@@ -3,11 +3,11 @@ use pollster::block_on;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use wgpu::{
-    Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor,
-    BindGroupLayoutEntry, BindingResource, BindingType, BufferBindingType, BufferDescriptor,
-    BufferUsages, CommandEncoderDescriptor, ComputePassDescriptor, ComputePipelineDescriptor,
-    DeviceDescriptor, InstanceDescriptor, PipelineLayoutDescriptor, PowerPreference,
-    RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+    BindingResource, BindingType, BufferBindingType, BufferDescriptor, BufferUsages,
+    CommandEncoderDescriptor, ComputePassDescriptor, ComputePipelineDescriptor, DeviceDescriptor,
+    InstanceDescriptor, PipelineLayoutDescriptor, PowerPreference, RequestAdapterOptions,
+    ShaderModuleDescriptor, ShaderSource, ShaderStages,
 };
 use wide::f32x4;
 
@@ -59,7 +59,7 @@ impl ComputationalUnit {
                 let _epsilon = if action.offset > 0 {
                     self.regs[action.offset as usize]
                 } else {
-                    1e-9  // Default precision
+                    1e-9 // Default precision
                 };
                 self.regs[action.dst as usize] = x.sqrt();
             }
@@ -390,9 +390,9 @@ mod tests {
     #[test]
     fn test_approximate_action() {
         let mut unit = ComputationalUnit::new(8);
-        
+
         unit.regs[1] = 16.0;
-        
+
         let action = Action {
             kind: Kind::Approximate,
             dst: 2,
@@ -400,11 +400,11 @@ mod tests {
             offset: 0,
             size: 0,
         };
-        
+
         unsafe {
             unit.execute(&action);
         }
-        
+
         // sqrt(16) = 4
         assert_eq!(unit.regs[2], 4.0);
     }
@@ -412,9 +412,9 @@ mod tests {
     #[test]
     fn test_choose_action() {
         let mut unit = ComputationalUnit::new(8);
-        
+
         unit.regs[1] = 100.0;
-        
+
         // Choose from [0, 100)
         let action = Action {
             kind: Kind::Choose,
@@ -423,11 +423,11 @@ mod tests {
             offset: 0,
             size: 0,
         };
-        
+
         unsafe {
             unit.execute(&action);
         }
-        
+
         // Result should be in range [0, 100)
         assert!(unit.regs[2] >= 0.0);
         assert!(unit.regs[2] < 100.0);
@@ -436,10 +436,10 @@ mod tests {
     #[test]
     fn test_choose_ranges() {
         let mut unit = ComputationalUnit::new(8);
-        
+
         for n in [1.0, 10.0, 50.0, 1000.0] {
             unit.regs[0] = n;
-            
+
             let action = Action {
                 kind: Kind::Choose,
                 dst: 1,
@@ -447,7 +447,7 @@ mod tests {
                 offset: 0,
                 size: 0,
             };
-            
+
             for _ in 0..10 {
                 unsafe {
                     unit.execute(&action);

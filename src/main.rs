@@ -1,4 +1,4 @@
-use base::{execute, Algorithm, Action, Kind};
+use base::{execute, Action, Algorithm, Kind};
 
 fn main() {
     // Example 1: Default execution
@@ -42,12 +42,12 @@ fn main() {
             size: 16,
         },
     ];
-    
+
     // Initialize some test data
     for i in 0..32 {
         simd_alg.payloads[i] = (i as f32).to_le_bytes()[0];
     }
-    
+
     match execute(simd_alg) {
         Ok(()) => println!("✓ SIMD execution complete"),
         Err(e) => eprintln!("✗ Error: {:?}", e),
@@ -60,7 +60,7 @@ fn main() {
     custom_alg.timeout_ms = Some(5000);
     custom_alg.units.simd_units = 2;
     custom_alg.state.unit_scratch_offsets = vec![0, 8192];
-    
+
     match execute(custom_alg) {
         Ok(()) => println!("✓ Custom execution complete"),
         Err(e) => eprintln!("✗ Error: {:?}", e),
@@ -90,7 +90,7 @@ mod integration_tests {
                 size: 16,
             },
         ];
-        
+
         assert!(execute(alg).is_ok());
     }
 
@@ -107,7 +107,7 @@ mod integration_tests {
                 size: 16,
             });
         }
-        
+
         assert!(execute(alg).is_ok());
     }
 }

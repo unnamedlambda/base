@@ -248,13 +248,13 @@ mod tests {
     #[test]
     fn test_computational_assignment_generation() {
         let mut alg = Algorithm::default();
-        
+
         // Set up some initial values in registers
         alg.payloads = vec![0u8; 65536];
         // Store 100.0 in the first position (for Choose to use)
         let hundred_bytes = 100.0_f64.to_le_bytes();
         alg.payloads[0..8].copy_from_slice(&hundred_bytes);
-        
+
         alg.actions = vec![
             Action {
                 kind: Kind::Choose,
@@ -271,15 +271,14 @@ mod tests {
                 size: 0,
             },
         ];
-        
+
         assert!(alg.computational_assignments.is_empty());
         alg.units.gpu_enabled = false; // Disable GPU for test
-        // Keep SIMD units as default instead of setting to 0
-        
+                                       // Keep SIMD units as default instead of setting to 0
+
         let result = execute(alg);
         assert!(result.is_ok());
     }
-
 
     #[test]
     fn test_mixed_actions() {
@@ -314,7 +313,7 @@ mod tests {
                 size: 16,
             },
         ];
-        
+
         alg.units.gpu_enabled = false;
         let result = execute(alg);
         assert!(result.is_ok());
@@ -348,16 +347,14 @@ mod tests {
     fn test_computational_disabled() {
         let mut alg = Algorithm::default();
         alg.units.computational_enabled = false;
-        alg.actions = vec![
-            Action {
-                kind: Kind::Choose,
-                dst: 0,
-                src: 1,
-                offset: 0,
-                size: 0,
-            },
-        ];
-        
+        alg.actions = vec![Action {
+            kind: Kind::Choose,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }];
+
         // Should still execute without error (action will be ignored)
         alg.units.gpu_enabled = false;
         let result = execute(alg);
