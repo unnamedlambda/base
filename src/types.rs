@@ -73,7 +73,6 @@ pub struct UnitSpec {
 
 impl Default for Algorithm {
     fn default() -> Self {
-        let num_units = 4;
         Algorithm {
             actions: Vec::new(),
             payloads: vec![0u8; 65536],
@@ -92,7 +91,7 @@ impl Default for Algorithm {
                 batch_size: 16,
             },
             units: UnitSpec {
-                simd_units: num_units,
+                simd_units: 4,
                 gpu_enabled: true,
                 computational_enabled: true,
                 backends_bits: Backends::all().bits(),
