@@ -41,6 +41,39 @@ impl SharedMemory {
             .copy_from_nonoverlapping(data.as_ptr(), data.len());
     }
 }
+pub(crate) struct ComputationalUnit {
+    regs: Vec<f64>,
+}
+
+impl ComputationalUnit {
+    pub fn new(regs: usize) -> Self {
+        Self {
+            regs: vec![0.0; regs],
+        }
+    }
+
+    pub unsafe fn execute(&mut self, action: &Action) {
+        match action.kind {
+            Kind::Approximate => {
+                let x = self.regs[action.src as usize];
+                let _epsilon = if action.offset > 0 {
+                    self.regs[action.offset as usize]
+                } else {
+                    1e-9  // Default precision
+                };
+                self.regs[action.dst as usize] = x.sqrt();
+            }
+            Kind::Choose => {
+                let n = self.regs[action.src as usize] as u64;
+                if n > 0 {
+                    let choice = rand::random::<u64>() % n;
+                    self.regs[action.dst as usize] = choice as f64;
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 pub(crate) struct SimdUnit {
     id: u8,
@@ -175,7 +208,6 @@ impl GpuUnit {
             ),
         });
 
-        // Create bind group layout
         let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Compute Bind Group Layout"),
             entries: &[BindGroupLayoutEntry {
@@ -257,6 +289,20 @@ impl GpuUnit {
     }
 }
 
+pub(crate) async fn computational_unit_task(
+    actions: Arc<Vec<Action>>,
+    indices: Vec<usize>,
+    regs: usize,
+) {
+    let mut unit = ComputationalUnit::new(regs);
+
+    for idx in indices {
+        unsafe {
+            unit.execute(&actions[idx]);
+        }
+    }
+}
+
 pub(crate) async fn simd_unit_task(
     id: u8,
     actions: Arc<Vec<Action>>,
@@ -333,5 +379,82 @@ mod tests {
     fn test_queue_item_size() {
         // Ensure QueueItem is small for efficient channel passing
         assert_eq!(std::mem::size_of::<QueueItem>(), 8);
+    }
+
+    #[test]
+    fn test_computational_unit_creation() {
+        let unit = ComputationalUnit::new(32);
+        assert_eq!(unit.regs.len(), 32);
+    }
+
+    #[test]
+    fn test_approximate_action() {
+        let mut unit = ComputationalUnit::new(8);
+        
+        unit.regs[1] = 16.0;
+        
+        let action = Action {
+            kind: Kind::Approximate,
+            dst: 2,
+            src: 1,
+            offset: 0,
+            size: 0,
+        };
+        
+        unsafe {
+            unit.execute(&action);
+        }
+        
+        // sqrt(16) = 4
+        assert_eq!(unit.regs[2], 4.0);
+    }
+
+    #[test]
+    fn test_choose_action() {
+        let mut unit = ComputationalUnit::new(8);
+        
+        unit.regs[1] = 100.0;
+        
+        // Choose from [0, 100)
+        let action = Action {
+            kind: Kind::Choose,
+            dst: 2,
+            src: 1,
+            offset: 0,
+            size: 0,
+        };
+        
+        unsafe {
+            unit.execute(&action);
+        }
+        
+        // Result should be in range [0, 100)
+        assert!(unit.regs[2] >= 0.0);
+        assert!(unit.regs[2] < 100.0);
+    }
+
+    #[test]
+    fn test_choose_ranges() {
+        let mut unit = ComputationalUnit::new(8);
+        
+        for n in [1.0, 10.0, 50.0, 1000.0] {
+            unit.regs[0] = n;
+            
+            let action = Action {
+                kind: Kind::Choose,
+                dst: 1,
+                src: 0,
+                offset: 0,
+                size: 0,
+            };
+            
+            for _ in 0..10 {
+                unsafe {
+                    unit.execute(&action);
+                }
+                assert!(unit.regs[1] >= 0.0);
+                assert!(unit.regs[1] < n);
+            }
+        }
     }
 }

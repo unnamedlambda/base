@@ -14,6 +14,8 @@ pub enum Kind {
     SimdAdd = 11,
     SimdMul = 12,
     SimdStore = 13,
+    Approximate = 20,
+    Choose = 21,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -34,6 +36,7 @@ pub struct Algorithm {
     pub queues: QueueSpec,
     pub units: UnitSpec,
     pub simd_assignments: Vec<u8>,
+    pub computational_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,
     pub stack_size: Option<usize>,
@@ -50,6 +53,7 @@ pub struct State {
     pub shared_data_size: usize,
     pub gpu_offset: usize,
     pub gpu_size: usize,
+    pub computational_regs: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -62,6 +66,7 @@ pub struct QueueSpec {
 pub struct UnitSpec {
     pub simd_units: usize,
     pub gpu_enabled: bool,
+    pub computational_enabled: bool,
     pub backends_bits: u32,
     pub features_bits: u64,
 }
@@ -80,6 +85,7 @@ impl Default for Algorithm {
                 shared_data_size: 16384,
                 gpu_offset: 32768,
                 gpu_size: 32768,
+                computational_regs: 32,
             },
             queues: QueueSpec {
                 capacity: 256,
@@ -88,10 +94,12 @@ impl Default for Algorithm {
             units: UnitSpec {
                 simd_units: num_units,
                 gpu_enabled: true,
+                computational_enabled: true,
                 backends_bits: Backends::all().bits(),
                 features_bits: 0,
             },
             simd_assignments: Vec::new(),
+            computational_assignments: Vec::new(),
             worker_threads: None,
             blocking_threads: None,
             stack_size: None,

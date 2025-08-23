@@ -8,7 +8,7 @@ mod types;
 mod units;
 mod validation;
 
-use crate::units::{gpu_unit_task, simd_unit_task, SharedMemory};
+use crate::units::{computational_unit_task, gpu_unit_task, simd_unit_task, SharedMemory};
 use crate::validation::validate;
 
 #[derive(Debug)]
@@ -30,6 +30,18 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 Kind::SimdLoad | Kind::SimdAdd | Kind::SimdMul | Kind::SimdStore => {
                     algorithm.simd_assignments[i] = unit;
                     unit = (unit + 1) % algorithm.units.simd_units as u8;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if algorithm.computational_assignments.is_empty() {
+        algorithm.computational_assignments = vec![255; algorithm.actions.len()];
+        for (i, action) in algorithm.actions.iter().enumerate() {
+            match action.kind {
+                Kind::Approximate | Kind::Choose => {
+                    algorithm.computational_assignments[i] = 0;
                 }
                 _ => {}
             }
@@ -82,6 +94,13 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
+    let mut computational_work: Vec<usize> = Vec::new();
+    for (i, &assignment) in algorithm.computational_assignments.iter().enumerate() {
+        if assignment != 255 {
+            computational_work.push(i);
+        }
+    }
+
     let actions = Arc::new(algorithm.actions.clone());
     let mut handles = vec![];
 
@@ -112,6 +131,17 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     drop(tx);
+
+    if algorithm.units.computational_enabled && !computational_work.is_empty() {
+        let actions = actions.clone();
+        let regs = algorithm.state.computational_regs;
+
+        handles.push(tokio::spawn(computational_unit_task(
+            actions,
+            computational_work,
+            regs,
+        )));
+    }
 
     if algorithm.units.gpu_enabled {
         let gpu_size = algorithm.state.gpu_size;
@@ -146,6 +176,8 @@ mod tests {
         assert_eq!(alg.queues.capacity, 256);
         assert_eq!(alg.queues.batch_size, 16);
         assert!(alg.units.gpu_enabled);
+        assert!(alg.units.computational_enabled);
+        assert_eq!(alg.state.computational_regs, 32);
     }
 
     #[test]
@@ -214,6 +246,81 @@ mod tests {
     }
 
     #[test]
+    fn test_computational_assignment_generation() {
+        let mut alg = Algorithm::default();
+        
+        // Set up some initial values in registers
+        alg.payloads = vec![0u8; 65536];
+        // Store 100.0 in the first position (for Choose to use)
+        let hundred_bytes = 100.0_f64.to_le_bytes();
+        alg.payloads[0..8].copy_from_slice(&hundred_bytes);
+        
+        alg.actions = vec![
+            Action {
+                kind: Kind::Choose,
+                dst: 0,
+                src: 1,
+                offset: 0,
+                size: 0,
+            },
+            Action {
+                kind: Kind::Approximate,
+                dst: 1,
+                src: 0,
+                offset: 0,
+                size: 0,
+            },
+        ];
+        
+        assert!(alg.computational_assignments.is_empty());
+        alg.units.gpu_enabled = false; // Disable GPU for test
+        // Keep SIMD units as default instead of setting to 0
+        
+        let result = execute(alg);
+        assert!(result.is_ok());
+    }
+
+
+    #[test]
+    fn test_mixed_actions() {
+        let mut alg = Algorithm::default();
+        alg.actions = vec![
+            Action {
+                kind: Kind::SimdLoad,
+                dst: 0,
+                src: 0,
+                offset: 0,
+                size: 16,
+            },
+            Action {
+                kind: Kind::Choose,
+                dst: 1,
+                src: 0,
+                offset: 0,
+                size: 0,
+            },
+            Action {
+                kind: Kind::Approximate,
+                dst: 2,
+                src: 1,
+                offset: 0,
+                size: 0,
+            },
+            Action {
+                kind: Kind::SimdStore,
+                dst: 0,
+                src: 0,
+                offset: 0,
+                size: 16,
+            },
+        ];
+        
+        alg.units.gpu_enabled = false;
+        let result = execute(alg);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_execute_empty_algorithm() {
         let alg = Algorithm::default();
         let result = execute(alg);
@@ -235,5 +342,25 @@ mod tests {
         // This might or might not timeout depending on system speed
         // Just ensure it doesn't panic
         let _ = execute(alg);
+    }
+
+    #[test]
+    fn test_computational_disabled() {
+        let mut alg = Algorithm::default();
+        alg.units.computational_enabled = false;
+        alg.actions = vec![
+            Action {
+                kind: Kind::Choose,
+                dst: 0,
+                src: 1,
+                offset: 0,
+                size: 0,
+            },
+        ];
+        
+        // Should still execute without error (action will be ignored)
+        alg.units.gpu_enabled = false;
+        let result = execute(alg);
+        assert!(result.is_ok());
     }
 }
