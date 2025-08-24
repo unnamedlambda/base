@@ -23,6 +23,7 @@ pub enum Kind {
     Compare = 22,
     Timestamp = 23,
     AtomicCAS = 24,
+    Fence = 26,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

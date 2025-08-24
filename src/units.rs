@@ -2,6 +2,7 @@ use crate::types::{Action, Kind};
 use pollster::block_on;
 use portable_atomic::{AtomicU128, AtomicU64, Ordering};
 use quanta::Clock;
+use std::sync::atomic::fence;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use wgpu::{
@@ -160,6 +161,9 @@ impl WriteUnit {
                     self.shared
                         .write(action.src as usize, &actual.to_le_bytes()[0..8]);
                 }
+            }
+            Kind::Fence => {
+                fence(Ordering::SeqCst);
             }
             _ => {}
         }
@@ -1232,5 +1236,79 @@ mod atomic_tests {
             let actual = u128::from_le_bytes(shared.read(208, 16)[0..16].try_into().unwrap());
             assert_eq!(actual, value_1);
         }
+    }
+
+    #[test]
+    fn test_fence() {
+        let mut memory = vec![0u8; 1024];
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared);
+
+        let action = Action {
+            kind: Kind::Fence,
+            dst: 0,
+            src: 0,
+            offset: 0,
+            size: 0, // All fields ignored for fence
+        };
+
+        unsafe {
+            // Fence doesn't crash and provides ordering guarantee
+            unit.execute(&action);
+            // Can't really test the effect without multiple threads
+            // but at least verify it executes
+        }
+    }
+
+    #[test]
+    fn test_fence_ordering() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        let mut memory = vec![0u8; 1024];
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+
+        let data_ready = Arc::new(AtomicBool::new(false));
+        let data_ready_clone = data_ready.clone();
+
+        let shared_clone = shared.clone();
+        let handle = thread::spawn(move || {
+            let mut unit = WriteUnit::new(shared_clone);
+
+            // Write data
+            let data = 42u64.to_le_bytes();
+            unsafe {
+                unit.shared.write(0, &data);
+            }
+
+            // Fence to ensure write completes before flag
+            let fence_action = Action {
+                kind: Kind::Fence,
+                dst: 0,
+                src: 0,
+                offset: 0,
+                size: 0,
+            };
+            unsafe {
+                unit.execute(&fence_action);
+            }
+
+            // Signal ready
+            data_ready_clone.store(true, Ordering::Release);
+        });
+
+        // Wait for data
+        while !data_ready.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+
+        // Read should see 42
+        unsafe {
+            let value = u64::from_le_bytes(shared.read(0, 8)[0..8].try_into().unwrap());
+            assert_eq!(value, 42);
+        }
+
+        handle.join().unwrap();
     }
 }
