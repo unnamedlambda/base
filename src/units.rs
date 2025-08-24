@@ -4,6 +4,8 @@ use portable_atomic::{AtomicU128, AtomicU64, Ordering};
 use quanta::Clock;
 use std::sync::atomic::fence;
 use std::sync::Arc;
+use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use wgpu::{
     Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
@@ -107,46 +109,6 @@ impl WriteUnit {
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
-            Kind::FileRead => {
-                // Read filename from memory (null-terminated string)
-                // action.src = memory offset where filename starts
-                // action.offset = max filename length to read
-                let filename = read_null_terminated_string(
-                    &self.shared,
-                    action.src as usize,
-                    action.offset as usize,
-                );
-
-                // Read entire file into memory
-                // action.dst = memory offset to write file contents
-                // action.size = max bytes to read from file (0 = entire file)
-                let data = std::fs::read(&filename).unwrap_or_default();
-
-                if action.size == 0 {
-                    // Write entire file
-                    self.shared.write(action.dst as usize, &data);
-                } else {
-                    // Write up to size bytes
-                    let len = data.len().min(action.size as usize);
-                    self.shared.write(action.dst as usize, &data[..len]);
-                }
-            }
-            Kind::FileWrite => {
-                // Read filename from memory (null-terminated string)
-                // action.dst = memory offset where filename starts
-                // action.offset = max filename length to read
-                let filename = read_null_terminated_string(
-                    &self.shared,
-                    action.dst as usize,
-                    action.offset as usize,
-                );
-
-                // Write data from memory to file
-                // action.src = memory offset of data to write
-                // action.size = number of bytes to write
-                let data = self.shared.read(action.src as usize, action.size as usize);
-                let _ = std::fs::write(&filename, data);
-            }
             Kind::AtomicCAS => {
                 if action.size == 16 {
                     let expected = read_as_u128(&self.shared, action.src as usize);
@@ -166,6 +128,120 @@ impl WriteUnit {
                 fence(Ordering::SeqCst);
             }
             _ => {}
+        }
+    }
+}
+
+pub(crate) struct FileUnit {
+    id: u8,
+    shared: Arc<SharedMemory>,
+    buffer: Vec<u8>,
+}
+
+impl FileUnit {
+    pub fn new(id: u8, shared: Arc<SharedMemory>, buffer_size: usize) -> Self {
+        Self {
+            id,
+            shared,
+            buffer: vec![0u8; buffer_size],
+        }
+    }
+
+    pub async fn execute(&mut self, action: &Action) -> Option<QueueItem> {
+        match action.kind {
+            Kind::FileRead => {
+                let filename = read_null_terminated_string(
+                    &self.shared,
+                    action.src as usize,
+                    action.offset as usize,
+                );
+
+                match fs::File::open(&filename).await {
+                    Ok(mut file) => {
+                        if action.size == 0 {
+                            // Read entire file in chunks
+                            let mut total_read = 0;
+                            let dst_base = action.dst as usize;
+
+                            loop {
+                                match file.read(&mut self.buffer).await {
+                                    Ok(0) => break, // EOF
+                                    Ok(n) => {
+                                        unsafe {
+                                            self.shared
+                                                .write(dst_base + total_read, &self.buffer[..n]);
+                                        }
+                                        total_read += n;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+
+                            Some(QueueItem {
+                                offset: action.dst,
+                                size: (total_read.min(u16::MAX as usize)) as u16,
+                                unit_id: self.id,
+                                _pad: 0,
+                            })
+                        } else {
+                            // Read specific amount
+                            let read_size = (action.size as usize).min(self.buffer.len());
+                            match file.read(&mut self.buffer[..read_size]).await {
+                                Ok(n) => {
+                                    unsafe {
+                                        self.shared.write(action.dst as usize, &self.buffer[..n]);
+                                    }
+                                    Some(QueueItem {
+                                        offset: action.dst,
+                                        size: n as u16,
+                                        unit_id: self.id,
+                                        _pad: 0,
+                                    })
+                                }
+                                Err(_) => None,
+                            }
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+            Kind::FileWrite => {
+                let filename = read_null_terminated_string(
+                    &self.shared,
+                    action.dst as usize,
+                    action.offset as usize,
+                );
+
+                match fs::File::create(&filename).await {
+                    Ok(mut file) => {
+                        let mut written = 0;
+                        let total_size = action.size as usize;
+                        let src_base = action.src as usize;
+
+                        // Write in chunks
+                        while written < total_size {
+                            let chunk_size = (total_size - written).min(self.buffer.len());
+                            let data = unsafe { self.shared.read(src_base + written, chunk_size) };
+
+                            match file.write_all(data).await {
+                                Ok(_) => written += chunk_size,
+                                Err(_) => break,
+                            }
+                        }
+
+                        let _ = file.sync_all().await; // Ensure data hits disk
+
+                        Some(QueueItem {
+                            offset: action.src,
+                            size: (written.min(u16::MAX as usize)) as u16,
+                            unit_id: self.id,
+                            _pad: 0,
+                        })
+                    }
+                    Err(_) => None,
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -439,6 +515,23 @@ pub(crate) async fn write_unit_task(
     for idx in indices {
         unsafe {
             unit.execute(&actions[idx]);
+        }
+    }
+}
+
+pub(crate) async fn file_unit_task(
+    id: u8,
+    actions: Arc<Vec<Action>>,
+    indices: Vec<usize>,
+    shared: Arc<SharedMemory>,
+    buffer_size: usize,
+    tx: mpsc::Sender<QueueItem>,
+) {
+    let mut unit = FileUnit::new(id, shared, buffer_size);
+
+    for idx in indices {
+        if let Some(item) = unit.execute(&actions[idx]).await {
+            let _ = tx.send(item).await;
         }
     }
 }
@@ -832,8 +925,8 @@ mod file_tests {
     use std::fs;
     use std::path::Path;
 
-    #[test]
-    fn test_file_write_and_read() {
+    #[tokio::test]
+    async fn test_file_write_and_read() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_output.txt";
         let test_data = b"Hello, BASE!";
@@ -847,7 +940,7 @@ mod file_tests {
         memory[100..100 + test_data.len()].copy_from_slice(test_data);
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = FileUnit::new(0, shared.clone(), 1024);
 
         // Test FileWrite
         let write_action = Action {
@@ -858,9 +951,7 @@ mod file_tests {
             size: test_data.len() as u32, // write 12 bytes
         };
 
-        unsafe {
-            unit.execute(&write_action);
-        }
+        unit.execute(&write_action).await;
 
         // Verify file was created
         assert!(Path::new(test_file).exists());
@@ -869,7 +960,9 @@ mod file_tests {
 
         // Test FileRead
         // Clear the data area first
-        memory[200..212].fill(0);
+        for i in 200..212 {
+            memory[i] = 0;
+        }
 
         let read_action = Action {
             kind: Kind::FileRead,
@@ -879,8 +972,9 @@ mod file_tests {
             size: 100,  // max bytes to read
         };
 
+        unit.execute(&read_action).await;
+
         unsafe {
-            unit.execute(&read_action);
             let read_data = shared.read(200, test_data.len());
             assert_eq!(read_data, test_data);
         }
@@ -889,8 +983,8 @@ mod file_tests {
         fs::remove_file(test_file).ok();
     }
 
-    #[test]
-    fn test_file_read_nonexistent() {
+    #[tokio::test]
+    async fn test_file_read_nonexistent() {
         let mut memory = vec![0u8; 1024];
 
         // Store filename for nonexistent file
@@ -899,7 +993,7 @@ mod file_tests {
         memory[filename.len()] = 0;
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = FileUnit::new(0, shared.clone(), 1024);
 
         let action = Action {
             kind: Kind::FileRead,
@@ -909,16 +1003,19 @@ mod file_tests {
             size: 100,
         };
 
+        let result = unit.execute(&action).await;
+        // Should return None for failed read
+        assert!(result.is_none());
+
+        // Memory should remain unchanged (all zeros)
         unsafe {
-            unit.execute(&action);
-            // Should write empty data (unwrap_or_default)
             let data = shared.read(100, 10);
             assert_eq!(data.iter().filter(|&&b| b != 0).count(), 0);
         }
     }
 
-    #[test]
-    fn test_file_size_limits() {
+    #[tokio::test]
+    async fn test_file_size_limits() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_size_limit.txt";
         let test_data = b"This is a longer test string for size limiting";
@@ -932,7 +1029,7 @@ mod file_tests {
         fs::write(test_file, test_data).unwrap();
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = FileUnit::new(0, shared.clone(), 1024);
 
         // Read only first 10 bytes
         let action = Action {
@@ -943,8 +1040,9 @@ mod file_tests {
             size: 10, // Limit to 10 bytes
         };
 
+        unit.execute(&action).await;
+
         unsafe {
-            unit.execute(&action);
             let read_data = shared.read(100, 10);
             assert_eq!(read_data, &test_data[..10]);
 
@@ -957,8 +1055,8 @@ mod file_tests {
         fs::remove_file(test_file).ok();
     }
 
-    #[test]
-    fn test_filename_with_path() {
+    #[tokio::test]
+    async fn test_filename_with_path() {
         let mut memory = vec![0u8; 1024];
         let test_dir = "test_dir";
         let test_file = "test_dir/test_file.txt";
@@ -974,7 +1072,7 @@ mod file_tests {
         memory[100..100 + test_data.len()].copy_from_slice(test_data);
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = FileUnit::new(0, shared.clone(), 1024);
 
         let action = Action {
             kind: Kind::FileWrite,
@@ -984,9 +1082,7 @@ mod file_tests {
             size: test_data.len() as u32,
         };
 
-        unsafe {
-            unit.execute(&action);
-        }
+        unit.execute(&action).await;
 
         assert!(Path::new(test_file).exists());
         let contents = fs::read(test_file).unwrap();
@@ -997,8 +1093,8 @@ mod file_tests {
         fs::remove_dir(test_dir).ok();
     }
 
-    #[test]
-    fn test_binary_data() {
+    #[tokio::test]
+    async fn test_binary_data() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_binary.bin";
 
@@ -1013,7 +1109,7 @@ mod file_tests {
         memory[100..100 + binary_data.len()].copy_from_slice(&binary_data);
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = FileUnit::new(0, shared.clone(), 1024);
 
         // Write binary file
         let write_action = Action {
@@ -1024,9 +1120,7 @@ mod file_tests {
             size: binary_data.len() as u32,
         };
 
-        unsafe {
-            unit.execute(&write_action);
-        }
+        unit.execute(&write_action).await;
 
         // Read it back
         let read_action = Action {
@@ -1037,8 +1131,9 @@ mod file_tests {
             size: 0, // Read entire file
         };
 
+        unit.execute(&read_action).await;
+
         unsafe {
-            unit.execute(&read_action);
             let read_data = shared.read(200, binary_data.len());
             assert_eq!(read_data, &binary_data);
         }

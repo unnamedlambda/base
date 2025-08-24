@@ -51,6 +51,7 @@ pub struct Algorithm {
     pub stack_size: Option<usize>,
     pub timeout_ms: Option<u64>,
     pub thread_name_prefix: Option<String>,
+    pub file_assignments: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -63,6 +64,7 @@ pub struct State {
     pub gpu_offset: usize,
     pub gpu_size: usize,
     pub computational_regs: usize,
+    pub file_buffer_size: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -76,6 +78,7 @@ pub struct UnitSpec {
     pub simd_units: usize,
     pub gpu_enabled: bool,
     pub computational_enabled: bool,
+    pub file_units: usize,
     pub backends_bits: u32,
     pub features_bits: u64,
 }
@@ -94,6 +97,7 @@ impl Default for Algorithm {
                 gpu_offset: 32768,
                 gpu_size: 32768,
                 computational_regs: 32,
+                file_buffer_size: 65536,
             },
             queues: QueueSpec {
                 capacity: 256,
@@ -103,12 +107,14 @@ impl Default for Algorithm {
                 simd_units: 4,
                 gpu_enabled: true,
                 computational_enabled: true,
+                file_units: 2,
                 backends_bits: Backends::all().bits(),
                 features_bits: 0,
             },
             simd_assignments: Vec::new(),
             computational_assignments: Vec::new(),
             write_assignments: Vec::new(),
+            file_assignments: Vec::new(),
             worker_threads: None,
             blocking_threads: None,
             stack_size: None,

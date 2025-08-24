@@ -9,7 +9,8 @@ mod units;
 mod validation;
 
 use crate::units::{
-    computational_unit_task, gpu_unit_task, simd_unit_task, write_unit_task, SharedMemory,
+    computational_unit_task, file_unit_task, gpu_unit_task, simd_unit_task, write_unit_task,
+    SharedMemory,
 };
 use crate::validation::validate;
 
@@ -54,8 +55,22 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         algorithm.write_assignments = vec![255; algorithm.actions.len()];
         for (i, action) in algorithm.actions.iter().enumerate() {
             match action.kind {
-                Kind::ConditionalWrite | Kind::MemCopy | Kind::FileRead | Kind::FileWrite => {
+                Kind::ConditionalWrite | Kind::MemCopy => {
                     algorithm.write_assignments[i] = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if algorithm.file_assignments.is_empty() {
+        algorithm.file_assignments = vec![255; algorithm.actions.len()];
+        let mut unit = 0u8;
+        for (i, action) in algorithm.actions.iter().enumerate() {
+            match action.kind {
+                Kind::FileRead | Kind::FileWrite => {
+                    algorithm.file_assignments[i] = unit;
+                    unit = (unit + 1) % algorithm.units.file_units as u8;
                 }
                 _ => {}
             }
@@ -122,8 +137,33 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
+    let mut file_work: Vec<Vec<usize>> = vec![Vec::new(); algorithm.units.file_units];
+    for (i, &assignment) in algorithm.file_assignments.iter().enumerate() {
+        if assignment != 255 {
+            file_work[assignment as usize].push(i);
+        }
+    }
+
     let actions = Arc::new(algorithm.actions.clone());
     let mut handles = vec![];
+
+    for (unit_id, indices) in file_work.into_iter().enumerate() {
+        if !indices.is_empty() {
+            let tx = tx.clone();
+            let actions = actions.clone();
+            let shared = shared.clone();
+            let buffer_size = algorithm.state.file_buffer_size;
+
+            handles.push(tokio::spawn(file_unit_task(
+                unit_id as u8,
+                actions,
+                indices,
+                shared,
+                buffer_size,
+                tx,
+            )));
+        }
+    }
 
     for (unit_id, indices) in simd_work.into_iter().enumerate() {
         if !indices.is_empty() {
