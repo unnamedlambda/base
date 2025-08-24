@@ -82,11 +82,11 @@ fn read_null_terminated_string(shared: &SharedMemory, offset: usize, max_len: us
     }
 }
 
-pub(crate) struct WriteUnit {
+pub(crate) struct MemoryUnit {
     shared: Arc<SharedMemory>,
 }
 
-impl WriteUnit {
+impl MemoryUnit {
     pub fn new(shared: Arc<SharedMemory>) -> Self {
         Self { shared }
     }
@@ -505,12 +505,12 @@ impl GpuUnit {
     }
 }
 
-pub(crate) async fn write_unit_task(
+pub(crate) async fn memory_unit_task(
     actions: Arc<Vec<Action>>,
     indices: Vec<usize>,
     shared: Arc<SharedMemory>,
 ) {
-    let mut unit = WriteUnit::new(shared);
+    let mut unit = MemoryUnit::new(shared);
 
     for idx in indices {
         unsafe {
@@ -751,7 +751,7 @@ mod tests {
         memory[100..104].copy_from_slice(&[1, 2, 3, 4]);
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::MemCopy,
@@ -778,7 +778,7 @@ mod tests {
         memory[100..104].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::ConditionalWrite,
@@ -807,7 +807,7 @@ mod tests {
         memory[200..204].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::ConditionalWrite,
@@ -835,7 +835,7 @@ mod tests {
         }
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::MemCopy,
@@ -860,7 +860,7 @@ mod tests {
         memory[100..110].copy_from_slice(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         // Copy with overlap (src=100, dst=105, overlaps at 105-109)
         let action = Action {
@@ -894,7 +894,7 @@ mod tests {
             memory[200..208].copy_from_slice(&0.0f64.to_le_bytes());
 
             let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-            let mut unit = WriteUnit::new(shared.clone());
+            let mut unit = MemoryUnit::new(shared.clone());
 
             let action = Action {
                 kind: Kind::ConditionalWrite,
@@ -1159,7 +1159,7 @@ mod atomic_tests {
         memory[300..308].copy_from_slice(&100u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::AtomicCAS,
@@ -1193,7 +1193,7 @@ mod atomic_tests {
         memory[300..308].copy_from_slice(&100u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::AtomicCAS,
@@ -1224,7 +1224,7 @@ mod atomic_tests {
         memory[100..108].copy_from_slice(&0u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         // Simulate increment using CAS loop
         for expected_val in 0u64..10 {
@@ -1271,7 +1271,7 @@ mod atomic_tests {
         memory[304..320].copy_from_slice(&new_val.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::AtomicCAS,
@@ -1303,7 +1303,7 @@ mod atomic_tests {
         memory[112..128].copy_from_slice(&value_1.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared.clone());
+        let mut unit = MemoryUnit::new(shared.clone());
 
         // Try to CAS with same pointer but old generation (should fail)
         let old_gen_value = ((ptr_a as u128) << 64) | 0u128;
@@ -1337,7 +1337,7 @@ mod atomic_tests {
     fn test_fence() {
         let mut memory = vec![0u8; 1024];
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = WriteUnit::new(shared);
+        let mut unit = MemoryUnit::new(shared);
 
         let action = Action {
             kind: Kind::Fence,
@@ -1369,7 +1369,7 @@ mod atomic_tests {
 
         let shared_clone = shared.clone();
         let handle = thread::spawn(move || {
-            let mut unit = WriteUnit::new(shared_clone);
+            let mut unit = MemoryUnit::new(shared_clone);
 
             // Write data
             let data = 42u64.to_le_bytes();

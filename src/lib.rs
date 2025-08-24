@@ -9,7 +9,7 @@ mod units;
 mod validation;
 
 use crate::units::{
-    computational_unit_task, file_unit_task, gpu_unit_task, simd_unit_task, write_unit_task,
+    computational_unit_task, file_unit_task, gpu_unit_task, memory_unit_task, simd_unit_task,
     SharedMemory,
 };
 use crate::validation::validate;
@@ -208,7 +208,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let actions = actions.clone();
         let shared_clone = shared.clone();
 
-        handles.push(tokio::spawn(write_unit_task(
+        handles.push(tokio::spawn(memory_unit_task(
             actions,
             write_work,
             shared_clone,
