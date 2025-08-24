@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_operation() {
+    fn test_compare_action() {
         let mut unit = ComputationalUnit::new(8);
 
         // Test greater than
