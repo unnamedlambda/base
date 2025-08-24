@@ -43,6 +43,19 @@ impl SharedMemory {
     }
 }
 
+fn read_null_terminated_string(shared: &SharedMemory, offset: usize, max_len: usize) -> String {
+    unsafe {
+        // Read up to max_len bytes
+        let bytes = shared.read(offset, max_len);
+
+        // Find null terminator
+        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+
+        // Convert to string
+        String::from_utf8_lossy(&bytes[..len]).into_owned()
+    }
+}
+
 pub(crate) struct WriteUnit {
     shared: Arc<SharedMemory>,
 }
@@ -69,6 +82,46 @@ impl WriteUnit {
                 let src_ptr = self.shared.ptr.add(action.src as usize);
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
+            }
+            Kind::FileRead => {
+                // Read filename from memory (null-terminated string)
+                // action.src = memory offset where filename starts
+                // action.offset = max filename length to read
+                let filename = read_null_terminated_string(
+                    &self.shared,
+                    action.src as usize,
+                    action.offset as usize,
+                );
+
+                // Read entire file into memory
+                // action.dst = memory offset to write file contents
+                // action.size = max bytes to read from file (0 = entire file)
+                let data = std::fs::read(&filename).unwrap_or_default();
+
+                if action.size == 0 {
+                    // Write entire file
+                    self.shared.write(action.dst as usize, &data);
+                } else {
+                    // Write up to size bytes
+                    let len = data.len().min(action.size as usize);
+                    self.shared.write(action.dst as usize, &data[..len]);
+                }
+            }
+            Kind::FileWrite => {
+                // Read filename from memory (null-terminated string)
+                // action.dst = memory offset where filename starts
+                // action.offset = max filename length to read
+                let filename = read_null_terminated_string(
+                    &self.shared,
+                    action.dst as usize,
+                    action.offset as usize,
+                );
+
+                // Write data from memory to file
+                // action.src = memory offset of data to write
+                // action.size = number of bytes to write
+                let data = self.shared.read(action.src as usize, action.size as usize);
+                let _ = std::fs::write(&filename, data);
             }
             _ => {}
         }
@@ -728,5 +781,227 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+    
+    #[test]
+    fn test_file_write_and_read() {
+        let mut memory = vec![0u8; 1024];
+        let test_file = "test_output.txt";
+        let test_data = b"Hello, BASE!";
+        
+        // Setup: Store filename at offset 0
+        let filename_bytes = test_file.as_bytes();
+        memory[0..filename_bytes.len()].copy_from_slice(filename_bytes);
+        memory[filename_bytes.len()] = 0; // null terminator
+        
+        // Store data at offset 100
+        memory[100..100 + test_data.len()].copy_from_slice(test_data);
+        
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+        
+        // Test FileWrite
+        let write_action = Action {
+            kind: Kind::FileWrite,
+            src: 100,        // data at offset 100
+            dst: 0,          // filename at offset 0
+            offset: 50,      // max filename length
+            size: test_data.len() as u32,  // write 12 bytes
+        };
+        
+        unsafe {
+            unit.execute(&write_action);
+        }
+        
+        // Verify file was created
+        assert!(Path::new(test_file).exists());
+        let file_contents = fs::read(test_file).unwrap();
+        assert_eq!(file_contents, test_data);
+        
+        // Test FileRead
+        // Clear the data area first
+        memory[200..212].fill(0);
+        
+        let read_action = Action {
+            kind: Kind::FileRead,
+            src: 0,          // filename at offset 0
+            dst: 200,        // write data to offset 200
+            offset: 50,      // max filename length
+            size: 100,       // max bytes to read
+        };
+        
+        unsafe {
+            unit.execute(&read_action);
+            let read_data = shared.read(200, test_data.len());
+            assert_eq!(read_data, test_data);
+        }
+        
+        // Cleanup
+        fs::remove_file(test_file).ok();
+    }
+    
+    #[test]
+    fn test_file_read_nonexistent() {
+        let mut memory = vec![0u8; 1024];
+        
+        // Store filename for nonexistent file
+        let filename = "nonexistent_file.txt";
+        memory[0..filename.len()].copy_from_slice(filename.as_bytes());
+        memory[filename.len()] = 0;
+        
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+        
+        let action = Action {
+            kind: Kind::FileRead,
+            src: 0,
+            dst: 100,
+            offset: 50,
+            size: 100,
+        };
+        
+        unsafe {
+            unit.execute(&action);
+            // Should write empty data (unwrap_or_default)
+            let data = shared.read(100, 10);
+            assert_eq!(data.iter().filter(|&&b| b != 0).count(), 0);
+        }
+    }
+    
+    #[test]
+    fn test_file_size_limits() {
+        let mut memory = vec![0u8; 1024];
+        let test_file = "test_size_limit.txt";
+        let test_data = b"This is a longer test string for size limiting";
+        
+        // Setup filename
+        let filename_bytes = test_file.as_bytes();
+        memory[0..filename_bytes.len()].copy_from_slice(filename_bytes);
+        memory[filename_bytes.len()] = 0;
+        
+        // Write test file with full data
+        fs::write(test_file, test_data).unwrap();
+        
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+        
+        // Read only first 10 bytes
+        let action = Action {
+            kind: Kind::FileRead,
+            src: 0,
+            dst: 100,
+            offset: 50,
+            size: 10,  // Limit to 10 bytes
+        };
+        
+        unsafe {
+            unit.execute(&action);
+            let read_data = shared.read(100, 10);
+            assert_eq!(read_data, &test_data[..10]);
+            
+            // Verify we didn't write beyond the limit
+            let byte_11 = shared.read(110, 1)[0];
+            assert_eq!(byte_11, 0);
+        }
+        
+        // Cleanup
+        fs::remove_file(test_file).ok();
+    }
+    
+    #[test]
+    fn test_filename_with_path() {
+        let mut memory = vec![0u8; 1024];
+        let test_dir = "test_dir";
+        let test_file = "test_dir/test_file.txt";
+        let test_data = b"Path test";
+        
+        fs::create_dir_all(test_dir).ok();
+        
+        // Store filename with path
+        memory[0..test_file.len()].copy_from_slice(test_file.as_bytes());
+        memory[test_file.len()] = 0;
+        
+        // Store data
+        memory[100..100 + test_data.len()].copy_from_slice(test_data);
+        
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+        
+        let action = Action {
+            kind: Kind::FileWrite,
+            src: 100,
+            dst: 0,
+            offset: 100,  // Longer for path
+            size: test_data.len() as u32,
+        };
+        
+        unsafe {
+            unit.execute(&action);
+        }
+        
+        assert!(Path::new(test_file).exists());
+        let contents = fs::read(test_file).unwrap();
+        assert_eq!(contents, test_data);
+        
+        // Cleanup
+        fs::remove_file(test_file).ok();
+        fs::remove_dir(test_dir).ok();
+    }
+    
+    #[test]
+    fn test_binary_data() {
+        let mut memory = vec![0u8; 1024];
+        let test_file = "test_binary.bin";
+        
+        // Binary data including zeros
+        let binary_data = vec![0xFF, 0x00, 0x42, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
+        
+        // Setup filename
+        memory[0..test_file.len()].copy_from_slice(test_file.as_bytes());
+        memory[test_file.len()] = 0;
+        
+        // Store binary data
+        memory[100..100 + binary_data.len()].copy_from_slice(&binary_data);
+        
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+        
+        // Write binary file
+        let write_action = Action {
+            kind: Kind::FileWrite,
+            src: 100,
+            dst: 0,
+            offset: 50,
+            size: binary_data.len() as u32,
+        };
+        
+        unsafe {
+            unit.execute(&write_action);
+        }
+        
+        // Read it back
+        let read_action = Action {
+            kind: Kind::FileRead,
+            src: 0,
+            dst: 200,
+            offset: 50,
+            size: 0,  // Read entire file
+        };
+        
+        unsafe {
+            unit.execute(&read_action);
+            let read_data = shared.read(200, binary_data.len());
+            assert_eq!(read_data, &binary_data);
+        }
+        
+        // Cleanup
+        fs::remove_file(test_file).ok();
     }
 }

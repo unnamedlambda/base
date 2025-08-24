@@ -16,6 +16,8 @@ pub enum Kind {
     SimdStore = 13,
     ConditionalWrite = 14,
     MemCopy = 15,
+    FileRead = 16,
+    FileWrite = 17,
     Approximate = 20,
     Choose = 21,
     Compare = 22,

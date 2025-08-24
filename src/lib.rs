@@ -54,7 +54,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         algorithm.write_assignments = vec![255; algorithm.actions.len()];
         for (i, action) in algorithm.actions.iter().enumerate() {
             match action.kind {
-                Kind::MemCopy | Kind::ConditionalWrite => {
+                Kind::ConditionalWrite | Kind::MemCopy | Kind::FileRead | Kind::FileWrite => {
                     algorithm.write_assignments[i] = 0;
                 }
                 _ => {}
