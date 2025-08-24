@@ -51,12 +51,12 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
-    if algorithm.write_assignments.is_empty() {
-        algorithm.write_assignments = vec![255; algorithm.actions.len()];
+    if algorithm.memory_assignments.is_empty() {
+        algorithm.memory_assignments = vec![255; algorithm.actions.len()];
         for (i, action) in algorithm.actions.iter().enumerate() {
             match action.kind {
-                Kind::ConditionalWrite | Kind::MemCopy => {
-                    algorithm.write_assignments[i] = 0;
+                Kind::ConditionalWrite | Kind::MemCopy | Kind::MemScan => {
+                    algorithm.memory_assignments[i] = 0;
                 }
                 _ => {}
             }
@@ -131,7 +131,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     let mut write_work: Vec<usize> = Vec::new();
-    for (i, &assignment) in algorithm.write_assignments.iter().enumerate() {
+    for (i, &assignment) in algorithm.memory_assignments.iter().enumerate() {
         if assignment != 255 {
             write_work.push(i);
         }
@@ -441,7 +441,7 @@ mod integration_tests {
     #[test]
     fn test_full_algorithm_execution() {
         let mut alg = Algorithm::default();
-        
+
         // Create a simple computation pipeline
         alg.actions = vec![
             // Load data into SIMD
@@ -469,15 +469,15 @@ mod integration_tests {
                 size: 16,
             },
         ];
-        
+
         // Initialize some data
         for i in 0..16 {
             alg.payloads[i] = i as u8;
         }
-        
+
         alg.units.gpu_enabled = false; // Disable GPU for test
         alg.timeout_ms = Some(1000); // 1 second timeout
-        
+
         let result = execute(alg);
         assert!(result.is_ok());
     }
@@ -486,7 +486,7 @@ mod integration_tests {
     fn test_algorithm_with_timeout() {
         let mut alg = Algorithm::default();
         alg.timeout_ms = Some(1); // Very short timeout
-        
+
         // Add many actions to potentially trigger timeout
         for i in 0..1000 {
             alg.actions.push(Action {
@@ -497,9 +497,9 @@ mod integration_tests {
                 size: 100,
             });
         }
-        
+
         alg.units.gpu_enabled = false;
-        
+
         // This might timeout or complete depending on system speed
         let _ = execute(alg);
     }
@@ -507,7 +507,7 @@ mod integration_tests {
     #[test]
     fn test_mixed_unit_coordination() {
         let mut alg = Algorithm::default();
-        
+
         // Create actions that use different units
         alg.actions = vec![
             // Computational unit: generate random number
@@ -535,9 +535,9 @@ mod integration_tests {
                 size: 50,
             },
         ];
-        
+
         alg.units.gpu_enabled = false;
-        
+
         let result = execute(alg);
         assert!(result.is_ok());
     }

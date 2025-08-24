@@ -109,6 +109,46 @@ impl MemoryUnit {
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
+            Kind::MemScan => {
+                // action.src = pattern start offset
+                // action.dst = search region start offset
+                // action.size = search region size
+                // action.offset = pattern size (lower 16 bits) | result offset (upper 16 bits)
+
+                let pattern_size = (action.offset & 0xFFFF) as usize;
+                let result_offset = (action.offset >> 16) as usize;
+
+                if pattern_size == 0 || pattern_size > action.size as usize {
+                    // Invalid pattern size - write -1 (not found)
+                    self.shared.write(result_offset, &(-1i64).to_le_bytes());
+                    return;
+                }
+
+                let pattern = self.shared.read(action.src as usize, pattern_size);
+                let search_region = self.shared.read(action.dst as usize, action.size as usize);
+
+                // Search for pattern in region
+                let mut found_offset = -1i64;
+
+                if pattern_size == 1 {
+                    // Optimize single byte search
+                    if let Some(pos) = search_region.iter().position(|&b| b == pattern[0]) {
+                        found_offset = (action.dst as i64) + (pos as i64);
+                    }
+                } else {
+                    // Multi-byte pattern search
+                    for i in 0..=(search_region.len() - pattern_size) {
+                        if &search_region[i..i + pattern_size] == pattern {
+                            found_offset = (action.dst as i64) + (i as i64);
+                            break;
+                        }
+                    }
+                }
+
+                // Write result offset (or -1 if not found)
+                self.shared
+                    .write(result_offset, &found_offset.to_le_bytes());
+            }
             Kind::AtomicCAS => {
                 if action.size == 16 {
                     let expected = read_as_u128(&self.shared, action.src as usize);
@@ -610,6 +650,95 @@ pub(crate) async fn gpu_unit_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_memscan_single_byte() {
+        let mut memory = vec![0u8; 1024];
+
+        // Pattern to search for (single byte 0x42)
+        memory[100] = 0x42;
+
+        // Data to search in
+        memory[200..210]
+            .copy_from_slice(&[0x00, 0x11, 0x22, 0x42, 0x33, 0x44, 0x42, 0x55, 0x66, 0x77]);
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = MemoryUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::MemScan,
+            src: 100,                // Pattern at offset 100
+            dst: 200,                // Search from offset 200
+            size: 10,                // Search 10 bytes
+            offset: 1 | (300 << 16), // Pattern size 1, result at offset 300
+        };
+
+        unsafe {
+            unit.execute(&action);
+            let result = i64::from_le_bytes(shared.read(300, 8)[0..8].try_into().unwrap());
+            assert_eq!(result, 203); // Found at offset 203
+        }
+    }
+
+    #[test]
+    fn test_memscan_multi_byte() {
+        let mut memory = vec![0u8; 1024];
+
+        // Pattern to search for (3 bytes: 0xAA, 0xBB, 0xCC)
+        memory[100..103].copy_from_slice(&[0xAA, 0xBB, 0xCC]);
+
+        // Data to search in
+        memory[200..215].copy_from_slice(&[
+            0x00, 0x11, 0x22, 0xAA, 0xBB, 0xCC, 0x33, 0x44, 0xAA, 0xBB, 0xCC, 0x55, 0x66, 0x77,
+            0x88,
+        ]);
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = MemoryUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::MemScan,
+            src: 100,                // Pattern at offset 100
+            dst: 200,                // Search from offset 200
+            size: 15,                // Search 15 bytes
+            offset: 3 | (300 << 16), // Pattern size 3, result at offset 300
+        };
+
+        unsafe {
+            unit.execute(&action);
+            let result = i64::from_le_bytes(shared.read(300, 8)[0..8].try_into().unwrap());
+            assert_eq!(result, 203); // Found at offset 203 (first occurrence)
+        }
+    }
+
+    #[test]
+    fn test_memscan_not_found() {
+        let mut memory = vec![0u8; 1024];
+
+        // Pattern to search for
+        memory[100] = 0xFF;
+
+        // Data to search in (doesn't contain 0xFF)
+        memory[200..210]
+            .copy_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99]);
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = MemoryUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::MemScan,
+            src: 100,
+            dst: 200,
+            size: 10,
+            offset: 1 | (300 << 16),
+        };
+
+        unsafe {
+            unit.execute(&action);
+            let result = i64::from_le_bytes(shared.read(300, 8)[0..8].try_into().unwrap());
+            assert_eq!(result, -1); // Not found
+        }
+    }
 
     #[test]
     fn test_simd_unit_creation() {
