@@ -433,3 +433,112 @@ mod tests {
         assert!(result.is_ok());
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    #[test]
+    fn test_full_algorithm_execution() {
+        let mut alg = Algorithm::default();
+        
+        // Create a simple computation pipeline
+        alg.actions = vec![
+            // Load data into SIMD
+            Action {
+                kind: Kind::SimdLoad,
+                dst: 0,
+                src: 0,
+                offset: 0,
+                size: 16,
+            },
+            // Add two SIMD registers
+            Action {
+                kind: Kind::SimdAdd,
+                dst: 2,
+                src: 0,
+                offset: 1,
+                size: 0,
+            },
+            // Store result
+            Action {
+                kind: Kind::SimdStore,
+                src: 2,
+                dst: 0,
+                offset: 100,
+                size: 16,
+            },
+        ];
+        
+        // Initialize some data
+        for i in 0..16 {
+            alg.payloads[i] = i as u8;
+        }
+        
+        alg.units.gpu_enabled = false; // Disable GPU for test
+        alg.timeout_ms = Some(1000); // 1 second timeout
+        
+        let result = execute(alg);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_algorithm_with_timeout() {
+        let mut alg = Algorithm::default();
+        alg.timeout_ms = Some(1); // Very short timeout
+        
+        // Add many actions to potentially trigger timeout
+        for i in 0..1000 {
+            alg.actions.push(Action {
+                kind: Kind::MemCopy,
+                src: 0,
+                dst: 100,
+                offset: 0,
+                size: 100,
+            });
+        }
+        
+        alg.units.gpu_enabled = false;
+        
+        // This might timeout or complete depending on system speed
+        let _ = execute(alg);
+    }
+
+    #[test]
+    fn test_mixed_unit_coordination() {
+        let mut alg = Algorithm::default();
+        
+        // Create actions that use different units
+        alg.actions = vec![
+            // Computational unit: generate random number
+            Action {
+                kind: Kind::Choose,
+                dst: 0,
+                src: 1,
+                offset: 0,
+                size: 0,
+            },
+            // SIMD unit: process data
+            Action {
+                kind: Kind::SimdLoad,
+                dst: 0,
+                src: 0,
+                offset: 0,
+                size: 16,
+            },
+            // Write unit: copy memory
+            Action {
+                kind: Kind::MemCopy,
+                src: 100,
+                dst: 200,
+                offset: 0,
+                size: 50,
+            },
+        ];
+        
+        alg.units.gpu_enabled = false;
+        
+        let result = execute(alg);
+        assert!(result.is_ok());
+    }
+}
