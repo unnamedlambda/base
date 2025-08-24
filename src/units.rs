@@ -1407,3 +1407,159 @@ mod atomic_tests {
         handle.join().unwrap();
     }
 }
+
+#[cfg(test)]
+mod concurrent_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_simd_units() {
+        // Test multiple SIMD units writing to different memory regions concurrently
+        let mut memory = vec![0u8; 65536];
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let scratch = Arc::new(vec![0u8; 16384]);
+
+        let (tx, mut rx) = mpsc::channel(100);
+        let mut handles = vec![];
+
+        // Spawn 4 SIMD units working in parallel
+        for unit_id in 0..4u8 {
+            let shared_clone = shared.clone();
+            let scratch_clone = scratch.clone();
+            let tx_clone = tx.clone();
+
+            handles.push(tokio::spawn(async move {
+                let mut unit = SimdUnit::new(
+                    unit_id,
+                    16,
+                    scratch_clone,
+                    unit_id as usize * 4096,
+                    4096,
+                    shared_clone,
+                    unit_id as usize * 1024,
+                );
+
+                // Each unit does some SIMD operations
+                let action = Action {
+                    kind: Kind::SimdStore,
+                    src: 0,
+                    offset: 0,
+                    size: 16,
+                    dst: 0,
+                };
+
+                if let Some(item) = unsafe { unit.execute(&action) } {
+                    tx_clone.send(item).await.unwrap();
+                }
+            }));
+        }
+
+        drop(tx);
+
+        // Collect all results
+        let mut items = vec![];
+        while let Some(item) = rx.recv().await {
+            items.push(item);
+        }
+
+        // Verify we got results from all units
+        assert_eq!(items.len(), 4);
+
+        // Verify each unit wrote to its own region
+        let mut unit_ids: Vec<u8> = items.iter().map(|i| i.unit_id).collect();
+        unit_ids.sort();
+        assert_eq!(unit_ids, vec![0, 1, 2, 3]);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_file_operations() {
+        // Test multiple file operations happening concurrently
+        let mut memory = vec![0u8; 4096];
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+
+        // Setup multiple files
+        let files = ["test1.txt", "test2.txt", "test3.txt"];
+        let mut handles = vec![];
+
+        for (i, filename) in files.iter().enumerate() {
+            let offset = i * 100;
+            memory[offset..offset + filename.len()].copy_from_slice(filename.as_bytes());
+            memory[offset + filename.len()] = 0;
+
+            // Write test data
+            let data = format!("Data {}", i);
+            memory[1000 + offset..1000 + offset + data.len()].copy_from_slice(data.as_bytes());
+
+            let shared_clone = shared.clone();
+            handles.push(tokio::spawn(async move {
+                let mut unit = FileUnit::new(i as u8, shared_clone, 1024);
+
+                let action = Action {
+                    kind: Kind::FileWrite,
+                    src: (1000 + offset) as u32,
+                    dst: offset as u32,
+                    offset: 50,
+                    size: data.len() as u32,
+                };
+
+                unit.execute(&action).await
+            }));
+        }
+
+        // Wait for all writes
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all files exist
+        for filename in &files {
+            assert!(std::path::Path::new(filename).exists());
+            std::fs::remove_file(filename).ok();
+        }
+    }
+
+    #[test]
+    fn test_atomic_cas_contention() {
+        // Test CAS under contention from multiple threads
+        let mut memory = vec![0u8; 1024];
+        memory[100..108].copy_from_slice(&0u64.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let counter = Arc::new(AtomicU32::new(0));
+
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let shared_clone = shared.clone();
+            let counter_clone = counter.clone();
+
+            handles.push(std::thread::spawn(move || {
+                // Try to increment the value using CAS
+                loop {
+                    let current = unsafe {
+                        u64::from_le_bytes(shared_clone.read(100, 8)[0..8].try_into().unwrap())
+                    };
+
+                    let result = unsafe { shared_clone.cas64(100, current, current + 1) };
+
+                    if result == current {
+                        counter_clone.fetch_add(1, Ordering::SeqCst);
+                        break;
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // All 10 threads should have succeeded
+        assert_eq!(counter.load(Ordering::SeqCst), 10);
+
+        // Final value should be 10
+        let final_val =
+            unsafe { u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap()) };
+        assert_eq!(final_val, 10);
+    }
+}
