@@ -1,5 +1,6 @@
 use crate::types::{Action, Kind};
 use pollster::block_on;
+use portable_atomic::{AtomicU128, AtomicU64, Ordering};
 use quanta::Clock;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -41,6 +42,28 @@ impl SharedMemory {
             .add(offset)
             .copy_from_nonoverlapping(data.as_ptr(), data.len());
     }
+
+    pub unsafe fn cas64(&self, offset: usize, expected: u64, new: u64) -> u64 {
+        let ptr = self.ptr.add(offset) as *mut AtomicU64;
+        (*ptr)
+            .compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
+            .unwrap_or_else(|x| x)
+    }
+
+    pub unsafe fn cas128(&self, offset: usize, expected: u128, new: u128) -> u128 {
+        let ptr = self.ptr.add(offset) as *mut AtomicU128;
+        (*ptr)
+            .compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
+            .unwrap_or_else(|x| x)
+    }
+}
+
+fn read_as_u64(shared: &SharedMemory, offset: usize) -> u64 {
+    u64::from_le_bytes(unsafe { shared.read(offset, 8)[0..8].try_into().unwrap() })
+}
+
+fn read_as_u128(shared: &SharedMemory, offset: usize) -> u128 {
+    u128::from_le_bytes(unsafe { shared.read(offset, 16)[0..16].try_into().unwrap() })
 }
 
 fn read_null_terminated_string(shared: &SharedMemory, offset: usize, max_len: usize) -> String {
@@ -122,6 +145,21 @@ impl WriteUnit {
                 // action.size = number of bytes to write
                 let data = self.shared.read(action.src as usize, action.size as usize);
                 let _ = std::fs::write(&filename, data);
+            }
+            Kind::AtomicCAS => {
+                if action.size == 16 {
+                    let expected = read_as_u128(&self.shared, action.src as usize);
+                    let new = read_as_u128(&self.shared, action.offset as usize);
+                    let actual = self.shared.cas128(action.dst as usize, expected, new);
+                    self.shared
+                        .write(action.src as usize, &actual.to_le_bytes());
+                } else {
+                    let expected = read_as_u64(&self.shared, action.src as usize);
+                    let new = read_as_u64(&self.shared, action.offset as usize);
+                    let actual = self.shared.cas64(action.dst as usize, expected, new);
+                    self.shared
+                        .write(action.src as usize, &actual.to_le_bytes()[0..8]);
+                }
             }
             _ => {}
         }
@@ -789,76 +827,76 @@ mod file_tests {
     use super::*;
     use std::fs;
     use std::path::Path;
-    
+
     #[test]
     fn test_file_write_and_read() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_output.txt";
         let test_data = b"Hello, BASE!";
-        
+
         // Setup: Store filename at offset 0
         let filename_bytes = test_file.as_bytes();
         memory[0..filename_bytes.len()].copy_from_slice(filename_bytes);
         memory[filename_bytes.len()] = 0; // null terminator
-        
+
         // Store data at offset 100
         memory[100..100 + test_data.len()].copy_from_slice(test_data);
-        
+
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = WriteUnit::new(shared.clone());
-        
+
         // Test FileWrite
         let write_action = Action {
             kind: Kind::FileWrite,
-            src: 100,        // data at offset 100
-            dst: 0,          // filename at offset 0
-            offset: 50,      // max filename length
-            size: test_data.len() as u32,  // write 12 bytes
+            src: 100,                     // data at offset 100
+            dst: 0,                       // filename at offset 0
+            offset: 50,                   // max filename length
+            size: test_data.len() as u32, // write 12 bytes
         };
-        
+
         unsafe {
             unit.execute(&write_action);
         }
-        
+
         // Verify file was created
         assert!(Path::new(test_file).exists());
         let file_contents = fs::read(test_file).unwrap();
         assert_eq!(file_contents, test_data);
-        
+
         // Test FileRead
         // Clear the data area first
         memory[200..212].fill(0);
-        
+
         let read_action = Action {
             kind: Kind::FileRead,
-            src: 0,          // filename at offset 0
-            dst: 200,        // write data to offset 200
-            offset: 50,      // max filename length
-            size: 100,       // max bytes to read
+            src: 0,     // filename at offset 0
+            dst: 200,   // write data to offset 200
+            offset: 50, // max filename length
+            size: 100,  // max bytes to read
         };
-        
+
         unsafe {
             unit.execute(&read_action);
             let read_data = shared.read(200, test_data.len());
             assert_eq!(read_data, test_data);
         }
-        
+
         // Cleanup
         fs::remove_file(test_file).ok();
     }
-    
+
     #[test]
     fn test_file_read_nonexistent() {
         let mut memory = vec![0u8; 1024];
-        
+
         // Store filename for nonexistent file
         let filename = "nonexistent_file.txt";
         memory[0..filename.len()].copy_from_slice(filename.as_bytes());
         memory[filename.len()] = 0;
-        
+
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = WriteUnit::new(shared.clone());
-        
+
         let action = Action {
             kind: Kind::FileRead,
             src: 0,
@@ -866,7 +904,7 @@ mod file_tests {
             offset: 50,
             size: 100,
         };
-        
+
         unsafe {
             unit.execute(&action);
             // Should write empty data (unwrap_or_default)
@@ -874,105 +912,105 @@ mod file_tests {
             assert_eq!(data.iter().filter(|&&b| b != 0).count(), 0);
         }
     }
-    
+
     #[test]
     fn test_file_size_limits() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_size_limit.txt";
         let test_data = b"This is a longer test string for size limiting";
-        
+
         // Setup filename
         let filename_bytes = test_file.as_bytes();
         memory[0..filename_bytes.len()].copy_from_slice(filename_bytes);
         memory[filename_bytes.len()] = 0;
-        
+
         // Write test file with full data
         fs::write(test_file, test_data).unwrap();
-        
+
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = WriteUnit::new(shared.clone());
-        
+
         // Read only first 10 bytes
         let action = Action {
             kind: Kind::FileRead,
             src: 0,
             dst: 100,
             offset: 50,
-            size: 10,  // Limit to 10 bytes
+            size: 10, // Limit to 10 bytes
         };
-        
+
         unsafe {
             unit.execute(&action);
             let read_data = shared.read(100, 10);
             assert_eq!(read_data, &test_data[..10]);
-            
+
             // Verify we didn't write beyond the limit
             let byte_11 = shared.read(110, 1)[0];
             assert_eq!(byte_11, 0);
         }
-        
+
         // Cleanup
         fs::remove_file(test_file).ok();
     }
-    
+
     #[test]
     fn test_filename_with_path() {
         let mut memory = vec![0u8; 1024];
         let test_dir = "test_dir";
         let test_file = "test_dir/test_file.txt";
         let test_data = b"Path test";
-        
+
         fs::create_dir_all(test_dir).ok();
-        
+
         // Store filename with path
         memory[0..test_file.len()].copy_from_slice(test_file.as_bytes());
         memory[test_file.len()] = 0;
-        
+
         // Store data
         memory[100..100 + test_data.len()].copy_from_slice(test_data);
-        
+
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = WriteUnit::new(shared.clone());
-        
+
         let action = Action {
             kind: Kind::FileWrite,
             src: 100,
             dst: 0,
-            offset: 100,  // Longer for path
+            offset: 100, // Longer for path
             size: test_data.len() as u32,
         };
-        
+
         unsafe {
             unit.execute(&action);
         }
-        
+
         assert!(Path::new(test_file).exists());
         let contents = fs::read(test_file).unwrap();
         assert_eq!(contents, test_data);
-        
+
         // Cleanup
         fs::remove_file(test_file).ok();
         fs::remove_dir(test_dir).ok();
     }
-    
+
     #[test]
     fn test_binary_data() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_binary.bin";
-        
+
         // Binary data including zeros
         let binary_data = vec![0xFF, 0x00, 0x42, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
-        
+
         // Setup filename
         memory[0..test_file.len()].copy_from_slice(test_file.as_bytes());
         memory[test_file.len()] = 0;
-        
+
         // Store binary data
         memory[100..100 + binary_data.len()].copy_from_slice(&binary_data);
-        
+
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = WriteUnit::new(shared.clone());
-        
+
         // Write binary file
         let write_action = Action {
             kind: Kind::FileWrite,
@@ -981,27 +1019,218 @@ mod file_tests {
             offset: 50,
             size: binary_data.len() as u32,
         };
-        
+
         unsafe {
             unit.execute(&write_action);
         }
-        
+
         // Read it back
         let read_action = Action {
             kind: Kind::FileRead,
             src: 0,
             dst: 200,
             offset: 50,
-            size: 0,  // Read entire file
+            size: 0, // Read entire file
         };
-        
+
         unsafe {
             unit.execute(&read_action);
             let read_data = shared.read(200, binary_data.len());
             assert_eq!(read_data, &binary_data);
         }
-        
+
         // Cleanup
         fs::remove_file(test_file).ok();
+    }
+}
+
+#[cfg(test)]
+mod atomic_tests {
+    use super::*;
+
+    #[test]
+    fn test_cas64_success() {
+        let mut memory = vec![0u8; 1024];
+
+        // Initialize value to 42
+        memory[100..108].copy_from_slice(&42u64.to_le_bytes());
+
+        // Expected: 42, New: 100
+        memory[200..208].copy_from_slice(&42u64.to_le_bytes());
+        memory[300..308].copy_from_slice(&100u64.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::AtomicCAS,
+            dst: 100,    // target location
+            src: 200,    // expected value location
+            offset: 300, // new value location
+            size: 8,     // 64-bit
+        };
+
+        unsafe {
+            unit.execute(&action);
+
+            // Should have swapped to 100
+            let result = u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap());
+            assert_eq!(result, 100);
+
+            // Old value (42) should be written back to src
+            let old = u64::from_le_bytes(shared.read(200, 8)[0..8].try_into().unwrap());
+            assert_eq!(old, 42);
+        }
+    }
+
+    #[test]
+    fn test_cas64_failure() {
+        let mut memory = vec![0u8; 1024];
+
+        // Initialize value to 42
+        memory[100..108].copy_from_slice(&42u64.to_le_bytes());
+
+        memory[200..208].copy_from_slice(&50u64.to_le_bytes());
+        memory[300..308].copy_from_slice(&100u64.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::AtomicCAS,
+            dst: 100,
+            src: 200,
+            offset: 300,
+            size: 8,
+        };
+
+        unsafe {
+            unit.execute(&action);
+
+            // Should still be 42 (CAS failed)
+            let result = u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap());
+            assert_eq!(result, 42);
+
+            // Actual value (42) should be written back to src
+            let actual = u64::from_le_bytes(shared.read(200, 8)[0..8].try_into().unwrap());
+            assert_eq!(actual, 42);
+        }
+    }
+
+    #[test]
+    fn test_cas_loop_increment() {
+        let mut memory = vec![0u8; 1024];
+
+        // Initialize counter to 0
+        memory[100..108].copy_from_slice(&0u64.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        // Simulate increment using CAS loop
+        for expected_val in 0u64..10 {
+            // Set expected value
+            memory[200..208].copy_from_slice(&expected_val.to_le_bytes());
+
+            // Set new value (expected + 1)
+            memory[300..308].copy_from_slice(&(expected_val + 1).to_le_bytes());
+
+            let action = Action {
+                kind: Kind::AtomicCAS,
+                dst: 100,
+                src: 200,
+                offset: 300,
+                size: 8,
+            };
+
+            unsafe {
+                unit.execute(&action);
+            }
+        }
+
+        // Counter should be 10
+        unsafe {
+            let final_val = u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap());
+            assert_eq!(final_val, 10);
+        }
+    }
+
+    #[test]
+    fn test_cas128_success() {
+        let mut memory = vec![0u8; 1024];
+
+        // Use offset 112 instead of 100 (112 = 7 * 16, so it's 16-byte aligned)
+        // Initialize 128-bit value (pointer: 0x1000, generation: 1)
+        let initial = ((0x1000u128) << 64) | 1;
+        memory[112..128].copy_from_slice(&initial.to_le_bytes());
+
+        // Expected: same as initial
+        memory[208..224].copy_from_slice(&initial.to_le_bytes());
+
+        // New value (pointer: 0x2000, generation: 2)
+        let new_val = ((0x2000u128) << 64) | 2;
+        memory[304..320].copy_from_slice(&new_val.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::AtomicCAS,
+            dst: 112,
+            src: 208,
+            offset: 304,
+            size: 16,
+        };
+
+        unsafe {
+            unit.execute(&action);
+
+            // Should have swapped to new value
+            let result = u128::from_le_bytes(shared.read(112, 16)[0..16].try_into().unwrap());
+            assert_eq!(result, new_val);
+        }
+    }
+
+    #[test]
+    fn test_cas_aba_protection() {
+        let mut memory = vec![0u8; 1024];
+
+        // 128-bit value with pointer and generation
+        // Use offset 112 for 16-byte alignment
+        let ptr_a = 0x1000u64;
+        let gen_1 = 1u64;
+        let value_1 = ((ptr_a as u128) << 64) | (gen_1 as u128);
+
+        memory[112..128].copy_from_slice(&value_1.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        // Try to CAS with same pointer but old generation (should fail)
+        let old_gen_value = ((ptr_a as u128) << 64) | 0u128;
+        memory[208..224].copy_from_slice(&old_gen_value.to_le_bytes());
+
+        let new_value = ((0x2000u128) << 64) | 2u128;
+        memory[304..320].copy_from_slice(&new_value.to_le_bytes());
+
+        let action = Action {
+            kind: Kind::AtomicCAS,
+            dst: 112,
+            src: 208,
+            offset: 304,
+            size: 16,
+        };
+
+        unsafe {
+            unit.execute(&action);
+
+            // Should have failed - generation mismatch
+            let result = u128::from_le_bytes(shared.read(112, 16)[0..16].try_into().unwrap());
+            assert_eq!(result, value_1);
+
+            // Actual value written back shows the real generation
+            let actual = u128::from_le_bytes(shared.read(208, 16)[0..16].try_into().unwrap());
+            assert_eq!(actual, value_1);
+        }
     }
 }
