@@ -18,6 +18,7 @@ pub enum Kind {
     MemCopy = 15,
     Approximate = 20,
     Choose = 21,
+    Compare = 22,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

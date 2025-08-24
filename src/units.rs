@@ -103,6 +103,11 @@ impl ComputationalUnit {
                     self.regs[action.dst as usize] = choice as f64;
                 }
             }
+            Kind::Compare => {
+                let a = self.regs[action.src as usize];
+                let b = self.regs[action.offset as usize];
+                self.regs[action.dst as usize] = if a > b { 1.0 } else { 0.0 };
+            }
             _ => {}
         }
     }
@@ -503,6 +508,46 @@ mod tests {
                 assert!(unit.regs[1] < n);
             }
         }
+    }
+
+    #[test]
+    fn test_compare_operation() {
+        let mut unit = ComputationalUnit::new(8);
+
+        // Test greater than
+        unit.regs[0] = 5.0;
+        unit.regs[1] = 3.0;
+
+        let action = Action {
+            kind: Kind::Compare,
+            dst: 2,
+            src: 0,
+            offset: 1,
+            size: 0,
+        };
+
+        unsafe {
+            unit.execute(&action);
+        }
+        assert_eq!(unit.regs[2], 1.0); // 5 > 3 is true
+
+        // Test less than
+        unit.regs[0] = 2.0;
+        unit.regs[1] = 7.0;
+
+        unsafe {
+            unit.execute(&action);
+        }
+        assert_eq!(unit.regs[2], 0.0); // 2 > 7 is false
+
+        // Test equal
+        unit.regs[0] = 4.0;
+        unit.regs[1] = 4.0;
+
+        unsafe {
+            unit.execute(&action);
+        }
+        assert_eq!(unit.regs[2], 0.0); // 4 > 4 is false (not greater)
     }
 
     #[test]
