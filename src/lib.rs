@@ -8,7 +8,9 @@ mod types;
 mod units;
 mod validation;
 
-use crate::units::{computational_unit_task, gpu_unit_task, simd_unit_task, SharedMemory};
+use crate::units::{
+    computational_unit_task, gpu_unit_task, simd_unit_task, write_unit_task, SharedMemory,
+};
 use crate::validation::validate;
 
 #[derive(Debug)]
@@ -42,6 +44,18 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
             match action.kind {
                 Kind::Approximate | Kind::Choose => {
                     algorithm.computational_assignments[i] = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if algorithm.write_assignments.is_empty() {
+        algorithm.write_assignments = vec![255; algorithm.actions.len()];
+        for (i, action) in algorithm.actions.iter().enumerate() {
+            match action.kind {
+                Kind::MemCopy | Kind::ConditionalWrite => {
+                    algorithm.write_assignments[i] = 0;
                 }
                 _ => {}
             }
@@ -101,6 +115,13 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
+    let mut write_work: Vec<usize> = Vec::new();
+    for (i, &assignment) in algorithm.write_assignments.iter().enumerate() {
+        if assignment != 255 {
+            write_work.push(i);
+        }
+    }
+
     let actions = Arc::new(algorithm.actions.clone());
     let mut handles = vec![];
 
@@ -140,6 +161,17 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
             actions,
             computational_work,
             regs,
+        )));
+    }
+
+    if !write_work.is_empty() {
+        let actions = actions.clone();
+        let shared_clone = shared.clone();
+
+        handles.push(tokio::spawn(write_unit_task(
+            actions,
+            write_work,
+            shared_clone,
         )));
     }
 

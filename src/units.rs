@@ -41,6 +41,39 @@ impl SharedMemory {
             .copy_from_nonoverlapping(data.as_ptr(), data.len());
     }
 }
+
+pub(crate) struct WriteUnit {
+    shared: Arc<SharedMemory>,
+}
+
+impl WriteUnit {
+    pub fn new(shared: Arc<SharedMemory>) -> Self {
+        Self { shared }
+    }
+
+    pub unsafe fn execute(&mut self, action: &Action) {
+        match action.kind {
+            Kind::ConditionalWrite => {
+                // Read first 8 bytes at offset as condition
+                let cond_bytes = self.shared.read(action.offset as usize, 8);
+                let condition = f64::from_le_bytes(cond_bytes[0..8].try_into().unwrap());
+
+                if condition != 0.0 {
+                    let src_ptr = self.shared.ptr.add(action.src as usize);
+                    let dst_ptr = self.shared.ptr.add(action.dst as usize);
+                    std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
+                }
+            }
+            Kind::MemCopy => {
+                let src_ptr = self.shared.ptr.add(action.src as usize);
+                let dst_ptr = self.shared.ptr.add(action.dst as usize);
+                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub(crate) struct ComputationalUnit {
     regs: Vec<f64>,
 }
@@ -289,6 +322,20 @@ impl GpuUnit {
     }
 }
 
+pub(crate) async fn write_unit_task(
+    actions: Arc<Vec<Action>>,
+    indices: Vec<usize>,
+    shared: Arc<SharedMemory>,
+) {
+    let mut unit = WriteUnit::new(shared);
+
+    for idx in indices {
+        unsafe {
+            unit.execute(&actions[idx]);
+        }
+    }
+}
+
 pub(crate) async fn computational_unit_task(
     actions: Arc<Vec<Action>>,
     indices: Vec<usize>,
@@ -454,6 +501,179 @@ mod tests {
                 }
                 assert!(unit.regs[1] >= 0.0);
                 assert!(unit.regs[1] < n);
+            }
+        }
+    }
+
+    #[test]
+    fn test_memcopy_basic() {
+        let mut memory = vec![0u8; 1024];
+        memory[100..104].copy_from_slice(&[1, 2, 3, 4]);
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::MemCopy,
+            dst: 200,
+            src: 100,
+            offset: 0,
+            size: 4,
+        };
+
+        unsafe {
+            unit.execute(&action);
+            let copied = shared.read(200, 4);
+            assert_eq!(copied, &[1, 2, 3, 4]);
+        }
+    }
+
+    #[test]
+    fn test_conditional_write_true() {
+        let mut memory = vec![0u8; 1024];
+
+        // Set condition to 1.0 (true)
+        memory[0..8].copy_from_slice(&1.0f64.to_le_bytes());
+        // Set source data
+        memory[100..104].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::ConditionalWrite,
+            dst: 200,
+            src: 100,
+            offset: 0, // condition at offset 0
+            size: 4,
+        };
+
+        unsafe {
+            unit.execute(&action);
+            let result = shared.read(200, 4);
+            assert_eq!(result, &[0xAA, 0xBB, 0xCC, 0xDD]);
+        }
+    }
+
+    #[test]
+    fn test_conditional_write_false() {
+        let mut memory = vec![0u8; 1024];
+
+        // Set condition to 0.0 (false)
+        memory[0..8].copy_from_slice(&0.0f64.to_le_bytes());
+        // Set source data
+        memory[100..104].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+        // Pre-fill destination with different data
+        memory[200..204].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::ConditionalWrite,
+            dst: 200,
+            src: 100,
+            offset: 0,
+            size: 4,
+        };
+
+        unsafe {
+            unit.execute(&action);
+            // Destination should be unchanged
+            let result = shared.read(200, 4);
+            assert_eq!(result, &[0x11, 0x22, 0x33, 0x44]);
+        }
+    }
+
+    #[test]
+    fn test_large_memcopy() {
+        let mut memory = vec![0u8; 65536];
+
+        // Fill source with pattern
+        for i in 0..1000 {
+            memory[1000 + i] = (i % 256) as u8;
+        }
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::MemCopy,
+            dst: 5000,
+            src: 1000,
+            offset: 0,
+            size: 1000,
+        };
+
+        unsafe {
+            unit.execute(&action);
+            let result = shared.read(5000, 1000);
+            for i in 0..1000 {
+                assert_eq!(result[i], (i % 256) as u8);
+            }
+        }
+    }
+
+    #[test]
+    fn test_overlapping_memcopy() {
+        let mut memory = vec![0u8; 1024];
+        memory[100..110].copy_from_slice(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = WriteUnit::new(shared.clone());
+
+        // Copy with overlap (src=100, dst=105, overlaps at 105-109)
+        let action = Action {
+            kind: Kind::MemCopy,
+            dst: 105,
+            src: 100,
+            offset: 0,
+            size: 5,
+        };
+
+        unsafe {
+            unit.execute(&action);
+            let result = shared.read(105, 5);
+            assert_eq!(result, &[0, 1, 2, 3, 4]);
+        }
+    }
+
+    #[test]
+    fn test_conditional_with_float_values() {
+        let mut memory = vec![0u8; 1024];
+
+        // Test with different condition values
+        for (cond_val, should_copy) in [
+            (0.0f64, false),
+            (1.0f64, true),
+            (-1.0f64, true),
+            (0.001f64, true),
+        ] {
+            memory[0..8].copy_from_slice(&cond_val.to_le_bytes());
+            memory[100..108].copy_from_slice(&42.0f64.to_le_bytes());
+            memory[200..208].copy_from_slice(&0.0f64.to_le_bytes());
+
+            let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+            let mut unit = WriteUnit::new(shared.clone());
+
+            let action = Action {
+                kind: Kind::ConditionalWrite,
+                dst: 200,
+                src: 100,
+                offset: 0,
+                size: 8,
+            };
+
+            unsafe {
+                unit.execute(&action);
+                let result_bytes = shared.read(200, 8);
+                let result = f64::from_le_bytes(result_bytes.try_into().unwrap());
+
+                if should_copy {
+                    assert_eq!(result, 42.0, "Condition {} should copy", cond_val);
+                } else {
+                    assert_eq!(result, 0.0, "Condition {} should not copy", cond_val);
+                }
             }
         }
     }
