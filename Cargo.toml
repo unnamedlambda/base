@@ -12,3 +12,4 @@ tokio = { version = "1.47.0", features = ["full"] }
 wide = "0.7"
 futures = "0.3"
 rand = "0.8"
+quanta = "0.12"

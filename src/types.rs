@@ -19,6 +19,7 @@ pub enum Kind {
     Approximate = 20,
     Choose = 21,
     Compare = 22,
+    Timestamp = 23,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

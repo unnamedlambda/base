@@ -1,5 +1,6 @@
 use crate::types::{Action, Kind};
 use pollster::block_on;
+use quanta::Clock;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use wgpu::{
@@ -76,12 +77,14 @@ impl WriteUnit {
 
 pub(crate) struct ComputationalUnit {
     regs: Vec<f64>,
+    clock: Clock,
 }
 
 impl ComputationalUnit {
     pub fn new(regs: usize) -> Self {
         Self {
             regs: vec![0.0; regs],
+            clock: Clock::new(),
         }
     }
 
@@ -107,6 +110,10 @@ impl ComputationalUnit {
                 let a = self.regs[action.src as usize];
                 let b = self.regs[action.offset as usize];
                 self.regs[action.dst as usize] = if a > b { 1.0 } else { 0.0 };
+            }
+            Kind::Timestamp => {
+                // Store current timestamp in register
+                self.regs[action.dst as usize] = self.clock.raw() as f64;
             }
             _ => {}
         }
