@@ -55,13 +55,13 @@ impl ComputationalUnit {
     pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::Approximate => {
-                let x = self.regs[action.src as usize];
-                let _epsilon = if action.offset > 0 {
-                    self.regs[action.offset as usize]
-                } else {
-                    1e-9 // Default precision
-                };
-                self.regs[action.dst as usize] = x.sqrt();
+                let base = self.regs[action.src as usize];
+                let iterations = action.offset as usize;
+                let mut x = base;
+                for _ in 0..iterations {
+                    x = 0.5 * (x + base / x)
+                }
+                self.regs[action.dst as usize] = x;
             }
             Kind::Choose => {
                 let n = self.regs[action.src as usize] as u64;
@@ -397,7 +397,7 @@ mod tests {
             kind: Kind::Approximate,
             dst: 2,
             src: 1,
-            offset: 0,
+            offset: 10,
             size: 0,
         };
 
