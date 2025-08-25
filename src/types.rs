@@ -29,6 +29,7 @@ pub enum Kind {
     NetAccept = 28,
     NetSend = 29,
     NetRecv = 30,
+    FFICall = 31,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -51,6 +52,7 @@ pub struct Algorithm {
     pub simd_assignments: Vec<u8>,
     pub computational_assignments: Vec<u8>,
     pub network_assignments: Vec<u8>,
+    pub ffi_assignments: Vec<u8>,
     pub memory_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,
@@ -122,6 +124,7 @@ impl Default for Algorithm {
             memory_assignments: Vec::new(),
             file_assignments: Vec::new(),
             network_assignments: Vec::new(),
+            ffi_assignments: Vec::new(),
             worker_threads: None,
             blocking_threads: None,
             stack_size: None,
