@@ -13,8 +13,8 @@ use wgpu::{
     Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBindingType, BufferDescriptor, BufferUsages,
     CommandEncoderDescriptor, ComputePassDescriptor, ComputePipelineDescriptor, DeviceDescriptor,
-    InstanceDescriptor, PipelineLayoutDescriptor, PowerPreference, RequestAdapterOptions,
-    ShaderModuleDescriptor, ShaderSource, ShaderStages,
+    InstanceDescriptor, PipelineCompilationOptions, PipelineLayoutDescriptor, PowerPreference,
+    RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource, ShaderStages,
 };
 use wide::f32x4;
 
@@ -683,6 +683,7 @@ impl GpuUnit {
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: "main",
+            compilation_options: PipelineCompilationOptions::default(),
         });
 
         let bind_group = device.create_bind_group(&BindGroupDescriptor {
@@ -728,6 +729,7 @@ impl GpuUnit {
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
                 label: Some("Compute Pass"),
+                timestamp_writes: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
