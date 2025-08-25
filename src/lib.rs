@@ -154,10 +154,10 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
-    let mut write_work: Vec<usize> = Vec::new();
+    let mut memory_work: Vec<usize> = Vec::new();
     for (i, &assignment) in algorithm.memory_assignments.iter().enumerate() {
         if assignment != 255 {
-            write_work.push(i);
+            memory_work.push(i);
         }
     }
 
@@ -263,13 +263,13 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         )));
     }
 
-    if !write_work.is_empty() {
+    if !memory_work.is_empty() {
         let actions = actions.clone();
         let shared_clone = shared.clone();
 
         handles.push(tokio::spawn(memory_unit_task(
             actions,
-            write_work,
+            memory_work,
             shared_clone,
         )));
     }
