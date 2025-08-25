@@ -2,10 +2,12 @@ use crate::types::{Action, Kind};
 use pollster::block_on;
 use portable_atomic::{AtomicU128, AtomicU64, Ordering};
 use quanta::Clock;
+use std::collections::HashMap;
 use std::sync::atomic::fence;
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use wgpu::{
     Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
@@ -168,6 +170,162 @@ impl MemoryUnit {
                 fence(Ordering::SeqCst);
             }
             _ => {}
+        }
+    }
+}
+
+pub(crate) struct NetworkUnit {
+    id: u8,
+    shared: Arc<SharedMemory>,
+    connections: HashMap<u32, TcpStream>,
+    listeners: HashMap<u32, TcpListener>,
+    next_handle: u32,
+}
+
+impl NetworkUnit {
+    pub fn new(id: u8, shared: Arc<SharedMemory>) -> Self {
+        Self {
+            id,
+            shared,
+            connections: HashMap::new(),
+            listeners: HashMap::new(),
+            next_handle: 1,
+        }
+    }
+
+    pub async fn execute(&mut self, action: &Action) -> Option<QueueItem> {
+        match action.kind {
+            Kind::NetConnect => {
+                // Read address from memory
+                let addr = read_null_terminated_string(
+                    &self.shared,
+                    action.src as usize,
+                    action.offset as usize,
+                );
+
+                // Connect to remote OR bind+listen based on format
+                if addr.starts_with(':') || addr.contains("0.0.0.0:") {
+                    // It's a listener
+                    let listener = TcpListener::bind(addr).await.ok()?;
+                    let handle = self.next_handle;
+                    self.next_handle += 1;
+                    self.listeners.insert(handle, listener);
+
+                    // Write handle to dst
+                    unsafe {
+                        self.shared
+                            .write(action.dst as usize, &handle.to_le_bytes());
+                    }
+
+                    Some(QueueItem {
+                        offset: action.dst,
+                        size: 4,
+                        unit_id: self.id,
+                        _pad: 0,
+                    })
+                } else {
+                    // It's a connection
+                    let stream = TcpStream::connect(addr).await.ok()?;
+                    let handle = self.next_handle;
+                    self.next_handle += 1;
+                    self.connections.insert(handle, stream);
+
+                    // Write handle to dst
+                    unsafe {
+                        self.shared
+                            .write(action.dst as usize, &handle.to_le_bytes());
+                    }
+
+                    Some(QueueItem {
+                        offset: action.dst,
+                        size: 4,
+                        unit_id: self.id,
+                        _pad: 0,
+                    })
+                }
+            }
+
+            Kind::NetAccept => {
+                // Read listener handle from src
+                let handle = unsafe {
+                    u32::from_le_bytes(
+                        self.shared.read(action.src as usize, 4)[0..4]
+                            .try_into()
+                            .unwrap(),
+                    )
+                };
+
+                let listener = self.listeners.get_mut(&handle)?;
+                let (stream, _addr) = listener.accept().await.ok()?;
+
+                let conn_handle = self.next_handle;
+                self.next_handle += 1;
+                self.connections.insert(conn_handle, stream);
+
+                // Write new connection handle to dst
+                unsafe {
+                    self.shared
+                        .write(action.dst as usize, &conn_handle.to_le_bytes());
+                }
+
+                Some(QueueItem {
+                    offset: action.dst,
+                    size: 4,
+                    unit_id: self.id,
+                    _pad: 0,
+                })
+            }
+
+            Kind::NetSend => {
+                // Read connection handle from dst
+                let handle = unsafe {
+                    u32::from_le_bytes(
+                        self.shared.read(action.dst as usize, 4)[0..4]
+                            .try_into()
+                            .unwrap(),
+                    )
+                };
+
+                let stream = self.connections.get_mut(&handle)?;
+                let data = unsafe { self.shared.read(action.src as usize, action.size as usize) };
+
+                let n = stream.write(data).await.ok()?;
+
+                Some(QueueItem {
+                    offset: action.src,
+                    size: n as u16,
+                    unit_id: self.id,
+                    _pad: 0,
+                })
+            }
+
+            Kind::NetRecv => {
+                // Read connection handle from src
+                let handle = unsafe {
+                    u32::from_le_bytes(
+                        self.shared.read(action.src as usize, 4)[0..4]
+                            .try_into()
+                            .unwrap(),
+                    )
+                };
+
+                let stream = self.connections.get_mut(&handle)?;
+                let mut buffer = vec![0u8; action.size as usize];
+                let n = stream.read(&mut buffer).await.ok()?;
+
+                unsafe {
+                    self.shared.write(action.dst as usize, &buffer[..n]);
+                }
+
+                Some(QueueItem {
+                    offset: action.dst,
+                    size: n as u16,
+                    unit_id: self.id,
+                    _pad: 0,
+                })
+            }
+
+            _ => None,
         }
     }
 }
@@ -555,6 +713,22 @@ pub(crate) async fn memory_unit_task(
     for idx in indices {
         unsafe {
             unit.execute(&actions[idx]);
+        }
+    }
+}
+
+pub(crate) async fn network_unit_task(
+    id: u8,
+    actions: Arc<Vec<Action>>,
+    indices: Vec<usize>,
+    shared: Arc<SharedMemory>,
+    tx: mpsc::Sender<QueueItem>,
+) {
+    let mut unit = NetworkUnit::new(id, shared);
+
+    for idx in indices {
+        if let Some(item) = unit.execute(&actions[idx]).await {
+            let _ = tx.send(item).await;
         }
     }
 }
@@ -1045,6 +1219,315 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn test_network_connect_and_send() {
+        // Start a test server
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn server task
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 5];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"hello");
+        });
+
+        // Setup memory
+        let mut memory = vec![0u8; 1024];
+        let addr_str = addr.to_string();
+        memory[0..addr_str.len()].copy_from_slice(addr_str.as_bytes());
+        memory[addr_str.len()] = 0;
+
+        // Store data to send
+        memory[100..105].copy_from_slice(b"hello");
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = NetworkUnit::new(0, shared.clone());
+
+        // Connect
+        let connect_action = Action {
+            kind: Kind::NetConnect,
+            src: 0,      // address at offset 0
+            dst: 200,    // store handle at 200
+            offset: 100, // max address length
+            size: 0,
+        };
+
+        let result = unit.execute(&connect_action).await;
+        assert!(result.is_some());
+
+        // Send data
+        let send_action = Action {
+            kind: Kind::NetSend,
+            src: 100, // data at offset 100
+            dst: 200, // handle at offset 200
+            offset: 0,
+            size: 5, // send 5 bytes
+        };
+
+        let result = unit.execute(&send_action).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().size, 5);
+    }
+
+    #[tokio::test]
+    async fn test_network_listen_accept_recv() {
+        let mut memory = vec![0u8; 1024];
+
+        // Setup listener address
+        let addr = "0.0.0.0:0"; // OS assigns port
+        memory[0..addr.len()].copy_from_slice(addr.as_bytes());
+        memory[addr.len()] = 0;
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = NetworkUnit::new(0, shared.clone());
+
+        // Create listener
+        let listen_action = Action {
+            kind: Kind::NetConnect, // NetConnect with 0.0.0.0 = listen
+            src: 0,                 // address
+            dst: 200,               // store listener handle
+            offset: 50,
+            size: 0,
+        };
+
+        let result = unit.execute(&listen_action).await;
+        assert!(result.is_some());
+
+        // Get actual listening port for client
+        let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
+        let actual_addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
+
+        // Spawn client
+        let client_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let mut stream = TcpStream::connect(actual_addr).await.unwrap();
+            stream.write_all(b"test").await.unwrap();
+        });
+
+        // Accept connection
+        let accept_action = Action {
+            kind: Kind::NetAccept,
+            src: 200, // listener handle
+            dst: 300, // store connection handle
+            offset: 0,
+            size: 0,
+        };
+
+        let result = unit.execute(&accept_action).await;
+        assert!(result.is_some());
+
+        // Receive data
+        let recv_action = Action {
+            kind: Kind::NetRecv,
+            src: 300, // connection handle
+            dst: 400, // store received data
+            offset: 0,
+            size: 100, // max bytes to receive
+        };
+
+        let result = unit.execute(&recv_action).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().size, 4);
+
+        // Verify received data
+        unsafe {
+            let data = shared.read(400, 4);
+            assert_eq!(data, b"test");
+        }
+
+        client_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_network_echo_server() {
+        let mut memory = vec![0u8; 1024];
+        memory[0..10].copy_from_slice(b"0.0.0.0:0\0");
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = NetworkUnit::new(0, shared.clone());
+
+        // Start listener
+        let listen_action = Action {
+            kind: Kind::NetConnect,
+            src: 0,
+            dst: 200,
+            offset: 50,
+            size: 0,
+        };
+        unit.execute(&listen_action).await.unwrap();
+
+        let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
+        let addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
+
+        // Client task
+        let client = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream.write_all(b"echo").await.unwrap();
+
+            let mut buf = [0u8; 4];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"echo");
+        });
+
+        // Accept
+        let accept = Action {
+            kind: Kind::NetAccept,
+            src: 200,
+            dst: 300,
+            offset: 0,
+            size: 0,
+        };
+        unit.execute(&accept).await.unwrap();
+
+        // Receive
+        let recv = Action {
+            kind: Kind::NetRecv,
+            src: 300,
+            dst: 400,
+            offset: 0,
+            size: 100,
+        };
+        let result = unit.execute(&recv).await.unwrap();
+
+        // Echo back
+        let send = Action {
+            kind: Kind::NetSend,
+            src: 400,
+            dst: 300,
+            offset: 0,
+            size: result.size as u32,
+        };
+        unit.execute(&send).await.unwrap();
+
+        client.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_multiple_connections() {
+        let mut memory = vec![0u8; 2048];
+        memory[0..10].copy_from_slice(b"0.0.0.0:0\0");
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = NetworkUnit::new(0, shared.clone());
+
+        // Create listener
+        unit.execute(&Action {
+            kind: Kind::NetConnect,
+            src: 0,
+            dst: 200,
+            offset: 50,
+            size: 0,
+        })
+        .await
+        .unwrap();
+
+        let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
+        let addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
+
+        // Spawn multiple clients
+        let mut clients = vec![];
+        for i in 0..3 {
+            let addr = addr.clone();
+            clients.push(tokio::spawn(async move {
+                let mut stream = TcpStream::connect(addr).await.unwrap();
+                stream.write_all(&[i as u8]).await.unwrap();
+            }));
+        }
+
+        // Accept all connections
+        let mut handles = vec![];
+        for i in 0..3 {
+            let accept = Action {
+                kind: Kind::NetAccept,
+                src: 200,
+                dst: 300 + i * 4,
+                offset: 0,
+                size: 0,
+            };
+            unit.execute(&accept).await.unwrap();
+            handles.push(300 + i * 4);
+        }
+
+        // Receive from all
+        for (i, &handle_offset) in handles.iter().enumerate() {
+            let recv = Action {
+                kind: Kind::NetRecv,
+                src: handle_offset as u32,
+                dst: 400 + i as u32 * 100,
+                offset: 0,
+                size: 1,
+            };
+            unit.execute(&recv).await.unwrap();
+        }
+
+        for client in clients {
+            client.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_network_handle_persistence() {
+        let mut memory = vec![0u8; 1024];
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = NetworkUnit::new(0, shared.clone());
+
+        // Verify handles increment
+        memory[0..10].copy_from_slice(b"0.0.0.0:0\0");
+
+        for i in 0..3 {
+            let action = Action {
+                kind: Kind::NetConnect,
+                src: 0,
+                dst: 200 + i * 4,
+                offset: 50,
+                size: 0,
+            };
+            unit.execute(&action).await.unwrap();
+
+            let handle = unsafe {
+                u32::from_le_bytes(
+                    shared.read((200 + i * 4) as usize, 4)[0..4]
+                        .try_into()
+                        .unwrap(),
+                )
+            };
+            assert_eq!(handle, i + 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_connection() {
+        let mut memory = vec![0u8; 1024];
+
+        // Invalid address
+        let addr = "invalid.address:99999";
+        memory[0..addr.len()].copy_from_slice(addr.as_bytes());
+        memory[addr.len()] = 0;
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = NetworkUnit::new(0, shared);
+
+        let action = Action {
+            kind: Kind::NetConnect,
+            src: 0,
+            dst: 200,
+            offset: 50,
+            size: 0,
+        };
+
+        let result = unit.execute(&action).await;
+        assert!(result.is_none()); // Should fail gracefully
     }
 }
 

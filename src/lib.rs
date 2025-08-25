@@ -9,8 +9,8 @@ mod units;
 mod validation;
 
 use crate::units::{
-    computational_unit_task, file_unit_task, gpu_unit_task, memory_unit_task, simd_unit_task,
-    SharedMemory,
+    computational_unit_task, file_unit_task, gpu_unit_task, memory_unit_task, network_unit_task,
+    simd_unit_task, SharedMemory,
 };
 use crate::validation::validate;
 
@@ -57,6 +57,18 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
             match action.kind {
                 Kind::ConditionalWrite | Kind::MemCopy | Kind::MemScan => {
                     algorithm.memory_assignments[i] = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if algorithm.network_assignments.is_empty() {
+        algorithm.network_assignments = vec![255; algorithm.actions.len()];
+        for (i, action) in algorithm.actions.iter().enumerate() {
+            match action.kind {
+                Kind::NetConnect | Kind::NetAccept | Kind::NetSend | Kind::NetRecv => {
+                    algorithm.network_assignments[i] = 0;
                 }
                 _ => {}
             }
@@ -137,6 +149,13 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
+    let mut network_work: Vec<usize> = Vec::new();
+    for (i, &assignment) in algorithm.network_assignments.iter().enumerate() {
+        if assignment != 255 {
+            network_work.push(i);
+        }
+    }
+
     let mut file_work: Vec<Vec<usize>> = vec![Vec::new(); algorithm.units.file_units];
     for (i, &assignment) in algorithm.file_assignments.iter().enumerate() {
         if assignment != 255 {
@@ -189,6 +208,20 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 tx,
             )));
         }
+    }
+
+    if !network_work.is_empty() {
+        let tx = tx.clone();
+        let actions = actions.clone();
+        let shared = shared.clone();
+
+        handles.push(tokio::spawn(network_unit_task(
+            0, // network unit id
+            actions,
+            network_work,
+            shared,
+            tx,
+        )));
     }
 
     drop(tx);
@@ -488,7 +521,7 @@ mod integration_tests {
         alg.timeout_ms = Some(1); // Very short timeout
 
         // Add many actions to potentially trigger timeout
-        for i in 0..1000 {
+        for _ in 0..1000 {
             alg.actions.push(Action {
                 kind: Kind::MemCopy,
                 src: 0,
