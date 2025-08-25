@@ -1,3 +1,2 @@
-base/target/
-base/Cargo.lock
-base/**/*.rs.bk
+target/
+*.rs.bk
