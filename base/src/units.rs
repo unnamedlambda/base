@@ -1,4 +1,4 @@
-use crate::types::{Action, Kind};
+use base_types::{Action, Kind};
 use pollster::block_on;
 use portable_atomic::{AtomicU128, AtomicU64, Ordering};
 use quanta::Clock;

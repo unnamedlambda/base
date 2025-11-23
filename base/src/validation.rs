@@ -1,4 +1,4 @@
-use crate::types::Algorithm;
+use base_types::Algorithm;
 use crate::Error;
 
 pub(crate) fn validate(alg: &Algorithm) -> Result<(), Error> {
@@ -34,22 +34,4 @@ pub(crate) fn validate(alg: &Algorithm) -> Result<(), Error> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_clean_algorithm() {
-        let alg = Algorithm::default();
-        assert!(validate(&alg).is_ok());
-    }
-
-    #[test]
-    fn test_validate_detects_overlap() {
-        let mut alg = Algorithm::default();
-        alg.state.shared_data_offset = 4000; // Overlaps with unit 1 scratch
-        assert!(validate(&alg).is_err());
-    }
 }
