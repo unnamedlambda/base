@@ -84,6 +84,13 @@ fn read_null_terminated_string(shared: &SharedMemory, offset: usize, max_len: us
     }
 }
 
+pub(crate) fn read_null_terminated_string_from_slice(data: &[u8], offset: usize, max_len: usize) -> String {
+    let end = (offset + max_len).min(data.len());
+    let bytes = &data[offset..end];
+    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..len]).into_owned()
+}
+
 pub(crate) struct MemoryUnit {
     shared: Arc<SharedMemory>,
 }
@@ -617,7 +624,7 @@ pub(crate) struct GpuUnit {
 }
 
 impl GpuUnit {
-    pub fn new(shared: Arc<SharedMemory>, gpu_size: usize, backends: Backends) -> Self {
+    pub fn new(shared: Arc<SharedMemory>, shader_source: &str, gpu_size: usize, backends: Backends) -> Self {
         let instance = wgpu::Instance::new(InstanceDescriptor {
             backends,
             ..Default::default()
@@ -641,21 +648,7 @@ impl GpuUnit {
 
         let shader = device.create_shader_module(ShaderModuleDescriptor {
             label: Some("Compute"),
-            source: ShaderSource::Wgsl(
-                r#"
-                @group(0) @binding(0)
-                var<storage, read_write> data: array<f32>;
-                
-                @compute @workgroup_size(64)
-                fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-                    let i = id.x;
-                    if (i < arrayLength(&data)) {
-                        data[i] = data[i] * 2.0;
-                    }
-                }
-            "#
-                .into(),
-            ),
+            source: ShaderSource::Wgsl(shader_source.into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -848,11 +841,12 @@ pub(crate) async fn simd_unit_task(
 pub(crate) async fn gpu_unit_task(
     mut rx: mpsc::Receiver<QueueItem>,
     shared: Arc<SharedMemory>,
+    shader_source: String,
     gpu_size: usize,
     batch_size: usize,
     backends: Backends,
 ) {
-    let mut gpu = GpuUnit::new(shared, gpu_size, backends);
+    let mut gpu = GpuUnit::new(shared, &shader_source, gpu_size, backends);
     let mut batch = Vec::with_capacity(batch_size);
 
     while let Some(item) = rx.recv().await {

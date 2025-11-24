@@ -9,7 +9,7 @@ mod validation;
 
 use crate::units::{
     computational_unit_task, ffi_unit_task, file_unit_task, gpu_unit_task, memory_unit_task,
-    network_unit_task, simd_unit_task, SharedMemory,
+    network_unit_task, read_null_terminated_string_from_slice, simd_unit_task, SharedMemory,
 };
 use crate::validation::validate;
 
@@ -94,6 +94,19 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 Kind::FileRead | Kind::FileWrite => {
                     algorithm.file_assignments[i] = unit;
                     unit = (unit + 1) % algorithm.units.file_units as u8;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if algorithm.gpu_assignments.is_empty() {
+        algorithm.gpu_assignments = vec![255; algorithm.actions.len()];
+        for (i, action) in algorithm.actions.iter().enumerate() {
+            match action.kind {
+                Kind::CreateBuffer | Kind::WriteBuffer | Kind::CreateShader 
+                | Kind::CreatePipeline | Kind::Dispatch | Kind::ReadBuffer => {
+                    algorithm.gpu_assignments[i] = 0;
                 }
                 _ => {}
             }
@@ -273,14 +286,22 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         )));
     }
 
-    if algorithm.units.gpu_enabled {
+    if algorithm.units.gpu_enabled && !algorithm.state.gpu_shader_offsets.is_empty() {
         let gpu_size = algorithm.state.gpu_size;
         let batch_size = algorithm.queues.batch_size;
         let backends =
             Backends::from_bits(algorithm.units.backends_bits).unwrap_or(Backends::all());
 
+        let offset = algorithm.state.gpu_shader_offsets[0];
+        let shader_source = read_null_terminated_string_from_slice(&algorithm.payloads, offset, 8192);
+
         handles.push(tokio::spawn(gpu_unit_task(
-            rx, shared, gpu_size, batch_size, backends,
+            rx, 
+            shared, 
+            shader_source,
+            gpu_size, 
+            batch_size, 
+            backends,
         )));
     }
 

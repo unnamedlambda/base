@@ -51,6 +51,7 @@ pub struct State {
     pub gpu_size: usize,
     pub computational_regs: usize,
     pub file_buffer_size: usize,
+    pub gpu_shader_offsets: Vec<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -82,6 +83,7 @@ pub struct Algorithm {
     pub file_assignments: Vec<u8>,
     pub network_assignments: Vec<u8>,
     pub ffi_assignments: Vec<u8>,
+    pub gpu_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,
     pub stack_size: Option<usize>,

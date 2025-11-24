@@ -17,9 +17,16 @@ instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
 inductive Kind where
-  | SimdLoad | SimdAdd | SimdMul | SimdStore
-  | MemCopy | FileRead | FileWrite
-  | Approximate | Choose | Compare
+  | SimdLoad
+  | SimdAdd
+  | SimdMul
+  | SimdStore
+  | MemCopy
+  | FileRead
+  | FileWrite
+  | Approximate
+  | Choose
+  | Compare
   deriving Repr
 
 instance : ToJson Kind where
@@ -62,6 +69,7 @@ structure State where
   gpu_size : Nat
   computational_regs : Nat
   file_buffer_size : Nat
+  gpu_shader_offsets : List Nat
   deriving Repr
 
 instance : ToJson State where
@@ -74,7 +82,8 @@ instance : ToJson State where
     ("gpu_offset", toJson s.gpu_offset),
     ("gpu_size", toJson s.gpu_size),
     ("computational_regs", toJson s.computational_regs),
-    ("file_buffer_size", toJson s.file_buffer_size)
+    ("file_buffer_size", toJson s.file_buffer_size),
+    ("gpu_shader_offsets", toJson s.gpu_shader_offsets)
   ]
 
 structure QueueSpec where
@@ -119,6 +128,7 @@ structure Algorithm where
   file_assignments : List UInt8
   network_assignments : List UInt8
   ffi_assignments : List UInt8
+  gpu_assignments : List UInt8
   worker_threads : Option Nat
   blocking_threads : Option Nat
   stack_size : Option Nat
@@ -139,12 +149,38 @@ instance : ToJson Algorithm where
     ("file_assignments", toJson alg.file_assignments),
     ("network_assignments", toJson alg.network_assignments),
     ("ffi_assignments", toJson alg.ffi_assignments),
+    ("gpu_assignments", toJson alg.gpu_assignments),
     ("worker_threads", toJson alg.worker_threads),
     ("blocking_threads", toJson alg.blocking_threads),
     ("stack_size", toJson alg.stack_size),
     ("timeout_ms", toJson alg.timeout_ms),
     ("thread_name_prefix", toJson alg.thread_name_prefix)
   ]
+
+def stringToBytes (s : String) : List UInt8 :=
+  s.toUTF8.toList ++ [0]
+
+def padTo (bytes : List UInt8) (targetLen : Nat) : List UInt8 :=
+  bytes ++ List.replicate (targetLen - bytes.length) 0
+
+def zeros (n : Nat) : List UInt8 :=
+  List.replicate n 0
+
+def doubleShader : String :=
+  "@group(0) @binding(0)\n" ++
+  "var<storage, read_write> data: array<f32>;\n\n" ++
+  "@compute @workgroup_size(64)\n" ++
+  "fn main(@builtin(global_invocation_id) id: vec3<u32>) {\n" ++
+  "    let i = id.x;\n" ++
+  "    if (i < arrayLength(&data)) {\n" ++
+  "        data[i] = data[i] * 2.0;\n" ++
+  "    }\n" ++
+  "}\n"
+
+def gpuPayloads (shader : String) : List UInt8 :=
+  let shaderBytes := padTo (stringToBytes shader) 1024
+  let dataArea := zeros 4096
+  shaderBytes ++ dataArea
 
 def exampleAlgorithm : Algorithm := {
   actions := [
@@ -153,7 +189,7 @@ def exampleAlgorithm : Algorithm := {
     { kind := .SimdAdd, dst := 2, src := 0, offset := 1, size := 0 },
     { kind := .SimdStore, dst := 0, src := 2, offset := 32, size := 16 }
   ],
-  payloads := List.replicate 65536 0,
+  payloads := gpuPayloads doubleShader,
   state := {
     regs_per_unit := 16,
     unit_scratch_offsets := [0, 4096, 8192, 12288],
@@ -163,7 +199,8 @@ def exampleAlgorithm : Algorithm := {
     gpu_offset := 32768,
     gpu_size := 32768,
     computational_regs := 32,
-    file_buffer_size := 65536
+    file_buffer_size := 65536,
+    gpu_shader_offsets := [0]
   },
   queues := {
     capacity := 256,
@@ -171,7 +208,7 @@ def exampleAlgorithm : Algorithm := {
   },
   units := {
     simd_units := 4,
-    gpu_enabled := false,
+    gpu_enabled := true,
     computational_enabled := true,
     file_units := 2,
     backends_bits := 0xFFFFFFFF,
@@ -183,10 +220,11 @@ def exampleAlgorithm : Algorithm := {
   file_assignments := [],
   network_assignments := [],
   ffi_assignments := [],
+  gpu_assignments := [],
   worker_threads := none,
   blocking_threads := none,
   stack_size := none,
-  timeout_ms := none,
+  timeout_ms := some 5000,
   thread_name_prefix := none
 }
 
