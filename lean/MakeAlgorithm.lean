@@ -242,21 +242,127 @@ def gpuDualPayloads (shader : String) (file1 : String) (file2 : String) (a1 : UI
   let workspace2 := zeros 56
   shaderBytes ++ file1Bytes ++ file2Bytes ++ flag1Bytes ++ flag2Bytes ++ input1Bytes ++ workspace1 ++ input2Bytes ++ workspace2
 
+def f64ToBytes (f : Float) : List UInt8 :=
+  let bits := f.toBits
+  let b0 := UInt8.ofNat (bits.toNat &&& 0xFF)
+  let b1 := UInt8.ofNat ((bits.toNat >>> 8) &&& 0xFF)
+  let b2 := UInt8.ofNat ((bits.toNat >>> 16) &&& 0xFF)
+  let b3 := UInt8.ofNat ((bits.toNat >>> 24) &&& 0xFF)
+  let b4 := UInt8.ofNat ((bits.toNat >>> 32) &&& 0xFF)
+  let b5 := UInt8.ofNat ((bits.toNat >>> 40) &&& 0xFF)
+  let b6 := UInt8.ofNat ((bits.toNat >>> 48) &&& 0xFF)
+  let b7 := UInt8.ofNat ((bits.toNat >>> 56) &&& 0xFF)
+  [b0, b1, b2, b3, b4, b5, b6, b7]
+
+def complexPayloads (shader : String) : List UInt8 :=
+  -- 0-2047: GPU shader
+  let shaderBytes := padTo (stringToBytes shader) 2048
+
+  -- 2048-2303: filename "result1.txt"
+  let file1 := padTo (stringToBytes "result1.txt") 256
+
+  -- 2304-2559: filename "result2.txt"
+  let file2 := padTo (stringToBytes "result2.txt") 256
+
+  -- 2560-2567: completion flag 1
+  let flag1 := zeros 8
+
+  -- 2568-2575: completion flag 2
+  let flag2 := zeros 8
+
+  -- 2576-2639: gpu_data_1 (7,9 + workspace)
+  let gpuData1 := uint32ToBytes 7 ++ uint32ToBytes 9 ++ zeros 56
+
+  -- 2640-2703: gpu_data_2 (3,5 + workspace)
+  let gpuData2 := uint32ToBytes 3 ++ uint32ToBytes 5 ++ zeros 56
+
+  -- 2704-2711: comparison flag
+  let compFlag := zeros 8
+
+  -- 2712-2719: compare_area_a (will hold 16 as f64)
+  let compareA := zeros 8
+
+  -- 2720-2727: compare_area_b (will hold 8 as f64)
+  let compareB := zeros 8
+
+  -- 2728-2735: condition1 (1.0 = true, will take path A)
+  let condition1 := f64ToBytes 1.0
+
+  -- 2736-2743: condition2 (0.0 = false, will take path B)
+  let condition2 := f64ToBytes 0.0
+
+  -- 2744-2807: gpu_data_3 for doubling (16, workspace)
+  let gpuData3 := uint32ToBytes 16 ++ uint32ToBytes 16 ++ zeros 56
+
+  -- 2808-2815: completion flag 3
+  let flag3 := zeros 8
+
+  -- 2816-2823: completion flag 4
+  let flag4 := zeros 8
+
+  -- 2824-2879: filename "path_a.txt"
+  let filePathA := padTo (stringToBytes "path_a.txt") 56
+
+  -- 2880-2935: filename "path_b.txt"
+  let filePathB := padTo (stringToBytes "path_b.txt") 56
+
+  -- 2936-2991: filename "doubled.txt"
+  let fileDoubled := padTo (stringToBytes "doubled.txt") 56
+
+  -- 2992-3047: text "TOOK PATH A"
+  let textA := padTo (stringToBytes "TOOK PATH A") 56
+
+  -- 3048-3103: text "TOOK PATH B"
+  let textB := padTo (stringToBytes "TOOK PATH B") 56
+
+  shaderBytes ++ file1 ++ file2 ++ flag1 ++ flag2 ++ gpuData1 ++ gpuData2 ++
+  compFlag ++ compareA ++ compareB ++ condition1 ++ condition2 ++ gpuData3 ++ flag3 ++ flag4 ++
+  filePathA ++ filePathB ++ fileDoubled ++ textA ++ textB
+
 def exampleAlgorithm : Algorithm := {
   actions := [
-    -- First GPU computation: 7 + 9 = 16
+    -- Action 0-3: First GPU computation: 7 + 9 = 16
     { kind := .Dispatch, dst := 2576, src := 2576, offset := 2560, size := 64 },
     { kind := .AsyncDispatch, dst := 0, src := 0, offset := 2560, size := 0 },
     { kind := .Wait, dst := 2560, src := 0, offset := 0, size := 0 },
     { kind := .FileWrite, dst := 2048, src := 2588, offset := 256, size := 2 },
 
-    -- Second GPU computation: 3 + 5 = 8
+    -- Action 4-7: Second GPU computation: 3 + 5 = 8
     { kind := .Dispatch, dst := 2640, src := 2640, offset := 2568, size := 64 },
     { kind := .AsyncDispatch, dst := 0, src := 4, offset := 2568, size := 0 },
     { kind := .Wait, dst := 2568, src := 0, offset := 0, size := 0 },
-    { kind := .FileWrite, dst := 2304, src := 2652, offset := 256, size := 1 }
+    { kind := .FileWrite, dst := 2304, src := 2652, offset := 256, size := 1 },
+
+    -- Action 8: Simple test - write a marker file to prove we reach here
+    { kind := .FileWrite, dst := 2824, src := 2992, offset := 56, size := 11 },
+
+    -- TEST 1: Condition = 1.0 (true) - should take path A
+    -- Action 9: ConditionalJump with condition1 (1.0 != 0 → jump to action 11)
+    { kind := .ConditionalJump, src := 2728, dst := 11, offset := 0, size := 0 },
+
+    -- Action 10: Path B for test 1 (SKIPPED because jump happened)
+    { kind := .FileWrite, dst := 2880, src := 3048, offset := 56, size := 11 },
+
+    -- TEST 2: Condition = 0.0 (false) - should take path B
+    -- Action 11: ConditionalJump with condition2 (0.0 == 0 → fall through to action 12)
+    { kind := .ConditionalJump, src := 2736, dst := 14, offset := 0, size := 0 },
+
+    -- Action 12: Path B for test 2 (EXECUTED - fell through from action 11)
+    { kind := .FileWrite, dst := 2880, src := 3048, offset := 56, size := 11 },
+
+    -- Action 13: Skip past the path A write (unconditional jump - reads from shader which is non-zero)
+    { kind := .ConditionalJump, src := 0, dst := 15, offset := 0, size := 0 },
+
+    -- Action 14: Path A for test 2 (SKIPPED - never reached)
+    { kind := .FileWrite, dst := 2824, src := 2992, offset := 56, size := 11 },
+
+    -- Action 15-18: Final GPU computation (double: 16+16=32)
+    { kind := .Dispatch, dst := 2744, src := 2744, offset := 2808, size := 64 },
+    { kind := .AsyncDispatch, dst := 0, src := 15, offset := 2808, size := 0 },
+    { kind := .Wait, dst := 2808, src := 0, offset := 0, size := 0 },
+    { kind := .FileWrite, dst := 2936, src := 2756, offset := 56, size := 2 }
   ],
-  payloads := gpuDualPayloads addIntShader "output1.txt" "output2.txt" 7 9 3 5,
+  payloads := complexPayloads addIntShader,
   state := {
     regs_per_unit := 16,
     unit_scratch_offsets := [4096, 8192, 12288, 16384],
@@ -291,7 +397,7 @@ def exampleAlgorithm : Algorithm := {
   worker_threads := none,
   blocking_threads := none,
   stack_size := none,
-  timeout_ms := some 5000,
+  timeout_ms := some 30000,
   thread_name_prefix := none
 }
 
