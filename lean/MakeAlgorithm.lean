@@ -230,28 +230,33 @@ def addIntShader : String :=
   "    }\n" ++
   "}\n"
 
-def gpuPayloads (shader : String) : List UInt8 :=
-  let shaderBytes := padTo (stringToBytes shader) 1024
-  let dataArea := zeros 4096
-  shaderBytes ++ dataArea
-
-def gpuIntPayloads (shader : String) (outputFile : String) (num1 : UInt32) (num2 : UInt32) : List UInt8 :=
+def gpuDualPayloads (shader : String) (file1 : String) (file2 : String) (a1 : UInt32) (b1 : UInt32) (a2 : UInt32) (b2 : UInt32) : List UInt8 :=
   let shaderBytes := padTo (stringToBytes shader) 2048
-  let outputBytes := padTo (stringToBytes outputFile) 256
-  let flagBytes := zeros 8
-  let num1Bytes := uint32ToBytes num1
-  let num2Bytes := uint32ToBytes num2
-  let workspace := zeros 56
-  shaderBytes ++ outputBytes ++ flagBytes ++ num1Bytes ++ num2Bytes ++ workspace
+  let file1Bytes := padTo (stringToBytes file1) 256
+  let file2Bytes := padTo (stringToBytes file2) 256
+  let flag1Bytes := zeros 8
+  let flag2Bytes := zeros 8
+  let input1Bytes := uint32ToBytes a1 ++ uint32ToBytes b1
+  let workspace1 := zeros 56
+  let input2Bytes := uint32ToBytes a2 ++ uint32ToBytes b2
+  let workspace2 := zeros 56
+  shaderBytes ++ file1Bytes ++ file2Bytes ++ flag1Bytes ++ flag2Bytes ++ input1Bytes ++ workspace1 ++ input2Bytes ++ workspace2
 
 def exampleAlgorithm : Algorithm := {
   actions := [
-    { kind := .Dispatch, dst := 2312, src := 2312, offset := 2304, size := 64 },
-    { kind := .AsyncDispatch, dst := 0, src := 0, offset := 2304, size := 0 },
-    { kind := .Wait, dst := 2304, src := 0, offset := 0, size := 0 },
-    { kind := .FileWrite, dst := 2048, src := 2324, offset := 256, size := 2 }
+    -- First GPU computation: 7 + 9 = 16
+    { kind := .Dispatch, dst := 2576, src := 2576, offset := 2560, size := 64 },
+    { kind := .AsyncDispatch, dst := 0, src := 0, offset := 2560, size := 0 },
+    { kind := .Wait, dst := 2560, src := 0, offset := 0, size := 0 },
+    { kind := .FileWrite, dst := 2048, src := 2588, offset := 256, size := 2 },
+
+    -- Second GPU computation: 3 + 5 = 8
+    { kind := .Dispatch, dst := 2640, src := 2640, offset := 2568, size := 64 },
+    { kind := .AsyncDispatch, dst := 0, src := 4, offset := 2568, size := 0 },
+    { kind := .Wait, dst := 2568, src := 0, offset := 0, size := 0 },
+    { kind := .FileWrite, dst := 2304, src := 2652, offset := 256, size := 1 }
   ],
-  payloads := gpuIntPayloads addIntShader "output.txt" 7 9,
+  payloads := gpuDualPayloads addIntShader "output1.txt" "output2.txt" 7 9 3 5,
   state := {
     regs_per_unit := 16,
     unit_scratch_offsets := [4096, 8192, 12288, 16384],
