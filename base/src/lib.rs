@@ -268,7 +268,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                 let item = units::QueueItem {
                     action_index: action.src,
-                    offset: action.src,
+                    offset: action.offset,
                     size: action.size as u16,
                     unit_id: action.dst as u8,
                     _pad: 0,
