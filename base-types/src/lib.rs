@@ -61,7 +61,6 @@ pub struct State {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct QueueSpec {
     pub capacity: usize,
-    pub batch_size: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

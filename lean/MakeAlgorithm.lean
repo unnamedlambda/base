@@ -100,13 +100,11 @@ instance : ToJson State where
 
 structure QueueSpec where
   capacity : Nat
-  batch_size : Nat
   deriving Repr
 
 instance : ToJson QueueSpec where
   toJson q := Json.mkObj [
-    ("capacity", toJson q.capacity),
-    ("batch_size", toJson q.batch_size)
+    ("capacity", toJson q.capacity)
   ]
 
 structure UnitSpec where
@@ -382,8 +380,7 @@ def exampleAlgorithm : Algorithm := {
     gpu_shader_offsets := [0]
   },
   queues := {
-    capacity := 256,
-    batch_size := 1
+    capacity := 256
   },
   units := {
     simd_units := 4,
