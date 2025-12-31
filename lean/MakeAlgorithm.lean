@@ -111,9 +111,12 @@ instance : ToJson QueueSpec where
 
 structure UnitSpec where
   simd_units : Nat
-  gpu_enabled : Bool
-  computational_enabled : Bool
+  gpu_units : Nat
+  computational_units : Nat
   file_units : Nat
+  network_units : Nat
+  memory_units : Nat
+  ffi_units : Nat
   backends_bits : UInt32
   features_bits : UInt64
   deriving Repr
@@ -121,9 +124,12 @@ structure UnitSpec where
 instance : ToJson UnitSpec where
   toJson u := Json.mkObj [
     ("simd_units", toJson u.simd_units),
-    ("gpu_enabled", toJson u.gpu_enabled),
-    ("computational_enabled", toJson u.computational_enabled),
+    ("gpu_units", toJson u.gpu_units),
+    ("computational_units", toJson u.computational_units),
     ("file_units", toJson u.file_units),
+    ("network_units", toJson u.network_units),
+    ("memory_units", toJson u.memory_units),
+    ("ffi_units", toJson u.ffi_units),
     ("backends_bits", toJson u.backends_bits),
     ("features_bits", toJson u.features_bits)
   ]
@@ -381,9 +387,12 @@ def exampleAlgorithm : Algorithm := {
   },
   units := {
     simd_units := 4,
-    gpu_enabled := true,
-    computational_enabled := true,
+    gpu_units := 1,
+    computational_units := 1,
     file_units := 2,
+    network_units := 1,
+    memory_units := 1,
+    ffi_units := 1,
     backends_bits := 0xFFFFFFFF,
     features_bits := 0
   },

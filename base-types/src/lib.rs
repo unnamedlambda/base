@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     CreateBuffer = 0,
@@ -67,9 +67,12 @@ pub struct QueueSpec {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UnitSpec {
     pub simd_units: usize,
-    pub gpu_enabled: bool,
-    pub computational_enabled: bool,
+    pub gpu_units: usize,
+    pub computational_units: usize,
     pub file_units: usize,
+    pub network_units: usize,
+    pub memory_units: usize,
+    pub ffi_units: usize,
     pub backends_bits: u32,
     pub features_bits: u64,
 }
