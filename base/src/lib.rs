@@ -159,43 +159,43 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let computational_assignments = Arc::new(algorithm.computational_assignments.clone());
     let memory_assignments = Arc::new(algorithm.memory_assignments.clone());
 
-    let gpu_channels: Vec<_> = (0..algorithm.units.gpu_units.max(1))
+    let gpu_channels: Vec<_> = (0..algorithm.units.gpu_units)
         .map(|_| mpsc::channel(algorithm.queues.capacity))
         .collect();
     let gpu_senders: Vec<_> = gpu_channels.iter().map(|(tx, _)| tx.clone()).collect();
     let gpu_receivers: Vec<_> = gpu_channels.into_iter().map(|(_, rx)| rx).collect();
 
-    let simd_channels: Vec<_> = (0..algorithm.units.simd_units.max(1))
+    let simd_channels: Vec<_> = (0..algorithm.units.simd_units)
         .map(|_| mpsc::channel(algorithm.queues.capacity))
         .collect();
     let simd_senders: Vec<_> = simd_channels.iter().map(|(tx, _)| tx.clone()).collect();
     let simd_receivers: Vec<_> = simd_channels.into_iter().map(|(_, rx)| rx).collect();
 
-    let file_channels: Vec<_> = (0..algorithm.units.file_units.max(1))
+    let file_channels: Vec<_> = (0..algorithm.units.file_units)
         .map(|_| mpsc::channel(algorithm.queues.capacity))
         .collect();
     let file_senders: Vec<_> = file_channels.iter().map(|(tx, _)| tx.clone()).collect();
     let file_receivers: Vec<_> = file_channels.into_iter().map(|(_, rx)| rx).collect();
 
-    let network_channels: Vec<_> = (0..algorithm.units.network_units.max(1))
+    let network_channels: Vec<_> = (0..algorithm.units.network_units)
         .map(|_| mpsc::channel(algorithm.queues.capacity))
         .collect();
     let network_senders: Vec<_> = network_channels.iter().map(|(tx, _)| tx.clone()).collect();
     let network_receivers: Vec<_> = network_channels.into_iter().map(|(_, rx)| rx).collect();
 
-    let ffi_channels: Vec<_> = (0..algorithm.units.ffi_units.max(1))
+    let ffi_channels: Vec<_> = (0..algorithm.units.ffi_units)
         .map(|_| mpsc::channel(algorithm.queues.capacity))
         .collect();
     let ffi_senders: Vec<_> = ffi_channels.iter().map(|(tx, _)| tx.clone()).collect();
     let ffi_receivers: Vec<_> = ffi_channels.into_iter().map(|(_, rx)| rx).collect();
 
-    let computational_channels: Vec<_> = (0..algorithm.units.computational_units.max(1))
+    let computational_channels: Vec<_> = (0..algorithm.units.computational_units)
         .map(|_| mpsc::channel(algorithm.queues.capacity))
         .collect();
     let computational_senders: Vec<_> = computational_channels.iter().map(|(tx, _)| tx.clone()).collect();
     let computational_receivers: Vec<_> = computational_channels.into_iter().map(|(_, rx)| rx).collect();
 
-    let memory_channels: Vec<_> = (0..algorithm.units.memory_units.max(1))
+    let memory_channels: Vec<_> = (0..algorithm.units.memory_units)
         .map(|_| mpsc::channel(algorithm.queues.capacity))
         .collect();
     let memory_senders: Vec<_> = memory_channels.iter().map(|(tx, _)| tx.clone()).collect();
@@ -327,6 +327,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                 match unit_type {
                     0 => {
+                        if gpu_senders.is_empty() {
+                            // No GPU units configured - skip this action
+                            pc += 1;
+                            continue;
+                        }
+
                         let assigned = gpu_assignments
                             .get(pc)
                             .copied()
@@ -348,6 +354,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let _ = gpu_senders[unit_id].send(item).await;
                     }
                     1 => {
+                        if simd_senders.is_empty() {
+                            // No SIMD units configured - skip this action
+                            pc += 1;
+                            continue;
+                        }
+
                         let assigned = simd_assignments
                             .get(pc)
                             .copied()
@@ -369,6 +381,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let _ = simd_senders[unit_id].send(item).await;
                     }
                     2 => {
+                        if file_senders.is_empty() {
+                            // No file units configured - skip this action
+                            pc += 1;
+                            continue;
+                        }
+
                         let assigned = file_assignments
                             .get(pc)
                             .copied()
@@ -390,6 +408,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let _ = file_senders[unit_id].send(item).await;
                     }
                     3 => {
+                        if network_senders.is_empty() {
+                            // No network units configured - skip this action
+                            pc += 1;
+                            continue;
+                        }
+
                         let assigned = network_assignments
                             .get(pc)
                             .copied()
@@ -411,6 +435,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let _ = network_senders[unit_id].send(item).await;
                     }
                     4 => {
+                        if ffi_senders.is_empty() {
+                            // No FFI units configured - skip this action
+                            pc += 1;
+                            continue;
+                        }
+
                         let assigned = ffi_assignments
                             .get(pc)
                             .copied()
@@ -432,6 +462,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let _ = ffi_senders[unit_id].send(item).await;
                     }
                     5 => {
+                        if computational_senders.is_empty() {
+                            // No computational units configured - skip this action
+                            pc += 1;
+                            continue;
+                        }
+
                         let assigned = computational_assignments
                             .get(pc)
                             .copied()
@@ -453,6 +489,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let _ = computational_senders[unit_id].send(item).await;
                     }
                     6 => {
+                        if memory_senders.is_empty() {
+                            // No memory units configured - skip this action
+                            pc += 1;
+                            continue;
+                        }
+
                         let assigned = memory_assignments
                             .get(pc)
                             .copied()
