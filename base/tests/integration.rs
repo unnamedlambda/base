@@ -734,3 +734,270 @@ fn test_integration_complex_gpu_simd_workflow() {
     assert_eq!(&contents_cond[..], b"HIGH", "Should have taken HIGH path (condition = 1.0)");
 }
 
+#[test]
+fn test_integration_multiple_async_same_unit() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("queue_order.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Three CAS operations that will be queued to same memory unit
+    payloads[2000..2008].copy_from_slice(&0u64.to_le_bytes());
+    payloads[2008..2016].copy_from_slice(&0u64.to_le_bytes());
+    payloads[2016..2024].copy_from_slice(&1u64.to_le_bytes());
+
+    payloads[2100..2108].copy_from_slice(&1u64.to_le_bytes());
+    payloads[2108..2116].copy_from_slice(&1u64.to_le_bytes());
+    payloads[2116..2124].copy_from_slice(&2u64.to_le_bytes());
+
+    payloads[2200..2208].copy_from_slice(&2u64.to_le_bytes());
+    payloads[2208..2216].copy_from_slice(&2u64.to_le_bytes());
+    payloads[2216..2224].copy_from_slice(&3u64.to_le_bytes());
+
+    let actions = vec![
+        // CAS operations
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 2000,
+            src: 2008,
+            offset: 2016,
+            size: 8,
+        },
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 2100,
+            src: 2108,
+            offset: 2116,
+            size: 8,
+        },
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 2200,
+            src: 2208,
+            offset: 2216,
+            size: 8,
+        },
+        // Queue all three to SAME memory unit (unit 0)
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 0,
+            offset: 3000,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 1,
+            offset: 3008,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 2,
+            offset: 3016,
+            size: 0,
+        },
+        // Wait for all
+        Action {
+            kind: Kind::Wait,
+            dst: 3000,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: 3008,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: 3016,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Copy all results to buffer
+        Action {
+            kind: Kind::MemCopy,
+            src: 2000,
+            dst: 512,
+            offset: 0,
+            size: 8,
+        },
+        Action {
+            kind: Kind::MemCopy,
+            src: 2100,
+            dst: 520,
+            offset: 0,
+            size: 8,
+        },
+        Action {
+            kind: Kind::MemCopy,
+            src: 2200,
+            dst: 528,
+            offset: 0,
+            size: 8,
+        },
+        // Write to file
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 512,
+            offset: filename_bytes.len() as u32,
+            size: 24,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "Queue ordering result should exist");
+    let contents = fs::read(&result_file).unwrap();
+
+    let v1 = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let v2 = u64::from_le_bytes(contents[8..16].try_into().unwrap());
+    let v3 = u64::from_le_bytes(contents[16..24].try_into().unwrap());
+
+    assert_eq!(v1, 1, "First CAS: 0→1");
+    assert_eq!(v2, 2, "Second CAS: 1→2");
+    assert_eq!(v3, 3, "Third CAS: 2→3");
+}
+
+#[test]
+fn test_integration_cross_unit_data_flow() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("cross_unit.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Memory unit prepares data
+    payloads[2000..2008].copy_from_slice(&42u64.to_le_bytes());
+
+    let actions = vec![
+        // Memory: Copy data to shared location
+        Action {
+            kind: Kind::MemCopy,
+            src: 2000,
+            dst: 2100,
+            offset: 0,
+            size: 8,
+        },
+        // AsyncDispatch memory operation
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 0,
+            offset: 2560,
+            size: 0,
+        },
+        // Wait for memory to finish
+        Action {
+            kind: Kind::Wait,
+            dst: 2560,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // File unit reads from shared location prepared by memory
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 2100,
+            offset: filename_bytes.len() as u32,
+            size: 8,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "Cross-unit data flow result should exist");
+    let contents = fs::read(&result_file).unwrap();
+    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(value, 42, "File should read data prepared by memory unit");
+}
+
+#[test]
+fn test_integration_conditional_skip_with_wait() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("cond_skip.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Condition: 0.0 (false) - will NOT jump, will execute AsyncDispatch
+    payloads[2700..2708].copy_from_slice(&0.0f64.to_le_bytes());
+
+    payloads[2000..2008].copy_from_slice(&99u64.to_le_bytes());
+    payloads[2008..2016].copy_from_slice(&99u64.to_le_bytes());
+    payloads[2016..2024].copy_from_slice(&123u64.to_le_bytes());
+
+    let actions = vec![
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 2000,
+            src: 2008,
+            offset: 2016,
+            size: 8,
+        },
+        // Jump over AsyncDispatch if condition true (it's false, so won't jump)
+        Action {
+            kind: Kind::ConditionalJump,
+            src: 2700,
+            dst: 4,
+            offset: 0,
+            size: 0,
+        },
+        // This WILL execute (condition was false)
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 0,
+            offset: 2560,
+            size: 0,
+        },
+        // Wait for the dispatch that happened
+        Action {
+            kind: Kind::Wait,
+            dst: 2560,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 2000,
+            offset: filename_bytes.len() as u32,
+            size: 8,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "Conditional skip result should exist");
+    let contents = fs::read(&result_file).unwrap();
+    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(value, 123, "CAS completed because AsyncDispatch was not skipped");
+}
+
