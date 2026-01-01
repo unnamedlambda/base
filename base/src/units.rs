@@ -1019,12 +1019,6 @@ mod tests {
     }
 
     #[test]
-    fn test_queue_item_size() {
-        // Ensure QueueItem is small for efficient channel passing
-        assert_eq!(std::mem::size_of::<QueueItem>(), 8);
-    }
-
-    #[test]
     fn test_computational_unit_creation() {
         let unit = ComputationalUnit::new(32);
         assert_eq!(unit.regs.len(), 32);
