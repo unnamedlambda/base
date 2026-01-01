@@ -1964,20 +1964,20 @@ mod atomic_tests {
         let mut memory = vec![0u8; 1024];
 
         // Initialize value to 42
-        memory[100..108].copy_from_slice(&42u64.to_le_bytes());
+        memory[104..112].copy_from_slice(&42u64.to_le_bytes());
 
         // Expected: 42, New: 100
-        memory[200..208].copy_from_slice(&42u64.to_le_bytes());
-        memory[300..308].copy_from_slice(&100u64.to_le_bytes());
+        memory[208..216].copy_from_slice(&42u64.to_le_bytes());
+        memory[304..312].copy_from_slice(&100u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::AtomicCAS,
-            dst: 100,    // target location
-            src: 200,    // expected value location
-            offset: 300, // new value location
+            dst: 104,    // target location
+            src: 208,    // expected value location
+            offset: 304, // new value location
             size: 8,     // 64-bit
         };
 
@@ -1985,11 +1985,11 @@ mod atomic_tests {
             unit.execute(&action);
 
             // Should have swapped to 100
-            let result = u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap());
+            let result = u64::from_le_bytes(shared.read(104, 8)[0..8].try_into().unwrap());
             assert_eq!(result, 100);
 
             // Old value (42) should be written back to src
-            let old = u64::from_le_bytes(shared.read(200, 8)[0..8].try_into().unwrap());
+            let old = u64::from_le_bytes(shared.read(208, 8)[0..8].try_into().unwrap());
             assert_eq!(old, 42);
         }
     }
@@ -1999,19 +1999,19 @@ mod atomic_tests {
         let mut memory = vec![0u8; 1024];
 
         // Initialize value to 42
-        memory[100..108].copy_from_slice(&42u64.to_le_bytes());
+        memory[104..112].copy_from_slice(&42u64.to_le_bytes());
 
-        memory[200..208].copy_from_slice(&50u64.to_le_bytes());
-        memory[300..308].copy_from_slice(&100u64.to_le_bytes());
+        memory[208..216].copy_from_slice(&50u64.to_le_bytes());
+        memory[304..312].copy_from_slice(&100u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = MemoryUnit::new(shared.clone());
 
         let action = Action {
             kind: Kind::AtomicCAS,
-            dst: 100,
-            src: 200,
-            offset: 300,
+            dst: 104,
+            src: 208,
+            offset: 304,
             size: 8,
         };
 
@@ -2019,11 +2019,11 @@ mod atomic_tests {
             unit.execute(&action);
 
             // Should still be 42 (CAS failed)
-            let result = u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap());
+            let result = u64::from_le_bytes(shared.read(104, 8)[0..8].try_into().unwrap());
             assert_eq!(result, 42);
 
             // Actual value (42) should be written back to src
-            let actual = u64::from_le_bytes(shared.read(200, 8)[0..8].try_into().unwrap());
+            let actual = u64::from_le_bytes(shared.read(208, 8)[0..8].try_into().unwrap());
             assert_eq!(actual, 42);
         }
     }
@@ -2033,7 +2033,7 @@ mod atomic_tests {
         let mut memory = vec![0u8; 1024];
 
         // Initialize counter to 0
-        memory[100..108].copy_from_slice(&0u64.to_le_bytes());
+        memory[104..112].copy_from_slice(&0u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = MemoryUnit::new(shared.clone());
@@ -2041,16 +2041,16 @@ mod atomic_tests {
         // Simulate increment using CAS loop
         for expected_val in 0u64..10 {
             // Set expected value
-            memory[200..208].copy_from_slice(&expected_val.to_le_bytes());
+            memory[208..216].copy_from_slice(&expected_val.to_le_bytes());
 
             // Set new value (expected + 1)
-            memory[300..308].copy_from_slice(&(expected_val + 1).to_le_bytes());
+            memory[304..312].copy_from_slice(&(expected_val + 1).to_le_bytes());
 
             let action = Action {
                 kind: Kind::AtomicCAS,
-                dst: 100,
-                src: 200,
-                offset: 300,
+                dst: 104,
+                src: 208,
+                offset: 304,
                 size: 8,
             };
 
@@ -2061,7 +2061,7 @@ mod atomic_tests {
 
         // Counter should be 10
         unsafe {
-            let final_val = u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap());
+            let final_val = u64::from_le_bytes(shared.read(104, 8)[0..8].try_into().unwrap());
             assert_eq!(final_val, 10);
         }
     }
@@ -2335,7 +2335,7 @@ mod concurrent_tests {
     fn test_atomic_cas_contention() {
         // Test CAS under contention from multiple threads
         let mut memory = vec![0u8; 1024];
-        memory[100..108].copy_from_slice(&0u64.to_le_bytes());
+        memory[104..112].copy_from_slice(&0u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let counter = Arc::new(AtomicU32::new(0));
@@ -2349,10 +2349,10 @@ mod concurrent_tests {
                 // Try to increment the value using CAS
                 loop {
                     let current = unsafe {
-                        u64::from_le_bytes(shared_clone.read(100, 8)[0..8].try_into().unwrap())
+                        u64::from_le_bytes(shared_clone.read(104, 8)[0..8].try_into().unwrap())
                     };
 
-                    let result = unsafe { shared_clone.cas64(100, current, current + 1) };
+                    let result = unsafe { shared_clone.cas64(104, current, current + 1) };
 
                     if result == current {
                         counter_clone.fetch_add(1, Ordering::SeqCst);
@@ -2371,7 +2371,7 @@ mod concurrent_tests {
 
         // Final value should be 10
         let final_val =
-            unsafe { u64::from_le_bytes(shared.read(100, 8)[0..8].try_into().unwrap()) };
+            unsafe { u64::from_le_bytes(shared.read(104, 8)[0..8].try_into().unwrap()) };
         assert_eq!(final_val, 10);
     }
 }
