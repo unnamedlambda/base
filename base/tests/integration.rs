@@ -731,6 +731,6 @@ fn test_integration_complex_gpu_simd_workflow() {
 
     assert!(condition_file.exists(), "Condition file should exist");
     let contents_cond = fs::read(&condition_file).unwrap();
-    assert_eq!(&contents_cond[..], b"HIGH", "Should have taken HIGH path (16 > 10)");
+    assert_eq!(&contents_cond[..], b"HIGH", "Should have taken HIGH path (condition = 1.0)");
 }
 
