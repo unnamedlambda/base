@@ -750,9 +750,9 @@ fn test_integration_multiple_async_same_unit() {
     payloads[2008..2016].copy_from_slice(&0u64.to_le_bytes());
     payloads[2016..2024].copy_from_slice(&1u64.to_le_bytes());
 
-    payloads[2100..2108].copy_from_slice(&1u64.to_le_bytes());
-    payloads[2108..2116].copy_from_slice(&1u64.to_le_bytes());
-    payloads[2116..2124].copy_from_slice(&2u64.to_le_bytes());
+    payloads[2104..2112].copy_from_slice(&1u64.to_le_bytes());
+    payloads[2112..2120].copy_from_slice(&1u64.to_le_bytes());
+    payloads[2120..2128].copy_from_slice(&2u64.to_le_bytes());
 
     payloads[2200..2208].copy_from_slice(&2u64.to_le_bytes());
     payloads[2208..2216].copy_from_slice(&2u64.to_le_bytes());
@@ -769,9 +769,9 @@ fn test_integration_multiple_async_same_unit() {
         },
         Action {
             kind: Kind::AtomicCAS,
-            dst: 2100,
-            src: 2108,
-            offset: 2116,
+            dst: 2104,
+            src: 2112,
+            offset: 2120,
             size: 8,
         },
         Action {
@@ -835,7 +835,7 @@ fn test_integration_multiple_async_same_unit() {
         },
         Action {
             kind: Kind::MemCopy,
-            src: 2100,
+            src: 2104,
             dst: 520,
             offset: 0,
             size: 8,
