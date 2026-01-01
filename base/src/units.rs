@@ -909,7 +909,8 @@ pub(crate) async fn gpu_unit_task(
 
         // Write completion flag
         unsafe {
-            shared.write(action.offset as usize, &1u64.to_le_bytes());
+            let flag_offset = item.offset as usize;
+            shared.write(flag_offset, &1u64.to_le_bytes());
         }
     }
 }
