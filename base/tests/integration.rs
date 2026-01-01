@@ -54,6 +54,96 @@ fn create_test_algorithm(
     }
 }
 
+fn create_complex_algorithm(
+    actions: Vec<Action>,
+    payloads: Vec<u8>,
+    file_units: usize,
+    memory_units: usize,
+    simd_units: usize,
+    gpu_units: usize,
+    gpu_shader_offsets: Vec<usize>,
+    gpu_size: usize,
+) -> Algorithm {
+    let num_actions = actions.len();
+    let payload_size = payloads.len();
+
+    // Generate scratch offsets for SIMD units
+    // Each SIMD unit needs scratch space for registers
+    let scratch_size_per_unit = 256; // enough for 16 SIMD registers of 16 bytes each
+    let unit_scratch_offsets: Vec<usize> = (0..simd_units)
+        .map(|i| i * scratch_size_per_unit)
+        .collect();
+
+    // Shared data starts after scratch space
+    let scratch_region_end = simd_units * scratch_size_per_unit;
+    let shared_data_offset = scratch_region_end;
+    let shared_data_size = if payload_size > scratch_region_end {
+        payload_size - scratch_region_end
+    } else {
+        0
+    };
+
+    // GPU offset must not overlap with shared data
+    let gpu_offset = shared_data_offset + shared_data_size;
+
+    Algorithm {
+        actions,
+        payloads,
+        state: State {
+            regs_per_unit: 16,
+            unit_scratch_offsets,
+            unit_scratch_size: scratch_size_per_unit,
+            shared_data_offset,
+            shared_data_size,
+            gpu_offset,
+            gpu_size,
+            computational_regs: 32,
+            file_buffer_size: 65536,
+            gpu_shader_offsets,
+        },
+        queues: QueueSpec { capacity: 256 },
+        units: UnitSpec {
+            simd_units,
+            gpu_units,
+            computational_units: 0,
+            file_units,
+            network_units: 0,
+            memory_units,
+            ffi_units: 0,
+            backends_bits: 0xFFFFFFFF,
+            features_bits: 0,
+        },
+        simd_assignments: if simd_units > 0 {
+            vec![0; num_actions]
+        } else {
+            vec![255; num_actions]
+        },
+        computational_assignments: vec![],
+        memory_assignments: if memory_units > 0 {
+            vec![0; num_actions]
+        } else {
+            vec![255; num_actions]
+        },
+        file_assignments: if file_units > 0 {
+            vec![0; num_actions]
+        } else {
+            vec![255; num_actions]
+        },
+        network_assignments: vec![],
+        ffi_assignments: vec![],
+        gpu_assignments: if gpu_units > 0 {
+            vec![0; num_actions]
+        } else {
+            vec![255; num_actions]
+        },
+        worker_threads: None,
+        blocking_threads: None,
+        stack_size: None,
+        timeout_ms: Some(10000),
+        thread_name_prefix: None,
+    }
+}
+
 #[test]
 fn test_integration_memcopy_filewrite() {
     let temp_dir = TempDir::new().unwrap();
@@ -236,3 +326,411 @@ fn test_integration_file_roundtrip() {
     let verify_value = u64::from_le_bytes(verify_contents[0..8].try_into().unwrap());
     assert_eq!(verify_value, 99);
 }
+
+#[test]
+fn test_integration_async_memory_operations() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("async_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 2048];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Completion flag at offset 256 (8-byte aligned)
+    // CAS target at offset 304 (8-byte aligned, initial value: 100)
+    payloads[304..312].copy_from_slice(&100u64.to_le_bytes());
+    // CAS expected value at offset 312 (8-byte aligned, 100)
+    payloads[312..320].copy_from_slice(&100u64.to_le_bytes());
+    // CAS new value at offset 320 (8-byte aligned, 200)
+    payloads[320..328].copy_from_slice(&200u64.to_le_bytes());
+
+    let actions = vec![
+        // AtomicCAS: swap 100 → 200
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 304,    // target
+            src: 312,    // expected value
+            offset: 320, // new value
+            size: 8,
+        },
+        // AsyncDispatch to memory unit
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,      // unit type 6 = memory
+            src: 0,      // action index 0
+            offset: 256, // completion flag
+            size: 0,
+        },
+        // Wait for completion
+        Action {
+            kind: Kind::Wait,
+            dst: 256,    // flag location
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // FileWrite result
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,      // filename
+            src: 304,    // CAS result (should be 200)
+            offset: filename_bytes.len() as u32,
+            size: 8,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).expect("Async memory operations test failed");
+
+    // Verify result: CAS should have swapped 100 → 200
+    assert!(result_file.exists(), "Result file should exist");
+    let result = fs::read(&result_file).unwrap();
+    let value = u64::from_le_bytes(result[0..8].try_into().unwrap());
+    assert_eq!(value, 200, "AtomicCAS should have swapped 100→200");
+}
+
+#[test]
+fn test_integration_complex_workflow() {
+    let temp_dir = TempDir::new().unwrap();
+    let path_a = temp_dir.path().join("result_a.txt");
+    let path_b = temp_dir.path().join("result_b.txt");
+    let path_cas = temp_dir.path().join("cas_result.txt");
+
+    let path_a_str = path_a.to_str().unwrap();
+    let path_b_str = path_b.to_str().unwrap();
+    let path_cas_str = path_cas.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_a_bytes = format!("{}\0", path_a_str).into_bytes();
+    payloads[0..filename_a_bytes.len()].copy_from_slice(&filename_a_bytes);
+
+    let filename_b_bytes = format!("{}\0", path_b_str).into_bytes();
+    payloads[512..512 + filename_b_bytes.len()].copy_from_slice(&filename_b_bytes);
+
+    let filename_cas_bytes = format!("{}\0", path_cas_str).into_bytes();
+    payloads[1024..1024 + filename_cas_bytes.len()].copy_from_slice(&filename_cas_bytes);
+
+    // Data (all 8-byte aligned)
+    payloads[2000..2008].copy_from_slice(&42u64.to_le_bytes());   // Source value
+    payloads[2104..2112].copy_from_slice(&1.0f64.to_le_bytes());  // Condition (true)
+    payloads[2200..2208].copy_from_slice(&100u64.to_le_bytes());  // CAS target
+    payloads[2208..2216].copy_from_slice(&100u64.to_le_bytes());  // CAS expected
+    payloads[2216..2224].copy_from_slice(&999u64.to_le_bytes());  // CAS new value
+    // Completion flag at 2304
+
+    let actions = vec![
+        // Action 0: MemCopy value to buffer
+        Action {
+            kind: Kind::MemCopy,
+            src: 2000,
+            dst: 3000,
+            offset: 0,
+            size: 8,
+        },
+        // Action 1: AtomicCAS (100 → 999)
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 2200,
+            src: 2208,
+            offset: 2216,
+            size: 8,
+        },
+        // Action 2: AsyncDispatch to memory unit
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 1,
+            offset: 2304,
+            size: 0,
+        },
+        // Action 3: Wait for completion
+        Action {
+            kind: Kind::Wait,
+            dst: 2304,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Action 4: FileWrite CAS result
+        Action {
+            kind: Kind::FileWrite,
+            dst: 1024,
+            src: 2200,
+            offset: filename_cas_bytes.len() as u32,
+            size: 8,
+        },
+        // Action 5: ConditionalJump based on condition
+        Action {
+            kind: Kind::ConditionalJump,
+            src: 2104,
+            dst: 7,      // Jump to action 7 (path A)
+            offset: 0,
+            size: 0,
+        },
+        // Action 6: Path B - FileWrite (SKIPPED)
+        Action {
+            kind: Kind::FileWrite,
+            dst: 512,
+            src: 3000,
+            offset: filename_b_bytes.len() as u32,
+            size: 8,
+        },
+        // Action 7: Path A - FileWrite (EXECUTED)
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 3000,
+            offset: filename_a_bytes.len() as u32,
+            size: 8,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).expect("Complex workflow test failed");
+
+    // Verify CAS result
+    assert!(path_cas.exists(), "CAS result file should exist");
+    let cas_result = fs::read(&path_cas).unwrap();
+    let cas_value = u64::from_le_bytes(cas_result[0..8].try_into().unwrap());
+    assert_eq!(cas_value, 999, "CAS should have swapped 100→999");
+
+    // Verify conditional jump took path A
+    assert!(path_a.exists(), "Path A file should exist");
+    assert!(!path_b.exists(), "Path B file should NOT exist (jumped over)");
+
+    let result_a = fs::read(&path_a).unwrap();
+    let value_a = u64::from_le_bytes(result_a[0..8].try_into().unwrap());
+    assert_eq!(value_a, 42, "Path A should contain copied value");
+}
+
+// Simple WGSL shader for addition: reads data[0] and data[1], writes sum to data[2]
+const SIMPLE_ADD_SHADER: &str = r#"
+@group(0) @binding(0) var<storage, read_write> data: array<u32>;
+
+@compute @workgroup_size(1)
+fn main() {
+    let a = data[0];
+    let b = data[1];
+    data[2] = a + b;
+}
+"#;
+
+#[test]
+fn test_integration_gpu_async() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("gpu_async_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let shader_bytes = SIMPLE_ADD_SHADER.as_bytes();
+    payloads[0..shader_bytes.len()].copy_from_slice(shader_bytes);
+
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[2048..2048 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    payloads[3000..3004].copy_from_slice(&7u32.to_le_bytes());
+    payloads[3004..3008].copy_from_slice(&9u32.to_le_bytes());
+
+    let actions = vec![
+        Action {
+            kind: Kind::Dispatch,
+            dst: 3000,
+            src: 3000,
+            offset: 2560,
+            size: 12,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 0,
+            src: 0,
+            offset: 2560,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: 2560,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 2048,
+            src: 3008,
+            offset: filename_bytes.len() as u32,
+            size: 4,
+        },
+    ];
+
+    let algorithm = create_complex_algorithm(
+        actions,
+        payloads,
+        1,    // file_units
+        0,    // memory_units
+        0,    // simd_units
+        1,    // gpu_units
+        vec![0],  // gpu_shader_offsets
+        2048, // gpu_size
+    );
+
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "GPU async result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    let value = u32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(value, 16, "GPU should have computed 7 + 9 = 16");
+}
+
+#[test]
+fn test_integration_complex_gpu_simd_workflow() {
+    let temp_dir = TempDir::new().unwrap();
+    let result1 = temp_dir.path().join("result1.txt");
+    let result2 = temp_dir.path().join("result2.txt");
+    let condition_file = temp_dir.path().join("condition.txt");
+
+    let result1_str = result1.to_str().unwrap();
+    let result2_str = result2.to_str().unwrap();
+    let condition_str = condition_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let shader_bytes = SIMPLE_ADD_SHADER.as_bytes();
+    payloads[0..shader_bytes.len()].copy_from_slice(shader_bytes);
+
+    let filename1_bytes = format!("{}\0", result1_str).into_bytes();
+    payloads[2048..2048 + filename1_bytes.len()].copy_from_slice(&filename1_bytes);
+
+    let filename2_bytes = format!("{}\0", result2_str).into_bytes();
+    payloads[2304..2304 + filename2_bytes.len()].copy_from_slice(&filename2_bytes);
+
+    let filename_cond_bytes = format!("{}\0", condition_str).into_bytes();
+    payloads[2720..2720 + filename_cond_bytes.len()].copy_from_slice(&filename_cond_bytes);
+
+    payloads[2576..2580].copy_from_slice(&7u32.to_le_bytes());
+    payloads[2580..2584].copy_from_slice(&9u32.to_le_bytes());
+
+    payloads[2640..2644].copy_from_slice(&3u32.to_le_bytes());
+    payloads[2644..2648].copy_from_slice(&5u32.to_le_bytes());
+
+    // Condition value for ConditionalJump (1.0 = true, will jump)
+    payloads[2704..2712].copy_from_slice(&1.0f64.to_le_bytes());
+
+    let high_text = b"HIGH";
+    payloads[2776..2780].copy_from_slice(high_text);
+    let low_text = b"LOW";
+    payloads[2832..2835].copy_from_slice(low_text);
+
+    let actions = vec![
+        Action {
+            kind: Kind::Dispatch,
+            dst: 2576,
+            src: 2576,
+            offset: 2560,
+            size: 12,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 0,
+            src: 0,
+            offset: 2560,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: 2560,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 2048,
+            src: 2584,
+            offset: filename1_bytes.len() as u32,
+            size: 4,
+        },
+        Action {
+            kind: Kind::Dispatch,
+            dst: 2640,
+            src: 2640,
+            offset: 2568,
+            size: 12,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 0,
+            src: 4,
+            offset: 2568,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: 2568,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 2304,
+            src: 2648,
+            offset: filename2_bytes.len() as u32,
+            size: 4,
+        },
+        Action {
+            kind: Kind::ConditionalJump,
+            src: 2704,
+            dst: 10,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 2720,
+            src: 2832,
+            offset: filename_cond_bytes.len() as u32,
+            size: 3,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 2720,
+            src: 2776,
+            offset: filename_cond_bytes.len() as u32,
+            size: 4,
+        },
+    ];
+
+    let algorithm = create_complex_algorithm(
+        actions,
+        payloads,
+        3,
+        0,
+        0,
+        1,
+        vec![0],
+        2048,
+    );
+
+    execute(algorithm).unwrap();
+
+    assert!(result1.exists(), "GPU result 1 should exist");
+    let contents1 = fs::read(&result1).unwrap();
+    let value1 = u32::from_le_bytes(contents1[0..4].try_into().unwrap());
+    assert_eq!(value1, 16, "GPU1 should compute 7 + 9 = 16");
+
+    assert!(result2.exists(), "GPU result 2 should exist");
+    let contents2 = fs::read(&result2).unwrap();
+    let value2 = u32::from_le_bytes(contents2[0..4].try_into().unwrap());
+    assert_eq!(value2, 8, "GPU2 should compute 3 + 5 = 8");
+
+    assert!(condition_file.exists(), "Condition file should exist");
+    let contents_cond = fs::read(&condition_file).unwrap();
+    assert_eq!(&contents_cond[..], b"HIGH", "Should have taken HIGH path (16 > 10)");
+}
+
