@@ -769,7 +769,7 @@ pub(crate) async fn memory_unit_task(
 
         // Write completion flag
         unsafe {
-            let flag_offset = action.offset as usize;
+            let flag_offset = item.offset as usize;
             shared.write(flag_offset, &1u64.to_le_bytes());
         }
     }
@@ -790,7 +790,7 @@ pub(crate) async fn ffi_unit_task(
 
         // Write completion flag
         unsafe {
-            let flag_offset = action.offset as usize;
+            let flag_offset = item.offset as usize;
             shared.write(flag_offset, &1u64.to_le_bytes());
         }
     }
@@ -810,7 +810,7 @@ pub(crate) async fn network_unit_task(
 
         // Write completion flag
         unsafe {
-            let flag_offset = action.offset as usize;
+            let flag_offset = item.offset as usize;
             shared.write(flag_offset, &1u64.to_le_bytes());
         }
     }
@@ -831,7 +831,7 @@ pub(crate) async fn file_unit_task(
 
         // Write completion flag
         unsafe {
-            let flag_offset = action.offset as usize;
+            let flag_offset = item.offset as usize;
             shared.write(flag_offset, &1u64.to_le_bytes());
         }
     }
@@ -853,7 +853,7 @@ pub(crate) async fn computational_unit_task(
 
         // Write completion flag
         unsafe {
-            let flag_offset = action.offset as usize;
+            let flag_offset = item.offset as usize;
             shared.write(flag_offset, &1u64.to_le_bytes());
         }
     }
@@ -887,7 +887,7 @@ pub(crate) async fn simd_unit_task(
 
         // Write completion flag
         unsafe {
-            let flag_offset = action.offset as usize;
+            let flag_offset = item.offset as usize;
             shared.write(flag_offset, &1u64.to_le_bytes());
         }
     }
