@@ -1001,3 +1001,300 @@ fn test_integration_conditional_skip_with_wait() {
     assert_eq!(value, 123, "CAS completed because AsyncDispatch was not skipped");
 }
 
+#[test]
+fn test_integration_memscan() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("memscan_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Create a haystack with a needle: search for pattern 0xDEADBEEF
+    let needle = 0xDEADBEEFu32;
+    let haystack_start = 1000;
+    let needle_position = haystack_start + 40; // 8-byte aligned: 1040 % 8 = 0
+
+    // Fill haystack with random-ish data
+    for i in 0..100 {
+        let val = (i * 7 + 13) as u32;
+        let offset = haystack_start + i * 4;
+        payloads[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    // Place needle at specific position
+    payloads[needle_position..needle_position + 4].copy_from_slice(&needle.to_le_bytes());
+
+    // Store needle pattern at offset 2000
+    payloads[2000..2004].copy_from_slice(&needle.to_le_bytes());
+
+    let actions = vec![
+        // MemScan: search for needle in haystack
+        // offset encoding: lower 16 bits = pattern size, upper 16 bits = result offset
+        Action {
+            kind: Kind::MemScan,
+            src: 2000,    // needle/pattern location
+            dst: haystack_start as u32,  // search region start
+            offset: 4 | (2100 << 16),  // pattern_size=4, result_offset=2100
+            size: 400,    // search region size
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,      // memory unit
+            src: 0,      // action index 0
+            offset: 2500, // completion flag
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: 2500,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 2100,
+            offset: filename_bytes.len() as u32,
+            size: 8,  // Changed to 8 bytes for i64 result
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "MemScan result should exist");
+    let contents = fs::read(&result_file).unwrap();
+    let found_offset = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+
+    assert_eq!(found_offset as usize, needle_position, "MemScan should find needle at correct offset");
+}
+
+#[test]
+fn test_integration_conditional_write() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("condwrite_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Condition: 1.0 (true)
+    payloads[2000..2008].copy_from_slice(&1.0f64.to_le_bytes());
+    // Value to write: 999
+    payloads[2008..2016].copy_from_slice(&999u64.to_le_bytes());
+    // Target location: 2100 (initially 0)
+    payloads[2100..2108].copy_from_slice(&0u64.to_le_bytes());
+
+    let actions = vec![
+        // ConditionalWrite: write 999 to offset 2100 if condition is true
+        Action {
+            kind: Kind::ConditionalWrite,
+            src: 2008,    // source value (999)
+            dst: 2100,    // target location
+            offset: 2000, // condition (1.0 = true)
+            size: 8,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,      // memory unit
+            src: 0,      // action index 0
+            offset: 2500, // completion flag
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: 2500,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 2100,
+            offset: filename_bytes.len() as u32,
+            size: 8,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "ConditionalWrite result should exist");
+    let contents = fs::read(&result_file).unwrap();
+    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+
+    assert_eq!(value, 999, "ConditionalWrite should write value when condition is true");
+}
+
+#[test]
+fn test_integration_fence() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("fence_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Setup multiple CAS operations with fence in between
+    payloads[2000..2008].copy_from_slice(&10u64.to_le_bytes());
+    payloads[2008..2016].copy_from_slice(&10u64.to_le_bytes());
+    payloads[2016..2024].copy_from_slice(&20u64.to_le_bytes());
+
+    payloads[2096..2104].copy_from_slice(&30u64.to_le_bytes());
+    payloads[2104..2112].copy_from_slice(&30u64.to_le_bytes());
+    payloads[2112..2120].copy_from_slice(&40u64.to_le_bytes());
+
+    let actions = vec![
+        // First CAS via memory unit
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 2000,    // target
+            src: 2008,    // expected value location
+            offset: 2016, // new value location
+            size: 8,
+        },
+        // AsyncDispatch first CAS
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,      // memory unit
+            src: 0,      // action index 0
+            offset: 2496, // completion flag
+            size: 0,
+        },
+        // Wait for first CAS
+        Action {
+            kind: Kind::Wait,
+            dst: 2496,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Fence to ensure ordering
+        Action {
+            kind: Kind::Fence,
+            dst: 0,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Second CAS via memory unit
+        Action {
+            kind: Kind::AtomicCAS,
+            dst: 2096,    // target
+            src: 2104,    // expected value location
+            offset: 2112, // new value location
+            size: 8,
+        },
+        // AsyncDispatch second CAS
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,      // memory unit
+            src: 4,      // action index 4
+            offset: 2504, // completion flag
+            size: 0,
+        },
+        // Wait for second CAS
+        Action {
+            kind: Kind::Wait,
+            dst: 2504,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Copy results
+        Action {
+            kind: Kind::MemCopy,
+            src: 2000,
+            dst: 3000,
+            offset: 0,
+            size: 8,
+        },
+        Action {
+            kind: Kind::MemCopy,
+            src: 2096,
+            dst: 3008,
+            offset: 0,
+            size: 8,
+        },
+        // Write to file
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 3000,
+            offset: filename_bytes.len() as u32,
+            size: 16,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "Fence test result should exist");
+    let contents = fs::read(&result_file).unwrap();
+
+    let val1 = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let val2 = u64::from_le_bytes(contents[8..16].try_into().unwrap());
+
+    assert_eq!(val1, 20, "First CAS should complete before fence");
+    assert_eq!(val2, 40, "Second CAS should complete after fence");
+}
+
+#[test]
+fn test_integration_memwrite() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("memwrite_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Source data
+    payloads[2000..2008].copy_from_slice(&777u64.to_le_bytes());
+
+    // Destination initially zero
+    payloads[2100..2108].copy_from_slice(&0u64.to_le_bytes());
+
+    let actions = vec![
+        // MemWrite: write from 2000 to 2100
+        Action {
+            kind: Kind::MemWrite,
+            src: 2000,
+            dst: 2100,
+            offset: 0,
+            size: 8,
+        },
+        // FileWrite the result
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 2100,
+            offset: filename_bytes.len() as u32,
+            size: 8,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "MemWrite result should exist");
+    let contents = fs::read(&result_file).unwrap();
+    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+
+    assert_eq!(value, 777, "MemWrite should copy value correctly");
+}
+
