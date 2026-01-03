@@ -538,47 +538,32 @@ impl ComputationalUnit {
 pub(crate) struct SimdUnit {
     id: u8,
     regs: Vec<f32x4>,
-    scratch: Arc<Vec<u8>>,
-    scratch_offset: usize,
-    scratch_size: usize,
     shared: Arc<SharedMemory>,
-    shared_offset: usize,
 }
 
 impl SimdUnit {
     pub fn new(
         id: u8,
         regs: usize,
-        scratch: Arc<Vec<u8>>,
-        scratch_offset: usize,
-        scratch_size: usize,
         shared: Arc<SharedMemory>,
-        shared_offset: usize,
     ) -> Self {
         Self {
             id,
             regs: vec![f32x4::splat(0.0); regs],
-            scratch,
-            scratch_offset,
-            scratch_size,
             shared,
-            shared_offset,
         }
     }
 
     pub unsafe fn execute(&mut self, action: &Action) -> Option<QueueItem> {
         match action.kind {
             Kind::SimdLoad => {
-                let offset = self.scratch_offset + action.offset as usize;
-                if offset + 16 <= self.scratch_offset + self.scratch_size {
-                    let vals = &self.scratch[offset..offset + 16];
-                    let f0 = f32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
-                    let f1 = f32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
-                    let f2 = f32::from_le_bytes([vals[8], vals[9], vals[10], vals[11]]);
-                    let f3 = f32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
+                let vals = self.shared.read(action.src as usize, 16);
+                let f0 = f32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
+                let f1 = f32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
+                let f2 = f32::from_le_bytes([vals[8], vals[9], vals[10], vals[11]]);
+                let f3 = f32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
 
-                    self.regs[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
-                }
+                self.regs[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
                 None
             }
             Kind::SimdAdd => {
@@ -595,7 +580,7 @@ impl SimdUnit {
             }
             Kind::SimdStore => {
                 let reg_data = self.regs[action.src as usize].to_array();
-                let write_offset = self.shared_offset + (action.offset as usize);
+                let write_offset = action.offset as usize;
 
                 let mut bytes = [0u8; 16];
                 for (i, &val) in reg_data.iter().enumerate() {
@@ -862,19 +847,11 @@ pub(crate) async fn simd_unit_task(
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
     regs: usize,
-    scratch: Arc<Vec<u8>>,
-    scratch_offset: usize,
-    scratch_size: usize,
-    shared_offset: usize,
 ) {
     let mut unit = SimdUnit::new(
         0,
         regs,
-        scratch,
-        scratch_offset,
-        scratch_size,
         shared.clone(),
-        shared_offset,
     );
 
     while let Some(item) = rx.recv().await {
@@ -1010,9 +987,8 @@ mod tests {
     fn test_simd_unit_creation() {
         let memory = vec![0u8; 1024];
         let shared = Arc::new(SharedMemory::new(memory.as_ptr() as *mut u8));
-        let scratch = Arc::new(vec![0u8; 256]);
 
-        let unit = SimdUnit::new(0, 16, scratch, 0, 256, shared, 0);
+        let unit = SimdUnit::new(0, 16, shared);
         assert_eq!(unit.id, 0);
         assert_eq!(unit.regs.len(), 16);
     }
@@ -2229,7 +2205,6 @@ mod concurrent_tests {
         // Test multiple SIMD units writing to different memory regions concurrently
         let mut memory = vec![0u8; 65536];
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let scratch = Arc::new(vec![0u8; 16384]);
 
         let (tx, mut rx) = mpsc::channel(100);
         let mut handles = vec![];
@@ -2237,18 +2212,13 @@ mod concurrent_tests {
         // Spawn 4 SIMD units working in parallel
         for unit_id in 0..4u8 {
             let shared_clone = shared.clone();
-            let scratch_clone = scratch.clone();
             let tx_clone = tx.clone();
 
             handles.push(tokio::spawn(async move {
                 let mut unit = SimdUnit::new(
                     unit_id,
                     16,
-                    scratch_clone,
-                    unit_id as usize * 4096,
-                    4096,
                     shared_clone,
-                    unit_id as usize * 1024,
                 );
 
                 // Each unit does some SIMD operations

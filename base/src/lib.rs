@@ -219,22 +219,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
-    for (worker_id, rx) in simd_receivers.into_iter().enumerate() {
-        let scratch = Arc::new(vec![0u8; algorithm.state.unit_scratch_size]);
-        let scratch_offset = algorithm.state.unit_scratch_offsets
-            .get(worker_id)
-            .copied()
-            .unwrap_or(0);
-
+    for (_, rx) in simd_receivers.into_iter().enumerate() {
         tokio::spawn(simd_unit_task(
             rx,
             actions_arc.clone(),
             shared.clone(),
             algorithm.state.regs_per_unit,
-            scratch,
-            scratch_offset,
-            algorithm.state.unit_scratch_size,
-            0, // shared_offset
         ));
     }
 
