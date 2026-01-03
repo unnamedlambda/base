@@ -22,9 +22,6 @@ use wide::f32x4;
 pub(crate) struct QueueItem {
     pub action_index: u32,
     pub offset: u32,
-    pub size: u16,
-    pub unit_id: u8,
-    pub _pad: u8,
 }
 
 pub(crate) struct SharedMemory {
@@ -264,9 +261,6 @@ impl NetworkUnit {
                     Some(QueueItem {
                         action_index: 0,
                         offset: action.dst,
-                        size: 4,
-                        unit_id: self.id,
-                        _pad: 0,
                     })
                 } else {
                     // It's a connection
@@ -284,9 +278,6 @@ impl NetworkUnit {
                     Some(QueueItem {
                         action_index: 0,
                         offset: action.dst,
-                        size: 4,
-                        unit_id: self.id,
-                        _pad: 0,
                     })
                 }
             }
@@ -317,9 +308,6 @@ impl NetworkUnit {
                 Some(QueueItem {
                     action_index: 0,
                     offset: action.dst,
-                    size: 4,
-                    unit_id: self.id,
-                    _pad: 0,
                 })
             }
 
@@ -341,9 +329,6 @@ impl NetworkUnit {
                 Some(QueueItem {
                     action_index: 0,
                     offset: action.src,
-                    size: n as u16,
-                    unit_id: self.id,
-                    _pad: 0,
                 })
             }
 
@@ -368,9 +353,6 @@ impl NetworkUnit {
                 Some(QueueItem {
                     action_index: 0,
                     offset: action.dst,
-                    size: n as u16,
-                    unit_id: self.id,
-                    _pad: 0,
                 })
             }
 
@@ -427,9 +409,6 @@ impl FileUnit {
                             Some(QueueItem {
                                 action_index: 0,
                                 offset: action.dst,
-                                size: (total_read.min(u16::MAX as usize)) as u16,
-                                unit_id: self.id,
-                                _pad: 0,
                             })
                         } else {
                             // Read specific amount
@@ -442,9 +421,6 @@ impl FileUnit {
                                     Some(QueueItem {
                                         action_index: 0,
                                         offset: action.dst,
-                                        size: n as u16,
-                                        unit_id: self.id,
-                                        _pad: 0,
                                     })
                                 }
                                 Err(_) => None,
@@ -591,9 +567,6 @@ impl SimdUnit {
                 Some(QueueItem {
                     action_index: 0,
                     offset: write_offset as u32,
-                    size: 16,
-                    unit_id: self.id,
-                    _pad: 0,
                 })
             }
             _ => None,
@@ -1452,7 +1425,6 @@ mod network_tests {
 
         let result = unit.execute(&send_action).await;
         assert!(result.is_some());
-        assert_eq!(result.unwrap().size, 5);
     }
 
     #[tokio::test]
@@ -1513,7 +1485,6 @@ mod network_tests {
 
         let result = unit.execute(&recv_action).await;
         assert!(result.is_some());
-        assert_eq!(result.unwrap().size, 4);
 
         // Verify received data
         unsafe {
@@ -1575,13 +1546,13 @@ mod network_tests {
         };
         let result = unit.execute(&recv).await.unwrap();
 
-        // Echo back
+        // Echo back - use the same size as recv action
         let send = Action {
             kind: Kind::NetSend,
             src: 400,
             dst: 300,
             offset: 0,
-            size: result.size as u32,
+            size: recv.size,
         };
         unit.execute(&send).await.unwrap();
 
@@ -2246,11 +2217,6 @@ mod concurrent_tests {
 
         // Verify we got results from all units
         assert_eq!(items.len(), 4);
-
-        // Verify each unit wrote to its own region
-        let mut unit_ids: Vec<u8> = items.iter().map(|i| i.unit_id).collect();
-        unit_ids.sort();
-        assert_eq!(unit_ids, vec![0, 1, 2, 3]);
     }
 
     #[tokio::test]

@@ -337,9 +337,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let item = units::QueueItem {
                             action_index: action.src,
                             offset: action.offset,
-                            size: action.size as u16,
-                            unit_id: unit_id as u8,
-                            _pad: 0,
                         };
                         let _ = gpu_senders[unit_id].send(item).await;
                     }
@@ -364,9 +361,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let item = units::QueueItem {
                             action_index: action.src,
                             offset: action.offset,
-                            size: action.size as u16,
-                            unit_id: unit_id as u8,
-                            _pad: 0,
                         };
                         let _ = simd_senders[unit_id].send(item).await;
                     }
@@ -391,9 +385,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let item = units::QueueItem {
                             action_index: action.src,
                             offset: action.offset,
-                            size: action.size as u16,
-                            unit_id: unit_id as u8,
-                            _pad: 0,
                         };
                         let _ = file_senders[unit_id].send(item).await;
                     }
@@ -418,9 +409,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let item = units::QueueItem {
                             action_index: action.src,
                             offset: action.offset,
-                            size: action.size as u16,
-                            unit_id: unit_id as u8,
-                            _pad: 0,
                         };
                         let _ = network_senders[unit_id].send(item).await;
                     }
@@ -445,9 +433,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let item = units::QueueItem {
                             action_index: action.src,
                             offset: action.offset,
-                            size: action.size as u16,
-                            unit_id: unit_id as u8,
-                            _pad: 0,
                         };
                         let _ = ffi_senders[unit_id].send(item).await;
                     }
@@ -472,9 +457,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let item = units::QueueItem {
                             action_index: action.src,
                             offset: action.offset,
-                            size: action.size as u16,
-                            unit_id: unit_id as u8,
-                            _pad: 0,
                         };
                         let _ = computational_senders[unit_id].send(item).await;
                     }
@@ -499,9 +481,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let item = units::QueueItem {
                             action_index: action.src,
                             offset: action.offset,
-                            size: action.size as u16,
-                            unit_id: unit_id as u8,
-                            _pad: 0,
                         };
                         let _ = memory_senders[unit_id].send(item).await;
                     }
