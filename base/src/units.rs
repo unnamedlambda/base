@@ -572,17 +572,12 @@ impl SimdUnit {
                 let offset = self.scratch_offset + action.offset as usize;
                 if offset + 16 <= self.scratch_offset + self.scratch_size {
                     let vals = &self.scratch[offset..offset + 16];
-                    let floats: Vec<f32> = vals
-                        .chunks(4)
-                        .map(|chunk| {
-                            let bytes = [chunk[0], chunk[1], chunk[2], chunk[3]];
-                            f32::from_le_bytes(bytes)
-                        })
-                        .collect();
-                    if floats.len() >= 4 {
-                        self.regs[action.dst as usize] =
-                            f32x4::from([floats[0], floats[1], floats[2], floats[3]]);
-                    }
+                    let f0 = f32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
+                    let f1 = f32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
+                    let f2 = f32::from_le_bytes([vals[8], vals[9], vals[10], vals[11]]);
+                    let f3 = f32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
+
+                    self.regs[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
                 }
                 None
             }
@@ -602,7 +597,10 @@ impl SimdUnit {
                 let reg_data = self.regs[action.src as usize].to_array();
                 let write_offset = self.shared_offset + (action.offset as usize);
 
-                let bytes: Vec<u8> = reg_data.iter().flat_map(|f| f.to_le_bytes()).collect();
+                let mut bytes = [0u8; 16];
+                for (i, &val) in reg_data.iter().enumerate() {
+                    bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
+                }
                 self.shared.write(write_offset, &bytes);
 
                 Some(QueueItem {
