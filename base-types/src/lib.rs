@@ -33,6 +33,10 @@ pub enum Kind {
     AsyncDispatch = 32,
     Wait = 33,
     MemWrite = 34,
+    SimdLoadI32 = 37,
+    SimdAddI32 = 38,
+    SimdMulI32 = 39,
+    SimdStoreI32 = 40,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

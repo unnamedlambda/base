@@ -16,7 +16,7 @@ use wgpu::{
     InstanceDescriptor, PipelineCompilationOptions, PipelineLayoutDescriptor, PowerPreference,
     RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource, ShaderStages,
 };
-use wide::f32x4;
+use wide::{f32x4, i32x4};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QueueItem {
@@ -513,7 +513,8 @@ impl ComputationalUnit {
 
 pub(crate) struct SimdUnit {
     id: u8,
-    regs: Vec<f32x4>,
+    regs_f32: Vec<f32x4>,
+    regs_i32: Vec<i32x4>,
     shared: Arc<SharedMemory>,
 }
 
@@ -525,7 +526,8 @@ impl SimdUnit {
     ) -> Self {
         Self {
             id,
-            regs: vec![f32x4::splat(0.0); regs],
+            regs_f32: vec![f32x4::splat(0.0); regs],
+            regs_i32: vec![i32x4::splat(0); regs],
             shared,
         }
     }
@@ -539,23 +541,60 @@ impl SimdUnit {
                 let f2 = f32::from_le_bytes([vals[8], vals[9], vals[10], vals[11]]);
                 let f3 = f32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
 
-                self.regs[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
+                self.regs_f32[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
                 None
             }
             Kind::SimdAdd => {
-                let a = self.regs[action.src as usize];
-                let b = self.regs[action.offset as usize];
-                self.regs[action.dst as usize] = a + b;
+                let a = self.regs_f32[action.src as usize];
+                let b = self.regs_f32[action.offset as usize];
+                self.regs_f32[action.dst as usize] = a + b;
                 None
             }
             Kind::SimdMul => {
-                let a = self.regs[action.src as usize];
-                let b = self.regs[action.offset as usize];
-                self.regs[action.dst as usize] = a * b;
+                let a = self.regs_f32[action.src as usize];
+                let b = self.regs_f32[action.offset as usize];
+                self.regs_f32[action.dst as usize] = a * b;
                 None
             }
             Kind::SimdStore => {
-                let reg_data = self.regs[action.src as usize].to_array();
+                let reg_data = self.regs_f32[action.src as usize].to_array();
+                let write_offset = action.offset as usize;
+
+                let mut bytes = [0u8; 16];
+                for (i, &val) in reg_data.iter().enumerate() {
+                    bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
+                }
+                self.shared.write(write_offset, &bytes);
+
+                Some(QueueItem {
+                    action_index: 0,
+                    offset: write_offset as u32,
+                })
+            }
+            Kind::SimdLoadI32 => {
+                let vals = self.shared.read(action.src as usize, 16);
+                let i0 = i32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
+                let i1 = i32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
+                let i2 = i32::from_le_bytes([vals[8], vals[9], vals[10], vals[11]]);
+                let i3 = i32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
+
+                self.regs_i32[action.dst as usize] = i32x4::from([i0, i1, i2, i3]);
+                None
+            }
+            Kind::SimdAddI32 => {
+                let a = self.regs_i32[action.src as usize];
+                let b = self.regs_i32[action.offset as usize];
+                self.regs_i32[action.dst as usize] = a + b;
+                None
+            }
+            Kind::SimdMulI32 => {
+                let a = self.regs_i32[action.src as usize];
+                let b = self.regs_i32[action.offset as usize];
+                self.regs_i32[action.dst as usize] = a * b;
+                None
+            }
+            Kind::SimdStoreI32 => {
+                let reg_data = self.regs_i32[action.src as usize].to_array();
                 let write_offset = action.offset as usize;
 
                 let mut bytes = [0u8; 16];
@@ -963,7 +1002,59 @@ mod tests {
 
         let unit = SimdUnit::new(0, 16, shared);
         assert_eq!(unit.id, 0);
-        assert_eq!(unit.regs.len(), 16);
+        assert_eq!(unit.regs_f32.len(), 16);
+        assert_eq!(unit.regs_i32.len(), 16);
+    }
+
+    #[test]
+    fn test_simd_i32x4_operations() {
+        let mut memory = vec![0u8; 1024];
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = SimdUnit::new(0, 4, shared.clone());
+
+        // Setup test data: [1, 2, 3, 4] and [10, 20, 30, 40]
+        unsafe {
+            memory[0..4].copy_from_slice(&1i32.to_le_bytes());
+            memory[4..8].copy_from_slice(&2i32.to_le_bytes());
+            memory[8..12].copy_from_slice(&3i32.to_le_bytes());
+            memory[12..16].copy_from_slice(&4i32.to_le_bytes());
+
+            memory[16..20].copy_from_slice(&10i32.to_le_bytes());
+            memory[20..24].copy_from_slice(&20i32.to_le_bytes());
+            memory[24..28].copy_from_slice(&30i32.to_le_bytes());
+            memory[28..32].copy_from_slice(&40i32.to_le_bytes());
+        }
+
+        // Test Load, Add, Mul, Store
+        let load_a = Action { kind: Kind::SimdLoadI32, dst: 0, src: 0, offset: 0, size: 16 };
+        let load_b = Action { kind: Kind::SimdLoadI32, dst: 1, src: 16, offset: 0, size: 16 };
+        let add = Action { kind: Kind::SimdAddI32, dst: 2, src: 0, offset: 1, size: 0 };
+        let mul = Action { kind: Kind::SimdMulI32, dst: 3, src: 0, offset: 1, size: 0 };
+        let store_add = Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 100, size: 16 };
+        let store_mul = Action { kind: Kind::SimdStoreI32, dst: 0, src: 3, offset: 116, size: 16 };
+
+        unsafe {
+            unit.execute(&load_a);
+            unit.execute(&load_b);
+            unit.execute(&add);
+            unit.execute(&mul);
+            unit.execute(&store_add);
+            unit.execute(&store_mul);
+
+            // Verify addition: [11, 22, 33, 44]
+            let add_result = shared.read(100, 16);
+            assert_eq!(i32::from_le_bytes(add_result[0..4].try_into().unwrap()), 11);
+            assert_eq!(i32::from_le_bytes(add_result[4..8].try_into().unwrap()), 22);
+            assert_eq!(i32::from_le_bytes(add_result[8..12].try_into().unwrap()), 33);
+            assert_eq!(i32::from_le_bytes(add_result[12..16].try_into().unwrap()), 44);
+
+            // Verify multiplication: [10, 40, 90, 160]
+            let mul_result = shared.read(116, 16);
+            assert_eq!(i32::from_le_bytes(mul_result[0..4].try_into().unwrap()), 10);
+            assert_eq!(i32::from_le_bytes(mul_result[4..8].try_into().unwrap()), 40);
+            assert_eq!(i32::from_le_bytes(mul_result[8..12].try_into().unwrap()), 90);
+            assert_eq!(i32::from_le_bytes(mul_result[12..16].try_into().unwrap()), 160);
+        }
     }
 
     #[test]
