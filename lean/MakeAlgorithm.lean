@@ -189,6 +189,17 @@ def uint32ToBytes (n : UInt32) : List UInt8 :=
   let b3 := UInt8.ofNat ((n.toNat >>> 24) &&& 0xFF)
   [b0, b1, b2, b3]
 
+def uint64ToBytes (n : UInt64) : List UInt8 :=
+  let b0 := UInt8.ofNat (n.toNat &&& 0xFF)
+  let b1 := UInt8.ofNat ((n.toNat >>> 8) &&& 0xFF)
+  let b2 := UInt8.ofNat ((n.toNat >>> 16) &&& 0xFF)
+  let b3 := UInt8.ofNat ((n.toNat >>> 24) &&& 0xFF)
+  let b4 := UInt8.ofNat ((n.toNat >>> 32) &&& 0xFF)
+  let b5 := UInt8.ofNat ((n.toNat >>> 40) &&& 0xFF)
+  let b6 := UInt8.ofNat ((n.toNat >>> 48) &&& 0xFF)
+  let b7 := UInt8.ofNat ((n.toNat >>> 56) &&& 0xFF)
+  [b0, b1, b2, b3, b4, b5, b6, b7]
+
 def addIntShader : String :=
   "@group(0) @binding(0)\n" ++
   "var<storage, read_write> data: array<u32>;\n\n" ++
@@ -289,11 +300,11 @@ def complexPayloads (shader : String) : List UInt8 :=
   -- 2720-2727: compare_area_b (will hold 8 as f64)
   let compareB := zeros 8
 
-  -- 2728-2735: condition1 (1.0 = true, will take path A)
-  let condition1 := f64ToBytes 1.0
+  -- 2728-2735: condition1 (1 = true, will take path A)
+  let condition1 := uint64ToBytes 1
 
-  -- 2736-2743: condition2 (0.0 = false, will take path B)
-  let condition2 := f64ToBytes 0.0
+  -- 2736-2743: condition2 (0 = false, will take path B)
+  let condition2 := uint64ToBytes 0
 
   -- 2744-2807: gpu_data_3 for doubling (16, workspace)
   let gpuData3 := uint32ToBytes 16 ++ uint32ToBytes 16 ++ zeros 56
@@ -340,15 +351,15 @@ def exampleAlgorithm : Algorithm := {
     -- Action 8: Simple test - write a marker file to prove we reach here
     { kind := .FileWrite, dst := 2824, src := 2992, offset := 56, size := 11 },
 
-    -- TEST 1: Condition = 1.0 (true) - should take path A
-    -- Action 9: ConditionalJump with condition1 (1.0 != 0 → jump to action 11)
+    -- TEST 1: Condition = 1 (true) - should take path A
+    -- Action 9: ConditionalJump with condition1 (1 != 0 → jump to action 11)
     { kind := .ConditionalJump, src := 2728, dst := 11, offset := 0, size := 0 },
 
     -- Action 10: Path B for test 1 (SKIPPED because jump happened)
     { kind := .FileWrite, dst := 2880, src := 3048, offset := 56, size := 11 },
 
-    -- TEST 2: Condition = 0.0 (false) - should take path B
-    -- Action 11: ConditionalJump with condition2 (0.0 == 0 → fall through to action 12)
+    -- TEST 2: Condition = 0 (false) - should take path B
+    -- Action 11: ConditionalJump with condition2 (0 == 0 → fall through to action 12)
     { kind := .ConditionalJump, src := 2736, dst := 14, offset := 0, size := 0 },
 
     -- Action 12: Path B for test 2 (EXECUTED - fell through from action 11)

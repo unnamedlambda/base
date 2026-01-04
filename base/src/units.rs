@@ -103,9 +103,9 @@ impl MemoryUnit {
             Kind::ConditionalWrite => {
                 // Read first 8 bytes at offset as condition
                 let cond_bytes = self.shared.read(action.offset as usize, 8);
-                let condition = f64::from_le_bytes(cond_bytes[0..8].try_into().unwrap());
+                let condition = u64::from_le_bytes(cond_bytes[0..8].try_into().unwrap());
 
-                if condition != 0.0 {
+                if condition != 0 {
                     let src_ptr = self.shared.ptr.add(action.src as usize);
                     let dst_ptr = self.shared.ptr.add(action.dst as usize);
                     std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
@@ -1201,8 +1201,8 @@ mod tests {
     fn test_conditional_write_true() {
         let mut memory = vec![0u8; 1024];
 
-        // Set condition to 1.0 (true)
-        memory[0..8].copy_from_slice(&1.0f64.to_le_bytes());
+        // Set condition to 1 (true)
+        memory[0..8].copy_from_slice(&1u64.to_le_bytes());
         // Set source data
         memory[100..104].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
 
@@ -1228,8 +1228,8 @@ mod tests {
     fn test_conditional_write_false() {
         let mut memory = vec![0u8; 1024];
 
-        // Set condition to 0.0 (false)
-        memory[0..8].copy_from_slice(&0.0f64.to_le_bytes());
+        // Set condition to 0 (false)
+        memory[0..8].copy_from_slice(&0u64.to_le_bytes());
         // Set source data
         memory[100..104].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
         // Pre-fill destination with different data
@@ -1308,19 +1308,19 @@ mod tests {
     }
 
     #[test]
-    fn test_conditional_with_float_values() {
+    fn test_conditional_with_integer_values() {
         let mut memory = vec![0u8; 1024];
 
         // Test with different condition values
         for (cond_val, should_copy) in [
-            (0.0f64, false),
-            (1.0f64, true),
-            (-1.0f64, true),
-            (0.001f64, true),
+            (0u64, false),
+            (1u64, true),
+            (u64::MAX, true),
+            (42u64, true),
         ] {
             memory[0..8].copy_from_slice(&cond_val.to_le_bytes());
-            memory[100..108].copy_from_slice(&42.0f64.to_le_bytes());
-            memory[200..208].copy_from_slice(&0.0f64.to_le_bytes());
+            memory[100..108].copy_from_slice(&42u64.to_le_bytes());
+            memory[200..208].copy_from_slice(&0u64.to_le_bytes());
 
             let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
             let mut unit = MemoryUnit::new(shared.clone());
@@ -1336,12 +1336,12 @@ mod tests {
             unsafe {
                 unit.execute(&action);
                 let result_bytes = shared.read(200, 8);
-                let result = f64::from_le_bytes(result_bytes.try_into().unwrap());
+                let result = u64::from_le_bytes(result_bytes.try_into().unwrap());
 
                 if should_copy {
-                    assert_eq!(result, 42.0, "Condition {} should copy", cond_val);
+                    assert_eq!(result, 42, "Condition {} should copy", cond_val);
                 } else {
-                    assert_eq!(result, 0.0, "Condition {} should not copy", cond_val);
+                    assert_eq!(result, 0, "Condition {} should not copy", cond_val);
                 }
             }
         }

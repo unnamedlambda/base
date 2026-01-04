@@ -295,11 +295,11 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
             Kind::ConditionalJump => {
                 let cond_bytes = unsafe { shared.read(action.src as usize + action.offset as usize, 8) };
-                let cond = f64::from_le_bytes(
+                let cond = u64::from_le_bytes(
                     cond_bytes[0..8].try_into().map_err(|_| Error::Execution("ConditionalJump: invalid condition".into()))?
                 );
 
-                if cond != 0.0 {
+                if cond != 0 {
                     pc = action.dst as usize;  // Jump
                 } else {
                     pc += 1;  // Fall through

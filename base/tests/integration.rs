@@ -204,9 +204,9 @@ fn test_integration_conditional_jump() {
     let filename_b_bytes = format!("{}\0", test_file_b_str).into_bytes();
     payloads[256..256 + filename_b_bytes.len()].copy_from_slice(&filename_b_bytes);
 
-    // Setup conditions: 1.0 (true) and 0.0 (false) as f64
-    payloads[512..520].copy_from_slice(&1.0f64.to_le_bytes());
-    payloads[520..528].copy_from_slice(&0.0f64.to_le_bytes());
+    // Setup conditions: 1 (true) and 0 (false) as u64
+    payloads[512..520].copy_from_slice(&1u64.to_le_bytes());
+    payloads[520..528].copy_from_slice(&0u64.to_le_bytes());
 
     // Setup data value
     payloads[528..536].copy_from_slice(&42u64.to_le_bytes());
@@ -416,7 +416,7 @@ fn test_integration_complex_workflow() {
 
     // Data (all 8-byte aligned)
     payloads[2000..2008].copy_from_slice(&42u64.to_le_bytes());   // Source value
-    payloads[2104..2112].copy_from_slice(&1.0f64.to_le_bytes());  // Condition (true)
+    payloads[2104..2112].copy_from_slice(&1u64.to_le_bytes());  // Condition (true)
     payloads[2200..2208].copy_from_slice(&100u64.to_le_bytes());  // CAS target
     payloads[2208..2216].copy_from_slice(&100u64.to_le_bytes());  // CAS expected
     payloads[2216..2224].copy_from_slice(&999u64.to_le_bytes());  // CAS new value
@@ -618,8 +618,8 @@ fn test_integration_complex_gpu_simd_workflow() {
     payloads[2640..2644].copy_from_slice(&3u32.to_le_bytes());
     payloads[2644..2648].copy_from_slice(&5u32.to_le_bytes());
 
-    // Condition value for ConditionalJump (1.0 = true, will jump)
-    payloads[2704..2712].copy_from_slice(&1.0f64.to_le_bytes());
+    // Condition value for ConditionalJump (1 = true, will jump)
+    payloads[2704..2712].copy_from_slice(&1u64.to_le_bytes());
 
     let high_text = b"HIGH";
     payloads[2776..2780].copy_from_slice(high_text);
@@ -943,8 +943,8 @@ fn test_integration_conditional_skip_with_wait() {
     let filename_bytes = format!("{}\0", result_path_str).into_bytes();
     payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
 
-    // Condition: 0.0 (false) - will NOT jump, will execute AsyncDispatch
-    payloads[2700..2708].copy_from_slice(&0.0f64.to_le_bytes());
+    // Condition: 0 (false) - will NOT jump, will execute AsyncDispatch
+    payloads[2700..2708].copy_from_slice(&0u64.to_le_bytes());
 
     payloads[2000..2008].copy_from_slice(&99u64.to_le_bytes());
     payloads[2008..2016].copy_from_slice(&99u64.to_le_bytes());
@@ -1085,8 +1085,8 @@ fn test_integration_conditional_write() {
     let filename_bytes = format!("{}\0", result_path_str).into_bytes();
     payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
 
-    // Condition: 1.0 (true)
-    payloads[2000..2008].copy_from_slice(&1.0f64.to_le_bytes());
+    // Condition: 1 (true)
+    payloads[2000..2008].copy_from_slice(&1u64.to_le_bytes());
     // Value to write: 999
     payloads[2008..2016].copy_from_slice(&999u64.to_le_bytes());
     // Target location: 2100 (initially 0)
@@ -1098,7 +1098,7 @@ fn test_integration_conditional_write() {
             kind: Kind::ConditionalWrite,
             src: 2008,    // source value (999)
             dst: 2100,    // target location
-            offset: 2000, // condition (1.0 = true)
+            offset: 2000, // condition (1 = true)
             size: 8,
         },
         Action {
