@@ -245,6 +245,59 @@ def addIntShader : String :=
   "    }\n" ++
   "}\n"
 
+-- Gradient shader: generates 512x512 BMP gradient image
+-- BMP format: BGR order, bottom-to-top rows, rows padded to 4 bytes
+-- 512 pixels * 3 bytes = 1536 bytes per row (already 4-byte aligned)
+-- Each thread writes one u32 (4 bytes) of output
+def gradientShader : String :=
+  "@group(0) @binding(0)\n" ++
+  "var<storage, read_write> data: array<u32>;\n\n" ++
+  "@compute @workgroup_size(64)\n" ++
+  "fn main(@builtin(global_invocation_id) id: vec3<u32>) {\n" ++
+  "    let width = 512u;\n" ++
+  "    let height = 512u;\n" ++
+  "    let row_size = width * 3u;  // 1536, already 4-byte aligned\n" ++
+  "    let total_bytes = row_size * height;\n" ++
+  "    let total_words = (total_bytes + 3u) / 4u;\n" ++
+  "    let word_idx = id.x;\n" ++
+  "    \n" ++
+  "    if (word_idx >= total_words) { return; }\n" ++
+  "    \n" ++
+  "    // Compute 4 bytes for this u32\n" ++
+  "    var result: u32 = 0u;\n" ++
+  "    \n" ++
+  "    for (var i = 0u; i < 4u; i = i + 1u) {\n" ++
+  "        let byte_idx = word_idx * 4u + i;\n" ++
+  "        if (byte_idx >= total_bytes) { break; }\n" ++
+  "        \n" ++
+  "        // Which row and column\n" ++
+  "        let row = byte_idx / row_size;\n" ++
+  "        let col_byte = byte_idx % row_size;\n" ++
+  "        let x = col_byte / 3u;\n" ++
+  "        // BMP is bottom-to-top, so flip y\n" ++
+  "        let y = height - 1u - row;\n" ++
+  "        // BMP is BGR order: 0=B, 1=G, 2=R\n" ++
+  "        let channel = col_byte % 3u;\n" ++
+  "        \n" ++
+  "        // Calculate color value for this channel\n" ++
+  "        var value: u32;\n" ++
+  "        if (channel == 2u) {\n" ++
+  "            // Red: gradient left to right\n" ++
+  "            value = (x * 255u) / (width - 1u);\n" ++
+  "        } else if (channel == 1u) {\n" ++
+  "            // Green: gradient top to bottom\n" ++
+  "            value = (y * 255u) / (height - 1u);\n" ++
+  "        } else {\n" ++
+  "            // Blue: diagonal gradient\n" ++
+  "            value = ((x + y) * 128u) / (width + height - 2u);\n" ++
+  "        }\n" ++
+  "        \n" ++
+  "        result = result | (value << (i * 8u));\n" ++
+  "    }\n" ++
+  "    \n" ++
+  "    data[word_idx] = result;\n" ++
+  "}\n"
+
 def gpuDualPayloads (shader : String) (file1 : String) (file2 : String) (a1 : UInt32) (b1 : UInt32) (a2 : UInt32) (b2 : UInt32) : List UInt8 :=
   let shaderBytes := padTo (stringToBytes shader) 2048
   let file1Bytes := padTo (stringToBytes file1) 256
@@ -334,60 +387,95 @@ def complexPayloads (shader : String) : List UInt8 :=
   compFlag ++ compareA ++ compareB ++ condition1 ++ condition2 ++ gpuData3 ++ flag3 ++ flag4 ++
   filePathA ++ filePathB ++ fileDoubled ++ textA ++ textB
 
+-- BMP file header (14 bytes) + DIB header (40 bytes) = 54 bytes total
+-- For 512x512 24-bit image: file size = 54 + 512*512*3 = 786486 bytes
+def bmpHeader : List UInt8 :=
+  let width : Nat := 512
+  let height : Nat := 512
+  let rowSize : Nat := width * 3  -- 1536, already 4-byte aligned
+  let pixelDataSize : Nat := rowSize * height  -- 786432
+  let fileSize : Nat := 54 + pixelDataSize  -- 786486
+
+  -- BMP File Header (14 bytes)
+  let bfType := [0x42, 0x4D]  -- "BM"
+  let bfSize := uint32ToBytes (UInt32.ofNat fileSize)
+  let bfReserved := [0, 0, 0, 0]
+  let bfOffBits := uint32ToBytes 54  -- pixel data starts at offset 54
+
+  -- DIB Header - BITMAPINFOHEADER (40 bytes)
+  let biSize := uint32ToBytes 40
+  let biWidth := uint32ToBytes (UInt32.ofNat width)
+  let biHeight := uint32ToBytes (UInt32.ofNat height)  -- positive = bottom-up
+  let biPlanes := [1, 0]  -- always 1
+  let biBitCount := [24, 0]  -- 24 bits per pixel
+  let biCompression := uint32ToBytes 0  -- BI_RGB (uncompressed)
+  let biSizeImage := uint32ToBytes (UInt32.ofNat pixelDataSize)
+  let biXPelsPerMeter := uint32ToBytes 2835  -- 72 DPI
+  let biYPelsPerMeter := uint32ToBytes 2835
+  let biClrUsed := uint32ToBytes 0
+  let biClrImportant := uint32ToBytes 0
+
+  bfType ++ bfSize ++ bfReserved ++ bfOffBits ++
+  biSize ++ biWidth ++ biHeight ++ biPlanes ++ biBitCount ++
+  biCompression ++ biSizeImage ++ biXPelsPerMeter ++ biYPelsPerMeter ++
+  biClrUsed ++ biClrImportant
+
+-- Gradient image payloads for 512x512 BMP output
+def gradientPayloads (shader : String) : List UInt8 :=
+  -- 0-4095: GPU shader (4KB)
+  let shaderBytes := padTo (stringToBytes shader) 4096
+
+  -- 4096-4351: filename "gradient.bmp" (256 bytes)
+  let filename := padTo (stringToBytes "gradient.bmp") 256
+
+  -- 4352-4359: completion flag (8 bytes)
+  let flag := zeros 8
+
+  -- 4360-4361: 2 bytes padding
+  let padding := zeros 2
+
+  -- 4362-4415: BMP header (54 bytes) - positioned right before pixels
+  let header := bmpHeader  -- exactly 54 bytes
+
+  -- 4416+: pixel data area (512*512*3 = 786432 bytes)
+  -- GPU will write here, we just reserve space
+  let pixelData := zeros 786432
+
+  shaderBytes ++ filename ++ flag ++ padding ++ header ++ pixelData
+
 def exampleAlgorithm : Algorithm := {
   actions := [
-    -- Action 0-3: First GPU computation: 7 + 9 = 16
-    { kind := .Dispatch, dst := 2576, src := 2576, offset := 2560, size := 64 },
-    { kind := .AsyncDispatch, dst := 0, src := 0, offset := 2560, size := 0 },
-    { kind := .Wait, dst := 2560, src := 0, offset := 0, size := 0 },
-    { kind := .FileWrite, dst := 2048, src := 2588, offset := 256, size := 2 },
+    -- Generate 512x512 gradient BMP image using GPU
+    -- Layout: shader(4096) + filename(256) + flag(8) + padding(2) + header(54) + pixels(786432)
+    -- GPU writes pixel data at offset 4416
+    -- BMP header is at 4362-4415 (54 bytes) - already positioned before pixels
+    -- File output: header(54) + pixels(786432) = 786486 bytes
 
-    -- Action 4-7: Second GPU computation: 3 + 5 = 8
-    { kind := .Dispatch, dst := 2640, src := 2640, offset := 2568, size := 64 },
-    { kind := .AsyncDispatch, dst := 0, src := 4, offset := 2568, size := 0 },
-    { kind := .Wait, dst := 2568, src := 0, offset := 0, size := 0 },
-    { kind := .FileWrite, dst := 2304, src := 2652, offset := 256, size := 1 },
+    -- Action 0: Dispatch GPU to generate gradient pixels
+    -- size = pixel data bytes (786432)
+    { kind := .Dispatch, dst := 4416, src := 4416, offset := 4352, size := 786432 },
 
-    -- Action 8: Simple test - write a marker file to prove we reach here
-    { kind := .FileWrite, dst := 2824, src := 2992, offset := 56, size := 11 },
+    -- Action 1: Queue to GPU unit
+    { kind := .AsyncDispatch, dst := 0, src := 0, offset := 4352, size := 0 },
 
-    -- TEST 1: Condition = 1 (true) - should take path A
-    -- Action 9: ConditionalJump with condition1 (1 != 0 → jump to action 11)
-    { kind := .ConditionalJump, src := 2728, dst := 11, offset := 0, size := 0 },
+    -- Action 2: Wait for GPU completion
+    { kind := .Wait, dst := 4352, src := 0, offset := 0, size := 0 },
 
-    -- Action 10: Path B for test 1 (SKIPPED because jump happened)
-    { kind := .FileWrite, dst := 2880, src := 3048, offset := 56, size := 11 },
-
-    -- TEST 2: Condition = 0 (false) - should take path B
-    -- Action 11: ConditionalJump with condition2 (0 == 0 → fall through to action 12)
-    { kind := .ConditionalJump, src := 2736, dst := 14, offset := 0, size := 0 },
-
-    -- Action 12: Path B for test 2 (EXECUTED - fell through from action 11)
-    { kind := .FileWrite, dst := 2880, src := 3048, offset := 56, size := 11 },
-
-    -- Action 13: Skip past the path A write (unconditional jump - reads from shader which is non-zero)
-    { kind := .ConditionalJump, src := 0, dst := 15, offset := 0, size := 0 },
-
-    -- Action 14: Path A for test 2 (SKIPPED - never reached)
-    { kind := .FileWrite, dst := 2824, src := 2992, offset := 56, size := 11 },
-
-    -- Action 15-18: Final GPU computation (double: 16+16=32)
-    { kind := .Dispatch, dst := 2744, src := 2744, offset := 2808, size := 64 },
-    { kind := .AsyncDispatch, dst := 0, src := 15, offset := 2808, size := 0 },
-    { kind := .Wait, dst := 2808, src := 0, offset := 0, size := 0 },
-    { kind := .FileWrite, dst := 2936, src := 2756, offset := 56, size := 2 }
+    -- Action 3: FileWrite the complete BMP (header + pixels)
+    -- filename at 4096, data starts at 4362, size = 54 + 786432 = 786486
+    { kind := .FileWrite, dst := 4096, src := 4362, offset := 256, size := 786486 }
   ],
-  payloads := complexPayloads addIntShader,
+  payloads := gradientPayloads gradientShader,
   state := {
     regs_per_unit := 16,
-    unit_scratch_offsets := [4096, 8192, 12288, 16384],
+    unit_scratch_offsets := [900000, 904096, 908192, 912288],
     unit_scratch_size := 4096,
-    shared_data_offset := 20480,
+    shared_data_offset := 920000,
     shared_data_size := 16384,
-    gpu_offset := 2312,
-    gpu_size := 128,
+    gpu_offset := 4416,
+    gpu_size := 786432,
     computational_regs := 32,
-    file_buffer_size := 65536,
+    file_buffer_size := 800000,
     gpu_shader_offsets := [0]
   },
   queues := {
