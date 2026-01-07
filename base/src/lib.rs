@@ -270,9 +270,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         ));
     }
 
-    let mut memory_unit = units::MemoryUnit::new(shared.clone());
-    let mut file_unit = units::FileUnit::new(0, shared.clone(), algorithm.state.file_buffer_size);
-
     let mut pc: usize = 0;
     let actions = &algorithm.actions;
     let timeout_start = std::time::Instant::now();
@@ -288,11 +285,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let action = &actions[pc];
 
         match action.kind {
-            Kind::MemCopy => {
-                unsafe { memory_unit.execute(action); }
-                pc += 1;
-            }
-
             Kind::ConditionalJump => {
                 let cond_bytes = unsafe { shared.read(action.src as usize + action.offset as usize, 8) };
                 let cond = u64::from_le_bytes(
@@ -501,24 +493,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         break;
                     }
                     tokio::task::yield_now().await;
-                }
-                pc += 1;
-            }
-
-            Kind::FileWrite => {
-                file_unit.execute(action).await;
-                pc += 1;
-            }
-
-            Kind::FileRead => {
-                file_unit.execute(action).await;
-                pc += 1;
-            }
-
-            Kind::MemWrite => {
-                unsafe {
-                    let data = shared.read(action.src as usize, action.size as usize);
-                    shared.write(action.dst as usize, data);
                 }
                 pc += 1;
             }
