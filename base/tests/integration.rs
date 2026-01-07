@@ -1678,3 +1678,67 @@ fn test_integration_simd_i32x4_shared_memory() {
     assert_eq!(mul3, 160, "SIMD Mul i32 lane 3: 4 * 40 = 160");
 }
 
+#[test]
+fn test_integration_filewrite_null_terminated() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("null_term_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 1024];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Setup null-terminated string data at offset 256
+    let test_string = b"Hello, World!";
+    payloads[256..256 + test_string.len()].copy_from_slice(test_string);
+    payloads[256 + test_string.len()] = 0; // null terminator
+    // Add garbage after null to verify it stops at null
+    let garbage = b"GARBAGE";
+    payloads[256 + test_string.len() + 1..256 + test_string.len() + 1 + garbage.len()]
+        .copy_from_slice(garbage);
+
+    let file_flag = 512u32;
+
+    let actions = vec![
+        // Action 0: FileWrite with size=0 triggers null-terminated mode
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 256,
+            offset: filename_bytes.len() as u32,
+            size: 0, // size=0 means write until null byte
+        },
+        // Action 1: AsyncDispatch FileWrite
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 0,
+            offset: file_flag,
+            size: 0,
+        },
+        // Action 2: Wait for FileWrite
+        Action {
+            kind: Kind::Wait,
+            dst: file_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+
+    execute(algorithm).unwrap();
+
+    assert!(result_file.exists(), "Null-terminated write result should exist");
+    let contents = fs::read(&result_file).unwrap();
+
+    // Should only contain "Hello, World!" without the null or garbage
+    assert_eq!(
+        contents,
+        test_string,
+        "FileWrite size=0 should write until null byte, not including garbage"
+    );
+}
+

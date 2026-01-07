@@ -439,18 +439,36 @@ impl FileUnit {
 
                 match fs::File::create(&filename).await {
                     Ok(mut file) => {
-                        let mut written = 0;
-                        let total_size = action.size as usize;
                         let src_base = action.src as usize;
 
-                        // Write in chunks
-                        while written < total_size {
-                            let chunk_size = (total_size - written).min(self.buffer.len());
-                            let data = unsafe { self.shared.read(src_base + written, chunk_size) };
+                        if action.size == 0 {
+                            // Null-terminated mode: find the null byte and write up to it
+                            let mut len = 0;
+                            while len < self.buffer.len() {
+                                let byte = unsafe { *self.shared.ptr.add(src_base + len) };
+                                if byte == 0 {
+                                    break;
+                                }
+                                len += 1;
+                            }
 
-                            match file.write_all(data).await {
-                                Ok(_) => written += chunk_size,
-                                Err(_) => break,
+                            if len > 0 {
+                                let data = unsafe { self.shared.read(src_base, len) };
+                                let _ = file.write_all(data).await;
+                            }
+                        } else {
+                            let mut written = 0;
+                            let total_size = action.size as usize;
+
+                            // Write in chunks
+                            while written < total_size {
+                                let chunk_size = (total_size - written).min(self.buffer.len());
+                                let data = unsafe { self.shared.read(src_base + written, chunk_size) };
+
+                                match file.write_all(data).await {
+                                    Ok(_) => written += chunk_size,
+                                    Err(_) => break,
+                                }
                             }
                         }
 
