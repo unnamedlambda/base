@@ -6,7 +6,8 @@ static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn get_lean4_eval_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/../../target/debug/lean4-eval", manifest_dir)
+    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    format!("{}/../../target/{}/lean4-eval", manifest_dir, profile)
 }
 
 fn get_temp_file() -> String {
