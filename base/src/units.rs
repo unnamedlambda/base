@@ -116,6 +116,18 @@ impl MemoryUnit {
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
+            Kind::MemWrite => {
+                // Write immediate value to memory
+                // dst = destination address, src = immediate value, size = bytes (1, 2, 4, or 8)
+                let dst_ptr = self.shared.ptr.add(action.dst as usize);
+                match action.size {
+                    1 => *dst_ptr = action.src as u8,
+                    2 => *(dst_ptr as *mut u16) = action.src as u16,
+                    4 => *(dst_ptr as *mut u32) = action.src,
+                    8 => *(dst_ptr as *mut u64) = action.src as u64,
+                    _ => {}
+                }
+            }
             Kind::MemCopyIndirect => {
                 // src = address containing source pointer (u32), dst = destination, offset added to indirect addr
                 let indirect_addr_bytes = self.shared.read(action.src as usize, 4);

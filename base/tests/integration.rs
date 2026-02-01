@@ -2024,3 +2024,170 @@ fn test_integration_filewrite_null_terminated() {
     );
 }
 
+#[test]
+fn test_integration_memwrite_immediate() {
+    // Tests MemWrite operation which writes an immediate value to memory
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("memwrite_immediate_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 1024];
+
+    // Setup filename with null terminator
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Memory locations for MemWrite results
+    // 256: 1-byte value
+    // 264: 2-byte value
+    // 272: 4-byte value
+    // 280: 8-byte value
+
+    let memwrite_flag_1 = 512u32;
+    let memwrite_flag_2 = 520u32;
+    let memwrite_flag_4 = 528u32;
+    let memwrite_flag_8 = 536u32;
+    let filewrite_flag = 544u32;
+
+    let actions = vec![
+        // Action 0: MemWrite 1 byte (value 0x42 = 66)
+        Action {
+            kind: Kind::MemWrite,
+            dst: 256,
+            src: 0x42,
+            offset: 0,
+            size: 1,
+        },
+        // Action 1: MemWrite 2 bytes (value 0x1234 = 4660)
+        Action {
+            kind: Kind::MemWrite,
+            dst: 264,
+            src: 0x1234,
+            offset: 0,
+            size: 2,
+        },
+        // Action 2: MemWrite 4 bytes (value 0xDEADBEEF)
+        Action {
+            kind: Kind::MemWrite,
+            dst: 272,
+            src: 0xDEADBEEF,
+            offset: 0,
+            size: 4,
+        },
+        // Action 3: MemWrite 8 bytes (value stored as u32, will be zero-extended)
+        Action {
+            kind: Kind::MemWrite,
+            dst: 280,
+            src: 0x12345678,
+            offset: 0,
+            size: 8,
+        },
+        // Action 4: FileWrite - write all 32 bytes (256 to 288) to file
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 256,
+            offset: filename_bytes.len() as u32,
+            size: 32,
+        },
+        // Action 5-8: AsyncDispatch MemWrite operations
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6, // memory unit
+            src: 0, // action 0
+            offset: memwrite_flag_1,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: memwrite_flag_1,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 1,
+            offset: memwrite_flag_2,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: memwrite_flag_2,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 2,
+            offset: memwrite_flag_4,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: memwrite_flag_4,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 3,
+            offset: memwrite_flag_8,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: memwrite_flag_8,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Action 14-15: FileWrite
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2, // file unit
+            src: 4, // action 4
+            offset: filewrite_flag,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: filewrite_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "MemWrite result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    assert_eq!(contents.len(), 32, "Should have written 32 bytes");
+
+    // Verify 1-byte write at offset 0 (relative to 256)
+    assert_eq!(contents[0], 0x42, "1-byte MemWrite failed");
+
+    // Verify 2-byte write at offset 8 (264 - 256)
+    let val_2 = u16::from_le_bytes([contents[8], contents[9]]);
+    assert_eq!(val_2, 0x1234, "2-byte MemWrite failed");
+
+    // Verify 4-byte write at offset 16 (272 - 256)
+    let val_4 = u32::from_le_bytes([contents[16], contents[17], contents[18], contents[19]]);
+    assert_eq!(val_4, 0xDEADBEEF, "4-byte MemWrite failed");
+
+    // Verify 8-byte write at offset 24 (280 - 256)
+    let val_8 = u64::from_le_bytes([
+        contents[24], contents[25], contents[26], contents[27],
+        contents[28], contents[29], contents[30], contents[31],
+    ]);
+    assert_eq!(val_8, 0x12345678, "8-byte MemWrite failed");
+}
+
