@@ -335,6 +335,118 @@ fn test_integration_conditional_jump() {
 }
 
 #[test]
+fn test_integration_conditional_jump_variable_size() {
+    // Tests that ConditionalJump respects the size field
+    // When size=4, only check first 4 bytes; when size=8 (or 0), check all 8
+    let temp_dir = TempDir::new().unwrap();
+    let test_file_4byte = temp_dir.path().join("result_4byte.txt");
+    let test_file_8byte = temp_dir.path().join("result_8byte.txt");
+    let test_file_4byte_str = test_file_4byte.to_str().unwrap();
+    let test_file_8byte_str = test_file_8byte.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 1024];
+
+    // Setup filenames
+    let filename_4byte_bytes = format!("{}\0", test_file_4byte_str).into_bytes();
+    payloads[0..filename_4byte_bytes.len()].copy_from_slice(&filename_4byte_bytes);
+
+    let filename_8byte_bytes = format!("{}\0", test_file_8byte_str).into_bytes();
+    payloads[256..256 + filename_8byte_bytes.len()].copy_from_slice(&filename_8byte_bytes);
+
+    // Condition at 512: first 4 bytes are 0, next 4 bytes are non-zero
+    // This means: size=4 check sees FALSE (no jump), size=8 check sees TRUE (jump)
+    payloads[512..516].copy_from_slice(&0u32.to_le_bytes());      // bytes 0-3: zero
+    payloads[516..520].copy_from_slice(&0xFFu32.to_le_bytes());   // bytes 4-7: non-zero
+
+    // Data value
+    payloads[528..536].copy_from_slice(&99u64.to_le_bytes());
+
+    let flag_4byte = 600u32;
+    let flag_8byte = 608u32;
+
+    let actions = vec![
+        // Action 0: FileWrite for 4-byte test
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 528,
+            offset: filename_4byte_bytes.len() as u32,
+            size: 8,
+        },
+        // Action 1: FileWrite for 8-byte test
+        Action {
+            kind: Kind::FileWrite,
+            dst: 256,
+            src: 528,
+            offset: filename_8byte_bytes.len() as u32,
+            size: 8,
+        },
+        // Action 2: ConditionalJump with size=4 (checks only first 4 bytes = 0, should NOT jump)
+        Action {
+            kind: Kind::ConditionalJump,
+            src: 512,
+            dst: 5,   // Would skip the FileWrite dispatch
+            offset: 0,
+            size: 4,  // Only check 4 bytes - they're all zero, so fall through
+        },
+        // Action 3: AsyncDispatch FileWrite 4-byte (EXECUTED - did not jump because size=4 saw zeros)
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 0,
+            offset: flag_4byte,
+            size: 0,
+        },
+        // Action 4: Wait
+        Action {
+            kind: Kind::Wait,
+            dst: flag_4byte,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Action 5: ConditionalJump with size=8 (checks all 8 bytes, sees non-zero, should jump)
+        Action {
+            kind: Kind::ConditionalJump,
+            src: 512,
+            dst: 8,   // Jump over the FileWrite dispatch
+            offset: 0,
+            size: 8,  // Check all 8 bytes - bytes 4-7 are non-zero, so jump
+        },
+        // Action 6: AsyncDispatch FileWrite 8-byte (SKIPPED - jumped over)
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 1,
+            offset: flag_8byte,
+            size: 0,
+        },
+        // Action 7: Wait (SKIPPED)
+        Action {
+            kind: Kind::Wait,
+            dst: flag_8byte,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Action 8: End
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+
+    execute(algorithm).unwrap();
+
+    // Verify: 4-byte file SHOULD exist (size=4 saw zeros, didn't jump, wrote file)
+    assert!(test_file_4byte.exists(), "4-byte check should NOT jump when first 4 bytes are zero");
+    let contents = fs::read(&test_file_4byte).unwrap();
+    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(value, 99);
+
+    // Verify: 8-byte file should NOT exist (size=8 saw non-zero in bytes 4-7, jumped over write)
+    assert!(!test_file_8byte.exists(), "8-byte check SHOULD jump when any of 8 bytes are non-zero");
+}
+
+#[test]
 fn test_integration_file_roundtrip() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("source.txt");

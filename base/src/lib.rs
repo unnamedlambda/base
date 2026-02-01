@@ -286,12 +286,14 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
         match action.kind {
             Kind::ConditionalJump => {
-                let cond_bytes = unsafe { shared.read(action.src as usize + action.offset as usize, 8) };
-                let cond = u64::from_le_bytes(
-                    cond_bytes[0..8].try_into().map_err(|_| Error::Execution("ConditionalJump: invalid condition".into()))?
-                );
+                // size field specifies how many bytes to check (default 8 if 0)
+                let check_size = if action.size == 0 { 8 } else { action.size as usize };
+                let cond_bytes = unsafe { shared.read(action.src as usize + action.offset as usize, check_size) };
 
-                if cond != 0 {
+                // Check if any byte is non-zero
+                let cond_nonzero = cond_bytes.iter().take(check_size).any(|&b| b != 0);
+
+                if cond_nonzero {
                     pc = action.dst as usize;  // Jump
                 } else {
                     pc += 1;  // Fall through
