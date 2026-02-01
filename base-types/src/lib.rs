@@ -37,6 +37,8 @@ pub enum Kind {
     SimdAddI32 = 38,
     SimdMulI32 = 39,
     SimdStoreI32 = 40,
+    SimdDivI32 = 41,
+    SimdSubI32 = 43,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

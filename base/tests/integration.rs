@@ -1791,6 +1791,110 @@ fn test_integration_simd_i32x4_shared_memory() {
 }
 
 #[test]
+fn test_integration_simd_i32_div() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("simd_div_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // [100, 200, 300, 400]
+    payloads[256..260].copy_from_slice(&100i32.to_le_bytes());
+    payloads[260..264].copy_from_slice(&200i32.to_le_bytes());
+    payloads[264..268].copy_from_slice(&300i32.to_le_bytes());
+    payloads[268..272].copy_from_slice(&400i32.to_le_bytes());
+
+    // [10, 20, 0, 40] - 0 tests div-by-zero
+    payloads[272..276].copy_from_slice(&10i32.to_le_bytes());
+    payloads[276..280].copy_from_slice(&20i32.to_le_bytes());
+    payloads[280..284].copy_from_slice(&0i32.to_le_bytes());
+    payloads[284..288].copy_from_slice(&40i32.to_le_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::SimdLoadI32, dst: 0, src: 256, offset: 0, size: 16 },
+        Action { kind: Kind::SimdLoadI32, dst: 1, src: 272, offset: 0, size: 16 },
+        Action { kind: Kind::SimdDivI32, dst: 2, src: 0, offset: 1, size: 0 },
+        Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: filename_bytes.len() as u32, size: 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 3, offset: 624, size: 0 },
+        Action { kind: Kind::Wait, dst: 600, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Wait, dst: 608, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Wait, dst: 616, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Wait, dst: 624, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 4, offset: 632, size: 0 },
+        Action { kind: Kind::Wait, dst: 632, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_complex_algorithm(actions, payloads, 1, 0, 1, 0, vec![], 0);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&result_file).unwrap();
+    // [100/10, 200/20, 300/0, 400/40] = [10, 10, 0, 10]
+    assert_eq!(i32::from_le_bytes(contents[0..4].try_into().unwrap()), 10);
+    assert_eq!(i32::from_le_bytes(contents[4..8].try_into().unwrap()), 10);
+    assert_eq!(i32::from_le_bytes(contents[8..12].try_into().unwrap()), 0);
+    assert_eq!(i32::from_le_bytes(contents[12..16].try_into().unwrap()), 10);
+}
+
+#[test]
+fn test_integration_simd_i32_sub() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("simd_sub_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // [100, 200, 300, 400]
+    payloads[256..260].copy_from_slice(&100i32.to_le_bytes());
+    payloads[260..264].copy_from_slice(&200i32.to_le_bytes());
+    payloads[264..268].copy_from_slice(&300i32.to_le_bytes());
+    payloads[268..272].copy_from_slice(&400i32.to_le_bytes());
+
+    // [10, 20, 30, 40]
+    payloads[272..276].copy_from_slice(&10i32.to_le_bytes());
+    payloads[276..280].copy_from_slice(&20i32.to_le_bytes());
+    payloads[280..284].copy_from_slice(&30i32.to_le_bytes());
+    payloads[284..288].copy_from_slice(&40i32.to_le_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::SimdLoadI32, dst: 0, src: 256, offset: 0, size: 16 },
+        Action { kind: Kind::SimdLoadI32, dst: 1, src: 272, offset: 0, size: 16 },
+        Action { kind: Kind::SimdSubI32, dst: 2, src: 0, offset: 1, size: 0 },
+        Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: filename_bytes.len() as u32, size: 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 1, src: 3, offset: 624, size: 0 },
+        Action { kind: Kind::Wait, dst: 600, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Wait, dst: 608, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Wait, dst: 616, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Wait, dst: 624, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 4, offset: 632, size: 0 },
+        Action { kind: Kind::Wait, dst: 632, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_complex_algorithm(actions, payloads, 1, 0, 1, 0, vec![], 0);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&result_file).unwrap();
+    // [100-10, 200-20, 300-30, 400-40] = [90, 180, 270, 360]
+    assert_eq!(i32::from_le_bytes(contents[0..4].try_into().unwrap()), 90);
+    assert_eq!(i32::from_le_bytes(contents[4..8].try_into().unwrap()), 180);
+    assert_eq!(i32::from_le_bytes(contents[8..12].try_into().unwrap()), 270);
+    assert_eq!(i32::from_le_bytes(contents[12..16].try_into().unwrap()), 360);
+}
+
+#[test]
 fn test_integration_filewrite_null_terminated() {
     let temp_dir = TempDir::new().unwrap();
     let result_file = temp_dir.path().join("null_term_result.txt");

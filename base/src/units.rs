@@ -611,6 +611,24 @@ impl SimdUnit {
                 self.regs_i32[action.dst as usize] = a * b;
                 None
             }
+            Kind::SimdDivI32 => {
+                let a = self.regs_i32[action.src as usize].to_array();
+                let b = self.regs_i32[action.offset as usize].to_array();
+                let result = i32x4::from([
+                    if b[0] != 0 { a[0] / b[0] } else { 0 },
+                    if b[1] != 0 { a[1] / b[1] } else { 0 },
+                    if b[2] != 0 { a[2] / b[2] } else { 0 },
+                    if b[3] != 0 { a[3] / b[3] } else { 0 },
+                ]);
+                self.regs_i32[action.dst as usize] = result;
+                None
+            }
+            Kind::SimdSubI32 => {
+                let a = self.regs_i32[action.src as usize];
+                let b = self.regs_i32[action.offset as usize];
+                self.regs_i32[action.dst as usize] = a - b;
+                None
+            }
             Kind::SimdStoreI32 => {
                 let reg_data = self.regs_i32[action.src as usize].to_array();
                 let write_offset = action.offset as usize;
