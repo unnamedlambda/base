@@ -10,9 +10,12 @@ fn get_lean4_eval_binary() -> String {
     format!("{}/../../target/{}/lean4-eval", manifest_dir, profile)
 }
 
-fn get_temp_file() -> String {
+fn get_temp_files() -> (String, String) {
     let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("/tmp/lean4_eval_test_{}.lean", id)
+    (
+        format!("/tmp/lean4_eval_test_{}.lean", id),
+        format!("/tmp/out_{}.txt", id),
+    )
 }
 
 fn run_lean(code: &str, test_file: &str) -> String {
@@ -27,23 +30,32 @@ fn run_lean(code: &str, test_file: &str) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-fn run_ours(code: &str, test_file: &str) -> String {
+fn run_ours(code: &str, test_file: &str, output_file: &str) -> String {
     fs::write(test_file, code).expect("Failed to write test file");
 
+    // Remove output file before running
+    let _ = fs::remove_file(output_file);
+
     let binary = get_lean4_eval_binary();
-    let output = Command::new(&binary)
+    let _ = Command::new(&binary)
         .arg(test_file)
+        .arg(output_file)
         .output()
         .expect(&format!("Failed to run {}", binary));
 
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+    // Read result from output file
+    fs::read_to_string(output_file)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 fn compare(code: &str) {
-    let test_file = get_temp_file();
+    let (test_file, output_file) = get_temp_files();
     let lean_output = run_lean(code, &test_file);
-    let our_output = run_ours(code, &test_file);
+    let our_output = run_ours(code, &test_file, &output_file);
     fs::remove_file(&test_file).ok();
+    fs::remove_file(&output_file).ok();
 
     assert_eq!(
         lean_output, our_output,

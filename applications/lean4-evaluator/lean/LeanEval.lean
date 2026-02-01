@@ -209,10 +209,10 @@ def FLAGS_SIZE : Nat := 32       -- 4 completion flags (8 bytes each)
 def SOURCE_BUF_SIZE : Nat := 512
 def OUTPUT_BUF_SIZE : Nat := 256
 
--- Memory addresses
+-- Memory addresses (aligned for main.rs patching at 0x0010)
 def FFI_GET_ARGV : UInt32 := 0
-def STDOUT_PATH : UInt32 := (FFI_GET_ARGV.toNat + FN_PTR_SIZE).toUInt32
-def ARGV_PARAMS : UInt32 := (STDOUT_PATH.toNat + STDOUT_PATH_SIZE + PADDING_1_SIZE).toUInt32
+def OUTPUT_PATH : UInt32 := 0x0010  -- main.rs patches output path here
+def ARGV_PARAMS : UInt32 := (OUTPUT_PATH.toNat + STDOUT_PATH_SIZE + PADDING_1_SIZE).toUInt32
 def FILENAME_BUF : UInt32 := (ARGV_PARAMS.toNat + ARGV_PARAMS_SIZE).toUInt32
 def FFI_RESULT : UInt32 := (FILENAME_BUF.toNat + FILENAME_BUF_SIZE).toUInt32
 -- Completion flags after FFI_RESULT
@@ -225,7 +225,8 @@ def OUTPUT_BUF : UInt32 := (SOURCE_BUF.toNat + SOURCE_BUF_SIZE).toUInt32
 
 def leanEvalPayloads : List UInt8 :=
   let fnPtrPlaceholder := zeros FN_PTR_SIZE
-  let stdoutPath := padTo (stringToBytes "/dev/stdout") STDOUT_PATH_SIZE
+  let padding0 := zeros 8  -- Padding to align OUTPUT_PATH at 0x0010
+  let outputPath := padTo (stringToBytes "/dev/stdout") STDOUT_PATH_SIZE
   let padding1 := zeros PADDING_1_SIZE
   let argvParams := uint32ToBytes 1 ++ uint32ToBytes (FILENAME_BUF_SIZE - 8).toUInt32
   let filenameBuf := zeros FILENAME_BUF_SIZE
@@ -234,7 +235,7 @@ def leanEvalPayloads : List UInt8 :=
   let flags := zeros FLAGS_SIZE
   let sourceBuf := zeros SOURCE_BUF_SIZE
   let outputBuf := zeros OUTPUT_BUF_SIZE
-  fnPtrPlaceholder ++ stdoutPath ++ padding1 ++ argvParams ++
+  fnPtrPlaceholder ++ padding0 ++ outputPath ++ padding1 ++ argvParams ++
     filenameBuf ++ ffiResult ++ padding2 ++ flags ++ sourceBuf ++ outputBuf
 
 def leanEvalAlgorithm : Algorithm := {
@@ -248,7 +249,7 @@ def leanEvalAlgorithm : Algorithm := {
     { kind := .MemCopy, src := SOURCE_BUF + EVAL_PATTERN_LEN.toUInt32, dst := OUTPUT_BUF,
       offset := 0, size := 32 },
     -- Action 3: FileWrite - Write output (size=0 means null-terminated)
-    { kind := .FileWrite, dst := STDOUT_PATH, src := OUTPUT_BUF,
+    { kind := .FileWrite, dst := OUTPUT_PATH, src := OUTPUT_BUF,
       offset := STDOUT_PATH_SIZE.toUInt32, size := 0 },
     -- Action 4: AsyncDispatch FFICall to FFI unit (type 4)
     { kind := .AsyncDispatch, dst := 4, src := 0, offset := FLAG_FFI, size := 0 },
