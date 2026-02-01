@@ -39,6 +39,8 @@ pub enum Kind {
     SimdStoreI32 = 40,
     SimdDivI32 = 41,
     SimdSubI32 = 43,
+    MemCopyIndirect = 44,
+    MemStoreIndirect = 45,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

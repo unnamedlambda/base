@@ -116,6 +116,28 @@ impl MemoryUnit {
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
+            Kind::MemCopyIndirect => {
+                // src = address containing source pointer (u32), dst = destination, offset added to indirect addr
+                let indirect_addr_bytes = self.shared.read(action.src as usize, 4);
+                let indirect_addr = u32::from_le_bytes([
+                    indirect_addr_bytes[0], indirect_addr_bytes[1],
+                    indirect_addr_bytes[2], indirect_addr_bytes[3],
+                ]) as usize + action.offset as usize;
+                let src_ptr = self.shared.ptr.add(indirect_addr);
+                let dst_ptr = self.shared.ptr.add(action.dst as usize);
+                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
+            }
+            Kind::MemStoreIndirect => {
+                // src = source data, dst = address containing destination pointer (u32), offset added to indirect addr
+                let indirect_addr_bytes = self.shared.read(action.dst as usize, 4);
+                let indirect_addr = u32::from_le_bytes([
+                    indirect_addr_bytes[0], indirect_addr_bytes[1],
+                    indirect_addr_bytes[2], indirect_addr_bytes[3],
+                ]) as usize + action.offset as usize;
+                let src_ptr = self.shared.ptr.add(action.src as usize);
+                let dst_ptr = self.shared.ptr.add(indirect_addr);
+                std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
+            }
             Kind::MemScan => {
                 // action.src = pattern start offset
                 // action.dst = search region start offset

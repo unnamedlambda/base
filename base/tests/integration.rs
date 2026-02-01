@@ -1622,6 +1622,72 @@ fn test_integration_memwrite() {
 }
 
 #[test]
+fn test_integration_memcopy_indirect() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("memcopy_indirect_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Pointer at offset 1000 points to data at 2000
+    payloads[1000..1004].copy_from_slice(&2000u32.to_le_bytes());
+    // Data at offset 2000
+    payloads[2000..2008].copy_from_slice(&12345u64.to_le_bytes());
+
+    let actions = vec![
+        // MemCopyIndirect: read ptr from 1000, copy from *ptr to 3000
+        Action { kind: Kind::MemCopyIndirect, src: 1000, dst: 3000, offset: 0, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: filename_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 2200, size: 0 },
+        Action { kind: Kind::Wait, dst: 2200, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 2208, size: 0 },
+        Action { kind: Kind::Wait, dst: 2208, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&result_file).unwrap();
+    assert_eq!(u64::from_le_bytes(contents[0..8].try_into().unwrap()), 12345);
+}
+
+#[test]
+fn test_integration_memstore_indirect() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("memstore_indirect_result.txt");
+    let result_path_str = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Source data at 2000
+    payloads[2000..2008].copy_from_slice(&99999u64.to_le_bytes());
+    // Pointer at 1000 points to destination 3000
+    payloads[1000..1004].copy_from_slice(&3000u32.to_le_bytes());
+
+    let actions = vec![
+        // MemStoreIndirect: copy from 2000 to *ptr (read ptr from 1000)
+        Action { kind: Kind::MemStoreIndirect, src: 2000, dst: 1000, offset: 0, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: filename_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 2200, size: 0 },
+        Action { kind: Kind::Wait, dst: 2200, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 2208, size: 0 },
+        Action { kind: Kind::Wait, dst: 2208, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&result_file).unwrap();
+    assert_eq!(u64::from_le_bytes(contents[0..8].try_into().unwrap()), 99999);
+}
+
+#[test]
 fn test_integration_simd_shared_memory() {
     let temp_dir = TempDir::new().unwrap();
     let result_file = temp_dir.path().join("simd_result.txt");
