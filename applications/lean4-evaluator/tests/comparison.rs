@@ -93,3 +93,63 @@ fn test_eval_nat_literal_with_whitespace() {
 fn test_eval_nat_literal_with_newline() {
     compare("#eval 42\n");
 }
+
+#[test]
+fn test_eval_addition_0_plus_0() {
+    compare("#eval 0 + 0");
+}
+
+#[test]
+fn test_eval_addition_1_plus_1() {
+    compare("#eval 1 + 1");
+}
+
+#[test]
+fn test_eval_addition_2_plus_3() {
+    compare("#eval 2 + 3");
+}
+
+#[test]
+fn test_eval_addition_5_plus_4() {
+    compare("#eval 5 + 4");
+}
+
+#[test]
+fn test_eval_addition_9_plus_0() {
+    compare("#eval 9 + 0");
+}
+
+#[test]
+fn test_eval_addition_0_plus_9() {
+    compare("#eval 0 + 9");
+}
+
+#[test]
+fn test_eval_addition_9_plus_9() {
+    compare("#eval 9 + 9");
+}
+
+#[test]
+fn test_eval_addition_7_plus_8() {
+    compare("#eval 7 + 8");
+}
+
+#[test]
+fn test_eval_addition_10_plus_20() {
+    compare("#eval 10 + 20");
+}
+
+#[test]
+fn test_eval_addition_99_plus_1() {
+    compare("#eval 99 + 1");
+}
+
+#[test]
+fn test_eval_addition_123_plus_456() {
+    compare("#eval 123 + 456");
+}
+
+#[test]
+fn test_eval_addition_large() {
+    compare("#eval 999999999 + 1");
+}
