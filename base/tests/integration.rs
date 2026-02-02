@@ -631,6 +631,190 @@ fn test_integration_async_memory_operations() {
 }
 
 #[test]
+fn test_integration_broadcast_memory_write() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("broadcast_mem.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 1024];
+
+    // Setup filename with null terminator
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let mem_flag = 900u32;
+    let file_flag = 908u32;
+
+    let actions = vec![
+        // Action 0: write first value
+        Action {
+            kind: Kind::MemWrite,
+            dst: 128,
+            src: 0x1111_1111,
+            offset: 0,
+            size: 8,
+        },
+        // Action 1: write second value
+        Action {
+            kind: Kind::MemWrite,
+            dst: 136,
+            src: 0x2222_2222,
+            offset: 0,
+            size: 8,
+        },
+        // Action 2: file write of both values
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 128,
+            offset: filename_bytes.len() as u32,
+            size: 16,
+        },
+        // Action 3: broadcast memory writes (actions 0..2)
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6, // memory unit
+            src: 0,
+            offset: mem_flag,
+            size: (1u32 << 31) | 2,
+        },
+        // Action 4: wait for memory writes
+        Action {
+            kind: Kind::Wait,
+            dst: mem_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Action 5: file write
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2, // file unit
+            src: 2,
+            offset: file_flag,
+            size: 0,
+        },
+        // Action 6: wait for file write
+        Action {
+            kind: Kind::Wait,
+            dst: file_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 2);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&test_file).unwrap();
+    let first = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let second = u64::from_le_bytes(contents[8..16].try_into().unwrap());
+    assert_eq!(first, 0x1111_1111);
+    assert_eq!(second, 0x2222_2222);
+}
+
+#[test]
+fn test_integration_broadcast_memory_write_many() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("broadcast_mem_many.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 1024];
+
+    // Setup filename with null terminator
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let mem_flag = 920u32;
+    let file_flag = 928u32;
+
+    let actions = vec![
+        Action {
+            kind: Kind::MemWrite,
+            dst: 128,
+            src: 0xAAAA_AAAA,
+            offset: 0,
+            size: 8,
+        },
+        Action {
+            kind: Kind::MemWrite,
+            dst: 136,
+            src: 0xBBBB_BBBB,
+            offset: 0,
+            size: 8,
+        },
+        Action {
+            kind: Kind::MemWrite,
+            dst: 144,
+            src: 0xCCCC_CCCC,
+            offset: 0,
+            size: 8,
+        },
+        Action {
+            kind: Kind::MemWrite,
+            dst: 152,
+            src: 0xDDDD_DDDD,
+            offset: 0,
+            size: 8,
+        },
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 128,
+            offset: filename_bytes.len() as u32,
+            size: 32,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6, // memory unit
+            src: 0,
+            offset: mem_flag,
+            size: (1u32 << 31) | 4,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: mem_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2, // file unit
+            src: 4,
+            offset: file_flag,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: file_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 4);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&test_file).unwrap();
+    let values: Vec<u64> = contents
+        .chunks(8)
+        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            0xAAAA_AAAA,
+            0xBBBB_BBBB,
+            0xCCCC_CCCC,
+            0xDDDD_DDDD
+        ]
+    );
+}
+
+#[test]
 fn test_integration_complex_workflow() {
     let temp_dir = TempDir::new().unwrap();
     let path_a = temp_dir.path().join("result_a.txt");
@@ -2190,4 +2374,3 @@ fn test_integration_memwrite_immediate() {
     ]);
     assert_eq!(val_8, 0x12345678, "8-byte MemWrite failed");
 }
-

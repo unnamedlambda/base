@@ -1,5 +1,5 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use std::sync::atomic::Ordering;
 use wgpu::Backends;
 
 pub use base_types::{Action, Algorithm, Kind, QueueSpec, State, UnitSpec};
@@ -8,8 +8,10 @@ mod units;
 mod validation;
 
 use crate::units::{
-    computational_unit_task, ffi_unit_task, file_unit_task, gpu_unit_task, memory_unit_task,
-    network_unit_task, read_null_terminated_string_from_slice, simd_unit_task, SharedMemory,
+    computational_unit_task_mailbox, ffi_unit_task_mailbox, file_unit_task_mailbox,
+    gpu_unit_task_mailbox, memory_unit_task_mailbox, network_unit_task_mailbox,
+    read_null_terminated_string_from_slice, simd_unit_task_mailbox, Broadcast, Mailbox,
+    SharedMemory,
 };
 use crate::validation::validate;
 
@@ -29,7 +31,16 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         let mut unit = 0u8;
         for (i, action) in algorithm.actions.iter().enumerate() {
             match action.kind {
-                Kind::SimdLoad | Kind::SimdAdd | Kind::SimdMul | Kind::SimdStore => {
+                Kind::SimdLoad
+                | Kind::SimdAdd
+                | Kind::SimdMul
+                | Kind::SimdStore
+                | Kind::SimdLoadI32
+                | Kind::SimdAddI32
+                | Kind::SimdMulI32
+                | Kind::SimdStoreI32
+                | Kind::SimdDivI32
+                | Kind::SimdSubI32 => {
                     algorithm.simd_assignments[i] = unit;
                     unit = (unit + 1) % algorithm.units.simd_units as u8;
                 }
@@ -54,7 +65,14 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         algorithm.memory_assignments = vec![255; algorithm.actions.len()];
         for (i, action) in algorithm.actions.iter().enumerate() {
             match action.kind {
-                Kind::ConditionalWrite | Kind::MemCopy | Kind::MemScan | Kind::AtomicCAS | Kind::Fence => {
+                Kind::ConditionalWrite
+                | Kind::MemCopy
+                | Kind::MemScan
+                | Kind::AtomicCAS
+                | Kind::Fence
+                | Kind::MemWrite
+                | Kind::MemCopyIndirect
+                | Kind::MemStoreIndirect => {
                     algorithm.memory_assignments[i] = 0;
                 }
                 _ => {}
@@ -159,119 +177,137 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let computational_assignments = Arc::new(algorithm.computational_assignments.clone());
     let memory_assignments = Arc::new(algorithm.memory_assignments.clone());
 
-    let gpu_channels: Vec<_> = (0..algorithm.units.gpu_units)
-        .map(|_| mpsc::channel(algorithm.queues.capacity))
+    let gpu_mailboxes: Vec<_> = (0..algorithm.units.gpu_units)
+        .map(|_| Arc::new(Mailbox::new()))
         .collect();
-    let gpu_senders: Vec<_> = gpu_channels.iter().map(|(tx, _)| tx.clone()).collect();
-    let gpu_receivers: Vec<_> = gpu_channels.into_iter().map(|(_, rx)| rx).collect();
-
-    let simd_channels: Vec<_> = (0..algorithm.units.simd_units)
-        .map(|_| mpsc::channel(algorithm.queues.capacity))
+    let simd_mailboxes: Vec<_> = (0..algorithm.units.simd_units)
+        .map(|_| Arc::new(Mailbox::new()))
         .collect();
-    let simd_senders: Vec<_> = simd_channels.iter().map(|(tx, _)| tx.clone()).collect();
-    let simd_receivers: Vec<_> = simd_channels.into_iter().map(|(_, rx)| rx).collect();
-
-    let file_channels: Vec<_> = (0..algorithm.units.file_units)
-        .map(|_| mpsc::channel(algorithm.queues.capacity))
+    let file_mailboxes: Vec<_> = (0..algorithm.units.file_units)
+        .map(|_| Arc::new(Mailbox::new()))
         .collect();
-    let file_senders: Vec<_> = file_channels.iter().map(|(tx, _)| tx.clone()).collect();
-    let file_receivers: Vec<_> = file_channels.into_iter().map(|(_, rx)| rx).collect();
-
-    let network_channels: Vec<_> = (0..algorithm.units.network_units)
-        .map(|_| mpsc::channel(algorithm.queues.capacity))
+    let network_mailboxes: Vec<_> = (0..algorithm.units.network_units)
+        .map(|_| Arc::new(Mailbox::new()))
         .collect();
-    let network_senders: Vec<_> = network_channels.iter().map(|(tx, _)| tx.clone()).collect();
-    let network_receivers: Vec<_> = network_channels.into_iter().map(|(_, rx)| rx).collect();
-
-    let ffi_channels: Vec<_> = (0..algorithm.units.ffi_units)
-        .map(|_| mpsc::channel(algorithm.queues.capacity))
+    let ffi_mailboxes: Vec<_> = (0..algorithm.units.ffi_units)
+        .map(|_| Arc::new(Mailbox::new()))
         .collect();
-    let ffi_senders: Vec<_> = ffi_channels.iter().map(|(tx, _)| tx.clone()).collect();
-    let ffi_receivers: Vec<_> = ffi_channels.into_iter().map(|(_, rx)| rx).collect();
-
-    let computational_channels: Vec<_> = (0..algorithm.units.computational_units)
-        .map(|_| mpsc::channel(algorithm.queues.capacity))
+    let computational_mailboxes: Vec<_> = (0..algorithm.units.computational_units)
+        .map(|_| Arc::new(Mailbox::new()))
         .collect();
-    let computational_senders: Vec<_> = computational_channels.iter().map(|(tx, _)| tx.clone()).collect();
-    let computational_receivers: Vec<_> = computational_channels.into_iter().map(|(_, rx)| rx).collect();
-
-    let memory_channels: Vec<_> = (0..algorithm.units.memory_units)
-        .map(|_| mpsc::channel(algorithm.queues.capacity))
+    let memory_mailboxes: Vec<_> = (0..algorithm.units.memory_units)
+        .map(|_| Arc::new(Mailbox::new()))
         .collect();
-    let memory_senders: Vec<_> = memory_channels.iter().map(|(tx, _)| tx.clone()).collect();
-    let memory_receivers: Vec<_> = memory_channels.into_iter().map(|(_, rx)| rx).collect();
 
-    for (gpu_id, rx) in gpu_receivers.into_iter().enumerate() {
+    let simd_broadcast = Arc::new(Broadcast::new(algorithm.units.simd_units as u32));
+    let computational_broadcast =
+        Arc::new(Broadcast::new(algorithm.units.computational_units as u32));
+    let memory_broadcast = Arc::new(Broadcast::new(algorithm.units.memory_units as u32));
+
+    let mut thread_handles = Vec::new();
+    let mut async_handles = Vec::new();
+
+    for (gpu_id, mailbox) in gpu_mailboxes.iter().enumerate() {
         if gpu_id < algorithm.state.gpu_shader_offsets.len() {
             let gpu_size = algorithm.state.gpu_size;
             let backends = Backends::from_bits(algorithm.units.backends_bits).unwrap_or(Backends::all());
             let offset = algorithm.state.gpu_shader_offsets[gpu_id];
-            let shader_source = read_null_terminated_string_from_slice(&algorithm.payloads, offset, 8192);
+            let shader_source =
+                read_null_terminated_string_from_slice(&algorithm.payloads, offset, 8192);
+            let mailbox = mailbox.clone();
+            let actions = actions_arc.clone();
+            let shared = shared.clone();
 
-            tokio::spawn(gpu_unit_task(
-                rx,
-                actions_arc.clone(),
-                shared.clone(),
-                shader_source,
-                gpu_size,
-                backends,
-            ));
+            thread_handles.push(std::thread::spawn(move || {
+                gpu_unit_task_mailbox(
+                    mailbox,
+                    actions,
+                    shared,
+                    shader_source,
+                    gpu_size,
+                    backends,
+                );
+            }));
         }
     }
 
-    for (_, rx) in simd_receivers.into_iter().enumerate() {
-        tokio::spawn(simd_unit_task(
-            rx,
-            actions_arc.clone(),
-            shared.clone(),
-            algorithm.state.regs_per_unit,
-        ));
+    for (worker_id, mailbox) in simd_mailboxes.iter().cloned().enumerate() {
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        let regs = algorithm.state.regs_per_unit;
+        let broadcast = simd_broadcast.clone();
+        thread_handles.push(std::thread::spawn(move || {
+            simd_unit_task_mailbox(
+                mailbox,
+                broadcast,
+                worker_id as u32,
+                actions,
+                shared,
+                regs,
+            );
+        }));
     }
 
-    for (_, rx) in file_receivers.into_iter().enumerate() {
-        tokio::spawn(file_unit_task(
-            rx,
-            actions_arc.clone(),
-            shared.clone(),
-            algorithm.state.file_buffer_size,
-        ));
+    for mailbox in file_mailboxes.iter().cloned() {
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        let buffer_size = algorithm.state.file_buffer_size;
+        async_handles.push(tokio::spawn(async move {
+            file_unit_task_mailbox(mailbox, actions, shared, buffer_size).await;
+        }));
     }
 
-    for (_, rx) in network_receivers.into_iter().enumerate() {
-        tokio::spawn(network_unit_task(
-            rx,
-            actions_arc.clone(),
-            shared.clone(),
-        ));
+    for mailbox in network_mailboxes.iter().cloned() {
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        async_handles.push(tokio::spawn(async move {
+            network_unit_task_mailbox(mailbox, actions, shared).await;
+        }));
     }
 
-    for (_, rx) in ffi_receivers.into_iter().enumerate() {
-        tokio::spawn(ffi_unit_task(
-            rx,
-            actions_arc.clone(),
-            shared.clone(),
-        ));
+    for mailbox in ffi_mailboxes.iter().cloned() {
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        thread_handles.push(std::thread::spawn(move || {
+            ffi_unit_task_mailbox(mailbox, actions, shared);
+        }));
     }
 
-    for (_, rx) in computational_receivers.into_iter().enumerate() {
-        tokio::spawn(computational_unit_task(
-            rx,
-            actions_arc.clone(),
-            shared.clone(),
-            algorithm.state.computational_regs,
-        ));
+    for (worker_id, mailbox) in computational_mailboxes.iter().cloned().enumerate() {
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        let regs = algorithm.state.computational_regs;
+        let broadcast = computational_broadcast.clone();
+        thread_handles.push(std::thread::spawn(move || {
+            computational_unit_task_mailbox(
+                mailbox,
+                broadcast,
+                worker_id as u32,
+                actions,
+                shared,
+                regs,
+            );
+        }));
     }
 
-    for (_, rx) in memory_receivers.into_iter().enumerate() {
-        tokio::spawn(memory_unit_task(
-            rx,
-            actions_arc.clone(),
-            shared.clone(),
-        ));
+    for (worker_id, mailbox) in memory_mailboxes.iter().cloned().enumerate() {
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        let broadcast = memory_broadcast.clone();
+        thread_handles.push(std::thread::spawn(move || {
+            memory_unit_task_mailbox(
+                mailbox,
+                broadcast,
+                worker_id as u32,
+                actions,
+                shared,
+            );
+        }));
     }
 
     let mut pc: usize = 0;
     let actions = &algorithm.actions;
+    let actions_len = actions.len() as u32;
     let timeout_start = std::time::Instant::now();
     let timeout_duration = algorithm.timeout_ms.map(Duration::from_millis);
 
@@ -286,33 +322,34 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
         match action.kind {
             Kind::ConditionalJump => {
-                // size field specifies how many bytes to check (default 8 if 0)
                 let check_size = if action.size == 0 { 8 } else { action.size as usize };
-                let cond_bytes = unsafe { shared.read(action.src as usize + action.offset as usize, check_size) };
-
-                // Check if any byte is non-zero
+                let cond_bytes =
+                    unsafe { shared.read(action.src as usize + action.offset as usize, check_size) };
                 let cond_nonzero = cond_bytes.iter().take(check_size).any(|&b| b != 0);
 
                 if cond_nonzero {
-                    pc = action.dst as usize;  // Jump
+                    pc = action.dst as usize;
                 } else {
-                    pc += 1;  // Fall through
+                    pc += 1;
                 }
             }
 
             Kind::AsyncDispatch => {
                 unsafe {
-                    // Clear completion flag
-                    let zero: u64 = 0;
-                    shared.write(action.offset as usize, &zero.to_le_bytes());
+                    shared.store_u64(action.offset as usize, 0, Ordering::Release);
                 }
 
                 let unit_type = action.dst;
+                let is_broadcast = (action.size & (1 << 31)) != 0;
+                let size_count = action.size & 0x7FFF_FFFF;
+                let start = action.src;
+                let count = if size_count == 0 { 1 } else { size_count };
+                let end = start.saturating_add(count).min(actions_len);
+                let flag = action.offset;
 
                 match unit_type {
                     0 => {
-                        if gpu_senders.is_empty() {
-                            // No GPU units configured - skip this action
+                        if gpu_mailboxes.is_empty() {
                             pc += 1;
                             continue;
                         }
@@ -323,20 +360,21 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             .unwrap_or(0);
 
                         let unit_id = if assigned == 255 {
-                            0  // Unassigned - use GPU 0
+                            0
                         } else {
-                            (assigned as usize).min(gpu_senders.len() - 1)
+                            (assigned as usize).min(gpu_mailboxes.len() - 1)
                         };
 
-                        let item = units::QueueItem {
-                            action_index: action.src,
-                            offset: action.offset,
-                        };
-                        let _ = gpu_senders[unit_id].send(item).await;
+                        gpu_mailboxes[unit_id].post(start, end, flag);
                     }
                     1 => {
-                        if simd_senders.is_empty() {
-                            // No SIMD units configured - skip this action
+                        if is_broadcast {
+                            simd_broadcast.dispatch(start, end, flag);
+                            pc += 1;
+                            continue;
+                        }
+
+                        if simd_mailboxes.is_empty() {
                             pc += 1;
                             continue;
                         }
@@ -347,20 +385,15 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             .unwrap_or(0);
 
                         let unit_id = if assigned == 255 {
-                            0  // Unassigned - use unit 0
+                            0
                         } else {
-                            (assigned as usize).min(simd_senders.len() - 1)
+                            (assigned as usize).min(simd_mailboxes.len() - 1)
                         };
 
-                        let item = units::QueueItem {
-                            action_index: action.src,
-                            offset: action.offset,
-                        };
-                        let _ = simd_senders[unit_id].send(item).await;
+                        simd_mailboxes[unit_id].post(start, end, flag);
                     }
                     2 => {
-                        if file_senders.is_empty() {
-                            // No file units configured - skip this action
+                        if file_mailboxes.is_empty() {
                             pc += 1;
                             continue;
                         }
@@ -371,20 +404,15 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             .unwrap_or(0);
 
                         let unit_id = if assigned == 255 {
-                            0  // Unassigned - use unit 0
+                            0
                         } else {
-                            (assigned as usize).min(file_senders.len() - 1)
+                            (assigned as usize).min(file_mailboxes.len() - 1)
                         };
 
-                        let item = units::QueueItem {
-                            action_index: action.src,
-                            offset: action.offset,
-                        };
-                        let _ = file_senders[unit_id].send(item).await;
+                        file_mailboxes[unit_id].post(start, end, flag);
                     }
                     3 => {
-                        if network_senders.is_empty() {
-                            // No network units configured - skip this action
+                        if network_mailboxes.is_empty() {
                             pc += 1;
                             continue;
                         }
@@ -395,20 +423,15 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             .unwrap_or(0);
 
                         let unit_id = if assigned == 255 {
-                            0  // Unassigned - use interface 0
+                            0
                         } else {
-                            (assigned as usize).min(network_senders.len() - 1)
+                            (assigned as usize).min(network_mailboxes.len() - 1)
                         };
 
-                        let item = units::QueueItem {
-                            action_index: action.src,
-                            offset: action.offset,
-                        };
-                        let _ = network_senders[unit_id].send(item).await;
+                        network_mailboxes[unit_id].post(start, end, flag);
                     }
                     4 => {
-                        if ffi_senders.is_empty() {
-                            // No FFI units configured - skip this action
+                        if ffi_mailboxes.is_empty() {
                             pc += 1;
                             continue;
                         }
@@ -419,20 +442,21 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             .unwrap_or(0);
 
                         let unit_id = if assigned == 255 {
-                            0  // Unassigned - use unit 0
+                            0
                         } else {
-                            (assigned as usize).min(ffi_senders.len() - 1)
+                            (assigned as usize).min(ffi_mailboxes.len() - 1)
                         };
 
-                        let item = units::QueueItem {
-                            action_index: action.src,
-                            offset: action.offset,
-                        };
-                        let _ = ffi_senders[unit_id].send(item).await;
+                        ffi_mailboxes[unit_id].post(start, end, flag);
                     }
                     5 => {
-                        if computational_senders.is_empty() {
-                            // No computational units configured - skip this action
+                        if is_broadcast {
+                            computational_broadcast.dispatch(start, end, flag);
+                            pc += 1;
+                            continue;
+                        }
+
+                        if computational_mailboxes.is_empty() {
                             pc += 1;
                             continue;
                         }
@@ -443,20 +467,21 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             .unwrap_or(0);
 
                         let unit_id = if assigned == 255 {
-                            0  // Unassigned - use unit 0
+                            0
                         } else {
-                            (assigned as usize).min(computational_senders.len() - 1)
+                            (assigned as usize).min(computational_mailboxes.len() - 1)
                         };
 
-                        let item = units::QueueItem {
-                            action_index: action.src,
-                            offset: action.offset,
-                        };
-                        let _ = computational_senders[unit_id].send(item).await;
+                        computational_mailboxes[unit_id].post(start, end, flag);
                     }
                     6 => {
-                        if memory_senders.is_empty() {
-                            // No memory units configured - skip this action
+                        if is_broadcast {
+                            memory_broadcast.dispatch(start, end, flag);
+                            pc += 1;
+                            continue;
+                        }
+
+                        if memory_mailboxes.is_empty() {
                             pc += 1;
                             continue;
                         }
@@ -467,16 +492,12 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             .unwrap_or(0);
 
                         let unit_id = if assigned == 255 {
-                            0  // Unassigned - use unit 0
+                            0
                         } else {
-                            (assigned as usize).min(memory_senders.len() - 1)
+                            (assigned as usize).min(memory_mailboxes.len() - 1)
                         };
 
-                        let item = units::QueueItem {
-                            action_index: action.src,
-                            offset: action.offset,
-                        };
-                        let _ = memory_senders[unit_id].send(item).await;
+                        memory_mailboxes[unit_id].post(start, end, flag);
                     }
                     _ => {}
                 }
@@ -485,12 +506,8 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
             }
 
             Kind::Wait => {
-                // Busy-wait on completion flag
                 loop {
-                    let flag_bytes = unsafe { shared.read(action.dst as usize, 8) };
-                    let flag = u64::from_le_bytes(
-                        flag_bytes[0..8].try_into().map_err(|_| Error::Execution("Wait: invalid flag".into()))?
-                    );
+                    let flag = unsafe { shared.load_u64(action.dst as usize, Ordering::Acquire) };
                     if flag != 0 {
                         break;
                     }
@@ -503,6 +520,38 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 pc += 1;
             }
         }
+    }
+
+    for mailbox in gpu_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in simd_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in file_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in network_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in ffi_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in computational_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in memory_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    simd_broadcast.shutdown();
+    computational_broadcast.shutdown();
+    memory_broadcast.shutdown();
+
+    for handle in thread_handles {
+        let _ = handle.join();
+    }
+    for handle in async_handles {
+        let _ = handle.await;
     }
 
     Ok(())

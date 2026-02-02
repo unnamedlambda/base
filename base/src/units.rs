@@ -3,12 +3,11 @@ use pollster::block_on;
 use portable_atomic::{AtomicU128, AtomicU64, Ordering};
 use quanta::Clock;
 use std::collections::HashMap;
-use std::sync::atomic::fence;
+use std::sync::atomic::{fence, AtomicBool, AtomicU32};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 use wgpu::{
     Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBindingType, BufferDescriptor, BufferUsages,
@@ -18,10 +17,162 @@ use wgpu::{
 };
 use wide::{f32x4, i32x4};
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct QueueItem {
-    pub action_index: u32,
-    pub offset: u32,
+pub const MAILBOX_CLOSED: u64 = u64::MAX;
+
+pub(crate) struct Mailbox(AtomicU64);
+
+pub(crate) enum MailboxPoll {
+    Empty,
+    Work { start: u32, end: u32, flag: u32 },
+    Closed,
+}
+
+impl Mailbox {
+    pub const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    pub fn post(&self, start: u32, end: u32, flag: u32) {
+        let packed = ((start as u64) << 43) | ((end as u64) << 22) | (flag as u64);
+        let mut spin_count = 0u32;
+        loop {
+            match self
+                .0
+                .compare_exchange(0, packed, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(_) => spin_backoff(&mut spin_count),
+            }
+        }
+    }
+
+    pub fn shutdown(&self) {
+        self.0.store(MAILBOX_CLOSED, Ordering::Release);
+    }
+
+    pub fn poll(&self) -> MailboxPoll {
+        let packed = self.0.swap(0, Ordering::AcqRel);
+        if packed == 0 {
+            return MailboxPoll::Empty;
+        }
+        if packed == MAILBOX_CLOSED {
+            return MailboxPoll::Closed;
+        }
+        let start = (packed >> 43) as u32;
+        let end = ((packed >> 22) & 0x1F_FFFF) as u32;
+        let flag = (packed & 0x3F_FFFF) as u32;
+        MailboxPoll::Work { start, end, flag }
+    }
+}
+
+fn spin_backoff(spin_count: &mut u32) {
+    *spin_count += 1;
+    if *spin_count < 100 {
+        std::hint::spin_loop();
+    } else if *spin_count < 1000 {
+        std::thread::yield_now();
+    } else {
+        std::thread::sleep(std::time::Duration::from_micros(1));
+    }
+}
+
+async fn spin_backoff_async(spin_count: &mut u32) {
+    *spin_count += 1;
+    if *spin_count < 50 {
+        std::hint::spin_loop();
+        tokio::task::yield_now().await;
+    } else if *spin_count < 200 {
+        tokio::task::yield_now().await;
+    } else {
+        tokio::time::sleep(std::time::Duration::from_micros(50)).await;
+    }
+}
+
+pub(crate) struct Broadcast {
+    epoch: AtomicU64,
+    start: AtomicU32,
+    end: AtomicU32,
+    flag: AtomicU32,
+    done: AtomicU32,
+    num_workers: u32,
+    shutdown: AtomicBool,
+}
+
+impl Broadcast {
+    pub fn new(num_workers: u32) -> Self {
+        Self {
+            epoch: AtomicU64::new(0),
+            start: AtomicU32::new(0),
+            end: AtomicU32::new(0),
+            flag: AtomicU32::new(0),
+            done: AtomicU32::new(0),
+            num_workers,
+            shutdown: AtomicBool::new(false),
+        }
+    }
+
+    pub fn dispatch(&self, start: u32, end: u32, flag: u32) {
+        self.start.store(start, Ordering::Relaxed);
+        self.end.store(end, Ordering::Relaxed);
+        self.flag.store(flag, Ordering::Relaxed);
+        self.done.store(self.num_workers, Ordering::Relaxed);
+        self.epoch.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        self.epoch.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn broadcast_step(
+    worker_id: u32,
+    last_epoch: &mut u64,
+    broadcast: &Broadcast,
+    actions: &Arc<Vec<Action>>,
+    shared: &Arc<SharedMemory>,
+    mut exec: impl FnMut(&Action),
+) -> bool {
+    if broadcast.shutdown.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let epoch = broadcast.epoch.load(Ordering::Acquire);
+    if epoch == *last_epoch {
+        return true;
+    }
+
+    if broadcast.shutdown.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let start = broadcast.start.load(Ordering::Relaxed);
+    let end = broadcast.end.load(Ordering::Relaxed);
+    let flag = broadcast.flag.load(Ordering::Relaxed);
+    let num_workers = broadcast.num_workers.max(1);
+
+    let total = end.saturating_sub(start);
+    if total == 0 {
+        *last_epoch = epoch;
+        return true;
+    }
+
+    let chunk = (total + num_workers - 1) / num_workers;
+    let my_start = start.saturating_add(worker_id.saturating_mul(chunk));
+    let my_end = (my_start + chunk).min(end);
+
+    for idx in my_start..my_end {
+        exec(&actions[idx as usize]);
+    }
+
+    if broadcast.done.fetch_sub(1, Ordering::AcqRel) == 1 {
+        unsafe {
+            shared.store_u64(flag as usize, 1, Ordering::Release);
+        }
+    }
+
+    *last_epoch = epoch;
+    true
 }
 
 pub(crate) struct SharedMemory {
@@ -44,6 +195,29 @@ impl SharedMemory {
         self.ptr
             .add(offset)
             .copy_from_nonoverlapping(data.as_ptr(), data.len());
+    }
+
+    pub unsafe fn load_u64(&self, offset: usize, order: Ordering) -> u64 {
+        let ptr = self.ptr.add(offset) as *const u64;
+        let value = std::ptr::read_unaligned(ptr);
+        match order {
+            Ordering::Acquire | Ordering::AcqRel | Ordering::SeqCst => {
+                fence(Ordering::Acquire);
+            }
+            _ => {}
+        }
+        value
+    }
+
+    pub unsafe fn store_u64(&self, offset: usize, value: u64, order: Ordering) {
+        match order {
+            Ordering::Release | Ordering::AcqRel | Ordering::SeqCst => {
+                fence(Ordering::Release);
+            }
+            _ => {}
+        }
+        let ptr = self.ptr.add(offset) as *mut u64;
+        std::ptr::write_unaligned(ptr, value);
     }
 
     pub unsafe fn cas64(&self, offset: usize, expected: u64, new: u64) -> u64 {
@@ -122,9 +296,9 @@ impl MemoryUnit {
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 match action.size {
                     1 => *dst_ptr = action.src as u8,
-                    2 => *(dst_ptr as *mut u16) = action.src as u16,
-                    4 => *(dst_ptr as *mut u32) = action.src,
-                    8 => *(dst_ptr as *mut u64) = action.src as u64,
+                    2 => std::ptr::write_unaligned(dst_ptr as *mut u16, action.src as u16),
+                    4 => std::ptr::write_unaligned(dst_ptr as *mut u32, action.src),
+                    8 => std::ptr::write_unaligned(dst_ptr as *mut u64, action.src as u64),
                     _ => {}
                 }
             }
@@ -268,7 +442,7 @@ impl NetworkUnit {
         }
     }
 
-    pub async fn execute(&mut self, action: &Action) -> Option<QueueItem> {
+    pub async fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::NetConnect => {
                 // Read address from memory
@@ -281,24 +455,19 @@ impl NetworkUnit {
                 // Connect to remote OR bind+listen based on format
                 if addr.starts_with(':') || addr.contains("0.0.0.0:") {
                     // It's a listener
-                    let listener = TcpListener::bind(addr).await.ok()?;
-                    let handle = self.next_handle;
-                    self.next_handle += 1;
-                    self.listeners.insert(handle, listener);
+                    if let Ok(listener) = TcpListener::bind(addr).await {
+                        let handle = self.next_handle;
+                        self.next_handle += 1;
+                        self.listeners.insert(handle, listener);
 
-                    // Write handle to dst
-                    unsafe {
-                        self.shared
-                            .write(action.dst as usize, &handle.to_le_bytes());
+                        // Write handle to dst
+                        unsafe {
+                            self.shared
+                                .write(action.dst as usize, &handle.to_le_bytes());
+                        }
                     }
-
-                    Some(QueueItem {
-                        action_index: 0,
-                        offset: action.dst,
-                    })
-                } else {
+                } else if let Ok(stream) = TcpStream::connect(addr).await {
                     // It's a connection
-                    let stream = TcpStream::connect(addr).await.ok()?;
                     let handle = self.next_handle;
                     self.next_handle += 1;
                     self.connections.insert(handle, stream);
@@ -308,11 +477,6 @@ impl NetworkUnit {
                         self.shared
                             .write(action.dst as usize, &handle.to_le_bytes());
                     }
-
-                    Some(QueueItem {
-                        action_index: 0,
-                        offset: action.dst,
-                    })
                 }
             }
 
@@ -326,23 +490,19 @@ impl NetworkUnit {
                     )
                 };
 
-                let listener = self.listeners.get_mut(&handle)?;
-                let (stream, _addr) = listener.accept().await.ok()?;
+                if let Some(listener) = self.listeners.get_mut(&handle) {
+                    if let Ok((stream, _addr)) = listener.accept().await {
+                        let conn_handle = self.next_handle;
+                        self.next_handle += 1;
+                        self.connections.insert(conn_handle, stream);
 
-                let conn_handle = self.next_handle;
-                self.next_handle += 1;
-                self.connections.insert(conn_handle, stream);
-
-                // Write new connection handle to dst
-                unsafe {
-                    self.shared
-                        .write(action.dst as usize, &conn_handle.to_le_bytes());
+                        // Write new connection handle to dst
+                        unsafe {
+                            self.shared
+                                .write(action.dst as usize, &conn_handle.to_le_bytes());
+                        }
+                    }
                 }
-
-                Some(QueueItem {
-                    action_index: 0,
-                    offset: action.dst,
-                })
             }
 
             Kind::NetSend => {
@@ -355,15 +515,10 @@ impl NetworkUnit {
                     )
                 };
 
-                let stream = self.connections.get_mut(&handle)?;
-                let data = unsafe { self.shared.read(action.src as usize, action.size as usize) };
-
-                let n = stream.write(data).await.ok()?;
-
-                Some(QueueItem {
-                    action_index: 0,
-                    offset: action.src,
-                })
+                if let Some(stream) = self.connections.get_mut(&handle) {
+                    let data = unsafe { self.shared.read(action.src as usize, action.size as usize) };
+                    let _ = stream.write(data).await;
+                }
             }
 
             Kind::NetRecv => {
@@ -376,21 +531,17 @@ impl NetworkUnit {
                     )
                 };
 
-                let stream = self.connections.get_mut(&handle)?;
-                let mut buffer = vec![0u8; action.size as usize];
-                let n = stream.read(&mut buffer).await.ok()?;
-
-                unsafe {
-                    self.shared.write(action.dst as usize, &buffer[..n]);
+                if let Some(stream) = self.connections.get_mut(&handle) {
+                    let mut buffer = vec![0u8; action.size as usize];
+                    if let Ok(n) = stream.read(&mut buffer).await {
+                        unsafe {
+                            self.shared.write(action.dst as usize, &buffer[..n]);
+                        }
+                    }
                 }
-
-                Some(QueueItem {
-                    action_index: 0,
-                    offset: action.dst,
-                })
             }
 
-            _ => None,
+            _ => {}
         }
     }
 }
@@ -410,7 +561,7 @@ impl FileUnit {
         }
     }
 
-    pub async fn execute(&mut self, action: &Action) -> Option<QueueItem> {
+    pub async fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::FileRead => {
                 let filename = read_null_terminated_string(
@@ -419,49 +570,34 @@ impl FileUnit {
                     action.offset as usize,
                 );
 
-                match fs::File::open(&filename).await {
-                    Ok(mut file) => {
-                        if action.size == 0 {
-                            // Read entire file in chunks
-                            let mut total_read = 0;
-                            let dst_base = action.dst as usize;
+                if let Ok(mut file) = fs::File::open(&filename).await {
+                    if action.size == 0 {
+                        // Read entire file in chunks
+                        let mut total_read = 0;
+                        let dst_base = action.dst as usize;
 
-                            loop {
-                                match file.read(&mut self.buffer).await {
-                                    Ok(0) => break, // EOF
-                                    Ok(n) => {
-                                        unsafe {
-                                            self.shared
-                                                .write(dst_base + total_read, &self.buffer[..n]);
-                                        }
-                                        total_read += n;
-                                    }
-                                    Err(_) => break,
-                                }
-                            }
-
-                            Some(QueueItem {
-                                action_index: 0,
-                                offset: action.dst,
-                            })
-                        } else {
-                            // Read specific amount
-                            let read_size = (action.size as usize).min(self.buffer.len());
-                            match file.read(&mut self.buffer[..read_size]).await {
+                        loop {
+                            match file.read(&mut self.buffer).await {
+                                Ok(0) => break, // EOF
                                 Ok(n) => {
                                     unsafe {
-                                        self.shared.write(action.dst as usize, &self.buffer[..n]);
+                                        self.shared
+                                            .write(dst_base + total_read, &self.buffer[..n]);
                                     }
-                                    Some(QueueItem {
-                                        action_index: 0,
-                                        offset: action.dst,
-                                    })
+                                    total_read += n;
                                 }
-                                Err(_) => None,
+                                Err(_) => break,
+                            }
+                        }
+                    } else {
+                        // Read specific amount
+                        let read_size = (action.size as usize).min(self.buffer.len());
+                        if let Ok(n) = file.read(&mut self.buffer[..read_size]).await {
+                            unsafe {
+                                self.shared.write(action.dst as usize, &self.buffer[..n]);
                             }
                         }
                     }
-                    Err(_) => None,
                 }
             }
             Kind::FileWrite => {
@@ -471,49 +607,44 @@ impl FileUnit {
                     action.offset as usize,
                 );
 
-                match fs::File::create(&filename).await {
-                    Ok(mut file) => {
-                        let src_base = action.src as usize;
+                if let Ok(mut file) = fs::File::create(&filename).await {
+                    let src_base = action.src as usize;
 
-                        if action.size == 0 {
-                            // Null-terminated mode: find the null byte and write up to it
-                            let mut len = 0;
-                            while len < self.buffer.len() {
-                                let byte = unsafe { *self.shared.ptr.add(src_base + len) };
-                                if byte == 0 {
-                                    break;
-                                }
-                                len += 1;
+                    if action.size == 0 {
+                        // Null-terminated mode: find the null byte and write up to it
+                        let mut len = 0;
+                        while len < self.buffer.len() {
+                            let byte = unsafe { *self.shared.ptr.add(src_base + len) };
+                            if byte == 0 {
+                                break;
                             }
-
-                            if len > 0 {
-                                let data = unsafe { self.shared.read(src_base, len) };
-                                let _ = file.write_all(data).await;
-                            }
-                        } else {
-                            let mut written = 0;
-                            let total_size = action.size as usize;
-
-                            // Write in chunks
-                            while written < total_size {
-                                let chunk_size = (total_size - written).min(self.buffer.len());
-                                let data = unsafe { self.shared.read(src_base + written, chunk_size) };
-
-                                match file.write_all(data).await {
-                                    Ok(_) => written += chunk_size,
-                                    Err(_) => break,
-                                }
-                            }
+                            len += 1;
                         }
 
-                        let _ = file.sync_all().await; // Ensure data hits disk
+                        if len > 0 {
+                            let data = unsafe { self.shared.read(src_base, len) };
+                            let _ = file.write_all(data).await;
+                        }
+                    } else {
+                        let mut written = 0;
+                        let total_size = action.size as usize;
 
-                        None
+                        // Write in chunks
+                        while written < total_size {
+                            let chunk_size = (total_size - written).min(self.buffer.len());
+                            let data = unsafe { self.shared.read(src_base + written, chunk_size) };
+
+                            match file.write_all(data).await {
+                                Ok(_) => written += chunk_size,
+                                Err(_) => break,
+                            }
+                        }
                     }
-                    Err(_) => None,
+
+                    let _ = file.sync_all().await; // Ensure data hits disk
                 }
             }
-            _ => None,
+            _ => {}
         }
     }
 }
@@ -584,7 +715,7 @@ impl SimdUnit {
         }
     }
 
-    pub unsafe fn execute(&mut self, action: &Action) -> Option<QueueItem> {
+    pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::SimdLoad => {
                 let vals = self.shared.read(action.src as usize, 16);
@@ -594,19 +725,16 @@ impl SimdUnit {
                 let f3 = f32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
 
                 self.regs_f32[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
-                None
             }
             Kind::SimdAdd => {
                 let a = self.regs_f32[action.src as usize];
                 let b = self.regs_f32[action.offset as usize];
                 self.regs_f32[action.dst as usize] = a + b;
-                None
             }
             Kind::SimdMul => {
                 let a = self.regs_f32[action.src as usize];
                 let b = self.regs_f32[action.offset as usize];
                 self.regs_f32[action.dst as usize] = a * b;
-                None
             }
             Kind::SimdStore => {
                 let reg_data = self.regs_f32[action.src as usize].to_array();
@@ -617,11 +745,6 @@ impl SimdUnit {
                     bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
                 }
                 self.shared.write(write_offset, &bytes);
-
-                Some(QueueItem {
-                    action_index: 0,
-                    offset: write_offset as u32,
-                })
             }
             Kind::SimdLoadI32 => {
                 let vals = self.shared.read(action.src as usize, 16);
@@ -631,19 +754,16 @@ impl SimdUnit {
                 let i3 = i32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
 
                 self.regs_i32[action.dst as usize] = i32x4::from([i0, i1, i2, i3]);
-                None
             }
             Kind::SimdAddI32 => {
                 let a = self.regs_i32[action.src as usize];
                 let b = self.regs_i32[action.offset as usize];
                 self.regs_i32[action.dst as usize] = a + b;
-                None
             }
             Kind::SimdMulI32 => {
                 let a = self.regs_i32[action.src as usize];
                 let b = self.regs_i32[action.offset as usize];
                 self.regs_i32[action.dst as usize] = a * b;
-                None
             }
             Kind::SimdDivI32 => {
                 let a = self.regs_i32[action.src as usize].to_array();
@@ -655,13 +775,11 @@ impl SimdUnit {
                     if b[3] != 0 { a[3] / b[3] } else { 0 },
                 ]);
                 self.regs_i32[action.dst as usize] = result;
-                None
             }
             Kind::SimdSubI32 => {
                 let a = self.regs_i32[action.src as usize];
                 let b = self.regs_i32[action.offset as usize];
                 self.regs_i32[action.dst as usize] = a - b;
-                None
             }
             Kind::SimdStoreI32 => {
                 let reg_data = self.regs_i32[action.src as usize].to_array();
@@ -672,13 +790,8 @@ impl SimdUnit {
                     bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
                 }
                 self.shared.write(write_offset, &bytes);
-
-                Some(QueueItem {
-                    action_index: 0,
-                    offset: write_offset as u32,
-                })
             }
-            _ => None,
+            _ => {}
         }
     }
 }
@@ -819,139 +932,229 @@ impl GpuUnit {
     }
 }
 
-pub(crate) async fn memory_unit_task(
-    mut rx: mpsc::Receiver<QueueItem>,
+pub(crate) fn memory_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
+    broadcast: Arc<Broadcast>,
+    worker_id: u32,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
     let mut unit = MemoryUnit::new(shared.clone());
+    let mut last_epoch = 0u64;
+    let mut spin_count = 0u32;
 
-    while let Some(item) = rx.recv().await {
-        let action = &actions[item.action_index as usize];
-        unsafe {
-            unit.execute(action);
-        }
-
-        // Write completion flag
-        unsafe {
-            let flag_offset = item.offset as usize;
-            shared.write(flag_offset, &1u64.to_le_bytes());
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unsafe {
+                        unit.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => {
+                let prev_epoch = last_epoch;
+                if !broadcast_step(
+                    worker_id,
+                    &mut last_epoch,
+                    &broadcast,
+                    &actions,
+                    &shared,
+                    |action| unsafe { unit.execute(action); },
+                ) {
+                    return;
+                }
+                if last_epoch != prev_epoch {
+                    spin_count = 0;
+                } else {
+                    spin_backoff(&mut spin_count);
+                }
+            }
         }
     }
 }
 
-pub(crate) async fn ffi_unit_task(
-    mut rx: mpsc::Receiver<QueueItem>,
+pub(crate) fn ffi_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
     let mut unit = FFIUnit::new(shared.clone());
+    let mut spin_count = 0u32;
 
-    while let Some(item) = rx.recv().await {
-        let action = &actions[item.action_index as usize];
-        unsafe {
-            unit.execute(action);
-        }
-
-        // Write completion flag
-        unsafe {
-            let flag_offset = item.offset as usize;
-            shared.write(flag_offset, &1u64.to_le_bytes());
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unsafe {
+                        unit.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => spin_backoff(&mut spin_count),
         }
     }
 }
 
-pub(crate) async fn network_unit_task(
-    mut rx: mpsc::Receiver<QueueItem>,
+pub(crate) async fn network_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
     let mut unit = NetworkUnit::new(0, shared.clone());
+    let mut spin_count = 0u32;
 
-    while let Some(item) = rx.recv().await {
-        let action = &actions[item.action_index as usize];
-
-        unit.execute(action).await;
-
-        // Write completion flag
-        unsafe {
-            let flag_offset = item.offset as usize;
-            shared.write(flag_offset, &1u64.to_le_bytes());
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unit.execute(&actions[idx as usize]).await;
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => spin_backoff_async(&mut spin_count).await,
         }
     }
 }
 
-pub(crate) async fn file_unit_task(
-    mut rx: mpsc::Receiver<QueueItem>,
+pub(crate) async fn file_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
     buffer_size: usize,
 ) {
     let mut unit = FileUnit::new(0, shared.clone(), buffer_size);
+    let mut spin_count = 0u32;
 
-    while let Some(item) = rx.recv().await {
-        let action = &actions[item.action_index as usize];
-
-        unit.execute(action).await;
-
-        // Write completion flag
-        unsafe {
-            let flag_offset = item.offset as usize;
-            shared.write(flag_offset, &1u64.to_le_bytes());
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unit.execute(&actions[idx as usize]).await;
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => spin_backoff_async(&mut spin_count).await,
         }
     }
 }
 
-pub(crate) async fn computational_unit_task(
-    mut rx: mpsc::Receiver<QueueItem>,
+pub(crate) fn computational_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
+    broadcast: Arc<Broadcast>,
+    worker_id: u32,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
     regs: usize,
 ) {
     let mut unit = ComputationalUnit::new(regs);
+    let mut last_epoch = 0u64;
+    let mut spin_count = 0u32;
 
-    while let Some(item) = rx.recv().await {
-        let action = &actions[item.action_index as usize];
-        unsafe {
-            unit.execute(action);
-        }
-
-        // Write completion flag
-        unsafe {
-            let flag_offset = item.offset as usize;
-            shared.write(flag_offset, &1u64.to_le_bytes());
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unsafe {
+                        unit.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => {
+                let prev_epoch = last_epoch;
+                if !broadcast_step(
+                    worker_id,
+                    &mut last_epoch,
+                    &broadcast,
+                    &actions,
+                    &shared,
+                    |action| unsafe { unit.execute(action); },
+                ) {
+                    return;
+                }
+                if last_epoch != prev_epoch {
+                    spin_count = 0;
+                } else {
+                    spin_backoff(&mut spin_count);
+                }
+            }
         }
     }
 }
 
-pub(crate) async fn simd_unit_task(
-    mut rx: mpsc::Receiver<QueueItem>,
+pub(crate) fn simd_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
+    broadcast: Arc<Broadcast>,
+    worker_id: u32,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
     regs: usize,
 ) {
-    let mut unit = SimdUnit::new(
-        0,
-        regs,
-        shared.clone(),
-    );
+    let mut unit = SimdUnit::new(0, regs, shared.clone());
+    let mut last_epoch = 0u64;
+    let mut spin_count = 0u32;
 
-    while let Some(item) = rx.recv().await {
-        let action = &actions[item.action_index as usize];
-        unsafe {
-            unit.execute(action);
-        }
-
-        // Write completion flag
-        unsafe {
-            let flag_offset = item.offset as usize;
-            shared.write(flag_offset, &1u64.to_le_bytes());
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unsafe {
+                        unit.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => {
+                let prev_epoch = last_epoch;
+                if !broadcast_step(
+                    worker_id,
+                    &mut last_epoch,
+                    &broadcast,
+                    &actions,
+                    &shared,
+                    |action| unsafe { unit.execute(action); },
+                ) {
+                    return;
+                }
+                if last_epoch != prev_epoch {
+                    spin_count = 0;
+                } else {
+                    spin_backoff(&mut spin_count);
+                }
+            }
         }
     }
 }
 
-pub(crate) async fn gpu_unit_task(
-    mut rx: mpsc::Receiver<QueueItem>,
+pub(crate) fn gpu_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
     shader_source: String,
@@ -959,15 +1162,23 @@ pub(crate) async fn gpu_unit_task(
     backends: Backends,
 ) {
     let mut gpu = GpuUnit::new(shared.clone(), &shader_source, gpu_size, backends);
+    let mut spin_count = 0u32;
 
-    while let Some(item) = rx.recv().await {
-        let action = &actions[item.action_index as usize];
-        unsafe { gpu.execute(action); }
-
-        // Write completion flag
-        unsafe {
-            let flag_offset = item.offset as usize;
-            shared.write(flag_offset, &1u64.to_le_bytes());
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unsafe {
+                        gpu.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => spin_backoff(&mut spin_count),
         }
     }
 }
@@ -1572,8 +1783,13 @@ mod network_tests {
             size: 0,
         };
 
-        let result = unit.execute(&connect_action).await;
-        assert!(result.is_some());
+        unit.execute(&connect_action).await;
+        let handle = unsafe {
+            u32::from_le_bytes(
+                shared.read(200, 4)[0..4].try_into().unwrap(),
+            )
+        };
+        assert!(handle != 0);
 
         // Send data
         let send_action = Action {
@@ -1584,8 +1800,7 @@ mod network_tests {
             size: 5, // send 5 bytes
         };
 
-        let result = unit.execute(&send_action).await;
-        assert!(result.is_some());
+        unit.execute(&send_action).await;
     }
 
     #[tokio::test]
@@ -1609,8 +1824,7 @@ mod network_tests {
             size: 0,
         };
 
-        let result = unit.execute(&listen_action).await;
-        assert!(result.is_some());
+        unit.execute(&listen_action).await;
 
         // Get actual listening port for client
         let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
@@ -1632,8 +1846,7 @@ mod network_tests {
             size: 0,
         };
 
-        let result = unit.execute(&accept_action).await;
-        assert!(result.is_some());
+        unit.execute(&accept_action).await;
 
         // Receive data
         let recv_action = Action {
@@ -1644,8 +1857,7 @@ mod network_tests {
             size: 100, // max bytes to receive
         };
 
-        let result = unit.execute(&recv_action).await;
-        assert!(result.is_some());
+        unit.execute(&recv_action).await;
 
         // Verify received data
         unsafe {
@@ -1672,7 +1884,7 @@ mod network_tests {
             offset: 50,
             size: 0,
         };
-        unit.execute(&listen_action).await.unwrap();
+        unit.execute(&listen_action).await;
 
         let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
         let addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
@@ -1695,7 +1907,7 @@ mod network_tests {
             offset: 0,
             size: 0,
         };
-        unit.execute(&accept).await.unwrap();
+        unit.execute(&accept).await;
 
         // Receive
         let recv = Action {
@@ -1705,7 +1917,7 @@ mod network_tests {
             offset: 0,
             size: 100,
         };
-        let result = unit.execute(&recv).await.unwrap();
+        unit.execute(&recv).await;
 
         // Echo back - use the same size as recv action
         let send = Action {
@@ -1715,7 +1927,7 @@ mod network_tests {
             offset: 0,
             size: recv.size,
         };
-        unit.execute(&send).await.unwrap();
+        unit.execute(&send).await;
 
         client.await.unwrap();
     }
@@ -1736,8 +1948,7 @@ mod network_tests {
             offset: 50,
             size: 0,
         })
-        .await
-        .unwrap();
+        .await;
 
         let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
         let addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
@@ -1762,7 +1973,7 @@ mod network_tests {
                 offset: 0,
                 size: 0,
             };
-            unit.execute(&accept).await.unwrap();
+            unit.execute(&accept).await;
             handles.push(300 + i * 4);
         }
 
@@ -1775,7 +1986,7 @@ mod network_tests {
                 offset: 0,
                 size: 1,
             };
-            unit.execute(&recv).await.unwrap();
+            unit.execute(&recv).await;
         }
 
         for client in clients {
@@ -1800,7 +2011,7 @@ mod network_tests {
                 offset: 50,
                 size: 0,
             };
-            unit.execute(&action).await.unwrap();
+            unit.execute(&action).await;
 
             let handle = unsafe {
                 u32::from_le_bytes(
@@ -1823,7 +2034,7 @@ mod network_tests {
         memory[addr.len()] = 0;
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = NetworkUnit::new(0, shared);
+        let mut unit = NetworkUnit::new(0, shared.clone());
 
         let action = Action {
             kind: Kind::NetConnect,
@@ -1833,8 +2044,11 @@ mod network_tests {
             size: 0,
         };
 
-        let result = unit.execute(&action).await;
-        assert!(result.is_none()); // Should fail gracefully
+        unit.execute(&action).await;
+        let handle = unsafe {
+            u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap())
+        };
+        assert_eq!(handle, 0); // Should fail gracefully
     }
 }
 
@@ -1922,9 +2136,7 @@ mod file_tests {
             size: 100,
         };
 
-        let result = unit.execute(&action).await;
-        // Should return None for failed read
-        assert!(result.is_none());
+        unit.execute(&action).await;
 
         // Memory should remain unchanged (all zeros)
         unsafe {
@@ -2337,14 +2549,13 @@ mod concurrent_tests {
         // Test multiple SIMD units writing to different memory regions concurrently
         let mut memory = vec![0u8; 65536];
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-
-        let (tx, mut rx) = mpsc::channel(100);
+        let counter = Arc::new(AtomicU32::new(0));
         let mut handles = vec![];
 
         // Spawn 4 SIMD units working in parallel
         for unit_id in 0..4u8 {
             let shared_clone = shared.clone();
-            let tx_clone = tx.clone();
+            let counter_clone = counter.clone();
 
             handles.push(tokio::spawn(async move {
                 let mut unit = SimdUnit::new(
@@ -2362,22 +2573,19 @@ mod concurrent_tests {
                     dst: 0,
                 };
 
-                if let Some(item) = unsafe { unit.execute(&action) } {
-                    tx_clone.send(item).await.unwrap();
+                unsafe {
+                    unit.execute(&action);
                 }
+                counter_clone.fetch_add(1, Ordering::SeqCst);
             }));
         }
 
-        drop(tx);
-
-        // Collect all results
-        let mut items = vec![];
-        while let Some(item) = rx.recv().await {
-            items.push(item);
+        for handle in handles {
+            handle.await.unwrap();
         }
 
         // Verify we got results from all units
-        assert_eq!(items.len(), 4);
+        assert_eq!(counter.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
