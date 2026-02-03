@@ -67,14 +67,11 @@ name = "base"
 version = "0.1.0"
 dependencies = [
  "base-types",
- "bincode",
  "futures",
  "pollster",
  "portable-atomic",
  "quanta",
  "rand",
- "serde",
- "serde_json",
  "tempfile",
  "tokio",
  "wgpu",
