@@ -463,7 +463,13 @@ def exampleAlgorithm : Algorithm := {
 
     -- Action 3: FileWrite the complete BMP (header + pixels)
     -- filename at 4096, data starts at 4362, size = 54 + 786432 = 786486
-    { kind := .FileWrite, dst := 4096, src := 4362, offset := 256, size := 786486 }
+    { kind := .FileWrite, dst := 4096, src := 4362, offset := 256, size := 786486 },
+
+    -- Action 4: Queue FileWrite to file unit (unit type 2)
+    { kind := .AsyncDispatch, dst := 2, src := 3, offset := 4352, size := 0 },
+
+    -- Action 5: Wait for FileWrite completion
+    { kind := .Wait, dst := 4352, src := 0, offset := 0, size := 0 }
   ],
   payloads := gradientPayloads gradientShader,
   state := {
