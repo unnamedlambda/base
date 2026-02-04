@@ -20,6 +20,7 @@ def OUTPUT_BUF_SIZE_N : Nat := 32
 def OUTPUT_POS_INIT_N : Nat := 30
 def POS_INIT_N : Nat := 6
 def OUTPUT_COPY_BYTES_U32 : UInt32 := 16
+def OUTPUT_BUF_PAD_SIZE_N : Nat := 16
 def ONE_MIB_N : Nat := 0x100000
 def TIMEOUT_MS_N : Nat := 10000
 def QUEUE_CAPACITY_N : Nat := 64
@@ -41,6 +42,7 @@ def ITOA_INIT_MEM_STEPS_N : Nat := 2
 def ITOA_LOOP_DIV_SIMD_STEPS_N : Nat := 6
 def ITOA_LOOP_POST_SIMD_STEPS_N : Nat := 4
 def OUTPUT_SIMD_STEPS_N : Nat := 3
+def STORE_RESULT_SIMD_STEPS_N : Nat := 2
 
 def SIMD_UNIT_ID_N : Nat := 1
 def FILE_UNIT_ID_N : Nat := 2
@@ -68,6 +70,8 @@ def ASCII_ZERO_I : Int := 48
 def ASCII_SPACE_I : Int := 32
 def ASCII_PLUS_I : Int := 43
 def ASCII_NEWLINE_I : Int := 10
+def ASCII_LPAREN_I : Int := 40
+def ASCII_RPAREN_I : Int := 41
 
 def OFFSET_FFI_PTR_U32 : UInt32 := 0x0000
 def OFFSET_OUTPUT_PATH_U32 : UInt32 := 0x0010
@@ -95,6 +99,8 @@ def OFFSET_RESULT_U32 : UInt32 := 0x0430
 def OFFSET_DIGIT_COUNT_U32 : UInt32 := 0x0440
 def OFFSET_OUTPUT_POS_U32 : UInt32 := 0x0450
 def OFFSET_OUTPUT_BUF_U32 : UInt32 := 0x0460
+def OFFSET_CONST_RPAREN_U32 : UInt32 := 0x0490
+def OFFSET_CONST_LPAREN_U32 : UInt32 := 0x04A0
 
 end C
 
@@ -344,6 +350,8 @@ structure Layout where
   DIGIT_COUNT : UInt32
   OUTPUT_POS : UInt32
   OUTPUT_BUF : UInt32
+  CONST_RPAREN : UInt32
+  CONST_LPAREN : UInt32
 
 
 def layout : Layout := {
@@ -374,7 +382,9 @@ def layout : Layout := {
   RESULT := C.OFFSET_RESULT_U32,
   DIGIT_COUNT := C.OFFSET_DIGIT_COUNT_U32,
   OUTPUT_POS := C.OFFSET_OUTPUT_POS_U32,
-  OUTPUT_BUF := C.OFFSET_OUTPUT_BUF_U32
+  OUTPUT_BUF := C.OFFSET_OUTPUT_BUF_U32,
+  CONST_RPAREN := C.OFFSET_CONST_RPAREN_U32,
+  CONST_LPAREN := C.OFFSET_CONST_LPAREN_U32
 }
 
 def L : Layout := layout
@@ -415,12 +425,15 @@ def leanEvalPayloads : List UInt8 :=
   let digitCount := zeros C.SIZE_16_N
   let outputPos := int32ToBytes16 (i C.OUTPUT_POS_INIT_N)
   let outputBuf := zeros C.OUTPUT_BUF_SIZE_N
+  let outputPad := zeros C.OUTPUT_BUF_PAD_SIZE_N
+  let constRParen := int32ToBytes16 C.ASCII_RPAREN_I
+  let constLParen := int32ToBytes16 C.ASCII_LPAREN_I
 
   ffiPtr ++ outputPath ++ argvParams ++ filenameBuf ++ ffiResult ++
     flagFfi ++ flagFile ++ flagSimd ++ flagMem ++ constZero ++ sourceBuf ++
     const48 ++ const10 ++ constOne ++ constSpace ++ constPlus ++
     pos ++ charBuf ++ accum ++ leftVal ++ rightVal ++ result ++
-    digitCount ++ outputPos ++ outputBuf
+    digitCount ++ outputPos ++ outputBuf ++ outputPad ++ constRParen ++ constLParen
 
 def fence : Action := { kind := .Fence, dst := ZERO, src := ZERO, offset := ZERO, size := ZERO }
 
@@ -432,6 +445,12 @@ inductive WorkOp where
   | FileRead
   | MemCopyChar
   | LoadChar
+  | LoadRParen
+  | SubCharRParen
+  | StoreDigitCountFromRParen
+  | LoadLParen
+  | SubCharLParen
+  | StoreDigitCountFromLParen
   | LoadSpace
   | SubCharSpace
   | StoreDigitCountFromSpace
@@ -518,6 +537,12 @@ def workOps : List WorkOp := [
   FileRead,
   MemCopyChar,
   LoadChar,
+  LoadRParen,
+  SubCharRParen,
+  StoreDigitCountFromRParen,
+  LoadLParen,
+  SubCharLParen,
+  StoreDigitCountFromLParen,
   LoadSpace,
   SubCharSpace,
   StoreDigitCountFromSpace,
@@ -584,6 +609,12 @@ def opToAction : WorkOp -> Action
   | FileRead => w .FileRead L.FILENAME_IN_ARGV L.SOURCE_BUF (L.FILENAME_BUF_SIZE.toUInt32) (L.SOURCE_BUF_SIZE.toUInt32)
   | MemCopyChar => w .MemCopyIndirect L.POS L.CHAR_BUF L.SOURCE_BUF SIZE_BYTE
   | LoadChar => w .SimdLoadI32 L.CHAR_BUF (r RA) ZERO SIZE_NONE
+  | LoadRParen => w .SimdLoadI32 L.CONST_RPAREN (r RB) ZERO SIZE_NONE
+  | SubCharRParen => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
+  | StoreDigitCountFromRParen => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | LoadLParen => w .SimdLoadI32 L.CONST_LPAREN (r RB) ZERO SIZE_NONE
+  | SubCharLParen => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
+  | StoreDigitCountFromLParen => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
   | LoadSpace => w .SimdLoadI32 L.CONST_SPACE (r RB) ZERO SIZE_NONE
   | SubCharSpace => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
   | StoreDigitCountFromSpace => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
@@ -661,6 +692,7 @@ def PARSE_NUMBER_LEN : Nat :=
   let p8 := SIMD_STEP_LEN * C.PARSE_DIGIT_SIMD_STEPS_N
   let p9 := INC_POS_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
   p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
+def PARSE_ADDEND_LEN : Nat := PARSE_NUMBER_LEN
 def ADD_TO_RESULT_LEN : Nat := SIMD_STEP_LEN * C.ADD_RESULT_SIMD_STEPS_N + MEM_STEP_LEN
 def CHECK_PLUS_ONLY_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * C.CHECK_PLUS_SIMD_STEPS_N + C.SINGLE_ACTION_N + INC_POS_LEN + C.SINGLE_ACTION_N
 def CHECK_PLUS_LEN : Nat := SKIP_SPACES_LEN + CHECK_PLUS_ONLY_LEN
@@ -668,9 +700,15 @@ def ITOA_INIT_LEN : Nat := MEM_STEP_LEN * C.ITOA_INIT_MEM_STEPS_N
 def ITOA_LOOP_LEN : Nat := SIMD_STEP_LEN * C.ITOA_LOOP_DIV_SIMD_STEPS_N + MEM_STEP_LEN + SIMD_STEP_LEN * C.ITOA_LOOP_POST_SIMD_STEPS_N + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
 def OUTPUT_LEN : Nat := SIMD_STEP_LEN * C.OUTPUT_SIMD_STEPS_N + MEM_STEP_LEN + FILE_STEP_LEN
 def SETUP_LEN : Nat := FFI_STEP_LEN + FILE_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN
+def LAMBDA_CHECK_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * C.CHECK_PLUS_SIMD_STEPS_N + C.SINGLE_ACTION_N
+def FIND_PLUS_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * C.CHECK_PLUS_SIMD_STEPS_N + JUMP_PAD_LEN + INC_POS_LEN + C.SINGLE_ACTION_N
+def LAMBDA_PATH_LEN : Nat :=
+  FIND_PLUS_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ADDEND_LEN +
+  (SIMD_STEP_LEN * C.STORE_RESULT_SIMD_STEPS_N) + MEM_STEP_LEN +
+  INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + ADD_TO_RESULT_LEN + C.SINGLE_ACTION_N
 def SKIP_PARSE_LEN : Nat := SKIP_SPACES_LEN + PARSE_NUMBER_LEN
 def MAIN_FLOW_LEN : Nat :=
-  SETUP_LEN + SKIP_PARSE_LEN + ADD_TO_RESULT_LEN + CHECK_PLUS_LEN +
+  SETUP_LEN + LAMBDA_CHECK_LEN + LAMBDA_PATH_LEN + SKIP_PARSE_LEN + ADD_TO_RESULT_LEN + CHECK_PLUS_LEN +
   ITOA_INIT_LEN + ITOA_LOOP_LEN + OUTPUT_LEN
 
 def WORK_BASE : UInt32 := UInt32.ofNat MAIN_FLOW_LEN
@@ -742,6 +780,31 @@ def addToResultBlock : List Action :=
   simdStep LoadResultForAdd ++ simdStep LoadRightVal ++ simdStep AddResultRight ++ simdStep StoreResultAfterAdd ++
   memStep ClearAccum
 
+def findPlusBlock (loopStart done : Nat) : List Action :=
+  let continueStart := loopStart + (LOAD_CHAR_LEN + SIMD_STEP_LEN * C.CHECK_PLUS_SIMD_STEPS_N + JUMP_PAD_LEN)
+  loadChar ++
+  simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
+  jumpPad (jumpIfN L.DIGIT_COUNT continueStart) (jumpIfN L.CONST_ONE done) ++
+  incPos ++
+  [jumpIfN L.CONST_ONE loopStart]
+
+def parseAddendBlock (loopStart done : Nat) : List Action :=
+  let p0 := loadChar ++ simdStep ClearCharBuf
+  let rparenCheck := loopStart + (p0.length + JUMP_PAD_LEN)
+  let p1 := jumpPad (jumpIfN L.CHAR_BUF rparenCheck) (jumpIfN L.CONST_ONE done)
+  let p2 := simdStep LoadRParen ++ simdStep SubCharRParen ++ simdStep StoreDigitCountFromRParen
+  let newlineCheck := loopStart + (p0.length + p1.length + p2.length + JUMP_PAD_LEN)
+  let p3 := jumpPad (jumpIfN L.DIGIT_COUNT newlineCheck) (jumpIfN L.CONST_ONE done)
+  let p4 := simdStep LoadBaseForNewlineCheck ++ simdStep SubCharNewline ++ simdStep StoreDigitCountFromNewline
+  let spaceCheck := loopStart + (p0.length + p1.length + p2.length + p3.length + p4.length + JUMP_PAD_LEN)
+  let p5 := jumpPad (jumpIfN L.DIGIT_COUNT spaceCheck) (jumpIfN L.CONST_ONE done)
+  let p6 := simdStep LoadSpace ++ simdStep SubCharSpace ++ simdStep StoreDigitCountFromSpace
+  let accumulate := loopStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + JUMP_PAD_LEN)
+  let p7 := jumpPad (jumpIfN L.DIGIT_COUNT accumulate) (jumpIfN L.CONST_ONE done)
+  let p8 := simdStep LoadAsciiZero ++ simdStep SubCharZero ++ simdStep LoadBase ++ simdStep LoadAccum ++ simdStep MulAccumBase ++ simdStep AddAccumDigit ++ simdStep StoreAccum
+  let p9 := incPos ++ [jumpIfN L.CONST_ONE loopStart, fence]
+  p0 ++ p1 ++ p2 ++ p3 ++ p4 ++ p5 ++ p6 ++ p7 ++ p8 ++ p9
+
 def checkPlusBlock (loopStart skipParseStart outputStart : Nat) : List Action :=
   let afterSkip := loopStart + SKIP_SPACES_LEN
   let skip := skipSpacesBlock loopStart afterSkip
@@ -750,8 +813,34 @@ def checkPlusBlock (loopStart skipParseStart outputStart : Nat) : List Action :=
     simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
     [jumpIfN L.DIGIT_COUNT outputStart] ++
     incPos ++
-    [jumpIfN L.CONST_ONE skipParseStart]
+  [jumpIfN L.CONST_ONE skipParseStart]
   skip ++ plusCheck
+
+def lambdaCheckBlock (normalStart : Nat) : List Action :=
+  loadChar ++
+  simdStep LoadLParen ++ simdStep SubCharLParen ++ simdStep StoreDigitCountFromLParen ++
+  [jumpIfN L.DIGIT_COUNT normalStart]
+
+def lambdaPathBlock (loopStart outputStart : Nat) : List Action :=
+  let findPlusDone := loopStart + FIND_PLUS_LEN
+  let findPlus := findPlusBlock loopStart findPlusDone
+  let skipPlus := incPos
+  let skipToAddendStart := loopStart + findPlus.length + skipPlus.length
+  let addendStart := skipToAddendStart + SKIP_SPACES_LEN
+  let addendDone := addendStart + PARSE_ADDEND_LEN
+  let skipToAddend := skipSpacesBlock skipToAddendStart addendStart
+  let parseAddend := parseAddendBlock addendStart addendDone
+  let storeAddend := simdStep LoadAccumForResult ++ simdStep StoreResultFromAccum
+  let clearAccum := memStep ClearAccum
+  let skipRParen := incPos
+  let skipToArgStart := addendDone + storeAddend.length + clearAccum.length + skipRParen.length
+  let argStart := skipToArgStart + SKIP_SPACES_LEN
+  let argDone := argStart + PARSE_NUMBER_LEN
+  let skipToArg := skipSpacesBlock skipToArgStart argStart
+  let parseArg := parseNumberBlock argStart argDone
+  let addToResult := addToResultBlock
+  let jumpOutput := [jumpIfN L.CONST_ONE outputStart]
+  findPlus ++ skipPlus ++ skipToAddend ++ parseAddend ++ storeAddend ++ clearAccum ++ skipRParen ++ skipToArg ++ parseArg ++ addToResult ++ jumpOutput
 
 def itoaLoopBlock (loopStart : Nat) : List Action :=
   simdStep LoadResultForItoa ++ simdStep DivResultBase ++ simdStep MulQuotBase ++ simdStep SubResultQuot ++
@@ -774,13 +863,19 @@ def outputBlock : List Action :=
 def actualMainFlow : List Action :=
   let setup := ffiStep FfiCall ++ fileStep FileRead ++ memStep ClearAccum ++ memStep ClearResult
 
-  let skipParseStart := SETUP_LEN
+  let lambdaCheckStart := SETUP_LEN
+  let lambdaPathStart := lambdaCheckStart + LAMBDA_CHECK_LEN
+  let normalStart := lambdaPathStart + LAMBDA_PATH_LEN
+
+  let skipParseStart := normalStart
   let addStart := skipParseStart + SKIP_PARSE_LEN
   let checkPlusStart := addStart + ADD_TO_RESULT_LEN
   let outputStart := checkPlusStart + CHECK_PLUS_LEN
   let itoaStart := outputStart
   let itoaLoopStart := itoaStart + ITOA_INIT_LEN
 
+  let lambdaCheck := lambdaCheckBlock normalStart
+  let lambdaPath := lambdaPathBlock lambdaPathStart outputStart
   let skipParse := skipParseBlock skipParseStart addStart
   let addToResult := addToResultBlock
   let checkPlus := checkPlusBlock checkPlusStart skipParseStart outputStart
@@ -789,6 +884,8 @@ def actualMainFlow : List Action :=
   let output := outputBlock
 
   setup ++
+  lambdaCheck ++
+  lambdaPath ++
   skipParse ++
   addToResult ++
   checkPlus ++

@@ -168,3 +168,18 @@ fn test_eval_addition_many_terms() {
 fn test_eval_addition_with_spaces() {
     compare("#eval   7   +   8 +  9");
 }
+
+#[test]
+fn test_eval_lambda_single_arg() {
+    compare("#eval (fun x => x + 1) 5");
+}
+
+#[test]
+fn test_eval_lambda_addend_7() {
+    compare("#eval (fun x => x + 7) 5");
+}
+
+#[test]
+fn test_eval_lambda_addend_20() {
+    compare("#eval (fun x => x + 20) 10");
+}
