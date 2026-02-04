@@ -153,3 +153,18 @@ fn test_eval_addition_123_plus_456() {
 fn test_eval_addition_large() {
     compare("#eval 999999999 + 1");
 }
+
+#[test]
+fn test_eval_addition_three_terms() {
+    compare("#eval 1 + 2 + 3");
+}
+
+#[test]
+fn test_eval_addition_many_terms() {
+    compare("#eval 10 + 20 + 30 + 40 + 50");
+}
+
+#[test]
+fn test_eval_addition_with_spaces() {
+    compare("#eval   7   +   8 +  9");
+}
