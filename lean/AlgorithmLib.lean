@@ -96,11 +96,6 @@ instance : ToJson Action where
 
 structure State where
   regs_per_unit : Nat
-  unit_scratch_offsets : List Nat
-  unit_scratch_size : Nat
-  shared_data_offset : Nat
-  shared_data_size : Nat
-  gpu_offset : Nat
   gpu_size : Nat
   computational_regs : Nat
   file_buffer_size : Nat
@@ -110,11 +105,6 @@ structure State where
 instance : ToJson State where
   toJson s := Json.mkObj [
     ("regs_per_unit", toJson s.regs_per_unit),
-    ("unit_scratch_offsets", toJson s.unit_scratch_offsets),
-    ("unit_scratch_size", toJson s.unit_scratch_size),
-    ("shared_data_offset", toJson s.shared_data_offset),
-    ("shared_data_size", toJson s.shared_data_size),
-    ("gpu_offset", toJson s.gpu_offset),
     ("gpu_size", toJson s.gpu_size),
     ("computational_regs", toJson s.computational_regs),
     ("file_buffer_size", toJson s.file_buffer_size),

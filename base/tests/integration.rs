@@ -17,11 +17,6 @@ fn create_test_algorithm(
         payloads,
         state: State {
             regs_per_unit: 16,
-            unit_scratch_offsets: vec![],
-            unit_scratch_size: 0,
-            shared_data_offset: 0,
-            shared_data_size: payload_size,
-            gpu_offset: payload_size,
             gpu_size: 0,
             computational_regs: 0,
             file_buffer_size: 65536,
@@ -65,35 +60,11 @@ fn create_complex_algorithm(
     let num_actions = actions.len();
     let payload_size = payloads.len();
 
-    // Generate scratch offsets for SIMD units
-    // Each SIMD unit needs scratch space for registers
-    let scratch_size_per_unit = 256; // enough for 16 SIMD registers of 16 bytes each
-    let unit_scratch_offsets: Vec<usize> = (0..simd_units)
-        .map(|i| i * scratch_size_per_unit)
-        .collect();
-
-    // Shared data starts after scratch space
-    let scratch_region_end = simd_units * scratch_size_per_unit;
-    let shared_data_offset = scratch_region_end;
-    let shared_data_size = if payload_size > scratch_region_end {
-        payload_size - scratch_region_end
-    } else {
-        0
-    };
-
-    // GPU offset must not overlap with shared data
-    let gpu_offset = shared_data_offset + shared_data_size;
-
     Algorithm {
         actions,
         payloads,
         state: State {
             regs_per_unit: 16,
-            unit_scratch_offsets,
-            unit_scratch_size: scratch_size_per_unit,
-            shared_data_offset,
-            shared_data_size,
-            gpu_offset,
             gpu_size,
             computational_regs: 32,
             file_buffer_size: 65536,

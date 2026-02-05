@@ -55,11 +55,6 @@ pub struct Action {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct State {
     pub regs_per_unit: usize,
-    pub unit_scratch_offsets: Vec<usize>,
-    pub unit_scratch_size: usize,
-    pub shared_data_offset: usize,
-    pub shared_data_size: usize,
-    pub gpu_offset: usize,
     pub gpu_size: usize,
     pub computational_regs: usize,
     pub file_buffer_size: usize,
