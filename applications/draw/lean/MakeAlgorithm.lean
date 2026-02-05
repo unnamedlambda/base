@@ -309,8 +309,7 @@ def drawAlgorithm : Algorithm :=
       network_units := 1,
       memory_units := 1,
       ffi_units := 1,
-      backends_bits := 0xFFFFFFFF,
-      features_bits := 0
+      backends_bits := 0xFFFFFFFF
     },
     simd_assignments := [],
     computational_assignments := [],

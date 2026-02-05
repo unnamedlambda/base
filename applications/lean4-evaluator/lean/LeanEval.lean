@@ -710,8 +710,7 @@ def leanEvalAlgorithm : Algorithm := {
     network_units := C.NETWORK_UNIT_COUNT_N,
     memory_units := C.MEMORY_UNIT_COUNT_N,
     ffi_units := C.FFI_UNIT_COUNT_N,
-    backends_bits := ZERO,
-    features_bits := UInt64.ofNat C.ZERO_N
+    backends_bits := ZERO
   },
   simd_assignments := [],
   computational_assignments := [],

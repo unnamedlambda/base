@@ -36,7 +36,6 @@ fn create_test_algorithm(
             memory_units,
             ffi_units: 0,
             backends_bits: 0,
-            features_bits: 0,
         },
         simd_assignments: vec![],
         computational_assignments: vec![],
@@ -109,7 +108,6 @@ fn create_complex_algorithm(
             memory_units,
             ffi_units: 0,
             backends_bits: 0xFFFFFFFF,
-            features_bits: 0,
         },
         simd_assignments: if simd_units > 0 {
             vec![0; num_actions]

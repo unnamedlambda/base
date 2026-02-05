@@ -76,7 +76,6 @@ pub struct UnitSpec {
     pub memory_units: usize,
     pub ffi_units: usize,
     pub backends_bits: u32,
-    pub features_bits: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

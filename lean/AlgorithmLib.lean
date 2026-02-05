@@ -130,7 +130,6 @@ structure UnitSpec where
   memory_units : Nat
   ffi_units : Nat
   backends_bits : UInt32
-  features_bits : UInt64
   deriving Repr
 
 instance : ToJson UnitSpec where
@@ -142,8 +141,7 @@ instance : ToJson UnitSpec where
     ("network_units", toJson u.network_units),
     ("memory_units", toJson u.memory_units),
     ("ffi_units", toJson u.ffi_units),
-    ("backends_bits", toJson u.backends_bits),
-    ("features_bits", toJson u.features_bits)
+    ("backends_bits", toJson u.backends_bits)
   ]
 
 structure Algorithm where
