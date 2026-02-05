@@ -6,6 +6,7 @@ use base_types::Algorithm;
 fn main() {
     println!("cargo:rerun-if-changed=lean/LeanEval.lean");
     println!("cargo:rerun-if-changed=lakefile.lean");
+    println!("cargo:rerun-if-changed=../../lean/AlgorithmLib.lean");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 

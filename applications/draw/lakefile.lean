@@ -1,6 +1,8 @@
 import Lake
 open Lake DSL
 
+require algorithmLib from "../../lean"
+
 package algorithms where
   srcDir := "lean"
 
