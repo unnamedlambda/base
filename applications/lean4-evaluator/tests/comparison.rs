@@ -183,3 +183,83 @@ fn test_eval_lambda_addend_7() {
 fn test_eval_lambda_addend_20() {
     compare("#eval (fun x => x + 20) 10");
 }
+
+#[test]
+fn test_eval_mul_2_times_3() {
+    compare("#eval 2 * 3");
+}
+
+#[test]
+fn test_eval_mul_0_times_5() {
+    compare("#eval 0 * 5");
+}
+
+#[test]
+fn test_eval_mul_5_times_0() {
+    compare("#eval 5 * 0");
+}
+
+#[test]
+fn test_eval_mul_1_times_1() {
+    compare("#eval 1 * 1");
+}
+
+#[test]
+fn test_eval_mul_large() {
+    compare("#eval 123 * 456");
+}
+
+#[test]
+fn test_eval_mul_chained() {
+    compare("#eval 2 * 3 * 4");
+}
+
+#[test]
+fn test_eval_mul_chained_many() {
+    compare("#eval 2 * 3 * 4 * 5");
+}
+
+#[test]
+fn test_eval_precedence_add_mul() {
+    compare("#eval 2 + 3 * 4");
+}
+
+#[test]
+fn test_eval_precedence_mul_add() {
+    compare("#eval 2 * 3 + 4");
+}
+
+#[test]
+fn test_eval_precedence_complex() {
+    compare("#eval 1 + 2 * 3 + 4");
+}
+
+#[test]
+fn test_eval_precedence_chain() {
+    compare("#eval 2 + 3 * 4 * 5 + 6");
+}
+
+#[test]
+fn test_eval_precedence_mul_chains() {
+    compare("#eval 1 * 2 + 3 * 4");
+}
+
+#[test]
+fn test_eval_lambda_mul_simple() {
+    compare("#eval (fun x => x * 2) 5");
+}
+
+#[test]
+fn test_eval_lambda_mul_by_zero() {
+    compare("#eval (fun x => x * 0) 42");
+}
+
+#[test]
+fn test_eval_lambda_mul_large() {
+    compare("#eval (fun x => x * 100) 50");
+}
+
+#[test]
+fn test_eval_mul_with_spaces() {
+    compare("#eval  2  *  3  *  4");
+}
