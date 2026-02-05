@@ -263,3 +263,73 @@ fn test_eval_lambda_mul_large() {
 fn test_eval_mul_with_spaces() {
     compare("#eval  2  *  3  *  4");
 }
+
+#[test]
+fn test_eval_sub_5_minus_3() {
+    compare("#eval 5 - 3");
+}
+
+#[test]
+fn test_eval_sub_10_minus_0() {
+    compare("#eval 10 - 0");
+}
+
+#[test]
+fn test_eval_sub_0_minus_0() {
+    compare("#eval 0 - 0");
+}
+
+#[test]
+fn test_eval_sub_large() {
+    compare("#eval 1000 - 999");
+}
+
+#[test]
+fn test_eval_sub_chained() {
+    compare("#eval 10 - 3 - 2");
+}
+
+#[test]
+fn test_eval_sub_chained_many() {
+    compare("#eval 100 - 10 - 20 - 30");
+}
+
+#[test]
+fn test_eval_add_sub_mixed() {
+    compare("#eval 10 + 5 - 3");
+}
+
+#[test]
+fn test_eval_sub_add_mixed() {
+    compare("#eval 10 - 5 + 3");
+}
+
+#[test]
+fn test_eval_sub_mul_precedence() {
+    compare("#eval 10 - 2 * 3");
+}
+
+#[test]
+fn test_eval_mul_sub_precedence() {
+    compare("#eval 2 * 3 - 4");
+}
+
+#[test]
+fn test_eval_complex_precedence() {
+    compare("#eval 20 - 2 * 3 + 4");
+}
+
+#[test]
+fn test_eval_lambda_sub_simple() {
+    compare("#eval (fun x => x - 2) 10");
+}
+
+#[test]
+fn test_eval_lambda_sub_to_zero() {
+    compare("#eval (fun x => x - 5) 5");
+}
+
+#[test]
+fn test_eval_sub_with_spaces() {
+    compare("#eval  10  -  3  -  2");
+}
