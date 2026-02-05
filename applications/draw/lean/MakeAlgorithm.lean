@@ -301,9 +301,6 @@ def drawAlgorithm : Algorithm :=
       file_buffer_size := fileBufferSize,
       gpu_shader_offsets := [0]
     },
-    queues := {
-      capacity := 256
-    },
     units := {
       simd_units := 4,
       gpu_units := 1,

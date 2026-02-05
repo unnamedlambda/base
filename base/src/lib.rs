@@ -2,7 +2,7 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 use std::sync::atomic::Ordering;
 use wgpu::Backends;
 
-pub use base_types::{Action, Algorithm, Kind, QueueSpec, State, UnitSpec};
+pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 
 mod units;
 mod validation;

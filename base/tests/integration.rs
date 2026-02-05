@@ -1,5 +1,5 @@
 use base::execute;
-use base_types::{Action, Algorithm, Kind, QueueSpec, State, UnitSpec};
+use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 use std::fs;
 use tempfile::TempDir;
 
@@ -27,7 +27,6 @@ fn create_test_algorithm(
             file_buffer_size: 65536,
             gpu_shader_offsets: vec![],
         },
-        queues: QueueSpec { capacity: 256 },
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
@@ -101,7 +100,6 @@ fn create_complex_algorithm(
             file_buffer_size: 65536,
             gpu_shader_offsets,
         },
-        queues: QueueSpec { capacity: 256 },
         units: UnitSpec {
             simd_units,
             gpu_units,

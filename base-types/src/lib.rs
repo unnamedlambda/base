@@ -67,11 +67,6 @@ pub struct State {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct QueueSpec {
-    pub capacity: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UnitSpec {
     pub simd_units: usize,
     pub gpu_units: usize,
@@ -89,7 +84,6 @@ pub struct Algorithm {
     pub actions: Vec<Action>,
     pub payloads: Vec<u8>,
     pub state: State,
-    pub queues: QueueSpec,
     pub units: UnitSpec,
     pub simd_assignments: Vec<u8>,
     pub computational_assignments: Vec<u8>,

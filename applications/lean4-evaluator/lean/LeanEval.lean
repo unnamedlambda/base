@@ -25,7 +25,6 @@ def OUTPUT_COPY_BYTES_U32 : UInt32 := 16
 def OUTPUT_BUF_PAD_SIZE_N : Nat := 16
 def ONE_MIB_N : Nat := 0x100000
 def TIMEOUT_MS_N : Nat := 10000
-def QUEUE_CAPACITY_N : Nat := 64
 def REGS_PER_UNIT_N : Nat := 32
 def WORKER_THREADS_N : Nat := 2
 def BLOCKING_THREADS_N : Nat := 2
@@ -703,7 +702,6 @@ def leanEvalAlgorithm : Algorithm := {
     file_buffer_size := C.ONE_MIB_N,
     gpu_shader_offsets := []
   },
-  queues := { capacity := C.QUEUE_CAPACITY_N },
   units := {
     simd_units := C.SIMD_UNIT_COUNT_N,
     gpu_units := C.GPU_UNIT_COUNT_N,

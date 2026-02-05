@@ -121,15 +121,6 @@ instance : ToJson State where
     ("gpu_shader_offsets", toJson s.gpu_shader_offsets)
   ]
 
-structure QueueSpec where
-  capacity : Nat
-  deriving Repr
-
-instance : ToJson QueueSpec where
-  toJson q := Json.mkObj [
-    ("capacity", toJson q.capacity)
-  ]
-
 structure UnitSpec where
   simd_units : Nat
   gpu_units : Nat
@@ -159,7 +150,6 @@ structure Algorithm where
   actions : List Action
   payloads : List UInt8
   state : State
-  queues : QueueSpec
   units : UnitSpec
   simd_assignments : List UInt8
   computational_assignments : List UInt8
@@ -180,7 +170,6 @@ instance : ToJson Algorithm where
     ("actions", toJson alg.actions),
     ("payloads", toJson alg.payloads),
     ("state", toJson alg.state),
-    ("queues", toJson alg.queues),
     ("units", toJson alg.units),
     ("simd_assignments", toJson alg.simd_assignments),
     ("computational_assignments", toJson alg.computational_assignments),
