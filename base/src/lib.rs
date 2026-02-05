@@ -5,7 +5,6 @@ use wgpu::Backends;
 pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 
 mod units;
-mod validation;
 
 use crate::units::{
     computational_unit_task_mailbox, ffi_unit_task_mailbox, file_unit_task_mailbox,
@@ -13,7 +12,6 @@ use crate::units::{
     read_null_terminated_string_from_slice, simd_unit_task_mailbox, Broadcast, Mailbox,
     SharedMemory,
 };
-use crate::validation::validate;
 
 #[derive(Debug)]
 pub enum Error {
@@ -24,8 +22,6 @@ pub enum Error {
 }
 
 pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
-    validate(&algorithm)?;
-
     if algorithm.simd_assignments.is_empty() {
         algorithm.simd_assignments = vec![255; algorithm.actions.len()];
         let mut unit = 0u8;
