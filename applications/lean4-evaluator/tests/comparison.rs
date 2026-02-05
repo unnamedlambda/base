@@ -333,3 +333,38 @@ fn test_eval_lambda_sub_to_zero() {
 fn test_eval_sub_with_spaces() {
     compare("#eval  10  -  3  -  2");
 }
+
+#[test]
+fn test_eval_let_add() {
+    compare("#eval let x := 5; x + 3");
+}
+
+#[test]
+fn test_eval_let_mul() {
+    compare("#eval let x := 10; x * 2");
+}
+
+#[test]
+fn test_eval_let_sub() {
+    compare("#eval let x := 10; x - 3");
+}
+
+#[test]
+fn test_eval_let_zero() {
+    compare("#eval let x := 0; x + 5");
+}
+
+#[test]
+fn test_eval_let_identity() {
+    compare("#eval let x := 42; x + 0");
+}
+
+#[test]
+fn test_eval_let_mul_zero() {
+    compare("#eval let x := 5; x * 0");
+}
+
+#[test]
+fn test_eval_let_large() {
+    compare("#eval let x := 100; x * 100");
+}
