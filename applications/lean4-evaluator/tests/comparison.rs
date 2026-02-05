@@ -368,3 +368,48 @@ fn test_eval_let_mul_zero() {
 fn test_eval_let_large() {
     compare("#eval let x := 100; x * 100");
 }
+
+#[test]
+fn test_eval_paren_simple() {
+    compare("#eval (5)");
+}
+
+#[test]
+fn test_eval_paren_add() {
+    compare("#eval (2 + 3)");
+}
+
+#[test]
+fn test_eval_paren_mul_right() {
+    compare("#eval 2 * (3 + 4)");
+}
+
+#[test]
+fn test_eval_paren_mul_left() {
+    compare("#eval (2 + 3) * 4");
+}
+
+#[test]
+fn test_eval_paren_both() {
+    compare("#eval (1 + 2) * (3 + 4)");
+}
+
+#[test]
+fn test_eval_paren_override_precedence() {
+    compare("#eval (2 + 3) * 4");
+}
+
+#[test]
+fn test_eval_paren_sub() {
+    compare("#eval (10 - 3) * 2");
+}
+
+#[test]
+fn test_eval_paren_complex() {
+    compare("#eval 1 + (2 * 3) + 4");
+}
+
+#[test]
+fn test_eval_paren_sub_mul() {
+    compare("#eval (5 - 2) * (4 + 1)");
+}

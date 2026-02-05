@@ -83,6 +83,7 @@ def ASCII_I_CHAR_I : Int := 105
 def ASCII_N_CHAR_I : Int := 110
 def ASCII_X_I : Int := 120
 def ASCII_SEMICOLON_I : Int := 59
+def ASCII_F_I : Int := 102
 
 def OFFSET_FFI_PTR_U32 : UInt32 := 0x0000
 def OFFSET_OUTPUT_PATH_U32 : UInt32 := 0x0010
@@ -124,6 +125,9 @@ def OFFSET_CONST_N_CHAR_U32 : UInt32 := 0x0530
 def OFFSET_CONST_X_U32 : UInt32 := 0x0540
 def OFFSET_VAR_VAL_U32 : UInt32 := 0x0550
 def OFFSET_CONST_SEMICOLON_U32 : UInt32 := 0x0560
+def OFFSET_CONST_F_U32 : UInt32 := 0x0570
+def OFFSET_SAVED_RESULT_U32 : UInt32 := 0x0580
+def OFFSET_SAVED_TERM_U32 : UInt32 := 0x0590
 
 end C
 
@@ -180,6 +184,9 @@ structure Layout where
   CONST_X : UInt32
   VAR_VAL : UInt32
   CONST_SEMICOLON : UInt32
+  CONST_F : UInt32
+  SAVED_RESULT : UInt32
+  SAVED_TERM : UInt32
 
 
 def layout : Layout := {
@@ -224,7 +231,10 @@ def layout : Layout := {
   CONST_N_CHAR := C.OFFSET_CONST_N_CHAR_U32,
   CONST_X := C.OFFSET_CONST_X_U32,
   VAR_VAL := C.OFFSET_VAR_VAL_U32,
-  CONST_SEMICOLON := C.OFFSET_CONST_SEMICOLON_U32
+  CONST_SEMICOLON := C.OFFSET_CONST_SEMICOLON_U32,
+  CONST_F := C.OFFSET_CONST_F_U32,
+  SAVED_RESULT := C.OFFSET_SAVED_RESULT_U32,
+  SAVED_TERM := C.OFFSET_SAVED_TERM_U32
 }
 
 def L : Layout := layout
@@ -280,6 +290,9 @@ def leanEvalPayloads : List UInt8 :=
   let constX := int32ToBytes16 C.ASCII_X_I
   let varVal := zeros C.SIZE_16_N
   let constSemicolon := int32ToBytes16 C.ASCII_SEMICOLON_I
+  let constF := int32ToBytes16 C.ASCII_F_I
+  let savedResult := zeros C.SIZE_16_N
+  let savedTerm := zeros C.SIZE_16_N
 
   ffiPtr ++ outputPath ++ argvParams ++ filenameBuf ++ ffiResult ++
     flagFfi ++ flagFile ++ flagSimd ++ flagMem ++ constZero ++ sourceBuf ++
@@ -287,7 +300,8 @@ def leanEvalPayloads : List UInt8 :=
     pos ++ charBuf ++ accum ++ leftVal ++ rightVal ++ result ++
     digitCount ++ outputPos ++ outputBuf ++ outputPad ++ constRParen ++ constLParen ++
     term ++ constStar ++ constMinus ++ constL ++ constE ++ constColon ++
-    constEquals ++ constIChar ++ constNChar ++ constX ++ varVal ++ constSemicolon
+    constEquals ++ constIChar ++ constNChar ++ constX ++ varVal ++ constSemicolon ++
+    constF ++ savedResult ++ savedTerm
 
 def fence : Action := { kind := .Fence, dst := ZERO, src := ZERO, offset := ZERO, size := ZERO }
 
@@ -401,6 +415,16 @@ inductive WorkOp where
   | LoadSemicolon
   | SubCharSemicolon
   | StoreDigitCountFromSemicolon
+  | LoadF
+  | SubCharF
+  | StoreDigitCountFromF
+  | SaveResult
+  | RestoreResult
+  | SaveTerm
+  | RestoreTerm
+  | StoreResultFromTerm
+  | StoreTermFromResult
+  | StoreAccumFromResult
   deriving BEq, DecidableEq, Repr
 
 open WorkOp
@@ -535,7 +559,17 @@ def workOps : List WorkOp := [
   StoreResultFromVarValSub,
   LoadSemicolon,
   SubCharSemicolon,
-  StoreDigitCountFromSemicolon
+  StoreDigitCountFromSemicolon,
+  LoadF,
+  SubCharF,
+  StoreDigitCountFromF,
+  SaveResult,
+  RestoreResult,
+  SaveTerm,
+  RestoreTerm,
+  StoreResultFromTerm,
+  StoreTermFromResult,
+  StoreAccumFromResult
 ]
 
 def workIndex (op : WorkOp) : Nat :=
@@ -651,6 +685,16 @@ def opToAction : WorkOp -> Action
   | LoadSemicolon => w .SimdLoadI32 L.CONST_SEMICOLON (r RB) ZERO SIZE_NONE
   | SubCharSemicolon => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
   | StoreDigitCountFromSemicolon => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | LoadF => w .SimdLoadI32 L.CONST_F (r RB) ZERO SIZE_NONE
+  | SubCharF => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
+  | StoreDigitCountFromF => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | SaveResult => w .MemCopy L.RESULT L.SAVED_RESULT ZERO SIZE_I32
+  | RestoreResult => w .MemCopy L.SAVED_RESULT L.RESULT ZERO SIZE_I32
+  | SaveTerm => w .MemCopy L.TERM L.SAVED_TERM ZERO SIZE_I32
+  | RestoreTerm => w .MemCopy L.SAVED_TERM L.TERM ZERO SIZE_I32
+  | StoreResultFromTerm => w .SimdStoreI32 (r RT) (r RA) L.RESULT SIZE_NONE
+  | StoreTermFromResult => w .SimdStoreI32 (r RV) (r RA) L.TERM SIZE_NONE
+  | StoreAccumFromResult => w .SimdStoreI32 (r RV) (r RA) L.ACCUM SIZE_NONE
 
 
 def workActions : List Action := workOps.map opToAction
@@ -757,9 +801,84 @@ def LET_PATH_LEN : Nat :=
   INC_POS_LEN +                                    -- skip operator
   SKIP_SPACES_LEN + PARSE_NUMBER_LEN +             -- parse operand
   LET_COMPUTE_LEN
+
+def PAREN_CHECK_LEN : Nat :=
+  LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N +
+  INC_POS_LEN +
+  LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+
+def PARSE_GROUPED_NUMBER_LEN : Nat :=
+  let p0 := LOAD_CHAR_LEN + SIMD_STEP_LEN
+  let p1 := JUMP_PAD_LEN
+  let p2 := SIMD_STEP_LEN * 3
+  let p3 := JUMP_PAD_LEN
+  let p4 := SIMD_STEP_LEN * 3
+  let p5 := JUMP_PAD_LEN
+  let p6 := SIMD_STEP_LEN * 3
+  let p7 := JUMP_PAD_LEN
+  let p8 := SIMD_STEP_LEN * 3
+  let p9 := JUMP_PAD_LEN
+  let p8b := SIMD_STEP_LEN * 3
+  let p9b := JUMP_PAD_LEN
+  let p8c := SIMD_STEP_LEN * 3
+  let p9c := JUMP_PAD_LEN
+  let p10 := SIMD_STEP_LEN * 7
+  let p11 := INC_POS_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  p0 + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9 + p8b + p9b + p8c + p9c + p10 + p11
+
+def GROUPED_SKIP_PARSE_LEN : Nat := SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN
+
+def GROUPED_CHECK_OPERATOR_LEN : Nat :=
+  SKIP_SPACES_LEN + LOAD_CHAR_LEN +
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+
+def GROUPED_HANDLE_MULTIPLY_LEN : Nat := INC_POS_LEN + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def GROUPED_HANDLE_ADD_LEN : Nat := ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def GROUPED_HANDLE_SUBTRACT_LEN : Nat := ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def GROUPED_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + SIMD_STEP_LEN * 2 + MEM_STEP_LEN + INC_POS_LEN + C.SINGLE_ACTION_N
+
+def GROUPING_PATH_LEN : Nat :=
+  GROUPED_SKIP_PARSE_LEN + TERM_FROM_ACCUM_LEN +
+  GROUPED_CHECK_OPERATOR_LEN +
+  GROUPED_HANDLE_MULTIPLY_LEN + GROUPED_HANDLE_ADD_LEN + GROUPED_HANDLE_SUBTRACT_LEN +
+  GROUPED_FINALIZE_LEN
+
+def PAREN_CHECK_BEFORE_PARSE_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+def MID_GROUPED_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN
+def MID_GROUPED_EVAL_LEN : Nat :=
+  GROUPED_SKIP_PARSE_LEN + TERM_FROM_ACCUM_LEN +
+  GROUPED_CHECK_OPERATOR_LEN +
+  GROUPED_HANDLE_MULTIPLY_LEN + GROUPED_HANDLE_ADD_LEN + GROUPED_HANDLE_SUBTRACT_LEN +
+  MID_GROUPED_FINALIZE_LEN
+def ACCUM_FROM_RESULT_LEN : Nat := SIMD_STEP_LEN * 2 + MEM_STEP_LEN
+
+def HANDLE_MULTIPLY_NORMAL_PATH_LEN : Nat := PARSE_NUMBER_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def HANDLE_MULTIPLY_PAREN_PATH_LEN : Nat :=
+  MEM_STEP_LEN + INC_POS_LEN + MID_GROUPED_EVAL_LEN + ACCUM_FROM_RESULT_LEN + INC_POS_LEN + MEM_STEP_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def NEW_HANDLE_MULTIPLY_LEN : Nat :=
+  INC_POS_LEN + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN +
+  HANDLE_MULTIPLY_NORMAL_PATH_LEN + HANDLE_MULTIPLY_PAREN_PATH_LEN
+
+def HANDLE_ADD_NORMAL_PATH_LEN : Nat := PARSE_NUMBER_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def HANDLE_ADD_PAREN_PATH_LEN : Nat :=
+  MEM_STEP_LEN + INC_POS_LEN + MID_GROUPED_EVAL_LEN + ACCUM_FROM_RESULT_LEN + INC_POS_LEN + MEM_STEP_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def NEW_HANDLE_ADD_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN +
+  HANDLE_ADD_NORMAL_PATH_LEN + HANDLE_ADD_PAREN_PATH_LEN
+
+def HANDLE_SUBTRACT_NORMAL_PATH_LEN : Nat := PARSE_NUMBER_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def HANDLE_SUBTRACT_PAREN_PATH_LEN : Nat :=
+  MEM_STEP_LEN + INC_POS_LEN + MID_GROUPED_EVAL_LEN + ACCUM_FROM_RESULT_LEN + INC_POS_LEN + MEM_STEP_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def NEW_HANDLE_SUBTRACT_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN +
+  HANDLE_SUBTRACT_NORMAL_PATH_LEN + HANDLE_SUBTRACT_PAREN_PATH_LEN
+
 def MAIN_FLOW_LEN : Nat :=
-  SETUP_LEN + LAMBDA_CHECK_LEN + LAMBDA_PATH_LEN + LET_CHECK_LEN + LET_PATH_LEN + SKIP_PARSE_LEN + TERM_FROM_ACCUM_LEN + CHECK_OPERATOR_LEN +
-  HANDLE_MULTIPLY_LEN + HANDLE_ADD_LEN + HANDLE_SUBTRACT_LEN + FINALIZE_LEN + ITOA_INIT_LEN + ITOA_LOOP_LEN + OUTPUT_LEN
+  SETUP_LEN + PAREN_CHECK_LEN + LAMBDA_PATH_LEN + GROUPING_PATH_LEN + LET_CHECK_LEN + LET_PATH_LEN + SKIP_PARSE_LEN + TERM_FROM_ACCUM_LEN + CHECK_OPERATOR_LEN +
+  NEW_HANDLE_MULTIPLY_LEN + NEW_HANDLE_ADD_LEN + NEW_HANDLE_SUBTRACT_LEN + FINALIZE_LEN + ITOA_INIT_LEN + ITOA_LOOP_LEN + OUTPUT_LEN
 
 def WORK_BASE : UInt32 := UInt32.ofNat MAIN_FLOW_LEN
 
@@ -948,6 +1067,16 @@ def lambdaCheckBlock (normalStart : Nat) : List Action :=
   simdStep LoadLParen ++ simdStep SubCharLParen ++ simdStep StoreDigitCountFromLParen ++
   [jumpIfN L.DIGIT_COUNT normalStart]
 
+def parenCheckBlock (lambdaStart groupingStart normalStart : Nat) : List Action :=
+  loadChar ++
+  simdStep LoadLParen ++ simdStep SubCharLParen ++ simdStep StoreDigitCountFromLParen ++
+  [jumpIfN L.DIGIT_COUNT normalStart] ++
+  incPos ++
+  loadChar ++
+  simdStep LoadF ++ simdStep SubCharF ++ simdStep StoreDigitCountFromF ++
+  [jumpIfN L.DIGIT_COUNT groupingStart] ++
+  [jumpIfN L.CONST_ONE lambdaStart]
+
 def lambdaPathBlock (loopStart outputStart : Nat) : List Action :=
   let clearFlag := memStep ClearLeftVal
   let findOpStart := loopStart + clearFlag.length
@@ -1075,114 +1204,288 @@ def outputBlock : List Action :=
   memStep CopyOutputToLeft ++
   fileStep FileWriteOutput
 
+def parseGroupedNumberBlock (loopStart done : Nat) : List Action :=
+  let p0 := loadChar ++ simdStep ClearCharBuf
+  let newlineCheck := loopStart + (p0.length + JUMP_PAD_LEN)
+  let p1 := jumpPad (jumpIfN L.CHAR_BUF newlineCheck) (jumpIfN L.CONST_ONE done)
+  let p2 := simdStep LoadBaseForNewlineCheck ++ simdStep SubCharNewline ++ simdStep StoreDigitCountFromNewline
+  let spaceCheck := loopStart + (p0.length + p1.length + p2.length + JUMP_PAD_LEN)
+  let p3 := jumpPad (jumpIfN L.DIGIT_COUNT spaceCheck) (jumpIfN L.CONST_ONE done)
+  let p4 := simdStep LoadSpace ++ simdStep SubCharSpace ++ simdStep StoreDigitCountFromSpace
+  let plusCheck := loopStart + (p0.length + p1.length + p2.length + p3.length + p4.length + JUMP_PAD_LEN)
+  let p5 := jumpPad (jumpIfN L.DIGIT_COUNT plusCheck) (jumpIfN L.CONST_ONE done)
+  let p6 := simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus
+  let starCheck := loopStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + JUMP_PAD_LEN)
+  let p7 := jumpPad (jumpIfN L.DIGIT_COUNT starCheck) (jumpIfN L.CONST_ONE done)
+  let p8 := simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar
+  let minusCheck := loopStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + p7.length + p8.length + JUMP_PAD_LEN)
+  let p9 := jumpPad (jumpIfN L.DIGIT_COUNT minusCheck) (jumpIfN L.CONST_ONE done)
+  let p8b := simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus
+  let rparenCheck := loopStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + p7.length + p8.length + p9.length + p8b.length + JUMP_PAD_LEN)
+  let p9b := jumpPad (jumpIfN L.DIGIT_COUNT rparenCheck) (jumpIfN L.CONST_ONE done)
+  let p8c := simdStep LoadRParen ++ simdStep SubCharRParen ++ simdStep StoreDigitCountFromRParen
+  let accumulate := loopStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + p7.length + p8.length + p9.length + p8b.length + p9b.length + p8c.length + JUMP_PAD_LEN)
+  let p9c := jumpPad (jumpIfN L.DIGIT_COUNT accumulate) (jumpIfN L.CONST_ONE done)
+  let p10 := simdStep LoadAsciiZero ++ simdStep SubCharZero ++ simdStep LoadBase ++ simdStep LoadAccum ++ simdStep MulAccumBase ++ simdStep AddAccumDigit ++ simdStep StoreAccum
+  let p11 := incPos ++ [jumpIfN L.CONST_ONE loopStart, fence]
+  p0 ++ p1 ++ p2 ++ p3 ++ p4 ++ p5 ++ p6 ++ p7 ++ p8 ++ p9 ++ p8b ++ p9b ++ p8c ++ p9c ++ p10 ++ p11
+
+def groupedSkipParseBlock (start done : Nat) : List Action :=
+  let parseStart := start + SKIP_SPACES_LEN
+  skipSpacesBlock start parseStart ++ parseGroupedNumberBlock parseStart done
+
+def accumFromResultBlock : List Action :=
+  simdStep LoadResultForItoa ++ simdStep StoreAccumFromResult ++ memStep ClearResult
+
+def midGroupedEvalBlock (start : Nat) : List Action :=
+  let skipParseDone := start + GROUPED_SKIP_PARSE_LEN
+  let termFromAccumDone := skipParseDone + TERM_FROM_ACCUM_LEN
+  let checkOpDone := termFromAccumDone + GROUPED_CHECK_OPERATOR_LEN
+  let handleMulStart := checkOpDone
+  let handleMulDone := handleMulStart + GROUPED_HANDLE_MULTIPLY_LEN
+  let handleAddStart := handleMulDone
+  let handleAddDone := handleAddStart + GROUPED_HANDLE_ADD_LEN
+  let handleSubStart := handleAddDone
+  let handleSubDone := handleSubStart + GROUPED_HANDLE_SUBTRACT_LEN
+  let finalizeStart := handleSubDone
+  let skipParse := groupedSkipParseBlock start skipParseDone
+  let termFromAccum := termFromAccumBlock
+  let checkOpSkipEnd := termFromAccumDone + SKIP_SPACES_LEN
+  let rparenStart := checkOpSkipEnd + LOAD_CHAR_LEN
+  let starStart := rparenStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let plusStart := starStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let minusStart := plusStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let checkOp :=
+    skipSpacesBlock termFromAccumDone checkOpSkipEnd ++
+    loadChar ++
+    simdStep LoadRParen ++ simdStep SubCharRParen ++ simdStep StoreDigitCountFromRParen ++
+    [jumpIfN L.DIGIT_COUNT starStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+    simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
+    [jumpIfN L.DIGIT_COUNT plusStart] ++ [jumpIfN L.CONST_ONE handleMulStart] ++
+    simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
+    [jumpIfN L.DIGIT_COUNT minusStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
+    simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
+    [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart]
+  let handleMulSkipStart := handleMulStart + INC_POS_LEN
+  let handleMulParseDone := handleMulSkipStart + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN
+  let handleMul :=
+    incPos ++
+    groupedSkipParseBlock handleMulSkipStart handleMulParseDone ++
+    multiplyTermBlock ++
+    [jumpIfN L.CONST_ONE termFromAccumDone]
+  let handleAddIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
+  let handleAddSkipStart := handleAddIncStart + INC_POS_LEN
+  let handleAddParseDone := handleAddSkipStart + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN
+  let handleAdd :=
+    addTermToResultBlock ++
+    incPos ++
+    groupedSkipParseBlock handleAddSkipStart handleAddParseDone ++
+    termFromAccumBlock ++
+    [jumpIfN L.CONST_ONE termFromAccumDone]
+  let handleSubIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
+  let handleSubSkipStart := handleSubIncStart + INC_POS_LEN
+  let handleSubParseDone := handleSubSkipStart + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN
+  let handleSub :=
+    addTermToResultBlock ++
+    incPos ++
+    groupedSkipParseBlock handleSubSkipStart handleSubParseDone ++
+    negateAccumToTermBlock ++
+    [jumpIfN L.CONST_ONE termFromAccumDone]
+  let finalize := addTermToResultBlock
+  skipParse ++ termFromAccum ++ checkOp ++ handleMul ++ handleAdd ++ handleSub ++ finalize
+
+def groupingPathBlock (start checkOpStart : Nat) : List Action :=
+  let skipParseDone := start + GROUPED_SKIP_PARSE_LEN
+  let termFromAccumDone := skipParseDone + TERM_FROM_ACCUM_LEN
+  let checkOpDone := termFromAccumDone + GROUPED_CHECK_OPERATOR_LEN
+  let handleMulStart := checkOpDone
+  let handleMulDone := handleMulStart + GROUPED_HANDLE_MULTIPLY_LEN
+  let handleAddStart := handleMulDone
+  let handleAddDone := handleAddStart + GROUPED_HANDLE_ADD_LEN
+  let handleSubStart := handleAddDone
+  let handleSubDone := handleSubStart + GROUPED_HANDLE_SUBTRACT_LEN
+  let finalizeStart := handleSubDone
+  let skipParse := groupedSkipParseBlock start skipParseDone
+  let termFromAccum := termFromAccumBlock
+  let checkOpSkipEnd := termFromAccumDone + SKIP_SPACES_LEN
+  let rparenStart := checkOpSkipEnd + LOAD_CHAR_LEN
+  let starStart := rparenStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let plusStart := starStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let minusStart := plusStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let checkOp :=
+    skipSpacesBlock termFromAccumDone checkOpSkipEnd ++
+    loadChar ++
+    simdStep LoadRParen ++ simdStep SubCharRParen ++ simdStep StoreDigitCountFromRParen ++
+    [jumpIfN L.DIGIT_COUNT starStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+    simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
+    [jumpIfN L.DIGIT_COUNT plusStart] ++ [jumpIfN L.CONST_ONE handleMulStart] ++
+    simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
+    [jumpIfN L.DIGIT_COUNT minusStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
+    simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
+    [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart]
+  let handleMulSkipStart := handleMulStart + INC_POS_LEN
+  let handleMulParseDone := handleMulSkipStart + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN
+  let handleMul :=
+    incPos ++
+    groupedSkipParseBlock handleMulSkipStart handleMulParseDone ++
+    multiplyTermBlock ++
+    [jumpIfN L.CONST_ONE termFromAccumDone]
+  let handleAddIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
+  let handleAddSkipStart := handleAddIncStart + INC_POS_LEN
+  let handleAddParseDone := handleAddSkipStart + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN
+  let handleAdd :=
+    addTermToResultBlock ++
+    incPos ++
+    groupedSkipParseBlock handleAddSkipStart handleAddParseDone ++
+    termFromAccumBlock ++
+    [jumpIfN L.CONST_ONE termFromAccumDone]
+  let handleSubIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
+  let handleSubSkipStart := handleSubIncStart + INC_POS_LEN
+  let handleSubParseDone := handleSubSkipStart + SKIP_SPACES_LEN + PARSE_GROUPED_NUMBER_LEN
+  let handleSub :=
+    addTermToResultBlock ++
+    incPos ++
+    groupedSkipParseBlock handleSubSkipStart handleSubParseDone ++
+    negateAccumToTermBlock ++
+    [jumpIfN L.CONST_ONE termFromAccumDone]
+  let finalize :=
+    addTermToResultBlock ++
+    simdStep LoadResultForItoa ++ simdStep StoreTermFromResult ++
+    memStep ClearResult ++
+    incPos ++
+    [jumpIfN L.CONST_ONE checkOpStart]
+  skipParse ++ termFromAccum ++ checkOp ++ handleMul ++ handleAdd ++ handleSub ++ finalize
+
+def parenCheckBeforeParseBlock (normalStart parenStart : Nat) : List Action :=
+  loadChar ++
+  simdStep LoadLParen ++ simdStep SubCharLParen ++ simdStep StoreDigitCountFromLParen ++
+  [jumpIfN L.DIGIT_COUNT normalStart] ++ [jumpIfN L.CONST_ONE parenStart]
+
 def actualMainFlow : List Action :=
-  -- Setup: FFI call, file read, clear accum, result, and term
   let setup := ffiStep FfiCall ++ fileStep FileRead ++ memStep ClearAccum ++ memStep ClearResult ++ memStep ClearTerm
 
-  -- Calculate all section start positions
-  let lambdaCheckStart := SETUP_LEN
-  let lambdaPathStart := lambdaCheckStart + LAMBDA_CHECK_LEN
-  let letCheckStart := lambdaPathStart + LAMBDA_PATH_LEN
+  let parenCheckStart := SETUP_LEN
+  let lambdaPathStart := parenCheckStart + PAREN_CHECK_LEN
+  let groupingPathStart := lambdaPathStart + LAMBDA_PATH_LEN
+  let letCheckStart := groupingPathStart + GROUPING_PATH_LEN
   let letPathStart := letCheckStart + LET_CHECK_LEN
   let normalStart := letPathStart + LET_PATH_LEN
 
-  -- Normal path: skip spaces, parse first number, store to TERM
   let skipParseStart := normalStart
   let termFromAccumStart := skipParseStart + SKIP_PARSE_LEN
-
-  -- Check operator section
   let checkOperatorStart := termFromAccumStart + TERM_FROM_ACCUM_LEN
   let checkOperatorSkipEnd := checkOperatorStart + SKIP_SPACES_LEN
   let checkOperatorLoadCharEnd := checkOperatorSkipEnd + LOAD_CHAR_LEN
-  let checkOperatorStarEnd := checkOperatorLoadCharEnd + SIMD_STEP_LEN * 3  -- LoadStar, SubCharStar, StoreDigitCountFromStar
+  let checkOperatorStarEnd := checkOperatorLoadCharEnd + SIMD_STEP_LEN * 3
 
-  -- Handle multiply section (after check operator)
   let handleMultiplyStart := checkOperatorStart + CHECK_OPERATOR_LEN
-  let handleMultiplySkipStart := handleMultiplyStart + INC_POS_LEN
-  let handleMultiplyParseStart := handleMultiplySkipStart + SKIP_SPACES_LEN
-  let handleMultiplyParseDone := handleMultiplyParseStart + PARSE_NUMBER_LEN
-
-  -- Handle add section (after handle multiply)
-  let handleAddStart := handleMultiplyStart + HANDLE_MULTIPLY_LEN
-  let handleAddIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
-  let handleAddSkipStart := handleAddIncStart + INC_POS_LEN
-  let handleAddParseStart := handleAddSkipStart + SKIP_SPACES_LEN
-  let handleAddParseDone := handleAddParseStart + PARSE_NUMBER_LEN
-
-  -- Handle subtract section (after handle add)
-  let handleSubtractStart := handleAddStart + HANDLE_ADD_LEN
-  let handleSubtractIncStart := handleSubtractStart + ADD_TERM_TO_RESULT_LEN
-  let handleSubtractSkipStart := handleSubtractIncStart + INC_POS_LEN
-  let handleSubtractParseStart := handleSubtractSkipStart + SKIP_SPACES_LEN
-  let handleSubtractParseDone := handleSubtractParseStart + PARSE_NUMBER_LEN
-
-  -- Finalize and output sections
-  let finalizeStart := handleSubtractStart + HANDLE_SUBTRACT_LEN
+  let handleAddStart := handleMultiplyStart + NEW_HANDLE_MULTIPLY_LEN
+  let handleSubtractStart := handleAddStart + NEW_HANDLE_ADD_LEN
+  let finalizeStart := handleSubtractStart + NEW_HANDLE_SUBTRACT_LEN
   let outputStart := finalizeStart + FINALIZE_LEN
   let itoaStart := outputStart
   let itoaLoopStart := itoaStart + ITOA_INIT_LEN
 
-  let lambdaCheck := lambdaCheckBlock letCheckStart
+  let parenCheck := parenCheckBlock lambdaPathStart groupingPathStart letCheckStart
   let lambdaPath := lambdaPathBlock lambdaPathStart outputStart
+  let groupingPath := groupingPathBlock groupingPathStart checkOperatorStart
   let letCheck := letCheckBlock normalStart
   let letPath := letPathBlock letPathStart outputStart
   let skipParse := skipParseBlock skipParseStart termFromAccumStart
   let termFromAccum := termFromAccumBlock
 
-  -- Check operator: skip spaces, load char, check '*', check '+', check '-', or go to finalize
   let plusCheckStart := checkOperatorStarEnd + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
   let minusCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
   let checkOperator :=
     skipSpacesBlock checkOperatorStart checkOperatorSkipEnd ++
     loadChar ++
     simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
-    [jumpIfN L.DIGIT_COUNT plusCheckStart] ++  -- if not '*', skip to plus check
-    [jumpIfN L.CONST_ONE handleMultiplyStart] ++  -- if '*', go to handleMultiply
+    [jumpIfN L.DIGIT_COUNT plusCheckStart] ++ [jumpIfN L.CONST_ONE handleMultiplyStart] ++
     simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
-    [jumpIfN L.DIGIT_COUNT minusCheckStart] ++  -- if not '+', skip to minus check
-    [jumpIfN L.CONST_ONE handleAddStart] ++  -- if '+', go to handleAdd
+    [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
     simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
-    [jumpIfN L.DIGIT_COUNT finalizeStart] ++  -- if not '-', go to finalize
-    [jumpIfN L.CONST_ONE handleSubtractStart]  -- if '-', go to handleSubtract
+    [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubtractStart]
 
-  -- Handle multiply: incPos, skip spaces, parse number, TERM *= ACCUM, jump back
+  let handleMulIncStart := handleMultiplyStart + INC_POS_LEN
+  let handleMulSkipStart := handleMulIncStart + SKIP_SPACES_LEN
+  let handleMulCheckParenStart := handleMulSkipStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let handleMulNormalPathStart := handleMulCheckParenStart
+  let handleMulNormalParseDone := handleMulNormalPathStart + PARSE_NUMBER_LEN
+  let handleMulParenPathStart := handleMulCheckParenStart + HANDLE_MULTIPLY_NORMAL_PATH_LEN
+  let handleMulMidGroupedStart := handleMulParenPathStart + MEM_STEP_LEN + INC_POS_LEN
   let handleMultiply :=
     incPos ++
-    skipSpacesBlock handleMultiplySkipStart handleMultiplyParseStart ++
-    parseNumberBlock handleMultiplyParseStart handleMultiplyParseDone ++
+    skipSpacesBlock handleMulIncStart handleMulSkipStart ++
+    parenCheckBeforeParseBlock handleMulNormalPathStart handleMulParenPathStart ++
+    parseNumberBlock handleMulNormalPathStart handleMulNormalParseDone ++
+    multiplyTermBlock ++
+    [jumpIfN L.CONST_ONE checkOperatorStart] ++
+    memStep SaveTerm ++
+    incPos ++
+    midGroupedEvalBlock handleMulMidGroupedStart ++
+    accumFromResultBlock ++
+    incPos ++
+    memStep RestoreTerm ++
     multiplyTermBlock ++
     [jumpIfN L.CONST_ONE checkOperatorStart]
 
-  -- Handle add: RESULT += TERM, incPos, skip spaces, parse number, TERM = ACCUM, jump back
+  let handleAddIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN
+  let handleAddSkipStart := handleAddIncStart + SKIP_SPACES_LEN
+  let handleAddCheckParenStart := handleAddSkipStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let handleAddNormalPathStart := handleAddCheckParenStart
+  let handleAddNormalParseDone := handleAddNormalPathStart + PARSE_NUMBER_LEN
+  let handleAddParenPathStart := handleAddCheckParenStart + HANDLE_ADD_NORMAL_PATH_LEN
+  let handleAddMidGroupedStart := handleAddParenPathStart + MEM_STEP_LEN + INC_POS_LEN
   let handleAdd :=
     addTermToResultBlock ++
     incPos ++
-    skipSpacesBlock handleAddSkipStart handleAddParseStart ++
-    parseNumberBlock handleAddParseStart handleAddParseDone ++
+    skipSpacesBlock (handleAddStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN) handleAddSkipStart ++
+    parenCheckBeforeParseBlock handleAddNormalPathStart handleAddParenPathStart ++
+    parseNumberBlock handleAddNormalPathStart handleAddNormalParseDone ++
+    termFromAccumBlock ++
+    [jumpIfN L.CONST_ONE checkOperatorStart] ++
+    memStep SaveTerm ++
+    incPos ++
+    midGroupedEvalBlock handleAddMidGroupedStart ++
+    accumFromResultBlock ++
+    incPos ++
+    memStep RestoreTerm ++
     termFromAccumBlock ++
     [jumpIfN L.CONST_ONE checkOperatorStart]
 
-  -- Handle subtract: RESULT += TERM (commit), incPos, skip spaces, parse number, TERM = -ACCUM (negate), jump back
+  let handleSubIncStart := handleSubtractStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN
+  let handleSubSkipStart := handleSubIncStart + SKIP_SPACES_LEN
+  let handleSubCheckParenStart := handleSubSkipStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let handleSubNormalPathStart := handleSubCheckParenStart
+  let handleSubNormalParseDone := handleSubNormalPathStart + PARSE_NUMBER_LEN
+  let handleSubParenPathStart := handleSubCheckParenStart + HANDLE_SUBTRACT_NORMAL_PATH_LEN
+  let handleSubMidGroupedStart := handleSubParenPathStart + MEM_STEP_LEN + INC_POS_LEN
   let handleSubtract :=
     addTermToResultBlock ++
     incPos ++
-    skipSpacesBlock handleSubtractSkipStart handleSubtractParseStart ++
-    parseNumberBlock handleSubtractParseStart handleSubtractParseDone ++
+    skipSpacesBlock (handleSubtractStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN) handleSubSkipStart ++
+    parenCheckBeforeParseBlock handleSubNormalPathStart handleSubParenPathStart ++
+    parseNumberBlock handleSubNormalPathStart handleSubNormalParseDone ++
+    negateAccumToTermBlock ++
+    [jumpIfN L.CONST_ONE checkOperatorStart] ++
+    memStep SaveTerm ++
+    incPos ++
+    midGroupedEvalBlock handleSubMidGroupedStart ++
+    accumFromResultBlock ++
+    incPos ++
+    memStep RestoreTerm ++
     negateAccumToTermBlock ++
     [jumpIfN L.CONST_ONE checkOperatorStart]
 
-  -- Finalize: RESULT += TERM, then output
-  let finalize :=
-    addTermToResultBlock ++
-    [jumpIfN L.CONST_ONE itoaStart]
-
+  let finalize := addTermToResultBlock ++ [jumpIfN L.CONST_ONE itoaStart]
   let itoaInit := itoaInitBlock
   let itoaLoop := itoaLoopBlock itoaLoopStart
   let output := outputBlock
 
   setup ++
-  lambdaCheck ++
+  parenCheck ++
   lambdaPath ++
+  groupingPath ++
   letCheck ++
   letPath ++
   skipParse ++
