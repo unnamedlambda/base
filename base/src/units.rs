@@ -423,6 +423,98 @@ impl FFIUnit {
     }
 }
 
+pub(crate) struct HashTableUnit {
+    shared: Arc<SharedMemory>,
+    tables: HashMap<u32, HashMap<Vec<u8>, Vec<u8>>>,
+    next_handle: u32,
+}
+
+impl HashTableUnit {
+    pub fn new(shared: Arc<SharedMemory>) -> Self {
+        Self {
+            shared,
+            tables: HashMap::new(),
+            next_handle: 0,
+        }
+    }
+
+    pub unsafe fn execute(&mut self, action: &Action) {
+        match action.kind {
+            Kind::HashTableCreate => {
+                let handle = self.next_handle;
+                self.next_handle += 1;
+                self.tables.insert(handle, HashMap::new());
+                self.shared
+                    .write(action.dst as usize, &handle.to_le_bytes());
+            }
+            Kind::HashTableInsert => {
+                let handle = action.offset;
+                let key_size = (action.size >> 16) as usize;
+                let val_size = (action.size & 0xFFFF) as usize;
+                let key = self.shared.read(action.dst as usize, key_size).to_vec();
+                let val = self.shared.read(action.src as usize, val_size).to_vec();
+                if let Some(table) = self.tables.get_mut(&handle) {
+                    table.insert(key, val);
+                }
+            }
+            Kind::HashTableLookup => {
+                let handle = action.offset;
+                let key_size = (action.size >> 16) as usize;
+                let key = self.shared.read(action.dst as usize, key_size).to_vec();
+                if let Some(table) = self.tables.get(&handle) {
+                    if let Some(val) = table.get(&key) {
+                        let len = val.len() as u32;
+                        self.shared
+                            .write(action.src as usize, &len.to_le_bytes());
+                        self.shared
+                            .write(action.src as usize + 4, val);
+                        return;
+                    }
+                }
+                // Not found - write sentinel
+                self.shared
+                    .write(action.src as usize, &0xFFFF_FFFFu32.to_le_bytes());
+            }
+            Kind::HashTableDelete => {
+                let handle = action.offset;
+                let key_size = action.size as usize;
+                let key = self.shared.read(action.dst as usize, key_size).to_vec();
+                if let Some(table) = self.tables.get_mut(&handle) {
+                    table.remove(&key);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn hash_table_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
+    actions: Arc<Vec<Action>>,
+    shared: Arc<SharedMemory>,
+) {
+    let mut unit = HashTableUnit::new(shared.clone());
+    let mut spin_count = 0u32;
+
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                for idx in start..end {
+                    unsafe {
+                        unit.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => return,
+            MailboxPoll::Empty => spin_backoff(&mut spin_count),
+        }
+    }
+}
+
 pub(crate) struct NetworkUnit {
     id: u8,
     shared: Arc<SharedMemory>,

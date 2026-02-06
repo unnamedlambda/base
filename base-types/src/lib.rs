@@ -41,6 +41,10 @@ pub enum Kind {
     SimdSubI32 = 43,
     MemCopyIndirect = 44,
     MemStoreIndirect = 45,
+    HashTableCreate = 50,
+    HashTableInsert = 51,
+    HashTableLookup = 52,
+    HashTableDelete = 53,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -70,6 +74,7 @@ pub struct UnitSpec {
     pub network_units: usize,
     pub memory_units: usize,
     pub ffi_units: usize,
+    pub hash_table_units: usize,
     pub backends_bits: u32,
 }
 
@@ -85,6 +90,7 @@ pub struct Algorithm {
     pub file_assignments: Vec<u8>,
     pub network_assignments: Vec<u8>,
     pub ffi_assignments: Vec<u8>,
+    pub hash_table_assignments: Vec<u8>,
     pub gpu_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,

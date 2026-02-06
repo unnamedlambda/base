@@ -30,6 +30,7 @@ fn create_test_algorithm(
             network_units: 0,
             memory_units,
             ffi_units: 0,
+            hash_table_units: 0,
             backends_bits: 0,
         },
         simd_assignments: vec![],
@@ -38,6 +39,7 @@ fn create_test_algorithm(
         file_assignments: vec![0; num_actions],
         network_assignments: vec![],
         ffi_assignments: vec![],
+        hash_table_assignments: vec![],
         gpu_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
@@ -78,6 +80,7 @@ fn create_complex_algorithm(
             network_units: 0,
             memory_units,
             ffi_units: 0,
+            hash_table_units: 0,
             backends_bits: 0xFFFFFFFF,
         },
         simd_assignments: if simd_units > 0 {
@@ -98,6 +101,7 @@ fn create_complex_algorithm(
         },
         network_assignments: vec![],
         ffi_assignments: vec![],
+        hash_table_assignments: vec![],
         gpu_assignments: if gpu_units > 0 {
             vec![0; num_actions]
         } else {
@@ -2340,4 +2344,413 @@ fn test_integration_memwrite_immediate() {
         contents[28], contents[29], contents[30], contents[31],
     ]);
     assert_eq!(val_8, 0x12345678, "8-byte MemWrite failed");
+}
+
+fn create_hash_table_algorithm(actions: Vec<Action>, payloads: Vec<u8>) -> Algorithm {
+    create_hash_table_algorithm_with_file(actions, payloads, false)
+}
+
+fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>, with_file: bool) -> Algorithm {
+    let num_actions = actions.len();
+    Algorithm {
+        actions,
+        payloads,
+        state: State {
+            regs_per_unit: 0,
+            gpu_size: 0,
+            computational_regs: 0,
+            file_buffer_size: if with_file { 65536 } else { 0 },
+            gpu_shader_offsets: vec![],
+        },
+        units: UnitSpec {
+            simd_units: 0,
+            gpu_units: 0,
+            computational_units: 0,
+            file_units: if with_file { 1 } else { 0 },
+            network_units: 0,
+            memory_units: if with_file { 1 } else { 0 },
+            ffi_units: 0,
+            hash_table_units: 1,
+            backends_bits: 0,
+        },
+        simd_assignments: vec![],
+        computational_assignments: vec![],
+        memory_assignments: vec![],
+        file_assignments: vec![],
+        network_assignments: vec![],
+        ffi_assignments: vec![],
+        hash_table_assignments: vec![0; num_actions],
+        gpu_assignments: vec![],
+        worker_threads: None,
+        blocking_threads: None,
+        stack_size: None,
+        timeout_ms: Some(5000),
+        thread_name_prefix: None,
+    }
+}
+
+#[test]
+fn test_hash_table_create_insert_lookup() {
+    // Smoke test: create, insert, lookup - just verify no crash
+    let flag_offset = 0u32;
+    let handle_addr = 8u32;
+    let key_addr = 16u32;
+    let val_addr = 32u32;
+    let result_addr = 48u32;
+
+    let mut payloads = vec![0u8; 64];
+    payloads[16] = b'f'; payloads[17] = b'o'; payloads[18] = b'o';
+    payloads[32..36].copy_from_slice(&42u32.to_le_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::HashTableCreate, dst: handle_addr, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::HashTableInsert, dst: key_addr, src: val_addr, offset: 0, size: (3 << 16) | 4 },
+        Action { kind: Kind::HashTableLookup, dst: key_addr, src: result_addr, offset: 0, size: (3 << 16) | 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_offset, size: 3 },
+        Action { kind: Kind::Wait, dst: flag_offset, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_hash_table_algorithm(actions, payloads);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_hash_table_insert_lookup_verify() {
+    // Verify lookup returns correct value by writing result to file
+    // Layout:
+    //   0..8:   flag_hash
+    //   8..16:  flag_mem
+    //  16..24:  flag_file
+    //  24..28:  handle
+    //  32..35:  key "abc"
+    //  48..52:  value 99u32
+    //  64..72:  result [u32 len][u32 value]
+    // 256..N:   filename
+    // 512..520: data copy for file write
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("ht_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_hash = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let key_addr = 32u32;
+    let val_addr = 48u32;
+    let result_addr = 64u32;
+    let filename_addr = 256u32;
+    let data_copy_addr = 512u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32] = b'a'; payloads[33] = b'b'; payloads[34] = b'c';
+    payloads[48..52].copy_from_slice(&99u32.to_le_bytes());
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[256..256 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Create
+        Action { kind: Kind::HashTableCreate, dst: handle_addr, src: 0, offset: 0, size: 0 },
+        // 1: Insert "abc" -> 99
+        Action { kind: Kind::HashTableInsert, dst: key_addr, src: val_addr, offset: 0, size: (3 << 16) | 4 },
+        // 2: Lookup "abc"
+        Action { kind: Kind::HashTableLookup, dst: key_addr, src: result_addr, offset: 0, size: (3 << 16) | 8 },
+        // 3: MemCopy result to data_copy
+        Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 8 },
+        // 4: FileWrite data_copy to file
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 8 },
+        // 5: Dispatch hash ops
+        Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 3 },
+        // 6: Wait hash
+        Action { kind: Kind::Wait, dst: flag_hash, src: 0, offset: 0, size: 0 },
+        // 7: Dispatch memcopy
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 3, offset: flag_mem, size: 1 },
+        // 8: Wait mem
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 9: Dispatch filewrite
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 4, offset: flag_file, size: 1 },
+        // 10: Wait file
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_hash_table_algorithm_with_file(actions, payloads, true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "Result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    // Result format: [u32 len][u32 value] = [4, 99]
+    let len = u32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let value = u32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(len, 4, "Lookup result length should be 4");
+    assert_eq!(value, 99, "Lookup result value should be 99");
+}
+
+#[test]
+fn test_hash_table_lookup_not_found() {
+    // Verify that lookup of missing key writes 0xFFFFFFFF sentinel
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("ht_notfound.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_hash = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let key_addr = 32u32;
+    let result_addr = 64u32;
+    let filename_addr = 256u32;
+    let data_copy_addr = 512u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32] = b'x'; payloads[33] = b'y'; payloads[34] = b'z';
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[256..256 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Create
+        Action { kind: Kind::HashTableCreate, dst: handle_addr, src: 0, offset: 0, size: 0 },
+        // 1: Lookup "xyz" (not inserted)
+        Action { kind: Kind::HashTableLookup, dst: key_addr, src: result_addr, offset: 0, size: (3 << 16) | 8 },
+        // 2: MemCopy result
+        Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 4 },
+        // 3: FileWrite
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 4 },
+        // 4: Dispatch hash
+        Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 2 },
+        // 5: Wait
+        Action { kind: Kind::Wait, dst: flag_hash, src: 0, offset: 0, size: 0 },
+        // 6: Dispatch mem
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 2, offset: flag_mem, size: 1 },
+        // 7: Wait
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 8: Dispatch file
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 3, offset: flag_file, size: 1 },
+        // 9: Wait
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_hash_table_algorithm_with_file(actions, payloads, true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "Result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    let sentinel = u32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(sentinel, 0xFFFFFFFF, "Not-found lookup should return sentinel 0xFFFFFFFF");
+}
+
+#[test]
+fn test_hash_table_insert_overwrite() {
+    // Insert same key twice - second value should win
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("ht_overwrite.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_hash = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let key_addr = 32u32;
+    let val1_addr = 48u32;
+    let val2_addr = 56u32;
+    let result_addr = 64u32;
+    let filename_addr = 256u32;
+    let data_copy_addr = 512u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32] = b'x';
+    payloads[48..52].copy_from_slice(&10u32.to_le_bytes());
+    payloads[56..60].copy_from_slice(&20u32.to_le_bytes());
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[256..256 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Create
+        Action { kind: Kind::HashTableCreate, dst: handle_addr, src: 0, offset: 0, size: 0 },
+        // 1: Insert "x" -> 10
+        Action { kind: Kind::HashTableInsert, dst: key_addr, src: val1_addr, offset: 0, size: (1 << 16) | 4 },
+        // 2: Insert "x" -> 20 (overwrite)
+        Action { kind: Kind::HashTableInsert, dst: key_addr, src: val2_addr, offset: 0, size: (1 << 16) | 4 },
+        // 3: Lookup "x"
+        Action { kind: Kind::HashTableLookup, dst: key_addr, src: result_addr, offset: 0, size: (1 << 16) | 8 },
+        // 4: MemCopy result
+        Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 8 },
+        // 5: FileWrite
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 8 },
+        // 6: Dispatch hash
+        Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 4 },
+        // 7: Wait
+        Action { kind: Kind::Wait, dst: flag_hash, src: 0, offset: 0, size: 0 },
+        // 8: Dispatch mem
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
+        // 9: Wait
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 10: Dispatch file
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 5, offset: flag_file, size: 1 },
+        // 11: Wait
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_hash_table_algorithm_with_file(actions, payloads, true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "Result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    let len = u32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let value = u32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(len, 4, "Lookup result length should be 4");
+    assert_eq!(value, 20, "Overwritten value should be 20, not 10");
+}
+
+#[test]
+fn test_hash_table_delete() {
+    // Insert then delete - lookup should return not found sentinel
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("ht_delete.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_hash = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let key_addr = 32u32;
+    let val_addr = 48u32;
+    let result_addr = 64u32;
+    let filename_addr = 256u32;
+    let data_copy_addr = 512u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32] = b'k';
+    payloads[48..52].copy_from_slice(&77u32.to_le_bytes());
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[256..256 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Create
+        Action { kind: Kind::HashTableCreate, dst: handle_addr, src: 0, offset: 0, size: 0 },
+        // 1: Insert "k" -> 77
+        Action { kind: Kind::HashTableInsert, dst: key_addr, src: val_addr, offset: 0, size: (1 << 16) | 4 },
+        // 2: Delete "k"
+        Action { kind: Kind::HashTableDelete, dst: key_addr, src: 0, offset: 0, size: 1 },
+        // 3: Lookup "k" (should be not found)
+        Action { kind: Kind::HashTableLookup, dst: key_addr, src: result_addr, offset: 0, size: (1 << 16) | 8 },
+        // 4: MemCopy result
+        Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 4 },
+        // 5: FileWrite
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 4 },
+        // 6: Dispatch hash
+        Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 4 },
+        // 7: Wait
+        Action { kind: Kind::Wait, dst: flag_hash, src: 0, offset: 0, size: 0 },
+        // 8: Dispatch mem
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
+        // 9: Wait
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 10: Dispatch file
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 5, offset: flag_file, size: 1 },
+        // 11: Wait
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_hash_table_algorithm_with_file(actions, payloads, true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "Result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    let sentinel = u32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(sentinel, 0xFFFFFFFF, "Deleted key lookup should return sentinel 0xFFFFFFFF");
+}
+
+#[test]
+fn test_hash_table_multiple_keys() {
+    // Insert multiple keys, verify each lookup returns correct value
+    let temp_dir = TempDir::new().unwrap();
+    let test_file1 = temp_dir.path().join("ht_multi1.txt");
+    let test_file2 = temp_dir.path().join("ht_multi2.txt");
+    let test_file1_str = test_file1.to_str().unwrap();
+    let test_file2_str = test_file2.to_str().unwrap();
+
+    let flag_hash1 = 0u32;
+    let flag_hash2 = 8u32;
+    let flag_mem1 = 16u32;
+    let flag_file1 = 24u32;
+    let flag_mem2 = 32u32;
+    let flag_file2 = 40u32;
+    let handle_addr = 48u32;
+    let key1_addr = 64u32;   // "ab"
+    let key2_addr = 80u32;   // "cd"
+    let val1_addr = 96u32;   // 100
+    let val2_addr = 104u32;  // 200
+    let result1_addr = 112u32;
+    let result2_addr = 128u32;
+    let filename1_addr = 256u32;
+    let filename2_addr = 512u32;
+    let data_copy1_addr = 768u32;
+    let data_copy2_addr = 784u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[64] = b'a'; payloads[65] = b'b';
+    payloads[80] = b'c'; payloads[81] = b'd';
+    payloads[96..100].copy_from_slice(&100u32.to_le_bytes());
+    payloads[104..108].copy_from_slice(&200u32.to_le_bytes());
+    let fn1_bytes = format!("{}\0", test_file1_str).into_bytes();
+    let fn2_bytes = format!("{}\0", test_file2_str).into_bytes();
+    payloads[256..256 + fn1_bytes.len()].copy_from_slice(&fn1_bytes);
+    payloads[512..512 + fn2_bytes.len()].copy_from_slice(&fn2_bytes);
+
+    let actions = vec![
+        // 0: Create
+        Action { kind: Kind::HashTableCreate, dst: handle_addr, src: 0, offset: 0, size: 0 },
+        // 1: Insert "ab" -> 100
+        Action { kind: Kind::HashTableInsert, dst: key1_addr, src: val1_addr, offset: 0, size: (2 << 16) | 4 },
+        // 2: Insert "cd" -> 200
+        Action { kind: Kind::HashTableInsert, dst: key2_addr, src: val2_addr, offset: 0, size: (2 << 16) | 4 },
+        // 3: Lookup "ab"
+        Action { kind: Kind::HashTableLookup, dst: key1_addr, src: result1_addr, offset: 0, size: (2 << 16) | 8 },
+        // 4: Lookup "cd"
+        Action { kind: Kind::HashTableLookup, dst: key2_addr, src: result2_addr, offset: 0, size: (2 << 16) | 8 },
+        // 5: MemCopy result1
+        Action { kind: Kind::MemCopy, src: result1_addr, dst: data_copy1_addr, offset: 0, size: 8 },
+        // 6: MemCopy result2
+        Action { kind: Kind::MemCopy, src: result2_addr, dst: data_copy2_addr, offset: 0, size: 8 },
+        // 7: FileWrite result1
+        Action { kind: Kind::FileWrite, dst: filename1_addr, src: data_copy1_addr, offset: fn1_bytes.len() as u32, size: 8 },
+        // 8: FileWrite result2
+        Action { kind: Kind::FileWrite, dst: filename2_addr, src: data_copy2_addr, offset: fn2_bytes.len() as u32, size: 8 },
+        // 9: Dispatch hash (create + 2 inserts + 2 lookups)
+        Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash1, size: 5 },
+        // 10: Wait
+        Action { kind: Kind::Wait, dst: flag_hash1, src: 0, offset: 0, size: 0 },
+        // 11: Dispatch memcopy1
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: flag_mem1, size: 1 },
+        // 12: Wait
+        Action { kind: Kind::Wait, dst: flag_mem1, src: 0, offset: 0, size: 0 },
+        // 13: Dispatch filewrite1
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 7, offset: flag_file1, size: 1 },
+        // 14: Wait
+        Action { kind: Kind::Wait, dst: flag_file1, src: 0, offset: 0, size: 0 },
+        // 15: Dispatch memcopy2
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 6, offset: flag_mem2, size: 1 },
+        // 16: Wait
+        Action { kind: Kind::Wait, dst: flag_mem2, src: 0, offset: 0, size: 0 },
+        // 17: Dispatch filewrite2
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 8, offset: flag_file2, size: 1 },
+        // 18: Wait
+        Action { kind: Kind::Wait, dst: flag_file2, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_hash_table_algorithm_with_file(actions, payloads, true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file1.exists(), "Result file 1 should exist");
+    let contents1 = fs::read(&test_file1).unwrap();
+    let len1 = u32::from_le_bytes(contents1[0..4].try_into().unwrap());
+    let value1 = u32::from_le_bytes(contents1[4..8].try_into().unwrap());
+    assert_eq!(len1, 4, "Lookup 'ab' result length should be 4");
+    assert_eq!(value1, 100, "Lookup 'ab' should return 100");
+
+    assert!(test_file2.exists(), "Result file 2 should exist");
+    let contents2 = fs::read(&test_file2).unwrap();
+    let len2 = u32::from_le_bytes(contents2[0..4].try_into().unwrap());
+    let value2 = u32::from_le_bytes(contents2[4..8].try_into().unwrap());
+    assert_eq!(len2, 4, "Lookup 'cd' result length should be 4");
+    assert_eq!(value2, 200, "Lookup 'cd' should return 200");
 }

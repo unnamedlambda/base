@@ -8,9 +8,9 @@ mod units;
 
 use crate::units::{
     computational_unit_task_mailbox, ffi_unit_task_mailbox, file_unit_task_mailbox,
-    gpu_unit_task_mailbox, memory_unit_task_mailbox, network_unit_task_mailbox,
-    read_null_terminated_string_from_slice, simd_unit_task_mailbox, Broadcast, Mailbox,
-    SharedMemory,
+    gpu_unit_task_mailbox, hash_table_unit_task_mailbox, memory_unit_task_mailbox,
+    network_unit_task_mailbox, read_null_terminated_string_from_slice, simd_unit_task_mailbox,
+    Broadcast, Mailbox, SharedMemory,
 };
 
 #[derive(Debug)]
@@ -100,6 +100,21 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
+    if algorithm.hash_table_assignments.is_empty() {
+        algorithm.hash_table_assignments = vec![255; algorithm.actions.len()];
+        for (i, action) in algorithm.actions.iter().enumerate() {
+            match action.kind {
+                Kind::HashTableCreate
+                | Kind::HashTableInsert
+                | Kind::HashTableLookup
+                | Kind::HashTableDelete => {
+                    algorithm.hash_table_assignments[i] = 0;
+                }
+                _ => {}
+            }
+        }
+    }
+
     if algorithm.file_assignments.is_empty() {
         algorithm.file_assignments = vec![255; algorithm.actions.len()];
         let mut unit = 0u8;
@@ -172,6 +187,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let ffi_assignments = Arc::new(algorithm.ffi_assignments.clone());
     let computational_assignments = Arc::new(algorithm.computational_assignments.clone());
     let memory_assignments = Arc::new(algorithm.memory_assignments.clone());
+    let hash_table_assignments = Arc::new(algorithm.hash_table_assignments.clone());
 
     let gpu_mailboxes: Vec<_> = (0..algorithm.units.gpu_units)
         .map(|_| Arc::new(Mailbox::new()))
@@ -192,6 +208,9 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
     let memory_mailboxes: Vec<_> = (0..algorithm.units.memory_units)
+        .map(|_| Arc::new(Mailbox::new()))
+        .collect();
+    let hash_table_mailboxes: Vec<_> = (0..algorithm.units.hash_table_units)
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
 
@@ -298,6 +317,14 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 actions,
                 shared,
             );
+        }));
+    }
+
+    for mailbox in hash_table_mailboxes.iter().cloned() {
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        thread_handles.push(std::thread::spawn(move || {
+            hash_table_unit_task_mailbox(mailbox, actions, shared);
         }));
     }
 
@@ -495,6 +522,25 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                         memory_mailboxes[unit_id].post(start, end, flag);
                     }
+                    7 => {
+                        if hash_table_mailboxes.is_empty() {
+                            pc += 1;
+                            continue;
+                        }
+
+                        let assigned = hash_table_assignments
+                            .get(pc)
+                            .copied()
+                            .unwrap_or(0);
+
+                        let unit_id = if assigned == 255 {
+                            0
+                        } else {
+                            (assigned as usize).min(hash_table_mailboxes.len() - 1)
+                        };
+
+                        hash_table_mailboxes[unit_id].post(start, end, flag);
+                    }
                     _ => {}
                 }
 
@@ -537,6 +583,9 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         mailbox.shutdown();
     }
     for mailbox in memory_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in hash_table_mailboxes.iter() {
         mailbox.shutdown();
     }
     simd_broadcast.shutdown();

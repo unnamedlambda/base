@@ -304,6 +304,7 @@ def drawAlgorithm : Algorithm :=
       network_units := 1,
       memory_units := 1,
       ffi_units := 1,
+      hash_table_units := 0,
       backends_bits := 0xFFFFFFFF
     },
     simd_assignments := [],
@@ -312,6 +313,7 @@ def drawAlgorithm : Algorithm :=
     file_assignments := [],
     network_assignments := [],
     ffi_assignments := [],
+    hash_table_assignments := [],
     gpu_assignments := [],
     worker_threads := none,
     blocking_threads := none,
