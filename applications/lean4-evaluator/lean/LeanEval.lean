@@ -894,6 +894,28 @@ def NEW_BODY_LEN : Nat :=
   NEW_BODY_INIT_LEN + NEW_BODY_CHECK_OP_LEN +
   NEW_BODY_HANDLE_MUL_LEN + NEW_BODY_HANDLE_ADD_LEN + NEW_BODY_HANDLE_SUB_LEN +
   NEW_BODY_FINALIZE_LEN
+def BINDING_EXPR_CHECK_OP_LEN : Nat :=
+  SKIP_SPACES_LEN + LOAD_CHAR_LEN +
+  SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +        -- NUL check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- semicolon check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- newline check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- star check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- plus check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N      -- minus check
+def BINDING_EXPR_HANDLE_MUL_LEN : Nat :=
+  INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def BINDING_EXPR_HANDLE_ADD_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def BINDING_EXPR_HANDLE_SUB_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def BINDING_EXPR_FINALIZE_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + SIMD_STEP_LEN * 2 + MEM_STEP_LEN + C.SINGLE_ACTION_N
+def BINDING_EXPR_INIT_LEN : Nat :=
+  PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN
+def BINDING_EXPR_LEN : Nat :=
+  BINDING_EXPR_INIT_LEN + BINDING_EXPR_CHECK_OP_LEN +
+  BINDING_EXPR_HANDLE_MUL_LEN + BINDING_EXPR_HANDLE_ADD_LEN + BINDING_EXPR_HANDLE_SUB_LEN +
+  BINDING_EXPR_FINALIZE_LEN
 def LET_PATH_LEN : Nat :=
   HASH_STEP_LEN +                                  -- create hash table
   INC_POS_LEN * 4 +                                -- skip "let "
@@ -902,10 +924,10 @@ def LET_PATH_LEN : Nat :=
   INC_POS_LEN * 4 +                                -- skip " := "
   SKIP_SPACES_LEN +                                 -- skip spaces before binding value
   MEM_STEP_LEN +                                    -- save identifier buffer
-  PARSE_ATOM_LEN +                                  -- parse binding value (supports vars)
+  BINDING_EXPR_LEN +                                -- parse binding expression (terminates on ;)
   MEM_STEP_LEN +                                    -- restore identifier buffer
   MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN +    -- store val, insert, clear accum
-  LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + -- semicolon check
+  LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + -- semicolon check (still needed)
   INC_POS_LEN + SKIP_SPACES_LEN +                  -- skip semicolon + spaces
   LET_CHECK_LEN + C.SINGLE_ACTION_N +              -- check for another 'let'
   NEW_BODY_LEN
@@ -1286,6 +1308,91 @@ def parseAtomBlock (start done : Nat) : List Action :=
     simdStep LoadHtResultVal ++ simdStep StoreAccumFromHtVal
   init ++ p0 ++ p1 ++ p2 ++ p3 ++ p4 ++ p5 ++ p6 ++ p7 ++ p8 ++ p9 ++ p8b ++ p9b ++ p8c ++ p9c ++ p10 ++ p10b ++ p11 ++ lookup
 
+def parseBindingExprBlock (start done : Nat) : List Action :=
+  -- Parse first atom → TERM
+  let parseStart := start
+  let parseDone := parseStart + PARSE_ATOM_LEN
+  let termStart := parseDone
+  let checkOpStart := termStart + TERM_FROM_ACCUM_LEN
+  -- Check operator positions
+  let checkOpSkipEnd := checkOpStart + SKIP_SPACES_LEN
+  let checkOpLoadCharEnd := checkOpSkipEnd + LOAD_CHAR_LEN
+  let semicolonCheckStart := checkOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let newlineCheckStart := semicolonCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let starCheckStart := newlineCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let plusCheckStart := starCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let minusCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  -- Handler positions
+  let handleMulStart := checkOpStart + BINDING_EXPR_CHECK_OP_LEN
+  let handleAddStart := handleMulStart + BINDING_EXPR_HANDLE_MUL_LEN
+  let handleSubStart := handleAddStart + BINDING_EXPR_HANDLE_ADD_LEN
+  let finalizeStart := handleSubStart + BINDING_EXPR_HANDLE_SUB_LEN
+  -- Mul handler internals
+  let mulSkipStart := handleMulStart + INC_POS_LEN
+  let mulAtomStart := mulSkipStart + SKIP_SPACES_LEN
+  let mulAtomDone := mulAtomStart + PARSE_ATOM_LEN
+  -- Add handler internals
+  let addIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
+  let addSkipStart := addIncStart + INC_POS_LEN
+  let addAtomStart := addSkipStart + SKIP_SPACES_LEN
+  let addAtomDone := addAtomStart + PARSE_ATOM_LEN
+  -- Sub handler internals
+  let subIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
+  let subSkipStart := subIncStart + INC_POS_LEN
+  let subAtomStart := subSkipStart + SKIP_SPACES_LEN
+  let subAtomDone := subAtomStart + PARSE_ATOM_LEN
+
+  -- === Emit actions ===
+  -- Parse first atom, store as TERM
+  parseAtomBlock parseStart parseDone ++
+  termFromAccumBlock ++
+  -- Check operator
+  skipSpacesBlock checkOpStart checkOpSkipEnd ++
+  loadChar ++
+  -- NUL check (terminate)
+  simdStep ClearCharBuf ++
+  [jumpIfN L.CHAR_BUF semicolonCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  -- Semicolon check (terminate)
+  simdStep LoadSemicolon ++ simdStep SubCharSemicolon ++ simdStep StoreDigitCountFromSemicolon ++
+  [jumpIfN L.DIGIT_COUNT newlineCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  -- Newline check (terminate)
+  simdStep LoadBaseForNewlineCheck ++ simdStep SubCharNewline ++ simdStep StoreDigitCountFromNewline ++
+  [jumpIfN L.DIGIT_COUNT starCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  -- Star check (mul)
+  simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
+  [jumpIfN L.DIGIT_COUNT plusCheckStart] ++ [jumpIfN L.CONST_ONE handleMulStart] ++
+  -- Plus check
+  simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
+  [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
+  -- Minus check
+  simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
+  [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
+  -- handleMul: incPos, skip spaces, parse atom, multiply into term, loop
+  incPos ++
+  skipSpacesBlock mulSkipStart mulAtomStart ++
+  parseAtomBlock mulAtomStart mulAtomDone ++
+  multiplyTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- handleAdd: flush term to result, incPos, skip spaces, parse atom, new term, loop
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock addSkipStart addAtomStart ++
+  parseAtomBlock addAtomStart addAtomDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- handleSub: flush term to result, incPos, skip spaces, parse atom, negate to term, loop
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock subSkipStart subAtomStart ++
+  parseAtomBlock subAtomStart subAtomDone ++
+  negateAccumToTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- finalize: flush final term to ACCUM (not RESULT, since we're just evaluating the binding value)
+  addTermToResultBlock ++
+  simdStep LoadResultForItoa ++ simdStep StoreAccumFromResult ++
+  memStep ClearResult ++
+  [jumpIfN L.CONST_ONE done]
+
 def letPathBlock (loopStart outputStart : Nat) : List Action :=
   -- Create hash table
   let letBindingLoop := loopStart + HASH_STEP_LEN
@@ -1298,12 +1405,12 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   let identDone := identLoopStart + IDENT_LOOP_LEN
   -- Skip " := " (4 chars)
   let skipAssignDone := identDone + INC_POS_LEN * 4
-  -- Skip spaces, save identifier, parse binding value (with var support), restore identifier
+  -- Skip spaces, save identifier, parse binding expression (full expr support), restore identifier
   let skipSpacesStart := skipAssignDone
   let saveIdentStart := skipSpacesStart + SKIP_SPACES_LEN
-  let parseValueStart := saveIdentStart + MEM_STEP_LEN
-  let parseValueDone := parseValueStart + PARSE_ATOM_LEN
-  let restoreIdentStart := parseValueDone
+  let parseExprStart := saveIdentStart + MEM_STEP_LEN
+  let parseExprDone := parseExprStart + BINDING_EXPR_LEN
+  let restoreIdentStart := parseExprDone
   let afterRestore := restoreIdentStart + MEM_STEP_LEN
   -- Store value, insert into hash table, clear accum
   let afterInsert := afterRestore + MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN
@@ -1361,7 +1468,7 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   incPos ++ incPos ++ incPos ++ incPos ++
   skipSpacesBlock skipSpacesStart saveIdentStart ++
   memStep SaveIdentBuf ++
-  parseAtomBlock parseValueStart parseValueDone ++
+  parseBindingExprBlock parseExprStart parseExprDone ++
   memStep RestoreIdentBuf ++
   -- Store to hash table
   memStep StoreAccumToHtVal ++ hashStepInsert ++ memStep ClearAccum ++

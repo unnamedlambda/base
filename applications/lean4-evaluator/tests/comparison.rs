@@ -524,3 +524,38 @@ fn test_eval_let_var_ref_precedence() {
     compare("#eval let a := 2; let b := a; let c := 3; a + b * c");
 }
 
+#[test]
+fn test_eval_let_expr_add_in_binding() {
+    compare("#eval let x := 2 + 3; x");
+}
+
+#[test]
+fn test_eval_let_expr_mul_in_binding() {
+    compare("#eval let x := 4 * 5; x");
+}
+
+#[test]
+fn test_eval_let_expr_sub_in_binding() {
+    compare("#eval let x := 10 - 4; x");
+}
+
+#[test]
+fn test_eval_let_expr_precedence_in_binding() {
+    compare("#eval let x := 2 + 3 * 4; x");
+}
+
+#[test]
+fn test_eval_let_expr_var_in_binding() {
+    compare("#eval let a := 2; let b := a * 3; b");
+}
+
+#[test]
+fn test_eval_let_expr_complex_in_binding() {
+    compare("#eval let a := 10; let b := 5; let c := a - b * 2; c");
+}
+
+#[test]
+fn test_eval_let_expr_chain() {
+    compare("#eval let x := 1 + 2; let y := x * 3; let z := y - 4; z");
+}
+
