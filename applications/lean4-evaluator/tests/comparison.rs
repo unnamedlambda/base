@@ -413,3 +413,73 @@ fn test_eval_paren_complex() {
 fn test_eval_paren_sub_mul() {
     compare("#eval (5 - 2) * (4 + 1)");
 }
+
+#[test]
+fn test_eval_let_two_vars_add() {
+    compare("#eval let x := 5; let y := 10; x + y");
+}
+
+#[test]
+fn test_eval_let_two_vars_mul() {
+    compare("#eval let foo := 3; let bar := 4; foo * bar");
+}
+
+#[test]
+fn test_eval_let_three_vars_add() {
+    compare("#eval let x := 1; let y := 2; let z := 3; x + y + z");
+}
+
+#[test]
+fn test_eval_let_multichar_name() {
+    compare("#eval let abc := 42; abc + 0");
+}
+
+#[test]
+fn test_eval_let_var_sub() {
+    compare("#eval let a := 20; let b := 7; a - b");
+}
+
+#[test]
+fn test_eval_let_var_only() {
+    compare("#eval let x := 99; x");
+}
+
+#[test]
+fn test_eval_let_mixed_ops() {
+    compare("#eval let a := 10; let b := 3; a + b - 2");
+}
+
+#[test]
+fn test_eval_let_var_mul_var() {
+    compare("#eval let x := 6; let y := 7; x * y");
+}
+
+#[test]
+fn test_eval_let_four_vars() {
+    compare("#eval let a := 1; let b := 2; let c := 3; let d := 4; a + b + c + d");
+}
+
+#[test]
+fn test_eval_let_large_values() {
+    compare("#eval let x := 1000; let y := 2000; x + y");
+}
+
+#[test]
+fn test_eval_let_var_times_number() {
+    compare("#eval let x := 5; x * 3");
+}
+
+#[test]
+fn test_eval_let_number_plus_var() {
+    compare("#eval let x := 7; 3 + x");
+}
+
+#[test]
+fn test_eval_let_long_name() {
+    compare("#eval let total := 100; let discount := 15; total - discount");
+}
+
+#[test]
+fn test_eval_let_five_vars() {
+    compare("#eval let a := 1; let b := 2; let c := 3; let d := 4; let e := 5; a + b + c + d + e");
+}

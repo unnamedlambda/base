@@ -128,6 +128,18 @@ def OFFSET_CONST_SEMICOLON_U32 : UInt32 := 0x0560
 def OFFSET_CONST_F_U32 : UInt32 := 0x0570
 def OFFSET_SAVED_RESULT_U32 : UInt32 := 0x0580
 def OFFSET_SAVED_TERM_U32 : UInt32 := 0x0590
+def OFFSET_FLAG_HASH_U32 : UInt32 := 0x05A0
+def OFFSET_HT_HANDLE_U32 : UInt32 := 0x05B0
+def OFFSET_IDENTIFIER_BUF_U32 : UInt32 := 0x05C0
+def OFFSET_HT_VAL_BUF_U32 : UInt32 := 0x05E0
+def OFFSET_HT_RESULT_BUF_U32 : UInt32 := 0x05F0
+def OFFSET_HT_RESULT_VAL_U32 : UInt32 := 0x05F4
+def OFFSET_IDENT_WRITE_PTR_U32 : UInt32 := 0x0600
+
+def IDENT_BUF_SIZE_N : Nat := 32
+def HASH_TABLE_UNIT_ID_N : Nat := 7
+def HASH_TABLE_UNIT_COUNT_N : Nat := 1
+def HASH_STEP_ACTIONS_N : Nat := 2
 
 end C
 
@@ -187,6 +199,13 @@ structure Layout where
   CONST_F : UInt32
   SAVED_RESULT : UInt32
   SAVED_TERM : UInt32
+  FLAG_HASH : UInt32
+  HT_HANDLE : UInt32
+  IDENTIFIER_BUF : UInt32
+  HT_VAL_BUF : UInt32
+  HT_RESULT_BUF : UInt32
+  HT_RESULT_VAL : UInt32
+  IDENT_WRITE_PTR : UInt32
 
 
 def layout : Layout := {
@@ -234,7 +253,14 @@ def layout : Layout := {
   CONST_SEMICOLON := C.OFFSET_CONST_SEMICOLON_U32,
   CONST_F := C.OFFSET_CONST_F_U32,
   SAVED_RESULT := C.OFFSET_SAVED_RESULT_U32,
-  SAVED_TERM := C.OFFSET_SAVED_TERM_U32
+  SAVED_TERM := C.OFFSET_SAVED_TERM_U32,
+  FLAG_HASH := C.OFFSET_FLAG_HASH_U32,
+  HT_HANDLE := C.OFFSET_HT_HANDLE_U32,
+  IDENTIFIER_BUF := C.OFFSET_IDENTIFIER_BUF_U32,
+  HT_VAL_BUF := C.OFFSET_HT_VAL_BUF_U32,
+  HT_RESULT_BUF := C.OFFSET_HT_RESULT_BUF_U32,
+  HT_RESULT_VAL := C.OFFSET_HT_RESULT_VAL_U32,
+  IDENT_WRITE_PTR := C.OFFSET_IDENT_WRITE_PTR_U32
 }
 
 def L : Layout := layout
@@ -293,6 +319,12 @@ def leanEvalPayloads : List UInt8 :=
   let constF := int32ToBytes16 C.ASCII_F_I
   let savedResult := zeros C.SIZE_16_N
   let savedTerm := zeros C.SIZE_16_N
+  let flagHash := zeros C.SIZE_16_N
+  let htHandle := zeros C.SIZE_16_N
+  let identBuf := zeros C.IDENT_BUF_SIZE_N
+  let htValBuf := zeros C.SIZE_16_N
+  let htResultBuf := zeros C.SIZE_16_N
+  let identWritePtr := zeros C.SIZE_16_N
 
   ffiPtr ++ outputPath ++ argvParams ++ filenameBuf ++ ffiResult ++
     flagFfi ++ flagFile ++ flagSimd ++ flagMem ++ constZero ++ sourceBuf ++
@@ -301,7 +333,8 @@ def leanEvalPayloads : List UInt8 :=
     digitCount ++ outputPos ++ outputBuf ++ outputPad ++ constRParen ++ constLParen ++
     term ++ constStar ++ constMinus ++ constL ++ constE ++ constColon ++
     constEquals ++ constIChar ++ constNChar ++ constX ++ varVal ++ constSemicolon ++
-    constF ++ savedResult ++ savedTerm
+    constF ++ savedResult ++ savedTerm ++
+    flagHash ++ htHandle ++ identBuf ++ htValBuf ++ htResultBuf ++ identWritePtr
 
 def fence : Action := { kind := .Fence, dst := ZERO, src := ZERO, offset := ZERO, size := ZERO }
 
@@ -425,6 +458,18 @@ inductive WorkOp where
   | StoreResultFromTerm
   | StoreTermFromResult
   | StoreAccumFromResult
+  | ClearIdentBuf
+  | InitIdentWritePtr
+  | StoreCharToIdent
+  | LoadIdentWritePtr
+  | AddIdentWritePtrOne
+  | StoreIdentWritePtr
+  | StoreAccumToHtVal
+  | LoadHtResultLen
+  | AddHtResultLenOne
+  | StoreHtCheckResult
+  | LoadHtResultVal
+  | StoreAccumFromHtVal
   deriving BEq, DecidableEq, Repr
 
 open WorkOp
@@ -569,7 +614,19 @@ def workOps : List WorkOp := [
   RestoreTerm,
   StoreResultFromTerm,
   StoreTermFromResult,
-  StoreAccumFromResult
+  StoreAccumFromResult,
+  ClearIdentBuf,
+  InitIdentWritePtr,
+  StoreCharToIdent,
+  LoadIdentWritePtr,
+  AddIdentWritePtrOne,
+  StoreIdentWritePtr,
+  StoreAccumToHtVal,
+  LoadHtResultLen,
+  AddHtResultLenOne,
+  StoreHtCheckResult,
+  LoadHtResultVal,
+  StoreAccumFromHtVal
 ]
 
 def workIndex (op : WorkOp) : Nat :=
@@ -695,6 +752,18 @@ def opToAction : WorkOp -> Action
   | StoreResultFromTerm => w .SimdStoreI32 (r RT) (r RA) L.RESULT SIZE_NONE
   | StoreTermFromResult => w .SimdStoreI32 (r RV) (r RA) L.TERM SIZE_NONE
   | StoreAccumFromResult => w .SimdStoreI32 (r RV) (r RA) L.ACCUM SIZE_NONE
+  | ClearIdentBuf => w .MemWrite ZERO L.IDENTIFIER_BUF ZERO (u32 C.IDENT_BUF_SIZE_N)
+  | InitIdentWritePtr => w .MemWrite ZERO L.IDENT_WRITE_PTR ZERO SIZE_I32
+  | StoreCharToIdent => w .MemStoreIndirect L.CHAR_BUF L.IDENT_WRITE_PTR L.IDENTIFIER_BUF SIZE_BYTE
+  | LoadIdentWritePtr => w .SimdLoadI32 L.IDENT_WRITE_PTR (r RJ) ZERO SIZE_NONE
+  | AddIdentWritePtrOne => w .SimdAddI32 (r RJ) (r RL) (r RK) SIZE_NONE
+  | StoreIdentWritePtr => w .SimdStoreI32 (r RL) (r RA) L.IDENT_WRITE_PTR SIZE_NONE
+  | StoreAccumToHtVal => w .MemCopy L.ACCUM L.HT_VAL_BUF ZERO SIZE_I32
+  | LoadHtResultLen => w .SimdLoadI32 L.HT_RESULT_BUF (r RS) ZERO SIZE_NONE
+  | AddHtResultLenOne => w .SimdAddI32 (r RS) (r RU) (r RK) SIZE_NONE
+  | StoreHtCheckResult => w .SimdStoreI32 (r RU) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | LoadHtResultVal => w .SimdLoadI32 L.HT_RESULT_VAL (r RS) ZERO SIZE_NONE
+  | StoreAccumFromHtVal => w .SimdStoreI32 (r RS) (r RA) L.ACCUM SIZE_NONE
 
 
 def workActions : List Action := workOps.map opToAction
@@ -705,6 +774,8 @@ def FILE_STEP_LEN : Nat := C.SIMD_STEP_ACTIONS_N
 def FFI_STEP_LEN : Nat := C.SIMD_STEP_ACTIONS_N
 def LOAD_CHAR_LEN : Nat := MEM_STEP_LEN + SIMD_STEP_LEN
 def INC_POS_LEN : Nat := SIMD_STEP_LEN * C.INC_POS_SIMD_STEPS_N
+def INC_IDENT_WRITE_PTR_LEN : Nat := SIMD_STEP_LEN * C.INC_POS_SIMD_STEPS_N
+def HASH_STEP_LEN : Nat := C.HASH_STEP_ACTIONS_N
 def JUMP_PAD_LEN : Nat := C.JUMP_PAD_ACTIONS_N
 def SKIP_SPACES_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * C.SKIP_SPACES_SIMD_STEPS_N + C.SINGLE_ACTION_N + INC_POS_LEN + C.SINGLE_ACTION_N
 def PARSE_NUMBER_LEN : Nat :=
@@ -784,23 +855,45 @@ def HANDLE_SUBTRACT_LEN : Nat := ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPA
 def FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
 def CHECK_OPERATOR_LEN : Nat := SKIP_SPACES_LEN + LOAD_CHAR_LEN + SIMD_STEP_LEN * 6 + 4 + CHECK_MINUS_LEN + C.SINGLE_ACTION_N
 def LET_CHECK_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
-def SKIP_LET_KEYWORD_LEN : Nat := INC_POS_LEN * 9  -- skip "let x := "
-def STORE_ACCUM_TO_VAR_VAL_LEN : Nat := SIMD_STEP_LEN * 2 + MEM_STEP_LEN
-def LET_COMPUTE_LEN : Nat :=
-  C.SINGLE_ACTION_N +                              -- checkFlag1
-  SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N +          -- addPath
-  SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N +          -- checkFlag2
-  SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N +          -- mulPath
-  SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N            -- subPath
+def IDENT_LOOP_LEN : Nat :=
+  LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +
+  MEM_STEP_LEN + INC_IDENT_WRITE_PTR_LEN + INC_POS_LEN + C.SINGLE_ACTION_N
+def PARSE_ATOM_INIT_LEN : Nat := MEM_STEP_LEN * 2
+def PARSE_ATOM_EXTRA_LEN : Nat := MEM_STEP_LEN + INC_IDENT_WRITE_PTR_LEN
+def PARSE_ATOM_LOOKUP_LEN : Nat :=
+  HASH_STEP_LEN + SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N + SIMD_STEP_LEN * 2
+def PARSE_ATOM_LEN : Nat :=
+  PARSE_ATOM_INIT_LEN + PARSE_NUMBER_LEN + PARSE_ATOM_EXTRA_LEN + PARSE_ATOM_LOOKUP_LEN
+def BODY_OP_CHECK_LEN : Nat :=
+  SKIP_SPACES_LEN + LOAD_CHAR_LEN +
+  SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +  -- NUL check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +  -- newline check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N +  -- plus
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N +  -- star
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN  -- minus
+def BODY_OPERAND_PARSE_LEN : Nat :=
+  INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN
+def BODY_ADD_PATH_LEN : Nat := ADD_TO_RESULT_LEN + C.SINGLE_ACTION_N
+def BODY_MUL_CHECK_LEN : Nat := SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N
+def BODY_MUL_PATH_LEN : Nat := ADD_TO_RESULT_LEN + C.SINGLE_ACTION_N
+def BODY_SUB_PATH_LEN : Nat := NEGATE_ACCUM_TO_TERM_LEN + ADD_TERM_TO_RESULT_LEN + MEM_STEP_LEN + C.SINGLE_ACTION_N
+def BODY_OP_LOOP_LEN : Nat :=
+  BODY_OP_CHECK_LEN + BODY_OPERAND_PARSE_LEN + C.SINGLE_ACTION_N +
+  BODY_ADD_PATH_LEN + BODY_MUL_CHECK_LEN + BODY_MUL_PATH_LEN + BODY_SUB_PATH_LEN
+def BODY_INIT_LEN : Nat :=
+  SKIP_SPACES_LEN + PARSE_ATOM_LEN + SIMD_STEP_LEN * 2 + MEM_STEP_LEN
 def LET_PATH_LEN : Nat :=
-  SKIP_LET_KEYWORD_LEN +
-  SKIP_SPACES_LEN + PARSE_NUMBER_LEN +             -- parse binding value
-  STORE_ACCUM_TO_VAR_VAL_LEN +
-  MEM_STEP_LEN +                                   -- clear LEFT_VAL
-  FIND_OPERATOR_LEN +
-  INC_POS_LEN +                                    -- skip operator
-  SKIP_SPACES_LEN + PARSE_NUMBER_LEN +             -- parse operand
-  LET_COMPUTE_LEN
+  HASH_STEP_LEN +                                  -- create hash table
+  INC_POS_LEN * 4 +                                -- skip "let "
+  MEM_STEP_LEN * 2 +                               -- clear ident buf + init write ptr
+  IDENT_LOOP_LEN +                                  -- parse identifier
+  INC_POS_LEN * 4 +                                -- skip " := "
+  SKIP_SPACES_LEN + PARSE_NUMBER_LEN +              -- parse binding value
+  MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN +    -- store val, insert, clear accum
+  LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + -- semicolon check
+  INC_POS_LEN + SKIP_SPACES_LEN +                  -- skip semicolon + spaces
+  LET_CHECK_LEN + C.SINGLE_ACTION_N +              -- check for another 'let'
+  BODY_INIT_LEN + BODY_OP_LOOP_LEN
 
 def PAREN_CHECK_LEN : Nat :=
   LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N +
@@ -891,6 +984,7 @@ def SIMD_UNIT_ID : UInt32 := u32 C.SIMD_UNIT_ID_N
 def FILE_UNIT_ID : UInt32 := u32 C.FILE_UNIT_ID_N
 def FFI_UNIT_ID : UInt32 := u32 C.FFI_UNIT_ID_N
 def MEM_UNIT_ID : UInt32 := u32 C.MEM_UNIT_ID_N
+def HT_UNIT_ID : UInt32 := u32 C.HASH_TABLE_UNIT_ID_N
 
 def simd (op : WorkOp) : Action := async SIMD_UNIT_ID op L.FLAG_SIMD
 
@@ -916,7 +1010,24 @@ def fileStep (op : WorkOp) : List Action := [file op, wait L.FLAG_FILE]
 
 def ffiStep (op : WorkOp) : List Action := [ffi op, wait L.FLAG_FFI]
 
+def HASH_WORK_BASE : Nat := MAIN_FLOW_LEN + workOps.length
+
+def htAsync (idx : Nat) : Action :=
+  { kind := .AsyncDispatch, dst := HT_UNIT_ID, src := u32 (HASH_WORK_BASE + idx), offset := L.FLAG_HASH, size := SIZE_NONE }
+
+def hashStepCreate : List Action := [htAsync 0, wait L.FLAG_HASH]
+def hashStepInsert : List Action := [htAsync 1, wait L.FLAG_HASH]
+def hashStepLookup : List Action := [htAsync 2, wait L.FLAG_HASH]
+
+def htWorkActions : List Action := [
+  w .HashTableCreate ZERO L.HT_HANDLE ZERO SIZE_NONE,
+  w .HashTableInsert L.HT_VAL_BUF L.IDENTIFIER_BUF ZERO (u32 (32 * 65536 + 4)),
+  w .HashTableLookup L.HT_RESULT_BUF L.IDENTIFIER_BUF ZERO (u32 (32 * 65536 + 8))
+]
+
 def incPos : List Action := simdStep LoadPos ++ simdStep LoadOne ++ simdStep AddPosOne ++ simdStep StorePos
+
+def incIdentWritePtr : List Action := simdStep LoadIdentWritePtr ++ simdStep LoadOne ++ simdStep AddIdentWritePtrOne ++ simdStep StoreIdentWritePtr
 
 def loadChar : List Action := memStep MemCopyChar ++ simdStep LoadChar
 
@@ -1118,73 +1229,161 @@ def letCheckBlock (normalStart : Nat) : List Action :=
   simdStep LoadL ++ simdStep SubCharL ++ simdStep StoreDigitCountFromL ++
   [jumpIfN L.DIGIT_COUNT normalStart]
 
-def storeAccumToVarValBlock : List Action :=
-  simdStep LoadAccumForRight ++ simdStep StoreVarValFromAccum ++
-  memStep ClearAccum
+def parseAtomBlock (start done : Nat) : List Action :=
+  let innerStart := start + PARSE_ATOM_INIT_LEN
+  let lookupStart := innerStart + PARSE_NUMBER_LEN + PARSE_ATOM_EXTRA_LEN
+  let htFound := lookupStart + HASH_STEP_LEN + SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  -- Init: clear identifier buffer and write pointer
+  let init := memStep ClearIdentBuf ++ memStep InitIdentWritePtr
+  -- Inner loop (like parseNumberBlock but terminators go to lookupStart, p10b added)
+  let p0 := loadChar ++ simdStep ClearCharBuf
+  let newlineCheck := innerStart + (p0.length + JUMP_PAD_LEN)
+  let p1 := jumpPad (jumpIfN L.CHAR_BUF newlineCheck) (jumpIfN L.CONST_ONE lookupStart)
+  let p2 := simdStep LoadBaseForNewlineCheck ++ simdStep SubCharNewline ++ simdStep StoreDigitCountFromNewline
+  let spaceCheck := innerStart + (p0.length + p1.length + p2.length + JUMP_PAD_LEN)
+  let p3 := jumpPad (jumpIfN L.DIGIT_COUNT spaceCheck) (jumpIfN L.CONST_ONE lookupStart)
+  let p4 := simdStep LoadSpace ++ simdStep SubCharSpace ++ simdStep StoreDigitCountFromSpace
+  let plusCheck := innerStart + (p0.length + p1.length + p2.length + p3.length + p4.length + JUMP_PAD_LEN)
+  let p5 := jumpPad (jumpIfN L.DIGIT_COUNT plusCheck) (jumpIfN L.CONST_ONE lookupStart)
+  let p6 := simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus
+  let starCheck := innerStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + JUMP_PAD_LEN)
+  let p7 := jumpPad (jumpIfN L.DIGIT_COUNT starCheck) (jumpIfN L.CONST_ONE lookupStart)
+  let p8 := simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar
+  let minusCheck := innerStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + p7.length + p8.length + JUMP_PAD_LEN)
+  let p9 := jumpPad (jumpIfN L.DIGIT_COUNT minusCheck) (jumpIfN L.CONST_ONE lookupStart)
+  let p8b := simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus
+  let semicolonCheck := innerStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + p7.length + p8.length + p9.length + p8b.length + JUMP_PAD_LEN)
+  let p9b := jumpPad (jumpIfN L.DIGIT_COUNT semicolonCheck) (jumpIfN L.CONST_ONE lookupStart)
+  let p8c := simdStep LoadSemicolon ++ simdStep SubCharSemicolon ++ simdStep StoreDigitCountFromSemicolon
+  let accumulate := innerStart + (p0.length + p1.length + p2.length + p3.length + p4.length + p5.length + p6.length + p7.length + p8.length + p9.length + p8b.length + p9b.length + p8c.length + JUMP_PAD_LEN)
+  let p9c := jumpPad (jumpIfN L.DIGIT_COUNT accumulate) (jumpIfN L.CONST_ONE lookupStart)
+  -- Digit accumulation (also used for letter chars - ACCUM gets garbage for letters, overridden by hash lookup)
+  let p10 := simdStep LoadAsciiZero ++ simdStep SubCharZero ++ simdStep LoadBase ++ simdStep LoadAccum ++ simdStep MulAccumBase ++ simdStep AddAccumDigit ++ simdStep StoreAccum
+  -- Store char to identifier buffer and advance write pointer
+  let p10b := memStep StoreCharToIdent ++ incIdentWritePtr
+  let p11 := incPos ++ [jumpIfN L.CONST_ONE innerStart, fence]
+  -- Hash table lookup: check if identifier exists
+  let lookup :=
+    hashStepLookup ++
+    simdStep LoadOne ++ simdStep LoadHtResultLen ++ simdStep AddHtResultLenOne ++ simdStep StoreHtCheckResult ++
+    [jumpIfN L.DIGIT_COUNT htFound] ++
+    [jumpIfN L.CONST_ONE done] ++
+    simdStep LoadHtResultVal ++ simdStep StoreAccumFromHtVal
+  init ++ p0 ++ p1 ++ p2 ++ p3 ++ p4 ++ p5 ++ p6 ++ p7 ++ p8 ++ p9 ++ p8b ++ p9b ++ p8c ++ p9c ++ p10 ++ p10b ++ p11 ++ lookup
 
 def letPathBlock (loopStart outputStart : Nat) : List Action :=
-  -- Skip "let x := " (9 chars)
-  let skipKeyword := incPos ++ incPos ++ incPos ++ incPos ++ incPos ++ incPos ++ incPos ++ incPos ++ incPos
-  let skipKeywordDone := loopStart + SKIP_LET_KEYWORD_LEN
-
-  -- Skip spaces and parse binding value
-  let parseBindingStart := skipKeywordDone + SKIP_SPACES_LEN
+  -- Create hash table
+  let letBindingLoop := loopStart + HASH_STEP_LEN
+  -- Skip "let " (4 chars)
+  let clearIdentStart := letBindingLoop + INC_POS_LEN * 4
+  -- Clear identifier buffer and write pointer
+  let identLoopStart := clearIdentStart + MEM_STEP_LEN * 2
+  -- Identifier parse loop: read chars until space
+  let identContinue := identLoopStart + LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let identDone := identLoopStart + IDENT_LOOP_LEN
+  -- Skip " := " (4 chars)
+  let skipAssignDone := identDone + INC_POS_LEN * 4
+  -- Parse binding value
+  let parseBindingStart := skipAssignDone + SKIP_SPACES_LEN
   let parseBindingDone := parseBindingStart + PARSE_NUMBER_LEN
-  let skipToBinding := skipSpacesBlock skipKeywordDone parseBindingStart
-  let parseBinding := parseNumberBlock parseBindingStart parseBindingDone
+  -- Store value, insert into hash table, clear accum
+  let afterInsert := parseBindingDone + MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN
+  -- Semicolon check
+  let bodyStart := loopStart + LET_PATH_LEN - BODY_INIT_LEN - BODY_OP_LOOP_LEN
+  let afterSemicolonCheck := afterInsert + LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
+  -- After semicolon: skip, spaces, check for 'let'
+  let spacesAfterSemicolonStart := afterSemicolonCheck + INC_POS_LEN
+  let spacesAfterSemicolonDone := spacesAfterSemicolonStart + SKIP_SPACES_LEN
+  -- Body expression evaluation
+  let bodySkipEnd := bodyStart + SKIP_SPACES_LEN
+  let bodyParseStart := bodySkipEnd
+  let bodyParseDone := bodyParseStart + PARSE_ATOM_LEN
+  let bodyOpLoop := bodyParseDone + SIMD_STEP_LEN * 2 + MEM_STEP_LEN
+  -- Body operator check positions
+  let bodyOpSkipEnd := bodyOpLoop + SKIP_SPACES_LEN
+  let bodyOpLoadCharEnd := bodyOpSkipEnd + LOAD_CHAR_LEN
+  let newlineCheckStart := bodyOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let plusCheckStart := newlineCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let starCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N
+  let minusCheckStart := starCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N
+  let operandParseStart := bodyOpLoop + BODY_OP_CHECK_LEN
+  -- Operand parse positions
+  let operandSkipStart := operandParseStart + INC_POS_LEN
+  let operandAtomStart := operandSkipStart + SKIP_SPACES_LEN
+  let operandAtomDone := operandAtomStart + PARSE_ATOM_LEN
+  -- Flag dispatch positions
+  let flagDispatchStart := operandAtomDone + C.SINGLE_ACTION_N
+  let notAddStart := flagDispatchStart + BODY_ADD_PATH_LEN
+  let subStart := notAddStart + BODY_MUL_CHECK_LEN + BODY_MUL_PATH_LEN
 
-  -- Store ACCUM to VAR_VAL and clear ACCUM
-  let storeVarVal := storeAccumToVarValBlock
-  let storeVarValDone := parseBindingDone + STORE_ACCUM_TO_VAR_VAL_LEN
-
-  -- Clear LEFT_VAL flag
-  let clearFlag := memStep ClearLeftVal
-  let clearFlagDone := storeVarValDone + MEM_STEP_LEN
-
-  -- Find operator (will loop until it finds +, *, or - and set LEFT_VAL)
-  let findOpStart := clearFlagDone
-  let findOpDone := findOpStart + FIND_OPERATOR_LEN
-  let findOp := findOperatorBlock findOpStart findOpDone
-
-  -- Skip operator
-  let skipOp := incPos
-  let skipOpDone := findOpDone + INC_POS_LEN
-
-  -- Skip spaces and parse operand
-  let parseOperandStart := skipOpDone + SKIP_SPACES_LEN
-  let parseOperandDone := parseOperandStart + PARSE_NUMBER_LEN
-  let skipToOperand := skipSpacesBlock skipOpDone parseOperandStart
-  let parseOperand := parseNumberBlock parseOperandStart parseOperandDone
-
-  -- Compute result based on LEFT_VAL flag
-  -- LEFT_VAL = 0: add, LEFT_VAL = 1: mul, LEFT_VAL = 2: sub
-  let computeStart := parseOperandDone
-  let addPathLen := SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N
-  let checkFlag2Len := SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N
-  let mulPathLen := SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N
-  let notAddStart := computeStart + C.SINGLE_ACTION_N + addPathLen
-  let subStart := notAddStart + checkFlag2Len + mulPathLen
-  let checkFlag1 := [jumpIfN L.LEFT_VAL notAddStart]
-  let addPath :=
-    simdStep LoadVarVal ++ simdStep LoadAccumForRight ++
-    simdStep AddVarValAccum ++ simdStep StoreResultFromVarValAdd ++
-    [jumpIfN L.CONST_ONE outputStart]
-  let checkFlag2 :=
-    simdStep LoadOne ++ simdStep LoadLeftValForCheck ++
-    simdStep SubLeftValOne ++ simdStep StoreDigitCountFromLeftCheck ++
-    [jumpIfN L.DIGIT_COUNT subStart]
-  let mulPath :=
-    simdStep LoadVarVal ++ simdStep LoadAccumForRight ++
-    simdStep MulVarValAccum ++ simdStep StoreResultFromVarValMul ++
-    [jumpIfN L.CONST_ONE outputStart]
-  let subPath :=
-    simdStep LoadVarVal ++ simdStep LoadAccumForRight ++
-    simdStep SubVarValAccum ++ simdStep StoreResultFromVarValSub ++
-    [jumpIfN L.CONST_ONE outputStart]
-
-  skipKeyword ++ skipToBinding ++ parseBinding ++ storeVarVal ++ clearFlag ++
-  findOp ++ skipOp ++ skipToOperand ++ parseOperand ++
-  checkFlag1 ++ addPath ++ checkFlag2 ++ mulPath ++ subPath
+  -- === Emit actions ===
+  hashStepCreate ++
+  -- letBindingLoop:
+  incPos ++ incPos ++ incPos ++ incPos ++
+  memStep ClearIdentBuf ++ memStep InitIdentWritePtr ++
+  -- identLoop:
+  loadChar ++
+  simdStep LoadSpace ++ simdStep SubCharSpace ++ simdStep StoreDigitCountFromSpace ++
+  [jumpIfN L.DIGIT_COUNT identContinue] ++
+  [jumpIfN L.CONST_ONE identDone] ++
+  memStep StoreCharToIdent ++ incIdentWritePtr ++ incPos ++
+  [jumpIfN L.CONST_ONE identLoopStart] ++
+  -- identDone: skip " := "
+  incPos ++ incPos ++ incPos ++ incPos ++
+  skipSpacesBlock skipAssignDone parseBindingStart ++
+  parseNumberBlock parseBindingStart parseBindingDone ++
+  -- Store to hash table
+  memStep StoreAccumToHtVal ++ hashStepInsert ++ memStep ClearAccum ++
+  -- Semicolon check
+  loadChar ++
+  simdStep LoadSemicolon ++ simdStep SubCharSemicolon ++ simdStep StoreDigitCountFromSemicolon ++
+  [jumpIfN L.DIGIT_COUNT bodyStart] ++
+  -- Semicolon found: skip ; then spaces, check for 'let'
+  incPos ++
+  skipSpacesBlock spacesAfterSemicolonStart spacesAfterSemicolonDone ++
+  loadChar ++
+  simdStep LoadL ++ simdStep SubCharL ++ simdStep StoreDigitCountFromL ++
+  [jumpIfN L.DIGIT_COUNT bodyStart] ++
+  [jumpIfN L.CONST_ONE letBindingLoop] ++
+  -- bodyStart: parse first atom, store as RESULT
+  skipSpacesBlock bodyStart bodySkipEnd ++
+  parseAtomBlock bodyParseStart bodyParseDone ++
+  simdStep LoadAccumForResult ++ simdStep StoreResultFromAccum ++
+  memStep ClearAccum ++
+  -- bodyOpLoop: check operator
+  skipSpacesBlock bodyOpLoop bodyOpSkipEnd ++
+  loadChar ++
+  -- NUL check
+  simdStep ClearCharBuf ++
+  [jumpIfN L.CHAR_BUF newlineCheckStart] ++ [jumpIfN L.CONST_ONE outputStart] ++
+  -- Newline check
+  simdStep LoadBaseForNewlineCheck ++ simdStep SubCharNewline ++ simdStep StoreDigitCountFromNewline ++
+  [jumpIfN L.DIGIT_COUNT plusCheckStart] ++ [jumpIfN L.CONST_ONE outputStart] ++
+  -- Plus check
+  simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
+  [jumpIfN L.DIGIT_COUNT starCheckStart] ++ memStep ClearLeftVal ++ [jumpIfN L.CONST_ONE operandParseStart] ++
+  -- Star check
+  simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
+  [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ memStep SetLeftVal ++ [jumpIfN L.CONST_ONE operandParseStart] ++
+  -- Minus check
+  simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
+  [jumpIfN L.DIGIT_COUNT operandParseStart] ++ memStep SetLeftValTwo ++
+  -- operandParse: skip operator, spaces, parse atom
+  incPos ++
+  skipSpacesBlock operandSkipStart operandAtomStart ++
+  parseAtomBlock operandAtomStart operandAtomDone ++
+  -- Flag dispatch
+  [jumpIfN L.LEFT_VAL notAddStart] ++
+  -- addPath
+  addToResultBlock ++ [jumpIfN L.CONST_ONE bodyOpLoop] ++
+  -- checkFlag2: distinguish mul from sub
+  simdStep LoadOne ++ simdStep LoadLeftValForCheck ++ simdStep SubLeftValOne ++ simdStep StoreDigitCountFromLeftCheck ++
+  [jumpIfN L.DIGIT_COUNT subStart] ++
+  -- mulPath
+  mulResultBlock ++ [jumpIfN L.CONST_ONE bodyOpLoop] ++
+  -- subPath
+  negateAccumToTermBlock ++ addTermToResultBlock ++ memStep ClearAccum ++
+  [jumpIfN L.CONST_ONE bodyOpLoop]
 
 def itoaLoopBlock (loopStart : Nat) : List Action :=
   simdStep LoadResultForItoa ++ simdStep DivResultBase ++ simdStep MulQuotBase ++ simdStep SubResultQuot ++
@@ -1500,7 +1699,7 @@ def actualMainFlow : List Action :=
   output
 
 def leanEvalAlgorithm : Algorithm := {
-  actions := actualMainFlow ++ workActions,
+  actions := actualMainFlow ++ workActions ++ htWorkActions,
   payloads := leanEvalPayloads,
   state := {
     regs_per_unit := C.REGS_PER_UNIT_N,
@@ -1517,7 +1716,7 @@ def leanEvalAlgorithm : Algorithm := {
     network_units := C.NETWORK_UNIT_COUNT_N,
     memory_units := C.MEMORY_UNIT_COUNT_N,
     ffi_units := C.FFI_UNIT_COUNT_N,
-    hash_table_units := 0,
+    hash_table_units := C.HASH_TABLE_UNIT_COUNT_N,
     backends_bits := ZERO
   },
   simd_assignments := [],
