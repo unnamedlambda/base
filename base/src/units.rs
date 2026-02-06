@@ -292,14 +292,16 @@ impl MemoryUnit {
             }
             Kind::MemWrite => {
                 // Write immediate value to memory
-                // dst = destination address, src = immediate value, size = bytes (1, 2, 4, or 8)
+                // dst = destination address, src = immediate value, size = bytes
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 match action.size {
                     1 => *dst_ptr = action.src as u8,
                     2 => std::ptr::write_unaligned(dst_ptr as *mut u16, action.src as u16),
                     4 => std::ptr::write_unaligned(dst_ptr as *mut u32, action.src),
                     8 => std::ptr::write_unaligned(dst_ptr as *mut u64, action.src as u64),
-                    _ => {}
+                    n => {
+                        std::ptr::write_bytes(dst_ptr, action.src as u8, n as usize);
+                    }
                 }
             }
             Kind::MemCopyIndirect => {

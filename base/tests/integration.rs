@@ -2754,3 +2754,52 @@ fn test_hash_table_multiple_keys() {
     assert_eq!(len2, 4, "Lookup 'cd' result length should be 4");
     assert_eq!(value2, 200, "Lookup 'cd' should return 200");
 }
+
+#[test]
+fn test_memwrite_large_size_zeroes_buffer() {
+    // Verify that MemWrite with size > 8 (e.g. 32) correctly fills the buffer.
+    //
+    // Strategy: write a known pattern to a 32-byte buffer, then use MemWrite with
+    // size=32 and src=0 to zero it out, then FileWrite the buffer and verify all zeros.
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("memwrite_large.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_mem = 0u32;
+    let flag_file = 16u32;
+    let buf_addr = 64u32;      // 32-byte buffer to test
+    let filename_addr = 256u32;
+    let buf_size = 32u32;
+
+    let mut payloads = vec![0u8; 512];
+    // Fill the buffer with non-zero pattern so we can verify MemWrite clears it
+    for i in 0..32 {
+        payloads[buf_addr as usize + i] = 0xAA;
+    }
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[256..256 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: MemWrite to verify pattern is there (copy buf to check area first)
+        // Actually, just directly MemWrite size=32 with src=0 to zero the buffer
+        Action { kind: Kind::MemWrite, dst: buf_addr, src: 0, offset: 0, size: buf_size },
+        // 1: FileWrite the buffer to file
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: buf_addr, offset: filename_bytes.len() as u32, size: buf_size },
+        // 2: Dispatch MemWrite
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: flag_mem, size: 1 },
+        // 3: Wait
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 4: Dispatch FileWrite
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: flag_file, size: 1 },
+        // 5: Wait
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "Result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    assert_eq!(contents.len(), 32, "Should have written 32 bytes");
+    assert!(contents.iter().all(|&b| b == 0), "All 32 bytes should be zero after MemWrite with size=32, got: {:?}", contents);
+}
