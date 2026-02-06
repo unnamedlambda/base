@@ -135,6 +135,7 @@ def OFFSET_HT_VAL_BUF_U32 : UInt32 := 0x05E0
 def OFFSET_HT_RESULT_BUF_U32 : UInt32 := 0x05F0
 def OFFSET_HT_RESULT_VAL_U32 : UInt32 := 0x05F4
 def OFFSET_IDENT_WRITE_PTR_U32 : UInt32 := 0x0600
+def OFFSET_SAVED_IDENTIFIER_BUF_U32 : UInt32 := 0x0610
 
 def IDENT_BUF_SIZE_N : Nat := 32
 def HASH_TABLE_UNIT_ID_N : Nat := 7
@@ -206,6 +207,7 @@ structure Layout where
   HT_RESULT_BUF : UInt32
   HT_RESULT_VAL : UInt32
   IDENT_WRITE_PTR : UInt32
+  SAVED_IDENTIFIER_BUF : UInt32
 
 
 def layout : Layout := {
@@ -260,7 +262,8 @@ def layout : Layout := {
   HT_VAL_BUF := C.OFFSET_HT_VAL_BUF_U32,
   HT_RESULT_BUF := C.OFFSET_HT_RESULT_BUF_U32,
   HT_RESULT_VAL := C.OFFSET_HT_RESULT_VAL_U32,
-  IDENT_WRITE_PTR := C.OFFSET_IDENT_WRITE_PTR_U32
+  IDENT_WRITE_PTR := C.OFFSET_IDENT_WRITE_PTR_U32,
+  SAVED_IDENTIFIER_BUF := C.OFFSET_SAVED_IDENTIFIER_BUF_U32
 }
 
 def L : Layout := layout
@@ -325,6 +328,7 @@ def leanEvalPayloads : List UInt8 :=
   let htValBuf := zeros C.SIZE_16_N
   let htResultBuf := zeros C.SIZE_16_N
   let identWritePtr := zeros C.SIZE_16_N
+  let savedIdentBuf := zeros C.IDENT_BUF_SIZE_N
 
   ffiPtr ++ outputPath ++ argvParams ++ filenameBuf ++ ffiResult ++
     flagFfi ++ flagFile ++ flagSimd ++ flagMem ++ constZero ++ sourceBuf ++
@@ -334,7 +338,7 @@ def leanEvalPayloads : List UInt8 :=
     term ++ constStar ++ constMinus ++ constL ++ constE ++ constColon ++
     constEquals ++ constIChar ++ constNChar ++ constX ++ varVal ++ constSemicolon ++
     constF ++ savedResult ++ savedTerm ++
-    flagHash ++ htHandle ++ identBuf ++ htValBuf ++ htResultBuf ++ identWritePtr
+    flagHash ++ htHandle ++ identBuf ++ htValBuf ++ htResultBuf ++ identWritePtr ++ savedIdentBuf
 
 def fence : Action := { kind := .Fence, dst := ZERO, src := ZERO, offset := ZERO, size := ZERO }
 
@@ -455,6 +459,8 @@ inductive WorkOp where
   | RestoreResult
   | SaveTerm
   | RestoreTerm
+  | SaveIdentBuf
+  | RestoreIdentBuf
   | StoreResultFromTerm
   | StoreTermFromResult
   | StoreAccumFromResult
@@ -612,6 +618,8 @@ def workOps : List WorkOp := [
   RestoreResult,
   SaveTerm,
   RestoreTerm,
+  SaveIdentBuf,
+  RestoreIdentBuf,
   StoreResultFromTerm,
   StoreTermFromResult,
   StoreAccumFromResult,
@@ -749,6 +757,8 @@ def opToAction : WorkOp -> Action
   | RestoreResult => w .MemCopy L.SAVED_RESULT L.RESULT ZERO SIZE_I32
   | SaveTerm => w .MemCopy L.TERM L.SAVED_TERM ZERO SIZE_I32
   | RestoreTerm => w .MemCopy L.SAVED_TERM L.TERM ZERO SIZE_I32
+  | SaveIdentBuf => w .MemCopy L.IDENTIFIER_BUF L.SAVED_IDENTIFIER_BUF ZERO (u32 C.IDENT_BUF_SIZE_N)
+  | RestoreIdentBuf => w .MemCopy L.SAVED_IDENTIFIER_BUF L.IDENTIFIER_BUF ZERO (u32 C.IDENT_BUF_SIZE_N)
   | StoreResultFromTerm => w .SimdStoreI32 (r RT) (r RA) L.RESULT SIZE_NONE
   | StoreTermFromResult => w .SimdStoreI32 (r RV) (r RA) L.TERM SIZE_NONE
   | StoreAccumFromResult => w .SimdStoreI32 (r RV) (r RA) L.ACCUM SIZE_NONE
@@ -890,7 +900,10 @@ def LET_PATH_LEN : Nat :=
   MEM_STEP_LEN * 2 +                               -- clear ident buf + init write ptr
   IDENT_LOOP_LEN +                                  -- parse identifier
   INC_POS_LEN * 4 +                                -- skip " := "
-  SKIP_SPACES_LEN + PARSE_NUMBER_LEN +              -- parse binding value
+  SKIP_SPACES_LEN +                                 -- skip spaces before binding value
+  MEM_STEP_LEN +                                    -- save identifier buffer
+  PARSE_ATOM_LEN +                                  -- parse binding value (supports vars)
+  MEM_STEP_LEN +                                    -- restore identifier buffer
   MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN +    -- store val, insert, clear accum
   LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + -- semicolon check
   INC_POS_LEN + SKIP_SPACES_LEN +                  -- skip semicolon + spaces
@@ -1285,11 +1298,15 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   let identDone := identLoopStart + IDENT_LOOP_LEN
   -- Skip " := " (4 chars)
   let skipAssignDone := identDone + INC_POS_LEN * 4
-  -- Parse binding value
-  let parseBindingStart := skipAssignDone + SKIP_SPACES_LEN
-  let parseBindingDone := parseBindingStart + PARSE_NUMBER_LEN
+  -- Skip spaces, save identifier, parse binding value (with var support), restore identifier
+  let skipSpacesStart := skipAssignDone
+  let saveIdentStart := skipSpacesStart + SKIP_SPACES_LEN
+  let parseValueStart := saveIdentStart + MEM_STEP_LEN
+  let parseValueDone := parseValueStart + PARSE_ATOM_LEN
+  let restoreIdentStart := parseValueDone
+  let afterRestore := restoreIdentStart + MEM_STEP_LEN
   -- Store value, insert into hash table, clear accum
-  let afterInsert := parseBindingDone + MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN
+  let afterInsert := afterRestore + MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN
   -- Semicolon check
   let bodyStart := loopStart + LET_PATH_LEN - NEW_BODY_LEN
   let afterSemicolonCheck := afterInsert + LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
@@ -1342,8 +1359,10 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   [jumpIfN L.CONST_ONE identLoopStart] ++
   -- identDone: skip " := "
   incPos ++ incPos ++ incPos ++ incPos ++
-  skipSpacesBlock skipAssignDone parseBindingStart ++
-  parseNumberBlock parseBindingStart parseBindingDone ++
+  skipSpacesBlock skipSpacesStart saveIdentStart ++
+  memStep SaveIdentBuf ++
+  parseAtomBlock parseValueStart parseValueDone ++
+  memStep RestoreIdentBuf ++
   -- Store to hash table
   memStep StoreAccumToHtVal ++ hashStepInsert ++ memStep ClearAccum ++
   -- Semicolon check

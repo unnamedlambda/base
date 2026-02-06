@@ -504,3 +504,23 @@ fn test_eval_let_precedence_mixed() {
     compare("#eval let a := 2; let b := 3; let c := 4; a + b * c - 1");
 }
 
+#[test]
+fn test_eval_let_var_ref_in_binding() {
+    compare("#eval let x := 5; let y := x; y");
+}
+
+#[test]
+fn test_eval_let_var_ref_chain() {
+    compare("#eval let x := 10; let y := x; let z := y; z");
+}
+
+#[test]
+fn test_eval_let_var_ref_in_expr() {
+    compare("#eval let x := 3; let y := x; x + y");
+}
+
+#[test]
+fn test_eval_let_var_ref_precedence() {
+    compare("#eval let a := 2; let b := a; let c := 3; a + b * c");
+}
+
