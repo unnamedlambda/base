@@ -864,24 +864,26 @@ def PARSE_ATOM_LOOKUP_LEN : Nat :=
   HASH_STEP_LEN + SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N + SIMD_STEP_LEN * 2
 def PARSE_ATOM_LEN : Nat :=
   PARSE_ATOM_INIT_LEN + PARSE_NUMBER_LEN + PARSE_ATOM_EXTRA_LEN + PARSE_ATOM_LOOKUP_LEN
-def BODY_OP_CHECK_LEN : Nat :=
+def NEW_BODY_CHECK_OP_LEN : Nat :=
   SKIP_SPACES_LEN + LOAD_CHAR_LEN +
-  SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +  -- NUL check
-  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +  -- newline check
-  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N +  -- plus
-  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N +  -- star
-  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN  -- minus
-def BODY_OPERAND_PARSE_LEN : Nat :=
-  INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN
-def BODY_ADD_PATH_LEN : Nat := ADD_TO_RESULT_LEN + C.SINGLE_ACTION_N
-def BODY_MUL_CHECK_LEN : Nat := SIMD_STEP_LEN * 4 + C.SINGLE_ACTION_N
-def BODY_MUL_PATH_LEN : Nat := ADD_TO_RESULT_LEN + C.SINGLE_ACTION_N
-def BODY_SUB_PATH_LEN : Nat := NEGATE_ACCUM_TO_TERM_LEN + ADD_TERM_TO_RESULT_LEN + MEM_STEP_LEN + C.SINGLE_ACTION_N
-def BODY_OP_LOOP_LEN : Nat :=
-  BODY_OP_CHECK_LEN + BODY_OPERAND_PARSE_LEN + C.SINGLE_ACTION_N +
-  BODY_ADD_PATH_LEN + BODY_MUL_CHECK_LEN + BODY_MUL_PATH_LEN + BODY_SUB_PATH_LEN
-def BODY_INIT_LEN : Nat :=
-  SKIP_SPACES_LEN + PARSE_ATOM_LEN + SIMD_STEP_LEN * 2 + MEM_STEP_LEN
+  SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +        -- NUL check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- newline check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- star check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- plus check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N      -- minus check
+def NEW_BODY_HANDLE_MUL_LEN : Nat :=
+  INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def NEW_BODY_HANDLE_ADD_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def NEW_BODY_HANDLE_SUB_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def NEW_BODY_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
+def NEW_BODY_INIT_LEN : Nat :=
+  SKIP_SPACES_LEN + PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN
+def NEW_BODY_LEN : Nat :=
+  NEW_BODY_INIT_LEN + NEW_BODY_CHECK_OP_LEN +
+  NEW_BODY_HANDLE_MUL_LEN + NEW_BODY_HANDLE_ADD_LEN + NEW_BODY_HANDLE_SUB_LEN +
+  NEW_BODY_FINALIZE_LEN
 def LET_PATH_LEN : Nat :=
   HASH_STEP_LEN +                                  -- create hash table
   INC_POS_LEN * 4 +                                -- skip "let "
@@ -893,7 +895,7 @@ def LET_PATH_LEN : Nat :=
   LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + -- semicolon check
   INC_POS_LEN + SKIP_SPACES_LEN +                  -- skip semicolon + spaces
   LET_CHECK_LEN + C.SINGLE_ACTION_N +              -- check for another 'let'
-  BODY_INIT_LEN + BODY_OP_LOOP_LEN
+  NEW_BODY_LEN
 
 def PAREN_CHECK_LEN : Nat :=
   LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N +
@@ -1289,32 +1291,42 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   -- Store value, insert into hash table, clear accum
   let afterInsert := parseBindingDone + MEM_STEP_LEN + HASH_STEP_LEN + MEM_STEP_LEN
   -- Semicolon check
-  let bodyStart := loopStart + LET_PATH_LEN - BODY_INIT_LEN - BODY_OP_LOOP_LEN
+  let bodyStart := loopStart + LET_PATH_LEN - NEW_BODY_LEN
   let afterSemicolonCheck := afterInsert + LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
   -- After semicolon: skip, spaces, check for 'let'
   let spacesAfterSemicolonStart := afterSemicolonCheck + INC_POS_LEN
   let spacesAfterSemicolonDone := spacesAfterSemicolonStart + SKIP_SPACES_LEN
-  -- Body expression evaluation
+  -- Body expression evaluation (term-based precedence)
   let bodySkipEnd := bodyStart + SKIP_SPACES_LEN
   let bodyParseStart := bodySkipEnd
   let bodyParseDone := bodyParseStart + PARSE_ATOM_LEN
-  let bodyOpLoop := bodyParseDone + SIMD_STEP_LEN * 2 + MEM_STEP_LEN
+  let bodyCheckOp := bodyParseDone + TERM_FROM_ACCUM_LEN
   -- Body operator check positions
-  let bodyOpSkipEnd := bodyOpLoop + SKIP_SPACES_LEN
-  let bodyOpLoadCharEnd := bodyOpSkipEnd + LOAD_CHAR_LEN
-  let newlineCheckStart := bodyOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
-  let plusCheckStart := newlineCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
-  let starCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N
-  let minusCheckStart := starCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N
-  let operandParseStart := bodyOpLoop + BODY_OP_CHECK_LEN
-  -- Operand parse positions
-  let operandSkipStart := operandParseStart + INC_POS_LEN
-  let operandAtomStart := operandSkipStart + SKIP_SPACES_LEN
-  let operandAtomDone := operandAtomStart + PARSE_ATOM_LEN
-  -- Flag dispatch positions
-  let flagDispatchStart := operandAtomDone + C.SINGLE_ACTION_N
-  let notAddStart := flagDispatchStart + BODY_ADD_PATH_LEN
-  let subStart := notAddStart + BODY_MUL_CHECK_LEN + BODY_MUL_PATH_LEN
+  let bodyCheckOpSkipEnd := bodyCheckOp + SKIP_SPACES_LEN
+  let bodyCheckOpLoadCharEnd := bodyCheckOpSkipEnd + LOAD_CHAR_LEN
+  let newlineCheckStart := bodyCheckOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let starCheckStart := newlineCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let plusCheckStart := starCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let minusCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  -- Handler positions
+  let handleMulStart := bodyCheckOp + NEW_BODY_CHECK_OP_LEN
+  let handleAddStart := handleMulStart + NEW_BODY_HANDLE_MUL_LEN
+  let handleSubStart := handleAddStart + NEW_BODY_HANDLE_ADD_LEN
+  let finalizeStart := handleSubStart + NEW_BODY_HANDLE_SUB_LEN
+  -- Mul handler internals
+  let mulSkipStart := handleMulStart + INC_POS_LEN
+  let mulAtomStart := mulSkipStart + SKIP_SPACES_LEN
+  let mulAtomDone := mulAtomStart + PARSE_ATOM_LEN
+  -- Add handler internals
+  let addIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
+  let addSkipStart := addIncStart + INC_POS_LEN
+  let addAtomStart := addSkipStart + SKIP_SPACES_LEN
+  let addAtomDone := addAtomStart + PARSE_ATOM_LEN
+  -- Sub handler internals
+  let subIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
+  let subSkipStart := subIncStart + INC_POS_LEN
+  let subAtomStart := subSkipStart + SKIP_SPACES_LEN
+  let subAtomDone := subAtomStart + PARSE_ATOM_LEN
 
   -- === Emit actions ===
   hashStepCreate ++
@@ -1345,45 +1357,51 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   simdStep LoadL ++ simdStep SubCharL ++ simdStep StoreDigitCountFromL ++
   [jumpIfN L.DIGIT_COUNT bodyStart] ++
   [jumpIfN L.CONST_ONE letBindingLoop] ++
-  -- bodyStart: parse first atom, store as RESULT
+  -- bodyStart: parse first atom, store as TERM
   skipSpacesBlock bodyStart bodySkipEnd ++
   parseAtomBlock bodyParseStart bodyParseDone ++
-  simdStep LoadAccumForResult ++ simdStep StoreResultFromAccum ++
-  memStep ClearAccum ++
-  -- bodyOpLoop: check operator
-  skipSpacesBlock bodyOpLoop bodyOpSkipEnd ++
+  termFromAccumBlock ++
+  -- bodyCheckOp: skip spaces, load char, check operator
+  skipSpacesBlock bodyCheckOp bodyCheckOpSkipEnd ++
   loadChar ++
   -- NUL check
   simdStep ClearCharBuf ++
-  [jumpIfN L.CHAR_BUF newlineCheckStart] ++ [jumpIfN L.CONST_ONE outputStart] ++
+  [jumpIfN L.CHAR_BUF newlineCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
   -- Newline check
   simdStep LoadBaseForNewlineCheck ++ simdStep SubCharNewline ++ simdStep StoreDigitCountFromNewline ++
-  [jumpIfN L.DIGIT_COUNT plusCheckStart] ++ [jumpIfN L.CONST_ONE outputStart] ++
+  [jumpIfN L.DIGIT_COUNT starCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  -- Star check (mul has higher precedence, checked first)
+  simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
+  [jumpIfN L.DIGIT_COUNT plusCheckStart] ++ [jumpIfN L.CONST_ONE handleMulStart] ++
   -- Plus check
   simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
-  [jumpIfN L.DIGIT_COUNT starCheckStart] ++ memStep ClearLeftVal ++ [jumpIfN L.CONST_ONE operandParseStart] ++
-  -- Star check
-  simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
-  [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ memStep SetLeftVal ++ [jumpIfN L.CONST_ONE operandParseStart] ++
+  [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
   -- Minus check
   simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
-  [jumpIfN L.DIGIT_COUNT operandParseStart] ++ memStep SetLeftValTwo ++
-  -- operandParse: skip operator, spaces, parse atom
+  [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
+  -- handleMul: incPos, skip spaces, parse atom, multiply into term, loop
   incPos ++
-  skipSpacesBlock operandSkipStart operandAtomStart ++
-  parseAtomBlock operandAtomStart operandAtomDone ++
-  -- Flag dispatch
-  [jumpIfN L.LEFT_VAL notAddStart] ++
-  -- addPath
-  addToResultBlock ++ [jumpIfN L.CONST_ONE bodyOpLoop] ++
-  -- checkFlag2: distinguish mul from sub
-  simdStep LoadOne ++ simdStep LoadLeftValForCheck ++ simdStep SubLeftValOne ++ simdStep StoreDigitCountFromLeftCheck ++
-  [jumpIfN L.DIGIT_COUNT subStart] ++
-  -- mulPath
-  mulResultBlock ++ [jumpIfN L.CONST_ONE bodyOpLoop] ++
-  -- subPath
-  negateAccumToTermBlock ++ addTermToResultBlock ++ memStep ClearAccum ++
-  [jumpIfN L.CONST_ONE bodyOpLoop]
+  skipSpacesBlock mulSkipStart mulAtomStart ++
+  parseAtomBlock mulAtomStart mulAtomDone ++
+  multiplyTermBlock ++
+  [jumpIfN L.CONST_ONE bodyCheckOp] ++
+  -- handleAdd: flush term to result, incPos, skip spaces, parse atom, new term, loop
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock addSkipStart addAtomStart ++
+  parseAtomBlock addAtomStart addAtomDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE bodyCheckOp] ++
+  -- handleSub: flush term to result, incPos, skip spaces, parse atom, negate to term, loop
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock subSkipStart subAtomStart ++
+  parseAtomBlock subAtomStart subAtomDone ++
+  negateAccumToTermBlock ++
+  [jumpIfN L.CONST_ONE bodyCheckOp] ++
+  -- finalize: flush final term to result, jump to output
+  addTermToResultBlock ++
+  [jumpIfN L.CONST_ONE outputStart]
 
 def itoaLoopBlock (loopStart : Nat) : List Action :=
   simdStep LoadResultForItoa ++ simdStep DivResultBase ++ simdStep MulQuotBase ++ simdStep SubResultQuot ++

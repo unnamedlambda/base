@@ -483,3 +483,24 @@ fn test_eval_let_long_name() {
 fn test_eval_let_five_vars() {
     compare("#eval let a := 1; let b := 2; let c := 3; let d := 4; let e := 5; a + b + c + d + e");
 }
+
+#[test]
+fn test_eval_let_precedence_sub_mul() {
+    compare("#eval let a := 10; let b := 2; let c := 3; a - b * c");
+}
+
+#[test]
+fn test_eval_let_precedence_add_mul() {
+    compare("#eval let a := 10; let b := 2; let c := 3; a + b * c");
+}
+
+#[test]
+fn test_eval_let_precedence_mul_add() {
+    compare("#eval let a := 3; let b := 4; a * b + 1");
+}
+
+#[test]
+fn test_eval_let_precedence_mixed() {
+    compare("#eval let a := 2; let b := 3; let c := 4; a + b * c - 1");
+}
+
