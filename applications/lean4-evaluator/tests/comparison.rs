@@ -13,8 +13,8 @@ fn get_lean4_eval_binary() -> String {
 fn get_temp_files() -> (String, String) {
     let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     (
-        format!("/tmp/lean4_eval_test_{}.lean", id),
-        format!("/tmp/out_{}.txt", id),
+        format!("/tmp/l4t{}.lean", id),
+        format!("/tmp/l4o{}", id),
     )
 }
 
@@ -558,4 +558,20 @@ fn test_eval_let_expr_complex_in_binding() {
 fn test_eval_let_expr_chain() {
     compare("#eval let x := 1 + 2; let y := x * 3; let z := y - 4; z");
 }
+
+#[test]
+fn test_eval_lt_true() {
+    compare("#eval 1 < 2");
+}
+
+#[test]
+fn test_eval_lt_false() {
+    compare("#eval 5 < 3");
+}
+
+#[test]
+fn test_eval_lt_equal() {
+    compare("#eval 5 < 5");
+}
+
 
