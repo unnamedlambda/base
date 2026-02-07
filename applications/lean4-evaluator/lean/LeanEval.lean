@@ -85,6 +85,7 @@ def ASCII_X_I : Int := 120
 def ASCII_SEMICOLON_I : Int := 59
 def ASCII_F_I : Int := 102
 def ASCII_LT_I : Int := 60
+def ASCII_GT_I : Int := 62
 
 def OFFSET_FFI_PTR_U32 : UInt32 := 0x0000
 def OFFSET_OUTPUT_PATH_U32 : UInt32 := 0x0010
@@ -141,6 +142,7 @@ def OFFSET_CONST_LT_U32 : UInt32 := 0x0630
 def OFFSET_BOOL_FLAG_U32 : UInt32 := 0x0640
 def OFFSET_TRUE_STRING_U32 : UInt32 := 0x0650
 def OFFSET_FALSE_STRING_U32 : UInt32 := 0x0660
+def OFFSET_CONST_GT_U32 : UInt32 := 0x0670
 
 def IDENT_BUF_SIZE_N : Nat := 32
 def HASH_TABLE_UNIT_ID_N : Nat := 7
@@ -217,6 +219,7 @@ structure Layout where
   BOOL_FLAG : UInt32
   TRUE_STRING : UInt32
   FALSE_STRING : UInt32
+  CONST_GT : UInt32
 
 
 def layout : Layout := {
@@ -276,7 +279,8 @@ def layout : Layout := {
   CONST_LT := C.OFFSET_CONST_LT_U32,
   BOOL_FLAG := C.OFFSET_BOOL_FLAG_U32,
   TRUE_STRING := C.OFFSET_TRUE_STRING_U32,
-  FALSE_STRING := C.OFFSET_FALSE_STRING_U32
+  FALSE_STRING := C.OFFSET_FALSE_STRING_U32,
+  CONST_GT := C.OFFSET_CONST_GT_U32
 }
 
 def L : Layout := layout
@@ -346,6 +350,7 @@ def leanEvalPayloads : List UInt8 :=
   let boolFlag := zeros C.SIZE_16_N
   let trueString := padTo (stringToBytes "true\n") C.SIZE_16_N
   let falseString := padTo (stringToBytes "false\n") C.SIZE_16_N
+  let constGT := int32ToBytes16 C.ASCII_GT_I
 
   ffiPtr ++ outputPath ++ argvParams ++ filenameBuf ++ ffiResult ++
     flagFfi ++ flagFile ++ flagSimd ++ flagMem ++ constZero ++ sourceBuf ++
@@ -356,7 +361,8 @@ def leanEvalPayloads : List UInt8 :=
     constEquals ++ constIChar ++ constNChar ++ constX ++ varVal ++ constSemicolon ++
     constF ++ savedResult ++ savedTerm ++
     flagHash ++ htHandle ++ identBuf ++ htValBuf ++ htResultBuf ++ identWritePtr ++ savedIdentBuf ++
-    constLT ++ boolFlag ++ trueString ++ falseString
+    constLT ++ boolFlag ++ trueString ++ falseString ++
+    constGT
 
 def fence : Action := { kind := .Fence, dst := ZERO, src := ZERO, offset := ZERO, size := ZERO }
 
@@ -502,6 +508,15 @@ inductive WorkOp where
   | ClearBoolFlag
   | CopyTrueToLeft
   | CopyFalseToLeft
+  | LoadGT
+  | SubCharGT
+  | StoreDigitCountFromGT
+  | LoadEqualsChar
+  | SubCharEquals
+  | StoreDigitCountFromEquals
+  | CompareGTReversed
+  | CompareGE
+  | CompareGEReversed
   deriving BEq, DecidableEq, Repr
 
 open WorkOp
@@ -668,7 +683,16 @@ def workOps : List WorkOp := [
   SetBoolFlag,
   ClearBoolFlag,
   CopyTrueToLeft,
-  CopyFalseToLeft
+  CopyFalseToLeft,
+  LoadGT,
+  SubCharGT,
+  StoreDigitCountFromGT,
+  LoadEqualsChar,
+  SubCharEquals,
+  StoreDigitCountFromEquals,
+  CompareGTReversed,
+  CompareGE,
+  CompareGEReversed
 ]
 
 def workIndex (op : WorkOp) : Nat :=
@@ -816,6 +840,15 @@ def opToAction : WorkOp -> Action
   | ClearBoolFlag => w .MemWrite ZERO L.BOOL_FLAG ZERO SIZE_I32
   | CopyTrueToLeft => w .MemCopy L.TRUE_STRING L.LEFT_VAL ZERO (u32 16)
   | CopyFalseToLeft => w .MemCopy L.FALSE_STRING L.LEFT_VAL ZERO (u32 16)
+  | LoadGT => w .SimdLoadI32 L.CONST_GT (r RB) ZERO SIZE_NONE
+  | SubCharGT => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
+  | StoreDigitCountFromGT => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | LoadEqualsChar => w .SimdLoadI32 L.CONST_EQUALS (r RB) ZERO SIZE_NONE
+  | SubCharEquals => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
+  | StoreDigitCountFromEquals => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | CompareGTReversed => w .Compare L.RESULT L.ACCUM L.TERM SIZE_I32
+  | CompareGE => w .Compare L.TERM L.ACCUM L.RESULT (u32 5)
+  | CompareGEReversed => w .Compare L.RESULT L.ACCUM L.TERM (u32 5)
 
 
 def workActions : List Action := workOps.map opToAction
@@ -902,19 +935,41 @@ def CHECK_STAR_SIMD_STEPS_N : Nat := 3
 def CHECK_STAR_LEN : Nat := SIMD_STEP_LEN * CHECK_STAR_SIMD_STEPS_N + C.SINGLE_ACTION_N
 def CHECK_MINUS_LEN : Nat := SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
 def CHECK_LT_LEN : Nat := SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
+def CHECK_GT_LEN : Nat := SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
+def PEEK_EQUALS_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
 def HANDLE_MULTIPLY_LEN : Nat := INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
 def HANDLE_ADD_LEN : Nat := ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
 def HANDLE_SUBTRACT_LEN : Nat := ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
 def FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
 def HANDLE_LESSTHAN_LEN : Nat :=
-  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN +
-  TERM_FROM_ACCUM_LEN + MEM_STEP_LEN * 3 +
+  ADD_TERM_TO_RESULT_LEN + MEM_STEP_LEN +  -- addTermToResult + clearLeftVal
+  INC_POS_LEN +                             -- skip '<'
+  PEEK_EQUALS_LEN +                         -- peek for '='
+  INC_POS_LEN + MEM_STEP_LEN +             -- skip '=' + setLeftVal (LE branch)
+  SKIP_SPACES_LEN + PARSE_NUMBER_LEN +      -- parse right operand
+  TERM_FROM_ACCUM_LEN +
+  C.SINGLE_ACTION_N +                       -- jumpIfN LEFT_VAL
+  MEM_STEP_LEN + C.SINGLE_ACTION_N +       -- CompareGT + jump
+  MEM_STEP_LEN +                            -- CompareGE (LE path)
+  MEM_STEP_LEN * 3 +                       -- ClearResult + SetBoolFlag + ClearLeftVal
+  TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def HANDLE_GREATERTHAN_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + MEM_STEP_LEN +
+  INC_POS_LEN +
+  PEEK_EQUALS_LEN +
+  INC_POS_LEN + MEM_STEP_LEN +
+  SKIP_SPACES_LEN + PARSE_NUMBER_LEN +
+  TERM_FROM_ACCUM_LEN +
+  C.SINGLE_ACTION_N +
+  MEM_STEP_LEN + C.SINGLE_ACTION_N +
+  MEM_STEP_LEN +
+  MEM_STEP_LEN * 3 +
   TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
 def BOOL_CHECK_LEN : Nat := C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
 def RESULT_CHECK_LEN : Nat := C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
 def TRUE_OUTPUT_LEN : Nat := MEM_STEP_LEN + FILE_STEP_LEN + C.SINGLE_ACTION_N
 def FALSE_OUTPUT_LEN : Nat := MEM_STEP_LEN + FILE_STEP_LEN + C.SINGLE_ACTION_N
-def CHECK_OPERATOR_LEN : Nat := SKIP_SPACES_LEN + LOAD_CHAR_LEN + SIMD_STEP_LEN * 6 + 4 + CHECK_MINUS_LEN + C.SINGLE_ACTION_N + CHECK_LT_LEN + C.SINGLE_ACTION_N
+def CHECK_OPERATOR_LEN : Nat := SKIP_SPACES_LEN + LOAD_CHAR_LEN + SIMD_STEP_LEN * 6 + 4 + CHECK_MINUS_LEN + C.SINGLE_ACTION_N + CHECK_LT_LEN + C.SINGLE_ACTION_N + CHECK_GT_LEN + C.SINGLE_ACTION_N
 def LET_CHECK_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
 def IDENT_LOOP_LEN : Nat :=
   LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +
@@ -939,12 +994,13 @@ def NEW_BODY_HANDLE_ADD_LEN : Nat :=
 def NEW_BODY_HANDLE_SUB_LEN : Nat :=
   ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
 def NEW_BODY_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
+def NEW_BODY_COMP_REDIRECT_LEN : Nat := ADD_TERM_TO_RESULT_LEN + MEM_STEP_LEN + C.SINGLE_ACTION_N
 def NEW_BODY_INIT_LEN : Nat :=
   SKIP_SPACES_LEN + PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN
 def NEW_BODY_LEN : Nat :=
   NEW_BODY_INIT_LEN + NEW_BODY_CHECK_OP_LEN +
   NEW_BODY_HANDLE_MUL_LEN + NEW_BODY_HANDLE_ADD_LEN + NEW_BODY_HANDLE_SUB_LEN +
-  NEW_BODY_FINALIZE_LEN
+  NEW_BODY_COMP_REDIRECT_LEN + NEW_BODY_FINALIZE_LEN
 def BINDING_EXPR_CHECK_OP_LEN : Nat :=
   SKIP_SPACES_LEN + LOAD_CHAR_LEN +
   SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +        -- NUL check
@@ -1059,7 +1115,7 @@ def NEW_HANDLE_SUBTRACT_LEN : Nat :=
 
 def MAIN_FLOW_LEN : Nat :=
   SETUP_LEN + PAREN_CHECK_LEN + LAMBDA_PATH_LEN + GROUPING_PATH_LEN + LET_CHECK_LEN + LET_PATH_LEN + SKIP_PARSE_LEN + TERM_FROM_ACCUM_LEN + CHECK_OPERATOR_LEN +
-  NEW_HANDLE_MULTIPLY_LEN + NEW_HANDLE_ADD_LEN + NEW_HANDLE_SUBTRACT_LEN + HANDLE_LESSTHAN_LEN + FINALIZE_LEN +
+  NEW_HANDLE_MULTIPLY_LEN + NEW_HANDLE_ADD_LEN + NEW_HANDLE_SUBTRACT_LEN + HANDLE_LESSTHAN_LEN + HANDLE_GREATERTHAN_LEN + FINALIZE_LEN +
   BOOL_CHECK_LEN + RESULT_CHECK_LEN + TRUE_OUTPUT_LEN + FALSE_OUTPUT_LEN +
   ITOA_INIT_LEN + ITOA_LOOP_LEN + OUTPUT_LEN
 
@@ -1446,7 +1502,7 @@ def parseBindingExprBlock (start done : Nat) : List Action :=
   memStep ClearResult ++
   [jumpIfN L.CONST_ONE done]
 
-def letPathBlock (loopStart outputStart : Nat) : List Action :=
+def letPathBlock (loopStart outputStart mainCheckOperatorStart : Nat) : List Action :=
   -- Create hash table
   let letBindingLoop := loopStart + HASH_STEP_LEN
   -- Skip "let " (4 chars)
@@ -1489,7 +1545,8 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   let handleMulStart := bodyCheckOp + NEW_BODY_CHECK_OP_LEN
   let handleAddStart := handleMulStart + NEW_BODY_HANDLE_MUL_LEN
   let handleSubStart := handleAddStart + NEW_BODY_HANDLE_ADD_LEN
-  let finalizeStart := handleSubStart + NEW_BODY_HANDLE_SUB_LEN
+  let compRedirectStart := handleSubStart + NEW_BODY_HANDLE_SUB_LEN
+  let finalizeStart := compRedirectStart + NEW_BODY_COMP_REDIRECT_LEN
   -- Mul handler internals
   let mulSkipStart := handleMulStart + INC_POS_LEN
   let mulAtomStart := mulSkipStart + SKIP_SPACES_LEN
@@ -1557,7 +1614,7 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
   -- Minus check
   simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
-  [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
+  [jumpIfN L.DIGIT_COUNT compRedirectStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
   -- handleMul: incPos, skip spaces, parse atom, multiply into term, loop
   incPos ++
   skipSpacesBlock mulSkipStart mulAtomStart ++
@@ -1578,6 +1635,10 @@ def letPathBlock (loopStart outputStart : Nat) : List Action :=
   parseAtomBlock subAtomStart subAtomDone ++
   negateAccumToTermBlock ++
   [jumpIfN L.CONST_ONE bodyCheckOp] ++
+  -- compRedirect: flush term to result, clear term, jump to main checkOperator for comparison handling
+  addTermToResultBlock ++
+  memStep ClearTerm ++
+  [jumpIfN L.CONST_ONE mainCheckOperatorStart] ++
   -- finalize: flush final term to result, jump to output
   addTermToResultBlock ++
   [jumpIfN L.CONST_ONE outputStart]
@@ -1778,7 +1839,8 @@ def actualMainFlow : List Action :=
   let handleAddStart := handleMultiplyStart + NEW_HANDLE_MULTIPLY_LEN
   let handleSubtractStart := handleAddStart + NEW_HANDLE_ADD_LEN
   let handleLessThanStart := handleSubtractStart + NEW_HANDLE_SUBTRACT_LEN
-  let finalizeStart := handleLessThanStart + HANDLE_LESSTHAN_LEN
+  let handleGreaterThanStart := handleLessThanStart + HANDLE_LESSTHAN_LEN
+  let finalizeStart := handleGreaterThanStart + HANDLE_GREATERTHAN_LEN
   let boolCheckStart := finalizeStart + FINALIZE_LEN
   let resultCheckStart := boolCheckStart + BOOL_CHECK_LEN
   let trueOutputStart := resultCheckStart + RESULT_CHECK_LEN
@@ -1791,13 +1853,14 @@ def actualMainFlow : List Action :=
   let lambdaPath := lambdaPathBlock lambdaPathStart outputStart
   let groupingPath := groupingPathBlock groupingPathStart checkOperatorStart
   let letCheck := letCheckBlock normalStart
-  let letPath := letPathBlock letPathStart outputStart
+  let letPath := letPathBlock letPathStart outputStart checkOperatorStart
   let skipParse := skipParseBlock skipParseStart termFromAccumStart
   let termFromAccum := termFromAccumBlock
 
   let plusCheckStart := checkOperatorStarEnd + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
   let minusCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
   let ltCheckStart := minusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let gtCheckStart := ltCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
   let checkOperator :=
     skipSpacesBlock checkOperatorStart checkOperatorSkipEnd ++
     loadChar ++
@@ -1808,7 +1871,9 @@ def actualMainFlow : List Action :=
     simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
     [jumpIfN L.DIGIT_COUNT ltCheckStart] ++ [jumpIfN L.CONST_ONE handleSubtractStart] ++
     simdStep LoadLT ++ simdStep SubCharLT ++ simdStep StoreDigitCountFromLT ++
-    [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleLessThanStart]
+    [jumpIfN L.DIGIT_COUNT gtCheckStart] ++ [jumpIfN L.CONST_ONE handleLessThanStart] ++
+    simdStep LoadGT ++ simdStep SubCharGT ++ simdStep StoreDigitCountFromGT ++
+    [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleGreaterThanStart]
 
   let handleMulIncStart := handleMultiplyStart + INC_POS_LEN
   let handleMulSkipStart := handleMulIncStart + SKIP_SPACES_LEN
@@ -1881,17 +1946,75 @@ def actualMainFlow : List Action :=
     negateAccumToTermBlock ++
     [jumpIfN L.CONST_ONE checkOperatorStart]
 
+  -- handleLT: handles both '<' and '<=' via peek for '='
+  let ltBase := handleLessThanStart
+  let ltAfterAddTerm := ltBase + ADD_TERM_TO_RESULT_LEN
+  let ltAfterClearFlag := ltAfterAddTerm + MEM_STEP_LEN
+  let ltAfterIncPos := ltAfterClearFlag + INC_POS_LEN
+  let ltAfterPeek := ltAfterIncPos + PEEK_EQUALS_LEN
+  let ltAfterEqBranch := ltAfterPeek + INC_POS_LEN + MEM_STEP_LEN  -- skip '=' + setLeftVal
+  let ltSkipStart := ltAfterEqBranch
+  let ltSkipEnd := ltSkipStart + SKIP_SPACES_LEN
+  let ltParseStart := ltSkipEnd
+  let ltParseDone := ltParseStart + PARSE_NUMBER_LEN
+  let ltAfterTermFromAccum := ltParseDone + TERM_FROM_ACCUM_LEN
+  let ltLeComparePath := ltAfterTermFromAccum + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N
+  let ltAfterCompare := ltLeComparePath + MEM_STEP_LEN
   let handleLT :=
     addTermToResultBlock ++
+    memStep ClearLeftVal ++
     incPos ++
-    skipSpacesBlock (handleLessThanStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN)
-                    (handleLessThanStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN) ++
-    parseNumberBlock (handleLessThanStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN)
-                     (handleLessThanStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN) ++
+    loadChar ++
+    simdStep LoadEqualsChar ++ simdStep SubCharEquals ++ simdStep StoreDigitCountFromEquals ++
+    [jumpIfN L.DIGIT_COUNT ltAfterEqBranch] ++
+    incPos ++
+    memStep SetLeftVal ++
+    skipSpacesBlock ltSkipStart ltSkipEnd ++
+    parseNumberBlock ltParseStart ltParseDone ++
     termFromAccumBlock ++
+    [jumpIfN L.LEFT_VAL ltLeComparePath] ++
     memStep CompareGT ++
+    [jumpIfN L.CONST_ONE ltAfterCompare] ++
+    memStep CompareGE ++
     memStep ClearResult ++
     memStep SetBoolFlag ++
+    memStep ClearLeftVal ++
+    termFromAccumBlock ++
+    [jumpIfN L.CONST_ONE checkOperatorStart]
+
+  -- handleGT: handles both '>' and '>=' via peek for '='
+  let gtBase := handleGreaterThanStart
+  let gtAfterAddTerm := gtBase + ADD_TERM_TO_RESULT_LEN
+  let gtAfterClearFlag := gtAfterAddTerm + MEM_STEP_LEN
+  let gtAfterIncPos := gtAfterClearFlag + INC_POS_LEN
+  let gtAfterPeek := gtAfterIncPos + PEEK_EQUALS_LEN
+  let gtAfterEqBranch := gtAfterPeek + INC_POS_LEN + MEM_STEP_LEN  -- skip '=' + setLeftVal
+  let gtSkipStart := gtAfterEqBranch
+  let gtSkipEnd := gtSkipStart + SKIP_SPACES_LEN
+  let gtParseStart := gtSkipEnd
+  let gtParseDone := gtParseStart + PARSE_NUMBER_LEN
+  let gtAfterTermFromAccum := gtParseDone + TERM_FROM_ACCUM_LEN
+  let gtGeComparePath := gtAfterTermFromAccum + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N
+  let gtAfterCompare := gtGeComparePath + MEM_STEP_LEN
+  let handleGT :=
+    addTermToResultBlock ++
+    memStep ClearLeftVal ++
+    incPos ++
+    loadChar ++
+    simdStep LoadEqualsChar ++ simdStep SubCharEquals ++ simdStep StoreDigitCountFromEquals ++
+    [jumpIfN L.DIGIT_COUNT gtAfterEqBranch] ++
+    incPos ++
+    memStep SetLeftVal ++
+    skipSpacesBlock gtSkipStart gtSkipEnd ++
+    parseNumberBlock gtParseStart gtParseDone ++
+    termFromAccumBlock ++
+    [jumpIfN L.LEFT_VAL gtGeComparePath] ++
+    memStep CompareGTReversed ++
+    [jumpIfN L.CONST_ONE gtAfterCompare] ++
+    memStep CompareGEReversed ++
+    memStep ClearResult ++
+    memStep SetBoolFlag ++
+    memStep ClearLeftVal ++
     termFromAccumBlock ++
     [jumpIfN L.CONST_ONE checkOperatorStart]
 
@@ -1932,6 +2055,7 @@ def actualMainFlow : List Action :=
   handleAdd ++
   handleSubtract ++
   handleLT ++
+  handleGT ++
   finalize ++
   boolCheck ++
   resultCheck ++

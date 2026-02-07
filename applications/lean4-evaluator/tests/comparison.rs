@@ -574,4 +574,112 @@ fn test_eval_lt_equal() {
     compare("#eval 5 < 5");
 }
 
+#[test]
+fn test_eval_gt_true() {
+    compare("#eval 5 > 3");
+}
 
+#[test]
+fn test_eval_gt_false() {
+    compare("#eval 1 > 2");
+}
+
+#[test]
+fn test_eval_gt_equal() {
+    compare("#eval 5 > 5");
+}
+
+#[test]
+fn test_eval_gt_zero() {
+    compare("#eval 0 > 0");
+}
+
+#[test]
+fn test_eval_le_true() {
+    compare("#eval 1 <= 2");
+}
+
+#[test]
+fn test_eval_le_false() {
+    compare("#eval 5 <= 3");
+}
+
+#[test]
+fn test_eval_le_equal() {
+    compare("#eval 5 <= 5");
+}
+
+#[test]
+fn test_eval_le_zero() {
+    compare("#eval 0 <= 0");
+}
+
+#[test]
+fn test_eval_ge_true() {
+    compare("#eval 5 >= 3");
+}
+
+#[test]
+fn test_eval_ge_false() {
+    compare("#eval 1 >= 2");
+}
+
+#[test]
+fn test_eval_ge_equal() {
+    compare("#eval 5 >= 5");
+}
+
+#[test]
+fn test_eval_ge_zero() {
+    compare("#eval 0 >= 0");
+}
+
+#[test]
+fn test_eval_gt_expr() {
+    compare("#eval 2 + 3 > 4");
+}
+
+#[test]
+fn test_eval_le_expr() {
+    compare("#eval 2 * 3 <= 7");
+}
+
+#[test]
+fn test_eval_ge_expr() {
+    compare("#eval 10 - 3 >= 7");
+}
+
+#[test]
+fn test_eval_let_lt() {
+    compare("#eval let x := 3; x < 5");
+}
+
+#[test]
+fn test_eval_let_gt() {
+    compare("#eval let x := 10; x > 5");
+}
+
+#[test]
+fn test_eval_let_le() {
+    compare("#eval let x := 5; x <= 5");
+}
+
+#[test]
+fn test_eval_let_ge() {
+    compare("#eval let x := 5; x >= 5");
+}
+
+#[test]
+fn test_eval_gt_large() {
+    compare("#eval 1000 > 999");
+}
+
+#[test]
+fn test_eval_le_large() {
+    compare("#eval 999 <= 1000");
+}
+
+#[test]
+fn test_eval_ge_large() {
+    compare("#eval 1000 >= 1000");
+}
