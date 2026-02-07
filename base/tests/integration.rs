@@ -2893,3 +2893,84 @@ fn test_integration_memory_compare() {
     let result = i32::from_le_bytes(contents[0..4].try_into().unwrap());
     assert_eq!(result, 1, "5 > 3 should be 1 (true)");
 }
+
+#[test]
+fn test_integration_memory_compare_ge() {
+    // Tests GE mode (size=5): a >= b returns 1 when equal, 0 when a < b.
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("compare_ge_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let a_addr = 256u32;
+    let b_addr = 264u32;
+    let result_addr = 272u32;
+    let compare_flag = 512u32;
+    let filewrite_flag = 520u32;
+
+    let mut payloads = vec![0u8; 1024];
+
+    // Store a=5, b=5 (equal values)
+    payloads[a_addr as usize..a_addr as usize + 4].copy_from_slice(&5i32.to_le_bytes());
+    payloads[b_addr as usize..b_addr as usize + 4].copy_from_slice(&5i32.to_le_bytes());
+
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // Action 0: Compare GE — size=5 means >= mode
+        Action {
+            kind: Kind::Compare,
+            dst: result_addr,
+            src: a_addr,
+            offset: b_addr,
+            size: 5,
+        },
+        // Action 1: FileWrite
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: result_addr,
+            offset: filename_bytes.len() as u32,
+            size: 4,
+        },
+        // Action 2-3: AsyncDispatch Compare + Wait
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: 0,
+            offset: compare_flag,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: compare_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        // Action 4-5: AsyncDispatch FileWrite + Wait
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 1,
+            offset: filewrite_flag,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: filewrite_flag,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists(), "Compare GE result file should exist");
+    let contents = fs::read(&test_file).unwrap();
+    assert_eq!(contents.len(), 4);
+    let result = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(result, 1, "5 >= 5 should be 1 (true)");
+}

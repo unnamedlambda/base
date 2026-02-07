@@ -389,7 +389,11 @@ impl MemoryUnit {
                 let a = i32::from_le_bytes(a_bytes[0..4].try_into().unwrap());
                 let b_bytes = self.shared.read(action.offset as usize, 4);
                 let b = i32::from_le_bytes(b_bytes[0..4].try_into().unwrap());
-                let result: i32 = if a > b { 1 } else { 0 };
+                let result: i32 = if action.size == 5 {
+                    if a >= b { 1 } else { 0 }
+                } else {
+                    if a > b { 1 } else { 0 }
+                };
                 self.shared.write(action.dst as usize, &result.to_le_bytes());
             }
             _ => {}
