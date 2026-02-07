@@ -985,6 +985,18 @@ def incIdentWritePtrI : List Instr := simdStepI LoadIdentWritePtr ++ simdStepI L
 def loadCharI : List Instr := memStepI MemCopyChar ++ simdStepI LoadChar
 def fenceI : Instr := .fence
 def jumpPadI (a b : Instr) : List Instr := [a, b, .fence, .fence]
+def charCheckI (l s st : WorkOp) : List Instr := simdStepI l ++ simdStepI s ++ simdStepI st
+
+def operatorChainI (pfx : String) (mulLabel addLabel subLabel fallLabel : String) : List Instr :=
+  [Instr.label (pfx ++ "_starCheck")] ++
+  charCheckI LoadStar SubCharStar StoreDigitCountFromStar ++
+  [Instr.jumpTo L.DIGIT_COUNT (pfx ++ "_plusCheck"), Instr.jumpAlways mulLabel] ++
+  [Instr.label (pfx ++ "_plusCheck")] ++
+  charCheckI LoadPlus SubCharPlus StoreDigitCountFromPlus ++
+  [Instr.jumpTo L.DIGIT_COUNT (pfx ++ "_minusCheck"), Instr.jumpAlways addLabel] ++
+  [Instr.label (pfx ++ "_minusCheck")] ++
+  charCheckI LoadMinus SubCharMinus StoreDigitCountFromMinus ++
+  [Instr.jumpTo L.DIGIT_COUNT fallLabel, Instr.jumpAlways subLabel]
 
 def addToResultI : List Instr :=
   simdStepI LoadAccumForRight ++ simdStepI StoreRightVal ++
@@ -1022,10 +1034,14 @@ def subResultI : List Instr :=
 def skipSpacesI (loop done : String) : List Instr :=
   [Instr.label loop] ++
   loadCharI ++
-  simdStepI LoadSpace ++ simdStepI SubCharSpace ++ simdStepI StoreDigitCountFromSpace ++
+  charCheckI LoadSpace SubCharSpace StoreDigitCountFromSpace ++
   [Instr.jumpTo L.DIGIT_COUNT done] ++
   incPosI ++
   [Instr.jumpAlways loop]
+
+def skipI (pfx : String) : List Instr :=
+  skipSpacesI (pfx ++ "_loop") (pfx ++ "_done") ++ [Instr.label (pfx ++ "_done")]
+def incPosNI (n : Nat) : List Instr := (List.replicate n ()).flatMap fun _ => incPosI
 
 structure TerminatorCheck where
   loadOp : WorkOp
@@ -1049,7 +1065,7 @@ def parseLoopI (cfg : ParseLoopConfig) : List Instr :=
     let next := if idx + 1 < n then tLabel (idx + 1) else accumLabel
     (instrs ++
       [Instr.label (tLabel idx)] ++
-      simdStepI tc.loadOp ++ simdStepI tc.subOp ++ simdStepI tc.storeOp ++
+      charCheckI tc.loadOp tc.subOp tc.storeOp ++
       jumpPadI (Instr.jumpTo L.DIGIT_COUNT next) (Instr.jumpAlways cfg.exitLabel),
      idx + 1)
   ) ([], 0)
@@ -1128,7 +1144,7 @@ def itoaLoopI (loop : String) : List Instr :=
 
 def parenCheckBeforeParseI (normalLabel parenLabel : String) : List Instr :=
   loadCharI ++
-  simdStepI LoadLParen ++ simdStepI SubCharLParen ++ simdStepI StoreDigitCountFromLParen ++
+  charCheckI LoadLParen SubCharLParen StoreDigitCountFromLParen ++
   [Instr.jumpTo L.DIGIT_COUNT normalLabel, Instr.jumpAlways parenLabel]
 
 structure OpCheck where
@@ -1150,8 +1166,7 @@ def emitParseI (kind : ParseKind) (pfx doneLabel : String) : List Instr :=
 def emitSkipParseI (kind : ParseKind) (pfx : String) : List Instr :=
   let skipLabel := pfx ++ "_skip"
   let parseDone := pfx ++ "_parseDone"
-  skipSpacesI (skipLabel ++ "_loop") (skipLabel ++ "_done") ++
-  [Instr.label (skipLabel ++ "_done")] ++
+  skipI skipLabel ++
   emitParseI kind pfx parseDone ++
   [Instr.label parseDone]
 
@@ -1167,20 +1182,11 @@ def parenSubEvalI (pfx : String) : List Instr :=
   termFromAccumI ++
   -- checkOp: skip spaces, check rparen/star/plus/minus
   [Instr.label checkOp] ++
-  skipSpacesI (p ++ "_opSkip_loop") (p ++ "_opSkip_done") ++
-  [Instr.label (p ++ "_opSkip_done")] ++
+  skipI (p ++ "_opSkip") ++
   loadCharI ++
-  simdStepI LoadRParen ++ simdStepI SubCharRParen ++ simdStepI StoreDigitCountFromRParen ++
+  charCheckI LoadRParen SubCharRParen StoreDigitCountFromRParen ++
   [Instr.jumpTo L.DIGIT_COUNT (p ++ "_starCheck"), Instr.jumpAlways finalize] ++
-  [Instr.label (p ++ "_starCheck")] ++
-  simdStepI LoadStar ++ simdStepI SubCharStar ++ simdStepI StoreDigitCountFromStar ++
-  [Instr.jumpTo L.DIGIT_COUNT (p ++ "_plusCheck"), Instr.jumpAlways handleMul] ++
-  [Instr.label (p ++ "_plusCheck")] ++
-  simdStepI LoadPlus ++ simdStepI SubCharPlus ++ simdStepI StoreDigitCountFromPlus ++
-  [Instr.jumpTo L.DIGIT_COUNT (p ++ "_minusCheck"), Instr.jumpAlways handleAdd] ++
-  [Instr.label (p ++ "_minusCheck")] ++
-  simdStepI LoadMinus ++ simdStepI SubCharMinus ++ simdStepI StoreDigitCountFromMinus ++
-  [Instr.jumpTo L.DIGIT_COUNT finalize, Instr.jumpAlways handleSub] ++
+  operatorChainI p handleMul handleAdd handleSub finalize ++
   -- handleMul
   [Instr.label handleMul] ++
   incPosI ++
@@ -1227,8 +1233,7 @@ def exprEvalI
   -- init section
   let initSkip :=
     if initSkipSpaces then
-      skipSpacesI (p ++ "_initSkip_loop") (p ++ "_initSkip_done") ++
-      [Instr.label (p ++ "_initSkip_done")]
+      skipI (p ++ "_initSkip")
     else []
   let initInstrs :=
     if initHasParen then
@@ -1267,27 +1272,17 @@ def exprEvalI
   ) ([], 0)
   let checkOpInstrs :=
     [Instr.label checkOp] ++
-    skipSpacesI (p ++ "_opSkip_loop") (p ++ "_opSkip_done") ++
-    [Instr.label (p ++ "_opSkip_done")] ++
+    skipI (p ++ "_opSkip") ++
     loadCharI ++
     termChecks.1 ++
-    [Instr.label (p ++ "_starCheck")] ++
-    simdStepI LoadStar ++ simdStepI SubCharStar ++ simdStepI StoreDigitCountFromStar ++
-    [Instr.jumpTo L.DIGIT_COUNT (p ++ "_plusCheck"), Instr.jumpAlways handleMul] ++
-    [Instr.label (p ++ "_plusCheck")] ++
-    simdStepI LoadPlus ++ simdStepI SubCharPlus ++ simdStepI StoreDigitCountFromPlus ++
-    [Instr.jumpTo L.DIGIT_COUNT (p ++ "_minusCheck"), Instr.jumpAlways handleAdd] ++
-    [Instr.label (p ++ "_minusCheck")] ++
-    simdStepI LoadMinus ++ simdStepI SubCharMinus ++ simdStepI StoreDigitCountFromMinus ++
-    [Instr.jumpTo L.DIGIT_COUNT minusFallLabel, Instr.jumpAlways handleSub]
+    operatorChainI p handleMul handleAdd handleSub minusFallLabel
   initInstrs ++
   checkOpInstrs ++
   -- handleMul
   (if handlersHasParen then
     [Instr.label handleMul] ++
     incPosI ++
-    skipSpacesI (p ++ "_MulSkip_loop") (p ++ "_MulSkip_done") ++
-    [Instr.label (p ++ "_MulSkip_done")] ++
+    skipI (p ++ "_MulSkip") ++
     parenCheckBeforeParseI (p ++ "_MulNormal") (p ++ "_MulParen") ++
     [Instr.label (p ++ "_MulNormal")] ++
     emitParseI parseKind (p ++ "_MulParse") (p ++ "_MulParseDone") ++
@@ -1312,8 +1307,7 @@ def exprEvalI
     [Instr.label handleAdd] ++
     addTermToResultI ++
     incPosI ++
-    skipSpacesI (p ++ "_AddSkip_loop") (p ++ "_AddSkip_done") ++
-    [Instr.label (p ++ "_AddSkip_done")] ++
+    skipI (p ++ "_AddSkip") ++
     parenCheckBeforeParseI (p ++ "_AddNormal") (p ++ "_AddParen") ++
     [Instr.label (p ++ "_AddNormal")] ++
     emitParseI parseKind (p ++ "_AddParse") (p ++ "_AddParseDone") ++
@@ -1339,8 +1333,7 @@ def exprEvalI
     [Instr.label handleSub] ++
     addTermToResultI ++
     incPosI ++
-    skipSpacesI (p ++ "_SubSkip_loop") (p ++ "_SubSkip_done") ++
-    [Instr.label (p ++ "_SubSkip_done")] ++
+    skipI (p ++ "_SubSkip") ++
     parenCheckBeforeParseI (p ++ "_SubNormal") (p ++ "_SubParen") ++
     [Instr.label (p ++ "_SubNormal")] ++
     emitParseI parseKind (p ++ "_SubParse") (p ++ "_SubParseDone") ++
@@ -1374,11 +1367,11 @@ def setupI : List Instr :=
 def parenCheckI : List Instr :=
   [Instr.label "parenCheck"] ++
   loadCharI ++
-  simdStepI LoadLParen ++ simdStepI SubCharLParen ++ simdStepI StoreDigitCountFromLParen ++
+  charCheckI LoadLParen SubCharLParen StoreDigitCountFromLParen ++
   [Instr.jumpTo L.DIGIT_COUNT "letCheck"] ++
   incPosI ++
   loadCharI ++
-  simdStepI LoadF ++ simdStepI SubCharF ++ simdStepI StoreDigitCountFromF ++
+  charCheckI LoadF SubCharF StoreDigitCountFromF ++
   [Instr.jumpTo L.DIGIT_COUNT "groupingPath", Instr.jumpAlways "lambdaPath"]
 
 def findOperatorI : List Instr :=
@@ -1386,17 +1379,17 @@ def findOperatorI : List Instr :=
   let done := "lam_findOp_done"
   [Instr.label loop] ++
   loadCharI ++
-  simdStepI LoadPlus ++ simdStepI SubCharPlus ++ simdStepI StoreDigitCountFromPlus ++
+  charCheckI LoadPlus SubCharPlus StoreDigitCountFromPlus ++
   [Instr.jumpTo L.DIGIT_COUNT "lam_findOp_starCheck"] ++
   memStepI ClearLeftVal ++
   [Instr.jumpAlways done] ++
   [Instr.label "lam_findOp_starCheck"] ++
-  simdStepI LoadStar ++ simdStepI SubCharStar ++ simdStepI StoreDigitCountFromStar ++
+  charCheckI LoadStar SubCharStar StoreDigitCountFromStar ++
   [Instr.jumpTo L.DIGIT_COUNT "lam_findOp_minusCheck"] ++
   memStepI SetLeftVal ++
   [Instr.jumpAlways done] ++
   [Instr.label "lam_findOp_minusCheck"] ++
-  simdStepI LoadMinus ++ simdStepI SubCharMinus ++ simdStepI StoreDigitCountFromMinus ++
+  charCheckI LoadMinus SubCharMinus StoreDigitCountFromMinus ++
   [Instr.jumpTo L.DIGIT_COUNT "lam_findOp_next"] ++
   memStepI SetLeftValTwo ++
   [Instr.jumpAlways done] ++
@@ -1410,15 +1403,13 @@ def lambdaPathI : List Instr :=
   memStepI ClearLeftVal ++
   findOperatorI ++
   incPosI ++
-  skipSpacesI "lam_skip1_loop" "lam_skip1_done" ++
-  [Instr.label "lam_skip1_done"] ++
+  skipI "lam_skip1" ++
   parseAddendI "lam_addend" "lam_addendDone" ++
   [Instr.label "lam_addendDone"] ++
   simdStepI LoadAccumForResult ++ simdStepI StoreResultFromAccum ++
   memStepI ClearAccum ++
   incPosI ++
-  skipSpacesI "lam_skip2_loop" "lam_skip2_done" ++
-  [Instr.label "lam_skip2_done"] ++
+  skipI "lam_skip2" ++
   parseNumberI "lam_arg" "lam_argDone" ++
   [Instr.label "lam_argDone"] ++
   [Instr.jumpTo L.LEFT_VAL "lam_notAdd"] ++
@@ -1445,7 +1436,7 @@ def groupingPathI : List Instr :=
 def letCheckI : List Instr :=
   [Instr.label "letCheck"] ++
   loadCharI ++
-  simdStepI LoadL ++ simdStepI SubCharL ++ simdStepI StoreDigitCountFromL ++
+  charCheckI LoadL SubCharL StoreDigitCountFromL ++
   [Instr.jumpTo L.DIGIT_COUNT "ifCheck"]
 
 def parseBindingExprI (pfx doneLabel : String) : List Instr :=
@@ -1462,7 +1453,7 @@ def parseBindingExprI (pfx doneLabel : String) : List Instr :=
 def identLoopI : List Instr :=
   [Instr.label "let_identLoop"] ++
   loadCharI ++
-  simdStepI LoadSpace ++ simdStepI SubCharSpace ++ simdStepI StoreDigitCountFromSpace ++
+  charCheckI LoadSpace SubCharSpace StoreDigitCountFromSpace ++
   [Instr.jumpTo L.DIGIT_COUNT "let_identContinue", Instr.jumpAlways "let_identDone"] ++
   [Instr.label "let_identContinue"] ++
   memStepI StoreCharToIdent ++ incIdentWritePtrI ++ incPosI ++
@@ -1488,13 +1479,12 @@ def letPathI : List Instr :=
   hashStepCreateI ++
   -- letBindingLoop:
   [Instr.label "let_bindLoop"] ++
-  incPosI ++ incPosI ++ incPosI ++ incPosI ++  -- skip "let "
+  incPosNI 4 ++  -- skip "let "
   memStepI ClearIdentBuf ++ memStepI InitIdentWritePtr ++
   identLoopI ++
   -- skip " := "
   incPosI ++ incPosI ++ incPosI ++ incPosI ++
-  skipSpacesI "let_skipBeforeExpr_loop" "let_skipBeforeExpr_done" ++
-  [Instr.label "let_skipBeforeExpr_done"] ++
+  skipI "let_skipBeforeExpr" ++
   memStepI SaveIdentBuf ++
   parseBindingExprI "letBind" "let_afterBind" ++
   [Instr.label "let_afterBind"] ++
@@ -1502,24 +1492,22 @@ def letPathI : List Instr :=
   memStepI StoreAccumToHtVal ++ hashStepInsertI ++ memStepI ClearAccum ++
   -- semicolon check
   loadCharI ++
-  simdStepI LoadSemicolon ++ simdStepI SubCharSemicolon ++ simdStepI StoreDigitCountFromSemicolon ++
+  charCheckI LoadSemicolon SubCharSemicolon StoreDigitCountFromSemicolon ++
   [Instr.jumpTo L.DIGIT_COUNT "let_bodyStart"] ++
   -- semicolon found: skip ; then spaces, check for 'let'
   incPosI ++
-  skipSpacesI "let_afterSemi_loop" "let_afterSemi_done" ++
-  [Instr.label "let_afterSemi_done"] ++
+  skipI "let_afterSemi" ++
   loadCharI ++
-  simdStepI LoadL ++ simdStepI SubCharL ++ simdStepI StoreDigitCountFromL ++
+  charCheckI LoadL SubCharL StoreDigitCountFromL ++
   [Instr.jumpTo L.DIGIT_COUNT "let_bodyStart", Instr.jumpAlways "let_bindLoop"] ++
   -- bodyStart: check for 'if' before body
   [Instr.label "let_bodyStart"] ++
   loadCharI ++
-  simdStepI LoadIChar ++ simdStepI SubCharIChar ++ simdStepI StoreDigitCountFromIChar ++
+  charCheckI LoadIChar SubCharIChar StoreDigitCountFromIChar ++
   [Instr.jumpTo L.DIGIT_COUNT "let_bodyNormal"] ++
   incPosI ++ incPosI ++ incPosI ++
   memStepI SetIfFlag ++
-  skipSpacesI "let_bodyIfSkip_loop" "let_bodyIfSkip_done" ++
-  [Instr.label "let_bodyIfSkip_done"] ++
+  skipI "let_bodyIfSkip" ++
   [Instr.jumpAlways "let_bodyNormal"] ++
   -- body evaluation
   [Instr.label "let_bodyNormal"] ++
@@ -1529,12 +1517,11 @@ def letPathI : List Instr :=
 def ifCheckI : List Instr :=
   [Instr.label "ifCheck"] ++
   loadCharI ++
-  simdStepI LoadIChar ++ simdStepI SubCharIChar ++ simdStepI StoreDigitCountFromIChar ++
+  charCheckI LoadIChar SubCharIChar StoreDigitCountFromIChar ++
   [Instr.jumpTo L.DIGIT_COUNT "normalStart"] ++
   incPosI ++ incPosI ++ incPosI ++
   memStepI SetIfFlag ++
-  skipSpacesI "ifCheck_skip_loop" "ifCheck_skip_done" ++
-  [Instr.label "ifCheck_skip_done"] ++
+  skipI "ifCheck_skip" ++
   [Instr.jumpAlways "parenCheck"]
 
 def mainExprEvalI : List Instr :=
@@ -1543,67 +1530,42 @@ def mainExprEvalI : List Instr :=
     [Instr.jumpAlways "boolCheck"]
     (afterMinusFallthrough := some "main_ltCheck")
 
-def handleLTI : List Instr :=
-  [Instr.label "main_ltCheck"] ++
-  simdStepI LoadLT ++ simdStepI SubCharLT ++ simdStepI StoreDigitCountFromLT ++
-  [Instr.jumpTo L.DIGIT_COUNT "main_gtCheck", Instr.jumpAlways "main_handleLT"] ++
-  [Instr.label "main_gtCheck"] ++
-  simdStepI LoadGT ++ simdStepI SubCharGT ++ simdStepI StoreDigitCountFromGT ++
-  [Instr.jumpTo L.DIGIT_COUNT "main_finalize", Instr.jumpAlways "main_handleGT"] ++
-  -- handleLT
-  [Instr.label "main_handleLT"] ++
+def handleComparisonI (pfx : String) (strictOp eqOp : WorkOp) : List Instr :=
+  [Instr.label ("main_handle" ++ pfx)] ++
   addTermToResultI ++
   memStepI ClearLeftVal ++
   incPosI ++
   loadCharI ++
-  simdStepI LoadEqualsChar ++ simdStepI SubCharEquals ++ simdStepI StoreDigitCountFromEquals ++
-  [Instr.jumpTo L.DIGIT_COUNT "lt_afterEq"] ++
+  charCheckI LoadEqualsChar SubCharEquals StoreDigitCountFromEquals ++
+  [Instr.jumpTo L.DIGIT_COUNT (pfx ++ "_afterEq")] ++
   incPosI ++
   memStepI SetLeftVal ++
-  [Instr.label "lt_afterEq"] ++
-  skipSpacesI "lt_skip_loop" "lt_skip_done" ++
-  [Instr.label "lt_skip_done"] ++
-  parseNumberI "lt_parse" "lt_parseDone" ++
-  [Instr.label "lt_parseDone"] ++
+  [Instr.label (pfx ++ "_afterEq")] ++
+  skipI (pfx ++ "_skip") ++
+  parseNumberI (pfx ++ "_parse") (pfx ++ "_parseDone") ++
+  [Instr.label (pfx ++ "_parseDone")] ++
   termFromAccumI ++
-  [Instr.jumpTo L.LEFT_VAL "lt_lePath"] ++
-  memStepI CompareGT ++
-  [Instr.jumpAlways "lt_afterCompare"] ++
-  [Instr.label "lt_lePath"] ++
-  memStepI CompareGE ++
-  [Instr.label "lt_afterCompare"] ++
-  memStepI ClearResult ++
-  memStepI SetBoolFlag ++
-  memStepI ClearLeftVal ++
-  termFromAccumI ++
-  [Instr.jumpAlways "main_checkOp"] ++
-  -- handleGT
-  [Instr.label "main_handleGT"] ++
-  addTermToResultI ++
-  memStepI ClearLeftVal ++
-  incPosI ++
-  loadCharI ++
-  simdStepI LoadEqualsChar ++ simdStepI SubCharEquals ++ simdStepI StoreDigitCountFromEquals ++
-  [Instr.jumpTo L.DIGIT_COUNT "gt_afterEq"] ++
-  incPosI ++
-  memStepI SetLeftVal ++
-  [Instr.label "gt_afterEq"] ++
-  skipSpacesI "gt_skip_loop" "gt_skip_done" ++
-  [Instr.label "gt_skip_done"] ++
-  parseNumberI "gt_parse" "gt_parseDone" ++
-  [Instr.label "gt_parseDone"] ++
-  termFromAccumI ++
-  [Instr.jumpTo L.LEFT_VAL "gt_gePath"] ++
-  memStepI CompareGTReversed ++
-  [Instr.jumpAlways "gt_afterCompare"] ++
-  [Instr.label "gt_gePath"] ++
-  memStepI CompareGEReversed ++
-  [Instr.label "gt_afterCompare"] ++
+  [Instr.jumpTo L.LEFT_VAL (pfx ++ "_eqPath")] ++
+  memStepI strictOp ++
+  [Instr.jumpAlways (pfx ++ "_afterCompare")] ++
+  [Instr.label (pfx ++ "_eqPath")] ++
+  memStepI eqOp ++
+  [Instr.label (pfx ++ "_afterCompare")] ++
   memStepI ClearResult ++
   memStepI SetBoolFlag ++
   memStepI ClearLeftVal ++
   termFromAccumI ++
   [Instr.jumpAlways "main_checkOp"]
+
+def handleLTI : List Instr :=
+  [Instr.label "main_ltCheck"] ++
+  charCheckI LoadLT SubCharLT StoreDigitCountFromLT ++
+  [Instr.jumpTo L.DIGIT_COUNT "main_gtCheck", Instr.jumpAlways "main_handleLT"] ++
+  [Instr.label "main_gtCheck"] ++
+  charCheckI LoadGT SubCharGT StoreDigitCountFromGT ++
+  [Instr.jumpTo L.DIGIT_COUNT "main_finalize", Instr.jumpAlways "main_handleGT"] ++
+  handleComparisonI "LT" CompareGT CompareGE ++
+  handleComparisonI "GT" CompareGTReversed CompareGEReversed
 
 def boolCheckI : List Instr :=
   [Instr.label "boolCheck"] ++
@@ -1627,17 +1589,10 @@ def falseOutputI : List Instr :=
   fileStepI FileWriteOutput ++
   [Instr.jumpAlways "end"]
 
-def thenBranchEvalI (pfx doneLabel : String) : List Instr :=
+def branchEvalI (pfx doneLabel : String) (termOps : List WorkOp) : List Instr :=
   exprEvalI pfx .Atom
     [⟨[ClearCharBuf], L.CHAR_BUF, (pfx ++ "_finalize")⟩,
-     ⟨[LoadEChar, SubCharEChar, StoreDigitCountFromEChar], L.DIGIT_COUNT, (pfx ++ "_finalize")⟩]
-    true true
-    [Instr.jumpAlways doneLabel]
-
-def elseBranchEvalI (pfx doneLabel : String) : List Instr :=
-  exprEvalI pfx .Atom
-    [⟨[ClearCharBuf], L.CHAR_BUF, (pfx ++ "_finalize")⟩,
-     ⟨[LoadBaseForNewlineCheck, SubCharNewline, StoreDigitCountFromNewline], L.DIGIT_COUNT, (pfx ++ "_finalize")⟩]
+     ⟨termOps, L.DIGIT_COUNT, (pfx ++ "_finalize")⟩]
     true true
     [Instr.jumpAlways doneLabel]
 
@@ -1645,17 +1600,15 @@ def ifThenElseI : List Instr :=
   [Instr.label "ifThenElse"] ++
   memStepI SaveCondition ++
   memStepI ClearBoolFlag ++ memStepI ClearIfFlag ++ memStepI ClearResult ++ memStepI ClearAccum ++ memStepI ClearTerm ++
-  incPosI ++ incPosI ++ incPosI ++ incPosI ++ incPosI ++  -- skip "then "
-  skipSpacesI "ite_thenSkip_loop" "ite_thenSkip_done" ++
-  [Instr.label "ite_thenSkip_done"] ++
-  thenBranchEvalI "then" "ite_afterThen" ++
+  incPosNI 5 ++  -- skip "then "
+  skipI "ite_thenSkip" ++
+  branchEvalI "then" "ite_afterThen" [LoadEChar, SubCharEChar, StoreDigitCountFromEChar] ++
   [Instr.label "ite_afterThen"] ++
   memStepI SaveIfResultA ++
   memStepI ClearResult ++ memStepI ClearAccum ++ memStepI ClearTerm ++
-  incPosI ++ incPosI ++ incPosI ++ incPosI ++ incPosI ++  -- skip "else "
-  skipSpacesI "ite_elseSkip_loop" "ite_elseSkip_done" ++
-  [Instr.label "ite_elseSkip_done"] ++
-  elseBranchEvalI "else" "ite_afterElse" ++
+  incPosNI 5 ++  -- skip "else "
+  skipI "ite_elseSkip" ++
+  branchEvalI "else" "ite_afterElse" [LoadBaseForNewlineCheck, SubCharNewline, StoreDigitCountFromNewline] ++
   [Instr.label "ite_afterElse"] ++
   memStepI SaveIfResultB ++
   [Instr.jumpTo L.SAVED_CONDITION "ite_restoreA"] ++
