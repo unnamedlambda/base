@@ -49,7 +49,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         algorithm.computational_assignments = vec![255; algorithm.actions.len()];
         for (i, action) in algorithm.actions.iter().enumerate() {
             match action.kind {
-                Kind::Approximate | Kind::Choose | Kind::Compare | Kind::Timestamp => {
+                Kind::Approximate | Kind::Choose | Kind::Timestamp => {
                     algorithm.computational_assignments[i] = 0;
                 }
                 _ => {}
@@ -68,7 +68,8 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 | Kind::Fence
                 | Kind::MemWrite
                 | Kind::MemCopyIndirect
-                | Kind::MemStoreIndirect => {
+                | Kind::MemStoreIndirect
+                | Kind::Compare => {
                     algorithm.memory_assignments[i] = 0;
                 }
                 _ => {}

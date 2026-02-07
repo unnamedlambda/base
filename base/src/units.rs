@@ -384,6 +384,14 @@ impl MemoryUnit {
             Kind::Fence => {
                 fence(Ordering::SeqCst);
             }
+            Kind::Compare => {
+                let a_bytes = self.shared.read(action.src as usize, 4);
+                let a = i32::from_le_bytes(a_bytes[0..4].try_into().unwrap());
+                let b_bytes = self.shared.read(action.offset as usize, 4);
+                let b = i32::from_le_bytes(b_bytes[0..4].try_into().unwrap());
+                let result: i32 = if a > b { 1 } else { 0 };
+                self.shared.write(action.dst as usize, &result.to_le_bytes());
+            }
             _ => {}
         }
     }
@@ -773,11 +781,6 @@ impl ComputationalUnit {
                     let choice = rand::random::<u64>() % n;
                     self.regs[action.dst as usize] = choice as f64;
                 }
-            }
-            Kind::Compare => {
-                let a = self.regs[action.src as usize];
-                let b = self.regs[action.offset as usize];
-                self.regs[action.dst as usize] = if a > b { 1.0 } else { 0.0 };
             }
             Kind::Timestamp => {
                 // Store current timestamp in register
@@ -1510,46 +1513,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compare_action() {
-        let mut unit = ComputationalUnit::new(8);
-
-        // Test greater than
-        unit.regs[0] = 5.0;
-        unit.regs[1] = 3.0;
-
-        let action = Action {
-            kind: Kind::Compare,
-            dst: 2,
-            src: 0,
-            offset: 1,
-            size: 0,
-        };
-
-        unsafe {
-            unit.execute(&action);
-        }
-        assert_eq!(unit.regs[2], 1.0); // 5 > 3 is true
-
-        // Test less than
-        unit.regs[0] = 2.0;
-        unit.regs[1] = 7.0;
-
-        unsafe {
-            unit.execute(&action);
-        }
-        assert_eq!(unit.regs[2], 0.0); // 2 > 7 is false
-
-        // Test equal
-        unit.regs[0] = 4.0;
-        unit.regs[1] = 4.0;
-
-        unsafe {
-            unit.execute(&action);
-        }
-        assert_eq!(unit.regs[2], 0.0); // 4 > 4 is false (not greater)
-    }
-
-    #[test]
     fn test_memcopy_basic() {
         let mut memory = vec![0u8; 1024];
         memory[100..104].copy_from_slice(&[1, 2, 3, 4]);
@@ -1627,6 +1590,47 @@ mod tests {
             let result = shared.read(200, 4);
             assert_eq!(result, &[0x11, 0x22, 0x33, 0x44]);
         }
+    }
+
+    #[test]
+    fn test_memory_compare_action() {
+        let mut memory = vec![0u8; 256];
+        memory[0..4].copy_from_slice(&5i32.to_le_bytes());
+        memory[16..20].copy_from_slice(&3i32.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = MemoryUnit::new(shared.clone());
+
+        let action = Action {
+            kind: Kind::Compare,
+            dst: 32,
+            src: 0,
+            offset: 16,
+            size: 0,
+        };
+
+        // 5 > 3 → 1
+        unsafe {
+            unit.execute(&action);
+        }
+        let result = i32::from_le_bytes(unsafe { shared.read(32, 4) }[0..4].try_into().unwrap());
+        assert_eq!(result, 1);
+
+        // 3 > 5 → 0
+        let action2 = Action { src: 16, offset: 0, ..action };
+        unsafe {
+            unit.execute(&action2);
+        }
+        let result = i32::from_le_bytes(unsafe { shared.read(32, 4) }[0..4].try_into().unwrap());
+        assert_eq!(result, 0);
+
+        // 5 > 5 → 0
+        let action3 = Action { src: 0, offset: 0, ..action };
+        unsafe {
+            unit.execute(&action3);
+        }
+        let result = i32::from_le_bytes(unsafe { shared.read(32, 4) }[0..4].try_into().unwrap());
+        assert_eq!(result, 0);
     }
 
     #[test]
