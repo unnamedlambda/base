@@ -143,6 +143,10 @@ def OFFSET_BOOL_FLAG_U32 : UInt32 := 0x0640
 def OFFSET_TRUE_STRING_U32 : UInt32 := 0x0650
 def OFFSET_FALSE_STRING_U32 : UInt32 := 0x0660
 def OFFSET_CONST_GT_U32 : UInt32 := 0x0670
+def OFFSET_IF_FLAG_U32 : UInt32 := 0x0680
+def OFFSET_SAVED_CONDITION_U32 : UInt32 := 0x0690
+def OFFSET_IF_RESULT_A_U32 : UInt32 := 0x06A0
+def OFFSET_IF_RESULT_B_U32 : UInt32 := 0x06B0
 
 def IDENT_BUF_SIZE_N : Nat := 32
 def HASH_TABLE_UNIT_ID_N : Nat := 7
@@ -220,6 +224,10 @@ structure Layout where
   TRUE_STRING : UInt32
   FALSE_STRING : UInt32
   CONST_GT : UInt32
+  IF_FLAG : UInt32
+  SAVED_CONDITION : UInt32
+  IF_RESULT_A : UInt32
+  IF_RESULT_B : UInt32
 
 
 def layout : Layout := {
@@ -280,7 +288,11 @@ def layout : Layout := {
   BOOL_FLAG := C.OFFSET_BOOL_FLAG_U32,
   TRUE_STRING := C.OFFSET_TRUE_STRING_U32,
   FALSE_STRING := C.OFFSET_FALSE_STRING_U32,
-  CONST_GT := C.OFFSET_CONST_GT_U32
+  CONST_GT := C.OFFSET_CONST_GT_U32,
+  IF_FLAG := C.OFFSET_IF_FLAG_U32,
+  SAVED_CONDITION := C.OFFSET_SAVED_CONDITION_U32,
+  IF_RESULT_A := C.OFFSET_IF_RESULT_A_U32,
+  IF_RESULT_B := C.OFFSET_IF_RESULT_B_U32
 }
 
 def L : Layout := layout
@@ -351,6 +363,10 @@ def leanEvalPayloads : List UInt8 :=
   let trueString := padTo (stringToBytes "true\n") C.SIZE_16_N
   let falseString := padTo (stringToBytes "false\n") C.SIZE_16_N
   let constGT := int32ToBytes16 C.ASCII_GT_I
+  let ifFlag := zeros C.SIZE_16_N
+  let savedCondition := zeros C.SIZE_16_N
+  let ifResultA := zeros C.SIZE_16_N
+  let ifResultB := zeros C.SIZE_16_N
 
   ffiPtr ++ outputPath ++ argvParams ++ filenameBuf ++ ffiResult ++
     flagFfi ++ flagFile ++ flagSimd ++ flagMem ++ constZero ++ sourceBuf ++
@@ -362,7 +378,8 @@ def leanEvalPayloads : List UInt8 :=
     constF ++ savedResult ++ savedTerm ++
     flagHash ++ htHandle ++ identBuf ++ htValBuf ++ htResultBuf ++ identWritePtr ++ savedIdentBuf ++
     constLT ++ boolFlag ++ trueString ++ falseString ++
-    constGT
+    constGT ++
+    ifFlag ++ savedCondition ++ ifResultA ++ ifResultB
 
 def fence : Action := { kind := .Fence, dst := ZERO, src := ZERO, offset := ZERO, size := ZERO }
 
@@ -517,6 +534,19 @@ inductive WorkOp where
   | CompareGTReversed
   | CompareGE
   | CompareGEReversed
+  | LoadIChar
+  | SubCharIChar
+  | StoreDigitCountFromIChar
+  | LoadEChar
+  | SubCharEChar
+  | StoreDigitCountFromEChar
+  | SetIfFlag
+  | ClearIfFlag
+  | SaveCondition
+  | SaveIfResultA
+  | SaveIfResultB
+  | RestoreIfResultA
+  | RestoreIfResultB
   deriving BEq, DecidableEq, Repr
 
 open WorkOp
@@ -692,7 +722,20 @@ def workOps : List WorkOp := [
   StoreDigitCountFromEquals,
   CompareGTReversed,
   CompareGE,
-  CompareGEReversed
+  CompareGEReversed,
+  LoadIChar,
+  SubCharIChar,
+  StoreDigitCountFromIChar,
+  LoadEChar,
+  SubCharEChar,
+  StoreDigitCountFromEChar,
+  SetIfFlag,
+  ClearIfFlag,
+  SaveCondition,
+  SaveIfResultA,
+  SaveIfResultB,
+  RestoreIfResultA,
+  RestoreIfResultB
 ]
 
 def workIndex (op : WorkOp) : Nat :=
@@ -849,6 +892,19 @@ def opToAction : WorkOp -> Action
   | CompareGTReversed => w .Compare L.RESULT L.ACCUM L.TERM SIZE_I32
   | CompareGE => w .Compare L.TERM L.ACCUM L.RESULT (u32 5)
   | CompareGEReversed => w .Compare L.RESULT L.ACCUM L.TERM (u32 5)
+  | LoadIChar => w .SimdLoadI32 L.CONST_I_CHAR (r RB) ZERO SIZE_NONE
+  | SubCharIChar => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
+  | StoreDigitCountFromIChar => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | LoadEChar => w .SimdLoadI32 L.CONST_E (r RB) ZERO SIZE_NONE
+  | SubCharEChar => w .SimdSubI32 (r RA) (r RC) (r RB) SIZE_NONE
+  | StoreDigitCountFromEChar => w .SimdStoreI32 (r RC) (r RA) L.DIGIT_COUNT SIZE_NONE
+  | SetIfFlag => w .MemWrite (u32 1) L.IF_FLAG ZERO SIZE_I32
+  | ClearIfFlag => w .MemWrite ZERO L.IF_FLAG ZERO SIZE_I32
+  | SaveCondition => w .MemCopy L.RESULT L.SAVED_CONDITION ZERO SIZE_I32
+  | SaveIfResultA => w .MemCopy L.RESULT L.IF_RESULT_A ZERO SIZE_I32
+  | SaveIfResultB => w .MemCopy L.RESULT L.IF_RESULT_B ZERO SIZE_I32
+  | RestoreIfResultA => w .MemCopy L.IF_RESULT_A L.RESULT ZERO SIZE_I32
+  | RestoreIfResultB => w .MemCopy L.IF_RESULT_B L.RESULT ZERO SIZE_I32
 
 
 def workActions : List Action := workOps.map opToAction
@@ -901,7 +957,7 @@ def CHECK_PLUS_LEN : Nat := SKIP_SPACES_LEN + CHECK_PLUS_ONLY_LEN
 def ITOA_INIT_LEN : Nat := MEM_STEP_LEN * C.ITOA_INIT_MEM_STEPS_N
 def ITOA_LOOP_LEN : Nat := SIMD_STEP_LEN * C.ITOA_LOOP_DIV_SIMD_STEPS_N + MEM_STEP_LEN + SIMD_STEP_LEN * C.ITOA_LOOP_POST_SIMD_STEPS_N + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
 def OUTPUT_LEN : Nat := SIMD_STEP_LEN * C.OUTPUT_SIMD_STEPS_N + MEM_STEP_LEN + FILE_STEP_LEN
-def SETUP_LEN : Nat := FFI_STEP_LEN + FILE_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN
+def SETUP_LEN : Nat := FFI_STEP_LEN + FILE_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN + MEM_STEP_LEN
 def LAMBDA_CHECK_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * C.CHECK_PLUS_SIMD_STEPS_N + C.SINGLE_ACTION_N
 def FIND_PLUS_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * C.CHECK_PLUS_SIMD_STEPS_N + JUMP_PAD_LEN + INC_POS_LEN + C.SINGLE_ACTION_N
 def FIND_OPERATOR_LEN : Nat :=
@@ -965,12 +1021,53 @@ def HANDLE_GREATERTHAN_LEN : Nat :=
   MEM_STEP_LEN +
   MEM_STEP_LEN * 3 +
   TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
-def BOOL_CHECK_LEN : Nat := C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+def BOOL_CHECK_LEN : Nat := C.SINGLE_ACTION_N * 4
 def RESULT_CHECK_LEN : Nat := C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
 def TRUE_OUTPUT_LEN : Nat := MEM_STEP_LEN + FILE_STEP_LEN + C.SINGLE_ACTION_N
 def FALSE_OUTPUT_LEN : Nat := MEM_STEP_LEN + FILE_STEP_LEN + C.SINGLE_ACTION_N
 def CHECK_OPERATOR_LEN : Nat := SKIP_SPACES_LEN + LOAD_CHAR_LEN + SIMD_STEP_LEN * 6 + 4 + CHECK_MINUS_LEN + C.SINGLE_ACTION_N + CHECK_LT_LEN + C.SINGLE_ACTION_N + CHECK_GT_LEN + C.SINGLE_ACTION_N
 def LET_CHECK_LEN : Nat := LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N
+def IF_CHECK_LEN : Nat :=
+  LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N +  -- check 'i'
+  INC_POS_LEN * 3 +                                          -- skip "if "
+  MEM_STEP_LEN +                                              -- set IF_FLAG
+  SKIP_SPACES_LEN +                                           -- skip extra spaces
+  C.SINGLE_ACTION_N                                           -- jump to parenCheckStart
+def THEN_BRANCH_CHECK_OP_LEN : Nat :=
+  SKIP_SPACES_LEN + LOAD_CHAR_LEN +
+  SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +        -- NUL check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- 'e' check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- star check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- plus check
+  SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N      -- minus check
+def THEN_BRANCH_HANDLE_MUL_LEN : Nat :=
+  INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def THEN_BRANCH_HANDLE_ADD_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def THEN_BRANCH_HANDLE_SUB_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def THEN_BRANCH_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
+def THEN_BRANCH_EVAL_LEN : Nat :=
+  SKIP_SPACES_LEN + PARSE_NUMBER_LEN + TERM_FROM_ACCUM_LEN +
+  THEN_BRANCH_CHECK_OP_LEN +
+  THEN_BRANCH_HANDLE_MUL_LEN + THEN_BRANCH_HANDLE_ADD_LEN + THEN_BRANCH_HANDLE_SUB_LEN +
+  THEN_BRANCH_FINALIZE_LEN
+def ELSE_BRANCH_CHECK_OP_LEN : Nat := THEN_BRANCH_CHECK_OP_LEN
+def ELSE_BRANCH_EVAL_LEN : Nat := THEN_BRANCH_EVAL_LEN
+def IF_THEN_ELSE_LEN : Nat :=
+  MEM_STEP_LEN +                              -- SaveCondition
+  MEM_STEP_LEN * 5 +                          -- ClearBoolFlag + ClearIfFlag + ClearResult + ClearAccum + ClearTerm
+  INC_POS_LEN * 5 + SKIP_SPACES_LEN +         -- skip "then " + skipSpaces
+  THEN_BRANCH_EVAL_LEN +                       -- evaluate then-branch
+  MEM_STEP_LEN +                              -- SaveIfResultA
+  MEM_STEP_LEN * 3 +                          -- ClearResult + ClearAccum + ClearTerm
+  INC_POS_LEN * 5 + SKIP_SPACES_LEN +         -- skip "else " + skipSpaces
+  ELSE_BRANCH_EVAL_LEN +                       -- evaluate else-branch
+  MEM_STEP_LEN +                              -- SaveIfResultB
+  C.SINGLE_ACTION_N +                          -- jumpIfN SAVED_CONDITION → restoreA
+  MEM_STEP_LEN + C.SINGLE_ACTION_N +          -- RestoreIfResultB + jump to itoaStart
+  MEM_STEP_LEN +                              -- RestoreIfResultA (true path)
+  C.SINGLE_ACTION_N                            -- jump to itoaStart
 def IDENT_LOOP_LEN : Nat :=
   LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +
   MEM_STEP_LEN + INC_IDENT_WRITE_PTR_LEN + INC_POS_LEN + C.SINGLE_ACTION_N
@@ -1114,9 +1211,12 @@ def NEW_HANDLE_SUBTRACT_LEN : Nat :=
   HANDLE_SUBTRACT_NORMAL_PATH_LEN + HANDLE_SUBTRACT_PAREN_PATH_LEN
 
 def MAIN_FLOW_LEN : Nat :=
-  SETUP_LEN + PAREN_CHECK_LEN + LAMBDA_PATH_LEN + GROUPING_PATH_LEN + LET_CHECK_LEN + LET_PATH_LEN + SKIP_PARSE_LEN + TERM_FROM_ACCUM_LEN + CHECK_OPERATOR_LEN +
+  SETUP_LEN + PAREN_CHECK_LEN + LAMBDA_PATH_LEN + GROUPING_PATH_LEN + LET_CHECK_LEN + LET_PATH_LEN +
+  IF_CHECK_LEN +
+  SKIP_PARSE_LEN + TERM_FROM_ACCUM_LEN + CHECK_OPERATOR_LEN +
   NEW_HANDLE_MULTIPLY_LEN + NEW_HANDLE_ADD_LEN + NEW_HANDLE_SUBTRACT_LEN + HANDLE_LESSTHAN_LEN + HANDLE_GREATERTHAN_LEN + FINALIZE_LEN +
   BOOL_CHECK_LEN + RESULT_CHECK_LEN + TRUE_OUTPUT_LEN + FALSE_OUTPUT_LEN +
+  IF_THEN_ELSE_LEN +
   ITOA_INIT_LEN + ITOA_LOOP_LEN + OUTPUT_LEN
 
 def WORK_BASE : UInt32 := UInt32.ofNat MAIN_FLOW_LEN
@@ -1818,15 +1918,152 @@ def parenCheckBeforeParseBlock (normalStart parenStart : Nat) : List Action :=
   simdStep LoadLParen ++ simdStep SubCharLParen ++ simdStep StoreDigitCountFromLParen ++
   [jumpIfN L.DIGIT_COUNT normalStart] ++ [jumpIfN L.CONST_ONE parenStart]
 
+-- Then-branch evaluator: terminates on NUL or 'e' (start of "else")
+def thenBranchEvalBlock (start done : Nat) : List Action :=
+  let skipStart := start
+  let parseStart := skipStart + SKIP_SPACES_LEN
+  let parseDone := parseStart + PARSE_NUMBER_LEN
+  let checkOpStart := parseDone + TERM_FROM_ACCUM_LEN
+  let checkOpSkipEnd := checkOpStart + SKIP_SPACES_LEN
+  let checkOpLoadCharEnd := checkOpSkipEnd + LOAD_CHAR_LEN
+  let eCheckStart := checkOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let starCheckStart := eCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let plusCheckStart := starCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let minusCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let handleMulStart := checkOpStart + THEN_BRANCH_CHECK_OP_LEN
+  let handleAddStart := handleMulStart + THEN_BRANCH_HANDLE_MUL_LEN
+  let handleSubStart := handleAddStart + THEN_BRANCH_HANDLE_ADD_LEN
+  let finalizeStart := handleSubStart + THEN_BRANCH_HANDLE_SUB_LEN
+  let mulSkipStart := handleMulStart + INC_POS_LEN
+  let mulParseStart := mulSkipStart + SKIP_SPACES_LEN
+  let mulParseDone := mulParseStart + PARSE_NUMBER_LEN
+  let addIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
+  let addSkipStart := addIncStart + INC_POS_LEN
+  let addParseStart := addSkipStart + SKIP_SPACES_LEN
+  let addParseDone := addParseStart + PARSE_NUMBER_LEN
+  let subIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
+  let subSkipStart := subIncStart + INC_POS_LEN
+  let subParseStart := subSkipStart + SKIP_SPACES_LEN
+  let subParseDone := subParseStart + PARSE_NUMBER_LEN
+
+  skipSpacesBlock skipStart parseStart ++
+  parseNumberBlock parseStart parseDone ++
+  termFromAccumBlock ++
+  -- checkOp
+  skipSpacesBlock checkOpStart checkOpSkipEnd ++
+  loadChar ++
+  simdStep ClearCharBuf ++
+  [jumpIfN L.CHAR_BUF eCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  simdStep LoadEChar ++ simdStep SubCharEChar ++ simdStep StoreDigitCountFromEChar ++
+  [jumpIfN L.DIGIT_COUNT starCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
+  [jumpIfN L.DIGIT_COUNT plusCheckStart] ++ [jumpIfN L.CONST_ONE handleMulStart] ++
+  simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
+  [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
+  simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
+  [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
+  -- handleMul
+  incPos ++
+  skipSpacesBlock mulSkipStart mulParseStart ++
+  parseNumberBlock mulParseStart mulParseDone ++
+  multiplyTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- handleAdd
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock addSkipStart addParseStart ++
+  parseNumberBlock addParseStart addParseDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- handleSub
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock subSkipStart subParseStart ++
+  parseNumberBlock subParseStart subParseDone ++
+  negateAccumToTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- finalize
+  addTermToResultBlock ++
+  [jumpIfN L.CONST_ONE done]
+
+-- Else-branch evaluator: terminates on NUL or newline
+def elseBranchEvalBlock (start done : Nat) : List Action :=
+  let skipStart := start
+  let parseStart := skipStart + SKIP_SPACES_LEN
+  let parseDone := parseStart + PARSE_NUMBER_LEN
+  let checkOpStart := parseDone + TERM_FROM_ACCUM_LEN
+  let checkOpSkipEnd := checkOpStart + SKIP_SPACES_LEN
+  let checkOpLoadCharEnd := checkOpSkipEnd + LOAD_CHAR_LEN
+  let newlineCheckStart := checkOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let starCheckStart := newlineCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let plusCheckStart := starCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let minusCheckStart := plusCheckStart + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
+  let handleMulStart := checkOpStart + ELSE_BRANCH_CHECK_OP_LEN
+  let handleAddStart := handleMulStart + THEN_BRANCH_HANDLE_MUL_LEN
+  let handleSubStart := handleAddStart + THEN_BRANCH_HANDLE_ADD_LEN
+  let finalizeStart := handleSubStart + THEN_BRANCH_HANDLE_SUB_LEN
+  let mulSkipStart := handleMulStart + INC_POS_LEN
+  let mulParseStart := mulSkipStart + SKIP_SPACES_LEN
+  let mulParseDone := mulParseStart + PARSE_NUMBER_LEN
+  let addIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
+  let addSkipStart := addIncStart + INC_POS_LEN
+  let addParseStart := addSkipStart + SKIP_SPACES_LEN
+  let addParseDone := addParseStart + PARSE_NUMBER_LEN
+  let subIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
+  let subSkipStart := subIncStart + INC_POS_LEN
+  let subParseStart := subSkipStart + SKIP_SPACES_LEN
+  let subParseDone := subParseStart + PARSE_NUMBER_LEN
+
+  skipSpacesBlock skipStart parseStart ++
+  parseNumberBlock parseStart parseDone ++
+  termFromAccumBlock ++
+  -- checkOp
+  skipSpacesBlock checkOpStart checkOpSkipEnd ++
+  loadChar ++
+  simdStep ClearCharBuf ++
+  [jumpIfN L.CHAR_BUF newlineCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  simdStep LoadBaseForNewlineCheck ++ simdStep SubCharNewline ++ simdStep StoreDigitCountFromNewline ++
+  [jumpIfN L.DIGIT_COUNT starCheckStart] ++ [jumpIfN L.CONST_ONE finalizeStart] ++
+  simdStep LoadStar ++ simdStep SubCharStar ++ simdStep StoreDigitCountFromStar ++
+  [jumpIfN L.DIGIT_COUNT plusCheckStart] ++ [jumpIfN L.CONST_ONE handleMulStart] ++
+  simdStep LoadPlus ++ simdStep SubCharPlus ++ simdStep StoreDigitCountFromPlus ++
+  [jumpIfN L.DIGIT_COUNT minusCheckStart] ++ [jumpIfN L.CONST_ONE handleAddStart] ++
+  simdStep LoadMinus ++ simdStep SubCharMinus ++ simdStep StoreDigitCountFromMinus ++
+  [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
+  -- handleMul
+  incPos ++
+  skipSpacesBlock mulSkipStart mulParseStart ++
+  parseNumberBlock mulParseStart mulParseDone ++
+  multiplyTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- handleAdd
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock addSkipStart addParseStart ++
+  parseNumberBlock addParseStart addParseDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- handleSub
+  addTermToResultBlock ++
+  incPos ++
+  skipSpacesBlock subSkipStart subParseStart ++
+  parseNumberBlock subParseStart subParseDone ++
+  negateAccumToTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- finalize
+  addTermToResultBlock ++
+  [jumpIfN L.CONST_ONE done]
+
 def actualMainFlow : List Action :=
-  let setup := ffiStep FfiCall ++ fileStep FileRead ++ memStep ClearAccum ++ memStep ClearResult ++ memStep ClearTerm ++ memStep ClearBoolFlag
+  let setup := ffiStep FfiCall ++ fileStep FileRead ++ memStep ClearAccum ++ memStep ClearResult ++ memStep ClearTerm ++ memStep ClearBoolFlag ++ memStep ClearIfFlag
 
   let parenCheckStart := SETUP_LEN
   let lambdaPathStart := parenCheckStart + PAREN_CHECK_LEN
   let groupingPathStart := lambdaPathStart + LAMBDA_PATH_LEN
   let letCheckStart := groupingPathStart + GROUPING_PATH_LEN
   let letPathStart := letCheckStart + LET_CHECK_LEN
-  let normalStart := letPathStart + LET_PATH_LEN
+  let ifCheckStart := letPathStart + LET_PATH_LEN
+  let normalStart := ifCheckStart + IF_CHECK_LEN
 
   let skipParseStart := normalStart
   let termFromAccumStart := skipParseStart + SKIP_PARSE_LEN
@@ -1845,15 +2082,28 @@ def actualMainFlow : List Action :=
   let resultCheckStart := boolCheckStart + BOOL_CHECK_LEN
   let trueOutputStart := resultCheckStart + RESULT_CHECK_LEN
   let falseOutputStart := trueOutputStart + TRUE_OUTPUT_LEN
-  let itoaStart := falseOutputStart + FALSE_OUTPUT_LEN
+  let ifThenElseStart := falseOutputStart + FALSE_OUTPUT_LEN
+  let itoaStart := ifThenElseStart + IF_THEN_ELSE_LEN
   let outputStart := itoaStart
   let itoaLoopStart := itoaStart + ITOA_INIT_LEN
 
   let parenCheck := parenCheckBlock lambdaPathStart groupingPathStart letCheckStart
   let lambdaPath := lambdaPathBlock lambdaPathStart outputStart
   let groupingPath := groupingPathBlock groupingPathStart checkOperatorStart
-  let letCheck := letCheckBlock normalStart
+  let letCheck := letCheckBlock ifCheckStart
   let letPath := letPathBlock letPathStart outputStart checkOperatorStart
+
+  -- ifCheck: detect 'i' → skip "if ", set IF_FLAG, jump to parenCheckStart for condition eval
+  let ifCheckSkipEnd := ifCheckStart + LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + INC_POS_LEN * 3 + MEM_STEP_LEN
+  let ifCheck :=
+    loadChar ++
+    simdStep LoadIChar ++ simdStep SubCharIChar ++ simdStep StoreDigitCountFromIChar ++
+    [jumpIfN L.DIGIT_COUNT normalStart] ++
+    incPos ++ incPos ++ incPos ++
+    memStep SetIfFlag ++
+    skipSpacesBlock ifCheckSkipEnd (ifCheckSkipEnd + SKIP_SPACES_LEN) ++
+    [jumpIfN L.CONST_ONE parenCheckStart]
+
   let skipParse := skipParseBlock skipParseStart termFromAccumStart
   let termFromAccum := termFromAccumBlock
 
@@ -2020,9 +2270,12 @@ def actualMainFlow : List Action :=
 
   let finalize := addTermToResultBlock ++ [jumpIfN L.CONST_ONE boolCheckStart]
 
+  let ifFlagCheckStart := boolCheckStart + C.SINGLE_ACTION_N * 2
   let boolCheck :=
-    [jumpIfN L.BOOL_FLAG resultCheckStart] ++
-    [jumpIfN L.CONST_ONE itoaStart]
+    [jumpIfN L.BOOL_FLAG ifFlagCheckStart] ++
+    [jumpIfN L.CONST_ONE itoaStart] ++
+    [jumpIfN L.IF_FLAG ifThenElseStart] ++
+    [jumpIfN L.CONST_ONE resultCheckStart]
 
   let resultCheck :=
     [jumpIfN L.RESULT trueOutputStart] ++
@@ -2038,6 +2291,40 @@ def actualMainFlow : List Action :=
     fileStep FileWriteOutput ++
     [jumpIfN L.CONST_ONE MAIN_FLOW_LEN]
 
+  -- ifThenElse: save condition, eval then-branch, eval else-branch, select result
+  let iteBase := ifThenElseStart
+  let iteClearStart := iteBase + MEM_STEP_LEN
+  let iteSkipThenStart := iteClearStart + MEM_STEP_LEN * 5
+  let iteSkipThenSpacesStart := iteSkipThenStart + INC_POS_LEN * 5
+  let iteThenEvalStart := iteSkipThenSpacesStart + SKIP_SPACES_LEN
+  let iteThenEvalDone := iteThenEvalStart + THEN_BRANCH_EVAL_LEN
+  let iteSaveAStart := iteThenEvalDone
+  let iteClearBeforeElse := iteSaveAStart + MEM_STEP_LEN
+  let iteSkipElseStart := iteClearBeforeElse + MEM_STEP_LEN * 3
+  let iteSkipElseSpacesStart := iteSkipElseStart + INC_POS_LEN * 5
+  let iteElseEvalStart := iteSkipElseSpacesStart + SKIP_SPACES_LEN
+  let iteElseEvalDone := iteElseEvalStart + ELSE_BRANCH_EVAL_LEN
+  let iteSaveBStart := iteElseEvalDone
+  let iteSelectStart := iteSaveBStart + MEM_STEP_LEN
+  let iteRestoreAStart := iteSelectStart + C.SINGLE_ACTION_N + MEM_STEP_LEN + C.SINGLE_ACTION_N
+  let ifThenElse :=
+    memStep SaveCondition ++
+    memStep ClearBoolFlag ++ memStep ClearIfFlag ++ memStep ClearResult ++ memStep ClearAccum ++ memStep ClearTerm ++
+    incPos ++ incPos ++ incPos ++ incPos ++ incPos ++
+    skipSpacesBlock iteSkipThenSpacesStart iteThenEvalStart ++
+    thenBranchEvalBlock iteThenEvalStart iteThenEvalDone ++
+    memStep SaveIfResultA ++
+    memStep ClearResult ++ memStep ClearAccum ++ memStep ClearTerm ++
+    incPos ++ incPos ++ incPos ++ incPos ++ incPos ++
+    skipSpacesBlock iteSkipElseSpacesStart iteElseEvalStart ++
+    elseBranchEvalBlock iteElseEvalStart iteElseEvalDone ++
+    memStep SaveIfResultB ++
+    [jumpIfN L.SAVED_CONDITION iteRestoreAStart] ++
+    memStep RestoreIfResultB ++
+    [jumpIfN L.CONST_ONE itoaStart] ++
+    memStep RestoreIfResultA ++
+    [jumpIfN L.CONST_ONE itoaStart]
+
   let itoaInit := itoaInitBlock
   let itoaLoop := itoaLoopBlock itoaLoopStart
   let output := outputBlock
@@ -2048,6 +2335,7 @@ def actualMainFlow : List Action :=
   groupingPath ++
   letCheck ++
   letPath ++
+  ifCheck ++
   skipParse ++
   termFromAccum ++
   checkOperator ++
@@ -2061,6 +2349,7 @@ def actualMainFlow : List Action :=
   resultCheck ++
   trueOutput ++
   falseOutput ++
+  ifThenElse ++
   itoaInit ++
   itoaLoop ++
   output

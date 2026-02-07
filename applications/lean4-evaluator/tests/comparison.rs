@@ -683,3 +683,63 @@ fn test_eval_le_large() {
 fn test_eval_ge_large() {
     compare("#eval 1000 >= 1000");
 }
+
+#[test]
+fn test_eval_if_true() {
+    compare("#eval if 1 < 2 then 10 else 20");
+}
+
+#[test]
+fn test_eval_if_false() {
+    compare("#eval if 5 < 3 then 10 else 20");
+}
+
+#[test]
+fn test_eval_if_gt() {
+    compare("#eval if 5 > 3 then 1 else 0");
+}
+
+#[test]
+fn test_eval_if_le() {
+    compare("#eval if 3 <= 3 then 1 else 0");
+}
+
+#[test]
+fn test_eval_if_ge() {
+    compare("#eval if 2 >= 3 then 1 else 0");
+}
+
+#[test]
+fn test_eval_if_expr_then() {
+    compare("#eval if 1 < 2 then 3 + 4 else 0");
+}
+
+#[test]
+fn test_eval_if_expr_else() {
+    compare("#eval if 5 < 3 then 0 else 3 * 4");
+}
+
+#[test]
+fn test_eval_if_both_expr() {
+    compare("#eval if 1 < 2 then 2 + 3 else 4 * 5");
+}
+
+#[test]
+fn test_eval_if_expr_cond() {
+    compare("#eval if 2 + 3 < 10 then 1 else 0");
+}
+
+#[test]
+fn test_eval_if_complex_cond() {
+    compare("#eval if 3 * 2 > 5 then 100 else 200");
+}
+
+#[test]
+fn test_eval_if_zero_result() {
+    compare("#eval if 1 < 2 then 0 else 1");
+}
+
+#[test]
+fn test_eval_if_large_values() {
+    compare("#eval if 100 > 50 then 999 else 111");
+}
