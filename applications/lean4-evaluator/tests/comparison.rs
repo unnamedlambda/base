@@ -743,3 +743,38 @@ fn test_eval_if_zero_result() {
 fn test_eval_if_large_values() {
     compare("#eval if 100 > 50 then 999 else 111");
 }
+
+#[test]
+fn test_eval_if_var_then() {
+    compare("#eval let x := 5; if x > 3 then x + 1 else 0");
+}
+
+#[test]
+fn test_eval_if_var_else() {
+    compare("#eval let x := 2; if x > 3 then 0 else x * 10");
+}
+
+#[test]
+fn test_eval_if_var_both() {
+    compare("#eval let x := 5; if x > 3 then x + 1 else x - 1");
+}
+
+#[test]
+fn test_eval_if_var_cond_and_branch() {
+    compare("#eval let a := 10; if a > 5 then a * 2 else a + 1");
+}
+
+#[test]
+fn test_eval_if_multi_let() {
+    compare("#eval let x := 3; let y := 7; if x < y then y - x else x - y");
+}
+
+#[test]
+fn test_eval_if_paren_then() {
+    compare("#eval if 1 < 2 then (3 + 4) * 2 else 0");
+}
+
+#[test]
+fn test_eval_if_paren_else() {
+    compare("#eval if 5 < 3 then 0 else (10 - 3) * 2");
+}

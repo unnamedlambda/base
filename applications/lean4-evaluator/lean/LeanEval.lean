@@ -1040,34 +1040,6 @@ def THEN_BRANCH_CHECK_OP_LEN : Nat :=
   SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- star check
   SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +    -- plus check
   SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N      -- minus check
-def THEN_BRANCH_HANDLE_MUL_LEN : Nat :=
-  INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
-def THEN_BRANCH_HANDLE_ADD_LEN : Nat :=
-  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
-def THEN_BRANCH_HANDLE_SUB_LEN : Nat :=
-  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PARSE_NUMBER_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
-def THEN_BRANCH_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
-def THEN_BRANCH_EVAL_LEN : Nat :=
-  SKIP_SPACES_LEN + PARSE_NUMBER_LEN + TERM_FROM_ACCUM_LEN +
-  THEN_BRANCH_CHECK_OP_LEN +
-  THEN_BRANCH_HANDLE_MUL_LEN + THEN_BRANCH_HANDLE_ADD_LEN + THEN_BRANCH_HANDLE_SUB_LEN +
-  THEN_BRANCH_FINALIZE_LEN
-def ELSE_BRANCH_CHECK_OP_LEN : Nat := THEN_BRANCH_CHECK_OP_LEN
-def ELSE_BRANCH_EVAL_LEN : Nat := THEN_BRANCH_EVAL_LEN
-def IF_THEN_ELSE_LEN : Nat :=
-  MEM_STEP_LEN +                              -- SaveCondition
-  MEM_STEP_LEN * 5 +                          -- ClearBoolFlag + ClearIfFlag + ClearResult + ClearAccum + ClearTerm
-  INC_POS_LEN * 5 + SKIP_SPACES_LEN +         -- skip "then " + skipSpaces
-  THEN_BRANCH_EVAL_LEN +                       -- evaluate then-branch
-  MEM_STEP_LEN +                              -- SaveIfResultA
-  MEM_STEP_LEN * 3 +                          -- ClearResult + ClearAccum + ClearTerm
-  INC_POS_LEN * 5 + SKIP_SPACES_LEN +         -- skip "else " + skipSpaces
-  ELSE_BRANCH_EVAL_LEN +                       -- evaluate else-branch
-  MEM_STEP_LEN +                              -- SaveIfResultB
-  C.SINGLE_ACTION_N +                          -- jumpIfN SAVED_CONDITION → restoreA
-  MEM_STEP_LEN + C.SINGLE_ACTION_N +          -- RestoreIfResultB + jump to itoaStart
-  MEM_STEP_LEN +                              -- RestoreIfResultA (true path)
-  C.SINGLE_ACTION_N                            -- jump to itoaStart
 def IDENT_LOOP_LEN : Nat :=
   LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N +
   MEM_STEP_LEN + INC_IDENT_WRITE_PTR_LEN + INC_POS_LEN + C.SINGLE_ACTION_N
@@ -1093,7 +1065,7 @@ def NEW_BODY_HANDLE_SUB_LEN : Nat :=
 def NEW_BODY_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
 def NEW_BODY_COMP_REDIRECT_LEN : Nat := ADD_TERM_TO_RESULT_LEN + MEM_STEP_LEN + C.SINGLE_ACTION_N
 def NEW_BODY_INIT_LEN : Nat :=
-  SKIP_SPACES_LEN + PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN
+  IF_CHECK_LEN + SKIP_SPACES_LEN + PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN
 def NEW_BODY_LEN : Nat :=
   NEW_BODY_INIT_LEN + NEW_BODY_CHECK_OP_LEN +
   NEW_BODY_HANDLE_MUL_LEN + NEW_BODY_HANDLE_ADD_LEN + NEW_BODY_HANDLE_SUB_LEN +
@@ -1188,6 +1160,51 @@ def MID_GROUPED_EVAL_LEN : Nat :=
   GROUPED_HANDLE_MULTIPLY_LEN + GROUPED_HANDLE_ADD_LEN + GROUPED_HANDLE_SUBTRACT_LEN +
   MID_GROUPED_FINALIZE_LEN
 def ACCUM_FROM_RESULT_LEN : Nat := SIMD_STEP_LEN * 2 + MEM_STEP_LEN
+
+def BRANCH_HANDLE_MUL_NORMAL_LEN : Nat := PARSE_ATOM_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def BRANCH_HANDLE_MUL_PAREN_LEN : Nat :=
+  MEM_STEP_LEN + INC_POS_LEN + MID_GROUPED_EVAL_LEN + ACCUM_FROM_RESULT_LEN + INC_POS_LEN + MEM_STEP_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
+def THEN_BRANCH_HANDLE_MUL_LEN : Nat :=
+  INC_POS_LEN + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN +
+  BRANCH_HANDLE_MUL_NORMAL_LEN + BRANCH_HANDLE_MUL_PAREN_LEN
+def BRANCH_HANDLE_ADD_NORMAL_LEN : Nat := PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def BRANCH_HANDLE_ADD_PAREN_LEN : Nat :=
+  MEM_STEP_LEN + INC_POS_LEN + MID_GROUPED_EVAL_LEN + ACCUM_FROM_RESULT_LEN + INC_POS_LEN + MEM_STEP_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def THEN_BRANCH_HANDLE_ADD_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN +
+  BRANCH_HANDLE_ADD_NORMAL_LEN + BRANCH_HANDLE_ADD_PAREN_LEN
+def BRANCH_HANDLE_SUB_NORMAL_LEN : Nat := PARSE_ATOM_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def BRANCH_HANDLE_SUB_PAREN_LEN : Nat :=
+  MEM_STEP_LEN + INC_POS_LEN + MID_GROUPED_EVAL_LEN + ACCUM_FROM_RESULT_LEN + INC_POS_LEN + MEM_STEP_LEN + NEGATE_ACCUM_TO_TERM_LEN + C.SINGLE_ACTION_N
+def THEN_BRANCH_HANDLE_SUB_LEN : Nat :=
+  ADD_TERM_TO_RESULT_LEN + INC_POS_LEN + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN +
+  BRANCH_HANDLE_SUB_NORMAL_LEN + BRANCH_HANDLE_SUB_PAREN_LEN
+def THEN_BRANCH_FINALIZE_LEN : Nat := ADD_TERM_TO_RESULT_LEN + C.SINGLE_ACTION_N
+def BRANCH_INIT_NORMAL_LEN : Nat := PARSE_ATOM_LEN + TERM_FROM_ACCUM_LEN + C.SINGLE_ACTION_N
+def BRANCH_INIT_PAREN_LEN : Nat :=
+  INC_POS_LEN + MID_GROUPED_EVAL_LEN + ACCUM_FROM_RESULT_LEN + INC_POS_LEN + TERM_FROM_ACCUM_LEN
+def THEN_BRANCH_EVAL_LEN : Nat :=
+  SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN +
+  BRANCH_INIT_NORMAL_LEN + BRANCH_INIT_PAREN_LEN +
+  THEN_BRANCH_CHECK_OP_LEN +
+  THEN_BRANCH_HANDLE_MUL_LEN + THEN_BRANCH_HANDLE_ADD_LEN + THEN_BRANCH_HANDLE_SUB_LEN +
+  THEN_BRANCH_FINALIZE_LEN
+def ELSE_BRANCH_CHECK_OP_LEN : Nat := THEN_BRANCH_CHECK_OP_LEN
+def ELSE_BRANCH_EVAL_LEN : Nat := THEN_BRANCH_EVAL_LEN
+def IF_THEN_ELSE_LEN : Nat :=
+  MEM_STEP_LEN +                              -- SaveCondition
+  MEM_STEP_LEN * 5 +                          -- ClearBoolFlag + ClearIfFlag + ClearResult + ClearAccum + ClearTerm
+  INC_POS_LEN * 5 + SKIP_SPACES_LEN +         -- skip "then " + skipSpaces
+  THEN_BRANCH_EVAL_LEN +                       -- evaluate then-branch
+  MEM_STEP_LEN +                              -- SaveIfResultA
+  MEM_STEP_LEN * 3 +                          -- ClearResult + ClearAccum + ClearTerm
+  INC_POS_LEN * 5 + SKIP_SPACES_LEN +         -- skip "else " + skipSpaces
+  ELSE_BRANCH_EVAL_LEN +                       -- evaluate else-branch
+  MEM_STEP_LEN +                              -- SaveIfResultB
+  C.SINGLE_ACTION_N +                          -- jumpIfN SAVED_CONDITION → restoreA
+  MEM_STEP_LEN + C.SINGLE_ACTION_N +          -- RestoreIfResultB + jump to itoaStart
+  MEM_STEP_LEN +                              -- RestoreIfResultA (true path)
+  C.SINGLE_ACTION_N                            -- jump to itoaStart
 
 def HANDLE_MULTIPLY_NORMAL_PATH_LEN : Nat := PARSE_NUMBER_LEN + MULTIPLY_TERM_LEN + C.SINGLE_ACTION_N
 def HANDLE_MULTIPLY_PAREN_PATH_LEN : Nat :=
@@ -1629,8 +1646,11 @@ def letPathBlock (loopStart outputStart mainCheckOperatorStart : Nat) : List Act
   -- After semicolon: skip, spaces, check for 'let'
   let spacesAfterSemicolonStart := afterSemicolonCheck + INC_POS_LEN
   let spacesAfterSemicolonDone := spacesAfterSemicolonStart + SKIP_SPACES_LEN
+  -- Body ifCheck: detect 'i' → set IF_FLAG, skip "if ", jump to parenCheckStart
+  let bodyNormalStart := bodyStart + IF_CHECK_LEN
+  let bodyIfCheckSkipEnd := bodyStart + LOAD_CHAR_LEN + SIMD_STEP_LEN * 3 + C.SINGLE_ACTION_N + INC_POS_LEN * 3 + MEM_STEP_LEN
   -- Body expression evaluation (term-based precedence)
-  let bodySkipEnd := bodyStart + SKIP_SPACES_LEN
+  let bodySkipEnd := bodyNormalStart + SKIP_SPACES_LEN
   let bodyParseStart := bodySkipEnd
   let bodyParseDone := bodyParseStart + PARSE_ATOM_LEN
   let bodyCheckOp := bodyParseDone + TERM_FROM_ACCUM_LEN
@@ -1693,8 +1713,16 @@ def letPathBlock (loopStart outputStart mainCheckOperatorStart : Nat) : List Act
   simdStep LoadL ++ simdStep SubCharL ++ simdStep StoreDigitCountFromL ++
   [jumpIfN L.DIGIT_COUNT bodyStart] ++
   [jumpIfN L.CONST_ONE letBindingLoop] ++
-  -- bodyStart: parse first atom, store as TERM
-  skipSpacesBlock bodyStart bodySkipEnd ++
+  -- bodyStart: check for 'if' before normal body evaluation
+  loadChar ++
+  simdStep LoadIChar ++ simdStep SubCharIChar ++ simdStep StoreDigitCountFromIChar ++
+  [jumpIfN L.DIGIT_COUNT bodyNormalStart] ++
+  incPos ++ incPos ++ incPos ++
+  memStep SetIfFlag ++
+  skipSpacesBlock bodyIfCheckSkipEnd (bodyIfCheckSkipEnd + SKIP_SPACES_LEN) ++
+  [jumpIfN L.CONST_ONE bodyNormalStart] ++
+  -- bodyNormalStart: parse first atom, store as TERM
+  skipSpacesBlock bodyNormalStart bodySkipEnd ++
   parseAtomBlock bodyParseStart bodyParseDone ++
   termFromAccumBlock ++
   -- bodyCheckOp: skip spaces, load char, check operator
@@ -1921,9 +1949,12 @@ def parenCheckBeforeParseBlock (normalStart parenStart : Nat) : List Action :=
 -- Then-branch evaluator: terminates on NUL or 'e' (start of "else")
 def thenBranchEvalBlock (start done : Nat) : List Action :=
   let skipStart := start
-  let parseStart := skipStart + SKIP_SPACES_LEN
-  let parseDone := parseStart + PARSE_NUMBER_LEN
-  let checkOpStart := parseDone + TERM_FROM_ACCUM_LEN
+  let initParenCheckStart := skipStart + SKIP_SPACES_LEN
+  let initNormalStart := initParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let initNormalParseDone := initNormalStart + PARSE_ATOM_LEN
+  let initParenStart := initNormalStart + BRANCH_INIT_NORMAL_LEN
+  let initMidGroupedStart := initParenStart + INC_POS_LEN
+  let checkOpStart := start + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN + BRANCH_INIT_NORMAL_LEN + BRANCH_INIT_PAREN_LEN
   let checkOpSkipEnd := checkOpStart + SKIP_SPACES_LEN
   let checkOpLoadCharEnd := checkOpSkipEnd + LOAD_CHAR_LEN
   let eCheckStart := checkOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
@@ -1934,20 +1965,39 @@ def thenBranchEvalBlock (start done : Nat) : List Action :=
   let handleAddStart := handleMulStart + THEN_BRANCH_HANDLE_MUL_LEN
   let handleSubStart := handleAddStart + THEN_BRANCH_HANDLE_ADD_LEN
   let finalizeStart := handleSubStart + THEN_BRANCH_HANDLE_SUB_LEN
+  -- Mul handler internals
   let mulSkipStart := handleMulStart + INC_POS_LEN
-  let mulParseStart := mulSkipStart + SKIP_SPACES_LEN
-  let mulParseDone := mulParseStart + PARSE_NUMBER_LEN
-  let addIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
-  let addSkipStart := addIncStart + INC_POS_LEN
-  let addParseStart := addSkipStart + SKIP_SPACES_LEN
-  let addParseDone := addParseStart + PARSE_NUMBER_LEN
-  let subIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
-  let subSkipStart := subIncStart + INC_POS_LEN
-  let subParseStart := subSkipStart + SKIP_SPACES_LEN
-  let subParseDone := subParseStart + PARSE_NUMBER_LEN
+  let mulParenCheckStart := mulSkipStart + SKIP_SPACES_LEN
+  let mulNormalStart := mulParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let mulNormalParseDone := mulNormalStart + PARSE_ATOM_LEN
+  let mulParenStart := mulNormalStart + BRANCH_HANDLE_MUL_NORMAL_LEN
+  let mulMidGroupedStart := mulParenStart + MEM_STEP_LEN + INC_POS_LEN
+  -- Add handler internals
+  let addSkipStart := handleAddStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN
+  let addParenCheckStart := addSkipStart + SKIP_SPACES_LEN
+  let addNormalStart := addParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let addNormalParseDone := addNormalStart + PARSE_ATOM_LEN
+  let addParenStart := addNormalStart + BRANCH_HANDLE_ADD_NORMAL_LEN
+  let addMidGroupedStart := addParenStart + MEM_STEP_LEN + INC_POS_LEN
+  -- Sub handler internals
+  let subSkipStart := handleSubStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN
+  let subParenCheckStart := subSkipStart + SKIP_SPACES_LEN
+  let subNormalStart := subParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let subNormalParseDone := subNormalStart + PARSE_ATOM_LEN
+  let subParenStart := subNormalStart + BRANCH_HANDLE_SUB_NORMAL_LEN
+  let subMidGroupedStart := subParenStart + MEM_STEP_LEN + INC_POS_LEN
 
-  skipSpacesBlock skipStart parseStart ++
-  parseNumberBlock parseStart parseDone ++
+  skipSpacesBlock skipStart initParenCheckStart ++
+  parenCheckBeforeParseBlock initNormalStart initParenStart ++
+  -- init normal path
+  parseAtomBlock initNormalStart initNormalParseDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- init paren path
+  incPos ++
+  midGroupedEvalBlock initMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
   termFromAccumBlock ++
   -- checkOp
   skipSpacesBlock checkOpStart checkOpSkipEnd ++
@@ -1964,22 +2014,55 @@ def thenBranchEvalBlock (start done : Nat) : List Action :=
   [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
   -- handleMul
   incPos ++
-  skipSpacesBlock mulSkipStart mulParseStart ++
-  parseNumberBlock mulParseStart mulParseDone ++
+  skipSpacesBlock mulSkipStart mulParenCheckStart ++
+  parenCheckBeforeParseBlock mulNormalStart mulParenStart ++
+  -- mul normal path
+  parseAtomBlock mulNormalStart mulNormalParseDone ++
+  multiplyTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- mul paren path
+  memStep SaveTerm ++
+  incPos ++
+  midGroupedEvalBlock mulMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
+  memStep RestoreTerm ++
   multiplyTermBlock ++
   [jumpIfN L.CONST_ONE checkOpStart] ++
   -- handleAdd
   addTermToResultBlock ++
   incPos ++
-  skipSpacesBlock addSkipStart addParseStart ++
-  parseNumberBlock addParseStart addParseDone ++
+  skipSpacesBlock addSkipStart addParenCheckStart ++
+  parenCheckBeforeParseBlock addNormalStart addParenStart ++
+  -- add normal path
+  parseAtomBlock addNormalStart addNormalParseDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- add paren path
+  memStep SaveTerm ++
+  incPos ++
+  midGroupedEvalBlock addMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
+  memStep RestoreTerm ++
   termFromAccumBlock ++
   [jumpIfN L.CONST_ONE checkOpStart] ++
   -- handleSub
   addTermToResultBlock ++
   incPos ++
-  skipSpacesBlock subSkipStart subParseStart ++
-  parseNumberBlock subParseStart subParseDone ++
+  skipSpacesBlock subSkipStart subParenCheckStart ++
+  parenCheckBeforeParseBlock subNormalStart subParenStart ++
+  -- sub normal path
+  parseAtomBlock subNormalStart subNormalParseDone ++
+  negateAccumToTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- sub paren path
+  memStep SaveTerm ++
+  incPos ++
+  midGroupedEvalBlock subMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
+  memStep RestoreTerm ++
   negateAccumToTermBlock ++
   [jumpIfN L.CONST_ONE checkOpStart] ++
   -- finalize
@@ -1989,9 +2072,12 @@ def thenBranchEvalBlock (start done : Nat) : List Action :=
 -- Else-branch evaluator: terminates on NUL or newline
 def elseBranchEvalBlock (start done : Nat) : List Action :=
   let skipStart := start
-  let parseStart := skipStart + SKIP_SPACES_LEN
-  let parseDone := parseStart + PARSE_NUMBER_LEN
-  let checkOpStart := parseDone + TERM_FROM_ACCUM_LEN
+  let initParenCheckStart := skipStart + SKIP_SPACES_LEN
+  let initNormalStart := initParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let initNormalParseDone := initNormalStart + PARSE_ATOM_LEN
+  let initParenStart := initNormalStart + BRANCH_INIT_NORMAL_LEN
+  let initMidGroupedStart := initParenStart + INC_POS_LEN
+  let checkOpStart := start + SKIP_SPACES_LEN + PAREN_CHECK_BEFORE_PARSE_LEN + BRANCH_INIT_NORMAL_LEN + BRANCH_INIT_PAREN_LEN
   let checkOpSkipEnd := checkOpStart + SKIP_SPACES_LEN
   let checkOpLoadCharEnd := checkOpSkipEnd + LOAD_CHAR_LEN
   let newlineCheckStart := checkOpLoadCharEnd + SIMD_STEP_LEN + C.SINGLE_ACTION_N + C.SINGLE_ACTION_N
@@ -2002,20 +2088,39 @@ def elseBranchEvalBlock (start done : Nat) : List Action :=
   let handleAddStart := handleMulStart + THEN_BRANCH_HANDLE_MUL_LEN
   let handleSubStart := handleAddStart + THEN_BRANCH_HANDLE_ADD_LEN
   let finalizeStart := handleSubStart + THEN_BRANCH_HANDLE_SUB_LEN
+  -- Mul handler internals
   let mulSkipStart := handleMulStart + INC_POS_LEN
-  let mulParseStart := mulSkipStart + SKIP_SPACES_LEN
-  let mulParseDone := mulParseStart + PARSE_NUMBER_LEN
-  let addIncStart := handleAddStart + ADD_TERM_TO_RESULT_LEN
-  let addSkipStart := addIncStart + INC_POS_LEN
-  let addParseStart := addSkipStart + SKIP_SPACES_LEN
-  let addParseDone := addParseStart + PARSE_NUMBER_LEN
-  let subIncStart := handleSubStart + ADD_TERM_TO_RESULT_LEN
-  let subSkipStart := subIncStart + INC_POS_LEN
-  let subParseStart := subSkipStart + SKIP_SPACES_LEN
-  let subParseDone := subParseStart + PARSE_NUMBER_LEN
+  let mulParenCheckStart := mulSkipStart + SKIP_SPACES_LEN
+  let mulNormalStart := mulParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let mulNormalParseDone := mulNormalStart + PARSE_ATOM_LEN
+  let mulParenStart := mulNormalStart + BRANCH_HANDLE_MUL_NORMAL_LEN
+  let mulMidGroupedStart := mulParenStart + MEM_STEP_LEN + INC_POS_LEN
+  -- Add handler internals
+  let addSkipStart := handleAddStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN
+  let addParenCheckStart := addSkipStart + SKIP_SPACES_LEN
+  let addNormalStart := addParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let addNormalParseDone := addNormalStart + PARSE_ATOM_LEN
+  let addParenStart := addNormalStart + BRANCH_HANDLE_ADD_NORMAL_LEN
+  let addMidGroupedStart := addParenStart + MEM_STEP_LEN + INC_POS_LEN
+  -- Sub handler internals
+  let subSkipStart := handleSubStart + ADD_TERM_TO_RESULT_LEN + INC_POS_LEN
+  let subParenCheckStart := subSkipStart + SKIP_SPACES_LEN
+  let subNormalStart := subParenCheckStart + PAREN_CHECK_BEFORE_PARSE_LEN
+  let subNormalParseDone := subNormalStart + PARSE_ATOM_LEN
+  let subParenStart := subNormalStart + BRANCH_HANDLE_SUB_NORMAL_LEN
+  let subMidGroupedStart := subParenStart + MEM_STEP_LEN + INC_POS_LEN
 
-  skipSpacesBlock skipStart parseStart ++
-  parseNumberBlock parseStart parseDone ++
+  skipSpacesBlock skipStart initParenCheckStart ++
+  parenCheckBeforeParseBlock initNormalStart initParenStart ++
+  -- init normal path
+  parseAtomBlock initNormalStart initNormalParseDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- init paren path
+  incPos ++
+  midGroupedEvalBlock initMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
   termFromAccumBlock ++
   -- checkOp
   skipSpacesBlock checkOpStart checkOpSkipEnd ++
@@ -2032,22 +2137,55 @@ def elseBranchEvalBlock (start done : Nat) : List Action :=
   [jumpIfN L.DIGIT_COUNT finalizeStart] ++ [jumpIfN L.CONST_ONE handleSubStart] ++
   -- handleMul
   incPos ++
-  skipSpacesBlock mulSkipStart mulParseStart ++
-  parseNumberBlock mulParseStart mulParseDone ++
+  skipSpacesBlock mulSkipStart mulParenCheckStart ++
+  parenCheckBeforeParseBlock mulNormalStart mulParenStart ++
+  -- mul normal path
+  parseAtomBlock mulNormalStart mulNormalParseDone ++
+  multiplyTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- mul paren path
+  memStep SaveTerm ++
+  incPos ++
+  midGroupedEvalBlock mulMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
+  memStep RestoreTerm ++
   multiplyTermBlock ++
   [jumpIfN L.CONST_ONE checkOpStart] ++
   -- handleAdd
   addTermToResultBlock ++
   incPos ++
-  skipSpacesBlock addSkipStart addParseStart ++
-  parseNumberBlock addParseStart addParseDone ++
+  skipSpacesBlock addSkipStart addParenCheckStart ++
+  parenCheckBeforeParseBlock addNormalStart addParenStart ++
+  -- add normal path
+  parseAtomBlock addNormalStart addNormalParseDone ++
+  termFromAccumBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- add paren path
+  memStep SaveTerm ++
+  incPos ++
+  midGroupedEvalBlock addMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
+  memStep RestoreTerm ++
   termFromAccumBlock ++
   [jumpIfN L.CONST_ONE checkOpStart] ++
   -- handleSub
   addTermToResultBlock ++
   incPos ++
-  skipSpacesBlock subSkipStart subParseStart ++
-  parseNumberBlock subParseStart subParseDone ++
+  skipSpacesBlock subSkipStart subParenCheckStart ++
+  parenCheckBeforeParseBlock subNormalStart subParenStart ++
+  -- sub normal path
+  parseAtomBlock subNormalStart subNormalParseDone ++
+  negateAccumToTermBlock ++
+  [jumpIfN L.CONST_ONE checkOpStart] ++
+  -- sub paren path
+  memStep SaveTerm ++
+  incPos ++
+  midGroupedEvalBlock subMidGroupedStart ++
+  accumFromResultBlock ++
+  incPos ++
+  memStep RestoreTerm ++
   negateAccumToTermBlock ++
   [jumpIfN L.CONST_ONE checkOpStart] ++
   -- finalize
