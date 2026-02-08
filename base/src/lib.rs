@@ -9,9 +9,9 @@ mod units;
 
 use crate::units::{
     computational_unit_task_mailbox, ffi_unit_task_mailbox, file_unit_task_mailbox,
-    gpu_unit_task_mailbox, hash_table_unit_task_mailbox, memory_unit_task_mailbox,
-    network_unit_task_mailbox, read_null_terminated_string_from_slice, simd_unit_task_mailbox,
-    Broadcast, Mailbox, SharedMemory,
+    gpu_unit_task_mailbox, hash_table_unit_task_mailbox, lmdb_unit_task_mailbox,
+    memory_unit_task_mailbox, network_unit_task_mailbox, read_null_terminated_string_from_slice,
+    simd_unit_task_mailbox, Broadcast, Mailbox, SharedMemory,
 };
 
 #[derive(Debug)]
@@ -32,6 +32,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         network_units = algorithm.units.network_units,
         ffi_units = algorithm.units.ffi_units,
         hash_table_units = algorithm.units.hash_table_units,
+        lmdb_units = algorithm.units.lmdb_units,
         actions_count = algorithm.actions.len(),
     ).entered();
 
@@ -137,6 +138,26 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         debug!("auto-assigned hash table actions across {} units", algorithm.units.hash_table_units);
     }
 
+    if algorithm.lmdb_assignments.is_empty() {
+        algorithm.lmdb_assignments = vec![255; algorithm.actions.len()];
+        for (i, action) in algorithm.actions.iter().enumerate() {
+            match action.kind {
+                Kind::LmdbOpen
+                | Kind::LmdbPut
+                | Kind::LmdbGet
+                | Kind::LmdbDelete
+                | Kind::LmdbCursorScan
+                | Kind::LmdbSync
+                | Kind::LmdbBeginWriteTxn
+                | Kind::LmdbCommitWriteTxn => {
+                    algorithm.lmdb_assignments[i] = 0;
+                }
+                _ => {}
+            }
+        }
+        debug!("auto-assigned LMDB actions across {} units", algorithm.units.lmdb_units);
+    }
+
     if algorithm.file_assignments.is_empty() {
         algorithm.file_assignments = vec![255; algorithm.actions.len()];
         let mut unit = 0u8;
@@ -214,6 +235,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let computational_assignments = Arc::new(algorithm.computational_assignments.clone());
     let memory_assignments = Arc::new(algorithm.memory_assignments.clone());
     let hash_table_assignments = Arc::new(algorithm.hash_table_assignments.clone());
+    let lmdb_assignments = Arc::new(algorithm.lmdb_assignments.clone());
 
     let gpu_mailboxes: Vec<_> = (0..algorithm.units.gpu_units)
         .map(|_| Arc::new(Mailbox::new()))
@@ -237,6 +259,9 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
     let hash_table_mailboxes: Vec<_> = (0..algorithm.units.hash_table_units)
+        .map(|_| Arc::new(Mailbox::new()))
+        .collect();
+    let lmdb_mailboxes: Vec<_> = (0..algorithm.units.lmdb_units)
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
 
@@ -359,6 +384,15 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let shared = shared.clone();
         thread_handles.push(std::thread::spawn(move || {
             hash_table_unit_task_mailbox(mailbox, actions, shared);
+        }));
+    }
+
+    for (lmdb_id, mailbox) in lmdb_mailboxes.iter().cloned().enumerate() {
+        info!(lmdb_id, "spawning LMDB unit thread");
+        let actions = actions_arc.clone();
+        let shared = shared.clone();
+        thread_handles.push(std::thread::spawn(move || {
+            lmdb_unit_task_mailbox(mailbox, actions, shared);
         }));
     }
 
@@ -586,6 +620,25 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                         hash_table_mailboxes[unit_id].post(start, end, flag);
                     }
+                    8 => {
+                        if lmdb_mailboxes.is_empty() {
+                            pc += 1;
+                            continue;
+                        }
+
+                        let assigned = lmdb_assignments
+                            .get(pc)
+                            .copied()
+                            .unwrap_or(0);
+
+                        let unit_id = if assigned == 255 {
+                            0
+                        } else {
+                            (assigned as usize).min(lmdb_mailboxes.len() - 1)
+                        };
+
+                        lmdb_mailboxes[unit_id].post(start, end, flag);
+                    }
                     _ => {}
                 }
 
@@ -634,6 +687,9 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         mailbox.shutdown();
     }
     for mailbox in hash_table_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in lmdb_mailboxes.iter() {
         mailbox.shutdown();
     }
     simd_broadcast.shutdown();

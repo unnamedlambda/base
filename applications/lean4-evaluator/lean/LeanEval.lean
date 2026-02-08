@@ -1659,6 +1659,7 @@ def leanEvalAlgorithm : Algorithm := {
     memory_units := C.MEMORY_UNIT_COUNT_N,
     ffi_units := C.FFI_UNIT_COUNT_N,
     hash_table_units := C.HASH_TABLE_UNIT_COUNT_N,
+    lmdb_units := 0,
     backends_bits := ZERO
   },
   simd_assignments := [],
@@ -1668,6 +1669,7 @@ def leanEvalAlgorithm : Algorithm := {
   network_assignments := [],
   ffi_assignments := [],
   hash_table_assignments := [],
+  lmdb_assignments := [],
   gpu_assignments := [],
   worker_threads := some C.WORKER_THREADS_N,
   blocking_threads := some C.BLOCKING_THREADS_N,

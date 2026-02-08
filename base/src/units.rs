@@ -17,6 +17,7 @@ use wgpu::{
     RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource, ShaderStages,
 };
 use wide::{f32x4, i32x4};
+use lmdb_zero as lmdb;
 
 pub const MAILBOX_CLOSED: u64 = u64::MAX;
 
@@ -551,6 +552,353 @@ pub(crate) fn hash_table_unit_task_mailbox(
             }
             MailboxPoll::Closed => {
                 info!("hash table unit shutting down");
+                return;
+            }
+            MailboxPoll::Empty => spin_backoff(&mut spin_count),
+        }
+    }
+}
+
+pub(crate) struct LmdbUnit {
+    shared: Arc<SharedMemory>,
+    envs: HashMap<u32, (lmdb::Environment, liblmdb_sys::MDB_dbi)>,
+    active_write_txns: HashMap<u32, *mut liblmdb_sys::MDB_txn>,
+    next_handle: u32,
+}
+
+impl Drop for LmdbUnit {
+    fn drop(&mut self) {
+        for (_handle, txn) in self.active_write_txns.drain() {
+            unsafe { liblmdb_sys::mdb_txn_abort(txn); }
+        }
+    }
+}
+
+impl LmdbUnit {
+    pub fn new(shared: Arc<SharedMemory>) -> Self {
+        Self {
+            shared,
+            envs: HashMap::new(),
+            active_write_txns: HashMap::new(),
+            next_handle: 0,
+        }
+    }
+
+    fn raw_begin_txn(env: &lmdb::Environment, readonly: bool) -> *mut liblmdb_sys::MDB_txn {
+        let mut txn = std::ptr::null_mut();
+        let flags = if readonly { liblmdb_sys::MDB_RDONLY } else { 0 };
+        unsafe {
+            if liblmdb_sys::mdb_txn_begin(env.as_raw(), std::ptr::null_mut(), flags, &mut txn) == 0 {
+                txn
+            } else {
+                std::ptr::null_mut()
+            }
+        }
+    }
+
+    fn raw_put(txn: *mut liblmdb_sys::MDB_txn, dbi: liblmdb_sys::MDB_dbi, key: &[u8], val: &[u8]) -> bool {
+        let mut k = liblmdb_sys::MDB_val { mv_size: key.len(), mv_data: key.as_ptr() as *const _ };
+        let mut v = liblmdb_sys::MDB_val { mv_size: val.len(), mv_data: val.as_ptr() as *const _ };
+        unsafe { liblmdb_sys::mdb_put(txn, dbi, &mut k, &mut v, 0) == 0 }
+    }
+
+    fn raw_get(txn: *mut liblmdb_sys::MDB_txn, dbi: liblmdb_sys::MDB_dbi, key: &[u8]) -> Option<Vec<u8>> {
+        let mut k = liblmdb_sys::MDB_val { mv_size: key.len(), mv_data: key.as_ptr() as *const _ };
+        let mut v = liblmdb_sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
+        unsafe {
+            if liblmdb_sys::mdb_get(txn, dbi, &mut k, &mut v) == 0 {
+                Some(std::slice::from_raw_parts(v.mv_data as *const u8, v.mv_size).to_vec())
+            } else {
+                None
+            }
+        }
+    }
+
+    fn raw_del(txn: *mut liblmdb_sys::MDB_txn, dbi: liblmdb_sys::MDB_dbi, key: &[u8]) -> bool {
+        let mut k = liblmdb_sys::MDB_val { mv_size: key.len(), mv_data: key.as_ptr() as *const _ };
+        unsafe { liblmdb_sys::mdb_del(txn, dbi, &mut k, std::ptr::null_mut()) == 0 }
+    }
+
+    fn raw_cursor_scan(
+        txn: *mut liblmdb_sys::MDB_txn,
+        dbi: liblmdb_sys::MDB_dbi,
+        start_key: Option<&[u8]>,
+        max_entries: usize,
+    ) -> Vec<u8> {
+        let mut result = Vec::new();
+        result.extend_from_slice(&0u32.to_le_bytes()); // count placeholder
+
+        let mut cursor: *mut liblmdb_sys::MDB_cursor = std::ptr::null_mut();
+        unsafe {
+            if liblmdb_sys::mdb_cursor_open(txn, dbi, &mut cursor) != 0 {
+                return result;
+            }
+
+            let mut k = liblmdb_sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
+            let mut v = liblmdb_sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
+
+            let first_rc = if let Some(sk) = start_key {
+                k.mv_size = sk.len();
+                k.mv_data = sk.as_ptr() as *const _;
+                liblmdb_sys::mdb_cursor_get(cursor, &mut k, &mut v, liblmdb_sys::MDB_cursor_op::MDB_SET_RANGE)
+            } else {
+                liblmdb_sys::mdb_cursor_get(cursor, &mut k, &mut v, liblmdb_sys::MDB_cursor_op::MDB_FIRST)
+            };
+
+            let mut count = 0u32;
+            if first_rc == 0 {
+                loop {
+                    if count >= max_entries as u32 { break; }
+                    if k.mv_size > u16::MAX as usize || v.mv_size > u16::MAX as usize { break; }
+
+                    result.extend_from_slice(&(k.mv_size as u16).to_le_bytes());
+                    result.extend_from_slice(&(v.mv_size as u16).to_le_bytes());
+                    result.extend_from_slice(std::slice::from_raw_parts(k.mv_data as *const u8, k.mv_size));
+                    result.extend_from_slice(std::slice::from_raw_parts(v.mv_data as *const u8, v.mv_size));
+                    count += 1;
+
+                    if liblmdb_sys::mdb_cursor_get(cursor, &mut k, &mut v, liblmdb_sys::MDB_cursor_op::MDB_NEXT) != 0 {
+                        break;
+                    }
+                }
+            }
+
+            liblmdb_sys::mdb_cursor_close(cursor);
+            result[0..4].copy_from_slice(&count.to_le_bytes());
+        }
+        result
+    }
+
+    pub unsafe fn execute(&mut self, action: &Action) {
+        match action.kind {
+            Kind::LmdbOpen => {
+                debug!(dst = action.dst, src = action.src, "lmdb_open");
+                let path_str = read_null_terminated_string(
+                    &self.shared,
+                    action.src as usize,
+                    action.offset as usize,
+                );
+
+                let map_size = if action.size == 0 {
+                    1024 * 1024 * 1024
+                } else {
+                    (action.size as usize) * 1024 * 1024
+                };
+
+                if let Err(_) = std::fs::create_dir_all(&path_str) {
+                    self.shared
+                        .write(action.dst as usize, &0xFFFF_FFFFu32.to_le_bytes());
+                    return;
+                }
+
+                let env = match lmdb::EnvBuilder::new() {
+                    Ok(mut builder) => {
+                        builder.set_mapsize(map_size).ok();
+                        builder.set_maxdbs(1).ok();
+                        let flags = lmdb::open::WRITEMAP | lmdb::open::NOSYNC;
+                        match builder.open(&path_str, flags, 0o600) {
+                            Ok(env) => env,
+                            Err(_) => {
+                                self.shared
+                                    .write(action.dst as usize, &0xFFFF_FFFFu32.to_le_bytes());
+                                return;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.shared
+                            .write(action.dst as usize, &0xFFFF_FFFFu32.to_le_bytes());
+                        return;
+                    }
+                };
+
+                // Open database once and cache the raw DBI handle
+                let dbi = match lmdb::Database::open(&env, None, &lmdb::DatabaseOptions::defaults()) {
+                    Ok(db) => db.into_raw(),
+                    Err(_) => {
+                        self.shared
+                            .write(action.dst as usize, &0xFFFF_FFFFu32.to_le_bytes());
+                        return;
+                    }
+                };
+
+                let handle = self.next_handle;
+                self.next_handle += 1;
+                self.envs.insert(handle, (env, dbi));
+                self.shared
+                    .write(action.dst as usize, &handle.to_le_bytes());
+            }
+
+            Kind::LmdbBeginWriteTxn => {
+                debug!(handle = action.offset, "lmdb_begin_write_txn");
+                let handle = action.offset;
+                // Abort existing txn to avoid deadlock (LMDB allows one write txn per env)
+                if let Some(old_txn) = self.active_write_txns.remove(&handle) {
+                    liblmdb_sys::mdb_txn_abort(old_txn);
+                }
+                if let Some((env, _dbi)) = self.envs.get(&handle) {
+                    let txn = Self::raw_begin_txn(env, false);
+                    if !txn.is_null() {
+                        self.active_write_txns.insert(handle, txn);
+                    }
+                }
+            }
+
+            Kind::LmdbCommitWriteTxn => {
+                debug!(handle = action.offset, "lmdb_commit_write_txn");
+                let handle = action.offset;
+                if let Some(txn) = self.active_write_txns.remove(&handle) {
+                    liblmdb_sys::mdb_txn_commit(txn);
+                }
+            }
+
+            Kind::LmdbPut => {
+                debug!(handle = action.offset, key_dst = action.dst, val_src = action.src, "lmdb_put");
+                let handle = action.offset;
+                let key_size = (action.size >> 16) as usize;
+                let val_size = (action.size & 0xFFFF) as usize;
+
+                if let Some((env, dbi)) = self.envs.get(&handle) {
+                    let key = self.shared.read(action.dst as usize, key_size);
+                    let val = self.shared.read(action.src as usize, val_size);
+
+                    let txn = self.active_write_txns.get(&handle).copied();
+                    if let Some(txn) = txn {
+                        Self::raw_put(txn, *dbi, key, val);
+                    } else {
+                        let txn = Self::raw_begin_txn(env, false);
+                        if !txn.is_null() {
+                            Self::raw_put(txn, *dbi, key, val);
+                            liblmdb_sys::mdb_txn_commit(txn);
+                        }
+                    }
+                }
+            }
+
+            Kind::LmdbGet => {
+                debug!(handle = action.offset, key_dst = action.dst, result_src = action.src, "lmdb_get");
+                let handle = action.offset;
+                let key_size = (action.size >> 16) as usize;
+
+                if let Some((env, dbi)) = self.envs.get(&handle) {
+                    let key = self.shared.read(action.dst as usize, key_size);
+
+                    let (txn, owned) = match self.active_write_txns.get(&handle) {
+                        Some(&txn) => (txn, false),
+                        None => (Self::raw_begin_txn(env, true), true),
+                    };
+                    if !txn.is_null() {
+                        if let Some(val) = Self::raw_get(txn, *dbi, key) {
+                            let len = val.len() as u32;
+                            self.shared.write(action.src as usize, &len.to_le_bytes());
+                            self.shared.write(action.src as usize + 4, &val);
+                            if owned { liblmdb_sys::mdb_txn_abort(txn); }
+                            return;
+                        }
+                        if owned { liblmdb_sys::mdb_txn_abort(txn); }
+                    }
+                }
+                self.shared
+                    .write(action.src as usize, &0xFFFF_FFFFu32.to_le_bytes());
+            }
+
+            Kind::LmdbDelete => {
+                debug!(handle = action.offset, key_dst = action.dst, "lmdb_delete");
+                let handle = action.offset;
+                let key_size = (action.size >> 16) as usize;
+
+                if let Some((env, dbi)) = self.envs.get(&handle) {
+                    let key = self.shared.read(action.dst as usize, key_size);
+
+                    let txn = self.active_write_txns.get(&handle).copied();
+                    if let Some(txn) = txn {
+                        Self::raw_del(txn, *dbi, key);
+                    } else {
+                        let txn = Self::raw_begin_txn(env, false);
+                        if !txn.is_null() {
+                            Self::raw_del(txn, *dbi, key);
+                            liblmdb_sys::mdb_txn_commit(txn);
+                        }
+                    }
+                }
+            }
+
+            Kind::LmdbCursorScan => {
+                let handle = action.offset;
+                let key_len = (action.size >> 16) as usize;
+                let max_entries = (action.size & 0xFFFF) as usize;
+                debug!(
+                    handle = handle,
+                    result_dst = action.dst,
+                    key_len = key_len,
+                    max_entries = max_entries,
+                    "lmdb_cursor_scan"
+                );
+
+                if let Some((env, dbi)) = self.envs.get(&handle) {
+                    let start_key = if key_len > 0 {
+                        Some(self.shared.read(action.src as usize, key_len).to_vec())
+                    } else {
+                        None
+                    };
+
+                    let (txn, owned) = match self.active_write_txns.get(&handle) {
+                        Some(&txn) => (txn, false),
+                        None => (Self::raw_begin_txn(env, true), true),
+                    };
+                    if !txn.is_null() {
+                        let result = Self::raw_cursor_scan(txn, *dbi, start_key.as_deref(), max_entries);
+                        self.shared.write(action.dst as usize, &result);
+                        if owned { liblmdb_sys::mdb_txn_abort(txn); }
+                    } else {
+                        self.shared.write(action.dst as usize, &0u32.to_le_bytes());
+                    }
+                } else {
+                    self.shared
+                        .write(action.dst as usize, &0u32.to_le_bytes());
+                }
+            }
+
+            Kind::LmdbSync => {
+                debug!(handle = action.offset, "lmdb_sync");
+                let handle = action.offset;
+                if let Some((env, _dbi)) = self.envs.get(&handle) {
+                    let _ = env.sync(true);
+                }
+            }
+
+            _ => {}
+        }
+    }
+}
+
+pub(crate) fn lmdb_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
+    actions: Arc<Vec<Action>>,
+    shared: Arc<SharedMemory>,
+) {
+    let _span = info_span!("lmdb_unit").entered();
+    info!("LMDB unit started");
+    let mut unit = LmdbUnit::new(shared.clone());
+    let mut spin_count = 0u32;
+
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "lmdb_work_received");
+                for idx in start..end {
+                    unsafe {
+                        unit.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                debug!(flag, "lmdb_work_complete");
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => {
+                info!("LMDB unit shutting down");
                 return;
             }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),

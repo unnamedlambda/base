@@ -31,6 +31,7 @@ fn create_test_algorithm(
             memory_units,
             ffi_units: 0,
             hash_table_units: 0,
+            lmdb_units: 0,
             backends_bits: 0,
         },
         simd_assignments: vec![],
@@ -40,6 +41,7 @@ fn create_test_algorithm(
         network_assignments: vec![],
         ffi_assignments: vec![],
         hash_table_assignments: vec![],
+        lmdb_assignments: vec![],
         gpu_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
@@ -81,6 +83,7 @@ fn create_complex_algorithm(
             memory_units,
             ffi_units: 0,
             hash_table_units: 0,
+            lmdb_units: 0,
             backends_bits: 0xFFFFFFFF,
         },
         simd_assignments: if simd_units > 0 {
@@ -102,6 +105,7 @@ fn create_complex_algorithm(
         network_assignments: vec![],
         ffi_assignments: vec![],
         hash_table_assignments: vec![],
+        lmdb_assignments: vec![],
         gpu_assignments: if gpu_units > 0 {
             vec![0; num_actions]
         } else {
@@ -2371,6 +2375,7 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
             memory_units: if with_file { 1 } else { 0 },
             ffi_units: 0,
             hash_table_units: 1,
+            lmdb_units: 0,
             backends_bits: 0,
         },
         simd_assignments: vec![],
@@ -2380,6 +2385,7 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
         network_assignments: vec![],
         ffi_assignments: vec![],
         hash_table_assignments: vec![0; num_actions],
+        lmdb_assignments: vec![],
         gpu_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
@@ -2973,4 +2979,1352 @@ fn test_integration_memory_compare_ge() {
     assert_eq!(contents.len(), 4);
     let result = i32::from_le_bytes(contents[0..4].try_into().unwrap());
     assert_eq!(result, 1, "5 >= 5 should be 1 (true)");
+}
+
+fn create_lmdb_algorithm(actions: Vec<Action>, payloads: Vec<u8>, with_file: bool, with_memory: bool) -> Algorithm {
+    let num_actions = actions.len();
+    Algorithm {
+        actions,
+        payloads,
+        state: State {
+            regs_per_unit: 0,
+            gpu_size: 0,
+            computational_regs: 0,
+            file_buffer_size: if with_file { 65536 } else { 0 },
+            gpu_shader_offsets: vec![],
+        },
+        units: UnitSpec {
+            simd_units: 0,
+            gpu_units: 0,
+            computational_units: 0,
+            file_units: if with_file { 1 } else { 0 },
+            network_units: 0,
+            memory_units: if with_memory { 1 } else { 0 },
+            ffi_units: 0,
+            hash_table_units: 0,
+            lmdb_units: 1,
+            backends_bits: 0,
+        },
+        simd_assignments: vec![],
+        computational_assignments: vec![],
+        memory_assignments: vec![],
+        file_assignments: vec![],
+        network_assignments: vec![],
+        ffi_assignments: vec![],
+        hash_table_assignments: vec![],
+        lmdb_assignments: vec![0; num_actions],
+        gpu_assignments: vec![],
+        worker_threads: None,
+        blocking_threads: None,
+        stack_size: None,
+        timeout_ms: Some(5000),
+        thread_name_prefix: None,
+    }
+}
+
+#[test]
+fn test_lmdb_basic_operations() {
+    // Test open, put, get by verifying result through memory and file write
+    // Layout:
+    //   0..8:   flag_lmdb
+    //   8..16:  flag_mem
+    //  16..24:  flag_file
+    //  24..28:  handle
+    //  32..288: db_path (null-terminated)
+    // 300..303: key "foo"
+    // 320..323: value "bar"
+    // 340..352: get result [u32 len][data]
+    // 400..N:   filename
+    // 512..524: data copy for file write [u32 len][data]
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("basic_ops");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("lmdb_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let db_path_addr = 32u32;
+    let key_addr = 300u32;
+    let val_addr = 320u32;
+    let result_addr = 340u32;
+    let filename_addr = 400u32;
+    let data_copy_addr = 512u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"foo");
+    payloads[320..323].copy_from_slice(b"bar");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[400..400 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open LMDB
+        Action { kind: Kind::LmdbOpen, dst: handle_addr, src: db_path_addr, offset: 256, size: 10 },
+        // 1: Put foo=bar
+        Action { kind: Kind::LmdbPut, dst: key_addr, src: val_addr, offset: 0, size: (3 << 16) | 3 },
+        // 2: Get foo -> result_addr (writes u32 len + data)
+        Action { kind: Kind::LmdbGet, dst: key_addr, src: result_addr, offset: 0, size: 3 << 16 },
+        // 3: Dispatch LMDB operations
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 3 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 5: MemCopy result to data_copy_addr (copy 12 bytes: u32 len + up to 8 bytes data)
+        Action { kind: Kind::MemCopy, dst: data_copy_addr, src: result_addr, offset: 0, size: 12 },
+        // 6: Dispatch MemCopy
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 8: FileWrite data_copy_addr to file (write 12 bytes)
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 12 },
+        // 9: Dispatch FileWrite
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 8, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    // Read the file and verify it contains the correct data
+    let file_contents = fs::read(&test_file).unwrap();
+    assert!(file_contents.len() >= 7, "File should contain at least u32 len + 3 bytes value");
+
+    let len = u32::from_le_bytes([file_contents[0], file_contents[1], file_contents[2], file_contents[3]]);
+    assert_eq!(len, 3, "Length should be 3");
+    assert_eq!(&file_contents[4..7], b"bar", "Value should be 'bar'");
+}
+
+#[test]
+fn test_lmdb_delete() {
+    // Test that deleted keys return sentinel 0xFFFFFFFF when accessed
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("delete");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("delete_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let db_path_addr = 32u32;
+    let key_addr = 300u32;
+    let val_addr = 320u32;
+    let result_addr = 340u32;
+    let filename_addr = 400u32;
+    let data_copy_addr = 512u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"foo");
+    payloads[320..323].copy_from_slice(b"bar");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[400..400 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open LMDB
+        Action { kind: Kind::LmdbOpen, dst: handle_addr, src: db_path_addr, offset: 256, size: 10 },
+        // 1: Put foo=bar
+        Action { kind: Kind::LmdbPut, dst: key_addr, src: val_addr, offset: 0, size: (3 << 16) | 3 },
+        // 2: Delete foo
+        Action { kind: Kind::LmdbDelete, dst: key_addr, src: 0, offset: 0, size: 3 << 16 },
+        // 3: Get foo -> result_addr (should write 0xFFFFFFFF sentinel)
+        Action { kind: Kind::LmdbGet, dst: key_addr, src: result_addr, offset: 0, size: 3 << 16 },
+        // 4: Dispatch LMDB operations
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 4 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 6: MemCopy result to data_copy_addr (copy 4 bytes for sentinel)
+        Action { kind: Kind::MemCopy, dst: data_copy_addr, src: result_addr, offset: 0, size: 4 },
+        // 7: Dispatch MemCopy
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 6, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 9: FileWrite sentinel to file
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 4 },
+        // 10: Dispatch FileWrite
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 9, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    // Read the file and verify it contains the sentinel value
+    let file_contents = fs::read(&test_file).unwrap();
+    assert_eq!(file_contents.len(), 4, "File should contain 4 bytes");
+
+    let sentinel = u32::from_le_bytes([file_contents[0], file_contents[1], file_contents[2], file_contents[3]]);
+    assert_eq!(sentinel, 0xFFFF_FFFF, "Deleted key should return sentinel value 0xFFFFFFFF");
+}
+
+#[test]
+fn test_lmdb_cursor_scan() {
+    // Test cursor scan by writing results to file and verifying format
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("cursor_scan");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("cursor_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let db_path_addr = 32u32;
+    let scan_result_addr = 1024u32;
+    let filename_addr = 400u32;
+    let data_copy_addr = 2048u32;
+
+    let mut payloads = vec![0u8; 4096];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+
+    // Write multiple key-value pairs
+    payloads[512..515].copy_from_slice(b"aaa");
+    payloads[528..534].copy_from_slice(b"value1");
+    payloads[544..547].copy_from_slice(b"bbb");
+    payloads[560..566].copy_from_slice(b"value2");
+    payloads[576..579].copy_from_slice(b"ccc");
+    payloads[592..598].copy_from_slice(b"value3");
+    payloads[608..611].copy_from_slice(b"ddd");
+    payloads[624..630].copy_from_slice(b"value4");
+
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[400..400 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open LMDB
+        Action { kind: Kind::LmdbOpen, dst: handle_addr, src: db_path_addr, offset: 256, size: 10 },
+        // 1-4: Put 4 key-value pairs
+        Action { kind: Kind::LmdbPut, dst: 512, src: 528, offset: 0, size: (3 << 16) | 6 },
+        Action { kind: Kind::LmdbPut, dst: 544, src: 560, offset: 0, size: (3 << 16) | 6 },
+        Action { kind: Kind::LmdbPut, dst: 576, src: 592, offset: 0, size: (3 << 16) | 6 },
+        Action { kind: Kind::LmdbPut, dst: 608, src: 624, offset: 0, size: (3 << 16) | 6 },
+        // 5: Cursor scan from beginning, max 10 entries
+        Action { kind: Kind::LmdbCursorScan, dst: scan_result_addr, src: 0, offset: 0, size: (0 << 16) | 10 },
+        // 6: Dispatch LMDB operations
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 6 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 8: MemCopy scan result to data_copy_addr (copy first 100 bytes)
+        Action { kind: Kind::MemCopy, dst: data_copy_addr, src: scan_result_addr, offset: 0, size: 100 },
+        // 9: Dispatch MemCopy
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 11: FileWrite scan result to file
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 100 },
+        // 12: Dispatch FileWrite
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    // Read the file and verify cursor scan format
+    let file_contents = fs::read(&test_file).unwrap();
+    assert!(file_contents.len() >= 4, "File should contain at least count field");
+
+    // First 4 bytes is the entry count
+    let count = u32::from_le_bytes([file_contents[0], file_contents[1], file_contents[2], file_contents[3]]);
+    assert_eq!(count, 4, "Should have 4 entries");
+
+    // Verify cursor scan output format: [u32 count][u16 klen, u16 vlen, key, val]...
+    // Entry 1: "aaa" (3 bytes) -> "value1" (6 bytes)
+    let offset = 4;
+    let klen1 = u16::from_le_bytes([file_contents[offset], file_contents[offset + 1]]);
+    let vlen1 = u16::from_le_bytes([file_contents[offset + 2], file_contents[offset + 3]]);
+    assert_eq!(klen1, 3);
+    assert_eq!(vlen1, 6);
+    assert_eq!(&file_contents[offset + 4..offset + 7], b"aaa");
+    assert_eq!(&file_contents[offset + 7..offset + 13], b"value1");
+}
+
+#[test]
+fn test_lmdb_batched_writes() {
+    // Test BeginWriteTxn / Put×N / CommitWriteTxn batching, then Get to verify
+    // Layout:
+    //   0..8:   flag_lmdb
+    //   8..16:  flag_mem
+    //  16..24:  flag_file
+    //  24..28:  handle
+    //  32..288: db_path
+    // 300..303: key1 "aaa"
+    // 320..326: val1 "value1"
+    // 340..343: key2 "bbb"
+    // 360..366: val2 "value2"
+    // 380..383: key3 "ccc"
+    // 400..406: val3 "value3"
+    // 420..432: get result [u32 len][data]
+    // 500..N:   filename
+    // 600..612: data copy for file write
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("batched");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("batch_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+    let handle_addr = 24u32;
+    let db_path_addr = 32u32;
+    let get_result_addr = 420u32;
+    let filename_addr = 500u32;
+    let data_copy_addr = 600u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"aaa");
+    payloads[320..326].copy_from_slice(b"value1");
+    payloads[340..343].copy_from_slice(b"bbb");
+    payloads[360..366].copy_from_slice(b"value2");
+    payloads[380..383].copy_from_slice(b"ccc");
+    payloads[400..406].copy_from_slice(b"value3");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open LMDB
+        Action { kind: Kind::LmdbOpen, dst: handle_addr, src: db_path_addr, offset: 256, size: 10 },
+        // 1: Begin write transaction
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 2-4: Batch 3 puts in one transaction
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 6 },
+        Action { kind: Kind::LmdbPut, dst: 340, src: 360, offset: 0, size: (3 << 16) | 6 },
+        Action { kind: Kind::LmdbPut, dst: 380, src: 400, offset: 0, size: (3 << 16) | 6 },
+        // 5: Commit write transaction
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 6: Get "bbb" to verify batch was committed
+        Action { kind: Kind::LmdbGet, dst: 340, src: get_result_addr, offset: 0, size: 3 << 16 },
+        // 7: Dispatch LMDB operations
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 7 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 9: MemCopy result
+        Action { kind: Kind::MemCopy, dst: data_copy_addr, src: get_result_addr, offset: 0, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 9, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // 12: FileWrite
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 12, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    assert!(file_contents.len() >= 10, "File should contain u32 len + 6 bytes value");
+
+    let len = u32::from_le_bytes([file_contents[0], file_contents[1], file_contents[2], file_contents[3]]);
+    assert_eq!(len, 6, "Length should be 6");
+    assert_eq!(&file_contents[4..10], b"value2", "Value should be 'value2'");
+}
+
+#[test]
+fn test_lmdb_uncommitted_read_in_batch() {
+    // Get within an active write txn should see uncommitted puts
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("uncommitted_read");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("uncommitted_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..325].copy_from_slice(b"value");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // 1: Begin write txn
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 2: Put key=value (within batch, not committed)
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 5 },
+        // 3: Get key (should see uncommitted value within same txn)
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        // 4: Commit
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 5: Dispatch LMDB
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 5 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 7: MemCopy + FileWrite to verify
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 7, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 10, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let len = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len, 5, "Uncommitted read should see value length 5");
+    assert_eq!(&file_contents[4..9], b"value", "Uncommitted read should see 'value'");
+}
+
+#[test]
+fn test_lmdb_cursor_scan_in_batch() {
+    // CursorScan within an active write txn should see uncommitted data
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("cursor_batch");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("cursor_batch_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 4096];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[512..514].copy_from_slice(b"aa");
+    payloads[528..530].copy_from_slice(b"v1");
+    payloads[544..546].copy_from_slice(b"bb");
+    payloads[560..562].copy_from_slice(b"v2");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[400..400 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // 1: Begin
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 2-3: Put two entries
+        Action { kind: Kind::LmdbPut, dst: 512, src: 528, offset: 0, size: (2 << 16) | 2 },
+        Action { kind: Kind::LmdbPut, dst: 544, src: 560, offset: 0, size: (2 << 16) | 2 },
+        // 4: CursorScan (should see both uncommitted entries)
+        Action { kind: Kind::LmdbCursorScan, dst: 1024, src: 0, offset: 0, size: (0 << 16) | 10 },
+        // 5: Commit
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 6: Dispatch
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 6 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 8: MemCopy + FileWrite
+        Action { kind: Kind::MemCopy, dst: 2048, src: 1024, offset: 0, size: 50 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 400, src: 2048, offset: 256, size: 50 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let count = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(count, 2, "CursorScan in batch should see 2 uncommitted entries");
+    // First entry: "aa" -> "v1"
+    let klen = u16::from_le_bytes([file_contents[4], file_contents[5]]);
+    let vlen = u16::from_le_bytes([file_contents[6], file_contents[7]]);
+    assert_eq!(klen, 2);
+    assert_eq!(vlen, 2);
+    assert_eq!(&file_contents[8..10], b"aa");
+    assert_eq!(&file_contents[10..12], b"v1");
+}
+
+#[test]
+fn test_lmdb_commit_without_begin() {
+    // CommitWriteTxn with no active txn should be a no-op
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("commit_no_begin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("commit_no_begin_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..325].copy_from_slice(b"value");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // 1: Commit without begin (should be no-op)
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 2: Auto-commit Put (should still work fine)
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 5 },
+        // 3: Get
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        // 4: Dispatch
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 4 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 6: MemCopy + FileWrite
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 6, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 9, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let len = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len, 5, "Auto-commit put after stray commit should work");
+    assert_eq!(&file_contents[4..9], b"value");
+}
+
+#[test]
+fn test_lmdb_empty_batch() {
+    // BeginWriteTxn immediately followed by CommitWriteTxn — no crash
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("empty_batch");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+
+    let flag_lmdb = 0u32;
+
+    let mut payloads = vec![0u8; 512];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 3 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, false, false);
+    execute(algorithm).unwrap();
+    // No panic = pass
+}
+
+#[test]
+fn test_lmdb_double_begin() {
+    // Second BeginWriteTxn aborts the first, doesn't deadlock, data from first is lost
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("double_begin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("double_begin_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..304].copy_from_slice(b"key1");
+    payloads[320..325].copy_from_slice(b"lost!");  // will be aborted
+    payloads[340..344].copy_from_slice(b"key2");
+    payloads[360..365].copy_from_slice(b"kept!");  // will be committed
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // 1: Begin first batch
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 2: Put key1=lost! (in first txn)
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (4 << 16) | 5 },
+        // 3: Begin second batch (aborts first, key1 put is lost)
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 4: Put key2=kept! (in second txn)
+        Action { kind: Kind::LmdbPut, dst: 340, src: 360, offset: 0, size: (4 << 16) | 5 },
+        // 5: Commit second batch
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 6: Get key1 (should be sentinel — was in aborted txn)
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 4 << 16 },
+        // 7: Dispatch
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 7 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 9: Write sentinel to file
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 9, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 12, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let sentinel = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(sentinel, 0xFFFF_FFFF, "key1 from aborted txn should not exist");
+}
+
+#[test]
+fn test_lmdb_batch_delete_readback() {
+    // Delete within batch, Get in same batch returns sentinel
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("batch_delete");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("batch_delete_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_lmdb2 = 100u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..323].copy_from_slice(b"val");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // Phase 1: auto-commit put key=val
+        // 0: Open
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // 1: Put key=val (auto-commit)
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 3 },
+        // 2: Dispatch phase 1
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 2 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+
+        // Phase 2: batch delete + read back
+        // 4: Begin batch
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 5: Delete key
+        Action { kind: Kind::LmdbDelete, dst: 300, src: 0, offset: 0, size: 3 << 16 },
+        // 6: Get key (should be sentinel within batch)
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        // 7: Commit
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 8: Dispatch phase 2
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 4, offset: flag_lmdb2, size: 4 },
+        Action { kind: Kind::Wait, dst: flag_lmdb2, src: 0, offset: 0, size: 0 },
+
+        // Write result to file
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 10, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 13, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let sentinel = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(sentinel, 0xFFFF_FFFF, "Deleted key in batch should return sentinel");
+}
+
+#[test]
+fn test_lmdb_mixed_batch_and_autocommit() {
+    // Batch put key1, commit, then auto-commit put key2 — both visible
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("mixed");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("mixed_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_lmdb2 = 100u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..304].copy_from_slice(b"key1");
+    payloads[320..324].copy_from_slice(b"bat!");
+    payloads[340..344].copy_from_slice(b"key2");
+    payloads[360..364].copy_from_slice(b"aut!");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // Phase 1: batch put key1
+        // 0: Open
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // 1: Begin
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 2: Put key1=bat!
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (4 << 16) | 4 },
+        // 3: Commit
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 4: Auto-commit put key2=aut!
+        Action { kind: Kind::LmdbPut, dst: 340, src: 360, offset: 0, size: (4 << 16) | 4 },
+        // 5: Dispatch phase 1
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 5 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+
+        // Phase 2: CursorScan all entries — should see both
+        // 7: CursorScan
+        Action { kind: Kind::LmdbCursorScan, dst: 700, src: 0, offset: 0, size: (0 << 16) | 10 },
+        // 8: Dispatch
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 7, offset: flag_lmdb2, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_lmdb2, src: 0, offset: 0, size: 0 },
+
+        // Write scan result to file
+        Action { kind: Kind::MemCopy, dst: 800, src: 700, offset: 0, size: 50 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 10, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 800, offset: 256, size: 50 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 13, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let count = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(count, 2, "Should see both batched and auto-committed entries");
+    // Entries are sorted by key: "key1" then "key2"
+    let klen1 = u16::from_le_bytes([file_contents[4], file_contents[5]]);
+    assert_eq!(klen1, 4);
+    assert_eq!(&file_contents[8..12], b"key1");
+}
+
+#[test]
+fn test_lmdb_batch_overwrite() {
+    // Put same key twice in batch — Get sees the latest value
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("overwrite");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("overwrite_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..324].copy_from_slice(b"old!");
+    payloads[340..344].copy_from_slice(b"new!");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // 0: Open
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // 1: Begin
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 2: Put key=old!
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 4 },
+        // 3: Put key=new! (overwrite in same txn)
+        Action { kind: Kind::LmdbPut, dst: 300, src: 340, offset: 0, size: (3 << 16) | 4 },
+        // 4: Get key (should see "new!")
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        // 5: Commit
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        // 6: Dispatch
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 6 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // 8: MemCopy + FileWrite
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let len = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len, 4, "Overwritten value should have length 4");
+    assert_eq!(&file_contents[4..8], b"new!", "Should see the overwritten value");
+}
+
+#[test]
+fn test_lmdb_uncommitted_batch_dropped() {
+    // BeginWriteTxn + Put but no Commit — unit shutdown aborts the txn, data not persisted
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("dropped_batch");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("dropped_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_lmdb2 = 100u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..323].copy_from_slice(b"val");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    // Phase 1: begin + put but NO commit — dispatch returns, unit continues
+    // Phase 2: new dispatch that does a fresh Get — should be sentinel because txn was
+    // never committed (it's still active though, so the Get takes the non-batch path
+    // and creates a ReadTransaction which only sees committed state)
+    // Actually: the txn is still active in phase 2 dispatch, so Get will go through
+    // the batched path and see the uncommitted data. We need to test that after the
+    // unit fully shuts down (Drop aborts), the data is not persisted.
+    //
+    // To properly test this, we do two separate execute() calls on the same db path.
+
+    // Execute 1: begin + put, no commit
+    let actions1 = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 3 },
+        // No commit! Unit will Drop and abort the txn.
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 3 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+    ];
+    let alg1 = create_lmdb_algorithm(actions1, payloads.clone(), false, false);
+    execute(alg1).unwrap();
+
+    // Execute 2: reopen same db, Get should return sentinel
+    let actions2 = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 2 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 7, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+    let alg2 = create_lmdb_algorithm(actions2, payloads, true, true);
+    execute(alg2).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let sentinel = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(sentinel, 0xFFFF_FFFF, "Uncommitted batch should be aborted on Drop, data not persisted");
+}
+
+#[test]
+fn test_lmdb_get_nonexistent_key() {
+    // Get on a key that was never put should return sentinel 0xFFFFFFFF
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("get_nonexistent");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("get_nonexistent_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..306].copy_from_slice(b"nokey!");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // Get a key that was never put
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 6 << 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 2 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 7, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let sentinel = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(sentinel, 0xFFFF_FFFF, "Get on nonexistent key should return sentinel");
+}
+
+#[test]
+fn test_lmdb_delete_nonexistent_key() {
+    // Deleting a key that doesn't exist should be a no-op (not crash),
+    // and subsequent put/get should still work
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("del_nonexistent");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("del_nonexistent_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..325].copy_from_slice(b"value");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // Delete a key that doesn't exist yet
+        Action { kind: Kind::LmdbDelete, dst: 300, src: 0, offset: 0, size: 3 << 16 },
+        // Put should still work after deleting nonexistent key
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 5 },
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 4 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 6, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 9, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let len = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len, 5);
+    assert_eq!(&file_contents[4..9], b"value", "Put after deleting nonexistent key should work");
+}
+
+#[test]
+fn test_lmdb_cursor_scan_empty_db() {
+    // CursorScan on an empty database should return count=0
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("cursor_empty");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("cursor_empty_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // CursorScan with no start key, max 100 entries, on empty db
+        Action { kind: Kind::LmdbCursorScan, dst: 420, src: 0, offset: 0, size: 100 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 2 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 7, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let count = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(count, 0, "CursorScan on empty db should return 0 entries");
+}
+
+#[test]
+fn test_lmdb_cursor_scan_with_start_key() {
+    // Put keys aa, bb, cc, dd — scan from "cc" should return only cc and dd
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("cursor_start");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("cursor_start_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 2048];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    // keys at 300, 310, 320, 330; values at 340, 350, 360, 370
+    payloads[300..302].copy_from_slice(b"aa");
+    payloads[310..312].copy_from_slice(b"bb");
+    payloads[320..322].copy_from_slice(b"cc");
+    payloads[330..332].copy_from_slice(b"dd");
+    payloads[340..342].copy_from_slice(b"v1");
+    payloads[350..352].copy_from_slice(b"v2");
+    payloads[360..362].copy_from_slice(b"v3");
+    payloads[370..372].copy_from_slice(b"v4");
+    // start key "cc" at 380
+    payloads[380..382].copy_from_slice(b"cc");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        Action { kind: Kind::LmdbPut, dst: 300, src: 340, offset: 0, size: (2 << 16) | 2 },
+        Action { kind: Kind::LmdbPut, dst: 310, src: 350, offset: 0, size: (2 << 16) | 2 },
+        Action { kind: Kind::LmdbPut, dst: 320, src: 360, offset: 0, size: (2 << 16) | 2 },
+        Action { kind: Kind::LmdbPut, dst: 330, src: 370, offset: 0, size: (2 << 16) | 2 },
+        // CursorScan from "cc", max 100
+        // src=380 (start key addr), size = (key_len=2 << 16) | max_entries=100
+        Action { kind: Kind::LmdbCursorScan, dst: 800, src: 380, offset: 0, size: (2 << 16) | 100 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 6 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // Copy result: 4 (count) + 2*(2+2+2+2) = 4+16 = 20 bytes
+        Action { kind: Kind::MemCopy, dst: 900, src: 800, offset: 0, size: 24 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 900, offset: 256, size: 24 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let count = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(count, 2, "CursorScan from 'cc' should return 2 entries (cc, dd)");
+
+    // First entry: cc -> v3
+    let klen1 = u16::from_le_bytes(file_contents[4..6].try_into().unwrap()) as usize;
+    let vlen1 = u16::from_le_bytes(file_contents[6..8].try_into().unwrap()) as usize;
+    assert_eq!(klen1, 2);
+    assert_eq!(vlen1, 2);
+    assert_eq!(&file_contents[8..10], b"cc");
+    assert_eq!(&file_contents[10..12], b"v3");
+
+    // Second entry: dd -> v4
+    let klen2 = u16::from_le_bytes(file_contents[12..14].try_into().unwrap()) as usize;
+    let vlen2 = u16::from_le_bytes(file_contents[14..16].try_into().unwrap()) as usize;
+    assert_eq!(klen2, 2);
+    assert_eq!(vlen2, 2);
+    assert_eq!(&file_contents[16..18], b"dd");
+    assert_eq!(&file_contents[18..20], b"v4");
+}
+
+#[test]
+fn test_lmdb_cursor_scan_max_entries_limit() {
+    // Put 4 entries, scan with max_entries=2 — should return exactly 2
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("cursor_limit");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("cursor_limit_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 2048];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..302].copy_from_slice(b"aa");
+    payloads[310..312].copy_from_slice(b"bb");
+    payloads[320..322].copy_from_slice(b"cc");
+    payloads[330..332].copy_from_slice(b"dd");
+    payloads[340..342].copy_from_slice(b"v1");
+    payloads[350..352].copy_from_slice(b"v2");
+    payloads[360..362].copy_from_slice(b"v3");
+    payloads[370..372].copy_from_slice(b"v4");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        Action { kind: Kind::LmdbPut, dst: 300, src: 340, offset: 0, size: (2 << 16) | 2 },
+        Action { kind: Kind::LmdbPut, dst: 310, src: 350, offset: 0, size: (2 << 16) | 2 },
+        Action { kind: Kind::LmdbPut, dst: 320, src: 360, offset: 0, size: (2 << 16) | 2 },
+        Action { kind: Kind::LmdbPut, dst: 330, src: 370, offset: 0, size: (2 << 16) | 2 },
+        // CursorScan: no start key (key_len=0), max_entries=2
+        Action { kind: Kind::LmdbCursorScan, dst: 800, src: 0, offset: 0, size: 2 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 6 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::MemCopy, dst: 900, src: 800, offset: 0, size: 20 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 900, offset: 256, size: 20 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let count = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(count, 2, "CursorScan with max_entries=2 should return exactly 2");
+
+    // Should be first two in sorted order: aa, bb
+    let klen1 = u16::from_le_bytes(file_contents[4..6].try_into().unwrap()) as usize;
+    assert_eq!(klen1, 2);
+    assert_eq!(&file_contents[8..10], b"aa");
+
+    let klen2 = u16::from_le_bytes(file_contents[12..14].try_into().unwrap()) as usize;
+    assert_eq!(klen2, 2);
+    assert_eq!(&file_contents[16..18], b"bb");
+}
+
+#[test]
+fn test_lmdb_sync_no_crash() {
+    // LmdbSync should not crash on a valid env
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("sync_test");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+
+    let flag_lmdb = 0u32;
+
+    let mut payloads = vec![0u8; 512];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..322].copy_from_slice(b"hi");
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 2 },
+        Action { kind: Kind::LmdbSync, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 3 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, false, false);
+    execute(algorithm).unwrap();
+    // No panic = pass
+}
+
+#[test]
+fn test_lmdb_put_empty_value() {
+    // Put a key with 0-length value, Get should return len=0
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("empty_val");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("empty_val_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 1024];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        // Put key with 0-length value: key_size=3, val_size=0
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: 3 << 16 },
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 3 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 8, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let len = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len, 0, "Get of key with empty value should return len=0 (not sentinel)");
+}
+
+#[test]
+fn test_lmdb_large_value() {
+    // Put a 4096-byte value, verify it roundtrips correctly
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("large_val");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("large_val_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let val_size = 4096usize;
+    let mut payloads = vec![0u8; 16384];
+    payloads[32..32 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    // Fill value at 1000 with a pattern
+    for i in 0..val_size {
+        payloads[1000 + i] = (i % 251) as u8; // prime-mod pattern
+    }
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 256, size: 10 },
+        Action { kind: Kind::LmdbPut, dst: 300, src: 1000, offset: 0, size: (3 << 16) | (val_size as u32) },
+        Action { kind: Kind::LmdbGet, dst: 300, src: 6000, offset: 0, size: 3 << 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 3 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // Copy result header (4 bytes len) + val_size bytes
+        Action { kind: Kind::MemCopy, dst: 11000, src: 6000, offset: 0, size: (4 + val_size) as u32 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: flag_mem, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 11000, offset: 256, size: (4 + val_size) as u32 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 8, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let len = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len as usize, val_size, "Large value should roundtrip with correct length");
+    for i in 0..val_size {
+        assert_eq!(
+            file_contents[4 + i],
+            (i % 251) as u8,
+            "Large value mismatch at byte {}",
+            i
+        );
+    }
+}
+
+#[test]
+fn test_lmdb_multiple_databases() {
+    // Open two independent databases, verify they are isolated
+    let temp_dir = TempDir::new().unwrap();
+    let db1_path = temp_dir.path().join("multi_db1");
+    let db2_path = temp_dir.path().join("multi_db2");
+    let db1_path_str = format!("{}\0", db1_path.to_str().unwrap());
+    let db2_path_str = format!("{}\0", db2_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("multi_db_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    // handle1 at offset 24, handle2 at offset 28
+    let mut payloads = vec![0u8; 2048];
+    payloads[32..32 + db1_path_str.len()].copy_from_slice(db1_path_str.as_bytes());
+    // db2 path at offset 256
+    payloads[256..256 + db2_path_str.len()].copy_from_slice(db2_path_str.as_bytes());
+    // key "key" at 300
+    payloads[300..303].copy_from_slice(b"key");
+    // value "db1!" at 320, "db2!" at 340
+    payloads[320..324].copy_from_slice(b"db1!");
+    payloads[340..344].copy_from_slice(b"db2!");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // Open db1 -> handle at addr 24 (will be 0)
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 224, size: 10 },
+        // Open db2 -> handle at addr 28 (will be 1)
+        Action { kind: Kind::LmdbOpen, dst: 28, src: 256, offset: 512, size: 10 },
+        // Put "key"="db1!" into db1 (handle via offset field — but handle is stored at addr 24)
+        // Handle 0 is at offset=0
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 4 },
+        // Put "key"="db2!" into db2 (handle=1)
+        Action { kind: Kind::LmdbPut, dst: 300, src: 340, offset: 1, size: (3 << 16) | 4 },
+        // Get "key" from db1 -> result at 420
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        // Get "key" from db2 -> result at 460
+        Action { kind: Kind::LmdbGet, dst: 300, src: 460, offset: 1, size: 3 << 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 6 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        // Copy db1 result (4+4=8 bytes) to 600
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 8 },
+        // Copy db2 result (4+4=8 bytes) to 608 (contiguous)
+        Action { kind: Kind::MemCopy, dst: 608, src: 460, offset: 0, size: 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 2 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        // Write both results: 16 bytes total
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 12, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    // db1 result
+    let len1 = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len1, 4);
+    assert_eq!(&file_contents[4..8], b"db1!", "db1 should return db1! for key");
+    // db2 result
+    let len2 = u32::from_le_bytes(file_contents[8..12].try_into().unwrap());
+    assert_eq!(len2, 4);
+    assert_eq!(&file_contents[12..16], b"db2!", "db2 should return db2! for key");
+}
+
+#[test]
+fn test_lmdb_batch_across_two_databases() {
+    // Batch writes across two different databases: begin/commit on each independently
+    let temp_dir = TempDir::new().unwrap();
+    let db1_path = temp_dir.path().join("batch_multi_db1");
+    let db2_path = temp_dir.path().join("batch_multi_db2");
+    let db1_path_str = format!("{}\0", db1_path.to_str().unwrap());
+    let db2_path_str = format!("{}\0", db2_path.to_str().unwrap());
+    let test_file = temp_dir.path().join("batch_multi_result.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let flag_lmdb = 0u32;
+    let flag_mem = 8u32;
+    let flag_file = 16u32;
+
+    let mut payloads = vec![0u8; 2048];
+    payloads[32..32 + db1_path_str.len()].copy_from_slice(db1_path_str.as_bytes());
+    payloads[256..256 + db2_path_str.len()].copy_from_slice(db2_path_str.as_bytes());
+    payloads[300..303].copy_from_slice(b"key");
+    payloads[320..323].copy_from_slice(b"aa!");
+    payloads[340..343].copy_from_slice(b"bb!");
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[500..500 + filename_bytes.len()].copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // Open db1 (handle=0) and db2 (handle=1)
+        Action { kind: Kind::LmdbOpen, dst: 24, src: 32, offset: 224, size: 10 },
+        Action { kind: Kind::LmdbOpen, dst: 28, src: 256, offset: 512, size: 10 },
+        // Begin batch on both
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::LmdbBeginWriteTxn, dst: 0, src: 0, offset: 1, size: 0 },
+        // Put into each
+        Action { kind: Kind::LmdbPut, dst: 300, src: 320, offset: 0, size: (3 << 16) | 3 },
+        Action { kind: Kind::LmdbPut, dst: 300, src: 340, offset: 1, size: (3 << 16) | 3 },
+        // Commit both
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::LmdbCommitWriteTxn, dst: 0, src: 0, offset: 1, size: 0 },
+        // Read back from each
+        Action { kind: Kind::LmdbGet, dst: 300, src: 420, offset: 0, size: 3 << 16 },
+        Action { kind: Kind::LmdbGet, dst: 300, src: 460, offset: 1, size: 3 << 16 },
+        Action { kind: Kind::AsyncDispatch, dst: 8, src: 0, offset: flag_lmdb, size: 10 },
+        Action { kind: Kind::Wait, dst: flag_lmdb, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 7 },
+        Action { kind: Kind::MemCopy, dst: 607, src: 460, offset: 0, size: 7 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 12, offset: flag_mem, size: 2 },
+        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 14 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 16, offset: flag_file, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_lmdb_algorithm(actions, payloads, true, true);
+    execute(algorithm).unwrap();
+
+    let file_contents = fs::read(&test_file).unwrap();
+    let len1 = u32::from_le_bytes(file_contents[0..4].try_into().unwrap());
+    assert_eq!(len1, 3);
+    assert_eq!(&file_contents[4..7], b"aa!", "db1 batch put should be committed");
+    let len2 = u32::from_le_bytes(file_contents[7..11].try_into().unwrap());
+    assert_eq!(len2, 3);
+    assert_eq!(&file_contents[11..14], b"bb!", "db2 batch put should be committed");
 }

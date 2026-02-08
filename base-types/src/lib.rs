@@ -45,6 +45,14 @@ pub enum Kind {
     HashTableInsert = 51,
     HashTableLookup = 52,
     HashTableDelete = 53,
+    LmdbOpen = 60,
+    LmdbPut = 61,
+    LmdbGet = 62,
+    LmdbDelete = 63,
+    LmdbCursorScan = 64,
+    LmdbSync = 65,
+    LmdbBeginWriteTxn = 66,
+    LmdbCommitWriteTxn = 67,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -75,6 +83,7 @@ pub struct UnitSpec {
     pub memory_units: usize,
     pub ffi_units: usize,
     pub hash_table_units: usize,
+    pub lmdb_units: usize,
     pub backends_bits: u32,
 }
 
@@ -91,6 +100,7 @@ pub struct Algorithm {
     pub network_assignments: Vec<u8>,
     pub ffi_assignments: Vec<u8>,
     pub hash_table_assignments: Vec<u8>,
+    pub lmdb_assignments: Vec<u8>,
     pub gpu_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,
