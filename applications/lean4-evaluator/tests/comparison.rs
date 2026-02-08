@@ -30,37 +30,42 @@ fn run_lean(code: &str, test_file: &str) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-fn run_ours(code: &str, test_file: &str, output_file: &str) -> String {
+fn run_ours(code: &str, test_file: &str, output_file: &str) -> (String, String) {
     fs::write(test_file, code).expect("Failed to write test file");
 
     // Remove output file before running
     let _ = fs::remove_file(output_file);
 
     let binary = get_lean4_eval_binary();
-    let _ = Command::new(&binary)
+    let output = Command::new(&binary)
         .arg(test_file)
         .arg(output_file)
+        .env("RUST_LOG", "trace")
         .output()
         .expect(&format!("Failed to run {}", binary));
 
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
     // Read result from output file
-    fs::read_to_string(output_file)
+    let result = fs::read_to_string(output_file)
         .unwrap_or_default()
         .trim()
-        .to_string()
+        .to_string();
+
+    (result, stderr)
 }
 
 fn compare(code: &str) {
     let (test_file, output_file) = get_temp_files();
     let lean_output = run_lean(code, &test_file);
-    let our_output = run_ours(code, &test_file, &output_file);
+    let (our_output, stderr) = run_ours(code, &test_file, &output_file);
     fs::remove_file(&test_file).ok();
     fs::remove_file(&output_file).ok();
 
     assert_eq!(
         lean_output, our_output,
-        "\nCode: {}\nLean output: '{}'\nOur output: '{}'",
-        code, lean_output, our_output
+        "\nCode: {}\nLean output: '{}'\nOur output: '{}'\nstderr:\n{}",
+        code, lean_output, our_output, stderr
     );
 }
 

@@ -2,6 +2,7 @@ mod argv;
 
 use base::execute;
 use base_types::Algorithm;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
 const OUTPUT_PATH_OFFSET: usize = 0x0010;
@@ -10,6 +11,20 @@ const OUTPUT_PATH_MAX_LEN: usize = 16;
 fn main() {
     // Initialize argv module (stores args for FFI access)
     argv::init();
+
+    // Initialize tracing: stderr only (warn + base=info by default, override with RUST_LOG)
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_filter(
+                    EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| EnvFilter::new("off"))
+                ),
+        )
+        .init();
 
     // Deserialize algorithm
     let mut alg: Algorithm = bincode::deserialize(ALGORITHM_BINARY)

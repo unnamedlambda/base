@@ -1,5 +1,6 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
 use std::sync::atomic::Ordering;
+use tracing::{debug, info, info_span};
 use wgpu::Backends;
 
 pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
@@ -22,6 +23,20 @@ pub enum Error {
 }
 
 pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
+    let _span = info_span!("execute",
+        simd_units = algorithm.units.simd_units,
+        gpu_units = algorithm.units.gpu_units,
+        computational_units = algorithm.units.computational_units,
+        memory_units = algorithm.units.memory_units,
+        file_units = algorithm.units.file_units,
+        network_units = algorithm.units.network_units,
+        ffi_units = algorithm.units.ffi_units,
+        hash_table_units = algorithm.units.hash_table_units,
+        actions_count = algorithm.actions.len(),
+    ).entered();
+
+    info!("starting execution engine");
+
     if algorithm.simd_assignments.is_empty() {
         algorithm.simd_assignments = vec![255; algorithm.actions.len()];
         let mut unit = 0u8;
@@ -43,6 +58,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned SIMD actions across {} units", algorithm.units.simd_units);
     }
 
     if algorithm.computational_assignments.is_empty() {
@@ -55,6 +71,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned computational actions across {} units", algorithm.units.computational_units);
     }
 
     if algorithm.memory_assignments.is_empty() {
@@ -75,6 +92,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned memory actions across {} units", algorithm.units.memory_units);
     }
 
     if algorithm.ffi_assignments.is_empty() {
@@ -87,6 +105,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned FFI actions across {} units", algorithm.units.ffi_units);
     }
 
     if algorithm.network_assignments.is_empty() {
@@ -99,6 +118,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned network actions across {} units", algorithm.units.network_units);
     }
 
     if algorithm.hash_table_assignments.is_empty() {
@@ -114,6 +134,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned hash table actions across {} units", algorithm.units.hash_table_units);
     }
 
     if algorithm.file_assignments.is_empty() {
@@ -128,6 +149,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned file actions across {} units", algorithm.units.file_units);
     }
 
     if algorithm.gpu_assignments.is_empty() {
@@ -145,6 +167,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 _ => {}
             }
         }
+        debug!("auto-assigned GPU actions across {} units", algorithm.units.gpu_units);
     }
 
     let mut builder = tokio::runtime::Builder::new_multi_thread();
@@ -172,10 +195,12 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
 
     let result = runtime.block_on(execute_internal(algorithm));
     runtime.shutdown_timeout(Duration::from_millis(100));
+    info!("execution complete");
     result
 }
 
 async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
+    let _span = info_span!("execute_internal").entered();
     let mut memory = Pin::new(algorithm.payloads.clone().into_boxed_slice());
     let mem_ptr = memory.as_mut().as_mut_ptr();
     let shared = Arc::new(SharedMemory::new(mem_ptr));
@@ -225,6 +250,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
     for (gpu_id, mailbox) in gpu_mailboxes.iter().enumerate() {
         if gpu_id < algorithm.state.gpu_shader_offsets.len() {
+            info!(gpu_id, "spawning GPU unit thread");
             let gpu_size = algorithm.state.gpu_size;
             let backends = Backends::from_bits(algorithm.units.backends_bits).unwrap_or(Backends::all());
             let offset = algorithm.state.gpu_shader_offsets[gpu_id];
@@ -248,6 +274,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     for (worker_id, mailbox) in simd_mailboxes.iter().cloned().enumerate() {
+        info!(worker_id, "spawning SIMD unit thread");
         let actions = actions_arc.clone();
         let shared = shared.clone();
         let regs = algorithm.state.regs_per_unit;
@@ -264,7 +291,8 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }));
     }
 
-    for mailbox in file_mailboxes.iter().cloned() {
+    for (file_id, mailbox) in file_mailboxes.iter().cloned().enumerate() {
+        info!(file_id, "spawning file unit task");
         let actions = actions_arc.clone();
         let shared = shared.clone();
         let buffer_size = algorithm.state.file_buffer_size;
@@ -273,7 +301,8 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }));
     }
 
-    for mailbox in network_mailboxes.iter().cloned() {
+    for (network_id, mailbox) in network_mailboxes.iter().cloned().enumerate() {
+        info!(network_id, "spawning network unit task");
         let actions = actions_arc.clone();
         let shared = shared.clone();
         async_handles.push(tokio::spawn(async move {
@@ -281,7 +310,8 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }));
     }
 
-    for mailbox in ffi_mailboxes.iter().cloned() {
+    for (ffi_id, mailbox) in ffi_mailboxes.iter().cloned().enumerate() {
+        info!(ffi_id, "spawning FFI unit thread");
         let actions = actions_arc.clone();
         let shared = shared.clone();
         thread_handles.push(std::thread::spawn(move || {
@@ -290,6 +320,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     for (worker_id, mailbox) in computational_mailboxes.iter().cloned().enumerate() {
+        info!(worker_id, "spawning computational unit thread");
         let actions = actions_arc.clone();
         let shared = shared.clone();
         let regs = algorithm.state.computational_regs;
@@ -307,6 +338,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     for (worker_id, mailbox) in memory_mailboxes.iter().cloned().enumerate() {
+        info!(worker_id, "spawning memory unit thread");
         let actions = actions_arc.clone();
         let shared = shared.clone();
         let broadcast = memory_broadcast.clone();
@@ -321,7 +353,8 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }));
     }
 
-    for mailbox in hash_table_mailboxes.iter().cloned() {
+    for (hash_table_id, mailbox) in hash_table_mailboxes.iter().cloned().enumerate() {
+        info!(hash_table_id, "spawning hash table unit thread");
         let actions = actions_arc.clone();
         let shared = shared.clone();
         thread_handles.push(std::thread::spawn(move || {
@@ -350,6 +383,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 let cond_bytes =
                     unsafe { shared.read(action.src as usize + action.offset as usize, check_size) };
                 let cond_nonzero = cond_bytes.iter().take(check_size).any(|&b| b != 0);
+                debug!(pc, cond_nonzero, target = action.dst, "conditional_jump");
 
                 if cond_nonzero {
                     pc = action.dst as usize;
@@ -370,6 +404,16 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 let count = if size_count == 0 { 1 } else { size_count };
                 let end = start.saturating_add(count).min(actions_len);
                 let flag = action.offset;
+
+                debug!(
+                    pc,
+                    unit_type,
+                    is_broadcast,
+                    start,
+                    end,
+                    flag,
+                    "async_dispatch"
+                );
 
                 match unit_type {
                     0 => {
@@ -549,6 +593,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
             }
 
             Kind::Wait => {
+                debug!(pc, flag_addr = action.dst, "wait_begin");
                 loop {
                     let flag = unsafe { shared.load_u64(action.dst as usize, Ordering::Acquire) };
                     if flag != 0 {
@@ -556,6 +601,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     }
                     tokio::task::yield_now().await;
                 }
+                debug!(pc, "wait_complete");
                 pc += 1;
             }
 
@@ -565,6 +611,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
+    info!("shutting down all units");
     for mailbox in gpu_mailboxes.iter() {
         mailbox.shutdown();
     }
@@ -599,6 +646,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     for handle in async_handles {
         let _ = handle.await;
     }
+    info!("all unit threads joined");
 
     Ok(())
 }

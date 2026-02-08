@@ -13,9 +13,11 @@ quanta = "0.12"
 pollster = "0.3"
 futures = "0.3"
 rand = "0.8"
+tracing = { version = "0.1", features = ["release_max_level_off"] }
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [lib]
 name = "base"

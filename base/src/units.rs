@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tracing::{debug, info, info_span, trace, warn, Instrument};
 use wgpu::{
     Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBindingType, BufferDescriptor, BufferUsages,
@@ -33,6 +34,7 @@ impl Mailbox {
     }
 
     pub fn post(&self, start: u32, end: u32, flag: u32) {
+        debug!(start, end, flag, "mailbox_post");
         let packed = ((start as u64) << 43) | ((end as u64) << 22) | (flag as u64);
         let mut spin_count = 0u32;
         loop {
@@ -47,6 +49,7 @@ impl Mailbox {
     }
 
     pub fn shutdown(&self) {
+        debug!("mailbox_shutdown");
         self.0.store(MAILBOX_CLOSED, Ordering::Release);
     }
 
@@ -112,6 +115,7 @@ impl Broadcast {
     }
 
     pub fn dispatch(&self, start: u32, end: u32, flag: u32) {
+        debug!(start, end, flag, workers = self.num_workers, "broadcast_dispatch");
         self.start.store(start, Ordering::Relaxed);
         self.end.store(end, Ordering::Relaxed);
         self.flag.store(flag, Ordering::Relaxed);
@@ -120,6 +124,7 @@ impl Broadcast {
     }
 
     pub fn shutdown(&self) {
+        debug!("broadcast_shutdown");
         self.shutdown.store(true, Ordering::Release);
         self.epoch.fetch_add(1, Ordering::Release);
     }
@@ -160,6 +165,8 @@ fn broadcast_step(
     let chunk = (total + num_workers - 1) / num_workers;
     let my_start = start.saturating_add(worker_id.saturating_mul(chunk));
     let my_end = (my_start + chunk).min(end);
+
+    trace!(worker_id, my_start, my_end, "broadcast_work_received");
 
     for idx in my_start..my_end {
         exec(&actions[idx as usize]);
@@ -275,6 +282,7 @@ impl MemoryUnit {
     pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::ConditionalWrite => {
+                debug!(dst = action.dst, src = action.src, size = action.size, offset = action.offset, "mem_conditional_write");
                 // Read first 8 bytes at offset as condition
                 let cond_bytes = self.shared.read(action.offset as usize, 8);
                 let condition = u64::from_le_bytes(cond_bytes[0..8].try_into().unwrap());
@@ -286,11 +294,13 @@ impl MemoryUnit {
                 }
             }
             Kind::MemCopy => {
+                debug!(dst = action.dst, src = action.src, size = action.size, "mem_copy");
                 let src_ptr = self.shared.ptr.add(action.src as usize);
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
             Kind::MemWrite => {
+                debug!(dst = action.dst, src = action.src, size = action.size, "mem_write");
                 // Write immediate value to memory
                 // dst = destination address, src = immediate value, size = bytes
                 let dst_ptr = self.shared.ptr.add(action.dst as usize);
@@ -305,6 +315,7 @@ impl MemoryUnit {
                 }
             }
             Kind::MemCopyIndirect => {
+                debug!(dst = action.dst, src = action.src, size = action.size, offset = action.offset, "mem_copy_indirect");
                 // src = address containing source pointer (u32), dst = destination, offset added to indirect addr
                 let indirect_addr_bytes = self.shared.read(action.src as usize, 4);
                 let indirect_addr = u32::from_le_bytes([
@@ -316,6 +327,7 @@ impl MemoryUnit {
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
             Kind::MemStoreIndirect => {
+                debug!(dst = action.dst, src = action.src, size = action.size, offset = action.offset, "mem_store_indirect");
                 // src = source data, dst = address containing destination pointer (u32), offset added to indirect addr
                 let indirect_addr_bytes = self.shared.read(action.dst as usize, 4);
                 let indirect_addr = u32::from_le_bytes([
@@ -327,6 +339,7 @@ impl MemoryUnit {
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
             Kind::MemScan => {
+                debug!(src = action.src, dst = action.dst, size = action.size, offset = action.offset, "mem_scan");
                 // action.src = pattern start offset
                 // action.dst = search region start offset
                 // action.size = search region size
@@ -367,6 +380,7 @@ impl MemoryUnit {
                     .write(result_offset, &found_offset.to_le_bytes());
             }
             Kind::AtomicCAS => {
+                debug!(dst = action.dst, src = action.src, size = action.size, "atomic_cas");
                 if action.size == 16 {
                     let expected = read_as_u128(&self.shared, action.src as usize);
                     let new = read_as_u128(&self.shared, action.offset as usize);
@@ -382,9 +396,11 @@ impl MemoryUnit {
                 }
             }
             Kind::Fence => {
+                trace!("fence");
                 fence(Ordering::SeqCst);
             }
             Kind::Compare => {
+                debug!(src = action.src, dst = action.dst, offset = action.offset, size = action.size, "compare");
                 let a_bytes = self.shared.read(action.src as usize, 4);
                 let a = i32::from_le_bytes(a_bytes[0..4].try_into().unwrap());
                 let b_bytes = self.shared.read(action.offset as usize, 4);
@@ -413,11 +429,13 @@ impl FFIUnit {
     pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::FFICall => {
+                debug!(src = action.src, dst = action.dst, offset = action.offset, "ffi_call");
                 // Read function pointer from memory
                 let fn_bytes = self.shared.read(action.src as usize, 8);
                 let fn_ptr = usize::from_le_bytes(fn_bytes[0..8].try_into().unwrap());
 
                 if fn_ptr == 0 {
+                    warn!("ffi_call skipped: null function pointer");
                     return; // Skip null pointer
                 }
 
@@ -455,6 +473,7 @@ impl HashTableUnit {
     pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::HashTableCreate => {
+                debug!(dst = action.dst, "hash_table_create");
                 let handle = self.next_handle;
                 self.next_handle += 1;
                 self.tables.insert(handle, HashMap::new());
@@ -462,6 +481,7 @@ impl HashTableUnit {
                     .write(action.dst as usize, &handle.to_le_bytes());
             }
             Kind::HashTableInsert => {
+                debug!(handle = action.offset, key_dst = action.dst, val_src = action.src, "hash_table_insert");
                 let handle = action.offset;
                 let key_size = (action.size >> 16) as usize;
                 let val_size = (action.size & 0xFFFF) as usize;
@@ -472,6 +492,7 @@ impl HashTableUnit {
                 }
             }
             Kind::HashTableLookup => {
+                debug!(handle = action.offset, key_dst = action.dst, result_src = action.src, "hash_table_lookup");
                 let handle = action.offset;
                 let key_size = (action.size >> 16) as usize;
                 let key = self.shared.read(action.dst as usize, key_size).to_vec();
@@ -490,6 +511,7 @@ impl HashTableUnit {
                     .write(action.src as usize, &0xFFFF_FFFFu32.to_le_bytes());
             }
             Kind::HashTableDelete => {
+                debug!(handle = action.offset, key_dst = action.dst, "hash_table_delete");
                 let handle = action.offset;
                 let key_size = action.size as usize;
                 let key = self.shared.read(action.dst as usize, key_size).to_vec();
@@ -507,12 +529,15 @@ pub(crate) fn hash_table_unit_task_mailbox(
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
+    let _span = info_span!("hash_table_unit").entered();
+    info!("hash table unit started");
     let mut unit = HashTableUnit::new(shared.clone());
     let mut spin_count = 0u32;
 
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "hash_table_work_received");
                 for idx in start..end {
                     unsafe {
                         unit.execute(&actions[idx as usize]);
@@ -521,9 +546,13 @@ pub(crate) fn hash_table_unit_task_mailbox(
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "hash_table_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("hash table unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),
         }
     }
@@ -557,6 +586,7 @@ impl NetworkUnit {
                     action.src as usize,
                     action.offset as usize,
                 );
+                debug!(addr = %addr, dst = action.dst, "net_connect");
 
                 // Connect to remote OR bind+listen based on format
                 if addr.starts_with(':') || addr.contains("0.0.0.0:") {
@@ -587,6 +617,7 @@ impl NetworkUnit {
             }
 
             Kind::NetAccept => {
+                debug!(src = action.src, dst = action.dst, "net_accept");
                 // Read listener handle from src
                 let handle = unsafe {
                     u32::from_le_bytes(
@@ -612,6 +643,7 @@ impl NetworkUnit {
             }
 
             Kind::NetSend => {
+                debug!(dst = action.dst, src = action.src, size = action.size, "net_send");
                 // Read connection handle from dst
                 let handle = unsafe {
                     u32::from_le_bytes(
@@ -628,6 +660,7 @@ impl NetworkUnit {
             }
 
             Kind::NetRecv => {
+                debug!(src = action.src, dst = action.dst, size = action.size, "net_recv");
                 // Read connection handle from src
                 let handle = unsafe {
                     u32::from_le_bytes(
@@ -675,6 +708,7 @@ impl FileUnit {
                     action.src as usize,
                     action.offset as usize,
                 );
+                debug!(filename = %filename, dst = action.dst, size = action.size, "file_read");
 
                 if let Ok(mut file) = fs::File::open(&filename).await {
                     if action.size == 0 {
@@ -712,6 +746,7 @@ impl FileUnit {
                     action.dst as usize,
                     action.offset as usize,
                 );
+                debug!(filename = %filename, src = action.src, size = action.size, "file_write");
 
                 if let Ok(mut file) = fs::File::create(&filename).await {
                     let src_base = action.src as usize;
@@ -771,6 +806,7 @@ impl ComputationalUnit {
     pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::Approximate => {
+                debug!(dst = action.dst, src = action.src, iterations = action.offset, "approximate");
                 let base = self.regs[action.src as usize];
                 let iterations = action.offset as usize;
                 let mut x = base;
@@ -780,6 +816,7 @@ impl ComputationalUnit {
                 self.regs[action.dst as usize] = x;
             }
             Kind::Choose => {
+                debug!(dst = action.dst, src = action.src, "choose");
                 let n = self.regs[action.src as usize] as u64;
                 if n > 0 {
                     let choice = rand::random::<u64>() % n;
@@ -787,6 +824,7 @@ impl ComputationalUnit {
                 }
             }
             Kind::Timestamp => {
+                debug!(dst = action.dst, "timestamp");
                 // Store current timestamp in register
                 self.regs[action.dst as usize] = self.clock.raw() as f64;
             }
@@ -819,6 +857,7 @@ impl SimdUnit {
     pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::SimdLoad => {
+                trace!(dst = action.dst, src = action.src, "simd_load_f32");
                 let vals = self.shared.read(action.src as usize, 16);
                 let f0 = f32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
                 let f1 = f32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
@@ -828,16 +867,19 @@ impl SimdUnit {
                 self.regs_f32[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
             }
             Kind::SimdAdd => {
+                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_add_f32");
                 let a = self.regs_f32[action.src as usize];
                 let b = self.regs_f32[action.offset as usize];
                 self.regs_f32[action.dst as usize] = a + b;
             }
             Kind::SimdMul => {
+                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_mul_f32");
                 let a = self.regs_f32[action.src as usize];
                 let b = self.regs_f32[action.offset as usize];
                 self.regs_f32[action.dst as usize] = a * b;
             }
             Kind::SimdStore => {
+                trace!(src = action.src, offset = action.offset, "simd_store_f32");
                 let reg_data = self.regs_f32[action.src as usize].to_array();
                 let write_offset = action.offset as usize;
 
@@ -848,6 +890,7 @@ impl SimdUnit {
                 self.shared.write(write_offset, &bytes);
             }
             Kind::SimdLoadI32 => {
+                trace!(dst = action.dst, src = action.src, "simd_load_i32");
                 let vals = self.shared.read(action.src as usize, 16);
                 let i0 = i32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
                 let i1 = i32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
@@ -857,16 +900,19 @@ impl SimdUnit {
                 self.regs_i32[action.dst as usize] = i32x4::from([i0, i1, i2, i3]);
             }
             Kind::SimdAddI32 => {
+                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_add_i32");
                 let a = self.regs_i32[action.src as usize];
                 let b = self.regs_i32[action.offset as usize];
                 self.regs_i32[action.dst as usize] = a + b;
             }
             Kind::SimdMulI32 => {
+                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_mul_i32");
                 let a = self.regs_i32[action.src as usize];
                 let b = self.regs_i32[action.offset as usize];
                 self.regs_i32[action.dst as usize] = a * b;
             }
             Kind::SimdDivI32 => {
+                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_div_i32");
                 let a = self.regs_i32[action.src as usize].to_array();
                 let b = self.regs_i32[action.offset as usize].to_array();
                 let result = i32x4::from([
@@ -878,11 +924,13 @@ impl SimdUnit {
                 self.regs_i32[action.dst as usize] = result;
             }
             Kind::SimdSubI32 => {
+                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_sub_i32");
                 let a = self.regs_i32[action.src as usize];
                 let b = self.regs_i32[action.offset as usize];
                 self.regs_i32[action.dst as usize] = a - b;
             }
             Kind::SimdStoreI32 => {
+                trace!(src = action.src, offset = action.offset, "simd_store_i32");
                 let reg_data = self.regs_i32[action.src as usize].to_array();
                 let write_offset = action.offset as usize;
 
@@ -909,6 +957,9 @@ pub(crate) struct GpuUnit {
 
 impl GpuUnit {
     pub fn new(shared: Arc<SharedMemory>, shader_source: &str, gpu_size: usize, backends: Backends) -> Self {
+        let _span = info_span!("gpu_init", gpu_size, ?backends).entered();
+        info!("initializing GPU unit");
+
         let instance = wgpu::Instance::new(InstanceDescriptor {
             backends,
             ..Default::default()
@@ -919,9 +970,11 @@ impl GpuUnit {
             ..Default::default()
         }))
         .expect("Failed to find adapter");
+        info!("GPU adapter acquired");
 
         let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor::default(), None))
             .expect("Failed to create device");
+        info!("GPU device created");
 
         let compute_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Compute"),
@@ -941,6 +994,7 @@ impl GpuUnit {
             label: Some("Compute"),
             source: ShaderSource::Wgsl(shader_source.into()),
         });
+        info!(shader_len = shader_source.len(), "GPU shader compiled");
 
         let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Compute Bind Group Layout"),
@@ -978,6 +1032,7 @@ impl GpuUnit {
                 resource: BindingResource::Buffer(compute_buffer.as_entire_buffer_binding()),
             }],
         });
+        info!("GPU pipeline created");
 
         Self {
             device,
@@ -993,6 +1048,13 @@ impl GpuUnit {
     pub unsafe fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::Dispatch => {
+                debug!(
+                    src = action.src,
+                    dst = action.dst,
+                    size = action.size,
+                    workgroups = (action.size + 63) / 64,
+                    "gpu_dispatch"
+                );
                 // Read input from action.src, size bytes
                 let data = self.shared.read(action.src as usize, action.size as usize);
 
@@ -1025,6 +1087,7 @@ impl GpuUnit {
                 self.shared.write(action.dst as usize, &result[..action.size as usize]);
                 drop(result);
                 self.staging_buffer.unmap();
+                debug!("gpu_dispatch_readback_complete");
             }
             _ => {
                 // Other GPU actions (CreateBuffer, etc.) not yet implemented
@@ -1040,6 +1103,8 @@ pub(crate) fn memory_unit_task_mailbox(
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
+    let _span = info_span!("memory_unit", worker_id).entered();
+    info!("memory unit started");
     let mut unit = MemoryUnit::new(shared.clone());
     let mut last_epoch = 0u64;
     let mut spin_count = 0u32;
@@ -1047,6 +1112,7 @@ pub(crate) fn memory_unit_task_mailbox(
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "memory_work_received");
                 for idx in start..end {
                     unsafe {
                         unit.execute(&actions[idx as usize]);
@@ -1055,9 +1121,13 @@ pub(crate) fn memory_unit_task_mailbox(
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "memory_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("memory unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => {
                 let prev_epoch = last_epoch;
                 if !broadcast_step(
@@ -1085,12 +1155,15 @@ pub(crate) fn ffi_unit_task_mailbox(
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
+    let _span = info_span!("ffi_unit").entered();
+    info!("FFI unit started");
     let mut unit = FFIUnit::new(shared.clone());
     let mut spin_count = 0u32;
 
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "ffi_work_received");
                 for idx in start..end {
                     unsafe {
                         unit.execute(&actions[idx as usize]);
@@ -1099,9 +1172,13 @@ pub(crate) fn ffi_unit_task_mailbox(
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "ffi_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("FFI unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),
         }
     }
@@ -1112,24 +1189,34 @@ pub(crate) async fn network_unit_task_mailbox(
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
+    async move {
+        info!("network unit started");
     let mut unit = NetworkUnit::new(0, shared.clone());
     let mut spin_count = 0u32;
 
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "network_work_received");
                 for idx in start..end {
                     unit.execute(&actions[idx as usize]).await;
                 }
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "network_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("network unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => spin_backoff_async(&mut spin_count).await,
         }
     }
+    }
+    .instrument(info_span!("network_unit"))
+    .await
 }
 
 pub(crate) async fn file_unit_task_mailbox(
@@ -1138,24 +1225,34 @@ pub(crate) async fn file_unit_task_mailbox(
     shared: Arc<SharedMemory>,
     buffer_size: usize,
 ) {
+    async move {
+        info!("file unit started");
     let mut unit = FileUnit::new(0, shared.clone(), buffer_size);
     let mut spin_count = 0u32;
 
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "file_work_received");
                 for idx in start..end {
                     unit.execute(&actions[idx as usize]).await;
                 }
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "file_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("file unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => spin_backoff_async(&mut spin_count).await,
         }
     }
+    }
+    .instrument(info_span!("file_unit"))
+    .await
 }
 
 pub(crate) fn computational_unit_task_mailbox(
@@ -1166,6 +1263,8 @@ pub(crate) fn computational_unit_task_mailbox(
     shared: Arc<SharedMemory>,
     regs: usize,
 ) {
+    let _span = info_span!("computational_unit", worker_id).entered();
+    info!("computational unit started");
     let mut unit = ComputationalUnit::new(regs);
     let mut last_epoch = 0u64;
     let mut spin_count = 0u32;
@@ -1173,6 +1272,7 @@ pub(crate) fn computational_unit_task_mailbox(
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "computational_work_received");
                 for idx in start..end {
                     unsafe {
                         unit.execute(&actions[idx as usize]);
@@ -1181,9 +1281,13 @@ pub(crate) fn computational_unit_task_mailbox(
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "computational_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("computational unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => {
                 let prev_epoch = last_epoch;
                 if !broadcast_step(
@@ -1214,6 +1318,8 @@ pub(crate) fn simd_unit_task_mailbox(
     shared: Arc<SharedMemory>,
     regs: usize,
 ) {
+    let _span = info_span!("simd_unit", worker_id).entered();
+    info!("SIMD unit started");
     let mut unit = SimdUnit::new(0, regs, shared.clone());
     let mut last_epoch = 0u64;
     let mut spin_count = 0u32;
@@ -1221,6 +1327,7 @@ pub(crate) fn simd_unit_task_mailbox(
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "simd_work_received");
                 for idx in start..end {
                     unsafe {
                         unit.execute(&actions[idx as usize]);
@@ -1229,9 +1336,13 @@ pub(crate) fn simd_unit_task_mailbox(
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "simd_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("SIMD unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => {
                 let prev_epoch = last_epoch;
                 if !broadcast_step(
@@ -1262,12 +1373,15 @@ pub(crate) fn gpu_unit_task_mailbox(
     gpu_size: usize,
     backends: Backends,
 ) {
+    let _span = info_span!("gpu_unit").entered();
+    info!("GPU unit started");
     let mut gpu = GpuUnit::new(shared.clone(), &shader_source, gpu_size, backends);
     let mut spin_count = 0u32;
 
     loop {
         match mailbox.poll() {
             MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "gpu_work_received");
                 for idx in start..end {
                     unsafe {
                         gpu.execute(&actions[idx as usize]);
@@ -1276,9 +1390,13 @@ pub(crate) fn gpu_unit_task_mailbox(
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
                 }
+                debug!(flag, "gpu_work_complete");
                 spin_count = 0;
             }
-            MailboxPoll::Closed => return,
+            MailboxPoll::Closed => {
+                info!("GPU unit shutting down");
+                return;
+            }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),
         }
     }
