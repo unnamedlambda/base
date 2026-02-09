@@ -1095,11 +1095,24 @@ impl FileUnit {
                 let filename = read_null_terminated_string(
                     &self.shared,
                     action.dst as usize,
-                    action.offset as usize,
+                    4096,
                 );
-                debug!(filename = %filename, src = action.src, size = action.size, "file_write");
+                debug!(filename = %filename, src = action.src, offset = action.offset, size = action.size, "file_write");
 
-                if let Ok(mut file) = fs::File::create(&filename).await {
+                let file_result = if action.offset == 0 {
+                    fs::File::create(&filename).await
+                } else {
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .open(&filename)
+                        .await
+                };
+
+                if let Ok(mut file) = file_result {
+                    if action.offset > 0 {
+                        let _ = file.seek(std::io::SeekFrom::Start(action.offset as u64)).await;
+                    }
                     let src_base = action.src as usize;
 
                     if action.size == 0 {
@@ -2684,7 +2697,7 @@ mod file_tests {
             kind: Kind::FileWrite,
             src: 100,                     // data at offset 100
             dst: 0,                       // filename at offset 0
-            offset: 50,                   // max filename length
+            offset: 0,                    // file byte offset
             size: test_data.len() as u32, // write 12 bytes
         };
 
@@ -2813,7 +2826,7 @@ mod file_tests {
             kind: Kind::FileWrite,
             src: 100,
             dst: 0,
-            offset: 100,
+            offset: 0,
             size: test_data.len() as u32,
         };
 
@@ -2851,7 +2864,7 @@ mod file_tests {
             kind: Kind::FileWrite,
             src: 100,
             dst: 0,
-            offset: 50,
+            offset: 0,
             size: binary_data.len() as u32,
         };
 
@@ -2984,6 +2997,46 @@ mod atomic_tests {
             let actual = u64::from_le_bytes(shared.read(208, 8)[0..8].try_into().unwrap());
             assert_eq!(actual, 42);
         }
+    }
+
+    #[tokio::test]
+    async fn test_file_write_with_offset() {
+        let test_file = "test_write_offset.txt";
+        let initial_data = b"AAAAAABBBBBB"; // 12 bytes
+
+        // First write: create file with initial content
+        fs::write(test_file, initial_data).await.unwrap();
+
+        let mut memory = vec![0u8; 1024];
+
+        // Setup filename at offset 0
+        let filename_bytes = test_file.as_bytes();
+        memory[0..filename_bytes.len()].copy_from_slice(filename_bytes);
+        memory[filename_bytes.len()] = 0; // null terminator
+
+        // Setup data to write at offset 100: "XX"
+        memory[100..102].copy_from_slice(b"XX");
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = FileUnit::new(0, shared.clone(), 4096);
+
+        // Write "XX" at byte offset 4 in the file
+        let action = Action {
+            kind: Kind::FileWrite,
+            src: 100,        // data at offset 100
+            dst: 0,          // filename at offset 0
+            offset: 4,       // write to file byte position 4
+            size: 2,         // write 2 bytes
+        };
+
+        unit.execute(&action).await;
+
+        // Verify file now contains "AAAAXXBBBBBB"
+        let file_contents = fs::read(test_file).await.unwrap();
+        assert_eq!(file_contents, b"AAAAXXBBBBBB");
+
+        // Cleanup
+        fs::remove_file(test_file).await.ok();
     }
 
     #[test]
@@ -3254,7 +3307,7 @@ mod concurrent_tests {
                     kind: Kind::FileWrite,
                     src: (1000 + offset) as u32,
                     dst: offset as u32,
-                    offset: 50,
+                    offset: 0,
                     size: data.len() as u32,
                 };
 

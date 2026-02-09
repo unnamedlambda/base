@@ -278,7 +278,7 @@ def drawAlgorithm : Algorithm :=
   let simdActions := (List.range batches).foldr (fun i acc => simdActionsForBatch i ++ acc) []
   let gpuActions := List.map gpuActionForBatch (List.range batches)
   let memActions := List.map memActionForBatch (List.range batches)
-  let fileAction : Action := { kind := .FileWrite, dst := u32 filenameOffset, src := u32 headerOffset, offset := u32 filenameSize, size := u32 (headerSize + pixelBytes) }
+  let fileAction : Action := { kind := .FileWrite, dst := u32 filenameOffset, src := u32 headerOffset, offset := 0, size := u32 (headerSize + pixelBytes) }
   let workerActions := simdActions ++ gpuActions ++ memActions ++ [fileAction]
   let dispatchStart := 1 + workerActions.length
   let jumpAction : Action := { kind := .ConditionalJump, dst := u32 dispatchStart, src := u32 flagAlways, offset := 0, size := 1 }

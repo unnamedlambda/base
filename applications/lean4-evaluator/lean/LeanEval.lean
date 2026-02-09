@@ -799,7 +799,7 @@ def opToAction : WorkOp -> Action
   | AddOutputPosOne => w .SimdAddI32 (r RAC) (r RAD) (r RK) SIZE_NONE
   | StoreDigitCountFinal => w .SimdStoreI32 (r RAD) (r RA) L.DIGIT_COUNT SIZE_NONE
   | CopyOutputToLeft => w .MemCopyIndirect L.DIGIT_COUNT L.LEFT_VAL L.OUTPUT_BUF OUTPUT_COPY_BYTES
-  | FileWriteOutput => w .FileWrite L.LEFT_VAL L.OUTPUT_PATH OUTPUT_COPY_BYTES SIZE_NONE
+  | FileWriteOutput => w .FileWrite L.LEFT_VAL L.OUTPUT_PATH ZERO SIZE_NONE
   | StoreResultFromLeft => w .SimdStoreI32 (r RS) (r RA) L.RESULT SIZE_NONE
   | ClearCharBuf => w .SimdStoreI32 (r RA) (r RA) L.CHAR_BUF SIZE_NONE
   | LoadBaseForNewlineCheck => w .SimdLoadI32 L.CONST_10 (r RAE) ZERO SIZE_NONE

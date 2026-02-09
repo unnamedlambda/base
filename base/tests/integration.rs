@@ -152,7 +152,7 @@ fn test_integration_memcopy_filewrite() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 264,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: AsyncDispatch MemCopy to memory unit (type 6)
@@ -234,7 +234,7 @@ fn test_integration_conditional_jump() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 528,
-            offset: filename_a_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 1: FileWrite to path B (data action, dispatched by index)
@@ -242,7 +242,7 @@ fn test_integration_conditional_jump() {
             kind: Kind::FileWrite,
             dst: 256,
             src: 528,
-            offset: filename_b_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: ConditionalJump with true condition (should jump to action 5)
@@ -345,7 +345,7 @@ fn test_integration_conditional_jump_variable_size() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 528,
-            offset: filename_4byte_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 1: FileWrite for 8-byte test
@@ -353,7 +353,7 @@ fn test_integration_conditional_jump_variable_size() {
             kind: Kind::FileWrite,
             dst: 256,
             src: 528,
-            offset: filename_8byte_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: ConditionalJump with size=4 (checks only first 4 bytes = 0, should NOT jump)
@@ -453,7 +453,7 @@ fn test_integration_file_roundtrip() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 256,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 1: FileRead file into buffer
@@ -469,7 +469,7 @@ fn test_integration_file_roundtrip() {
             kind: Kind::FileWrite,
             dst: 512,
             src: 264,
-            offset: verify_filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 3: AsyncDispatch FileWrite 1
@@ -557,7 +557,7 @@ fn test_integration_async_memory_operations() {
             kind: Kind::FileWrite,
             dst: 0,      // filename
             src: 304,    // CAS result (should be 200)
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: AsyncDispatch CAS to memory unit
@@ -642,7 +642,7 @@ fn test_integration_broadcast_memory_write() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 128,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 16,
         },
         // Action 3: broadcast memory writes (actions 0..2)
@@ -737,7 +737,7 @@ fn test_integration_broadcast_memory_write_many() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 128,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 32,
         },
         Action {
@@ -831,11 +831,11 @@ fn test_integration_complex_workflow() {
         // Action 1: AtomicCAS (100 → 999)
         Action { kind: Kind::AtomicCAS, dst: 2200, src: 2208, offset: 2216, size: 8 },
         // Action 2: FileWrite CAS result
-        Action { kind: Kind::FileWrite, dst: 1024, src: 2200, offset: filename_cas_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 1024, src: 2200, offset: 0, size: 8 },
         // Action 3: FileWrite path B (data action)
-        Action { kind: Kind::FileWrite, dst: 512, src: 3000, offset: filename_b_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 512, src: 3000, offset: 0, size: 8 },
         // Action 4: FileWrite path A (data action)
-        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: filename_a_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: 0, size: 8 },
 
         // Action 5: AsyncDispatch MemCopy
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: memcopy_flag, size: 0 },
@@ -925,7 +925,7 @@ fn test_integration_gpu_async() {
             kind: Kind::FileWrite,
             dst: 2048,
             src: 3008,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 4,
         },
         // Action 2: AsyncDispatch GPU
@@ -1031,13 +1031,13 @@ fn test_integration_complex_gpu_simd_workflow() {
         // Action 1: GPU Dispatch 2
         Action { kind: Kind::Dispatch, dst: 2640, src: 2640, offset: 2568, size: 12 },
         // Action 2: FileWrite result1
-        Action { kind: Kind::FileWrite, dst: 2048, src: 2584, offset: filename1_bytes.len() as u32, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 2048, src: 2584, offset: 0, size: 4 },
         // Action 3: FileWrite result2
-        Action { kind: Kind::FileWrite, dst: 2304, src: 2648, offset: filename2_bytes.len() as u32, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 2304, src: 2648, offset: 0, size: 4 },
         // Action 4: FileWrite LOW (skipped)
-        Action { kind: Kind::FileWrite, dst: 2720, src: 2832, offset: filename_cond_bytes.len() as u32, size: 3 },
+        Action { kind: Kind::FileWrite, dst: 2720, src: 2832, offset: 0, size: 3 },
         // Action 5: FileWrite HIGH (executed)
-        Action { kind: Kind::FileWrite, dst: 2720, src: 2776, offset: filename_cond_bytes.len() as u32, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 2720, src: 2776, offset: 0, size: 4 },
         // Action 6: AsyncDispatch GPU 1
         Action { kind: Kind::AsyncDispatch, dst: 0, src: 0, offset: 2560, size: 0 },
         // Action 7: Wait for GPU 1
@@ -1133,7 +1133,7 @@ fn test_integration_multiple_async_same_unit() {
         Action { kind: Kind::MemCopy, src: 2104, dst: 520, offset: 0, size: 8 },
         Action { kind: Kind::MemCopy, src: 2200, dst: 528, offset: 0, size: 8 },
         // Action 6: Write to file
-        Action { kind: Kind::FileWrite, dst: 0, src: 512, offset: filename_bytes.len() as u32, size: 24 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 512, offset: 0, size: 24 },
         // Action 7-9: Queue all three CAS to SAME memory unit (unit 0)
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 3000, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 1, offset: 3008, size: 0 },
@@ -1202,7 +1202,7 @@ fn test_integration_cross_unit_data_flow() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 2100,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: AsyncDispatch memory operation
@@ -1283,7 +1283,7 @@ fn test_integration_conditional_skip_with_wait() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 2000,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: Jump over AsyncDispatch if condition true (it's false, so won't jump)
@@ -1383,7 +1383,7 @@ fn test_integration_memscan() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 2100,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: AsyncDispatch MemScan
@@ -1465,7 +1465,7 @@ fn test_integration_conditional_write() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 2100,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: AsyncDispatch ConditionalWrite
@@ -1583,7 +1583,7 @@ fn test_integration_fence() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 3000,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 16,
         },
         // Action 6: AsyncDispatch first CAS
@@ -1732,7 +1732,7 @@ fn test_integration_memwrite() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 2100,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 2: AsyncDispatch MemCopy to memory unit
@@ -1799,7 +1799,7 @@ fn test_integration_memcopy_indirect() {
     let actions = vec![
         // MemCopyIndirect: read ptr from 1000, copy from *ptr to 3000
         Action { kind: Kind::MemCopyIndirect, src: 1000, dst: 3000, offset: 0, size: 8 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: filename_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: 0, size: 8 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 2200, size: 0 },
         Action { kind: Kind::Wait, dst: 2200, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 2208, size: 0 },
@@ -1832,7 +1832,7 @@ fn test_integration_memstore_indirect() {
     let actions = vec![
         // MemStoreIndirect: copy from 2000 to *ptr (read ptr from 1000)
         Action { kind: Kind::MemStoreIndirect, src: 2000, dst: 1000, offset: 0, size: 8 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: filename_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: 0, size: 8 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 2200, size: 0 },
         Action { kind: Kind::Wait, dst: 2200, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 2208, size: 0 },
@@ -1880,7 +1880,7 @@ fn test_integration_simd_shared_memory() {
         Action { kind: Kind::SimdStore, dst: 0, src: 2, offset: 500, size: 16 },
         Action { kind: Kind::SimdStore, dst: 0, src: 3, offset: 516, size: 16 },
         // Action 6: FileWrite both results (32 bytes total)
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: filename_bytes.len() as u32, size: 32 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 32 },
         // Action 7-12: Dispatch SIMD actions
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
@@ -1966,7 +1966,7 @@ fn test_integration_simd_i32x4_shared_memory() {
         Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
         Action { kind: Kind::SimdStoreI32, dst: 0, src: 3, offset: 516, size: 16 },
         // Action 6: FileWrite both results (32 bytes total)
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: filename_bytes.len() as u32, size: 32 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 32 },
         // Action 7-12: Dispatch SIMD actions
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
@@ -2043,7 +2043,7 @@ fn test_integration_simd_i32_div() {
         Action { kind: Kind::SimdLoadI32, dst: 1, src: 272, offset: 0, size: 16 },
         Action { kind: Kind::SimdDivI32, dst: 2, src: 0, offset: 1, size: 0 },
         Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: filename_bytes.len() as u32, size: 16 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 16 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
@@ -2095,7 +2095,7 @@ fn test_integration_simd_i32_sub() {
         Action { kind: Kind::SimdLoadI32, dst: 1, src: 272, offset: 0, size: 16 },
         Action { kind: Kind::SimdSubI32, dst: 2, src: 0, offset: 1, size: 0 },
         Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: filename_bytes.len() as u32, size: 16 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 16 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
@@ -2147,7 +2147,7 @@ fn test_integration_filewrite_null_terminated() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 256,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 0, // size=0 means write until null byte
         },
         // Action 1: AsyncDispatch FileWrite
@@ -2246,7 +2246,7 @@ fn test_integration_memwrite_immediate() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 256,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 32,
         },
         // Action 5-8: AsyncDispatch MemWrite operations
@@ -2463,7 +2463,7 @@ fn test_hash_table_insert_lookup_verify() {
         // 3: MemCopy result to data_copy
         Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 8 },
         // 4: FileWrite data_copy to file
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 8 },
         // 5: Dispatch hash ops
         Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 3 },
         // 6: Wait hash
@@ -2519,7 +2519,7 @@ fn test_hash_table_lookup_not_found() {
         // 2: MemCopy result
         Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 4 },
         // 3: FileWrite
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 4 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 4 },
         // 4: Dispatch hash
         Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 2 },
         // 5: Wait
@@ -2580,7 +2580,7 @@ fn test_hash_table_insert_overwrite() {
         // 4: MemCopy result
         Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 8 },
         // 5: FileWrite
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 8 },
         // 6: Dispatch hash
         Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 4 },
         // 7: Wait
@@ -2641,7 +2641,7 @@ fn test_hash_table_delete() {
         // 4: MemCopy result
         Action { kind: Kind::MemCopy, src: result_addr, dst: data_copy_addr, offset: 0, size: 4 },
         // 5: FileWrite
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: filename_bytes.len() as u32, size: 4 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 4 },
         // 6: Dispatch hash
         Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash, size: 4 },
         // 7: Wait
@@ -2718,9 +2718,9 @@ fn test_hash_table_multiple_keys() {
         // 6: MemCopy result2
         Action { kind: Kind::MemCopy, src: result2_addr, dst: data_copy2_addr, offset: 0, size: 8 },
         // 7: FileWrite result1
-        Action { kind: Kind::FileWrite, dst: filename1_addr, src: data_copy1_addr, offset: fn1_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: filename1_addr, src: data_copy1_addr, offset: 0, size: 8 },
         // 8: FileWrite result2
-        Action { kind: Kind::FileWrite, dst: filename2_addr, src: data_copy2_addr, offset: fn2_bytes.len() as u32, size: 8 },
+        Action { kind: Kind::FileWrite, dst: filename2_addr, src: data_copy2_addr, offset: 0, size: 8 },
         // 9: Dispatch hash (create + 2 inserts + 2 lookups)
         Action { kind: Kind::AsyncDispatch, dst: 7, src: 0, offset: flag_hash1, size: 5 },
         // 10: Wait
@@ -2790,7 +2790,7 @@ fn test_memwrite_large_size_zeroes_buffer() {
         // Actually, just directly MemWrite size=32 with src=0 to zero the buffer
         Action { kind: Kind::MemWrite, dst: buf_addr, src: 0, offset: 0, size: buf_size },
         // 1: FileWrite the buffer to file
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: buf_addr, offset: filename_bytes.len() as u32, size: buf_size },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: buf_addr, offset: 0, size: buf_size },
         // 2: Dispatch MemWrite
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: flag_mem, size: 1 },
         // 3: Wait
@@ -2855,7 +2855,7 @@ fn test_integration_memory_compare() {
             kind: Kind::FileWrite,
             dst: 0,
             src: result_addr,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 4,
         },
         // Action 2-3: AsyncDispatch Compare to memory unit + Wait
@@ -2936,7 +2936,7 @@ fn test_integration_memory_compare_ge() {
             kind: Kind::FileWrite,
             dst: 0,
             src: result_addr,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 4,
         },
         // Action 2-3: AsyncDispatch Compare + Wait
@@ -3076,7 +3076,7 @@ fn test_lmdb_basic_operations() {
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
         // 8: FileWrite data_copy_addr to file (write 12 bytes)
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 12 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 12 },
         // 9: Dispatch FileWrite
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 8, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
@@ -3139,7 +3139,7 @@ fn test_lmdb_delete() {
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 6, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
         // 9: FileWrite sentinel to file
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 4 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 4 },
         // 10: Dispatch FileWrite
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 9, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
@@ -3209,7 +3209,7 @@ fn test_lmdb_cursor_scan() {
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
         // 11: FileWrite scan result to file
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 100 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 100 },
         // 12: Dispatch FileWrite
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
@@ -3302,7 +3302,7 @@ fn test_lmdb_batched_writes() {
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 9, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
         // 12: FileWrite
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 256, size: 12 },
+        Action { kind: Kind::FileWrite, dst: filename_addr, src: data_copy_addr, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 12, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3356,7 +3356,7 @@ fn test_lmdb_uncommitted_read_in_batch() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 7, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 10, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3411,7 +3411,7 @@ fn test_lmdb_cursor_scan_in_batch() {
         Action { kind: Kind::MemCopy, dst: 2048, src: 1024, offset: 0, size: 50 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 400, src: 2048, offset: 256, size: 50 },
+        Action { kind: Kind::FileWrite, dst: 400, src: 2048, offset: 0, size: 50 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3467,7 +3467,7 @@ fn test_lmdb_commit_without_begin() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 6, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 9, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3550,7 +3550,7 @@ fn test_lmdb_double_begin() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 9, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 12, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3611,7 +3611,7 @@ fn test_lmdb_batch_delete_readback() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 10, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 13, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3674,7 +3674,7 @@ fn test_lmdb_mixed_batch_and_autocommit() {
         Action { kind: Kind::MemCopy, dst: 800, src: 700, offset: 0, size: 50 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 10, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 800, offset: 256, size: 50 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 800, offset: 0, size: 50 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 13, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3732,7 +3732,7 @@ fn test_lmdb_batch_overwrite() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3798,7 +3798,7 @@ fn test_lmdb_uncommitted_batch_dropped() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 7, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3838,7 +3838,7 @@ fn test_lmdb_get_nonexistent_key() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 7, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3884,7 +3884,7 @@ fn test_lmdb_delete_nonexistent_key() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 6, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 12 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 12 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 9, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3925,7 +3925,7 @@ fn test_lmdb_cursor_scan_empty_db() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 7, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -3982,7 +3982,7 @@ fn test_lmdb_cursor_scan_with_start_key() {
         Action { kind: Kind::MemCopy, dst: 900, src: 800, offset: 0, size: 24 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 900, offset: 256, size: 24 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 900, offset: 0, size: 24 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -4050,7 +4050,7 @@ fn test_lmdb_cursor_scan_max_entries_limit() {
         Action { kind: Kind::MemCopy, dst: 900, src: 800, offset: 0, size: 20 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 900, offset: 256, size: 20 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 900, offset: 0, size: 20 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 11, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -4128,7 +4128,7 @@ fn test_lmdb_put_empty_value() {
         Action { kind: Kind::MemCopy, dst: 600, src: 420, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 8, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -4175,7 +4175,7 @@ fn test_lmdb_large_value() {
         Action { kind: Kind::MemCopy, dst: 11000, src: 6000, offset: 0, size: (4 + val_size) as u32 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: flag_mem, size: 1 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 11000, offset: 256, size: (4 + val_size) as u32 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 11000, offset: 0, size: (4 + val_size) as u32 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 8, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -4247,7 +4247,7 @@ fn test_lmdb_multiple_databases() {
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 8, offset: flag_mem, size: 2 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
         // Write both results: 16 bytes total
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 16 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 16 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 12, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -4312,7 +4312,7 @@ fn test_lmdb_batch_across_two_databases() {
         Action { kind: Kind::MemCopy, dst: 607, src: 460, offset: 0, size: 7 },
         Action { kind: Kind::AsyncDispatch, dst: 6, src: 12, offset: flag_mem, size: 2 },
         Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 256, size: 14 },
+        Action { kind: Kind::FileWrite, dst: 500, src: 600, offset: 0, size: 14 },
         Action { kind: Kind::AsyncDispatch, dst: 2, src: 16, offset: flag_file, size: 1 },
         Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
     ];
@@ -4423,7 +4423,7 @@ fn test_integration_computational_load_store_f64() {
             kind: Kind::FileWrite,
             dst: 0,      // filename offset
             src: 512,    // data offset
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 4: AsyncDispatch computational operations (actions 0-2) to computational unit (type 5)
@@ -4517,7 +4517,7 @@ fn test_integration_computational_load_store_u64() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 512,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 4: AsyncDispatch computational (actions 0-2)
@@ -4600,7 +4600,7 @@ fn test_integration_computational_timestamp() {
             kind: Kind::FileWrite,
             dst: 0,
             src: 512,
-            offset: filename_bytes.len() as u32,
+            offset: 0,
             size: 8,
         },
         // Action 3: AsyncDispatch computational
@@ -4721,7 +4721,7 @@ fn test_integration_file_read_with_offset() {
             kind: Kind::FileWrite,
             dst: 256,
             src: 1024,
-            offset: result1_bytes.len() as u32,
+            offset: 0,
             size: 14,
         },
         // Action 4: Write chunk 2
@@ -4729,7 +4729,7 @@ fn test_integration_file_read_with_offset() {
             kind: Kind::FileWrite,
             dst: 512,
             src: 1038,
-            offset: result2_bytes.len() as u32,
+            offset: 0,
             size: 14,
         },
         // Action 5: Write chunk 3
@@ -4737,7 +4737,7 @@ fn test_integration_file_read_with_offset() {
             kind: Kind::FileWrite,
             dst: 768,
             src: 1052,
-            offset: result3_bytes.len() as u32,
+            offset: 0,
             size: 14,
         },
         // Action 6-17: AsyncDispatch + Wait for each read and write
@@ -4842,4 +4842,107 @@ fn test_integration_file_read_with_offset() {
     assert_eq!(chunk1, b"AAAAAABBBBBBCC", "Chunk 1: bytes 0-14");
     assert_eq!(chunk2, b"CCCCDDDDDDEEEE", "Chunk 2: bytes 14-28");
     assert_eq!(chunk3, b"EEFFFFFFGGGGGG", "Chunk 3: bytes 28-42");
+}
+
+#[test]
+fn test_integration_file_write_with_offset() {
+    // Test FileWrite with offset parameter for chunked file writing
+    let temp_dir = TempDir::new().unwrap();
+    let output_file = temp_dir.path().join("chunked_output.txt");
+
+    let output_path_str = output_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 2048];
+
+    // Store output filename at offset 0
+    let output_bytes = format!("{}\0", output_path_str).into_bytes();
+    payloads[0..output_bytes.len()].copy_from_slice(&output_bytes);
+
+    // Data chunks to write at 512, 526, 540
+    payloads[512..526].copy_from_slice(b"AAAAAABBBBBBCC"); // 14 bytes
+    payloads[526..540].copy_from_slice(b"DDDDDDEEEEEEEE"); // 14 bytes
+    payloads[540..554].copy_from_slice(b"FFFFFFGGGGGGGG"); // 14 bytes
+
+    let flag1 = 1536u32;
+    let flag2 = 1544u32;
+    let flag3 = 1552u32;
+
+    let actions = vec![
+        // Action 0: Write first chunk at byte 0
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,           // filename
+            src: 512,         // data chunk 1
+            offset: 0,        // write to byte 0 (creates file)
+            size: 14,
+        },
+        // Action 1: Write second chunk at byte 14
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 526,         // data chunk 2
+            offset: 14,       // write to byte 14 (append mode)
+            size: 14,
+        },
+        // Action 2: Write third chunk at byte 28
+        Action {
+            kind: Kind::FileWrite,
+            dst: 0,
+            src: 540,         // data chunk 3
+            offset: 28,       // write to byte 28 (append mode)
+            size: 14,
+        },
+        // Action 3-8: AsyncDispatch + Wait for each write
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 0,
+            offset: flag1,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag1,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 1,
+            offset: flag2,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag2,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 2,
+            offset: flag3,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag3,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    execute(algorithm).unwrap();
+
+    // Verify the output file has all chunks written at correct positions
+    assert!(output_file.exists(), "Output file should exist");
+
+    let contents = fs::read(&output_file).unwrap();
+    assert_eq!(contents, b"AAAAAABBBBBBCCDDDDDDEEEEEEEEFFFFFFGGGGGGGG", "All chunks concatenated");
 }

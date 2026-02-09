@@ -152,7 +152,7 @@ def mkMemCopy (dstOff srcOff byteCount : Nat) : Action :=
 
 def mkFileWrite (filenameOff dataOff dataSize : Nat) : Action :=
   { kind := .FileWrite, dst := u32 filenameOff, src := u32 dataOff,
-    offset := u32 filenameSlot, size := u32 dataSize }
+    offset := 0, size := u32 dataSize }
 
 -- Ingest actions --------------------------------------------------------
 
