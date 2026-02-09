@@ -53,6 +53,10 @@ pub enum Kind {
     LmdbSync = 65,
     LmdbBeginWriteTxn = 66,
     LmdbCommitWriteTxn = 67,
+    ComputationalLoadF64 = 68,
+    ComputationalStoreF64 = 69,
+    ComputationalLoadU64 = 70,
+    ComputationalStoreU64 = 71,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

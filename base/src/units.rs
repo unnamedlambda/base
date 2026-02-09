@@ -1139,14 +1139,18 @@ impl FileUnit {
 }
 
 pub(crate) struct ComputationalUnit {
-    regs: Vec<f64>,
+    regs_f64: Vec<f64>,
+    regs_u64: Vec<u64>,
+    shared: Arc<SharedMemory>,
     clock: Clock,
 }
 
 impl ComputationalUnit {
-    pub fn new(regs: usize) -> Self {
+    pub fn new(regs: usize, shared: Arc<SharedMemory>) -> Self {
         Self {
-            regs: vec![0.0; regs],
+            regs_f64: vec![0.0; regs],
+            regs_u64: vec![0; regs],
+            shared,
             clock: Clock::new(),
         }
     }
@@ -1155,26 +1159,48 @@ impl ComputationalUnit {
         match action.kind {
             Kind::Approximate => {
                 debug!(dst = action.dst, src = action.src, iterations = action.offset, "approximate");
-                let base = self.regs[action.src as usize];
+                let base = self.regs_f64[action.src as usize];
                 let iterations = action.offset as usize;
                 let mut x = base;
                 for _ in 0..iterations {
                     x = 0.5 * (x + base / x)
                 }
-                self.regs[action.dst as usize] = x;
+                self.regs_f64[action.dst as usize] = x;
             }
             Kind::Choose => {
                 debug!(dst = action.dst, src = action.src, "choose");
-                let n = self.regs[action.src as usize] as u64;
+                let n = self.regs_u64[action.src as usize];
                 if n > 0 {
                     let choice = rand::random::<u64>() % n;
-                    self.regs[action.dst as usize] = choice as f64;
+                    self.regs_u64[action.dst as usize] = choice;
                 }
             }
             Kind::Timestamp => {
                 debug!(dst = action.dst, "timestamp");
                 // Store current timestamp in register
-                self.regs[action.dst as usize] = self.clock.raw() as f64;
+                self.regs_u64[action.dst as usize] = self.clock.raw();
+            }
+            Kind::ComputationalLoadF64 => {
+                debug!(dst = action.dst, src = action.src, "comp_load_f64");
+                let bytes = self.shared.read(action.src as usize, 8);
+                let value = f64::from_le_bytes(bytes[0..8].try_into().unwrap());
+                self.regs_f64[action.dst as usize] = value;
+            }
+            Kind::ComputationalStoreF64 => {
+                debug!(src = action.src, offset = action.offset, "comp_store_f64");
+                let value = self.regs_f64[action.src as usize];
+                self.shared.write(action.offset as usize, &value.to_le_bytes());
+            }
+            Kind::ComputationalLoadU64 => {
+                debug!(dst = action.dst, src = action.src, "comp_load_u64");
+                let bytes = self.shared.read(action.src as usize, 8);
+                let value = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+                self.regs_u64[action.dst as usize] = value;
+            }
+            Kind::ComputationalStoreU64 => {
+                debug!(src = action.src, offset = action.offset, "comp_store_u64");
+                let value = self.regs_u64[action.src as usize];
+                self.shared.write(action.offset as usize, &value.to_le_bytes());
             }
             _ => {}
         }
@@ -1613,7 +1639,7 @@ pub(crate) fn computational_unit_task_mailbox(
 ) {
     let _span = info_span!("computational_unit", worker_id).entered();
     info!("computational unit started");
-    let mut unit = ComputationalUnit::new(regs);
+    let mut unit = ComputationalUnit::new(regs, shared.clone());
     let mut last_epoch = 0u64;
     let mut spin_count = 0u32;
 
@@ -1907,15 +1933,20 @@ mod tests {
 
     #[test]
     fn test_computational_unit_creation() {
-        let unit = ComputationalUnit::new(32);
-        assert_eq!(unit.regs.len(), 32);
+        let mut memory = vec![0u8; 1024];
+        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
+        let unit = ComputationalUnit::new(32, Arc::new(shared));
+        assert_eq!(unit.regs_f64.len(), 32);
+        assert_eq!(unit.regs_u64.len(), 32);
     }
 
     #[test]
     fn test_approximate_action() {
-        let mut unit = ComputationalUnit::new(8);
+        let mut memory = vec![0u8; 1024];
+        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
+        let mut unit = ComputationalUnit::new(8, Arc::new(shared));
 
-        unit.regs[1] = 16.0;
+        unit.regs_f64[1] = 16.0;
 
         let action = Action {
             kind: Kind::Approximate,
@@ -1930,14 +1961,16 @@ mod tests {
         }
 
         // sqrt(16) = 4
-        assert_eq!(unit.regs[2], 4.0);
+        assert_eq!(unit.regs_f64[2], 4.0);
     }
 
     #[test]
     fn test_choose_action() {
-        let mut unit = ComputationalUnit::new(8);
+        let mut memory = vec![0u8; 1024];
+        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
+        let mut unit = ComputationalUnit::new(8, Arc::new(shared));
 
-        unit.regs[1] = 100.0;
+        unit.regs_u64[1] = 100;
 
         // Choose from [0, 100)
         let action = Action {
@@ -1953,16 +1986,17 @@ mod tests {
         }
 
         // Result should be in range [0, 100)
-        assert!(unit.regs[2] >= 0.0);
-        assert!(unit.regs[2] < 100.0);
+        assert!(unit.regs_u64[2] < 100);
     }
 
     #[test]
     fn test_choose_ranges() {
-        let mut unit = ComputationalUnit::new(8);
+        let mut memory = vec![0u8; 1024];
+        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
+        let mut unit = ComputationalUnit::new(8, Arc::new(shared));
 
-        for n in [1.0, 10.0, 50.0, 1000.0] {
-            unit.regs[0] = n;
+        for n in [1u64, 10, 50, 1000] {
+            unit.regs_u64[0] = n;
 
             let action = Action {
                 kind: Kind::Choose,
@@ -1976,8 +2010,7 @@ mod tests {
                 unsafe {
                     unit.execute(&action);
                 }
-                assert!(unit.regs[1] >= 0.0);
-                assert!(unit.regs[1] < n);
+                assert!(unit.regs_u64[1] < n);
             }
         }
     }
