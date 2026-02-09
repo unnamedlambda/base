@@ -461,7 +461,7 @@ fn test_integration_file_roundtrip() {
             kind: Kind::FileRead,
             src: 0,
             dst: 264,
-            offset: filename_bytes.len() as u32,
+            offset: 0,  // file byte offset (read from start)
             size: 8,
         },
         // Action 2: FileWrite buffer to verification file
@@ -4647,4 +4647,199 @@ fn test_integration_computational_timestamp() {
     // Verify timestamp is reasonable
     assert!(timestamp > 0, "Timestamp should be non-zero");
     assert!(timestamp < u64::MAX / 2, "Timestamp should be a reasonable value");
+}
+
+#[test]
+fn test_integration_file_read_with_offset() {
+    // Test FileRead with offset parameter for chunked file reading
+    let temp_dir = TempDir::new().unwrap();
+    let input_file = temp_dir.path().join("large_input.txt");
+    let result1_file = temp_dir.path().join("chunk1.txt");
+    let result2_file = temp_dir.path().join("chunk2.txt");
+    let result3_file = temp_dir.path().join("chunk3.txt");
+
+    // Create a large input file with known content
+    let full_content = b"AAAAAABBBBBBCCCCCCDDDDDDEEEEEEFFFFFFGGGGGG"; // 42 bytes
+    fs::write(&input_file, full_content).unwrap();
+
+    let input_path_str = input_file.to_str().unwrap();
+    let result1_path_str = result1_file.to_str().unwrap();
+    let result2_path_str = result2_file.to_str().unwrap();
+    let result3_path_str = result3_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 2048];
+
+    // Store input filename at offset 0
+    let input_bytes = format!("{}\0", input_path_str).into_bytes();
+    payloads[0..input_bytes.len()].copy_from_slice(&input_bytes);
+
+    // Store output filenames
+    let result1_bytes = format!("{}\0", result1_path_str).into_bytes();
+    payloads[256..256 + result1_bytes.len()].copy_from_slice(&result1_bytes);
+
+    let result2_bytes = format!("{}\0", result2_path_str).into_bytes();
+    payloads[512..512 + result2_bytes.len()].copy_from_slice(&result2_bytes);
+
+    let result3_bytes = format!("{}\0", result3_path_str).into_bytes();
+    payloads[768..768 + result3_bytes.len()].copy_from_slice(&result3_bytes);
+
+    // Data buffers for each chunk at 1024, 1038, 1052
+    let flag1 = 1536u32;
+    let flag2 = 1544u32;
+    let flag3 = 1552u32;
+    let flag4 = 1560u32;
+    let flag5 = 1568u32;
+    let flag6 = 1576u32;
+
+    let actions = vec![
+        // Action 0: Read first 14 bytes (offset 0)
+        Action {
+            kind: Kind::FileRead,
+            src: 0,           // input filename
+            dst: 1024,        // destination buffer 1
+            offset: 0,        // read from byte 0
+            size: 14,
+        },
+        // Action 1: Read middle 14 bytes (offset 14)
+        Action {
+            kind: Kind::FileRead,
+            src: 0,
+            dst: 1038,        // destination buffer 2
+            offset: 14,       // read from byte 14
+            size: 14,
+        },
+        // Action 2: Read last 14 bytes (offset 28)
+        Action {
+            kind: Kind::FileRead,
+            src: 0,
+            dst: 1052,        // destination buffer 3
+            offset: 28,       // read from byte 28
+            size: 14,
+        },
+        // Action 3: Write chunk 1
+        Action {
+            kind: Kind::FileWrite,
+            dst: 256,
+            src: 1024,
+            offset: result1_bytes.len() as u32,
+            size: 14,
+        },
+        // Action 4: Write chunk 2
+        Action {
+            kind: Kind::FileWrite,
+            dst: 512,
+            src: 1038,
+            offset: result2_bytes.len() as u32,
+            size: 14,
+        },
+        // Action 5: Write chunk 3
+        Action {
+            kind: Kind::FileWrite,
+            dst: 768,
+            src: 1052,
+            offset: result3_bytes.len() as u32,
+            size: 14,
+        },
+        // Action 6-17: AsyncDispatch + Wait for each read and write
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 0,
+            offset: flag1,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag1,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 1,
+            offset: flag2,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag2,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 2,
+            offset: flag3,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag3,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 3,
+            offset: flag4,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag4,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 4,
+            offset: flag5,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag5,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::AsyncDispatch,
+            dst: 2,
+            src: 5,
+            offset: flag6,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag6,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    execute(algorithm).unwrap();
+
+    // Verify each chunk was written correctly
+    assert!(result1_file.exists(), "Chunk 1 should exist");
+    assert!(result2_file.exists(), "Chunk 2 should exist");
+    assert!(result3_file.exists(), "Chunk 3 should exist");
+
+    let chunk1 = fs::read(&result1_file).unwrap();
+    let chunk2 = fs::read(&result2_file).unwrap();
+    let chunk3 = fs::read(&result3_file).unwrap();
+
+    assert_eq!(chunk1, b"AAAAAABBBBBBCC", "Chunk 1: bytes 0-14");
+    assert_eq!(chunk2, b"CCCCDDDDDDEEEE", "Chunk 2: bytes 14-28");
+    assert_eq!(chunk3, b"EEFFFFFFGGGGGG", "Chunk 3: bytes 28-42");
 }

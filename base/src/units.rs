@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{fence, AtomicBool, AtomicU32};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info, info_span, trace, warn, Instrument};
 use wgpu::{
@@ -1054,11 +1054,14 @@ impl FileUnit {
                 let filename = read_null_terminated_string(
                     &self.shared,
                     action.src as usize,
-                    action.offset as usize,
+                    4096,
                 );
-                debug!(filename = %filename, dst = action.dst, size = action.size, "file_read");
+                debug!(filename = %filename, dst = action.dst, offset = action.offset, size = action.size, "file_read");
 
                 if let Ok(mut file) = fs::File::open(&filename).await {
+                    if action.offset > 0 {
+                        let _ = file.seek(std::io::SeekFrom::Start(action.offset as u64)).await;
+                    }
                     if action.size == 0 {
                         // Read entire file in chunks
                         let mut total_read = 0;
@@ -2702,7 +2705,7 @@ mod file_tests {
             kind: Kind::FileRead,
             src: 0,     // filename at offset 0
             dst: 200,   // write data to offset 200
-            offset: 50, // max filename length
+            offset: 0,  // file byte offset
             size: 100,  // max bytes to read
         };
 
@@ -2733,7 +2736,7 @@ mod file_tests {
             kind: Kind::FileRead,
             src: 0,
             dst: 100,
-            offset: 50,
+            offset: 0,
             size: 100,
         };
 
@@ -2768,7 +2771,7 @@ mod file_tests {
             kind: Kind::FileRead,
             src: 0,
             dst: 100,
-            offset: 50,
+            offset: 0,
             size: 10, // Limit to 10 bytes
         };
 
@@ -2810,7 +2813,7 @@ mod file_tests {
             kind: Kind::FileWrite,
             src: 100,
             dst: 0,
-            offset: 100, // Longer for path
+            offset: 100,
             size: test_data.len() as u32,
         };
 
@@ -2859,7 +2862,7 @@ mod file_tests {
             kind: Kind::FileRead,
             src: 0,
             dst: 200,
-            offset: 50,
+            offset: 0,
             size: 0, // Read entire file
         };
 
@@ -2873,6 +2876,41 @@ mod file_tests {
         // Cleanup
         fs::remove_file(test_file).ok();
     }
+
+    #[tokio::test]
+    async fn test_file_read_with_offset() {
+        let mut memory = vec![0u8; 1024];
+        let test_file = "test_read_offset.txt";
+        let test_data = b"Hello, World!";
+
+        fs::write(test_file, test_data).unwrap();
+
+        let filename_bytes = test_file.as_bytes();
+        memory[0..filename_bytes.len()].copy_from_slice(filename_bytes);
+        memory[filename_bytes.len()] = 0;
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = FileUnit::new(0, shared.clone(), 1024);
+
+        // Read from byte offset 7 ("World!")
+        let action = Action {
+            kind: Kind::FileRead,
+            src: 0,
+            dst: 100,
+            offset: 7,
+            size: 6,
+        };
+
+        unit.execute(&action).await;
+
+        unsafe {
+            let read_data = shared.read(100, 6);
+            assert_eq!(read_data, b"World!");
+        }
+
+        fs::remove_file(test_file).ok();
+    }
+
 }
 
 #[cfg(test)]

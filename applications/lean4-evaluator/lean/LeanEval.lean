@@ -744,7 +744,7 @@ def workIndex (op : WorkOp) : Nat :=
 
 def opToAction : WorkOp -> Action
   | FfiCall => w .FFICall L.FFI_PTR L.ARGV_PARAMS L.FFI_RESULT SIZE_NONE
-  | FileRead => w .FileRead L.FILENAME_IN_ARGV L.SOURCE_BUF (L.FILENAME_BUF_SIZE.toUInt32) (L.SOURCE_BUF_SIZE.toUInt32)
+  | FileRead => w .FileRead L.FILENAME_IN_ARGV L.SOURCE_BUF ZERO (L.SOURCE_BUF_SIZE.toUInt32)
   | MemCopyChar => w .MemCopyIndirect L.POS L.CHAR_BUF L.SOURCE_BUF SIZE_BYTE
   | LoadChar => w .SimdLoadI32 L.CHAR_BUF (r RA) ZERO SIZE_NONE
   | LoadRParen => w .SimdLoadI32 L.CONST_RPAREN (r RB) ZERO SIZE_NONE
