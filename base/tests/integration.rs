@@ -21,6 +21,7 @@ fn create_test_algorithm(
             computational_regs: 0,
             file_buffer_size: 65536,
             gpu_shader_offsets: vec![],
+            cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
             simd_units: 0,
@@ -32,6 +33,7 @@ fn create_test_algorithm(
             ffi_units: 0,
             hash_table_units: 0,
             lmdb_units: 0,
+            cranelift_units: 0,
             backends_bits: 0,
         },
         simd_assignments: vec![],
@@ -43,6 +45,7 @@ fn create_test_algorithm(
         hash_table_assignments: vec![],
         lmdb_assignments: vec![],
         gpu_assignments: vec![],
+        cranelift_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,
@@ -73,6 +76,7 @@ fn create_complex_algorithm(
             computational_regs: 32,
             file_buffer_size: 65536,
             gpu_shader_offsets,
+            cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
             simd_units,
@@ -84,6 +88,7 @@ fn create_complex_algorithm(
             ffi_units: 0,
             hash_table_units: 0,
             lmdb_units: 0,
+            cranelift_units: 0,
             backends_bits: 0xFFFFFFFF,
         },
         simd_assignments: if simd_units > 0 {
@@ -111,10 +116,62 @@ fn create_complex_algorithm(
         } else {
             vec![255; num_actions]
         },
+        cranelift_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,
         timeout_ms: Some(10000),
+        thread_name_prefix: None,
+    }
+}
+
+fn create_cranelift_algorithm(
+    actions: Vec<Action>,
+    payloads: Vec<u8>,
+    cranelift_units: usize,
+    cranelift_ir_offsets: Vec<usize>,
+    with_file: bool,
+) -> Algorithm {
+    let num_actions = actions.len();
+
+    Algorithm {
+        actions,
+        payloads,
+        state: State {
+            regs_per_unit: 16,
+            gpu_size: 0,
+            computational_regs: 0,
+            file_buffer_size: if with_file { 65536 } else { 0 },
+            gpu_shader_offsets: vec![],
+            cranelift_ir_offsets,
+        },
+        units: UnitSpec {
+            simd_units: 0,
+            gpu_units: 0,
+            computational_units: 0,
+            file_units: if with_file { 1 } else { 0 },
+            network_units: 0,
+            memory_units: 0,
+            ffi_units: 0,
+            hash_table_units: 0,
+            lmdb_units: 0,
+            cranelift_units,
+            backends_bits: 0,
+        },
+        simd_assignments: vec![],
+        computational_assignments: vec![],
+        memory_assignments: vec![],
+        file_assignments: if with_file { vec![0; num_actions] } else { vec![] },
+        network_assignments: vec![],
+        ffi_assignments: vec![],
+        hash_table_assignments: vec![],
+        lmdb_assignments: vec![],
+        gpu_assignments: vec![],
+        cranelift_assignments: vec![0; num_actions],
+        worker_threads: None,
+        blocking_threads: None,
+        stack_size: None,
+        timeout_ms: Some(5000),
         thread_name_prefix: None,
     }
 }
@@ -2365,6 +2422,7 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
             computational_regs: 0,
             file_buffer_size: if with_file { 65536 } else { 0 },
             gpu_shader_offsets: vec![],
+            cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
             simd_units: 0,
@@ -2376,6 +2434,7 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
             ffi_units: 0,
             hash_table_units: 1,
             lmdb_units: 0,
+            cranelift_units: 0,
             backends_bits: 0,
         },
         simd_assignments: vec![],
@@ -2387,6 +2446,7 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
         hash_table_assignments: vec![0; num_actions],
         lmdb_assignments: vec![],
         gpu_assignments: vec![],
+        cranelift_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,
@@ -2992,6 +3052,7 @@ fn create_lmdb_algorithm(actions: Vec<Action>, payloads: Vec<u8>, with_file: boo
             computational_regs: 0,
             file_buffer_size: if with_file { 65536 } else { 0 },
             gpu_shader_offsets: vec![],
+            cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
             simd_units: 0,
@@ -3003,6 +3064,7 @@ fn create_lmdb_algorithm(actions: Vec<Action>, payloads: Vec<u8>, with_file: boo
             ffi_units: 0,
             hash_table_units: 0,
             lmdb_units: 1,
+            cranelift_units: 0,
             backends_bits: 0,
         },
         simd_assignments: vec![],
@@ -3014,6 +3076,7 @@ fn create_lmdb_algorithm(actions: Vec<Action>, payloads: Vec<u8>, with_file: boo
         hash_table_assignments: vec![],
         lmdb_assignments: vec![0; num_actions],
         gpu_assignments: vec![],
+        cranelift_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,
@@ -4344,6 +4407,7 @@ fn create_computational_test_algorithm(
             computational_regs: 32,
             file_buffer_size: 65536,
             gpu_shader_offsets: vec![],
+            cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
             simd_units: 0,
@@ -4355,6 +4419,7 @@ fn create_computational_test_algorithm(
             ffi_units: 0,
             hash_table_units: 0,
             lmdb_units: 0,
+            cranelift_units: 0,
             backends_bits: 0,
         },
         simd_assignments: vec![],
@@ -4366,6 +4431,7 @@ fn create_computational_test_algorithm(
         hash_table_assignments: vec![],
         lmdb_assignments: vec![],
         gpu_assignments: vec![],
+        cranelift_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,
@@ -4945,4 +5011,396 @@ fn test_integration_file_write_with_offset() {
 
     let contents = fs::read(&output_file).unwrap();
     assert_eq!(contents, b"AAAAAABBBBBBCCDDDDDDEEEEEEEEFFFFFFGGGGGGGG", "All chunks concatenated");
+}
+
+#[test]
+fn test_cranelift_basic_compilation() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("cranelift_basic.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+
+    // Store CLIF IR at offset 0 (null-terminated)
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    let cranelift_flag = 1024u32;
+    let file_flag = 1032u32;
+    let data_offset = 2000usize;
+
+    // Store test value
+    payloads[data_offset..data_offset + 8].copy_from_slice(&42u64.to_le_bytes());
+
+    // Filename at offset 3000
+    let filename_offset = 3000usize;
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[filename_offset..filename_offset + filename_bytes.len()]
+        .copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        // Action 0: Cranelift executes (no-op, just tests compilation)
+        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        // Action 1: FileWrite to verify we got here
+        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: data_offset as u32, offset: 0, size: 8 },
+        // Action 2: AsyncDispatch Cranelift
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
+        // Action 3: Wait for Cranelift
+        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
+        // Action 4: AsyncDispatch FileWrite
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
+        // Action 5: Wait for FileWrite
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists());
+    let contents = fs::read(&test_file).unwrap();
+    let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(result, 42);
+}
+
+#[test]
+fn test_cranelift_arithmetic_add() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("cranelift_add.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0
+    v2 = load.i64 v0+8
+    v3 = iadd v1, v2
+    store.i64 v3, v0+16
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    let cranelift_flag = 1024u32;
+    let file_flag = 1032u32;
+    let data_offset = 2000usize;
+
+    // Input values: 100 + 200
+    payloads[data_offset..data_offset + 8].copy_from_slice(&100u64.to_le_bytes());
+    payloads[data_offset + 8..data_offset + 16].copy_from_slice(&200u64.to_le_bytes());
+
+    let filename_offset = 3000usize;
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[filename_offset..filename_offset + filename_bytes.len()]
+        .copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 16) as u32, offset: 0, size: 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists());
+    let contents = fs::read(&test_file).unwrap();
+    let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(result, 300);
+}
+
+#[test]
+fn test_cranelift_arithmetic_multiply() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("cranelift_mul.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0
+    v2 = load.i64 v0+8
+    v3 = imul v1, v2
+    store.i64 v3, v0+16
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    let cranelift_flag = 1024u32;
+    let file_flag = 1032u32;
+    let data_offset = 2000usize;
+
+    // Input values: 7 * 9
+    payloads[data_offset..data_offset + 8].copy_from_slice(&7u64.to_le_bytes());
+    payloads[data_offset + 8..data_offset + 16].copy_from_slice(&9u64.to_le_bytes());
+
+    let filename_offset = 3000usize;
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[filename_offset..filename_offset + filename_bytes.len()]
+        .copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 16) as u32, offset: 0, size: 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists());
+    let contents = fs::read(&test_file).unwrap();
+    let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(result, 63);
+}
+
+#[test]
+fn test_cranelift_memory_operations() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("cranelift_mem.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i32 v0
+    v2 = load.i32 v0+4
+    v3 = load.i32 v0+8
+    v4 = iadd v1, v2
+    v5 = iadd v4, v3
+    store.i32 v5, v0+12
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    let cranelift_flag = 1024u32;
+    let file_flag = 1032u32;
+    let data_offset = 2000usize;
+
+    // Input values: 10 + 20 + 30 = 60
+    payloads[data_offset..data_offset + 4].copy_from_slice(&10u32.to_le_bytes());
+    payloads[data_offset + 4..data_offset + 8].copy_from_slice(&20u32.to_le_bytes());
+    payloads[data_offset + 8..data_offset + 12].copy_from_slice(&30u32.to_le_bytes());
+
+    let filename_offset = 3000usize;
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[filename_offset..filename_offset + filename_bytes.len()]
+        .copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 12) as u32, offset: 0, size: 4 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists());
+    let contents = fs::read(&test_file).unwrap();
+    let result = u32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(result, 60);
+}
+
+#[test]
+fn test_cranelift_multiple_units() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file1 = temp_dir.path().join("unit1_add.txt");
+    let test_file2 = temp_dir.path().join("unit2_mul.txt");
+    let test_file1_str = test_file1.to_str().unwrap();
+    let test_file2_str = test_file2.to_str().unwrap();
+
+    let clif_ir1 = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0
+    v2 = load.i64 v0+8
+    v3 = iadd v1, v2
+    store.i64 v3, v0+16
+    return
+}
+"#;
+
+    let clif_ir2 = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0
+    v2 = load.i64 v0+8
+    v3 = imul v1, v2
+    store.i64 v3, v0+16
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+
+    // Store both CLIF IRs
+    let clif1_bytes = format!("{}\0", clif_ir1).into_bytes();
+    payloads[0..clif1_bytes.len()].copy_from_slice(&clif1_bytes);
+
+    let ir2_offset = 600usize;
+    let clif2_bytes = format!("{}\0", clif_ir2).into_bytes();
+    payloads[ir2_offset..ir2_offset + clif2_bytes.len()].copy_from_slice(&clif2_bytes);
+
+    // Unit 1 data: 5 + 3 = 8
+    let data1_offset = 2000usize;
+    payloads[data1_offset..data1_offset + 8].copy_from_slice(&5u64.to_le_bytes());
+    payloads[data1_offset + 8..data1_offset + 16].copy_from_slice(&3u64.to_le_bytes());
+
+    // Unit 2 data: 4 * 6 = 24
+    let data2_offset = 2100usize;
+    payloads[data2_offset..data2_offset + 8].copy_from_slice(&4u64.to_le_bytes());
+    payloads[data2_offset + 8..data2_offset + 16].copy_from_slice(&6u64.to_le_bytes());
+
+    // Filenames
+    let file1_offset = 3000usize;
+    let file1_bytes = format!("{}\0", test_file1_str).into_bytes();
+    payloads[file1_offset..file1_offset + file1_bytes.len()].copy_from_slice(&file1_bytes);
+
+    let file2_offset = 3200usize;
+    let file2_bytes = format!("{}\0", test_file2_str).into_bytes();
+    payloads[file2_offset..file2_offset + file2_bytes.len()].copy_from_slice(&file2_bytes);
+
+    let actions = vec![
+        // Action 0: Cranelift unit 0 computation
+        Action { kind: Kind::MemCopy, dst: data1_offset as u32, src: 0, offset: 0, size: 0 },
+        // Action 1: Cranelift unit 1 computation
+        Action { kind: Kind::MemCopy, dst: data2_offset as u32, src: 0, offset: 0, size: 0 },
+        // Action 2: FileWrite result 1
+        Action { kind: Kind::FileWrite, dst: file1_offset as u32, src: (data1_offset + 16) as u32, offset: 0, size: 8 },
+        // Action 3: FileWrite result 2
+        Action { kind: Kind::FileWrite, dst: file2_offset as u32, src: (data2_offset + 16) as u32, offset: 0, size: 8 },
+        // Action 4: AsyncDispatch unit 0
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        // Action 5: AsyncDispatch unit 1
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        // Action 6: Wait for unit 0
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        // Action 7: Wait for unit 1
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
+        // Action 8: AsyncDispatch FileWrite 1
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: 1040, size: 0 },
+        // Action 9: AsyncDispatch FileWrite 2
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 3, offset: 1048, size: 0 },
+        // Action 10: Wait for FileWrite 1
+        Action { kind: Kind::Wait, dst: 1040, src: 0, offset: 0, size: 0 },
+        // Action 11: Wait for FileWrite 2
+        Action { kind: Kind::Wait, dst: 1048, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 2, vec![0, ir2_offset], true);
+
+    // Assign actions to specific units
+    algorithm.cranelift_assignments = vec![
+        0,   // Action 0 -> unit 0
+        1,   // Action 1 -> unit 1
+        255, // Action 2 (FileWrite)
+        255, // Action 3 (FileWrite)
+        0,   // Action 4 (Dispatch to unit 0)
+        1,   // Action 5 (Dispatch to unit 1)
+        0,   // Action 6 (Wait)
+        1,   // Action 7 (Wait)
+        255, // Action 8 (Dispatch FileWrite)
+        255, // Action 9 (Dispatch FileWrite)
+        255, // Action 10 (Wait)
+        255, // Action 11 (Wait)
+    ];
+
+    execute(algorithm).unwrap();
+
+    assert!(test_file1.exists());
+    assert!(test_file2.exists());
+
+    let contents1 = fs::read(&test_file1).unwrap();
+    let result1 = u64::from_le_bytes(contents1[0..8].try_into().unwrap());
+    assert_eq!(result1, 8);
+
+    let contents2 = fs::read(&test_file2).unwrap();
+    let result2 = u64::from_le_bytes(contents2[0..8].try_into().unwrap());
+    assert_eq!(result2, 24);
+}
+
+#[test]
+fn test_cranelift_conditional_logic() {
+    let temp_dir = TempDir::new().unwrap();
+    let test_file = temp_dir.path().join("cranelift_cond.txt");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0
+    v2 = load.i64 v0+8
+    v3 = load.i64 v0+16
+    v4 = icmp_imm eq v1, 0
+    brif v4, block2, block1
+
+block1:
+    store.i64 v2, v0+24
+    return
+
+block2:
+    store.i64 v3, v0+24
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    let cranelift_flag = 1024u32;
+    let file_flag = 1032u32;
+    let data_offset = 2000usize;
+
+    // condition = 1 (non-zero), value_a = 100, value_b = 200
+    // Should store value_a (100)
+    payloads[data_offset..data_offset + 8].copy_from_slice(&1u64.to_le_bytes());
+    payloads[data_offset + 8..data_offset + 16].copy_from_slice(&100u64.to_le_bytes());
+    payloads[data_offset + 16..data_offset + 24].copy_from_slice(&200u64.to_le_bytes());
+
+    let filename_offset = 3000usize;
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[filename_offset..filename_offset + filename_bytes.len()]
+        .copy_from_slice(&filename_bytes);
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 24) as u32, offset: 0, size: 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists());
+    let contents = fs::read(&test_file).unwrap();
+    let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(result, 100); // value_a, since condition was non-zero
 }

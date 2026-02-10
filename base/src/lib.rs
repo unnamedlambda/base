@@ -8,10 +8,11 @@ pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 mod units;
 
 use crate::units::{
-    computational_unit_task_mailbox, ffi_unit_task_mailbox, file_unit_task_mailbox,
-    gpu_unit_task_mailbox, hash_table_unit_task_mailbox, lmdb_unit_task_mailbox,
-    memory_unit_task_mailbox, network_unit_task_mailbox, read_null_terminated_string_from_slice,
-    simd_unit_task_mailbox, Broadcast, Mailbox, SharedMemory,
+    computational_unit_task_mailbox, cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
+    file_unit_task_mailbox, gpu_unit_task_mailbox, hash_table_unit_task_mailbox,
+    lmdb_unit_task_mailbox, memory_unit_task_mailbox,
+    network_unit_task_mailbox, read_null_terminated_string_from_slice, simd_unit_task_mailbox,
+    Broadcast, Mailbox, SharedMemory,
 };
 
 #[derive(Debug)]
@@ -33,6 +34,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         ffi_units = algorithm.units.ffi_units,
         hash_table_units = algorithm.units.hash_table_units,
         lmdb_units = algorithm.units.lmdb_units,
+        cranelift_units = algorithm.units.cranelift_units,
         actions_count = algorithm.actions.len(),
     ).entered();
 
@@ -197,6 +199,10 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         debug!("auto-assigned GPU actions across {} units", algorithm.units.gpu_units);
     }
 
+    if algorithm.cranelift_assignments.is_empty() {
+        algorithm.cranelift_assignments = vec![255; algorithm.actions.len()];
+    }
+
     let mut builder = tokio::runtime::Builder::new_multi_thread();
 
     if let Some(workers) = algorithm.worker_threads {
@@ -242,6 +248,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let memory_assignments = Arc::new(algorithm.memory_assignments.clone());
     let hash_table_assignments = Arc::new(algorithm.hash_table_assignments.clone());
     let lmdb_assignments = Arc::new(algorithm.lmdb_assignments.clone());
+    let cranelift_assignments = Arc::new(algorithm.cranelift_assignments.clone());
 
     let gpu_mailboxes: Vec<_> = (0..algorithm.units.gpu_units)
         .map(|_| Arc::new(Mailbox::new()))
@@ -268,6 +275,9 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
     let lmdb_mailboxes: Vec<_> = (0..algorithm.units.lmdb_units)
+        .map(|_| Arc::new(Mailbox::new()))
+        .collect();
+    let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
 
@@ -400,6 +410,22 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         thread_handles.push(std::thread::spawn(move || {
             lmdb_unit_task_mailbox(mailbox, actions, shared);
         }));
+    }
+
+    for (cl_id, mailbox) in cranelift_mailboxes.iter().enumerate() {
+        if cl_id < algorithm.state.cranelift_ir_offsets.len() {
+            info!(cl_id, "spawning Cranelift unit thread");
+            let offset = algorithm.state.cranelift_ir_offsets[cl_id];
+            let ir_source =
+                read_null_terminated_string_from_slice(&algorithm.payloads, offset, 64 * 1024);
+            let mailbox = mailbox.clone();
+            let actions = actions_arc.clone();
+            let shared = shared.clone();
+
+            thread_handles.push(std::thread::spawn(move || {
+                cranelift_unit_task_mailbox(mailbox, actions, shared, ir_source);
+            }));
+        }
     }
 
     let mut pc: usize = 0;
@@ -645,6 +671,25 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                         lmdb_mailboxes[unit_id].post(start, end, flag);
                     }
+                    9 => {
+                        if cranelift_mailboxes.is_empty() {
+                            pc += 1;
+                            continue;
+                        }
+
+                        let assigned = cranelift_assignments
+                            .get(pc)
+                            .copied()
+                            .unwrap_or(0);
+
+                        let unit_id = if assigned == 255 {
+                            0
+                        } else {
+                            (assigned as usize).min(cranelift_mailboxes.len() - 1)
+                        };
+
+                        cranelift_mailboxes[unit_id].post(start, end, flag);
+                    }
                     _ => {}
                 }
 
@@ -696,6 +741,9 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         mailbox.shutdown();
     }
     for mailbox in lmdb_mailboxes.iter() {
+        mailbox.shutdown();
+    }
+    for mailbox in cranelift_mailboxes.iter() {
         mailbox.shutdown();
     }
     simd_broadcast.shutdown();

@@ -1648,7 +1648,8 @@ def leanEvalAlgorithm : Algorithm := {
     gpu_size := C.ZERO_N,
     computational_regs := C.REGS_PER_UNIT_N,
     file_buffer_size := C.ONE_MIB_N,
-    gpu_shader_offsets := []
+    gpu_shader_offsets := [],
+    cranelift_ir_offsets := []
   },
   units := {
     simd_units := C.SIMD_UNIT_COUNT_N,
@@ -1660,6 +1661,7 @@ def leanEvalAlgorithm : Algorithm := {
     ffi_units := C.FFI_UNIT_COUNT_N,
     hash_table_units := C.HASH_TABLE_UNIT_COUNT_N,
     lmdb_units := 0,
+    cranelift_units := 0,
     backends_bits := ZERO
   },
   simd_assignments := [],
@@ -1671,6 +1673,7 @@ def leanEvalAlgorithm : Algorithm := {
   hash_table_assignments := [],
   lmdb_assignments := [],
   gpu_assignments := [],
+  cranelift_assignments := [],
   worker_threads := some C.WORKER_THREADS_N,
   blocking_threads := some C.BLOCKING_THREADS_N,
   stack_size := none,

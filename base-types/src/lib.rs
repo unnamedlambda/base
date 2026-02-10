@@ -75,6 +75,8 @@ pub struct State {
     pub computational_regs: usize,
     pub file_buffer_size: usize,
     pub gpu_shader_offsets: Vec<usize>,
+    #[serde(default)]
+    pub cranelift_ir_offsets: Vec<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -88,6 +90,8 @@ pub struct UnitSpec {
     pub ffi_units: usize,
     pub hash_table_units: usize,
     pub lmdb_units: usize,
+    #[serde(default)]
+    pub cranelift_units: usize,
     pub backends_bits: u32,
 }
 
@@ -106,6 +110,8 @@ pub struct Algorithm {
     pub hash_table_assignments: Vec<u8>,
     pub lmdb_assignments: Vec<u8>,
     pub gpu_assignments: Vec<u8>,
+    #[serde(default)]
+    pub cranelift_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,
     pub stack_size: Option<usize>,

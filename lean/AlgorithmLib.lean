@@ -124,6 +124,7 @@ structure State where
   computational_regs : Nat
   file_buffer_size : Nat
   gpu_shader_offsets : List Nat
+  cranelift_ir_offsets : List Nat
   deriving Repr
 
 instance : ToJson State where
@@ -132,7 +133,8 @@ instance : ToJson State where
     ("gpu_size", toJson s.gpu_size),
     ("computational_regs", toJson s.computational_regs),
     ("file_buffer_size", toJson s.file_buffer_size),
-    ("gpu_shader_offsets", toJson s.gpu_shader_offsets)
+    ("gpu_shader_offsets", toJson s.gpu_shader_offsets),
+    ("cranelift_ir_offsets", toJson s.cranelift_ir_offsets),
   ]
 
 structure UnitSpec where
@@ -145,6 +147,7 @@ structure UnitSpec where
   ffi_units : Nat
   hash_table_units : Nat
   lmdb_units : Nat
+  cranelift_units : Nat
   backends_bits : UInt32
   deriving Repr
 
@@ -159,6 +162,7 @@ instance : ToJson UnitSpec where
     ("ffi_units", toJson u.ffi_units),
     ("hash_table_units", toJson u.hash_table_units),
     ("lmdb_units", toJson u.lmdb_units),
+    ("cranelift_units", toJson u.cranelift_units),
     ("backends_bits", toJson u.backends_bits)
   ]
 
@@ -176,6 +180,7 @@ structure Algorithm where
   hash_table_assignments : List UInt8
   lmdb_assignments : List UInt8
   gpu_assignments : List UInt8
+  cranelift_assignments : List UInt8
   worker_threads : Option Nat
   blocking_threads : Option Nat
   stack_size : Option Nat
@@ -198,6 +203,7 @@ instance : ToJson Algorithm where
     ("hash_table_assignments", toJson alg.hash_table_assignments),
     ("lmdb_assignments", toJson alg.lmdb_assignments),
     ("gpu_assignments", toJson alg.gpu_assignments),
+    ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),
     ("blocking_threads", toJson alg.blocking_threads),
     ("stack_size", toJson alg.stack_size),

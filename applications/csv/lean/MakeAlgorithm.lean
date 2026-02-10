@@ -291,7 +291,8 @@ def buildAlgorithm : Algorithm :=
       gpu_size := 0,
       computational_regs := 32,
       file_buffer_size := 2_000_000,
-      gpu_shader_offsets := []
+      gpu_shader_offsets := [],
+      cranelift_ir_offsets := []
     },
     units := {
       simd_units := 0,
@@ -303,6 +304,7 @@ def buildAlgorithm : Algorithm :=
       ffi_units := 0,
       hash_table_units := 0,
       lmdb_units := 1,
+      cranelift_units := 0,
       backends_bits := 0xFFFFFFFF
     },
     simd_assignments := [],
@@ -314,6 +316,7 @@ def buildAlgorithm : Algorithm :=
     hash_table_assignments := [],
     lmdb_assignments := [],
     gpu_assignments := [],
+    cranelift_assignments := [],
     worker_threads := none,
     blocking_threads := none,
     stack_size := none,

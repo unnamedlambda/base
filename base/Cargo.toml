@@ -16,6 +16,12 @@ rand = "0.8"
 tracing = { version = "0.1", features = ["release_max_level_off"] }
 lmdb-zero = "0.4"
 liblmdb-sys = "0.2"
+cranelift-codegen = "0.116"
+cranelift-frontend = "0.116"
+cranelift-jit = "0.116"
+cranelift-module = "0.116"
+cranelift-reader = "0.116"
+cranelift-native = "0.116"
 
 [dev-dependencies]
 tempfile = "3"

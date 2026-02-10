@@ -18,6 +18,9 @@ use wgpu::{
 };
 use wide::{f32x4, i32x4};
 use lmdb_zero as lmdb;
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_jit::JITBuilder;
+use cranelift_module::Module;
 
 pub const MAILBOX_CLOSED: u64 = u64::MAX;
 
@@ -1785,6 +1788,97 @@ pub(crate) fn gpu_unit_task_mailbox(
             }
             MailboxPoll::Closed => {
                 info!("GPU unit shutting down");
+                return;
+            }
+            MailboxPoll::Empty => spin_backoff(&mut spin_count),
+        }
+    }
+}
+
+pub(crate) struct CraneliftUnit {
+    shared: Arc<SharedMemory>,
+    compiled_fn: unsafe extern "C" fn(*mut u8),
+    _module: cranelift_jit::JITModule,
+}
+
+impl CraneliftUnit {
+    pub fn new(shared: Arc<SharedMemory>, clif_source: &str) -> Self {
+        info!(ir_len = clif_source.len(), "compiling Cranelift IR");
+
+        // Parse CLIF text
+        let functions = cranelift_reader::parse_functions(clif_source)
+            .expect("Failed to parse CLIF IR");
+        assert!(!functions.is_empty(), "No functions in CLIF IR");
+        let func = functions.into_iter().next().unwrap();
+
+        // Create JIT module with host ISA
+        let mut flag_builder = settings::builder();
+        flag_builder.set("opt_level", "speed").unwrap();
+        let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
+        let isa = isa_builder.finish(settings::Flags::new(flag_builder)).unwrap();
+        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut module = cranelift_jit::JITModule::new(builder);
+
+        // Declare function with the parsed signature
+        let func_id = module
+            .declare_function("main", cranelift_module::Linkage::Local, &func.signature)
+            .expect("Failed to declare function");
+
+        // Define function from parsed IR
+        let mut ctx = cranelift_codegen::Context::for_function(func);
+        module
+            .define_function(func_id, &mut ctx)
+            .expect("Failed to compile function");
+        module.finalize_definitions().unwrap();
+
+        // Get function pointer
+        let code_ptr = module.get_finalized_function(func_id);
+        let compiled_fn: unsafe extern "C" fn(*mut u8) =
+            unsafe { std::mem::transmute(code_ptr) };
+
+        info!("Cranelift IR compiled successfully");
+
+        CraneliftUnit {
+            shared,
+            compiled_fn,
+            _module: module,
+        }
+    }
+
+    pub unsafe fn execute(&mut self, action: &Action) {
+        let ptr = self.shared.ptr.add(action.dst as usize);
+        (self.compiled_fn)(ptr);
+    }
+}
+
+pub(crate) fn cranelift_unit_task_mailbox(
+    mailbox: Arc<Mailbox>,
+    actions: Arc<Vec<Action>>,
+    shared: Arc<SharedMemory>,
+    clif_source: String,
+) {
+    let _span = info_span!("cranelift_unit").entered();
+    info!("Cranelift unit started");
+    let mut unit = CraneliftUnit::new(shared.clone(), &clif_source);
+    let mut spin_count = 0u32;
+
+    loop {
+        match mailbox.poll() {
+            MailboxPoll::Work { start, end, flag } => {
+                debug!(start, end, flag, "cranelift_work_received");
+                for idx in start..end {
+                    unsafe {
+                        unit.execute(&actions[idx as usize]);
+                    }
+                }
+                unsafe {
+                    shared.store_u64(flag as usize, 1, Ordering::Release);
+                }
+                debug!(flag, "cranelift_work_complete");
+                spin_count = 0;
+            }
+            MailboxPoll::Closed => {
+                info!("Cranelift unit shutting down");
                 return;
             }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),

@@ -294,7 +294,8 @@ def drawAlgorithm : Algorithm :=
       gpu_size := batchBytes,
       computational_regs := 32,
       file_buffer_size := fileBufferSize,
-      gpu_shader_offsets := [0]
+      gpu_shader_offsets := [0],
+      cranelift_ir_offsets := []
     },
     units := {
       simd_units := 4,
@@ -306,6 +307,7 @@ def drawAlgorithm : Algorithm :=
       ffi_units := 1,
       hash_table_units := 0,
       lmdb_units := 0,
+      cranelift_units := 0,
       backends_bits := 0xFFFFFFFF
     },
     simd_assignments := [],
@@ -317,6 +319,7 @@ def drawAlgorithm : Algorithm :=
     hash_table_assignments := [],
     lmdb_assignments := [],
     gpu_assignments := [],
+    cranelift_assignments := [],
     worker_threads := none,
     blocking_threads := none,
     stack_size := none,
