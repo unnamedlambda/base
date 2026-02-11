@@ -1,0 +1,20 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../base" }
+base-types = { path = "../base-types" }
+bincode = "1"
+tracing = { version = "0.1", features = ["release_max_level_off"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[build-dependencies]
+base-types = { path = "../base-types" }
+serde_json = "1"
+bincode = "1"
+
+[[bin]]
+name = "benchmarks"
+path = "src/main.rs"

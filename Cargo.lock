@@ -123,6 +123,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "benchmarks"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "base-types",
+ "bincode",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
