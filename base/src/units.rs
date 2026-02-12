@@ -234,6 +234,37 @@ impl SharedMemory {
         std::ptr::write_unaligned(ptr as *mut u64, value);
     }
 
+    pub unsafe fn load_u32(&self, offset: usize, order: Ordering) -> u32 {
+        let ptr = self.ptr.add(offset);
+        if (ptr as usize) & 0x3 == 0 {
+            return (*(ptr as *const AtomicU32)).load(order);
+        }
+        let value = std::ptr::read_unaligned(ptr as *const u32);
+        if matches!(order, Ordering::Acquire | Ordering::AcqRel | Ordering::SeqCst) {
+            fence(Ordering::Acquire);
+        }
+        value
+    }
+
+    pub unsafe fn store_u32(&self, offset: usize, value: u32, order: Ordering) {
+        let ptr = self.ptr.add(offset);
+        if (ptr as usize) & 0x3 == 0 {
+            (*(ptr as *const AtomicU32)).store(value, order);
+            return;
+        }
+        if matches!(order, Ordering::Release | Ordering::AcqRel | Ordering::SeqCst) {
+            fence(Ordering::Release);
+        }
+        std::ptr::write_unaligned(ptr as *mut u32, value);
+    }
+
+    pub unsafe fn cas_u32(&self, offset: usize, current: u32, new: u32, success: Ordering, failure: Ordering) -> Result<u32, u32> {
+        let ptr = self.ptr.add(offset);
+        debug_assert!((ptr as usize) & 0x3 == 0, "cas_u32: pointer not 4-byte aligned (offset {offset})");
+        (*(ptr as *const AtomicU32)).compare_exchange(current, new, success, failure)
+    }
+
+    // CAS requires natural alignment — there is no unaligned fallback.
     pub unsafe fn cas64(&self, offset: usize, expected: u64, new: u64) -> u64 {
         let ptr = self.ptr.add(offset);
         debug_assert!((ptr as usize) & 0x7 == 0, "cas64: pointer not 8-byte aligned (offset {offset})");
@@ -257,6 +288,36 @@ fn read_as_u64(shared: &SharedMemory, offset: usize) -> u64 {
 
 fn read_as_u128(shared: &SharedMemory, offset: usize) -> u128 {
     u128::from_le_bytes(unsafe { shared.read(offset, 16)[0..16].try_into().unwrap() })
+}
+
+pub(crate) fn order_from_u32(raw: u32) -> Ordering {
+    match raw {
+        1 => Ordering::Acquire,
+        2 => Ordering::Release,
+        3 => Ordering::AcqRel,
+        4 => Ordering::SeqCst,
+        _ => Ordering::Relaxed,
+    }
+}
+
+pub(crate) unsafe fn load_sized(shared: &SharedMemory, offset: usize, size: u32, order: Ordering) -> u64 {
+    match size {
+        1 => shared.read(offset, 1)[0] as u64,
+        2 => u16::from_le_bytes(shared.read(offset, 2)[0..2].try_into().unwrap()) as u64,
+        4 => u32::from_le_bytes(shared.read(offset, 4)[0..4].try_into().unwrap()) as u64,
+        8 => shared.load_u64(offset, order),
+        _ => 0,
+    }
+}
+
+unsafe fn store_sized(shared: &SharedMemory, offset: usize, size: u32, value: u64, order: Ordering) {
+    match size {
+        1 => shared.write(offset, &[(value & 0xFF) as u8]),
+        2 => shared.write(offset, &((value as u16).to_le_bytes())),
+        4 => shared.write(offset, &((value as u32).to_le_bytes())),
+        8 => shared.store_u64(offset, value, order),
+        _ => {}
+    }
 }
 
 fn read_null_terminated_string(shared: &SharedMemory, offset: usize, max_len: usize) -> String {
@@ -347,6 +408,86 @@ impl MemoryUnit {
                 let dst_ptr = self.shared.ptr.add(indirect_addr);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
+            Kind::AtomicLoad => {
+                let order = order_from_u32(action.offset);
+                match action.size {
+                    1 => {
+                        let value = self.shared.read(action.src as usize, 1)[0];
+                        self.shared.write(action.dst as usize, &[value]);
+                    }
+                    2 => {
+                        let value = self.shared.read(action.src as usize, 2);
+                        self.shared.write(action.dst as usize, &value[0..2]);
+                    }
+                    4 => {
+                        let value = self.shared.load_u32(action.src as usize, order);
+                        self.shared.write(action.dst as usize, &value.to_le_bytes());
+                    }
+                    8 => {
+                        let value = self.shared.load_u64(action.src as usize, order);
+                        self.shared.store_u64(action.dst as usize, value, order);
+                    }
+                    _ => {}
+                }
+            }
+            Kind::AtomicStore => {
+                let order = order_from_u32(action.offset);
+                match action.size {
+                    1 => {
+                        let value = self.shared.read(action.src as usize, 1)[0];
+                        self.shared.write(action.dst as usize, &[value]);
+                    }
+                    2 => {
+                        let value = self.shared.read(action.src as usize, 2);
+                        self.shared.write(action.dst as usize, &value[0..2]);
+                    }
+                    4 => {
+                        let bytes = self.shared.read(action.src as usize, 4);
+                        let value = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+                        self.shared.store_u32(action.dst as usize, value, order);
+                    }
+                    8 => {
+                        let bytes = self.shared.read(action.src as usize, 8);
+                        let value = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+                        self.shared.store_u64(action.dst as usize, value, order);
+                    }
+                    _ => {}
+                }
+            }
+            Kind::AtomicFetchAdd => {
+                let order = order_from_u32(action.size >> 29);
+                let op_size = action.size & 0x1FFF_FFFF;
+                let addend = load_sized(&self.shared, action.offset as usize, op_size, Ordering::Relaxed);
+                let prev = match op_size {
+                    4 => {
+                        let ptr = self.shared.ptr.add(action.dst as usize) as *const AtomicU32;
+                        (*ptr).fetch_add(addend as u32, order) as u64
+                    }
+                    8 => {
+                        let ptr = self.shared.ptr.add(action.dst as usize) as *const AtomicU64;
+                        (*ptr).fetch_add(addend as u64, order)
+                    }
+                    _ => 0,
+                };
+                store_sized(&self.shared, action.src as usize, op_size, prev, Ordering::Relaxed);
+            }
+            Kind::AtomicFetchSub => {
+                let order = order_from_u32(action.size >> 29);
+                let op_size = action.size & 0x1FFF_FFFF;
+                let addend = load_sized(&self.shared, action.offset as usize, op_size, Ordering::Relaxed);
+                let prev = match op_size {
+                    4 => {
+                        let ptr = self.shared.ptr.add(action.dst as usize) as *const AtomicU32;
+                        (*ptr).fetch_sub(addend as u32, order) as u64
+                    }
+                    8 => {
+                        let ptr = self.shared.ptr.add(action.dst as usize) as *const AtomicU64;
+                        (*ptr).fetch_sub(addend as u64, order)
+                    }
+                    _ => 0,
+                };
+                store_sized(&self.shared, action.src as usize, op_size, prev, Ordering::Relaxed);
+            }
             Kind::MemScan => {
                 debug!(src = action.src, dst = action.dst, size = action.size, offset = action.offset, "mem_scan");
                 // action.src = pattern start offset
@@ -396,6 +537,25 @@ impl MemoryUnit {
                     let actual = self.shared.cas128(action.dst as usize, expected, new);
                     self.shared
                         .write(action.src as usize, &actual.to_le_bytes());
+                } else if action.size == 4 {
+                    let expected_bytes = self.shared.read(action.src as usize, 4);
+                    let expected =
+                        u32::from_le_bytes(expected_bytes[0..4].try_into().unwrap());
+                    let new_bytes = self.shared.read(action.offset as usize, 4);
+                    let new =
+                        u32::from_le_bytes(new_bytes[0..4].try_into().unwrap());
+                    let observed = match self.shared.cas_u32(
+                        action.dst as usize,
+                        expected,
+                        new,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(prev) => prev,
+                        Err(actual) => actual,
+                    };
+                    self.shared
+                        .write(action.src as usize, &observed.to_le_bytes());
                 } else {
                     let expected = read_as_u64(&self.shared, action.src as usize);
                     let new = read_as_u64(&self.shared, action.offset as usize);
@@ -1981,6 +2141,76 @@ mod tests {
             unit.execute(&action);
             let result = i64::from_le_bytes(shared.read(300, 8)[0..8].try_into().unwrap());
             assert_eq!(result, -1); // Not found
+        }
+    }
+
+    #[test]
+    fn test_atomic_load_store() {
+        let mut memory = vec![0u8; 256];
+        memory[64..72].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = MemoryUnit::new(shared.clone());
+
+        let store = Action {
+            kind: Kind::AtomicStore,
+            dst: 32,
+            src: 64,
+            offset: 0,
+            size: 8,
+        };
+        let load = Action {
+            kind: Kind::AtomicLoad,
+            dst: 40,
+            src: 32,
+            offset: 0,
+            size: 8,
+        };
+
+        unsafe {
+            unit.execute(&store);
+            unit.execute(&load);
+            let stored = u64::from_le_bytes(shared.read(32, 8)[0..8].try_into().unwrap());
+            let loaded = u64::from_le_bytes(shared.read(40, 8)[0..8].try_into().unwrap());
+            assert_eq!(stored, 0xDEADBEEF);
+            assert_eq!(loaded, 0xDEADBEEF);
+        }
+    }
+
+    #[test]
+    fn test_atomic_fetch_add_sub() {
+        let mut memory = vec![0u8; 256];
+        memory[32..40].copy_from_slice(&10u64.to_le_bytes());
+        memory[64..72].copy_from_slice(&5u64.to_le_bytes());
+        memory[72..80].copy_from_slice(&3u64.to_le_bytes());
+
+        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
+        let mut unit = MemoryUnit::new(shared.clone());
+
+        let add = Action {
+            kind: Kind::AtomicFetchAdd,
+            dst: 32,
+            src: 40,
+            offset: 64,
+            size: 8,
+        };
+        let sub = Action {
+            kind: Kind::AtomicFetchSub,
+            dst: 32,
+            src: 48,
+            offset: 72,
+            size: 8,
+        };
+
+        unsafe {
+            unit.execute(&add);
+            unit.execute(&sub);
+            let final_val = u64::from_le_bytes(shared.read(32, 8)[0..8].try_into().unwrap());
+            let prev_add = u64::from_le_bytes(shared.read(40, 8)[0..8].try_into().unwrap());
+            let prev_sub = u64::from_le_bytes(shared.read(48, 8)[0..8].try_into().unwrap());
+            assert_eq!(prev_add, 10);
+            assert_eq!(prev_sub, 15);
+            assert_eq!(final_val, 12);
         }
     }
 

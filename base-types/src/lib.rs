@@ -57,6 +57,10 @@ pub enum Kind {
     ComputationalStoreF64 = 69,
     ComputationalLoadU64 = 70,
     ComputationalStoreU64 = 71,
+    AtomicLoad = 72,
+    AtomicStore = 73,
+    AtomicFetchAdd = 74,
+    AtomicFetchSub = 75,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

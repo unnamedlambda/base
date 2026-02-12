@@ -663,6 +663,108 @@ fn test_integration_async_memory_operations() {
 }
 
 #[test]
+fn test_integration_atomic_compare_exchange_u64() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("atomic_cmpxchg_u64.bin");
+    let result_path = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 2048];
+    let filename = format!("{}\0", result_path).into_bytes();
+    payloads[0..filename.len()].copy_from_slice(&filename);
+
+    // Layout:
+    // 1000: target (u64)
+    // 1008: expected_success (u64, in/out)
+    // 1016: expected_failure (u64, in/out)
+    // 1024: new_success (u64)
+    // 1032: new_failure (u64)
+    payloads[1000..1008].copy_from_slice(&7u64.to_le_bytes());
+    payloads[1008..1016].copy_from_slice(&7u64.to_le_bytes());
+    payloads[1016..1024].copy_from_slice(&7u64.to_le_bytes());
+    payloads[1024..1032].copy_from_slice(&11u64.to_le_bytes());
+    payloads[1032..1040].copy_from_slice(&99u64.to_le_bytes());
+
+    let mem_flag_a = 1100u32;
+    let mem_flag_b = 1108u32;
+    let file_flag = 1116u32;
+
+    let actions = vec![
+        Action { kind: Kind::AtomicCAS, dst: 1000, src: 1008, offset: 1024, size: 8 },
+        Action { kind: Kind::AtomicCAS, dst: 1000, src: 1016, offset: 1032, size: 8 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 1000, offset: 0, size: 24 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: mem_flag_a, size: 0 },
+        Action { kind: Kind::Wait, dst: mem_flag_a, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 1, offset: mem_flag_b, size: 0 },
+        Action { kind: Kind::Wait, dst: mem_flag_b, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: file_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+    execute(algorithm).unwrap();
+
+    let out = fs::read(&result_file).unwrap();
+    let target = u64::from_le_bytes(out[0..8].try_into().unwrap());
+    let expected_success = u64::from_le_bytes(out[8..16].try_into().unwrap());
+    let expected_failure = u64::from_le_bytes(out[16..24].try_into().unwrap());
+
+    assert_eq!(target, 11, "First compare-exchange should update target");
+    assert_eq!(expected_success, 7, "Successful compare-exchange writes observed old value");
+    assert_eq!(expected_failure, 11, "Failed compare-exchange writes actual value back");
+}
+
+#[test]
+fn test_integration_atomic_compare_exchange_u32() {
+    let temp_dir = TempDir::new().unwrap();
+    let result_file = temp_dir.path().join("atomic_cmpxchg_u32.bin");
+    let result_path = result_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 2048];
+    let filename = format!("{}\0", result_path).into_bytes();
+    payloads[0..filename.len()].copy_from_slice(&filename);
+
+    // Layout:
+    // 1200: target (u32)
+    // 1204: expected_success (u32, in/out)
+    // 1208: expected_failure (u32, in/out)
+    // 1212: new_success (u32)
+    // 1216: new_failure (u32)
+    payloads[1200..1204].copy_from_slice(&3u32.to_le_bytes());
+    payloads[1204..1208].copy_from_slice(&3u32.to_le_bytes());
+    payloads[1208..1212].copy_from_slice(&3u32.to_le_bytes());
+    payloads[1212..1216].copy_from_slice(&9u32.to_le_bytes());
+    payloads[1216..1220].copy_from_slice(&21u32.to_le_bytes());
+
+    let mem_flag_a = 1300u32;
+    let mem_flag_b = 1308u32;
+    let file_flag = 1316u32;
+
+    let actions = vec![
+        Action { kind: Kind::AtomicCAS, dst: 1200, src: 1204, offset: 1212, size: 4 },
+        Action { kind: Kind::AtomicCAS, dst: 1200, src: 1208, offset: 1216, size: 4 },
+        Action { kind: Kind::FileWrite, dst: 0, src: 1200, offset: 0, size: 12 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: mem_flag_a, size: 0 },
+        Action { kind: Kind::Wait, dst: mem_flag_a, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: 1, offset: mem_flag_b, size: 0 },
+        Action { kind: Kind::Wait, dst: mem_flag_b, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: file_flag, size: 0 },
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
+    execute(algorithm).unwrap();
+
+    let out = fs::read(&result_file).unwrap();
+    let target = u32::from_le_bytes(out[0..4].try_into().unwrap());
+    let expected_success = u32::from_le_bytes(out[4..8].try_into().unwrap());
+    let expected_failure = u32::from_le_bytes(out[8..12].try_into().unwrap());
+
+    assert_eq!(target, 9, "First compare-exchange should update target");
+    assert_eq!(expected_success, 3, "Successful compare-exchange writes observed old value");
+    assert_eq!(expected_failure, 9, "Failed compare-exchange writes actual value back");
+}
+
+#[test]
 fn test_integration_broadcast_memory_write() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("broadcast_mem.txt");
