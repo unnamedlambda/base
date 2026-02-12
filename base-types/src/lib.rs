@@ -61,6 +61,9 @@ pub enum Kind {
     AtomicStore = 73,
     AtomicFetchAdd = 74,
     AtomicFetchSub = 75,
+    WaitUntil = 76,
+    Park = 77,
+    Wake = 78,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

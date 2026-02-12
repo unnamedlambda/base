@@ -5506,3 +5506,137 @@ block2:
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(result, 100); // value_a, since condition was non-zero
 }
+
+fn create_test_algorithm_with_timeout(
+    actions: Vec<Action>,
+    payloads: Vec<u8>,
+    file_units: usize,
+    memory_units: usize,
+    timeout_ms: u64,
+) -> Algorithm {
+    let mut alg = create_test_algorithm(actions, payloads, file_units, memory_units);
+    alg.timeout_ms = Some(timeout_ms);
+    alg
+}
+
+#[test]
+fn test_integration_wake_then_park_progresses() {
+    // Wake increments wake word from 0→1, then Park sees word != expected(0) and passes immediately.
+    // FileWrite persists wake word + status for verification.
+    let tmp_dir = TempDir::new().unwrap();
+    let test_file = tmp_dir.path().join("park_wake.bin");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    // Layout:
+    // 0..8   = wake word (starts 0)
+    // 8..16  = expected value (0)
+    // 16..24 = status output
+    // 24..32 = (spare)
+    // 1000.. = filename
+    let wake_addr: u32 = 0;
+    let expected_addr: u32 = 8;
+    let status_addr: u32 = 16;
+    let filename_offset: u32 = 1000;
+
+    // expected = 0
+    payloads[expected_addr as usize..expected_addr as usize + 8].copy_from_slice(&0u64.to_le_bytes());
+
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[filename_offset as usize..filename_offset as usize + filename_bytes.len()]
+        .copy_from_slice(&filename_bytes);
+
+    let file_flag: u32 = 2000;
+
+    let actions = vec![
+        // 0: Wake — increments wake word 0→1
+        Action { kind: Kind::Wake, dst: wake_addr, src: 0, offset: 0, size: 0 },
+        // 1: Park — wake word is already 1 != expected(0), passes immediately
+        Action { kind: Kind::Park, dst: wake_addr, src: expected_addr, offset: status_addr, size: 0 },
+        // 2: MemCopy wake word to offset 24 (just to ensure data is in payloads for FileWrite)
+        Action { kind: Kind::MemCopy, dst: wake_addr, src: 24, offset: 0, size: 0 },
+        // 3: FileWrite — write 16 bytes (wake word + status) to file
+        Action { kind: Kind::FileWrite, dst: filename_offset, src: wake_addr, offset: 0, size: 24 },
+        // 4: AsyncDispatch file unit
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 3, offset: file_flag, size: 0 },
+        // 5: Wait for file write
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 1, 5000);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists());
+    let contents = fs::read(&test_file).unwrap();
+
+    // wake word should be 1
+    let wake_val = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(wake_val, 1, "wake word should be 1 after Wake");
+
+    // status should be 1 (woken, not timed out)
+    let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
+    assert_eq!(status_val, 1, "status should be 1 (woken)");
+}
+
+#[test]
+fn test_integration_park_times_out_without_wake() {
+    // Park with 10ms per-action timeout, no wake ever fires.
+    // Status should be 0 (timed out).
+    // WaitUntil verifies status == 0.
+    let tmp_dir = TempDir::new().unwrap();
+    let test_file = tmp_dir.path().join("park_timeout.bin");
+    let test_file_str = test_file.to_str().unwrap();
+
+    let mut payloads = vec![0u8; 4096];
+
+    // Layout:
+    // 0..8   = wake word (stays 0, never woken)
+    // 8..16  = expected value (0)
+    // 16..24 = status output
+    // 24..32 = expected status (0)
+    // 1000.. = filename
+    let wake_addr: u32 = 0;
+    let _expected_addr: u32 = 8;
+    let status_addr: u32 = 16;
+    let expected_status_addr: u32 = 24;
+    let filename_offset: u32 = 1000;
+
+    // expected = 0
+    payloads[8..16].copy_from_slice(&0u64.to_le_bytes());
+    // expected status = 0 (for WaitUntil comparison)
+    payloads[24..32].copy_from_slice(&0u64.to_le_bytes());
+
+    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
+    payloads[filename_offset as usize..filename_offset as usize + filename_bytes.len()]
+        .copy_from_slice(&filename_bytes);
+
+    let file_flag: u32 = 2000;
+
+    let actions = vec![
+        // 0: Park with 10ms per-action timeout — wake word stays 0 == expected(0), so it times out
+        Action { kind: Kind::Park, dst: wake_addr, src: 0, offset: status_addr, size: 10 },
+        // 1: WaitUntil — wait for status == 0 (it should already be 0 = timed out)
+        Action { kind: Kind::WaitUntil, dst: status_addr, src: expected_status_addr, offset: 0, size: 0 },
+        // 2: FileWrite — write 32 bytes for verification
+        Action { kind: Kind::FileWrite, dst: filename_offset, src: wake_addr, offset: 0, size: 32 },
+        // 3: AsyncDispatch file unit
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: file_flag, size: 0 },
+        // 4: Wait for file write
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 1, 5000);
+    execute(algorithm).unwrap();
+
+    assert!(test_file.exists());
+    let contents = fs::read(&test_file).unwrap();
+
+    // wake word should still be 0 (no wake)
+    let wake_val = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(wake_val, 0, "wake word should still be 0");
+
+    // status should be 0 (timed out, not woken)
+    let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
+    assert_eq!(status_val, 0, "status should be 0 (timed out)");
+}

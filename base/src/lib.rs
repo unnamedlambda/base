@@ -10,9 +10,9 @@ mod units;
 use crate::units::{
     computational_unit_task_mailbox, cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
     file_unit_task_mailbox, gpu_unit_task_mailbox, hash_table_unit_task_mailbox,
-    lmdb_unit_task_mailbox, memory_unit_task_mailbox,
-    network_unit_task_mailbox, read_null_terminated_string_from_slice, simd_unit_task_mailbox,
-    Broadcast, Mailbox, SharedMemory,
+    lmdb_unit_task_mailbox, load_sized, memory_unit_task_mailbox,
+    network_unit_task_mailbox, order_from_u32, read_null_terminated_string_from_slice,
+    simd_unit_task_mailbox, Broadcast, Mailbox, SharedMemory,
 };
 
 #[derive(Debug)]
@@ -710,6 +710,97 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     tokio::task::yield_now().await;
                 }
                 debug!(pc, "wait_complete");
+                pc += 1;
+            }
+
+            Kind::WaitUntil => {
+                let invert = (action.offset & 1) != 0;
+                let order = order_from_u32((action.offset >> 1) & 0x7);
+                let size = if action.size == 0 { 8 } else { action.size };
+                let expected = unsafe { load_sized(&shared, action.src as usize, size, order) };
+                debug!(pc, dst = action.dst, expected, invert, ?order, size, "wait_until_begin");
+                loop {
+                    let current = unsafe { load_sized(&shared, action.dst as usize, size, order) };
+                    let equal = current == expected;
+                    if equal != invert {
+                        break;
+                    }
+                    if let Some(timeout) = timeout_duration {
+                        if timeout_start.elapsed() > timeout {
+                            return Err(Error::Execution("Timeout".into()));
+                        }
+                    }
+                    tokio::task::yield_now().await;
+                }
+                debug!(pc, "wait_until_complete");
+                pc += 1;
+            }
+
+            Kind::Park => {
+                let wake_addr = action.dst as usize;
+                let expected = if action.src == 0 {
+                    0u64
+                } else {
+                    unsafe { shared.load_u64(action.src as usize, Ordering::Acquire) }
+                };
+                let status_addr = action.offset as usize;
+                let per_timeout_ms = action.size as u64;
+                debug!(pc, wake_addr, expected, status_addr, per_timeout_ms, "park_begin");
+
+                let park_start = std::time::Instant::now();
+                let per_timeout = if per_timeout_ms > 0 {
+                    Some(Duration::from_millis(per_timeout_ms))
+                } else {
+                    None
+                };
+
+                let woken = loop {
+                    let current = unsafe { shared.load_u64(wake_addr, Ordering::Acquire) };
+                    if current != expected {
+                        break true;
+                    }
+                    if let Some(pt) = per_timeout {
+                        if park_start.elapsed() > pt {
+                            break false;
+                        }
+                    }
+                    if let Some(timeout) = timeout_duration {
+                        if timeout_start.elapsed() > timeout {
+                            return Err(Error::Execution("Timeout".into()));
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_micros(50)).await;
+                };
+
+                if status_addr != 0 {
+                    let status_val: u64 = if woken { 1 } else { 0 };
+                    unsafe { shared.store_u64(status_addr, status_val, Ordering::Release) };
+                }
+                debug!(pc, woken, "park_complete");
+                pc += 1;
+            }
+
+            Kind::Wake => {
+                let wake_addr = action.dst as usize;
+                let delta = if action.src == 0 {
+                    1u64
+                } else {
+                    unsafe { shared.load_u64(action.src as usize, Ordering::Acquire) }
+                };
+                debug!(pc, wake_addr, delta, "wake");
+
+                loop {
+                    let current = unsafe { shared.load_u64(wake_addr, Ordering::Acquire) };
+                    let new_val = current.wrapping_add(delta);
+                    let result = unsafe { shared.cas64(wake_addr, current, new_val) };
+                    if result == current {
+                        if action.offset != 0 {
+                            unsafe { shared.store_u64(action.offset as usize, new_val, Ordering::Release) };
+                        }
+                        break;
+                    }
+                    std::hint::spin_loop();
+                }
                 pc += 1;
             }
 
