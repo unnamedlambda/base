@@ -100,6 +100,51 @@ pub fn print_table(results: &[BenchResult]) {
     println!();
 }
 
+/// Print a dispatch benchmark table (Rust vs Base, with ratio and action count).
+pub fn print_dispatch_table(results: &[BenchResult]) {
+    let name_w = 22;
+    let col_w = 10;
+
+    println!();
+    println!(
+        "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>8} {:>6}",
+        "Benchmark", "Rust", "Base", "Ratio", "Actions", "Check",
+        name_w = name_w, col_w = col_w
+    );
+    println!("{}", "-".repeat(name_w + col_w * 3 + 8 + 6 + 5));
+
+    for r in results {
+        let rust_str = match r.rust_ms {
+            Some(ms) => format!("{:.2}ms", ms),
+            None => "N/A".to_string(),
+        };
+        let base_str = format!("{:.2}ms", r.base_ms);
+
+        let ratio_str = match r.rust_ms {
+            Some(rust_ms) if rust_ms > 0.0 => format!("{:.2}x", r.base_ms / rust_ms),
+            _ => "N/A".to_string(),
+        };
+
+        let actions_str = match r.python_ms {
+            Some(n) => format!("{}", n as u64),
+            None => "".to_string(),
+        };
+
+        let check_str = match r.verified {
+            Some(true) => "✓",
+            Some(false) => "✗",
+            None => "—",
+        };
+
+        println!(
+            "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>8} {:>6}",
+            r.name, rust_str, base_str, ratio_str, actions_str, check_str,
+            name_w = name_w, col_w = col_w
+        );
+    }
+    println!();
+}
+
 fn python_dir() -> std::path::PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest).join("python")
