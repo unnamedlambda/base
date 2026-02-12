@@ -208,39 +208,44 @@ impl SharedMemory {
             .copy_from_nonoverlapping(data.as_ptr(), data.len());
     }
 
+    // Use a true atomic op when the pointer is naturally aligned; fall back to
+    // an unaligned read + fence otherwise.
     pub unsafe fn load_u64(&self, offset: usize, order: Ordering) -> u64 {
-        let ptr = self.ptr.add(offset) as *const u64;
-        let value = std::ptr::read_unaligned(ptr);
-        match order {
-            Ordering::Acquire | Ordering::AcqRel | Ordering::SeqCst => {
-                fence(Ordering::Acquire);
-            }
-            _ => {}
+        let ptr = self.ptr.add(offset);
+        if (ptr as usize) & 0x7 == 0 {
+            return (*(ptr as *const AtomicU64)).load(order);
+        }
+        let value = std::ptr::read_unaligned(ptr as *const u64);
+        if matches!(order, Ordering::Acquire | Ordering::AcqRel | Ordering::SeqCst) {
+            fence(Ordering::Acquire);
         }
         value
     }
 
     pub unsafe fn store_u64(&self, offset: usize, value: u64, order: Ordering) {
-        match order {
-            Ordering::Release | Ordering::AcqRel | Ordering::SeqCst => {
-                fence(Ordering::Release);
-            }
-            _ => {}
+        let ptr = self.ptr.add(offset);
+        if (ptr as usize) & 0x7 == 0 {
+            (*(ptr as *const AtomicU64)).store(value, order);
+            return;
         }
-        let ptr = self.ptr.add(offset) as *mut u64;
-        std::ptr::write_unaligned(ptr, value);
+        if matches!(order, Ordering::Release | Ordering::AcqRel | Ordering::SeqCst) {
+            fence(Ordering::Release);
+        }
+        std::ptr::write_unaligned(ptr as *mut u64, value);
     }
 
     pub unsafe fn cas64(&self, offset: usize, expected: u64, new: u64) -> u64 {
-        let ptr = self.ptr.add(offset) as *mut AtomicU64;
-        (*ptr)
+        let ptr = self.ptr.add(offset);
+        debug_assert!((ptr as usize) & 0x7 == 0, "cas64: pointer not 8-byte aligned (offset {offset})");
+        (*(ptr as *const AtomicU64))
             .compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
             .unwrap_or_else(|x| x)
     }
 
     pub unsafe fn cas128(&self, offset: usize, expected: u128, new: u128) -> u128 {
-        let ptr = self.ptr.add(offset) as *mut AtomicU128;
-        (*ptr)
+        let ptr = self.ptr.add(offset);
+        debug_assert!((ptr as usize) & 0xF == 0, "cas128: pointer not 16-byte aligned (offset {offset})");
+        (*(ptr as *const AtomicU128))
             .compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
             .unwrap_or_else(|x| x)
     }
