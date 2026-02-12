@@ -1,5 +1,5 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, info_span};
 use wgpu::Backends;
 
@@ -11,8 +11,10 @@ use crate::units::{
     computational_unit_task_mailbox, cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
     file_unit_task_mailbox, gpu_unit_task_mailbox, hash_table_unit_task_mailbox,
     lmdb_unit_task_mailbox, load_sized, memory_unit_task_mailbox,
-    network_unit_task_mailbox, order_from_u32, read_null_terminated_string_from_slice,
-    simd_unit_task_mailbox, Broadcast, Mailbox, SharedMemory,
+    network_unit_task_mailbox, order_from_u32, queue_try_push_packet_mp,
+    read_null_terminated_string_from_slice, simd_unit_task_mailbox,
+    Broadcast, Mailbox, SharedMemory,
+    QUEUE_BASE_OFF, QUEUE_HEAD_OFF, QUEUE_MASK_OFF, QUEUE_TAIL_OFF,
 };
 
 #[derive(Debug)]
@@ -22,6 +24,72 @@ pub enum Error {
     Execution(String),
     GpuInit(String),
 }
+
+const KERNEL_DESC_QUEUE_OFF: usize = 0;
+const KERNEL_DESC_UNIT_TYPE_OFF: usize = 4;
+const KERNEL_DESC_UNIT_ID_OFF: usize = 8;
+const KERNEL_DESC_STOP_FLAG_OFF: usize = 12;
+const KERNEL_DESC_PROGRESS_OFF: usize = 16;
+
+const KERNEL_KIND_QUEUE_ROUTER: u32 = 1;
+
+struct KernelHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+    progress_addr: u32,
+    queue_desc: u32,
+}
+
+enum DispatchTarget {
+    Mailbox(Arc<Mailbox>),
+    Broadcast(Arc<Broadcast>),
+}
+
+unsafe fn cas_u32(
+    shared: &SharedMemory,
+    offset: usize,
+    current: u32,
+    new: u32,
+    success: Ordering,
+    failure: Ordering,
+) -> Result<u32, u32> {
+    shared.cas_u32(offset, current, new, success, failure)
+}
+
+unsafe fn queue_desc_read(shared: &SharedMemory, queue_desc: usize) -> (u32, u32) {
+    let mask = shared.load_u32(queue_desc + QUEUE_MASK_OFF, Ordering::Relaxed);
+    let base = shared.load_u32(queue_desc + QUEUE_BASE_OFF, Ordering::Relaxed);
+    (mask, base)
+}
+
+unsafe fn queue_try_pop_u64(shared: &SharedMemory, queue_desc: usize) -> Option<u64> {
+    let (mask, base) = queue_desc_read(shared, queue_desc);
+    loop {
+        let head = shared.load_u32(queue_desc + QUEUE_HEAD_OFF, Ordering::Relaxed);
+        let tail = shared.load_u32(queue_desc + QUEUE_TAIL_OFF, Ordering::Acquire);
+        if head == tail {
+            return None;
+        }
+        let new_head = head.wrapping_add(1);
+        if cas_u32(
+            shared,
+            queue_desc + QUEUE_HEAD_OFF,
+            head,
+            new_head,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        )
+        .is_err()
+        {
+            continue;
+        }
+        let slot = (head & mask) as usize;
+        let slot_off = base as usize + slot * 8;
+        let bytes = shared.read(slot_off, 8);
+        return Some(u64::from_le_bytes(bytes[0..8].try_into().unwrap()));
+    }
+}
+
 
 pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute",
@@ -99,7 +167,9 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 | Kind::AtomicLoad
                 | Kind::AtomicStore
                 | Kind::AtomicFetchAdd
-                | Kind::AtomicFetchSub => {
+                | Kind::AtomicFetchSub
+                | Kind::QueuePushPacketMP
+                 => {
                     algorithm.memory_assignments[i] = 0;
                 }
                 _ => {}
@@ -254,44 +324,27 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let lmdb_assignments = Arc::new(algorithm.lmdb_assignments.clone());
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments.clone());
 
-    let gpu_mailboxes: Vec<_> = (0..algorithm.units.gpu_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let simd_mailboxes: Vec<_> = (0..algorithm.units.simd_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let file_mailboxes: Vec<_> = (0..algorithm.units.file_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let network_mailboxes: Vec<_> = (0..algorithm.units.network_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let ffi_mailboxes: Vec<_> = (0..algorithm.units.ffi_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let computational_mailboxes: Vec<_> = (0..algorithm.units.computational_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let memory_mailboxes: Vec<_> = (0..algorithm.units.memory_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let hash_table_mailboxes: Vec<_> = (0..algorithm.units.hash_table_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
-    let lmdb_mailboxes: Vec<_> = (0..algorithm.units.lmdb_units)
-        .map(|_| Arc::new(Mailbox::new()))
-        .collect();
+    let gpu_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.gpu_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let simd_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.simd_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let network_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.network_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let ffi_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.ffi_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let computational_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.computational_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let hash_table_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.hash_table_units).map(|_| Arc::new(Mailbox::new())).collect();
+    let lmdb_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.lmdb_units).map(|_| Arc::new(Mailbox::new())).collect();
     let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
-
+        
     let simd_broadcast = Arc::new(Broadcast::new(algorithm.units.simd_units as u32));
-    let computational_broadcast =
+    let computational_broadcast = 
         Arc::new(Broadcast::new(algorithm.units.computational_units as u32));
     let memory_broadcast = Arc::new(Broadcast::new(algorithm.units.memory_units as u32));
 
     let mut thread_handles = Vec::new();
     let mut async_handles = Vec::new();
+    let mut kernel_handles: Vec<Option<KernelHandle>> = Vec::new();
 
     for (gpu_id, mailbox) in gpu_mailboxes.iter().enumerate() {
         if gpu_id < algorithm.state.gpu_shader_offsets.len() {
@@ -804,8 +857,242 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 pc += 1;
             }
 
+            Kind::KernelStart => {
+                let kind = action.size;
+                let status = if kind == KERNEL_KIND_QUEUE_ROUTER {
+                    let (queue_desc, unit_type, unit_id, stop_flag_addr, progress_addr) = unsafe {
+                        (
+                            shared.load_u32(action.dst as usize + KERNEL_DESC_QUEUE_OFF, Ordering::Acquire),
+                            shared.load_u32(action.dst as usize + KERNEL_DESC_UNIT_TYPE_OFF, Ordering::Acquire),
+                            shared.load_u32(action.dst as usize + KERNEL_DESC_UNIT_ID_OFF, Ordering::Acquire),
+                            shared.load_u32(action.dst as usize + KERNEL_DESC_STOP_FLAG_OFF, Ordering::Acquire),
+                            shared.load_u32(action.dst as usize + KERNEL_DESC_PROGRESS_OFF, Ordering::Acquire),
+                        )
+                    };
+
+                    let target: Option<DispatchTarget> = {
+                        let pools: [&[Arc<Mailbox>]; 9] = [
+                            &gpu_mailboxes, &simd_mailboxes, &file_mailboxes,
+                            &network_mailboxes, &ffi_mailboxes, &computational_mailboxes,
+                            &memory_mailboxes, &hash_table_mailboxes, &lmdb_mailboxes,
+                        ];
+                        if unit_id == u32::MAX {
+                            match unit_type {
+                                1 => Some(DispatchTarget::Broadcast(simd_broadcast.clone())),
+                                5 => Some(DispatchTarget::Broadcast(computational_broadcast.clone())),
+                                6 => Some(DispatchTarget::Broadcast(memory_broadcast.clone())),
+                                _ => {
+                                    let t = unit_type as usize;
+                                    if t < pools.len() && !pools[t].is_empty() {
+                                        Some(DispatchTarget::Mailbox(pools[t][0].clone()))
+                                    } else {
+                                        None
+                                    }
+                                }
+                            }
+                        } else {
+                            let t = unit_type as usize;
+                            if t < pools.len() && !pools[t].is_empty() {
+                                let idx = (unit_id as usize).min(pools[t].len() - 1);
+                                Some(DispatchTarget::Mailbox(pools[t][idx].clone()))
+                            } else {
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(target) = target {
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let stop_for_thread = stop.clone();
+                    let shared_for_thread = shared.clone();
+
+                    let join = std::thread::spawn(move || {
+                        let mut drained = 0u64;
+                        let mut spin_count = 0u32;
+                        loop {
+                            if stop_for_thread.load(Ordering::Acquire) {
+                                break;
+                            }
+                            if stop_flag_addr != 0 {
+                                let stop_word = unsafe { shared_for_thread.load_u64(stop_flag_addr as usize, Ordering::Acquire) };
+                                if stop_word != 0 {
+                                    break;
+                                }
+                            }
+                            let packed = unsafe { queue_try_pop_u64(&shared_for_thread, queue_desc as usize) };
+                            if let Some(packed) = packed {
+                                spin_count = 0;
+                                let start = (packed >> 43) as u32;
+                                let end = ((packed >> 22) & 0x1F_FFFF) as u32;
+                                let flag = (packed & 0x3F_FFFF) as u32;
+                                match &target {
+                                    DispatchTarget::Mailbox(m) => m.post(start, end, flag),
+                                    DispatchTarget::Broadcast(b) => b.dispatch(start, end, flag),
+                                }
+                                if flag != 0 {
+                                    loop {
+                                        let done = unsafe {
+                                            shared_for_thread.load_u64(flag as usize, Ordering::Acquire)
+                                        };
+                                        if done != 0 || stop_for_thread.load(Ordering::Acquire) {
+                                            break;
+                                        }
+                                        std::hint::spin_loop();
+                                    }
+                                }
+                                drained = drained.wrapping_add(1);
+                                if progress_addr != 0 {
+                                    unsafe { shared_for_thread.store_u64(progress_addr as usize, drained, Ordering::Release) };
+                                }
+                            } else if spin_count < 32 {
+                                std::hint::spin_loop();
+                                spin_count += 1;
+                            } else {
+                                std::thread::sleep(Duration::from_micros(50));
+                            }
+                        }
+                    });
+
+                    let mut handle_id = kernel_handles.len();
+                    for (i, slot) in kernel_handles.iter().enumerate() {
+                        if slot.is_none() {
+                            handle_id = i;
+                            break;
+                        }
+                    }
+                    let handle = KernelHandle {
+                        stop,
+                        join: Some(join),
+                        progress_addr,
+                        queue_desc,
+                    };
+                    if handle_id == kernel_handles.len() {
+                        kernel_handles.push(Some(handle));
+                    } else {
+                        kernel_handles[handle_id] = Some(handle);
+                    }
+                    unsafe {
+                        shared.store_u32(action.src as usize, handle_id as u32, Ordering::Release);
+                    }
+                    1u64
+                    } else {
+                        0u64
+                    }
+                } else {
+                    0u64
+                };
+                unsafe {
+                    shared.store_u64(action.offset as usize, status, Ordering::Release);
+                }
+                pc += 1;
+            }
+
+            Kind::KernelSubmit => {
+                let handle_id = unsafe { shared.load_u32(action.dst as usize, Ordering::Acquire) } as usize;
+                let mut submitted = 0u64;
+                if let Some(Some(handle)) = kernel_handles.get(handle_id) {
+                    let count = if action.size == 0 { 1 } else { action.size };
+                    for i in 0..count {
+                        let src_ptr = action.src as usize + (i as usize) * 8;
+                        let ok = unsafe {
+                            queue_try_push_packet_mp(&shared, handle.queue_desc as usize, src_ptr)
+                        };
+                        if ok {
+                            submitted += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                unsafe {
+                    shared.store_u64(action.offset as usize, submitted, Ordering::Release);
+                }
+                pc += 1;
+            }
+
+            Kind::KernelSubmitIndirect => {
+                let handle_id =
+                    unsafe { shared.load_u32(action.dst as usize, Ordering::Acquire) } as usize;
+                let packet_base = unsafe { shared.load_u32(action.src as usize, Ordering::Acquire) };
+                let mut submitted = 0u64;
+                if let Some(Some(handle)) = kernel_handles.get(handle_id) {
+                    let count = if action.size == 0 { 1 } else { action.size };
+                    for i in 0..count {
+                        let src_ptr = packet_base as usize + (i as usize) * 8;
+                        let ok = unsafe {
+                            queue_try_push_packet_mp(&shared, handle.queue_desc as usize, src_ptr)
+                        };
+                        if ok {
+                            submitted += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                unsafe {
+                    shared.store_u64(action.offset as usize, submitted, Ordering::Release);
+                }
+                pc += 1;
+            }
+
+            Kind::KernelWait => {
+                let handle_id = unsafe { shared.load_u32(action.dst as usize, Ordering::Acquire) } as usize;
+                let target = action.src as u64;
+                let timeout_ms = action.size as u64;
+                let start_t = std::time::Instant::now();
+                let mut ok = false;
+                if let Some(Some(handle)) = kernel_handles.get(handle_id) {
+                    loop {
+                        let progress = if handle.progress_addr == 0 {
+                            0
+                        } else {
+                            unsafe { shared.load_u64(handle.progress_addr as usize, Ordering::Acquire) }
+                        };
+                        if progress >= target {
+                            ok = true;
+                            break;
+                        }
+                        if timeout_ms != 0 && start_t.elapsed() >= Duration::from_millis(timeout_ms) {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                }
+                unsafe {
+                    shared.store_u64(action.offset as usize, if ok { 1 } else { 0 }, Ordering::Release);
+                }
+                pc += 1;
+            }
+
+            Kind::KernelStop => {
+                let handle_id = unsafe { shared.load_u32(action.dst as usize, Ordering::Acquire) } as usize;
+                let mut ok = false;
+                if handle_id < kernel_handles.len() {
+                    if let Some(mut handle) = kernel_handles[handle_id].take() {
+                        handle.stop.store(true, Ordering::Release);
+                        if let Some(join) = handle.join.take() {
+                            let _ = join.join();
+                        }
+                        ok = true;
+                    }
+                }
+                unsafe {
+                    shared.store_u64(action.offset as usize, if ok { 1 } else { 0 }, Ordering::Release);
+                }
+                pc += 1;
+            }
+
             _ => {
                 pc += 1;
+            }
+        }
+    }
+
+    for slot in kernel_handles.iter_mut() {
+        if let Some(mut handle) = slot.take() {
+            handle.stop.store(true, Ordering::Release);
+            if let Some(join) = handle.join.take() {
+                let _ = join.join();
             }
         }
     }

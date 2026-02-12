@@ -5640,3 +5640,376 @@ fn test_integration_park_times_out_without_wake() {
     let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
     assert_eq!(status_val, 0, "status should be 0 (timed out)");
 }
+
+fn mw(dst: u32, src: u32, size: u32) -> Action {
+    Action { kind: Kind::MemWrite, dst, src, offset: 0, size }
+}
+
+const K_SETUP_DONE: usize = 0x480;
+const K_QUEUE_DESC: usize = 0x100;
+const K_QUEUE_BASE: usize = 0x200;
+const KERNEL_DESC: usize = 0x300;
+const K_HANDLE_PTR: usize = 0x400;
+const K_PACKET_PTR_PTR: usize = 0x408;
+const K_START_STATUS: usize = 0x500;
+const K_SUBMIT_STATUS: usize = 0x508;
+const K_WAIT_STATUS: usize = 0x510;
+const K_STOP_STATUS: usize = 0x518;
+const K_PROGRESS_ADDR: usize = 0x520;
+const K_STOP_FLAG_ADDR: usize = 0x528;
+const K_EXPECTED_ZERO_ADDR: usize = 0x530;
+const K_EXPECTED_ONE_ADDR: usize = 0x538;
+const K_EXPECTED_TWO_ADDR: usize = 0x540;
+const K_VALUE_ADDR: usize = 0x600;
+const K_PREV_A_ADDR: usize = 0x608;
+const K_ADDEND_A_ADDR: usize = 0x610;
+const K_PREV_B_ADDR: usize = 0x618;
+const K_ADDEND_B_ADDR: usize = 0x620;
+const K_EXPECTED_SUM_ADDR: usize = 0x628;
+const K_FLAG_A_ADDR: usize = 0x630;
+const K_FLAG_B_ADDR: usize = 0x638;
+const K_PACKET_ADDR: usize = 0x700;
+
+#[test]
+fn test_kernel_submit_indirect_single_packet() {
+    let payloads = vec![0u8; 2048];
+    let mut actions = vec![
+        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
+        mw(KERNEL_DESC as u32 + 4, 6, 4),
+        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
+        mw(K_ADDEND_A_ADDR as u32, 7, 8),
+        mw(K_EXPECTED_SUM_ADDR as u32, 7, 8),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
+    ];
+    // packet: worker at w, dispatches actions[w..w+1]
+    let w = (actions.len() + 2 + 2) as u64; // +2 pkt writes, +2 AsyncDispatch/Wait
+    let pkt = (w << 43) | ((w + 1) << 22) | (K_FLAG_A_ADDR as u64);
+    actions.push(mw(K_PACKET_ADDR as u32, pkt as u32, 4));
+    actions.push(mw(K_PACKET_ADDR as u32 + 4, (pkt >> 32) as u32, 4));
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    actions.extend_from_slice(&[
+        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
+        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 1, offset: K_WAIT_STATUS as u32, size: 3000 },
+        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
+        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_START_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_kernel_submit_indirect_multiple_packets() {
+    let payloads = vec![0u8; 2048];
+    let mut actions = vec![
+        mw(K_QUEUE_DESC as u32 + 8, 31, 4),
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
+        mw(KERNEL_DESC as u32 + 4, 6, 4),
+        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
+        mw(K_ADDEND_A_ADDR as u32, 5, 8),
+        mw(K_ADDEND_B_ADDR as u32, 9, 8),
+        mw(K_EXPECTED_SUM_ADDR as u32, 14, 8),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+        mw(K_EXPECTED_TWO_ADDR as u32, 2, 8),
+        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
+    ];
+    // workers at w and w+1; pkt_a dispatches [w..w+1], pkt_b dispatches [w+1..w+2]
+    let w = (actions.len() + 4 + 2) as u64; // +4 pkt writes, +2 AsyncDispatch/Wait
+    let pkt_a = (w << 43) | ((w + 1) << 22) | (K_FLAG_A_ADDR as u64);
+    let pkt_b = ((w + 1) << 43) | ((w + 2) << 22) | (K_FLAG_B_ADDR as u64);
+    actions.extend_from_slice(&[
+        mw(K_PACKET_ADDR as u32, pkt_a as u32, 4),
+        mw(K_PACKET_ADDR as u32 + 4, (pkt_a >> 32) as u32, 4),
+        mw((K_PACKET_ADDR + 8) as u32, pkt_b as u32, 4),
+        mw((K_PACKET_ADDR + 8) as u32 + 4, (pkt_b >> 32) as u32, 4),
+    ]);
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    actions.extend_from_slice(&[
+        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
+        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_B_ADDR as u32, offset: K_ADDEND_B_ADDR as u32, size: 8 },
+        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 2 },
+        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 2, offset: K_WAIT_STATUS as u32, size: 3000 },
+        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
+        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_START_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_TWO_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_TWO_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_kernel_submit_indirect_invalid_handle() {
+    let payloads = vec![0u8; 2048];
+    let mut actions = vec![
+        mw(K_HANDLE_PTR as u32, 999, 4),
+        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
+        mw(K_PACKET_ADDR as u32, 0x400000, 8),
+    ];
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    actions.extend_from_slice(&[
+        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 1 },
+        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_kernel_submit_indirect_size_zero_defaults_to_one_packet() {
+    let payloads = vec![0u8; 2048];
+    let mut actions = vec![
+        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
+        mw(KERNEL_DESC as u32 + 4, 6, 4),
+        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
+        mw(K_ADDEND_A_ADDR as u32, 3, 8),
+        mw(K_ADDEND_B_ADDR as u32, 11, 8),
+        mw(K_EXPECTED_SUM_ADDR as u32, 3, 8),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
+    ];
+    // workers at w and w+1; pkt_a dispatches [w..w+1], pkt_b dispatches [w+1..w+2]
+    let w = (actions.len() + 4 + 2) as u64; // +4 pkt writes, +2 AsyncDispatch/Wait
+    let pkt_a = (w << 43) | ((w + 1) << 22) | (K_FLAG_A_ADDR as u64);
+    let pkt_b = ((w + 1) << 43) | ((w + 2) << 22) | (K_FLAG_B_ADDR as u64);
+    actions.extend_from_slice(&[
+        mw(K_PACKET_ADDR as u32, pkt_a as u32, 4),
+        mw(K_PACKET_ADDR as u32 + 4, (pkt_a >> 32) as u32, 4),
+        mw((K_PACKET_ADDR + 8) as u32, pkt_b as u32, 4),
+        mw((K_PACKET_ADDR + 8) as u32 + 4, (pkt_b >> 32) as u32, 4),
+    ]);
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    actions.extend_from_slice(&[
+        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
+        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_B_ADDR as u32, offset: K_ADDEND_B_ADDR as u32, size: 8 },
+        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 0 },
+        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 1, offset: K_WAIT_STATUS as u32, size: 3000 },
+        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
+        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_kernel_submit_indirect_partial_submit_when_queue_full() {
+    let payloads = vec![0u8; 2048];
+    let mut actions = vec![
+        // queue with capacity 1 (mask=0), kernel stops immediately (stop_flag=1)
+        mw(K_STOP_FLAG_ADDR as u32, 1, 8),
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
+        mw(KERNEL_DESC as u32 + 4, 6, 4),
+        mw(KERNEL_DESC as u32 + 12, K_STOP_FLAG_ADDR as u32, 4),
+        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
+        mw(K_PACKET_ADDR as u32, 0x400000, 8),
+        mw((K_PACKET_ADDR + 8) as u32, 0x400000, 8),
+    ];
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    actions.extend_from_slice(&[
+        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 2 },
+        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
+        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_kernel_wait_timeout_and_stop_idempotent() {
+    let payloads = vec![0u8; 2048];
+    let mut actions = vec![
+        mw(K_STOP_FLAG_ADDR as u32, 1, 8),
+        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
+        mw(KERNEL_DESC as u32 + 4, 6, 4),
+        mw(KERNEL_DESC as u32 + 12, K_STOP_FLAG_ADDR as u32, 4),
+        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+    ];
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    actions.extend_from_slice(&[
+        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 1, offset: K_WAIT_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
+        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
+        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_START_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_queue_push_packet_mp_single_and_full() {
+    const PUSH1_DONE: usize = 0x560;
+    const PUSH2_DONE: usize = 0x568;
+    const PUSH1_STATUS: usize = 0x570;
+    const PUSH2_STATUS: usize = 0x578;
+
+    let payloads = vec![0u8; 2048];
+    let mut actions = vec![
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+        mw(K_PACKET_ADDR as u32, 0x400000, 8),
+        mw((K_PACKET_ADDR + 8) as u32, 0x400000, 8),
+    ];
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    // QueuePushPacketMP actions dispatched individually via AsyncDispatch
+    let qp1 = actions.len() as u32 + 4; // after 2 AsyncDispatch/Wait pairs
+    let qp2 = qp1 + 1;
+    actions.extend_from_slice(&[
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: qp1, offset: PUSH1_DONE as u32, size: 1 },
+        Action { kind: Kind::Wait, dst: PUSH1_DONE as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 6, src: qp2, offset: PUSH2_DONE as u32, size: 1 },
+        Action { kind: Kind::Wait, dst: PUSH2_DONE as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: PUSH1_STATUS as u32, size: 0 },
+        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: (K_PACKET_ADDR + 8) as u32, offset: PUSH2_STATUS as u32, size: 0 },
+        Action { kind: Kind::WaitUntil, dst: PUSH1_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: PUSH2_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_queue_push_packet_mp_concurrent_multi_producer() {
+    const ROUNDS: u32 = 8;
+    const PRODUCERS: u32 = 4;
+    const EXPECTED: u64 = (ROUNDS as u64) * (PRODUCERS as u64);
+    const PUSH_DONE_BASE: usize = 0x560;
+    const PUSH_STATUS_BASE: usize = 0x5f0;
+    const QUEUE_TAIL_ADDR: usize = K_QUEUE_DESC + 4;
+    const QUEUE_RESERVE_ADDR: usize = K_QUEUE_DESC + 20;
+
+    let payloads = vec![0u8; 4096];
+    let mut actions = vec![
+        mw(K_QUEUE_DESC as u32 + 8, 1023, 4),
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+        mw(K_EXPECTED_SUM_ADDR as u32, EXPECTED as u32, 8),
+        mw(K_PACKET_ADDR as u32, 0x400000, 8),
+    ];
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    // QueuePushPacketMP x 4 (one per producer, broadcast-partitioned)
+    let qp_start = actions.len() as u32;
+    actions.extend_from_slice(&[
+        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 0) as u32, size: 0 },
+        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 8) as u32, size: 0 },
+        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 16) as u32, size: 0 },
+        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 24) as u32, size: 0 },
+    ]);
+
+    for i in 0..ROUNDS {
+        actions.push(Action {
+            kind: Kind::AsyncDispatch,
+            dst: 6,
+            src: qp_start,
+            offset: (PUSH_DONE_BASE + (i as usize) * 8) as u32,
+            size: (1u32 << 31) | 4, // broadcast range partitioned across workers
+        });
+        actions.push(Action {
+            kind: Kind::Wait,
+            dst: (PUSH_DONE_BASE + (i as usize) * 8) as u32,
+            src: 0,
+            offset: 0,
+            size: 0,
+        });
+    }
+
+    actions.extend_from_slice(&[
+        Action { kind: Kind::WaitUntil, dst: QUEUE_TAIL_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 4 },
+        Action { kind: Kind::WaitUntil, dst: QUEUE_RESERVE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 4 },
+        Action { kind: Kind::WaitUntil, dst: K_QUEUE_DESC as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 4 },
+    ]);
+
+    let algorithm = create_test_algorithm(actions, payloads, 0, PRODUCERS as usize);
+    execute(algorithm).unwrap();
+}
+
+#[test]
+fn test_worker_discovered_chain_via_queue_push_packet_mp() {
+    const CHAIN_TARGET: u32 = 50;
+    const PUSH_STATUS: usize = 0x560;
+    const N_KERNEL_ACTIONS: u64 = 8; // KernelStart..WaitUntil (see below)
+
+    let payloads = vec![0u8; 4096];
+    let mut actions = vec![
+        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
+        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
+        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
+        mw(KERNEL_DESC as u32 + 4, 6, 4),
+        mw(KERNEL_DESC as u32 + 12, K_STOP_FLAG_ADDR as u32, 4),
+        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
+        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
+        mw(K_ADDEND_A_ADDR as u32, 1, 8),
+    ];
+    // packet: worker actions at w and w+1, dispatches [w..w+2]
+    let w = (actions.len() + 2 + 2) as u64 + N_KERNEL_ACTIONS; // +2 pkt, +2 async/wait, +kernel
+    let pkt = (w << 43) | ((w + 2) << 22); // flag=0
+    actions.push(mw(K_PACKET_ADDR as u32, pkt as u32, 4));
+    actions.push(mw(K_PACKET_ADDR as u32 + 4, (pkt >> 32) as u32, 4));
+    let setup_len = actions.len() as u32;
+    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
+    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
+    actions.extend_from_slice(&[
+        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelSubmit, dst: K_HANDLE_PTR as u32, src: K_PACKET_ADDR as u32, offset: K_SUBMIT_STATUS as u32, size: 1 },
+        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: CHAIN_TARGET, offset: K_WAIT_STATUS as u32, size: 5000 },
+        Action { kind: Kind::MemWrite, dst: K_STOP_FLAG_ADDR as u32, src: 1, offset: 0, size: 8 },
+        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
+        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
+        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 1, size: 8 }, // value != 0
+    ]);
+    // worker actions (dispatched repeatedly by kernel at indices w..w+2)
+    let worker_start = actions.len() as u64;
+    assert_eq!(worker_start, w);
+    actions.extend_from_slice(&[
+        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
+        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: PUSH_STATUS as u32, size: 0 },
+    ]);
+    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
+    execute(algorithm).unwrap();
+}

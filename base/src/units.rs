@@ -320,6 +320,65 @@ unsafe fn store_sized(shared: &SharedMemory, offset: usize, size: u32, value: u6
     }
 }
 
+pub(crate) const QUEUE_HEAD_OFF: usize = 0;
+pub(crate) const QUEUE_TAIL_OFF: usize = 4;
+pub(crate) const QUEUE_MASK_OFF: usize = 8;
+pub(crate) const QUEUE_BASE_OFF: usize = 12;
+pub(crate) const QUEUE_RESERVE_OFF: usize = 20;
+
+pub(crate) unsafe fn queue_try_push_packet_mp(
+    shared: &SharedMemory,
+    queue_desc: usize,
+    data_src: usize,
+) -> bool {
+    let mask = shared.load_u32(queue_desc + QUEUE_MASK_OFF, Ordering::Relaxed);
+    let base = shared.load_u32(queue_desc + QUEUE_BASE_OFF, Ordering::Relaxed);
+    let cap = mask.wrapping_add(1);
+
+    let reserved = loop {
+        let head = shared.load_u32(queue_desc + QUEUE_HEAD_OFF, Ordering::Acquire);
+        let reserve = shared.load_u32(queue_desc + QUEUE_RESERVE_OFF, Ordering::Relaxed);
+        if reserve.wrapping_sub(head) >= cap {
+            return false;
+        }
+        match shared.cas_u32(
+            queue_desc + QUEUE_RESERVE_OFF,
+            reserve,
+            reserve.wrapping_add(1),
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break reserve,
+            Err(_) => std::hint::spin_loop(),
+        }
+    };
+
+    let slot = (reserved & mask) as usize;
+    let slot_off = base as usize + slot * 8;
+    let data = shared.read(data_src, 8);
+    shared.write(slot_off, data);
+
+    loop {
+        let tail = shared.load_u32(queue_desc + QUEUE_TAIL_OFF, Ordering::Acquire);
+        if tail == reserved {
+            match shared.cas_u32(
+                queue_desc + QUEUE_TAIL_OFF,
+                tail,
+                tail.wrapping_add(1),
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(_) => std::hint::spin_loop(),
+            }
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+
+    true
+}
+
 fn read_null_terminated_string(shared: &SharedMemory, offset: usize, max_len: usize) -> String {
     unsafe {
         // Read up to max_len bytes
@@ -487,6 +546,11 @@ impl MemoryUnit {
                     _ => 0,
                 };
                 store_sized(&self.shared, action.src as usize, op_size, prev, Ordering::Relaxed);
+            }
+            Kind::QueuePushPacketMP => {
+                let ok =
+                    queue_try_push_packet_mp(&self.shared, action.dst as usize, action.src as usize);
+                self.shared.store_u64(action.offset as usize, if ok { 1 } else { 0 }, Ordering::Release);
             }
             Kind::MemScan => {
                 debug!(src = action.src, dst = action.dst, size = action.size, offset = action.offset, "mem_scan");
