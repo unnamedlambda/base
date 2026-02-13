@@ -5,13 +5,11 @@ edition = "2021"
 
 [dependencies]
 base-types = { path = "../base-types" }
-tokio = { version = "1", features = ["full"] }
 wgpu = "0.20"
 wide = "0.7"
 portable-atomic = "1"
 quanta = "0.12"
 pollster = "0.3"
-futures = "0.3"
 rand = "0.8"
 tracing = { version = "0.1", features = ["release_max_level_off"] }
 lmdb-zero = "0.4"

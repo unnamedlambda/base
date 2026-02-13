@@ -277,36 +277,12 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         algorithm.cranelift_assignments = vec![255; algorithm.actions.len()];
     }
 
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
-
-    if let Some(workers) = algorithm.worker_threads {
-        builder.worker_threads(workers);
-    }
-
-    if let Some(blocking) = algorithm.blocking_threads {
-        builder.max_blocking_threads(blocking);
-    }
-
-    if let Some(stack) = algorithm.stack_size {
-        builder.thread_stack_size(stack);
-    }
-
-    if let Some(prefix) = &algorithm.thread_name_prefix {
-        builder.thread_name(prefix);
-    }
-
-    let runtime = builder
-        .enable_all()
-        .build()
-        .map_err(Error::RuntimeCreation)?;
-
-    let result = runtime.block_on(execute_internal(algorithm));
-    runtime.shutdown_timeout(Duration::from_millis(100));
+    let result = execute_internal(algorithm);
     info!("execution complete");
     result
 }
 
-async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
+fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute_internal").entered();
     let mut memory = Pin::new(algorithm.payloads.clone().into_boxed_slice());
     let mem_ptr = memory.as_mut().as_mut_ptr();
@@ -343,7 +319,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let memory_broadcast = Arc::new(Broadcast::new(algorithm.units.memory_units as u32));
 
     let mut thread_handles = Vec::new();
-    let mut async_handles = Vec::new();
     let mut kernel_handles: Vec<Option<KernelHandle>> = Vec::new();
 
     for (gpu_id, mailbox) in gpu_mailboxes.iter().enumerate() {
@@ -394,8 +369,8 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let actions = actions_arc.clone();
         let shared = shared.clone();
         let buffer_size = algorithm.state.file_buffer_size;
-        async_handles.push(tokio::spawn(async move {
-            file_unit_task_mailbox(mailbox, actions, shared, buffer_size).await;
+        thread_handles.push(std::thread::spawn(move || {
+            file_unit_task_mailbox(mailbox, actions, shared, buffer_size);
         }));
     }
 
@@ -403,8 +378,8 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         info!(network_id, "spawning network unit task");
         let actions = actions_arc.clone();
         let shared = shared.clone();
-        async_handles.push(tokio::spawn(async move {
-            network_unit_task_mailbox(mailbox, actions, shared).await;
+        thread_handles.push(std::thread::spawn(move || {
+            network_unit_task_mailbox(mailbox, actions, shared);
         }));
     }
 
@@ -760,7 +735,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     if flag != 0 {
                         break;
                     }
-                    tokio::task::yield_now().await;
+                    std::thread::yield_now();
                 }
                 debug!(pc, "wait_complete");
                 pc += 1;
@@ -783,7 +758,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             return Err(Error::Execution("Timeout".into()));
                         }
                     }
-                    tokio::task::yield_now().await;
+                    std::thread::yield_now();
                 }
                 debug!(pc, "wait_until_complete");
                 pc += 1;
@@ -822,7 +797,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             return Err(Error::Execution("Timeout".into()));
                         }
                     }
-                    tokio::time::sleep(Duration::from_micros(50)).await;
+                    std::thread::sleep(Duration::from_micros(50));
                 };
 
                 if status_addr != 0 {
@@ -1055,7 +1030,7 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         if timeout_ms != 0 && start_t.elapsed() >= Duration::from_millis(timeout_ms) {
                             break;
                         }
-                        tokio::task::yield_now().await;
+                        std::thread::yield_now();
                     }
                 }
                 unsafe {
@@ -1134,9 +1109,6 @@ async fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
     for handle in thread_handles {
         let _ = handle.join();
-    }
-    for handle in async_handles {
-        let _ = handle.await;
     }
     info!("all unit threads joined");
 

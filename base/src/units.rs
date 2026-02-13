@@ -3,12 +3,12 @@ use pollster::block_on;
 use portable_atomic::{AtomicU128, AtomicU64, Ordering};
 use quanta::Clock;
 use std::collections::HashMap;
+use std::fs;
+use std::io::{Read as IoRead, Seek, Write as IoWrite};
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{fence, AtomicBool, AtomicU32};
 use std::sync::Arc;
-use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, info, info_span, trace, warn, Instrument};
+use tracing::{debug, info, info_span, trace, warn};
 use wgpu::{
     Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBindingType, BufferDescriptor, BufferUsages,
@@ -80,18 +80,6 @@ fn spin_backoff(spin_count: &mut u32) {
         std::thread::yield_now();
     } else {
         std::thread::sleep(std::time::Duration::from_micros(1));
-    }
-}
-
-async fn spin_backoff_async(spin_count: &mut u32) {
-    *spin_count += 1;
-    if *spin_count < 50 {
-        std::hint::spin_loop();
-        tokio::task::yield_now().await;
-    } else if *spin_count < 200 {
-        tokio::task::yield_now().await;
-    } else {
-        tokio::time::sleep(std::time::Duration::from_micros(50)).await;
     }
 }
 
@@ -1157,10 +1145,9 @@ impl NetworkUnit {
         }
     }
 
-    pub async fn execute(&mut self, action: &Action) {
+    pub fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::NetConnect => {
-                // Read address from memory
                 let addr = read_null_terminated_string(
                     &self.shared,
                     action.src as usize,
@@ -1168,27 +1155,20 @@ impl NetworkUnit {
                 );
                 debug!(addr = %addr, dst = action.dst, "net_connect");
 
-                // Connect to remote OR bind+listen based on format
                 if addr.starts_with(':') || addr.contains("0.0.0.0:") {
-                    // It's a listener
-                    if let Ok(listener) = TcpListener::bind(addr).await {
+                    if let Ok(listener) = TcpListener::bind(&addr) {
                         let handle = self.next_handle;
                         self.next_handle += 1;
                         self.listeners.insert(handle, listener);
-
-                        // Write handle to dst
                         unsafe {
                             self.shared
                                 .write(action.dst as usize, &handle.to_le_bytes());
                         }
                     }
-                } else if let Ok(stream) = TcpStream::connect(addr).await {
-                    // It's a connection
+                } else if let Ok(stream) = TcpStream::connect(&addr) {
                     let handle = self.next_handle;
                     self.next_handle += 1;
                     self.connections.insert(handle, stream);
-
-                    // Write handle to dst
                     unsafe {
                         self.shared
                             .write(action.dst as usize, &handle.to_le_bytes());
@@ -1198,7 +1178,6 @@ impl NetworkUnit {
 
             Kind::NetAccept => {
                 debug!(src = action.src, dst = action.dst, "net_accept");
-                // Read listener handle from src
                 let handle = unsafe {
                     u32::from_le_bytes(
                         self.shared.read(action.src as usize, 4)[0..4]
@@ -1208,12 +1187,10 @@ impl NetworkUnit {
                 };
 
                 if let Some(listener) = self.listeners.get_mut(&handle) {
-                    if let Ok((stream, _addr)) = listener.accept().await {
+                    if let Ok((stream, _addr)) = listener.accept() {
                         let conn_handle = self.next_handle;
                         self.next_handle += 1;
                         self.connections.insert(conn_handle, stream);
-
-                        // Write new connection handle to dst
                         unsafe {
                             self.shared
                                 .write(action.dst as usize, &conn_handle.to_le_bytes());
@@ -1224,7 +1201,6 @@ impl NetworkUnit {
 
             Kind::NetSend => {
                 debug!(dst = action.dst, src = action.src, size = action.size, "net_send");
-                // Read connection handle from dst
                 let handle = unsafe {
                     u32::from_le_bytes(
                         self.shared.read(action.dst as usize, 4)[0..4]
@@ -1235,13 +1211,12 @@ impl NetworkUnit {
 
                 if let Some(stream) = self.connections.get_mut(&handle) {
                     let data = unsafe { self.shared.read(action.src as usize, action.size as usize) };
-                    let _ = stream.write(data).await;
+                    let _ = IoWrite::write(stream, data);
                 }
             }
 
             Kind::NetRecv => {
                 debug!(src = action.src, dst = action.dst, size = action.size, "net_recv");
-                // Read connection handle from src
                 let handle = unsafe {
                     u32::from_le_bytes(
                         self.shared.read(action.src as usize, 4)[0..4]
@@ -1252,7 +1227,7 @@ impl NetworkUnit {
 
                 if let Some(stream) = self.connections.get_mut(&handle) {
                     let mut buffer = vec![0u8; action.size as usize];
-                    if let Ok(n) = stream.read(&mut buffer).await {
+                    if let Ok(n) = IoRead::read(stream, &mut buffer) {
                         unsafe {
                             self.shared.write(action.dst as usize, &buffer[..n]);
                         }
@@ -1280,7 +1255,7 @@ impl FileUnit {
         }
     }
 
-    pub async fn execute(&mut self, action: &Action) {
+    pub fn execute(&mut self, action: &Action) {
         match action.kind {
             Kind::FileRead => {
                 let filename = read_null_terminated_string(
@@ -1290,9 +1265,9 @@ impl FileUnit {
                 );
                 debug!(filename = %filename, dst = action.dst, offset = action.offset, size = action.size, "file_read");
 
-                if let Ok(mut file) = fs::File::open(&filename).await {
+                if let Ok(mut file) = fs::File::open(&filename) {
                     if action.offset > 0 {
-                        let _ = file.seek(std::io::SeekFrom::Start(action.offset as u64)).await;
+                        let _ = file.seek(std::io::SeekFrom::Start(action.offset as u64));
                     }
                     if action.size == 0 {
                         // Read entire file in chunks
@@ -1300,7 +1275,7 @@ impl FileUnit {
                         let dst_base = action.dst as usize;
 
                         loop {
-                            match file.read(&mut self.buffer).await {
+                            match file.read(&mut self.buffer) {
                                 Ok(0) => break, // EOF
                                 Ok(n) => {
                                     unsafe {
@@ -1315,7 +1290,7 @@ impl FileUnit {
                     } else {
                         // Read specific amount
                         let read_size = (action.size as usize).min(self.buffer.len());
-                        if let Ok(n) = file.read(&mut self.buffer[..read_size]).await {
+                        if let Ok(n) = file.read(&mut self.buffer[..read_size]) {
                             unsafe {
                                 self.shared.write(action.dst as usize, &self.buffer[..n]);
                             }
@@ -1332,18 +1307,18 @@ impl FileUnit {
                 debug!(filename = %filename, src = action.src, offset = action.offset, size = action.size, "file_write");
 
                 let file_result = if action.offset == 0 {
-                    fs::File::create(&filename).await
+                    fs::File::create(&filename)
                 } else {
                     fs::OpenOptions::new()
                         .write(true)
                         .create(true)
                         .open(&filename)
-                        .await
+                        
                 };
 
                 if let Ok(mut file) = file_result {
                     if action.offset > 0 {
-                        let _ = file.seek(std::io::SeekFrom::Start(action.offset as u64)).await;
+                        let _ = file.seek(std::io::SeekFrom::Start(action.offset as u64));
                     }
                     let src_base = action.src as usize;
 
@@ -1360,7 +1335,7 @@ impl FileUnit {
 
                         if len > 0 {
                             let data = unsafe { self.shared.read(src_base, len) };
-                            let _ = file.write_all(data).await;
+                            let _ = file.write_all(data);
                         }
                     } else {
                         let mut written = 0;
@@ -1371,14 +1346,14 @@ impl FileUnit {
                             let chunk_size = (total_size - written).min(self.buffer.len());
                             let data = unsafe { self.shared.read(src_base + written, chunk_size) };
 
-                            match file.write_all(data).await {
+                            match file.write_all(data) {
                                 Ok(_) => written += chunk_size,
                                 Err(_) => break,
                             }
                         }
                     }
 
-                    let _ = file.sync_all().await; // Ensure data hits disk
+                    let _ = file.sync_all(); // Ensure data hits disk
                 }
             }
             _ => {}
@@ -1806,13 +1781,13 @@ pub(crate) fn ffi_unit_task_mailbox(
     }
 }
 
-pub(crate) async fn network_unit_task_mailbox(
+pub(crate) fn network_unit_task_mailbox(
     mailbox: Arc<Mailbox>,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
 ) {
-    async move {
-        info!("network unit started");
+    let _span = info_span!("network_unit").entered();
+    info!("network unit started");
     let mut unit = NetworkUnit::new(0, shared.clone());
     let mut spin_count = 0u32;
 
@@ -1821,7 +1796,7 @@ pub(crate) async fn network_unit_task_mailbox(
             MailboxPoll::Work { start, end, flag } => {
                 debug!(start, end, flag, "network_work_received");
                 for idx in start..end {
-                    unit.execute(&actions[idx as usize]).await;
+                    unit.execute(&actions[idx as usize]);
                 }
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
@@ -1833,22 +1808,19 @@ pub(crate) async fn network_unit_task_mailbox(
                 info!("network unit shutting down");
                 return;
             }
-            MailboxPoll::Empty => spin_backoff_async(&mut spin_count).await,
+            MailboxPoll::Empty => spin_backoff(&mut spin_count),
         }
     }
-    }
-    .instrument(info_span!("network_unit"))
-    .await
 }
 
-pub(crate) async fn file_unit_task_mailbox(
+pub(crate) fn file_unit_task_mailbox(
     mailbox: Arc<Mailbox>,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
     buffer_size: usize,
 ) {
-    async move {
-        info!("file unit started");
+    let _span = info_span!("file_unit").entered();
+    info!("file unit started");
     let mut unit = FileUnit::new(0, shared.clone(), buffer_size);
     let mut spin_count = 0u32;
 
@@ -1857,7 +1829,7 @@ pub(crate) async fn file_unit_task_mailbox(
             MailboxPoll::Work { start, end, flag } => {
                 debug!(start, end, flag, "file_work_received");
                 for idx in start..end {
-                    unit.execute(&actions[idx as usize]).await;
+                    unit.execute(&actions[idx as usize]);
                 }
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
@@ -1869,12 +1841,9 @@ pub(crate) async fn file_unit_task_mailbox(
                 info!("file unit shutting down");
                 return;
             }
-            MailboxPoll::Empty => spin_backoff_async(&mut spin_count).await,
+            MailboxPoll::Empty => spin_backoff(&mut spin_count),
         }
     }
-    }
-    .instrument(info_span!("file_unit"))
-    .await
 }
 
 pub(crate) fn computational_unit_task_mailbox(
@@ -2756,19 +2725,18 @@ mod ffi_tests {
 mod network_tests {
     use super::*;
     use std::time::Duration;
-    use tokio::net::TcpListener;
-
-    #[tokio::test]
-    async fn test_network_connect_and_send() {
+    
+    #[test]
+    fn test_network_connect_and_send() {
         // Start a test server
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
 
         // Spawn server task
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
             let mut buf = [0u8; 5];
-            stream.read_exact(&mut buf).await.unwrap();
+            stream.read_exact(&mut buf).unwrap();
             assert_eq!(&buf, b"hello");
         });
 
@@ -2793,7 +2761,7 @@ mod network_tests {
             size: 0,
         };
 
-        unit.execute(&connect_action).await;
+        unit.execute(&connect_action);
         let handle = unsafe {
             u32::from_le_bytes(
                 shared.read(200, 4)[0..4].try_into().unwrap(),
@@ -2810,11 +2778,11 @@ mod network_tests {
             size: 5, // send 5 bytes
         };
 
-        unit.execute(&send_action).await;
+        unit.execute(&send_action);
     }
 
-    #[tokio::test]
-    async fn test_network_listen_accept_recv() {
+    #[test]
+    fn test_network_listen_accept_recv() {
         let mut memory = vec![0u8; 1024];
 
         // Setup listener address
@@ -2834,17 +2802,17 @@ mod network_tests {
             size: 0,
         };
 
-        unit.execute(&listen_action).await;
+        unit.execute(&listen_action);
 
         // Get actual listening port for client
         let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
         let actual_addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
 
         // Spawn client
-        let client_task = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            let mut stream = TcpStream::connect(actual_addr).await.unwrap();
-            stream.write_all(b"test").await.unwrap();
+        let client_task = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            let mut stream = TcpStream::connect(actual_addr).unwrap();
+            stream.write_all(b"test").unwrap();
         });
 
         // Accept connection
@@ -2856,7 +2824,7 @@ mod network_tests {
             size: 0,
         };
 
-        unit.execute(&accept_action).await;
+        unit.execute(&accept_action);
 
         // Receive data
         let recv_action = Action {
@@ -2867,7 +2835,7 @@ mod network_tests {
             size: 100, // max bytes to receive
         };
 
-        unit.execute(&recv_action).await;
+        unit.execute(&recv_action);
 
         // Verify received data
         unsafe {
@@ -2875,11 +2843,11 @@ mod network_tests {
             assert_eq!(data, b"test");
         }
 
-        client_task.await.unwrap();
+        client_task.join().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_network_echo_server() {
+    #[test]
+    fn test_network_echo_server() {
         let mut memory = vec![0u8; 1024];
         memory[0..10].copy_from_slice(b"0.0.0.0:0\0");
 
@@ -2894,18 +2862,18 @@ mod network_tests {
             offset: 50,
             size: 0,
         };
-        unit.execute(&listen_action).await;
+        unit.execute(&listen_action);
 
         let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
         let addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
 
         // Client task
-        let client = tokio::spawn(async move {
-            let mut stream = TcpStream::connect(addr).await.unwrap();
-            stream.write_all(b"echo").await.unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.write_all(b"echo").unwrap();
 
             let mut buf = [0u8; 4];
-            stream.read_exact(&mut buf).await.unwrap();
+            stream.read_exact(&mut buf).unwrap();
             assert_eq!(&buf, b"echo");
         });
 
@@ -2917,7 +2885,7 @@ mod network_tests {
             offset: 0,
             size: 0,
         };
-        unit.execute(&accept).await;
+        unit.execute(&accept);
 
         // Receive
         let recv = Action {
@@ -2927,7 +2895,7 @@ mod network_tests {
             offset: 0,
             size: 100,
         };
-        unit.execute(&recv).await;
+        unit.execute(&recv);
 
         // Echo back - use the same size as recv action
         let send = Action {
@@ -2937,13 +2905,13 @@ mod network_tests {
             offset: 0,
             size: recv.size,
         };
-        unit.execute(&send).await;
+        unit.execute(&send);
 
-        client.await.unwrap();
+        client.join().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_multiple_connections() {
+    #[test]
+    fn test_multiple_connections() {
         let mut memory = vec![0u8; 2048];
         memory[0..10].copy_from_slice(b"0.0.0.0:0\0");
 
@@ -2958,7 +2926,7 @@ mod network_tests {
             offset: 50,
             size: 0,
         })
-        .await;
+        ;
 
         let handle = unsafe { u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap()) };
         let addr = unit.listeners.get(&handle).unwrap().local_addr().unwrap();
@@ -2967,9 +2935,9 @@ mod network_tests {
         let mut clients = vec![];
         for i in 0..3 {
             let addr = addr.clone();
-            clients.push(tokio::spawn(async move {
-                let mut stream = TcpStream::connect(addr).await.unwrap();
-                stream.write_all(&[i as u8]).await.unwrap();
+            clients.push(std::thread::spawn(move || {
+                let mut stream = TcpStream::connect(addr).unwrap();
+                stream.write_all(&[i as u8]).unwrap();
             }));
         }
 
@@ -2983,7 +2951,7 @@ mod network_tests {
                 offset: 0,
                 size: 0,
             };
-            unit.execute(&accept).await;
+            unit.execute(&accept);
             handles.push(300 + i * 4);
         }
 
@@ -2996,16 +2964,16 @@ mod network_tests {
                 offset: 0,
                 size: 1,
             };
-            unit.execute(&recv).await;
+            unit.execute(&recv);
         }
 
         for client in clients {
-            client.await.unwrap();
+            client.join().unwrap();
         }
     }
 
-    #[tokio::test]
-    async fn test_network_handle_persistence() {
+    #[test]
+    fn test_network_handle_persistence() {
         let mut memory = vec![0u8; 1024];
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = NetworkUnit::new(0, shared.clone());
@@ -3021,7 +2989,7 @@ mod network_tests {
                 offset: 50,
                 size: 0,
             };
-            unit.execute(&action).await;
+            unit.execute(&action);
 
             let handle = unsafe {
                 u32::from_le_bytes(
@@ -3034,8 +3002,8 @@ mod network_tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_invalid_connection() {
+    #[test]
+    fn test_invalid_connection() {
         let mut memory = vec![0u8; 1024];
 
         // Invalid address
@@ -3054,7 +3022,7 @@ mod network_tests {
             size: 0,
         };
 
-        unit.execute(&action).await;
+        unit.execute(&action);
         let handle = unsafe {
             u32::from_le_bytes(shared.read(200, 4)[0..4].try_into().unwrap())
         };
@@ -3068,8 +3036,8 @@ mod file_tests {
     use std::fs;
     use std::path::Path;
 
-    #[tokio::test]
-    async fn test_file_write_and_read() {
+    #[test]
+    fn test_file_write_and_read() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_output.txt";
         let test_data = b"Hello, BASE!";
@@ -3094,7 +3062,7 @@ mod file_tests {
             size: test_data.len() as u32, // write 12 bytes
         };
 
-        unit.execute(&write_action).await;
+        unit.execute(&write_action);
 
         // Verify file was created
         assert!(Path::new(test_file).exists());
@@ -3115,7 +3083,7 @@ mod file_tests {
             size: 100,  // max bytes to read
         };
 
-        unit.execute(&read_action).await;
+        unit.execute(&read_action);
 
         unsafe {
             let read_data = shared.read(200, test_data.len());
@@ -3126,8 +3094,8 @@ mod file_tests {
         fs::remove_file(test_file).ok();
     }
 
-    #[tokio::test]
-    async fn test_file_read_nonexistent() {
+    #[test]
+    fn test_file_read_nonexistent() {
         let mut memory = vec![0u8; 1024];
 
         // Store filename for nonexistent file
@@ -3146,7 +3114,7 @@ mod file_tests {
             size: 100,
         };
 
-        unit.execute(&action).await;
+        unit.execute(&action);
 
         // Memory should remain unchanged (all zeros)
         unsafe {
@@ -3155,8 +3123,8 @@ mod file_tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_file_size_limits() {
+    #[test]
+    fn test_file_size_limits() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_size_limit.txt";
         let test_data = b"This is a longer test string for size limiting";
@@ -3181,7 +3149,7 @@ mod file_tests {
             size: 10, // Limit to 10 bytes
         };
 
-        unit.execute(&action).await;
+        unit.execute(&action);
 
         unsafe {
             let read_data = shared.read(100, 10);
@@ -3196,8 +3164,8 @@ mod file_tests {
         fs::remove_file(test_file).ok();
     }
 
-    #[tokio::test]
-    async fn test_filename_with_path() {
+    #[test]
+    fn test_filename_with_path() {
         let mut memory = vec![0u8; 1024];
         let test_dir = "test_dir";
         let test_file = "test_dir/test_file.txt";
@@ -3223,7 +3191,7 @@ mod file_tests {
             size: test_data.len() as u32,
         };
 
-        unit.execute(&action).await;
+        unit.execute(&action);
 
         assert!(Path::new(test_file).exists());
         let contents = fs::read(test_file).unwrap();
@@ -3234,8 +3202,8 @@ mod file_tests {
         fs::remove_dir(test_dir).ok();
     }
 
-    #[tokio::test]
-    async fn test_binary_data() {
+    #[test]
+    fn test_binary_data() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_binary.bin";
 
@@ -3261,7 +3229,7 @@ mod file_tests {
             size: binary_data.len() as u32,
         };
 
-        unit.execute(&write_action).await;
+        unit.execute(&write_action);
 
         // Read it back
         let read_action = Action {
@@ -3272,7 +3240,7 @@ mod file_tests {
             size: 0, // Read entire file
         };
 
-        unit.execute(&read_action).await;
+        unit.execute(&read_action);
 
         unsafe {
             let read_data = shared.read(200, binary_data.len());
@@ -3283,8 +3251,8 @@ mod file_tests {
         fs::remove_file(test_file).ok();
     }
 
-    #[tokio::test]
-    async fn test_file_read_with_offset() {
+    #[test]
+    fn test_file_read_with_offset() {
         let mut memory = vec![0u8; 1024];
         let test_file = "test_read_offset.txt";
         let test_data = b"Hello, World!";
@@ -3307,7 +3275,7 @@ mod file_tests {
             size: 6,
         };
 
-        unit.execute(&action).await;
+        unit.execute(&action);
 
         unsafe {
             let read_data = shared.read(100, 6);
@@ -3392,13 +3360,13 @@ mod atomic_tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_file_write_with_offset() {
+    #[test]
+    fn test_file_write_with_offset() {
         let test_file = "test_write_offset.txt";
         let initial_data = b"AAAAAABBBBBB"; // 12 bytes
 
         // First write: create file with initial content
-        fs::write(test_file, initial_data).await.unwrap();
+        fs::write(test_file, initial_data).unwrap();
 
         let mut memory = vec![0u8; 1024];
 
@@ -3422,14 +3390,14 @@ mod atomic_tests {
             size: 2,         // write 2 bytes
         };
 
-        unit.execute(&action).await;
+        unit.execute(&action);
 
         // Verify file now contains "AAAAXXBBBBBB"
-        let file_contents = fs::read(test_file).await.unwrap();
+        let file_contents = fs::read(test_file).unwrap();
         assert_eq!(file_contents, b"AAAAXXBBBBBB");
 
         // Cleanup
-        fs::remove_file(test_file).await.ok();
+        fs::remove_file(test_file).ok();
     }
 
     #[test]
@@ -3629,8 +3597,8 @@ mod concurrent_tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn test_concurrent_simd_units() {
+    #[test]
+    fn test_concurrent_simd_units() {
         // Test multiple SIMD units writing to different memory regions concurrently
         let mut memory = vec![0u8; 65536];
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
@@ -3642,7 +3610,7 @@ mod concurrent_tests {
             let shared_clone = shared.clone();
             let counter_clone = counter.clone();
 
-            handles.push(tokio::spawn(async move {
+            handles.push(std::thread::spawn(move || {
                 let mut unit = SimdUnit::new(
                     unit_id,
                     16,
@@ -3666,15 +3634,15 @@ mod concurrent_tests {
         }
 
         for handle in handles {
-            handle.await.unwrap();
+            handle.join().unwrap();
         }
 
         // Verify we got results from all units
         assert_eq!(counter.load(Ordering::SeqCst), 4);
     }
 
-    #[tokio::test]
-    async fn test_concurrent_file_operations() {
+    #[test]
+    fn test_concurrent_file_operations() {
         // Test multiple file operations happening concurrently
         let mut memory = vec![0u8; 4096];
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
@@ -3693,7 +3661,7 @@ mod concurrent_tests {
             memory[1000 + offset..1000 + offset + data.len()].copy_from_slice(data.as_bytes());
 
             let shared_clone = shared.clone();
-            handles.push(tokio::spawn(async move {
+            handles.push(std::thread::spawn(move || {
                 let mut unit = FileUnit::new(i as u8, shared_clone, 1024);
 
                 let action = Action {
@@ -3704,13 +3672,13 @@ mod concurrent_tests {
                     size: data.len() as u32,
                 };
 
-                unit.execute(&action).await
+                unit.execute(&action)
             }));
         }
 
         // Wait for all writes
         for handle in handles {
-            handle.await.unwrap();
+            handle.join().unwrap();
         }
 
         // Verify all files exist
