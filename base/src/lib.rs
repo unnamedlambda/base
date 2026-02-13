@@ -845,111 +845,130 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         )
                     };
 
-                    let target: Option<DispatchTarget> = {
-                        let pools: [&[Arc<Mailbox>]; 9] = [
-                            &gpu_mailboxes, &simd_mailboxes, &file_mailboxes,
-                            &network_mailboxes, &ffi_mailboxes, &computational_mailboxes,
-                            &memory_mailboxes, &hash_table_mailboxes, &lmdb_mailboxes,
-                        ];
-                        if unit_id == u32::MAX {
-                            match unit_type {
-                                1 => Some(DispatchTarget::Broadcast(simd_broadcast.clone())),
-                                5 => Some(DispatchTarget::Broadcast(computational_broadcast.clone())),
-                                6 => Some(DispatchTarget::Broadcast(memory_broadcast.clone())),
-                                _ => {
-                                    let t = unit_type as usize;
-                                    if t < pools.len() && !pools[t].is_empty() {
-                                        Some(DispatchTarget::Mailbox(pools[t][0].clone()))
-                                    } else {
-                                        None
-                                    }
+                    let pools: [&[Arc<Mailbox>]; 9] = [
+                        &gpu_mailboxes, &simd_mailboxes, &file_mailboxes,
+                        &network_mailboxes, &ffi_mailboxes, &computational_mailboxes,
+                        &memory_mailboxes, &hash_table_mailboxes, &lmdb_mailboxes,
+                    ];
+                    let t = unit_type as usize;
+
+                    // Pool mode (u32::MAX - 1): round-robin across all workers
+                    let pool_mailboxes: Option<Vec<Arc<Mailbox>>> = if unit_id == u32::MAX - 1 {
+                        if t < pools.len() && !pools[t].is_empty() {
+                            Some(pools[t].to_vec())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    let single_target: Option<DispatchTarget> = if pool_mailboxes.is_some() {
+                        None
+                    } else if unit_id == u32::MAX {
+                        match unit_type {
+                            1 => Some(DispatchTarget::Broadcast(simd_broadcast.clone())),
+                            5 => Some(DispatchTarget::Broadcast(computational_broadcast.clone())),
+                            6 => Some(DispatchTarget::Broadcast(memory_broadcast.clone())),
+                            _ => {
+                                if t < pools.len() && !pools[t].is_empty() {
+                                    Some(DispatchTarget::Mailbox(pools[t][0].clone()))
+                                } else {
+                                    None
                                 }
                             }
+                        }
+                    } else {
+                        if t < pools.len() && !pools[t].is_empty() {
+                            let idx = (unit_id as usize).min(pools[t].len() - 1);
+                            Some(DispatchTarget::Mailbox(pools[t][idx].clone()))
                         } else {
-                            let t = unit_type as usize;
-                            if t < pools.len() && !pools[t].is_empty() {
-                                let idx = (unit_id as usize).min(pools[t].len() - 1);
-                                Some(DispatchTarget::Mailbox(pools[t][idx].clone()))
-                            } else {
-                                None
-                            }
+                            None
                         }
                     };
 
-                    if let Some(target) = target {
-                    let stop = Arc::new(AtomicBool::new(false));
-                    let stop_for_thread = stop.clone();
-                    let shared_for_thread = shared.clone();
+                    if pool_mailboxes.is_some() || single_target.is_some() {
+                        let stop = Arc::new(AtomicBool::new(false));
+                        let stop_for_thread = stop.clone();
+                        let shared_for_thread = shared.clone();
 
-                    let join = std::thread::spawn(move || {
-                        let mut drained = 0u64;
-                        let mut spin_count = 0u32;
-                        loop {
-                            if stop_for_thread.load(Ordering::Acquire) {
-                                break;
-                            }
-                            if stop_flag_addr != 0 {
-                                let stop_word = unsafe { shared_for_thread.load_u64(stop_flag_addr as usize, Ordering::Acquire) };
-                                if stop_word != 0 {
+                        let join = std::thread::spawn(move || {
+                            let mut drained = 0u64;
+                            let mut spin_count = 0u32;
+                            let mut rr_idx = 0usize;
+                            loop {
+                                if stop_for_thread.load(Ordering::Acquire) {
                                     break;
                                 }
-                            }
-                            let packed = unsafe { queue_try_pop_u64(&shared_for_thread, queue_desc as usize) };
-                            if let Some(packed) = packed {
-                                spin_count = 0;
-                                let start = (packed >> 43) as u32;
-                                let end = ((packed >> 22) & 0x1F_FFFF) as u32;
-                                let flag = (packed & 0x3F_FFFF) as u32;
-                                match &target {
-                                    DispatchTarget::Mailbox(m) => m.post(start, end, flag),
-                                    DispatchTarget::Broadcast(b) => b.dispatch(start, end, flag),
-                                }
-                                if flag != 0 {
-                                    loop {
-                                        let done = unsafe {
-                                            shared_for_thread.load_u64(flag as usize, Ordering::Acquire)
-                                        };
-                                        if done != 0 || stop_for_thread.load(Ordering::Acquire) {
-                                            break;
-                                        }
-                                        std::hint::spin_loop();
+                                if stop_flag_addr != 0 {
+                                    let stop_word = unsafe { shared_for_thread.load_u64(stop_flag_addr as usize, Ordering::Acquire) };
+                                    if stop_word != 0 {
+                                        break;
                                     }
                                 }
-                                drained = drained.wrapping_add(1);
-                                if progress_addr != 0 {
-                                    unsafe { shared_for_thread.store_u64(progress_addr as usize, drained, Ordering::Release) };
+                                let packed = unsafe { queue_try_pop_u64(&shared_for_thread, queue_desc as usize) };
+                                if let Some(packed) = packed {
+                                    spin_count = 0;
+                                    let start = (packed >> 43) as u32;
+                                    let end = ((packed >> 22) & 0x1F_FFFF) as u32;
+                                    let flag = (packed & 0x3F_FFFF) as u32;
+
+                                    if let Some(ref pool) = pool_mailboxes {
+                                        // Pool mode: round-robin, no flag wait
+                                        pool[rr_idx % pool.len()].post(start, end, flag);
+                                        rr_idx += 1;
+                                    } else if let Some(ref target) = single_target {
+                                        match target {
+                                            DispatchTarget::Mailbox(m) => m.post(start, end, flag),
+                                            DispatchTarget::Broadcast(b) => b.dispatch(start, end, flag),
+                                        }
+                                        if flag != 0 {
+                                            loop {
+                                                let done = unsafe {
+                                                    shared_for_thread.load_u64(flag as usize, Ordering::Acquire)
+                                                };
+                                                if done != 0 || stop_for_thread.load(Ordering::Acquire) {
+                                                    break;
+                                                }
+                                                std::hint::spin_loop();
+                                            }
+                                        }
+                                    }
+                                    drained = drained.wrapping_add(1);
+                                    if progress_addr != 0 {
+                                        unsafe { shared_for_thread.store_u64(progress_addr as usize, drained, Ordering::Release) };
+                                    }
+                                } else if spin_count < 32 {
+                                    std::hint::spin_loop();
+                                    spin_count += 1;
+                                } else {
+                                    std::thread::sleep(Duration::from_micros(50));
                                 }
-                            } else if spin_count < 32 {
-                                std::hint::spin_loop();
-                                spin_count += 1;
-                            } else {
-                                std::thread::sleep(Duration::from_micros(50));
+                            }
+                        });
+
+                        let mut handle_id = kernel_handles.len();
+                        for (i, slot) in kernel_handles.iter().enumerate() {
+                            if slot.is_none() {
+                                handle_id = i;
+                                break;
                             }
                         }
-                    });
-
-                    let mut handle_id = kernel_handles.len();
-                    for (i, slot) in kernel_handles.iter().enumerate() {
-                        if slot.is_none() {
-                            handle_id = i;
-                            break;
+                        let handle = KernelHandle {
+                            stop,
+                            join: Some(join),
+                            progress_addr,
+                            queue_desc,
+                        };
+                        if handle_id == kernel_handles.len() {
+                            kernel_handles.push(Some(handle));
+                        } else {
+                            kernel_handles[handle_id] = Some(handle);
                         }
-                    }
-                    let handle = KernelHandle {
-                        stop,
-                        join: Some(join),
-                        progress_addr,
-                        queue_desc,
-                    };
-                    if handle_id == kernel_handles.len() {
-                        kernel_handles.push(Some(handle));
-                    } else {
-                        kernel_handles[handle_id] = Some(handle);
-                    }
-                    unsafe {
-                        shared.store_u32(action.src as usize, handle_id as u32, Ordering::Release);
-                    }
-                    1u64
+                        unsafe {
+                            shared.store_u32(action.src as usize, handle_id as u32, Ordering::Release);
+                        }
+                        1u64
                     } else {
                         0u64
                     }
