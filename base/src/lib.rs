@@ -38,6 +38,7 @@ struct KernelHandle {
     join: Option<std::thread::JoinHandle<()>>,
     progress_addr: u32,
     queue_desc: u32,
+    pool: Option<Vec<Arc<Mailbox>>>,
 }
 
 enum DispatchTarget {
@@ -887,7 +888,32 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         }
                     };
 
-                    if pool_mailboxes.is_some() || single_target.is_some() {
+                    if let Some(pool) = pool_mailboxes {
+                        let stop = Arc::new(AtomicBool::new(false));
+                        let mut handle_id = kernel_handles.len();
+                        for (i, slot) in kernel_handles.iter().enumerate() {
+                            if slot.is_none() {
+                                handle_id = i;
+                                break;
+                            }
+                        }
+                        let handle = KernelHandle {
+                            stop,
+                            join: None,
+                            progress_addr,
+                            queue_desc,
+                            pool: Some(pool),
+                        };
+                        if handle_id == kernel_handles.len() {
+                            kernel_handles.push(Some(handle));
+                        } else {
+                            kernel_handles[handle_id] = Some(handle);
+                        }
+                        unsafe {
+                            shared.store_u32(action.src as usize, handle_id as u32, Ordering::Release);
+                        }
+                        1u64
+                    } else if let Some(single_target) = single_target {
                         let stop = Arc::new(AtomicBool::new(false));
                         let stop_for_thread = stop.clone();
                         let shared_for_thread = shared.clone();
@@ -895,7 +921,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         let join = std::thread::spawn(move || {
                             let mut drained = 0u64;
                             let mut spin_count = 0u32;
-                            let mut rr_idx = 0usize;
                             loop {
                                 if stop_for_thread.load(Ordering::Acquire) {
                                     break;
@@ -913,25 +938,19 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                                     let end = ((packed >> 22) & 0x1F_FFFF) as u32;
                                     let flag = (packed & 0x3F_FFFF) as u32;
 
-                                    if let Some(ref pool) = pool_mailboxes {
-                                        // Pool mode: round-robin, no flag wait
-                                        pool[rr_idx % pool.len()].post(start, end, flag);
-                                        rr_idx += 1;
-                                    } else if let Some(ref target) = single_target {
-                                        match target {
-                                            DispatchTarget::Mailbox(m) => m.post(start, end, flag),
-                                            DispatchTarget::Broadcast(b) => b.dispatch(start, end, flag),
-                                        }
-                                        if flag != 0 {
-                                            loop {
-                                                let done = unsafe {
-                                                    shared_for_thread.load_u64(flag as usize, Ordering::Acquire)
-                                                };
-                                                if done != 0 || stop_for_thread.load(Ordering::Acquire) {
-                                                    break;
-                                                }
-                                                std::hint::spin_loop();
+                                    match &single_target {
+                                        DispatchTarget::Mailbox(m) => m.post(start, end, flag),
+                                        DispatchTarget::Broadcast(b) => b.dispatch(start, end, flag),
+                                    }
+                                    if flag != 0 {
+                                        loop {
+                                            let done = unsafe {
+                                                shared_for_thread.load_u64(flag as usize, Ordering::Acquire)
+                                            };
+                                            if done != 0 || stop_for_thread.load(Ordering::Acquire) {
+                                                break;
                                             }
+                                            std::hint::spin_loop();
                                         }
                                     }
                                     drained = drained.wrapping_add(1);
@@ -959,6 +978,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                             join: Some(join),
                             progress_addr,
                             queue_desc,
+                            pool: None,
                         };
                         if handle_id == kernel_handles.len() {
                             kernel_handles.push(Some(handle));
@@ -986,15 +1006,36 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 let mut submitted = 0u64;
                 if let Some(Some(handle)) = kernel_handles.get(handle_id) {
                     let count = if action.size == 0 { 1 } else { action.size };
-                    for i in 0..count {
-                        let src_ptr = action.src as usize + (i as usize) * 8;
-                        let ok = unsafe {
-                            queue_try_push_packet_mp(&shared, handle.queue_desc as usize, src_ptr)
-                        };
-                        if ok {
+                    if let Some(ref pool) = handle.pool {
+                        // Inline dispatch: post directly to workers round-robin
+                        let mut progress = if handle.progress_addr != 0 {
+                            unsafe { shared.load_u64(handle.progress_addr as usize, Ordering::Acquire) }
+                        } else { 0 };
+                        let pool_len = pool.len();
+                        for i in 0..count {
+                            let src_ptr = action.src as usize + (i as usize) * 8;
+                            let packed = unsafe { shared.load_u64(src_ptr, Ordering::Acquire) };
+                            let start = (packed >> 43) as u32;
+                            let end = ((packed >> 22) & 0x1F_FFFF) as u32;
+                            let flag = (packed & 0x3F_FFFF) as u32;
+                            pool[(progress as usize) % pool_len].post(start, end, flag);
+                            progress += 1;
                             submitted += 1;
-                        } else {
-                            break;
+                        }
+                        if handle.progress_addr != 0 {
+                            unsafe { shared.store_u64(handle.progress_addr as usize, progress, Ordering::Release) };
+                        }
+                    } else {
+                        for i in 0..count {
+                            let src_ptr = action.src as usize + (i as usize) * 8;
+                            let ok = unsafe {
+                                queue_try_push_packet_mp(&shared, handle.queue_desc as usize, src_ptr)
+                            };
+                            if ok {
+                                submitted += 1;
+                            } else {
+                                break;
+                            }
                         }
                     }
                 }
@@ -1011,15 +1052,35 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 let mut submitted = 0u64;
                 if let Some(Some(handle)) = kernel_handles.get(handle_id) {
                     let count = if action.size == 0 { 1 } else { action.size };
-                    for i in 0..count {
-                        let src_ptr = packet_base as usize + (i as usize) * 8;
-                        let ok = unsafe {
-                            queue_try_push_packet_mp(&shared, handle.queue_desc as usize, src_ptr)
-                        };
-                        if ok {
+                    if let Some(ref pool) = handle.pool {
+                        let mut progress = if handle.progress_addr != 0 {
+                            unsafe { shared.load_u64(handle.progress_addr as usize, Ordering::Acquire) }
+                        } else { 0 };
+                        let pool_len = pool.len();
+                        for i in 0..count {
+                            let src_ptr = packet_base as usize + (i as usize) * 8;
+                            let packed = unsafe { shared.load_u64(src_ptr, Ordering::Acquire) };
+                            let start = (packed >> 43) as u32;
+                            let end = ((packed >> 22) & 0x1F_FFFF) as u32;
+                            let flag = (packed & 0x3F_FFFF) as u32;
+                            pool[(progress as usize) % pool_len].post(start, end, flag);
+                            progress += 1;
                             submitted += 1;
-                        } else {
-                            break;
+                        }
+                        if handle.progress_addr != 0 {
+                            unsafe { shared.store_u64(handle.progress_addr as usize, progress, Ordering::Release) };
+                        }
+                    } else {
+                        for i in 0..count {
+                            let src_ptr = packet_base as usize + (i as usize) * 8;
+                            let ok = unsafe {
+                                queue_try_push_packet_mp(&shared, handle.queue_desc as usize, src_ptr)
+                            };
+                            if ok {
+                                submitted += 1;
+                            } else {
+                                break;
+                            }
                         }
                     }
                 }
