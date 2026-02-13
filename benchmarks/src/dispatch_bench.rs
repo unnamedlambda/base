@@ -606,6 +606,260 @@ fn bench_bfs_levels(
 }
 
 // ---------------------------------------------------------------------------
+// Kernel queue dispatch (KernelStart/Submit/Wait/Stop)
+// ---------------------------------------------------------------------------
+
+const QUEUE_MASK_OFF: usize = 8;
+const QUEUE_BASE_OFF: usize = 12;
+const QUEUE_DESC_SIZE: usize = 24;
+const KERNEL_DESC_QUEUE_OFF: usize = 0;
+const KERNEL_DESC_UNIT_TYPE_OFF: usize = 4;
+const KERNEL_DESC_UNIT_ID_OFF: usize = 8;
+const KERNEL_DESC_PROGRESS_OFF: usize = 16;
+const KERNEL_DESC_THREAD_COUNT_OFF: usize = 20;
+const KERNEL_DESC_SIZE: usize = 24;
+const KERNEL_KIND_QUEUE_ROUTER: u32 = 1;
+
+fn build_kernel_queue_algorithm(
+    num_nodes: usize,
+    coarse_chunk: usize,
+    workers: usize,
+) -> (Algorithm, Vec<u64>, Vec<u64>, u64, u32) {
+    let (chunk_sums, expected_sum) = build_frontier_chunk_sums(num_nodes, coarse_chunk);
+    let chunk_count = chunk_sums.len();
+    let packets_per_worker = (chunk_count + workers - 1) / workers;
+
+    let main_action_count: usize = 5;
+    let worker_base = main_action_count as u32;
+
+    assert!(
+        (worker_base as usize + chunk_count) <= 0x1F_FFFF,
+        "Action count exceeds 21-bit packet encoding limit"
+    );
+
+    // Build packets (same split as frontier benchmark)
+    let mut packets = Vec::new();
+    for w in 0..workers {
+        let start_idx = (w * packets_per_worker).min(chunk_count);
+        let end_idx = ((w + 1) * packets_per_worker).min(chunk_count);
+        if start_idx < end_idx {
+            packets.push(packed_packet(
+                worker_base + start_idx as u32,
+                worker_base + end_idx as u32,
+                0,
+            ));
+        }
+    }
+    let num_packets = packets.len();
+    let queue_capacity = num_packets.next_power_of_two().max(16);
+
+    // --- Memory layout ---
+    let queue_desc_addr = align64(64);
+    let queue_slots_addr = queue_desc_addr + QUEUE_DESC_SIZE;
+    let kernel_desc_addr = align64(queue_slots_addr + queue_capacity * 8);
+    let handle_id_addr = align64(kernel_desc_addr + KERNEL_DESC_SIZE);
+    let start_status_addr = align64(handle_id_addr + 8);
+    let submit_status_addr = start_status_addr + 8;
+    let wait_status_addr = submit_status_addr + 8;
+    let stop_status_addr = wait_status_addr + 8;
+    let progress_addr = stop_status_addr + 8;
+    let packet_data_addr = align64(progress_addr + 8);
+    let addend_base = align64(packet_data_addr + num_packets * 8);
+    let checksum_addr = align64(addend_base + chunk_count * 8);
+    let expected_sum_addr = checksum_addr + 8;
+    let dynamic_end = align64(expected_sum_addr + 8);
+
+    let mut payloads = vec![0u8; dynamic_end];
+
+    // Queue descriptor (head, tail, reserve start at 0 — already zeroed)
+    payloads[queue_desc_addr + QUEUE_MASK_OFF..][..4]
+        .copy_from_slice(&((queue_capacity - 1) as u32).to_le_bytes());
+    payloads[queue_desc_addr + QUEUE_BASE_OFF..][..4]
+        .copy_from_slice(&(queue_slots_addr as u32).to_le_bytes());
+
+    // Kernel descriptor
+    payloads[kernel_desc_addr + KERNEL_DESC_QUEUE_OFF..][..4]
+        .copy_from_slice(&(queue_desc_addr as u32).to_le_bytes());
+    payloads[kernel_desc_addr + KERNEL_DESC_UNIT_TYPE_OFF..][..4]
+        .copy_from_slice(&MEMORY_UNIT_TYPE.to_le_bytes());
+    payloads[kernel_desc_addr + KERNEL_DESC_UNIT_ID_OFF..][..4]
+        .copy_from_slice(&(u32::MAX - 1).to_le_bytes()); // Pool (round-robin)
+    // stop_flag = 0 (already zeroed)
+    payloads[kernel_desc_addr + KERNEL_DESC_PROGRESS_OFF..][..4]
+        .copy_from_slice(&(progress_addr as u32).to_le_bytes());
+    payloads[kernel_desc_addr + KERNEL_DESC_THREAD_COUNT_OFF..][..4]
+        .copy_from_slice(&(workers as u32).to_le_bytes());
+
+    // Packet data
+    for (i, &pkt) in packets.iter().enumerate() {
+        let off = packet_data_addr + i * 8;
+        payloads[off..off + 8].copy_from_slice(&pkt.to_le_bytes());
+    }
+
+    // Checksum and expected
+    payloads[checksum_addr..checksum_addr + 8].copy_from_slice(&0u64.to_le_bytes());
+    payloads[expected_sum_addr..expected_sum_addr + 8]
+        .copy_from_slice(&expected_sum.to_le_bytes());
+
+    // --- Actions ---
+    let total_actions = main_action_count + chunk_count;
+    let mut actions = Vec::with_capacity(total_actions);
+
+    // 0: KernelStart
+    actions.push(Action {
+        kind: Kind::KernelStart,
+        dst: kernel_desc_addr as u32,
+        src: handle_id_addr as u32,
+        offset: start_status_addr as u32,
+        size: KERNEL_KIND_QUEUE_ROUTER,
+    });
+
+    // 1: KernelSubmit
+    actions.push(Action {
+        kind: Kind::KernelSubmit,
+        dst: handle_id_addr as u32,
+        src: packet_data_addr as u32,
+        offset: submit_status_addr as u32,
+        size: num_packets as u32,
+    });
+
+    // 2: KernelWait (wait for all packets drained)
+    actions.push(Action {
+        kind: Kind::KernelWait,
+        dst: handle_id_addr as u32,
+        src: num_packets as u32,
+        offset: wait_status_addr as u32,
+        size: 30_000,
+    });
+
+    // 3: WaitUntil (checksum == expected)
+    actions.push(Action {
+        kind: Kind::WaitUntil,
+        dst: checksum_addr as u32,
+        src: expected_sum_addr as u32,
+        offset: 0,
+        size: 8,
+    });
+
+    // 4: KernelStop
+    actions.push(Action {
+        kind: Kind::KernelStop,
+        dst: handle_id_addr as u32,
+        src: 0,
+        offset: stop_status_addr as u32,
+        size: 0,
+    });
+
+    // 5..5+chunk_count: AtomicFetchAdd (worker actions dispatched via queue)
+    for (idx, &sum) in chunk_sums.iter().enumerate() {
+        payloads[addend_base + idx * 8..addend_base + idx * 8 + 8]
+            .copy_from_slice(&sum.to_le_bytes());
+        actions.push(Action {
+            kind: Kind::AtomicFetchAdd,
+            dst: checksum_addr as u32,
+            src: 0,
+            offset: (addend_base + idx * 8) as u32,
+            size: 8,
+        });
+    }
+
+    let mut memory_assignments = vec![0u8; total_actions];
+    for i in 0..chunk_count {
+        memory_assignments[main_action_count + i] = (i % workers) as u8;
+    }
+
+    let algorithm = Algorithm {
+        actions,
+        payloads,
+        state: State {
+            regs_per_unit: 0,
+            gpu_size: 0,
+            computational_regs: 0,
+            file_buffer_size: 0,
+            gpu_shader_offsets: vec![],
+            cranelift_ir_offsets: vec![],
+        },
+        units: UnitSpec {
+            simd_units: 0,
+            gpu_units: 0,
+            computational_units: 0,
+            file_units: 0,
+            network_units: 0,
+            memory_units: workers,
+            ffi_units: 0,
+            hash_table_units: 0,
+            lmdb_units: 0,
+            cranelift_units: 0,
+            backends_bits: 0,
+        },
+        simd_assignments: vec![],
+        computational_assignments: vec![],
+        memory_assignments,
+        file_assignments: vec![],
+        network_assignments: vec![],
+        ffi_assignments: vec![],
+        hash_table_assignments: vec![],
+        lmdb_assignments: vec![],
+        gpu_assignments: vec![],
+        cranelift_assignments: vec![],
+        worker_threads: Some(1),
+        blocking_threads: Some(1),
+        stack_size: Some(256 * 1024),
+        timeout_ms: Some(30_000),
+        thread_name_prefix: Some("kernel-queue-bench".to_string()),
+    };
+
+    (algorithm, packets, chunk_sums, expected_sum, worker_base)
+}
+
+fn bench_kernel_queue(
+    n: usize,
+    chunk: usize,
+    workers: usize,
+    rounds: usize,
+    label: &str,
+) -> BenchResult {
+    let (_, packets, chunk_sums, expected, worker_base) =
+        build_kernel_queue_algorithm(n, chunk, workers);
+    let action_count = 5 + chunk_sums.len();
+
+    // Warmup
+    let _ = rust_frontier_sum(&packets, &chunk_sums, worker_base, workers);
+    let _ = base::execute(build_kernel_queue_algorithm(n, chunk, workers).0);
+
+    let mut rust_times = Vec::with_capacity(rounds);
+    let mut base_times = Vec::with_capacity(rounds);
+    let mut verified = true;
+
+    for _ in 0..rounds {
+        let t = std::time::Instant::now();
+        let rust_got = rust_frontier_sum(&packets, &chunk_sums, worker_base, workers);
+        rust_times.push(t.elapsed().as_secs_f64() * 1000.0);
+        if rust_got != expected {
+            eprintln!("WARNING: Rust checksum {} != expected {}", rust_got, expected);
+            verified = false;
+        }
+
+        let (alg, _, _, _, _) = build_kernel_queue_algorithm(n, chunk, workers);
+        let t = std::time::Instant::now();
+        let ok = base::execute(alg).is_ok();
+        base_times.push(t.elapsed().as_secs_f64() * 1000.0);
+        if !ok {
+            eprintln!("WARNING: Base kernel queue failed (n={}, chunk={})", n, chunk);
+            verified = false;
+        }
+    }
+
+    BenchResult {
+        name: label.to_string(),
+        python_ms: Some(action_count as f64),
+        rust_ms: Some(median(&mut rust_times)),
+        base_ms: median(&mut base_times),
+        verified: Some(verified),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -679,6 +933,18 @@ pub fn run(cfg: &Config) -> Vec<BenchResult> {
     for &n in bfs_sizes {
         let label = format!("bfs n={} c={}", format_count(n), format_count(cfg.chunk));
         results.push(bench_bfs_levels(n, cfg.chunk, cfg.workers, cfg.rounds, &label));
+    }
+
+    // --- Kernel queue dispatch ---
+    eprintln!("\n--- Kernel queue dispatch (KernelStart/Submit/Wait/Stop) ---");
+    let kq_sizes: &[usize] = match cfg.profile.as_str() {
+        "quick" => &[1_000_000, 5_000_000],
+        "full" => &[1_000_000, 5_000_000, 10_000_000, 20_000_000],
+        _ => &[1_000_000, 5_000_000, 10_000_000],
+    };
+    for &n in kq_sizes {
+        let label = format!("kq n={} c={}", format_count(n), format_count(cfg.chunk));
+        results.push(bench_kernel_queue(n, cfg.chunk, cfg.workers, cfg.rounds, &label));
     }
 
     results
