@@ -9,8 +9,8 @@ fn print_usage() {
     eprintln!();
     eprintln!("  --bench <name>     Benchmark to run: csv, dispatch, all (default: all)");
     eprintln!("  --profile <name>   Profile: quick, medium, full (default: medium)");
-    eprintln!("  --rounds <n>       Rounds per measurement (default: 5)");
-    eprintln!("  --chunk <n>        Coarse chunk size for dispatch (default: 16384)");
+    eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
+    eprintln!("  --chunk <n>        Coarse chunk size for dispatch (default: 100000)");
     eprintln!("  --workers <n>      Worker threads for dispatch (default: auto)");
     eprintln!("  --help             Show this help");
 }
@@ -32,8 +32,8 @@ fn main() {
 
     let mut bench = "all".to_string();
     let mut profile = "medium".to_string();
-    let mut rounds: usize = 5;
-    let mut chunk: usize = 16384;
+    let mut rounds: usize = 10;
+    let mut chunk: usize = 100_000;
     let mut workers: usize = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)

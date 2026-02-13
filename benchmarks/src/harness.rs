@@ -9,6 +9,7 @@ pub struct BenchResult {
     pub rust_ms: Option<f64>,
     pub base_ms: f64,
     pub verified: Option<bool>,
+    pub actions: Option<usize>,
 }
 
 
@@ -125,8 +126,8 @@ pub fn print_dispatch_table(results: &[BenchResult]) {
             _ => "N/A".to_string(),
         };
 
-        let actions_str = match r.python_ms {
-            Some(n) => format!("{}", n as u64),
+        let actions_str = match r.actions {
+            Some(n) => format!("{}", n),
             None => "".to_string(),
         };
 

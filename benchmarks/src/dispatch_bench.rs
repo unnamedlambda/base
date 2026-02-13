@@ -287,7 +287,8 @@ fn bench_frontier(
 
     BenchResult {
         name: label.to_string(),
-        python_ms: Some(action_count as f64),
+        python_ms: None,
+        actions: Some(action_count),
         rust_ms: Some(median(&mut rust_times)),
         base_ms: median(&mut base_times),
         verified: Some(verified),
@@ -510,7 +511,8 @@ fn bench_multi_phase(
 
     BenchResult {
         name: label.to_string(),
-        python_ms: Some(action_count as f64),
+        python_ms: None,
+        actions: Some(action_count),
         rust_ms: Some(median(&mut rust_times)),
         base_ms: median(&mut base_times),
         verified: Some(verified),
@@ -852,7 +854,8 @@ fn bench_kernel_queue(
 
     BenchResult {
         name: label.to_string(),
-        python_ms: Some(action_count as f64),
+        python_ms: None,
+        actions: Some(action_count),
         rust_ms: Some(median(&mut rust_times)),
         base_ms: median(&mut base_times),
         verified: Some(verified),
@@ -873,7 +876,7 @@ pub struct Config {
 pub fn run(cfg: &Config) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
-    eprintln!(
+    println!(
         "Workers: {}, Chunk: {}, Rounds: {}, Profile: {}",
         cfg.workers, cfg.chunk, cfg.rounds, cfg.profile
     );
@@ -890,13 +893,10 @@ pub fn run(cfg: &Config) -> Vec<BenchResult> {
         results.push(bench_frontier(n, cfg.chunk, cfg.workers, cfg.rounds, &label));
     }
 
-    // --- Chunk sweep at fixed size ---
-    if cfg.profile != "quick" {
-        let sweep_n: usize = if cfg.profile == "full" { 10_000_000 } else { 5_000_000 };
-        let chunks: &[usize] = match cfg.profile.as_str() {
-            "full" => &[256, 1024, 4096, 16384, 65536],
-            _ => &[512, 4096],
-        };
+    // --- Chunk sweep at fixed size (full profile only) ---
+    if cfg.profile == "full" {
+        let sweep_n: usize = 10_000_000;
+        let chunks: &[usize] = &[256, 1024, 4096, 16384, 65536];
         for &c in chunks {
             if c == cfg.chunk {
                 continue;
@@ -907,7 +907,7 @@ pub fn run(cfg: &Config) -> Vec<BenchResult> {
     }
 
     // --- Multi-phase prefix sum ---
-    eprintln!("\n--- Multi-phase reduction (prefix-sum style) ---");
+    println!("\n--- Multi-phase reduction (prefix-sum style) ---");
     let phase_n: usize = match cfg.profile.as_str() {
         "quick" => 5_000_000,
         "full" => 10_000_000,
@@ -924,7 +924,7 @@ pub fn run(cfg: &Config) -> Vec<BenchResult> {
     }
 
     // --- BFS-level dispatch ---
-    eprintln!("\n--- BFS-level dispatch (variable frontier sizes) ---");
+    println!("\n--- BFS-level dispatch (variable frontier sizes) ---");
     let bfs_sizes: &[usize] = match cfg.profile.as_str() {
         "quick" => &[1_000_000],
         "full" => &[1_000_000, 5_000_000, 10_000_000],
@@ -936,7 +936,7 @@ pub fn run(cfg: &Config) -> Vec<BenchResult> {
     }
 
     // --- Kernel queue dispatch ---
-    eprintln!("\n--- Kernel queue dispatch (KernelStart/Submit/Wait/Stop) ---");
+    println!("\n--- Kernel queue dispatch (KernelStart/Submit/Wait/Stop) ---");
     let kq_sizes: &[usize] = match cfg.profile.as_str() {
         "quick" => &[1_000_000, 5_000_000],
         "full" => &[1_000_000, 5_000_000, 10_000_000, 20_000_000],
