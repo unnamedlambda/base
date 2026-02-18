@@ -38,6 +38,8 @@ fn generate_algorithm(manifest_dir: &str, exe_name: &str, output_name: &str) {
 fn main() {
     println!("cargo:rerun-if-changed=lean/CsvBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lean/RegexBenchAlgorithm.lean");
+    println!("cargo:rerun-if-changed=lean/JsonBenchAlgorithm.lean");
+    println!("cargo:rerun-if-changed=lean/StringSearchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lakefile.lean");
     println!("cargo:rerun-if-changed=../lean/AlgorithmLib.lean");
 
@@ -58,4 +60,6 @@ fn main() {
 
     generate_algorithm(&manifest_dir, "generate_csv", "csv_algorithm");
     generate_algorithm(&manifest_dir, "generate_regex", "regex_algorithm");
+    generate_algorithm(&manifest_dir, "generate_json", "json_algorithm");
+    generate_algorithm(&manifest_dir, "generate_string_search", "strsearch_algorithm");
 }
