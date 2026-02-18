@@ -1211,7 +1211,7 @@ impl NetworkUnit {
 
                 if let Some(stream) = self.connections.get_mut(&handle) {
                     let data = unsafe { self.shared.read(action.src as usize, action.size as usize) };
-                    let _ = IoWrite::write(stream, data);
+                    let _ = IoWrite::write_all(stream, data);
                 }
             }
 
@@ -1227,9 +1227,9 @@ impl NetworkUnit {
 
                 if let Some(stream) = self.connections.get_mut(&handle) {
                     let mut buffer = vec![0u8; action.size as usize];
-                    if let Ok(n) = IoRead::read(stream, &mut buffer) {
+                    if let Ok(_) = IoRead::read_exact(stream, &mut buffer) {
                         unsafe {
-                            self.shared.write(action.dst as usize, &buffer[..n]);
+                            self.shared.write(action.dst as usize, &buffer);
                         }
                     }
                 }

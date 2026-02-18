@@ -4,6 +4,7 @@ mod harness;
 mod json_bench;
 mod gpu_bench;
 mod matmul_bench;
+mod network_bench;
 mod reduction_bench;
 mod regex_bench;
 mod sort_bench;
@@ -93,6 +94,7 @@ fn main() {
     let run_vecops = bench == "all" || bench == "burn" || bench == "vecops";
     let run_reduction = bench == "all" || bench == "burn" || bench == "reduction";
     let run_gpu = bench == "gpu";
+    let run_network = bench == "network";
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
     let run_wc = bench == "all" || bench == "wc";
@@ -141,6 +143,11 @@ fn main() {
     if run_gpu {
         let results = gpu_bench::run(rounds);
         gpu_bench::print_gpu_table(&results);
+    }
+
+    if run_network {
+        let results = network_bench::run(rounds);
+        network_bench::print_network_table(&results);
     }
 
     if run_sort {
