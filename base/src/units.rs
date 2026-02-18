@@ -1993,59 +1993,194 @@ pub(crate) fn gpu_unit_task_mailbox(
     }
 }
 
+pub(crate) struct CraneliftHashTableContext {
+    tables: HashMap<u32, HashMap<Vec<u8>, Vec<u8>>>,
+    next_handle: u32,
+}
+
+impl CraneliftHashTableContext {
+    fn new() -> Self {
+        Self { tables: HashMap::new(), next_handle: 0 }
+    }
+}
+
+/// Offset in shared memory where the HT context pointer is stored (first 8 bytes of payload).
+const CL_HT_CTX_OFFSET: usize = 0;
+
+unsafe extern "C" fn cl_ht_create(ctx: *mut u8) -> u32 {
+    let ctx = &mut *(ctx as *mut CraneliftHashTableContext);
+    let handle = ctx.next_handle;
+    ctx.next_handle += 1;
+    ctx.tables.insert(handle, HashMap::new());
+    handle
+}
+
+unsafe extern "C" fn cl_ht_lookup(
+    ctx: *mut u8,
+    key: *const u8,
+    key_len: u32,
+    result: *mut u8,
+) -> u32 {
+    let ctx = &*(ctx as *const CraneliftHashTableContext);
+    let key = std::slice::from_raw_parts(key, key_len as usize);
+    if let Some(table) = ctx.tables.get(&0) {
+        if let Some(val) = table.get(key) {
+            std::ptr::copy_nonoverlapping(val.as_ptr(), result, val.len());
+            return val.len() as u32;
+        }
+    }
+    0xFFFF_FFFF
+}
+
+unsafe extern "C" fn cl_ht_insert(
+    ctx: *mut u8,
+    key: *const u8,
+    key_len: u32,
+    val: *const u8,
+    val_len: u32,
+) {
+    let ctx = &mut *(ctx as *mut CraneliftHashTableContext);
+    let key_slice = std::slice::from_raw_parts(key, key_len as usize);
+    let val_slice = std::slice::from_raw_parts(val, val_len as usize);
+    if let Some(table) = ctx.tables.get_mut(&0) {
+        if let Some(existing) = table.get_mut(key_slice) {
+            if existing.len() == val_len as usize {
+                existing.copy_from_slice(val_slice);
+            } else {
+                *existing = val_slice.to_vec();
+            }
+        } else {
+            table.insert(key_slice.to_vec(), val_slice.to_vec());
+        }
+    }
+}
+
+unsafe extern "C" fn cl_ht_count(ctx: *mut u8) -> u32 {
+    let ctx = &*(ctx as *const CraneliftHashTableContext);
+    ctx.tables.get(&0).map(|t| t.len() as u32).unwrap_or(0)
+}
+
+unsafe extern "C" fn cl_ht_get_entry(
+    ctx: *mut u8,
+    index: u32,
+    key_out: *mut u8,
+    val_out: *mut u8,
+) -> i32 {
+    let ctx = &*(ctx as *const CraneliftHashTableContext);
+    if let Some(table) = ctx.tables.get(&0) {
+        if let Some((key, val)) = table.iter().nth(index as usize) {
+            std::ptr::copy_nonoverlapping(key.as_ptr(), key_out, key.len());
+            std::ptr::copy_nonoverlapping(val.as_ptr(), val_out, val.len());
+            return key.len() as i32;
+        }
+    }
+    -1
+}
+
+unsafe extern "C" fn cl_ht_increment(
+    ctx: *mut u8,
+    key: *const u8,
+    key_len: u32,
+    addend: i64,
+) -> i64 {
+    let ctx = &mut *(ctx as *mut CraneliftHashTableContext);
+    let key_slice = std::slice::from_raw_parts(key, key_len as usize);
+    if let Some(table) = ctx.tables.get_mut(&0) {
+        if let Some(existing) = table.get_mut(key_slice) {
+            let current = i64::from_le_bytes(existing[..8].try_into().unwrap_or([0; 8]));
+            let new_val = current + addend;
+            existing[..8].copy_from_slice(&new_val.to_le_bytes());
+            return new_val;
+        }
+        table.insert(key_slice.to_vec(), addend.to_le_bytes().to_vec());
+    }
+    addend
+}
+
 pub(crate) struct CraneliftUnit {
     shared: Arc<SharedMemory>,
-    compiled_fn: unsafe extern "C" fn(*mut u8),
-    _module: cranelift_jit::JITModule,
+    compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
 }
 
 impl CraneliftUnit {
-    pub fn new(shared: Arc<SharedMemory>, clif_source: &str) -> Self {
+    pub fn new(shared: Arc<SharedMemory>, compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>) -> Self {
+        Self { shared, compiled_fns }
+    }
+
+    pub fn compile(clif_source: &str) -> Arc<Vec<unsafe extern "C" fn(*mut u8)>> {
         info!(ir_len = clif_source.len(), "compiling Cranelift IR");
 
-        // Parse CLIF text
-        let functions = cranelift_reader::parse_functions(clif_source)
+        let mut functions = cranelift_reader::parse_functions(clif_source)
             .expect("Failed to parse CLIF IR");
         assert!(!functions.is_empty(), "No functions in CLIF IR");
-        let func = functions.into_iter().next().unwrap();
 
-        // Create JIT module with host ISA
         let mut flag_builder = settings::builder();
         flag_builder.set("opt_level", "speed").unwrap();
         let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
         let isa = isa_builder.finish(settings::Flags::new(flag_builder)).unwrap();
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+
+        builder.symbol("ht_create", cl_ht_create as *const u8);
+        builder.symbol("ht_lookup", cl_ht_lookup as *const u8);
+        builder.symbol("ht_insert", cl_ht_insert as *const u8);
+        builder.symbol("ht_count", cl_ht_count as *const u8);
+        builder.symbol("ht_get_entry", cl_ht_get_entry as *const u8);
+        builder.symbol("ht_increment", cl_ht_increment as *const u8);
+
         let mut module = cranelift_jit::JITModule::new(builder);
 
-        // Declare function with the parsed signature
-        let func_id = module
-            .declare_function("main", cranelift_module::Linkage::Local, &func.signature)
-            .expect("Failed to declare function");
+        // cranelift_reader parses `%name` as ExternalName::TestCase; fix up to ExternalName::User
+        for func in functions.iter_mut() {
+            let mut fixups = Vec::new();
+            for (fref, data) in func.dfg.ext_funcs.iter() {
+                if let cranelift_codegen::ir::ExternalName::TestCase(testcase) = &data.name {
+                    let name = testcase.to_string();
+                    let name = name.strip_prefix('%').unwrap_or(&name).to_string();
+                    let sig = func.dfg.signatures[data.signature].clone();
+                    fixups.push((fref, name, sig));
+                }
+            }
+            for (fref, name, sig) in fixups {
+                let fid = module
+                    .declare_function(&name, cranelift_module::Linkage::Import, &sig)
+                    .expect("Failed to declare imported function");
+                let user_ref = func.declare_imported_user_function(
+                    cranelift_codegen::ir::UserExternalName { namespace: 0, index: fid.as_u32() },
+                );
+                func.dfg.ext_funcs[fref].name = cranelift_codegen::ir::ExternalName::user(user_ref);
+                func.dfg.ext_funcs[fref].colocated = false;
+            }
+        }
 
-        // Define function from parsed IR
-        let mut ctx = cranelift_codegen::Context::for_function(func);
-        module
-            .define_function(func_id, &mut ctx)
-            .expect("Failed to compile function");
+        let mut func_ids = Vec::with_capacity(functions.len());
+        for (i, func) in functions.into_iter().enumerate() {
+            let name = format!("fn_{}", i);
+            let func_id = module
+                .declare_function(&name, cranelift_module::Linkage::Local, &func.signature)
+                .expect("Failed to declare function");
+            let mut ctx = cranelift_codegen::Context::for_function(func);
+            module.define_function(func_id, &mut ctx).expect("Failed to compile function");
+            func_ids.push(func_id);
+        }
         module.finalize_definitions().unwrap();
 
-        // Get function pointer
-        let code_ptr = module.get_finalized_function(func_id);
-        let compiled_fn: unsafe extern "C" fn(*mut u8) =
-            unsafe { std::mem::transmute(code_ptr) };
+        let compiled_fns: Vec<unsafe extern "C" fn(*mut u8)> = func_ids
+            .iter()
+            .map(|&id| {
+                let code_ptr = module.get_finalized_function(id);
+                unsafe { std::mem::transmute(code_ptr) }
+            })
+            .collect();
 
-        info!("Cranelift IR compiled successfully");
-
-        CraneliftUnit {
-            shared,
-            compiled_fn,
-            _module: module,
-        }
+        info!(count = compiled_fns.len(), "Cranelift IR compiled successfully");
+        Box::leak(Box::new(module));
+        Arc::new(compiled_fns)
     }
 
     pub unsafe fn execute(&mut self, action: &Action) {
+        let fn_idx = (action.src as usize) % self.compiled_fns.len();
         let ptr = self.shared.ptr.add(action.dst as usize);
-        (self.compiled_fn)(ptr);
+        (self.compiled_fns[fn_idx])(ptr);
     }
 }
 
@@ -2053,11 +2188,20 @@ pub(crate) fn cranelift_unit_task_mailbox(
     mailbox: Arc<Mailbox>,
     actions: Arc<Vec<Action>>,
     shared: Arc<SharedMemory>,
-    clif_source: String,
+    compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
 ) {
     let _span = info_span!("cranelift_unit").entered();
     info!("Cranelift unit started");
-    let mut unit = CraneliftUnit::new(shared.clone(), &clif_source);
+
+    // Create hash table context for CLIF-callable HT functions and store its pointer
+    // at offset 0 in shared memory (HT_CTX_PTR slot, written before JIT code runs).
+    let ctx = Box::new(CraneliftHashTableContext::new());
+    let ctx_ptr = Box::into_raw(ctx);
+    unsafe {
+        shared.store_u64(CL_HT_CTX_OFFSET, ctx_ptr as u64, Ordering::Release);
+    }
+
+    let mut unit = CraneliftUnit::new(shared.clone(), compiled_fns);
     let mut spin_count = 0u32;
 
     loop {
@@ -2077,6 +2221,7 @@ pub(crate) fn cranelift_unit_task_mailbox(
             }
             MailboxPoll::Closed => {
                 info!("Cranelift unit shutting down");
+                unsafe { drop(Box::from_raw(ctx_ptr)); }
                 return;
             }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),

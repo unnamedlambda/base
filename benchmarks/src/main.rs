@@ -5,6 +5,7 @@ mod json_bench;
 mod regex_bench;
 mod sort_bench;
 mod string_search_bench;
+mod wordcount_bench;
 
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
@@ -86,6 +87,7 @@ fn main() {
     let run_regex = bench == "all" || bench == "regex";
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
+    let run_wc = bench == "all" || bench == "wc";
 
     if run_csv {
         let results = csv_bench::run(rounds);
@@ -120,6 +122,11 @@ fn main() {
 
     if run_strsearch {
         let results = string_search_bench::run(rounds);
+        harness::print_table(&results);
+    }
+
+    if run_wc {
+        let results = wordcount_bench::run(rounds);
         harness::print_table(&results);
     }
 }

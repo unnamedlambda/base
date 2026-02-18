@@ -21,3 +21,7 @@ lean_exe generate_json where
 lean_exe generate_string_search where
   root := `StringSearchAlgorithm
   supportInterpreter := true
+
+lean_exe generate_wordcount where
+  root := `WordCountAlgorithm
+  supportInterpreter := true
