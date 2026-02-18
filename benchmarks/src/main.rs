@@ -3,9 +3,11 @@ mod dispatch_bench;
 mod harness;
 mod json_bench;
 mod matmul_bench;
+mod reduction_bench;
 mod regex_bench;
 mod sort_bench;
 mod string_search_bench;
+mod vecops_bench;
 mod wordcount_bench;
 
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -87,6 +89,8 @@ fn main() {
     let run_json = bench == "all" || bench == "json";
     let run_regex = bench == "all" || bench == "regex";
     let run_matmul = bench == "all" || bench == "burn";
+    let run_vecops = bench == "all" || bench == "burn" || bench == "vecops";
+    let run_reduction = bench == "all" || bench == "burn" || bench == "reduction";
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
     let run_wc = bench == "all" || bench == "wc";
@@ -119,6 +123,16 @@ fn main() {
 
     if run_matmul {
         let results = matmul_bench::run(rounds);
+        harness::print_burn_table(&results);
+    }
+
+    if run_vecops {
+        let results = vecops_bench::run(rounds);
+        harness::print_burn_table(&results);
+    }
+
+    if run_reduction {
+        let results = reduction_bench::run(rounds);
         harness::print_burn_table(&results);
     }
 
