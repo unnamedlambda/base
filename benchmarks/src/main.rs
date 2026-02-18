@@ -3,6 +3,7 @@ mod dispatch_bench;
 mod harness;
 mod json_bench;
 mod regex_bench;
+mod sort_bench;
 mod string_search_bench;
 
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -83,6 +84,7 @@ fn main() {
     let run_dispatch = bench == "all" || bench == "dispatch";
     let run_json = bench == "all" || bench == "json";
     let run_regex = bench == "all" || bench == "regex";
+    let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
 
     if run_csv {
@@ -108,6 +110,11 @@ fn main() {
 
     if run_regex {
         let results = regex_bench::run(rounds);
+        harness::print_table(&results);
+    }
+
+    if run_sort {
+        let results = sort_bench::run(rounds);
         harness::print_table(&results);
     }
 
