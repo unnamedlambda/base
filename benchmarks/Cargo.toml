@@ -13,6 +13,7 @@ crossbeam-channel = "0.5"
 burn = { version = "0.16", default-features = false, features = ["ndarray", "wgpu"] }
 pollster = "0.4"
 wgpu = "23"
+tokio = { version = "1", features = ["fs", "rt", "rt-multi-thread", "sync", "net", "io-util"] }
 
 [build-dependencies]
 base-types = { path = "../base-types" }

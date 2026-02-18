@@ -3,7 +3,9 @@ mod dispatch_bench;
 mod harness;
 mod json_bench;
 mod gpu_bench;
+mod gpu_iter_bench;
 mod matmul_bench;
+mod memory_bench;
 mod network_bench;
 mod reduction_bench;
 mod regex_bench;
@@ -94,6 +96,8 @@ fn main() {
     let run_vecops = bench == "all" || bench == "burn" || bench == "vecops";
     let run_reduction = bench == "all" || bench == "burn" || bench == "reduction";
     let run_gpu = bench == "gpu";
+    let run_gpu_iter = bench == "gpu-iter";
+    let run_memory = bench == "memory";
     let run_network = bench == "network";
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
@@ -143,6 +147,16 @@ fn main() {
     if run_gpu {
         let results = gpu_bench::run(rounds);
         gpu_bench::print_gpu_table(&results);
+    }
+
+    if run_gpu_iter {
+        let results = gpu_iter_bench::run(rounds);
+        gpu_iter_bench::print_iter_table(&results);
+    }
+
+    if run_memory {
+        let results = memory_bench::run(rounds);
+        memory_bench::print_memory_table(&results);
     }
 
     if run_network {

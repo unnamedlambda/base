@@ -1288,13 +1288,15 @@ impl FileUnit {
                             }
                         }
                     } else {
-                        // Read specific amount
-                        let read_size = (action.size as usize).min(self.buffer.len());
-                        if let Ok(n) = file.read(&mut self.buffer[..read_size]) {
-                            unsafe {
-                                self.shared.write(action.dst as usize, &self.buffer[..n]);
-                            }
-                        }
+                        // Read specific amount directly into shared memory
+                        let read_size = action.size as usize;
+                        let dst_slice = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                self.shared.ptr.add(action.dst as usize),
+                                read_size,
+                            )
+                        };
+                        let _ = IoRead::read_exact(&mut file, dst_slice);
                     }
                 }
             }
