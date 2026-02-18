@@ -2,6 +2,7 @@ mod csv_bench;
 mod dispatch_bench;
 mod harness;
 mod json_bench;
+mod matmul_bench;
 mod regex_bench;
 mod sort_bench;
 mod string_search_bench;
@@ -85,6 +86,7 @@ fn main() {
     let run_dispatch = bench == "all" || bench == "dispatch";
     let run_json = bench == "all" || bench == "json";
     let run_regex = bench == "all" || bench == "regex";
+    let run_matmul = bench == "all" || bench == "burn";
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
     let run_wc = bench == "all" || bench == "wc";
@@ -113,6 +115,11 @@ fn main() {
     if run_regex {
         let results = regex_bench::run(rounds);
         harness::print_table(&results);
+    }
+
+    if run_matmul {
+        let results = matmul_bench::run(rounds);
+        harness::print_burn_table(&results);
     }
 
     if run_sort {

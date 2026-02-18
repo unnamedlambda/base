@@ -146,6 +146,49 @@ pub fn print_dispatch_table(results: &[BenchResult]) {
     println!();
 }
 
+/// Print Rust vs Burn vs Base comparison table.
+pub fn print_burn_table(results: &[BenchResult]) {
+    let name_w = 20;
+    let col_w = 12;
+
+    println!();
+    println!(
+        "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
+        "Benchmark", "Rust", "Burn", "Base", "Check",
+        name_w = name_w, col_w = col_w
+    );
+    println!("{}", "-".repeat(name_w + col_w * 3 + 6 + 4));
+
+    for r in results {
+        let rust_str = match r.rust_ms {
+            Some(ms) => format!("{:.1}ms", ms),
+            None => "N/A".to_string(),
+        };
+        let burn_str = match r.python_ms {
+            Some(ms) => format!("{:.1}ms", ms),
+            None => "N/A".to_string(),
+        };
+        let base_str = if r.base_ms.is_nan() {
+            "N/A".to_string()
+        } else {
+            format!("{:.1}ms", r.base_ms)
+        };
+
+        let check_str = match r.verified {
+            Some(true) => "\u{2713}",
+            Some(false) => "\u{2717}",
+            None => "\u{2014}",
+        };
+
+        println!(
+            "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
+            r.name, rust_str, burn_str, base_str, check_str,
+            name_w = name_w, col_w = col_w
+        );
+    }
+    println!();
+}
+
 fn python_dir() -> std::path::PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest).join("python")
