@@ -1,6 +1,7 @@
 mod csv_bench;
 mod dispatch_bench;
 mod harness;
+mod regex_bench;
 
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
@@ -78,6 +79,7 @@ fn main() {
 
     let run_csv = bench == "all" || bench == "csv";
     let run_dispatch = bench == "all" || bench == "dispatch";
+    let run_regex = bench == "all" || bench == "regex";
 
     if run_csv {
         let results = csv_bench::run(rounds);
@@ -93,5 +95,10 @@ fn main() {
         };
         let results = dispatch_bench::run(&cfg);
         harness::print_dispatch_table(&results);
+    }
+
+    if run_regex {
+        let results = regex_bench::run(rounds);
+        harness::print_table(&results);
     }
 }

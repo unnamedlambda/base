@@ -9,3 +9,7 @@ package benchAlgorithms where
 lean_exe generate_csv where
   root := `CsvBenchAlgorithm
   supportInterpreter := true
+
+lean_exe generate_regex where
+  root := `RegexBenchAlgorithm
+  supportInterpreter := true
