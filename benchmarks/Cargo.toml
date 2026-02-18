@@ -10,7 +10,9 @@ bincode = "1"
 tracing = { version = "0.1", features = ["release_max_level_off"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 crossbeam-channel = "0.5"
-burn = { version = "0.16", default-features = false, features = ["ndarray"] }
+burn = { version = "0.16", default-features = false, features = ["ndarray", "wgpu"] }
+pollster = "0.4"
+wgpu = "23"
 
 [build-dependencies]
 base-types = { path = "../base-types" }
