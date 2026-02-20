@@ -285,21 +285,21 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
 
 fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute_internal").entered();
-    let mut memory = Pin::new(algorithm.payloads.clone().into_boxed_slice());
+    let mut memory = Pin::new(algorithm.payloads.into_boxed_slice());
     let mem_ptr = memory.as_mut().as_mut_ptr();
     let shared = Arc::new(SharedMemory::new(mem_ptr));
-    let actions_arc = Arc::new(algorithm.actions.clone());
+    let actions_arc = Arc::new(algorithm.actions);
 
-    let gpu_assignments = Arc::new(algorithm.gpu_assignments.clone());
-    let simd_assignments = Arc::new(algorithm.simd_assignments.clone());
-    let file_assignments = Arc::new(algorithm.file_assignments.clone());
-    let network_assignments = Arc::new(algorithm.network_assignments.clone());
-    let ffi_assignments = Arc::new(algorithm.ffi_assignments.clone());
-    let computational_assignments = Arc::new(algorithm.computational_assignments.clone());
-    let memory_assignments = Arc::new(algorithm.memory_assignments.clone());
-    let hash_table_assignments = Arc::new(algorithm.hash_table_assignments.clone());
-    let lmdb_assignments = Arc::new(algorithm.lmdb_assignments.clone());
-    let cranelift_assignments = Arc::new(algorithm.cranelift_assignments.clone());
+    let gpu_assignments = Arc::new(algorithm.gpu_assignments);
+    let simd_assignments = Arc::new(algorithm.simd_assignments);
+    let file_assignments = Arc::new(algorithm.file_assignments);
+    let network_assignments = Arc::new(algorithm.network_assignments);
+    let ffi_assignments = Arc::new(algorithm.ffi_assignments);
+    let computational_assignments = Arc::new(algorithm.computational_assignments);
+    let memory_assignments = Arc::new(algorithm.memory_assignments);
+    let hash_table_assignments = Arc::new(algorithm.hash_table_assignments);
+    let lmdb_assignments = Arc::new(algorithm.lmdb_assignments);
+    let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
     let gpu_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.gpu_units).map(|_| Arc::new(Mailbox::new())).collect();
     let simd_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.simd_units).map(|_| Arc::new(Mailbox::new())).collect();
@@ -329,7 +329,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
             let backends = Backends::from_bits(algorithm.units.backends_bits).unwrap_or(Backends::all());
             let offset = algorithm.state.gpu_shader_offsets[gpu_id];
             let shader_source =
-                read_null_terminated_string_from_slice(&algorithm.payloads, offset, 8192);
+                read_null_terminated_string_from_slice(&memory, offset, 8192);
             let mailbox = mailbox.clone();
             let actions = actions_arc.clone();
             let shared = shared.clone();
@@ -453,7 +453,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let mut clif_compiled: std::collections::HashMap<usize, Arc<Vec<unsafe extern "C" fn(*mut u8)>>> = std::collections::HashMap::new();
     for (idx, &offset) in algorithm.state.cranelift_ir_offsets.iter().enumerate() {
         if !clif_compiled.contains_key(&idx) {
-            let source = read_null_terminated_string_from_slice(&algorithm.payloads, offset, 64 * 1024);
+            let source = read_null_terminated_string_from_slice(&memory, offset, 64 * 1024);
             if !source.is_empty() {
                 let mut hasher = DefaultHasher::new();
                 source.hash(&mut hasher);
@@ -487,7 +487,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     let mut pc: usize = 0;
-    let actions = &algorithm.actions;
+    let actions = &*actions_arc;
     let actions_len = actions.len() as u32;
     let timeout_start = std::time::Instant::now();
     let timeout_duration = algorithm.timeout_ms.map(Duration::from_millis);
