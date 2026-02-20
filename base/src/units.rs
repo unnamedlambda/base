@@ -2979,7 +2979,7 @@ mod network_tests {
             src: 300, // connection handle
             dst: 400, // store received data
             offset: 0,
-            size: 100, // max bytes to receive
+            size: 4, // exact bytes to receive
         };
 
         unit.execute(&recv_action);
@@ -3040,17 +3040,17 @@ mod network_tests {
             src: 300,
             dst: 400,
             offset: 0,
-            size: 100,
+            size: 4, // exact bytes to receive ("echo")
         };
         unit.execute(&recv);
 
-        // Echo back - use the same size as recv action
+        // Echo back
         let send = Action {
             kind: Kind::NetSend,
             src: 400,
             dst: 300,
             offset: 0,
-            size: recv.size,
+            size: 4,
         };
         unit.execute(&send);
 
