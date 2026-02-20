@@ -7030,3 +7030,408 @@ block0(v0: i64):
     assert_eq!(download_rc, -1, "download(buf_id=99) should return -1");
     assert_eq!(pipeline_bad_bind_rc, -1, "create_pipeline with invalid buf_id binding should return -1");
 }
+
+#[test]
+fn test_clif_ffi_net_echo() {
+    // CLIF IR: init network → connect to a Rust echo server → send "hello" → recv response → cleanup.
+    // Verification: the echoed data is written to a file via cl_file_write from within CLIF.
+    use std::net::TcpListener;
+    use std::io::{Read, Write};
+
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("net_echo_verify.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Find a free port
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let addr_str = format!("127.0.0.1:{}\0", port);
+
+    // Spawn echo server thread
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 64];
+        let n = stream.read(&mut buf).unwrap();
+        stream.write_all(&buf[..n]).unwrap();
+    });
+
+    // Memory layout:
+    //   2000..2100:  server address (null-terminated)
+    //   2100..2200:  verify file path (null-terminated)
+    //   3000..3005:  send data "hello"
+    //   3100..3105:  recv buffer
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64, i64) -> i64 system_v
+    sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_net_init sig0
+    fn1 = %cl_net_connect sig1
+    fn2 = %cl_net_send sig2
+    fn3 = %cl_net_recv sig2
+    fn4 = %cl_net_cleanup sig0
+    fn5 = %cl_file_write sig3
+
+block0(v0: i64):
+    call fn0(v0)
+
+    ; connect
+    v1 = iconst.i64 {addr_off}
+    v2 = call fn1(v0, v1)
+
+    ; send 5 bytes from offset 3000
+    v3 = iconst.i64 3000
+    v4 = iconst.i64 5
+    v5 = call fn2(v0, v2, v3, v4)
+
+    ; recv into offset 3100
+    v6 = iconst.i64 3100
+    v7 = call fn3(v0, v2, v6, v4)
+
+    ; write received data to verify file via cl_file_write
+    v8 = iconst.i64 {file_off}
+    v9 = iconst.i64 0
+    v10 = call fn5(v0, v8, v6, v9, v4)
+
+    call fn4(v0)
+    return
+}}"#, addr_off = 2000, file_off = 2100);
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + addr_str.len()].copy_from_slice(addr_str.as_bytes());
+    payloads[2100..2100 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[3000..3005].copy_from_slice(b"hello");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+    handle.join().unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(&contents[..5], b"hello");
+}
+
+#[test]
+fn test_clif_ffi_net_listen_accept() {
+    // CLIF IR: init → listen → accept → recv → send (echo) → cleanup.
+    // A Rust thread connects and sends "ping!", expects echo back.
+    use std::net::TcpStream;
+    use std::io::{Read, Write};
+
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("net_listen_verify.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let addr_str = format!("127.0.0.1:{}\0", port);
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 system_v
+    sig3 = (i64, i64, i64, i64) -> i64 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_net_init sig0
+    fn1 = %cl_net_listen sig1
+    fn2 = %cl_net_accept sig2
+    fn3 = %cl_net_send sig3
+    fn4 = %cl_net_recv sig3
+    fn5 = %cl_net_cleanup sig0
+    fn6 = %cl_file_write sig4
+
+block0(v0: i64):
+    call fn0(v0)
+
+    ; listen
+    v1 = iconst.i64 {addr_off}
+    v2 = call fn1(v0, v1)
+
+    ; accept a connection
+    v3 = call fn2(v0, v2)
+
+    ; recv 5 bytes into offset 3100
+    v4 = iconst.i64 3100
+    v5 = iconst.i64 5
+    v6 = call fn4(v0, v3, v4, v5)
+
+    ; echo: send those 5 bytes back
+    v7 = call fn3(v0, v3, v4, v5)
+
+    ; write received data to verify file
+    v8 = iconst.i64 {file_off}
+    v9 = iconst.i64 0
+    v10 = call fn6(v0, v8, v4, v9, v5)
+
+    call fn5(v0)
+    return
+}}"#, addr_off = 2000, file_off = 2100);
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + addr_str.len()].copy_from_slice(addr_str.as_bytes());
+    payloads[2100..2100 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    // Spawn client thread that connects and sends "ping!"
+    let port_copy = port;
+    let client_handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port_copy)).unwrap();
+        stream.write_all(b"ping!").unwrap();
+        let mut buf = [0u8; 5];
+        stream.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping!");
+    });
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    algorithm.timeout_ms = Some(10000);
+    execute(algorithm).unwrap();
+    client_handle.join().unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(&contents[..5], b"ping!");
+}
+
+#[test]
+fn test_clif_ffi_net_invalid_handle() {
+    // Send/recv on handle 0 (never created) should return errors.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("net_invalid_verify.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_net_init sig0
+    fn1 = %cl_net_send sig1
+    fn2 = %cl_net_recv sig1
+    fn3 = %cl_net_cleanup sig0
+    fn4 = %cl_file_write sig2
+block0(v0: i64):
+    call fn0(v0)
+    ; send on handle 0 (never created)
+    v1 = iconst.i64 0
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 5
+    v4 = call fn1(v0, v1, v2, v3)
+    store.i64 v4, v0+3100
+    ; recv on handle 0
+    v5 = iconst.i64 3050
+    v6 = call fn2(v0, v1, v5, v3)
+    store.i64 v6, v0+3108
+    ; send on handle 42 (never created)
+    v8 = iconst.i64 42
+    v9 = call fn1(v0, v8, v2, v3)
+    store.i64 v9, v0+3116
+    ; write results to file
+    v10 = iconst.i64 2200
+    v11 = iconst.i64 3100
+    v12 = iconst.i64 0
+    v13 = iconst.i64 24
+    v14 = call fn4(v0, v10, v11, v12, v13)
+    call fn3(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[3000..3005].copy_from_slice(b"hello");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 24);
+    let send_ret = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let recv_ret = i64::from_le_bytes(contents[8..16].try_into().unwrap());
+    let send42_ret = i64::from_le_bytes(contents[16..24].try_into().unwrap());
+    assert_eq!(send_ret, -1, "send on handle 0 should return -1");
+    assert_eq!(recv_ret, -1, "recv on handle 0 should return -1");
+    assert_eq!(send42_ret, -1, "send on handle 42 (never created) should return -1");
+}
+
+#[test]
+fn test_clif_ffi_net_connect_bad_address() {
+    // Connect to an address that can't be reached, verify handle=0.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("net_badaddr_verify.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let bad_addr = "127.0.0.1:1\0";
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_net_init sig0
+    fn1 = %cl_net_connect sig1
+    fn2 = %cl_net_cleanup sig0
+    fn3 = %cl_file_write sig2
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 2000
+    v2 = call fn1(v0, v1)
+    store.i64 v2, v0+3000
+    v3 = iconst.i64 2200
+    v4 = iconst.i64 3000
+    v5 = iconst.i64 0
+    v6 = iconst.i64 8
+    v7 = call fn3(v0, v3, v4, v5, v6)
+    call fn2(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + bad_addr.len()].copy_from_slice(bad_addr.as_bytes());
+    payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    algorithm.timeout_ms = Some(10000);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let handle = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(handle, 0, "connect to unreachable address should return handle 0");
+}
+
+#[test]
+fn test_clif_ffi_net_recv_writes_at_offset() {
+    // Verify cl_net_recv writes data at the correct shared memory offset.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("recv_offset.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let addr_str = format!("127.0.0.1:{}\0", port);
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 system_v
+    sig3 = (i64, i64, i64, i64) -> i64 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_net_init sig0
+    fn1 = %cl_net_listen sig1
+    fn2 = %cl_net_accept sig2
+    fn3 = %cl_net_recv sig3
+    fn4 = %cl_net_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+
+    ; listen
+    v1 = iconst.i64 2000
+    v2 = call fn1(v0, v1)
+
+    ; accept
+    v3 = call fn2(v0, v2)
+
+    ; recv 16 bytes into offset 3000
+    v4 = iconst.i64 3000
+    v5 = iconst.i64 16
+    v6 = call fn3(v0, v3, v4, v5)
+
+    ; store recv return value at 5000
+    store.i64 v6, v0+5000
+
+    ; write recv buffer (16 bytes from offset 3000) to verify file
+    v7 = iconst.i64 2100
+    v8 = iconst.i64 0
+    v9 = call fn5(v0, v7, v4, v8, v5)
+
+    ; append recv return value (8 bytes from offset 5000) at file offset 16
+    v10 = iconst.i64 5000
+    v11 = iconst.i64 16
+    v12 = iconst.i64 8
+    v13 = call fn5(v0, v7, v10, v11, v12)
+
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + addr_str.len()].copy_from_slice(addr_str.as_bytes());
+    payloads[2100..2100 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let pattern: [u8; 16] = [0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    let client_port = port;
+    let client = std::thread::spawn(move || {
+        use std::io::Write;
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", client_port)) {
+                stream.write_all(&pattern).unwrap();
+                return;
+            }
+        }
+        panic!("client could not connect");
+    });
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    algorithm.timeout_ms = Some(10000);
+    execute(algorithm).unwrap();
+    client.join().unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert!(contents.len() >= 24, "expected 24 bytes, got {}", contents.len());
+
+    let recv_data = &contents[0..16];
+    assert_eq!(recv_data, &[0xDE, 0xAD, 0xBE, 0xEF, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+    let recv_ret = i64::from_le_bytes(contents[16..24].try_into().unwrap());
+    assert_eq!(recv_ret, 16, "recv should return 16 bytes read");
+}

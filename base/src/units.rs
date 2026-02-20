@@ -2374,6 +2374,96 @@ unsafe extern "C" fn cl_file_write(
     written
 }
 
+struct CraneliftNetContext {
+    connections: HashMap<u32, TcpStream>,
+    listeners: HashMap<u32, TcpListener>,
+    next_handle: u32,
+}
+
+unsafe extern "C" fn cl_net_init(ptr: *mut u8) {
+    let ctx = Box::new(CraneliftNetContext {
+        connections: HashMap::new(),
+        listeners: HashMap::new(),
+        next_handle: 1,
+    });
+    std::ptr::write_unaligned(ptr as *mut *mut CraneliftNetContext, Box::into_raw(ctx));
+}
+
+unsafe extern "C" fn cl_net_listen(ptr: *mut u8, addr_off: i64) -> i64 {
+    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+    let addr = read_cstr(ptr, addr_off as usize);
+    match TcpListener::bind(&addr) {
+        Ok(listener) => {
+            let handle = ctx.next_handle;
+            ctx.next_handle += 1;
+            ctx.listeners.insert(handle, listener);
+            handle as i64
+        }
+        Err(_) => 0,
+    }
+}
+
+unsafe extern "C" fn cl_net_connect(ptr: *mut u8, addr_off: i64) -> i64 {
+    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+    let addr = read_cstr(ptr, addr_off as usize);
+    match TcpStream::connect(&addr) {
+        Ok(stream) => {
+            let handle = ctx.next_handle;
+            ctx.next_handle += 1;
+            ctx.connections.insert(handle, stream);
+            handle as i64
+        }
+        Err(_) => 0,
+    }
+}
+
+unsafe extern "C" fn cl_net_accept(ptr: *mut u8, listener: i64) -> i64 {
+    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+    if let Some(l) = ctx.listeners.get(&(listener as u32)) {
+        if let Ok((stream, _)) = l.accept() {
+            let handle = ctx.next_handle;
+            ctx.next_handle += 1;
+            ctx.connections.insert(handle, stream);
+            return handle as i64;
+        }
+    }
+    0
+}
+
+unsafe extern "C" fn cl_net_send(ptr: *mut u8, conn: i64, src_off: i64, size: i64) -> i64 {
+    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+    if let Some(stream) = ctx.connections.get_mut(&(conn as u32)) {
+        let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
+        match IoWrite::write_all(stream, data) {
+            Ok(_) => return 0,
+            Err(_) => return -1,
+        }
+    }
+    -1
+}
+
+unsafe extern "C" fn cl_net_recv(ptr: *mut u8, conn: i64, dst_off: i64, size: i64) -> i64 {
+    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+    if let Some(stream) = ctx.connections.get_mut(&(conn as u32)) {
+        let buf = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
+        let mut total = 0;
+        while total < size as usize {
+            match IoRead::read(stream, &mut buf[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(_) => return -1,
+            }
+        }
+        return total as i64;
+    }
+    -1
+}
+
+unsafe extern "C" fn cl_net_cleanup(ptr: *mut u8) {
+    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+    drop(Box::from_raw(ctx_ptr));
+}
+
 pub(crate) struct CraneliftUnit {
     shared: Arc<SharedMemory>,
     compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
@@ -2414,6 +2504,14 @@ impl CraneliftUnit {
 
         builder.symbol("cl_file_read", cl_file_read as *const u8);
         builder.symbol("cl_file_write", cl_file_write as *const u8);
+
+        builder.symbol("cl_net_init", cl_net_init as *const u8);
+        builder.symbol("cl_net_listen", cl_net_listen as *const u8);
+        builder.symbol("cl_net_connect", cl_net_connect as *const u8);
+        builder.symbol("cl_net_accept", cl_net_accept as *const u8);
+        builder.symbol("cl_net_send", cl_net_send as *const u8);
+        builder.symbol("cl_net_recv", cl_net_recv as *const u8);
+        builder.symbol("cl_net_cleanup", cl_net_cleanup as *const u8);
 
         let mut module = cranelift_jit::JITModule::new(builder);
 
