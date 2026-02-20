@@ -6013,3 +6013,1020 @@ fn test_worker_discovered_chain_via_queue_push_packet_mp() {
     let algorithm = create_test_algorithm(actions, payloads, 0, 1);
     execute(algorithm).unwrap();
 }
+
+#[test]
+fn test_clif_ffi_file_write_and_read() {
+    // CLIF IR writes "Hello, CLIF!" to a file via cl_file_write,
+    // then reads it back via cl_file_read into a different memory region.
+    // Verified by a subsequent FileWrite action that dumps the read-back data.
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("clif_ffi_data.bin");
+    let verify_file = temp_dir.path().join("clif_ffi_verify.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   0..~600:    CLIF IR (null-terminated)
+    //  1024..1032:  cranelift completion flag
+    //  1032..1040:  file completion flag
+    //  2000..2256:  data file path (null-terminated)
+    //  2256..2512:  verify file path (null-terminated)
+    //  3000..3012:  source data "Hello, CLIF!" (12 bytes)
+    //  3100..3112:  read-back destination (12 bytes)
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    ; cl_file_write(ptr, path_off, src_off, file_offset, size) -> i64
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    ; cl_file_read(ptr, path_off, dst_off, file_offset, size) -> i64
+    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_file_write sig0
+    fn1 = %cl_file_read sig1
+
+block0(v0: i64):
+    ; write 12 bytes from offset 3000 to file
+    v1 = iconst.i64 {path_off}
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 12
+    v5 = call fn0(v0, v1, v2, v3, v4)
+
+    ; read 13 bytes from file into offset 3100
+    v6 = iconst.i64 3100
+    v7 = call fn1(v0, v1, v6, v3, v4)
+
+    return
+}}"#, path_off = 2000);
+
+    let mut payloads = vec![0u8; 4096];
+
+    // Store CLIF IR at offset 0
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    assert!(clif_bytes.len() < 1024, "CLIF IR too large: {}", clif_bytes.len());
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    // Store data file path at offset 2000
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+
+    // Store verify file path at offset 2256
+    payloads[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    // Store source data at offset 3000: "Hello, CLIF!" = 12 bytes
+    payloads[3000..3012].copy_from_slice(b"Hello, CLIF!");
+
+    let cranelift_flag = 1024u32;
+    let file_flag = 1032u32;
+
+    let actions = vec![
+        // Action 0: cranelift dispatch target (dst=0 so v0 = base of shared memory)
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        // Action 1: FileWrite to dump read-back data (offset 3100, 12 bytes) to verify file
+        Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 12 },
+        // Action 2: AsyncDispatch cranelift (type 9)
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
+        // Action 3: Wait for cranelift
+        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
+        // Action 4: AsyncDispatch FileWrite (type 2)
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
+        // Action 5: Wait for FileWrite
+        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    // The CLIF IR wrote to the data file, then read it back into memory at offset 3100.
+    // The FileWrite action dumped offset 3100 to the verify file.
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(&contents[..12], b"Hello, CLIF!");
+}
+
+#[test]
+fn test_clif_ffi_file_write_read_with_offset() {
+    // Tests cl_file_write at a file offset, then cl_file_read at that offset.
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("clif_offset.bin");
+    let verify_file = temp_dir.path().join("clif_offset_verify.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+    fn1 = %cl_file_read sig1
+
+block0(v0: i64):
+    v1 = iconst.i64 {path_off}
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 8
+    v4 = iconst.i64 5
+    ; write 5 bytes from offset 3000 to file at file_offset=8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    ; read 5 bytes from file at file_offset=8 into offset 3100
+    v6 = iconst.i64 3100
+    v7 = call fn1(v0, v1, v6, v3, v4)
+    return
+}}"#, path_off = 2000);
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+    payloads[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[3000..3005].copy_from_slice(b"ABCDE");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 5 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(&contents[..5], b"ABCDE");
+
+    // Also verify the data file: first 8 bytes should be zeros (offset=8), then our data
+    let raw = fs::read(&data_file).unwrap();
+    assert_eq!(&raw[..8], &[0u8; 8]);
+    assert_eq!(&raw[8..13], b"ABCDE");
+}
+
+#[test]
+fn test_clif_ffi_file_binary_data() {
+    // Tests that binary data with embedded null bytes round-trips correctly.
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("clif_binary.bin");
+    let verify_file = temp_dir.path().join("clif_binary_verify.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+    fn1 = %cl_file_read sig1
+
+block0(v0: i64):
+    v1 = iconst.i64 {path_off}
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    v6 = iconst.i64 3100
+    v7 = call fn1(v0, v1, v6, v3, v4)
+    return
+}}"#, path_off = 2000);
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+    payloads[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    // Binary data with embedded nulls: [0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]
+    payloads[3000..3008].copy_from_slice(&[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]);
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 8 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(&contents[..8], &[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]);
+}
+
+#[test]
+fn test_clif_ffi_gpu_vec_add() {
+    // Tests the full GPU pipeline via CLIF FFI:
+    // init → create buffers → upload → create pipeline → dispatch → download → cleanup.
+    // Adds two 64-element f32 vectors element-wise.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("gpu_vec_add_verify.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let n: usize = 64;
+    let data_bytes = n * 4; // 256 bytes per buffer
+
+    // WGSL shader for element-wise add: result[i] = a[i] + b[i]
+    let wgsl = "@group(0) @binding(0) var<storage, read> a: array<f32>;\n\
+                @group(0) @binding(1) var<storage, read> b: array<f32>;\n\
+                @group(0) @binding(2) var<storage, read_write> result: array<f32>;\n\
+                @compute @workgroup_size(64)\n\
+                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
+                    let i = gid.x;\n\
+                    if (i < arrayLength(&a)) {\n\
+                        result[i] = a[i] + b[i];\n\
+                    }\n\
+                }\n";
+
+    // Memory layout (must be 8-byte aligned for i64 loads):
+    //    0..~1500:  CLIF IR
+    // 2000..2256:   verify file path
+    // 3000..3400:   shader source (null-terminated, ~300 bytes)
+    // 3400..3424:   binding descriptors: 3 bindings × 8 bytes = 24 bytes
+    //              [buf_id:i32, read_only:i32] × 3
+    // 4000..4256:   buffer A data (64 f32s)
+    // 4256..4512:   buffer B data (64 f32s)
+    // 4512..4768:   result download area (64 f32s)
+    let shader_off = 3000;
+    let bind_off = 3400;
+    let a_off = 4000;
+    let b_off = 4256;
+    let result_off = 4512;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64) -> i32 system_v
+    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_upload sig2
+    fn3 = %cl_gpu_create_pipeline sig3
+    fn4 = %cl_gpu_dispatch sig4
+    fn5 = %cl_gpu_download sig5
+    fn6 = %cl_gpu_cleanup sig0
+    fn7 = %cl_file_write sig6
+
+block0(v0: i64):
+    call fn0(v0)
+
+    ; create 3 buffers (a, b, result) each {data_bytes} bytes
+    v1 = iconst.i64 {data_bytes}
+    v2 = call fn1(v0, v1)
+    v3 = call fn1(v0, v1)
+    v4 = call fn1(v0, v1)
+
+    ; upload A to buf0
+    v5 = iconst.i64 {a_off}
+    v16 = call fn2(v0, v2, v5, v1)
+
+    ; upload B to buf1
+    v6 = iconst.i64 {b_off}
+    v17 = call fn2(v0, v3, v6, v1)
+
+    ; create pipeline with 3 bindings: [buf0 read, buf1 read, buf2 rw]
+    v7 = iconst.i64 {shader_off}
+    v8 = iconst.i64 {bind_off}
+    v9 = iconst.i32 3
+    v10 = call fn3(v0, v7, v8, v9)
+
+    ; dispatch 1 workgroup of 64 threads
+    v11 = iconst.i32 1
+    v18 = call fn4(v0, v10, v11)
+
+    ; download result buffer to offset {result_off}
+    v12 = iconst.i64 {result_off}
+    v19 = call fn5(v0, v4, v12, v1)
+
+    ; write result to verify file
+    v13 = iconst.i64 {file_off}
+    v14 = iconst.i64 0
+    v15 = call fn7(v0, v13, v12, v14, v1)
+
+    call fn6(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        a_off = a_off,
+        b_off = b_off,
+        shader_off = shader_off,
+        bind_off = bind_off,
+        result_off = result_off,
+        file_off = 2000,
+    );
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    assert!(clif_bytes.len() < 2000, "CLIF IR too large: {} bytes", clif_bytes.len());
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    // Verify file path
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    // Shader source (null-terminated)
+    let shader_bytes = wgsl.as_bytes();
+    payloads[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
+    payloads[shader_off + shader_bytes.len()] = 0;
+
+    // Binding descriptors: [buf_id:i32, read_only:i32] × 3
+    // buf0 read_only=1, buf1 read_only=1, buf2 read_only=0
+    let bind = &mut payloads[bind_off..];
+    bind[0..4].copy_from_slice(&0i32.to_le_bytes()); // buf0
+    bind[4..8].copy_from_slice(&1i32.to_le_bytes()); // read_only
+    bind[8..12].copy_from_slice(&1i32.to_le_bytes()); // buf1
+    bind[12..16].copy_from_slice(&1i32.to_le_bytes()); // read_only
+    bind[16..20].copy_from_slice(&2i32.to_le_bytes()); // buf2
+    bind[20..24].copy_from_slice(&0i32.to_le_bytes()); // read_write
+
+    // Fill buffer A: [1.0, 2.0, 3.0, ..., 64.0]
+    for i in 0..n {
+        let val = (i + 1) as f32;
+        payloads[a_off + i * 4..a_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+    }
+    // Fill buffer B: [100.0, 100.0, ..., 100.0]
+    for i in 0..n {
+        let val = 100.0f32;
+        payloads[b_off + i * 4..b_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    algorithm.timeout_ms = Some(15000); // GPU init can be slow
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), data_bytes, "Result file should be {} bytes", data_bytes);
+
+    // Verify: result[i] = (i+1) + 100.0
+    for i in 0..n {
+        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 + 100.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Mismatch at index {}: got {}, expected {}", i, actual, expected
+        );
+    }
+}
+
+#[test]
+fn test_clif_ffi_file_return_values() {
+    // Verify that cl_file_write and cl_file_read return correct byte counts,
+    // and cl_file_read on a nonexistent file returns -1.
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("retval.bin");
+    let missing_file = temp_dir.path().join("does_not_exist.bin");
+    let verify_file = temp_dir.path().join("retval_verify.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+    let missing_file_str = format!("{}\0", missing_file.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Layout: data file path @ 2000, missing file path @ 2200,
+    //         verify file path @ 2400, source data @ 3000,
+    //         results @ 3100 (3 x i64: write_ret, read_ret, missing_read_ret)
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+    fn1 = %cl_file_read sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 7
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    store.i64 v5, v0+3100
+    v6 = iconst.i64 3050
+    v7 = call fn1(v0, v1, v6, v3, v4)
+    store.i64 v7, v0+3108
+    v8 = iconst.i64 2200
+    v9 = iconst.i64 3060
+    v10 = call fn1(v0, v8, v9, v3, v4)
+    store.i64 v10, v0+3116
+    v11 = iconst.i64 2400
+    v12 = iconst.i64 3100
+    v13 = iconst.i64 24
+    v14 = call fn0(v0, v11, v12, v3, v13)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+    payloads[2200..2200 + missing_file_str.len()].copy_from_slice(missing_file_str.as_bytes());
+    payloads[2400..2400 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[3000..3007].copy_from_slice(b"RETVALS");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 24);
+    let write_ret = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let read_ret = i64::from_le_bytes(contents[8..16].try_into().unwrap());
+    let missing_ret = i64::from_le_bytes(contents[16..24].try_into().unwrap());
+    assert_eq!(write_ret, 7, "cl_file_write should return bytes written");
+    assert_eq!(read_ret, 7, "cl_file_read should return bytes read");
+    assert_eq!(missing_ret, -1, "cl_file_read on missing file should return -1");
+}
+
+#[test]
+fn test_clif_ffi_file_read_dynamic_size() {
+    // cl_file_read with size=0 should read the entire file.
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("dynamic.bin");
+    let verify_file = temp_dir.path().join("dynamic_verify.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Pre-create the file with known content (23 bytes)
+    fs::write(&data_file, b"dynamic size read test!").unwrap();
+
+    // CLIF: read with size=0 → should read entire file, return 23
+    // Then write the result + return value to verify file
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_read sig0
+    fn1 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = call fn0(v0, v1, v2, v3, v3)
+    store.i64 v4, v0+3100
+    v5 = iconst.i64 2200
+    v6 = iconst.i64 3100
+    v7 = iconst.i64 8
+    v8 = call fn1(v0, v5, v6, v3, v7)
+    v9 = iconst.i64 8
+    v10 = iconst.i64 23
+    v11 = call fn1(v0, v5, v2, v9, v10)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+    payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert!(contents.len() >= 31, "Expected at least 31 bytes, got {}", contents.len());
+    let bytes_read = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(bytes_read, 23, "size=0 should read entire 23-byte file");
+    assert_eq!(&contents[8..31], b"dynamic size read test!");
+}
+
+#[test]
+fn test_clif_ffi_file_write_cstring_mode() {
+    // cl_file_write with size=0 writes a C-string (stops at null byte).
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("cstring.bin");
+    let verify_file = temp_dir.path().join("cstring_verify.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Source at offset 3000: "CSTR\0extra" — size=0 should write only "CSTR" (4 bytes)
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+    fn1 = %cl_file_read sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = call fn0(v0, v1, v2, v3, v3)
+    store.i64 v4, v0+3100
+    v5 = iconst.i64 2200
+    v6 = iconst.i64 3100
+    v7 = iconst.i64 8
+    v8 = call fn0(v0, v5, v6, v3, v7)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+    payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[3000..3009].copy_from_slice(b"CSTR\0xtra");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let verify = fs::read(&verify_file).unwrap();
+    let write_ret = i64::from_le_bytes(verify[0..8].try_into().unwrap());
+    assert_eq!(write_ret, 4, "size=0 should write 4 bytes (up to null)");
+
+    let raw = fs::read(&data_file).unwrap();
+    assert_eq!(&raw, b"CSTR", "File should contain only 'CSTR'");
+}
+
+#[test]
+fn test_clif_ffi_file_overwrite_shorter() {
+    // Write long data, then overwrite with shorter data at offset 0 (truncates).
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("overwrite.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 10
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    v6 = iconst.i64 3100
+    v7 = iconst.i64 3
+    v8 = call fn0(v0, v1, v6, v3, v7)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+    payloads[3000..3010].copy_from_slice(b"LONGDATA!!");
+    payloads[3100..3103].copy_from_slice(b"SML");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    // Second write with file_offset=0 uses File::create() which truncates
+    let raw = fs::read(&data_file).unwrap();
+    assert_eq!(&raw, b"SML", "Second write should truncate file to 3 bytes");
+}
+
+#[test]
+fn test_clif_ffi_file_partial_reads() {
+    // Write 100 bytes, then read in two 50-byte chunks at different offsets.
+    let temp_dir = TempDir::new().unwrap();
+    let data_file = temp_dir.path().join("partial.bin");
+    let verify_file = temp_dir.path().join("partial_verify.bin");
+    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+    fn1 = %cl_file_read sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 100
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    v6 = iconst.i64 3200
+    v7 = iconst.i64 50
+    v8 = call fn1(v0, v1, v6, v3, v7)
+    v9 = iconst.i64 3250
+    v10 = call fn1(v0, v1, v9, v7, v7)
+    v11 = iconst.i64 2200
+    v12 = iconst.i64 3200
+    v13 = call fn0(v0, v11, v12, v3, v4)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
+    payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    // Fill 100 bytes at offset 3000 with pattern 0..99
+    for i in 0..100u8 {
+        payloads[3000 + i as usize] = i;
+    }
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 100);
+    // First 50 bytes should be 0..49, second 50 bytes should be 50..99
+    for i in 0..100u8 {
+        assert_eq!(contents[i as usize], i, "Byte {} mismatch in reassembled read", i);
+    }
+}
+
+#[test]
+fn test_clif_ffi_gpu_multiple_dispatches_before_download() {
+    // Tests the pending_encoder batching: dispatch pipeline 3 times, then download once.
+    // Uses a shader that multiplies by 2 each dispatch: data * 2 * 2 * 2 = data * 8.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("gpu_multi_dispatch.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let n: usize = 64;
+    let data_bytes = n * 4;
+
+    let wgsl = "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\
+                @compute @workgroup_size(64)\n\
+                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
+                    let i = gid.x;\n\
+                    if (i < arrayLength(&data)) {\n\
+                        data[i] = data[i] * 2.0;\n\
+                    }\n\
+                }\n";
+
+    let shader_off = 3000;
+    let bind_off = 3400;
+    let data_off = 4000;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64) -> i32 system_v
+    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_upload sig2
+    fn3 = %cl_gpu_create_pipeline sig3
+    fn4 = %cl_gpu_dispatch sig4
+    fn5 = %cl_gpu_download sig5
+    fn6 = %cl_gpu_cleanup sig0
+    fn7 = %cl_file_write sig6
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 {data_bytes}
+    v2 = call fn1(v0, v1)
+    v3 = iconst.i64 {data_off}
+    v12 = call fn2(v0, v2, v3, v1)
+    v4 = iconst.i64 {shader_off}
+    v5 = iconst.i64 {bind_off}
+    v6 = iconst.i32 1
+    v7 = call fn3(v0, v4, v5, v6)
+    v13 = call fn4(v0, v7, v6)
+    v14 = call fn4(v0, v7, v6)
+    v15 = call fn4(v0, v7, v6)
+    v8 = iconst.i64 {result_off}
+    v16 = call fn5(v0, v2, v8, v1)
+    v9 = iconst.i64 2000
+    v10 = iconst.i64 0
+    v11 = call fn7(v0, v9, v8, v10, v1)
+    call fn6(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        data_off = data_off,
+        shader_off = shader_off,
+        bind_off = bind_off,
+        result_off = 4500,
+    );
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let shader_bytes = wgsl.as_bytes();
+    payloads[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
+    payloads[shader_off + shader_bytes.len()] = 0;
+
+    // 1 binding: buf0 read_write
+    payloads[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+    payloads[bind_off + 4..bind_off + 8].copy_from_slice(&0i32.to_le_bytes());
+
+    // Fill data: [1.0, 2.0, ..., 64.0]
+    for i in 0..n {
+        let val = (i + 1) as f32;
+        payloads[data_off + i * 4..data_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    algorithm.timeout_ms = Some(15000);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), data_bytes);
+    for i in 0..n {
+        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 * 8.0; // *2 three times
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Index {}: got {}, expected {} (after 3x multiply by 2)", i, actual, expected
+        );
+    }
+}
+
+#[test]
+fn test_clif_ffi_gpu_buffer_reuse() {
+    // Upload data A, dispatch, download result A, then upload data B, dispatch, download result B.
+    // Verifies that buffer state is correctly updated on re-upload.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("gpu_reuse.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let n: usize = 64;
+    let data_bytes = n * 4;
+
+    // Shader: data[i] = data[i] + 1.0
+    let wgsl = "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\
+                @compute @workgroup_size(64)\n\
+                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
+                    let i = gid.x;\n\
+                    if (i < arrayLength(&data)) {\n\
+                        data[i] = data[i] + 1.0;\n\
+                    }\n\
+                }\n";
+
+    let shader_off = 3000;
+    let bind_off = 3400;
+    let data_a_off = 4000;
+    let data_b_off = 4300;
+    let result_a_off = 4600;
+    let result_b_off = result_a_off + data_bytes;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64) -> i32 system_v
+    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_upload sig2
+    fn3 = %cl_gpu_create_pipeline sig3
+    fn4 = %cl_gpu_dispatch sig4
+    fn5 = %cl_gpu_download sig5
+    fn6 = %cl_gpu_cleanup sig0
+    fn7 = %cl_file_write sig6
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 {data_bytes}
+    v2 = call fn1(v0, v1)
+    v3 = iconst.i64 {shader_off}
+    v4 = iconst.i64 {bind_off}
+    v5 = iconst.i32 1
+    v6 = call fn3(v0, v3, v4, v5)
+    v7 = iconst.i64 {data_a_off}
+    v15 = call fn2(v0, v2, v7, v1)
+    v16 = call fn4(v0, v6, v5)
+    v8 = iconst.i64 {result_a_off}
+    v17 = call fn5(v0, v2, v8, v1)
+    v9 = iconst.i64 {data_b_off}
+    v18 = call fn2(v0, v2, v9, v1)
+    v19 = call fn4(v0, v6, v5)
+    v10 = iconst.i64 {result_b_off}
+    v20 = call fn5(v0, v2, v10, v1)
+    v11 = iconst.i64 2000
+    v12 = iconst.i64 0
+    v13 = iconst.i64 {two_data_bytes}
+    v14 = call fn7(v0, v11, v8, v12, v13)
+    call fn6(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        shader_off = shader_off,
+        bind_off = bind_off,
+        data_a_off = data_a_off,
+        data_b_off = data_b_off,
+        result_a_off = result_a_off,
+        result_b_off = result_b_off,
+        two_data_bytes = data_bytes * 2,
+    );
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let shader_bytes = wgsl.as_bytes();
+    payloads[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
+    payloads[shader_off + shader_bytes.len()] = 0;
+
+    payloads[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+    payloads[bind_off + 4..bind_off + 8].copy_from_slice(&0i32.to_le_bytes());
+
+    // Data A: all 10.0
+    for i in 0..n {
+        payloads[data_a_off + i * 4..data_a_off + i * 4 + 4].copy_from_slice(&10.0f32.to_le_bytes());
+    }
+    // Data B: all 100.0
+    for i in 0..n {
+        payloads[data_b_off + i * 4..data_b_off + i * 4 + 4].copy_from_slice(&100.0f32.to_le_bytes());
+    }
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    algorithm.timeout_ms = Some(15000);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), data_bytes * 2);
+
+    // Result A: each element should be 10.0 + 1.0 = 11.0
+    for i in 0..n {
+        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - 11.0).abs() < 0.01,
+            "Result A index {}: got {}, expected 11.0", i, actual
+        );
+    }
+    // Result B: each element should be 100.0 + 1.0 = 101.0
+    for i in 0..n {
+        let off = data_bytes + i * 4;
+        let actual = f32::from_le_bytes(contents[off..off + 4].try_into().unwrap());
+        assert!(
+            (actual - 101.0).abs() < 0.01,
+            "Result B index {}: got {}, expected 101.0", i, actual
+        );
+    }
+}
+
+///   - create_pipeline with out-of-range buf_id in binding returns -1
+/// All error codes are stored and written to a verify file.
+#[test]
+fn test_clif_ffi_gpu_error_codes() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("gpu_errors.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   0..~1800:  CLIF IR
+    //   2000..xx:  verify file path
+    //   3000..3200: dummy shader (valid WGSL, needed for init)
+    //   3200..3208: binding descriptor [buf_id=99, read_only=0] (invalid buf_id)
+    //   4000..4032: return values (4 i32s stored as i64: create_buf_rc, upload_rc, dispatch_rc, download_rc, pipeline_bad_bind_rc)
+
+    let wgsl = "@group(0) @binding(0) var<storage, read_write> d: array<f32>;\n\
+                @compute @workgroup_size(1)\n\
+                fn main() { d[0] = 1.0; }\n";
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32) -> i32 system_v
+    sig5 = (i64) system_v
+    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_upload sig2
+    fn3 = %cl_gpu_create_pipeline sig3
+    fn4 = %cl_gpu_dispatch sig4
+    fn5 = %cl_gpu_download sig2
+    fn6 = %cl_gpu_cleanup sig5
+    fn7 = %cl_file_write sig6
+block0(v0: i64):
+    call fn0(v0)
+
+    ; create_buffer with size=0 → should return -1
+    v1 = iconst.i64 0
+    v2 = call fn1(v0, v1)
+    v20 = sextend.i64 v2
+    store.i64 v20, v0+4000
+
+    ; upload with buf_id=99 (no buffers exist yet) → should return -1
+    v3 = iconst.i32 99
+    v4 = iconst.i64 3000
+    v5 = iconst.i64 64
+    v6 = call fn2(v0, v3, v4, v5)
+    v21 = sextend.i64 v6
+    store.i64 v21, v0+4008
+
+    ; dispatch with pipeline_id=99 (no pipelines exist) → should return -1
+    v7 = iconst.i32 99
+    v8 = iconst.i32 1
+    v9 = call fn4(v0, v7, v8)
+    v22 = sextend.i64 v9
+    store.i64 v22, v0+4016
+
+    ; download with buf_id=99 → should return -1
+    v10 = iconst.i64 3000
+    v11 = iconst.i64 64
+    v12 = call fn5(v0, v3, v10, v11)
+    v23 = sextend.i64 v12
+    store.i64 v23, v0+4024
+
+    ; create a valid buffer so we can test pipeline with bad binding
+    v13 = iconst.i64 256
+    v14 = call fn1(v0, v13)
+
+    ; create_pipeline with binding that references buf_id=99 → should return -1
+    v15 = iconst.i64 3000
+    v16 = iconst.i64 3200
+    v17 = iconst.i32 1
+    v18 = call fn3(v0, v15, v16, v17)
+    v24 = sextend.i64 v18
+    store.i64 v24, v0+4032
+
+    ; write 40 bytes of return values to verify file
+    v25 = iconst.i64 2000
+    v26 = iconst.i64 4000
+    v27 = iconst.i64 0
+    v28 = iconst.i64 40
+    v29 = call fn7(v0, v25, v26, v27, v28)
+
+    call fn6(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    // Valid shader at 3000
+    let shader_bytes = wgsl.as_bytes();
+    payloads[3000..3000 + shader_bytes.len()].copy_from_slice(shader_bytes);
+    payloads[3000 + shader_bytes.len()] = 0;
+
+    // Binding descriptor at 3200: buf_id=99 (invalid), read_only=0
+    payloads[3200..3204].copy_from_slice(&99i32.to_le_bytes());
+    payloads[3204..3208].copy_from_slice(&0i32.to_le_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    algorithm.timeout_ms = Some(10000);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 40, "Expected 40 bytes of return values");
+
+    let create_buf_rc = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let upload_rc = i64::from_le_bytes(contents[8..16].try_into().unwrap());
+    let dispatch_rc = i64::from_le_bytes(contents[16..24].try_into().unwrap());
+    let download_rc = i64::from_le_bytes(contents[24..32].try_into().unwrap());
+    let pipeline_bad_bind_rc = i64::from_le_bytes(contents[32..40].try_into().unwrap());
+
+    assert_eq!(create_buf_rc, -1, "create_buffer(size=0) should return -1");
+    assert_eq!(upload_rc, -1, "upload(buf_id=99) should return -1");
+    assert_eq!(dispatch_rc, -1, "dispatch(pipeline_id=99) should return -1");
+    assert_eq!(download_rc, -1, "download(buf_id=99) should return -1");
+    assert_eq!(pipeline_bad_bind_rc, -1, "create_pipeline with invalid buf_id binding should return -1");
+}

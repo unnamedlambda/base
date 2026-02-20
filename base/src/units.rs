@@ -22,6 +22,30 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::JITBuilder;
 use cranelift_module::Module;
 
+/// Cached wgpu Device + Queue (Arc-wrapped for sharing).
+/// Creating many wgpu Devices exhausts OS GPU driver handles (~60 limit).
+/// One device per process; callers create fresh buffers/pipelines per use.
+fn cached_gpu_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
+    use std::sync::OnceLock;
+    static GPU: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+    let (d, q) = GPU.get_or_init(|| {
+        let instance = wgpu::Instance::new(InstanceDescriptor::default());
+        let adapter = block_on(instance.request_adapter(&RequestAdapterOptions {
+            power_preference: PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("Failed to find GPU adapter");
+        let (device, queue) = block_on(adapter.request_device(
+            &DeviceDescriptor::default(), None,
+        ))
+        .expect("Failed to create GPU device");
+        std::mem::forget(instance);
+        std::mem::forget(adapter);
+        (Arc::new(device), Arc::new(queue))
+    });
+    (d.clone(), q.clone())
+}
+
 pub const MAILBOX_CLOSED: u64 = u64::MAX;
 
 pub(crate) struct Mailbox(AtomicU64);
@@ -1545,8 +1569,8 @@ impl SimdUnit {
 }
 
 pub(crate) struct GpuUnit {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     compute_buffer: wgpu::Buffer,
     staging_buffer: wgpu::Buffer,
     pipeline: wgpu::ComputePipeline,
@@ -1555,25 +1579,12 @@ pub(crate) struct GpuUnit {
 }
 
 impl GpuUnit {
-    pub fn new(shared: Arc<SharedMemory>, shader_source: &str, gpu_size: usize, backends: Backends) -> Self {
-        let _span = info_span!("gpu_init", gpu_size, ?backends).entered();
+    pub fn new(shared: Arc<SharedMemory>, shader_source: &str, gpu_size: usize, _backends: Backends) -> Self {
+        let _span = info_span!("gpu_init", gpu_size).entered();
         info!("initializing GPU unit");
 
-        let instance = wgpu::Instance::new(InstanceDescriptor {
-            backends,
-            ..Default::default()
-        });
-
-        let adapter = block_on(instance.request_adapter(&RequestAdapterOptions {
-            power_preference: PowerPreference::HighPerformance,
-            ..Default::default()
-        }))
-        .expect("Failed to find adapter");
-        info!("GPU adapter acquired");
-
-        let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor::default(), None))
-            .expect("Failed to create device");
-        info!("GPU device created");
+        let (device, queue) = cached_gpu_device();
+        info!("GPU device acquired (cached)");
 
         let compute_buffer = device.create_buffer(&BufferDescriptor {
             label: Some("Compute"),
@@ -2099,6 +2110,270 @@ unsafe extern "C" fn cl_ht_increment(
     addend
 }
 
+struct CraneliftGpuContext {
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    buffers: Vec<wgpu::Buffer>,
+    staging_buffers: Vec<wgpu::Buffer>,
+    pipelines: Vec<(wgpu::ComputePipeline, wgpu::BindGroup)>,
+    pending_encoder: Option<wgpu::CommandEncoder>,
+}
+
+unsafe extern "C" fn cl_gpu_init(ptr: *mut u8) {
+    let (device, queue) = cached_gpu_device();
+    let ctx = Box::new(CraneliftGpuContext {
+        device, queue,
+        buffers: Vec::new(),
+        staging_buffers: Vec::new(),
+        pipelines: Vec::new(),
+        pending_encoder: None,
+    });
+    std::ptr::write_unaligned(ptr as *mut *mut CraneliftGpuContext, Box::into_raw(ctx));
+}
+
+unsafe extern "C" fn cl_gpu_create_buffer(ptr: *mut u8, size: i64) -> i32 {
+    if size <= 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let buffer = ctx.device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: size as u64,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let staging = ctx.device.create_buffer(&BufferDescriptor {
+            label: None,
+            size: size as u64,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let idx = ctx.buffers.len() as i32;
+        ctx.buffers.push(buffer);
+        ctx.staging_buffers.push(staging);
+        idx
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_gpu_create_pipeline(
+    ptr: *mut u8,
+    shader_off: i64,
+    bind_off: i64,
+    n_bindings: i32,
+) -> i32 {
+    if n_bindings < 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let shader_ptr = ptr.add(shader_off as usize);
+        let mut len = 0;
+        while *shader_ptr.add(len) != 0 { len += 1; }
+        let shader_src = match std::str::from_utf8(std::slice::from_raw_parts(shader_ptr, len)) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let shader = ctx.device.create_shader_module(ShaderModuleDescriptor {
+            label: None, source: ShaderSource::Wgsl(shader_src.into()),
+        });
+        let mut bgl_entries = Vec::new();
+        let mut bg_entries = Vec::new();
+        let bind_base = ptr.add(bind_off as usize);
+        let n_bufs = ctx.buffers.len();
+        for i in 0..n_bindings as usize {
+            let desc_ptr = bind_base.add(i * 8);
+            let buf_id = std::ptr::read_unaligned(desc_ptr as *const i32) as usize;
+            if buf_id >= n_bufs { return -1; }
+            let read_only = std::ptr::read_unaligned(desc_ptr.add(4) as *const i32) != 0;
+            bgl_entries.push(BindGroupLayoutEntry {
+                binding: i as u32,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            });
+            bg_entries.push((i as u32, buf_id));
+        }
+        let bgl = ctx.device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None, entries: &bgl_entries,
+        });
+        let pipeline = ctx.device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&ctx.device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: None, bind_group_layouts: &[&bgl], push_constant_ranges: &[],
+            })),
+            module: &shader,
+            entry_point: "main",
+            compilation_options: PipelineCompilationOptions::default(),
+        });
+        let entries: Vec<BindGroupEntry> = bg_entries.iter().map(|&(binding, buf_id)| {
+            BindGroupEntry {
+                binding,
+                resource: BindingResource::Buffer(ctx.buffers[buf_id].as_entire_buffer_binding()),
+            }
+        }).collect();
+        let bind_group = ctx.device.create_bind_group(&BindGroupDescriptor {
+            label: None, layout: &bgl, entries: &entries,
+        });
+        let idx = ctx.pipelines.len() as i32;
+        ctx.pipelines.push((pipeline, bind_group));
+        idx
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_gpu_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
+        ctx.queue.write_buffer(&ctx.buffers[bid], 0, data);
+        0
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_gpu_dispatch(ptr: *mut u8, pipeline_id: i32, workgroups: i32) -> i32 {
+    if pipeline_id < 0 || workgroups <= 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let pid = pipeline_id as usize;
+        if pid >= ctx.pipelines.len() { return -1; }
+        if let Some(enc) = ctx.pending_encoder.take() {
+            ctx.queue.submit(Some(enc.finish()));
+        }
+        let (pipeline, bind_group) = &ctx.pipelines[pid];
+        let mut encoder = ctx.device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: None, timestamp_writes: None,
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+        }
+        ctx.pending_encoder = Some(encoder);
+        0
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_gpu_download(ptr: *mut u8, buf_id: i32, dst_off: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let size = size as u64;
+        let mut encoder = ctx.pending_encoder.take().unwrap_or_else(||
+            ctx.device.create_command_encoder(&CommandEncoderDescriptor { label: None })
+        );
+        encoder.copy_buffer_to_buffer(&ctx.buffers[bid], 0, &ctx.staging_buffers[bid], 0, size);
+        ctx.queue.submit(Some(encoder.finish()));
+        let slice = ctx.staging_buffers[bid].slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        ctx.device.poll(wgpu::Maintain::Wait);
+        let mapped = slice.get_mapped_range();
+        let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
+        dst.copy_from_slice(&mapped);
+        drop(mapped);
+        ctx.staging_buffers[bid].unmap();
+        0
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_gpu_cleanup(ptr: *mut u8) {
+    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+    drop(Box::from_raw(ctx_ptr));
+}
+
+unsafe fn read_cstr(ptr: *mut u8, off: usize) -> String {
+    let start = ptr.add(off);
+    let mut len = 0;
+    while *start.add(len) != 0 { len += 1; }
+    String::from_utf8_lossy(std::slice::from_raw_parts(start, len)).into_owned()
+}
+
+unsafe extern "C" fn cl_file_read(
+    ptr: *mut u8,
+    path_off: i64,
+    dst_off: i64,
+    file_offset: i64,
+    size: i64,
+) -> i64 {
+    let filename = read_cstr(ptr, path_off as usize);
+    let mut file = match fs::File::open(&filename) {
+        Ok(f) => f,
+        Err(_) => return -1,
+    };
+    if file_offset > 0 {
+        let _ = file.seek(std::io::SeekFrom::Start(file_offset as u64));
+    }
+    if size == 0 {
+        let file_len = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
+        if file_len == 0 { return 0; }
+        let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), file_len);
+        let mut total = 0;
+        while total < file_len {
+            match file.read(&mut dst[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(_) => break,
+            }
+        }
+        total as i64
+    } else {
+        let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
+        match file.read(dst) {
+            Ok(n) => n as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+unsafe extern "C" fn cl_file_write(
+    ptr: *mut u8,
+    path_off: i64,
+    src_off: i64,
+    file_offset: i64,
+    size: i64,
+) -> i64 {
+    let filename = read_cstr(ptr, path_off as usize);
+    let mut file = if file_offset == 0 {
+        match fs::File::create(&filename) {
+            Ok(f) => f,
+            Err(_) => return -1,
+        }
+    } else {
+        match fs::OpenOptions::new().write(true).create(true).open(&filename) {
+            Ok(mut f) => {
+                let _ = f.seek(std::io::SeekFrom::Start(file_offset as u64));
+                f
+            }
+            Err(_) => return -1,
+        }
+    };
+    let written = if size == 0 {
+        let base = ptr.add(src_off as usize);
+        let mut len = 0;
+        while *base.add(len) != 0 { len += 1; }
+        if len > 0 {
+            let data = std::slice::from_raw_parts(base, len);
+            match file.write_all(data) {
+                Ok(_) => len as i64,
+                Err(_) => -1,
+            }
+        } else { 0 }
+    } else {
+        let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
+        match file.write_all(data) {
+            Ok(_) => size,
+            Err(_) => -1,
+        }
+    };
+    if written >= 0 { let _ = file.sync_all(); }
+    written
+}
+
 pub(crate) struct CraneliftUnit {
     shared: Arc<SharedMemory>,
     compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
@@ -2128,6 +2403,17 @@ impl CraneliftUnit {
         builder.symbol("ht_count", cl_ht_count as *const u8);
         builder.symbol("ht_get_entry", cl_ht_get_entry as *const u8);
         builder.symbol("ht_increment", cl_ht_increment as *const u8);
+
+        builder.symbol("cl_gpu_init", cl_gpu_init as *const u8);
+        builder.symbol("cl_gpu_create_buffer", cl_gpu_create_buffer as *const u8);
+        builder.symbol("cl_gpu_create_pipeline", cl_gpu_create_pipeline as *const u8);
+        builder.symbol("cl_gpu_upload", cl_gpu_upload as *const u8);
+        builder.symbol("cl_gpu_dispatch", cl_gpu_dispatch as *const u8);
+        builder.symbol("cl_gpu_download", cl_gpu_download as *const u8);
+        builder.symbol("cl_gpu_cleanup", cl_gpu_cleanup as *const u8);
+
+        builder.symbol("cl_file_read", cl_file_read as *const u8);
+        builder.symbol("cl_file_write", cl_file_write as *const u8);
 
         let mut module = cranelift_jit::JITModule::new(builder);
 

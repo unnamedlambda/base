@@ -1,18 +1,27 @@
 use base_types::{Action, Kind, State, UnitSpec};
-use crate::harness::{self, BenchResult};
+use crate::harness;
 
 // ---------------------------------------------------------------------------
 // Iterative GPU Benchmark: apply a trivial kernel N times to the same data.
 //
 // Exposes the cost of round-tripping through shared memory on every dispatch.
 //
-// Current Base: N dispatches = N x (SharedMem→GPU→SharedMem)
-// Ideal Base:   1 upload + N kernels + 1 download
-// Burn:         Naturally keeps tensors GPU-resident
-// Raw wgpu:     Keeps buffer GPU-resident, only reads back at end
+// Current Base:  N dispatches = N x (SharedMem→GPU→SharedMem)
+// CLIF+GPU:      1 upload + N kernels + 1 download (via extern "C" wrappers)
+// Burn:          Naturally keeps tensors GPU-resident
+// Raw wgpu:      Keeps buffer GPU-resident, only reads back at end
 // ---------------------------------------------------------------------------
 
 type Gpu = burn::backend::wgpu::Wgpu;
+
+pub struct GpuIterResult {
+    pub name: String,
+    pub wgpu_ms: f64,
+    pub burn_ms: f64,
+    pub base_ms: f64,
+    pub clif_ms: f64,
+    pub verified: bool,
+}
 
 // Partial sum reduction: each workgroup of 64 reduces 64 elements → 1 partial sum.
 // For 1M floats: 15625 workgroups → ~61KB download vs 4MB for full readback.
@@ -89,35 +98,68 @@ fn cpu_expected_sum(data: &[f32], passes: usize) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Cached devices for fair comparison (all approaches reuse one device)
+// ---------------------------------------------------------------------------
+
+fn cached_burn_device() -> burn::backend::wgpu::WgpuDevice {
+    use std::sync::{Arc, OnceLock};
+    static DEVICE: OnceLock<burn::backend::wgpu::WgpuDevice> = OnceLock::new();
+    DEVICE.get_or_init(|| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("No GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                required_features: adapter.features(),
+                required_limits: adapter.limits(),
+                ..Default::default()
+            },
+            None,
+        ))
+        .expect("Failed to create device");
+        let setup = burn::backend::wgpu::WgpuSetup {
+            instance: Arc::new(instance),
+            adapter: Arc::new(adapter),
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+        };
+        burn::backend::wgpu::init_device(setup, Default::default())
+    }).clone()
+}
+
+fn cached_wgpu_device() -> (std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>) {
+    use std::sync::{Arc, OnceLock};
+    static GPU: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
+    let (d, q) = GPU.get_or_init(|| {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("No GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor::default(),
+            None,
+        ))
+        .expect("Failed to create device");
+        std::mem::forget(instance);
+        std::mem::forget(adapter);
+        (Arc::new(device), Arc::new(queue))
+    });
+    (d.clone(), q.clone())
+}
+
+// ---------------------------------------------------------------------------
 // Burn: naturally keeps tensor GPU-resident across operations
 // ---------------------------------------------------------------------------
 
 fn burn_iterative(data: &[f32], passes: usize) -> f64 {
     use burn::tensor::{Tensor, TensorData};
-    use std::sync::Arc;
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
-    .expect("No GPU adapter");
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            required_features: adapter.features(),
-            required_limits: adapter.limits(),
-            ..Default::default()
-        },
-        None,
-    ))
-    .expect("Failed to create device");
-    let setup = burn::backend::wgpu::WgpuSetup {
-        instance: Arc::new(instance),
-        adapter: Arc::new(adapter),
-        device: Arc::new(device),
-        queue: Arc::new(queue),
-    };
-    let dev = burn::backend::wgpu::init_device(setup, Default::default());
+    let dev = cached_burn_device();
 
     let n = data.len();
     let mut t = Tensor::<Gpu, 1>::from_data(TensorData::new(data.to_vec(), [n]), &dev);
@@ -138,17 +180,7 @@ fn burn_iterative(data: &[f32], passes: usize) -> f64 {
 fn wgpu_iterative(data: &[f32], passes: usize) -> f64 {
     use wgpu::*;
 
-    let instance = Instance::new(InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
-        power_preference: PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
-    .expect("No GPU adapter");
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &DeviceDescriptor::default(),
-        None,
-    ))
-    .expect("Failed to create device");
+    let (device, queue) = cached_wgpu_device();
 
     let n = data.len();
     let byte_size = (n * 4) as u64;
@@ -463,6 +495,224 @@ fn build_base_iterative_verify(data: &[f32], passes: usize, output_path: &str) -
 }
 
 // ---------------------------------------------------------------------------
+// CLIF+GPU: Cranelift JIT calls generic extern "C" GPU primitives from the
+// base library (base/src/units.rs). Data stays GPU-resident between dispatches.
+// The 7 GPU primitives + cl_file_write are registered by CraneliftUnit::compile().
+// ---------------------------------------------------------------------------
+
+// Memory layout for the CLIF function's parameter block.
+const CLIF_PASSES_OFF: usize    = 0x08;  // i64: number of passes
+const CLIF_DSIZE_OFF: usize     = 0x10;  // i64: data buffer size in bytes
+const CLIF_WORKGROUPS_OFF: usize = 0x18; // i64: workgroups for scale dispatch (precomputed)
+const CLIF_SUMSSIZE_OFF: usize  = 0x20;  // i64: sums buffer size in bytes (workgroups * 4)
+// Binding descriptors: each binding = [buf_id: i32, read_only: i32] = 8 bytes
+const CLIF_SCALE_BIND_OFF: usize = 0x40; // scale: 1 binding [buf0, rw]
+const CLIF_REDUCE_BIND_OFF: usize = 0x48; // reduce: 2 bindings [buf0, ro], [buf1, rw]
+// Shaders (null-terminated WGSL strings)
+const CLIF_SCALE_SHADER_OFF: usize = 0x100;  // scale shader
+const CLIF_REDUCE_SHADER_OFF: usize = 0x800; // reduce shader
+// File output + CLIF IR
+const CLIF_FNAME_OFF: usize     = 0xC00;  // output filename (null-terminated)
+const CLIF_FLAG_OFF: usize      = 0xD00;  // cranelift completion flag
+const CLIF_IR_OFF: usize        = 0x1000; // CLIF IR source (null-terminated)
+// Data region
+const CLIF_DATA_OFF: usize      = 0x2000; // f32 data / partial sums download area
+
+/// Generate CLIF IR for generic GPU primitives:
+///   init → create_buffer(data) → create_buffer(sums) → upload →
+///   create_pipeline(scale) → create_pipeline(reduce) →
+///   loop { dispatch(scale) } → dispatch(reduce) → download(sums) →
+///   file_write(sums) → cleanup
+fn gen_gpu_clif_ir() -> String {
+    format!(
+r#"function u0:0(i64) system_v {{
+    ; sig0: (ptr) — init, cleanup
+    sig0 = (i64) system_v
+    ; sig1: (ptr, size) -> buf_id — create_buffer
+    sig1 = (i64, i64) -> i32 system_v
+    ; sig2: (ptr, shader_off, bind_off, n_bindings) -> pipe_id — create_pipeline
+    sig2 = (i64, i64, i64, i32) -> i32 system_v
+    ; sig3: (ptr, buf_id, src_off, size) -> i32 — upload/download
+    sig3 = (i64, i32, i64, i64) -> i32 system_v
+    ; sig4: (ptr, pipe_id, workgroups) -> i32 — dispatch
+    sig4 = (i64, i32, i32) -> i32 system_v
+    ; sig5: (ptr, path_off, src_off, file_offset, size) -> i64 — file write
+    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_create_pipeline sig2
+    fn3 = %cl_gpu_upload sig3
+    fn4 = %cl_gpu_dispatch sig4
+    fn5 = %cl_gpu_download sig3
+    fn6 = %cl_gpu_cleanup sig0
+    fn7 = %cl_file_write sig5
+
+block0(v0: i64):
+    ; --- init device ---
+    call fn0(v0)
+
+    ; --- create buffers ---
+    v1 = load.i64 v0+{dsize_off}           ; data_size
+    v2 = call fn1(v0, v1)                   ; buf0 = data buffer
+
+    v3 = load.i64 v0+{sums_off}            ; sums_size
+    v4 = call fn1(v0, v3)                   ; buf1 = sums buffer
+
+    ; --- upload data to buf0 ---
+    v5 = iconst.i64 {data_off}
+    v22 = call fn3(v0, v2, v5, v1)
+
+    ; --- create scale pipeline (1 binding: buf0 read_write) ---
+    v6 = iconst.i64 {scale_shader_off}
+    v7 = iconst.i64 {scale_bind_off}
+    v8 = iconst.i32 1
+    v9 = call fn2(v0, v6, v7, v8)          ; pipe0 = scale pipeline
+
+    ; --- create reduce pipeline (2 bindings: buf0 read, buf1 read_write) ---
+    v10 = iconst.i64 {reduce_shader_off}
+    v11 = iconst.i64 {reduce_bind_off}
+    v12 = iconst.i32 2
+    v13 = call fn2(v0, v10, v11, v12)       ; pipe1 = reduce pipeline
+
+    ; --- load loop params ---
+    v14 = load.i64 v0+{passes_off}          ; n_passes
+    v15 = load.i64 v0+{wg_off}             ; workgroups (i64)
+    v16 = ireduce.i32 v15                   ; workgroups (i32 for dispatch)
+    v17 = iconst.i64 0                      ; loop counter
+    jump block1(v17)
+
+block1(v18: i64):
+    ; --- loop: dispatch scale pipeline N times ---
+    v19 = icmp uge v18, v14
+    brif v19, block2, block3(v18)
+
+block3(v20: i64):
+    v23 = call fn4(v0, v9, v16)             ; dispatch(scale, workgroups)
+    v21 = iadd_imm v20, 1
+    jump block1(v21)
+
+block2:
+    ; --- reduction dispatch ---
+    v24 = call fn4(v0, v13, v16)            ; dispatch(reduce, workgroups)
+
+    ; --- download sums buffer to data region ---
+    v25 = call fn5(v0, v4, v5, v3)          ; download(buf1, data_off, sums_size)
+
+    ; --- cleanup ---
+    call fn6(v0)
+
+    ; --- file write partial sums ---
+    v26 = iconst.i64 {fname_off}
+    v27 = iconst.i64 0
+    v28 = call fn7(v0, v26, v5, v27, v3)   ; file_write(ptr, fname, data_off, 0, sums_size)
+
+    return
+}}"#,
+        dsize_off = CLIF_DSIZE_OFF,
+        sums_off = CLIF_SUMSSIZE_OFF,
+        data_off = CLIF_DATA_OFF,
+        scale_shader_off = CLIF_SCALE_SHADER_OFF,
+        scale_bind_off = CLIF_SCALE_BIND_OFF,
+        reduce_shader_off = CLIF_REDUCE_SHADER_OFF,
+        reduce_bind_off = CLIF_REDUCE_BIND_OFF,
+        passes_off = CLIF_PASSES_OFF,
+        wg_off = CLIF_WORKGROUPS_OFF,
+        fname_off = CLIF_FNAME_OFF,
+    )
+}
+
+/// Build a CLIF+GPU iterative algorithm that goes through base::execute().
+/// The CLIF IR does: init → upload → N scale dispatches → reduce → download → file_write → cleanup.
+fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str) -> base::Algorithm {
+    let n = data.len();
+    let data_size = n * 4;
+    let workgroups = ((n as u32) + 63) / 64;
+    let sums_size = (workgroups as usize) * 4;
+
+    let clif_source = gen_gpu_clif_ir();
+    let clif_bytes = format!("{}\0", clif_source).into_bytes();
+    assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
+        "CLIF IR too large: {} bytes", clif_bytes.len());
+
+    let payload_size = CLIF_DATA_OFF + data_size.max(sums_size);
+    let mut payloads = vec![0u8; payload_size];
+
+    // CLIF IR source
+    payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    // Control params
+    payloads[CLIF_PASSES_OFF..CLIF_PASSES_OFF + 8].copy_from_slice(&(passes as i64).to_le_bytes());
+    payloads[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(data_size as i64).to_le_bytes());
+    payloads[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
+    payloads[CLIF_SUMSSIZE_OFF..CLIF_SUMSSIZE_OFF + 8].copy_from_slice(&(sums_size as i64).to_le_bytes());
+
+    // Binding descriptors
+    // Scale: [buf0, rw]
+    payloads[CLIF_SCALE_BIND_OFF..CLIF_SCALE_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
+    payloads[CLIF_SCALE_BIND_OFF + 4..CLIF_SCALE_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
+    // Reduce: [buf0, ro], [buf1, rw]
+    payloads[CLIF_REDUCE_BIND_OFF..CLIF_REDUCE_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
+    payloads[CLIF_REDUCE_BIND_OFF + 4..CLIF_REDUCE_BIND_OFF + 8].copy_from_slice(&1i32.to_le_bytes());
+    payloads[CLIF_REDUCE_BIND_OFF + 8..CLIF_REDUCE_BIND_OFF + 12].copy_from_slice(&1i32.to_le_bytes());
+    payloads[CLIF_REDUCE_BIND_OFF + 12..CLIF_REDUCE_BIND_OFF + 16].copy_from_slice(&0i32.to_le_bytes());
+
+    // Scale shader (null-terminated)
+    let scale_bytes = WGSL_SCALE.as_bytes();
+    payloads[CLIF_SCALE_SHADER_OFF..CLIF_SCALE_SHADER_OFF + scale_bytes.len()].copy_from_slice(scale_bytes);
+    payloads[CLIF_SCALE_SHADER_OFF + scale_bytes.len()] = 0;
+
+    // Reduce shader (null-terminated)
+    let reduce_bytes = WGSL_REDUCE.as_bytes();
+    payloads[CLIF_REDUCE_SHADER_OFF..CLIF_REDUCE_SHADER_OFF + reduce_bytes.len()].copy_from_slice(reduce_bytes);
+    payloads[CLIF_REDUCE_SHADER_OFF + reduce_bytes.len()] = 0;
+
+    // Filename (null-terminated)
+    let fname = format!("{}\0", output_path);
+    payloads[CLIF_FNAME_OFF..CLIF_FNAME_OFF + fname.len()].copy_from_slice(fname.as_bytes());
+
+    // Data
+    for (i, &v) in data.iter().enumerate() {
+        let off = CLIF_DATA_OFF + i * 4;
+        payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    let _ = std::fs::remove_file(output_path);
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: CLIF_FLAG_OFF as u32, size: 0 },
+        Action { kind: Kind::Wait, dst: CLIF_FLAG_OFF as u32, src: 0, offset: 0, size: 0 },
+    ];
+    let num_actions = actions.len();
+
+    base::Algorithm {
+        actions,
+        payloads,
+        state: State {
+            regs_per_unit: 0,
+            gpu_size: 0,
+            computational_regs: 0,
+            file_buffer_size: 0,
+            gpu_shader_offsets: vec![],
+            cranelift_ir_offsets: vec![CLIF_IR_OFF],
+        },
+        units: UnitSpec {
+            simd_units: 0, gpu_units: 0, computational_units: 0, file_units: 0,
+            network_units: 0, memory_units: 0, ffi_units: 0, hash_table_units: 0,
+            lmdb_units: 0, cranelift_units: 1, backends_bits: 0,
+        },
+        simd_assignments: vec![], computational_assignments: vec![], memory_assignments: vec![],
+        file_assignments: vec![], network_assignments: vec![], ffi_assignments: vec![],
+        hash_table_assignments: vec![], lmdb_assignments: vec![],
+        gpu_assignments: vec![], cranelift_assignments: vec![0; num_actions],
+        worker_threads: Some(1), blocking_threads: Some(1),
+        stack_size: Some(256 * 1024), timeout_ms: Some(300_000),
+        thread_name_prefix: Some("clif-gpu-iter".into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Verification
 // ---------------------------------------------------------------------------
 
@@ -482,48 +732,33 @@ fn check_result(actual: f64, expected: f64, label: &str, impl_name: &str) -> boo
 // Table printer
 // ---------------------------------------------------------------------------
 
-pub fn print_iter_table(results: &[BenchResult]) {
+pub fn print_iter_table(results: &[GpuIterResult]) {
     let name_w = 26;
     let col_w = 14;
 
     println!();
     println!(
-        "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
+        "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
         "GPU Iterative",
         "Raw wgpu",
         "Burn",
         "Base",
+        "CLIF+GPU",
         "Check",
         name_w = name_w,
         col_w = col_w
     );
-    println!("{}", "-".repeat(name_w + col_w * 3 + 6 + 4));
+    println!("{}", "-".repeat(name_w + col_w * 4 + 6 + 5));
 
     for r in results {
-        let wgpu_str = match r.rust_ms {
-            Some(ms) => format!("{:.1}ms", ms),
-            None => "N/A".to_string(),
-        };
-        let burn_str = match r.python_ms {
-            Some(ms) => format!("{:.1}ms", ms),
-            None => "N/A".to_string(),
-        };
-        let base_str = if r.base_ms.is_nan() {
-            "N/A".to_string()
-        } else {
-            format!("{:.1}ms", r.base_ms)
-        };
-        let check_str = match r.verified {
-            Some(true) => "    \u{2713}",
-            Some(false) => "    \u{2717}",
-            None => "    \u{2014}",
-        };
+        let check_str = if r.verified { "    \u{2713}" } else { "    \u{2717}" };
         println!(
-            "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {}",
+            "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>col_w$} {}",
             r.name,
-            wgpu_str,
-            burn_str,
-            base_str,
+            format!("{:.1}ms", r.wgpu_ms),
+            format!("{:.1}ms", r.burn_ms),
+            format!("{:.1}ms", r.base_ms),
+            format!("{:.1}ms", r.clif_ms),
             check_str,
             name_w = name_w,
             col_w = col_w
@@ -536,12 +771,13 @@ pub fn print_iter_table(results: &[BenchResult]) {
 // Runner
 // ---------------------------------------------------------------------------
 
-pub fn run(iterations: usize) -> Vec<BenchResult> {
+pub fn run(iterations: usize) -> Vec<GpuIterResult> {
     let mut results = Vec::new();
 
     eprintln!("\n=== GPU Iterative Benchmark: N kernel passes on same data ===");
     eprintln!("  Raw wgpu & Burn: data stays GPU-resident between passes");
-    eprintln!("  Base (current):  round-trips through SharedMemory each pass\n");
+    eprintln!("  Base (current):  round-trips through SharedMemory each pass");
+    eprintln!("  CLIF+GPU:        CLIF JIT calls extern C GPU wrappers (GPU-resident)\n");
 
     // 1M floats = 4MB. Workgroups needed = 1M/64 = 15625 (well under 65535 limit).
     let n = 1_000_000usize;
@@ -571,10 +807,19 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Base (round-trips each pass)
         let base_alg = build_base_iterative(&data, passes);
-        let mut base_result = 0.0f64;
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
             let alg = base_alg.clone();
+            let _ = base::execute(alg);
+            start.elapsed().as_secs_f64() * 1000.0
+        });
+
+        // CLIF+GPU (GPU-resident via extern "C" wrappers, through execute())
+        let clif_out = format!("/tmp/gpu-iter-clif-{}.bin", passes);
+        let clif_alg = build_clif_gpu_iter_algorithm(&data, passes, &clif_out);
+        let clif_ms = harness::median_of(iterations, || {
+            let start = std::time::Instant::now();
+            let alg = clif_alg.clone();
             let _ = base::execute(alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
@@ -590,17 +835,26 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             Err(_) => f64::NAN,
         };
 
+        // Verify CLIF: read partial sums from file written by CLIF function
+        let clif_result: f64 = match std::fs::read(&clif_out) {
+            Ok(bytes) => bytes.chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
+                .sum(),
+            Err(_) => f64::NAN,
+        };
+
         let wgpu_ok = check_result(wgpu_result, expected, &label, "wgpu");
         let burn_ok = check_result(burn_result, expected, &label, "Burn");
         let base_ok = check_result(base_sum, expected, &label, "Base");
+        let clif_ok = check_result(clif_result, expected, &label, "CLIF+GPU");
 
-        results.push(BenchResult {
+        results.push(GpuIterResult {
             name: label,
-            python_ms: Some(burn_ms),  // reuse python_ms field for Burn
-            rust_ms: Some(wgpu_ms),    // reuse rust_ms field for raw wgpu
+            wgpu_ms,
+            burn_ms,
             base_ms,
-            verified: Some(wgpu_ok && burn_ok && base_ok),
-            actions: Some(1 + passes + 1), // 1 dispatch + N*async + 1 wait
+            clif_ms,
+            verified: wgpu_ok && burn_ok && base_ok && clif_ok,
         });
     }
 
