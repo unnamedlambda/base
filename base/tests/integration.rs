@@ -7435,3 +7435,1394 @@ block0(v0: i64):
     let recv_ret = i64::from_le_bytes(contents[16..24].try_into().unwrap());
     assert_eq!(recv_ret, 16, "recv should return 16 bytes read");
 }
+
+#[test]
+fn test_clif_ffi_lmdb_put_get_delete() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_basic");
+    let verify_file = temp_dir.path().join("lmdb_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i32, i64, i32) -> i32 system_v
+    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_get sig3
+    fn4 = %cl_lmdb_delete sig4
+    fn5 = %cl_lmdb_cleanup sig0
+    fn6 = %cl_file_write sig5
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 3
+    v6 = iconst.i64 5010
+    v7 = iconst.i32 6
+    v8 = call fn2(v0, v3, v4, v5, v6, v7)
+    v9 = iconst.i64 5100
+    v10 = call fn3(v0, v3, v4, v5, v9)
+    store.i32 v10, v0+5300
+    v11 = call fn4(v0, v3, v4, v5)
+    v12 = iconst.i64 5200
+    v13 = call fn3(v0, v3, v4, v5, v12)
+    store.i32 v13, v0+5304
+    v14 = iconst.i64 4256
+    v15 = iconst.i64 5300
+    v16 = iconst.i64 0
+    v17 = iconst.i64 8
+    v18 = call fn6(v0, v14, v15, v16, v17)
+    v19 = iconst.i64 8
+    v20 = iconst.i64 6
+    v22 = iconst.i64 5104
+    v21 = call fn6(v0, v14, v22, v19, v20)
+    call fn5(v0)
+    return
+}}"#);
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000..5003].copy_from_slice(b"foo");
+    payloads[5010..5016].copy_from_slice(b"barbaz");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert!(contents.len() >= 14);
+    let first_len = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(first_len, 6, "First get should return length 6");
+    let second_ret = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(second_ret, -1, "Get after delete should return -1");
+    assert_eq!(&contents[8..14], b"barbaz");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_batch_write() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_batch");
+    let verify_file = temp_dir.path().join("lmdb_batch_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i32) -> i32 system_v
+    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_get sig3
+    fn4 = %cl_lmdb_begin_write_txn sig4
+    fn5 = %cl_lmdb_commit_write_txn sig4
+    fn6 = %cl_lmdb_cleanup sig0
+    fn7 = %cl_file_write sig5
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = call fn4(v0, v3)
+    v5 = iconst.i32 2
+    v6 = iconst.i64 5000
+    v7 = iconst.i64 5030
+    v8 = call fn2(v0, v3, v6, v5, v7, v5)
+    v9 = iconst.i64 5010
+    v10 = iconst.i64 5040
+    v11 = call fn2(v0, v3, v9, v5, v10, v5)
+    v12 = iconst.i64 5020
+    v13 = iconst.i64 5050
+    v14 = call fn2(v0, v3, v12, v5, v13, v5)
+    v15 = call fn5(v0, v3)
+    v16 = iconst.i64 5100
+    v17 = call fn3(v0, v3, v6, v5, v16)
+    store.i32 v17, v0+5400
+    v18 = iconst.i64 5200
+    v19 = call fn3(v0, v3, v9, v5, v18)
+    store.i32 v19, v0+5404
+    v20 = iconst.i64 5300
+    v21 = call fn3(v0, v3, v12, v5, v20)
+    store.i32 v21, v0+5408
+    v22 = iconst.i64 4256
+    v23 = iconst.i64 5400
+    v24 = iconst.i64 0
+    v25 = iconst.i64 12
+    v26 = call fn7(v0, v22, v23, v24, v25)
+    v27 = iconst.i64 12
+    v28 = iconst.i64 2
+    v34 = iconst.i64 5104
+    v29 = call fn7(v0, v22, v34, v27, v28)
+    v30 = iconst.i64 14
+    v35 = iconst.i64 5204
+    v31 = call fn7(v0, v22, v35, v30, v28)
+    v32 = iconst.i64 16
+    v36 = iconst.i64 5304
+    v33 = call fn7(v0, v22, v36, v32, v28)
+    call fn6(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000..5002].copy_from_slice(b"k1");
+    payloads[5010..5012].copy_from_slice(b"k2");
+    payloads[5020..5022].copy_from_slice(b"k3");
+    payloads[5030..5032].copy_from_slice(b"v1");
+    payloads[5040..5042].copy_from_slice(b"v2");
+    payloads[5050..5052].copy_from_slice(b"v3");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert!(contents.len() >= 18);
+    let len1 = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let len2 = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    let len3 = i32::from_le_bytes(contents[8..12].try_into().unwrap());
+    assert_eq!(len1, 2);
+    assert_eq!(len2, 2);
+    assert_eq!(len3, 2);
+    assert_eq!(&contents[12..14], b"v1");
+    assert_eq!(&contents[14..16], b"v2");
+    assert_eq!(&contents[16..18], b"v3");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_cursor_scan() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_scan");
+    let verify_file = temp_dir.path().join("lmdb_scan_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_cursor_scan sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i32 1
+    v5 = iconst.i64 5000
+    v6 = iconst.i64 5030
+    v7 = call fn2(v0, v3, v5, v4, v6, v4)
+    v8 = iconst.i64 5010
+    v9 = call fn2(v0, v3, v8, v4, v6, v4)
+    v10 = iconst.i64 5020
+    v11 = call fn2(v0, v3, v10, v4, v6, v4)
+    v12 = iconst.i64 5040
+    v13 = iconst.i32 0
+    v14 = iconst.i32 100
+    v15 = iconst.i64 5100
+    v16 = call fn3(v0, v3, v12, v13, v14, v15)
+    store.i32 v16, v0+5500
+    v17 = iconst.i64 4256
+    v18 = iconst.i64 5500
+    v19 = iconst.i64 0
+    v20 = iconst.i64 4
+    v21 = call fn5(v0, v17, v18, v19, v20)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'a';
+    payloads[5010] = b'b';
+    payloads[5020] = b'c';
+    payloads[5030] = b'x';
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert!(contents.len() >= 4);
+    let count = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(count, 3, "Cursor scan should find 3 entries");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_get_nonexistent_key() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_nokey");
+    let verify_file = temp_dir.path().join("lmdb_nokey_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_get sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 1
+    v6 = iconst.i64 5010
+    v7 = iconst.i32 3
+    v8 = call fn2(v0, v3, v4, v5, v6, v7)
+    store.i32 v8, v0+5100
+    v9 = iconst.i64 5001
+    v10 = iconst.i64 5200
+    v11 = call fn3(v0, v3, v9, v5, v10)
+    store.i32 v11, v0+5104
+    v12 = iconst.i64 4256
+    v13 = iconst.i64 5100
+    v14 = iconst.i64 0
+    v15 = iconst.i64 8
+    v16 = call fn5(v0, v12, v13, v14, v15)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'a';
+    payloads[5001] = b'b';
+    payloads[5010..5013].copy_from_slice(b"val");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let put_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let get_ret = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(put_ret, 0, "put should succeed");
+    assert_eq!(get_ret, -1, "get on non-existent key should return -1");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_put_overwrite() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_overwrite");
+    let verify_file = temp_dir.path().join("lmdb_overwrite_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_get sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 1
+    v6 = iconst.i64 5010
+    v7 = iconst.i32 3
+    v8 = call fn2(v0, v3, v4, v5, v6, v7)
+    v9 = iconst.i64 5020
+    v10 = call fn2(v0, v3, v4, v5, v9, v7)
+    v11 = iconst.i64 5100
+    v12 = call fn3(v0, v3, v4, v5, v11)
+    store.i32 v12, v0+5200
+    v13 = iconst.i64 4256
+    v14 = iconst.i64 5200
+    v15 = iconst.i64 0
+    v16 = iconst.i64 4
+    v17 = call fn5(v0, v13, v14, v15, v16)
+    v18 = iconst.i64 4
+    v19 = iconst.i64 3
+    v20 = iconst.i64 5104
+    v21 = call fn5(v0, v13, v20, v18, v19)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'k';
+    payloads[5010..5013].copy_from_slice(b"old");
+    payloads[5020..5023].copy_from_slice(b"new");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert!(contents.len() >= 7);
+    let get_len = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(get_len, 3);
+    assert_eq!(&contents[4..7], b"new");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_commit_without_begin() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_nobegin");
+    let verify_file = temp_dir.path().join("lmdb_nobegin_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+    sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_commit_write_txn sig2
+    fn3 = %cl_lmdb_cleanup sig0
+    fn4 = %cl_file_write sig3
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = call fn2(v0, v3)
+    store.i32 v4, v0+5000
+    v5 = iconst.i64 4256
+    v6 = iconst.i64 5000
+    v7 = iconst.i64 0
+    v8 = iconst.i64 4
+    v9 = call fn4(v0, v5, v6, v7, v8)
+    call fn3(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 4);
+    let commit_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(commit_ret, -1, "commit without begin should return -1");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_cursor_scan_empty_db() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_empty");
+    let verify_file = temp_dir.path().join("lmdb_empty_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_cursor_scan sig2
+    fn3 = %cl_lmdb_cleanup sig0
+    fn4 = %cl_file_write sig3
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 0
+    v6 = iconst.i32 100
+    v7 = iconst.i64 5100
+    v8 = call fn2(v0, v3, v4, v5, v6, v7)
+    store.i32 v8, v0+5200
+    v9 = iconst.i64 4256
+    v10 = iconst.i64 5200
+    v11 = iconst.i64 0
+    v12 = iconst.i64 4
+    v13 = call fn4(v0, v9, v10, v11, v12)
+    call fn3(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 4);
+    let count = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(count, 0, "cursor scan on empty db should return 0");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_cursor_scan_with_start_key() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_rangescan");
+    let verify_file = temp_dir.path().join("lmdb_range_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_cursor_scan sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i32 1
+    v20 = iconst.i64 5060
+    v5 = iconst.i64 5000
+    v6 = call fn2(v0, v3, v5, v4, v20, v4)
+    v7 = iconst.i64 5001
+    v8 = call fn2(v0, v3, v7, v4, v20, v4)
+    v9 = iconst.i64 5002
+    v10 = call fn2(v0, v3, v9, v4, v20, v4)
+    v11 = iconst.i64 5003
+    v12 = call fn2(v0, v3, v11, v4, v20, v4)
+    v13 = iconst.i64 5004
+    v14 = call fn2(v0, v3, v13, v4, v20, v4)
+    v15 = iconst.i32 100
+    v16 = iconst.i64 5200
+    v17 = call fn3(v0, v3, v9, v4, v15, v16)
+    store.i32 v17, v0+5300
+    v18 = iconst.i64 4256
+    v19 = iconst.i64 5300
+    v21 = iconst.i64 0
+    v22 = iconst.i64 4
+    v23 = call fn5(v0, v18, v19, v21, v22)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'a';
+    payloads[5001] = b'b';
+    payloads[5002] = b'c';
+    payloads[5003] = b'd';
+    payloads[5004] = b'e';
+    payloads[5060] = b'x';
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 4);
+    let count = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(count, 3, "scan from 'c' should find c, d, e = 3 entries");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_sync() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_sync");
+    let verify_file = temp_dir.path().join("lmdb_sync_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_sync sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 1
+    v6 = iconst.i64 5010
+    v7 = call fn2(v0, v3, v4, v5, v6, v5)
+    v8 = call fn3(v0, v3)
+    store.i32 v8, v0+5100
+    v9 = iconst.i64 4256
+    v10 = iconst.i64 5100
+    v11 = iconst.i64 0
+    v12 = iconst.i64 4
+    v13 = call fn5(v0, v9, v10, v11, v12)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'k';
+    payloads[5010] = b'v';
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 4);
+    let sync_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(sync_ret, 0, "sync should return 0");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_delete_nonexistent_key() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_delnone");
+    let verify_file = temp_dir.path().join("lmdb_delnone_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Delete a key that was never inserted (auto-commit path — exercises txn abort fix).
+    // Then put a key and get it to prove the db still works after the failed delete.
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_delete sig2
+    fn3 = %cl_lmdb_put sig3
+    fn4 = %cl_lmdb_get sig4
+    fn5 = %cl_lmdb_cleanup sig0
+    fn6 = %cl_file_write sig5
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    ; delete key "x" which doesn't exist
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 1
+    v6 = call fn2(v0, v3, v4, v5)
+    store.i32 v6, v0+5100
+    ; now put key "a" = "ok" to prove db still works
+    v7 = iconst.i64 5010
+    v8 = iconst.i64 5020
+    v9 = iconst.i32 2
+    v10 = call fn3(v0, v3, v7, v5, v8, v9)
+    store.i32 v10, v0+5104
+    ; get key "a"
+    v11 = iconst.i64 5200
+    v12 = call fn4(v0, v3, v7, v5, v11)
+    store.i32 v12, v0+5108
+    ; write [del_ret, put_ret, get_ret, value]
+    v13 = iconst.i64 4256
+    v14 = iconst.i64 5100
+    v15 = iconst.i64 0
+    v16 = iconst.i64 12
+    v17 = call fn6(v0, v13, v14, v15, v16)
+    v18 = iconst.i64 12
+    v19 = iconst.i64 2
+    v20 = iconst.i64 5204
+    v21 = call fn6(v0, v13, v20, v18, v19)
+    call fn5(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'x';
+    payloads[5010] = b'a';
+    payloads[5020..5022].copy_from_slice(b"ok");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 14);
+    let del_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let put_ret = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    let get_ret = i32::from_le_bytes(contents[8..12].try_into().unwrap());
+    assert_eq!(del_ret, -1, "delete nonexistent key should return -1");
+    assert_eq!(put_ret, 0, "put after failed delete should succeed");
+    assert_eq!(get_ret, 2, "get should return value length 2");
+    assert_eq!(&contents[12..14], b"ok");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_invalid_handle() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_invhandle");
+    let verify_file = temp_dir.path().join("lmdb_invhandle_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Open a db (handle 0), then do put/get/delete/scan/sync on handle 99.
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i32, i64, i32) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+    sig6 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig7 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_get sig3
+    fn4 = %cl_lmdb_delete sig4
+    fn5 = %cl_lmdb_sync sig5
+    fn6 = %cl_lmdb_cursor_scan sig6
+    fn7 = %cl_lmdb_begin_write_txn sig5
+    fn8 = %cl_lmdb_commit_write_txn sig5
+    fn9 = %cl_lmdb_cleanup sig0
+    fn10 = %cl_file_write sig7
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    ; use bogus handle 99 for everything
+    v4 = iconst.i32 99
+    v5 = iconst.i64 5000
+    v6 = iconst.i32 1
+    v7 = iconst.i64 5010
+    v8 = iconst.i32 2
+    ; put on bad handle
+    v9 = call fn2(v0, v4, v5, v6, v7, v8)
+    store.i32 v9, v0+5100
+    ; get on bad handle
+    v10 = iconst.i64 5200
+    v11 = call fn3(v0, v4, v5, v6, v10)
+    store.i32 v11, v0+5104
+    ; delete on bad handle
+    v12 = call fn4(v0, v4, v5, v6)
+    store.i32 v12, v0+5108
+    ; sync on bad handle
+    v13 = call fn5(v0, v4)
+    store.i32 v13, v0+5112
+    ; cursor_scan on bad handle
+    v14 = iconst.i32 100
+    v15 = iconst.i64 5300
+    v16 = call fn6(v0, v4, v5, v6, v14, v15)
+    store.i32 v16, v0+5116
+    ; begin_write_txn on bad handle
+    v17 = call fn7(v0, v4)
+    store.i32 v17, v0+5120
+    ; commit_write_txn on bad handle
+    v18 = call fn8(v0, v4)
+    store.i32 v18, v0+5124
+    ; write 28 bytes of results
+    v19 = iconst.i64 4256
+    v20 = iconst.i64 5100
+    v21 = iconst.i64 0
+    v22 = iconst.i64 28
+    v23 = call fn10(v0, v19, v20, v21, v22)
+    call fn9(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'k';
+    payloads[5010..5012].copy_from_slice(b"vv");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 28);
+    let put_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let get_ret = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    let del_ret = i32::from_le_bytes(contents[8..12].try_into().unwrap());
+    let sync_ret = i32::from_le_bytes(contents[12..16].try_into().unwrap());
+    let scan_ret = i32::from_le_bytes(contents[16..20].try_into().unwrap());
+    let begin_ret = i32::from_le_bytes(contents[20..24].try_into().unwrap());
+    let commit_ret = i32::from_le_bytes(contents[24..28].try_into().unwrap());
+    assert_eq!(put_ret, -1, "put on invalid handle");
+    assert_eq!(get_ret, -1, "get on invalid handle");
+    assert_eq!(del_ret, -1, "delete on invalid handle");
+    assert_eq!(sync_ret, -1, "sync on invalid handle");
+    assert_eq!(scan_ret, 0, "scan on invalid handle returns 0 entries");
+    assert_eq!(begin_ret, -1, "begin_write_txn on invalid handle");
+    assert_eq!(commit_ret, -1, "commit_write_txn on invalid handle");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_double_begin() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_dblbegin");
+    let verify_file = temp_dir.path().join("lmdb_dblbegin_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // begin_write_txn, put k1=v1, begin_write_txn again (aborts first),
+    // put k2=v2, commit. k1 should be gone, k2 should exist.
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_begin_write_txn sig2
+    fn3 = %cl_lmdb_put sig3
+    fn4 = %cl_lmdb_commit_write_txn sig2
+    fn5 = %cl_lmdb_get sig4
+    fn6 = %cl_lmdb_cleanup sig0
+    fn7 = %cl_file_write sig5
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    ; first begin
+    v4 = call fn2(v0, v3)
+    ; put k1=v1 in first txn
+    v5 = iconst.i64 5000
+    v6 = iconst.i32 2
+    v7 = iconst.i64 5010
+    v8 = call fn3(v0, v3, v5, v6, v7, v6)
+    ; second begin — should abort the first txn (k1=v1 lost)
+    v9 = call fn2(v0, v3)
+    ; put k2=v2 in second txn
+    v10 = iconst.i64 5020
+    v11 = iconst.i64 5030
+    v12 = call fn3(v0, v3, v10, v6, v11, v6)
+    ; commit second txn
+    v13 = call fn4(v0, v3)
+    ; get k1 — should fail (-1)
+    v14 = iconst.i64 5100
+    v15 = call fn5(v0, v3, v5, v6, v14)
+    store.i32 v15, v0+5200
+    ; get k2 — should succeed
+    v16 = iconst.i64 5300
+    v17 = call fn5(v0, v3, v10, v6, v16)
+    store.i32 v17, v0+5204
+    ; write results
+    v18 = iconst.i64 4256
+    v19 = iconst.i64 5200
+    v20 = iconst.i64 0
+    v21 = iconst.i64 8
+    v22 = call fn7(v0, v18, v19, v20, v21)
+    ; write the k2 value
+    v23 = iconst.i64 8
+    v24 = iconst.i64 2
+    v25 = iconst.i64 5304
+    v26 = call fn7(v0, v18, v25, v23, v24)
+    call fn6(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000..5002].copy_from_slice(b"k1");
+    payloads[5010..5012].copy_from_slice(b"v1");
+    payloads[5020..5022].copy_from_slice(b"k2");
+    payloads[5030..5032].copy_from_slice(b"v2");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 10);
+    let get_k1 = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let get_k2 = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(get_k1, -1, "k1 should be lost (first txn aborted by second begin)");
+    assert_eq!(get_k2, 2, "k2 should exist with length 2");
+    assert_eq!(&contents[8..10], b"v2");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_empty_batch() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_emptybatch");
+    let verify_file = temp_dir.path().join("lmdb_emptybatch_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // begin_write_txn then immediately commit with no puts
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+    sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_begin_write_txn sig2
+    fn3 = %cl_lmdb_commit_write_txn sig2
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig3
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = call fn2(v0, v3)
+    store.i32 v4, v0+5000
+    v5 = call fn3(v0, v3)
+    store.i32 v5, v0+5004
+    v6 = iconst.i64 4256
+    v7 = iconst.i64 5000
+    v8 = iconst.i64 0
+    v9 = iconst.i64 8
+    v10 = call fn5(v0, v6, v7, v8, v9)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let begin_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let commit_ret = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(begin_ret, 0, "begin empty batch should succeed");
+    assert_eq!(commit_ret, 0, "commit empty batch should succeed");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_put_empty_value() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_emptyval");
+    let verify_file = temp_dir.path().join("lmdb_emptyval_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Put key="k" with val_len=0, then get it back
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_get sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 1
+    v6 = iconst.i64 5010
+    v7 = iconst.i32 0
+    ; put key="k" with empty value
+    v8 = call fn2(v0, v3, v4, v5, v6, v7)
+    store.i32 v8, v0+5100
+    ; get it back
+    v9 = iconst.i64 5200
+    v10 = call fn3(v0, v3, v4, v5, v9)
+    store.i32 v10, v0+5104
+    ; write [put_ret, get_ret]
+    v11 = iconst.i64 4256
+    v12 = iconst.i64 5100
+    v13 = iconst.i64 0
+    v14 = iconst.i64 8
+    v15 = call fn5(v0, v11, v12, v13, v14)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'k';
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let put_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let get_ret = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(put_ret, 0, "put with empty value should succeed");
+    assert_eq!(get_ret, 0, "get should return length 0 for empty value");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_multiple_databases() {
+    let temp_dir = TempDir::new().unwrap();
+    let db1_path = temp_dir.path().join("clif_lmdb_multi1");
+    let db2_path = temp_dir.path().join("clif_lmdb_multi2");
+    let verify_file = temp_dir.path().join("lmdb_multi_verify.bin");
+    let db1_path_str = format!("{}\0", db1_path.to_str().unwrap());
+    let db2_path_str = format!("{}\0", db2_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Open two databases. Put key="k" in db1 with val="d1", in db2 with val="d2".
+    // Get from each to verify isolation.
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_get sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    ; open db1
+    v3 = call fn1(v0, v1, v2)
+    ; open db2
+    v4 = iconst.i64 4200
+    v5 = call fn1(v0, v4, v2)
+    ; key "k" at 5000, val "d1" at 5010, val "d2" at 5020
+    v6 = iconst.i64 5000
+    v7 = iconst.i32 1
+    v8 = iconst.i64 5010
+    v9 = iconst.i32 2
+    ; put "k"="d1" in db1
+    v10 = call fn2(v0, v3, v6, v7, v8, v9)
+    ; put "k"="d2" in db2
+    v11 = iconst.i64 5020
+    v12 = call fn2(v0, v5, v6, v7, v11, v9)
+    ; get from db1
+    v13 = iconst.i64 5100
+    v14 = call fn3(v0, v3, v6, v7, v13)
+    store.i32 v14, v0+5200
+    ; get from db2
+    v15 = iconst.i64 5300
+    v16 = call fn3(v0, v5, v6, v7, v15)
+    store.i32 v16, v0+5204
+    ; write [len1, len2, val1, val2]
+    v17 = iconst.i64 4400
+    v18 = iconst.i64 5200
+    v19 = iconst.i64 0
+    v20 = iconst.i64 8
+    v21 = call fn5(v0, v17, v18, v19, v20)
+    v22 = iconst.i64 8
+    v23 = iconst.i64 2
+    v24 = iconst.i64 5104
+    v25 = call fn5(v0, v17, v24, v22, v23)
+    v26 = iconst.i64 10
+    v27 = iconst.i64 5304
+    v28 = call fn5(v0, v17, v27, v26, v23)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db1_path_str.len()].copy_from_slice(db1_path_str.as_bytes());
+    payloads[4200..4200 + db2_path_str.len()].copy_from_slice(db2_path_str.as_bytes());
+    payloads[4400..4400 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'k';
+    payloads[5010..5012].copy_from_slice(b"d1");
+    payloads[5020..5022].copy_from_slice(b"d2");
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 12);
+    let len1 = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    let len2 = i32::from_le_bytes(contents[4..8].try_into().unwrap());
+    assert_eq!(len1, 2);
+    assert_eq!(len2, 2);
+    assert_eq!(&contents[8..10], b"d1", "db1 should have val d1");
+    assert_eq!(&contents[10..12], b"d2", "db2 should have val d2");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_cursor_scan_max_entries_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_scanlimit");
+    let verify_file = temp_dir.path().join("lmdb_scanlimit_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Insert 5 keys (a-e), scan with max_entries=2
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_put sig2
+    fn3 = %cl_lmdb_cursor_scan sig3
+    fn4 = %cl_lmdb_cleanup sig0
+    fn5 = %cl_file_write sig4
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i32 1
+    v20 = iconst.i64 5060
+    v5 = iconst.i64 5000
+    v6 = call fn2(v0, v3, v5, v4, v20, v4)
+    v7 = iconst.i64 5001
+    v8 = call fn2(v0, v3, v7, v4, v20, v4)
+    v9 = iconst.i64 5002
+    v10 = call fn2(v0, v3, v9, v4, v20, v4)
+    v11 = iconst.i64 5003
+    v12 = call fn2(v0, v3, v11, v4, v20, v4)
+    v13 = iconst.i64 5004
+    v14 = call fn2(v0, v3, v13, v4, v20, v4)
+    ; scan all but limit to 2
+    v15 = iconst.i32 0
+    v16 = iconst.i32 2
+    v17 = iconst.i64 5200
+    v18 = iconst.i64 5100
+    v19 = call fn3(v0, v3, v18, v15, v16, v17)
+    store.i32 v19, v0+5300
+    v21 = iconst.i64 4256
+    v22 = iconst.i64 5300
+    v23 = iconst.i64 0
+    v24 = iconst.i64 4
+    v25 = call fn5(v0, v21, v22, v23, v24)
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[5000] = b'a';
+    payloads[5001] = b'b';
+    payloads[5002] = b'c';
+    payloads[5003] = b'd';
+    payloads[5004] = b'e';
+    payloads[5060] = b'x';
+
+    let actions = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 4);
+    let count = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(count, 2, "scan with max_entries=2 should return exactly 2");
+}
+
+#[test]
+fn test_clif_ffi_lmdb_uncommitted_batch_cleanup() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("clif_lmdb_uncommitted");
+    let verify_file = temp_dir.path().join("lmdb_uncommitted_verify.bin");
+    let db_path_str = format!("{}\0", db_path.to_str().unwrap());
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // begin_write_txn, put a key, then cleanup WITHOUT committing.
+    // Drop should abort the txn. Then reopen the db and verify key is missing.
+    // We do this in two separate execute() calls.
+    let clif_ir_1 =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_begin_write_txn sig2
+    fn3 = %cl_lmdb_put sig3
+    fn4 = %cl_lmdb_cleanup sig0
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = call fn2(v0, v3)
+    v5 = iconst.i64 5000
+    v6 = iconst.i32 3
+    v7 = iconst.i64 5010
+    v8 = call fn3(v0, v3, v5, v6, v7, v6)
+    ; cleanup without commit — Drop should abort the active write txn
+    call fn4(v0)
+    return
+}
+"#;
+
+    let mut payloads1 = vec![0u8; 8192];
+    let clif_bytes1 = format!("{}\0", clif_ir_1).into_bytes();
+    payloads1[0..clif_bytes1.len()].copy_from_slice(&clif_bytes1);
+    payloads1[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads1[5000..5003].copy_from_slice(b"key");
+    payloads1[5010..5013].copy_from_slice(b"val");
+
+    let actions1 = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm1 = create_cranelift_algorithm(actions1, payloads1, 1, vec![0], false);
+    execute(algorithm1).unwrap();
+
+    // Second run: reopen db, try to get the key — should not exist
+    let clif_ir_2 =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_lmdb_init sig0
+    fn1 = %cl_lmdb_open sig1
+    fn2 = %cl_lmdb_get sig2
+    fn3 = %cl_lmdb_cleanup sig0
+    fn4 = %cl_file_write sig3
+block0(v0: i64):
+    call fn0(v0)
+    v1 = iconst.i64 4000
+    v2 = iconst.i32 10
+    v3 = call fn1(v0, v1, v2)
+    v4 = iconst.i64 5000
+    v5 = iconst.i32 3
+    v6 = iconst.i64 5100
+    v7 = call fn2(v0, v3, v4, v5, v6)
+    store.i32 v7, v0+5200
+    v8 = iconst.i64 4256
+    v9 = iconst.i64 5200
+    v10 = iconst.i64 0
+    v11 = iconst.i64 4
+    v12 = call fn4(v0, v8, v9, v10, v11)
+    call fn3(v0)
+    return
+}
+"#;
+
+    let mut payloads2 = vec![0u8; 8192];
+    let clif_bytes2 = format!("{}\0", clif_ir_2).into_bytes();
+    payloads2[0..clif_bytes2.len()].copy_from_slice(&clif_bytes2);
+    payloads2[4000..4000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
+    payloads2[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads2[5000..5003].copy_from_slice(b"key");
+
+    let actions2 = vec![
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 1, vec![0], false);
+    execute(algorithm2).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 4);
+    let get_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
+    assert_eq!(get_ret, -1, "uncommitted key should not persist after cleanup");
+}
