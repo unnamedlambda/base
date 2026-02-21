@@ -1699,9 +1699,7 @@ impl GpuUnit {
                 self.staging_buffer.unmap();
                 debug!("gpu_dispatch_readback_complete");
             }
-            _ => {
-                // Other GPU actions (CreateBuffer, etc.) not yet implemented
-            }
+            _ => {}
         }
     }
 }

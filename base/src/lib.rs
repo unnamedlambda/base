@@ -261,10 +261,9 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         let mut unit = 0u8;
         for (i, action) in algorithm.actions.iter().enumerate() {
             match action.kind {
-                Kind::CreateBuffer | Kind::WriteBuffer | Kind::CreateShader
-                | Kind::CreatePipeline | Kind::Dispatch | Kind::ReadBuffer => {
+                Kind::Dispatch => {
                     algorithm.gpu_assignments[i] = unit;
-                    if action.kind == Kind::Dispatch && algorithm.units.gpu_units > 1 {
+                    if algorithm.units.gpu_units > 1 {
                         unit = (unit + 1) % algorithm.units.gpu_units as u8;
                     }
                 }

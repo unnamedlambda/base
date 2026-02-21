@@ -3,12 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    CreateBuffer = 0,
-    WriteBuffer = 1,
-    CreateShader = 2,
-    CreatePipeline = 3,
     Dispatch = 4,
-    ReadBuffer = 5,
     SimdLoad = 10,
     SimdAdd = 11,
     SimdMul = 12,
