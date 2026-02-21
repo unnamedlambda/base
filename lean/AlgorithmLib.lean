@@ -133,7 +133,6 @@ structure UnitSpec where
   simd_units : Nat
   gpu_units : Nat
   file_units : Nat
-  network_units : Nat
   memory_units : Nat
   ffi_units : Nat
   hash_table_units : Nat
@@ -147,7 +146,6 @@ instance : ToJson UnitSpec where
     ("simd_units", toJson u.simd_units),
     ("gpu_units", toJson u.gpu_units),
     ("file_units", toJson u.file_units),
-    ("network_units", toJson u.network_units),
     ("memory_units", toJson u.memory_units),
     ("ffi_units", toJson u.ffi_units),
     ("hash_table_units", toJson u.hash_table_units),
@@ -164,7 +162,6 @@ structure Algorithm where
   simd_assignments : List UInt8
   memory_assignments : List UInt8
   file_assignments : List UInt8
-  network_assignments : List UInt8
   ffi_assignments : List UInt8
   hash_table_assignments : List UInt8
   lmdb_assignments : List UInt8
@@ -186,7 +183,6 @@ instance : ToJson Algorithm where
     ("simd_assignments", toJson alg.simd_assignments),
     ("memory_assignments", toJson alg.memory_assignments),
     ("file_assignments", toJson alg.file_assignments),
-    ("network_assignments", toJson alg.network_assignments),
     ("ffi_assignments", toJson alg.ffi_assignments),
     ("hash_table_assignments", toJson alg.hash_table_assignments),
     ("lmdb_assignments", toJson alg.lmdb_assignments),

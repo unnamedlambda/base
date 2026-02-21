@@ -11,7 +11,7 @@ use crate::units::{
     cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
     file_unit_task_mailbox, gpu_unit_task_mailbox, hash_table_unit_task_mailbox,
     lmdb_unit_task_mailbox, load_sized, memory_unit_task_mailbox,
-    network_unit_task_mailbox, order_from_u32, queue_try_push_packet_mp,
+    order_from_u32, queue_try_push_packet_mp,
     read_null_terminated_string_from_slice, simd_unit_task_mailbox,
     Broadcast, Mailbox, SharedMemory,
     QUEUE_BASE_OFF, QUEUE_HEAD_OFF, QUEUE_MASK_OFF, QUEUE_TAIL_OFF,
@@ -98,7 +98,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         gpu_units = algorithm.units.gpu_units,
         memory_units = algorithm.units.memory_units,
         file_units = algorithm.units.file_units,
-        network_units = algorithm.units.network_units,
         ffi_units = algorithm.units.ffi_units,
         hash_table_units = algorithm.units.hash_table_units,
         lmdb_units = algorithm.units.lmdb_units,
@@ -167,19 +166,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
             }
         }
         debug!("auto-assigned FFI actions across {} units", algorithm.units.ffi_units);
-    }
-
-    if algorithm.network_assignments.is_empty() {
-        algorithm.network_assignments = vec![255; algorithm.actions.len()];
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::NetConnect | Kind::NetAccept | Kind::NetSend | Kind::NetRecv => {
-                    algorithm.network_assignments[i] = 0;
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned network actions across {} units", algorithm.units.network_units);
     }
 
     if algorithm.hash_table_assignments.is_empty() {
@@ -269,7 +255,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let gpu_assignments = Arc::new(algorithm.gpu_assignments);
     let simd_assignments = Arc::new(algorithm.simd_assignments);
     let file_assignments = Arc::new(algorithm.file_assignments);
-    let network_assignments = Arc::new(algorithm.network_assignments);
     let ffi_assignments = Arc::new(algorithm.ffi_assignments);
     let memory_assignments = Arc::new(algorithm.memory_assignments);
     let hash_table_assignments = Arc::new(algorithm.hash_table_assignments);
@@ -279,7 +264,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let gpu_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.gpu_units).map(|_| Arc::new(Mailbox::new())).collect();
     let simd_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.simd_units).map(|_| Arc::new(Mailbox::new())).collect();
     let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
-    let network_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.network_units).map(|_| Arc::new(Mailbox::new())).collect();
     let ffi_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.ffi_units).map(|_| Arc::new(Mailbox::new())).collect();
     let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
     let hash_table_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.hash_table_units).map(|_| Arc::new(Mailbox::new())).collect();
@@ -344,15 +328,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let buffer_size = algorithm.state.file_buffer_size;
         thread_handles.push(std::thread::spawn(move || {
             file_unit_task_mailbox(mailbox, actions, shared, buffer_size);
-        }));
-    }
-
-    for (network_id, mailbox) in network_mailboxes.iter().cloned().enumerate() {
-        info!(network_id, "spawning network unit task");
-        let actions = actions_arc.clone();
-        let shared = shared.clone();
-        thread_handles.push(std::thread::spawn(move || {
-            network_unit_task_mailbox(mailbox, actions, shared);
         }));
     }
 
@@ -556,25 +531,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         };
 
                         file_mailboxes[unit_id].post(start, end, flag);
-                    }
-                    3 => {
-                        if network_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = network_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(network_mailboxes.len() - 1)
-                        };
-
-                        network_mailboxes[unit_id].post(start, end, flag);
                     }
                     4 => {
                         if ffi_mailboxes.is_empty() {
@@ -802,7 +758,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                     let pools: [&[Arc<Mailbox>]; 9] = [
                         &gpu_mailboxes, &simd_mailboxes, &file_mailboxes,
-                        &network_mailboxes, &ffi_mailboxes, &[],
+                        &[], &ffi_mailboxes, &[],
                         &memory_mailboxes, &hash_table_mailboxes, &lmdb_mailboxes,
                     ];
                     let t = unit_type as usize;
@@ -1113,9 +1069,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         mailbox.shutdown();
     }
     for mailbox in file_mailboxes.iter() {
-        mailbox.shutdown();
-    }
-    for mailbox in network_mailboxes.iter() {
         mailbox.shutdown();
     }
     for mailbox in ffi_mailboxes.iter() {
