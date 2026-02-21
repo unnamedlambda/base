@@ -25,11 +25,6 @@ inductive Kind where
   | WaitUntil
   | Park
   | Wake
-  | KernelStart
-  | KernelSubmit
-  | KernelWait
-  | KernelStop
-  | KernelSubmitIndirect
   deriving Repr
 
 instance : ToJson Kind where
@@ -41,11 +36,6 @@ instance : ToJson Kind where
     | .WaitUntil => "wait_until"
     | .Park => "park"
     | .Wake => "wake"
-    | .KernelStart => "kernel_start"
-    | .KernelSubmit => "kernel_submit"
-    | .KernelWait => "kernel_wait"
-    | .KernelStop => "kernel_stop"
-    | .KernelSubmitIndirect => "kernel_submit_indirect"
 
 structure Action where
   kind : Kind

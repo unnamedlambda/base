@@ -1,4 +1,5 @@
 mod csv_bench;
+mod dispatch_bench;
 mod harness;
 mod json_bench;
 mod gpu_bench;
@@ -18,8 +19,11 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 fn print_usage() {
     eprintln!("Usage: benchmarks [OPTIONS]");
     eprintln!();
-    eprintln!("  --bench <name>     Benchmark to run: csv, all (default: all)");
+    eprintln!("  --bench <name>     Benchmark to run: csv, dispatch, all (default: all)");
     eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
+    eprintln!("  --profile <p>      Profile: quick, medium, full (default: medium)");
+    eprintln!("  --chunk <n>        Coarse chunk size (default: 100000)");
+    eprintln!("  --workers <n>      Worker threads (default: auto)");
     eprintln!("  --help             Show this help");
 }
 
@@ -40,6 +44,12 @@ fn main() {
 
     let mut bench = "all".to_string();
     let mut rounds: usize = 10;
+    let mut profile = "medium".to_string();
+    let mut chunk: usize = 100_000;
+    let mut workers: usize = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(1, 16);
 
     let mut i = 1;
     while i < args.len() {
@@ -51,6 +61,18 @@ fn main() {
             "--rounds" => {
                 i += 1;
                 if i < args.len() { rounds = args[i].parse().unwrap_or(5); }
+            }
+            "--profile" => {
+                i += 1;
+                if i < args.len() { profile = args[i].clone(); }
+            }
+            "--chunk" => {
+                i += 1;
+                if i < args.len() { chunk = args[i].parse().unwrap_or(100_000); }
+            }
+            "--workers" => {
+                i += 1;
+                if i < args.len() { workers = args[i].parse().unwrap_or(4).clamp(1, 16); }
             }
             "--help" | "-h" => {
                 print_usage();
@@ -71,6 +93,7 @@ fn main() {
     let run_matmul = bench == "all" || bench == "burn";
     let run_vecops = bench == "all" || bench == "burn" || bench == "vecops";
     let run_reduction = bench == "all" || bench == "burn" || bench == "reduction";
+    let run_dispatch = bench == "dispatch";
     let run_gpu = bench == "gpu";
     let run_gpu_iter = bench == "gpu-iter";
     let run_memory = bench == "memory";
@@ -107,6 +130,17 @@ fn main() {
     if run_reduction {
         let results = reduction_bench::run(rounds);
         harness::print_burn_table(&results);
+    }
+
+    if run_dispatch {
+        let cfg = dispatch_bench::Config {
+            profile: profile.clone(),
+            rounds,
+            chunk,
+            workers,
+        };
+        let results = dispatch_bench::run(&cfg);
+        dispatch_bench::print_dispatch_table(&results);
     }
 
     if run_gpu {

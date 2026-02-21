@@ -10,11 +10,6 @@ pub enum Kind {
     WaitUntil = 76,
     Park = 77,
     Wake = 78,
-    KernelStart = 80,
-    KernelSubmit = 81,
-    KernelWait = 82,
-    KernelStop = 83,
-    KernelSubmitIndirect = 84,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

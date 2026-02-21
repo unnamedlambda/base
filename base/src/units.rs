@@ -215,65 +215,6 @@ pub(crate) unsafe fn load_sized(shared: &SharedMemory, offset: usize, size: u32,
     }
 }
 
-pub(crate) const QUEUE_HEAD_OFF: usize = 0;
-pub(crate) const QUEUE_TAIL_OFF: usize = 4;
-pub(crate) const QUEUE_MASK_OFF: usize = 8;
-pub(crate) const QUEUE_BASE_OFF: usize = 12;
-pub(crate) const QUEUE_RESERVE_OFF: usize = 20;
-
-pub(crate) unsafe fn queue_try_push_packet_mp(
-    shared: &SharedMemory,
-    queue_desc: usize,
-    data_src: usize,
-) -> bool {
-    let mask = shared.load_u32(queue_desc + QUEUE_MASK_OFF, Ordering::Relaxed);
-    let base = shared.load_u32(queue_desc + QUEUE_BASE_OFF, Ordering::Relaxed);
-    let cap = mask.wrapping_add(1);
-
-    let reserved = loop {
-        let head = shared.load_u32(queue_desc + QUEUE_HEAD_OFF, Ordering::Acquire);
-        let reserve = shared.load_u32(queue_desc + QUEUE_RESERVE_OFF, Ordering::Relaxed);
-        if reserve.wrapping_sub(head) >= cap {
-            return false;
-        }
-        match shared.cas_u32(
-            queue_desc + QUEUE_RESERVE_OFF,
-            reserve,
-            reserve.wrapping_add(1),
-            Ordering::AcqRel,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => break reserve,
-            Err(_) => std::hint::spin_loop(),
-        }
-    };
-
-    let slot = (reserved & mask) as usize;
-    let slot_off = base as usize + slot * 8;
-    let data = shared.read(data_src, 8);
-    shared.write(slot_off, data);
-
-    loop {
-        let tail = shared.load_u32(queue_desc + QUEUE_TAIL_OFF, Ordering::Acquire);
-        if tail == reserved {
-            match shared.cas_u32(
-                queue_desc + QUEUE_TAIL_OFF,
-                tail,
-                tail.wrapping_add(1),
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(_) => std::hint::spin_loop(),
-            }
-        } else {
-            std::hint::spin_loop();
-        }
-    }
-
-    true
-}
-
 pub(crate) fn read_null_terminated_string_from_slice(data: &[u8], offset: usize, max_len: usize) -> String {
     let end = (offset + max_len).min(data.len());
     let bytes = &data[offset..end];
@@ -1031,6 +972,69 @@ unsafe extern "C" fn cl_lmdb_cleanup(ptr: *mut u8) {
     drop(Box::from_raw(ctx_ptr));
 }
 
+thread_local! {
+    static THREAD_COMPILED_FNS: std::cell::RefCell<Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>> = const { std::cell::RefCell::new(None) };
+}
+
+struct CraneliftThreadContext {
+    threads: HashMap<u32, std::thread::JoinHandle<()>>,
+    next_handle: u32,
+    compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
+}
+
+unsafe extern "C" fn cl_thread_init(ptr: *mut u8) {
+    let compiled_fns = THREAD_COMPILED_FNS.with(|cell| {
+        cell.borrow().clone().expect("cl_thread_init: no compiled functions available")
+    });
+    let ctx = Box::new(CraneliftThreadContext {
+        threads: HashMap::new(),
+        next_handle: 1,
+        compiled_fns,
+    });
+    std::ptr::write_unaligned(ptr as *mut *mut CraneliftThreadContext, Box::into_raw(ctx));
+}
+
+unsafe extern "C" fn cl_thread_spawn(ptr: *mut u8, fn_index: i64, thread_ptr: i64) -> i64 {
+    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+    let idx = fn_index as usize;
+    if idx >= ctx.compiled_fns.len() { return -1; }
+    let func = ctx.compiled_fns[idx];
+    let arg = thread_ptr as usize;
+    let handle_id = ctx.next_handle;
+    ctx.next_handle += 1;
+
+    let compiled_fns_clone = ctx.compiled_fns.clone();
+    let join = std::thread::spawn(move || {
+        THREAD_COMPILED_FNS.with(|cell| {
+            *cell.borrow_mut() = Some(compiled_fns_clone);
+        });
+        func(arg as *mut u8);
+    });
+
+    ctx.threads.insert(handle_id, join);
+    handle_id as i64
+}
+
+unsafe extern "C" fn cl_thread_join(ptr: *mut u8, handle: i64) -> i64 {
+    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+    if let Some(join) = ctx.threads.remove(&(handle as u32)) {
+        match join.join() {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    } else {
+        -1
+    }
+}
+
+unsafe extern "C" fn cl_thread_cleanup(ptr: *mut u8) {
+    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+    let mut ctx = Box::from_raw(ctx_ptr);
+    for (_, join) in ctx.threads.drain() {
+        let _ = join.join();
+    }
+}
+
 pub(crate) struct CraneliftUnit {
     shared: Arc<SharedMemory>,
     compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
@@ -1090,6 +1094,11 @@ impl CraneliftUnit {
         builder.symbol("cl_lmdb_cursor_scan", cl_lmdb_cursor_scan as *const u8);
         builder.symbol("cl_lmdb_sync", cl_lmdb_sync as *const u8);
         builder.symbol("cl_lmdb_cleanup", cl_lmdb_cleanup as *const u8);
+
+        builder.symbol("cl_thread_init", cl_thread_init as *const u8);
+        builder.symbol("cl_thread_spawn", cl_thread_spawn as *const u8);
+        builder.symbol("cl_thread_join", cl_thread_join as *const u8);
+        builder.symbol("cl_thread_cleanup", cl_thread_cleanup as *const u8);
 
         let mut module = cranelift_jit::JITModule::new(builder);
 
@@ -1156,6 +1165,10 @@ pub(crate) fn cranelift_unit_task_mailbox(
 ) {
     let _span = info_span!("cranelift_unit").entered();
     info!("Cranelift unit started");
+
+    THREAD_COMPILED_FNS.with(|cell| {
+        *cell.borrow_mut() = Some(compiled_fns.clone());
+    });
 
     // Create hash table context for CLIF-callable HT functions and store its pointer
     // at offset 0 in shared memory (HT_CTX_PTR slot, written before JIT code runs).

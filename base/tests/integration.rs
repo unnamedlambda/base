@@ -3460,3 +3460,643 @@ block0(v0: i64):
     let get_ret = i32::from_le_bytes(contents[0..4].try_into().unwrap());
     assert_eq!(get_ret, -1, "uncommitted key should not persist after cleanup");
 }
+
+#[test]
+fn test_clif_ffi_thread_spawn_and_join() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("thread_result.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   0-7:     HT context (set by runtime)
+    //   16-23:   thread context pointer
+    //   200-207: worker writes here (value 42)
+    //   3000+:   file path
+    let mut payloads = vec![0u8; 4096];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    // fn0: init thread ctx, spawn fn1, join, cleanup
+    // fn1: worker writes 42 at offset 0 (relative to its ptr = base+200)
+    // fn2: write memory[200..208] to file for verification
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64, i64) -> i64 system_v
+    fn1 = %cl_thread_spawn sig1
+    sig2 = (i64, i64) -> i64 system_v
+    fn2 = %cl_thread_join sig2
+    sig3 = (i64) system_v
+    fn3 = %cl_thread_cleanup sig3
+block0(v0: i64):
+    v1 = iadd_imm v0, 16
+    call fn0(v1)
+    v2 = iconst.i64 1
+    v3 = iadd_imm v0, 200
+    v4 = call fn1(v1, v2, v3)
+    v5 = call fn2(v1, v4)
+    call fn3(v1)
+    return
+}
+
+function u0:1(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 42
+    store.i64 v1, v0
+    return
+}
+
+function u0:2(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 200
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(value, 42, "spawned thread should have written 42");
+}
+
+#[test]
+fn test_clif_ffi_thread_multiple_workers() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("thread_multi.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   16-23:    thread context
+    //   200-207:  worker 0 writes here (value 99)
+    //   208-215:  worker 1 writes here (value 99)
+    //   216-223:  worker 2 writes here (value 99)
+    //   3000+:    file path
+    let mut payloads = vec![0u8; 8192];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    // fn0: spawn 3 workers, join all
+    // fn1: worker reads its base ptr offset, writes a value based on position
+    //      Each worker gets base+200, base+208, base+216 respectively.
+    //      Worker writes (offset_from_200 / 8 + 1) * 100 at offset 0.
+    // fn2: write 24 bytes (3 u64s) from offset 200 to file
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64, i64) -> i64 system_v
+    fn1 = %cl_thread_spawn sig1
+    sig2 = (i64, i64) -> i64 system_v
+    fn2 = %cl_thread_join sig2
+    sig3 = (i64) system_v
+    fn3 = %cl_thread_cleanup sig3
+block0(v0: i64):
+    v1 = iadd_imm v0, 16
+    call fn0(v1)
+    v2 = iconst.i64 1
+    v3 = iadd_imm v0, 200
+    v4 = call fn1(v1, v2, v3)
+    v5 = iadd_imm v0, 208
+    v6 = call fn1(v1, v2, v5)
+    v7 = iadd_imm v0, 216
+    v8 = call fn1(v1, v2, v7)
+    v9 = call fn2(v1, v4)
+    v10 = call fn2(v1, v6)
+    v11 = call fn2(v1, v8)
+    call fn3(v1)
+    return
+}
+
+function u0:1(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 99
+    store.i64 v1, v0
+    return
+}
+
+function u0:2(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 200
+    v3 = iconst.i64 0
+    v4 = iconst.i64 24
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 24);
+    let v0 = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let v1 = u64::from_le_bytes(contents[8..16].try_into().unwrap());
+    let v2 = u64::from_le_bytes(contents[16..24].try_into().unwrap());
+    assert_eq!(v0, 99, "worker 0 should have written 99");
+    assert_eq!(v1, 99, "worker 1 should have written 99");
+    assert_eq!(v2, 99, "worker 2 should have written 99");
+}
+
+#[test]
+fn test_clif_ffi_thread_join_invalid_handle() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("thread_invalid.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // fn0: init, join invalid handle (999), store return value, cleanup
+    // fn1: write the return value to file
+    let mut payloads = vec![0u8; 4096];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64) -> i64 system_v
+    fn1 = %cl_thread_join sig1
+    sig2 = (i64) system_v
+    fn2 = %cl_thread_cleanup sig2
+block0(v0: i64):
+    v1 = iadd_imm v0, 16
+    call fn0(v1)
+    v2 = iconst.i64 999
+    v3 = call fn1(v1, v2)
+    store.i64 v3, v0+200
+    call fn2(v1)
+    return
+}
+
+function u0:1(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 200
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let ret = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(ret, -1, "joining invalid handle should return -1");
+}
+
+#[test]
+fn test_clif_ffi_thread_spawn_oob_fn_index() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("thread_oob.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   16-23:    thread context
+    //   200-207:  return value from spawn with fn_index=999 (out of bounds)
+    //   208-215:  return value from spawn with fn_index=-1 (negative wraps to huge)
+    //   3000+:    file path
+    let mut payloads = vec![0u8; 4096];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    // fn0: init, try spawn with oob index 999 and negative -1, store returns, cleanup
+    // fn1: write results to file
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64, i64) -> i64 system_v
+    fn1 = %cl_thread_spawn sig1
+    sig2 = (i64) system_v
+    fn2 = %cl_thread_cleanup sig2
+block0(v0: i64):
+    v1 = iadd_imm v0, 16
+    call fn0(v1)
+    v2 = iconst.i64 999
+    v3 = iconst.i64 0
+    v4 = call fn1(v1, v2, v3)
+    store.i64 v4, v0+200
+    v5 = iconst.i64 -1
+    v6 = call fn1(v1, v5, v3)
+    store.i64 v6, v0+208
+    call fn2(v1)
+    return
+}
+
+function u0:1(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 200
+    v3 = iconst.i64 0
+    v4 = iconst.i64 16
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 16);
+    let ret_oob = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let ret_neg = i64::from_le_bytes(contents[8..16].try_into().unwrap());
+    assert_eq!(ret_oob, -1, "spawn with out-of-bounds fn_index should return -1");
+    assert_eq!(ret_neg, -1, "spawn with negative fn_index should return -1");
+}
+
+#[test]
+fn test_clif_ffi_thread_cleanup_joins_unjoined() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("thread_cleanup.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   16-23:    thread context
+    //   200-207:  worker 0 writes 77 here
+    //   208-215:  worker 1 writes 88 here
+    //   3000+:    file path
+    let mut payloads = vec![0u8; 8192];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    // fn0: init, spawn 2 workers WITHOUT joining, then cleanup (should join them)
+    //      After cleanup, sleep briefly via a busy loop, then write results to file
+    // fn1: worker writes 77 at its ptr
+    // fn2: worker writes 88 at its ptr
+    // fn3: write 16 bytes from offset 200 to file
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64, i64) -> i64 system_v
+    fn1 = %cl_thread_spawn sig1
+    sig2 = (i64) system_v
+    fn2 = %cl_thread_cleanup sig2
+block0(v0: i64):
+    v1 = iadd_imm v0, 16
+    call fn0(v1)
+    v2 = iconst.i64 1
+    v3 = iadd_imm v0, 200
+    v4 = call fn1(v1, v2, v3)
+    v5 = iconst.i64 2
+    v6 = iadd_imm v0, 208
+    v7 = call fn1(v1, v5, v6)
+    call fn2(v1)
+    return
+}
+
+function u0:1(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 77
+    store.i64 v1, v0
+    return
+}
+
+function u0:2(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 88
+    store.i64 v1, v0
+    return
+}
+
+function u0:3(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 200
+    v3 = iconst.i64 0
+    v4 = iconst.i64 16
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 3, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 16);
+    let v0 = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let v1 = u64::from_le_bytes(contents[8..16].try_into().unwrap());
+    assert_eq!(v0, 77, "cleanup should have joined worker 0 which wrote 77");
+    assert_eq!(v1, 88, "cleanup should have joined worker 1 which wrote 88");
+}
+
+#[test]
+fn test_clif_ffi_thread_double_join() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("thread_double.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   16-23:    thread context
+    //   200-207:  first join return (should be 0)
+    //   208-215:  second join same handle (should be -1)
+    //   3000+:    file path
+    let mut payloads = vec![0u8; 4096];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    // fn0: init, spawn fn1, join twice, store both returns, cleanup
+    // fn1: noop worker
+    // fn2: write results to file
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64, i64) -> i64 system_v
+    fn1 = %cl_thread_spawn sig1
+    sig2 = (i64, i64) -> i64 system_v
+    fn2 = %cl_thread_join sig2
+    sig3 = (i64) system_v
+    fn3 = %cl_thread_cleanup sig3
+block0(v0: i64):
+    v1 = iadd_imm v0, 16
+    call fn0(v1)
+    v2 = iconst.i64 1
+    v3 = iconst.i64 0
+    v4 = call fn1(v1, v2, v3)
+    v5 = call fn2(v1, v4)
+    store.i64 v5, v0+200
+    v6 = call fn2(v1, v4)
+    store.i64 v6, v0+208
+    call fn3(v1)
+    return
+}
+
+function u0:1(i64) system_v {
+block0(v0: i64):
+    return
+}
+
+function u0:2(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 200
+    v3 = iconst.i64 0
+    v4 = iconst.i64 16
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 16);
+    let first_join = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let second_join = i64::from_le_bytes(contents[8..16].try_into().unwrap());
+    assert_eq!(first_join, 0, "first join should succeed with 0");
+    assert_eq!(second_join, -1, "second join of same handle should return -1");
+}
+
+#[test]
+fn test_clif_ffi_thread_spawned_thread_spawns() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("thread_recursive.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   16-23:    thread context (main)
+    //   32-39:    thread context (child, at base+32 relative to child's ptr)
+    //   200-207:  grandchild writes 55 here
+    //   3000+:    file path
+    //
+    // fn0 (main): init ctx at base+16, spawn fn1 with ptr=base, join, cleanup
+    // fn1 (child): init ctx at base+32, spawn fn2 with ptr=base+200, join, cleanup
+    // fn2 (grandchild): writes 55 at its ptr
+    // fn3: write results to file
+    let mut payloads = vec![0u8; 8192];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64, i64) -> i64 system_v
+    fn1 = %cl_thread_spawn sig1
+    sig2 = (i64, i64) -> i64 system_v
+    fn2 = %cl_thread_join sig2
+    sig3 = (i64) system_v
+    fn3 = %cl_thread_cleanup sig3
+block0(v0: i64):
+    v1 = iadd_imm v0, 16
+    call fn0(v1)
+    v2 = iconst.i64 1
+    v3 = call fn1(v1, v2, v0)
+    v4 = call fn2(v1, v3)
+    call fn3(v1)
+    return
+}
+
+function u0:1(i64) system_v {
+    sig0 = (i64) system_v
+    fn0 = %cl_thread_init sig0
+    sig1 = (i64, i64, i64) -> i64 system_v
+    fn1 = %cl_thread_spawn sig1
+    sig2 = (i64, i64) -> i64 system_v
+    fn2 = %cl_thread_join sig2
+    sig3 = (i64) system_v
+    fn3 = %cl_thread_cleanup sig3
+block0(v0: i64):
+    v1 = iadd_imm v0, 32
+    call fn0(v1)
+    v2 = iconst.i64 2
+    v3 = iadd_imm v0, 200
+    v4 = call fn1(v1, v2, v3)
+    v5 = call fn2(v1, v4)
+    call fn3(v1)
+    return
+}
+
+function u0:2(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 55
+    store.i64 v1, v0
+    return
+}
+
+function u0:3(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 200
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 3, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(value, 55, "grandchild thread should have written 55");
+}
+
+#[test]
+fn test_clif_atomic_rmw_add() {
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("atomic_rmw.bin");
+    let file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    // Memory layout:
+    //   64:       accumulator (u64, init 0)
+    //   200-215:  descriptor { addend: u64=10, acc_rel: i64 }
+    //   216-231:  descriptor { addend: u64=32, acc_rel: i64 }
+    //   3000+:    file path
+    let mut payloads = vec![0u8; 4096];
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+
+    // accumulator = 0
+    payloads[64..72].copy_from_slice(&0u64.to_le_bytes());
+
+    // desc0 at 200: addend=10, acc_rel = 64 - 200 = -136
+    payloads[200..208].copy_from_slice(&10u64.to_le_bytes());
+    payloads[208..216].copy_from_slice(&(-136i64).to_le_bytes());
+
+    // desc1 at 216: addend=32, acc_rel = 64 - 216 = -152
+    payloads[216..224].copy_from_slice(&32u64.to_le_bytes());
+    payloads[224..232].copy_from_slice(&(-152i64).to_le_bytes());
+
+    // fn0: noop
+    // fn1: atomic add worker — reads addend + rel offset, does atomic_rmw add
+    // fn2: write accumulator (8 bytes at offset 64) to file
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    return
+}
+
+function u0:1(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0
+    v2 = load.i64 notrap aligned v0+8
+    v3 = iadd v0, v2
+    v4 = atomic_rmw.i64 little add v3, v1
+    return
+}
+
+function u0:2(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 64
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#;
+
+    let clif_off = 3200usize;
+    payloads[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
+    payloads[clif_off + clif_ir.len()] = 0;
+
+    // Actions:
+    //   0: Noop (fn1, ptr=base+200 → first descriptor)
+    //   1: Noop (fn1, ptr=base+216 → second descriptor)
+    //   2: Noop (fn2, ptr=base → write file)
+    //   3: AsyncDispatch (dispatches actions 0..3)
+    //   4: Wait
+    let actions = vec![
+        Action { kind: Kind::Noop, dst: 200, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 216, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 0, src: 0, offset: 2016, size: 3 },
+        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+    ];
+
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    execute(algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 8);
+    let acc = u64::from_le_bytes(contents[0..8].try_into().unwrap());
+    assert_eq!(acc, 42, "accumulator should be 10 + 32 = 42");
+}
