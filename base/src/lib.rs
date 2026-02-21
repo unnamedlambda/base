@@ -1,15 +1,13 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, info_span};
-use wgpu::Backends;
-
 pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 
 mod units;
 
 use crate::units::{
     cranelift_unit_task_mailbox,
-    file_unit_task_mailbox, gpu_unit_task_mailbox,
+    file_unit_task_mailbox,
     load_sized, memory_unit_task_mailbox,
     order_from_u32, queue_try_push_packet_mp,
     read_null_terminated_string_from_slice,
@@ -22,7 +20,6 @@ pub enum Error {
     InvalidConfig(String),
     RuntimeCreation(std::io::Error),
     Execution(String),
-    GpuInit(String),
 }
 
 const KERNEL_DESC_QUEUE_OFF: usize = 0;
@@ -94,7 +91,6 @@ unsafe fn queue_try_pop_u64(shared: &SharedMemory, queue_desc: usize) -> Option<
 
 pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute",
-        gpu_units = algorithm.units.gpu_units,
         memory_units = algorithm.units.memory_units,
         file_units = algorithm.units.file_units,
         cranelift_units = algorithm.units.cranelift_units,
@@ -142,23 +138,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         debug!("auto-assigned file actions across {} units", algorithm.units.file_units);
     }
 
-    if algorithm.gpu_assignments.is_empty() {
-        algorithm.gpu_assignments = vec![255; algorithm.actions.len()];
-        let mut unit = 0u8;
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::Dispatch => {
-                    algorithm.gpu_assignments[i] = unit;
-                    if algorithm.units.gpu_units > 1 {
-                        unit = (unit + 1) % algorithm.units.gpu_units as u8;
-                    }
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned GPU actions across {} units", algorithm.units.gpu_units);
-    }
-
     if algorithm.cranelift_assignments.is_empty() {
         algorithm.cranelift_assignments = vec![255; algorithm.actions.len()];
     }
@@ -175,12 +154,10 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let shared = Arc::new(SharedMemory::new(mem_ptr));
     let actions_arc = Arc::new(algorithm.actions);
 
-    let gpu_assignments = Arc::new(algorithm.gpu_assignments);
     let file_assignments = Arc::new(algorithm.file_assignments);
     let memory_assignments = Arc::new(algorithm.memory_assignments);
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
-    let gpu_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.gpu_units).map(|_| Arc::new(Mailbox::new())).collect();
     let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
     let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
     let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
@@ -191,31 +168,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
     let mut thread_handles = Vec::new();
     let mut kernel_handles: Vec<Option<KernelHandle>> = Vec::new();
-
-    for (gpu_id, mailbox) in gpu_mailboxes.iter().enumerate() {
-        if gpu_id < algorithm.state.gpu_shader_offsets.len() {
-            info!(gpu_id, "spawning GPU unit thread");
-            let gpu_size = algorithm.state.gpu_size;
-            let backends = Backends::from_bits(algorithm.units.backends_bits).unwrap_or(Backends::all());
-            let offset = algorithm.state.gpu_shader_offsets[gpu_id];
-            let shader_source =
-                read_null_terminated_string_from_slice(&memory, offset, 8192);
-            let mailbox = mailbox.clone();
-            let actions = actions_arc.clone();
-            let shared = shared.clone();
-
-            thread_handles.push(std::thread::spawn(move || {
-                gpu_unit_task_mailbox(
-                    mailbox,
-                    actions,
-                    shared,
-                    shader_source,
-                    gpu_size,
-                    backends,
-                );
-            }));
-        }
-    }
 
     for (file_id, mailbox) in file_mailboxes.iter().cloned().enumerate() {
         info!(file_id, "spawning file unit task");
@@ -338,25 +290,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 );
 
                 match unit_type {
-                    0 => {
-                        if gpu_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = gpu_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(gpu_mailboxes.len() - 1)
-                        };
-
-                        gpu_mailboxes[unit_id].post(start, end, flag);
-                    }
                     2 => {
                         if file_mailboxes.is_empty() {
                             pc += 1;
@@ -544,7 +477,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     };
 
                     let pools: [&[Arc<Mailbox>]; 9] = [
-                        &gpu_mailboxes, &[], &file_mailboxes,
+                        &[], &[], &file_mailboxes,
                         &[], &[], &[],
                         &memory_mailboxes, &[], &[],
                     ];
@@ -848,9 +781,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     info!("shutting down all units");
-    for mailbox in gpu_mailboxes.iter() {
-        mailbox.shutdown();
-    }
     for mailbox in file_mailboxes.iter() {
         mailbox.shutdown();
     }

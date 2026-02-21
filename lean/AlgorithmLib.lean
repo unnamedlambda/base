@@ -30,7 +30,6 @@ inductive Kind where
   | Fence
   | AsyncDispatch
   | Wait
-  | Dispatch
   deriving Repr
 
 instance : ToJson Kind where
@@ -47,7 +46,6 @@ instance : ToJson Kind where
     | .Fence => "fence"
     | .AsyncDispatch => "async_dispatch"
     | .Wait => "wait"
-    | .Dispatch => "dispatch"
 
 structure Action where
   kind : Kind
@@ -67,35 +65,27 @@ instance : ToJson Action where
   ]
 
 structure State where
-  gpu_size : Nat
   file_buffer_size : Nat
-  gpu_shader_offsets : List Nat
   cranelift_ir_offsets : List Nat
   deriving Repr
 
 instance : ToJson State where
   toJson s := Json.mkObj [
-    ("gpu_size", toJson s.gpu_size),
     ("file_buffer_size", toJson s.file_buffer_size),
-    ("gpu_shader_offsets", toJson s.gpu_shader_offsets),
     ("cranelift_ir_offsets", toJson s.cranelift_ir_offsets),
   ]
 
 structure UnitSpec where
-  gpu_units : Nat
   file_units : Nat
   memory_units : Nat
   cranelift_units : Nat
-  backends_bits : UInt32
   deriving Repr
 
 instance : ToJson UnitSpec where
   toJson u := Json.mkObj [
-    ("gpu_units", toJson u.gpu_units),
     ("file_units", toJson u.file_units),
     ("memory_units", toJson u.memory_units),
-    ("cranelift_units", toJson u.cranelift_units),
-    ("backends_bits", toJson u.backends_bits)
+    ("cranelift_units", toJson u.cranelift_units)
   ]
 
 structure Algorithm where
@@ -105,7 +95,6 @@ structure Algorithm where
   units : UnitSpec
   memory_assignments : List UInt8
   file_assignments : List UInt8
-  gpu_assignments : List UInt8
   cranelift_assignments : List UInt8
   worker_threads : Option Nat
   blocking_threads : Option Nat
@@ -122,7 +111,6 @@ instance : ToJson Algorithm where
     ("units", toJson alg.units),
     ("memory_assignments", toJson alg.memory_assignments),
     ("file_assignments", toJson alg.file_assignments),
-    ("gpu_assignments", toJson alg.gpu_assignments),
     ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),
     ("blocking_threads", toJson alg.blocking_threads),

@@ -16,78 +16,21 @@ fn create_test_algorithm(
         actions,
         payloads,
         state: State {
-            gpu_size: 0,
             file_buffer_size: 65536,
-            gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
-            gpu_units: 0,
             file_units,
             memory_units,
             cranelift_units: 0,
-            backends_bits: 0,
         },
         memory_assignments: vec![0; num_actions],
         file_assignments: vec![0; num_actions],
-        gpu_assignments: vec![],
         cranelift_assignments: vec![],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,
         timeout_ms: Some(5000),
-        thread_name_prefix: None,
-    }
-}
-
-fn create_complex_algorithm(
-    actions: Vec<Action>,
-    payloads: Vec<u8>,
-    file_units: usize,
-    memory_units: usize,
-    gpu_units: usize,
-    gpu_shader_offsets: Vec<usize>,
-    gpu_size: usize,
-) -> Algorithm {
-    let num_actions = actions.len();
-    let payload_size = payloads.len();
-
-    Algorithm {
-        actions,
-        payloads,
-        state: State {
-            gpu_size,
-            file_buffer_size: 65536,
-            gpu_shader_offsets,
-            cranelift_ir_offsets: vec![],
-        },
-        units: UnitSpec {
-            gpu_units,
-            file_units,
-            memory_units,
-            cranelift_units: 0,
-            backends_bits: 0xFFFFFFFF,
-        },
-        memory_assignments: if memory_units > 0 {
-            vec![0; num_actions]
-        } else {
-            vec![255; num_actions]
-        },
-        file_assignments: if file_units > 0 {
-            vec![0; num_actions]
-        } else {
-            vec![255; num_actions]
-        },
-        gpu_assignments: if gpu_units > 0 {
-            vec![0; num_actions]
-        } else {
-            vec![255; num_actions]
-        },
-        cranelift_assignments: vec![],
-        worker_threads: None,
-        blocking_threads: None,
-        stack_size: None,
-        timeout_ms: Some(10000),
         thread_name_prefix: None,
     }
 }
@@ -105,21 +48,16 @@ fn create_cranelift_algorithm(
         actions,
         payloads,
         state: State {
-            gpu_size: 0,
             file_buffer_size: if with_file { 65536 } else { 0 },
-            gpu_shader_offsets: vec![],
             cranelift_ir_offsets,
         },
         units: UnitSpec {
-            gpu_units: 0,
             file_units: if with_file { 1 } else { 0 },
             memory_units: 0,
             cranelift_units,
-            backends_bits: 0,
         },
         memory_assignments: vec![],
         file_assignments: if with_file { vec![0; num_actions] } else { vec![] },
-        gpu_assignments: vec![],
         cranelift_assignments: vec![0; num_actions],
         worker_threads: None,
         blocking_threads: None,
@@ -992,220 +930,6 @@ fn test_integration_complex_workflow() {
     assert_eq!(value_a, 42, "Path A should contain copied value");
 }
 
-// Simple WGSL shader for addition: reads data[0] and data[1], writes sum to data[2]
-const SIMPLE_ADD_SHADER: &str = r#"
-@group(0) @binding(0) var<storage, read_write> data: array<u32>;
-
-@compute @workgroup_size(1)
-fn main() {
-    let a = data[0];
-    let b = data[1];
-    data[2] = a + b;
-}
-"#;
-
-#[test]
-fn test_integration_gpu_async() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("gpu_async_result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let shader_bytes = SIMPLE_ADD_SHADER.as_bytes();
-    payloads[0..shader_bytes.len()].copy_from_slice(shader_bytes);
-
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[2048..2048 + filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    payloads[3000..3004].copy_from_slice(&7u32.to_le_bytes());
-    payloads[3004..3008].copy_from_slice(&9u32.to_le_bytes());
-
-    let file_flag = 2568u32;
-
-    let actions = vec![
-        // Action 0: GPU Dispatch
-        Action {
-            kind: Kind::Dispatch,
-            dst: 3000,
-            src: 3000,
-            offset: 2560,
-            size: 12,
-        },
-        // Action 1: FileWrite result
-        Action {
-            kind: Kind::FileWrite,
-            dst: 2048,
-            src: 3008,
-            offset: 0,
-            size: 4,
-        },
-        // Action 2: AsyncDispatch GPU
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 0,
-            src: 0,
-            offset: 2560,
-            size: 0,
-        },
-        // Action 3: Wait for GPU
-        Action {
-            kind: Kind::Wait,
-            dst: 2560,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 5: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_complex_algorithm(
-        actions,
-        payloads,
-        1,    // file_units
-        0,    // memory_units
-        1,    // gpu_units
-        vec![0],  // gpu_shader_offsets
-        2048, // gpu_size
-    );
-
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "GPU async result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    let value = u32::from_le_bytes(contents[0..4].try_into().unwrap());
-    assert_eq!(value, 16, "GPU should have computed 7 + 9 = 16");
-}
-
-#[test]
-fn test_integration_complex_gpu_simd_workflow() {
-    let temp_dir = TempDir::new().unwrap();
-    let result1 = temp_dir.path().join("result1.txt");
-    let result2 = temp_dir.path().join("result2.txt");
-    let condition_file = temp_dir.path().join("condition.txt");
-
-    let result1_str = result1.to_str().unwrap();
-    let result2_str = result2.to_str().unwrap();
-    let condition_str = condition_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let shader_bytes = SIMPLE_ADD_SHADER.as_bytes();
-    payloads[0..shader_bytes.len()].copy_from_slice(shader_bytes);
-
-    let filename1_bytes = format!("{}\0", result1_str).into_bytes();
-    payloads[2048..2048 + filename1_bytes.len()].copy_from_slice(&filename1_bytes);
-
-    let filename2_bytes = format!("{}\0", result2_str).into_bytes();
-    payloads[2304..2304 + filename2_bytes.len()].copy_from_slice(&filename2_bytes);
-
-    let filename_cond_bytes = format!("{}\0", condition_str).into_bytes();
-    payloads[2720..2720 + filename_cond_bytes.len()].copy_from_slice(&filename_cond_bytes);
-
-    payloads[2576..2580].copy_from_slice(&7u32.to_le_bytes());
-    payloads[2580..2584].copy_from_slice(&9u32.to_le_bytes());
-
-    payloads[2640..2644].copy_from_slice(&3u32.to_le_bytes());
-    payloads[2644..2648].copy_from_slice(&5u32.to_le_bytes());
-
-    // Condition value for ConditionalJump (1 = true, will jump)
-    payloads[2704..2712].copy_from_slice(&1u64.to_le_bytes());
-
-    let high_text = b"HIGH";
-    payloads[2776..2780].copy_from_slice(high_text);
-    let low_text = b"LOW";
-    payloads[2832..2835].copy_from_slice(low_text);
-
-    // Completion flags
-    let fw1_flag = 2880u32;
-    let fw2_flag = 2888u32;
-    let fw_cond_flag = 2896u32;
-
-    let actions = vec![
-        // Action 0: GPU Dispatch 1
-        Action { kind: Kind::Dispatch, dst: 2576, src: 2576, offset: 2560, size: 12 },
-        // Action 1: GPU Dispatch 2
-        Action { kind: Kind::Dispatch, dst: 2640, src: 2640, offset: 2568, size: 12 },
-        // Action 2: FileWrite result1
-        Action { kind: Kind::FileWrite, dst: 2048, src: 2584, offset: 0, size: 4 },
-        // Action 3: FileWrite result2
-        Action { kind: Kind::FileWrite, dst: 2304, src: 2648, offset: 0, size: 4 },
-        // Action 4: FileWrite LOW (skipped)
-        Action { kind: Kind::FileWrite, dst: 2720, src: 2832, offset: 0, size: 3 },
-        // Action 5: FileWrite HIGH (executed)
-        Action { kind: Kind::FileWrite, dst: 2720, src: 2776, offset: 0, size: 4 },
-        // Action 6: AsyncDispatch GPU 1
-        Action { kind: Kind::AsyncDispatch, dst: 0, src: 0, offset: 2560, size: 0 },
-        // Action 7: Wait for GPU 1
-        Action { kind: Kind::Wait, dst: 2560, src: 0, offset: 0, size: 0 },
-        // Action 8: AsyncDispatch FileWrite 1
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: fw1_flag, size: 0 },
-        // Action 9: Wait for FileWrite 1
-        Action { kind: Kind::Wait, dst: fw1_flag, src: 0, offset: 0, size: 0 },
-        // Action 10: AsyncDispatch GPU 2
-        Action { kind: Kind::AsyncDispatch, dst: 0, src: 1, offset: 2568, size: 0 },
-        // Action 11: Wait for GPU 2
-        Action { kind: Kind::Wait, dst: 2568, src: 0, offset: 0, size: 0 },
-        // Action 12: AsyncDispatch FileWrite 2
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 3, offset: fw2_flag, size: 0 },
-        // Action 13: Wait for FileWrite 2
-        Action { kind: Kind::Wait, dst: fw2_flag, src: 0, offset: 0, size: 0 },
-        // Action 14: ConditionalJump - if condition true (1), jump to action 18 (HIGH path)
-        Action { kind: Kind::ConditionalJump, src: 2704, dst: 18, offset: 0, size: 0 },
-        // Action 15: AsyncDispatch LOW FileWrite (skipped when jumping)
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 4, offset: fw_cond_flag, size: 0 },
-        // Action 16: Wait for LOW (skipped)
-        Action { kind: Kind::Wait, dst: fw_cond_flag, src: 0, offset: 0, size: 0 },
-        // Action 17: Jump to end (skip HIGH path)
-        Action { kind: Kind::ConditionalJump, src: 2704, dst: 20, offset: 0, size: 0 },
-        // Action 18: AsyncDispatch HIGH FileWrite
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 5, offset: fw_cond_flag, size: 0 },
-        // Action 19: Wait for HIGH
-        Action { kind: Kind::Wait, dst: fw_cond_flag, src: 0, offset: 0, size: 0 },
-        // Action 20: End
-    ];
-
-    let algorithm = create_complex_algorithm(
-        actions,
-        payloads,
-        3,
-        0,
-        1,
-        vec![0],
-        2048,
-    );
-
-    execute(algorithm).unwrap();
-
-    assert!(result1.exists(), "GPU result 1 should exist");
-    let contents1 = fs::read(&result1).unwrap();
-    let value1 = u32::from_le_bytes(contents1[0..4].try_into().unwrap());
-    assert_eq!(value1, 16, "GPU1 should compute 7 + 9 = 16");
-
-    assert!(result2.exists(), "GPU result 2 should exist");
-    let contents2 = fs::read(&result2).unwrap();
-    let value2 = u32::from_le_bytes(contents2[0..4].try_into().unwrap());
-    assert_eq!(value2, 8, "GPU2 should compute 3 + 5 = 8");
-
-    assert!(condition_file.exists(), "Condition file should exist");
-    let contents_cond = fs::read(&condition_file).unwrap();
-    assert_eq!(&contents_cond[..], b"HIGH", "Should have taken HIGH path (condition = 1.0)");
-}
 
 #[test]
 fn test_integration_multiple_async_same_unit() {

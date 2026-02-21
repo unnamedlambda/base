@@ -8,14 +8,6 @@ use crate::harness::{self, BenchResult};
 // Workload: Read N MB of f32 data, GPU doubles each element, write result.
 // ---------------------------------------------------------------------------
 
-const SHADER_OFF: usize = 0x0000;
-const FLAG1_ADDR: usize = 0x3000; // FileRead completion
-const FLAG2_ADDR: usize = 0x3008; // GPU completion
-const FLAG3_ADDR: usize = 0x3010; // FileWrite completion
-const FNAME_IN_OFF: usize = 0x3100; // Input filename
-const FNAME_OUT_OFF: usize = 0x3200; // Output filename
-const DATA_OFF: usize = 0x4000;
-
 /// WGSL shader: double each f32 in-place.
 const WGSL_DOUBLE: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<f32>;
@@ -56,173 +48,184 @@ fn verify_doubled(path: &str, n_floats: usize) -> bool {
     true
 }
 
-/// Build Base algorithm: FileRead → GPU double → FileWrite.
-///
-/// Actions:
-///   [0] FileRead (input file → DATA_OFF)
-///   [1] Dispatch (GPU double in-place at DATA_OFF)
-///   [2] FileWrite (DATA_OFF → output file)
-///   [3] AsyncDispatch → File (action 0), flag FLAG1
-///   [4] Wait(FLAG1)
-///   [5] AsyncDispatch → GPU (action 1), flag FLAG2
-///   [6] Wait(FLAG2)
-///   [7] AsyncDispatch → File (action 2), flag FLAG3
-///   [8] Wait(FLAG3)
-fn build_memory_algorithm(
+// ---------------------------------------------------------------------------
+// CLIF+GPU+File: Cranelift JIT does file_read → GPU double → file_write
+// in a single compiled function via extern "C" wrappers.
+// ---------------------------------------------------------------------------
+
+const CLIF_DSIZE_OFF: usize = 0x08;         // i64: GPU buffer size in bytes
+const CLIF_WORKGROUPS_OFF: usize = 0x10;     // i64: workgroups for dispatch
+const CLIF_BIND_OFF: usize = 0x40;           // binding descriptor [buf_id=0, read_only=0]
+const CLIF_SHADER_OFF: usize = 0x100;        // WGSL shader (null-terminated)
+const CLIF_FNAME_IN_OFF: usize = 0x3000;     // input filename (null-terminated)
+const CLIF_FNAME_OUT_OFF: usize = 0x3100;    // output filename (null-terminated)
+const CLIF_IR_OFF: usize = 0x3800;           // CLIF IR source (null-terminated)
+const CLIF_FLAG_OFF: usize = 0x3200;         // cranelift completion flag
+const CLIF_DATA_OFF: usize = 0x4000;         // data buffer
+
+fn gen_memory_clif_ir() -> String {
+    format!(
+r#"function u0:0(i64) system_v {{
+    ; sig0: (ptr) — gpu init/cleanup
+    sig0 = (i64) system_v
+    ; sig1: (ptr, size) -> buf_id — gpu create_buffer
+    sig1 = (i64, i64) -> i32 system_v
+    ; sig2: (ptr, shader_off, bind_off, n_bindings) -> pipe_id — gpu create_pipeline
+    sig2 = (i64, i64, i64, i32) -> i32 system_v
+    ; sig3: (ptr, buf_id, off, size) -> i32 — gpu upload/download
+    sig3 = (i64, i32, i64, i64) -> i32 system_v
+    ; sig4: (ptr, pipe_id, workgroups) -> i32 — gpu dispatch
+    sig4 = (i64, i32, i32) -> i32 system_v
+    ; sig5: (ptr, path_off, dst_off, file_offset, size) -> i64 — file read
+    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
+    ; sig6: (ptr, path_off, src_off, file_offset, size) -> i64 — file write
+    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_create_pipeline sig2
+    fn3 = %cl_gpu_upload sig3
+    fn4 = %cl_gpu_dispatch sig4
+    fn5 = %cl_gpu_download sig3
+    fn6 = %cl_gpu_cleanup sig0
+    fn7 = %cl_file_read sig5
+    fn8 = %cl_file_write sig6
+
+block0(v0: i64):
+    ; --- file read input into data region ---
+    v1 = iconst.i64 {fname_in_off}
+    v2 = iconst.i64 {data_off}
+    v3 = iconst.i64 0
+    v4 = load.i64 v0+{dsize_off}
+    v30 = call fn7(v0, v1, v2, v3, v4)
+
+    ; --- gpu init ---
+    call fn0(v0)
+
+    ; --- create buffer ---
+    v5 = call fn1(v0, v4)
+
+    ; --- upload data to GPU ---
+    v31 = call fn3(v0, v5, v2, v4)
+
+    ; --- create pipeline (1 binding: buf0 rw) ---
+    v6 = iconst.i64 {shader_off}
+    v7 = iconst.i64 {bind_off}
+    v8 = iconst.i32 1
+    v9 = call fn2(v0, v6, v7, v8)
+
+    ; --- dispatch ---
+    v10 = load.i64 v0+{wg_off}
+    v11 = ireduce.i32 v10
+    v32 = call fn4(v0, v9, v11)
+
+    ; --- download result ---
+    v33 = call fn5(v0, v5, v2, v4)
+
+    ; --- gpu cleanup ---
+    call fn6(v0)
+
+    ; --- file write output ---
+    v12 = iconst.i64 {fname_out_off}
+    v34 = call fn8(v0, v12, v2, v3, v4)
+
+    return
+}}"#,
+        dsize_off = CLIF_DSIZE_OFF,
+        data_off = CLIF_DATA_OFF,
+        shader_off = CLIF_SHADER_OFF,
+        bind_off = CLIF_BIND_OFF,
+        wg_off = CLIF_WORKGROUPS_OFF,
+        fname_in_off = CLIF_FNAME_IN_OFF,
+        fname_out_off = CLIF_FNAME_OUT_OFF,
+    )
+}
+
+fn build_clif_memory_algorithm(
     input_path: &str,
     output_path: &str,
     n_floats: usize,
 ) -> base::Algorithm {
     let buffer_size = n_floats * 4;
-    let payload_size = DATA_OFF + buffer_size;
+    let workgroups = ((n_floats + 63) / 64) as u32;
+
+    let clif_source = gen_memory_clif_ir();
+    let clif_bytes = format!("{}\0", clif_source).into_bytes();
+    assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
+        "CLIF IR too large: {} bytes", clif_bytes.len());
+
+    let payload_size = CLIF_DATA_OFF + buffer_size;
     let mut payloads = vec![0u8; payload_size];
 
-    // Shader
-    let shader_bytes = WGSL_DOUBLE.as_bytes();
-    payloads[SHADER_OFF..SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
+    // CLIF IR source
+    payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
 
-    // Filenames
+    // Control params
+    payloads[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(buffer_size as i64).to_le_bytes());
+    payloads[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
+
+    // Binding descriptor: [buf_id=0, read_only=0]
+    payloads[CLIF_BIND_OFF..CLIF_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
+    payloads[CLIF_BIND_OFF + 4..CLIF_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
+
+    // Shader (null-terminated)
+    let shader_bytes = WGSL_DOUBLE.as_bytes();
+    payloads[CLIF_SHADER_OFF..CLIF_SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
+    payloads[CLIF_SHADER_OFF + shader_bytes.len()] = 0;
+
+    // Filenames (null-terminated)
     let fname_in = format!("{}\0", input_path);
+    payloads[CLIF_FNAME_IN_OFF..CLIF_FNAME_IN_OFF + fname_in.len()].copy_from_slice(fname_in.as_bytes());
     let fname_out = format!("{}\0", output_path);
-    payloads[FNAME_IN_OFF..FNAME_IN_OFF + fname_in.len()].copy_from_slice(fname_in.as_bytes());
-    payloads[FNAME_OUT_OFF..FNAME_OUT_OFF + fname_out.len()].copy_from_slice(fname_out.as_bytes());
+    payloads[CLIF_FNAME_OUT_OFF..CLIF_FNAME_OUT_OFF + fname_out.len()].copy_from_slice(fname_out.as_bytes());
+
+    let _ = std::fs::remove_file(output_path);
 
     let actions = vec![
-        // [0] FileRead: input → DATA_OFF
-        Action {
-            kind: Kind::FileRead,
-            src: FNAME_IN_OFF as u32,
-            dst: DATA_OFF as u32,
-            offset: 0,
-            size: buffer_size as u32,
-        },
-        // [1] GPU Dispatch: double in-place
-        Action {
-            kind: Kind::Dispatch,
-            src: DATA_OFF as u32,
-            dst: DATA_OFF as u32,
-            offset: 0,
-            size: buffer_size as u32,
-        },
-        // [2] FileWrite: DATA_OFF → output
-        Action {
-            kind: Kind::FileWrite,
-            src: DATA_OFF as u32,
-            dst: FNAME_OUT_OFF as u32,
-            offset: 0,
-            size: buffer_size as u32,
-        },
-        // [3] AsyncDispatch → File (action 0)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 0,
-            offset: FLAG1_ADDR as u32,
-            size: 0,
-        },
-        // [4] Wait FileRead
-        Action {
-            kind: Kind::Wait,
-            dst: FLAG1_ADDR as u32,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // [5] AsyncDispatch → GPU (action 1)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 0,
-            src: 1,
-            offset: FLAG2_ADDR as u32,
-            size: 0,
-        },
-        // [6] Wait GPU
-        Action {
-            kind: Kind::Wait,
-            dst: FLAG2_ADDR as u32,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // [7] AsyncDispatch → File (action 2)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 2,
-            offset: FLAG3_ADDR as u32,
-            size: 0,
-        },
-        // [8] Wait FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: FLAG3_ADDR as u32,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: CLIF_FLAG_OFF as u32, size: 0 },
+        Action { kind: Kind::Wait, dst: CLIF_FLAG_OFF as u32, src: 0, offset: 0, size: 0 },
     ];
-
     let num_actions = actions.len();
 
     base::Algorithm {
         actions,
         payloads,
         state: State {
-            gpu_size: buffer_size,
-            file_buffer_size: 1024 * 1024, // 1MB file buffer
-            gpu_shader_offsets: vec![SHADER_OFF],
-            cranelift_ir_offsets: vec![],
+            file_buffer_size: 0,
+            cranelift_ir_offsets: vec![CLIF_IR_OFF],
         },
         units: UnitSpec {
-            gpu_units: 1,
-            file_units: 1,
+            file_units: 0,
             memory_units: 0,
-            cranelift_units: 0,
-            backends_bits: 0xFFFF_FFFF,
+            cranelift_units: 1,
         },
         memory_assignments: vec![],
         file_assignments: vec![],
-        gpu_assignments: vec![0; num_actions],
-        cranelift_assignments: vec![],
+        cranelift_assignments: vec![0; num_actions],
         worker_threads: Some(1),
         blocking_threads: Some(1),
         stack_size: Some(256 * 1024),
         timeout_ms: Some(120_000),
-        thread_name_prefix: Some("memory-bench".into()),
+        thread_name_prefix: Some("clif-memory-bench".into()),
     }
 }
 
-/// Rust baseline: tokio::fs + wgpu manual.
-async fn rust_memory_pipeline(input_path: &str, output_path: &str, n_floats: usize) {
-    use std::sync::Arc;
+/// Rust baseline: sync file I/O + cached wgpu device (fair comparison with CLIF path).
+fn rust_memory_pipeline(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    input_path: &str,
+    output_path: &str,
+    n_floats: usize,
+) {
+    let data = std::fs::read(input_path).unwrap();
 
-    // Read file
-    let data = tokio::fs::read(input_path).await.unwrap();
-
-    // Setup wgpu
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor::default(), None)
-        .await
-        .unwrap();
-
-    let device = Arc::new(device);
-    let queue = Arc::new(queue);
-
-    // Shader
     let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
         source: wgpu::ShaderSource::Wgsl(WGSL_DOUBLE.into()),
     });
 
-    // Buffer
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: data.len() as u64,
@@ -234,7 +237,6 @@ async fn rust_memory_pipeline(input_path: &str, output_path: &str, n_floats: usi
 
     queue.write_buffer(&buffer, 0, &data);
 
-    // Pipeline
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -273,7 +275,6 @@ async fn rust_memory_pipeline(input_path: &str, output_path: &str, n_floats: usi
         cache: None,
     });
 
-    // Dispatch
     let mut encoder = device.create_command_encoder(&Default::default());
     {
         let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -283,7 +284,6 @@ async fn rust_memory_pipeline(input_path: &str, output_path: &str, n_floats: usi
         pass.dispatch_workgroups(workgroups, 1, 1);
     }
 
-    // Readback
     let staging = device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: data.len() as u64,
@@ -295,19 +295,13 @@ async fn rust_memory_pipeline(input_path: &str, output_path: &str, n_floats: usi
     queue.submit(Some(encoder.finish()));
 
     let slice = staging.slice(..);
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        tx.send(r).ok();
-    });
+    slice.map_async(wgpu::MapMode::Read, |_| {});
     device.poll(wgpu::Maintain::Wait);
-    rx.await.unwrap().unwrap();
 
     let result = slice.get_mapped_range().to_vec();
-    drop(slice);
     staging.unmap();
 
-    // Write file
-    tokio::fs::write(output_path, &result).await.unwrap();
+    std::fs::write(output_path, &result).unwrap();
 }
 
 pub fn print_memory_table(results: &[BenchResult]) {
@@ -318,8 +312,8 @@ pub fn print_memory_table(results: &[BenchResult]) {
     println!(
         "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
         "Memory Benchmark",
-        "Rust(tokio+wgpu)",
-        "Base",
+        "Rust(wgpu)",
+        "CLIF+GPU",
         "Check",
         name_w = name_w,
         col_w = col_w
@@ -362,6 +356,18 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     eprintln!("\n=== Memory-Heavy Benchmarks: Large file → GPU → Write ===");
     eprintln!("  Testing flat buffer scalability with multi-MB payloads\n");
 
+    // Cache GPU device once (same as CLIF path uses cached_gpu_device)
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .expect("No GPU adapter found");
+    let (device, queue) = pollster::block_on(
+        adapter.request_device(&wgpu::DeviceDescriptor::default(), None),
+    )
+    .expect("Failed to create GPU device");
+
     for &n_floats in &[256_000, 512_000, 1_000_000] {
         let mb = (n_floats * 4) as f64 / (1024.0 * 1024.0);
         eprintln!("  Pipeline: {:.1}MB ({} floats) ...", mb, n_floats);
@@ -373,38 +379,35 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         };
         let input_path = format!("/tmp/memory-bench-data/input_{}.bin", label);
         let rust_output = format!("/tmp/memory-bench-data/output_rust_{}.bin", label);
-        let base_output = format!("/tmp/memory-bench-data/output_base_{}.bin", label);
+        let clif_output = format!("/tmp/memory-bench-data/output_clif_{}.bin", label);
 
         gen_test_file(&input_path, n_floats);
 
-        let base_alg = build_memory_algorithm(&input_path, &base_output, n_floats);
+        let clif_alg = build_clif_memory_algorithm(&input_path, &clif_output, n_floats);
 
-        // Rust baseline
+        // Rust baseline (cached device, sync I/O)
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .unwrap();
-            rt.block_on(rust_memory_pipeline(&input_path, &rust_output, n_floats));
+            rust_memory_pipeline(&device, &queue, &input_path, &rust_output, n_floats);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        // Base
+        // CLIF+GPU
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let alg = base_alg.clone();
+            let alg = clif_alg.clone();
             let _ = base::execute(alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
         let rust_ok = verify_doubled(&rust_output, n_floats);
-        let base_ok = verify_doubled(&base_output, n_floats);
+        let clif_ok = verify_doubled(&clif_output, n_floats);
 
         if !rust_ok {
             eprintln!("  VERIFY FAIL: Rust output incorrect");
         }
-        if !base_ok {
-            eprintln!("  VERIFY FAIL: Base output incorrect");
+        if !clif_ok {
+            eprintln!("  VERIFY FAIL: CLIF output incorrect");
         }
 
         results.push(BenchResult {
@@ -412,7 +415,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             python_ms: None,
             rust_ms: Some(rust_ms),
             base_ms,
-            verified: Some(rust_ok && base_ok),
+            verified: Some(rust_ok && clif_ok),
             actions: None,
         });
     }

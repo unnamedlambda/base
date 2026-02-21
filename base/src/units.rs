@@ -9,7 +9,7 @@ use std::sync::atomic::{fence, AtomicBool, AtomicU32};
 use std::sync::Arc;
 use tracing::{debug, info, info_span, trace};
 use wgpu::{
-    Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
+    BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBindingType, BufferDescriptor, BufferUsages,
     CommandEncoderDescriptor, ComputePassDescriptor, ComputePipelineDescriptor, DeviceDescriptor,
     InstanceDescriptor, PipelineCompilationOptions, PipelineLayoutDescriptor, PowerPreference,
@@ -722,141 +722,7 @@ impl FileUnit {
 }
 
 
-pub(crate) struct GpuUnit {
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    compute_buffer: wgpu::Buffer,
-    staging_buffer: wgpu::Buffer,
-    pipeline: wgpu::ComputePipeline,
-    bind_group: wgpu::BindGroup,
-    shared: Arc<SharedMemory>,
-}
 
-impl GpuUnit {
-    pub fn new(shared: Arc<SharedMemory>, shader_source: &str, gpu_size: usize, _backends: Backends) -> Self {
-        let _span = info_span!("gpu_init", gpu_size).entered();
-        info!("initializing GPU unit");
-
-        let (device, queue) = cached_gpu_device();
-        info!("GPU device acquired (cached)");
-
-        let compute_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("Compute"),
-            size: gpu_size as u64,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-
-        let staging_buffer = device.create_buffer(&BufferDescriptor {
-            label: Some("Staging"),
-            size: gpu_size as u64,
-            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        let shader = device.create_shader_module(ShaderModuleDescriptor {
-            label: Some("Compute"),
-            source: ShaderSource::Wgsl(shader_source.into()),
-        });
-        info!(shader_len = shader_source.len(), "GPU shader compiled");
-
-        let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("Compute Bind Group Layout"),
-            entries: &[BindGroupLayoutEntry {
-                binding: 0,
-                visibility: ShaderStages::COMPUTE,
-                ty: BindingType::Buffer {
-                    ty: BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("Compute Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
-            label: Some("Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: "main",
-            compilation_options: PipelineCompilationOptions::default(),
-        });
-
-        let bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("Compute Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer(compute_buffer.as_entire_buffer_binding()),
-            }],
-        });
-        info!("GPU pipeline created");
-
-        Self {
-            device,
-            queue,
-            compute_buffer,
-            staging_buffer,
-            pipeline,
-            bind_group,
-            shared,
-        }
-    }
-
-    pub unsafe fn execute(&mut self, action: &Action) {
-        match action.kind {
-            Kind::Dispatch => {
-                debug!(
-                    src = action.src,
-                    dst = action.dst,
-                    size = action.size,
-                    workgroups = (action.size + 63) / 64,
-                    "gpu_dispatch"
-                );
-                // Read input from action.src, size bytes
-                let data = self.shared.read(action.src as usize, action.size as usize);
-
-                // Write to GPU buffer, run shader, read result
-                self.queue.write_buffer(&self.compute_buffer, 0, data);
-
-                let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
-                    label: Some("Compute Encoder"),
-                });
-
-                {
-                    let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
-                        label: Some("Compute Pass"),
-                        timestamp_writes: None,
-                    });
-                    pass.set_pipeline(&self.pipeline);
-                    pass.set_bind_group(0, &self.bind_group, &[]);
-                    pass.dispatch_workgroups((action.size + 63) / 64, 1, 1);
-                }
-
-                encoder.copy_buffer_to_buffer(&self.compute_buffer, 0, &self.staging_buffer, 0, action.size as u64);
-                self.queue.submit(Some(encoder.finish()));
-
-                // Read back and write to action.dst
-                let buffer_slice = self.staging_buffer.slice(..);
-                buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
-                self.device.poll(wgpu::Maintain::Wait);
-
-                let result = buffer_slice.get_mapped_range();
-                self.shared.write(action.dst as usize, &result[..action.size as usize]);
-                drop(result);
-                self.staging_buffer.unmap();
-                debug!("gpu_dispatch_readback_complete");
-            }
-            _ => {}
-        }
-    }
-}
 
 pub(crate) fn memory_unit_task_mailbox(
     mailbox: Arc<Mailbox>,
@@ -948,42 +814,6 @@ pub(crate) fn file_unit_task_mailbox(
 }
 
 
-pub(crate) fn gpu_unit_task_mailbox(
-    mailbox: Arc<Mailbox>,
-    actions: Arc<Vec<Action>>,
-    shared: Arc<SharedMemory>,
-    shader_source: String,
-    gpu_size: usize,
-    backends: Backends,
-) {
-    let _span = info_span!("gpu_unit").entered();
-    info!("GPU unit started");
-    let mut gpu = GpuUnit::new(shared.clone(), &shader_source, gpu_size, backends);
-    let mut spin_count = 0u32;
-
-    loop {
-        match mailbox.poll() {
-            MailboxPoll::Work { start, end, flag } => {
-                debug!(start, end, flag, "gpu_work_received");
-                for idx in start..end {
-                    unsafe {
-                        gpu.execute(&actions[idx as usize]);
-                    }
-                }
-                unsafe {
-                    shared.store_u64(flag as usize, 1, Ordering::Release);
-                }
-                debug!(flag, "gpu_work_complete");
-                spin_count = 0;
-            }
-            MailboxPoll::Closed => {
-                info!("GPU unit shutting down");
-                return;
-            }
-            MailboxPoll::Empty => spin_backoff(&mut spin_count),
-        }
-    }
-}
 
 pub(crate) struct CraneliftHashTableContext {
     tables: HashMap<u32, HashMap<Vec<u8>, Vec<u8>>>,

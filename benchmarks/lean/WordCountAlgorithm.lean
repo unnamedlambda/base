@@ -303,21 +303,16 @@ def buildAlgorithm : Algorithm := {
   actions := controlActions ++ workerActions,
   payloads := buildPayload,
   state := {
-    gpu_size := 0,
     file_buffer_size := FILE_BUF_SIZE,
-    gpu_shader_offsets := [],
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    gpu_units := 0,
     file_units := 1,
     memory_units := 0,
     cranelift_units := 1,
-    backends_bits := 0xFFFFFFFF
   },
   memory_assignments := [],
   file_assignments := [],
-  gpu_assignments := [],
   cranelift_assignments := [],
   worker_threads := some 2,
   blocking_threads := some 2,

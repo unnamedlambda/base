@@ -113,10 +113,6 @@ fn cpu_sum(data: &[f32]) -> f64 {
 
 // ---------------------------------------------------------------------------
 // Burn GPU implementations
-//
-// Uses cached device (Burn leaks Arc<Device> on init_device so we can't
-// create fresh per call). Same work as Base/CLIF: upload + compute + full
-// readback + file write.
 // ---------------------------------------------------------------------------
 
 fn burn_vec_add_gpu(a: &[f32], b: &[f32], device: &burn::backend::wgpu::WgpuDevice, output_path: &str) {
@@ -140,7 +136,7 @@ fn burn_reduction_gpu(data: &[f32], num_groups: usize, device: &burn::backend::w
     use burn::tensor::{Tensor, TensorData};
     let n = data.len();
     let t = Tensor::<Gpu, 1>::from_data(TensorData::new(data.to_vec(), [n]), device);
-    // Partial reduction in groups of 64 — same as Base/CLIF shader
+    // Partial reduction in groups of 64 — same as CLIF shader
     let result = t.reshape([num_groups, 64]).sum_dim(1).into_data();
     std::fs::write(output_path, result.as_bytes()).ok();
 }
@@ -231,14 +227,9 @@ fn main(
 }
 
 // ---------------------------------------------------------------------------
-// Memory layout for Base GPU algorithms
+// CLIF+GPU+File: Cranelift JIT does GPU pipeline + file write in a single
+// compiled function. Generic IR parameterized by memory layout.
 // ---------------------------------------------------------------------------
-
-const SHADER_OFF: usize = 0x0000;
-const FLAG1_ADDR: usize = 0x3000; // GPU completion flag
-const FLAG2_ADDR: usize = 0x3008; // File completion flag
-const FNAME_OFF: usize = 0x3100;  // Output filename (null-terminated)
-const DATA_OFF: usize = 0x4000;   // Data buffer start
 
 // CLIF memory layout (GPU context pointer at offset 0)
 const CLIF_DSIZE_OFF: usize = 0x08;       // i64: GPU buffer size in bytes
@@ -255,183 +246,11 @@ const CLIF_DATA_OFF: usize = 0x4000;       // data buffer
 pub struct GpuBenchResult {
     pub name: String,
     pub burn_ms: f64,
-    pub base_ms: f64,
     pub clif_ms: f64,
     pub verified: bool,
 }
 
-/// Build a Base algorithm: GPU dispatch + FileWrite.
-///
-/// Actions:
-///   [0] Dispatch       — GPU compute (buffer at DATA_OFF)
-///   [1] FileWrite      — write result region to file
-///   [2] AsyncDispatch  → GPU (action 0), flag at FLAG1
-///   [3] Wait(FLAG1)
-///   [4] AsyncDispatch  → File (action 1), flag at FLAG2
-///   [5] Wait(FLAG2)
-fn build_gpu_algorithm(
-    shader: &str,
-    data: &[u8],
-    buffer_size: usize,
-    result_offset: usize,
-    result_size: usize,
-    output_path: &str,
-) -> base::Algorithm {
-    let payload_size = DATA_OFF + data.len();
-    let mut payloads = vec![0u8; payload_size];
-
-    let shader_bytes = shader.as_bytes();
-    payloads[SHADER_OFF..SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
-
-    let fname = format!("{}\0", output_path);
-    let fname_bytes = fname.as_bytes();
-    payloads[FNAME_OFF..FNAME_OFF + fname_bytes.len()].copy_from_slice(fname_bytes);
-
-    payloads[DATA_OFF..DATA_OFF + data.len()].copy_from_slice(data);
-
-    let _ = std::fs::remove_file(output_path);
-
-    let actions = vec![
-        // [0] GPU Dispatch
-        Action {
-            kind: Kind::Dispatch,
-            src: DATA_OFF as u32,
-            dst: DATA_OFF as u32,
-            offset: 0,
-            size: buffer_size as u32,
-        },
-        // [1] FileWrite: result region → file
-        Action {
-            kind: Kind::FileWrite,
-            src: (DATA_OFF + result_offset) as u32,
-            dst: FNAME_OFF as u32,
-            offset: 0,
-            size: result_size as u32,
-        },
-        // [2] AsyncDispatch → GPU (action 0)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 0,
-            src: 0,
-            offset: FLAG1_ADDR as u32,
-            size: 0,
-        },
-        // [3] Wait GPU
-        Action {
-            kind: Kind::Wait,
-            dst: FLAG1_ADDR as u32,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // [4] AsyncDispatch → File (action 1)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: FLAG2_ADDR as u32,
-            size: 0,
-        },
-        // [5] Wait File
-        Action {
-            kind: Kind::Wait,
-            dst: FLAG2_ADDR as u32,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let num_actions = actions.len();
-
-    base::Algorithm {
-        actions,
-        payloads,
-        state: State {
-            gpu_size: buffer_size,
-            file_buffer_size: 65536,
-            gpu_shader_offsets: vec![SHADER_OFF],
-            cranelift_ir_offsets: vec![],
-        },
-        units: UnitSpec {
-            gpu_units: 1,
-            file_units: 1,
-            memory_units: 0,
-            cranelift_units: 0,
-            backends_bits: 0xFFFF_FFFF,
-        },
-        memory_assignments: vec![],
-        file_assignments: vec![],
-        gpu_assignments: vec![0; num_actions],
-        cranelift_assignments: vec![],
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(256 * 1024),
-        timeout_ms: Some(120_000),
-        thread_name_prefix: Some("gpu-bench".into()),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Base GPU algorithm builders
-// ---------------------------------------------------------------------------
-
-fn build_gpu_vec_add(a: &[f32], b: &[f32], output_path: &str) -> base::Algorithm {
-    let n = a.len();
-    let buffer_size = n * 4 * 2; // [a | b]
-    let mut data = vec![0u8; buffer_size];
-    for (i, &v) in a.iter().enumerate() {
-        let off = i * 4;
-        data[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    for (i, &v) in b.iter().enumerate() {
-        let off = n * 4 + i * 4;
-        data[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    // Result: first N f32s (a[i]+b[i]) at offset 0
-    build_gpu_algorithm(WGSL_VEC_ADD, &data, buffer_size, 0, n * 4, output_path)
-}
-
-fn build_gpu_matmul(a: &[f32], b: &[f32], n: usize, output_path: &str) -> base::Algorithm {
-    let nn = n * n;
-    let buffer_size = nn * 4 * 3; // [A | B | C]
-    let mut data = vec![0u8; buffer_size];
-    for (i, &v) in a.iter().enumerate() {
-        let off = i * 4;
-        data[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    for (i, &v) in b.iter().enumerate() {
-        let off = nn * 4 + i * 4;
-        data[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    let shader = wgsl_matmul(n);
-    // Result: C at offset 2*NN*4, size NN*4
-    build_gpu_algorithm(&shader, &data, buffer_size, 2 * nn * 4, nn * 4, output_path)
-}
-
-fn build_gpu_reduction(data_f32: &[f32], output_path: &str) -> base::Algorithm {
-    let n = data_f32.len();
-    let num_groups = n / 64;
-    let buffer_elems = n + num_groups;
-    let buffer_size = buffer_elems * 4;
-    let mut data = vec![0u8; buffer_size];
-    for (i, &v) in data_f32.iter().enumerate() {
-        let off = i * 4;
-        data[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    let shader = wgsl_reduction(n);
-    // Result: partial sums at offset N*4, size num_groups*4
-    build_gpu_algorithm(&shader, &data, buffer_size, n * 4, num_groups * 4, output_path)
-}
-
-// ---------------------------------------------------------------------------
-// CLIF+GPU+File: Cranelift JIT does GPU pipeline + file write in a single
-// compiled function. Generic IR parameterized by memory layout.
-// ---------------------------------------------------------------------------
-
 /// Generate CLIF IR for GPU dispatch + file write.
-/// Reads all parameters from the memory block:
-///   buffer_size, workgroups, file source offset, file write size.
 fn gen_gpu_clif_ir() -> String {
     format!(
 r#"function u0:0(i64) system_v {{
@@ -506,8 +325,6 @@ block0(v0: i64):
     )
 }
 
-/// Build a CLIF+GPU algorithm that goes through base::execute().
-/// The CLIF IR is embedded in payloads and compiled by the framework.
 fn build_clif_gpu_algorithm(
     shader: &str,
     data: &[u8],
@@ -525,29 +342,23 @@ fn build_clif_gpu_algorithm(
     let payload_size = CLIF_DATA_OFF + data.len();
     let mut payloads = vec![0u8; payload_size];
 
-    // CLIF IR source
     payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
 
-    // Control params
     payloads[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(buffer_size as i64).to_le_bytes());
     payloads[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
     payloads[CLIF_FSRC_OFF..CLIF_FSRC_OFF + 8].copy_from_slice(&((CLIF_DATA_OFF + result_offset) as i64).to_le_bytes());
     payloads[CLIF_FSIZE_OFF..CLIF_FSIZE_OFF + 8].copy_from_slice(&(result_size as i64).to_le_bytes());
 
-    // Binding descriptor: [buf_id=0, read_only=0]
     payloads[CLIF_BIND_OFF..CLIF_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
     payloads[CLIF_BIND_OFF + 4..CLIF_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
 
-    // Shader (null-terminated)
     let shader_bytes = shader.as_bytes();
     payloads[CLIF_SHADER_OFF..CLIF_SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
     payloads[CLIF_SHADER_OFF + shader_bytes.len()] = 0;
 
-    // Filename (null-terminated)
     let fname = format!("{}\0", output_path);
     payloads[CLIF_FNAME_OFF..CLIF_FNAME_OFF + fname.len()].copy_from_slice(fname.as_bytes());
 
-    // Data
     payloads[CLIF_DATA_OFF..CLIF_DATA_OFF + data.len()].copy_from_slice(data);
 
     let _ = std::fs::remove_file(output_path);
@@ -563,21 +374,16 @@ fn build_clif_gpu_algorithm(
         actions,
         payloads,
         state: State {
-            gpu_size: 0,
             file_buffer_size: 0,
-            gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![CLIF_IR_OFF],
         },
         units: UnitSpec {
-            gpu_units: 0,
             file_units: 0,
             memory_units: 0,
             cranelift_units: 1,
-            backends_bits: 0,
         },
         memory_assignments: vec![],
         file_assignments: vec![],
-        gpu_assignments: vec![],
         cranelift_assignments: vec![0; num_actions],
         worker_threads: Some(1),
         blocking_threads: Some(1),
@@ -597,25 +403,23 @@ pub fn print_gpu_table(results: &[GpuBenchResult]) {
 
     println!();
     println!(
-        "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
+        "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
         "GPU Benchmark",
         "Burn(wgpu)",
-        "Base(GPU)",
         "CLIF+GPU",
         "Check",
         name_w = name_w,
         col_w = col_w
     );
-    println!("{}", "-".repeat(name_w + col_w * 3 + 6 + 4));
+    println!("{}", "-".repeat(name_w + col_w * 2 + 6 + 3));
 
     for r in results {
         let check_str = if r.verified { "\u{2713}" } else { "\u{2717}" };
 
         println!(
-            "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
+            "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
             r.name,
             format!("{:.1}ms", r.burn_ms),
-            format!("{:.1}ms", r.base_ms),
             format!("{:.1}ms", r.clif_ms),
             check_str,
             name_w = name_w,
@@ -633,22 +437,29 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
     let mut results = Vec::new();
     std::fs::create_dir_all("/tmp/gpu-bench-data").ok();
 
-    eprintln!("\n=== GPU Benchmarks: Burn(wgpu) vs Base(GPU dispatch) vs CLIF+GPU ===");
+    eprintln!("\n=== GPU Benchmarks: Burn(wgpu) vs CLIF+GPU ===");
     eprintln!("  All: cached GPU device, fresh buffers/pipelines per call");
     eprintln!("  All do: upload + compute + full readback + file write");
     eprintln!("  CLIF+GPU: Cranelift JIT calls extern C GPU + file wrappers\n");
 
-    // Init Burn device (cached). Device init ~450ms is same for all approaches
-    // and excluded from timing (median drops the first-iteration outlier).
     let burn_dev = burn_device();
 
-    // Warm up Base's cached_gpu_device too (first execute() triggers it).
-    // Run one throwaway iteration so median doesn't include init cost.
+    // Warm up GPU devices
     eprintln!("  Warming up GPU devices ...");
     {
         let warmup_a = gen_floats(64, 1);
         let warmup_b = gen_floats(64, 2);
-        let warmup_alg = build_gpu_vec_add(&warmup_a, &warmup_b, "/tmp/gpu-bench-data/_warmup.bin");
+        let buffer_size = 64 * 4 * 2;
+        let mut data_bytes = vec![0u8; buffer_size];
+        for (i, &v) in warmup_a.iter().enumerate() {
+            let off = i * 4;
+            data_bytes[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        for (i, &v) in warmup_b.iter().enumerate() {
+            let off = 64 * 4 + i * 4;
+            data_bytes[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        let warmup_alg = build_clif_gpu_algorithm(WGSL_VEC_ADD, &data_bytes, buffer_size, 1, 0, 64 * 4, "/tmp/gpu-bench-data/_warmup.bin");
         let _ = base::execute(warmup_alg);
         let _ = std::fs::remove_file("/tmp/gpu-bench-data/_warmup.bin");
     }
@@ -664,10 +475,7 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
 
         let label = format!("vecadd_{}", format_count(n));
         let burn_out = format!("/tmp/gpu-bench-data/{}_burn.bin", label);
-        let base_out = format!("/tmp/gpu-bench-data/{}_base.bin", label);
         let clif_out = format!("/tmp/gpu-bench-data/{}_clif.bin", label);
-
-        let base_alg = build_gpu_vec_add(&a, &b, &base_out);
 
         // Prepare data bytes for CLIF
         let buffer_size = n * 4 * 2;
@@ -688,13 +496,6 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        let base_ms = harness::median_of(iterations, || {
-            let start = std::time::Instant::now();
-            let alg = base_alg.clone();
-            let _ = base::execute(alg);
-            start.elapsed().as_secs_f64() * 1000.0
-        });
-
         let clif_alg = build_clif_gpu_algorithm(WGSL_VEC_ADD, &data_bytes, buffer_size, workgroups, 0, n * 4, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -707,10 +508,6 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             || { eprintln!("  VERIFY FAIL [{}] Burn: could not read output", label); false },
             |v| check_gpu_result(v, expected, "Burn", &label, n),
         );
-        let base_ok = read_f32_file_sum(&base_out).map_or_else(
-            || { eprintln!("  VERIFY FAIL [{}] Base: could not read output", label); false },
-            |v| check_gpu_result(v, expected, "Base", &label, n),
-        );
         let clif_ok = read_f32_file_sum(&clif_out).map_or_else(
             || { eprintln!("  VERIFY FAIL [{}] CLIF: could not read output", label); false },
             |v| check_gpu_result(v, expected, "CLIF", &label, n),
@@ -719,9 +516,8 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
         results.push(GpuBenchResult {
             name: format!("VecAdd {}", format_count(n)),
             burn_ms,
-            base_ms,
             clif_ms,
-            verified: burn_ok && base_ok && clif_ok,
+            verified: burn_ok && clif_ok,
         });
 
     }
@@ -737,10 +533,8 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
         let nn = n * n;
         let label = format!("matmul_{}", n);
         let burn_out = format!("/tmp/gpu-bench-data/{}_burn.bin", label);
-        let base_out = format!("/tmp/gpu-bench-data/{}_base.bin", label);
         let clif_out = format!("/tmp/gpu-bench-data/{}_clif.bin", label);
 
-        let base_alg = build_gpu_matmul(&a, &b, n, &base_out);
         let shader = wgsl_matmul(n);
 
         // Prepare data bytes for CLIF
@@ -762,13 +556,6 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        let base_ms = harness::median_of(iterations, || {
-            let start = std::time::Instant::now();
-            let alg = base_alg.clone();
-            let _ = base::execute(alg);
-            start.elapsed().as_secs_f64() * 1000.0
-        });
-
         let clif_alg = build_clif_gpu_algorithm(&shader, &data_bytes, buffer_size, workgroups, 2 * nn * 4, nn * 4, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -781,10 +568,6 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             || { eprintln!("  VERIFY FAIL [{}] Burn: could not read output", label); false },
             |v| check_gpu_result(v, expected, "Burn", &label, nn),
         );
-        let base_ok = read_f32_file_sum(&base_out).map_or_else(
-            || { eprintln!("  VERIFY FAIL [{}] Base: could not read output", label); false },
-            |v| check_gpu_result(v, expected, "Base", &label, nn),
-        );
         let clif_ok = read_f32_file_sum(&clif_out).map_or_else(
             || { eprintln!("  VERIFY FAIL [{}] CLIF: could not read output", label); false },
             |v| check_gpu_result(v, expected, "CLIF", &label, nn),
@@ -793,15 +576,13 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
         results.push(GpuBenchResult {
             name: format!("MatMul {}x{}", n, n),
             burn_ms,
-            base_ms,
             clif_ms,
-            verified: burn_ok && base_ok && clif_ok,
+            verified: burn_ok && clif_ok,
         });
 
     }
 
     // ---- Reduction (partial sums, groups of 64) ----
-    // Sizes must be multiples of 64 so both sides partition identically.
     for &n in &[256_000usize, 512_000, 896_000] {
         let num_groups = n / 64;
         eprintln!("  Reduction {} ({} groups) ...", format_count(n), num_groups);
@@ -811,10 +592,8 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
 
         let label = format!("reduction_{}", format_count(n));
         let burn_out = format!("/tmp/gpu-bench-data/{}_burn.bin", label);
-        let base_out = format!("/tmp/gpu-bench-data/{}_base.bin", label);
         let clif_out = format!("/tmp/gpu-bench-data/{}_clif.bin", label);
 
-        let base_alg = build_gpu_reduction(&data, &base_out);
         let shader = wgsl_reduction(n);
 
         // Prepare data bytes for CLIF
@@ -833,13 +612,6 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        let base_ms = harness::median_of(iterations, || {
-            let start = std::time::Instant::now();
-            let alg = base_alg.clone();
-            let _ = base::execute(alg);
-            start.elapsed().as_secs_f64() * 1000.0
-        });
-
         let clif_alg = build_clif_gpu_algorithm(&shader, &data_bytes, buffer_size, workgroups, n * 4, num_groups * 4, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -852,10 +624,6 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             || { eprintln!("  VERIFY FAIL [{}] Burn: could not read output", label); false },
             |v| check_gpu_result(v, expected, "Burn", &label, n),
         );
-        let base_ok = read_f32_file_sum(&base_out).map_or_else(
-            || { eprintln!("  VERIFY FAIL [{}] Base: could not read output", label); false },
-            |v| check_gpu_result(v, expected, "Base", &label, n),
-        );
         let clif_ok = read_f32_file_sum(&clif_out).map_or_else(
             || { eprintln!("  VERIFY FAIL [{}] CLIF: could not read output", label); false },
             |v| check_gpu_result(v, expected, "CLIF", &label, n),
@@ -864,9 +632,8 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
         results.push(GpuBenchResult {
             name: format!("Reduction {}", format_count(n)),
             burn_ms,
-            base_ms,
             clif_ms,
-            verified: burn_ok && base_ok && clif_ok,
+            verified: burn_ok && clif_ok,
         });
 
     }
