@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Dispatch = 4,
-    SimdLoad = 10,
-    SimdAdd = 11,
-    SimdMul = 12,
-    SimdStore = 13,
     ConditionalWrite = 14,
     MemCopy = 15,
     FileRead = 16,
@@ -21,12 +17,6 @@ pub enum Kind {
     AsyncDispatch = 32,
     Wait = 33,
     MemWrite = 34,
-    SimdLoadI32 = 37,
-    SimdAddI32 = 38,
-    SimdMulI32 = 39,
-    SimdStoreI32 = 40,
-    SimdDivI32 = 41,
-    SimdSubI32 = 43,
     MemCopyIndirect = 44,
     MemStoreIndirect = 45,
 AtomicFetchAdd = 74,
@@ -52,7 +42,6 @@ pub struct Action {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct State {
-    pub regs_per_unit: usize,
     pub gpu_size: usize,
     pub file_buffer_size: usize,
     pub gpu_shader_offsets: Vec<usize>,
@@ -61,7 +50,6 @@ pub struct State {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UnitSpec {
-    pub simd_units: usize,
     pub gpu_units: usize,
     pub file_units: usize,
     pub memory_units: usize,
@@ -76,7 +64,6 @@ pub struct Algorithm {
     pub payloads: Vec<u8>,
     pub state: State,
     pub units: UnitSpec,
-    pub simd_assignments: Vec<u8>,
     pub memory_assignments: Vec<u8>,
     pub file_assignments: Vec<u8>,
     pub ffi_assignments: Vec<u8>,

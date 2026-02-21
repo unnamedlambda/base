@@ -16,14 +16,12 @@ fn create_test_algorithm(
         actions,
         payloads,
         state: State {
-            regs_per_unit: 16,
             gpu_size: 0,
             file_buffer_size: 65536,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
-            simd_units: 0,
             gpu_units: 0,
             file_units,
             memory_units,
@@ -31,7 +29,6 @@ fn create_test_algorithm(
             cranelift_units: 0,
             backends_bits: 0,
         },
-        simd_assignments: vec![],
         memory_assignments: vec![0; num_actions],
         file_assignments: vec![0; num_actions],
         ffi_assignments: vec![],
@@ -50,7 +47,6 @@ fn create_complex_algorithm(
     payloads: Vec<u8>,
     file_units: usize,
     memory_units: usize,
-    simd_units: usize,
     gpu_units: usize,
     gpu_shader_offsets: Vec<usize>,
     gpu_size: usize,
@@ -62,25 +58,18 @@ fn create_complex_algorithm(
         actions,
         payloads,
         state: State {
-            regs_per_unit: 16,
             gpu_size,
             file_buffer_size: 65536,
             gpu_shader_offsets,
             cranelift_ir_offsets: vec![],
         },
         units: UnitSpec {
-            simd_units,
             gpu_units,
             file_units,
             memory_units,
             ffi_units: 0,
             cranelift_units: 0,
             backends_bits: 0xFFFFFFFF,
-        },
-        simd_assignments: if simd_units > 0 {
-            vec![0; num_actions]
-        } else {
-            vec![255; num_actions]
         },
         memory_assignments: if memory_units > 0 {
             vec![0; num_actions]
@@ -120,14 +109,12 @@ fn create_cranelift_algorithm(
         actions,
         payloads,
         state: State {
-            regs_per_unit: 16,
             gpu_size: 0,
             file_buffer_size: if with_file { 65536 } else { 0 },
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets,
         },
         units: UnitSpec {
-            simd_units: 0,
             gpu_units: 0,
             file_units: if with_file { 1 } else { 0 },
             memory_units: 0,
@@ -135,7 +122,6 @@ fn create_cranelift_algorithm(
             cranelift_units,
             backends_bits: 0,
         },
-        simd_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: if with_file { vec![0; num_actions] } else { vec![] },
         ffi_assignments: vec![],
@@ -1099,7 +1085,6 @@ fn test_integration_gpu_async() {
         payloads,
         1,    // file_units
         0,    // memory_units
-        0,    // simd_units
         1,    // gpu_units
         vec![0],  // gpu_shader_offsets
         2048, // gpu_size
@@ -1205,7 +1190,6 @@ fn test_integration_complex_gpu_simd_workflow() {
         actions,
         payloads,
         3,
-        0,
         0,
         1,
         vec![0],
@@ -1978,278 +1962,6 @@ fn test_integration_memstore_indirect() {
     assert_eq!(u64::from_le_bytes(contents[0..8].try_into().unwrap()), 99999);
 }
 
-#[test]
-fn test_integration_simd_shared_memory() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("simd_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Vector A at offset 256: [1.0, 2.0, 3.0, 4.0]
-    payloads[256..260].copy_from_slice(&1.0f32.to_le_bytes());
-    payloads[260..264].copy_from_slice(&2.0f32.to_le_bytes());
-    payloads[264..268].copy_from_slice(&3.0f32.to_le_bytes());
-    payloads[268..272].copy_from_slice(&4.0f32.to_le_bytes());
-
-    // Vector B at offset 272: [10.0, 10.0, 10.0, 10.0]
-    payloads[272..276].copy_from_slice(&10.0f32.to_le_bytes());
-    payloads[276..280].copy_from_slice(&10.0f32.to_le_bytes());
-    payloads[280..284].copy_from_slice(&10.0f32.to_le_bytes());
-    payloads[284..288].copy_from_slice(&10.0f32.to_le_bytes());
-
-    let file_flag = 648u32;
-
-    let actions = vec![
-        // Action 0-5: SIMD operations (data actions)
-        Action { kind: Kind::SimdLoad, dst: 0, src: 256, offset: 0, size: 16 },
-        Action { kind: Kind::SimdLoad, dst: 1, src: 272, offset: 0, size: 16 },
-        Action { kind: Kind::SimdAdd, dst: 2, src: 0, offset: 1, size: 0 },
-        Action { kind: Kind::SimdMul, dst: 3, src: 0, offset: 1, size: 0 },
-        Action { kind: Kind::SimdStore, dst: 0, src: 2, offset: 500, size: 16 },
-        Action { kind: Kind::SimdStore, dst: 0, src: 3, offset: 516, size: 16 },
-        // Action 6: FileWrite both results (32 bytes total)
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 32 },
-        // Action 7-12: Dispatch SIMD actions
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 3, offset: 624, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 4, offset: 632, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 5, offset: 640, size: 0 },
-        // Action 13-18: Wait for all SIMD to complete
-        Action { kind: Kind::Wait, dst: 600, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 608, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 616, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 624, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 632, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 640, src: 0, offset: 0, size: 0 },
-        // Action 19: AsyncDispatch FileWrite
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 6, offset: file_flag, size: 0 },
-        // Action 20: Wait for FileWrite
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_complex_algorithm(actions, payloads, 1, 0, 1, 0, vec![], 0);
-
-    execute(algorithm).unwrap();
-
-    // Verify results
-    assert!(result_file.exists(), "SIMD result file should exist");
-    let contents = fs::read(&result_file).unwrap();
-
-    // Check addition result: [11.0, 12.0, 13.0, 14.0]
-    let add0 = f32::from_le_bytes(contents[0..4].try_into().unwrap());
-    let add1 = f32::from_le_bytes(contents[4..8].try_into().unwrap());
-    let add2 = f32::from_le_bytes(contents[8..12].try_into().unwrap());
-    let add3 = f32::from_le_bytes(contents[12..16].try_into().unwrap());
-
-    assert_eq!(add0, 11.0, "SIMD Add lane 0: 1.0 + 10.0 = 11.0");
-    assert_eq!(add1, 12.0, "SIMD Add lane 1: 2.0 + 10.0 = 12.0");
-    assert_eq!(add2, 13.0, "SIMD Add lane 2: 3.0 + 10.0 = 13.0");
-    assert_eq!(add3, 14.0, "SIMD Add lane 3: 4.0 + 10.0 = 14.0");
-
-    // Check multiplication result: [10.0, 20.0, 30.0, 40.0]
-    let mul0 = f32::from_le_bytes(contents[16..20].try_into().unwrap());
-    let mul1 = f32::from_le_bytes(contents[20..24].try_into().unwrap());
-    let mul2 = f32::from_le_bytes(contents[24..28].try_into().unwrap());
-    let mul3 = f32::from_le_bytes(contents[28..32].try_into().unwrap());
-
-    assert_eq!(mul0, 10.0, "SIMD Mul lane 0: 1.0 * 10.0 = 10.0");
-    assert_eq!(mul1, 20.0, "SIMD Mul lane 1: 2.0 * 10.0 = 20.0");
-    assert_eq!(mul2, 30.0, "SIMD Mul lane 2: 3.0 * 10.0 = 30.0");
-    assert_eq!(mul3, 40.0, "SIMD Mul lane 3: 4.0 * 10.0 = 40.0");
-}
-
-#[test]
-fn test_integration_simd_i32x4_shared_memory() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("simd_i32_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Vector A at offset 256: [1, 2, 3, 4]
-    payloads[256..260].copy_from_slice(&1i32.to_le_bytes());
-    payloads[260..264].copy_from_slice(&2i32.to_le_bytes());
-    payloads[264..268].copy_from_slice(&3i32.to_le_bytes());
-    payloads[268..272].copy_from_slice(&4i32.to_le_bytes());
-
-    // Vector B at offset 272: [10, 20, 30, 40]
-    payloads[272..276].copy_from_slice(&10i32.to_le_bytes());
-    payloads[276..280].copy_from_slice(&20i32.to_le_bytes());
-    payloads[280..284].copy_from_slice(&30i32.to_le_bytes());
-    payloads[284..288].copy_from_slice(&40i32.to_le_bytes());
-
-    let file_flag = 648u32;
-
-    let actions = vec![
-        // Action 0-5: SIMD i32 operations (data actions)
-        Action { kind: Kind::SimdLoadI32, dst: 0, src: 256, offset: 0, size: 16 },
-        Action { kind: Kind::SimdLoadI32, dst: 1, src: 272, offset: 0, size: 16 },
-        Action { kind: Kind::SimdAddI32, dst: 2, src: 0, offset: 1, size: 0 },
-        Action { kind: Kind::SimdMulI32, dst: 3, src: 0, offset: 1, size: 0 },
-        Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
-        Action { kind: Kind::SimdStoreI32, dst: 0, src: 3, offset: 516, size: 16 },
-        // Action 6: FileWrite both results (32 bytes total)
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 32 },
-        // Action 7-12: Dispatch SIMD actions
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 3, offset: 624, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 4, offset: 632, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 5, offset: 640, size: 0 },
-        // Action 13-18: Wait for all SIMD to complete
-        Action { kind: Kind::Wait, dst: 600, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 608, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 616, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 624, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 632, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 640, src: 0, offset: 0, size: 0 },
-        // Action 19: AsyncDispatch FileWrite
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 6, offset: file_flag, size: 0 },
-        // Action 20: Wait for FileWrite
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_complex_algorithm(actions, payloads, 1, 0, 1, 0, vec![], 0);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "SIMD i32 result file should exist");
-    let contents = fs::read(&result_file).unwrap();
-
-    let add0 = i32::from_le_bytes(contents[0..4].try_into().unwrap());
-    let add1 = i32::from_le_bytes(contents[4..8].try_into().unwrap());
-    let add2 = i32::from_le_bytes(contents[8..12].try_into().unwrap());
-    let add3 = i32::from_le_bytes(contents[12..16].try_into().unwrap());
-
-    assert_eq!(add0, 11, "SIMD Add i32 lane 0: 1 + 10 = 11");
-    assert_eq!(add1, 22, "SIMD Add i32 lane 1: 2 + 20 = 22");
-    assert_eq!(add2, 33, "SIMD Add i32 lane 2: 3 + 30 = 33");
-    assert_eq!(add3, 44, "SIMD Add i32 lane 3: 4 + 40 = 44");
-
-    let mul0 = i32::from_le_bytes(contents[16..20].try_into().unwrap());
-    let mul1 = i32::from_le_bytes(contents[20..24].try_into().unwrap());
-    let mul2 = i32::from_le_bytes(contents[24..28].try_into().unwrap());
-    let mul3 = i32::from_le_bytes(contents[28..32].try_into().unwrap());
-
-    assert_eq!(mul0, 10, "SIMD Mul i32 lane 0: 1 * 10 = 10");
-    assert_eq!(mul1, 40, "SIMD Mul i32 lane 1: 2 * 20 = 40");
-    assert_eq!(mul2, 90, "SIMD Mul i32 lane 2: 3 * 30 = 90");
-    assert_eq!(mul3, 160, "SIMD Mul i32 lane 3: 4 * 40 = 160");
-}
-
-#[test]
-fn test_integration_simd_i32_div() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("simd_div_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // [100, 200, 300, 400]
-    payloads[256..260].copy_from_slice(&100i32.to_le_bytes());
-    payloads[260..264].copy_from_slice(&200i32.to_le_bytes());
-    payloads[264..268].copy_from_slice(&300i32.to_le_bytes());
-    payloads[268..272].copy_from_slice(&400i32.to_le_bytes());
-
-    // [10, 20, 0, 40] - 0 tests div-by-zero
-    payloads[272..276].copy_from_slice(&10i32.to_le_bytes());
-    payloads[276..280].copy_from_slice(&20i32.to_le_bytes());
-    payloads[280..284].copy_from_slice(&0i32.to_le_bytes());
-    payloads[284..288].copy_from_slice(&40i32.to_le_bytes());
-
-    let actions = vec![
-        Action { kind: Kind::SimdLoadI32, dst: 0, src: 256, offset: 0, size: 16 },
-        Action { kind: Kind::SimdLoadI32, dst: 1, src: 272, offset: 0, size: 16 },
-        Action { kind: Kind::SimdDivI32, dst: 2, src: 0, offset: 1, size: 0 },
-        Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 16 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 3, offset: 624, size: 0 },
-        Action { kind: Kind::Wait, dst: 600, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 608, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 616, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 624, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 4, offset: 632, size: 0 },
-        Action { kind: Kind::Wait, dst: 632, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_complex_algorithm(actions, payloads, 1, 0, 1, 0, vec![], 0);
-    execute(algorithm).unwrap();
-
-    let contents = fs::read(&result_file).unwrap();
-    // [100/10, 200/20, 300/0, 400/40] = [10, 10, 0, 10]
-    assert_eq!(i32::from_le_bytes(contents[0..4].try_into().unwrap()), 10);
-    assert_eq!(i32::from_le_bytes(contents[4..8].try_into().unwrap()), 10);
-    assert_eq!(i32::from_le_bytes(contents[8..12].try_into().unwrap()), 0);
-    assert_eq!(i32::from_le_bytes(contents[12..16].try_into().unwrap()), 10);
-}
-
-#[test]
-fn test_integration_simd_i32_sub() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("simd_sub_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // [100, 200, 300, 400]
-    payloads[256..260].copy_from_slice(&100i32.to_le_bytes());
-    payloads[260..264].copy_from_slice(&200i32.to_le_bytes());
-    payloads[264..268].copy_from_slice(&300i32.to_le_bytes());
-    payloads[268..272].copy_from_slice(&400i32.to_le_bytes());
-
-    // [10, 20, 30, 40]
-    payloads[272..276].copy_from_slice(&10i32.to_le_bytes());
-    payloads[276..280].copy_from_slice(&20i32.to_le_bytes());
-    payloads[280..284].copy_from_slice(&30i32.to_le_bytes());
-    payloads[284..288].copy_from_slice(&40i32.to_le_bytes());
-
-    let actions = vec![
-        Action { kind: Kind::SimdLoadI32, dst: 0, src: 256, offset: 0, size: 16 },
-        Action { kind: Kind::SimdLoadI32, dst: 1, src: 272, offset: 0, size: 16 },
-        Action { kind: Kind::SimdSubI32, dst: 2, src: 0, offset: 1, size: 0 },
-        Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 500, size: 16 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 500, offset: 0, size: 16 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 0, offset: 600, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 1, offset: 608, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 2, offset: 616, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 1, src: 3, offset: 624, size: 0 },
-        Action { kind: Kind::Wait, dst: 600, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 608, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 616, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 624, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 4, offset: 632, size: 0 },
-        Action { kind: Kind::Wait, dst: 632, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_complex_algorithm(actions, payloads, 1, 0, 1, 0, vec![], 0);
-    execute(algorithm).unwrap();
-
-    let contents = fs::read(&result_file).unwrap();
-    // [100-10, 200-20, 300-30, 400-40] = [90, 180, 270, 360]
-    assert_eq!(i32::from_le_bytes(contents[0..4].try_into().unwrap()), 90);
-    assert_eq!(i32::from_le_bytes(contents[4..8].try_into().unwrap()), 180);
-    assert_eq!(i32::from_le_bytes(contents[8..12].try_into().unwrap()), 270);
-    assert_eq!(i32::from_le_bytes(contents[12..16].try_into().unwrap()), 360);
-}
 
 #[test]
 fn test_integration_filewrite_null_terminated() {

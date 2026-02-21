@@ -15,7 +15,6 @@ use wgpu::{
     InstanceDescriptor, PipelineCompilationOptions, PipelineLayoutDescriptor, PowerPreference,
     RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource, ShaderStages,
 };
-use wide::{f32x4, i32x4};
 use lmdb_zero as lmdb;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::JITBuilder;
@@ -759,117 +758,6 @@ impl FileUnit {
     }
 }
 
-pub(crate) struct SimdUnit {
-    id: u8,
-    regs_f32: Vec<f32x4>,
-    regs_i32: Vec<i32x4>,
-    shared: Arc<SharedMemory>,
-}
-
-impl SimdUnit {
-    pub fn new(
-        id: u8,
-        regs: usize,
-        shared: Arc<SharedMemory>,
-    ) -> Self {
-        Self {
-            id,
-            regs_f32: vec![f32x4::splat(0.0); regs],
-            regs_i32: vec![i32x4::splat(0); regs],
-            shared,
-        }
-    }
-
-    pub unsafe fn execute(&mut self, action: &Action) {
-        match action.kind {
-            Kind::SimdLoad => {
-                trace!(dst = action.dst, src = action.src, "simd_load_f32");
-                let vals = self.shared.read(action.src as usize, 16);
-                let f0 = f32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
-                let f1 = f32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
-                let f2 = f32::from_le_bytes([vals[8], vals[9], vals[10], vals[11]]);
-                let f3 = f32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
-
-                self.regs_f32[action.dst as usize] = f32x4::from([f0, f1, f2, f3]);
-            }
-            Kind::SimdAdd => {
-                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_add_f32");
-                let a = self.regs_f32[action.src as usize];
-                let b = self.regs_f32[action.offset as usize];
-                self.regs_f32[action.dst as usize] = a + b;
-            }
-            Kind::SimdMul => {
-                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_mul_f32");
-                let a = self.regs_f32[action.src as usize];
-                let b = self.regs_f32[action.offset as usize];
-                self.regs_f32[action.dst as usize] = a * b;
-            }
-            Kind::SimdStore => {
-                trace!(src = action.src, offset = action.offset, "simd_store_f32");
-                let reg_data = self.regs_f32[action.src as usize].to_array();
-                let write_offset = action.offset as usize;
-
-                let mut bytes = [0u8; 16];
-                for (i, &val) in reg_data.iter().enumerate() {
-                    bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
-                }
-                self.shared.write(write_offset, &bytes);
-            }
-            Kind::SimdLoadI32 => {
-                trace!(dst = action.dst, src = action.src, "simd_load_i32");
-                let vals = self.shared.read(action.src as usize, 16);
-                let i0 = i32::from_le_bytes([vals[0], vals[1], vals[2], vals[3]]);
-                let i1 = i32::from_le_bytes([vals[4], vals[5], vals[6], vals[7]]);
-                let i2 = i32::from_le_bytes([vals[8], vals[9], vals[10], vals[11]]);
-                let i3 = i32::from_le_bytes([vals[12], vals[13], vals[14], vals[15]]);
-
-                self.regs_i32[action.dst as usize] = i32x4::from([i0, i1, i2, i3]);
-            }
-            Kind::SimdAddI32 => {
-                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_add_i32");
-                let a = self.regs_i32[action.src as usize];
-                let b = self.regs_i32[action.offset as usize];
-                self.regs_i32[action.dst as usize] = a + b;
-            }
-            Kind::SimdMulI32 => {
-                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_mul_i32");
-                let a = self.regs_i32[action.src as usize];
-                let b = self.regs_i32[action.offset as usize];
-                self.regs_i32[action.dst as usize] = a * b;
-            }
-            Kind::SimdDivI32 => {
-                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_div_i32");
-                let a = self.regs_i32[action.src as usize].to_array();
-                let b = self.regs_i32[action.offset as usize].to_array();
-                let result = i32x4::from([
-                    if b[0] != 0 { a[0] / b[0] } else { 0 },
-                    if b[1] != 0 { a[1] / b[1] } else { 0 },
-                    if b[2] != 0 { a[2] / b[2] } else { 0 },
-                    if b[3] != 0 { a[3] / b[3] } else { 0 },
-                ]);
-                self.regs_i32[action.dst as usize] = result;
-            }
-            Kind::SimdSubI32 => {
-                trace!(dst = action.dst, src = action.src, offset = action.offset, "simd_sub_i32");
-                let a = self.regs_i32[action.src as usize];
-                let b = self.regs_i32[action.offset as usize];
-                self.regs_i32[action.dst as usize] = a - b;
-            }
-            Kind::SimdStoreI32 => {
-                trace!(src = action.src, offset = action.offset, "simd_store_i32");
-                let reg_data = self.regs_i32[action.src as usize].to_array();
-                let write_offset = action.offset as usize;
-
-                let mut bytes = [0u8; 16];
-                for (i, &val) in reg_data.iter().enumerate() {
-                    bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
-                }
-                self.shared.write(write_offset, &bytes);
-            }
-            _ => {}
-        }
-    }
-}
 
 pub(crate) struct GpuUnit {
     device: Arc<wgpu::Device>,
@@ -1129,60 +1017,6 @@ pub(crate) fn file_unit_task_mailbox(
     }
 }
 
-pub(crate) fn simd_unit_task_mailbox(
-    mailbox: Arc<Mailbox>,
-    broadcast: Arc<Broadcast>,
-    worker_id: u32,
-    actions: Arc<Vec<Action>>,
-    shared: Arc<SharedMemory>,
-    regs: usize,
-) {
-    let _span = info_span!("simd_unit", worker_id).entered();
-    info!("SIMD unit started");
-    let mut unit = SimdUnit::new(0, regs, shared.clone());
-    let mut last_epoch = 0u64;
-    let mut spin_count = 0u32;
-
-    loop {
-        match mailbox.poll() {
-            MailboxPoll::Work { start, end, flag } => {
-                debug!(start, end, flag, "simd_work_received");
-                for idx in start..end {
-                    unsafe {
-                        unit.execute(&actions[idx as usize]);
-                    }
-                }
-                unsafe {
-                    shared.store_u64(flag as usize, 1, Ordering::Release);
-                }
-                debug!(flag, "simd_work_complete");
-                spin_count = 0;
-            }
-            MailboxPoll::Closed => {
-                info!("SIMD unit shutting down");
-                return;
-            }
-            MailboxPoll::Empty => {
-                let prev_epoch = last_epoch;
-                if !broadcast_step(
-                    worker_id,
-                    &mut last_epoch,
-                    &broadcast,
-                    &actions,
-                    &shared,
-                    |action| unsafe { unit.execute(action); },
-                ) {
-                    return;
-                }
-                if last_epoch != prev_epoch {
-                    spin_count = 0;
-                } else {
-                    spin_backoff(&mut spin_count);
-                }
-            }
-        }
-    }
-}
 
 pub(crate) fn gpu_unit_task_mailbox(
     mailbox: Arc<Mailbox>,
@@ -2252,67 +2086,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_simd_unit_creation() {
-        let memory = vec![0u8; 1024];
-        let shared = Arc::new(SharedMemory::new(memory.as_ptr() as *mut u8));
-
-        let unit = SimdUnit::new(0, 16, shared);
-        assert_eq!(unit.id, 0);
-        assert_eq!(unit.regs_f32.len(), 16);
-        assert_eq!(unit.regs_i32.len(), 16);
-    }
-
-    #[test]
-    fn test_simd_i32x4_operations() {
-        let mut memory = vec![0u8; 1024];
-        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = SimdUnit::new(0, 4, shared.clone());
-
-        // Setup test data: [1, 2, 3, 4] and [10, 20, 30, 40]
-        unsafe {
-            memory[0..4].copy_from_slice(&1i32.to_le_bytes());
-            memory[4..8].copy_from_slice(&2i32.to_le_bytes());
-            memory[8..12].copy_from_slice(&3i32.to_le_bytes());
-            memory[12..16].copy_from_slice(&4i32.to_le_bytes());
-
-            memory[16..20].copy_from_slice(&10i32.to_le_bytes());
-            memory[20..24].copy_from_slice(&20i32.to_le_bytes());
-            memory[24..28].copy_from_slice(&30i32.to_le_bytes());
-            memory[28..32].copy_from_slice(&40i32.to_le_bytes());
-        }
-
-        // Test Load, Add, Mul, Store
-        let load_a = Action { kind: Kind::SimdLoadI32, dst: 0, src: 0, offset: 0, size: 16 };
-        let load_b = Action { kind: Kind::SimdLoadI32, dst: 1, src: 16, offset: 0, size: 16 };
-        let add = Action { kind: Kind::SimdAddI32, dst: 2, src: 0, offset: 1, size: 0 };
-        let mul = Action { kind: Kind::SimdMulI32, dst: 3, src: 0, offset: 1, size: 0 };
-        let store_add = Action { kind: Kind::SimdStoreI32, dst: 0, src: 2, offset: 100, size: 16 };
-        let store_mul = Action { kind: Kind::SimdStoreI32, dst: 0, src: 3, offset: 116, size: 16 };
-
-        unsafe {
-            unit.execute(&load_a);
-            unit.execute(&load_b);
-            unit.execute(&add);
-            unit.execute(&mul);
-            unit.execute(&store_add);
-            unit.execute(&store_mul);
-
-            // Verify addition: [11, 22, 33, 44]
-            let add_result = shared.read(100, 16);
-            assert_eq!(i32::from_le_bytes(add_result[0..4].try_into().unwrap()), 11);
-            assert_eq!(i32::from_le_bytes(add_result[4..8].try_into().unwrap()), 22);
-            assert_eq!(i32::from_le_bytes(add_result[8..12].try_into().unwrap()), 33);
-            assert_eq!(i32::from_le_bytes(add_result[12..16].try_into().unwrap()), 44);
-
-            // Verify multiplication: [10, 40, 90, 160]
-            let mul_result = shared.read(116, 16);
-            assert_eq!(i32::from_le_bytes(mul_result[0..4].try_into().unwrap()), 10);
-            assert_eq!(i32::from_le_bytes(mul_result[4..8].try_into().unwrap()), 40);
-            assert_eq!(i32::from_le_bytes(mul_result[8..12].try_into().unwrap()), 90);
-            assert_eq!(i32::from_le_bytes(mul_result[12..16].try_into().unwrap()), 160);
-        }
-    }
 
     #[test]
     fn test_memcopy_basic() {
@@ -3209,49 +2982,6 @@ mod concurrent_tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    #[test]
-    fn test_concurrent_simd_units() {
-        // Test multiple SIMD units writing to different memory regions concurrently
-        let mut memory = vec![0u8; 65536];
-        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let counter = Arc::new(AtomicU32::new(0));
-        let mut handles = vec![];
-
-        // Spawn 4 SIMD units working in parallel
-        for unit_id in 0..4u8 {
-            let shared_clone = shared.clone();
-            let counter_clone = counter.clone();
-
-            handles.push(std::thread::spawn(move || {
-                let mut unit = SimdUnit::new(
-                    unit_id,
-                    16,
-                    shared_clone,
-                );
-
-                // Each unit does some SIMD operations
-                let action = Action {
-                    kind: Kind::SimdStore,
-                    src: 0,
-                    offset: 0,
-                    size: 16,
-                    dst: 0,
-                };
-
-                unsafe {
-                    unit.execute(&action);
-                }
-                counter_clone.fetch_add(1, Ordering::SeqCst);
-            }));
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        // Verify we got results from all units
-        assert_eq!(counter.load(Ordering::SeqCst), 4);
-    }
 
     #[test]
     fn test_concurrent_file_operations() {

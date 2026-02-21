@@ -18,16 +18,6 @@ instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
 inductive Kind where
-  | SimdLoad
-  | SimdAdd
-  | SimdMul
-  | SimdStore
-  | SimdLoadI32
-  | SimdAddI32
-  | SimdMulI32
-  | SimdStoreI32
-  | SimdDivI32
-  | SimdSubI32
   | MemCopy
   | MemCopyIndirect
   | MemStoreIndirect
@@ -46,16 +36,6 @@ inductive Kind where
 
 instance : ToJson Kind where
   toJson
-    | .SimdLoad => "simd_load"
-    | .SimdAdd => "simd_add"
-    | .SimdMul => "simd_mul"
-    | .SimdStore => "simd_store"
-    | .SimdLoadI32 => "simd_load_i32"
-    | .SimdAddI32 => "simd_add_i32"
-    | .SimdMulI32 => "simd_mul_i32"
-    | .SimdStoreI32 => "simd_store_i32"
-    | .SimdDivI32 => "simd_div_i32"
-    | .SimdSubI32 => "simd_sub_i32"
     | .MemCopy => "mem_copy"
     | .MemCopyIndirect => "mem_copy_indirect"
     | .MemStoreIndirect => "mem_store_indirect"
@@ -89,7 +69,6 @@ instance : ToJson Action where
   ]
 
 structure State where
-  regs_per_unit : Nat
   gpu_size : Nat
   file_buffer_size : Nat
   gpu_shader_offsets : List Nat
@@ -98,7 +77,6 @@ structure State where
 
 instance : ToJson State where
   toJson s := Json.mkObj [
-    ("regs_per_unit", toJson s.regs_per_unit),
     ("gpu_size", toJson s.gpu_size),
     ("file_buffer_size", toJson s.file_buffer_size),
     ("gpu_shader_offsets", toJson s.gpu_shader_offsets),
@@ -106,7 +84,6 @@ instance : ToJson State where
   ]
 
 structure UnitSpec where
-  simd_units : Nat
   gpu_units : Nat
   file_units : Nat
   memory_units : Nat
@@ -117,7 +94,6 @@ structure UnitSpec where
 
 instance : ToJson UnitSpec where
   toJson u := Json.mkObj [
-    ("simd_units", toJson u.simd_units),
     ("gpu_units", toJson u.gpu_units),
     ("file_units", toJson u.file_units),
     ("memory_units", toJson u.memory_units),
@@ -131,7 +107,6 @@ structure Algorithm where
   payloads : List UInt8
   state : State
   units : UnitSpec
-  simd_assignments : List UInt8
   memory_assignments : List UInt8
   file_assignments : List UInt8
   ffi_assignments : List UInt8
@@ -150,7 +125,6 @@ instance : ToJson Algorithm where
     ("payloads", toJson alg.payloads),
     ("state", toJson alg.state),
     ("units", toJson alg.units),
-    ("simd_assignments", toJson alg.simd_assignments),
     ("memory_assignments", toJson alg.memory_assignments),
     ("file_assignments", toJson alg.file_assignments),
     ("ffi_assignments", toJson alg.ffi_assignments),

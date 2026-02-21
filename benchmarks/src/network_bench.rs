@@ -112,14 +112,12 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
         actions,
         payloads,
         state: State {
-            regs_per_unit: 0,
             gpu_size: 0,
             file_buffer_size: 0,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![CLIF_IR_OFF],
         },
         units: UnitSpec {
-            simd_units: 0,
             gpu_units: 0,
             file_units: 0,
             memory_units: 0,
@@ -127,7 +125,6 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
             cranelift_units: 1,
             backends_bits: 0,
         },
-        simd_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: vec![],
         ffi_assignments: vec![],

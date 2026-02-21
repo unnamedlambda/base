@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 base-types = { path = "../base-types" }
 wgpu = "0.20"
-wide = "0.7"
 portable-atomic = "1"
 quanta = "0.12"
 pollster = "0.3"

@@ -12,7 +12,7 @@ use crate::units::{
     file_unit_task_mailbox, gpu_unit_task_mailbox,
     load_sized, memory_unit_task_mailbox,
     order_from_u32, queue_try_push_packet_mp,
-    read_null_terminated_string_from_slice, simd_unit_task_mailbox,
+    read_null_terminated_string_from_slice,
     Broadcast, Mailbox, SharedMemory,
     QUEUE_BASE_OFF, QUEUE_HEAD_OFF, QUEUE_MASK_OFF, QUEUE_TAIL_OFF,
 };
@@ -94,7 +94,6 @@ unsafe fn queue_try_pop_u64(shared: &SharedMemory, queue_desc: usize) -> Option<
 
 pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute",
-        simd_units = algorithm.units.simd_units,
         gpu_units = algorithm.units.gpu_units,
         memory_units = algorithm.units.memory_units,
         file_units = algorithm.units.file_units,
@@ -104,30 +103,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     ).entered();
 
     info!("starting execution engine");
-
-    if algorithm.simd_assignments.is_empty() {
-        algorithm.simd_assignments = vec![255; algorithm.actions.len()];
-        let mut unit = 0u8;
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::SimdLoad
-                | Kind::SimdAdd
-                | Kind::SimdMul
-                | Kind::SimdStore
-                | Kind::SimdLoadI32
-                | Kind::SimdAddI32
-                | Kind::SimdMulI32
-                | Kind::SimdStoreI32
-                | Kind::SimdDivI32
-                | Kind::SimdSubI32 => {
-                    algorithm.simd_assignments[i] = unit;
-                    unit = (unit + 1) % algorithm.units.simd_units as u8;
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned SIMD actions across {} units", algorithm.units.simd_units);
-    }
 
     if algorithm.memory_assignments.is_empty() {
         algorithm.memory_assignments = vec![255; algorithm.actions.len()];
@@ -215,14 +190,12 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let actions_arc = Arc::new(algorithm.actions);
 
     let gpu_assignments = Arc::new(algorithm.gpu_assignments);
-    let simd_assignments = Arc::new(algorithm.simd_assignments);
     let file_assignments = Arc::new(algorithm.file_assignments);
     let ffi_assignments = Arc::new(algorithm.ffi_assignments);
     let memory_assignments = Arc::new(algorithm.memory_assignments);
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
     let gpu_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.gpu_units).map(|_| Arc::new(Mailbox::new())).collect();
-    let simd_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.simd_units).map(|_| Arc::new(Mailbox::new())).collect();
     let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
     let ffi_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.ffi_units).map(|_| Arc::new(Mailbox::new())).collect();
     let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
@@ -230,7 +203,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
         
-    let simd_broadcast = Arc::new(Broadcast::new(algorithm.units.simd_units as u32));
     let memory_broadcast = Arc::new(Broadcast::new(algorithm.units.memory_units as u32));
 
     let mut thread_handles = Vec::new();
@@ -259,24 +231,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 );
             }));
         }
-    }
-
-    for (worker_id, mailbox) in simd_mailboxes.iter().cloned().enumerate() {
-        info!(worker_id, "spawning SIMD unit thread");
-        let actions = actions_arc.clone();
-        let shared = shared.clone();
-        let regs = algorithm.state.regs_per_unit;
-        let broadcast = simd_broadcast.clone();
-        thread_handles.push(std::thread::spawn(move || {
-            simd_unit_task_mailbox(
-                mailbox,
-                broadcast,
-                worker_id as u32,
-                actions,
-                shared,
-                regs,
-            );
-        }));
     }
 
     for (file_id, mailbox) in file_mailboxes.iter().cloned().enumerate() {
@@ -427,31 +381,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         };
 
                         gpu_mailboxes[unit_id].post(start, end, flag);
-                    }
-                    1 => {
-                        if is_broadcast {
-                            simd_broadcast.dispatch(start, end, flag);
-                            pc += 1;
-                            continue;
-                        }
-
-                        if simd_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = simd_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(simd_mailboxes.len() - 1)
-                        };
-
-                        simd_mailboxes[unit_id].post(start, end, flag);
                     }
                     2 => {
                         if file_mailboxes.is_empty() {
@@ -659,7 +588,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     };
 
                     let pools: [&[Arc<Mailbox>]; 9] = [
-                        &gpu_mailboxes, &simd_mailboxes, &file_mailboxes,
+                        &gpu_mailboxes, &[], &file_mailboxes,
                         &[], &ffi_mailboxes, &[],
                         &memory_mailboxes, &[], &[],
                     ];
@@ -680,7 +609,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         None
                     } else if unit_id == u32::MAX {
                         match unit_type {
-                            1 => Some(DispatchTarget::Broadcast(simd_broadcast.clone())),
                             6 => Some(DispatchTarget::Broadcast(memory_broadcast.clone())),
                             _ => {
                                 if t < pools.len() && !pools[t].is_empty() {
@@ -967,9 +895,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     for mailbox in gpu_mailboxes.iter() {
         mailbox.shutdown();
     }
-    for mailbox in simd_mailboxes.iter() {
-        mailbox.shutdown();
-    }
     for mailbox in file_mailboxes.iter() {
         mailbox.shutdown();
     }
@@ -982,7 +907,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     for mailbox in cranelift_mailboxes.iter() {
         mailbox.shutdown();
     }
-    simd_broadcast.shutdown();
     memory_broadcast.shutdown();
 
     for handle in thread_handles {
