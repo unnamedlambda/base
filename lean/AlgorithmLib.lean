@@ -46,14 +46,6 @@ inductive Kind where
   | HashTableInsert
   | HashTableLookup
   | HashTableDelete
-  | LmdbOpen
-  | LmdbPut
-  | LmdbGet
-  | LmdbDelete
-  | LmdbCursorScan
-  | LmdbSync
-  | LmdbBeginWriteTxn
-  | LmdbCommitWriteTxn
   deriving Repr
 
 instance : ToJson Kind where
@@ -86,14 +78,6 @@ instance : ToJson Kind where
     | .HashTableInsert => "hash_table_insert"
     | .HashTableLookup => "hash_table_lookup"
     | .HashTableDelete => "hash_table_delete"
-    | .LmdbOpen => "lmdb_open"
-    | .LmdbPut => "lmdb_put"
-    | .LmdbGet => "lmdb_get"
-    | .LmdbDelete => "lmdb_delete"
-    | .LmdbCursorScan => "lmdb_cursor_scan"
-    | .LmdbSync => "lmdb_sync"
-    | .LmdbBeginWriteTxn => "lmdb_begin_write_txn"
-    | .LmdbCommitWriteTxn => "lmdb_commit_write_txn"
 
 structure Action where
   kind : Kind
@@ -136,7 +120,6 @@ structure UnitSpec where
   memory_units : Nat
   ffi_units : Nat
   hash_table_units : Nat
-  lmdb_units : Nat
   cranelift_units : Nat
   backends_bits : UInt32
   deriving Repr
@@ -149,7 +132,6 @@ instance : ToJson UnitSpec where
     ("memory_units", toJson u.memory_units),
     ("ffi_units", toJson u.ffi_units),
     ("hash_table_units", toJson u.hash_table_units),
-    ("lmdb_units", toJson u.lmdb_units),
     ("cranelift_units", toJson u.cranelift_units),
     ("backends_bits", toJson u.backends_bits)
   ]
@@ -164,7 +146,6 @@ structure Algorithm where
   file_assignments : List UInt8
   ffi_assignments : List UInt8
   hash_table_assignments : List UInt8
-  lmdb_assignments : List UInt8
   gpu_assignments : List UInt8
   cranelift_assignments : List UInt8
   worker_threads : Option Nat
@@ -185,7 +166,6 @@ instance : ToJson Algorithm where
     ("file_assignments", toJson alg.file_assignments),
     ("ffi_assignments", toJson alg.ffi_assignments),
     ("hash_table_assignments", toJson alg.hash_table_assignments),
-    ("lmdb_assignments", toJson alg.lmdb_assignments),
     ("gpu_assignments", toJson alg.gpu_assignments),
     ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),

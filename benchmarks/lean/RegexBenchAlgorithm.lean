@@ -222,13 +222,13 @@ def buildAlgorithm : Algorithm := {
   units := {
     simd_units := 0, gpu_units := 0,
     file_units := 1, memory_units := 0,
-    ffi_units := 0, hash_table_units := 0, lmdb_units := 0,
+    ffi_units := 0, hash_table_units := 0,
     cranelift_units := 1, backends_bits := 0xFFFFFFFF
   },
   simd_assignments := [],
   memory_assignments := [], file_assignments := [],
   ffi_assignments := [],
-  hash_table_assignments := [], lmdb_assignments := [],
+  hash_table_assignments := [],
   gpu_assignments := [], cranelift_assignments := [],
   worker_threads := some 2, blocking_threads := some 2,
   stack_size := none, timeout_ms := some TIMEOUT_MS,

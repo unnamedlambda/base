@@ -303,7 +303,6 @@ def drawAlgorithm : Algorithm :=
       memory_units := 1,
       ffi_units := 1,
       hash_table_units := 0,
-      lmdb_units := 0,
       cranelift_units := 0,
       backends_bits := 0xFFFFFFFF
     },
@@ -312,7 +311,6 @@ def drawAlgorithm : Algorithm :=
     file_assignments := [],
     ffi_assignments := [],
     hash_table_assignments := [],
-    lmdb_assignments := [],
     gpu_assignments := [],
     cranelift_assignments := [],
     worker_threads := none,
