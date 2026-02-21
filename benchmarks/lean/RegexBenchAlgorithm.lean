@@ -214,18 +214,18 @@ def buildAlgorithm : Algorithm := {
   actions := controlActions ++ workerActions,
   payloads := buildPayload,
   state := {
-    regs_per_unit := 0, gpu_size := 0, computational_regs := 0,
+    regs_per_unit := 0, gpu_size := 0,
     file_buffer_size := FILE_BUF_SIZE,
     gpu_shader_offsets := [],
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    simd_units := 0, gpu_units := 0, computational_units := 0,
+    simd_units := 0, gpu_units := 0,
     file_units := 1, network_units := 0, memory_units := 0,
     ffi_units := 0, hash_table_units := 0, lmdb_units := 0,
     cranelift_units := 1, backends_bits := 0xFFFFFFFF
   },
-  simd_assignments := [], computational_assignments := [],
+  simd_assignments := [],
   memory_assignments := [], file_assignments := [],
   network_assignments := [], ffi_assignments := [],
   hash_table_assignments := [], lmdb_assignments := [],

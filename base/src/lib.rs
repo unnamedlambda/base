@@ -8,7 +8,7 @@ pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 mod units;
 
 use crate::units::{
-    computational_unit_task_mailbox, cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
+    cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
     file_unit_task_mailbox, gpu_unit_task_mailbox, hash_table_unit_task_mailbox,
     lmdb_unit_task_mailbox, load_sized, memory_unit_task_mailbox,
     network_unit_task_mailbox, order_from_u32, queue_try_push_packet_mp,
@@ -96,7 +96,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute",
         simd_units = algorithm.units.simd_units,
         gpu_units = algorithm.units.gpu_units,
-        computational_units = algorithm.units.computational_units,
         memory_units = algorithm.units.memory_units,
         file_units = algorithm.units.file_units,
         network_units = algorithm.units.network_units,
@@ -131,25 +130,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
             }
         }
         debug!("auto-assigned SIMD actions across {} units", algorithm.units.simd_units);
-    }
-
-    if algorithm.computational_assignments.is_empty() {
-        algorithm.computational_assignments = vec![255; algorithm.actions.len()];
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::Approximate
-                | Kind::Choose
-                | Kind::Timestamp
-                | Kind::ComputationalLoadF64
-                | Kind::ComputationalStoreF64
-                | Kind::ComputationalLoadU64
-                | Kind::ComputationalStoreU64 => {
-                    algorithm.computational_assignments[i] = 0;
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned computational actions across {} units", algorithm.units.computational_units);
     }
 
     if algorithm.memory_assignments.is_empty() {
@@ -291,7 +271,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let file_assignments = Arc::new(algorithm.file_assignments);
     let network_assignments = Arc::new(algorithm.network_assignments);
     let ffi_assignments = Arc::new(algorithm.ffi_assignments);
-    let computational_assignments = Arc::new(algorithm.computational_assignments);
     let memory_assignments = Arc::new(algorithm.memory_assignments);
     let hash_table_assignments = Arc::new(algorithm.hash_table_assignments);
     let lmdb_assignments = Arc::new(algorithm.lmdb_assignments);
@@ -302,7 +281,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
     let network_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.network_units).map(|_| Arc::new(Mailbox::new())).collect();
     let ffi_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.ffi_units).map(|_| Arc::new(Mailbox::new())).collect();
-    let computational_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.computational_units).map(|_| Arc::new(Mailbox::new())).collect();
     let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
     let hash_table_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.hash_table_units).map(|_| Arc::new(Mailbox::new())).collect();
     let lmdb_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.lmdb_units).map(|_| Arc::new(Mailbox::new())).collect();
@@ -311,8 +289,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         .collect();
         
     let simd_broadcast = Arc::new(Broadcast::new(algorithm.units.simd_units as u32));
-    let computational_broadcast = 
-        Arc::new(Broadcast::new(algorithm.units.computational_units as u32));
     let memory_broadcast = Arc::new(Broadcast::new(algorithm.units.memory_units as u32));
 
     let mut thread_handles = Vec::new();
@@ -386,24 +362,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let shared = shared.clone();
         thread_handles.push(std::thread::spawn(move || {
             ffi_unit_task_mailbox(mailbox, actions, shared);
-        }));
-    }
-
-    for (worker_id, mailbox) in computational_mailboxes.iter().cloned().enumerate() {
-        info!(worker_id, "spawning computational unit thread");
-        let actions = actions_arc.clone();
-        let shared = shared.clone();
-        let regs = algorithm.state.computational_regs;
-        let broadcast = computational_broadcast.clone();
-        thread_handles.push(std::thread::spawn(move || {
-            computational_unit_task_mailbox(
-                mailbox,
-                broadcast,
-                worker_id as u32,
-                actions,
-                shared,
-                regs,
-            );
         }));
     }
 
@@ -637,31 +595,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                         ffi_mailboxes[unit_id].post(start, end, flag);
                     }
-                    5 => {
-                        if is_broadcast {
-                            computational_broadcast.dispatch(start, end, flag);
-                            pc += 1;
-                            continue;
-                        }
-
-                        if computational_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = computational_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(computational_mailboxes.len() - 1)
-                        };
-
-                        computational_mailboxes[unit_id].post(start, end, flag);
-                    }
                     6 => {
                         if is_broadcast {
                             memory_broadcast.dispatch(start, end, flag);
@@ -869,7 +802,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                     let pools: [&[Arc<Mailbox>]; 9] = [
                         &gpu_mailboxes, &simd_mailboxes, &file_mailboxes,
-                        &network_mailboxes, &ffi_mailboxes, &computational_mailboxes,
+                        &network_mailboxes, &ffi_mailboxes, &[],
                         &memory_mailboxes, &hash_table_mailboxes, &lmdb_mailboxes,
                     ];
                     let t = unit_type as usize;
@@ -890,7 +823,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     } else if unit_id == u32::MAX {
                         match unit_type {
                             1 => Some(DispatchTarget::Broadcast(simd_broadcast.clone())),
-                            5 => Some(DispatchTarget::Broadcast(computational_broadcast.clone())),
                             6 => Some(DispatchTarget::Broadcast(memory_broadcast.clone())),
                             _ => {
                                 if t < pools.len() && !pools[t].is_empty() {
@@ -1189,9 +1121,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     for mailbox in ffi_mailboxes.iter() {
         mailbox.shutdown();
     }
-    for mailbox in computational_mailboxes.iter() {
-        mailbox.shutdown();
-    }
     for mailbox in memory_mailboxes.iter() {
         mailbox.shutdown();
     }
@@ -1205,7 +1134,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         mailbox.shutdown();
     }
     simd_broadcast.shutdown();
-    computational_broadcast.shutdown();
     memory_broadcast.shutdown();
 
     for handle in thread_handles {

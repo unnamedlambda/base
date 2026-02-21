@@ -35,10 +35,7 @@ inductive Kind where
   | MemScan
   | FileRead
   | FileWrite
-  | Approximate
-  | Choose
   | Compare
-  | Timestamp
   | ConditionalJump
   | Fence
   | AsyncDispatch
@@ -78,10 +75,7 @@ instance : ToJson Kind where
     | .MemScan => "mem_scan"
     | .FileRead => "file_read"
     | .FileWrite => "file_write"
-    | .Approximate => "approximate"
-    | .Choose => "choose"
     | .Compare => "compare"
-    | .Timestamp => "timestamp"
     | .ConditionalJump => "conditional_jump"
     | .Fence => "fence"
     | .AsyncDispatch => "async_dispatch"
@@ -121,7 +115,6 @@ instance : ToJson Action where
 structure State where
   regs_per_unit : Nat
   gpu_size : Nat
-  computational_regs : Nat
   file_buffer_size : Nat
   gpu_shader_offsets : List Nat
   cranelift_ir_offsets : List Nat
@@ -131,7 +124,6 @@ instance : ToJson State where
   toJson s := Json.mkObj [
     ("regs_per_unit", toJson s.regs_per_unit),
     ("gpu_size", toJson s.gpu_size),
-    ("computational_regs", toJson s.computational_regs),
     ("file_buffer_size", toJson s.file_buffer_size),
     ("gpu_shader_offsets", toJson s.gpu_shader_offsets),
     ("cranelift_ir_offsets", toJson s.cranelift_ir_offsets),
@@ -140,7 +132,6 @@ instance : ToJson State where
 structure UnitSpec where
   simd_units : Nat
   gpu_units : Nat
-  computational_units : Nat
   file_units : Nat
   network_units : Nat
   memory_units : Nat
@@ -155,7 +146,6 @@ instance : ToJson UnitSpec where
   toJson u := Json.mkObj [
     ("simd_units", toJson u.simd_units),
     ("gpu_units", toJson u.gpu_units),
-    ("computational_units", toJson u.computational_units),
     ("file_units", toJson u.file_units),
     ("network_units", toJson u.network_units),
     ("memory_units", toJson u.memory_units),
@@ -172,7 +162,6 @@ structure Algorithm where
   state : State
   units : UnitSpec
   simd_assignments : List UInt8
-  computational_assignments : List UInt8
   memory_assignments : List UInt8
   file_assignments : List UInt8
   network_assignments : List UInt8
@@ -195,7 +184,6 @@ instance : ToJson Algorithm where
     ("state", toJson alg.state),
     ("units", toJson alg.units),
     ("simd_assignments", toJson alg.simd_assignments),
-    ("computational_assignments", toJson alg.computational_assignments),
     ("memory_assignments", toJson alg.memory_assignments),
     ("file_assignments", toJson alg.file_assignments),
     ("network_assignments", toJson alg.network_assignments),

@@ -171,7 +171,6 @@ fn build_echo_server(port: u16, data_size: usize) -> base::Algorithm {
         state: State {
             regs_per_unit: 0,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: 0,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
@@ -179,7 +178,6 @@ fn build_echo_server(port: u16, data_size: usize) -> base::Algorithm {
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: 0,
             network_units: 1,
             memory_units: 0,
@@ -190,7 +188,6 @@ fn build_echo_server(port: u16, data_size: usize) -> base::Algorithm {
             backends_bits: 0xFFFF_FFFF,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: vec![],
         network_assignments: vec![0; num_actions],
@@ -292,7 +289,6 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
         state: State {
             regs_per_unit: 0,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: 0,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![CLIF_IR_OFF],
@@ -300,7 +296,6 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: 0,
             network_units: 0,
             memory_units: 0,
@@ -311,7 +306,6 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: vec![],
         network_assignments: vec![],

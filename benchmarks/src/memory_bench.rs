@@ -170,7 +170,6 @@ fn build_memory_algorithm(
         state: State {
             regs_per_unit: 0,
             gpu_size: buffer_size,
-            computational_regs: 0,
             file_buffer_size: 1024 * 1024, // 1MB file buffer
             gpu_shader_offsets: vec![SHADER_OFF],
             cranelift_ir_offsets: vec![],
@@ -178,7 +177,6 @@ fn build_memory_algorithm(
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 1,
-            computational_units: 0,
             file_units: 1,
             network_units: 0,
             memory_units: 0,
@@ -189,7 +187,6 @@ fn build_memory_algorithm(
             backends_bits: 0xFFFF_FFFF,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: vec![],
         network_assignments: vec![],

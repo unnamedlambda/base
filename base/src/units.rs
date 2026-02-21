@@ -1,7 +1,6 @@
 use base_types::{Action, Kind};
 use pollster::block_on;
 use portable_atomic::{AtomicU128, AtomicU64, Ordering};
-use quanta::Clock;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read as IoRead, Seek, Write as IoWrite};
@@ -1324,75 +1323,6 @@ impl FileUnit {
     }
 }
 
-pub(crate) struct ComputationalUnit {
-    regs_f64: Vec<f64>,
-    regs_u64: Vec<u64>,
-    shared: Arc<SharedMemory>,
-    clock: Clock,
-}
-
-impl ComputationalUnit {
-    pub fn new(regs: usize, shared: Arc<SharedMemory>) -> Self {
-        Self {
-            regs_f64: vec![0.0; regs],
-            regs_u64: vec![0; regs],
-            shared,
-            clock: Clock::new(),
-        }
-    }
-
-    pub unsafe fn execute(&mut self, action: &Action) {
-        match action.kind {
-            Kind::Approximate => {
-                debug!(dst = action.dst, src = action.src, iterations = action.offset, "approximate");
-                let base = self.regs_f64[action.src as usize];
-                let iterations = action.offset as usize;
-                let mut x = base;
-                for _ in 0..iterations {
-                    x = 0.5 * (x + base / x)
-                }
-                self.regs_f64[action.dst as usize] = x;
-            }
-            Kind::Choose => {
-                debug!(dst = action.dst, src = action.src, "choose");
-                let n = self.regs_u64[action.src as usize];
-                if n > 0 {
-                    let choice = rand::random::<u64>() % n;
-                    self.regs_u64[action.dst as usize] = choice;
-                }
-            }
-            Kind::Timestamp => {
-                debug!(dst = action.dst, "timestamp");
-                // Store current timestamp in register
-                self.regs_u64[action.dst as usize] = self.clock.raw();
-            }
-            Kind::ComputationalLoadF64 => {
-                debug!(dst = action.dst, src = action.src, "comp_load_f64");
-                let bytes = self.shared.read(action.src as usize, 8);
-                let value = f64::from_le_bytes(bytes[0..8].try_into().unwrap());
-                self.regs_f64[action.dst as usize] = value;
-            }
-            Kind::ComputationalStoreF64 => {
-                debug!(src = action.src, offset = action.offset, "comp_store_f64");
-                let value = self.regs_f64[action.src as usize];
-                self.shared.write(action.offset as usize, &value.to_le_bytes());
-            }
-            Kind::ComputationalLoadU64 => {
-                debug!(dst = action.dst, src = action.src, "comp_load_u64");
-                let bytes = self.shared.read(action.src as usize, 8);
-                let value = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-                self.regs_u64[action.dst as usize] = value;
-            }
-            Kind::ComputationalStoreU64 => {
-                debug!(src = action.src, offset = action.offset, "comp_store_u64");
-                let value = self.regs_u64[action.src as usize];
-                self.shared.write(action.offset as usize, &value.to_le_bytes());
-            }
-            _ => {}
-        }
-    }
-}
-
 pub(crate) struct SimdUnit {
     id: u8,
     regs_f32: Vec<f32x4>,
@@ -1790,61 +1720,6 @@ pub(crate) fn file_unit_task_mailbox(
                 return;
             }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),
-        }
-    }
-}
-
-pub(crate) fn computational_unit_task_mailbox(
-    mailbox: Arc<Mailbox>,
-    broadcast: Arc<Broadcast>,
-    worker_id: u32,
-    actions: Arc<Vec<Action>>,
-    shared: Arc<SharedMemory>,
-    regs: usize,
-) {
-    let _span = info_span!("computational_unit", worker_id).entered();
-    info!("computational unit started");
-    let mut unit = ComputationalUnit::new(regs, shared.clone());
-    let mut last_epoch = 0u64;
-    let mut spin_count = 0u32;
-
-    loop {
-        match mailbox.poll() {
-            MailboxPoll::Work { start, end, flag } => {
-                debug!(start, end, flag, "computational_work_received");
-                for idx in start..end {
-                    unsafe {
-                        unit.execute(&actions[idx as usize]);
-                    }
-                }
-                unsafe {
-                    shared.store_u64(flag as usize, 1, Ordering::Release);
-                }
-                debug!(flag, "computational_work_complete");
-                spin_count = 0;
-            }
-            MailboxPoll::Closed => {
-                info!("computational unit shutting down");
-                return;
-            }
-            MailboxPoll::Empty => {
-                let prev_epoch = last_epoch;
-                if !broadcast_step(
-                    worker_id,
-                    &mut last_epoch,
-                    &broadcast,
-                    &actions,
-                    &shared,
-                    |action| unsafe { unit.execute(action); },
-                ) {
-                    return;
-                }
-                if last_epoch != prev_epoch {
-                    spin_count = 0;
-                } else {
-                    spin_backoff(&mut spin_count);
-                }
-            }
         }
     }
 }
@@ -3031,90 +2906,6 @@ mod tests {
             assert_eq!(i32::from_le_bytes(mul_result[4..8].try_into().unwrap()), 40);
             assert_eq!(i32::from_le_bytes(mul_result[8..12].try_into().unwrap()), 90);
             assert_eq!(i32::from_le_bytes(mul_result[12..16].try_into().unwrap()), 160);
-        }
-    }
-
-    #[test]
-    fn test_computational_unit_creation() {
-        let mut memory = vec![0u8; 1024];
-        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
-        let unit = ComputationalUnit::new(32, Arc::new(shared));
-        assert_eq!(unit.regs_f64.len(), 32);
-        assert_eq!(unit.regs_u64.len(), 32);
-    }
-
-    #[test]
-    fn test_approximate_action() {
-        let mut memory = vec![0u8; 1024];
-        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
-        let mut unit = ComputationalUnit::new(8, Arc::new(shared));
-
-        unit.regs_f64[1] = 16.0;
-
-        let action = Action {
-            kind: Kind::Approximate,
-            dst: 2,
-            src: 1,
-            offset: 10,
-            size: 0,
-        };
-
-        unsafe {
-            unit.execute(&action);
-        }
-
-        // sqrt(16) = 4
-        assert_eq!(unit.regs_f64[2], 4.0);
-    }
-
-    #[test]
-    fn test_choose_action() {
-        let mut memory = vec![0u8; 1024];
-        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
-        let mut unit = ComputationalUnit::new(8, Arc::new(shared));
-
-        unit.regs_u64[1] = 100;
-
-        // Choose from [0, 100)
-        let action = Action {
-            kind: Kind::Choose,
-            dst: 2,
-            src: 1,
-            offset: 0,
-            size: 0,
-        };
-
-        unsafe {
-            unit.execute(&action);
-        }
-
-        // Result should be in range [0, 100)
-        assert!(unit.regs_u64[2] < 100);
-    }
-
-    #[test]
-    fn test_choose_ranges() {
-        let mut memory = vec![0u8; 1024];
-        let shared = unsafe { SharedMemory::new(memory.as_mut_ptr()) };
-        let mut unit = ComputationalUnit::new(8, Arc::new(shared));
-
-        for n in [1u64, 10, 50, 1000] {
-            unit.regs_u64[0] = n;
-
-            let action = Action {
-                kind: Kind::Choose,
-                dst: 1,
-                src: 0,
-                offset: 0,
-                size: 0,
-            };
-
-            for _ in 0..10 {
-                unsafe {
-                    unit.execute(&action);
-                }
-                assert!(unit.regs_u64[1] < n);
-            }
         }
     }
 

@@ -174,7 +174,6 @@ fn build_frontier_algorithm(
         state: State {
             regs_per_unit: 0,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: 0,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
@@ -182,7 +181,6 @@ fn build_frontier_algorithm(
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: 0,
             network_units: 0,
             memory_units: workers,
@@ -193,7 +191,6 @@ fn build_frontier_algorithm(
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments,
         file_assignments: vec![],
         network_assignments: vec![],
@@ -406,7 +403,6 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
         state: State {
             regs_per_unit: 0,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: 0,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
@@ -414,7 +410,6 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: 0,
             network_units: 0,
             memory_units: workers,
@@ -425,7 +420,6 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments,
         file_assignments: vec![],
         network_assignments: vec![],
@@ -776,7 +770,6 @@ fn build_kernel_queue_algorithm(
         state: State {
             regs_per_unit: 0,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: 0,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
@@ -784,7 +777,6 @@ fn build_kernel_queue_algorithm(
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: 0,
             network_units: 0,
             memory_units: workers,
@@ -795,7 +787,6 @@ fn build_kernel_queue_algorithm(
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments,
         file_assignments: vec![],
         network_assignments: vec![],

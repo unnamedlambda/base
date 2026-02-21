@@ -18,7 +18,6 @@ fn create_test_algorithm(
         state: State {
             regs_per_unit: 16,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: 65536,
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
@@ -26,7 +25,6 @@ fn create_test_algorithm(
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units,
             network_units: 0,
             memory_units,
@@ -37,7 +35,6 @@ fn create_test_algorithm(
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments: vec![0; num_actions],
         file_assignments: vec![0; num_actions],
         network_assignments: vec![],
@@ -73,7 +70,6 @@ fn create_complex_algorithm(
         state: State {
             regs_per_unit: 16,
             gpu_size,
-            computational_regs: 32,
             file_buffer_size: 65536,
             gpu_shader_offsets,
             cranelift_ir_offsets: vec![],
@@ -81,7 +77,6 @@ fn create_complex_algorithm(
         units: UnitSpec {
             simd_units,
             gpu_units,
-            computational_units: 0,
             file_units,
             network_units: 0,
             memory_units,
@@ -96,7 +91,6 @@ fn create_complex_algorithm(
         } else {
             vec![255; num_actions]
         },
-        computational_assignments: vec![],
         memory_assignments: if memory_units > 0 {
             vec![0; num_actions]
         } else {
@@ -140,7 +134,6 @@ fn create_cranelift_algorithm(
         state: State {
             regs_per_unit: 16,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: if with_file { 65536 } else { 0 },
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets,
@@ -148,7 +141,6 @@ fn create_cranelift_algorithm(
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: if with_file { 1 } else { 0 },
             network_units: 0,
             memory_units: 0,
@@ -159,7 +151,6 @@ fn create_cranelift_algorithm(
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: if with_file { vec![0; num_actions] } else { vec![] },
         network_assignments: vec![],
@@ -2521,7 +2512,6 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
         state: State {
             regs_per_unit: 0,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: if with_file { 65536 } else { 0 },
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
@@ -2529,7 +2519,6 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: if with_file { 1 } else { 0 },
             network_units: 0,
             memory_units: if with_file { 1 } else { 0 },
@@ -2540,7 +2529,6 @@ fn create_hash_table_algorithm_with_file(actions: Vec<Action>, payloads: Vec<u8>
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: vec![],
         network_assignments: vec![],
@@ -3151,7 +3139,6 @@ fn create_lmdb_algorithm(actions: Vec<Action>, payloads: Vec<u8>, with_file: boo
         state: State {
             regs_per_unit: 0,
             gpu_size: 0,
-            computational_regs: 0,
             file_buffer_size: if with_file { 65536 } else { 0 },
             gpu_shader_offsets: vec![],
             cranelift_ir_offsets: vec![],
@@ -3159,7 +3146,6 @@ fn create_lmdb_algorithm(actions: Vec<Action>, payloads: Vec<u8>, with_file: boo
         units: UnitSpec {
             simd_units: 0,
             gpu_units: 0,
-            computational_units: 0,
             file_units: if with_file { 1 } else { 0 },
             network_units: 0,
             memory_units: if with_memory { 1 } else { 0 },
@@ -3170,7 +3156,6 @@ fn create_lmdb_algorithm(actions: Vec<Action>, payloads: Vec<u8>, with_file: boo
             backends_bits: 0,
         },
         simd_assignments: vec![],
-        computational_assignments: vec![],
         memory_assignments: vec![],
         file_assignments: vec![],
         network_assignments: vec![],
@@ -4492,329 +4477,6 @@ fn test_lmdb_batch_across_two_databases() {
     let len2 = u32::from_le_bytes(file_contents[7..11].try_into().unwrap());
     assert_eq!(len2, 3);
     assert_eq!(&file_contents[11..14], b"bb!", "db2 batch put should be committed");
-}
-
-fn create_computational_test_algorithm(
-    actions: Vec<Action>,
-    payloads: Vec<u8>,
-) -> Algorithm {
-    let num_actions = actions.len();
-
-    Algorithm {
-        actions,
-        payloads,
-        state: State {
-            regs_per_unit: 16,
-            gpu_size: 0,
-            computational_regs: 32,
-            file_buffer_size: 65536,
-            gpu_shader_offsets: vec![],
-            cranelift_ir_offsets: vec![],
-        },
-        units: UnitSpec {
-            simd_units: 0,
-            gpu_units: 0,
-            computational_units: 1,
-            file_units: 1,
-            network_units: 0,
-            memory_units: 1,
-            ffi_units: 0,
-            hash_table_units: 0,
-            lmdb_units: 0,
-            cranelift_units: 0,
-            backends_bits: 0,
-        },
-        simd_assignments: vec![],
-        computational_assignments: vec![],
-        memory_assignments: vec![0; num_actions],
-        file_assignments: vec![0; num_actions],
-        network_assignments: vec![],
-        ffi_assignments: vec![],
-        hash_table_assignments: vec![],
-        lmdb_assignments: vec![],
-        gpu_assignments: vec![],
-        cranelift_assignments: vec![],
-        worker_threads: None,
-        blocking_threads: None,
-        stack_size: None,
-        timeout_ms: Some(5000),
-        thread_name_prefix: None,
-    }
-}
-
-#[test]
-fn test_integration_computational_load_store_f64() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("comp_f64_result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-
-    // Setup filename with null terminator
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Setup source data at offset 256: value 16.0 (for sqrt test)
-    payloads[256..264].copy_from_slice(&16.0f64.to_le_bytes());
-
-    // Result will be stored at offset 512
-    let comp_flag = 1024u32;
-    let file_flag = 1032u32;
-
-    let actions = vec![
-        // Action 0: ComputationalLoadF64 - load 16.0 from memory offset 256 into register 0
-        Action {
-            kind: Kind::ComputationalLoadF64,
-            dst: 0,      // register 0
-            src: 256,    // memory offset
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: Approximate - compute sqrt (register 0 -> register 1)
-        Action {
-            kind: Kind::Approximate,
-            dst: 1,      // output register
-            src: 0,      // input register
-            offset: 10,  // iterations
-            size: 0,
-        },
-        // Action 2: ComputationalStoreF64 - store result from register 1 to memory offset 512
-        Action {
-            kind: Kind::ComputationalStoreF64,
-            src: 1,      // register 1
-            dst: 0,
-            offset: 512, // memory offset
-            size: 0,
-        },
-        // Action 3: FileWrite - write result to file
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,      // filename offset
-            src: 512,    // data offset
-            offset: 0,
-            size: 8,
-        },
-        // Action 4: AsyncDispatch computational operations (actions 0-2) to computational unit (type 5)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 5,      // computational unit type
-            src: 0,      // start action index
-            offset: comp_flag,
-            size: 3,     // dispatch 3 actions (0, 1, 2)
-        },
-        // Action 5: Wait for computational operations
-        Action {
-            kind: Kind::Wait,
-            dst: comp_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 6: AsyncDispatch FileWrite to file unit (type 2)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,      // file unit type
-            src: 3,      // action index 3 (FileWrite)
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 7: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_computational_test_algorithm(actions, payloads);
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "Result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    let result = f64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(result, 4.0, "sqrt(16) should equal 4.0");
-}
-
-#[test]
-fn test_integration_computational_load_store_u64() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("comp_u64_result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-
-    // Setup filename
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Setup source data at offset 256: value 100 (for choose test)
-    payloads[256..264].copy_from_slice(&100u64.to_le_bytes());
-
-    let comp_flag = 1024u32;
-    let file_flag = 1032u32;
-
-    let actions = vec![
-        // Action 0: ComputationalLoadU64 - load 100 from memory into register 0
-        Action {
-            kind: Kind::ComputationalLoadU64,
-            dst: 0,
-            src: 256,
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: Choose - random value in [0, 100) (register 0 -> register 1)
-        Action {
-            kind: Kind::Choose,
-            dst: 1,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 2: ComputationalStoreU64 - store result to memory offset 512
-        Action {
-            kind: Kind::ComputationalStoreU64,
-            src: 1,
-            dst: 0,
-            offset: 512,
-            size: 0,
-        },
-        // Action 3: FileWrite
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 512,
-            offset: 0,
-            size: 8,
-        },
-        // Action 4: AsyncDispatch computational (actions 0-2)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 5,
-            src: 0,
-            offset: comp_flag,
-            size: 3,
-        },
-        // Action 5: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: comp_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 6: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 3,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 7: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_computational_test_algorithm(actions, payloads);
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "Result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert!(result < 100, "Choose result should be in range [0, 100), got {}", result);
-}
-
-#[test]
-fn test_integration_computational_timestamp() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("comp_timestamp_result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-
-    // Setup filename
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    let comp_flag = 1024u32;
-    let file_flag = 1032u32;
-
-    let actions = vec![
-        // Action 0: Timestamp - get current time into register 0
-        Action {
-            kind: Kind::Timestamp,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: Store timestamp
-        Action {
-            kind: Kind::ComputationalStoreU64,
-            src: 0,
-            dst: 0,
-            offset: 512,
-            size: 0,
-        },
-        // Action 2: FileWrite
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 512,
-            offset: 0,
-            size: 8,
-        },
-        // Action 3: AsyncDispatch computational
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 5,
-            src: 0,
-            offset: comp_flag,
-            size: 2,
-        },
-        // Action 4: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: comp_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 5: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 2,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 6: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_computational_test_algorithm(actions, payloads);
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "Result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    let timestamp = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    
-    // Verify timestamp is reasonable
-    assert!(timestamp > 0, "Timestamp should be non-zero");
-    assert!(timestamp < u64::MAX / 2, "Timestamp should be a reasonable value");
 }
 
 #[test]
