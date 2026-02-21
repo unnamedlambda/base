@@ -165,10 +165,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
                 | Kind::MemCopyIndirect
                 | Kind::MemStoreIndirect
                 | Kind::Compare
-                | Kind::AtomicLoad
-                | Kind::AtomicStore
                 | Kind::AtomicFetchAdd
-                | Kind::AtomicFetchSub
                 | Kind::QueuePushPacketMP
                  => {
                     algorithm.memory_assignments[i] = 0;

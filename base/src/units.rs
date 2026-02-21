@@ -479,52 +479,6 @@ impl MemoryUnit {
                 let dst_ptr = self.shared.ptr.add(indirect_addr);
                 std::ptr::copy_nonoverlapping(src_ptr, dst_ptr, action.size as usize);
             }
-            Kind::AtomicLoad => {
-                let order = order_from_u32(action.offset);
-                match action.size {
-                    1 => {
-                        let value = self.shared.read(action.src as usize, 1)[0];
-                        self.shared.write(action.dst as usize, &[value]);
-                    }
-                    2 => {
-                        let value = self.shared.read(action.src as usize, 2);
-                        self.shared.write(action.dst as usize, &value[0..2]);
-                    }
-                    4 => {
-                        let value = self.shared.load_u32(action.src as usize, order);
-                        self.shared.write(action.dst as usize, &value.to_le_bytes());
-                    }
-                    8 => {
-                        let value = self.shared.load_u64(action.src as usize, order);
-                        self.shared.store_u64(action.dst as usize, value, order);
-                    }
-                    _ => {}
-                }
-            }
-            Kind::AtomicStore => {
-                let order = order_from_u32(action.offset);
-                match action.size {
-                    1 => {
-                        let value = self.shared.read(action.src as usize, 1)[0];
-                        self.shared.write(action.dst as usize, &[value]);
-                    }
-                    2 => {
-                        let value = self.shared.read(action.src as usize, 2);
-                        self.shared.write(action.dst as usize, &value[0..2]);
-                    }
-                    4 => {
-                        let bytes = self.shared.read(action.src as usize, 4);
-                        let value = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-                        self.shared.store_u32(action.dst as usize, value, order);
-                    }
-                    8 => {
-                        let bytes = self.shared.read(action.src as usize, 8);
-                        let value = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-                        self.shared.store_u64(action.dst as usize, value, order);
-                    }
-                    _ => {}
-                }
-            }
             Kind::AtomicFetchAdd => {
                 let order = order_from_u32(action.size >> 29);
                 let op_size = action.size & 0x1FFF_FFFF;
@@ -537,23 +491,6 @@ impl MemoryUnit {
                     8 => {
                         let ptr = self.shared.ptr.add(action.dst as usize) as *const AtomicU64;
                         (*ptr).fetch_add(addend as u64, order)
-                    }
-                    _ => 0,
-                };
-                store_sized(&self.shared, action.src as usize, op_size, prev, Ordering::Relaxed);
-            }
-            Kind::AtomicFetchSub => {
-                let order = order_from_u32(action.size >> 29);
-                let op_size = action.size & 0x1FFF_FFFF;
-                let addend = load_sized(&self.shared, action.offset as usize, op_size, Ordering::Relaxed);
-                let prev = match op_size {
-                    4 => {
-                        let ptr = self.shared.ptr.add(action.dst as usize) as *const AtomicU32;
-                        (*ptr).fetch_sub(addend as u32, order) as u64
-                    }
-                    8 => {
-                        let ptr = self.shared.ptr.add(action.dst as usize) as *const AtomicU64;
-                        (*ptr).fetch_sub(addend as u64, order)
                     }
                     _ => 0,
                 };
@@ -3010,44 +2947,10 @@ mod tests {
     }
 
     #[test]
-    fn test_atomic_load_store() {
-        let mut memory = vec![0u8; 256];
-        memory[64..72].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
-
-        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = MemoryUnit::new(shared.clone());
-
-        let store = Action {
-            kind: Kind::AtomicStore,
-            dst: 32,
-            src: 64,
-            offset: 0,
-            size: 8,
-        };
-        let load = Action {
-            kind: Kind::AtomicLoad,
-            dst: 40,
-            src: 32,
-            offset: 0,
-            size: 8,
-        };
-
-        unsafe {
-            unit.execute(&store);
-            unit.execute(&load);
-            let stored = u64::from_le_bytes(shared.read(32, 8)[0..8].try_into().unwrap());
-            let loaded = u64::from_le_bytes(shared.read(40, 8)[0..8].try_into().unwrap());
-            assert_eq!(stored, 0xDEADBEEF);
-            assert_eq!(loaded, 0xDEADBEEF);
-        }
-    }
-
-    #[test]
-    fn test_atomic_fetch_add_sub() {
+    fn test_atomic_fetch_add() {
         let mut memory = vec![0u8; 256];
         memory[32..40].copy_from_slice(&10u64.to_le_bytes());
         memory[64..72].copy_from_slice(&5u64.to_le_bytes());
-        memory[72..80].copy_from_slice(&3u64.to_le_bytes());
 
         let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
         let mut unit = MemoryUnit::new(shared.clone());
@@ -3059,23 +2962,13 @@ mod tests {
             offset: 64,
             size: 8,
         };
-        let sub = Action {
-            kind: Kind::AtomicFetchSub,
-            dst: 32,
-            src: 48,
-            offset: 72,
-            size: 8,
-        };
 
         unsafe {
             unit.execute(&add);
-            unit.execute(&sub);
             let final_val = u64::from_le_bytes(shared.read(32, 8)[0..8].try_into().unwrap());
             let prev_add = u64::from_le_bytes(shared.read(40, 8)[0..8].try_into().unwrap());
-            let prev_sub = u64::from_le_bytes(shared.read(48, 8)[0..8].try_into().unwrap());
             assert_eq!(prev_add, 10);
-            assert_eq!(prev_sub, 15);
-            assert_eq!(final_val, 12);
+            assert_eq!(final_val, 15);
         }
     }
 
