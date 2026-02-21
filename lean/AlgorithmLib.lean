@@ -42,10 +42,6 @@ inductive Kind where
   | Wait
   | Dispatch
   | FFICall
-  | HashTableCreate
-  | HashTableInsert
-  | HashTableLookup
-  | HashTableDelete
   deriving Repr
 
 instance : ToJson Kind where
@@ -74,10 +70,6 @@ instance : ToJson Kind where
     | .Wait => "wait"
     | .Dispatch => "dispatch"
     | .FFICall => "f_f_i_call"
-    | .HashTableCreate => "hash_table_create"
-    | .HashTableInsert => "hash_table_insert"
-    | .HashTableLookup => "hash_table_lookup"
-    | .HashTableDelete => "hash_table_delete"
 
 structure Action where
   kind : Kind
@@ -119,7 +111,6 @@ structure UnitSpec where
   file_units : Nat
   memory_units : Nat
   ffi_units : Nat
-  hash_table_units : Nat
   cranelift_units : Nat
   backends_bits : UInt32
   deriving Repr
@@ -131,7 +122,6 @@ instance : ToJson UnitSpec where
     ("file_units", toJson u.file_units),
     ("memory_units", toJson u.memory_units),
     ("ffi_units", toJson u.ffi_units),
-    ("hash_table_units", toJson u.hash_table_units),
     ("cranelift_units", toJson u.cranelift_units),
     ("backends_bits", toJson u.backends_bits)
   ]
@@ -145,7 +135,6 @@ structure Algorithm where
   memory_assignments : List UInt8
   file_assignments : List UInt8
   ffi_assignments : List UInt8
-  hash_table_assignments : List UInt8
   gpu_assignments : List UInt8
   cranelift_assignments : List UInt8
   worker_threads : Option Nat
@@ -165,7 +154,6 @@ instance : ToJson Algorithm where
     ("memory_assignments", toJson alg.memory_assignments),
     ("file_assignments", toJson alg.file_assignments),
     ("ffi_assignments", toJson alg.ffi_assignments),
-    ("hash_table_assignments", toJson alg.hash_table_assignments),
     ("gpu_assignments", toJson alg.gpu_assignments),
     ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),

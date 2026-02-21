@@ -327,7 +327,6 @@ def buildAlgorithm : Algorithm := {
     file_units := 1,
     memory_units := 0,
     ffi_units := 0,
-    hash_table_units := 0,
     cranelift_units := 1,
     backends_bits := 0xFFFFFFFF
   },
@@ -335,7 +334,6 @@ def buildAlgorithm : Algorithm := {
   memory_assignments := [],
   file_assignments := [],
   ffi_assignments := [],
-  hash_table_assignments := [],
   gpu_assignments := [],
   cranelift_assignments := [],
   worker_threads := some 2,

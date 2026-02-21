@@ -360,8 +360,6 @@ fn build_gpu_algorithm(
             file_units: 1,
             memory_units: 0,
             ffi_units: 0,
-            hash_table_units: 0,
-
             cranelift_units: 0,
             backends_bits: 0xFFFF_FFFF,
         },
@@ -369,8 +367,6 @@ fn build_gpu_algorithm(
         memory_assignments: vec![],
         file_assignments: vec![],
         ffi_assignments: vec![],
-        hash_table_assignments: vec![],
-
         gpu_assignments: vec![0; num_actions],
         cranelift_assignments: vec![],
         worker_threads: Some(1),
@@ -584,8 +580,6 @@ fn build_clif_gpu_algorithm(
             file_units: 0,
             memory_units: 0,
             ffi_units: 0,
-            hash_table_units: 0,
-
             cranelift_units: 1,
             backends_bits: 0,
         },
@@ -593,8 +587,6 @@ fn build_clif_gpu_algorithm(
         memory_assignments: vec![],
         file_assignments: vec![],
         ffi_assignments: vec![],
-        hash_table_assignments: vec![],
-
         gpu_assignments: vec![],
         cranelift_assignments: vec![0; num_actions],
         worker_threads: Some(1),

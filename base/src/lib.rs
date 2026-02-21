@@ -9,7 +9,7 @@ mod units;
 
 use crate::units::{
     cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
-    file_unit_task_mailbox, gpu_unit_task_mailbox, hash_table_unit_task_mailbox,
+    file_unit_task_mailbox, gpu_unit_task_mailbox,
     load_sized, memory_unit_task_mailbox,
     order_from_u32, queue_try_push_packet_mp,
     read_null_terminated_string_from_slice, simd_unit_task_mailbox,
@@ -99,7 +99,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         memory_units = algorithm.units.memory_units,
         file_units = algorithm.units.file_units,
         ffi_units = algorithm.units.ffi_units,
-        hash_table_units = algorithm.units.hash_table_units,
         cranelift_units = algorithm.units.cranelift_units,
         actions_count = algorithm.actions.len(),
     ).entered();
@@ -167,22 +166,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         debug!("auto-assigned FFI actions across {} units", algorithm.units.ffi_units);
     }
 
-    if algorithm.hash_table_assignments.is_empty() {
-        algorithm.hash_table_assignments = vec![255; algorithm.actions.len()];
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::HashTableCreate
-                | Kind::HashTableInsert
-                | Kind::HashTableLookup
-                | Kind::HashTableDelete => {
-                    algorithm.hash_table_assignments[i] = 0;
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned hash table actions across {} units", algorithm.units.hash_table_units);
-    }
-
     if algorithm.file_assignments.is_empty() {
         algorithm.file_assignments = vec![255; algorithm.actions.len()];
         let mut unit = 0u8;
@@ -236,7 +219,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let file_assignments = Arc::new(algorithm.file_assignments);
     let ffi_assignments = Arc::new(algorithm.ffi_assignments);
     let memory_assignments = Arc::new(algorithm.memory_assignments);
-    let hash_table_assignments = Arc::new(algorithm.hash_table_assignments);
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
     let gpu_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.gpu_units).map(|_| Arc::new(Mailbox::new())).collect();
@@ -244,7 +226,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
     let ffi_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.ffi_units).map(|_| Arc::new(Mailbox::new())).collect();
     let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
-    let hash_table_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.hash_table_units).map(|_| Arc::new(Mailbox::new())).collect();
     let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
@@ -330,15 +311,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 actions,
                 shared,
             );
-        }));
-    }
-
-    for (hash_table_id, mailbox) in hash_table_mailboxes.iter().cloned().enumerate() {
-        info!(hash_table_id, "spawning hash table unit thread");
-        let actions = actions_arc.clone();
-        let shared = shared.clone();
-        thread_handles.push(std::thread::spawn(move || {
-            hash_table_unit_task_mailbox(mailbox, actions, shared);
         }));
     }
 
@@ -544,25 +516,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                         memory_mailboxes[unit_id].post(start, end, flag);
                     }
-                    7 => {
-                        if hash_table_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = hash_table_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(hash_table_mailboxes.len() - 1)
-                        };
-
-                        hash_table_mailboxes[unit_id].post(start, end, flag);
-                    }
                     9 => {
                         if cranelift_mailboxes.is_empty() {
                             pc += 1;
@@ -708,7 +661,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     let pools: [&[Arc<Mailbox>]; 9] = [
                         &gpu_mailboxes, &simd_mailboxes, &file_mailboxes,
                         &[], &ffi_mailboxes, &[],
-                        &memory_mailboxes, &hash_table_mailboxes, &[],
+                        &memory_mailboxes, &[], &[],
                     ];
                     let t = unit_type as usize;
 
@@ -1024,9 +977,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         mailbox.shutdown();
     }
     for mailbox in memory_mailboxes.iter() {
-        mailbox.shutdown();
-    }
-    for mailbox in hash_table_mailboxes.iter() {
         mailbox.shutdown();
     }
     for mailbox in cranelift_mailboxes.iter() {
