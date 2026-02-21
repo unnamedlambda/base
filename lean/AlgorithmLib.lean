@@ -18,8 +18,7 @@ instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
 inductive Kind where
-  | FileRead
-  | FileWrite
+  | Noop
   | ConditionalJump
   | AsyncDispatch
   | Wait
@@ -35,8 +34,7 @@ inductive Kind where
 
 instance : ToJson Kind where
   toJson
-    | .FileRead => "file_read"
-    | .FileWrite => "file_write"
+    | .Noop => "noop"
     | .ConditionalJump => "conditional_jump"
     | .AsyncDispatch => "async_dispatch"
     | .Wait => "wait"
@@ -67,24 +65,20 @@ instance : ToJson Action where
   ]
 
 structure State where
-  file_buffer_size : Nat
   cranelift_ir_offsets : List Nat
   deriving Repr
 
 instance : ToJson State where
   toJson s := Json.mkObj [
-    ("file_buffer_size", toJson s.file_buffer_size),
     ("cranelift_ir_offsets", toJson s.cranelift_ir_offsets),
   ]
 
 structure UnitSpec where
-  file_units : Nat
   cranelift_units : Nat
   deriving Repr
 
 instance : ToJson UnitSpec where
   toJson u := Json.mkObj [
-    ("file_units", toJson u.file_units),
     ("cranelift_units", toJson u.cranelift_units)
   ]
 
@@ -93,7 +87,6 @@ structure Algorithm where
   payloads : List UInt8
   state : State
   units : UnitSpec
-  file_assignments : List UInt8
   cranelift_assignments : List UInt8
   worker_threads : Option Nat
   blocking_threads : Option Nat
@@ -108,7 +101,6 @@ instance : ToJson Algorithm where
     ("payloads", toJson alg.payloads),
     ("state", toJson alg.state),
     ("units", toJson alg.units),
-    ("file_assignments", toJson alg.file_assignments),
     ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),
     ("blocking_threads", toJson alg.blocking_threads),

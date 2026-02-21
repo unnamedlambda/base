@@ -41,10 +41,8 @@ def RESULT_SLOT     : Nat := 0x3400
 def OUTPUT_BUF      : Nat := 0x4000
 def INPUT_DATA      : Nat := 0x14000
 
-def FILE_UNIT : UInt32 := 2
 def CL_UNIT   : UInt32 := 9
 
-def FILE_BUF_SIZE : Nat := 0x4000000
 def TIMEOUT_MS    : Nat := 300000
 
 -- HT primitives:
@@ -55,8 +53,8 @@ def TIMEOUT_MS    : Nat := 300000
 --
 -- Parse phase: for each word, single ht_increment call.
 -- Format phase: ht_count + loop ht_get_entry → format word\tcount\n.
-def clifIR : String :=
-  "function %wordcount(i64) system_v {\n" ++
+def clifComputeFn : String :=
+  "function u0:1(i64) system_v {\n" ++
   "  sig0 = (i64) -> i32 system_v\n" ++
   "  sig1 = (i64, i64, i32, i64) -> i64 system_v\n" ++
   "  sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
@@ -216,6 +214,35 @@ def clifIR : String :=
   "  return\n" ++
   "}\n"
 
+def clifReadFn : String :=
+  "function u0:0(i64) system_v {\n" ++
+  "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "  fn0 = %cl_file_read sig0\n" ++
+  "block0(v0: i64):\n" ++
+  "  v1 = iconst.i64 80\n" ++        -- INPUT_FILENAME
+  "  v2 = iconst.i64 81920\n" ++     -- INPUT_DATA
+  "  v3 = iconst.i64 0\n" ++
+  "  v4 = iconst.i64 0\n" ++
+  "  v5 = call fn0(v0, v1, v2, v3, v4)\n" ++
+  "  return\n" ++
+  "}\n"
+
+def clifWriteFn : String :=
+  "function u0:2(i64) system_v {\n" ++
+  "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "  fn0 = %cl_file_write sig0\n" ++
+  "block0(v0: i64):\n" ++
+  "  v1 = iconst.i64 336\n" ++       -- OUTPUT_FILENAME
+  "  v2 = iconst.i64 16384\n" ++     -- OUTPUT_BUF
+  "  v3 = iconst.i64 0\n" ++
+  "  v4 = iconst.i64 0\n" ++
+  "  v5 = call fn0(v0, v1, v2, v3, v4)\n" ++
+  "  return\n" ++
+  "}\n"
+
+def clifIR : String :=
+  clifReadFn ++ "\n" ++ clifComputeFn ++ "\n" ++ clifWriteFn
+
 def clifIRBytes : List UInt8 :=
   clifIR.toUTF8.toList ++ [0]
 
@@ -252,24 +279,15 @@ def buildPayload : List UInt8 :=
 def wBase : UInt32 := 6
 
 def workerActions : List Action := [
-  -- W+0: FileRead
-  { kind := .FileRead,
-    src := UInt32.ofNat INPUT_FILENAME,
-    dst := UInt32.ofNat INPUT_DATA,
-    offset := 0, size := 0 },
-  -- W+1: CL fn 0 (wordcount — parse + format)
-  { kind := .FileRead, dst := 0, src := 0, offset := 0, size := 0 },
-  -- W+2: FileWrite
-  { kind := .FileWrite,
-    src := UInt32.ofNat OUTPUT_BUF,
-    dst := UInt32.ofNat OUTPUT_FILENAME,
-    offset := 0, size := 0 }
+  { kind := .Noop, dst := 0, src := 0, offset := 0, size := 0 },
+  { kind := .Noop, dst := 0, src := 1, offset := 0, size := 0 },
+  { kind := .Noop, dst := 0, src := 2, offset := 0, size := 0 }
 ]
 
 def controlActions : List Action := [
-  -- 0: Dispatch FileRead
+  -- 0: Dispatch CLIF file-read
   { kind := .AsyncDispatch,
-    dst := FILE_UNIT,
+    dst := CL_UNIT,
     src := wBase,
     offset := UInt32.ofNat FLAG_FILE,
     size := 1 },
@@ -277,7 +295,7 @@ def controlActions : List Action := [
   { kind := .Wait,
     dst := UInt32.ofNat FLAG_FILE,
     src := 0, offset := 0, size := 0 },
-  -- 2: Dispatch CL
+  -- 2: Dispatch CLIF compute
   { kind := .AsyncDispatch,
     dst := CL_UNIT,
     src := wBase + 1,
@@ -287,9 +305,9 @@ def controlActions : List Action := [
   { kind := .Wait,
     dst := UInt32.ofNat FLAG_CL,
     src := 0, offset := 0, size := 0 },
-  -- 4: Dispatch FileWrite
+  -- 4: Dispatch CLIF file-write
   { kind := .AsyncDispatch,
-    dst := FILE_UNIT,
+    dst := CL_UNIT,
     src := wBase + 2,
     offset := UInt32.ofNat FLAG_FILE,
     size := 1 },
@@ -303,14 +321,11 @@ def buildAlgorithm : Algorithm := {
   actions := controlActions ++ workerActions,
   payloads := buildPayload,
   state := {
-    file_buffer_size := FILE_BUF_SIZE,
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    file_units := 1,
     cranelift_units := 1,
   },
-  file_assignments := [],
   cranelift_assignments := [],
   worker_threads := some 2,
   blocking_threads := some 2,

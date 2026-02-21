@@ -33,10 +33,8 @@ def OUTPUT_BUF      : Nat := 0x0350
 def CLIF_IR_OFF     : Nat := 0x0400
 def INPUT_DATA      : Nat := 0x4000
 
-def FILE_UNIT : UInt32 := 2
 def CL_UNIT   : UInt32 := 9
 
-def FILE_BUF_SIZE : Nat := 0x4000000
 def TIMEOUT_MS    : Nat := 300000
 
 /-
@@ -50,8 +48,8 @@ def TIMEOUT_MS    : Nat := 300000
   For each match: verify remaining 7 bytes via single i64 load+compare (bytes 1-8).
   On full match, parse digits with unsigned range check.
 -/
-def clifIR : String :=
-  "function %json_sum(i64) system_v {\n" ++
+def clifComputeFn : String :=
+  "function u0:1(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
   "  v1 = load.i32 v0+592\n" ++             -- FILE_SIZE (0x250)
   "  v2 = sextend.i64 v1\n" ++
@@ -170,6 +168,35 @@ def clifIR : String :=
   "  return\n" ++
   "}\n"
 
+def clifReadFn : String :=
+  "function u0:0(i64) system_v {\n" ++
+  "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "  fn0 = %cl_file_read sig0\n" ++
+  "block0(v0: i64):\n" ++
+  "  v1 = iconst.i64 32\n" ++        -- INPUT_FILENAME
+  "  v2 = iconst.i64 16384\n" ++     -- INPUT_DATA
+  "  v3 = iconst.i64 0\n" ++
+  "  v4 = iconst.i64 0\n" ++
+  "  v5 = call fn0(v0, v1, v2, v3, v4)\n" ++
+  "  return\n" ++
+  "}\n"
+
+def clifWriteFn : String :=
+  "function u0:2(i64) system_v {\n" ++
+  "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "  fn0 = %cl_file_write sig0\n" ++
+  "block0(v0: i64):\n" ++
+  "  v1 = iconst.i64 288\n" ++       -- OUTPUT_FILENAME
+  "  v2 = iconst.i64 848\n" ++       -- OUTPUT_BUF
+  "  v3 = iconst.i64 0\n" ++
+  "  v4 = iconst.i64 0\n" ++
+  "  v5 = call fn0(v0, v1, v2, v3, v4)\n" ++
+  "  return\n" ++
+  "}\n"
+
+def clifIR : String :=
+  clifReadFn ++ "\n" ++ clifComputeFn ++ "\n" ++ clifWriteFn
+
 def clifIRBytes : List UInt8 :=
   clifIR.toUTF8.toList ++ [0]
 
@@ -197,27 +224,21 @@ def buildPayload : List UInt8 :=
     irBytes ++ padding
 
 def workerActions : List Action := [
-  { kind := .FileRead,
-    src := UInt32.ofNat INPUT_FILENAME,
-    dst := UInt32.ofNat INPUT_DATA,
-    offset := 0, size := 0 },
-  { kind := .FileRead, dst := 0, src := 0, offset := 0, size := 0 },
-  { kind := .FileWrite,
-    src := UInt32.ofNat OUTPUT_BUF,
-    dst := UInt32.ofNat OUTPUT_FILENAME,
-    offset := 0, size := 0 }
+  { kind := .Noop, dst := 0, src := 0, offset := 0, size := 0 },
+  { kind := .Noop, dst := 0, src := 1, offset := 0, size := 0 },
+  { kind := .Noop, dst := 0, src := 2, offset := 0, size := 0 }
 ]
 
 def controlActions : List Action :=
   let wBase : UInt32 := 6
   [
-    { kind := .AsyncDispatch, dst := FILE_UNIT, src := wBase,
+    { kind := .AsyncDispatch, dst := CL_UNIT, src := wBase,
       offset := UInt32.ofNat FLAG_FILE, size := 1 },
     { kind := .Wait, dst := UInt32.ofNat FLAG_FILE, src := 0, offset := 0, size := 0 },
     { kind := .AsyncDispatch, dst := CL_UNIT, src := wBase + 1,
       offset := UInt32.ofNat FLAG_CL, size := 1 },
     { kind := .Wait, dst := UInt32.ofNat FLAG_CL, src := 0, offset := 0, size := 0 },
-    { kind := .AsyncDispatch, dst := FILE_UNIT, src := wBase + 2,
+    { kind := .AsyncDispatch, dst := CL_UNIT, src := wBase + 2,
       offset := UInt32.ofNat FLAG_FILE, size := 1 },
     { kind := .Wait, dst := UInt32.ofNat FLAG_FILE, src := 0, offset := 0, size := 0 }
   ]
@@ -226,14 +247,12 @@ def buildAlgorithm : Algorithm := {
   actions := controlActions ++ workerActions,
   payloads := buildPayload,
   state := {
-    file_buffer_size := FILE_BUF_SIZE,
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    file_units := 1,
     cranelift_units := 1,
   },
-  file_assignments := [], cranelift_assignments := [],
+  cranelift_assignments := [],
   worker_threads := some 2, blocking_threads := some 2,
   stack_size := none, timeout_ms := some TIMEOUT_MS,
   thread_name_prefix := some "json-bench"

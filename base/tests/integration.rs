@@ -3,40 +3,11 @@ use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 use std::fs;
 use tempfile::TempDir;
 
-fn create_test_algorithm(
-    actions: Vec<Action>,
-    payloads: Vec<u8>,
-    file_units: usize,
-) -> Algorithm {
-    let num_actions = actions.len();
-
-    Algorithm {
-        actions,
-        payloads,
-        state: State {
-            file_buffer_size: 65536,
-            cranelift_ir_offsets: vec![],
-        },
-        units: UnitSpec {
-            file_units,
-            cranelift_units: 0,
-        },
-        file_assignments: vec![0; num_actions],
-        cranelift_assignments: vec![],
-        worker_threads: None,
-        blocking_threads: None,
-        stack_size: None,
-        timeout_ms: Some(5000),
-        thread_name_prefix: None,
-    }
-}
-
 fn create_cranelift_algorithm(
     actions: Vec<Action>,
     payloads: Vec<u8>,
     cranelift_units: usize,
     cranelift_ir_offsets: Vec<usize>,
-    with_file: bool,
 ) -> Algorithm {
     let num_actions = actions.len();
 
@@ -44,14 +15,11 @@ fn create_cranelift_algorithm(
         actions,
         payloads,
         state: State {
-            file_buffer_size: if with_file { 65536 } else { 0 },
             cranelift_ir_offsets,
         },
         units: UnitSpec {
-            file_units: if with_file { 1 } else { 0 },
             cranelift_units,
         },
-        file_assignments: if with_file { vec![0; num_actions] } else { vec![] },
         cranelift_assignments: vec![0; num_actions],
         worker_threads: None,
         blocking_threads: None,
@@ -66,105 +34,73 @@ fn test_integration_conditional_jump() {
     let temp_dir = TempDir::new().unwrap();
     let test_file_a = temp_dir.path().join("result_a.txt");
     let test_file_b = temp_dir.path().join("result_b.txt");
-    let test_file_a_str = test_file_a.to_str().unwrap();
-    let test_file_b_str = test_file_b.to_str().unwrap();
+    let file_a_str = format!("{}\0", test_file_a.to_str().unwrap());
+    let file_b_str = format!("{}\0", test_file_b.to_str().unwrap());
 
-    let mut payloads = vec![0u8; 1024];
+    // Two CLIF functions: fn0 writes to file A, fn1 writes to file B
+    // Both write 8 bytes from offset 3016 (data value 42)
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3016
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}
 
-    // Setup filename A with null terminator
-    let filename_a_bytes = format!("{}\0", test_file_a_str).into_bytes();
-    payloads[0..filename_a_bytes.len()].copy_from_slice(&filename_a_bytes);
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2256
+    v2 = iconst.i64 3016
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
-    // Setup filename B with null terminator
-    let filename_b_bytes = format!("{}\0", test_file_b_str).into_bytes();
-    payloads[256..256 + filename_b_bytes.len()].copy_from_slice(&filename_b_bytes);
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + file_a_str.len()].copy_from_slice(file_a_str.as_bytes());
+    payloads[2256..2256 + file_b_str.len()].copy_from_slice(file_b_str.as_bytes());
+    // Conditions: 1 (true) and 0 (false)
+    payloads[3000..3008].copy_from_slice(&1u64.to_le_bytes());
+    payloads[3008..3016].copy_from_slice(&0u64.to_le_bytes());
+    // Data value
+    payloads[3016..3024].copy_from_slice(&42u64.to_le_bytes());
 
-    // Setup conditions: 1 (true) and 0 (false) as u64
-    payloads[512..520].copy_from_slice(&1u64.to_le_bytes());
-    payloads[520..528].copy_from_slice(&0u64.to_le_bytes());
-
-    // Setup data value
-    payloads[528..536].copy_from_slice(&42u64.to_le_bytes());
-
-    // Completion flags
-    let flag_a = 600u32;
-    let flag_b = 608u32;
+    let flag_a = 1024u32;
+    let flag_b = 1032u32;
 
     let actions = vec![
-        // Action 0: FileWrite to path A (data action, dispatched by index)
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 528,
-            offset: 0,
-            size: 8,
-        },
-        // Action 1: FileWrite to path B (data action, dispatched by index)
-        Action {
-            kind: Kind::FileWrite,
-            dst: 256,
-            src: 528,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: ConditionalJump with true condition (should jump to action 5)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 512,
-            dst: 5,   // Jump to second ConditionalJump (skip FileWrite A dispatch)
-            offset: 0,
-            size: 0,
-        },
-        // Action 3: AsyncDispatch FileWrite A (SKIPPED - jumped over)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,      // file unit
-            src: 0,      // action index 0 (FileWrite A)
-            offset: flag_a,
-            size: 0,
-        },
-        // Action 4: Wait for FileWrite A (SKIPPED)
-        Action {
-            kind: Kind::Wait,
-            dst: flag_a,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 5: ConditionalJump with false condition (should fall through to action 6)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 520,
-            dst: 99,
-            offset: 0,
-            size: 0,
-        },
-        // Action 6: AsyncDispatch FileWrite B (EXECUTED - fell through)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,      // file unit
-            src: 1,      // action index 1 (FileWrite B)
-            offset: flag_b,
-            size: 0,
-        },
-        // Action 7: Wait for FileWrite B
-        Action {
-            kind: Kind::Wait,
-            dst: flag_b,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        // Action 0: CLIF fn0 writes file A (dispatched by src=0)
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        // Action 1: CLIF fn1 writes file B (dispatched by src=1)
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        // Action 2: ConditionalJump — condition true → jump to 5 (skip A dispatch)
+        Action { kind: Kind::ConditionalJump, src: 3000, dst: 5, offset: 0, size: 0 },
+        // Action 3: AsyncDispatch CLIF fn0 (SKIPPED)
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: flag_a, size: 0 },
+        // Action 4: Wait (SKIPPED)
+        Action { kind: Kind::Wait, dst: flag_a, src: 0, offset: 0, size: 0 },
+        // Action 5: ConditionalJump — condition false → fall through
+        Action { kind: Kind::ConditionalJump, src: 3008, dst: 99, offset: 0, size: 0 },
+        // Action 6: AsyncDispatch CLIF fn1 (EXECUTED)
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: flag_b, size: 0 },
+        // Action 7: Wait
+        Action { kind: Kind::Wait, dst: flag_b, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1);
-
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
-    // Verify: File A should NOT exist (skipped)
     assert!(!test_file_a.exists());
-
-    // Verify: File B should exist with value 42
     assert!(test_file_b.exists());
     let contents = fs::read(&test_file_b).unwrap();
     let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -173,625 +109,124 @@ fn test_integration_conditional_jump() {
 
 #[test]
 fn test_integration_conditional_jump_variable_size() {
-    // Tests that ConditionalJump respects the size field
-    // When size=4, only check first 4 bytes; when size=8 (or 0), check all 8
+    // size=4 checks only first 4 bytes; size=8 checks all 8
     let temp_dir = TempDir::new().unwrap();
     let test_file_4byte = temp_dir.path().join("result_4byte.txt");
     let test_file_8byte = temp_dir.path().join("result_8byte.txt");
-    let test_file_4byte_str = test_file_4byte.to_str().unwrap();
-    let test_file_8byte_str = test_file_8byte.to_str().unwrap();
+    let file_4_str = format!("{}\0", test_file_4byte.to_str().unwrap());
+    let file_8_str = format!("{}\0", test_file_8byte.to_str().unwrap());
 
-    let mut payloads = vec![0u8; 1024];
+    // Two CLIF functions: fn0 writes to 4byte file, fn1 writes to 8byte file
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3016
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}
 
-    // Setup filenames
-    let filename_4byte_bytes = format!("{}\0", test_file_4byte_str).into_bytes();
-    payloads[0..filename_4byte_bytes.len()].copy_from_slice(&filename_4byte_bytes);
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2256
+    v2 = iconst.i64 3016
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
-    let filename_8byte_bytes = format!("{}\0", test_file_8byte_str).into_bytes();
-    payloads[256..256 + filename_8byte_bytes.len()].copy_from_slice(&filename_8byte_bytes);
-
-    // Condition at 512: first 4 bytes are 0, next 4 bytes are non-zero
-    // This means: size=4 check sees FALSE (no jump), size=8 check sees TRUE (jump)
-    payloads[512..516].copy_from_slice(&0u32.to_le_bytes());      // bytes 0-3: zero
-    payloads[516..520].copy_from_slice(&0xFFu32.to_le_bytes());   // bytes 4-7: non-zero
-
+    let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + file_4_str.len()].copy_from_slice(file_4_str.as_bytes());
+    payloads[2256..2256 + file_8_str.len()].copy_from_slice(file_8_str.as_bytes());
+    // Condition at 3000: first 4 bytes zero, next 4 non-zero
+    payloads[3000..3004].copy_from_slice(&0u32.to_le_bytes());
+    payloads[3004..3008].copy_from_slice(&0xFFu32.to_le_bytes());
     // Data value
-    payloads[528..536].copy_from_slice(&99u64.to_le_bytes());
+    payloads[3016..3024].copy_from_slice(&99u64.to_le_bytes());
 
-    let flag_4byte = 600u32;
-    let flag_8byte = 608u32;
+    let flag_4 = 1024u32;
+    let flag_8 = 1032u32;
 
     let actions = vec![
-        // Action 0: FileWrite for 4-byte test
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 528,
-            offset: 0,
-            size: 8,
-        },
-        // Action 1: FileWrite for 8-byte test
-        Action {
-            kind: Kind::FileWrite,
-            dst: 256,
-            src: 528,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: ConditionalJump with size=4 (checks only first 4 bytes = 0, should NOT jump)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 512,
-            dst: 5,   // Would skip the FileWrite dispatch
-            offset: 0,
-            size: 4,  // Only check 4 bytes - they're all zero, so fall through
-        },
-        // Action 3: AsyncDispatch FileWrite 4-byte (EXECUTED - did not jump because size=4 saw zeros)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 0,
-            offset: flag_4byte,
-            size: 0,
-        },
+        // Action 0: CLIF fn0 writes 4byte file
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        // Action 1: CLIF fn1 writes 8byte file
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        // Action 2: ConditionalJump size=4 (first 4 bytes zero → no jump)
+        Action { kind: Kind::ConditionalJump, src: 3000, dst: 5, offset: 0, size: 4 },
+        // Action 3: AsyncDispatch CLIF fn0 (EXECUTED)
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: flag_4, size: 0 },
         // Action 4: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: flag_4byte,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 5: ConditionalJump with size=8 (checks all 8 bytes, sees non-zero, should jump)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 512,
-            dst: 8,   // Jump over the FileWrite dispatch
-            offset: 0,
-            size: 8,  // Check all 8 bytes - bytes 4-7 are non-zero, so jump
-        },
-        // Action 6: AsyncDispatch FileWrite 8-byte (SKIPPED - jumped over)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: flag_8byte,
-            size: 0,
-        },
+        Action { kind: Kind::Wait, dst: flag_4, src: 0, offset: 0, size: 0 },
+        // Action 5: ConditionalJump size=8 (bytes 4-7 non-zero → jump)
+        Action { kind: Kind::ConditionalJump, src: 3000, dst: 8, offset: 0, size: 8 },
+        // Action 6: AsyncDispatch CLIF fn1 (SKIPPED)
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: flag_8, size: 0 },
         // Action 7: Wait (SKIPPED)
-        Action {
-            kind: Kind::Wait,
-            dst: flag_8byte,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 8: End
+        Action { kind: Kind::Wait, dst: flag_8, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1);
-
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
-    // Verify: 4-byte file SHOULD exist (size=4 saw zeros, didn't jump, wrote file)
     assert!(test_file_4byte.exists(), "4-byte check should NOT jump when first 4 bytes are zero");
     let contents = fs::read(&test_file_4byte).unwrap();
     let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(value, 99);
 
-    // Verify: 8-byte file should NOT exist (size=8 saw non-zero in bytes 4-7, jumped over write)
     assert!(!test_file_8byte.exists(), "8-byte check SHOULD jump when any of 8 bytes are non-zero");
-}
-
-#[test]
-fn test_integration_file_roundtrip() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("source.txt");
-    let verify_file = temp_dir.path().join("verify.txt");
-    let test_file_str = test_file.to_str().unwrap();
-    let verify_file_str = verify_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 1024];
-
-    // Setup source filename with null terminator
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Setup verify filename with null terminator
-    let verify_filename_bytes = format!("{}\0", verify_file_str).into_bytes();
-    payloads[512..512 + verify_filename_bytes.len()].copy_from_slice(&verify_filename_bytes);
-
-    // Setup source data (value 99)
-    payloads[256..264].copy_from_slice(&99u64.to_le_bytes());
-
-    // Completion flags
-    let flag1 = 800u32;
-    let flag2 = 808u32;
-    let flag3 = 816u32;
-
-    let actions = vec![
-        // Action 0: FileWrite initial value to file
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 256,
-            offset: 0,
-            size: 8,
-        },
-        // Action 1: FileRead file into buffer
-        Action {
-            kind: Kind::FileRead,
-            src: 0,
-            dst: 264,
-            offset: 0,  // file byte offset (read from start)
-            size: 8,
-        },
-        // Action 2: FileWrite buffer to verification file
-        Action {
-            kind: Kind::FileWrite,
-            dst: 512,
-            src: 264,
-            offset: 0,
-            size: 8,
-        },
-        // Action 3: AsyncDispatch FileWrite 1
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2, src: 0, offset: flag1, size: 0,
-        },
-        // Action 4: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: flag1, src: 0, offset: 0, size: 0,
-        },
-        // Action 5: AsyncDispatch FileRead
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2, src: 1, offset: flag2, size: 0,
-        },
-        // Action 6: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: flag2, src: 0, offset: 0, size: 0,
-        },
-        // Action 7: AsyncDispatch FileWrite 2
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2, src: 2, offset: flag3, size: 0,
-        },
-        // Action 8: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: flag3, src: 0, offset: 0, size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1);
-
-    execute(algorithm).unwrap();
-
-    // Verify: Source file exists with value 99
-    assert!(test_file.exists());
-    let source_contents = fs::read(&test_file).unwrap();
-    let source_value = u64::from_le_bytes(source_contents[0..8].try_into().unwrap());
-    assert_eq!(source_value, 99);
-
-    // Verify: Verification file exists with value 99 (read from source)
-    assert!(verify_file.exists());
-    let verify_contents = fs::read(&verify_file).unwrap();
-    let verify_value = u64::from_le_bytes(verify_contents[0..8].try_into().unwrap());
-    assert_eq!(verify_value, 99);
-}
-
-#[test]
-fn test_integration_filewrite_null_terminated() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("null_term_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 1024];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Setup null-terminated string data at offset 256
-    let test_string = b"Hello, World!";
-    payloads[256..256 + test_string.len()].copy_from_slice(test_string);
-    payloads[256 + test_string.len()] = 0; // null terminator
-    // Add garbage after null to verify it stops at null
-    let garbage = b"GARBAGE";
-    payloads[256 + test_string.len() + 1..256 + test_string.len() + 1 + garbage.len()]
-        .copy_from_slice(garbage);
-
-    let file_flag = 512u32;
-
-    let actions = vec![
-        // Action 0: FileWrite with size=0 triggers null-terminated mode
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 256,
-            offset: 0,
-            size: 0, // size=0 means write until null byte
-        },
-        // Action 1: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 0,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 2: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "Null-terminated write result should exist");
-    let contents = fs::read(&result_file).unwrap();
-
-    // Should only contain "Hello, World!" without the null or garbage
-    assert_eq!(
-        contents,
-        test_string,
-        "FileWrite size=0 should write until null byte, not including garbage"
-    );
-}
-
-#[test]
-fn test_integration_file_read_with_offset() {
-    // Test FileRead with offset parameter for chunked file reading
-    let temp_dir = TempDir::new().unwrap();
-    let input_file = temp_dir.path().join("large_input.txt");
-    let result1_file = temp_dir.path().join("chunk1.txt");
-    let result2_file = temp_dir.path().join("chunk2.txt");
-    let result3_file = temp_dir.path().join("chunk3.txt");
-
-    // Create a large input file with known content
-    let full_content = b"AAAAAABBBBBBCCCCCCDDDDDDEEEEEEFFFFFFGGGGGG"; // 42 bytes
-    fs::write(&input_file, full_content).unwrap();
-
-    let input_path_str = input_file.to_str().unwrap();
-    let result1_path_str = result1_file.to_str().unwrap();
-    let result2_path_str = result2_file.to_str().unwrap();
-    let result3_path_str = result3_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-
-    // Store input filename at offset 0
-    let input_bytes = format!("{}\0", input_path_str).into_bytes();
-    payloads[0..input_bytes.len()].copy_from_slice(&input_bytes);
-
-    // Store output filenames
-    let result1_bytes = format!("{}\0", result1_path_str).into_bytes();
-    payloads[256..256 + result1_bytes.len()].copy_from_slice(&result1_bytes);
-
-    let result2_bytes = format!("{}\0", result2_path_str).into_bytes();
-    payloads[512..512 + result2_bytes.len()].copy_from_slice(&result2_bytes);
-
-    let result3_bytes = format!("{}\0", result3_path_str).into_bytes();
-    payloads[768..768 + result3_bytes.len()].copy_from_slice(&result3_bytes);
-
-    // Data buffers for each chunk at 1024, 1038, 1052
-    let flag1 = 1536u32;
-    let flag2 = 1544u32;
-    let flag3 = 1552u32;
-    let flag4 = 1560u32;
-    let flag5 = 1568u32;
-    let flag6 = 1576u32;
-
-    let actions = vec![
-        // Action 0: Read first 14 bytes (offset 0)
-        Action {
-            kind: Kind::FileRead,
-            src: 0,           // input filename
-            dst: 1024,        // destination buffer 1
-            offset: 0,        // read from byte 0
-            size: 14,
-        },
-        // Action 1: Read middle 14 bytes (offset 14)
-        Action {
-            kind: Kind::FileRead,
-            src: 0,
-            dst: 1038,        // destination buffer 2
-            offset: 14,       // read from byte 14
-            size: 14,
-        },
-        // Action 2: Read last 14 bytes (offset 28)
-        Action {
-            kind: Kind::FileRead,
-            src: 0,
-            dst: 1052,        // destination buffer 3
-            offset: 28,       // read from byte 28
-            size: 14,
-        },
-        // Action 3: Write chunk 1
-        Action {
-            kind: Kind::FileWrite,
-            dst: 256,
-            src: 1024,
-            offset: 0,
-            size: 14,
-        },
-        // Action 4: Write chunk 2
-        Action {
-            kind: Kind::FileWrite,
-            dst: 512,
-            src: 1038,
-            offset: 0,
-            size: 14,
-        },
-        // Action 5: Write chunk 3
-        Action {
-            kind: Kind::FileWrite,
-            dst: 768,
-            src: 1052,
-            offset: 0,
-            size: 14,
-        },
-        // Action 6-17: AsyncDispatch + Wait for each read and write
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 0,
-            offset: flag1,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag1,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: flag2,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag2,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 2,
-            offset: flag3,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag3,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 3,
-            offset: flag4,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag4,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 4,
-            offset: flag5,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag5,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 5,
-            offset: flag6,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag6,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1);
-    execute(algorithm).unwrap();
-
-    // Verify each chunk was written correctly
-    assert!(result1_file.exists(), "Chunk 1 should exist");
-    assert!(result2_file.exists(), "Chunk 2 should exist");
-    assert!(result3_file.exists(), "Chunk 3 should exist");
-
-    let chunk1 = fs::read(&result1_file).unwrap();
-    let chunk2 = fs::read(&result2_file).unwrap();
-    let chunk3 = fs::read(&result3_file).unwrap();
-
-    assert_eq!(chunk1, b"AAAAAABBBBBBCC", "Chunk 1: bytes 0-14");
-    assert_eq!(chunk2, b"CCCCDDDDDDEEEE", "Chunk 2: bytes 14-28");
-    assert_eq!(chunk3, b"EEFFFFFFGGGGGG", "Chunk 3: bytes 28-42");
-}
-
-#[test]
-fn test_integration_file_write_with_offset() {
-    // Test FileWrite with offset parameter for chunked file writing
-    let temp_dir = TempDir::new().unwrap();
-    let output_file = temp_dir.path().join("chunked_output.txt");
-
-    let output_path_str = output_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-
-    // Store output filename at offset 0
-    let output_bytes = format!("{}\0", output_path_str).into_bytes();
-    payloads[0..output_bytes.len()].copy_from_slice(&output_bytes);
-
-    // Data chunks to write at 512, 526, 540
-    payloads[512..526].copy_from_slice(b"AAAAAABBBBBBCC"); // 14 bytes
-    payloads[526..540].copy_from_slice(b"DDDDDDEEEEEEEE"); // 14 bytes
-    payloads[540..554].copy_from_slice(b"FFFFFFGGGGGGGG"); // 14 bytes
-
-    let flag1 = 1536u32;
-    let flag2 = 1544u32;
-    let flag3 = 1552u32;
-
-    let actions = vec![
-        // Action 0: Write first chunk at byte 0
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,           // filename
-            src: 512,         // data chunk 1
-            offset: 0,        // write to byte 0 (creates file)
-            size: 14,
-        },
-        // Action 1: Write second chunk at byte 14
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 526,         // data chunk 2
-            offset: 14,       // write to byte 14 (append mode)
-            size: 14,
-        },
-        // Action 2: Write third chunk at byte 28
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 540,         // data chunk 3
-            offset: 28,       // write to byte 28 (append mode)
-            size: 14,
-        },
-        // Action 3-8: AsyncDispatch + Wait for each write
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 0,
-            offset: flag1,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag1,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: flag2,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag2,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 2,
-            offset: flag3,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: flag3,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1);
-    execute(algorithm).unwrap();
-
-    // Verify the output file has all chunks written at correct positions
-    assert!(output_file.exists(), "Output file should exist");
-
-    let contents = fs::read(&output_file).unwrap();
-    assert_eq!(contents, b"AAAAAABBBBBBCCDDDDDDEEEEEEEEFFFFFFGGGGGGGG", "All chunks concatenated");
 }
 
 #[test]
 fn test_cranelift_basic_compilation() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("cranelift_basic.txt");
-    let test_file_str = test_file.to_str().unwrap();
+    let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
+    // No-op CLIF + verify fn that writes data_offset(8 bytes) to file
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     return
-}
-"#;
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 2000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
-
-    // Store CLIF IR at offset 0 (null-terminated)
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    let cranelift_flag = 1024u32;
-    let file_flag = 1032u32;
-    let data_offset = 2000usize;
-
-    // Store test value
-    payloads[data_offset..data_offset + 8].copy_from_slice(&42u64.to_le_bytes());
-
-    // Filename at offset 3000
-    let filename_offset = 3000usize;
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[filename_offset..filename_offset + filename_bytes.len()]
-        .copy_from_slice(&filename_bytes);
+    payloads[2000..2008].copy_from_slice(&42u64.to_le_bytes());
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        // Action 0: Cranelift executes (no-op, just tests compilation)
-        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
-        // Action 1: FileWrite to verify we got here
-        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: data_offset as u32, offset: 0, size: 8 },
-        // Action 2: AsyncDispatch Cranelift
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
-        // Action 3: Wait for Cranelift
-        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
-        // Action 4: AsyncDispatch FileWrite
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
-        // Action 5: Wait for FileWrite
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -804,49 +239,50 @@ block0(v0: i64):
 fn test_cranelift_arithmetic_add() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("cranelift_add.txt");
-    let test_file_str = test_file.to_str().unwrap();
+    let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
+    // fn0: add, fn1: write result to file
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 v0
     v2 = load.i64 v0+8
     v3 = iadd v1, v2
     store.i64 v3, v0+16
     return
-}
-"#;
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 2016
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
-
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    let cranelift_flag = 1024u32;
-    let file_flag = 1032u32;
-    let data_offset = 2000usize;
-
-    // Input values: 100 + 200
-    payloads[data_offset..data_offset + 8].copy_from_slice(&100u64.to_le_bytes());
-    payloads[data_offset + 8..data_offset + 16].copy_from_slice(&200u64.to_le_bytes());
-
-    let filename_offset = 3000usize;
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[filename_offset..filename_offset + filename_bytes.len()]
-        .copy_from_slice(&filename_bytes);
+    payloads[2000..2008].copy_from_slice(&100u64.to_le_bytes());
+    payloads[2008..2016].copy_from_slice(&200u64.to_le_bytes());
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 16) as u32, offset: 0, size: 8 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
-    assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(result, 300);
@@ -856,49 +292,49 @@ block0(v0: i64):
 fn test_cranelift_arithmetic_multiply() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("cranelift_mul.txt");
-    let test_file_str = test_file.to_str().unwrap();
+    let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 v0
     v2 = load.i64 v0+8
     v3 = imul v1, v2
     store.i64 v3, v0+16
     return
-}
-"#;
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 2016
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
-
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    let cranelift_flag = 1024u32;
-    let file_flag = 1032u32;
-    let data_offset = 2000usize;
-
-    // Input values: 7 * 9
-    payloads[data_offset..data_offset + 8].copy_from_slice(&7u64.to_le_bytes());
-    payloads[data_offset + 8..data_offset + 16].copy_from_slice(&9u64.to_le_bytes());
-
-    let filename_offset = 3000usize;
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[filename_offset..filename_offset + filename_bytes.len()]
-        .copy_from_slice(&filename_bytes);
+    payloads[2000..2008].copy_from_slice(&7u64.to_le_bytes());
+    payloads[2008..2016].copy_from_slice(&9u64.to_le_bytes());
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 16) as u32, offset: 0, size: 8 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
-    assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(result, 63);
@@ -908,9 +344,10 @@ block0(v0: i64):
 fn test_cranelift_memory_operations() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("cranelift_mem.txt");
-    let test_file_str = test_file.to_str().unwrap();
+    let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     v1 = load.i32 v0
     v2 = load.i32 v0+4
@@ -919,41 +356,40 @@ block0(v0: i64):
     v5 = iadd v4, v3
     store.i32 v5, v0+12
     return
-}
-"#;
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 2012
+    v3 = iconst.i64 0
+    v4 = iconst.i64 4
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
-
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    let cranelift_flag = 1024u32;
-    let file_flag = 1032u32;
-    let data_offset = 2000usize;
-
-    // Input values: 10 + 20 + 30 = 60
-    payloads[data_offset..data_offset + 4].copy_from_slice(&10u32.to_le_bytes());
-    payloads[data_offset + 4..data_offset + 8].copy_from_slice(&20u32.to_le_bytes());
-    payloads[data_offset + 8..data_offset + 12].copy_from_slice(&30u32.to_le_bytes());
-
-    let filename_offset = 3000usize;
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[filename_offset..filename_offset + filename_bytes.len()]
-        .copy_from_slice(&filename_bytes);
+    payloads[2000..2004].copy_from_slice(&10u32.to_le_bytes());
+    payloads[2004..2008].copy_from_slice(&20u32.to_le_bytes());
+    payloads[2008..2012].copy_from_slice(&30u32.to_le_bytes());
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 12) as u32, offset: 0, size: 4 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
-    assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
     let result = u32::from_le_bytes(contents[0..4].try_into().unwrap());
     assert_eq!(result, 60);
@@ -964,124 +400,111 @@ fn test_cranelift_multiple_units() {
     let temp_dir = TempDir::new().unwrap();
     let test_file1 = temp_dir.path().join("unit1_add.txt");
     let test_file2 = temp_dir.path().join("unit2_mul.txt");
-    let test_file1_str = test_file1.to_str().unwrap();
-    let test_file2_str = test_file2.to_str().unwrap();
+    let file1_str = format!("{}\0", test_file1.to_str().unwrap());
+    let file2_str = format!("{}\0", test_file2.to_str().unwrap());
 
-    let clif_ir1 = r#"function u0:0(i64) system_v {
+    // Unit 0: add + write result to file1
+    let clif_ir1 = format!(
+r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 v0
     v2 = load.i64 v0+8
     v3 = iadd v1, v2
     store.i64 v3, v0+16
     return
-}
-"#;
+}}
 
-    let clif_ir2 = r#"function u0:0(i64) system_v {
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 2016
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
+
+    // Unit 1: multiply + write result to file2
+    let clif_ir2 = format!(
+r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 v0
     v2 = load.i64 v0+8
     v3 = imul v1, v2
     store.i64 v3, v0+16
     return
-}
-"#;
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3200
+    v2 = iconst.i64 2116
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 8192];
-
-    // Store both CLIF IRs
     let clif1_bytes = format!("{}\0", clif_ir1).into_bytes();
     payloads[0..clif1_bytes.len()].copy_from_slice(&clif1_bytes);
-
-    let ir2_offset = 600usize;
+    let ir2_offset = 1200usize;
     let clif2_bytes = format!("{}\0", clif_ir2).into_bytes();
     payloads[ir2_offset..ir2_offset + clif2_bytes.len()].copy_from_slice(&clif2_bytes);
 
-    // Unit 1 data: 5 + 3 = 8
-    let data1_offset = 2000usize;
-    payloads[data1_offset..data1_offset + 8].copy_from_slice(&5u64.to_le_bytes());
-    payloads[data1_offset + 8..data1_offset + 16].copy_from_slice(&3u64.to_le_bytes());
-
-    // Unit 2 data: 4 * 6 = 24
-    let data2_offset = 2100usize;
-    payloads[data2_offset..data2_offset + 8].copy_from_slice(&4u64.to_le_bytes());
-    payloads[data2_offset + 8..data2_offset + 16].copy_from_slice(&6u64.to_le_bytes());
-
+    // Unit 0 data: 5 + 3 = 8 at offset 2000
+    payloads[2000..2008].copy_from_slice(&5u64.to_le_bytes());
+    payloads[2008..2016].copy_from_slice(&3u64.to_le_bytes());
+    // Unit 1 data: 4 * 6 = 24 at offset 2100
+    payloads[2100..2108].copy_from_slice(&4u64.to_le_bytes());
+    payloads[2108..2116].copy_from_slice(&6u64.to_le_bytes());
     // Filenames
-    let file1_offset = 3000usize;
-    let file1_bytes = format!("{}\0", test_file1_str).into_bytes();
-    payloads[file1_offset..file1_offset + file1_bytes.len()].copy_from_slice(&file1_bytes);
-
-    let file2_offset = 3200usize;
-    let file2_bytes = format!("{}\0", test_file2_str).into_bytes();
-    payloads[file2_offset..file2_offset + file2_bytes.len()].copy_from_slice(&file2_bytes);
+    payloads[3000..3000 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
+    payloads[3200..3200 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
 
     let actions = vec![
-        // Action 0: Cranelift unit 0 computation
-        Action { kind: Kind::FileRead, dst: data1_offset as u32, src: 0, offset: 0, size: 0 },
-        // Action 1: Cranelift unit 1 computation
-        Action { kind: Kind::FileRead, dst: data2_offset as u32, src: 0, offset: 0, size: 0 },
-        // Action 2: FileWrite result 1
-        Action { kind: Kind::FileWrite, dst: file1_offset as u32, src: (data1_offset + 16) as u32, offset: 0, size: 8 },
-        // Action 3: FileWrite result 2
-        Action { kind: Kind::FileWrite, dst: file2_offset as u32, src: (data2_offset + 16) as u32, offset: 0, size: 8 },
-        // Action 4: AsyncDispatch unit 0
+        // Action 0: unit 0 compute (src=0 → fn0)
+        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
+        // Action 1: unit 1 compute (src=0 → fn0)
+        Action { kind: Kind::Noop, dst: 2100, src: 0, offset: 0, size: 0 },
+        // Action 2: unit 0 write (src=1 → fn1)
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        // Action 3: unit 1 write (src=1 → fn1)
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        // Dispatch compute
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
-        // Action 5: AsyncDispatch unit 1
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
-        // Action 6: Wait for unit 0
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        // Action 7: Wait for unit 1
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
-        // Action 8: AsyncDispatch FileWrite 1
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: 1040, size: 0 },
-        // Action 9: AsyncDispatch FileWrite 2
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 3, offset: 1048, size: 0 },
-        // Action 10: Wait for FileWrite 1
+        // Dispatch writes
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 2, offset: 1040, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 3, offset: 1048, size: 0 },
         Action { kind: Kind::Wait, dst: 1040, src: 0, offset: 0, size: 0 },
-        // Action 11: Wait for FileWrite 2
         Action { kind: Kind::Wait, dst: 1048, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 2, vec![0, ir2_offset], true);
-
-    // Assign actions to specific units
-    algorithm.cranelift_assignments = vec![
-        0,   // Action 0 -> unit 0
-        1,   // Action 1 -> unit 1
-        255, // Action 2 (FileWrite)
-        255, // Action 3 (FileWrite)
-        0,   // Action 4 (Dispatch to unit 0)
-        1,   // Action 5 (Dispatch to unit 1)
-        0,   // Action 6 (Wait)
-        1,   // Action 7 (Wait)
-        255, // Action 8 (Dispatch FileWrite)
-        255, // Action 9 (Dispatch FileWrite)
-        255, // Action 10 (Wait)
-        255, // Action 11 (Wait)
-    ];
-
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 2, vec![0, ir2_offset]);
+    algorithm.cranelift_assignments = vec![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1];
     execute(algorithm).unwrap();
 
-    assert!(test_file1.exists());
-    assert!(test_file2.exists());
-
     let contents1 = fs::read(&test_file1).unwrap();
-    let result1 = u64::from_le_bytes(contents1[0..8].try_into().unwrap());
-    assert_eq!(result1, 8);
-
+    assert_eq!(u64::from_le_bytes(contents1[0..8].try_into().unwrap()), 8);
     let contents2 = fs::read(&test_file2).unwrap();
-    let result2 = u64::from_le_bytes(contents2[0..8].try_into().unwrap());
-    assert_eq!(result2, 24);
+    assert_eq!(u64::from_le_bytes(contents2[0..8].try_into().unwrap()), 24);
 }
 
 #[test]
 fn test_cranelift_conditional_logic() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("cranelift_cond.txt");
-    let test_file_str = test_file.to_str().unwrap();
+    let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 v0
     v2 = load.i64 v0+8
@@ -1096,176 +519,160 @@ block1:
 block2:
     store.i64 v3, v0+24
     return
-}
-"#;
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 3000
+    v2 = iconst.i64 2024
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
-
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    let cranelift_flag = 1024u32;
-    let file_flag = 1032u32;
-    let data_offset = 2000usize;
-
-    // condition = 1 (non-zero), value_a = 100, value_b = 200
-    // Should store value_a (100)
-    payloads[data_offset..data_offset + 8].copy_from_slice(&1u64.to_le_bytes());
-    payloads[data_offset + 8..data_offset + 16].copy_from_slice(&100u64.to_le_bytes());
-    payloads[data_offset + 16..data_offset + 24].copy_from_slice(&200u64.to_le_bytes());
-
-    let filename_offset = 3000usize;
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[filename_offset..filename_offset + filename_bytes.len()]
-        .copy_from_slice(&filename_bytes);
+    // condition=1, value_a=100, value_b=200 → should store value_a
+    payloads[2000..2008].copy_from_slice(&1u64.to_le_bytes());
+    payloads[2008..2016].copy_from_slice(&100u64.to_le_bytes());
+    payloads[2016..2024].copy_from_slice(&200u64.to_le_bytes());
+    payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 24) as u32, offset: 0, size: 8 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
-    assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(result, 100); // value_a, since condition was non-zero
+    assert_eq!(result, 100);
 }
 
-fn create_test_algorithm_with_timeout(
-    actions: Vec<Action>,
-    payloads: Vec<u8>,
-    file_units: usize,
-    timeout_ms: u64,
-) -> Algorithm {
-    let mut alg = create_test_algorithm(actions, payloads, file_units);
-    alg.timeout_ms = Some(timeout_ms);
-    alg
-}
 
 #[test]
 fn test_integration_wake_then_park_progresses() {
-    // Wake increments wake word from 0→1, then Park sees word != expected(0) and passes immediately.
-    // FileWrite persists wake word + status for verification.
+    // Wake increments wake word 0→1, Park sees word != expected(0) and passes immediately.
+    // CLIF FFI writes wake word + status to file for verification.
     let tmp_dir = TempDir::new().unwrap();
     let test_file = tmp_dir.path().join("park_wake.bin");
-    let test_file_str = test_file.to_str().unwrap();
+    let file_str = format!("{}\0", test_file.to_str().unwrap());
+
+    // CLIF fn: write 24 bytes from offset 3000 (wake_addr) to file at offset 2000
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 24
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+    // 3000..3008 = wake word (starts 0)
+    // 3008..3016 = expected value (0)
+    // 3016..3024 = status output
+    payloads[3008..3016].copy_from_slice(&0u64.to_le_bytes());
 
-    // Layout:
-    // 0..8   = wake word (starts 0)
-    // 8..16  = expected value (0)
-    // 16..24 = status output
-    // 24..32 = (spare)
-    // 1000.. = filename
-    let wake_addr: u32 = 0;
-    let expected_addr: u32 = 8;
-    let status_addr: u32 = 16;
-    let filename_offset: u32 = 1000;
-
-    // expected = 0
-    payloads[expected_addr as usize..expected_addr as usize + 8].copy_from_slice(&0u64.to_le_bytes());
-
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[filename_offset as usize..filename_offset as usize + filename_bytes.len()]
-        .copy_from_slice(&filename_bytes);
-
-    let file_flag: u32 = 2000;
+    let clif_flag = 1024u32;
 
     let actions = vec![
-        // 0: Wake — increments wake word 0→1
-        Action { kind: Kind::Wake, dst: wake_addr, src: 0, offset: 0, size: 0 },
-        // 1: Park — wake word is already 1 != expected(0), passes immediately
-        Action { kind: Kind::Park, dst: wake_addr, src: expected_addr, offset: status_addr, size: 0 },
-        // 2: MemCopy wake word to offset 24 (just to ensure data is in payloads for FileWrite)
-        Action { kind: Kind::FileRead, dst: wake_addr, src: 24, offset: 0, size: 0 },
-        // 3: FileWrite — write 16 bytes (wake word + status) to file
-        Action { kind: Kind::FileWrite, dst: filename_offset, src: wake_addr, offset: 0, size: 24 },
-        // 4: AsyncDispatch file unit
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 3, offset: file_flag, size: 0 },
-        // 5: Wait for file write
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        // 0: placeholder for CLIF dispatch
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        // 1: Wake — increments wake word 0→1
+        Action { kind: Kind::Wake, dst: 3000, src: 0, offset: 0, size: 0 },
+        // 2: Park — wake word is already 1 != expected(0), passes immediately
+        Action { kind: Kind::Park, dst: 3000, src: 3008, offset: 3016, size: 0 },
+        // 3: AsyncDispatch CLIF (writes to file)
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: clif_flag, size: 0 },
+        // 4: Wait
+        Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 5000);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    algorithm.timeout_ms = Some(5000);
     execute(algorithm).unwrap();
 
     assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
-
-    // wake word should be 1
     let wake_val = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(wake_val, 1, "wake word should be 1 after Wake");
-
-    // status should be 1 (woken, not timed out)
     let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
     assert_eq!(status_val, 1, "status should be 1 (woken)");
 }
 
 #[test]
 fn test_integration_park_times_out_without_wake() {
-    // Park with 10ms per-action timeout, no wake ever fires.
-    // Status should be 0 (timed out).
-    // WaitUntil verifies status == 0.
+    // Park with 10ms timeout, no wake fires. Status should be 0 (timed out).
     let tmp_dir = TempDir::new().unwrap();
     let test_file = tmp_dir.path().join("park_timeout.bin");
-    let test_file_str = test_file.to_str().unwrap();
+    let file_str = format!("{}\0", test_file.to_str().unwrap());
+
+    // CLIF fn: write 32 bytes from offset 3000 to file at offset 2000
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 2000
+    v2 = iconst.i64 3000
+    v3 = iconst.i64 0
+    v4 = iconst.i64 32
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    payloads[2000..2000 + file_str.len()].copy_from_slice(file_str.as_bytes());
+    // 3000..3008 = wake word (stays 0)
+    // 3008..3016 = expected value (0)
+    // 3016..3024 = status output
+    // 3024..3032 = expected status (0, for WaitUntil)
+    payloads[3008..3016].copy_from_slice(&0u64.to_le_bytes());
+    payloads[3024..3032].copy_from_slice(&0u64.to_le_bytes());
 
-    // Layout:
-    // 0..8   = wake word (stays 0, never woken)
-    // 8..16  = expected value (0)
-    // 16..24 = status output
-    // 24..32 = expected status (0)
-    // 1000.. = filename
-    let wake_addr: u32 = 0;
-    let _expected_addr: u32 = 8;
-    let status_addr: u32 = 16;
-    let expected_status_addr: u32 = 24;
-    let filename_offset: u32 = 1000;
-
-    // expected = 0
-    payloads[8..16].copy_from_slice(&0u64.to_le_bytes());
-    // expected status = 0 (for WaitUntil comparison)
-    payloads[24..32].copy_from_slice(&0u64.to_le_bytes());
-
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[filename_offset as usize..filename_offset as usize + filename_bytes.len()]
-        .copy_from_slice(&filename_bytes);
-
-    let file_flag: u32 = 2000;
+    let clif_flag = 1024u32;
 
     let actions = vec![
-        // 0: Park with 10ms per-action timeout — wake word stays 0 == expected(0), so it times out
-        Action { kind: Kind::Park, dst: wake_addr, src: 0, offset: status_addr, size: 10 },
-        // 1: WaitUntil — wait for status == 0 (it should already be 0 = timed out)
-        Action { kind: Kind::WaitUntil, dst: status_addr, src: expected_status_addr, offset: 0, size: 0 },
-        // 2: FileWrite — write 32 bytes for verification
-        Action { kind: Kind::FileWrite, dst: filename_offset, src: wake_addr, offset: 0, size: 32 },
-        // 3: AsyncDispatch file unit
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: file_flag, size: 0 },
-        // 4: Wait for file write
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        // 0: placeholder for CLIF dispatch
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        // 1: Park with 10ms timeout — wake word 0 == expected(0), times out
+        Action { kind: Kind::Park, dst: 3000, src: 3008, offset: 3016, size: 10 },
+        // 2: WaitUntil — status == expected_status (0 == 0)
+        Action { kind: Kind::WaitUntil, dst: 3016, src: 3024, offset: 0, size: 0 },
+        // 3: AsyncDispatch CLIF (writes to file)
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: clif_flag, size: 0 },
+        // 4: Wait
+        Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 5000);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    algorithm.timeout_ms = Some(5000);
     execute(algorithm).unwrap();
 
     assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
-
-    // wake word should still be 0 (no wake)
     let wake_val = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(wake_val, 0, "wake word should still be 0");
-
-    // status should be 0 (timed out, not woken)
     let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
     assert_eq!(status_val, 0, "status should be 0 (timed out)");
 }
@@ -1291,68 +698,42 @@ fn test_clif_ffi_file_write_and_read() {
     //  3100..3112:  read-back destination (12 bytes)
     let clif_ir = format!(
 r#"function u0:0(i64) system_v {{
-    ; cl_file_write(ptr, path_off, src_off, file_offset, size) -> i64
     sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    ; cl_file_read(ptr, path_off, dst_off, file_offset, size) -> i64
-    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v
-
     fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig1
+    fn1 = %cl_file_read sig0
 
 block0(v0: i64):
-    ; write 12 bytes from offset 3000 to file
-    v1 = iconst.i64 {path_off}
+    v1 = iconst.i64 2000
     v2 = iconst.i64 3000
     v3 = iconst.i64 0
     v4 = iconst.i64 12
+    ; write 12 bytes to data file
     v5 = call fn0(v0, v1, v2, v3, v4)
-
-    ; read 13 bytes from file into offset 3100
+    ; read 12 bytes back into offset 3100
     v6 = iconst.i64 3100
     v7 = call fn1(v0, v1, v6, v3, v4)
-
+    ; write read-back to verify file
+    v8 = iconst.i64 2256
+    v9 = call fn0(v0, v8, v6, v3, v4)
     return
-}}"#, path_off = 2000);
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
-
-    // Store CLIF IR at offset 0
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    assert!(clif_bytes.len() < 1024, "CLIF IR too large: {}", clif_bytes.len());
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    // Store data file path at offset 2000
     payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-
-    // Store verify file path at offset 2256
     payloads[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-
-    // Store source data at offset 3000: "Hello, CLIF!" = 12 bytes
     payloads[3000..3012].copy_from_slice(b"Hello, CLIF!");
 
-    let cranelift_flag = 1024u32;
-    let file_flag = 1032u32;
-
     let actions = vec![
-        // Action 0: cranelift dispatch target (dst=0 so v0 = base of shared memory)
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
-        // Action 1: FileWrite to dump read-back data (offset 3100, 12 bytes) to verify file
-        Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 12 },
-        // Action 2: AsyncDispatch cranelift (type 9)
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
-        // Action 3: Wait for cranelift
-        Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
-        // Action 4: AsyncDispatch FileWrite (type 2)
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: file_flag, size: 0 },
-        // Action 5: Wait for FileWrite
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
-    // The CLIF IR wrote to the data file, then read it back into memory at offset 3100.
-    // The FileWrite action dumped offset 3100 to the verify file.
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(&contents[..12], b"Hello, CLIF!");
 }
@@ -1369,22 +750,25 @@ fn test_clif_ffi_file_write_read_with_offset() {
     let clif_ir = format!(
 r#"function u0:0(i64) system_v {{
     sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig1
+    fn1 = %cl_file_read sig0
 
 block0(v0: i64):
-    v1 = iconst.i64 {path_off}
+    v1 = iconst.i64 2000
     v2 = iconst.i64 3000
     v3 = iconst.i64 8
     v4 = iconst.i64 5
-    ; write 5 bytes from offset 3000 to file at file_offset=8
+    ; write 5 bytes at file_offset=8
     v5 = call fn0(v0, v1, v2, v3, v4)
-    ; read 5 bytes from file at file_offset=8 into offset 3100
+    ; read 5 bytes at file_offset=8 into offset 3100
     v6 = iconst.i64 3100
     v7 = call fn1(v0, v1, v6, v3, v4)
+    ; write read-back to verify file
+    v8 = iconst.i64 2256
+    v9 = iconst.i64 0
+    v10 = call fn0(v0, v8, v6, v9, v4)
     return
-}}"#, path_off = 2000);
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
@@ -1394,21 +778,17 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"ABCDE");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 5 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 1032, size: 0 },
-        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(&contents[..5], b"ABCDE");
 
-    // Also verify the data file: first 8 bytes should be zeros (offset=8), then our data
     let raw = fs::read(&data_file).unwrap();
     assert_eq!(&raw[..8], &[0u8; 8]);
     assert_eq!(&raw[8..13], b"ABCDE");
@@ -1426,39 +806,37 @@ fn test_clif_ffi_file_binary_data() {
     let clif_ir = format!(
 r#"function u0:0(i64) system_v {{
     sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig1
+    fn1 = %cl_file_read sig0
 
 block0(v0: i64):
-    v1 = iconst.i64 {path_off}
+    v1 = iconst.i64 2000
     v2 = iconst.i64 3000
     v3 = iconst.i64 0
     v4 = iconst.i64 8
     v5 = call fn0(v0, v1, v2, v3, v4)
     v6 = iconst.i64 3100
     v7 = call fn1(v0, v1, v6, v3, v4)
+    ; write read-back to verify file
+    v8 = iconst.i64 2256
+    v9 = call fn0(v0, v8, v6, v3, v4)
     return
-}}"#, path_off = 2000);
+}}"#);
 
     let mut payloads = vec![0u8; 4096];
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     payloads[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
     payloads[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-    // Binary data with embedded nulls: [0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]
     payloads[3000..3008].copy_from_slice(&[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]);
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 8 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 1032, size: 0 },
-        Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], true);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1606,12 +984,12 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     algorithm.timeout_ms = Some(15000); // GPU init can be slow
     execute(algorithm).unwrap();
 
@@ -1680,12 +1058,12 @@ block0(v0: i64):
     payloads[3000..3007].copy_from_slice(b"RETVALS");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1741,12 +1119,12 @@ block0(v0: i64):
     payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1793,12 +1171,12 @@ block0(v0: i64):
     payloads[3000..3009].copy_from_slice(b"CSTR\0xtra");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let verify = fs::read(&verify_file).unwrap();
@@ -1841,12 +1219,12 @@ block0(v0: i64):
     payloads[3100..3103].copy_from_slice(b"SML");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     // Second write with file_offset=0 uses File::create() which truncates
@@ -1897,12 +1275,12 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2002,12 +1380,12 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     algorithm.timeout_ms = Some(15000);
     execute(algorithm).unwrap();
 
@@ -2125,12 +1503,12 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     algorithm.timeout_ms = Some(15000);
     execute(algorithm).unwrap();
 
@@ -2262,12 +1640,12 @@ block0(v0: i64):
     payloads[3204..3208].copy_from_slice(&0i32.to_le_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
 
@@ -2363,12 +1741,12 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"hello");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
     handle.join().unwrap();
 
@@ -2454,12 +1832,12 @@ block0(v0: i64):
     });
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
     client_handle.join().unwrap();
@@ -2519,12 +1897,12 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"hello");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2577,12 +1955,12 @@ block0(v0: i64):
     payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
 
@@ -2672,12 +2050,12 @@ block0(v0: i64):
     });
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
     client.join().unwrap();
@@ -2754,12 +2132,12 @@ block0(v0: i64):
     payloads[5010..5016].copy_from_slice(b"barbaz");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2854,12 +2232,12 @@ block0(v0: i64):
     payloads[5050..5052].copy_from_slice(b"v3");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2936,12 +2314,12 @@ block0(v0: i64):
     payloads[5030] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3006,12 +2384,12 @@ block0(v0: i64):
     payloads[5010..5013].copy_from_slice(b"val");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3082,12 +2460,12 @@ block0(v0: i64):
     payloads[5020..5023].copy_from_slice(b"new");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3140,12 +2518,12 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3201,12 +2579,12 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3280,12 +2658,12 @@ block0(v0: i64):
     payloads[5060] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3345,12 +2723,12 @@ block0(v0: i64):
     payloads[5010] = b'v';
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3429,12 +2807,12 @@ block0(v0: i64):
     payloads[5020..5022].copy_from_slice(b"ok");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3533,12 +2911,12 @@ block0(v0: i64):
     payloads[5010..5012].copy_from_slice(b"vv");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3640,12 +3018,12 @@ block0(v0: i64):
     payloads[5030..5032].copy_from_slice(b"v2");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3704,12 +3082,12 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3777,12 +3155,12 @@ block0(v0: i64):
     payloads[5000] = b'k';
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3874,12 +3252,12 @@ block0(v0: i64):
     payloads[5020..5022].copy_from_slice(b"d2");
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3961,12 +3339,12 @@ block0(v0: i64):
     payloads[5060] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0], false);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -4021,12 +3399,12 @@ block0(v0: i64):
     payloads1[5010..5013].copy_from_slice(b"val");
 
     let actions1 = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm1 = create_cranelift_algorithm(actions1, payloads1, 1, vec![0], false);
+    let algorithm1 = create_cranelift_algorithm(actions1, payloads1, 1, vec![0]);
     execute(algorithm1).unwrap();
 
     // Second run: reopen db, try to get the key — should not exist
@@ -4069,12 +3447,12 @@ block0(v0: i64):
     payloads2[5000..5003].copy_from_slice(b"key");
 
     let actions2 = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 1, vec![0], false);
+    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 1, vec![0]);
     execute(algorithm2).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();

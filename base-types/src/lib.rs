@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    FileRead = 16,
-    FileWrite = 17,
+    Noop = 0,
     ConditionalJump = 25,
     AsyncDispatch = 32,
     Wait = 33,
@@ -29,13 +28,11 @@ pub struct Action {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct State {
-    pub file_buffer_size: usize,
     pub cranelift_ir_offsets: Vec<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UnitSpec {
-    pub file_units: usize,
     pub cranelift_units: usize,
 }
 
@@ -45,7 +42,6 @@ pub struct Algorithm {
     pub payloads: Vec<u8>,
     pub state: State,
     pub units: UnitSpec,
-    pub file_assignments: Vec<u8>,
     pub cranelift_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,

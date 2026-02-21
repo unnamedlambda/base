@@ -36,10 +36,7 @@ def CLIF_IR_OFF     : Nat := 0x0400
 def CSV_DATA        : Nat := 0x2000
 
 -- Unit type IDs
-def FILE_UNIT : UInt32 := 2
 def CL_UNIT   : UInt32 := 9
-
-def FILE_BUF_SIZE : Nat := 0x4000000  -- 64 MiB
 def TIMEOUT_MS    : Nat := 300000
 
 /-
@@ -65,8 +62,8 @@ def TIMEOUT_MS    : Nat := 300000
 
   Offsets: +752=END_POS, +8192=CSV_DATA, +848=LEFT_VAL
 -/
-def clifIR : String :=
-  "function %csv_parse(i64) system_v {\n" ++
+def clifComputeFn : String :=
+  "function u0:1(i64) system_v {\n" ++
   -- entry: load end_pos, setup SIMD vectors and hoisted constants
   "block0(v0: i64):\n" ++
   "  v1 = load.i32 v0+752\n" ++
@@ -224,6 +221,35 @@ def clifIR : String :=
   "  return\n" ++
   "}\n"
 
+def clifReadFn : String :=
+  "function u0:0(i64) system_v {\n" ++
+  "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "  fn0 = %cl_file_read sig0\n" ++
+  "block0(v0: i64):\n" ++
+  "  v1 = iconst.i64 32\n" ++        -- INPUT_FILENAME
+  "  v2 = iconst.i64 8192\n" ++      -- CSV_DATA
+  "  v3 = iconst.i64 0\n" ++
+  "  v4 = iconst.i64 0\n" ++
+  "  v5 = call fn0(v0, v1, v2, v3, v4)\n" ++
+  "  return\n" ++
+  "}\n"
+
+def clifWriteFn : String :=
+  "function u0:2(i64) system_v {\n" ++
+  "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "  fn0 = %cl_file_write sig0\n" ++
+  "block0(v0: i64):\n" ++
+  "  v1 = iconst.i64 288\n" ++       -- OUTPUT_FILENAME
+  "  v2 = iconst.i64 848\n" ++       -- LEFT_VAL
+  "  v3 = iconst.i64 0\n" ++
+  "  v4 = iconst.i64 0\n" ++
+  "  v5 = call fn0(v0, v1, v2, v3, v4)\n" ++
+  "  return\n" ++
+  "}\n"
+
+def clifIR : String :=
+  clifReadFn ++ "\n" ++ clifComputeFn ++ "\n" ++ clifWriteFn
+
 -- Convert CLIF IR string to bytes for payload
 def clifIRBytes : List UInt8 :=
   clifIR.toUTF8.toList ++ [0]  -- null-terminated
@@ -259,18 +285,9 @@ def buildPayload : List UInt8 :=
 -- Index 1: FileWrite
 -- Index 2: Cranelift run (dummy action, dst=0 so function gets base ptr)
 def workerActions : List Action := [
-  -- [0] FileRead: read file at INPUT_FILENAME into CSV_DATA
-  { kind := .FileRead,
-    src := UInt32.ofNat INPUT_FILENAME,
-    dst := UInt32.ofNat CSV_DATA,
-    offset := 0, size := 0 },
-  -- [1] FileWrite: write null-terminated string at LEFT_VAL to OUTPUT_FILENAME
-  { kind := .FileWrite,
-    src := UInt32.ofNat LEFT_VAL,
-    dst := UInt32.ofNat OUTPUT_FILENAME,
-    offset := 0, size := 0 },
-  -- [2] Cranelift run: dummy, dst=0 means function gets memory base
-  { kind := .FileRead, dst := 0, src := 0, offset := 0, size := 0 }
+  { kind := .Noop, dst := 0, src := 0, offset := 0, size := 0 },
+  { kind := .Noop, dst := 0, src := 1, offset := 0, size := 0 },
+  { kind := .Noop, dst := 0, src := 2, offset := 0, size := 0 }
 ]
 
 -- Control actions (main program)
@@ -278,9 +295,9 @@ def workerActions : List Action := [
 def controlActions : List Action :=
   let wBase : UInt32 := 6
   [
-    -- Dispatch FileRead to file unit, signal FLAG_FILE
+    -- Dispatch CLIF file-read function
     { kind := .AsyncDispatch,
-      dst := FILE_UNIT,
+      dst := CL_UNIT,
       src := wBase,
       offset := UInt32.ofNat FLAG_FILE,
       size := 1 },
@@ -288,20 +305,20 @@ def controlActions : List Action :=
     { kind := .Wait,
       dst := UInt32.ofNat FLAG_FILE,
       src := 0, offset := 0, size := 0 },
-    -- Dispatch to Cranelift unit, signal FLAG_CL
+    -- Dispatch CLIF compute function
     { kind := .AsyncDispatch,
       dst := CL_UNIT,
-      src := wBase + 2,
+      src := wBase + 1,
       offset := UInt32.ofNat FLAG_CL,
       size := 1 },
     -- Wait for Cranelift
     { kind := .Wait,
       dst := UInt32.ofNat FLAG_CL,
       src := 0, offset := 0, size := 0 },
-    -- Dispatch FileWrite to file unit, signal FLAG_FILE
+    -- Dispatch CLIF file-write function
     { kind := .AsyncDispatch,
-      dst := FILE_UNIT,
-      src := wBase + 1,
+      dst := CL_UNIT,
+      src := wBase + 2,
       offset := UInt32.ofNat FLAG_FILE,
       size := 1 },
     -- Wait for FileWrite
@@ -315,14 +332,11 @@ def buildAlgorithm : Algorithm := {
   actions := controlActions ++ workerActions,
   payloads := buildPayload,
   state := {
-    file_buffer_size := FILE_BUF_SIZE,
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    file_units := 1,
     cranelift_units := 1,
   },
-  file_assignments := [],
   cranelift_assignments := [],
   worker_threads := some 2,
   blocking_threads := some 2,

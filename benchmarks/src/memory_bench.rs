@@ -182,7 +182,7 @@ fn build_clif_memory_algorithm(
     let _ = std::fs::remove_file(output_path);
 
     let actions = vec![
-        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: CLIF_FLAG_OFF as u32, size: 0 },
         Action { kind: Kind::Wait, dst: CLIF_FLAG_OFF as u32, src: 0, offset: 0, size: 0 },
     ];
@@ -192,14 +192,11 @@ fn build_clif_memory_algorithm(
         actions,
         payloads,
         state: State {
-            file_buffer_size: 0,
             cranelift_ir_offsets: vec![CLIF_IR_OFF],
         },
         units: UnitSpec {
-            file_units: 0,
             cranelift_units: 1,
         },
-        file_assignments: vec![],
         cranelift_assignments: vec![0; num_actions],
         worker_threads: Some(1),
         blocking_threads: Some(1),

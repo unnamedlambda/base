@@ -7,7 +7,6 @@ mod units;
 
 use crate::units::{
     cranelift_unit_task_mailbox,
-    file_unit_task_mailbox,
     load_sized,
     order_from_u32, queue_try_push_packet_mp,
     read_null_terminated_string_from_slice,
@@ -86,27 +85,11 @@ unsafe fn queue_try_pop_u64(shared: &SharedMemory, queue_desc: usize) -> Option<
 
 pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute",
-        file_units = algorithm.units.file_units,
         cranelift_units = algorithm.units.cranelift_units,
         actions_count = algorithm.actions.len(),
     ).entered();
 
     info!("starting execution engine");
-
-    if algorithm.file_assignments.is_empty() && algorithm.units.file_units > 0 {
-        algorithm.file_assignments = vec![255; algorithm.actions.len()];
-        let mut unit = 0u8;
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::FileRead | Kind::FileWrite => {
-                    algorithm.file_assignments[i] = unit;
-                    unit = (unit + 1) % algorithm.units.file_units as u8;
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned file actions across {} units", algorithm.units.file_units);
-    }
 
     if algorithm.cranelift_assignments.is_empty() {
         algorithm.cranelift_assignments = vec![255; algorithm.actions.len()];
@@ -124,26 +107,14 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let shared = Arc::new(SharedMemory::new(mem_ptr));
     let actions_arc = Arc::new(algorithm.actions);
 
-    let file_assignments = Arc::new(algorithm.file_assignments);
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
-    let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
     let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
 
     let mut thread_handles = Vec::new();
     let mut kernel_handles: Vec<Option<KernelHandle>> = Vec::new();
-
-    for (file_id, mailbox) in file_mailboxes.iter().cloned().enumerate() {
-        info!(file_id, "spawning file unit task");
-        let actions = actions_arc.clone();
-        let shared = shared.clone();
-        let buffer_size = algorithm.state.file_buffer_size;
-        thread_handles.push(std::thread::spawn(move || {
-            file_unit_task_mailbox(mailbox, actions, shared, buffer_size);
-        }));
-    }
 
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -240,25 +211,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 );
 
                 match unit_type {
-                    2 => {
-                        if file_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = file_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(file_mailboxes.len() - 1)
-                        };
-
-                        file_mailboxes[unit_id].post(start, end, flag);
-                    }
                     9 => {
                         if cranelift_mailboxes.is_empty() {
                             pc += 1;
@@ -402,7 +354,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     };
 
                     let pools: [&[Arc<Mailbox>]; 9] = [
-                        &[], &[], &file_mailboxes,
+                        &[], &[], &[],
                         &[], &[], &[],
                         &[], &[], &[],
                     ];
@@ -698,9 +650,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     }
 
     info!("shutting down all units");
-    for mailbox in file_mailboxes.iter() {
-        mailbox.shutdown();
-    }
     for mailbox in cranelift_mailboxes.iter() {
         mailbox.shutdown();
     }
