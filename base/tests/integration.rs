@@ -7,10 +7,8 @@ fn create_test_algorithm(
     actions: Vec<Action>,
     payloads: Vec<u8>,
     file_units: usize,
-    memory_units: usize,
 ) -> Algorithm {
     let num_actions = actions.len();
-    let payload_size = payloads.len();
 
     Algorithm {
         actions,
@@ -21,10 +19,8 @@ fn create_test_algorithm(
         },
         units: UnitSpec {
             file_units,
-            memory_units,
             cranelift_units: 0,
         },
-        memory_assignments: vec![0; num_actions],
         file_assignments: vec![0; num_actions],
         cranelift_assignments: vec![],
         worker_threads: None,
@@ -53,10 +49,8 @@ fn create_cranelift_algorithm(
         },
         units: UnitSpec {
             file_units: if with_file { 1 } else { 0 },
-            memory_units: 0,
             cranelift_units,
         },
-        memory_assignments: vec![],
         file_assignments: if with_file { vec![0; num_actions] } else { vec![] },
         cranelift_assignments: vec![0; num_actions],
         worker_threads: None,
@@ -65,86 +59,6 @@ fn create_cranelift_algorithm(
         timeout_ms: Some(5000),
         thread_name_prefix: None,
     }
-}
-
-#[test]
-fn test_integration_memcopy_filewrite() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 1024];
-
-    // Setup filename with null terminator
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Setup source data (value 42)
-    payloads[256..264].copy_from_slice(&42u64.to_le_bytes());
-
-    // Completion flags at offset 512 and 520
-    let memcopy_flag = 512u32;
-    let filewrite_flag = 520u32;
-
-    let actions = vec![
-        // Action 0: MemCopy (executed by memory unit)
-        Action {
-            kind: Kind::MemCopy,
-            src: 256,
-            dst: 264,
-            offset: 0,
-            size: 8,
-        },
-        // Action 1: FileWrite (executed by file unit)
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 264,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: AsyncDispatch MemCopy to memory unit (type 6)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,              // memory unit
-            src: 0,              // action index 0 (MemCopy)
-            offset: memcopy_flag,
-            size: 0,
-        },
-        // Action 3: Wait for MemCopy
-        Action {
-            kind: Kind::Wait,
-            dst: memcopy_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4: AsyncDispatch FileWrite to file unit (type 2)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,              // file unit
-            src: 1,              // action index 1 (FileWrite)
-            offset: filewrite_flag,
-            size: 0,
-        },
-        // Action 5: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: filewrite_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists());
-    let contents = fs::read(&test_file).unwrap();
-    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(value, 42);
 }
 
 #[test]
@@ -243,7 +157,7 @@ fn test_integration_conditional_jump() {
         },
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    let algorithm = create_test_algorithm(actions, payloads, 1);
 
     execute(algorithm).unwrap();
 
@@ -355,7 +269,7 @@ fn test_integration_conditional_jump_variable_size() {
         // Action 8: End
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    let algorithm = create_test_algorithm(actions, payloads, 1);
 
     execute(algorithm).unwrap();
 
@@ -452,7 +366,7 @@ fn test_integration_file_roundtrip() {
         },
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    let algorithm = create_test_algorithm(actions, payloads, 1);
 
     execute(algorithm).unwrap();
 
@@ -468,1218 +382,6 @@ fn test_integration_file_roundtrip() {
     let verify_value = u64::from_le_bytes(verify_contents[0..8].try_into().unwrap());
     assert_eq!(verify_value, 99);
 }
-
-#[test]
-fn test_integration_async_memory_operations() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("async_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Completion flags
-    let cas_flag = 256u32;
-    let file_flag = 264u32;
-
-    // CAS target at offset 304 (8-byte aligned, initial value: 100)
-    payloads[304..312].copy_from_slice(&100u64.to_le_bytes());
-    // CAS expected value at offset 312 (8-byte aligned, 100)
-    payloads[312..320].copy_from_slice(&100u64.to_le_bytes());
-    // CAS new value at offset 320 (8-byte aligned, 200)
-    payloads[320..328].copy_from_slice(&200u64.to_le_bytes());
-
-    let actions = vec![
-        // Action 0: AtomicCAS: swap 100 → 200
-        Action {
-            kind: Kind::AtomicCAS,
-            dst: 304,    // target
-            src: 312,    // expected value
-            offset: 320, // new value
-            size: 8,
-        },
-        // Action 1: FileWrite result
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,      // filename
-            src: 304,    // CAS result (should be 200)
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: AsyncDispatch CAS to memory unit
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,      // unit type 6 = memory
-            src: 0,      // action index 0
-            offset: cas_flag,
-            size: 0,
-        },
-        // Action 3: Wait for CAS
-        Action {
-            kind: Kind::Wait,
-            dst: cas_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4: AsyncDispatch FileWrite to file unit
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,      // file unit
-            src: 1,      // action index 1 (FileWrite)
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 5: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).expect("Async memory operations test failed");
-
-    // Verify result: CAS should have swapped 100 → 200
-    assert!(result_file.exists(), "Result file should exist");
-    let result = fs::read(&result_file).unwrap();
-    let value = u64::from_le_bytes(result[0..8].try_into().unwrap());
-    assert_eq!(value, 200, "AtomicCAS should have swapped 100→200");
-}
-
-#[test]
-fn test_integration_atomic_compare_exchange_u64() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("atomic_cmpxchg_u64.bin");
-    let result_path = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-    let filename = format!("{}\0", result_path).into_bytes();
-    payloads[0..filename.len()].copy_from_slice(&filename);
-
-    // Layout:
-    // 1000: target (u64)
-    // 1008: expected_success (u64, in/out)
-    // 1016: expected_failure (u64, in/out)
-    // 1024: new_success (u64)
-    // 1032: new_failure (u64)
-    payloads[1000..1008].copy_from_slice(&7u64.to_le_bytes());
-    payloads[1008..1016].copy_from_slice(&7u64.to_le_bytes());
-    payloads[1016..1024].copy_from_slice(&7u64.to_le_bytes());
-    payloads[1024..1032].copy_from_slice(&11u64.to_le_bytes());
-    payloads[1032..1040].copy_from_slice(&99u64.to_le_bytes());
-
-    let mem_flag_a = 1100u32;
-    let mem_flag_b = 1108u32;
-    let file_flag = 1116u32;
-
-    let actions = vec![
-        Action { kind: Kind::AtomicCAS, dst: 1000, src: 1008, offset: 1024, size: 8 },
-        Action { kind: Kind::AtomicCAS, dst: 1000, src: 1016, offset: 1032, size: 8 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 1000, offset: 0, size: 24 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: mem_flag_a, size: 0 },
-        Action { kind: Kind::Wait, dst: mem_flag_a, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 1, offset: mem_flag_b, size: 0 },
-        Action { kind: Kind::Wait, dst: mem_flag_b, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: file_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-    execute(algorithm).unwrap();
-
-    let out = fs::read(&result_file).unwrap();
-    let target = u64::from_le_bytes(out[0..8].try_into().unwrap());
-    let expected_success = u64::from_le_bytes(out[8..16].try_into().unwrap());
-    let expected_failure = u64::from_le_bytes(out[16..24].try_into().unwrap());
-
-    assert_eq!(target, 11, "First compare-exchange should update target");
-    assert_eq!(expected_success, 7, "Successful compare-exchange writes observed old value");
-    assert_eq!(expected_failure, 11, "Failed compare-exchange writes actual value back");
-}
-
-#[test]
-fn test_integration_atomic_compare_exchange_u32() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("atomic_cmpxchg_u32.bin");
-    let result_path = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 2048];
-    let filename = format!("{}\0", result_path).into_bytes();
-    payloads[0..filename.len()].copy_from_slice(&filename);
-
-    // Layout:
-    // 1200: target (u32)
-    // 1204: expected_success (u32, in/out)
-    // 1208: expected_failure (u32, in/out)
-    // 1212: new_success (u32)
-    // 1216: new_failure (u32)
-    payloads[1200..1204].copy_from_slice(&3u32.to_le_bytes());
-    payloads[1204..1208].copy_from_slice(&3u32.to_le_bytes());
-    payloads[1208..1212].copy_from_slice(&3u32.to_le_bytes());
-    payloads[1212..1216].copy_from_slice(&9u32.to_le_bytes());
-    payloads[1216..1220].copy_from_slice(&21u32.to_le_bytes());
-
-    let mem_flag_a = 1300u32;
-    let mem_flag_b = 1308u32;
-    let file_flag = 1316u32;
-
-    let actions = vec![
-        Action { kind: Kind::AtomicCAS, dst: 1200, src: 1204, offset: 1212, size: 4 },
-        Action { kind: Kind::AtomicCAS, dst: 1200, src: 1208, offset: 1216, size: 4 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 1200, offset: 0, size: 12 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: mem_flag_a, size: 0 },
-        Action { kind: Kind::Wait, dst: mem_flag_a, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 1, offset: mem_flag_b, size: 0 },
-        Action { kind: Kind::Wait, dst: mem_flag_b, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: file_flag, size: 0 },
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-    execute(algorithm).unwrap();
-
-    let out = fs::read(&result_file).unwrap();
-    let target = u32::from_le_bytes(out[0..4].try_into().unwrap());
-    let expected_success = u32::from_le_bytes(out[4..8].try_into().unwrap());
-    let expected_failure = u32::from_le_bytes(out[8..12].try_into().unwrap());
-
-    assert_eq!(target, 9, "First compare-exchange should update target");
-    assert_eq!(expected_success, 3, "Successful compare-exchange writes observed old value");
-    assert_eq!(expected_failure, 9, "Failed compare-exchange writes actual value back");
-}
-
-#[test]
-fn test_integration_broadcast_memory_write() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("broadcast_mem.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 1024];
-
-    // Setup filename with null terminator
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    let mem_flag = 900u32;
-    let file_flag = 908u32;
-
-    let actions = vec![
-        // Action 0: write first value
-        Action {
-            kind: Kind::MemWrite,
-            dst: 128,
-            src: 0x1111_1111,
-            offset: 0,
-            size: 8,
-        },
-        // Action 1: write second value
-        Action {
-            kind: Kind::MemWrite,
-            dst: 136,
-            src: 0x2222_2222,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: file write of both values
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 128,
-            offset: 0,
-            size: 16,
-        },
-        // Action 3: broadcast memory writes (actions 0..2)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6, // memory unit
-            src: 0,
-            offset: mem_flag,
-            size: (1u32 << 31) | 2,
-        },
-        // Action 4: wait for memory writes
-        Action {
-            kind: Kind::Wait,
-            dst: mem_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 5: file write
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2, // file unit
-            src: 2,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 6: wait for file write
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 2);
-    execute(algorithm).unwrap();
-
-    let contents = fs::read(&test_file).unwrap();
-    let first = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    let second = u64::from_le_bytes(contents[8..16].try_into().unwrap());
-    assert_eq!(first, 0x1111_1111);
-    assert_eq!(second, 0x2222_2222);
-}
-
-#[test]
-fn test_integration_broadcast_memory_write_many() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("broadcast_mem_many.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 1024];
-
-    // Setup filename with null terminator
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    let mem_flag = 920u32;
-    let file_flag = 928u32;
-
-    let actions = vec![
-        Action {
-            kind: Kind::MemWrite,
-            dst: 128,
-            src: 0xAAAA_AAAA,
-            offset: 0,
-            size: 8,
-        },
-        Action {
-            kind: Kind::MemWrite,
-            dst: 136,
-            src: 0xBBBB_BBBB,
-            offset: 0,
-            size: 8,
-        },
-        Action {
-            kind: Kind::MemWrite,
-            dst: 144,
-            src: 0xCCCC_CCCC,
-            offset: 0,
-            size: 8,
-        },
-        Action {
-            kind: Kind::MemWrite,
-            dst: 152,
-            src: 0xDDDD_DDDD,
-            offset: 0,
-            size: 8,
-        },
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 128,
-            offset: 0,
-            size: 32,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6, // memory unit
-            src: 0,
-            offset: mem_flag,
-            size: (1u32 << 31) | 4,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: mem_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2, // file unit
-            src: 4,
-            offset: file_flag,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 4);
-    execute(algorithm).unwrap();
-
-    let contents = fs::read(&test_file).unwrap();
-    let values: Vec<u64> = contents
-        .chunks(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect();
-    assert_eq!(
-        values,
-        vec![
-            0xAAAA_AAAA,
-            0xBBBB_BBBB,
-            0xCCCC_CCCC,
-            0xDDDD_DDDD
-        ]
-    );
-}
-
-#[test]
-fn test_integration_complex_workflow() {
-    let temp_dir = TempDir::new().unwrap();
-    let path_a = temp_dir.path().join("result_a.txt");
-    let path_b = temp_dir.path().join("result_b.txt");
-    let path_cas = temp_dir.path().join("cas_result.txt");
-
-    let path_a_str = path_a.to_str().unwrap();
-    let path_b_str = path_b.to_str().unwrap();
-    let path_cas_str = path_cas.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_a_bytes = format!("{}\0", path_a_str).into_bytes();
-    payloads[0..filename_a_bytes.len()].copy_from_slice(&filename_a_bytes);
-
-    let filename_b_bytes = format!("{}\0", path_b_str).into_bytes();
-    payloads[512..512 + filename_b_bytes.len()].copy_from_slice(&filename_b_bytes);
-
-    let filename_cas_bytes = format!("{}\0", path_cas_str).into_bytes();
-    payloads[1024..1024 + filename_cas_bytes.len()].copy_from_slice(&filename_cas_bytes);
-
-    // Data (all 8-byte aligned)
-    payloads[2000..2008].copy_from_slice(&42u64.to_le_bytes());   // Source value
-    payloads[2104..2112].copy_from_slice(&1u64.to_le_bytes());  // Condition (true)
-    payloads[2200..2208].copy_from_slice(&100u64.to_le_bytes());  // CAS target
-    payloads[2208..2216].copy_from_slice(&100u64.to_le_bytes());  // CAS expected
-    payloads[2216..2224].copy_from_slice(&999u64.to_le_bytes());  // CAS new value
-
-    // Completion flags
-    let memcopy_flag = 2304u32;
-    let cas_flag = 2312u32;
-    let fw_cas_flag = 2320u32;
-    let fw_a_flag = 2328u32;
-    let fw_b_flag = 2336u32;
-
-    let actions = vec![
-        // Action 0: MemCopy value to buffer
-        Action { kind: Kind::MemCopy, src: 2000, dst: 3000, offset: 0, size: 8 },
-        // Action 1: AtomicCAS (100 → 999)
-        Action { kind: Kind::AtomicCAS, dst: 2200, src: 2208, offset: 2216, size: 8 },
-        // Action 2: FileWrite CAS result
-        Action { kind: Kind::FileWrite, dst: 1024, src: 2200, offset: 0, size: 8 },
-        // Action 3: FileWrite path B (data action)
-        Action { kind: Kind::FileWrite, dst: 512, src: 3000, offset: 0, size: 8 },
-        // Action 4: FileWrite path A (data action)
-        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: 0, size: 8 },
-
-        // Action 5: AsyncDispatch MemCopy
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: memcopy_flag, size: 0 },
-        // Action 6: Wait
-        Action { kind: Kind::Wait, dst: memcopy_flag, src: 0, offset: 0, size: 0 },
-        // Action 7: AsyncDispatch CAS
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 1, offset: cas_flag, size: 0 },
-        // Action 8: Wait
-        Action { kind: Kind::Wait, dst: cas_flag, src: 0, offset: 0, size: 0 },
-        // Action 9: AsyncDispatch FileWrite CAS result
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 2, offset: fw_cas_flag, size: 0 },
-        // Action 10: Wait
-        Action { kind: Kind::Wait, dst: fw_cas_flag, src: 0, offset: 0, size: 0 },
-        // Action 11: ConditionalJump based on condition (jump to action 14 = path A)
-        Action { kind: Kind::ConditionalJump, src: 2104, dst: 14, offset: 0, size: 0 },
-        // Action 12: AsyncDispatch FileWrite B (SKIPPED)
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 3, offset: fw_b_flag, size: 0 },
-        // Action 13: Wait (SKIPPED)
-        Action { kind: Kind::Wait, dst: fw_b_flag, src: 0, offset: 0, size: 0 },
-        // Action 14: AsyncDispatch FileWrite A (EXECUTED)
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 4, offset: fw_a_flag, size: 0 },
-        // Action 15: Wait
-        Action { kind: Kind::Wait, dst: fw_a_flag, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).expect("Complex workflow test failed");
-
-    // Verify CAS result
-    assert!(path_cas.exists(), "CAS result file should exist");
-    let cas_result = fs::read(&path_cas).unwrap();
-    let cas_value = u64::from_le_bytes(cas_result[0..8].try_into().unwrap());
-    assert_eq!(cas_value, 999, "CAS should have swapped 100→999");
-
-    // Verify conditional jump took path A
-    assert!(path_a.exists(), "Path A file should exist");
-    assert!(!path_b.exists(), "Path B file should NOT exist (jumped over)");
-
-    let result_a = fs::read(&path_a).unwrap();
-    let value_a = u64::from_le_bytes(result_a[0..8].try_into().unwrap());
-    assert_eq!(value_a, 42, "Path A should contain copied value");
-}
-
-
-#[test]
-fn test_integration_multiple_async_same_unit() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("queue_order.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Three CAS operations that will be queued to same memory unit
-    payloads[2000..2008].copy_from_slice(&0u64.to_le_bytes());
-    payloads[2008..2016].copy_from_slice(&0u64.to_le_bytes());
-    payloads[2016..2024].copy_from_slice(&1u64.to_le_bytes());
-
-    payloads[2104..2112].copy_from_slice(&1u64.to_le_bytes());
-    payloads[2112..2120].copy_from_slice(&1u64.to_le_bytes());
-    payloads[2120..2128].copy_from_slice(&2u64.to_le_bytes());
-
-    payloads[2200..2208].copy_from_slice(&2u64.to_le_bytes());
-    payloads[2208..2216].copy_from_slice(&2u64.to_le_bytes());
-    payloads[2216..2224].copy_from_slice(&3u64.to_le_bytes());
-
-    let file_flag = 3024u32;
-
-    let actions = vec![
-        // Action 0-2: CAS operations
-        Action { kind: Kind::AtomicCAS, dst: 2000, src: 2008, offset: 2016, size: 8 },
-        Action { kind: Kind::AtomicCAS, dst: 2104, src: 2112, offset: 2120, size: 8 },
-        Action { kind: Kind::AtomicCAS, dst: 2200, src: 2208, offset: 2216, size: 8 },
-        // Action 3-5: Copy all results to buffer
-        Action { kind: Kind::MemCopy, src: 2000, dst: 512, offset: 0, size: 8 },
-        Action { kind: Kind::MemCopy, src: 2104, dst: 520, offset: 0, size: 8 },
-        Action { kind: Kind::MemCopy, src: 2200, dst: 528, offset: 0, size: 8 },
-        // Action 6: Write to file
-        Action { kind: Kind::FileWrite, dst: 0, src: 512, offset: 0, size: 24 },
-        // Action 7-9: Queue all three CAS to SAME memory unit (unit 0)
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 3000, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 1, offset: 3008, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 2, offset: 3016, size: 0 },
-        // Action 10-12: Wait for all CAS
-        Action { kind: Kind::Wait, dst: 3000, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 3008, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 3016, src: 0, offset: 0, size: 0 },
-        // Action 13-15: Dispatch MemCopy operations
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 3, offset: 3032, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 4, offset: 3040, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 5, offset: 3048, size: 0 },
-        // Action 16-18: Wait for all MemCopy
-        Action { kind: Kind::Wait, dst: 3032, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 3040, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: 3048, src: 0, offset: 0, size: 0 },
-        // Action 19: AsyncDispatch FileWrite
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 6, offset: file_flag, size: 0 },
-        // Action 20: Wait for FileWrite
-        Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "Queue ordering result should exist");
-    let contents = fs::read(&result_file).unwrap();
-
-    let v1 = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    let v2 = u64::from_le_bytes(contents[8..16].try_into().unwrap());
-    let v3 = u64::from_le_bytes(contents[16..24].try_into().unwrap());
-
-    assert_eq!(v1, 1, "First CAS: 0→1");
-    assert_eq!(v2, 2, "Second CAS: 1→2");
-    assert_eq!(v3, 3, "Third CAS: 2→3");
-}
-
-#[test]
-fn test_integration_cross_unit_data_flow() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("cross_unit.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Memory unit prepares data
-    payloads[2000..2008].copy_from_slice(&42u64.to_le_bytes());
-
-    let file_flag = 2568u32;
-
-    let actions = vec![
-        // Action 0: Memory - Copy data to shared location
-        Action {
-            kind: Kind::MemCopy,
-            src: 2000,
-            dst: 2100,
-            offset: 0,
-            size: 8,
-        },
-        // Action 1: FileWrite to file
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 2100,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: AsyncDispatch memory operation
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 0,
-            offset: 2560,
-            size: 0,
-        },
-        // Action 3: Wait for memory to finish
-        Action {
-            kind: Kind::Wait,
-            dst: 2560,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4: AsyncDispatch FileWrite to file unit
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 5: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "Cross-unit data flow result should exist");
-    let contents = fs::read(&result_file).unwrap();
-    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(value, 42, "File should read data prepared by memory unit");
-}
-
-#[test]
-fn test_integration_conditional_skip_with_wait() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("cond_skip.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Condition: 0 (false) - will NOT jump, will execute AsyncDispatch
-    payloads[2700..2708].copy_from_slice(&0u64.to_le_bytes());
-
-    payloads[2000..2008].copy_from_slice(&99u64.to_le_bytes());
-    payloads[2008..2016].copy_from_slice(&99u64.to_le_bytes());
-    payloads[2016..2024].copy_from_slice(&123u64.to_le_bytes());
-
-    let file_flag = 2568u32;
-
-    let actions = vec![
-        // Action 0: AtomicCAS
-        Action {
-            kind: Kind::AtomicCAS,
-            dst: 2000,
-            src: 2008,
-            offset: 2016,
-            size: 8,
-        },
-        // Action 1: FileWrite result
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 2000,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: Jump over AsyncDispatch if condition true (it's false, so won't jump)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 2700,
-            dst: 5,   // Jump to action 5 (after Wait for CAS)
-            offset: 0,
-            size: 0,
-        },
-        // Action 3: This WILL execute (condition was false)
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 0,
-            offset: 2560,
-            size: 0,
-        },
-        // Action 4: Wait for the dispatch that happened
-        Action {
-            kind: Kind::Wait,
-            dst: 2560,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 5: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 6: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "Conditional skip result should exist");
-    let contents = fs::read(&result_file).unwrap();
-    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(value, 123, "CAS completed because AsyncDispatch was not skipped");
-}
-
-#[test]
-fn test_integration_memscan() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("memscan_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Create a haystack with a needle: search for pattern 0xDEADBEEF
-    let needle = 0xDEADBEEFu32;
-    let haystack_start = 1000;
-    let needle_position = haystack_start + 40; // 8-byte aligned: 1040 % 8 = 0
-
-    // Fill haystack with random-ish data
-    for i in 0..100 {
-        let val = (i * 7 + 13) as u32;
-        let offset = haystack_start + i * 4;
-        payloads[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
-    }
-
-    // Place needle at specific position
-    payloads[needle_position..needle_position + 4].copy_from_slice(&needle.to_le_bytes());
-
-    // Store needle pattern at offset 2000
-    payloads[2000..2004].copy_from_slice(&needle.to_le_bytes());
-
-    let file_flag = 2508u32;
-
-    let actions = vec![
-        // Action 0: MemScan - search for needle in haystack
-        Action {
-            kind: Kind::MemScan,
-            src: 2000,    // needle/pattern location
-            dst: haystack_start as u32,  // search region start
-            offset: 4 | (2100 << 16),  // pattern_size=4, result_offset=2100
-            size: 400,    // search region size
-        },
-        // Action 1: FileWrite result
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 2100,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: AsyncDispatch MemScan
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,      // memory unit
-            src: 0,      // action index 0
-            offset: 2500, // completion flag
-            size: 0,
-        },
-        // Action 3: Wait for MemScan
-        Action {
-            kind: Kind::Wait,
-            dst: 2500,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 5: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "MemScan result should exist");
-    let contents = fs::read(&result_file).unwrap();
-    let found_offset = i64::from_le_bytes(contents[0..8].try_into().unwrap());
-
-    assert_eq!(found_offset as usize, needle_position, "MemScan should find needle at correct offset");
-}
-
-#[test]
-fn test_integration_conditional_write() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("condwrite_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Condition: 1 (true)
-    payloads[2000..2008].copy_from_slice(&1u64.to_le_bytes());
-    // Value to write: 999
-    payloads[2008..2016].copy_from_slice(&999u64.to_le_bytes());
-    // Target location: 2100 (initially 0)
-    payloads[2100..2108].copy_from_slice(&0u64.to_le_bytes());
-
-    let file_flag = 2508u32;
-
-    let actions = vec![
-        // Action 0: ConditionalWrite - write 999 to offset 2100 if condition is true
-        Action {
-            kind: Kind::ConditionalWrite,
-            src: 2008,    // source value (999)
-            dst: 2100,    // target location
-            offset: 2000, // condition (1 = true)
-            size: 8,
-        },
-        // Action 1: FileWrite result
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 2100,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: AsyncDispatch ConditionalWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,      // memory unit
-            src: 0,      // action index 0
-            offset: 2500, // completion flag
-            size: 0,
-        },
-        // Action 3: Wait for ConditionalWrite
-        Action {
-            kind: Kind::Wait,
-            dst: 2500,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 5: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "ConditionalWrite result should exist");
-    let contents = fs::read(&result_file).unwrap();
-    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-
-    assert_eq!(value, 999, "ConditionalWrite should write value when condition is true");
-}
-
-#[test]
-fn test_integration_fence() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("fence_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Setup multiple CAS operations with fence in between
-    payloads[2000..2008].copy_from_slice(&10u64.to_le_bytes());
-    payloads[2008..2016].copy_from_slice(&10u64.to_le_bytes());
-    payloads[2016..2024].copy_from_slice(&20u64.to_le_bytes());
-
-    payloads[2096..2104].copy_from_slice(&30u64.to_le_bytes());
-    payloads[2104..2112].copy_from_slice(&30u64.to_le_bytes());
-    payloads[2112..2120].copy_from_slice(&40u64.to_le_bytes());
-
-    let mem1_flag = 2496u32;
-    let mem2_flag = 2504u32;
-    let file_flag = 2512u32;
-
-    let actions = vec![
-        // Action 0: First CAS
-        Action {
-            kind: Kind::AtomicCAS,
-            dst: 2000,    // target
-            src: 2008,    // expected value location
-            offset: 2016, // new value location
-            size: 8,
-        },
-        // Action 1: Fence to ensure ordering
-        Action {
-            kind: Kind::Fence,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 2: Second CAS
-        Action {
-            kind: Kind::AtomicCAS,
-            dst: 2096,    // target
-            src: 2104,    // expected value location
-            offset: 2112, // new value location
-            size: 8,
-        },
-        // Action 3: MemCopy result 1
-        Action {
-            kind: Kind::MemCopy,
-            src: 2000,
-            dst: 3000,
-            offset: 0,
-            size: 8,
-        },
-        // Action 4: MemCopy result 2
-        Action {
-            kind: Kind::MemCopy,
-            src: 2096,
-            dst: 3008,
-            offset: 0,
-            size: 8,
-        },
-        // Action 5: FileWrite results
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 3000,
-            offset: 0,
-            size: 16,
-        },
-        // Action 6: AsyncDispatch first CAS
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,      // memory unit
-            src: 0,      // action index 0
-            offset: mem1_flag, // completion flag
-            size: 0,
-        },
-        // Action 7: Wait for first CAS
-        Action {
-            kind: Kind::Wait,
-            dst: mem1_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 8: AsyncDispatch Fence
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 1,
-            offset: 2520,
-            size: 0,
-        },
-        // Action 9: Wait for Fence
-        Action {
-            kind: Kind::Wait,
-            dst: 2520,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 10: AsyncDispatch second CAS
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 2,
-            offset: mem2_flag,
-            size: 0,
-        },
-        // Action 11: Wait for second CAS
-        Action {
-            kind: Kind::Wait,
-            dst: mem2_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 12: AsyncDispatch MemCopy 1
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 3,
-            offset: 2528,
-            size: 0,
-        },
-        // Action 13: Wait for MemCopy 1
-        Action {
-            kind: Kind::Wait,
-            dst: 2528,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 14: AsyncDispatch MemCopy 2
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 4,
-            offset: 2536,
-            size: 0,
-        },
-        // Action 15: Wait for MemCopy 2
-        Action {
-            kind: Kind::Wait,
-            dst: 2536,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 16: AsyncDispatch FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 5,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 17: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "Fence test result should exist");
-    let contents = fs::read(&result_file).unwrap();
-
-    let val1 = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    let val2 = u64::from_le_bytes(contents[8..16].try_into().unwrap());
-
-    assert_eq!(val1, 20, "First CAS should complete before fence");
-    assert_eq!(val2, 40, "Second CAS should complete after fence");
-}
-
-#[test]
-fn test_integration_memwrite() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("memwrite_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Source data
-    payloads[2000..2008].copy_from_slice(&777u64.to_le_bytes());
-
-    // Destination initially zero
-    payloads[2100..2108].copy_from_slice(&0u64.to_le_bytes());
-
-    let mem_flag = 2200u32;
-    let file_flag = 2208u32;
-
-    let actions = vec![
-        // Action 0: MemCopy - copy from 2000 to 2100 (MemWrite not implemented in async units)
-        Action {
-            kind: Kind::MemCopy,
-            src: 2000,
-            dst: 2100,
-            offset: 0,
-            size: 8,
-        },
-        // Action 1: FileWrite the result
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 2100,
-            offset: 0,
-            size: 8,
-        },
-        // Action 2: AsyncDispatch MemCopy to memory unit
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 0,
-            offset: mem_flag,
-            size: 0,
-        },
-        // Action 3: Wait for MemCopy
-        Action {
-            kind: Kind::Wait,
-            dst: mem_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4: AsyncDispatch FileWrite to file unit
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: file_flag,
-            size: 0,
-        },
-        // Action 5: Wait for FileWrite
-        Action {
-            kind: Kind::Wait,
-            dst: file_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(result_file.exists(), "MemWrite result should exist");
-    let contents = fs::read(&result_file).unwrap();
-    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-
-    assert_eq!(value, 777, "MemWrite should copy value correctly");
-}
-
-#[test]
-fn test_integration_memcopy_indirect() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("memcopy_indirect_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Pointer at offset 1000 points to data at 2000
-    payloads[1000..1004].copy_from_slice(&2000u32.to_le_bytes());
-    // Data at offset 2000
-    payloads[2000..2008].copy_from_slice(&12345u64.to_le_bytes());
-
-    let actions = vec![
-        // MemCopyIndirect: read ptr from 1000, copy from *ptr to 3000
-        Action { kind: Kind::MemCopyIndirect, src: 1000, dst: 3000, offset: 0, size: 8 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: 0, size: 8 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 2200, size: 0 },
-        Action { kind: Kind::Wait, dst: 2200, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 2208, size: 0 },
-        Action { kind: Kind::Wait, dst: 2208, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-    execute(algorithm).unwrap();
-
-    let contents = fs::read(&result_file).unwrap();
-    assert_eq!(u64::from_le_bytes(contents[0..8].try_into().unwrap()), 12345);
-}
-
-#[test]
-fn test_integration_memstore_indirect() {
-    let temp_dir = TempDir::new().unwrap();
-    let result_file = temp_dir.path().join("memstore_indirect_result.txt");
-    let result_path_str = result_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 4096];
-
-    let filename_bytes = format!("{}\0", result_path_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Source data at 2000
-    payloads[2000..2008].copy_from_slice(&99999u64.to_le_bytes());
-    // Pointer at 1000 points to destination 3000
-    payloads[1000..1004].copy_from_slice(&3000u32.to_le_bytes());
-
-    let actions = vec![
-        // MemStoreIndirect: copy from 2000 to *ptr (read ptr from 1000)
-        Action { kind: Kind::MemStoreIndirect, src: 2000, dst: 1000, offset: 0, size: 8 },
-        Action { kind: Kind::FileWrite, dst: 0, src: 3000, offset: 0, size: 8 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: 2200, size: 0 },
-        Action { kind: Kind::Wait, dst: 2200, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: 2208, size: 0 },
-        Action { kind: Kind::Wait, dst: 2208, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-    execute(algorithm).unwrap();
-
-    let contents = fs::read(&result_file).unwrap();
-    assert_eq!(u64::from_le_bytes(contents[0..8].try_into().unwrap()), 99999);
-}
-
 
 #[test]
 fn test_integration_filewrite_null_terminated() {
@@ -1730,7 +432,7 @@ fn test_integration_filewrite_null_terminated() {
         },
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    let algorithm = create_test_algorithm(actions, payloads, 1);
 
     execute(algorithm).unwrap();
 
@@ -1744,395 +446,6 @@ fn test_integration_filewrite_null_terminated() {
         "FileWrite size=0 should write until null byte, not including garbage"
     );
 }
-
-#[test]
-fn test_integration_memwrite_immediate() {
-    // Tests MemWrite operation which writes an immediate value to memory
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("memwrite_immediate_result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let mut payloads = vec![0u8; 1024];
-
-    // Setup filename with null terminator
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    // Memory locations for MemWrite results
-    // 256: 1-byte value
-    // 264: 2-byte value
-    // 272: 4-byte value
-    // 280: 8-byte value
-
-    let memwrite_flag_1 = 512u32;
-    let memwrite_flag_2 = 520u32;
-    let memwrite_flag_4 = 528u32;
-    let memwrite_flag_8 = 536u32;
-    let filewrite_flag = 544u32;
-
-    let actions = vec![
-        // Action 0: MemWrite 1 byte (value 0x42 = 66)
-        Action {
-            kind: Kind::MemWrite,
-            dst: 256,
-            src: 0x42,
-            offset: 0,
-            size: 1,
-        },
-        // Action 1: MemWrite 2 bytes (value 0x1234 = 4660)
-        Action {
-            kind: Kind::MemWrite,
-            dst: 264,
-            src: 0x1234,
-            offset: 0,
-            size: 2,
-        },
-        // Action 2: MemWrite 4 bytes (value 0xDEADBEEF)
-        Action {
-            kind: Kind::MemWrite,
-            dst: 272,
-            src: 0xDEADBEEF,
-            offset: 0,
-            size: 4,
-        },
-        // Action 3: MemWrite 8 bytes (value stored as u32, will be zero-extended)
-        Action {
-            kind: Kind::MemWrite,
-            dst: 280,
-            src: 0x12345678,
-            offset: 0,
-            size: 8,
-        },
-        // Action 4: FileWrite - write all 32 bytes (256 to 288) to file
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: 256,
-            offset: 0,
-            size: 32,
-        },
-        // Action 5-8: AsyncDispatch MemWrite operations
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6, // memory unit
-            src: 0, // action 0
-            offset: memwrite_flag_1,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: memwrite_flag_1,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 1,
-            offset: memwrite_flag_2,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: memwrite_flag_2,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 2,
-            offset: memwrite_flag_4,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: memwrite_flag_4,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 3,
-            offset: memwrite_flag_8,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: memwrite_flag_8,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 14-15: FileWrite
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2, // file unit
-            src: 4, // action 4
-            offset: filewrite_flag,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: filewrite_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "MemWrite result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    assert_eq!(contents.len(), 32, "Should have written 32 bytes");
-
-    // Verify 1-byte write at offset 0 (relative to 256)
-    assert_eq!(contents[0], 0x42, "1-byte MemWrite failed");
-
-    // Verify 2-byte write at offset 8 (264 - 256)
-    let val_2 = u16::from_le_bytes([contents[8], contents[9]]);
-    assert_eq!(val_2, 0x1234, "2-byte MemWrite failed");
-
-    // Verify 4-byte write at offset 16 (272 - 256)
-    let val_4 = u32::from_le_bytes([contents[16], contents[17], contents[18], contents[19]]);
-    assert_eq!(val_4, 0xDEADBEEF, "4-byte MemWrite failed");
-
-    // Verify 8-byte write at offset 24 (280 - 256)
-    let val_8 = u64::from_le_bytes([
-        contents[24], contents[25], contents[26], contents[27],
-        contents[28], contents[29], contents[30], contents[31],
-    ]);
-    assert_eq!(val_8, 0x12345678, "8-byte MemWrite failed");
-}
-
-
-#[test]
-fn test_memwrite_large_size_zeroes_buffer() {
-    // Verify that MemWrite with size > 8 (e.g. 32) correctly fills the buffer.
-    //
-    // Strategy: write a known pattern to a 32-byte buffer, then use MemWrite with
-    // size=32 and src=0 to zero it out, then FileWrite the buffer and verify all zeros.
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("memwrite_large.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let flag_mem = 0u32;
-    let flag_file = 16u32;
-    let buf_addr = 64u32;      // 32-byte buffer to test
-    let filename_addr = 256u32;
-    let buf_size = 32u32;
-
-    let mut payloads = vec![0u8; 512];
-    // Fill the buffer with non-zero pattern so we can verify MemWrite clears it
-    for i in 0..32 {
-        payloads[buf_addr as usize + i] = 0xAA;
-    }
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[256..256 + filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    let actions = vec![
-        // 0: MemWrite to verify pattern is there (copy buf to check area first)
-        // Actually, just directly MemWrite size=32 with src=0 to zero the buffer
-        Action { kind: Kind::MemWrite, dst: buf_addr, src: 0, offset: 0, size: buf_size },
-        // 1: FileWrite the buffer to file
-        Action { kind: Kind::FileWrite, dst: filename_addr, src: buf_addr, offset: 0, size: buf_size },
-        // 2: Dispatch MemWrite
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: flag_mem, size: 1 },
-        // 3: Wait
-        Action { kind: Kind::Wait, dst: flag_mem, src: 0, offset: 0, size: 0 },
-        // 4: Dispatch FileWrite
-        Action { kind: Kind::AsyncDispatch, dst: 2, src: 1, offset: flag_file, size: 1 },
-        // 5: Wait
-        Action { kind: Kind::Wait, dst: flag_file, src: 0, offset: 0, size: 0 },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "Result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    assert_eq!(contents.len(), 32, "Should have written 32 bytes");
-    assert!(contents.iter().all(|&b| b == 0), "All 32 bytes should be zero after MemWrite with size=32, got: {:?}", contents);
-}
-
-#[test]
-fn test_integration_memory_compare() {
-    // Sets up two i32 values in shared memory, runs Compare via AsyncDispatch,
-    // then writes the result to a file to verify.
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("compare_result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    // Memory layout:
-    //   0..256: filename
-    // 256..260: value a (i32)
-    // 264..268: value b (i32)
-    // 272..276: result (i32)
-    // 512: compare flag
-    // 520: filewrite flag
-    let a_addr = 256u32;
-    let b_addr = 264u32;
-    let result_addr = 272u32;
-    let compare_flag = 512u32;
-    let filewrite_flag = 520u32;
-
-    let mut payloads = vec![0u8; 1024];
-
-    // Store a=5, b=3 in payload
-    payloads[a_addr as usize..a_addr as usize + 4].copy_from_slice(&5i32.to_le_bytes());
-    payloads[b_addr as usize..b_addr as usize + 4].copy_from_slice(&3i32.to_le_bytes());
-
-    // Store filename
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    let actions = vec![
-        // Action 0: Compare — reads a at src, b at offset, writes (a > b ? 1 : 0) to dst
-        Action {
-            kind: Kind::Compare,
-            dst: result_addr,
-            src: a_addr,
-            offset: b_addr,
-            size: 0,
-        },
-        // Action 1: FileWrite — write 4 bytes from result_addr to file
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: result_addr,
-            offset: 0,
-            size: 4,
-        },
-        // Action 2-3: AsyncDispatch Compare to memory unit + Wait
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6, // memory unit
-            src: 0, // action 0
-            offset: compare_flag,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: compare_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4-5: AsyncDispatch FileWrite + Wait
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2, // file unit
-            src: 1, // action 1
-            offset: filewrite_flag,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: filewrite_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "Compare result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    assert_eq!(contents.len(), 4);
-    let result = i32::from_le_bytes(contents[0..4].try_into().unwrap());
-    assert_eq!(result, 1, "5 > 3 should be 1 (true)");
-}
-
-#[test]
-fn test_integration_memory_compare_ge() {
-    // Tests GE mode (size=5): a >= b returns 1 when equal, 0 when a < b.
-    let temp_dir = TempDir::new().unwrap();
-    let test_file = temp_dir.path().join("compare_ge_result.txt");
-    let test_file_str = test_file.to_str().unwrap();
-
-    let a_addr = 256u32;
-    let b_addr = 264u32;
-    let result_addr = 272u32;
-    let compare_flag = 512u32;
-    let filewrite_flag = 520u32;
-
-    let mut payloads = vec![0u8; 1024];
-
-    // Store a=5, b=5 (equal values)
-    payloads[a_addr as usize..a_addr as usize + 4].copy_from_slice(&5i32.to_le_bytes());
-    payloads[b_addr as usize..b_addr as usize + 4].copy_from_slice(&5i32.to_le_bytes());
-
-    let filename_bytes = format!("{}\0", test_file_str).into_bytes();
-    payloads[0..filename_bytes.len()].copy_from_slice(&filename_bytes);
-
-    let actions = vec![
-        // Action 0: Compare GE — size=5 means >= mode
-        Action {
-            kind: Kind::Compare,
-            dst: result_addr,
-            src: a_addr,
-            offset: b_addr,
-            size: 5,
-        },
-        // Action 1: FileWrite
-        Action {
-            kind: Kind::FileWrite,
-            dst: 0,
-            src: result_addr,
-            offset: 0,
-            size: 4,
-        },
-        // Action 2-3: AsyncDispatch Compare + Wait
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: 0,
-            offset: compare_flag,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: compare_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 4-5: AsyncDispatch FileWrite + Wait
-        Action {
-            kind: Kind::AsyncDispatch,
-            dst: 2,
-            src: 1,
-            offset: filewrite_flag,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: filewrite_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let algorithm = create_test_algorithm(actions, payloads, 1, 1);
-    execute(algorithm).unwrap();
-
-    assert!(test_file.exists(), "Compare GE result file should exist");
-    let contents = fs::read(&test_file).unwrap();
-    assert_eq!(contents.len(), 4);
-    let result = i32::from_le_bytes(contents[0..4].try_into().unwrap());
-    assert_eq!(result, 1, "5 >= 5 should be 1 (true)");
-}
-
 
 #[test]
 fn test_integration_file_read_with_offset() {
@@ -2312,7 +625,7 @@ fn test_integration_file_read_with_offset() {
         },
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    let algorithm = create_test_algorithm(actions, payloads, 1);
     execute(algorithm).unwrap();
 
     // Verify each chunk was written correctly
@@ -2422,7 +735,7 @@ fn test_integration_file_write_with_offset() {
         },
     ];
 
-    let algorithm = create_test_algorithm(actions, payloads, 1, 0);
+    let algorithm = create_test_algorithm(actions, payloads, 1);
     execute(algorithm).unwrap();
 
     // Verify the output file has all chunks written at correct positions
@@ -2465,7 +778,7 @@ block0(v0: i64):
 
     let actions = vec![
         // Action 0: Cranelift executes (no-op, just tests compilation)
-        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
         // Action 1: FileWrite to verify we got here
         Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: data_offset as u32, offset: 0, size: 8 },
         // Action 2: AsyncDispatch Cranelift
@@ -2522,7 +835,7 @@ block0(v0: i64):
         .copy_from_slice(&filename_bytes);
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 16) as u32, offset: 0, size: 8 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
         Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
@@ -2574,7 +887,7 @@ block0(v0: i64):
         .copy_from_slice(&filename_bytes);
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 16) as u32, offset: 0, size: 8 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
         Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
@@ -2629,7 +942,7 @@ block0(v0: i64):
         .copy_from_slice(&filename_bytes);
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 12) as u32, offset: 0, size: 4 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
         Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
@@ -2705,9 +1018,9 @@ block0(v0: i64):
 
     let actions = vec![
         // Action 0: Cranelift unit 0 computation
-        Action { kind: Kind::MemCopy, dst: data1_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: data1_offset as u32, src: 0, offset: 0, size: 0 },
         // Action 1: Cranelift unit 1 computation
-        Action { kind: Kind::MemCopy, dst: data2_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: data2_offset as u32, src: 0, offset: 0, size: 0 },
         // Action 2: FileWrite result 1
         Action { kind: Kind::FileWrite, dst: file1_offset as u32, src: (data1_offset + 16) as u32, offset: 0, size: 8 },
         // Action 3: FileWrite result 2
@@ -2807,7 +1120,7 @@ block2:
         .copy_from_slice(&filename_bytes);
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: data_offset as u32, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::FileWrite, dst: filename_offset as u32, src: (data_offset + 24) as u32, offset: 0, size: 8 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: cranelift_flag, size: 0 },
         Action { kind: Kind::Wait, dst: cranelift_flag, src: 0, offset: 0, size: 0 },
@@ -2828,10 +1141,9 @@ fn create_test_algorithm_with_timeout(
     actions: Vec<Action>,
     payloads: Vec<u8>,
     file_units: usize,
-    memory_units: usize,
     timeout_ms: u64,
 ) -> Algorithm {
-    let mut alg = create_test_algorithm(actions, payloads, file_units, memory_units);
+    let mut alg = create_test_algorithm(actions, payloads, file_units);
     alg.timeout_ms = Some(timeout_ms);
     alg
 }
@@ -2872,7 +1184,7 @@ fn test_integration_wake_then_park_progresses() {
         // 1: Park — wake word is already 1 != expected(0), passes immediately
         Action { kind: Kind::Park, dst: wake_addr, src: expected_addr, offset: status_addr, size: 0 },
         // 2: MemCopy wake word to offset 24 (just to ensure data is in payloads for FileWrite)
-        Action { kind: Kind::MemCopy, dst: wake_addr, src: 24, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: wake_addr, src: 24, offset: 0, size: 0 },
         // 3: FileWrite — write 16 bytes (wake word + status) to file
         Action { kind: Kind::FileWrite, dst: filename_offset, src: wake_addr, offset: 0, size: 24 },
         // 4: AsyncDispatch file unit
@@ -2881,7 +1193,7 @@ fn test_integration_wake_then_park_progresses() {
         Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 1, 5000);
+    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 5000);
     execute(algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -2943,7 +1255,7 @@ fn test_integration_park_times_out_without_wake() {
         Action { kind: Kind::Wait, dst: file_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 1, 5000);
+    let algorithm = create_test_algorithm_with_timeout(actions, payloads, 1, 5000);
     execute(algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -2956,379 +1268,6 @@ fn test_integration_park_times_out_without_wake() {
     // status should be 0 (timed out, not woken)
     let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
     assert_eq!(status_val, 0, "status should be 0 (timed out)");
-}
-
-fn mw(dst: u32, src: u32, size: u32) -> Action {
-    Action { kind: Kind::MemWrite, dst, src, offset: 0, size }
-}
-
-const K_SETUP_DONE: usize = 0x480;
-const K_QUEUE_DESC: usize = 0x100;
-const K_QUEUE_BASE: usize = 0x200;
-const KERNEL_DESC: usize = 0x300;
-const K_HANDLE_PTR: usize = 0x400;
-const K_PACKET_PTR_PTR: usize = 0x408;
-const K_START_STATUS: usize = 0x500;
-const K_SUBMIT_STATUS: usize = 0x508;
-const K_WAIT_STATUS: usize = 0x510;
-const K_STOP_STATUS: usize = 0x518;
-const K_PROGRESS_ADDR: usize = 0x520;
-const K_STOP_FLAG_ADDR: usize = 0x528;
-const K_EXPECTED_ZERO_ADDR: usize = 0x530;
-const K_EXPECTED_ONE_ADDR: usize = 0x538;
-const K_EXPECTED_TWO_ADDR: usize = 0x540;
-const K_VALUE_ADDR: usize = 0x600;
-const K_PREV_A_ADDR: usize = 0x608;
-const K_ADDEND_A_ADDR: usize = 0x610;
-const K_PREV_B_ADDR: usize = 0x618;
-const K_ADDEND_B_ADDR: usize = 0x620;
-const K_EXPECTED_SUM_ADDR: usize = 0x628;
-const K_FLAG_A_ADDR: usize = 0x630;
-const K_FLAG_B_ADDR: usize = 0x638;
-const K_PACKET_ADDR: usize = 0x700;
-
-#[test]
-fn test_kernel_submit_indirect_single_packet() {
-    let payloads = vec![0u8; 2048];
-    let mut actions = vec![
-        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
-        mw(KERNEL_DESC as u32 + 4, 6, 4),
-        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
-        mw(K_ADDEND_A_ADDR as u32, 7, 8),
-        mw(K_EXPECTED_SUM_ADDR as u32, 7, 8),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
-    ];
-    // packet: worker at w, dispatches actions[w..w+1]
-    let w = (actions.len() + 2 + 2) as u64; // +2 pkt writes, +2 AsyncDispatch/Wait
-    let pkt = (w << 43) | ((w + 1) << 22) | (K_FLAG_A_ADDR as u64);
-    actions.push(mw(K_PACKET_ADDR as u32, pkt as u32, 4));
-    actions.push(mw(K_PACKET_ADDR as u32 + 4, (pkt >> 32) as u32, 4));
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    actions.extend_from_slice(&[
-        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
-        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 1, offset: K_WAIT_STATUS as u32, size: 3000 },
-        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
-        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_START_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_kernel_submit_indirect_multiple_packets() {
-    let payloads = vec![0u8; 2048];
-    let mut actions = vec![
-        mw(K_QUEUE_DESC as u32 + 8, 31, 4),
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
-        mw(KERNEL_DESC as u32 + 4, 6, 4),
-        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
-        mw(K_ADDEND_A_ADDR as u32, 5, 8),
-        mw(K_ADDEND_B_ADDR as u32, 9, 8),
-        mw(K_EXPECTED_SUM_ADDR as u32, 14, 8),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-        mw(K_EXPECTED_TWO_ADDR as u32, 2, 8),
-        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
-    ];
-    // workers at w and w+1; pkt_a dispatches [w..w+1], pkt_b dispatches [w+1..w+2]
-    let w = (actions.len() + 4 + 2) as u64; // +4 pkt writes, +2 AsyncDispatch/Wait
-    let pkt_a = (w << 43) | ((w + 1) << 22) | (K_FLAG_A_ADDR as u64);
-    let pkt_b = ((w + 1) << 43) | ((w + 2) << 22) | (K_FLAG_B_ADDR as u64);
-    actions.extend_from_slice(&[
-        mw(K_PACKET_ADDR as u32, pkt_a as u32, 4),
-        mw(K_PACKET_ADDR as u32 + 4, (pkt_a >> 32) as u32, 4),
-        mw((K_PACKET_ADDR + 8) as u32, pkt_b as u32, 4),
-        mw((K_PACKET_ADDR + 8) as u32 + 4, (pkt_b >> 32) as u32, 4),
-    ]);
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    actions.extend_from_slice(&[
-        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
-        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_B_ADDR as u32, offset: K_ADDEND_B_ADDR as u32, size: 8 },
-        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 2 },
-        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 2, offset: K_WAIT_STATUS as u32, size: 3000 },
-        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
-        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_START_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_TWO_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_TWO_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_kernel_submit_indirect_invalid_handle() {
-    let payloads = vec![0u8; 2048];
-    let mut actions = vec![
-        mw(K_HANDLE_PTR as u32, 999, 4),
-        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
-        mw(K_PACKET_ADDR as u32, 0x400000, 8),
-    ];
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    actions.extend_from_slice(&[
-        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 1 },
-        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_kernel_submit_indirect_size_zero_defaults_to_one_packet() {
-    let payloads = vec![0u8; 2048];
-    let mut actions = vec![
-        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
-        mw(KERNEL_DESC as u32 + 4, 6, 4),
-        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
-        mw(K_ADDEND_A_ADDR as u32, 3, 8),
-        mw(K_ADDEND_B_ADDR as u32, 11, 8),
-        mw(K_EXPECTED_SUM_ADDR as u32, 3, 8),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
-    ];
-    // workers at w and w+1; pkt_a dispatches [w..w+1], pkt_b dispatches [w+1..w+2]
-    let w = (actions.len() + 4 + 2) as u64; // +4 pkt writes, +2 AsyncDispatch/Wait
-    let pkt_a = (w << 43) | ((w + 1) << 22) | (K_FLAG_A_ADDR as u64);
-    let pkt_b = ((w + 1) << 43) | ((w + 2) << 22) | (K_FLAG_B_ADDR as u64);
-    actions.extend_from_slice(&[
-        mw(K_PACKET_ADDR as u32, pkt_a as u32, 4),
-        mw(K_PACKET_ADDR as u32 + 4, (pkt_a >> 32) as u32, 4),
-        mw((K_PACKET_ADDR + 8) as u32, pkt_b as u32, 4),
-        mw((K_PACKET_ADDR + 8) as u32 + 4, (pkt_b >> 32) as u32, 4),
-    ]);
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    actions.extend_from_slice(&[
-        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
-        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_B_ADDR as u32, offset: K_ADDEND_B_ADDR as u32, size: 8 },
-        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 0 },
-        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 1, offset: K_WAIT_STATUS as u32, size: 3000 },
-        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
-        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_kernel_submit_indirect_partial_submit_when_queue_full() {
-    let payloads = vec![0u8; 2048];
-    let mut actions = vec![
-        // queue with capacity 1 (mask=0), kernel stops immediately (stop_flag=1)
-        mw(K_STOP_FLAG_ADDR as u32, 1, 8),
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
-        mw(KERNEL_DESC as u32 + 4, 6, 4),
-        mw(KERNEL_DESC as u32 + 12, K_STOP_FLAG_ADDR as u32, 4),
-        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-        mw(K_PACKET_PTR_PTR as u32, K_PACKET_ADDR as u32, 4),
-        mw(K_PACKET_ADDR as u32, 0x400000, 8),
-        mw((K_PACKET_ADDR + 8) as u32, 0x400000, 8),
-    ];
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    actions.extend_from_slice(&[
-        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelSubmitIndirect, dst: K_HANDLE_PTR as u32, src: K_PACKET_PTR_PTR as u32, offset: K_SUBMIT_STATUS as u32, size: 2 },
-        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
-        Action { kind: Kind::WaitUntil, dst: K_SUBMIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_PROGRESS_ADDR as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_kernel_wait_timeout_and_stop_idempotent() {
-    let payloads = vec![0u8; 2048];
-    let mut actions = vec![
-        mw(K_STOP_FLAG_ADDR as u32, 1, 8),
-        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
-        mw(KERNEL_DESC as u32 + 4, 6, 4),
-        mw(KERNEL_DESC as u32 + 12, K_STOP_FLAG_ADDR as u32, 4),
-        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-    ];
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    actions.extend_from_slice(&[
-        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: 1, offset: K_WAIT_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
-        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
-        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_START_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_queue_push_packet_mp_single_and_full() {
-    const PUSH1_DONE: usize = 0x560;
-    const PUSH2_DONE: usize = 0x568;
-    const PUSH1_STATUS: usize = 0x570;
-    const PUSH2_STATUS: usize = 0x578;
-
-    let payloads = vec![0u8; 2048];
-    let mut actions = vec![
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-        mw(K_PACKET_ADDR as u32, 0x400000, 8),
-        mw((K_PACKET_ADDR + 8) as u32, 0x400000, 8),
-    ];
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    // QueuePushPacketMP actions dispatched individually via AsyncDispatch
-    let qp1 = actions.len() as u32 + 4; // after 2 AsyncDispatch/Wait pairs
-    let qp2 = qp1 + 1;
-    actions.extend_from_slice(&[
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: qp1, offset: PUSH1_DONE as u32, size: 1 },
-        Action { kind: Kind::Wait, dst: PUSH1_DONE as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 6, src: qp2, offset: PUSH2_DONE as u32, size: 1 },
-        Action { kind: Kind::Wait, dst: PUSH2_DONE as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: PUSH1_STATUS as u32, size: 0 },
-        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: (K_PACKET_ADDR + 8) as u32, offset: PUSH2_STATUS as u32, size: 0 },
-        Action { kind: Kind::WaitUntil, dst: PUSH1_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: PUSH2_STATUS as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 8 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_queue_push_packet_mp_concurrent_multi_producer() {
-    const ROUNDS: u32 = 8;
-    const PRODUCERS: u32 = 4;
-    const EXPECTED: u64 = (ROUNDS as u64) * (PRODUCERS as u64);
-    const PUSH_DONE_BASE: usize = 0x560;
-    const PUSH_STATUS_BASE: usize = 0x5f0;
-    const QUEUE_TAIL_ADDR: usize = K_QUEUE_DESC + 4;
-    const QUEUE_RESERVE_ADDR: usize = K_QUEUE_DESC + 20;
-
-    let payloads = vec![0u8; 4096];
-    let mut actions = vec![
-        mw(K_QUEUE_DESC as u32 + 8, 1023, 4),
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-        mw(K_EXPECTED_SUM_ADDR as u32, EXPECTED as u32, 8),
-        mw(K_PACKET_ADDR as u32, 0x400000, 8),
-    ];
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    // QueuePushPacketMP x 4 (one per producer, broadcast-partitioned)
-    let qp_start = actions.len() as u32;
-    actions.extend_from_slice(&[
-        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 0) as u32, size: 0 },
-        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 8) as u32, size: 0 },
-        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 16) as u32, size: 0 },
-        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: (PUSH_STATUS_BASE + 24) as u32, size: 0 },
-    ]);
-
-    for i in 0..ROUNDS {
-        actions.push(Action {
-            kind: Kind::AsyncDispatch,
-            dst: 6,
-            src: qp_start,
-            offset: (PUSH_DONE_BASE + (i as usize) * 8) as u32,
-            size: (1u32 << 31) | 4, // broadcast range partitioned across workers
-        });
-        actions.push(Action {
-            kind: Kind::Wait,
-            dst: (PUSH_DONE_BASE + (i as usize) * 8) as u32,
-            src: 0,
-            offset: 0,
-            size: 0,
-        });
-    }
-
-    actions.extend_from_slice(&[
-        Action { kind: Kind::WaitUntil, dst: QUEUE_TAIL_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 4 },
-        Action { kind: Kind::WaitUntil, dst: QUEUE_RESERVE_ADDR as u32, src: K_EXPECTED_SUM_ADDR as u32, offset: 0, size: 4 },
-        Action { kind: Kind::WaitUntil, dst: K_QUEUE_DESC as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 0, size: 4 },
-    ]);
-
-    let algorithm = create_test_algorithm(actions, payloads, 0, PRODUCERS as usize);
-    execute(algorithm).unwrap();
-}
-
-#[test]
-fn test_worker_discovered_chain_via_queue_push_packet_mp() {
-    const CHAIN_TARGET: u32 = 50;
-    const PUSH_STATUS: usize = 0x560;
-    const N_KERNEL_ACTIONS: u64 = 8; // KernelStart..WaitUntil (see below)
-
-    let payloads = vec![0u8; 4096];
-    let mut actions = vec![
-        mw(K_QUEUE_DESC as u32 + 8, 15, 4),
-        mw(K_QUEUE_DESC as u32 + 12, K_QUEUE_BASE as u32, 4),
-        mw(KERNEL_DESC as u32, K_QUEUE_DESC as u32, 4),
-        mw(KERNEL_DESC as u32 + 4, 6, 4),
-        mw(KERNEL_DESC as u32 + 12, K_STOP_FLAG_ADDR as u32, 4),
-        mw(KERNEL_DESC as u32 + 16, K_PROGRESS_ADDR as u32, 4),
-        mw(K_EXPECTED_ONE_ADDR as u32, 1, 8),
-        mw(K_ADDEND_A_ADDR as u32, 1, 8),
-    ];
-    // packet: worker actions at w and w+1, dispatches [w..w+2]
-    let w = (actions.len() + 2 + 2) as u64 + N_KERNEL_ACTIONS; // +2 pkt, +2 async/wait, +kernel
-    let pkt = (w << 43) | ((w + 2) << 22); // flag=0
-    actions.push(mw(K_PACKET_ADDR as u32, pkt as u32, 4));
-    actions.push(mw(K_PACKET_ADDR as u32 + 4, (pkt >> 32) as u32, 4));
-    let setup_len = actions.len() as u32;
-    actions.push(Action { kind: Kind::AsyncDispatch, dst: 6, src: 0, offset: K_SETUP_DONE as u32, size: setup_len });
-    actions.push(Action { kind: Kind::Wait, dst: K_SETUP_DONE as u32, src: 0, offset: 0, size: 0 });
-    actions.extend_from_slice(&[
-        Action { kind: Kind::KernelStart, dst: KERNEL_DESC as u32, src: K_HANDLE_PTR as u32, offset: K_START_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelSubmit, dst: K_HANDLE_PTR as u32, src: K_PACKET_ADDR as u32, offset: K_SUBMIT_STATUS as u32, size: 1 },
-        Action { kind: Kind::KernelWait, dst: K_HANDLE_PTR as u32, src: CHAIN_TARGET, offset: K_WAIT_STATUS as u32, size: 5000 },
-        Action { kind: Kind::MemWrite, dst: K_STOP_FLAG_ADDR as u32, src: 1, offset: 0, size: 8 },
-        Action { kind: Kind::KernelStop, dst: K_HANDLE_PTR as u32, src: 0, offset: K_STOP_STATUS as u32, size: 0 },
-        Action { kind: Kind::WaitUntil, dst: K_WAIT_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_STOP_STATUS as u32, src: K_EXPECTED_ONE_ADDR as u32, offset: 0, size: 8 },
-        Action { kind: Kind::WaitUntil, dst: K_VALUE_ADDR as u32, src: K_EXPECTED_ZERO_ADDR as u32, offset: 1, size: 8 }, // value != 0
-    ]);
-    // worker actions (dispatched repeatedly by kernel at indices w..w+2)
-    let worker_start = actions.len() as u64;
-    assert_eq!(worker_start, w);
-    actions.extend_from_slice(&[
-        Action { kind: Kind::AtomicFetchAdd, dst: K_VALUE_ADDR as u32, src: K_PREV_A_ADDR as u32, offset: K_ADDEND_A_ADDR as u32, size: 8 },
-        Action { kind: Kind::QueuePushPacketMP, dst: K_QUEUE_DESC as u32, src: K_PACKET_ADDR as u32, offset: PUSH_STATUS as u32, size: 0 },
-    ]);
-    let algorithm = create_test_algorithm(actions, payloads, 0, 1);
-    execute(algorithm).unwrap();
 }
 
 #[test]
@@ -3396,7 +1335,7 @@ block0(v0: i64):
 
     let actions = vec![
         // Action 0: cranelift dispatch target (dst=0 so v0 = base of shared memory)
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         // Action 1: FileWrite to dump read-back data (offset 3100, 12 bytes) to verify file
         Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 12 },
         // Action 2: AsyncDispatch cranelift (type 9)
@@ -3455,7 +1394,7 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"ABCDE");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 5 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
@@ -3511,7 +1450,7 @@ block0(v0: i64):
     payloads[3000..3008].copy_from_slice(&[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]);
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::FileWrite, dst: 2256, src: 3100, offset: 0, size: 8 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
@@ -3667,7 +1606,7 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -3741,7 +1680,7 @@ block0(v0: i64):
     payloads[3000..3007].copy_from_slice(b"RETVALS");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -3802,7 +1741,7 @@ block0(v0: i64):
     payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -3854,7 +1793,7 @@ block0(v0: i64):
     payloads[3000..3009].copy_from_slice(b"CSTR\0xtra");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -3902,7 +1841,7 @@ block0(v0: i64):
     payloads[3100..3103].copy_from_slice(b"SML");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -3958,7 +1897,7 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4063,7 +2002,7 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4186,7 +2125,7 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4323,7 +2262,7 @@ block0(v0: i64):
     payloads[3204..3208].copy_from_slice(&0i32.to_le_bytes());
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4424,7 +2363,7 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"hello");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4515,7 +2454,7 @@ block0(v0: i64):
     });
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4580,7 +2519,7 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"hello");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4638,7 +2577,7 @@ block0(v0: i64):
     payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4733,7 +2672,7 @@ block0(v0: i64):
     });
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4815,7 +2754,7 @@ block0(v0: i64):
     payloads[5010..5016].copy_from_slice(b"barbaz");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4915,7 +2854,7 @@ block0(v0: i64):
     payloads[5050..5052].copy_from_slice(b"v3");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -4997,7 +2936,7 @@ block0(v0: i64):
     payloads[5030] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5067,7 +3006,7 @@ block0(v0: i64):
     payloads[5010..5013].copy_from_slice(b"val");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5143,7 +3082,7 @@ block0(v0: i64):
     payloads[5020..5023].copy_from_slice(b"new");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5201,7 +3140,7 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5262,7 +3201,7 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5341,7 +3280,7 @@ block0(v0: i64):
     payloads[5060] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5406,7 +3345,7 @@ block0(v0: i64):
     payloads[5010] = b'v';
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5490,7 +3429,7 @@ block0(v0: i64):
     payloads[5020..5022].copy_from_slice(b"ok");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5594,7 +3533,7 @@ block0(v0: i64):
     payloads[5010..5012].copy_from_slice(b"vv");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5701,7 +3640,7 @@ block0(v0: i64):
     payloads[5030..5032].copy_from_slice(b"v2");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5765,7 +3704,7 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5838,7 +3777,7 @@ block0(v0: i64):
     payloads[5000] = b'k';
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -5935,7 +3874,7 @@ block0(v0: i64):
     payloads[5020..5022].copy_from_slice(b"d2");
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -6022,7 +3961,7 @@ block0(v0: i64):
     payloads[5060] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -6082,7 +4021,7 @@ block0(v0: i64):
     payloads1[5010..5013].copy_from_slice(b"val");
 
     let actions1 = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
@@ -6130,7 +4069,7 @@ block0(v0: i64):
     payloads2[5000..5003].copy_from_slice(b"key");
 
     let actions2 = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];

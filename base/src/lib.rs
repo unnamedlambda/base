@@ -8,10 +8,10 @@ mod units;
 use crate::units::{
     cranelift_unit_task_mailbox,
     file_unit_task_mailbox,
-    load_sized, memory_unit_task_mailbox,
+    load_sized,
     order_from_u32, queue_try_push_packet_mp,
     read_null_terminated_string_from_slice,
-    Broadcast, Mailbox, SharedMemory,
+    Mailbox, SharedMemory,
     QUEUE_BASE_OFF, QUEUE_HEAD_OFF, QUEUE_MASK_OFF, QUEUE_TAIL_OFF,
 };
 
@@ -36,11 +36,6 @@ struct KernelHandle {
     progress_addr: u32,
     queue_desc: u32,
     pool: Option<Vec<Arc<Mailbox>>>,
-}
-
-enum DispatchTarget {
-    Mailbox(Arc<Mailbox>),
-    Broadcast(Arc<Broadcast>),
 }
 
 unsafe fn cas_u32(
@@ -91,7 +86,6 @@ unsafe fn queue_try_pop_u64(shared: &SharedMemory, queue_desc: usize) -> Option<
 
 pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute",
-        memory_units = algorithm.units.memory_units,
         file_units = algorithm.units.file_units,
         cranelift_units = algorithm.units.cranelift_units,
         actions_count = algorithm.actions.len(),
@@ -99,31 +93,7 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
 
     info!("starting execution engine");
 
-    if algorithm.memory_assignments.is_empty() {
-        algorithm.memory_assignments = vec![255; algorithm.actions.len()];
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::ConditionalWrite
-                | Kind::MemCopy
-                | Kind::MemScan
-                | Kind::AtomicCAS
-                | Kind::Fence
-                | Kind::MemWrite
-                | Kind::MemCopyIndirect
-                | Kind::MemStoreIndirect
-                | Kind::Compare
-                | Kind::AtomicFetchAdd
-                | Kind::QueuePushPacketMP
-                 => {
-                    algorithm.memory_assignments[i] = 0;
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned memory actions across {} units", algorithm.units.memory_units);
-    }
-
-    if algorithm.file_assignments.is_empty() {
+    if algorithm.file_assignments.is_empty() && algorithm.units.file_units > 0 {
         algorithm.file_assignments = vec![255; algorithm.actions.len()];
         let mut unit = 0u8;
         for (i, action) in algorithm.actions.iter().enumerate() {
@@ -155,16 +125,12 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let actions_arc = Arc::new(algorithm.actions);
 
     let file_assignments = Arc::new(algorithm.file_assignments);
-    let memory_assignments = Arc::new(algorithm.memory_assignments);
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
     let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
-    let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
     let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
         .map(|_| Arc::new(Mailbox::new()))
         .collect();
-        
-    let memory_broadcast = Arc::new(Broadcast::new(algorithm.units.memory_units as u32));
 
     let mut thread_handles = Vec::new();
     let mut kernel_handles: Vec<Option<KernelHandle>> = Vec::new();
@@ -176,22 +142,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let buffer_size = algorithm.state.file_buffer_size;
         thread_handles.push(std::thread::spawn(move || {
             file_unit_task_mailbox(mailbox, actions, shared, buffer_size);
-        }));
-    }
-
-    for (worker_id, mailbox) in memory_mailboxes.iter().cloned().enumerate() {
-        info!(worker_id, "spawning memory unit thread");
-        let actions = actions_arc.clone();
-        let shared = shared.clone();
-        let broadcast = memory_broadcast.clone();
-        thread_handles.push(std::thread::spawn(move || {
-            memory_unit_task_mailbox(
-                mailbox,
-                broadcast,
-                worker_id as u32,
-                actions,
-                shared,
-            );
         }));
     }
 
@@ -308,31 +258,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         };
 
                         file_mailboxes[unit_id].post(start, end, flag);
-                    }
-                    6 => {
-                        if is_broadcast {
-                            memory_broadcast.dispatch(start, end, flag);
-                            pc += 1;
-                            continue;
-                        }
-
-                        if memory_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = memory_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(memory_mailboxes.len() - 1)
-                        };
-
-                        memory_mailboxes[unit_id].post(start, end, flag);
                     }
                     9 => {
                         if cranelift_mailboxes.is_empty() {
@@ -479,7 +404,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                     let pools: [&[Arc<Mailbox>]; 9] = [
                         &[], &[], &file_mailboxes,
                         &[], &[], &[],
-                        &memory_mailboxes, &[], &[],
+                        &[], &[], &[],
                     ];
                     let t = unit_type as usize;
 
@@ -494,23 +419,18 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         None
                     };
 
-                    let single_target: Option<DispatchTarget> = if pool_mailboxes.is_some() {
+                    let single_target: Option<Arc<Mailbox>> = if pool_mailboxes.is_some() {
                         None
                     } else if unit_id == u32::MAX {
-                        match unit_type {
-                            6 => Some(DispatchTarget::Broadcast(memory_broadcast.clone())),
-                            _ => {
-                                if t < pools.len() && !pools[t].is_empty() {
-                                    Some(DispatchTarget::Mailbox(pools[t][0].clone()))
-                                } else {
-                                    None
-                                }
-                            }
+                        if t < pools.len() && !pools[t].is_empty() {
+                            Some(pools[t][0].clone())
+                        } else {
+                            None
                         }
                     } else {
                         if t < pools.len() && !pools[t].is_empty() {
                             let idx = (unit_id as usize).min(pools[t].len() - 1);
-                            Some(DispatchTarget::Mailbox(pools[t][idx].clone()))
+                            Some(pools[t][idx].clone())
                         } else {
                             None
                         }
@@ -566,10 +486,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                                     let end = ((packed >> 22) & 0x1F_FFFF) as u32;
                                     let flag = (packed & 0x3F_FFFF) as u32;
 
-                                    match &single_target {
-                                        DispatchTarget::Mailbox(m) => m.post(start, end, flag),
-                                        DispatchTarget::Broadcast(b) => b.dispatch(start, end, flag),
-                                    }
+                                    single_target.post(start, end, flag);
                                     if flag != 0 {
                                         loop {
                                             let done = unsafe {
@@ -784,13 +701,9 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     for mailbox in file_mailboxes.iter() {
         mailbox.shutdown();
     }
-    for mailbox in memory_mailboxes.iter() {
-        mailbox.shutdown();
-    }
     for mailbox in cranelift_mailboxes.iter() {
         mailbox.shutdown();
     }
-    memory_broadcast.shutdown();
 
     for handle in thread_handles {
         let _ = handle.join();

@@ -163,7 +163,7 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
         // [1] Wait for CL completion
         Action { kind: Kind::Wait, dst: FLAG_CL as u32, src: 0, offset: 0, size: 0 },
         // [2] CL work action: call function 0 with base ptr
-        Action { kind: Kind::Fence, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
     base::Algorithm {
@@ -174,10 +174,9 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
             cranelift_ir_offsets: vec![CLIF_OFF],
         },
         units: UnitSpec {
-            file_units: 0, memory_units: 0,
+            file_units: 0,
             cranelift_units: 1,
         },
-        memory_assignments: vec![],
         file_assignments: vec![],
         cranelift_assignments: vec![],
         worker_threads: Some(1),

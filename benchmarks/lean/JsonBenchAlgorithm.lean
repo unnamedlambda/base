@@ -201,7 +201,7 @@ def workerActions : List Action := [
     src := UInt32.ofNat INPUT_FILENAME,
     dst := UInt32.ofNat INPUT_DATA,
     offset := 0, size := 0 },
-  { kind := .Fence, dst := 0, src := 0, offset := 0, size := 0 },
+  { kind := .FileRead, dst := 0, src := 0, offset := 0, size := 0 },
   { kind := .FileWrite,
     src := UInt32.ofNat OUTPUT_BUF,
     dst := UInt32.ofNat OUTPUT_FILENAME,
@@ -230,10 +230,10 @@ def buildAlgorithm : Algorithm := {
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    file_units := 1, memory_units := 0,
+    file_units := 1,
     cranelift_units := 1,
   },
-  memory_assignments := [], file_assignments := [], cranelift_assignments := [],
+  file_assignments := [], cranelift_assignments := [],
   worker_threads := some 2, blocking_threads := some 2,
   stack_size := none, timeout_ms := some TIMEOUT_MS,
   thread_name_prefix := some "json-bench"

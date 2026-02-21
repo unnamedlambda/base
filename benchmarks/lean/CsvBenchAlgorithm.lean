@@ -270,7 +270,7 @@ def workerActions : List Action := [
     dst := UInt32.ofNat OUTPUT_FILENAME,
     offset := 0, size := 0 },
   -- [2] Cranelift run: dummy, dst=0 means function gets memory base
-  { kind := .Fence, dst := 0, src := 0, offset := 0, size := 0 }
+  { kind := .FileRead, dst := 0, src := 0, offset := 0, size := 0 }
 ]
 
 -- Control actions (main program)
@@ -320,10 +320,8 @@ def buildAlgorithm : Algorithm := {
   },
   units := {
     file_units := 1,
-    memory_units := 0,
     cranelift_units := 1,
   },
-  memory_assignments := [],
   file_assignments := [],
   cranelift_assignments := [],
   worker_threads := some 2,

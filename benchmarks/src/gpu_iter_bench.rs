@@ -464,7 +464,7 @@ fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str)
     let _ = std::fs::remove_file(output_path);
 
     let actions = vec![
-        Action { kind: Kind::MemCopy, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: CLIF_FLAG_OFF as u32, size: 0 },
         Action { kind: Kind::Wait, dst: CLIF_FLAG_OFF as u32, src: 0, offset: 0, size: 0 },
     ];
@@ -479,10 +479,8 @@ fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str)
         },
         units: UnitSpec {
             file_units: 0,
-            memory_units: 0,
             cranelift_units: 1,
         },
-        memory_assignments: vec![],
         file_assignments: vec![],
         cranelift_assignments: vec![0; num_actions],
         worker_threads: Some(1),

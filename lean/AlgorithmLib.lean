@@ -18,34 +18,36 @@ instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
 inductive Kind where
-  | MemCopy
-  | MemCopyIndirect
-  | MemStoreIndirect
-  | MemWrite
-  | MemScan
   | FileRead
   | FileWrite
-  | Compare
   | ConditionalJump
-  | Fence
   | AsyncDispatch
   | Wait
+  | WaitUntil
+  | Park
+  | Wake
+  | KernelStart
+  | KernelSubmit
+  | KernelWait
+  | KernelStop
+  | KernelSubmitIndirect
   deriving Repr
 
 instance : ToJson Kind where
   toJson
-    | .MemCopy => "mem_copy"
-    | .MemCopyIndirect => "mem_copy_indirect"
-    | .MemStoreIndirect => "mem_store_indirect"
-    | .MemWrite => "mem_write"
-    | .MemScan => "mem_scan"
     | .FileRead => "file_read"
     | .FileWrite => "file_write"
-    | .Compare => "compare"
     | .ConditionalJump => "conditional_jump"
-    | .Fence => "fence"
     | .AsyncDispatch => "async_dispatch"
     | .Wait => "wait"
+    | .WaitUntil => "wait_until"
+    | .Park => "park"
+    | .Wake => "wake"
+    | .KernelStart => "kernel_start"
+    | .KernelSubmit => "kernel_submit"
+    | .KernelWait => "kernel_wait"
+    | .KernelStop => "kernel_stop"
+    | .KernelSubmitIndirect => "kernel_submit_indirect"
 
 structure Action where
   kind : Kind
@@ -77,14 +79,12 @@ instance : ToJson State where
 
 structure UnitSpec where
   file_units : Nat
-  memory_units : Nat
   cranelift_units : Nat
   deriving Repr
 
 instance : ToJson UnitSpec where
   toJson u := Json.mkObj [
     ("file_units", toJson u.file_units),
-    ("memory_units", toJson u.memory_units),
     ("cranelift_units", toJson u.cranelift_units)
   ]
 
@@ -93,7 +93,6 @@ structure Algorithm where
   payloads : List UInt8
   state : State
   units : UnitSpec
-  memory_assignments : List UInt8
   file_assignments : List UInt8
   cranelift_assignments : List UInt8
   worker_threads : Option Nat
@@ -109,7 +108,6 @@ instance : ToJson Algorithm where
     ("payloads", toJson alg.payloads),
     ("state", toJson alg.state),
     ("units", toJson alg.units),
-    ("memory_assignments", toJson alg.memory_assignments),
     ("file_assignments", toJson alg.file_assignments),
     ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),

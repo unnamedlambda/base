@@ -258,7 +258,7 @@ def workerActions : List Action := [
     dst := UInt32.ofNat INPUT_DATA,
     offset := 0, size := 0 },
   -- W+1: CL fn 0 (wordcount — parse + format)
-  { kind := .Fence, dst := 0, src := 0, offset := 0, size := 0 },
+  { kind := .FileRead, dst := 0, src := 0, offset := 0, size := 0 },
   -- W+2: FileWrite
   { kind := .FileWrite,
     src := UInt32.ofNat OUTPUT_BUF,
@@ -308,10 +308,8 @@ def buildAlgorithm : Algorithm := {
   },
   units := {
     file_units := 1,
-    memory_units := 0,
     cranelift_units := 1,
   },
-  memory_assignments := [],
   file_assignments := [],
   cranelift_assignments := [],
   worker_threads := some 2,

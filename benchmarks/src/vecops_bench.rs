@@ -192,7 +192,7 @@ fn build_base_vec_add(a: &[f32], b: &[f32]) -> base::Algorithm {
     let actions = vec![
         Action { kind: Kind::AsyncDispatch, dst: 9, src: 2, offset: FLAG_CL as u32, size: 1 },
         Action { kind: Kind::Wait, dst: FLAG_CL as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Fence, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::FileRead, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
     base::Algorithm {
@@ -203,10 +203,10 @@ fn build_base_vec_add(a: &[f32], b: &[f32]) -> base::Algorithm {
             cranelift_ir_offsets: vec![CLIF_OFF],
         },
         units: UnitSpec {
-            file_units: 0, memory_units: 0,
+            file_units: 0,
             cranelift_units: 1,
         },
-        memory_assignments: vec![], file_assignments: vec![], cranelift_assignments: vec![],
+        file_assignments: vec![], cranelift_assignments: vec![],
         worker_threads: Some(1), blocking_threads: Some(1),
         stack_size: Some(256 * 1024), timeout_ms: Some(30_000),
         thread_name_prefix: Some("vecadd-bench".into()),
