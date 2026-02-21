@@ -8,7 +8,7 @@ pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 mod units;
 
 use crate::units::{
-    cranelift_unit_task_mailbox, ffi_unit_task_mailbox,
+    cranelift_unit_task_mailbox,
     file_unit_task_mailbox, gpu_unit_task_mailbox,
     load_sized, memory_unit_task_mailbox,
     order_from_u32, queue_try_push_packet_mp,
@@ -97,7 +97,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
         gpu_units = algorithm.units.gpu_units,
         memory_units = algorithm.units.memory_units,
         file_units = algorithm.units.file_units,
-        ffi_units = algorithm.units.ffi_units,
         cranelift_units = algorithm.units.cranelift_units,
         actions_count = algorithm.actions.len(),
     ).entered();
@@ -126,19 +125,6 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
             }
         }
         debug!("auto-assigned memory actions across {} units", algorithm.units.memory_units);
-    }
-
-    if algorithm.ffi_assignments.is_empty() {
-        algorithm.ffi_assignments = vec![255; algorithm.actions.len()];
-        for (i, action) in algorithm.actions.iter().enumerate() {
-            match action.kind {
-                Kind::FFICall => {
-                    algorithm.ffi_assignments[i] = 0;
-                }
-                _ => {}
-            }
-        }
-        debug!("auto-assigned FFI actions across {} units", algorithm.units.ffi_units);
     }
 
     if algorithm.file_assignments.is_empty() {
@@ -191,13 +177,11 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
     let gpu_assignments = Arc::new(algorithm.gpu_assignments);
     let file_assignments = Arc::new(algorithm.file_assignments);
-    let ffi_assignments = Arc::new(algorithm.ffi_assignments);
     let memory_assignments = Arc::new(algorithm.memory_assignments);
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
     let gpu_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.gpu_units).map(|_| Arc::new(Mailbox::new())).collect();
     let file_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.file_units).map(|_| Arc::new(Mailbox::new())).collect();
-    let ffi_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.ffi_units).map(|_| Arc::new(Mailbox::new())).collect();
     let memory_mailboxes: Vec<Arc<Mailbox>> = (0..algorithm.units.memory_units).map(|_| Arc::new(Mailbox::new())).collect();
     let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
         .map(|_| Arc::new(Mailbox::new()))
@@ -240,15 +224,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let buffer_size = algorithm.state.file_buffer_size;
         thread_handles.push(std::thread::spawn(move || {
             file_unit_task_mailbox(mailbox, actions, shared, buffer_size);
-        }));
-    }
-
-    for (ffi_id, mailbox) in ffi_mailboxes.iter().cloned().enumerate() {
-        info!(ffi_id, "spawning FFI unit thread");
-        let actions = actions_arc.clone();
-        let shared = shared.clone();
-        thread_handles.push(std::thread::spawn(move || {
-            ffi_unit_task_mailbox(mailbox, actions, shared);
         }));
     }
 
@@ -400,25 +375,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         };
 
                         file_mailboxes[unit_id].post(start, end, flag);
-                    }
-                    4 => {
-                        if ffi_mailboxes.is_empty() {
-                            pc += 1;
-                            continue;
-                        }
-
-                        let assigned = ffi_assignments
-                            .get(pc)
-                            .copied()
-                            .unwrap_or(0);
-
-                        let unit_id = if assigned == 255 {
-                            0
-                        } else {
-                            (assigned as usize).min(ffi_mailboxes.len() - 1)
-                        };
-
-                        ffi_mailboxes[unit_id].post(start, end, flag);
                     }
                     6 => {
                         if is_broadcast {
@@ -589,7 +545,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
                     let pools: [&[Arc<Mailbox>]; 9] = [
                         &gpu_mailboxes, &[], &file_mailboxes,
-                        &[], &ffi_mailboxes, &[],
+                        &[], &[], &[],
                         &memory_mailboxes, &[], &[],
                     ];
                     let t = unit_type as usize;
@@ -896,9 +852,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         mailbox.shutdown();
     }
     for mailbox in file_mailboxes.iter() {
-        mailbox.shutdown();
-    }
-    for mailbox in ffi_mailboxes.iter() {
         mailbox.shutdown();
     }
     for mailbox in memory_mailboxes.iter() {

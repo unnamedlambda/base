@@ -7,7 +7,7 @@ use std::io::{Read as IoRead, Seek, Write as IoWrite};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{fence, AtomicBool, AtomicU32};
 use std::sync::Arc;
-use tracing::{debug, info, info_span, trace, warn};
+use tracing::{debug, info, info_span, trace};
 use wgpu::{
     Backends, BindGroupDescriptor, BindGroupEntry, BindGroupLayoutDescriptor, BindGroupLayoutEntry,
     BindingResource, BindingType, BufferBindingType, BufferDescriptor, BufferUsages,
@@ -597,43 +597,6 @@ impl MemoryUnit {
     }
 }
 
-pub(crate) struct FFIUnit {
-    shared: Arc<SharedMemory>,
-}
-
-impl FFIUnit {
-    pub fn new(shared: Arc<SharedMemory>) -> Self {
-        Self { shared }
-    }
-
-    pub unsafe fn execute(&mut self, action: &Action) {
-        match action.kind {
-            Kind::FFICall => {
-                debug!(src = action.src, dst = action.dst, offset = action.offset, "ffi_call");
-                // Read function pointer from memory
-                let fn_bytes = self.shared.read(action.src as usize, 8);
-                let fn_ptr = usize::from_le_bytes(fn_bytes[0..8].try_into().unwrap());
-
-                if fn_ptr == 0 {
-                    warn!("ffi_call skipped: null function pointer");
-                    return; // Skip null pointer
-                }
-
-                // Get arg pointer - this should be within our memory
-                let arg_ptr = self.shared.ptr.add(action.dst as usize);
-
-                // Cast and call
-                let func: unsafe extern "C" fn(*mut u8) -> i64 = std::mem::transmute(fn_ptr);
-                let result = func(arg_ptr);
-
-                // Store result
-                self.shared
-                    .write(action.offset as usize, &result.to_le_bytes());
-            }
-            _ => {}
-        }
-    }
-}
 
 pub(crate) struct FileUnit {
     id: u8,
@@ -949,39 +912,6 @@ pub(crate) fn memory_unit_task_mailbox(
     }
 }
 
-pub(crate) fn ffi_unit_task_mailbox(
-    mailbox: Arc<Mailbox>,
-    actions: Arc<Vec<Action>>,
-    shared: Arc<SharedMemory>,
-) {
-    let _span = info_span!("ffi_unit").entered();
-    info!("FFI unit started");
-    let mut unit = FFIUnit::new(shared.clone());
-    let mut spin_count = 0u32;
-
-    loop {
-        match mailbox.poll() {
-            MailboxPoll::Work { start, end, flag } => {
-                debug!(start, end, flag, "ffi_work_received");
-                for idx in start..end {
-                    unsafe {
-                        unit.execute(&actions[idx as usize]);
-                    }
-                }
-                unsafe {
-                    shared.store_u64(flag as usize, 1, Ordering::Release);
-                }
-                debug!(flag, "ffi_work_complete");
-                spin_count = 0;
-            }
-            MailboxPoll::Closed => {
-                info!("FFI unit shutting down");
-                return;
-            }
-            MailboxPoll::Empty => spin_backoff(&mut spin_count),
-        }
-    }
-}
 
 
 pub(crate) fn file_unit_task_mailbox(
@@ -2302,118 +2232,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod ffi_tests {
-    use super::*;
-
-    #[no_mangle]
-    pub extern "C" fn test_add_numbers(args: *mut u8) -> i64 {
-        unsafe {
-            // Use byte copying to handle any alignment
-            let mut a_bytes = [0u8; 8];
-            let mut b_bytes = [0u8; 8];
-            std::ptr::copy_nonoverlapping(args, a_bytes.as_mut_ptr(), 8);
-            std::ptr::copy_nonoverlapping(args.add(8), b_bytes.as_mut_ptr(), 8);
-
-            let a = i64::from_le_bytes(a_bytes);
-            let b = i64::from_le_bytes(b_bytes);
-            a + b
-        }
-    }
-
-    #[no_mangle]
-    pub extern "C" fn test_return_42(_args: *mut u8) -> i64 {
-        42
-    }
-
-    #[test]
-    fn test_ffi_basic_call() {
-        let mut memory = vec![0u8; 1024];
-
-        // Store function pointer at offset 0
-        let fn_ptr = test_return_42 as usize as u64;
-        memory[0..8].copy_from_slice(&fn_ptr.to_le_bytes());
-
-        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = FFIUnit::new(shared.clone());
-
-        let action = Action {
-            kind: Kind::FFICall,
-            src: 0,      // function pointer location
-            dst: 100,    // args location (unused for this function)
-            offset: 200, // result location
-            size: 0,     // unused
-        };
-
-        unsafe {
-            unit.execute(&action);
-
-            let result = i64::from_le_bytes(shared.read(200, 8)[0..8].try_into().unwrap());
-            assert_eq!(result, 42);
-        }
-    }
-
-    #[test]
-    fn test_ffi_with_args() {
-        let mut memory = vec![0u8; 1024];
-
-        // Get function pointer as usize first
-        let fn_ptr = test_add_numbers as *const () as usize;
-
-        // Store as little-endian bytes
-        memory[0..8].copy_from_slice(&fn_ptr.to_le_bytes());
-
-        // Store arguments at offset 100
-        memory[100..108].copy_from_slice(&10i64.to_le_bytes());
-        memory[108..116].copy_from_slice(&32i64.to_le_bytes());
-
-        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = FFIUnit::new(shared.clone());
-
-        let action = Action {
-            kind: Kind::FFICall,
-            src: 0,      // function pointer location
-            dst: 100,    // args location
-            offset: 200, // result location
-            size: 0,
-        };
-
-        unsafe {
-            unit.execute(&action);
-
-            let result = i64::from_le_bytes(shared.read(200, 8)[0..8].try_into().unwrap());
-            assert_eq!(result, 42); // 10 + 32 = 42
-        }
-    }
-
-    #[test]
-    fn test_ffi_null_pointer_safety() {
-        let mut memory = vec![0u8; 1024];
-
-        // Store null pointer
-        memory[0..8].copy_from_slice(&0u64.to_le_bytes());
-
-        let shared = Arc::new(SharedMemory::new(memory.as_mut_ptr()));
-        let mut unit = FFIUnit::new(shared.clone());
-
-        let action = Action {
-            kind: Kind::FFICall,
-            src: 0,
-            dst: 100,
-            offset: 200,
-            size: 0,
-        };
-
-        unsafe {
-            // Should not crash, just skip
-            unit.execute(&action);
-
-            // Result area should be untouched (still zeros)
-            let result = i64::from_le_bytes(shared.read(200, 8)[0..8].try_into().unwrap());
-            assert_eq!(result, 0);
-        }
-    }
-}
 
 #[cfg(test)]
 mod file_tests {

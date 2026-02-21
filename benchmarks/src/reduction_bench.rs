@@ -178,12 +178,10 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
         units: UnitSpec {
             gpu_units: 0,
             file_units: 0, memory_units: 0,
-            ffi_units: 0,
             cranelift_units: 1, backends_bits: 0,
         },
         memory_assignments: vec![],
         file_assignments: vec![],
-        ffi_assignments: vec![],
         gpu_assignments: vec![],
         cranelift_assignments: vec![],
         worker_threads: Some(1),

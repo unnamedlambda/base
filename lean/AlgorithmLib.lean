@@ -31,7 +31,6 @@ inductive Kind where
   | AsyncDispatch
   | Wait
   | Dispatch
-  | FFICall
   deriving Repr
 
 instance : ToJson Kind where
@@ -49,7 +48,6 @@ instance : ToJson Kind where
     | .AsyncDispatch => "async_dispatch"
     | .Wait => "wait"
     | .Dispatch => "dispatch"
-    | .FFICall => "f_f_i_call"
 
 structure Action where
   kind : Kind
@@ -87,7 +85,6 @@ structure UnitSpec where
   gpu_units : Nat
   file_units : Nat
   memory_units : Nat
-  ffi_units : Nat
   cranelift_units : Nat
   backends_bits : UInt32
   deriving Repr
@@ -97,7 +94,6 @@ instance : ToJson UnitSpec where
     ("gpu_units", toJson u.gpu_units),
     ("file_units", toJson u.file_units),
     ("memory_units", toJson u.memory_units),
-    ("ffi_units", toJson u.ffi_units),
     ("cranelift_units", toJson u.cranelift_units),
     ("backends_bits", toJson u.backends_bits)
   ]
@@ -109,7 +105,6 @@ structure Algorithm where
   units : UnitSpec
   memory_assignments : List UInt8
   file_assignments : List UInt8
-  ffi_assignments : List UInt8
   gpu_assignments : List UInt8
   cranelift_assignments : List UInt8
   worker_threads : Option Nat
@@ -127,7 +122,6 @@ instance : ToJson Algorithm where
     ("units", toJson alg.units),
     ("memory_assignments", toJson alg.memory_assignments),
     ("file_assignments", toJson alg.file_assignments),
-    ("ffi_assignments", toJson alg.ffi_assignments),
     ("gpu_assignments", toJson alg.gpu_assignments),
     ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),

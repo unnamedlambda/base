@@ -324,13 +324,11 @@ def buildAlgorithm : Algorithm := {
     gpu_units := 0,
     file_units := 1,
     memory_units := 0,
-    ffi_units := 0,
     cranelift_units := 1,
     backends_bits := 0xFFFFFFFF
   },
   memory_assignments := [],
   file_assignments := [],
-  ffi_assignments := [],
   gpu_assignments := [],
   cranelift_assignments := [],
   worker_threads := some 2,

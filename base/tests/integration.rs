@@ -25,13 +25,11 @@ fn create_test_algorithm(
             gpu_units: 0,
             file_units,
             memory_units,
-            ffi_units: 0,
             cranelift_units: 0,
             backends_bits: 0,
         },
         memory_assignments: vec![0; num_actions],
         file_assignments: vec![0; num_actions],
-        ffi_assignments: vec![],
         gpu_assignments: vec![],
         cranelift_assignments: vec![],
         worker_threads: None,
@@ -67,7 +65,6 @@ fn create_complex_algorithm(
             gpu_units,
             file_units,
             memory_units,
-            ffi_units: 0,
             cranelift_units: 0,
             backends_bits: 0xFFFFFFFF,
         },
@@ -81,7 +78,6 @@ fn create_complex_algorithm(
         } else {
             vec![255; num_actions]
         },
-        ffi_assignments: vec![],
         gpu_assignments: if gpu_units > 0 {
             vec![0; num_actions]
         } else {
@@ -118,13 +114,11 @@ fn create_cranelift_algorithm(
             gpu_units: 0,
             file_units: if with_file { 1 } else { 0 },
             memory_units: 0,
-            ffi_units: 0,
             cranelift_units,
             backends_bits: 0,
         },
         memory_assignments: vec![],
         file_assignments: if with_file { vec![0; num_actions] } else { vec![] },
-        ffi_assignments: vec![],
         gpu_assignments: vec![],
         cranelift_assignments: vec![0; num_actions],
         worker_threads: None,

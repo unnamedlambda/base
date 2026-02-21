@@ -13,7 +13,6 @@ pub enum Kind {
     AtomicCAS = 24,
     ConditionalJump = 25,
     Fence = 26,
-    FFICall = 31,
     AsyncDispatch = 32,
     Wait = 33,
     MemWrite = 34,
@@ -53,7 +52,6 @@ pub struct UnitSpec {
     pub gpu_units: usize,
     pub file_units: usize,
     pub memory_units: usize,
-    pub ffi_units: usize,
 pub cranelift_units: usize,
     pub backends_bits: u32,
 }
@@ -66,7 +64,6 @@ pub struct Algorithm {
     pub units: UnitSpec,
     pub memory_assignments: Vec<u8>,
     pub file_assignments: Vec<u8>,
-    pub ffi_assignments: Vec<u8>,
 pub gpu_assignments: Vec<u8>,
     pub cranelift_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
