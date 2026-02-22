@@ -389,8 +389,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // CLIF+GPU
         let base_ms = harness::median_of(iterations, || {
-            let start = std::time::Instant::now();
             let alg = clif_alg.clone();
+            let start = std::time::Instant::now();
             let _ = base::execute(alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
