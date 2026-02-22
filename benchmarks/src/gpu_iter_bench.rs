@@ -581,8 +581,8 @@ pub fn run(iterations: usize) -> Vec<GpuIterResult> {
         let clif_out = format!("/tmp/gpu-iter-clif-{}.bin", passes);
         let clif_alg = build_clif_gpu_iter_algorithm(&data, passes, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
-            let start = std::time::Instant::now();
             let alg = clif_alg.clone();
+            let start = std::time::Instant::now();
             let _ = base::execute(alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
