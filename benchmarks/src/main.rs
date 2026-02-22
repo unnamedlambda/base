@@ -1,5 +1,6 @@
 mod csv_bench;
 mod dispatch_bench;
+mod dynamic_bench;
 mod harness;
 mod json_bench;
 mod gpu_bench;
@@ -19,7 +20,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 fn print_usage() {
     eprintln!("Usage: benchmarks [OPTIONS]");
     eprintln!();
-    eprintln!("  --bench <name>     Benchmark to run: csv, dispatch, all (default: all)");
+    eprintln!("  --bench <name>     Benchmark to run: csv, dispatch, dynamic, all (default: all)");
     eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
     eprintln!("  --profile <p>      Profile: quick, medium, full (default: medium)");
     eprintln!("  --chunk <n>        Coarse chunk size (default: 100000)");
@@ -94,6 +95,7 @@ fn main() {
     let run_vecops = bench == "all" || bench == "burn" || bench == "vecops";
     let run_reduction = bench == "all" || bench == "burn" || bench == "reduction";
     let run_dispatch = bench == "dispatch";
+    let run_dynamic = bench == "dynamic";
     let run_gpu = bench == "gpu";
     let run_gpu_iter = bench == "gpu-iter";
     let run_memory = bench == "memory";
@@ -141,6 +143,16 @@ fn main() {
         };
         let results = dispatch_bench::run(&cfg);
         dispatch_bench::print_dispatch_table(&results);
+    }
+
+    if run_dynamic {
+        let cfg = dynamic_bench::Config {
+            profile: profile.clone(),
+            rounds,
+            workers,
+        };
+        let results = dynamic_bench::run(&cfg);
+        harness::print_table(&results);
     }
 
     if run_gpu {

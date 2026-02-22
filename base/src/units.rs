@@ -1035,6 +1035,15 @@ unsafe extern "C" fn cl_thread_cleanup(ptr: *mut u8) {
     }
 }
 
+unsafe extern "C" fn cl_thread_call(ptr: *mut u8, fn_index: i64, arg_ptr: i64) -> i64 {
+    let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+    let idx = fn_index as usize;
+    if idx >= ctx.compiled_fns.len() { return -1; }
+    let func = ctx.compiled_fns[idx];
+    func(arg_ptr as *mut u8);
+    0
+}
+
 pub(crate) struct CraneliftUnit {
     shared: Arc<SharedMemory>,
     compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
@@ -1099,6 +1108,7 @@ impl CraneliftUnit {
         builder.symbol("cl_thread_spawn", cl_thread_spawn as *const u8);
         builder.symbol("cl_thread_join", cl_thread_join as *const u8);
         builder.symbol("cl_thread_cleanup", cl_thread_cleanup as *const u8);
+        builder.symbol("cl_thread_call", cl_thread_call as *const u8);
 
         let mut module = cranelift_jit::JITModule::new(builder);
 
