@@ -20,7 +20,9 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 fn print_usage() {
     eprintln!("Usage: benchmarks [OPTIONS]");
     eprintln!();
-    eprintln!("  --bench <name>     Benchmark to run: csv, dispatch, dynamic, all (default: all)");
+    eprintln!("  --bench <name>     Benchmark to run: csv, json, regex, burn, vecops, reduction,");
+    eprintln!("                     dispatch, dynamic, gpu, gpu-iter, memory, network,");
+    eprintln!("                     sort, strsearch, wc, all (default: all)");
     eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
     eprintln!("  --profile <p>      Profile: quick, medium, full (default: medium)");
     eprintln!("  --chunk <n>        Coarse chunk size (default: 100000)");
@@ -94,12 +96,12 @@ fn main() {
     let run_matmul = bench == "all" || bench == "burn";
     let run_vecops = bench == "all" || bench == "burn" || bench == "vecops";
     let run_reduction = bench == "all" || bench == "burn" || bench == "reduction";
-    let run_dispatch = bench == "dispatch";
-    let run_dynamic = bench == "dynamic";
-    let run_gpu = bench == "gpu";
-    let run_gpu_iter = bench == "gpu-iter";
-    let run_memory = bench == "memory";
-    let run_network = bench == "network";
+    let run_dispatch = bench == "all" || bench == "dispatch";
+    let run_dynamic = bench == "all" || bench == "dynamic";
+    let run_gpu = bench == "all" || bench == "gpu";
+    let run_gpu_iter = bench == "all" || bench == "gpu-iter";
+    let run_memory = bench == "all" || bench == "memory";
+    let run_network = bench == "all" || bench == "network";
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
     let run_wc = bench == "all" || bench == "wc";
