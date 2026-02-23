@@ -2,6 +2,7 @@ mod csv_bench;
 mod dispatch_bench;
 mod dynamic_bench;
 mod harness;
+mod histogram_bench;
 mod json_bench;
 mod gpu_bench;
 mod gpu_iter_bench;
@@ -22,7 +23,7 @@ fn print_usage() {
     eprintln!();
     eprintln!("  --bench <name>     Benchmark to run: csv, json, regex, burn, vecops, reduction,");
     eprintln!("                     dispatch, dynamic, gpu, gpu-iter, memory, network,");
-    eprintln!("                     sort, strsearch, wc, all (default: all)");
+    eprintln!("                     histogram, sort, strsearch, wc, all (default: all)");
     eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
     eprintln!("  --profile <p>      Profile: quick, medium, full (default: medium)");
     eprintln!("  --chunk <n>        Coarse chunk size (default: 100000)");
@@ -102,6 +103,7 @@ fn main() {
     let run_gpu_iter = bench == "all" || bench == "gpu-iter";
     let run_memory = bench == "all" || bench == "memory";
     let run_network = bench == "all" || bench == "network";
+    let run_histogram = bench == "all" || bench == "histogram";
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
     let run_wc = bench == "all" || bench == "wc";
@@ -175,6 +177,15 @@ fn main() {
     if run_network {
         let results = network_bench::run(rounds);
         network_bench::print_network_table(&results);
+    }
+
+    if run_histogram {
+        let cfg = histogram_bench::HistConfig {
+            rounds,
+            workers,
+        };
+        let results = histogram_bench::run(&cfg);
+        harness::print_table(&results);
     }
 
     if run_sort {
