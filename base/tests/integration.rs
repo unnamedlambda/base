@@ -889,7 +889,7 @@ r#"function u0:0(i64) system_v {{
     sig1 = (i64, i64) -> i32 system_v
     sig2 = (i64, i32, i64, i64) -> i32 system_v
     sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
     sig5 = (i64, i32, i64, i64) -> i32 system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
 
@@ -927,7 +927,7 @@ block0(v0: i64):
 
     ; dispatch 1 workgroup of 64 threads
     v11 = iconst.i32 1
-    v18 = call fn4(v0, v10, v11)
+    v18 = call fn4(v0, v10, v11, v11, v11)
 
     ; download result buffer to offset {result_off}
     v12 = iconst.i64 {result_off}
@@ -1322,7 +1322,7 @@ r#"function u0:0(i64) system_v {{
     sig1 = (i64, i64) -> i32 system_v
     sig2 = (i64, i32, i64, i64) -> i32 system_v
     sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
     sig5 = (i64, i32, i64, i64) -> i32 system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_gpu_init sig0
@@ -1343,9 +1343,9 @@ block0(v0: i64):
     v5 = iconst.i64 {bind_off}
     v6 = iconst.i32 1
     v7 = call fn3(v0, v4, v5, v6)
-    v13 = call fn4(v0, v7, v6)
-    v14 = call fn4(v0, v7, v6)
-    v15 = call fn4(v0, v7, v6)
+    v13 = call fn4(v0, v7, v6, v6, v6)
+    v14 = call fn4(v0, v7, v6, v6, v6)
+    v15 = call fn4(v0, v7, v6, v6, v6)
     v8 = iconst.i64 {result_off}
     v16 = call fn5(v0, v2, v8, v1)
     v9 = iconst.i64 2000
@@ -1436,7 +1436,7 @@ r#"function u0:0(i64) system_v {{
     sig1 = (i64, i64) -> i32 system_v
     sig2 = (i64, i32, i64, i64) -> i32 system_v
     sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
     sig5 = (i64, i32, i64, i64) -> i32 system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_gpu_init sig0
@@ -1457,12 +1457,12 @@ block0(v0: i64):
     v6 = call fn3(v0, v3, v4, v5)
     v7 = iconst.i64 {data_a_off}
     v15 = call fn2(v0, v2, v7, v1)
-    v16 = call fn4(v0, v6, v5)
+    v16 = call fn4(v0, v6, v5, v5, v5)
     v8 = iconst.i64 {result_a_off}
     v17 = call fn5(v0, v2, v8, v1)
     v9 = iconst.i64 {data_b_off}
     v18 = call fn2(v0, v2, v9, v1)
-    v19 = call fn4(v0, v6, v5)
+    v19 = call fn4(v0, v6, v5, v5, v5)
     v10 = iconst.i64 {result_b_off}
     v20 = call fn5(v0, v2, v10, v1)
     v11 = iconst.i64 2000
@@ -1544,11 +1544,11 @@ fn test_clif_ffi_gpu_error_codes() {
     let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
 
     // Memory layout:
-    //   0..~1800:  CLIF IR
-    //   2000..xx:  verify file path
-    //   3000..3200: dummy shader (valid WGSL, needed for init)
-    //   3200..3208: binding descriptor [buf_id=99, read_only=0] (invalid buf_id)
-    //   4000..4032: return values (4 i32s stored as i64: create_buf_rc, upload_rc, dispatch_rc, download_rc, pipeline_bad_bind_rc)
+    //   0..~2100:  CLIF IR (null-terminated)
+    //   2500..xx:  verify file path
+    //   3500..3700: dummy shader (valid WGSL, needed for init)
+    //   3700..3708: binding descriptor [buf_id=99, read_only=0] (invalid buf_id)
+    //   4500..4540: return values (5 i32s stored as i64: create_buf_rc, upload_rc, dispatch_rc, download_rc, pipeline_bad_bind_rc)
 
     let wgsl = "@group(0) @binding(0) var<storage, read_write> d: array<f32>;\n\
                 @compute @workgroup_size(1)\n\
@@ -1560,7 +1560,7 @@ r#"function u0:0(i64) system_v {
     sig1 = (i64, i64) -> i32 system_v
     sig2 = (i64, i32, i64, i64) -> i32 system_v
     sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
     sig5 = (i64) system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_gpu_init sig0
@@ -1578,45 +1578,45 @@ block0(v0: i64):
     v1 = iconst.i64 0
     v2 = call fn1(v0, v1)
     v20 = sextend.i64 v2
-    store.i64 v20, v0+4000
+    store.i64 v20, v0+4500
 
     ; upload with buf_id=99 (no buffers exist yet) → should return -1
     v3 = iconst.i32 99
-    v4 = iconst.i64 3000
+    v4 = iconst.i64 3500
     v5 = iconst.i64 64
     v6 = call fn2(v0, v3, v4, v5)
     v21 = sextend.i64 v6
-    store.i64 v21, v0+4008
+    store.i64 v21, v0+4508
 
     ; dispatch with pipeline_id=99 (no pipelines exist) → should return -1
     v7 = iconst.i32 99
     v8 = iconst.i32 1
-    v9 = call fn4(v0, v7, v8)
+    v9 = call fn4(v0, v7, v8, v8, v8)
     v22 = sextend.i64 v9
-    store.i64 v22, v0+4016
+    store.i64 v22, v0+4516
 
     ; download with buf_id=99 → should return -1
-    v10 = iconst.i64 3000
+    v10 = iconst.i64 3500
     v11 = iconst.i64 64
     v12 = call fn5(v0, v3, v10, v11)
     v23 = sextend.i64 v12
-    store.i64 v23, v0+4024
+    store.i64 v23, v0+4524
 
     ; create a valid buffer so we can test pipeline with bad binding
     v13 = iconst.i64 256
     v14 = call fn1(v0, v13)
 
     ; create_pipeline with binding that references buf_id=99 → should return -1
-    v15 = iconst.i64 3000
-    v16 = iconst.i64 3200
+    v15 = iconst.i64 3500
+    v16 = iconst.i64 3700
     v17 = iconst.i32 1
     v18 = call fn3(v0, v15, v16, v17)
     v24 = sextend.i64 v18
-    store.i64 v24, v0+4032
+    store.i64 v24, v0+4532
 
     ; write 40 bytes of return values to verify file
-    v25 = iconst.i64 2000
-    v26 = iconst.i64 4000
+    v25 = iconst.i64 2500
+    v26 = iconst.i64 4500
     v27 = iconst.i64 0
     v28 = iconst.i64 40
     v29 = call fn7(v0, v25, v26, v27, v28)
@@ -1629,16 +1629,16 @@ block0(v0: i64):
     let mut payloads = vec![0u8; 8192];
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     payloads[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+    payloads[2500..2500 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
-    // Valid shader at 3000
+    // Valid shader at 3500
     let shader_bytes = wgsl.as_bytes();
-    payloads[3000..3000 + shader_bytes.len()].copy_from_slice(shader_bytes);
-    payloads[3000 + shader_bytes.len()] = 0;
+    payloads[3500..3500 + shader_bytes.len()].copy_from_slice(shader_bytes);
+    payloads[3500 + shader_bytes.len()] = 0;
 
-    // Binding descriptor at 3200: buf_id=99 (invalid), read_only=0
-    payloads[3200..3204].copy_from_slice(&99i32.to_le_bytes());
-    payloads[3204..3208].copy_from_slice(&0i32.to_le_bytes());
+    // Binding descriptor at 3700: buf_id=99 (invalid), read_only=0
+    payloads[3700..3704].copy_from_slice(&99i32.to_le_bytes());
+    payloads[3704..3708].copy_from_slice(&0i32.to_le_bytes());
 
     let actions = vec![
         Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
@@ -1651,7 +1651,7 @@ block0(v0: i64):
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(contents.len(), 40, "Expected 40 bytes of return values");
+    assert_eq!(contents.len(), 40, "Expected 40 bytes of return values, got {}", contents.len());
 
     let create_buf_rc = i64::from_le_bytes(contents[0..8].try_into().unwrap());
     let upload_rc = i64::from_le_bytes(contents[8..16].try_into().unwrap());

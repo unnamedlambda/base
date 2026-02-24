@@ -24,7 +24,7 @@ fn main() {
     match execute(alg) {
         Ok(()) => {
             let elapsed = start.elapsed();
-            eprintln!("Mandelbrot 3840x2160 rendered in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
+            eprintln!("Mandelbrot 4096x4096 rendered in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
             eprintln!("Output: mandelbrot.bmp");
         }
         Err(e) => eprintln!("Execution failed: {:?}", e),

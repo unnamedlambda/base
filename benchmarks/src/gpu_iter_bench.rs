@@ -340,7 +340,7 @@ r#"function u0:0(i64) system_v {{
     sig1 = (i64, i64) -> i32 system_v
     sig2 = (i64, i64, i64, i32) -> i32 system_v
     sig3 = (i64, i32, i64, i64) -> i32 system_v
-    sig4 = (i64, i32, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
     sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
 
     fn0 = %cl_gpu_init sig0
@@ -385,20 +385,20 @@ block1(v18: i64):
     brif v19, block2, block3(v18)
 
 block3(v20: i64):
-    v23 = call fn4(v0, v9, v16)
+    v23 = call fn4(v0, v9, v16, v8, v8)
     v21 = iadd_imm v20, 1
     jump block1(v21)
 
 block2:
-    v24 = call fn4(v0, v13, v16)
+    v24 = call fn4(v0, v13, v16, v8, v8)
 
-    v25 = call fn5(v0, v4, v5, v3)
+    v26 = call fn5(v0, v4, v5, v3)
 
     call fn6(v0)
 
-    v26 = iconst.i64 {fname_off}
-    v27 = iconst.i64 0
-    v28 = call fn7(v0, v26, v5, v27, v3)
+    v27 = iconst.i64 {fname_off}
+    v28 = iconst.i64 0
+    v29 = call fn7(v0, v27, v5, v28, v3)
 
     return
 }}"#,

@@ -449,8 +449,8 @@ unsafe extern "C" fn cl_gpu_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size
     })).unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_gpu_dispatch(ptr: *mut u8, pipeline_id: i32, workgroups: i32) -> i32 {
-    if pipeline_id < 0 || workgroups <= 0 { return -1; }
+unsafe extern "C" fn cl_gpu_dispatch(ptr: *mut u8, pipeline_id: i32, wg_x: i32, wg_y: i32, wg_z: i32) -> i32 {
+    if pipeline_id < 0 || wg_x <= 0 || wg_y <= 0 || wg_z <= 0 { return -1; }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let pid = pipeline_id as usize;
@@ -466,7 +466,7 @@ unsafe extern "C" fn cl_gpu_dispatch(ptr: *mut u8, pipeline_id: i32, workgroups:
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
-            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+            pass.dispatch_workgroups(wg_x as u32, wg_y as u32, wg_z as u32);
         }
         ctx.pending_encoder = Some(encoder);
         0

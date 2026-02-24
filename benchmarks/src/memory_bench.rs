@@ -74,8 +74,8 @@ r#"function u0:0(i64) system_v {{
     sig2 = (i64, i64, i64, i32) -> i32 system_v
     ; sig3: (ptr, buf_id, off, size) -> i32 — gpu upload/download
     sig3 = (i64, i32, i64, i64) -> i32 system_v
-    ; sig4: (ptr, pipe_id, workgroups) -> i32 — gpu dispatch
-    sig4 = (i64, i32, i32) -> i32 system_v
+    ; sig4: (ptr, pipe_id, wg_x, wg_y, wg_z) -> i32 — gpu dispatch
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
     ; sig5: (ptr, path_off, dst_off, file_offset, size) -> i64 — file read
     sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
     ; sig6: (ptr, path_off, src_off, file_offset, size) -> i64 — file write
@@ -117,7 +117,8 @@ block0(v0: i64):
     ; --- dispatch ---
     v10 = load.i64 v0+{wg_off}
     v11 = ireduce.i32 v10
-    v32 = call fn4(v0, v9, v11)
+    v32 = iconst.i32 1
+    v35 = call fn4(v0, v9, v11, v32, v32)
 
     ; --- download result ---
     v33 = call fn5(v0, v5, v2, v4)

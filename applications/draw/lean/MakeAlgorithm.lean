@@ -8,15 +8,15 @@ open AlgorithmLib
 namespace Algorithm
 
 -- ---------------------------------------------------------------------------
--- 3840×2160 Mandelbrot set rendered on GPU, written to BMP
+-- 4096×4096 Mandelbrot set rendered on GPU, written to BMP
 --
 -- Single CLIF function orchestrates: GPU compute → file write.
--- GPU workgroup limit is 65535 per dimension; at workgroup_size(256)
--- max pixels = 256 * 65535 = 16,776,960. 3840*2160 = 8,294,400 fits.
+-- 2D dispatch with workgroup_size(16, 16) = 256 threads per group.
+-- dispatch(4096/16, 4096/16, 1) = (256, 256, 1) — well under 65535 limit.
 -- ---------------------------------------------------------------------------
 
-def imageWidth : Nat := 3840
-def imageHeight : Nat := 2160
+def imageWidth : Nat := 4096
+def imageHeight : Nat := 4096
 def maxIter : Nat := 1000
 
 def pixelCount : Nat := imageWidth * imageHeight
@@ -52,8 +52,9 @@ def bmpHeader : List UInt8 :=
 -- ---------------------------------------------------------------------------
 -- WGSL compute shader: Mandelbrot iteration + smooth colorization
 --
--- 1D dispatch with workgroup_size(256). Each thread computes one pixel.
--- Smooth escape: iter_smooth = iter + 1 - log2(log2(|z|)) / log2(2)
+-- 2D dispatch with workgroup_size(16, 16). gid.x = pixel column, gid.y = row.
+-- No integer div/mod needed — 2D indexing maps directly to pixel coordinates.
+-- Smooth escape: iter + 1 - log2(log2(|z|²)) / log2(2)
 -- Bernstein polynomial palette for coloring.
 -- ---------------------------------------------------------------------------
 
@@ -63,20 +64,19 @@ def mandelbrotShader : String :=
   let mi := toString maxIter
   "@group(0) @binding(0)\n" ++
   "var<storage, read_write> pixels: array<u32>;\n\n" ++
-  "@compute @workgroup_size(256)\n" ++
+  "@compute @workgroup_size(16, 16)\n" ++
   "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
   s!"    let width: u32 = {w}u;\n" ++
   s!"    let height: u32 = {h}u;\n" ++
   s!"    let max_iter: u32 = {mi}u;\n" ++
-  "    let idx: u32 = gid.x;\n" ++
-  "    let total: u32 = width * height;\n" ++
-  "    if (idx >= total) { return; }\n" ++
-  "    let px: u32 = idx % width;\n" ++
-  "    let py: u32 = idx / width;\n" ++
+  "    let px: u32 = gid.x;\n" ++
+  "    let py: u32 = gid.y;\n" ++
+  "    if (px >= width || py >= height) { return; }\n" ++
+  "    let idx: u32 = py * width + px;\n" ++
   -- Map pixel to complex plane: Re [-2.2, 0.8], Im [-1.2, 1.2]
   "    let x0: f32 = -2.2 + f32(px) * 3.0 / f32(width - 1u);\n" ++
   "    let y0: f32 = -1.2 + f32(py) * 2.4 / f32(height - 1u);\n" ++
-  -- z = z^2 + c with cardioid/bulb check skipped (GPU brute-force is fast enough)
+  -- z = z^2 + c
   "    var zr: f32 = 0.0;\n" ++
   "    var zi: f32 = 0.0;\n" ++
   "    var iter: u32 = 0u;\n" ++
@@ -117,7 +117,7 @@ def mandelbrotShader : String :=
 --   1. cl_gpu_init
 --   2. cl_gpu_create_buffer (pixelBytes)
 --   3. cl_gpu_create_pipeline (mandelbrot shader, 1 rw binding)
---   4. cl_gpu_dispatch (workgroups)
+--   4. cl_gpu_dispatch (wg_x, wg_y, wg_z) — 2D dispatch
 --   5. cl_gpu_download (pixels into payload)
 --   6. cl_gpu_cleanup
 --   7. cl_file_write (BMP header + pixel data)
@@ -140,7 +140,8 @@ def bmpHeader_off : Nat := clifIr_off + clifIrRegionSize
 def pixels_off : Nat := bmpHeader_off + 54
 def totalPayload : Nat := pixels_off + pixelBytes
 
-def workgroupCount : Nat := (pixelCount + 255) / 256
+def wgX : Nat := imageWidth / 16    -- 256
+def wgY : Nat := imageHeight / 16   -- 256
 
 def clifIrSource : String :=
   let sh := toString shader_off
@@ -150,7 +151,8 @@ def clifIrSource : String :=
   let bmpTotalSize := toString (54 + pixelBytes)
   let px := toString pixels_off
   let dataSz := toString pixelBytes
-  let wgCount := toString workgroupCount
+  let wgXStr := toString wgX
+  let wgYStr := toString wgY
   "function u0:0(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
   "    return\n" ++
@@ -160,7 +162,7 @@ def clifIrSource : String :=
   "    sig1 = (i64, i64) -> i32 system_v\n" ++
   "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++
   "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig4 = (i64, i32, i32) -> i32 system_v\n" ++
+  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++
   "    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
   "    fn0 = %cl_gpu_init sig0\n" ++
   "    fn1 = %cl_gpu_create_buffer sig1\n" ++
@@ -178,16 +180,17 @@ def clifIrSource : String :=
   s!"    v4 = iconst.i64 {bd}\n" ++
   "    v5 = iconst.i32 1\n" ++
   "    v6 = call fn2(v0, v3, v4, v5)\n" ++
-  s!"    v7 = iconst.i32 {wgCount}\n" ++
-  "    v8 = call fn3(v0, v6, v7)\n" ++
-  s!"    v9 = iconst.i64 {px}\n" ++
-  "    v10 = call fn4(v0, v2, v9, v1)\n" ++
+  s!"    v7 = iconst.i32 {wgXStr}\n" ++
+  s!"    v8 = iconst.i32 {wgYStr}\n" ++
+  "    v9 = call fn3(v0, v6, v7, v8, v5)\n" ++
+  s!"    v10 = iconst.i64 {px}\n" ++
+  "    v11 = call fn4(v0, v2, v10, v1)\n" ++
   "    call fn5(v0)\n" ++
-  s!"    v11 = iconst.i64 {fn_out}\n" ++
-  s!"    v12 = iconst.i64 {bmp}\n" ++
-  "    v13 = iconst.i64 0\n" ++
-  s!"    v14 = iconst.i64 {bmpTotalSize}\n" ++
-  "    v15 = call fn6(v0, v11, v12, v13, v14)\n" ++
+  s!"    v12 = iconst.i64 {fn_out}\n" ++
+  s!"    v13 = iconst.i64 {bmp}\n" ++
+  "    v14 = iconst.i64 0\n" ++
+  s!"    v15 = iconst.i64 {bmpTotalSize}\n" ++
+  "    v16 = call fn6(v0, v12, v13, v14, v15)\n" ++
   "    return\n" ++
   "}\n"
 
