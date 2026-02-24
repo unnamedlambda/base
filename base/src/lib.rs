@@ -56,29 +56,12 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
 
     let mut thread_handles = Vec::new();
 
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    static CLIF_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, Arc<Vec<unsafe extern "C" fn(*mut u8)>>>>> = std::sync::OnceLock::new();
-    let cache = CLIF_CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
     let mut clif_compiled: std::collections::HashMap<usize, Arc<Vec<unsafe extern "C" fn(*mut u8)>>> = std::collections::HashMap::new();
     for (idx, &offset) in algorithm.state.cranelift_ir_offsets.iter().enumerate() {
         if !clif_compiled.contains_key(&idx) {
             let source = read_null_terminated_string_from_slice(&memory, offset, 64 * 1024);
             if !source.is_empty() {
-                let mut hasher = DefaultHasher::new();
-                source.hash(&mut hasher);
-                let source_hash = hasher.finish();
-                let compiled = {
-                    let mut cache_lock = cache.lock().unwrap();
-                    if let Some(cached) = cache_lock.get(&source_hash) {
-                        cached.clone()
-                    } else {
-                        let compiled = units::CraneliftUnit::compile(&source);
-                        cache_lock.insert(source_hash, compiled.clone());
-                        compiled
-                    }
-                };
+                let compiled = units::CraneliftUnit::compile(&source);
                 clif_compiled.insert(idx, compiled);
             }
         }
