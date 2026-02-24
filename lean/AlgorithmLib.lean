@@ -83,6 +83,7 @@ structure Algorithm where
   stack_size : Option Nat
   timeout_ms : Option Nat
   thread_name_prefix : Option String
+  additional_shared_memory : Nat
   deriving Repr
 
 instance : ToJson Algorithm where
@@ -96,7 +97,8 @@ instance : ToJson Algorithm where
     ("blocking_threads", toJson alg.blocking_threads),
     ("stack_size", toJson alg.stack_size),
     ("timeout_ms", toJson alg.timeout_ms),
-    ("thread_name_prefix", toJson alg.thread_name_prefix)
+    ("thread_name_prefix", toJson alg.thread_name_prefix),
+    ("additional_shared_memory", toJson alg.additional_shared_memory)
   ]
 
 def u32 (n : Nat) : UInt32 := UInt32.ofNat n

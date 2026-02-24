@@ -207,11 +207,10 @@ def payloads : List UInt8 :=
   let flagPad := zeros (clifIr_off - flag_off - 8)
   let clifBytes := padTo (stringToBytes clifIrSource) clifIrRegionSize
   let bmpBytes := bmpHeader
-  let pixelData := zeros pixelBytes
   reserved ++ hdrPad ++
   bindDesc ++ bindPad ++
   shaderBytes ++ filenameBytes ++ flagBytes ++ flagPad ++
-  clifBytes ++ bmpBytes ++ pixelData
+  clifBytes ++ bmpBytes
 
 -- ---------------------------------------------------------------------------
 -- Algorithm definition
@@ -240,7 +239,8 @@ def drawAlgorithm : Algorithm :=
     blocking_threads := some 1,
     stack_size := some (512 * 1024),
     timeout_ms := some 120000,
-    thread_name_prefix := some "mandelbrot"
+    thread_name_prefix := some "mandelbrot",
+    additional_shared_memory := pixelBytes
   }
 
 end Algorithm

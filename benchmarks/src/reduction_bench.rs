@@ -181,6 +181,7 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
         stack_size: Some(256 * 1024),
         timeout_ms: Some(30_000),
         thread_name_prefix: Some("sum-bench".into()),
+        additional_shared_memory: 0,
     }
 }
 

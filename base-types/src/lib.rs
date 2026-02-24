@@ -43,4 +43,5 @@ pub struct Algorithm {
     pub stack_size: Option<usize>,
     pub timeout_ms: Option<u64>,
     pub thread_name_prefix: Option<String>,
+    pub additional_shared_memory: usize,
 }

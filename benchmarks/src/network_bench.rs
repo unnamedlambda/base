@@ -123,6 +123,7 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
         stack_size: Some(256 * 1024),
         timeout_ms: Some(120_000),
         thread_name_prefix: Some("net-bench".into()),
+        additional_shared_memory: 0,
     }
 }
 

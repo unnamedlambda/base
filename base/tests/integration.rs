@@ -26,6 +26,7 @@ fn create_cranelift_algorithm(
         stack_size: None,
         timeout_ms: Some(5000),
         thread_name_prefix: None,
+        additional_shared_memory: 0,
     }
 }
 

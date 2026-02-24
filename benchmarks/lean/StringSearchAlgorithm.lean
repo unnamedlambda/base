@@ -216,7 +216,8 @@ def buildAlgorithm : Algorithm := {
   cranelift_assignments := [],
   worker_threads := some 2, blocking_threads := some 2,
   stack_size := none, timeout_ms := some TIMEOUT_MS,
-  thread_name_prefix := some "strsearch-bench"
+  thread_name_prefix := some "strsearch-bench",
+  additional_shared_memory := 0
 }
 
 end StringSearchBench

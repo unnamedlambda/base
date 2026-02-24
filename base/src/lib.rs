@@ -39,7 +39,11 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
 
 fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let _span = info_span!("execute_internal").entered();
-    let mut memory = Pin::new(algorithm.payloads.into_boxed_slice());
+    let mut payloads = algorithm.payloads;
+    if algorithm.additional_shared_memory > 0 {
+        payloads.resize(payloads.len() + algorithm.additional_shared_memory, 0);
+    }
+    let mut memory = Pin::new(payloads.into_boxed_slice());
     let mem_ptr = memory.as_mut().as_mut_ptr();
     let shared = Arc::new(SharedMemory::new(mem_ptr));
     let actions_arc = Arc::new(algorithm.actions);

@@ -331,7 +331,8 @@ def buildAlgorithm : Algorithm := {
   blocking_threads := some 2,
   stack_size := none,
   timeout_ms := some TIMEOUT_MS,
-  thread_name_prefix := some "wordcount-bench"
+  thread_name_prefix := some "wordcount-bench",
+  additional_shared_memory := 0
 }
 
 end WordCountBench
