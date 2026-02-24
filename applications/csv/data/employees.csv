@@ -1,0 +1,11 @@
+id,name,age,city,dept_id,salary
+1,Alice,30,Seattle,1,85000
+2,Bob,25,Portland,2,72000
+3,Charlie,35,Seattle,1,95000
+4,Diana,28,NYC,3,88000
+5,Eve,32,SF,2,91000
+6,Frank,45,Seattle,1,110000
+7,Grace,29,Portland,3,78000
+8,Hank,38,NYC,2,96000
+9,Ivy,26,SF,1,82000
+10,Jack,41,Seattle,3,105000
