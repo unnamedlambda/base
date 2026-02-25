@@ -25,17 +25,13 @@ pub enum Error {
     Execution(String),
 }
 
-pub fn execute(mut algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
+pub fn execute(algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
     let _span = info_span!("execute",
         cranelift_units = algorithm.units.cranelift_units,
         actions_count = algorithm.actions.len(),
     ).entered();
 
     info!("starting execution engine");
-
-    if algorithm.cranelift_assignments.is_empty() {
-        algorithm.cranelift_assignments = vec![255; algorithm.actions.len()];
-    }
 
     let result = execute_internal(algorithm);
     info!("execution complete");
@@ -53,8 +49,6 @@ fn execute_internal(algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
     let mem_ptr = memory.as_mut().as_mut_ptr();
     let shared = Arc::new(SharedMemory::new(mem_ptr));
     let actions = algorithm.actions;
-
-    let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
     let cranelift_mailboxes: Vec<_> = (0..algorithm.units.cranelift_units)
         .map(|_| Arc::new(Mailbox::new()))
@@ -149,25 +143,17 @@ fn execute_internal(algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
                 let desc_start = action.src;
                 let count = action.size;
                 let flag = action.offset;
+                let unit_id = (action.dst as usize).min(
+                    cranelift_mailboxes.len().saturating_sub(1),
+                );
 
                 unsafe {
                     shared.store_u64(flag as usize, 0, Ordering::Release);
                 }
 
-                debug!(pc, desc_start, count, flag, "clif_call_async");
+                debug!(pc, desc_start, count, flag, unit_id, "clif_call_async");
 
                 if !cranelift_mailboxes.is_empty() {
-                    let assigned = cranelift_assignments
-                        .get(pc)
-                        .copied()
-                        .unwrap_or(0);
-
-                    let unit_id = if assigned == 255 {
-                        0
-                    } else {
-                        (assigned as usize).min(cranelift_mailboxes.len() - 1)
-                    };
-
                     cranelift_mailboxes[unit_id].post(desc_start, count, flag);
                 }
 

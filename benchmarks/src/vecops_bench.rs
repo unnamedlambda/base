@@ -202,7 +202,6 @@ fn build_base_vec_add(a: &[f32], b: &[f32]) -> base::Algorithm {
         units: UnitSpec {
             cranelift_units: 0,
         },
-cranelift_assignments: vec![],
         worker_threads: Some(1), blocking_threads: Some(1),
         stack_size: Some(256 * 1024), timeout_ms: Some(30_000),
         thread_name_prefix: Some("vecadd-bench".into()),

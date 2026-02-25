@@ -298,7 +298,6 @@ def buildAlgorithm : Algorithm := {
   units := {
     cranelift_units := 0,
   },
-  cranelift_assignments := [],
   worker_threads := some 2,
   blocking_threads := some 2,
   stack_size := none,

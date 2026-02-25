@@ -377,7 +377,6 @@ fn build_clif_gpu_algorithm(
         units: UnitSpec {
             cranelift_units: 0,
         },
-        cranelift_assignments: vec![],
         worker_threads: Some(1),
         blocking_threads: Some(1),
         stack_size: Some(256 * 1024),

@@ -12,8 +12,6 @@ fn create_cranelift_algorithm(
     cranelift_units: usize,
     cranelift_ir_offsets: Vec<usize>,
 ) -> Algorithm {
-    let num_actions = actions.len();
-
     Algorithm {
         actions,
         payloads,
@@ -23,7 +21,6 @@ fn create_cranelift_algorithm(
         units: UnitSpec {
             cranelift_units,
         },
-        cranelift_assignments: vec![0; num_actions],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,
@@ -482,18 +479,17 @@ block0(v0: i64):
         Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
         // Dispatch compute
         Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: 1032, size: 1 },
+        Action { kind: Kind::ClifCallAsync, dst: 1, src: 1, offset: 1032, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
         // Dispatch writes
         Action { kind: Kind::ClifCallAsync, dst: 0, src: 2, offset: 1040, size: 1 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 3, offset: 1048, size: 1 },
+        Action { kind: Kind::ClifCallAsync, dst: 1, src: 3, offset: 1048, size: 1 },
         Action { kind: Kind::Wait, dst: 1040, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::Wait, dst: 1048, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 2, vec![0, ir2_offset]);
-    algorithm.cranelift_assignments = vec![0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1];
+    let algorithm = create_cranelift_algorithm(actions, payloads, 2, vec![0, ir2_offset]);
     execute(algorithm).unwrap();
 
     let contents1 = fs::read(&test_file1).unwrap();
@@ -4665,7 +4661,6 @@ fn create_output_algorithm(
         units: UnitSpec {
             cranelift_units: 1,
         },
-        cranelift_assignments: vec![0],
         worker_threads: None,
         blocking_threads: None,
         stack_size: None,

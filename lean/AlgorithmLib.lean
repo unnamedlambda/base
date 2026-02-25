@@ -79,7 +79,6 @@ structure Algorithm where
   payloads : List UInt8
   state : State
   units : UnitSpec
-  cranelift_assignments : List UInt8
   worker_threads : Option Nat
   blocking_threads : Option Nat
   stack_size : Option Nat
@@ -94,7 +93,6 @@ instance : ToJson Algorithm where
     ("payloads", toJson alg.payloads),
     ("state", toJson alg.state),
     ("units", toJson alg.units),
-    ("cranelift_assignments", toJson alg.cranelift_assignments),
     ("worker_threads", toJson alg.worker_threads),
     ("blocking_threads", toJson alg.blocking_threads),
     ("stack_size", toJson alg.stack_size),

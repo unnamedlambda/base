@@ -202,7 +202,6 @@ fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> base
         units: UnitSpec {
             cranelift_units: 0,
         },
-cranelift_assignments: vec![],
         worker_threads: Some(1), blocking_threads: Some(1),
         stack_size: Some(256 * 1024), timeout_ms: Some(60_000),
         thread_name_prefix: Some("matmul-bench".into()),

@@ -59,7 +59,6 @@ pub struct Algorithm {
     pub payloads: Vec<u8>,
     pub state: State,
     pub units: UnitSpec,
-    pub cranelift_assignments: Vec<u8>,
     pub worker_threads: Option<usize>,
     pub blocking_threads: Option<usize>,
     pub stack_size: Option<usize>,

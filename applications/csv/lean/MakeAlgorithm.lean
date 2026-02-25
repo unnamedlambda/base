@@ -533,7 +533,6 @@ def csvAlgorithm : Algorithm :=
     payloads := payloads,
     state := { cranelift_ir_offsets := [clifIr_off] },
     units := { cranelift_units := 0 },
-    cranelift_assignments := [0],
     worker_threads := some 1,
     blocking_threads := some 1,
     stack_size := some (512 * 1024),

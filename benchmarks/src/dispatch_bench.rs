@@ -176,7 +176,7 @@ fn build_frontier_algorithm(
         } else {
             actions.push(Action {
                 kind: Kind::ClifCallAsync,
-                dst: 0,
+                dst: w as u32,
                 src: start_action,
                 offset: flag_addr,
                 size: count,
@@ -203,12 +203,6 @@ fn build_frontier_algorithm(
         });
     }
 
-    let num_actions = actions.len();
-    let mut cranelift_assignments = vec![0u8; num_actions];
-    for w in 0..workers {
-        cranelift_assignments[w] = (w % workers) as u8;
-    }
-
     let algorithm = Algorithm {
         actions,
         payloads,
@@ -218,7 +212,6 @@ fn build_frontier_algorithm(
         units: UnitSpec {
             cranelift_units: workers,
         },
-        cranelift_assignments,
         worker_threads: Some(1),
         blocking_threads: Some(1),
         stack_size: Some(256 * 1024),
@@ -430,7 +423,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
                 let flag_addr = (flags_base + w * 8) as u32;
                 actions.push(Action {
                     kind: Kind::ClifCallAsync,
-                    dst: 0,
+                    dst: w as u32,
                     src: start,
                     offset: flag_addr,
                     size: count,
@@ -469,14 +462,6 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
 
     assert_eq!(actions.len(), total_actions);
 
-    let mut cranelift_assignments = vec![0u8; total_actions];
-    for k in 0..num_phases {
-        for w in 0..workers {
-            let action_idx = k * (workers + 1) + w;
-            cranelift_assignments[action_idx] = (w % workers) as u8;
-        }
-    }
-
     Algorithm {
         actions,
         payloads,
@@ -486,7 +471,6 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
         units: UnitSpec {
             cranelift_units: workers,
         },
-        cranelift_assignments,
         worker_threads: Some(1),
         blocking_threads: Some(1),
         stack_size: Some(256 * 1024),
