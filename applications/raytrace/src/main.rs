@@ -22,7 +22,7 @@ fn main() {
 
     let start = std::time::Instant::now();
     match execute(alg) {
-        Ok(()) => {
+        Ok(_) => {
             let elapsed = start.elapsed();
             eprintln!("Cornell box 4096x4096 rendered in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
             eprintln!("Output: cornell_box.bmp");

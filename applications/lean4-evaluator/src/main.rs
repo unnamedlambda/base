@@ -47,7 +47,7 @@ fn main() {
     }
 
     match execute(alg) {
-        Ok(()) => {}
+        Ok(_) => {}
         Err(e) => {
             eprintln!("Execution failed: {:?}", e);
             std::process::exit(1);

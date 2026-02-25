@@ -1,7 +1,10 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
 use std::sync::atomic::Ordering;
 use tracing::{debug, info, info_span};
-pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
+pub use base_types::{Action, Algorithm, Kind, OutputBatchSchema, OutputColumn, OutputType, State, UnitSpec};
+pub use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, Int64Array, Float64Array, StringArray};
+use arrow_schema::{Schema, Field, DataType};
 
 mod units;
 
@@ -22,7 +25,7 @@ pub enum Error {
     Execution(String),
 }
 
-pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
+pub fn execute(mut algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
     let _span = info_span!("execute",
         cranelift_units = algorithm.units.cranelift_units,
         actions_count = algorithm.actions.len(),
@@ -39,8 +42,9 @@ pub fn execute(mut algorithm: Algorithm) -> Result<(), Error> {
     result
 }
 
-fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
+fn execute_internal(algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
     let _span = info_span!("execute_internal").entered();
+    let output_schemas = algorithm.output;
     let mut payloads = algorithm.payloads;
     if algorithm.additional_shared_memory > 0 {
         payloads.resize(payloads.len() + algorithm.additional_shared_memory, 0);
@@ -294,5 +298,97 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         unsafe { drop(Box::from_raw(ctx_ptr)) };
     }
 
-    Ok(())
+    let batches = build_record_batches(&memory, &output_schemas);
+    Ok(batches)
+}
+
+fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<RecordBatch> {
+    let mut batches = Vec::with_capacity(schemas.len());
+    for schema in schemas {
+        let row_count = if schema.row_count_offset + 8 <= memory.len() {
+            let bytes: [u8; 8] = memory[schema.row_count_offset..schema.row_count_offset + 8]
+                .try_into().unwrap();
+            u64::from_le_bytes(bytes) as usize
+        } else {
+            0
+        };
+        if row_count == 0 {
+            continue;
+        }
+
+        let mut fields = Vec::with_capacity(schema.columns.len());
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
+
+        for col in &schema.columns {
+            match col.dtype {
+                OutputType::I64 => {
+                    fields.push(Field::new(&col.name, DataType::Int64, false));
+                    let mut values = Vec::with_capacity(row_count);
+                    for i in 0..row_count {
+                        let off = col.data_offset + i * 8;
+                        if off + 8 <= memory.len() {
+                            let bytes: [u8; 8] = memory[off..off + 8].try_into().unwrap();
+                            values.push(i64::from_le_bytes(bytes));
+                        } else {
+                            values.push(0);
+                        }
+                    }
+                    arrays.push(Arc::new(Int64Array::from(values)) as ArrayRef);
+                }
+                OutputType::F64 => {
+                    fields.push(Field::new(&col.name, DataType::Float64, false));
+                    let mut values = Vec::with_capacity(row_count);
+                    for i in 0..row_count {
+                        let off = col.data_offset + i * 8;
+                        if off + 8 <= memory.len() {
+                            let bytes: [u8; 8] = memory[off..off + 8].try_into().unwrap();
+                            values.push(f64::from_le_bytes(bytes));
+                        } else {
+                            values.push(0.0);
+                        }
+                    }
+                    arrays.push(Arc::new(Float64Array::from(values)) as ArrayRef);
+                }
+                OutputType::Utf8 => {
+                    fields.push(Field::new(&col.name, DataType::Utf8, false));
+                    let mut strings = Vec::with_capacity(row_count);
+                    // For Utf8: len_offset holds the byte length of each string.
+                    // data_offset points to contiguous null-terminated strings.
+                    // For single-row: read len_offset for byte count, slice data_offset..+len
+                    // For multi-row: strings are packed sequentially, each null-terminated
+                    let total_byte_len = if col.len_offset + 8 <= memory.len() {
+                        let bytes: [u8; 8] = memory[col.len_offset..col.len_offset + 8]
+                            .try_into().unwrap();
+                        u64::from_le_bytes(bytes) as usize
+                    } else {
+                        0
+                    };
+                    if row_count == 1 {
+                        let end = (col.data_offset + total_byte_len).min(memory.len());
+                        let slice = &memory[col.data_offset..end];
+                        let s = std::str::from_utf8(slice).unwrap_or("");
+                        strings.push(s.to_string());
+                    } else {
+                        // Multi-row: null-terminated strings packed sequentially
+                        let mut pos = col.data_offset;
+                        for _ in 0..row_count {
+                            let start = pos;
+                            while pos < memory.len() && memory[pos] != 0 {
+                                pos += 1;
+                            }
+                            let s = std::str::from_utf8(&memory[start..pos]).unwrap_or("");
+                            strings.push(s.to_string());
+                            pos += 1; // skip null terminator
+                        }
+                    }
+                    arrays.push(Arc::new(StringArray::from(strings)) as ArrayRef);
+                }
+            }
+        }
+
+        if let Ok(batch) = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays) {
+            batches.push(batch);
+        }
+    }
+    batches
 }

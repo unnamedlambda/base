@@ -207,6 +207,7 @@ cranelift_assignments: vec![],
         stack_size: Some(256 * 1024), timeout_ms: Some(30_000),
         thread_name_prefix: Some("vecadd-bench".into()),
         additional_shared_memory: 0,
+        output: vec![],
     }
 }
 

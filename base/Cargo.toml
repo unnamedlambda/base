@@ -19,10 +19,14 @@ cranelift-jit = "0.116"
 cranelift-module = "0.116"
 cranelift-reader = "0.116"
 cranelift-native = "0.116"
+arrow-array = { version = "54", default-features = false }
+arrow-schema = { version = "54", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+arrow-array = { version = "54", default-features = false }
+arrow-schema = { version = "54", default-features = false }
 
 [lib]
 name = "base"

@@ -483,6 +483,7 @@ fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str)
         timeout_ms: Some(300_000),
         thread_name_prefix: Some("clif-gpu-iter".into()),
         additional_shared_memory: 0,
+        output: vec![],
     }
 }
 

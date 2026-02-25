@@ -49,7 +49,7 @@ fn main() {
 
     let start = std::time::Instant::now();
     match execute(alg) {
-        Ok(()) => {
+        Ok(_) => {
             let elapsed = start.elapsed();
             // Read header to compute actual compressed data size
             let mut actual_compressed = 0u64;

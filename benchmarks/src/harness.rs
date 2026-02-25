@@ -49,7 +49,7 @@ pub fn run_python(script: &str, args: &[&str]) -> Option<(f64, String)> {
 pub fn run_base(algorithm: Algorithm) -> f64 {
     let start = Instant::now();
     match base::execute(algorithm) {
-        Ok(()) => {}
+        Ok(_) => {}
         Err(e) => eprintln!("Base execution failed: {:?}", e),
     }
     start.elapsed().as_secs_f64() * 1000.0

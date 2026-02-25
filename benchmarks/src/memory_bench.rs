@@ -202,6 +202,7 @@ fn build_clif_memory_algorithm(
         timeout_ms: Some(120_000),
         thread_name_prefix: Some("clif-memory-bench".into()),
         additional_shared_memory: 0,
+        output: vec![],
     }
 }
 

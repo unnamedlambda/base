@@ -177,6 +177,7 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
         timeout_ms: Some(30_000),
         thread_name_prefix: Some("sum-bench".into()),
         additional_shared_memory: 0,
+        output: vec![],
     }
 }
 

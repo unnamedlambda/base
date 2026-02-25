@@ -32,6 +32,27 @@ pub struct UnitSpec {
     pub cranelift_units: usize,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum OutputType {
+    I64,
+    F64,
+    Utf8,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OutputColumn {
+    pub name: String,
+    pub dtype: OutputType,
+    pub data_offset: usize,
+    pub len_offset: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OutputBatchSchema {
+    pub columns: Vec<OutputColumn>,
+    pub row_count_offset: usize,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Algorithm {
     pub actions: Vec<Action>,
@@ -45,4 +66,6 @@ pub struct Algorithm {
     pub timeout_ms: Option<u64>,
     pub thread_name_prefix: Option<String>,
     pub additional_shared_memory: usize,
+    #[serde(default)]
+    pub output: Vec<OutputBatchSchema>,
 }

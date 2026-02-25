@@ -1,6 +1,9 @@
-use base::execute;
-use base_types::{Action, Algorithm, Kind, State, UnitSpec};
+use base::{execute, RecordBatch};
+use base_types::{Action, Algorithm, Kind, OutputBatchSchema, OutputColumn, OutputType, State, UnitSpec};
 use std::fs;
+use std::sync::Arc;
+use arrow_array::{Int64Array, Float64Array, StringArray};
+use arrow_schema::{Schema, Field, DataType};
 use tempfile::TempDir;
 
 fn create_cranelift_algorithm(
@@ -27,6 +30,7 @@ fn create_cranelift_algorithm(
         timeout_ms: Some(5000),
         thread_name_prefix: None,
         additional_shared_memory: 0,
+        output: vec![],
     }
 }
 
@@ -4636,4 +4640,609 @@ block0(v0: i64):
     assert!(output_file.exists());
     let output_data = fs::read(&output_file).unwrap();
     assert_eq!(output_data, input_data, "output should match input");
+}
+
+fn create_output_algorithm(
+    clif_ir: &str,
+    payloads: Vec<u8>,
+    output: Vec<OutputBatchSchema>,
+) -> Algorithm {
+    let mut p = payloads;
+    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
+    if p.len() < clif_bytes.len() {
+        p.resize(clif_bytes.len().max(p.len()), 0);
+    }
+    p[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+
+    Algorithm {
+        actions: vec![
+            Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+        ],
+        payloads: p,
+        state: State {
+            cranelift_ir_offsets: vec![0],
+        },
+        units: UnitSpec {
+            cranelift_units: 1,
+        },
+        cranelift_assignments: vec![0],
+        worker_threads: None,
+        blocking_threads: None,
+        stack_size: None,
+        timeout_ms: Some(5000),
+        thread_name_prefix: None,
+        additional_shared_memory: 0,
+        output,
+    }
+}
+
+#[test]
+fn test_output_no_schema_returns_empty() {
+    // A simple CLIF that writes a value but has no output schema —
+    // execute should return an empty Vec<RecordBatch>.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 42
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let alg = create_output_algorithm(clif_ir, payloads, vec![]);
+    let batches = execute(alg).unwrap();
+    assert!(batches.is_empty());
+}
+
+#[test]
+fn test_output_single_i64_column() {
+    // CLIF writes i64 value 99 at offset 2000 and row_count=1 at offset 2008.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 99
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    v4 = iconst.i64 1
+    v5 = iconst.i64 2008
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![OutputBatchSchema {
+        row_count_offset: 2008,
+        columns: vec![OutputColumn {
+            name: "value".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 2000,
+            len_offset: 0,
+        }],
+    }];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 1);
+
+    let expected = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(vec![99i64]))],
+    ).unwrap();
+    assert_eq!(batches[0], expected);
+}
+
+#[test]
+fn test_output_i64_and_f64_columns() {
+    // CLIF writes an i64 at 2000, an f64 at 2008, and row_count=1 at 2016.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 42
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    v4 = f64const 0x1.921fb54442d18p1
+    v5 = iconst.i64 2008
+    v6 = iadd v0, v5
+    store.f64 v4, v6
+    v7 = iconst.i64 1
+    v8 = iconst.i64 2016
+    v9 = iadd v0, v8
+    store.i64 v7, v9
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![OutputBatchSchema {
+        row_count_offset: 2016,
+        columns: vec![
+            OutputColumn {
+                name: "count".to_string(),
+                dtype: OutputType::I64,
+                data_offset: 2000,
+                len_offset: 0,
+            },
+            OutputColumn {
+                name: "pi".to_string(),
+                dtype: OutputType::F64,
+                data_offset: 2008,
+                len_offset: 0,
+            },
+        ],
+    }];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 1);
+
+    let expected = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("count", DataType::Int64, false),
+            Field::new("pi", DataType::Float64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![42i64])),
+            Arc::new(Float64Array::from(vec![std::f64::consts::PI])),
+        ],
+    ).unwrap();
+    assert_eq!(batches[0], expected);
+}
+
+#[test]
+fn test_output_utf8_single_row() {
+    // CLIF writes "hello" (5 bytes) at offset 2000, string length 5 at offset 2008,
+    // and row_count=1 at offset 2016.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 0x6f6c6c6568
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    v4 = iconst.i64 5
+    v5 = iconst.i64 2008
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+    v7 = iconst.i64 1
+    v8 = iconst.i64 2016
+    v9 = iadd v0, v8
+    store.i64 v7, v9
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![OutputBatchSchema {
+        row_count_offset: 2016,
+        columns: vec![OutputColumn {
+            name: "greeting".to_string(),
+            dtype: OutputType::Utf8,
+            data_offset: 2000,
+            len_offset: 2008,
+        }],
+    }];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 1);
+
+    let expected = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("greeting", DataType::Utf8, false)])),
+        vec![Arc::new(StringArray::from(vec!["hello"]))],
+    ).unwrap();
+    assert_eq!(batches[0], expected);
+}
+
+#[test]
+fn test_output_multi_row_i64() {
+    // CLIF writes 3 i64 values at offsets 2000, 2008, 2016, and row_count=3 at 2024.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 10
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    v4 = iconst.i64 20
+    v5 = iconst.i64 2008
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+    v7 = iconst.i64 30
+    v8 = iconst.i64 2016
+    v9 = iadd v0, v8
+    store.i64 v7, v9
+    v10 = iconst.i64 3
+    v11 = iconst.i64 2024
+    v12 = iadd v0, v11
+    store.i64 v10, v12
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![OutputBatchSchema {
+        row_count_offset: 2024,
+        columns: vec![OutputColumn {
+            name: "values".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 2000,
+            len_offset: 0,
+        }],
+    }];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 1);
+
+    let expected = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("values", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(vec![10i64, 20, 30]))],
+    ).unwrap();
+    assert_eq!(batches[0], expected);
+}
+
+#[test]
+fn test_output_zero_row_count_skips_batch() {
+    // CLIF writes nothing — row_count stays 0 in zeroed memory.
+    // The batch should be skipped entirely.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![OutputBatchSchema {
+        row_count_offset: 2000,
+        columns: vec![OutputColumn {
+            name: "x".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 2008,
+            len_offset: 0,
+        }],
+    }];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert!(batches.is_empty());
+}
+
+#[test]
+fn test_output_multiple_batches() {
+    // Two output schemas — each becomes a separate RecordBatch.
+    // Batch 1: single i64 at 2000, row_count at 2008.
+    // Batch 2: single f64 at 2016, row_count at 2024.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 7
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    v4 = iconst.i64 1
+    v5 = iconst.i64 2008
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+    v7 = f64const 0x1.c000000000000p2
+    v8 = iconst.i64 2016
+    v9 = iadd v0, v8
+    store.f64 v7, v9
+    v10 = iconst.i64 1
+    v11 = iconst.i64 2024
+    v12 = iadd v0, v11
+    store.i64 v10, v12
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![
+        OutputBatchSchema {
+            row_count_offset: 2008,
+            columns: vec![OutputColumn {
+                name: "integer_val".to_string(),
+                dtype: OutputType::I64,
+                data_offset: 2000,
+                len_offset: 0,
+            }],
+        },
+        OutputBatchSchema {
+            row_count_offset: 2024,
+            columns: vec![OutputColumn {
+                name: "float_val".to_string(),
+                dtype: OutputType::F64,
+                data_offset: 2016,
+                len_offset: 0,
+            }],
+        },
+    ];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 2);
+
+    let expected_0 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("integer_val", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(vec![7i64]))],
+    ).unwrap();
+    assert_eq!(batches[0], expected_0);
+
+    let expected_1 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("float_val", DataType::Float64, false)])),
+        vec![Arc::new(Float64Array::from(vec![7.0f64]))],
+    ).unwrap();
+    assert_eq!(batches[1], expected_1);
+}
+
+#[test]
+fn test_output_utf8_multi_row() {
+    // CLIF writes two null-terminated strings at offset 2000: "abc\0def\0"
+    // len_offset at 2100 holds total byte length (not used for multi-row; strings are null-terminated).
+    // row_count=2 at 2108.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 0x0066656400636261
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    v4 = iconst.i64 7
+    v5 = iconst.i64 2100
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+    v7 = iconst.i64 2
+    v8 = iconst.i64 2108
+    v9 = iadd v0, v8
+    store.i64 v7, v9
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![OutputBatchSchema {
+        row_count_offset: 2108,
+        columns: vec![OutputColumn {
+            name: "words".to_string(),
+            dtype: OutputType::Utf8,
+            data_offset: 2000,
+            len_offset: 2100,
+        }],
+    }];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 1);
+
+    let expected = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("words", DataType::Utf8, false)])),
+        vec![Arc::new(StringArray::from(vec!["abc", "def"]))],
+    ).unwrap();
+    assert_eq!(batches[0], expected);
+}
+
+#[test]
+fn test_output_multiple_batches_multi_row_mixed() {
+    // Batch 0: summary — 1 row with I64 "total" and F64 "average"
+    // Batch 1: detail — 3 rows with I64 "id" and Utf8 "name"
+    //
+    // Layout (all in additional_shared_memory region starting at offset 2000):
+    //   2000: batch0 row_count (8 bytes) = 1
+    //   2008: batch0 col0 "total" i64 = 300
+    //   2016: batch0 col1 "average" f64 = 100.0
+    //   2024: batch1 row_count (8 bytes) = 3
+    //   2032: batch1 col0 "id" i64[3] = [1, 2, 3] (24 bytes)
+    //   2056: batch1 col1 "name" strings = "alice\0bob\0charlie\0" (19 bytes)
+    //   2080: batch1 col1 len_offset (8 bytes) = 19
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    ; batch0 row_count = 1
+    v1 = iconst.i64 1
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+
+    ; batch0 total = 300
+    v4 = iconst.i64 300
+    v5 = iconst.i64 2008
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+
+    ; batch0 average = 100.0
+    v7 = f64const 0x1.9000000000000p6
+    v8 = iconst.i64 2016
+    v9 = iadd v0, v8
+    store.f64 v7, v9
+
+    ; batch1 row_count = 3
+    v10 = iconst.i64 3
+    v11 = iconst.i64 2024
+    v12 = iadd v0, v11
+    store.i64 v10, v12
+
+    ; batch1 id[0] = 1
+    v13 = iconst.i64 1
+    v14 = iconst.i64 2032
+    v15 = iadd v0, v14
+    store.i64 v13, v15
+
+    ; batch1 id[1] = 2
+    v16 = iconst.i64 2
+    v17 = iconst.i64 2040
+    v18 = iadd v0, v17
+    store.i64 v16, v18
+
+    ; batch1 id[2] = 3
+    v19 = iconst.i64 3
+    v20 = iconst.i64 2048
+    v21 = iadd v0, v20
+    store.i64 v19, v21
+
+    ; batch1 names: "alice\0bob\0charlie\0" packed at 2056
+    ; "alice\0bo" = 0x6f62_0065_6369_6c61
+    v22 = iconst.i64 0x6f62006563696c61
+    v23 = iconst.i64 2056
+    v24 = iadd v0, v23
+    store.i64 v22, v24
+    ; "b\0charli" = 0x696c_7261_6863_0062
+    v25 = iconst.i64 0x696c726168630062
+    v26 = iconst.i64 2064
+    v27 = iadd v0, v26
+    store.i64 v25, v27
+    ; "e\0" + padding = 0x0065
+    v28 = iconst.i64 0x0065
+    v29 = iconst.i64 2072
+    v30 = iadd v0, v29
+    store.i64 v28, v30
+
+    ; batch1 name len_offset = 19
+    v31 = iconst.i64 19
+    v32 = iconst.i64 2080
+    v33 = iadd v0, v32
+    store.i64 v31, v33
+
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![
+        OutputBatchSchema {
+            row_count_offset: 2000,
+            columns: vec![
+                OutputColumn {
+                    name: "total".to_string(),
+                    dtype: OutputType::I64,
+                    data_offset: 2008,
+                    len_offset: 0,
+                },
+                OutputColumn {
+                    name: "average".to_string(),
+                    dtype: OutputType::F64,
+                    data_offset: 2016,
+                    len_offset: 0,
+                },
+            ],
+        },
+        OutputBatchSchema {
+            row_count_offset: 2024,
+            columns: vec![
+                OutputColumn {
+                    name: "id".to_string(),
+                    dtype: OutputType::I64,
+                    data_offset: 2032,
+                    len_offset: 0,
+                },
+                OutputColumn {
+                    name: "name".to_string(),
+                    dtype: OutputType::Utf8,
+                    data_offset: 2056,
+                    len_offset: 2080,
+                },
+            ],
+        },
+    ];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 2);
+
+    // Batch 0: summary
+    let expected_0 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("total", DataType::Int64, false),
+            Field::new("average", DataType::Float64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![300i64])),
+            Arc::new(Float64Array::from(vec![100.0f64])),
+        ],
+    ).unwrap();
+    assert_eq!(batches[0], expected_0);
+
+    // Batch 1: detail
+    let expected_1 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1i64, 2, 3])),
+            Arc::new(StringArray::from(vec!["alice", "bob", "charlie"])),
+        ],
+    ).unwrap();
+    assert_eq!(batches[1], expected_1);
+}
+
+#[test]
+fn test_output_multiple_batches_partial_skip() {
+    // Three schemas declared, but only batch 0 and batch 2 have row_count > 0.
+    // Batch 1 should be skipped, resulting in 2 returned batches.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    ; batch0: row_count=1, value=42
+    v1 = iconst.i64 1
+    v2 = iconst.i64 2000
+    v3 = iadd v0, v2
+    store.i64 v1, v3
+    v4 = iconst.i64 42
+    v5 = iconst.i64 2008
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+
+    ; batch1: row_count stays 0 (skipped)
+
+    ; batch2: row_count=2, values=[10, 20]
+    v7 = iconst.i64 2
+    v8 = iconst.i64 2032
+    v9 = iadd v0, v8
+    store.i64 v7, v9
+    v10 = iconst.i64 10
+    v11 = iconst.i64 2040
+    v12 = iadd v0, v11
+    store.i64 v10, v12
+    v13 = iconst.i64 20
+    v14 = iconst.i64 2048
+    v15 = iadd v0, v14
+    store.i64 v13, v15
+
+    return
+}"#;
+
+    let payloads = vec![0u8; 4096];
+    let output = vec![
+        OutputBatchSchema {
+            row_count_offset: 2000,
+            columns: vec![OutputColumn {
+                name: "a".to_string(),
+                dtype: OutputType::I64,
+                data_offset: 2008,
+                len_offset: 0,
+            }],
+        },
+        OutputBatchSchema {
+            row_count_offset: 2016,  // stays 0 — skipped
+            columns: vec![OutputColumn {
+                name: "b".to_string(),
+                dtype: OutputType::F64,
+                data_offset: 2024,
+                len_offset: 0,
+            }],
+        },
+        OutputBatchSchema {
+            row_count_offset: 2032,
+            columns: vec![OutputColumn {
+                name: "c".to_string(),
+                dtype: OutputType::I64,
+                data_offset: 2040,
+                len_offset: 0,
+            }],
+        },
+    ];
+
+    let alg = create_output_algorithm(clif_ir, payloads, output);
+    let batches = execute(alg).unwrap();
+    assert_eq!(batches.len(), 2, "middle batch with row_count=0 should be skipped");
+
+    let expected_0 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(vec![42i64]))],
+    ).unwrap();
+    assert_eq!(batches[0], expected_0);
+
+    let expected_1 = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("c", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(vec![10i64, 20]))],
+    ).unwrap();
+    assert_eq!(batches[1], expected_1);
 }

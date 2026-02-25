@@ -22,7 +22,7 @@ fn main() {
 
     let start = std::time::Instant::now();
     match execute(alg) {
-        Ok(()) => {
+        Ok(_) => {
             let elapsed = start.elapsed();
             eprintln!("CSV demo completed in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
             eprintln!("Output files: scan.csv, filter.csv, join.csv");

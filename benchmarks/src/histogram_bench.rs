@@ -385,6 +385,7 @@ fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> base::Algori
         timeout_ms: Some(60_000),
         thread_name_prefix: Some("hist-bench".into()),
         additional_shared_memory: 0,
+        output: vec![],
     }
 }
 

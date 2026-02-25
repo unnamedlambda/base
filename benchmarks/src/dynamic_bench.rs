@@ -258,6 +258,7 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64)
         timeout_ms: Some(30_000),
         thread_name_prefix: None,
         additional_shared_memory: 0,
+        output: vec![],
     };
 
     (algorithm, expected)
@@ -588,6 +589,7 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
         timeout_ms: Some(30_000),
         thread_name_prefix: None,
         additional_shared_memory: 0,
+        output: vec![],
     };
 
     (algorithm, expected)
