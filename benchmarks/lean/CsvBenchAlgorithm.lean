@@ -27,7 +27,6 @@ namespace CsvBench
 
 -- Memory layout offsets
 def FLAG_FILE       : Nat := 0x0008
-def FLAG_CL         : Nat := 0x0010
 def INPUT_FILENAME  : Nat := 0x0020
 def OUTPUT_FILENAME : Nat := 0x0120
 def END_POS         : Nat := 0x02F0
@@ -35,8 +34,6 @@ def LEFT_VAL        : Nat := 0x0350
 def CLIF_IR_OFF     : Nat := 0x0400
 def CSV_DATA        : Nat := 0x2000
 
--- Unit type IDs
-def CL_UNIT   : UInt32 := 9
 def TIMEOUT_MS    : Nat := 300000
 
 /-
@@ -280,62 +277,26 @@ def buildPayload : List UInt8 :=
     gap1 ++ endPos ++ gap2 ++ leftVal ++ gap3 ++
     irBytes ++ padding
 
--- Worker actions (referenced by control dispatches)
--- Index 0: FileRead
--- Index 1: FileWrite
--- Index 2: Cranelift run (dummy action, dst=0 so function gets base ptr)
-def workerActions : List Action := [
-  { kind := .Noop, dst := 0, src := 0, offset := 0, size := 0 },
-  { kind := .Noop, dst := 0, src := 1, offset := 0, size := 0 },
-  { kind := .Noop, dst := 0, src := 2, offset := 0, size := 0 }
-]
-
--- Control actions (main program)
--- Layout: actions[0..5] = control, actions[6..8] = workers
+-- Control actions (synchronous ClifCall)
 def controlActions : List Action :=
-  let wBase : UInt32 := 6
   [
-    -- Dispatch CLIF file-read function
-    { kind := .AsyncDispatch,
-      dst := CL_UNIT,
-      src := wBase,
-      offset := UInt32.ofNat FLAG_FILE,
-      size := 1 },
-    -- Wait for FileRead
-    { kind := .Wait,
-      dst := UInt32.ofNat FLAG_FILE,
-      src := 0, offset := 0, size := 0 },
-    -- Dispatch CLIF compute function
-    { kind := .AsyncDispatch,
-      dst := CL_UNIT,
-      src := wBase + 1,
-      offset := UInt32.ofNat FLAG_CL,
-      size := 1 },
-    -- Wait for Cranelift
-    { kind := .Wait,
-      dst := UInt32.ofNat FLAG_CL,
-      src := 0, offset := 0, size := 0 },
-    -- Dispatch CLIF file-write function
-    { kind := .AsyncDispatch,
-      dst := CL_UNIT,
-      src := wBase + 2,
-      offset := UInt32.ofNat FLAG_FILE,
-      size := 1 },
-    -- Wait for FileWrite
-    { kind := .Wait,
-      dst := UInt32.ofNat FLAG_FILE,
-      src := 0, offset := 0, size := 0 }
+    -- 0: Synchronous CLIF file-read (fn 0)
+    { kind := .ClifCall, dst := 0, src := 0, offset := 0, size := 0 },
+    -- 1: Synchronous CLIF compute (fn 1)
+    { kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 },
+    -- 2: Synchronous CLIF file-write (fn 2)
+    { kind := .ClifCall, dst := 0, src := 2, offset := 0, size := 0 }
   ]
 
 -- Build the full algorithm
 def buildAlgorithm : Algorithm := {
-  actions := controlActions ++ workerActions,
+  actions := controlActions,
   payloads := buildPayload,
   state := {
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    cranelift_units := 1,
+    cranelift_units := 0,
   },
   cranelift_assignments := [],
   worker_threads := some 2,

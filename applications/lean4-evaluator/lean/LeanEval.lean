@@ -8,8 +8,6 @@ open AlgorithmLib
 namespace LeanEval
 
 -- Payload layout
-def FLAG_FILE      : Nat := 0x0008
-def FLAG_CL        : Nat := 0x0010
 def OUTPUT_PATH    : Nat := 0x0020
 def INPUT_PATH     : Nat := 0x0060
 def SOURCE_BUF     : Nat := 0x0160
@@ -25,7 +23,6 @@ def STACK_BASE     : Nat := 0x11F8
 def STACK_SZ       : Nat := 512
 def CLIF_IR_OFF    : Nat := 0x13F8
 
-def CL_UNIT : UInt32 := 9
 def TIMEOUT_MS : Nat := 30000
 
 /-
@@ -1341,55 +1338,23 @@ def buildPayload : List UInt8 :=
     trueStr ++ falseStr ++ identBuf ++ htValBuf ++ outputBuf ++
     stackRegion ++ irBytes
 
-def wBase : UInt32 := 6
-
-def workerActions : List Action := [
-  { kind := .Noop, dst := 0, src := 0, offset := 0, size := 0 },
-  { kind := .Noop, dst := 0, src := 1, offset := 0, size := 0 },
-  { kind := .Noop, dst := 0, src := 2, offset := 0, size := 0 }
-]
-
-def controlActions : List Action := [
-  -- 0: Dispatch file read
-  { kind := .AsyncDispatch,
-    dst := CL_UNIT,
-    src := wBase,
-    offset := UInt32.ofNat FLAG_FILE,
-    size := 1 },
-  -- 1: Wait file read
-  { kind := .Wait,
-    dst := UInt32.ofNat FLAG_FILE,
-    src := 0, offset := 0, size := 0 },
-  -- 2: Dispatch compute
-  { kind := .AsyncDispatch,
-    dst := CL_UNIT,
-    src := wBase + 1,
-    offset := UInt32.ofNat FLAG_CL,
-    size := 1 },
-  -- 3: Wait compute
-  { kind := .Wait,
-    dst := UInt32.ofNat FLAG_CL,
-    src := 0, offset := 0, size := 0 },
-  -- 4: Dispatch file write
-  { kind := .AsyncDispatch,
-    dst := CL_UNIT,
-    src := wBase + 2,
-    offset := UInt32.ofNat FLAG_FILE,
-    size := 1 },
-  -- 5: Wait file write
-  { kind := .Wait,
-    dst := UInt32.ofNat FLAG_FILE,
-    src := 0, offset := 0, size := 0 }
+def actions : List Action := [
+  -- 0: File read (fn 0)
+  { kind := .ClifCall, dst := 0, src := 0, offset := 0, size := 0 },
+  -- 1: Compute (fn 1)
+  { kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 },
+  -- 2: File write (fn 2)
+  { kind := .ClifCall, dst := 0, src := 2, offset := 0, size := 0 }
 ]
 
 def buildAlgorithm : Algorithm := {
-  actions := controlActions ++ workerActions,
+  actions := actions,
   payloads := buildPayload,
   state := {
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    cranelift_units := 1,
+    cranelift_units := 0,
   },
   cranelift_assignments := [],
   worker_threads := some 2,

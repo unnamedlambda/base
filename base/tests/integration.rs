@@ -81,19 +81,19 @@ block0(v0: i64):
 
     let actions = vec![
         // Action 0: CLIF fn0 writes file A (dispatched by src=0)
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
         // Action 1: CLIF fn1 writes file B (dispatched by src=1)
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
         // Action 2: ConditionalJump — condition true → jump to 5 (skip A dispatch)
         Action { kind: Kind::ConditionalJump, src: 3000, dst: 5, offset: 0, size: 0 },
-        // Action 3: AsyncDispatch CLIF fn0 (SKIPPED)
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: flag_a, size: 0 },
+        // Action 3: ClifCallAsync CLIF fn0 (SKIPPED)
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: flag_a, size: 1 },
         // Action 4: Wait (SKIPPED)
         Action { kind: Kind::Wait, dst: flag_a, src: 0, offset: 0, size: 0 },
         // Action 5: ConditionalJump — condition false → fall through
         Action { kind: Kind::ConditionalJump, src: 3008, dst: 99, offset: 0, size: 0 },
-        // Action 6: AsyncDispatch CLIF fn1 (EXECUTED)
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: flag_b, size: 0 },
+        // Action 6: ClifCallAsync CLIF fn1 (EXECUTED)
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: flag_b, size: 1 },
         // Action 7: Wait
         Action { kind: Kind::Wait, dst: flag_b, src: 0, offset: 0, size: 0 },
     ];
@@ -159,19 +159,19 @@ block0(v0: i64):
 
     let actions = vec![
         // Action 0: CLIF fn0 writes 4byte file
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
         // Action 1: CLIF fn1 writes 8byte file
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
         // Action 2: ConditionalJump size=4 (first 4 bytes zero → no jump)
         Action { kind: Kind::ConditionalJump, src: 3000, dst: 5, offset: 0, size: 4 },
-        // Action 3: AsyncDispatch CLIF fn0 (EXECUTED)
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: flag_4, size: 0 },
+        // Action 3: ClifCallAsync CLIF fn0 (EXECUTED)
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: flag_4, size: 1 },
         // Action 4: Wait
         Action { kind: Kind::Wait, dst: flag_4, src: 0, offset: 0, size: 0 },
         // Action 5: ConditionalJump size=8 (bytes 4-7 non-zero → jump)
         Action { kind: Kind::ConditionalJump, src: 3000, dst: 8, offset: 0, size: 8 },
-        // Action 6: AsyncDispatch CLIF fn1 (SKIPPED)
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: flag_8, size: 0 },
+        // Action 6: ClifCallAsync CLIF fn1 (SKIPPED)
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: flag_8, size: 1 },
         // Action 7: Wait (SKIPPED)
         Action { kind: Kind::Wait, dst: flag_8, src: 0, offset: 0, size: 0 },
     ];
@@ -219,11 +219,11 @@ block0(v0: i64):
     payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: 1032, size: 1 },
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
@@ -273,11 +273,11 @@ block0(v0: i64):
     payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: 1032, size: 1 },
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
@@ -325,11 +325,11 @@ block0(v0: i64):
     payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: 1032, size: 1 },
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
@@ -380,11 +380,11 @@ block0(v0: i64):
     payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: 1032, size: 1 },
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
@@ -469,21 +469,21 @@ block0(v0: i64):
 
     let actions = vec![
         // Action 0: unit 0 compute (src=0 → fn0)
-        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 2000, src: 0, offset: 0, size: 0 },
         // Action 1: unit 1 compute (src=0 → fn0)
-        Action { kind: Kind::Noop, dst: 2100, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 2100, src: 0, offset: 0, size: 0 },
         // Action 2: unit 0 write (src=1 → fn1)
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
         // Action 3: unit 1 write (src=1 → fn1)
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
         // Dispatch compute
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: 1032, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
         // Dispatch writes
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 2, offset: 1040, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 3, offset: 1048, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 2, offset: 1040, size: 1 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 3, offset: 1048, size: 1 },
         Action { kind: Kind::Wait, dst: 1040, src: 0, offset: 0, size: 0 },
         Action { kind: Kind::Wait, dst: 1048, src: 0, offset: 0, size: 0 },
     ];
@@ -544,11 +544,11 @@ block0(v0: i64):
     payloads[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 2000, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 2000, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 1, offset: 1032, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 1, offset: 1032, size: 1 },
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
@@ -596,13 +596,13 @@ block0(v0: i64):
 
     let actions = vec![
         // 0: placeholder for CLIF dispatch
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
         // 1: Wake — increments wake word 0→1
         Action { kind: Kind::Wake, dst: 3000, src: 0, offset: 0, size: 0 },
         // 2: Park — wake word is already 1 != expected(0), passes immediately
         Action { kind: Kind::Park, dst: 3000, src: 3008, offset: 3016, size: 0 },
-        // 3: AsyncDispatch CLIF (writes to file)
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: clif_flag, size: 0 },
+        // 3: ClifCallAsync CLIF (writes to file)
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: clif_flag, size: 1 },
         // 4: Wait
         Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
@@ -655,13 +655,13 @@ block0(v0: i64):
 
     let actions = vec![
         // 0: placeholder for CLIF dispatch
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
         // 1: Park with 10ms timeout — wake word 0 == expected(0), times out
         Action { kind: Kind::Park, dst: 3000, src: 3008, offset: 3016, size: 10 },
         // 2: WaitUntil — status == expected_status (0 == 0)
         Action { kind: Kind::WaitUntil, dst: 3016, src: 3024, offset: 0, size: 0 },
-        // 3: AsyncDispatch CLIF (writes to file)
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: clif_flag, size: 0 },
+        // 3: ClifCallAsync CLIF (writes to file)
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: clif_flag, size: 1 },
         // 4: Wait
         Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
@@ -727,8 +727,8 @@ block0(v0: i64):
     payloads[3000..3012].copy_from_slice(b"Hello, CLIF!");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -779,8 +779,8 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"ABCDE");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -832,8 +832,8 @@ block0(v0: i64):
     payloads[3000..3008].copy_from_slice(&[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]);
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -985,8 +985,8 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1059,8 +1059,8 @@ block0(v0: i64):
     payloads[3000..3007].copy_from_slice(b"RETVALS");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1120,8 +1120,8 @@ block0(v0: i64):
     payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1172,8 +1172,8 @@ block0(v0: i64):
     payloads[3000..3009].copy_from_slice(b"CSTR\0xtra");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1220,8 +1220,8 @@ block0(v0: i64):
     payloads[3100..3103].copy_from_slice(b"SML");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1276,8 +1276,8 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1381,8 +1381,8 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1504,8 +1504,8 @@ block0(v0: i64):
     }
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1641,8 +1641,8 @@ block0(v0: i64):
     payloads[3704..3708].copy_from_slice(&0i32.to_le_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1742,8 +1742,8 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"hello");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1833,8 +1833,8 @@ block0(v0: i64):
     });
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1898,8 +1898,8 @@ block0(v0: i64):
     payloads[3000..3005].copy_from_slice(b"hello");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -1956,8 +1956,8 @@ block0(v0: i64):
     payloads[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2051,8 +2051,8 @@ block0(v0: i64):
     });
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2133,8 +2133,8 @@ block0(v0: i64):
     payloads[5010..5016].copy_from_slice(b"barbaz");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2233,8 +2233,8 @@ block0(v0: i64):
     payloads[5050..5052].copy_from_slice(b"v3");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2315,8 +2315,8 @@ block0(v0: i64):
     payloads[5030] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2385,8 +2385,8 @@ block0(v0: i64):
     payloads[5010..5013].copy_from_slice(b"val");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2461,8 +2461,8 @@ block0(v0: i64):
     payloads[5020..5023].copy_from_slice(b"new");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2519,8 +2519,8 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2580,8 +2580,8 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2659,8 +2659,8 @@ block0(v0: i64):
     payloads[5060] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2724,8 +2724,8 @@ block0(v0: i64):
     payloads[5010] = b'v';
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2808,8 +2808,8 @@ block0(v0: i64):
     payloads[5020..5022].copy_from_slice(b"ok");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -2912,8 +2912,8 @@ block0(v0: i64):
     payloads[5010..5012].copy_from_slice(b"vv");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3019,8 +3019,8 @@ block0(v0: i64):
     payloads[5030..5032].copy_from_slice(b"v2");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3083,8 +3083,8 @@ block0(v0: i64):
     payloads[4256..4256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3156,8 +3156,8 @@ block0(v0: i64):
     payloads[5000] = b'k';
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3253,8 +3253,8 @@ block0(v0: i64):
     payloads[5020..5022].copy_from_slice(b"d2");
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3340,8 +3340,8 @@ block0(v0: i64):
     payloads[5060] = b'x';
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3400,8 +3400,8 @@ block0(v0: i64):
     payloads1[5010..5013].copy_from_slice(b"val");
 
     let actions1 = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3448,8 +3448,8 @@ block0(v0: i64):
     payloads2[5000..5003].copy_from_slice(b"key");
 
     let actions2 = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 1024, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3523,9 +3523,9 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 2 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3608,9 +3608,9 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 2 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3672,9 +3672,9 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 2 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3741,9 +3741,9 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 2 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3828,9 +3828,9 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 3, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 3, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 2 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
@@ -3907,9 +3907,9 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 2 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
@@ -4006,9 +4006,9 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 3, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 0, offset: 2016, size: 2 },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 3, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 2 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
@@ -4080,16 +4080,16 @@ block0(v0: i64):
     payloads[clif_off + clif_ir.len()] = 0;
 
     // Actions:
-    //   0: Noop (fn1, ptr=base+200 → first descriptor)
-    //   1: Noop (fn1, ptr=base+216 → second descriptor)
-    //   2: Noop (fn2, ptr=base → write file)
-    //   3: AsyncDispatch (dispatches actions 0..3)
+    //   0: Describe (fn1, ptr=base+200 → first descriptor)
+    //   1: Describe (fn1, ptr=base+216 → second descriptor)
+    //   2: Describe (fn2, ptr=base → write file)
+    //   3: ClifCallAsync (dispatches actions 0..3)
     //   4: Wait
     let actions = vec![
-        Action { kind: Kind::Noop, dst: 200, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 216, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::Noop, dst: 0, src: 2, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 0, src: 0, offset: 2016, size: 3 },
+        Action { kind: Kind::Describe, dst: 200, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 216, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 3 },
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 

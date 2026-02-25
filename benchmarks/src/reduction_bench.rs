@@ -158,12 +158,7 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
     }
 
     let actions = vec![
-        // [0] Dispatch CL work (action 2) with flag at FLAG_CL
-        Action { kind: Kind::AsyncDispatch, dst: 9, src: 2, offset: FLAG_CL as u32, size: 1 },
-        // [1] Wait for CL completion
-        Action { kind: Kind::Wait, dst: FLAG_CL as u32, src: 0, offset: 0, size: 0 },
-        // [2] CL work action: call function 0 with base ptr
-        Action { kind: Kind::Noop, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
     base::Algorithm {
@@ -173,7 +168,7 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
             cranelift_ir_offsets: vec![CLIF_OFF],
         },
         units: UnitSpec {
-            cranelift_units: 1,
+            cranelift_units: 0,
         },
         cranelift_assignments: vec![],
         worker_threads: Some(1),

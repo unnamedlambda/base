@@ -50,7 +50,7 @@ pub(crate) struct Mailbox(AtomicU64);
 
 pub(crate) enum MailboxPoll {
     Empty,
-    Work { start: u32, end: u32, flag: u32 },
+    Work { src: u32, count: u32, flag: u32 },
     Closed,
 }
 
@@ -59,9 +59,16 @@ impl Mailbox {
         Self(AtomicU64::new(0))
     }
 
-    pub fn post(&self, start: u32, end: u32, flag: u32) {
-        debug!(start, end, flag, "mailbox_post");
-        let packed = ((start as u64) << 43) | ((end as u64) << 22) | (flag as u64);
+    /// Post work to the mailbox.
+    /// - count=0: direct dispatch — `src` is the CLIF function index
+    /// - count>0: batch dispatch — `src` is the first action descriptor index,
+    ///   worker iterates actions\[src..src+count\] reading fn_idx and mem_offset from each
+    pub fn post(&self, src: u32, count: u32, flag: u32) {
+        debug!(src, count, flag, "mailbox_post");
+        let packed = ((src as u64) << 43) | ((count as u64) << 22) | (flag as u64);
+        // Ensure packed != 0 (empty sentinel). When src=0, count=0, flag=0 the packed
+        // value would be 0. Set the top bit to disambiguate.
+        let packed = if packed == 0 { 1u64 << 63 } else { packed };
         let mut spin_count = 0u32;
         loop {
             match self
@@ -87,10 +94,12 @@ impl Mailbox {
         if packed == MAILBOX_CLOSED {
             return MailboxPoll::Closed;
         }
-        let start = (packed >> 43) as u32;
-        let end = ((packed >> 22) & 0x1F_FFFF) as u32;
+        // Undo the top-bit sentinel for the src=0,count=0,flag=0 case
+        let packed = if packed == (1u64 << 63) { 0 } else { packed };
+        let src = (packed >> 43) as u32;
+        let count = ((packed >> 22) & 0x1F_FFFF) as u32;
         let flag = (packed & 0x3F_FFFF) as u32;
-        MailboxPoll::Work { start, end, flag }
+        MailboxPoll::Work { src, count, flag }
     }
 }
 
@@ -235,6 +244,17 @@ impl CraneliftHashTableContext {
 
 /// Offset in shared memory where the HT context pointer is stored (first 8 bytes of payload).
 const CL_HT_CTX_OFFSET: usize = 0;
+
+/// Create the hash table context and store its pointer at offset 0 in shared memory.
+/// Returns the raw pointer so the caller can drop it when done.
+pub(crate) fn init_ht_context(shared: &SharedMemory) -> *mut CraneliftHashTableContext {
+    let ctx = Box::new(CraneliftHashTableContext::new());
+    let ctx_ptr = Box::into_raw(ctx);
+    unsafe {
+        shared.store_u64(CL_HT_CTX_OFFSET, ctx_ptr as u64, Ordering::Release);
+    }
+    ctx_ptr
+}
 
 unsafe extern "C" fn cl_ht_create(ctx: *mut u8) -> u32 {
     let ctx = &mut *(ctx as *mut CraneliftHashTableContext);
@@ -973,7 +993,7 @@ unsafe extern "C" fn cl_lmdb_cleanup(ptr: *mut u8) {
 }
 
 thread_local! {
-    static THREAD_COMPILED_FNS: std::cell::RefCell<Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static THREAD_COMPILED_FNS: std::cell::RefCell<Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>> = const { std::cell::RefCell::new(None) };
 }
 
 struct CraneliftThreadContext {
@@ -1044,17 +1064,7 @@ unsafe extern "C" fn cl_thread_call(ptr: *mut u8, fn_index: i64, arg_ptr: i64) -
     0
 }
 
-pub(crate) struct CraneliftUnit {
-    shared: Arc<SharedMemory>,
-    compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
-}
-
-impl CraneliftUnit {
-    pub fn new(shared: Arc<SharedMemory>, compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>) -> Self {
-        Self { shared, compiled_fns }
-    }
-
-    pub fn compile(clif_source: &str) -> Arc<Vec<unsafe extern "C" fn(*mut u8)>> {
+pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Arc<Vec<unsafe extern "C" fn(*mut u8)>> {
         info!(ir_len = clif_source.len(), "compiling Cranelift IR");
 
         let mut functions = cranelift_reader::parse_functions(clif_source)
@@ -1158,13 +1168,6 @@ impl CraneliftUnit {
         info!(count = compiled_fns.len(), "Cranelift IR compiled successfully");
         Box::leak(Box::new(module));
         Arc::new(compiled_fns)
-    }
-
-    pub unsafe fn execute(&mut self, action: &Action) {
-        let fn_idx = (action.src as usize) % self.compiled_fns.len();
-        let ptr = self.shared.ptr.add(action.dst as usize);
-        (self.compiled_fns[fn_idx])(ptr);
-    }
 }
 
 pub(crate) fn cranelift_unit_task_mailbox(
@@ -1180,25 +1183,20 @@ pub(crate) fn cranelift_unit_task_mailbox(
         *cell.borrow_mut() = Some(compiled_fns.clone());
     });
 
-    // Create hash table context for CLIF-callable HT functions and store its pointer
-    // at offset 0 in shared memory (HT_CTX_PTR slot, written before JIT code runs).
-    let ctx = Box::new(CraneliftHashTableContext::new());
-    let ctx_ptr = Box::into_raw(ctx);
-    unsafe {
-        shared.store_u64(CL_HT_CTX_OFFSET, ctx_ptr as u64, Ordering::Release);
-    }
-
-    let mut unit = CraneliftUnit::new(shared.clone(), compiled_fns);
+    let compiled = &*compiled_fns;
+    let ptr = shared.ptr;
     let mut spin_count = 0u32;
 
     loop {
         match mailbox.poll() {
-            MailboxPoll::Work { start, end, flag } => {
-                debug!(start, end, flag, "cranelift_work_received");
+            MailboxPoll::Work { src, count, flag } => {
+                debug!(src, count, flag, "cranelift_work_received");
+                let start = src as usize;
+                let end = start + count as usize;
                 for idx in start..end {
-                    unsafe {
-                        unit.execute(&actions[idx as usize]);
-                    }
+                    let desc = &actions[idx];
+                    let fn_idx = (desc.src as usize) % compiled.len();
+                    unsafe { compiled[fn_idx](ptr.add(desc.dst as usize)) };
                 }
                 unsafe {
                     shared.store_u64(flag as usize, 1, Ordering::Release);
@@ -1208,7 +1206,6 @@ pub(crate) fn cranelift_unit_task_mailbox(
             }
             MailboxPoll::Closed => {
                 info!("Cranelift unit shutting down");
-                unsafe { drop(Box::from_raw(ctx_ptr)); }
                 return;
             }
             MailboxPoll::Empty => spin_backoff(&mut spin_count),

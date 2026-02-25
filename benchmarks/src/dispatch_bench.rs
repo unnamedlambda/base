@@ -79,12 +79,12 @@ fn decode_packet(packet: u64) -> (u32, u32, u32) {
 
 /// Generate CLIF IR for the dispatch bench.
 ///
-/// fn0: noop placeholder (never dispatched, required by CraneliftUnit)
+/// fn0: unused placeholder
 /// fn1: atomic-add worker — reads addend + relative acc offset from descriptor,
 ///      computes absolute accumulator address, does atomic_rmw add.
 fn gen_dispatch_clif_ir() -> String {
-    // Each worker action has dst = descriptor offset.
-    // CraneliftUnit::execute passes ptr = base + action.dst to the function.
+    // Each Describe action has dst = descriptor offset.
+    // Worker passes ptr = base + desc.dst to the function.
     //
     // Descriptor layout (16 bytes):
     //   +0: addend (u64)
@@ -151,9 +151,9 @@ fn build_frontier_algorithm(
     }
 
     // Actions:
-    //   [0..W-1]:          AsyncDispatch (one per worker)
+    //   [0..W-1]:          ClifCallAsync (one per worker)
     //   [W]:               WaitUntil (acc == expected)
-    //   [W+1..W+1+chunks]: Noop worker actions (dispatched by AsyncDispatch)
+    //   [W+1..W+1+chunks]: Describe worker actions (dispatched by ClifCallAsync)
     let worker_base_action = (workers + 1) as u32;
     let mut actions = Vec::with_capacity(workers + 1 + chunk_count);
 
@@ -167,7 +167,7 @@ fn build_frontier_algorithm(
 
         if count == 0 {
             actions.push(Action {
-                kind: Kind::Noop,
+                kind: Kind::Describe,
                 dst: 0,
                 src: 0,
                 offset: 0,
@@ -175,7 +175,7 @@ fn build_frontier_algorithm(
             });
         } else {
             actions.push(Action {
-                kind: Kind::AsyncDispatch,
+                kind: Kind::ClifCallAsync,
                 dst: 0,
                 src: start_action,
                 offset: flag_addr,
@@ -195,7 +195,7 @@ fn build_frontier_algorithm(
     for i in 0..chunk_count {
         let desc_off = desc_base + i * 16;
         actions.push(Action {
-            kind: Kind::Noop,
+            kind: Kind::Describe,
             dst: desc_off as u32,
             src: 1,
             offset: 0,
@@ -388,8 +388,8 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
 
     // Actions layout:
     //   main section: num_phases * (workers + 1) actions
-    //     per phase: W AsyncDispatches + 1 WaitUntil
-    //   worker section: total_chunks Noop actions
+    //     per phase: W ClifCallAsyncs + 1 WaitUntil
+    //   worker section: total_chunks Describe actions
     let main_section_len = num_phases * (workers + 1);
     let total_actions = main_section_len + total_chunks;
     let mut actions = Vec::with_capacity(total_actions);
@@ -418,7 +418,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
             let count = (end_idx - start_idx) as u32;
             if count == 0 {
                 actions.push(Action {
-                    kind: Kind::Noop,
+                    kind: Kind::Describe,
                     dst: 0,
                     src: 0,
                     offset: 0,
@@ -428,7 +428,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
                 let start = (base_action_idx + start_idx) as u32;
                 let flag_addr = (flags_base + w * 8) as u32;
                 actions.push(Action {
-                    kind: Kind::AsyncDispatch,
+                    kind: Kind::ClifCallAsync,
                     dst: 0,
                     src: start,
                     offset: flag_addr,
@@ -446,7 +446,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
         });
     }
 
-    // Worker section: Noop actions with descriptors
+    // Worker section: Describe actions with descriptors
     // Also fix up descriptor acc_rel offsets now that we know positions
     desc_idx = 0;
     for (k, phase) in phases.iter().enumerate() {
@@ -456,7 +456,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
             let acc_rel = (acc_addr as i64) - (desc_off as i64);
             payloads[desc_off + 8..desc_off + 16].copy_from_slice(&acc_rel.to_le_bytes());
             actions.push(Action {
-                kind: Kind::Noop,
+                kind: Kind::Describe,
                 dst: desc_off as u32,
                 src: 1,
                 offset: 0,

@@ -18,9 +18,10 @@ instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
 inductive Kind where
-  | Noop
+  | Describe
+  | ClifCall
   | ConditionalJump
-  | AsyncDispatch
+  | ClifCallAsync
   | Wait
   | WaitUntil
   | Park
@@ -29,9 +30,10 @@ inductive Kind where
 
 instance : ToJson Kind where
   toJson
-    | .Noop => "noop"
+    | .Describe => "describe"
+    | .ClifCall => "clif_call"
     | .ConditionalJump => "conditional_jump"
-    | .AsyncDispatch => "async_dispatch"
+    | .ClifCallAsync => "clif_call_async"
     | .Wait => "wait"
     | .WaitUntil => "wait_until"
     | .Park => "park"

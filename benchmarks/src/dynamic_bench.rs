@@ -70,7 +70,8 @@ function u0:2(i64) system_v {
     fn2 = %cl_thread_join sig2
     sig3 = (i64) system_v
     fn3 = %cl_thread_cleanup sig3
-block0(v0: i64):
+block0(v99: i64):
+    v0 = iadd_imm v99, 72
     ; v0 = orchestrator control block: +0 root_node_rel, +8 thread_ctx
     v1 = load.i64 notrap aligned v0
     v2 = iadd v0, v1
@@ -230,11 +231,11 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64)
 
     let actions = vec![
         Action {
-            kind: Kind::AsyncDispatch,
+            kind: Kind::ClifCall,
             dst: 0,
             src: 2,
-            offset: flag_addr as u32,
-            size: 1,
+            offset: 0,
+            size: 0,
         },
         Action {
             kind: Kind::WaitUntil,
@@ -243,21 +244,14 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64)
             offset: 0,
             size: 8,
         },
-        Action {
-            kind: Kind::Noop,
-            dst: ctrl_off as u32,
-            src: 2,
-            offset: 0,
-            size: 0,
-        },
     ];
 
     let algorithm = Algorithm {
         actions,
         payloads,
         state: State { cranelift_ir_offsets: vec![clif_off] },
-        units: UnitSpec { cranelift_units: 1 },
-        cranelift_assignments: vec![0u8; 3],
+        units: UnitSpec { cranelift_units: 0 },
+        cranelift_assignments: vec![],
         worker_threads: Some(1),
         blocking_threads: Some(1),
         stack_size: Some(256 * 1024),
@@ -373,7 +367,8 @@ function u0:2(i64) system_v {
     fn2 = %cl_thread_join sig2
     sig3 = (i64) system_v
     fn3 = %cl_thread_cleanup sig3
-block0(v0: i64):
+block0(v99: i64):
+    v0 = iadd_imm v99, 72
     v1 = load.i64 notrap aligned v0
     v2 = iadd v0, v1
     v3 = iadd_imm v0, 8
@@ -566,11 +561,11 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
 
     let actions = vec![
         Action {
-            kind: Kind::AsyncDispatch,
+            kind: Kind::ClifCall,
             dst: 0,
             src: 2,
-            offset: flag_addr as u32,
-            size: 1,
+            offset: 0,
+            size: 0,
         },
         Action {
             kind: Kind::WaitUntil,
@@ -579,21 +574,14 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
             offset: 0,
             size: 8,
         },
-        Action {
-            kind: Kind::Noop,
-            dst: ctrl_off as u32,
-            src: 2,
-            offset: 0,
-            size: 0,
-        },
     ];
 
     let algorithm = Algorithm {
         actions,
         payloads,
         state: State { cranelift_ir_offsets: vec![clif_off] },
-        units: UnitSpec { cranelift_units: 1 },
-        cranelift_assignments: vec![0u8; 3],
+        units: UnitSpec { cranelift_units: 0 },
+        cranelift_assignments: vec![],
         worker_threads: Some(1),
         blocking_threads: Some(1),
         stack_size: Some(256 * 1024),

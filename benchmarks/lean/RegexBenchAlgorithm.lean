@@ -27,7 +27,6 @@ namespace RegexBench
 -/
 
 def FLAG_FILE       : Nat := 0x0008
-def FLAG_CL         : Nat := 0x0010
 def INPUT_FILENAME  : Nat := 0x0020
 def OUTPUT_FILENAME : Nat := 0x0120
 def FILE_SIZE       : Nat := 0x0250
@@ -35,8 +34,6 @@ def RESULT_COUNT    : Nat := 0x0300
 def OUTPUT_BUF      : Nat := 0x0350
 def CLIF_IR_OFF     : Nat := 0x0400
 def INPUT_DATA      : Nat := 0x4000
-
-def CL_UNIT   : UInt32 := 9
 
 def TIMEOUT_MS    : Nat := 300000
 
@@ -211,34 +208,24 @@ def buildPayload : List UInt8 :=
     gap3 ++ resultCount ++ gap4 ++ outputBuf ++ gap5 ++
     irBytes ++ padding
 
-def workerActions : List Action := [
-  { kind := .Noop, dst := 0, src := 0, offset := 0, size := 0 },
-  { kind := .Noop, dst := 0, src := 1, offset := 0, size := 0 },
-  { kind := .Noop, dst := 0, src := 2, offset := 0, size := 0 }
-]
-
 def controlActions : List Action :=
-  let wBase : UInt32 := 6
   [
-    { kind := .AsyncDispatch, dst := CL_UNIT, src := wBase,
-      offset := UInt32.ofNat FLAG_FILE, size := 1 },
-    { kind := .Wait, dst := UInt32.ofNat FLAG_FILE, src := 0, offset := 0, size := 0 },
-    { kind := .AsyncDispatch, dst := CL_UNIT, src := wBase + 1,
-      offset := UInt32.ofNat FLAG_CL, size := 1 },
-    { kind := .Wait, dst := UInt32.ofNat FLAG_CL, src := 0, offset := 0, size := 0 },
-    { kind := .AsyncDispatch, dst := CL_UNIT, src := wBase + 2,
-      offset := UInt32.ofNat FLAG_FILE, size := 1 },
-    { kind := .Wait, dst := UInt32.ofNat FLAG_FILE, src := 0, offset := 0, size := 0 }
+    -- 0: Synchronous CLIF file-read (fn 0)
+    { kind := .ClifCall, dst := 0, src := 0, offset := 0, size := 0 },
+    -- 1: Synchronous CLIF compute (fn 1)
+    { kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 },
+    -- 2: Synchronous CLIF file-write (fn 2)
+    { kind := .ClifCall, dst := 0, src := 2, offset := 0, size := 0 }
   ]
 
 def buildAlgorithm : Algorithm := {
-  actions := controlActions ++ workerActions,
+  actions := controlActions,
   payloads := buildPayload,
   state := {
     cranelift_ir_offsets := [CLIF_IR_OFF]
   },
   units := {
-    cranelift_units := 1,
+    cranelift_units := 0,
   },
   cranelift_assignments := [],
   worker_threads := some 2, blocking_threads := some 2,

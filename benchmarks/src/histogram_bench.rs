@@ -132,7 +132,8 @@ fn gen_clif_ir(chunk_size: usize, hist_stride: usize) -> String {
     fn3 = %cl_thread_cleanup sig3
     fn4 = %cl_file_write sig4
 
-block0(v0: i64):
+block0(v99: i64):
+    v0 = iadd_imm v99, 0x40                    ; skip to HDR_BASE
     v1 = load.i64 notrap aligned v0+0x00      ; data_ptr
     v2 = load.i64 notrap aligned v0+0x08      ; n
     v3 = load.i64 notrap aligned v0+0x10      ; workers
@@ -369,18 +370,15 @@ fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> base::Algori
     payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
 
     let actions = vec![
-        Action { kind: Kind::Noop, dst: HDR_BASE as u32, src: 2, offset: 0, size: 0 },
-        Action { kind: Kind::AsyncDispatch, dst: 0, src: 0, offset: CLIF_FLAG_OFF as u32, size: 0 },
-        Action { kind: Kind::Wait, dst: CLIF_FLAG_OFF as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 2, offset: 0, size: 0 },
     ];
-    let num_actions = actions.len();
 
     base::Algorithm {
         actions,
         payloads,
         state: State { cranelift_ir_offsets: vec![CLIF_IR_OFF] },
-        units: UnitSpec { cranelift_units: 1 },
-        cranelift_assignments: vec![0; num_actions],
+        units: UnitSpec { cranelift_units: 0 },
+        cranelift_assignments: vec![],
         worker_threads: Some(1),
         blocking_threads: Some(1),
         stack_size: Some(512 * 1024),

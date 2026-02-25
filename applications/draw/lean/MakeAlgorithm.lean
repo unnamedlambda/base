@@ -219,25 +219,18 @@ def payloads : List UInt8 :=
 -- Algorithm definition
 --
 -- Actions:
---   [0] Worker: dst=0, src=1 → calls fn u0:1 with shared memory base ptr
---   [1] AsyncDispatch: posts action[0] to cranelift unit 0
---   [2] Wait: spins until completion flag is set
+--   [0] ClifCall: synchronous call to CLIF fn 1
 -- ---------------------------------------------------------------------------
 
 def drawAlgorithm : Algorithm :=
-  let workerAction : Action :=
-    { kind := .Noop, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  let dispatchAction : Action :=
-    { kind := .AsyncDispatch, dst := u32 0, src := u32 0,
-      offset := u32 flag_off, size := u32 1 }
-  let waitAction : Action :=
-    { kind := .Wait, dst := u32 flag_off, src := u32 0, offset := u32 0, size := u32 0 }
+  let clifCallAction : Action :=
+    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
   {
-    actions := [workerAction, dispatchAction, waitAction],
+    actions := [clifCallAction],
     payloads := payloads,
     state := { cranelift_ir_offsets := [clifIr_off] },
-    units := { cranelift_units := 1 },
-    cranelift_assignments := [0, 0, 0],
+    units := { cranelift_units := 0 },
+    cranelift_assignments := [0],
     worker_threads := some 1,
     blocking_threads := some 1,
     stack_size := some (512 * 1024),

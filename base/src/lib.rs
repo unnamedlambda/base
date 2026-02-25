@@ -6,11 +6,13 @@ pub use base_types::{Action, Algorithm, Kind, State, UnitSpec};
 mod units;
 
 use crate::units::{
+    compile_cranelift_ir,
     cranelift_unit_task_mailbox,
+    init_ht_context,
     load_sized,
     order_from_u32,
     read_null_terminated_string_from_slice,
-    Mailbox, SharedMemory,
+    Mailbox, SharedMemory, THREAD_COMPILED_FNS,
 };
 
 #[derive(Debug)]
@@ -46,7 +48,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
     let mut memory = Pin::new(payloads.into_boxed_slice());
     let mem_ptr = memory.as_mut().as_mut_ptr();
     let shared = Arc::new(SharedMemory::new(mem_ptr));
-    let actions_arc = Arc::new(algorithm.actions);
+    let actions = algorithm.actions;
 
     let cranelift_assignments = Arc::new(algorithm.cranelift_assignments);
 
@@ -61,11 +63,30 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         if !clif_compiled.contains_key(&idx) {
             let source = read_null_terminated_string_from_slice(&memory, offset, 64 * 1024);
             if !source.is_empty() {
-                let compiled = units::CraneliftUnit::compile(&source);
+                let compiled = compile_cranelift_ir(&source);
                 clif_compiled.insert(idx, compiled);
             }
         }
     }
+
+    // Keep a reference to unit 0's compiled fns for synchronous ClifCall
+    let clif_fns_local = clif_compiled.get(&0).cloned();
+
+    // Set thread-local compiled fns so FFI functions (cl_thread_init etc.) work on interpreter thread
+    if let Some(ref fns) = clif_fns_local {
+        THREAD_COMPILED_FNS.with(|cell| {
+            *cell.borrow_mut() = Some(fns.clone());
+        });
+    }
+
+    // Init HT context before any CLIF code runs (shared by ClifCall and worker threads)
+    let ht_ctx_ptr = if !clif_compiled.is_empty() {
+        Some(init_ht_context(&shared))
+    } else {
+        None
+    };
+
+    let actions_arc = Arc::new(actions);
 
     for (cl_id, mailbox) in cranelift_mailboxes.iter().enumerate() {
         if let Some(compiled_fns) = clif_compiled.get(&cl_id).cloned() {
@@ -80,9 +101,9 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         }
     }
 
-    let mut pc: usize = 0;
     let actions = &*actions_arc;
-    let actions_len = actions.len() as u32;
+
+    let mut pc: usize = 0;
     let timeout_start = std::time::Instant::now();
     let timeout_duration = algorithm.timeout_ms.map(Duration::from_millis);
 
@@ -96,6 +117,16 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let action = &actions[pc];
 
         match action.kind {
+            Kind::ClifCall => {
+                let fn_idx = action.src as usize;
+                debug!(pc, fn_idx, "clif_call");
+                if let Some(ref fns) = clif_fns_local {
+                    let f = fns[fn_idx % fns.len()];
+                    unsafe { f(mem_ptr) };
+                }
+                pc += 1;
+            }
+
             Kind::ConditionalJump => {
                 let check_size = if action.size == 0 { 8 } else { action.size as usize };
                 let cond_bytes =
@@ -110,19 +141,16 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                 }
             }
 
-            Kind::AsyncDispatch => {
-                unsafe {
-                    shared.store_u64(action.offset as usize, 0, Ordering::Release);
-                }
-
-                let is_broadcast = (action.size & (1 << 31)) != 0;
-                let size_count = action.size & 0x7FFF_FFFF;
-                let start = action.src;
-                let count = if size_count == 0 { 1 } else { size_count };
-                let end = start.saturating_add(count).min(actions_len);
+            Kind::ClifCallAsync => {
+                let desc_start = action.src;
+                let count = action.size;
                 let flag = action.offset;
 
-                debug!(pc, is_broadcast, start, end, flag, "async_dispatch");
+                unsafe {
+                    shared.store_u64(flag as usize, 0, Ordering::Release);
+                }
+
+                debug!(pc, desc_start, count, flag, "clif_call_async");
 
                 if !cranelift_mailboxes.is_empty() {
                     let assigned = cranelift_assignments
@@ -136,7 +164,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
                         (assigned as usize).min(cranelift_mailboxes.len() - 1)
                     };
 
-                    cranelift_mailboxes[unit_id].post(start, end, flag);
+                    cranelift_mailboxes[unit_id].post(desc_start, count, flag);
                 }
 
                 pc += 1;
@@ -261,6 +289,10 @@ fn execute_internal(algorithm: Algorithm) -> Result<(), Error> {
         let _ = handle.join();
     }
     info!("all unit threads joined");
+
+    if let Some(ctx_ptr) = ht_ctx_ptr {
+        unsafe { drop(Box::from_raw(ctx_ptr)) };
+    }
 
     Ok(())
 }

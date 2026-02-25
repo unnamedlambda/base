@@ -89,12 +89,12 @@ def clifIrSource : String :=
   let joinFn    := toString joinFname_off
   let seaStr    := toString seattleStr_off
   let seaLen    := toString seattleStrLen
-  -- noop function (required by CraneliftUnit)
+  -- noop function (CLIF fn index 0, unused placeholder)
   "function u0:0(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
   "    return\n" ++
   "}\n\n" ++
-  -- orchestrator
+  -- orchestrator (CLIF fn index 1, called synchronously via ClifCall)
   "function u0:1(i64) system_v {\n" ++
   "    sig0 = (i64) system_v\n" ++                                 -- init/cleanup
   "    sig1 = (i64, i64, i32) -> i32 system_v\n" ++                -- lmdb_open
@@ -526,19 +526,14 @@ def payloads : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 def csvAlgorithm : Algorithm :=
-  let workerAction : Action :=
-    { kind := .Noop, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  let dispatchAction : Action :=
-    { kind := .AsyncDispatch, dst := u32 0, src := u32 0,
-      offset := u32 flag_off, size := u32 1 }
-  let waitAction : Action :=
-    { kind := .Wait, dst := u32 flag_off, src := u32 0, offset := u32 0, size := u32 0 }
+  let clifCallAction : Action :=
+    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
   {
-    actions := [workerAction, dispatchAction, waitAction],
+    actions := [clifCallAction],
     payloads := payloads,
     state := { cranelift_ir_offsets := [clifIr_off] },
-    units := { cranelift_units := 1 },
-    cranelift_assignments := [0, 0, 0],
+    units := { cranelift_units := 0 },
+    cranelift_assignments := [0],
     worker_threads := some 1,
     blocking_threads := some 1,
     stack_size := some (512 * 1024),
