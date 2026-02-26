@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crate::harness::{self, BenchResult};
 
 // ---------------------------------------------------------------------------
@@ -60,7 +60,6 @@ const CLIF_SHADER_OFF: usize = 0x100;        // WGSL shader (null-terminated)
 const CLIF_FNAME_IN_OFF: usize = 0x3000;     // input filename (null-terminated)
 const CLIF_FNAME_OUT_OFF: usize = 0x3100;    // output filename (null-terminated)
 const CLIF_IR_OFF: usize = 0x3800;           // CLIF IR source (null-terminated)
-const CLIF_FLAG_OFF: usize = 0x3200;         // cranelift completion flag
 const CLIF_DATA_OFF: usize = 0x4000;         // data buffer
 
 fn gen_memory_clif_ir() -> String {
@@ -189,9 +188,7 @@ fn build_clif_memory_algorithm(
     base::Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![CLIF_IR_OFF],
-        },
+        cranelift_ir: clif_source,
         units: UnitSpec {
             cranelift_units: 0,
         },

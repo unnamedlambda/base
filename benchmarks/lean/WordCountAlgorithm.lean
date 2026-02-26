@@ -254,12 +254,11 @@ def buildPayload : List UInt8 :=
   let outputFile   := zeros 256                              -- 0x0150..0x024F
   let fileSize     := zeros 4                                -- 0x0250..0x0253
   let gap2         := zeros (CLIF_IR_OFF - 0x0254)           -- 0x0254..0x02FF
-  let irBytes      := clifIRBytes                            -- 0x0300..
   let currentSize  :=
     htCtxPtr.length + flagFile.length + flagCl.length + gap0.length +
     currentKey.length + newValue.length + gap1.length +
     inputFile.length + outputFile.length + fileSize.length +
-    gap2.length + irBytes.length
+    gap2.length
   let padToResult  := if RESULT_SLOT > currentSize then zeros (RESULT_SLOT - currentSize) else []
   let resultSlot   := zeros 8                                -- 0x3400..0x3407
   let padToOutput  := zeros (OUTPUT_BUF - (RESULT_SLOT + 8))
@@ -268,7 +267,7 @@ def buildPayload : List UInt8 :=
   htCtxPtr ++ flagFile ++ flagCl ++ gap0 ++
     currentKey ++ newValue ++ gap1 ++
     inputFile ++ outputFile ++ fileSize ++
-    gap2 ++ irBytes ++ padToResult ++ resultSlot ++
+    gap2 ++ padToResult ++ resultSlot ++
     padToOutput ++ outputBuf ++ padToInput
 
 def controlActions : List Action := [
@@ -283,9 +282,7 @@ def controlActions : List Action := [
 def buildAlgorithm : Algorithm := {
   actions := controlActions,
   payloads := buildPayload,
-  state := {
-    cranelift_ir_offsets := [CLIF_IR_OFF]
-  },
+  cranelift_ir := clifIR,
   units := {
     cranelift_units := 0,
   },

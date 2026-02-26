@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crate::harness;
 
 // ---------------------------------------------------------------------------
@@ -329,7 +329,6 @@ const CLIF_REDUCE_BIND_OFF: usize = 0x48;
 const CLIF_SCALE_SHADER_OFF: usize = 0x100;
 const CLIF_REDUCE_SHADER_OFF: usize = 0x800;
 const CLIF_FNAME_OFF: usize     = 0xC00;
-const CLIF_FLAG_OFF: usize      = 0xD00;
 const CLIF_IR_OFF: usize        = 0x1000;
 const CLIF_DATA_OFF: usize      = 0x2000;
 
@@ -470,9 +469,7 @@ fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str)
     base::Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![CLIF_IR_OFF],
-        },
+        cranelift_ir: clif_source,
         units: UnitSpec {
             cranelift_units: 0,
         },

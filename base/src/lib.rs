@@ -1,7 +1,7 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
 use std::sync::atomic::Ordering;
 use tracing::{debug, info, info_span};
-pub use base_types::{Action, Algorithm, Kind, OutputBatchSchema, OutputColumn, OutputType, State, UnitSpec};
+pub use base_types::{Action, Algorithm, Kind, OutputBatchSchema, OutputColumn, OutputType, UnitSpec};
 pub use arrow_array::RecordBatch;
 use arrow_array::{ArrayRef, Int64Array, Float64Array, StringArray};
 use arrow_schema::{Schema, Field, DataType};
@@ -14,7 +14,6 @@ use crate::units::{
     init_ht_context,
     load_sized,
     order_from_u32,
-    read_null_terminated_string_from_slice,
     Mailbox, SharedMemory, THREAD_COMPILED_FNS,
 };
 
@@ -56,29 +55,22 @@ fn execute_internal(algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
 
     let mut thread_handles = Vec::new();
 
-    let mut clif_compiled: std::collections::HashMap<usize, Arc<Vec<unsafe extern "C" fn(*mut u8)>>> = std::collections::HashMap::new();
-    for (idx, &offset) in algorithm.state.cranelift_ir_offsets.iter().enumerate() {
-        if !clif_compiled.contains_key(&idx) {
-            let source = read_null_terminated_string_from_slice(&memory, offset, 64 * 1024);
-            if !source.is_empty() {
-                let compiled = compile_cranelift_ir(&source);
-                clif_compiled.insert(idx, compiled);
-            }
-        }
-    }
-
-    // Keep a reference to unit 0's compiled fns for synchronous ClifCall
-    let clif_fns_local = clif_compiled.get(&0).cloned();
+    // Compile CLIF IR once; all workers share the same compiled fns
+    let clif_fns = if !algorithm.cranelift_ir.is_empty() {
+        Some(compile_cranelift_ir(&algorithm.cranelift_ir))
+    } else {
+        None
+    };
 
     // Set thread-local compiled fns so FFI functions (cl_thread_init etc.) work on interpreter thread
-    if let Some(ref fns) = clif_fns_local {
+    if let Some(ref fns) = clif_fns {
         THREAD_COMPILED_FNS.with(|cell| {
             *cell.borrow_mut() = Some(fns.clone());
         });
     }
 
     // Init HT context before any CLIF code runs (shared by ClifCall and worker threads)
-    let ht_ctx_ptr = if !clif_compiled.is_empty() {
+    let ht_ctx_ptr = if clif_fns.is_some() {
         Some(init_ht_context(&shared))
     } else {
         None
@@ -87,11 +79,12 @@ fn execute_internal(algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
     let actions_arc = Arc::new(actions);
 
     for (cl_id, mailbox) in cranelift_mailboxes.iter().enumerate() {
-        if let Some(compiled_fns) = clif_compiled.get(&cl_id).cloned() {
+        if let Some(ref compiled_fns) = clif_fns {
             info!(cl_id, "spawning Cranelift unit thread");
             let mailbox = mailbox.clone();
             let actions = actions_arc.clone();
             let shared = shared.clone();
+            let compiled_fns = compiled_fns.clone();
 
             thread_handles.push(std::thread::spawn(move || {
                 cranelift_unit_task_mailbox(mailbox, actions, shared, compiled_fns);
@@ -118,7 +111,7 @@ fn execute_internal(algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
             Kind::ClifCall => {
                 let fn_idx = action.src as usize;
                 debug!(pc, fn_idx, "clif_call");
-                if let Some(ref fns) = clif_fns_local {
+                if let Some(ref fns) = clif_fns {
                     let f = fns[fn_idx % fns.len()];
                     unsafe { f(mem_ptr) };
                 }

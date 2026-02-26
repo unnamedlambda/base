@@ -196,17 +196,15 @@ def buildPayload : List UInt8 :=
   let gap4         := zeros (OUTPUT_BUF - (RESULT_COUNT + 8))
   let outputBuf    := zeros 64
   let gap5         := zeros (CLIF_IR_OFF - (OUTPUT_BUF + 64))
-  let irBytes      := clifIRBytes
   let currentSize  :=
     gap0.length + flagFile.length + flagCl.length + gap1.length +
     inputFile.length + outputFile.length + gap2.length + fileSize.length +
     gap3.length + resultCount.length + gap4.length + outputBuf.length +
-    gap5.length + irBytes.length
+    gap5.length
   let padding := if INPUT_DATA > currentSize then zeros (INPUT_DATA - currentSize) else []
   gap0 ++ flagFile ++ flagCl ++ gap1 ++
     inputFile ++ outputFile ++ gap2 ++ fileSize ++
-    gap3 ++ resultCount ++ gap4 ++ outputBuf ++ gap5 ++
-    irBytes ++ padding
+    gap3 ++ resultCount ++ gap4 ++ outputBuf ++ gap5 ++ padding
 
 def controlActions : List Action :=
   [
@@ -221,9 +219,7 @@ def controlActions : List Action :=
 def buildAlgorithm : Algorithm := {
   actions := controlActions,
   payloads := buildPayload,
-  state := {
-    cranelift_ir_offsets := [CLIF_IR_OFF]
-  },
+  cranelift_ir := clifIR,
   units := {
     cranelift_units := 0,
   },

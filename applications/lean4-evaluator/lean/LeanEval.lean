@@ -1332,11 +1332,10 @@ def buildPayload : List UInt8 :=
   let htValBuf    := zeros 8                               -- 0x11B0
   let outputBuf   := zeros OUTPUT_BUF_SZ                   -- 0x11B8
   let stackRegion := zeros STACK_SZ                        -- 0x11F8
-  let irBytes     := clifIRBytes                           -- 0x13F8
   htCtxPtr ++ flagFile ++ flagCl ++ reserved ++
     outputPath ++ inputPath ++ sourceBuf ++
     trueStr ++ falseStr ++ identBuf ++ htValBuf ++ outputBuf ++
-    stackRegion ++ irBytes
+    stackRegion
 
 def actions : List Action := [
   -- 0: File read (fn 0)
@@ -1350,9 +1349,7 @@ def actions : List Action := [
 def buildAlgorithm : Algorithm := {
   actions := actions,
   payloads := buildPayload,
-  state := {
-    cranelift_ir_offsets := [CLIF_IR_OFF]
-  },
+  cranelift_ir := clifIR,
   units := {
     cranelift_units := 0,
   },

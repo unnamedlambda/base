@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crate::harness::{self, BenchResult};
 
 type B = burn::backend::NdArray<f32>;
@@ -167,7 +167,6 @@ block9(v130: f64):
 
 const DATA_OFF: usize = 0x4000;
 const CLIF_OFF: usize = 0x0100;
-const FLAG_CL: usize = 0x0008;
 
 fn build_base_vec_add(a: &[f32], b: &[f32]) -> base::Algorithm {
     let n = a.len();
@@ -196,9 +195,7 @@ fn build_base_vec_add(a: &[f32], b: &[f32]) -> base::Algorithm {
     base::Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![CLIF_OFF],
-        },
+        cranelift_ir: CLIF_VEC_ADD.to_string(),
         units: UnitSpec {
             cranelift_units: 0,
         },

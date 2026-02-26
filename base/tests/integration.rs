@@ -1,5 +1,5 @@
 use base::{execute, RecordBatch};
-use base_types::{Action, Algorithm, Kind, OutputBatchSchema, OutputColumn, OutputType, State, UnitSpec};
+use base_types::{Action, Algorithm, Kind, OutputBatchSchema, OutputColumn, OutputType, UnitSpec};
 use std::fs;
 use std::sync::Arc;
 use arrow_array::{Int64Array, Float64Array, StringArray};
@@ -10,14 +10,12 @@ fn create_cranelift_algorithm(
     actions: Vec<Action>,
     payloads: Vec<u8>,
     cranelift_units: usize,
-    cranelift_ir_offsets: Vec<usize>,
+    cranelift_ir: String,
 ) -> Algorithm {
     Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets,
-        },
+        cranelift_ir,
         units: UnitSpec {
             cranelift_units,
         },
@@ -95,7 +93,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: flag_b, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(!test_file_a.exists());
@@ -173,7 +171,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: flag_8, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(test_file_4byte.exists(), "4-byte check should NOT jump when first 4 bytes are zero");
@@ -224,7 +222,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -278,7 +276,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -330,7 +328,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -385,7 +383,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -401,8 +399,12 @@ fn test_cranelift_multiple_units() {
     let file1_str = format!("{}\0", test_file1.to_str().unwrap());
     let file2_str = format!("{}\0", test_file2.to_str().unwrap());
 
-    // Unit 0: add + write result to file1
-    let clif_ir1 = format!(
+    // Single CLIF source with 4 functions:
+    //   fn0: add (for worker 0)
+    //   fn1: write to file1 (for worker 0)
+    //   fn2: multiply (for worker 1)
+    //   fn3: write to file2 (for worker 1)
+    let clif_ir = format!(
 r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 v0
@@ -422,11 +424,9 @@ block0(v0: i64):
     v4 = iconst.i64 8
     v5 = call fn0(v0, v1, v2, v3, v4)
     return
-}}"#);
+}}
 
-    // Unit 1: multiply + write result to file2
-    let clif_ir2 = format!(
-r#"function u0:0(i64) system_v {{
+function u0:2(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 v0
     v2 = load.i64 v0+8
@@ -435,7 +435,7 @@ block0(v0: i64):
     return
 }}
 
-function u0:1(i64) system_v {{
+function u0:3(i64) system_v {{
     sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_file_write sig0
 block0(v0: i64):
@@ -448,11 +448,6 @@ block0(v0: i64):
 }}"#);
 
     let mut payloads = vec![0u8; 8192];
-    let clif1_bytes = format!("{}\0", clif_ir1).into_bytes();
-    payloads[0..clif1_bytes.len()].copy_from_slice(&clif1_bytes);
-    let ir2_offset = 1200usize;
-    let clif2_bytes = format!("{}\0", clif_ir2).into_bytes();
-    payloads[ir2_offset..ir2_offset + clif2_bytes.len()].copy_from_slice(&clif2_bytes);
 
     // Unit 0 data: 5 + 3 = 8 at offset 2000
     payloads[2000..2008].copy_from_slice(&5u64.to_le_bytes());
@@ -465,14 +460,14 @@ block0(v0: i64):
     payloads[3200..3200 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
 
     let actions = vec![
-        // Action 0: unit 0 compute (src=0 → fn0)
+        // Action 0: worker 0 compute (fn0: add)
         Action { kind: Kind::Describe, dst: 2000, src: 0, offset: 0, size: 0 },
-        // Action 1: unit 1 compute (src=0 → fn0)
-        Action { kind: Kind::Describe, dst: 2100, src: 0, offset: 0, size: 0 },
-        // Action 2: unit 0 write (src=1 → fn1)
+        // Action 1: worker 1 compute (fn2: multiply)
+        Action { kind: Kind::Describe, dst: 2100, src: 2, offset: 0, size: 0 },
+        // Action 2: worker 0 write (fn1: write file1)
         Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
-        // Action 3: unit 1 write (src=1 → fn1)
-        Action { kind: Kind::Describe, dst: 0, src: 1, offset: 0, size: 0 },
+        // Action 3: worker 1 write (fn3: write file2)
+        Action { kind: Kind::Describe, dst: 0, src: 3, offset: 0, size: 0 },
         // Dispatch compute
         Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
         Action { kind: Kind::ClifCallAsync, dst: 1, src: 1, offset: 1032, size: 1 },
@@ -485,7 +480,15 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1048, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 2, vec![0, ir2_offset]);
+    let algorithm = Algorithm {
+        actions,
+        payloads,
+        cranelift_ir: clif_ir,
+        units: UnitSpec { cranelift_units: 2 },
+        timeout_ms: Some(5000),
+        additional_shared_memory: 0,
+        output: vec![],
+    };
     execute(algorithm).unwrap();
 
     let contents1 = fs::read(&test_file1).unwrap();
@@ -548,7 +551,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -603,7 +606,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(5000);
     execute(algorithm).unwrap();
 
@@ -662,7 +665,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(5000);
     execute(algorithm).unwrap();
 
@@ -728,7 +731,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -780,7 +783,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -833,7 +836,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -986,7 +989,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(15000); // GPU init can be slow
     execute(algorithm).unwrap();
 
@@ -1060,7 +1063,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1121,7 +1124,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1173,7 +1176,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let verify = fs::read(&verify_file).unwrap();
@@ -1221,7 +1224,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     // Second write with file_offset=0 uses File::create() which truncates
@@ -1277,7 +1280,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1382,7 +1385,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(15000);
     execute(algorithm).unwrap();
 
@@ -1505,7 +1508,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(15000);
     execute(algorithm).unwrap();
 
@@ -1642,7 +1645,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
 
@@ -1743,7 +1746,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
     handle.join().unwrap();
 
@@ -1834,7 +1837,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
     client_handle.join().unwrap();
@@ -1899,7 +1902,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1957,7 +1960,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
 
@@ -2052,7 +2055,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
     execute(algorithm).unwrap();
     client.join().unwrap();
@@ -2134,7 +2137,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2234,7 +2237,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2316,7 +2319,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2386,7 +2389,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2462,7 +2465,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2520,7 +2523,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2581,7 +2584,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2660,7 +2663,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2725,7 +2728,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2809,7 +2812,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2913,7 +2916,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3020,7 +3023,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3084,7 +3087,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3157,7 +3160,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3254,7 +3257,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3341,7 +3344,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3401,7 +3404,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm1 = create_cranelift_algorithm(actions1, payloads1, 1, vec![0]);
+    let algorithm1 = create_cranelift_algorithm(actions1, payloads1, 1, clif_ir_1.to_string());
     execute(algorithm1).unwrap();
 
     // Second run: reopen db, try to get the key — should not exist
@@ -3449,7 +3452,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 1, vec![0]);
+    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 1, clif_ir_2.to_string());
     execute(algorithm2).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3525,7 +3528,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3610,7 +3613,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3674,7 +3677,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3743,7 +3746,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3830,7 +3833,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -3909,7 +3912,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -4008,7 +4011,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -4089,7 +4092,7 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![clif_off]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -4127,7 +4130,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -4184,7 +4187,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(test_file_a.exists());
@@ -4239,7 +4242,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -4297,7 +4300,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 2, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -4366,7 +4369,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 2, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(!test_file_bad.exists(), "fn1 should be skipped by conditional jump");
@@ -4395,7 +4398,7 @@ block0(v0: i64):
     ];
 
     // cranelift_units: 0 — no workers
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let mut algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     algorithm.additional_shared_memory = 0;
 
     // Rebuild with file write verification
@@ -4427,7 +4430,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 0, vec![0]);
+    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 0, clif_ir2.to_string());
     execute(algorithm2).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -4492,7 +4495,7 @@ block0(v0: i64):
     ];
 
     // Need 1 worker unit for the async dispatch
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(test_file_sync.exists(), "sync ClifCall should write file");
@@ -4566,7 +4569,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -4626,7 +4629,7 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, vec![0]);
+    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
     execute(algorithm).unwrap();
 
     assert!(output_file.exists());
@@ -4651,9 +4654,7 @@ fn create_output_algorithm(
             Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
         ],
         payloads: p,
-        state: State {
-            cranelift_ir_offsets: vec![0],
-        },
+        cranelift_ir: clif_ir.to_string(),
         units: UnitSpec {
             cranelift_units: 1,
         },

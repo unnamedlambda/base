@@ -56,15 +56,6 @@ instance : ToJson Action where
     ("size", toJson a.size)
   ]
 
-structure State where
-  cranelift_ir_offsets : List Nat
-  deriving Repr
-
-instance : ToJson State where
-  toJson s := Json.mkObj [
-    ("cranelift_ir_offsets", toJson s.cranelift_ir_offsets),
-  ]
-
 structure UnitSpec where
   cranelift_units : Nat
   deriving Repr
@@ -77,7 +68,7 @@ instance : ToJson UnitSpec where
 structure Algorithm where
   actions : List Action
   payloads : List UInt8
-  state : State
+  cranelift_ir : String
   units : UnitSpec
   timeout_ms : Option Nat
   additional_shared_memory : Nat
@@ -87,7 +78,7 @@ instance : ToJson Algorithm where
   toJson alg := Json.mkObj [
     ("actions", toJson alg.actions),
     ("payloads", toJson alg.payloads),
-    ("state", toJson alg.state),
+    ("cranelift_ir", toJson alg.cranelift_ir),
     ("units", toJson alg.units),
     ("timeout_ms", toJson alg.timeout_ms),
     ("additional_shared_memory", toJson alg.additional_shared_memory)

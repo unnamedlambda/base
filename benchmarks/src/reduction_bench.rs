@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crate::harness::{self, BenchResult};
 
 type B = burn::backend::NdArray<f32>;
@@ -137,7 +137,6 @@ block9(v120: f64):
 
 const DATA_OFF: usize = 0x4000;
 const CLIF_OFF: usize = 0x0100;
-const FLAG_CL: usize = 0x0008;
 
 fn build_base_sum(data: &[f32]) -> base::Algorithm {
     let n = data.len();
@@ -164,9 +163,7 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
     base::Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![CLIF_OFF],
-        },
+        cranelift_ir: CLIF_SUM.to_string(),
         units: UnitSpec {
             cranelift_units: 0,
         },

@@ -1,5 +1,5 @@
 use base::Algorithm;
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crossbeam_channel::unbounded;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -206,9 +206,7 @@ fn build_frontier_algorithm(
     let algorithm = Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![clif_off; workers],
-        },
+        cranelift_ir: clif_ir.clone(),
         units: UnitSpec {
             cranelift_units: workers,
         },
@@ -461,9 +459,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
     Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![clif_off; workers],
-        },
+        cranelift_ir: clif_ir.clone(),
         units: UnitSpec {
             cranelift_units: workers,
         },

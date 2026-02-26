@@ -23,11 +23,6 @@ pub struct Action {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct State {
-    pub cranelift_ir_offsets: Vec<usize>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UnitSpec {
     pub cranelift_units: usize,
 }
@@ -57,7 +52,7 @@ pub struct OutputBatchSchema {
 pub struct Algorithm {
     pub actions: Vec<Action>,
     pub payloads: Vec<u8>,
-    pub state: State,
+    pub cranelift_ir: String,
     pub units: UnitSpec,
     pub timeout_ms: Option<u64>,
     pub additional_shared_memory: usize,

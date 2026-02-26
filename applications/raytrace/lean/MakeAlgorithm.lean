@@ -394,12 +394,12 @@ def payloads : List UInt8 :=
   let filenameBytes := padTo (stringToBytes "cornell_box.bmp") filenameRegionSize
   let flagBytes := uint64ToBytes 0
   let flagPad := zeros (clifIr_off - flag_off - 8)
-  let clifBytes := padTo (stringToBytes clifIrSource) clifIrRegionSize
+  let clifPad := zeros clifIrRegionSize
   let bmpBytes := bmpHeader
   reserved ++ hdrPad ++
   bindDesc ++ bindPad ++
   shaderBytes ++ filenameBytes ++ flagBytes ++ flagPad ++
-  clifBytes ++ bmpBytes
+  clifPad ++ bmpBytes
 
 -- ---------------------------------------------------------------------------
 -- Algorithm definition
@@ -411,7 +411,7 @@ def raytraceAlgorithm : Algorithm :=
   {
     actions := [clifCallAction],
     payloads := payloads,
-    state := { cranelift_ir_offsets := [clifIr_off] },
+    cranelift_ir := clifIrSource,
     units := { cranelift_units := 0 },
     timeout_ms := some 300000,
     additional_shared_memory := pixelBytes

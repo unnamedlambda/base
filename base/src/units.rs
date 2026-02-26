@@ -224,13 +224,6 @@ pub(crate) unsafe fn load_sized(shared: &SharedMemory, offset: usize, size: u32,
     }
 }
 
-pub(crate) fn read_null_terminated_string_from_slice(data: &[u8], offset: usize, max_len: usize) -> String {
-    let end = (offset + max_len).min(data.len());
-    let bytes = &data[offset..end];
-    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..len]).into_owned()
-}
-
 pub(crate) struct CraneliftHashTableContext {
     tables: HashMap<u32, HashMap<Vec<u8>, Vec<u8>>>,
     next_handle: u32,

@@ -1,5 +1,5 @@
 use base::Algorithm;
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
@@ -186,7 +186,6 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64)
     }
     let num_nodes = nodes.len();
 
-    let flag_addr = 64usize;
     let exp_addr = 56usize;
     let ctrl_off = 72usize;
     let nodes_off = align64(ctrl_off + 16);
@@ -249,7 +248,7 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64)
     let algorithm = Algorithm {
         actions,
         payloads,
-        state: State { cranelift_ir_offsets: vec![clif_off] },
+        cranelift_ir: clif_ir.clone(),
         units: UnitSpec { cranelift_units: 0 },
         timeout_ms: Some(30_000),
         additional_shared_memory: 0,
@@ -493,7 +492,6 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
     let num_nodes = tree.values.len();
     let expected: u64 = tree.values.iter().sum();
 
-    let flag_addr = 64usize;
     let exp_addr = 56usize;
     let ctrl_off = 72usize;
     let nodes_off = align64(ctrl_off + 16);
@@ -575,7 +573,7 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
     let algorithm = Algorithm {
         actions,
         payloads,
-        state: State { cranelift_ir_offsets: vec![clif_off] },
+        cranelift_ir: clif_ir.clone(),
         units: UnitSpec { cranelift_units: 0 },
         timeout_ms: Some(30_000),
         additional_shared_memory: 0,

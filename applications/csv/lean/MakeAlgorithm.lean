@@ -503,8 +503,7 @@ def payloads : List UInt8 :=
   -- Flag + padding to CLIF IR
   let flagBytes := uint64ToBytes 0
   let flagPad := zeros (clifIr_off - flag_off - 8)
-  -- CLIF IR
-  let clifBytes := padTo (stringToBytes clifIrSource) clifIrRegionSize
+  let clifPad := zeros clifIrRegionSize
   -- Buffers (all zeros)
   let empBufBytes := zeros empBufSize
   let deptBufBytes := zeros deptBufSize
@@ -517,7 +516,7 @@ def payloads : List UInt8 :=
   scanFnameBytes ++ filterFnameBytes ++ joinFnameBytes ++
   seattleBytes ++
   flagBytes ++ flagPad ++
-  clifBytes ++
+  clifPad ++
   empBufBytes ++ deptBufBytes ++
   keyScratchBytes ++ scanResultBytes ++ scanResult2Bytes
 
@@ -531,7 +530,7 @@ def csvAlgorithm : Algorithm :=
   {
     actions := [clifCallAction],
     payloads := payloads,
-    state := { cranelift_ir_offsets := [clifIr_off] },
+    cranelift_ir := clifIrSource,
     units := { cranelift_units := 0 },
     timeout_ms := some 30000,
     additional_shared_memory := 0

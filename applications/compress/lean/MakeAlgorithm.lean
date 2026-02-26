@@ -433,12 +433,11 @@ def payloads : List UInt8 :=
   let outputFnameBytes := padTo (stringToBytes "compress_output.lz4") filenameRegionSize
   let flagBytes := uint64ToBytes 0
   let flagPad := zeros (clifIr_off - flag_off - 8)
-  let clifBytes := padTo (stringToBytes clifIrSource) clifIrRegionSize
+  let clifPad := zeros clifIrRegionSize
   reserved ++ hdrPad ++
   bindDesc ++ bindPad ++
   shaderBytes ++ inputFnameBytes ++ outputFnameBytes ++
-  flagBytes ++ flagPad ++
-  clifBytes
+  flagBytes ++ flagPad ++ clifPad
 
 -- ---------------------------------------------------------------------------
 -- Algorithm definition
@@ -450,7 +449,7 @@ def compressAlgorithm : Algorithm :=
   {
     actions := [clifCallAction],
     payloads := payloads,
-    state := { cranelift_ir_offsets := [clifIr_off] },
+    cranelift_ir := clifIrSource,
     units := { cranelift_units := 0 },
     timeout_ms := some 120000,
     additional_shared_memory := totalAdditionalMemory

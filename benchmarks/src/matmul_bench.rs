@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crate::harness::{self, BenchResult};
 
 type B = burn::backend::NdArray<f32>;
@@ -166,7 +166,6 @@ block9(v140: f64):
 
 const DATA_OFF: usize = 0x4000;
 const CLIF_OFF: usize = 0x0100;
-const FLAG_CL: usize = 0x0008;
 
 fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> base::Algorithm {
     let payload_size = DATA_OFF + (m * k + k * n) * 4;
@@ -196,9 +195,7 @@ fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> base
     base::Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![CLIF_OFF],
-        },
+        cranelift_ir: CLIF_MATMUL.to_string(),
         units: UnitSpec {
             cranelift_units: 0,
         },

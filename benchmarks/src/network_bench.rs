@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
@@ -14,7 +14,6 @@ use std::time::Duration;
 // CLIF memory layout (context pointer at offset 0, managed by cl_net_init/cleanup)
 const CLIF_DSIZE_OFF: usize = 0x08;   // i64: data buffer size in bytes
 const CLIF_ADDR_OFF: usize = 0x1000;  // Server address string (null-terminated)
-const CLIF_FLAG_OFF: usize = 0x1F00;  // Cranelift completion flag
 const CLIF_IR_OFF: usize = 0x2000;    // CLIF IR source (null-terminated)
 const CLIF_DATA_OFF: usize = 0x4000;  // Data buffer
 
@@ -108,9 +107,7 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
     base::Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![CLIF_IR_OFF],
-        },
+        cranelift_ir: clif_source,
         units: UnitSpec {
             cranelift_units: 0,
         },

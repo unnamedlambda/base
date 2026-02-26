@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::io::{Read as _, Write as _};
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crate::harness::{self, BenchResult};
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,6 @@ const HDR_OUTPATH_REL: usize = HDR_BASE + 0x48;
 
 const WORKER_DESC_SIZE: usize = 48;
 const CLIF_IR_OFF: usize = 0x1000;
-const CLIF_FLAG_OFF: usize = 0x0F00;
 
 fn gen_clif_ir(chunk_size: usize, hist_stride: usize) -> String {
     let mut ir = String::new();
@@ -376,7 +375,7 @@ fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> base::Algori
     base::Algorithm {
         actions,
         payloads,
-        state: State { cranelift_ir_offsets: vec![CLIF_IR_OFF] },
+        cranelift_ir: clif_source,
         units: UnitSpec { cranelift_units: 0 },
         timeout_ms: Some(60_000),
         additional_shared_memory: 0,

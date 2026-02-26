@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, State, UnitSpec};
+use base_types::{Action, Kind, UnitSpec};
 use crate::harness;
 type Gpu = burn::backend::wgpu::Wgpu;
 
@@ -240,7 +240,6 @@ const CLIF_BIND_OFF: usize = 0x40;         // binding descriptor [buf_id=0, read
 const CLIF_SHADER_OFF: usize = 0x100;      // WGSL shader (null-terminated)
 const CLIF_FNAME_OFF: usize = 0x3100;      // output filename (null-terminated)
 const CLIF_IR_OFF: usize = 0x3800;         // CLIF IR source (null-terminated, ~800 bytes)
-const CLIF_FLAG_OFF: usize = 0x3010;       // cranelift completion flag
 const CLIF_DATA_OFF: usize = 0x4000;       // data buffer
 
 pub struct GpuBenchResult {
@@ -371,9 +370,7 @@ fn build_clif_gpu_algorithm(
     base::Algorithm {
         actions,
         payloads,
-        state: State {
-            cranelift_ir_offsets: vec![CLIF_IR_OFF],
-        },
+        cranelift_ir: clif_source,
         units: UnitSpec {
             cranelift_units: 0,
         },

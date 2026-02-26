@@ -264,18 +264,15 @@ def buildPayload : List UInt8 :=
   let gap2         := zeros (LEFT_VAL - 0x02F4)  -- 0x02F4..0x034F
   let leftVal      := zeros 32                   -- 0x0350..0x036F
   let gap3         := zeros (CLIF_IR_OFF - 0x0370) -- 0x0370..0x03FF
-  let irBytes      := clifIRBytes                -- 0x0400..
   -- Pad to CSV_DATA start (0x2000 = 8192)
   let currentSize :=
     gap0.length + flagFile.length + flagCl.length + gap_to_input.length +
     inputFile.length + outputFile.length +
-    gap1.length + endPos.length + gap2.length + leftVal.length + gap3.length +
-    irBytes.length
+    gap1.length + endPos.length + gap2.length + leftVal.length + gap3.length
   let padding := if CSV_DATA > currentSize then zeros (CSV_DATA - currentSize) else []
   gap0 ++ flagFile ++ flagCl ++ gap_to_input ++
     inputFile ++ outputFile ++
-    gap1 ++ endPos ++ gap2 ++ leftVal ++ gap3 ++
-    irBytes ++ padding
+    gap1 ++ endPos ++ gap2 ++ leftVal ++ gap3 ++ padding
 
 -- Control actions (synchronous ClifCall)
 def controlActions : List Action :=
@@ -292,9 +289,7 @@ def controlActions : List Action :=
 def buildAlgorithm : Algorithm := {
   actions := controlActions,
   payloads := buildPayload,
-  state := {
-    cranelift_ir_offsets := [CLIF_IR_OFF]
-  },
+  cranelift_ir := clifIR,
   units := {
     cranelift_units := 0,
   },
