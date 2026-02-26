@@ -1054,12 +1054,14 @@ unsafe extern "C" fn cl_thread_call(ptr: *mut u8, fn_index: i64, arg_ptr: i64) -
     0
 }
 
-pub(crate) fn compile_cranelift_ir(clif_source: &str) -> (cranelift_jit::JITModule, Arc<Vec<unsafe extern "C" fn(*mut u8)>>) {
+pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Result<(cranelift_jit::JITModule, Arc<Vec<unsafe extern "C" fn(*mut u8)>>), String> {
         info!(ir_len = clif_source.len(), "compiling Cranelift IR");
 
         let mut functions = cranelift_reader::parse_functions(clif_source)
-            .expect("Failed to parse CLIF IR");
-        assert!(!functions.is_empty(), "No functions in CLIF IR");
+            .map_err(|e| format!("{e}"))?;
+        if functions.is_empty() {
+            return Err("No functions in CLIF IR".into());
+        }
 
         let mut flag_builder = settings::builder();
         flag_builder.set("opt_level", "speed").unwrap();
@@ -1156,7 +1158,7 @@ pub(crate) fn compile_cranelift_ir(clif_source: &str) -> (cranelift_jit::JITModu
             .collect();
 
         info!(count = compiled_fns.len(), "Cranelift IR compiled successfully");
-        (module, Arc::new(compiled_fns))
+        Ok((module, Arc::new(compiled_fns)))
 }
 
 pub(crate) fn cranelift_unit_task_mailbox(

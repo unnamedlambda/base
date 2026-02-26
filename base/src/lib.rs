@@ -20,8 +20,7 @@ use crate::units::{
 
 #[derive(Debug)]
 pub enum Error {
-    InvalidConfig(String),
-    RuntimeCreation(std::io::Error),
+    ClifParse(String),
     Execution(String),
 }
 
@@ -51,7 +50,8 @@ impl Base {
         let shared = Arc::new(SharedMemory::new(mem_ptr));
 
         let (module, clif_fns) = if !config.cranelift_ir.is_empty() {
-            let (module, fns) = compile_cranelift_ir(&config.cranelift_ir);
+            let (module, fns) = compile_cranelift_ir(&config.cranelift_ir)
+                .map_err(Error::ClifParse)?;
             (Some(module), Some(fns))
         } else {
             (None, None)

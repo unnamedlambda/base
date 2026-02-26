@@ -5919,3 +5919,61 @@ block0(v0: i64):
     assert_eq!(col.value(2), 300);
     assert_eq!(col.value(3), 999);
 }
+
+#[test]
+fn clif_parse_error_garbage_ir() {
+    let config = BaseConfig {
+        cranelift_ir: "this is not valid CLIF".to_string(),
+        memory_size: 256,
+        context_offset: 0,
+    };
+    let Err(err) = Base::new(config) else {
+        panic!("expected ClifParse error for garbage IR");
+    };
+    assert!(matches!(err, base::Error::ClifParse(_)));
+}
+
+#[test]
+fn clif_parse_error_via_run() {
+    let config = BaseConfig {
+        cranelift_ir: "not valid clif at all {}[]".to_string(),
+        memory_size: 256,
+        context_offset: 0,
+    };
+    let algorithm = Algorithm {
+        actions: vec![],
+        payloads: vec![0u8; 256],
+        cranelift_units: 0,
+        timeout_ms: Some(1000),
+        output: vec![],
+    };
+    let Err(err) = run(config, algorithm) else {
+        panic!("expected ClifParse error for invalid CLIF via run()");
+    };
+    assert!(matches!(err, base::Error::ClifParse(_)));
+}
+
+#[test]
+fn clif_parse_error_incomplete_function() {
+    let config = BaseConfig {
+        cranelift_ir: "function %f0(i64) {\n".to_string(),
+        memory_size: 256,
+        context_offset: 0,
+    };
+    let Err(err) = Base::new(config) else {
+        panic!("expected ClifParse error for incomplete function");
+    };
+    assert!(matches!(err, base::Error::ClifParse(_)));
+}
+
+#[test]
+fn clif_parse_error_empty_ir_no_error() {
+    // Empty string should NOT error — it skips compilation entirely
+    let config = BaseConfig {
+        cranelift_ir: String::new(),
+        memory_size: 256,
+        context_offset: 0,
+    };
+    let base = Base::new(config);
+    assert!(base.is_ok());
+}
