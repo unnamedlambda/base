@@ -1346,19 +1346,21 @@ def actions : List Action := [
   { kind := .ClifCall, dst := 0, src := 2, offset := 0, size := 0 }
 ]
 
+def buildConfig : BaseConfig := {
+  cranelift_ir := clifIR,
+  memory_size := buildPayload.length,
+  context_offset := 0
+}
+
 def buildAlgorithm : Algorithm := {
   actions := actions,
   payloads := buildPayload,
-  cranelift_ir := clifIR,
-  units := {
-    cranelift_units := 0,
-  },
-  timeout_ms := some TIMEOUT_MS,
-  additional_shared_memory := 0
+  cranelift_units := 0,
+  timeout_ms := some TIMEOUT_MS
 }
 
 end LeanEval
 
 def main : IO Unit := do
-  let json := toJson LeanEval.buildAlgorithm
+  let json := toJsonPair LeanEval.buildConfig LeanEval.buildAlgorithm
   IO.println (Json.compress json)

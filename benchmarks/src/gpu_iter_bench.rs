@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use crate::harness;
 
 // ---------------------------------------------------------------------------
@@ -414,7 +414,7 @@ block2:
     )
 }
 
-fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str) -> base::Algorithm {
+fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str) -> (base::BaseConfig, base::Algorithm) {
     let n = data.len();
     let data_size = n * 4;
     let workgroups = ((n as u32) + 63) / 64;
@@ -466,17 +466,19 @@ fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str)
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    base::Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_source,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_source,
-        units: UnitSpec {
-            cranelift_units: 0,
-        },
+        cranelift_units: 0,
         timeout_ms: Some(300_000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 // ---------------------------------------------------------------------------
@@ -570,11 +572,12 @@ pub fn run(iterations: usize) -> Vec<GpuIterResult> {
 
         // CLIF+GPU (GPU-resident via extern "C" wrappers, through execute())
         let clif_out = format!("/tmp/gpu-iter-clif-{}.bin", passes);
-        let clif_alg = build_clif_gpu_iter_algorithm(&data, passes, &clif_out);
+        let (clif_config, clif_alg) = build_clif_gpu_iter_algorithm(&data, passes, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
+            let cfg = clif_config.clone();
             let alg = clif_alg.clone();
             let start = std::time::Instant::now();
-            let _ = base::execute(alg);
+            let _ = base::run(cfg, alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

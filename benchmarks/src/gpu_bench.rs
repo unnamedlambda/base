@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use crate::harness;
 type Gpu = burn::backend::wgpu::Wgpu;
 
@@ -333,7 +333,7 @@ fn build_clif_gpu_algorithm(
     result_offset: usize,
     result_size: usize,
     output_path: &str,
-) -> base::Algorithm {
+) -> (base::BaseConfig, base::Algorithm) {
     let clif_source = gen_gpu_clif_ir();
     let clif_bytes = format!("{}\0", clif_source).into_bytes();
     assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
@@ -367,17 +367,19 @@ fn build_clif_gpu_algorithm(
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    base::Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_source,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_source,
-        units: UnitSpec {
-            cranelift_units: 0,
-        },
+        cranelift_units: 0,
         timeout_ms: Some(120_000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 // ---------------------------------------------------------------------------
@@ -446,8 +448,8 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             let off = 64 * 4 + i * 4;
             data_bytes[off..off + 4].copy_from_slice(&v.to_le_bytes());
         }
-        let warmup_alg = build_clif_gpu_algorithm(WGSL_VEC_ADD, &data_bytes, buffer_size, 1, 0, 64 * 4, "/tmp/gpu-bench-data/_warmup.bin");
-        let _ = base::execute(warmup_alg);
+        let (warmup_config, warmup_alg) = build_clif_gpu_algorithm(WGSL_VEC_ADD, &data_bytes, buffer_size, 1, 0, 64 * 4, "/tmp/gpu-bench-data/_warmup.bin");
+        let _ = base::run(warmup_config, warmup_alg);
         let _ = std::fs::remove_file("/tmp/gpu-bench-data/_warmup.bin");
     }
     eprintln!("  GPU devices ready.\n");
@@ -483,11 +485,12 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        let clif_alg = build_clif_gpu_algorithm(WGSL_VEC_ADD, &data_bytes, buffer_size, workgroups, 0, n * 4, &clif_out);
+        let (clif_config, clif_alg) = build_clif_gpu_algorithm(WGSL_VEC_ADD, &data_bytes, buffer_size, workgroups, 0, n * 4, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
+            let cfg = clif_config.clone();
             let alg = clif_alg.clone();
-            let _ = base::execute(alg);
+            let _ = base::run(cfg, alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
@@ -543,11 +546,12 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        let clif_alg = build_clif_gpu_algorithm(&shader, &data_bytes, buffer_size, workgroups, 2 * nn * 4, nn * 4, &clif_out);
+        let (clif_config, clif_alg) = build_clif_gpu_algorithm(&shader, &data_bytes, buffer_size, workgroups, 2 * nn * 4, nn * 4, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
+            let cfg = clif_config.clone();
             let alg = clif_alg.clone();
-            let _ = base::execute(alg);
+            let _ = base::run(cfg, alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
@@ -599,11 +603,12 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        let clif_alg = build_clif_gpu_algorithm(&shader, &data_bytes, buffer_size, workgroups, n * 4, num_groups * 4, &clif_out);
+        let (clif_config, clif_alg) = build_clif_gpu_algorithm(&shader, &data_bytes, buffer_size, workgroups, n * 4, num_groups * 4, &clif_out);
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
+            let cfg = clif_config.clone();
             let alg = clif_alg.clone();
-            let _ = base::execute(alg);
+            let _ = base::run(cfg, alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

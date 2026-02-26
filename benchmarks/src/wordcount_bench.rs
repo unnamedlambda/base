@@ -1,4 +1,4 @@
-use base::Algorithm;
+use base::{BaseConfig, Algorithm};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -63,14 +63,15 @@ fn parse_output(content: &str) -> HashMap<String, u64> {
     result
 }
 
-fn prepare_algorithm(text_path: &str, output_path: &str, file_size: usize) -> Algorithm {
-    let mut alg: Algorithm =
+fn prepare_algorithm(text_path: &str, output_path: &str, file_size: usize) -> (BaseConfig, Algorithm) {
+    let (mut config, mut alg): (BaseConfig, Algorithm) =
         bincode::deserialize(WC_ALGORITHM).expect("Failed to deserialize algorithm");
 
     let needed = INPUT_DATA + file_size + 256;
     if alg.payloads.len() < needed {
         alg.payloads.resize(needed, 0);
     }
+    config.memory_size = config.memory_size.max(alg.payloads.len());
 
     // Patch input filename
     let inp = text_path.as_bytes();
@@ -90,7 +91,7 @@ fn prepare_algorithm(text_path: &str, output_path: &str, file_size: usize) -> Al
     alg.payloads[0x0038..0x0048].fill(0);
     alg.payloads[0x3400..0x3408].fill(0);
 
-    alg
+    (config, alg)
 }
 
 fn format_count(n: usize) -> String {
@@ -144,8 +145,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
 
-            let alg = prepare_algorithm(&text_path, &output_path, file_size);
-            let ms = harness::run_base(alg);
+            let (cfg, alg) = prepare_algorithm(&text_path, &output_path, file_size);
+            let ms = harness::run_base(cfg, alg);
 
             if let Ok(content) = fs::read_to_string(&output_path) {
                 let got = parse_output(content.trim());

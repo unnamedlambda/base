@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
@@ -80,8 +80,8 @@ block0(v0: i64):
     )
 }
 
-/// Build a CLIF+Net algorithm that goes through base::execute().
-fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
+/// Build a CLIF+Net algorithm that goes through base::run().
+fn build_clif_net_algorithm(port: u16, data_size: usize) -> (base::BaseConfig, base::Algorithm) {
     let clif_source = gen_net_clif_ir();
     let clif_bytes = format!("{}\0", clif_source).into_bytes();
     assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
@@ -104,17 +104,19 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    base::Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_source,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_source,
-        units: UnitSpec {
-            cranelift_units: 0,
-        },
+        cranelift_units: 0,
         timeout_ms: Some(120_000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 /// Raw TCP echo server
@@ -259,11 +261,11 @@ pub fn run(iterations: usize) -> Vec<NetworkBenchResult> {
             let port = base_port + port_counter;
             port_counter += 1;
 
-            let alg = build_clif_net_algorithm(port, data_size);
+            let (cfg, alg) = build_clif_net_algorithm(port, data_size);
             let test_data_clone = test_data.clone();
 
             thread::spawn(move || {
-                let _ = base::execute(alg);
+                let _ = base::run(cfg, alg);
             });
 
             let start = std::time::Instant::now();
@@ -294,9 +296,9 @@ pub fn run(iterations: usize) -> Vec<NetworkBenchResult> {
             let port = base_port + port_counter;
             port_counter += 1;
             let test_data_clone = test_data.clone();
-            let alg = build_clif_net_algorithm(port, data_size);
+            let (cfg, alg) = build_clif_net_algorithm(port, data_size);
             thread::spawn(move || {
-                let _ = base::execute(alg);
+                let _ = base::run(cfg, alg);
             });
             let response = tcp_client(port, &test_data_clone);
             response == test_data

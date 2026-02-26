@@ -1,4 +1,4 @@
-use base::{execute, Algorithm};
+use base::{run, Algorithm, BaseConfig};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
@@ -17,11 +17,11 @@ fn main() {
         )
         .init();
 
-    let alg: Algorithm = bincode::deserialize(ALGORITHM_BINARY)
-        .expect("Failed to deserialize algorithm binary");
+    let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+        .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     let start = std::time::Instant::now();
-    match execute(alg) {
+    match run(config, alg) {
         Ok(_) => {
             let elapsed = start.elapsed();
             eprintln!("Cornell box 4096x4096 rendered in {:.1}ms", elapsed.as_secs_f64() * 1000.0);

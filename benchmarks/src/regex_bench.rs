@@ -1,4 +1,4 @@
-use base::Algorithm;
+use base::{BaseConfig, Algorithm};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -57,14 +57,15 @@ fn rust_regex_count(path: &str) -> usize {
     count
 }
 
-fn prepare_algorithm(text_path: &str, output_path: &str, file_size: usize) -> Algorithm {
-    let mut alg: Algorithm =
+fn prepare_algorithm(text_path: &str, output_path: &str, file_size: usize) -> (BaseConfig, Algorithm) {
+    let (mut config, mut alg): (BaseConfig, Algorithm) =
         bincode::deserialize(REGEX_ALGORITHM).expect("Failed to deserialize regex algorithm");
 
     let needed = INPUT_DATA + file_size + 256;
     if alg.payloads.len() < needed {
         alg.payloads.resize(needed, 0);
     }
+    config.memory_size = config.memory_size.max(alg.payloads.len());
 
     // Patch input filename
     let inp = text_path.as_bytes();
@@ -80,7 +81,7 @@ fn prepare_algorithm(text_path: &str, output_path: &str, file_size: usize) -> Al
     let end = file_size as i32;
     alg.payloads[FILE_SIZE..FILE_SIZE + 4].copy_from_slice(&end.to_le_bytes());
 
-    alg
+    (config, alg)
 }
 
 fn format_count(n: usize) -> String {
@@ -141,8 +142,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
 
-            let alg = prepare_algorithm(&text_path, &output_path, file_size);
-            let ms = harness::run_base(alg);
+            let (cfg, alg) = prepare_algorithm(&text_path, &output_path, file_size);
+            let ms = harness::run_base(cfg, alg);
 
             if let Ok(content) = fs::read_to_string(&output_path) {
                 if let Ok(count) = content.trim().parse::<usize>() {

@@ -1,4 +1,4 @@
-use base::Algorithm;
+use base::{Algorithm, BaseConfig};
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -46,9 +46,9 @@ pub fn run_python(script: &str, args: &[&str]) -> Option<(f64, String)> {
 }
 
 /// Execute a Base algorithm and return wall-clock time in ms.
-pub fn run_base(algorithm: Algorithm) -> f64 {
+pub fn run_base(config: BaseConfig, algorithm: Algorithm) -> f64 {
     let start = Instant::now();
-    match base::execute(algorithm) {
+    match base::run(config, algorithm) {
         Ok(_) => {}
         Err(e) => eprintln!("Base execution failed: {:?}", e),
     }

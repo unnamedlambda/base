@@ -1,4 +1,4 @@
-use base::{execute, Algorithm};
+use base::{run, Algorithm, BaseConfig};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
@@ -21,8 +21,8 @@ fn main() {
         )
         .init();
 
-    let mut alg: Algorithm = bincode::deserialize(ALGORITHM_BINARY)
-        .expect("Failed to deserialize algorithm binary");
+    let (config, mut alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+        .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
@@ -46,7 +46,7 @@ fn main() {
             .copy_from_slice(&output_path.as_bytes()[..output_len]);
     }
 
-    match execute(alg) {
+    match run(config, alg) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Execution failed: {:?}", e);

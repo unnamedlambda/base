@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::io::{Read as _, Write as _};
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use crate::harness::{self, BenchResult};
 
 // ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ block7:
 // Algorithm builder
 // ---------------------------------------------------------------------------
 
-fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> base::Algorithm {
+fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> (base::BaseConfig, base::Algorithm) {
     let n = data.len();
     let chunk_size = (n + workers - 1) / workers;
 
@@ -372,15 +372,19 @@ fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> base::Algori
         Action { kind: Kind::ClifCall, dst: 0, src: 2, offset: 0, size: 0 },
     ];
 
-    base::Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_source,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_source,
-        units: UnitSpec { cranelift_units: 0 },
+        cranelift_units: 0,
         timeout_ms: Some(60_000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 fn read_result(path: &str) -> Option<Vec<u64>> {
@@ -427,8 +431,8 @@ pub fn run(cfg: &HistConfig) -> Vec<BenchResult> {
             let rust_out = format!("/tmp/hist_bench_rust_{}_{}.bin", n, w);
             let clif_out = format!("/tmp/hist_bench_clif_{}_{}.bin", n, w);
 
-            let clif_alg = build_algorithm(&data, w, &clif_out);
-            let _ = base::execute(clif_alg.clone()); // warmup JIT
+            let (clif_config, clif_alg) = build_algorithm(&data, w, &clif_out);
+            let _ = base::run(clif_config.clone(), clif_alg.clone()); // warmup JIT
 
             let rust_ms = harness::median_of(cfg.rounds, || {
                 let start = std::time::Instant::now();
@@ -438,9 +442,10 @@ pub fn run(cfg: &HistConfig) -> Vec<BenchResult> {
 
             let mut clif_ok = true;
             let clif_ms = harness::median_of(cfg.rounds, || {
+                let cfg = clif_config.clone();
                 let alg = clif_alg.clone();
                 let start = std::time::Instant::now();
-                if base::execute(alg).is_err() {
+                if base::run(cfg, alg).is_err() {
                     clif_ok = false;
                 }
                 start.elapsed().as_secs_f64() * 1000.0

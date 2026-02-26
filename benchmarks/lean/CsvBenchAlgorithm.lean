@@ -285,20 +285,22 @@ def controlActions : List Action :=
     { kind := .ClifCall, dst := 0, src := 2, offset := 0, size := 0 }
   ]
 
--- Build the full algorithm
+-- Build config and algorithm
+def buildConfig : BaseConfig := {
+  cranelift_ir := clifIR,
+  memory_size := buildPayload.length,
+  context_offset := 0
+}
+
 def buildAlgorithm : Algorithm := {
   actions := controlActions,
   payloads := buildPayload,
-  cranelift_ir := clifIR,
-  units := {
-    cranelift_units := 0,
-  },
-  timeout_ms := some TIMEOUT_MS,
-  additional_shared_memory := 0
+  cranelift_units := 0,
+  timeout_ms := some TIMEOUT_MS
 }
 
 end CsvBench
 
 def main : IO Unit := do
-  let json := toJson CsvBench.buildAlgorithm
+  let json := toJsonPair CsvBench.buildConfig CsvBench.buildAlgorithm
   IO.println (Json.compress json)

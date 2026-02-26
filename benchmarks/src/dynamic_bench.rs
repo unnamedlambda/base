@@ -1,5 +1,4 @@
-use base::Algorithm;
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::thread;
@@ -160,7 +159,7 @@ block4(v40: i64, v41: i64, v42: i64, v43: i64):
     .to_string()
 }
 
-fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64) {
+fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (base::BaseConfig, base::Algorithm, u64) {
     let n = data.len();
     let expected: u64 = data.iter().sum();
 
@@ -245,17 +244,20 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64)
         },
     ];
 
-    let algorithm = Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_ir.clone(),
-        units: UnitSpec { cranelift_units: 0 },
+        cranelift_units: 0,
         timeout_ms: Some(30_000),
-        additional_shared_memory: 0,
         output: vec![],
     };
 
-    (algorithm, expected)
+    (config, algorithm, expected)
 }
 
 // =========================================================================
@@ -488,7 +490,7 @@ block10(v180: i64):
 
 const TREE_NODE_SIZE: usize = 128; // value, num_children, threshold, children_rel, result, thread_ctx, handles_rel, padding
 
-fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
+fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (base::BaseConfig, base::Algorithm, u64) {
     let num_nodes = tree.values.len();
     let expected: u64 = tree.values.iter().sum();
 
@@ -570,17 +572,20 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
         },
     ];
 
-    let algorithm = Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_ir.clone(),
-        units: UnitSpec { cranelift_units: 0 },
+        cranelift_units: 0,
         timeout_ms: Some(30_000),
-        additional_shared_memory: 0,
         output: vec![],
     };
 
-    (algorithm, expected)
+    (config, algorithm, expected)
 }
 
 // =========================================================================
@@ -599,7 +604,10 @@ fn bench_recursive(
 
     // Warmup
     let _ = rust_recursive_sum(&data_arc, 0, n, threshold);
-    let _ = base::execute(build_recursive_algorithm(&data, threshold).0);
+    {
+        let (cfg, alg, _) = build_recursive_algorithm(&data, threshold);
+        let _ = base::run(cfg, alg);
+    }
 
     let mut rust_times = Vec::with_capacity(rounds);
     let mut base_times = Vec::with_capacity(rounds);
@@ -611,9 +619,9 @@ fn bench_recursive(
         rust_times.push(t.elapsed().as_secs_f64() * 1000.0);
         if got != expected { verified = false; }
 
-        let (alg, _) = build_recursive_algorithm(&data, threshold);
+        let (cfg, alg, _) = build_recursive_algorithm(&data, threshold);
         let t = std::time::Instant::now();
-        if !base::execute(alg).is_ok() { verified = false; }
+        if !base::run(cfg, alg).is_ok() { verified = false; }
         base_times.push(t.elapsed().as_secs_f64() * 1000.0);
     }
 
@@ -641,7 +649,10 @@ fn bench_tree(
     // Warmup
     let _ = rust_tree_sum(&tree_arc, 0, threshold);
     let tree_ref: &Tree = &*tree_arc;
-    let _ = base::execute(build_tree_algorithm(tree_ref, threshold).0);
+    {
+        let (cfg, alg, _) = build_tree_algorithm(tree_ref, threshold);
+        let _ = base::run(cfg, alg);
+    }
 
     let mut rust_times = Vec::with_capacity(rounds);
     let mut base_times = Vec::with_capacity(rounds);
@@ -653,9 +664,9 @@ fn bench_tree(
         rust_times.push(t.elapsed().as_secs_f64() * 1000.0);
         if got != expected { verified = false; }
 
-        let (alg, _) = build_tree_algorithm(tree_ref, threshold);
+        let (cfg, alg, _) = build_tree_algorithm(tree_ref, threshold);
         let t = std::time::Instant::now();
-        if !base::execute(alg).is_ok() { verified = false; }
+        if !base::run(cfg, alg).is_ok() { verified = false; }
         base_times.push(t.elapsed().as_secs_f64() * 1000.0);
     }
 

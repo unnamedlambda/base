@@ -235,16 +235,13 @@ impl CraneliftHashTableContext {
     }
 }
 
-/// Offset in shared memory where the HT context pointer is stored (first 8 bytes of payload).
-const CL_HT_CTX_OFFSET: usize = 0;
-
-/// Create the hash table context and store its pointer at offset 0 in shared memory.
+/// Create the hash table context and store its pointer at the given offset in shared memory.
 /// Returns the raw pointer so the caller can drop it when done.
-pub(crate) fn init_ht_context(shared: &SharedMemory) -> *mut CraneliftHashTableContext {
+pub(crate) fn init_ht_context(shared: &SharedMemory, offset: usize) -> *mut CraneliftHashTableContext {
     let ctx = Box::new(CraneliftHashTableContext::new());
     let ctx_ptr = Box::into_raw(ctx);
     unsafe {
-        shared.store_u64(CL_HT_CTX_OFFSET, ctx_ptr as u64, Ordering::Release);
+        shared.store_u64(offset, ctx_ptr as u64, Ordering::Release);
     }
     ctx_ptr
 }
@@ -1057,7 +1054,7 @@ unsafe extern "C" fn cl_thread_call(ptr: *mut u8, fn_index: i64, arg_ptr: i64) -
     0
 }
 
-pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Arc<Vec<unsafe extern "C" fn(*mut u8)>> {
+pub(crate) fn compile_cranelift_ir(clif_source: &str) -> (cranelift_jit::JITModule, Arc<Vec<unsafe extern "C" fn(*mut u8)>>) {
         info!(ir_len = clif_source.len(), "compiling Cranelift IR");
 
         let mut functions = cranelift_reader::parse_functions(clif_source)
@@ -1159,8 +1156,7 @@ pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Arc<Vec<unsafe extern "
             .collect();
 
         info!(count = compiled_fns.len(), "Cranelift IR compiled successfully");
-        Box::leak(Box::new(module));
-        Arc::new(compiled_fns)
+        (module, Arc::new(compiled_fns))
 }
 
 pub(crate) fn cranelift_unit_task_mailbox(

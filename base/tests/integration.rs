@@ -1,5 +1,5 @@
-use base::{execute, RecordBatch};
-use base_types::{Action, Algorithm, Kind, OutputBatchSchema, OutputColumn, OutputType, UnitSpec};
+use base::{run, Base, RecordBatch};
+use base_types::{Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType};
 use std::fs;
 use std::sync::Arc;
 use arrow_array::{Int64Array, Float64Array, StringArray};
@@ -11,18 +11,20 @@ fn create_cranelift_algorithm(
     payloads: Vec<u8>,
     cranelift_units: usize,
     cranelift_ir: String,
-) -> Algorithm {
-    Algorithm {
+) -> (BaseConfig, Algorithm) {
+    let config = BaseConfig {
+        cranelift_ir,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = Algorithm {
         actions,
         payloads,
-        cranelift_ir,
-        units: UnitSpec {
-            cranelift_units,
-        },
+        cranelift_units,
         timeout_ms: Some(5000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 #[test]
@@ -93,8 +95,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: flag_b, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(!test_file_a.exists());
     assert!(test_file_b.exists());
@@ -171,8 +173,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: flag_8, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(test_file_4byte.exists(), "4-byte check should NOT jump when first 4 bytes are zero");
     let contents = fs::read(&test_file_4byte).unwrap();
@@ -222,8 +224,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
@@ -276,8 +278,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -328,8 +330,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -383,8 +385,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u32::from_le_bytes(contents[0..4].try_into().unwrap());
@@ -480,16 +482,19 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1048, src: 0, offset: 0, size: 0 },
     ];
 
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
     let algorithm = Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_ir,
-        units: UnitSpec { cranelift_units: 2 },
+        cranelift_units: 2,
         timeout_ms: Some(5000),
-        additional_shared_memory: 0,
         output: vec![],
     };
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     let contents1 = fs::read(&test_file1).unwrap();
     assert_eq!(u64::from_le_bytes(contents1[0..8].try_into().unwrap()), 8);
@@ -551,8 +556,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1032, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -606,9 +611,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(5000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
@@ -665,9 +670,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: clif_flag, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(5000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
@@ -731,8 +736,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(&contents[..12], b"Hello, CLIF!");
@@ -783,8 +788,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(&contents[..5], b"ABCDE");
@@ -836,8 +841,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(&contents[..8], &[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]);
@@ -989,9 +994,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(15000); // GPU init can be slow
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), data_bytes, "Result file should be {} bytes", data_bytes);
@@ -1063,8 +1068,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 24);
@@ -1124,8 +1129,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert!(contents.len() >= 31, "Expected at least 31 bytes, got {}", contents.len());
@@ -1176,8 +1181,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let verify = fs::read(&verify_file).unwrap();
     let write_ret = i64::from_le_bytes(verify[0..8].try_into().unwrap());
@@ -1224,8 +1229,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     // Second write with file_offset=0 uses File::create() which truncates
     let raw = fs::read(&data_file).unwrap();
@@ -1280,8 +1285,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 100);
@@ -1385,9 +1390,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(15000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), data_bytes);
@@ -1508,9 +1513,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(15000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), data_bytes * 2);
@@ -1645,9 +1650,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 40, "Expected 40 bytes of return values, got {}", contents.len());
@@ -1746,8 +1751,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
     handle.join().unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1837,9 +1842,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
     client_handle.join().unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1902,8 +1907,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 24);
@@ -1960,9 +1965,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -2055,9 +2060,9 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    let (config, mut algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(10000);
-    execute(algorithm).unwrap();
+    run(config, algorithm).unwrap();
     client.join().unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -2137,8 +2142,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert!(contents.len() >= 14);
@@ -2237,8 +2242,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert!(contents.len() >= 18);
@@ -2319,8 +2324,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert!(contents.len() >= 4);
@@ -2389,8 +2394,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -2465,8 +2470,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert!(contents.len() >= 7);
@@ -2523,8 +2528,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 4);
@@ -2584,8 +2589,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 4);
@@ -2663,8 +2668,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 4);
@@ -2728,8 +2733,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 4);
@@ -2812,8 +2817,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 14);
@@ -2916,8 +2921,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 28);
@@ -3023,8 +3028,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 10);
@@ -3087,8 +3092,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -3160,8 +3165,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -3257,8 +3262,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 12);
@@ -3344,8 +3349,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 4);
@@ -3404,8 +3409,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm1 = create_cranelift_algorithm(actions1, payloads1, 1, clif_ir_1.to_string());
-    execute(algorithm1).unwrap();
+    let (config1, algorithm1) = create_cranelift_algorithm(actions1, payloads1, 1, clif_ir_1.to_string());
+    run(config1, algorithm1).unwrap();
 
     // Second run: reopen db, try to get the key — should not exist
     let clif_ir_2 =
@@ -3452,8 +3457,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 1, clif_ir_2.to_string());
-    execute(algorithm2).unwrap();
+    let (config2, algorithm2) = create_cranelift_algorithm(actions2, payloads2, 1, clif_ir_2.to_string());
+    run(config2, algorithm2).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 4);
@@ -3528,8 +3533,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -3613,8 +3618,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 24);
@@ -3677,8 +3682,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -3746,8 +3751,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 16);
@@ -3833,8 +3838,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 16);
@@ -3912,8 +3917,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 16);
@@ -4011,8 +4016,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -4092,8 +4097,8 @@ block0(v0: i64):
         Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -4130,8 +4135,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
     let contents = fs::read(&test_file).unwrap();
@@ -4187,8 +4192,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(test_file_a.exists());
     let contents_a = fs::read(&test_file_a).unwrap();
@@ -4242,8 +4247,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -4300,8 +4305,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 2, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -4369,8 +4374,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 2, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(!test_file_bad.exists(), "fn1 should be skipped by conditional jump");
     assert!(test_file_good.exists(), "fn2 should be executed");
@@ -4398,8 +4403,7 @@ block0(v0: i64):
     ];
 
     // cranelift_units: 0 — no workers
-    let mut algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    algorithm.additional_shared_memory = 0;
+    let (_config, _algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
 
     // Rebuild with file write verification
     let temp_dir = TempDir::new().unwrap();
@@ -4430,8 +4434,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm2 = create_cranelift_algorithm(actions2, payloads2, 0, clif_ir2.to_string());
-    execute(algorithm2).unwrap();
+    let (config2, algorithm2) = create_cranelift_algorithm(actions2, payloads2, 0, clif_ir2.to_string());
+    run(config2, algorithm2).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -4495,8 +4499,8 @@ block0(v0: i64):
     ];
 
     // Need 1 worker unit for the async dispatch
-    let algorithm = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(test_file_sync.exists(), "sync ClifCall should write file");
     let sync_val = u64::from_le_bytes(fs::read(&test_file_sync).unwrap()[0..8].try_into().unwrap());
@@ -4569,8 +4573,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     assert_eq!(contents.len(), 8);
@@ -4629,8 +4633,8 @@ block0(v0: i64):
         Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let algorithm = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
-    execute(algorithm).unwrap();
+    let (config, algorithm) = create_cranelift_algorithm(actions, payloads, 0, clif_ir.to_string());
+    run(config, algorithm).unwrap();
 
     assert!(output_file.exists());
     let output_data = fs::read(&output_file).unwrap();
@@ -4641,7 +4645,7 @@ fn create_output_algorithm(
     clif_ir: &str,
     payloads: Vec<u8>,
     output: Vec<OutputBatchSchema>,
-) -> Algorithm {
+) -> (BaseConfig, Algorithm) {
     let mut p = payloads;
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     if p.len() < clif_bytes.len() {
@@ -4649,19 +4653,21 @@ fn create_output_algorithm(
     }
     p[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
 
-    Algorithm {
+    let config = BaseConfig {
+        cranelift_ir: clif_ir.to_string(),
+        memory_size: p.len(),
+        context_offset: 0,
+    };
+    let algorithm = Algorithm {
         actions: vec![
             Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
         ],
         payloads: p,
-        cranelift_ir: clif_ir.to_string(),
-        units: UnitSpec {
-            cranelift_units: 1,
-        },
+        cranelift_units: 1,
         timeout_ms: Some(5000),
-        additional_shared_memory: 0,
         output,
-    }
+    };
+    (config, algorithm)
 }
 
 #[test]
@@ -4678,8 +4684,8 @@ block0(v0: i64):
 }"#;
 
     let payloads = vec![0u8; 4096];
-    let alg = create_output_algorithm(clif_ir, payloads, vec![]);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, vec![]);
+    let batches = run(cfg, alg).unwrap();
     assert!(batches.is_empty());
 }
 
@@ -4710,8 +4716,8 @@ block0(v0: i64):
         }],
     }];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
     let expected = RecordBatch::try_new(
@@ -4760,8 +4766,8 @@ block0(v0: i64):
         ],
     }];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
     let expected = RecordBatch::try_new(
@@ -4809,8 +4815,8 @@ block0(v0: i64):
         }],
     }];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
     let expected = RecordBatch::try_new(
@@ -4855,8 +4861,8 @@ block0(v0: i64):
         }],
     }];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
     let expected = RecordBatch::try_new(
@@ -4886,8 +4892,8 @@ block0(v0: i64):
         }],
     }];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert!(batches.is_empty());
 }
 
@@ -4939,8 +4945,8 @@ block0(v0: i64):
         },
     ];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 2);
 
     let expected_0 = RecordBatch::try_new(
@@ -4989,8 +4995,8 @@ block0(v0: i64):
         }],
     }];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
     let expected = RecordBatch::try_new(
@@ -5121,8 +5127,8 @@ block0(v0: i64):
         },
     ];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 2);
 
     // Batch 0: summary
@@ -5218,8 +5224,8 @@ block0(v0: i64):
         },
     ];
 
-    let alg = create_output_algorithm(clif_ir, payloads, output);
-    let batches = execute(alg).unwrap();
+    let (cfg, alg) = create_output_algorithm(clif_ir, payloads, output);
+    let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 2, "middle batch with row_count=0 should be skipped");
 
     let expected_0 = RecordBatch::try_new(
@@ -5233,4 +5239,683 @@ block0(v0: i64):
         vec![Arc::new(Int64Array::from(vec![10i64, 20]))],
     ).unwrap();
     assert_eq!(batches[1], expected_1);
+}
+
+#[test]
+fn test_base_single_execute_matches_standalone() {
+    // Base::new + execute should produce the same result as standalone run.
+    // CLIF: load i64 from offset 100, multiply by 7, store at 200, row_count=1 at 208.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+100
+    v2 = iconst.i64 7
+    v3 = imul v1, v2
+    store v3, v0+200
+    v4 = iconst.i64 1
+    store v4, v0+208
+    return
+}"#.to_string();
+
+    let mut payloads = vec![0u8; 4096];
+    payloads[100..108].copy_from_slice(&6i64.to_le_bytes());
+
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 208,
+        columns: vec![OutputColumn {
+            name: "result".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 200,
+            len_offset: 0,
+        }],
+    }];
+
+    // Standalone
+    let config1 = BaseConfig { cranelift_ir: clif_ir.clone(), memory_size: payloads.len(), context_offset: 0 };
+    let alg1 = Algorithm {
+        actions: actions.clone(),
+        payloads: payloads.clone(),
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema.clone(),
+    };
+    let batches1 = run(config1, alg1).unwrap();
+
+    // Base struct
+    let config2 = BaseConfig { cranelift_ir: clif_ir, memory_size: payloads.len(), context_offset: payloads.len() };
+    let alg2 = Algorithm {
+        actions,
+        payloads,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    };
+    let mut base = Base::new(config2).unwrap();
+    let batches2 = base.execute(alg2).unwrap();
+
+    // Both should produce 6 * 7 = 42
+    assert_eq!(batches1.len(), 1);
+    assert_eq!(batches2.len(), 1);
+    let col1 = batches1[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let col2 = batches2[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col1.value(0), 42);
+    assert_eq!(col2.value(0), 42);
+}
+
+#[test]
+fn test_base_multi_execute_different_payloads() {
+    // Compile once, execute twice with different input payloads.
+    // CLIF reads i64 at offset 100, multiplies by 3, stores result at 200, row_count=1 at 208.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+100
+    v2 = iconst.i64 3
+    v3 = imul v1, v2
+    store v3, v0+200
+    v4 = iconst.i64 1
+    v5 = iconst.i64 208
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 4096 };
+    let mut base = Base::new(config).unwrap();
+
+    // First execute: input = 10, expect 30
+    let mut payloads1 = vec![0u8; 4096];
+    payloads1[100..108].copy_from_slice(&10i64.to_le_bytes());
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 208,
+        columns: vec![OutputColumn {
+            name: "result".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 200,
+            len_offset: 0,
+        }],
+    }];
+    let alg1 = Algorithm {
+        actions: actions.clone(),
+        payloads: payloads1,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema.clone(),
+    };
+    let batches1 = base.execute(alg1).unwrap();
+    assert_eq!(batches1.len(), 1);
+    let col1 = batches1[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col1.value(0), 30);
+
+    // Second execute: input = 100, expect 300
+    let mut payloads2 = vec![0u8; 4096];
+    payloads2[100..108].copy_from_slice(&100i64.to_le_bytes());
+    let alg2 = Algorithm {
+        actions,
+        payloads: payloads2,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    };
+    let batches2 = base.execute(alg2).unwrap();
+    assert_eq!(batches2.len(), 1);
+    let col2 = batches2[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col2.value(0), 300);
+}
+
+#[test]
+fn test_base_multi_execute_different_actions() {
+    // Compile once with two CLIF functions, execute with different action sequences.
+    // fn0: stores 42 at offset 200, row_count=1 at 208
+    // fn1: stores 99 at offset 200, row_count=1 at 208
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 42
+    store v1, v0+200
+    v2 = iconst.i64 1
+    v3 = iconst.i64 208
+    v4 = iadd v0, v3
+    store.i64 v2, v4
+    return
+}
+
+function u0:1(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 99
+    store v1, v0+200
+    v2 = iconst.i64 1
+    v3 = iconst.i64 208
+    v4 = iadd v0, v3
+    store.i64 v2, v4
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 4096 };
+    let mut base = Base::new(config).unwrap();
+
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 208,
+        columns: vec![OutputColumn {
+            name: "val".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 200,
+            len_offset: 0,
+        }],
+    }];
+
+    // First execute: call fn0 only
+    let alg1 = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }],
+        payloads: vec![0u8; 4096],
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema.clone(),
+    };
+    let batches1 = base.execute(alg1).unwrap();
+    let col1 = batches1[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col1.value(0), 42);
+
+    // Second execute: call fn1 only
+    let alg2 = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        payloads: vec![0u8; 4096],
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    };
+    let batches2 = base.execute(alg2).unwrap();
+    let col2 = batches2[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col2.value(0), 99);
+}
+
+#[test]
+fn test_base_multi_execute_accumulates_in_memory() {
+    // Memory persists beyond the payload region across executes.
+    // Payloads only cover offsets 0..128 (input at 100). Accumulator lives at offset 200,
+    // which is beyond payload size and thus NOT overwritten between executes.
+    // CLIF: load i64 from offset 200, add i64 from offset 100, store back at 200.
+    // Also stores row_count=1 at 208.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+200
+    v2 = load.i64 v0+100
+    v3 = iadd v1, v2
+    store v3, v0+200
+    v4 = iconst.i64 1
+    v5 = iconst.i64 208
+    v6 = iadd v0, v5
+    store.i64 v4, v6
+    return
+}"#.to_string();
+
+    // memory_size is larger than payloads — offsets 128..4096 persist between executes.
+    // context_offset=128: payloads fill [0..128), accumulator at 200 is in persistent region.
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 128 };
+    let mut base = Base::new(config).unwrap();
+
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 208,
+        columns: vec![OutputColumn {
+            name: "total".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 200,
+            len_offset: 0,
+        }],
+    }];
+
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+
+    // Execute 1: add 10 → total = 10
+    let mut p1 = vec![0u8; 128];
+    p1[100..108].copy_from_slice(&10i64.to_le_bytes());
+    let batches = base.execute(Algorithm {
+        actions: actions.clone(),
+        payloads: p1,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema.clone(),
+    }).unwrap();
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col.value(0), 10);
+
+    // Execute 2: add 25 → total = 35
+    // Payload only overwrites 0..128, offset 200 persists from previous execute
+    let mut p2 = vec![0u8; 128];
+    p2[100..108].copy_from_slice(&25i64.to_le_bytes());
+    let batches = base.execute(Algorithm {
+        actions: actions.clone(),
+        payloads: p2,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema.clone(),
+    }).unwrap();
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col.value(0), 35);
+
+    // Execute 3: add 5 → total = 40
+    let mut p3 = vec![0u8; 128];
+    p3[100..108].copy_from_slice(&5i64.to_le_bytes());
+    let batches = base.execute(Algorithm {
+        actions,
+        payloads: p3,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    }).unwrap();
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col.value(0), 40);
+}
+
+#[test]
+fn test_base_multi_execute_with_file_io() {
+    // Compile once, write different files on each execute.
+    let temp_dir = TempDir::new().unwrap();
+    let file1 = temp_dir.path().join("out1.bin");
+    let file2 = temp_dir.path().join("out2.bin");
+    let file1_str = format!("{}\0", file1.to_str().unwrap());
+    let file2_str = format!("{}\0", file2.to_str().unwrap());
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
+block0(v0: i64):
+    v1 = iconst.i64 256
+    v2 = iconst.i64 512
+    v3 = iconst.i64 0
+    v4 = iconst.i64 8
+    v5 = call fn0(v0, v1, v2, v3, v4)
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 4096 };
+    let mut base = Base::new(config).unwrap();
+
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+
+    // Execute 1: write value 42 to file1
+    let mut p1 = vec![0u8; 4096];
+    p1[256..256 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
+    p1[512..520].copy_from_slice(&42u64.to_le_bytes());
+    base.execute(Algorithm {
+        actions: actions.clone(),
+        payloads: p1,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: vec![],
+    }).unwrap();
+    assert!(file1.exists());
+    let data1 = fs::read(&file1).unwrap();
+    assert_eq!(u64::from_le_bytes(data1[..8].try_into().unwrap()), 42);
+
+    // Execute 2: write value 99 to file2
+    let mut p2 = vec![0u8; 4096];
+    p2[256..256 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
+    p2[512..520].copy_from_slice(&99u64.to_le_bytes());
+    base.execute(Algorithm {
+        actions,
+        payloads: p2,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: vec![],
+    }).unwrap();
+    assert!(file2.exists());
+    let data2 = fs::read(&file2).unwrap();
+    assert_eq!(u64::from_le_bytes(data2[..8].try_into().unwrap()), 99);
+}
+
+#[test]
+fn test_base_multi_execute_varying_cranelift_units() {
+    // Same config, but different cranelift_units per execute.
+    // fn0: stores 1 at offset 200
+    // Workers also call fn0, each adding to the same location (but with sync ClifCall
+    // only the interpreter calls it, so this just verifies units can vary).
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 1
+    store v1, v0+200
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 4096 };
+    let mut base = Base::new(config).unwrap();
+
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+
+    // Execute with 0 units
+    base.execute(Algorithm {
+        actions: actions.clone(),
+        payloads: vec![0u8; 4096],
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: vec![],
+    }).unwrap();
+
+    // Execute with 2 units
+    base.execute(Algorithm {
+        actions: actions.clone(),
+        payloads: vec![0u8; 4096],
+        cranelift_units: 2,
+        timeout_ms: Some(5000),
+        output: vec![],
+    }).unwrap();
+
+    // Execute with 4 units
+    base.execute(Algorithm {
+        actions,
+        payloads: vec![0u8; 4096],
+        cranelift_units: 4,
+        timeout_ms: Some(5000),
+        output: vec![],
+    }).unwrap();
+}
+
+#[test]
+fn test_base_context_offset_truncates_payload() {
+    // Payloads larger than context_offset are truncated — only [0..context_offset) is copied.
+    // CLIF reads from offset 100 (payload region) and offset 200 (persistent region).
+    // context_offset=150: payloads fill [0..150), offset 200 is NOT overwritten by payload copy.
+    //
+    // Layout: [0..150) = payload | [150..4096) = persistent
+    // Payload has value 11 at offset 100 AND tries to put 99 at offset 200, but
+    // the copy is truncated so offset 200 stays at whatever was there before (0).
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+100
+    v2 = load.i64 v0+200
+    v3 = iadd v1, v2
+    store v3, v0+300
+    v4 = iconst.i64 1
+    store v4, v0+308
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 150 };
+    let mut base = Base::new(config).unwrap();
+
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 308,
+        columns: vec![OutputColumn {
+            name: "sum".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 300,
+            len_offset: 0,
+        }],
+    }];
+
+    // Build a payload that's 4096 bytes — larger than context_offset (150).
+    // Put 11 at offset 100 (inside payload region) and 99 at offset 200 (outside — truncated).
+    let mut payloads = vec![0u8; 4096];
+    payloads[100..108].copy_from_slice(&11i64.to_le_bytes());
+    payloads[200..208].copy_from_slice(&99i64.to_le_bytes());
+
+    let batches = base.execute(Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }],
+        payloads,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    }).unwrap();
+
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    // offset 100 was copied (11), offset 200 was NOT copied (stays 0) → sum = 11 + 0 = 11
+    assert_eq!(col.value(0), 11);
+}
+
+#[test]
+fn test_base_context_offset_persistent_region_survives_payload() {
+    // Pre-seed persistent region, then verify payload writes don't clobber it.
+    // CLIF fn0: stores seed value at offset 200, fn1: reads from 100 + 200 → stores at 300.
+    // context_offset=150.
+    //
+    // Step 1: call fn0 to seed offset 200 with 77 (persistent region)
+    // Step 2: call fn1 with new payload (input=5 at offset 100) — 77 should survive at 200
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = iconst.i64 77
+    store v1, v0+200
+    return
+}
+
+function u0:1(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+100
+    v2 = load.i64 v0+200
+    v3 = iadd v1, v2
+    store v3, v0+300
+    v4 = iconst.i64 1
+    store v4, v0+308
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 150 };
+    let mut base = Base::new(config).unwrap();
+
+    // Execute 1: seed 77 at offset 200 (in persistent region)
+    base.execute(Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }],
+        payloads: vec![],
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: vec![],
+    }).unwrap();
+
+    // Execute 2: send payload with input=5 at offset 100, read both
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 308,
+        columns: vec![OutputColumn {
+            name: "sum".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 300,
+            len_offset: 0,
+        }],
+    }];
+
+    let mut payloads = vec![0u8; 150]; // exactly context_offset size
+    payloads[100..108].copy_from_slice(&5i64.to_le_bytes());
+
+    let batches = base.execute(Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        payloads,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    }).unwrap();
+
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    // 5 (payload) + 77 (persistent) = 82
+    assert_eq!(col.value(0), 82);
+}
+
+#[test]
+fn test_base_empty_payloads_leave_memory_intact() {
+    // Empty payloads don't touch memory at all — persistent state survives.
+    // CLIF: accumulate into offset 200 (read, add 1, store back). row_count at 208.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+200
+    v2 = iconst.i64 1
+    v3 = iadd v1, v2
+    store v3, v0+200
+    v4 = iconst.i64 1
+    store v4, v0+208
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 128 };
+    let mut base = Base::new(config).unwrap();
+
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 208,
+        columns: vec![OutputColumn {
+            name: "counter".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 200,
+            len_offset: 0,
+        }],
+    }];
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+
+    // Three executes with empty payloads — counter should increment each time
+    for expected in 1..=3 {
+        let batches = base.execute(Algorithm {
+            actions: actions.clone(),
+            payloads: vec![],
+            cranelift_units: 0,
+            timeout_ms: Some(5000),
+            output: output_schema.clone(),
+        }).unwrap();
+        let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(col.value(0), expected);
+    }
+}
+
+#[test]
+fn test_base_context_offset_at_memory_size() {
+    // context_offset == memory_size: entire memory is payload region. No persistent region.
+    // Every execute completely overwrites all memory (payload fills the whole space).
+    // Accumulator at offset 200 gets wiped each time.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+200
+    v2 = load.i64 v0+100
+    v3 = iadd v1, v2
+    store v3, v0+200
+    v4 = iconst.i64 1
+    store v4, v0+208
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 4096 };
+    let mut base = Base::new(config).unwrap();
+
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 208,
+        columns: vec![OutputColumn {
+            name: "result".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 200,
+            len_offset: 0,
+        }],
+    }];
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+
+    // Execute 1: input=10, accumulator starts at 0 → result=10
+    let mut p1 = vec![0u8; 4096];
+    p1[100..108].copy_from_slice(&10i64.to_le_bytes());
+    let batches = base.execute(Algorithm {
+        actions: actions.clone(),
+        payloads: p1,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema.clone(),
+    }).unwrap();
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col.value(0), 10);
+
+    // Execute 2: input=20, BUT payload zeroes offset 200 first → result=20 (NOT 30)
+    let mut p2 = vec![0u8; 4096];
+    p2[100..108].copy_from_slice(&20i64.to_le_bytes());
+    let batches = base.execute(Algorithm {
+        actions,
+        payloads: p2,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    }).unwrap();
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    // accumulator was clobbered by payload copy — starts at 0 again, so 0+20=20
+    assert_eq!(col.value(0), 20);
+}
+
+#[test]
+fn test_base_output_in_persistent_region() {
+    // Output data lives in persistent region (beyond context_offset).
+    // CLIF appends to a growing buffer at offset 500+ across multiple executes.
+    // context_offset=128, output region at 500.
+    //
+    // Each execute: read input from offset 100, store at offset 500 + 8*count, increment count at 508.
+    // Actually simpler: each execute appends one value at a known slot.
+    //
+    // fn0: reads count from offset 400, uses it to store input at 500+8*count, increments count.
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    v1 = load.i64 v0+100
+    v2 = load.i64 v0+400
+    v3 = iconst.i64 8
+    v4 = imul v2, v3
+    v5 = iconst.i64 500
+    v6 = iadd v4, v5
+    v7 = iadd v0, v6
+    store v1, v7
+    v8 = iconst.i64 1
+    v9 = iadd v2, v8
+    store v9, v0+400
+    store v9, v0+408
+    return
+}"#.to_string();
+
+    let config = BaseConfig { cranelift_ir: clif_ir, memory_size: 4096, context_offset: 128 };
+    let mut base = Base::new(config).unwrap();
+
+    let actions = vec![
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+    ];
+
+    // Execute 3 times with values 100, 200, 300
+    for &val in &[100i64, 200, 300] {
+        let mut p = vec![0u8; 128];
+        p[100..108].copy_from_slice(&val.to_le_bytes());
+        base.execute(Algorithm {
+            actions: actions.clone(),
+            payloads: p,
+            cranelift_units: 0,
+            timeout_ms: Some(5000),
+            output: vec![],
+        }).unwrap();
+    }
+
+    // Final read: count at 400 should be 3, values at 500/508/516 should be 100/200/300
+    let output_schema = vec![OutputBatchSchema {
+        row_count_offset: 408,
+        columns: vec![OutputColumn {
+            name: "values".to_string(),
+            dtype: OutputType::I64,
+            data_offset: 500,
+            len_offset: 0,
+        }],
+    }];
+
+    // One more execute to read output — pass a dummy input
+    let mut p = vec![0u8; 128];
+    p[100..108].copy_from_slice(&999i64.to_le_bytes());
+    let batches = base.execute(Algorithm {
+        actions,
+        payloads: p,
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: output_schema,
+    }).unwrap();
+
+    // count is now 4 (we did 4 executes), values: 100, 200, 300, 999
+    assert_eq!(batches.len(), 1);
+    let col = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(col.len(), 4);
+    assert_eq!(col.value(0), 100);
+    assert_eq!(col.value(1), 200);
+    assert_eq!(col.value(2), 300);
+    assert_eq!(col.value(3), 999);
 }

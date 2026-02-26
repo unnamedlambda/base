@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use crate::harness::{self, BenchResult};
 
 type B = burn::backend::NdArray<f32>;
@@ -167,7 +167,7 @@ block9(v140: f64):
 const DATA_OFF: usize = 0x4000;
 const CLIF_OFF: usize = 0x0100;
 
-fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> base::Algorithm {
+fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> (base::BaseConfig, base::Algorithm) {
     let payload_size = DATA_OFF + (m * k + k * n) * 4;
     let mut payloads = vec![0u8; payload_size];
 
@@ -192,17 +192,19 @@ fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> base
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    base::Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: CLIF_MATMUL.to_string(),
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: CLIF_MATMUL.to_string(),
-        units: UnitSpec {
-            cranelift_units: 0,
-        },
+        cranelift_units: 0,
         timeout_ms: Some(60_000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 fn close_enough(a: f64, b: f64) -> bool {
@@ -249,11 +251,12 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         };
 
         // Base (Cranelift JIT)
-        let template = build_base_matmul(a, b, n, n, n);
+        let (template_config, template_alg) = build_base_matmul(a, b, n, n, n);
         let base_ms = harness::median_of(iterations, || {
-            let alg = template.clone();
+            let config = template_config.clone();
+            let alg = template_alg.clone();
             let start = std::time::Instant::now();
-            let _ = base::execute(alg);
+            let _ = base::run(config, alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

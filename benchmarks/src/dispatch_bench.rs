@@ -1,5 +1,4 @@
-use base::Algorithm;
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use crossbeam_channel::unbounded;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -115,7 +114,7 @@ fn build_frontier_algorithm(
     num_nodes: usize,
     coarse_chunk: usize,
     workers: usize,
-) -> (Algorithm, u64) {
+) -> (base::BaseConfig, base::Algorithm, u64) {
     let (chunk_sums, expected_sum) = build_frontier_chunk_sums(num_nodes, coarse_chunk);
     let chunk_count = chunk_sums.len();
 
@@ -203,19 +202,20 @@ fn build_frontier_algorithm(
         });
     }
 
-    let algorithm = Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_ir.clone(),
-        units: UnitSpec {
-            cranelift_units: workers,
-        },
+        cranelift_units: workers,
         timeout_ms: Some(30_000),
-        additional_shared_memory: 0,
         output: vec![],
     };
 
-    (algorithm, expected_sum)
+    (config, algorithm, expected_sum)
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +291,10 @@ fn bench_frontier(
 
     // Warmup
     let _ = rust_frontier_sum(&packets, &chunk_sums_vec, worker_base, workers);
-    let _ = base::execute(build_frontier_algorithm(n, chunk, workers).0);
+    {
+        let (cfg, alg, _) = build_frontier_algorithm(n, chunk, workers);
+        let _ = base::run(cfg, alg);
+    }
 
     let mut rust_times = Vec::with_capacity(rounds);
     let mut base_times = Vec::with_capacity(rounds);
@@ -306,9 +309,9 @@ fn bench_frontier(
             verified = false;
         }
 
-        let (alg, _) = build_frontier_algorithm(n, chunk, workers);
+        let (cfg, alg, _) = build_frontier_algorithm(n, chunk, workers);
         let t = std::time::Instant::now();
-        let ok = base::execute(alg).is_ok();
+        let ok = base::run(cfg, alg).is_ok();
         base_times.push(t.elapsed().as_secs_f64() * 1000.0);
         if !ok {
             eprintln!("WARNING: Base execution failed (n={}, chunk={})", n, chunk);
@@ -330,7 +333,7 @@ fn bench_frontier(
 // Multi-phase infrastructure
 // ---------------------------------------------------------------------------
 
-fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm {
+fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> (base::BaseConfig, base::Algorithm) {
     let num_phases = phases.len();
     let total_chunks: usize = phases.iter().map(|p| p.len()).sum();
 
@@ -456,17 +459,19 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
 
     assert_eq!(actions.len(), total_actions);
 
-    Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_ir.clone(),
-        units: UnitSpec {
-            cranelift_units: workers,
-        },
+        cranelift_units: workers,
         timeout_ms: Some(30_000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 fn rust_multi_phase_sum(phases: &[Vec<u64>], workers: usize) -> u64 {
@@ -510,12 +515,15 @@ fn bench_multi_phase(
     rounds: usize,
     label: &str,
 ) -> BenchResult {
-    let alg = build_multi_phase_algorithm(phases, workers);
-    let action_count = alg.actions.len();
+    let (_, alg_for_count) = build_multi_phase_algorithm(phases, workers);
+    let action_count = alg_for_count.actions.len();
 
     // Warmup
     let _ = rust_multi_phase_sum(phases, workers);
-    let _ = base::execute(build_multi_phase_algorithm(phases, workers));
+    {
+        let (cfg, alg) = build_multi_phase_algorithm(phases, workers);
+        let _ = base::run(cfg, alg);
+    }
 
     let mut rust_times = Vec::with_capacity(rounds);
     let mut base_times = Vec::with_capacity(rounds);
@@ -533,9 +541,9 @@ fn bench_multi_phase(
             verified = false;
         }
 
-        let alg = build_multi_phase_algorithm(phases, workers);
+        let (cfg, alg) = build_multi_phase_algorithm(phases, workers);
         let t = std::time::Instant::now();
-        let ok = base::execute(alg).is_ok();
+        let ok = base::run(cfg, alg).is_ok();
         base_times.push(t.elapsed().as_secs_f64() * 1000.0);
         if !ok {
             eprintln!("WARNING: Base multi-phase execution failed");

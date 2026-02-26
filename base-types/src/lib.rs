@@ -22,11 +22,6 @@ pub struct Action {
     pub size: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct UnitSpec {
-    pub cranelift_units: usize,
-}
-
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OutputType {
     I64,
@@ -49,13 +44,17 @@ pub struct OutputBatchSchema {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BaseConfig {
+    pub cranelift_ir: String,
+    pub memory_size: usize,
+    pub context_offset: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Algorithm {
     pub actions: Vec<Action>,
     pub payloads: Vec<u8>,
-    pub cranelift_ir: String,
-    pub units: UnitSpec,
+    pub cranelift_units: usize,
     pub timeout_ms: Option<u64>,
-    pub additional_shared_memory: usize,
-    #[serde(default)]
     pub output: Vec<OutputBatchSchema>,
 }

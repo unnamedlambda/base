@@ -1,4 +1,4 @@
-use base::{execute, Algorithm};
+use base::{run, Algorithm, BaseConfig};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
@@ -34,8 +34,8 @@ fn main() {
         })
         .len();
 
-    let mut alg: Algorithm = bincode::deserialize(ALGORITHM_BINARY)
-        .expect("Failed to deserialize algorithm binary");
+    let (config, mut alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+        .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     // Write input filename into payload (null-terminated)
     let path_bytes = input_path.as_bytes();
@@ -48,7 +48,7 @@ fn main() {
     alg.payloads[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
 
     let start = std::time::Instant::now();
-    match execute(alg) {
+    match run(config, alg) {
         Ok(_) => {
             let elapsed = start.elapsed();
             // Read header to compute actual compressed data size

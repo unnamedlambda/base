@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::process::Command;
-use base_types::Algorithm;
+use base_types::{BaseConfig, Algorithm};
 
 fn main() {
     println!("cargo:rerun-if-changed=lean/MakeAlgorithm.lean");
@@ -44,11 +44,11 @@ fn main() {
     fs::write(format!("{}/algorithm.json", out_dir), &json_str)
         .expect("Failed to write debug JSON");
 
-    let algorithm: Algorithm = serde_json::from_str(&json_str)
-        .expect("BUILD FAILED: Lean JSON does not match Rust Algorithm structure");
+    let pair: (BaseConfig, Algorithm) = serde_json::from_str(&json_str)
+        .expect("BUILD FAILED: Lean JSON does not match Rust (BaseConfig, Algorithm) structure");
 
-    let binary = bincode::serialize(&algorithm)
-        .expect("Failed to serialize algorithm to bincode");
+    let binary = bincode::serialize(&pair)
+        .expect("Failed to serialize (BaseConfig, Algorithm) to bincode");
 
     fs::write(format!("{}/algorithm.bin", out_dir), binary)
         .expect("Failed to write binary algorithm");

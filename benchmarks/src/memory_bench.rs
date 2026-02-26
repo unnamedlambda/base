@@ -1,4 +1,4 @@
-use base_types::{Action, Kind, UnitSpec};
+use base_types::{Action, Kind};
 use crate::harness::{self, BenchResult};
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ fn build_clif_memory_algorithm(
     input_path: &str,
     output_path: &str,
     n_floats: usize,
-) -> base::Algorithm {
+) -> (base::BaseConfig, base::Algorithm) {
     let buffer_size = n_floats * 4;
     let workgroups = ((n_floats + 63) / 64) as u32;
 
@@ -185,17 +185,19 @@ fn build_clif_memory_algorithm(
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
     ];
 
-    base::Algorithm {
+    let config = base::BaseConfig {
+        cranelift_ir: clif_source,
+        memory_size: payloads.len(),
+        context_offset: 0,
+    };
+    let algorithm = base::Algorithm {
         actions,
         payloads,
-        cranelift_ir: clif_source,
-        units: UnitSpec {
-            cranelift_units: 0,
-        },
+        cranelift_units: 0,
         timeout_ms: Some(120_000),
-        additional_shared_memory: 0,
         output: vec![],
-    }
+    };
+    (config, algorithm)
 }
 
 /// Rust baseline: sync file I/O + cached wgpu device (fair comparison with CLIF path).
@@ -370,7 +372,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         gen_test_file(&input_path, n_floats);
 
-        let clif_alg = build_clif_memory_algorithm(&input_path, &clif_output, n_floats);
+        let (clif_config, clif_alg) = build_clif_memory_algorithm(&input_path, &clif_output, n_floats);
 
         // Rust baseline (cached device, sync I/O)
         let rust_ms = harness::median_of(iterations, || {
@@ -381,9 +383,10 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // CLIF+GPU
         let base_ms = harness::median_of(iterations, || {
+            let cfg = clif_config.clone();
             let alg = clif_alg.clone();
             let start = std::time::Instant::now();
-            let _ = base::execute(alg);
+            let _ = base::run(cfg, alg);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

@@ -56,33 +56,38 @@ instance : ToJson Action where
     ("size", toJson a.size)
   ]
 
-structure UnitSpec where
-  cranelift_units : Nat
+structure BaseConfig where
+  cranelift_ir : String
+  memory_size : Nat
+  context_offset : Nat
   deriving Repr
 
-instance : ToJson UnitSpec where
-  toJson u := Json.mkObj [
-    ("cranelift_units", toJson u.cranelift_units)
+instance : ToJson BaseConfig where
+  toJson c := Json.mkObj [
+    ("cranelift_ir", toJson c.cranelift_ir),
+    ("memory_size", toJson c.memory_size),
+    ("context_offset", toJson c.context_offset)
   ]
 
 structure Algorithm where
   actions : List Action
   payloads : List UInt8
-  cranelift_ir : String
-  units : UnitSpec
+  cranelift_units : Nat
   timeout_ms : Option Nat
-  additional_shared_memory : Nat
-  deriving Repr
+  output : List Json := []
 
 instance : ToJson Algorithm where
   toJson alg := Json.mkObj [
     ("actions", toJson alg.actions),
     ("payloads", toJson alg.payloads),
-    ("cranelift_ir", toJson alg.cranelift_ir),
-    ("units", toJson alg.units),
+    ("cranelift_units", toJson alg.cranelift_units),
     ("timeout_ms", toJson alg.timeout_ms),
-    ("additional_shared_memory", toJson alg.additional_shared_memory)
+    ("output", Json.arr alg.output.toArray)
   ]
+
+/-- Serialize a (BaseConfig, Algorithm) pair as a JSON tuple (array of two elements). -/
+def toJsonPair (config : BaseConfig) (algorithm : Algorithm) : Json :=
+  Json.arr #[toJson config, toJson algorithm]
 
 def u32 (n : Nat) : UInt32 := UInt32.ofNat n
 

@@ -222,20 +222,24 @@ def payloads : List UInt8 :=
 --   [0] ClifCall: synchronous call to CLIF fn 1
 -- ---------------------------------------------------------------------------
 
+def drawConfig : BaseConfig := {
+  cranelift_ir := clifIrSource,
+  memory_size := payloads.length + pixelBytes,
+  context_offset := 0
+}
+
 def drawAlgorithm : Algorithm :=
   let clifCallAction : Action :=
     { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
   {
     actions := [clifCallAction],
     payloads := payloads,
-    cranelift_ir := clifIrSource,
-    units := { cranelift_units := 0 },
-    timeout_ms := some 120000,
-    additional_shared_memory := pixelBytes
+    cranelift_units := 0,
+    timeout_ms := some 120000
   }
 
 end Algorithm
 
 def main : IO Unit := do
-  let json := toJson Algorithm.drawAlgorithm
+  let json := toJsonPair Algorithm.drawConfig Algorithm.drawAlgorithm
   IO.println (Json.compress json)

@@ -1,4 +1,4 @@
-use base::Algorithm;
+use base::{BaseConfig, Algorithm};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -39,8 +39,8 @@ fn generate_csv(path: &str, num_rows: usize) -> i64 {
     total
 }
 
-fn prepare_algorithm(csv_path: &str, output_path: &str, file_size: usize) -> Algorithm {
-    let mut alg: Algorithm =
+fn prepare_algorithm(csv_path: &str, output_path: &str, file_size: usize) -> (BaseConfig, Algorithm) {
+    let (mut config, mut alg): (BaseConfig, Algorithm) =
         bincode::deserialize(CSV_ALGORITHM).expect("Failed to deserialize algorithm");
 
     // Ensure payload can hold the CSV data that FileRead will write at CSV_DATA
@@ -48,6 +48,7 @@ fn prepare_algorithm(csv_path: &str, output_path: &str, file_size: usize) -> Alg
     if alg.payloads.len() < needed {
         alg.payloads.resize(needed, 0);
     }
+    config.memory_size = config.memory_size.max(alg.payloads.len());
 
     // Patch input filename (null-terminated)
     let inp = csv_path.as_bytes();
@@ -63,7 +64,7 @@ fn prepare_algorithm(csv_path: &str, output_path: &str, file_size: usize) -> Alg
     let end = file_size as i32;
     alg.payloads[END_POS..END_POS + 4].copy_from_slice(&end.to_le_bytes());
 
-    alg
+    (config, alg)
 }
 
 /// Pure Rust CSV salary sum — same algorithm as the CLIF IR, for comparison.
@@ -154,8 +155,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
 
-            let alg = prepare_algorithm(&csv_path, &output_path, file_size);
-            let ms = harness::run_base(alg);
+            let (cfg, alg) = prepare_algorithm(&csv_path, &output_path, file_size);
+            let ms = harness::run_base(cfg, alg);
 
             // Verify result by reading the output file
             if let Ok(content) = fs::read_to_string(&output_path) {

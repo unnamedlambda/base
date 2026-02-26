@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::process::Command;
-use base_types::Algorithm;
+use base_types::{BaseConfig, Algorithm};
 
 fn generate_algorithm(manifest_dir: &str, exe_name: &str, output_name: &str) {
     let output = Command::new("lake")
@@ -25,11 +25,11 @@ fn generate_algorithm(manifest_dir: &str, exe_name: &str, output_name: &str) {
     fs::write(format!("{}/{}.json", out_dir, output_name), &json_str)
         .expect("Failed to write debug JSON");
 
-    let algorithm: Algorithm = serde_json::from_str(&json_str)
-        .unwrap_or_else(|e| panic!("BUILD FAILED: {} JSON does not match Rust Algorithm structure: {}", exe_name, e));
+    let pair: (BaseConfig, Algorithm) = serde_json::from_str(&json_str)
+        .unwrap_or_else(|e| panic!("BUILD FAILED: {} JSON does not match Rust (BaseConfig, Algorithm) structure: {}", exe_name, e));
 
-    let binary = bincode::serialize(&algorithm)
-        .expect("Failed to serialize algorithm to bincode");
+    let binary = bincode::serialize(&pair)
+        .expect("Failed to serialize (BaseConfig, Algorithm) to bincode");
 
     fs::write(format!("{}/{}.bin", out_dir, output_name), binary)
         .expect("Failed to write binary algorithm");
