@@ -212,11 +212,7 @@ fn build_frontier_algorithm(
         units: UnitSpec {
             cranelift_units: workers,
         },
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(256 * 1024),
         timeout_ms: Some(30_000),
-        thread_name_prefix: Some("dispatch-bench".to_string()),
         additional_shared_memory: 0,
         output: vec![],
     };
@@ -471,11 +467,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> Algorithm
         units: UnitSpec {
             cranelift_units: workers,
         },
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(256 * 1024),
         timeout_ms: Some(30_000),
-        thread_name_prefix: Some("multi-phase-bench".to_string()),
         additional_shared_memory: 0,
         output: vec![],
     }

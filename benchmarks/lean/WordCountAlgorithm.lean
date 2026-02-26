@@ -289,11 +289,7 @@ def buildAlgorithm : Algorithm := {
   units := {
     cranelift_units := 0,
   },
-  worker_threads := some 2,
-  blocking_threads := some 2,
-  stack_size := none,
   timeout_ms := some TIMEOUT_MS,
-  thread_name_prefix := some "wordcount-bench",
   additional_shared_memory := 0
 }
 

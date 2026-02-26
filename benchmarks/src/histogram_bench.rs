@@ -378,11 +378,7 @@ fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> base::Algori
         payloads,
         state: State { cranelift_ir_offsets: vec![CLIF_IR_OFF] },
         units: UnitSpec { cranelift_units: 0 },
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(512 * 1024),
         timeout_ms: Some(60_000),
-        thread_name_prefix: Some("hist-bench".into()),
         additional_shared_memory: 0,
         output: vec![],
     }

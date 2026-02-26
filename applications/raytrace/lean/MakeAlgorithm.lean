@@ -413,11 +413,7 @@ def raytraceAlgorithm : Algorithm :=
     payloads := payloads,
     state := { cranelift_ir_offsets := [clifIr_off] },
     units := { cranelift_units := 0 },
-    worker_threads := some 1,
-    blocking_threads := some 1,
-    stack_size := some (512 * 1024),
     timeout_ms := some 300000,
-    thread_name_prefix := some "raytrace",
     additional_shared_memory := pixelBytes
   }
 

@@ -170,11 +170,7 @@ fn build_base_sum(data: &[f32]) -> base::Algorithm {
         units: UnitSpec {
             cranelift_units: 0,
         },
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(256 * 1024),
         timeout_ms: Some(30_000),
-        thread_name_prefix: Some("sum-bench".into()),
         additional_shared_memory: 0,
         output: vec![],
     }

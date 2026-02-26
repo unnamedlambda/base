@@ -79,11 +79,7 @@ structure Algorithm where
   payloads : List UInt8
   state : State
   units : UnitSpec
-  worker_threads : Option Nat
-  blocking_threads : Option Nat
-  stack_size : Option Nat
   timeout_ms : Option Nat
-  thread_name_prefix : Option String
   additional_shared_memory : Nat
   deriving Repr
 
@@ -93,11 +89,7 @@ instance : ToJson Algorithm where
     ("payloads", toJson alg.payloads),
     ("state", toJson alg.state),
     ("units", toJson alg.units),
-    ("worker_threads", toJson alg.worker_threads),
-    ("blocking_threads", toJson alg.blocking_threads),
-    ("stack_size", toJson alg.stack_size),
     ("timeout_ms", toJson alg.timeout_ms),
-    ("thread_name_prefix", toJson alg.thread_name_prefix),
     ("additional_shared_memory", toJson alg.additional_shared_memory)
   ]
 

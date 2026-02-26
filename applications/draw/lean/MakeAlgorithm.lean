@@ -230,11 +230,7 @@ def drawAlgorithm : Algorithm :=
     payloads := payloads,
     state := { cranelift_ir_offsets := [clifIr_off] },
     units := { cranelift_units := 0 },
-    worker_threads := some 1,
-    blocking_threads := some 1,
-    stack_size := some (512 * 1024),
     timeout_ms := some 120000,
-    thread_name_prefix := some "mandelbrot",
     additional_shared_memory := pixelBytes
   }
 

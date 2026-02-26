@@ -21,11 +21,7 @@ fn create_cranelift_algorithm(
         units: UnitSpec {
             cranelift_units,
         },
-        worker_threads: None,
-        blocking_threads: None,
-        stack_size: None,
         timeout_ms: Some(5000),
-        thread_name_prefix: None,
         additional_shared_memory: 0,
         output: vec![],
     }
@@ -4661,11 +4657,7 @@ fn create_output_algorithm(
         units: UnitSpec {
             cranelift_units: 1,
         },
-        worker_threads: None,
-        blocking_threads: None,
-        stack_size: None,
         timeout_ms: Some(5000),
-        thread_name_prefix: None,
         additional_shared_memory: 0,
         output,
     }

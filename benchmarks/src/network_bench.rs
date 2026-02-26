@@ -114,11 +114,7 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> base::Algorithm {
         units: UnitSpec {
             cranelift_units: 0,
         },
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(256 * 1024),
         timeout_ms: Some(120_000),
-        thread_name_prefix: Some("net-bench".into()),
         additional_shared_memory: 0,
         output: vec![],
     }

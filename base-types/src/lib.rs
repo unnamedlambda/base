@@ -59,11 +59,7 @@ pub struct Algorithm {
     pub payloads: Vec<u8>,
     pub state: State,
     pub units: UnitSpec,
-    pub worker_threads: Option<usize>,
-    pub blocking_threads: Option<usize>,
-    pub stack_size: Option<usize>,
     pub timeout_ms: Option<u64>,
-    pub thread_name_prefix: Option<String>,
     pub additional_shared_memory: usize,
     #[serde(default)]
     pub output: Vec<OutputBatchSchema>,

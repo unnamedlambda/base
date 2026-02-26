@@ -251,11 +251,7 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (Algorithm, u64)
         payloads,
         state: State { cranelift_ir_offsets: vec![clif_off] },
         units: UnitSpec { cranelift_units: 0 },
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(256 * 1024),
         timeout_ms: Some(30_000),
-        thread_name_prefix: None,
         additional_shared_memory: 0,
         output: vec![],
     };
@@ -581,11 +577,7 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (Algorithm, u64) {
         payloads,
         state: State { cranelift_ir_offsets: vec![clif_off] },
         units: UnitSpec { cranelift_units: 0 },
-        worker_threads: Some(1),
-        blocking_threads: Some(1),
-        stack_size: Some(256 * 1024),
         timeout_ms: Some(30_000),
-        thread_name_prefix: None,
         additional_shared_memory: 0,
         output: vec![],
     };
