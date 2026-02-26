@@ -2,7 +2,7 @@
 
 Base is an execution system that delivers performance comparable to idiomatic Rust while allowing control logic to be specified in a language with a strong type system — without introducing type checking or interpreter overhead at runtime.
 
-Programs are defined as a configuration pair: a `BaseConfig` (Cranelift IR + memory layout) and an `Algorithm` (actions, payloads, execution parameters). This pair is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at build time, but the runtime has no knowledge of or dependency on Lean.
+Programs are defined as a configuration pair: a `BaseConfig` (Cranelift IR + memory layout) and an `Algorithm` (actions, payloads, execution parameters). This pair is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but the execution at runtime has no knowledge of or usage of Lean.
 
 The system is completely portable — all dependencies build from `cargo` with no manual system library installation, and only portable Rust features are used. Cranelift provides a JIT compiler similar to LLVM but without the system dependency — it is pure Rust, built from Cargo. Backend code quality is comparable to LLVM, which means optimization lives in Lean: emit good IR, and the generated code is fast. CPU, GPU, file, network, and database primitives are exposed through a shared memory space and directly callable from the JIT-compiled IR.
 
@@ -86,7 +86,7 @@ GPU handles, database connections, and computed state survive across `execute()`
 
 The `(BaseConfig, Algorithm)` pair is plain data. The entire assembly-like control surface — memory layout, action sequencing, FFI calls, GPU dispatch — is exposed to the specification language. This enables freedom to bolt on type systems that constrain effects in a bottom-up way: start with the raw primitives, then layer on whatever invariants the application needs.
 
-Lean 4 is used here because its dependent type system can express constraints on program structure (memory layout invariants, offset arithmetic, action sequencing) and verify them at build time. But this is a property of the specification language, not the runtime. Any language that can produce the right JSON structure can target Base. The Cranelift JIT sees only IR text and a byte array.
+Lean 4 is used here because its dependent type system can express constraints on program structure (memory layout invariants, offset arithmetic, action sequencing) and verify them at build time. But this is a property of the specification language, not the Rust executor. Any language that can produce the right JSON structure can target Base. The Cranelift JIT sees only IR text and a byte array.
 
 ## Benchmark results
 
@@ -108,7 +108,8 @@ StrSearch (1M)             20.3ms        2.3ms        1.7ms
 WordCount (1M)            162.6ms       32.1ms       34.4ms
 ```
 
-Base has ~1.3ms JIT compilation overhead visible at small sizes. At scale, multithreaded dispatch closes the gap and can overtake idiomatic Rust.
+Base has ~1.3ms JIT compilation overhead visible at small sizes. At scale, direct CLIF IR manipulation 
+including SIMD usage can overtake raw Rust.
 
 ### GPU workloads
 
