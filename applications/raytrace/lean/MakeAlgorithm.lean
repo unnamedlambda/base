@@ -10,7 +10,7 @@ namespace Algorithm
 -- Single CLIF function orchestrates: GPU compute -> file write.
 -- 2D dispatch with workgroup_size(16, 16) = 256 threads per group.
 -- dispatch(4096/16, 4096/16, 1) = (256, 256, 1).
--- 16 samples per pixel, up to 5 bounces with direct + indirect lighting.
+-- 32 samples per pixel, up to 5 bounces with direct + indirect lighting.
 -- ---------------------------------------------------------------------------
 
 def imageWidth : Nat := 4096
