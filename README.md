@@ -191,7 +191,7 @@ Cranelift IR can call these directly via `%cl_*` function references:
 
 ## Building
 
-Requires Rust and [Lean 4](https://leanprover.github.io/lean4/doc/setup.html). GPU workloads use wgpu, which runs on Vulkan, Metal, DX12, and WebGPU.
+The `base` crate requires only Rust. Applications and benchmarks additionally require [Lean 4](https://leanprover.github.io/lean4/doc/setup.html) to generate their algorithm definitions. GPU workloads use wgpu, which runs on Vulkan, Metal, DX12, and WebGPU.
 
 ```bash
 # Run benchmarks
