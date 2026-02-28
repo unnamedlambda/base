@@ -142,7 +142,9 @@ def compressionShader : String :=
   "        var op: u32 = 0u;\n" ++
   "        var anchor: u32 = 0u;\n\n" ++
 
-  "        while (ip + 4u <= block_len) {\n" ++
+  -- LZ4 spec: last 5 bytes (LASTLITERALS) must be emitted as literals
+  "        let match_limit = block_len - min(block_len, 5u);\n" ++
+  "        while (ip + 4u <= match_limit) {\n" ++
   "            let cur4 = read4(input_word_start, ip);\n" ++
   "            let h = hash4(cur4);\n" ++
   "            let ref_pos = hash_table[h];\n" ++
@@ -154,7 +156,7 @@ def compressionShader : String :=
   "                let ref4 = read4(input_word_start, ref_pos);\n" ++
   "                if (ref4 == cur4) {\n" ++
   "                    match_len = 4u;\n" ++
-  "                    while (ip + match_len < block_len && match_len < MAX_MATCH_LEN) {\n" ++
+  "                    while (ip + match_len < match_limit && match_len < MAX_MATCH_LEN) {\n" ++
   "                        if (read_byte(input_word_start, ref_pos + match_len) != read_byte(input_word_start, ip + match_len)) {\n" ++
   "                            break;\n" ++
   "                        }\n" ++
@@ -355,61 +357,71 @@ def clifIrSource : String :=
   -- Step 10: GPU cleanup
   "    call fn7(v0)\n" ++
   "\n" ++
-  -- Step 11: Write file header: [num_blocks:u32 LE][original_size:u32 LE][block_sizes:u32 LE × N]
-  -- First, build a header in shared memory at a scratch area (reuse inputData_off area,
-  -- since we no longer need the input data).
-  -- Header layout: 4 bytes numBlocks + 4 bytes origSize + numBlocks * 4 bytes block_sizes
-  -- We'll write header + compressed block data to file using two file_write calls.
+  -- Step 11: Write standard LZ4 frame format
+  -- Frame: [magic:4][FLG:1][BD:1][HC:1] [block_size:4][data:N]... [endmark:4]
+  -- Reuse inputData_off area as scratch (input data no longer needed after GPU).
   --
-  -- For simplicity: write numBlocks * maxCompressedBlockSize of output data.
-  -- The metadata tells the decompressor how many bytes per block are valid.
-  -- Total output = 8 + numBlocks*4 (header) + numBlocks*maxCompressedBlockSize (data)
-  --
-  -- Write header into input data area (reused as scratch)
-  "    v60 = iadd v0, v2\n" ++            -- absolute addr of inputData_off area (scratch)
-  "    store v10, v60\n" ++               -- [0..3] = numBlocks (v10 = ireduce.i32 v9)
+  -- Write 7-byte frame header into scratch
+  "    v60 = iadd v0, v2\n" ++            -- absolute addr of inputData_off (scratch)
+  -- Magic number 0x184D2204 LE = bytes 04 22 4D 18
+  "    v61 = iconst.i32 0x184D2204\n" ++
+  "    store v61, v60\n" ++
   "    v62 = iconst.i64 4\n" ++
   "    v63 = iadd v60, v62\n" ++
-  "    store v40, v63\n" ++               -- [4..7] = original_size (v40 = ireduce.i32 v4)
+  -- FLG=0x60, BD=0x70, HC=0x73 → pack as 3 bytes
+  "    v64 = iconst.i64 0x60\n" ++       -- FLG: version=01, block-independent
+  "    istore8 v64, v63\n" ++
+  "    v65 = iadd v63, v6\n" ++          -- v6 = 1
+  "    v66 = iconst.i64 0x70\n" ++       -- BD: block max size = 4MB
+  "    istore8 v66, v65\n" ++
+  "    v67 = iadd v65, v6\n" ++
+  "    v68 = iconst.i64 0x73\n" ++       -- HC: precomputed xxh32 header checksum
+  "    istore8 v68, v67\n" ++
   "\n" ++
-  -- Write per-block compressed sizes from metadata into header
-  -- block_meta layout: [0]=input_size, then [1 + block_id*2]=compressed_size
-  -- Read from metaOff+4 (skip index 0 = input_size), stride 8 (every other u32)
-  -- Write to scratch+8, stride 4
-  "    v64 = iconst.i64 8\n" ++
-  "    jump block1(v3)\n" ++              -- loop counter i=0
+  -- Write 7-byte frame header to file at offset 0
+  s!"    v27 = iconst.i64 {outFname}\n" ++
+  "    v69 = iconst.i64 7\n" ++
+  "    v70 = call fn8(v0, v27, v2, v3, v69)\n" ++   -- write header, file_offset=0, len=7
   "\n" ++
-  "block1(v70: i64):\n" ++
-  "    v71 = icmp uge v70, v9\n" ++       -- i >= numBlocks?
-  "    brif v71, block2, block3\n" ++
+  -- Loop over blocks: write [block_size:u32 LE][block_data:N] for each
+  -- file_offset starts at 7
+  "    v71 = iconst.i64 8\n" ++
+  s!"    v30 = iconst.i64 {maxCompBlk}\n" ++
+  "    jump block1(v3, v69)\n" ++         -- i=0, file_offset=7
+  "\n" ++
+  "block1(v80: i64, v81: i64):\n" ++     -- block_i, file_offset
+  "    v82 = icmp uge v80, v9\n" ++       -- i >= numBlocks?
+  "    brif v82, block2(v81), block3\n" ++
   "\n" ++
   "block3:\n" ++
-  -- Read compressed size: metadata at metaOff + 4 + i*8
-  "    v72 = imul v70, v64\n" ++          -- i * 8
-  "    v73 = iadd v72, v62\n" ++          -- i * 8 + 4
-  "    v74 = iadd v41, v73\n" ++          -- metaOff + 4 + i*8
-  "    v75 = iadd v0, v74\n" ++           -- absolute addr
-  "    v76 = load.i32 v75\n" ++           -- compressed size for block i
-  -- Write to scratch: scratch + 8 + i*4
-  "    v77 = imul v70, v62\n" ++          -- i * 4
-  "    v78 = iadd v77, v64\n" ++          -- i * 4 + 8
-  "    v79 = iadd v60, v78\n" ++          -- absolute addr in scratch
-  "    store v76, v79\n" ++
-  -- i++
-  "    v80 = iadd v70, v6\n" ++           -- v6 = 1
-  "    jump block1(v80)\n" ++
+  -- Read compressed size from block_meta[1 + block_i*2]
+  "    v83 = imul v80, v71\n" ++          -- block_i * 8
+  "    v84 = iadd v83, v62\n" ++          -- block_i * 8 + 4
+  "    v85 = iadd v41, v84\n" ++          -- metaOff + 4 + block_i*8
+  "    v86 = iadd v0, v85\n" ++           -- absolute addr
+  "    v87 = load.i32 v86\n" ++           -- compressed size for this block
   "\n" ++
-  "block2:\n" ++
-  -- Write header: 8 + numBlocks * 4 bytes
-  "    v81 = imul v9, v62\n" ++           -- numBlocks * 4
-  "    v82 = iadd v81, v64\n" ++          -- header size = numBlocks*4 + 8
-  s!"    v27 = iconst.i64 {outFname}\n" ++
-  "    v28 = call fn8(v0, v27, v2, v3, v82)\n" ++    -- write header at file offset 0
+  -- Write block_size (u32 LE) into scratch, then write to file
+  "    store v87, v60\n" ++               -- store size at scratch[0..3]
+  "    v88 = call fn8(v0, v27, v2, v81, v62)\n" ++  -- write 4 bytes at file_offset
   "\n" ++
-  -- Write compressed block data after header
-  s!"    v30 = iconst.i64 {maxCompBlk}\n" ++
-  "    v31 = imul v9, v30\n" ++           -- total block data size
-  "    v32 = call fn8(v0, v27, v23, v82, v31)\n" ++  -- write data at file offset = header size
+  -- Write block data from outputData_off + block_i * maxCompressedBlockSize
+  "    v89 = imul v80, v30\n" ++          -- block_i * maxCompressedBlockSize
+  "    v90 = iadd v23, v89\n" ++          -- outputData_off + block_i * maxCompBlk (relative)
+  "    v91 = uextend.i64 v87\n" ++        -- compressed size as i64
+  "    v92 = iadd v81, v62\n" ++          -- file_offset + 4
+  "    v93 = call fn8(v0, v27, v90, v92, v91)\n" ++  -- write block data
+  "\n" ++
+  -- Advance: file_offset += 4 + compressed_size
+  "    v94 = iadd v92, v91\n" ++          -- file_offset + 4 + compressed_size
+  "    v95 = iadd v80, v6\n" ++           -- block_i + 1
+  "    jump block1(v95, v94)\n" ++
+  "\n" ++
+  -- Write 4-byte end mark (0x00000000) at final file_offset
+  "block2(v96: i64):\n" ++               -- final file_offset
+  "    v97 = iconst.i32 0\n" ++
+  "    store v97, v60\n" ++               -- store 0 at scratch[0..3]
+  "    v98 = call fn8(v0, v27, v2, v96, v62)\n" ++  -- write 4 bytes at file_offset
   "\n" ++
   "    return\n" ++
   "}\n"

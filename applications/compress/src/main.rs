@@ -51,23 +51,23 @@ fn main() {
     match run(config, alg) {
         Ok(_) => {
             let elapsed = start.elapsed();
-            // Read header to compute actual compressed data size
+            // Parse standard LZ4 frame to compute actual compressed data size
             let mut actual_compressed = 0u64;
             let file_size = std::fs::metadata("compress_output.lz4")
                 .map(|m| m.len())
                 .unwrap_or(0);
-            if file_size >= 8 {
-                let header = std::fs::read("compress_output.lz4").unwrap_or_default();
-                if header.len() >= 8 {
-                    let num_blocks = u32::from_le_bytes(header[0..4].try_into().unwrap()) as usize;
-                    let header_size = 8 + num_blocks * 4;
-                    if header.len() >= header_size {
-                        for i in 0..num_blocks {
-                            let off = 8 + i * 4;
-                            let block_sz = u32::from_le_bytes(header[off..off + 4].try_into().unwrap());
-                            actual_compressed += block_sz as u64;
-                        }
+            if file_size >= 11 {
+                let data = std::fs::read("compress_output.lz4").unwrap_or_default();
+                // Skip 7-byte frame header (magic + FLG + BD + HC)
+                let mut pos = 7usize;
+                while pos + 4 <= data.len() {
+                    let block_size = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+                    if block_size == 0 {
+                        break; // end mark
                     }
+                    let size = (block_size & 0x7FFFFFFF) as u64;
+                    actual_compressed += size;
+                    pos += 4 + size as usize;
                 }
             }
             let ratio = if input_size > 0 {
