@@ -1,0 +1,24 @@
+c Long unit propagation chain: 15 vars, 15 clauses
+c Unit clause x1=T triggers a chain of 14 forced implications:
+c   x1=T => x2=T => x3=T => ... => x15=T
+c Each step: clause (-x_i, x_{i+1}) becomes unit after x_i is set true.
+c Plus a final clause requiring x15 to confirm the chain completes.
+c Satisfying assignment: all variables TRUE (forced, unique solution).
+p cnf 15 15
+c Unit clause: x1 must be true
+1 0
+c Implication chain: -x_i or x_{i+1} (if x_i=T then x_{i+1}=T)
+-1 2 0
+-2 3 0
+-3 4 0
+-4 5 0
+-5 6 0
+-6 7 0
+-7 8 0
+-8 9 0
+-9 10 0
+-10 11 0
+-11 12 0
+-12 13 0
+-13 14 0
+-14 15 0

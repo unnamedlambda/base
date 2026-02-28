@@ -1,0 +1,23 @@
+c UNSAT by resolution: 4 vars, 8 clauses
+c This formula requires resolution steps to prove unsatisfiable.
+c It encodes: (x1 or x2) and (x1 or -x2) and (-x1 or x3) and (-x1 or -x3)
+c            and (x2 or x4) and (x2 or -x4) and (-x2 or x3) and (-x2 or -x3)
+c
+c Resolution proof:
+c   (x1 or x2) + (x1 or -x2) => x1
+c   (-x1 or x3) + (-x1 or -x3) => -x1
+c   x1 + -x1 => empty clause (contradiction)
+c
+c Alternatively:
+c   (x2 or x4) + (x2 or -x4) => x2
+c   (-x2 or x3) + (-x2 or -x3) => -x2
+c   x2 + -x2 => contradiction
+p cnf 4 8
+1 2 0
+1 -2 0
+-1 3 0
+-1 -3 0
+2 4 0
+2 -4 0
+-2 3 0
+-2 -3 0

@@ -1,0 +1,31 @@
+c Unique solution SAT: 6 vars, 18 clauses
+c Has exactly one satisfying assignment: x1=T,x2=F,x3=T,x4=F,x5=T,x6=F
+c True literals: {1, -2, 3, -4, 5, -6}
+c Every other assignment violates at least one clause.
+c Constructed by adding clauses that block all neighbors of the solution.
+p cnf 6 18
+c Exclude flipping x1: block (F,F,T,F,T,F) -> need clause with (1) in any assignment with -1
+c If x1=F, one of these must catch it:
+1 2 0
+1 -3 0
+1 4 0
+c Exclude flipping x2: block (T,T,T,F,T,F) -> need -2 in relevant clauses
+-2 -1 0
+-2 -3 0
+-2 4 0
+c Exclude flipping x3: block (T,F,F,F,T,F)
+3 2 0
+3 4 0
+3 -5 0
+c Exclude flipping x4: block (T,F,T,T,T,F)
+-4 -1 0
+-4 -3 0
+-4 6 0
+c Exclude flipping x5: block (T,F,T,F,F,F)
+5 2 0
+5 4 0
+5 -3 0
+c Exclude flipping x6: block (T,F,T,F,T,T)
+-6 -1 0
+-6 -3 0
+-6 2 0

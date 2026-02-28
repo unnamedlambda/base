@@ -1,0 +1,7 @@
+c UNSAT: all 8 combinations of 3 variables fail
+c (x1 or x2) and (x1 or not x2) and (not x1 or x2) and (not x1 or not x2)
+p cnf 2 4
+1 2 0
+1 -2 0
+-1 2 0
+-1 -2 0

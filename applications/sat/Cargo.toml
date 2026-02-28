@@ -1,0 +1,22 @@
+[package]
+name = "sat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../../base" }
+bincode = "1"
+tracing = { version = "0.1", features = ["release_max_level_off"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[build-dependencies]
+base-types = { path = "../../base-types" }
+serde_json = "1"
+bincode = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "sat"
+path = "src/main.rs"

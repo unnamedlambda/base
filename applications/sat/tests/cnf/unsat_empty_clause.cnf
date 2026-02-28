@@ -1,0 +1,11 @@
+c Empty clause edge case: UNSAT
+c A formula with an empty clause is trivially unsatisfiable.
+c NOTE: The DIMACS representation of an empty clause is just "0" on a line.
+c Some parsers may skip empty clauses (lit_count=0). If the solver's parser
+c skips it, this test verifies whether the solver handles this correctly.
+c The remaining clauses (x1) and (-x1) are also UNSAT by themselves,
+c so the formula is UNSAT regardless of empty clause handling.
+p cnf 1 3
+1 0
+0
+-1 0

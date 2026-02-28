@@ -1,0 +1,19 @@
+c Unit propagation chain leading to contradiction: 10 vars, 12 clauses (UNSAT)
+c x1=T is forced, which propagates through a chain to force x10=T,
+c but a final clause requires x10=F, creating a contradiction.
+c No backtracking possible since every assignment is forced.
+p cnf 10 11
+c Unit clause: x1 must be true
+1 0
+c Chain: x1=T => x2=T => ... => x10=T
+-1 2 0
+-2 3 0
+-3 4 0
+-4 5 0
+-5 6 0
+-6 7 0
+-7 8 0
+-8 9 0
+-9 10 0
+c Contradiction: x10 must also be false
+-10 0

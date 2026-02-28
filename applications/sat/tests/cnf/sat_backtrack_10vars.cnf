@@ -1,0 +1,39 @@
+c Deep backtracking SAT: 10 vars, 28 clauses
+c No unit clauses — the solver must make decisions and backtrack.
+c Satisfying assignment: x1=T,x2=F,x3=T,x4=F,x5=T,x6=F,x7=T,x8=F,x9=T,x10=F
+c True literals: {1, -2, 3, -4, 5, -6, 7, -8, 9, -10}
+p cnf 10 28
+c Block all-true: (each has a negative even var, satisfied by target)
+-2 -3 -5 0
+-4 -1 -7 0
+-6 -5 -9 0
+-8 -3 -1 0
+-10 -7 -5 0
+c Block all-false: (each has a positive odd var, satisfied by target)
+1 2 4 0
+3 6 8 0
+5 4 10 0
+7 2 6 0
+9 8 10 0
+c Implication chain favoring alternating pattern
+1 -2 0
+-2 3 0
+3 -4 0
+-4 5 0
+5 -6 0
+-6 7 0
+7 -8 0
+-8 9 0
+9 -10 0
+c Conflict clauses to prune non-alternating assignments
+-1 -2 0
+-3 -4 0
+-5 -6 0
+-7 -8 0
+-9 -10 0
+c Wide constraint: all odd vars true or all even vars false
+1 3 5 7 9 0
+-2 -4 -6 -8 -10 0
+c Mixed cross-constraints
+1 -4 9 0
+3 -8 -10 0

@@ -1,0 +1,39 @@
+c Pigeonhole: 4 pigeons into 3 holes (UNSAT)
+c Variables: p_i_j = pigeon i in hole j
+c  p11=1  p12=2  p13=3
+c  p21=4  p22=5  p23=6
+c  p31=7  p32=8  p33=9
+c  p41=10 p42=11 p43=12
+c Each pigeon in at least one hole (4 clauses)
+c No two pigeons in same hole (3 holes x C(4,2)=6 pairs = 18 clauses)
+c Total: 12 vars, 22 clauses
+p cnf 12 22
+c Pigeon 1 in at least one hole
+1 2 3 0
+c Pigeon 2 in at least one hole
+4 5 6 0
+c Pigeon 3 in at least one hole
+7 8 9 0
+c Pigeon 4 in at least one hole
+10 11 12 0
+c Hole 1: no two pigeons
+-1 -4 0
+-1 -7 0
+-1 -10 0
+-4 -7 0
+-4 -10 0
+-7 -10 0
+c Hole 2: no two pigeons
+-2 -5 0
+-2 -8 0
+-2 -11 0
+-5 -8 0
+-5 -11 0
+-8 -11 0
+c Hole 3: no two pigeons
+-3 -6 0
+-3 -9 0
+-3 -12 0
+-6 -9 0
+-6 -12 0
+-9 -12 0

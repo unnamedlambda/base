@@ -1,0 +1,43 @@
+c Deep backtracking SAT: 10 vars, 24 clauses
+c The formula has a hidden satisfying assignment x1..x10 = T,T,T,T,T,T,T,T,T,T
+c but trying any prefix of false values leads to long contradiction chains,
+c forcing the solver to backtrack through many decision levels.
+c
+c Implication chain: -x_i => x_{i+1} for i=1..9
+c Plus clauses that create conflicts when multiple variables are false.
+c
+c Satisfying assignment: all variables TRUE.
+c Verification: every clause contains at least one positive literal of the all-true assignment.
+p cnf 10 24
+c Implication chain: not x_i implies x_{i+1}
+-1 2 0
+-2 3 0
+-3 4 0
+-4 5 0
+-5 6 0
+-6 7 0
+-7 8 0
+-8 9 0
+-9 10 0
+c Must have x10 true (if chain propagates to x10=F, we fail)
+10 0
+c Blocking clauses: pairs of variables cannot both be false
+c These ensure backtracking when trying variables false
+1 3 0
+2 4 0
+3 5 0
+4 6 0
+5 7 0
+6 8 0
+7 9 0
+8 10 0
+c Require at least one of first half true
+1 2 3 4 5 0
+c Require at least one of second half true
+6 7 8 9 10 0
+c Cross-half constraints
+1 6 0
+2 7 0
+3 8 0
+4 9 0
+5 10 0

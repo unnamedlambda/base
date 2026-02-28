@@ -1,0 +1,23 @@
+c Pure literal SAT: 8 vars, 10 clauses
+c Variables 1,2,3 only appear positive (pure positive)
+c Variables 6,7,8 only appear negative (pure negative)
+c Variables 4,5 appear in both polarities (mixed)
+c A solver with pure literal elimination should immediately set:
+c   x1=T, x2=T, x3=T (only positive), x6=F, x7=F, x8=F (only negative)
+c Then the remaining clauses on x4,x5 are easily satisfiable.
+c Satisfying assignment: x1=T,x2=T,x3=T,x4=T,x5=T,x6=F,x7=F,x8=F
+p cnf 8 10
+c Clauses with pure positive vars
+1 4 -6 0
+2 -4 -7 0
+1 3 5 0
+c Clauses with pure negative vars
+-6 -7 -8 0
+3 -7 -8 0
+c Mixed clauses on x4,x5
+4 5 0
+-4 5 0
+4 -5 0
+c Clauses combining pure and mixed
+1 2 -4 -6 0
+3 -5 -8 0

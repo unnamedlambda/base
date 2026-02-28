@@ -1,0 +1,65 @@
+c Pigeonhole: 5 pigeons into 4 holes (UNSAT)
+c Variables: p_i_j = pigeon i in hole j (i=1..5, j=1..4)
+c  p11=1  p12=2  p13=3  p14=4
+c  p21=5  p22=6  p23=7  p24=8
+c  p31=9  p32=10 p33=11 p34=12
+c  p41=13 p42=14 p43=15 p44=16
+c  p51=17 p52=18 p53=19 p54=20
+c Each pigeon in at least one hole: 5 clauses (width 4)
+c No two pigeons in same hole: 4 holes x C(5,2)=10 pairs = 40 clauses
+c Total: 20 vars, 45 clauses
+p cnf 20 45
+c Pigeon 1 in at least one hole
+1 2 3 4 0
+c Pigeon 2 in at least one hole
+5 6 7 8 0
+c Pigeon 3 in at least one hole
+9 10 11 12 0
+c Pigeon 4 in at least one hole
+13 14 15 16 0
+c Pigeon 5 in at least one hole
+17 18 19 20 0
+c Hole 1: no two pigeons (vars 1,5,9,13,17)
+-1 -5 0
+-1 -9 0
+-1 -13 0
+-1 -17 0
+-5 -9 0
+-5 -13 0
+-5 -17 0
+-9 -13 0
+-9 -17 0
+-13 -17 0
+c Hole 2: no two pigeons (vars 2,6,10,14,18)
+-2 -6 0
+-2 -10 0
+-2 -14 0
+-2 -18 0
+-6 -10 0
+-6 -14 0
+-6 -18 0
+-10 -14 0
+-10 -18 0
+-14 -18 0
+c Hole 3: no two pigeons (vars 3,7,11,15,19)
+-3 -7 0
+-3 -11 0
+-3 -15 0
+-3 -19 0
+-7 -11 0
+-7 -15 0
+-7 -19 0
+-11 -15 0
+-11 -19 0
+-15 -19 0
+c Hole 4: no two pigeons (vars 4,8,12,16,20)
+-4 -8 0
+-4 -12 0
+-4 -16 0
+-4 -20 0
+-8 -12 0
+-8 -16 0
+-8 -20 0
+-12 -16 0
+-12 -20 0
+-16 -20 0

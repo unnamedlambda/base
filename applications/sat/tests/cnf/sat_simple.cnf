@@ -1,0 +1,6 @@
+c Simple SAT: (x1 or x2) and (not x1 or x2) and (x1 or not x2)
+c Solution: x1=true, x2=true
+p cnf 2 3
+1 2 0
+-1 2 0
+1 -2 0

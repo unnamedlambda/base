@@ -1,3 +1,3 @@
 [workspace]
-members = ["base-types", "base", "benchmarks", "applications/draw", "applications/raytrace", "applications/compress", "applications/csv", "applications/lean4-evaluator"]
+members = ["base-types", "base", "benchmarks", "applications/draw", "applications/raytrace", "applications/compress", "applications/csv", "applications/lean4-evaluator", "applications/sat"]
 resolver = "2"

@@ -1,0 +1,21 @@
+c Tautological clauses mixed with real constraints: 5 vars, 8 clauses (SAT)
+c Clauses 1,3,5 are tautological (contain both x and -x), always true.
+c The remaining clauses form a satisfiable formula.
+c A correct solver should recognize tautological clauses as trivially satisfied
+c and not let them interfere with the real constraints.
+c Satisfying assignment: x1=T, x2=T, x3=T, x4=F, x5=T
+p cnf 5 8
+c Tautological: contains 1 and -1
+1 -1 2 3 0
+c Real constraint
+1 2 0
+c Tautological: contains 3 and -3
+-2 3 -3 4 0
+c Real constraint
+-1 2 3 0
+c Tautological: contains 5 and -5
+5 -5 -4 0
+c Real constraints
+1 -4 5 0
+-2 3 5 0
+1 3 -4 0

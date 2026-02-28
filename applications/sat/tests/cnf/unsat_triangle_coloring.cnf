@@ -1,0 +1,18 @@
+c UNSAT: 2-coloring of an odd cycle (triangle, K3)
+c 3 vertices, each pair must have different colors.
+c 2-coloring a triangle is impossible (chromatic number = 3).
+c
+c Encoding: x_i = T means color A, x_i = F means color B
+c "x_i != x_j" encoded as (x_i or x_j) and (-x_i or -x_j)
+c
+c 3 vars, 6 clauses
+p cnf 3 6
+c x1 != x2
+1 2 0
+-1 -2 0
+c x2 != x3
+2 3 0
+-2 -3 0
+c x3 != x1
+3 1 0
+-3 -1 0
