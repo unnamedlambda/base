@@ -143,56 +143,35 @@ def totalPayload : Nat := pixels_off + pixelBytes
 def wgX : Nat := imageWidth / 16    -- 256
 def wgY : Nat := imageHeight / 16   -- 256
 
-def clifIrSource : String :=
-  let sh := toString shader_off
-  let bd := toString bindDesc_off
-  let fn_out := toString filename_off
-  let bmp := toString bmpHeader_off
-  let bmpTotalSize := toString (54 + pixelBytes)
-  let px := toString pixels_off
-  let dataSz := toString pixelBytes
-  let wgXStr := toString wgX
-  let wgYStr := toString wgY
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n\n" ++
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++
-  "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "    fn0 = %cl_gpu_init sig0\n" ++
-  "    fn1 = %cl_gpu_create_buffer sig1\n" ++
-  "    fn2 = %cl_gpu_create_pipeline sig2\n" ++
-  "    fn3 = %cl_gpu_dispatch sig4\n" ++
-  "    fn4 = %cl_gpu_download sig3\n" ++
-  "    fn5 = %cl_gpu_cleanup sig0\n" ++
-  "    fn6 = %cl_file_write sig5\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    call fn0(v0)\n" ++
-  s!"    v1 = iconst.i64 {dataSz}\n" ++
-  "    v2 = call fn1(v0, v1)\n" ++
-  s!"    v3 = iconst.i64 {sh}\n" ++
-  s!"    v4 = iconst.i64 {bd}\n" ++
-  "    v5 = iconst.i32 1\n" ++
-  "    v6 = call fn2(v0, v3, v4, v5)\n" ++
-  s!"    v7 = iconst.i32 {wgXStr}\n" ++
-  s!"    v8 = iconst.i32 {wgYStr}\n" ++
-  "    v9 = call fn3(v0, v6, v7, v8, v5)\n" ++
-  s!"    v10 = iconst.i64 {px}\n" ++
-  "    v11 = call fn4(v0, v2, v10, v1)\n" ++
-  "    call fn5(v0)\n" ++
-  s!"    v12 = iconst.i64 {fn_out}\n" ++
-  s!"    v13 = iconst.i64 {bmp}\n" ++
-  "    v14 = iconst.i64 0\n" ++
-  s!"    v15 = iconst.i64 {bmpTotalSize}\n" ++
-  "    v16 = call fn6(v0, v12, v13, v14, v15)\n" ++
-  "    return\n" ++
-  "}\n"
+open AlgorithmLib.IR in
+def clifIrSource : String := buildProgram do
+  let fnInit ← declareFFI "cl_gpu_init" [.i64] none
+  let fnBuf  ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
+  let fnPipe ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
+  let fnDisp ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
+  let fnDl   ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnFree ← declareFFI "cl_gpu_cleanup" [.i64] none
+  let fnWr   ← declareFFI "cl_file_write" [.i64, .i64, .i64, .i64, .i64] (some .i64)
+  let ptr ← entryBlock
+  callVoid fnInit [ptr]
+  let dataSz ← iconst64 pixelBytes
+  let bufId  ← call fnBuf [ptr, dataSz]
+  let shOff  ← iconst64 shader_off
+  let bdOff  ← iconst64 bindDesc_off
+  let one32  ← iconst32 1
+  let pipeId ← call fnPipe [ptr, shOff, bdOff, one32]
+  let wgx    ← iconst32 wgX
+  let wgy    ← iconst32 wgY
+  let _      ← call fnDisp [ptr, pipeId, wgx, wgy, one32]
+  let pxOff  ← iconst64 pixels_off
+  let _      ← call fnDl [ptr, bufId, pxOff, dataSz]
+  callVoid fnFree [ptr]
+  let fnOff  ← iconst64 filename_off
+  let bmpOff ← iconst64 bmpHeader_off
+  let zero   ← iconst64 0
+  let total  ← iconst64 (54 + pixelBytes)
+  let _      ← call fnWr [ptr, fnOff, bmpOff, zero, total]
+  ret
 
 -- ---------------------------------------------------------------------------
 -- Payload construction
