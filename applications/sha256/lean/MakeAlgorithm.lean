@@ -624,10 +624,9 @@ def clifIrSource : String := buildProgram do
   let ptr ← entryBlock
 
   -- Step 1: Read input file
-  let inFname ← iconst64 inputFilename_off
+  let fileSize ← readFile ptr fnRead inputFilename_off fileData_off
   let dataOff ← iconst64 fileData_off
   let zero ← iconst64 0
-  let fileSize ← call fnRead [ptr, inFname, dataOff, zero, zero]
   storeAt ptr fileSize_off fileSize
 
   -- Common constants
@@ -746,11 +745,8 @@ def sha256Config : BaseConfig := {
   context_offset := 0
 }
 
-def sha256Algorithm : Algorithm :=
-  let clifCallAction : Action :=
-    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  {
-    actions := [clifCallAction],
+def sha256Algorithm : Algorithm := {
+    actions := [IR.clifCallAction],
     payloads := payloads,
     cranelift_units := 0,
     timeout_ms := some 300000

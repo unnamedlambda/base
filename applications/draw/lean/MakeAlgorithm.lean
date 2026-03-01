@@ -1,8 +1,6 @@
-import Lean
-import Std
 import AlgorithmLib
 
-open Lean
+open Lean (Json)
 open AlgorithmLib
 
 namespace Algorithm
@@ -145,32 +143,24 @@ def wgY : Nat := imageHeight / 16   -- 256
 
 open AlgorithmLib.IR in
 def clifIrSource : String := buildProgram do
-  let fnInit ← declareFFI "cl_gpu_init" [.i64] none
-  let fnBuf  ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
-  let fnPipe ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
-  let fnDisp ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
-  let fnDl   ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnFree ← declareFFI "cl_gpu_cleanup" [.i64] none
-  let fnWr   ← declareFFI "cl_file_write" [.i64, .i64, .i64, .i64, .i64] (some .i64)
+  let gpu ← declareGpuFFI
+  let fnWr ← declareFileWrite
   let ptr ← entryBlock
-  callVoid fnInit [ptr]
+  callVoid gpu.fnInit [ptr]
   let dataSz ← iconst64 pixelBytes
-  let bufId  ← call fnBuf [ptr, dataSz]
+  let bufId  ← call gpu.fnCreateBuffer [ptr, dataSz]
   let shOff  ← iconst64 shader_off
   let bdOff  ← iconst64 bindDesc_off
   let one32  ← iconst32 1
-  let pipeId ← call fnPipe [ptr, shOff, bdOff, one32]
+  let pipeId ← call gpu.fnCreatePipeline [ptr, shOff, bdOff, one32]
   let wgx    ← iconst32 wgX
   let wgy    ← iconst32 wgY
-  let _      ← call fnDisp [ptr, pipeId, wgx, wgy, one32]
+  let _      ← call gpu.fnDispatch [ptr, pipeId, wgx, wgy, one32]
   let pxOff  ← iconst64 pixels_off
-  let _      ← call fnDl [ptr, bufId, pxOff, dataSz]
-  callVoid fnFree [ptr]
-  let fnOff  ← iconst64 filename_off
-  let bmpOff ← iconst64 bmpHeader_off
-  let zero   ← iconst64 0
+  let _      ← call gpu.fnDownload [ptr, bufId, pxOff, dataSz]
+  callVoid gpu.fnCleanup [ptr]
   let total  ← iconst64 (54 + pixelBytes)
-  let _      ← call fnWr [ptr, fnOff, bmpOff, zero, total]
+  let _      ← writeFile0 ptr fnWr filename_off bmpHeader_off total
   ret
 
 -- ---------------------------------------------------------------------------
@@ -207,11 +197,8 @@ def drawConfig : BaseConfig := {
   context_offset := 0
 }
 
-def drawAlgorithm : Algorithm :=
-  let clifCallAction : Action :=
-    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  {
-    actions := [clifCallAction],
+def drawAlgorithm : Algorithm := {
+    actions := [IR.clifCallAction],
     payloads := payloads,
     cranelift_units := 0,
     timeout_ms := some 120000

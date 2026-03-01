@@ -1,8 +1,6 @@
-import Lean
-import Std
 import AlgorithmLib
 
-open Lean
+open Lean (Json)
 open AlgorithmLib
 
 namespace CsvDemo
@@ -354,15 +352,9 @@ def emitOutputPhases (k : K)
 set_option maxRecDepth 4096 in
 def clifIrSource : String := buildProgram do
   -- Declare FFI functions
-  let fnFileRead ← declareFFI "cl_file_read" [.i64, .i64, .i64, .i64, .i64] (some .i64)
-  let fnLmdbInit ← declareFFI "cl_lmdb_init" [.i64] none
-  let fnLmdbOpen ← declareFFI "cl_lmdb_open" [.i64, .i64, .i32] (some .i32)
-  let fnBeginTxn ← declareFFI "cl_lmdb_begin_write_txn" [.i64, .i32] (some .i32)
-  let fnLmdbPut ← declareFFI "cl_lmdb_put" [.i64, .i32, .i64, .i32, .i64, .i32] (some .i32)
-  let fnCommitTxn ← declareFFI "cl_lmdb_commit_write_txn" [.i64, .i32] (some .i32)
-  let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
-  let fnFileWrite ← declareFFI "cl_file_write" [.i64, .i64, .i64, .i64, .i64] (some .i64)
-  let fnCleanup ← declareFFI "cl_lmdb_cleanup" [.i64] none
+  let fnFileRead ← declareFileRead
+  let lmdb ← declareLmdbFFI
+  let fnFileWrite ← declareFileWrite
 
   -- Entry block first so it gets block0
   let ptr ← entryBlock
@@ -395,20 +387,18 @@ def clifIrSource : String := buildProgram do
   let joinDone   ← declareBlock []
 
   -- Setup instructions (emitted into entry block0)
-  let empCsvOff ← iconst64 empCsvPath_off
   let empBufOff ← iconst64 empBuf_off
   let zero ← iconst64 0
-  let empSize ← call fnFileRead [ptr, empCsvOff, empBufOff, zero, zero]
-  let deptCsvOff ← iconst64 deptCsvPath_off
+  let empSize ← readFile ptr fnFileRead empCsvPath_off empBuf_off
   let deptBufOff ← iconst64 deptBuf_off
-  let deptSize ← call fnFileRead [ptr, deptCsvOff, deptBufOff, zero, zero]
-  callVoid fnLmdbInit [ptr]
+  let deptSize ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
+  callVoid lmdb.fnInit [ptr]
   let empDbOff ← iconst64 empDbPath_off
   let maxDbs ← iconst32 10
-  let empHandle ← call fnLmdbOpen [ptr, empDbOff, maxDbs]
+  let empHandle ← call lmdb.fnOpen [ptr, empDbOff, maxDbs]
   let deptDbOff ← iconst64 deptDbPath_off
-  let deptHandle ← call fnLmdbOpen [ptr, deptDbOff, maxDbs]
-  let _ ← call fnBeginTxn [ptr, empHandle]
+  let deptHandle ← call lmdb.fnOpen [ptr, deptDbOff, maxDbs]
+  let _ ← call lmdb.fnBeginWriteTxn [ptr, empHandle]
   let one ← iconst64 1
   let keyLen4 ← iconst32 4
   let newline ← iconst64 10
@@ -419,7 +409,11 @@ def clifIrSource : String := buildProgram do
     ptr, zero, one, keyLen4, newline, keyScrOff,
     empBufOff, deptBufOff, empSize, deptSize,
     empHandle, deptHandle,
-    fnLmdbPut, fnCommitTxn, fnBeginTxn, fnCursorScan, fnFileWrite, fnCleanup
+    fnLmdbPut := lmdb.fnPut,
+    fnCommitTxn := lmdb.fnCommitWriteTxn,
+    fnBeginTxn := lmdb.fnBeginWriteTxn,
+    fnCursorScan := lmdb.fnCursorScan,
+    fnFileWrite, fnCleanup := lmdb.fnCleanup
   }
 
   emitIngest k empLoop empScan empAdvance empPut empDone
@@ -480,11 +474,8 @@ def csvConfig : BaseConfig := {
   context_offset := 0
 }
 
-def csvAlgorithm : Algorithm :=
-  let clifCallAction : Action :=
-    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  {
-    actions := [clifCallAction],
+def csvAlgorithm : Algorithm := {
+    actions := [IR.clifCallAction],
     payloads := payloads,
     cranelift_units := 0,
     timeout_ms := some 30000

@@ -861,9 +861,7 @@ def clifIrSource : String := buildProgram do
   let resultFlagAddr ← absAddr ptr resultFlag_off
 
   -- Read CNF file
-  let inFnameV ← iconst64 inputFilename_off
-  let cnfStartV ← iconst64 cnf_off
-  let bytesRead ← call fnRead [ptr, inFnameV, cnfStartV, c0, c0]
+  let bytesRead ← readFile ptr fnRead inputFilename_off cnf_off
 
   -- Initialize scratch
   store c0 numVarsAddr
@@ -947,11 +945,8 @@ def satConfig : BaseConfig := {
   context_offset := 0
 }
 
-def satAlgorithm : Algorithm :=
-  let clifCallAction : Action :=
-    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  {
-    actions := [clifCallAction],
+def satAlgorithm : Algorithm := {
+    actions := [IR.clifCallAction],
     payloads := payloads,
     cranelift_units := 0,
     timeout_ms := some 300000

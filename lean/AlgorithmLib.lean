@@ -598,16 +598,6 @@ def storeAt (base : Val) (offset : Nat) (val : Val) : IRBuilder Unit := do
   let addr ← absAddr base offset
   store val addr
 
-/-- Load i64 from base + offset -/
-def load64At (base : Val) (offset : Nat) : IRBuilder Val := do
-  let addr ← absAddr base offset
-  load64 addr
-
-/-- Load i32 from base + offset -/
-def load32At (base : Val) (offset : Nat) : IRBuilder Val := do
-  let addr ← absAddr base offset
-  load32 addr
-
 /-- Declare cl_file_read: (ptr, fname_off, data_off, file_offset, size) -> bytes_read -/
 def declareFileRead : IRBuilder FnRef :=
   declareFFI "cl_file_read" [.i64, .i64, .i64, .i64, .i64] (some .i64)
@@ -637,23 +627,61 @@ def declareGpuFFI : IRBuilder GpuSetup := do
   let fnCleanup ← declareFFI "cl_gpu_cleanup" [.i64] none
   pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnCreatePipeline, fnDispatch, fnCleanup }
 
-/-- Build a counting for-loop: for (i = init; i < limit; i += step) { body i }.
-    Returns the declared exit block so the caller can continue after the loop. -/
-def forLoop (init limit step : Val) (body : Val → IRBuilder Unit) : IRBuilder DeclaredBlock := do
-  let hdrBlk ← declareBlock [.i64]
-  let i := hdrBlk.param 0
-  let exitBlk ← declareBlock []
-  let bodyBlk ← declareBlock []
-  jump hdrBlk.ref [init]
-  startBlock hdrBlk
-  let done ← icmp .uge i limit
-  brif done exitBlk.ref [] bodyBlk.ref []
-  startBlock bodyBlk
-  body i
-  let next ← iadd i step
-  jump hdrBlk.ref [next]
-  startBlock exitBlk
-  pure exitBlk
+/-- Read a file into shared memory. Returns bytes read.
+    readFile ptr fnRead filenameOff dataOff => call fnRead(ptr, filenameOff, dataOff, 0, 0) -/
+def readFile (ptr : Val) (fnRead : FnRef) (filenameOff dataOff : Nat) : IRBuilder Val := do
+  let fnOff ← iconst64 filenameOff
+  let dOff ← iconst64 dataOff
+  let zero ← iconst64 0
+  call fnRead [ptr, fnOff, dOff, zero, zero]
+
+/-- Write a region of shared memory to a file. Returns bytes written.
+    writeFile ptr fnWrite filenameOff srcOff fileOffset size -/
+def writeFile (ptr : Val) (fnWrite : FnRef) (filenameOff srcOff : Nat)
+    (fileOffset size : Val) : IRBuilder Val := do
+  let fnOff ← iconst64 filenameOff
+  let sOff ← iconst64 srcOff
+  call fnWrite [ptr, fnOff, sOff, fileOffset, size]
+
+/-- Write a region of shared memory to a file starting at file offset 0. -/
+def writeFile0 (ptr : Val) (fnWrite : FnRef) (filenameOff srcOff : Nat)
+    (size : Val) : IRBuilder Val := do
+  let zero ← iconst64 0
+  writeFile ptr fnWrite filenameOff srcOff zero size
+
+/-- Align a value up to the next multiple of 4 (wgpu COPY_BUFFER_ALIGNMENT).
+    alignUp4 x = (x + 3) & ~3 -/
+def alignUp4 (v : Val) : IRBuilder Val := do
+  let c3 ← iconst64 3
+  let sum ← iadd v c3
+  let negFour ← iconst64 (-4)
+  band sum negFour
+
+/-- LMDB FFI function bundle -/
+structure LmdbSetup where
+  fnInit : FnRef
+  fnOpen : FnRef
+  fnBeginWriteTxn : FnRef
+  fnPut : FnRef
+  fnCommitWriteTxn : FnRef
+  fnCursorScan : FnRef
+  fnCleanup : FnRef
+
+/-- Declare all 7 LMDB FFI functions -/
+def declareLmdbFFI : IRBuilder LmdbSetup := do
+  let fnInit ← declareFFI "cl_lmdb_init" [.i64] none
+  let fnOpen ← declareFFI "cl_lmdb_open" [.i64, .i64, .i32] (some .i32)
+  let fnBeginWriteTxn ← declareFFI "cl_lmdb_begin_write_txn" [.i64, .i32] (some .i32)
+  let fnPut ← declareFFI "cl_lmdb_put" [.i64, .i32, .i64, .i32, .i64, .i32] (some .i32)
+  let fnCommitWriteTxn ← declareFFI "cl_lmdb_commit_write_txn" [.i64, .i32] (some .i32)
+  let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
+  let fnCleanup ← declareFFI "cl_lmdb_cleanup" [.i64] none
+  pure { fnInit, fnOpen, fnBeginWriteTxn, fnPut, fnCommitWriteTxn, fnCursorScan, fnCleanup }
+
+/-- The standard ClifCall action used by all applications -/
+def clifCallAction : Action := {
+  kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0
+}
 
 end IR
 

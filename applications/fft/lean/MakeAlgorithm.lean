@@ -140,13 +140,7 @@ def clifIrSource : String := buildProgram do
   -- FFI declarations
   let fnRead ← declareFileRead
   let fnWrite ← declareFileWrite
-  let fnInit ← declareFFI "cl_gpu_init" [.i64] none
-  let fnBuf  ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
-  let fnUp   ← declareFFI "cl_gpu_upload" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnPipe ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
-  let fnDisp ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
-  let fnDl   ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnFree ← declareFFI "cl_gpu_cleanup" [.i64] none
+  let gpu ← declareGpuFFI
 
   let ptr ← entryBlock
   let c0  ← iconst64 0
@@ -155,9 +149,8 @@ def clifIrSource : String := buildProgram do
   let c8  ← iconst64 8
 
   -- Step 1: Read input file
-  let inFnOff ← iconst64 inputFilename_off
   let inDatOff ← iconst64 inputData_off
-  let bytesRead ← call fnRead [ptr, inFnOff, inDatOff, c0, c0]
+  let bytesRead ← readFile ptr fnRead inputFilename_off inputData_off
 
   -- Compute N = bytes_read / 8
   let c3 ← iconst64 3
@@ -241,20 +234,17 @@ def clifIrSource : String := buildProgram do
 
   -- Step 3: GPU init
   startBlock gpuBlk
-  callVoid fnInit [ptr]
+  callVoid gpu.fnInit [ptr]
 
   -- Align data size to multiple of 4: (N*8 + 3) & ~3
   let dataSz ← imul bigN c8
-  let c3_2 ← iconst64 3
-  let dataPad ← iadd dataSz c3_2
-  let cNeg4 ← iconst64 (-4)
-  let alignedSz ← band dataPad cNeg4
+  let alignedSz ← alignUp4 dataSz
 
   -- Create 3 buffers
-  let buf0 ← call fnBuf [ptr, alignedSz]
-  let buf1 ← call fnBuf [ptr, alignedSz]
+  let buf0 ← call gpu.fnCreateBuffer [ptr, alignedSz]
+  let buf1 ← call gpu.fnCreateBuffer [ptr, alignedSz]
   let metaSzC ← iconst64 metaSize
-  let buf2 ← call fnBuf [ptr, metaSzC]
+  let buf2 ← call gpu.fnCreateBuffer [ptr, metaSzC]
 
   -- Write N into meta region
   let metaOffC ← iconst64 meta_off
@@ -263,13 +253,13 @@ def clifIrSource : String := buildProgram do
   store nI32 metaAbs
 
   -- Upload buf_a
-  let _ ← call fnUp [ptr, buf0, bufAOff, alignedSz]
+  let _ ← call gpu.fnUpload [ptr, buf0, bufAOff, alignedSz]
 
   -- Create pipeline (3 bindings)
   let shOffC ← iconst64 shader_off
   let bdOffC ← iconst64 bindDesc_off
   let c3_i32 ← iconst32 3
-  let pipeId ← call fnPipe [ptr, shOffC, bdOffC, c3_i32]
+  let pipeId ← call gpu.fnCreatePipeline [ptr, shOffC, bdOffC, c3_i32]
 
   -- Compute dispatch size: ceil(N/2 / 64)
   let halfN ← ushr bigN c1
@@ -301,12 +291,12 @@ def clifIrSource : String := buildProgram do
   let dirI32 ← ireduce32 dir
   store dirI32 metaDir
   -- Upload meta
-  let _ ← call fnUp [ptr, buf2, metaOffC, metaSzC]
+  let _ ← call gpu.fnUpload [ptr, buf2, metaOffC, metaSzC]
   -- Dispatch
-  let _ ← call fnDisp [ptr, pipeId, wgCount32, one32, one32]
+  let _ ← call gpu.fnDispatch [ptr, pipeId, wgCount32, one32, one32]
   -- Sync: download meta to scratch to force GPU completion
   let scratchOff ← iconst64 64
-  let _ ← call fnDl [ptr, buf2, scratchOff, metaSzC]
+  let _ ← call gpu.fnDownload [ptr, buf2, scratchOff, metaSzC]
   -- Next stage, toggle direction
   let stageNext ← iadd stage c1
   let dirNext ← bxor dir c1
@@ -327,8 +317,8 @@ def clifIrSource : String := buildProgram do
   startBlock finalBlk
   let dstOff2 := finalBlk.param 0
   let bufId := finalBlk.param 1
-  let _ ← call fnDl [ptr, bufId, dstOff2, alignedSz]
-  callVoid fnFree [ptr]
+  let _ ← call gpu.fnDownload [ptr, bufId, dstOff2, alignedSz]
+  callVoid gpu.fnCleanup [ptr]
 
   -- Step 6: Write output file
   let outFnOff ← iconst64 outputFilename_off
@@ -369,11 +359,8 @@ def fftConfig : BaseConfig := {
   context_offset := 0
 }
 
-def fftAlgorithm : Algorithm :=
-  let clifCallAction : Action :=
-    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  {
-    actions := [clifCallAction],
+def fftAlgorithm : Algorithm := {
+    actions := [IR.clifCallAction],
     payloads := payloads,
     cranelift_units := 0,
     timeout_ms := some 300000

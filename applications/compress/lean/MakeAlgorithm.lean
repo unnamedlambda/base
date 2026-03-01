@@ -1,8 +1,6 @@
-import Lean
-import Std
 import AlgorithmLib
 
-open Lean
+open Lean (Json)
 open AlgorithmLib
 
 namespace Algorithm
@@ -265,27 +263,17 @@ open AlgorithmLib.IR in
 def clifIrSource : String := buildProgram do
   let fnRead ← declareFileRead
   let fnWrite ← declareFileWrite
-  let fnInit ← declareFFI "cl_gpu_init" [.i64] none
-  let fnBuf  ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
-  let fnUp   ← declareFFI "cl_gpu_upload" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnPipe ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
-  let fnDisp ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
-  let fnDl   ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnFree ← declareFFI "cl_gpu_cleanup" [.i64] none
+  let gpu ← declareGpuFFI
 
   let ptr ← entryBlock
 
   -- Step 1: Read input file
-  let inFname ← iconst64 inputFilename_off
   let inData  ← iconst64 inputData_off
   let zero    ← iconst64 0
-  let bytesRead ← call fnRead [ptr, inFname, inData, zero, zero]
+  let bytesRead ← readFile ptr fnRead inputFilename_off inputData_off
 
   -- Step 2: Align up to multiple of 4 (wgpu COPY_BUFFER_ALIGNMENT)
-  let c3 ← iconst64 3
-  let sum3 ← iadd bytesRead c3
-  let negFour ← iconst64 (-4)   -- 0xFFFF...FFFC
-  let alignedSz ← band sum3 negFour
+  let alignedSz ← alignUp4 bytesRead
 
   -- Step 3: Compute numBlocks = (bytesRead + blockSize - 1) / blockSize
   let blkSzV ← iconst64 blockSize
@@ -296,14 +284,14 @@ def clifIrSource : String := buildProgram do
   let numBlocks32 ← ireduce32 numBlocks
 
   -- Step 4: GPU init
-  callVoid fnInit [ptr]
+  callVoid gpu.fnInit [ptr]
 
   -- Step 5: Create 3 buffers
-  let buf0 ← call fnBuf [ptr, alignedSz]       -- input (aligned)
+  let buf0 ← call gpu.fnCreateBuffer [ptr, alignedSz]       -- input (aligned)
   let outBufSzV ← iconst64 outputBufSize
-  let buf1 ← call fnBuf [ptr, outBufSzV]       -- output
+  let buf1 ← call gpu.fnCreateBuffer [ptr, outBufSzV]       -- output
   let metaSzV ← iconst64 metaSize
-  let buf2 ← call fnBuf [ptr, metaSzV]         -- metadata
+  let buf2 ← call gpu.fnCreateBuffer [ptr, metaSzV]         -- metadata
 
   -- Step 6: Write input size into metadata region
   let inputSz32 ← ireduce32 bytesRead
@@ -312,26 +300,26 @@ def clifIrSource : String := buildProgram do
   store inputSz32 metaAddr
 
   -- Step 7: Upload input data and metadata
-  let _ ← call fnUp [ptr, buf0, inData, alignedSz]
-  let _ ← call fnUp [ptr, buf2, metaOffV, metaSzV]
+  let _ ← call gpu.fnUpload [ptr, buf0, inData, alignedSz]
+  let _ ← call gpu.fnUpload [ptr, buf2, metaOffV, metaSzV]
 
   -- Step 8: Create pipeline (3 bindings)
   let shOffV ← iconst64 shader_off
   let bdOffV ← iconst64 bindDesc_off
   let three32 ← iconst32 3
-  let pipeId ← call fnPipe [ptr, shOffV, bdOffV, three32]
+  let pipeId ← call gpu.fnCreatePipeline [ptr, shOffV, bdOffV, three32]
 
   -- Step 9: Dispatch — numBlocks workgroups
   let one32 ← iconst32 1
-  let _ ← call fnDisp [ptr, pipeId, numBlocks32, one32, one32]
+  let _ ← call gpu.fnDispatch [ptr, pipeId, numBlocks32, one32, one32]
 
   -- Step 10: Download output and metadata
   let outDataV ← iconst64 outputData_off
-  let _ ← call fnDl [ptr, buf1, outDataV, outBufSzV]
-  let _ ← call fnDl [ptr, buf2, metaOffV, metaSzV]
+  let _ ← call gpu.fnDownload [ptr, buf1, outDataV, outBufSzV]
+  let _ ← call gpu.fnDownload [ptr, buf2, metaOffV, metaSzV]
 
   -- Step 11: GPU cleanup
-  callVoid fnFree [ptr]
+  callVoid gpu.fnCleanup [ptr]
 
   -- Step 12: Write standard LZ4 frame format
   -- Reuse inputData_off area as scratch
@@ -439,11 +427,8 @@ def compressConfig : BaseConfig := {
   context_offset := 0
 }
 
-def compressAlgorithm : Algorithm :=
-  let clifCallAction : Action :=
-    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  {
-    actions := [clifCallAction],
+def compressAlgorithm : Algorithm := {
+    actions := [IR.clifCallAction],
     payloads := payloads,
     cranelift_units := 0,
     timeout_ms := some 120000
