@@ -74,413 +74,363 @@ def totalPayload    : Nat := scanResult2_off + scanResult2Size  -- 0x8310
 --   block20: Join done — cleanup, return
 -- ---------------------------------------------------------------------------
 
-def clifIrSource : String :=
-  let empDb     := toString empDbPath_off
-  let deptDb    := toString deptDbPath_off
-  let empCsv    := toString empCsvPath_off
-  let deptCsv   := toString deptCsvPath_off
-  let empBuf    := toString empBuf_off
-  let deptBuf   := toString deptBuf_off
-  let keySc     := toString keyScratch_off
-  let scanRes   := toString scanResult_off
-  let scanRes2  := toString scanResult2_off
-  let scanFn    := toString scanFname_off
-  let filterFn  := toString filterFname_off
-  let joinFn    := toString joinFname_off
-  let seaStr    := toString seattleStr_off
-  let seaLen    := toString seattleStrLen
-  -- noop function (CLIF fn index 0, unused placeholder)
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n\n" ++
-  -- orchestrator (CLIF fn index 1, called synchronously via ClifCall)
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++                                 -- init/cleanup
-  "    sig1 = (i64, i64, i32) -> i32 system_v\n" ++                -- lmdb_open
-  "    sig2 = (i64, i32) -> i32 system_v\n" ++                     -- begin/commit txn
-  "    sig3 = (i64, i32, i64, i32, i64, i32) -> i32 system_v\n" ++ -- lmdb_put
-  "    sig4 = (i64, i32, i64, i32, i64) -> i32 system_v\n" ++      -- lmdb_get
-  "    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++      -- file_read/write
-  "    sig6 = (i64, i32, i64, i32, i32, i64) -> i32 system_v\n" ++ -- cursor_scan
-  "    fn0 = %cl_file_read sig5\n" ++
-  "    fn1 = %cl_lmdb_init sig0\n" ++
-  "    fn2 = %cl_lmdb_open sig1\n" ++
-  "    fn3 = %cl_lmdb_begin_write_txn sig2\n" ++
-  "    fn4 = %cl_lmdb_put sig3\n" ++
-  "    fn5 = %cl_lmdb_commit_write_txn sig2\n" ++
-  "    fn6 = %cl_lmdb_cursor_scan sig6\n" ++
-  "    fn7 = %cl_file_write sig5\n" ++
-  "    fn8 = %cl_lmdb_cleanup sig0\n" ++
-  "\n" ++
+open AlgorithmLib.IR
 
-  -- =====================================================================
-  -- block0: Setup
-  -- =====================================================================
-  "block0(v0: i64):\n" ++
-  -- Read employees.csv into empBuf
-  s!"    v1 = iconst.i64 {empCsv}\n" ++
-  s!"    v2 = iconst.i64 {empBuf}\n" ++
-  "    v3 = iconst.i64 0\n" ++
-  "    v4 = call fn0(v0, v1, v2, v3, v3)\n" ++  -- v4 = emp file size
-  -- Read departments.csv into deptBuf
-  s!"    v5 = iconst.i64 {deptCsv}\n" ++
-  s!"    v6 = iconst.i64 {deptBuf}\n" ++
-  "    v7 = call fn0(v0, v5, v6, v3, v3)\n" ++  -- v7 = dept file size
-  -- Init LMDB
-  "    call fn1(v0)\n" ++
-  -- Open employee DB
-  s!"    v8 = iconst.i64 {empDb}\n" ++
-  "    v9 = iconst.i32 10\n" ++
-  "    v10 = call fn2(v0, v8, v9)\n" ++  -- emp handle
-  -- Open department DB
-  s!"    v11 = iconst.i64 {deptDb}\n" ++
-  "    v12 = call fn2(v0, v11, v9)\n" ++  -- dept handle
-  -- Begin employee write txn
-  "    v13 = call fn3(v0, v10)\n" ++
-  -- Constants we'll reuse
-  "    v14 = iconst.i64 1\n" ++
-  "    v15 = iconst.i32 4\n" ++       -- key length = 4 bytes
-  "    v16 = iconst.i64 10\n" ++      -- newline '\n' = 10
-  s!"    v17 = iconst.i64 {keySc}\n" ++  -- key scratch offset
-  -- Jump to emp ingest loop: (pos=0, key=0)
-  "    jump block1(v3, v3)\n" ++
-  "\n" ++
+-- Shared values threaded across sub-functions
+structure K where
+  ptr : Val
+  zero : Val
+  one : Val
+  keyLen4 : Val
+  newline : Val
+  keyScrOff : Val
+  empBufOff : Val
+  deptBufOff : Val
+  empSize : Val
+  deptSize : Val
+  empHandle : Val
+  deptHandle : Val
+  fnLmdbPut : FnRef
+  fnCommitTxn : FnRef
+  fnBeginTxn : FnRef
+  fnCursorScan : FnRef
+  fnFileWrite : FnRef
+  fnCleanup : FnRef
 
-  -- =====================================================================
-  -- block1: Employee ingest — find newline
-  -- args: v20=pos (byte offset within empBuf), v21=key (row index)
-  -- =====================================================================
-  "block1(v20: i64, v21: i64):\n" ++
-  -- Check if pos >= file_size
-  "    v22 = icmp uge v20, v4\n" ++
-  "    brif v22, block3, block30(v20)\n" ++
-  "\n" ++
+-- Emit employee/department ingest loops
+def emitIngest (k : K)
+    (empLoop empScan empAdvance empPut empDone : DeclaredBlock)
+    (deptLoop deptScan deptAdv deptPut deptDone : DeclaredBlock)
+    : IRBuilder Unit := do
+  -- Employee ingest — outer loop header
+  startBlock empLoop
+  let pos := empLoop.param 0
+  let key := empLoop.param 1
+  let posEnd ← icmp .uge pos k.empSize
+  brif posEnd empDone.ref [] empScan.ref [pos]
 
-  -- block30: inner newline scan loop
-  "block30(v200: i64):\n" ++
-  -- Load byte at empBuf + pos
-  "    v201 = iadd v2, v200\n" ++     -- empBuf offset + pos
-  "    v202 = iadd v0, v201\n" ++     -- absolute addr
-  "    v203 = load.i8 v202\n" ++
-  "    v204 = uextend.i64 v203\n" ++
-  -- Check if byte == '\n'
-  "    v205 = icmp eq v204, v16\n" ++
-  "    brif v205, block2, block31\n" ++
-  "\n" ++
+  -- Employee ingest — inner newline scan loop
+  startBlock empScan
+  let sPos := empScan.param 0
+  let relAddr ← iadd k.empBufOff sPos
+  let absAddr ← iadd k.ptr relAddr
+  let byte ← load_i8 absAddr
+  let byteExt ← uextend64 byte
+  let isNl ← icmp .eq byteExt k.newline
+  brif isNl empPut.ref [] empAdvance.ref []
 
-  -- block31: not newline, advance pos and continue scanning
-  "block31:\n" ++
-  "    v206 = iadd v200, v14\n" ++    -- pos + 1
-  -- Check if pos >= file_size
-  "    v207 = icmp uge v206, v4\n" ++
-  "    brif v207, block2, block30(v206)\n" ++  -- if EOF, treat as row end too
-  "\n" ++
+  startBlock empAdvance
+  let nextPos ← iadd sPos k.one
+  let atEnd ← icmp .uge nextPos k.empSize
+  brif atEnd empPut.ref [] empScan.ref [nextPos]
 
-  -- =====================================================================
-  -- block2: Employee ingest — found row end, put row into LMDB
-  -- v20=row_start, v21=key, v200=pos of '\n' (or EOF pos)
-  -- =====================================================================
-  "block2:\n" ++
-  -- Row end position: include the \n (pos + 1), or just pos if EOF
-  "    v23 = iadd v200, v14\n" ++     -- end = pos + 1 (include \n)
-  -- Row length = end - row_start
-  "    v24 = isub v23, v20\n" ++
-  "    v25 = ireduce.i32 v24\n" ++    -- row_len as i32
-  -- Store key as u32 LE at key scratch
-  "    v26 = ireduce.i32 v21\n" ++    -- key as i32
-  "    v27 = iadd v0, v17\n" ++       -- absolute addr of key scratch
-  "    store v26, v27\n" ++
-  -- Value offset = empBuf_off + row_start
-  "    v28 = iadd v2, v20\n" ++       -- empBuf offset + row_start
-  -- cl_lmdb_put(ptr, handle, key_off, key_len, val_off, val_len)
-  "    v29 = call fn4(v0, v10, v17, v15, v28, v25)\n" ++
-  -- Advance: key++, pos = end
-  "    v30 = iadd v21, v14\n" ++      -- key + 1
-  "    jump block1(v23, v30)\n" ++
-  "\n" ++
+  -- Employee ingest — found row end, put into LMDB
+  startBlock empPut
+  let rowEnd ← iadd sPos k.one
+  let rowLen ← isub rowEnd pos
+  let rowLen32 ← ireduce32 rowLen
+  let key32 ← ireduce32 key
+  let keyAddr ← iadd k.ptr k.keyScrOff
+  store key32 keyAddr
+  let valOff ← iadd k.empBufOff pos
+  let _ ← call k.fnLmdbPut [k.ptr, k.empHandle, k.keyScrOff, k.keyLen4, valOff, rowLen32]
+  let nextKey ← iadd key k.one
+  jump empLoop.ref [rowEnd, nextKey]
 
-  -- =====================================================================
-  -- block3: Employee ingest done — commit, begin dept txn
-  -- =====================================================================
-  "block3:\n" ++
-  "    v31 = call fn5(v0, v10)\n" ++   -- commit emp txn
-  "    v32 = call fn3(v0, v12)\n" ++   -- begin dept write txn
-  -- Jump to dept ingest loop: (pos=0, key=0)
-  "    jump block4(v3, v3)\n" ++
-  "\n" ++
+  -- Employee ingest done — commit, begin dept txn
+  startBlock empDone
+  let _ ← call k.fnCommitTxn [k.ptr, k.empHandle]
+  let _ ← call k.fnBeginTxn [k.ptr, k.deptHandle]
+  jump deptLoop.ref [k.zero, k.zero]
 
-  -- =====================================================================
-  -- block4: Department ingest — find newline
-  -- args: v40=pos, v41=key
-  -- =====================================================================
-  "block4(v40: i64, v41: i64):\n" ++
-  "    v42 = icmp uge v40, v7\n" ++   -- pos >= dept file size?
-  "    brif v42, block6, block40(v40)\n" ++
-  "\n" ++
+  -- Department ingest — outer loop header
+  startBlock deptLoop
+  let dPos := deptLoop.param 0
+  let dKey := deptLoop.param 1
+  let dEnd ← icmp .uge dPos k.deptSize
+  brif dEnd deptDone.ref [] deptScan.ref [dPos]
 
-  -- block40: inner newline scan for dept
-  "block40(v400: i64):\n" ++
-  "    v401 = iadd v6, v400\n" ++     -- deptBuf offset + pos
-  "    v402 = iadd v0, v401\n" ++
-  "    v403 = load.i8 v402\n" ++
-  "    v404 = uextend.i64 v403\n" ++
-  "    v405 = icmp eq v404, v16\n" ++
-  "    brif v405, block5, block41\n" ++
-  "\n" ++
+  startBlock deptScan
+  let dsPos := deptScan.param 0
+  let dRelAddr ← iadd k.deptBufOff dsPos
+  let dAbsAddr ← iadd k.ptr dRelAddr
+  let dByte ← load_i8 dAbsAddr
+  let dByteExt ← uextend64 dByte
+  let dIsNl ← icmp .eq dByteExt k.newline
+  brif dIsNl deptPut.ref [] deptAdv.ref []
 
-  "block41:\n" ++
-  "    v406 = iadd v400, v14\n" ++
-  "    v407 = icmp uge v406, v7\n" ++
-  "    brif v407, block5, block40(v406)\n" ++
-  "\n" ++
+  startBlock deptAdv
+  let dNextPos ← iadd dsPos k.one
+  let dAtEnd ← icmp .uge dNextPos k.deptSize
+  brif dAtEnd deptPut.ref [] deptScan.ref [dNextPos]
 
-  -- =====================================================================
-  -- block5: Department ingest — put row
-  -- v40=row_start, v41=key, v400=pos of '\n' or EOF
-  -- =====================================================================
-  "block5:\n" ++
-  "    v43 = iadd v400, v14\n" ++
-  "    v44 = isub v43, v40\n" ++
-  "    v45 = ireduce.i32 v44\n" ++
-  "    v46 = ireduce.i32 v41\n" ++
-  "    v47 = iadd v0, v17\n" ++
-  "    store v46, v47\n" ++
-  "    v48 = iadd v6, v40\n" ++
-  "    v49 = call fn4(v0, v12, v17, v15, v48, v45)\n" ++
-  "    v50 = iadd v41, v14\n" ++
-  "    jump block4(v43, v50)\n" ++
-  "\n" ++
+  -- Department ingest — put row
+  startBlock deptPut
+  let dRowEnd ← iadd dsPos k.one
+  let dRowLen ← isub dRowEnd dPos
+  let dRowLen32 ← ireduce32 dRowLen
+  let dKey32 ← ireduce32 dKey
+  let dKeyAddr ← iadd k.ptr k.keyScrOff
+  store dKey32 dKeyAddr
+  let dValOff ← iadd k.deptBufOff dPos
+  let _ ← call k.fnLmdbPut [k.ptr, k.deptHandle, k.keyScrOff, k.keyLen4, dValOff, dRowLen32]
+  let dNextKey ← iadd dKey k.one
+  jump deptLoop.ref [dRowEnd, dNextKey]
 
-  -- =====================================================================
-  -- block6: Dept ingest done — commit, cursor_scan employees for scan.csv
-  -- =====================================================================
-  "block6:\n" ++
-  "    v51 = call fn5(v0, v12)\n" ++   -- commit dept txn
-  -- cursor_scan employees (all rows)
-  s!"    v52 = iconst.i64 {scanRes}\n" ++
-  "    v53 = iconst.i32 0\n" ++        -- key_len=0 → scan from beginning
-  "    v54 = iconst.i32 100\n" ++      -- max entries
-  "    v55 = call fn6(v0, v10, v3, v53, v54, v52)\n" ++  -- v55 = count
-  -- Jump to scan output loop: (i=0, offset=4, file_off=0)
-  "    v56 = iconst.i64 4\n" ++
-  "    jump block7(v3, v56, v3)\n" ++
-  "\n" ++
+-- Emit scan + filter + join output phases
+set_option maxRecDepth 4096 in
+def emitOutputPhases (k : K)
+    (deptDone : DeclaredBlock)
+    (scanHdr scanBody scanDone : DeclaredBlock)
+    (filterHdr filterParse : DeclaredBlock)
+    (substrScan substrCmp substrByte : DeclaredBlock)
+    (filterMatch substrAdv filterSkip filterDone : DeclaredBlock)
+    (joinHdr joinBody joinDone : DeclaredBlock)
+    : IRBuilder Unit := do
+  -- Dept ingest done — commit, cursor_scan employees for scan.csv
+  startBlock deptDone
+  let _ ← call k.fnCommitTxn [k.ptr, k.deptHandle]
+  let scanResOff ← iconst64 scanResult_off
+  let keyLen0 ← iconst32 0
+  let maxEntries ← iconst32 100
+  let scanCount ← call k.fnCursorScan [k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanResOff]
+  let four ← iconst64 4
+  jump scanHdr.ref [k.zero, four, k.zero]
 
-  -- =====================================================================
-  -- block7: Scan output — loop header
-  -- args: v60=i (entry index), v61=byte offset in scan result, v62=file_off
-  -- =====================================================================
-  "block7(v60: i64, v61: i64, v62: i64):\n" ++
-  "    v63 = sextend.i64 v55\n" ++    -- count as i64
-  "    v64 = icmp uge v60, v63\n" ++
-  "    brif v64, block9, block8\n" ++
-  "\n" ++
+  -- Scan output — loop header
+  startBlock scanHdr
+  let si := scanHdr.param 0
+  let sByteOff := scanHdr.param 1
+  let sFileOff := scanHdr.param 2
+  let scanCount64 ← sextend64 scanCount
+  let sDone ← icmp .uge si scanCount64
+  brif sDone scanDone.ref [] scanBody.ref []
 
-  -- =====================================================================
-  -- block8: Scan output — write row, advance
-  -- Read cursor_scan entry: [u16 klen][u16 vlen][key][val]
-  -- =====================================================================
-  "block8:\n" ++
-  -- Read klen (u16 at scanResult + offset)
-  "    v65 = iadd v52, v61\n" ++      -- scanResult offset + byte offset
-  "    v66 = iadd v0, v65\n" ++       -- absolute addr
-  "    v67 = load.i16 v66\n" ++       -- klen (u16)
-  "    v68 = uextend.i64 v67\n" ++
-  -- Read vlen (u16 at offset + 2)
-  "    v69 = iconst.i64 2\n" ++
-  "    v70 = iadd v66, v69\n" ++
-  "    v71 = load.i16 v70\n" ++       -- vlen (u16)
-  "    v72 = uextend.i64 v71\n" ++
-  -- Value data starts at: scanResult_off + byte_offset + 4 + klen
-  "    v73 = iadd v61, v56\n" ++      -- byte_offset + 4
-  "    v74 = iadd v73, v68\n" ++      -- + klen → val data offset (relative to scanResult)
-  "    v75 = iadd v52, v74\n" ++      -- val data offset in shared mem
-  -- cl_file_write(ptr, filename, src_off, file_offset, size)
-  "    v76 = ireduce.i32 v72\n" ++
-  "    v77 = sextend.i64 v76\n" ++    -- vlen as i64 for file_write
-  s!"    v78 = iconst.i64 {scanFn}\n" ++
-  "    v79 = call fn7(v0, v78, v75, v62, v77)\n" ++
-  -- Advance: i++, byte_offset += 4 + klen + vlen, file_off += vlen
-  "    v80 = iadd v60, v14\n" ++
-  "    v81 = iadd v73, v68\n" ++      -- byte_offset + 4 + klen
-  "    v82 = iadd v81, v72\n" ++      -- + vlen
-  "    v83 = iadd v62, v72\n" ++      -- file_off + vlen
-  "    jump block7(v80, v82, v83)\n" ++
-  "\n" ++
+  -- Scan output — write row, advance
+  startBlock scanBody
+  let sEntryOff ← iadd scanResOff sByteOff
+  let sEntryAddr ← iadd k.ptr sEntryOff
+  let sKlen ← load_i16 sEntryAddr
+  let sKlen64 ← uextend64 sKlen
+  let two ← iconst64 2
+  let sVlenAddr ← iadd sEntryAddr two
+  let sVlen ← load_i16 sVlenAddr
+  let sVlen64 ← uextend64 sVlen
+  let sDataOff ← iadd sByteOff four
+  let sDataOff2 ← iadd sDataOff sKlen64
+  let sValOff ← iadd scanResOff sDataOff2
+  let sVlen32 ← ireduce32 sVlen64
+  let sVlenSigned ← sextend64 sVlen32
+  let scanFnOff ← iconst64 scanFname_off
+  let _ ← call k.fnFileWrite [k.ptr, scanFnOff, sValOff, sFileOff, sVlenSigned]
+  let sNextI ← iadd si k.one
+  let sNextByte ← iadd sDataOff2 sVlen64
+  let sNextFile ← iadd sFileOff sVlen64
+  jump scanHdr.ref [sNextI, sNextByte, sNextFile]
 
-  -- =====================================================================
-  -- block9: Scan done — cursor_scan employees again for filter
-  -- =====================================================================
-  "block9:\n" ++
-  s!"    v84 = iconst.i64 {scanRes2}\n" ++
-  "    v85 = call fn6(v0, v10, v3, v53, v54, v84)\n" ++  -- v85 = count
-  -- Jump to filter loop: (i=0, offset=4, file_off=0)
-  "    jump block10(v3, v56, v3)\n" ++
-  "\n" ++
+  -- Scan done — cursor_scan employees again for filter
+  startBlock scanDone
+  let scanRes2Off ← iconst64 scanResult2_off
+  let filterCount ← call k.fnCursorScan [k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanRes2Off]
+  jump filterHdr.ref [k.zero, four, k.zero]
 
-  -- =====================================================================
-  -- block10: Filter output — loop header
-  -- args: v90=i, v91=byte offset in result, v92=file_off
-  -- =====================================================================
-  "block10(v90: i64, v91: i64, v92: i64):\n" ++
-  "    v93 = sextend.i64 v85\n" ++
-  "    v94 = icmp uge v90, v93\n" ++
-  "    brif v94, block17, block11\n" ++
-  "\n" ++
+  -- Filter output — loop header
+  startBlock filterHdr
+  let fi := filterHdr.param 0
+  let fByteOff := filterHdr.param 1
+  let fFileOff := filterHdr.param 2
+  let filterCount64 ← sextend64 filterCount
+  let fDone ← icmp .uge fi filterCount64
+  brif fDone filterDone.ref [] filterParse.ref []
 
-  -- =====================================================================
-  -- block11: Filter — parse entry, decide include/skip
-  -- =====================================================================
-  "block11:\n" ++
-  -- Read klen, vlen
-  "    v95 = iadd v84, v91\n" ++
-  "    v96 = iadd v0, v95\n" ++
-  "    v97 = load.i16 v96\n" ++       -- klen
-  "    v98 = uextend.i64 v97\n" ++
-  "    v99 = iconst.i64 2\n" ++
-  "    v100 = iadd v96, v99\n" ++
-  "    v101 = load.i16 v100\n" ++     -- vlen
-  "    v102 = uextend.i64 v101\n" ++
-  -- Compute val offset: result_off + byte_offset + 4 + klen
-  "    v103 = iadd v91, v56\n" ++     -- + 4
-  "    v104 = iadd v103, v98\n" ++    -- + klen
-  "    v105 = iadd v84, v104\n" ++    -- val offset in shared mem
-  -- Read key value (first 4 bytes of key = u32 LE)
-  -- Key starts at result_off + byte_offset + 4
-  "    v106 = iadd v84, v103\n" ++    -- key offset in shared mem
-  "    v107 = iadd v0, v106\n" ++
-  "    v108 = load.i32 v107\n" ++     -- key as i32
-  -- If key == 0 (header row), always include
-  "    v109 = iconst.i32 0\n" ++
-  "    v110 = icmp eq v108, v109\n" ++
-  "    brif v110, block14, block12(v3)\n" ++
-  "\n" ++
+  -- Filter — parse entry, decide include/skip
+  startBlock filterParse
+  let fEntryOff ← iadd scanRes2Off fByteOff
+  let fEntryAddr ← iadd k.ptr fEntryOff
+  let fKlen ← load_i16 fEntryAddr
+  let fKlen64 ← uextend64 fKlen
+  let ftwo ← iconst64 2
+  let fVlenAddr ← iadd fEntryAddr ftwo
+  let fVlen ← load_i16 fVlenAddr
+  let fVlen64 ← uextend64 fVlen
+  let fDataOff ← iadd fByteOff four
+  let fDataOff2 ← iadd fDataOff fKlen64
+  let fValOff ← iadd scanRes2Off fDataOff2
+  let fKeyOff ← iadd scanRes2Off fDataOff
+  let fKeyAddr ← iadd k.ptr fKeyOff
+  let fKeyVal ← load32 fKeyAddr
+  let zero32 ← iconst32 0
+  let isHeader ← icmp .eq fKeyVal zero32
+  brif isHeader filterMatch.ref [] substrScan.ref [k.zero]
 
-  -- =====================================================================
-  -- block12: Filter — substring scan: check for ",Seattle," in value
-  -- Scan through value bytes looking for match
-  -- args: v120=scan_pos (position within value to check)
-  -- =====================================================================
-  "block12(v120: i64):\n" ++
-  -- If scan_pos + seattleStrLen > vlen, no match possible
-  s!"    v121 = iconst.i64 {seaLen}\n" ++  -- 9
-  "    v122 = iadd v120, v121\n" ++
-  "    v123 = icmp ugt v122, v102\n" ++   -- scan_pos + 9 > vlen?
-  "    brif v123, block16, block13(v3)\n" ++
-  "\n" ++
+  -- Filter — substring scan
+  startBlock substrScan
+  let scanPos := substrScan.param 0
+  let seaLen ← iconst64 seattleStrLen
+  let scanEnd ← iadd scanPos seaLen
+  let noRoom ← icmp .ugt scanEnd fVlen64
+  brif noRoom filterSkip.ref [] substrCmp.ref [k.zero]
 
-  -- =====================================================================
-  -- block13: Filter — compare substring at position
-  -- Compare bytes at val[scan_pos..scan_pos+9] vs ",Seattle,"
-  -- args: v130=match_idx (0..8)
-  -- =====================================================================
-  "block13(v130: i64):\n" ++
-  "    v131 = icmp uge v130, v121\n" ++  -- match_idx >= 9?
-  "    brif v131, block14, block50\n" ++  -- all matched → include row
-  "\n" ++
+  -- Filter — compare substring at position
+  startBlock substrCmp
+  let matchIdx := substrCmp.param 0
+  let allMatch ← icmp .uge matchIdx seaLen
+  brif allMatch filterMatch.ref [] substrByte.ref []
 
-  -- block50: compare one byte
-  "block50:\n" ++
-  -- Load val[scan_pos + match_idx]
-  "    v132 = iadd v120, v130\n" ++      -- scan_pos + match_idx
-  "    v133 = iadd v105, v132\n" ++      -- val_off + scan_pos + match_idx
-  "    v134 = iadd v0, v133\n" ++
-  "    v135 = load.i8 v134\n" ++
-  -- Load seattle_str[match_idx]
-  s!"    v136 = iconst.i64 {seaStr}\n" ++
-  "    v137 = iadd v136, v130\n" ++
-  "    v138 = iadd v0, v137\n" ++
-  "    v139 = load.i8 v138\n" ++
-  -- Compare
-  "    v140 = icmp eq v135, v139\n" ++
-  "    v141 = iadd v130, v14\n" ++       -- match_idx + 1
-  "    brif v140, block13(v141), block15\n" ++
-  "\n" ++
+  startBlock substrByte
+  let bytePos ← iadd scanPos matchIdx
+  let valByteOff ← iadd fValOff bytePos
+  let valByteAddr ← iadd k.ptr valByteOff
+  let valByte ← load_i8 valByteAddr
+  let seaOff ← iconst64 seattleStr_off
+  let seaByteOff ← iadd seaOff matchIdx
+  let seaByteAddr ← iadd k.ptr seaByteOff
+  let seaByte ← load_i8 seaByteAddr
+  let bytesEq ← icmp .eq valByte seaByte
+  let nextMatch ← iadd matchIdx k.one
+  brif bytesEq substrCmp.ref [nextMatch] substrAdv.ref []
 
-  -- =====================================================================
-  -- block14: Filter — match! Write row to filter output
-  -- =====================================================================
-  "block14:\n" ++
-  "    v142 = ireduce.i32 v102\n" ++
-  "    v143 = sextend.i64 v142\n" ++
-  s!"    v144 = iconst.i64 {filterFn}\n" ++
-  "    v145 = call fn7(v0, v144, v105, v92, v143)\n" ++
-  -- Advance: i++, update byte_offset, file_off += vlen
-  "    v146 = iadd v90, v14\n" ++
-  "    v147 = iadd v104, v102\n" ++    -- byte_offset + 4 + klen + vlen (relative)
-  "    v148 = iadd v92, v102\n" ++     -- file_off + vlen
-  "    jump block10(v146, v147, v148)\n" ++
-  "\n" ++
+  -- Filter — match
+  startBlock filterMatch
+  let fVlen32 ← ireduce32 fVlen64
+  let fVlenSigned ← sextend64 fVlen32
+  let filterFnOff ← iconst64 filterFname_off
+  let _ ← call k.fnFileWrite [k.ptr, filterFnOff, fValOff, fFileOff, fVlenSigned]
+  let fNextI ← iadd fi k.one
+  let fNextByte ← iadd fDataOff2 fVlen64
+  let fNextFile ← iadd fFileOff fVlen64
+  jump filterHdr.ref [fNextI, fNextByte, fNextFile]
 
-  -- =====================================================================
-  -- block15: Filter — no match at this position, try next
-  -- =====================================================================
-  "block15:\n" ++
-  "    v149 = iadd v120, v14\n" ++     -- scan_pos + 1
-  "    jump block12(v149)\n" ++
-  "\n" ++
+  startBlock substrAdv
+  let nextScanPos ← iadd scanPos k.one
+  jump substrScan.ref [nextScanPos]
 
-  -- =====================================================================
-  -- block16: Filter — no match at all, skip row
-  -- =====================================================================
-  "block16:\n" ++
-  "    v150 = iadd v90, v14\n" ++
-  "    v151 = iadd v104, v102\n" ++
-  "    jump block10(v150, v151, v92)\n" ++   -- file_off unchanged
-  "\n" ++
+  startBlock filterSkip
+  let skipNextI ← iadd fi k.one
+  let skipNextByte ← iadd fDataOff2 fVlen64
+  jump filterHdr.ref [skipNextI, skipNextByte, fFileOff]
 
-  -- =====================================================================
-  -- block17: Filter done — cursor_scan departments for join.csv
-  -- =====================================================================
-  "block17:\n" ++
-  "    v152 = call fn6(v0, v12, v3, v53, v54, v52)\n" ++  -- reuse scanResult buf
-  -- Jump to join output loop: (i=0, offset=4, file_off=0)
-  "    jump block18(v3, v56, v3)\n" ++
-  "\n" ++
+  -- Filter done — cursor_scan departments for join.csv
+  startBlock filterDone
+  let joinCount ← call k.fnCursorScan [k.ptr, k.deptHandle, k.zero, keyLen0, maxEntries, scanResOff]
+  jump joinHdr.ref [k.zero, four, k.zero]
 
-  -- =====================================================================
-  -- block18: Join output — loop header
-  -- args: v160=i, v161=byte offset, v162=file_off
-  -- =====================================================================
-  "block18(v160: i64, v161: i64, v162: i64):\n" ++
-  "    v163 = sextend.i64 v152\n" ++
-  "    v164 = icmp uge v160, v163\n" ++
-  "    brif v164, block20, block19\n" ++
-  "\n" ++
+  -- Join output — loop header
+  startBlock joinHdr
+  let ji := joinHdr.param 0
+  let jByteOff := joinHdr.param 1
+  let jFileOff := joinHdr.param 2
+  let joinCount64 ← sextend64 joinCount
+  let jDone ← icmp .uge ji joinCount64
+  brif jDone joinDone.ref [] joinBody.ref []
 
-  -- =====================================================================
-  -- block19: Join output — write row, advance
-  -- =====================================================================
-  "block19:\n" ++
-  "    v165 = iadd v52, v161\n" ++
-  "    v166 = iadd v0, v165\n" ++
-  "    v167 = load.i16 v166\n" ++      -- klen
-  "    v168 = uextend.i64 v167\n" ++
-  "    v169 = iconst.i64 2\n" ++
-  "    v170 = iadd v166, v169\n" ++
-  "    v171 = load.i16 v170\n" ++      -- vlen
-  "    v172 = uextend.i64 v171\n" ++
-  "    v173 = iadd v161, v56\n" ++     -- + 4
-  "    v174 = iadd v173, v168\n" ++    -- + klen
-  "    v175 = iadd v52, v174\n" ++     -- val offset in shared mem
-  "    v176 = ireduce.i32 v172\n" ++
-  "    v177 = sextend.i64 v176\n" ++
-  s!"    v178 = iconst.i64 {joinFn}\n" ++
-  "    v179 = call fn7(v0, v178, v175, v162, v177)\n" ++
-  "    v180 = iadd v160, v14\n" ++
-  "    v181 = iadd v174, v172\n" ++
-  "    v182 = iadd v162, v172\n" ++
-  "    jump block18(v180, v181, v182)\n" ++
-  "\n" ++
+  -- Join output — write row, advance
+  startBlock joinBody
+  let jEntryOff ← iadd scanResOff jByteOff
+  let jEntryAddr ← iadd k.ptr jEntryOff
+  let jKlen ← load_i16 jEntryAddr
+  let jKlen64 ← uextend64 jKlen
+  let jtwo ← iconst64 2
+  let jVlenAddr ← iadd jEntryAddr jtwo
+  let jVlen ← load_i16 jVlenAddr
+  let jVlen64 ← uextend64 jVlen
+  let jDataOff ← iadd jByteOff four
+  let jDataOff2 ← iadd jDataOff jKlen64
+  let jValOff ← iadd scanResOff jDataOff2
+  let jVlen32 ← ireduce32 jVlen64
+  let jVlenSigned ← sextend64 jVlen32
+  let joinFnOff ← iconst64 joinFname_off
+  let _ ← call k.fnFileWrite [k.ptr, joinFnOff, jValOff, jFileOff, jVlenSigned]
+  let jNextI ← iadd ji k.one
+  let jNextByte ← iadd jDataOff2 jVlen64
+  let jNextFile ← iadd jFileOff jVlen64
+  jump joinHdr.ref [jNextI, jNextByte, jNextFile]
 
-  -- =====================================================================
-  -- block20: Done — cleanup and return
-  -- =====================================================================
-  "block20:\n" ++
-  "    call fn8(v0)\n" ++
-  "    return\n" ++
-  "}\n"
+  -- Done — cleanup and return
+  startBlock joinDone
+  callVoid k.fnCleanup [k.ptr]
+  ret
+
+set_option maxRecDepth 4096 in
+def clifIrSource : String := buildProgram do
+  -- Declare FFI functions
+  let fnFileRead ← declareFFI "cl_file_read" [.i64, .i64, .i64, .i64, .i64] (some .i64)
+  let fnLmdbInit ← declareFFI "cl_lmdb_init" [.i64] none
+  let fnLmdbOpen ← declareFFI "cl_lmdb_open" [.i64, .i64, .i32] (some .i32)
+  let fnBeginTxn ← declareFFI "cl_lmdb_begin_write_txn" [.i64, .i32] (some .i32)
+  let fnLmdbPut ← declareFFI "cl_lmdb_put" [.i64, .i32, .i64, .i32, .i64, .i32] (some .i32)
+  let fnCommitTxn ← declareFFI "cl_lmdb_commit_write_txn" [.i64, .i32] (some .i32)
+  let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
+  let fnFileWrite ← declareFFI "cl_file_write" [.i64, .i64, .i64, .i64, .i64] (some .i64)
+  let fnCleanup ← declareFFI "cl_lmdb_cleanup" [.i64] none
+
+  -- Entry block first so it gets block0
+  let ptr ← entryBlock
+
+  -- Forward-declare all blocks
+  let empLoop    ← declareBlock [.i64, .i64]
+  let empScan    ← declareBlock [.i64]
+  let empAdvance ← declareBlock []
+  let empPut     ← declareBlock []
+  let empDone    ← declareBlock []
+  let deptLoop   ← declareBlock [.i64, .i64]
+  let deptScan   ← declareBlock [.i64]
+  let deptAdv    ← declareBlock []
+  let deptPut    ← declareBlock []
+  let deptDone   ← declareBlock []
+  let scanHdr    ← declareBlock [.i64, .i64, .i64]
+  let scanBody   ← declareBlock []
+  let scanDone   ← declareBlock []
+  let filterHdr  ← declareBlock [.i64, .i64, .i64]
+  let filterParse ← declareBlock []
+  let substrScan ← declareBlock [.i64]
+  let substrCmp  ← declareBlock [.i64]
+  let substrByte ← declareBlock []
+  let filterMatch ← declareBlock []
+  let substrAdv  ← declareBlock []
+  let filterSkip ← declareBlock []
+  let filterDone ← declareBlock []
+  let joinHdr    ← declareBlock [.i64, .i64, .i64]
+  let joinBody   ← declareBlock []
+  let joinDone   ← declareBlock []
+
+  -- Setup instructions (emitted into entry block0)
+  let empCsvOff ← iconst64 empCsvPath_off
+  let empBufOff ← iconst64 empBuf_off
+  let zero ← iconst64 0
+  let empSize ← call fnFileRead [ptr, empCsvOff, empBufOff, zero, zero]
+  let deptCsvOff ← iconst64 deptCsvPath_off
+  let deptBufOff ← iconst64 deptBuf_off
+  let deptSize ← call fnFileRead [ptr, deptCsvOff, deptBufOff, zero, zero]
+  callVoid fnLmdbInit [ptr]
+  let empDbOff ← iconst64 empDbPath_off
+  let maxDbs ← iconst32 10
+  let empHandle ← call fnLmdbOpen [ptr, empDbOff, maxDbs]
+  let deptDbOff ← iconst64 deptDbPath_off
+  let deptHandle ← call fnLmdbOpen [ptr, deptDbOff, maxDbs]
+  let _ ← call fnBeginTxn [ptr, empHandle]
+  let one ← iconst64 1
+  let keyLen4 ← iconst32 4
+  let newline ← iconst64 10
+  let keyScrOff ← iconst64 keyScratch_off
+  jump empLoop.ref [zero, zero]
+
+  let k : K := {
+    ptr, zero, one, keyLen4, newline, keyScrOff,
+    empBufOff, deptBufOff, empSize, deptSize,
+    empHandle, deptHandle,
+    fnLmdbPut, fnCommitTxn, fnBeginTxn, fnCursorScan, fnFileWrite, fnCleanup
+  }
+
+  emitIngest k empLoop empScan empAdvance empPut empDone
+               deptLoop deptScan deptAdv deptPut deptDone
+
+  emitOutputPhases k deptDone
+    scanHdr scanBody scanDone
+    filterHdr filterParse
+    substrScan substrCmp substrByte
+    filterMatch substrAdv filterSkip filterDone
+    joinHdr joinBody joinDone
 
 -- ---------------------------------------------------------------------------
 -- Payload construction
