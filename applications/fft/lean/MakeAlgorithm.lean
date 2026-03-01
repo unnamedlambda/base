@@ -134,242 +134,206 @@ def fftShader : String :=
 -- 8. Write output file
 -- ---------------------------------------------------------------------------
 
-def clifIrSource : String :=
-  let inFname := toString inputFilename_off
-  let outFname := toString outputFilename_off
-  let inData := toString inputData_off
-  let bufA := toString bufA_off
-  let bufB := toString bufB_off
-  let metaOff := toString meta_off
-  let shOff := toString shader_off
-  let bdOff := toString bindDesc_off
-  let metaSzStr := toString metaSize
+set_option maxRecDepth 2048 in
+open AlgorithmLib.IR in
+def clifIrSource : String := buildProgram do
+  -- FFI declarations
+  let fnRead ← declareFileRead
+  let fnWrite ← declareFileWrite
+  let fnInit ← declareFFI "cl_gpu_init" [.i64] none
+  let fnBuf  ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
+  let fnUp   ← declareFFI "cl_gpu_upload" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnPipe ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
+  let fnDisp ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
+  let fnDl   ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnFree ← declareFFI "cl_gpu_cleanup" [.i64] none
 
-  -- noop function
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n\n" ++
-
-  -- orchestrator
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++                                   -- gpu_init, gpu_cleanup
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++                       -- gpu_create_buffer
-  "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++             -- gpu_create_pipeline
-  "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++             -- gpu_upload, gpu_download
-  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++        -- gpu_dispatch
-  "    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++        -- file_read, file_write
-  "    fn0 = %cl_file_read sig5\n" ++
-  "    fn1 = %cl_gpu_init sig0\n" ++
-  "    fn2 = %cl_gpu_create_buffer sig1\n" ++
-  "    fn3 = %cl_gpu_upload sig3\n" ++
-  "    fn4 = %cl_gpu_create_pipeline sig2\n" ++
-  "    fn5 = %cl_gpu_dispatch sig4\n" ++
-  "    fn6 = %cl_gpu_download sig3\n" ++
-  "    fn7 = %cl_gpu_cleanup sig0\n" ++
-  "    fn8 = %cl_file_write sig5\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-
-  -- Constants
-  "    v1 = iconst.i64 0\n" ++
-  "    v2 = iconst.i64 1\n" ++
-  "    v3 = iconst.i64 4\n" ++
-  "    v4 = iconst.i64 8\n" ++
+  let ptr ← entryBlock
+  let c0  ← iconst64 0
+  let c1  ← iconst64 1
+  let c4  ← iconst64 4
+  let c8  ← iconst64 8
 
   -- Step 1: Read input file
-  s!"    v10 = iconst.i64 {inFname}\n" ++
-  s!"    v11 = iconst.i64 {inData}\n" ++
-  "    v12 = call fn0(v0, v10, v11, v1, v1)\n" ++   -- v12 = bytes read
+  let inFnOff ← iconst64 inputFilename_off
+  let inDatOff ← iconst64 inputData_off
+  let bytesRead ← call fnRead [ptr, inFnOff, inDatOff, c0, c0]
 
-  -- Compute N = bytes_read / 8 (each complex is 2 × f32 = 8 bytes)
-  "    v13 = iconst.i64 3\n" ++
-  "    v14 = ushr v12, v13\n" ++                     -- N = bytes_read >> 3
+  -- Compute N = bytes_read / 8
+  let c3 ← iconst64 3
+  let bigN ← ushr bytesRead c3
 
-  -- Step 2: Bit-reverse permutation from inputData → bufA
-  -- For each index i in [0, N), compute bit-reversed index rev(i),
-  -- copy complex number from inputData[i] to bufA[rev(i)]
-  -- We need log2(N) bits. Compute log2(N) first.
-  -- log2(N): count trailing zeros of N (since N is power of 2)
-  -- Actually easier: loop from N, shift right until 1
-  "    jump block1(v14, v1)\n" ++  -- tmp = N, log2n = 0
+  -- Step 2: Compute log2(N) — loop: shift right until ≤ 1
+  let log2Hdr ← declareBlock [.i64, .i64]  -- tmp, log2n
+  let log2Body ← declareBlock []
+  let log2Done ← declareBlock [.i64]       -- log2n result
+  jump log2Hdr.ref [bigN, c0]
 
-  "\n" ++
-  -- Compute log2(N)
-  "block1(v20: i64, v21: i64):\n" ++  -- tmp, log2n
-  "    v22 = icmp ugt v20, v2\n" ++   -- tmp > 1?
-  "    brif v22, block2, block3(v21)\n" ++
+  startBlock log2Hdr
+  let tmp := log2Hdr.param 0
+  let log2n := log2Hdr.param 1
+  let cmpGt ← icmp .ugt tmp c1
+  brif cmpGt log2Body.ref [] log2Done.ref [log2n]
 
-  "\n" ++
-  "block2:\n" ++
-  "    v23 = ushr v20, v2\n" ++        -- tmp >> 1
-  "    v24 = iadd v21, v2\n" ++        -- log2n + 1
-  "    jump block1(v23, v24)\n" ++
+  startBlock log2Body
+  let tmp2 ← ushr tmp c1
+  let log2n2 ← iadd log2n c1
+  jump log2Hdr.ref [tmp2, log2n2]
 
-  "\n" ++
-  -- v30 = log2(N), now do bit-reverse permutation
-  "block3(v30: i64):\n" ++
-  s!"    v31 = iconst.i64 {bufA}\n" ++
-  "    jump block4(v1)\n" ++           -- i = 0
+  -- log2(N) computed, now bit-reverse permutation
+  startBlock log2Done
+  let log2Result := log2Done.param 0
+  let bufAOff ← iconst64 bufA_off
 
-  "\n" ++
-  -- Bit-reverse loop: for i in [0, N)
-  "block4(v40: i64):\n" ++            -- i
-  "    v41 = icmp uge v40, v14\n" ++  -- i >= N?
-  "    brif v41, block10, block5\n" ++
+  -- Outer loop: for i in [0, N)
+  let outerHdr ← declareBlock [.i64]    -- i
+  let outerBody ← declareBlock []
+  let gpuBlk ← declareBlock []          -- after permutation
+  jump outerHdr.ref [c0]
 
-  "\n" ++
-  -- Compute bit-reverse of v40 with v30 bits
-  "block5:\n" ++
-  "    jump block6(v40, v1, v1)\n" ++  -- val=i, rev=0, bit=0
+  startBlock outerHdr
+  let i := outerHdr.param 0
+  let iDone ← icmp .uge i bigN
+  brif iDone gpuBlk.ref [] outerBody.ref []
 
-  "\n" ++
-  "block6(v50: i64, v51: i64, v52: i64):\n" ++  -- val, rev, bit
-  "    v53 = icmp uge v52, v30\n" ++             -- bit >= log2n?
-  "    brif v53, block7(v51), block8\n" ++
+  -- Compute bit-reverse of i with log2Result bits
+  startBlock outerBody
+  let revHdr ← declareBlock [.i64, .i64, .i64]  -- val, rev, bit
+  let revBody ← declareBlock []
+  let revDone ← declareBlock [.i64]              -- final rev
+  jump revHdr.ref [i, c0, c0]
 
-  "\n" ++
-  "block8:\n" ++
-  "    v54 = band v50, v2\n" ++        -- val & 1
-  "    v55 = ishl v51, v2\n" ++        -- rev << 1
-  "    v56 = bor v55, v54\n" ++        -- rev = (rev << 1) | (val & 1)
-  "    v57 = ushr v50, v2\n" ++        -- val >> 1
-  "    v58 = iadd v52, v2\n" ++        -- bit + 1
-  "    jump block6(v57, v56, v58)\n" ++
+  startBlock revHdr
+  let val := revHdr.param 0
+  let rev := revHdr.param 1
+  let bit := revHdr.param 2
+  let bitDone ← icmp .uge bit log2Result
+  brif bitDone revDone.ref [rev] revBody.ref []
 
-  "\n" ++
+  startBlock revBody
+  let lsb ← band val c1
+  let revShift ← ishl rev c1
+  let revNew ← bor revShift lsb
+  let valShift ← ushr val c1
+  let bitNext ← iadd bit c1
+  jump revHdr.ref [valShift, revNew, bitNext]
+
   -- Copy inputData[i] (8 bytes) to bufA[rev]
-  "block7(v60: i64):\n" ++            -- rev
+  startBlock revDone
+  let revIdx := revDone.param 0
   -- src = inputData_off + i * 8
-  "    v61 = imul v40, v4\n" ++       -- i * 8 (v4 = 8)
-  "    v62 = iadd v11, v61\n" ++      -- inputData_off + i*8
-  "    v63 = iadd v0, v62\n" ++       -- absolute src
-
+  let iMul8 ← imul i c8
+  let srcOff ← iadd inDatOff iMul8
+  let srcAbs ← iadd ptr srcOff
   -- dst = bufA_off + rev * 8
-  "    v64 = imul v60, v4\n" ++       -- rev * 8
-  "    v65 = iadd v31, v64\n" ++      -- bufA_off + rev*8
-  "    v66 = iadd v0, v65\n" ++       -- absolute dst
+  let revMul8 ← imul revIdx c8
+  let dstOff ← iadd bufAOff revMul8
+  let dstAbs ← iadd ptr dstOff
+  -- Copy 8 bytes as two i32
+  let lo ← load32 srcAbs
+  store lo dstAbs
+  let srcHi ← iadd srcAbs c4
+  let dstHi ← iadd dstAbs c4
+  let hi ← load32 srcHi
+  store hi dstHi
+  let iNext ← iadd i c1
+  jump outerHdr.ref [iNext]
 
-  -- Copy 8 bytes (load as two i32, store as two i32)
-  "    v67 = load.i32 v63\n" ++       -- first 4 bytes (real)
-  "    store v67, v66\n" ++
-  "    v68 = iadd v63, v3\n" ++       -- src + 4 (v3 = 4)
-  "    v69 = iadd v66, v3\n" ++       -- dst + 4
-  "    v70 = load.i32 v68\n" ++       -- next 4 bytes (imag)
-  "    store v70, v69\n" ++
-
-  "    v71 = iadd v40, v2\n" ++       -- i + 1
-  "    jump block4(v71)\n" ++
-
-  "\n" ++
   -- Step 3: GPU init
-  "block10:\n" ++
-  "    call fn1(v0)\n" ++
+  startBlock gpuBlk
+  callVoid fnInit [ptr]
 
-  -- Align data size to multiple of 4
-  "    v100 = imul v14, v4\n" ++       -- N * 8 = actual data bytes
-  "    v101 = iconst.i64 3\n" ++
-  "    v102 = iadd v100, v101\n" ++
-  "    v103 = iconst.i64 -4\n" ++
-  "    v104 = band v102, v103\n" ++    -- aligned data size
+  -- Align data size to multiple of 4: (N*8 + 3) & ~3
+  let dataSz ← imul bigN c8
+  let c3_2 ← iconst64 3
+  let dataPad ← iadd dataSz c3_2
+  let cNeg4 ← iconst64 (-4)
+  let alignedSz ← band dataPad cNeg4
 
-  -- Create 3 buffers: buf_a (rw), buf_b (rw), meta (read)
-  "    v105 = call fn2(v0, v104)\n" ++  -- buf0 = buf_a
-  "    v106 = call fn2(v0, v104)\n" ++  -- buf1 = buf_b
-  s!"    v107 = iconst.i64 {metaSzStr}\n" ++
-  "    v108 = call fn2(v0, v107)\n" ++  -- buf2 = meta
+  -- Create 3 buffers
+  let buf0 ← call fnBuf [ptr, alignedSz]
+  let buf1 ← call fnBuf [ptr, alignedSz]
+  let metaSzC ← iconst64 metaSize
+  let buf2 ← call fnBuf [ptr, metaSzC]
 
   -- Write N into meta region
-  s!"    v109 = iconst.i64 {metaOff}\n" ++
-  "    v110 = iadd v0, v109\n" ++
-  "    v111 = ireduce.i32 v14\n" ++    -- N as i32
-  "    store v111, v110\n" ++
+  let metaOffC ← iconst64 meta_off
+  let metaAbs ← iadd ptr metaOffC
+  let nI32 ← ireduce32 bigN
+  store nI32 metaAbs
 
-  -- Upload buf_a data to GPU
-  "    v112 = call fn3(v0, v105, v31, v104)\n" ++
+  -- Upload buf_a
+  let _ ← call fnUp [ptr, buf0, bufAOff, alignedSz]
 
   -- Create pipeline (3 bindings)
-  s!"    v113 = iconst.i64 {shOff}\n" ++
-  s!"    v114 = iconst.i64 {bdOff}\n" ++
-  "    v115 = iconst.i32 3\n" ++
-  "    v116 = call fn4(v0, v113, v114, v115)\n" ++
+  let shOffC ← iconst64 shader_off
+  let bdOffC ← iconst64 bindDesc_off
+  let c3_i32 ← iconst32 3
+  let pipeId ← call fnPipe [ptr, shOffC, bdOffC, c3_i32]
 
-  -- Compute dispatch size: N/2 threads, workgroup_size=64
-  -- workgroups = ceil(N/2 / 64) = (N/2 + 63) / 64
-  "    v117 = ushr v14, v2\n" ++        -- N/2
-  "    v118 = iconst.i64 63\n" ++
-  "    v119 = iadd v117, v118\n" ++
-  "    v120 = iconst.i64 6\n" ++
-  "    v121 = ushr v119, v120\n" ++     -- workgroups = (N/2 + 63) >> 6
-  "    v122 = ireduce.i32 v121\n" ++    -- as i32
-  "    v123 = iconst.i32 1\n" ++
+  -- Compute dispatch size: ceil(N/2 / 64)
+  let halfN ← ushr bigN c1
+  let c63 ← iconst64 63
+  let halfPad ← iadd halfN c63
+  let c6 ← iconst64 6
+  let wgCount ← ushr halfPad c6
+  let wgCount32 ← ireduce32 wgCount
+  let one32 ← iconst32 1
 
-  -- Step 4: Loop log2(N) stages
-  "    jump block11(v1, v1)\n" ++       -- stage=0, direction=0
+  -- Step 4: Stage loop
+  let stageHdr ← declareBlock [.i64, .i64]   -- stage, direction
+  let stageBody ← declareBlock []
+  let downloadBlk ← declareBlock [.i64]      -- final direction
+  jump stageHdr.ref [c0, c0]
 
-  "\n" ++
-  -- Stage loop
-  "block11(v130: i64, v131: i64):\n" ++ -- stage, direction
-  "    v132 = icmp uge v130, v30\n" ++   -- stage >= log2(N)?
-  "    brif v132, block13(v131), block12\n" ++
+  startBlock stageHdr
+  let stage := stageHdr.param 0
+  let dir := stageHdr.param 1
+  let stageDone ← icmp .uge stage log2Result
+  brif stageDone downloadBlk.ref [dir] stageBody.ref []
 
-  "\n" ++
-  "block12:\n" ++
+  startBlock stageBody
   -- Write stage and direction into meta
-  "    v133 = iadd v110, v3\n" ++        -- meta_off + 4 (stage field)
-  "    v134 = ireduce.i32 v130\n" ++     -- stage as i32
-  "    store v134, v133\n" ++
-  "    v135 = iadd v133, v3\n" ++        -- meta_off + 8 (direction field)
-  "    v136 = ireduce.i32 v131\n" ++     -- direction as i32
-  "    store v136, v135\n" ++
-
+  let metaStage ← iadd metaAbs c4
+  let stageI32 ← ireduce32 stage
+  store stageI32 metaStage
+  let metaDir ← iadd metaStage c4
+  let dirI32 ← ireduce32 dir
+  store dirI32 metaDir
   -- Upload meta
-  "    v137 = call fn3(v0, v108, v109, v107)\n" ++
-
+  let _ ← call fnUp [ptr, buf2, metaOffC, metaSzC]
   -- Dispatch
-  "    v138 = call fn5(v0, v116, v122, v123, v123)\n" ++
-
-  -- Sync: download meta buffer to scratch area to force GPU completion
-  -- This ensures the dispatch finishes before next meta upload
-  "    v170 = iconst.i64 64\n" ++        -- scratch offset 0x40
-  "    v171 = call fn6(v0, v108, v170, v107)\n" ++
-
+  let _ ← call fnDisp [ptr, pipeId, wgCount32, one32, one32]
+  -- Sync: download meta to scratch to force GPU completion
+  let scratchOff ← iconst64 64
+  let _ ← call fnDl [ptr, buf2, scratchOff, metaSzC]
   -- Next stage, toggle direction
-  "    v139 = iadd v130, v2\n" ++        -- stage + 1
-  "    v140 = bxor v131, v2\n" ++        -- direction ^ 1
-  "    jump block11(v139, v140)\n" ++
+  let stageNext ← iadd stage c1
+  let dirNext ← bxor dir c1
+  jump stageHdr.ref [stageNext, dirNext]
 
-  "\n" ++
   -- Step 5: Download result
-  -- If direction == 0, result is in buf_a (last write went to buf_a)
-  -- Wait, direction tracks which direction the NEXT pass would use:
-  -- direction=0 means "read buf_a, write buf_b", so after toggling,
-  -- if we end with direction=0, last write was to buf_a (toggle from 1 to 0 means last was dir=1 → wrote to buf_a)
-  -- Actually: direction starts at 0. Stage 0: dir=0 → read A write B → toggle to 1
-  -- Stage 1: dir=1 → read B write A → toggle to 0
-  -- After all stages, direction tells us what the NEXT would be.
-  -- If direction=0 after loop: last was dir=1 → wrote to buf_a → download buf_a
-  -- If direction=1 after loop: last was dir=0 → wrote to buf_b → download buf_b
-  "block13(v150: i64):\n" ++            -- final direction
-  s!"    v151 = iconst.i64 {bufA}\n" ++
-  s!"    v152 = iconst.i64 {bufB}\n" ++
-  "    v153 = icmp eq v150, v1\n" ++    -- direction == 0? → result in buf_a
-  "    brif v153, block14(v151, v105), block14(v152, v106)\n" ++
+  -- direction==0 after loop → last was dir=1 → wrote to buf_a → download buf_a
+  -- direction==1 after loop → last was dir=0 → wrote to buf_b → download buf_b
+  startBlock downloadBlk
+  let finalDir := downloadBlk.param 0
+  let bufAOffC ← iconst64 bufA_off
+  let bufBOffC ← iconst64 bufB_off
+  let dirIsZero ← icmp .eq finalDir c0
+  -- Use brif to pass both dst_offset (i64) and gpu_buf_id (i32) to final block
+  let finalBlk ← declareBlock [.i64, .i32]  -- dst_off, gpu_buf_id
+  brif dirIsZero finalBlk.ref [bufAOffC, buf0] finalBlk.ref [bufBOffC, buf1]
 
-  "\n" ++
-  "block14(v160: i64, v161: i32):\n" ++ -- dst_off (relative), gpu_buf_id
-  -- Download from GPU to the chosen buffer region
-  "    v162 = call fn6(v0, v161, v160, v104)\n" ++
-
-  -- GPU cleanup
-  "    call fn7(v0)\n" ++
+  startBlock finalBlk
+  let dstOff2 := finalBlk.param 0
+  let bufId := finalBlk.param 1
+  let _ ← call fnDl [ptr, bufId, dstOff2, alignedSz]
+  callVoid fnFree [ptr]
 
   -- Step 6: Write output file
-  s!"    v163 = iconst.i64 {outFname}\n" ++
-  "    v164 = call fn8(v0, v163, v160, v1, v100)\n" ++
-
-  "    return\n" ++
-  "}\n"
+  let outFnOff ← iconst64 outputFilename_off
+  let _ ← call fnWrite [ptr, outFnOff, dstOff2, c0, dataSz]
+  ret
 
 -- ---------------------------------------------------------------------------
 -- Payload construction
