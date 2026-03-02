@@ -1,32 +1,45 @@
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use base_types::{BaseConfig, Algorithm};
 
-fn generate_algorithm(manifest_dir: &str, exe_name: &str, output_name: &str) {
+/// Extract JSON from Lean interpreter output, skipping any warning lines.
+fn extract_json(output: &str) -> &str {
+    // Our JSON always starts with '[' (toJsonPair produces an array)
+    match output.find("\n[") {
+        Some(pos) => &output[pos + 1..],
+        None => output.trim_start(),
+    }
+}
+
+fn generate_algorithm(manifest_dir: &str, lean_file: &Path, output_name: &str) {
+    // Use Lean interpreter directly — skips C compilation entirely.
     let output = Command::new("lake")
-        .args(&["exe", exe_name])
+        .args(&["env", "lean", "--run"])
+        .arg(lean_file)
         .current_dir(manifest_dir)
         .output()
-        .unwrap_or_else(|e| panic!("Failed to run lake exe {}: {}", exe_name, e));
+        .unwrap_or_else(|e| panic!("Failed to run Lean interpreter for {:?}: {}", lean_file, e));
 
     if !output.status.success() {
-        eprintln!("=== {} Generation Failed ===", exe_name);
+        eprintln!("=== Lean Interpretation Failed ({:?}) ===", lean_file);
         eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
         eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-        panic!("{} code generation failed", exe_name);
+        panic!("Lean code generation failed for {:?}", lean_file);
     }
 
-    let json_str = String::from_utf8(output.stdout)
+    let raw_output = String::from_utf8(output.stdout)
         .expect("Lean output was not valid UTF-8");
+    let json_str = extract_json(&raw_output);
 
     let out_dir = env::var("OUT_DIR").unwrap();
 
-    fs::write(format!("{}/{}.json", out_dir, output_name), &json_str)
+    fs::write(format!("{}/{}.json", out_dir, output_name), json_str)
         .expect("Failed to write debug JSON");
 
-    let pair: (BaseConfig, Algorithm) = serde_json::from_str(&json_str)
-        .unwrap_or_else(|e| panic!("BUILD FAILED: {} JSON does not match Rust (BaseConfig, Algorithm) structure: {}", exe_name, e));
+    let pair: (BaseConfig, Algorithm) = serde_json::from_str(json_str)
+        .unwrap_or_else(|e| panic!("BUILD FAILED: {} JSON does not match Rust (BaseConfig, Algorithm) structure: {}", output_name, e));
 
     let binary = bincode::serialize(&pair)
         .expect("Failed to serialize (BaseConfig, Algorithm) to bincode");
@@ -45,23 +58,11 @@ fn main() {
     println!("cargo:rerun-if-changed=../lean/AlgorithmLib.lean");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let lean_dir = Path::new(&manifest_dir).join("lean");
 
-    let lake_build = Command::new("lake")
-        .arg("build")
-        .current_dir(&manifest_dir)
-        .output()
-        .expect("Failed to run lake build");
-
-    if !lake_build.status.success() {
-        eprintln!("Lake build failed:");
-        eprintln!("stdout: {}", String::from_utf8_lossy(&lake_build.stdout));
-        eprintln!("stderr: {}", String::from_utf8_lossy(&lake_build.stderr));
-        panic!("Lake build failed");
-    }
-
-    generate_algorithm(&manifest_dir, "generate_csv", "csv_algorithm");
-    generate_algorithm(&manifest_dir, "generate_regex", "regex_algorithm");
-    generate_algorithm(&manifest_dir, "generate_json", "json_algorithm");
-    generate_algorithm(&manifest_dir, "generate_string_search", "strsearch_algorithm");
-    generate_algorithm(&manifest_dir, "generate_wordcount", "wc_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("CsvBenchAlgorithm.lean"), "csv_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("RegexBenchAlgorithm.lean"), "regex_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("JsonBenchAlgorithm.lean"), "json_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("StringSearchAlgorithm.lean"), "strsearch_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("WordCountAlgorithm.lean"), "wc_algorithm");
 }
