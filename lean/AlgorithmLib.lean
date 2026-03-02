@@ -162,7 +162,7 @@ structure FnRef where
 
 /-- Comparison condition codes -/
 inductive ICmpCond where
-  | eq | ne | uge | ugt | ult | slt | sgt
+  | eq | ne | uge | ugt | ule | ult | slt | sle | sgt | sge
   deriving Repr
 
 /-- A single CLIF instruction -/
@@ -469,9 +469,12 @@ def renderICmpCond : ICmpCond → String
   | .ne => "ne"
   | .uge => "uge"
   | .ugt => "ugt"
+  | .ule => "ule"
   | .ult => "ult"
   | .slt => "slt"
+  | .sle => "sle"
   | .sgt => "sgt"
+  | .sge => "sge"
 
 def renderArgs (vals : List Val) : String :=
   String.intercalate ", " (vals.map renderVal)
