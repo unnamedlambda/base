@@ -1,6 +1,7 @@
 import AlgorithmLib
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.Layout
 
 namespace Algorithm
 
@@ -16,42 +17,51 @@ namespace Algorithm
 --
 -- All 32-bit SHA-256 arithmetic done in i64 with band mask32 (0xFFFFFFFF).
 -- Only ireduce.i32 for stores.
---
--- Memory layout (all offsets relative to shared memory base v0):
---   [0x0000..0x0040)  reserved
---   [0x0040..0x0048)  scratch: file_size (i64)
---   [0x0048..0x0050)  scratch: padded_len (i64)
---   [0x0050..0x0058)  scratch: num_blocks (i64)
---   [0x0100..0x0200)  input filename (null-terminated, patched at runtime)
---   [0x0200..0x0300)  output filename "sha256_output.txt"
---   [0x0300..0x0342)  hex output buffer (64 hex chars + newline = 65 bytes)
---   [0x1000..0x10FF)  K constants (64 x u32 LE, in payload)
---   [0x1100..0x111F)  H initial state (8 x u32 LE, in payload)
---   [0x1120..0x113F)  H working state (8 x u32, runtime)
---   [0x1140..0x123F)  W message schedule (64 x u32 = 256 bytes)
---   [0x1240..0x124F)  hex lookup table "0123456789abcdef" (in payload)
---   [0x2000+)         file data + padding (up to 4MB + 128)
 -- ---------------------------------------------------------------------------
 
--- Memory region sizes
 def maxFileSize : Nat := 4 * 1024 * 1024  -- 4MB max input file
 
--- Offsets
-def reserved_off : Nat := 0x0000
-def fileSize_off : Nat := 0x0040
-def paddedLen_off : Nat := 0x0048
-def numBlocks_off : Nat := 0x0050
-def inputFilename_off : Nat := 0x0100
-def outputFilename_off : Nat := 0x0200
-def hexOutput_off : Nat := 0x0300
-def K_off : Nat := 0x1000
-def H_init_off : Nat := 0x1100
-def H_work_off : Nat := 0x1120
-def W_off : Nat := 0x1140
-def hexTable_off : Nat := 0x1240
-def fileData_off : Nat := 0x2000
+-- Typed field handles — the FieldTy is carried at the type level
+structure Fields where
+  reserved       : Fld (.bytes 64)
+  fileSize       : Fld .i64
+  paddedLen      : Fld .i64
+  numBlocks      : Fld .i64
+  inputFilename  : Fld (.bytes 256)
+  outputFilename : Fld (.bytes 256)
+  hexOutput      : Fld (.bytes 66)
+  K              : Fld (.bytes 256)
+  H_init         : Fld (.bytes 32)
+  H_work         : Fld (.bytes 32)
+  W              : Fld (.bytes 256)
+  hexTable       : Fld (.bytes 16)
+  fileData       : Fld (.bytes (maxFileSize + 128))
 
-def totalMemory : Nat := fileData_off + maxFileSize + 128
+-- Memory layout: all offsets computed sequentially by the Layout DSL.
+-- `field` returns a typed handle; no strings to get wrong.
+def mkLayout : Fields × LayoutMeta := Layout.build do
+  let reserved       ← field (.bytes 64)       -- [0x00, 0x40)  GPU ctx ptr etc.
+  let fileSize       ← field .i64              -- scratch: file_size
+  let paddedLen      ← field .i64              -- scratch: padded_len
+  let numBlocks      ← field .i64              -- scratch: num_blocks
+  skip 168                                      -- pad to 0x100
+  let inputFilename  ← field (.bytes 256)      -- input filename (patched at runtime)
+  let outputFilename ← field (.bytes 256)      -- output filename
+  let hexOutput      ← field (.bytes 66)       -- 64 hex chars + newline + padding
+  skip (0x1000 - 0x0342)                        -- pad to 0x1000
+  let K              ← field (.bytes 256)      -- K constants (64 x u32 LE)
+  let H_init         ← field (.bytes 32)       -- H initial state (8 x u32 LE)
+  let H_work         ← field (.bytes 32)       -- H working state (runtime)
+  let W              ← field (.bytes 256)      -- W message schedule (64 x u32)
+  let hexTable       ← field (.bytes 16)       -- "0123456789abcdef"
+  skip (0x2000 - 0x1250)                        -- pad to 0x2000
+  let fileData       ← field (.bytes (maxFileSize + 128))
+  pure { reserved, fileSize, paddedLen, numBlocks, inputFilename,
+         outputFilename, hexOutput, K, H_init, H_work, W, hexTable, fileData }
+
+def f : Fields := mkLayout.1
+def layoutMeta : LayoutMeta := mkLayout.2
+
 
 -- SHA-256 constants K[0..63]
 def kConstants : List UInt32 := [
@@ -118,7 +128,7 @@ def emitPadding (k : Consts) (fileSize : Val) : IRBuilder (Val × Val) := do
   let sum ← iadd fsp9 c63
   let paddedLen ← bandNot sum c63
 
-  storeAt k.ptr paddedLen_off paddedLen
+  fldStore k.ptr f.paddedLen paddedLen
 
   -- Zero bytes from file_size+1 to padded_len-8
   let zeroEnd ← isub paddedLen k.c8
@@ -181,14 +191,14 @@ def emitPadding (k : Consts) (fileSize : Val) : IRBuilder (Val × Val) := do
   -- Compute num_blocks = padded_len / 64
   let c6 ← iconst64 6
   let numBlocks ← ushr paddedLen c6
-  storeAt k.ptr numBlocks_off numBlocks
+  fldStore k.ptr f.numBlocks numBlocks
 
   pure (paddedLen, numBlocks)
 
 -- Step 3: Copy H_initial → H_working
 def emitCopyH (k : Consts) : IRBuilder Unit := do
-  let hInitBase ← iconst64 H_init_off
-  let hWorkBase ← iconst64 H_work_off
+  let hInitBase ← fldOffset f.H_init
+  let hWorkBase ← fldOffset f.H_work
   let copyHdr ← declareBlock [.i64]
   let ci := copyHdr.param 0
   let copyDone ← declareBlock []
@@ -240,7 +250,7 @@ def emitLoadW (k : Consts) (blkBase : Val) : IRBuilder Unit := do
   let or2 ← bor or1 s2
   let or3 ← bor or2 byte3
   let w32 ← ireduce32 or3
-  let wOffC ← iconst64 W_off
+  let wOffC ← fldOffset f.W
   let wRel ← iadd wOffC wi4
   let wAbs ← iadd k.ptr wRel
   store w32 wAbs
@@ -264,7 +274,7 @@ def emitExpandW (k : Consts) : IRBuilder Unit := do
   let c2 ← iconst64 2
   let im2 ← isub ei c2
   let im2x4 ← imul im2 k.c4
-  let wOff' ← iconst64 W_off
+  let wOff' ← fldOffset f.W
   let wi2Rel ← iadd wOff' im2x4
   let wi2Abs ← iadd k.ptr wi2Rel
   let wi2val ← uload32_64 wi2Abs
@@ -397,13 +407,13 @@ def emitCompressionRound (k : Consts) (blkIdx : Val)
   let ch ← bxor ef notEg
 
   -- Load K[round_i] and W[round_i]
-  let kBase ← iconst64 K_off
+  let kBase ← fldOffset f.K
   let ri4 ← imul ri k.c4
   let kRel ← iadd kBase ri4
   let kAbs ← iadd k.ptr kRel
   let kVal ← uload32_64 kAbs
 
-  let wBase ← iconst64 W_off
+  let wBase ← fldOffset f.W
   let wRiRel ← iadd wBase ri4
   let wRiAbs ← iadd k.ptr wRiRel
   let wVal ← uload32_64 wRiAbs
@@ -474,62 +484,53 @@ def emitAddBack (k : Consts) (addBackBlk : DeclaredBlock)
   let abG := addBackBlk.param 7
   let abH := addBackBlk.param 8
 
-  let hBase ← iconst64 H_work_off
-  let hAddr0 ← iadd k.ptr hBase
-  let oldH0 ← uload32_64 hAddr0
+  let oldH0 ← fldLoad32At k.ptr f.H_work 0
   let newH0 ← iadd oldH0 abA
   let mH0 ← band newH0 k.mask32
   let rH0 ← ireduce32 mH0
-  store rH0 hAddr0
+  fldStore32At k.ptr f.H_work 0 rH0
 
-  let hAddr1 ← iadd hAddr0 k.c4
-  let oldH1 ← uload32_64 hAddr1
+  let oldH1 ← fldLoad32At k.ptr f.H_work 4
   let newH1 ← iadd oldH1 abB
   let mH1 ← band newH1 k.mask32
   let rH1 ← ireduce32 mH1
-  store rH1 hAddr1
+  fldStore32At k.ptr f.H_work 4 rH1
 
-  let hAddr2 ← iadd hAddr1 k.c4
-  let oldH2 ← uload32_64 hAddr2
+  let oldH2 ← fldLoad32At k.ptr f.H_work 8
   let newH2 ← iadd oldH2 abC
   let mH2 ← band newH2 k.mask32
   let rH2 ← ireduce32 mH2
-  store rH2 hAddr2
+  fldStore32At k.ptr f.H_work 8 rH2
 
-  let hAddr3 ← iadd hAddr2 k.c4
-  let oldH3 ← uload32_64 hAddr3
+  let oldH3 ← fldLoad32At k.ptr f.H_work 12
   let newH3 ← iadd oldH3 abD
   let mH3 ← band newH3 k.mask32
   let rH3 ← ireduce32 mH3
-  store rH3 hAddr3
+  fldStore32At k.ptr f.H_work 12 rH3
 
-  let hAddr4 ← iadd hAddr3 k.c4
-  let oldH4 ← uload32_64 hAddr4
+  let oldH4 ← fldLoad32At k.ptr f.H_work 16
   let newH4 ← iadd oldH4 abE
   let mH4 ← band newH4 k.mask32
   let rH4 ← ireduce32 mH4
-  store rH4 hAddr4
+  fldStore32At k.ptr f.H_work 16 rH4
 
-  let hAddr5 ← iadd hAddr4 k.c4
-  let oldH5 ← uload32_64 hAddr5
+  let oldH5 ← fldLoad32At k.ptr f.H_work 20
   let newH5 ← iadd oldH5 abF
   let mH5 ← band newH5 k.mask32
   let rH5 ← ireduce32 mH5
-  store rH5 hAddr5
+  fldStore32At k.ptr f.H_work 20 rH5
 
-  let hAddr6 ← iadd hAddr5 k.c4
-  let oldH6 ← uload32_64 hAddr6
+  let oldH6 ← fldLoad32At k.ptr f.H_work 24
   let newH6 ← iadd oldH6 abG
   let mH6 ← band newH6 k.mask32
   let rH6 ← ireduce32 mH6
-  store rH6 hAddr6
+  fldStore32At k.ptr f.H_work 24 rH6
 
-  let hAddr7 ← iadd hAddr6 k.c4
-  let oldH7 ← uload32_64 hAddr7
+  let oldH7 ← fldLoad32At k.ptr f.H_work 28
   let newH7 ← iadd oldH7 abH
   let mH7 ← band newH7 k.mask32
   let rH7 ← ireduce32 mH7
-  store rH7 hAddr7
+  fldStore32At k.ptr f.H_work 28 rH7
 
   let nextBlkIdx ← iadd abBlkIdx k.c1
   jump outerHdr.ref [nextBlkIdx]
@@ -537,9 +538,9 @@ def emitAddBack (k : Consts) (addBackBlk : DeclaredBlock)
 -- Step 6: Hex formatting and file output
 def emitHexFormat (k : Consts) (fnWrite : FnRef) (hexBlk : DeclaredBlock) : IRBuilder Unit := do
   startBlock hexBlk
-  let hWorkC ← iconst64 H_work_off
-  let hexOutC ← iconst64 hexOutput_off
-  let hexTblC ← iconst64 hexTable_off
+  let hWorkC ← fldOffset f.H_work
+  let hexOutC ← fldOffset f.hexOutput
+  let hexTblC ← fldOffset f.hexTable
 
   let hexOuter ← declareBlock [.i64, .i64]
   let hwi := hexOuter.param 0
@@ -610,8 +611,8 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) (hexBlk : DeclaredBlock) : IRBu
   let nlChar ← iconst64 10
   istore8 nlChar nlAbs
   let outLen ← iadd totalChars k.c1
-  let outFname ← iconst64 outputFilename_off
-  let outData ← iconst64 hexOutput_off
+  let outFname ← fldOffset f.outputFilename
+  let outData ← fldOffset f.hexOutput
   let _ ← call fnWrite [k.ptr, outFname, outData, k.zero, outLen]
   ret
 
@@ -624,10 +625,10 @@ def clifIrSource : String := buildProgram do
   let ptr ← entryBlock
 
   -- Step 1: Read input file
-  let fileSize ← readFile ptr fnRead inputFilename_off fileData_off
-  let dataOff ← iconst64 fileData_off
+  let fileSize ← fldReadFile ptr fnRead f.inputFilename f.fileData
+  let dataOff ← fldOffset f.fileData
   let zero ← iconst64 0
-  storeAt ptr fileSize_off fileSize
+  fldStore ptr f.fileSize fileSize
 
   -- Common constants
   let c1 ← iconst64 1
@@ -674,24 +675,15 @@ def clifIrSource : String := buildProgram do
   -- Expand W[16..63]
   emitExpandW k
 
-  -- Init working vars a-h
-  let hW ← iconst64 H_work_off
-  let hWA ← iadd ptr hW
-  let va ← uload32_64 hWA
-  let hWA1 ← iadd hWA c4
-  let vb ← uload32_64 hWA1
-  let hWA2 ← iadd hWA1 c4
-  let vc ← uload32_64 hWA2
-  let hWA3 ← iadd hWA2 c4
-  let vd ← uload32_64 hWA3
-  let hWA4 ← iadd hWA3 c4
-  let ve ← uload32_64 hWA4
-  let hWA5 ← iadd hWA4 c4
-  let vf ← uload32_64 hWA5
-  let hWA6 ← iadd hWA5 c4
-  let vg ← uload32_64 hWA6
-  let hWA7 ← iadd hWA6 c4
-  let vh ← uload32_64 hWA7
+  -- Init working vars a-h (bounds-checked at compile time: 0..28 + 4 ≤ 32)
+  let va ← fldLoad32At ptr f.H_work 0
+  let vb ← fldLoad32At ptr f.H_work 4
+  let vc ← fldLoad32At ptr f.H_work 8
+  let vd ← fldLoad32At ptr f.H_work 12
+  let ve ← fldLoad32At ptr f.H_work 16
+  let vf ← fldLoad32At ptr f.H_work 20
+  let vg ← fldLoad32At ptr f.H_work 24
+  let vh ← fldLoad32At ptr f.H_work 28
 
   -- 64-round compression
   let addBackBlk ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
@@ -704,36 +696,17 @@ def clifIrSource : String := buildProgram do
   emitHexFormat k fnWrite hexBlk
 
 -- ---------------------------------------------------------------------------
--- Payload construction
+-- Payload construction (generated from layout)
 -- ---------------------------------------------------------------------------
 
 def payloads : List UInt8 :=
-  let reserved := zeros inputFilename_off
-  -- Input filename placeholder (will be patched at runtime)
-  let inputFname := padTo (stringToBytes "input.bin") (outputFilename_off - inputFilename_off)
-  -- Output filename
-  let outputFname := padTo (stringToBytes "sha256_output.txt") (hexOutput_off - outputFilename_off)
-  -- Hex output region (zeros, will be written at runtime)
-  let hexOutRegion := zeros (K_off - hexOutput_off)
-  -- K constants (64 x u32 LE)
-  let kBytes := (kConstants.map uint32ToBytes).flatten
-  -- Pad to H_init_off
-  let kPad := zeros (H_init_off - K_off - kBytes.length)
-  -- H initial values (8 x u32 LE)
-  let hBytes := (hInitial.map uint32ToBytes).flatten
-  -- Pad to H_work_off
-  let hPad := zeros (H_work_off - H_init_off - hBytes.length)
-  -- H working region (zeros, will be written at runtime)
-  let hWorkRegion := zeros (W_off - H_work_off)
-  -- W message schedule region (zeros)
-  let wRegion := zeros (hexTable_off - W_off)
-  -- Hex lookup table
-  let hexTable := "0123456789abcdef".toUTF8.toList
-  -- Pad to fileData_off
-  let hexPad := zeros (fileData_off - hexTable_off - hexTable.length)
-  reserved ++ inputFname ++ outputFname ++ hexOutRegion ++
-    kBytes ++ kPad ++ hBytes ++ hPad ++ hWorkRegion ++ wRegion ++
-    hexTable ++ hexPad
+  mkPayload f.fileData.offset [
+    f.inputFilename.init (stringToBytes "input.bin"),
+    f.outputFilename.init (stringToBytes "sha256_output.txt"),
+    f.K.init ((kConstants.map uint32ToBytes).flatten),
+    f.H_init.init ((hInitial.map uint32ToBytes).flatten),
+    f.hexTable.init ("0123456789abcdef".toUTF8.toList)
+  ]
 
 -- ---------------------------------------------------------------------------
 -- Configuration
@@ -741,7 +714,7 @@ def payloads : List UInt8 :=
 
 def sha256Config : BaseConfig := {
   cranelift_ir := clifIrSource,
-  memory_size := totalMemory,
+  memory_size := layoutMeta.totalSize,
   context_offset := 0
 }
 

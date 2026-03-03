@@ -129,6 +129,120 @@ def int32ToBytes (n : Int) : List UInt8 :=
   uint32ToBytes u
 
 -- ===========================================================================
+-- Memory Layout DSL (with typed field handles)
+-- ===========================================================================
+
+namespace Layout
+
+/-- Field types with statically known sizes -/
+inductive FieldTy where
+  | u8                          -- 1 byte
+  | i32                         -- 4 bytes
+  | i64                         -- 8 bytes
+  | bytes (n : Nat)             -- fixed-size byte region
+  deriving Repr, BEq
+
+/-- Size in bytes of a field type -/
+def FieldTy.size : FieldTy → Nat
+  | .u8 => 1
+  | .i32 => 4
+  | .i64 => 8
+  | .bytes n => n
+
+/-- A typed field handle. The FieldTy parameter is carried at the type level,
+    so you can't accidentally use an i32 field where i64 is expected.
+    The offset is computed by the layout builder — no manual hex constants. -/
+structure Fld (t : FieldTy) where
+  offset : Nat
+  deriving Repr
+
+/-- Type-erased field handle for payload initialization -/
+structure AnyFld where
+  offset : Nat
+  ty : FieldTy
+
+/-- Erase the type parameter from a field handle -/
+def Fld.toAny (f : Fld t) : AnyFld := { offset := f.offset, ty := t }
+
+/-- Layout builder state -/
+structure BuilderState where
+  fields : List AnyFld := []    -- accumulated fields (in order)
+  cursor : Nat := 0             -- next free byte offset
+
+/-- Layout builder monad -/
+abbrev LayoutBuilder := StateM BuilderState
+
+/-- Skip to an absolute offset. Fails silently if cursor is already past it. -/
+def skipTo (offset : Nat) : LayoutBuilder Unit :=
+  modify fun s => { s with cursor := max s.cursor offset }
+
+/-- Skip forward by n bytes -/
+def skip (n : Nat) : LayoutBuilder Unit :=
+  modify fun s => { s with cursor := s.cursor + n }
+
+/-- Add a field at the current cursor position. Returns a typed handle. -/
+def field (ty : FieldTy) : LayoutBuilder (Fld ty) :=
+  modifyGet fun s =>
+    let f : Fld ty := { offset := s.cursor }
+    (f, { fields := s.fields ++ [f.toAny], cursor := s.cursor + ty.size })
+
+/-- Add a field at a specific absolute offset. Returns a typed handle. -/
+def fieldAt (ty : FieldTy) (offset : Nat) : LayoutBuilder (Fld ty) :=
+  modifyGet fun s =>
+    let f : Fld ty := { offset }
+    (f, { fields := s.fields ++ [f.toAny], cursor := max s.cursor (offset + ty.size) })
+
+-- -------------------------------------------------------------------------
+-- Layout finalization
+-- -------------------------------------------------------------------------
+
+/-- A finalized memory layout with total size -/
+structure LayoutMeta where
+  totalSize : Nat
+  deriving Repr
+
+/-- Run a layout builder, return both the builder's result and the layout metadata -/
+def build (builder : LayoutBuilder α) : α × LayoutMeta :=
+  let (a, st) := builder.run {}
+  (a, { totalSize := st.cursor })
+
+-- -------------------------------------------------------------------------
+-- Payload generation
+-- -------------------------------------------------------------------------
+
+/-- A payload initializer: typed field handle + byte content -/
+structure FieldInit where
+  offset : Nat
+  bytes : List UInt8
+  deriving Inhabited
+
+/-- Create a payload initializer from a typed field handle.
+    Panics at build time if `bytes` exceeds the field's declared size. -/
+def Fld.init (_f : Fld t) (bytes : List UInt8) : FieldInit :=
+  if bytes.length > t.size then
+    panic! s!"Fld.init: {bytes.length} bytes exceeds field size {t.size}"
+  else
+    { offset := _f.offset, bytes }
+
+/-- Write bytes into a list at a given offset -/
+private def writeBytesAux (buf : List UInt8) (pos : Nat) (bytes : List UInt8) (limit : Nat) : List UInt8 :=
+  match bytes with
+  | [] => buf
+  | b :: rest =>
+    if pos < limit then
+      writeBytesAux (buf.set pos b) (pos + 1) rest limit
+    else buf
+
+/-- Generate a payload byte list from a total size and field initializers.
+    Fields without initializers are zero-filled. -/
+def mkPayload (size : Nat) (inits : List FieldInit) : List UInt8 :=
+  let buf : List UInt8 := List.replicate size (0 : UInt8)
+  inits.foldl (init := buf) fun acc init =>
+    writeBytesAux acc init.offset init.bytes size
+
+end Layout
+
+-- ===========================================================================
 -- CLIF IR Builder DSL
 -- ===========================================================================
 
@@ -680,6 +794,98 @@ def declareLmdbFFI : IRBuilder LmdbSetup := do
   let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
   let fnCleanup ← declareFFI "cl_lmdb_cleanup" [.i64] none
   pure { fnInit, fnOpen, fnBeginWriteTxn, fnPut, fnCommitWriteTxn, fnCursorScan, fnCleanup }
+
+-- ---------------------------------------------------------------------------
+-- Layout-aware IR combinators (typed field handles)
+-- ---------------------------------------------------------------------------
+
+/-- Get a typed field's offset as an iconst64 value -/
+def fldOffset (f : Layout.Fld t) : IRBuilder Val :=
+  iconst64 f.offset
+
+/-- Get a typed field's absolute address: base + offset -/
+def fldAddr (base : Val) (f : Layout.Fld t) : IRBuilder Val :=
+  absAddr base f.offset
+
+/-- Proof witness that a FieldTy is a scalar (u8, i32, i64) — not a byte region.
+    Carries store/load implementations so the match is done per-instance, not generically. -/
+class Layout.IsScalar (t : Layout.FieldTy) where
+  scalarStore : Val → Val → IRBuilder Unit
+  scalarLoad  : Val → IRBuilder Val
+
+instance : Layout.IsScalar .u8 where
+  scalarStore val addr := istore8 val addr
+  scalarLoad  addr     := uload8_64 addr
+
+instance : Layout.IsScalar .i32 where
+  scalarStore val addr := store val addr
+  scalarLoad  addr     := uload32_64 addr
+
+instance : Layout.IsScalar .i64 where
+  scalarStore val addr := store val addr
+  scalarLoad  addr     := load64 addr
+
+/-- Store a value to a scalar field. Rejects `.bytes n` at the type level. -/
+def fldStore (base : Val) (f : Layout.Fld t) [inst : Layout.IsScalar t] (val : Val) : IRBuilder Unit := do
+  let addr ← fldAddr base f
+  inst.scalarStore val addr
+
+/-- Load a value from a scalar field. Rejects `.bytes n` at the type level. -/
+def fldLoad (base : Val) (f : Layout.Fld t) [inst : Layout.IsScalar t] : IRBuilder Val := do
+  let addr ← fldAddr base f
+  inst.scalarLoad addr
+
+/-- Store an i64 value at byte offset `i` within a `.bytes n` field.
+    Requires a proof that `i + 8 ≤ n` (the 8-byte store fits). -/
+def fldStoreAt (base : Val) (f : Layout.Fld (.bytes n)) (i : Nat) (val : Val)
+    (_h : i + 8 ≤ n := by omega) : IRBuilder Unit := do
+  let addr ← absAddr base (f.offset + i)
+  store val addr
+
+/-- Store a u8 value at byte offset `i` within a `.bytes n` field.
+    Requires a proof that `i < n` (the 1-byte store fits). -/
+def fldStore8At (base : Val) (f : Layout.Fld (.bytes n)) (i : Nat) (val : Val)
+    (_h : i + 1 ≤ n := by omega) : IRBuilder Unit := do
+  let addr ← absAddr base (f.offset + i)
+  istore8 val addr
+
+/-- Store an i32 value at byte offset `i` within a `.bytes n` field.
+    Requires a proof that `i + 4 ≤ n` (the 4-byte store fits). -/
+def fldStore32At (base : Val) (f : Layout.Fld (.bytes n)) (i : Nat) (val : Val)
+    (_h : i + 4 ≤ n := by omega) : IRBuilder Unit := do
+  let addr ← absAddr base (f.offset + i)
+  store val addr
+
+/-- Load an i64 value from byte offset `i` within a `.bytes n` field.
+    Requires a proof that `i + 8 ≤ n`. -/
+def fldLoadAt (base : Val) (f : Layout.Fld (.bytes n)) (i : Nat)
+    (_h : i + 8 ≤ n := by omega) : IRBuilder Val := do
+  let addr ← absAddr base (f.offset + i)
+  load64 addr
+
+/-- Load a u8 value (zero-extended to i64) from byte offset `i` within a `.bytes n` field.
+    Requires a proof that `i < n`. -/
+def fldLoad8At (base : Val) (f : Layout.Fld (.bytes n)) (i : Nat)
+    (_h : i + 1 ≤ n := by omega) : IRBuilder Val := do
+  let addr ← absAddr base (f.offset + i)
+  uload8_64 addr
+
+/-- Load an i32 value (zero-extended to i64) from byte offset `i` within a `.bytes n` field.
+    Requires a proof that `i + 4 ≤ n`. -/
+def fldLoad32At (base : Val) (f : Layout.Fld (.bytes n)) (i : Nat)
+    (_h : i + 4 ≤ n := by omega) : IRBuilder Val := do
+  let addr ← absAddr base (f.offset + i)
+  uload32_64 addr
+
+/-- Read a file using typed field handles for filename and data regions -/
+def fldReadFile (ptr : Val) (fnRead : FnRef)
+    (filenameFld : Layout.Fld ft) (dataFld : Layout.Fld dt) : IRBuilder Val :=
+  readFile ptr fnRead filenameFld.offset dataFld.offset
+
+/-- Write a file using typed field handles for filename and source regions -/
+def fldWriteFile0 (ptr : Val) (fnWrite : FnRef)
+    (filenameFld : Layout.Fld ft) (srcFld : Layout.Fld st) (size : Val) : IRBuilder Val :=
+  writeFile0 ptr fnWrite filenameFld.offset srcFld.offset size
 
 /-- The standard ClifCall action used by all applications -/
 def clifCallAction : Action := {

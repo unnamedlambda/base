@@ -2,6 +2,7 @@ import AlgorithmLib
 
 open Lean (Json)
 open AlgorithmLib
+open AlgorithmLib.Layout
 
 namespace Algorithm
 
@@ -108,38 +109,41 @@ def mandelbrotShader : String :=
   "}\n"
 
 -- ---------------------------------------------------------------------------
--- CLIF IR: GPU pipeline + file write
---
--- fn u0:0: noop (required by CraneliftUnit, never called)
--- fn u0:1: orchestrator
---   1. cl_gpu_init
---   2. cl_gpu_create_buffer (pixelBytes)
---   3. cl_gpu_create_pipeline (mandelbrot shader, 1 rw binding)
---   4. cl_gpu_dispatch (wg_x, wg_y, wg_z) — 2D dispatch
---   5. cl_gpu_download (pixels into payload)
---   6. cl_gpu_cleanup
---   7. cl_file_write (BMP header + pixel data)
---
--- No upload needed — shader generates all pixel data from scratch.
--- All sizes and offsets are CLIF iconst immediates (no payload loads).
+-- Memory layout (typed field handles)
 -- ---------------------------------------------------------------------------
 
--- Payload layout
-def hdrBase : Nat := 0x40          -- skip CraneliftHashTableContext at offset 0
-def bindDesc_off : Nat := 0x100    -- [buf_id=0 (i32), read_only=0 (i32)]
-def shader_off : Nat := 0x200      -- WGSL shader (null-terminated)
-def shaderRegionSize : Nat := 8192
-def filename_off : Nat := shader_off + shaderRegionSize
-def filenameRegionSize : Nat := 256
-def flag_off : Nat := filename_off + filenameRegionSize
-def clifIr_off : Nat := flag_off + 64
-def clifIrRegionSize : Nat := 4096
-def bmpHeader_off : Nat := clifIr_off + clifIrRegionSize
-def pixels_off : Nat := bmpHeader_off + 54
-def totalPayload : Nat := pixels_off + pixelBytes
+structure Fields where
+  reserved   : Fld (.bytes 64)
+  bindDesc   : Fld (.bytes 8)
+  shader     : Fld (.bytes 8192)
+  filename   : Fld (.bytes 256)
+  flag       : Fld (.bytes 64)
+  clifIr     : Fld (.bytes 4096)
+  bmpHeader  : Fld (.bytes 54)
+  pixels     : Fld (.bytes pixelBytes)
+
+def mkLayout : Fields × LayoutMeta := Layout.build do
+  let reserved  ← field (.bytes 64)       -- [0x00, 0x40)  GPU ctx ptr
+  skip 192                                 -- pad to 0x100
+  let bindDesc  ← field (.bytes 8)        -- [buf_id=0 (i32), read_only=0 (i32)]
+  skip 248                                 -- pad to 0x200
+  let shader    ← field (.bytes 8192)     -- WGSL shader (null-terminated)
+  let filename  ← field (.bytes 256)      -- output filename
+  let flag      ← field (.bytes 64)       -- sync flag
+  let clifIr    ← field (.bytes 4096)     -- CLIF IR region
+  let bmpHeader ← field (.bytes 54)       -- BMP file header
+  let pixels    ← field (.bytes pixelBytes)
+  pure { reserved, bindDesc, shader, filename, flag, clifIr, bmpHeader, pixels }
+
+def f : Fields := mkLayout.1
+def layoutMeta : LayoutMeta := mkLayout.2
 
 def wgX : Nat := imageWidth / 16    -- 256
 def wgY : Nat := imageHeight / 16   -- 256
+
+-- ---------------------------------------------------------------------------
+-- CLIF IR: GPU pipeline + file write
+-- ---------------------------------------------------------------------------
 
 open AlgorithmLib.IR in
 def clifIrSource : String := buildProgram do
@@ -149,51 +153,35 @@ def clifIrSource : String := buildProgram do
   callVoid gpu.fnInit [ptr]
   let dataSz ← iconst64 pixelBytes
   let bufId  ← call gpu.fnCreateBuffer [ptr, dataSz]
-  let shOff  ← iconst64 shader_off
-  let bdOff  ← iconst64 bindDesc_off
+  let shOff  ← fldOffset f.shader
+  let bdOff  ← fldOffset f.bindDesc
   let one32  ← iconst32 1
   let pipeId ← call gpu.fnCreatePipeline [ptr, shOff, bdOff, one32]
   let wgx    ← iconst32 wgX
   let wgy    ← iconst32 wgY
   let _      ← call gpu.fnDispatch [ptr, pipeId, wgx, wgy, one32]
-  let pxOff  ← iconst64 pixels_off
+  let pxOff  ← fldOffset f.pixels
   let _      ← call gpu.fnDownload [ptr, bufId, pxOff, dataSz]
   callVoid gpu.fnCleanup [ptr]
   let total  ← iconst64 (54 + pixelBytes)
-  let _      ← writeFile0 ptr fnWr filename_off bmpHeader_off total
+  let _      ← fldWriteFile0 ptr fnWr f.filename f.bmpHeader total
   ret
 
 -- ---------------------------------------------------------------------------
--- Payload construction
+-- Payload & config
 -- ---------------------------------------------------------------------------
 
 def payloads : List UInt8 :=
-  let reserved := zeros hdrBase
-  let hdrPad := zeros (bindDesc_off - hdrBase)
-  -- Binding descriptor at bindDesc_off: [buf_id=0 (i32), read_only=0 (i32)]
-  let bindDesc := uint32ToBytes 0 ++ uint32ToBytes 0
-  let bindPad := zeros (shader_off - bindDesc_off - 8)
-  let shaderBytes := padTo (stringToBytes mandelbrotShader) shaderRegionSize
-  let filenameBytes := padTo (stringToBytes "mandelbrot.bmp") filenameRegionSize
-  let flagBytes := uint64ToBytes 0
-  let flagPad := zeros (clifIr_off - flag_off - 8)
-  let clifPad := zeros clifIrRegionSize
-  let bmpBytes := bmpHeader
-  reserved ++ hdrPad ++
-  bindDesc ++ bindPad ++
-  shaderBytes ++ filenameBytes ++ flagBytes ++ flagPad ++
-  clifPad ++ bmpBytes
-
--- ---------------------------------------------------------------------------
--- Algorithm definition
---
--- Actions:
---   [0] ClifCall: synchronous call to CLIF fn 1
--- ---------------------------------------------------------------------------
+  mkPayload (f.bmpHeader.offset + 54) [
+    f.bindDesc.init (uint32ToBytes 0 ++ uint32ToBytes 0),
+    f.shader.init (stringToBytes mandelbrotShader),
+    f.filename.init (stringToBytes "mandelbrot.bmp"),
+    f.bmpHeader.init bmpHeader
+  ]
 
 def drawConfig : BaseConfig := {
   cranelift_ir := clifIrSource,
-  memory_size := payloads.length + pixelBytes,
+  memory_size := layoutMeta.totalSize,
   context_offset := 0
 }
 
