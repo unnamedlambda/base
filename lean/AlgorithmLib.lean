@@ -877,6 +877,28 @@ def fldLoad32At (base : Val) (f : Layout.Fld (.bytes n)) (i : Nat)
   let addr ← absAddr base (f.offset + i)
   uload32_64 addr
 
+/-- CUDA FFI function bundle -/
+structure CudaSetup where
+  fnInit : FnRef
+  fnCreateBuffer : FnRef
+  fnUpload : FnRef
+  fnDownload : FnRef
+  fnLaunch : FnRef
+  fnCleanup : FnRef
+
+/-- Declare all 6 CUDA FFI functions.
+    `cl_cuda_launch` takes: ptr, kernel_off, n_bufs, bind_off,
+    grid_x, grid_y, grid_z, block_x, block_y, block_z → i32 -/
+def declareCudaFFI : IRBuilder CudaSetup := do
+  let fnInit ← declareFFI "cl_cuda_init" [.i64] none
+  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer" [.i64, .i64] (some .i32)
+  let fnUpload ← declareFFI "cl_cuda_upload" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDownload ← declareFFI "cl_cuda_download" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnLaunch ← declareFFI "cl_cuda_launch"
+    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnCleanup ← declareFFI "cl_cuda_cleanup" [.i64] none
+  pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnLaunch, fnCleanup }
+
 /-- Read a file using typed field handles for filename and data regions -/
 def fldReadFile (ptr : Val) (fnRead : FnRef)
     (filenameFld : Layout.Fld ft) (dataFld : Layout.Fld dt) : IRBuilder Val :=

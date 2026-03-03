@@ -5977,3 +5977,714 @@ fn clif_parse_error_empty_ir_no_error() {
     let base = Base::new(config);
     assert!(base.is_ok());
 }
+
+#[test]
+fn test_clif_ffi_cuda_vec_add() {
+    // Full CUDA pipeline: init → create buffers → upload → launch PTX → download → verify.
+    // Adds two 64-element f32 vectors element-wise using a PTX kernel.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("cuda_vec_add_verify.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let n: usize = 64;
+    let data_bytes = n * 4; // 256 bytes per buffer
+
+    // PTX kernel: result[tid] = a[tid] + b[tid]
+    let ptx = "\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 a_ptr,
+    .param .u64 b_ptr,
+    .param .u64 result_ptr
+)
+{
+    .reg .u32 %r0;
+    .reg .u64 %ra, %rb, %rc, %off;
+    .reg .f32 %fa, %fb, %fr;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+
+    ld.param.u64 %ra, [a_ptr];
+    ld.param.u64 %rb, [b_ptr];
+    ld.param.u64 %rc, [result_ptr];
+
+    add.u64 %ra, %ra, %off;
+    add.u64 %rb, %rb, %off;
+    add.u64 %rc, %rc, %off;
+
+    ld.global.f32 %fa, [%ra];
+    ld.global.f32 %fb, [%rb];
+    add.f32 %fr, %fa, %fb;
+    st.global.f32 [%rc], %fr;
+
+    ret;
+}\0";
+
+    // Memory layout:
+    //    0..2000:  CLIF IR (in BaseConfig, not payload)
+    // 2000..2256:  verify file path
+    // 3000..3800:  PTX source (null-terminated)
+    // 3800..3812:  binding descriptors: 3 × i32 buf_ids = 12 bytes
+    // 4000..4256:  buffer A data (64 f32s)
+    // 4256..4512:  buffer B data (64 f32s)
+    // 4512..4768:  result download area (64 f32s)
+    let ptx_off = 3000;
+    let bind_off = 3800;
+    let a_off = 4000;
+    let b_off = 4256;
+    let result_off = 4512;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload sig2
+    fn3 = %cl_cuda_download sig2
+    fn4 = %cl_cuda_launch sig3
+    fn5 = %cl_cuda_cleanup sig0
+    fn6 = %cl_file_write sig4
+
+block0(v0: i64):
+    call fn0(v0)
+
+    ; create 3 buffers of {data_bytes} bytes each
+    v1 = iconst.i64 {data_bytes}
+    v2 = call fn1(v0, v1)
+    v3 = call fn1(v0, v1)
+    v4 = call fn1(v0, v1)
+
+    ; upload A from offset {a_off}
+    v5 = iconst.i64 {a_off}
+    v20 = call fn2(v0, v2, v5, v1)
+
+    ; upload B from offset {b_off}
+    v6 = iconst.i64 {b_off}
+    v21 = call fn2(v0, v3, v6, v1)
+
+    ; launch PTX kernel: ptx at {ptx_off}, 3 bufs, binds at {bind_off}
+    ; grid(1,1,1) block(64,1,1)
+    v7 = iconst.i64 {ptx_off}
+    v8 = iconst.i32 3
+    v9 = iconst.i64 {bind_off}
+    v10 = iconst.i32 1
+    v11 = iconst.i32 1
+    v12 = iconst.i32 1
+    v13 = iconst.i32 64
+    v14 = iconst.i32 1
+    v15 = iconst.i32 1
+    v22 = call fn4(v0, v7, v8, v9, v10, v11, v12, v13, v14, v15)
+
+    ; download result to offset {result_off}
+    v16 = iconst.i64 {result_off}
+    v23 = call fn3(v0, v4, v16, v1)
+
+    ; write result to verify file
+    v17 = iconst.i64 {file_off}
+    v18 = iconst.i64 0
+    v19 = call fn6(v0, v17, v16, v18, v1)
+
+    call fn5(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        a_off = a_off,
+        b_off = b_off,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        result_off = result_off,
+        file_off = 2000,
+    );
+
+    let mut payloads = vec![0u8; 8192];
+
+    // Verify file path
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    // PTX source (already null-terminated in the string literal)
+    let ptx_bytes = ptx.as_bytes();
+    payloads[ptx_off..ptx_off + ptx_bytes.len()].copy_from_slice(ptx_bytes);
+
+    // Binding descriptors: packed i32 buf_ids [0, 1, 2]
+    let bind = &mut payloads[bind_off..];
+    bind[0..4].copy_from_slice(&0i32.to_le_bytes());
+    bind[4..8].copy_from_slice(&1i32.to_le_bytes());
+    bind[8..12].copy_from_slice(&2i32.to_le_bytes());
+
+    // Fill buffer A: [1.0, 2.0, ..., 64.0]
+    for i in 0..n {
+        let val = (i + 1) as f32;
+        payloads[a_off + i * 4..a_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+    }
+    // Fill buffer B: [100.0, 100.0, ..., 100.0]
+    for i in 0..n {
+        let val = 100.0f32;
+        payloads[b_off + i * 4..b_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    let actions = vec![
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let (config, mut algorithm) =
+        create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    algorithm.timeout_ms = Some(15000);
+    run(config, algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), data_bytes, "Result file should be {} bytes", data_bytes);
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 + 100.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Mismatch at index {}: got {}, expected {}",
+            i, actual, expected
+        );
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_scalar_multiply() {
+    // In-place kernel: single buffer, multiply each f32 element by 3.0.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("cuda_scalar_mul.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let n: usize = 64;
+    let data_bytes = n * 4;
+
+    let ptx = "\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 data_ptr
+)
+{
+    .reg .u32 %r0;
+    .reg .u64 %rd, %off;
+    .reg .f32 %fv, %fc;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+
+    ld.param.u64 %rd, [data_ptr];
+    add.u64 %rd, %rd, %off;
+
+    ld.global.f32 %fv, [%rd];
+    mov.f32 %fc, 0f40400000;
+    mul.f32 %fv, %fv, %fc;
+    st.global.f32 [%rd], %fv;
+
+    ret;
+}\0";
+
+    let ptx_off = 3000;
+    let bind_off = 3800;
+    let data_off = 4000;
+    let result_off = 4512;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload sig2
+    fn3 = %cl_cuda_download sig2
+    fn4 = %cl_cuda_launch sig3
+    fn5 = %cl_cuda_cleanup sig0
+    fn6 = %cl_file_write sig4
+
+block0(v0: i64):
+    call fn0(v0)
+
+    v1 = iconst.i64 {data_bytes}
+    v2 = call fn1(v0, v1)
+
+    ; upload data
+    v3 = iconst.i64 {data_off}
+    v20 = call fn2(v0, v2, v3, v1)
+
+    ; launch: 1 buffer binding
+    v4 = iconst.i64 {ptx_off}
+    v5 = iconst.i32 1
+    v6 = iconst.i64 {bind_off}
+    v7 = iconst.i32 1
+    v8 = iconst.i32 64
+    v21 = call fn4(v0, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+
+    ; download
+    v9 = iconst.i64 {result_off}
+    v22 = call fn3(v0, v2, v9, v1)
+
+    ; write to file
+    v10 = iconst.i64 2000
+    v11 = iconst.i64 0
+    v23 = call fn6(v0, v10, v9, v11, v1)
+
+    call fn5(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        data_off = data_off,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        result_off = result_off,
+    );
+
+    let mut payloads = vec![0u8; 8192];
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let ptx_bytes = ptx.as_bytes();
+    payloads[ptx_off..ptx_off + ptx_bytes.len()].copy_from_slice(ptx_bytes);
+
+    // 1 binding: buf 0
+    payloads[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    // Data: [1.0, 2.0, ..., 64.0]
+    for i in 0..n {
+        let val = (i + 1) as f32;
+        payloads[data_off + i * 4..data_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    let actions = vec![
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let (config, mut algorithm) =
+        create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    algorithm.timeout_ms = Some(15000);
+    run(config, algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), data_bytes);
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 * 3.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Mismatch at index {}: got {}, expected {}",
+            i, actual, expected
+        );
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_multiple_launches() {
+    // Launch a multiply-by-2 kernel three times on the same buffer.
+    // Result: data * 2 * 2 * 2 = data * 8.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("cuda_multi_launch.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let n: usize = 64;
+    let data_bytes = n * 4;
+
+    let ptx = "\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 data_ptr
+)
+{
+    .reg .u32 %r0;
+    .reg .u64 %rd, %off;
+    .reg .f32 %fv;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+
+    ld.param.u64 %rd, [data_ptr];
+    add.u64 %rd, %rd, %off;
+
+    ld.global.f32 %fv, [%rd];
+    add.f32 %fv, %fv, %fv;
+    st.global.f32 [%rd], %fv;
+
+    ret;
+}\0";
+
+    let ptx_off = 3000;
+    let bind_off = 3800;
+    let data_off = 4000;
+    let result_off = 4512;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload sig2
+    fn3 = %cl_cuda_download sig2
+    fn4 = %cl_cuda_launch sig3
+    fn5 = %cl_cuda_cleanup sig0
+    fn6 = %cl_file_write sig4
+
+block0(v0: i64):
+    call fn0(v0)
+
+    v1 = iconst.i64 {data_bytes}
+    v2 = call fn1(v0, v1)
+
+    v3 = iconst.i64 {data_off}
+    v20 = call fn2(v0, v2, v3, v1)
+
+    ; launch 3 times
+    v4 = iconst.i64 {ptx_off}
+    v5 = iconst.i32 1
+    v6 = iconst.i64 {bind_off}
+    v7 = iconst.i32 1
+    v8 = iconst.i32 64
+    v21 = call fn4(v0, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v22 = call fn4(v0, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v23 = call fn4(v0, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+
+    v9 = iconst.i64 {result_off}
+    v24 = call fn3(v0, v2, v9, v1)
+
+    v10 = iconst.i64 2000
+    v11 = iconst.i64 0
+    v25 = call fn6(v0, v10, v9, v11, v1)
+
+    call fn5(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        data_off = data_off,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        result_off = result_off,
+    );
+
+    let mut payloads = vec![0u8; 8192];
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let ptx_bytes = ptx.as_bytes();
+    payloads[ptx_off..ptx_off + ptx_bytes.len()].copy_from_slice(ptx_bytes);
+
+    payloads[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    for i in 0..n {
+        let val = (i + 1) as f32;
+        payloads[data_off + i * 4..data_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+    }
+
+    let actions = vec![
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let (config, mut algorithm) =
+        create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    algorithm.timeout_ms = Some(15000);
+    run(config, algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), data_bytes);
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 * 8.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Mismatch at index {}: got {}, expected {} (after 3x multiply by 2)",
+            i, actual, expected
+        );
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_buffer_reuse() {
+    // Upload data A → launch → download result A, then re-upload data B → launch → download result B.
+    // Verifies buffer state is correctly updated on re-upload.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("cuda_reuse.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let n: usize = 64;
+    let data_bytes = n * 4;
+
+    // Kernel: data[tid] += 1.0
+    let ptx = "\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 data_ptr
+)
+{
+    .reg .u32 %r0;
+    .reg .u64 %rd, %off;
+    .reg .f32 %fv, %fc;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+
+    ld.param.u64 %rd, [data_ptr];
+    add.u64 %rd, %rd, %off;
+
+    ld.global.f32 %fv, [%rd];
+    mov.f32 %fc, 0f3F800000;
+    add.f32 %fv, %fv, %fc;
+    st.global.f32 [%rd], %fv;
+
+    ret;
+}\0";
+
+    let ptx_off = 3000;
+    let bind_off = 3800;
+    let data_a_off = 4000;
+    let data_b_off = 4300;
+    let result_a_off = 4600;
+    let result_b_off = result_a_off + data_bytes;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload sig2
+    fn3 = %cl_cuda_download sig2
+    fn4 = %cl_cuda_launch sig3
+    fn5 = %cl_cuda_cleanup sig0
+    fn6 = %cl_file_write sig4
+
+block0(v0: i64):
+    call fn0(v0)
+
+    v1 = iconst.i64 {data_bytes}
+    v2 = call fn1(v0, v1)
+
+    ; round 1: upload A, launch, download
+    v3 = iconst.i64 {data_a_off}
+    v20 = call fn2(v0, v2, v3, v1)
+    v4 = iconst.i64 {ptx_off}
+    v5 = iconst.i32 1
+    v6 = iconst.i64 {bind_off}
+    v7 = iconst.i32 1
+    v8 = iconst.i32 64
+    v21 = call fn4(v0, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v9 = iconst.i64 {result_a_off}
+    v22 = call fn3(v0, v2, v9, v1)
+
+    ; round 2: re-upload B, launch, download
+    v10 = iconst.i64 {data_b_off}
+    v23 = call fn2(v0, v2, v10, v1)
+    v24 = call fn4(v0, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v11 = iconst.i64 {result_b_off}
+    v25 = call fn3(v0, v2, v11, v1)
+
+    ; write both results to file
+    v12 = iconst.i64 2000
+    v13 = iconst.i64 0
+    v14 = iconst.i64 {two_data_bytes}
+    v26 = call fn6(v0, v12, v9, v13, v14)
+
+    call fn5(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        data_a_off = data_a_off,
+        data_b_off = data_b_off,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        result_a_off = result_a_off,
+        result_b_off = result_b_off,
+        two_data_bytes = data_bytes * 2,
+    );
+
+    let mut payloads = vec![0u8; 8192];
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    let ptx_bytes = ptx.as_bytes();
+    payloads[ptx_off..ptx_off + ptx_bytes.len()].copy_from_slice(ptx_bytes);
+
+    payloads[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    // Data A: all 10.0
+    for i in 0..n {
+        payloads[data_a_off + i * 4..data_a_off + i * 4 + 4].copy_from_slice(&10.0f32.to_le_bytes());
+    }
+    // Data B: all 100.0
+    for i in 0..n {
+        payloads[data_b_off + i * 4..data_b_off + i * 4 + 4].copy_from_slice(&100.0f32.to_le_bytes());
+    }
+
+    let actions = vec![
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let (config, mut algorithm) =
+        create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    algorithm.timeout_ms = Some(15000);
+    run(config, algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), data_bytes * 2);
+
+    // Result A: 10.0 + 1.0 = 11.0
+    for i in 0..n {
+        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - 11.0).abs() < 0.01,
+            "Result A index {}: got {}, expected 11.0", i, actual
+        );
+    }
+    // Result B: 100.0 + 1.0 = 101.0
+    for i in 0..n {
+        let off = data_bytes + i * 4;
+        let actual = f32::from_le_bytes(contents[off..off + 4].try_into().unwrap());
+        assert!(
+            (actual - 101.0).abs() < 0.01,
+            "Result B index {}: got {}, expected 101.0", i, actual
+        );
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_error_codes() {
+    // Verify FFI functions return -1 for invalid arguments.
+    let temp_dir = TempDir::new().unwrap();
+    let verify_file = temp_dir.path().join("cuda_errors.bin");
+    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+
+    let clif_ir =
+r#"function u0:0(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload sig2
+    fn3 = %cl_cuda_download sig2
+    fn4 = %cl_cuda_launch sig3
+    fn5 = %cl_cuda_cleanup sig0
+    fn6 = %cl_file_write sig4
+
+block0(v0: i64):
+    call fn0(v0)
+
+    ; create_buffer with size=0 → should return -1
+    v1 = iconst.i64 0
+    v2 = call fn1(v0, v1)
+    v20 = sextend.i64 v2
+    store.i64 v20, v0+4500
+
+    ; upload with buf_id=99 → should return -1
+    v3 = iconst.i32 99
+    v4 = iconst.i64 3000
+    v5 = iconst.i64 64
+    v6 = call fn2(v0, v3, v4, v5)
+    v21 = sextend.i64 v6
+    store.i64 v21, v0+4508
+
+    ; download with buf_id=99 → should return -1
+    v7 = call fn3(v0, v3, v4, v5)
+    v22 = sextend.i64 v7
+    store.i64 v22, v0+4516
+
+    ; launch with n_bufs=0 is valid but grid_x=0 → should return -1
+    v8 = iconst.i64 3500
+    v9 = iconst.i32 0
+    v10 = iconst.i64 3800
+    v11 = iconst.i32 1
+    v12 = call fn4(v0, v8, v9, v10, v9, v11, v11, v11, v11, v11)
+    v23 = sextend.i64 v12
+    store.i64 v23, v0+4524
+
+    ; create_buffer with size=-1 → should return -1
+    v13 = iconst.i64 -1
+    v14 = call fn1(v0, v13)
+    v24 = sextend.i64 v14
+    store.i64 v24, v0+4532
+
+    ; write 40 bytes of return values to verify file
+    v15 = iconst.i64 2000
+    v16 = iconst.i64 4500
+    v17 = iconst.i64 0
+    v18 = iconst.i64 40
+    v19 = call fn6(v0, v15, v16, v17, v18)
+
+    call fn5(v0)
+    return
+}
+"#;
+
+    let mut payloads = vec![0u8; 8192];
+    payloads[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
+
+    // Dummy null-terminated string at 3500 for the PTX source in launch test
+    payloads[3500] = b'x';
+    payloads[3501] = 0;
+
+    let actions = vec![
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+
+    let (config, mut algorithm) =
+        create_cranelift_algorithm(actions, payloads, 1, clif_ir.to_string());
+    algorithm.timeout_ms = Some(15000);
+    run(config, algorithm).unwrap();
+
+    let contents = fs::read(&verify_file).unwrap();
+    assert_eq!(contents.len(), 40);
+
+    let create_zero_rc = i64::from_le_bytes(contents[0..8].try_into().unwrap());
+    let upload_bad_rc = i64::from_le_bytes(contents[8..16].try_into().unwrap());
+    let download_bad_rc = i64::from_le_bytes(contents[16..24].try_into().unwrap());
+    let launch_bad_grid_rc = i64::from_le_bytes(contents[24..32].try_into().unwrap());
+    let create_neg_rc = i64::from_le_bytes(contents[32..40].try_into().unwrap());
+
+    assert_eq!(create_zero_rc, -1, "create_buffer(size=0) should return -1");
+    assert_eq!(upload_bad_rc, -1, "upload(buf_id=99) should return -1");
+    assert_eq!(download_bad_rc, -1, "download(buf_id=99) should return -1");
+    assert_eq!(launch_bad_grid_rc, -1, "launch(grid_x=0) should return -1");
+    assert_eq!(create_neg_rc, -1, "create_buffer(size=-1) should return -1");
+}

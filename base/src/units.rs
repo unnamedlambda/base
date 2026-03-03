@@ -512,6 +512,169 @@ unsafe extern "C" fn cl_gpu_cleanup(ptr: *mut u8) {
     drop(Box::from_raw(ctx_ptr));
 }
 
+struct CraneliftCudaContext {
+    device: std::sync::Arc<cudarc::driver::CudaDevice>,
+    buffers: Vec<cudarc::driver::CudaSlice<u8>>,
+}
+
+fn cached_cuda_device() -> std::sync::Arc<cudarc::driver::CudaDevice> {
+    use std::sync::OnceLock;
+    static CUDA: OnceLock<std::sync::Arc<cudarc::driver::CudaDevice>> = OnceLock::new();
+    CUDA.get_or_init(|| {
+        cudarc::driver::CudaDevice::new(0).expect("Failed to create CUDA device")
+    }).clone()
+}
+
+unsafe extern "C" fn cl_cuda_init(ptr: *mut u8) {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let device = cached_cuda_device();
+        let cuda_ctx = Box::new(CraneliftCudaContext {
+            device,
+            buffers: Vec::new(),
+        });
+        std::ptr::write_unaligned(
+            ptr as *mut *mut CraneliftCudaContext,
+            Box::into_raw(cuda_ctx),
+        );
+    }))
+    .expect("cl_cuda_init panicked");
+}
+
+unsafe extern "C" fn cl_cuda_create_buffer(ptr: *mut u8, size: i64) -> i32 {
+    if size <= 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        match ctx.device.alloc_zeros::<u8>(size as usize) {
+            Ok(buf) => {
+                let idx = ctx.buffers.len() as i32;
+                ctx.buffers.push(buf);
+                idx
+            }
+            Err(_) => -1,
+        }
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_cuda_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
+        match ctx.device.htod_sync_copy_into(data, &mut ctx.buffers[bid]) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_cuda_download(ptr: *mut u8, buf_id: i32, dst_off: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
+        match ctx.device.dtoh_sync_copy_into(&ctx.buffers[bid], dst) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    })).unwrap_or(-1)
+}
+
+/// Launch a PTX kernel.
+///
+/// - `kernel_off`: offset of null-terminated PTX source in shared memory
+/// - `n_bufs`: number of buffer arguments
+/// - `bind_off`: offset of packed i32 buffer IDs (4 bytes each)
+/// - `grid_x/y/z`: grid dimensions
+/// - `block_x/y/z`: block dimensions
+///
+/// The PTX must define `.entry main(...)` with `n_bufs` pointer parameters.
+unsafe extern "C" fn cl_cuda_launch(
+    ptr: *mut u8,
+    kernel_off: i64,
+    n_bufs: i32,
+    bind_off: i64,
+    grid_x: i32,
+    grid_y: i32,
+    grid_z: i32,
+    block_x: i32,
+    block_y: i32,
+    block_z: i32,
+) -> i32 {
+    if n_bufs < 0 || grid_x <= 0 || grid_y <= 0 || grid_z <= 0
+        || block_x <= 0 || block_y <= 0 || block_z <= 0
+    {
+        return -1;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+
+        // Read PTX source from shared memory
+        let ptx_src = read_cstr(ptr, kernel_off as usize);
+
+        // Use a hash of PTX source as module name so different kernels
+        // get different modules even on the same cached CudaDevice.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        ptx_src.hash(&mut hasher);
+        let module_name = format!("ptx_{:016x}", hasher.finish());
+        let func_name: &'static str = "main";
+        if !ctx.device.has_func(&module_name, func_name) {
+            let ptx = cudarc::nvrtc::Ptx::from_src(ptx_src);
+            if let Err(e) = ctx.device.load_ptx(ptx, &module_name, &[func_name]) {
+                eprintln!("cl_cuda_launch: load_ptx failed: {:?}", e);
+                return -1;
+            }
+        }
+        let func = match ctx.device.get_func(&module_name, func_name) {
+            Some(f) => f,
+            None => return -1,
+        };
+
+        // Build kernel args: cuLaunchKernel expects kernelParams[i] to be
+        // a pointer to the i-th argument value. For device-pointer params,
+        // the value is a CUdeviceptr (u64). We copy them into a local Vec
+        // so the addresses are guaranteed stable through the launch.
+        use cudarc::driver::DevicePtr;
+        let bind_base = ptr.add(bind_off as usize);
+        let mut dev_ptrs: Vec<cudarc::driver::sys::CUdeviceptr> = Vec::with_capacity(n_bufs as usize);
+        for i in 0..n_bufs as usize {
+            let buf_id = std::ptr::read_unaligned(bind_base.add(i * 4) as *const i32) as usize;
+            if buf_id >= ctx.buffers.len() { return -1; }
+            dev_ptrs.push(*ctx.buffers[buf_id].device_ptr());
+        }
+        let mut arg_ptrs: Vec<*mut std::ffi::c_void> = dev_ptrs
+            .iter_mut()
+            .map(|p| p as *mut cudarc::driver::sys::CUdeviceptr as *mut std::ffi::c_void)
+            .collect();
+
+        let cfg = cudarc::driver::LaunchConfig {
+            grid_dim: (grid_x as u32, grid_y as u32, grid_z as u32),
+            block_dim: (block_x as u32, block_y as u32, block_z as u32),
+            shared_mem_bytes: 0,
+        };
+        use cudarc::driver::LaunchAsync;
+        if let Err(e) = func.launch(cfg, &mut arg_ptrs) {
+            eprintln!("cl_cuda_launch: kernel launch failed: {:?}", e);
+            return -1;
+        }
+
+        match ctx.device.synchronize() {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_cuda_cleanup(ptr: *mut u8) {
+    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+    drop(Box::from_raw(ctx_ptr));
+}
+
 unsafe fn read_cstr(ptr: *mut u8, off: usize) -> String {
     let start = ptr.add(off);
     let mut len = 0;
@@ -1083,6 +1246,13 @@ pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Result<(cranelift_jit::
         builder.symbol("cl_gpu_dispatch", cl_gpu_dispatch as *const u8);
         builder.symbol("cl_gpu_download", cl_gpu_download as *const u8);
         builder.symbol("cl_gpu_cleanup", cl_gpu_cleanup as *const u8);
+
+        builder.symbol("cl_cuda_init", cl_cuda_init as *const u8);
+        builder.symbol("cl_cuda_create_buffer", cl_cuda_create_buffer as *const u8);
+        builder.symbol("cl_cuda_upload", cl_cuda_upload as *const u8);
+        builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
+        builder.symbol("cl_cuda_launch", cl_cuda_launch as *const u8);
+        builder.symbol("cl_cuda_cleanup", cl_cuda_cleanup as *const u8);
 
         builder.symbol("cl_file_read", cl_file_read as *const u8);
         builder.symbol("cl_file_write", cl_file_write as *const u8);

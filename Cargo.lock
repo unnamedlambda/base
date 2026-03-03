@@ -169,6 +169,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-native",
  "cranelift-reader",
+ "cudarc",
  "liblmdb-sys",
  "lmdb-zero",
  "pollster 0.3.0",

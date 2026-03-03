@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 base-types = { path = "../base-types" }
 wgpu = "0.20"
+cudarc = { version = "0.12", default-features = false, features = ["std", "driver", "cuda-12060"] }
 portable-atomic = "1"
 quanta = "0.12"
 pollster = "0.3"
