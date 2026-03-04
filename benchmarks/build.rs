@@ -54,6 +54,7 @@ fn main() {
     println!("cargo:rerun-if-changed=lean/JsonBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lean/StringSearchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lean/WordCountAlgorithm.lean");
+    println!("cargo:rerun-if-changed=lean/SaxpyBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lakefile.lean");
     println!("cargo:rerun-if-changed=../lean/AlgorithmLib.lean");
 
@@ -65,4 +66,5 @@ fn main() {
     generate_algorithm(&manifest_dir, &lean_dir.join("JsonBenchAlgorithm.lean"), "json_algorithm");
     generate_algorithm(&manifest_dir, &lean_dir.join("StringSearchAlgorithm.lean"), "strsearch_algorithm");
     generate_algorithm(&manifest_dir, &lean_dir.join("WordCountAlgorithm.lean"), "wc_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("SaxpyBenchAlgorithm.lean"), "saxpy_algorithm");
 }

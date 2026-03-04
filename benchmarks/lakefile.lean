@@ -25,3 +25,7 @@ lean_exe generate_string_search where
 lean_exe generate_wordcount where
   root := `WordCountAlgorithm
   supportInterpreter := true
+
+lean_exe generate_saxpy where
+  root := `SaxpyBenchAlgorithm
+  supportInterpreter := true

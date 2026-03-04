@@ -1,4 +1,5 @@
 mod csv_bench;
+mod cuda_bench;
 mod dispatch_bench;
 mod dynamic_bench;
 mod harness;
@@ -22,7 +23,7 @@ fn print_usage() {
     eprintln!("Usage: benchmarks [OPTIONS]");
     eprintln!();
     eprintln!("  --bench <name>     Benchmark to run: csv, json, regex, burn, vecops, reduction,");
-    eprintln!("                     dispatch, dynamic, gpu, gpu-iter, memory, network,");
+    eprintln!("                     dispatch, dynamic, gpu, gpu-iter, cuda, memory, network,");
     eprintln!("                     histogram, sort, strsearch, wc, all (default: all)");
     eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
     eprintln!("  --profile <p>      Profile: quick, medium, full (default: medium)");
@@ -101,6 +102,7 @@ fn main() {
     let run_dynamic = bench == "all" || bench == "dynamic";
     let run_gpu = bench == "all" || bench == "gpu";
     let run_gpu_iter = bench == "all" || bench == "gpu-iter";
+    let run_cuda = bench == "all" || bench == "cuda";
     let run_memory = bench == "all" || bench == "memory";
     let run_network = bench == "all" || bench == "network";
     let run_histogram = bench == "all" || bench == "histogram";
@@ -167,6 +169,11 @@ fn main() {
     if run_gpu_iter {
         let results = gpu_iter_bench::run(rounds);
         gpu_iter_bench::print_iter_table(&results);
+    }
+
+    if run_cuda {
+        let results = cuda_bench::run(rounds);
+        cuda_bench::print_cuda_table(&results);
     }
 
     if run_memory {
