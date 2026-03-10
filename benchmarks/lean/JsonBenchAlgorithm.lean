@@ -14,20 +14,18 @@ namespace JsonBench
   then parses following digits and sums them. No tree building.
 
   Memory layout:
-    0x0008  FLAG_FILE     (8 bytes)
-    0x0010  FLAG_CL       (8 bytes)
-    0x0020  INPUT_FILENAME  (256 bytes)
-    0x0120  OUTPUT_FILENAME (256 bytes)
+    0x0000  RESERVED        (40 bytes, managed)
+    0x0028  INPUT_FILENAME  (256 bytes)
+    0x0128  OUTPUT_FILENAME (256 bytes)
     0x0250  FILE_SIZE     (4 bytes, i32 LE)
     0x0350  OUTPUT_BUF    (64 bytes, itoa result)
     0x0400  CLIF_IR       (variable, null-terminated)
     0x4000  INPUT_DATA    (variable)
 -/
 
-def FLAG_FILE       : Nat := 0x0008
-def FLAG_CL         : Nat := 0x0010
-def INPUT_FILENAME  : Nat := 0x0020
-def OUTPUT_FILENAME : Nat := 0x0120
+def RESERVED_END    : Nat := 0x0028
+def INPUT_FILENAME  : Nat := 0x0028
+def OUTPUT_FILENAME : Nat := 0x0128
 def FILE_SIZE       : Nat := 0x0250
 def OUTPUT_BUF      : Nat := 0x0350
 def CLIF_IR_OFF     : Nat := 0x0400
@@ -171,7 +169,7 @@ def clifReadFn : String :=
   "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
   "  fn0 = %cl_file_read sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = iconst.i64 32\n" ++        -- INPUT_FILENAME
+  "  v1 = iconst.i64 40\n" ++        -- INPUT_FILENAME (0x0028)
   "  v2 = iconst.i64 16384\n" ++     -- INPUT_DATA
   "  v3 = iconst.i64 0\n" ++
   "  v4 = iconst.i64 0\n" ++
@@ -184,7 +182,7 @@ def clifWriteFn : String :=
   "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
   "  fn0 = %cl_file_write sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = iconst.i64 288\n" ++       -- OUTPUT_FILENAME
+  "  v1 = iconst.i64 296\n" ++       -- OUTPUT_FILENAME (0x0128)
   "  v2 = iconst.i64 848\n" ++       -- OUTPUT_BUF
   "  v3 = iconst.i64 0\n" ++
   "  v4 = iconst.i64 0\n" ++
@@ -199,23 +197,20 @@ def clifIRBytes : List UInt8 :=
   clifIR.toUTF8.toList ++ [0]
 
 def buildPayload : List UInt8 :=
-  let gap0         := zeros FLAG_FILE
-  let flagFile     := zeros 8
-  let flagCl       := zeros 8
-  let gap1         := zeros (INPUT_FILENAME - 0x0018)
-  let inputFile    := zeros 256
-  let outputFile   := zeros 256
-  let gap2         := zeros (FILE_SIZE - 0x0220)
+  let reserved     := zeros RESERVED_END         -- 0x0000..0x0027 (managed)
+  let inputFile    := zeros 256                  -- 0x0028..0x0127
+  let outputFile   := zeros 256                  -- 0x0128..0x0227
+  let gap2         := zeros (FILE_SIZE - 0x0228)
   let fileSize     := zeros 4
   let gap3         := zeros (OUTPUT_BUF - 0x0254)
   let outputBuf    := zeros 64
   let gap4         := zeros (CLIF_IR_OFF - (OUTPUT_BUF + 64))
   let currentSize  :=
-    gap0.length + flagFile.length + flagCl.length + gap1.length +
+    reserved.length +
     inputFile.length + outputFile.length + gap2.length + fileSize.length +
     gap3.length + outputBuf.length + gap4.length
   let padding := if INPUT_DATA > currentSize then zeros (INPUT_DATA - currentSize) else []
-  gap0 ++ flagFile ++ flagCl ++ gap1 ++
+  reserved ++
     inputFile ++ outputFile ++ gap2 ++ fileSize ++
     gap3 ++ outputBuf ++ gap4 ++ padding
 

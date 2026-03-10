@@ -8,8 +8,8 @@ use crate::harness::{self, BenchResult};
 const REGEX_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/regex_algorithm.bin"));
 
 // Memory layout offsets (must match RegexBenchAlgorithm.lean)
-const INPUT_FILENAME: usize = 0x0020;
-const OUTPUT_FILENAME: usize = 0x0120;
+const INPUT_FILENAME: usize = 0x0028;
+const OUTPUT_FILENAME: usize = 0x0128;
 const FILE_SIZE: usize = 0x0250;
 const INPUT_DATA: usize = 0x4000;
 

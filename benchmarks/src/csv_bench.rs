@@ -8,8 +8,8 @@ use crate::harness::{self, BenchResult};
 const CSV_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csv_algorithm.bin"));
 
 // Memory layout offsets (must match CsvBenchAlgorithm.lean)
-const INPUT_FILENAME: usize = 0x0020;
-const OUTPUT_FILENAME: usize = 0x0120;
+const INPUT_FILENAME: usize = 0x0028;
+const OUTPUT_FILENAME: usize = 0x0128;
 const END_POS: usize = 0x02F0;
 const CSV_DATA: usize = 0x2000;
 

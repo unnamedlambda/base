@@ -15,10 +15,9 @@ namespace CsvBench
   This is the CPU analog of the GPU unit's WGSL shader compilation.
 
   Memory layout (shared between harness, file unit, and JIT code):
-    0x0008  FLAG_FILE     (8 bytes)
-    0x0010  FLAG_CL       (8 bytes, for cranelift dispatch)
-    0x0020  INPUT_FILENAME  (256 bytes, patched by harness)
-    0x0120  OUTPUT_FILENAME (256 bytes, patched by harness)
+    0x0000  RESERVED        (40 bytes, managed: context_ptr, data ptr/len, out ptr/len)
+    0x0028  INPUT_FILENAME  (256 bytes, patched by harness)
+    0x0128  OUTPUT_FILENAME (256 bytes, patched by harness)
     0x02F0  END_POS       (4 bytes i32, CSV byte count, patched by harness)
     0x0350  LEFT_VAL      (32 bytes, itoa result for FileWrite)
     0x0400  CLIF_IR       (null-terminated CLIF text, ~4KB)
@@ -26,9 +25,9 @@ namespace CsvBench
 -/
 
 -- Memory layout offsets
-def FLAG_FILE       : Nat := 0x0008
-def INPUT_FILENAME  : Nat := 0x0020
-def OUTPUT_FILENAME : Nat := 0x0120
+def RESERVED_END    : Nat := 0x0028
+def INPUT_FILENAME  : Nat := 0x0028
+def OUTPUT_FILENAME : Nat := 0x0128
 def END_POS         : Nat := 0x02F0
 def LEFT_VAL        : Nat := 0x0350
 def CLIF_IR_OFF     : Nat := 0x0400
@@ -223,7 +222,7 @@ def clifReadFn : String :=
   "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
   "  fn0 = %cl_file_read sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = iconst.i64 32\n" ++        -- INPUT_FILENAME
+  "  v1 = iconst.i64 40\n" ++        -- INPUT_FILENAME (0x0028)
   "  v2 = iconst.i64 8192\n" ++      -- CSV_DATA
   "  v3 = iconst.i64 0\n" ++
   "  v4 = iconst.i64 0\n" ++
@@ -236,7 +235,7 @@ def clifWriteFn : String :=
   "  sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
   "  fn0 = %cl_file_write sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = iconst.i64 288\n" ++       -- OUTPUT_FILENAME
+  "  v1 = iconst.i64 296\n" ++       -- OUTPUT_FILENAME (0x0128)
   "  v2 = iconst.i64 848\n" ++       -- LEFT_VAL
   "  v3 = iconst.i64 0\n" ++
   "  v4 = iconst.i64 0\n" ++
@@ -253,24 +252,21 @@ def clifIRBytes : List UInt8 :=
 
 -- Build payload
 def buildPayload : List UInt8 :=
-  let gap0         := zeros FLAG_FILE            -- 0x0000..0x0007
-  let flagFile     := zeros 8                    -- 0x0008..0x000F
-  let flagCl       := zeros 8                    -- 0x0010..0x0017
-  let gap_to_input := zeros 8                    -- 0x0018..0x001F
-  let inputFile    := zeros 256                  -- 0x0020..0x011F
-  let outputFile   := zeros 256                  -- 0x0120..0x021F
-  let gap1         := zeros (END_POS - 0x0220)   -- 0x0220..0x02EF
+  let reserved     := zeros RESERVED_END         -- 0x0000..0x0027 (runtime-managed)
+  let inputFile    := zeros 256                  -- 0x0028..0x0127
+  let outputFile   := zeros 256                  -- 0x0128..0x0227
+  let gap1         := zeros (END_POS - 0x0228)   -- 0x0228..0x02EF
   let endPos       := zeros 4                    -- 0x02F0..0x02F3
   let gap2         := zeros (LEFT_VAL - 0x02F4)  -- 0x02F4..0x034F
   let leftVal      := zeros 32                   -- 0x0350..0x036F
   let gap3         := zeros (CLIF_IR_OFF - 0x0370) -- 0x0370..0x03FF
   -- Pad to CSV_DATA start (0x2000 = 8192)
   let currentSize :=
-    gap0.length + flagFile.length + flagCl.length + gap_to_input.length +
+    reserved.length +
     inputFile.length + outputFile.length +
     gap1.length + endPos.length + gap2.length + leftVal.length + gap3.length
   let padding := if CSV_DATA > currentSize then zeros (CSV_DATA - currentSize) else []
-  gap0 ++ flagFile ++ flagCl ++ gap_to_input ++
+  reserved ++
     inputFile ++ outputFile ++
     gap1 ++ endPos ++ gap2 ++ leftVal ++ gap3 ++ padding
 

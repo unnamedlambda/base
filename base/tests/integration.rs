@@ -6703,24 +6703,19 @@ block0(v0: i64):
 }
 
 #[test]
-fn test_data_ptr_not_written_when_data_empty() {
-    // When data is empty, offsets 8-16 should NOT be overwritten.
-    // Seed those offsets with a known value in initial_memory,
-    // then verify CLIF sees the original values.
+fn test_data_ptr_written_even_when_data_empty() {
+    // Offsets 8-16 are always written — even with empty data.
+    // Seed those offsets with sentinels to verify they get overwritten.
     let clif_ir = r#"function u0:0(i64) system_v {
 block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v0+16
+    v1 = load.i64 v0+16
     store v1, v0+200
-    store v2, v0+208
     v3 = iconst.i64 1
-    store v3, v0+216
+    store v3, v0+208
     return
 }"#.to_string();
 
     let mut initial = vec![0u8; 4096];
-    // Seed offsets 8 and 16 with sentinel values
-    initial[8..16].copy_from_slice(&0xDEADBEEFu64.to_le_bytes());
     initial[16..24].copy_from_slice(&0xCAFEBABEu64.to_le_bytes());
 
     let config = BaseConfig {
@@ -6731,10 +6726,9 @@ block0(v0: i64):
     };
 
     let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 216,
+        row_count_offset: 208,
         columns: vec![
-            OutputColumn { name: "off8".to_string(), dtype: OutputType::I64, data_offset: 200, len_offset: 0 },
-            OutputColumn { name: "off16".to_string(), dtype: OutputType::I64, data_offset: 208, len_offset: 0 },
+            OutputColumn { name: "len".to_string(), dtype: OutputType::I64, data_offset: 200, len_offset: 0 },
         ],
     }];
     let alg = Algorithm {
@@ -6744,49 +6738,38 @@ block0(v0: i64):
         output: output_schema,
     };
 
-    // Pass empty data — should NOT clobber offsets 8, 16
     let batches = run(config, alg).unwrap();
-    let off8 = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-    let off16 = batches[0].column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-    assert_eq!(off8.value(0), 0xDEADBEEF_i64, "offset 8 should retain sentinel when data is empty");
-    assert_eq!(off16.value(0), 0xCAFEBABE_i64, "offset 16 should retain sentinel when data is empty");
+    let len = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(len.value(0), 0, "data_len should be 0 for empty data, sentinel overwritten");
 }
 
 #[test]
-fn test_out_ptr_not_written_when_out_empty() {
-    // When out is empty, offsets 24-32 should NOT be overwritten.
-    // Seed offsets 24, 32 with sentinels in initial_memory,
-    // pass non-empty data (which DOES write 8-16) but empty out.
+fn test_out_ptr_written_even_when_out_empty() {
+    // Offsets 24-32 are always written — even with empty out.
+    // Seed those offsets with sentinels to verify they get overwritten.
     let clif_ir = r#"function u0:0(i64) system_v {
 block0(v0: i64):
-    v1 = load.i64 v0+24
-    v2 = load.i64 v0+32
+    v1 = load.i64 v0+32
     store v1, v0+200
-    store v2, v0+208
     v3 = iconst.i64 1
-    store v3, v0+216
+    store v3, v0+208
     return
 }"#.to_string();
 
     let mut initial = vec![0u8; 4096];
-    initial[24..32].copy_from_slice(&0x11111111u64.to_le_bytes());
     initial[32..40].copy_from_slice(&0x22222222u64.to_le_bytes());
 
-    // Data is non-empty, so offsets 8-16 will get the data pointer written,
-    // but offsets 24/32 should remain untouched.
     let config = BaseConfig {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         context_offset: 0,
         initial_memory: initial,
     };
-    let mut base = Base::new(config).unwrap();
 
     let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 216,
+        row_count_offset: 208,
         columns: vec![
-            OutputColumn { name: "off24".to_string(), dtype: OutputType::I64, data_offset: 200, len_offset: 0 },
-            OutputColumn { name: "off32".to_string(), dtype: OutputType::I64, data_offset: 208, len_offset: 0 },
+            OutputColumn { name: "len".to_string(), dtype: OutputType::I64, data_offset: 200, len_offset: 0 },
         ],
     }];
     let alg = Algorithm {
@@ -6796,13 +6779,9 @@ block0(v0: i64):
         output: output_schema,
     };
 
-    // Pass non-empty data but execute (not execute_into) — out is empty
-    let data = vec![0u8; 8];
-    let batches = base.execute(&alg, &data).unwrap();
-    let off24 = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-    let off32 = batches[0].column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-    assert_eq!(off24.value(0), 0x11111111_i64, "offset 24 should retain sentinel when out is empty");
-    assert_eq!(off32.value(0), 0x22222222_i64, "offset 32 should retain sentinel when out is empty");
+    let batches = run(config, alg).unwrap();
+    let len = batches[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(len.value(0), 0, "out_len should be 0 for empty out, sentinel overwritten");
 }
 
 #[test]
@@ -7185,12 +7164,4 @@ block0(v0: i64):
     let l2 = b2[0].column(1).as_any().downcast_ref::<Int64Array>().unwrap();
     assert_eq!(v2.value(0), 22);
     assert_eq!(l2.value(0), 16, "data_len should reflect new buffer size");
-
-    // Call 3: empty data — pointers should NOT be updated, old values stay
-    let b3 = base.execute(&alg, &[]).unwrap();
-    let v3 = b3[0].column(0).as_any().downcast_ref::<Int64Array>().unwrap();
-    let l3 = b3[0].column(1).as_any().downcast_ref::<Int64Array>().unwrap();
-    // Pointers still point to data2's (now potentially dangling) location,
-    // but importantly len should still be 16 from previous call
-    assert_eq!(l3.value(0), 16, "empty data should not update data_len — stale from previous call");
 }

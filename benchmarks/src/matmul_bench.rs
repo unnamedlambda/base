@@ -61,14 +61,14 @@ fn burn_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> f64 {
 // CLIF IR: SIMD matmul with 4x-unrolled j-loop (16 cols/iter).
 // Inner loop uses 4 independent f32x4 accumulators for ILP.
 // Memory layout:
-//   0x0010: [4] M, 0x0014: [4] K, 0x0018: [4] N, 0x0020: [8] result (f64)
+//   0x0028: [4] M, 0x002C: [4] K, 0x0030: [4] N, 0x0038: [8] result (f64)
 //   0x4000: matrix A (M*K f32), then matrix B (K*N f32)
 const CLIF_MATMUL: &str = "\
 function %matmul(i64) system_v {
 block0(v0: i64):
-  v1 = load.i32 v0+16
-  v2 = load.i32 v0+20
-  v3 = load.i32 v0+24
+  v1 = load.i32 v0+40
+  v2 = load.i32 v0+44
+  v3 = load.i32 v0+48
   v4 = sextend.i64 v1
   v5 = sextend.i64 v2
   v6 = sextend.i64 v3
@@ -158,7 +158,7 @@ block8(v130: i64, v131: f64):
   jump block1(v132, v131)
 
 block9(v140: f64):
-  v141 = iconst.i64 32
+  v141 = iconst.i64 56
   v142 = iadd v0, v141
   store.f64 v140, v142
   return
@@ -171,9 +171,9 @@ fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> (bas
     let mem_size = DATA_OFF + (m * k + k * n) * 4;
     let mut memory = vec![0u8; mem_size];
 
-    memory[0x10..0x14].copy_from_slice(&(m as u32).to_le_bytes());
-    memory[0x14..0x18].copy_from_slice(&(k as u32).to_le_bytes());
-    memory[0x18..0x1C].copy_from_slice(&(n as u32).to_le_bytes());
+    memory[0x28..0x2C].copy_from_slice(&(m as u32).to_le_bytes());
+    memory[0x2C..0x30].copy_from_slice(&(k as u32).to_le_bytes());
+    memory[0x30..0x34].copy_from_slice(&(n as u32).to_le_bytes());
 
     let ir = CLIF_MATMUL.as_bytes();
     memory[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);

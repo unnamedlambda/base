@@ -231,12 +231,12 @@ fn main(
 // compiled function. Generic IR parameterized by memory layout.
 // ---------------------------------------------------------------------------
 
-// CLIF memory layout (GPU context pointer at offset 0)
-const CLIF_DSIZE_OFF: usize = 0x08;       // i64: GPU buffer size in bytes
-const CLIF_WORKGROUPS_OFF: usize = 0x10;   // i64: workgroups for dispatch
-const CLIF_FSRC_OFF: usize = 0x18;         // i64: file_write source offset (absolute)
-const CLIF_FSIZE_OFF: usize = 0x20;        // i64: file_write size in bytes
-const CLIF_BIND_OFF: usize = 0x40;         // binding descriptor [buf_id=0, read_only=0]
+// CLIF memory layout (GPU context pointer at offset 0, offsets 0x00-0x27 reserved)
+const CLIF_DSIZE_OFF: usize = 0x28;       // i64: GPU buffer size in bytes
+const CLIF_WORKGROUPS_OFF: usize = 0x30;   // i64: workgroups for dispatch
+const CLIF_FSRC_OFF: usize = 0x38;         // i64: file_write source offset (absolute)
+const CLIF_FSIZE_OFF: usize = 0x40;        // i64: file_write size in bytes
+const CLIF_BIND_OFF: usize = 0x48;         // binding descriptor [buf_id=0, read_only=0]
 const CLIF_SHADER_OFF: usize = 0x100;      // WGSL shader (null-terminated)
 const CLIF_FNAME_OFF: usize = 0x3100;      // output filename (null-terminated)
 const CLIF_IR_OFF: usize = 0x3800;         // CLIF IR source (null-terminated, ~800 bytes)

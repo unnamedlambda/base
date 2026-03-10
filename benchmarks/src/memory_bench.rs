@@ -53,9 +53,9 @@ fn verify_doubled(path: &str, n_floats: usize) -> bool {
 // in a single compiled function via extern "C" wrappers.
 // ---------------------------------------------------------------------------
 
-const CLIF_DSIZE_OFF: usize = 0x08;         // i64: GPU buffer size in bytes
-const CLIF_WORKGROUPS_OFF: usize = 0x10;     // i64: workgroups for dispatch
-const CLIF_BIND_OFF: usize = 0x40;           // binding descriptor [buf_id=0, read_only=0]
+const CLIF_DSIZE_OFF: usize = 0x28;         // i64: GPU buffer size in bytes
+const CLIF_WORKGROUPS_OFF: usize = 0x30;     // i64: workgroups for dispatch
+const CLIF_BIND_OFF: usize = 0x48;           // binding descriptor [buf_id=0, read_only=0]
 const CLIF_SHADER_OFF: usize = 0x100;        // WGSL shader (null-terminated)
 const CLIF_FNAME_IN_OFF: usize = 0x3000;     // input filename (null-terminated)
 const CLIF_FNAME_OUT_OFF: usize = 0x3100;    // output filename (null-terminated)

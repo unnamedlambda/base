@@ -56,12 +56,12 @@ fn burn_vec_add(a: &[f32], b: &[f32]) -> f64 {
 // CLIF IR: 4x-unrolled SIMD vec_add of two f32 arrays → f64 sum.
 // Main loop: 4 independent f32x4 accumulators (16 floats/iter) for ILP.
 // Memory layout:
-//   0x0010: [4] n (u32), 0x0018: [8] result (f64)
+//   0x0028: [4] n (u32), 0x0030: [8] result (f64)
 //   0x4000: array A (n * f32), then array B (n * f32)
 const CLIF_VEC_ADD: &str = "\
 function %vec_add(i64) system_v {
 block0(v0: i64):
-  v1 = load.i32 v0+16
+  v1 = load.i32 v0+40
   v2 = sextend.i64 v1
   v3 = iconst.i64 16384
   v4 = iadd v0, v3
@@ -159,7 +159,7 @@ block8(v120: i64, v121: f64):
   jump block7(v129, v128)
 
 block9(v130: f64):
-  v131 = iconst.i64 24
+  v131 = iconst.i64 48
   v132 = iadd v0, v131
   store.f64 v130, v132
   return
@@ -173,7 +173,7 @@ fn build_base_vec_add(a: &[f32], b: &[f32]) -> (base::BaseConfig, base::Algorith
     let mem_size = DATA_OFF + n * 4 * 2;
     let mut memory = vec![0u8; mem_size];
 
-    memory[0x10..0x14].copy_from_slice(&(n as u32).to_le_bytes());
+    memory[0x28..0x2C].copy_from_slice(&(n as u32).to_le_bytes());
 
     let ir = CLIF_VEC_ADD.as_bytes();
     memory[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);

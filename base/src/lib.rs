@@ -93,31 +93,23 @@ impl Base {
 
         // Write data/out pointer + length into reserved region so CLIF code can access
         // the caller's buffer directly via pointer (zero-copy).
-        // Only write when caller provides data/out, to avoid clobbering application
-        // memory layouts that use those offsets for other purposes.
-        if !data.is_empty() {
-            unsafe {
-                std::ptr::write_unaligned(
-                    self.memory[8..].as_mut_ptr() as *mut *const u8,
-                    data.as_ptr(),
-                );
-                std::ptr::write_unaligned(
-                    self.memory[16..].as_mut_ptr() as *mut usize,
-                    data.len(),
-                );
-            }
-        }
-        if !out.is_empty() {
-            unsafe {
-                std::ptr::write_unaligned(
-                    self.memory[24..].as_mut_ptr() as *mut *mut u8,
-                    out.as_mut_ptr(),
-                );
-                std::ptr::write_unaligned(
-                    self.memory[32..].as_mut_ptr() as *mut usize,
-                    out.len(),
-                );
-            }
+        unsafe {
+            std::ptr::write_unaligned(
+                self.memory[8..].as_mut_ptr() as *mut *const u8,
+                data.as_ptr(),
+            );
+            std::ptr::write_unaligned(
+                self.memory[16..].as_mut_ptr() as *mut usize,
+                data.len(),
+            );
+            std::ptr::write_unaligned(
+                self.memory[24..].as_mut_ptr() as *mut *mut u8,
+                out.as_mut_ptr(),
+            );
+            std::ptr::write_unaligned(
+                self.memory[32..].as_mut_ptr() as *mut usize,
+                out.len(),
+            );
         }
 
         let cranelift_mailboxes: Vec<_> = (0..cranelift_units)

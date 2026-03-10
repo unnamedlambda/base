@@ -47,11 +47,11 @@ fn burn_sum(data: &[f32]) -> f64 {
 // CLIF IR: 4x-unrolled SIMD sum of f32 array → f64 result.
 // Main loop: 4 independent f32x4 accumulators (16 floats/iter) for ILP.
 // Memory layout:
-//   0x0010: [4] n (u32), 0x0018: [8] result (f64), 0x4000: data (n * f32)
+//   0x0028: [4] n (u32), 0x0030: [8] result (f64), 0x4000: data (n * f32)
 const CLIF_SUM: &str = "\
 function %sum_reduce(i64) system_v {
 block0(v0: i64):
-  v1 = load.i32 v0+16
+  v1 = load.i32 v0+40
   v2 = sextend.i64 v1
   v3 = iconst.i64 16384
   v4 = iadd v0, v3
@@ -129,7 +129,7 @@ block8(v110: i64, v111: f64):
   jump block7(v116, v115)
 
 block9(v120: f64):
-  v121 = iconst.i64 24
+  v121 = iconst.i64 48
   v122 = iadd v0, v121
   store.f64 v120, v122
   return
@@ -143,8 +143,8 @@ fn build_base_sum(data: &[f32]) -> (base::BaseConfig, base::Algorithm) {
     let mem_size = DATA_OFF + n * 4;
     let mut memory = vec![0u8; mem_size];
 
-    // n at 0x10
-    memory[0x10..0x14].copy_from_slice(&(n as u32).to_le_bytes());
+    // n at 0x28
+    memory[0x28..0x2C].copy_from_slice(&(n as u32).to_le_bytes());
 
     // CLIF IR at 0x100
     let ir = CLIF_SUM.as_bytes();

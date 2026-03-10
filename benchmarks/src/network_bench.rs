@@ -11,8 +11,8 @@ use std::time::Duration;
 // Pattern: Client sends N bytes → server echoes back → client verifies.
 // ---------------------------------------------------------------------------
 
-// CLIF memory layout (context pointer at offset 0, managed by cl_net_init/cleanup)
-const CLIF_DSIZE_OFF: usize = 0x08;   // i64: data buffer size in bytes
+// CLIF memory layout (context pointer at offset 0, offsets 0x00-0x27 reserved)
+const CLIF_DSIZE_OFF: usize = 0x28;   // i64: data buffer size in bytes
 const CLIF_ADDR_OFF: usize = 0x1000;  // Server address string (null-terminated)
 const CLIF_IR_OFF: usize = 0x2000;    // CLIF IR source (null-terminated)
 const CLIF_DATA_OFF: usize = 0x4000;  // Data buffer

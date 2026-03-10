@@ -6,18 +6,18 @@ open AlgorithmLib
 namespace LeanEval
 
 -- Payload layout
-def OUTPUT_PATH    : Nat := 0x0020
-def INPUT_PATH     : Nat := 0x0060
-def SOURCE_BUF     : Nat := 0x0160
+def OUTPUT_PATH    : Nat := 0x0028
+def INPUT_PATH     : Nat := 0x0068
+def SOURCE_BUF     : Nat := 0x0168
 def SOURCE_BUF_SZ  : Nat := 4096
-def TRUE_STR       : Nat := 0x1160
-def FALSE_STR      : Nat := 0x1168
-def IDENT_BUF      : Nat := 0x1170
+def TRUE_STR       : Nat := 0x1168
+def FALSE_STR      : Nat := 0x1170
+def IDENT_BUF      : Nat := 0x1178
 def IDENT_BUF_SZ   : Nat := 64
-def HT_VAL_BUF     : Nat := 0x11B0
-def OUTPUT_BUF     : Nat := 0x11B8
+def HT_VAL_BUF     : Nat := 0x11B8
+def OUTPUT_BUF     : Nat := 0x11C0
 def OUTPUT_BUF_SZ  : Nat := 64
-def STACK_BASE     : Nat := 0x11F8
+def STACK_BASE     : Nat := 0x1200
 def STACK_SZ       : Nat := 512
 
 def TIMEOUT_MS : Nat := 30000
@@ -1844,20 +1844,17 @@ def clifIrSource : String := buildProgram do
 -- ---------------------------------------------------------------------------
 
 def buildPayload : List UInt8 :=
-  let htCtxPtr    := zeros 8                               -- 0x0000
-  let flagFile    := zeros 8                               -- 0x0008
-  let flagCl      := zeros 8                               -- 0x0010
-  let reserved    := zeros 8                               -- 0x0018
-  let outputPath  := padTo (stringToBytes "output.txt") 64 -- 0x0020
-  let inputPath   := zeros 256                             -- 0x0060
-  let sourceBuf   := zeros SOURCE_BUF_SZ                   -- 0x0160
-  let trueStr     := padTo (stringToBytes "true") 8        -- 0x1160
-  let falseStr    := padTo (stringToBytes "false") 8       -- 0x1168
-  let identBuf    := zeros IDENT_BUF_SZ                    -- 0x1170
-  let htValBuf    := zeros 8                               -- 0x11B0
-  let outputBuf   := zeros OUTPUT_BUF_SZ                   -- 0x11B8
-  let stackRegion := zeros STACK_SZ                        -- 0x11F8
-  htCtxPtr ++ flagFile ++ flagCl ++ reserved ++
+  let reserved    := zeros 40                              -- 0x0000-0x0027: runtime reserved
+  let outputPath  := padTo (stringToBytes "output.txt") 64 -- 0x0028
+  let inputPath   := zeros 256                             -- 0x0068
+  let sourceBuf   := zeros SOURCE_BUF_SZ                   -- 0x0168
+  let trueStr     := padTo (stringToBytes "true") 8        -- 0x1168
+  let falseStr    := padTo (stringToBytes "false") 8       -- 0x1170
+  let identBuf    := zeros IDENT_BUF_SZ                    -- 0x1178
+  let htValBuf    := zeros 8                               -- 0x11B8
+  let outputBuf   := zeros OUTPUT_BUF_SZ                   -- 0x11C0
+  let stackRegion := zeros STACK_SZ                        -- 0x1200
+  reserved ++
     outputPath ++ inputPath ++ sourceBuf ++
     trueStr ++ falseStr ++ identBuf ++ htValBuf ++ outputBuf ++
     stackRegion

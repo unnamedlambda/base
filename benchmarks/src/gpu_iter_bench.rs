@@ -320,12 +320,12 @@ fn wgpu_iterative(data: &[f32], passes: usize) -> f64 {
 // Data stays GPU-resident between dispatches.
 // ---------------------------------------------------------------------------
 
-const CLIF_PASSES_OFF: usize    = 0x08;
-const CLIF_DSIZE_OFF: usize     = 0x10;
-const CLIF_WORKGROUPS_OFF: usize = 0x18;
-const CLIF_SUMSSIZE_OFF: usize  = 0x20;
-const CLIF_SCALE_BIND_OFF: usize = 0x40;
-const CLIF_REDUCE_BIND_OFF: usize = 0x48;
+const CLIF_PASSES_OFF: usize    = 0x28;
+const CLIF_DSIZE_OFF: usize     = 0x30;
+const CLIF_WORKGROUPS_OFF: usize = 0x38;
+const CLIF_SUMSSIZE_OFF: usize  = 0x40;
+const CLIF_SCALE_BIND_OFF: usize = 0x48;
+const CLIF_REDUCE_BIND_OFF: usize = 0x50;
 const CLIF_SCALE_SHADER_OFF: usize = 0x100;
 const CLIF_REDUCE_SHADER_OFF: usize = 0x800;
 const CLIF_FNAME_OFF: usize     = 0xC00;

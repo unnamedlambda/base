@@ -2,9 +2,9 @@ use base::{run, Algorithm, BaseConfig};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
-const INPUT_PATH_OFFSET: usize = 0x0060;
+const INPUT_PATH_OFFSET: usize = 0x0068;
 const INPUT_PATH_MAX_LEN: usize = 256;
-const OUTPUT_PATH_OFFSET: usize = 0x0020;
+const OUTPUT_PATH_OFFSET: usize = 0x0028;
 const OUTPUT_PATH_MAX_LEN: usize = 64;
 
 fn main() {
