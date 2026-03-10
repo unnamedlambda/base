@@ -471,12 +471,12 @@ def payloads : List UInt8 :=
 def csvConfig : BaseConfig := {
   cranelift_ir := clifIrSource,
   memory_size := payloads.length,
-  context_offset := 0
+  context_offset := 0,
+  initial_memory := payloads
 }
 
 def csvAlgorithm : Algorithm := {
     actions := [IR.clifCallAction],
-    payloads := payloads,
     cranelift_units := 0,
     timeout_ms := some 30000
   }

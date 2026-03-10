@@ -31,26 +31,26 @@ pub struct Base {
     clif_fns: Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>,
     _module: Option<cranelift_jit::JITModule>,
     ht_ctx_ptr: Option<*mut CraneliftHashTableContext>,
-    context_offset: usize,
 }
 
 impl Base {
     pub fn new(config: BaseConfig) -> Result<Self, Error> {
-        let memory = vec![0u8; config.memory_size].into_boxed_slice();
-        Self::from_memory(config, memory)
+        let needed = config.memory_size.max(config.initial_memory.len());
+        let mut memory = config.initial_memory;
+        memory.resize(needed, 0);
+        Self::from_parts(config.cranelift_ir, config.context_offset, memory.into_boxed_slice())
     }
 
-    fn from_memory(config: BaseConfig, memory: Box<[u8]>) -> Result<Self, Error> {
+    fn from_parts(cranelift_ir: String, context_offset: usize, memory: Box<[u8]>) -> Result<Self, Error> {
         let _span = info_span!("base_new", memory_size = memory.len()).entered();
         info!("creating Base instance");
 
-        let context_offset = config.context_offset;
         let mut memory = Pin::new(memory);
         let mem_ptr = memory.as_mut().as_mut_ptr();
         let shared = Arc::new(SharedMemory::new(mem_ptr));
 
-        let (module, clif_fns) = if !config.cranelift_ir.is_empty() {
-            let (module, fns) = compile_cranelift_ir(&config.cranelift_ir)
+        let (module, clif_fns) = if !cranelift_ir.is_empty() {
+            let (module, fns) = compile_cranelift_ir(&cranelift_ir)
                 .map_err(Error::ClifParse)?;
             (Some(module), Some(fns))
         } else {
@@ -64,7 +64,7 @@ impl Base {
             });
         }
 
-        // Init HT context at context_offset (in the persistent region, safe from payload writes)
+        // Init HT context at context_offset
         let ht_ctx_ptr = if clif_fns.is_some() {
             Some(init_ht_context(&shared, context_offset))
         } else {
@@ -72,22 +72,52 @@ impl Base {
         };
 
         info!("Base instance created");
-        Ok(Base { memory, mem_ptr, shared, clif_fns, _module: module, ht_ctx_ptr, context_offset })
+        Ok(Base { memory, mem_ptr, shared, clif_fns, _module: module, ht_ctx_ptr })
     }
 
-    pub fn execute(&mut self, algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
+    pub fn execute(&mut self, algorithm: &Algorithm, data: &[u8]) -> Result<Vec<RecordBatch>, Error> {
+        self.execute_into(algorithm, data, &mut [])
+    }
+
+    pub fn execute_into(&mut self, algorithm: &Algorithm, data: &[u8], out: &mut [u8]) -> Result<Vec<RecordBatch>, Error> {
         let _span = info_span!("execute",
             cranelift_units = algorithm.cranelift_units,
             actions_count = algorithm.actions.len(),
         ).entered();
         info!("starting execution");
 
-        let Algorithm { actions, payloads, cranelift_units, timeout_ms, output: output_schemas } = algorithm;
+        let actions = algorithm.actions.clone();
+        let cranelift_units = algorithm.cranelift_units;
+        let timeout_ms = algorithm.timeout_ms;
+        let output_schemas = &algorithm.output;
 
-        // Copy payloads into shared memory (payload region: 0..context_offset)
-        if !payloads.is_empty() {
-            let copy_len = payloads.len().min(self.context_offset).min(self.memory.len());
-            self.memory[..copy_len].copy_from_slice(&payloads[..copy_len]);
+        // Write data/out pointer + length into reserved region so CLIF code can access
+        // the caller's buffer directly via pointer (zero-copy).
+        // Only write when caller provides data/out, to avoid clobbering application
+        // memory layouts that use those offsets for other purposes.
+        if !data.is_empty() {
+            unsafe {
+                std::ptr::write_unaligned(
+                    self.memory[8..].as_mut_ptr() as *mut *const u8,
+                    data.as_ptr(),
+                );
+                std::ptr::write_unaligned(
+                    self.memory[16..].as_mut_ptr() as *mut usize,
+                    data.len(),
+                );
+            }
+        }
+        if !out.is_empty() {
+            unsafe {
+                std::ptr::write_unaligned(
+                    self.memory[24..].as_mut_ptr() as *mut *mut u8,
+                    out.as_mut_ptr(),
+                );
+                std::ptr::write_unaligned(
+                    self.memory[32..].as_mut_ptr() as *mut usize,
+                    out.len(),
+                );
+            }
         }
 
         let cranelift_mailboxes: Vec<_> = (0..cranelift_units)
@@ -309,20 +339,8 @@ impl Drop for Base {
 }
 
 pub fn run(config: BaseConfig, algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
-    // Zero-copy path: move payloads directly into memory (resize if needed),
-    // avoiding a separate allocation + memcpy.
-    let Algorithm { actions, payloads, cranelift_units, timeout_ms, output } = algorithm;
-    let mut payloads = payloads;
-    let needed = config.memory_size.max(payloads.len());
-    payloads.resize(needed, 0);
-    let mut base = Base::from_memory(config, payloads.into_boxed_slice())?;
-    base.execute(Algorithm {
-        actions,
-        payloads: Vec::new(),
-        cranelift_units,
-        timeout_ms,
-        output,
-    })
+    let mut base = Base::new(config)?;
+    base.execute(&algorithm, &[])
 }
 
 fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<RecordBatch> {

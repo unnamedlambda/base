@@ -134,19 +134,19 @@ fn build_frontier_algorithm(
     let clif_bytes = format!("{}\0", clif_ir);
     let desc_base = align64(clif_off + clif_bytes.len());
     let desc_end = desc_base + chunk_count * 16;
-    let payload_size = align64(desc_end);
+    let mem_size = align64(desc_end);
 
-    let mut payloads = vec![0u8; payload_size];
+    let mut memory = vec![0u8; mem_size];
 
-    payloads[acc_addr..acc_addr + 8].copy_from_slice(&0u64.to_le_bytes());
-    payloads[expected_addr..expected_addr + 8].copy_from_slice(&expected_sum.to_le_bytes());
-    payloads[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
+    memory[acc_addr..acc_addr + 8].copy_from_slice(&0u64.to_le_bytes());
+    memory[expected_addr..expected_addr + 8].copy_from_slice(&expected_sum.to_le_bytes());
+    memory[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
 
     for (i, &sum) in chunk_sums.iter().enumerate() {
         let desc_off = desc_base + i * 16;
-        payloads[desc_off..desc_off + 8].copy_from_slice(&sum.to_le_bytes());
+        memory[desc_off..desc_off + 8].copy_from_slice(&sum.to_le_bytes());
         let acc_rel = (acc_addr as i64) - (desc_off as i64);
-        payloads[desc_off + 8..desc_off + 16].copy_from_slice(&acc_rel.to_le_bytes());
+        memory[desc_off + 8..desc_off + 16].copy_from_slice(&acc_rel.to_le_bytes());
     }
 
     // Actions:
@@ -204,12 +204,12 @@ fn build_frontier_algorithm(
 
     let config = base::BaseConfig {
         cranelift_ir: clif_ir,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: workers,
         timeout_ms: Some(30_000),
         output: vec![],
@@ -346,10 +346,10 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> (base::Ba
     let clif_bytes = format!("{}\0", clif_ir);
     let desc_base = align64(clif_off + clif_bytes.len());
     let desc_end = desc_base + total_chunks * 16;
-    let payload_size = align64(desc_end);
+    let mem_size = align64(desc_end);
 
-    let mut payloads = vec![0u8; payload_size];
-    payloads[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
+    let mut memory = vec![0u8; mem_size];
+    memory[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
 
     // Fill accumulator and expected values per phase
     let mut phase_expected = Vec::with_capacity(num_phases);
@@ -359,9 +359,9 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> (base::Ba
             pe = pe.wrapping_add(val);
         }
         phase_expected.push(pe);
-        payloads[acc_base_addr + k * 8..acc_base_addr + k * 8 + 8]
+        memory[acc_base_addr + k * 8..acc_base_addr + k * 8 + 8]
             .copy_from_slice(&0u64.to_le_bytes());
-        payloads[exp_base_addr + k * 8..exp_base_addr + k * 8 + 8]
+        memory[exp_base_addr + k * 8..exp_base_addr + k * 8 + 8]
             .copy_from_slice(&pe.to_le_bytes());
     }
 
@@ -370,7 +370,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> (base::Ba
     for phase in phases {
         for &val in phase {
             let desc_off = desc_base + desc_idx * 16;
-            payloads[desc_off..desc_off + 8].copy_from_slice(&val.to_le_bytes());
+            memory[desc_off..desc_off + 8].copy_from_slice(&val.to_le_bytes());
             // acc_rel for this chunk's phase — we need to know which phase this chunk belongs to
             // We'll fix this below after building actions
             desc_idx += 1;
@@ -445,7 +445,7 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> (base::Ba
         for _ in 0..phase.len() {
             let desc_off = desc_base + desc_idx * 16;
             let acc_rel = (acc_addr as i64) - (desc_off as i64);
-            payloads[desc_off + 8..desc_off + 16].copy_from_slice(&acc_rel.to_le_bytes());
+            memory[desc_off + 8..desc_off + 16].copy_from_slice(&acc_rel.to_le_bytes());
             actions.push(Action {
                 kind: Kind::Describe,
                 dst: desc_off as u32,
@@ -461,12 +461,12 @@ fn build_multi_phase_algorithm(phases: &[Vec<u64>], workers: usize) -> (base::Ba
 
     let config = base::BaseConfig {
         cranelift_ir: clif_ir,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: workers,
         timeout_ms: Some(30_000),
         output: vec![],

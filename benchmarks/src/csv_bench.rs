@@ -40,29 +40,29 @@ fn generate_csv(path: &str, num_rows: usize) -> i64 {
 }
 
 fn prepare_algorithm(csv_path: &str, output_path: &str, file_size: usize) -> (BaseConfig, Algorithm) {
-    let (mut config, mut alg): (BaseConfig, Algorithm) =
+    let (mut config, alg): (BaseConfig, Algorithm) =
         bincode::deserialize(CSV_ALGORITHM).expect("Failed to deserialize algorithm");
 
-    // Ensure payload can hold the CSV data that FileRead will write at CSV_DATA
+    // Ensure memory can hold the CSV data that FileRead will write at CSV_DATA
     let needed = CSV_DATA + file_size + 256;
-    if alg.payloads.len() < needed {
-        alg.payloads.resize(needed, 0);
+    if config.initial_memory.len() < needed {
+        config.initial_memory.resize(needed, 0);
     }
-    config.memory_size = config.memory_size.max(alg.payloads.len());
+    config.memory_size = config.memory_size.max(config.initial_memory.len());
 
     // Patch input filename (null-terminated)
     let inp = csv_path.as_bytes();
-    alg.payloads[INPUT_FILENAME..INPUT_FILENAME + inp.len()].copy_from_slice(inp);
-    alg.payloads[INPUT_FILENAME + inp.len()] = 0;
+    config.initial_memory[INPUT_FILENAME..INPUT_FILENAME + inp.len()].copy_from_slice(inp);
+    config.initial_memory[INPUT_FILENAME + inp.len()] = 0;
 
     // Patch output filename (null-terminated)
     let out = output_path.as_bytes();
-    alg.payloads[OUTPUT_FILENAME..OUTPUT_FILENAME + out.len()].copy_from_slice(out);
-    alg.payloads[OUTPUT_FILENAME + out.len()] = 0;
+    config.initial_memory[OUTPUT_FILENAME..OUTPUT_FILENAME + out.len()].copy_from_slice(out);
+    config.initial_memory[OUTPUT_FILENAME + out.len()] = 0;
 
     // Patch END_POS (i32 little-endian = CSV file byte count)
     let end = file_size as i32;
-    alg.payloads[END_POS..END_POS + 4].copy_from_slice(&end.to_le_bytes());
+    config.initial_memory[END_POS..END_POS + 4].copy_from_slice(&end.to_le_bytes());
 
     (config, alg)
 }

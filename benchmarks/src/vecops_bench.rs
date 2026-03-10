@@ -170,22 +170,22 @@ const CLIF_OFF: usize = 0x0100;
 
 fn build_base_vec_add(a: &[f32], b: &[f32]) -> (base::BaseConfig, base::Algorithm) {
     let n = a.len();
-    let payload_size = DATA_OFF + n * 4 * 2;
-    let mut payloads = vec![0u8; payload_size];
+    let mem_size = DATA_OFF + n * 4 * 2;
+    let mut memory = vec![0u8; mem_size];
 
-    payloads[0x10..0x14].copy_from_slice(&(n as u32).to_le_bytes());
+    memory[0x10..0x14].copy_from_slice(&(n as u32).to_le_bytes());
 
     let ir = CLIF_VEC_ADD.as_bytes();
-    payloads[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);
+    memory[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);
 
     for (i, &v) in a.iter().enumerate() {
         let off = DATA_OFF + i * 4;
-        payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
     }
     let b_start = DATA_OFF + n * 4;
     for (i, &v) in b.iter().enumerate() {
         let off = b_start + i * 4;
-        payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
     }
 
     let actions = vec![
@@ -194,12 +194,12 @@ fn build_base_vec_add(a: &[f32], b: &[f32]) -> (base::BaseConfig, base::Algorith
 
     let config = base::BaseConfig {
         cranelift_ir: CLIF_VEC_ADD.to_string(),
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(30_000),
         output: vec![],

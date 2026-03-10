@@ -4,7 +4,7 @@ use crate::harness::{self, BenchResult};
 // ---------------------------------------------------------------------------
 // Memory-Heavy Benchmark: Large file → GPU process → Write result
 //
-// Tests whether the flat payload buffer scales to 100MB+ sizes.
+// Tests whether the flat memory buffer scales to 100MB+ sizes.
 // Workload: Read N MB of f32 data, GPU doubles each element, write result.
 // ---------------------------------------------------------------------------
 
@@ -154,30 +154,30 @@ fn build_clif_memory_algorithm(
     assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
         "CLIF IR too large: {} bytes", clif_bytes.len());
 
-    let payload_size = CLIF_DATA_OFF + buffer_size;
-    let mut payloads = vec![0u8; payload_size];
+    let mem_size = CLIF_DATA_OFF + buffer_size;
+    let mut memory = vec![0u8; mem_size];
 
     // CLIF IR source
-    payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
+    memory[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
 
     // Control params
-    payloads[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(buffer_size as i64).to_le_bytes());
-    payloads[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
+    memory[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(buffer_size as i64).to_le_bytes());
+    memory[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
 
     // Binding descriptor: [buf_id=0, read_only=0]
-    payloads[CLIF_BIND_OFF..CLIF_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
-    payloads[CLIF_BIND_OFF + 4..CLIF_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
+    memory[CLIF_BIND_OFF..CLIF_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[CLIF_BIND_OFF + 4..CLIF_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
 
     // Shader (null-terminated)
     let shader_bytes = WGSL_DOUBLE.as_bytes();
-    payloads[CLIF_SHADER_OFF..CLIF_SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
-    payloads[CLIF_SHADER_OFF + shader_bytes.len()] = 0;
+    memory[CLIF_SHADER_OFF..CLIF_SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
+    memory[CLIF_SHADER_OFF + shader_bytes.len()] = 0;
 
     // Filenames (null-terminated)
     let fname_in = format!("{}\0", input_path);
-    payloads[CLIF_FNAME_IN_OFF..CLIF_FNAME_IN_OFF + fname_in.len()].copy_from_slice(fname_in.as_bytes());
+    memory[CLIF_FNAME_IN_OFF..CLIF_FNAME_IN_OFF + fname_in.len()].copy_from_slice(fname_in.as_bytes());
     let fname_out = format!("{}\0", output_path);
-    payloads[CLIF_FNAME_OUT_OFF..CLIF_FNAME_OUT_OFF + fname_out.len()].copy_from_slice(fname_out.as_bytes());
+    memory[CLIF_FNAME_OUT_OFF..CLIF_FNAME_OUT_OFF + fname_out.len()].copy_from_slice(fname_out.as_bytes());
 
     let _ = std::fs::remove_file(output_path);
 
@@ -187,12 +187,12 @@ fn build_clif_memory_algorithm(
 
     let config = base::BaseConfig {
         cranelift_ir: clif_source,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(120_000),
         output: vec![],
@@ -343,7 +343,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     std::fs::create_dir_all("/tmp/memory-bench-data").ok();
 
     eprintln!("\n=== Memory-Heavy Benchmarks: Large file → GPU → Write ===");
-    eprintln!("  Testing flat buffer scalability with multi-MB payloads\n");
+    eprintln!("  Testing flat buffer scalability with multi-MB memory\n");
 
     // Cache GPU device once (same as CLIF path uses cached_gpu_device)
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
@@ -383,10 +383,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // CLIF+GPU
         let base_ms = harness::median_of(iterations, || {
-            let cfg = clif_config.clone();
-            let alg = clif_alg.clone();
             let start = std::time::Instant::now();
-            let _ = base::run(cfg, alg);
+            let _ = base::run(clif_config.clone(), clif_alg.clone());
             start.elapsed().as_secs_f64() * 1000.0
         });
 

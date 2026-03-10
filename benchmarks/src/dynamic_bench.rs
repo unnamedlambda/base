@@ -193,23 +193,23 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (base::BaseConfi
 
     let clif_ir = gen_recursive_clif_ir();
     let clif_bytes = format!("{}\0", clif_ir);
-    let payload_size = align64(clif_off + clif_bytes.len());
+    let mem_size = align64(clif_off + clif_bytes.len());
 
-    let mut payloads = vec![0u8; payload_size];
-    payloads[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
-    payloads[exp_addr..exp_addr + 8].copy_from_slice(&expected.to_le_bytes());
+    let mut memory = vec![0u8; mem_size];
+    memory[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
+    memory[exp_addr..exp_addr + 8].copy_from_slice(&expected.to_le_bytes());
 
     let root_rel = (nodes_off as i64) - (ctrl_off as i64);
-    payloads[ctrl_off..ctrl_off + 8].copy_from_slice(&root_rel.to_le_bytes());
+    memory[ctrl_off..ctrl_off + 8].copy_from_slice(&root_rel.to_le_bytes());
 
     let data_ptr = data.as_ptr() as u64;
 
     for (i, node) in nodes.iter().enumerate() {
         let node_off = nodes_off + i * NODE_SIZE;
-        payloads[node_off..node_off + 8].copy_from_slice(&data_ptr.to_le_bytes());
-        payloads[node_off + 8..node_off + 16].copy_from_slice(&(node.start as u64).to_le_bytes());
-        payloads[node_off + 16..node_off + 24].copy_from_slice(&(node.end as u64).to_le_bytes());
-        payloads[node_off + 24..node_off + 32].copy_from_slice(&(threshold as u64).to_le_bytes());
+        memory[node_off..node_off + 8].copy_from_slice(&data_ptr.to_le_bytes());
+        memory[node_off + 8..node_off + 16].copy_from_slice(&(node.start as u64).to_le_bytes());
+        memory[node_off + 16..node_off + 24].copy_from_slice(&(node.end as u64).to_le_bytes());
+        memory[node_off + 24..node_off + 32].copy_from_slice(&(threshold as u64).to_le_bytes());
 
         if !node.is_leaf {
             let left_idx = 2 * i + 1;
@@ -219,8 +219,8 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (base::BaseConfi
                 let right_off = nodes_off + right_idx * NODE_SIZE;
                 let left_rel = (left_off as i64) - (node_off as i64);
                 let right_rel = (right_off as i64) - (node_off as i64);
-                payloads[node_off + 48..node_off + 56].copy_from_slice(&left_rel.to_le_bytes());
-                payloads[node_off + 56..node_off + 64].copy_from_slice(&right_rel.to_le_bytes());
+                memory[node_off + 48..node_off + 56].copy_from_slice(&left_rel.to_le_bytes());
+                memory[node_off + 56..node_off + 64].copy_from_slice(&right_rel.to_le_bytes());
             }
         }
     }
@@ -246,12 +246,12 @@ fn build_recursive_algorithm(data: &[u64], threshold: usize) -> (base::BaseConfi
 
     let config = base::BaseConfig {
         cranelift_ir: clif_ir,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(30_000),
         output: vec![],
@@ -511,43 +511,43 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (base::BaseConfig, bas
     let clif_off = align64(handles_end);
     let clif_ir = gen_tree_clif_ir();
     let clif_bytes = format!("{}\0", clif_ir);
-    let payload_size = align64(clif_off + clif_bytes.len());
+    let mem_size = align64(clif_off + clif_bytes.len());
 
-    let mut payloads = vec![0u8; payload_size];
-    payloads[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
-    payloads[exp_addr..exp_addr + 8].copy_from_slice(&expected.to_le_bytes());
+    let mut memory = vec![0u8; mem_size];
+    memory[clif_off..clif_off + clif_bytes.len()].copy_from_slice(clif_bytes.as_bytes());
+    memory[exp_addr..exp_addr + 8].copy_from_slice(&expected.to_le_bytes());
 
     let root_rel = (nodes_off as i64) - (ctrl_off as i64);
-    payloads[ctrl_off..ctrl_off + 8].copy_from_slice(&root_rel.to_le_bytes());
+    memory[ctrl_off..ctrl_off + 8].copy_from_slice(&root_rel.to_le_bytes());
 
     let mut child_slot = 0usize;
     for (i, children) in tree.children.iter().enumerate() {
         let node_off = nodes_off + i * TREE_NODE_SIZE;
 
         // +0: value
-        payloads[node_off..node_off + 8].copy_from_slice(&tree.values[i].to_le_bytes());
+        memory[node_off..node_off + 8].copy_from_slice(&tree.values[i].to_le_bytes());
         // +8: num_children
-        payloads[node_off + 8..node_off + 16].copy_from_slice(&(children.len() as u64).to_le_bytes());
+        memory[node_off + 8..node_off + 16].copy_from_slice(&(children.len() as u64).to_le_bytes());
         // +16: threshold
-        payloads[node_off + 16..node_off + 24].copy_from_slice(&(threshold as u64).to_le_bytes());
+        memory[node_off + 16..node_off + 24].copy_from_slice(&(threshold as u64).to_le_bytes());
 
         if !children.is_empty() {
             // +24: children_rel (offset from node to children array)
             let my_children_off = children_off + child_slot * 8;
             let children_rel = (my_children_off as i64) - (node_off as i64);
-            payloads[node_off + 24..node_off + 32].copy_from_slice(&children_rel.to_le_bytes());
+            memory[node_off + 24..node_off + 32].copy_from_slice(&children_rel.to_le_bytes());
 
             // +48: handles_rel (offset from node to handles array)
             let my_handles_off = handles_off + child_slot * 8;
             let handles_rel = (my_handles_off as i64) - (node_off as i64);
-            payloads[node_off + 48..node_off + 56].copy_from_slice(&handles_rel.to_le_bytes());
+            memory[node_off + 48..node_off + 56].copy_from_slice(&handles_rel.to_le_bytes());
 
             // Write child node offsets (relative to this node)
             for &child_id in children {
                 let child_node_off = nodes_off + child_id * TREE_NODE_SIZE;
                 let child_rel = (child_node_off as i64) - (node_off as i64);
                 let slot_off = children_off + child_slot * 8;
-                payloads[slot_off..slot_off + 8].copy_from_slice(&child_rel.to_le_bytes());
+                memory[slot_off..slot_off + 8].copy_from_slice(&child_rel.to_le_bytes());
                 child_slot += 1;
             }
         }
@@ -574,12 +574,12 @@ fn build_tree_algorithm(tree: &Tree, threshold: usize) -> (base::BaseConfig, bas
 
     let config = base::BaseConfig {
         cranelift_ir: clif_ir,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(30_000),
         output: vec![],

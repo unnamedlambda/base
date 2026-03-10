@@ -10,7 +10,7 @@ use crate::harness::{self, BenchResult};
 // thread-local histogram, then the orchestrator merges them.
 //
 // Rust baseline: std::thread::spawn with per-thread local histograms.
-// Base (CLIF):   cl_thread_spawn/join with per-worker regions in payload.
+// Base (CLIF):   cl_thread_spawn/join with per-worker regions in memory.
 // ---------------------------------------------------------------------------
 
 const BINS: usize = 256;
@@ -340,33 +340,33 @@ fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> (base::BaseC
     let clif_bytes = format!("{}\0", clif_source).into_bytes();
     let path_bytes = format!("{}\0", out_path).into_bytes();
 
-    // Data is NOT in the payload — we store an absolute pointer to the caller's slice.
+    // Data is NOT in the memory — we store an absolute pointer to the caller's slice.
     let ir_end = CLIF_IR_OFF + ((clif_bytes.len() + 63) & !63);
     let hist_off = (ir_end + 4095) & !4095;
     let result_off = hist_off + ((workers * hist_stride + 63) & !63);
     let handles_off = result_off + ((BINS * 8 + 63) & !63);
     let descs_off = handles_off + workers * 8;
     let outpath_off = descs_off + ((workers * WORKER_DESC_SIZE + 63) & !63);
-    let payload_size = outpath_off + ((path_bytes.len() + 63) & !63);
+    let mem_size = outpath_off + ((path_bytes.len() + 63) & !63);
 
-    let mut payloads = vec![0u8; payload_size];
+    let mut memory = vec![0u8; mem_size];
 
-    payloads[HDR_DATA_PTR..HDR_DATA_PTR + 8]
+    memory[HDR_DATA_PTR..HDR_DATA_PTR + 8]
         .copy_from_slice(&(data.as_ptr() as i64).to_le_bytes());
-    payloads[HDR_N..HDR_N + 8].copy_from_slice(&(n as i64).to_le_bytes());
-    payloads[HDR_WORKERS..HDR_WORKERS + 8].copy_from_slice(&(workers as i64).to_le_bytes());
-    payloads[HDR_BINS..HDR_BINS + 8].copy_from_slice(&(BINS as i64).to_le_bytes());
-    payloads[HDR_HIST_BASE_REL..HDR_HIST_BASE_REL + 8]
+    memory[HDR_N..HDR_N + 8].copy_from_slice(&(n as i64).to_le_bytes());
+    memory[HDR_WORKERS..HDR_WORKERS + 8].copy_from_slice(&(workers as i64).to_le_bytes());
+    memory[HDR_BINS..HDR_BINS + 8].copy_from_slice(&(BINS as i64).to_le_bytes());
+    memory[HDR_HIST_BASE_REL..HDR_HIST_BASE_REL + 8]
         .copy_from_slice(&((hist_off - HDR_BASE) as i64).to_le_bytes());
-    payloads[HDR_RESULT_REL..HDR_RESULT_REL + 8]
+    memory[HDR_RESULT_REL..HDR_RESULT_REL + 8]
         .copy_from_slice(&((result_off - HDR_BASE) as i64).to_le_bytes());
-    payloads[HDR_HANDLES_REL..HDR_HANDLES_REL + 8]
+    memory[HDR_HANDLES_REL..HDR_HANDLES_REL + 8]
         .copy_from_slice(&((handles_off - HDR_BASE) as i64).to_le_bytes());
-    payloads[HDR_OUTPATH_REL..HDR_OUTPATH_REL + 8]
+    memory[HDR_OUTPATH_REL..HDR_OUTPATH_REL + 8]
         .copy_from_slice(&((outpath_off - HDR_BASE) as i64).to_le_bytes());
-    payloads[outpath_off..outpath_off + path_bytes.len()].copy_from_slice(&path_bytes);
+    memory[outpath_off..outpath_off + path_bytes.len()].copy_from_slice(&path_bytes);
 
-    payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
+    memory[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
 
     let actions = vec![
         Action { kind: Kind::ClifCall, dst: 0, src: 2, offset: 0, size: 0 },
@@ -374,12 +374,12 @@ fn build_algorithm(data: &[u32], workers: usize, out_path: &str) -> (base::BaseC
 
     let config = base::BaseConfig {
         cranelift_ir: clif_source,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(60_000),
         output: vec![],

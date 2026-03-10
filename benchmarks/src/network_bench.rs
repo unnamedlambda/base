@@ -87,18 +87,18 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> (base::BaseConfig, b
     assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
         "CLIF IR too large: {} bytes", clif_bytes.len());
 
-    let payload_size = CLIF_DATA_OFF + data_size;
-    let mut payloads = vec![0u8; payload_size];
+    let mem_size = CLIF_DATA_OFF + data_size;
+    let mut memory = vec![0u8; mem_size];
 
     // CLIF IR source
-    payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
+    memory[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
 
     // Data size parameter
-    payloads[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(data_size as i64).to_le_bytes());
+    memory[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(data_size as i64).to_le_bytes());
 
     // Server address
     let addr = format!("0.0.0.0:{}\0", port);
-    payloads[CLIF_ADDR_OFF..CLIF_ADDR_OFF + addr.len()].copy_from_slice(addr.as_bytes());
+    memory[CLIF_ADDR_OFF..CLIF_ADDR_OFF + addr.len()].copy_from_slice(addr.as_bytes());
 
     let actions = vec![
         Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
@@ -106,12 +106,12 @@ fn build_clif_net_algorithm(port: u16, data_size: usize) -> (base::BaseConfig, b
 
     let config = base::BaseConfig {
         cranelift_ir: clif_source,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(120_000),
         output: vec![],

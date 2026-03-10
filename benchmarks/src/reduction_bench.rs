@@ -140,20 +140,20 @@ const CLIF_OFF: usize = 0x0100;
 
 fn build_base_sum(data: &[f32]) -> (base::BaseConfig, base::Algorithm) {
     let n = data.len();
-    let payload_size = DATA_OFF + n * 4;
-    let mut payloads = vec![0u8; payload_size];
+    let mem_size = DATA_OFF + n * 4;
+    let mut memory = vec![0u8; mem_size];
 
     // n at 0x10
-    payloads[0x10..0x14].copy_from_slice(&(n as u32).to_le_bytes());
+    memory[0x10..0x14].copy_from_slice(&(n as u32).to_le_bytes());
 
     // CLIF IR at 0x100
     let ir = CLIF_SUM.as_bytes();
-    payloads[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);
+    memory[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);
 
     // Data at 0x4000
     for (i, &v) in data.iter().enumerate() {
         let off = DATA_OFF + i * 4;
-        payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
     }
 
     let actions = vec![
@@ -162,12 +162,12 @@ fn build_base_sum(data: &[f32]) -> (base::BaseConfig, base::Algorithm) {
 
     let config = base::BaseConfig {
         cranelift_ir: CLIF_SUM.to_string(),
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(30_000),
         output: vec![],

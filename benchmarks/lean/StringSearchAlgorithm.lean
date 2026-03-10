@@ -192,12 +192,12 @@ def controlActions : List Action :=
 def buildConfig : BaseConfig := {
   cranelift_ir := clifIR,
   memory_size := buildPayload.length,
-  context_offset := 0
+  context_offset := 0,
+  initial_memory := buildPayload
 }
 
 def buildAlgorithm : Algorithm := {
   actions := controlActions,
-  payloads := buildPayload,
   cranelift_units := 0,
   timeout_ms := some TIMEOUT_MS
 }

@@ -34,18 +34,18 @@ fn main() {
         })
         .len();
 
-    let (config, mut alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
-    // Write input filename into payload (null-terminated)
+    // Write input filename into initial_memory (null-terminated)
     let path_bytes = input_path.as_bytes();
     assert!(
         path_bytes.len() < 255,
         "Input path too long (max 254 chars)"
     );
-    alg.payloads[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
+    config.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
         .copy_from_slice(path_bytes);
-    alg.payloads[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
+    config.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
 
     let start = std::time::Instant::now();
     match run(config, alg) {

@@ -339,27 +339,27 @@ fn build_clif_gpu_algorithm(
     assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
         "CLIF IR too large: {} bytes", clif_bytes.len());
 
-    let payload_size = CLIF_DATA_OFF + data.len();
-    let mut payloads = vec![0u8; payload_size];
+    let mem_size = CLIF_DATA_OFF + data.len();
+    let mut memory = vec![0u8; mem_size];
 
-    payloads[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
+    memory[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
 
-    payloads[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(buffer_size as i64).to_le_bytes());
-    payloads[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
-    payloads[CLIF_FSRC_OFF..CLIF_FSRC_OFF + 8].copy_from_slice(&((CLIF_DATA_OFF + result_offset) as i64).to_le_bytes());
-    payloads[CLIF_FSIZE_OFF..CLIF_FSIZE_OFF + 8].copy_from_slice(&(result_size as i64).to_le_bytes());
+    memory[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(buffer_size as i64).to_le_bytes());
+    memory[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
+    memory[CLIF_FSRC_OFF..CLIF_FSRC_OFF + 8].copy_from_slice(&((CLIF_DATA_OFF + result_offset) as i64).to_le_bytes());
+    memory[CLIF_FSIZE_OFF..CLIF_FSIZE_OFF + 8].copy_from_slice(&(result_size as i64).to_le_bytes());
 
-    payloads[CLIF_BIND_OFF..CLIF_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
-    payloads[CLIF_BIND_OFF + 4..CLIF_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
+    memory[CLIF_BIND_OFF..CLIF_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[CLIF_BIND_OFF + 4..CLIF_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
 
     let shader_bytes = shader.as_bytes();
-    payloads[CLIF_SHADER_OFF..CLIF_SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
-    payloads[CLIF_SHADER_OFF + shader_bytes.len()] = 0;
+    memory[CLIF_SHADER_OFF..CLIF_SHADER_OFF + shader_bytes.len()].copy_from_slice(shader_bytes);
+    memory[CLIF_SHADER_OFF + shader_bytes.len()] = 0;
 
     let fname = format!("{}\0", output_path);
-    payloads[CLIF_FNAME_OFF..CLIF_FNAME_OFF + fname.len()].copy_from_slice(fname.as_bytes());
+    memory[CLIF_FNAME_OFF..CLIF_FNAME_OFF + fname.len()].copy_from_slice(fname.as_bytes());
 
-    payloads[CLIF_DATA_OFF..CLIF_DATA_OFF + data.len()].copy_from_slice(data);
+    memory[CLIF_DATA_OFF..CLIF_DATA_OFF + data.len()].copy_from_slice(data);
 
     let _ = std::fs::remove_file(output_path);
 
@@ -369,12 +369,12 @@ fn build_clif_gpu_algorithm(
 
     let config = base::BaseConfig {
         cranelift_ir: clif_source,
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(120_000),
         output: vec![],

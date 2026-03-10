@@ -48,12 +48,13 @@ pub struct BaseConfig {
     pub cranelift_ir: String,
     pub memory_size: usize,
     pub context_offset: usize,
+    #[serde(default)]
+    pub initial_memory: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Algorithm {
     pub actions: Vec<Action>,
-    pub payloads: Vec<u8>,
     pub cranelift_units: usize,
     pub timeout_ms: Option<u64>,
     pub output: Vec<OutputBatchSchema>,

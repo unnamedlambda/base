@@ -168,24 +168,24 @@ const DATA_OFF: usize = 0x4000;
 const CLIF_OFF: usize = 0x0100;
 
 fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> (base::BaseConfig, base::Algorithm) {
-    let payload_size = DATA_OFF + (m * k + k * n) * 4;
-    let mut payloads = vec![0u8; payload_size];
+    let mem_size = DATA_OFF + (m * k + k * n) * 4;
+    let mut memory = vec![0u8; mem_size];
 
-    payloads[0x10..0x14].copy_from_slice(&(m as u32).to_le_bytes());
-    payloads[0x14..0x18].copy_from_slice(&(k as u32).to_le_bytes());
-    payloads[0x18..0x1C].copy_from_slice(&(n as u32).to_le_bytes());
+    memory[0x10..0x14].copy_from_slice(&(m as u32).to_le_bytes());
+    memory[0x14..0x18].copy_from_slice(&(k as u32).to_le_bytes());
+    memory[0x18..0x1C].copy_from_slice(&(n as u32).to_le_bytes());
 
     let ir = CLIF_MATMUL.as_bytes();
-    payloads[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);
+    memory[CLIF_OFF..CLIF_OFF + ir.len()].copy_from_slice(ir);
 
     for (i, &v) in a.iter().enumerate() {
         let off = DATA_OFF + i * 4;
-        payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
     }
     let b_start = DATA_OFF + m * k * 4;
     for (i, &v) in b.iter().enumerate() {
         let off = b_start + i * 4;
-        payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
     }
 
     let actions = vec![
@@ -194,12 +194,12 @@ fn build_base_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> (bas
 
     let config = base::BaseConfig {
         cranelift_ir: CLIF_MATMUL.to_string(),
-        memory_size: payloads.len(),
+        memory_size: memory.len(),
         context_offset: 0,
+        initial_memory: memory,
     };
     let algorithm = base::Algorithm {
         actions,
-        payloads,
         cranelift_units: 0,
         timeout_ms: Some(60_000),
         output: vec![],

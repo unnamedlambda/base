@@ -60,18 +60,19 @@ structure BaseConfig where
   cranelift_ir : String
   memory_size : Nat
   context_offset : Nat
+  initial_memory : List UInt8 := []
   deriving Repr
 
 instance : ToJson BaseConfig where
   toJson c := Json.mkObj [
     ("cranelift_ir", toJson c.cranelift_ir),
     ("memory_size", toJson c.memory_size),
-    ("context_offset", toJson c.context_offset)
+    ("context_offset", toJson c.context_offset),
+    ("initial_memory", toJson c.initial_memory)
   ]
 
 structure Algorithm where
   actions : List Action
-  payloads : List UInt8
   cranelift_units : Nat
   timeout_ms : Option Nat
   output : List Json := []
@@ -79,7 +80,6 @@ structure Algorithm where
 instance : ToJson Algorithm where
   toJson alg := Json.mkObj [
     ("actions", toJson alg.actions),
-    ("payloads", toJson alg.payloads),
     ("cranelift_units", toJson alg.cranelift_units),
     ("timeout_ms", toJson alg.timeout_ms),
     ("output", Json.arr alg.output.toArray)

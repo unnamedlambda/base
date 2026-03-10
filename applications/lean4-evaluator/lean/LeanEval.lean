@@ -1865,12 +1865,12 @@ def buildPayload : List UInt8 :=
 def buildConfig : BaseConfig := {
   cranelift_ir := clifIrSource,
   memory_size := buildPayload.length,
-  context_offset := 0
+  context_offset := 0,
+  initial_memory := buildPayload
 }
 
 def buildAlgorithm : Algorithm := {
   actions := [IR.clifCallAction],
-  payloads := buildPayload,
   cranelift_units := 0,
   timeout_ms := some TIMEOUT_MS
 }

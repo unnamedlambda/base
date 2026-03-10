@@ -21,7 +21,7 @@ fn main() {
         )
         .init();
 
-    let (config, mut alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     let args: Vec<String> = std::env::args().collect();
@@ -33,16 +33,16 @@ fn main() {
     // Patch input file path
     let input_path = &args[1];
     let input_len = input_path.len().min(INPUT_PATH_MAX_LEN - 1);
-    alg.payloads[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + INPUT_PATH_MAX_LEN].fill(0);
-    alg.payloads[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + input_len]
+    config.initial_memory[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + INPUT_PATH_MAX_LEN].fill(0);
+    config.initial_memory[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + input_len]
         .copy_from_slice(&input_path.as_bytes()[..input_len]);
 
     // Patch output file path if provided
     if args.len() > 2 {
         let output_path = &args[2];
         let output_len = output_path.len().min(OUTPUT_PATH_MAX_LEN - 1);
-        alg.payloads[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + OUTPUT_PATH_MAX_LEN].fill(0);
-        alg.payloads[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + output_len]
+        config.initial_memory[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + OUTPUT_PATH_MAX_LEN].fill(0);
+        config.initial_memory[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + output_len]
             .copy_from_slice(&output_path.as_bytes()[..output_len]);
     }
 

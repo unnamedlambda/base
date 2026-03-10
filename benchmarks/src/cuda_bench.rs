@@ -114,26 +114,26 @@ fn build_saxpy_algorithm(
     y: &[f32],
     output_path: &str,
 ) -> (base::BaseConfig, base::Algorithm) {
-    let (config, mut algorithm): (base::BaseConfig, base::Algorithm) = {
+    let (mut config, algorithm): (base::BaseConfig, base::Algorithm) = {
         let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/saxpy_algorithm.bin"));
         bincode::deserialize(bytes).expect("Failed to deserialize saxpy_algorithm")
     };
 
-    algorithm.payloads[NELEMS_OFF..NELEMS_OFF + 4]
+    config.initial_memory[NELEMS_OFF..NELEMS_OFF + 4]
         .copy_from_slice(&(n as i32).to_le_bytes());
 
     let fname = format!("{}\0", output_path);
     let fname_bytes = fname.as_bytes();
-    algorithm.payloads[FNAME_OFF..FNAME_OFF + fname_bytes.len()]
+    config.initial_memory[FNAME_OFF..FNAME_OFF + fname_bytes.len()]
         .copy_from_slice(fname_bytes);
 
     for (i, &v) in x.iter().enumerate() {
         let off = DATA_OFF + i * 4;
-        algorithm.payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        config.initial_memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
     }
     for (i, &v) in y.iter().enumerate() {
         let off = DATA_OFF + n * 4 + i * 4;
-        algorithm.payloads[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        config.initial_memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
     }
 
     (config, algorithm)
