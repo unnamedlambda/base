@@ -7,11 +7,9 @@ use crate::harness::{self, BenchResult};
 
 const CSV_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csv_algorithm.bin"));
 
-// Memory layout offsets (must match CsvBenchAlgorithm.lean)
-const INPUT_FILENAME: usize = 0x0028;
-const OUTPUT_FILENAME: usize = 0x0128;
-const END_POS: usize = 0x02F0;
-const CSV_DATA: usize = 0x2000;
+fn load_algorithm() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(CSV_ALGORITHM).expect("Failed to deserialize csv algorithm")
+}
 
 /// Generate a deterministic CSV file with a salary column.
 /// Salaries are in range 1000–9999 to keep the i32 total within range.
@@ -39,32 +37,14 @@ fn generate_csv(path: &str, num_rows: usize) -> i64 {
     total
 }
 
-fn prepare_algorithm(csv_path: &str, output_path: &str, file_size: usize) -> (BaseConfig, Algorithm) {
-    let (mut config, alg): (BaseConfig, Algorithm) =
-        bincode::deserialize(CSV_ALGORITHM).expect("Failed to deserialize algorithm");
-
-    // Ensure memory can hold the CSV data that FileRead will write at CSV_DATA
-    let needed = CSV_DATA + file_size + 256;
-    if config.initial_memory.len() < needed {
-        config.initial_memory.resize(needed, 0);
-    }
-    config.memory_size = config.memory_size.max(config.initial_memory.len());
-
-    // Patch input filename (null-terminated)
-    let inp = csv_path.as_bytes();
-    config.initial_memory[INPUT_FILENAME..INPUT_FILENAME + inp.len()].copy_from_slice(inp);
-    config.initial_memory[INPUT_FILENAME + inp.len()] = 0;
-
-    // Patch output filename (null-terminated)
-    let out = output_path.as_bytes();
-    config.initial_memory[OUTPUT_FILENAME..OUTPUT_FILENAME + out.len()].copy_from_slice(out);
-    config.initial_memory[OUTPUT_FILENAME + out.len()] = 0;
-
-    // Patch END_POS (i32 little-endian = CSV file byte count)
-    let end = file_size as i32;
-    config.initial_memory[END_POS..END_POS + 4].copy_from_slice(&end.to_le_bytes());
-
-    (config, alg)
+/// Build payload: "input_path\0output_path\0"
+fn build_payload(csv_path: &str, output_path: &str) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(csv_path.as_bytes());
+    payload.push(0);
+    payload.extend_from_slice(output_path.as_bytes());
+    payload.push(0);
+    payload
 }
 
 /// Pure Rust CSV salary sum — same algorithm as the CLIF IR, for comparison.
@@ -114,12 +94,16 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let sizes = [10_000, 100_000, 500_000, 1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000];
     let mut results = Vec::new();
 
+    // JIT compile once
+    let (config, alg) = load_algorithm();
+    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+
     for &n in &sizes {
         let csv_path = format!("/tmp/bench-data/employees_{}.csv", n);
         let output_path = format!("/tmp/bench-data/base_result_{}.txt", n);
 
         let expected = generate_csv(&csv_path, n);
-        let file_size = fs::metadata(&csv_path).unwrap().len() as usize;
+        let payload = build_payload(&csv_path, &output_path);
 
         // Python
         let python_ms = harness::median_of(iterations, || {
@@ -150,35 +134,38 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             ms
         });
 
-        // Base
+        // Base (Cranelift JIT) — execute with payload, verify output file
         let mut verified = None;
+
+        // Warmup
+        let _ = fs::remove_file(&output_path);
+        let _ = base_instance.execute(&alg, &payload);
+
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
+            let start = std::time::Instant::now();
+            let _ = base_instance.execute(&alg, &payload);
+            start.elapsed().as_secs_f64() * 1000.0
+        });
 
-            let (cfg, alg) = prepare_algorithm(&csv_path, &output_path, file_size);
-            let ms = harness::run_base(cfg, alg);
-
-            // Verify result by reading the output file
-            if let Ok(content) = fs::read_to_string(&output_path) {
-                if let Ok(sum) = content.trim().parse::<i64>() {
-                    verified = Some(sum == expected);
-                    if sum != expected {
-                        eprintln!("WARNING: Base (CL) sum {} != expected {} (n={})", sum, expected, n);
-                    }
-                } else {
-                    eprintln!(
-                        "WARNING: Base (CL) output not a valid integer: {:?}",
-                        content.trim()
-                    );
-                    verified = Some(false);
+        // Verify result by reading the output file
+        if let Ok(content) = fs::read_to_string(&output_path) {
+            if let Ok(sum) = content.trim().parse::<i64>() {
+                verified = Some(sum == expected);
+                if sum != expected {
+                    eprintln!("WARNING: Base (CL) sum {} != expected {} (n={})", sum, expected, n);
                 }
             } else {
-                eprintln!("WARNING: Could not read base output file {:?}", output_path);
+                eprintln!(
+                    "WARNING: Base (CL) output not a valid integer: {:?}",
+                    content.trim()
+                );
                 verified = Some(false);
             }
-
-            ms
-        });
+        } else {
+            eprintln!("WARNING: Could not read base output file {:?}", output_path);
+            verified = Some(false);
+        }
 
         results.push(BenchResult {
             name: format!("CSV ({})", format_count(n)),
