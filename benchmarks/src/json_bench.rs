@@ -7,11 +7,9 @@ use crate::harness::{self, BenchResult};
 
 const JSON_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/json_algorithm.bin"));
 
-// Memory layout offsets (must match JsonBenchAlgorithm.lean)
-const INPUT_FILENAME: usize = 0x0028;
-const OUTPUT_FILENAME: usize = 0x0128;
-const FILE_SIZE: usize = 0x0250;
-const INPUT_DATA: usize = 0x4000;
+fn load_algorithm() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(JSON_ALGORITHM).expect("Failed to deserialize json algorithm")
+}
 
 fn generate_json(path: &str, n: usize) -> i64 {
     let dir = Path::new(path).parent().unwrap();
@@ -38,6 +36,16 @@ fn generate_json(path: &str, n: usize) -> i64 {
     total
 }
 
+/// Build payload: "input_path\0output_path\0"
+fn build_payload(json_path: &str, output_path: &str) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(json_path.as_bytes());
+    payload.push(0);
+    payload.extend_from_slice(output_path.as_bytes());
+    payload.push(0);
+    payload
+}
+
 /// Streaming JSON parser: extracts "value" fields without building a tree.
 /// Scans for the pattern `"value": <digits>` and sums the numbers.
 fn rust_json_sum(path: &str) -> i64 {
@@ -62,33 +70,6 @@ fn rust_json_sum(path: &str) -> i64 {
     total
 }
 
-fn prepare_algorithm(json_path: &str, output_path: &str, file_size: usize) -> (BaseConfig, Algorithm) {
-    let (mut config, alg): (BaseConfig, Algorithm) =
-        bincode::deserialize(JSON_ALGORITHM).expect("Failed to deserialize json algorithm");
-
-    let needed = INPUT_DATA + file_size + 256;
-    if config.initial_memory.len() < needed {
-        config.initial_memory.resize(needed, 0);
-    }
-    config.memory_size = config.memory_size.max(config.initial_memory.len());
-
-    // Patch input filename
-    let inp = json_path.as_bytes();
-    config.initial_memory[INPUT_FILENAME..INPUT_FILENAME + inp.len()].copy_from_slice(inp);
-    config.initial_memory[INPUT_FILENAME + inp.len()] = 0;
-
-    // Patch output filename
-    let out = output_path.as_bytes();
-    config.initial_memory[OUTPUT_FILENAME..OUTPUT_FILENAME + out.len()].copy_from_slice(out);
-    config.initial_memory[OUTPUT_FILENAME + out.len()] = 0;
-
-    // Patch FILE_SIZE
-    let end = file_size as i32;
-    config.initial_memory[FILE_SIZE..FILE_SIZE + 4].copy_from_slice(&end.to_le_bytes());
-
-    (config, alg)
-}
-
 fn format_count(n: usize) -> String {
     if n >= 1_000_000 {
         format!("{}M", n / 1_000_000)
@@ -103,12 +84,16 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let sizes = [1_000, 10_000, 50_000, 100_000, 500_000];
     let mut results = Vec::new();
 
+    // JIT compile once
+    let (config, alg) = load_algorithm();
+    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+
     for &n in &sizes {
         let json_path = format!("/tmp/bench-data/data_{}.json", n);
         let output_path = format!("/tmp/bench-data/json_result_{}.txt", n);
 
         let expected = generate_json(&json_path, n);
-        let file_size = fs::metadata(&json_path).unwrap().len() as usize;
+        let payload = build_payload(&json_path, &output_path);
 
         // Python
         let python_ms = harness::median_of(iterations, || {
@@ -142,36 +127,35 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             ms
         });
 
-        // Base
+        // Base (Cranelift JIT) — execute with payload, verify output file
         let mut verified = None;
+
+        // Warmup
+        let _ = fs::remove_file(&output_path);
+        let _ = base_instance.execute(&alg, &payload);
+
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
+            let start = std::time::Instant::now();
+            let _ = base_instance.execute(&alg, &payload);
+            start.elapsed().as_secs_f64() * 1000.0
+        });
 
-            let (cfg, alg) = prepare_algorithm(&json_path, &output_path, file_size);
-            let ms = harness::run_base(cfg, alg);
-
-            if let Ok(content) = fs::read_to_string(&output_path) {
-                if let Ok(sum) = content.trim().parse::<i64>() {
-                    if sum == expected {
-                        verified = Some(true);
-                    } else {
-                        eprintln!(
-                            "WARNING: Base JSON sum {} != expected {} (n={})",
-                            sum, expected, n
-                        );
-                        verified = Some(false);
-                    }
-                } else {
-                    eprintln!("WARNING: Could not parse base JSON output: {:?}", content.trim());
-                    verified = Some(false);
+        // Verify result by reading the output file
+        if let Ok(content) = fs::read_to_string(&output_path) {
+            if let Ok(sum) = content.trim().parse::<i64>() {
+                verified = Some(sum == expected);
+                if sum != expected {
+                    eprintln!("WARNING: Base JSON sum {} != expected {} (n={})", sum, expected, n);
                 }
             } else {
-                eprintln!("WARNING: Could not read base output file {:?}", output_path);
+                eprintln!("WARNING: Could not parse base JSON output: {:?}", content.trim());
                 verified = Some(false);
             }
-
-            ms
-        });
+        } else {
+            eprintln!("WARNING: Could not read base output file {:?}", output_path);
+            verified = Some(false);
+        }
 
         results.push(BenchResult {
             name: format!("JSON ({})", format_count(n)),
