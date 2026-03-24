@@ -123,8 +123,6 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         });
 
         // Base (Cranelift JIT) — execute with payload, verify output file
-        let mut verified = None;
-
         // Warmup
         let _ = fs::remove_file(&output_path);
         let _ = base_instance.execute(&alg, &payload);
@@ -137,23 +135,23 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         });
 
         // Verify result by reading the output file
-        if let Ok(content) = fs::read_to_string(&output_path) {
+        let verified = if let Ok(content) = fs::read_to_string(&output_path) {
             if let Ok(count) = content.trim().parse::<usize>() {
-                verified = Some(count == expected);
                 if count != expected {
                     eprintln!(
                         "WARNING: Base regex count {} != expected {} (n={})",
                         count, expected, n
                     );
                 }
+                Some(count == expected)
             } else {
                 eprintln!("WARNING: Could not parse base regex output: {:?}", content.trim());
-                verified = Some(false);
+                Some(false)
             }
         } else {
             eprintln!("WARNING: Could not read base output file {:?}", output_path);
-            verified = Some(false);
-        }
+            Some(false)
+        };
 
         results.push(BenchResult {
             name: format!("Regex ({})", format_count(n)),

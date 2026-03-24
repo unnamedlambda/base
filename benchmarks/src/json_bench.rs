@@ -128,8 +128,6 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         });
 
         // Base (Cranelift JIT) — execute with payload, verify output file
-        let mut verified = None;
-
         // Warmup
         let _ = fs::remove_file(&output_path);
         let _ = base_instance.execute(&alg, &payload);
@@ -142,20 +140,20 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         });
 
         // Verify result by reading the output file
-        if let Ok(content) = fs::read_to_string(&output_path) {
+        let verified = if let Ok(content) = fs::read_to_string(&output_path) {
             if let Ok(sum) = content.trim().parse::<i64>() {
-                verified = Some(sum == expected);
                 if sum != expected {
                     eprintln!("WARNING: Base JSON sum {} != expected {} (n={})", sum, expected, n);
                 }
+                Some(sum == expected)
             } else {
                 eprintln!("WARNING: Could not parse base JSON output: {:?}", content.trim());
-                verified = Some(false);
+                Some(false)
             }
         } else {
             eprintln!("WARNING: Could not read base output file {:?}", output_path);
-            verified = Some(false);
-        }
+            Some(false)
+        };
 
         results.push(BenchResult {
             name: format!("JSON ({})", format_count(n)),

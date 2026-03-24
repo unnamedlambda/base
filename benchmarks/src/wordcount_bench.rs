@@ -119,8 +119,6 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Base (Cranelift JIT) — fresh instance per execution because HT state
         // accumulates across execute() calls (ht_increment on handle 0 persists).
-        let mut verified = None;
-
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
             let (config, alg) = load_algorithm();
@@ -136,10 +134,10 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let mut base_instance = base::Base::new(config).expect("Base::new failed");
         let _ = base_instance.execute(&alg, &payload);
 
-        if let Ok(content) = fs::read_to_string(&output_path) {
+        let verified = if let Ok(content) = fs::read_to_string(&output_path) {
             let got = parse_output(content.trim());
             if got == expected {
-                verified = Some(true);
+                Some(true)
             } else {
                 eprintln!(
                     "WARNING: Base counts mismatch (n={}): got {} unique, expected {} unique",
@@ -157,12 +155,12 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
                         );
                     }
                 }
-                verified = Some(false);
+                Some(false)
             }
         } else {
             eprintln!("WARNING: Could not read base output file {:?}", output_path);
-            verified = Some(false);
-        }
+            Some(false)
+        };
 
         results.push(BenchResult {
             name: format!("WC ({})", format_count(n)),

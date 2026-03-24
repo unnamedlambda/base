@@ -1,4 +1,3 @@
-use base::{Algorithm, BaseConfig};
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
@@ -43,16 +42,6 @@ pub fn run_python(script: &str, args: &[&str]) -> Option<(f64, String)> {
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Some((elapsed_ms, stdout))
-}
-
-/// Execute a Base algorithm and return wall-clock time in ms.
-pub fn run_base(config: BaseConfig, algorithm: Algorithm) -> f64 {
-    let start = Instant::now();
-    match base::run(config, algorithm) {
-        Ok(_) => {}
-        Err(e) => eprintln!("Base execution failed: {:?}", e),
-    }
-    start.elapsed().as_secs_f64() * 1000.0
 }
 
 /// Run a benchmark function `iterations` times and return the median.
