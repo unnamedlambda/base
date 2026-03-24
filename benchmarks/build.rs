@@ -59,6 +59,7 @@ fn main() {
     println!("cargo:rerun-if-changed=lean/HistogramBench4Algorithm.lean");
     println!("cargo:rerun-if-changed=lean/MatmulBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lean/VecOpsBenchAlgorithm.lean");
+    println!("cargo:rerun-if-changed=lean/ReductionBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lakefile.lean");
     println!("cargo:rerun-if-changed=../lean/AlgorithmLib.lean");
 
@@ -75,4 +76,5 @@ fn main() {
     generate_algorithm(&manifest_dir, &lean_dir.join("HistogramBench4Algorithm.lean"), "hist4_algorithm");
     generate_algorithm(&manifest_dir, &lean_dir.join("MatmulBenchAlgorithm.lean"), "matmul_algorithm");
     generate_algorithm(&manifest_dir, &lean_dir.join("VecOpsBenchAlgorithm.lean"), "vecops_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("ReductionBenchAlgorithm.lean"), "reduction_algorithm");
 }
