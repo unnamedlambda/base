@@ -459,6 +459,43 @@ unsafe extern "C" fn cl_gpu_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size
     })).unwrap_or(-1)
 }
 
+unsafe extern "C" fn cl_gpu_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 || src_ptr == 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let data = std::slice::from_raw_parts(src_ptr as *const u8, size as usize);
+        ctx.queue.write_buffer(&ctx.buffers[bid], 0, data);
+        0
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_gpu_download_ptr(ptr: *mut u8, buf_id: i32, buf_offset: i64, dst_ptr: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 || dst_ptr == 0 || buf_offset < 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let size = size as u64;
+        let buf_offset = buf_offset as u64;
+        let mut encoder = ctx.pending_encoder.take().unwrap_or_else(||
+            ctx.device.create_command_encoder(&CommandEncoderDescriptor { label: None })
+        );
+        encoder.copy_buffer_to_buffer(&ctx.buffers[bid], buf_offset, &ctx.staging_buffers[bid], 0, size);
+        ctx.queue.submit(Some(encoder.finish()));
+        let slice = ctx.staging_buffers[bid].slice(..size);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        ctx.device.poll(wgpu::Maintain::Wait);
+        let mapped = slice.get_mapped_range();
+        let dst = std::slice::from_raw_parts_mut(dst_ptr as *mut u8, size as usize);
+        dst.copy_from_slice(&mapped);
+        drop(mapped);
+        ctx.staging_buffers[bid].unmap();
+        0
+    })).unwrap_or(-1)
+}
+
 unsafe extern "C" fn cl_gpu_dispatch(ptr: *mut u8, pipeline_id: i32, wg_x: i32, wg_y: i32, wg_z: i32) -> i32 {
     if pipeline_id < 0 || wg_x <= 0 || wg_y <= 0 || wg_z <= 0 { return -1; }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1243,8 +1280,10 @@ pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Result<(cranelift_jit::
         builder.symbol("cl_gpu_create_buffer", cl_gpu_create_buffer as *const u8);
         builder.symbol("cl_gpu_create_pipeline", cl_gpu_create_pipeline as *const u8);
         builder.symbol("cl_gpu_upload", cl_gpu_upload as *const u8);
+        builder.symbol("cl_gpu_upload_ptr", cl_gpu_upload_ptr as *const u8);
         builder.symbol("cl_gpu_dispatch", cl_gpu_dispatch as *const u8);
         builder.symbol("cl_gpu_download", cl_gpu_download as *const u8);
+        builder.symbol("cl_gpu_download_ptr", cl_gpu_download_ptr as *const u8);
         builder.symbol("cl_gpu_cleanup", cl_gpu_cleanup as *const u8);
 
         builder.symbol("cl_cuda_init", cl_cuda_init as *const u8);

@@ -7165,3 +7165,215 @@ block0(v0: i64):
     assert_eq!(v2.value(0), 22);
     assert_eq!(l2.value(0), 16, "data_len should reflect new buffer size");
 }
+
+#[test]
+fn test_gpu_upload_ptr_download_ptr_vecadd() {
+    // Tests cl_gpu_upload_ptr and cl_gpu_download_ptr with execute_into.
+    // Uploads A+B from caller's data pointer, computes C[i]=A[i]+B[i] on GPU,
+    // downloads C to caller's out pointer. No shared memory data copying.
+    let n: usize = 64;
+
+    let wgsl = "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\
+                @compute @workgroup_size(64)\n\
+                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
+                    let n = arrayLength(&data) / 2u;\n\
+                    let i = gid.x;\n\
+                    if (i >= n) { return; }\n\
+                    data[i] = data[i] + data[n + i];\n\
+                }\n";
+
+    // Memory layout:
+    //   0x0000  reserved (40 bytes)
+    //   0x0100  WGSL shader (null-terminated)
+    //   0x1100  bind descriptor (8 bytes: [buf_id=0, read_only=0])
+    let shader_off: usize = 0x0100;
+    let bind_off: usize = 0x1100;
+    let mem_size: usize = 0x1200;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i64) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v
+
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_create_pipeline sig2
+    fn3 = %cl_gpu_upload_ptr sig3
+    fn4 = %cl_gpu_dispatch sig4
+    fn5 = %cl_gpu_download_ptr sig5
+    fn6 = %cl_gpu_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x10
+    v3 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+    v4 = call fn1(v0, v2)
+    v5 = call fn3(v0, v4, v1, v2)
+    v6 = iconst.i64 {shader_off}
+    v7 = iconst.i64 {bind_off}
+    v8 = iconst.i32 1
+    v9 = call fn2(v0, v6, v7, v8)
+    v10 = call fn4(v0, v9, v8, v8, v8)
+    v11 = ushr_imm v2, 3
+    v12 = ishl_imm v11, 2
+    v13 = iconst.i64 0
+    v14 = call fn5(v0, v4, v13, v3, v12)
+    call fn6(v0)
+    return
+}}"#,
+        shader_off = shader_off,
+        bind_off = bind_off,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    let shader_bytes = wgsl.as_bytes();
+    memory[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
+    memory[shader_off + shader_bytes.len()] = 0;
+    // bind desc: buf_id=0, read_only=0
+    memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+
+    // Build payload: [A: 64 f32s][B: 64 f32s]
+    let mut payload = vec![0u8; n * 4 * 2];
+    for i in 0..n {
+        let a_val = (i + 1) as f32;
+        let b_val = 100.0f32;
+        payload[i * 4..i * 4 + 4].copy_from_slice(&a_val.to_le_bytes());
+        payload[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
+    }
+
+    let mut out = vec![0u8; n * 4];
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 + 100.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Element {}: expected {}, got {}",
+            i, expected, actual
+        );
+    }
+}
+
+#[test]
+fn test_gpu_download_ptr_with_offset() {
+    // Tests cl_gpu_download_ptr with a non-zero buf_offset.
+    // Allocates a buffer with [A: 64 floats][B: 64 floats], uploads both,
+    // then downloads only the B portion (offset = 64*4) to the out pointer.
+    let n: usize = 64;
+
+    // Shader does nothing — we just want to test upload + offset download
+    let wgsl = "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\
+                @compute @workgroup_size(64)\n\
+                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
+                }\n";
+
+    let shader_off: usize = 0x0100;
+    let bind_off: usize = 0x1100;
+    let mem_size: usize = 0x1200;
+
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i64, i64, i64) -> i32 system_v
+
+    fn0 = %cl_gpu_init sig0
+    fn1 = %cl_gpu_create_buffer sig1
+    fn2 = %cl_gpu_upload_ptr sig2
+    fn3 = %cl_gpu_download_ptr sig3
+    fn4 = %cl_gpu_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x10
+    v3 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+    ; create buffer for full data (2*64*4 = 512 bytes)
+    v4 = call fn1(v0, v2)
+    ; upload all data from payload
+    v5 = call fn2(v0, v4, v1, v2)
+    ; download only second half: buf_offset = 256, size = 256, to out_ptr
+    v6 = iconst.i64 {half}
+    v7 = call fn3(v0, v4, v6, v3, v6)
+    call fn4(v0)
+    return
+}}"#,
+        half = n * 4,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    let shader_bytes = wgsl.as_bytes();
+    memory[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
+    memory[shader_off + shader_bytes.len()] = 0;
+    memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+
+    // Payload: [A: 1.0..64.0][B: 101.0..164.0]
+    let mut payload = vec![0u8; n * 4 * 2];
+    for i in 0..n {
+        let a_val = (i + 1) as f32;
+        let b_val = (i + 101) as f32;
+        payload[i * 4..i * 4 + 4].copy_from_slice(&a_val.to_le_bytes());
+        payload[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
+    }
+
+    let mut out = vec![0u8; n * 4];
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    // out should contain the B values (101.0..164.0), not A values
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 101) as f32;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Element {}: expected {} (B region), got {} — buf_offset download may be broken",
+            i, expected, actual
+        );
+    }
+}
