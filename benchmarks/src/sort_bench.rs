@@ -1,102 +1,113 @@
-use std::fs;
-use std::path::Path;
-
+use base::{BaseConfig, Algorithm};
 use crate::harness::{self, BenchResult, format_count};
 
-fn generate_data(path: &str, n: usize) -> (i32, i32) {
-    let dir = Path::new(path).parent().unwrap();
-    fs::create_dir_all(dir).ok();
+const SORT_ALGORITHM: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/sort_algorithm.bin"));
 
-    let mut values: Vec<i32> = Vec::with_capacity(n);
+fn load_algorithm() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(SORT_ALGORITHM).expect("Failed to deserialize sort algorithm")
+}
+
+fn generate_data(n: usize) -> Vec<i32> {
+    let mut values = Vec::with_capacity(n);
     for i in 0..n {
-        // Deterministic pseudo-random i32 values
         let v = ((i as i64).wrapping_mul(1_103_515_245).wrapping_add(12_345) % 2_000_000) as i32
             - 1_000_000;
         values.push(v);
     }
-
-    // Write as raw little-endian i32
-    let mut bytes = Vec::with_capacity(n * 4);
-    for &v in &values {
-        bytes.extend_from_slice(&v.to_le_bytes());
-    }
-    fs::write(path, &bytes).unwrap();
-
-    values.sort();
-    (values[0], values[n - 1])
+    values
 }
 
-fn rust_sort(path: &str) -> (i32, i32) {
-    let data = fs::read(path).unwrap();
-    let n = data.len() / 4;
-    let mut values: Vec<i32> = Vec::with_capacity(n);
-    for i in 0..n {
-        let offset = i * 4;
-        let v = i32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]);
-        values.push(v);
+fn build_payload(values: &[i32]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(values.len() * 4);
+    for &v in values {
+        payload.extend_from_slice(&v.to_le_bytes());
     }
-    values.sort_unstable();
-    (values[0], values[n - 1])
+    payload
+}
+
+fn i32_from_bytes(data: &[u8]) -> Vec<i32> {
+    data.chunks_exact(4)
+        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+fn rust_sort(values: &[i32]) -> Vec<i32> {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted
+}
+
+fn verify_sorted(actual: &[i32], expected: &[i32], label: &str, impl_name: &str) -> bool {
+    if actual.len() != expected.len() {
+        eprintln!("  VERIFY FAIL [{}] {}: length mismatch: {} vs {}", label, impl_name, actual.len(), expected.len());
+        return false;
+    }
+    for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+        if a != e {
+            eprintln!("  VERIFY FAIL [{}] {}: element {} got {}, expected {}", label, impl_name, i, a, e);
+            return false;
+        }
+    }
+    true
 }
 
 pub fn run(iterations: usize) -> Vec<BenchResult> {
     let sizes = [10_000, 100_000, 500_000, 1_000_000, 5_000_000];
     let mut results = Vec::new();
 
-    for &n in &sizes {
-        let data_path = format!("/tmp/bench-data/sort_{}.bin", n);
+    let (config, alg) = load_algorithm();
+    let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
-        let (expected_first, expected_last) = generate_data(&data_path, n);
+    for &n in &sizes {
+        let label = format!("Sort ({})", format_count(n));
+        let values = generate_data(n);
+        let expected = rust_sort(&values);
+        let payload = build_payload(&values);
+        let out_size = n * 4 * 2;  // 2x: first half = sorted result, second half = radix temp
+        let mut out_buf = vec![0u8; out_size];
+
+        // Generate data file for Python bench
+        let data_path = format!("/tmp/bench-data/sort_{}.bin", n);
+        std::fs::create_dir_all("/tmp/bench-data").ok();
+        std::fs::write(&data_path, &payload).unwrap();
 
         // Python
         let python_ms = harness::median_of(iterations, || {
             match harness::run_python("sort_bench.py", &[&data_path]) {
-                Some((ms, stdout)) => {
-                    if let Some((first_s, last_s)) = stdout.split_once(',') {
-                        let first: i32 = first_s.parse().unwrap_or(0);
-                        let last: i32 = last_s.parse().unwrap_or(0);
-                        if first != expected_first || last != expected_last {
-                            eprintln!(
-                                "WARNING: Python sort mismatch (n={}): got ({},{}), expected ({},{})",
-                                n, first, last, expected_first, expected_last
-                            );
-                        }
-                    }
-                    ms
-                }
+                Some((ms, _)) => ms,
                 None => f64::NAN,
             }
         });
 
-        // Pure Rust
+        // Rust
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let (first, last) = rust_sort(&data_path);
-            let ms = start.elapsed().as_secs_f64() * 1000.0;
-            if first != expected_first || last != expected_last {
-                eprintln!(
-                    "WARNING: Rust sort mismatch (n={}): got ({},{}), expected ({},{})",
-                    n, first, last, expected_first, expected_last
-                );
-            }
-            ms
+            std::hint::black_box(rust_sort(&values));
+            start.elapsed().as_secs_f64() * 1000.0
         });
 
+        // Warmup Base
+        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+
+        // Base
+        let base_ms = harness::median_of(iterations, || {
+            let start = std::time::Instant::now();
+            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            start.elapsed().as_secs_f64() * 1000.0
+        });
+
+        // Verify
+        let rust_ok = verify_sorted(&rust_sort(&values), &expected, &label, "Rust");
+        let base_result = i32_from_bytes(&out_buf[..n * 4]);
+        let base_ok = verify_sorted(&base_result, &expected, &label, "Base");
+
         results.push(BenchResult {
-            name: format!("Sort ({})", format_count(n)),
-            col_a_ms: if python_ms.is_nan() {
-                None
-            } else {
-                Some(python_ms)
-            },
+            name: label,
+            col_a_ms: if python_ms.is_nan() { None } else { Some(python_ms) },
             col_b_ms: Some(rust_ms),
-            base_ms: f64::NAN,
-            verified: None,
+            base_ms,
+            verified: Some(rust_ok && base_ok),
         });
     }
 

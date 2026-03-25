@@ -65,6 +65,7 @@ fn main() {
     println!("cargo:rerun-if-changed=lean/GpuReductionBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lean/CudaSaxpyBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lean/GpuIterBenchAlgorithm.lean");
+    println!("cargo:rerun-if-changed=lean/SortBenchAlgorithm.lean");
     println!("cargo:rerun-if-changed=lakefile.lean");
     println!("cargo:rerun-if-changed=../lean/AlgorithmLib.lean");
 
@@ -87,4 +88,5 @@ fn main() {
     generate_algorithm(&manifest_dir, &lean_dir.join("GpuReductionBenchAlgorithm.lean"), "gpu_reduction_algorithm");
     generate_algorithm(&manifest_dir, &lean_dir.join("CudaSaxpyBenchAlgorithm.lean"), "cuda_saxpy_algorithm");
     generate_algorithm(&manifest_dir, &lean_dir.join("GpuIterBenchAlgorithm.lean"), "gpu_iter_algorithm");
+    generate_algorithm(&manifest_dir, &lean_dir.join("SortBenchAlgorithm.lean"), "sort_algorithm");
 }
