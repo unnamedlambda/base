@@ -205,7 +205,6 @@ pub fn run(cfg: &HistConfig) -> Vec<BenchResult> {
                 rust_ms: Some(rust_ms),
                 base_ms,
                 verified: Some(rust_verified && base_verified),
-                actions: None,
             });
         }
     }

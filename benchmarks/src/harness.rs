@@ -8,7 +8,6 @@ pub struct BenchResult {
     pub rust_ms: Option<f64>,
     pub base_ms: f64,
     pub verified: Option<bool>,
-    pub actions: Option<usize>,
 }
 
 

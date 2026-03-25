@@ -107,7 +107,6 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             rust_ms: Some(rust_ms),
             base_ms: f64::NAN,
             verified: None,
-            actions: None,
         });
     }
 
