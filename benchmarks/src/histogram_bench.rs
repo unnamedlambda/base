@@ -1,5 +1,5 @@
 use base::{BaseConfig, Algorithm};
-use crate::harness::{self, BenchResult};
+use crate::harness::{self, BenchResult, format_count};
 
 // ---------------------------------------------------------------------------
 // Parallel Histogram Benchmark
@@ -105,16 +105,6 @@ fn read_result(path: &str) -> Option<Vec<u64>> {
     let bytes = std::fs::read(path).ok()?;
     if bytes.len() != BINS * 8 { return None; }
     Some(bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect())
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
 }
 
 // ---------------------------------------------------------------------------

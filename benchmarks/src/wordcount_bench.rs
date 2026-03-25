@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult};
+use crate::harness::{self, BenchResult, format_count};
 
 const WC_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wc_algorithm.bin"));
 
@@ -69,16 +69,6 @@ fn parse_output(content: &str) -> HashMap<String, u64> {
         }
     }
     result
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
 }
 
 pub fn run(iterations: usize) -> Vec<BenchResult> {

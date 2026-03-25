@@ -21,28 +21,7 @@ fn load_reduction_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(GPU_REDUCTION_ALGORITHM).expect("Failed to deserialize gpu_reduction algorithm")
 }
 
-fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
-    let mut state = seed;
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let bits = (state >> 33) as i32;
-        out.push(bits as f32 / i32::MAX as f32);
-    }
-    out
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
-}
+use harness::{gen_floats, format_count, f32_sum, build_f32_payload};
 
 /// Get (or create) the cached Burn GPU device.
 fn burn_device() -> burn::backend::wgpu::WgpuDevice {
@@ -72,15 +51,6 @@ fn burn_device() -> burn::backend::wgpu::WgpuDevice {
         };
         burn::backend::wgpu::init_device(setup, Default::default())
     }).clone()
-}
-
-fn f32_sum(data: &[u8]) -> f64 {
-    let mut total = 0.0f64;
-    for chunk in data.chunks_exact(4) {
-        let v = f32::from_le_bytes(chunk.try_into().unwrap());
-        total += v as f64;
-    }
-    total
 }
 
 fn check_gpu_result(actual: f64, expected: f64, label: &str, n: usize) -> bool {
@@ -159,31 +129,6 @@ fn burn_reduction_gpu(data: &[f32], num_groups: usize, device: &burn::backend::w
 // Payload builders
 // ---------------------------------------------------------------------------
 
-/// VecAdd payload: [A floats][B floats]
-fn build_vecadd_payload(a: &[f32], b: &[f32]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity((a.len() + b.len()) * 4);
-    for &v in a {
-        payload.extend_from_slice(&v.to_le_bytes());
-    }
-    for &v in b {
-        payload.extend_from_slice(&v.to_le_bytes());
-    }
-    payload
-}
-
-/// MatMul payload: [A floats: N*N][B floats: N*N]
-fn build_matmul_payload(a: &[f32], b: &[f32]) -> Vec<u8> {
-    build_vecadd_payload(a, b)
-}
-
-/// Reduction payload: [f32 values]
-fn build_reduction_payload(data: &[f32]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(data.len() * 4);
-    for &v in data {
-        payload.extend_from_slice(&v.to_le_bytes());
-    }
-    payload
-}
 
 // ---------------------------------------------------------------------------
 // Table printer
@@ -252,7 +197,7 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             let a = gen_floats(n, 42);
             let b = gen_floats(n, 123);
             let expected = cpu_vec_add_sum(&a, &b);
-            let payload = build_vecadd_payload(&a, &b);
+            let payload = build_f32_payload(&[&a, &b]);
             let out_size = n * 4;
             let mut out_buf = vec![0u8; out_size];
 
@@ -296,7 +241,7 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             let a: Vec<f32> = (0..nn).map(|i| (i % 100) as f32 / 100.0).collect();
             let b: Vec<f32> = (0..nn).map(|i| ((i + 1) % 100) as f32 / 100.0).collect();
             let expected = cpu_matmul_sum(&a, &b, n);
-            let payload = build_matmul_payload(&a, &b);
+            let payload = build_f32_payload(&[&a, &b]);
             let out_size = nn * 4;
             let mut out_buf = vec![0u8; out_size];
 
@@ -339,7 +284,7 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
 
             let data = gen_floats(n, 42);
             let expected = cpu_sum(&data);
-            let payload = build_reduction_payload(&data);
+            let payload = build_f32_payload(&[&data]);
             let out_size = num_groups * 4;
             let mut out_buf = vec![0u8; out_size];
 

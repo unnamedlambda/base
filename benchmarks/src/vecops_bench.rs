@@ -1,5 +1,5 @@
 use base::{BaseConfig, Algorithm};
-use crate::harness::{self, BenchResult};
+use crate::harness::{self, BenchResult, gen_floats, format_count};
 
 // ---------------------------------------------------------------------------
 // Vector Addition Benchmark
@@ -16,19 +16,6 @@ const VECOPS_ALGORITHM: &[u8] =
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(VECOPS_ALGORITHM).expect("Failed to deserialize vecops algorithm")
-}
-
-fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
-    let mut state = seed;
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let bits = (state >> 33) as i32;
-        out.push(bits as f32 / i32::MAX as f32);
-    }
-    out
 }
 
 fn rust_vec_add(a: &[f32], b: &[f32]) -> f64 {
@@ -69,16 +56,6 @@ fn close_enough(a: f64, b: f64) -> bool {
     let diff = (a - b).abs();
     let mag = a.abs().max(b.abs()).max(1.0);
     diff / mag < 0.01
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
 }
 
 pub fn run(iterations: usize) -> Vec<BenchResult> {

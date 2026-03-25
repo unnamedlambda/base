@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult};
+use crate::harness::{self, BenchResult, format_count};
 
 const JSON_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/json_algorithm.bin"));
 
@@ -68,16 +68,6 @@ fn rust_json_sum(path: &str) -> i64 {
         }
     }
     total
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
 }
 
 pub fn run(iterations: usize) -> Vec<BenchResult> {

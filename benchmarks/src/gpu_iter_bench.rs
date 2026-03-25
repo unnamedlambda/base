@@ -63,7 +63,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
 }
 "#;
 
-fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
+use harness::{format_count, f32_sum};
+
+fn gen_positive_floats(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
@@ -74,16 +76,6 @@ fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
         out.push((bits as f32 / i32::MAX as f32).abs() + 0.1);
     }
     out
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
 }
 
 /// Payload layout: [passes: i64 (8 bytes)][f32 data]
@@ -347,12 +339,6 @@ fn check_result(actual: f64, expected: f64, label: &str, impl_name: &str) -> boo
     ok
 }
 
-fn f32_sum(data: &[u8]) -> f64 {
-    data.chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
-        .sum()
-}
-
 // ---------------------------------------------------------------------------
 // Table printer
 // ---------------------------------------------------------------------------
@@ -412,7 +398,7 @@ pub fn run(iterations: usize) -> Vec<GpuIterResult> {
         let label = format!("{}x scale {}", passes, format_count(n));
         eprintln!("  {} ...", label);
 
-        let data = gen_floats(n, 42);
+        let data = gen_positive_floats(n, 42);
         let expected = cpu_expected_sum(&data, passes);
         let payload = build_payload(&data, passes);
         let mut out_buf = vec![0u8; out_size];

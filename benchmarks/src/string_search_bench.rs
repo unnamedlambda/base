@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult};
+use crate::harness::{self, BenchResult, format_count};
 
 const STRSEARCH_ALGORITHM: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/strsearch_algorithm.bin"));
@@ -73,16 +73,6 @@ fn rust_string_search(path: &str) -> usize {
         pos += 1;
     }
     count
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
 }
 
 pub fn run(iterations: usize) -> Vec<BenchResult> {

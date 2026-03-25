@@ -136,3 +136,53 @@ fn python_dir() -> std::path::PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest).join("python")
 }
+
+// ---------------------------------------------------------------------------
+// Shared utilities used across benchmark files
+// ---------------------------------------------------------------------------
+
+pub fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
+    let mut state = seed;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let bits = (state >> 33) as i32;
+        out.push(bits as f32 / i32::MAX as f32);
+    }
+    out
+}
+
+pub fn format_count(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        format!("{}", n)
+    }
+}
+
+pub fn build_f32_payload(slices: &[&[f32]]) -> Vec<u8> {
+    let total: usize = slices.iter().map(|s| s.len()).sum();
+    let mut payload = Vec::with_capacity(total * 4);
+    for slice in slices {
+        for &v in *slice {
+            payload.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    payload
+}
+
+pub fn f32_from_bytes(data: &[u8]) -> Vec<f32> {
+    data.chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+pub fn f32_sum(data: &[u8]) -> f64 {
+    data.chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
+        .sum()
+}

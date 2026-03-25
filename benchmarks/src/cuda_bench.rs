@@ -10,28 +10,7 @@ fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(CUDA_SAXPY_ALGORITHM).expect("Failed to deserialize cuda_saxpy algorithm")
 }
 
-fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
-    let mut state = seed;
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let bits = (state >> 33) as i32;
-        out.push(bits as f32 / i32::MAX as f32);
-    }
-    out
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
-}
+use harness::{gen_floats, format_count, f32_from_bytes, build_f32_payload};
 
 fn cuda_device() -> burn::backend::cuda_jit::CudaDevice {
     burn::backend::cuda_jit::CudaDevice::new(0)
@@ -62,22 +41,6 @@ fn burn_saxpy_cuda(a: f32, x: &[f32], y: &[f32]) -> Vec<f32> {
     result.as_slice::<f32>().unwrap().to_vec()
 }
 
-// ---------------------------------------------------------------------------
-// Payload builder
-// ---------------------------------------------------------------------------
-
-/// SAXPY payload: [x floats][y floats]
-fn build_payload(x: &[f32], y: &[f32]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity((x.len() + y.len()) * 4);
-    for &v in x {
-        payload.extend_from_slice(&v.to_le_bytes());
-    }
-    for &v in y {
-        payload.extend_from_slice(&v.to_le_bytes());
-    }
-    payload
-}
-
 fn check_saxpy_result(actual: &[f32], expected: &[f32], impl_name: &str, label: &str) -> bool {
     if actual.len() != expected.len() {
         eprintln!(
@@ -97,12 +60,6 @@ fn check_saxpy_result(actual: &[f32], expected: &[f32], impl_name: &str, label: 
         }
     }
     true
-}
-
-fn f32_from_bytes(data: &[u8]) -> Vec<f32> {
-    data.chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +125,7 @@ pub fn run(iterations: usize) -> Vec<CudaBenchResult> {
         let x = gen_floats(n, 42);
         let y = gen_floats(n, 123);
         let expected = cpu_saxpy(2.0, &x, &y);
-        let payload = build_payload(&x, &y);
+        let payload = build_f32_payload(&[&x, &y]);
         let out_size = n * 4;
         let mut out_buf = vec![0u8; out_size];
         let label = format!("SAXPY {}", format_count(n));

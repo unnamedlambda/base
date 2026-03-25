@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult};
+use crate::harness::{self, BenchResult, format_count};
 
 fn generate_data(path: &str, n: usize) -> (i32, i32) {
     let dir = Path::new(path).parent().unwrap();
@@ -42,16 +42,6 @@ fn rust_sort(path: &str) -> (i32, i32) {
     }
     values.sort_unstable();
     (values[0], values[n - 1])
-}
-
-fn format_count(n: usize) -> String {
-    if n >= 1_000_000 {
-        format!("{}M", n / 1_000_000)
-    } else if n >= 1_000 {
-        format!("{}K", n / 1_000)
-    } else {
-        format!("{}", n)
-    }
 }
 
 pub fn run(iterations: usize) -> Vec<BenchResult> {
