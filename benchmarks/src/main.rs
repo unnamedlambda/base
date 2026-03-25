@@ -141,7 +141,7 @@ fn main() {
             workers,
         };
         let results = histogram_bench::run(&cfg);
-        harness::print_table(&results);
+        harness::print_results_2col(&results, "Rust");
     }
 
     if run_sort {

@@ -191,8 +191,8 @@ pub fn run(cfg: &HistConfig) -> Vec<BenchResult> {
 
             results.push(BenchResult {
                 name: label,
-                col_a_ms: None,
-                col_b_ms: Some(rust_ms),
+                col_a_ms: Some(rust_ms),
+                col_b_ms: None,
                 base_ms,
                 verified: Some(rust_verified && base_verified),
             });
