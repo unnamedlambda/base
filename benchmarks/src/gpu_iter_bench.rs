@@ -1,4 +1,4 @@
-use base_types::{Action, Kind};
+use base::{BaseConfig, Algorithm};
 use crate::harness;
 
 // ---------------------------------------------------------------------------
@@ -8,10 +8,17 @@ use crate::harness;
 //
 // Raw wgpu:  Keeps buffer GPU-resident, only reads back at end
 // Burn:      Naturally keeps tensors GPU-resident
-// CLIF+GPU:  1 upload + N kernels + 1 download (via extern "C" wrappers)
+// Base+GPU:  1 upload + N kernels + 1 download (via execute_into)
 // ---------------------------------------------------------------------------
 
 type Gpu = burn::backend::wgpu::Wgpu;
+
+const GPU_ITER_ALGORITHM: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/gpu_iter_algorithm.bin"));
+
+fn load_algorithm() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(GPU_ITER_ALGORITHM).expect("Failed to deserialize gpu_iter algorithm")
+}
 
 pub struct GpuIterResult {
     pub name: String,
@@ -21,7 +28,18 @@ pub struct GpuIterResult {
     pub verified: bool,
 }
 
-// Partial sum reduction: each workgroup of 64 reduces 64 elements → 1 partial sum.
+const WGSL_SCALE: &str = r#"
+@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let n = arrayLength(&data);
+    let i = gid.x;
+    if (i >= n) { return; }
+    data[i] = data[i] * 1.001;
+}
+"#;
+
 const WGSL_REDUCE: &str = r#"
 @group(0) @binding(0) var<storage, read>       data: array<f32>;
 @group(0) @binding(1) var<storage, read_write> sums: array<f32>;
@@ -42,18 +60,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
         s >>= 1u;
     }
     if lid.x == 0u { sums[wgid.x] = partial[0]; }
-}
-"#;
-
-const WGSL_SCALE: &str = r#"
-@group(0) @binding(0) var<storage, read_write> data: array<f32>;
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let n = arrayLength(&data);
-    let i = gid.x;
-    if (i >= n) { return; }
-    data[i] = data[i] * 1.001;
 }
 "#;
 
@@ -78,6 +84,16 @@ fn format_count(n: usize) -> String {
     } else {
         format!("{}", n)
     }
+}
+
+/// Payload layout: [passes: i64 (8 bytes)][f32 data]
+fn build_payload(data: &[f32], passes: usize) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(8 + data.len() * 4);
+    payload.extend_from_slice(&(passes as i64).to_le_bytes());
+    for &v in data {
+        payload.extend_from_slice(&v.to_le_bytes());
+    }
+    payload
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +176,7 @@ fn burn_iterative(data: &[f32], passes: usize) -> f64 {
 
     let n = data.len();
     let mut t = Tensor::<Gpu, 1>::from_data(TensorData::new(data.to_vec(), [n]), &dev);
-    let scale = Tensor::<Gpu, 1>::from_data(TensorData::new(vec![1.001f32], [1]), &dev);
+    let scale = Tensor::<Gpu, 1>::from_data(TensorData::new(vec![1.001f32; n], [n]), &dev);
 
     for _ in 0..passes {
         t = t * scale.clone();
@@ -251,7 +267,7 @@ fn wgpu_iterative(data: &[f32], passes: usize) -> f64 {
         queue.submit(Some(encoder.finish()));
     }
 
-    // GPU reduction: 1M → ~15K partial sums
+    // GPU reduction: N → N/64 partial sums
     let reduce_wgs = ((n as u32) + 63) / 64;
     let sums_bytes = (reduce_wgs as u64) * 4;
 
@@ -316,172 +332,6 @@ fn wgpu_iterative(data: &[f32], passes: usize) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// CLIF+GPU: Cranelift JIT calls generic extern "C" GPU primitives.
-// Data stays GPU-resident between dispatches.
-// ---------------------------------------------------------------------------
-
-const CLIF_PASSES_OFF: usize    = 0x28;
-const CLIF_DSIZE_OFF: usize     = 0x30;
-const CLIF_WORKGROUPS_OFF: usize = 0x38;
-const CLIF_SUMSSIZE_OFF: usize  = 0x40;
-const CLIF_SCALE_BIND_OFF: usize = 0x48;
-const CLIF_REDUCE_BIND_OFF: usize = 0x50;
-const CLIF_SCALE_SHADER_OFF: usize = 0x100;
-const CLIF_REDUCE_SHADER_OFF: usize = 0x800;
-const CLIF_FNAME_OFF: usize     = 0xC00;
-const CLIF_IR_OFF: usize        = 0x1000;
-const CLIF_DATA_OFF: usize      = 0x2000;
-
-fn gen_gpu_clif_ir() -> String {
-    format!(
-r#"function u0:0(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i64, i32) -> i32 system_v
-    sig3 = (i64, i32, i64, i64) -> i32 system_v
-    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
-
-    fn0 = %cl_gpu_init sig0
-    fn1 = %cl_gpu_create_buffer sig1
-    fn2 = %cl_gpu_create_pipeline sig2
-    fn3 = %cl_gpu_upload sig3
-    fn4 = %cl_gpu_dispatch sig4
-    fn5 = %cl_gpu_download sig3
-    fn6 = %cl_gpu_cleanup sig0
-    fn7 = %cl_file_write sig5
-
-block0(v0: i64):
-    call fn0(v0)
-
-    v1 = load.i64 v0+{dsize_off}
-    v2 = call fn1(v0, v1)
-
-    v3 = load.i64 v0+{sums_off}
-    v4 = call fn1(v0, v3)
-
-    v5 = iconst.i64 {data_off}
-    v22 = call fn3(v0, v2, v5, v1)
-
-    v6 = iconst.i64 {scale_shader_off}
-    v7 = iconst.i64 {scale_bind_off}
-    v8 = iconst.i32 1
-    v9 = call fn2(v0, v6, v7, v8)
-
-    v10 = iconst.i64 {reduce_shader_off}
-    v11 = iconst.i64 {reduce_bind_off}
-    v12 = iconst.i32 2
-    v13 = call fn2(v0, v10, v11, v12)
-
-    v14 = load.i64 v0+{passes_off}
-    v15 = load.i64 v0+{wg_off}
-    v16 = ireduce.i32 v15
-    v17 = iconst.i64 0
-    jump block1(v17)
-
-block1(v18: i64):
-    v19 = icmp uge v18, v14
-    brif v19, block2, block3(v18)
-
-block3(v20: i64):
-    v23 = call fn4(v0, v9, v16, v8, v8)
-    v21 = iadd_imm v20, 1
-    jump block1(v21)
-
-block2:
-    v24 = call fn4(v0, v13, v16, v8, v8)
-
-    v26 = call fn5(v0, v4, v5, v3)
-
-    call fn6(v0)
-
-    v27 = iconst.i64 {fname_off}
-    v28 = iconst.i64 0
-    v29 = call fn7(v0, v27, v5, v28, v3)
-
-    return
-}}"#,
-        dsize_off = CLIF_DSIZE_OFF,
-        sums_off = CLIF_SUMSSIZE_OFF,
-        data_off = CLIF_DATA_OFF,
-        scale_shader_off = CLIF_SCALE_SHADER_OFF,
-        scale_bind_off = CLIF_SCALE_BIND_OFF,
-        reduce_shader_off = CLIF_REDUCE_SHADER_OFF,
-        reduce_bind_off = CLIF_REDUCE_BIND_OFF,
-        passes_off = CLIF_PASSES_OFF,
-        wg_off = CLIF_WORKGROUPS_OFF,
-        fname_off = CLIF_FNAME_OFF,
-    )
-}
-
-fn build_clif_gpu_iter_algorithm(data: &[f32], passes: usize, output_path: &str) -> (base::BaseConfig, base::Algorithm) {
-    let n = data.len();
-    let data_size = n * 4;
-    let workgroups = ((n as u32) + 63) / 64;
-    let sums_size = (workgroups as usize) * 4;
-
-    let clif_source = gen_gpu_clif_ir();
-    let clif_bytes = format!("{}\0", clif_source).into_bytes();
-    assert!(clif_bytes.len() < (CLIF_DATA_OFF - CLIF_IR_OFF),
-        "CLIF IR too large: {} bytes", clif_bytes.len());
-
-    let mem_size = CLIF_DATA_OFF + data_size.max(sums_size);
-    let mut memory = vec![0u8; mem_size];
-
-    memory[CLIF_IR_OFF..CLIF_IR_OFF + clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    memory[CLIF_PASSES_OFF..CLIF_PASSES_OFF + 8].copy_from_slice(&(passes as i64).to_le_bytes());
-    memory[CLIF_DSIZE_OFF..CLIF_DSIZE_OFF + 8].copy_from_slice(&(data_size as i64).to_le_bytes());
-    memory[CLIF_WORKGROUPS_OFF..CLIF_WORKGROUPS_OFF + 8].copy_from_slice(&(workgroups as i64).to_le_bytes());
-    memory[CLIF_SUMSSIZE_OFF..CLIF_SUMSSIZE_OFF + 8].copy_from_slice(&(sums_size as i64).to_le_bytes());
-
-    // Scale: [buf0, rw]
-    memory[CLIF_SCALE_BIND_OFF..CLIF_SCALE_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
-    memory[CLIF_SCALE_BIND_OFF + 4..CLIF_SCALE_BIND_OFF + 8].copy_from_slice(&0i32.to_le_bytes());
-    // Reduce: [buf0, ro], [buf1, rw]
-    memory[CLIF_REDUCE_BIND_OFF..CLIF_REDUCE_BIND_OFF + 4].copy_from_slice(&0i32.to_le_bytes());
-    memory[CLIF_REDUCE_BIND_OFF + 4..CLIF_REDUCE_BIND_OFF + 8].copy_from_slice(&1i32.to_le_bytes());
-    memory[CLIF_REDUCE_BIND_OFF + 8..CLIF_REDUCE_BIND_OFF + 12].copy_from_slice(&1i32.to_le_bytes());
-    memory[CLIF_REDUCE_BIND_OFF + 12..CLIF_REDUCE_BIND_OFF + 16].copy_from_slice(&0i32.to_le_bytes());
-
-    let scale_bytes = WGSL_SCALE.as_bytes();
-    memory[CLIF_SCALE_SHADER_OFF..CLIF_SCALE_SHADER_OFF + scale_bytes.len()].copy_from_slice(scale_bytes);
-    memory[CLIF_SCALE_SHADER_OFF + scale_bytes.len()] = 0;
-
-    let reduce_bytes = WGSL_REDUCE.as_bytes();
-    memory[CLIF_REDUCE_SHADER_OFF..CLIF_REDUCE_SHADER_OFF + reduce_bytes.len()].copy_from_slice(reduce_bytes);
-    memory[CLIF_REDUCE_SHADER_OFF + reduce_bytes.len()] = 0;
-
-    let fname = format!("{}\0", output_path);
-    memory[CLIF_FNAME_OFF..CLIF_FNAME_OFF + fname.len()].copy_from_slice(fname.as_bytes());
-
-    for (i, &v) in data.iter().enumerate() {
-        let off = CLIF_DATA_OFF + i * 4;
-        memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-
-    let _ = std::fs::remove_file(output_path);
-
-    let actions = vec![
-        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
-    ];
-
-    let config = base::BaseConfig {
-        cranelift_ir: clif_source,
-        memory_size: memory.len(),
-        context_offset: 0,
-        initial_memory: memory,
-    };
-    let algorithm = base::Algorithm {
-        actions,
-        cranelift_units: 0,
-        timeout_ms: Some(300_000),
-        output: vec![],
-    };
-    (config, algorithm)
-}
-
-// ---------------------------------------------------------------------------
 // Verification
 // ---------------------------------------------------------------------------
 
@@ -495,6 +345,12 @@ fn check_result(actual: f64, expected: f64, label: &str, impl_name: &str) -> boo
         );
     }
     ok
+}
+
+fn f32_sum(data: &[u8]) -> f64 {
+    data.chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
+        .sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +367,7 @@ pub fn print_iter_table(results: &[GpuIterResult]) {
         "GPU Iterative",
         "Raw wgpu",
         "Burn",
-        "CLIF+GPU",
+        "Base+GPU",
         "Check",
         name_w = name_w,
         col_w = col_w
@@ -543,9 +399,14 @@ pub fn run(iterations: usize) -> Vec<GpuIterResult> {
 
     eprintln!("\n=== GPU Iterative Benchmark: N kernel passes on same data ===");
     eprintln!("  Raw wgpu & Burn: data stays GPU-resident between passes");
-    eprintln!("  CLIF+GPU:        CLIF JIT calls extern C GPU wrappers (GPU-resident)\n");
+    eprintln!("  Base+GPU:        Lean-built CLIF, data GPU-resident via execute_into\n");
 
     let n = 1_000_000usize;
+    let num_groups = (n + 63) / 64;
+    let out_size = num_groups * 4;
+
+    let (config, alg) = load_algorithm();
+    let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &passes in &[1, 10, 100, 500, 1000] {
         let label = format!("{}x scale {}", passes, format_count(n));
@@ -553,43 +414,43 @@ pub fn run(iterations: usize) -> Vec<GpuIterResult> {
 
         let data = gen_floats(n, 42);
         let expected = cpu_expected_sum(&data, passes);
+        let payload = build_payload(&data, passes);
+        let mut out_buf = vec![0u8; out_size];
+
+        // Warmup all three
+        std::hint::black_box(wgpu_iterative(&data, passes));
+        std::hint::black_box(burn_iterative(&data, passes));
+        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
 
         // Raw wgpu (GPU-resident)
-        let mut wgpu_result = 0.0f64;
         let wgpu_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            wgpu_result = wgpu_iterative(&data, passes);
+            std::hint::black_box(wgpu_iterative(&data, passes));
             start.elapsed().as_secs_f64() * 1000.0
         });
 
         // Burn (GPU-resident)
-        let mut burn_result = 0.0f64;
         let burn_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            burn_result = burn_iterative(&data, passes);
+            std::hint::black_box(burn_iterative(&data, passes));
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        // CLIF+GPU (GPU-resident via extern "C" wrappers, through execute())
-        let clif_out = format!("/tmp/gpu-iter-clif-{}.bin", passes);
-        let (clif_config, clif_alg) = build_clif_gpu_iter_algorithm(&data, passes, &clif_out);
+        // Base+GPU (GPU-resident via CLIF loop)
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base::run(clif_config.clone(), clif_alg.clone());
+            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        // Verify CLIF: read partial sums from file written by CLIF function
-        let clif_result: f64 = match std::fs::read(&clif_out) {
-            Ok(bytes) => bytes.chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
-                .sum(),
-            Err(_) => f64::NAN,
-        };
+        // Verify
+        let wgpu_result = wgpu_iterative(&data, passes);
+        let burn_result = burn_iterative(&data, passes);
+        let clif_result = f32_sum(&out_buf);
 
         let wgpu_ok = check_result(wgpu_result, expected, &label, "wgpu");
         let burn_ok = check_result(burn_result, expected, &label, "Burn");
-        let clif_ok = check_result(clif_result, expected, &label, "CLIF+GPU");
+        let clif_ok = check_result(clif_result, expected, &label, "Base+GPU");
 
         results.push(GpuIterResult {
             name: label,
