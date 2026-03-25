@@ -103,8 +103,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         results.push(BenchResult {
             name: format!("Sum ({})", format_count(n)),
-            python_ms: Some(burn_ms),
-            rust_ms: Some(rust_ms),
+            col_a_ms: Some(rust_ms),
+            col_b_ms: Some(burn_ms),
             base_ms,
             verified,
         });

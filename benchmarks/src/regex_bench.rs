@@ -145,12 +145,12 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         results.push(BenchResult {
             name: format!("Regex ({})", format_count(n)),
-            python_ms: if python_ms.is_nan() {
+            col_a_ms: if python_ms.is_nan() {
                 None
             } else {
                 Some(python_ms)
             },
-            rust_ms: Some(rust_ms),
+            col_b_ms: Some(rust_ms),
             base_ms,
             verified,
         });
