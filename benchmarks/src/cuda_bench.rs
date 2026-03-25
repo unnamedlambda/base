@@ -1,6 +1,14 @@
+use base::{BaseConfig, Algorithm};
 use crate::harness;
 
 type CudaBackend = burn::backend::CudaJit;
+
+const CUDA_SAXPY_ALGORITHM: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_saxpy_algorithm.bin"));
+
+fn load_algorithm() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(CUDA_SAXPY_ALGORITHM).expect("Failed to deserialize cuda_saxpy algorithm")
+}
 
 fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;
@@ -29,16 +37,45 @@ fn cuda_device() -> burn::backend::cuda_jit::CudaDevice {
     burn::backend::cuda_jit::CudaDevice::new(0)
 }
 
-fn read_f32_file(path: &str) -> Option<Vec<f32>> {
-    let data = std::fs::read(path).ok()?;
-    if data.len() < 4 || data.len() % 4 != 0 {
-        return None;
+// ---------------------------------------------------------------------------
+// CPU reference: y[i] = 2.0 * x[i] + y[i]
+// ---------------------------------------------------------------------------
+
+fn cpu_saxpy(a: f32, x: &[f32], y: &[f32]) -> Vec<f32> {
+    x.iter()
+        .zip(y.iter())
+        .map(|(&xi, &yi)| a * xi + yi)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Burn(CUDA) SAXPY — full readback for fair comparison
+// ---------------------------------------------------------------------------
+
+fn burn_saxpy_cuda(a: f32, x: &[f32], y: &[f32]) -> Vec<f32> {
+    use burn::tensor::{Tensor, TensorData};
+    let device = cuda_device();
+    let n = x.len();
+    let x_t = Tensor::<CudaBackend, 1>::from_data(TensorData::new(x.to_vec(), [n]), &device);
+    let y_t = Tensor::<CudaBackend, 1>::from_data(TensorData::new(y.to_vec(), [n]), &device);
+    let result = (x_t.mul_scalar(a) + y_t).into_data();
+    result.as_slice::<f32>().unwrap().to_vec()
+}
+
+// ---------------------------------------------------------------------------
+// Payload builder
+// ---------------------------------------------------------------------------
+
+/// SAXPY payload: [x floats][y floats]
+fn build_payload(x: &[f32], y: &[f32]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity((x.len() + y.len()) * 4);
+    for &v in x {
+        payload.extend_from_slice(&v.to_le_bytes());
     }
-    let mut vals = Vec::with_capacity(data.len() / 4);
-    for chunk in data.chunks_exact(4) {
-        vals.push(f32::from_le_bytes(chunk.try_into().unwrap()));
+    for &v in y {
+        payload.extend_from_slice(&v.to_le_bytes());
     }
-    Some(vals)
+    payload
 }
 
 fn check_saxpy_result(actual: &[f32], expected: &[f32], impl_name: &str, label: &str) -> bool {
@@ -62,81 +99,10 @@ fn check_saxpy_result(actual: &[f32], expected: &[f32], impl_name: &str, label: 
     true
 }
 
-// ---------------------------------------------------------------------------
-// CPU reference: y[i] = 2.0 * x[i] + y[i]
-// ---------------------------------------------------------------------------
-
-fn cpu_saxpy(a: f32, x: &[f32], y: &[f32]) -> Vec<f32> {
-    x.iter()
-        .zip(y.iter())
-        .map(|(&xi, &yi)| a * xi + yi)
+fn f32_from_bytes(data: &[u8]) -> Vec<f32> {
+    data.chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Burn(CUDA) SAXPY
-// ---------------------------------------------------------------------------
-
-fn burn_saxpy_cuda(
-    a: f32,
-    x: &[f32],
-    y: &[f32],
-    output_path: &str,
-) {
-    use burn::tensor::{Tensor, TensorData};
-    let device = cuda_device();
-    let n = x.len();
-    let x_t = Tensor::<CudaBackend, 1>::from_data(TensorData::new(x.to_vec(), [n]), &device);
-    let y_t = Tensor::<CudaBackend, 1>::from_data(TensorData::new(y.to_vec(), [n]), &device);
-    let result = (x_t.mul_scalar(a) + y_t).into_data();
-    std::fs::write(output_path, result.as_bytes()).ok();
-}
-
-// ---------------------------------------------------------------------------
-// CLIF+CUDA (Lean-generated algorithm): SAXPY via PTX kernel
-//
-// Memory layout (from SaxpyBenchAlgorithm.lean):
-//   0x000: reserved (64 bytes, CUDA context pointer at offset 0)
-//   0x100: nElems (i32)
-//   0x200: ptxSrc (4096 bytes, null-terminated)
-//   0x1200: bindDesc (8 bytes: 2 x i32 buffer ids)
-//   0x1208: filename (256 bytes, null-terminated)
-//   0x1408: dataRegion (x[0..N] then y[0..N], f32 each)
-// ---------------------------------------------------------------------------
-
-const NELEMS_OFF: usize = 0x100;
-const DATA_OFF: usize = 0x1408;
-const FNAME_OFF: usize = 0x1208;
-
-fn build_saxpy_algorithm(
-    n: usize,
-    x: &[f32],
-    y: &[f32],
-    output_path: &str,
-) -> (base::BaseConfig, base::Algorithm) {
-    let (mut config, algorithm): (base::BaseConfig, base::Algorithm) = {
-        let bytes = include_bytes!(concat!(env!("OUT_DIR"), "/saxpy_algorithm.bin"));
-        bincode::deserialize(bytes).expect("Failed to deserialize saxpy_algorithm")
-    };
-
-    config.initial_memory[NELEMS_OFF..NELEMS_OFF + 4]
-        .copy_from_slice(&(n as i32).to_le_bytes());
-
-    let fname = format!("{}\0", output_path);
-    let fname_bytes = fname.as_bytes();
-    config.initial_memory[FNAME_OFF..FNAME_OFF + fname_bytes.len()]
-        .copy_from_slice(fname_bytes);
-
-    for (i, &v) in x.iter().enumerate() {
-        let off = DATA_OFF + i * 4;
-        config.initial_memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    for (i, &v) in y.iter().enumerate() {
-        let off = DATA_OFF + n * 4 + i * 4;
-        config.initial_memory[off..off + 4].copy_from_slice(&v.to_le_bytes());
-    }
-
-    (config, algorithm)
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +125,7 @@ pub fn print_cuda_table(results: &[CudaBenchResult]) {
         "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
         "CUDA Benchmark",
         "Burn(cuda)",
-        "Base",
+        "Base+CUDA",
         "Check",
         name_w = name_w,
         col_w = col_w
@@ -188,13 +154,13 @@ pub fn print_cuda_table(results: &[CudaBenchResult]) {
 
 pub fn run(iterations: usize) -> Vec<CudaBenchResult> {
     let mut results = Vec::new();
-    std::fs::create_dir_all("/tmp/cuda-bench-data").ok();
 
-    eprintln!("\n=== CUDA Benchmarks: Burn(cuda-jit) vs Base CLIF+PTX ===");
+    eprintln!("\n=== CUDA Benchmarks: Burn(cuda-jit) vs Base+CUDA ===");
     eprintln!("  SAXPY: y[i] = 2.0 * x[i] + y[i]");
-    eprintln!("  Burn: cubecl global runtime (pooled allocs, kernel cache)");
-    eprintln!("  Base: base::run() — JIT + CUDA pipeline each call\n");
+    eprintln!("  Both: upload + compute + full readback via execute_into\n");
 
+    let (config, alg) = load_algorithm();
+    let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in &[262_144usize, 524_288, 1_048_576] {
         eprintln!("  SAXPY {} ...", format_count(n));
@@ -202,40 +168,35 @@ pub fn run(iterations: usize) -> Vec<CudaBenchResult> {
         let x = gen_floats(n, 42);
         let y = gen_floats(n, 123);
         let expected = cpu_saxpy(2.0, &x, &y);
+        let payload = build_payload(&x, &y);
+        let out_size = n * 4;
+        let mut out_buf = vec![0u8; out_size];
+        let label = format!("SAXPY {}", format_count(n));
 
-        let label = format!("saxpy_{}", format_count(n));
-        let burn_out = format!("/tmp/cuda-bench-data/{}_burn.bin", label);
-        let base_out = format!("/tmp/cuda-bench-data/{}_base.bin", label);
+        // Warmup both
+        std::hint::black_box(burn_saxpy_cuda(2.0, &x, &y));
+        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
 
-        // Burn
         let burn_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            burn_saxpy_cuda(2.0, &x, &y, &burn_out);
+            std::hint::black_box(burn_saxpy_cuda(2.0, &x, &y));
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        // Base
-        let (base_cfg, base_alg) = build_saxpy_algorithm(n, &x, &y, &base_out);
         let base_ms = harness::median_of(iterations, || {
-            let cfg = base_cfg.clone();
-            let alg = base_alg.clone();
             let start = std::time::Instant::now();
-            let _ = base::run(cfg, alg);
+            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
-        // Verify both
-        let burn_ok = read_f32_file(&burn_out).map_or_else(
-            || { eprintln!("  VERIFY FAIL [{}] Burn: could not read output", label); false },
-            |v| check_saxpy_result(&v, &expected, "Burn", &label),
-        );
-        let base_ok = read_f32_file(&base_out).map_or_else(
-            || { eprintln!("  VERIFY FAIL [{}] Base: could not read output", label); false },
-            |v| check_saxpy_result(&v, &expected, "Base", &label),
-        );
+        // Verify
+        let burn_result = burn_saxpy_cuda(2.0, &x, &y);
+        let base_result = f32_from_bytes(&out_buf);
+        let burn_ok = check_saxpy_result(&burn_result, &expected, "Burn", &label);
+        let base_ok = check_saxpy_result(&base_result, &expected, "Base", &label);
 
         results.push(CudaBenchResult {
-            name: format!("SAXPY {}", format_count(n)),
+            name: label,
             burn_ms,
             base_ms,
             verified: burn_ok && base_ok,
