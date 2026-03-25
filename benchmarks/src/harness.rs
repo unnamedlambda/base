@@ -97,6 +97,30 @@ pub fn print_burn_table(results: &[BenchResult]) {
     print_results(results, "Rust", "Burn");
 }
 
+/// Print a 2-column table (col_b + Base only, no col_a).
+pub fn print_results_2col(results: &[BenchResult], col_b: &str) {
+    let name_w = 20;
+    let col_w = 12;
+
+    println!();
+    println!(
+        "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
+        "Benchmark", col_b, "Base", "Check",
+        name_w = name_w, col_w = col_w
+    );
+    println!("{}", "-".repeat(name_w + col_w * 2 + 6 + 3));
+
+    for r in results {
+        println!(
+            "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
+            r.name, fmt_ms(r.col_b_ms),
+            fmt_ms(Some(r.base_ms)), fmt_check(r.verified),
+            name_w = name_w, col_w = col_w
+        );
+    }
+    println!();
+}
+
 fn python_dir() -> std::path::PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest).join("python")

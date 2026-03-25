@@ -146,7 +146,7 @@ fn main() {
 
     if run_sort {
         let results = sort_bench::run(rounds);
-        harness::print_table(&results);
+        harness::print_results_2col(&results, "Rust");
     }
 
     if run_strsearch {

@@ -67,19 +67,6 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let out_size = n * 4 * 2;  // 2x: first half = sorted result, second half = radix temp
         let mut out_buf = vec![0u8; out_size];
 
-        // Generate data file for Python bench
-        let data_path = format!("/tmp/bench-data/sort_{}.bin", n);
-        std::fs::create_dir_all("/tmp/bench-data").ok();
-        std::fs::write(&data_path, &payload).unwrap();
-
-        // Python
-        let python_ms = harness::median_of(iterations, || {
-            match harness::run_python("sort_bench.py", &[&data_path]) {
-                Some((ms, _)) => ms,
-                None => f64::NAN,
-            }
-        });
-
         // Rust
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -104,7 +91,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         results.push(BenchResult {
             name: label,
-            col_a_ms: if python_ms.is_nan() { None } else { Some(python_ms) },
+            col_a_ms: None,
             col_b_ms: Some(rust_ms),
             base_ms,
             verified: Some(rust_ok && base_ok),
