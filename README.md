@@ -2,24 +2,51 @@
 
 Base is an execution system that delivers performance comparable to idiomatic Rust while allowing control logic to be specified in a language with a strong type system — without introducing type checking or interpreter overhead at runtime.
 
-Programs are defined as a configuration pair: a `BaseConfig` (Cranelift IR + memory layout) and an `Algorithm` (actions, payloads, execution parameters). This pair is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but the execution at runtime has no knowledge of or usage of Lean.
+Programs are defined as a configuration pair: a `BaseConfig` (Cranelift IR + memory layout) and an `Algorithm` (actions, execution parameters). This pair is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but the execution at runtime has no knowledge of or usage of Lean.
 
 The system is completely portable — all dependencies build from `cargo` with no manual system library installation, and only portable Rust features are used. Cranelift provides a JIT compiler similar to LLVM but without the system dependency — it is pure Rust, built from Cargo. Backend code quality is comparable to LLVM, which means optimization lives in Lean: emit good IR, and the generated code is fast. CPU, GPU, file, network, and database primitives are exposed through a shared memory space and directly callable from the JIT-compiled IR.
+
+GPU compute uses [wgpu](https://wgpu.rs/), a portable abstraction over Vulkan, Metal, DX12, and WebGPU — no vendor-specific SDK required. For NVIDIA GPUs, Base also provides direct CUDA support via [cudarc](https://github.com/coreylowman/cudarc), which dynamically loads the CUDA driver at runtime (`libcuda.so` / `nvcuda.dll`). PTX kernel source is embedded in the algorithm's initial memory by Lean at build time and loaded into the CUDA driver at execution time — no `nvcc` compilation step, no `-sys` crate, and no build-time CUDA SDK dependency beyond having the driver installed.
 
 ## How it works
 
 A program in Base is two things:
 
 ```
-BaseConfig { cranelift_ir, memory_size, context_offset }
-Algorithm  { actions, payloads, cranelift_units, timeout_ms, output }
+BaseConfig { cranelift_ir, memory_size, context_offset, initial_memory }
+Algorithm  { actions, cranelift_units, timeout_ms, output }
 ```
 
-**BaseConfig** defines the compiled code (Cranelift IR text) and the memory region it operates on. `context_offset` splits memory into a payload region `[0..context_offset)` that gets overwritten each call and a persistent region `[context_offset..memory_size)` that survives across calls.
+**BaseConfig** defines the compiled code (Cranelift IR text), the memory region it operates on, and static initial memory contents generated at build time (shader sources, binding descriptors, PTX kernels, etc.).
 
-**Algorithm** defines what to execute: a sequence of actions (call a compiled function, dispatch async work, conditional jump, park/wake), initial memory contents (payloads), and optionally an output schema for returning Arrow RecordBatches.
+**Algorithm** defines what to execute: a sequence of actions (call a compiled function, dispatch async work, conditional jump, park/wake), and optionally an output schema for returning Arrow RecordBatches.
 
-At build time, Lean 4 generates this pair as JSON. The Rust build script deserializes it into typed structs and embeds the binary. At runtime, Cranelift JIT-compiles the IR and executes actions against the shared memory — no interpreter, no GC, no serialization layer in the hot path.
+At build time, Lean 4 generates this pair as JSON. The Rust build script deserializes it into typed structs and embeds the binary. At runtime, Cranelift JIT-compiles the IR once and executes actions against shared memory — no interpreter, no GC, no serialization layer in the hot path.
+
+## Execution patterns
+
+### One-shot execution
+
+```rust
+let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)?;
+base::run(config, alg)?;
+```
+
+### Compile-once, execute-many with payloads
+
+For workloads that benefit from persistent state and dynamic data, the `Base` struct provides JIT-once semantics with zero-copy data passing:
+
+```rust
+let mut base = Base::new(config)?;              // JIT compile once
+
+// Pass dynamic data via pointer — no copying into shared memory
+let results = base.execute(&algorithm, &data)?;
+
+// Or with an output buffer for zero-copy results
+base.execute_into(&algorithm, &payload, &mut output)?;
+```
+
+The CLIF code reads `data_ptr`, `data_len`, `out_ptr`, and `out_len` from a reserved region at offsets 0x08-0x27. GPU uploads/downloads use `cl_gpu_upload_ptr` / `cl_gpu_download_ptr` to transfer directly between caller buffers and GPU memory — no intermediate copies through shared memory.
 
 ## Example: GPU path tracer
 
@@ -35,52 +62,7 @@ The [raytrace](applications/raytrace/) application renders a 4096x4096 Cornell b
 
 2. Cranelift IR that orchestrates: GPU init -> buffer creation -> shader upload -> dispatch -> download pixel data -> file write as BMP
 
-3. A payload that packs the BMP header, shader source, binding descriptors, output filename, and CLIF IR into a flat byte layout
-
-4. A configuration that wires it all together:
-
-```lean
-def raytraceConfig : BaseConfig := {
-  cranelift_ir := clifIrSource,
-  memory_size := payloads.length + pixelBytes,
-  context_offset := 0
-}
-
-def raytraceAlgorithm : Algorithm :=
-  let clifCallAction : Action :=
-    { kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0 }
-  {
-    actions := [clifCallAction],
-    payloads := payloads,
-    cranelift_units := 0,
-    timeout_ms := some 300000
-  }
-```
-
-The Rust side is minimal — deserialize the pair, call `run`:
-
-```rust
-let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
-    .expect("Failed to deserialize");
-
-match run(config, alg) { ... }
-```
-
-## Interactive execution with `Base` struct
-
-For workloads that benefit from persistent state, the `Base` struct provides compile-once, execute-many semantics:
-
-```rust
-let mut base = Base::new(config)?;          // JIT compile once
-
-// First call: set up GPU pipeline, open DB handles, etc.
-let _ = base.execute(setup_algorithm)?;     // State persists above context_offset
-
-// Hot path: just pass new data, everything else is already initialized
-let results = base.execute(work_algorithm)?; // Payloads overwrite [0..context_offset)
-```
-
-GPU handles, database connections, and computed state survive across `execute()` calls in the persistent memory region. New payloads (file paths, parameters, input data) are written into the payload region without disturbing persistent state.
+3. Initial memory that packs the BMP header, shader source, binding descriptors, output filename, and CLIF IR into a flat byte layout
 
 ## Type system design
 
@@ -90,90 +72,98 @@ Lean 4 is used here because its dependent type system can express constraints on
 
 ## Benchmark results
 
-All benchmarks run on the same machine, 10 rounds with median taken, comparing Python, idiomatic Rust, and Base (Cranelift JIT). GPU benchmarks compare against Burn (wgpu backend).
+The benchmarks demonstrate that Base matches idiomatic Rust performance — the key point being that programs specified in Lean and compiled through Cranelift do not pay the runtime overhead you would see from a Lean, Python, or other high-level language runtime. The specification language's type system is a build-time concern only; at execution time, it is just native code operating on flat memory.
+
+All benchmarks run on the same machine, median of 10 rounds. CPU benchmarks compare Python, idiomatic Rust, and Base. GPU benchmarks compare Burn (wgpu/cuda backends) and Base. All results are verified for correctness. JIT compilation happens once before timing (`Base::new`), so only execution cost is measured.
 
 ### CPU workloads
 
 ```
 Benchmark                  Python         Rust         Base
 ------------------------------------------------------------
-CSV (10K)                  19.8ms        0.2ms        1.7ms
-CSV (1M)                  547.9ms       58.1ms       36.3ms
-CSV (5M)                 2697.5ms      320.6ms      176.0ms
-JSON (1K)                  16.5ms        0.0ms        1.3ms
-JSON (500K)               357.4ms       16.2ms       10.0ms
-Regex (10K)                15.1ms        0.1ms        1.4ms
-Regex (1M)                105.3ms        7.1ms        5.2ms
-StrSearch (1M)             20.3ms        2.3ms        1.7ms
-WordCount (1M)            162.6ms       32.1ms       34.4ms
+CSV (1M)                  542.6ms       55.8ms       30.0ms
+CSV (5M)                 2713.3ms      314.6ms      153.9ms
+JSON (100K)                81.5ms        2.6ms        2.4ms
+JSON (500K)               350.1ms       15.5ms        9.4ms
+Regex (500K)               59.4ms        4.1ms        2.8ms
+Regex (1M)                103.7ms        8.1ms        4.5ms
+StrSearch (1M)             19.2ms        2.1ms        1.5ms
+WordCount (1M)            155.7ms       36.0ms       37.1ms
 ```
 
-Base has ~1.3ms JIT compilation overhead visible at small sizes. At scale, direct CLIF IR manipulation 
-including SIMD usage can overtake raw Rust.
+The benchmarks measure pure execution time — JIT compilation happens once before timing via `Base::new()`. All file I/O benchmarks (CSV, JSON, Regex, StrSearch, WC) include file read/write in the timing for all three implementations. Base can exceed Rust on workloads like CSV and Regex because Cranelift IR can emit SIMD instructions directly, avoiding the overhead of Rust's standard library abstractions. WordCount is a regression — Base uses FFI calls to a hash table (`ht_*` primitives) which Cranelift cannot inline, whereas LLVM can inline Rust's equivalent `HashMap` operations.
 
-### GPU workloads
+### Sort (radix sort vs Rust pdqsort)
 
 ```
-GPU Benchmark              Burn(wgpu)         Base
------------------------------------------------------
-VecAdd 256K                     4.3ms          5.0ms
-VecAdd 500K                     5.7ms          9.1ms
-MatMul 256x256                  3.0ms          2.3ms
-MatMul 512x512                  4.4ms          6.9ms
-Reduction 256K                  2.9ms          1.5ms
-Reduction 512K                  3.3ms          1.9ms
-Reduction 896K                  4.0ms          2.6ms
+Benchmark                    Rust         Base
+---------------------------------------------
+Sort (100K)                 1.1ms        1.0ms
+Sort (1M)                  12.4ms        8.4ms
+Sort (5M)                  63.8ms       44.7ms
 ```
 
-Results vary by kernel shape. Burn wins on simple element-wise operations (VecAdd) and larger MatMul. Base wins on reductions and small MatMul.
+Base uses LSD radix sort (O(n), Lean-generated CLIF) vs Rust's `sort_unstable` (pdqsort, O(n log n)). This benchmark demonstrates that Base can execute a memory-intensive workload competitively. Rust would likely match given a native radix sort implementation — the comparison is less about Rust vs Base and more about showing Base handles hot memory access patterns well.
+
+### Burn CPU workloads (Rust vs Burn vs Base)
+
+```
+Benchmark                    Rust         Burn         Base
+------------------------------------------------------------
+MatMul (256x256)            1.5ms        0.2ms        1.0ms
+MatMul (1024x1024)         96.6ms        8.0ms       59.3ms
+VecAdd (10M)                7.1ms       22.5ms        2.4ms
+VecAdd (50M)               35.9ms      127.1ms       12.6ms
+Sum (50M)                  35.7ms        9.1ms        7.9ms
+Sum (100M)                 71.3ms       18.1ms       16.1ms
+```
+
+Burn wins at MatMul (uses optimized BLAS kernels). Base wins at simple operations (VecAdd, Sum) where allocation overhead dominates the trivial O(n) compute.
+
+### GPU workloads (Burn wgpu vs Base wgpu)
+
+```
+Benchmark              Burn(wgpu)         Base
+---------------------------------------------
+VecAdd 256K                 3.7ms        0.6ms
+MatMul 256x256              3.0ms        0.5ms
+MatMul 512x512              3.8ms        1.9ms
+Reduction 256K              3.1ms        0.4ms
+Reduction 896K              4.2ms        1.1ms
+```
+
+Both sides use [wgpu](https://wgpu.rs/) — the same portable GPU library, the same GPU hardware. The 3-5x gap is entirely Burn's host-side framework overhead (tensor allocation, cubecl scheduling, backend abstraction layer). Base calls the wgpu API directly through thin FFI wrappers from JIT-compiled CLIF.
 
 ### GPU iterative (data stays GPU-resident)
 
 ```
-GPU Iterative              Raw wgpu         Burn         Base
-----------------------------------------------------------------
-1x scale 1M                  3.8ms        3.9ms          3.3ms
-10x scale 1M                 3.9ms        4.2ms          3.3ms
-100x scale 1M                8.8ms        5.8ms          9.1ms
-1000x scale 1M              51.7ms       34.4ms         54.3ms
+Benchmark                Raw wgpu         Burn         Base
+------------------------------------------------------------
+1x scale 1M                 4.5ms        5.7ms        2.2ms
+100x scale 1M               9.6ms        8.9ms        9.3ms
+1000x scale 1M             70.2ms       44.1ms       69.9ms
 ```
 
-At low iteration counts Base matches or beats raw wgpu. At high iteration counts Burn pulls ahead through kernel fusion.
+Base wins at low iteration counts (minimal setup overhead). At high iteration counts Burn pulls ahead through kernel fusion.
 
-### Parallel dispatch and threading
+### CUDA (Burn cuda-jit vs Base PTX)
 
 ```
-Dispatch                         Rust    Base     Actions
-----------------------------------------------------------
-bfs n=5M c=100K                 0.4ms   0.4ms        214
-phase k=20 n=5M                 0.5ms   0.4ms        300
-
-Benchmark                        Rust         Base
-----------------------------------------------------
-rec n=5M t=500K                 1.4ms        2.0ms
-tree n=50K b=4 t=2           1010.2ms     1015.1ms
+Benchmark              Burn(cuda)         Base
+---------------------------------------------
+SAXPY 262K                  0.5ms        0.4ms
+SAXPY 1M                    1.8ms        1.3ms
 ```
+
+Both sides go through similar CUDA driver paths — Base with less runtime abstraction overhead.
 
 ### Histogram (parallel, 256 bins)
 
 ```
-Benchmark                        Rust         Base
-----------------------------------------------------
-hist n=1M w=4                   1.0ms        1.8ms
-hist n=10M w=4                  2.1ms        2.8ms
-```
-
-### Network and memory pipeline
-
-```
-Network                         Raw TCP         Base
-------------------------------------------------------
-TCP Echo 100KB                  51.0ms        50.6ms
-
-Memory Pipeline              Rust(wgpu)         Base
-------------------------------------------------------
-File->GPU->File (1.0MB)         4.6ms          4.6ms
-File->GPU->File (3.8MB)        10.7ms        14.3ms
+Benchmark                    Rust         Base
+---------------------------------------------
+hist n=10M workers=1        8.8ms        9.1ms
+hist n=10M workers=4        6.9ms        7.1ms
 ```
 
 ## FFI primitives
@@ -183,23 +173,30 @@ Cranelift IR can call these directly via `%cl_*` function references:
 | Category | Functions |
 |----------|-----------|
 | **File** | `cl_file_read`, `cl_file_write` |
-| **GPU** | `cl_gpu_init`, `cl_gpu_create_buffer`, `cl_gpu_create_pipeline`, `cl_gpu_upload`, `cl_gpu_dispatch`, `cl_gpu_download`, `cl_gpu_cleanup` |
+| **GPU** | `cl_gpu_init`, `cl_gpu_create_buffer`, `cl_gpu_create_pipeline`, `cl_gpu_upload`, `cl_gpu_upload_ptr`, `cl_gpu_dispatch`, `cl_gpu_download`, `cl_gpu_download_ptr`, `cl_gpu_cleanup` |
+| **CUDA** | `cl_cuda_init`, `cl_cuda_create_buffer`, `cl_cuda_launch`, `cl_cuda_upload`, `cl_cuda_upload_ptr`, `cl_cuda_download`, `cl_cuda_download_ptr`, `cl_cuda_cleanup` |
 | **Network** | `cl_net_init`, `cl_net_listen`, `cl_net_connect`, `cl_net_accept`, `cl_net_send`, `cl_net_recv`, `cl_net_cleanup` |
 | **Database** | `cl_lmdb_init`, `cl_lmdb_open`, `cl_lmdb_begin_write_txn`, `cl_lmdb_commit_write_txn`, `cl_lmdb_put`, `cl_lmdb_get`, `cl_lmdb_delete`, `cl_lmdb_cursor_scan`, `cl_lmdb_sync`, `cl_lmdb_cleanup` |
 | **Threading** | `cl_thread_init`, `cl_thread_spawn`, `cl_thread_join`, `cl_thread_call`, `cl_thread_cleanup` |
 | **Hash table** | `ht_create`, `ht_insert`, `ht_lookup`, `ht_count`, `ht_get_entry`, `ht_increment` |
 
+The `_ptr` variants (`cl_gpu_upload_ptr`, `cl_gpu_download_ptr`, `cl_cuda_upload_ptr`, `cl_cuda_download_ptr`) transfer data directly between caller-provided pointers and GPU/CUDA buffers, enabling zero-copy integration with the `execute_into` payload pattern.
+
 ## Building
 
-The `base` crate requires only Rust. Applications and benchmarks additionally require [Lean 4](https://leanprover.github.io/lean4/doc/setup.html) to generate their algorithm definitions. GPU workloads use wgpu, which runs on Vulkan, Metal, DX12, and WebGPU.
+The `base` crate requires only Rust. Applications and benchmarks additionally require [Lean 4](https://leanprover.github.io/lean4/doc/setup.html) to generate their algorithm definitions. GPU workloads require a Vulkan, Metal, DX12, or WebGPU capable system. CUDA workloads require an NVIDIA GPU with a CUDA-capable driver installed (libraries are loaded dynamically at runtime — see above).
 
 ```bash
-# Run benchmarks
+# Run all benchmarks
 cargo run --release -p benchmarks -- --rounds 5
+
+# Run a specific benchmark
+cargo run --release -p benchmarks -- --bench sort --rounds 5
+
+# Run tests
+cargo test -p base
 
 # Build an application
 cargo build --release -p raytrace
-
-# Run
 ./target/release/raytrace
 ```
