@@ -97,15 +97,15 @@ pub fn print_burn_table(results: &[BenchResult]) {
     print_results(results, "Rust", "Burn");
 }
 
-/// Print a 2-column table (col_b + Base only, no col_a).
-pub fn print_results_2col(results: &[BenchResult], col_b: &str) {
+/// Print a 2-column table (col_a + Base only, no col_b).
+pub fn print_results_2col(results: &[BenchResult], col_a: &str) {
     let name_w = 20;
     let col_w = 12;
 
     println!();
     println!(
         "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-        "Benchmark", col_b, "Base", "Check",
+        "Benchmark", col_a, "Base", "Check",
         name_w = name_w, col_w = col_w
     );
     println!("{}", "-".repeat(name_w + col_w * 2 + 6 + 3));
@@ -113,7 +113,7 @@ pub fn print_results_2col(results: &[BenchResult], col_b: &str) {
     for r in results {
         println!(
             "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-            r.name, fmt_ms(r.col_b_ms),
+            r.name, fmt_ms(r.col_a_ms),
             fmt_ms(Some(r.base_ms)), fmt_check(r.verified),
             name_w = name_w, col_w = col_w
         );

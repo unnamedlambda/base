@@ -1,5 +1,5 @@
 use base::{BaseConfig, Algorithm};
-use crate::harness;
+use crate::harness::{self, BenchResult};
 
 type CudaBackend = burn::backend::CudaJit;
 
@@ -66,50 +66,12 @@ fn check_saxpy_result(actual: &[f32], expected: &[f32], impl_name: &str, label: 
 // Table printer
 // ---------------------------------------------------------------------------
 
-pub struct CudaBenchResult {
-    pub name: String,
-    pub burn_ms: f64,
-    pub base_ms: f64,
-    pub verified: bool,
-}
-
-pub fn print_cuda_table(results: &[CudaBenchResult]) {
-    let name_w = 22;
-    let col_w = 14;
-
-    println!();
-    println!(
-        "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-        "CUDA Benchmark",
-        "Burn(cuda)",
-        "Base+CUDA",
-        "Check",
-        name_w = name_w,
-        col_w = col_w
-    );
-    println!("{}", "-".repeat(name_w + col_w * 2 + 6 + 3));
-
-    for r in results {
-        let check_str = if r.verified { "\u{2713}" } else { "\u{2717}" };
-
-        println!(
-            "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-            r.name,
-            format!("{:.1}ms", r.burn_ms),
-            format!("{:.1}ms", r.base_ms),
-            check_str,
-            name_w = name_w,
-            col_w = col_w
-        );
-    }
-    println!();
-}
 
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
-pub fn run(iterations: usize) -> Vec<CudaBenchResult> {
+pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     eprintln!("\n=== CUDA Benchmarks: Burn(cuda-jit) vs Base+CUDA ===");
@@ -152,11 +114,12 @@ pub fn run(iterations: usize) -> Vec<CudaBenchResult> {
         let burn_ok = check_saxpy_result(&burn_result, &expected, "Burn", &label);
         let base_ok = check_saxpy_result(&base_result, &expected, "Base", &label);
 
-        results.push(CudaBenchResult {
+        results.push(BenchResult {
             name: label,
-            burn_ms,
+            col_a_ms: Some(burn_ms),
+            col_b_ms: None,
             base_ms,
-            verified: burn_ok && base_ok,
+            verified: Some(burn_ok && base_ok),
         });
     }
 

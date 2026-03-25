@@ -1,5 +1,5 @@
 use base::{BaseConfig, Algorithm};
-use crate::harness;
+use crate::harness::{self, BenchResult};
 
 // ---------------------------------------------------------------------------
 // Iterative GPU Benchmark: apply a trivial kernel N times to the same data.
@@ -20,13 +20,6 @@ fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(GPU_ITER_ALGORITHM).expect("Failed to deserialize gpu_iter algorithm")
 }
 
-pub struct GpuIterResult {
-    pub name: String,
-    pub wgpu_ms: f64,
-    pub burn_ms: f64,
-    pub clif_ms: f64,
-    pub verified: bool,
-}
 
 const WGSL_SCALE: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<f32>;
@@ -343,44 +336,12 @@ fn check_result(actual: f64, expected: f64, label: &str, impl_name: &str) -> boo
 // Table printer
 // ---------------------------------------------------------------------------
 
-pub fn print_iter_table(results: &[GpuIterResult]) {
-    let name_w = 26;
-    let col_w = 14;
-
-    println!();
-    println!(
-        "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
-        "GPU Iterative",
-        "Raw wgpu",
-        "Burn",
-        "Base+GPU",
-        "Check",
-        name_w = name_w,
-        col_w = col_w
-    );
-    println!("{}", "-".repeat(name_w + col_w * 3 + 6 + 4));
-
-    for r in results {
-        let check_str = if r.verified { "    \u{2713}" } else { "    \u{2717}" };
-        println!(
-            "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {}",
-            r.name,
-            format!("{:.1}ms", r.wgpu_ms),
-            format!("{:.1}ms", r.burn_ms),
-            format!("{:.1}ms", r.clif_ms),
-            check_str,
-            name_w = name_w,
-            col_w = col_w
-        );
-    }
-    println!();
-}
 
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
-pub fn run(iterations: usize) -> Vec<GpuIterResult> {
+pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     eprintln!("\n=== GPU Iterative Benchmark: N kernel passes on same data ===");
@@ -438,12 +399,12 @@ pub fn run(iterations: usize) -> Vec<GpuIterResult> {
         let burn_ok = check_result(burn_result, expected, &label, "Burn");
         let clif_ok = check_result(clif_result, expected, &label, "Base+GPU");
 
-        results.push(GpuIterResult {
+        results.push(BenchResult {
             name: label,
-            wgpu_ms,
-            burn_ms,
-            clif_ms,
-            verified: wgpu_ok && burn_ok && clif_ok,
+            col_a_ms: Some(wgpu_ms),
+            col_b_ms: Some(burn_ms),
+            base_ms: clif_ms,
+            verified: Some(wgpu_ok && burn_ok && clif_ok),
         });
     }
 

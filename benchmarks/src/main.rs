@@ -122,17 +122,17 @@ fn main() {
 
     if run_gpu {
         let results = gpu_bench::run(rounds);
-        gpu_bench::print_gpu_table(&results);
+        harness::print_results_2col(&results, "Burn(wgpu)");
     }
 
     if run_gpu_iter {
         let results = gpu_iter_bench::run(rounds);
-        gpu_iter_bench::print_iter_table(&results);
+        harness::print_results(&results, "Raw wgpu", "Burn");
     }
 
     if run_cuda {
         let results = cuda_bench::run(rounds);
-        cuda_bench::print_cuda_table(&results);
+        harness::print_results_2col(&results, "Burn(cuda)");
     }
 
     if run_histogram {

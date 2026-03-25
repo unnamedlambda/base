@@ -1,5 +1,5 @@
 use base::{BaseConfig, Algorithm};
-use crate::harness;
+use crate::harness::{self, BenchResult};
 type Gpu = burn::backend::wgpu::Wgpu;
 
 const GPU_VECADD_ALGORITHM: &[u8] =
@@ -134,50 +134,12 @@ fn burn_reduction_gpu(data: &[f32], num_groups: usize, device: &burn::backend::w
 // Table printer
 // ---------------------------------------------------------------------------
 
-pub struct GpuBenchResult {
-    pub name: String,
-    pub burn_ms: f64,
-    pub base_ms: f64,
-    pub verified: bool,
-}
-
-pub fn print_gpu_table(results: &[GpuBenchResult]) {
-    let name_w = 22;
-    let col_w = 14;
-
-    println!();
-    println!(
-        "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-        "GPU Benchmark",
-        "Burn(wgpu)",
-        "Base+GPU",
-        "Check",
-        name_w = name_w,
-        col_w = col_w
-    );
-    println!("{}", "-".repeat(name_w + col_w * 2 + 6 + 3));
-
-    for r in results {
-        let check_str = if r.verified { "\u{2713}" } else { "\u{2717}" };
-
-        println!(
-            "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-            r.name,
-            format!("{:.1}ms", r.burn_ms),
-            format!("{:.1}ms", r.base_ms),
-            check_str,
-            name_w = name_w,
-            col_w = col_w
-        );
-    }
-    println!();
-}
 
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
-pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
+pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     eprintln!("\n=== GPU Benchmarks: Burn(wgpu) vs Base+GPU ===");
@@ -220,11 +182,12 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             let base_sum = f32_sum(&out_buf);
             let verified = check_gpu_result(base_sum, expected, &format!("VecAdd {}", format_count(n)), n);
 
-            results.push(GpuBenchResult {
+            results.push(BenchResult {
                 name: format!("VecAdd {}", format_count(n)),
-                burn_ms,
+                col_a_ms: Some(burn_ms),
+                col_b_ms: None,
                 base_ms,
-                verified,
+                verified: Some(verified),
             });
         }
     }
@@ -264,11 +227,12 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             let base_sum = f32_sum(&out_buf);
             let verified = check_gpu_result(base_sum, expected, &format!("MatMul {}x{}", n, n), nn);
 
-            results.push(GpuBenchResult {
+            results.push(BenchResult {
                 name: format!("MatMul {}x{}", n, n),
-                burn_ms,
+                col_a_ms: Some(burn_ms),
+                col_b_ms: None,
                 base_ms,
-                verified,
+                verified: Some(verified),
             });
         }
     }
@@ -308,11 +272,12 @@ pub fn run(iterations: usize) -> Vec<GpuBenchResult> {
             let base_sum = f32_sum(&out_buf);
             let verified = check_gpu_result(base_sum, expected, &format!("Reduction {}", format_count(n)), n);
 
-            results.push(GpuBenchResult {
+            results.push(BenchResult {
                 name: format!("Reduction {}", format_count(n)),
-                burn_ms,
+                col_a_ms: Some(burn_ms),
+                col_b_ms: None,
                 base_ms,
-                verified,
+                verified: Some(verified),
             });
         }
     }
