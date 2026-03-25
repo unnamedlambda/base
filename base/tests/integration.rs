@@ -7377,3 +7377,325 @@ block0(v0: i64):
         );
     }
 }
+
+#[test]
+fn test_cuda_upload_ptr_download_ptr_vecadd() {
+    // Tests cl_cuda_upload_ptr and cl_cuda_download_ptr with execute_into.
+    // Uploads A+B from caller's data pointer via PTX kernel C[i]=A[i]+B[i],
+    // downloads C to caller's out pointer. No shared memory data copying.
+    let n: usize = 64;
+    let data_bytes: usize = n * 4;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 a_ptr,\n\
+                   .param .u64 b_ptr,\n\
+                   .param .u64 c_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %ra, %rb, %rc, %off;\n\
+                   .reg .f32 %fa, %fb, %fr;\n\
+               \n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+               \n\
+                   ld.param.u64 %ra, [a_ptr];\n\
+                   ld.param.u64 %rb, [b_ptr];\n\
+                   ld.param.u64 %rc, [c_ptr];\n\
+               \n\
+                   add.u64 %ra, %ra, %off;\n\
+                   add.u64 %rb, %rb, %off;\n\
+                   add.u64 %rc, %rc, %off;\n\
+               \n\
+                   ld.global.f32 %fa, [%ra];\n\
+                   ld.global.f32 %fb, [%rb];\n\
+                   add.f32 %fr, %fa, %fb;\n\
+                   st.global.f32 [%rc], %fr;\n\
+               \n\
+                   ret;\n\
+               }\n\0";
+
+    // Memory layout:
+    //   0x0000  reserved (40 bytes)
+    //   0x0100  PTX source (null-terminated)
+    //   0x1100  bind descriptor (12 bytes: 3 × i32 buf_ids = [0, 1, 2])
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x1100;
+    let mem_size: usize = 0x1200;
+
+    // CLIF: uses cl_cuda_upload_ptr / cl_cuda_download_ptr with payload pointers
+    // sig for upload_ptr/download_ptr: (ptr: i64, buf_id: i32, abs_ptr: i64, size: i64) -> i32
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cuda_launch sig3
+    fn5 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x10
+    v3 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+
+    ; create 3 buffers of {data_bytes} bytes each
+    v4 = iconst.i64 {data_bytes}
+    v5 = call fn1(v0, v4)
+    v6 = call fn1(v0, v4)
+    v7 = call fn1(v0, v4)
+
+    ; upload A from data_ptr
+    v8 = call fn2(v0, v5, v1, v4)
+
+    ; upload B from data_ptr + data_bytes
+    v9 = iadd v1, v4
+    v10 = call fn2(v0, v6, v9, v4)
+
+    ; launch PTX kernel: grid(1,1,1) block(64,1,1)
+    v11 = iconst.i64 {ptx_off}
+    v12 = iconst.i32 3
+    v13 = iconst.i64 {bind_off}
+    v14 = iconst.i32 1
+    v15 = iconst.i32 64
+    v16 = call fn4(v0, v11, v12, v13, v14, v14, v14, v15, v14, v14)
+
+    ; download result from buf 2 to out_ptr
+    v17 = call fn3(v0, v7, v3, v4)
+
+    call fn5(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    let ptx_bytes = ptx.as_bytes();
+    memory[ptx_off..ptx_off + ptx_bytes.len()].copy_from_slice(ptx_bytes);
+    // bind desc: buf_id=0 (A), buf_id=1 (B), buf_id=2 (C)
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
+    memory[bind_off + 8..bind_off + 12].copy_from_slice(&2i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+
+    // Build payload: [A: 64 f32s][B: 64 f32s]
+    let mut payload = vec![0u8; n * 4 * 2];
+    for i in 0..n {
+        let a_val = (i + 1) as f32;
+        let b_val = 100.0f32;
+        payload[i * 4..i * 4 + 4].copy_from_slice(&a_val.to_le_bytes());
+        payload[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
+    }
+
+    let mut out = vec![0u8; n * 4];
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 + 100.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Element {}: expected {}, got {}",
+            i, expected, actual
+        );
+    }
+}
+
+#[test]
+fn test_cuda_download_ptr_different_data() {
+    // Tests cl_cuda_upload_ptr and cl_cuda_download_ptr with two different payloads.
+    // First execute: uploads A=[1..64] + B=[100..100], expects C=[101..164].
+    // Second execute: uploads A=[200..200] + B=[1..64], expects C=[201..264].
+    // Verifies the _ptr functions work correctly across multiple execute_into calls.
+    let n: usize = 64;
+    let data_bytes: usize = n * 4;
+
+    // Simple PTX: C[i] = A[i] + B[i], 2 buffers in-place on buf 0, result in buf 1
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 a_ptr,\n\
+                   .param .u64 b_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %ra, %rb, %off;\n\
+                   .reg .f32 %fa, %fb, %fr;\n\
+               \n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+               \n\
+                   ld.param.u64 %ra, [a_ptr];\n\
+                   ld.param.u64 %rb, [b_ptr];\n\
+               \n\
+                   add.u64 %ra, %ra, %off;\n\
+                   add.u64 %rb, %rb, %off;\n\
+               \n\
+                   ld.global.f32 %fa, [%ra];\n\
+                   ld.global.f32 %fb, [%rb];\n\
+                   add.f32 %fr, %fa, %fb;\n\
+                   st.global.f32 [%rb], %fr;\n\
+               \n\
+                   ret;\n\
+               }\n\0";
+
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x1100;
+    let mem_size: usize = 0x1200;
+
+    // CLIF: upload A to buf 0, B to buf 1, launch, download buf 1 to out_ptr
+    let clif_ir = format!(
+r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cuda_launch sig3
+    fn5 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x10
+    v3 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+
+    ; create 2 buffers
+    v4 = iconst.i64 {data_bytes}
+    v5 = call fn1(v0, v4)
+    v6 = call fn1(v0, v4)
+
+    ; upload A from data_ptr to buf 0
+    v7 = call fn2(v0, v5, v1, v4)
+
+    ; upload B from data_ptr + data_bytes to buf 1
+    v8 = iadd v1, v4
+    v9 = call fn2(v0, v6, v8, v4)
+
+    ; launch: grid(1,1,1) block(64,1,1)
+    v10 = iconst.i64 {ptx_off}
+    v11 = iconst.i32 2
+    v12 = iconst.i64 {bind_off}
+    v13 = iconst.i32 1
+    v14 = iconst.i32 64
+    v15 = call fn4(v0, v10, v11, v12, v13, v13, v13, v14, v13, v13)
+
+    ; download buf 1 (result) to out_ptr
+    v16 = call fn3(v0, v6, v3, v4)
+
+    call fn5(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    let ptx_bytes = ptx.as_bytes();
+    memory[ptx_off..ptx_off + ptx_bytes.len()].copy_from_slice(ptx_bytes);
+    // bind desc: buf_id=0 (A), buf_id=1 (B)
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    // First execute: A=[1..64], B=[100..100]
+    let mut payload1 = vec![0u8; n * 4 * 2];
+    for i in 0..n {
+        let a_val = (i + 1) as f32;
+        let b_val = 100.0f32;
+        payload1[i * 4..i * 4 + 4].copy_from_slice(&a_val.to_le_bytes());
+        payload1[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; n * 4];
+    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 + 100.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 1, element {}: expected {}, got {}",
+            i, expected, actual
+        );
+    }
+
+    // Second execute: A=[200..200], B=[1..64]
+    let mut payload2 = vec![0u8; n * 4 * 2];
+    for i in 0..n {
+        let a_val = 200.0f32;
+        let b_val = (i + 1) as f32;
+        payload2[i * 4..i * 4 + 4].copy_from_slice(&a_val.to_le_bytes());
+        payload2[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; n * 4];
+    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = 200.0 + (i + 1) as f32;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 2, element {}: expected {}, got {}",
+            i, expected, actual
+        );
+    }
+}

@@ -606,6 +606,34 @@ unsafe extern "C" fn cl_cuda_upload(ptr: *mut u8, buf_id: i32, src_off: i64, siz
     })).unwrap_or(-1)
 }
 
+unsafe extern "C" fn cl_cuda_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 || src_ptr == 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let data = std::slice::from_raw_parts(src_ptr as *const u8, size as usize);
+        match ctx.device.htod_sync_copy_into(data, &mut ctx.buffers[bid]) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_cuda_download_ptr(ptr: *mut u8, buf_id: i32, dst_ptr: i64, size: i64) -> i32 {
+    if buf_id < 0 || size <= 0 || dst_ptr == 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        let dst = std::slice::from_raw_parts_mut(dst_ptr as *mut u8, size as usize);
+        match ctx.device.dtoh_sync_copy_into(&ctx.buffers[bid], dst) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    })).unwrap_or(-1)
+}
+
 unsafe extern "C" fn cl_cuda_download(ptr: *mut u8, buf_id: i32, dst_off: i64, size: i64) -> i32 {
     if buf_id < 0 || size <= 0 { return -1; }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1289,7 +1317,9 @@ pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Result<(cranelift_jit::
         builder.symbol("cl_cuda_init", cl_cuda_init as *const u8);
         builder.symbol("cl_cuda_create_buffer", cl_cuda_create_buffer as *const u8);
         builder.symbol("cl_cuda_upload", cl_cuda_upload as *const u8);
+        builder.symbol("cl_cuda_upload_ptr", cl_cuda_upload_ptr as *const u8);
         builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
+        builder.symbol("cl_cuda_download_ptr", cl_cuda_download_ptr as *const u8);
         builder.symbol("cl_cuda_launch", cl_cuda_launch as *const u8);
         builder.symbol("cl_cuda_cleanup", cl_cuda_cleanup as *const u8);
 
