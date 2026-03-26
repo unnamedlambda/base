@@ -111,17 +111,12 @@ fn read_result(path: &str) -> Option<Vec<u64>> {
 // Benchmark entry point
 // ---------------------------------------------------------------------------
 
-pub struct HistConfig {
-    pub rounds: usize,
-    pub workers: usize,
-}
-
-pub fn run(cfg: &HistConfig) -> Vec<BenchResult> {
+pub fn run(rounds: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
     let input_path = "/tmp/histogram_bench_input.bin";
 
     eprintln!("\n=== Parallel Histogram Benchmark ===");
-    eprintln!("  workers={}, bins={}", cfg.workers, BINS);
+    eprintln!("  bins={}", BINS);
 
     for &n in &[1_000_000, 10_000_000] {
         // Write input file
@@ -130,8 +125,7 @@ pub fn run(cfg: &HistConfig) -> Vec<BenchResult> {
         std::fs::write(input_path, &data_bytes).unwrap();
         let expected = reference_histogram(&data);
 
-        let mut worker_counts = vec![1, 4];
-        worker_counts.retain(|&w| w <= cfg.workers);
+        let worker_counts = [1, 4];
 
         for &w in &worker_counts {
             let label = format!("hist n={} w={}", format_count(n), w);
@@ -156,14 +150,14 @@ pub fn run(cfg: &HistConfig) -> Vec<BenchResult> {
             rust_histogram(&mut file_buf, input_path, &rust_out, w);
             let _ = base_instance.execute(&alg, &base_payload);
 
-            let rust_ms = harness::median_of(cfg.rounds, || {
+            let rust_ms = harness::median_of(rounds, || {
                 let start = std::time::Instant::now();
                 rust_histogram(&mut file_buf, input_path, &rust_out, w);
                 start.elapsed().as_secs_f64() * 1000.0
             });
 
             let mut base_ok = true;
-            let base_ms = harness::median_of(cfg.rounds, || {
+            let base_ms = harness::median_of(rounds, || {
                 let start = std::time::Instant::now();
                 if base_instance.execute(&alg, &base_payload).is_err() {
                     base_ok = false;

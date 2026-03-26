@@ -22,7 +22,6 @@ fn print_usage() {
     eprintln!("                     gpu, gpu-iter, cuda,");
     eprintln!("                     histogram, sort, strsearch, wc, all (default: all)");
     eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
-    eprintln!("  --workers <n>      Worker threads (default: auto)");
     eprintln!("  --help             Show this help");
 }
 
@@ -43,10 +42,6 @@ fn main() {
 
     let mut bench = "all".to_string();
     let mut rounds: usize = 10;
-    let mut workers: usize = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(1, 16);
 
     let mut i = 1;
     while i < args.len() {
@@ -58,10 +53,6 @@ fn main() {
             "--rounds" => {
                 i += 1;
                 if i < args.len() { rounds = args[i].parse().unwrap_or(5); }
-            }
-            "--workers" => {
-                i += 1;
-                if i < args.len() { workers = args[i].parse().unwrap_or(4).clamp(1, 16); }
             }
             "--help" | "-h" => {
                 print_usage();
@@ -136,11 +127,7 @@ fn main() {
     }
 
     if run_histogram {
-        let cfg = histogram_bench::HistConfig {
-            rounds,
-            workers,
-        };
-        let results = histogram_bench::run(&cfg);
+        let results = histogram_bench::run(rounds);
         harness::print_results_2col(&results, "Rust");
     }
 
