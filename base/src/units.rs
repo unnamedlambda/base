@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read as IoRead, Seek, Write as IoWrite};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{fence, AtomicU32};
+use std::sync::atomic::fence;
 use std::sync::Arc;
 use tracing::{debug, info, info_span};
 use wgpu::{
@@ -131,12 +131,6 @@ impl SharedMemory {
         std::slice::from_raw_parts(self.ptr.add(offset), size)
     }
 
-    pub unsafe fn write(&self, offset: usize, data: &[u8]) {
-        self.ptr
-            .add(offset)
-            .copy_from_nonoverlapping(data.as_ptr(), data.len());
-    }
-
     // Use a true atomic op when the pointer is naturally aligned; fall back to
     // an unaligned read + fence otherwise.
     pub unsafe fn load_u64(&self, offset: usize, order: Ordering) -> u64 {
@@ -161,36 +155,6 @@ impl SharedMemory {
             fence(Ordering::Release);
         }
         std::ptr::write_unaligned(ptr as *mut u64, value);
-    }
-
-    pub unsafe fn load_u32(&self, offset: usize, order: Ordering) -> u32 {
-        let ptr = self.ptr.add(offset);
-        if (ptr as usize) & 0x3 == 0 {
-            return (*(ptr as *const AtomicU32)).load(order);
-        }
-        let value = std::ptr::read_unaligned(ptr as *const u32);
-        if matches!(order, Ordering::Acquire | Ordering::AcqRel | Ordering::SeqCst) {
-            fence(Ordering::Acquire);
-        }
-        value
-    }
-
-    pub unsafe fn store_u32(&self, offset: usize, value: u32, order: Ordering) {
-        let ptr = self.ptr.add(offset);
-        if (ptr as usize) & 0x3 == 0 {
-            (*(ptr as *const AtomicU32)).store(value, order);
-            return;
-        }
-        if matches!(order, Ordering::Release | Ordering::AcqRel | Ordering::SeqCst) {
-            fence(Ordering::Release);
-        }
-        std::ptr::write_unaligned(ptr as *mut u32, value);
-    }
-
-    pub unsafe fn cas_u32(&self, offset: usize, current: u32, new: u32, success: Ordering, failure: Ordering) -> Result<u32, u32> {
-        let ptr = self.ptr.add(offset);
-        debug_assert!((ptr as usize) & 0x3 == 0, "cas_u32: pointer not 4-byte aligned (offset {offset})");
-        (*(ptr as *const AtomicU32)).compare_exchange(current, new, success, failure)
     }
 
     // CAS requires natural alignment — there is no unaligned fallback.
