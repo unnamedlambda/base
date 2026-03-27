@@ -6856,13 +6856,13 @@ block0(v0: i64):
     };
 
     // Call 1: data=111
-    let mut data1 = 111i64.to_le_bytes().to_vec();
+    let data1 = 111i64.to_le_bytes().to_vec();
     let mut out1 = vec![0u8; 8];
     base.execute_into(&alg, &data1, &mut out1).unwrap();
     assert_eq!(i64::from_le_bytes(out1[0..8].try_into().unwrap()), 111);
 
     // Call 2: data=222, different buffers
-    let mut data2 = 222i64.to_le_bytes().to_vec();
+    let data2 = 222i64.to_le_bytes().to_vec();
     let mut out2 = vec![0u8; 8];
     base.execute_into(&alg, &data2, &mut out2).unwrap();
     assert_eq!(i64::from_le_bytes(out2[0..8].try_into().unwrap()), 222);
