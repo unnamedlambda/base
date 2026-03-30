@@ -1,4 +1,5 @@
 use base::{BaseConfig, Algorithm};
+use rayon::prelude::*;
 use crate::harness::{self, BenchResult, format_count};
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,56 @@ fn rust_histogram(file_buf: &mut Vec<u8>, input_path: &str, output_path: &str, w
     std::fs::write(output_path, &result_buf).unwrap();
 }
 
+// ---------------------------------------------------------------------------
+// Rayon baseline — idiomatic work-stealing parallel histogram
+// ---------------------------------------------------------------------------
+
+fn rayon_histogram(file_buf: &mut Vec<u8>, input_path: &str, output_path: &str, workers: usize) {
+    use std::io::Read;
+    let mut file = std::fs::File::open(input_path).unwrap();
+    let file_len = file.metadata().unwrap().len() as usize;
+    if file_buf.len() < file_len {
+        file_buf.resize(file_len, 0);
+    }
+    file.read_exact(&mut file_buf[..file_len]).unwrap();
+
+    assert!(file_len % 4 == 0);
+    let n = file_len / 4;
+    let data = unsafe { std::slice::from_raw_parts(file_buf.as_ptr() as *const u32, n) };
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build()
+        .unwrap();
+
+    let hist = pool.install(|| {
+        let chunk_size = (n + workers - 1) / workers;
+        data.par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut local = vec![0u64; BINS];
+                for &v in chunk {
+                    local[v as usize] += 1;
+                }
+                local
+            })
+            .reduce(
+                || vec![0u64; BINS],
+                |mut a, b| {
+                    for i in 0..BINS {
+                        a[i] += b[i];
+                    }
+                    a
+                },
+            )
+    });
+
+    let mut result_buf = vec![0u8; BINS * 8];
+    for (i, &count) in hist.iter().enumerate() {
+        result_buf[i * 8..(i + 1) * 8].copy_from_slice(&count.to_le_bytes());
+    }
+    std::fs::write(output_path, &result_buf).unwrap();
+}
+
 fn read_result(path: &str) -> Option<Vec<u64>> {
     let bytes = std::fs::read(path).ok()?;
     if bytes.len() != BINS * 8 { return None; }
@@ -143,16 +194,25 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             let (config, alg) = load_algorithm(w);
             let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
+            let rayon_out = format!("/tmp/hist_bench_rayon_{}_{}.bin", n, w);
+
             // Pre-allocated file read buffer — same as Base's shared memory region
             let mut file_buf = vec![0u8; MAX_DATA_BYTES];
 
-            // Warmup both
+            // Warmup all three
             rust_histogram(&mut file_buf, input_path, &rust_out, w);
+            rayon_histogram(&mut file_buf, input_path, &rayon_out, w);
             let _ = base_instance.execute(&alg, &base_payload);
 
             let rust_ms = harness::median_of(rounds, || {
                 let start = std::time::Instant::now();
                 rust_histogram(&mut file_buf, input_path, &rust_out, w);
+                start.elapsed().as_secs_f64() * 1000.0
+            });
+
+            let rayon_ms = harness::median_of(rounds, || {
+                let start = std::time::Instant::now();
+                rayon_histogram(&mut file_buf, input_path, &rayon_out, w);
                 start.elapsed().as_secs_f64() * 1000.0
             });
 
@@ -168,16 +228,23 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             let rust_verified = read_result(&rust_out)
                 .map(|h| h == expected)
                 .unwrap_or(false);
+            let rayon_verified = read_result(&rayon_out)
+                .map(|h| h == expected)
+                .unwrap_or(false);
             let base_verified = base_ok
                 && read_result(&base_out)
                     .map(|h| h == expected)
                     .unwrap_or(false);
 
             let _ = std::fs::remove_file(&rust_out);
+            let _ = std::fs::remove_file(&rayon_out);
             let _ = std::fs::remove_file(&base_out);
 
             if !rust_verified {
                 eprintln!("  VERIFY FAIL: Rust {}", label);
+            }
+            if !rayon_verified {
+                eprintln!("  VERIFY FAIL: Rayon {}", label);
             }
             if !base_verified {
                 eprintln!("  VERIFY FAIL: Base {}", label);
@@ -186,9 +253,9 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             results.push(BenchResult {
                 name: label,
                 col_a_ms: Some(rust_ms),
-                col_b_ms: None,
+                col_b_ms: Some(rayon_ms),
                 base_ms,
-                verified: Some(rust_verified && base_verified),
+                verified: Some(rust_verified && rayon_verified && base_verified),
             });
         }
     }

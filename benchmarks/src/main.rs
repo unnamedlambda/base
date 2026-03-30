@@ -128,7 +128,7 @@ fn main() {
 
     if run_histogram {
         let results = histogram_bench::run(rounds);
-        harness::print_results_2col(&results, "Rust");
+        harness::print_results(&results, "Rust", "Rayon");
     }
 
     if run_sort {
