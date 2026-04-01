@@ -33,6 +33,9 @@ pub struct Base {
     ht_ctx_ptr: Option<*mut CraneliftHashTableContext>,
 }
 
+unsafe impl Send for Base {}
+unsafe impl Sync for Base {}
+
 impl Base {
     pub fn new(config: BaseConfig) -> Result<Self, Error> {
         let needed = config.memory_size.max(config.initial_memory.len());

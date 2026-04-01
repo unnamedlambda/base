@@ -1,3 +1,7 @@
 target/
 *.rs.bk
 .lake/
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
