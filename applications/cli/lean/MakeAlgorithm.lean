@@ -8,6 +8,11 @@ namespace Algorithm
 
 structure Fields where
   reserved : Fld (.bytes 64)
+  ptx : Fld (.bytes 512)
+  bindDesc : Fld (.bytes 12)
+  accBuf : Fld .i32
+  termBuf : Fld .i32
+  outBuf : Fld .i32
   input : Fld (.bytes 256)
   scratch : Fld (.bytes 32)
   output : Fld (.bytes 32)
@@ -19,6 +24,11 @@ structure Fields where
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
   let reserved ← field (.bytes 64)
+  let ptx ← field (.bytes 512)
+  let bindDesc ← field (.bytes 12)
+  let accBuf ← field .i32
+  let termBuf ← field .i32
+  let outBuf ← field .i32
   let input ← field (.bytes 256)
   let scratch ← field (.bytes 32)
   let output ← field (.bytes 32)
@@ -27,7 +37,7 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let secondVal ← field .i64
   let result ← field .i64
   let outputLen ← field .i64
-  pure { reserved, input, scratch, output, inputLen, firstVal, secondVal, result, outputLen }
+  pure { reserved, ptx, bindDesc, accBuf, termBuf, outBuf, input, scratch, output, inputLen, firstVal, secondVal, result, outputLen }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
@@ -40,6 +50,32 @@ def asciiMinus : Int := 45
 def asciiPlus : Int := 43
 def asciiZero : Int := 48
 def asciiNine : Int := 57
+
+def scalarAddPtx : String :=
+  ".version 7.0\n" ++
+  ".target sm_50\n" ++
+  ".address_size 64\n" ++
+  "\n" ++
+  ".visible .entry main(\n" ++
+  "    .param .u64 lhs_ptr,\n" ++
+  "    .param .u64 rhs_ptr,\n" ++
+  "    .param .u64 out_ptr\n" ++
+  ")\n" ++
+  "{\n" ++
+  "    .reg .u64 %lhs, %rhs, %out;\n" ++
+  "    .reg .u64 %a, %b, %sum;\n" ++
+  "\n" ++
+  "    ld.param.u64 %lhs, [lhs_ptr];\n" ++
+  "    ld.param.u64 %rhs, [rhs_ptr];\n" ++
+  "    ld.param.u64 %out, [out_ptr];\n" ++
+  "\n" ++
+  "    ld.global.u64 %a, [%lhs];\n" ++
+  "    ld.global.u64 %b, [%rhs];\n" ++
+  "    add.s64 %sum, %a, %b;\n" ++
+  "    st.global.u64 [%out], %sum;\n" ++
+  "\n" ++
+  "    ret;\n" ++
+  "}\n"
 
 def loadByteAt (ptr : Val) (baseOff : Nat) (idx : Val) : IRBuilder Val := do
   let base ← iconst64 baseOff
@@ -262,7 +298,33 @@ def emitFormatSigned (ptr value : Val) : IRBuilder Val := do
   startBlock done
   pure (done.param 0)
 
-def emitParseAddChain (ptr len : Val) : IRBuilder Val := do
+def emitCudaScalarAdd (cuda : CudaSetup) (ptr lhs rhs : Val) : IRBuilder Val := do
+  fldStore ptr f.firstVal lhs
+  fldStore ptr f.secondVal rhs
+
+  let bufAcc64 ← fldLoad ptr f.accBuf
+  let bufTerm64 ← fldLoad ptr f.termBuf
+  let bufOut64 ← fldLoad ptr f.outBuf
+  let bufAcc ← ireduce32 bufAcc64
+  let bufTerm ← ireduce32 bufTerm64
+  let bufOut ← ireduce32 bufOut64
+
+  let size8 ← iconst64 8
+  let lhsOff ← fldOffset f.firstVal
+  let rhsOff ← fldOffset f.secondVal
+  let outOff ← fldOffset f.result
+  let ptxOff ← fldOffset f.ptx
+  let bindOff ← fldOffset f.bindDesc
+  let nBufs ← iconst32 3
+  let one32 ← iconst32 1
+
+  let _ ← call cuda.fnUpload [ptr, bufAcc, lhsOff, size8]
+  let _ ← call cuda.fnUpload [ptr, bufTerm, rhsOff, size8]
+  let _ ← call cuda.fnLaunch [ptr, ptxOff, nBufs, bindOff, one32, one32, one32, one32, one32, one32]
+  let _ ← call cuda.fnDownload [ptr, bufOut, outOff, size8]
+  fldLoad ptr f.result
+
+def emitParseAddChain (cuda : CudaSetup) (ptr len : Val) : IRBuilder Val := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let plus ← iconst64 asciiPlus
@@ -315,7 +377,7 @@ def emitParseAddChain (ptr len : Val) : IRBuilder Val := do
   let nextPos ← iadd plusPos one
   let (term, termEnd) ← emitParseInt ptr nextPos len
   fldStore ptr f.secondVal term
-  let nextAcc ← iadd plusAcc term
+  let nextAcc ← emitCudaScalarAdd cuda ptr plusAcc term
   jump loopHdr.ref [nextAcc, termEnd]
 
   startBlock done
@@ -324,20 +386,54 @@ def emitParseAddChain (ptr len : Val) : IRBuilder Val := do
 def clifIrSource : String := buildProgram do
   let fnRead ← AlgorithmLib.IR.declareStdinReadline
   let fnWrite ← AlgorithmLib.IR.declareStdoutWrite
+  let cuda ← declareCudaFFI
   let ptr ← entryBlock
   let inputOff ← fldOffset f.input
   let inputMax ← iconst64 256
-  let bytesRead ← call fnRead [ptr, inputOff, inputMax]
+  let outOff ← fldOffset f.output
+  let size8 ← iconst64 8
+
+  callVoid cuda.fnInit [ptr]
+  let accBuf ← call cuda.fnCreateBuffer [ptr, size8]
+  let termBuf ← call cuda.fnCreateBuffer [ptr, size8]
+  let outBuf ← call cuda.fnCreateBuffer [ptr, size8]
+  fldStore ptr f.accBuf (← sextend64 accBuf)
+  fldStore ptr f.termBuf (← sextend64 termBuf)
+  fldStore ptr f.outBuf (← sextend64 outBuf)
+  fldStore32At ptr f.bindDesc 0 accBuf
+  fldStore32At ptr f.bindDesc 4 termBuf
+  fldStore32At ptr f.bindDesc 8 outBuf
+
+  let zero ← iconst64 0
+  let loopHdr ← declareBlock []
+  let loopBody ← declareBlock [.i64]
+  let bytesRead := loopBody.param 0
+  let done ← declareBlock []
+
+  jump loopHdr.ref []
+
+  startBlock loopHdr
+  let readLen ← call fnRead [ptr, inputOff, inputMax]
+  let isEof ← icmp .eq readLen zero
+  brif isEof done.ref [] loopBody.ref [readLen]
+
+  startBlock loopBody
   fldStore ptr f.inputLen bytesRead
-  let sum ← emitParseAddChain ptr bytesRead
+  let sum ← emitParseAddChain cuda ptr bytesRead
   fldStore ptr f.result sum
   let outLen ← emitFormatSigned ptr sum
   fldStore ptr f.outputLen outLen
-  let outOff ← fldOffset f.output
   let _ ← call fnWrite [ptr, outOff, outLen]
+  jump loopHdr.ref []
+
+  startBlock done
+  callVoid cuda.fnCleanup [ptr]
   ret
 
-def payloads : List UInt8 := mkPayload layoutMeta.totalSize []
+def payloads : List UInt8 :=
+  mkPayload layoutMeta.totalSize [
+    f.ptx.init (stringToBytes scalarAddPtx)
+  ]
 
 def cliConfig : BaseConfig := {
   cranelift_ir := clifIrSource,
