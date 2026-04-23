@@ -26,17 +26,18 @@ structure Table (s : Schema) where mk ::
 
 def mkTable (s : Schema) : Table s := Table.mk
 
-structure FilteredTable (s : Schema) where
-  filterCol : String
-  pattern   : String
-
 @[reducible] def mergeSchema (s1 s2 : Schema) : Schema :=
   s1 ++ s2.filter (fun c => !s1.elem c)
 
-structure JoinedTable (s1 s2 : Schema) where
-  filtered : FilteredTable s1
-  right    : Table s2
-  joinKey  : String
+-- QueryPlan s is a typed query tree whose index is the output schema.
+-- filter preserves the schema; join computes mergeSchema at the type level;
+-- select projects to exactly the chosen columns — all checked at elaboration.
+inductive QueryPlan : Schema → Type where
+  | table  : Table s → QueryPlan s
+  | filter : (col pat : String) → QueryPlan s → col ∈ s → QueryPlan s
+  | join   : (key : String) → QueryPlan s1 → QueryPlan s2 → key ∈ s1 → key ∈ s2
+           → QueryPlan (mergeSchema s1 s2)
+  | select : (cols : List String) → QueryPlan s → (∀ c ∈ cols, c ∈ s) → QueryPlan cols
 
 -- ---------------------------------------------------------------------------
 -- Payload layout constants
@@ -478,17 +479,26 @@ def buildQueryMonomorphic (patternStr : String) : BaseConfig × Algorithm :=
 -- Pipeline API
 -- ---------------------------------------------------------------------------
 
-def filter (col : String) (pattern : String) {s : Schema} (_ : Table s)
-    (_ : col ∈ s := by decide) : FilteredTable s :=
-  { filterCol := col, pattern := pattern }
+def plan {s : Schema} (t : Table s) : QueryPlan s := .table t
 
-def join (right : Table s2) (key : String) {s1 : Schema} (ft : FilteredTable s1)
-    (_ : key ∈ s1 := by decide) (_ : key ∈ s2 := by decide) : JoinedTable s1 s2 :=
-  { filtered := ft, right := right, joinKey := key }
+def filter (col pat : String) {s : Schema} (p : QueryPlan s)
+    (h : col ∈ s := by decide) : QueryPlan s := .filter col pat p h
 
-def select (cols : List String) {s1 s2 : Schema} (jt : JoinedTable s1 s2)
-    (_ : ∀ c ∈ cols, c ∈ mergeSchema s1 s2 := by decide) : BaseConfig × Algorithm :=
-  buildQueryMonomorphic ("," ++ jt.filtered.pattern ++ ",")
+def join (key : String) {s1 s2 : Schema} (p1 : QueryPlan s1) (p2 : QueryPlan s2)
+    (h1 : key ∈ s1 := by decide) (h2 : key ∈ s2 := by decide) : QueryPlan (mergeSchema s1 s2) :=
+  .join key p1 p2 h1 h2
+
+def select (cols : List String) {s : Schema} (p : QueryPlan s)
+    (h : ∀ c ∈ cols, c ∈ s := by decide) : QueryPlan cols := .select cols p h
+
+def extractPattern : QueryPlan s → String
+  | .table _            => ""
+  | .filter _ pat _ _   => pat
+  | .join _ p1 _ _ _    => extractPattern p1
+  | .select _ p _       => extractPattern p
+
+def compile {s : Schema} (p : QueryPlan s) : BaseConfig × Algorithm :=
+  buildQueryMonomorphic ("," ++ extractPattern p ++ ",")
 
 -- ---------------------------------------------------------------------------
 -- Schemas declared to match the actual CSV headers.
@@ -498,32 +508,46 @@ def select (cols : List String) {s1 s2 : Schema} (jt : JoinedTable s1 s2)
 
 abbrev employeeSchema   : Schema := ["id", "name", "age", "city", "dept_id", "salary"]
 abbrev departmentSchema : Schema := ["dept_id", "dept_name", "floor"]
+abbrev locationSchema   : Schema := ["city", "region", "country"]
 
 def employees   : Table employeeSchema   := Table.mk
 def departments : Table departmentSchema := Table.mk
+def locations   : Table locationSchema   := Table.mk
 
--- Pipeline: filter employees by city, join departments on dept_id, project columns.
--- Each proof obligation is discharged automatically by `decide` at elaboration.
--- Any nonexistent column name causes a build-time elaboration failure.
+-- Tree-shaped query — two-level join with independent filters on both branches.
+-- Schema propagates through every node; mergeSchema is computed at each join.
+-- All membership proofs discharge automatically via `decide`.
+--
+--   join "dept_id"
+--     ├─ join "city"
+--     │    ├─ filter "city" "Seattle" employees
+--     │    └─ locations
+--     └─ filter "dept_name" "Engineering" departments
+--   |> select ["name", "city", "region", "dept_name", "floor"]
 def result : BaseConfig × Algorithm :=
-  employees
-  |> filter "city" "Seattle"
-  |> join departments "dept_id"
-  |> select ["name", "city", "dept_name"]
+  join "dept_id"
+    (join "city"
+      (plan employees |> filter "city" "Seattle")
+      (plan locations))
+    (plan departments |> filter "dept_name" "Engineering")
+  |> select ["name", "city", "region", "dept_name", "floor"]
+  |> compile
 
 -- Uncomment either def to see elaboration-time rejection:
 --
--- def badFilterCol : BaseConfig × Algorithm :=
---   employees
---   |> filter "salary_band" "Seattle"         -- "salary_band" ∉ employeeSchema → decide fails
---   |> join departments "dept_id"
---   |> select ["name", "city", "dept_name"]
+-- def badJoinKey : BaseConfig × Algorithm :=
+--   join "nonexistent_key"              -- ∉ employeeSchema → decide fails
+--     (plan employees |> filter "city" "Seattle")
+--     (plan departments)
+--   |> select ["name", "dept_name"]
+--   |> compile
 --
 -- def badSelectCol : BaseConfig × Algorithm :=
---   employees
---   |> filter "city" "Seattle"
---   |> join departments "dept_id"
---   |> select ["name", "city", "nonexistent"] -- "nonexistent" ∉ merged schema → decide fails
+--   join "dept_id"
+--     (plan employees |> filter "city" "Seattle")
+--     (plan departments)
+--   |> select ["name", "salary_band"]   -- ∉ merged schema → decide fails
+--   |> compile
 
 end CsvDemo
 
