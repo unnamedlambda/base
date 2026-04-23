@@ -262,6 +262,65 @@ def emitFormatSigned (ptr value : Val) : IRBuilder Val := do
   startBlock done
   pure (done.param 0)
 
+def emitParseAddChain (ptr len : Val) : IRBuilder Val := do
+  let zero ← iconst64 0
+  let one ← iconst64 1
+  let plus ← iconst64 asciiPlus
+  let sp ← iconst64 asciiSpace
+  let nl ← iconst64 asciiNewline
+
+  let (first, pos1) ← emitParseInt ptr zero len
+  fldStore ptr f.firstVal first
+  fldStore ptr f.secondVal zero
+
+  let loopHdr ← declareBlock [.i64, .i64]
+  let acc := loopHdr.param 0
+  let pos := loopHdr.param 1
+  let loopBody ← declareBlock []
+  let loopCheckNl ← declareBlock [.i64, .i64, .i64]
+  let checkNlAcc := loopCheckNl.param 0
+  let checkNlPos := loopCheckNl.param 1
+  let chNl := loopCheckNl.param 2
+  let loopCheckPlus ← declareBlock [.i64, .i64, .i64]
+  let checkPlusAcc := loopCheckPlus.param 0
+  let checkPlusPos := loopCheckPlus.param 1
+  let chPlus := loopCheckPlus.param 2
+  let plusBlk ← declareBlock [.i64, .i64]
+  let plusAcc := plusBlk.param 0
+  let plusPos := plusBlk.param 1
+  let done ← declareBlock [.i64]
+
+  jump loopHdr.ref [first, pos1]
+
+  startBlock loopHdr
+  let atEnd ← icmp .uge pos len
+  brif atEnd done.ref [acc] loopBody.ref []
+
+  startBlock loopBody
+  let ch ← loadInputByte ptr pos
+  let isSp ← icmp .eq ch sp
+  let nextPos ← iadd pos one
+  brif isSp loopHdr.ref [acc, nextPos] loopCheckNl.ref [acc, pos, ch]
+
+  startBlock loopCheckNl
+  let isNl ← icmp .eq chNl nl
+  let nextPos ← iadd checkNlPos one
+  brif isNl loopHdr.ref [checkNlAcc, nextPos] loopCheckPlus.ref [checkNlAcc, checkNlPos, chNl]
+
+  startBlock loopCheckPlus
+  let isPlus ← icmp .eq chPlus plus
+  brif isPlus plusBlk.ref [checkPlusAcc, checkPlusPos] done.ref [checkPlusAcc]
+
+  startBlock plusBlk
+  let nextPos ← iadd plusPos one
+  let (term, termEnd) ← emitParseInt ptr nextPos len
+  fldStore ptr f.secondVal term
+  let nextAcc ← iadd plusAcc term
+  jump loopHdr.ref [nextAcc, termEnd]
+
+  startBlock done
+  pure (done.param 0)
+
 def clifIrSource : String := buildProgram do
   let fnRead ← AlgorithmLib.IR.declareStdinReadline
   let fnWrite ← AlgorithmLib.IR.declareStdoutWrite
@@ -270,12 +329,7 @@ def clifIrSource : String := buildProgram do
   let inputMax ← iconst64 256
   let bytesRead ← call fnRead [ptr, inputOff, inputMax]
   fldStore ptr f.inputLen bytesRead
-  let zero ← iconst64 0
-  let (lhs, pos1) ← emitParseInt ptr zero bytesRead
-  fldStore ptr f.firstVal lhs
-  let (rhs, _) ← emitParseInt ptr pos1 bytesRead
-  fldStore ptr f.secondVal rhs
-  let sum ← iadd lhs rhs
+  let sum ← emitParseAddChain ptr bytesRead
   fldStore ptr f.result sum
   let outLen ← emitFormatSigned ptr sum
   fldStore ptr f.outputLen outLen
