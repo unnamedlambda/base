@@ -18,24 +18,13 @@ fn main() {
     println!("cargo:rerun-if-changed=../../lean/AlgorithmLib.lean");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let build_output = Command::new("lake")
-        .args(["build", "generate"])
+    let lean_file = Path::new(&manifest_dir).join("lean/MakeAlgorithm.lean");
+    let output = Command::new("lake")
+        .args(["env", "lean", "--run"])
+        .arg(&lean_file)
         .current_dir(&manifest_dir)
         .output()
-        .expect("Failed to build Lean generator");
-
-    if !build_output.status.success() {
-        eprintln!("=== Lake Build Failed ===");
-        eprintln!("stdout: {}", String::from_utf8_lossy(&build_output.stdout));
-        eprintln!("stderr: {}", String::from_utf8_lossy(&build_output.stderr));
-        panic!("Lean generator build failed");
-    }
-
-    let generator = Path::new(&manifest_dir).join(".lake/build/bin/generate");
-    let output = Command::new(&generator)
-        .current_dir(&manifest_dir)
-        .output()
-        .expect("Failed to run generated Lean executable");
+        .expect("Failed to run Lean interpreter");
 
     if !output.status.success() {
         eprintln!("=== Lean Interpretation Failed ===");
