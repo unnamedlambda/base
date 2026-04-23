@@ -10,9 +10,12 @@ structure Fields where
   reserved : Fld (.bytes 64)
   ptx : Fld (.bytes 512)
   bindDesc : Fld (.bytes 12)
+  zeroBuf : Fld .i32
+  litBuf : Fld .i32
   accBuf : Fld .i32
-  termBuf : Fld .i32
   outBuf : Fld .i32
+  varPresent : Fld (.bytes 26)
+  varBufIds : Fld (.bytes 104)
   input : Fld (.bytes 256)
   scratch : Fld (.bytes 32)
   output : Fld (.bytes 32)
@@ -26,9 +29,12 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let reserved ← field (.bytes 64)
   let ptx ← field (.bytes 512)
   let bindDesc ← field (.bytes 12)
+  let zeroBuf ← field .i32
+  let litBuf ← field .i32
   let accBuf ← field .i32
-  let termBuf ← field .i32
   let outBuf ← field .i32
+  let varPresent ← field (.bytes 26)
+  let varBufIds ← field (.bytes 104)
   let input ← field (.bytes 256)
   let scratch ← field (.bytes 32)
   let output ← field (.bytes 32)
@@ -37,7 +43,7 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let secondVal ← field .i64
   let result ← field .i64
   let outputLen ← field .i64
-  pure { reserved, ptx, bindDesc, accBuf, termBuf, outBuf, input, scratch, output, inputLen, firstVal, secondVal, result, outputLen }
+  pure { reserved, ptx, bindDesc, zeroBuf, litBuf, accBuf, outBuf, varPresent, varBufIds, input, scratch, output, inputLen, firstVal, secondVal, result, outputLen }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
@@ -48,8 +54,11 @@ def asciiSpace : Int := 32
 def asciiNewline : Int := 10
 def asciiMinus : Int := 45
 def asciiPlus : Int := 43
+def asciiEq : Int := 61
 def asciiZero : Int := 48
 def asciiNine : Int := 57
+def asciiA : Int := 97
+def asciiZ : Int := 122
 
 def scalarAddPtx : String :=
   ".version 7.0\n" ++
@@ -100,6 +109,35 @@ def storeScratchByte (ptr idx value : Val) : IRBuilder Unit :=
 
 def storeOutputByte (ptr idx value : Val) : IRBuilder Unit :=
   storeByteAt ptr f.output.offset idx value
+
+def emitIsVarChar (ch : Val) : IRBuilder Val := do
+  let a ← iconst64 asciiA
+  let z ← iconst64 asciiZ
+  let geA ← icmp .uge ch a
+  let leZ ← icmp .ule ch z
+  band geA leZ
+
+def loadVarPresent (ptr idx : Val) : IRBuilder Val :=
+  loadByteAt ptr f.varPresent.offset idx
+
+def storeVarPresent (ptr idx value : Val) : IRBuilder Unit :=
+  storeByteAt ptr f.varPresent.offset idx value
+
+def loadVarBufId (ptr idx : Val) : IRBuilder Val := do
+  let four ← iconst64 4
+  let base ← iconst64 f.varBufIds.offset
+  let byteOff ← imul idx four
+  let rel ← iadd base byteOff
+  let addr ← iadd ptr rel
+  uload32_64 addr
+
+def storeVarBufId (ptr idx bufId32 : Val) : IRBuilder Unit := do
+  let four ← iconst64 4
+  let base ← iconst64 f.varBufIds.offset
+  let byteOff ← imul idx four
+  let rel ← iadd base byteOff
+  let addr ← iadd ptr rel
+  store bufId32 addr
 
 def emitSkipWs (ptr pos len : Val) : IRBuilder Val := do
   let one ← iconst64 1
@@ -298,90 +336,250 @@ def emitFormatSigned (ptr value : Val) : IRBuilder Val := do
   startBlock done
   pure (done.param 0)
 
-def emitCudaScalarAdd (cuda : CudaSetup) (ptr lhs rhs : Val) : IRBuilder Val := do
-  fldStore ptr f.firstVal lhs
-  fldStore ptr f.secondVal rhs
-
-  let bufAcc64 ← fldLoad ptr f.accBuf
-  let bufTerm64 ← fldLoad ptr f.termBuf
-  let bufOut64 ← fldLoad ptr f.outBuf
-  let bufAcc ← ireduce32 bufAcc64
-  let bufTerm ← ireduce32 bufTerm64
-  let bufOut ← ireduce32 bufOut64
-
-  let size8 ← iconst64 8
-  let lhsOff ← fldOffset f.firstVal
-  let rhsOff ← fldOffset f.secondVal
-  let outOff ← fldOffset f.result
+def emitCudaLaunchAdd (cuda : CudaSetup) (ptr lhsBuf rhsBuf outBuf : Val) : IRBuilder Unit := do
   let ptxOff ← fldOffset f.ptx
   let bindOff ← fldOffset f.bindDesc
   let nBufs ← iconst32 3
   let one32 ← iconst32 1
-
-  let _ ← call cuda.fnUpload [ptr, bufAcc, lhsOff, size8]
-  let _ ← call cuda.fnUpload [ptr, bufTerm, rhsOff, size8]
+  fldStore32At ptr f.bindDesc 0 lhsBuf
+  fldStore32At ptr f.bindDesc 4 rhsBuf
+  fldStore32At ptr f.bindDesc 8 outBuf
   let _ ← call cuda.fnLaunch [ptr, ptxOff, nBufs, bindOff, one32, one32, one32, one32, one32, one32]
-  let _ ← call cuda.fnDownload [ptr, bufOut, outOff, size8]
-  fldLoad ptr f.result
+  pure ()
 
-def emitParseAddChain (cuda : CudaSetup) (ptr len : Val) : IRBuilder Val := do
+def emitUploadLiteralToBuf (cuda : CudaSetup) (ptr bufId value : Val) : IRBuilder Unit := do
+  fldStore ptr f.firstVal value
+  let size8 ← iconst64 8
+  let valOff ← fldOffset f.firstVal
+  let _ ← call cuda.fnUpload [ptr, bufId, valOff, size8]
+  pure ()
+
+def emitAccFromLiteral (cuda : CudaSetup) (ptr value : Val) : IRBuilder Unit := do
+  let bufAcc64 ← fldLoad ptr f.accBuf
+  let bufAcc ← ireduce32 bufAcc64
+  emitUploadLiteralToBuf cuda ptr bufAcc value
+
+def emitAccFromVar (cuda : CudaSetup) (ptr varIdx : Val) : IRBuilder Unit := do
+  let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
+  let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
+  let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
+  emitCudaLaunchAdd cuda ptr zeroBuf varBuf accBuf
+
+def emitTermToLiteralBuf (cuda : CudaSetup) (ptr value : Val) : IRBuilder Val := do
+  let litBuf64 ← fldLoad ptr f.litBuf
+  let litBuf ← ireduce32 litBuf64
+  emitUploadLiteralToBuf cuda ptr litBuf value
+  pure litBuf
+
+def emitTermParse (ptr start len : Val) : IRBuilder (Val × Val × Val) := do
+  let zero ← iconst64 0
+  let pos0 ← emitSkipWs ptr start len
+
+  let hdr ← declareBlock [.i64]
+  let pos := hdr.param 0
+  let readBlk ← declareBlock []
+  let varBlk ← declareBlock [.i64]
+  let varIdx := varBlk.param 0
+  let intBlk ← declareBlock []
+  let done ← declareBlock [.i64, .i64, .i64]
+
+  jump hdr.ref [pos0]
+
+  startBlock hdr
+  let atEnd ← icmp .uge pos len
+  brif atEnd done.ref [zero, zero, pos] readBlk.ref []
+
+  startBlock readBlk
+  let ch ← loadInputByte ptr pos
+  let isVar ← emitIsVarChar ch
+  let a ← iconst64 asciiA
+  let idx ← isub ch a
+  brif isVar varBlk.ref [idx] intBlk.ref []
+
+  startBlock varBlk
+  let one ← iconst64 1
+  let nextPos ← iadd pos one
+  jump done.ref [one, varIdx, nextPos]
+
+  startBlock intBlk
+  let (v, p) ← emitParseInt ptr pos len
+  jump done.ref [zero, v, p]
+
+  startBlock done
+  pure (done.param 0, done.param 1, done.param 2)
+
+def emitParseAddChain (cuda : CudaSetup) (ptr start len : Val) : IRBuilder Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let plus ← iconst64 asciiPlus
   let sp ← iconst64 asciiSpace
   let nl ← iconst64 asciiNewline
 
-  let (first, pos1) ← emitParseInt ptr zero len
-  fldStore ptr f.firstVal first
-  fldStore ptr f.secondVal zero
+  let (firstIsVar, firstPayload, pos1) ← emitTermParse ptr start len
+  let firstIsVarNonzero ← icmp .ne firstIsVar zero
+  let firstVarBlk ← declareBlock [.i64]
+  let firstVarIdx := firstVarBlk.param 0
+  let firstLitBlk ← declareBlock [.i64]
+  let firstLitVal := firstLitBlk.param 0
 
   let loopHdr ← declareBlock [.i64, .i64]
-  let acc := loopHdr.param 0
+  let haveAcc := loopHdr.param 0
   let pos := loopHdr.param 1
   let loopBody ← declareBlock []
   let loopCheckNl ← declareBlock [.i64, .i64, .i64]
-  let checkNlAcc := loopCheckNl.param 0
+  let checkNlHave := loopCheckNl.param 0
   let checkNlPos := loopCheckNl.param 1
   let chNl := loopCheckNl.param 2
   let loopCheckPlus ← declareBlock [.i64, .i64, .i64]
-  let checkPlusAcc := loopCheckPlus.param 0
+  let checkPlusHave := loopCheckPlus.param 0
   let checkPlusPos := loopCheckPlus.param 1
   let chPlus := loopCheckPlus.param 2
   let plusBlk ← declareBlock [.i64, .i64]
-  let plusAcc := plusBlk.param 0
+  let plusHave := plusBlk.param 0
   let plusPos := plusBlk.param 1
-  let done ← declareBlock [.i64]
+  let done ← declareBlock []
 
-  jump loopHdr.ref [first, pos1]
+  brif firstIsVarNonzero firstVarBlk.ref [firstPayload] firstLitBlk.ref [firstPayload]
+
+  startBlock firstVarBlk
+  emitAccFromVar cuda ptr firstVarIdx
+  jump loopHdr.ref [one, pos1]
+
+  startBlock firstLitBlk
+  emitAccFromLiteral cuda ptr firstLitVal
+  jump loopHdr.ref [one, pos1]
 
   startBlock loopHdr
   let atEnd ← icmp .uge pos len
-  brif atEnd done.ref [acc] loopBody.ref []
+  brif atEnd done.ref [] loopBody.ref []
 
   startBlock loopBody
   let ch ← loadInputByte ptr pos
   let isSp ← icmp .eq ch sp
   let nextPos ← iadd pos one
-  brif isSp loopHdr.ref [acc, nextPos] loopCheckNl.ref [acc, pos, ch]
+  brif isSp loopHdr.ref [haveAcc, nextPos] loopCheckNl.ref [haveAcc, pos, ch]
 
   startBlock loopCheckNl
   let isNl ← icmp .eq chNl nl
   let nextPos ← iadd checkNlPos one
-  brif isNl loopHdr.ref [checkNlAcc, nextPos] loopCheckPlus.ref [checkNlAcc, checkNlPos, chNl]
+  brif isNl loopHdr.ref [checkNlHave, nextPos] loopCheckPlus.ref [checkNlHave, checkNlPos, chNl]
 
   startBlock loopCheckPlus
   let isPlus ← icmp .eq chPlus plus
-  brif isPlus plusBlk.ref [checkPlusAcc, checkPlusPos] done.ref [checkPlusAcc]
+  brif isPlus plusBlk.ref [checkPlusHave, checkPlusPos] done.ref []
 
   startBlock plusBlk
   let nextPos ← iadd plusPos one
-  let (term, termEnd) ← emitParseInt ptr nextPos len
-  fldStore ptr f.secondVal term
-  let nextAcc ← emitCudaScalarAdd cuda ptr plusAcc term
-  jump loopHdr.ref [nextAcc, termEnd]
+  let (termIsVar, termPayload, termEnd) ← emitTermParse ptr nextPos len
+  let termIsVarNonzero ← icmp .ne termIsVar zero
+  let termVarBlk ← declareBlock [.i64]
+  let termVarIdx := termVarBlk.param 0
+  let termLitBlk ← declareBlock [.i64]
+  let termLitVal := termLitBlk.param 0
+
+  brif termIsVarNonzero termVarBlk.ref [termPayload] termLitBlk.ref [termPayload]
+
+  startBlock termVarBlk
+  let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
+  let outBuf ← ireduce32 (← fldLoad ptr f.outBuf)
+  let rhsBuf ← ireduce32 (← loadVarBufId ptr termVarIdx)
+  emitCudaLaunchAdd cuda ptr accBuf rhsBuf outBuf
+  let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
+  emitCudaLaunchAdd cuda ptr zeroBuf outBuf accBuf
+  jump loopHdr.ref [plusHave, termEnd]
+
+  startBlock termLitBlk
+  let litBuf ← emitTermToLiteralBuf cuda ptr termLitVal
+  let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
+  let outBuf ← ireduce32 (← fldLoad ptr f.outBuf)
+  emitCudaLaunchAdd cuda ptr accBuf litBuf outBuf
+  let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
+  emitCudaLaunchAdd cuda ptr zeroBuf outBuf accBuf
+  jump loopHdr.ref [plusHave, termEnd]
 
   startBlock done
-  pure (done.param 0)
+  pure ()
+
+def emitDownloadAccToResult (cuda : CudaSetup) (ptr : Val) : IRBuilder Val := do
+  let accBuf64 ← fldLoad ptr f.accBuf
+  let accBuf ← ireduce32 accBuf64
+  let size8 ← iconst64 8
+  let outOff ← fldOffset f.result
+  let _ ← call cuda.fnDownload [ptr, accBuf, outOff, size8]
+  fldLoad ptr f.result
+
+def emitEvalLine (cuda : CudaSetup) (ptr len : Val) : IRBuilder (Val × Val) := do
+  let zero ← iconst64 0
+  let one ← iconst64 1
+  let eqCh ← iconst64 asciiEq
+
+  let pos0 ← emitSkipWs ptr zero len
+
+  let hdr ← declareBlock [.i64]
+  let pos := hdr.param 0
+  let readBlk ← declareBlock []
+  let exprBlk ← declareBlock [.i64]
+  let exprStart := exprBlk.param 0
+  let varStartBlk ← declareBlock [.i64, .i64]
+  let varIdx := varStartBlk.param 0
+  let nameEnd := varStartBlk.param 1
+  let bareVarBlk ← declareBlock [.i64]
+  let bareVarIdx := bareVarBlk.param 0
+  let eqReadBlk ← declareBlock [.i64, .i64]
+  let eqVarIdx := eqReadBlk.param 0
+  let eqPos := eqReadBlk.param 1
+  let assignBlk ← declareBlock [.i64, .i64]
+  let assignVarIdx := assignBlk.param 0
+  let assignEqPos := assignBlk.param 1
+  let done ← declareBlock [.i64, .i64]
+
+  jump hdr.ref [pos0]
+
+  startBlock hdr
+  let atEnd ← icmp .uge pos len
+  brif atEnd done.ref [zero, zero] readBlk.ref []
+
+  startBlock readBlk
+  let ch ← loadInputByte ptr pos
+  let isVar ← emitIsVarChar ch
+  let a ← iconst64 asciiA
+  let idx ← isub ch a
+  let nextPos ← iadd pos one
+  brif isVar varStartBlk.ref [idx, nextPos] exprBlk.ref [pos]
+
+  startBlock exprBlk
+  emitParseAddChain cuda ptr exprStart len
+  let value ← emitDownloadAccToResult cuda ptr
+  jump done.ref [value, one]
+
+  startBlock varStartBlk
+  let eqPos2 ← emitSkipWs ptr nameEnd len
+  let eqAtEnd ← icmp .uge eqPos2 len
+  brif eqAtEnd bareVarBlk.ref [varIdx] eqReadBlk.ref [varIdx, eqPos2]
+
+  startBlock bareVarBlk
+  emitAccFromVar cuda ptr bareVarIdx
+  let value ← emitDownloadAccToResult cuda ptr
+  jump done.ref [value, one]
+
+  startBlock eqReadBlk
+  let ch2 ← loadInputByte ptr eqPos
+  let isEq ← icmp .eq ch2 eqCh
+  brif isEq assignBlk.ref [eqVarIdx, eqPos] exprBlk.ref [pos0]
+
+  startBlock assignBlk
+  let exprPos ← iadd assignEqPos one
+  emitParseAddChain cuda ptr exprPos len
+  let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
+  let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
+  let varBuf ← ireduce32 (← loadVarBufId ptr assignVarIdx)
+  emitCudaLaunchAdd cuda ptr zeroBuf accBuf varBuf
+  storeVarPresent ptr assignVarIdx one
+  let value ← emitDownloadAccToResult cuda ptr
+  jump done.ref [value, zero]
+
+  startBlock done
+  pure (done.param 0, done.param 1)
 
 def clifIrSource : String := buildProgram do
   let fnRead ← AlgorithmLib.IR.declareStdinReadline
@@ -392,22 +590,43 @@ def clifIrSource : String := buildProgram do
   let inputMax ← iconst64 256
   let outOff ← fldOffset f.output
   let size8 ← iconst64 8
+  let zero ← iconst64 0
+  let one ← iconst64 1
 
   callVoid cuda.fnInit [ptr]
+  let zeroBuf ← call cuda.fnCreateBuffer [ptr, size8]
+  let litBuf ← call cuda.fnCreateBuffer [ptr, size8]
   let accBuf ← call cuda.fnCreateBuffer [ptr, size8]
-  let termBuf ← call cuda.fnCreateBuffer [ptr, size8]
   let outBuf ← call cuda.fnCreateBuffer [ptr, size8]
+  fldStore ptr f.zeroBuf (← sextend64 zeroBuf)
+  fldStore ptr f.litBuf (← sextend64 litBuf)
   fldStore ptr f.accBuf (← sextend64 accBuf)
-  fldStore ptr f.termBuf (← sextend64 termBuf)
   fldStore ptr f.outBuf (← sextend64 outBuf)
-  fldStore32At ptr f.bindDesc 0 accBuf
-  fldStore32At ptr f.bindDesc 4 termBuf
-  fldStore32At ptr f.bindDesc 8 outBuf
 
-  let zero ← iconst64 0
+  let setupHdr ← declareBlock [.i64]
+  let vi := setupHdr.param 0
+  let setupBody ← declareBlock []
+  let afterSetup ← declareBlock []
+  let twentySix ← iconst64 26
+  jump setupHdr.ref [zero]
+
+  startBlock setupHdr
+  let doneSetup ← icmp .uge vi twentySix
+  brif doneSetup afterSetup.ref [] setupBody.ref []
+
+  startBlock setupBody
+  let vbuf ← call cuda.fnCreateBuffer [ptr, size8]
+  storeVarBufId ptr vi vbuf
+  storeVarPresent ptr vi zero
+  let nextI ← iadd vi one
+  jump setupHdr.ref [nextI]
+
+  startBlock afterSetup
   let loopHdr ← declareBlock []
   let loopBody ← declareBlock [.i64]
   let bytesRead := loopBody.param 0
+  let printBlk ← declareBlock [.i64]
+  let lineValue := printBlk.param 0
   let done ← declareBlock []
 
   jump loopHdr.ref []
@@ -419,9 +638,13 @@ def clifIrSource : String := buildProgram do
 
   startBlock loopBody
   fldStore ptr f.inputLen bytesRead
-  let sum ← emitParseAddChain cuda ptr bytesRead
-  fldStore ptr f.result sum
-  let outLen ← emitFormatSigned ptr sum
+  let (lineResult, shouldPrint) ← emitEvalLine cuda ptr bytesRead
+  fldStore ptr f.result lineResult
+  let shouldPrintNow ← icmp .eq shouldPrint one
+  brif shouldPrintNow printBlk.ref [lineResult] loopHdr.ref []
+
+  startBlock printBlk
+  let outLen ← emitFormatSigned ptr lineValue
   fldStore ptr f.outputLen outLen
   let _ ← call fnWrite [ptr, outOff, outLen]
   jump loopHdr.ref []
