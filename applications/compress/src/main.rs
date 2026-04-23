@@ -1,5 +1,4 @@
 use base::{run, Algorithm, BaseConfig};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
 
@@ -7,19 +6,6 @@ const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algori
 const INPUT_FILENAME_OFF: usize = 0x4200;
 
 fn main() {
-    tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_target(true)
-                .with_thread_ids(true)
-                .with_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("off")),
-                ),
-        )
-        .init();
-
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: compress <input_file>");

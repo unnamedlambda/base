@@ -1,6 +1,7 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, sync::{Arc, Once}, time::Duration};
 use std::sync::atomic::Ordering;
 use tracing::{debug, info, info_span};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 pub use base_types::{Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType};
 pub use arrow_array::RecordBatch;
 use arrow_array::{ArrayRef, Int64Array, Float64Array, StringArray};
@@ -336,6 +337,25 @@ impl Drop for Base {
 pub fn run(config: BaseConfig, algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
     let mut base = Base::new(config)?;
     base.execute(&algorithm, &[])
+}
+
+pub fn init_tracing() {
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        tracing_subscriber::registry()
+            .with(
+                fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_target(true)
+                    .with_thread_ids(true)
+                    .with_filter(
+                        EnvFilter::try_from_default_env()
+                            .unwrap_or_else(|_| EnvFilter::new("off")),
+                    ),
+            )
+            .init();
+    });
 }
 
 fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<RecordBatch> {

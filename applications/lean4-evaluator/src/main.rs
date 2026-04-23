@@ -1,5 +1,4 @@
 use base::{run, Algorithm, BaseConfig};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
 const INPUT_PATH_OFFSET: usize = 0x0068;
@@ -8,19 +7,6 @@ const OUTPUT_PATH_OFFSET: usize = 0x0028;
 const OUTPUT_PATH_MAX_LEN: usize = 64;
 
 fn main() {
-    tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stderr)
-                .with_target(true)
-                .with_thread_ids(true)
-                .with_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("off")),
-                ),
-        )
-        .init();
-
     let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 

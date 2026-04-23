@@ -12,6 +12,7 @@ quanta = "0.12"
 pollster = "0.3"
 rand = "0.8"
 tracing = { version = "0.1", features = ["release_max_level_off"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 lmdb-zero = "0.4"
 liblmdb-sys = "0.2"
 cranelift-codegen = "0.116"
@@ -25,7 +26,6 @@ arrow-schema = { version = "54", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 arrow-array = { version = "54", default-features = false }
 arrow-schema = { version = "54", default-features = false }
 
