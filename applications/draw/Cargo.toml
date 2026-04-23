@@ -8,9 +8,7 @@ base = { path = "../../base" }
 bincode = "1"
 
 [build-dependencies]
-base-types = { path = "../../base-types" }
-serde_json = "1"
-bincode = "1"
+build-support = { path = "../../build-support" }
 
 [[bin]]
 name = "draw"

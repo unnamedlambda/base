@@ -1,0 +1,9 @@
+[package]
+name = "build-support"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base-types = { path = "../base-types" }
+serde_json = "1"
+bincode = "1"

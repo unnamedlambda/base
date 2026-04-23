@@ -1,92 +1,84 @@
-use std::env;
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-use base_types::{BaseConfig, Algorithm};
-
-/// Extract JSON from Lean interpreter output, skipping any warning lines.
-fn extract_json(output: &str) -> &str {
-    // Our JSON always starts with '[' (toJsonPair produces an array)
-    match output.find("\n[") {
-        Some(pos) => &output[pos + 1..],
-        None => output.trim_start(),
-    }
-}
-
-fn generate_algorithm(manifest_dir: &str, lean_file: &Path, output_name: &str) {
-    // Use Lean interpreter directly — skips C compilation entirely.
-    let output = Command::new("lake")
-        .args(&["env", "lean", "--run"])
-        .arg(lean_file)
-        .current_dir(manifest_dir)
-        .output()
-        .unwrap_or_else(|e| panic!("Failed to run Lean interpreter for {:?}: {}", lean_file, e));
-
-    if !output.status.success() {
-        eprintln!("=== Lean Interpretation Failed ({:?}) ===", lean_file);
-        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
-        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-        panic!("Lean code generation failed for {:?}", lean_file);
-    }
-
-    let raw_output = String::from_utf8(output.stdout)
-        .expect("Lean output was not valid UTF-8");
-    let json_str = extract_json(&raw_output);
-
-    let out_dir = env::var("OUT_DIR").unwrap();
-
-    fs::write(format!("{}/{}.json", out_dir, output_name), json_str)
-        .expect("Failed to write debug JSON");
-
-    let pair: (BaseConfig, Algorithm) = serde_json::from_str(json_str)
-        .unwrap_or_else(|e| panic!("BUILD FAILED: {} JSON does not match Rust (BaseConfig, Algorithm) structure: {}", output_name, e));
-
-    let binary = bincode::serialize(&pair)
-        .expect("Failed to serialize (BaseConfig, Algorithm) to bincode");
-
-    fs::write(format!("{}/{}.bin", out_dir, output_name), binary)
-        .expect("Failed to write binary algorithm");
-}
+use build_support::{generate_algorithms, rerun_if_changed, AlgorithmArtifact};
 
 fn main() {
-    println!("cargo:rerun-if-changed=lean/CsvBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/RegexBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/JsonBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/StringSearchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/WordCountAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/SaxpyBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/HistogramBench1Algorithm.lean");
-    println!("cargo:rerun-if-changed=lean/HistogramBench4Algorithm.lean");
-    println!("cargo:rerun-if-changed=lean/MatmulBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/VecOpsBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/ReductionBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/GpuVecAddBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/GpuMatMulBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/GpuReductionBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/CudaSaxpyBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/GpuIterBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lean/SortBenchAlgorithm.lean");
-    println!("cargo:rerun-if-changed=lakefile.lean");
-    println!("cargo:rerun-if-changed=../lean/AlgorithmLib.lean");
+    let artifacts = [
+        AlgorithmArtifact {
+            lean_file: "lean/CsvBenchAlgorithm.lean",
+            output_name: "csv_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/RegexBenchAlgorithm.lean",
+            output_name: "regex_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/JsonBenchAlgorithm.lean",
+            output_name: "json_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/StringSearchAlgorithm.lean",
+            output_name: "strsearch_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/WordCountAlgorithm.lean",
+            output_name: "wc_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/SaxpyBenchAlgorithm.lean",
+            output_name: "saxpy_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/HistogramBench1Algorithm.lean",
+            output_name: "hist1_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/HistogramBench4Algorithm.lean",
+            output_name: "hist4_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/MatmulBenchAlgorithm.lean",
+            output_name: "matmul_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/VecOpsBenchAlgorithm.lean",
+            output_name: "vecops_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/ReductionBenchAlgorithm.lean",
+            output_name: "reduction_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/GpuVecAddBenchAlgorithm.lean",
+            output_name: "gpu_vecadd_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/GpuMatMulBenchAlgorithm.lean",
+            output_name: "gpu_matmul_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/GpuReductionBenchAlgorithm.lean",
+            output_name: "gpu_reduction_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/CudaSaxpyBenchAlgorithm.lean",
+            output_name: "cuda_saxpy_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/GpuIterBenchAlgorithm.lean",
+            output_name: "gpu_iter_algorithm",
+        },
+        AlgorithmArtifact {
+            lean_file: "lean/SortBenchAlgorithm.lean",
+            output_name: "sort_algorithm",
+        },
+    ];
 
-    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let lean_dir = Path::new(&manifest_dir).join("lean");
+    let rerun_paths: Vec<_> = artifacts
+        .iter()
+        .map(|artifact| artifact.lean_file)
+        .chain(["lakefile.lean", "../lean/AlgorithmLib.lean"])
+        .collect();
 
-    generate_algorithm(&manifest_dir, &lean_dir.join("CsvBenchAlgorithm.lean"), "csv_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("RegexBenchAlgorithm.lean"), "regex_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("JsonBenchAlgorithm.lean"), "json_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("StringSearchAlgorithm.lean"), "strsearch_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("WordCountAlgorithm.lean"), "wc_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("SaxpyBenchAlgorithm.lean"), "saxpy_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("HistogramBench1Algorithm.lean"), "hist1_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("HistogramBench4Algorithm.lean"), "hist4_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("MatmulBenchAlgorithm.lean"), "matmul_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("VecOpsBenchAlgorithm.lean"), "vecops_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("ReductionBenchAlgorithm.lean"), "reduction_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("GpuVecAddBenchAlgorithm.lean"), "gpu_vecadd_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("GpuMatMulBenchAlgorithm.lean"), "gpu_matmul_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("GpuReductionBenchAlgorithm.lean"), "gpu_reduction_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("CudaSaxpyBenchAlgorithm.lean"), "cuda_saxpy_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("GpuIterBenchAlgorithm.lean"), "gpu_iter_algorithm");
-    generate_algorithm(&manifest_dir, &lean_dir.join("SortBenchAlgorithm.lean"), "sort_algorithm");
+    rerun_if_changed(&rerun_paths);
+
+    generate_algorithms(&artifacts);
 }
