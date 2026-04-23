@@ -3,7 +3,7 @@ use pollster::block_on;
 use portable_atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read as IoRead, Seek, Write as IoWrite};
+use std::io::{BufRead, Read as IoRead, Seek, Write as IoWrite};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::fence;
 use std::sync::Arc;
@@ -792,6 +792,45 @@ unsafe extern "C" fn cl_file_write(
     written
 }
 
+unsafe extern "C" fn cl_stdin_readline(ptr: *mut u8, dst_off: i64, max_len: i64) -> i64 {
+    if max_len <= 0 {
+        return 0;
+    }
+
+    let mut line = String::new();
+    let mut stdin = std::io::stdin().lock();
+    let read = match stdin.read_line(&mut line) {
+        Ok(n) => n,
+        Err(_) => return -1,
+    };
+    if read == 0 {
+        return 0;
+    }
+
+    let buf = line.as_bytes();
+    let copy_len = buf.len().min(max_len.saturating_sub(1) as usize);
+    let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), max_len as usize);
+    dst[..copy_len].copy_from_slice(&buf[..copy_len]);
+    dst[copy_len] = 0;
+    copy_len as i64
+}
+
+unsafe extern "C" fn cl_stdout_write(ptr: *mut u8, src_off: i64, size: i64) -> i64 {
+    if size < 0 {
+        return -1;
+    }
+
+    let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
+    let mut stdout = std::io::stdout().lock();
+    match stdout.write_all(data) {
+        Ok(_) => match stdout.flush() {
+            Ok(_) => size,
+            Err(_) => -1,
+        },
+        Err(_) => -1,
+    }
+}
+
 struct CraneliftNetContext {
     connections: HashMap<u32, TcpStream>,
     listeners: HashMap<u32, TcpListener>,
@@ -1289,6 +1328,8 @@ pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Result<(cranelift_jit::
 
         builder.symbol("cl_file_read", cl_file_read as *const u8);
         builder.symbol("cl_file_write", cl_file_write as *const u8);
+        builder.symbol("cl_stdin_readline", cl_stdin_readline as *const u8);
+        builder.symbol("cl_stdout_write", cl_stdout_write as *const u8);
 
         builder.symbol("cl_net_init", cl_net_init as *const u8);
         builder.symbol("cl_net_listen", cl_net_listen as *const u8);

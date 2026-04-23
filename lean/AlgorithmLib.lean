@@ -723,6 +723,14 @@ def declareFileRead : IRBuilder FnRef :=
 def declareFileWrite : IRBuilder FnRef :=
   declareFFI "cl_file_write" [.i64, .i64, .i64, .i64, .i64] (some .i64)
 
+/-- Declare cl_stdin_readline: (ptr, dst_off, max_len) -> bytes_read -/
+def declareStdinReadline : IRBuilder FnRef :=
+  declareFFI "cl_stdin_readline" [.i64, .i64, .i64] (some .i64)
+
+/-- Declare cl_stdout_write: (ptr, src_off, size) -> bytes_written -/
+def declareStdoutWrite : IRBuilder FnRef :=
+  declareFFI "cl_stdout_write" [.i64, .i64, .i64] (some .i64)
+
 /-- GPU FFI function bundle -/
 structure GpuSetup where
   fnInit : FnRef
