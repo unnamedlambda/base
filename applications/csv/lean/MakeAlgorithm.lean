@@ -26,14 +26,17 @@ structure Table (s : Schema) where mk ::
 
 def mkTable (s : Schema) : Table s := Table.mk
 
-structure CsvQuery (s1 s2 : Schema) where
-  mk ::
-  filterCol     : String
-  filterColInS1 : filterCol ∈ s1
-  filterPattern : String
-  joinKey       : String
-  joinKeyInS1   : joinKey ∈ s1
-  joinKeyInS2   : joinKey ∈ s2
+structure FilteredTable (s : Schema) where
+  filterCol : String
+  pattern   : String
+
+@[reducible] def mergeSchema (s1 s2 : Schema) : Schema :=
+  s1 ++ s2.filter (fun c => !s1.elem c)
+
+structure JoinedTable (s1 s2 : Schema) where
+  filtered : FilteredTable s1
+  right    : Table s2
+  joinKey  : String
 
 -- ---------------------------------------------------------------------------
 -- Payload layout constants
@@ -472,12 +475,20 @@ def buildQueryMonomorphic (patternStr : String) : BaseConfig × Algorithm :=
   (cfg, alg)
 
 -- ---------------------------------------------------------------------------
--- Typed entry point
+-- Pipeline API
 -- ---------------------------------------------------------------------------
 
-def buildQuery {s1 s2 : Schema} (_ : Table s1) (_ : Table s2)
-    (q : CsvQuery s1 s2) : BaseConfig × Algorithm :=
-  buildQueryMonomorphic ("," ++ q.filterPattern ++ ",")
+def filter (col : String) (pattern : String) {s : Schema} (_ : Table s)
+    (_ : col ∈ s := by decide) : FilteredTable s :=
+  { filterCol := col, pattern := pattern }
+
+def join (right : Table s2) (key : String) {s1 : Schema} (ft : FilteredTable s1)
+    (_ : key ∈ s1 := by decide) (_ : key ∈ s2 := by decide) : JoinedTable s1 s2 :=
+  { filtered := ft, right := right, joinKey := key }
+
+def select (cols : List String) {s1 s2 : Schema} (jt : JoinedTable s1 s2)
+    (_ : ∀ c ∈ cols, c ∈ mergeSchema s1 s2 := by decide) : BaseConfig × Algorithm :=
+  buildQueryMonomorphic ("," ++ jt.filtered.pattern ++ ",")
 
 -- ---------------------------------------------------------------------------
 -- Schemas declared to match the actual CSV headers.
@@ -488,29 +499,31 @@ def buildQuery {s1 s2 : Schema} (_ : Table s1) (_ : Table s2)
 abbrev employeeSchema   : Schema := ["id", "name", "age", "city", "dept_id", "salary"]
 abbrev departmentSchema : Schema := ["dept_id", "dept_name", "floor"]
 
-def employees   : Table employeeSchema   := mkTable _
-def departments : Table departmentSchema := mkTable _
+def employees   : Table employeeSchema   := Table.mk
+def departments : Table departmentSchema := Table.mk
 
--- Typed query: filter employees by city, join on dept_id.
--- Each `by decide` evaluates against the declared schema at elaboration.
--- Change "city" to a nonexistent column → filterColInS1 fails to build.
-def query : CsvQuery employeeSchema departmentSchema := {
-  filterCol     := "city",
-  filterColInS1 := by decide,
-  filterPattern := "Seattle",
-  joinKey       := "dept_id",
-  joinKeyInS1   := by decide,
-  joinKeyInS2   := by decide
-}
+-- Pipeline: filter employees by city, join departments on dept_id, project columns.
+-- Each proof obligation is discharged automatically by `decide` at elaboration.
+-- Any nonexistent column name causes a build-time elaboration failure.
+def result : BaseConfig × Algorithm :=
+  employees
+  |> filter "city" "Seattle"
+  |> join departments "dept_id"
+  |> select ["name", "city", "dept_name"]
 
--- Uncomment to see elaboration-time rejection of a nonexistent column:
+-- Uncomment either def to see elaboration-time rejection:
 --
--- def badQuery : CsvQuery employeeSchema departmentSchema := {
---   filterCol     := "salary_band",    -- not in employees.csv header
---   filterColInS1 := by decide,        -- error: decide tactic failed
--- }
-
-def result : BaseConfig × Algorithm := buildQuery employees departments query
+-- def badFilterCol : BaseConfig × Algorithm :=
+--   employees
+--   |> filter "salary_band" "Seattle"         -- "salary_band" ∉ employeeSchema → decide fails
+--   |> join departments "dept_id"
+--   |> select ["name", "city", "dept_name"]
+--
+-- def badSelectCol : BaseConfig × Algorithm :=
+--   employees
+--   |> filter "city" "Seattle"
+--   |> join departments "dept_id"
+--   |> select ["name", "city", "nonexistent"] -- "nonexistent" ∉ merged schema → decide fails
 
 end CsvDemo
 
