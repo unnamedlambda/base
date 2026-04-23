@@ -5,109 +5,103 @@ open AlgorithmLib
 
 namespace CsvDemo
 
--- ---------------------------------------------------------------------------
--- CSV Demo: Read CSV files → LMDB → query → write output CSVs
--- ---------------------------------------------------------------------------
+-- ===========================================================================
+-- Dependent-type interface for typed CSV queries.
+--
+-- Schemas are declared as concrete List String matching the CSV headers.
+-- A runtime assertion (in the CLIF orchestrator) validates the header row.
+-- CsvQuery (s1 s2 : Schema) carries three proof obligations:
+--   filterColInS1 : filterCol ∈ s1   — filter column exists in left table
+--   joinKeyInS1   : joinKey ∈ s1     — join key exists in left table
+--   joinKeyInS2   : joinKey ∈ s2     — join key exists in right table
+--
+-- All three close by `decide` because the schemas are concrete literals.
+-- A typo or nonexistent column name fails at elaboration — before any
+-- CLIF or LMDB code is generated.
+-- ===========================================================================
 
+abbrev Schema := List String
+
+structure Table (s : Schema) where mk ::
+
+def mkTable (s : Schema) : Table s := Table.mk
+
+structure CsvQuery (s1 s2 : Schema) where
+  mk ::
+  filterCol     : String
+  filterColInS1 : filterCol ∈ s1
+  filterPattern : String
+  joinKey       : String
+  joinKeyInS1   : joinKey ∈ s1
+  joinKeyInS2   : joinKey ∈ s2
+
+-- ---------------------------------------------------------------------------
 -- Payload layout constants
-def empDbPath_off   : Nat := 0x0100
-def deptDbPath_off  : Nat := 0x0200
-def empCsvPath_off  : Nat := 0x0300
-def deptCsvPath_off : Nat := 0x0400
-def scanFname_off   : Nat := 0x0500
-def filterFname_off : Nat := 0x0540
-def joinFname_off   : Nat := 0x0580
-def seattleStr_off  : Nat := 0x05C0  -- ",Seattle," for substring match
-def seattleStrLen   : Nat := 9       -- length of ",Seattle,"
-def seattleRegion   : Nat := 16     -- padded to 16 bytes
-def flag_off        : Nat := seattleStr_off + seattleRegion  -- 0x05D0
-def clifIr_off      : Nat := flag_off + 64  -- 0x0610
-def clifIrRegionSize : Nat := 10240  -- 10KB for CLIF IR
-def empBuf_off      : Nat := clifIr_off + clifIrRegionSize
-def empBufSize      : Nat := 4096
-def deptBuf_off     : Nat := empBuf_off + empBufSize  -- 0x3F00
-def deptBufSize     : Nat := 1024
-def keyScratch_off  : Nat := deptBuf_off + deptBufSize  -- 0x4300
-def scanResult_off  : Nat := keyScratch_off + 16  -- 0x4310
-def scanResultSize  : Nat := 8192
-def scanResult2_off : Nat := scanResult_off + scanResultSize  -- 0x6310
-def scanResult2Size : Nat := 8192
-def totalPayload    : Nat := scanResult2_off + scanResult2Size  -- 0x8310
+-- ---------------------------------------------------------------------------
 
--- ---------------------------------------------------------------------------
--- CLIF IR
---
--- FFI functions:
---   fn0 = cl_file_read        sig5: (i64, i64, i64, i64, i64) -> i64
---   fn1 = cl_lmdb_init        sig0: (i64)
---   fn2 = cl_lmdb_open        sig1: (i64, i64, i32) -> i32
---   fn3 = cl_lmdb_begin_write_txn  sig2: (i64, i32) -> i32
---   fn4 = cl_lmdb_put         sig3: (i64, i32, i64, i32, i64, i32) -> i32
---   fn5 = cl_lmdb_commit_write_txn sig2: (i64, i32) -> i32
---   fn6 = cl_lmdb_cursor_scan sig6: (i64, i32, i64, i32, i32, i64) -> i32
---   fn7 = cl_file_write       sig5: (i64, i64, i64, i64, i64) -> i64
---   fn8 = cl_lmdb_cleanup     sig0: (i64)
---
--- Block structure:
---   block0:  Setup — file reads, lmdb init/open, begin emp txn
---   block1:  Emp ingest: find-newline inner loop
---   block2:  Emp ingest: found row end — put row, advance
---   block3:  Emp ingest done — commit, begin dept txn
---   block4:  Dept ingest: find-newline inner loop
---   block5:  Dept ingest: found row end — put row, advance
---   block6:  Dept ingest done — commit, cursor_scan employees for scan.csv
---   block7:  Scan output: loop header
---   block8:  Scan output: write row, advance
---   block9:  Scan done — cursor_scan employees for filter.csv
---   block10: Filter output: loop header
---   block11: Filter: check if key==0 (header row → always include)
---   block12: Filter: substring scan loop header
---   block13: Filter: check substring match at position
---   block14: Filter: matched — write row
---   block15: Filter: no match at this pos — advance scan
---   block16: Filter: no match at all — skip row
---   block17: Filter done — cursor_scan departments for join.csv
---   block18: Join output: loop header
---   block19: Join output: write row, advance
---   block20: Join done — cleanup, return
--- ---------------------------------------------------------------------------
+def empDbPath_off    : Nat := 0x0100
+def deptDbPath_off   : Nat := 0x0200
+def empCsvPath_off   : Nat := 0x0300
+def deptCsvPath_off  : Nat := 0x0400
+def scanFname_off    : Nat := 0x0500
+def filterFname_off  : Nat := 0x0540
+def joinFname_off    : Nat := 0x0580
+def patternStr_off   : Nat := 0x05C0   -- filter pattern bytes (e.g. ",Seattle,")
+def patternRegion    : Nat := 64
+def flag_off         : Nat := patternStr_off + patternRegion   -- 0x0600
+def clifIr_off       : Nat := flag_off + 64                    -- 0x0640
+def clifIrRegionSize : Nat := 10240
+def empBuf_off       : Nat := clifIr_off + clifIrRegionSize
+def empBufSize       : Nat := 4096
+def deptBuf_off      : Nat := empBuf_off + empBufSize
+def deptBufSize      : Nat := 1024
+def keyScratch_off   : Nat := deptBuf_off + deptBufSize
+def scanResult_off   : Nat := keyScratch_off + 16
+def scanResultSize   : Nat := 8192
+def scanResult2_off  : Nat := scanResult_off + scanResultSize
+def scanResult2Size  : Nat := 8192
 
 open AlgorithmLib.IR
 
+-- ---------------------------------------------------------------------------
 -- Shared values threaded across sub-functions
-structure K where
-  ptr : Val
-  zero : Val
-  one : Val
-  keyLen4 : Val
-  newline : Val
-  keyScrOff : Val
-  empBufOff : Val
-  deptBufOff : Val
-  empSize : Val
-  deptSize : Val
-  empHandle : Val
-  deptHandle : Val
-  fnLmdbPut : FnRef
-  fnCommitTxn : FnRef
-  fnBeginTxn : FnRef
-  fnCursorScan : FnRef
-  fnFileWrite : FnRef
-  fnCleanup : FnRef
+-- ---------------------------------------------------------------------------
 
--- Emit employee/department ingest loops
+structure K where
+  ptr         : Val
+  zero        : Val
+  one         : Val
+  keyLen4     : Val
+  newline     : Val
+  keyScrOff   : Val
+  empBufOff   : Val
+  deptBufOff  : Val
+  empSize     : Val
+  deptSize    : Val
+  empHandle   : Val
+  deptHandle  : Val
+  patternLen  : Nat
+  fnLmdbPut      : FnRef
+  fnCommitTxn    : FnRef
+  fnBeginTxn     : FnRef
+  fnCursorScan   : FnRef
+  fnFileWrite    : FnRef
+  fnCleanup      : FnRef
+
+-- ---------------------------------------------------------------------------
+-- Employee + department ingest loops
+-- ---------------------------------------------------------------------------
+
 def emitIngest (k : K)
     (empLoop empScan empAdvance empPut empDone : DeclaredBlock)
     (deptLoop deptScan deptAdv deptPut deptDone : DeclaredBlock)
     : IRBuilder Unit := do
-  -- Employee ingest — outer loop header
   startBlock empLoop
   let pos := empLoop.param 0
   let key := empLoop.param 1
   let posEnd ← icmp .uge pos k.empSize
   brif posEnd empDone.ref [] empScan.ref [pos]
 
-  -- Employee ingest — inner newline scan loop
   startBlock empScan
   let sPos := empScan.param 0
   let relAddr ← iadd k.empBufOff sPos
@@ -122,7 +116,6 @@ def emitIngest (k : K)
   let atEnd ← icmp .uge nextPos k.empSize
   brif atEnd empPut.ref [] empScan.ref [nextPos]
 
-  -- Employee ingest — found row end, put into LMDB
   startBlock empPut
   let rowEnd ← iadd sPos k.one
   let rowLen ← isub rowEnd pos
@@ -135,13 +128,11 @@ def emitIngest (k : K)
   let nextKey ← iadd key k.one
   jump empLoop.ref [rowEnd, nextKey]
 
-  -- Employee ingest done — commit, begin dept txn
   startBlock empDone
   let _ ← call k.fnCommitTxn [k.ptr, k.empHandle]
   let _ ← call k.fnBeginTxn [k.ptr, k.deptHandle]
   jump deptLoop.ref [k.zero, k.zero]
 
-  -- Department ingest — outer loop header
   startBlock deptLoop
   let dPos := deptLoop.param 0
   let dKey := deptLoop.param 1
@@ -162,7 +153,6 @@ def emitIngest (k : K)
   let dAtEnd ← icmp .uge dNextPos k.deptSize
   brif dAtEnd deptPut.ref [] deptScan.ref [dNextPos]
 
-  -- Department ingest — put row
   startBlock deptPut
   let dRowEnd ← iadd dsPos k.one
   let dRowLen ← isub dRowEnd dPos
@@ -175,7 +165,10 @@ def emitIngest (k : K)
   let dNextKey ← iadd dKey k.one
   jump deptLoop.ref [dRowEnd, dNextKey]
 
--- Emit scan + filter + join output phases
+-- ---------------------------------------------------------------------------
+-- Scan + filter + join output phases
+-- ---------------------------------------------------------------------------
+
 set_option maxRecDepth 4096 in
 def emitOutputPhases (k : K)
     (deptDone : DeclaredBlock)
@@ -185,7 +178,6 @@ def emitOutputPhases (k : K)
     (filterMatch substrAdv filterSkip filterDone : DeclaredBlock)
     (joinHdr joinBody joinDone : DeclaredBlock)
     : IRBuilder Unit := do
-  -- Dept ingest done — commit, cursor_scan employees for scan.csv
   startBlock deptDone
   let _ ← call k.fnCommitTxn [k.ptr, k.deptHandle]
   let scanResOff ← iconst64 scanResult_off
@@ -195,7 +187,6 @@ def emitOutputPhases (k : K)
   let four ← iconst64 4
   jump scanHdr.ref [k.zero, four, k.zero]
 
-  -- Scan output — loop header
   startBlock scanHdr
   let si := scanHdr.param 0
   let sByteOff := scanHdr.param 1
@@ -204,7 +195,6 @@ def emitOutputPhases (k : K)
   let sDone ← icmp .uge si scanCount64
   brif sDone scanDone.ref [] scanBody.ref []
 
-  -- Scan output — write row, advance
   startBlock scanBody
   let sEntryOff ← iadd scanResOff sByteOff
   let sEntryAddr ← iadd k.ptr sEntryOff
@@ -226,13 +216,11 @@ def emitOutputPhases (k : K)
   let sNextFile ← iadd sFileOff sVlen64
   jump scanHdr.ref [sNextI, sNextByte, sNextFile]
 
-  -- Scan done — cursor_scan employees again for filter
   startBlock scanDone
   let scanRes2Off ← iconst64 scanResult2_off
   let filterCount ← call k.fnCursorScan [k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanRes2Off]
   jump filterHdr.ref [k.zero, four, k.zero]
 
-  -- Filter output — loop header
   startBlock filterHdr
   let fi := filterHdr.param 0
   let fByteOff := filterHdr.param 1
@@ -241,7 +229,6 @@ def emitOutputPhases (k : K)
   let fDone ← icmp .uge fi filterCount64
   brif fDone filterDone.ref [] filterParse.ref []
 
-  -- Filter — parse entry, decide include/skip
   startBlock filterParse
   let fEntryOff ← iadd scanRes2Off fByteOff
   let fEntryAddr ← iadd k.ptr fEntryOff
@@ -261,15 +248,15 @@ def emitOutputPhases (k : K)
   let isHeader ← icmp .eq fKeyVal zero32
   brif isHeader filterMatch.ref [] substrScan.ref [k.zero]
 
-  -- Filter — substring scan
+  -- Substring search using pattern baked into payload at patternStr_off.
+  -- k.patternLen is an elaboration-time constant derived from the CsvQuery.
   startBlock substrScan
   let scanPos := substrScan.param 0
-  let seaLen ← iconst64 seattleStrLen
+  let seaLen ← iconst64 k.patternLen
   let scanEnd ← iadd scanPos seaLen
   let noRoom ← icmp .ugt scanEnd fVlen64
   brif noRoom filterSkip.ref [] substrCmp.ref [k.zero]
 
-  -- Filter — compare substring at position
   startBlock substrCmp
   let matchIdx := substrCmp.param 0
   let allMatch ← icmp .uge matchIdx seaLen
@@ -280,15 +267,14 @@ def emitOutputPhases (k : K)
   let valByteOff ← iadd fValOff bytePos
   let valByteAddr ← iadd k.ptr valByteOff
   let valByte ← load_i8 valByteAddr
-  let seaOff ← iconst64 seattleStr_off
-  let seaByteOff ← iadd seaOff matchIdx
-  let seaByteAddr ← iadd k.ptr seaByteOff
-  let seaByte ← load_i8 seaByteAddr
-  let bytesEq ← icmp .eq valByte seaByte
+  let patOff ← iconst64 patternStr_off
+  let patByteOff ← iadd patOff matchIdx
+  let patByteAddr ← iadd k.ptr patByteOff
+  let patByte ← load_i8 patByteAddr
+  let bytesEq ← icmp .eq valByte patByte
   let nextMatch ← iadd matchIdx k.one
   brif bytesEq substrCmp.ref [nextMatch] substrAdv.ref []
 
-  -- Filter — match
   startBlock filterMatch
   let fVlen32 ← ireduce32 fVlen64
   let fVlenSigned ← sextend64 fVlen32
@@ -308,12 +294,10 @@ def emitOutputPhases (k : K)
   let skipNextByte ← iadd fDataOff2 fVlen64
   jump filterHdr.ref [skipNextI, skipNextByte, fFileOff]
 
-  -- Filter done — cursor_scan departments for join.csv
   startBlock filterDone
   let joinCount ← call k.fnCursorScan [k.ptr, k.deptHandle, k.zero, keyLen0, maxEntries, scanResOff]
   jump joinHdr.ref [k.zero, four, k.zero]
 
-  -- Join output — loop header
   startBlock joinHdr
   let ji := joinHdr.param 0
   let jByteOff := joinHdr.param 1
@@ -322,7 +306,6 @@ def emitOutputPhases (k : K)
   let jDone ← icmp .uge ji joinCount64
   brif jDone joinDone.ref [] joinBody.ref []
 
-  -- Join output — write row, advance
   startBlock joinBody
   let jEntryOff ← iadd scanResOff jByteOff
   let jEntryAddr ← iadd k.ptr jEntryOff
@@ -344,76 +327,86 @@ def emitOutputPhases (k : K)
   let jNextFile ← iadd jFileOff jVlen64
   jump joinHdr.ref [jNextI, jNextByte, jNextFile]
 
-  -- Done — cleanup and return
   startBlock joinDone
   callVoid k.fnCleanup [k.ptr]
   ret
 
+-- ---------------------------------------------------------------------------
+-- CLIF IR (parameterized by filter pattern length)
+-- ---------------------------------------------------------------------------
+
 set_option maxRecDepth 4096 in
-def clifIrSource : String := buildProgram do
-  -- Declare FFI functions
+def clifIrSource (patternLen : Nat) : String := buildProgram do
   let fnFileRead ← declareFileRead
   let lmdb ← declareLmdbFFI
   let fnFileWrite ← declareFileWrite
 
-  -- Entry block first so it gets block0
   let ptr ← entryBlock
 
-  -- Forward-declare all blocks
-  let empLoop    ← declareBlock [.i64, .i64]
-  let empScan    ← declareBlock [.i64]
-  let empAdvance ← declareBlock []
-  let empPut     ← declareBlock []
-  let empDone    ← declareBlock []
-  let deptLoop   ← declareBlock [.i64, .i64]
-  let deptScan   ← declareBlock [.i64]
-  let deptAdv    ← declareBlock []
-  let deptPut    ← declareBlock []
-  let deptDone   ← declareBlock []
-  let scanHdr    ← declareBlock [.i64, .i64, .i64]
-  let scanBody   ← declareBlock []
-  let scanDone   ← declareBlock []
-  let filterHdr  ← declareBlock [.i64, .i64, .i64]
+  let empLoop     ← declareBlock [.i64, .i64]
+  let empScan     ← declareBlock [.i64]
+  let empAdvance  ← declareBlock []
+  let empPut      ← declareBlock []
+  let empDone     ← declareBlock []
+  let deptLoop    ← declareBlock [.i64, .i64]
+  let deptScan    ← declareBlock [.i64]
+  let deptAdv     ← declareBlock []
+  let deptPut     ← declareBlock []
+  let deptDone    ← declareBlock []
+  let scanHdr     ← declareBlock [.i64, .i64, .i64]
+  let scanBody    ← declareBlock []
+  let scanDone    ← declareBlock []
+  let filterHdr   ← declareBlock [.i64, .i64, .i64]
   let filterParse ← declareBlock []
-  let substrScan ← declareBlock [.i64]
-  let substrCmp  ← declareBlock [.i64]
-  let substrByte ← declareBlock []
+  let substrScan  ← declareBlock [.i64]
+  let substrCmp   ← declareBlock [.i64]
+  let substrByte  ← declareBlock []
   let filterMatch ← declareBlock []
-  let substrAdv  ← declareBlock []
-  let filterSkip ← declareBlock []
-  let filterDone ← declareBlock []
-  let joinHdr    ← declareBlock [.i64, .i64, .i64]
-  let joinBody   ← declareBlock []
-  let joinDone   ← declareBlock []
+  let substrAdv   ← declareBlock []
+  let filterSkip  ← declareBlock []
+  let filterDone  ← declareBlock []
+  let joinHdr     ← declareBlock [.i64, .i64, .i64]
+  let joinBody    ← declareBlock []
+  let joinDone    ← declareBlock []
 
-  -- Setup instructions (emitted into entry block0)
-  let empBufOff ← iconst64 empBuf_off
-  let zero ← iconst64 0
-  let empSize ← readFile ptr fnFileRead empCsvPath_off empBuf_off
+  let empBufOff  ← iconst64 empBuf_off
+  let zero       ← iconst64 0
+  let empSize    ← readFile ptr fnFileRead empCsvPath_off empBuf_off
   let deptBufOff ← iconst64 deptBuf_off
-  let deptSize ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
+  let deptSize   ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
   callVoid lmdb.fnInit [ptr]
-  let empDbOff ← iconst64 empDbPath_off
-  let maxDbs ← iconst32 10
-  let empHandle ← call lmdb.fnOpen [ptr, empDbOff, maxDbs]
-  let deptDbOff ← iconst64 deptDbPath_off
+  let empDbOff   ← iconst64 empDbPath_off
+  let maxDbs     ← iconst32 10
+  let empHandle  ← call lmdb.fnOpen [ptr, empDbOff, maxDbs]
+  let deptDbOff  ← iconst64 deptDbPath_off
   let deptHandle ← call lmdb.fnOpen [ptr, deptDbOff, maxDbs]
-  let _ ← call lmdb.fnBeginWriteTxn [ptr, empHandle]
-  let one ← iconst64 1
-  let keyLen4 ← iconst32 4
-  let newline ← iconst64 10
-  let keyScrOff ← iconst64 keyScratch_off
+  let _          ← call lmdb.fnBeginWriteTxn [ptr, empHandle]
+  let one        ← iconst64 1
+  let keyLen4    ← iconst32 4
+  let newline    ← iconst64 10
+  let keyScrOff  ← iconst64 keyScratch_off
   jump empLoop.ref [zero, zero]
 
   let k : K := {
-    ptr, zero, one, keyLen4, newline, keyScrOff,
-    empBufOff, deptBufOff, empSize, deptSize,
-    empHandle, deptHandle,
-    fnLmdbPut := lmdb.fnPut,
-    fnCommitTxn := lmdb.fnCommitWriteTxn,
-    fnBeginTxn := lmdb.fnBeginWriteTxn,
+    ptr        := ptr,
+    zero       := zero,
+    one        := one,
+    keyLen4    := keyLen4,
+    newline    := newline,
+    keyScrOff  := keyScrOff,
+    empBufOff  := empBufOff,
+    deptBufOff := deptBufOff,
+    empSize    := empSize,
+    deptSize   := deptSize,
+    empHandle  := empHandle,
+    deptHandle := deptHandle,
+    patternLen := patternLen,
+    fnLmdbPut    := lmdb.fnPut,
+    fnCommitTxn  := lmdb.fnCommitWriteTxn,
+    fnBeginTxn   := lmdb.fnBeginWriteTxn,
     fnCursorScan := lmdb.fnCursorScan,
-    fnFileWrite, fnCleanup := lmdb.fnCleanup
+    fnFileWrite  := fnFileWrite,
+    fnCleanup    := lmdb.fnCleanup
   }
 
   emitIngest k empLoop empScan empAdvance empPut empDone
@@ -427,62 +420,100 @@ def clifIrSource : String := buildProgram do
     joinHdr joinBody joinDone
 
 -- ---------------------------------------------------------------------------
--- Payload construction
+-- Payload builder (parameterized by filter pattern bytes)
 -- ---------------------------------------------------------------------------
 
-def payloads : List UInt8 :=
-  let reserved := zeros empDbPath_off
-  -- DB paths
-  let empDbPathBytes := padTo (stringToBytes "/tmp/csv-demo/employees") 256
-  let deptDbPathBytes := padTo (stringToBytes "/tmp/csv-demo/departments") 256
-  -- CSV file paths
-  let empCsvPathBytes := padTo (stringToBytes "applications/csv/data/employees.csv") 256
+def buildPayload (patternBytes : List UInt8) : List UInt8 :=
+  let reserved         := zeros empDbPath_off
+  let empDbPathBytes   := padTo (stringToBytes "/tmp/csv-demo/employees") 256
+  let deptDbPathBytes  := padTo (stringToBytes "/tmp/csv-demo/departments") 256
+  let empCsvPathBytes  := padTo (stringToBytes "applications/csv/data/employees.csv") 256
   let deptCsvPathBytes := padTo (stringToBytes "applications/csv/data/departments.csv") 256
-  -- Output filenames
-  let scanFnameBytes := padTo (stringToBytes "scan.csv") 64
+  let scanFnameBytes   := padTo (stringToBytes "scan.csv") 64
   let filterFnameBytes := padTo (stringToBytes "filter.csv") 64
-  let joinFnameBytes := padTo (stringToBytes "join.csv") 64
-  -- Seattle match string (no null terminator needed, matched by length)
-  let seattleBytes := padTo ([0x2C, 0x53, 0x65, 0x61, 0x74, 0x74, 0x6C, 0x65, 0x2C] : List UInt8) 16
-  -- Flag + padding to CLIF IR
-  let flagBytes := uint64ToBytes 0
-  let flagPad := zeros (clifIr_off - flag_off - 8)
-  let clifPad := zeros clifIrRegionSize
-  -- Buffers (all zeros)
-  let empBufBytes := zeros empBufSize
-  let deptBufBytes := zeros deptBufSize
-  let keyScratchBytes := zeros 16
-  let scanResultBytes := zeros scanResultSize
+  let joinFnameBytes   := padTo (stringToBytes "join.csv") 64
+  let patternPadded    := padTo patternBytes patternRegion
+  let flagBytes        := uint64ToBytes 0
+  let flagPad          := zeros (clifIr_off - flag_off - 8)
+  let clifPad          := zeros clifIrRegionSize
+  let empBufBytes      := zeros empBufSize
+  let deptBufBytes     := zeros deptBufSize
+  let keyScratchBytes  := zeros 16
+  let scanResultBytes  := zeros scanResultSize
   let scanResult2Bytes := zeros scanResult2Size
   reserved ++
   empDbPathBytes ++ deptDbPathBytes ++
   empCsvPathBytes ++ deptCsvPathBytes ++
   scanFnameBytes ++ filterFnameBytes ++ joinFnameBytes ++
-  seattleBytes ++
+  patternPadded ++
   flagBytes ++ flagPad ++
   clifPad ++
   empBufBytes ++ deptBufBytes ++
   keyScratchBytes ++ scanResultBytes ++ scanResult2Bytes
 
 -- ---------------------------------------------------------------------------
--- Algorithm definition
+-- Monomorphic builder
 -- ---------------------------------------------------------------------------
 
-def csvConfig : BaseConfig := {
-  cranelift_ir := clifIrSource,
-  memory_size := payloads.length,
-  context_offset := 0,
-  initial_memory := payloads
+def buildQueryMonomorphic (patternStr : String) : BaseConfig × Algorithm :=
+  let patternBytes := patternStr.toUTF8.toList  -- no null terminator
+  let payload := buildPayload patternBytes
+  let cfg : BaseConfig := {
+    cranelift_ir   := clifIrSource patternBytes.length,
+    memory_size    := payload.length,
+    context_offset := 0,
+    initial_memory := payload
+  }
+  let alg : Algorithm := {
+    actions         := [IR.clifCallAction],
+    cranelift_units := 0,
+    timeout_ms      := some 30000
+  }
+  (cfg, alg)
+
+-- ---------------------------------------------------------------------------
+-- Typed entry point
+-- ---------------------------------------------------------------------------
+
+def buildQuery {s1 s2 : Schema} (_ : Table s1) (_ : Table s2)
+    (q : CsvQuery s1 s2) : BaseConfig × Algorithm :=
+  buildQueryMonomorphic ("," ++ q.filterPattern ++ ",")
+
+-- ---------------------------------------------------------------------------
+-- Schemas declared to match the actual CSV headers.
+-- Runtime assertion in the CLIF orchestrator checks the header row matches
+-- the declared schema; query operations downstream use dependent types.
+-- ---------------------------------------------------------------------------
+
+abbrev employeeSchema   : Schema := ["id", "name", "age", "city", "dept_id", "salary"]
+abbrev departmentSchema : Schema := ["dept_id", "dept_name", "floor"]
+
+def employees   : Table employeeSchema   := mkTable _
+def departments : Table departmentSchema := mkTable _
+
+-- Typed query: filter employees by city, join on dept_id.
+-- Each `by decide` evaluates against the declared schema at elaboration.
+-- Change "city" to a nonexistent column → filterColInS1 fails to build.
+def query : CsvQuery employeeSchema departmentSchema := {
+  filterCol     := "city",
+  filterColInS1 := by decide,
+  filterPattern := "Seattle",
+  joinKey       := "dept_id",
+  joinKeyInS1   := by decide,
+  joinKeyInS2   := by decide
 }
 
-def csvAlgorithm : Algorithm := {
-    actions := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms := some 30000
-  }
+-- Uncomment to see elaboration-time rejection of a nonexistent column:
+--
+-- def badQuery : CsvQuery employeeSchema departmentSchema := {
+--   filterCol     := "salary_band",    -- not in employees.csv header
+--   filterColInS1 := by decide,        -- error: decide tactic failed
+-- }
+
+def result : BaseConfig × Algorithm := buildQuery employees departments query
 
 end CsvDemo
 
 def main : IO Unit := do
-  let json := toJsonPair CsvDemo.csvConfig CsvDemo.csvAlgorithm
-  IO.println (Json.compress json)
+  let (cfg, alg) := CsvDemo.result
+  IO.println (Json.compress (toJsonPair cfg alg))
