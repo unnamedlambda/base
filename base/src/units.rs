@@ -515,7 +515,7 @@ unsafe extern "C" fn cl_gpu_cleanup(ptr: *mut u8) {
 
 struct CraneliftCudaContext {
     device: std::sync::Arc<cudarc::driver::CudaDevice>,
-    buffers: Vec<cudarc::driver::CudaSlice<u8>>,
+    buffers: Vec<Option<cudarc::driver::CudaSlice<u8>>>,
 }
 
 fn cached_cuda_device() -> std::sync::Arc<cudarc::driver::CudaDevice> {
@@ -548,7 +548,7 @@ unsafe extern "C" fn cl_cuda_create_buffer(ptr: *mut u8, size: i64) -> i32 {
         match ctx.device.alloc_zeros::<u8>(size as usize) {
             Ok(buf) => {
                 let idx = ctx.buffers.len() as i32;
-                ctx.buffers.push(buf);
+                ctx.buffers.push(Some(buf));
                 idx
             }
             Err(_) => -1,
@@ -563,7 +563,8 @@ unsafe extern "C" fn cl_cuda_upload(ptr: *mut u8, buf_id: i32, src_off: i64, siz
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() { return -1; }
         let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
-        match ctx.device.htod_sync_copy_into(data, &mut ctx.buffers[bid]) {
+        let Some(buf) = ctx.buffers[bid].as_mut() else { return -1; };
+        match ctx.device.htod_sync_copy_into(data, buf) {
             Ok(_) => 0,
             Err(_) => -1,
         }
@@ -577,7 +578,8 @@ unsafe extern "C" fn cl_cuda_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64,
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() { return -1; }
         let data = std::slice::from_raw_parts(src_ptr as *const u8, size as usize);
-        match ctx.device.htod_sync_copy_into(data, &mut ctx.buffers[bid]) {
+        let Some(buf) = ctx.buffers[bid].as_mut() else { return -1; };
+        match ctx.device.htod_sync_copy_into(data, buf) {
             Ok(_) => 0,
             Err(_) => -1,
         }
@@ -591,7 +593,8 @@ unsafe extern "C" fn cl_cuda_download_ptr(ptr: *mut u8, buf_id: i32, dst_ptr: i6
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() { return -1; }
         let dst = std::slice::from_raw_parts_mut(dst_ptr as *mut u8, size as usize);
-        match ctx.device.dtoh_sync_copy_into(&ctx.buffers[bid], dst) {
+        let Some(buf) = ctx.buffers[bid].as_ref() else { return -1; };
+        match ctx.device.dtoh_sync_copy_into(buf, dst) {
             Ok(_) => 0,
             Err(_) => -1,
         }
@@ -605,9 +608,23 @@ unsafe extern "C" fn cl_cuda_download(ptr: *mut u8, buf_id: i32, dst_off: i64, s
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() { return -1; }
         let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
-        match ctx.device.dtoh_sync_copy_into(&ctx.buffers[bid], dst) {
+        let Some(buf) = ctx.buffers[bid].as_ref() else { return -1; };
+        match ctx.device.dtoh_sync_copy_into(buf, dst) {
             Ok(_) => 0,
             Err(_) => -1,
+        }
+    })).unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_cuda_free_buffer(ptr: *mut u8, buf_id: i32) -> i32 {
+    if buf_id < 0 { return -1; }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() { return -1; }
+        match ctx.buffers[bid].take() {
+            Some(_) => 0,
+            None => -1,
         }
     })).unwrap_or(-1)
 }
@@ -674,7 +691,8 @@ unsafe extern "C" fn cl_cuda_launch(
         for i in 0..n_bufs as usize {
             let buf_id = std::ptr::read_unaligned(bind_base.add(i * 4) as *const i32) as usize;
             if buf_id >= ctx.buffers.len() { return -1; }
-            dev_ptrs.push(*ctx.buffers[buf_id].device_ptr());
+            let Some(buf) = ctx.buffers[buf_id].as_ref() else { return -1; };
+            dev_ptrs.push(*buf.device_ptr());
         }
         let mut arg_ptrs: Vec<*mut std::ffi::c_void> = dev_ptrs
             .iter_mut()
@@ -1323,6 +1341,7 @@ pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Result<(cranelift_jit::
         builder.symbol("cl_cuda_upload_ptr", cl_cuda_upload_ptr as *const u8);
         builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
         builder.symbol("cl_cuda_download_ptr", cl_cuda_download_ptr as *const u8);
+        builder.symbol("cl_cuda_free_buffer", cl_cuda_free_buffer as *const u8);
         builder.symbol("cl_cuda_launch", cl_cuda_launch as *const u8);
         builder.symbol("cl_cuda_cleanup", cl_cuda_cleanup as *const u8);
 
