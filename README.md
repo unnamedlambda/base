@@ -48,21 +48,21 @@ base.execute_into(&algorithm, &payload, &mut output)?;
 
 The CLIF code reads `data_ptr`, `data_len`, `out_ptr`, and `out_len` from a reserved region at offsets 0x08-0x27. GPU uploads/downloads use `cl_gpu_upload_ptr` / `cl_gpu_download_ptr` to transfer directly between caller buffers and GPU memory — no intermediate copies through shared memory.
 
-## Example: GPU path tracer
+## Example: CUDA Scene Renderer
 
-The [raytrace](applications/raytrace/) application renders a 4096x4096 Cornell box with path tracing on the GPU. The entire program — WGSL shader, Cranelift IR orchestration, BMP header, memory layout — is defined in a single Lean file.
+The [scene](applications/scene/) application renders a small physically based scene on the GPU using raw PTX launched through the CUDA driver API. The entire program — PTX kernel source, Cranelift IR orchestration, BMP header, memory layout, and output filename — is defined in a single Lean file.
 
-![Cornell box rendered by Base](cornell_box.png)
+![CUDA scene render by Base](scene.png)
 
-*4096x4096, 32 samples per pixel, 5 bounces. Rendered in ~735ms. (downsized and converted to PNG offline for README inclusion)*
+*1280x720, 128 samples per pixel, up to 5 bounces. Rendered in ~415ms from raw PTX and converted to PNG offline for README inclusion.*
 
-**[MakeAlgorithm.lean](applications/raytrace/lean/MakeAlgorithm.lean)** defines:
+**[MakeAlgorithm.lean](applications/scene/lean/MakeAlgorithm.lean)** defines:
 
-1. A WGSL compute shader implementing a full path tracer — 5 planes, 2 AABBs, an area light, Lambertian diffuse with direct lighting and cosine-weighted indirect sampling (dispatched as 256x256 workgroups of 16x16 threads)
+1. A raw PTX Monte Carlo renderer with diffuse, mirror-like metal, and glass materials; multiple direct lights; fog; depth of field; tone mapping; and stochastic sampling.
 
-2. Cranelift IR that orchestrates: GPU init -> buffer creation -> shader upload -> dispatch -> download pixel data -> file write as BMP
+2. Cranelift IR that orchestrates: CUDA init -> device buffer creation -> PTX launch -> pixel download -> file write as BMP.
 
-3. Initial memory that packs the BMP header, shader source, binding descriptors, output filename, and CLIF IR into a flat byte layout
+3. Initial memory that packs the BMP header, PTX source, binding descriptors, output filename, and CLIF IR into a flat byte layout.
 
 ## Type system design
 
@@ -197,6 +197,6 @@ cargo run --release -p benchmarks -- --bench sort --rounds 5
 cargo test -p base
 
 # Build an application
-cargo build --release -p raytrace
-./target/release/raytrace
+cargo build --release -p scene
+./target/release/scene
 ```
