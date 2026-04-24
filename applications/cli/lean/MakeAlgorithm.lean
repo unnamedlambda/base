@@ -91,6 +91,7 @@ def asciiZero : Int := 48
 def asciiNine : Int := 57
 def asciiA : Int := 97
 def asciiZ : Int := 122
+def asciiGreater : Int := 62
 
 def scalarAddPtx : String :=
   ".version 7.0\n" ++
@@ -2216,6 +2217,10 @@ def clifIrSource : String := buildProgram do
   jump loopHdr.ref []
 
   startBlock loopHdr
+  storeOutputByte ptr zero (← iconst64 asciiGreater)
+  storeOutputByte ptr one (← iconst64 asciiSpace)
+  let two ← iconst64 2
+  let _ ← call fnWrite [ptr, outOff, two]
   let readLen ← call fnRead [ptr, inputOff, inputMax]
   let isEof ← icmp .eq readLen zero
   brif isEof done.ref [] loopBody.ref [readLen]
