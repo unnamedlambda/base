@@ -1,0 +1,15 @@
+[package]
+name = "scene"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../../base" }
+bincode = "1"
+
+[build-dependencies]
+build-support = { path = "../../build-support" }
+
+[[bin]]
+name = "scene"
+path = "src/main.rs"
