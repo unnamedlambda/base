@@ -10,6 +10,9 @@ bincode = "1"
 [build-dependencies]
 build-support = { path = "../../build-support" }
 
+[dev-dependencies]
+tempfile = "3"
+
 [[bin]]
 name = "matmul"
 path = "src/main.rs"
