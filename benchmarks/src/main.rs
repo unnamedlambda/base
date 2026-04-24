@@ -1,10 +1,10 @@
 mod csv_bench;
 mod cuda_bench;
+mod gpu_bench;
+mod gpu_iter_bench;
 mod harness;
 mod histogram_bench;
 mod json_bench;
-mod gpu_bench;
-mod gpu_iter_bench;
 mod matmul_bench;
 mod reduction_bench;
 mod regex_bench;
@@ -32,8 +32,7 @@ fn main() {
                 .with_writer(std::io::stderr)
                 .with_target(true)
                 .with_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("off")),
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off")),
                 ),
         )
         .init();
@@ -48,11 +47,15 @@ fn main() {
         match args[i].as_str() {
             "--bench" => {
                 i += 1;
-                if i < args.len() { bench = args[i].clone(); }
+                if i < args.len() {
+                    bench = args[i].clone();
+                }
             }
             "--rounds" => {
                 i += 1;
-                if i < args.len() { rounds = args[i].parse().unwrap_or(5); }
+                if i < args.len() {
+                    rounds = args[i].parse().unwrap_or(5);
+                }
             }
             "--help" | "-h" => {
                 print_usage();

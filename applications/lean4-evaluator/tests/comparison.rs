@@ -6,16 +6,17 @@ static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn get_lean4_eval_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/lean4-eval", manifest_dir, profile)
 }
 
 fn get_temp_files() -> (String, String) {
     let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    (
-        format!("/tmp/l4t{}.lean", id),
-        format!("/tmp/l4o{}", id),
-    )
+    (format!("/tmp/l4t{}.lean", id), format!("/tmp/l4o{}", id))
 }
 
 fn run_lean(code: &str, test_file: &str) -> String {

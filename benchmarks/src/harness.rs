@@ -10,7 +10,6 @@ pub struct BenchResult {
     pub verified: Option<bool>,
 }
 
-
 /// Run a Python script and return wall-clock time in ms, plus stdout.
 /// Returns None if python3 is not available or the script printed SKIP to stderr.
 pub fn run_python(script: &str, args: &[&str]) -> Option<(f64, String)> {
@@ -73,17 +72,26 @@ pub fn print_results(results: &[BenchResult], col_a: &str, col_b: &str) {
     println!();
     println!(
         "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
-        "Benchmark", col_a, col_b, "Base", "Check",
-        name_w = name_w, col_w = col_w
+        "Benchmark",
+        col_a,
+        col_b,
+        "Base",
+        "Check",
+        name_w = name_w,
+        col_w = col_w
     );
     println!("{}", "-".repeat(name_w + col_w * 3 + 6 + 4));
 
     for r in results {
         println!(
             "{:<name_w$} {:>col_w$} {:>col_w$} {:>col_w$} {:>6}",
-            r.name, fmt_ms(r.col_a_ms), fmt_ms(r.col_b_ms),
-            fmt_ms(Some(r.base_ms)), fmt_check(r.verified),
-            name_w = name_w, col_w = col_w
+            r.name,
+            fmt_ms(r.col_a_ms),
+            fmt_ms(r.col_b_ms),
+            fmt_ms(Some(r.base_ms)),
+            fmt_check(r.verified),
+            name_w = name_w,
+            col_w = col_w
         );
     }
     println!();
@@ -105,17 +113,24 @@ pub fn print_results_2col(results: &[BenchResult], col_a: &str) {
     println!();
     println!(
         "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-        "Benchmark", col_a, "Base", "Check",
-        name_w = name_w, col_w = col_w
+        "Benchmark",
+        col_a,
+        "Base",
+        "Check",
+        name_w = name_w,
+        col_w = col_w
     );
     println!("{}", "-".repeat(name_w + col_w * 2 + 6 + 3));
 
     for r in results {
         println!(
             "{:<name_w$} {:>col_w$} {:>col_w$} {:>6}",
-            r.name, fmt_ms(r.col_a_ms),
-            fmt_ms(Some(r.base_ms)), fmt_check(r.verified),
-            name_w = name_w, col_w = col_w
+            r.name,
+            fmt_ms(r.col_a_ms),
+            fmt_ms(Some(r.base_ms)),
+            fmt_check(r.verified),
+            name_w = name_w,
+            col_w = col_w
         );
     }
     println!();

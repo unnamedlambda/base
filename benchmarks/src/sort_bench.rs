@@ -1,8 +1,7 @@
-use base::{BaseConfig, Algorithm};
-use crate::harness::{self, BenchResult, format_count};
+use crate::harness::{self, format_count, BenchResult};
+use base::{Algorithm, BaseConfig};
 
-const SORT_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/sort_algorithm.bin"));
+const SORT_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sort_algorithm.bin"));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(SORT_ALGORITHM).expect("Failed to deserialize sort algorithm")
@@ -40,12 +39,21 @@ fn rust_sort(values: &[i32]) -> Vec<i32> {
 
 fn verify_sorted(actual: &[i32], expected: &[i32], label: &str, impl_name: &str) -> bool {
     if actual.len() != expected.len() {
-        eprintln!("  VERIFY FAIL [{}] {}: length mismatch: {} vs {}", label, impl_name, actual.len(), expected.len());
+        eprintln!(
+            "  VERIFY FAIL [{}] {}: length mismatch: {} vs {}",
+            label,
+            impl_name,
+            actual.len(),
+            expected.len()
+        );
         return false;
     }
     for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
         if a != e {
-            eprintln!("  VERIFY FAIL [{}] {}: element {} got {}, expected {}", label, impl_name, i, a, e);
+            eprintln!(
+                "  VERIFY FAIL [{}] {}: element {} got {}, expected {}",
+                label, impl_name, i, a, e
+            );
             return false;
         }
     }
@@ -64,7 +72,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let values = generate_data(n);
         let expected = rust_sort(&values);
         let payload = build_payload(&values);
-        let out_size = n * 4 * 2;  // 2x: first half = sorted result, second half = radix temp
+        let out_size = n * 4 * 2; // 2x: first half = sorted result, second half = radix temp
         let mut out_buf = vec![0u8; out_size];
 
         // Rust

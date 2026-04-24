@@ -3,7 +3,11 @@ use std::process::Command;
 
 fn get_compress_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/compress", manifest_dir, profile)
 }
 
@@ -21,7 +25,10 @@ fn run_compress(input_path: &str, work_dir: &std::path::Path) -> String {
         panic!("Compress failed on {}: {}", input_path, stderr);
     }
 
-    work_dir.join("compress_output.lz4").to_string_lossy().to_string()
+    work_dir
+        .join("compress_output.lz4")
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Decompress using system lz4 tool, returns decompressed bytes
@@ -47,10 +54,7 @@ fn roundtrip_test(input_data: &[u8], name: &str) {
     fs::write(&input_path, input_data).unwrap();
 
     // Compress
-    let lz4_path = run_compress(
-        input_path.to_str().unwrap(),
-        tmpdir.path(),
-    );
+    let lz4_path = run_compress(input_path.to_str().unwrap(), tmpdir.path());
 
     // Verify the output is a valid LZ4 frame (starts with magic number)
     let lz4_data = fs::read(&lz4_path).unwrap();
@@ -69,10 +73,7 @@ fn roundtrip_test(input_data: &[u8], name: &str) {
 
     // Decompress with lz4
     let decompressed_path = tmpdir.path().join("decompressed.bin");
-    let decompressed = run_lz4_decompress(
-        &lz4_path,
-        decompressed_path.to_str().unwrap(),
-    );
+    let decompressed = run_lz4_decompress(&lz4_path, decompressed_path.to_str().unwrap());
 
     // Verify identity
     assert_eq!(
@@ -92,7 +93,10 @@ fn roundtrip_test(input_data: &[u8], name: &str) {
 
 #[test]
 fn test_roundtrip_small_text() {
-    roundtrip_test(b"Hello, World! This is a test of LZ4 compression.\n", "small_text");
+    roundtrip_test(
+        b"Hello, World! This is a test of LZ4 compression.\n",
+        "small_text",
+    );
 }
 
 #[test]
@@ -215,8 +219,12 @@ fn test_roundtrip_binary_with_nulls() {
     // Data with lots of null bytes interspersed
     let mut data = vec![0u8; 4096];
     for i in 0..data.len() {
-        if i % 7 == 0 { data[i] = 0xFF; }
-        if i % 13 == 0 { data[i] = (i & 0xFF) as u8; }
+        if i % 7 == 0 {
+            data[i] = 0xFF;
+        }
+        if i % 13 == 0 {
+            data[i] = (i & 0xFF) as u8;
+        }
     }
     roundtrip_test(&data, "binary_with_nulls");
 }

@@ -1,22 +1,23 @@
-use std::{pin::Pin, sync::{Arc, Once}, time::Duration};
+pub use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
+use arrow_schema::{DataType, Field, Schema};
+pub use base_types::{
+    Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType,
+};
 use std::sync::atomic::Ordering;
+use std::{
+    pin::Pin,
+    sync::{Arc, Once},
+    time::Duration,
+};
 use tracing::{debug, info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
-pub use base_types::{Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType};
-pub use arrow_array::RecordBatch;
-use arrow_array::{ArrayRef, Int64Array, Float64Array, StringArray};
-use arrow_schema::{Schema, Field, DataType};
 
 mod units;
 
 use crate::units::{
-    compile_cranelift_ir,
-    cranelift_unit_task_mailbox,
-    init_ht_context,
-    load_sized,
-    order_from_u32,
-    CraneliftHashTableContext,
-    Mailbox, SharedMemory, THREAD_COMPILED_FNS,
+    compile_cranelift_ir, cranelift_unit_task_mailbox, init_ht_context, load_sized, order_from_u32,
+    CraneliftHashTableContext, Mailbox, SharedMemory, THREAD_COMPILED_FNS,
 };
 
 #[derive(Debug)]
@@ -42,10 +43,18 @@ impl Base {
         let needed = config.memory_size.max(config.initial_memory.len());
         let mut memory = config.initial_memory;
         memory.resize(needed, 0);
-        Self::from_parts(config.cranelift_ir, config.context_offset, memory.into_boxed_slice())
+        Self::from_parts(
+            config.cranelift_ir,
+            config.context_offset,
+            memory.into_boxed_slice(),
+        )
     }
 
-    fn from_parts(cranelift_ir: String, context_offset: usize, memory: Box<[u8]>) -> Result<Self, Error> {
+    fn from_parts(
+        cranelift_ir: String,
+        context_offset: usize,
+        memory: Box<[u8]>,
+    ) -> Result<Self, Error> {
         let _span = info_span!("base_new", memory_size = memory.len()).entered();
         info!("creating Base instance");
 
@@ -54,8 +63,7 @@ impl Base {
         let shared = Arc::new(SharedMemory::new(mem_ptr));
 
         let (module, clif_fns) = if !cranelift_ir.is_empty() {
-            let (module, fns) = compile_cranelift_ir(&cranelift_ir)
-                .map_err(Error::ClifParse)?;
+            let (module, fns) = compile_cranelift_ir(&cranelift_ir).map_err(Error::ClifParse)?;
             (Some(module), Some(fns))
         } else {
             (None, None)
@@ -76,18 +84,36 @@ impl Base {
         };
 
         info!("Base instance created");
-        Ok(Base { memory, mem_ptr, shared, clif_fns, _module: module, ht_ctx_ptr })
+        Ok(Base {
+            memory,
+            mem_ptr,
+            shared,
+            clif_fns,
+            _module: module,
+            ht_ctx_ptr,
+        })
     }
 
-    pub fn execute(&mut self, algorithm: &Algorithm, data: &[u8]) -> Result<Vec<RecordBatch>, Error> {
+    pub fn execute(
+        &mut self,
+        algorithm: &Algorithm,
+        data: &[u8],
+    ) -> Result<Vec<RecordBatch>, Error> {
         self.execute_into(algorithm, data, &mut [])
     }
 
-    pub fn execute_into(&mut self, algorithm: &Algorithm, data: &[u8], out: &mut [u8]) -> Result<Vec<RecordBatch>, Error> {
-        let _span = info_span!("execute",
+    pub fn execute_into(
+        &mut self,
+        algorithm: &Algorithm,
+        data: &[u8],
+        out: &mut [u8],
+    ) -> Result<Vec<RecordBatch>, Error> {
+        let _span = info_span!(
+            "execute",
             cranelift_units = algorithm.cranelift_units,
             actions_count = algorithm.actions.len(),
-        ).entered();
+        )
+        .entered();
         info!("starting execution");
 
         let actions = algorithm.actions.clone();
@@ -102,18 +128,12 @@ impl Base {
                 self.memory[8..].as_mut_ptr() as *mut *const u8,
                 data.as_ptr(),
             );
-            std::ptr::write_unaligned(
-                self.memory[16..].as_mut_ptr() as *mut usize,
-                data.len(),
-            );
+            std::ptr::write_unaligned(self.memory[16..].as_mut_ptr() as *mut usize, data.len());
             std::ptr::write_unaligned(
                 self.memory[24..].as_mut_ptr() as *mut *mut u8,
                 out.as_mut_ptr(),
             );
-            std::ptr::write_unaligned(
-                self.memory[32..].as_mut_ptr() as *mut usize,
-                out.len(),
-            );
+            std::ptr::write_unaligned(self.memory[32..].as_mut_ptr() as *mut usize, out.len());
         }
 
         let cranelift_mailboxes: Vec<_> = (0..cranelift_units)
@@ -167,9 +187,14 @@ impl Base {
                 }
 
                 Kind::ConditionalJump => {
-                    let check_size = if action.size == 0 { 8 } else { action.size as usize };
-                    let cond_bytes =
-                        unsafe { shared.read(action.src as usize + action.offset as usize, check_size) };
+                    let check_size = if action.size == 0 {
+                        8
+                    } else {
+                        action.size as usize
+                    };
+                    let cond_bytes = unsafe {
+                        shared.read(action.src as usize + action.offset as usize, check_size)
+                    };
                     let cond_nonzero = cond_bytes.iter().take(check_size).any(|&b| b != 0);
                     debug!(pc, cond_nonzero, target = action.dst, "conditional_jump");
 
@@ -184,9 +209,8 @@ impl Base {
                     let desc_start = action.src;
                     let count = action.size;
                     let flag = action.offset;
-                    let unit_id = (action.dst as usize).min(
-                        cranelift_mailboxes.len().saturating_sub(1),
-                    );
+                    let unit_id =
+                        (action.dst as usize).min(cranelift_mailboxes.len().saturating_sub(1));
 
                     unsafe {
                         shared.store_u64(flag as usize, 0, Ordering::Release);
@@ -204,7 +228,8 @@ impl Base {
                 Kind::Wait => {
                     debug!(pc, flag_addr = action.dst, "wait_begin");
                     loop {
-                        let flag = unsafe { shared.load_u64(action.dst as usize, Ordering::Acquire) };
+                        let flag =
+                            unsafe { shared.load_u64(action.dst as usize, Ordering::Acquire) };
                         if flag != 0 {
                             break;
                         }
@@ -219,9 +244,18 @@ impl Base {
                     let order = order_from_u32((action.offset >> 1) & 0x7);
                     let size = if action.size == 0 { 8 } else { action.size };
                     let expected = unsafe { load_sized(shared, action.src as usize, size, order) };
-                    debug!(pc, dst = action.dst, expected, invert, ?order, size, "wait_until_begin");
+                    debug!(
+                        pc,
+                        dst = action.dst,
+                        expected,
+                        invert,
+                        ?order,
+                        size,
+                        "wait_until_begin"
+                    );
                     loop {
-                        let current = unsafe { load_sized(shared, action.dst as usize, size, order) };
+                        let current =
+                            unsafe { load_sized(shared, action.dst as usize, size, order) };
                         let equal = current == expected;
                         if equal != invert {
                             break;
@@ -246,7 +280,10 @@ impl Base {
                     };
                     let status_addr = action.offset as usize;
                     let per_timeout_ms = action.size as u64;
-                    debug!(pc, wake_addr, expected, status_addr, per_timeout_ms, "park_begin");
+                    debug!(
+                        pc,
+                        wake_addr, expected, status_addr, per_timeout_ms, "park_begin"
+                    );
 
                     let park_start = std::time::Instant::now();
                     let per_timeout = if per_timeout_ms > 0 {
@@ -296,7 +333,13 @@ impl Base {
                         let result = unsafe { shared.cas64(wake_addr, current, new_val) };
                         if result == current {
                             if action.offset != 0 {
-                                unsafe { shared.store_u64(action.offset as usize, new_val, Ordering::Release) };
+                                unsafe {
+                                    shared.store_u64(
+                                        action.offset as usize,
+                                        new_val,
+                                        Ordering::Release,
+                                    )
+                                };
                             }
                             break;
                         }
@@ -350,8 +393,7 @@ pub fn init_tracing() {
                     .with_target(true)
                     .with_thread_ids(true)
                     .with_filter(
-                        EnvFilter::try_from_default_env()
-                            .unwrap_or_else(|_| EnvFilter::new("off")),
+                        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off")),
                     ),
             )
             .init();
@@ -363,7 +405,8 @@ fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<Rec
     for schema in schemas {
         let row_count = if schema.row_count_offset + 8 <= memory.len() {
             let bytes: [u8; 8] = memory[schema.row_count_offset..schema.row_count_offset + 8]
-                .try_into().unwrap();
+                .try_into()
+                .unwrap();
             u64::from_le_bytes(bytes) as usize
         } else {
             0
@@ -410,7 +453,8 @@ fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<Rec
                     let mut strings = Vec::with_capacity(row_count);
                     let total_byte_len = if col.len_offset + 8 <= memory.len() {
                         let bytes: [u8; 8] = memory[col.len_offset..col.len_offset + 8]
-                            .try_into().unwrap();
+                            .try_into()
+                            .unwrap();
                         u64::from_le_bytes(bytes) as usize
                     } else {
                         0

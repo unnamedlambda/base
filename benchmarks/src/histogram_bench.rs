@@ -1,6 +1,6 @@
-use base::{BaseConfig, Algorithm};
+use crate::harness::{self, format_count, BenchResult};
+use base::{Algorithm, BaseConfig};
 use rayon::prelude::*;
-use crate::harness::{self, BenchResult, format_count};
 
 // ---------------------------------------------------------------------------
 // Parallel Histogram Benchmark
@@ -19,7 +19,11 @@ const HIST1_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hist1_a
 const HIST4_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hist4_algorithm.bin"));
 
 fn load_algorithm(workers: usize) -> (BaseConfig, Algorithm) {
-    let data = if workers == 1 { HIST1_ALGORITHM } else { HIST4_ALGORITHM };
+    let data = if workers == 1 {
+        HIST1_ALGORITHM
+    } else {
+        HIST4_ALGORITHM
+    };
     bincode::deserialize(data).expect("Failed to deserialize histogram algorithm")
 }
 
@@ -154,8 +158,15 @@ fn rayon_histogram(file_buf: &mut Vec<u8>, input_path: &str, output_path: &str, 
 
 fn read_result(path: &str) -> Option<Vec<u64>> {
     let bytes = std::fs::read(path).ok()?;
-    if bytes.len() != BINS * 8 { return None; }
-    Some(bytes.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect())
+    if bytes.len() != BINS * 8 {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(8)
+            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------

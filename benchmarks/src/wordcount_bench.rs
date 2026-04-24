@@ -1,10 +1,10 @@
-use base::{BaseConfig, Algorithm};
+use base::{Algorithm, BaseConfig};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult, format_count};
+use crate::harness::{self, format_count, BenchResult};
 
 const WC_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wc_algorithm.bin"));
 
@@ -13,11 +13,9 @@ fn load_algorithm() -> (BaseConfig, Algorithm) {
 }
 
 const VOCABULARY: &[&str] = &[
-    "the", "of", "and", "to", "in", "a", "is", "that",
-    "for", "it", "was", "on", "are", "as", "with", "his",
-    "they", "at", "be", "this", "from", "or", "had", "by",
-    "not", "but", "some", "what", "we", "can", "out", "all",
-    "your", "when", "up", "use", "how", "said", "an", "each",
+    "the", "of", "and", "to", "in", "a", "is", "that", "for", "it", "was", "on", "are", "as",
+    "with", "his", "they", "at", "be", "this", "from", "or", "had", "by", "not", "but", "some",
+    "what", "we", "can", "out", "all", "your", "when", "up", "use", "how", "said", "an", "each",
 ];
 
 fn generate_text(path: &str, num_words: usize) -> HashMap<String, u64> {

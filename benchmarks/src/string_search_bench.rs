@@ -1,9 +1,9 @@
-use base::{BaseConfig, Algorithm};
+use base::{Algorithm, BaseConfig};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult, format_count};
+use crate::harness::{self, format_count, BenchResult};
 
 const STRSEARCH_ALGORITHM: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/strsearch_algorithm.bin"));
@@ -13,11 +13,9 @@ fn load_algorithm() -> (BaseConfig, Algorithm) {
 }
 
 const VOCABULARY: &[&str] = &[
-    "the", "of", "and", "to", "in", "a", "is", "that",
-    "for", "it", "was", "on", "are", "as", "with", "his",
-    "they", "at", "be", "this", "from", "or", "had", "by",
-    "not", "but", "some", "what", "we", "can", "out", "all",
-    "your", "when", "up", "use", "how", "said", "an", "each",
+    "the", "of", "and", "to", "in", "a", "is", "that", "for", "it", "was", "on", "are", "as",
+    "with", "his", "they", "at", "be", "this", "from", "or", "had", "by", "not", "but", "some",
+    "what", "we", "can", "out", "all", "your", "when", "up", "use", "how", "said", "an", "each",
 ];
 
 const PATTERN: &str = "that";
@@ -145,7 +143,10 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
                 }
                 Some(count == expected)
             } else {
-                eprintln!("WARNING: Could not parse base strsearch output: {:?}", content.trim());
+                eprintln!(
+                    "WARNING: Could not parse base strsearch output: {:?}",
+                    content.trim()
+                );
                 Some(false)
             }
         } else {

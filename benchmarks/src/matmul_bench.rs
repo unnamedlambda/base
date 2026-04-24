@@ -1,5 +1,5 @@
-use base::{BaseConfig, Algorithm};
 use crate::harness::{self, BenchResult};
+use base::{Algorithm, BaseConfig};
 
 // ---------------------------------------------------------------------------
 // Matrix Multiplication Benchmark
@@ -11,8 +11,7 @@ use crate::harness::{self, BenchResult};
 
 type B = burn::backend::NdArray<f32>;
 
-const MATMUL_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/matmul_algorithm.bin"));
+const MATMUL_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/matmul_algorithm.bin"));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(MATMUL_ALGORITHM).expect("Failed to deserialize matmul algorithm")
@@ -48,14 +47,8 @@ fn rust_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> f64 {
 fn burn_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> f64 {
     use burn::tensor::{Tensor, TensorData};
     let device = Default::default();
-    let a_t = Tensor::<B, 2>::from_data(
-        TensorData::new(a.to_vec(), [m, k]),
-        &device,
-    );
-    let b_t = Tensor::<B, 2>::from_data(
-        TensorData::new(b.to_vec(), [k, n]),
-        &device,
-    );
+    let a_t = Tensor::<B, 2>::from_data(TensorData::new(a.to_vec(), [m, k]), &device);
+    let b_t = Tensor::<B, 2>::from_data(TensorData::new(b.to_vec(), [k, n]), &device);
     let c_t = a_t.matmul(b_t);
     c_t.sum().into_scalar() as f64
 }
@@ -136,9 +129,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let base_result = f64::from_le_bytes(out_buf);
         let rust_check = rust_matmul(a, b, n, n, n);
         let burn_check = burn_matmul(a, b, n, n, n);
-        let verified = Some(
-            close_enough(rust_check, burn_check) && close_enough(rust_check, base_result),
-        );
+        let verified =
+            Some(close_enough(rust_check, burn_check) && close_enough(rust_check, base_result));
 
         results.push(BenchResult {
             name: format!("MatMul ({}x{})", n, n),

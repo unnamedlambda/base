@@ -4,7 +4,11 @@ use std::process::Command;
 
 fn get_fft_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/fft", manifest_dir, profile)
 }
 
@@ -86,10 +90,11 @@ fn assert_complex_eq(got: &[(f32, f32)], expected: &[(f32, f32)], tol: f32, name
     );
 
     // Compute max magnitude for relative error
-    let max_mag = expected.iter()
+    let max_mag = expected
+        .iter()
         .map(|&(r, i)| (r * r + i * i).sqrt())
         .fold(0.0f32, f32::max)
-        .max(1.0);  // avoid division by zero
+        .max(1.0); // avoid division by zero
 
     for (idx, (&(gr, gi), &(er, ei))) in got.iter().zip(expected.iter()).enumerate() {
         let dr = (gr - er).abs();
@@ -99,7 +104,14 @@ fn assert_complex_eq(got: &[(f32, f32)], expected: &[(f32, f32)], tol: f32, name
         assert!(
             rel_err < tol,
             "{}: index {}: got ({}, {}), expected ({}, {}), rel_err = {} (tol = {})",
-            name, idx, gr, gi, er, ei, rel_err, tol
+            name,
+            idx,
+            gr,
+            gi,
+            er,
+            ei,
+            rel_err,
+            tol
         );
     }
 }
@@ -193,7 +205,10 @@ fn test_n64() {
     let input: Vec<(f32, f32)> = (0..64)
         .map(|k| {
             let t = k as f32 / 64.0;
-            ((2.0 * PI * 3.0 * t).cos() + 0.5 * (2.0 * PI * 7.0 * t).sin(), 0.0)
+            (
+                (2.0 * PI * 3.0 * t).cos() + 0.5 * (2.0 * PI * 7.0 * t).sin(),
+                0.0,
+            )
         })
         .collect();
     test_fft(&input, 1e-3, "n64_multi_freq");
@@ -256,7 +271,10 @@ fn test_n512() {
     let input: Vec<(f32, f32)> = (0..512)
         .map(|k| {
             let t = k as f32 / 512.0;
-            ((2.0 * PI * 20.0 * t).sin() + 0.7 * (2.0 * PI * 100.0 * t).cos(), 0.0)
+            (
+                (2.0 * PI * 20.0 * t).sin() + 0.7 * (2.0 * PI * 100.0 * t).cos(),
+                0.0,
+            )
         })
         .collect();
     test_fft(&input, 1e-2, "n512_two_freq");
@@ -329,13 +347,13 @@ fn test_known_n8_ramp() {
     let sqrt2 = std::f32::consts::SQRT_2;
     let expected = vec![
         (36.0, 0.0),
-        (-4.0, 4.0 + 4.0 * sqrt2),       //  9.65685...
+        (-4.0, 4.0 + 4.0 * sqrt2), //  9.65685...
         (-4.0, 4.0),
-        (-4.0, -4.0 + 4.0 * sqrt2),      //  1.65685...
+        (-4.0, -4.0 + 4.0 * sqrt2), //  1.65685...
         (-4.0, 0.0),
-        (-4.0, 4.0 - 4.0 * sqrt2),       // -1.65685...
+        (-4.0, 4.0 - 4.0 * sqrt2), // -1.65685...
         (-4.0, -4.0),
-        (-4.0, -(4.0 + 4.0 * sqrt2)),    // -9.65685...
+        (-4.0, -(4.0 + 4.0 * sqrt2)), // -9.65685...
     ];
     assert_complex_eq(&got, &expected, 1e-4, "known_n8_ramp");
 }
@@ -351,7 +369,8 @@ fn test_conjugate_symmetry() {
         .collect();
 
     let output = run_base_fft(&input);
-    let max_mag = output.iter()
+    let max_mag = output
+        .iter()
         .map(|&(r, i)| (r * r + i * i).sqrt())
         .fold(0.0f32, f32::max)
         .max(1.0);
@@ -365,7 +384,13 @@ fn test_conjugate_symmetry() {
         assert!(
             rel_err < 1e-4,
             "Conjugate symmetry: X[{}]=({},{}), conj(X[{}])=({},{}), rel_err={}",
-            k, xr, xi, n - k, yr, -yi, rel_err
+            k,
+            xr,
+            xi,
+            n - k,
+            yr,
+            -yi,
+            rel_err
         );
     }
 }
@@ -382,15 +407,14 @@ fn test_shift_theorem() {
         .collect();
 
     // Circular shift
-    let shifted: Vec<(f32, f32)> = (0..n)
-        .map(|i| input[(i + n - m) % n])
-        .collect();
+    let shifted: Vec<(f32, f32)> = (0..n).map(|i| input[(i + n - m) % n]).collect();
 
     let fft_orig = run_base_fft(&input);
     let fft_shifted = run_base_fft(&shifted);
 
     // Verify: fft_shifted[k] ≈ fft_orig[k] * exp(-2πi*k*m/N)
-    let max_mag = fft_orig.iter()
+    let max_mag = fft_orig
+        .iter()
         .map(|&(r, i)| (r * r + i * i).sqrt())
         .fold(0.0f32, f32::max)
         .max(1.0);
@@ -408,7 +432,12 @@ fn test_shift_theorem() {
         assert!(
             rel_err < 1e-3,
             "Shift theorem: k={}, shifted=({},{}), expected=({},{}), rel_err={}",
-            k, sr, si, er, ei, rel_err
+            k,
+            sr,
+            si,
+            er,
+            ei,
+            rel_err
         );
     }
 }
@@ -421,12 +450,14 @@ fn test_parseval() {
         .collect();
     let n = input.len();
 
-    let time_energy: f64 = input.iter()
+    let time_energy: f64 = input
+        .iter()
         .map(|&(r, i)| (r as f64) * (r as f64) + (i as f64) * (i as f64))
         .sum();
 
     let output = run_base_fft(&input);
-    let freq_energy: f64 = output.iter()
+    let freq_energy: f64 = output
+        .iter()
         .map(|&(r, i)| (r as f64) * (r as f64) + (i as f64) * (i as f64))
         .sum::<f64>()
         / (n as f64);
@@ -451,7 +482,9 @@ fn test_linearity() {
     let x: Vec<(f32, f32)> = (0..n).map(|k| ((k as f32 * 0.2).sin(), 0.0)).collect();
     let y: Vec<(f32, f32)> = (0..n).map(|k| (0.0, (k as f32 * 0.3).cos())).collect();
 
-    let combined: Vec<(f32, f32)> = x.iter().zip(y.iter())
+    let combined: Vec<(f32, f32)> = x
+        .iter()
+        .zip(y.iter())
         .map(|(&(xr, xi), &(yr, yi))| (a * xr + b * yr, a * xi + b * yi))
         .collect();
 
@@ -459,7 +492,9 @@ fn test_linearity() {
     let fft_y = run_base_fft(&y);
     let fft_combined = run_base_fft(&combined);
 
-    let expected: Vec<(f32, f32)> = fft_x.iter().zip(fft_y.iter())
+    let expected: Vec<(f32, f32)> = fft_x
+        .iter()
+        .zip(fft_y.iter())
         .map(|(&(xr, xi), &(yr, yi))| (a * xr + b * yr, a * xi + b * yi))
         .collect();
 
@@ -469,10 +504,14 @@ fn test_linearity() {
 // --- External reference comparison (numpy) ---
 
 fn run_numpy_fft(input: &[(f32, f32)]) -> Vec<(f32, f32)> {
-    let input_json: Vec<String> = input.iter()
+    let input_json: Vec<String> = input
+        .iter()
         .map(|&(r, i)| {
-            if i == 0.0 { format!("{}", r) }
-            else { format!("complex({},{})", r, i) }
+            if i == 0.0 {
+                format!("{}", r)
+            } else {
+                format!("complex({},{})", r, i)
+            }
         })
         .collect();
     let script = format!(
@@ -486,10 +525,15 @@ fn run_numpy_fft(input: &[(f32, f32)]) -> Vec<(f32, f32)> {
         .expect("python3 not found");
     assert!(output.status.success(), "numpy FFT failed");
     let stdout = String::from_utf8(output.stdout).unwrap();
-    stdout.trim().split(' ')
+    stdout
+        .trim()
+        .split(' ')
         .map(|pair| {
             let parts: Vec<&str> = pair.split(',').collect();
-            (parts[0].parse::<f32>().unwrap(), parts[1].parse::<f32>().unwrap())
+            (
+                parts[0].parse::<f32>().unwrap(),
+                parts[1].parse::<f32>().unwrap(),
+            )
         })
         .collect()
 }

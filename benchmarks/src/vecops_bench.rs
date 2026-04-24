@@ -1,5 +1,5 @@
-use base::{BaseConfig, Algorithm};
-use crate::harness::{self, BenchResult, gen_floats, format_count};
+use crate::harness::{self, format_count, gen_floats, BenchResult};
+use base::{Algorithm, BaseConfig};
 
 // ---------------------------------------------------------------------------
 // Vector Addition Benchmark
@@ -11,8 +11,7 @@ use crate::harness::{self, BenchResult, gen_floats, format_count};
 
 type B = burn::backend::NdArray<f32>;
 
-const VECOPS_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/vecops_algorithm.bin"));
+const VECOPS_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vecops_algorithm.bin"));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(VECOPS_ALGORITHM).expect("Failed to deserialize vecops algorithm")
@@ -108,9 +107,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let base_result = f64::from_le_bytes(out_buf);
         let rust_check = rust_vec_add(&a, &b);
         let burn_check = burn_vec_add(&a, &b);
-        let verified = Some(
-            close_enough(rust_check, burn_check) && close_enough(rust_check, base_result),
-        );
+        let verified =
+            Some(close_enough(rust_check, burn_check) && close_enough(rust_check, base_result));
 
         results.push(BenchResult {
             name: format!("VecAdd ({})", format_count(n)),

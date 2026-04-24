@@ -1,9 +1,9 @@
-use base::{BaseConfig, Algorithm};
+use base::{Algorithm, BaseConfig};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult, format_count};
+use crate::harness::{self, format_count, BenchResult};
 
 const CSV_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csv_algorithm.bin"));
 
@@ -28,7 +28,10 @@ fn generate_csv(path: &str, num_rows: usize) -> i64 {
         writeln!(
             f,
             "{},First{},Last{},e{}@co.com,Dept{},{}",
-            i, i, i, i,
+            i,
+            i,
+            i,
+            i,
             i % 10,
             salary
         )
@@ -81,7 +84,9 @@ fn rust_csv_sum(path: &str) -> i64 {
 }
 
 pub fn run(iterations: usize) -> Vec<BenchResult> {
-    let sizes = [10_000, 100_000, 500_000, 1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000];
+    let sizes = [
+        10_000, 100_000, 500_000, 1_000_000, 2_000_000, 3_000_000, 4_000_000, 5_000_000,
+    ];
     let mut results = Vec::new();
 
     // JIT compile once
@@ -101,10 +106,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
                 Some((ms, stdout)) => {
                     if let Ok(sum) = stdout.parse::<i64>() {
                         if sum != expected {
-                            eprintln!(
-                                "WARNING: Python sum {} != expected {}",
-                                sum, expected
-                            );
+                            eprintln!("WARNING: Python sum {} != expected {}", sum, expected);
                         }
                     }
                     ms
@@ -119,7 +121,10 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             let sum = rust_csv_sum(&csv_path);
             let ms = start.elapsed().as_secs_f64() * 1000.0;
             if sum != expected {
-                eprintln!("WARNING: Rust sum {} != expected {} (n={})", sum, expected, n);
+                eprintln!(
+                    "WARNING: Rust sum {} != expected {} (n={})",
+                    sum, expected, n
+                );
             }
             ms
         });
@@ -140,7 +145,10 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let verified = if let Ok(content) = fs::read_to_string(&output_path) {
             if let Ok(sum) = content.trim().parse::<i64>() {
                 if sum != expected {
-                    eprintln!("WARNING: Base (CL) sum {} != expected {} (n={})", sum, expected, n);
+                    eprintln!(
+                        "WARNING: Base (CL) sum {} != expected {} (n={})",
+                        sum, expected, n
+                    );
                 }
                 Some(sum == expected)
             } else {

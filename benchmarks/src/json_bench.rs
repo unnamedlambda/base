@@ -1,9 +1,9 @@
-use base::{BaseConfig, Algorithm};
+use base::{Algorithm, BaseConfig};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult, format_count};
+use crate::harness::{self, format_count, BenchResult};
 
 const JSON_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/json_algorithm.bin"));
 
@@ -133,11 +133,17 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let verified = if let Ok(content) = fs::read_to_string(&output_path) {
             if let Ok(sum) = content.trim().parse::<i64>() {
                 if sum != expected {
-                    eprintln!("WARNING: Base JSON sum {} != expected {} (n={})", sum, expected, n);
+                    eprintln!(
+                        "WARNING: Base JSON sum {} != expected {} (n={})",
+                        sum, expected, n
+                    );
                 }
                 Some(sum == expected)
             } else {
-                eprintln!("WARNING: Could not parse base JSON output: {:?}", content.trim());
+                eprintln!(
+                    "WARNING: Could not parse base JSON output: {:?}",
+                    content.trim()
+                );
                 Some(false)
             }
         } else {

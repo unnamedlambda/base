@@ -1,5 +1,5 @@
-use base::{BaseConfig, Algorithm};
-use crate::harness::{self, BenchResult, gen_floats, format_count};
+use crate::harness::{self, format_count, gen_floats, BenchResult};
+use base::{Algorithm, BaseConfig};
 
 // ---------------------------------------------------------------------------
 // Sum Reduction Benchmark
@@ -26,10 +26,7 @@ fn burn_sum(data: &[f32]) -> f64 {
     use burn::tensor::{Tensor, TensorData};
     let n = data.len();
     let device = Default::default();
-    let t = Tensor::<B, 1>::from_data(
-        TensorData::new(data.to_vec(), [n]),
-        &device,
-    );
+    let t = Tensor::<B, 1>::from_data(TensorData::new(data.to_vec(), [n]), &device);
     t.sum().into_scalar() as f64
 }
 
@@ -97,9 +94,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let base_result = f64::from_le_bytes(out_buf);
         let rust_check = rust_sum(&data);
         let burn_check = burn_sum(&data);
-        let verified = Some(
-            close_enough(rust_check, burn_check) && close_enough(rust_check, base_result),
-        );
+        let verified =
+            Some(close_enough(rust_check, burn_check) && close_enough(rust_check, base_result));
 
         results.push(BenchResult {
             name: format!("Sum ({})", format_count(n)),

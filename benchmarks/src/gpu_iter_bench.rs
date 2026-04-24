@@ -1,5 +1,5 @@
-use base::{BaseConfig, Algorithm};
 use crate::harness::{self, BenchResult};
+use base::{Algorithm, BaseConfig};
 
 // ---------------------------------------------------------------------------
 // Iterative GPU Benchmark: apply a trivial kernel N times to the same data.
@@ -19,7 +19,6 @@ const GPU_ITER_ALGORITHM: &[u8] =
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(GPU_ITER_ALGORITHM).expect("Failed to deserialize gpu_iter algorithm")
 }
-
 
 const WGSL_SCALE: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<f32>;
@@ -56,7 +55,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
 }
 "#;
 
-use harness::{format_count, f32_sum};
+use harness::{f32_sum, format_count};
 
 fn gen_positive_floats(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;
@@ -102,30 +101,33 @@ fn cpu_expected_sum(data: &[f32], passes: usize) -> f64 {
 fn cached_burn_device() -> burn::backend::wgpu::WgpuDevice {
     use std::sync::{Arc, OnceLock};
     static DEVICE: OnceLock<burn::backend::wgpu::WgpuDevice> = OnceLock::new();
-    DEVICE.get_or_init(|| {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        }))
-        .expect("No GPU adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                required_features: adapter.features(),
-                required_limits: adapter.limits(),
-                ..Default::default()
-            },
-            None,
-        ))
-        .expect("Failed to create device");
-        let setup = burn::backend::wgpu::WgpuSetup {
-            instance: Arc::new(instance),
-            adapter: Arc::new(adapter),
-            device: Arc::new(device),
-            queue: Arc::new(queue),
-        };
-        burn::backend::wgpu::init_device(setup, Default::default())
-    }).clone()
+    DEVICE
+        .get_or_init(|| {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    ..Default::default()
+                }))
+                .expect("No GPU adapter");
+            let (device, queue) = pollster::block_on(adapter.request_device(
+                &wgpu::DeviceDescriptor {
+                    required_features: adapter.features(),
+                    required_limits: adapter.limits(),
+                    ..Default::default()
+                },
+                None,
+            ))
+            .expect("Failed to create device");
+            let setup = burn::backend::wgpu::WgpuSetup {
+                instance: Arc::new(instance),
+                adapter: Arc::new(adapter),
+                device: Arc::new(device),
+                queue: Arc::new(queue),
+            };
+            burn::backend::wgpu::init_device(setup, Default::default())
+        })
+        .clone()
 }
 
 fn cached_wgpu_device() -> (std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Queue>) {
@@ -138,11 +140,9 @@ fn cached_wgpu_device() -> (std::sync::Arc<wgpu::Device>, std::sync::Arc<wgpu::Q
             ..Default::default()
         }))
         .expect("No GPU adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor::default(),
-            None,
-        ))
-        .expect("Failed to create device");
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+                .expect("Failed to create device");
         std::mem::forget(instance);
         std::mem::forget(adapter);
         (Arc::new(device), Arc::new(queue))
@@ -257,48 +257,84 @@ fn wgpu_iterative(data: &[f32], passes: usize) -> f64 {
     let sums_bytes = (reduce_wgs as u64) * 4;
 
     let sums_buf = device.create_buffer(&BufferDescriptor {
-        label: Some("Sums"), size: sums_bytes,
-        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC, mapped_at_creation: false,
+        label: Some("Sums"),
+        size: sums_bytes,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
     });
     let reduce_staging = device.create_buffer(&BufferDescriptor {
-        label: Some("ReduceStaging"), size: sums_bytes,
-        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ, mapped_at_creation: false,
+        label: Some("ReduceStaging"),
+        size: sums_bytes,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
     });
 
     let reduce_shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("Reduce"), source: ShaderSource::Wgsl(WGSL_REDUCE.into()),
+        label: Some("Reduce"),
+        source: ShaderSource::Wgsl(WGSL_REDUCE.into()),
     });
     let reduce_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: None,
         entries: &[
-            BindGroupLayoutEntry { binding: 0, visibility: ShaderStages::COMPUTE,
-                ty: BindingType::Buffer { ty: BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false, min_binding_size: None }, count: None },
-            BindGroupLayoutEntry { binding: 1, visibility: ShaderStages::COMPUTE,
-                ty: BindingType::Buffer { ty: BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false, min_binding_size: None }, count: None },
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     });
     let reduce_pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
         label: None,
         layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[&reduce_bgl], push_constant_ranges: &[],
+            label: None,
+            bind_group_layouts: &[&reduce_bgl],
+            push_constant_ranges: &[],
         })),
-        module: &reduce_shader, entry_point: Some("main"),
-        compilation_options: PipelineCompilationOptions::default(), cache: None,
+        module: &reduce_shader,
+        entry_point: Some("main"),
+        compilation_options: PipelineCompilationOptions::default(),
+        cache: None,
     });
     let reduce_bg = device.create_bind_group(&BindGroupDescriptor {
-        label: None, layout: &reduce_bgl,
+        label: None,
+        layout: &reduce_bgl,
         entries: &[
-            BindGroupEntry { binding: 0, resource: compute_buf.as_entire_binding() },
-            BindGroupEntry { binding: 1, resource: sums_buf.as_entire_binding() },
+            BindGroupEntry {
+                binding: 0,
+                resource: compute_buf.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: sums_buf.as_entire_binding(),
+            },
         ],
     });
 
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
-    { let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: None, timestamp_writes: None });
-      pass.set_pipeline(&reduce_pipeline); pass.set_bind_group(0, &reduce_bg, &[]);
-      pass.dispatch_workgroups(reduce_wgs, 1, 1); }
+    {
+        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&reduce_pipeline);
+        pass.set_bind_group(0, &reduce_bg, &[]);
+        pass.dispatch_workgroups(reduce_wgs, 1, 1);
+    }
     encoder.copy_buffer_to_buffer(&sums_buf, 0, &reduce_staging, 0, sums_bytes);
     queue.submit(Some(encoder.finish()));
 
@@ -307,7 +343,8 @@ fn wgpu_iterative(data: &[f32], passes: usize) -> f64 {
     device.poll(Maintain::Wait);
 
     let mapped = slice.get_mapped_range();
-    let sum: f64 = mapped.chunks_exact(4)
+    let sum: f64 = mapped
+        .chunks_exact(4)
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
         .sum();
     drop(mapped);
@@ -335,7 +372,6 @@ fn check_result(actual: f64, expected: f64, label: &str, impl_name: &str) -> boo
 // ---------------------------------------------------------------------------
 // Table printer
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Runner

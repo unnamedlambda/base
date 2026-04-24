@@ -3,7 +3,11 @@ use std::process::{Command, Stdio};
 
 fn get_cli_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/cli", manifest_dir, profile)
 }
 

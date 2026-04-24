@@ -1,9 +1,9 @@
-use base::{BaseConfig, Algorithm};
+use base::{Algorithm, BaseConfig};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::harness::{self, BenchResult, format_count};
+use crate::harness::{self, format_count, BenchResult};
 
 const REGEX_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/regex_algorithm.bin"));
 
@@ -12,11 +12,10 @@ fn load_algorithm() -> (BaseConfig, Algorithm) {
 }
 
 const VOCABULARY: &[&str] = &[
-    "the", "running", "of", "singing", "and", "to", "jumping", "in",
-    "a", "is", "that", "finding", "for", "it", "was", "making",
-    "on", "are", "as", "with", "building", "they", "at", "be",
-    "this", "from", "or", "testing", "had", "by", "not", "coding",
-    "but", "some", "what", "we", "writing", "can", "out", "reading",
+    "the", "running", "of", "singing", "and", "to", "jumping", "in", "a", "is", "that", "finding",
+    "for", "it", "was", "making", "on", "are", "as", "with", "building", "they", "at", "be",
+    "this", "from", "or", "testing", "had", "by", "not", "coding", "but", "some", "what", "we",
+    "writing", "can", "out", "reading",
 ];
 
 fn generate_text(path: &str, num_words: usize) -> usize {
@@ -55,10 +54,7 @@ fn rust_regex_count(path: &str) -> usize {
     let data = fs::read_to_string(path).unwrap();
     let mut count = 0;
     for word in data.split_whitespace() {
-        if word.len() > 3
-            && word.ends_with("ing")
-            && word.bytes().all(|b| b.is_ascii_lowercase())
-        {
+        if word.len() > 3 && word.ends_with("ing") && word.bytes().all(|b| b.is_ascii_lowercase()) {
             count += 1;
         }
     }
@@ -135,7 +131,10 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
                 }
                 Some(count == expected)
             } else {
-                eprintln!("WARNING: Could not parse base regex output: {:?}", content.trim());
+                eprintln!(
+                    "WARNING: Could not parse base regex output: {:?}",
+                    content.trim()
+                );
                 Some(false)
             }
         } else {

@@ -1,4 +1,8 @@
 use base_types::Action;
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_jit::JITBuilder;
+use cranelift_module::Module;
+use lmdb_zero as lmdb;
 use pollster::block_on;
 use portable_atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
@@ -15,10 +19,6 @@ use wgpu::{
     InstanceDescriptor, PipelineCompilationOptions, PipelineLayoutDescriptor, PowerPreference,
     RequestAdapterOptions, ShaderModuleDescriptor, ShaderSource, ShaderStages,
 };
-use lmdb_zero as lmdb;
-use cranelift_codegen::settings::{self, Configurable};
-use cranelift_jit::JITBuilder;
-use cranelift_module::Module;
 
 /// Cached wgpu Device + Queue (Arc-wrapped for sharing).
 /// Creating many wgpu Devices exhausts OS GPU driver handles (~60 limit).
@@ -33,10 +33,8 @@ fn cached_gpu_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
             ..Default::default()
         }))
         .expect("Failed to find GPU adapter");
-        let (device, queue) = block_on(adapter.request_device(
-            &DeviceDescriptor::default(), None,
-        ))
-        .expect("Failed to create GPU device");
+        let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor::default(), None))
+            .expect("Failed to create GPU device");
         std::mem::forget(instance);
         std::mem::forget(adapter);
         (Arc::new(device), Arc::new(queue))
@@ -114,7 +112,6 @@ fn spin_backoff(spin_count: &mut u32) {
     }
 }
 
-
 pub(crate) struct SharedMemory {
     ptr: *mut u8,
 }
@@ -139,7 +136,10 @@ impl SharedMemory {
             return (*(ptr as *const AtomicU64)).load(order);
         }
         let value = std::ptr::read_unaligned(ptr as *const u64);
-        if matches!(order, Ordering::Acquire | Ordering::AcqRel | Ordering::SeqCst) {
+        if matches!(
+            order,
+            Ordering::Acquire | Ordering::AcqRel | Ordering::SeqCst
+        ) {
             fence(Ordering::Acquire);
         }
         value
@@ -151,7 +151,10 @@ impl SharedMemory {
             (*(ptr as *const AtomicU64)).store(value, order);
             return;
         }
-        if matches!(order, Ordering::Release | Ordering::AcqRel | Ordering::SeqCst) {
+        if matches!(
+            order,
+            Ordering::Release | Ordering::AcqRel | Ordering::SeqCst
+        ) {
             fence(Ordering::Release);
         }
         std::ptr::write_unaligned(ptr as *mut u64, value);
@@ -160,12 +163,14 @@ impl SharedMemory {
     // CAS requires natural alignment — there is no unaligned fallback.
     pub unsafe fn cas64(&self, offset: usize, expected: u64, new: u64) -> u64 {
         let ptr = self.ptr.add(offset);
-        debug_assert!((ptr as usize) & 0x7 == 0, "cas64: pointer not 8-byte aligned (offset {offset})");
+        debug_assert!(
+            (ptr as usize) & 0x7 == 0,
+            "cas64: pointer not 8-byte aligned (offset {offset})"
+        );
         (*(ptr as *const AtomicU64))
             .compare_exchange(expected, new, Ordering::SeqCst, Ordering::SeqCst)
             .unwrap_or_else(|x| x)
     }
-
 }
 
 pub(crate) fn order_from_u32(raw: u32) -> Ordering {
@@ -178,7 +183,12 @@ pub(crate) fn order_from_u32(raw: u32) -> Ordering {
     }
 }
 
-pub(crate) unsafe fn load_sized(shared: &SharedMemory, offset: usize, size: u32, order: Ordering) -> u64 {
+pub(crate) unsafe fn load_sized(
+    shared: &SharedMemory,
+    offset: usize,
+    size: u32,
+    order: Ordering,
+) -> u64 {
     match size {
         1 => shared.read(offset, 1)[0] as u64,
         2 => u16::from_le_bytes(shared.read(offset, 2)[0..2].try_into().unwrap()) as u64,
@@ -195,13 +205,19 @@ pub(crate) struct CraneliftHashTableContext {
 
 impl CraneliftHashTableContext {
     fn new() -> Self {
-        Self { tables: HashMap::new(), next_handle: 0 }
+        Self {
+            tables: HashMap::new(),
+            next_handle: 0,
+        }
     }
 }
 
 /// Create the hash table context and store its pointer at the given offset in shared memory.
 /// Returns the raw pointer so the caller can drop it when done.
-pub(crate) fn init_ht_context(shared: &SharedMemory, offset: usize) -> *mut CraneliftHashTableContext {
+pub(crate) fn init_ht_context(
+    shared: &SharedMemory,
+    offset: usize,
+) -> *mut CraneliftHashTableContext {
     let ctx = Box::new(CraneliftHashTableContext::new());
     let ctx_ptr = Box::into_raw(ctx);
     unsafe {
@@ -312,7 +328,8 @@ struct CraneliftGpuContext {
 unsafe extern "C" fn cl_gpu_init(ptr: *mut u8) {
     let (device, queue) = cached_gpu_device();
     let ctx = Box::new(CraneliftGpuContext {
-        device, queue,
+        device,
+        queue,
         buffers: Vec::new(),
         staging_buffers: Vec::new(),
         pipelines: Vec::new(),
@@ -322,7 +339,9 @@ unsafe extern "C" fn cl_gpu_init(ptr: *mut u8) {
 }
 
 unsafe extern "C" fn cl_gpu_create_buffer(ptr: *mut u8, size: i64) -> i32 {
-    if size <= 0 { return -1; }
+    if size <= 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let buffer = ctx.device.create_buffer(&BufferDescriptor {
@@ -341,7 +360,8 @@ unsafe extern "C" fn cl_gpu_create_buffer(ptr: *mut u8, size: i64) -> i32 {
         ctx.buffers.push(buffer);
         ctx.staging_buffers.push(staging);
         idx
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_gpu_create_pipeline(
@@ -350,18 +370,23 @@ unsafe extern "C" fn cl_gpu_create_pipeline(
     bind_off: i64,
     n_bindings: i32,
 ) -> i32 {
-    if n_bindings < 0 { return -1; }
+    if n_bindings < 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let shader_ptr = ptr.add(shader_off as usize);
         let mut len = 0;
-        while *shader_ptr.add(len) != 0 { len += 1; }
+        while *shader_ptr.add(len) != 0 {
+            len += 1;
+        }
         let shader_src = match std::str::from_utf8(std::slice::from_raw_parts(shader_ptr, len)) {
             Ok(s) => s,
             Err(_) => return -1,
         };
         let shader = ctx.device.create_shader_module(ShaderModuleDescriptor {
-            label: None, source: ShaderSource::Wgsl(shader_src.into()),
+            label: None,
+            source: ShaderSource::Wgsl(shader_src.into()),
         });
         let mut bgl_entries = Vec::new();
         let mut bg_entries = Vec::new();
@@ -370,7 +395,9 @@ unsafe extern "C" fn cl_gpu_create_pipeline(
         for i in 0..n_bindings as usize {
             let desc_ptr = bind_base.add(i * 8);
             let buf_id = std::ptr::read_unaligned(desc_ptr as *const i32) as usize;
-            if buf_id >= n_bufs { return -1; }
+            if buf_id >= n_bufs {
+                return -1;
+            }
             let read_only = std::ptr::read_unaligned(desc_ptr.add(4) as *const i32) != 0;
             bgl_entries.push(BindGroupLayoutEntry {
                 binding: i as u32,
@@ -384,69 +411,110 @@ unsafe extern "C" fn cl_gpu_create_pipeline(
             });
             bg_entries.push((i as u32, buf_id));
         }
-        let bgl = ctx.device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: None, entries: &bgl_entries,
-        });
-        let pipeline = ctx.device.create_compute_pipeline(&ComputePipelineDescriptor {
-            label: None,
-            layout: Some(&ctx.device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                label: None, bind_group_layouts: &[&bgl], push_constant_ranges: &[],
-            })),
-            module: &shader,
-            entry_point: "main",
-            compilation_options: PipelineCompilationOptions::default(),
-        });
-        let entries: Vec<BindGroupEntry> = bg_entries.iter().map(|&(binding, buf_id)| {
-            BindGroupEntry {
+        let bgl = ctx
+            .device
+            .create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: None,
+                entries: &bgl_entries,
+            });
+        let pipeline = ctx
+            .device
+            .create_compute_pipeline(&ComputePipelineDescriptor {
+                label: None,
+                layout: Some(
+                    &ctx.device
+                        .create_pipeline_layout(&PipelineLayoutDescriptor {
+                            label: None,
+                            bind_group_layouts: &[&bgl],
+                            push_constant_ranges: &[],
+                        }),
+                ),
+                module: &shader,
+                entry_point: "main",
+                compilation_options: PipelineCompilationOptions::default(),
+            });
+        let entries: Vec<BindGroupEntry> = bg_entries
+            .iter()
+            .map(|&(binding, buf_id)| BindGroupEntry {
                 binding,
                 resource: BindingResource::Buffer(ctx.buffers[buf_id].as_entire_buffer_binding()),
-            }
-        }).collect();
+            })
+            .collect();
         let bind_group = ctx.device.create_bind_group(&BindGroupDescriptor {
-            label: None, layout: &bgl, entries: &entries,
+            label: None,
+            layout: &bgl,
+            entries: &entries,
         });
         let idx = ctx.pipelines.len() as i32;
         ctx.pipelines.push((pipeline, bind_group));
         idx
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_gpu_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 { return -1; }
+    if buf_id < 0 || size <= 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
         ctx.queue.write_buffer(&ctx.buffers[bid], 0, data);
         0
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_gpu_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 || src_ptr == 0 { return -1; }
+    if buf_id < 0 || size <= 0 || src_ptr == 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let data = std::slice::from_raw_parts(src_ptr as *const u8, size as usize);
         ctx.queue.write_buffer(&ctx.buffers[bid], 0, data);
         0
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_gpu_download_ptr(ptr: *mut u8, buf_id: i32, buf_offset: i64, dst_ptr: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 || dst_ptr == 0 || buf_offset < 0 { return -1; }
+unsafe extern "C" fn cl_gpu_download_ptr(
+    ptr: *mut u8,
+    buf_id: i32,
+    buf_offset: i64,
+    dst_ptr: i64,
+    size: i64,
+) -> i32 {
+    if buf_id < 0 || size <= 0 || dst_ptr == 0 || buf_offset < 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let size = size as u64;
         let buf_offset = buf_offset as u64;
-        let mut encoder = ctx.pending_encoder.take().unwrap_or_else(||
-            ctx.device.create_command_encoder(&CommandEncoderDescriptor { label: None })
+        let mut encoder = ctx.pending_encoder.take().unwrap_or_else(|| {
+            ctx.device
+                .create_command_encoder(&CommandEncoderDescriptor { label: None })
+        });
+        encoder.copy_buffer_to_buffer(
+            &ctx.buffers[bid],
+            buf_offset,
+            &ctx.staging_buffers[bid],
+            0,
+            size,
         );
-        encoder.copy_buffer_to_buffer(&ctx.buffers[bid], buf_offset, &ctx.staging_buffers[bid], 0, size);
         ctx.queue.submit(Some(encoder.finish()));
         let slice = ctx.staging_buffers[bid].slice(..size);
         slice.map_async(wgpu::MapMode::Read, |_| {});
@@ -457,23 +525,37 @@ unsafe extern "C" fn cl_gpu_download_ptr(ptr: *mut u8, buf_id: i32, buf_offset: 
         drop(mapped);
         ctx.staging_buffers[bid].unmap();
         0
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_gpu_dispatch(ptr: *mut u8, pipeline_id: i32, wg_x: i32, wg_y: i32, wg_z: i32) -> i32 {
-    if pipeline_id < 0 || wg_x <= 0 || wg_y <= 0 || wg_z <= 0 { return -1; }
+unsafe extern "C" fn cl_gpu_dispatch(
+    ptr: *mut u8,
+    pipeline_id: i32,
+    wg_x: i32,
+    wg_y: i32,
+    wg_z: i32,
+) -> i32 {
+    if pipeline_id < 0 || wg_x <= 0 || wg_y <= 0 || wg_z <= 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let pid = pipeline_id as usize;
-        if pid >= ctx.pipelines.len() { return -1; }
+        if pid >= ctx.pipelines.len() {
+            return -1;
+        }
         if let Some(enc) = ctx.pending_encoder.take() {
             ctx.queue.submit(Some(enc.finish()));
         }
         let (pipeline, bind_group) = &ctx.pipelines[pid];
-        let mut encoder = ctx.device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor { label: None });
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
-                label: None, timestamp_writes: None,
+                label: None,
+                timestamp_writes: None,
             });
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, bind_group, &[]);
@@ -481,19 +563,25 @@ unsafe extern "C" fn cl_gpu_dispatch(ptr: *mut u8, pipeline_id: i32, wg_x: i32, 
         }
         ctx.pending_encoder = Some(encoder);
         0
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_gpu_download(ptr: *mut u8, buf_id: i32, dst_off: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 { return -1; }
+    if buf_id < 0 || size <= 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let size = size as u64;
-        let mut encoder = ctx.pending_encoder.take().unwrap_or_else(||
-            ctx.device.create_command_encoder(&CommandEncoderDescriptor { label: None })
-        );
+        let mut encoder = ctx.pending_encoder.take().unwrap_or_else(|| {
+            ctx.device
+                .create_command_encoder(&CommandEncoderDescriptor { label: None })
+        });
         encoder.copy_buffer_to_buffer(&ctx.buffers[bid], 0, &ctx.staging_buffers[bid], 0, size);
         ctx.queue.submit(Some(encoder.finish()));
         let slice = ctx.staging_buffers[bid].slice(..);
@@ -505,7 +593,8 @@ unsafe extern "C" fn cl_gpu_download(ptr: *mut u8, buf_id: i32, dst_off: i64, si
         drop(mapped);
         ctx.staging_buffers[bid].unmap();
         0
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_gpu_cleanup(ptr: *mut u8) {
@@ -521,9 +610,8 @@ struct CraneliftCudaContext {
 fn cached_cuda_device() -> std::sync::Arc<cudarc::driver::CudaDevice> {
     use std::sync::OnceLock;
     static CUDA: OnceLock<std::sync::Arc<cudarc::driver::CudaDevice>> = OnceLock::new();
-    CUDA.get_or_init(|| {
-        cudarc::driver::CudaDevice::new(0).expect("Failed to create CUDA device")
-    }).clone()
+    CUDA.get_or_init(|| cudarc::driver::CudaDevice::new(0).expect("Failed to create CUDA device"))
+        .clone()
 }
 
 unsafe extern "C" fn cl_cuda_init(ptr: *mut u8) {
@@ -542,7 +630,9 @@ unsafe extern "C" fn cl_cuda_init(ptr: *mut u8) {
 }
 
 unsafe extern "C" fn cl_cuda_create_buffer(ptr: *mut u8, size: i64) -> i32 {
-    if size <= 0 { return -1; }
+    if size <= 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
         match ctx.device.alloc_zeros::<u8>(size as usize) {
@@ -553,80 +643,119 @@ unsafe extern "C" fn cl_cuda_create_buffer(ptr: *mut u8, size: i64) -> i32 {
             }
             Err(_) => -1,
         }
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_cuda_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 { return -1; }
+    if buf_id < 0 || size <= 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
-        let Some(buf) = ctx.buffers[bid].as_mut() else { return -1; };
+        let Some(buf) = ctx.buffers[bid].as_mut() else {
+            return -1;
+        };
         match ctx.device.htod_sync_copy_into(data, buf) {
             Ok(_) => 0,
             Err(_) => -1,
         }
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_cuda_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 || src_ptr == 0 { return -1; }
+    if buf_id < 0 || size <= 0 || src_ptr == 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let data = std::slice::from_raw_parts(src_ptr as *const u8, size as usize);
-        let Some(buf) = ctx.buffers[bid].as_mut() else { return -1; };
+        let Some(buf) = ctx.buffers[bid].as_mut() else {
+            return -1;
+        };
         match ctx.device.htod_sync_copy_into(data, buf) {
             Ok(_) => 0,
             Err(_) => -1,
         }
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_cuda_download_ptr(ptr: *mut u8, buf_id: i32, dst_ptr: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 || dst_ptr == 0 { return -1; }
+unsafe extern "C" fn cl_cuda_download_ptr(
+    ptr: *mut u8,
+    buf_id: i32,
+    dst_ptr: i64,
+    size: i64,
+) -> i32 {
+    if buf_id < 0 || size <= 0 || dst_ptr == 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let dst = std::slice::from_raw_parts_mut(dst_ptr as *mut u8, size as usize);
-        let Some(buf) = ctx.buffers[bid].as_ref() else { return -1; };
+        let Some(buf) = ctx.buffers[bid].as_ref() else {
+            return -1;
+        };
         match ctx.device.dtoh_sync_copy_into(buf, dst) {
             Ok(_) => 0,
             Err(_) => -1,
         }
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_cuda_download(ptr: *mut u8, buf_id: i32, dst_off: i64, size: i64) -> i32 {
-    if buf_id < 0 || size <= 0 { return -1; }
+    if buf_id < 0 || size <= 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
-        let Some(buf) = ctx.buffers[bid].as_ref() else { return -1; };
+        let Some(buf) = ctx.buffers[bid].as_ref() else {
+            return -1;
+        };
         match ctx.device.dtoh_sync_copy_into(buf, dst) {
             Ok(_) => 0,
             Err(_) => -1,
         }
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_cuda_free_buffer(ptr: *mut u8, buf_id: i32) -> i32 {
-    if buf_id < 0 { return -1; }
+    if buf_id < 0 {
+        return -1;
+    }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
         let bid = buf_id as usize;
-        if bid >= ctx.buffers.len() { return -1; }
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
         match ctx.buffers[bid].take() {
             Some(_) => 0,
             None => -1,
         }
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 /// Launch a PTX kernel.
@@ -650,8 +779,13 @@ unsafe extern "C" fn cl_cuda_launch(
     block_y: i32,
     block_z: i32,
 ) -> i32 {
-    if n_bufs < 0 || grid_x <= 0 || grid_y <= 0 || grid_z <= 0
-        || block_x <= 0 || block_y <= 0 || block_z <= 0
+    if n_bufs < 0
+        || grid_x <= 0
+        || grid_y <= 0
+        || grid_z <= 0
+        || block_x <= 0
+        || block_y <= 0
+        || block_z <= 0
     {
         return -1;
     }
@@ -687,11 +821,16 @@ unsafe extern "C" fn cl_cuda_launch(
         // so the addresses are guaranteed stable through the launch.
         use cudarc::driver::DevicePtr;
         let bind_base = ptr.add(bind_off as usize);
-        let mut dev_ptrs: Vec<cudarc::driver::sys::CUdeviceptr> = Vec::with_capacity(n_bufs as usize);
+        let mut dev_ptrs: Vec<cudarc::driver::sys::CUdeviceptr> =
+            Vec::with_capacity(n_bufs as usize);
         for i in 0..n_bufs as usize {
             let buf_id = std::ptr::read_unaligned(bind_base.add(i * 4) as *const i32) as usize;
-            if buf_id >= ctx.buffers.len() { return -1; }
-            let Some(buf) = ctx.buffers[buf_id].as_ref() else { return -1; };
+            if buf_id >= ctx.buffers.len() {
+                return -1;
+            }
+            let Some(buf) = ctx.buffers[buf_id].as_ref() else {
+                return -1;
+            };
             dev_ptrs.push(*buf.device_ptr());
         }
         let mut arg_ptrs: Vec<*mut std::ffi::c_void> = dev_ptrs
@@ -714,7 +853,8 @@ unsafe extern "C" fn cl_cuda_launch(
             Ok(_) => 0,
             Err(_) => -1,
         }
-    })).unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe extern "C" fn cl_cuda_cleanup(ptr: *mut u8) {
@@ -725,7 +865,9 @@ unsafe extern "C" fn cl_cuda_cleanup(ptr: *mut u8) {
 unsafe fn read_cstr(ptr: *mut u8, off: usize) -> String {
     let start = ptr.add(off);
     let mut len = 0;
-    while *start.add(len) != 0 { len += 1; }
+    while *start.add(len) != 0 {
+        len += 1;
+    }
     String::from_utf8_lossy(std::slice::from_raw_parts(start, len)).into_owned()
 }
 
@@ -746,7 +888,9 @@ unsafe extern "C" fn cl_file_read(
     }
     if size == 0 {
         let file_len = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
-        if file_len == 0 { return 0; }
+        if file_len == 0 {
+            return 0;
+        }
         let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), file_len);
         let mut total = 0;
         while total < file_len {
@@ -780,7 +924,11 @@ unsafe extern "C" fn cl_file_write(
             Err(_) => return -1,
         }
     } else {
-        match fs::OpenOptions::new().write(true).create(true).open(&filename) {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&filename)
+        {
             Ok(mut f) => {
                 let _ = f.seek(std::io::SeekFrom::Start(file_offset as u64));
                 f
@@ -791,14 +939,18 @@ unsafe extern "C" fn cl_file_write(
     let written = if size == 0 {
         let base = ptr.add(src_off as usize);
         let mut len = 0;
-        while *base.add(len) != 0 { len += 1; }
+        while *base.add(len) != 0 {
+            len += 1;
+        }
         if len > 0 {
             let data = std::slice::from_raw_parts(base, len);
             match file.write_all(data) {
                 Ok(_) => len as i64,
                 Err(_) => -1,
             }
-        } else { 0 }
+        } else {
+            0
+        }
     } else {
         let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
         match file.write_all(data) {
@@ -806,7 +958,9 @@ unsafe extern "C" fn cl_file_write(
             Err(_) => -1,
         }
     };
-    if written >= 0 { let _ = file.sync_all(); }
+    if written >= 0 {
+        let _ = file.sync_all();
+    }
     written
 }
 
@@ -948,7 +1102,9 @@ struct CraneliftLmdbContext {
 impl Drop for CraneliftLmdbContext {
     fn drop(&mut self) {
         for (_handle, txn) in self.active_write_txns.drain() {
-            unsafe { liblmdb_sys::mdb_txn_abort(txn); }
+            unsafe {
+                liblmdb_sys::mdb_txn_abort(txn);
+            }
         }
     }
 }
@@ -965,15 +1121,36 @@ fn lmdb_raw_begin_txn(env: &lmdb::Environment, readonly: bool) -> *mut liblmdb_s
     }
 }
 
-fn lmdb_raw_put(txn: *mut liblmdb_sys::MDB_txn, dbi: liblmdb_sys::MDB_dbi, key: &[u8], val: &[u8]) -> bool {
-    let mut k = liblmdb_sys::MDB_val { mv_size: key.len(), mv_data: key.as_ptr() as *const _ };
-    let mut v = liblmdb_sys::MDB_val { mv_size: val.len(), mv_data: val.as_ptr() as *const _ };
+fn lmdb_raw_put(
+    txn: *mut liblmdb_sys::MDB_txn,
+    dbi: liblmdb_sys::MDB_dbi,
+    key: &[u8],
+    val: &[u8],
+) -> bool {
+    let mut k = liblmdb_sys::MDB_val {
+        mv_size: key.len(),
+        mv_data: key.as_ptr() as *const _,
+    };
+    let mut v = liblmdb_sys::MDB_val {
+        mv_size: val.len(),
+        mv_data: val.as_ptr() as *const _,
+    };
     unsafe { liblmdb_sys::mdb_put(txn, dbi, &mut k, &mut v, 0) == 0 }
 }
 
-fn lmdb_raw_get(txn: *mut liblmdb_sys::MDB_txn, dbi: liblmdb_sys::MDB_dbi, key: &[u8]) -> Option<Vec<u8>> {
-    let mut k = liblmdb_sys::MDB_val { mv_size: key.len(), mv_data: key.as_ptr() as *const _ };
-    let mut v = liblmdb_sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
+fn lmdb_raw_get(
+    txn: *mut liblmdb_sys::MDB_txn,
+    dbi: liblmdb_sys::MDB_dbi,
+    key: &[u8],
+) -> Option<Vec<u8>> {
+    let mut k = liblmdb_sys::MDB_val {
+        mv_size: key.len(),
+        mv_data: key.as_ptr() as *const _,
+    };
+    let mut v = liblmdb_sys::MDB_val {
+        mv_size: 0,
+        mv_data: std::ptr::null(),
+    };
     unsafe {
         if liblmdb_sys::mdb_get(txn, dbi, &mut k, &mut v) == 0 {
             Some(std::slice::from_raw_parts(v.mv_data as *const u8, v.mv_size).to_vec())
@@ -984,7 +1161,10 @@ fn lmdb_raw_get(txn: *mut liblmdb_sys::MDB_txn, dbi: liblmdb_sys::MDB_dbi, key: 
 }
 
 fn lmdb_raw_del(txn: *mut liblmdb_sys::MDB_txn, dbi: liblmdb_sys::MDB_dbi, key: &[u8]) -> bool {
-    let mut k = liblmdb_sys::MDB_val { mv_size: key.len(), mv_data: key.as_ptr() as *const _ };
+    let mut k = liblmdb_sys::MDB_val {
+        mv_size: key.len(),
+        mv_data: key.as_ptr() as *const _,
+    };
     unsafe { liblmdb_sys::mdb_del(txn, dbi, &mut k, std::ptr::null_mut()) == 0 }
 }
 
@@ -1001,26 +1181,58 @@ fn lmdb_raw_cursor_scan(
         if liblmdb_sys::mdb_cursor_open(txn, dbi, &mut cursor) != 0 {
             return result;
         }
-        let mut k = liblmdb_sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
-        let mut v = liblmdb_sys::MDB_val { mv_size: 0, mv_data: std::ptr::null() };
+        let mut k = liblmdb_sys::MDB_val {
+            mv_size: 0,
+            mv_data: std::ptr::null(),
+        };
+        let mut v = liblmdb_sys::MDB_val {
+            mv_size: 0,
+            mv_data: std::ptr::null(),
+        };
         let first_rc = if let Some(sk) = start_key {
             k.mv_size = sk.len();
             k.mv_data = sk.as_ptr() as *const _;
-            liblmdb_sys::mdb_cursor_get(cursor, &mut k, &mut v, liblmdb_sys::MDB_cursor_op::MDB_SET_RANGE)
+            liblmdb_sys::mdb_cursor_get(
+                cursor,
+                &mut k,
+                &mut v,
+                liblmdb_sys::MDB_cursor_op::MDB_SET_RANGE,
+            )
         } else {
-            liblmdb_sys::mdb_cursor_get(cursor, &mut k, &mut v, liblmdb_sys::MDB_cursor_op::MDB_FIRST)
+            liblmdb_sys::mdb_cursor_get(
+                cursor,
+                &mut k,
+                &mut v,
+                liblmdb_sys::MDB_cursor_op::MDB_FIRST,
+            )
         };
         let mut count = 0u32;
         if first_rc == 0 {
             loop {
-                if count >= max_entries as u32 { break; }
-                if k.mv_size > u16::MAX as usize || v.mv_size > u16::MAX as usize { break; }
+                if count >= max_entries as u32 {
+                    break;
+                }
+                if k.mv_size > u16::MAX as usize || v.mv_size > u16::MAX as usize {
+                    break;
+                }
                 result.extend_from_slice(&(k.mv_size as u16).to_le_bytes());
                 result.extend_from_slice(&(v.mv_size as u16).to_le_bytes());
-                result.extend_from_slice(std::slice::from_raw_parts(k.mv_data as *const u8, k.mv_size));
-                result.extend_from_slice(std::slice::from_raw_parts(v.mv_data as *const u8, v.mv_size));
+                result.extend_from_slice(std::slice::from_raw_parts(
+                    k.mv_data as *const u8,
+                    k.mv_size,
+                ));
+                result.extend_from_slice(std::slice::from_raw_parts(
+                    v.mv_data as *const u8,
+                    v.mv_size,
+                ));
                 count += 1;
-                if liblmdb_sys::mdb_cursor_get(cursor, &mut k, &mut v, liblmdb_sys::MDB_cursor_op::MDB_NEXT) != 0 {
+                if liblmdb_sys::mdb_cursor_get(
+                    cursor,
+                    &mut k,
+                    &mut v,
+                    liblmdb_sys::MDB_cursor_op::MDB_NEXT,
+                ) != 0
+                {
                     break;
                 }
             }
@@ -1043,9 +1255,15 @@ unsafe extern "C" fn cl_lmdb_init(ptr: *mut u8) {
 unsafe extern "C" fn cl_lmdb_open(ptr: *mut u8, path_off: i64, map_size_mb: i32) -> i32 {
     let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
     let path_str = read_cstr(ptr, path_off as usize);
-    let map_size = if map_size_mb <= 0 { 1024 * 1024 * 1024 } else { (map_size_mb as usize) * 1024 * 1024 };
+    let map_size = if map_size_mb <= 0 {
+        1024 * 1024 * 1024
+    } else {
+        (map_size_mb as usize) * 1024 * 1024
+    };
 
-    if std::fs::create_dir_all(&path_str).is_err() { return -1; }
+    if std::fs::create_dir_all(&path_str).is_err() {
+        return -1;
+    }
 
     let env = match lmdb::EnvBuilder::new() {
         Ok(mut builder) => {
@@ -1072,9 +1290,12 @@ unsafe extern "C" fn cl_lmdb_open(ptr: *mut u8, path_off: i64, map_size_mb: i32)
 }
 
 unsafe extern "C" fn cl_lmdb_put(
-    ptr: *mut u8, handle: u32,
-    key_off: i64, key_len: i32,
-    val_off: i64, val_len: i32,
+    ptr: *mut u8,
+    handle: u32,
+    key_off: i64,
+    key_len: i32,
+    val_off: i64,
+    val_len: i32,
 ) -> i32 {
     let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
@@ -1083,7 +1304,11 @@ unsafe extern "C" fn cl_lmdb_put(
         let dbi = *dbi;
 
         if let Some(&txn) = ctx.active_write_txns.get(&handle) {
-            return if lmdb_raw_put(txn, dbi, key, val) { 0 } else { -1 };
+            return if lmdb_raw_put(txn, dbi, key, val) {
+                0
+            } else {
+                -1
+            };
         }
         let txn = lmdb_raw_begin_txn(env, false);
         if !txn.is_null() {
@@ -1102,8 +1327,10 @@ unsafe extern "C" fn cl_lmdb_put(
 }
 
 unsafe extern "C" fn cl_lmdb_get(
-    ptr: *mut u8, handle: u32,
-    key_off: i64, key_len: i32,
+    ptr: *mut u8,
+    handle: u32,
+    key_off: i64,
+    key_len: i32,
     result_off: i64,
 ) -> i32 {
     let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
@@ -1121,10 +1348,14 @@ unsafe extern "C" fn cl_lmdb_get(
                 let dst = ptr.add(result_off as usize);
                 std::ptr::copy_nonoverlapping(len.to_le_bytes().as_ptr(), dst, 4);
                 std::ptr::copy_nonoverlapping(val.as_ptr(), dst.add(4), val.len());
-                if owned { liblmdb_sys::mdb_txn_abort(txn); }
+                if owned {
+                    liblmdb_sys::mdb_txn_abort(txn);
+                }
                 return len as i32;
             }
-            if owned { liblmdb_sys::mdb_txn_abort(txn); }
+            if owned {
+                liblmdb_sys::mdb_txn_abort(txn);
+            }
         }
     }
     let dst = ptr.add(result_off as usize);
@@ -1132,10 +1363,7 @@ unsafe extern "C" fn cl_lmdb_get(
     -1
 }
 
-unsafe extern "C" fn cl_lmdb_delete(
-    ptr: *mut u8, handle: u32,
-    key_off: i64, key_len: i32,
-) -> i32 {
+unsafe extern "C" fn cl_lmdb_delete(ptr: *mut u8, handle: u32, key_off: i64, key_len: i32) -> i32 {
     let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
         let key = std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize);
@@ -1178,21 +1406,30 @@ unsafe extern "C" fn cl_lmdb_begin_write_txn(ptr: *mut u8, handle: u32) -> i32 {
 unsafe extern "C" fn cl_lmdb_commit_write_txn(ptr: *mut u8, handle: u32) -> i32 {
     let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
     if let Some(txn) = ctx.active_write_txns.remove(&handle) {
-        return if liblmdb_sys::mdb_txn_commit(txn) == 0 { 0 } else { -1 };
+        return if liblmdb_sys::mdb_txn_commit(txn) == 0 {
+            0
+        } else {
+            -1
+        };
     }
     -1
 }
 
 unsafe extern "C" fn cl_lmdb_cursor_scan(
-    ptr: *mut u8, handle: u32,
-    key_off: i64, key_len: i32,
+    ptr: *mut u8,
+    handle: u32,
+    key_off: i64,
+    key_len: i32,
     max_entries: i32,
     result_off: i64,
 ) -> i32 {
     let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
         let start_key = if key_len > 0 {
-            Some(std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize))
+            Some(std::slice::from_raw_parts(
+                ptr.add(key_off as usize),
+                key_len as usize,
+            ))
         } else {
             None
         };
@@ -1204,9 +1441,15 @@ unsafe extern "C" fn cl_lmdb_cursor_scan(
         };
         if !txn.is_null() {
             let result = lmdb_raw_cursor_scan(txn, dbi, start_key, max_entries as usize);
-            std::ptr::copy_nonoverlapping(result.as_ptr(), ptr.add(result_off as usize), result.len());
+            std::ptr::copy_nonoverlapping(
+                result.as_ptr(),
+                ptr.add(result_off as usize),
+                result.len(),
+            );
             let count = u32::from_le_bytes(result[0..4].try_into().unwrap());
-            if owned { liblmdb_sys::mdb_txn_abort(txn); }
+            if owned {
+                liblmdb_sys::mdb_txn_abort(txn);
+            }
             return count as i32;
         }
     }
@@ -1243,7 +1486,9 @@ struct CraneliftThreadContext {
 
 unsafe extern "C" fn cl_thread_init(ptr: *mut u8) {
     let compiled_fns = THREAD_COMPILED_FNS.with(|cell| {
-        cell.borrow().clone().expect("cl_thread_init: no compiled functions available")
+        cell.borrow()
+            .clone()
+            .expect("cl_thread_init: no compiled functions available")
     });
     let ctx = Box::new(CraneliftThreadContext {
         threads: HashMap::new(),
@@ -1256,7 +1501,9 @@ unsafe extern "C" fn cl_thread_init(ptr: *mut u8) {
 unsafe extern "C" fn cl_thread_spawn(ptr: *mut u8, fn_index: i64, thread_ptr: i64) -> i64 {
     let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
     let idx = fn_index as usize;
-    if idx >= ctx.compiled_fns.len() { return -1; }
+    if idx >= ctx.compiled_fns.len() {
+        return -1;
+    }
     let func = ctx.compiled_fns[idx];
     let arg = thread_ptr as usize;
     let handle_id = ctx.next_handle;
@@ -1297,131 +1544,159 @@ unsafe extern "C" fn cl_thread_cleanup(ptr: *mut u8) {
 unsafe extern "C" fn cl_thread_call(ptr: *mut u8, fn_index: i64, arg_ptr: i64) -> i64 {
     let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
     let idx = fn_index as usize;
-    if idx >= ctx.compiled_fns.len() { return -1; }
+    if idx >= ctx.compiled_fns.len() {
+        return -1;
+    }
     let func = ctx.compiled_fns[idx];
     func(arg_ptr as *mut u8);
     0
 }
 
-pub(crate) fn compile_cranelift_ir(clif_source: &str) -> Result<(cranelift_jit::JITModule, Arc<Vec<unsafe extern "C" fn(*mut u8)>>), String> {
-        info!(ir_len = clif_source.len(), "compiling Cranelift IR");
+pub(crate) fn compile_cranelift_ir(
+    clif_source: &str,
+) -> Result<
+    (
+        cranelift_jit::JITModule,
+        Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
+    ),
+    String,
+> {
+    info!(ir_len = clif_source.len(), "compiling Cranelift IR");
 
-        let mut functions = cranelift_reader::parse_functions(clif_source)
-            .map_err(|e| format!("{e}"))?;
-        if functions.is_empty() {
-            return Err("No functions in CLIF IR".into());
-        }
+    let mut functions =
+        cranelift_reader::parse_functions(clif_source).map_err(|e| format!("{e}"))?;
+    if functions.is_empty() {
+        return Err("No functions in CLIF IR".into());
+    }
 
-        let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").unwrap();
-        let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
-        let isa = isa_builder.finish(settings::Flags::new(flag_builder)).unwrap();
-        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    let mut flag_builder = settings::builder();
+    flag_builder.set("opt_level", "speed").unwrap();
+    let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .unwrap();
+    let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
-        builder.symbol("ht_create", cl_ht_create as *const u8);
-        builder.symbol("ht_lookup", cl_ht_lookup as *const u8);
-        builder.symbol("ht_insert", cl_ht_insert as *const u8);
-        builder.symbol("ht_count", cl_ht_count as *const u8);
-        builder.symbol("ht_get_entry", cl_ht_get_entry as *const u8);
-        builder.symbol("ht_increment", cl_ht_increment as *const u8);
+    builder.symbol("ht_create", cl_ht_create as *const u8);
+    builder.symbol("ht_lookup", cl_ht_lookup as *const u8);
+    builder.symbol("ht_insert", cl_ht_insert as *const u8);
+    builder.symbol("ht_count", cl_ht_count as *const u8);
+    builder.symbol("ht_get_entry", cl_ht_get_entry as *const u8);
+    builder.symbol("ht_increment", cl_ht_increment as *const u8);
 
-        builder.symbol("cl_gpu_init", cl_gpu_init as *const u8);
-        builder.symbol("cl_gpu_create_buffer", cl_gpu_create_buffer as *const u8);
-        builder.symbol("cl_gpu_create_pipeline", cl_gpu_create_pipeline as *const u8);
-        builder.symbol("cl_gpu_upload", cl_gpu_upload as *const u8);
-        builder.symbol("cl_gpu_upload_ptr", cl_gpu_upload_ptr as *const u8);
-        builder.symbol("cl_gpu_dispatch", cl_gpu_dispatch as *const u8);
-        builder.symbol("cl_gpu_download", cl_gpu_download as *const u8);
-        builder.symbol("cl_gpu_download_ptr", cl_gpu_download_ptr as *const u8);
-        builder.symbol("cl_gpu_cleanup", cl_gpu_cleanup as *const u8);
+    builder.symbol("cl_gpu_init", cl_gpu_init as *const u8);
+    builder.symbol("cl_gpu_create_buffer", cl_gpu_create_buffer as *const u8);
+    builder.symbol(
+        "cl_gpu_create_pipeline",
+        cl_gpu_create_pipeline as *const u8,
+    );
+    builder.symbol("cl_gpu_upload", cl_gpu_upload as *const u8);
+    builder.symbol("cl_gpu_upload_ptr", cl_gpu_upload_ptr as *const u8);
+    builder.symbol("cl_gpu_dispatch", cl_gpu_dispatch as *const u8);
+    builder.symbol("cl_gpu_download", cl_gpu_download as *const u8);
+    builder.symbol("cl_gpu_download_ptr", cl_gpu_download_ptr as *const u8);
+    builder.symbol("cl_gpu_cleanup", cl_gpu_cleanup as *const u8);
 
-        builder.symbol("cl_cuda_init", cl_cuda_init as *const u8);
-        builder.symbol("cl_cuda_create_buffer", cl_cuda_create_buffer as *const u8);
-        builder.symbol("cl_cuda_upload", cl_cuda_upload as *const u8);
-        builder.symbol("cl_cuda_upload_ptr", cl_cuda_upload_ptr as *const u8);
-        builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
-        builder.symbol("cl_cuda_download_ptr", cl_cuda_download_ptr as *const u8);
-        builder.symbol("cl_cuda_free_buffer", cl_cuda_free_buffer as *const u8);
-        builder.symbol("cl_cuda_launch", cl_cuda_launch as *const u8);
-        builder.symbol("cl_cuda_cleanup", cl_cuda_cleanup as *const u8);
+    builder.symbol("cl_cuda_init", cl_cuda_init as *const u8);
+    builder.symbol("cl_cuda_create_buffer", cl_cuda_create_buffer as *const u8);
+    builder.symbol("cl_cuda_upload", cl_cuda_upload as *const u8);
+    builder.symbol("cl_cuda_upload_ptr", cl_cuda_upload_ptr as *const u8);
+    builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
+    builder.symbol("cl_cuda_download_ptr", cl_cuda_download_ptr as *const u8);
+    builder.symbol("cl_cuda_free_buffer", cl_cuda_free_buffer as *const u8);
+    builder.symbol("cl_cuda_launch", cl_cuda_launch as *const u8);
+    builder.symbol("cl_cuda_cleanup", cl_cuda_cleanup as *const u8);
 
-        builder.symbol("cl_file_read", cl_file_read as *const u8);
-        builder.symbol("cl_file_write", cl_file_write as *const u8);
-        builder.symbol("cl_stdin_readline", cl_stdin_readline as *const u8);
-        builder.symbol("cl_stdout_write", cl_stdout_write as *const u8);
+    builder.symbol("cl_file_read", cl_file_read as *const u8);
+    builder.symbol("cl_file_write", cl_file_write as *const u8);
+    builder.symbol("cl_stdin_readline", cl_stdin_readline as *const u8);
+    builder.symbol("cl_stdout_write", cl_stdout_write as *const u8);
 
-        builder.symbol("cl_net_init", cl_net_init as *const u8);
-        builder.symbol("cl_net_listen", cl_net_listen as *const u8);
-        builder.symbol("cl_net_connect", cl_net_connect as *const u8);
-        builder.symbol("cl_net_accept", cl_net_accept as *const u8);
-        builder.symbol("cl_net_send", cl_net_send as *const u8);
-        builder.symbol("cl_net_recv", cl_net_recv as *const u8);
-        builder.symbol("cl_net_cleanup", cl_net_cleanup as *const u8);
+    builder.symbol("cl_net_init", cl_net_init as *const u8);
+    builder.symbol("cl_net_listen", cl_net_listen as *const u8);
+    builder.symbol("cl_net_connect", cl_net_connect as *const u8);
+    builder.symbol("cl_net_accept", cl_net_accept as *const u8);
+    builder.symbol("cl_net_send", cl_net_send as *const u8);
+    builder.symbol("cl_net_recv", cl_net_recv as *const u8);
+    builder.symbol("cl_net_cleanup", cl_net_cleanup as *const u8);
 
-        builder.symbol("cl_lmdb_init", cl_lmdb_init as *const u8);
-        builder.symbol("cl_lmdb_open", cl_lmdb_open as *const u8);
-        builder.symbol("cl_lmdb_put", cl_lmdb_put as *const u8);
-        builder.symbol("cl_lmdb_get", cl_lmdb_get as *const u8);
-        builder.symbol("cl_lmdb_delete", cl_lmdb_delete as *const u8);
-        builder.symbol("cl_lmdb_begin_write_txn", cl_lmdb_begin_write_txn as *const u8);
-        builder.symbol("cl_lmdb_commit_write_txn", cl_lmdb_commit_write_txn as *const u8);
-        builder.symbol("cl_lmdb_cursor_scan", cl_lmdb_cursor_scan as *const u8);
-        builder.symbol("cl_lmdb_sync", cl_lmdb_sync as *const u8);
-        builder.symbol("cl_lmdb_cleanup", cl_lmdb_cleanup as *const u8);
+    builder.symbol("cl_lmdb_init", cl_lmdb_init as *const u8);
+    builder.symbol("cl_lmdb_open", cl_lmdb_open as *const u8);
+    builder.symbol("cl_lmdb_put", cl_lmdb_put as *const u8);
+    builder.symbol("cl_lmdb_get", cl_lmdb_get as *const u8);
+    builder.symbol("cl_lmdb_delete", cl_lmdb_delete as *const u8);
+    builder.symbol(
+        "cl_lmdb_begin_write_txn",
+        cl_lmdb_begin_write_txn as *const u8,
+    );
+    builder.symbol(
+        "cl_lmdb_commit_write_txn",
+        cl_lmdb_commit_write_txn as *const u8,
+    );
+    builder.symbol("cl_lmdb_cursor_scan", cl_lmdb_cursor_scan as *const u8);
+    builder.symbol("cl_lmdb_sync", cl_lmdb_sync as *const u8);
+    builder.symbol("cl_lmdb_cleanup", cl_lmdb_cleanup as *const u8);
 
-        builder.symbol("cl_thread_init", cl_thread_init as *const u8);
-        builder.symbol("cl_thread_spawn", cl_thread_spawn as *const u8);
-        builder.symbol("cl_thread_join", cl_thread_join as *const u8);
-        builder.symbol("cl_thread_cleanup", cl_thread_cleanup as *const u8);
-        builder.symbol("cl_thread_call", cl_thread_call as *const u8);
+    builder.symbol("cl_thread_init", cl_thread_init as *const u8);
+    builder.symbol("cl_thread_spawn", cl_thread_spawn as *const u8);
+    builder.symbol("cl_thread_join", cl_thread_join as *const u8);
+    builder.symbol("cl_thread_cleanup", cl_thread_cleanup as *const u8);
+    builder.symbol("cl_thread_call", cl_thread_call as *const u8);
 
-        let mut module = cranelift_jit::JITModule::new(builder);
+    let mut module = cranelift_jit::JITModule::new(builder);
 
-        // cranelift_reader parses `%name` as ExternalName::TestCase; fix up to ExternalName::User
-        for func in functions.iter_mut() {
-            let mut fixups = Vec::new();
-            for (fref, data) in func.dfg.ext_funcs.iter() {
-                if let cranelift_codegen::ir::ExternalName::TestCase(testcase) = &data.name {
-                    let name = testcase.to_string();
-                    let name = name.strip_prefix('%').unwrap_or(&name).to_string();
-                    let sig = func.dfg.signatures[data.signature].clone();
-                    fixups.push((fref, name, sig));
-                }
+    // cranelift_reader parses `%name` as ExternalName::TestCase; fix up to ExternalName::User
+    for func in functions.iter_mut() {
+        let mut fixups = Vec::new();
+        for (fref, data) in func.dfg.ext_funcs.iter() {
+            if let cranelift_codegen::ir::ExternalName::TestCase(testcase) = &data.name {
+                let name = testcase.to_string();
+                let name = name.strip_prefix('%').unwrap_or(&name).to_string();
+                let sig = func.dfg.signatures[data.signature].clone();
+                fixups.push((fref, name, sig));
             }
-            for (fref, name, sig) in fixups {
-                let fid = module
-                    .declare_function(&name, cranelift_module::Linkage::Import, &sig)
-                    .expect("Failed to declare imported function");
-                let user_ref = func.declare_imported_user_function(
-                    cranelift_codegen::ir::UserExternalName { namespace: 0, index: fid.as_u32() },
-                );
-                func.dfg.ext_funcs[fref].name = cranelift_codegen::ir::ExternalName::user(user_ref);
-                func.dfg.ext_funcs[fref].colocated = false;
-            }
         }
-
-        let mut func_ids = Vec::with_capacity(functions.len());
-        for (i, func) in functions.into_iter().enumerate() {
-            let name = format!("fn_{}", i);
-            let func_id = module
-                .declare_function(&name, cranelift_module::Linkage::Local, &func.signature)
-                .expect("Failed to declare function");
-            let mut ctx = cranelift_codegen::Context::for_function(func);
-            module.define_function(func_id, &mut ctx).expect("Failed to compile function");
-            func_ids.push(func_id);
+        for (fref, name, sig) in fixups {
+            let fid = module
+                .declare_function(&name, cranelift_module::Linkage::Import, &sig)
+                .expect("Failed to declare imported function");
+            let user_ref =
+                func.declare_imported_user_function(cranelift_codegen::ir::UserExternalName {
+                    namespace: 0,
+                    index: fid.as_u32(),
+                });
+            func.dfg.ext_funcs[fref].name = cranelift_codegen::ir::ExternalName::user(user_ref);
+            func.dfg.ext_funcs[fref].colocated = false;
         }
-        module.finalize_definitions().unwrap();
+    }
 
-        let compiled_fns: Vec<unsafe extern "C" fn(*mut u8)> = func_ids
-            .iter()
-            .map(|&id| {
-                let code_ptr = module.get_finalized_function(id);
-                unsafe { std::mem::transmute(code_ptr) }
-            })
-            .collect();
+    let mut func_ids = Vec::with_capacity(functions.len());
+    for (i, func) in functions.into_iter().enumerate() {
+        let name = format!("fn_{}", i);
+        let func_id = module
+            .declare_function(&name, cranelift_module::Linkage::Local, &func.signature)
+            .expect("Failed to declare function");
+        let mut ctx = cranelift_codegen::Context::for_function(func);
+        module
+            .define_function(func_id, &mut ctx)
+            .expect("Failed to compile function");
+        func_ids.push(func_id);
+    }
+    module.finalize_definitions().unwrap();
 
-        info!(count = compiled_fns.len(), "Cranelift IR compiled successfully");
-        Ok((module, Arc::new(compiled_fns)))
+    let compiled_fns: Vec<unsafe extern "C" fn(*mut u8)> = func_ids
+        .iter()
+        .map(|&id| {
+            let code_ptr = module.get_finalized_function(id);
+            unsafe { std::mem::transmute(code_ptr) }
+        })
+        .collect();
+
+    info!(
+        count = compiled_fns.len(),
+        "Cranelift IR compiled successfully"
+    );
+    Ok((module, Arc::new(compiled_fns)))
 }
 
 pub(crate) fn cranelift_unit_task_mailbox(

@@ -1,5 +1,5 @@
-use base::{BaseConfig, Algorithm};
 use crate::harness::{self, BenchResult};
+use base::{Algorithm, BaseConfig};
 
 type CudaBackend = burn::backend::CudaJit;
 
@@ -10,7 +10,7 @@ fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(CUDA_SAXPY_ALGORITHM).expect("Failed to deserialize cuda_saxpy algorithm")
 }
 
-use harness::{gen_floats, format_count, f32_from_bytes, build_f32_payload};
+use harness::{build_f32_payload, f32_from_bytes, format_count, gen_floats};
 
 fn cuda_device() -> burn::backend::cuda_jit::CudaDevice {
     burn::backend::cuda_jit::CudaDevice::new(0)
@@ -45,7 +45,10 @@ fn check_saxpy_result(actual: &[f32], expected: &[f32], impl_name: &str, label: 
     if actual.len() != expected.len() {
         eprintln!(
             "  VERIFY FAIL [{}] {}: length mismatch: got {}, expected {}",
-            label, impl_name, actual.len(), expected.len()
+            label,
+            impl_name,
+            actual.len(),
+            expected.len()
         );
         return false;
     }
@@ -65,7 +68,6 @@ fn check_saxpy_result(actual: &[f32], expected: &[f32], impl_name: &str, label: 
 // ---------------------------------------------------------------------------
 // Table printer
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Runner

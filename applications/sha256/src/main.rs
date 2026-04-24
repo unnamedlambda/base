@@ -27,12 +27,10 @@ fn main() {
     config.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
 
     match run(config, alg) {
-        Ok(_) => {
-            match std::fs::read_to_string("sha256_output.txt") {
-                Ok(result) => print!("{}", result),
-                Err(e) => eprintln!("Failed to read output: {}", e),
-            }
-        }
+        Ok(_) => match std::fs::read_to_string("sha256_output.txt") {
+            Ok(result) => print!("{}", result),
+            Err(e) => eprintln!("Failed to read output: {}", e),
+        },
         Err(e) => eprintln!("Execution failed: {:?}", e),
     }
 }

@@ -10,7 +10,10 @@ fn main() {
     match run(config, alg) {
         Ok(_) => {
             let elapsed = start.elapsed();
-            eprintln!("Matmul completed in {:.1}ms", elapsed.as_secs_f64() * 1000.0);
+            eprintln!(
+                "Matmul completed in {:.1}ms",
+                elapsed.as_secs_f64() * 1000.0
+            );
             eprintln!("Output: matmul_output.bin");
         }
         Err(e) => eprintln!("Execution failed: {:?}", e),

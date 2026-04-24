@@ -1,10 +1,10 @@
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 
-use base_types::{Algorithm, BaseConfig};
-use arrow_array::{Array, RecordBatch, StructArray};
 use arrow_array::ffi::{to_ffi, FFI_ArrowArray};
+use arrow_array::{Array, RecordBatch, StructArray};
 use arrow_schema::ffi::FFI_ArrowSchema;
+use base_types::{Algorithm, BaseConfig};
 
 #[pyclass(name = "BaseConfig")]
 struct PyBaseConfig {
@@ -107,9 +107,8 @@ impl PyBase {
         data: Option<&[u8]>,
     ) -> PyResult<PyObject> {
         let data = data.unwrap_or(&[]);
-        let batches = allow_threads_unsafe(py, || {
-            self.inner.execute(&algorithm.inner, data)
-        }).map_err(|e| PyValueError::new_err(format!("execute failed: {:?}", e)))?;
+        let batches = allow_threads_unsafe(py, || self.inner.execute(&algorithm.inner, data))
+            .map_err(|e| PyValueError::new_err(format!("execute failed: {:?}", e)))?;
         batches_to_pyarrow(py, batches)
     }
 
@@ -120,12 +119,11 @@ impl PyBase {
         data: &[u8],
         out: &Bound<'_, pyo3::types::PyByteArray>,
     ) -> PyResult<PyObject> {
-        let out_slice = unsafe {
-            std::slice::from_raw_parts_mut(out.data() as *mut u8, out.len())
-        };
+        let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data() as *mut u8, out.len()) };
         let batches = allow_threads_unsafe(py, || {
             self.inner.execute_into(&algorithm.inner, data, out_slice)
-        }).map_err(|e| PyValueError::new_err(format!("execute_into failed: {:?}", e)))?;
+        })
+        .map_err(|e| PyValueError::new_err(format!("execute_into failed: {:?}", e)))?;
         batches_to_pyarrow(py, batches)
     }
 }
@@ -149,9 +147,8 @@ fn load(path: &str) -> PyResult<(PyBase, PyAlgorithm)> {
 fn run(py: Python<'_>, config: &PyBaseConfig, algorithm: &PyAlgorithm) -> PyResult<PyObject> {
     let config = config.inner.clone();
     let algorithm = algorithm.inner.clone();
-    let batches = allow_threads_unsafe(py, || {
-        base::run(config, algorithm)
-    }).map_err(|e| PyValueError::new_err(format!("run failed: {:?}", e)))?;
+    let batches = allow_threads_unsafe(py, || base::run(config, algorithm))
+        .map_err(|e| PyValueError::new_err(format!("run failed: {:?}", e)))?;
     batches_to_pyarrow(py, batches)
 }
 

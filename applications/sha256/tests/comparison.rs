@@ -3,7 +3,11 @@ use std::process::Command;
 
 fn get_sha256_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/sha256", manifest_dir, profile)
 }
 
@@ -40,7 +44,9 @@ fn run_system_sha256sum(input_path: &str) -> String {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // sha256sum output format: "<hash>  <filename>"
-    stdout.split_whitespace().next()
+    stdout
+        .split_whitespace()
+        .next()
         .expect("sha256sum produced no output")
         .to_string()
 }
@@ -236,7 +242,9 @@ fn test_single_bit() {
 #[test]
 fn test_alternating_bits() {
     // Alternating 0xAA and 0x55 — exercises XOR/AND paths
-    let data: Vec<u8> = (0..200).map(|i| if i % 2 == 0 { 0xAA } else { 0x55 }).collect();
+    let data: Vec<u8> = (0..200)
+        .map(|i| if i % 2 == 0 { 0xAA } else { 0x55 })
+        .collect();
     test_sha256(&data, "alternating_aa_55");
 }
 

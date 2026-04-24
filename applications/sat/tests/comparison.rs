@@ -3,7 +3,11 @@ use std::process::Command;
 
 fn get_sat_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/sat", manifest_dir, profile)
 }
 
@@ -140,7 +144,11 @@ fn test_cnf(filename: &str, expected_sat: bool) {
         // Verify the assignment
         let (_num_vars, clauses) = parse_cnf(&cnf_path);
         let lits = parse_assignment(&assignment);
-        assert!(!lits.is_empty(), "SAT result for {} has no assignment", filename);
+        assert!(
+            !lits.is_empty(),
+            "SAT result for {} has no assignment",
+            filename
+        );
         verify_assignment(&clauses, &lits)
             .unwrap_or_else(|e| panic!("Invalid assignment for {}: {}", filename, e));
     } else {
