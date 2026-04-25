@@ -18,14 +18,30 @@ pub fn rerun_if_changed(paths: &[&str]) {
     }
 }
 
-pub fn generate_algorithms(artifacts: &[AlgorithmArtifact]) {
+pub fn generate_algorithms(lake_dir: &str, artifacts: &[AlgorithmArtifact]) {
     let manifest_dir = manifest_dir();
+    let lake_path = manifest_dir.join(lake_dir);
     let out_dir = out_dir();
 
+    build_algorithm_lib(&lake_path);
+
     for artifact in artifacts {
-        let output = run_lean_interpreter(&manifest_dir, artifact.lean_file);
+        let output = run_lean_interpreter(&lake_path, artifact.lean_file);
         write_algorithm_outputs(&out_dir, artifact.output_name, &output.stdout);
     }
+}
+
+fn build_algorithm_lib(lake_dir: &Path) {
+    let olean = lake_dir.join(".lake/build/lib/lean/AlgorithmLib.olean");
+    if olean.exists() {
+        return;
+    }
+    let output = Command::new("lake")
+        .args(["build", "AlgorithmLib"])
+        .current_dir(lake_dir)
+        .output()
+        .unwrap_or_else(|e| panic!("Failed to run lake build AlgorithmLib: {e}"));
+    ensure_success(output, "lake build AlgorithmLib failed", "AlgorithmLib build failed");
 }
 
 fn manifest_dir() -> PathBuf {
@@ -40,12 +56,12 @@ fn out_dir() -> PathBuf {
         .expect("OUT_DIR is not set")
 }
 
-fn run_lean_interpreter(manifest_dir: &Path, lean_file: &str) -> Output {
-    let lean_path = manifest_dir.join(lean_file);
+fn run_lean_interpreter(lake_dir: &Path, lean_file: &str) -> Output {
+    let lean_path = lake_dir.join(lean_file);
     let output = Command::new("lake")
         .args(["env", "lean", "--run"])
         .arg(&lean_path)
-        .current_dir(manifest_dir)
+        .current_dir(lake_dir)
         .output()
         .unwrap_or_else(|error| panic!("Failed to run Lean interpreter for {lean_file}: {error}"));
 

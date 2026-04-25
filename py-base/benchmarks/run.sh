@@ -12,6 +12,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$SCRIPT_DIR/../.venv"
+LAKE_DIR="$SCRIPT_DIR/../../algorithms"
+LEAN_DIR="$LAKE_DIR/lean"
+OUT_DIR="$LAKE_DIR/data"
 
 # ── Python environment ────────────────────────────────────────────────────────
 
@@ -31,10 +34,6 @@ fi
 pip install -q -r "$SCRIPT_DIR/requirements-bench.txt"
 
 # ── Algorithm JSON files ──────────────────────────────────────────────────────
-
-LAKE_DIR="$SCRIPT_DIR/../../benchmarks"
-LEAN_DIR="$LAKE_DIR/lean"
-OUT_DIR="$SCRIPT_DIR/algos"
 
 mkdir -p "$OUT_DIR"
 

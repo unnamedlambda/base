@@ -33,13 +33,13 @@ def main():
             print_usage()
             sys.exit(1)
 
-    algos_dir = os.path.join(BENCHMARKS_DIR, "algos")
+    data_dir = os.path.normpath(os.path.join(BENCHMARKS_DIR, "..", "..", "algorithms", "data"))
 
     def algo_path(name: str) -> str:
-        path = os.path.join(algos_dir, f"{name}.json")
+        path = os.path.join(data_dir, f"{name}.json")
         if not os.path.exists(path):
             print(
-                f"ERROR: {path} not found. Run ./generate_algos.sh first.",
+                f"ERROR: {path} not found. Run ./run.sh first.",
                 file=sys.stderr,
             )
             sys.exit(1)

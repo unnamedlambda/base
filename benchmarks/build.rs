@@ -74,11 +74,12 @@ fn main() {
 
     let rerun_paths: Vec<_> = artifacts
         .iter()
-        .map(|artifact| artifact.lean_file)
-        .chain(["lakefile.lean", "../lean/AlgorithmLib.lean"])
+        .map(|artifact| format!("../algorithms/{}", artifact.lean_file))
+        .chain(["../algorithms/lean/AlgorithmLib.lean".to_string()])
         .collect();
+    let rerun_paths_refs: Vec<&str> = rerun_paths.iter().map(|s| s.as_str()).collect();
 
-    rerun_if_changed(&rerun_paths);
+    rerun_if_changed(&rerun_paths_refs);
 
-    generate_algorithms(&artifacts);
+    generate_algorithms("../algorithms", &artifacts);
 }
