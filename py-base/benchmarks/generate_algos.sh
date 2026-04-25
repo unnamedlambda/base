@@ -20,6 +20,7 @@ declare -A ALGOS=(
     ["RegexBenchAlgorithm.lean"]="regex"
     ["StringSearchAlgorithm.lean"]="strsearch"
     ["WordCountAlgorithm.lean"]="wordcount"
+    ["VecOpsBenchAlgorithm.lean"]="vecops"
 )
 
 for lean_file in "${!ALGOS[@]}"; do

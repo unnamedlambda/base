@@ -4,7 +4,7 @@ Python benchmark suite for py_base.
 Usage:
     python bench.py [--bench <name>] [--rounds <n>]
 
-    --bench   csv | json | regex | strsearch | all  (default: all)
+    --bench   csv | json | regex | strsearch | vecops | all  (default: all)
     --rounds  number of timed iterations per size         (default: 10)
 
 Prerequisites:
@@ -18,7 +18,7 @@ import os
 BENCHMARKS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BENCHMARKS_DIR)
 
-from benches import csv_bench, json_bench, regex_bench, strsearch_bench
+from benches import csv_bench, json_bench, regex_bench, strsearch_bench, vecops_bench
 import harness
 
 
@@ -75,7 +75,11 @@ def main():
         results = strsearch_bench.run(algo_path("strsearch"), rounds)
         harness.print_table(results)
 
-    if bench not in ("all", "csv", "json", "regex", "strsearch"):
+    if bench in ("all", "vecops"):
+        results = vecops_bench.run(algo_path("vecops"), rounds)
+        harness.print_table(results, col_a="NumPy")
+
+    if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops"):
         print(f"Unknown benchmark: {bench}", file=sys.stderr)
         print_usage()
         sys.exit(1)

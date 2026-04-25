@@ -37,13 +37,13 @@ def _fmt_check(v: Optional[bool]) -> str:
     return "—"
 
 
-def print_table(results: list[BenchResult]) -> None:
+def print_table(results: list[BenchResult], col_a: str = "Python") -> None:
     name_w = 20
     col_w = 12
 
     print()
     print(
-        f"{'Benchmark':<{name_w}} {'Python':>{col_w}} {'PyO3':>{col_w}} {'Check':>6}"
+        f"{'Benchmark':<{name_w}} {col_a:>{col_w}} {'PyO3':>{col_w}} {'Check':>6}"
     )
     print("-" * (name_w + col_w * 2 + 6 + 3))
 
