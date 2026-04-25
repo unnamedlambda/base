@@ -1,17 +1,3 @@
-"""
-Python benchmark suite for py_base.
-
-Usage:
-    python bench.py [--bench <name>] [--rounds <n>]
-
-    --bench   csv | json | regex | strsearch | vecops | all  (default: all)
-    --rounds  number of timed iterations per size         (default: 10)
-
-Prerequisites:
-    1. maturin develop        # build py_base
-    2. ./generate_algos.sh    # generate algos/*.json from Lean source
-"""
-
 import sys
 import os
 
