@@ -1,11 +1,10 @@
 import Lake
 open Lake DSL
 
-package algorithms where
-  srcDir := "lean"
+require algorithmLib from "../lib"
 
-@[default_target]
-lean_lib AlgorithmLib
+package algorithms where
+  srcDir := "."
 
 -- Benchmark algorithms
 lean_exe generate_csv_bench where

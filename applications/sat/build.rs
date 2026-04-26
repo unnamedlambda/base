@@ -2,12 +2,12 @@ use build_support::{generate_algorithms, rerun_if_changed, AlgorithmArtifact};
 
 fn main() {
     rerun_if_changed(&[
-        "../../algorithms/lean/SatAlgorithm.lean",
-        "../../algorithms/lean/AlgorithmLib.lean",
+        "../../lean/algorithms/SatAlgorithm.lean",
+        "../../lean/lib/AlgorithmLib.lean",
     ]);
 
-    generate_algorithms("../../algorithms", &[AlgorithmArtifact {
-        lean_file: "lean/SatAlgorithm.lean",
+    generate_algorithms("../../lean/algorithms", &[AlgorithmArtifact {
+        lean_file: "SatAlgorithm.lean",
         output_name: "algorithm",
     }]);
 }

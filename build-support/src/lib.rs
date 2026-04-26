@@ -31,17 +31,19 @@ pub fn generate_algorithms(lake_dir: &str, artifacts: &[AlgorithmArtifact]) {
     }
 }
 
-fn build_algorithm_lib(lake_dir: &Path) {
-    let olean = lake_dir.join(".lake/build/lib/lean/AlgorithmLib.olean");
+fn build_algorithm_lib(algorithms_dir: &Path) {
+    // AlgorithmLib lives in ../lib relative to the algorithms package.
+    let lib_dir = algorithms_dir.parent().unwrap().join("lib");
+    let olean = lib_dir.join(".lake/build/lib/lean/AlgorithmLib.olean");
     if olean.exists() {
         return;
     }
     let output = Command::new("lake")
-        .args(["build", "AlgorithmLib"])
-        .current_dir(lake_dir)
+        .args(["build"])
+        .current_dir(&lib_dir)
         .output()
-        .unwrap_or_else(|e| panic!("Failed to run lake build AlgorithmLib: {e}"));
-    ensure_success(output, "lake build AlgorithmLib failed", "AlgorithmLib build failed");
+        .unwrap_or_else(|e| panic!("Failed to build AlgorithmLib: {e}"));
+    ensure_success(output, "AlgorithmLib build failed", "AlgorithmLib build failed");
 }
 
 fn manifest_dir() -> PathBuf {

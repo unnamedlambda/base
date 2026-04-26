@@ -3,83 +3,83 @@ use build_support::{generate_algorithms, rerun_if_changed, AlgorithmArtifact};
 fn main() {
     let artifacts = [
         AlgorithmArtifact {
-            lean_file: "lean/CsvBenchAlgorithm.lean",
+            lean_file: "CsvBenchAlgorithm.lean",
             output_name: "csv_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/RegexBenchAlgorithm.lean",
+            lean_file: "RegexBenchAlgorithm.lean",
             output_name: "regex_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/JsonBenchAlgorithm.lean",
+            lean_file: "JsonBenchAlgorithm.lean",
             output_name: "json_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/StringSearchAlgorithm.lean",
+            lean_file: "StringSearchAlgorithm.lean",
             output_name: "strsearch_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/WordCountAlgorithm.lean",
+            lean_file: "WordCountAlgorithm.lean",
             output_name: "wc_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/SaxpyBenchAlgorithm.lean",
+            lean_file: "SaxpyBenchAlgorithm.lean",
             output_name: "saxpy_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/HistogramBench1Algorithm.lean",
+            lean_file: "HistogramBench1Algorithm.lean",
             output_name: "hist1_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/HistogramBench4Algorithm.lean",
+            lean_file: "HistogramBench4Algorithm.lean",
             output_name: "hist4_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/MatmulBenchAlgorithm.lean",
+            lean_file: "MatmulBenchAlgorithm.lean",
             output_name: "matmul_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/VecOpsBenchAlgorithm.lean",
+            lean_file: "VecOpsBenchAlgorithm.lean",
             output_name: "vecops_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/ReductionBenchAlgorithm.lean",
+            lean_file: "ReductionBenchAlgorithm.lean",
             output_name: "reduction_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/GpuVecAddBenchAlgorithm.lean",
+            lean_file: "GpuVecAddBenchAlgorithm.lean",
             output_name: "gpu_vecadd_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/GpuMatMulBenchAlgorithm.lean",
+            lean_file: "GpuMatMulBenchAlgorithm.lean",
             output_name: "gpu_matmul_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/GpuReductionBenchAlgorithm.lean",
+            lean_file: "GpuReductionBenchAlgorithm.lean",
             output_name: "gpu_reduction_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/CudaSaxpyBenchAlgorithm.lean",
+            lean_file: "CudaSaxpyBenchAlgorithm.lean",
             output_name: "cuda_saxpy_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/GpuIterBenchAlgorithm.lean",
+            lean_file: "GpuIterBenchAlgorithm.lean",
             output_name: "gpu_iter_algorithm",
         },
         AlgorithmArtifact {
-            lean_file: "lean/SortBenchAlgorithm.lean",
+            lean_file: "SortBenchAlgorithm.lean",
             output_name: "sort_algorithm",
         },
     ];
 
     let rerun_paths: Vec<_> = artifacts
         .iter()
-        .map(|artifact| format!("../algorithms/{}", artifact.lean_file))
-        .chain(["../algorithms/lean/AlgorithmLib.lean".to_string()])
+        .map(|artifact| format!("../lean/algorithms/{}", artifact.lean_file))
+        .chain(["../lean/lib/AlgorithmLib.lean".to_string()])
         .collect();
     let rerun_paths_refs: Vec<&str> = rerun_paths.iter().map(|s| s.as_str()).collect();
 
     rerun_if_changed(&rerun_paths_refs);
 
-    generate_algorithms("../algorithms", &artifacts);
+    generate_algorithms("../lean/algorithms", &artifacts);
 }

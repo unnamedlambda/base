@@ -12,9 +12,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$SCRIPT_DIR/../.venv"
-LAKE_DIR="$SCRIPT_DIR/../../algorithms"
-LEAN_DIR="$LAKE_DIR/lean"
-OUT_DIR="$LAKE_DIR/data"
+LAKE_DIR="$SCRIPT_DIR/../../lean/algorithms"
+LEAN_DIR="$LAKE_DIR"
+OUT_DIR="$SCRIPT_DIR/../../lean/data"
 
 # ── Python environment ────────────────────────────────────────────────────────
 

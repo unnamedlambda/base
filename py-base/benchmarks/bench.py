@@ -33,7 +33,7 @@ def main():
             print_usage()
             sys.exit(1)
 
-    data_dir = os.path.normpath(os.path.join(BENCHMARKS_DIR, "..", "..", "algorithms", "data"))
+    data_dir = os.path.normpath(os.path.join(BENCHMARKS_DIR, "..", "..", "lean", "data"))
 
     def algo_path(name: str) -> str:
         path = os.path.join(data_dir, f"{name}.json")
