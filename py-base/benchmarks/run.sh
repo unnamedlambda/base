@@ -44,6 +44,7 @@ declare -A ALGOS=(
     ["StringSearchAlgorithm.lean"]="strsearch"
     ["WordCountAlgorithm.lean"]="wordcount"
     ["VecOpsBenchAlgorithm.lean"]="vecops"
+    ["PandasBenchAlgorithm.lean"]="pandas"
 )
 
 for lean_file in "${!ALGOS[@]}"; do
