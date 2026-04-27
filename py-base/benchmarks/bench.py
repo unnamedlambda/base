@@ -62,11 +62,11 @@ def main():
         harness.print_table(results)
 
     if bench in ("all", "vecops"):
-        results = vecops_bench.run(algo_path("vecops"), rounds)
+        results = vecops_bench.run(algo_path("vecops"), algo_path("clampsum"), rounds)
         harness.print_table(results, col_a="NumPy")
 
     if bench in ("all", "pandas"):
-        results = pandas_bench.run(algo_path("pandas"), rounds)
+        results = pandas_bench.run(algo_path("pandas"), algo_path("pandas_filter"), rounds)
         harness.print_table(results, col_a="Pandas")
 
     if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops", "pandas"):

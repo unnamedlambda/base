@@ -1,72 +1,55 @@
 """
-VecAdd benchmark: numpy vs py_base.
+NumPy vector benchmarks: numpy vs py_base.
 
-Both start from the same contiguous bytes buffer — the natural py_base convention.
-Data lives in one flat allocation; no split into separate Python objects.
+VecAdd:   (a + b).sum()
+  numpy:   allocates intermediate f32 array for (a+b), then sums — two passes.
+  py_base: 4x-unrolled f32x4 SIMD add + accumulate, horizontal reduce to f64.
+           Single pass, zero allocations.
 
-  numpy:   np.frombuffer views (zero-copy) → (a + b).sum()
-           Two-pass: allocates a full intermediate array for (a+b), then sums it.
+ClampSum: np.clip(a, -0.5, 0.5).sum()
+  numpy:   allocates intermediate f32 array for the clipped values, then sums — two passes.
+  py_base: same 4x-unrolled f32x4 structure as VecAdd; fmin/fmax replace the add.
+           Accumulates in f32x4, reduces to f64 at the end. Single pass, zero allocations.
 
-  py_base: passes buffer directly → 4x-unrolled SIMD f32x4 loop
-           Single pass: adds and accumulates in registers, zero intermediate allocation.
-
-Payload: [A floats: n * f32][B floats: n * f32]  (back to back, n inferred from data_len/8)
-Out:     bytearray(8)  (f64 result)
+Both sides start from pre-built numpy arrays (zero-copy views for numpy;
+pre-packed bytes for py_base). Only the computation is timed.
 """
 
 import os
 import struct
 import sys
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
 
-try:
-    import numpy as np
-except ImportError:
-    np = None
-
 SIZES = [1_000_000, 10_000_000, 50_000_000]
 
-
-def close_enough(a: float, b: float, tol: float = 0.01) -> bool:
-    if a != a or b != b:  # NaN check
-        return False
-    mag = max(abs(a), abs(b), 1.0)
-    return abs(a - b) / mag < tol
+CLAMP_LO = -0.5
+CLAMP_HI =  0.5
 
 
-def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
-    if np is None:
-        print("numpy not installed — skipping vecops benchmark", file=sys.stderr)
-        return []
-
+def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     engine, alg = py_base.load(algo_path)
+    out = bytearray(8)
     results = []
-
     rng = np.random.default_rng(42)
 
     for n in SIZES:
-        # Must be multiple of 16 for the SIMD main loop.
-        n = (n // 16) * 16
+        n = (n // 16) * 16   # must be multiple of 16 for the SIMD main loop
 
-        # Single contiguous buffer: [A floats][B floats] — the py_base convention.
-        # A real program would fill this buffer directly as data is generated.
         buf = rng.standard_normal(2 * n).astype(np.float32)
-        data = bytes(buf)  # pre-built once outside timing; both sides start here
-        out = bytearray(8)
-
+        data = bytes(buf)
         a = np.frombuffer(data, dtype=np.float32, count=n)
         b = np.frombuffer(data, dtype=np.float32, offset=n * 4)
 
-        # numpy: zero-copy views into the shared buffer, then two-pass compute
-        # (allocates intermediate array for a+b, then sums it separately)
+        (a + b).sum()  # warmup
         numpy_ms = harness.median_of(rounds, lambda: harness.time_ms(
             lambda: (a + b).sum()
         ))
 
-        # py_base: buffer passed directly, single-pass SIMD, no intermediate allocation
         engine.execute_into(alg, data, out)  # warmup
         pybase_ms = harness.median_of(rounds, lambda: harness.time_ms(
             lambda: engine.execute_into(alg, data, out)
@@ -74,13 +57,53 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
         expected = float((a + b).sum())
         pybase_result = struct.unpack("<d", bytes(out))[0]
-        verified = close_enough(expected, pybase_result)
+        mag = max(abs(expected), 1.0)
+        verified = abs(pybase_result - expected) / mag < 0.01
 
         results.append(harness.BenchResult(
-            name=f"VecAdd ({harness.format_count(n)})",
+            name=f"VecAdd  ({harness.format_count(n)})",
             python_ms=numpy_ms,
             pybase_ms=pybase_ms,
             verified=verified,
         ))
 
     return results
+
+
+def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
+    engine, alg = py_base.load(algo_path)
+    out = bytearray(8)
+    results = []
+    rng = np.random.default_rng(99)
+
+    for n in SIZES:
+        a = rng.standard_normal(n).astype(np.float32)
+        data = bytes(a)
+
+        np.clip(a, CLAMP_LO, CLAMP_HI).sum()  # warmup
+        numpy_ms = harness.median_of(rounds, lambda: harness.time_ms(
+            lambda: np.clip(a, CLAMP_LO, CLAMP_HI).sum()
+        ))
+
+        engine.execute_into(alg, data, out)  # warmup
+        pybase_ms = harness.median_of(rounds, lambda: harness.time_ms(
+            lambda: engine.execute_into(alg, data, out)
+        ))
+
+        expected = float(np.clip(a, CLAMP_LO, CLAMP_HI).sum())
+        pybase_result = struct.unpack("<d", bytes(out))[0]
+        mag = max(abs(expected), 1.0)
+        verified = abs(pybase_result - expected) / mag < 0.01
+
+        results.append(harness.BenchResult(
+            name=f"ClampSum({harness.format_count(n)})",
+            python_ms=numpy_ms,
+            pybase_ms=pybase_ms,
+            verified=verified,
+        ))
+
+    return results
+
+
+def run(vecadd_path: str, clampsum_path: str, rounds: int) -> list[harness.BenchResult]:
+    return _run_vecadd(vecadd_path, rounds) + _run_clampsum(clampsum_path, rounds)
