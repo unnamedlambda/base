@@ -26,7 +26,11 @@ class BenchResult:
 def _fmt_ms(v: Optional[float]) -> str:
     if v is None:
         return "N/A"
-    return f"{v:.1f}ms"
+    if v >= 10.0:
+        return f"{v:.1f}ms"
+    if v >= 1.0:
+        return f"{v:.2f}ms"
+    return f"{v:.3f}ms"
 
 
 def _fmt_check(v: Optional[bool]) -> str:
