@@ -605,6 +605,15 @@ unsafe extern "C" fn cl_gpu_cleanup(ptr: *mut u8) {
 struct CraneliftCudaContext {
     device: std::sync::Arc<cudarc::driver::CudaDevice>,
     buffers: Vec<Option<cudarc::driver::CudaSlice<u8>>>,
+    blas: Option<cudarc::cublas::CudaBlas>,
+    main_kernel_cache: std::collections::HashMap<i64, String>,
+    named_kernel_cache: std::collections::HashMap<(i64, i64), NamedKernelCacheEntry>,
+}
+
+struct NamedKernelCacheEntry {
+    func_name: String,
+    module_name: String,
+    _leaked_func_name: Option<*mut str>,
 }
 
 fn cached_cuda_device() -> std::sync::Arc<cudarc::driver::CudaDevice> {
@@ -620,6 +629,9 @@ unsafe extern "C" fn cl_cuda_init(ptr: *mut u8) {
         let cuda_ctx = Box::new(CraneliftCudaContext {
             device,
             buffers: Vec::new(),
+            blas: None,
+            main_kernel_cache: std::collections::HashMap::new(),
+            named_kernel_cache: std::collections::HashMap::new(),
         });
         std::ptr::write_unaligned(
             ptr as *mut *mut CraneliftCudaContext,
@@ -684,6 +696,47 @@ unsafe extern "C" fn cl_cuda_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64,
             return -1;
         };
         match ctx.device.htod_sync_copy_into(data, buf) {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_cuda_upload_ptr_offset(
+    ptr: *mut u8,
+    buf_id: i32,
+    buf_offset: i64,
+    src_ptr: i64,
+    size: i64,
+) -> i32 {
+    use cudarc::driver::DevicePtr;
+
+    if buf_id < 0 || buf_offset < 0 || size <= 0 || src_ptr == 0 {
+        return -1;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let bid = buf_id as usize;
+        if bid >= ctx.buffers.len() {
+            return -1;
+        }
+        let data = std::slice::from_raw_parts(src_ptr as *const u8, size as usize);
+        let Some(buf) = ctx.buffers[bid].as_mut() else {
+            return -1;
+        };
+        let start = buf_offset as usize;
+        let byte_len = size as usize;
+        // Cuda buffers are allocated as CudaSlice<u8>, so len is in bytes.
+        let total_len = {
+            use cudarc::driver::DeviceSlice;
+            buf.len()
+        };
+        if start.saturating_add(byte_len) > total_len {
+            return -1;
+        }
+        let dst = (*buf.device_ptr()).saturating_add(buf_offset as u64);
+        match unsafe { cudarc::driver::result::memcpy_htod_sync(dst, data) } {
             Ok(_) => 0,
             Err(_) => -1,
         }
@@ -792,24 +845,26 @@ unsafe extern "C" fn cl_cuda_launch(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
 
-        // Read PTX source from shared memory
-        let ptx_src = read_cstr(ptr, kernel_off as usize);
-
-        // Use a hash of PTX source as module name so different kernels
-        // get different modules even on the same cached CudaDevice.
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        ptx_src.hash(&mut hasher);
-        let module_name = format!("ptx_{:016x}", hasher.finish());
         let func_name: &'static str = "main";
-        if !ctx.device.has_func(&module_name, func_name) {
-            let ptx = cudarc::nvrtc::Ptx::from_src(ptx_src);
-            if let Err(e) = ctx.device.load_ptx(ptx, &module_name, &[func_name]) {
-                eprintln!("cl_cuda_launch: load_ptx failed: {:?}", e);
-                return -1;
+        let module_name = if let Some(name) = ctx.main_kernel_cache.get(&kernel_off) {
+            name.clone()
+        } else {
+            let ptx_src = read_cstr(ptr, kernel_off as usize);
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            ptx_src.hash(&mut hasher);
+            let module_name = format!("ptx_{:016x}", hasher.finish());
+            if !ctx.device.has_func(&module_name, func_name) {
+                let ptx = cudarc::nvrtc::Ptx::from_src(ptx_src.clone());
+                if let Err(e) = ctx.device.load_ptx(ptx, &module_name, &[func_name]) {
+                    eprintln!("cl_cuda_launch: load_ptx failed: {:?}", e);
+                    return -1;
+                }
             }
-        }
+            ctx.main_kernel_cache.insert(kernel_off, module_name.clone());
+            module_name
+        };
         let func = match ctx.device.get_func(&module_name, func_name) {
             Some(f) => f,
             None => return -1,
@@ -849,6 +904,14 @@ unsafe extern "C" fn cl_cuda_launch(
             return -1;
         }
 
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+unsafe extern "C" fn cl_cuda_sync(ptr: *mut u8) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
         match ctx.device.synchronize() {
             Ok(_) => 0,
             Err(_) => -1,
@@ -860,6 +923,426 @@ unsafe extern "C" fn cl_cuda_launch(
 unsafe extern "C" fn cl_cuda_cleanup(ptr: *mut u8) {
     let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
     drop(Box::from_raw(ctx_ptr));
+}
+
+/// Launch a PTX kernel by name.
+///
+/// Same as `cl_cuda_launch` but reads the entry-point name from shared memory
+/// at `name_off` instead of hardcoding `"main"`.
+unsafe extern "C" fn cl_cuda_launch_named(
+    ptr: *mut u8,
+    kernel_off: i64,
+    name_off: i64,
+    n_bufs: i32,
+    bind_off: i64,
+    grid_x: i32,
+    grid_y: i32,
+    grid_z: i32,
+    block_x: i32,
+    block_y: i32,
+    block_z: i32,
+) -> i32 {
+    if n_bufs < 0
+        || grid_x <= 0
+        || grid_y <= 0
+        || grid_z <= 0
+        || block_x <= 0
+        || block_y <= 0
+        || block_z <= 0
+    {
+        return -1;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let (module_name, func_name) =
+            if let Some(entry) = ctx.named_kernel_cache.get(&(kernel_off, name_off)) {
+                (entry.module_name.clone(), entry.func_name.clone())
+            } else {
+                let ptx_src = read_cstr(ptr, kernel_off as usize);
+                let func_name_owned = read_cstr(ptr, name_off as usize);
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                ptx_src.hash(&mut hasher);
+                func_name_owned.hash(&mut hasher);
+                let module_name = format!("ptx_{:016x}", hasher.finish());
+                let leaked_func_name = if !ctx.device.has_func(&module_name, &func_name_owned) {
+                    let leaked_func_name = Box::into_raw(func_name_owned.clone().into_boxed_str());
+                    let leaked_func_name_ref: &'static str = unsafe { &*leaked_func_name };
+                    let ptx = cudarc::nvrtc::Ptx::from_src(ptx_src.clone());
+                    if let Err(e) = ctx.device.load_ptx(ptx, &module_name, &[leaked_func_name_ref]) {
+                        drop(unsafe { Box::from_raw(leaked_func_name) });
+                        eprintln!("cl_cuda_launch_named: load_ptx failed: {:?}", e);
+                        return -1;
+                    }
+                    Some(leaked_func_name)
+                } else {
+                    None
+                };
+                ctx.named_kernel_cache.insert(
+                    (kernel_off, name_off),
+                    NamedKernelCacheEntry {
+                        func_name: func_name_owned.clone(),
+                        module_name: module_name.clone(),
+                        _leaked_func_name: leaked_func_name,
+                    },
+                );
+                (module_name, func_name_owned)
+            };
+
+        if !ctx.device.has_func(&module_name, &func_name) {
+            return -1;
+        }
+        let func = match ctx.device.get_func(&module_name, &func_name) {
+            Some(f) => f,
+            None => return -1,
+        };
+
+        use cudarc::driver::DevicePtr;
+        let bind_base = ptr.add(bind_off as usize);
+        let mut dev_ptrs: Vec<cudarc::driver::sys::CUdeviceptr> =
+            Vec::with_capacity(n_bufs as usize);
+        for i in 0..n_bufs as usize {
+            let buf_id = std::ptr::read_unaligned(bind_base.add(i * 4) as *const i32) as usize;
+            if buf_id >= ctx.buffers.len() {
+                return -1;
+            }
+            let Some(buf) = ctx.buffers[buf_id].as_ref() else {
+                return -1;
+            };
+            dev_ptrs.push(*buf.device_ptr());
+        }
+        let mut arg_ptrs: Vec<*mut std::ffi::c_void> = dev_ptrs
+            .iter_mut()
+            .map(|p| p as *mut cudarc::driver::sys::CUdeviceptr as *mut std::ffi::c_void)
+            .collect();
+
+        let cfg = cudarc::driver::LaunchConfig {
+            grid_dim: (grid_x as u32, grid_y as u32, grid_z as u32),
+            block_dim: (block_x as u32, block_y as u32, block_z as u32),
+            shared_mem_bytes: 0,
+        };
+        use cudarc::driver::LaunchAsync;
+        if let Err(e) = func.launch(cfg, &mut arg_ptrs) {
+            eprintln!("cl_cuda_launch_named: kernel launch failed: {:?}", e);
+            return -1;
+        }
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// cuBLAS SGEMM: C = alpha * op(A) * op(B) + beta * C
+///
+/// - `transa`: 0 = NoTrans, 1 = Trans (for A)
+/// - `transb`: 0 = NoTrans, 1 = Trans (for B)
+/// - `m`, `n`, `k`: dimensions of op(A) = m×k, op(B) = k×n, C = m×n
+/// - `alpha_bits`, `beta_bits`: f32 scalars reinterpreted as i32 bits
+/// - `a_buf`, `b_buf`, `c_buf`: buffer IDs (from cl_cuda_create_buffer)
+///
+/// Leading dimensions follow standard cuBLAS column-major rules:
+///   lda = k if transa else m,  ldb = n if transb else k,  ldc = m
+unsafe extern "C" fn cl_cublas_sgemm(
+    ptr: *mut u8,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha_bits: i32,
+    a_buf: i32,
+    b_buf: i32,
+    beta_bits: i32,
+    c_buf: i32,
+) -> i32 {
+    use cudarc::cublas::sys::cublasOperation_t;
+    use cudarc::driver::DevicePtr;
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+
+        if ctx.blas.is_none() {
+            match cudarc::cublas::CudaBlas::new(ctx.device.clone()) {
+                Ok(b) => ctx.blas = Some(b),
+                Err(e) => {
+                    eprintln!("cl_cublas_sgemm: CudaBlas::new failed: {:?}", e);
+                    return -1;
+                }
+            }
+        }
+        let blas = ctx.blas.as_ref().unwrap();
+
+        let alpha = f32::from_bits(alpha_bits as u32);
+        let beta = f32::from_bits(beta_bits as u32);
+        let op_a = if transa != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let op_b = if transb != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let lda = if transa != 0 { k } else { m };
+        let ldb = if transb != 0 { n } else { k };
+        let ldc = m;
+
+        let get_dev_ptr = |buf_id: i32| -> Option<u64> {
+            let bid = buf_id as usize;
+            if bid >= ctx.buffers.len() {
+                return None;
+            }
+            Some(*ctx.buffers[bid].as_ref()?.device_ptr())
+        };
+
+        let a_dev = match get_dev_ptr(a_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+        let b_dev = match get_dev_ptr(b_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+        let c_dev = match get_dev_ptr(c_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        if let Err(e) = unsafe {
+            cudarc::cublas::result::sgemm(
+                *blas.handle(),
+                op_a,
+                op_b,
+                m,
+                n,
+                k,
+                &alpha,
+                a_dev as *const f32,
+                lda,
+                b_dev as *const f32,
+                ldb,
+                &beta,
+                c_dev as *mut f32,
+                ldc,
+            )
+        } {
+            eprintln!("cl_cublas_sgemm: sgemm failed: {:?}", e);
+            return -1;
+        }
+
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// cuBLAS SGEMV: y = alpha * op(A) * x + beta * y
+///
+/// - `trans`: 0 = NoTrans, 1 = Trans
+/// - `m`, `n`: dimensions of A in column-major form
+/// - `alpha_bits`, `beta_bits`: f32 scalars reinterpreted as i32 bits
+/// - `a_buf`, `x_buf`, `y_buf`: buffer IDs
+///
+/// For row-major weights shaped [rows, cols], call with `trans=1`, `m=cols`, `n=rows`.
+unsafe extern "C" fn cl_cublas_sgemv(
+    ptr: *mut u8,
+    trans: i32,
+    m: i32,
+    n: i32,
+    alpha_bits: i32,
+    a_buf: i32,
+    x_buf: i32,
+    beta_bits: i32,
+    y_buf: i32,
+) -> i32 {
+    use cudarc::cublas::sys::cublasOperation_t;
+    use cudarc::driver::DevicePtr;
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+
+        if ctx.blas.is_none() {
+            match cudarc::cublas::CudaBlas::new(ctx.device.clone()) {
+                Ok(b) => ctx.blas = Some(b),
+                Err(e) => {
+                    eprintln!("cl_cublas_sgemv: CudaBlas::new failed: {:?}", e);
+                    return -1;
+                }
+            }
+        }
+        let blas = ctx.blas.as_ref().unwrap();
+
+        let alpha = f32::from_bits(alpha_bits as u32);
+        let beta = f32::from_bits(beta_bits as u32);
+        let op = if trans != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let lda = m;
+
+        let get_dev_ptr = |buf_id: i32| -> Option<u64> {
+            let bid = buf_id as usize;
+            if bid >= ctx.buffers.len() {
+                return None;
+            }
+            Some(*ctx.buffers[bid].as_ref()?.device_ptr())
+        };
+
+        let a_dev = match get_dev_ptr(a_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+        let x_dev = match get_dev_ptr(x_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+        let y_dev = match get_dev_ptr(y_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        if let Err(e) = unsafe {
+            cudarc::cublas::result::sgemv(
+                *blas.handle(),
+                op,
+                m,
+                n,
+                &alpha,
+                a_dev as *const f32,
+                lda,
+                x_dev as *const f32,
+                1,
+                &beta,
+                y_dev as *mut f32,
+                1,
+            )
+        } {
+            eprintln!("cl_cublas_sgemv: sgemv failed: {:?}", e);
+            return -1;
+        }
+
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// cuBLAS SGEMM strided batched: C_i = alpha * op(A_i) * op(B_i) + beta * C_i
+///
+/// - `transa`: 0 = NoTrans, 1 = Trans
+/// - `transb`: 0 = NoTrans, 1 = Trans
+/// - `m`, `n`, `k`: dimensions of op(A) = m×k, op(B) = k×n, C = m×n
+/// - `stride_a`, `stride_b`, `stride_c`: batch strides in number of f32 elements
+/// - `batch_count`: number of matrices/vectors in the batch
+/// - `alpha_bits`, `beta_bits`: f32 scalars reinterpreted as i32 bits
+///
+/// For row-major matrices stored as contiguous `[rows, cols]`, use the same
+/// transpose conventions as `cl_cublas_sgemv` / `cl_cublas_sgemm`.
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn cl_cublas_sgemm_strided_batched(
+    ptr: *mut u8,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha_bits: i32,
+    a_buf: i32,
+    stride_a: i64,
+    b_buf: i32,
+    stride_b: i64,
+    beta_bits: i32,
+    c_buf: i32,
+    stride_c: i64,
+    batch_count: i32,
+) -> i32 {
+    use cudarc::cublas::sys::cublasOperation_t;
+    use cudarc::driver::DevicePtr;
+
+    if m <= 0 || n <= 0 || k <= 0 || stride_a < 0 || stride_b < 0 || stride_c < 0 || batch_count <= 0 {
+        return -1;
+    }
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+
+        if ctx.blas.is_none() {
+            match cudarc::cublas::CudaBlas::new(ctx.device.clone()) {
+                Ok(b) => ctx.blas = Some(b),
+                Err(e) => {
+                    eprintln!("cl_cublas_sgemm_strided_batched: CudaBlas::new failed: {:?}", e);
+                    return -1;
+                }
+            }
+        }
+        let blas = ctx.blas.as_ref().unwrap();
+
+        let alpha = f32::from_bits(alpha_bits as u32);
+        let beta = f32::from_bits(beta_bits as u32);
+        let op_a = if transa != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let op_b = if transb != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let lda = if transa != 0 { k } else { m };
+        let ldb = if transb != 0 { n } else { k };
+        let ldc = m;
+
+        let get_dev_ptr = |buf_id: i32| -> Option<u64> {
+            let bid = buf_id as usize;
+            if bid >= ctx.buffers.len() {
+                return None;
+            }
+            Some(*ctx.buffers[bid].as_ref()?.device_ptr())
+        };
+
+        let a_dev = match get_dev_ptr(a_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+        let b_dev = match get_dev_ptr(b_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+        let c_dev = match get_dev_ptr(c_buf) {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        if let Err(e) = unsafe {
+            cudarc::cublas::result::sgemm_strided_batched(
+                *blas.handle(),
+                op_a,
+                op_b,
+                m,
+                n,
+                k,
+                &alpha,
+                a_dev as *const f32,
+                lda,
+                stride_a,
+                b_dev as *const f32,
+                ldb,
+                stride_b,
+                &beta,
+                c_dev as *mut f32,
+                ldc,
+                stride_c,
+                batch_count,
+            )
+        } {
+            eprintln!("cl_cublas_sgemm_strided_batched: sgemm failed: {:?}", e);
+            return -1;
+        }
+
+        0
+    }))
+    .unwrap_or(-1)
 }
 
 unsafe fn read_cstr(ptr: *mut u8, off: usize) -> String {
@@ -1601,10 +2084,19 @@ pub(crate) fn compile_cranelift_ir(
     builder.symbol("cl_cuda_create_buffer", cl_cuda_create_buffer as *const u8);
     builder.symbol("cl_cuda_upload", cl_cuda_upload as *const u8);
     builder.symbol("cl_cuda_upload_ptr", cl_cuda_upload_ptr as *const u8);
+    builder.symbol("cl_cuda_upload_ptr_offset", cl_cuda_upload_ptr_offset as *const u8);
     builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
     builder.symbol("cl_cuda_download_ptr", cl_cuda_download_ptr as *const u8);
     builder.symbol("cl_cuda_free_buffer", cl_cuda_free_buffer as *const u8);
     builder.symbol("cl_cuda_launch", cl_cuda_launch as *const u8);
+    builder.symbol("cl_cuda_launch_named", cl_cuda_launch_named as *const u8);
+    builder.symbol("cl_cublas_sgemm", cl_cublas_sgemm as *const u8);
+    builder.symbol("cl_cublas_sgemv", cl_cublas_sgemv as *const u8);
+    builder.symbol(
+        "cl_cublas_sgemm_strided_batched",
+        cl_cublas_sgemm_strided_batched as *const u8,
+    );
+    builder.symbol("cl_cuda_sync", cl_cuda_sync as *const u8);
     builder.symbol("cl_cuda_cleanup", cl_cuda_cleanup as *const u8);
 
     builder.symbol("cl_file_read", cl_file_read as *const u8);

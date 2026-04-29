@@ -9825,3 +9825,586 @@ block0(v0: i64):
         );
     }
 }
+
+#[test]
+fn test_cublas_sgemm_strided_batched_reuse() {
+    // Exercises the cl_cublas_sgemm_strided_batched FFI directly with a small
+    // batched GEMV-shaped workload:
+    //   for each batch i: y_i = A_i @ x_i
+    // where A_i is 2x3 row-major and x_i is length-3.
+    //
+    // Reuses the same Base instance across two execute_into calls to ensure the
+    // wrapper behaves correctly across repeated executions.
+    let batch_count: usize = 2;
+    let m: usize = 2;
+    let k: usize = 3;
+    let a_elems: usize = batch_count * m * k;
+    let x_elems: usize = batch_count * k;
+    let y_elems: usize = batch_count * m;
+    let a_bytes: usize = a_elems * 4;
+    let x_bytes: usize = x_elems * 4;
+    let y_bytes: usize = y_elems * 4;
+
+    let mem_size: usize = 0x0800;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cublas_sgemm_strided_batched sig3
+    fn5 = %cl_cuda_sync sig4
+    fn6 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+
+    ; create A, x, y buffers
+    v10 = iconst.i64 {a_bytes}
+    v11 = iconst.i64 {x_bytes}
+    v12 = iconst.i64 {y_bytes}
+    v13 = call fn1(v0, v10)
+    v14 = call fn1(v0, v11)
+    v15 = call fn1(v0, v12)
+
+    ; upload A from data_ptr
+    v16 = call fn2(v0, v13, v1, v10)
+
+    ; upload x from data_ptr + a_bytes
+    v17 = iadd v1, v10
+    v18 = call fn2(v0, v14, v17, v11)
+
+    ; batched GEMV using SGEMM-strided-batched
+    ; row-major A (2x3) => transa=1, transb=0, m=2, n=1, k=3
+    ; stride_a=6, stride_b=3, stride_c=2 elements, batch_count=2
+    v20 = iconst.i32 1
+    v21 = iconst.i32 0
+    v22 = iconst.i32 {m}
+    v23 = iconst.i32 1
+    v24 = iconst.i32 {k}
+    v25 = iconst.i32 0x3f800000
+    v26 = iconst.i64 {stride_a}
+    v27 = iconst.i64 {stride_b}
+    v28 = iconst.i64 {stride_c}
+    v29 = iconst.i32 {batch_count}
+    v30 = call fn4(v0, v20, v21, v22, v23, v24, v25, v13, v26, v14, v27, v21, v15, v28, v29)
+
+    v31 = call fn5(v0)
+    v32 = call fn3(v0, v15, v2, v12)
+
+    call fn6(v0)
+    return
+}}"#,
+        a_bytes = a_bytes,
+        x_bytes = x_bytes,
+        y_bytes = y_bytes,
+        m = m,
+        k = k,
+        stride_a = m * k,
+        stride_b = k,
+        stride_c = m,
+        batch_count = batch_count,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let a1: [f32; 12] = [
+        1.0, 2.0, 3.0,
+        4.0, 5.0, 6.0,
+        7.0, 8.0, 9.0,
+        10.0, 11.0, 12.0,
+    ];
+    let x1: [f32; 6] = [
+        1.0, 1.0, 1.0,
+        2.0, 0.0, -1.0,
+    ];
+    let expected1: [f32; 4] = [
+        6.0, 15.0,
+        5.0, 8.0,
+    ];
+
+    let mut payload1 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+
+    for (i, expected) in expected1.iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 1, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+
+    let a2: [f32; 12] = [
+        -1.0, 0.0, 1.0,
+        2.0, -2.0, 0.5,
+        3.0, 1.0, -4.0,
+        0.0, 2.0, 5.0,
+    ];
+    let x2: [f32; 6] = [
+        3.0, -1.0, 2.0,
+        -2.0, 4.0, 1.0,
+    ];
+    let expected2: [f32; 4] = [
+        -1.0, 9.0,
+        -6.0, 13.0,
+    ];
+
+    let mut payload2 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+
+    for (i, expected) in expected2.iter().enumerate() {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 2, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+}
+
+#[test]
+fn test_cuda_upload_ptr_offset_reuse() {
+    // Verifies cl_cuda_upload_ptr_offset can update a subrange of an existing
+    // device buffer across repeated execute_into calls.
+    let total_bytes: usize = 16; // 4 f32s
+    let mem_size: usize = 0x0400;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i64, i64) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_offset sig2
+    fn3 = %cl_cuda_download_ptr sig3
+    fn4 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+
+    v10 = iconst.i64 {total_bytes}
+    v11 = call fn1(v0, v10)
+
+    ; upload first 2 floats to offset 0
+    v12 = iconst.i64 8
+    v13 = iconst.i64 0
+    v14 = call fn2(v0, v11, v13, v1, v12)
+
+    ; upload second 2 floats to offset 8
+    v15 = iadd v1, v12
+    v16 = call fn2(v0, v11, v12, v15, v12)
+
+    ; download full 4-float buffer
+    v17 = call fn3(v0, v11, v2, v10)
+
+    call fn4(v0)
+    return
+}}"#,
+        total_bytes = total_bytes,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let payload1: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+    let mut bytes1 = Vec::with_capacity(total_bytes);
+    for v in payload1 {
+        bytes1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; total_bytes];
+    base.execute_into(&alg, &bytes1, &mut out1).unwrap();
+    for (i, expected) in [1.0f32, 2.0, 3.0, 4.0].iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "Run 1, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+
+    let payload2: [f32; 4] = [10.0, 20.0, 30.0, 40.0];
+    let mut bytes2 = Vec::with_capacity(total_bytes);
+    for v in payload2 {
+        bytes2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; total_bytes];
+    base.execute_into(&alg, &bytes2, &mut out2).unwrap();
+    for (i, expected) in [10.0f32, 20.0, 30.0, 40.0].iter().enumerate() {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "Run 2, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+}
+
+#[test]
+fn test_cuda_launch_named_reuses_named_kernel() {
+    // Verifies cl_cuda_launch_named can launch a non-"main" entry point and
+    // that repeated named launches in the same CUDA context remain correct.
+    let n: usize = 8;
+    let data_bytes: usize = n * 4;
+    let ptx_off: usize = 0x0100;
+    let name_off: usize = 0x0600;
+    let bind_off: usize = 0x0700;
+    let mem_size: usize = 0x0800;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry add_one(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f3F800000;\n\
+                   add.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cuda_launch_named sig3
+    fn5 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v0, v10)
+    v12 = call fn2(v0, v11, v1, v10)
+
+    ; launch named kernel twice: x -> x+1 -> x+2
+    v13 = iconst.i64 {ptx_off}
+    v14 = iconst.i64 {name_off}
+    v15 = iconst.i32 1
+    v16 = iconst.i64 {bind_off}
+    v17 = iconst.i32 1
+    v18 = iconst.i32 {n}
+    v19 = call fn4(v0, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
+    v20 = call fn4(v0, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
+
+    v21 = call fn3(v0, v11, v2, v10)
+
+    call fn5(v0)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        name_off = name_off,
+        bind_off = bind_off,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[name_off..name_off + 8].copy_from_slice(b"add_one\0");
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let payload1: Vec<f32> = (1..=n).map(|x| x as f32).collect();
+    let mut bytes1 = Vec::with_capacity(data_bytes);
+    for v in &payload1 {
+        bytes1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; data_bytes];
+    base.execute_into(&alg, &bytes1, &mut out1).unwrap();
+    for (i, input) in payload1.iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = *input + 2.0;
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "Run 1, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+
+    let payload2: Vec<f32> = vec![5.0; n];
+    let mut bytes2 = Vec::with_capacity(data_bytes);
+    for v in &payload2 {
+        bytes2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; data_bytes];
+    base.execute_into(&alg, &bytes2, &mut out2).unwrap();
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - 7.0).abs() < 0.001,
+            "Run 2, element {}: expected 7.0, got {}",
+            i,
+            actual
+        );
+    }
+}
+
+#[test]
+fn test_cublas_sgemv_reuse() {
+    // Directly exercises cl_cublas_sgemv with a small row-major 2x3 matrix.
+    let rows: usize = 2;
+    let cols: usize = 3;
+    let a_elems: usize = rows * cols;
+    let x_elems: usize = cols;
+    let y_elems: usize = rows;
+    let a_bytes: usize = a_elems * 4;
+    let x_bytes: usize = x_elems * 4;
+    let y_bytes: usize = y_elems * 4;
+    let mem_size: usize = 0x0400;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cublas_sgemv sig3
+    fn5 = %cl_cuda_sync sig4
+    fn6 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    call fn0(v0)
+
+    v10 = iconst.i64 {a_bytes}
+    v11 = iconst.i64 {x_bytes}
+    v12 = iconst.i64 {y_bytes}
+    v13 = call fn1(v0, v10)
+    v14 = call fn1(v0, v11)
+    v15 = call fn1(v0, v12)
+
+    v16 = call fn2(v0, v13, v1, v10)
+    v17 = iadd v1, v10
+    v18 = call fn2(v0, v14, v17, v11)
+
+    ; row-major A[rows, cols] -> sgemv(trans=1, m=cols, n=rows)
+    v19 = iconst.i32 1
+    v20 = iconst.i32 {cols}
+    v21 = iconst.i32 {rows}
+    v22 = iconst.i32 0x3f800000
+    v23 = iconst.i32 0
+    v24 = call fn4(v0, v19, v20, v21, v22, v13, v14, v23, v15)
+
+    v25 = call fn5(v0)
+    v26 = call fn3(v0, v15, v2, v12)
+
+    call fn6(v0)
+    return
+}}"#,
+        a_bytes = a_bytes,
+        x_bytes = x_bytes,
+        y_bytes = y_bytes,
+        cols = cols,
+        rows = rows,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let x1: [f32; 3] = [1.0, 1.0, 1.0];
+    let expected1: [f32; 2] = [6.0, 15.0];
+    let mut payload1 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+    for (i, expected) in expected1.iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 1, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+
+    let a2: [f32; 6] = [-1.0, 0.0, 2.0, 3.0, -2.0, 1.0];
+    let x2: [f32; 3] = [2.0, -1.0, 4.0];
+    let expected2: [f32; 2] = [6.0, 12.0];
+    let mut payload2 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+    for (i, expected) in expected2.iter().enumerate() {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 2, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+}
