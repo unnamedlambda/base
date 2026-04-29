@@ -69,11 +69,15 @@ def main():
         results = pandas_bench.run(algo_path("pandas"), algo_path("pandas_filter"), rounds)
         harness.print_table(results, col_a="Pandas")
 
-    if bench in ("all", "vllm"):
-        results = []
-        results.extend(vllm_bench.run(algo_path("cuda_gemv_persist"), rounds))
-        results.extend(vllm_bench._run_rmsnorm(algo_path("cuda_rmsnorm_persist"), rounds))
-        results.extend(vllm_bench._run_softmax(algo_path("cuda_softmax_persist"), rounds))
+    if bench in ("vllm",):
+        results = vllm_bench.run(
+            algo_path("cuda_gemv_persist"),
+            algo_path("cuda_rmsnorm_persist"),
+            algo_path("cuda_softmax_persist"),
+            algo_path("cuda_decoder_layer"),
+            algo_path("cuda_decode_attention"),
+            rounds,
+        )
         harness.print_table(results, col_a="PyTorch")
 
     if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops", "pandas", "vllm"):

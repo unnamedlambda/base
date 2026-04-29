@@ -50,6 +50,8 @@ declare -A ALGOS=(
     ["CudaGemvPersistAlgorithm.lean"]="cuda_gemv_persist"
     ["CudaRmsNormPersistAlgorithm.lean"]="cuda_rmsnorm_persist"
     ["CudaSoftmaxPersistAlgorithm.lean"]="cuda_softmax_persist"
+    ["CudaDecoderLayerAlgorithm.lean"]="cuda_decoder_layer"
+    ["CudaDecodeAttentionAlgorithm.lean"]="cuda_decode_attention"
 )
 
 for lean_file in "${!ALGOS[@]}"; do
