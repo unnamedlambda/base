@@ -70,7 +70,9 @@ def main():
         harness.print_table(results, col_a="Pandas")
 
     if bench in ("all", "vllm"):
-        results = vllm_bench.run(algo_path("cuda_gemv_persist"), rounds)
+        results = []
+        results.extend(vllm_bench.run(algo_path("cuda_gemv_persist"), rounds))
+        results.extend(vllm_bench._run_rmsnorm(algo_path("cuda_rmsnorm_persist"), rounds))
         harness.print_table(results, col_a="PyTorch")
 
     if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops", "pandas", "vllm"):

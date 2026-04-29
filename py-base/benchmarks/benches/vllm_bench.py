@@ -27,6 +27,7 @@ except ImportError:
 
 
 GEMV_SIZES = [(4096, 4096), (4096, 11008), (11008, 4096)]
+NORM_SIZES = [896, 2048, 4096]
 
 
 def _time_torch(fn):
@@ -40,6 +41,10 @@ def _time_torch(fn):
 
 
 def run(persist_path: str, rounds: int) -> list[harness.BenchResult]:
+    return _run_gemv(persist_path, rounds)
+
+
+def _run_gemv(persist_path: str, rounds: int) -> list[harness.BenchResult]:
     raw = json.loads(open(persist_path).read())
     config = py_base.BaseConfig(json.dumps(raw[0]))
     load_alg = py_base.Algorithm(json.dumps(raw[1]))
@@ -93,6 +98,73 @@ def run(persist_path: str, rounds: int) -> list[harness.BenchResult]:
         results.append(
             harness.BenchResult(
                 name=f"GEMV    ({m}×{n})",
+                python_ms=torch_ms,
+                pybase_ms=pybase_ms,
+                verified=verified,
+            )
+        )
+
+    return results
+
+
+def _run_rmsnorm(persist_path: str, rounds: int) -> list[harness.BenchResult]:
+    raw = json.loads(open(persist_path).read())
+    config = py_base.BaseConfig(json.dumps(raw[0]))
+    load_alg = py_base.Algorithm(json.dumps(raw[1]))
+    prep_alg = py_base.Algorithm(json.dumps(raw[2]))
+    infer_alg = py_base.Algorithm(json.dumps(raw[3]))
+
+    results = []
+    rng = np.random.default_rng(7)
+
+    for n in NORM_SIZES:
+        engine = py_base.Base(config)
+        x_np = rng.standard_normal(n).astype(np.float32)
+        w_np = rng.standard_normal(n).astype(np.float32) * 0.5 + 1.0
+        out = bytearray(n * 4)
+
+        load_data = struct.pack("<Q", n) + w_np.tobytes()
+        engine.execute(load_alg, load_data)
+        x_bytes = x_np.tobytes()
+
+        if _TORCH_OK:
+            x_t = torch.from_numpy(x_np).cuda()
+            w_t = torch.from_numpy(w_np).cuda()
+
+            def rms(x, w):
+                return x * w * torch.rsqrt(x.pow(2).mean() + 1e-5)
+
+            rms(x_t, w_t)
+            torch_ms = harness.median_of(
+                rounds,
+                lambda: _time_torch(lambda: rms(x_t, w_t)),
+            )
+        else:
+            torch_ms = None
+
+        engine.execute(prep_alg, x_bytes)
+        engine.execute(infer_alg)
+        pybase_ms = harness.median_of(
+            rounds,
+            lambda: (
+                engine.execute(prep_alg, x_bytes),
+                harness.time_ms(lambda: engine.execute(infer_alg)),
+            )[1],
+        )
+
+        if _TORCH_OK:
+            engine.execute(prep_alg, x_bytes)
+            engine.execute_into(infer_alg, b"", out)
+            ref = rms(x_t, w_t).cpu().numpy()
+            got = np.frombuffer(bytes(out), dtype=np.float32)
+            mag = max(float(np.abs(ref).max()), 1e-6)
+            verified = bool(np.max(np.abs(got - ref)) / mag < 1e-2)
+        else:
+            verified = None
+
+        results.append(
+            harness.BenchResult(
+                name=f"RMSNorm ({n})",
                 python_ms=torch_ms,
                 pybase_ms=pybase_ms,
                 verified=verified,
