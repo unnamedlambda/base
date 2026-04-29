@@ -25,11 +25,10 @@ fi
 
 source "$VENV/bin/activate"
 
-if ! python -c "import py_base" 2>/dev/null; then
-    echo "Installing py_base (first time — builds Rust, may take a minute)..."
-    pip install -q maturin
-    (cd "$SCRIPT_DIR/.." && maturin develop -q)
-fi
+pip install -q maturin
+
+echo "Building py_base ..."
+(cd "$SCRIPT_DIR/.." && maturin develop -q)
 
 pip install -q -r "$SCRIPT_DIR/requirements-bench.txt"
 
