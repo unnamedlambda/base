@@ -5,7 +5,7 @@
 # Subsequent runs: fast. Lean JSONs are regenerated only if source changed.
 #
 # Usage: ./run.sh [--bench <name>] [--rounds <n>]
-#   --bench   csv | json | regex | strsearch | vecops | all  (default: all)
+#   --bench   csv | json | regex | strsearch | vecops | vllm | all  (default: all)
 #   --rounds  timed iterations per size                      (default: 10)
 
 set -euo pipefail
@@ -47,6 +47,7 @@ declare -A ALGOS=(
     ["ClampSumBenchAlgorithm.lean"]="clampsum"
     ["PandasBenchAlgorithm.lean"]="pandas"
     ["PandasFilterBenchAlgorithm.lean"]="pandas_filter"
+    ["CudaGemvPersistAlgorithm.lean"]="cuda_gemv_persist"
 )
 
 for lean_file in "${!ALGOS[@]}"; do
