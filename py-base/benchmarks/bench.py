@@ -69,7 +69,7 @@ def main():
         results = pandas_bench.run(algo_path("pandas"), algo_path("pandas_filter"), rounds)
         harness.print_table(results, col_a="Pandas")
 
-    if bench in ("vllm",):
+    if bench in ("all", "vllm"):
         results = vllm_bench.run(
             algo_path("cuda_gemv_persist"),
             algo_path("cuda_rmsnorm_persist"),

@@ -5,7 +5,7 @@
 # Subsequent runs: fast. Lean JSONs are regenerated only if source changed.
 #
 # Usage: ./run.sh [--bench <name>] [--rounds <n>]
-#   --bench   csv | json | regex | strsearch | vecops | vllm | all  (default: all)
+#   --bench   csv | json | regex | strsearch | vecops | pandas | vllm | all  (default: all)
 #   --rounds  timed iterations per size                      (default: 10)
 
 set -euo pipefail
