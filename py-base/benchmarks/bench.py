@@ -73,6 +73,7 @@ def main():
         results = []
         results.extend(vllm_bench.run(algo_path("cuda_gemv_persist"), rounds))
         results.extend(vllm_bench._run_rmsnorm(algo_path("cuda_rmsnorm_persist"), rounds))
+        results.extend(vllm_bench._run_softmax(algo_path("cuda_softmax_persist"), rounds))
         harness.print_table(results, col_a="PyTorch")
 
     if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops", "pandas", "vllm"):

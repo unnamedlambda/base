@@ -49,6 +49,7 @@ declare -A ALGOS=(
     ["PandasFilterBenchAlgorithm.lean"]="pandas_filter"
     ["CudaGemvPersistAlgorithm.lean"]="cuda_gemv_persist"
     ["CudaRmsNormPersistAlgorithm.lean"]="cuda_rmsnorm_persist"
+    ["CudaSoftmaxPersistAlgorithm.lean"]="cuda_softmax_persist"
 )
 
 for lean_file in "${!ALGOS[@]}"; do

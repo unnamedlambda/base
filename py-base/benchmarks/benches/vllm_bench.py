@@ -28,6 +28,8 @@ except ImportError:
 
 GEMV_SIZES = [(4096, 4096), (4096, 11008), (11008, 4096)]
 NORM_SIZES = [896, 2048, 4096]
+SOFTMAX_SIZES = [512, 2048, 32000]
+SOFTMAX_INNER_ITERS = 64
 
 
 def _time_torch(fn):
@@ -165,6 +167,75 @@ def _run_rmsnorm(persist_path: str, rounds: int) -> list[harness.BenchResult]:
         results.append(
             harness.BenchResult(
                 name=f"RMSNorm ({n})",
+                python_ms=torch_ms,
+                pybase_ms=pybase_ms,
+                verified=verified,
+            )
+        )
+
+    return results
+
+
+def _run_softmax(persist_path: str, rounds: int) -> list[harness.BenchResult]:
+    raw = json.loads(open(persist_path).read())
+    config = py_base.BaseConfig(json.dumps(raw[0]))
+    load_alg = py_base.Algorithm(json.dumps(raw[1]))
+    prep_alg = py_base.Algorithm(json.dumps(raw[2]))
+    infer_alg = py_base.Algorithm(json.dumps(raw[3]))
+    stack_alg = py_base.Algorithm(json.dumps(raw[4]))
+
+    results = []
+    rng = np.random.default_rng(13)
+
+    for n in SOFTMAX_SIZES:
+        engine = py_base.Base(config)
+        x_np = rng.standard_normal(n).astype(np.float32)
+        out = bytearray(n * 4)
+
+        load_data = struct.pack("<Q", n)
+        engine.execute(load_alg, load_data)
+        x_bytes = x_np.tobytes()
+
+        if _TORCH_OK:
+            x_t = torch.from_numpy(x_np).cuda()
+            torch.softmax(x_t, dim=0)
+
+            def softmax_many():
+                for _ in range(SOFTMAX_INNER_ITERS):
+                    torch.softmax(x_t, dim=0)
+
+            torch_ms = (
+                harness.median_of(rounds, lambda: _time_torch(softmax_many))
+                / SOFTMAX_INNER_ITERS
+            )
+        else:
+            torch_ms = None
+
+        engine.execute(prep_alg, x_bytes)
+        engine.execute(stack_alg)
+        pybase_ms = (
+            harness.median_of(
+                rounds,
+                lambda: (
+                    engine.execute(prep_alg, x_bytes),
+                    harness.time_ms(lambda: engine.execute(stack_alg)),
+                )[1],
+            )
+            / SOFTMAX_INNER_ITERS
+        )
+
+        if _TORCH_OK:
+            engine.execute(prep_alg, x_bytes)
+            engine.execute_into(stack_alg, b"", out)
+            ref = torch.softmax(x_t, dim=0).cpu().numpy()
+            got = np.frombuffer(bytes(out), dtype=np.float32)
+            verified = bool(np.max(np.abs(got - ref)) < 1e-3)
+        else:
+            verified = None
+
+        results.append(
+            harness.BenchResult(
+                name=f"Softmax ({n})",
                 python_ms=torch_ms,
                 pybase_ms=pybase_ms,
                 verified=verified,
