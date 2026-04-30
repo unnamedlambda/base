@@ -4,7 +4,7 @@ import os
 BENCHMARKS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BENCHMARKS_DIR)
 
-from benches import csv_bench, json_bench, pandas_bench, regex_bench, strsearch_bench, vecops_bench, vllm_bench
+from benches import csv_bench, json_bench, pandas_bench, regex_bench, strsearch_bench, torchops_bench, vecops_bench, vllm_bench
 import harness
 
 
@@ -71,6 +71,14 @@ def main():
         )
         harness.print_table(results, col_a="NumPy")
 
+    if bench in ("all", "torchops"):
+        results = torchops_bench.run(
+            algo_path("cuda_vecadd_persist"),
+            algo_path("cuda_saxpy_persist"),
+            rounds,
+        )
+        harness.print_table(results, col_a="PyTorch")
+
     if bench in ("all", "pandas"):
         results = pandas_bench.run(algo_path("pandas"), algo_path("pandas_filter"), rounds)
         harness.print_table(results, col_a="Pandas")
@@ -86,7 +94,7 @@ def main():
         )
         harness.print_table(results, col_a="PyTorch")
 
-    if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops", "pandas", "vllm"):
+    if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops", "torchops", "pandas", "vllm"):
         print(f"Unknown benchmark: {bench}", file=sys.stderr)
         print_usage()
         sys.exit(1)

@@ -5,7 +5,7 @@
 # Subsequent runs: fast. Lean JSONs are regenerated only if source changed.
 #
 # Usage: ./run.sh [--bench <name>] [--rounds <n>]
-#   --bench   csv | json | regex | strsearch | vecops | pandas | vllm | all  (default: all)
+#   --bench   csv | json | regex | strsearch | vecops | torchops | pandas | vllm | all  (default: all)
 #   --rounds  timed iterations per size                      (default: 10)
 
 set -euo pipefail
@@ -48,6 +48,8 @@ declare -A ALGOS=(
     ["RowAffineReduceBenchAlgorithm.lean"]="rowaffine"
     ["PandasBenchAlgorithm.lean"]="pandas"
     ["PandasFilterBenchAlgorithm.lean"]="pandas_filter"
+    ["CudaVecAddPersistAlgorithm.lean"]="cuda_vecadd_persist"
+    ["CudaSaxpyPersistAlgorithm.lean"]="cuda_saxpy_persist"
     ["CudaGemvPersistAlgorithm.lean"]="cuda_gemv_persist"
     ["CudaRmsNormPersistAlgorithm.lean"]="cuda_rmsnorm_persist"
     ["CudaSoftmaxPersistAlgorithm.lean"]="cuda_softmax_persist"
