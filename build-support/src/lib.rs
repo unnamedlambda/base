@@ -6,28 +6,24 @@ use std::process::Output;
 
 use base_types::{Algorithm, BaseConfig};
 
-#[derive(Clone, Copy, Debug)]
-pub struct AlgorithmArtifact {
-    pub lean_file: &'static str,
-    pub output_name: &'static str,
+pub fn build(algorithms_dir: &str, lean_file: &'static str) {
+    build_all(algorithms_dir, &[(lean_file, "algorithm")]);
 }
 
-pub fn rerun_if_changed(paths: &[&str]) {
-    for path in paths {
-        println!("cargo:rerun-if-changed={path}");
-    }
-}
-
-pub fn generate_algorithms(lake_dir: &str, artifacts: &[AlgorithmArtifact]) {
+pub fn build_all(algorithms_dir: &str, artifacts: &[(&'static str, &'static str)]) {
     let manifest_dir = manifest_dir();
-    let lake_path = manifest_dir.join(lake_dir);
+    let lake_path = manifest_dir.join(algorithms_dir);
     let out_dir = out_dir();
+
+    let lib_lean = lake_path.parent().unwrap().join("lib/AlgorithmLib.lean");
+    println!("cargo:rerun-if-changed={}", lib_lean.display());
 
     build_algorithm_lib(&lake_path);
 
-    for artifact in artifacts {
-        let output = run_lean_interpreter(&lake_path, artifact.lean_file);
-        write_algorithm_outputs(&out_dir, artifact.output_name, &output.stdout);
+    for &(lean_file, output_name) in artifacts {
+        println!("cargo:rerun-if-changed={}", lake_path.join(lean_file).display());
+        let output = run_lean_interpreter(&lake_path, lean_file);
+        write_algorithm_outputs(&out_dir, output_name, &output.stdout);
     }
 }
 
