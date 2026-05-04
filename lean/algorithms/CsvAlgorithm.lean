@@ -553,4 +553,4 @@ end CsvDemo
 
 def main : IO Unit := do
   let (cfg, alg) := CsvDemo.result
-  IO.println (Json.compress (toJsonPair cfg alg))
+  IO.println (Json.compress (.arr #[toJsonEntry "csv_app" cfg alg]))

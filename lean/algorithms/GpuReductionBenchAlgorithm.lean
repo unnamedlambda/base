@@ -165,6 +165,5 @@ def buildAlgorithm : Algorithm := {
 
 end GpuReductionBench
 
-def main : IO Unit := do
-  let json := toJsonPair GpuReductionBench.buildConfig GpuReductionBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "gpu_reduction_algorithm" GpuReductionBench.buildConfig GpuReductionBench.buildAlgorithm]))

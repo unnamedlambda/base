@@ -954,6 +954,5 @@ def satAlgorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit := do
-  let json := toJsonPair Algorithm.satConfig Algorithm.satAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "sat_app" Algorithm.satConfig Algorithm.satAlgorithm]))

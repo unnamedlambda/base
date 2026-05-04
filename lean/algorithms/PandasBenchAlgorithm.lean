@@ -130,6 +130,5 @@ def buildAlgorithm : Algorithm := {
 
 end PandasBench
 
-def main : IO Unit := do
-  let json := toJsonPair PandasBench.buildConfig PandasBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "pandas_algorithm" PandasBench.buildConfig PandasBench.buildAlgorithm]))

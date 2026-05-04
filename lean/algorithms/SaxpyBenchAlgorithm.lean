@@ -166,6 +166,5 @@ def saxpyAlgorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit := do
-  let json := toJsonPair Algorithm.saxpyConfig Algorithm.saxpyAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "saxpy_algorithm" Algorithm.saxpyConfig Algorithm.saxpyAlgorithm]))

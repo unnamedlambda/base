@@ -1,3 +1,9 @@
+use std::path::Path;
+
 fn main() {
-    build_support::build("../../lean/algorithms", "Sha256Algorithm.lean");
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    build_support::build(
+        &manifest.join("../../lean/algorithms/Sha256Algorithm.lean"),
+        &manifest.join("../../lean"),
+    );
 }

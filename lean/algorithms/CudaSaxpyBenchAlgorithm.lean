@@ -170,6 +170,5 @@ def buildAlgorithm : Algorithm := {
 
 end CudaSaxpyBench
 
-def main : IO Unit := do
-  let json := toJsonPair CudaSaxpyBench.buildConfig CudaSaxpyBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "cuda_saxpy_algorithm" CudaSaxpyBench.buildConfig CudaSaxpyBench.buildAlgorithm]))

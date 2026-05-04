@@ -173,6 +173,5 @@ def buildAlgorithm : Algorithm := {
 
 end VecOpsBench
 
-def main : IO Unit := do
-  let json := toJsonPair VecOpsBench.buildConfig VecOpsBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "vecops_algorithm" VecOpsBench.buildConfig VecOpsBench.buildAlgorithm]))

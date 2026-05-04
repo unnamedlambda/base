@@ -1,6 +1,6 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/algorithm.bin"));
+const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lean_eval_app.bin"));
 const INPUT_PATH_OFFSET: usize = 0x0068;
 const INPUT_PATH_MAX_LEN: usize = 256;
 const OUTPUT_PATH_OFFSET: usize = 0x0028;

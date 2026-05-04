@@ -135,6 +135,5 @@ def buildAlgorithm : Algorithm := {
 
 end GpuVecAddBench
 
-def main : IO Unit := do
-  let json := toJsonPair GpuVecAddBench.buildConfig GpuVecAddBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "gpu_vecadd_algorithm" GpuVecAddBench.buildConfig GpuVecAddBench.buildAlgorithm]))

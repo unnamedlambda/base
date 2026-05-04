@@ -2274,6 +2274,5 @@ def cliAlgorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit := do
-  let json := toJsonPair Algorithm.cliConfig Algorithm.cliAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "cli_app" Algorithm.cliConfig Algorithm.cliAlgorithm]))

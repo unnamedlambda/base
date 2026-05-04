@@ -209,6 +209,5 @@ def buildAlgorithm : Algorithm := {
 
 end HistogramBench1
 
-def main : IO Unit := do
-  let json := toJsonPair HistogramBench1.buildConfig HistogramBench1.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "hist1_algorithm" HistogramBench1.buildConfig HistogramBench1.buildAlgorithm]))

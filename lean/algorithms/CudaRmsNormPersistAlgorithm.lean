@@ -226,11 +226,9 @@ def inferAlgorithm : Algorithm := { actions := actions 3, cranelift_units := 0, 
 
 end CudaRmsNormPersist
 
-def main : IO Unit := do
-  let json := Json.arr #[
-    toJson CudaRmsNormPersist.buildConfig,
-    toJson CudaRmsNormPersist.loadAlgorithm,
-    toJson CudaRmsNormPersist.prepAlgorithm,
-    toJson CudaRmsNormPersist.inferAlgorithm
-  ]
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[
+    toJsonEntry "cuda_rmsnorm_load"  CudaRmsNormPersist.buildConfig CudaRmsNormPersist.loadAlgorithm,
+    toJsonEntry "cuda_rmsnorm_prep"  CudaRmsNormPersist.buildConfig CudaRmsNormPersist.prepAlgorithm,
+    toJsonEntry "cuda_rmsnorm_infer" CudaRmsNormPersist.buildConfig CudaRmsNormPersist.inferAlgorithm,
+  ]))

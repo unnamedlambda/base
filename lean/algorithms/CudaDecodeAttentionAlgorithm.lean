@@ -391,12 +391,10 @@ def stackAlgorithm (depth : Nat) : Algorithm := {
 
 end CudaDecodeAttention
 
-def main : IO Unit := do
-  let json := Json.arr #[
-    toJson CudaDecodeAttention.buildConfig,
-    toJson CudaDecodeAttention.loadAlgorithm,
-    toJson CudaDecodeAttention.prepAlgorithm,
-    toJson CudaDecodeAttention.inferAlgorithm,
-    toJson (CudaDecodeAttention.stackAlgorithm 64)
-  ]
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[
+    toJsonEntry "cuda_decode_attn_load"  CudaDecodeAttention.buildConfig CudaDecodeAttention.loadAlgorithm,
+    toJsonEntry "cuda_decode_attn_prep"  CudaDecodeAttention.buildConfig CudaDecodeAttention.prepAlgorithm,
+    toJsonEntry "cuda_decode_attn_infer" CudaDecodeAttention.buildConfig CudaDecodeAttention.inferAlgorithm,
+    toJsonEntry "cuda_decode_attn_stack" CudaDecodeAttention.buildConfig (CudaDecodeAttention.stackAlgorithm 64),
+  ]))

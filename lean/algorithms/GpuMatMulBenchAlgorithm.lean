@@ -148,6 +148,5 @@ def buildAlgorithm : Algorithm := {
 
 end GpuMatMulBench
 
-def main : IO Unit := do
-  let json := toJsonPair GpuMatMulBench.buildConfig GpuMatMulBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "gpu_matmul_algorithm" GpuMatMulBench.buildConfig GpuMatMulBench.buildAlgorithm]))

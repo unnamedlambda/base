@@ -214,6 +214,5 @@ def buildAlgorithm : Algorithm := {
 
 end RegexBench
 
-def main : IO Unit := do
-  let json := toJsonPair RegexBench.buildConfig RegexBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "regex_algorithm" RegexBench.buildConfig RegexBench.buildAlgorithm]))

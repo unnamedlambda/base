@@ -89,6 +89,11 @@ instance : ToJson Algorithm where
 def toJsonPair (config : BaseConfig) (algorithm : Algorithm) : Json :=
   Json.arr #[toJson config, toJson algorithm]
 
+/-- Serialize a named artifact entry: ["name", config, algorithm].
+    Use this in def main to declare artifact names that the build system will use as file names. -/
+def toJsonEntry (name : String) (config : BaseConfig) (algorithm : Algorithm) : Json :=
+  .arr #[.str name, toJson config, toJson algorithm]
+
 /-- Common single-call action list used by most benchmark artifacts. -/
 def mkCallActions (src : UInt32) : List Action :=
   [{ kind := .ClifCall, dst := 0, src := src, offset := 0, size := 0 }]

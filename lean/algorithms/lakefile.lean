@@ -7,115 +7,45 @@ package algorithms where
   srcDir := "."
 
 -- Benchmark algorithms
-lean_exe generate_csv_bench where
-  root := `CsvBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_regex_bench where
-  root := `RegexBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_json_bench where
-  root := `JsonBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_strsearch_bench where
-  root := `StringSearchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_wordcount_bench where
-  root := `WordCountAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_saxpy_bench where
-  root := `SaxpyBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_hist1_bench where
-  root := `HistogramBench1Algorithm
-  supportInterpreter := true
-
-lean_exe generate_hist4_bench where
-  root := `HistogramBench4Algorithm
-  supportInterpreter := true
-
-lean_exe generate_matmul_bench where
-  root := `MatmulBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_vecops_bench where
-  root := `VecOpsBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_reduction_bench where
-  root := `ReductionBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_gpu_vecadd_bench where
-  root := `GpuVecAddBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_gpu_matmul_bench where
-  root := `GpuMatMulBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_gpu_reduction_bench where
-  root := `GpuReductionBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_cuda_saxpy_bench where
-  root := `CudaSaxpyBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_gpu_iter_bench where
-  root := `GpuIterBenchAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_sort_bench where
-  root := `SortBenchAlgorithm
-  supportInterpreter := true
+lean_lib CsvBenchAlgorithm
+lean_lib RegexBenchAlgorithm
+lean_lib JsonBenchAlgorithm
+lean_lib StringSearchAlgorithm
+lean_lib WordCountAlgorithm
+lean_lib SaxpyBenchAlgorithm
+lean_lib HistogramBench1Algorithm
+lean_lib HistogramBench4Algorithm
+lean_lib MatmulBenchAlgorithm
+lean_lib VecOpsBenchAlgorithm
+lean_lib ReductionBenchAlgorithm
+lean_lib GpuVecAddBenchAlgorithm
+lean_lib GpuMatMulBenchAlgorithm
+lean_lib GpuReductionBenchAlgorithm
+lean_lib CudaSaxpyBenchAlgorithm
+lean_lib GpuIterBenchAlgorithm
+lean_lib SortBenchAlgorithm
+lean_lib ClampSumBenchAlgorithm
+lean_lib PandasBenchAlgorithm
+lean_lib PandasFilterBenchAlgorithm
+lean_lib RowAffineReduceBenchAlgorithm
+lean_lib RowDotBenchAlgorithm
+lean_lib CudaDecodeAttentionAlgorithm
+lean_lib CudaDecoderLayerAlgorithm
+lean_lib CudaGemvPersistAlgorithm
+lean_lib CudaRmsNormPersistAlgorithm
+lean_lib CudaSaxpyPersistAlgorithm
+lean_lib CudaSoftmaxPersistAlgorithm
+lean_lib CudaVecAddPersistAlgorithm
 
 -- Application algorithms
-lean_exe generate_cli where
-  root := `CliAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_compress where
-  root := `CompressAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_csv where
-  root := `CsvAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_draw where
-  root := `DrawAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_fft where
-  root := `FftAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_lean_eval where
-  root := `LeanEvalAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_matmul where
-  root := `MatmulAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_raytrace where
-  root := `RaytraceAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_sat where
-  root := `SatAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_scene where
-  root := `SceneAlgorithm
-  supportInterpreter := true
-
-lean_exe generate_sha256 where
-  root := `Sha256Algorithm
-  supportInterpreter := true
+lean_lib CliAlgorithm
+lean_lib CompressAlgorithm
+lean_lib CsvAlgorithm
+lean_lib DrawAlgorithm
+lean_lib FftAlgorithm
+lean_lib LeanEvalAlgorithm
+lean_lib MatmulAlgorithm
+lean_lib RaytraceAlgorithm
+lean_lib SatAlgorithm
+lean_lib SceneAlgorithm
+lean_lib Sha256Algorithm

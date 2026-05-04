@@ -124,6 +124,5 @@ def buildAlgorithm : Algorithm := {
 
 end PandasFilterBench
 
-def main : IO Unit := do
-  let json := toJsonPair PandasFilterBench.buildConfig PandasFilterBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "pandas_filter_algorithm" PandasFilterBench.buildConfig PandasFilterBench.buildAlgorithm]))

@@ -141,11 +141,9 @@ def inferAlgorithm : Algorithm := {
 
 end CudaGemvPersist
 
-def main : IO Unit := do
-  let json := Json.arr #[
-    toJson CudaGemvPersist.buildConfig,
-    toJson CudaGemvPersist.loadAlgorithm,
-    toJson CudaGemvPersist.prepAlgorithm,
-    toJson CudaGemvPersist.inferAlgorithm
-  ]
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[
+    toJsonEntry "cuda_gemv_load"  CudaGemvPersist.buildConfig CudaGemvPersist.loadAlgorithm,
+    toJsonEntry "cuda_gemv_prep"  CudaGemvPersist.buildConfig CudaGemvPersist.prepAlgorithm,
+    toJsonEntry "cuda_gemv_infer" CudaGemvPersist.buildConfig CudaGemvPersist.inferAlgorithm,
+  ]))

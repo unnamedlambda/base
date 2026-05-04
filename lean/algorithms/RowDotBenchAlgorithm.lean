@@ -203,6 +203,5 @@ def buildAlgorithm : Algorithm := {
 
 end RowDotBench
 
-def main : IO Unit := do
-  let json := toJsonPair RowDotBench.buildConfig RowDotBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "row_dot_algorithm" RowDotBench.buildConfig RowDotBench.buildAlgorithm]))

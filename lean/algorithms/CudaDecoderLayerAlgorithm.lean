@@ -631,13 +631,11 @@ def stackAlgorithm (depth : Nat) : Algorithm := {
 
 end CudaDecoderLayer
 
-def main : IO Unit := do
-  let json := Json.arr #[
-    toJson CudaDecoderLayer.buildConfig,
-    toJson CudaDecoderLayer.loadAlgorithm,
-    toJson CudaDecoderLayer.prepAlgorithm,
-    toJson CudaDecoderLayer.inferAlgorithm,
-    toJson (CudaDecoderLayer.stackAlgorithm 16),
-    toJson (CudaDecoderLayer.stackAlgorithm 32)
-  ]
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[
+    toJsonEntry "cuda_decoder_load"    CudaDecoderLayer.buildConfig CudaDecoderLayer.loadAlgorithm,
+    toJsonEntry "cuda_decoder_prep"    CudaDecoderLayer.buildConfig CudaDecoderLayer.prepAlgorithm,
+    toJsonEntry "cuda_decoder_infer"   CudaDecoderLayer.buildConfig CudaDecoderLayer.inferAlgorithm,
+    toJsonEntry "cuda_decoder_stack16" CudaDecoderLayer.buildConfig (CudaDecoderLayer.stackAlgorithm 16),
+    toJsonEntry "cuda_decoder_stack32" CudaDecoderLayer.buildConfig (CudaDecoderLayer.stackAlgorithm 32),
+  ]))

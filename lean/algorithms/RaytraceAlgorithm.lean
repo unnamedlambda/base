@@ -391,6 +391,5 @@ def raytraceAlgorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit := do
-  let json := toJsonPair Algorithm.raytraceConfig Algorithm.raytraceAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "raytrace_app" Algorithm.raytraceConfig Algorithm.raytraceAlgorithm]))

@@ -271,6 +271,5 @@ def buildAlgorithm : Algorithm := {
 
 end CsvBench
 
-def main : IO Unit := do
-  let json := toJsonPair CsvBench.buildConfig CsvBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "csv_algorithm" CsvBench.buildConfig CsvBench.buildAlgorithm]))

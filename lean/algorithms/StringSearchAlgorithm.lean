@@ -198,6 +198,5 @@ def buildAlgorithm : Algorithm := {
 
 end StringSearchBench
 
-def main : IO Unit := do
-  let json := toJsonPair StringSearchBench.buildConfig StringSearchBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "strsearch_algorithm" StringSearchBench.buildConfig StringSearchBench.buildAlgorithm]))

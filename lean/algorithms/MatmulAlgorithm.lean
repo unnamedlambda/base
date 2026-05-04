@@ -354,4 +354,4 @@ end Matmul
 
 def main : IO Unit := do
   let (cfg, alg) := Matmul.result
-  IO.println (Json.compress (toJsonPair cfg alg))
+  IO.println (Json.compress (.arr #[toJsonEntry "matmul_app" cfg alg]))

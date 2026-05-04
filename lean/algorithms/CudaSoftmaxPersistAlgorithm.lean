@@ -705,12 +705,10 @@ def stackAlgorithm (depth : Nat) : Algorithm := {
 
 end CudaSoftmaxPersist
 
-def main : IO Unit := do
-  let json := Json.arr #[
-    toJson CudaSoftmaxPersist.buildConfig,
-    toJson CudaSoftmaxPersist.loadAlgorithm,
-    toJson CudaSoftmaxPersist.prepAlgorithm,
-    toJson CudaSoftmaxPersist.inferAlgorithm,
-    toJson (CudaSoftmaxPersist.stackAlgorithm 64)
-  ]
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[
+    toJsonEntry "cuda_softmax_load"  CudaSoftmaxPersist.buildConfig CudaSoftmaxPersist.loadAlgorithm,
+    toJsonEntry "cuda_softmax_prep"  CudaSoftmaxPersist.buildConfig CudaSoftmaxPersist.prepAlgorithm,
+    toJsonEntry "cuda_softmax_infer" CudaSoftmaxPersist.buildConfig CudaSoftmaxPersist.inferAlgorithm,
+    toJsonEntry "cuda_softmax_stack" CudaSoftmaxPersist.buildConfig (CudaSoftmaxPersist.stackAlgorithm 64),
+  ]))

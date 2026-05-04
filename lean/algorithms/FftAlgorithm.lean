@@ -368,6 +368,5 @@ def fftAlgorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit := do
-  let json := toJsonPair Algorithm.fftConfig Algorithm.fftAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "fft_app" Algorithm.fftConfig Algorithm.fftAlgorithm]))

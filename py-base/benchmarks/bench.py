@@ -46,50 +46,68 @@ def main():
         return path
 
     if bench in ("all", "csv"):
-        results = csv_bench.run(algo_path("csv"), rounds)
+        results = csv_bench.run(algo_path("csv_algorithm"), rounds)
         harness.print_table(results)
 
     if bench in ("all", "json"):
-        results = json_bench.run(algo_path("json"), rounds)
+        results = json_bench.run(algo_path("json_algorithm"), rounds)
         harness.print_table(results)
 
     if bench in ("all", "regex"):
-        results = regex_bench.run(algo_path("regex"), rounds)
+        results = regex_bench.run(algo_path("regex_algorithm"), rounds)
         harness.print_table(results)
 
     if bench in ("all", "strsearch"):
-        results = strsearch_bench.run(algo_path("strsearch"), rounds)
+        results = strsearch_bench.run(algo_path("strsearch_algorithm"), rounds)
         harness.print_table(results)
 
     if bench in ("all", "vecops"):
         results = vecops_bench.run(
-            algo_path("vecops"),
-            algo_path("clampsum"),
-            algo_path("rowdot"),
-            algo_path("rowaffine"),
+            algo_path("vecops_algorithm"),
+            algo_path("clamp_sum_algorithm"),
+            algo_path("row_dot_algorithm"),
+            algo_path("row_affine_reduce_algorithm"),
             rounds,
         )
         harness.print_table(results, col_a="NumPy")
 
     if bench in ("all", "torchops"):
         results = torchops_bench.run(
-            algo_path("cuda_vecadd_persist"),
-            algo_path("cuda_saxpy_persist"),
+            algo_path("cuda_vecadd_persist_load"),
+            algo_path("cuda_vecadd_persist_prep"),
+            algo_path("cuda_vecadd_persist_infer"),
+            algo_path("cuda_saxpy_persist_load"),
+            algo_path("cuda_saxpy_persist_prep"),
+            algo_path("cuda_saxpy_persist_infer"),
             rounds,
         )
         harness.print_table(results, col_a="PyTorch")
 
     if bench in ("all", "pandas"):
-        results = pandas_bench.run(algo_path("pandas"), algo_path("pandas_filter"), rounds)
+        results = pandas_bench.run(algo_path("pandas_algorithm"), algo_path("pandas_filter_algorithm"), rounds)
         harness.print_table(results, col_a="Pandas")
 
     if bench in ("all", "vllm"):
         results = vllm_bench.run(
-            algo_path("cuda_gemv_persist"),
-            algo_path("cuda_rmsnorm_persist"),
-            algo_path("cuda_softmax_persist"),
-            algo_path("cuda_decoder_layer"),
-            algo_path("cuda_decode_attention"),
+            algo_path("cuda_gemv_load"),
+            algo_path("cuda_gemv_prep"),
+            algo_path("cuda_gemv_infer"),
+            algo_path("cuda_rmsnorm_load"),
+            algo_path("cuda_rmsnorm_prep"),
+            algo_path("cuda_rmsnorm_infer"),
+            algo_path("cuda_softmax_load"),
+            algo_path("cuda_softmax_prep"),
+            algo_path("cuda_softmax_infer"),
+            algo_path("cuda_softmax_stack"),
+            algo_path("cuda_decoder_load"),
+            algo_path("cuda_decoder_prep"),
+            algo_path("cuda_decoder_infer"),
+            algo_path("cuda_decoder_stack16"),
+            algo_path("cuda_decoder_stack32"),
+            algo_path("cuda_decode_attn_load"),
+            algo_path("cuda_decode_attn_prep"),
+            algo_path("cuda_decode_attn_infer"),
+            algo_path("cuda_decode_attn_stack"),
             rounds,
         )
         harness.print_table(results, col_a="PyTorch")

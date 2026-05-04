@@ -36,36 +36,52 @@ pip install -q -r "$SCRIPT_DIR/requirements-bench.txt"
 
 mkdir -p "$OUT_DIR"
 
-declare -A ALGOS=(
-    ["CsvBenchAlgorithm.lean"]="csv"
-    ["JsonBenchAlgorithm.lean"]="json"
-    ["RegexBenchAlgorithm.lean"]="regex"
-    ["StringSearchAlgorithm.lean"]="strsearch"
-    ["WordCountAlgorithm.lean"]="wordcount"
-    ["VecOpsBenchAlgorithm.lean"]="vecops"
-    ["ClampSumBenchAlgorithm.lean"]="clampsum"
-    ["RowDotBenchAlgorithm.lean"]="rowdot"
-    ["RowAffineReduceBenchAlgorithm.lean"]="rowaffine"
-    ["PandasBenchAlgorithm.lean"]="pandas"
-    ["PandasFilterBenchAlgorithm.lean"]="pandas_filter"
-    ["CudaVecAddPersistAlgorithm.lean"]="cuda_vecadd_persist"
-    ["CudaSaxpyPersistAlgorithm.lean"]="cuda_saxpy_persist"
-    ["CudaGemvPersistAlgorithm.lean"]="cuda_gemv_persist"
-    ["CudaRmsNormPersistAlgorithm.lean"]="cuda_rmsnorm_persist"
-    ["CudaSoftmaxPersistAlgorithm.lean"]="cuda_softmax_persist"
-    ["CudaDecoderLayerAlgorithm.lean"]="cuda_decoder_layer"
-    ["CudaDecodeAttentionAlgorithm.lean"]="cuda_decode_attention"
+# Each Lean file outputs [[name, config, alg], ...]; write one {name}.json per entry.
+_extract_artifacts() {
+    local out_dir="$1"
+    python3 -c '
+import sys, json, os
+out_dir = sys.argv[1]
+text = sys.stdin.read()
+start = text.find("\n[")
+data = json.loads(text[start + 1:] if start >= 0 else text.strip())
+for name, config, alg in data:
+    path = os.path.join(out_dir, f"{name}.json")
+    with open(path, "w") as f:
+        json.dump([config, alg], f)
+    print(f"  wrote {name}.json")
+' "$out_dir"
+}
+
+LEAN_FILES=(
+    "CsvBenchAlgorithm.lean"
+    "JsonBenchAlgorithm.lean"
+    "RegexBenchAlgorithm.lean"
+    "StringSearchAlgorithm.lean"
+    "WordCountAlgorithm.lean"
+    "VecOpsBenchAlgorithm.lean"
+    "ClampSumBenchAlgorithm.lean"
+    "RowDotBenchAlgorithm.lean"
+    "RowAffineReduceBenchAlgorithm.lean"
+    "PandasBenchAlgorithm.lean"
+    "PandasFilterBenchAlgorithm.lean"
+    "CudaVecAddPersistAlgorithm.lean"
+    "CudaSaxpyPersistAlgorithm.lean"
+    "CudaGemvPersistAlgorithm.lean"
+    "CudaRmsNormPersistAlgorithm.lean"
+    "CudaSoftmaxPersistAlgorithm.lean"
+    "CudaDecoderLayerAlgorithm.lean"
+    "CudaDecodeAttentionAlgorithm.lean"
 )
 
-for lean_file in "${!ALGOS[@]}"; do
-    name="${ALGOS[$lean_file]}"
+for lean_file in "${LEAN_FILES[@]}"; do
     src="$LEAN_DIR/$lean_file"
-    out="$OUT_DIR/$name.json"
+    stamp="$OUT_DIR/.${lean_file%.lean}.stamp"
 
-    if [[ ! -f "$out" ]] || [[ "$src" -nt "$out" ]]; then
-        echo "Generating $name.json ..."
-        raw=$(cd "$LAKE_DIR" && lake env lean --run "$src")
-        echo "$raw" | awk '/^\[/{found=1} found{print}' > "$out"
+    if [[ ! -f "$stamp" ]] || [[ "$src" -nt "$stamp" ]]; then
+        echo "Generating artifacts from $lean_file ..."
+        (cd "$LAKE_DIR" && lake env lean --run "$src") | _extract_artifacts "$OUT_DIR"
+        touch "$stamp"
     fi
 done
 

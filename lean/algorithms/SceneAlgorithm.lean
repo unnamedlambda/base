@@ -1100,5 +1100,4 @@ end Algorithm
 
 def main : IO Unit := do
   let (cfg, alg) := Algorithm.renderScene Algorithm.defaultScene
-  let json := toJsonPair cfg alg
-  IO.println (Json.compress json)
+  IO.println (Json.compress (.arr #[toJsonEntry "scene_app" cfg alg]))

@@ -1874,6 +1874,5 @@ def buildAlgorithm : Algorithm := {
 
 end LeanEval
 
-def main : IO Unit := do
-  let json := toJsonPair LeanEval.buildConfig LeanEval.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "lean_eval_app" LeanEval.buildConfig LeanEval.buildAlgorithm]))

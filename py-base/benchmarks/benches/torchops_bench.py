@@ -40,23 +40,22 @@ def _time_torch(fn):
     return harness.time_ms(synced)
 
 
-def _load_persist(path: str):
+def _load_artifact(path: str):
     raw = json.loads(open(path).read())
-    return (
-        py_base.BaseConfig(json.dumps(raw[0])),
-        py_base.Algorithm(json.dumps(raw[1])),
-        py_base.Algorithm(json.dumps(raw[2])),
-        py_base.Algorithm(json.dumps(raw[3])),
-    )
+    return py_base.BaseConfig(json.dumps(raw[0])), py_base.Algorithm(json.dumps(raw[1]))
 
 
 def _run_binary(
-    algo_path: str,
+    load_path: str,
+    prep_path: str,
+    infer_path: str,
     rounds: int,
     label: str,
     torch_ref,
 ) -> list[harness.BenchResult]:
-    config, load_alg, prep_alg, infer_alg = _load_persist(algo_path)
+    config, load_alg = _load_artifact(load_path)
+    _, prep_alg = _load_artifact(prep_path)
+    _, infer_alg = _load_artifact(infer_path)
     results = []
     rng = np.random.default_rng(2026)
 
@@ -112,8 +111,16 @@ def _run_binary(
     return results
 
 
-def run(vecadd_path: str, saxpy_path: str, rounds: int) -> list[harness.BenchResult]:
+def run(
+    vecadd_load: str,
+    vecadd_prep: str,
+    vecadd_infer: str,
+    saxpy_load: str,
+    saxpy_prep: str,
+    saxpy_infer: str,
+    rounds: int,
+) -> list[harness.BenchResult]:
     return (
-        _run_binary(vecadd_path, rounds, "VecAdd ", lambda x, y: x + y)
-        + _run_binary(saxpy_path, rounds, "SAXPY  ", lambda x, y: 2.0 * x + y)
+        _run_binary(vecadd_load, vecadd_prep, vecadd_infer, rounds, "VecAdd ", lambda x, y: x + y)
+        + _run_binary(saxpy_load, saxpy_prep, saxpy_infer, rounds, "SAXPY  ", lambda x, y: 2.0 * x + y)
     )

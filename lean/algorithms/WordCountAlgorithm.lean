@@ -280,6 +280,5 @@ def buildAlgorithm : Algorithm := {
 
 end WordCountBench
 
-def main : IO Unit := do
-  let json := toJsonPair WordCountBench.buildConfig WordCountBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "wc_algorithm" WordCountBench.buildConfig WordCountBench.buildAlgorithm]))

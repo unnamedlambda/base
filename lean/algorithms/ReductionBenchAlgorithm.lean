@@ -152,6 +152,5 @@ def buildAlgorithm : Algorithm := {
 
 end ReductionBench
 
-def main : IO Unit := do
-  let json := toJsonPair ReductionBench.buildConfig ReductionBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "reduction_algorithm" ReductionBench.buildConfig ReductionBench.buildAlgorithm]))

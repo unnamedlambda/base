@@ -194,6 +194,5 @@ def drawAlgorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit := do
-  let json := toJsonPair Algorithm.drawConfig Algorithm.drawAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "draw_app" Algorithm.drawConfig Algorithm.drawAlgorithm]))

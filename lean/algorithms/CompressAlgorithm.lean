@@ -478,4 +478,4 @@ end Algorithm
 
 def main : IO Unit := do
   let (cfg, alg) := Algorithm.result
-  IO.println (Json.compress (toJsonPair cfg alg))
+  IO.println (Json.compress (.arr #[toJsonEntry "compress_app" cfg alg]))

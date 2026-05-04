@@ -237,6 +237,5 @@ def buildAlgorithm : Algorithm := {
 
 end JsonBench
 
-def main : IO Unit := do
-  let json := toJsonPair JsonBench.buildConfig JsonBench.buildAlgorithm
-  IO.println (Json.compress json)
+def main : IO Unit :=
+  IO.println (Json.compress (.arr #[toJsonEntry "json_algorithm" JsonBench.buildConfig JsonBench.buildAlgorithm]))
