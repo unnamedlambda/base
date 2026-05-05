@@ -10,10 +10,15 @@ pub fn build(lean_file: &Path, watch_dir: &Path) {
     build_all(&[lean_file.to_path_buf()], watch_dir);
 }
 
+/// Build and run Lean generators that belong to the same Lake project directory.
+///
+/// Every file in `lean_files` must live under the same parent directory, which is
+/// used as the working directory for `lake build` and `lake env lean --run`.
 pub fn build_all(lean_files: &[PathBuf], watch_dir: &Path) {
-    let out_dir = out_dir();
-
-    println!("cargo:rerun-if-changed={}", watch_dir.display());
+    assert!(
+        !lean_files.is_empty(),
+        "build_all requires at least one Lean file"
+    );
 
     let modules: Vec<String> = lean_files
         .iter()
@@ -30,6 +35,23 @@ pub fn build_all(lean_files: &[PathBuf], watch_dir: &Path) {
     let lake_dir = lean_files[0]
         .parent()
         .unwrap_or_else(|| panic!("Lean file has no parent directory"));
+
+    for lean_file in &lean_files[1..] {
+        let lean_file_parent = lean_file
+            .parent()
+            .unwrap_or_else(|| panic!("Lean file has no parent directory"));
+        assert_eq!(
+            lean_file_parent, lake_dir,
+            "All Lean files passed to build_all must share the same parent directory: expected {}, got {} for {}",
+            lake_dir.display(),
+            lean_file_parent.display(),
+            lean_file.display(),
+        );
+    }
+
+    let out_dir = out_dir();
+
+    println!("cargo:rerun-if-changed={}", watch_dir.display());
 
     build_modules(
         lake_dir,
@@ -205,6 +227,22 @@ mod tests {
     fn write_artifact(path: &Path, config: &BaseConfig, algorithm: &Algorithm) {
         let json = serde_json::to_string(&(config, algorithm)).expect("serialize artifact");
         fs::write(path, json).expect("write artifact");
+    }
+
+    #[test]
+    #[should_panic(expected = "build_all requires at least one Lean file")]
+    fn build_all_rejects_empty_file_list() {
+        build_all(&[], Path::new("/tmp"));
+    }
+
+    #[test]
+    #[should_panic(expected = "All Lean files passed to build_all must share the same parent directory")]
+    fn build_all_rejects_mixed_parent_directories() {
+        let lean_files = vec![
+            PathBuf::from("/tmp/project_a/Foo.lean"),
+            PathBuf::from("/tmp/project_b/Bar.lean"),
+        ];
+        build_all(&lean_files, Path::new("/tmp"));
     }
 
     #[test]
