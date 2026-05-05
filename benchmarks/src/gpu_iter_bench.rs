@@ -15,7 +15,7 @@ type Gpu = burn::backend::wgpu::Wgpu;
 
 const GPU_ITER_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/GpuIterBenchAlgorithm/gpu_iter_algorithm.bin"
+    "/RustBenchmarks/gpu_iter_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

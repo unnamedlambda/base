@@ -389,13 +389,12 @@ def stackAlgorithm (depth : Nat) : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end CudaDecodeAttention
-
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[
-    toJsonEntry "cuda_decode_attn_load"  CudaDecodeAttention.buildConfig CudaDecodeAttention.loadAlgorithm,
-    toJsonEntry "cuda_decode_attn_prep"  CudaDecodeAttention.buildConfig CudaDecodeAttention.prepAlgorithm,
-    toJsonEntry "cuda_decode_attn_infer" CudaDecodeAttention.buildConfig CudaDecodeAttention.inferAlgorithm,
-    toJsonEntry "cuda_decode_attn_stack" CudaDecodeAttention.buildConfig (CudaDecodeAttention.stackAlgorithm 64),
+def artifacts : Array Json :=
+  #[
+    toJsonEntry "cuda_decode_attn_load" buildConfig loadAlgorithm,
+    toJsonEntry "cuda_decode_attn_prep" buildConfig prepAlgorithm,
+    toJsonEntry "cuda_decode_attn_infer" buildConfig inferAlgorithm,
+    toJsonEntry "cuda_decode_attn_stack" buildConfig (stackAlgorithm 64),
   ]
+
+end CudaDecodeAttention

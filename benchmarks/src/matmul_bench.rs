@@ -13,7 +13,7 @@ type B = burn::backend::NdArray<f32>;
 
 const MATMUL_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/MatmulBenchAlgorithm/matmul_algorithm.bin"
+    "/RustBenchmarks/matmul_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

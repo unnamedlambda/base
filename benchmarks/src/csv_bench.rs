@@ -7,7 +7,7 @@ use crate::harness::{self, format_count, BenchResult};
 
 const CSV_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/CsvBenchAlgorithm/csv_algorithm.bin"
+    "/RustBenchmarks/csv_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

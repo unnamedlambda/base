@@ -224,12 +224,11 @@ def loadAlgorithm : Algorithm := { actions := actions 1, cranelift_units := 0, t
 def prepAlgorithm : Algorithm := { actions := actions 2, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
 def inferAlgorithm : Algorithm := { actions := actions 3, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
 
-end CudaRmsNormPersist
-
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[
-    toJsonEntry "cuda_rmsnorm_load"  CudaRmsNormPersist.buildConfig CudaRmsNormPersist.loadAlgorithm,
-    toJsonEntry "cuda_rmsnorm_prep"  CudaRmsNormPersist.buildConfig CudaRmsNormPersist.prepAlgorithm,
-    toJsonEntry "cuda_rmsnorm_infer" CudaRmsNormPersist.buildConfig CudaRmsNormPersist.inferAlgorithm,
+def artifacts : Array Json :=
+  #[
+    toJsonEntry "cuda_rmsnorm_load" buildConfig loadAlgorithm,
+    toJsonEntry "cuda_rmsnorm_prep" buildConfig prepAlgorithm,
+    toJsonEntry "cuda_rmsnorm_infer" buildConfig inferAlgorithm,
   ]
+
+end CudaRmsNormPersist

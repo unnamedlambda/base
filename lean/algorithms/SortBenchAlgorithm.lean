@@ -223,8 +223,7 @@ def buildAlgorithm : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end SortBench
+def artifacts : Array Json :=
+  #[toJsonEntry "sort_algorithm" buildConfig buildAlgorithm]
 
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "sort_algorithm" SortBench.buildConfig SortBench.buildAlgorithm]
+end SortBench

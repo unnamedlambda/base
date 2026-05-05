@@ -8,7 +8,7 @@ use crate::harness::{self, format_count, BenchResult};
 
 const WC_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/WordCountAlgorithm/wc_algorithm.bin"
+    "/RustBenchmarks/wc_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

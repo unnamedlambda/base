@@ -128,8 +128,7 @@ def buildAlgorithm : Algorithm := {
   timeout_ms := some 30000
 }
 
-end PandasBench
+def artifacts : Array Json :=
+  #[toJsonEntry "pandas_algorithm" buildConfig buildAlgorithm]
 
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "pandas_algorithm" PandasBench.buildConfig PandasBench.buildAlgorithm]
+end PandasBench

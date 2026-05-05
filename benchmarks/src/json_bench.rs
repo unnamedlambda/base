@@ -7,7 +7,7 @@ use crate::harness::{self, format_count, BenchResult};
 
 const JSON_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/JsonBenchAlgorithm/json_algorithm.bin"
+    "/RustBenchmarks/json_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

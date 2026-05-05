@@ -163,8 +163,7 @@ def buildAlgorithm : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end GpuReductionBench
+def artifacts : Array Json :=
+  #[toJsonEntry "gpu_reduction_algorithm" buildConfig buildAlgorithm]
 
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "gpu_reduction_algorithm" GpuReductionBench.buildConfig GpuReductionBench.buildAlgorithm]
+end GpuReductionBench

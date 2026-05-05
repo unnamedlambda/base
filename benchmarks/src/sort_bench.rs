@@ -3,7 +3,7 @@ use base::{Algorithm, BaseConfig};
 
 const SORT_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/SortBenchAlgorithm/sort_algorithm.bin"
+    "/RustBenchmarks/sort_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

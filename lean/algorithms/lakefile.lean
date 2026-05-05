@@ -7,6 +7,8 @@ package algorithms where
   srcDir := "."
 
 -- Benchmark algorithms
+lean_lib RustBenchmarks
+lean_lib PythonBenchmarks
 lean_lib CsvBenchAlgorithm
 lean_lib RegexBenchAlgorithm
 lean_lib JsonBenchAlgorithm

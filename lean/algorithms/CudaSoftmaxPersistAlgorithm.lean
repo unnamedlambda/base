@@ -703,13 +703,12 @@ def stackAlgorithm (depth : Nat) : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end CudaSoftmaxPersist
-
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[
-    toJsonEntry "cuda_softmax_load"  CudaSoftmaxPersist.buildConfig CudaSoftmaxPersist.loadAlgorithm,
-    toJsonEntry "cuda_softmax_prep"  CudaSoftmaxPersist.buildConfig CudaSoftmaxPersist.prepAlgorithm,
-    toJsonEntry "cuda_softmax_infer" CudaSoftmaxPersist.buildConfig CudaSoftmaxPersist.inferAlgorithm,
-    toJsonEntry "cuda_softmax_stack" CudaSoftmaxPersist.buildConfig (CudaSoftmaxPersist.stackAlgorithm 64),
+def artifacts : Array Json :=
+  #[
+    toJsonEntry "cuda_softmax_load" buildConfig loadAlgorithm,
+    toJsonEntry "cuda_softmax_prep" buildConfig prepAlgorithm,
+    toJsonEntry "cuda_softmax_infer" buildConfig inferAlgorithm,
+    toJsonEntry "cuda_softmax_stack" buildConfig (stackAlgorithm 64),
   ]
+
+end CudaSoftmaxPersist

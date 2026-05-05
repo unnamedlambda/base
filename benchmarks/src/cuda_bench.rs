@@ -5,7 +5,7 @@ type CudaBackend = burn::backend::CudaJit;
 
 const CUDA_SAXPY_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/CudaSaxpyBenchAlgorithm/cuda_saxpy_algorithm.bin"
+    "/RustBenchmarks/cuda_saxpy_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

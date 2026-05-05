@@ -207,8 +207,7 @@ def buildAlgorithm : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end HistogramBench1
+def artifacts : Array Json :=
+  #[toJsonEntry "hist1_algorithm" buildConfig buildAlgorithm]
 
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "hist1_algorithm" HistogramBench1.buildConfig HistogramBench1.buildAlgorithm]
+end HistogramBench1

@@ -13,7 +13,7 @@ type B = burn::backend::NdArray<f32>;
 
 const VECOPS_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/VecOpsBenchAlgorithm/vecops_algorithm.bin"
+    "/RustBenchmarks/vecops_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

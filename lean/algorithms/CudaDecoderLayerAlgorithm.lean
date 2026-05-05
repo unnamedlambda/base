@@ -629,14 +629,13 @@ def stackAlgorithm (depth : Nat) : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end CudaDecoderLayer
-
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[
-    toJsonEntry "cuda_decoder_load"    CudaDecoderLayer.buildConfig CudaDecoderLayer.loadAlgorithm,
-    toJsonEntry "cuda_decoder_prep"    CudaDecoderLayer.buildConfig CudaDecoderLayer.prepAlgorithm,
-    toJsonEntry "cuda_decoder_infer"   CudaDecoderLayer.buildConfig CudaDecoderLayer.inferAlgorithm,
-    toJsonEntry "cuda_decoder_stack16" CudaDecoderLayer.buildConfig (CudaDecoderLayer.stackAlgorithm 16),
-    toJsonEntry "cuda_decoder_stack32" CudaDecoderLayer.buildConfig (CudaDecoderLayer.stackAlgorithm 32),
+def artifacts : Array Json :=
+  #[
+    toJsonEntry "cuda_decoder_load" buildConfig loadAlgorithm,
+    toJsonEntry "cuda_decoder_prep" buildConfig prepAlgorithm,
+    toJsonEntry "cuda_decoder_infer" buildConfig inferAlgorithm,
+    toJsonEntry "cuda_decoder_stack16" buildConfig (stackAlgorithm 16),
+    toJsonEntry "cuda_decoder_stack32" buildConfig (stackAlgorithm 32),
   ]
+
+end CudaDecoderLayer

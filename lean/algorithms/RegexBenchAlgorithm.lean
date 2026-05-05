@@ -212,8 +212,7 @@ def buildAlgorithm : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end RegexBench
+def artifacts : Array Json :=
+  #[toJsonEntry "regex_algorithm" buildConfig buildAlgorithm]
 
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "regex_algorithm" RegexBench.buildConfig RegexBench.buildAlgorithm]
+end RegexBench

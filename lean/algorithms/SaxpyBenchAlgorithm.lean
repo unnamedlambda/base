@@ -164,8 +164,7 @@ def saxpyAlgorithm : Algorithm := {
   timeout_ms := some 120000
 }
 
-end Algorithm
+def artifacts : Array Json :=
+  #[toJsonEntry "saxpy_algorithm" saxpyConfig saxpyAlgorithm]
 
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "saxpy_algorithm" Algorithm.saxpyConfig Algorithm.saxpyAlgorithm]
+end Algorithm

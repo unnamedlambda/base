@@ -7,7 +7,7 @@ use crate::harness::{self, format_count, BenchResult};
 
 const STRSEARCH_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/StringSearchAlgorithm/strsearch_algorithm.bin"
+    "/RustBenchmarks/strsearch_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

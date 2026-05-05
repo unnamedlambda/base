@@ -7,7 +7,7 @@ use crate::harness::{self, format_count, BenchResult};
 
 const REGEX_ALGORITHM: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
-    "/RegexBenchAlgorithm/regex_algorithm.bin"
+    "/RustBenchmarks/regex_algorithm.bin"
 ));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {

@@ -139,12 +139,11 @@ def inferAlgorithm : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end CudaGemvPersist
-
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[
-    toJsonEntry "cuda_gemv_load"  CudaGemvPersist.buildConfig CudaGemvPersist.loadAlgorithm,
-    toJsonEntry "cuda_gemv_prep"  CudaGemvPersist.buildConfig CudaGemvPersist.prepAlgorithm,
-    toJsonEntry "cuda_gemv_infer" CudaGemvPersist.buildConfig CudaGemvPersist.inferAlgorithm,
+def artifacts : Array Json :=
+  #[
+    toJsonEntry "cuda_gemv_load" buildConfig loadAlgorithm,
+    toJsonEntry "cuda_gemv_prep" buildConfig prepAlgorithm,
+    toJsonEntry "cuda_gemv_infer" buildConfig inferAlgorithm,
   ]
+
+end CudaGemvPersist

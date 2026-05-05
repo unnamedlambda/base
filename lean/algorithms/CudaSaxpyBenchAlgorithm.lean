@@ -168,8 +168,7 @@ def buildAlgorithm : Algorithm := {
   timeout_ms := some TIMEOUT_MS
 }
 
-end CudaSaxpyBench
+def artifacts : Array Json :=
+  #[toJsonEntry "cuda_saxpy_algorithm" buildConfig buildAlgorithm]
 
-def main (args : List String) : IO Unit := do
-  let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "cuda_saxpy_algorithm" CudaSaxpyBench.buildConfig CudaSaxpyBench.buildAlgorithm]
+end CudaSaxpyBench

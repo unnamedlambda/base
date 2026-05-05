@@ -16,6 +16,7 @@ VENV="$SCRIPT_DIR/../.venv"
 LAKE_DIR="$SCRIPT_DIR/../../lean/algorithms"
 LEAN_DIR="$LAKE_DIR"
 OUT_DIR="$SCRIPT_DIR/../../lean/data"
+BENCHMARKS_MODULE="PythonBenchmarks"
 
 # ── Python environment ────────────────────────────────────────────────────────
 
@@ -39,37 +40,13 @@ mkdir -p "$OUT_DIR"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-LEAN_FILES=(
-    "CsvBenchAlgorithm.lean"
-    "JsonBenchAlgorithm.lean"
-    "RegexBenchAlgorithm.lean"
-    "StringSearchAlgorithm.lean"
-    "WordCountAlgorithm.lean"
-    "VecOpsBenchAlgorithm.lean"
-    "ClampSumBenchAlgorithm.lean"
-    "RowDotBenchAlgorithm.lean"
-    "RowAffineReduceBenchAlgorithm.lean"
-    "PandasBenchAlgorithm.lean"
-    "PandasFilterBenchAlgorithm.lean"
-    "CudaVecAddPersistAlgorithm.lean"
-    "CudaSaxpyPersistAlgorithm.lean"
-    "CudaGemvPersistAlgorithm.lean"
-    "CudaRmsNormPersistAlgorithm.lean"
-    "CudaSoftmaxPersistAlgorithm.lean"
-    "CudaDecoderLayerAlgorithm.lean"
-    "CudaDecodeAttentionAlgorithm.lean"
-)
+src="$LEAN_DIR/$BENCHMARKS_MODULE.lean"
+module_out_dir="$OUT_DIR/$BENCHMARKS_MODULE"
 
-for lean_file in "${LEAN_FILES[@]}"; do
-    src="$LEAN_DIR/$lean_file"
-    module="${lean_file%.lean}"
-    module_out_dir="$OUT_DIR/$module"
-
-    (cd "$LAKE_DIR" && lake build "$module")
-    echo "Generating artifacts from $lean_file ..."
-    mkdir -p "$module_out_dir"
-    (cd "$LAKE_DIR" && lake env lean --run "$src" "$module_out_dir")
-done
+(cd "$LAKE_DIR" && lake build "$BENCHMARKS_MODULE")
+echo "Generating artifacts from $BENCHMARKS_MODULE.lean ..."
+mkdir -p "$module_out_dir"
+(cd "$LAKE_DIR" && lake env lean --run "$src" "$module_out_dir")
 
 # ── Run benchmarks ────────────────────────────────────────────────────────────
 
