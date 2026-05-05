@@ -169,5 +169,6 @@ def buildAlgorithm : Algorithm := {
 
 end MatmulBench
 
-def main : IO Unit :=
-  IO.println (Json.compress (.arr #[toJsonEntry "matmul_algorithm" MatmulBench.buildConfig MatmulBench.buildAlgorithm]))
+def main (args : List String) : IO Unit := do
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "matmul_algorithm" MatmulBench.buildConfig MatmulBench.buildAlgorithm]

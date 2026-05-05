@@ -5,7 +5,10 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const REGEX_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/regex_algorithm.bin"));
+const REGEX_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/RegexBenchAlgorithm/regex_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(REGEX_ALGORITHM).expect("Failed to deserialize regex algorithm")

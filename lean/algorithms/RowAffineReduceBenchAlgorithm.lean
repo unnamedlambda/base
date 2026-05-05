@@ -185,5 +185,6 @@ def buildAlgorithm : Algorithm := {
 
 end RowAffineReduceBench
 
-def main : IO Unit :=
-  IO.println (Json.compress (.arr #[toJsonEntry "row_affine_reduce_algorithm" RowAffineReduceBench.buildConfig RowAffineReduceBench.buildAlgorithm]))
+def main (args : List String) : IO Unit := do
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "row_affine_reduce_algorithm" RowAffineReduceBench.buildConfig RowAffineReduceBench.buildAlgorithm]

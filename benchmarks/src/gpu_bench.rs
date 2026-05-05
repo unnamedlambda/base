@@ -2,12 +2,18 @@ use crate::harness::{self, BenchResult};
 use base::{Algorithm, BaseConfig};
 type Gpu = burn::backend::wgpu::Wgpu;
 
-const GPU_VECADD_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/gpu_vecadd_algorithm.bin"));
-const GPU_MATMUL_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/gpu_matmul_algorithm.bin"));
-const GPU_REDUCTION_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/gpu_reduction_algorithm.bin"));
+const GPU_VECADD_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/GpuVecAddBenchAlgorithm/gpu_vecadd_algorithm.bin"
+));
+const GPU_MATMUL_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/GpuMatMulBenchAlgorithm/gpu_matmul_algorithm.bin"
+));
+const GPU_REDUCTION_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/GpuReductionBenchAlgorithm/gpu_reduction_algorithm.bin"
+));
 
 fn load_vecadd_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(GPU_VECADD_ALGORITHM).expect("Failed to deserialize gpu_vecadd algorithm")

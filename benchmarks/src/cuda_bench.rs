@@ -3,8 +3,10 @@ use base::{Algorithm, BaseConfig};
 
 type CudaBackend = burn::backend::CudaJit;
 
-const CUDA_SAXPY_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/cuda_saxpy_algorithm.bin"));
+const CUDA_SAXPY_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/CudaSaxpyBenchAlgorithm/cuda_saxpy_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(CUDA_SAXPY_ALGORITHM).expect("Failed to deserialize cuda_saxpy algorithm")

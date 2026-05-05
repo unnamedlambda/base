@@ -5,8 +5,10 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const STRSEARCH_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/strsearch_algorithm.bin"));
+const STRSEARCH_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/StringSearchAlgorithm/strsearch_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(STRSEARCH_ALGORITHM).expect("Failed to deserialize strsearch algorithm")

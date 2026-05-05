@@ -1,6 +1,7 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sha256_app.bin"));
+const ALGORITHM_BINARY: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/Sha256Algorithm/sha256_app.bin"));
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: usize = 0x100;

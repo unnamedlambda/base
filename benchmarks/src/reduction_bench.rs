@@ -11,8 +11,10 @@ use base::{Algorithm, BaseConfig};
 
 type B = burn::backend::NdArray<f32>;
 
-const REDUCTION_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/reduction_algorithm.bin"));
+const REDUCTION_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/ReductionBenchAlgorithm/reduction_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(REDUCTION_ALGORITHM).expect("Failed to deserialize reduction algorithm")

@@ -1,7 +1,10 @@
 use crate::harness::{self, format_count, BenchResult};
 use base::{Algorithm, BaseConfig};
 
-const SORT_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sort_algorithm.bin"));
+const SORT_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/SortBenchAlgorithm/sort_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(SORT_ALGORITHM).expect("Failed to deserialize sort algorithm")

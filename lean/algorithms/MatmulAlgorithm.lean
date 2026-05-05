@@ -352,6 +352,7 @@ def result : BaseConfig × Algorithm := matmul A B  -- : Matrix M N (erased)
 
 end Matmul
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
   let (cfg, alg) := Matmul.result
-  IO.println (Json.compress (.arr #[toJsonEntry "matmul_app" cfg alg]))
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "matmul_app" cfg alg]

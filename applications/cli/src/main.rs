@@ -1,6 +1,7 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cli_app.bin"));
+const ALGORITHM_BINARY: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/CliAlgorithm/cli_app.bin"));
 
 fn main() {
     let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)

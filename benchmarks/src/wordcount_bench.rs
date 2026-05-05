@@ -6,7 +6,10 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const WC_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wc_algorithm.bin"));
+const WC_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/WordCountAlgorithm/wc_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(WC_ALGORITHM).expect("Failed to deserialize wc algorithm")

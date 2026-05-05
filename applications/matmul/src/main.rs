@@ -1,6 +1,7 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/matmul_app.bin"));
+const ALGORITHM_BINARY: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/MatmulAlgorithm/matmul_app.bin"));
 
 fn main() {
     let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)

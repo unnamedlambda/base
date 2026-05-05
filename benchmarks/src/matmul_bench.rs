@@ -11,7 +11,10 @@ use base::{Algorithm, BaseConfig};
 
 type B = burn::backend::NdArray<f32>;
 
-const MATMUL_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/matmul_algorithm.bin"));
+const MATMUL_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/MatmulBenchAlgorithm/matmul_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(MATMUL_ALGORITHM).expect("Failed to deserialize matmul algorithm")

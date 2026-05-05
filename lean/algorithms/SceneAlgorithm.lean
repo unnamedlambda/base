@@ -1098,6 +1098,7 @@ def studioScene : SceneSpec :=
 
 end Algorithm
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
   let (cfg, alg) := Algorithm.renderScene Algorithm.defaultScene
-  IO.println (Json.compress (.arr #[toJsonEntry "scene_app" cfg alg]))
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "scene_app" cfg alg]

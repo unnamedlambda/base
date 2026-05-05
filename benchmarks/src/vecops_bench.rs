@@ -11,7 +11,10 @@ use base::{Algorithm, BaseConfig};
 
 type B = burn::backend::NdArray<f32>;
 
-const VECOPS_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vecops_algorithm.bin"));
+const VECOPS_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/VecOpsBenchAlgorithm/vecops_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(VECOPS_ALGORITHM).expect("Failed to deserialize vecops algorithm")

@@ -206,5 +206,6 @@ def buildAlgorithm : Algorithm := {
 
 end GpuIterBench
 
-def main : IO Unit :=
-  IO.println (Json.compress (.arr #[toJsonEntry "gpu_iter_algorithm" GpuIterBench.buildConfig GpuIterBench.buildAlgorithm]))
+def main (args : List String) : IO Unit := do
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "gpu_iter_algorithm" GpuIterBench.buildConfig GpuIterBench.buildAlgorithm]

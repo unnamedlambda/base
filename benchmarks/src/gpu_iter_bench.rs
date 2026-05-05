@@ -13,8 +13,10 @@ use base::{Algorithm, BaseConfig};
 
 type Gpu = burn::backend::wgpu::Wgpu;
 
-const GPU_ITER_ALGORITHM: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/gpu_iter_algorithm.bin"));
+const GPU_ITER_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/GpuIterBenchAlgorithm/gpu_iter_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(GPU_ITER_ALGORITHM).expect("Failed to deserialize gpu_iter algorithm")

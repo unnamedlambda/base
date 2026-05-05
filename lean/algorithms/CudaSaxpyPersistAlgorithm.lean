@@ -33,10 +33,11 @@ def result : CompileResult := AlgorithmLib.CudaTensor.compile {
 
 end CudaSaxpyPersist
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
   let r := CudaSaxpyPersist.result
-  IO.println (Json.compress (.arr #[
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[
     toJsonEntry "cuda_saxpy_persist_load"  r.config r.loadAlgorithm,
     toJsonEntry "cuda_saxpy_persist_prep"  r.config r.prepAlgorithm,
     toJsonEntry "cuda_saxpy_persist_infer" r.config r.inferAlgorithm,
-  ]))
+  ]

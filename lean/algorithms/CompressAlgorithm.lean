@@ -476,6 +476,7 @@ def result : BaseConfig × Algorithm := buildCompressor defaultParams
 
 end Algorithm
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
   let (cfg, alg) := Algorithm.result
-  IO.println (Json.compress (.arr #[toJsonEntry "compress_app" cfg alg]))
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "compress_app" cfg alg]

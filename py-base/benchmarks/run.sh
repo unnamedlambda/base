@@ -2,7 +2,8 @@
 # Run the py_base benchmark suite.
 #
 # First run: creates .venv, builds py_base, installs deps (~1 min).
-# Subsequent runs: fast. Lean JSONs are regenerated only if source changed.
+# Subsequent runs: fast. Lean modules are rebuilt incrementally by Lake,
+# and benchmark JSONs are regenerated on each run.
 #
 # Usage: ./run.sh [--bench <name>] [--rounds <n>]
 #   --bench   csv | json | regex | strsearch | vecops | torchops | pandas | vllm | all  (default: all)
@@ -35,23 +36,8 @@ pip install -q -r "$SCRIPT_DIR/requirements-bench.txt"
 # ── Algorithm JSON files ──────────────────────────────────────────────────────
 
 mkdir -p "$OUT_DIR"
-
-# Each Lean file outputs [[name, config, alg], ...]; write one {name}.json per entry.
-_extract_artifacts() {
-    local out_dir="$1"
-    python3 -c '
-import sys, json, os
-out_dir = sys.argv[1]
-text = sys.stdin.read()
-start = text.find("\n[")
-data = json.loads(text[start + 1:] if start >= 0 else text.strip())
-for name, config, alg in data:
-    path = os.path.join(out_dir, f"{name}.json")
-    with open(path, "w") as f:
-        json.dump([config, alg], f)
-    print(f"  wrote {name}.json")
-' "$out_dir"
-}
+rm -rf "$OUT_DIR"
+mkdir -p "$OUT_DIR"
 
 LEAN_FILES=(
     "CsvBenchAlgorithm.lean"
@@ -76,13 +62,13 @@ LEAN_FILES=(
 
 for lean_file in "${LEAN_FILES[@]}"; do
     src="$LEAN_DIR/$lean_file"
-    stamp="$OUT_DIR/.${lean_file%.lean}.stamp"
+    module="${lean_file%.lean}"
+    module_out_dir="$OUT_DIR/$module"
 
-    if [[ ! -f "$stamp" ]] || [[ "$src" -nt "$stamp" ]]; then
-        echo "Generating artifacts from $lean_file ..."
-        (cd "$LAKE_DIR" && lake env lean --run "$src") | _extract_artifacts "$OUT_DIR"
-        touch "$stamp"
-    fi
+    (cd "$LAKE_DIR" && lake build "$module")
+    echo "Generating artifacts from $lean_file ..."
+    mkdir -p "$module_out_dir"
+    (cd "$LAKE_DIR" && lake env lean --run "$src" "$module_out_dir")
 done
 
 # ── Run benchmarks ────────────────────────────────────────────────────────────

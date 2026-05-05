@@ -149,5 +149,6 @@ def buildAlgorithm : Algorithm := {
 
 end ClampSumBench
 
-def main : IO Unit :=
-  IO.println (Json.compress (.arr #[toJsonEntry "clamp_sum_algorithm" ClampSumBench.buildConfig ClampSumBench.buildAlgorithm]))
+def main (args : List String) : IO Unit := do
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "clamp_sum_algorithm" ClampSumBench.buildConfig ClampSumBench.buildAlgorithm]

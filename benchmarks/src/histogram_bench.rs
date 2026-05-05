@@ -15,8 +15,14 @@ use rayon::prelude::*;
 const BINS: usize = 256;
 const MAX_DATA_BYTES: usize = 64 * 1024 * 1024; // 64MB max input file
 
-const HIST1_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hist1_algorithm.bin"));
-const HIST4_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/hist4_algorithm.bin"));
+const HIST1_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/HistogramBench1Algorithm/hist1_algorithm.bin"
+));
+const HIST4_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/HistogramBench4Algorithm/hist4_algorithm.bin"
+));
 
 fn load_algorithm(workers: usize) -> (BaseConfig, Algorithm) {
     let data = if workers == 1 {

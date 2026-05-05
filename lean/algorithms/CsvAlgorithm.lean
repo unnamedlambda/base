@@ -551,6 +551,7 @@ def result : BaseConfig × Algorithm :=
 
 end CsvDemo
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
   let (cfg, alg) := CsvDemo.result
-  IO.println (Json.compress (.arr #[toJsonEntry "csv_app" cfg alg]))
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "csv_app" cfg alg]

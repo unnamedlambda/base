@@ -107,7 +107,7 @@ def run(revagg_path: str, filter_path: str, rounds: int) -> list[harness.BenchRe
         print("pandas not installed — skipping pandas benchmark", file=sys.stderr)
         return []
 
-    eng_rev,    alg_rev    = py_base.load(revagg_path)
+    eng_rev, alg_rev = py_base.load(revagg_path)
     eng_filter, alg_filter = py_base.load(filter_path)
     results = []
     rng = np.random.default_rng(42)

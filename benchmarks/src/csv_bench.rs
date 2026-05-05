@@ -5,7 +5,10 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const CSV_ALGORITHM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csv_algorithm.bin"));
+const CSV_ALGORITHM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/CsvBenchAlgorithm/csv_algorithm.bin"
+));
 
 fn load_algorithm() -> (BaseConfig, Algorithm) {
     bincode::deserialize(CSV_ALGORITHM).expect("Failed to deserialize csv algorithm")

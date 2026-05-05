@@ -1,6 +1,7 @@
 use base::{init_tracing, run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/csv_app.bin"));
+const ALGORITHM_BINARY: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/CsvAlgorithm/csv_app.bin"));
 
 fn main() {
     init_tracing();

@@ -85,14 +85,31 @@ instance : ToJson Algorithm where
     ("output", Json.arr alg.output.toArray)
   ]
 
-/-- Serialize a (BaseConfig, Algorithm) pair as a JSON tuple (array of two elements). -/
-def toJsonPair (config : BaseConfig) (algorithm : Algorithm) : Json :=
-  Json.arr #[toJson config, toJson algorithm]
-
 /-- Serialize a named artifact entry: ["name", config, algorithm].
     Use this in def main to declare artifact names that the build system will use as file names. -/
 def toJsonEntry (name : String) (config : BaseConfig) (algorithm : Algorithm) : Json :=
   .arr #[.str name, toJson config, toJson algorithm]
+
+/-- Parse the sole CLI argument as an output directory. -/
+def requireOutputDir (args : List String) : IO String :=
+  match args with
+  | [dir] => pure dir
+  | _ => throw <| IO.userError "expected exactly one argument: output directory"
+
+/-- Emit artifacts to a directory as one `{name}.json` file per entry, where each
+    file contains `[config, algorithm]`. -/
+def emitArtifacts (dir : String) (entries : Array Json) : IO Unit := do
+  IO.FS.createDirAll dir
+  let mut seen : List String := []
+  for entry in entries do
+    match entry with
+    | .arr #[.str name, config, algorithm] =>
+        if seen.contains name then
+          throw <| IO.userError s!"duplicate artifact name: {name}"
+        seen := name :: seen
+        IO.FS.writeFile s!"{dir}/{name}.json" (Json.compress (.arr #[config, algorithm]))
+    | _ =>
+        throw <| IO.userError s!"invalid artifact entry: {Json.compress entry}"
 
 /-- Common single-call action list used by most benchmark artifacts. -/
 def mkCallActions (src : UInt32) : List Action :=

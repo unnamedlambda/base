@@ -727,5 +727,6 @@ def sha256Algorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit :=
-  IO.println (Json.compress (.arr #[toJsonEntry "sha256_app" Algorithm.sha256Config Algorithm.sha256Algorithm]))
+def main (args : List String) : IO Unit := do
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "sha256_app" Algorithm.sha256Config Algorithm.sha256Algorithm]

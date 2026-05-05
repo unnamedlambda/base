@@ -32,10 +32,11 @@ def result : CompileResult := AlgorithmLib.CudaTensor.compile {
 
 end CudaVecAddPersist
 
-def main : IO Unit := do
+def main (args : List String) : IO Unit := do
   let r := CudaVecAddPersist.result
-  IO.println (Json.compress (.arr #[
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[
     toJsonEntry "cuda_vecadd_persist_load"  r.config r.loadAlgorithm,
     toJsonEntry "cuda_vecadd_persist_prep"  r.config r.prepAlgorithm,
     toJsonEntry "cuda_vecadd_persist_infer" r.config r.inferAlgorithm,
-  ]))
+  ]

@@ -368,5 +368,6 @@ def fftAlgorithm : Algorithm := {
 
 end Algorithm
 
-def main : IO Unit :=
-  IO.println (Json.compress (.arr #[toJsonEntry "fft_app" Algorithm.fftConfig Algorithm.fftAlgorithm]))
+def main (args : List String) : IO Unit := do
+  let outDir ← requireOutputDir args
+  emitArtifacts outDir #[toJsonEntry "fft_app" Algorithm.fftConfig Algorithm.fftAlgorithm]
