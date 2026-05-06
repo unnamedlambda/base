@@ -5,13 +5,13 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const JSON_ALGORITHM: &[u8] = include_bytes!(concat!(
+const JSON_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/json_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(JSON_ALGORITHM).expect("Failed to deserialize json algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(JSON_ARTIFACT).expect("Failed to deserialize json artifact")
 }
 
 fn generate_json(path: &str, n: usize) -> i64 {
@@ -78,7 +78,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in &sizes {

@@ -2,30 +2,30 @@ use crate::harness::{self, BenchResult};
 use base::{Algorithm, BaseConfig};
 type Gpu = burn::backend::wgpu::Wgpu;
 
-const GPU_VECADD_ALGORITHM: &[u8] = include_bytes!(concat!(
+const GPU_VECADD_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/gpu_vecadd_algorithm.bin"
 ));
-const GPU_MATMUL_ALGORITHM: &[u8] = include_bytes!(concat!(
+const GPU_MATMUL_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/gpu_matmul_algorithm.bin"
 ));
-const GPU_REDUCTION_ALGORITHM: &[u8] = include_bytes!(concat!(
+const GPU_REDUCTION_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/gpu_reduction_algorithm.bin"
 ));
 
-fn load_vecadd_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_VECADD_ALGORITHM).expect("Failed to deserialize gpu_vecadd algorithm")
+fn load_vecadd_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(GPU_VECADD_ARTIFACT).expect("Failed to deserialize gpu_vecadd artifact")
 }
 
-fn load_matmul_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_MATMUL_ALGORITHM).expect("Failed to deserialize gpu_matmul algorithm")
+fn load_matmul_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(GPU_MATMUL_ARTIFACT).expect("Failed to deserialize gpu_matmul artifact")
 }
 
-fn load_reduction_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_REDUCTION_ALGORITHM)
-        .expect("Failed to deserialize gpu_reduction algorithm")
+fn load_reduction_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(GPU_REDUCTION_ARTIFACT)
+        .expect("Failed to deserialize gpu_reduction artifact")
 }
 
 use harness::{build_f32_payload, f32_sum, format_count, gen_floats};
@@ -179,7 +179,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- VecAdd ----
     {
-        let (config, alg) = load_vecadd_algorithm();
+        let (config, alg) = load_vecadd_artifact();
         let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
         for &n in &[256_000usize, 500_000] {
@@ -228,7 +228,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- MatMul ----
     {
-        let (config, alg) = load_matmul_algorithm();
+        let (config, alg) = load_matmul_artifact();
         let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
         for &n in &[256usize, 512] {
@@ -273,7 +273,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- Reduction (partial sums, groups of 64) ----
     {
-        let (config, alg) = load_reduction_algorithm();
+        let (config, alg) = load_reduction_artifact();
         let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
         for &n in &[256_000usize, 512_000, 896_000] {

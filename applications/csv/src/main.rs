@@ -1,12 +1,12 @@
 use base::{init_tracing, run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] =
+const ARTIFACT_BINARY: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/CsvAlgorithm/csv_app.bin"));
 
 fn main() {
     init_tracing();
 
-    let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+    let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     let start = std::time::Instant::now();

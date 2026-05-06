@@ -11,13 +11,13 @@ use base::{Algorithm, BaseConfig};
 
 type B = burn::backend::NdArray<f32>;
 
-const VECOPS_ALGORITHM: &[u8] = include_bytes!(concat!(
+const VECOPS_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/vecops_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(VECOPS_ALGORITHM).expect("Failed to deserialize vecops algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(VECOPS_ARTIFACT).expect("Failed to deserialize vecops artifact")
 }
 
 fn rust_vec_add(a: &[f32], b: &[f32]) -> f64 {
@@ -65,7 +65,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in sizes {

@@ -1,6 +1,6 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] =
+const ARTIFACT_BINARY: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/FftAlgorithm/fft_app.bin"));
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
@@ -14,7 +14,7 @@ fn main() {
     }
     let input_path = &args[1];
 
-    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     // Write input filename into initial_memory (null-terminated)

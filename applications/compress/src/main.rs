@@ -1,6 +1,6 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(
+const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/CompressAlgorithm/compress_app.bin"
 ));
@@ -23,7 +23,7 @@ fn main() {
         })
         .len();
 
-    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     // Write input filename into initial_memory (null-terminated)

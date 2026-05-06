@@ -6,13 +6,11 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const WC_ALGORITHM: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/wc_algorithm.bin"
-));
+const WC_ARTIFACT: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/RustBenchmarks/wc_algorithm.bin"));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(WC_ALGORITHM).expect("Failed to deserialize wc algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(WC_ARTIFACT).expect("Failed to deserialize wc artifact")
 }
 
 const VOCABULARY: &[&str] = &[
@@ -112,7 +110,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // accumulates across execute() calls (ht_increment on handle 0 persists).
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
-            let (config, alg) = load_algorithm();
+            let (config, alg) = load_artifact();
             let mut base_instance = base::Base::new(config).expect("Base::new failed");
             let start = std::time::Instant::now();
             let _ = base_instance.execute(&alg, &payload);
@@ -121,7 +119,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Run one more time with fresh instance for verification
         let _ = fs::remove_file(&output_path);
-        let (config, alg) = load_algorithm();
+        let (config, alg) = load_artifact();
         let mut base_instance = base::Base::new(config).expect("Base::new failed");
         let _ = base_instance.execute(&alg, &payload);
 

@@ -3,13 +3,13 @@ use base::{Algorithm, BaseConfig};
 
 type CudaBackend = burn::backend::CudaJit;
 
-const CUDA_SAXPY_ALGORITHM: &[u8] = include_bytes!(concat!(
+const CUDA_SAXPY_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/cuda_saxpy_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(CUDA_SAXPY_ALGORITHM).expect("Failed to deserialize cuda_saxpy algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(CUDA_SAXPY_ARTIFACT).expect("Failed to deserialize cuda_saxpy artifact")
 }
 
 use harness::{build_f32_payload, f32_from_bytes, format_count, gen_floats};
@@ -82,7 +82,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     eprintln!("  SAXPY: y[i] = 2.0 * x[i] + y[i]");
     eprintln!("  Both: upload + compute + full readback via execute_into\n");
 
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in &[262_144usize, 524_288, 1_048_576] {

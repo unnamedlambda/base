@@ -5,13 +5,13 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const REGEX_ALGORITHM: &[u8] = include_bytes!(concat!(
+const REGEX_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/regex_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(REGEX_ALGORITHM).expect("Failed to deserialize regex algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(REGEX_ARTIFACT).expect("Failed to deserialize regex artifact")
 }
 
 const VOCABULARY: &[&str] = &[
@@ -69,7 +69,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in &sizes {

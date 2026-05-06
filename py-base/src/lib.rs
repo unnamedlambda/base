@@ -128,15 +128,15 @@ impl PyBase {
     }
 }
 
-/// Load a pre-serialized algorithm from a JSON file usually produced by `lake env lean --run`.
+/// Load a pre-serialized artifact from a JSON file usually produced by `lake env lean --run`.
 /// The file must contain a JSON array `[BaseConfig, Algorithm]`.
-/// Returns a JIT-compiled Base instance and the Algorithm, ready to use.
+/// Returns a JIT-compiled Base instance and the Algorithm from that artifact, ready to use.
 #[pyfunction]
 fn load(path: &str) -> PyResult<(PyBase, PyAlgorithm)> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| PyValueError::new_err(format!("Cannot read {}: {}", path, e)))?;
     let (config, algorithm): (BaseConfig, Algorithm) = serde_json::from_str(&text)
-        .map_err(|e| PyValueError::new_err(format!("Invalid algorithm JSON in {}: {}", path, e)))?;
+        .map_err(|e| PyValueError::new_err(format!("Invalid artifact JSON in {}: {}", path, e)))?;
     let inner = base::Base::new(config)
         .map_err(|e| PyValueError::new_err(format!("Base::new failed: {:?}", e)))?;
     Ok((PyBase { inner }, PyAlgorithm { inner: algorithm }))

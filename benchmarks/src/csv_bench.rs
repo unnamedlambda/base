@@ -5,13 +5,13 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const CSV_ALGORITHM: &[u8] = include_bytes!(concat!(
+const CSV_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/csv_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(CSV_ALGORITHM).expect("Failed to deserialize csv algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(CSV_ARTIFACT).expect("Failed to deserialize csv artifact")
 }
 
 /// Generate a deterministic CSV file with a salary column.
@@ -93,7 +93,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in &sizes {

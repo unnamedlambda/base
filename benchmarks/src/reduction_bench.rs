@@ -11,13 +11,13 @@ use base::{Algorithm, BaseConfig};
 
 type B = burn::backend::NdArray<f32>;
 
-const REDUCTION_ALGORITHM: &[u8] = include_bytes!(concat!(
+const REDUCTION_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/reduction_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(REDUCTION_ALGORITHM).expect("Failed to deserialize reduction algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(REDUCTION_ARTIFACT).expect("Failed to deserialize reduction artifact")
 }
 
 fn rust_sum(data: &[f32]) -> f64 {
@@ -55,7 +55,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in sizes {

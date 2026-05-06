@@ -1,12 +1,12 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(
+const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RaytraceAlgorithm/raytrace_app.bin"
 ));
 
 fn main() {
-    let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+    let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     let start = std::time::Instant::now();

@@ -2,15 +2,15 @@
 
 Base is an execution system that delivers performance comparable to idiomatic Rust while allowing control logic to be specified in a language with a strong type system — without introducing type checking or interpreter overhead at runtime.
 
-Programs are defined as a configuration pair: a `BaseConfig` (Cranelift IR + memory layout) and an `Algorithm` (actions, execution parameters). This pair is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but the execution at runtime has no knowledge of or usage of Lean.
+Programs are defined by an artifact: a `BaseConfig` (Cranelift IR + memory layout) paired with an `Algorithm` (actions, execution parameters). This artifact is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
 
 The system is completely portable — all dependencies build from `cargo` with no manual system library installation, and only portable Rust features are used. Cranelift provides a JIT compiler similar to LLVM but without the system dependency — it is pure Rust, built from Cargo. Backend code quality is comparable to LLVM, which means optimization lives in Lean: emit good IR, and the generated code is fast. CPU, GPU, file, network, and database primitives are exposed through a shared memory space and directly callable from the JIT-compiled IR.
 
-GPU compute uses [wgpu](https://wgpu.rs/), a portable abstraction over Vulkan, Metal, DX12, and WebGPU — no vendor-specific SDK required. For NVIDIA GPUs, Base also provides direct CUDA support via [cudarc](https://github.com/coreylowman/cudarc), which dynamically loads the CUDA driver at runtime (`libcuda.so` / `nvcuda.dll`). PTX kernel source is embedded in the algorithm's initial memory by Lean at build time and loaded into the CUDA driver at execution time — no `nvcc` compilation step, no `-sys` crate, and no build-time CUDA SDK dependency beyond having the driver installed.
+GPU compute uses [wgpu](https://wgpu.rs/), a portable abstraction over Vulkan, Metal, DX12, and WebGPU — no vendor-specific SDK required. For NVIDIA GPUs, Base also provides direct CUDA support via [cudarc](https://github.com/coreylowman/cudarc), which dynamically loads the CUDA driver at runtime (`libcuda.so` / `nvcuda.dll`). PTX kernel source is embedded in the artifact's initial memory by Lean at build time and loaded into the CUDA driver at execution time — no `nvcc` compilation step, no `-sys` crate, and no build-time CUDA SDK dependency beyond having the driver installed.
 
 ## How it works
 
-A program in Base is two things:
+A Base artifact contains two things:
 
 ```
 BaseConfig { cranelift_ir, memory_size, context_offset, initial_memory }
@@ -21,14 +21,14 @@ Algorithm  { actions, cranelift_units, timeout_ms, output }
 
 **Algorithm** defines what to execute: a sequence of actions (call a compiled function, dispatch async work, conditional jump, park/wake), and optionally an output schema for returning Arrow RecordBatches.
 
-At build time, Lean 4 generates this pair as JSON. The Rust build script deserializes it into typed structs and embeds the binary. At runtime, Cranelift JIT-compiles the IR once and executes actions against shared memory — no interpreter, no GC, no serialization layer in the hot path.
+At build time, Lean 4 generates this artifact as JSON. The Rust build script deserializes it into typed structs and emits a binary artifact encoding alongside the JSON. At runtime, Cranelift JIT-compiles the IR once and executes actions against shared memory — no interpreter, no GC, no serialization layer in the hot path.
 
 ## Execution patterns
 
 ### One-shot execution
 
 ```rust
-let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)?;
+let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)?;
 base::run(config, alg)?;
 ```
 
@@ -66,7 +66,7 @@ The [scene](applications/scene/) application renders a small physically based sc
 
 ## Type system design
 
-The `(BaseConfig, Algorithm)` pair is plain data. The entire assembly-like control surface — memory layout, action sequencing, FFI calls, GPU dispatch — is exposed to the specification language. This enables freedom to bolt on type systems that constrain effects in a bottom-up way: start with the raw primitives, then layer on whatever invariants the application needs.
+The artifact `(BaseConfig, Algorithm)` is plain data. The entire assembly-like control surface — memory layout, action sequencing, FFI calls, GPU dispatch — is exposed to the specification language. This enables freedom to bolt on type systems that constrain effects in a bottom-up way: start with the raw primitives, then layer on whatever invariants the application needs.
 
 Lean 4 is used here because its dependent type system can express constraints on program structure (memory layout invariants, offset arithmetic, action sequencing) and verify them at build time. But this is a property of the specification language, not the Rust executor. Any language that can produce the right JSON structure can target Base. The Cranelift JIT sees only IR text and a byte array.
 
@@ -184,7 +184,7 @@ The `_ptr` variants (`cl_gpu_upload_ptr`, `cl_gpu_download_ptr`, `cl_cuda_upload
 
 ## Building
 
-The `base` crate requires only Rust. Applications and benchmarks additionally require [Lean 4](https://leanprover.github.io/lean4/doc/setup.html) to generate their algorithm definitions. GPU workloads require a Vulkan, Metal, DX12, or WebGPU capable system. CUDA workloads require an NVIDIA GPU with a CUDA-capable driver installed (libraries are loaded dynamically at runtime — see above).
+The `base` crate requires only Rust. Applications and benchmarks additionally require [Lean 4](https://leanprover.github.io/lean4/doc/setup.html) to generate their artifacts. GPU workloads require a Vulkan, Metal, DX12, or WebGPU capable system. CUDA workloads require an NVIDIA GPU with a CUDA-capable driver installed (libraries are loaded dynamically at runtime — see above).
 
 ```bash
 # Run all benchmarks

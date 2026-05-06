@@ -1,13 +1,13 @@
 use crate::harness::{self, format_count, BenchResult};
 use base::{Algorithm, BaseConfig};
 
-const SORT_ALGORITHM: &[u8] = include_bytes!(concat!(
+const SORT_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/sort_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(SORT_ALGORITHM).expect("Failed to deserialize sort algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(SORT_ARTIFACT).expect("Failed to deserialize sort artifact")
 }
 
 fn generate_data(n: usize) -> Vec<i32> {
@@ -67,7 +67,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let sizes = [10_000, 100_000, 500_000, 1_000_000, 5_000_000];
     let mut results = Vec::new();
 
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in &sizes {

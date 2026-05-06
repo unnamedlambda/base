@@ -15,22 +15,22 @@ use rayon::prelude::*;
 const BINS: usize = 256;
 const MAX_DATA_BYTES: usize = 64 * 1024 * 1024; // 64MB max input file
 
-const HIST1_ALGORITHM: &[u8] = include_bytes!(concat!(
+const HIST1_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/hist1_algorithm.bin"
 ));
-const HIST4_ALGORITHM: &[u8] = include_bytes!(concat!(
+const HIST4_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/hist4_algorithm.bin"
 ));
 
-fn load_algorithm(workers: usize) -> (BaseConfig, Algorithm) {
+fn load_artifact(workers: usize) -> (BaseConfig, Algorithm) {
     let data = if workers == 1 {
-        HIST1_ALGORITHM
+        HIST1_ARTIFACT
     } else {
-        HIST4_ALGORITHM
+        HIST4_ARTIFACT
     };
-    bincode::deserialize(data).expect("Failed to deserialize histogram algorithm")
+    bincode::deserialize(data).expect("Failed to deserialize histogram artifact")
 }
 
 fn gen_data(n: usize, seed: u64) -> Vec<u32> {
@@ -208,7 +208,7 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             base_payload.push(0);
 
             // Load Lean-built algorithm and JIT compile once
-            let (config, alg) = load_algorithm(w);
+            let (config, alg) = load_artifact(w);
             let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
             let rayon_out = format!("/tmp/hist_bench_rayon_{}_{}.bin", n, w);

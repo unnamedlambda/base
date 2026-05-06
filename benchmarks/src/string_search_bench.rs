@@ -5,13 +5,13 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const STRSEARCH_ALGORITHM: &[u8] = include_bytes!(concat!(
+const STRSEARCH_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/strsearch_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(STRSEARCH_ALGORITHM).expect("Failed to deserialize strsearch algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(STRSEARCH_ARTIFACT).expect("Failed to deserialize strsearch artifact")
 }
 
 const VOCABULARY: &[&str] = &[
@@ -80,7 +80,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in &sizes {

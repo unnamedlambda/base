@@ -1,6 +1,6 @@
 use base::{run, Algorithm, BaseConfig};
 
-const ALGORITHM_BINARY: &[u8] = include_bytes!(concat!(
+const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/LeanEvalAlgorithm/lean_eval_app.bin"
 ));
@@ -10,7 +10,7 @@ const OUTPUT_PATH_OFFSET: usize = 0x0028;
 const OUTPUT_PATH_MAX_LEN: usize = 64;
 
 fn main() {
-    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ALGORITHM_BINARY)
+    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
         .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
 
     let args: Vec<String> = std::env::args().collect();

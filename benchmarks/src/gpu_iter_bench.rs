@@ -13,13 +13,13 @@ use base::{Algorithm, BaseConfig};
 
 type Gpu = burn::backend::wgpu::Wgpu;
 
-const GPU_ITER_ALGORITHM: &[u8] = include_bytes!(concat!(
+const GPU_ITER_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/gpu_iter_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_ITER_ALGORITHM).expect("Failed to deserialize gpu_iter algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(GPU_ITER_ARTIFACT).expect("Failed to deserialize gpu_iter artifact")
 }
 
 const WGSL_SCALE: &str = r#"
@@ -390,7 +390,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let num_groups = (n + 63) / 64;
     let out_size = num_groups * 4;
 
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &passes in &[1, 10, 100, 500, 1000] {

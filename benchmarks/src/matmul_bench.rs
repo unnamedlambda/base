@@ -11,13 +11,13 @@ use base::{Algorithm, BaseConfig};
 
 type B = burn::backend::NdArray<f32>;
 
-const MATMUL_ALGORITHM: &[u8] = include_bytes!(concat!(
+const MATMUL_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/matmul_algorithm.bin"
 ));
 
-fn load_algorithm() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(MATMUL_ALGORITHM).expect("Failed to deserialize matmul algorithm")
+fn load_artifact() -> (BaseConfig, Algorithm) {
+    bincode::deserialize(MATMUL_ARTIFACT).expect("Failed to deserialize matmul artifact")
 }
 
 fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
@@ -85,7 +85,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_algorithm();
+    let (config, alg) = load_artifact();
     let mut base_instance = base::Base::new(config).expect("Base::new failed");
 
     for &n in sizes {
