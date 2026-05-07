@@ -86,12 +86,12 @@ def clifNoopFn : String :=
 -- fn1: GPU Reduction orchestrator
 def clifGpuFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64) system_v\n" ++                              -- gpu_init / gpu_cleanup
-  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++                  -- gpu_create_buffer
-  "    sig2 = (i64, i64, i64, i64, i32) -> i32 system_v\n" ++        -- gpu_create_pipeline
-  "    sig3 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++        -- gpu_upload_ptr
-  "    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v\n" ++   -- gpu_dispatch
-  "    sig5 = (i64, i64, i32, i64, i64, i64) -> i32 system_v\n" ++   -- gpu_download_ptr(ptr, ctx_off, buf_id, buf_offset, dst_ptr, size)
+  "    sig0 = (i64) system_v\n" ++
+  "    sig1 = (i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++
+  "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++
+  "    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v\n" ++
   "\n" ++
   "    fn0 = %cl_gpu_init sig0\n" ++
   "    fn1 = %cl_gpu_create_buffer sig1\n" ++
@@ -105,9 +105,10 @@ def clifGpuFn : String :=
   "    v1 = load.i64 notrap aligned v0+0x18\n" ++               -- data_ptr
   "    v2 = load.i64 notrap aligned v0+0x20\n" ++               -- data_len (N * 4)
   "    v3 = load.i64 notrap aligned v0+0x28\n" ++               -- out_ptr
-  "    v90 = iconst.i64 8\n" ++                                  -- ctx_off (wgpu context at 0x08)
+  "    v90 = iadd_imm v0, 8\n" ++
   -- GPU init
-  "    call fn0(v0, v90)\n" ++
+  "    call fn0(v90)\n" ++
+  "    v91 = load.i64 notrap aligned v0+0x08\n" ++
   -- Compute: N = data_len/4, num_groups = N/64, buf_size = (N + num_groups) * 4
   "    v4 = ushr_imm v2, 2\n" ++                                -- N = data_len / 4
   "    v5 = ushr_imm v4, 6\n" ++                                -- num_groups = N / 64
@@ -115,21 +116,21 @@ def clifGpuFn : String :=
   "    v7 = ishl_imm v6, 2\n" ++                                -- buf_size = (N + num_groups) * 4
   "    v8 = ireduce.i32 v5\n" ++                                -- workgroups (= num_groups)
   -- Create buffer (holds input + output)
-  "    v10 = call fn1(v0, v90, v7)\n" ++                         -- buf_id
+  "    v10 = call fn1(v91, v7)\n" ++
   -- Upload input from payload (data_len bytes)
-  "    v11 = call fn3(v0, v90, v10, v1, v2)\n" ++
+  "    v11 = call fn3(v91, v10, v1, v2)\n" ++
   -- Create pipeline
-  "    v12 = iconst.i64 256\n" ++                                -- WGSL_SHADER_OFF
-  "    v13 = iconst.i64 4352\n" ++                               -- BIND_DESC_OFF
+  "    v12 = iadd_imm v0, 256\n" ++
+  "    v13 = iadd_imm v0, 4352\n" ++
   "    v14 = iconst.i32 1\n" ++
-  "    v15 = call fn2(v0, v90, v12, v13, v14)\n" ++
+  "    v15 = call fn2(v91, v12, v13, v14)\n" ++
   -- Dispatch
-  "    v16 = call fn4(v0, v90, v15, v8, v14, v14)\n" ++
+  "    v16 = call fn4(v91, v15, v8, v14, v14)\n" ++
   -- Download partial sums: num_groups*4 bytes from GPU buf offset N*4
   "    v17 = ishl_imm v5, 2\n" ++                               -- num_groups * 4 (download size)
-  "    v19 = call fn5(v0, v90, v10, v2, v3, v17)\n" ++          -- buf_offset = data_len = N*4
+  "    v19 = call fn5(v91, v10, v2, v3, v17)\n" ++
   -- GPU cleanup
-  "    call fn6(v0, v90)\n" ++
+  "    call fn6(v90)\n" ++
   "    return\n" ++
   "}\n"
 

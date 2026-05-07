@@ -37,16 +37,17 @@ def clifNoopFn : String :=
 
 def clifLoadFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64) system_v\n" ++
-  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64) system_v\n" ++
+  "    sig1 = (i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_init sig0\n" ++
   "    fn1 = %cl_cuda_create_buffer sig1\n" ++
   "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
   "block0(v0: i64):\n" ++
   "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v2 = iconst.i64 0x10\n" ++
-  "  call fn0(v0, v2)\n" ++
+  "  v2 = iadd_imm v0, 0x10\n" ++
+  "  call fn0(v2)\n" ++
+  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
   "  v10 = load.i64 notrap aligned v1\n" ++
   "  v11 = iadd_imm v1, 8\n" ++
   "  v12 = load.i64 notrap aligned v11\n" ++
@@ -58,40 +59,40 @@ def clifLoadFn : String :=
   "  v21 = ishl_imm v20, 2\n" ++
   "  v22 = ishl_imm v12, 2\n" ++
   "  v23 = ishl_imm v10, 2\n" ++
-  "  v30 = call fn1(v0, v2, v21)\n" ++
-  "  v31 = call fn1(v0, v2, v22)\n" ++
-  "  v32 = call fn1(v0, v2, v23)\n" ++
+  "  v30 = call fn1(v3, v21)\n" ++
+  "  v31 = call fn1(v3, v22)\n" ++
+  "  v32 = call fn1(v3, v23)\n" ++
   "  v40 = iconst.i64 16\n" ++
   "  v41 = iadd v1, v40\n" ++
-  "  v42 = call fn2(v0, v2, v30, v41, v21)\n" ++
+  "  v42 = call fn2(v3, v30, v41, v21)\n" ++
   "  return\n" ++
   "}\n"
 
 def clifPrepFn : String :=
   "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_upload_ptr sig0\n" ++
   "block0(v0: i64):\n" ++
   "  v1 = load.i64 notrap aligned v0+0x18\n" ++
   "  v2 = load.i64 notrap aligned v0+0x20\n" ++
-  "  v3 = iconst.i64 0x10\n" ++
+  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
   "  v20 = iconst.i32 1\n" ++
-  "  v21 = call fn0(v0, v3, v20, v1, v2)\n" ++
+  "  v21 = call fn0(v3, v20, v1, v2)\n" ++
   "  return\n" ++
   "}\n"
 
 def clifInferFn : String :=
   "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64, i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig2 = (i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig1 = (i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
+  "    sig2 = (i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_download_ptr sig0\n" ++
   "    fn1 = %cl_cublas_sgemv sig1\n" ++
   "    fn2 = %cl_cuda_sync sig2\n" ++
   "block0(v0: i64):\n" ++
   "  v3 = load.i64 notrap aligned v0+0x28\n" ++
   "  v4 = load.i64 notrap aligned v0+0x30\n" ++
-  "  v5 = iconst.i64 0x10\n" ++
+  "  v5 = load.i64 notrap aligned v0+0x10\n" ++
   "  v10 = load.i64 notrap aligned v0+0x38\n" ++
   "  v11 = load.i64 notrap aligned v0+0x40\n" ++
   "  v30 = ireduce.i32 v10\n" ++
@@ -101,15 +102,15 @@ def clifInferFn : String :=
   "  v34 = iconst.i32 0\n" ++
   "  v35 = iconst.i32 0\n" ++
   "  v36 = iconst.i32 2\n" ++
-  "  v37 = call fn1(v0, v5, v32, v31, v30, v33, v34, v32, v35, v36)\n" ++
-  "  v38 = call fn2(v0, v5)\n" ++
+  "  v37 = call fn1(v5, v32, v31, v30, v33, v34, v32, v35, v36)\n" ++
+  "  v38 = call fn2(v5)\n" ++
   "  v39 = iconst.i64 0\n" ++
   "  v40 = icmp eq v4, v39\n" ++
   "  brif v40, block1, block2\n" ++
   "block1:\n" ++
   "  return\n" ++
   "block2:\n" ++
-  "  v41 = call fn0(v0, v5, v36, v3, v4)\n" ++
+  "  v41 = call fn0(v5, v36, v3, v4)\n" ++
   "  return\n" ++
   "}\n"
 

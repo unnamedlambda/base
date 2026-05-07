@@ -800,50 +800,58 @@ structure GpuSetup where
 
 /-- Declare all 7 GPU FFI functions -/
 def declareGpuFFI : IRBuilder GpuSetup := do
-  let fnInit ← declareFFI "cl_gpu_init" [.i64, .i64] none
-  let fnCreateBuffer ← declareFFI "cl_gpu_create_buffer" [.i64, .i64, .i64] (some .i32)
-  let fnCreatePipeline ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i64, .i32] (some .i32)
-  let fnUpload ← declareFFI "cl_gpu_upload" [.i64, .i64, .i32, .i64, .i64] (some .i32)
-  let fnDownload ← declareFFI "cl_gpu_download" [.i64, .i64, .i32, .i64, .i64] (some .i32)
-  let fnDispatch ← declareFFI "cl_gpu_dispatch" [.i64, .i64, .i32, .i32, .i32, .i32] (some .i32)
-  let fnCleanup ← declareFFI "cl_gpu_cleanup" [.i64, .i64] none
+  let fnInit ← declareFFI "cl_gpu_init" [.i64] none
+  let fnCreateBuffer ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
+  let fnCreatePipeline ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
+  let fnUpload ← declareFFI "cl_gpu_upload" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDownload ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDispatch ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
+  let fnCleanup ← declareFFI "cl_gpu_cleanup" [.i64] none
   pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnCreatePipeline, fnDispatch, fnCleanup }
 
-def gpuCtxOffVal (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val :=
-  iconst64 hdr.wgpuContextPtrOffset
+def gpuCtxSlotPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val :=
+  absAddr ptr hdr.wgpuContextPtrOffset
+
+def gpuCtxPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
+  let slotPtr ← gpuCtxSlotPtr ptr hdr
+  load64 slotPtr
 
 def gpuInit (gpu : GpuSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let ctxOff ← gpuCtxOffVal hdr
-  callVoid gpu.fnInit [ptr, ctxOff]
+  let slotPtr ← gpuCtxSlotPtr ptr hdr
+  callVoid gpu.fnInit [slotPtr]
 
 def gpuCreateBuffer (gpu : GpuSetup) (ptr size : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← gpuCtxOffVal hdr
-  call gpu.fnCreateBuffer [ptr, ctxOff, size]
+  let ctxPtr ← gpuCtxPtr ptr hdr
+  call gpu.fnCreateBuffer [ctxPtr, size]
 
 def gpuCreatePipeline (gpu : GpuSetup) (ptr shaderOff bindOff nBindings : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← gpuCtxOffVal hdr
-  call gpu.fnCreatePipeline [ptr, ctxOff, shaderOff, bindOff, nBindings]
+  let ctxPtr ← gpuCtxPtr ptr hdr
+  let shaderPtr ← iadd ptr shaderOff
+  let bindPtr ← iadd ptr bindOff
+  call gpu.fnCreatePipeline [ctxPtr, shaderPtr, bindPtr, nBindings]
 
 def gpuUpload (gpu : GpuSetup) (ptr bufId srcOff size : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← gpuCtxOffVal hdr
-  call gpu.fnUpload [ptr, ctxOff, bufId, srcOff, size]
+  let ctxPtr ← gpuCtxPtr ptr hdr
+  let srcPtr ← iadd ptr srcOff
+  call gpu.fnUpload [ctxPtr, bufId, srcPtr, size]
 
 def gpuDownload (gpu : GpuSetup) (ptr bufId dstOff size : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← gpuCtxOffVal hdr
-  call gpu.fnDownload [ptr, ctxOff, bufId, dstOff, size]
+  let ctxPtr ← gpuCtxPtr ptr hdr
+  let dstPtr ← iadd ptr dstOff
+  call gpu.fnDownload [ctxPtr, bufId, dstPtr, size]
 
 def gpuDispatch (gpu : GpuSetup) (ptr pipelineId wgX wgY wgZ : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← gpuCtxOffVal hdr
-  call gpu.fnDispatch [ptr, ctxOff, pipelineId, wgX, wgY, wgZ]
+  let ctxPtr ← gpuCtxPtr ptr hdr
+  call gpu.fnDispatch [ctxPtr, pipelineId, wgX, wgY, wgZ]
 
 def gpuCleanup (gpu : GpuSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let ctxOff ← gpuCtxOffVal hdr
-  callVoid gpu.fnCleanup [ptr, ctxOff]
+  let slotPtr ← gpuCtxSlotPtr ptr hdr
+  callVoid gpu.fnCleanup [slotPtr]
 
 /-- Read a file into shared memory. Returns bytes read.
     readFile ptr fnRead filenameOff dataOff => call fnRead(ptr, filenameOff, dataOff, 0, 0) -/
@@ -992,51 +1000,59 @@ structure CudaSetup where
     `cl_cuda_launch` takes: ptr, kernel_off, n_bufs, bind_off,
     grid_x, grid_y, grid_z, block_x, block_y, block_z → i32 -/
 def declareCudaFFI : IRBuilder CudaSetup := do
-  let fnInit ← declareFFI "cl_cuda_init" [.i64, .i64] none
-  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer" [.i64, .i64, .i64] (some .i32)
-  let fnUpload ← declareFFI "cl_cuda_upload" [.i64, .i64, .i32, .i64, .i64] (some .i32)
-  let fnDownload ← declareFFI "cl_cuda_download" [.i64, .i64, .i32, .i64, .i64] (some .i32)
-  let fnFreeBuffer ← declareFFI "cl_cuda_free_buffer" [.i64, .i64, .i32] (some .i32)
+  let fnInit ← declareFFI "cl_cuda_init" [.i64] none
+  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer" [.i64, .i64] (some .i32)
+  let fnUpload ← declareFFI "cl_cuda_upload" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDownload ← declareFFI "cl_cuda_download" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnFreeBuffer ← declareFFI "cl_cuda_free_buffer" [.i64, .i32] (some .i32)
   let fnLaunch ← declareFFI "cl_cuda_launch"
-    [.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnCleanup ← declareFFI "cl_cuda_cleanup" [.i64, .i64] none
+    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnCleanup ← declareFFI "cl_cuda_cleanup" [.i64] none
   pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnFreeBuffer, fnLaunch, fnCleanup }
 
-def cudaCtxOffVal (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val :=
-  iconst64 hdr.cudaContextPtrOffset
+def cudaCtxSlotPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val :=
+  absAddr ptr hdr.cudaContextPtrOffset
+
+def cudaCtxPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
+  let slotPtr ← cudaCtxSlotPtr ptr hdr
+  load64 slotPtr
 
 def cudaInit (cuda : CudaSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let ctxOff ← cudaCtxOffVal hdr
-  callVoid cuda.fnInit [ptr, ctxOff]
+  let slotPtr ← cudaCtxSlotPtr ptr hdr
+  callVoid cuda.fnInit [slotPtr]
 
 def cudaCreateBuffer (cuda : CudaSetup) (ptr size : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← cudaCtxOffVal hdr
-  call cuda.fnCreateBuffer [ptr, ctxOff, size]
+  let ctxPtr ← cudaCtxPtr ptr hdr
+  call cuda.fnCreateBuffer [ctxPtr, size]
 
 def cudaUpload (cuda : CudaSetup) (ptr bufId srcOff size : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← cudaCtxOffVal hdr
-  call cuda.fnUpload [ptr, ctxOff, bufId, srcOff, size]
+  let ctxPtr ← cudaCtxPtr ptr hdr
+  let srcPtr ← iadd ptr srcOff
+  call cuda.fnUpload [ctxPtr, bufId, srcPtr, size]
 
 def cudaDownload (cuda : CudaSetup) (ptr bufId dstOff size : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← cudaCtxOffVal hdr
-  call cuda.fnDownload [ptr, ctxOff, bufId, dstOff, size]
+  let ctxPtr ← cudaCtxPtr ptr hdr
+  let dstPtr ← iadd ptr dstOff
+  call cuda.fnDownload [ctxPtr, bufId, dstPtr, size]
 
 def cudaFreeBuffer (cuda : CudaSetup) (ptr bufId : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← cudaCtxOffVal hdr
-  call cuda.fnFreeBuffer [ptr, ctxOff, bufId]
+  let ctxPtr ← cudaCtxPtr ptr hdr
+  call cuda.fnFreeBuffer [ctxPtr, bufId]
 
 def cudaLaunch (cuda : CudaSetup) (ptr kernelOff nBufs bindOff gridX gridY gridZ blockX blockY blockZ : Val)
     (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxOff ← cudaCtxOffVal hdr
-  call cuda.fnLaunch [ptr, ctxOff, kernelOff, nBufs, bindOff, gridX, gridY, gridZ, blockX, blockY, blockZ]
+  let ctxPtr ← cudaCtxPtr ptr hdr
+  let kernelPtr ← iadd ptr kernelOff
+  let bindPtr ← iadd ptr bindOff
+  call cuda.fnLaunch [ctxPtr, kernelPtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ]
 
 def cudaCleanup (cuda : CudaSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let ctxOff ← cudaCtxOffVal hdr
-  callVoid cuda.fnCleanup [ptr, ctxOff]
+  let slotPtr ← cudaCtxSlotPtr ptr hdr
+  callVoid cuda.fnCleanup [slotPtr]
 
 /-- Read a file using typed field handles for filename and data regions -/
 def fldReadFile (ptr : Val) (fnRead : FnRef)
@@ -1211,28 +1227,29 @@ private def clifLoadFn (inputs : Nat) : String :=
       (List.range inputs).map fun i =>
         let callIx := 21 + i
         let off := 0x44 + (4 * i)
-        s!"  v{callIx} = call fn1(v0, v2, v11)\n" ++
+        s!"  v{callIx} = call fn1(v3, v11)\n" ++
         s!"  store notrap aligned v{callIx}, v0+{off}\n"
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64) system_v\n" ++
-  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64) system_v\n" ++
+  "    sig1 = (i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_init sig0\n" ++
   "    fn1 = %cl_cuda_create_buffer sig1\n" ++
   "    fn2 = %cl_cuda_upload sig2\n" ++
   "block0(v0: i64):\n" ++
   "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v2 = iconst.i64 0x10\n" ++
-  "  call fn0(v0, v2)\n" ++
+  "  v2 = iadd_imm v0, 16\n" ++
+  "  call fn0(v2)\n" ++
+  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
   "  v10 = load.i64 notrap aligned v1\n" ++
   "  store notrap aligned v10, v0+0x38\n" ++
   "  v11 = ishl_imm v10, 2\n" ++
   "  v12 = iconst.i64 8\n" ++
-  "  v20 = call fn1(v0, v2, v12)\n" ++
+  "  v20 = call fn1(v3, v12)\n" ++
   "  store notrap aligned v20, v0+0x40\n" ++
   mkCreates ++
-  "  v40 = iconst.i64 0x38\n" ++
-  "  v41 = call fn2(v0, v2, v20, v40, v12)\n" ++
+  "  v40 = iadd_imm v0, 56\n" ++
+  "  v41 = call fn2(v3, v20, v40, v12)\n" ++
   "  return\n" ++
   "}\n"
 
@@ -1246,19 +1263,19 @@ private def clifPrepFn (inputs : Nat) : String :=
         let callVar := 12 + (3 * i)
         if i == 0 then
           s!"  v{bufVar} = load.i32 notrap aligned v0+{bufOff}\n" ++
-          s!"  v{callVar} = call fn0(v0, v3, v{bufVar}, v1, v5)\n"
+          s!"  v{callVar} = call fn0(v3, v{bufVar}, v1, v5)\n"
         else
           let prevPtr := if i == 1 then 1 else 11 + (3 * (i - 1))
           s!"  v{bufVar} = load.i32 notrap aligned v0+{bufOff}\n" ++
           s!"  v{ptrVar} = iadd v{prevPtr}, v5\n" ++
-          s!"  v{callVar} = call fn0(v0, v3, v{bufVar}, v{ptrVar}, v5)\n"
+          s!"  v{callVar} = call fn0(v3, v{bufVar}, v{ptrVar}, v5)\n"
   "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_upload_ptr sig0\n" ++
   "block0(v0: i64):\n" ++
   "  v1 = load.i64 notrap aligned v0+0x18\n" ++
   "  v2 = load.i64 notrap aligned v0+0x38\n" ++
-  "  v3 = iconst.i64 0x10\n" ++
+  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
   "  v5 = ishl_imm v2, 2\n" ++
   uploads ++
   "  return\n" ++
@@ -1267,9 +1284,9 @@ private def clifPrepFn (inputs : Nat) : String :=
 private def clifInferFn (inputs : Nat) (spec : PersistentKernel inputs) : String :=
   let outBufOff := 0x34 + (4 * spec.output.val)
   "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig2 = (i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig1 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
+  "    sig2 = (i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_download_ptr sig0\n" ++
   "    fn1 = %cl_cuda_launch sig1\n" ++
   "    fn2 = %cl_cuda_sync sig2\n" ++
@@ -1277,17 +1294,17 @@ private def clifInferFn (inputs : Nat) (spec : PersistentKernel inputs) : String
   "  v1 = load.i64 notrap aligned v0+0x28\n" ++
   "  v2 = load.i64 notrap aligned v0+0x30\n" ++
   "  v3 = load.i64 notrap aligned v0+0x38\n" ++
-  "  v18 = iconst.i64 0x10\n" ++
+  "  v18 = load.i64 notrap aligned v0+0x10\n" ++
   s!"  v4 = iadd_imm v3, {spec.blockSize - 1}\n" ++
   "  v5 = ushr_imm v4, 8\n" ++
   "  v6 = ireduce.i32 v5\n" ++
-  s!"  v7 = iconst.i64 {spec.ptxSourceOff}\n" ++
+  s!"  v7 = iadd_imm v0, {spec.ptxSourceOff}\n" ++
   s!"  v8 = iconst.i32 {inputs + 1}\n" ++
-  s!"  v9 = iconst.i64 {spec.bindDescOff}\n" ++
+  s!"  v9 = iadd_imm v0, {spec.bindDescOff}\n" ++
   "  v10 = iconst.i32 1\n" ++
   s!"  v11 = iconst.i32 {spec.blockSize}\n" ++
-  "  v12 = call fn1(v0, v18, v7, v8, v9, v6, v10, v10, v11, v10, v10)\n" ++
-  "  v13 = call fn2(v0, v18)\n" ++
+  "  v12 = call fn1(v18, v7, v8, v9, v6, v10, v10, v11, v10, v10)\n" ++
+  "  v13 = call fn2(v18)\n" ++
   "  v14 = iconst.i64 0\n" ++
   "  v15 = icmp eq v2, v14\n" ++
   "  brif v15, block1, block2\n" ++
@@ -1295,7 +1312,7 @@ private def clifInferFn (inputs : Nat) (spec : PersistentKernel inputs) : String
   "  return\n" ++
   "block2:\n" ++
   s!"  v16 = load.i32 notrap aligned v0+{outBufOff + 0x10}\n" ++
-  "  v17 = call fn0(v0, v18, v16, v1, v2)\n" ++
+  "  v17 = call fn0(v18, v16, v1, v2)\n" ++
   "  return\n" ++
   "}\n"
 

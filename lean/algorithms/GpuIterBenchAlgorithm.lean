@@ -92,12 +92,12 @@ def clifNoopFn : String :=
 -- float_bytes = data_len - 8
 def clifGpuFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64) system_v\n" ++                              -- gpu_init / gpu_cleanup
-  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++                  -- gpu_create_buffer
-  "    sig2 = (i64, i64, i64, i64, i32) -> i32 system_v\n" ++        -- gpu_create_pipeline
-  "    sig3 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++        -- gpu_upload_ptr
-  "    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v\n" ++   -- gpu_dispatch
-  "    sig5 = (i64, i64, i32, i64, i64, i64) -> i32 system_v\n" ++   -- gpu_download_ptr
+  "    sig0 = (i64) system_v\n" ++
+  "    sig1 = (i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++
+  "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++
+  "    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v\n" ++
   "\n" ++
   "    fn0 = %cl_gpu_init sig0\n" ++
   "    fn1 = %cl_gpu_create_buffer sig1\n" ++
@@ -111,7 +111,7 @@ def clifGpuFn : String :=
   "    v1 = load.i64 notrap aligned v0+0x18\n" ++               -- data_ptr
   "    v2 = load.i64 notrap aligned v0+0x20\n" ++               -- data_len (bytes, includes 8-byte prefix)
   "    v3 = load.i64 notrap aligned v0+0x28\n" ++               -- out_ptr
-  "    v90 = iconst.i64 8\n" ++                                  -- ctx_off (wgpu context at 0x08)
+  "    v90 = iadd_imm v0, 8\n" ++
   -- Read passes from start of payload
   "    v4 = load.i64 notrap aligned v1\n" ++                    -- passes = *(i64*)data_ptr
   -- float_bytes = data_len - 8
@@ -119,23 +119,24 @@ def clifGpuFn : String :=
   -- float_ptr = data_ptr + 8
   "    v6 = iadd_imm v1, 8\n" ++                                -- float_ptr
   -- GPU init
-  "    call fn0(v0, v90)\n" ++
+  "    call fn0(v90)\n" ++
+  "    v91 = load.i64 notrap aligned v0+0x08\n" ++
   -- Create data buffer (float_bytes) and sums buffer (float_bytes/64)
-  "    v7 = call fn1(v0, v90, v5)\n" ++                         -- data_buf
+  "    v7 = call fn1(v91, v5)\n" ++
   "    v8 = ushr_imm v5, 6\n" ++                                -- sums_size = float_bytes / 64
-  "    v9 = call fn1(v0, v90, v8)\n" ++                         -- sums_buf
+  "    v9 = call fn1(v91, v8)\n" ++
   -- Upload float data to data buffer
-  "    v10 = call fn3(v0, v90, v7, v6, v5)\n" ++
+  "    v10 = call fn3(v91, v7, v6, v5)\n" ++
   -- Create scale pipeline (1 binding: buf0 rw)
-  "    v11 = iconst.i64 256\n" ++                               -- SCALE_SHADER_OFF
-  "    v12 = iconst.i64 4352\n" ++                              -- SCALE_BIND_OFF (0x1100)
+  "    v11 = iadd_imm v0, 256\n" ++
+  "    v12 = iadd_imm v0, 4352\n" ++
   "    v13 = iconst.i32 1\n" ++
-  "    v14 = call fn2(v0, v90, v11, v12, v13)\n" ++             -- scale_pipe
+  "    v14 = call fn2(v91, v11, v12, v13)\n" ++
   -- Create reduce pipeline (2 bindings: buf0 ro, buf1 rw)
-  "    v15 = iconst.i64 2048\n" ++                              -- REDUCE_SHADER_OFF (0x0800)
-  "    v16 = iconst.i64 4360\n" ++                              -- REDUCE_BIND_OFF (0x1108)
+  "    v15 = iadd_imm v0, 2048\n" ++
+  "    v16 = iadd_imm v0, 4360\n" ++
   "    v17 = iconst.i32 2\n" ++
-  "    v18 = call fn2(v0, v90, v15, v16, v17)\n" ++             -- reduce_pipe
+  "    v18 = call fn2(v91, v15, v16, v17)\n" ++
   -- Compute workgroups: (float_bytes/4 + 63) / 64 = (float_bytes + 252) / 256
   "    v19 = iadd_imm v5, 252\n" ++
   "    v20 = ushr_imm v19, 8\n" ++
@@ -149,18 +150,18 @@ def clifGpuFn : String :=
   "    brif v24, block2, block3(v23)\n" ++
   "\n" ++
   "block3(v25: i64):\n" ++
-  "    v26 = call fn4(v0, v90, v14, v21, v13, v13)\n" ++
+  "    v26 = call fn4(v91, v14, v21, v13, v13)\n" ++
   "    v27 = iadd_imm v25, 1\n" ++
   "    jump block1(v27)\n" ++
   "\n" ++
   "block2:\n" ++
   -- Dispatch reduce kernel once
-  "    v28 = call fn4(v0, v90, v18, v21, v13, v13)\n" ++
+  "    v28 = call fn4(v91, v18, v21, v13, v13)\n" ++
   -- Download sums buffer to out_ptr (buf_offset=0)
   "    v29 = iconst.i64 0\n" ++
-  "    v30 = call fn5(v0, v90, v9, v29, v3, v8)\n" ++
+  "    v30 = call fn5(v91, v9, v29, v3, v8)\n" ++
   -- GPU cleanup
-  "    call fn6(v0, v90)\n" ++
+  "    call fn6(v90)\n" ++
   "    return\n" ++
   "}\n"
 

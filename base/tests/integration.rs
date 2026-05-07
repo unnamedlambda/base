@@ -1391,12 +1391,12 @@ fn test_clif_ffi_gpu_vec_add() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i64, i32, i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64) -> i32 system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
 
     fn0 = %cl_gpu_init sig0
@@ -1409,43 +1409,46 @@ fn test_clif_ffi_gpu_vec_add() {
     fn7 = %cl_file_write sig6
 
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     ; create 3 buffers (a, b, result) each {data_bytes} bytes
     v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v0, v90, v1)
-    v3 = call fn1(v0, v90, v1)
-    v4 = call fn1(v0, v90, v1)
+    v2 = call fn1(v91, v1)
+    v3 = call fn1(v91, v1)
+    v4 = call fn1(v91, v1)
 
     ; upload A to buf0
-    v5 = iconst.i64 {a_off}
-    v16 = call fn2(v0, v90, v2, v5, v1)
+    v5 = iadd_imm v0, {a_off}
+    v16 = call fn2(v91, v2, v5, v1)
 
     ; upload B to buf1
-    v6 = iconst.i64 {b_off}
-    v17 = call fn2(v0, v90, v3, v6, v1)
+    v6 = iadd_imm v0, {b_off}
+    v17 = call fn2(v91, v3, v6, v1)
 
     ; create pipeline with 3 bindings: [buf0 read, buf1 read, buf2 rw]
-    v7 = iconst.i64 {shader_off}
-    v8 = iconst.i64 {bind_off}
+    v7 = iadd_imm v0, {shader_off}
+    v8 = iadd_imm v0, {bind_off}
     v9 = iconst.i32 3
-    v10 = call fn3(v0, v90, v7, v8, v9)
+    v10 = call fn3(v91, v7, v8, v9)
 
     ; dispatch 1 workgroup of 64 threads
     v11 = iconst.i32 1
-    v18 = call fn4(v0, v90, v10, v11, v11, v11)
+    v18 = call fn4(v91, v10, v11, v11, v11)
 
-    ; download result buffer to offset {result_off}
-    v12 = iconst.i64 {result_off}
-    v19 = call fn5(v0, v90, v4, v12, v1)
+    ; download result buffer to pointer {result_off}
+    v12 = iadd_imm v0, {result_off}
+    v19 = call fn5(v91, v4, v12, v1)
 
     ; write result to verify file
     v13 = iconst.i64 {file_off}
-    v14 = iconst.i64 0
-    v15 = call fn7(v0, v13, v12, v14, v1)
+    v14 = iconst.i64 {result_off}
+    v15 = iconst.i64 0
+    v20 = call fn7(v0, v13, v14, v15, v1)
 
-    call fn6(v0, v90)
+    call fn6(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -1952,12 +1955,12 @@ fn test_clif_ffi_gpu_multiple_dispatches_before_download() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i64, i32, i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64) -> i32 system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_gpu_init sig0
     fn1 = %cl_gpu_create_buffer sig1
@@ -1968,25 +1971,28 @@ fn test_clif_ffi_gpu_multiple_dispatches_before_download() {
     fn6 = %cl_gpu_cleanup sig0
     fn7 = %cl_file_write sig6
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
     v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v0, v90, v1)
-    v3 = iconst.i64 {data_off}
-    v12 = call fn2(v0, v90, v2, v3, v1)
-    v4 = iconst.i64 {shader_off}
-    v5 = iconst.i64 {bind_off}
+    v2 = call fn1(v91, v1)
+    v3 = iadd_imm v0, {data_off}
+    v12 = call fn2(v91, v2, v3, v1)
+    v4 = iadd_imm v0, {shader_off}
+    v5 = iadd_imm v0, {bind_off}
     v6 = iconst.i32 1
-    v7 = call fn3(v0, v90, v4, v5, v6)
-    v13 = call fn4(v0, v90, v7, v6, v6, v6)
-    v14 = call fn4(v0, v90, v7, v6, v6, v6)
-    v15 = call fn4(v0, v90, v7, v6, v6, v6)
-    v8 = iconst.i64 {result_off}
-    v16 = call fn5(v0, v90, v2, v8, v1)
+    v7 = call fn3(v91, v4, v5, v6)
+    v13 = call fn4(v91, v7, v6, v6, v6)
+    v14 = call fn4(v91, v7, v6, v6, v6)
+    v15 = call fn4(v91, v7, v6, v6, v6)
+    v8 = iadd_imm v0, {result_off}
+    v16 = call fn5(v91, v2, v8, v1)
     v9 = iconst.i64 2000
-    v10 = iconst.i64 0
-    v11 = call fn7(v0, v9, v8, v10, v1)
-    call fn6(v0, v90)
+    v10 = iconst.i64 {result_off}
+    v11 = iconst.i64 0
+    v17 = call fn7(v0, v9, v10, v11, v1)
+    call fn6(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -2089,12 +2095,12 @@ fn test_clif_ffi_gpu_buffer_reuse() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i64, i32, i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64) -> i32 system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_gpu_init sig0
     fn1 = %cl_gpu_create_buffer sig1
@@ -2105,29 +2111,32 @@ fn test_clif_ffi_gpu_buffer_reuse() {
     fn6 = %cl_gpu_cleanup sig0
     fn7 = %cl_file_write sig6
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
     v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v0, v90, v1)
-    v3 = iconst.i64 {shader_off}
-    v4 = iconst.i64 {bind_off}
+    v2 = call fn1(v91, v1)
+    v3 = iadd_imm v0, {shader_off}
+    v4 = iadd_imm v0, {bind_off}
     v5 = iconst.i32 1
-    v6 = call fn3(v0, v90, v3, v4, v5)
-    v7 = iconst.i64 {data_a_off}
-    v15 = call fn2(v0, v90, v2, v7, v1)
-    v16 = call fn4(v0, v90, v6, v5, v5, v5)
-    v8 = iconst.i64 {result_a_off}
-    v17 = call fn5(v0, v90, v2, v8, v1)
-    v9 = iconst.i64 {data_b_off}
-    v18 = call fn2(v0, v90, v2, v9, v1)
-    v19 = call fn4(v0, v90, v6, v5, v5, v5)
-    v10 = iconst.i64 {result_b_off}
-    v20 = call fn5(v0, v90, v2, v10, v1)
+    v6 = call fn3(v91, v3, v4, v5)
+    v7 = iadd_imm v0, {data_a_off}
+    v15 = call fn2(v91, v2, v7, v1)
+    v16 = call fn4(v91, v6, v5, v5, v5)
+    v8 = iadd_imm v0, {result_a_off}
+    v17 = call fn5(v91, v2, v8, v1)
+    v9 = iadd_imm v0, {data_b_off}
+    v18 = call fn2(v91, v2, v9, v1)
+    v19 = call fn4(v91, v6, v5, v5, v5)
+    v10 = iadd_imm v0, {result_b_off}
+    v20 = call fn5(v91, v2, v10, v1)
     v11 = iconst.i64 2000
-    v12 = iconst.i64 0
-    v13 = iconst.i64 {two_data_bytes}
-    v14 = call fn7(v0, v11, v8, v12, v13)
-    call fn6(v0, v90)
+    v12 = iconst.i64 {result_a_off}
+    v13 = iconst.i64 0
+    v14 = iconst.i64 {two_data_bytes}
+    v21 = call fn7(v0, v11, v12, v13, v14)
+    call fn6(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -2236,12 +2245,12 @@ fn test_clif_ffi_gpu_error_codes() {
                 fn main() { d[0] = 1.0; }\n";
 
     let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i64) system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64) -> i32 system_v
     sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_gpu_init sig0
     fn1 = %cl_gpu_create_buffer sig1
@@ -2249,49 +2258,51 @@ fn test_clif_ffi_gpu_error_codes() {
     fn3 = %cl_gpu_create_pipeline sig3
     fn4 = %cl_gpu_dispatch sig4
     fn5 = %cl_gpu_download sig2
-    fn6 = %cl_gpu_cleanup sig5
+    fn6 = %cl_gpu_cleanup sig0
     fn7 = %cl_file_write sig6
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     ; create_buffer with size=0 → should return -1
     v1 = iconst.i64 0
-    v2 = call fn1(v0, v90, v1)
+    v2 = call fn1(v91, v1)
     v20 = sextend.i64 v2
     store.i64 v20, v0+4500
 
     ; upload with buf_id=99 (no buffers exist yet) → should return -1
     v3 = iconst.i32 99
-    v4 = iconst.i64 3500
+    v4 = iadd_imm v0, 3500
     v5 = iconst.i64 64
-    v6 = call fn2(v0, v90, v3, v4, v5)
+    v6 = call fn2(v91, v3, v4, v5)
     v21 = sextend.i64 v6
     store.i64 v21, v0+4508
 
     ; dispatch with pipeline_id=99 (no pipelines exist) → should return -1
     v7 = iconst.i32 99
     v8 = iconst.i32 1
-    v9 = call fn4(v0, v90, v7, v8, v8, v8)
+    v9 = call fn4(v91, v7, v8, v8, v8)
     v22 = sextend.i64 v9
     store.i64 v22, v0+4516
 
     ; download with buf_id=99 → should return -1
-    v10 = iconst.i64 3500
+    v10 = iadd_imm v0, 3500
     v11 = iconst.i64 64
-    v12 = call fn5(v0, v90, v3, v10, v11)
+    v12 = call fn5(v91, v3, v10, v11)
     v23 = sextend.i64 v12
     store.i64 v23, v0+4524
 
     ; create a valid buffer so we can test pipeline with bad binding
     v13 = iconst.i64 256
-    v14 = call fn1(v0, v90, v13)
+    v14 = call fn1(v91, v13)
 
     ; create_pipeline with binding that references buf_id=99 → should return -1
-    v15 = iconst.i64 3500
-    v16 = iconst.i64 3700
+    v15 = iadd_imm v0, 3500
+    v16 = iadd_imm v0, 3700
     v17 = iconst.i32 1
-    v18 = call fn3(v0, v90, v15, v16, v17)
+    v18 = call fn3(v91, v15, v16, v17)
     v24 = sextend.i64 v18
     store.i64 v24, v0+4532
 
@@ -2302,7 +2313,7 @@ block0(v0: i64):
     v28 = iconst.i64 40
     v29 = call fn7(v0, v25, v26, v27, v28)
 
-    call fn6(v0, v90)
+    call fn6(v90)
     return
 }
 "#;
@@ -7822,10 +7833,10 @@ fn test_clif_ffi_cuda_vec_add() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
 
     fn0 = %cl_cuda_init sig0
@@ -7837,46 +7848,49 @@ fn test_clif_ffi_cuda_vec_add() {
     fn6 = %cl_file_write sig4
 
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     ; create 3 buffers of {data_bytes} bytes each
     v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v0, v90, v1)
-    v3 = call fn1(v0, v90, v1)
-    v4 = call fn1(v0, v90, v1)
+    v2 = call fn1(v91, v1)
+    v3 = call fn1(v91, v1)
+    v4 = call fn1(v91, v1)
 
-    ; upload A from offset {a_off}
-    v5 = iconst.i64 {a_off}
-    v20 = call fn2(v0, v90, v2, v5, v1)
+    ; upload A from pointer {a_off}
+    v5 = iadd_imm v0, {a_off}
+    v20 = call fn2(v91, v2, v5, v1)
 
-    ; upload B from offset {b_off}
-    v6 = iconst.i64 {b_off}
-    v21 = call fn2(v0, v90, v3, v6, v1)
+    ; upload B from pointer {b_off}
+    v6 = iadd_imm v0, {b_off}
+    v21 = call fn2(v91, v3, v6, v1)
 
     ; launch PTX kernel: ptx at {ptx_off}, 3 bufs, binds at {bind_off}
     ; grid(1,1,1) block(64,1,1)
-    v7 = iconst.i64 {ptx_off}
+    v7 = iadd_imm v0, {ptx_off}
     v8 = iconst.i32 3
-    v9 = iconst.i64 {bind_off}
+    v9 = iadd_imm v0, {bind_off}
     v10 = iconst.i32 1
     v11 = iconst.i32 1
     v12 = iconst.i32 1
     v13 = iconst.i32 64
     v14 = iconst.i32 1
     v15 = iconst.i32 1
-    v22 = call fn4(v0, v90, v7, v8, v9, v10, v11, v12, v13, v14, v15)
+    v22 = call fn4(v91, v7, v8, v9, v10, v11, v12, v13, v14, v15)
 
-    ; download result to offset {result_off}
-    v16 = iconst.i64 {result_off}
-    v23 = call fn3(v0, v90, v4, v16, v1)
+    ; download result to pointer {result_off}
+    v16 = iadd_imm v0, {result_off}
+    v23 = call fn3(v91, v4, v16, v1)
 
     ; write result to verify file
     v17 = iconst.i64 {file_off}
-    v18 = iconst.i64 0
-    v19 = call fn6(v0, v17, v16, v18, v1)
+    v18 = iconst.i64 {result_off}
+    v19 = iconst.i64 0
+    v30 = call fn6(v0, v17, v18, v19, v1)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -8009,10 +8023,10 @@ fn test_clif_ffi_cuda_scalar_multiply() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
 
     fn0 = %cl_cuda_init sig0
@@ -8024,34 +8038,37 @@ fn test_clif_ffi_cuda_scalar_multiply() {
     fn6 = %cl_file_write sig4
 
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v0, v90, v1)
+    v2 = call fn1(v91, v1)
 
     ; upload data
-    v3 = iconst.i64 {data_off}
-    v20 = call fn2(v0, v90, v2, v3, v1)
+    v3 = iadd_imm v0, {data_off}
+    v20 = call fn2(v91, v2, v3, v1)
 
     ; launch: 1 buffer binding
-    v4 = iconst.i64 {ptx_off}
+    v4 = iadd_imm v0, {ptx_off}
     v5 = iconst.i32 1
-    v6 = iconst.i64 {bind_off}
+    v6 = iadd_imm v0, {bind_off}
     v7 = iconst.i32 1
     v8 = iconst.i32 64
-    v21 = call fn4(v0, v90, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v21 = call fn4(v91, v4, v5, v6, v7, v7, v7, v8, v7, v7)
 
     ; download
-    v9 = iconst.i64 {result_off}
-    v22 = call fn3(v0, v90, v2, v9, v1)
+    v9 = iadd_imm v0, {result_off}
+    v22 = call fn3(v91, v2, v9, v1)
 
     ; write to file
     v10 = iconst.i64 2000
-    v11 = iconst.i64 0
-    v23 = call fn6(v0, v10, v9, v11, v1)
+    v11 = iconst.i64 {result_off}
+    v12 = iconst.i64 0
+    v23 = call fn6(v0, v10, v11, v12, v1)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -8166,10 +8183,10 @@ fn test_clif_ffi_cuda_multiple_launches() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
 
     fn0 = %cl_cuda_init sig0
@@ -8181,33 +8198,36 @@ fn test_clif_ffi_cuda_multiple_launches() {
     fn6 = %cl_file_write sig4
 
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v0, v90, v1)
+    v2 = call fn1(v91, v1)
 
-    v3 = iconst.i64 {data_off}
-    v20 = call fn2(v0, v90, v2, v3, v1)
+    v3 = iadd_imm v0, {data_off}
+    v20 = call fn2(v91, v2, v3, v1)
 
     ; launch 3 times
-    v4 = iconst.i64 {ptx_off}
+    v4 = iadd_imm v0, {ptx_off}
     v5 = iconst.i32 1
-    v6 = iconst.i64 {bind_off}
+    v6 = iadd_imm v0, {bind_off}
     v7 = iconst.i32 1
     v8 = iconst.i32 64
-    v21 = call fn4(v0, v90, v4, v5, v6, v7, v7, v7, v8, v7, v7)
-    v22 = call fn4(v0, v90, v4, v5, v6, v7, v7, v7, v8, v7, v7)
-    v23 = call fn4(v0, v90, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v21 = call fn4(v91, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v22 = call fn4(v91, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v23 = call fn4(v91, v4, v5, v6, v7, v7, v7, v8, v7, v7)
 
-    v9 = iconst.i64 {result_off}
-    v24 = call fn3(v0, v90, v2, v9, v1)
+    v9 = iadd_imm v0, {result_off}
+    v24 = call fn3(v91, v2, v9, v1)
 
     v10 = iconst.i64 2000
-    v11 = iconst.i64 0
-    v25 = call fn6(v0, v10, v9, v11, v1)
+    v11 = iconst.i64 {result_off}
+    v12 = iconst.i64 0
+    v25 = call fn6(v0, v10, v11, v12, v1)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -8324,10 +8344,10 @@ fn test_clif_ffi_cuda_buffer_reuse() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
 
     fn0 = %cl_cuda_init sig0
@@ -8339,38 +8359,41 @@ fn test_clif_ffi_cuda_buffer_reuse() {
     fn6 = %cl_file_write sig4
 
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v0, v90, v1)
+    v2 = call fn1(v91, v1)
 
     ; round 1: upload A, launch, download
-    v3 = iconst.i64 {data_a_off}
-    v20 = call fn2(v0, v90, v2, v3, v1)
-    v4 = iconst.i64 {ptx_off}
+    v3 = iadd_imm v0, {data_a_off}
+    v20 = call fn2(v91, v2, v3, v1)
+    v4 = iadd_imm v0, {ptx_off}
     v5 = iconst.i32 1
-    v6 = iconst.i64 {bind_off}
+    v6 = iadd_imm v0, {bind_off}
     v7 = iconst.i32 1
     v8 = iconst.i32 64
-    v21 = call fn4(v0, v90, v4, v5, v6, v7, v7, v7, v8, v7, v7)
-    v9 = iconst.i64 {result_a_off}
-    v22 = call fn3(v0, v90, v2, v9, v1)
+    v21 = call fn4(v91, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v9 = iadd_imm v0, {result_a_off}
+    v22 = call fn3(v91, v2, v9, v1)
 
     ; round 2: re-upload B, launch, download
-    v10 = iconst.i64 {data_b_off}
-    v23 = call fn2(v0, v90, v2, v10, v1)
-    v24 = call fn4(v0, v90, v4, v5, v6, v7, v7, v7, v8, v7, v7)
-    v11 = iconst.i64 {result_b_off}
-    v25 = call fn3(v0, v90, v2, v11, v1)
+    v10 = iadd_imm v0, {data_b_off}
+    v23 = call fn2(v91, v2, v10, v1)
+    v24 = call fn4(v91, v4, v5, v6, v7, v7, v7, v8, v7, v7)
+    v11 = iadd_imm v0, {result_b_off}
+    v25 = call fn3(v91, v2, v11, v1)
 
     ; write both results to file
     v12 = iconst.i64 2000
-    v13 = iconst.i64 0
-    v14 = iconst.i64 {two_data_bytes}
-    v26 = call fn6(v0, v12, v9, v13, v14)
+    v13 = iconst.i64 {result_a_off}
+    v14 = iconst.i64 0
+    v15 = iconst.i64 {two_data_bytes}
+    v26 = call fn6(v0, v12, v13, v14, v15)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -8463,10 +8486,10 @@ fn test_clif_ffi_cuda_error_codes() {
     let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
 
     let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
 
     fn0 = %cl_cuda_init sig0
@@ -8478,12 +8501,14 @@ fn test_clif_ffi_cuda_error_codes() {
     fn6 = %cl_file_write sig4
 
 block0(v0: i64):
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     ; create_buffer with size=0 → should return -1
     v1 = iconst.i64 0
-    v2 = call fn1(v0, v90, v1)
+    v2 = call fn1(v91, v1)
     v20 = sextend.i64 v2
     store.i64 v20, v0+4500
 
@@ -8491,12 +8516,12 @@ block0(v0: i64):
     v3 = iconst.i32 99
     v4 = iconst.i64 3000
     v5 = iconst.i64 64
-    v6 = call fn2(v0, v90, v3, v4, v5)
+    v6 = call fn2(v91, v3, v4, v5)
     v21 = sextend.i64 v6
     store.i64 v21, v0+4508
 
     ; download with buf_id=99 → should return -1
-    v7 = call fn3(v0, v90, v3, v4, v5)
+    v7 = call fn3(v91, v3, v4, v5)
     v22 = sextend.i64 v7
     store.i64 v22, v0+4516
 
@@ -8505,13 +8530,13 @@ block0(v0: i64):
     v9 = iconst.i32 0
     v10 = iconst.i64 3800
     v11 = iconst.i32 1
-    v12 = call fn4(v0, v90, v8, v9, v10, v9, v11, v11, v11, v11, v11)
+    v12 = call fn4(v91, v8, v9, v10, v9, v11, v11, v11, v11, v11)
     v23 = sextend.i64 v12
     store.i64 v23, v0+4524
 
     ; create_buffer with size=-1 → should return -1
     v13 = iconst.i64 -1
-    v14 = call fn1(v0, v90, v13)
+    v14 = call fn1(v91, v13)
     v24 = sextend.i64 v14
     store.i64 v24, v0+4532
 
@@ -8522,7 +8547,7 @@ block0(v0: i64):
     v18 = iconst.i64 40
     v19 = call fn6(v0, v15, v16, v17, v18)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }
 "#;
@@ -9342,12 +9367,12 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i64, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i64, i32, i64, i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i64) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
+    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v
 
     fn0 = %cl_gpu_init sig0
     fn1 = %cl_gpu_create_buffer sig1
@@ -9361,20 +9386,22 @@ block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x10
     v3 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
-    v4 = call fn1(v0, v90, v2)
-    v5 = call fn3(v0, v90, v4, v1, v2)
-    v6 = iconst.i64 {shader_off}
-    v7 = iconst.i64 {bind_off}
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
+    v4 = call fn1(v91, v2)
+    v5 = call fn3(v91, v4, v1, v2)
+    v6 = iadd_imm v0, {shader_off}
+    v7 = iadd_imm v0, {bind_off}
     v8 = iconst.i32 1
-    v9 = call fn2(v0, v90, v6, v7, v8)
-    v10 = call fn4(v0, v90, v9, v8, v8, v8)
+    v9 = call fn2(v91, v6, v7, v8)
+    v10 = call fn4(v91, v9, v8, v8, v8)
     v11 = ushr_imm v2, 3
     v12 = ishl_imm v11, 2
     v13 = iconst.i64 0
-    v14 = call fn5(v0, v90, v4, v13, v3, v12)
-    call fn6(v0, v90)
+    v14 = call fn5(v91, v4, v13, v3, v12)
+    call fn6(v90)
     return
 }}"#,
         shader_off = shader_off,
@@ -9459,10 +9486,10 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i64, i64, i64) -> i32 system_v
 
     fn0 = %cl_gpu_init sig0
     fn1 = %cl_gpu_create_buffer sig1
@@ -9474,16 +9501,18 @@ block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x10
     v3 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
     ; create buffer for full data (2*64*4 = 512 bytes)
-    v4 = call fn1(v0, v90, v2)
+    v4 = call fn1(v91, v2)
     ; upload all data from payload
-    v5 = call fn2(v0, v90, v4, v1, v2)
+    v5 = call fn2(v91, v4, v1, v2)
     ; download only second half: buf_offset = 256, size = 256, to out_ptr
     v6 = iconst.i64 {half}
-    v7 = call fn3(v0, v90, v4, v6, v3, v6)
-    call fn4(v0, v90)
+    v7 = call fn3(v91, v4, v6, v3, v6)
+    call fn4(v90)
     return
 }}"#,
         half = n * 4,
@@ -9602,10 +9631,10 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
 
     fn0 = %cl_cuda_init sig0
     fn1 = %cl_cuda_create_buffer sig1
@@ -9618,34 +9647,36 @@ block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x10
     v3 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     ; create 3 buffers of {data_bytes} bytes each
     v4 = iconst.i64 {data_bytes}
-    v5 = call fn1(v0, v90, v4)
-    v6 = call fn1(v0, v90, v4)
-    v7 = call fn1(v0, v90, v4)
+    v5 = call fn1(v91, v4)
+    v6 = call fn1(v91, v4)
+    v7 = call fn1(v91, v4)
 
     ; upload A from data_ptr
-    v8 = call fn2(v0, v90, v5, v1, v4)
+    v8 = call fn2(v91, v5, v1, v4)
 
     ; upload B from data_ptr + data_bytes
     v9 = iadd v1, v4
-    v10 = call fn2(v0, v90, v6, v9, v4)
+    v10 = call fn2(v91, v6, v9, v4)
 
     ; launch PTX kernel: grid(1,1,1) block(64,1,1)
-    v11 = iconst.i64 {ptx_off}
+    v11 = iadd_imm v0, {ptx_off}
     v12 = iconst.i32 3
-    v13 = iconst.i64 {bind_off}
+    v13 = iadd_imm v0, {bind_off}
     v14 = iconst.i32 1
     v15 = iconst.i32 64
-    v16 = call fn4(v0, v90, v11, v12, v13, v14, v14, v14, v15, v14, v14)
+    v16 = call fn4(v91, v11, v12, v13, v14, v14, v14, v15, v14, v14)
 
     ; download result from buf 2 to out_ptr
-    v17 = call fn3(v0, v90, v7, v3, v4)
+    v17 = call fn3(v91, v7, v3, v4)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -9761,10 +9792,10 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
 
     fn0 = %cl_cuda_init sig0
     fn1 = %cl_cuda_create_buffer sig1
@@ -9777,33 +9808,35 @@ block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x10
     v3 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     ; create 2 buffers
     v4 = iconst.i64 {data_bytes}
-    v5 = call fn1(v0, v90, v4)
-    v6 = call fn1(v0, v90, v4)
+    v5 = call fn1(v91, v4)
+    v6 = call fn1(v91, v4)
 
     ; upload A from data_ptr to buf 0
-    v7 = call fn2(v0, v90, v5, v1, v4)
+    v7 = call fn2(v91, v5, v1, v4)
 
     ; upload B from data_ptr + data_bytes to buf 1
     v8 = iadd v1, v4
-    v9 = call fn2(v0, v90, v6, v8, v4)
+    v9 = call fn2(v91, v6, v8, v4)
 
     ; launch: grid(1,1,1) block(64,1,1)
-    v10 = iconst.i64 {ptx_off}
+    v10 = iadd_imm v0, {ptx_off}
     v11 = iconst.i32 2
-    v12 = iconst.i64 {bind_off}
+    v12 = iadd_imm v0, {bind_off}
     v13 = iconst.i32 1
     v14 = iconst.i32 64
-    v15 = call fn4(v0, v90, v10, v11, v12, v13, v13, v13, v14, v13, v13)
+    v15 = call fn4(v91, v10, v11, v12, v13, v13, v13, v14, v13, v13)
 
     ; download buf 1 (result) to out_ptr
-    v16 = call fn3(v0, v90, v6, v3, v4)
+    v16 = call fn3(v91, v6, v3, v4)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -9915,11 +9948,11 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32) -> i32 system_v
-    sig4 = (i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
 
     fn0 = %cl_cuda_init sig0
     fn1 = %cl_cuda_create_buffer sig1
@@ -9932,23 +9965,25 @@ function u0:1(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     ; create A, x, y buffers
     v10 = iconst.i64 {a_bytes}
     v11 = iconst.i64 {x_bytes}
     v12 = iconst.i64 {y_bytes}
-    v13 = call fn1(v0, v90, v10)
-    v14 = call fn1(v0, v90, v11)
-    v15 = call fn1(v0, v90, v12)
+    v13 = call fn1(v91, v10)
+    v14 = call fn1(v91, v11)
+    v15 = call fn1(v91, v12)
 
     ; upload A from data_ptr
-    v16 = call fn2(v0, v90, v13, v1, v10)
+    v16 = call fn2(v91, v13, v1, v10)
 
     ; upload x from data_ptr + a_bytes
     v17 = iadd v1, v10
-    v18 = call fn2(v0, v90, v14, v17, v11)
+    v18 = call fn2(v91, v14, v17, v11)
 
     ; batched GEMV using SGEMM-strided-batched
     ; row-major A (2x3) => transa=1, transb=0, m=2, n=1, k=3
@@ -9963,12 +9998,12 @@ block0(v0: i64):
     v27 = iconst.i64 {stride_b}
     v28 = iconst.i64 {stride_c}
     v29 = iconst.i32 {batch_count}
-    v30 = call fn4(v0, v90, v20, v21, v22, v23, v24, v25, v13, v26, v14, v27, v21, v15, v28, v29)
+    v30 = call fn4(v91, v20, v21, v22, v23, v24, v25, v13, v26, v14, v27, v21, v15, v28, v29)
 
-    v31 = call fn5(v0, v90)
-    v32 = call fn3(v0, v90, v15, v2, v12)
+    v31 = call fn5(v91)
+    v32 = call fn3(v91, v15, v2, v12)
 
-    call fn6(v0, v90)
+    call fn6(v90)
     return
 }}"#,
         a_bytes = a_bytes,
@@ -10091,10 +10126,10 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i64, i64) -> i32 system_v
 
     fn0 = %cl_cuda_init sig0
     fn1 = %cl_cuda_create_buffer sig1
@@ -10105,25 +10140,27 @@ function u0:1(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     v10 = iconst.i64 {total_bytes}
-    v11 = call fn1(v0, v90, v10)
+    v11 = call fn1(v91, v10)
 
     ; upload first 2 floats to offset 0
     v12 = iconst.i64 8
     v13 = iconst.i64 0
-    v14 = call fn2(v0, v90, v11, v13, v1, v12)
+    v14 = call fn2(v91, v11, v13, v1, v12)
 
     ; upload second 2 floats to offset 8
     v15 = iadd v1, v12
-    v16 = call fn2(v0, v90, v11, v12, v15, v12)
+    v16 = call fn2(v91, v11, v12, v15, v12)
 
     ; download full 4-float buffer
-    v17 = call fn3(v0, v90, v11, v2, v10)
+    v17 = call fn3(v91, v11, v2, v10)
 
-    call fn4(v0, v90)
+    call fn4(v90)
     return
 }}"#,
         total_bytes = total_bytes,
@@ -10229,10 +10266,10 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
 
     fn0 = %cl_cuda_init sig0
     fn1 = %cl_cuda_create_buffer sig1
@@ -10244,26 +10281,28 @@ function u0:1(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     v10 = iconst.i64 {data_bytes}
-    v11 = call fn1(v0, v90, v10)
-    v12 = call fn2(v0, v90, v11, v1, v10)
+    v11 = call fn1(v91, v10)
+    v12 = call fn2(v91, v11, v1, v10)
 
     ; launch named kernel twice: x -> x+1 -> x+2
-    v13 = iconst.i64 {ptx_off}
-    v14 = iconst.i64 {name_off}
+    v13 = iadd_imm v0, {ptx_off}
+    v14 = iadd_imm v0, {name_off}
     v15 = iconst.i32 1
-    v16 = iconst.i64 {bind_off}
+    v16 = iadd_imm v0, {bind_off}
     v17 = iconst.i32 1
     v18 = iconst.i32 {n}
-    v19 = call fn4(v0, v90, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
-    v20 = call fn4(v0, v90, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
+    v19 = call fn4(v91, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
+    v20 = call fn4(v91, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
 
-    v21 = call fn3(v0, v90, v11, v2, v10)
+    v21 = call fn3(v91, v11, v2, v10)
 
-    call fn5(v0, v90)
+    call fn5(v90)
     return
 }}"#,
         data_bytes = data_bytes,
@@ -10357,11 +10396,11 @@ block0(v0: i64):
 }}
 
 function u0:1(i64) system_v {{
-    sig0 = (i64, i64) system_v
-    sig1 = (i64, i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
-    sig4 = (i64, i64) -> i32 system_v
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
 
     fn0 = %cl_cuda_init sig0
     fn1 = %cl_cuda_create_buffer sig1
@@ -10374,19 +10413,21 @@ function u0:1(i64) system_v {{
 block0(v0: i64):
     v1 = load.i64 notrap aligned v0+0x08
     v2 = load.i64 notrap aligned v0+0x18
-    v90 = iconst.i64 0
-    call fn0(v0, v90)
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
 
     v10 = iconst.i64 {a_bytes}
     v11 = iconst.i64 {x_bytes}
     v12 = iconst.i64 {y_bytes}
-    v13 = call fn1(v0, v90, v10)
-    v14 = call fn1(v0, v90, v11)
-    v15 = call fn1(v0, v90, v12)
+    v13 = call fn1(v91, v10)
+    v14 = call fn1(v91, v11)
+    v15 = call fn1(v91, v12)
 
-    v16 = call fn2(v0, v90, v13, v1, v10)
+    v16 = call fn2(v91, v13, v1, v10)
     v17 = iadd v1, v10
-    v18 = call fn2(v0, v90, v14, v17, v11)
+    v18 = call fn2(v91, v14, v17, v11)
 
     ; row-major A[rows, cols] -> sgemv(trans=1, m=cols, n=rows)
     v19 = iconst.i32 1
@@ -10394,12 +10435,12 @@ block0(v0: i64):
     v21 = iconst.i32 {rows}
     v22 = iconst.i32 0x3f800000
     v23 = iconst.i32 0
-    v24 = call fn4(v0, v90, v19, v20, v21, v22, v13, v14, v23, v15)
+    v24 = call fn4(v91, v19, v20, v21, v22, v13, v14, v23, v15)
 
-    v25 = call fn5(v0, v90)
-    v26 = call fn3(v0, v90, v15, v2, v12)
+    v25 = call fn5(v91)
+    v26 = call fn3(v91, v15, v2, v12)
 
-    call fn6(v0, v90)
+    call fn6(v90)
     return
 }}"#,
         a_bytes = a_bytes,
