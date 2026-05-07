@@ -325,7 +325,35 @@ struct CraneliftGpuContext {
     pending_encoder: Option<wgpu::CommandEncoder>,
 }
 
-unsafe extern "C" fn cl_gpu_init(ptr: *mut u8) {
+unsafe fn ctx_slot<T>(ptr: *mut u8, ctx_off: i64) -> Option<*mut *mut T> {
+    if ctx_off < 0 {
+        None
+    } else {
+        Some(ptr.add(ctx_off as usize) as *mut *mut T)
+    }
+}
+
+unsafe fn read_ctx_mut<T>(ptr: *mut u8, ctx_off: i64) -> Option<&'static mut T> {
+    let slot = ctx_slot::<T>(ptr, ctx_off)?;
+    let raw = std::ptr::read_unaligned(slot as *const *mut T);
+    if raw.is_null() { None } else { Some(&mut *raw) }
+}
+
+unsafe fn read_ctx_ref<T>(ptr: *mut u8, ctx_off: i64) -> Option<&'static T> {
+    let slot = ctx_slot::<T>(ptr, ctx_off)?;
+    let raw = std::ptr::read_unaligned(slot as *const *mut T);
+    if raw.is_null() { None } else { Some(&*raw) }
+}
+
+unsafe fn write_ctx<T>(ptr: *mut u8, ctx_off: i64, raw: *mut T) -> bool {
+    let Some(slot) = ctx_slot::<T>(ptr, ctx_off) else {
+        return false;
+    };
+    std::ptr::write_unaligned(slot, raw);
+    true
+}
+
+unsafe extern "C" fn cl_gpu_init(ptr: *mut u8, ctx_off: i64) {
     let (device, queue) = cached_gpu_device();
     let ctx = Box::new(CraneliftGpuContext {
         device,
@@ -335,15 +363,17 @@ unsafe extern "C" fn cl_gpu_init(ptr: *mut u8) {
         pipelines: Vec::new(),
         pending_encoder: None,
     });
-    std::ptr::write_unaligned(ptr as *mut *mut CraneliftGpuContext, Box::into_raw(ctx));
+    let _ = write_ctx(ptr, ctx_off, Box::into_raw(ctx));
 }
 
-unsafe extern "C" fn cl_gpu_create_buffer(ptr: *mut u8, size: i64) -> i32 {
+unsafe extern "C" fn cl_gpu_create_buffer(ptr: *mut u8, ctx_off: i64, size: i64) -> i32 {
     if size <= 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftGpuContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let buffer = ctx.device.create_buffer(&BufferDescriptor {
             label: None,
             size: size as u64,
@@ -366,6 +396,7 @@ unsafe extern "C" fn cl_gpu_create_buffer(ptr: *mut u8, size: i64) -> i32 {
 
 unsafe extern "C" fn cl_gpu_create_pipeline(
     ptr: *mut u8,
+    ctx_off: i64,
     shader_off: i64,
     bind_off: i64,
     n_bindings: i32,
@@ -374,7 +405,9 @@ unsafe extern "C" fn cl_gpu_create_pipeline(
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftGpuContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let shader_ptr = ptr.add(shader_off as usize);
         let mut len = 0;
         while *shader_ptr.add(len) != 0 {
@@ -452,12 +485,20 @@ unsafe extern "C" fn cl_gpu_create_pipeline(
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_gpu_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size: i64) -> i32 {
+unsafe extern "C" fn cl_gpu_upload(
+    ptr: *mut u8,
+    ctx_off: i64,
+    buf_id: i32,
+    src_off: i64,
+    size: i64,
+) -> i32 {
     if buf_id < 0 || size <= 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let Some(ctx) = read_ctx_ref::<CraneliftGpuContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -469,12 +510,20 @@ unsafe extern "C" fn cl_gpu_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_gpu_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64, size: i64) -> i32 {
+unsafe extern "C" fn cl_gpu_upload_ptr(
+    ptr: *mut u8,
+    ctx_off: i64,
+    buf_id: i32,
+    src_ptr: i64,
+    size: i64,
+) -> i32 {
     if buf_id < 0 || size <= 0 || src_ptr == 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let Some(ctx) = read_ctx_ref::<CraneliftGpuContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -488,6 +537,7 @@ unsafe extern "C" fn cl_gpu_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64, 
 
 unsafe extern "C" fn cl_gpu_download_ptr(
     ptr: *mut u8,
+    ctx_off: i64,
     buf_id: i32,
     buf_offset: i64,
     dst_ptr: i64,
@@ -497,7 +547,9 @@ unsafe extern "C" fn cl_gpu_download_ptr(
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftGpuContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -531,6 +583,7 @@ unsafe extern "C" fn cl_gpu_download_ptr(
 
 unsafe extern "C" fn cl_gpu_dispatch(
     ptr: *mut u8,
+    ctx_off: i64,
     pipeline_id: i32,
     wg_x: i32,
     wg_y: i32,
@@ -540,7 +593,9 @@ unsafe extern "C" fn cl_gpu_dispatch(
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftGpuContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let pid = pipeline_id as usize;
         if pid >= ctx.pipelines.len() {
             return -1;
@@ -567,12 +622,20 @@ unsafe extern "C" fn cl_gpu_dispatch(
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_gpu_download(ptr: *mut u8, buf_id: i32, dst_off: i64, size: i64) -> i32 {
+unsafe extern "C" fn cl_gpu_download(
+    ptr: *mut u8,
+    ctx_off: i64,
+    buf_id: i32,
+    dst_off: i64,
+    size: i64,
+) -> i32 {
     if buf_id < 0 || size <= 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftGpuContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -597,9 +660,15 @@ unsafe extern "C" fn cl_gpu_download(ptr: *mut u8, buf_id: i32, dst_off: i64, si
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_gpu_cleanup(ptr: *mut u8) {
-    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftGpuContext);
-    drop(Box::from_raw(ctx_ptr));
+unsafe extern "C" fn cl_gpu_cleanup(ptr: *mut u8, ctx_off: i64) {
+    let Some(slot) = ctx_slot::<CraneliftGpuContext>(ptr, ctx_off) else {
+        return;
+    };
+    let ctx_ptr = std::ptr::read_unaligned(slot as *const *mut CraneliftGpuContext);
+    if !ctx_ptr.is_null() {
+        std::ptr::write_unaligned(slot, std::ptr::null_mut());
+        drop(Box::from_raw(ctx_ptr));
+    }
 }
 
 struct CraneliftCudaContext {
@@ -623,7 +692,7 @@ fn cached_cuda_device() -> std::sync::Arc<cudarc::driver::CudaDevice> {
         .clone()
 }
 
-unsafe extern "C" fn cl_cuda_init(ptr: *mut u8) {
+unsafe extern "C" fn cl_cuda_init(ptr: *mut u8, ctx_off: i64) {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let device = cached_cuda_device();
         let cuda_ctx = Box::new(CraneliftCudaContext {
@@ -633,20 +702,19 @@ unsafe extern "C" fn cl_cuda_init(ptr: *mut u8) {
             main_kernel_cache: std::collections::HashMap::new(),
             named_kernel_cache: std::collections::HashMap::new(),
         });
-        std::ptr::write_unaligned(
-            ptr as *mut *mut CraneliftCudaContext,
-            Box::into_raw(cuda_ctx),
-        );
+        let _ = write_ctx(ptr, ctx_off, Box::into_raw(cuda_ctx));
     }))
     .expect("cl_cuda_init panicked");
 }
 
-unsafe extern "C" fn cl_cuda_create_buffer(ptr: *mut u8, size: i64) -> i32 {
+unsafe extern "C" fn cl_cuda_create_buffer(ptr: *mut u8, ctx_off: i64, size: i64) -> i32 {
     if size <= 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         match ctx.device.alloc_zeros::<u8>(size as usize) {
             Ok(buf) => {
                 let idx = ctx.buffers.len() as i32;
@@ -659,12 +727,20 @@ unsafe extern "C" fn cl_cuda_create_buffer(ptr: *mut u8, size: i64) -> i32 {
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_cuda_upload(ptr: *mut u8, buf_id: i32, src_off: i64, size: i64) -> i32 {
+unsafe extern "C" fn cl_cuda_upload(
+    ptr: *mut u8,
+    ctx_off: i64,
+    buf_id: i32,
+    src_off: i64,
+    size: i64,
+) -> i32 {
     if buf_id < 0 || size <= 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -681,12 +757,20 @@ unsafe extern "C" fn cl_cuda_upload(ptr: *mut u8, buf_id: i32, src_off: i64, siz
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_cuda_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64, size: i64) -> i32 {
+unsafe extern "C" fn cl_cuda_upload_ptr(
+    ptr: *mut u8,
+    ctx_off: i64,
+    buf_id: i32,
+    src_ptr: i64,
+    size: i64,
+) -> i32 {
     if buf_id < 0 || size <= 0 || src_ptr == 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -705,6 +789,7 @@ unsafe extern "C" fn cl_cuda_upload_ptr(ptr: *mut u8, buf_id: i32, src_ptr: i64,
 
 unsafe extern "C" fn cl_cuda_upload_ptr_offset(
     ptr: *mut u8,
+    ctx_off: i64,
     buf_id: i32,
     buf_offset: i64,
     src_ptr: i64,
@@ -716,7 +801,9 @@ unsafe extern "C" fn cl_cuda_upload_ptr_offset(
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -746,6 +833,7 @@ unsafe extern "C" fn cl_cuda_upload_ptr_offset(
 
 unsafe extern "C" fn cl_cuda_download_ptr(
     ptr: *mut u8,
+    ctx_off: i64,
     buf_id: i32,
     dst_ptr: i64,
     size: i64,
@@ -754,7 +842,9 @@ unsafe extern "C" fn cl_cuda_download_ptr(
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -771,12 +861,20 @@ unsafe extern "C" fn cl_cuda_download_ptr(
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_cuda_download(ptr: *mut u8, buf_id: i32, dst_off: i64, size: i64) -> i32 {
+unsafe extern "C" fn cl_cuda_download(
+    ptr: *mut u8,
+    ctx_off: i64,
+    buf_id: i32,
+    dst_off: i64,
+    size: i64,
+) -> i32 {
     if buf_id < 0 || size <= 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -793,12 +891,14 @@ unsafe extern "C" fn cl_cuda_download(ptr: *mut u8, buf_id: i32, dst_off: i64, s
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_cuda_free_buffer(ptr: *mut u8, buf_id: i32) -> i32 {
+unsafe extern "C" fn cl_cuda_free_buffer(ptr: *mut u8, ctx_off: i64, buf_id: i32) -> i32 {
     if buf_id < 0 {
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let bid = buf_id as usize;
         if bid >= ctx.buffers.len() {
             return -1;
@@ -822,6 +922,7 @@ unsafe extern "C" fn cl_cuda_free_buffer(ptr: *mut u8, buf_id: i32) -> i32 {
 /// The PTX must define `.entry main(...)` with `n_bufs` pointer parameters.
 unsafe extern "C" fn cl_cuda_launch(
     ptr: *mut u8,
+    ctx_off: i64,
     kernel_off: i64,
     n_bufs: i32,
     bind_off: i64,
@@ -843,7 +944,9 @@ unsafe extern "C" fn cl_cuda_launch(
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
 
         let func_name: &'static str = "main";
         let module_name = if let Some(name) = ctx.main_kernel_cache.get(&kernel_off) {
@@ -909,9 +1012,11 @@ unsafe extern "C" fn cl_cuda_launch(
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_cuda_sync(ptr: *mut u8) -> i32 {
+unsafe extern "C" fn cl_cuda_sync(ptr: *mut u8, ctx_off: i64) -> i32 {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_ref::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         match ctx.device.synchronize() {
             Ok(_) => 0,
             Err(_) => -1,
@@ -920,9 +1025,15 @@ unsafe extern "C" fn cl_cuda_sync(ptr: *mut u8) -> i32 {
     .unwrap_or(-1)
 }
 
-unsafe extern "C" fn cl_cuda_cleanup(ptr: *mut u8) {
-    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
-    drop(Box::from_raw(ctx_ptr));
+unsafe extern "C" fn cl_cuda_cleanup(ptr: *mut u8, ctx_off: i64) {
+    let Some(slot) = ctx_slot::<CraneliftCudaContext>(ptr, ctx_off) else {
+        return;
+    };
+    let ctx_ptr = std::ptr::read_unaligned(slot as *const *mut CraneliftCudaContext);
+    if !ctx_ptr.is_null() {
+        std::ptr::write_unaligned(slot, std::ptr::null_mut());
+        drop(Box::from_raw(ctx_ptr));
+    }
 }
 
 /// Launch a PTX kernel by name.
@@ -931,6 +1042,7 @@ unsafe extern "C" fn cl_cuda_cleanup(ptr: *mut u8) {
 /// at `name_off` instead of hardcoding `"main"`.
 unsafe extern "C" fn cl_cuda_launch_named(
     ptr: *mut u8,
+    ctx_off: i64,
     kernel_off: i64,
     name_off: i64,
     n_bufs: i32,
@@ -953,7 +1065,9 @@ unsafe extern "C" fn cl_cuda_launch_named(
         return -1;
     }
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
         let (module_name, func_name) =
             if let Some(entry) = ctx.named_kernel_cache.get(&(kernel_off, name_off)) {
                 (entry.module_name.clone(), entry.func_name.clone())
@@ -1044,6 +1158,7 @@ unsafe extern "C" fn cl_cuda_launch_named(
 ///   lda = k if transa else m,  ldb = n if transb else k,  ldc = m
 unsafe extern "C" fn cl_cublas_sgemm(
     ptr: *mut u8,
+    ctx_off: i64,
     transa: i32,
     transb: i32,
     m: i32,
@@ -1059,7 +1174,9 @@ unsafe extern "C" fn cl_cublas_sgemm(
     use cudarc::driver::DevicePtr;
 
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
 
         if ctx.blas.is_none() {
             match cudarc::cublas::CudaBlas::new(ctx.device.clone()) {
@@ -1146,6 +1263,7 @@ unsafe extern "C" fn cl_cublas_sgemm(
 /// For row-major weights shaped [rows, cols], call with `trans=1`, `m=cols`, `n=rows`.
 unsafe extern "C" fn cl_cublas_sgemv(
     ptr: *mut u8,
+    ctx_off: i64,
     trans: i32,
     m: i32,
     n: i32,
@@ -1159,7 +1277,9 @@ unsafe extern "C" fn cl_cublas_sgemv(
     use cudarc::driver::DevicePtr;
 
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
 
         if ctx.blas.is_none() {
             match cudarc::cublas::CudaBlas::new(ctx.device.clone()) {
@@ -1241,6 +1361,7 @@ unsafe extern "C" fn cl_cublas_sgemv(
 #[allow(clippy::too_many_arguments)]
 unsafe extern "C" fn cl_cublas_sgemm_strided_batched(
     ptr: *mut u8,
+    ctx_off: i64,
     transa: i32,
     transb: i32,
     m: i32,
@@ -1264,7 +1385,9 @@ unsafe extern "C" fn cl_cublas_sgemm_strided_batched(
     }
 
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftCudaContext);
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ptr, ctx_off) else {
+            return -1;
+        };
 
         if ctx.blas.is_none() {
             match cudarc::cublas::CudaBlas::new(ctx.device.clone()) {

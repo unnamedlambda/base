@@ -42,9 +42,9 @@ def clifVecAddFn : String :=
   "function u0:1(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
   -- Load data_ptr, data_len, out_ptr from reserved region
-  "  v500 = load.i64 notrap aligned v0+0x08\n" ++  -- data_ptr
-  "  v501 = load.i64 notrap aligned v0+0x10\n" ++  -- data_len
-  "  v502 = load.i64 notrap aligned v0+0x18\n" ++  -- out_ptr
+  "  v500 = load.i64 notrap aligned v0+0x18\n" ++  -- data_ptr
+  "  v501 = load.i64 notrap aligned v0+0x20\n" ++  -- data_len
+  "  v502 = load.i64 notrap aligned v0+0x28\n" ++  -- out_ptr
   -- n = data_len / 8 (two f32 arrays)
   "  v2 = ushr_imm v501, 3\n" ++                    -- n
   -- A_ptr = v500 (data_ptr), B_ptr = data_ptr + n*4

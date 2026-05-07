@@ -150,19 +150,19 @@ def clifIrSource : String := buildProgram do
   let gpu ← declareGpuFFI
   let fnWr ← declareFileWrite
   let ptr ← entryBlock
-  callVoid gpu.fnInit [ptr]
+  gpuInit gpu ptr
   let dataSz ← iconst64 pixelBytes
-  let bufId  ← call gpu.fnCreateBuffer [ptr, dataSz]
+  let bufId  ← gpuCreateBuffer gpu ptr dataSz
   let shOff  ← fldOffset f.shader
   let bdOff  ← fldOffset f.bindDesc
   let one32  ← iconst32 1
-  let pipeId ← call gpu.fnCreatePipeline [ptr, shOff, bdOff, one32]
+  let pipeId ← gpuCreatePipeline gpu ptr shOff bdOff one32
   let wgx    ← iconst32 wgX
   let wgy    ← iconst32 wgY
-  let _      ← call gpu.fnDispatch [ptr, pipeId, wgx, wgy, one32]
+  let _      ← gpuDispatch gpu ptr pipeId wgx wgy one32
   let pxOff  ← fldOffset f.pixels
-  let _      ← call gpu.fnDownload [ptr, bufId, pxOff, dataSz]
-  callVoid gpu.fnCleanup [ptr]
+  let _      ← gpuDownload gpu ptr bufId pxOff dataSz
+  gpuCleanup gpu ptr
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← fldWriteFile0 ptr fnWr f.filename f.bmpHeader total
   ret

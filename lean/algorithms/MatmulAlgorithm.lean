@@ -256,26 +256,26 @@ def clifIrSource (m k n : Nat) : String :=
     let c0 ← iconst64 0
 
     -- CUDA init
-    callVoid cuda.fnInit [ptr]
+    cudaInit cuda ptr
 
     -- Create 4 buffers
     let aSz ← iconst64 aBytes
     let bSz ← iconst64 bBytes
     let cSz ← iconst64 cBytes
     let pSz ← iconst64 16
-    let bufA ← call cuda.fnCreateBuffer [ptr, aSz]
-    let bufB ← call cuda.fnCreateBuffer [ptr, bSz]
-    let bufC ← call cuda.fnCreateBuffer [ptr, cSz]
-    let bufP ← call cuda.fnCreateBuffer [ptr, pSz]
+    let bufA ← cudaCreateBuffer cuda ptr aSz
+    let bufB ← cudaCreateBuffer cuda ptr bSz
+    let bufC ← cudaCreateBuffer cuda ptr cSz
+    let bufP ← cudaCreateBuffer cuda ptr pSz
     let _ := bufA; let _ := bufB; let _ := bufC; let _ := bufP
 
     -- Upload A, B, params
     let aOffV ← iconst64 aOff
     let bOffV ← iconst64 bOff
     let pOffV ← iconst64 PARAMS_OFF
-    let _ ← call cuda.fnUpload [ptr, bufA, aOffV, aSz]
-    let _ ← call cuda.fnUpload [ptr, bufB, bOffV, bSz]
-    let _ ← call cuda.fnUpload [ptr, bufP, pOffV, pSz]
+    let _ ← cudaUpload cuda ptr bufA aOffV aSz
+    let _ ← cudaUpload cuda ptr bufB bOffV bSz
+    let _ ← cudaUpload cuda ptr bufP pOffV pSz
 
     -- Launch: grid = (ceil(N/16), ceil(M/16), 1), block = (16, 16, 1)
     let gridX := (n + 15) / 16
@@ -287,14 +287,13 @@ def clifIrSource (m k n : Nat) : String :=
     let gy ← iconst32 gridY
     let one32 ← iconst32 1
     let blk16 ← iconst32 16
-    let _ ← call cuda.fnLaunch
-      [ptr, ptxOff, nBufs, bindOff, gx, gy, one32, blk16, blk16, one32]
+    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff gx gy one32 blk16 blk16 one32
 
     -- Download C
     let cOffV ← iconst64 cOff
-    let _ ← call cuda.fnDownload [ptr, bufC, cOffV, cSz]
+    let _ ← cudaDownload cuda ptr bufC cOffV cSz
 
-    callVoid cuda.fnCleanup [ptr]
+    cudaCleanup cuda ptr
 
     -- Write output file: bytes [cOff .. cOff + cBytes)
     let fnOffV ← iconst64 OUTPUT_FN_OFF

@@ -35,9 +35,9 @@ def clifNoopFn : String :=
 def clifRevAggFn : String :=
   "function u0:1(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
-  "  v500 = load.i64 notrap aligned v0+0x08\n" ++   -- data_ptr
-  "  v501 = load.i64 notrap aligned v0+0x10\n" ++   -- data_len
-  "  v502 = load.i64 notrap aligned v0+0x18\n" ++   -- out_ptr
+  "  v500 = load.i64 notrap aligned v0+0x18\n" ++   -- data_ptr
+  "  v501 = load.i64 notrap aligned v0+0x20\n" ++   -- data_len
+  "  v502 = load.i64 notrap aligned v0+0x28\n" ++   -- out_ptr
   "  v503 = iadd_imm v0, 40\n" ++                   -- acc_base (0x28 = 40)
   "  v504 = iadd v500, v501\n" ++                   -- data_end
   "  v600 = iconst.i64 0\n" ++                      -- zero for init (0x0 = 0.0 in f64)

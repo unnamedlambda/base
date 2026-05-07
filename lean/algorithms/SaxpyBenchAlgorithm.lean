@@ -95,7 +95,7 @@ def clifIrSource : String := buildProgram do
   let ptr  ← entryBlock
 
   -- Init CUDA context
-  callVoid cuda.fnInit [ptr]
+  cudaInit cuda ptr
 
   -- Load N (i32) from memory, compute buffer size = N * 4
   let nAddr ← absAddr ptr f.nElems.offset
@@ -105,14 +105,14 @@ def clifIrSource : String := buildProgram do
   let bufSz ← imul nVal64 four
 
   -- Create 2 device buffers
-  let xBuf ← call cuda.fnCreateBuffer [ptr, bufSz]
-  let yBuf ← call cuda.fnCreateBuffer [ptr, bufSz]
+  let xBuf ← cudaCreateBuffer cuda ptr bufSz
+  let yBuf ← cudaCreateBuffer cuda ptr bufSz
 
   -- Upload x from dataRegion, y from dataRegion + bufSz
   let dataOff ← iconst64 f.dataRegion.offset
-  let _  ← call cuda.fnUpload [ptr, xBuf, dataOff, bufSz]
+  let _  ← cudaUpload cuda ptr xBuf dataOff bufSz
   let yOff ← iadd dataOff bufSz
-  let _  ← call cuda.fnUpload [ptr, yBuf, yOff, bufSz]
+  let _  ← cudaUpload cuda ptr yBuf yOff bufSz
 
   -- Compute grid dimensions: ceil(N / 256)
   let n255  ← iconst32 255
@@ -125,12 +125,12 @@ def clifIrSource : String := buildProgram do
   let ptxOff  ← iconst64 f.ptxSrc.offset
   let two32   ← iconst32 2
   let bindOff ← iconst64 f.bindDesc.offset
-  let _ ← call cuda.fnLaunch [ptr, ptxOff, two32, bindOff,
-                               gridX, one32, one32,
-                               c256, one32, one32]
+  let _ ← cudaLaunch cuda ptr ptxOff two32 bindOff
+                               gridX one32 one32
+                               c256 one32 one32
 
   -- Download y result
-  let _ ← call cuda.fnDownload [ptr, yBuf, yOff, bufSz]
+  let _ ← cudaDownload cuda ptr yBuf yOff bufSz
 
   -- Write y to verify file
   let fnameOff ← iconst64 f.filename.offset
@@ -138,7 +138,7 @@ def clifIrSource : String := buildProgram do
   let _ ← call fnWr [ptr, fnameOff, yOff, zero64, bufSz]
 
   -- Cleanup
-  callVoid cuda.fnCleanup [ptr]
+  cudaCleanup cuda ptr
   ret
 
 -- ---------------------------------------------------------------------------

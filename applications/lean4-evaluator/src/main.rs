@@ -4,9 +4,9 @@ const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/LeanEvalAlgorithm/lean_eval_app.bin"
 ));
-const INPUT_PATH_OFFSET: usize = 0x0068;
+const INPUT_PATH_OFFSET: usize = 0x0078;
 const INPUT_PATH_MAX_LEN: usize = 256;
-const OUTPUT_PATH_OFFSET: usize = 0x0028;
+const OUTPUT_PATH_OFFSET: usize = 0x0038;
 const OUTPUT_PATH_MAX_LEN: usize = 64;
 
 fn main() {

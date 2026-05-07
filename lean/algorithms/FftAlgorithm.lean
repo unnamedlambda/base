@@ -234,17 +234,17 @@ def clifIrSource : String := buildProgram do
 
   -- Step 3: GPU init
   startBlock gpuBlk
-  callVoid gpu.fnInit [ptr]
+  gpuInit gpu ptr
 
   -- Align data size to multiple of 4: (N*8 + 3) & ~3
   let dataSz ← imul bigN c8
   let alignedSz ← alignUp4 dataSz
 
   -- Create 3 buffers
-  let buf0 ← call gpu.fnCreateBuffer [ptr, alignedSz]
-  let buf1 ← call gpu.fnCreateBuffer [ptr, alignedSz]
+  let buf0 ← gpuCreateBuffer gpu ptr alignedSz
+  let buf1 ← gpuCreateBuffer gpu ptr alignedSz
   let metaSzC ← iconst64 metaSize
-  let buf2 ← call gpu.fnCreateBuffer [ptr, metaSzC]
+  let buf2 ← gpuCreateBuffer gpu ptr metaSzC
 
   -- Write N into meta region
   let metaOffC ← iconst64 meta_off
@@ -253,13 +253,13 @@ def clifIrSource : String := buildProgram do
   store nI32 metaAbs
 
   -- Upload buf_a
-  let _ ← call gpu.fnUpload [ptr, buf0, bufAOff, alignedSz]
+  let _ ← gpuUpload gpu ptr buf0 bufAOff alignedSz
 
   -- Create pipeline (3 bindings)
   let shOffC ← iconst64 shader_off
   let bdOffC ← iconst64 bindDesc_off
   let c3_i32 ← iconst32 3
-  let pipeId ← call gpu.fnCreatePipeline [ptr, shOffC, bdOffC, c3_i32]
+  let pipeId ← gpuCreatePipeline gpu ptr shOffC bdOffC c3_i32
 
   -- Compute dispatch size: ceil(N/2 / 64)
   let halfN ← ushr bigN c1
@@ -291,12 +291,12 @@ def clifIrSource : String := buildProgram do
   let dirI32 ← ireduce32 dir
   store dirI32 metaDir
   -- Upload meta
-  let _ ← call gpu.fnUpload [ptr, buf2, metaOffC, metaSzC]
+  let _ ← gpuUpload gpu ptr buf2 metaOffC metaSzC
   -- Dispatch
-  let _ ← call gpu.fnDispatch [ptr, pipeId, wgCount32, one32, one32]
+  let _ ← gpuDispatch gpu ptr pipeId wgCount32 one32 one32
   -- Sync: download meta to scratch to force GPU completion
   let scratchOff ← iconst64 64
-  let _ ← call gpu.fnDownload [ptr, buf2, scratchOff, metaSzC]
+  let _ ← gpuDownload gpu ptr buf2 scratchOff metaSzC
   -- Next stage, toggle direction
   let stageNext ← iadd stage c1
   let dirNext ← bxor dir c1
@@ -317,8 +317,8 @@ def clifIrSource : String := buildProgram do
   startBlock finalBlk
   let dstOff2 := finalBlk.param 0
   let bufId := finalBlk.param 1
-  let _ ← call gpu.fnDownload [ptr, bufId, dstOff2, alignedSz]
-  callVoid gpu.fnCleanup [ptr]
+  let _ ← gpuDownload gpu ptr bufId dstOff2 alignedSz
+  gpuCleanup gpu ptr
 
   -- Step 6: Write output file
   let outFnOff ← iconst64 outputFilename_off

@@ -24,9 +24,10 @@ namespace CudaSoftmaxPersist
     u0:4  finalize  — cl_cuda_sync, optional download y
 
   Shared memory layout:
-    0x00-0x27  reserved
-    0x28-0x2F  n (i64)
-    0x30-0x37  num_blocks (i64)
+    0x00-0x37  reserved (56-byte RuntimeHeader)
+    0x38-0x3F  n (i64)
+    0x40-0x47  num_blocks (i64)
+    0x48-0x4F  packed meta [n:u32][num_blocks:u32] staging area
 
   Three PTX entry points in one module (called via cl_cuda_launch_named):
     block_reduce  — gridDim=num_blocks: each block computes (local_max, local_sum) via online softmax
@@ -522,65 +523,71 @@ def clifNoopFn : String :=
   Load: init CUDA, alloc 5 bufs, compute num_blocks, upload meta, store n/num_blocks in sm.
   Data: [n: u64]
   Buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
+
+  App fields:
+    0x38-0x3F  n (i64)
+    0x40-0x47  num_blocks (i64)
+    0x48-0x4F  packed meta staging [n:u32][num_blocks:u32]
 -/
 def clifLoadFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64) system_v\n" ++
+  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_init sig0\n" ++
   "    fn1 = %cl_cuda_create_buffer sig1\n" ++
   "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x08\n" ++  -- data_ptr
-  "  call fn0(v0)\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x18\n" ++  -- data_ptr
+  "  v2 = iconst.i64 0x10\n" ++
+  "  call fn0(v0, v2)\n" ++
   "  v10 = load.i64 notrap aligned v1\n" ++       -- n
   -- num_blocks = (n + 255) >> 8
   "  v11 = iadd_imm v10, 255\n" ++
   "  v12 = ushr_imm v11, 8\n" ++                  -- num_blocks
-  "  v13 = iadd_imm v0, 0x28\n" ++
-  "  store notrap aligned v10, v13\n" ++          -- sm[0x28] = n
-  "  v14 = iadd_imm v0, 0x30\n" ++
-  "  store notrap aligned v12, v14\n" ++          -- sm[0x30] = num_blocks
+  "  v13 = iadd_imm v0, 0x38\n" ++
+  "  store notrap aligned v10, v13\n" ++          -- sm[0x38] = n
+  "  v14 = iadd_imm v0, 0x40\n" ++
+  "  store notrap aligned v12, v14\n" ++          -- sm[0x40] = num_blocks
   -- buf sizes
   "  v20 = ishl_imm v10, 2\n" ++                  -- x_bytes = n*4
   "  v21 = ishl_imm v12, 3\n" ++                  -- partials_bytes = num_blocks*8
   "  v22 = iconst.i64 8\n" ++                     -- meta/params = 8 bytes each
   -- alloc: buf0=x, buf1=y, buf2=meta, buf3=partials, buf4=params
-  "  v30 = call fn1(v0, v20)\n" ++               -- buf0 = x
-  "  v31 = call fn1(v0, v20)\n" ++               -- buf1 = y
-  "  v32 = call fn1(v0, v22)\n" ++               -- buf2 = meta
-  "  v33 = call fn1(v0, v21)\n" ++               -- buf3 = partials
-  "  v34 = call fn1(v0, v22)\n" ++               -- buf4 = params
-  -- pack [n:u32, num_blocks:u32] into 8 bytes at sm[0x40]
+  "  v30 = call fn1(v0, v2, v20)\n" ++            -- buf0 = x
+  "  v31 = call fn1(v0, v2, v20)\n" ++            -- buf1 = y
+  "  v32 = call fn1(v0, v2, v22)\n" ++            -- buf2 = meta
+  "  v33 = call fn1(v0, v2, v21)\n" ++            -- buf3 = partials
+  "  v34 = call fn1(v0, v2, v22)\n" ++            -- buf4 = params
+  -- pack [n:u32, num_blocks:u32] into 8 bytes at sm[0x48]
   "  v40 = ireduce.i32 v10\n" ++                  -- n as i32
   "  v41 = ireduce.i32 v12\n" ++                  -- num_blocks as i32
   "  v42 = uextend.i64 v40\n" ++
   "  v43 = uextend.i64 v41\n" ++
   "  v44 = ishl_imm v43, 32\n" ++                -- num_blocks << 32
   "  v45 = bor v42, v44\n" ++                    -- [n:u32][num_blocks:u32] as i64
-  "  v46 = iadd_imm v0, 0x40\n" ++
-  "  store notrap aligned v45, v46\n" ++          -- sm[0x40] = packed meta
-  "  v47 = call fn2(v0, v32, v46, v22)\n" ++     -- upload 8 bytes to meta buf
+  "  v46 = iadd_imm v0, 0x48\n" ++
+  "  store notrap aligned v45, v46\n" ++          -- sm[0x48] = packed meta
+  "  v47 = call fn2(v0, v2, v32, v46, v22)\n" ++  -- upload 8 bytes to meta buf
   "  return\n" ++
   "}\n"
 
 -- Prep: upload x from data_ptr to buf0
 def clifPrepFn : String :=
   "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_upload_ptr sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x08\n" ++   -- data_ptr (x)
-  "  v2 = load.i64 notrap aligned v0+0x10\n" ++   -- data_len
-  "  v3 = iconst.i32 0\n" ++                      -- buf0 (x)
-  "  v4 = call fn0(v0, v3, v1, v2)\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x18\n" ++   -- data_ptr (x)
+  "  v2 = load.i64 notrap aligned v0+0x20\n" ++   -- data_len
+  "  v3 = iconst.i64 0x10\n" ++
+  "  v4 = iconst.i32 0\n" ++                      -- buf0 (x)
+  "  v5 = call fn0(v0, v3, v4, v1, v2)\n" ++
   "  return\n" ++
   "}\n"
 
 /-
-  Infer: launch 3 kernels (block_reduce, global_reduce, normalize),
-  sync GPU, then optionally download y.
+  Core: launch 3 kernels (block_reduce, global_reduce, normalize).
   Bind layouts:
     K1 (block_reduce):  bufs [0, 2, 3]  — x, meta, partials
     K2 (global_reduce): bufs [2, 3, 4]  — meta, partials, params
@@ -588,12 +595,13 @@ def clifPrepFn : String :=
 -/
 def clifCoreFn : String :=
   "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_launch_named sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v10 = load.i64 notrap aligned v0+0x28\n" ++  -- n
-  "  v11 = load.i64 notrap aligned v0+0x30\n" ++  -- num_blocks
+  "  v10 = load.i64 notrap aligned v0+0x38\n" ++  -- n
+  "  v11 = load.i64 notrap aligned v0+0x40\n" ++  -- num_blocks
   "  v12 = ireduce.i32 v11\n" ++                  -- num_blocks as i32
+  "  v2 = iconst.i64 0x10\n" ++
   "  v20 = iconst.i64 " ++ toString PTX_SOURCE_OFF ++ "\n" ++
   "  v21 = iconst.i64 " ++ toString NAME_BLOCK_REDUCE ++ "\n" ++
   "  v22 = iconst.i64 " ++ toString NAME_GLOBAL_REDUCE ++ "\n" ++
@@ -611,36 +619,37 @@ def clifCoreFn : String :=
   "  v35 = icmp ule v10, v34\n" ++
   "  brif v35, block1, block2\n" ++
   "block1:\n" ++
-  "  v36 = call fn0(v0, v20, v24, v31, v28, v30, v30, v30, v33, v30, v30)\n" ++
+  "  v36 = call fn0(v0, v2, v20, v24, v31, v28, v30, v30, v30, v33, v30, v30)\n" ++
   "  return\n" ++
   "block2:\n" ++
   -- K1: block_reduce — gridDim=(num_blocks,1,1), blockDim=(256,1,1), 3 bufs
-  "  v40 = call fn0(v0, v20, v21, v31, v25, v12, v30, v30, v33, v30, v30)\n" ++
+  "  v40 = call fn0(v0, v2, v20, v21, v31, v25, v12, v30, v30, v33, v30, v30)\n" ++
   -- K2: global_reduce — gridDim=(1,1,1), blockDim=(256,1,1), 3 bufs
-  "  v41 = call fn0(v0, v20, v22, v31, v26, v30, v30, v30, v33, v30, v30)\n" ++
+  "  v41 = call fn0(v0, v2, v20, v22, v31, v26, v30, v30, v30, v33, v30, v30)\n" ++
   -- K3: normalize — gridDim=(num_blocks,1,1), blockDim=(256,1,1), 4 bufs
-  "  v42 = call fn0(v0, v20, v23, v32, v27, v12, v30, v30, v33, v30, v30)\n" ++
+  "  v42 = call fn0(v0, v2, v20, v23, v32, v27, v12, v30, v30, v33, v30, v30)\n" ++
   "  return\n" ++
   "}\n"
 
 def clifFinalizeFn : String :=
   "function u0:4(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig1 = (i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_download_ptr sig0\n" ++
   "    fn1 = %cl_cuda_sync sig1\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++   -- out_ptr
-  "  v2 = load.i64 notrap aligned v0+0x20\n" ++   -- out_len
-  "  v3 = call fn1(v0)\n" ++
-  "  v4 = iconst.i64 0\n" ++
-  "  v5 = icmp eq v2, v4\n" ++
-  "  brif v5, block1, block2\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x28\n" ++   -- out_ptr (correct: RuntimeHeader 0x28)
+  "  v2 = load.i64 notrap aligned v0+0x30\n" ++   -- out_len (correct: RuntimeHeader 0x30)
+  "  v3 = iconst.i64 0x10\n" ++
+  "  v4 = call fn1(v0, v3)\n" ++
+  "  v5 = iconst.i64 0\n" ++
+  "  v6 = icmp eq v2, v5\n" ++
+  "  brif v6, block1, block2\n" ++
   "block1:\n" ++
   "  return\n" ++
   "block2:\n" ++
-  "  v6 = iconst.i32 1\n" ++                     -- y is buf1
-  "  v7 = call fn0(v0, v6, v1, v2)\n" ++
+  "  v7 = iconst.i32 1\n" ++                     -- y is buf1
+  "  v8 = call fn0(v0, v3, v7, v1, v2)\n" ++
   "  return\n" ++
   "}\n"
 

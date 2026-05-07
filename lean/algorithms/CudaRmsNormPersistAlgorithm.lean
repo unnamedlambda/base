@@ -125,77 +125,93 @@ def clifNoopFn : String :=
   "  return\n" ++
   "}\n"
 
+/-
+  Load: init CUDA, read N from data[0], store N at sm[0x38], alloc 2 bufs,
+  store buf_ids at sm[0x40]/sm[0x44], upload N and weights into buf0.
+
+  Shared memory layout (app fields):
+    0x38-0x3F  N (i64)
+    0x40-0x43  buf0_id (i32)
+    0x44-0x47  buf1_id (i32)
+-/
 def clifLoadFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig3 = (i64, i32, i64, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64) system_v\n" ++
+  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i64, i32, i64, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_init sig0\n" ++
   "    fn1 = %cl_cuda_create_buffer sig1\n" ++
-  "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
-  "    fn3 = %cl_cuda_upload_ptr_offset sig3\n" ++
+  "    fn2 = %cl_cuda_upload_ptr_offset sig2\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x08\n" ++
-  "  call fn0(v0)\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
+  "  v2 = iconst.i64 0x10\n" ++
+  "  call fn0(v0, v2)\n" ++
   "  v10 = load.i64 notrap aligned v1\n" ++
-  "  v11 = iadd_imm v0, 0x28\n" ++
+  "  v11 = iadd_imm v0, 0x38\n" ++
   "  store notrap aligned v10, v11\n" ++
   "  v12 = ishl_imm v10, 2\n" ++
   "  v13 = iadd_imm v12, 8\n" ++
   "  v14 = iadd v13, v12\n" ++
-  "  v15 = call fn1(v0, v14)\n" ++
-  "  v16 = call fn1(v0, v12)\n" ++
-  "  store notrap aligned v15, v0+0x30\n" ++
-  "  store notrap aligned v16, v0+0x34\n" ++
+  "  v15 = call fn1(v0, v2, v14)\n" ++
+  "  v16 = call fn1(v0, v2, v12)\n" ++
+  "  store notrap aligned v15, v0+0x40\n" ++
+  "  store notrap aligned v16, v0+0x44\n" ++
   "  v17 = iconst.i64 0\n" ++
   "  v18 = iconst.i64 8\n" ++
-  "  v19 = call fn3(v0, v15, v17, v11, v18)\n" ++
+  "  v19 = call fn2(v0, v2, v15, v17, v11, v18)\n" ++
   "  v20 = iadd_imm v1, 8\n" ++
-  "  v21 = call fn3(v0, v15, v13, v20, v12)\n" ++
+  "  v21 = call fn2(v0, v2, v15, v13, v20, v12)\n" ++
   "  return\n" ++
   "}\n"
 
+/-
+  Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8.
+-/
 def clifPrepFn : String :=
   "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i32, i64, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_upload_ptr_offset sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x08\n" ++
-  "  v2 = load.i64 notrap aligned v0+0x28\n" ++
-  "  v3 = load.i32 notrap aligned v0+0x30\n" ++
-  "  v4 = iconst.i64 8\n" ++
-  "  v5 = ishl_imm v2, 2\n" ++
-  "  v6 = call fn0(v0, v3, v4, v1, v5)\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
+  "  v2 = load.i64 notrap aligned v0+0x38\n" ++
+  "  v3 = load.i32 notrap aligned v0+0x40\n" ++
+  "  v4 = iconst.i64 0x10\n" ++
+  "  v5 = iconst.i64 8\n" ++
+  "  v6 = ishl_imm v2, 2\n" ++
+  "  v7 = call fn0(v0, v4, v3, v5, v1, v6)\n" ++
   "  return\n" ++
   "}\n"
 
+/-
+  Infer: launch kernel, sync, optionally download buf1 to out_ptr.
+-/
 def clifInferFn : String :=
   "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig2 = (i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig1 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
+  "    sig2 = (i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_download_ptr sig0\n" ++
   "    fn1 = %cl_cuda_launch sig1\n" ++
   "    fn2 = %cl_cuda_sync sig2\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v2 = load.i64 notrap aligned v0+0x20\n" ++
-  "  v3 = iconst.i64 " ++ toString PTX_SOURCE_OFF ++ "\n" ++
-  "  v4 = iconst.i32 2\n" ++
-  "  v5 = iconst.i64 " ++ toString BIND_DESC_OFF ++ "\n" ++
-  "  v6 = iconst.i32 1\n" ++
-  "  v7 = iconst.i32 256\n" ++
-  "  v8 = call fn1(v0, v3, v4, v5, v6, v6, v6, v7, v6, v6)\n" ++
-  "  v9 = call fn2(v0)\n" ++
-  "  v10 = iconst.i64 0\n" ++
-  "  v11 = icmp eq v2, v10\n" ++
-  "  brif v11, block1, block2\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x28\n" ++
+  "  v2 = load.i64 notrap aligned v0+0x30\n" ++
+  "  v3 = iconst.i64 0x10\n" ++
+  "  v4 = iconst.i64 " ++ toString PTX_SOURCE_OFF ++ "\n" ++
+  "  v5 = iconst.i32 2\n" ++
+  "  v6 = iconst.i64 " ++ toString BIND_DESC_OFF ++ "\n" ++
+  "  v7 = iconst.i32 1\n" ++
+  "  v8 = iconst.i32 256\n" ++
+  "  v9 = call fn1(v0, v3, v4, v5, v6, v7, v7, v7, v8, v7, v7)\n" ++
+  "  v10 = call fn2(v0, v3)\n" ++
+  "  v11 = iconst.i64 0\n" ++
+  "  v12 = icmp eq v2, v11\n" ++
+  "  brif v12, block1, block2\n" ++
   "block1:\n" ++
   "  return\n" ++
   "block2:\n" ++
-  "  v12 = load.i32 notrap aligned v0+0x34\n" ++
-  "  v13 = call fn0(v0, v12, v1, v2)\n" ++
+  "  v13 = load.i32 notrap aligned v0+0x44\n" ++
+  "  v14 = call fn0(v0, v3, v13, v1, v2)\n" ++
   "  return\n" ++
   "}\n"
 

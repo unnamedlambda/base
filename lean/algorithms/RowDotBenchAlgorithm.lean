@@ -30,8 +30,8 @@ def clifNoopFn : String :=
 def clifRowDotFn : String :=
   "function u0:1(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
-  "  v500 = load.i64 notrap aligned v0+0x08\n" ++
-  "  v501 = load.i64 notrap aligned v0+0x18\n" ++
+  "  v500 = load.i64 notrap aligned v0+0x18\n" ++
+  "  v501 = load.i64 notrap aligned v0+0x28\n" ++
   "  v1 = load.i64 notrap aligned v500\n" ++
   "  v2 = load.i64 notrap aligned v500+8\n" ++
   "  v3 = iadd_imm v500, 16\n" ++

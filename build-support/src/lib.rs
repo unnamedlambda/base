@@ -183,7 +183,7 @@ fn read_generated_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::{Action, Kind};
+    use base_types::{Action, Kind, RuntimeHeader};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_entry(name: &str) -> (String, BaseConfig, Algorithm) {
@@ -192,6 +192,15 @@ mod tests {
             BaseConfig {
                 cranelift_ir: "function u0:0() { return }".to_string(),
                 memory_size: 64,
+                runtime_header: RuntimeHeader {
+                    ht_context_ptr_offset: 0x00,
+                    data_ptr_offset: 0x08,
+                    data_len_offset: 0x10,
+                    out_ptr_offset: 0x18,
+                    out_len_offset: 0x20,
+                    wgpu_context_ptr_offset: 0x38,
+                    cuda_context_ptr_offset: 0x40,
+                },
                 context_offset: 16,
                 initial_memory: vec![1, 2, 3],
             },

@@ -19,6 +19,7 @@ use crate::units::{
     compile_cranelift_ir, cranelift_unit_task_mailbox, init_ht_context, load_sized, order_from_u32,
     CraneliftHashTableContext, Mailbox, SharedMemory, THREAD_COMPILED_FNS,
 };
+use base_types::RuntimeHeader;
 
 #[derive(Debug)]
 pub enum Error {
@@ -33,6 +34,7 @@ pub struct Base {
     clif_fns: Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>,
     _module: Option<cranelift_jit::JITModule>,
     ht_ctx_ptr: Option<*mut CraneliftHashTableContext>,
+    runtime_header: RuntimeHeader,
 }
 
 unsafe impl Send for Base {}
@@ -40,19 +42,26 @@ unsafe impl Sync for Base {}
 
 impl Base {
     pub fn new(config: BaseConfig) -> Result<Self, Error> {
-        let needed = config.memory_size.max(config.initial_memory.len());
+        let header_end = config
+            .runtime_header
+            .out_len_offset
+            .saturating_add(std::mem::size_of::<usize>());
+        let needed = config
+            .memory_size
+            .max(config.initial_memory.len())
+            .max(header_end);
         let mut memory = config.initial_memory;
         memory.resize(needed, 0);
         Self::from_parts(
             config.cranelift_ir,
-            config.context_offset,
+            config.runtime_header,
             memory.into_boxed_slice(),
         )
     }
 
     fn from_parts(
         cranelift_ir: String,
-        context_offset: usize,
+        runtime_header: RuntimeHeader,
         memory: Box<[u8]>,
     ) -> Result<Self, Error> {
         let _span = info_span!("base_new", memory_size = memory.len()).entered();
@@ -76,9 +85,9 @@ impl Base {
             });
         }
 
-        // Init HT context at context_offset
+        // Init HT context at the explicit runtime-header slot.
         let ht_ctx_ptr = if clif_fns.is_some() {
-            Some(init_ht_context(&shared, context_offset))
+            Some(init_ht_context(&shared, runtime_header.ht_context_ptr_offset))
         } else {
             None
         };
@@ -91,6 +100,7 @@ impl Base {
             clif_fns,
             _module: module,
             ht_ctx_ptr,
+            runtime_header,
         })
     }
 
@@ -125,15 +135,21 @@ impl Base {
         // the caller's buffer directly via pointer (zero-copy).
         unsafe {
             std::ptr::write_unaligned(
-                self.memory[8..].as_mut_ptr() as *mut *const u8,
+                self.memory[self.runtime_header.data_ptr_offset..].as_mut_ptr() as *mut *const u8,
                 data.as_ptr(),
             );
-            std::ptr::write_unaligned(self.memory[16..].as_mut_ptr() as *mut usize, data.len());
             std::ptr::write_unaligned(
-                self.memory[24..].as_mut_ptr() as *mut *mut u8,
+                self.memory[self.runtime_header.data_len_offset..].as_mut_ptr() as *mut usize,
+                data.len(),
+            );
+            std::ptr::write_unaligned(
+                self.memory[self.runtime_header.out_ptr_offset..].as_mut_ptr() as *mut *mut u8,
                 out.as_mut_ptr(),
             );
-            std::ptr::write_unaligned(self.memory[32..].as_mut_ptr() as *mut usize, out.len());
+            std::ptr::write_unaligned(
+                self.memory[self.runtime_header.out_len_offset..].as_mut_ptr() as *mut usize,
+                out.len(),
+            );
         }
 
         let cranelift_mailboxes: Vec<_> = (0..cranelift_units)

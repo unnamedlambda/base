@@ -55,13 +55,16 @@ def BIND_DESC_OFF  : Nat := 0x5000
 def MEM_SIZE       : Nat := 0x5100
 def TIMEOUT_MS     : Nat := 30000
 
-def BUF_Q_OFF      : Nat := 0x30
-def BUF_K_OFF      : Nat := 0x34
-def BUF_V_OFF      : Nat := 0x38
-def BUF_SCORES_OFF : Nat := 0x3C
-def BUF_PROBS_OFF  : Nat := 0x40
-def BUF_OUT_OFF    : Nat := 0x44
-def BUF_META_OFF   : Nat := 0x48
+-- App fields: stored starting at 0x38 (beyond the 56-byte RuntimeHeader)
+def BUF_Q_OFF      : Nat := 0x38
+def BUF_K_OFF      : Nat := 0x3C
+def BUF_V_OFF      : Nat := 0x40
+def BUF_SCORES_OFF : Nat := 0x44
+def BUF_PROBS_OFF  : Nat := 0x48
+def BUF_OUT_OFF    : Nat := 0x4C
+def BUF_META_OFF   : Nat := 0x50
+-- seq_len (i64) staging + seq_len value stored at 0x58
+def SEQ_LEN_OFF    : Nat := 0x58  -- i64 seq_len value (also used as staging for GPU upload)
 
 def ptxSource : String :=
   ".version 8.0\n" ++
@@ -235,17 +238,18 @@ def clifNoopFn : String :=
 
 def clifLoadFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64) system_v\n" ++
+  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_init sig0\n" ++
   "    fn1 = %cl_cuda_create_buffer sig1\n" ++
   "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x08\n" ++
-  "  call fn0(v0)\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
+  "  v90 = iconst.i64 0x10\n" ++
+  "  call fn0(v0, v90)\n" ++
   "  v10 = load.i64 notrap aligned v1\n" ++               -- seq_len
-  "  store notrap aligned v10, v0+0x28\n" ++
+  "  store notrap aligned v10, v0+" ++ toString SEQ_LEN_OFF ++ "\n" ++
   "  v11 = iconst.i64 " ++ toString D_MODEL_BYTES ++ "\n" ++
   "  v12 = iconst.i64 " ++ toString D_MODEL ++ "\n" ++
   "  v13 = imul v10, v11\n" ++                            -- kv_bytes = seq_len * d_model * 4
@@ -253,13 +257,13 @@ def clifLoadFn : String :=
   "  v15 = imul v10, v14\n" ++
   "  v16 = ishl_imm v15, 2\n" ++                          -- score_bytes = seq_len * n_heads * 4
   "  v17 = iconst.i64 8\n" ++
-  "  v20 = call fn1(v0, v11)\n" ++                        -- q
-  "  v21 = call fn1(v0, v13)\n" ++                        -- k
-  "  v22 = call fn1(v0, v13)\n" ++                        -- v
-  "  v23 = call fn1(v0, v16)\n" ++                        -- scores
-  "  v24 = call fn1(v0, v16)\n" ++                        -- probs
-  "  v25 = call fn1(v0, v11)\n" ++                        -- out
-  "  v26 = call fn1(v0, v17)\n" ++                        -- meta
+  "  v20 = call fn1(v0, v90, v11)\n" ++                   -- q
+  "  v21 = call fn1(v0, v90, v13)\n" ++                   -- k
+  "  v22 = call fn1(v0, v90, v13)\n" ++                   -- v
+  "  v23 = call fn1(v0, v90, v16)\n" ++                   -- scores
+  "  v24 = call fn1(v0, v90, v16)\n" ++                   -- probs
+  "  v25 = call fn1(v0, v90, v11)\n" ++                   -- out
+  "  v26 = call fn1(v0, v90, v17)\n" ++                   -- meta
   "  store notrap aligned v20, v0+" ++ toString BUF_Q_OFF ++ "\n" ++
   "  store notrap aligned v21, v0+" ++ toString BUF_K_OFF ++ "\n" ++
   "  store notrap aligned v22, v0+" ++ toString BUF_V_OFF ++ "\n" ++
@@ -269,36 +273,38 @@ def clifLoadFn : String :=
   "  store notrap aligned v26, v0+" ++ toString BUF_META_OFF ++ "\n" ++
   "  v27 = ireduce.i32 v10\n" ++
   "  v28 = uextend.i64 v27\n" ++
-  "  v29 = iadd_imm v0, 0x50\n" ++
+  "  v29 = iadd_imm v0, " ++ toString SEQ_LEN_OFF ++ "\n" ++
   "  store notrap aligned v28, v29\n" ++                 -- [seq_len:u32][0:u32]
-  "  v30 = call fn2(v0, v26, v29, v17)\n" ++
+  "  v30 = call fn2(v0, v90, v26, v29, v17)\n" ++
   "  v31 = iadd_imm v1, 8\n" ++
-  "  v32 = call fn2(v0, v21, v31, v13)\n" ++
+  "  v32 = call fn2(v0, v90, v21, v31, v13)\n" ++
   "  v33 = iadd v31, v13\n" ++
-  "  v34 = call fn2(v0, v22, v33, v13)\n" ++
+  "  v34 = call fn2(v0, v90, v22, v33, v13)\n" ++
   "  return\n" ++
   "}\n"
 
 def clifPrepFn : String :=
   "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_upload_ptr sig0\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x08\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
+  "  v90 = iconst.i64 0x10\n" ++
   "  v2 = load.i32 notrap aligned v0+" ++ toString BUF_Q_OFF ++ "\n" ++
   "  v3 = iconst.i64 " ++ toString D_MODEL_BYTES ++ "\n" ++
-  "  v4 = call fn0(v0, v2, v1, v3)\n" ++
+  "  v4 = call fn0(v0, v90, v2, v1, v3)\n" ++
   "  return\n" ++
   "}\n"
 
 def clifCoreFn : String :=
   "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig1 = (i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
+  "    sig1 = (i64, i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_launch sig0\n" ++
   "    fn1 = %cl_cublas_sgemm_strided_batched sig1\n" ++
   "block0(v0: i64):\n" ++
-  "  v10 = load.i64 notrap aligned v0+0x28\n" ++  -- seq_len
+  "  v90 = iconst.i64 0x10\n" ++
+  "  v10 = load.i64 notrap aligned v0+" ++ toString SEQ_LEN_OFF ++ "\n" ++  -- seq_len
   "  v11 = ireduce.i32 v10\n" ++
   "  v12 = load.i32 notrap aligned v0+" ++ toString BUF_Q_OFF ++ "\n" ++
   "  v13 = load.i32 notrap aligned v0+" ++ toString BUF_K_OFF ++ "\n" ++
@@ -316,7 +322,7 @@ def clifCoreFn : String :=
   "  v25 = iconst.i32 0x3e000000\n" ++            -- 0.125
   "  v26 = iconst.i32 0x3f800000\n" ++            -- 1.0
   -- scores = 0.125 * K @ q, batched over heads
-  "  v30 = call fn1(v0, v19, v20, v11, v19, v21, v25, v13, v24, v12, v23, v20, v15, v10, v22)\n" ++
+  "  v30 = call fn1(v0, v90, v19, v20, v11, v19, v21, v25, v13, v24, v12, v23, v20, v15, v10, v22)\n" ++
   -- probs = softmax(scores)
   "  v31 = iconst.i64 " ++ toString PTX_SOURCE_OFF ++ "\n" ++
   "  v32 = iconst.i32 3\n" ++
@@ -325,30 +331,31 @@ def clifCoreFn : String :=
   "  store notrap aligned v15, v0+" ++ toString BIND_DESC_OFF ++ "\n" ++
   "  store notrap aligned v18, v0+" ++ toString (BIND_DESC_OFF + 4) ++ "\n" ++
   "  store notrap aligned v16, v0+" ++ toString (BIND_DESC_OFF + 8) ++ "\n" ++
-  "  v35 = call fn0(v0, v31, v32, v33, v22, v19, v19, v34, v19, v19)\n" ++
+  "  v35 = call fn0(v0, v90, v31, v32, v33, v22, v19, v19, v34, v19, v19)\n" ++
   -- out = V^T @ probs, batched over heads
-  "  v36 = call fn1(v0, v20, v20, v21, v19, v11, v26, v14, v24, v16, v10, v20, v17, v23, v22)\n" ++
+  "  v36 = call fn1(v0, v90, v20, v20, v21, v19, v11, v26, v14, v24, v16, v10, v20, v17, v23, v22)\n" ++
   "  return\n" ++
   "}\n"
 
 def clifFinalizeFn : String :=
   "function u0:4(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64) -> i32 system_v\n" ++
+  "    sig0 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig1 = (i64, i64) -> i32 system_v\n" ++
   "    fn0 = %cl_cuda_download_ptr sig0\n" ++
   "    fn1 = %cl_cuda_sync sig1\n" ++
   "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v2 = load.i64 notrap aligned v0+0x20\n" ++
+  "  v1 = load.i64 notrap aligned v0+0x28\n" ++
+  "  v2 = load.i64 notrap aligned v0+0x30\n" ++
+  "  v90 = iconst.i64 0x10\n" ++
   "  v3 = load.i32 notrap aligned v0+" ++ toString BUF_OUT_OFF ++ "\n" ++
-  "  v4 = call fn1(v0)\n" ++
+  "  v4 = call fn1(v0, v90)\n" ++
   "  v5 = iconst.i64 0\n" ++
   "  v6 = icmp eq v2, v5\n" ++
   "  brif v6, block1, block2\n" ++
   "block1:\n" ++
   "  return\n" ++
   "block2:\n" ++
-  "  v7 = call fn0(v0, v3, v1, v2)\n" ++
+  "  v7 = call fn0(v0, v90, v3, v1, v2)\n" ++
   "  return\n" ++
   "}\n"
 

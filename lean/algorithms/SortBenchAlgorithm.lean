@@ -157,9 +157,9 @@ def emitRadixPass (ptr src dst n shift : Val) (isSignedPass : Bool) : IRBuilder 
 
 def mainFn : IRBuilder Unit := do
   let ptr ← entryBlock
-  let dataPtr ← load64 =<< absAddr ptr 0x08
-  let dataLen ← load64 =<< absAddr ptr 0x10
-  let outPtr  ← load64 =<< absAddr ptr 0x18
+  let dataPtr ← load64 =<< absAddr ptr 0x18
+  let dataLen ← load64 =<< absAddr ptr 0x20
+  let outPtr  ← load64 =<< absAddr ptr 0x28
   -- out_len at 0x20 — caller provides 2*data_len, second half is temp
   let n ← ushr dataLen =<< iconst64 2
   let tempPtr ← iadd outPtr dataLen  -- second half of out buffer

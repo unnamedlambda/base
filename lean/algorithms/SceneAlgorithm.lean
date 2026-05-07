@@ -989,9 +989,9 @@ def clifIrSource (spec : SceneSpec) : String := buildProgram do
   let cuda ← declareCudaFFI
 
   let ptr ← entryBlock
-  callVoid cuda.fnInit [ptr]
+  cudaInit cuda ptr
   let dataSz ← iconst64 (pixelBytes spec)
-  let bufId ← call cuda.fnCreateBuffer [ptr, dataSz]
+  let bufId ← cudaCreateBuffer cuda ptr dataSz
   let ptxOffV ← iconst64 ptxOff
   let nBufs ← iconst32 1
   let bindOffV ← iconst64 bindOff
@@ -1000,11 +1000,10 @@ def clifIrSource (spec : SceneSpec) : String := buildProgram do
   let one32 ← iconst32 1
   let blk16 ← iconst32 16
   let _ := bufId
-  let _ ← call cuda.fnLaunch
-    [ptr, ptxOffV, nBufs, bindOffV, gridX, gridY, one32, blk16, blk16, one32]
+  let _ ← cudaLaunch cuda ptr ptxOffV nBufs bindOffV gridX gridY one32 blk16 blk16 one32
   let pxOffV ← iconst64 pixelsOff
-  let _ ← call cuda.fnDownload [ptr, bufId, pxOffV, dataSz]
-  callVoid cuda.fnCleanup [ptr]
+  let _ ← cudaDownload cuda ptr bufId pxOffV dataSz
+  cudaCleanup cuda ptr
   let total ← iconst64 (54 + pixelBytes spec)
   let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
   ret

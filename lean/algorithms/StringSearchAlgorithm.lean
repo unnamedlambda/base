@@ -56,7 +56,7 @@ def clifSearchFn : String :=
   "    fn1 = %cl_file_write sig1\n" ++
   "\n" ++
   "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x08\n" ++    -- data_ptr (payload)
+  "    v1 = load.i64 notrap aligned v0+0x18\n" ++    -- data_ptr (payload)
   "    v600 = iconst.i64 0\n" ++
   "    jump block1(v600)\n" ++
   "\n" ++

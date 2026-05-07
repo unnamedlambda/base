@@ -18,7 +18,7 @@ namespace CudaSaxpyBench
   N is derived from data_len: N = data_len / 8 (two f32 arrays)
 
   Memory layout (shared memory):
-    0x0000  RESERVED        (40 bytes, runtime-managed)
+    0x0000  RESERVED        (56 bytes, runtime-managed RuntimeHeader)
     0x0100  PTX_SOURCE      (null-terminated PTX source, 4096 bytes)
     0x1100  BIND_DESC       (8 bytes: [buf_id=0, buf_id=1] as 2 x i32)
 
@@ -87,10 +87,10 @@ def clifNoopFn : String :=
 -- fn1: CUDA SAXPY orchestrator
 def clifCudaFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++                              -- cuda_init / cuda_cleanup
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++                  -- cuda_create_buffer
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++        -- cuda_upload_ptr / cuda_download_ptr
-  "    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++ -- cuda_launch
+  "    sig0 = (i64, i64) system_v\n" ++                              -- cuda_init / cuda_cleanup
+  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++                  -- cuda_create_buffer
+  "    sig2 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++        -- cuda_upload_ptr / cuda_download_ptr
+  "    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++ -- cuda_launch
   "\n" ++
   "    fn0 = %cl_cuda_init sig0\n" ++
   "    fn1 = %cl_cuda_create_buffer sig1\n" ++
@@ -100,21 +100,22 @@ def clifCudaFn : String :=
   "    fn5 = %cl_cuda_cleanup sig0\n" ++
   "\n" ++
   "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x08\n" ++               -- data_ptr
-  "    v2 = load.i64 notrap aligned v0+0x10\n" ++               -- data_len
-  "    v3 = load.i64 notrap aligned v0+0x18\n" ++               -- out_ptr
+  "    v1 = load.i64 notrap aligned v0+0x18\n" ++               -- data_ptr
+  "    v2 = load.i64 notrap aligned v0+0x20\n" ++               -- data_len
+  "    v3 = load.i64 notrap aligned v0+0x28\n" ++               -- out_ptr
+  "    v90 = iconst.i64 0x10\n" ++                              -- ctx_off
   -- CUDA init
-  "    call fn0(v0)\n" ++
+  "    call fn0(v0, v90)\n" ++
   -- Compute: N = data_len / 8, buf_size = N * 4 = data_len / 2
   "    v4 = ushr_imm v2, 1\n" ++                                -- buf_size = data_len / 2
   -- Create 2 device buffers (x and y)
-  "    v5 = call fn1(v0, v4)\n" ++                              -- x_buf
-  "    v6 = call fn1(v0, v4)\n" ++                              -- y_buf
+  "    v5 = call fn1(v0, v90, v4)\n" ++                         -- x_buf
+  "    v6 = call fn1(v0, v90, v4)\n" ++                         -- y_buf
   -- Upload x from data_ptr
-  "    v7 = call fn2(v0, v5, v1, v4)\n" ++
+  "    v7 = call fn2(v0, v90, v5, v1, v4)\n" ++
   -- Upload y from data_ptr + buf_size
   "    v8 = iadd v1, v4\n" ++                                   -- data_ptr + buf_size
-  "    v9 = call fn2(v0, v6, v8, v4)\n" ++
+  "    v9 = call fn2(v0, v90, v6, v8, v4)\n" ++
   -- Compute grid: ceil(N / 256) = (N + 255) / 256
   -- N = buf_size / 4
   "    v10 = ushr_imm v4, 2\n" ++                               -- N
@@ -128,11 +129,11 @@ def clifCudaFn : String :=
   "    v17 = iconst.i64 256\n" ++                                -- PTX_SOURCE_OFF
   "    v18 = iconst.i32 2\n" ++                                  -- 2 buffer bindings
   "    v19 = iconst.i64 4352\n" ++                               -- BIND_DESC_OFF (0x1100)
-  "    v20 = call fn4(v0, v17, v18, v19, v15, v16, v16, v14, v16, v16)\n" ++
+  "    v20 = call fn4(v0, v90, v17, v18, v19, v15, v16, v16, v14, v16, v16)\n" ++
   -- Download y result to out_ptr
-  "    v21 = call fn3(v0, v6, v3, v4)\n" ++
+  "    v21 = call fn3(v0, v90, v6, v3, v4)\n" ++
   -- CUDA cleanup
-  "    call fn5(v0)\n" ++
+  "    call fn5(v0, v90)\n" ++
   "    return\n" ++
   "}\n"
 

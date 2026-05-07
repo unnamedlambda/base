@@ -599,7 +599,7 @@ def emitCudaLaunchAdd (cuda : CudaSetup) (ptr lhsBuf rhsBuf outBuf : Val) : IRBu
   fldStore32At ptr f.bindDesc 0 lhsBuf
   fldStore32At ptr f.bindDesc 4 rhsBuf
   fldStore32At ptr f.bindDesc 8 outBuf
-  let _ ← call cuda.fnLaunch [ptr, ptxOff, nBufs, bindOff, one32, one32, one32, one32, one32, one32]
+  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff one32 one32 one32 one32 one32 one32
   pure ()
 
 def emitCudaLaunchArrayScale (cuda : CudaSetup) (ptr inBuf paramBuf outBuf count : Val) : IRBuilder Unit := do
@@ -611,7 +611,7 @@ def emitCudaLaunchArrayScale (cuda : CudaSetup) (ptr inBuf paramBuf outBuf count
   fldStore32At ptr f.bindDesc 0 inBuf
   fldStore32At ptr f.bindDesc 4 paramBuf
   fldStore32At ptr f.bindDesc 8 outBuf
-  let _ ← call cuda.fnLaunch [ptr, ptxOff, nBufs, bindOff, count32, one32, one32, one32, one32, one32]
+  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
   pure ()
 
 def emitCudaLaunchArrayAdd (cuda : CudaSetup) (ptr lhsBuf rhsBuf paramBuf outBuf count : Val) : IRBuilder Unit := do
@@ -624,14 +624,14 @@ def emitCudaLaunchArrayAdd (cuda : CudaSetup) (ptr lhsBuf rhsBuf paramBuf outBuf
   fldStore32At ptr f.bindDesc 4 rhsBuf
   fldStore32At ptr f.bindDesc 8 paramBuf
   fldStore32At ptr f.bindDesc 12 outBuf
-  let _ ← call cuda.fnLaunch [ptr, ptxOff, nBufs, bindOff, count32, one32, one32, one32, one32, one32]
+  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
   pure ()
 
 def emitUploadLiteralToBuf (cuda : CudaSetup) (ptr bufId value : Val) : IRBuilder Unit := do
   fldStore ptr f.firstVal value
   let size8 ← iconst64 8
   let valOff ← fldOffset f.firstVal
-  let _ ← call cuda.fnUpload [ptr, bufId, valOff, size8]
+  let _ ← cudaUpload cuda ptr bufId valOff size8
   pure ()
 
 def emitAccFromLiteral (cuda : CudaSetup) (ptr value : Val) : IRBuilder Unit := do
@@ -785,7 +785,7 @@ def emitDownloadAccToResult (cuda : CudaSetup) (ptr : Val) : IRBuilder Val := do
   let accBuf ← ireduce32 accBuf64
   let size8 ← iconst64 8
   let outOff ← fldOffset f.result
-  let _ ← call cuda.fnDownload [ptr, accBuf, outOff, size8]
+  let _ ← cudaDownload cuda ptr accBuf outOff size8
   fldLoad ptr f.result
 
 def emitScalarTermValue (cuda : CudaSetup) (ptr start len : Val) : IRBuilder (Val × Val) := do
@@ -1573,14 +1573,14 @@ def emitUploadInputArrayToVarBuffer (cuda : CudaSetup) (ptr varIdx start len : V
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayLhsData
   let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
-  let _ ← call cuda.fnUpload [ptr, varBuf, dataOff, bytes]
+  let _ ← cudaUpload cuda ptr varBuf dataOff bytes
   pure ()
 
 def emitUploadOutDataToVarBuffer (cuda : CudaSetup) (ptr varIdx : Val) : IRBuilder Unit := do
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayOutData
   let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
-  let _ ← call cuda.fnUpload [ptr, varBuf, dataOff, bytes]
+  let _ ← cudaUpload cuda ptr varBuf dataOff bytes
   pure ()
 
 def emitScaleInputArrayToOutput (cuda : CudaSetup) (ptr arrStart len scalar : Val) : IRBuilder Val := do
@@ -1594,10 +1594,10 @@ def emitScaleInputArrayToOutput (cuda : CudaSetup) (ptr arrStart len scalar : Va
   let paramBuf ← ireduce32 (← fldLoad ptr f.tmpArrayParamBuf)
   let outBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufOut)
   let paramBytes ← iconst64 16
-  let _ ← call cuda.fnUpload [ptr, lhsBuf, lhsOff, bytes]
-  let _ ← call cuda.fnUpload [ptr, paramBuf, paramOff, paramBytes]
+  let _ ← cudaUpload cuda ptr lhsBuf lhsOff bytes
+  let _ ← cudaUpload cuda ptr paramBuf paramOff paramBytes
   emitCudaLaunchArrayScale cuda ptr lhsBuf paramBuf outBuf count
-  let _ ← call cuda.fnDownload [ptr, outBuf, outOff, bytes]
+  let _ ← cudaDownload cuda ptr outBuf outOff bytes
   emitFormatInputArrayShapeFromOutData ptr arrStart len count
 
 def emitAddInputArraysToOutput (cuda : CudaSetup) (ptr lhsStart rhsStart len : Val) : IRBuilder Val := do
@@ -1622,11 +1622,11 @@ def emitAddInputArraysToOutput (cuda : CudaSetup) (ptr lhsStart rhsStart len : V
   let paramBuf ← ireduce32 (← fldLoad ptr f.tmpArrayParamBuf)
   let outBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufOut)
   let paramBytes ← iconst64 16
-  let _ ← call cuda.fnUpload [ptr, lhsBuf, lhsOff, bytes]
-  let _ ← call cuda.fnUpload [ptr, rhsBuf, rhsOff, bytes]
-  let _ ← call cuda.fnUpload [ptr, paramBuf, paramOff, paramBytes]
+  let _ ← cudaUpload cuda ptr lhsBuf lhsOff bytes
+  let _ ← cudaUpload cuda ptr rhsBuf rhsOff bytes
+  let _ ← cudaUpload cuda ptr paramBuf paramOff paramBytes
   emitCudaLaunchArrayAdd cuda ptr lhsBuf rhsBuf paramBuf outBuf count
-  let _ ← call cuda.fnDownload [ptr, outBuf, outOff, bytes]
+  let _ ← cudaDownload cuda ptr outBuf outOff bytes
   let outLen ← emitFormatInputArrayShapeFromOutData ptr lhsStart len count
   jump done.ref [outLen]
 
@@ -2165,15 +2165,15 @@ def clifIrSource : String := buildProgram do
   let zero ← iconst64 0
   let one ← iconst64 1
 
-  callVoid cuda.fnInit [ptr]
-  let zeroBuf ← call cuda.fnCreateBuffer [ptr, size8]
-  let litBuf ← call cuda.fnCreateBuffer [ptr, size8]
-  let accBuf ← call cuda.fnCreateBuffer [ptr, size8]
-  let outBuf ← call cuda.fnCreateBuffer [ptr, size8]
-  let tmpArrayBufA ← call cuda.fnCreateBuffer [ptr, arrayBytes]
-  let tmpArrayBufB ← call cuda.fnCreateBuffer [ptr, arrayBytes]
-  let tmpArrayBufOut ← call cuda.fnCreateBuffer [ptr, arrayBytes]
-  let tmpArrayParamBuf ← call cuda.fnCreateBuffer [ptr, paramBytes]
+  cudaInit cuda ptr
+  let zeroBuf ← cudaCreateBuffer cuda ptr size8
+  let litBuf ← cudaCreateBuffer cuda ptr size8
+  let accBuf ← cudaCreateBuffer cuda ptr size8
+  let outBuf ← cudaCreateBuffer cuda ptr size8
+  let tmpArrayBufA ← cudaCreateBuffer cuda ptr arrayBytes
+  let tmpArrayBufB ← cudaCreateBuffer cuda ptr arrayBytes
+  let tmpArrayBufOut ← cudaCreateBuffer cuda ptr arrayBytes
+  let tmpArrayParamBuf ← cudaCreateBuffer cuda ptr paramBytes
   fldStore ptr f.zeroBuf (← sextend64 zeroBuf)
   fldStore ptr f.litBuf (← sextend64 litBuf)
   fldStore ptr f.accBuf (← sextend64 accBuf)
@@ -2195,7 +2195,7 @@ def clifIrSource : String := buildProgram do
   brif doneSetup afterSetup.ref [] setupBody.ref []
 
   startBlock setupBody
-  let vbuf ← call cuda.fnCreateBuffer [ptr, arrayBytes]
+  let vbuf ← cudaCreateBuffer cuda ptr arrayBytes
   storeVarBufId ptr vi vbuf
   storeVarPresent ptr vi zero
   storeVarKind ptr vi zero
@@ -2249,7 +2249,7 @@ def clifIrSource : String := buildProgram do
   jump loopHdr.ref []
 
   startBlock done
-  callVoid cuda.fnCleanup [ptr]
+  cudaCleanup cuda ptr
   ret
 
 def payloads : List UInt8 :=

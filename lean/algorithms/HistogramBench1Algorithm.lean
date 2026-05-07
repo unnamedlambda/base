@@ -59,7 +59,7 @@ def clifOrchestratorFn : String :=
   "    fn1 = %cl_file_write sig1\n" ++
   "\n" ++
   "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x08\n" ++
+  "    v1 = load.i64 notrap aligned v0+0x18\n" ++
   "    v200 = iconst.i64 0\n" ++
   "    jump block1(v200)\n" ++
   "\n" ++

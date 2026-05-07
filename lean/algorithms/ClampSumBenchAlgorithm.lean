@@ -26,9 +26,9 @@ def clifNoopFn : String :=
 def clifClampSumFn : String :=
   "function u0:1(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
-  "  v500 = load.i64 notrap aligned v0+0x08\n" ++   -- data_ptr
-  "  v501 = load.i64 notrap aligned v0+0x10\n" ++   -- data_len (bytes)
-  "  v502 = load.i64 notrap aligned v0+0x18\n" ++   -- out_ptr
+  "  v500 = load.i64 notrap aligned v0+0x18\n" ++   -- data_ptr
+  "  v501 = load.i64 notrap aligned v0+0x20\n" ++   -- data_len (bytes)
+  "  v502 = load.i64 notrap aligned v0+0x28\n" ++   -- out_ptr
   "  v2 = ushr_imm v501, 2\n" ++                    -- n = data_len / 4
   "  v7 = ushr_imm v2, 4\n" ++                      -- n/16 (main loop iters)
   "  v8 = ishl_imm v7, 6\n" ++                      -- n/16 * 64 (main loop byte bound)

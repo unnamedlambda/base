@@ -44,8 +44,8 @@ def clifMatmulFn : String :=
   "function u0:1(i64) system_v {\n" ++
   "block0(v0: i64):\n" ++
   -- Load data_ptr and out_ptr from reserved region
-  "  v500 = load.i64 notrap aligned v0+0x08\n" ++  -- data_ptr
-  "  v501 = load.i64 notrap aligned v0+0x18\n" ++  -- out_ptr
+  "  v500 = load.i64 notrap aligned v0+0x18\n" ++  -- data_ptr
+  "  v501 = load.i64 notrap aligned v0+0x28\n" ++  -- out_ptr
   -- Parse M, K, N from payload header
   "  v1 = load.i32 notrap aligned v500\n" ++        -- M
   "  v2 = load.i32 notrap aligned v500+4\n" ++      -- K

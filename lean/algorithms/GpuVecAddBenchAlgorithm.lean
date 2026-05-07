@@ -56,12 +56,12 @@ def clifNoopFn : String :=
 -- fn1: GPU VecAdd orchestrator
 def clifGpuFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++                              -- gpu_init / gpu_cleanup
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++                  -- gpu_create_buffer
-  "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++        -- gpu_create_pipeline
-  "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++        -- gpu_upload_ptr
-  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++   -- gpu_dispatch
-  "    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v\n" ++   -- gpu_download_ptr(ptr, buf_id, buf_offset, dst_ptr, size)
+  "    sig0 = (i64, i64) system_v\n" ++                              -- gpu_init / gpu_cleanup
+  "    sig1 = (i64, i64, i64) -> i32 system_v\n" ++                  -- gpu_create_buffer
+  "    sig2 = (i64, i64, i64, i64, i32) -> i32 system_v\n" ++        -- gpu_create_pipeline
+  "    sig3 = (i64, i64, i32, i64, i64) -> i32 system_v\n" ++        -- gpu_upload_ptr
+  "    sig4 = (i64, i64, i32, i32, i32, i32) -> i32 system_v\n" ++   -- gpu_dispatch
+  "    sig5 = (i64, i64, i32, i64, i64, i64) -> i32 system_v\n" ++   -- gpu_download_ptr(ptr, ctx_off, buf_id, buf_offset, dst_ptr, size)
   "\n" ++
   "    fn0 = %cl_gpu_init sig0\n" ++
   "    fn1 = %cl_gpu_create_buffer sig1\n" ++
@@ -72,33 +72,34 @@ def clifGpuFn : String :=
   "    fn6 = %cl_gpu_cleanup sig0\n" ++
   "\n" ++
   "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x08\n" ++               -- data_ptr
-  "    v2 = load.i64 notrap aligned v0+0x10\n" ++               -- data_len
-  "    v3 = load.i64 notrap aligned v0+0x18\n" ++               -- out_ptr
+  "    v1 = load.i64 notrap aligned v0+0x18\n" ++               -- data_ptr
+  "    v2 = load.i64 notrap aligned v0+0x20\n" ++               -- data_len
+  "    v3 = load.i64 notrap aligned v0+0x28\n" ++               -- out_ptr
+  "    v90 = iconst.i64 8\n" ++                                  -- ctx_off (wgpu context at 0x08)
   -- GPU init
-  "    call fn0(v0)\n" ++
+  "    call fn0(v0, v90)\n" ++
   -- Compute: n = data_len / 8, workgroups = (n+63)/64
   "    v4 = ushr_imm v2, 3\n" ++                                -- n = data_len / 8
   "    v5 = iadd_imm v4, 63\n" ++
   "    v6 = ushr_imm v5, 6\n" ++                                -- workgroups = (n+63)/64
   "    v7 = ireduce.i32 v6\n" ++
   -- Create buffer (size = data_len)
-  "    v10 = call fn1(v0, v2)\n" ++                              -- buf_id
+  "    v10 = call fn1(v0, v90, v2)\n" ++                         -- buf_id
   -- Upload from payload
-  "    v11 = call fn3(v0, v10, v1, v2)\n" ++
+  "    v11 = call fn3(v0, v90, v10, v1, v2)\n" ++
   -- Create pipeline
   "    v12 = iconst.i64 256\n" ++                                -- WGSL_SHADER_OFF
   "    v13 = iconst.i64 4352\n" ++                               -- BIND_DESC_OFF (0x1100)
   "    v14 = iconst.i32 1\n" ++
-  "    v15 = call fn2(v0, v12, v13, v14)\n" ++
+  "    v15 = call fn2(v0, v90, v12, v13, v14)\n" ++
   -- Dispatch
-  "    v16 = call fn4(v0, v15, v7, v14, v14)\n" ++
+  "    v16 = call fn4(v0, v90, v15, v7, v14, v14)\n" ++
   -- Download first n floats to out_ptr (buf_offset=0)
   "    v17 = ishl_imm v4, 2\n" ++                               -- n * 4 bytes
   "    v18 = iconst.i64 0\n" ++                                  -- buf_offset = 0
-  "    v19 = call fn5(v0, v10, v18, v3, v17)\n" ++
+  "    v19 = call fn5(v0, v90, v10, v18, v3, v17)\n" ++
   -- GPU cleanup
-  "    call fn6(v0)\n" ++
+  "    call fn6(v0, v90)\n" ++
   "    return\n" ++
   "}\n"
 
