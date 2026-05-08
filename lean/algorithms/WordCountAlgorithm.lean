@@ -1,36 +1,16 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace WordCountBench
 
 /-
-  Word frequency counting benchmark — Cranelift JIT version.
-
-  Payload (via execute data arg): "input_path\0output_path\0"
-
-  Memory layout (shared memory):
-    0x0000  RESERVED        (40 bytes, runtime-managed: ctx_ptr, data/out ptrs)
-    0x0038  CURRENT_KEY     (8 bytes, scratch for word u64 / get_entry key)
-    0x0040  NEW_VALUE       (8 bytes, scratch for count u64)
-    0x0100  INPUT_PATH      (256 bytes, copied from payload by CLIF)
-    0x0200  OUTPUT_PATH     (256 bytes, copied from payload by CLIF)
-    0x0350  RESULT_SLOT     (8 bytes, lookup/get_entry value)
-    0x4000  OUTPUT_BUF      (65536 bytes, formatted output)
-    0x14000 INPUT_DATA      (variable, populated by FileRead)
-
-  Single CLIF function:
-    1. Copy input/output paths from payload into shared memory
-    2. cl_file_read → gets bytes_read (used as file_size)
-    3. Parse words, ht_increment for each
-    4. Format phase: ht_count + ht_get_entry → word\tcount\n
-    5. cl_file_write result
-
-  Uses HT primitives: ht_create, ht_increment, ht_count, ht_get_entry.
-  HT context pointer slot lives at offset 0x00 and is initialized by CLIF.
+  Word frequency counting: parse words, ht_increment, format word\tcount\n output.
+  Payload: "input_path\0output_path\0"
+  HT context at offset 0x00, colocated ht_create/ht_increment/ht_count/ht_get_entry.
 -/
 
 def CURRENT_KEY     : Nat := 0x0038
@@ -40,251 +20,288 @@ def OUTPUT_PATH_OFF : Nat := 0x0200
 def RESULT_SLOT     : Nat := 0x0350
 def OUTPUT_BUF      : Nat := 0x4000
 def INPUT_DATA      : Nat := 0x14000
-def MAX_TEXT_BYTES   : Nat := 512 * 1024 * 1024
+def MAX_TEXT_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_TEXT_BYTES
 def TIMEOUT_MS      : Nat := 300000
 
--- fn0: noop
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+structure WcCtx where
+  ptr       : Val
+  dataPtr   : Val
+  fnRead    : FnRef
+  fnWrite   : FnRef
+  fnHtInit  : FnRef
+  fnHtClean : FnRef
+  fnCreate  : FnRef
+  fnIncr    : FnRef
+  fnCount   : FnRef
+  fnGetEntry: FnRef
+  zero      : Val
+  -- blocks shared across sub-functions
+  cpIn      : DeclaredBlock
+  cpOut1    : DeclaredBlock
+  cpOut     : DeclaredBlock
+  readBlk   : DeclaredBlock
+  skipWS    : DeclaredBlock
+  chkByte   : DeclaredBlock
+  readWord  : DeclaredBlock
+  readByte  : DeclaredBlock
+  wordDone  : DeclaredBlock
+  accumByte : DeclaredBlock
+  fmtStart  : DeclaredBlock
+  fmtLoop   : DeclaredBlock
+  getEntry  : DeclaredBlock
+  unpackW   : DeclaredBlock
+  extractB  : DeclaredBlock
+  writeTab  : DeclaredBlock
+  writeByte : DeclaredBlock
+  itoaFind  : DeclaredBlock
+  itoaWr    : DeclaredBlock
+  writeNL   : DeclaredBlock
+  writeFile : DeclaredBlock
 
--- fn1: Word count orchestrator
-def clifWcFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "    sig2 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "    sig3 = (i64) -> i32 system_v\n" ++
-  "    sig4 = (i64, i64, i32, i64) -> i64 system_v\n" ++
-  "    sig5 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "\n" ++
-  "    fn0 = %cl_ht_init sig0\n" ++
-  "    fn1 = %cl_ht_cleanup sig0\n" ++
-  "    fn2 = %cl_file_read sig1\n" ++
-  "    fn3 = %cl_file_write sig2\n" ++
-  "    fn4 = colocated %ht_create sig3\n" ++
-  "    fn5 = colocated %ht_increment sig4\n" ++
-  "    fn6 = colocated %ht_count sig3\n" ++
-  "    fn7 = colocated %ht_get_entry sig5\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x18\n" ++    -- data_ptr (payload)
-  "    v190 = iadd_imm v0, 0\n" ++
-  "    call fn0(v190)\n" ++
-  "    v600 = iconst.i64 0\n" ++
-  "    jump block1(v600)\n" ++
-  "\n" ++
-  -- Copy input path from payload to shared memory at INPUT_PATH_OFF (0x0100)
-  "block1(v201: i64):\n" ++
-  "    v202 = iadd v1, v201\n" ++
-  "    v203 = uload8.i64 notrap v202\n" ++
-  "    v204 = iadd_imm v0, 256\n" ++                 -- INPUT_PATH_OFF
-  "    v205 = iadd v204, v201\n" ++
-  "    istore8 v203, v205\n" ++
-  "    v206 = icmp_imm eq v203, 0\n" ++
-  "    v207 = iadd_imm v201, 1\n" ++
-  "    brif v206, block2(v207), block1(v207)\n" ++
-  "\n" ++
-  -- Copy output path from payload to shared memory at OUTPUT_PATH_OFF (0x0200)
-  "block2(v210: i64):\n" ++
-  "    v211 = iconst.i64 0\n" ++
-  "    jump block3(v210, v211)\n" ++
-  "\n" ++
-  "block3(v220: i64, v221: i64):\n" ++
-  "    v222 = iadd v1, v220\n" ++
-  "    v223 = uload8.i64 notrap v222\n" ++
-  "    v224 = iadd_imm v0, 512\n" ++                 -- OUTPUT_PATH_OFF
-  "    v225 = iadd v224, v221\n" ++
-  "    istore8 v223, v225\n" ++
-  "    v226 = icmp_imm eq v223, 0\n" ++
-  "    v227 = iadd_imm v220, 1\n" ++
-  "    v228 = iadd_imm v221, 1\n" ++
-  "    brif v226, block4, block3(v227, v228)\n" ++
-  "\n" ++
-  -- Read text file into shared memory, then setup for parse
-  "block4:\n" ++
-  "    v3 = iconst.i64 256\n" ++                     -- INPUT_PATH_OFF
-  "    v4 = iconst.i64 81920\n" ++                   -- INPUT_DATA (0x14000)
-  "    v5 = iconst.i64 0\n" ++
-  "    v700 = iconst.i64 0\n" ++
-  "    v7 = call fn2(v0, v3, v4, v5, v700)\n" ++    -- bytes_read = file_size
-  -- Create HT
-  "    v2 = load.i64 v0\n" ++                        -- HT context pointer (slot 0)
-  "    v800 = call fn4(v2)\n" ++                     -- ht_create(ctx)
-  -- Setup constants
-  "    v8 = iconst.i64 0\n" ++                       -- zero
-  "    v9 = iconst.i64 32\n" ++                      -- space
-  "    v10 = iconst.i64 8\n" ++                      -- max word bytes / shift
-  "    v11 = iconst.i64 1\n" ++
-  "    v12 = iconst.i64 56\n" ++                     -- CURRENT_KEY (0x38)
-  "    v13 = iconst.i32 8\n" ++                      -- key_len
-  "    v14 = iconst.i64 0xFF\n" ++                   -- byte mask
-  "    v15 = iconst.i64 9\n" ++                      -- tab
-  "    v16 = iconst.i64 10\n" ++                     -- newline / divisor 10
-  "    v17 = iconst.i64 48\n" ++                     -- '0'
-  "    v18 = iconst.i64 16384\n" ++                  -- OUTPUT_BUF (0x4000)
-  "    v19 = iconst.i64 848\n" ++                    -- RESULT_SLOT (0x0350)
-  "    jump block5(v8, v2)\n" ++
-  "\n" ++
-  -- === PARSE PHASE ===
-  -- block5: skip whitespace (pos, ctx)
-  "block5(v20: i64, v21: i64):\n" ++
-  "    v22 = icmp sge v20, v7\n" ++                  -- pos >= file_size?
-  "    brif v22, block20(v21), block6(v20, v21)\n" ++
-  "\n" ++
-  -- block6: check byte
-  "block6(v23: i64, v24: i64):\n" ++
-  "    v25 = iadd v0, v4\n" ++
-  "    v26 = iadd v25, v23\n" ++
-  "    v27 = uload8.i64 v26\n" ++
-  "    v28 = icmp ule v27, v9\n" ++                  -- <= space?
-  "    v29 = iadd_imm v23, 1\n" ++
-  "    brif v28, block5(v29, v24), block7(v23, v24, v8, v8)\n" ++
-  "\n" ++
-  -- block7: read word (pos, ctx, word_accum, byte_idx)
-  "block7(v30: i64, v31: i64, v32: i64, v33: i64):\n" ++
-  "    v34 = icmp sge v30, v7\n" ++                  -- pos >= file_size?
-  "    brif v34, block9(v30, v31, v32), block8(v30, v31, v32, v33)\n" ++
-  "\n" ++
-  -- block8: read byte
-  "block8(v35: i64, v36: i64, v37: i64, v38: i64):\n" ++
-  "    v39 = iadd v0, v4\n" ++
-  "    v40 = iadd v39, v35\n" ++
-  "    v41 = uload8.i64 v40\n" ++
-  "    v42 = icmp ule v41, v9\n" ++                  -- <= space?
-  "    brif v42, block9(v35, v36, v37), block10(v35, v36, v37, v38, v41)\n" ++
-  "\n" ++
-  -- block9: word done → ht_increment
-  "block9(v43: i64, v44: i64, v45: i64):\n" ++
-  "    v46 = iadd v0, v12\n" ++                      -- CURRENT_KEY addr
-  "    store.i64 v45, v46\n" ++
-  "    v47 = call fn5(v44, v46, v13, v11)\n" ++      -- ht_increment(ctx, key, 8, 1)
-  "    jump block5(v43, v44)\n" ++
-  "\n" ++
-  -- block10: accumulate byte
-  "block10(v50: i64, v51: i64, v52: i64, v53: i64, v54: i64):\n" ++
-  "    v55 = imul v53, v10\n" ++                     -- byte_idx * 8
-  "    v56 = ishl v54, v55\n" ++
-  "    v57 = bor v52, v56\n" ++
-  "    v58 = iadd_imm v50, 1\n" ++
-  "    v59 = iadd_imm v53, 1\n" ++
-  "    v60 = icmp sge v59, v10\n" ++                 -- >= 8 bytes?
-  "    brif v60, block9(v58, v51, v57), block7(v58, v51, v57, v59)\n" ++
-  "\n" ++
-  -- === FORMAT PHASE ===
-  -- block20: get entry count from HT
-  "block20(v80: i64):\n" ++
-  "    v81 = call fn6(v80)\n" ++                     -- ht_count(ctx)
-  "    v82 = uextend.i64 v81\n" ++
-  "    jump block21(v8, v18, v80, v82)\n" ++
-  "\n" ++
-  -- block21: format loop (idx, out_pos, ctx, total)
-  "block21(v83: i64, v84: i64, v85: i64, v86: i64):\n" ++
-  "    v87 = icmp sge v83, v86\n" ++                 -- idx >= total?
-  "    brif v87, block30(v84), block22(v83, v84, v85, v86)\n" ++
-  "\n" ++
-  -- block22: get entry, read key+val
-  "block22(v88: i64, v89: i64, v90: i64, v91: i64):\n" ++
-  "    v92 = ireduce.i32 v88\n" ++                   -- index as i32
-  "    v93 = iadd v0, v12\n" ++                      -- key_out (CURRENT_KEY)
-  "    v94 = iadd v0, v19\n" ++                      -- val_out (RESULT_SLOT)
-  "    v95 = call fn7(v90, v92, v93, v94)\n" ++      -- ht_get_entry
-  "    v96 = load.i64 v93\n" ++                      -- word u64
-  "    v97 = load.i64 v94\n" ++                      -- count u64
-  "    jump block23(v88, v89, v90, v91, v96, v97, v8)\n" ++
-  "\n" ++
-  -- block23: unpack word bytes (idx, out_pos, ctx, total, word, count, byte_idx)
-  "block23(v100: i64, v101: i64, v102: i64, v103: i64, v104: i64, v105: i64, v106: i64):\n" ++
-  "    v107 = icmp sge v106, v10\n" ++               -- >= 8?
-  "    brif v107, block25(v100, v101, v102, v103, v105), block24(v100, v101, v102, v103, v104, v105, v106)\n" ++
-  "\n" ++
-  -- block24: extract byte
-  "block24(v108: i64, v109: i64, v110: i64, v111: i64, v112: i64, v113: i64, v114: i64):\n" ++
-  "    v115 = imul v114, v10\n" ++                   -- byte_idx * 8
-  "    v116 = ushr v112, v115\n" ++
-  "    v117 = band v116, v14\n" ++                   -- & 0xFF
-  "    v118 = icmp eq v117, v8\n" ++                 -- == 0? (end of word)
-  "    brif v118, block25(v108, v109, v110, v111, v113), block26(v108, v109, v110, v111, v112, v113, v114, v117)\n" ++
-  "\n" ++
-  -- block25: write tab + start itoa (idx, out_pos, ctx, total, count)
-  "block25(v120: i64, v121: i64, v122: i64, v123: i64, v124: i64):\n" ++
-  "    v125 = iadd v0, v121\n" ++
-  "    istore8 v15, v125\n" ++                       -- tab
-  "    v126 = iadd_imm v121, 1\n" ++
-  "    jump block27(v120, v126, v122, v123, v124, v11)\n" ++
-  "\n" ++
-  -- block26: write byte
-  "block26(v127: i64, v128: i64, v129: i64, v130: i64, v131: i64, v132: i64, v133: i64, v134: i64):\n" ++
-  "    v135 = iadd v0, v128\n" ++
-  "    istore8 v134, v135\n" ++
-  "    v136 = iadd_imm v128, 1\n" ++
-  "    v137 = iadd_imm v133, 1\n" ++
-  "    jump block23(v127, v136, v129, v130, v131, v132, v137)\n" ++
-  "\n" ++
-  -- block27: find divisor (idx, out_pos, ctx, total, count, divisor)
-  "block27(v138: i64, v139: i64, v140: i64, v141: i64, v142: i64, v143: i64):\n" ++
-  "    v144 = imul v143, v16\n" ++                   -- divisor * 10
-  "    v145 = icmp ugt v144, v142\n" ++              -- > count?
-  "    brif v145, block28(v138, v139, v140, v141, v142, v143), block27(v138, v139, v140, v141, v142, v144)\n" ++
-  "\n" ++
-  -- block28: write digit (idx, out_pos, ctx, total, remainder, divisor)
-  "block28(v146: i64, v147: i64, v148: i64, v149: i64, v150: i64, v151: i64):\n" ++
-  "    v152 = udiv v150, v151\n" ++
-  "    v153 = iadd v152, v17\n" ++                   -- + '0'
-  "    v154 = iadd v0, v147\n" ++
-  "    istore8 v153, v154\n" ++
-  "    v155 = imul v152, v151\n" ++
-  "    v156 = isub v150, v155\n" ++                  -- remainder
-  "    v157 = udiv v151, v16\n" ++                   -- divisor / 10
-  "    v158 = iadd_imm v147, 1\n" ++
-  "    v159 = icmp eq v157, v8\n" ++                 -- done?
-  "    brif v159, block29(v146, v158, v148, v149), block28(v146, v158, v148, v149, v156, v157)\n" ++
-  "\n" ++
-  -- block29: write newline, next entry
-  "block29(v160: i64, v161: i64, v162: i64, v163: i64):\n" ++
-  "    v164 = iadd v0, v161\n" ++
-  "    istore8 v16, v164\n" ++                       -- newline
-  "    v165 = iadd_imm v161, 1\n" ++
-  "    v166 = iadd_imm v160, 1\n" ++
-  "    jump block21(v166, v165, v162, v163)\n" ++
-  "\n" ++
-  -- block30: null-terminate, then file_write
-  "block30(v167: i64):\n" ++
-  "    v168 = iconst.i32 0\n" ++
-  "    v169 = iadd v0, v167\n" ++
-  "    istore8 v168, v169\n" ++
-  -- Write result file
-  "    v170 = iconst.i64 512\n" ++                   -- OUTPUT_PATH_OFF
-  "    v171 = iconst.i64 16384\n" ++                 -- OUTPUT_BUF
-  "    v172 = iconst.i64 0\n" ++
-  "    v173 = iconst.i64 0\n" ++
-  "    v174 = call fn3(v0, v170, v171, v172, v173)\n" ++
-  "    call fn1(v190)\n" ++
-  "    return\n" ++
-  "}\n"
+def emitPathCopy (k : WcCtx) : IRBuilder Unit := do
+  jump k.cpIn.ref [k.zero]
 
-def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifWcFn
+  startBlock k.cpIn
+  let si1 := k.cpIn.param 0
+  let ch1  ← uload8_64 (← iadd k.dataPtr si1)
+  istore8 ch1 (← iadd (← absAddr k.ptr INPUT_PATH_OFF) si1)
+  let si1' ← iaddImm si1 1
+  brif (← icmpImm .eq ch1 0) k.cpOut1.ref [si1'] k.cpIn.ref [si1']
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
+  startBlock k.cpOut1
+  jump k.cpOut.ref [k.cpOut1.param 0, k.zero]
 
-def buildConfig : BaseConfig := {
-  cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0
-}
+  startBlock k.cpOut
+  let si3 := k.cpOut.param 0; let di3 := k.cpOut.param 1
+  let ch3  ← uload8_64 (← iadd k.dataPtr si3)
+  istore8 ch3 (← iadd (← absAddr k.ptr OUTPUT_PATH_OFF) di3)
+  let si3' ← iaddImm si3 1; let di3' ← iaddImm di3 1
+  brif (← icmpImm .eq ch3 0) k.readBlk.ref [] k.cpOut.ref [si3', di3']
 
-def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
+def emitParsePhase (k : WcCtx) (fileSize : Val) (inputBase : Val) : IRBuilder Unit := do
+  -- Skip whitespace
+  startBlock k.skipWS
+  let keyAddr  ← absAddr k.ptr CURRENT_KEY
+  let keyLen   ← iconst32 8
+  let one      ← iconst64 1
+  let eight    ← iconst64 8
+  let pos := k.skipWS.param 0; let ctx := k.skipWS.param 1
+  brif (← icmp .sge pos fileSize) k.fmtStart.ref [ctx] k.chkByte.ref [pos, ctx]
+
+  startBlock k.chkByte
+  let pos2 := k.chkByte.param 0; let ctx2 := k.chkByte.param 1
+  let byte2 ← uload8_64 (← iadd inputBase pos2)
+  let pos2' ← iaddImm pos2 1
+  brif (← icmp .ule byte2 (← iconst64 32))
+       k.skipWS.ref [pos2', ctx2]
+       k.readWord.ref [pos2, ctx2, k.zero, k.zero]
+
+  -- Read word, accumulate bytes into u64
+  startBlock k.readWord
+  let pos3 := k.readWord.param 0; let ctx3 := k.readWord.param 1
+  let wAcc  := k.readWord.param 2; let bIdx := k.readWord.param 3
+  brif (← icmp .sge pos3 fileSize) k.wordDone.ref [pos3, ctx3, wAcc]
+       k.readByte.ref [pos3, ctx3, wAcc, bIdx]
+
+  startBlock k.readByte
+  let pos4 := k.readByte.param 0; let ctx4 := k.readByte.param 1
+  let wAcc2 := k.readByte.param 2; let bIdx2 := k.readByte.param 3
+  let byte4 ← uload8_64 (← iadd inputBase pos4)
+  brif (← icmp .ule byte4 (← iconst64 32))
+       k.wordDone.ref [pos4, ctx4, wAcc2]
+       k.accumByte.ref [pos4, ctx4, wAcc2, bIdx2, byte4]
+
+  startBlock k.wordDone
+  let pos5 := k.wordDone.param 0; let ctx5 := k.wordDone.param 1
+  let wAcc3 := k.wordDone.param 2
+  storeI64 wAcc3 keyAddr
+  let _ ← call k.fnIncr [ctx5, keyAddr, keyLen, one]
+  jump k.skipWS.ref [pos5, ctx5]
+
+  startBlock k.accumByte
+  let pos6 := k.accumByte.param 0; let ctx6 := k.accumByte.param 1
+  let wAcc4 := k.accumByte.param 2; let bIdx3 := k.accumByte.param 3
+  let byte5 := k.accumByte.param 4
+  let shift ← imul bIdx3 eight
+  let shifted ← ishl byte5 shift
+  let wAcc4' ← bor wAcc4 shifted
+  let bIdx3' ← iaddImm bIdx3 1
+  -- After 8 bytes, flush word and continue (rare case, truncate)
+  brif (← icmp .sge bIdx3' eight)
+       k.wordDone.ref [← iaddImm pos6 1, ctx6, wAcc4']
+       k.readWord.ref [← iaddImm pos6 1, ctx6, wAcc4', bIdx3']
+
+def emitFormatPhase (k : WcCtx) : IRBuilder Unit := do
+  startBlock k.fmtStart
+  let eight   ← iconst64 8
+  let byteFF  ← iconst64 0xFF
+  let ten     ← iconst64 10
+  let one     ← iconst64 1
+  let keyAddr ← absAddr k.ptr CURRENT_KEY
+  let valAddr ← absAddr k.ptr RESULT_SLOT
+  let ctx7 := k.fmtStart.param 0
+  let cnt32 ← call k.fnCount [ctx7]
+  let cnt   ← uextend64 cnt32
+  jump k.fmtLoop.ref [k.zero, ← iconst64 OUTPUT_BUF, ctx7, cnt]
+
+  startBlock k.fmtLoop
+  let idx  := k.fmtLoop.param 0; let opos := k.fmtLoop.param 1
+  let ctx8 := k.fmtLoop.param 2; let tot  := k.fmtLoop.param 3
+  brif (← icmp .sge idx tot) k.writeFile.ref [opos] k.getEntry.ref [idx, opos, ctx8, tot]
+
+  startBlock k.getEntry
+  let idx2 := k.getEntry.param 0; let opos2 := k.getEntry.param 1
+  let ctx9  := k.getEntry.param 2; let tot2  := k.getEntry.param 3
+  let idx32 ← ireduce32 idx2
+  let _ ← call k.fnGetEntry [ctx9, idx32, keyAddr, valAddr]
+  let word  ← load64 keyAddr
+  let count ← load64 valAddr
+  jump k.unpackW.ref [idx2, opos2, ctx9, tot2, word, count, k.zero]
+
+  -- Unpack word bytes as ASCII
+  startBlock k.unpackW
+  let idx3  := k.unpackW.param 0; let opos3 := k.unpackW.param 1
+  let ctx10 := k.unpackW.param 2; let tot3  := k.unpackW.param 3
+  let word2 := k.unpackW.param 4; let cnt2  := k.unpackW.param 5
+  let bi    := k.unpackW.param 6
+  brif (← icmp .sge bi eight)
+       k.writeTab.ref [idx3, opos3, ctx10, tot3, cnt2]
+       k.extractB.ref [idx3, opos3, ctx10, tot3, word2, cnt2, bi]
+
+  startBlock k.extractB
+  let idx4  := k.extractB.param 0; let opos4 := k.extractB.param 1
+  let ctx11 := k.extractB.param 2; let tot4  := k.extractB.param 3
+  let word3 := k.extractB.param 4; let cnt3  := k.extractB.param 5
+  let bi2   := k.extractB.param 6
+  let shift2 ← imul bi2 eight
+  let b     ← band (← ushr word3 shift2) byteFF
+  brif (← icmpImm .eq b 0)
+       k.writeTab.ref [idx4, opos4, ctx11, tot4, cnt3]
+       k.writeByte.ref [idx4, opos4, ctx11, tot4, word3, cnt3, bi2, b]
+
+  startBlock k.writeByte
+  let idx5  := k.writeByte.param 0; let opos5 := k.writeByte.param 1
+  let ctx12 := k.writeByte.param 2; let tot5  := k.writeByte.param 3
+  let word4 := k.writeByte.param 4; let cnt4  := k.writeByte.param 5
+  let bi3   := k.writeByte.param 6; let b2    := k.writeByte.param 7
+  istore8 b2 (← iadd k.ptr opos5)
+  jump k.unpackW.ref [idx5, ← iaddImm opos5 1, ctx12, tot5, word4, cnt4, ← iaddImm bi3 1]
+
+  -- Write tab, then itoa count
+  startBlock k.writeTab
+  let idx6  := k.writeTab.param 0; let opos6 := k.writeTab.param 1
+  let ctx13 := k.writeTab.param 2; let tot6  := k.writeTab.param 3
+  let cnt5  := k.writeTab.param 4
+  istore8 (← iconst64 9) (← iadd k.ptr opos6)   -- tab
+  jump k.itoaFind.ref [idx6, ← iaddImm opos6 1, ctx13, tot6, cnt5, one]
+
+  startBlock k.itoaFind
+  let idx7  := k.itoaFind.param 0; let opos7 := k.itoaFind.param 1
+  let ctx14 := k.itoaFind.param 2; let tot7  := k.itoaFind.param 3
+  let cnt6  := k.itoaFind.param 4; let div   := k.itoaFind.param 5
+  let div10 ← imul div ten
+  brif (← icmp .ugt div10 cnt6)
+       k.itoaWr.ref [idx7, opos7, ctx14, tot7, cnt6, div]
+       k.itoaFind.ref [idx7, opos7, ctx14, tot7, cnt6, div10]
+
+  startBlock k.itoaWr
+  let idx8  := k.itoaWr.param 0; let opos8 := k.itoaWr.param 1
+  let ctx15 := k.itoaWr.param 2; let tot8  := k.itoaWr.param 3
+  let rem   := k.itoaWr.param 4; let div2  := k.itoaWr.param 5
+  let dig   ← udiv rem div2
+  let digB  ← iadd dig (← iconst64 48)
+  istore8 digB (← iadd k.ptr opos8)
+  let rem'  ← isub rem (← imul dig div2)
+  let div2' ← udiv div2 ten
+  let opos8'← iaddImm opos8 1
+  brif (← icmpImm .eq div2' 0)
+       k.writeNL.ref [idx8, opos8', ctx15, tot8]
+       k.itoaWr.ref [idx8, opos8', ctx15, tot8, rem', div2']
+
+  startBlock k.writeNL
+  let idx9  := k.writeNL.param 0; let opos9 := k.writeNL.param 1
+  let ctx16 := k.writeNL.param 2; let tot9  := k.writeNL.param 3
+  istore8 (← iconst64 10) (← iadd k.ptr opos9)  -- newline
+  jump k.fmtLoop.ref [← iaddImm idx9 1, ← iaddImm opos9 1, ctx16, tot9]
+
+  startBlock k.writeFile
+  let opos10 := k.writeFile.param 0
+  istore8 (← iconst32 0) (← iadd k.ptr opos10)
+  let _ ← call k.fnWrite [k.ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 OUTPUT_BUF,
+                           k.zero, k.zero]
+  callVoid k.fnHtClean [← absAddr k.ptr 0]
+  ret
+
+def mainFn : IRBuilder Unit := do
+  let ptr      ← entryBlock
+  let fnHtInit ← declareFFI "cl_ht_init"     [.i64] none
+  let fnHtClean← declareFFI "cl_ht_cleanup"  [.i64] none
+  let fnRead   ← declareFileRead
+  let fnWrite  ← declareFileWrite
+  let fnCreate ← declareColocatedFFI "ht_create"    [.i64]                   (some .i32)
+  let fnIncr   ← declareColocatedFFI "ht_increment" [.i64, .i64, .i32, .i64] (some .i64)
+  let fnCount  ← declareColocatedFFI "ht_count"     [.i64]                   (some .i32)
+  let fnGet    ← declareColocatedFFI "ht_get_entry"  [.i64, .i32, .i64, .i64] (some .i32)
+  let dataPtr  ← load64 (← absAddr ptr 0x18)
+  let zero     ← iconst64 0
+
+  let cpIn      ← declareBlock [.i64]
+  let cpOut1    ← declareBlock [.i64]
+  let cpOut     ← declareBlock [.i64, .i64]
+  let readBlk   ← declareBlock []
+  let skipWS    ← declareBlock [.i64, .i64]
+  let chkByte   ← declareBlock [.i64, .i64]
+  let readWord  ← declareBlock [.i64, .i64, .i64, .i64]
+  let readByte  ← declareBlock [.i64, .i64, .i64, .i64]
+  let wordDone  ← declareBlock [.i64, .i64, .i64]
+  let accumByte ← declareBlock [.i64, .i64, .i64, .i64, .i64]
+  let fmtStart  ← declareBlock [.i64]
+  let fmtLoop   ← declareBlock [.i64, .i64, .i64, .i64]
+  let getEntry  ← declareBlock [.i64, .i64, .i64, .i64]
+  let unpackW   ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64]
+  let extractB  ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64]
+  let writeByte ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
+  let writeTab  ← declareBlock [.i64, .i64, .i64, .i64, .i64]
+  let itoaFind  ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64]
+  let itoaWr    ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64]
+  let writeNL   ← declareBlock [.i64, .i64, .i64, .i64]
+  let writeFile ← declareBlock [.i64]
+
+  let k : WcCtx := {
+    ptr, dataPtr, fnRead, fnWrite, fnHtInit, fnHtClean := fnHtClean,
+    fnCreate, fnIncr, fnCount, fnGetEntry := fnGet, zero,
+    cpIn, cpOut1, cpOut, readBlk, skipWS, chkByte,
+    readWord, readByte, wordDone, accumByte,
+    fmtStart, fmtLoop, getEntry, unpackW, extractB, writeByte,
+    writeTab, itoaFind, itoaWr, writeNL, writeFile
+  }
+
+  emitPathCopy k
+
+  -- Init HT, read file, create HT, start parse
+  startBlock readBlk
+  callVoid fnHtInit [← absAddr ptr 0]
+  let fileSize ← readFile ptr fnRead INPUT_PATH_OFF INPUT_DATA
+  let inputBase← absAddr ptr INPUT_DATA
+  let ctxPtr   ← load64 (← absAddr ptr 0)
+  let _        ← call fnCreate [ctxPtr]
+  jump skipWS.ref [zero, ctxPtr]
+
+  emitParsePhase k fileSize inputBase
+  emitFormatPhase k
+
+def clifIR : String := buildProgram mainFn
 
 def artifacts : Array Json :=
-  #[toJsonEntry "wc_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "wc_algorithm" {
+    cranelift_ir := clifIR,
+    memory_size := MEM_SIZE,
+    context_offset := 0
+  } {
+    actions := mkCallActions 1,
+    cranelift_units := 0,
+    timeout_ms := some TIMEOUT_MS
+  }]
 
 end WordCountBench

@@ -1,241 +1,204 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace JsonBench
 
 /-
-  JSON benchmark algorithm — Cranelift JIT version.
-
-  Payload (via execute data arg): "input_path\0output_path\0"
-
-  Memory layout (shared memory):
-    0x0000  RESERVED        (40 bytes, runtime-managed: ctx_ptr, data/out ptrs)
-    0x0100  INPUT_PATH      (256 bytes, copied from payload by CLIF)
-    0x0200  OUTPUT_PATH     (256 bytes, copied from payload by CLIF)
-    0x0350  OUTPUT_BUF      (64 bytes, itoa result for FileWrite)
-    0x4000  INPUT_DATA      (variable, populated by FileRead)
-
-  Single CLIF function:
-    1. Copy input/output paths from payload into shared memory
-    2. cl_file_read → gets bytes_read (used as file_size)
-    3. SIMD JSON parse: scan for "value": pattern, sum digits
-    4. itoa total to OUTPUT_BUF
-    5. cl_file_write result
-
-  Uses 16-byte SIMD vectors (i8x16) for 2-byte prefix scanning ("v).
+  JSON benchmark: sum "value": <N> integers.
+  Payload: "input_path\0output_path\0"
+  SIMD '\"v' prefix scan then 8-byte needle verify, then digit accumulate.
 -/
 
 def INPUT_PATH_OFF  : Nat := 0x0100
 def OUTPUT_PATH_OFF : Nat := 0x0200
 def OUTPUT_BUF      : Nat := 0x0350
 def INPUT_DATA      : Nat := 0x4000
-def MAX_JSON_BYTES  : Nat := 512 * 1024 * 1024  -- 512MB max
+def MAX_JSON_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_JSON_BYTES
 def TIMEOUT_MS      : Nat := 300000
 
--- fn0: noop
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+set_option maxRecDepth 4096 in
+def mainFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let fnRead  ← declareFileRead
+  let fnWrite ← declareFileWrite
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let zero    ← iconst64 0
 
--- fn1: JSON orchestrator
--- Copies paths from payload, reads file, parses JSON, writes result
-def clifJsonFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "\n" ++
-  "    fn0 = %cl_file_read sig0\n" ++
-  "    fn1 = %cl_file_write sig1\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x18\n" ++    -- data_ptr (payload)
-  "    v600 = iconst.i64 0\n" ++
-  "    jump block1(v600)\n" ++
-  "\n" ++
-  -- Copy input path from payload to shared memory at INPUT_PATH_OFF (0x0100)
-  "block1(v201: i64):\n" ++
-  "    v202 = iadd v1, v201\n" ++
-  "    v203 = uload8.i64 notrap v202\n" ++
-  "    v204 = iadd_imm v0, 256\n" ++                 -- INPUT_PATH_OFF
-  "    v205 = iadd v204, v201\n" ++
-  "    istore8 v203, v205\n" ++
-  "    v206 = icmp_imm eq v203, 0\n" ++
-  "    v207 = iadd_imm v201, 1\n" ++
-  "    brif v206, block2(v207), block1(v207)\n" ++
-  "\n" ++
-  -- Copy output path from payload to shared memory at OUTPUT_PATH_OFF (0x0200)
-  "block2(v210: i64):\n" ++
-  "    v211 = iconst.i64 0\n" ++
-  "    jump block3(v210, v211)\n" ++
-  "\n" ++
-  "block3(v220: i64, v221: i64):\n" ++
-  "    v222 = iadd v1, v220\n" ++
-  "    v223 = uload8.i64 notrap v222\n" ++
-  "    v224 = iadd_imm v0, 512\n" ++                 -- OUTPUT_PATH_OFF
-  "    v225 = iadd v224, v221\n" ++
-  "    istore8 v223, v225\n" ++
-  "    v226 = icmp_imm eq v223, 0\n" ++
-  "    v227 = iadd_imm v220, 1\n" ++
-  "    v228 = iadd_imm v221, 1\n" ++
-  "    brif v226, block4, block3(v227, v228)\n" ++
-  "\n" ++
-  -- Read JSON file into shared memory
-  "block4:\n" ++
-  "    v3 = iconst.i64 256\n" ++                     -- INPUT_PATH_OFF
-  "    v4 = iconst.i64 16384\n" ++                   -- INPUT_DATA (0x4000)
-  "    v5 = iconst.i64 0\n" ++
-  "    v700 = iconst.i64 0\n" ++
-  "    v7 = call fn0(v0, v3, v4, v5, v700)\n" ++    -- bytes_read = file_size
-  -- Setup constants for SIMD scan
-  "    v8 = iconst.i64 0\n" ++                       -- zero i64
-  "    v9 = iconst.i64 9\n" ++                       -- needle length / digit range
-  "    v10 = isub v7, v9\n" ++                       -- end = file_size - 9
-  "    v11 = iconst.i64 10\n" ++                     -- for * 10
-  "    v12 = iconst.i64 48\n" ++                     -- '0'
-  "    v13 = iadd v0, v4\n" ++                       -- data_ptr = base + INPUT_DATA
-  "    v14 = iconst.i8 34\n" ++                      -- '\"' as i8
-  "    v15 = splat.i8x16 v14\n" ++                   -- broadcast '\"'
-  "    v16 = iconst.i8 118\n" ++                     -- 'v' as i8
-  "    v17 = splat.i8x16 v16\n" ++                   -- broadcast 'v'
-  "    v18 = iconst.i64 2322206377019990390\n" ++    -- \"value\": <sp> as LE i64 (bytes 1-8)
-  "    v19 = iconst.i32 0\n" ++                      -- zero i32 for mask comparison
-  "    jump block5(v8, v8)\n" ++
-  "\n" ++
-  -- block5: SIMD scan entry (pos, total)
-  "block5(v20: i64, v21: i64):\n" ++
-  "    v22 = icmp sgt v20, v10\n" ++                 -- pos > end?
-  "    brif v22, block10(v21), block6(v20, v21)\n" ++
-  "\n" ++
-  -- block6: 2-byte SIMD scan for '\"v' prefix
-  "block6(v23: i64, v24: i64):\n" ++
-  "    v25 = iadd v13, v23\n" ++                     -- data_ptr + pos
-  "    v26 = load.i8x16 v25\n" ++                    -- 16 bytes at pos
-  "    v27 = load.i8x16 v25+1\n" ++                  -- 16 bytes at pos+1
-  "    v28 = icmp eq v26, v15\n" ++                   -- compare with '\"'
-  "    v29 = icmp eq v27, v17\n" ++                   -- compare with 'v'
-  "    v30 = band v28, v29\n" ++                     -- '\"v' at lane?
-  "    v31 = vhigh_bits.i32 v30\n" ++                -- extract bitmask
-  "    v32 = icmp ne v31, v19\n" ++                  -- any match?
-  "    v33 = iadd_imm v23, 16\n" ++                  -- next chunk
-  "    brif v32, block7(v23, v24, v31), block5(v33, v24)\n" ++
-  "\n" ++
-  -- block7: extract first '\"v' position from mask
-  "block7(v35: i64, v36: i64, v37: i32):\n" ++
-  "    v38 = ctz v37\n" ++                           -- offset of first match
-  "    v39 = uextend.i64 v38\n" ++
-  "    v40 = iadd v35, v39\n" ++                     -- abs_pos = chunk_base + offset
-  "    v41 = icmp sgt v40, v10\n" ++                 -- past end?
-  "    brif v41, block10(v36), block8(v40, v36, v35, v37)\n" ++
-  "\n" ++
-  -- block8: verify remaining 8 bytes after '\"'
-  "block8(v42: i64, v43: i64, v44: i64, v45: i32):\n" ++
-  "    v46 = iadd v13, v42\n" ++                     -- data_ptr + abs_pos
-  "    v47 = load.i64 v46+1\n" ++                    -- load bytes 1-8 after '\"'
-  "    v48 = icmp eq v47, v18\n" ++                  -- == \"value\": <sp>?
-  "    brif v48, block9(v42, v43), block30(v44, v43, v45)\n" ++
-  "\n" ++
-  -- block30: no full match, clear lowest bit, try next in chunk
-  "block30(v49: i64, v50: i64, v51: i32):\n" ++
-  "    v52 = iadd_imm v51, -1\n" ++                 -- mask - 1
-  "    v53 = band v51, v52\n" ++                     -- clear lowest set bit
-  "    v54 = icmp ne v53, v19\n" ++                  -- more bits?
-  "    v55 = iadd_imm v49, 16\n" ++                  -- next chunk
-  "    brif v54, block7(v49, v50, v53), block5(v55, v50)\n" ++
-  "\n" ++
-  -- block9: full match, parse digits at pos + 9
-  "block9(v56: i64, v57: i64):\n" ++
-  "    v58 = iadd_imm v56, 9\n" ++                  -- pos + 9 (skip needle)
-  "    jump block20(v58, v57, v8)\n" ++
-  "\n" ++
-  -- block20: digit loop (digit_pos, total, accum)
-  "block20(v59: i64, v60: i64, v61: i64):\n" ++
-  "    v62 = iadd v13, v59\n" ++                     -- data_ptr + pos
-  "    v63 = uload8.i64 v62\n" ++
-  "    v64 = isub v63, v12\n" ++                     -- byte - '0'
-  "    v65 = icmp ugt v64, v9\n" ++                  -- > 9? (unsigned range check)
-  "    brif v65, block21(v59, v60, v61), block22(v59, v60, v61, v64)\n" ++
-  "\n" ++
-  -- block21: not a digit, total += accum, resume SIMD scan
-  "block21(v66: i64, v67: i64, v68: i64):\n" ++
-  "    v69 = iadd v67, v68\n" ++                     -- total += acc
-  "    jump block5(v66, v69)\n" ++
-  "\n" ++
-  -- block22: digit, acc = acc * 10 + digit
-  "block22(v70: i64, v71: i64, v72: i64, v73: i64):\n" ++
-  "    v74 = imul v72, v11\n" ++                     -- acc * 10
-  "    v75 = iadd v74, v73\n" ++                     -- + digit
-  "    v76 = iadd_imm v70, 1\n" ++                   -- pos++
-  "    jump block20(v76, v71, v75)\n" ++
-  "\n" ++
-  -- block10: itoa total to OUTPUT_BUF, then file_write
-  "block10(v80: i64):\n" ++
-  "    v81 = iconst.i64 1\n" ++
-  "    v82 = iconst.i64 848\n" ++                    -- OUTPUT_BUF (0x0350)
-  "    jump block11(v80, v81, v82)\n" ++
-  "\n" ++
-  -- find_divisor(total, div, wpos)
-  "block11(v83: i64, v84: i64, v85: i64):\n" ++
-  "    v86 = imul v84, v11\n" ++
-  "    v87 = icmp ugt v86, v83\n" ++
-  "    brif v87, block12(v83, v84, v85), block11(v83, v86, v85)\n" ++
-  "\n" ++
-  -- write_digit(val, div, wpos)
-  "block12(v88: i64, v89: i64, v90: i64):\n" ++
-  "    v91 = udiv v88, v89\n" ++
-  "    v92 = iadd v91, v12\n" ++                     -- + '0'
-  "    v93 = iadd v0, v90\n" ++
-  "    istore8 v92, v93\n" ++
-  "    v94 = imul v91, v89\n" ++
-  "    v95 = isub v88, v94\n" ++
-  "    v96 = udiv v89, v11\n" ++                     -- div / 10
-  "    v97 = iadd_imm v90, 1\n" ++
-  "    v98 = icmp eq v96, v8\n" ++                   -- div == 0?
-  "    brif v98, block13(v97), block12(v95, v96, v97)\n" ++
-  "\n" ++
-  -- write_newline_and_null, then file_write
-  "block13(v99: i64):\n" ++
-  "    v100 = iadd v0, v99\n" ++
-  "    v101 = iconst.i32 10\n" ++                    -- '\\n'
-  "    istore8 v101, v100\n" ++
-  "    v102 = iadd_imm v99, 1\n" ++
-  "    v103 = iadd v0, v102\n" ++
-  "    v104 = iconst.i32 0\n" ++
-  "    istore8 v104, v103\n" ++
-  -- Write result file
-  "    v150 = iconst.i64 512\n" ++                   -- OUTPUT_PATH_OFF
-  "    v151 = iconst.i64 848\n" ++                   -- OUTPUT_BUF
-  "    v152 = iconst.i64 0\n" ++
-  "    v153 = iconst.i64 0\n" ++
-  "    v154 = call fn1(v0, v150, v151, v152, v153)\n" ++
-  "    return\n" ++
-  "}\n"
+  let cpIn      ← declareBlock [.i64]
+  let cpOut1    ← declareBlock [.i64]
+  let cpOut     ← declareBlock [.i64, .i64]
+  let readBlk   ← declareBlock []
+  let scanChk   ← declareBlock [.i64, .i64]
+  let simdBlk   ← declareBlock [.i64, .i64]
+  let matchFind ← declareBlock [.i64, .i64, .i32]
+  let verify    ← declareBlock [.i64, .i64, .i64, .i32]
+  let matchFail ← declareBlock [.i64, .i64, .i32]
+  let digitSt   ← declareBlock [.i64, .i64]
+  let digitLoop ← declareBlock [.i64, .i64, .i64]
+  let digitFlsh ← declareBlock [.i64, .i64, .i64]
+  let acDigit   ← declareBlock [.i64, .i64, .i64, .i64]
+  let done      ← declareBlock [.i64]
+  let itoaBlk   ← declareBlock [.i64, .i64]
+  let itoaWr    ← declareBlock [.i64, .i64, .i64]
+  let itoaNL    ← declareBlock [.i64]
 
-def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifJsonFn
+  jump cpIn.ref [zero]
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
+  -- Copy input path
+  startBlock cpIn
+  let si1 := cpIn.param 0
+  let ch1  ← uload8_64 (← iadd dataPtr si1)
+  istore8 ch1 (← iadd (← absAddr ptr INPUT_PATH_OFF) si1)
+  let si1' ← iaddImm si1 1
+  brif (← icmpImm .eq ch1 0) cpOut1.ref [si1'] cpIn.ref [si1']
 
-def buildConfig : BaseConfig := {
-  cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0
-}
+  startBlock cpOut1
+  let si2 := cpOut1.param 0
+  jump cpOut.ref [si2, zero]
 
-def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
+  -- Copy output path
+  startBlock cpOut
+  let si3 := cpOut.param 0; let di3 := cpOut.param 1
+  let ch3  ← uload8_64 (← iadd dataPtr si3)
+  istore8 ch3 (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di3)
+  let si3' ← iaddImm si3 1; let di3' ← iaddImm di3 1
+  brif (← icmpImm .eq ch3 0) readBlk.ref [] cpOut.ref [si3', di3']
+
+  -- Read file; fileSize and dataBase dominate all scan blocks
+  startBlock readBlk
+  let fileSize ← readFile ptr fnRead INPUT_PATH_OFF INPUT_DATA
+  let dataBase ← absAddr ptr INPUT_DATA
+  let nine     ← iconst64 9
+  let endPos   ← isub fileSize nine      -- scan until pos > fileSize-9
+  let quot34   ← iconst8 34             -- '"'
+  let vOf34    ← splat .i8x16 quot34
+  let vv       ← iconst8 118            -- 'v'
+  let vOfV     ← splat .i8x16 vv
+  let needle   ← iconst64 2322206377019990390  -- "value\": " as LE i64
+  jump scanChk.ref [zero, zero]
+
+  -- End-of-file check
+  startBlock scanChk
+  let pos  := scanChk.param 0; let tot := scanChk.param 1
+  brif (← icmp .sgt pos endPos) done.ref [tot] simdBlk.ref [pos, tot]
+
+  -- 16-byte SIMD scan for '\"v' prefix
+  startBlock simdBlk
+  let pos2 := simdBlk.param 0; let tot2 := simdBlk.param 1
+  let p2   ← iadd dataBase pos2
+  let row0 ← loadI8x16 p2
+  let row1 ← loadI8x16 (← iaddImm p2 1)
+  let eq0  ← icmp .eq row0 vOf34
+  let eq1  ← icmp .eq row1 vOfV
+  let both ← band eq0 eq1
+  let mask ← vhighBits both
+  let zero32 ← iconst32 0
+  let has  ← icmp .ne mask zero32
+  brif has matchFind.ref [pos2, tot2, mask]
+           scanChk.ref [← iaddImm pos2 16, tot2]
+
+  -- Extract first match position from bitmask
+  startBlock matchFind
+  let cb   := matchFind.param 0; let tot3 := matchFind.param 1
+  let msk  := matchFind.param 2
+  let off32 ← ctz32 msk
+  let off  ← uextend64 off32
+  let abs  ← iadd cb off
+  brif (← icmp .sgt abs endPos) done.ref [tot3]
+       verify.ref [abs, tot3, cb, msk]
+
+  -- Verify 8-byte needle after '\"'
+  startBlock verify
+  let ap   := verify.param 0; let tot4 := verify.param 1
+  let cb2  := verify.param 2; let msk2 := verify.param 3
+  let bytes8 ← load64 (← iaddImm (← iadd dataBase ap) 1)
+  let isNeedle ← icmp .eq bytes8 needle
+  brif isNeedle digitSt.ref [ap, tot4]
+               matchFail.ref [cb2, tot4, msk2]
+
+  -- Clear lowest set bit, continue or advance chunk
+  startBlock matchFail
+  let cb3  := matchFail.param 0; let tot5 := matchFail.param 1
+  let msk3 := matchFail.param 2
+  let zero32b ← iconst32 0
+  let newMask ← band msk3 (← iadd msk3 (← iconst32 (-1)))
+  let more    ← icmp .ne newMask zero32b
+  brif more matchFind.ref [cb3, tot5, newMask]
+            scanChk.ref [← iaddImm cb3 16, tot5]
+
+  -- Skip needle (9 bytes), start digit accumulation
+  startBlock digitSt
+  let ap2  := digitSt.param 0; let tot6 := digitSt.param 1
+  jump digitLoop.ref [← iaddImm ap2 9, tot6, zero]
+
+  -- Digit loop
+  startBlock digitLoop
+  let dp   := digitLoop.param 0; let tot7 := digitLoop.param 1
+  let acc  := digitLoop.param 2
+  let byte ← uload8_64 (← iadd dataBase dp)
+  let d    ← isub byte (← iconst64 48)
+  let nine2 ← iconst64 9
+  brif (← icmp .ugt d nine2) digitFlsh.ref [dp, tot7, acc]
+                              acDigit.ref [dp, tot7, acc, d]
+
+  -- Flush accumulator
+  startBlock digitFlsh
+  let dp2  := digitFlsh.param 0; let tot8 := digitFlsh.param 1
+  let acc2 := digitFlsh.param 2
+  jump scanChk.ref [dp2, ← iadd tot8 acc2]
+
+  -- Accumulate digit
+  startBlock acDigit
+  let dp3  := acDigit.param 0; let tot9 := acDigit.param 1
+  let acc3 := acDigit.param 2; let d2   := acDigit.param 3
+  let acc3' ← iadd (← imul acc3 (← iconst64 10)) d2
+  jump digitLoop.ref [← iaddImm dp3 1, tot9, acc3']
+
+  -- itoa + write
+  startBlock done
+  let total := done.param 0
+  jump itoaBlk.ref [total, ← iconst64 1]
+
+  startBlock itoaBlk
+  let totF := itoaBlk.param 0; let divF := itoaBlk.param 1
+  let divF10 ← imul divF (← iconst64 10)
+  brif (← icmp .ugt divF10 totF) itoaWr.ref [totF, divF, ← iconst64 OUTPUT_BUF]
+                                  itoaBlk.ref [totF, divF10]
+
+  startBlock itoaWr
+  let valW := itoaWr.param 0; let divW := itoaWr.param 1; let wposW := itoaWr.param 2
+  let dig  ← udiv valW divW
+  let digB ← iadd dig (← iconst64 48)
+  istore8 digB (← iadd ptr wposW)
+  let rem  ← isub valW (← imul dig divW)
+  let divW'← udiv divW (← iconst64 10)
+  let wpos'← iaddImm wposW 1
+  brif (← icmpImm .eq divW' 0) itoaNL.ref [wpos'] itoaWr.ref [rem, divW', wpos']
+
+  startBlock itoaNL
+  let wp := itoaNL.param 0
+  istore8 (← iconst64 10) (← iadd ptr wp)
+  istore8 (← iconst32 0) (← iadd ptr (← iaddImm wp 1))
+  let _ ← call fnWrite [ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 OUTPUT_BUF,
+                         zero, zero]
+  ret
+
+def clifIR : String := buildProgram mainFn
 
 def artifacts : Array Json :=
-  #[toJsonEntry "json_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "json_algorithm" {
+    cranelift_ir := clifIR,
+    memory_size := MEM_SIZE,
+    context_offset := 0
+  } {
+    actions := mkCallActions 1,
+    cranelift_units := 0,
+    timeout_ms := some TIMEOUT_MS
+  }]
 
 end JsonBench

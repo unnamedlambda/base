@@ -639,6 +639,9 @@ def storeF32 (val addr : Val) : IRBuilder Unit :=
 def storeF64 (val addr : Val) : IRBuilder Unit :=
   emit (.storeTyped .f64 val addr)
 
+def storeI64 (val addr : Val) : IRBuilder Unit :=
+  emit (.storeTyped .i64 val addr)
+
 def rawInst (s : String) : IRBuilder Unit :=
   emit (.rawInst s)
 

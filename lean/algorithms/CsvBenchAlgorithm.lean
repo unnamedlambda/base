@@ -1,275 +1,225 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace CsvBench
 
 /-
-  CSV benchmark algorithm — Cranelift JIT version.
-
-  Payload (via execute data arg): "input_path\0output_path\0"
-
-  Memory layout (shared memory):
-    0x0000  RESERVED        (40 bytes, runtime-managed: ctx_ptr, data/out ptrs)
-    0x0100  INPUT_PATH      (256 bytes, copied from payload by CLIF)
-    0x0200  OUTPUT_PATH     (256 bytes, copied from payload by CLIF)
-    0x0350  LEFT_VAL        (32 bytes, itoa result for FileWrite)
-    0x2000  CSV_DATA        (variable, populated by FileRead)
-
-  Single CLIF function:
-    1. Copy input/output paths from payload into shared memory
-    2. cl_file_read → gets bytes_read (used as end_pos)
-    3. SIMD CSV parse (skip header, scan commas, parse salary digits)
-    4. itoa total to LEFT_VAL
-    5. cl_file_write result
-
-  Uses 16-byte SIMD vectors (i8x16) for delimiter scanning.
+  CSV benchmark: sum salary column (field 6) across all rows.
+  Payload: "input_path\0output_path\0"
+  SIMD newline scan to skip header; SIMD comma scan to find field 6; digit accumulate.
 -/
 
 def INPUT_PATH_OFF  : Nat := 0x0100
 def OUTPUT_PATH_OFF : Nat := 0x0200
 def LEFT_VAL        : Nat := 0x0350
 def CSV_DATA        : Nat := 0x2000
-def MAX_CSV_BYTES   : Nat := 512 * 1024 * 1024  -- 512MB max
+def MAX_CSV_BYTES   : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := CSV_DATA + MAX_CSV_BYTES
 def TIMEOUT_MS      : Nat := 300000
 
--- fn0: noop
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+set_option maxRecDepth 4096 in
+def mainFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let fnRead  ← declareFileRead
+  let fnWrite ← declareFileWrite
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let zero    ← iconst64 0
+  let zero32  ← iconst32 0
 
--- fn1: CSV orchestrator
--- Copies paths from payload, reads file, parses CSV, writes result
-def clifCsvFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "\n" ++
-  "    fn0 = %cl_file_read sig0\n" ++
-  "    fn1 = %cl_file_write sig1\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x18\n" ++    -- data_ptr (payload)
-  "    v600 = iconst.i64 0\n" ++
-  "    jump block1(v600)\n" ++
-  "\n" ++
-  -- Copy input path from payload to shared memory
-  "block1(v201: i64):\n" ++
-  "    v202 = iadd v1, v201\n" ++
-  "    v203 = uload8.i64 notrap v202\n" ++
-  "    v204 = iadd_imm v0, 256\n" ++                 -- INPUT_PATH_OFF
-  "    v205 = iadd v204, v201\n" ++
-  "    istore8 v203, v205\n" ++
-  "    v206 = icmp_imm eq v203, 0\n" ++
-  "    v207 = iadd_imm v201, 1\n" ++
-  "    brif v206, block2(v207), block1(v207)\n" ++
-  "\n" ++
-  -- Copy output path from payload to shared memory
-  "block2(v210: i64):\n" ++
-  "    v211 = iconst.i64 0\n" ++
-  "    jump block3(v210, v211)\n" ++
-  "\n" ++
-  "block3(v220: i64, v221: i64):\n" ++
-  "    v222 = iadd v1, v220\n" ++
-  "    v223 = uload8.i64 notrap v222\n" ++
-  "    v224 = iadd_imm v0, 512\n" ++                 -- OUTPUT_PATH_OFF
-  "    v225 = iadd v224, v221\n" ++
-  "    istore8 v223, v225\n" ++
-  "    v226 = icmp_imm eq v223, 0\n" ++
-  "    v227 = iadd_imm v220, 1\n" ++
-  "    v228 = iadd_imm v221, 1\n" ++
-  "    brif v226, block4, block3(v227, v228)\n" ++
-  "\n" ++
-  -- Read CSV file into shared memory
-  "block4:\n" ++
-  "    v3 = iconst.i64 256\n" ++                     -- INPUT_PATH_OFF
-  "    v4 = iconst.i64 8192\n" ++                    -- CSV_DATA
-  "    v5 = iconst.i64 0\n" ++
-  "    v700 = iconst.i64 0\n" ++
-  "    v7 = call fn0(v0, v3, v4, v5, v700)\n" ++    -- bytes_read = end_pos
-  -- Setup SIMD vectors and hoisted constants
-  "    v6 = iconst.i64 0\n" ++
-  "    v8 = iconst.i32 0\n" ++
-  "    v300 = iconst.i8 10\n" ++
-  "    v301 = splat.i8x16 v300\n" ++
-  "    v302 = iconst.i8 44\n" ++
-  "    v303 = splat.i8x16 v302\n" ++
-  "    v401 = iconst.i64 10\n" ++
-  "    v402 = iconst.i64 48\n" ++
-  "    v403 = iconst.i32 5\n" ++
-  "    v404 = iconst.i32 44\n" ++
-  "    v405 = iconst.i32 10\n" ++
-  "    v406 = iconst.i64 1\n" ++
-  "    v407 = iconst.i64 848\n" ++                   -- LEFT_VAL offset
-  "    jump block5(v6)\n" ++
-  "\n" ++
-  -- skip_header_16_check(pos)
-  "block5(v10: i64):\n" ++
-  "    v11 = iadd_imm v10, 16\n" ++
-  "    v12 = icmp sle v11, v7\n" ++
-  "    brif v12, block6(v10), block7(v10)\n" ++
-  "\n" ++
-  -- skip_header_16_body: SIMD newline detect
-  "block6(v13: i64):\n" ++
-  "    v14 = iadd v0, v13\n" ++
-  "    v15 = load.i8x16 notrap v14+8192\n" ++       -- CSV_DATA
-  "    v16 = icmp eq v15, v301\n" ++
-  "    v17 = vhigh_bits.i32 v16\n" ++
-  "    v18 = icmp ne v17, v8\n" ++
-  "    v19 = iadd_imm v13, 16\n" ++
-  "    brif v18, block8(v13, v17), block5(v19)\n" ++
-  "\n" ++
-  -- skip_header_1: byte fallback
-  "block7(v20: i64):\n" ++
-  "    v21 = iadd v0, v20\n" ++
-  "    v22 = uload8.i32 notrap v21+8192\n" ++
-  "    v23 = icmp eq v22, v405\n" ++                 -- '\n'
-  "    v24 = iadd_imm v20, 1\n" ++
-  "    brif v23, block9(v20), block7(v24)\n" ++
-  "\n" ++
-  -- skip_header_found: ctz
-  "block8(v25: i64, v26: i32):\n" ++
-  "    v27 = ctz v26\n" ++
-  "    v28 = uextend.i64 v27\n" ++
-  "    v29 = iadd v25, v28\n" ++
-  "    jump block9(v29)\n" ++
-  "\n" ++
-  -- header_done: advance past newline
-  "block9(v30: i64):\n" ++
-  "    v31 = iadd_imm v30, 1\n" ++
-  "    jump block10(v31, v6, v8)\n" ++
-  "\n" ++
-  -- comma_scan_16_check(pos, total, comma_count)
-  "block10(v39: i64, v40: i64, v41: i32):\n" ++
-  "    v42 = iadd_imm v39, 16\n" ++
-  "    v43 = icmp sle v42, v7\n" ++
-  "    brif v43, block11(v39, v40, v41), block12(v39, v40, v41)\n" ++
-  "\n" ++
-  -- comma_scan_16_body: SIMD comma detect
-  "block11(v44: i64, v45: i64, v46: i32):\n" ++
-  "    v48 = iadd v0, v44\n" ++
-  "    v49 = load.i8x16 notrap v48+8192\n" ++
-  "    v50 = icmp eq v49, v303\n" ++
-  "    v54 = vhigh_bits.i32 v50\n" ++
-  "    v55 = icmp ne v54, v8\n" ++
-  "    v56 = iadd_imm v44, 16\n" ++
-  "    brif v55, block13(v44, v45, v46, v54), block10(v56, v45, v46)\n" ++
-  "\n" ++
-  -- comma_scan_1: byte fallback
-  "block12(v57: i64, v58: i64, v59: i32):\n" ++
-  "    v61 = iadd v0, v57\n" ++
-  "    v62 = uload8.i32 notrap v61+8192\n" ++
-  "    v64 = icmp eq v62, v404\n" ++                 -- ','
-  "    v65 = iadd_imm v57, 1\n" ++
-  "    brif v64, block14(v57, v58, v59), block12(v65, v58, v59)\n" ++
-  "\n" ++
-  -- comma_found_16: ctz, count++, check ==5
-  "block13(v66: i64, v67: i64, v68: i32, v69: i32):\n" ++
-  "    v70 = ctz v69\n" ++
-  "    v71 = uextend.i64 v70\n" ++
-  "    v73 = iadd v66, v71\n" ++
-  "    v74 = iadd_imm v68, 1\n" ++
-  "    v76 = icmp eq v74, v403\n" ++                 -- 5 commas
-  "    v77 = iadd_imm v73, 1\n" ++
-  "    brif v76, block15(v77, v67, v6), block10(v77, v67, v74)\n" ++
-  "\n" ++
-  -- comma_found_1: count++, check ==5
-  "block14(v78: i64, v79: i64, v80: i32):\n" ++
-  "    v81 = iadd_imm v80, 1\n" ++
-  "    v83 = icmp eq v81, v403\n" ++
-  "    v84 = iadd_imm v78, 1\n" ++
-  "    brif v83, block15(v84, v79, v6), block10(v84, v79, v81)\n" ++
-  "\n" ++
-  -- digit_loop(pos, total, accum)
-  "block15(v88: i64, v89: i64, v90: i64):\n" ++
-  "    v92 = iadd v0, v88\n" ++
-  "    v93 = uload8.i64 notrap v92+8192\n" ++
-  "    v95 = icmp eq v93, v401\n" ++                 -- '\n' (10)
-  "    brif v95, block17(v88, v89, v90), block16(v88, v89, v90, v93)\n" ++
-  "\n" ++
-  -- is_digit: accum = accum*10 + (char - '0')
-  "block16(v96: i64, v97: i64, v98: i64, v99: i64):\n" ++
-  "    v101 = imul v98, v401\n" ++
-  "    v103 = isub v99, v402\n" ++
-  "    v104 = iadd v101, v103\n" ++
-  "    v105 = iadd_imm v96, 1\n" ++
-  "    jump block15(v105, v97, v104)\n" ++
-  "\n" ++
-  -- salary_done: total += accum, check end
-  "block17(v106: i64, v107: i64, v108: i64):\n" ++
-  "    v110 = iadd v107, v108\n" ++
-  "    v111 = iadd_imm v106, 1\n" ++
-  "    v112 = icmp sge v111, v7\n" ++
-  "    brif v112, block18(v110), block10(v111, v110, v8)\n" ++
-  "\n" ++
-  -- itoa_start: find largest power of 10
-  "block18(v113: i64):\n" ++
-  "    jump block19(v113, v406)\n" ++
-  "\n" ++
-  -- find_divisor(total, div)
-  "block19(v115: i64, v116: i64):\n" ++
-  "    v118 = imul v116, v401\n" ++
-  "    v119 = icmp ugt v118, v115\n" ++
-  "    brif v119, block20(v115, v116), block19(v115, v118)\n" ++
-  "\n" ++
-  -- write_digits_start(total, div)
-  "block20(v120: i64, v121: i64):\n" ++
-  "    jump block21(v120, v121, v407)\n" ++
-  "\n" ++
-  -- write_digit(val, div, wpos)
-  "block21(v123: i64, v124: i64, v125: i64):\n" ++
-  "    v126 = udiv v123, v124\n" ++
-  "    v128 = iadd v126, v402\n" ++
-  "    v130 = iadd v0, v125\n" ++
-  "    istore8 v128, v130\n" ++
-  "    v131 = imul v126, v124\n" ++
-  "    v132 = isub v123, v131\n" ++
-  "    v134 = udiv v124, v401\n" ++
-  "    v135 = iadd_imm v125, 1\n" ++
-  "    v136 = icmp eq v134, v6\n" ++
-  "    brif v136, block22(v135), block21(v132, v134, v135)\n" ++
-  "\n" ++
-  -- write_newline_and_null, then file_write
-  "block22(v137: i64):\n" ++
-  "    v139 = iadd v0, v137\n" ++
-  "    istore8 v405, v139\n" ++                      -- '\n'
-  "    v141 = iadd_imm v137, 1\n" ++
-  "    v143 = iadd v0, v141\n" ++
-  "    istore8 v8, v143\n" ++                        -- null
-  -- Write result file
-  "    v150 = iconst.i64 512\n" ++                   -- OUTPUT_PATH_OFF
-  "    v151 = iconst.i64 848\n" ++                   -- LEFT_VAL
-  "    v152 = iconst.i64 0\n" ++
-  "    v153 = iconst.i64 0\n" ++
-  "    v154 = call fn1(v0, v150, v151, v152, v153)\n" ++
-  "    return\n" ++
-  "}\n"
+  let cpIn       ← declareBlock [.i64]
+  let cpOut1     ← declareBlock [.i64]
+  let cpOut      ← declareBlock [.i64, .i64]
+  let readBlk    ← declareBlock []
+  -- header skip
+  let skipHdr16  ← declareBlock [.i64]
+  let skipHdrB   ← declareBlock [.i64]
+  let skipHdrFnd ← declareBlock [.i64, .i32]
+  let skipHdrSc  ← declareBlock [.i64]
+  let hdrDone    ← declareBlock [.i64]
+  -- comma scan (comma count is i64 to avoid iadd_imm type mismatch)
+  let commaSc16  ← declareBlock [.i64, .i64, .i64]
+  let commaScB   ← declareBlock [.i64, .i64, .i64]
+  let commaF16   ← declareBlock [.i64, .i64, .i64, .i32]
+  let commaF1    ← declareBlock [.i64, .i64, .i64]
+  let commaInc1  ← declareBlock [.i64, .i64, .i64]
+  -- digit accumulation
+  let digitLp    ← declareBlock [.i64, .i64, .i64]
+  let digitAcc   ← declareBlock [.i64, .i64, .i64, .i64]
+  let salDone    ← declareBlock [.i64, .i64, .i64]
+  -- itoa/write
+  let itoaStart  ← declareBlock [.i64]
+  let itoaFind   ← declareBlock [.i64, .i64]
+  let itoaWr     ← declareBlock [.i64, .i64, .i64]
+  let itoaNL     ← declareBlock [.i64]
 
-def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifCsvFn
+  jump cpIn.ref [zero]
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
+  -- Copy input path
+  startBlock cpIn
+  let si1 := cpIn.param 0
+  let ch1  ← uload8_64 (← iadd dataPtr si1)
+  istore8 ch1 (← iadd (← absAddr ptr INPUT_PATH_OFF) si1)
+  let si1' ← iaddImm si1 1
+  brif (← icmpImm .eq ch1 0) cpOut1.ref [si1'] cpIn.ref [si1']
 
-def buildConfig : BaseConfig := {
-  cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0
-}
+  startBlock cpOut1
+  jump cpOut.ref [cpOut1.param 0, zero]
 
-def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
+  -- Copy output path
+  startBlock cpOut
+  let si3 := cpOut.param 0; let di3 := cpOut.param 1
+  let ch3  ← uload8_64 (← iadd dataPtr si3)
+  istore8 ch3 (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di3)
+  let si3' ← iaddImm si3 1; let di3' ← iaddImm di3 1
+  brif (← icmpImm .eq ch3 0) readBlk.ref [] cpOut.ref [si3', di3']
+
+  -- Read file; fileSize and csvBase dominate all scan blocks
+  startBlock readBlk
+  let fileSize ← readFile ptr fnRead INPUT_PATH_OFF CSV_DATA
+  let csvBase  ← absAddr ptr CSV_DATA
+  let nlVec    ← splat .i8x16 (← iconst8 10)
+  let cmVec    ← splat .i8x16 (← iconst8 44)
+  jump skipHdr16.ref [zero]
+
+  -- SIMD newline scan: skip header row
+  startBlock skipHdr16
+  let hp := skipHdr16.param 0
+  brif (← icmp .sle (← iaddImm hp 16) fileSize) skipHdrB.ref [hp] skipHdrSc.ref [hp]
+
+  startBlock skipHdrB
+  let hp2 := skipHdrB.param 0
+  let row  ← loadI8x16 (← iadd csvBase hp2)
+  let eq   ← icmp .eq row nlVec
+  let mask ← vhighBits eq
+  brif (← icmp .ne mask zero32) skipHdrFnd.ref [hp2, mask]
+                                 skipHdr16.ref [← iaddImm hp2 16]
+
+  -- Found newline in SIMD chunk: extract position
+  startBlock skipHdrFnd
+  let hp3 := skipHdrFnd.param 0; let msk := skipHdrFnd.param 1
+  let off  ← uextend64 (← ctz32 msk)
+  jump hdrDone.ref [← iadd hp3 off]
+
+  -- Scalar fallback header skip
+  startBlock skipHdrSc
+  let hp4 := skipHdrSc.param 0
+  let b    ← uload8_64 (← iadd csvBase hp4)
+  brif (← icmpImm .eq b 10) hdrDone.ref [hp4] skipHdrSc.ref [← iaddImm hp4 1]
+
+  startBlock hdrDone
+  let hp5 := hdrDone.param 0
+  jump commaSc16.ref [← iaddImm hp5 1, zero, zero]
+
+  -- SIMD comma scan (pos, total, comma_count)
+  startBlock commaSc16
+  let cp := commaSc16.param 0; let tot := commaSc16.param 1
+  let cc  := commaSc16.param 2
+  brif (← icmp .sle (← iaddImm cp 16) fileSize) commaScB.ref [cp, tot, cc]
+                                                   commaF1.ref [cp, tot, cc]
+
+  startBlock commaScB
+  let cp2 := commaScB.param 0; let tot2 := commaScB.param 1
+  let cc2  := commaScB.param 2
+  let row2 ← loadI8x16 (← iadd csvBase cp2)
+  let eq2  ← icmp .eq row2 cmVec
+  let msk2 ← vhighBits eq2
+  brif (← icmp .ne msk2 zero32) commaF16.ref [cp2, tot2, cc2, msk2]
+                                  commaSc16.ref [← iaddImm cp2 16, tot2, cc2]
+
+  -- Found commas in SIMD chunk — process first, then continue or go to digits
+  startBlock commaF16
+  let cb  := commaF16.param 0; let tot3 := commaF16.param 1
+  let cc3 := commaF16.param 2; let msk3 := commaF16.param 3
+  let off2 ← uextend64 (← ctz32 msk3)
+  let abs  ← iadd cb off2
+  let cc3' ← iaddImm cc3 1
+  let five ← iconst64 5
+  brif (← icmp .eq cc3' five) digitLp.ref [← iaddImm abs 1, tot3, zero]
+                                commaSc16.ref [← iaddImm abs 1, tot3, cc3']
+
+  -- Scalar comma fallback
+  startBlock commaF1
+  let cp3 := commaF1.param 0; let tot4 := commaF1.param 1
+  let cc4  := commaF1.param 2
+  let b2   ← uload8_64 (← iadd csvBase cp3)
+  brif (← icmpImm .eq b2 44) commaInc1.ref [← iaddImm cp3 1, tot4, cc4]
+                               commaF1.ref [← iaddImm cp3 1, tot4, cc4]
+
+  -- Scalar comma found: increment count, check ==5
+  startBlock commaInc1
+  let cp4 := commaInc1.param 0; let tot5 := commaInc1.param 1
+  let cc5  := commaInc1.param 2
+  let cc5' ← iaddImm cc5 1
+  let five2 ← iconst64 5
+  brif (← icmp .eq cc5' five2) digitLp.ref [cp4, tot5, zero]
+                                 commaSc16.ref [cp4, tot5, cc5']
+
+  -- Digit accumulation loop
+  startBlock digitLp
+  let dp  := digitLp.param 0; let tot6 := digitLp.param 1
+  let acc := digitLp.param 2
+  let b3  ← uload8_64 (← iadd csvBase dp)
+  brif (← icmpImm .eq b3 10) salDone.ref [dp, tot6, acc]
+                               digitAcc.ref [dp, tot6, acc, b3]
+
+  startBlock digitAcc
+  let dp2  := digitAcc.param 0; let tot7 := digitAcc.param 1
+  let acc2 := digitAcc.param 2; let b4   := digitAcc.param 3
+  let acc2'← iadd (← imul acc2 (← iconst64 10)) (← isub b4 (← iconst64 48))
+  jump digitLp.ref [← iaddImm dp2 1, tot7, acc2']
+
+  -- Salary row done
+  startBlock salDone
+  let dp3 := salDone.param 0; let tot8 := salDone.param 1
+  let acc3 := salDone.param 2
+  let dp3' ← iaddImm dp3 1
+  brif (← icmp .sge dp3' fileSize) itoaStart.ref [← iadd tot8 acc3]
+                                     commaSc16.ref [dp3', ← iadd tot8 acc3, zero]
+
+  -- itoa + write result
+  startBlock itoaStart
+  let total := itoaStart.param 0
+  jump itoaFind.ref [total, ← iconst64 1]
+
+  startBlock itoaFind
+  let totF := itoaFind.param 0; let divF := itoaFind.param 1
+  let divF10 ← imul divF (← iconst64 10)
+  brif (← icmp .ugt divF10 totF) itoaWr.ref [totF, divF, ← iconst64 LEFT_VAL]
+                                   itoaFind.ref [totF, divF10]
+
+  startBlock itoaWr
+  let valW := itoaWr.param 0; let divW := itoaWr.param 1; let wposW := itoaWr.param 2
+  let dig  ← udiv valW divW
+  let digB ← iadd dig (← iconst64 48)
+  istore8 digB (← iadd ptr wposW)
+  let rem  ← isub valW (← imul dig divW)
+  let divW'← udiv divW (← iconst64 10)
+  let wpos'← iaddImm wposW 1
+  brif (← icmpImm .eq divW' 0) itoaNL.ref [wpos'] itoaWr.ref [rem, divW', wpos']
+
+  startBlock itoaNL
+  let wp := itoaNL.param 0
+  istore8 (← iconst64 10) (← iadd ptr wp)
+  istore8 (← iconst32 0) (← iadd ptr (← iaddImm wp 1))
+  let _ ← call fnWrite [ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 LEFT_VAL,
+                         zero, zero]
+  ret
+
+def clifIR : String := buildProgram mainFn
 
 def artifacts : Array Json :=
-  #[toJsonEntry "csv_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "csv_algorithm" {
+    cranelift_ir := clifIR,
+    memory_size := MEM_SIZE,
+    context_offset := 0
+  } {
+    actions := mkCallActions 1,
+    cranelift_units := 0,
+    timeout_ms := some TIMEOUT_MS
+  }]
 
 end CsvBench
