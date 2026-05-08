@@ -1,189 +1,156 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace RowAffineReduceBench
 
-/-!
-  Input payload:
-    [rows:u64][cols:u64][X: rows*cols*f32][scale: cols*f32][bias: cols*f32]
-
-  Output:
-    [y: rows*f32] where y[i] = sum_j (X[i,j] * scale[j] + bias[j])
-
-  This is a broadcasted row-wise affine transform plus reduction, intended as
-  a more NumPy-like tensor workload than the original 1D vector kernels.
+/-
+  Input: [rows:u64][cols:u64][X: rows*cols*f32][scale: cols*f32][bias: cols*f32]
+  Output: [y: rows*f32] where y[i] = sum_j (X[i,j] * scale[j] + bias[j])
+  4x-unrolled SIMD inner loop with scalar tail.
 -/
 
 def MEM_SIZE : Nat := 40
 def TIMEOUT_MS : Nat := 30000
 
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+set_option maxRecDepth 2048 in
+def mainFn : IRBuilder Unit := do
+  let ptr    ← entryBlock
+  let dataPtr← load64 (← absAddr ptr 0x18)
+  let outPtr ← load64 (← absAddr ptr 0x28)
+  let rows   ← load64 dataPtr
+  let cols   ← load64 (← iaddImm dataPtr 8)
+  let xPtr   ← iaddImm dataPtr 16
+  -- scale = xPtr + rows*cols*4, bias = scale + cols*4
+  let mk     ← imul rows cols
+  let scalePtr ← iadd xPtr (← ishlImm mk 2)
+  let stride ← ishlImm cols 2     -- cols * 4
+  let biasPtr  ← iadd scalePtr stride
+  -- loop bounds
+  let mainEnd ← ishlImm (← ushrImm cols 4) 6   -- (cols/16)*64
+  let simdEnd ← ishlImm (← ushrImm cols 2) 4   -- (cols/4)*16
+  let zero   ← fconst32 f32Zero
+  let zeroV  ← splat .f32x4 zero
+  let i0     ← iconst64 0
 
-def clifRowAffineReduceFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "  v500 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v501 = load.i64 notrap aligned v0+0x28\n" ++
-  "  v1 = load.i64 notrap aligned v500\n" ++
-  "  v2 = load.i64 notrap aligned v500+8\n" ++
-  "  v3 = iadd_imm v500, 16\n" ++
-  "  v4 = imul v1, v2\n" ++
-  "  v5 = ishl_imm v4, 2\n" ++
-  "  v6 = iadd v3, v5\n" ++
-  "  v7 = ishl_imm v2, 2\n" ++
-  "  v8 = iadd v6, v7\n" ++
-  "  v9 = iconst.i64 0\n" ++
-  "  jump block1(v9)\n" ++
-  "\n" ++
-  "block1(v10: i64):\n" ++
-  "  v11 = icmp sge v10, v1\n" ++
-  "  brif v11, block5, block2(v10)\n" ++
-  "\n" ++
-  "block2(v20: i64):\n" ++
-  "  v21 = imul v20, v2\n" ++
-  "  v22 = ishl_imm v21, 2\n" ++
-  "  v23 = iadd v3, v22\n" ++
-  "  v24 = ushr_imm v2, 4\n" ++
-  "  v25 = ishl_imm v24, 6\n" ++
-  "  v26 = ushr_imm v2, 2\n" ++
-  "  v27 = ishl_imm v26, 4\n" ++
-  "  v28 = ishl_imm v2, 2\n" ++
-  "  v29 = f32const 0.0\n" ++
-  "  v30 = splat.f32x4 v29\n" ++
-  "  v31 = iconst.i64 0\n" ++
-  "  jump block3(v20, v23, v31, v25, v27, v28, v30, v30, v30, v30)\n" ++
-  "\n" ++
-  "block3(v40: i64, v41: i64, v42: i64, v43: i64, v44: i64, v45: i64, v46: f32x4, v47: f32x4, v48: f32x4, v49: f32x4):\n" ++
-  "  v50 = icmp sge v42, v43\n" ++
-  "  brif v50, block4(v40, v41, v42, v43, v44, v45, v46, v47, v48, v49), block6(v40, v41, v42, v43, v44, v45, v46, v47, v48, v49)\n" ++
-  "\n" ++
-  "block6(v60: i64, v61: i64, v62: i64, v63: i64, v64: i64, v65: i64, v66: f32x4, v67: f32x4, v68: f32x4, v69: f32x4):\n" ++
-  "  v70 = iadd v61, v62\n" ++
-  "  v71 = iadd v6, v62\n" ++
-  "  v72 = iadd v8, v62\n" ++
-  "  v73 = load.f32x4 notrap aligned v70\n" ++
-  "  v74 = load.f32x4 notrap aligned v71\n" ++
-  "  v75 = load.f32x4 notrap aligned v72\n" ++
-  "  v76 = fmul v73, v74\n" ++
-  "  v77 = fadd v76, v75\n" ++
-  "  v78 = fadd v66, v77\n" ++
-  "  v79 = iadd_imm v70, 16\n" ++
-  "  v80 = iadd_imm v71, 16\n" ++
-  "  v81 = iadd_imm v72, 16\n" ++
-  "  v82 = load.f32x4 notrap aligned v79\n" ++
-  "  v83 = load.f32x4 notrap aligned v80\n" ++
-  "  v84 = load.f32x4 notrap aligned v81\n" ++
-  "  v85 = fmul v82, v83\n" ++
-  "  v86 = fadd v85, v84\n" ++
-  "  v87 = fadd v67, v86\n" ++
-  "  v88 = iadd_imm v70, 32\n" ++
-  "  v89 = iadd_imm v71, 32\n" ++
-  "  v90 = iadd_imm v72, 32\n" ++
-  "  v91 = load.f32x4 notrap aligned v88\n" ++
-  "  v92 = load.f32x4 notrap aligned v89\n" ++
-  "  v93 = load.f32x4 notrap aligned v90\n" ++
-  "  v94 = fmul v91, v92\n" ++
-  "  v95 = fadd v94, v93\n" ++
-  "  v96 = fadd v68, v95\n" ++
-  "  v97 = iadd_imm v70, 48\n" ++
-  "  v98 = iadd_imm v71, 48\n" ++
-  "  v99 = iadd_imm v72, 48\n" ++
-  "  v100 = load.f32x4 notrap aligned v97\n" ++
-  "  v101 = load.f32x4 notrap aligned v98\n" ++
-  "  v102 = load.f32x4 notrap aligned v99\n" ++
-  "  v103 = fmul v100, v101\n" ++
-  "  v104 = fadd v103, v102\n" ++
-  "  v105 = fadd v69, v104\n" ++
-  "  v106 = iadd_imm v62, 64\n" ++
-  "  jump block3(v60, v61, v106, v63, v64, v65, v78, v87, v96, v105)\n" ++
-  "\n" ++
-  "block4(v110: i64, v111: i64, v112: i64, v113: i64, v114: i64, v115: i64, v116: f32x4, v117: f32x4, v118: f32x4, v119: f32x4):\n" ++
-  "  v120 = fadd v116, v117\n" ++
-  "  v121 = fadd v118, v119\n" ++
-  "  v122 = fadd v120, v121\n" ++
-  "  jump block7(v110, v111, v112, v114, v115, v122)\n" ++
-  "\n" ++
-  "block7(v130: i64, v131: i64, v132: i64, v133: i64, v134: i64, v135: f32x4):\n" ++
-  "  v136 = icmp sge v132, v133\n" ++
-  "  brif v136, block8(v130, v131, v132, v134, v135), block9(v130, v131, v132, v133, v134, v135)\n" ++
-  "\n" ++
-  "block9(v140: i64, v141: i64, v142: i64, v143: i64, v144: i64, v145: f32x4):\n" ++
-  "  v146 = iadd v141, v142\n" ++
-  "  v147 = iadd v6, v142\n" ++
-  "  v148 = iadd v8, v142\n" ++
-  "  v149 = load.f32x4 notrap aligned v146\n" ++
-  "  v150 = load.f32x4 notrap aligned v147\n" ++
-  "  v151 = load.f32x4 notrap aligned v148\n" ++
-  "  v152 = fmul v149, v150\n" ++
-  "  v153 = fadd v152, v151\n" ++
-  "  v154 = fadd v145, v153\n" ++
-  "  v155 = iadd_imm v142, 16\n" ++
-  "  jump block7(v140, v141, v155, v143, v144, v154)\n" ++
-  "\n" ++
-  "block8(v160: i64, v161: i64, v162: i64, v163: i64, v164: f32x4):\n" ++
-  "  v165 = extractlane v164, 0\n" ++
-  "  v166 = extractlane v164, 1\n" ++
-  "  v167 = extractlane v164, 2\n" ++
-  "  v168 = extractlane v164, 3\n" ++
-  "  v169 = fadd v165, v166\n" ++
-  "  v170 = fadd v167, v168\n" ++
-  "  v171 = fadd v169, v170\n" ++
-  "  jump block10(v160, v161, v162, v163, v171)\n" ++
-  "\n" ++
-  "block10(v180: i64, v181: i64, v182: i64, v183: i64, v184: f32):\n" ++
-  "  v185 = icmp sge v182, v183\n" ++
-  "  brif v185, block11(v180, v184), block12(v180, v181, v182, v183, v184)\n" ++
-  "\n" ++
-  "block12(v190: i64, v191: i64, v192: i64, v193: i64, v194: f32):\n" ++
-  "  v195 = iadd v191, v192\n" ++
-  "  v196 = iadd v6, v192\n" ++
-  "  v197 = iadd v8, v192\n" ++
-  "  v198 = load.f32 notrap aligned v195\n" ++
-  "  v199 = load.f32 notrap aligned v196\n" ++
-  "  v200 = load.f32 notrap aligned v197\n" ++
-  "  v201 = fmul v198, v199\n" ++
-  "  v202 = fadd v201, v200\n" ++
-  "  v203 = fadd v194, v202\n" ++
-  "  v204 = iadd_imm v192, 4\n" ++
-  "  jump block10(v190, v191, v204, v193, v203)\n" ++
-  "\n" ++
-  "block11(v210: i64, v211: f32):\n" ++
-  "  v212 = ishl_imm v210, 2\n" ++
-  "  v213 = iadd v501, v212\n" ++
-  "  store.f32 notrap aligned v211, v213\n" ++
-  "  v214 = iadd_imm v210, 1\n" ++
-  "  jump block1(v214)\n" ++
-  "\n" ++
-  "block5:\n" ++
-  "  return\n" ++
-  "}\n"
+  let outerL ← declareBlock [.i64]
+  let rowSetup← declareBlock [.i64]
+  let mainL  ← declareBlock [.i64, .i64, .i64, .f32x4, .f32x4, .f32x4, .f32x4]
+  let mainB  ← declareBlock [.i64, .i64, .i64, .f32x4, .f32x4, .f32x4, .f32x4]
+  let merge  ← declareBlock [.i64, .i64, .i64, .f32x4, .f32x4, .f32x4, .f32x4]
+  let simdL  ← declareBlock [.i64, .i64, .i64, .f32x4]
+  let simdB  ← declareBlock [.i64, .i64, .i64, .f32x4]
+  let hred   ← declareBlock [.i64, .i64, .i64, .f32x4]
+  let scalarL← declareBlock [.i64, .i64, .i64, .f32]
+  let scalarB← declareBlock [.i64, .i64, .i64, .f32]
+  let storeR ← declareBlock [.i64, .f32]
+  let done   ← declareBlock []
 
-def clifIR : String := clifNoopFn ++ "\n" ++ clifRowAffineReduceFn
+  jump outerL.ref [i0]
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
+  startBlock outerL
+  let i := outerL.param 0
+  brif (← icmp .sge i rows) done.ref [] rowSetup.ref [i]
 
-def buildConfig : BaseConfig := {
-  cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0
-}
+  startBlock rowSetup
+  let i2 := rowSetup.param 0
+  let iCols ← imul i2 cols
+  let xPtrI ← iadd xPtr (← ishlImm iCols 2)
+  let j0    ← iconst64 0
+  jump mainL.ref [i2, xPtrI, j0, zeroV, zeroV, zeroV, zeroV]
 
-def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
+  -- 4x-unrolled main SIMD loop (64 bytes per iter)
+  startBlock mainL
+  let i3 := mainL.param 0; let xP := mainL.param 1; let jO := mainL.param 2
+  let a0 := mainL.param 3; let a1 := mainL.param 4
+  let a2 := mainL.param 5; let a3 := mainL.param 6
+  brif (← icmp .sge jO mainEnd) merge.ref [i3, xP, jO, a0, a1, a2, a3]
+                                 mainB.ref [i3, xP, jO, a0, a1, a2, a3]
+
+  startBlock mainB
+  let i4 := mainB.param 0; let xP2 := mainB.param 1; let jO2 := mainB.param 2
+  let a02 := mainB.param 3; let a12 := mainB.param 4
+  let a22 := mainB.param 5; let a32 := mainB.param 6
+  let xA ← iadd xP2 jO2; let sA ← iadd scalePtr jO2; let bA ← iadd biasPtr jO2
+  let x0 ← loadF32x4 xA; let s0 ← loadF32x4 sA; let b0 ← loadF32x4 bA
+  let a02' ← fadd a02 (← fadd (← fmul x0 s0) b0)
+  let xA1 ← iaddImm xA 16; let sA1 ← iaddImm sA 16; let bA1 ← iaddImm bA 16
+  let x1 ← loadF32x4 xA1; let s1 ← loadF32x4 sA1; let b1 ← loadF32x4 bA1
+  let a12' ← fadd a12 (← fadd (← fmul x1 s1) b1)
+  let xA2 ← iaddImm xA 32; let sA2 ← iaddImm sA 32; let bA2 ← iaddImm bA 32
+  let x2 ← loadF32x4 xA2; let s2 ← loadF32x4 sA2; let b2 ← loadF32x4 bA2
+  let a22' ← fadd a22 (← fadd (← fmul x2 s2) b2)
+  let xA3 ← iaddImm xA 48; let sA3 ← iaddImm sA 48; let bA3 ← iaddImm bA 48
+  let x3 ← loadF32x4 xA3; let s3 ← loadF32x4 sA3; let b3 ← loadF32x4 bA3
+  let a32' ← fadd a32 (← fadd (← fmul x3 s3) b3)
+  jump mainL.ref [i4, xP2, ← iaddImm jO2 64, a02', a12', a22', a32']
+
+  startBlock merge
+  let i5 := merge.param 0; let xP3 := merge.param 1; let jO3 := merge.param 2
+  let b0' := merge.param 3; let b1' := merge.param 4
+  let b2' := merge.param 5; let b3' := merge.param 6
+  let acc ← fadd (← fadd b0' b1') (← fadd b2' b3')
+  jump simdL.ref [i5, xP3, jO3, acc]
+
+  startBlock simdL
+  let i6 := simdL.param 0; let xP4 := simdL.param 1
+  let jO4 := simdL.param 2; let acc2 := simdL.param 3
+  brif (← icmp .sge jO4 simdEnd) hred.ref [i6, xP4, jO4, acc2]
+                                  simdB.ref [i6, xP4, jO4, acc2]
+
+  startBlock simdB
+  let i7 := simdB.param 0; let xP5 := simdB.param 1
+  let jO5 := simdB.param 2; let acc3 := simdB.param 3
+  let xA4 ← iadd xP5 jO5; let sA4 ← iadd scalePtr jO5; let bA4 ← iadd biasPtr jO5
+  let xV ← loadF32x4 xA4; let sV ← loadF32x4 sA4; let bV ← loadF32x4 bA4
+  let acc3' ← fadd acc3 (← fadd (← fmul xV sV) bV)
+  jump simdL.ref [i7, xP5, ← iaddImm jO5 16, acc3']
+
+  startBlock hred
+  let i8 := hred.param 0; let xP6 := hred.param 1
+  let jO6 := hred.param 2; let acc4 := hred.param 3
+  let e0 ← extractlane acc4 0; let e1 ← extractlane acc4 1
+  let e2 ← extractlane acc4 2; let e3 ← extractlane acc4 3
+  let sum ← fadd (← fadd e0 e1) (← fadd e2 e3)
+  jump scalarL.ref [i8, xP6, jO6, sum]
+
+  startBlock scalarL
+  let i9 := scalarL.param 0; let xP7 := scalarL.param 1
+  let jO7 := scalarL.param 2; let s2 := scalarL.param 3
+  brif (← icmp .sge jO7 stride) storeR.ref [i9, s2]
+                                 scalarB.ref [i9, xP7, jO7, s2]
+
+  startBlock scalarB
+  let i10 := scalarB.param 0; let xP8 := scalarB.param 1
+  let jO8 := scalarB.param 2; let s3 := scalarB.param 3
+  let xA5 ← iadd xP8 jO8; let sA5 ← iadd scalePtr jO8; let bA5 ← iadd biasPtr jO8
+  let xS ← loadF32 xA5; let sS ← loadF32 sA5; let bS ← loadF32 bA5
+  let s3' ← fadd s3 (← fadd (← fmul xS sS) bS)
+  jump scalarL.ref [i10, xP8, ← iaddImm jO8 4, s3']
+
+  startBlock storeR
+  let i11 := storeR.param 0; let s4 := storeR.param 1
+  let oAddr ← iadd outPtr (← ishlImm i11 2)
+  storeF32 s4 oAddr
+  jump outerL.ref [← iaddImm i11 1]
+
+  startBlock done
+  ret
+
+def clifIR : String := buildProgram mainFn
 
 def artifacts : Array Json :=
-  #[toJsonEntry "row_affine_reduce_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "row_affine_reduce_algorithm" {
+    cranelift_ir := clifIR,
+    memory_size := MEM_SIZE,
+    context_offset := 0
+  } {
+    actions := mkCallActions 1,
+    cranelift_units := 0,
+    timeout_ms := some TIMEOUT_MS
+  }]
 
 end RowAffineReduceBench

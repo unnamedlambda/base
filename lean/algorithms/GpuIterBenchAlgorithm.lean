@@ -1,41 +1,15 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace GpuIterBench
 
 /-
-  GPU Iterative benchmark algorithm — Cranelift JIT + wgpu version.
-
-  Apply a scale kernel (*1.001) N times to GPU-resident data, then reduce.
-
-  Payload (via execute data arg): [passes: i64][f32 values: M]
-  Output (via execute_into out arg): [f32 partial sums: M/64]
-
-  data_len includes the 8-byte passes prefix, so float_bytes = data_len - 8.
-
-  Memory layout (shared memory):
-    0x0000  RESERVED         (40 bytes, runtime-managed)
-    0x0100  SCALE_SHADER     (null-terminated WGSL)
-    0x0800  REDUCE_SHADER    (null-terminated WGSL)
-    0x1100  SCALE_BIND_DESC  (8 bytes: [buf_id=0, read_only=0])
-    0x1108  REDUCE_BIND_DESC (16 bytes: [buf_id=0, read_only=1], [buf_id=1, read_only=0])
-
-  Single CLIF function:
-    1. Read data_ptr, data_len, out_ptr from reserved region
-    2. Read passes from data_ptr[0..8]
-    3. cl_gpu_init
-    4. float_bytes = data_len - 8
-    5. Create data buffer (float_bytes) and sums buffer (float_bytes/64)
-    6. Upload payload+8 to data buffer
-    7. Create scale pipeline (1 binding) and reduce pipeline (2 bindings)
-    8. Loop: dispatch scale kernel `passes` times
-    9. Dispatch reduce kernel once
-   10. Download sums buffer to out_ptr
-   11. cl_gpu_cleanup
+  GPU Iterative: apply scale kernel (*1.001) N times, then reduce.
+  Payload: [passes: i64][f32 values: M], Output: [f32 partial sums: M/64]
 -/
 
 def SCALE_SHADER_OFF : Nat := 0x0100
@@ -45,7 +19,6 @@ def REDUCE_BIND_OFF  : Nat := 0x1108
 def MEM_SIZE         : Nat := 0x1200
 def TIMEOUT_MS       : Nat := 300000
 
--- Scale shader: multiply each f32 by 1.001, size-independent
 def scaleShader : String :=
   "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n" ++
   "\n" ++
@@ -57,7 +30,6 @@ def scaleShader : String :=
   "    data[i] = data[i] * 1.001;\n" ++
   "}\n"
 
--- Reduction shader: partial sum of groups of 64
 def reduceShader : String :=
   "@group(0) @binding(0) var<storage, read>       data: array<f32>;\n" ++
   "@group(0) @binding(1) var<storage, read_write> sums: array<f32>;\n" ++
@@ -80,133 +52,99 @@ def reduceShader : String :=
   "    if lid.x == 0u { sums[wgid.x] = partial[0]; }\n" ++
   "}\n"
 
--- fn0: noop
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+def mainFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataLen ← load64 (← absAddr ptr 0x20)
+  let outPtr  ← load64 (← absAddr ptr 0x28)
 
--- fn1: GPU iterative scale + reduce orchestrator
--- Payload layout: [passes: i64 (8 bytes)][f32 data: float_bytes]
--- float_bytes = data_len - 8
-def clifGpuFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++
-  "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v\n" ++
-  "\n" ++
-  "    fn0 = %cl_gpu_init sig0\n" ++
-  "    fn1 = %cl_gpu_create_buffer sig1\n" ++
-  "    fn2 = %cl_gpu_create_pipeline sig2\n" ++
-  "    fn3 = %cl_gpu_upload_ptr sig3\n" ++
-  "    fn4 = %cl_gpu_dispatch sig4\n" ++
-  "    fn5 = %cl_gpu_download_ptr sig5\n" ++
-  "    fn6 = %cl_gpu_cleanup sig0\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x18\n" ++               -- data_ptr
-  "    v2 = load.i64 notrap aligned v0+0x20\n" ++               -- data_len (bytes, includes 8-byte prefix)
-  "    v3 = load.i64 notrap aligned v0+0x28\n" ++               -- out_ptr
-  "    v90 = iadd_imm v0, 8\n" ++
-  -- Read passes from start of payload
-  "    v4 = load.i64 notrap aligned v1\n" ++                    -- passes = *(i64*)data_ptr
-  -- float_bytes = data_len - 8
-  "    v5 = iadd_imm v2, -8\n" ++                               -- float_bytes
-  -- float_ptr = data_ptr + 8
-  "    v6 = iadd_imm v1, 8\n" ++                                -- float_ptr
-  -- GPU init
-  "    call fn0(v90)\n" ++
-  "    v91 = load.i64 notrap aligned v0+0x08\n" ++
-  -- Create data buffer (float_bytes) and sums buffer (float_bytes/64)
-  "    v7 = call fn1(v91, v5)\n" ++
-  "    v8 = ushr_imm v5, 6\n" ++                                -- sums_size = float_bytes / 64
-  "    v9 = call fn1(v91, v8)\n" ++
-  -- Upload float data to data buffer
-  "    v10 = call fn3(v91, v7, v6, v5)\n" ++
-  -- Create scale pipeline (1 binding: buf0 rw)
-  "    v11 = iadd_imm v0, 256\n" ++
-  "    v12 = iadd_imm v0, 4352\n" ++
-  "    v13 = iconst.i32 1\n" ++
-  "    v14 = call fn2(v91, v11, v12, v13)\n" ++
-  -- Create reduce pipeline (2 bindings: buf0 ro, buf1 rw)
-  "    v15 = iadd_imm v0, 2048\n" ++
-  "    v16 = iadd_imm v0, 4360\n" ++
-  "    v17 = iconst.i32 2\n" ++
-  "    v18 = call fn2(v91, v15, v16, v17)\n" ++
-  -- Compute workgroups: (float_bytes/4 + 63) / 64 = (float_bytes + 252) / 256
-  "    v19 = iadd_imm v5, 252\n" ++
-  "    v20 = ushr_imm v19, 8\n" ++
-  "    v21 = ireduce.i32 v20\n" ++                              -- workgroups
-  -- Loop: dispatch scale kernel `passes` times
-  "    v22 = iconst.i64 0\n" ++
-  "    jump block1(v22)\n" ++
-  "\n" ++
-  "block1(v23: i64):\n" ++
-  "    v24 = icmp uge v23, v4\n" ++
-  "    brif v24, block2, block3(v23)\n" ++
-  "\n" ++
-  "block3(v25: i64):\n" ++
-  "    v26 = call fn4(v91, v14, v21, v13, v13)\n" ++
-  "    v27 = iadd_imm v25, 1\n" ++
-  "    jump block1(v27)\n" ++
-  "\n" ++
-  "block2:\n" ++
-  -- Dispatch reduce kernel once
-  "    v28 = call fn4(v91, v18, v21, v13, v13)\n" ++
-  -- Download sums buffer to out_ptr (buf_offset=0)
-  "    v29 = iconst.i64 0\n" ++
-  "    v30 = call fn5(v91, v9, v29, v3, v8)\n" ++
-  -- GPU cleanup
-  "    call fn6(v90)\n" ++
-  "    return\n" ++
-  "}\n"
+  let fnInit          ← declareFFI "cl_gpu_init"            [.i64]                    none
+  let fnCreateBuffer  ← declareFFI "cl_gpu_create_buffer"   [.i64, .i64]             (some .i32)
+  let fnCreatePipeline← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
+  let fnUploadPtr     ← declareFFI "cl_gpu_upload_ptr"      [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDispatch      ← declareFFI "cl_gpu_dispatch"        [.i64, .i32, .i32, .i32, .i32] (some .i32)
+  let fnDownloadPtr   ← declareFFI "cl_gpu_download_ptr"    [.i64, .i32, .i64, .i64, .i64] (some .i32)
+  let fnCleanup       ← declareFFI "cl_gpu_cleanup"         [.i64]                    none
 
-def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifGpuFn
+  -- Read passes from payload start
+  let passes    ← load64 dataPtr
+  let floatBytes← iaddImm dataLen (-8)
+  let floatPtr  ← iaddImm dataPtr 8
 
-def scaleShaderBytes : List UInt8 :=
-  scaleShader.toUTF8.toList ++ [0]
+  let ctxSlotPtr ← absAddr ptr 8
+  callVoid fnInit [ctxSlotPtr]
+  let ctxPtr ← load64 ctxSlotPtr
 
-def reduceShaderBytes : List UInt8 :=
-  reduceShader.toUTF8.toList ++ [0]
+  let dataBufId ← call fnCreateBuffer [ctxPtr, floatBytes]
+  let sumsBufSize← ushrImm floatBytes 6   -- floatBytes / 64
+  let sumsBufId  ← call fnCreateBuffer [ctxPtr, sumsBufSize]
+  let _ ← call fnUploadPtr [ctxPtr, dataBufId, floatPtr, floatBytes]
 
--- Scale bind: [buf_id=0, read_only=0]
-def scaleBindDesc : List UInt8 :=
-  [0, 0, 0, 0, 0, 0, 0, 0]
+  -- Scale pipeline (1 binding)
+  let scaleShaderAddr ← absAddr ptr SCALE_SHADER_OFF
+  let scaleBindAddr   ← absAddr ptr SCALE_BIND_OFF
+  let one ← iconst32 1
+  let scalePipeId ← call fnCreatePipeline [ctxPtr, scaleShaderAddr, scaleBindAddr, one]
 
--- Reduce bind: [buf_id=0, read_only=1], [buf_id=1, read_only=0]
-def reduceBindDesc : List UInt8 :=
-  [0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+  -- Reduce pipeline (2 bindings)
+  let reduceShaderAddr ← absAddr ptr REDUCE_SHADER_OFF
+  let reduceBindAddr   ← absAddr ptr REDUCE_BIND_OFF
+  let two ← iconst32 2
+  let reducePipeId ← call fnCreatePipeline [ctxPtr, reduceShaderAddr, reduceBindAddr, two]
+
+  -- workgroups = (floatBytes/4 + 63) / 64 = (floatBytes + 252) / 256
+  let wg ← ireduce32 (← ushrImm (← iaddImm floatBytes 252) 8)
+
+  -- Loop: dispatch scale `passes` times
+  let loop ← declareBlock [.i64]
+  let body ← declareBlock [.i64]
+  let after← declareBlock []
+
+  let i0 ← iconst64 0
+  jump loop.ref [i0]
+
+  startBlock loop
+  let i := loop.param 0
+  brif (← icmp .uge i passes) after.ref [] body.ref [i]
+
+  startBlock body
+  let i2 := body.param 0
+  let _ ← call fnDispatch [ctxPtr, scalePipeId, wg, one, one]
+  jump loop.ref [← iaddImm i2 1]
+
+  startBlock after
+  let _ ← call fnDispatch [ctxPtr, reducePipeId, wg, one, one]
+  let bufOff ← iconst64 0
+  let _ ← call fnDownloadPtr [ctxPtr, sumsBufId, bufOff, outPtr, sumsBufSize]
+
+  callVoid fnCleanup [ctxSlotPtr]
+  ret
+
+def clifIR : String := buildProgram mainFn
+
+def scaleShaderBytes  : List UInt8 := scaleShader.toUTF8.toList ++ [0]
+def reduceShaderBytes : List UInt8 := reduceShader.toUTF8.toList ++ [0]
+def scaleBindDesc  : List UInt8 := [0, 0, 0, 0, 0, 0, 0, 0]
+def reduceBindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
 
 def buildInitialMemory : List UInt8 :=
-  let reserved := zeros SCALE_SHADER_OFF      -- 0x0000..0x00FF (includes passes at 0x28)
-  let scale := scaleShaderBytes ++ zeros (REDUCE_SHADER_OFF - SCALE_SHADER_OFF - scaleShaderBytes.length)
-  let reduce := reduceShaderBytes ++ zeros (SCALE_BIND_OFF - REDUCE_SHADER_OFF - reduceShaderBytes.length)
-  let scaleBind := scaleBindDesc
-  let reduceBind := reduceBindDesc ++ zeros (MEM_SIZE - REDUCE_BIND_OFF - reduceBindDesc.length)
+  let reserved    := zeros SCALE_SHADER_OFF
+  let scale       := scaleShaderBytes ++ zeros (REDUCE_SHADER_OFF - SCALE_SHADER_OFF - scaleShaderBytes.length)
+  let reduce      := reduceShaderBytes ++ zeros (SCALE_BIND_OFF - REDUCE_SHADER_OFF - reduceShaderBytes.length)
+  let scaleBind   := scaleBindDesc
+  let reduceBind  := reduceBindDesc ++ zeros (MEM_SIZE - REDUCE_BIND_OFF - reduceBindDesc.length)
   reserved ++ scale ++ reduce ++ scaleBind ++ reduceBind
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
-
-def buildConfig : BaseConfig := {
-  cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0,
-  initial_memory := buildInitialMemory
-}
-
-def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
 def artifacts : Array Json :=
-  #[toJsonEntry "gpu_iter_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "gpu_iter_algorithm" {
+    cranelift_ir := clifIR,
+    memory_size := MEM_SIZE,
+    context_offset := 0,
+    initial_memory := buildInitialMemory
+  } {
+    actions := mkCallActions 1,
+    cranelift_units := 0,
+    timeout_ms := some TIMEOUT_MS
+  }]
 
 end GpuIterBench

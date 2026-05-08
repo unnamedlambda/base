@@ -309,8 +309,9 @@ namespace IR
 
 /-- CLIF value types -/
 inductive ClifTy where
-  | i32
-  | i64
+  | i8 | i32 | i64
+  | f32 | f64
+  | f32x4 | i8x16
   deriving Repr, BEq
 
 /-- An SSA value reference -/
@@ -365,6 +366,24 @@ inductive Inst where
   | brif (cond : Val) (thenBlk : BlockRef) (thenArgs : List Val)
          (elseBlk : BlockRef) (elseArgs : List Val)
   | ret
+  -- Float / SIMD
+  | fconst (dst : Val) (ty : ClifTy) (hexBits : String)
+  | fadd (dst a b : Val)
+  | fsub (dst a b : Val)
+  | fmul (dst a b : Val)
+  | fmax (dst a b : Val)
+  | fmin (dst a b : Val)
+  | fpromote (dst a : Val)
+  | splat (dst : Val) (ty : ClifTy) (src : Val)
+  | extractlane (dst : Val) (src : Val) (lane : Nat)
+  | storeTyped (ty : ClifTy) (val addr : Val)
+  | rawInst (s : String)
+  -- Additional float / int ops
+  | fneg (dst a : Val)
+  | fcmp (dst : Val) (cond : String) (a b : Val)
+  | bitcast (dst : Val) (ty : ClifTy) (src : Val)
+  | ctz (dst a : Val)
+  | vhighBits (dst a : Val)
 
 /-- A declared block with its parameter values -/
 structure DeclaredBlock where
@@ -394,6 +413,7 @@ structure FnDecl where
   ref : FnRef
   name : String
   sig : SigRef
+  colocated : Bool := false
 
 /-- IR builder state -/
 structure IRState where
@@ -536,6 +556,9 @@ def ushr (a b : Val) : IRBuilder Val := do
 def band (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.band v a b); pure v
 
+def bandImm (a : Val) (imm : Int) : IRBuilder Val := do
+  let c ← iconst64 imm; band a c
+
 def bandNot (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.bandNot v a b); pure v
 
@@ -544,6 +567,102 @@ def bor (a b : Val) : IRBuilder Val := do
 
 def bxor (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.bxor v a b); pure v
+
+-- ---------------------------------------------------------------------------
+-- Instruction emitters — immediate forms (convenience: emit iconst + op)
+-- ---------------------------------------------------------------------------
+
+def iaddImm (a : Val) (imm : Int) : IRBuilder Val := do
+  let c ← iconst64 imm; iadd a c
+
+def ishlImm (a : Val) (imm : Int) : IRBuilder Val := do
+  let c ← iconst64 imm; ishl a c
+
+def ushrImm (a : Val) (imm : Int) : IRBuilder Val := do
+  let c ← iconst64 imm; ushr a c
+
+-- ---------------------------------------------------------------------------
+-- Instruction emitters — float / SIMD
+-- ---------------------------------------------------------------------------
+
+/-- Emit a 32-bit float constant; hexBits is the IEEE 754 bit pattern, e.g. "0x00000000" for 0.0 -/
+def fconst32 (hexBits : String) : IRBuilder Val := do
+  let v ← freshVal; emit (.fconst v .f32 hexBits); pure v
+
+/-- Emit a 64-bit float constant; hexBits is the IEEE 754 bit pattern, e.g. "0x0000000000000000" for 0.0 -/
+def fconst64 (hexBits : String) : IRBuilder Val := do
+  let v ← freshVal; emit (.fconst v .f64 hexBits); pure v
+
+-- Common float constants (CLIF accepts decimal and C99 hex-float, e.g. "0x1.000000p-1" for 0.5)
+def f32Zero : String := "0.0"
+def f64Zero : String := "0.0"
+
+def fadd (a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fadd v a b); pure v
+
+def fsub (a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fsub v a b); pure v
+
+def fmul (a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fmul v a b); pure v
+
+def fmax (a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fmax v a b); pure v
+
+def fmin (a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fmin v a b); pure v
+
+def fpromote (a : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fpromote v a); pure v
+
+def splat (ty : ClifTy) (src : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.splat v ty src); pure v
+
+def extractlane (src : Val) (lane : Nat) : IRBuilder Val := do
+  let v ← freshVal; emit (.extractlane v src lane); pure v
+
+def loadF32 (addr : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.load v "load.f32 notrap aligned" addr); pure v
+
+def loadF64 (addr : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.load v "load.f64 notrap aligned" addr); pure v
+
+def loadF32x4 (addr : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.load v "load.f32x4 notrap aligned" addr); pure v
+
+def loadI8x16 (addr : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.load v "load.i8x16 notrap aligned" addr); pure v
+
+def storeF32 (val addr : Val) : IRBuilder Unit :=
+  emit (.storeTyped .f32 val addr)
+
+def storeF64 (val addr : Val) : IRBuilder Unit :=
+  emit (.storeTyped .f64 val addr)
+
+def rawInst (s : String) : IRBuilder Unit :=
+  emit (.rawInst s)
+
+def iconst8 (value : Int) : IRBuilder Val := do
+  let v ← freshVal; emit (.iconst v .i8 value); pure v
+
+def fneg (a : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fneg v a); pure v
+
+def fcmpGt (a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fcmp v "gt" a b); pure v
+
+def bitcastI64 (a : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.bitcast v .i64 a); pure v
+
+def bitcastF64 (a : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.bitcast v .f64 a); pure v
+
+def ctz32 (a : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.ctz v a); pure v
+
+def vhighBits (src : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.vhighBits v src); pure v
+
 
 -- ---------------------------------------------------------------------------
 -- Instruction emitters — type conversion
@@ -596,6 +715,9 @@ def load_i16 (addr : Val) : IRBuilder Val := do
 def icmp (cond : ICmpCond) (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.icmp v cond a b); pure v
 
+def icmpImm (cond : ICmpCond) (a : Val) (imm : Int) : IRBuilder Val := do
+  let c ← iconst64 imm; icmp cond a c
+
 def select' (cond a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.select v cond a b); pure v
 
@@ -630,8 +752,13 @@ def ret : IRBuilder Unit :=
 -- ---------------------------------------------------------------------------
 
 def renderClifTy : ClifTy → String
+  | .i8  => "i8"
   | .i32 => "i32"
   | .i64 => "i64"
+  | .f32 => "f32"
+  | .f64 => "f64"
+  | .f32x4 => "f32x4"
+  | .i8x16 => "i8x16"
 
 def renderVal (v : Val) : String := s!"v{v.id}"
 
@@ -708,6 +835,25 @@ def renderInst : Inst → String
                 else s!"{renderBlockRef eb}({renderArgs ea})"
     s!"    brif {renderVal cond}, {tStr}, {eStr}"
   | .ret => "    return"
+  | .fconst dst ty hexBits =>
+    let op := if ty == .f32 then "f32const" else "f64const"
+    s!"    {renderVal dst} = {op} {hexBits}"
+  | .fadd dst a b => s!"    {renderVal dst} = fadd {renderVal a}, {renderVal b}"
+  | .fsub dst a b => s!"    {renderVal dst} = fsub {renderVal a}, {renderVal b}"
+  | .fmul dst a b => s!"    {renderVal dst} = fmul {renderVal a}, {renderVal b}"
+  | .fmax dst a b => s!"    {renderVal dst} = fmax {renderVal a}, {renderVal b}"
+  | .fmin dst a b => s!"    {renderVal dst} = fmin {renderVal a}, {renderVal b}"
+  | .fpromote dst a => s!"    {renderVal dst} = fpromote.f64 {renderVal a}"
+  | .splat dst ty src => s!"    {renderVal dst} = splat.{renderClifTy ty} {renderVal src}"
+  | .extractlane dst src lane => s!"    {renderVal dst} = extractlane {renderVal src}, {lane}"
+  | .storeTyped ty val addr =>
+    s!"    store.{renderClifTy ty} notrap aligned {renderVal val}, {renderVal addr}"
+  | .rawInst s => s!"    {s}"
+  | .fneg dst a => s!"    {renderVal dst} = fneg {renderVal a}"
+  | .fcmp dst cond a b => s!"    {renderVal dst} = fcmp {cond} {renderVal a}, {renderVal b}"
+  | .bitcast dst ty src => s!"    {renderVal dst} = bitcast.{renderClifTy ty} {renderVal src}"
+  | .ctz dst a => s!"    {renderVal dst} = ctz {renderVal a}"
+  | .vhighBits dst a => s!"    {renderVal dst} = vhigh_bits.i32 {renderVal a}"
 
 def renderSigDecl (s : SigDecl) : String :=
   let params := String.intercalate ", " (s.params.map renderClifTy)
@@ -717,7 +863,7 @@ def renderSigDecl (s : SigDecl) : String :=
   s!"    sig{s.ref.id} = ({params}){retPart} system_v"
 
 def renderFnDecl (f : FnDecl) : String :=
-  s!"    fn{f.ref.id} = %{f.name} sig{f.sig.id}"
+  s!"    fn{f.ref.id} = {if f.colocated then "colocated %" else "%"}{f.name} sig{f.sig.id}"
 
 def renderBlock (b : BlockData) : String :=
   let paramStr := if b.params.isEmpty then ""
@@ -759,6 +905,23 @@ def noopFunction : String :=
 /-- Build a complete two-function CLIF program (noop + main) -/
 def buildProgram (mainBuilder : IRBuilder Unit) : String :=
   noopFunction ++ "\n" ++ buildFunction 1 mainBuilder
+
+/-- Build a noop function at a given function index (for multi-function programs) -/
+def noopAt (funcIdx : Nat) : String :=
+  buildFunction funcIdx do
+    let _ ← entryBlock
+    ret
+
+/-- Declare a colocated FFI function (intra-module call, e.g. colocated %ht_create) -/
+def declareColocatedFFI (name : String) (params : List ClifTy) (result : Option ClifTy) : IRBuilder FnRef := do
+  let sig ← declareSig params result
+  let s ← get
+  let ref : FnRef := { id := s.nextFn }
+  set { s with
+    nextFn := s.nextFn + 1
+    fns := s.fns ++ [{ ref := ref, name := name, sig := sig, colocated := true : FnDecl }]
+  }
+  pure ref
 
 -- ---------------------------------------------------------------------------
 -- High-level combinators

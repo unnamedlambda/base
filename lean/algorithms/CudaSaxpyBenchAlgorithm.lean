@@ -1,37 +1,15 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace CudaSaxpyBench
 
 /-
-  CUDA SAXPY benchmark algorithm — Cranelift JIT + CUDA PTX version.
-
-  SAXPY: y[i] = 2.0 * x[i] + y[i]
-
-  Payload (via execute data arg): [x floats: N][y floats: N]
-  Output (via execute_into out arg): [y result floats: N]
-
-  N is derived from data_len: N = data_len / 8 (two f32 arrays)
-
-  Memory layout (shared memory):
-    0x0000  RESERVED        (56 bytes, runtime-managed RuntimeHeader)
-    0x0100  PTX_SOURCE      (null-terminated PTX source, 4096 bytes)
-    0x1100  BIND_DESC       (8 bytes: [buf_id=0, buf_id=1] as 2 x i32)
-
-  Single CLIF function:
-    1. Read data_ptr, data_len, out_ptr from reserved region
-    2. cl_cuda_init
-    3. Compute N = data_len / 8, buf_size = N * 4
-    4. cl_cuda_create_buffer(buf_size) x 2 (x and y)
-    5. cl_cuda_upload_ptr(x_buf, data_ptr, buf_size)
-    6. cl_cuda_upload_ptr(y_buf, data_ptr + buf_size, buf_size)
-    7. cl_cuda_launch(ptx_off, 2, bind_off, grid, 1, 1, 256, 1, 1)
-    8. cl_cuda_download_ptr(y_buf, out_ptr, buf_size)
-    9. cl_cuda_cleanup
+  CUDA SAXPY: y[i] = 2.0 * x[i] + y[i]
+  Payload: [x floats: N][y floats: N], Output: [y result floats: N]
 -/
 
 def PTX_SOURCE_OFF : Nat := 0x0100
@@ -39,8 +17,6 @@ def BIND_DESC_OFF  : Nat := 0x1100
 def MEM_SIZE       : Nat := 0x1200
 def TIMEOUT_MS     : Nat := 120000
 
--- PTX kernel: y[i] = 2.0 * x[i] + y[i]
--- Block size 256, grid = ceil(N / 256).
 def ptxSource : String :=
   ".version 7.0\n" ++
   ".target sm_50\n" ++
@@ -70,83 +46,64 @@ def ptxSource : String :=
   "\n" ++
   "    ld.global.f32 %fx, [%rx];\n" ++
   "    ld.global.f32 %fy, [%ry];\n" ++
-  "    mov.f32 %fa, 0f40000000;\n" ++     -- 2.0f IEEE 754
+  "    mov.f32 %fa, 0f40000000;\n" ++
   "    fma.rn.f32 %fy, %fa, %fx, %fy;\n" ++
   "    st.global.f32 [%ry], %fy;\n" ++
   "\n" ++
   "    ret;\n" ++
   "}\n"
 
--- fn0: noop
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+def mainFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataLen ← load64 (← absAddr ptr 0x20)
+  let outPtr  ← load64 (← absAddr ptr 0x28)
 
--- fn1: CUDA SAXPY orchestrator
-def clifCudaFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "\n" ++
-  "    fn0 = %cl_cuda_init sig0\n" ++
-  "    fn1 = %cl_cuda_create_buffer sig1\n" ++
-  "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
-  "    fn3 = %cl_cuda_download_ptr sig2\n" ++
-  "    fn4 = %cl_cuda_launch sig3\n" ++
-  "    fn5 = %cl_cuda_cleanup sig0\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x18\n" ++               -- data_ptr
-  "    v2 = load.i64 notrap aligned v0+0x20\n" ++               -- data_len
-  "    v3 = load.i64 notrap aligned v0+0x28\n" ++               -- out_ptr
-  "    v90 = iadd_imm v0, 0x10\n" ++
-  -- CUDA init
-  "    call fn0(v90)\n" ++
-  "    v91 = load.i64 notrap aligned v0+0x10\n" ++
-  -- Compute: N = data_len / 8, buf_size = N * 4 = data_len / 2
-  "    v4 = ushr_imm v2, 1\n" ++                                -- buf_size = data_len / 2
-  -- Create 2 device buffers (x and y)
-  "    v5 = call fn1(v91, v4)\n" ++
-  "    v6 = call fn1(v91, v4)\n" ++
-  -- Upload x from data_ptr
-  "    v7 = call fn2(v91, v5, v1, v4)\n" ++
-  -- Upload y from data_ptr + buf_size
-  "    v8 = iadd v1, v4\n" ++                                   -- data_ptr + buf_size
-  "    v9 = call fn2(v91, v6, v8, v4)\n" ++
-  -- Compute grid: ceil(N / 256) = (N + 255) / 256
-  -- N = buf_size / 4
-  "    v10 = ushr_imm v4, 2\n" ++                               -- N
-  "    v11 = ireduce.i32 v10\n" ++                               -- N as i32
-  "    v12 = iconst.i32 255\n" ++
-  "    v13 = iadd v11, v12\n" ++                                 -- N + 255
-  "    v14 = iconst.i32 256\n" ++
-  "    v15 = udiv v13, v14\n" ++                                 -- gridX = ceil(N/256)
-  "    v16 = iconst.i32 1\n" ++
-  -- Launch PTX
-  "    v17 = iadd_imm v0, 256\n" ++
-  "    v18 = iconst.i32 2\n" ++                                  -- 2 buffer bindings
-  "    v19 = iadd_imm v0, 4352\n" ++
-  "    v20 = call fn4(v91, v17, v18, v19, v15, v16, v16, v14, v16, v16)\n" ++
-  -- Download y result to out_ptr
-  "    v21 = call fn3(v91, v6, v3, v4)\n" ++
-  -- CUDA cleanup
-  "    call fn5(v90)\n" ++
-  "    return\n" ++
-  "}\n"
+  let fnInit         ← declareFFI "cl_cuda_init"          [.i64]                    none
+  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer" [.i64, .i64]             (some .i32)
+  let fnUploadPtr    ← declareFFI "cl_cuda_upload_ptr"    [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDownloadPtr  ← declareFFI "cl_cuda_download_ptr"  [.i64, .i32, .i64, .i64] (some .i32)
+  let fnLaunch       ← declareFFI "cl_cuda_launch"
+    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnCleanup      ← declareFFI "cl_cuda_cleanup"       [.i64]                    none
 
-def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifCudaFn
+  let ctxSlotPtr ← absAddr ptr 0x10   -- ContextSlots.cuda
+  callVoid fnInit [ctxSlotPtr]
+  let ctxPtr ← load64 ctxSlotPtr
 
-def ptxBytes : List UInt8 :=
-  ptxSource.toUTF8.toList ++ [0]
+  -- buf_size = data_len / 2 (each of x and y is half)
+  let bufSize ← ushrImm dataLen 1
+  let xBufId  ← call fnCreateBuffer [ctxPtr, bufSize]
+  let yBufId  ← call fnCreateBuffer [ctxPtr, bufSize]
 
-def bindDesc : List UInt8 :=
-  -- buf_id=0 (x), buf_id=1 (y) — two i32 values
-  [0, 0, 0, 0, 1, 0, 0, 0]
+  -- Upload x from data_ptr, y from data_ptr + buf_size
+  let _ ← call fnUploadPtr [ctxPtr, xBufId, dataPtr, bufSize]
+  let yDataPtr ← iadd dataPtr bufSize
+  let _ ← call fnUploadPtr [ctxPtr, yBufId, yDataPtr, bufSize]
+
+  -- Grid: ceil(N / 256) where N = buf_size / 4
+  let bigN  ← ireduce32 (← ushrImm bufSize 2)
+  let c255  ← iconst32 255
+  let nPlus ← iadd bigN c255
+  let c256  ← iconst32 256
+  let gridX ← udiv nPlus c256
+  let one   ← iconst32 1
+
+  let ptxAddr  ← absAddr ptr PTX_SOURCE_OFF
+  let two      ← iconst32 2
+  let bindAddr ← absAddr ptr BIND_DESC_OFF
+  let _ ← call fnLaunch [ctxPtr, ptxAddr, two, bindAddr,
+                          gridX, one, one, c256, one, one]
+
+  let _ ← call fnDownloadPtr [ctxPtr, yBufId, outPtr, bufSize]
+
+  callVoid fnCleanup [ctxSlotPtr]
+  ret
+
+def clifIR : String := buildProgram mainFn
+
+def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
+def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]
 
 def buildInitialMemory : List UInt8 :=
   let reserved := zeros 0x0100
@@ -154,23 +111,16 @@ def buildInitialMemory : List UInt8 :=
   let bind := bindDesc ++ zeros (MEM_SIZE - BIND_DESC_OFF - bindDesc.length)
   reserved ++ ptx ++ bind
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
-
-def buildConfig : BaseConfig := {
-  cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0,
-  initial_memory := buildInitialMemory
-}
-
-def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
 def artifacts : Array Json :=
-  #[toJsonEntry "cuda_saxpy_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "cuda_saxpy_algorithm" {
+    cranelift_ir := clifIR,
+    memory_size := MEM_SIZE,
+    context_offset := 0,
+    initial_memory := buildInitialMemory
+  } {
+    actions := mkCallActions 1,
+    cranelift_units := 0,
+    timeout_ms := some TIMEOUT_MS
+  }]
 
 end CudaSaxpyBench

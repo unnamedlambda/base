@@ -1,33 +1,14 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace GpuVecAddBench
 
 /-
-  GPU VecAdd benchmark algorithm — Cranelift JIT + wgpu version.
-
-  Payload (via execute data arg): [A floats][B floats]
-  Output (via execute_into out arg): [C floats] (A[i] + B[i])
-
-  Memory layout (shared memory):
-    0x0000  RESERVED        (40 bytes, runtime-managed)
-    0x0100  WGSL_SHADER     (null-terminated WGSL source)
-    0x1100  BIND_DESC       (8 bytes: [buf_id=0, read_only=0])
-
-  Single CLIF function:
-    1. Read data_ptr, data_len, out_ptr from reserved region
-    2. cl_gpu_init
-    3. Compute n = data_len / 8, buffer_size = data_len, workgroups = (n+63)/64
-    4. cl_gpu_create_buffer(buffer_size)
-    5. cl_gpu_upload_ptr(buf_id, data_ptr, buffer_size) — zero copy from payload
-    6. cl_gpu_create_pipeline(shader_off, bind_off, 1)
-    7. cl_gpu_dispatch(pipe_id, workgroups, 1, 1)
-    8. cl_gpu_download_ptr(buf_id, 0, out_ptr, n*4) — zero copy to output
-    9. cl_gpu_cleanup
+  GPU VecAdd: C[i] = A[i] + B[i], data = [A floats][B floats], output = [C floats]
 -/
 
 def WGSL_SHADER_OFF : Nat := 0x0100
@@ -46,66 +27,45 @@ def wgslShader : String :=
   "    data[i] = data[i] + data[n + i];\n" ++
   "}\n"
 
--- fn0: noop
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+def mainFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataLen ← load64 (← absAddr ptr 0x20)
+  let outPtr  ← load64 (← absAddr ptr 0x28)
 
--- fn1: GPU VecAdd orchestrator
-def clifGpuFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i64, i64, i32) -> i32 system_v\n" ++
-  "    sig3 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v\n" ++
-  "\n" ++
-  "    fn0 = %cl_gpu_init sig0\n" ++
-  "    fn1 = %cl_gpu_create_buffer sig1\n" ++
-  "    fn2 = %cl_gpu_create_pipeline sig2\n" ++
-  "    fn3 = %cl_gpu_upload_ptr sig3\n" ++
-  "    fn4 = %cl_gpu_dispatch sig4\n" ++
-  "    fn5 = %cl_gpu_download_ptr sig5\n" ++
-  "    fn6 = %cl_gpu_cleanup sig0\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x18\n" ++               -- data_ptr
-  "    v2 = load.i64 notrap aligned v0+0x20\n" ++               -- data_len
-  "    v3 = load.i64 notrap aligned v0+0x28\n" ++               -- out_ptr
-  "    v90 = iadd_imm v0, 8\n" ++
-  -- GPU init
-  "    call fn0(v90)\n" ++
-  "    v91 = load.i64 notrap aligned v0+0x08\n" ++
-  -- Compute: n = data_len / 8, workgroups = (n+63)/64
-  "    v4 = ushr_imm v2, 3\n" ++                                -- n = data_len / 8
-  "    v5 = iadd_imm v4, 63\n" ++
-  "    v6 = ushr_imm v5, 6\n" ++                                -- workgroups = (n+63)/64
-  "    v7 = ireduce.i32 v6\n" ++
-  -- Create buffer (size = data_len)
-  "    v10 = call fn1(v91, v2)\n" ++
-  -- Upload from payload
-  "    v11 = call fn3(v91, v10, v1, v2)\n" ++
-  -- Create pipeline
-  "    v12 = iadd_imm v0, 256\n" ++
-  "    v13 = iadd_imm v0, 4352\n" ++
-  "    v14 = iconst.i32 1\n" ++
-  "    v15 = call fn2(v91, v12, v13, v14)\n" ++
-  -- Dispatch
-  "    v16 = call fn4(v91, v15, v7, v14, v14)\n" ++
-  -- Download first n floats to out_ptr (buf_offset=0)
-  "    v17 = ishl_imm v4, 2\n" ++                               -- n * 4 bytes
-  "    v18 = iconst.i64 0\n" ++                                  -- buf_offset = 0
-  "    v19 = call fn5(v91, v10, v18, v3, v17)\n" ++
-  -- GPU cleanup
-  "    call fn6(v90)\n" ++
-  "    return\n" ++
-  "}\n"
+  let fnInit          ← declareFFI "cl_gpu_init"            [.i64]                    none
+  let fnCreateBuffer  ← declareFFI "cl_gpu_create_buffer"   [.i64, .i64]             (some .i32)
+  let fnCreatePipeline← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
+  let fnUploadPtr     ← declareFFI "cl_gpu_upload_ptr"      [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDispatch      ← declareFFI "cl_gpu_dispatch"        [.i64, .i32, .i32, .i32, .i32] (some .i32)
+  let fnDownloadPtr   ← declareFFI "cl_gpu_download_ptr"    [.i64, .i32, .i64, .i64, .i64] (some .i32)
+  let fnCleanup       ← declareFFI "cl_gpu_cleanup"         [.i64]                    none
 
-def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifGpuFn
+  let ctxSlotPtr ← absAddr ptr 8   -- ContextSlots.wgpu
+  callVoid fnInit [ctxSlotPtr]
+  let ctxPtr ← load64 ctxSlotPtr
+
+  -- n = data_len / 8, workgroups = (n+63)/64
+  let n   ← ushrImm dataLen 3
+  let wg  ← ireduce32 (← ushrImm (← iaddImm n 63) 6)
+  let one ← iconst32 1
+
+  let bufId ← call fnCreateBuffer [ctxPtr, dataLen]
+  let _ ← call fnUploadPtr [ctxPtr, bufId, dataPtr, dataLen]
+
+  let shaderAddr ← absAddr ptr WGSL_SHADER_OFF
+  let bindAddr   ← absAddr ptr BIND_DESC_OFF
+  let pipeId ← call fnCreatePipeline [ctxPtr, shaderAddr, bindAddr, one]
+  let _ ← call fnDispatch [ctxPtr, pipeId, wg, one, one]
+
+  let nBytes ← ishlImm n 2
+  let bufOff ← iconst64 0
+  let _ ← call fnDownloadPtr [ctxPtr, bufId, bufOff, outPtr, nBytes]
+
+  callVoid fnCleanup [ctxSlotPtr]
+  ret
+
+def clifIR : String := buildProgram mainFn
 
 def wgslBytes : List UInt8 :=
   wgslShader.toUTF8.toList ++ [0]
@@ -119,23 +79,16 @@ def buildInitialMemory : List UInt8 :=
   let bind := bindDesc ++ zeros (MEM_SIZE - BIND_DESC_OFF - bindDesc.length)
   reserved ++ shader ++ bind
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
-
-def buildConfig : BaseConfig := {
-  cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0,
-  initial_memory := buildInitialMemory
-}
-
-def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
 def artifacts : Array Json :=
-  #[toJsonEntry "gpu_vecadd_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "gpu_vecadd_algorithm" {
+    cranelift_ir := clifIR,
+    memory_size := MEM_SIZE,
+    context_offset := 0,
+    initial_memory := buildInitialMemory
+  } {
+    actions := mkCallActions 1,
+    cranelift_units := 0,
+    timeout_ms := some TIMEOUT_MS
+  }]
 
 end GpuVecAddBench
