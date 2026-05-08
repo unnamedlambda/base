@@ -16,8 +16,8 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 mod units;
 
 use crate::units::{
-    compile_cranelift_ir, cranelift_unit_task_mailbox, init_ht_context, load_sized, order_from_u32,
-    CraneliftHashTableContext, Mailbox, SharedMemory, THREAD_COMPILED_FNS,
+    compile_cranelift_ir, cranelift_unit_task_mailbox, load_sized, order_from_u32, Mailbox,
+    SharedMemory, THREAD_COMPILED_FNS,
 };
 use base_types::RuntimeHeader;
 
@@ -33,7 +33,6 @@ pub struct Base {
     shared: Arc<SharedMemory>,
     clif_fns: Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>,
     _module: Option<cranelift_jit::JITModule>,
-    ht_ctx_ptr: Option<*mut CraneliftHashTableContext>,
     runtime_header: RuntimeHeader,
 }
 
@@ -85,13 +84,6 @@ impl Base {
             });
         }
 
-        // Init HT context at the explicit runtime-header slot.
-        let ht_ctx_ptr = if clif_fns.is_some() {
-            Some(init_ht_context(&shared, runtime_header.ht_context_ptr_offset))
-        } else {
-            None
-        };
-
         info!("Base instance created");
         Ok(Base {
             memory,
@@ -99,7 +91,6 @@ impl Base {
             shared,
             clif_fns,
             _module: module,
-            ht_ctx_ptr,
             runtime_header,
         })
     }
@@ -382,14 +373,6 @@ impl Base {
         let batches = build_record_batches(&self.memory, &output_schemas);
         info!("execution complete");
         Ok(batches)
-    }
-}
-
-impl Drop for Base {
-    fn drop(&mut self) {
-        if let Some(ctx_ptr) = self.ht_ctx_ptr {
-            unsafe { drop(Box::from_raw(ctx_ptr)) };
-        }
     }
 }
 

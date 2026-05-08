@@ -41,6 +41,8 @@ structure K where
   frameSize : Val     -- iconst 24
   space : Val         -- iconst 32 (' ')
   newline : Val       -- iconst 10 ('\n')
+  fnHtInit : FnRef
+  fnHtCleanup : FnRef
   fnHtCreate : FnRef
   fnHtInsert : FnRef
   fnHtLookup : FnRef
@@ -154,7 +156,10 @@ def emitSetup (k : K) (b : B) : IRBuilder Val := do
   -- Read source file
   let _ ← readFile k.ptr k.fnFileRead INPUT_PATH SOURCE_BUF
   -- Create hash table
-  let ctxPtr ← load64 k.ptr  -- HT ctx ptr at offset 0
+  let htSlot ← iconst64 AlgorithmLib.ContextSlots.ht
+  let htSlotPtr ← iadd k.ptr htSlot
+  callVoid k.fnHtInit [htSlotPtr]
+  let ctxPtr ← load64 htSlotPtr
   let _ ← call k.fnHtCreate [ctxPtr]
   -- Push initial stack frame: tag=255 (done), val=0, extra=0
   let stackAddr ← iadd k.ptr k.stackOff
@@ -1669,6 +1674,9 @@ def emitOutput (k : K) (b : B) : IRBuilder Unit := do
   istore8 k.zero nullAddr
   -- Write output file (size=0 → null-terminated write, stops before null byte)
   let _ ← writeFile0 k.ptr k.fnFileWrite OUTPUT_PATH OUTPUT_BUF k.zero
+  let htSlot ← iconst64 AlgorithmLib.ContextSlots.ht
+  let htSlotPtr ← iadd k.ptr htSlot
+  callVoid k.fnHtCleanup [htSlotPtr]
   ret
 
 -- ---------------------------------------------------------------------------
@@ -1680,6 +1688,8 @@ def clifIrSource : String := buildProgram do
   -- Declare FFI
   let fnFileRead ← declareFileRead
   let fnFileWrite ← declareFileWrite
+  let fnHtInit ← declareFFI "cl_ht_init" [.i64] none
+  let fnHtCleanup ← declareFFI "cl_ht_cleanup" [.i64] none
   let fnHtCreate ← declareFFI "ht_create" [.i64] (some .i32)
   let fnHtInsert ← declareFFI "ht_insert" [.i64, .i64, .i32, .i64, .i32] none
   let fnHtLookup ← declareFFI "ht_lookup" [.i64, .i64, .i32, .i64] (some .i32)
@@ -1791,7 +1801,7 @@ def clifIrSource : String := buildProgram do
   let k : K := {
     ptr, zero, one, srcBase, identOff, htValOff, outBufOff, stackOff,
     frameSize, space, newline,
-    fnHtCreate, fnHtInsert, fnHtLookup, fnFileRead, fnFileWrite
+    fnHtInit, fnHtCleanup, fnHtCreate, fnHtInsert, fnHtLookup, fnFileRead, fnFileWrite
   }
 
   let b : B := {

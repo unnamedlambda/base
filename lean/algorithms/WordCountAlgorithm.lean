@@ -30,7 +30,7 @@ namespace WordCountBench
     5. cl_file_write result
 
   Uses HT primitives: ht_create, ht_increment, ht_count, ht_get_entry.
-  HT context pointer at offset 0x00 is written by runtime (context_offset := 0).
+  HT context pointer slot lives at offset 0x00 and is initialized by CLIF.
 -/
 
 def CURRENT_KEY     : Nat := 0x0038
@@ -54,21 +54,26 @@ def clifNoopFn : String :=
 -- fn1: Word count orchestrator
 def clifWcFn : String :=
   "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "    sig0 = (i64) system_v\n" ++
   "    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "    sig2 = (i64) -> i32 system_v\n" ++
-  "    sig3 = (i64, i64, i32, i64) -> i64 system_v\n" ++
-  "    sig4 = (i64, i32, i64, i64) -> i32 system_v\n" ++
+  "    sig2 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
+  "    sig3 = (i64) -> i32 system_v\n" ++
+  "    sig4 = (i64, i64, i32, i64) -> i64 system_v\n" ++
+  "    sig5 = (i64, i32, i64, i64) -> i32 system_v\n" ++
   "\n" ++
-  "    fn0 = %cl_file_read sig0\n" ++
-  "    fn1 = %cl_file_write sig1\n" ++
-  "    fn2 = colocated %ht_create sig2\n" ++
-  "    fn3 = colocated %ht_increment sig3\n" ++
-  "    fn4 = colocated %ht_count sig2\n" ++
-  "    fn5 = colocated %ht_get_entry sig4\n" ++
+  "    fn0 = %cl_ht_init sig0\n" ++
+  "    fn1 = %cl_ht_cleanup sig0\n" ++
+  "    fn2 = %cl_file_read sig1\n" ++
+  "    fn3 = %cl_file_write sig2\n" ++
+  "    fn4 = colocated %ht_create sig3\n" ++
+  "    fn5 = colocated %ht_increment sig4\n" ++
+  "    fn6 = colocated %ht_count sig3\n" ++
+  "    fn7 = colocated %ht_get_entry sig5\n" ++
   "\n" ++
   "block0(v0: i64):\n" ++
   "    v1 = load.i64 notrap aligned v0+0x18\n" ++    -- data_ptr (payload)
+  "    v190 = iadd_imm v0, 0\n" ++
+  "    call fn0(v190)\n" ++
   "    v600 = iconst.i64 0\n" ++
   "    jump block1(v600)\n" ++
   "\n" ++
@@ -105,10 +110,10 @@ def clifWcFn : String :=
   "    v4 = iconst.i64 81920\n" ++                   -- INPUT_DATA (0x14000)
   "    v5 = iconst.i64 0\n" ++
   "    v700 = iconst.i64 0\n" ++
-  "    v7 = call fn0(v0, v3, v4, v5, v700)\n" ++    -- bytes_read = file_size
+  "    v7 = call fn2(v0, v3, v4, v5, v700)\n" ++    -- bytes_read = file_size
   -- Create HT
-  "    v2 = load.i64 v0\n" ++                        -- HT context pointer (offset 0)
-  "    v800 = call fn2(v2)\n" ++                     -- ht_create(ctx)
+  "    v2 = load.i64 v0\n" ++                        -- HT context pointer (slot 0)
+  "    v800 = call fn4(v2)\n" ++                     -- ht_create(ctx)
   -- Setup constants
   "    v8 = iconst.i64 0\n" ++                       -- zero
   "    v9 = iconst.i64 32\n" ++                      -- space
@@ -156,7 +161,7 @@ def clifWcFn : String :=
   "block9(v43: i64, v44: i64, v45: i64):\n" ++
   "    v46 = iadd v0, v12\n" ++                      -- CURRENT_KEY addr
   "    store.i64 v45, v46\n" ++
-  "    v47 = call fn3(v44, v46, v13, v11)\n" ++      -- ht_increment(ctx, key, 8, 1)
+  "    v47 = call fn5(v44, v46, v13, v11)\n" ++      -- ht_increment(ctx, key, 8, 1)
   "    jump block5(v43, v44)\n" ++
   "\n" ++
   -- block10: accumulate byte
@@ -172,7 +177,7 @@ def clifWcFn : String :=
   -- === FORMAT PHASE ===
   -- block20: get entry count from HT
   "block20(v80: i64):\n" ++
-  "    v81 = call fn4(v80)\n" ++                     -- ht_count(ctx)
+  "    v81 = call fn6(v80)\n" ++                     -- ht_count(ctx)
   "    v82 = uextend.i64 v81\n" ++
   "    jump block21(v8, v18, v80, v82)\n" ++
   "\n" ++
@@ -186,7 +191,7 @@ def clifWcFn : String :=
   "    v92 = ireduce.i32 v88\n" ++                   -- index as i32
   "    v93 = iadd v0, v12\n" ++                      -- key_out (CURRENT_KEY)
   "    v94 = iadd v0, v19\n" ++                      -- val_out (RESULT_SLOT)
-  "    v95 = call fn5(v90, v92, v93, v94)\n" ++      -- ht_get_entry
+  "    v95 = call fn7(v90, v92, v93, v94)\n" ++      -- ht_get_entry
   "    v96 = load.i64 v93\n" ++                      -- word u64
   "    v97 = load.i64 v94\n" ++                      -- count u64
   "    jump block23(v88, v89, v90, v91, v96, v97, v8)\n" ++
@@ -256,7 +261,8 @@ def clifWcFn : String :=
   "    v171 = iconst.i64 16384\n" ++                 -- OUTPUT_BUF
   "    v172 = iconst.i64 0\n" ++
   "    v173 = iconst.i64 0\n" ++
-  "    v174 = call fn1(v0, v170, v171, v172, v173)\n" ++
+  "    v174 = call fn3(v0, v170, v171, v172, v173)\n" ++
+  "    call fn1(v190)\n" ++
   "    return\n" ++
   "}\n"
 

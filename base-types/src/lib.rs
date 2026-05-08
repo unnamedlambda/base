@@ -45,21 +45,15 @@ pub struct OutputBatchSchema {
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeHeader {
-    pub ht_context_ptr_offset: usize,
     pub data_ptr_offset: usize,
     pub data_len_offset: usize,
     pub out_ptr_offset: usize,
     pub out_len_offset: usize,
-    pub wgpu_context_ptr_offset: usize,
-    pub cuda_context_ptr_offset: usize,
 }
 
 impl Default for RuntimeHeader {
     fn default() -> Self {
         Self {
-            ht_context_ptr_offset: 0x00,
-            wgpu_context_ptr_offset: 0x08,
-            cuda_context_ptr_offset: 0x10,
             data_ptr_offset: 0x18,
             data_len_offset: 0x20,
             out_ptr_offset: 0x28,

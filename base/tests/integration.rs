@@ -11,9 +11,6 @@ use tempfile::TempDir;
 
 fn legacy_runtime_header() -> RuntimeHeader {
     RuntimeHeader {
-        ht_context_ptr_offset: 0,
-        wgpu_context_ptr_offset: 0,
-        cuda_context_ptr_offset: 0,
         data_ptr_offset: 8,
         data_len_offset: 16,
         out_ptr_offset: 24,
@@ -6036,20 +6033,24 @@ fn test_clif_call_hash_table() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-    sig0 = (i64) -> i32 system_v
-    sig1 = (i64, i64, i32, i64, i32) system_v
-    sig2 = (i64, i64, i32, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %ht_create sig0
-    fn1 = %ht_insert sig1
-    fn2 = %ht_lookup sig2
-    fn3 = %cl_file_write sig3
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i32 system_v
+    sig2 = (i64, i64, i32, i64, i32) system_v
+    sig3 = (i64, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_ht_init sig0
+    fn1 = %ht_create sig1
+    fn2 = %ht_insert sig2
+    fn3 = %ht_lookup sig3
+    fn4 = %cl_file_write sig4
+    fn5 = %cl_ht_cleanup sig0
 block0(v0: i64):
-    ; Load HT context from offset 0
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
     v1 = load.i64 v0
 
     ; Create hash table
-    v2 = call fn0(v1)
+    v2 = call fn1(v1)
 
     ; Insert key "abc" (at offset 2000, len 3) → value 42 (at offset 2008, len 8)
     v3 = iconst.i64 2000
@@ -6058,19 +6059,20 @@ block0(v0: i64):
     v6 = iconst.i64 2008
     v7 = iadd v0, v6
     v8 = iconst.i32 8
-    call fn1(v1, v4, v5, v7, v8)
+    call fn2(v1, v4, v5, v7, v8)
 
     ; Lookup key "abc" → result at offset 2100
     v9 = iconst.i64 2100
     v10 = iadd v0, v9
-    v11 = call fn2(v1, v4, v5, v10)
+    v11 = call fn3(v1, v4, v5, v10)
 
     ; Write result (8 bytes at offset 2100) to file (path at offset 3000)
     v12 = iconst.i64 3000
     v13 = iconst.i64 2100
     v14 = iconst.i64 0
     v15 = iconst.i64 8
-    v16 = call fn3(v0, v12, v13, v14, v15)
+    v16 = call fn4(v0, v12, v13, v14, v15)
+    call fn5(v90)
     return
 }}"#
     );

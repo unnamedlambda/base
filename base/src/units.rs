@@ -212,18 +212,16 @@ impl CraneliftHashTableContext {
     }
 }
 
-/// Create the hash table context and store its pointer at the given offset in shared memory.
-/// Returns the raw pointer so the caller can drop it when done.
-pub(crate) fn init_ht_context(
-    shared: &SharedMemory,
-    offset: usize,
-) -> *mut CraneliftHashTableContext {
+unsafe extern "C" fn cl_ht_init(ctx_slot_ptr: *mut *mut CraneliftHashTableContext) {
     let ctx = Box::new(CraneliftHashTableContext::new());
-    let ctx_ptr = Box::into_raw(ctx);
-    unsafe {
-        shared.store_u64(offset, ctx_ptr as u64, Ordering::Release);
+    let _ = write_ctx_slot(ctx_slot_ptr, Box::into_raw(ctx));
+}
+
+unsafe extern "C" fn cl_ht_cleanup(ctx_slot_ptr: *mut *mut CraneliftHashTableContext) {
+    let ctx_ptr = clear_ctx_slot::<CraneliftHashTableContext>(ctx_slot_ptr);
+    if !ctx_ptr.is_null() {
+        drop(Box::from_raw(ctx_ptr));
     }
-    ctx_ptr
 }
 
 unsafe extern "C" fn cl_ht_create(ctx: *mut CraneliftHashTableContext) -> u32 {
@@ -2235,6 +2233,8 @@ pub(crate) fn compile_cranelift_ir(
         .unwrap();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
 
+    builder.symbol("cl_ht_init", cl_ht_init as *const u8);
+    builder.symbol("cl_ht_cleanup", cl_ht_cleanup as *const u8);
     builder.symbol("ht_create", cl_ht_create as *const u8);
     builder.symbol("ht_lookup", cl_ht_lookup as *const u8);
     builder.symbol("ht_insert", cl_ht_insert as *const u8);

@@ -57,9 +57,6 @@ instance : ToJson Action where
   ]
 
 structure RuntimeHeader where
-  htContextPtrOffset : Nat := 0x00
-  wgpuContextPtrOffset : Nat := 0x08
-  cudaContextPtrOffset : Nat := 0x10
   dataPtrOffset : Nat := 0x18
   dataLenOffset : Nat := 0x20
   outPtrOffset : Nat := 0x28
@@ -68,9 +65,6 @@ structure RuntimeHeader where
 
 instance : ToJson RuntimeHeader where
   toJson h := Json.mkObj [
-    ("ht_context_ptr_offset", toJson h.htContextPtrOffset),
-    ("wgpu_context_ptr_offset", toJson h.wgpuContextPtrOffset),
-    ("cuda_context_ptr_offset", toJson h.cudaContextPtrOffset),
     ("data_ptr_offset", toJson h.dataPtrOffset),
     ("data_len_offset", toJson h.dataLenOffset),
     ("out_ptr_offset", toJson h.outPtrOffset),
@@ -89,9 +83,17 @@ structure BaseConfig where
   cranelift_ir : String
   memory_size : Nat
   runtime_header : RuntimeHeader := {}
-  context_offset : Nat := RuntimeHeader.default.htContextPtrOffset
+  context_offset : Nat := 0
   initial_memory : List UInt8 := []
   deriving Repr
+
+namespace ContextSlots
+
+def ht : Nat := 0x00
+def wgpu : Nat := 0x08
+def cuda : Nat := 0x10
+
+end ContextSlots
 
 instance : ToJson BaseConfig where
   toJson c := Json.mkObj [
@@ -809,48 +811,48 @@ def declareGpuFFI : IRBuilder GpuSetup := do
   let fnCleanup ← declareFFI "cl_gpu_cleanup" [.i64] none
   pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnCreatePipeline, fnDispatch, fnCleanup }
 
-def gpuCtxSlotPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val :=
-  absAddr ptr hdr.wgpuContextPtrOffset
+def gpuCtxSlotPtr (ptr : Val) (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Val :=
+  absAddr ptr slotOffset
 
-def gpuCtxPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let slotPtr ← gpuCtxSlotPtr ptr hdr
+def gpuCtxPtr (ptr : Val) (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Val := do
+  let slotPtr ← gpuCtxSlotPtr ptr slotOffset
   load64 slotPtr
 
-def gpuInit (gpu : GpuSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let slotPtr ← gpuCtxSlotPtr ptr hdr
+def gpuInit (gpu : GpuSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Unit := do
+  let slotPtr ← gpuCtxSlotPtr ptr slotOffset
   callVoid gpu.fnInit [slotPtr]
 
 def gpuCreateBuffer (gpu : GpuSetup) (ptr size : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← gpuCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Val := do
+  let ctxPtr ← gpuCtxPtr ptr slotOffset
   call gpu.fnCreateBuffer [ctxPtr, size]
 
 def gpuCreatePipeline (gpu : GpuSetup) (ptr shaderOff bindOff nBindings : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← gpuCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Val := do
+  let ctxPtr ← gpuCtxPtr ptr slotOffset
   let shaderPtr ← iadd ptr shaderOff
   let bindPtr ← iadd ptr bindOff
   call gpu.fnCreatePipeline [ctxPtr, shaderPtr, bindPtr, nBindings]
 
 def gpuUpload (gpu : GpuSetup) (ptr bufId srcOff size : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← gpuCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Val := do
+  let ctxPtr ← gpuCtxPtr ptr slotOffset
   let srcPtr ← iadd ptr srcOff
   call gpu.fnUpload [ctxPtr, bufId, srcPtr, size]
 
 def gpuDownload (gpu : GpuSetup) (ptr bufId dstOff size : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← gpuCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Val := do
+  let ctxPtr ← gpuCtxPtr ptr slotOffset
   let dstPtr ← iadd ptr dstOff
   call gpu.fnDownload [ctxPtr, bufId, dstPtr, size]
 
 def gpuDispatch (gpu : GpuSetup) (ptr pipelineId wgX wgY wgZ : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← gpuCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Val := do
+  let ctxPtr ← gpuCtxPtr ptr slotOffset
   call gpu.fnDispatch [ctxPtr, pipelineId, wgX, wgY, wgZ]
 
-def gpuCleanup (gpu : GpuSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let slotPtr ← gpuCtxSlotPtr ptr hdr
+def gpuCleanup (gpu : GpuSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.wgpu) : IRBuilder Unit := do
+  let slotPtr ← gpuCtxSlotPtr ptr slotOffset
   callVoid gpu.fnCleanup [slotPtr]
 
 /-- Read a file into shared memory. Returns bytes read.
@@ -1010,48 +1012,48 @@ def declareCudaFFI : IRBuilder CudaSetup := do
   let fnCleanup ← declareFFI "cl_cuda_cleanup" [.i64] none
   pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnFreeBuffer, fnLaunch, fnCleanup }
 
-def cudaCtxSlotPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val :=
-  absAddr ptr hdr.cudaContextPtrOffset
+def cudaCtxSlotPtr (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val :=
+  absAddr ptr slotOffset
 
-def cudaCtxPtr (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let slotPtr ← cudaCtxSlotPtr ptr hdr
+def cudaCtxPtr (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let slotPtr ← cudaCtxSlotPtr ptr slotOffset
   load64 slotPtr
 
-def cudaInit (cuda : CudaSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let slotPtr ← cudaCtxSlotPtr ptr hdr
+def cudaInit (cuda : CudaSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Unit := do
+  let slotPtr ← cudaCtxSlotPtr ptr slotOffset
   callVoid cuda.fnInit [slotPtr]
 
 def cudaCreateBuffer (cuda : CudaSetup) (ptr size : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← cudaCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
   call cuda.fnCreateBuffer [ctxPtr, size]
 
 def cudaUpload (cuda : CudaSetup) (ptr bufId srcOff size : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← cudaCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
   let srcPtr ← iadd ptr srcOff
   call cuda.fnUpload [ctxPtr, bufId, srcPtr, size]
 
 def cudaDownload (cuda : CudaSetup) (ptr bufId dstOff size : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← cudaCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
   let dstPtr ← iadd ptr dstOff
   call cuda.fnDownload [ctxPtr, bufId, dstPtr, size]
 
 def cudaFreeBuffer (cuda : CudaSetup) (ptr bufId : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← cudaCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
   call cuda.fnFreeBuffer [ctxPtr, bufId]
 
 def cudaLaunch (cuda : CudaSetup) (ptr kernelOff nBufs bindOff gridX gridY gridZ blockX blockY blockZ : Val)
-    (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Val := do
-  let ctxPtr ← cudaCtxPtr ptr hdr
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
   let kernelPtr ← iadd ptr kernelOff
   let bindPtr ← iadd ptr bindOff
   call cuda.fnLaunch [ctxPtr, kernelPtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ]
 
-def cudaCleanup (cuda : CudaSetup) (ptr : Val) (hdr : RuntimeHeader := RuntimeHeader.default) : IRBuilder Unit := do
-  let slotPtr ← cudaCtxSlotPtr ptr hdr
+def cudaCleanup (cuda : CudaSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Unit := do
+  let slotPtr ← cudaCtxSlotPtr ptr slotOffset
   callVoid cuda.fnCleanup [slotPtr]
 
 /-- Read a file using typed field handles for filename and data regions -/
