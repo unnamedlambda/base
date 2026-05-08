@@ -1873,14 +1873,13 @@ unsafe extern "C" fn cl_lmdb_init(ctx_slot_ptr: *mut *mut CraneliftLmdbContext) 
 
 unsafe extern "C" fn cl_lmdb_open(
     ctx_ptr: *mut CraneliftLmdbContext,
-    ptr: *mut u8,
-    path_off: i64,
+    path_ptr: *const u8,
     map_size_mb: i32,
 ) -> i32 {
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return -1;
     };
-    let path_str = read_cstr(ptr, path_off as usize);
+    let path_str = read_cstr_ptr(path_ptr);
     let map_size = if map_size_mb <= 0 {
         1024 * 1024 * 1024
     } else {
@@ -1917,19 +1916,18 @@ unsafe extern "C" fn cl_lmdb_open(
 
 unsafe extern "C" fn cl_lmdb_put(
     ctx_ptr: *mut CraneliftLmdbContext,
-    ptr: *mut u8,
     handle: u32,
-    key_off: i64,
+    key_ptr: *const u8,
     key_len: i32,
-    val_off: i64,
+    val_ptr: *const u8,
     val_len: i32,
 ) -> i32 {
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return -1;
     };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
-        let key = std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize);
-        let val = std::slice::from_raw_parts(ptr.add(val_off as usize), val_len as usize);
+        let key = std::slice::from_raw_parts(key_ptr, key_len as usize);
+        let val = std::slice::from_raw_parts(val_ptr, val_len as usize);
         let dbi = *dbi;
 
         if let Some(&txn) = ctx.active_write_txns.get(&handle) {
@@ -1957,17 +1955,16 @@ unsafe extern "C" fn cl_lmdb_put(
 
 unsafe extern "C" fn cl_lmdb_get(
     ctx_ptr: *mut CraneliftLmdbContext,
-    ptr: *mut u8,
     handle: u32,
-    key_off: i64,
+    key_ptr: *const u8,
     key_len: i32,
-    result_off: i64,
+    result_ptr: *mut u8,
 ) -> i32 {
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return -1;
     };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
-        let key = std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize);
+        let key = std::slice::from_raw_parts(key_ptr, key_len as usize);
         let dbi = *dbi;
 
         let (txn, owned) = match ctx.active_write_txns.get(&handle) {
@@ -1977,7 +1974,7 @@ unsafe extern "C" fn cl_lmdb_get(
         if !txn.is_null() {
             if let Some(val) = lmdb_raw_get(txn, dbi, key) {
                 let len = val.len() as u32;
-                let dst = ptr.add(result_off as usize);
+                let dst = result_ptr;
                 std::ptr::copy_nonoverlapping(len.to_le_bytes().as_ptr(), dst, 4);
                 std::ptr::copy_nonoverlapping(val.as_ptr(), dst.add(4), val.len());
                 if owned {
@@ -1990,23 +1987,21 @@ unsafe extern "C" fn cl_lmdb_get(
             }
         }
     }
-    let dst = ptr.add(result_off as usize);
-    std::ptr::copy_nonoverlapping(0xFFFF_FFFFu32.to_le_bytes().as_ptr(), dst, 4);
+    std::ptr::copy_nonoverlapping(0xFFFF_FFFFu32.to_le_bytes().as_ptr(), result_ptr, 4);
     -1
 }
 
 unsafe extern "C" fn cl_lmdb_delete(
     ctx_ptr: *mut CraneliftLmdbContext,
-    ptr: *mut u8,
     handle: u32,
-    key_off: i64,
+    key_ptr: *const u8,
     key_len: i32,
 ) -> i32 {
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return -1;
     };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
-        let key = std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize);
+        let key = std::slice::from_raw_parts(key_ptr, key_len as usize);
         let dbi = *dbi;
 
         if let Some(&txn) = ctx.active_write_txns.get(&handle) {
@@ -2067,22 +2062,18 @@ unsafe extern "C" fn cl_lmdb_commit_write_txn(
 
 unsafe extern "C" fn cl_lmdb_cursor_scan(
     ctx_ptr: *mut CraneliftLmdbContext,
-    ptr: *mut u8,
     handle: u32,
-    key_off: i64,
+    key_ptr: *const u8,
     key_len: i32,
     max_entries: i32,
-    result_off: i64,
+    result_ptr: *mut u8,
 ) -> i32 {
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return 0;
     };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
         let start_key = if key_len > 0 {
-            Some(std::slice::from_raw_parts(
-                ptr.add(key_off as usize),
-                key_len as usize,
-            ))
+            Some(std::slice::from_raw_parts(key_ptr, key_len as usize))
         } else {
             None
         };
@@ -2094,11 +2085,7 @@ unsafe extern "C" fn cl_lmdb_cursor_scan(
         };
         if !txn.is_null() {
             let result = lmdb_raw_cursor_scan(txn, dbi, start_key, max_entries as usize);
-            std::ptr::copy_nonoverlapping(
-                result.as_ptr(),
-                ptr.add(result_off as usize),
-                result.len(),
-            );
+            std::ptr::copy_nonoverlapping(result.as_ptr(), result_ptr, result.len());
             let count = u32::from_le_bytes(result[0..4].try_into().unwrap());
             if owned {
                 liblmdb_sys::mdb_txn_abort(txn);
@@ -2106,8 +2093,7 @@ unsafe extern "C" fn cl_lmdb_cursor_scan(
             return count as i32;
         }
     }
-    let dst = ptr.add(result_off as usize);
-    std::ptr::copy_nonoverlapping(0u32.to_le_bytes().as_ptr(), dst, 4);
+    std::ptr::copy_nonoverlapping(0u32.to_le_bytes().as_ptr(), result_ptr, 4);
     0
 }
 

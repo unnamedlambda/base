@@ -130,7 +130,9 @@ def emitIngest (k : K)
   let keyAddr ← iadd k.ptr k.keyScrOff
   store key32 keyAddr
   let valOff ← iadd k.empBufOff pos
-  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.ptr, k.empHandle, k.keyScrOff, k.keyLen4, valOff, rowLen32]
+  let keyPtr ← iadd k.ptr k.keyScrOff
+  let valPtr ← iadd k.ptr valOff
+  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.empHandle, keyPtr, k.keyLen4, valPtr, rowLen32]
   let nextKey ← iadd key k.one
   jump empLoop.ref [rowEnd, nextKey]
 
@@ -167,7 +169,9 @@ def emitIngest (k : K)
   let dKeyAddr ← iadd k.ptr k.keyScrOff
   store dKey32 dKeyAddr
   let dValOff ← iadd k.deptBufOff dPos
-  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.ptr, k.deptHandle, k.keyScrOff, k.keyLen4, dValOff, dRowLen32]
+  let dKeyPtr ← iadd k.ptr k.keyScrOff
+  let dValPtr ← iadd k.ptr dValOff
+  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.deptHandle, dKeyPtr, k.keyLen4, dValPtr, dRowLen32]
   let dNextKey ← iadd dKey k.one
   jump deptLoop.ref [dRowEnd, dNextKey]
 
@@ -189,7 +193,8 @@ def emitOutputPhases (k : K)
   let scanResOff ← iconst64 scanResult_off
   let keyLen0 ← iconst32 0
   let maxEntries ← iconst32 100
-  let scanCount ← call k.fnCursorScan [k.lmdbCtx, k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanResOff]
+  let scanResPtr ← iadd k.ptr scanResOff
+  let scanCount ← call k.fnCursorScan [k.lmdbCtx, k.empHandle, k.ptr, keyLen0, maxEntries, scanResPtr]
   let four ← iconst64 4
   jump scanHdr.ref [k.zero, four, k.zero]
 
@@ -224,7 +229,8 @@ def emitOutputPhases (k : K)
 
   startBlock scanDone
   let scanRes2Off ← iconst64 scanResult2_off
-  let filterCount ← call k.fnCursorScan [k.lmdbCtx, k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanRes2Off]
+  let scanRes2Ptr ← iadd k.ptr scanRes2Off
+  let filterCount ← call k.fnCursorScan [k.lmdbCtx, k.empHandle, k.ptr, keyLen0, maxEntries, scanRes2Ptr]
   jump filterHdr.ref [k.zero, four, k.zero]
 
   startBlock filterHdr
@@ -301,7 +307,8 @@ def emitOutputPhases (k : K)
   jump filterHdr.ref [skipNextI, skipNextByte, fFileOff]
 
   startBlock filterDone
-  let joinCount ← call k.fnCursorScan [k.lmdbCtx, k.ptr, k.deptHandle, k.zero, keyLen0, maxEntries, scanResOff]
+  let joinScanPtr ← iadd k.ptr scanResOff
+  let joinCount ← call k.fnCursorScan [k.lmdbCtx, k.deptHandle, k.ptr, keyLen0, maxEntries, joinScanPtr]
   jump joinHdr.ref [k.zero, four, k.zero]
 
   startBlock joinHdr
@@ -385,9 +392,11 @@ def clifIrSource (patternLen : Nat) : String := buildProgram do
   let lmdbCtx    ← load64 ptr
   let empDbOff   ← iconst64 empDbPath_off
   let maxDbs     ← iconst32 10
-  let empHandle  ← call lmdb.fnOpen [lmdbCtx, ptr, empDbOff, maxDbs]
+  let empDbPtr ← iadd ptr empDbOff
+  let empHandle  ← call lmdb.fnOpen [lmdbCtx, empDbPtr, maxDbs]
   let deptDbOff  ← iconst64 deptDbPath_off
-  let deptHandle ← call lmdb.fnOpen [lmdbCtx, ptr, deptDbOff, maxDbs]
+  let deptDbPtr ← iadd ptr deptDbOff
+  let deptHandle ← call lmdb.fnOpen [lmdbCtx, deptDbPtr, maxDbs]
   let _          ← call lmdb.fnBeginWriteTxn [lmdbCtx, empHandle]
   let one        ← iconst64 1
   let keyLen4    ← iconst32 4

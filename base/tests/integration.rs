@@ -2927,10 +2927,10 @@ fn test_clif_ffi_lmdb_put_get_delete() {
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
-    sig4 = (i64, i64, i32, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i32, i64, i32) -> i32 system_v
     sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -2943,20 +2943,20 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
-    v4 = iconst.i64 5000
+    v3 = call fn1(v91, v1, v2)
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 3
-    v6 = iconst.i64 5010
+    v6 = iadd_imm v0, 5010
     v7 = iconst.i32 6
-    v8 = call fn2(v91, v0, v3, v4, v5, v6, v7)
-    v9 = iconst.i64 5100
-    v10 = call fn3(v91, v0, v3, v4, v5, v9)
+    v8 = call fn2(v91, v3, v4, v5, v6, v7)
+    v9 = iadd_imm v0, 5100
+    v10 = call fn3(v91, v3, v4, v5, v9)
     store.i32 v10, v0+5300
-    v11 = call fn4(v91, v0, v3, v4, v5)
-    v12 = iconst.i64 5200
-    v13 = call fn3(v91, v0, v3, v4, v5, v12)
+    v11 = call fn4(v91, v3, v4, v5)
+    v12 = iadd_imm v0, 5200
+    v13 = call fn3(v91, v3, v4, v5, v12)
     store.i32 v13, v0+5304
     v14 = iconst.i64 4256
     v15 = iconst.i64 5300
@@ -3026,9 +3026,9 @@ fn test_clif_ffi_lmdb_batch_write() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig4 = (i64, i32) -> i32 system_v
     sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
@@ -3043,29 +3043,29 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     v4 = call fn4(v91, v3)
     v5 = iconst.i32 2
-    v6 = iconst.i64 5000
-    v7 = iconst.i64 5030
-    v8 = call fn2(v91, v0, v3, v6, v5, v7, v5)
-    v9 = iconst.i64 5010
-    v10 = iconst.i64 5040
-    v11 = call fn2(v91, v0, v3, v9, v5, v10, v5)
-    v12 = iconst.i64 5020
-    v13 = iconst.i64 5050
-    v14 = call fn2(v91, v0, v3, v12, v5, v13, v5)
+    v6 = iadd_imm v0, 5000
+    v7 = iadd_imm v0, 5030
+    v8 = call fn2(v91, v3, v6, v5, v7, v5)
+    v9 = iadd_imm v0, 5010
+    v10 = iadd_imm v0, 5040
+    v11 = call fn2(v91, v3, v9, v5, v10, v5)
+    v12 = iadd_imm v0, 5020
+    v13 = iadd_imm v0, 5050
+    v14 = call fn2(v91, v3, v12, v5, v13, v5)
     v15 = call fn5(v91, v3)
-    v16 = iconst.i64 5100
-    v17 = call fn3(v91, v0, v3, v6, v5, v16)
+    v16 = iadd_imm v0, 5100
+    v17 = call fn3(v91, v3, v6, v5, v16)
     store.i32 v17, v0+5400
-    v18 = iconst.i64 5200
-    v19 = call fn3(v91, v0, v3, v9, v5, v18)
+    v18 = iadd_imm v0, 5200
+    v19 = call fn3(v91, v3, v9, v5, v18)
     store.i32 v19, v0+5404
-    v20 = iconst.i64 5300
-    v21 = call fn3(v91, v0, v3, v12, v5, v20)
+    v20 = iadd_imm v0, 5300
+    v21 = call fn3(v91, v3, v12, v5, v20)
     store.i32 v21, v0+5408
     v22 = iconst.i64 4256
     v23 = iconst.i64 5400
@@ -3148,9 +3148,9 @@ fn test_clif_ffi_lmdb_cursor_scan() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -3162,22 +3162,22 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     v4 = iconst.i32 1
-    v5 = iconst.i64 5000
-    v6 = iconst.i64 5030
-    v7 = call fn2(v91, v0, v3, v5, v4, v6, v4)
-    v8 = iconst.i64 5010
-    v9 = call fn2(v91, v0, v3, v8, v4, v6, v4)
-    v10 = iconst.i64 5020
-    v11 = call fn2(v91, v0, v3, v10, v4, v6, v4)
-    v12 = iconst.i64 5040
+    v5 = iadd_imm v0, 5000
+    v6 = iadd_imm v0, 5030
+    v7 = call fn2(v91, v3, v5, v4, v6, v4)
+    v8 = iadd_imm v0, 5010
+    v9 = call fn2(v91, v3, v8, v4, v6, v4)
+    v10 = iadd_imm v0, 5020
+    v11 = call fn2(v91, v3, v10, v4, v6, v4)
+    v12 = iadd_imm v0, 5040
     v13 = iconst.i32 0
     v14 = iconst.i32 100
-    v15 = iconst.i64 5100
-    v16 = call fn3(v91, v0, v3, v12, v13, v14, v15)
+    v15 = iadd_imm v0, 5100
+    v16 = call fn3(v91, v3, v12, v13, v14, v15)
     store.i32 v16, v0+5500
     v17 = iconst.i64 4256
     v18 = iconst.i64 5500
@@ -3241,9 +3241,9 @@ fn test_clif_ffi_lmdb_get_nonexistent_key() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -3255,18 +3255,18 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
-    v4 = iconst.i64 5000
+    v3 = call fn1(v91, v1, v2)
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 1
-    v6 = iconst.i64 5010
+    v6 = iadd_imm v0, 5010
     v7 = iconst.i32 3
-    v8 = call fn2(v91, v0, v3, v4, v5, v6, v7)
+    v8 = call fn2(v91, v3, v4, v5, v6, v7)
     store.i32 v8, v0+5100
-    v9 = iconst.i64 5001
-    v10 = iconst.i64 5200
-    v11 = call fn3(v91, v0, v3, v9, v5, v10)
+    v9 = iadd_imm v0, 5001
+    v10 = iadd_imm v0, 5200
+    v11 = call fn3(v91, v3, v9, v5, v10)
     store.i32 v11, v0+5104
     v12 = iconst.i64 4256
     v13 = iconst.i64 5100
@@ -3331,9 +3331,9 @@ fn test_clif_ffi_lmdb_put_overwrite() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -3345,18 +3345,18 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
-    v4 = iconst.i64 5000
+    v3 = call fn1(v91, v1, v2)
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 1
-    v6 = iconst.i64 5010
+    v6 = iadd_imm v0, 5010
     v7 = iconst.i32 3
-    v8 = call fn2(v91, v0, v3, v4, v5, v6, v7)
-    v9 = iconst.i64 5020
-    v10 = call fn2(v91, v0, v3, v4, v5, v9, v7)
-    v11 = iconst.i64 5100
-    v12 = call fn3(v91, v0, v3, v4, v5, v11)
+    v8 = call fn2(v91, v3, v4, v5, v6, v7)
+    v9 = iadd_imm v0, 5020
+    v10 = call fn2(v91, v3, v4, v5, v9, v7)
+    v11 = iadd_imm v0, 5100
+    v12 = call fn3(v91, v3, v4, v5, v11)
     store.i32 v12, v0+5200
     v13 = iconst.i64 4256
     v14 = iconst.i64 5200
@@ -3424,7 +3424,7 @@ fn test_clif_ffi_lmdb_commit_without_begin() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
     sig2 = (i64, i32) -> i32 system_v
     sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
@@ -3436,9 +3436,9 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     v4 = call fn2(v91, v3)
     store.i32 v4, v0+5000
     v5 = iconst.i64 4256
@@ -3499,8 +3499,8 @@ fn test_clif_ffi_lmdb_cursor_scan_empty_db() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
     sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -3511,14 +3511,14 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
-    v4 = iconst.i64 5000
+    v3 = call fn1(v91, v1, v2)
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 0
     v6 = iconst.i32 100
-    v7 = iconst.i64 5100
-    v8 = call fn2(v91, v0, v3, v4, v5, v6, v7)
+    v7 = iadd_imm v0, 5100
+    v8 = call fn2(v91, v3, v4, v5, v6, v7)
     store.i32 v8, v0+5200
     v9 = iconst.i64 4256
     v10 = iconst.i64 5200
@@ -3578,9 +3578,9 @@ fn test_clif_ffi_lmdb_cursor_scan_with_start_key() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -3592,24 +3592,24 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     v4 = iconst.i32 1
-    v20 = iconst.i64 5060
-    v5 = iconst.i64 5000
-    v6 = call fn2(v91, v0, v3, v5, v4, v20, v4)
-    v7 = iconst.i64 5001
-    v8 = call fn2(v91, v0, v3, v7, v4, v20, v4)
-    v9 = iconst.i64 5002
-    v10 = call fn2(v91, v0, v3, v9, v4, v20, v4)
-    v11 = iconst.i64 5003
-    v12 = call fn2(v91, v0, v3, v11, v4, v20, v4)
-    v13 = iconst.i64 5004
-    v14 = call fn2(v91, v0, v3, v13, v4, v20, v4)
+    v20 = iadd_imm v0, 5060
+    v5 = iadd_imm v0, 5000
+    v6 = call fn2(v91, v3, v5, v4, v20, v4)
+    v7 = iadd_imm v0, 5001
+    v8 = call fn2(v91, v3, v7, v4, v20, v4)
+    v9 = iadd_imm v0, 5002
+    v10 = call fn2(v91, v3, v9, v4, v20, v4)
+    v11 = iadd_imm v0, 5003
+    v12 = call fn2(v91, v3, v11, v4, v20, v4)
+    v13 = iadd_imm v0, 5004
+    v14 = call fn2(v91, v3, v13, v4, v20, v4)
     v15 = iconst.i32 100
-    v16 = iconst.i64 5200
-    v17 = call fn3(v91, v0, v3, v9, v4, v15, v16)
+    v16 = iadd_imm v0, 5200
+    v17 = call fn3(v91, v3, v9, v4, v15, v16)
     store.i32 v17, v0+5300
     v18 = iconst.i64 4256
     v19 = iconst.i64 5300
@@ -3675,8 +3675,8 @@ fn test_clif_ffi_lmdb_sync() {
 
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
     sig3 = (i64, i32) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
@@ -3689,13 +3689,13 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
-    v4 = iconst.i64 5000
+    v3 = call fn1(v91, v1, v2)
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 1
-    v6 = iconst.i64 5010
-    v7 = call fn2(v91, v0, v3, v4, v5, v6, v5)
+    v6 = iadd_imm v0, 5010
+    v7 = call fn2(v91, v3, v4, v5, v6, v5)
     v8 = call fn3(v91, v3)
     store.i32 v8, v0+5100
     v9 = iconst.i64 4256
@@ -3760,10 +3760,10 @@ fn test_clif_ffi_lmdb_delete_nonexistent_key() {
     // Then put a key and get it to prove the db still works after the failed delete.
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig4 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -3776,23 +3776,23 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     ; delete key "x" which doesn't exist
-    v4 = iconst.i64 5000
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 1
-    v6 = call fn2(v91, v0, v3, v4, v5)
+    v6 = call fn2(v91, v3, v4, v5)
     store.i32 v6, v0+5100
     ; now put key "a" = "ok" to prove db still works
-    v7 = iconst.i64 5010
-    v8 = iconst.i64 5020
+    v7 = iadd_imm v0, 5010
+    v8 = iadd_imm v0, 5020
     v9 = iconst.i32 2
-    v10 = call fn3(v91, v0, v3, v7, v5, v8, v9)
+    v10 = call fn3(v91, v3, v7, v5, v8, v9)
     store.i32 v10, v0+5104
     ; get key "a"
-    v11 = iconst.i64 5200
-    v12 = call fn4(v91, v0, v3, v7, v5, v11)
+    v11 = iadd_imm v0, 5200
+    v12 = call fn4(v91, v3, v7, v5, v11)
     store.i32 v12, v0+5108
     ; write [del_ret, put_ret, get_ret, value]
     v13 = iconst.i64 4256
@@ -3866,12 +3866,12 @@ fn test_clif_ffi_lmdb_invalid_handle() {
     // Open a db (handle 0), then do put/get/delete/scan/sync on handle 99.
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
-    sig4 = (i64, i64, i32, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
+    sig4 = (i64, i32, i64, i32) -> i32 system_v
     sig5 = (i64, i32) -> i32 system_v
-    sig6 = (i64, i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig6 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
     sig7 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -3888,32 +3888,32 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     ; use bogus handle 99 for everything
     v4 = iconst.i32 99
-    v5 = iconst.i64 5000
+    v5 = iadd_imm v0, 5000
     v6 = iconst.i32 1
-    v7 = iconst.i64 5010
+    v7 = iadd_imm v0, 5010
     v8 = iconst.i32 2
     ; put on bad handle
-    v9 = call fn2(v91, v0, v4, v5, v6, v7, v8)
+    v9 = call fn2(v91, v4, v5, v6, v7, v8)
     store.i32 v9, v0+5100
     ; get on bad handle
-    v10 = iconst.i64 5200
-    v11 = call fn3(v91, v0, v4, v5, v6, v10)
+    v10 = iadd_imm v0, 5200
+    v11 = call fn3(v91, v4, v5, v6, v10)
     store.i32 v11, v0+5104
     ; delete on bad handle
-    v12 = call fn4(v91, v0, v4, v5, v6)
+    v12 = call fn4(v91, v4, v5, v6)
     store.i32 v12, v0+5108
     ; sync on bad handle
     v13 = call fn5(v91, v4)
     store.i32 v13, v0+5112
     ; cursor_scan on bad handle
     v14 = iconst.i32 100
-    v15 = iconst.i64 5300
-    v16 = call fn6(v91, v0, v4, v5, v6, v14, v15)
+    v15 = iadd_imm v0, 5300
+    v16 = call fn6(v91, v4, v5, v6, v14, v15)
     store.i32 v16, v0+5116
     ; begin_write_txn on bad handle
     v17 = call fn7(v91, v4)
@@ -3996,10 +3996,10 @@ fn test_clif_ffi_lmdb_double_begin() {
     // put k2=v2, commit. k1 should be gone, k2 should exist.
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
     sig2 = (i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig4 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig4 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -4013,31 +4013,31 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     ; first begin
     v4 = call fn2(v91, v3)
     ; put k1=v1 in first txn
-    v5 = iconst.i64 5000
+    v5 = iadd_imm v0, 5000
     v6 = iconst.i32 2
-    v7 = iconst.i64 5010
-    v8 = call fn3(v91, v0, v3, v5, v6, v7, v6)
+    v7 = iadd_imm v0, 5010
+    v8 = call fn3(v91, v3, v5, v6, v7, v6)
     ; second begin — should abort the first txn (k1=v1 lost)
     v9 = call fn2(v91, v3)
     ; put k2=v2 in second txn
-    v10 = iconst.i64 5020
-    v11 = iconst.i64 5030
-    v12 = call fn3(v91, v0, v3, v10, v6, v11, v6)
+    v10 = iadd_imm v0, 5020
+    v11 = iadd_imm v0, 5030
+    v12 = call fn3(v91, v3, v10, v6, v11, v6)
     ; commit second txn
     v13 = call fn4(v91, v3)
     ; get k1 — should fail (-1)
-    v14 = iconst.i64 5100
-    v15 = call fn5(v91, v0, v3, v5, v6, v14)
+    v14 = iadd_imm v0, 5100
+    v15 = call fn5(v91, v3, v5, v6, v14)
     store.i32 v15, v0+5200
     ; get k2 — should succeed
-    v16 = iconst.i64 5300
-    v17 = call fn5(v91, v0, v3, v10, v6, v16)
+    v16 = iadd_imm v0, 5300
+    v17 = call fn5(v91, v3, v10, v6, v16)
     store.i32 v17, v0+5204
     ; write results
     v18 = iconst.i64 4256
@@ -4114,7 +4114,7 @@ fn test_clif_ffi_lmdb_empty_batch() {
     // begin_write_txn then immediately commit with no puts
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
     sig2 = (i64, i32) -> i32 system_v
     sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
@@ -4127,9 +4127,9 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     v4 = call fn2(v91, v3)
     store.i32 v4, v0+5000
     v5 = call fn3(v91, v3)
@@ -4195,9 +4195,9 @@ fn test_clif_ffi_lmdb_put_empty_value() {
     // Put key="k" with val_len=0, then get it back
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -4209,19 +4209,19 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
-    v4 = iconst.i64 5000
+    v3 = call fn1(v91, v1, v2)
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 1
-    v6 = iconst.i64 5010
+    v6 = iadd_imm v0, 5010
     v7 = iconst.i32 0
     ; put key="k" with empty value
-    v8 = call fn2(v91, v0, v3, v4, v5, v6, v7)
+    v8 = call fn2(v91, v3, v4, v5, v6, v7)
     store.i32 v8, v0+5100
     ; get it back
-    v9 = iconst.i64 5200
-    v10 = call fn3(v91, v0, v3, v4, v5, v9)
+    v9 = iadd_imm v0, 5200
+    v10 = call fn3(v91, v3, v4, v5, v9)
     store.i32 v10, v0+5104
     ; write [put_ret, get_ret]
     v11 = iconst.i64 4256
@@ -4289,9 +4289,9 @@ fn test_clif_ffi_lmdb_multiple_databases() {
     // Get from each to verify isolation.
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -4303,30 +4303,30 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
     ; open db1
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     ; open db2
-    v4 = iconst.i64 4200
-    v5 = call fn1(v91, v0, v4, v2)
+    v4 = iadd_imm v0, 4200
+    v5 = call fn1(v91, v4, v2)
     ; key "k" at 5000, val "d1" at 5010, val "d2" at 5020
-    v6 = iconst.i64 5000
+    v6 = iadd_imm v0, 5000
     v7 = iconst.i32 1
-    v8 = iconst.i64 5010
+    v8 = iadd_imm v0, 5010
     v9 = iconst.i32 2
     ; put "k"="d1" in db1
-    v10 = call fn2(v91, v0, v3, v6, v7, v8, v9)
+    v10 = call fn2(v91, v3, v6, v7, v8, v9)
     ; put "k"="d2" in db2
-    v11 = iconst.i64 5020
-    v12 = call fn2(v91, v0, v5, v6, v7, v11, v9)
+    v11 = iadd_imm v0, 5020
+    v12 = call fn2(v91, v5, v6, v7, v11, v9)
     ; get from db1
-    v13 = iconst.i64 5100
-    v14 = call fn3(v91, v0, v3, v6, v7, v13)
+    v13 = iadd_imm v0, 5100
+    v14 = call fn3(v91, v3, v6, v7, v13)
     store.i32 v14, v0+5200
     ; get from db2
-    v15 = iconst.i64 5300
-    v16 = call fn3(v91, v0, v5, v6, v7, v15)
+    v15 = iadd_imm v0, 5300
+    v16 = call fn3(v91, v5, v6, v7, v15)
     store.i32 v16, v0+5204
     ; write [len1, len2, val1, val2]
     v17 = iconst.i64 4400
@@ -4403,9 +4403,9 @@ fn test_clif_ffi_lmdb_cursor_scan_max_entries_limit() {
     // Insert 5 keys (a-e), scan with max_entries=2
     let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -4417,27 +4417,27 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     v4 = iconst.i32 1
-    v20 = iconst.i64 5060
-    v5 = iconst.i64 5000
-    v6 = call fn2(v91, v0, v3, v5, v4, v20, v4)
-    v7 = iconst.i64 5001
-    v8 = call fn2(v91, v0, v3, v7, v4, v20, v4)
-    v9 = iconst.i64 5002
-    v10 = call fn2(v91, v0, v3, v9, v4, v20, v4)
-    v11 = iconst.i64 5003
-    v12 = call fn2(v91, v0, v3, v11, v4, v20, v4)
-    v13 = iconst.i64 5004
-    v14 = call fn2(v91, v0, v3, v13, v4, v20, v4)
+    v20 = iadd_imm v0, 5060
+    v5 = iadd_imm v0, 5000
+    v6 = call fn2(v91, v3, v5, v4, v20, v4)
+    v7 = iadd_imm v0, 5001
+    v8 = call fn2(v91, v3, v7, v4, v20, v4)
+    v9 = iadd_imm v0, 5002
+    v10 = call fn2(v91, v3, v9, v4, v20, v4)
+    v11 = iadd_imm v0, 5003
+    v12 = call fn2(v91, v3, v11, v4, v20, v4)
+    v13 = iadd_imm v0, 5004
+    v14 = call fn2(v91, v3, v13, v4, v20, v4)
     ; scan all but limit to 2
     v15 = iconst.i32 0
     v16 = iconst.i32 2
-    v17 = iconst.i64 5200
-    v18 = iconst.i64 5100
-    v19 = call fn3(v91, v0, v3, v18, v15, v16, v17)
+    v17 = iadd_imm v0, 5200
+    v18 = iadd_imm v0, 5100
+    v19 = call fn3(v91, v3, v18, v15, v16, v17)
     store.i32 v19, v0+5300
     v21 = iconst.i64 4256
     v22 = iconst.i64 5300
@@ -4506,9 +4506,9 @@ fn test_clif_ffi_lmdb_uncommitted_batch_cleanup() {
     // We do this in two separate execute() calls.
     let clif_ir_1 = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
     sig2 = (i64, i32) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
     fn2 = %cl_lmdb_begin_write_txn sig2
@@ -4518,14 +4518,14 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
+    v3 = call fn1(v91, v1, v2)
     v4 = call fn2(v91, v3)
-    v5 = iconst.i64 5000
+    v5 = iadd_imm v0, 5000
     v6 = iconst.i32 3
-    v7 = iconst.i64 5010
-    v8 = call fn3(v91, v0, v3, v5, v6, v7, v6)
+    v7 = iadd_imm v0, 5010
+    v8 = call fn3(v91, v3, v5, v6, v7, v6)
     ; cleanup without commit — Drop should abort the active write txn
     call fn4(v90)
     return
@@ -4569,8 +4569,8 @@ block0(v0: i64):
     // Second run: reopen db, try to get the key — should not exist
     let clif_ir_2 = r#"function u0:0(i64) system_v {
     sig0 = (i64) system_v
-    sig1 = (i64, i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i64, i32, i64, i32, i64) -> i32 system_v
+    sig1 = (i64, i64, i32) -> i32 system_v
+    sig2 = (i64, i32, i64, i32, i64) -> i32 system_v
     sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_lmdb_init sig0
     fn1 = %cl_lmdb_open sig1
@@ -4581,13 +4581,13 @@ block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
     v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 4000
+    v1 = iadd_imm v0, 4000
     v2 = iconst.i32 10
-    v3 = call fn1(v91, v0, v1, v2)
-    v4 = iconst.i64 5000
+    v3 = call fn1(v91, v1, v2)
+    v4 = iadd_imm v0, 5000
     v5 = iconst.i32 3
-    v6 = iconst.i64 5100
-    v7 = call fn2(v91, v0, v3, v4, v5, v6)
+    v6 = iadd_imm v0, 5100
+    v7 = call fn2(v91, v3, v4, v5, v6)
     store.i32 v7, v0+5200
     v8 = iconst.i64 4256
     v9 = iconst.i64 5200
