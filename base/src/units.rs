@@ -226,8 +226,10 @@ pub(crate) fn init_ht_context(
     ctx_ptr
 }
 
-unsafe extern "C" fn cl_ht_create(ctx: *mut u8) -> u32 {
-    let ctx = &mut *(ctx as *mut CraneliftHashTableContext);
+unsafe extern "C" fn cl_ht_create(ctx: *mut CraneliftHashTableContext) -> u32 {
+    let Some(ctx) = read_ctx_mut::<CraneliftHashTableContext>(ctx) else {
+        return u32::MAX;
+    };
     let handle = ctx.next_handle;
     ctx.next_handle += 1;
     ctx.tables.insert(handle, HashMap::new());
@@ -235,12 +237,14 @@ unsafe extern "C" fn cl_ht_create(ctx: *mut u8) -> u32 {
 }
 
 unsafe extern "C" fn cl_ht_lookup(
-    ctx: *mut u8,
+    ctx: *const CraneliftHashTableContext,
     key: *const u8,
     key_len: u32,
     result: *mut u8,
 ) -> u32 {
-    let ctx = &*(ctx as *const CraneliftHashTableContext);
+    let Some(ctx) = read_ctx_ref::<CraneliftHashTableContext>(ctx) else {
+        return 0xFFFF_FFFF;
+    };
     let key = std::slice::from_raw_parts(key, key_len as usize);
     if let Some(table) = ctx.tables.get(&0) {
         if let Some(val) = table.get(key) {
@@ -252,13 +256,15 @@ unsafe extern "C" fn cl_ht_lookup(
 }
 
 unsafe extern "C" fn cl_ht_insert(
-    ctx: *mut u8,
+    ctx: *mut CraneliftHashTableContext,
     key: *const u8,
     key_len: u32,
     val: *const u8,
     val_len: u32,
 ) {
-    let ctx = &mut *(ctx as *mut CraneliftHashTableContext);
+    let Some(ctx) = read_ctx_mut::<CraneliftHashTableContext>(ctx) else {
+        return;
+    };
     let key_slice = std::slice::from_raw_parts(key, key_len as usize);
     let val_slice = std::slice::from_raw_parts(val, val_len as usize);
     if let Some(table) = ctx.tables.get_mut(&0) {
@@ -274,18 +280,22 @@ unsafe extern "C" fn cl_ht_insert(
     }
 }
 
-unsafe extern "C" fn cl_ht_count(ctx: *mut u8) -> u32 {
-    let ctx = &*(ctx as *const CraneliftHashTableContext);
+unsafe extern "C" fn cl_ht_count(ctx: *const CraneliftHashTableContext) -> u32 {
+    let Some(ctx) = read_ctx_ref::<CraneliftHashTableContext>(ctx) else {
+        return 0;
+    };
     ctx.tables.get(&0).map(|t| t.len() as u32).unwrap_or(0)
 }
 
 unsafe extern "C" fn cl_ht_get_entry(
-    ctx: *mut u8,
+    ctx: *const CraneliftHashTableContext,
     index: u32,
     key_out: *mut u8,
     val_out: *mut u8,
 ) -> i32 {
-    let ctx = &*(ctx as *const CraneliftHashTableContext);
+    let Some(ctx) = read_ctx_ref::<CraneliftHashTableContext>(ctx) else {
+        return -1;
+    };
     if let Some(table) = ctx.tables.get(&0) {
         if let Some((key, val)) = table.iter().nth(index as usize) {
             std::ptr::copy_nonoverlapping(key.as_ptr(), key_out, key.len());
@@ -297,12 +307,14 @@ unsafe extern "C" fn cl_ht_get_entry(
 }
 
 unsafe extern "C" fn cl_ht_increment(
-    ctx: *mut u8,
+    ctx: *mut CraneliftHashTableContext,
     key: *const u8,
     key_len: u32,
     addend: i64,
 ) -> i64 {
-    let ctx = &mut *(ctx as *mut CraneliftHashTableContext);
+    let Some(ctx) = read_ctx_mut::<CraneliftHashTableContext>(ctx) else {
+        return addend;
+    };
     let key_slice = std::slice::from_raw_parts(key, key_len as usize);
     if let Some(table) = ctx.tables.get_mut(&0) {
         if let Some(existing) = table.get_mut(key_slice) {
@@ -664,8 +676,8 @@ struct CraneliftCudaContext {
     device: std::sync::Arc<cudarc::driver::CudaDevice>,
     buffers: Vec<Option<cudarc::driver::CudaSlice<u8>>>,
     blas: Option<cudarc::cublas::CudaBlas>,
-    main_kernel_cache: std::collections::HashMap<i64, String>,
-    named_kernel_cache: std::collections::HashMap<(i64, i64), NamedKernelCacheEntry>,
+    main_kernel_cache: std::collections::HashMap<*const u8, String>,
+    named_kernel_cache: std::collections::HashMap<(*const u8, *const u8), NamedKernelCacheEntry>,
 }
 
 struct NamedKernelCacheEntry {
@@ -932,7 +944,7 @@ unsafe extern "C" fn cl_cuda_launch(
         };
 
         let func_name: &'static str = "main";
-        let module_name = if let Some(name) = ctx.main_kernel_cache.get(&(kernel_ptr as i64)) {
+        let module_name = if let Some(name) = ctx.main_kernel_cache.get(&kernel_ptr) {
             name.clone()
         } else {
             let ptx_src = read_cstr_ptr(kernel_ptr);
@@ -948,7 +960,7 @@ unsafe extern "C" fn cl_cuda_launch(
                     return -1;
                 }
             }
-            ctx.main_kernel_cache.insert(kernel_ptr as i64, module_name.clone());
+            ctx.main_kernel_cache.insert(kernel_ptr, module_name.clone());
             module_name
         };
         let func = match ctx.device.get_func(&module_name, func_name) {
@@ -1047,7 +1059,7 @@ unsafe extern "C" fn cl_cuda_launch_named(
             return -1;
         };
         let (module_name, func_name) =
-            if let Some(entry) = ctx.named_kernel_cache.get(&(kernel_ptr as i64, name_ptr as i64)) {
+            if let Some(entry) = ctx.named_kernel_cache.get(&(kernel_ptr, name_ptr)) {
                 (entry.module_name.clone(), entry.func_name.clone())
             } else {
                 let ptx_src = read_cstr_ptr(kernel_ptr);
@@ -1072,7 +1084,7 @@ unsafe extern "C" fn cl_cuda_launch_named(
                     None
                 };
                 ctx.named_kernel_cache.insert(
-                    (kernel_ptr as i64, name_ptr as i64),
+                    (kernel_ptr, name_ptr),
                     NamedKernelCacheEntry {
                         func_name: func_name_owned.clone(),
                         module_name: module_name.clone(),
@@ -1594,18 +1606,20 @@ struct CraneliftNetContext {
     next_handle: u32,
 }
 
-unsafe extern "C" fn cl_net_init(ptr: *mut u8) {
+unsafe extern "C" fn cl_net_init(ctx_slot_ptr: *mut *mut CraneliftNetContext) {
     let ctx = Box::new(CraneliftNetContext {
         connections: HashMap::new(),
         listeners: HashMap::new(),
         next_handle: 1,
     });
-    std::ptr::write_unaligned(ptr as *mut *mut CraneliftNetContext, Box::into_raw(ctx));
+    let _ = write_ctx_slot(ctx_slot_ptr, Box::into_raw(ctx));
 }
 
-unsafe extern "C" fn cl_net_listen(ptr: *mut u8, addr_off: i64) -> i64 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
-    let addr = read_cstr(ptr, addr_off as usize);
+unsafe extern "C" fn cl_net_listen(ctx_ptr: *mut CraneliftNetContext, addr_ptr: *const u8) -> i64 {
+    let Some(ctx) = read_ctx_mut::<CraneliftNetContext>(ctx_ptr) else {
+        return 0;
+    };
+    let addr = read_cstr_ptr(addr_ptr);
     match TcpListener::bind(&addr) {
         Ok(listener) => {
             let handle = ctx.next_handle;
@@ -1617,9 +1631,11 @@ unsafe extern "C" fn cl_net_listen(ptr: *mut u8, addr_off: i64) -> i64 {
     }
 }
 
-unsafe extern "C" fn cl_net_connect(ptr: *mut u8, addr_off: i64) -> i64 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
-    let addr = read_cstr(ptr, addr_off as usize);
+unsafe extern "C" fn cl_net_connect(ctx_ptr: *mut CraneliftNetContext, addr_ptr: *const u8) -> i64 {
+    let Some(ctx) = read_ctx_mut::<CraneliftNetContext>(ctx_ptr) else {
+        return 0;
+    };
+    let addr = read_cstr_ptr(addr_ptr);
     match TcpStream::connect(&addr) {
         Ok(stream) => {
             let handle = ctx.next_handle;
@@ -1631,8 +1647,10 @@ unsafe extern "C" fn cl_net_connect(ptr: *mut u8, addr_off: i64) -> i64 {
     }
 }
 
-unsafe extern "C" fn cl_net_accept(ptr: *mut u8, listener: i64) -> i64 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+unsafe extern "C" fn cl_net_accept(ctx_ptr: *mut CraneliftNetContext, listener: i64) -> i64 {
+    let Some(ctx) = read_ctx_mut::<CraneliftNetContext>(ctx_ptr) else {
+        return 0;
+    };
     if let Some(l) = ctx.listeners.get(&(listener as u32)) {
         if let Ok((stream, _)) = l.accept() {
             let handle = ctx.next_handle;
@@ -1644,10 +1662,17 @@ unsafe extern "C" fn cl_net_accept(ptr: *mut u8, listener: i64) -> i64 {
     0
 }
 
-unsafe extern "C" fn cl_net_send(ptr: *mut u8, conn: i64, src_off: i64, size: i64) -> i64 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+unsafe extern "C" fn cl_net_send(
+    ctx_ptr: *mut CraneliftNetContext,
+    conn: i64,
+    src_ptr: *const u8,
+    size: i64,
+) -> i64 {
+    let Some(ctx) = read_ctx_mut::<CraneliftNetContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some(stream) = ctx.connections.get_mut(&(conn as u32)) {
-        let data = std::slice::from_raw_parts(ptr.add(src_off as usize), size as usize);
+        let data = std::slice::from_raw_parts(src_ptr, size as usize);
         match IoWrite::write_all(stream, data) {
             Ok(_) => return 0,
             Err(_) => return -1,
@@ -1656,10 +1681,17 @@ unsafe extern "C" fn cl_net_send(ptr: *mut u8, conn: i64, src_off: i64, size: i6
     -1
 }
 
-unsafe extern "C" fn cl_net_recv(ptr: *mut u8, conn: i64, dst_off: i64, size: i64) -> i64 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
+unsafe extern "C" fn cl_net_recv(
+    ctx_ptr: *mut CraneliftNetContext,
+    conn: i64,
+    dst_ptr: *mut u8,
+    size: i64,
+) -> i64 {
+    let Some(ctx) = read_ctx_mut::<CraneliftNetContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some(stream) = ctx.connections.get_mut(&(conn as u32)) {
-        let buf = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
+        let buf = std::slice::from_raw_parts_mut(dst_ptr, size as usize);
         let mut total = 0;
         while total < size as usize {
             match IoRead::read(stream, &mut buf[total..]) {
@@ -1673,9 +1705,11 @@ unsafe extern "C" fn cl_net_recv(ptr: *mut u8, conn: i64, dst_off: i64, size: i6
     -1
 }
 
-unsafe extern "C" fn cl_net_cleanup(ptr: *mut u8) {
-    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftNetContext);
-    drop(Box::from_raw(ctx_ptr));
+unsafe extern "C" fn cl_net_cleanup(ctx_slot_ptr: *mut *mut CraneliftNetContext) {
+    let ctx_ptr = clear_ctx_slot::<CraneliftNetContext>(ctx_slot_ptr);
+    if !ctx_ptr.is_null() {
+        drop(Box::from_raw(ctx_ptr));
+    }
 }
 
 struct CraneliftLmdbContext {
@@ -1828,17 +1862,24 @@ fn lmdb_raw_cursor_scan(
     result
 }
 
-unsafe extern "C" fn cl_lmdb_init(ptr: *mut u8) {
+unsafe extern "C" fn cl_lmdb_init(ctx_slot_ptr: *mut *mut CraneliftLmdbContext) {
     let ctx = Box::new(CraneliftLmdbContext {
         envs: HashMap::new(),
         active_write_txns: HashMap::new(),
         next_handle: 0,
     });
-    std::ptr::write_unaligned(ptr as *mut *mut CraneliftLmdbContext, Box::into_raw(ctx));
+    let _ = write_ctx_slot(ctx_slot_ptr, Box::into_raw(ctx));
 }
 
-unsafe extern "C" fn cl_lmdb_open(ptr: *mut u8, path_off: i64, map_size_mb: i32) -> i32 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+unsafe extern "C" fn cl_lmdb_open(
+    ctx_ptr: *mut CraneliftLmdbContext,
+    ptr: *mut u8,
+    path_off: i64,
+    map_size_mb: i32,
+) -> i32 {
+    let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
+        return -1;
+    };
     let path_str = read_cstr(ptr, path_off as usize);
     let map_size = if map_size_mb <= 0 {
         1024 * 1024 * 1024
@@ -1875,6 +1916,7 @@ unsafe extern "C" fn cl_lmdb_open(ptr: *mut u8, path_off: i64, map_size_mb: i32)
 }
 
 unsafe extern "C" fn cl_lmdb_put(
+    ctx_ptr: *mut CraneliftLmdbContext,
     ptr: *mut u8,
     handle: u32,
     key_off: i64,
@@ -1882,7 +1924,9 @@ unsafe extern "C" fn cl_lmdb_put(
     val_off: i64,
     val_len: i32,
 ) -> i32 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+    let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
         let key = std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize);
         let val = std::slice::from_raw_parts(ptr.add(val_off as usize), val_len as usize);
@@ -1912,13 +1956,16 @@ unsafe extern "C" fn cl_lmdb_put(
 }
 
 unsafe extern "C" fn cl_lmdb_get(
+    ctx_ptr: *mut CraneliftLmdbContext,
     ptr: *mut u8,
     handle: u32,
     key_off: i64,
     key_len: i32,
     result_off: i64,
 ) -> i32 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+    let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
         let key = std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize);
         let dbi = *dbi;
@@ -1948,8 +1995,16 @@ unsafe extern "C" fn cl_lmdb_get(
     -1
 }
 
-unsafe extern "C" fn cl_lmdb_delete(ptr: *mut u8, handle: u32, key_off: i64, key_len: i32) -> i32 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+unsafe extern "C" fn cl_lmdb_delete(
+    ctx_ptr: *mut CraneliftLmdbContext,
+    ptr: *mut u8,
+    handle: u32,
+    key_off: i64,
+    key_len: i32,
+) -> i32 {
+    let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
         let key = std::slice::from_raw_parts(ptr.add(key_off as usize), key_len as usize);
         let dbi = *dbi;
@@ -1973,8 +2028,13 @@ unsafe extern "C" fn cl_lmdb_delete(ptr: *mut u8, handle: u32, key_off: i64, key
     -1
 }
 
-unsafe extern "C" fn cl_lmdb_begin_write_txn(ptr: *mut u8, handle: u32) -> i32 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+unsafe extern "C" fn cl_lmdb_begin_write_txn(
+    ctx_ptr: *mut CraneliftLmdbContext,
+    handle: u32,
+) -> i32 {
+    let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some(old_txn) = ctx.active_write_txns.remove(&handle) {
         liblmdb_sys::mdb_txn_abort(old_txn);
     }
@@ -1988,8 +2048,13 @@ unsafe extern "C" fn cl_lmdb_begin_write_txn(ptr: *mut u8, handle: u32) -> i32 {
     -1
 }
 
-unsafe extern "C" fn cl_lmdb_commit_write_txn(ptr: *mut u8, handle: u32) -> i32 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+unsafe extern "C" fn cl_lmdb_commit_write_txn(
+    ctx_ptr: *mut CraneliftLmdbContext,
+    handle: u32,
+) -> i32 {
+    let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some(txn) = ctx.active_write_txns.remove(&handle) {
         return if liblmdb_sys::mdb_txn_commit(txn) == 0 {
             0
@@ -2001,6 +2066,7 @@ unsafe extern "C" fn cl_lmdb_commit_write_txn(ptr: *mut u8, handle: u32) -> i32 
 }
 
 unsafe extern "C" fn cl_lmdb_cursor_scan(
+    ctx_ptr: *mut CraneliftLmdbContext,
     ptr: *mut u8,
     handle: u32,
     key_off: i64,
@@ -2008,7 +2074,9 @@ unsafe extern "C" fn cl_lmdb_cursor_scan(
     max_entries: i32,
     result_off: i64,
 ) -> i32 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+    let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
+        return 0;
+    };
     if let Some((env, dbi)) = ctx.envs.get(&handle) {
         let start_key = if key_len > 0 {
             Some(std::slice::from_raw_parts(
@@ -2043,8 +2111,10 @@ unsafe extern "C" fn cl_lmdb_cursor_scan(
     0
 }
 
-unsafe extern "C" fn cl_lmdb_sync(ptr: *mut u8, handle: u32) -> i32 {
-    let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+unsafe extern "C" fn cl_lmdb_sync(ctx_ptr: *const CraneliftLmdbContext, handle: u32) -> i32 {
+    let Some(ctx) = read_ctx_ref::<CraneliftLmdbContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some((env, _)) = ctx.envs.get(&handle) {
         match env.sync(true) {
             Ok(_) => return 0,
@@ -2054,8 +2124,8 @@ unsafe extern "C" fn cl_lmdb_sync(ptr: *mut u8, handle: u32) -> i32 {
     -1
 }
 
-unsafe extern "C" fn cl_lmdb_cleanup(ptr: *mut u8) {
-    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftLmdbContext);
+unsafe extern "C" fn cl_lmdb_cleanup(ctx_slot_ptr: *mut *mut CraneliftLmdbContext) {
+    let ctx_ptr = clear_ctx_slot::<CraneliftLmdbContext>(ctx_slot_ptr);
     drop(Box::from_raw(ctx_ptr));
 }
 
@@ -2069,7 +2139,7 @@ struct CraneliftThreadContext {
     compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
 }
 
-unsafe extern "C" fn cl_thread_init(ptr: *mut u8) {
+unsafe extern "C" fn cl_thread_init(ctx_slot_ptr: *mut *mut CraneliftThreadContext) {
     let compiled_fns = THREAD_COMPILED_FNS.with(|cell| {
         cell.borrow()
             .clone()
@@ -2080,17 +2150,26 @@ unsafe extern "C" fn cl_thread_init(ptr: *mut u8) {
         next_handle: 1,
         compiled_fns,
     });
-    std::ptr::write_unaligned(ptr as *mut *mut CraneliftThreadContext, Box::into_raw(ctx));
+    let raw = Box::into_raw(ctx);
+    if !write_ctx_slot(ctx_slot_ptr, raw) {
+        drop(Box::from_raw(raw));
+    }
 }
 
-unsafe extern "C" fn cl_thread_spawn(ptr: *mut u8, fn_index: i64, thread_ptr: i64) -> i64 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+unsafe extern "C" fn cl_thread_spawn(
+    ctx_ptr: *mut CraneliftThreadContext,
+    fn_index: i64,
+    thread_ptr: *mut u8,
+) -> i64 {
+    let Some(ctx) = read_ctx_mut::<CraneliftThreadContext>(ctx_ptr) else {
+        return -1;
+    };
     let idx = fn_index as usize;
     if idx >= ctx.compiled_fns.len() {
         return -1;
     }
     let func = ctx.compiled_fns[idx];
-    let arg = thread_ptr as usize;
+    let thread_arg = thread_ptr as usize;
     let handle_id = ctx.next_handle;
     ctx.next_handle += 1;
 
@@ -2099,15 +2178,17 @@ unsafe extern "C" fn cl_thread_spawn(ptr: *mut u8, fn_index: i64, thread_ptr: i6
         THREAD_COMPILED_FNS.with(|cell| {
             *cell.borrow_mut() = Some(compiled_fns_clone);
         });
-        func(arg as *mut u8);
+        func(thread_arg as *mut u8);
     });
 
     ctx.threads.insert(handle_id, join);
     handle_id as i64
 }
 
-unsafe extern "C" fn cl_thread_join(ptr: *mut u8, handle: i64) -> i64 {
-    let ctx = &mut *std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+unsafe extern "C" fn cl_thread_join(ctx_ptr: *mut CraneliftThreadContext, handle: i64) -> i64 {
+    let Some(ctx) = read_ctx_mut::<CraneliftThreadContext>(ctx_ptr) else {
+        return -1;
+    };
     if let Some(join) = ctx.threads.remove(&(handle as u32)) {
         match join.join() {
             Ok(_) => 0,
@@ -2118,22 +2199,28 @@ unsafe extern "C" fn cl_thread_join(ptr: *mut u8, handle: i64) -> i64 {
     }
 }
 
-unsafe extern "C" fn cl_thread_cleanup(ptr: *mut u8) {
-    let ctx_ptr = std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+unsafe extern "C" fn cl_thread_cleanup(ctx_slot_ptr: *mut *mut CraneliftThreadContext) {
+    let ctx_ptr = clear_ctx_slot::<CraneliftThreadContext>(ctx_slot_ptr);
     let mut ctx = Box::from_raw(ctx_ptr);
     for (_, join) in ctx.threads.drain() {
         let _ = join.join();
     }
 }
 
-unsafe extern "C" fn cl_thread_call(ptr: *mut u8, fn_index: i64, arg_ptr: i64) -> i64 {
-    let ctx = &*std::ptr::read_unaligned(ptr as *const *mut CraneliftThreadContext);
+unsafe extern "C" fn cl_thread_call(
+    ctx_ptr: *const CraneliftThreadContext,
+    fn_index: i64,
+    arg_ptr: *mut u8,
+) -> i64 {
+    let Some(ctx) = read_ctx_ref::<CraneliftThreadContext>(ctx_ptr) else {
+        return -1;
+    };
     let idx = fn_index as usize;
     if idx >= ctx.compiled_fns.len() {
         return -1;
     }
     let func = ctx.compiled_fns[idx];
-    func(arg_ptr as *mut u8);
+    func(arg_ptr);
     0
 }
 

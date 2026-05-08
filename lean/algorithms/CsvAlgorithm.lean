@@ -84,6 +84,8 @@ structure K where
   deptSize    : Val
   empHandle   : Val
   deptHandle  : Val
+  lmdbSlot    : Val
+  lmdbCtx     : Val
   patternLen  : Nat
   fnLmdbPut      : FnRef
   fnCommitTxn    : FnRef
@@ -128,13 +130,13 @@ def emitIngest (k : K)
   let keyAddr ← iadd k.ptr k.keyScrOff
   store key32 keyAddr
   let valOff ← iadd k.empBufOff pos
-  let _ ← call k.fnLmdbPut [k.ptr, k.empHandle, k.keyScrOff, k.keyLen4, valOff, rowLen32]
+  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.ptr, k.empHandle, k.keyScrOff, k.keyLen4, valOff, rowLen32]
   let nextKey ← iadd key k.one
   jump empLoop.ref [rowEnd, nextKey]
 
   startBlock empDone
-  let _ ← call k.fnCommitTxn [k.ptr, k.empHandle]
-  let _ ← call k.fnBeginTxn [k.ptr, k.deptHandle]
+  let _ ← call k.fnCommitTxn [k.lmdbCtx, k.empHandle]
+  let _ ← call k.fnBeginTxn [k.lmdbCtx, k.deptHandle]
   jump deptLoop.ref [k.zero, k.zero]
 
   startBlock deptLoop
@@ -165,7 +167,7 @@ def emitIngest (k : K)
   let dKeyAddr ← iadd k.ptr k.keyScrOff
   store dKey32 dKeyAddr
   let dValOff ← iadd k.deptBufOff dPos
-  let _ ← call k.fnLmdbPut [k.ptr, k.deptHandle, k.keyScrOff, k.keyLen4, dValOff, dRowLen32]
+  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.ptr, k.deptHandle, k.keyScrOff, k.keyLen4, dValOff, dRowLen32]
   let dNextKey ← iadd dKey k.one
   jump deptLoop.ref [dRowEnd, dNextKey]
 
@@ -183,11 +185,11 @@ def emitOutputPhases (k : K)
     (joinHdr joinBody joinDone : DeclaredBlock)
     : IRBuilder Unit := do
   startBlock deptDone
-  let _ ← call k.fnCommitTxn [k.ptr, k.deptHandle]
+  let _ ← call k.fnCommitTxn [k.lmdbCtx, k.deptHandle]
   let scanResOff ← iconst64 scanResult_off
   let keyLen0 ← iconst32 0
   let maxEntries ← iconst32 100
-  let scanCount ← call k.fnCursorScan [k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanResOff]
+  let scanCount ← call k.fnCursorScan [k.lmdbCtx, k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanResOff]
   let four ← iconst64 4
   jump scanHdr.ref [k.zero, four, k.zero]
 
@@ -222,7 +224,7 @@ def emitOutputPhases (k : K)
 
   startBlock scanDone
   let scanRes2Off ← iconst64 scanResult2_off
-  let filterCount ← call k.fnCursorScan [k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanRes2Off]
+  let filterCount ← call k.fnCursorScan [k.lmdbCtx, k.ptr, k.empHandle, k.zero, keyLen0, maxEntries, scanRes2Off]
   jump filterHdr.ref [k.zero, four, k.zero]
 
   startBlock filterHdr
@@ -299,7 +301,7 @@ def emitOutputPhases (k : K)
   jump filterHdr.ref [skipNextI, skipNextByte, fFileOff]
 
   startBlock filterDone
-  let joinCount ← call k.fnCursorScan [k.ptr, k.deptHandle, k.zero, keyLen0, maxEntries, scanResOff]
+  let joinCount ← call k.fnCursorScan [k.lmdbCtx, k.ptr, k.deptHandle, k.zero, keyLen0, maxEntries, scanResOff]
   jump joinHdr.ref [k.zero, four, k.zero]
 
   startBlock joinHdr
@@ -332,7 +334,7 @@ def emitOutputPhases (k : K)
   jump joinHdr.ref [jNextI, jNextByte, jNextFile]
 
   startBlock joinDone
-  callVoid k.fnCleanup [k.ptr]
+  callVoid k.fnCleanup [k.lmdbSlot]
   ret
 
 -- ---------------------------------------------------------------------------
@@ -378,13 +380,15 @@ def clifIrSource (patternLen : Nat) : String := buildProgram do
   let empSize    ← readFile ptr fnFileRead empCsvPath_off empBuf_off
   let deptBufOff ← iconst64 deptBuf_off
   let deptSize   ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
-  callVoid lmdb.fnInit [ptr]
+  let lmdbSlot   := ptr
+  callVoid lmdb.fnInit [lmdbSlot]
+  let lmdbCtx    ← load64 ptr
   let empDbOff   ← iconst64 empDbPath_off
   let maxDbs     ← iconst32 10
-  let empHandle  ← call lmdb.fnOpen [ptr, empDbOff, maxDbs]
+  let empHandle  ← call lmdb.fnOpen [lmdbCtx, ptr, empDbOff, maxDbs]
   let deptDbOff  ← iconst64 deptDbPath_off
-  let deptHandle ← call lmdb.fnOpen [ptr, deptDbOff, maxDbs]
-  let _          ← call lmdb.fnBeginWriteTxn [ptr, empHandle]
+  let deptHandle ← call lmdb.fnOpen [lmdbCtx, ptr, deptDbOff, maxDbs]
+  let _          ← call lmdb.fnBeginWriteTxn [lmdbCtx, empHandle]
   let one        ← iconst64 1
   let keyLen4    ← iconst32 4
   let newline    ← iconst64 10
@@ -404,6 +408,8 @@ def clifIrSource (patternLen : Nat) : String := buildProgram do
     deptSize   := deptSize,
     empHandle  := empHandle,
     deptHandle := deptHandle,
+    lmdbSlot   := lmdbSlot,
+    lmdbCtx    := lmdbCtx,
     patternLen := patternLen,
     fnLmdbPut    := lmdb.fnPut,
     fnCommitTxn  := lmdb.fnCommitWriteTxn,

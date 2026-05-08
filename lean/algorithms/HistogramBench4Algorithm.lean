@@ -135,6 +135,7 @@ def clifOrchestratorFn : String :=
   "\n" ++
   "    v14 = iadd_imm v0, 768\n" ++        -- THREAD_CTX_OFF
   "    call fn0(v14)\n" ++
+  "    v15 = load.i64 notrap aligned v0+768\n" ++
   "\n" ++
   "    v16 = iconst.i64 3\n" ++            -- fn_index for worker
   "    v17 = iconst.i64 19520\n" ++        -- DESCS_OFF
@@ -162,8 +163,7 @@ def clifOrchestratorFn : String :=
   "    store.i64 notrap aligned v41, v35+0x20\n" ++     -- hist_off
   "    store.i64 notrap aligned v12, v35+0x28\n" ++     -- bins
   "\n" ++
-  "    v42 = iadd_imm v0, 768\n" ++        -- THREAD_CTX_OFF
-  "    v43 = call fn1(v42, v16, v35)\n" ++
+  "    v43 = call fn1(v15, v16, v35)\n" ++
   "\n" ++
   "    v44 = ishl_imm v30, 3\n" ++
   "    v45 = iadd v0, v19\n" ++
@@ -180,8 +180,7 @@ def clifOrchestratorFn : String :=
   "    v52 = iadd v0, v19\n" ++
   "    v53 = iadd v52, v51\n" ++
   "    v54 = load.i64 notrap aligned v53\n" ++
-  "    v55 = iadd_imm v0, 768\n" ++        -- THREAD_CTX_OFF
-  "    v56 = call fn2(v55, v54)\n" ++
+  "    v56 = call fn2(v15, v54)\n" ++
   "    v57 = iadd_imm v50, 1\n" ++
   "    v58 = icmp ult v57, v9\n" ++
   "    brif v58, block6(v57), block7(v200)\n" ++

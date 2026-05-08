@@ -896,11 +896,11 @@ structure LmdbSetup where
 /-- Declare all 7 LMDB FFI functions -/
 def declareLmdbFFI : IRBuilder LmdbSetup := do
   let fnInit ← declareFFI "cl_lmdb_init" [.i64] none
-  let fnOpen ← declareFFI "cl_lmdb_open" [.i64, .i64, .i32] (some .i32)
+  let fnOpen ← declareFFI "cl_lmdb_open" [.i64, .i64, .i64, .i32] (some .i32)
   let fnBeginWriteTxn ← declareFFI "cl_lmdb_begin_write_txn" [.i64, .i32] (some .i32)
-  let fnPut ← declareFFI "cl_lmdb_put" [.i64, .i32, .i64, .i32, .i64, .i32] (some .i32)
+  let fnPut ← declareFFI "cl_lmdb_put" [.i64, .i64, .i32, .i64, .i32, .i64, .i32] (some .i32)
   let fnCommitWriteTxn ← declareFFI "cl_lmdb_commit_write_txn" [.i64, .i32] (some .i32)
-  let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
+  let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
   let fnCleanup ← declareFFI "cl_lmdb_cleanup" [.i64] none
   pure { fnInit, fnOpen, fnBeginWriteTxn, fnPut, fnCommitWriteTxn, fnCursorScan, fnCleanup }
 
