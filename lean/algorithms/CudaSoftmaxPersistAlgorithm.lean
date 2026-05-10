@@ -5,6 +5,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.PTX
 
 namespace CudaSoftmaxPersist
 
@@ -54,464 +55,128 @@ def TIMEOUT_MS         : Nat := 30000
   smem[32..63] = 8 warp sums. Online combination: given (m1,s1)+(m2,s2),
   new_max = max(m1,m2), new_sum = s1*ex2((m1-new_max)*log2e) + s2*ex2((m2-new_max)*log2e).
 -/
-def ptxSource : String :=
-  ".version 8.0\n" ++
-  ".target sm_86\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".shared .align 4 .b8 _smem[64];\n" ++
-  "\n" ++
-  -- ── kernel 0: small_softmax ──────────────────────────────────────────────
-  -- buf0=x (n f32), buf1=meta [n:u32,...], buf2=y (n f32)
-  -- Single-block fused path for n <= 2048.
-  ".visible .entry small_softmax(\n" ++
-  "    .param .u64 x_buf,\n" ++
-  "    .param .u64 meta_buf,\n" ++
-  "    .param .u64 y_buf\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred %p;\n" ++
-  "    .reg .u32  %r<10>;\n" ++
-  "    .reg .u64  %rd<6>;\n" ++
-  "    .reg .f32  %f<10>;\n" ++
-  "    ld.param.u64 %rd0, [x_buf];\n" ++
-  "    ld.param.u64 %rd1, [meta_buf];\n" ++
-  "    ld.param.u64 %rd2, [y_buf];\n" ++
-  "    ld.global.u32 %r0, [%rd1];\n" ++          -- n
-  "    mov.u32 %r1, %tid.x;\n" ++
-  "    shr.u32 %r2, %r1, 5;\n" ++
-  "    and.b32 %r3, %r1, 31;\n" ++
-  "    mov.f32 %f8, 0f3fb8aa3b;\n" ++            -- log2e
-  "    mov.f32 %f0, 0f00000000;\n" ++            -- local_max
-  "    mov.u32 %r4, %r1;\n" ++
-  "sm_loop_max:\n" ++
-  "    setp.ge.u32 %p, %r4, %r0;\n" ++
-  "    @%p bra sm_done_max;\n" ++
-  "    cvt.u64.u32 %rd3, %r4;\n" ++
-  "    shl.b64 %rd3, %rd3, 2;\n" ++
-  "    add.u64 %rd4, %rd0, %rd3;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    add.u32 %r4, %r4, 256;\n" ++
-  "    bra sm_loop_max;\n" ++
-  "sm_done_max:\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 16, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 8, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 4, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 2, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 1, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    setp.ne.u32 %p, %r3, 0;\n" ++
-  "    @%p bra sm_skip_max_store;\n" ++
-  "    mov.u32 %r5, _smem;\n" ++
-  "    shl.b32 %r6, %r2, 2;\n" ++
-  "    add.u32 %r5, %r5, %r6;\n" ++
-  "    st.shared.f32 [%r5], %f0;\n" ++
-  "sm_skip_max_store:\n" ++
-  "    bar.sync 0;\n" ++
-  "    setp.ne.u32 %p, %r1, 0;\n" ++
-  "    @%p bra sm_skip_max_reduce;\n" ++
-  "    mov.u32 %r5, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r5+0];\n" ++
-  "    ld.shared.f32 %f1, [%r5+4];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+8];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+12];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+16];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+20];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+24];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+28];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    st.shared.f32 [%r5+32], %f0;\n" ++
-  "sm_skip_max_reduce:\n" ++
-  "    bar.sync 0;\n" ++
-  "    mov.u32 %r5, _smem;\n" ++
-  "    ld.shared.f32 %f6, [%r5+32];\n" ++        -- global max
-  "    mov.f32 %f0, 0f00000000;\n" ++            -- local_sum
-  "    mov.u32 %r4, %r1;\n" ++
-  "sm_loop_sum:\n" ++
-  "    setp.ge.u32 %p, %r4, %r0;\n" ++
-  "    @%p bra sm_done_sum;\n" ++
-  "    cvt.u64.u32 %rd3, %r4;\n" ++
-  "    shl.b64 %rd3, %rd3, 2;\n" ++
-  "    add.u64 %rd4, %rd0, %rd3;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    sub.f32 %f1, %f1, %f6;\n" ++
-  "    mul.f32 %f1, %f1, %f8;\n" ++
-  "    ex2.approx.f32 %f1, %f1;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    add.u32 %r4, %r4, 256;\n" ++
-  "    bra sm_loop_sum;\n" ++
-  "sm_done_sum:\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 16, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 8, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 4, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 2, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 1, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    setp.ne.u32 %p, %r3, 0;\n" ++
-  "    @%p bra sm_skip_sum_store;\n" ++
-  "    mov.u32 %r5, _smem;\n" ++
-  "    shl.b32 %r6, %r2, 2;\n" ++
-  "    add.u32 %r5, %r5, %r6;\n" ++
-  "    st.shared.f32 [%r5], %f0;\n" ++
-  "sm_skip_sum_store:\n" ++
-  "    bar.sync 0;\n" ++
-  "    setp.ne.u32 %p, %r1, 0;\n" ++
-  "    @%p bra sm_skip_sum_reduce;\n" ++
-  "    mov.u32 %r5, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r5+0];\n" ++
-  "    ld.shared.f32 %f1, [%r5+4];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+8];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+12];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+16];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+20];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+24];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+28];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    rcp.approx.f32 %f0, %f0;\n" ++
-  "    st.shared.f32 [%r5+36], %f0;\n" ++
-  "sm_skip_sum_reduce:\n" ++
-  "    bar.sync 0;\n" ++
-  "    mov.u32 %r5, _smem;\n" ++
-  "    ld.shared.f32 %f7, [%r5+36];\n" ++        -- global inv sum
-  "    mov.u32 %r4, %r1;\n" ++
-  "sm_loop_out:\n" ++
-  "    setp.ge.u32 %p, %r4, %r0;\n" ++
-  "    @%p bra sm_done_out;\n" ++
-  "    cvt.u64.u32 %rd3, %r4;\n" ++
-  "    shl.b64 %rd3, %rd3, 2;\n" ++
-  "    add.u64 %rd4, %rd0, %rd3;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    sub.f32 %f1, %f1, %f6;\n" ++
-  "    mul.f32 %f1, %f1, %f8;\n" ++
-  "    ex2.approx.f32 %f1, %f1;\n" ++
-  "    mul.f32 %f1, %f1, %f7;\n" ++
-  "    add.u64 %rd5, %rd2, %rd3;\n" ++
-  "    st.global.f32 [%rd5], %f1;\n" ++
-  "    add.u32 %r4, %r4, 256;\n" ++
-  "    bra sm_loop_out;\n" ++
-  "sm_done_out:\n" ++
-  "    ret;\n" ++
-  "}\n" ++
-  "\n" ++
-  -- ── kernel 1: block_reduce ───────────────────────────────────────────────
-  -- buf0=x (n f32), buf1=meta [n:u32,num_blocks:u32], buf2=partials [max,sum per block]
-  ".visible .entry block_reduce(\n" ++
-  "    .param .u64 x_buf,\n" ++
-  "    .param .u64 meta_buf,\n" ++
-  "    .param .u64 partials_buf\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred %p;\n" ++
-  "    .reg .u32  %r<10>;\n" ++
-  "    .reg .u64  %rd<6>;\n" ++
-  "    .reg .f32  %f<12>;\n" ++
-  "    ld.param.u64 %rd0, [x_buf];\n" ++
-  "    ld.param.u64 %rd1, [meta_buf];\n" ++
-  "    ld.param.u64 %rd2, [partials_buf];\n" ++
-  "    ld.global.u32 %r0, [%rd1];\n" ++          -- n
-  "    mov.u32 %r1, %ctaid.x;\n" ++              -- block_idx
-  "    mov.u32 %r2, %tid.x;\n" ++               -- tid (0..255)
-  "    shr.u32 %r3, %r2, 5;\n" ++               -- warp_id
-  "    and.b32 %r4, %r2, 31;\n" ++              -- lane_id
-  "    mul.lo.u32 %r5, %r1, 256;\n" ++
-  "    add.u32 %r5, %r5, %r2;\n" ++             -- global_idx
-  "    mov.f32 %f10, 0f3fb8aa3b;\n" ++           -- log2e
-  -- load x[global_idx] or use (-inf, 0) for out-of-bounds
-  "    setp.ge.u32 %p, %r5, %r0;\n" ++
-  "    @%p bra br_oob;\n" ++
-  "    cvt.u64.u32 %rd3, %r5;\n" ++
-  "    shl.b64 %rd3, %rd3, 2;\n" ++
-  "    add.u64 %rd4, %rd0, %rd3;\n" ++
-  "    ld.global.f32 %f0, [%rd4];\n" ++          -- f0 = local_max = x[i]
-  "    mov.f32 %f1, 0f3f800000;\n" ++            -- f1 = local_sum = 1.0
-  "    bra br_reduce;\n" ++
-  "br_oob:\n" ++
-  "    mov.f32 %f0, 0f00000000;\n" ++            -- 0.0 (safe empty: avoids -inf - -inf = NaN in butterfly)
-  "    mov.f32 %f1, 0f00000000;\n" ++            -- 0.0
-  "br_reduce:\n" ++
-  -- warp butterfly reduction (5 steps: 16,8,4,2,1)
-  "    shfl.sync.bfly.b32 %f2, %f0, 16, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 16, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 8, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 8, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 4, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 4, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 2, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 2, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 1, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 1, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  -- lane 0 writes warp result to smem
-  "    setp.ne.u32 %p, %r4, 0;\n" ++
-  "    @%p bra br_skip_wst;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    shl.b32 %r7, %r3, 2;\n" ++
-  "    add.u32 %r8, %r6, %r7;\n" ++
-  "    st.shared.f32 [%r8], %f0;\n" ++           -- smem[warp_id] = warp_max
-  "    add.u32 %r8, %r8, 32;\n" ++
-  "    st.shared.f32 [%r8], %f1;\n" ++           -- smem[8+warp_id] = warp_sum
-  "br_skip_wst:\n" ++
-  "    bar.sync 0;\n" ++
-  -- thread 0 combines all 8 warp results
-  "    setp.ne.u32 %p, %r2, 0;\n" ++
-  "    @%p bra br_skip_bred;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r6+0];\n" ++
-  "    ld.shared.f32 %f1, [%r6+32];\n" ++
-  -- combine with warps 1..7
-  "    ld.shared.f32 %f2, [%r6+4];\n" ++ "    ld.shared.f32 %f3, [%r6+36];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+8];\n" ++ "    ld.shared.f32 %f3, [%r6+40];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+12];\n" ++ "    ld.shared.f32 %f3, [%r6+44];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+16];\n" ++ "    ld.shared.f32 %f3, [%r6+48];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+20];\n" ++ "    ld.shared.f32 %f3, [%r6+52];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+24];\n" ++ "    ld.shared.f32 %f3, [%r6+56];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+28];\n" ++ "    ld.shared.f32 %f3, [%r6+60];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  -- write (block_max, block_sum) to partials[block_idx*2], partials[block_idx*2+1]
-  "    cvt.u64.u32 %rd3, %r1;\n" ++
-  "    shl.b64 %rd3, %rd3, 3;\n" ++              -- block_idx * 8
-  "    add.u64 %rd4, %rd2, %rd3;\n" ++
-  "    st.global.f32 [%rd4], %f0;\n" ++
-  "    add.u64 %rd4, %rd4, 4;\n" ++
-  "    st.global.f32 [%rd4], %f1;\n" ++
-  "br_skip_bred:\n" ++
-  "    ret;\n" ++
-  "}\n" ++
-  "\n" ++
-  -- ── kernel 2: global_reduce ──────────────────────────────────────────────
-  -- buf0=meta [n:u32,num_blocks:u32], buf1=partials [max,sum per block], buf2=params [out]
-  ".visible .entry global_reduce(\n" ++
-  "    .param .u64 meta_buf,\n" ++
-  "    .param .u64 partials_buf,\n" ++
-  "    .param .u64 params_buf\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred %p;\n" ++
-  "    .reg .u32  %r<10>;\n" ++
-  "    .reg .u64  %rd<6>;\n" ++
-  "    .reg .f32  %f<12>;\n" ++
-  "    ld.param.u64 %rd0, [meta_buf];\n" ++
-  "    ld.param.u64 %rd1, [partials_buf];\n" ++
-  "    ld.param.u64 %rd2, [params_buf];\n" ++
-  "    ld.global.u32 %r0, [%rd0+4];\n" ++        -- num_blocks
-  "    mov.u32 %r1, %tid.x;\n" ++
-  "    shr.u32 %r2, %r1, 5;\n" ++               -- warp_id
-  "    and.b32 %r3, %r1, 31;\n" ++              -- lane_id
-  "    mov.f32 %f10, 0f3fb8aa3b;\n" ++           -- log2e
-  -- each thread handles one or more blocks in a stride loop
-  "    mov.f32 %f0, 0f00000000;\n" ++            -- local_max = 0.0 (safe empty: avoids -inf - -inf = NaN)
-  "    mov.f32 %f1, 0f00000000;\n" ++            -- local_sum = 0
-  "    mov.u32 %r4, %r1;\n" ++                  -- i = tid
-  "gr_loop:\n" ++
-  "    setp.ge.u32 %p, %r4, %r0;\n" ++          -- i >= num_blocks?
-  "    @%p bra gr_done;\n" ++
-  "    cvt.u64.u32 %rd3, %r4;\n" ++
-  "    shl.b64 %rd3, %rd3, 3;\n" ++             -- i * 8
-  "    add.u64 %rd4, %rd1, %rd3;\n" ++
-  "    ld.global.f32 %f2, [%rd4];\n" ++          -- partials[i].max
-  "    ld.global.f32 %f3, [%rd4+4];\n" ++        -- partials[i].sum
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    add.u32 %r4, %r4, 256;\n" ++
-  "    bra gr_loop;\n" ++
-  "gr_done:\n" ++
-  -- warp butterfly reduction (5 steps)
-  "    shfl.sync.bfly.b32 %f2, %f0, 16, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 16, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 8, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 8, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 4, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 4, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 2, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 2, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 1, 31, 0xffffffff;\n" ++
-  "    shfl.sync.bfly.b32 %f3, %f1, 1, 31, 0xffffffff;\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    setp.ne.u32 %p, %r3, 0;\n" ++
-  "    @%p bra gr_skip_wst;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    shl.b32 %r7, %r2, 2;\n" ++
-  "    add.u32 %r8, %r6, %r7;\n" ++
-  "    st.shared.f32 [%r8], %f0;\n" ++
-  "    add.u32 %r8, %r8, 32;\n" ++
-  "    st.shared.f32 [%r8], %f1;\n" ++
-  "gr_skip_wst:\n" ++
-  "    bar.sync 0;\n" ++
-  "    setp.ne.u32 %p, %r1, 0;\n" ++
-  "    @%p bra gr_skip_bred;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r6+0];\n" ++ "    ld.shared.f32 %f1, [%r6+32];\n" ++
-  "    ld.shared.f32 %f2, [%r6+4];\n" ++ "    ld.shared.f32 %f3, [%r6+36];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+8];\n" ++ "    ld.shared.f32 %f3, [%r6+40];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+12];\n" ++ "    ld.shared.f32 %f3, [%r6+44];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+16];\n" ++ "    ld.shared.f32 %f3, [%r6+48];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+20];\n" ++ "    ld.shared.f32 %f3, [%r6+52];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+24];\n" ++ "    ld.shared.f32 %f3, [%r6+56];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  "    ld.shared.f32 %f2, [%r6+28];\n" ++ "    ld.shared.f32 %f3, [%r6+60];\n" ++
-  "    max.f32 %f4, %f0, %f2;\n" ++
-  "    sub.f32 %f5, %f0, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f1, %f1, %f5;\n" ++
-  "    sub.f32 %f5, %f2, %f4;\n" ++ "    mul.f32 %f5, %f5, %f10;\n" ++ "    ex2.approx.f32 %f5, %f5;\n" ++ "    mul.f32 %f3, %f3, %f5;\n" ++
-  "    add.f32 %f1, %f1, %f3;\n" ++ "    mov.f32 %f0, %f4;\n" ++
-  -- write global_max and global_inv_sum to params_buf
-  "    rcp.approx.f32 %f1, %f1;\n" ++            -- inv_sum
-  "    st.global.f32 [%rd2], %f0;\n" ++          -- params[0] = global_max
-  "    st.global.f32 [%rd2+4], %f1;\n" ++        -- params[1] = global_inv_sum
-  "gr_skip_bred:\n" ++
-  "    ret;\n" ++
-  "}\n" ++
-  "\n" ++
-  -- ── kernel 3: normalize ──────────────────────────────────────────────────
-  -- buf0=x, buf1=meta [n:u32,...], buf2=params [global_max,global_inv_sum], buf3=y
-  ".visible .entry normalize(\n" ++
-  "    .param .u64 x_buf,\n" ++
-  "    .param .u64 meta_buf,\n" ++
-  "    .param .u64 params_buf,\n" ++
-  "    .param .u64 y_buf\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred %p;\n" ++
-  "    .reg .u32  %r<6>;\n" ++
-  "    .reg .u64  %rd<6>;\n" ++
-  "    .reg .f32  %f<6>;\n" ++
-  "    ld.param.u64 %rd0, [x_buf];\n" ++
-  "    ld.param.u64 %rd1, [meta_buf];\n" ++
-  "    ld.param.u64 %rd2, [params_buf];\n" ++
-  "    ld.param.u64 %rd3, [y_buf];\n" ++
-  "    ld.global.u32 %r0, [%rd1];\n" ++          -- n
-  "    mov.u32 %r1, %ctaid.x;\n" ++
-  "    mov.u32 %r2, %tid.x;\n" ++
-  "    mul.lo.u32 %r3, %r1, 256;\n" ++
-  "    add.u32 %r3, %r3, %r2;\n" ++              -- global_idx
-  "    setp.ge.u32 %p, %r3, %r0;\n" ++
-  "    @%p bra nrm_end;\n" ++
-  "    ld.global.f32 %f0, [%rd2];\n" ++          -- global_max
-  "    ld.global.f32 %f1, [%rd2+4];\n" ++        -- global_inv_sum
-  "    cvt.u64.u32 %rd4, %r3;\n" ++
-  "    shl.b64 %rd4, %rd4, 2;\n" ++
-  "    add.u64 %rd5, %rd0, %rd4;\n" ++
-  "    ld.global.f32 %f2, [%rd5];\n" ++          -- x[i]
-  "    sub.f32 %f2, %f2, %f0;\n" ++              -- x[i] - global_max
-  "    mov.f32 %f3, 0f3fb8aa3b;\n" ++            -- log2e
-  "    mul.f32 %f2, %f2, %f3;\n" ++
-  "    ex2.approx.f32 %f2, %f2;\n" ++            -- exp(x[i] - global_max)
-  "    mul.f32 %f2, %f2, %f1;\n" ++              -- * global_inv_sum
-  "    add.u64 %rd5, %rd3, %rd4;\n" ++
-  "    st.global.f32 [%rd5], %f2;\n" ++          -- y[i]
-  "nrm_end:\n" ++
-  "    ret;\n" ++
-  "}\n"
+def ptxSource : String := buildModule 64
+  [ -- ── small_softmax: single-block fused path for n ≤ 2048 ─────────────────
+    { name := "small_softmax", params := ["x_buf", "meta_buf", "y_buf"], body := do
+      let xPtr    ← ldParam "x_buf"
+      let metaPtr ← ldParam "meta_buf"
+      let yPtr    ← ldParam "y_buf"
+      let nReg ← freshR; ldGlobalU nReg metaPtr
+      let (tid, wid, lid) ← getWarpIds
+      let log2e ← freshF; movFC log2e f32_log2e
+      -- Phase 1: max reduction
+      let lMax ← freshF; movFC lMax f32_0
+      let mTmp ← freshF
+      strideLoop tid nReg 256 "sm_loop_max" "sm_done_max" fun i => do
+        let addr ← elemAddr xPtr i; ldGlobalF mTmp addr; maxF lMax lMax mTmp
+      warpReduceMax lMax mTmp
+      lane0WriteSmem lid wid "sm_skip_max_store" fun wAddr => stSharedFD wAddr lMax
+      thread0Op tid "sm_skip_max_reduce" do
+        let sBase ← smemBase; let gMax ← freshF
+        crossWarp8 gMax mTmp sBase 0 maxF; stSharedF sBase 32 gMax
+      let sBase1 ← smemBase
+      let gMax ← freshF; ldSharedF gMax sBase1 32
+      -- Phase 2: sum of exp
+      let lSum ← freshF; movFC lSum f32_0
+      let sTmp ← freshF
+      strideLoop tid nReg 256 "sm_loop_sum" "sm_done_sum" fun i => do
+        let addr ← elemAddr xPtr i; let xi ← freshF; ldGlobalF xi addr
+        subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; addF lSum lSum xi
+      warpReduceSum lSum sTmp
+      lane0WriteSmem lid wid "sm_skip_sum_store" fun wAddr => stSharedFD wAddr lSum
+      thread0Op tid "sm_skip_sum_reduce" do
+        let sBase ← smemBase
+        crossWarp8 lSum sTmp sBase 0 addF; rcp lSum lSum; stSharedF sBase 36 lSum
+      let sBase2 ← smemBase
+      let invSum ← freshF; ldSharedF invSum sBase2 36
+      -- Phase 3: output
+      strideLoop tid nReg 256 "sm_loop_out" "sm_done_out" fun i => do
+        let xAddr ← elemAddr xPtr i; let yAddr ← elemAddr yPtr i
+        let xi ← freshF; ldGlobalF xi xAddr
+        subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
+        stGlobalF yAddr xi
+      ptxRet },
+    -- ── block_reduce: each block → (local_max, local_sum) via online softmax ──
+    { name := "block_reduce", params := ["x_buf", "meta_buf", "partials_buf"], body := do
+      let xPtr        ← ldParam "x_buf"
+      let metaPtr     ← ldParam "meta_buf"
+      let partialsPtr ← ldParam "partials_buf"
+      let nReg ← freshR; ldGlobalU nReg metaPtr
+      let bid ← freshR; movR bid ctaX
+      let bsz ← freshR; movR bsz ntidX
+      let tid ← freshR; movR tid tidX
+      let wid ← freshR; shrR wid tid 5
+      let lid ← freshR; andR lid tid 31
+      let gid ← freshR; madLoS gid bid bsz tid
+      let log2e ← freshF; movFC log2e f32_log2e
+      let lMax ← freshF; let lSum ← freshF
+      let p ← freshP; setpGe p gid nReg; braIf p "br_oob"
+      let xAddr ← elemAddr xPtr gid; ldGlobalF lMax xAddr; movFC lSum f32_1
+      bra "br_reduce"
+      label "br_oob"; movFC lMax f32_0; movFC lSum f32_0
+      label "br_reduce"
+      let t0 ← freshF; let t1 ← freshF; let nm ← freshF; let adj ← freshF
+      warpReduceOnline lMax lSum t0 t1 nm adj log2e
+      lane0WriteSmem lid wid "br_skip_wst" fun wAddr => do
+        stSharedFD wAddr lMax
+        let sumAddr ← freshR; addRI sumAddr wAddr 32; stSharedFD sumAddr lSum
+      thread0Op tid "br_skip_bred" do
+        let sBase ← smemBase; let bMax ← freshF; let bSum ← freshF
+        crossWarp8Online bMax bSum t0 t1 nm adj log2e sBase 0 32
+        let bid64 ← freshRd; cvtU64 bid64 bid
+        let pOff ← freshRd; shlRd pOff bid64 3
+        let pAddr ← freshRd; addRd pAddr partialsPtr pOff
+        stGlobalF pAddr bMax; stGlobalFO pAddr 4 bSum
+      ptxRet },
+    -- ── global_reduce: combine partials → (global_max, global_inv_sum) ────────
+    { name := "global_reduce", params := ["meta_buf", "partials_buf", "params_buf"], body := do
+      let metaPtr     ← ldParam "meta_buf"
+      let partialsPtr ← ldParam "partials_buf"
+      let paramsPtr   ← ldParam "params_buf"
+      let nbPtr ← freshRd; addRdI nbPtr metaPtr 4
+      let numBlocks ← freshR; ldGlobalU numBlocks nbPtr
+      let tid ← freshR; movR tid tidX
+      let wid ← freshR; shrR wid tid 5
+      let lid ← freshR; andR lid tid 31
+      let log2e ← freshF; movFC log2e f32_log2e
+      let lMax ← freshF; movFC lMax f32_0
+      let lSum ← freshF; movFC lSum f32_0
+      let nm ← freshF; let adj ← freshF; let t0 ← freshF; let t1 ← freshF
+      strideLoop tid numBlocks 256 "gr_loop" "gr_done" fun i => do
+        let i64 ← freshRd; cvtU64 i64 i
+        let pOff ← freshRd; shlRd pOff i64 3
+        let pAddr ← freshRd; addRd pAddr partialsPtr pOff
+        let pMax ← freshF; ldGlobalF pMax pAddr
+        let pSum ← freshF; ldGlobalFO pSum pAddr 4
+        maxF nm lMax pMax
+        subF adj lMax nm; mulF adj adj log2e; ex2 adj adj; mulF lSum lSum adj
+        subF adj pMax nm; mulF adj adj log2e; ex2 adj adj; mulF pSum pSum adj
+        addF lSum lSum pSum; movF lMax nm
+      warpReduceOnline lMax lSum t0 t1 nm adj log2e
+      lane0WriteSmem lid wid "gr_skip_wst" fun wAddr => do
+        stSharedFD wAddr lMax
+        let sumAddr ← freshR; addRI sumAddr wAddr 32; stSharedFD sumAddr lSum
+      thread0Op tid "gr_skip_bred" do
+        let sBase ← smemBase; let bMax ← freshF; let bSum ← freshF
+        crossWarp8Online bMax bSum t0 t1 nm adj log2e sBase 0 32
+        rcp bSum bSum; stGlobalF paramsPtr bMax; stGlobalFO paramsPtr 4 bSum
+      ptxRet },
+    -- ── normalize: y[i] = exp((x[i]-global_max)*log2e) * global_inv_sum ───────
+    { name := "normalize", params := ["x_buf", "meta_buf", "params_buf", "y_buf"], body := do
+      let xPtr      ← ldParam "x_buf"
+      let metaPtr   ← ldParam "meta_buf"
+      let paramsPtr ← ldParam "params_buf"
+      let yPtr      ← ldParam "y_buf"
+      let nReg   ← freshR; ldGlobalU nReg metaPtr
+      let gMax   ← freshF; ldGlobalF gMax paramsPtr
+      let invSum ← freshF; ldGlobalFO invSum paramsPtr 4
+      let log2e  ← freshF; movFC log2e f32_log2e
+      let (gid, _) ← gridStrideSetup nReg "nrm_end"
+      let xAddr ← elemAddr xPtr gid; let yAddr ← elemAddr yPtr gid
+      let xi ← freshF; ldGlobalF xi xAddr
+      subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
+      stGlobalF yAddr xi
+      label "nrm_end"; ptxRet } ]
 
 -- CLIF: u0:0 noop, u0:1 load, u0:2 prep, u0:3 core, u0:4 finalize
 -- Load: init CUDA, alloc 5 bufs, pack/upload meta, store n/num_blocks

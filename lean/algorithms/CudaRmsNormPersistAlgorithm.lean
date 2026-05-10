@@ -5,6 +5,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.PTX
 
 namespace CudaRmsNormPersist
 
@@ -18,112 +19,45 @@ def N_OFF      : Nat := 0x38   -- i64: element count N
 def BUF0_OFF   : Nat := 0x40   -- i32: buf0 id (x + weights)
 def BUF1_OFF   : Nat := 0x44   -- i32: buf1 id (output)
 
-def ptxSource : String :=
-  ".version 8.0\n" ++
-  ".target sm_86\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".shared .align 4 .b8 _smem[36];\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 buf0,\n" ++
-  "    .param .u64 buf1\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred   %p;\n" ++
-  "    .reg .u32    %r<12>;\n" ++
-  "    .reg .u64    %rd<10>;\n" ++
-  "    .reg .f32    %f<10>;\n" ++
-  "\n" ++
-  "    ld.param.u64  %rd0, [buf0];\n" ++
-  "    ld.param.u64  %rd1, [buf1];\n" ++
-  "    ld.global.u32 %r0, [%rd0];\n" ++
-  "    mov.u32       %r1, %tid.x;\n" ++
-  "    shr.u32       %r2, %r1, 5;\n" ++
-  "    and.b32       %r3, %r1, 31;\n" ++
-  "    add.u64       %rd2, %rd0, 8;\n" ++
-  "    cvt.u64.u32   %rd3, %r0;\n" ++
-  "    shl.b64       %rd3, %rd3, 2;\n" ++
-  "    add.u64       %rd4, %rd2, %rd3;\n" ++
-  "    mov.f32       %f0, 0f00000000;\n" ++
-  "    mov.u32       %r4, %r1;\n" ++
-  "loop1:\n" ++
-  "    setp.ge.u32   %p, %r4, %r0;\n" ++
-  "    @%p bra       done1;\n" ++
-  "    cvt.u64.u32   %rd5, %r4;\n" ++
-  "    shl.b64       %rd5, %rd5, 2;\n" ++
-  "    add.u64       %rd6, %rd2, %rd5;\n" ++
-  "    ld.global.f32 %f1, [%rd6];\n" ++
-  "    fma.rn.f32    %f0, %f1, %f1, %f0;\n" ++
-  "    add.u32       %r4, %r4, 256;\n" ++
-  "    bra           loop1;\n" ++
-  "done1:\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 16, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 8, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 4, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 2, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 1, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    setp.ne.u32   %p, %r3, 0;\n" ++
-  "    @%p bra       skip1;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    shl.b32       %r6, %r2, 2;\n" ++
-  "    add.u32       %r5, %r5, %r6;\n" ++
-  "    st.shared.f32 [%r5], %f0;\n" ++
-  "skip1:\n" ++
-  "    bar.sync      0;\n" ++
-  "    setp.ne.u32   %p, %r1, 0;\n" ++
-  "    @%p bra       skip2;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r5+0];\n" ++
-  "    ld.shared.f32 %f1, [%r5+4];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+8];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+12];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+16];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+20];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+24];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+28];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    cvt.rn.f32.u32 %f1, %r0;\n" ++
-  "    div.rn.f32    %f0, %f0, %f1;\n" ++
-  "    mov.f32       %f1, 0f3727c5ac;\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    rsqrt.approx.f32 %f0, %f0;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    st.shared.f32 [%r5+32], %f0;\n" ++
-  "skip2:\n" ++
-  "    bar.sync      0;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    ld.shared.f32 %f3, [%r5+32];\n" ++
-  "    mov.u32       %r4, %r1;\n" ++
-  "loop2:\n" ++
-  "    setp.ge.u32   %p, %r4, %r0;\n" ++
-  "    @%p bra       done2;\n" ++
-  "    cvt.u64.u32   %rd5, %r4;\n" ++
-  "    shl.b64       %rd5, %rd5, 2;\n" ++
-  "    add.u64       %rd6, %rd2, %rd5;\n" ++
-  "    ld.global.f32 %f4, [%rd6];\n" ++
-  "    add.u64       %rd7, %rd4, %rd5;\n" ++
-  "    ld.global.f32 %f5, [%rd7];\n" ++
-  "    mul.f32       %f4, %f4, %f3;\n" ++
-  "    mul.f32       %f4, %f4, %f5;\n" ++
-  "    add.u64       %rd8, %rd1, %rd5;\n" ++
-  "    st.global.f32 [%rd8], %f4;\n" ++
-  "    add.u32       %r4, %r4, 256;\n" ++
-  "    bra           loop2;\n" ++
-  "done2:\n" ++
-  "    ret;\n" ++
-  "}\n"
+-- buf0 = [N:u32][x:N*f32][w:N*f32], buf1 = output y
+def ptxSource : String := buildModule 36 [{ name := "main", params := ["buf0", "buf1"], body := do
+  let buf0 ← ldParam "buf0"
+  let buf1 ← ldParam "buf1"
+  -- Read dynamic N from buf0[0]; x starts at buf0+8; w starts at buf0+8+N*4
+  let nReg ← freshR;  ldGlobalU nReg buf0
+  let xPtr ← freshRd; addRdI xPtr buf0 8
+  let nU64 ← freshRd; cvtU64 nU64 nReg
+  let nOff ← freshRd; shlRd nOff nU64 2
+  let wPtr ← freshRd; addRd wPtr xPtr nOff
+  let (tid, warpId, laneId) ← getWarpIds
+  -- loop1: sum of squares
+  let acc ← freshF; movFC acc f32_0
+  let tmp ← freshF
+  strideLoop tid nReg 256 "loop1" "done1" fun i => do
+    let addr ← elemAddr xPtr i; ldGlobalF tmp addr; fmaRn acc tmp tmp acc
+  warpReduceSum acc tmp
+  lane0WriteSmem laneId warpId "skip1" fun wAddr => stSharedFD wAddr acc
+  -- thread 0: sum warps, divide by N (dynamic float), add eps, rsqrt
+  thread0Op tid "skip2" do
+    let sBase ← smemBase
+    let total ← freshF
+    crossWarp8 total tmp sBase 0 addF
+    let nf ← freshF; cvtF32 nf nReg
+    divRn total total nf
+    let eps ← freshF; movFC eps f32_eps
+    addF total total eps; rsqrt total total
+    stSharedF sBase 32 total
+  -- loop2: normalize with dynamic w pointer
+  let sBase2 ← smemBase
+  let scale ← freshF; ldSharedF scale sBase2 32
+  strideLoop tid nReg 256 "loop2" "done2" fun j => do
+    let xAddr ← elemAddr xPtr j
+    let wAddr ← elemAddr wPtr j
+    let yAddr ← elemAddr buf1 j
+    let xi ← freshF; ldGlobalF xi xAddr
+    let wi ← freshF; ldGlobalF wi wAddr
+    mulF xi xi scale; mulF xi xi wi; stGlobalF yAddr xi
+  ptxRet }]
 
 /-
   Load: init CUDA, read N and weights from data, alloc 2 GPU bufs,

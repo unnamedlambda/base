@@ -5,6 +5,7 @@ set_option maxRecDepth 4096
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
+open AlgorithmLib.PTX
 
 namespace Algorithm
 
@@ -93,88 +94,48 @@ def asciiA : Int := 97
 def asciiZ : Int := 122
 def asciiGreater : Int := 62
 
-def scalarAddPtx : String :=
-  ".version 7.0\n" ++
-  ".target sm_50\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 lhs_ptr,\n" ++
-  "    .param .u64 rhs_ptr,\n" ++
-  "    .param .u64 out_ptr\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .u64 %lhs, %rhs, %out;\n" ++
-  "    .reg .u64 %a, %b, %sum;\n" ++
-  "\n" ++
-  "    ld.param.u64 %lhs, [lhs_ptr];\n" ++
-  "    ld.param.u64 %rhs, [rhs_ptr];\n" ++
-  "    ld.param.u64 %out, [out_ptr];\n" ++
-  "\n" ++
-  "    ld.global.u64 %a, [%lhs];\n" ++
-  "    ld.global.u64 %b, [%rhs];\n" ++
-  "    add.s64 %sum, %a, %b;\n" ++
-  "    st.global.u64 [%out], %sum;\n" ++
-  "\n" ++
-  "    ret;\n" ++
-  "}\n"
+def scalarAddPtx : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
+  name := "main", params := ["lhs_ptr", "rhs_ptr", "out_ptr"], body := do
+  let lhs ← ldParam "lhs_ptr"
+  let rhs ← ldParam "rhs_ptr"
+  let out ← ldParam "out_ptr"
+  let a ← freshRd; ldGlobalU64 a lhs
+  let b ← freshRd; ldGlobalU64 b rhs
+  let sum ← freshRd; addS64 sum a b
+  stGlobalU64 out sum
+  ptxRet }]
 
-def arrayScalePtxSource : String :=
-  ".version 7.0\n" ++
-  ".target sm_50\n" ++
-  ".address_size 64\n\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 in_ptr,\n" ++
-  "    .param .u64 param_ptr,\n" ++
-  "    .param .u64 out_ptr\n" ++
-  ")\n{\n" ++
-  "    .reg .u32 %idx;\n" ++
-  "    .reg .u64 %byte, %x, %s, %y;\n" ++
-  "    .reg .u64 %in, %param, %out, %addr;\n" ++
-  "    ld.param.u64 %in, [in_ptr];\n" ++
-  "    ld.param.u64 %param, [param_ptr];\n" ++
-  "    ld.param.u64 %out, [out_ptr];\n" ++
-  "    mov.u32 %idx, %ctaid.x;\n" ++
-  "    cvt.u64.u32 %byte, %idx;\n" ++
-  "    shl.b64 %byte, %byte, 3;\n" ++
-  "    add.u64 %addr, %in, %byte;\n" ++
-  "    ld.global.s64 %x, [%addr];\n" ++
-  "    ld.global.s64 %s, [%param];\n" ++
-  "    mul.lo.s64 %y, %x, %s;\n" ++
-  "    add.u64 %addr, %out, %byte;\n" ++
-  "    st.global.s64 [%addr], %y;\n" ++
-  "    ret;\n" ++
-  "}\n"
+def arrayScalePtxSource : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
+  name := "main", params := ["in_ptr", "param_ptr", "out_ptr"], body := do
+  let inPtr    ← ldParam "in_ptr"
+  let paramPtr ← ldParam "param_ptr"
+  let outPtr   ← ldParam "out_ptr"
+  let idx  ← freshR;  movR idx ctaX
+  let byte ← freshRd; cvtU64 byte idx; shlRd byte byte 3
+  let addr ← freshRd; addRd addr inPtr byte
+  let x    ← freshRd; ldGlobalS64 x addr
+  let s    ← freshRd; ldGlobalS64 s paramPtr
+  let y    ← freshRd; mulLoS64 y x s
+  let outAddr ← freshRd; addRd outAddr outPtr byte
+  stGlobalS64 outAddr y
+  ptxRet }]
 
-def arrayAddPtxSource : String :=
-  ".version 7.0\n" ++
-  ".target sm_50\n" ++
-  ".address_size 64\n\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 lhs_ptr,\n" ++
-  "    .param .u64 rhs_ptr,\n" ++
-  "    .param .u64 param_ptr,\n" ++
-  "    .param .u64 out_ptr\n" ++
-  ")\n{\n" ++
-  "    .reg .u32 %idx;\n" ++
-  "    .reg .u64 %byte, %a, %b, %y;\n" ++
-  "    .reg .u64 %lhs, %rhs, %param, %out, %addr;\n" ++
-  "    ld.param.u64 %lhs, [lhs_ptr];\n" ++
-  "    ld.param.u64 %rhs, [rhs_ptr];\n" ++
-  "    ld.param.u64 %param, [param_ptr];\n" ++
-  "    ld.param.u64 %out, [out_ptr];\n" ++
-  "    mov.u32 %idx, %ctaid.x;\n" ++
-  "    cvt.u64.u32 %byte, %idx;\n" ++
-  "    shl.b64 %byte, %byte, 3;\n" ++
-  "    add.u64 %addr, %lhs, %byte;\n" ++
-  "    ld.global.s64 %a, [%addr];\n" ++
-  "    add.u64 %addr, %rhs, %byte;\n" ++
-  "    ld.global.s64 %b, [%addr];\n" ++
-  "    add.s64 %y, %a, %b;\n" ++
-  "    add.u64 %addr, %out, %byte;\n" ++
-  "    st.global.s64 [%addr], %y;\n" ++
-  "    ret;\n" ++
-  "}\n"
+def arrayAddPtxSource : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
+  name := "main", params := ["lhs_ptr", "rhs_ptr", "param_ptr", "out_ptr"], body := do
+  let lhs   ← ldParam "lhs_ptr"
+  let rhs   ← ldParam "rhs_ptr"
+  let _     ← ldParam "param_ptr"  -- loaded but unused
+  let out   ← ldParam "out_ptr"
+  let idx   ← freshR;  movR idx ctaX
+  let byte  ← freshRd; cvtU64 byte idx; shlRd byte byte 3
+  let addrA ← freshRd; addRd addrA lhs byte
+  let a     ← freshRd; ldGlobalS64 a addrA
+  let addrB ← freshRd; addRd addrB rhs byte
+  let b     ← freshRd; ldGlobalS64 b addrB
+  let y     ← freshRd; addS64 y a b
+  let addrO ← freshRd; addRd addrO out byte
+  stGlobalS64 addrO y
+  ptxRet }]
 
 def loadByteAt (ptr : Val) (baseOff : Nat) (idx : Val) : IRBuilder Val := do
   let base ← iconst64 baseOff

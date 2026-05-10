@@ -5,6 +5,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.PTX
 
 namespace CudaDecodeAttention
 
@@ -67,169 +68,52 @@ def BUF_META_OFF   : Nat := 0x50
 -- seq_len (i64) staging + seq_len value stored at 0x58
 def SEQ_LEN_OFF    : Nat := 0x58  -- i64 seq_len value (also used as staging for GPU upload)
 
-def ptxSource : String :=
-  ".version 8.0\n" ++
-  ".target sm_86\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".shared .align 4 .b8 _smem[64];\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 scores_buf,\n" ++
-  "    .param .u64 meta_buf,\n" ++
-  "    .param .u64 probs_buf\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred %p;\n" ++
-  "    .reg .u32  %r<12>;\n" ++
-  "    .reg .u64  %rd<8>;\n" ++
-  "    .reg .f32  %f<10>;\n" ++
-  "    ld.param.u64 %rd0, [scores_buf];\n" ++
-  "    ld.param.u64 %rd1, [meta_buf];\n" ++
-  "    ld.param.u64 %rd2, [probs_buf];\n" ++
-  "    ld.global.u32 %r0, [%rd1];\n" ++          -- seq_len
-  "    mov.u32 %r1, %ctaid.x;\n" ++              -- head_idx
-  "    mov.u32 %r2, %tid.x;\n" ++
-  "    shr.u32 %r3, %r2, 5;\n" ++
-  "    and.b32 %r4, %r2, 31;\n" ++
-  "    cvt.u64.u32 %rd3, %r1;\n" ++
-  "    cvt.u64.u32 %rd4, %r0;\n" ++
-  "    mul.lo.u64 %rd5, %rd3, %rd4;\n" ++       -- head * seq_len
-  "    shl.b64 %rd5, %rd5, 2;\n" ++              -- * sizeof(f32)
-  "    add.u64 %rd6, %rd0, %rd5;\n" ++           -- scores head base
-  "    add.u64 %rd7, %rd2, %rd5;\n" ++           -- probs head base
-  "    mov.f32 %f8, 0f3fb8aa3b;\n" ++            -- log2e
-  "    mov.f32 %f0, 0f00000000;\n" ++            -- local_max
-  "    mov.u32 %r5, %r2;\n" ++
-  "sm_loop_max:\n" ++
-  "    setp.ge.u32 %p, %r5, %r0;\n" ++
-  "    @%p bra sm_done_max;\n" ++
-  "    cvt.u64.u32 %rd3, %r5;\n" ++
-  "    shl.b64 %rd3, %rd3, 2;\n" ++
-  "    add.u64 %rd4, %rd6, %rd3;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    add.u32 %r5, %r5, 256;\n" ++
-  "    bra sm_loop_max;\n" ++
-  "sm_done_max:\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 16, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 8, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 4, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 2, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 1, 31, 0xffffffff;\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    setp.ne.u32 %p, %r4, 0;\n" ++
-  "    @%p bra sm_skip_max_store;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    shl.b32 %r7, %r3, 2;\n" ++
-  "    add.u32 %r6, %r6, %r7;\n" ++
-  "    st.shared.f32 [%r6], %f0;\n" ++
-  "sm_skip_max_store:\n" ++
-  "    bar.sync 0;\n" ++
-  "    setp.ne.u32 %p, %r2, 0;\n" ++
-  "    @%p bra sm_skip_max_reduce;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r6+0];\n" ++
-  "    ld.shared.f32 %f1, [%r6+4];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+8];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+12];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+16];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+20];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+24];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+28];\n" ++
-  "    max.f32 %f0, %f0, %f1;\n" ++
-  "    st.shared.f32 [%r6+32], %f0;\n" ++
-  "sm_skip_max_reduce:\n" ++
-  "    bar.sync 0;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    ld.shared.f32 %f6, [%r6+32];\n" ++
-  "    mov.f32 %f0, 0f00000000;\n" ++            -- local_sum
-  "    mov.u32 %r5, %r2;\n" ++
-  "sm_loop_sum:\n" ++
-  "    setp.ge.u32 %p, %r5, %r0;\n" ++
-  "    @%p bra sm_done_sum;\n" ++
-  "    cvt.u64.u32 %rd3, %r5;\n" ++
-  "    shl.b64 %rd3, %rd3, 2;\n" ++
-  "    add.u64 %rd4, %rd6, %rd3;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    sub.f32 %f1, %f1, %f6;\n" ++
-  "    mul.f32 %f1, %f1, %f8;\n" ++
-  "    ex2.approx.f32 %f1, %f1;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    add.u32 %r5, %r5, 256;\n" ++
-  "    bra sm_loop_sum;\n" ++
-  "sm_done_sum:\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 16, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 8, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 4, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 2, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    shfl.sync.bfly.b32 %f1, %f0, 1, 31, 0xffffffff;\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    setp.ne.u32 %p, %r4, 0;\n" ++
-  "    @%p bra sm_skip_sum_store;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    shl.b32 %r7, %r3, 2;\n" ++
-  "    add.u32 %r6, %r6, %r7;\n" ++
-  "    st.shared.f32 [%r6], %f0;\n" ++
-  "sm_skip_sum_store:\n" ++
-  "    bar.sync 0;\n" ++
-  "    setp.ne.u32 %p, %r2, 0;\n" ++
-  "    @%p bra sm_skip_sum_reduce;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r6+0];\n" ++
-  "    ld.shared.f32 %f1, [%r6+4];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+8];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+12];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+16];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+20];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+24];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r6+28];\n" ++
-  "    add.f32 %f0, %f0, %f1;\n" ++
-  "    rcp.approx.f32 %f0, %f0;\n" ++
-  "    st.shared.f32 [%r6+36], %f0;\n" ++
-  "sm_skip_sum_reduce:\n" ++
-  "    bar.sync 0;\n" ++
-  "    mov.u32 %r6, _smem;\n" ++
-  "    ld.shared.f32 %f7, [%r6+36];\n" ++
-  "    mov.u32 %r5, %r2;\n" ++
-  "sm_loop_out:\n" ++
-  "    setp.ge.u32 %p, %r5, %r0;\n" ++
-  "    @%p bra sm_done_out;\n" ++
-  "    cvt.u64.u32 %rd3, %r5;\n" ++
-  "    shl.b64 %rd3, %rd3, 2;\n" ++
-  "    add.u64 %rd4, %rd6, %rd3;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    sub.f32 %f1, %f1, %f6;\n" ++
-  "    mul.f32 %f1, %f1, %f8;\n" ++
-  "    ex2.approx.f32 %f1, %f1;\n" ++
-  "    mul.f32 %f1, %f1, %f7;\n" ++
-  "    add.u64 %rd5, %rd7, %rd3;\n" ++
-  "    st.global.f32 [%rd5], %f1;\n" ++
-  "    add.u32 %r5, %r5, 256;\n" ++
-  "    bra sm_loop_out;\n" ++
-  "sm_done_out:\n" ++
-  "    ret;\n" ++
-  "}\n"
+def ptxSource : String := buildModule 64 [{ name := "main", params := ["scores_buf", "meta_buf", "probs_buf"], body := do
+  let scoresBuf ← ldParam "scores_buf"
+  let metaPtr   ← ldParam "meta_buf"
+  let probsBuf  ← ldParam "probs_buf"
+  let seqLen ← freshR; ldGlobalU seqLen metaPtr
+  let (tid, wid, lid) ← getWarpIds
+  let headIdx  ← freshR; movR headIdx ctaX
+  let headId64 ← freshRd; cvtU64 headId64 headIdx
+  let seqLen64 ← freshRd; cvtU64 seqLen64 seqLen
+  let headOff  ← freshRd; mulLoRd headOff headId64 seqLen64
+  let byteOff  ← freshRd; shlRd byteOff headOff 2
+  let scoresBase ← freshRd; addRd scoresBase scoresBuf byteOff
+  let probsBase  ← freshRd; addRd probsBase  probsBuf  byteOff
+  let log2e ← freshF; movFC log2e f32_log2e
+  -- Phase 1: max reduction over this head's scores
+  let lMax ← freshF; movFC lMax f32_0
+  let mTmp ← freshF
+  strideLoop tid seqLen 256 "sm_loop_max" "sm_done_max" fun i => do
+    let addr ← elemAddr scoresBase i; ldGlobalF mTmp addr; maxF lMax lMax mTmp
+  warpReduceMax lMax mTmp
+  lane0WriteSmem lid wid "sm_skip_max_store" fun wAddr => stSharedFD wAddr lMax
+  thread0Op tid "sm_skip_max_reduce" do
+    let sBase ← smemBase; let gMax ← freshF
+    crossWarp8 gMax mTmp sBase 0 maxF; stSharedF sBase 32 gMax
+  let sBase1 ← smemBase
+  let gMax ← freshF; ldSharedF gMax sBase1 32
+  -- Phase 2: sum of exp(score - max)
+  let lSum ← freshF; movFC lSum f32_0
+  let sTmp ← freshF
+  strideLoop tid seqLen 256 "sm_loop_sum" "sm_done_sum" fun i => do
+    let addr ← elemAddr scoresBase i; let xi ← freshF; ldGlobalF xi addr
+    subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; addF lSum lSum xi
+  warpReduceSum lSum sTmp
+  lane0WriteSmem lid wid "sm_skip_sum_store" fun wAddr => stSharedFD wAddr lSum
+  thread0Op tid "sm_skip_sum_reduce" do
+    let sBase ← smemBase
+    crossWarp8 lSum sTmp sBase 0 addF; rcp lSum lSum; stSharedF sBase 36 lSum
+  let sBase2 ← smemBase
+  let invSum ← freshF; ldSharedF invSum sBase2 36
+  -- Phase 3: write softmax probabilities
+  strideLoop tid seqLen 256 "sm_loop_out" "sm_done_out" fun i => do
+    let sAddr ← elemAddr scoresBase i; let pAddr ← elemAddr probsBase i
+    let xi ← freshF; ldGlobalF xi sAddr
+    subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
+    stGlobalF pAddr xi
+  ptxRet }]
 
 -- Load: init CUDA, alloc 7 bufs, upload K/V/meta, store buf IDs and seq_len
 def loadFn : IRBuilder Unit := do

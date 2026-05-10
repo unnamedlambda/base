@@ -3,6 +3,7 @@ import AlgorithmLib
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
+open AlgorithmLib.PTX
 
 namespace Algorithm
 
@@ -16,41 +17,22 @@ namespace Algorithm
 
 -- PTX kernel: y[i] = 2.0 * x[i] + y[i]
 -- Block size 256, grid = N/256 (harness ensures N is multiple of 256).
-def saxpyPtx : String :=
-  ".version 7.0\n" ++
-  ".target sm_50\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 x_ptr,\n" ++
-  "    .param .u64 y_ptr\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .u32 %r0, %r1;\n" ++
-  "    .reg .u64 %rx, %ry, %off;\n" ++
-  "    .reg .f32 %fx, %fy, %fa;\n" ++
-  "\n" ++
-  "    mov.u32 %r0, %ctaid.x;\n" ++
-  "    mov.u32 %r1, %tid.x;\n" ++
-  "    mad.lo.u32 %r0, %r0, 256, %r1;\n" ++
-  "\n" ++
-  "    cvt.u64.u32 %off, %r0;\n" ++
-  "    shl.b64 %off, %off, 2;\n" ++
-  "\n" ++
-  "    ld.param.u64 %rx, [x_ptr];\n" ++
-  "    ld.param.u64 %ry, [y_ptr];\n" ++
-  "\n" ++
-  "    add.u64 %rx, %rx, %off;\n" ++
-  "    add.u64 %ry, %ry, %off;\n" ++
-  "\n" ++
-  "    ld.global.f32 %fx, [%rx];\n" ++
-  "    ld.global.f32 %fy, [%ry];\n" ++
-  "    mov.f32 %fa, 0f40000000;\n" ++     -- 2.0f IEEE 754
-  "    fma.rn.f32 %fy, %fa, %fx, %fy;\n" ++
-  "    st.global.f32 [%ry], %fy;\n" ++
-  "\n" ++
-  "    ret;\n" ++
-  "}\n"
+def saxpyPtx : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
+  name := "main", params := ["x_ptr", "y_ptr"], body := do
+  let xPtr ← ldParam "x_ptr"
+  let yPtr ← ldParam "y_ptr"
+  let bid ← freshR; movR bid ctaX
+  let tid ← freshR; movR tid tidX
+  let gid ← freshR; madLoRC gid bid 256 tid
+  let off ← freshRd; cvtU64 off gid; shlRd off off 2
+  let xa ← freshRd; addRd xa xPtr off
+  let ya ← freshRd; addRd ya yPtr off
+  let fx ← freshF; ldGlobalF fx xa
+  let fy ← freshF; ldGlobalF fy ya
+  let fa ← freshF; movFC fa 0x40000000  -- 2.0f
+  fmaRn fy fa fx fy
+  stGlobalF ya fy
+  ptxRet }]
 
 -- ---------------------------------------------------------------------------
 -- Memory layout

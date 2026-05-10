@@ -1,6 +1,8 @@
 import AlgorithmLib
+set_option maxRecDepth 4096
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.PTX
 
 namespace Matmul
 
@@ -62,139 +64,91 @@ def genMatrixBytes (count : Nat) (seed : UInt32) : List UInt8 :=
 -- Shared memory holds one 16x16 tile of A and one 16x16 tile of B.
 -- ---------------------------------------------------------------------------
 
-def ptxSource : String :=
-  ".version 7.0\n" ++
-  ".target sm_50\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 p_a,\n" ++
-  "    .param .u64 p_b,\n" ++
-  "    .param .u64 p_c,\n" ++
-  "    .param .u64 p_par\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .shared .align 16 .b8 tiles[2048];\n" ++  -- A_tile (1024) + B_tile (1024)
-  "    .reg .u32 %r<30>;\n" ++
-  "    .reg .u64 %rd<10>;\n" ++
-  "    .reg .f32 %f<6>;\n" ++
-  "    .reg .pred %p<8>;\n" ++
-  "\n" ++
-  -- Kernel params
-  "    ld.param.u64 %rd0, [p_a];\n" ++
-  "    ld.param.u64 %rd1, [p_b];\n" ++
-  "    ld.param.u64 %rd2, [p_c];\n" ++
-  "    ld.param.u64 %rd3, [p_par];\n" ++
-  "    ld.global.u32 %r0, [%rd3];\n" ++       -- M
-  "    ld.global.u32 %r1, [%rd3+4];\n" ++     -- K
-  "    ld.global.u32 %r2, [%rd3+8];\n" ++     -- N
-  "\n" ++
-  -- Thread/block coords
-  "    mov.u32 %r3, %tid.x;\n" ++             -- tx
-  "    mov.u32 %r4, %tid.y;\n" ++             -- ty
-  "    mov.u32 %r5, %ctaid.x;\n" ++           -- bx
-  "    mov.u32 %r6, %ctaid.y;\n" ++           -- by
-  "    shl.b32 %r7, %r6, 4;\n" ++             -- by*16
-  "    add.u32 %r7, %r7, %r4;\n" ++           -- row = by*16 + ty
-  "    shl.b32 %r8, %r5, 4;\n" ++             -- bx*16
-  "    add.u32 %r8, %r8, %r3;\n" ++           -- col = bx*16 + tx
-  "\n" ++
-  -- Shared memory bases and my per-thread tile offset
-  "    mov.u32 %r9, tiles;\n" ++              -- A_tile base
-  "    add.u32 %r10, %r9, 1024;\n" ++         -- B_tile base
-  "    shl.b32 %r11, %r4, 4;\n" ++            -- ty*16
-  "    add.u32 %r11, %r11, %r3;\n" ++         -- ty*16 + tx
-  "    shl.b32 %r11, %r11, 2;\n" ++           -- *4 bytes
-  "\n" ++
-  -- Accumulator
-  "    mov.f32 %f0, 0f00000000;\n" ++
-  "\n" ++
-  -- Outer loop over K, step 16
-  "    mov.u32 %r12, 0;\n" ++                 -- tile_k
-  "$L_OUTER:\n" ++
-  "    setp.ge.u32 %p0, %r12, %r1;\n" ++
-  "    @%p0 bra $L_WRITE;\n" ++
-  "\n" ++
-  -- Load A_tile[ty][tx] = A[row * K + tile_k + tx]
-  "    setp.lt.u32 %p1, %r7, %r0;\n" ++       -- row < M
-  "    add.u32 %r13, %r12, %r3;\n" ++         -- tile_k + tx
-  "    setp.lt.u32 %p2, %r13, %r1;\n" ++      -- tile_k + tx < K
-  "    and.pred %p3, %p1, %p2;\n" ++
-  "    @!%p3 bra $L_A_ZERO;\n" ++
-  "    mul.lo.u32 %r14, %r7, %r1;\n" ++
-  "    add.u32 %r14, %r14, %r13;\n" ++
-  "    cvt.u64.u32 %rd4, %r14;\n" ++
-  "    shl.b64 %rd4, %rd4, 2;\n" ++
-  "    add.u64 %rd4, %rd0, %rd4;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    bra $L_A_STORE;\n" ++
-  "$L_A_ZERO:\n" ++
-  "    mov.f32 %f1, 0f00000000;\n" ++
-  "$L_A_STORE:\n" ++
-  "    add.u32 %r15, %r9, %r11;\n" ++         -- &A_tile[ty][tx]
-  "    st.shared.f32 [%r15], %f1;\n" ++
-  "\n" ++
-  -- Load B_tile[ty][tx] = B[(tile_k + ty) * N + col]
-  "    add.u32 %r16, %r12, %r4;\n" ++         -- tile_k + ty
-  "    setp.lt.u32 %p4, %r16, %r1;\n" ++      -- tile_k + ty < K
-  "    setp.lt.u32 %p5, %r8, %r2;\n" ++       -- col < N
-  "    and.pred %p6, %p4, %p5;\n" ++
-  "    @!%p6 bra $L_B_ZERO;\n" ++
-  "    mul.lo.u32 %r17, %r16, %r2;\n" ++
-  "    add.u32 %r17, %r17, %r8;\n" ++
-  "    cvt.u64.u32 %rd5, %r17;\n" ++
-  "    shl.b64 %rd5, %rd5, 2;\n" ++
-  "    add.u64 %rd5, %rd1, %rd5;\n" ++
-  "    ld.global.f32 %f2, [%rd5];\n" ++
-  "    bra $L_B_STORE;\n" ++
-  "$L_B_ZERO:\n" ++
-  "    mov.f32 %f2, 0f00000000;\n" ++
-  "$L_B_STORE:\n" ++
-  "    add.u32 %r18, %r10, %r11;\n" ++
-  "    st.shared.f32 [%r18], %f2;\n" ++
-  "\n" ++
-  "    bar.sync 0;\n" ++
-  "\n" ++
-  -- Inner accumulate: acc += A_tile[ty][kk] * B_tile[kk][tx]
-  "    shl.b32 %r19, %r4, 6;\n" ++            -- ty * 16 * 4 = ty*64 (A row base)
-  "    add.u32 %r19, %r9, %r19;\n" ++
-  "    shl.b32 %r20, %r3, 2;\n" ++            -- tx * 4 (B col offset)
-  "    add.u32 %r20, %r10, %r20;\n" ++
-  "    mov.u32 %r21, 0;\n" ++                 -- kk
-  "$L_INNER:\n" ++
-  "    setp.ge.u32 %p7, %r21, 16;\n" ++
-  "    @%p7 bra $L_INNER_END;\n" ++
-  "    shl.b32 %r22, %r21, 2;\n" ++           -- kk * 4
-  "    add.u32 %r23, %r19, %r22;\n" ++
-  "    ld.shared.f32 %f3, [%r23];\n" ++       -- A_tile[ty][kk]
-  "    shl.b32 %r24, %r21, 6;\n" ++           -- kk * 64
-  "    add.u32 %r25, %r20, %r24;\n" ++
-  "    ld.shared.f32 %f4, [%r25];\n" ++       -- B_tile[kk][tx]
-  "    fma.rn.f32 %f0, %f3, %f4, %f0;\n" ++
-  "    add.u32 %r21, %r21, 1;\n" ++
-  "    bra $L_INNER;\n" ++
-  "$L_INNER_END:\n" ++
-  "    bar.sync 0;\n" ++
-  "\n" ++
-  "    add.u32 %r12, %r12, 16;\n" ++
-  "    bra $L_OUTER;\n" ++
-  "\n" ++
-  -- Bounds-checked write: C[row * N + col] = acc
-  "$L_WRITE:\n" ++
-  "    setp.ge.u32 %p1, %r7, %r0;\n" ++
-  "    @%p1 bra $L_DONE;\n" ++
-  "    setp.ge.u32 %p2, %r8, %r2;\n" ++
-  "    @%p2 bra $L_DONE;\n" ++
-  "    mul.lo.u32 %r26, %r7, %r2;\n" ++
-  "    add.u32 %r26, %r26, %r8;\n" ++
-  "    cvt.u64.u32 %rd6, %r26;\n" ++
-  "    shl.b64 %rd6, %rd6, 2;\n" ++
-  "    add.u64 %rd6, %rd2, %rd6;\n" ++
-  "    st.global.f32 [%rd6], %f0;\n" ++
-  "\n" ++
-  "$L_DONE:\n" ++
-  "    ret;\n" ++
-  "}\n"
+def ptxSource : String := buildModuleWith
+  { version := "7.0", target := "sm_50", smemSize := 2048, smemAlign := 16, smemName := "tiles" }
+  [{ name := "main", params := ["p_a", "p_b", "p_c", "p_par"], body := do
+    let pA   ← ldParam "p_a"
+    let pB   ← ldParam "p_b"
+    let pC   ← ldParam "p_c"
+    let pPar ← ldParam "p_par"
+    -- Load M, K, N from params buffer
+    let mReg ← freshR; ldGlobalU  mReg pPar
+    let kReg ← freshR; ldGlobalUO kReg pPar 4
+    let nReg ← freshR; ldGlobalUO nReg pPar 8
+    -- Thread/block coordinates
+    let tx  ← freshR; movR tx  tidX
+    let ty  ← freshR; movR ty  tidY
+    let bx  ← freshR; movR bx  ctaX
+    let by_ ← freshR; movR by_ ctaY
+    -- row = by*16 + ty,  col = bx*16 + tx
+    let row ← freshR; shlR row by_ 4; addR row row ty
+    let col ← freshR; shlR col bx  4; addR col col tx
+    -- Shared memory: A_tile at tiles[0], B_tile at tiles[1024]
+    let aTile ← smemBaseNamed "tiles"
+    let bTile ← freshR; addRI bTile aTile 1024
+    -- Per-thread smem offset: (ty*16 + tx) * 4
+    let tOff ← freshR; shlR tOff ty 4; addR tOff tOff tx; shlR tOff tOff 2
+    -- Accumulator
+    let acc ← freshF; movFC acc f32_0
+    -- Outer loop: step through K in tiles of 16
+    let tileK ← freshR; movRC tileK 0
+    label "L_OUTER"
+    let p0 ← freshP; setpGe p0 tileK kReg; braIf p0 "L_WRITE"
+    -- Load A_tile[ty][tx] = A[row*K + tile_k+tx], or 0.0 if out of bounds
+    let p1 ← freshP; setpLt p1 row mReg
+    let tkTx ← freshR; addR tkTx tileK tx
+    let p2 ← freshP; setpLt p2 tkTx kReg
+    let p3 ← freshP; andPred p3 p1 p2
+    let f1 ← freshF
+    braIfNot p3 "L_A_ZERO"
+    let r14 ← freshR; mulLoR r14 row kReg; addR r14 r14 tkTx
+    let rd4 ← freshRd; cvtU64 rd4 r14; shlRd rd4 rd4 2; addRd rd4 pA rd4
+    ldGlobalF f1 rd4
+    bra "L_A_STORE"
+    label "L_A_ZERO"; movFC f1 f32_0
+    label "L_A_STORE"
+    let r15 ← freshR; addR r15 aTile tOff; stSharedFD r15 f1
+    -- Load B_tile[ty][tx] = B[(tile_k+ty)*N + col], or 0.0 if out of bounds
+    let tkTy ← freshR; addR tkTy tileK ty
+    let p4 ← freshP; setpLt p4 tkTy kReg
+    let p5 ← freshP; setpLt p5 col nReg
+    let p6 ← freshP; andPred p6 p4 p5
+    let f2 ← freshF
+    braIfNot p6 "L_B_ZERO"
+    let r17 ← freshR; mulLoR r17 tkTy nReg; addR r17 r17 col
+    let rd5 ← freshRd; cvtU64 rd5 r17; shlRd rd5 rd5 2; addRd rd5 pB rd5
+    ldGlobalF f2 rd5
+    bra "L_B_STORE"
+    label "L_B_ZERO"; movFC f2 f32_0
+    label "L_B_STORE"
+    let r18 ← freshR; addR r18 bTile tOff; stSharedFD r18 f2
+    barSync
+    -- Inner accumulate: acc += A_tile[ty][kk] * B_tile[kk][tx]
+    let aRowBase ← freshR; shlR aRowBase ty 6; addR aRowBase aTile aRowBase
+    let bColBase ← freshR; shlR bColBase tx 2; addR bColBase bTile bColBase
+    let kk ← freshR; movRC kk 0
+    label "L_INNER"
+    let p7 ← freshP; setpGeI p7 kk 16; braIf p7 "L_INNER_END"
+    let kkBytes  ← freshR; shlR kkBytes kk 2
+    let aAddr    ← freshR; addR aAddr aRowBase kkBytes
+    let f3 ← freshF; ldSharedFD f3 aAddr
+    let kkStride ← freshR; shlR kkStride kk 6
+    let bAddr    ← freshR; addR bAddr bColBase kkStride
+    let f4 ← freshF; ldSharedFD f4 bAddr
+    fmaRn acc f3 f4 acc
+    addRI kk kk 1; bra "L_INNER"
+    label "L_INNER_END"
+    barSync
+    addRI tileK tileK 16; bra "L_OUTER"
+    -- Bounds-checked write: C[row*N + col] = acc
+    label "L_WRITE"
+    let pw1 ← freshP; setpGe pw1 row mReg; braIf pw1 "L_DONE"
+    let pw2 ← freshP; setpGe pw2 col nReg; braIf pw2 "L_DONE"
+    let r26 ← freshR; mulLoR r26 row nReg; addR r26 r26 col
+    let rd6 ← freshRd; cvtU64 rd6 r26; shlRd rd6 rd6 2; addRd rd6 pC rd6
+    stGlobalF rd6 acc
+    label "L_DONE"
+    ptxRet }]
 
 -- ---------------------------------------------------------------------------
 -- Layout constants (fixed region offsets; data region base depends on m,k,n)

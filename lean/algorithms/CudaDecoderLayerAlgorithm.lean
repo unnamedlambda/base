@@ -5,6 +5,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.PTX
 
 namespace CudaDecoderLayer
 
@@ -80,305 +81,88 @@ def BIND_ADDRMS_OFF : Nat := 0x110
 def BIND_SILU_OFF  : Nat := 0x130
 def BIND_ADD2_OFF  : Nat := 0x140
 
-def ptxRmsNorm : String :=
-  ".version 8.0\n" ++
-  ".target sm_86\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".shared .align 4 .b8 _smem[36];\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 x_ptr,\n" ++
-  "    .param .u64 w_ptr,\n" ++
-  "    .param .u64 y_ptr\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred   %p;\n" ++
-  "    .reg .u32    %r<12>;\n" ++
-  "    .reg .u64    %rd<10>;\n" ++
-  "    .reg .f32    %f<10>;\n" ++
-  "\n" ++
-  "    ld.param.u64  %rd0, [x_ptr];\n" ++
-  "    ld.param.u64  %rd1, [w_ptr];\n" ++
-  "    ld.param.u64  %rd2, [y_ptr];\n" ++
-  "    mov.u32       %r0, " ++ toString D_MODEL ++ ";\n" ++
-  "    mov.u32       %r1, %tid.x;\n" ++
-  "    shr.u32       %r2, %r1, 5;\n" ++
-  "    and.b32       %r3, %r1, 31;\n" ++
-  "    mov.f32       %f0, 0f00000000;\n" ++
-  "    mov.u32       %r4, %r1;\n" ++
-  "loop1:\n" ++
-  "    setp.ge.u32   %p, %r4, %r0;\n" ++
-  "    @%p bra       done1;\n" ++
-  "    cvt.u64.u32   %rd3, %r4;\n" ++
-  "    shl.b64       %rd3, %rd3, 2;\n" ++
-  "    add.u64       %rd4, %rd0, %rd3;\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    fma.rn.f32    %f0, %f1, %f1, %f0;\n" ++
-  "    add.u32       %r4, %r4, 256;\n" ++
-  "    bra           loop1;\n" ++
-  "done1:\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 16, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 8, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 4, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 2, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 1, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    setp.ne.u32   %p, %r3, 0;\n" ++
-  "    @%p bra       skip1;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    shl.b32       %r6, %r2, 2;\n" ++
-  "    add.u32       %r5, %r5, %r6;\n" ++
-  "    st.shared.f32 [%r5], %f0;\n" ++
-  "skip1:\n" ++
-  "    bar.sync      0;\n" ++
-  "    setp.ne.u32   %p, %r1, 0;\n" ++
-  "    @%p bra       skip2;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r5+0];\n" ++
-  "    ld.shared.f32 %f1, [%r5+4];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+8];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+12];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+16];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+20];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+24];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+28];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    mov.f32       %f1, 0f44600000;\n" ++
-  "    div.rn.f32    %f0, %f0, %f1;\n" ++
-  "    mov.f32       %f1, 0f3727c5ac;\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    rsqrt.approx.f32 %f0, %f0;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    st.shared.f32 [%r5+32], %f0;\n" ++
-  "skip2:\n" ++
-  "    bar.sync      0;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    ld.shared.f32 %f3, [%r5+32];\n" ++
-  "    mov.u32       %r4, %r1;\n" ++
-  "loop2:\n" ++
-  "    setp.ge.u32   %p, %r4, %r0;\n" ++
-  "    @%p bra       done2;\n" ++
-  "    cvt.u64.u32   %rd3, %r4;\n" ++
-  "    shl.b64       %rd3, %rd3, 2;\n" ++
-  "    add.u64       %rd4, %rd0, %rd3;\n" ++
-  "    ld.global.f32 %f4, [%rd4];\n" ++
-  "    add.u64       %rd5, %rd1, %rd3;\n" ++
-  "    ld.global.f32 %f5, [%rd5];\n" ++
-  "    mul.f32       %f4, %f4, %f3;\n" ++
-  "    mul.f32       %f4, %f4, %f5;\n" ++
-  "    add.u64       %rd6, %rd2, %rd3;\n" ++
-  "    st.global.f32 [%rd6], %f4;\n" ++
-  "    add.u32       %r4, %r4, 256;\n" ++
-  "    bra           loop2;\n" ++
-  "done2:\n" ++
-  "    ret;\n" ++
-  "}\n"
+def ptxRmsNorm : String := buildModule 36 [{ name := "main", params := ["x_ptr", "w_ptr", "y_ptr"], body := do
+  let xPtr ← ldParam "x_ptr"
+  let wPtr ← ldParam "w_ptr"
+  let yPtr ← ldParam "y_ptr"
+  let nReg ← freshR; movRC nReg D_MODEL
+  let (tid, warpId, laneId) ← getWarpIds
+  rmsNormBody xPtr wPtr yPtr tid warpId laneId nReg 0x44600000 ""
+  ptxRet }]
 
-def ptxSiluGate : String :=
-  ".version 8.0\n" ++
-  ".target sm_86\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 gate_ptr,\n" ++
-  "    .param .u64 up_ptr,\n" ++
-  "    .param .u64 out_ptr\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred   %p;\n" ++
-  "    .reg .u32    %r<6>;\n" ++
-  "    .reg .u64    %rd<7>;\n" ++
-  "    .reg .f32    %f<8>;\n" ++
-  "\n" ++
-  "    ld.param.u64  %rd0, [gate_ptr];\n" ++
-  "    ld.param.u64  %rd1, [up_ptr];\n" ++
-  "    ld.param.u64  %rd2, [out_ptr];\n" ++
-  "    mov.u32       %r0, %ctaid.x;\n" ++
-  "    mov.u32       %r1, %ntid.x;\n" ++
-  "    mov.u32       %r2, %tid.x;\n" ++
-  "    mad.lo.s32    %r3, %r0, %r1, %r2;\n" ++
-  "    setp.ge.u32   %p, %r3, " ++ toString D_FF ++ ";\n" ++
-  "    @%p bra       done;\n" ++
-  "    cvt.u64.u32   %rd3, %r3;\n" ++
-  "    shl.b64       %rd3, %rd3, 2;\n" ++
-  "    add.u64       %rd4, %rd0, %rd3;\n" ++
-  "    add.u64       %rd5, %rd1, %rd3;\n" ++
-  "    add.u64       %rd6, %rd2, %rd3;\n" ++
-  "    ld.global.f32 %f0, [%rd4];\n" ++
-  "    ld.global.f32 %f1, [%rd5];\n" ++
-  "    neg.f32       %f2, %f0;\n" ++
-  "    mov.f32       %f3, 0f3fb8aa3b;\n" ++
-  "    mul.f32       %f2, %f2, %f3;\n" ++
-  "    ex2.approx.f32 %f2, %f2;\n" ++
-  "    mov.f32       %f4, 0f3f800000;\n" ++
-  "    add.f32       %f2, %f2, %f4;\n" ++
-  "    rcp.approx.f32 %f2, %f2;\n" ++
-  "    mul.f32       %f0, %f0, %f2;\n" ++
-  "    mul.f32       %f0, %f0, %f1;\n" ++
-  "    st.global.f32 [%rd6], %f0;\n" ++
-  "done:\n" ++
-  "    ret;\n" ++
-  "}\n"
+def ptxSiluGate : String := buildModule 0 [{ name := "main", params := ["gate_ptr", "up_ptr", "out_ptr"], body := do
+  let gatePtr ← ldParam "gate_ptr"
+  let upPtr   ← ldParam "up_ptr"
+  let outPtr  ← ldParam "out_ptr"
+  let nReg ← freshR; movRC nReg D_FF
+  let (gid, _) ← gridStrideSetup nReg "done"
+  let gAddr ← elemAddr gatePtr gid
+  let uAddr ← elemAddr upPtr gid
+  let oAddr ← elemAddr outPtr gid
+  let g  ← freshF; ldGlobalF g gAddr
+  let u  ← freshF; ldGlobalF u uAddr
+  let ng ← freshF; negF ng g
+  let l  ← freshF; movFC l f32_log2e
+  mulF ng ng l; ex2 ng ng
+  let one ← freshF; movFC one f32_1
+  addF ng ng one; rcp ng ng
+  mulF g g ng; mulF g g u
+  stGlobalF oAddr g
+  label "done"; ptxRet }]
 
-def ptxResidualAdd : String :=
-  ".version 8.0\n" ++
-  ".target sm_86\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 x_ptr,\n" ++
-  "    .param .u64 add_ptr\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred   %p;\n" ++
-  "    .reg .u32    %r<6>;\n" ++
-  "    .reg .u64    %rd<6>;\n" ++
-  "    .reg .f32    %f<4>;\n" ++
-  "\n" ++
-  "    ld.param.u64  %rd0, [x_ptr];\n" ++
-  "    ld.param.u64  %rd1, [add_ptr];\n" ++
-  "    mov.u32       %r0, %ctaid.x;\n" ++
-  "    mov.u32       %r1, %ntid.x;\n" ++
-  "    mov.u32       %r2, %tid.x;\n" ++
-  "    mad.lo.s32    %r3, %r0, %r1, %r2;\n" ++
-  "    setp.ge.u32   %p, %r3, " ++ toString D_MODEL ++ ";\n" ++
-  "    @%p bra       done;\n" ++
-  "    cvt.u64.u32   %rd2, %r3;\n" ++
-  "    shl.b64       %rd2, %rd2, 2;\n" ++
-  "    add.u64       %rd3, %rd0, %rd2;\n" ++
-  "    add.u64       %rd4, %rd1, %rd2;\n" ++
-  "    ld.global.f32 %f0, [%rd3];\n" ++
-  "    ld.global.f32 %f1, [%rd4];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    st.global.f32 [%rd3], %f0;\n" ++
-  "done:\n" ++
-  "    ret;\n" ++
-  "}\n"
+def ptxResidualAdd : String := buildModule 0 [{ name := "main", params := ["x_ptr", "add_ptr"], body := do
+  let xPtr   ← ldParam "x_ptr"
+  let addPtr ← ldParam "add_ptr"
+  let nReg ← freshR; movRC nReg D_MODEL
+  let (gid, _) ← gridStrideSetup nReg "done"
+  let xAddr ← elemAddr xPtr gid
+  let aAddr ← elemAddr addPtr gid
+  let xi ← freshF; ldGlobalF xi xAddr
+  let ai ← freshF; ldGlobalF ai aAddr
+  addF xi xi ai; stGlobalF xAddr xi
+  label "done"; ptxRet }]
 
-def ptxAddRmsNorm : String :=
-  ".version 8.0\n" ++
-  ".target sm_86\n" ++
-  ".address_size 64\n" ++
-  "\n" ++
-  ".shared .align 4 .b8 _smem[36];\n" ++
-  "\n" ++
-  ".visible .entry main(\n" ++
-  "    .param .u64 x_ptr,\n" ++
-  "    .param .u64 add_ptr,\n" ++
-  "    .param .u64 w_ptr,\n" ++
-  "    .param .u64 y_ptr\n" ++
-  ")\n" ++
-  "{\n" ++
-  "    .reg .pred   %p;\n" ++
-  "    .reg .u32    %r<12>;\n" ++
-  "    .reg .u64    %rd<11>;\n" ++
-  "    .reg .f32    %f<10>;\n" ++
-  "\n" ++
-  "    ld.param.u64  %rd0, [x_ptr];\n" ++
-  "    ld.param.u64  %rd1, [add_ptr];\n" ++
-  "    ld.param.u64  %rd2, [w_ptr];\n" ++
-  "    ld.param.u64  %rd3, [y_ptr];\n" ++
-  "    mov.u32       %r0, " ++ toString D_MODEL ++ ";\n" ++
-  "    mov.u32       %r1, %tid.x;\n" ++
-  "    shr.u32       %r2, %r1, 5;\n" ++
-  "    and.b32       %r3, %r1, 31;\n" ++
-  "    mov.f32       %f0, 0f00000000;\n" ++
-  "    mov.u32       %r4, %r1;\n" ++
-  "loop1:\n" ++
-  "    setp.ge.u32   %p, %r4, %r0;\n" ++
-  "    @%p bra       done1;\n" ++
-  "    cvt.u64.u32   %rd4, %r4;\n" ++
-  "    shl.b64       %rd4, %rd4, 2;\n" ++
-  "    add.u64       %rd5, %rd0, %rd4;\n" ++
-  "    add.u64       %rd6, %rd1, %rd4;\n" ++
-  "    ld.global.f32 %f1, [%rd5];\n" ++
-  "    ld.global.f32 %f2, [%rd6];\n" ++
-  "    add.f32       %f1, %f1, %f2;\n" ++
-  "    fma.rn.f32    %f0, %f1, %f1, %f0;\n" ++
-  "    add.u32       %r4, %r4, 256;\n" ++
-  "    bra           loop1;\n" ++
-  "done1:\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 16, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 8, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 4, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 2, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    shfl.sync.bfly.b32 %f2, %f0, 1, 31, 0xffffffff;\n" ++
-  "    add.f32       %f0, %f0, %f2;\n" ++
-  "    setp.ne.u32   %p, %r3, 0;\n" ++
-  "    @%p bra       skip1;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    shl.b32       %r6, %r2, 2;\n" ++
-  "    add.u32       %r5, %r5, %r6;\n" ++
-  "    st.shared.f32 [%r5], %f0;\n" ++
-  "skip1:\n" ++
-  "    bar.sync      0;\n" ++
-  "    setp.ne.u32   %p, %r1, 0;\n" ++
-  "    @%p bra       skip2;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    ld.shared.f32 %f0, [%r5+0];\n" ++
-  "    ld.shared.f32 %f1, [%r5+4];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+8];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+12];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+16];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+20];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+24];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    ld.shared.f32 %f1, [%r5+28];\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    mov.f32       %f1, 0f44600000;\n" ++
-  "    div.rn.f32    %f0, %f0, %f1;\n" ++
-  "    mov.f32       %f1, 0f3727c5ac;\n" ++
-  "    add.f32       %f0, %f0, %f1;\n" ++
-  "    rsqrt.approx.f32 %f0, %f0;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    st.shared.f32 [%r5+32], %f0;\n" ++
-  "skip2:\n" ++
-  "    bar.sync      0;\n" ++
-  "    mov.u32       %r5, _smem;\n" ++
-  "    ld.shared.f32 %f3, [%r5+32];\n" ++
-  "    mov.u32       %r4, %r1;\n" ++
-  "loop2:\n" ++
-  "    setp.ge.u32   %p, %r4, %r0;\n" ++
-  "    @%p bra       done2;\n" ++
-  "    cvt.u64.u32   %rd4, %r4;\n" ++
-  "    shl.b64       %rd4, %rd4, 2;\n" ++
-  "    add.u64       %rd5, %rd0, %rd4;\n" ++
-  "    add.u64       %rd6, %rd1, %rd4;\n" ++
-  "    add.u64       %rd7, %rd2, %rd4;\n" ++
-  "    add.u64       %rd8, %rd3, %rd4;\n" ++
-  "    ld.global.f32 %f4, [%rd5];\n" ++
-  "    ld.global.f32 %f5, [%rd6];\n" ++
-  "    add.f32       %f4, %f4, %f5;\n" ++
-  "    st.global.f32 [%rd5], %f4;\n" ++
-  "    ld.global.f32 %f6, [%rd7];\n" ++
-  "    mul.f32       %f4, %f4, %f3;\n" ++
-  "    mul.f32       %f4, %f4, %f6;\n" ++
-  "    st.global.f32 [%rd8], %f4;\n" ++
-  "    add.u32       %r4, %r4, 256;\n" ++
-  "    bra           loop2;\n" ++
-  "done2:\n" ++
-  "    ret;\n" ++
-  "}\n"
+def ptxAddRmsNorm : String := buildModule 36 [{ name := "main", params := ["x_ptr", "add_ptr", "w_ptr", "y_ptr"], body := do
+  let xPtr   ← ldParam "x_ptr"
+  let addPtr ← ldParam "add_ptr"
+  let wPtr   ← ldParam "w_ptr"
+  let yPtr   ← ldParam "y_ptr"
+  let nReg ← freshR; movRC nReg D_MODEL
+  let (tid, warpId, laneId) ← getWarpIds
+  let acc ← freshF; movFC acc f32_0
+  let tmp ← freshF
+  strideLoop tid nReg 256 "loop1" "done1" fun i => do
+    let xAddr ← elemAddr xPtr i
+    let aAddr ← elemAddr addPtr i
+    let xi ← freshF; ldGlobalF xi xAddr
+    let ai ← freshF; ldGlobalF ai aAddr
+    addF xi xi ai; fmaRn acc xi xi acc
+  warpReduceSum acc tmp
+  lane0WriteSmem laneId warpId "skip1" fun wAddr => stSharedFD wAddr acc
+  thread0Op tid "skip2" do
+    let sBase ← smemBase
+    let total ← freshF
+    crossWarp8 total tmp sBase 0 addF
+    let nf ← freshF; movFC nf 0x44600000
+    divRn total total nf
+    let eps ← freshF; movFC eps f32_eps
+    addF total total eps; rsqrt total total
+    stSharedF sBase 32 total
+  let sBase2 ← smemBase
+  let scale ← freshF; ldSharedF scale sBase2 32
+  strideLoop tid nReg 256 "loop2" "done2" fun j => do
+    let xAddr ← elemAddr xPtr j
+    let aAddr ← elemAddr addPtr j
+    let wAddr ← elemAddr wPtr j
+    let yAddr ← elemAddr yPtr j
+    let xi ← freshF; ldGlobalF xi xAddr
+    let ai ← freshF; ldGlobalF ai aAddr
+    addF xi xi ai
+    stGlobalF xAddr xi
+    let wi ← freshF; ldGlobalF wi wAddr
+    mulF xi xi scale; mulF xi xi wi
+    stGlobalF yAddr xi
+  ptxRet }]
 
 def loadFn : IRBuilder Unit := do
   let ptr     ← entryBlock
