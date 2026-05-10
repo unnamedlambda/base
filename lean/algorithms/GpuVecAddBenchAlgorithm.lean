@@ -4,6 +4,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.WGSL
 
 namespace GpuVecAddBench
 
@@ -17,15 +18,15 @@ def MEM_SIZE        : Nat := 0x1200
 def TIMEOUT_MS      : Nat := 120000
 
 def wgslShader : String :=
-  "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n" ++
-  "\n" ++
-  "@compute @workgroup_size(64)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  "    let n = arrayLength(&data) / 2u;\n" ++
-  "    let i = gid.x;\n" ++
-  "    if (i >= n) { return; }\n" ++
-  "    data[i] = data[i] + data[n + i];\n" ++
-  "}\n"
+  let data : AlgorithmLib.WGSL.Expr (.arr .f32) := ⟨"data"⟩
+  buildShader
+    [{ binding := 0, name := "data", ty := .arr .f32 }]
+    [] [] {}
+    do
+      let n ← letV "n" (wArrayLen data / litU 2)
+      let i ← letV "i" gidX
+      ifB (i .>= n) retV
+      assign (arrIdx data i) (arrIdx data i + arrIdx data (n + i))
 
 def mainFn : IRBuilder Unit := do
   let ptr     ← entryBlock

@@ -4,6 +4,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.WGSL
 
 namespace GpuMatMulBench
 
@@ -17,23 +18,22 @@ def MEM_SIZE        : Nat := 0x1200
 def TIMEOUT_MS      : Nat := 120000
 
 def wgslShader : String :=
-  "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n" ++
-  "\n" ++
-  "@compute @workgroup_size(64)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  "    let total = arrayLength(&data);\n" ++
-  "    let nn = total / 3u;\n" ++
-  "    let N = u32(sqrt(f32(nn)));\n" ++
-  "    let idx = gid.x;\n" ++
-  "    if (idx >= nn) { return; }\n" ++
-  "    let i = idx / N;\n" ++
-  "    let j = idx % N;\n" ++
-  "    var sum: f32 = 0.0;\n" ++
-  "    for (var k: u32 = 0u; k < N; k = k + 1u) {\n" ++
-  "        sum = sum + data[i * N + k] * data[nn + k * N + j];\n" ++
-  "    }\n" ++
-  "    data[2u * nn + idx] = sum;\n" ++
-  "}\n"
+  let data : AlgorithmLib.WGSL.Expr (.arr .f32) := ⟨"data"⟩
+  buildShader
+    [{ binding := 0, name := "data", ty := .arr .f32 }]
+    [] [] {}
+    do
+      let total ← letV "total" (wArrayLen data)
+      let nn    ← letV "nn"    (total / litU 3)
+      let bigN  ← letV "N"     (u32OfF (wSqrt (f32OfU nn)))
+      let idx   ← letV "idx"   gidX
+      ifB (idx .>= nn) retV
+      let ci    ← letV "i"     (idx / bigN)
+      let cj    ← letV "j"     (idx % bigN)
+      let sum   ← varV "sum"   (litF "0.0")
+      forU "k" (litU 0) (fun k => ltE k bigN) (fun k => k + litU 1) fun k => do
+        assign sum (sum + arrIdx data (ci * bigN + k) * arrIdx data (nn + k * bigN + cj))
+      assign (arrIdx data (litU 2 * nn + idx)) sum
 
 def mainFn : IRBuilder Unit := do
   let ptr     ← entryBlock

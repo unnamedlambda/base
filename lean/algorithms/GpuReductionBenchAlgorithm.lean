@@ -4,6 +4,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.WGSL
 
 namespace GpuReductionBench
 
@@ -18,37 +19,26 @@ def MEM_SIZE        : Nat := 0x1200
 def TIMEOUT_MS      : Nat := 120000
 
 def wgslShader : String :=
-  "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n" ++
-  "\n" ++
-  "var<workgroup> sdata: array<f32, 64>;\n" ++
-  "\n" ++
-  "@compute @workgroup_size(64)\n" ++
-  "fn main(\n" ++
-  "    @builtin(global_invocation_id) gid: vec3<u32>,\n" ++
-  "    @builtin(local_invocation_id) lid: vec3<u32>,\n" ++
-  "    @builtin(workgroup_id) wid: vec3<u32>\n" ++
-  ") {\n" ++
-  "    let total = arrayLength(&data);\n" ++
-  "    let num_groups = total / 65u;\n" ++
-  "    let input_n = num_groups * 64u;\n" ++
-  "    if (gid.x < input_n) {\n" ++
-  "        sdata[lid.x] = data[gid.x];\n" ++
-  "    } else {\n" ++
-  "        sdata[lid.x] = 0.0;\n" ++
-  "    }\n" ++
-  "    workgroupBarrier();\n" ++
-  "\n" ++
-  "    for (var s: u32 = 32u; s > 0u; s = s >> 1u) {\n" ++
-  "        if (lid.x < s) {\n" ++
-  "            sdata[lid.x] = sdata[lid.x] + sdata[lid.x + s];\n" ++
-  "        }\n" ++
-  "        workgroupBarrier();\n" ++
-  "    }\n" ++
-  "\n" ++
-  "    if (lid.x == 0u) {\n" ++
-  "        data[input_n + wid.x] = sdata[0];\n" ++
-  "    }\n" ++
-  "}\n"
+  let data  : AlgorithmLib.WGSL.Expr (.arr .f32)     := ⟨"data"⟩
+  let sdata : AlgorithmLib.WGSL.Expr (.arrN .f32 64) := ⟨"sdata"⟩
+  buildShader
+    [{ binding := 0, name := "data", ty := .arr .f32 }]
+    [("sdata", .f32, 64)] []
+    { lid := true, wid := true }
+    do
+      let total   ← letV "total"    (wArrayLen data)
+      let numGrps ← letV "num_groups" (total / litU 65)
+      let inputN  ← letV "input_n"  (numGrps * litU 64)
+      ifElse (gidX .< inputN)
+        (assign (arrIdxN sdata lidX) (arrIdx data gidX))
+        (assign (arrIdxN sdata lidX) (litF "0.0"))
+      wBarrier
+      forU "s" (litU 32) (fun s => gtE s (litU 0)) (fun s => shrU s (litU 1)) fun s => do
+        ifB (lidX .< s) do
+          assign (arrIdxN sdata lidX) (arrIdxN sdata lidX + arrIdxN sdata (lidX + s))
+        wBarrier
+      ifB (lidX .== litU 0) do
+        assign (arrIdx data (inputN + widX)) (arrIdxN sdata (litU 0))
 
 def mainFn : IRBuilder Unit := do
   let ptr     ← entryBlock

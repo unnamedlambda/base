@@ -1,6 +1,7 @@
 import AlgorithmLib
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.WGSL
 
 namespace Algorithm
 
@@ -56,70 +57,52 @@ def totalAdditionalMemory : Nat := maxDataSize * 3 + metaSize
 -- ---------------------------------------------------------------------------
 
 def fftShader : String :=
-  "@group(0) @binding(0)\n" ++
-  "var<storage, read_write> buf_a: array<vec2<f32>>;\n" ++
-  "@group(0) @binding(1)\n" ++
-  "var<storage, read_write> buf_b: array<vec2<f32>>;\n" ++
-  "@group(0) @binding(2)\n" ++
-  "var<storage, read> params: array<u32>;\n\n" ++
-
-  "const PI: f32 = 3.14159265358979323846;\n\n" ++
-
-  "@compute @workgroup_size(64)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  "    let n = params[0];\n" ++
-  "    let stage = params[1];\n" ++
-  "    let direction = params[2];\n" ++
-  "    let half_n = n / 2u;\n" ++
-  "    let tid = gid.x;\n" ++
-  "    if (tid >= half_n) {\n" ++
-  "        return;\n" ++
-  "    }\n\n" ++
-
-  -- Compute butterfly indices for this stage
-  -- block_size = 1 << (stage + 1), half_block = 1 << stage
-  "    let half_block = 1u << stage;\n" ++
-  "    let block_size = half_block << 1u;\n" ++
-  "    let block_id = tid / half_block;\n" ++
-  "    let j = tid % half_block;\n" ++
-  "    let i_top = block_id * block_size + j;\n" ++
-  "    let i_bot = i_top + half_block;\n\n" ++
-
-  -- Twiddle factor: W_N^k = exp(-2*pi*i*k/block_size)
-  -- k = j, N_local = block_size
-  "    let angle = -2.0 * PI * f32(j) / f32(block_size);\n" ++
-  "    let tw = vec2<f32>(cos(angle), sin(angle));\n\n" ++
-
-  -- Read from source buffer
-  "    var a_val: vec2<f32>;\n" ++
-  "    var b_val: vec2<f32>;\n" ++
-  "    if (direction == 0u) {\n" ++
-  "        a_val = buf_a[i_top];\n" ++
-  "        b_val = buf_a[i_bot];\n" ++
-  "    } else {\n" ++
-  "        a_val = buf_b[i_top];\n" ++
-  "        b_val = buf_b[i_bot];\n" ++
-  "    }\n\n" ++
-
-  -- Complex multiply: tw * b_val
-  "    let tb = vec2<f32>(\n" ++
-  "        tw.x * b_val.x - tw.y * b_val.y,\n" ++
-  "        tw.x * b_val.y + tw.y * b_val.x\n" ++
-  "    );\n\n" ++
-
-  -- Butterfly: top = a + tw*b, bot = a - tw*b
-  "    let out_top = a_val + tb;\n" ++
-  "    let out_bot = a_val - tb;\n\n" ++
-
-  -- Write to destination buffer
-  "    if (direction == 0u) {\n" ++
-  "        buf_b[i_top] = out_top;\n" ++
-  "        buf_b[i_bot] = out_bot;\n" ++
-  "    } else {\n" ++
-  "        buf_a[i_top] = out_top;\n" ++
-  "        buf_a[i_bot] = out_bot;\n" ++
-  "    }\n" ++
-  "}\n"
+  let bufA   : AlgorithmLib.WGSL.Expr (.arr .vec2f) := ⟨"buf_a"⟩
+  let bufB   : AlgorithmLib.WGSL.Expr (.arr .vec2f) := ⟨"buf_b"⟩
+  let params : AlgorithmLib.WGSL.Expr (.arr .u32)   := ⟨"params"⟩
+  buildShader
+    [{ binding := 0, name := "buf_a",  ty := .arr .vec2f },
+     { binding := 1, name := "buf_b",  ty := .arr .vec2f },
+     { binding := 2, name := "params", ty := .arr .u32, ro := true }]
+    []
+    [.constF "PI" "3.14159265358979323846"]
+    {}
+    do
+      let n         ← letV "n" (arrIdx params (litU 0))
+      let stage     ← letV "stage" (arrIdx params (litU 1))
+      let direction ← letV "direction" (arrIdx params (litU 2))
+      let halfN     ← letV "half_n" (n / litU 2)
+      let tid       ← letV "tid" gidX
+      ifB (tid .>= halfN) retV
+      let halfBlock ← letV "half_block" ((litU 1) .<< stage)
+      let blockSize ← letV "block_size" (halfBlock .<< litU 1)
+      let blockId   ← letV "block_id" (tid / halfBlock)
+      let j         ← letV "j" (tid % halfBlock)
+      let iTop      ← letV "i_top" (blockId * blockSize + j)
+      let iBot      ← letV "i_bot" (iTop + halfBlock)
+      let angle     ← letV "angle" (-litF "2.0" * ⟨"PI"⟩ * f32OfU j / f32OfU blockSize)
+      let tw        ← letV "tw" (mkVec2f (wCos angle) (wSin angle))
+      let aVal      ← varVT "a_val" .vec2f
+      let bVal      ← varVT "b_val" .vec2f
+      ifElse (direction .== litU 0)
+        (do
+          assign aVal (arrIdx bufA iTop)
+          assign bVal (arrIdx bufA iBot))
+        (do
+          assign aVal (arrIdx bufB iTop)
+          assign bVal (arrIdx bufB iBot))
+      let tb ← letV "tb" (mkVec2f
+        (v2x tw * v2x bVal - v2y tw * v2y bVal)
+        (v2x tw * v2y bVal + v2y tw * v2x bVal))
+      let outTop ← letV "out_top" (aVal + tb)
+      let outBot ← letV "out_bot" (aVal - tb)
+      ifElse (direction .== litU 0)
+        (do
+          assign (arrIdx bufB iTop) outTop
+          assign (arrIdx bufB iBot) outBot)
+        (do
+          assign (arrIdx bufA iTop) outTop
+          assign (arrIdx bufA iBot) outBot)
 
 -- ---------------------------------------------------------------------------
 -- CLIF IR orchestrator

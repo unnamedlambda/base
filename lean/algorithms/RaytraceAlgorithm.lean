@@ -1,6 +1,7 @@
 import AlgorithmLib
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.WGSL
 
 namespace Algorithm
 
@@ -57,258 +58,232 @@ def bmpHeader : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 def cornellBoxShader : String :=
-  let w := toString imageWidth
-  let h := toString imageHeight
-  let spp := toString numSamples
-  let bounces := toString maxBounces
-  "@group(0) @binding(0)\n" ++
-  "var<storage, read_write> pixels: array<u32>;\n\n" ++
-
-  -- PCG random number generator
-  "fn pcg(v: u32) -> u32 {\n" ++
-  "    var s = v * 747796405u + 2891336453u;\n" ++
-  "    let w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;\n" ++
-  "    return (w >> 22u) ^ w;\n" ++
-  "}\n\n" ++
-
-  "fn rand_f(seed: ptr<function, u32>) -> f32 {\n" ++
-  "    *seed = pcg(*seed);\n" ++
-  "    return f32(*seed) / 4294967295.0;\n" ++
-  "}\n\n" ++
-
-  -- Cosine-weighted hemisphere sampling
-  "fn cosine_hemisphere(n: vec3<f32>, seed: ptr<function, u32>) -> vec3<f32> {\n" ++
-  "    let u1 = rand_f(seed);\n" ++
-  "    let u2 = rand_f(seed);\n" ++
-  "    let r = sqrt(u1);\n" ++
-  "    let theta = 6.283185307 * u2;\n" ++
-  "    let x = r * cos(theta);\n" ++
-  "    let y = r * sin(theta);\n" ++
-  "    let z = sqrt(1.0 - u1);\n" ++
-  "    var up = vec3<f32>(0.0, 1.0, 0.0);\n" ++
-  "    if (abs(n.y) > 0.999) { up = vec3<f32>(1.0, 0.0, 0.0); }\n" ++
-  "    let tangent = normalize(cross(up, n));\n" ++
-  "    let bitangent = cross(n, tangent);\n" ++
-  "    return normalize(tangent * x + bitangent * y + n * z);\n" ++
-  "}\n\n" ++
-
-  -- Ray-AABB intersection returning distance and setting normal
-  "fn ray_aabb(ro: vec3<f32>, rd: vec3<f32>, bmin: vec3<f32>, bmax: vec3<f32>,\n" ++
-  "            out_normal: ptr<function, vec3<f32>>) -> f32 {\n" ++
-  "    let inv_d = 1.0 / rd;\n" ++
-  "    let t1 = (bmin - ro) * inv_d;\n" ++
-  "    let t2 = (bmax - ro) * inv_d;\n" ++
-  "    let tmin_v = min(t1, t2);\n" ++
-  "    let tmax_v = max(t1, t2);\n" ++
-  "    let tmin = max(max(tmin_v.x, tmin_v.y), tmin_v.z);\n" ++
-  "    let tmax = min(min(tmax_v.x, tmax_v.y), tmax_v.z);\n" ++
-  "    if (tmin > tmax || tmax < 0.001) { return -1.0; }\n" ++
-  "    let t = select(tmin, tmax, tmin < 0.001);\n" ++
-  "    let hit = ro + t * rd;\n" ++
-  "    let ce = (bmin + bmax) * 0.5;\n" ++
-  "    let d = (hit - ce) / (bmax - bmin);\n" ++
-  "    let ad = abs(d);\n" ++
-  "    if (ad.x > ad.y && ad.x > ad.z) {\n" ++
-  "        *out_normal = vec3<f32>(sign(d.x), 0.0, 0.0);\n" ++
-  "    } else if (ad.y > ad.z) {\n" ++
-  "        *out_normal = vec3<f32>(0.0, sign(d.y), 0.0);\n" ++
-  "    } else {\n" ++
-  "        *out_normal = vec3<f32>(0.0, 0.0, sign(d.z));\n" ++
-  "    }\n" ++
-  "    return t;\n" ++
-  "}\n\n" ++
-
-  -- Full scene intersection: 5 planes + 2 AABBs + area light
-  "fn scene_hit(ro: vec3<f32>, rd: vec3<f32>,\n" ++
-  "             out_n: ptr<function, vec3<f32>>,\n" ++
-  "             out_color: ptr<function, vec3<f32>>,\n" ++
-  "             out_emit: ptr<function, vec3<f32>>) -> f32 {\n" ++
-  "    var closest = 1e20;\n" ++
-  "    var n: vec3<f32>;\n" ++
-  "    *out_emit = vec3<f32>(0.0, 0.0, 0.0);\n" ++
-
-  -- Floor (y = 0): white
-  "    let t_floor = -ro.y / rd.y;\n" ++
-  "    if (t_floor > 0.001 && t_floor < closest) {\n" ++
-  "        let p = ro + t_floor * rd;\n" ++
-  "        if (p.x >= 0.0 && p.x <= 1.0 && p.z >= 0.0 && p.z <= 1.0) {\n" ++
-  "            closest = t_floor;\n" ++
-  "            *out_n = vec3<f32>(0.0, 1.0, 0.0);\n" ++
-  "            *out_color = vec3<f32>(0.73, 0.73, 0.73);\n" ++
-  "        }\n" ++
-  "    }\n" ++
-
-  -- Ceiling (y = 1): white + area light check
-  "    let t_ceil = (1.0 - ro.y) / rd.y;\n" ++
-  "    if (t_ceil > 0.001 && t_ceil < closest) {\n" ++
-  "        let p = ro + t_ceil * rd;\n" ++
-  "        if (p.x >= 0.0 && p.x <= 1.0 && p.z >= 0.0 && p.z <= 1.0) {\n" ++
-  "            closest = t_ceil;\n" ++
-  "            *out_n = vec3<f32>(0.0, -1.0, 0.0);\n" ++
-  "            if (p.x > 0.35 && p.x < 0.65 && p.z > 0.35 && p.z < 0.65) {\n" ++
-  "                *out_color = vec3<f32>(0.78, 0.78, 0.78);\n" ++
-  "                *out_emit = vec3<f32>(15.0, 15.0, 15.0);\n" ++
-  "            } else {\n" ++
-  "                *out_color = vec3<f32>(0.73, 0.73, 0.73);\n" ++
-  "            }\n" ++
-  "        }\n" ++
-  "    }\n" ++
-
-  -- Back wall (z = 0): white
-  "    let t_back = -ro.z / rd.z;\n" ++
-  "    if (t_back > 0.001 && t_back < closest) {\n" ++
-  "        let p = ro + t_back * rd;\n" ++
-  "        if (p.x >= 0.0 && p.x <= 1.0 && p.y >= 0.0 && p.y <= 1.0) {\n" ++
-  "            closest = t_back;\n" ++
-  "            *out_n = vec3<f32>(0.0, 0.0, 1.0);\n" ++
-  "            *out_color = vec3<f32>(0.73, 0.73, 0.73);\n" ++
-  "        }\n" ++
-  "    }\n" ++
-
-  -- Left wall (x = 0): red
-  "    let t_left = -ro.x / rd.x;\n" ++
-  "    if (t_left > 0.001 && t_left < closest) {\n" ++
-  "        let p = ro + t_left * rd;\n" ++
-  "        if (p.y >= 0.0 && p.y <= 1.0 && p.z >= 0.0 && p.z <= 1.0) {\n" ++
-  "            closest = t_left;\n" ++
-  "            *out_n = vec3<f32>(1.0, 0.0, 0.0);\n" ++
-  "            *out_color = vec3<f32>(0.65, 0.05, 0.05);\n" ++
-  "        }\n" ++
-  "    }\n" ++
-
-  -- Right wall (x = 1): green
-  "    let t_right = (1.0 - ro.x) / rd.x;\n" ++
-  "    if (t_right > 0.001 && t_right < closest) {\n" ++
-  "        let p = ro + t_right * rd;\n" ++
-  "        if (p.y >= 0.0 && p.y <= 1.0 && p.z >= 0.0 && p.z <= 1.0) {\n" ++
-  "            closest = t_right;\n" ++
-  "            *out_n = vec3<f32>(-1.0, 0.0, 0.0);\n" ++
-  "            *out_color = vec3<f32>(0.12, 0.45, 0.15);\n" ++
-  "        }\n" ++
-  "    }\n" ++
-
-  -- Front wall (z = 1): white (closes the box)
-  "    let t_front = (1.0 - ro.z) / rd.z;\n" ++
-  "    if (t_front > 0.001 && t_front < closest) {\n" ++
-  "        let p = ro + t_front * rd;\n" ++
-  "        if (p.x >= 0.0 && p.x <= 1.0 && p.y >= 0.0 && p.y <= 1.0) {\n" ++
-  "            closest = t_front;\n" ++
-  "            *out_n = vec3<f32>(0.0, 0.0, -1.0);\n" ++
-  "            *out_color = vec3<f32>(0.73, 0.73, 0.73);\n" ++
-  "        }\n" ++
-  "    }\n" ++
-
-  -- Tall box (right-rear): white AABB
-  "    var bn: vec3<f32>;\n" ++
-  "    let t_tall = ray_aabb(ro, rd,\n" ++
-  "        vec3<f32>(0.53, 0.0, 0.09),\n" ++
-  "        vec3<f32>(0.83, 0.60, 0.38), &bn);\n" ++
-  "    if (t_tall > 0.001 && t_tall < closest) {\n" ++
-  "        closest = t_tall;\n" ++
-  "        *out_n = bn;\n" ++
-  "        *out_color = vec3<f32>(0.73, 0.73, 0.73);\n" ++
-  "    }\n" ++
-
-  -- Short box (left-front): white AABB
-  "    let t_short = ray_aabb(ro, rd,\n" ++
-  "        vec3<f32>(0.13, 0.0, 0.37),\n" ++
-  "        vec3<f32>(0.43, 0.30, 0.67), &bn);\n" ++
-  "    if (t_short > 0.001 && t_short < closest) {\n" ++
-  "        closest = t_short;\n" ++
-  "        *out_n = bn;\n" ++
-  "        *out_color = vec3<f32>(0.73, 0.73, 0.73);\n" ++
-  "    }\n" ++
-
-  "    return closest;\n" ++
-  "}\n\n" ++
-
-  -- Main compute entry point
-  "@compute @workgroup_size(16, 16)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  s!"    let width: u32 = {w}u;\n" ++
-  s!"    let height: u32 = {h}u;\n" ++
-  "    let px = gid.x;\n" ++
-  "    let py = gid.y;\n" ++
-  "    if (px >= width || py >= height) { return; }\n" ++
-  "    let idx = py * width + px;\n" ++
-
-  -- Camera
-  "    let cam_pos = vec3<f32>(0.5, 0.5, 0.9);\n" ++
-  "    let cam_target = vec3<f32>(0.5, 0.4, 0.0);\n" ++
-  "    let cam_fwd = normalize(cam_target - cam_pos);\n" ++
-  "    let cam_right = normalize(cross(cam_fwd, vec3<f32>(0.0, 1.0, 0.0)));\n" ++
-  "    let cam_up = cross(cam_right, cam_fwd);\n" ++
-  "    let fov = 0.55;\n" ++
-
-  -- Multi-sample path tracing
-  s!"    let num_samples: u32 = {spp}u;\n" ++
-  "    var accum = vec3<f32>(0.0, 0.0, 0.0);\n" ++
-  "    var seed: u32 = pcg(idx * 1973u + px * 9277u + py * 26699u);\n" ++
-  "    for (var s: u32 = 0u; s < num_samples; s = s + 1u) {\n" ++
-  "        let jx = (f32(px) + rand_f(&seed)) / f32(width);\n" ++
-  "        let jy = (f32(py) + rand_f(&seed)) / f32(height);\n" ++
-  "        let uv = vec2<f32>(jx - 0.5, 0.5 - jy);\n" ++
-  "        var ray_dir = normalize(cam_fwd + fov * uv.x * cam_right + fov * uv.y * cam_up);\n" ++
-  "        var ray_org = cam_pos;\n" ++
-  "        var throughput = vec3<f32>(1.0, 1.0, 1.0);\n" ++
-  "        var color = vec3<f32>(0.0, 0.0, 0.0);\n" ++
-
-  s!"        for (var bounce: u32 = 0u; bounce < {bounces}u; bounce = bounce + 1u) " ++ "{\n" ++
-  "            var hit_n: vec3<f32>;\n" ++
-  "            var hit_color: vec3<f32>;\n" ++
-  "            var hit_emit: vec3<f32>;\n" ++
-  "            let t = scene_hit(ray_org, ray_dir, &hit_n, &hit_color, &hit_emit);\n" ++
-  "            if (t >= 1e19) { break; }\n" ++
-
-  -- Emission
-  "            color = color + throughput * hit_emit;\n" ++
-
-  -- Direct lighting: shadow ray to area light
-  "            let hit_p = ray_org + t * ray_dir + 0.001 * hit_n;\n" ++
-  "            let light_u = 0.35 + rand_f(&seed) * 0.30;\n" ++
-  "            let light_v = 0.35 + rand_f(&seed) * 0.30;\n" ++
-  "            let light_pos = vec3<f32>(light_u, 0.999, light_v);\n" ++
-  "            let to_light = light_pos - hit_p;\n" ++
-  "            let light_dist = length(to_light);\n" ++
-  "            let light_dir = to_light / light_dist;\n" ++
-  "            let n_dot_l = max(dot(hit_n, light_dir), 0.0);\n" ++
-  "            if (n_dot_l > 0.0) {\n" ++
-  "                var shadow_n: vec3<f32>;\n" ++
-  "                var shadow_c: vec3<f32>;\n" ++
-  "                var shadow_e: vec3<f32>;\n" ++
-  "                let st = scene_hit(hit_p, light_dir, &shadow_n, &shadow_c, &shadow_e);\n" ++
-  "                if (st >= light_dist - 0.01) {\n" ++
-  "                    let light_area = 0.09;\n" ++
-  "                    let light_n_dot = max(-light_dir.y, 0.0);\n" ++
-  "                    let solid_angle = light_area * light_n_dot / (light_dist * light_dist);\n" ++
-  "                    let light_intensity = vec3<f32>(15.0, 15.0, 15.0);\n" ++
-  "                    color = color + throughput * hit_color * light_intensity * n_dot_l * solid_angle / 3.14159265;\n" ++
-  "                }\n" ++
-  "            }\n" ++
-
-  -- Russian roulette after bounce 2
-  "            if (bounce > 1u) {\n" ++
-  "                let p_continue = max(max(hit_color.x, hit_color.y), hit_color.z);\n" ++
-  "                if (rand_f(&seed) > p_continue) { break; }\n" ++
-  "                throughput = throughput / p_continue;\n" ++
-  "            }\n" ++
-
-  -- Indirect bounce
-  "            throughput = throughput * hit_color;\n" ++
-  "            ray_org = hit_p;\n" ++
-  "            ray_dir = cosine_hemisphere(hit_n, &seed);\n" ++
-  "        }\n" ++
-  "        accum = accum + color;\n" ++
-  "    }\n" ++
-
-  -- Gamma correction and BGRA output
-  "    let final_color = accum / f32(num_samples);\n" ++
-  "    let mapped = pow(clamp(final_color, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.2));\n" ++
-  "    let ri = u32(clamp(mapped.x * 255.0, 0.0, 255.0));\n" ++
-  "    let gi = u32(clamp(mapped.y * 255.0, 0.0, 255.0));\n" ++
-  "    let bi = u32(clamp(mapped.z * 255.0, 0.0, 255.0));\n" ++
-  "    pixels[idx] = bi | (gi << 8u) | (ri << 16u) | (0xFFu << 24u);\n" ++
-  "}\n"
+  let pixels : AlgorithmLib.WGSL.Expr (.arr .u32) := ⟨"pixels"⟩
+  let imgW : AlgorithmLib.WGSL.Expr .u32 := ⟨"IMG_W"⟩
+  let imgH : AlgorithmLib.WGSL.Expr .u32 := ⟨"IMG_H"⟩
+  let numSamplesE : AlgorithmLib.WGSL.Expr .u32 := ⟨"NUM_SAMPLES"⟩
+  let maxBouncesE : AlgorithmLib.WGSL.Expr .u32 := ⟨"MAX_BOUNCES"⟩
+  let v3 (x y z : String) : AlgorithmLib.WGSL.Expr .vec3f := mkVec3f (litF x) (litF y) (litF z)
+  let pcgE (v : AlgorithmLib.WGSL.Expr .u32) : AlgorithmLib.WGSL.Expr .u32 := call1 "pcg" v
+  let randFE (seed : AlgorithmLib.WGSL.Expr (.ptrFn .u32)) : AlgorithmLib.WGSL.Expr .f32 := call1 "rand_f" seed
+  let cosineHemisphereE (n : AlgorithmLib.WGSL.Expr .vec3f) (seed : AlgorithmLib.WGSL.Expr (.ptrFn .u32)) : AlgorithmLib.WGSL.Expr .vec3f :=
+    call2 "cosine_hemisphere" n seed
+  let rayAabbE
+      (ro rd bmin bmax : AlgorithmLib.WGSL.Expr .vec3f)
+      (outNormal : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f)) : AlgorithmLib.WGSL.Expr .f32 :=
+    call5 "ray_aabb" ro rd bmin bmax outNormal
+  let sceneHitE
+      (ro rd : AlgorithmLib.WGSL.Expr .vec3f)
+      (outN outColor outEmit : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f)) : AlgorithmLib.WGSL.Expr .f32 :=
+    call5 "scene_hit" ro rd outN outColor outEmit
+  buildShader
+    [{ binding := 0, name := "pixels", ty := .arr .u32 }]
+    []
+    [.constU "IMG_W" imageWidth,
+     .constU "IMG_H" imageHeight,
+     .constU "NUM_SAMPLES" numSamples,
+     .constU "MAX_BOUNCES" maxBounces,
+     .fn {
+       name := "pcg",
+       params := [{ name := "v", ty := .u32 }],
+       retTy := some .u32,
+       body := do
+         let v : AlgorithmLib.WGSL.Expr .u32 := ⟨"v"⟩
+         let s ← varV "s" (v * litU 747796405 + litU 2891336453)
+         let w ← letV "w" ((bxorU (shrU s (shrU s (litU 28) + litU 4)) s) * litU 277803737)
+         retE (bxorU (shrU w (litU 22)) w)
+     },
+     .fn {
+       name := "rand_f",
+       params := [{ name := "seed", ty := .ptrFn .u32 }],
+       retTy := some .f32,
+       body := do
+         let seed : AlgorithmLib.WGSL.Expr (.ptrFn .u32) := ⟨"seed"⟩
+         derefAssign seed (pcgE (deref seed))
+         retE (f32OfU (deref seed) / litF "4294967295.0")
+     },
+     .fn {
+       name := "cosine_hemisphere",
+       params := [{ name := "n", ty := .vec3f }, { name := "seed", ty := .ptrFn .u32 }],
+       retTy := some .vec3f,
+       body := do
+         let n : AlgorithmLib.WGSL.Expr .vec3f := ⟨"n"⟩
+         let seed : AlgorithmLib.WGSL.Expr (.ptrFn .u32) := ⟨"seed"⟩
+         let u1 ← letV "u1" (randFE seed)
+         let u2 ← letV "u2" (randFE seed)
+         let r ← letV "r" (wSqrt u1)
+         let theta ← letV "theta" (litF "6.283185307" * u2)
+         let x ← letV "x" (r * wCos theta)
+         let y ← letV "y" (r * wSin theta)
+         let z ← letV "z" (wSqrt (litF "1.0" - u1))
+         let up ← varV "up" (v3 "0.0" "1.0" "0.0")
+         ifB (gtE (wAbs (vy n)) (litF "0.999")) do
+           assign up (v3 "1.0" "0.0" "0.0")
+         let tangent ← letV "tangent" (wNorm (wCross up n))
+         let bitangent ← letV "bitangent" (wCross n tangent)
+         retE (wNorm (tangent * x + bitangent * y + n * z))
+     },
+     .fn {
+       name := "ray_aabb",
+       params := [{ name := "ro", ty := .vec3f }, { name := "rd", ty := .vec3f },
+                  { name := "bmin", ty := .vec3f }, { name := "bmax", ty := .vec3f },
+                  { name := "out_normal", ty := .ptrFn .vec3f }],
+       retTy := some .f32,
+       body := do
+         let ro : AlgorithmLib.WGSL.Expr .vec3f := ⟨"ro"⟩
+         let rd : AlgorithmLib.WGSL.Expr .vec3f := ⟨"rd"⟩
+         let bmin : AlgorithmLib.WGSL.Expr .vec3f := ⟨"bmin"⟩
+         let bmax : AlgorithmLib.WGSL.Expr .vec3f := ⟨"bmax"⟩
+         let outNormal : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f) := ⟨"out_normal"⟩
+         let invD ← letV "inv_d" (splatV3 (litF "1.0") / rd)
+         let t1 ← letV "t1" ((bmin - ro) * invD)
+         let t2 ← letV "t2" ((bmax - ro) * invD)
+         let tminV ← letV "tmin_v" (wMinV3 t1 t2)
+         let tmaxV ← letV "tmax_v" (wMaxV3 t1 t2)
+         let tmin ← letV "tmin" (wMax (wMax (vx tminV) (vy tminV)) (vz tminV))
+         let tmax ← letV "tmax" (wMin (wMin (vx tmaxV) (vy tmaxV)) (vz tmaxV))
+         ifB ((gtE tmin tmax) .|| (ltE tmax (litF "0.001"))) do
+           retE (litF "-1.0")
+         let t ← letV "t" (wSelect tmin tmax (ltE tmin (litF "0.001")))
+         let hit ← letV "hit" (ro + t * rd)
+         let ce ← letV "ce" ((bmin + bmax) * litF "0.5")
+         let d ← letV "d" ((hit - ce) / (bmax - bmin))
+         let ad ← letV "ad" (wAbsV3 d)
+         ifElse ((gtE (vx ad) (vy ad)) .&& (gtE (vx ad) (vz ad)))
+           (derefAssign outNormal (mkVec3f (wSign (vx d)) (litF "0.0") (litF "0.0")))
+           (ifElse (gtE (vy ad) (vz ad))
+             (derefAssign outNormal (mkVec3f (litF "0.0") (wSign (vy d)) (litF "0.0")))
+             (derefAssign outNormal (mkVec3f (litF "0.0") (litF "0.0") (wSign (vz d)))))
+         retE t
+     },
+     .fn {
+       name := "scene_hit",
+       params := [{ name := "ro", ty := .vec3f }, { name := "rd", ty := .vec3f },
+                  { name := "out_n", ty := .ptrFn .vec3f },
+                  { name := "out_color", ty := .ptrFn .vec3f },
+                  { name := "out_emit", ty := .ptrFn .vec3f }],
+       retTy := some .f32,
+       body := do
+         let ro : AlgorithmLib.WGSL.Expr .vec3f := ⟨"ro"⟩
+         let rd : AlgorithmLib.WGSL.Expr .vec3f := ⟨"rd"⟩
+         let outN : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f) := ⟨"out_n"⟩
+         let outColor : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f) := ⟨"out_color"⟩
+         let outEmit : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f) := ⟨"out_emit"⟩
+         let white := v3 "0.73" "0.73" "0.73"
+         let closest ← varV "closest" (litF "1e20")
+         derefAssign outEmit (v3 "0.0" "0.0" "0.0")
+         let inUnitXZ (p : AlgorithmLib.WGSL.Expr .vec3f) : AlgorithmLib.WGSL.Expr .bool :=
+           (geE (vx p) (litF "0.0")) .&& (leE (vx p) (litF "1.0")) .&& (geE (vz p) (litF "0.0")) .&& (leE (vz p) (litF "1.0"))
+         let inUnitXY (p : AlgorithmLib.WGSL.Expr .vec3f) : AlgorithmLib.WGSL.Expr .bool :=
+           (geE (vx p) (litF "0.0")) .&& (leE (vx p) (litF "1.0")) .&& (geE (vy p) (litF "0.0")) .&& (leE (vy p) (litF "1.0"))
+         let inUnitYZ (p : AlgorithmLib.WGSL.Expr .vec3f) : AlgorithmLib.WGSL.Expr .bool :=
+           (geE (vy p) (litF "0.0")) .&& (leE (vy p) (litF "1.0")) .&& (geE (vz p) (litF "0.0")) .&& (leE (vz p) (litF "1.0"))
+         let considerPlane :=
+           fun (t : AlgorithmLib.WGSL.Expr .f32)
+               (inside : AlgorithmLib.WGSL.Expr .vec3f → AlgorithmLib.WGSL.Expr .bool)
+               (normal color : AlgorithmLib.WGSL.Expr .vec3f) => do
+             ifB ((gtE t (litF "0.001")) .&& (ltE t closest)) do
+               let p ← letV "p" (ro + t * rd)
+               ifB (inside p) do
+                 assign closest t
+                 derefAssign outN normal
+                 derefAssign outColor color
+         let tFloor ← letV "t_floor" (-vy ro / vy rd)
+         considerPlane tFloor inUnitXZ (v3 "0.0" "1.0" "0.0") white
+         let tCeil ← letV "t_ceil" ((litF "1.0" - vy ro) / vy rd)
+         ifB ((gtE tCeil (litF "0.001")) .&& (ltE tCeil closest)) do
+           let p ← letV "p" (ro + tCeil * rd)
+           ifB (inUnitXZ p) do
+             assign closest tCeil
+             derefAssign outN (v3 "0.0" "-1.0" "0.0")
+             ifElse ((gtE (vx p) (litF "0.35")) .&& (ltE (vx p) (litF "0.65")) .&& (gtE (vz p) (litF "0.35")) .&& (ltE (vz p) (litF "0.65")))
+               (do
+                 derefAssign outColor (v3 "0.78" "0.78" "0.78")
+                 derefAssign outEmit (v3 "15.0" "15.0" "15.0"))
+               (derefAssign outColor white)
+         let tBack ← letV "t_back" (-vz ro / vz rd)
+         considerPlane tBack inUnitXY (v3 "0.0" "0.0" "1.0") white
+         let tLeft ← letV "t_left" (-vx ro / vx rd)
+         considerPlane tLeft inUnitYZ (v3 "1.0" "0.0" "0.0") (v3 "0.65" "0.05" "0.05")
+         let tRight ← letV "t_right" ((litF "1.0" - vx ro) / vx rd)
+         considerPlane tRight inUnitYZ (v3 "-1.0" "0.0" "0.0") (v3 "0.12" "0.45" "0.15")
+         let tFront ← letV "t_front" ((litF "1.0" - vz ro) / vz rd)
+         considerPlane tFront inUnitXY (v3 "0.0" "0.0" "-1.0") white
+         let bn ← varVT "bn" .vec3f
+         let tTall ← letV "t_tall" (rayAabbE ro rd (v3 "0.53" "0.0" "0.09") (v3 "0.83" "0.60" "0.38") (addrOf bn))
+         ifB ((gtE tTall (litF "0.001")) .&& (ltE tTall closest)) do
+           assign closest tTall
+           derefAssign outN bn
+           derefAssign outColor white
+         let tShort ← letV "t_short" (rayAabbE ro rd (v3 "0.13" "0.0" "0.37") (v3 "0.43" "0.30" "0.67") (addrOf bn))
+         ifB ((gtE tShort (litF "0.001")) .&& (ltE tShort closest)) do
+           assign closest tShort
+           derefAssign outN bn
+           derefAssign outColor white
+         retE closest
+     }]
+    { wgX := 16, wgY := 16 }
+    do
+      let px ← letV "px" gidX
+      let py ← letV "py" gidY
+      ifB ((geE px imgW) .|| (geE py imgH)) retV
+      let idx ← letV "idx" (py * imgW + px)
+      let camPos ← letV "cam_pos" (v3 "0.5" "0.5" "0.9")
+      let camTarget ← letV "cam_target" (v3 "0.5" "0.4" "0.0")
+      let camFwd ← letV "cam_fwd" (wNorm (camTarget - camPos))
+      let camRight ← letV "cam_right" (wNorm (wCross camFwd (v3 "0.0" "1.0" "0.0")))
+      let camUp ← letV "cam_up" (wCross camRight camFwd)
+      let fov ← letV "fov" (litF "0.55")
+      let accum ← varV "accum" (v3 "0.0" "0.0" "0.0")
+      let seed ← varV "seed" (pcgE (idx * litU 1973 + px * litU 9277 + py * litU 26699))
+      forU "s" (litU 0) (fun s => ltE s numSamplesE) (fun s => s + litU 1) fun _ => do
+        let jx ← letV "jx" ((f32OfU px + randFE (addrOf seed)) / f32OfU imgW)
+        let jy ← letV "jy" ((f32OfU py + randFE (addrOf seed)) / f32OfU imgH)
+        let uv ← letV "uv" (mkVec2f (jx - litF "0.5") (litF "0.5" - jy))
+        let rayDir ← varV "ray_dir" (wNorm (camFwd + fov * v2x uv * camRight + fov * v2y uv * camUp))
+        let rayOrg ← varV "ray_org" camPos
+        let throughput ← varV "throughput" (v3 "1.0" "1.0" "1.0")
+        let color ← varV "color" (v3 "0.0" "0.0" "0.0")
+        forU "bounce" (litU 0) (fun bounce => ltE bounce maxBouncesE) (fun bounce => bounce + litU 1) fun bounce => do
+          let hitN ← varVT "hit_n" .vec3f
+          let hitColor ← varVT "hit_color" .vec3f
+          let hitEmit ← varVT "hit_emit" .vec3f
+          let t ← letV "t" (sceneHitE rayOrg rayDir (addrOf hitN) (addrOf hitColor) (addrOf hitEmit))
+          ifB (geE t (litF "1e19")) breakS
+          assign color (color + throughput * hitEmit)
+          let hitP ← letV "hit_p" (rayOrg + t * rayDir + litF "0.001" * hitN)
+          let lightU ← letV "light_u" (litF "0.35" + randFE (addrOf seed) * litF "0.30")
+          let lightV ← letV "light_v" (litF "0.35" + randFE (addrOf seed) * litF "0.30")
+          let lightPos ← letV "light_pos" (mkVec3f lightU (litF "0.999") lightV)
+          let toLight ← letV "to_light" (lightPos - hitP)
+          let lightDist ← letV "light_dist" (wLen toLight)
+          let lightDir ← letV "light_dir" (toLight / lightDist)
+          let nDotL ← letV "n_dot_l" (wMax (wDot hitN lightDir) (litF "0.0"))
+          ifB (gtE nDotL (litF "0.0")) do
+            let shadowN ← varVT "shadow_n" .vec3f
+            let shadowC ← varVT "shadow_c" .vec3f
+            let shadowE ← varVT "shadow_e" .vec3f
+            let st ← letV "st" (sceneHitE hitP lightDir (addrOf shadowN) (addrOf shadowC) (addrOf shadowE))
+            ifB (geE st (lightDist - litF "0.01")) do
+              let lightArea ← letV "light_area" (litF "0.09")
+              let lightNDot ← letV "light_n_dot" (wMax (-vy lightDir) (litF "0.0"))
+              let solidAngle ← letV "solid_angle" (lightArea * lightNDot / (lightDist * lightDist))
+              let lightIntensity ← letV "light_intensity" (v3 "15.0" "15.0" "15.0")
+              assign color (color + throughput * hitColor * lightIntensity * nDotL * solidAngle / litF "3.14159265")
+          ifB (gtE bounce (litU 1)) do
+            let pContinue ← letV "p_continue" (wMax (wMax (vx hitColor) (vy hitColor)) (vz hitColor))
+            ifB (gtE (randFE (addrOf seed)) pContinue) breakS
+            assign throughput (throughput / pContinue)
+          assign throughput (throughput * hitColor)
+          assign rayOrg hitP
+          assign rayDir (cosineHemisphereE hitN (addrOf seed))
+        assign accum (accum + color)
+      let finalColor ← letV "final_color" (accum / f32OfU numSamplesE)
+      let mapped ← letV "mapped" (wPow (wClampV3 finalColor (v3 "0.0" "0.0" "0.0") (v3 "1.0" "1.0" "1.0")) (v3 "0.45454545" "0.45454545" "0.45454545"))
+      let ri ← letV "ri" (u32OfF (wClamp (vx mapped * litF "255.0") (litF "0.0") (litF "255.0")))
+      let gi ← letV "gi" (u32OfF (wClamp (vy mapped * litF "255.0") (litF "0.0") (litF "255.0")))
+      let bi ← letV "bi" (u32OfF (wClamp (vz mapped * litF "255.0") (litF "0.0") (litF "255.0")))
+      assign (arrIdx pixels idx) (borU (borU bi (shlU gi (litU 8))) (borU (shlU ri (litU 16)) (shlU (litU 0xFF) (litU 24))))
 
 -- ---------------------------------------------------------------------------
 -- CLIF IR: GPU init -> buffer -> pipeline -> dispatch -> download -> cleanup -> file write

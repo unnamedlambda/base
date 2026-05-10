@@ -1,6 +1,7 @@
 import Lean
 import Std
 import AlgorithmLib.PTX
+import AlgorithmLib.WGSL
 
 open Lean
 

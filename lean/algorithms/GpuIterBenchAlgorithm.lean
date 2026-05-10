@@ -4,6 +4,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.WGSL
 
 namespace GpuIterBench
 
@@ -20,37 +21,37 @@ def MEM_SIZE         : Nat := 0x1200
 def TIMEOUT_MS       : Nat := 300000
 
 def scaleShader : String :=
-  "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n" ++
-  "\n" ++
-  "@compute @workgroup_size(64)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  "    let n = arrayLength(&data);\n" ++
-  "    let i = gid.x;\n" ++
-  "    if (i >= n) { return; }\n" ++
-  "    data[i] = data[i] * 1.001;\n" ++
-  "}\n"
+  let data : AlgorithmLib.WGSL.Expr (.arr .f32) := ⟨"data"⟩
+  buildShader
+    [{ binding := 0, name := "data", ty := .arr .f32 }]
+    [] [] {}
+    do
+      let n ← letV "n" (wArrayLen data)
+      let i ← letV "i" gidX
+      ifB (i .>= n) retV
+      assign (arrIdx data i) (arrIdx data i * litF "1.001")
 
 def reduceShader : String :=
-  "@group(0) @binding(0) var<storage, read>       data: array<f32>;\n" ++
-  "@group(0) @binding(1) var<storage, read_write> sums: array<f32>;\n" ++
-  "\n" ++
-  "var<workgroup> partial: array<f32, 64>;\n" ++
-  "\n" ++
-  "@compute @workgroup_size(64)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>,\n" ++
-  "        @builtin(local_invocation_id)   lid: vec3<u32>,\n" ++
-  "        @builtin(workgroup_id)          wgid: vec3<u32>) {\n" ++
-  "    let n = arrayLength(&data);\n" ++
-  "    partial[lid.x] = select(0.0, data[gid.x], gid.x < n);\n" ++
-  "    workgroupBarrier();\n" ++
-  "    var s = 32u;\n" ++
-  "    while s > 0u {\n" ++
-  "        if lid.x < s { partial[lid.x] += partial[lid.x + s]; }\n" ++
-  "        workgroupBarrier();\n" ++
-  "        s >>= 1u;\n" ++
-  "    }\n" ++
-  "    if lid.x == 0u { sums[wgid.x] = partial[0]; }\n" ++
-  "}\n"
+  let data    : AlgorithmLib.WGSL.Expr (.arr .f32)     := ⟨"data"⟩
+  let sums    : AlgorithmLib.WGSL.Expr (.arr .f32)     := ⟨"sums"⟩
+  let partialArr : AlgorithmLib.WGSL.Expr (.arrN .f32 64) := ⟨"partial"⟩
+  buildShader
+    [{ binding := 0, name := "data",    ty := .arr .f32, ro := true },
+     { binding := 1, name := "sums",    ty := .arr .f32 }]
+    [("partial", .f32, 64)] []
+    { lid := true, wid := true }
+    do
+      let n ← letV "n" (wArrayLen data)
+      assign (arrIdxN partialArr lidX) (wSelect (litF "0.0") (arrIdx data gidX) (gidX .< n))
+      wBarrier
+      let s ← varV "s" (litU 32)
+      whileB (gtE s (litU 0)) do
+        ifB (lidX .< s) do
+          assign (arrIdxN partialArr lidX) (arrIdxN partialArr lidX + arrIdxN partialArr (lidX + s))
+        wBarrier
+        assign s (shrU s (litU 1))
+      ifB (lidX .== litU 0) do
+        assign (arrIdx sums widX) (arrIdxN partialArr (litU 0))
 
 def mainFn : IRBuilder Unit := do
   let ptr     ← entryBlock

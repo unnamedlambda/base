@@ -2,6 +2,7 @@ import AlgorithmLib
 
 open Lean (Json)
 open AlgorithmLib
+open AlgorithmLib.WGSL
 
 namespace Algorithm
 
@@ -64,199 +65,163 @@ def totalAdditionalMemory  (bs : Nat) : Nat := maxInputSize + outputBufSize bs +
 -- ---------------------------------------------------------------------------
 
 def compressionShader (bs : Nat) : String :=
-  let blkSz        := toString bs
-  let maxCompBlkSz := toString (maxCompressedBlockSize bs)
-  -- Bindings
-  "@group(0) @binding(0)\n" ++
-  "var<storage, read> input_data: array<u32>;\n" ++
-  "@group(0) @binding(1)\n" ++
-  "var<storage, read_write> output_data: array<u32>;\n" ++
-  "@group(0) @binding(2)\n" ++
-  "var<storage, read_write> block_meta: array<u32>;\n\n" ++
-
-  -- Workgroup-shared hash table (256 entries)
-  "var<workgroup> hash_table: array<u32, 256>;\n\n" ++
-
-  -- Constants
-  s!"const BLOCK_SIZE: u32 = {blkSz}u;\n" ++
-  s!"const MAX_COMPRESSED_BLOCK_SIZE: u32 = {maxCompBlkSz}u;\n" ++
-  "const MIN_MATCH_LEN: u32 = 4u;\n" ++
-  "const MAX_MATCH_LEN: u32 = 255u;\n\n" ++
-
-  -- Read byte from array<u32>
-  "fn read_byte(base: u32, idx: u32) -> u32 {\n" ++
-  "    let word_idx = base + idx / 4u;\n" ++
-  "    let shift = (idx % 4u) * 8u;\n" ++
-  "    return (input_data[word_idx] >> shift) & 0xFFu;\n" ++
-  "}\n\n" ++
-
-  -- Read 4 bytes as u32
-  "fn read4(base: u32, idx: u32) -> u32 {\n" ++
-  "    let b0 = read_byte(base, idx);\n" ++
-  "    let b1 = read_byte(base, idx + 1u);\n" ++
-  "    let b2 = read_byte(base, idx + 2u);\n" ++
-  "    let b3 = read_byte(base, idx + 3u);\n" ++
-  "    return b0 | (b1 << 8u) | (b2 << 16u) | (b3 << 24u);\n" ++
-  "}\n\n" ++
-
-  -- Write byte to output array<u32>
-  "fn write_byte(base: u32, idx: u32, val: u32) {\n" ++
-  "    let word_idx = base + idx / 4u;\n" ++
-  "    let shift = (idx % 4u) * 8u;\n" ++
-  "    let mask = ~(0xFFu << shift);\n" ++
-  "    let old_val = output_data[word_idx];\n" ++
-  "    output_data[word_idx] = (old_val & mask) | ((val & 0xFFu) << shift);\n" ++
-  "}\n\n" ++
-
-  -- Hash function (Knuth multiplicative, 8-bit result)
-  "fn hash4(v: u32) -> u32 {\n" ++
-  "    return (v * 2654435761u) >> 24u;\n" ++
-  "}\n\n" ++
-
-  -- Main compute entry
-  "@compute @workgroup_size(64)\n" ++
-  "fn main(\n" ++
-  "    @builtin(workgroup_id) wid: vec3<u32>,\n" ++
-  "    @builtin(local_invocation_id) lid: vec3<u32>,\n" ++
-  ") {\n" ++
-  "    let block_id = wid.x;\n" ++
-  "    let thread_id = lid.x;\n" ++
-  "    let total_input_size = block_meta[0u];\n" ++
-
-  -- Initialize hash table
-  "    if (thread_id < 4u) {\n" ++
-  "        for (var i = thread_id * 64u; i < (thread_id + 1u) * 64u; i = i + 1u) {\n" ++
-  "            hash_table[i] = 0xFFFFFFFFu;\n" ++
-  "        }\n" ++
-  "    }\n" ++
-  "    workgroupBarrier();\n\n" ++
-
-  -- Input/output regions for this block
-  "    let input_byte_start = block_id * BLOCK_SIZE;\n" ++
-  "    let input_word_start = input_byte_start / 4u;\n" ++
-  "    let block_len = min(BLOCK_SIZE, total_input_size - input_byte_start);\n" ++
-  "    let output_byte_start = block_id * MAX_COMPRESSED_BLOCK_SIZE;\n" ++
-  "    let output_word_start = output_byte_start / 4u;\n\n" ++
-
-  -- Phase 1: Cooperative hash table population
-  "    let stride = 64u;\n" ++
-  "    var pos = thread_id;\n" ++
-  "    while (pos + 3u < block_len) {\n" ++
-  "        let val = read4(input_word_start, pos);\n" ++
-  "        let h = hash4(val);\n" ++
-  "        hash_table[h] = pos;\n" ++
-  "        pos = pos + stride;\n" ++
-  "    }\n" ++
-  "    workgroupBarrier();\n\n" ++
-
-  -- Phase 2: Thread 0 sequential greedy encoding
-  "    if (thread_id == 0u) {\n" ++
-  "        var ip: u32 = 0u;\n" ++
-  "        var op: u32 = 0u;\n" ++
-  "        var anchor: u32 = 0u;\n\n" ++
-
-  -- LZ4 spec: last 5 bytes (LASTLITERALS) must be emitted as literals
-  "        let match_limit = block_len - min(block_len, 5u);\n" ++
-  "        while (ip + 4u <= match_limit) {\n" ++
-  "            let cur4 = read4(input_word_start, ip);\n" ++
-  "            let h = hash4(cur4);\n" ++
-  "            let ref_pos = hash_table[h];\n" ++
-  "            hash_table[h] = ip;\n\n" ++
-
-  -- Check for match (offset fits in 16-bit field: guaranteed by h_window)
-  "            var match_len: u32 = 0u;\n" ++
-  "            if (ref_pos != 0xFFFFFFFFu && ref_pos < ip && (ip - ref_pos) < 65536u) {\n" ++
-  "                let ref4 = read4(input_word_start, ref_pos);\n" ++
-  "                if (ref4 == cur4) {\n" ++
-  "                    match_len = 4u;\n" ++
-  "                    while (ip + match_len < match_limit && match_len < MAX_MATCH_LEN) {\n" ++
-  "                        if (read_byte(input_word_start, ref_pos + match_len) != read_byte(input_word_start, ip + match_len)) {\n" ++
-  "                            break;\n" ++
-  "                        }\n" ++
-  "                        match_len = match_len + 1u;\n" ++
-  "                    }\n" ++
-  "                }\n" ++
-  "            }\n\n" ++
-
-  -- Emit match or advance
-  "            if (match_len >= MIN_MATCH_LEN) {\n" ++
-  "                let literal_len = ip - anchor;\n" ++
-  "                let match_offset = ip - ref_pos;\n" ++
-
-  -- Token byte: upper nibble = literal len, lower nibble = match len - 4
-  "                let lit_token = min(literal_len, 15u);\n" ++
-  "                let match_token = min(match_len - MIN_MATCH_LEN, 15u);\n" ++
-  "                write_byte(output_word_start, op, (lit_token << 4u) | match_token);\n" ++
-  "                op = op + 1u;\n\n" ++
-
-  -- Extended literal length
-  "                if (literal_len >= 15u) {\n" ++
-  "                    var rem = literal_len - 15u;\n" ++
-  "                    while (rem >= 255u) {\n" ++
-  "                        write_byte(output_word_start, op, 255u);\n" ++
-  "                        op = op + 1u;\n" ++
-  "                        rem = rem - 255u;\n" ++
-  "                    }\n" ++
-  "                    write_byte(output_word_start, op, rem);\n" ++
-  "                    op = op + 1u;\n" ++
-  "                }\n\n" ++
-
-  -- Literal bytes
-  "                for (var i: u32 = 0u; i < literal_len; i = i + 1u) {\n" ++
-  "                    write_byte(output_word_start, op, read_byte(input_word_start, anchor + i));\n" ++
-  "                    op = op + 1u;\n" ++
-  "                }\n\n" ++
-
-  -- Match offset (2 bytes LE)
-  "                write_byte(output_word_start, op, match_offset & 0xFFu);\n" ++
-  "                write_byte(output_word_start, op + 1u, (match_offset >> 8u) & 0xFFu);\n" ++
-  "                op = op + 2u;\n\n" ++
-
-  -- Extended match length
-  "                if (match_len - MIN_MATCH_LEN >= 15u) {\n" ++
-  "                    var rem = match_len - MIN_MATCH_LEN - 15u;\n" ++
-  "                    while (rem >= 255u) {\n" ++
-  "                        write_byte(output_word_start, op, 255u);\n" ++
-  "                        op = op + 1u;\n" ++
-  "                        rem = rem - 255u;\n" ++
-  "                    }\n" ++
-  "                    write_byte(output_word_start, op, rem);\n" ++
-  "                    op = op + 1u;\n" ++
-  "                }\n\n" ++
-
-  "                ip = ip + match_len;\n" ++
-  "                anchor = ip;\n" ++
-  "            } else {\n" ++
-  "                ip = ip + 1u;\n" ++
-  "            }\n" ++
-  "        }\n\n" ++
-
-  -- Flush remaining literals (last sequence)
-  "        let final_lit = block_len - anchor;\n" ++
-  "        if (final_lit > 0u) {\n" ++
-  "            let lit_token = min(final_lit, 15u);\n" ++
-  "            write_byte(output_word_start, op, lit_token << 4u);\n" ++
-  "            op = op + 1u;\n" ++
-  "            if (final_lit >= 15u) {\n" ++
-  "                var rem = final_lit - 15u;\n" ++
-  "                while (rem >= 255u) {\n" ++
-  "                    write_byte(output_word_start, op, 255u);\n" ++
-  "                    op = op + 1u;\n" ++
-  "                    rem = rem - 255u;\n" ++
-  "                }\n" ++
-  "                write_byte(output_word_start, op, rem);\n" ++
-  "                op = op + 1u;\n" ++
-  "            }\n" ++
-  "            for (var i: u32 = 0u; i < final_lit; i = i + 1u) {\n" ++
-  "                write_byte(output_word_start, op, read_byte(input_word_start, anchor + i));\n" ++
-  "                op = op + 1u;\n" ++
-  "            }\n" ++
-  "        }\n\n" ++
-
-  -- Store compressed size for this block (index 0 holds total_input_size)
-  "        block_meta[1u + block_id * 2u] = op;\n" ++
-  "    }\n" ++
-  "}\n"
+  let inputData : AlgorithmLib.WGSL.Expr (.arr .u32) := ⟨"input_data"⟩
+  let outputData : AlgorithmLib.WGSL.Expr (.arr .u32) := ⟨"output_data"⟩
+  let blockMeta : AlgorithmLib.WGSL.Expr (.arr .u32) := ⟨"block_meta"⟩
+  let hashTable : AlgorithmLib.WGSL.Expr (.arrN .u32 256) := ⟨"hash_table"⟩
+  let blockSize : AlgorithmLib.WGSL.Expr .u32 := ⟨"BLOCK_SIZE"⟩
+  let maxCompBlockSize : AlgorithmLib.WGSL.Expr .u32 := ⟨"MAX_COMPRESSED_BLOCK_SIZE"⟩
+  let minMatchLen : AlgorithmLib.WGSL.Expr .u32 := ⟨"MIN_MATCH_LEN"⟩
+  let maxMatchLen : AlgorithmLib.WGSL.Expr .u32 := ⟨"MAX_MATCH_LEN"⟩
+  let readByteE (base idx : AlgorithmLib.WGSL.Expr .u32) : AlgorithmLib.WGSL.Expr .u32 := call2 "read_byte" base idx
+  let read4E (base idx : AlgorithmLib.WGSL.Expr .u32) : AlgorithmLib.WGSL.Expr .u32 := call2 "read4" base idx
+  let hash4E (v : AlgorithmLib.WGSL.Expr .u32) : AlgorithmLib.WGSL.Expr .u32 := call1 "hash4" v
+  buildShader
+    [{ binding := 0, name := "input_data", ty := .arr .u32, ro := true },
+     { binding := 1, name := "output_data", ty := .arr .u32 },
+     { binding := 2, name := "block_meta", ty := .arr .u32 }]
+    [("hash_table", .u32, 256)]
+    [.constU "BLOCK_SIZE" bs,
+     .constU "MAX_COMPRESSED_BLOCK_SIZE" (maxCompressedBlockSize bs),
+     .constU "MIN_MATCH_LEN" 4,
+     .constU "MAX_MATCH_LEN" 255,
+     .fn {
+       name := "read_byte",
+       params := [{ name := "base", ty := .u32 }, { name := "idx", ty := .u32 }],
+       retTy := some .u32,
+       body := do
+         let base : AlgorithmLib.WGSL.Expr .u32 := ⟨"base"⟩
+         let idx : AlgorithmLib.WGSL.Expr .u32 := ⟨"idx"⟩
+         let wordIdx ← letV "word_idx" (base + idx / litU 4)
+         let shift ← letV "shift" ((idx % litU 4) * litU 8)
+         retE (bandU (shrU (arrIdx inputData wordIdx) shift) (litU 0xFF))
+     },
+     .fn {
+       name := "read4",
+       params := [{ name := "base", ty := .u32 }, { name := "idx", ty := .u32 }],
+       retTy := some .u32,
+       body := do
+         let base : AlgorithmLib.WGSL.Expr .u32 := ⟨"base"⟩
+         let idx : AlgorithmLib.WGSL.Expr .u32 := ⟨"idx"⟩
+         let b0 ← letV "b0" (readByteE base idx)
+         let b1 ← letV "b1" (readByteE base (idx + litU 1))
+         let b2 ← letV "b2" (readByteE base (idx + litU 2))
+         let b3 ← letV "b3" (readByteE base (idx + litU 3))
+         retE (borU (borU b0 (shlU b1 (litU 8))) (borU (shlU b2 (litU 16)) (shlU b3 (litU 24))))
+     },
+     .fn {
+       name := "write_byte",
+       params := [{ name := "base", ty := .u32 }, { name := "idx", ty := .u32 }, { name := "val", ty := .u32 }],
+       retTy := none,
+       body := do
+         let base : AlgorithmLib.WGSL.Expr .u32 := ⟨"base"⟩
+         let idx : AlgorithmLib.WGSL.Expr .u32 := ⟨"idx"⟩
+         let val : AlgorithmLib.WGSL.Expr .u32 := ⟨"val"⟩
+         let wordIdx ← letV "word_idx" (base + idx / litU 4)
+         let shift ← letV "shift" ((idx % litU 4) * litU 8)
+         let mask ← letV "mask" (bnotU (shlU (litU 0xFF) shift))
+         let oldVal ← letV "old_val" (arrIdx outputData wordIdx)
+         assign (arrIdx outputData wordIdx) (borU (bandU oldVal mask) (shlU (bandU val (litU 0xFF)) shift))
+     },
+     .fn {
+       name := "hash4",
+       params := [{ name := "v", ty := .u32 }],
+       retTy := some .u32,
+       body := do
+         let v : AlgorithmLib.WGSL.Expr .u32 := ⟨"v"⟩
+         retE (shrU (v * litU 2654435761) (litU 24))
+     }]
+    { lid := true, wid := true }
+    do
+      let blockId ← letV "block_id" widX
+      let threadId ← letV "thread_id" lidX
+      let totalInputSize ← letV "total_input_size" (arrIdx blockMeta (litU 0))
+      ifB (ltE threadId (litU 4)) do
+        forU "i" (threadId * litU 64) (fun i => ltE i ((threadId + litU 1) * litU 64)) (fun i => i + litU 1) fun i => do
+          assign (arrIdxN hashTable i) (litU 0xFFFFFFFF)
+      wBarrier
+      let inputByteStart ← letV "input_byte_start" (blockId * blockSize)
+      let inputWordStart ← letV "input_word_start" (inputByteStart / litU 4)
+      let blockLen ← letV "block_len" (wMinU blockSize (totalInputSize - inputByteStart))
+      let outputByteStart ← letV "output_byte_start" (blockId * maxCompBlockSize)
+      let outputWordStart ← letV "output_word_start" (outputByteStart / litU 4)
+      let stride ← letV "stride" (litU 64)
+      let pos ← varV "pos" threadId
+      whileB (ltE (pos + litU 3) blockLen) do
+        let val ← letV "val" (read4E inputWordStart pos)
+        let h ← letV "h" (hash4E val)
+        assign (arrIdxN hashTable h) pos
+        assign pos (pos + stride)
+      wBarrier
+      ifB (eqE threadId (litU 0)) do
+        let ip ← varV "ip" (litU 0)
+        let op ← varV "op" (litU 0)
+        let anchor ← varV "anchor" (litU 0)
+        let matchLimit ← letV "match_limit" (blockLen - wMinU blockLen (litU 5))
+        whileB (leE (ip + litU 4) matchLimit) do
+          let cur4 ← letV "cur4" (read4E inputWordStart ip)
+          let h ← letV "h" (hash4E cur4)
+          let refPos ← letV "ref_pos" (arrIdxN hashTable h)
+          assign (arrIdxN hashTable h) ip
+          let matchLen ← varV "match_len" (litU 0)
+          ifB (andE (andE (neE refPos (litU 0xFFFFFFFF)) (ltE refPos ip)) (ltE (ip - refPos) (litU 65536))) do
+            let ref4 ← letV "ref4" (read4E inputWordStart refPos)
+            ifB (eqE ref4 cur4) do
+              assign matchLen (litU 4)
+              whileB (andE (ltE (ip + matchLen) matchLimit) (ltE matchLen maxMatchLen)) do
+                ifB (neE (readByteE inputWordStart (refPos + matchLen)) (readByteE inputWordStart (ip + matchLen))) do
+                  breakS
+                assign matchLen (matchLen + litU 1)
+          ifB (geE matchLen minMatchLen) do
+            let literalLen ← letV "literal_len" (ip - anchor)
+            let matchOffset ← letV "match_offset" (ip - refPos)
+            let litToken ← letV "lit_token" (wMinU literalLen (litU 15))
+            let matchToken ← letV "match_token" (wMinU (matchLen - minMatchLen) (litU 15))
+            callS "write_byte" [toString outputWordStart, toString op, toString (borU (shlU litToken (litU 4)) matchToken)]
+            assign op (op + litU 1)
+            ifB (geE literalLen (litU 15)) do
+              let rem ← varV "rem" (literalLen - litU 15)
+              whileB (geE rem (litU 255)) do
+                callS "write_byte" [toString outputWordStart, toString op, toString (litU 255)]
+                assign op (op + litU 1)
+                assign rem (rem - litU 255)
+              callS "write_byte" [toString outputWordStart, toString op, toString rem]
+              assign op (op + litU 1)
+            forU "i" (litU 0) (fun i => ltE i literalLen) (fun i => i + litU 1) fun i => do
+              callS "write_byte" [toString outputWordStart, toString op, toString (readByteE inputWordStart (anchor + i))]
+              assign op (op + litU 1)
+            callS "write_byte" [toString outputWordStart, toString op, toString (bandU matchOffset (litU 0xFF))]
+            callS "write_byte" [toString outputWordStart, toString (op + litU 1), toString (bandU (shrU matchOffset (litU 8)) (litU 0xFF))]
+            assign op (op + litU 2)
+            ifB (geE (matchLen - minMatchLen) (litU 15)) do
+              let rem ← varV "rem" (matchLen - minMatchLen - litU 15)
+              whileB (geE rem (litU 255)) do
+                callS "write_byte" [toString outputWordStart, toString op, toString (litU 255)]
+                assign op (op + litU 1)
+                assign rem (rem - litU 255)
+              callS "write_byte" [toString outputWordStart, toString op, toString rem]
+              assign op (op + litU 1)
+            assign ip (ip + matchLen)
+            assign anchor ip
+          ifB (ltE matchLen minMatchLen) do
+            assign ip (ip + litU 1)
+        let finalLit ← letV "final_lit" (blockLen - anchor)
+        ifB (gtE finalLit (litU 0)) do
+          let litToken ← letV "lit_token" (wMinU finalLit (litU 15))
+          callS "write_byte" [toString outputWordStart, toString op, toString (shlU litToken (litU 4))]
+          assign op (op + litU 1)
+          ifB (geE finalLit (litU 15)) do
+            let rem ← varV "rem" (finalLit - litU 15)
+            whileB (geE rem (litU 255)) do
+              callS "write_byte" [toString outputWordStart, toString op, toString (litU 255)]
+              assign op (op + litU 1)
+              assign rem (rem - litU 255)
+            callS "write_byte" [toString outputWordStart, toString op, toString rem]
+            assign op (op + litU 1)
+          forU "i" (litU 0) (fun i => ltE i finalLit) (fun i => i + litU 1) fun i => do
+            callS "write_byte" [toString outputWordStart, toString op, toString (readByteE inputWordStart (anchor + i))]
+            assign op (op + litU 1)
+        assign (arrIdx blockMeta (litU 1 + blockId * litU 2)) op
 
 -- ---------------------------------------------------------------------------
 -- CLIF IR: file read → GPU compress → file write (parameterized by blockSize)

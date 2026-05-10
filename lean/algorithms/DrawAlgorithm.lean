@@ -3,6 +3,7 @@ import AlgorithmLib
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
+open AlgorithmLib.WGSL
 
 namespace Algorithm
 
@@ -58,55 +59,48 @@ def bmpHeader : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 def mandelbrotShader : String :=
-  let w := toString imageWidth
-  let h := toString imageHeight
-  let mi := toString maxIter
-  "@group(0) @binding(0)\n" ++
-  "var<storage, read_write> pixels: array<u32>;\n\n" ++
-  "@compute @workgroup_size(16, 16)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  s!"    let width: u32 = {w}u;\n" ++
-  s!"    let height: u32 = {h}u;\n" ++
-  s!"    let max_iter: u32 = {mi}u;\n" ++
-  "    let px: u32 = gid.x;\n" ++
-  "    let py: u32 = gid.y;\n" ++
-  "    if (px >= width || py >= height) { return; }\n" ++
-  "    let idx: u32 = py * width + px;\n" ++
-  -- Map pixel to complex plane: Re [-2.2, 0.8], Im [-1.2, 1.2]
-  "    let x0: f32 = -2.2 + f32(px) * 3.0 / f32(width - 1u);\n" ++
-  "    let y0: f32 = -1.2 + f32(py) * 2.4 / f32(height - 1u);\n" ++
-  -- z = z^2 + c
-  "    var zr: f32 = 0.0;\n" ++
-  "    var zi: f32 = 0.0;\n" ++
-  "    var iter: u32 = 0u;\n" ++
-  "    var zr2: f32 = 0.0;\n" ++
-  "    var zi2: f32 = 0.0;\n" ++
-  "    loop {\n" ++
-  "        if (iter >= max_iter) { break; }\n" ++
-  "        zr2 = zr * zr;\n" ++
-  "        zi2 = zi * zi;\n" ++
-  "        if (zr2 + zi2 > 4.0) { break; }\n" ++
-  "        zi = 2.0 * zr * zi + y0;\n" ++
-  "        zr = zr2 - zi2 + x0;\n" ++
-  "        iter = iter + 1u;\n" ++
-  "    }\n" ++
-  -- Smooth coloring with continuous escape value
-  "    var r: f32 = 0.0;\n" ++
-  "    var g: f32 = 0.0;\n" ++
-  "    var b: f32 = 0.0;\n" ++
-  "    if (iter < max_iter) {\n" ++
-  "        let mag2: f32 = zr2 + zi2;\n" ++
-  "        let smooth_iter: f32 = f32(iter) + 1.0 - log2(log2(mag2)) / log2(2.0);\n" ++
-  "        let t: f32 = smooth_iter / f32(max_iter);\n" ++
-  "        r = 9.0 * (1.0 - t) * t * t * t;\n" ++
-  "        g = 15.0 * (1.0 - t) * (1.0 - t) * t * t;\n" ++
-  "        b = 8.5 * (1.0 - t) * (1.0 - t) * (1.0 - t) * t;\n" ++
-  "    }\n" ++
-  "    let ri: u32 = u32(clamp(r * 255.0, 0.0, 255.0));\n" ++
-  "    let gi: u32 = u32(clamp(g * 255.0, 0.0, 255.0));\n" ++
-  "    let bi: u32 = u32(clamp(b * 255.0, 0.0, 255.0));\n" ++
-  "    pixels[idx] = bi | (gi << 8u) | (ri << 16u) | (0xFFu << 24u);\n" ++
-  "}\n"
+  let pixels : AlgorithmLib.WGSL.Expr (.arr .u32) := ⟨"pixels"⟩
+  buildShader
+    [{ binding := 0, name := "pixels", ty := .arr .u32 }]
+    []
+    [.constU "IMG_W" imageWidth,
+     .constU "IMG_H" imageHeight,
+     .constU "MAX_ITER" maxIter]
+    { wgX := 16, wgY := 16 }
+    do
+      let px   ← letV "px" gidX
+      let py   ← letV "py" gidY
+      ifB ((px .>= ⟨"IMG_W"⟩) .|| (py .>= ⟨"IMG_H"⟩)) retV
+      let idx  ← letV "idx" (py * ⟨"IMG_W"⟩ + px)
+      let x0   ← letV "x0" (litF "-2.2" + f32OfU px * litF "3.0" / f32OfU (⟨"IMG_W"⟩ - litU 1))
+      let y0   ← letV "y0" (litF "-1.2" + f32OfU py * litF "2.4" / f32OfU (⟨"IMG_H"⟩ - litU 1))
+      let zr   ← varV "zr" (litF "0.0")
+      let zi   ← varV "zi" (litF "0.0")
+      let iter ← varV "iter" (litU 0)
+      let zr2  ← varV "zr2" (litF "0.0")
+      let zi2  ← varV "zi2" (litF "0.0")
+      loopB do
+        ifB (iter .>= ⟨"MAX_ITER"⟩) breakS
+        assign zr2 (zr * zr)
+        assign zi2 (zi * zi)
+        ifB (zr2 + zi2 .> litF "4.0") breakS
+        assign zi (litF "2.0" * zr * zi + y0)
+        assign zr (zr2 - zi2 + x0)
+        assign iter (iter + litU 1)
+      let r ← varV "r" (litF "0.0")
+      let g ← varV "g" (litF "0.0")
+      let b ← varV "b" (litF "0.0")
+      ifB (iter .< ⟨"MAX_ITER"⟩) do
+        let mag2       ← letV "mag2" (zr2 + zi2)
+        let smoothIter ← letV "smooth_iter" (f32OfU iter + litF "1.0" - wLog2 (wLog2 mag2) / wLog2 (litF "2.0"))
+        let t          ← letV "t" (smoothIter / f32OfU ⟨"MAX_ITER"⟩)
+        assign r (litF "9.0" * (litF "1.0" - t) * t * t * t)
+        assign g (litF "15.0" * (litF "1.0" - t) * (litF "1.0" - t) * t * t)
+        assign b (litF "8.5" * (litF "1.0" - t) * (litF "1.0" - t) * (litF "1.0" - t) * t)
+      let ri ← letV "ri" (u32OfF (wClamp (r * litF "255.0") (litF "0.0") (litF "255.0")))
+      let gi ← letV "gi" (u32OfF (wClamp (g * litF "255.0") (litF "0.0") (litF "255.0")))
+      let bi ← letV "bi" (u32OfF (wClamp (b * litF "255.0") (litF "0.0") (litF "255.0")))
+      assign (arrIdx pixels idx) (((bi .| (gi .<< litU 8)) .| (ri .<< litU 16)) .| (litU 0xFF .<< litU 24))
 
 -- ---------------------------------------------------------------------------
 -- Memory layout (typed field handles)
