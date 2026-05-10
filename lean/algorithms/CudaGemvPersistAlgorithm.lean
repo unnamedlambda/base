@@ -4,117 +4,107 @@ import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace CudaGemvPersist
 
 /-
   Persistent GEMV: A stays on GPU, only x is uploaded per call.
 
-  One Base instance, three Algorithm objects (same CLIF module):
-    u0:1  load   — init CUDA, alloc 3 bufs, upload A, store m/n in sm, no cleanup
-    u0:2  prep   — upload x to persistent buf1
-    u0:3  infer  — cuBLAS SGEMV, optional download from buf2
+  fn1  load   — init CUDA, alloc 3 bufs (A, x, y), upload A, store m/n
+  fn2  prep   — upload x to buf1
+  fn3  infer  — cuBLAS SGEMV, sync, optional download y from buf2
 
-  Shared memory layout:
-    0x00-0x37  reserved (runtime-written, 56-byte RuntimeHeader)
-    0x38-0x3F  m (i64, written by load)
-    0x40-0x47  n (i64, written by load)
+  Shared memory app fields (after 56-byte runtime header):
+    0x38  m (i64)
+    0x40  n (i64)
+
+  Buffer IDs are sequential: buf0=A, buf1=x, buf2=y (hardcoded in infer/prep).
 
   Data formats:
     load  data: [m: u64][n: u64][A: m*n f32]
-    prep  data: [x: n f32]
+    prep  data: [x: n f32]  (data_len = n*4)
     infer out:  [y: m f32]  (optional; compute-only if out_len=0)
 -/
 
 def MEM_SIZE   : Nat := 0x50
 def TIMEOUT_MS : Nat := 30000
+def M_OFF      : Nat := 0x38
+def N_OFF      : Nat := 0x40
 
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+def loadFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let cuda    ← declareCudaFFI
+  let dataPtr ← load64 (← absAddr ptr 0x18)
 
-def clifLoadFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_init sig0\n" ++
-  "    fn1 = %cl_cuda_create_buffer sig1\n" ++
-  "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v2 = iadd_imm v0, 0x10\n" ++
-  "  call fn0(v2)\n" ++
-  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v10 = load.i64 notrap aligned v1\n" ++
-  "  v11 = iadd_imm v1, 8\n" ++
-  "  v12 = load.i64 notrap aligned v11\n" ++
-  "  v13 = iadd_imm v0, 0x38\n" ++
-  "  store notrap aligned v10, v13\n" ++
-  "  v14 = iadd_imm v0, 0x40\n" ++
-  "  store notrap aligned v12, v14\n" ++
-  "  v20 = imul v10, v12\n" ++
-  "  v21 = ishl_imm v20, 2\n" ++
-  "  v22 = ishl_imm v12, 2\n" ++
-  "  v23 = ishl_imm v10, 2\n" ++
-  "  v30 = call fn1(v3, v21)\n" ++
-  "  v31 = call fn1(v3, v22)\n" ++
-  "  v32 = call fn1(v3, v23)\n" ++
-  "  v40 = iconst.i64 16\n" ++
-  "  v41 = iadd v1, v40\n" ++
-  "  v42 = call fn2(v3, v30, v41, v21)\n" ++
-  "  return\n" ++
-  "}\n"
+  cudaInit cuda ptr 0x10
+  let ctxPtr ← load64 (← absAddr ptr 0x10)
 
-def clifPrepFn : String :=
-  "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_upload_ptr sig0\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v2 = load.i64 notrap aligned v0+0x20\n" ++
-  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v20 = iconst.i32 1\n" ++
-  "  v21 = call fn0(v3, v20, v1, v2)\n" ++
-  "  return\n" ++
-  "}\n"
+  let m  ← load64 dataPtr
+  let n  ← load64 (← iaddImm dataPtr 8)
+  storeI64 m (← absAddr ptr M_OFF)
+  storeI64 n (← absAddr ptr N_OFF)
 
-def clifInferFn : String :=
-  "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig2 = (i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_download_ptr sig0\n" ++
-  "    fn1 = %cl_cublas_sgemv sig1\n" ++
-  "    fn2 = %cl_cuda_sync sig2\n" ++
-  "block0(v0: i64):\n" ++
-  "  v3 = load.i64 notrap aligned v0+0x28\n" ++
-  "  v4 = load.i64 notrap aligned v0+0x30\n" ++
-  "  v5 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v10 = load.i64 notrap aligned v0+0x38\n" ++
-  "  v11 = load.i64 notrap aligned v0+0x40\n" ++
-  "  v30 = ireduce.i32 v10\n" ++
-  "  v31 = ireduce.i32 v11\n" ++
-  "  v32 = iconst.i32 1\n" ++
-  "  v33 = iconst.i32 0x3f800000\n" ++
-  "  v34 = iconst.i32 0\n" ++
-  "  v35 = iconst.i32 0\n" ++
-  "  v36 = iconst.i32 2\n" ++
-  "  v37 = call fn1(v5, v32, v31, v30, v33, v34, v32, v35, v36)\n" ++
-  "  v38 = call fn2(v5)\n" ++
-  "  v39 = iconst.i64 0\n" ++
-  "  v40 = icmp eq v4, v39\n" ++
-  "  brif v40, block1, block2\n" ++
-  "block1:\n" ++
-  "  return\n" ++
-  "block2:\n" ++
-  "  v41 = call fn0(v5, v36, v3, v4)\n" ++
-  "  return\n" ++
-  "}\n"
+  let mNBytes ← ishlImm (← imul m n) 2
+  let nBytes  ← ishlImm n 2
+  let mBytes  ← ishlImm m 2
 
-def clifIR : String := clifNoopFn ++ "\n" ++ clifLoadFn ++ "\n" ++ clifPrepFn ++ "\n" ++ clifInferFn
+  let buf0 ← call cuda.fnCreateBuffer [ctxPtr, mNBytes]  -- A (buf id 0)
+  let buf1 ← call cuda.fnCreateBuffer [ctxPtr, nBytes]   -- x (buf id 1)
+  let _    ← call cuda.fnCreateBuffer [ctxPtr, mBytes]   -- y (buf id 2)
+
+  -- Upload A from data[16..] (after m, n header)
+  let aPtr ← iaddImm dataPtr 16
+  let _ ← call cuda.fnUpload [ctxPtr, buf0, aPtr, mNBytes]
+  let _ := buf1  -- suppress unused warning; id is hardcoded in prepFn
+  ret
+
+def prepFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let cuda    ← declareCudaFFI
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataLen ← load64 (← absAddr ptr 0x20)
+  let ctxPtr  ← load64 (← absAddr ptr 0x10)
+  let xBuf    ← iconst32 1
+  let _ ← call cuda.fnUpload [ctxPtr, xBuf, dataPtr, dataLen]
+  ret
+
+def inferFn : IRBuilder Unit := do
+  let ptr    ← entryBlock
+  let cuda   ← declareCudaFFI
+  let blas   ← declareCuBlasFFI
+  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outLen ← load64 (← absAddr ptr 0x30)
+  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  let m      ← load64 (← absAddr ptr M_OFF)
+  let n      ← load64 (← absAddr ptr N_OFF)
+  let m32    ← ireduce32 m
+  let n32    ← ireduce32 n
+
+  let skipDl     ← declareBlock []
+  let doDownload ← declareBlock []
+
+  let alpha  ← iconst32 0x3f800000  -- 1.0f
+  let zero32 ← iconst32 0
+  let one32  ← iconst32 1
+  let two32  ← iconst32 2
+  -- sgemv(ctx, trans=1, m=n, n=m, alpha=1.0, a_buf=0, x_buf=1, beta=0, y_buf=2)
+  let _ ← call blas.fnSgemv [ctxPtr, one32, n32, m32, alpha, zero32, one32, zero32, two32]
+  let _ ← cudaSync cuda ptr 0x10
+  brif (← icmpImm .eq outLen 0) skipDl.ref [] doDownload.ref []
+
+  startBlock doDownload
+  let _ ← call cuda.fnDownload [ctxPtr, two32, outPtr, outLen]
+  ret
+
+  startBlock skipDl
+  ret
+
+def clifIR : String :=
+  noopFunction ++ "\n" ++
+  buildFunction 1 loadFn ++ "\n" ++
+  buildFunction 2 prepFn ++ "\n" ++
+  buildFunction 3 inferFn
 
 def actions (src : UInt32) : List Action :=
   [{ kind := .ClifCall, dst := 0, src := src, offset := 0, size := 0 }]
@@ -125,23 +115,9 @@ def buildConfig : BaseConfig := {
   context_offset := 0
 }
 
-def loadAlgorithm : Algorithm := {
-  actions := actions 1,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
-def prepAlgorithm : Algorithm := {
-  actions := actions 2,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
-def inferAlgorithm : Algorithm := {
-  actions := actions 3,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
+def loadAlgorithm : Algorithm := { actions := actions 1, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
+def prepAlgorithm : Algorithm := { actions := actions 2, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
+def inferAlgorithm : Algorithm := { actions := actions 3, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
 
 def artifacts : Array Json :=
   #[

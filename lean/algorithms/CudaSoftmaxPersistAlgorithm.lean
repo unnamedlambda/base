@@ -4,6 +4,7 @@ import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace CudaSoftmaxPersist
 
@@ -513,149 +514,116 @@ def ptxSource : String :=
   "}\n"
 
 -- CLIF: u0:0 noop, u0:1 load, u0:2 prep, u0:3 core, u0:4 finalize
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "  return\n" ++
-  "}\n"
+-- Load: init CUDA, alloc 5 bufs, pack/upload meta, store n/num_blocks
+def loadFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let cuda    ← declareCudaFFI
+  let dataPtr ← load64 (← absAddr ptr 0x18)
 
-/-
-  Load: init CUDA, alloc 5 bufs, compute num_blocks, upload meta, store n/num_blocks in sm.
-  Data: [n: u64]
-  Buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
+  cudaInit cuda ptr 0x10
+  let ctxPtr ← load64 (← absAddr ptr 0x10)
 
-  App fields:
-    0x38-0x3F  n (i64)
-    0x40-0x47  num_blocks (i64)
-    0x48-0x4F  packed meta staging [n:u32][num_blocks:u32]
--/
-def clifLoadFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_init sig0\n" ++
-  "    fn1 = %cl_cuda_create_buffer sig1\n" ++
-  "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++  -- data_ptr
-  "  v2 = iadd_imm v0, 0x10\n" ++
-  "  call fn0(v2)\n" ++
-  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v10 = load.i64 notrap aligned v1\n" ++       -- n
-  -- num_blocks = (n + 255) >> 8
-  "  v11 = iadd_imm v10, 255\n" ++
-  "  v12 = ushr_imm v11, 8\n" ++                  -- num_blocks
-  "  v13 = iadd_imm v0, 0x38\n" ++
-  "  store notrap aligned v10, v13\n" ++          -- sm[0x38] = n
-  "  v14 = iadd_imm v0, 0x40\n" ++
-  "  store notrap aligned v12, v14\n" ++          -- sm[0x40] = num_blocks
-  -- buf sizes
-  "  v20 = ishl_imm v10, 2\n" ++                  -- x_bytes = n*4
-  "  v21 = ishl_imm v12, 3\n" ++                  -- partials_bytes = num_blocks*8
-  "  v22 = iconst.i64 8\n" ++                     -- meta/params = 8 bytes each
-  -- alloc: buf0=x, buf1=y, buf2=meta, buf3=partials, buf4=params
-  "  v30 = call fn1(v3, v20)\n" ++
-  "  v31 = call fn1(v3, v20)\n" ++
-  "  v32 = call fn1(v3, v22)\n" ++
-  "  v33 = call fn1(v3, v21)\n" ++
-  "  v34 = call fn1(v3, v22)\n" ++
-  -- pack [n:u32, num_blocks:u32] into 8 bytes at sm[0x48]
-  "  v40 = ireduce.i32 v10\n" ++                  -- n as i32
-  "  v41 = ireduce.i32 v12\n" ++                  -- num_blocks as i32
-  "  v42 = uextend.i64 v40\n" ++
-  "  v43 = uextend.i64 v41\n" ++
-  "  v44 = ishl_imm v43, 32\n" ++                -- num_blocks << 32
-  "  v45 = bor v42, v44\n" ++                    -- [n:u32][num_blocks:u32] as i64
-  "  v46 = iadd_imm v0, 0x48\n" ++
-  "  store notrap aligned v45, v46\n" ++          -- sm[0x48] = packed meta
-  "  v47 = call fn2(v3, v32, v46, v22)\n" ++
-  "  return\n" ++
-  "}\n"
+  let n         ← load64 dataPtr
+  let numBlocks ← ushrImm (← iaddImm n 255) 8   -- (n + 255) >> 8
+  storeI64 n         (← absAddr ptr 0x38)
+  storeI64 numBlocks (← absAddr ptr 0x40)
+
+  let xBytes       ← ishlImm n 2          -- n*4
+  let partialsBytes← ishlImm numBlocks 3  -- num_blocks*8
+  let eight        ← iconst64 8
+
+  -- buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
+  let _ ← call cuda.fnCreateBuffer [ctxPtr, xBytes]
+  let _ ← call cuda.fnCreateBuffer [ctxPtr, xBytes]
+  let metaBuf ← call cuda.fnCreateBuffer [ctxPtr, eight]
+  let _ ← call cuda.fnCreateBuffer [ctxPtr, partialsBytes]
+  let _ ← call cuda.fnCreateBuffer [ctxPtr, eight]
+
+  -- Pack [n:u32, num_blocks:u32] as i64 LE into staging slot at 0x48
+  let n32   ← ireduce32 n
+  let nb32  ← ireduce32 numBlocks
+  let n64   ← uextend64 n32
+  let nb64  ← uextend64 nb32
+  let packed← bor n64 (← ishlImm nb64 32)
+  let metaSlot ← absAddr ptr 0x48
+  storeI64 packed metaSlot
+
+  -- Upload packed meta to buf2
+  let _ ← call cuda.fnUpload [ctxPtr, metaBuf, metaSlot, eight]
+  ret
 
 -- Prep: upload x from data_ptr to buf0
-def clifPrepFn : String :=
-  "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_upload_ptr sig0\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++   -- data_ptr (x)
-  "  v2 = load.i64 notrap aligned v0+0x20\n" ++   -- data_len
-  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v4 = iconst.i32 0\n" ++                      -- buf0 (x)
-  "  v5 = call fn0(v3, v4, v1, v2)\n" ++
-  "  return\n" ++
-  "}\n"
+def prepFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let cuda    ← declareCudaFFI
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataLen ← load64 (← absAddr ptr 0x20)
+  let ctxPtr  ← load64 (← absAddr ptr 0x10)
+  let xBuf    ← iconst32 0
+  let _ ← call cuda.fnUpload [ctxPtr, xBuf, dataPtr, dataLen]
+  ret
 
-/-
-  Core: launch 3 kernels (block_reduce, global_reduce, normalize).
-  Bind layouts:
-    K1 (block_reduce):  bufs [0, 2, 3]  — x, meta, partials
-    K2 (global_reduce): bufs [2, 3, 4]  — meta, partials, params
-    K3 (normalize):     bufs [0, 2, 4, 1] — x, meta, params, y
--/
-def clifCoreFn : String :=
-  "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_launch_named sig0\n" ++
-  "block0(v0: i64):\n" ++
-  "  v10 = load.i64 notrap aligned v0+0x38\n" ++  -- n
-  "  v11 = load.i64 notrap aligned v0+0x40\n" ++  -- num_blocks
-  "  v12 = ireduce.i32 v11\n" ++                  -- num_blocks as i32
-  "  v2 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v20 = iadd_imm v0, " ++ toString PTX_SOURCE_OFF ++ "\n" ++
-  "  v21 = iadd_imm v0, " ++ toString NAME_BLOCK_REDUCE ++ "\n" ++
-  "  v22 = iadd_imm v0, " ++ toString NAME_GLOBAL_REDUCE ++ "\n" ++
-  "  v23 = iadd_imm v0, " ++ toString NAME_NORMALIZE ++ "\n" ++
-  "  v24 = iadd_imm v0, " ++ toString NAME_SMALL_SOFTMAX ++ "\n" ++
-  "  v25 = iadd_imm v0, " ++ toString BIND_K1_OFF ++ "\n" ++
-  "  v26 = iadd_imm v0, " ++ toString BIND_K2_OFF ++ "\n" ++
-  "  v27 = iadd_imm v0, " ++ toString BIND_K3_OFF ++ "\n" ++
-  "  v28 = iadd_imm v0, " ++ toString BIND_SMALL_OFF ++ "\n" ++
-  "  v30 = iconst.i32 1\n" ++
-  "  v31 = iconst.i32 3\n" ++
-  "  v32 = iconst.i32 4\n" ++
-  "  v33 = iconst.i32 256\n" ++
-  "  v34 = iconst.i64 2048\n" ++
-  "  v35 = icmp ule v10, v34\n" ++
-  "  brif v35, block1, block2\n" ++
-  "block1:\n" ++
-  "  v36 = call fn0(v2, v20, v24, v31, v28, v30, v30, v30, v33, v30, v30)\n" ++
-  "  return\n" ++
-  "block2:\n" ++
-  -- K1: block_reduce — gridDim=(num_blocks,1,1), blockDim=(256,1,1), 3 bufs
-  "  v40 = call fn0(v2, v20, v21, v31, v25, v12, v30, v30, v33, v30, v30)\n" ++
-  -- K2: global_reduce — gridDim=(1,1,1), blockDim=(256,1,1), 3 bufs
-  "  v41 = call fn0(v2, v20, v22, v31, v26, v30, v30, v30, v33, v30, v30)\n" ++
-  -- K3: normalize — gridDim=(num_blocks,1,1), blockDim=(256,1,1), 4 bufs
-  "  v42 = call fn0(v2, v20, v23, v32, v27, v12, v30, v30, v33, v30, v30)\n" ++
-  "  return\n" ++
-  "}\n"
+-- Core: launch kernels (small path or 3-kernel path)
+def coreFn : IRBuilder Unit := do
+  let ptr    ← entryBlock
+  let cuda   ← declareCudaFFI
+  let n      ← load64 (← absAddr ptr 0x38)
+  let numBlocks ← load64 (← absAddr ptr 0x40)
+  let nb32   ← ireduce32 numBlocks
+  let one32  ← iconst32 1
+  let three32← iconst32 3
+  let four32 ← iconst32 4
+  let blk256 ← iconst32 256
 
-def clifFinalizeFn : String :=
-  "function u0:4(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_download_ptr sig0\n" ++
-  "    fn1 = %cl_cuda_sync sig1\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x28\n" ++   -- out_ptr (correct: RuntimeHeader 0x28)
-  "  v2 = load.i64 notrap aligned v0+0x30\n" ++   -- out_len (correct: RuntimeHeader 0x30)
-  "  v3 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v4 = call fn1(v3)\n" ++
-  "  v5 = iconst.i64 0\n" ++
-  "  v6 = icmp eq v2, v5\n" ++
-  "  brif v6, block1, block2\n" ++
-  "block1:\n" ++
-  "  return\n" ++
-  "block2:\n" ++
-  "  v7 = iconst.i32 1\n" ++                     -- y is buf1
-  "  v8 = call fn0(v3, v7, v1, v2)\n" ++
-  "  return\n" ++
-  "}\n"
+  let smallPath ← declareBlock []
+  let largePath ← declareBlock []
+
+  brif (← icmp .ule n (← iconst64 2048)) smallPath.ref [] largePath.ref []
+
+  -- Small path: single kernel
+  startBlock smallPath
+  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_SMALL_SOFTMAX)
+             three32 (← iconst64 BIND_SMALL_OFF) one32 one32 one32 blk256 one32 one32
+  ret
+
+  -- Large path: block_reduce → global_reduce → normalize
+  startBlock largePath
+  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_BLOCK_REDUCE)
+             three32 (← iconst64 BIND_K1_OFF) nb32 one32 one32 blk256 one32 one32
+  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_GLOBAL_REDUCE)
+             three32 (← iconst64 BIND_K2_OFF) one32 one32 one32 blk256 one32 one32
+  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_NORMALIZE)
+             four32 (← iconst64 BIND_K3_OFF) nb32 one32 one32 blk256 one32 one32
+  ret
+
+-- Finalize: sync, optional download y from buf1
+def finalizeFn : IRBuilder Unit := do
+  let ptr    ← entryBlock
+  let cuda   ← declareCudaFFI
+  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outLen ← load64 (← absAddr ptr 0x30)
+  let ctxPtr ← load64 (← absAddr ptr 0x10)
+
+  let skipDl     ← declareBlock []
+  let doDownload ← declareBlock []
+
+  let _ ← cudaSync cuda ptr 0x10
+  brif (← icmpImm .eq outLen 0) skipDl.ref [] doDownload.ref []
+
+  startBlock doDownload
+  let yBuf ← iconst32 1
+  let _ ← call cuda.fnDownload [ctxPtr, yBuf, outPtr, outLen]
+  ret
+
+  startBlock skipDl
+  ret
 
 def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifLoadFn ++ "\n" ++ clifPrepFn ++ "\n" ++ clifCoreFn ++ "\n" ++ clifFinalizeFn
+  noopFunction ++ "\n" ++
+  buildFunction 1 loadFn ++ "\n" ++
+  buildFunction 2 prepFn ++ "\n" ++
+  buildFunction 3 coreFn ++ "\n" ++
+  buildFunction 4 finalizeFn
 
 -- initial_memory: names, PTX source, bind descriptors
 def nameBlockReduce  : List UInt8 := "block_reduce".toUTF8.toList ++ [0]

@@ -1,9 +1,9 @@
 import Lean
-import Std
 import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace StringSearchBench
 
@@ -13,173 +13,131 @@ namespace StringSearchBench
   Payload (via execute data arg): "input_path\0output_path\0"
 
   Memory layout (shared memory):
-    0x0000  RESERVED        (40 bytes, runtime-managed: ctx_ptr, data/out ptrs)
+    0x0000  RESERVED        (56 bytes, runtime-managed)
     0x0100  INPUT_PATH      (256 bytes, copied from payload by CLIF)
     0x0200  OUTPUT_PATH     (256 bytes, copied from payload by CLIF)
     0x0350  OUTPUT_BUF      (64 bytes, itoa result for FileWrite)
     0x4000  INPUT_DATA      (variable, populated by FileRead)
 
-  Single CLIF function:
-    1. Copy input/output paths from payload into shared memory
-    2. cl_file_read → gets bytes_read (used as file_size)
-    3. SIMD 4-byte pattern match: 4 loads at offsets 0-3, AND all matches,
-       popcnt bitmask to count all "that" occurrences in 16-position chunks
-    4. itoa count to OUTPUT_BUF
-    5. cl_file_write result
-
-  No scalar cleanup needed: shared memory is zero-initialized past data,
-  so partial reads past end produce no false positives.
+  SIMD 4-byte pattern match for "that" across 16 positions per iteration.
+  popcnt bitmask to count all occurrences.
 -/
 
 def INPUT_PATH_OFF  : Nat := 0x0100
 def OUTPUT_PATH_OFF : Nat := 0x0200
 def OUTPUT_BUF      : Nat := 0x0350
 def INPUT_DATA      : Nat := 0x4000
-def MAX_TEXT_BYTES   : Nat := 512 * 1024 * 1024  -- 512MB max
+def MAX_TEXT_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_TEXT_BYTES
 def TIMEOUT_MS      : Nat := 300000
 
--- fn0: noop
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+set_option maxRecDepth 2048 in
+def mainFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let fnRead  ← declareFileRead
+  let fnWrite ← declareFileWrite
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let zero    ← iconst64 0
 
--- fn1: String search orchestrator
-def clifSearchFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "    sig1 = (i64, i64, i64, i64, i64) -> i64 system_v\n" ++
-  "\n" ++
-  "    fn0 = %cl_file_read sig0\n" ++
-  "    fn1 = %cl_file_write sig1\n" ++
-  "\n" ++
-  "block0(v0: i64):\n" ++
-  "    v1 = load.i64 notrap aligned v0+0x18\n" ++    -- data_ptr (payload)
-  "    v600 = iconst.i64 0\n" ++
-  "    jump block1(v600)\n" ++
-  "\n" ++
-  -- Copy input path from payload to shared memory at INPUT_PATH_OFF (0x0100)
-  "block1(v201: i64):\n" ++
-  "    v202 = iadd v1, v201\n" ++
-  "    v203 = uload8.i64 notrap v202\n" ++
-  "    v204 = iadd_imm v0, 256\n" ++                 -- INPUT_PATH_OFF
-  "    v205 = iadd v204, v201\n" ++
-  "    istore8 v203, v205\n" ++
-  "    v206 = icmp_imm eq v203, 0\n" ++
-  "    v207 = iadd_imm v201, 1\n" ++
-  "    brif v206, block2(v207), block1(v207)\n" ++
-  "\n" ++
-  -- Copy output path from payload to shared memory at OUTPUT_PATH_OFF (0x0200)
-  "block2(v210: i64):\n" ++
-  "    v211 = iconst.i64 0\n" ++
-  "    jump block3(v210, v211)\n" ++
-  "\n" ++
-  "block3(v220: i64, v221: i64):\n" ++
-  "    v222 = iadd v1, v220\n" ++
-  "    v223 = uload8.i64 notrap v222\n" ++
-  "    v224 = iadd_imm v0, 512\n" ++                 -- OUTPUT_PATH_OFF
-  "    v225 = iadd v224, v221\n" ++
-  "    istore8 v223, v225\n" ++
-  "    v226 = icmp_imm eq v223, 0\n" ++
-  "    v227 = iadd_imm v220, 1\n" ++
-  "    v228 = iadd_imm v221, 1\n" ++
-  "    brif v226, block4, block3(v227, v228)\n" ++
-  "\n" ++
-  -- Read text file into shared memory
-  "block4:\n" ++
-  "    v3 = iconst.i64 256\n" ++                     -- INPUT_PATH_OFF
-  "    v4 = iconst.i64 16384\n" ++                   -- INPUT_DATA (0x4000)
-  "    v5 = iconst.i64 0\n" ++
-  "    v700 = iconst.i64 0\n" ++
-  "    v7 = call fn0(v0, v3, v4, v5, v700)\n" ++    -- bytes_read = file_size
-  -- Setup constants for SIMD search
-  "    v8 = iconst.i64 0\n" ++                       -- zero
-  "    v9 = iconst.i64 4\n" ++                       -- pattern length
-  "    v10 = isub v7, v9\n" ++                       -- end = file_size - 4
-  "    v11 = iconst.i64 1\n" ++
-  "    v12 = iconst.i64 10\n" ++                     -- newline / div 10
-  "    v13 = iconst.i64 48\n" ++                     -- '0'
-  "    v14 = iconst.i64 848\n" ++                    -- OUTPUT_BUF (0x0350)
-  "    v15 = iadd v0, v4\n" ++                       -- data_ptr = base + INPUT_DATA
-  "    v16 = iconst.i8 116\n" ++                     -- 't' (0x74)
-  "    v17 = splat.i8x16 v16\n" ++                   -- broadcast 't'
-  "    v18 = iconst.i8 104\n" ++                     -- 'h' (0x68)
-  "    v19 = splat.i8x16 v18\n" ++                   -- broadcast 'h'
-  "    v20 = iconst.i8 97\n" ++                      -- 'a' (0x61)
-  "    v21 = splat.i8x16 v20\n" ++                   -- broadcast 'a'
-  "    v22 = iconst.i32 0\n" ++                      -- zero i32
-  "    jump block5(v8, v8)\n" ++
-  "\n" ++
-  -- block5: SIMD loop (pos, count)
-  "block5(v30: i64, v31: i64):\n" ++
-  "    v32 = icmp sgt v30, v10\n" ++                 -- pos > end?
-  "    brif v32, block10(v31), block6(v30, v31)\n" ++
-  "\n" ++
-  -- block6: SIMD 4-byte pattern match across 16 positions
-  "block6(v33: i64, v34: i64):\n" ++
-  "    v35 = iadd v15, v33\n" ++                     -- data_ptr + pos
-  "    v36 = load.i8x16 v35\n" ++                    -- 16 bytes at offset 0
-  "    v37 = load.i8x16 v35+1\n" ++                  -- 16 bytes at offset 1
-  "    v38 = load.i8x16 v35+2\n" ++                  -- 16 bytes at offset 2
-  "    v39 = load.i8x16 v35+3\n" ++                  -- 16 bytes at offset 3
-  "    v40 = icmp eq v36, v17\n" ++                   -- byte[i] == 't'?
-  "    v41 = icmp eq v37, v19\n" ++                   -- byte[i+1] == 'h'?
-  "    v42 = icmp eq v38, v21\n" ++                   -- byte[i+2] == 'a'?
-  "    v43 = icmp eq v39, v17\n" ++                   -- byte[i+3] == 't'?
-  "    v44 = band v40, v41\n" ++                     -- match bytes 0,1
-  "    v45 = band v42, v43\n" ++                     -- match bytes 2,3
-  "    v46 = band v44, v45\n" ++                     -- all 4 match
-  "    v47 = vhigh_bits.i32 v46\n" ++                -- extract 16-bit mask
-  "    v48 = popcnt v47\n" ++                        -- count matches
-  "    v49 = uextend.i64 v48\n" ++
-  "    v50 = iadd v34, v49\n" ++                     -- count += matches
-  "    v51 = iadd_imm v33, 16\n" ++                  -- advance 16
-  "    jump block5(v51, v50)\n" ++
-  "\n" ++
-  -- block10: itoa count to OUTPUT_BUF, then file_write
-  "block10(v60: i64):\n" ++
-  "    jump block11(v60, v11)\n" ++
-  "\n" ++
-  -- find divisor
-  "block11(v61: i64, v62: i64):\n" ++
-  "    v63 = imul v62, v12\n" ++                     -- div * 10
-  "    v64 = icmp ugt v63, v61\n" ++
-  "    brif v64, block12(v61, v62, v14), block11(v61, v63)\n" ++
-  "\n" ++
-  -- write digits
-  "block12(v65: i64, v66: i64, v67: i64):\n" ++
-  "    v68 = udiv v65, v66\n" ++
-  "    v69 = iadd v68, v13\n" ++                     -- + '0'
-  "    v70 = iadd v0, v67\n" ++
-  "    istore8 v69, v70\n" ++
-  "    v71 = imul v68, v66\n" ++
-  "    v72 = isub v65, v71\n" ++
-  "    v73 = udiv v66, v12\n" ++                     -- div / 10
-  "    v74 = iadd_imm v67, 1\n" ++
-  "    v75 = icmp eq v73, v8\n" ++                   -- div == 0?
-  "    brif v75, block13(v74), block12(v72, v73, v74)\n" ++
-  "\n" ++
-  -- write newline + null, then file_write
-  "block13(v76: i64):\n" ++
-  "    v77 = iadd v0, v76\n" ++
-  "    istore8 v12, v77\n" ++                        -- '\\n'
-  "    v78 = iadd_imm v76, 1\n" ++
-  "    v79 = iadd v0, v78\n" ++
-  "    v80 = iconst.i32 0\n" ++
-  "    istore8 v80, v79\n" ++
-  -- Write result file
-  "    v150 = iconst.i64 512\n" ++                   -- OUTPUT_PATH_OFF
-  "    v151 = iconst.i64 848\n" ++                   -- OUTPUT_BUF
-  "    v152 = iconst.i64 0\n" ++
-  "    v153 = iconst.i64 0\n" ++
-  "    v154 = call fn1(v0, v150, v151, v152, v153)\n" ++
-  "    return\n" ++
-  "}\n"
+  let cpIn      ← declareBlock [.i64]
+  let cpOut1    ← declareBlock [.i64]
+  let cpOut     ← declareBlock [.i64, .i64]
+  let readBlk   ← declareBlock []
+  let searchL   ← declareBlock [.i64, .i64]   -- (pos, count)
+  let searchB   ← declareBlock [.i64, .i64]
+  let itoaStart ← declareBlock [.i64]          -- (total)
+  let itoaScale ← declareBlock [.i64, .i64]    -- (value, div): find highest divisor
+  let itoaWr    ← declareBlock [.i64, .i64, .i64]  -- (value, div, wpos): write digits
+  let itoaNL    ← declareBlock [.i64]
 
-def clifIR : String :=
-  clifNoopFn ++ "\n" ++ clifSearchFn
+  jump cpIn.ref [zero]
+
+  -- Copy input path
+  startBlock cpIn
+  let si1 := cpIn.param 0
+  let ch1  ← uload8_64 (← iadd dataPtr si1)
+  istore8 ch1 (← iadd (← absAddr ptr INPUT_PATH_OFF) si1)
+  let si1' ← iaddImm si1 1
+  brif (← icmpImm .eq ch1 0) cpOut1.ref [si1'] cpIn.ref [si1']
+
+  startBlock cpOut1
+  jump cpOut.ref [cpOut1.param 0, zero]
+
+  -- Copy output path
+  startBlock cpOut
+  let si3 := cpOut.param 0; let di3 := cpOut.param 1
+  let ch3  ← uload8_64 (← iadd dataPtr si3)
+  istore8 ch3 (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di3)
+  let si3' ← iaddImm si3 1; let di3' ← iaddImm di3 1
+  brif (← icmpImm .eq ch3 0) readBlk.ref [] cpOut.ref [si3', di3']
+
+  -- Read file, set up SIMD vectors
+  startBlock readBlk
+  let fileSize ← readFile ptr fnRead INPUT_PATH_OFF INPUT_DATA
+  let dataBase ← absAddr ptr INPUT_DATA
+  let endPos   ← isub fileSize (← iconst64 4)
+  -- "that": t=116, h=104, a=97, t=116
+  let tVec ← splat .i8x16 (← iconst8 116)
+  let hVec ← splat .i8x16 (← iconst8 104)
+  let aVec ← splat .i8x16 (← iconst8 97)
+  jump searchL.ref [zero, zero]
+
+  -- SIMD search loop: 16 positions per iteration
+  startBlock searchL
+  let pos := searchL.param 0; let cnt := searchL.param 1
+  brif (← icmp .sgt pos endPos) itoaStart.ref [cnt] searchB.ref [pos, cnt]
+
+  startBlock searchB
+  let pos2 := searchB.param 0; let cnt2 := searchB.param 1
+  let base  ← iadd dataBase pos2
+  let v0    ← loadI8x16 base
+  let v1    ← loadI8x16 (← iaddImm base 1)
+  let v2    ← loadI8x16 (← iaddImm base 2)
+  let v3    ← loadI8x16 (← iaddImm base 3)
+  let m0    ← icmp .eq v0 tVec
+  let m1    ← icmp .eq v1 hVec
+  let m2    ← icmp .eq v2 aVec
+  let m3    ← icmp .eq v3 tVec
+  let m01   ← band m0 m1
+  let m23   ← band m2 m3
+  let mAll  ← band m01 m23
+  let bits  ← vhighBits mAll
+  let hits  ← uextend64 (← popcnt32 bits)
+  jump searchL.ref [← iaddImm pos2 16, ← iadd cnt2 hits]
+
+  -- itoa: start with divisor=1, scale up
+  startBlock itoaStart
+  let total := itoaStart.param 0
+  jump itoaScale.ref [total, ← iconst64 1]
+
+  startBlock itoaScale
+  let valS := itoaScale.param 0; let divS := itoaScale.param 1
+  let ten   ← iconst64 10
+  let div10 ← imul divS ten
+  brif (← icmp .ugt div10 valS) itoaWr.ref [valS, divS, ← iconst64 OUTPUT_BUF]
+                                  itoaScale.ref [valS, div10]
+
+  -- Write digits loop
+  startBlock itoaWr
+  let valW := itoaWr.param 0; let divW := itoaWr.param 1; let wpos := itoaWr.param 2
+  let ten2 ← iconst64 10
+  let dig  ← udiv valW divW
+  let digB ← iadd dig (← iconst64 48)
+  istore8 digB (← iadd ptr wpos)
+  let rem  ← isub valW (← imul dig divW)
+  let div' ← udiv divW ten2
+  let wpos'← iaddImm wpos 1
+  brif (← icmpImm .eq div' 0) itoaNL.ref [wpos'] itoaWr.ref [rem, div', wpos']
+
+  startBlock itoaNL
+  let wp := itoaNL.param 0
+  istore8 (← iconst64 10) (← iadd ptr wp)
+  istore8 (← iconst32 0) (← iadd ptr (← iaddImm wp 1))
+  let _ ← call fnWrite [ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 OUTPUT_BUF,
+                         zero, zero]
+  ret
+
+def clifIR : String := buildProgram mainFn
 
 def controlActions : List Action :=
   [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]

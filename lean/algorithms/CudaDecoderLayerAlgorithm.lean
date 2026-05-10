@@ -4,6 +4,7 @@ import AlgorithmLib
 
 open Lean
 open AlgorithmLib
+open AlgorithmLib.IR
 
 namespace CudaDecoderLayer
 
@@ -379,213 +380,206 @@ def ptxAddRmsNorm : String :=
   "    ret;\n" ++
   "}\n"
 
-def clifNoopFn : String :=
-  "function u0:0(i64) system_v {\n" ++
-  "block0(v0: i64):\n" ++
-  "    return\n" ++
-  "}\n"
+def loadFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let cuda    ← declareCudaFFI
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  cudaInit cuda ptr 0x10
+  let ctxPtr  ← load64 (← absAddr ptr 0x10)
 
-def clifLoadFn : String :=
-  "function u0:1(i64) system_v {\n" ++
-  "    sig0 = (i64) system_v\n" ++
-  "    sig1 = (i64, i64) -> i32 system_v\n" ++
-  "    sig2 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_init sig0\n" ++
-  "    fn1 = %cl_cuda_create_buffer sig1\n" ++
-  "    fn2 = %cl_cuda_upload_ptr sig2\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v90 = iadd_imm v0, 0x10\n" ++
-  "  call fn0(v90)\n" ++
-  "  v91 = load.i64 notrap aligned v0+0x10\n" ++
-  -- activations
-  "  v10 = iconst.i64 " ++ toString D_MODEL_BYTES ++ "\n" ++
-  "  v11 = iconst.i64 " ++ toString D_FF_BYTES ++ "\n" ++
-  "  v20 = call fn1(v91, v10)\n" ++
-  "  v21 = call fn1(v91, v10)\n" ++
-  "  v22 = call fn1(v91, v10)\n" ++
-  "  v23 = call fn1(v91, v10)\n" ++
-  "  v24 = call fn1(v91, v10)\n" ++
-  "  v25 = call fn1(v91, v10)\n" ++
-  "  v26 = call fn1(v91, v10)\n" ++
-  "  v27 = call fn1(v91, v11)\n" ++
-  "  v28 = call fn1(v91, v11)\n" ++
-  "  v29 = call fn1(v91, v11)\n" ++
-  "  v30 = call fn1(v91, v10)\n" ++
-  -- weights
-  "  v40 = call fn1(v91, v10)\n" ++
-  "  v41 = iconst.i64 " ++ toString W_DM_DM_BYTES ++ "\n" ++
-  "  v42 = call fn1(v91, v41)\n" ++
-  "  v43 = call fn1(v91, v41)\n" ++
-  "  v44 = call fn1(v91, v41)\n" ++
-  "  v45 = call fn1(v91, v41)\n" ++
-  "  v46 = call fn1(v91, v10)\n" ++
-  "  v47 = iconst.i64 " ++ toString W_FF_DM_BYTES ++ "\n" ++
-  "  v48 = call fn1(v91, v47)\n" ++
-  "  v49 = call fn1(v91, v47)\n" ++
-  "  v50 = iconst.i64 " ++ toString W_DM_FF_BYTES ++ "\n" ++
-  "  v51 = call fn1(v91, v50)\n" ++
-  -- store ids
-  "  store notrap aligned v20, v0+" ++ toString BUF_X_OFF ++ "\n" ++
-  "  store notrap aligned v21, v0+" ++ toString BUF_XN1_OFF ++ "\n" ++
-  "  store notrap aligned v22, v0+" ++ toString BUF_Q_OFF ++ "\n" ++
-  "  store notrap aligned v23, v0+" ++ toString BUF_K_OFF ++ "\n" ++
-  "  store notrap aligned v24, v0+" ++ toString BUF_V_OFF ++ "\n" ++
-  "  store notrap aligned v25, v0+" ++ toString BUF_O_OFF ++ "\n" ++
-  "  store notrap aligned v26, v0+" ++ toString BUF_XN2_OFF ++ "\n" ++
-  "  store notrap aligned v27, v0+" ++ toString BUF_G_OFF ++ "\n" ++
-  "  store notrap aligned v28, v0+" ++ toString BUF_U_OFF ++ "\n" ++
-  "  store notrap aligned v29, v0+" ++ toString BUF_A_OFF ++ "\n" ++
-  "  store notrap aligned v30, v0+" ++ toString BUF_D_OFF ++ "\n" ++
-  "  store notrap aligned v40, v0+" ++ toString BUF_RMS1_OFF ++ "\n" ++
-  "  store notrap aligned v42, v0+" ++ toString BUF_WQ_OFF ++ "\n" ++
-  "  store notrap aligned v43, v0+" ++ toString BUF_WK_OFF ++ "\n" ++
-  "  store notrap aligned v44, v0+" ++ toString BUF_WV_OFF ++ "\n" ++
-  "  store notrap aligned v45, v0+" ++ toString BUF_WO_OFF ++ "\n" ++
-  "  store notrap aligned v46, v0+" ++ toString BUF_RMS2_OFF ++ "\n" ++
-  "  store notrap aligned v48, v0+" ++ toString BUF_WG_OFF ++ "\n" ++
-  "  store notrap aligned v49, v0+" ++ toString BUF_WU_OFF ++ "\n" ++
-  "  store notrap aligned v51, v0+" ++ toString BUF_WD_OFF ++ "\n" ++
-  -- upload weights
-  "  v60 = call fn2(v91, v40, v1, v10)\n" ++
-  "  v61 = iadd_imm v1, " ++ toString D_MODEL_BYTES ++ "\n" ++
-  "  v62 = call fn2(v91, v42, v61, v41)\n" ++
-  "  v63 = iadd_imm v61, " ++ toString W_DM_DM_BYTES ++ "\n" ++
-  "  v64 = call fn2(v91, v43, v63, v41)\n" ++
-  "  v65 = iadd_imm v63, " ++ toString W_DM_DM_BYTES ++ "\n" ++
-  "  v66 = call fn2(v91, v44, v65, v41)\n" ++
-  "  v67 = iadd_imm v65, " ++ toString W_DM_DM_BYTES ++ "\n" ++
-  "  v68 = call fn2(v91, v45, v67, v41)\n" ++
-  "  v69 = iadd_imm v67, " ++ toString W_DM_DM_BYTES ++ "\n" ++
-  "  v70 = call fn2(v91, v46, v69, v10)\n" ++
-  "  v71 = iadd_imm v69, " ++ toString D_MODEL_BYTES ++ "\n" ++
-  "  v72 = call fn2(v91, v48, v71, v47)\n" ++
-  "  v73 = iadd_imm v71, " ++ toString W_FF_DM_BYTES ++ "\n" ++
-  "  v74 = call fn2(v91, v49, v73, v47)\n" ++
-  "  v75 = iadd_imm v73, " ++ toString W_FF_DM_BYTES ++ "\n" ++
-  "  v76 = call fn2(v91, v51, v75, v50)\n" ++
-  "  return\n" ++
-  "}\n"
+  let dmBytes  ← iconst64 D_MODEL_BYTES
+  let ffBytes  ← iconst64 D_FF_BYTES
+  let wdmBytes ← iconst64 W_DM_DM_BYTES
+  let wffBytes ← iconst64 W_FF_DM_BYTES
+  let wdfBytes ← iconst64 W_DM_FF_BYTES
 
-def clifPrepFn : String :=
-  "function u0:2(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_upload_ptr sig0\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x18\n" ++
-  "  v90 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v2 = load.i32 notrap aligned v0+" ++ toString BUF_X_OFF ++ "\n" ++
-  "  v3 = iconst.i64 " ++ toString D_MODEL_BYTES ++ "\n" ++
-  "  v4 = call fn0(v90, v2, v1, v3)\n" ++
-  "  return\n" ++
-  "}\n"
+  -- activation buffers
+  let bufX   ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufXn1 ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufQ   ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufK   ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufV   ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufO   ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufXn2 ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufG   ← call cuda.fnCreateBuffer [ctxPtr, ffBytes]
+  let bufU   ← call cuda.fnCreateBuffer [ctxPtr, ffBytes]
+  let bufA   ← call cuda.fnCreateBuffer [ctxPtr, ffBytes]
+  let bufD   ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  -- weight buffers
+  let bufRms1 ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufWq   ← call cuda.fnCreateBuffer [ctxPtr, wdmBytes]
+  let bufWk   ← call cuda.fnCreateBuffer [ctxPtr, wdmBytes]
+  let bufWv   ← call cuda.fnCreateBuffer [ctxPtr, wdmBytes]
+  let bufWo   ← call cuda.fnCreateBuffer [ctxPtr, wdmBytes]
+  let bufRms2 ← call cuda.fnCreateBuffer [ctxPtr, dmBytes]
+  let bufWg   ← call cuda.fnCreateBuffer [ctxPtr, wffBytes]
+  let bufWu   ← call cuda.fnCreateBuffer [ctxPtr, wffBytes]
+  let bufWd   ← call cuda.fnCreateBuffer [ctxPtr, wdfBytes]
 
-def clifInferFn : String :=
-  "function u0:3(i64) system_v {\n" ++
-  "    sig0 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    sig1 = (i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_launch sig0\n" ++
-  "    fn1 = %cl_cublas_sgemv sig1\n" ++
-"block0(v0: i64):\n" ++
-  "  v90 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v10 = load.i32 notrap aligned v0+" ++ toString BUF_X_OFF ++ "\n" ++
-  "  v11 = load.i32 notrap aligned v0+" ++ toString BUF_XN1_OFF ++ "\n" ++
-  "  v12 = load.i32 notrap aligned v0+" ++ toString BUF_Q_OFF ++ "\n" ++
-  "  v13 = load.i32 notrap aligned v0+" ++ toString BUF_K_OFF ++ "\n" ++
-  "  v14 = load.i32 notrap aligned v0+" ++ toString BUF_V_OFF ++ "\n" ++
-  "  v15 = load.i32 notrap aligned v0+" ++ toString BUF_O_OFF ++ "\n" ++
-  "  v16 = load.i32 notrap aligned v0+" ++ toString BUF_XN2_OFF ++ "\n" ++
-  "  v17 = load.i32 notrap aligned v0+" ++ toString BUF_G_OFF ++ "\n" ++
-  "  v18 = load.i32 notrap aligned v0+" ++ toString BUF_U_OFF ++ "\n" ++
-  "  v19 = load.i32 notrap aligned v0+" ++ toString BUF_A_OFF ++ "\n" ++
-  "  v20 = load.i32 notrap aligned v0+" ++ toString BUF_D_OFF ++ "\n" ++
-  "  v21 = load.i32 notrap aligned v0+" ++ toString BUF_RMS1_OFF ++ "\n" ++
-  "  v22 = load.i32 notrap aligned v0+" ++ toString BUF_WQ_OFF ++ "\n" ++
-  "  v23 = load.i32 notrap aligned v0+" ++ toString BUF_WK_OFF ++ "\n" ++
-  "  v24 = load.i32 notrap aligned v0+" ++ toString BUF_WV_OFF ++ "\n" ++
-  "  v25 = load.i32 notrap aligned v0+" ++ toString BUF_WO_OFF ++ "\n" ++
-  "  v26 = load.i32 notrap aligned v0+" ++ toString BUF_RMS2_OFF ++ "\n" ++
-  "  v27 = load.i32 notrap aligned v0+" ++ toString BUF_WG_OFF ++ "\n" ++
-  "  v28 = load.i32 notrap aligned v0+" ++ toString BUF_WU_OFF ++ "\n" ++
-  "  v29 = load.i32 notrap aligned v0+" ++ toString BUF_WD_OFF ++ "\n" ++
-  "  v30 = iconst.i64 " ++ toString D_MODEL_BYTES ++ "\n" ++
-  -- rms1 bind + launch
-  "  store notrap aligned v10, v0+" ++ toString BIND_RMS1_OFF ++ "\n" ++
-  "  store notrap aligned v21, v0+" ++ toString (BIND_RMS1_OFF + 4) ++ "\n" ++
-  "  store notrap aligned v11, v0+" ++ toString (BIND_RMS1_OFF + 8) ++ "\n" ++
-  "  v32 = iadd_imm v0, " ++ toString PTX_RMS_OFF ++ "\n" ++
-  "  v33 = iconst.i32 3\n" ++
-  "  v34 = iadd_imm v0, " ++ toString BIND_RMS1_OFF ++ "\n" ++
-  "  v35 = iconst.i32 1\n" ++
-  "  v36 = iconst.i32 256\n" ++
-  "  v37 = call fn0(v90, v32, v33, v34, v35, v35, v35, v36, v35, v35)\n" ++
-  -- q/k/v/o
-  "  v40 = iconst.i32 1\n" ++
-  "  v41 = iconst.i32 " ++ toString D_MODEL ++ "\n" ++
-  "  v42 = iconst.i32 0x3f800000\n" ++
-  "  v43 = iconst.i32 0\n" ++
-  "  v44 = call fn1(v90, v40, v41, v41, v42, v22, v11, v43, v12)\n" ++
-  "  v45 = call fn1(v90, v40, v41, v41, v42, v23, v11, v43, v13)\n" ++
-  "  v46 = call fn1(v90, v40, v41, v41, v42, v24, v11, v43, v14)\n" ++
-  "  v47 = call fn1(v90, v40, v41, v41, v42, v25, v14, v43, v15)\n" ++
-  -- fused: x += o and rmsnorm(x, rms2) -> xn2
-  "  store notrap aligned v10, v0+" ++ toString BIND_ADDRMS_OFF ++ "\n" ++
-  "  store notrap aligned v15, v0+" ++ toString (BIND_ADDRMS_OFF + 4) ++ "\n" ++
-  "  v48 = iadd_imm v0, " ++ toString PTX_ADD_OFF ++ "\n" ++
-  "  v49 = iconst.i32 2\n" ++
-  "  v50 = iadd_imm v0, " ++ toString BIND_ADDRMS_OFF ++ "\n" ++
-  "  v51 = iconst.i32 4\n" ++
-  "  v52 = call fn0(v90, v48, v49, v50, v51, v35, v35, v36, v35, v35)\n" ++
-  -- rms2
-  "  store notrap aligned v10, v0+" ++ toString (BIND_ADDRMS_OFF + 16) ++ "\n" ++
-  "  store notrap aligned v26, v0+" ++ toString (BIND_ADDRMS_OFF + 20) ++ "\n" ++
-  "  store notrap aligned v16, v0+" ++ toString (BIND_ADDRMS_OFF + 24) ++ "\n" ++
-  "  v53 = iadd_imm v0, " ++ toString (BIND_ADDRMS_OFF + 16) ++ "\n" ++
-  "  v54 = call fn0(v90, v32, v33, v53, v35, v35, v35, v36, v35, v35)\n" ++
-  -- gate/up
-  "  v55 = iconst.i32 " ++ toString D_FF ++ "\n" ++
-  "  v56 = call fn1(v90, v40, v41, v55, v42, v27, v16, v43, v17)\n" ++
-  "  v57 = call fn1(v90, v40, v41, v55, v42, v28, v16, v43, v18)\n" ++
-  -- silu_gate
-  "  store notrap aligned v17, v0+" ++ toString BIND_SILU_OFF ++ "\n" ++
-  "  store notrap aligned v18, v0+" ++ toString (BIND_SILU_OFF + 4) ++ "\n" ++
-  "  store notrap aligned v19, v0+" ++ toString (BIND_SILU_OFF + 8) ++ "\n" ++
-  "  v58 = iadd_imm v0, " ++ toString PTX_SILU_OFF ++ "\n" ++
-  "  v59 = iadd_imm v0, " ++ toString BIND_SILU_OFF ++ "\n" ++
-  "  v60 = iconst.i32 19\n" ++
-  "  v61 = call fn0(v90, v58, v33, v59, v60, v35, v35, v36, v35, v35)\n" ++
-  -- down + residual
-  "  v62 = call fn1(v90, v40, v55, v41, v42, v29, v19, v43, v20)\n" ++
-  "  store notrap aligned v10, v0+" ++ toString BIND_ADD2_OFF ++ "\n" ++
-  "  store notrap aligned v20, v0+" ++ toString (BIND_ADD2_OFF + 4) ++ "\n" ++
-  "  v63 = iadd_imm v0, " ++ toString BIND_ADD2_OFF ++ "\n" ++
-  "  v64 = call fn0(v90, v48, v49, v63, v51, v35, v35, v36, v35, v35)\n" ++
-  "  return\n" ++
-  "}\n"
+  storeI32 bufX   (← absAddr ptr BUF_X_OFF)
+  storeI32 bufXn1 (← absAddr ptr BUF_XN1_OFF)
+  storeI32 bufQ   (← absAddr ptr BUF_Q_OFF)
+  storeI32 bufK   (← absAddr ptr BUF_K_OFF)
+  storeI32 bufV   (← absAddr ptr BUF_V_OFF)
+  storeI32 bufO   (← absAddr ptr BUF_O_OFF)
+  storeI32 bufXn2 (← absAddr ptr BUF_XN2_OFF)
+  storeI32 bufG   (← absAddr ptr BUF_G_OFF)
+  storeI32 bufU   (← absAddr ptr BUF_U_OFF)
+  storeI32 bufA   (← absAddr ptr BUF_A_OFF)
+  storeI32 bufD   (← absAddr ptr BUF_D_OFF)
+  storeI32 bufRms1 (← absAddr ptr BUF_RMS1_OFF)
+  storeI32 bufWq  (← absAddr ptr BUF_WQ_OFF)
+  storeI32 bufWk  (← absAddr ptr BUF_WK_OFF)
+  storeI32 bufWv  (← absAddr ptr BUF_WV_OFF)
+  storeI32 bufWo  (← absAddr ptr BUF_WO_OFF)
+  storeI32 bufRms2 (← absAddr ptr BUF_RMS2_OFF)
+  storeI32 bufWg  (← absAddr ptr BUF_WG_OFF)
+  storeI32 bufWu  (← absAddr ptr BUF_WU_OFF)
+  storeI32 bufWd  (← absAddr ptr BUF_WD_OFF)
 
-def clifFinalizeFn : String :=
-  "function u0:4(i64) system_v {\n" ++
-  "    sig0 = (i64, i32, i64, i64) -> i32 system_v\n" ++
-  "    sig1 = (i64) -> i32 system_v\n" ++
-  "    fn0 = %cl_cuda_download_ptr sig0\n" ++
-  "    fn1 = %cl_cuda_sync sig1\n" ++
-  "block0(v0: i64):\n" ++
-  "  v1 = load.i64 notrap aligned v0+0x28\n" ++
-  "  v2 = load.i64 notrap aligned v0+0x30\n" ++
-  "  v90 = load.i64 notrap aligned v0+0x10\n" ++
-  "  v3 = load.i32 notrap aligned v0+" ++ toString BUF_X_OFF ++ "\n" ++
-  "  v4 = call fn1(v90)\n" ++
-  "  v5 = iconst.i64 0\n" ++
-  "  v6 = icmp eq v2, v5\n" ++
-  "  brif v6, block1, block2\n" ++
-  "block1:\n" ++
-  "  return\n" ++
-  "block2:\n" ++
-  "  v7 = call fn0(v90, v3, v1, v2)\n" ++
-  "  return\n" ++
-  "}\n"
+  -- upload weights (rms1, wq, wk, wv, wo, rms2, wg, wu, wd)
+  let _ ← call cuda.fnUpload [ctxPtr, bufRms1, dataPtr, dmBytes]
+  let p1 ← iaddImm dataPtr D_MODEL_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufWq, p1, wdmBytes]
+  let p2 ← iaddImm p1 W_DM_DM_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufWk, p2, wdmBytes]
+  let p3 ← iaddImm p2 W_DM_DM_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufWv, p3, wdmBytes]
+  let p4 ← iaddImm p3 W_DM_DM_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufWo, p4, wdmBytes]
+  let p5 ← iaddImm p4 W_DM_DM_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufRms2, p5, dmBytes]
+  let p6 ← iaddImm p5 D_MODEL_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufWg, p6, wffBytes]
+  let p7 ← iaddImm p6 W_FF_DM_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufWu, p7, wffBytes]
+  let p8 ← iaddImm p7 W_FF_DM_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufWd, p8, wdfBytes]
+  ret
 
-def clifIR : String := clifNoopFn ++ "\n" ++ clifLoadFn ++ "\n" ++ clifPrepFn ++ "\n" ++ clifInferFn ++ "\n" ++ clifFinalizeFn
+def prepFn : IRBuilder Unit := do
+  let ptr     ← entryBlock
+  let cuda    ← declareCudaFFI
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let ctxPtr  ← load64 (← absAddr ptr 0x10)
+  let bufX    ← load32 (← absAddr ptr BUF_X_OFF)
+  let dmBytes ← iconst64 D_MODEL_BYTES
+  let _ ← call cuda.fnUpload [ctxPtr, bufX, dataPtr, dmBytes]
+  ret
+
+def inferFn : IRBuilder Unit := do
+  let ptr    ← entryBlock
+  let cuda   ← declareCudaFFI
+  let blas   ← declareCuBlasFFI
+  let ctxPtr ← load64 (← absAddr ptr 0x10)
+
+  -- load all 20 buf IDs
+  let bufX    ← load32 (← absAddr ptr BUF_X_OFF)
+  let bufXn1  ← load32 (← absAddr ptr BUF_XN1_OFF)
+  let bufQ    ← load32 (← absAddr ptr BUF_Q_OFF)
+  let bufK    ← load32 (← absAddr ptr BUF_K_OFF)
+  let bufV    ← load32 (← absAddr ptr BUF_V_OFF)
+  let bufO    ← load32 (← absAddr ptr BUF_O_OFF)
+  let bufXn2  ← load32 (← absAddr ptr BUF_XN2_OFF)
+  let bufG    ← load32 (← absAddr ptr BUF_G_OFF)
+  let bufU    ← load32 (← absAddr ptr BUF_U_OFF)
+  let bufA    ← load32 (← absAddr ptr BUF_A_OFF)
+  let bufD    ← load32 (← absAddr ptr BUF_D_OFF)
+  let bufRms1 ← load32 (← absAddr ptr BUF_RMS1_OFF)
+  let bufWq   ← load32 (← absAddr ptr BUF_WQ_OFF)
+  let bufWk   ← load32 (← absAddr ptr BUF_WK_OFF)
+  let bufWv   ← load32 (← absAddr ptr BUF_WV_OFF)
+  let bufWo   ← load32 (← absAddr ptr BUF_WO_OFF)
+  let bufRms2 ← load32 (← absAddr ptr BUF_RMS2_OFF)
+  let bufWg   ← load32 (← absAddr ptr BUF_WG_OFF)
+  let bufWu   ← load32 (← absAddr ptr BUF_WU_OFF)
+  let bufWd   ← load32 (← absAddr ptr BUF_WD_OFF)
+
+  let one32   ← iconst32 1
+  let three32 ← iconst32 3
+  let two32   ← iconst32 2
+  let four32  ← iconst32 4
+  let blk256  ← iconst32 256
+  let dm32    ← iconst32 D_MODEL
+  let ff32    ← iconst32 D_FF
+  let alpha   ← iconst32 0x3f800000
+  let zero32  ← iconst32 0
+
+  -- rms1: normalize x with rms1 weights → xn1
+  storeI32 bufX   (← absAddr ptr BIND_RMS1_OFF)
+  storeI32 bufRms1 (← absAddr ptr (BIND_RMS1_OFF + 4))
+  storeI32 bufXn1 (← absAddr ptr (BIND_RMS1_OFF + 8))
+  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_RMS_OFF) three32
+             (← iconst64 BIND_RMS1_OFF) one32 one32 one32 blk256 one32 one32
+
+  -- attention projections: q = WQ @ xn1, k = WK @ xn1, v = WV @ xn1, o = WO @ v
+  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dm32, alpha, bufWq, bufXn1, zero32, bufQ]
+  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dm32, alpha, bufWk, bufXn1, zero32, bufK]
+  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dm32, alpha, bufWv, bufXn1, zero32, bufV]
+  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dm32, alpha, bufWo, bufV,   zero32, bufO]
+
+  -- residual add: x += o
+  storeI32 bufX (← absAddr ptr BIND_ADDRMS_OFF)
+  storeI32 bufO (← absAddr ptr (BIND_ADDRMS_OFF + 4))
+  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ADD_OFF) two32
+             (← iconst64 BIND_ADDRMS_OFF) four32 one32 one32 blk256 one32 one32
+
+  -- rms2: normalize x with rms2 weights → xn2
+  storeI32 bufX    (← absAddr ptr (BIND_ADDRMS_OFF + 16))
+  storeI32 bufRms2 (← absAddr ptr (BIND_ADDRMS_OFF + 20))
+  storeI32 bufXn2  (← absAddr ptr (BIND_ADDRMS_OFF + 24))
+  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_RMS_OFF) three32
+             (← iconst64 (BIND_ADDRMS_OFF + 16)) one32 one32 one32 blk256 one32 one32
+
+  -- FFN: gate = WG @ xn2, up = WU @ xn2
+  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, ff32, alpha, bufWg, bufXn2, zero32, bufG]
+  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, ff32, alpha, bufWu, bufXn2, zero32, bufU]
+
+  -- SiLU-gate: a = silu(g) * u
+  storeI32 bufG (← absAddr ptr BIND_SILU_OFF)
+  storeI32 bufU (← absAddr ptr (BIND_SILU_OFF + 4))
+  storeI32 bufA (← absAddr ptr (BIND_SILU_OFF + 8))
+  let nineteen32 ← iconst32 19
+  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SILU_OFF) three32
+             (← iconst64 BIND_SILU_OFF) nineteen32 one32 one32 blk256 one32 one32
+
+  -- down projection: d = WD @ a
+  let _ ← call blas.fnSgemv [ctxPtr, one32, ff32, dm32, alpha, bufWd, bufA, zero32, bufD]
+
+  -- residual add: x += d
+  storeI32 bufX (← absAddr ptr BIND_ADD2_OFF)
+  storeI32 bufD (← absAddr ptr (BIND_ADD2_OFF + 4))
+  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ADD_OFF) two32
+             (← iconst64 BIND_ADD2_OFF) four32 one32 one32 blk256 one32 one32
+  ret
+
+def finalizeFn : IRBuilder Unit := do
+  let ptr    ← entryBlock
+  let cuda   ← declareCudaFFI
+  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outLen ← load64 (← absAddr ptr 0x30)
+  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  let bufX   ← load32 (← absAddr ptr BUF_X_OFF)
+
+  let skipDl     ← declareBlock []
+  let doDownload ← declareBlock []
+
+  let _ ← cudaSync cuda ptr 0x10
+  brif (← icmpImm .eq outLen 0) skipDl.ref [] doDownload.ref []
+
+  startBlock doDownload
+  let _ ← call cuda.fnDownload [ctxPtr, bufX, outPtr, outLen]
+  ret
+
+  startBlock skipDl
+  ret
+
+def clifIR : String :=
+  noopFunction ++ "\n" ++
+  buildFunction 1 loadFn ++ "\n" ++
+  buildFunction 2 prepFn ++ "\n" ++
+  buildFunction 3 inferFn ++ "\n" ++
+  buildFunction 4 finalizeFn
 
 def ptxRmsBytes : List UInt8 := ptxRmsNorm.toUTF8.toList ++ [0]
 def ptxSiluBytes : List UInt8 := ptxSiluGate.toUTF8.toList ++ [0]

@@ -383,6 +383,7 @@ inductive Inst where
   | fcmp (dst : Val) (cond : String) (a b : Val)
   | bitcast (dst : Val) (ty : ClifTy) (src : Val)
   | ctz (dst a : Val)
+  | popcnt (dst a : Val)
   | vhighBits (dst a : Val)
 
 /-- A declared block with its parameter values -/
@@ -642,6 +643,9 @@ def storeF64 (val addr : Val) : IRBuilder Unit :=
 def storeI64 (val addr : Val) : IRBuilder Unit :=
   emit (.storeTyped .i64 val addr)
 
+def storeI32 (val addr : Val) : IRBuilder Unit :=
+  emit (.storeTyped .i32 val addr)
+
 def rawInst (s : String) : IRBuilder Unit :=
   emit (.rawInst s)
 
@@ -662,6 +666,9 @@ def bitcastF64 (a : Val) : IRBuilder Val := do
 
 def ctz32 (a : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.ctz v a); pure v
+
+def popcnt32 (a : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.popcnt v a); pure v
 
 def vhighBits (src : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.vhighBits v src); pure v
@@ -856,6 +863,7 @@ def renderInst : Inst → String
   | .fcmp dst cond a b => s!"    {renderVal dst} = fcmp {cond} {renderVal a}, {renderVal b}"
   | .bitcast dst ty src => s!"    {renderVal dst} = bitcast.{renderClifTy ty} {renderVal src}"
   | .ctz dst a => s!"    {renderVal dst} = ctz {renderVal a}"
+  | .popcnt dst a => s!"    {renderVal dst} = popcnt {renderVal a}"
   | .vhighBits dst a => s!"    {renderVal dst} = vhigh_bits.i32 {renderVal a}"
 
 def renderSigDecl (s : SigDecl) : String :=
@@ -1159,24 +1167,42 @@ structure CudaSetup where
   fnInit : FnRef
   fnCreateBuffer : FnRef
   fnUpload : FnRef
+  fnUploadOffset : FnRef   -- cl_cuda_upload_ptr_offset: (ctx, buf_id, buf_offset, src_ptr, size) → i32
   fnDownload : FnRef
   fnFreeBuffer : FnRef
   fnLaunch : FnRef
+  fnLaunchNamed : FnRef    -- cl_cuda_launch_named: adds name_ptr arg between kernel and n_bufs
+  fnSync : FnRef           -- cl_cuda_sync: (ctx) → i32
   fnCleanup : FnRef
 
-/-- Declare all 7 CUDA FFI functions.
-    `cl_cuda_launch` takes: ptr, kernel_off, n_bufs, bind_off,
-    grid_x, grid_y, grid_z, block_x, block_y, block_z → i32 -/
+/-- Declare all CUDA FFI functions. -/
 def declareCudaFFI : IRBuilder CudaSetup := do
-  let fnInit ← declareFFI "cl_cuda_init" [.i64] none
-  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer" [.i64, .i64] (some .i32)
-  let fnUpload ← declareFFI "cl_cuda_upload" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnDownload ← declareFFI "cl_cuda_download" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnFreeBuffer ← declareFFI "cl_cuda_free_buffer" [.i64, .i32] (some .i32)
-  let fnLaunch ← declareFFI "cl_cuda_launch"
+  let fnInit         ← declareFFI "cl_cuda_init"              [.i64]                               none
+  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer"     [.i64, .i64]                         (some .i32)
+  let fnUpload       ← declareFFI "cl_cuda_upload_ptr"        [.i64, .i32, .i64, .i64]             (some .i32)
+  let fnUploadOffset ← declareFFI "cl_cuda_upload_ptr_offset" [.i64, .i32, .i64, .i64, .i64]      (some .i32)
+  let fnDownload     ← declareFFI "cl_cuda_download_ptr"      [.i64, .i32, .i64, .i64]             (some .i32)
+  let fnFreeBuffer   ← declareFFI "cl_cuda_free_buffer"       [.i64, .i32]                         (some .i32)
+  let fnLaunch       ← declareFFI "cl_cuda_launch"
     [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnCleanup ← declareFFI "cl_cuda_cleanup" [.i64] none
-  pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnFreeBuffer, fnLaunch, fnCleanup }
+  let fnLaunchNamed  ← declareFFI "cl_cuda_launch_named"
+    [.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnSync         ← declareFFI "cl_cuda_sync"              [.i64]                               (some .i32)
+  let fnCleanup      ← declareFFI "cl_cuda_cleanup"           [.i64]                               none
+  pure { fnInit, fnCreateBuffer, fnUpload, fnUploadOffset, fnDownload,
+         fnFreeBuffer, fnLaunch, fnLaunchNamed, fnSync, fnCleanup }
+
+/-- cuBLAS FFI function bundle -/
+structure CuBlasSetup where
+  fnSgemv : FnRef   -- (ctx, trans, m, n, alpha_bits, a_buf, x_buf, beta_bits, y_buf) → i32
+  fnSgemm : FnRef   -- (ctx, transa, transb, m, n, k, alpha_bits, a_buf, stride_a, b_buf, stride_b, beta_bits, c_buf, stride_c, batch) → i32
+
+def declareCuBlasFFI : IRBuilder CuBlasSetup := do
+  let fnSgemv ← declareFFI "cl_cublas_sgemv"
+    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnSgemm ← declareFFI "cl_cublas_sgemm_strided_batched"
+    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32] (some .i32)
+  pure { fnSgemv, fnSgemm }
 
 def cudaCtxSlotPtr (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val :=
   absAddr ptr slotOffset
@@ -1200,11 +1226,23 @@ def cudaUpload (cuda : CudaSetup) (ptr bufId srcOff size : Val)
   let srcPtr ← iadd ptr srcOff
   call cuda.fnUpload [ctxPtr, bufId, srcPtr, size]
 
+/-- Upload to a specific offset within a GPU buffer. -/
+def cudaUploadOffset (cuda : CudaSetup) (ptr bufId bufOff srcOff size : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let srcPtr ← iadd ptr srcOff
+  call cuda.fnUploadOffset [ctxPtr, bufId, bufOff, srcPtr, size]
+
 def cudaDownload (cuda : CudaSetup) (ptr bufId dstOff size : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
   let ctxPtr ← cudaCtxPtr ptr slotOffset
   let dstPtr ← iadd ptr dstOff
   call cuda.fnDownload [ctxPtr, bufId, dstPtr, size]
+
+def cudaSync (cuda : CudaSetup) (ptr : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnSync [ctxPtr]
 
 def cudaFreeBuffer (cuda : CudaSetup) (ptr bufId : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
@@ -1217,6 +1255,14 @@ def cudaLaunch (cuda : CudaSetup) (ptr kernelOff nBufs bindOff gridX gridY gridZ
   let kernelPtr ← iadd ptr kernelOff
   let bindPtr ← iadd ptr bindOff
   call cuda.fnLaunch [ctxPtr, kernelPtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ]
+
+def cudaLaunchNamed (cuda : CudaSetup) (ptr kernelOff nameOff nBufs bindOff gridX gridY gridZ blockX blockY blockZ : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let kernelPtr ← iadd ptr kernelOff
+  let namePtr ← iadd ptr nameOff
+  let bindPtr ← iadd ptr bindOff
+  call cuda.fnLaunchNamed [ctxPtr, kernelPtr, namePtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ]
 
 def cudaCleanup (cuda : CudaSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Unit := do
   let slotPtr ← cudaCtxSlotPtr ptr slotOffset
