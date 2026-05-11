@@ -37,8 +37,22 @@ abbrev PTX := StateM PTXState
 private def emit (s : String) : PTX Unit :=
   modify fun st => { st with lines := st.lines.push ("    " ++ s ++ ";") }
 
+def declLine (text : String) : PTX Unit :=
+  modify fun st => { st with lines := st.lines.push ("    " ++ text) }
+
+def instrLine (text : String) : PTX Unit :=
+  modify fun st => { st with lines := st.lines.push ("    " ++ text) }
+
+def rawLine (text : String) : PTX Unit :=
+  modify fun st => { st with lines := st.lines.push text }
+
 def label (name : String) : PTX Unit :=
   modify fun st => { st with lines := st.lines.push (name ++ ":") }
+
+def declPredRegs (n : Nat) : PTX Unit := declLine s!".reg .pred %p<{n}>;"
+def declU32Regs  (n : Nat) : PTX Unit := declLine s!".reg .b32 %r<{n}>;"
+def declU64Regs  (n : Nat) : PTX Unit := declLine s!".reg .b64 %rd<{n}>;"
+def declF32Regs  (n : Nat) : PTX Unit := declLine s!".reg .f32 %f<{n}>;"
 
 -- Register allocation
 def freshP : PTX (Reg .pred) := do
@@ -59,6 +73,30 @@ def f32Bits (bits : UInt32) : String :=
     let d := (bits.toNat >>> (i * 4)) &&& 0xf
     if d < 10 then Char.ofNat (d + '0'.toNat) else Char.ofNat (d - 10 + 'a'.toNat)
   s!"0f{h 7}{h 6}{h 5}{h 4}{h 3}{h 2}{h 1}{h 0}"
+
+inductive FImm where
+  | bits (value : UInt32)
+  | float (value : Float)
+  | nat (value : Nat)
+  | text (value : String)
+
+def FImm.render : FImm → String
+  | .bits value => f32Bits value
+  | .float value => toString value
+  | .nat value => s!"{value}.0"
+  | .text value => value
+
+instance : Coe UInt32 FImm where
+  coe := FImm.bits
+
+instance : Coe Float FImm where
+  coe := FImm.float
+
+instance : Coe Nat FImm where
+  coe := FImm.nat
+
+instance : Coe String FImm where
+  coe := FImm.text
 
 -- Common float constants
 def f32_0     : UInt32 := 0x00000000  -- 0.0f
@@ -94,6 +132,7 @@ def stSharedFD (a : Reg .u32) (v : Reg .f32)  : PTX Unit := emit s!"st.shared.f3
 -- ── Integer (u32) ─────────────────────────────────────────────────────────────
 
 def movR  (d s : Reg .u32)               : PTX Unit := emit s!"mov.u32 {d.raw}, {s.raw}"
+def movRIText (d : Reg .u32) (imm : String) : PTX Unit := emit s!"mov.u32 {d.raw}, {imm}"
 def movRC (d : Reg .u32) (n : Nat)       : PTX Unit := emit s!"mov.u32 {d.raw}, {n}"
 def addR  (d a b : Reg .u32)             : PTX Unit := emit s!"add.u32 {d.raw}, {a.raw}, {b.raw}"
 def addRI (d a : Reg .u32) (n : Nat)     : PTX Unit := emit s!"add.u32 {d.raw}, {a.raw}, {n}"
@@ -102,9 +141,14 @@ def madLoS (d a b c : Reg .u32)          : PTX Unit := emit s!"mad.lo.s32 {d.raw
 def madLoU (d a b c : Reg .u32)          : PTX Unit := emit s!"mad.lo.u32 {d.raw}, {a.raw}, {b.raw}, {c.raw}"
 def madLoRC (d a : Reg .u32) (b : Nat) (c : Reg .u32) : PTX Unit :=
   emit s!"mad.lo.u32 {d.raw}, {a.raw}, {b}, {c.raw}"
+def madLoRII (d a : Reg .u32) (b c : Nat) : PTX Unit :=
+  emit s!"mad.lo.u32 {d.raw}, {a.raw}, {b}, {c}"
 def shlR  (d a : Reg .u32) (n : Nat)     : PTX Unit := emit s!"shl.b32 {d.raw}, {a.raw}, {n}"
 def shrR  (d a : Reg .u32) (n : Nat)     : PTX Unit := emit s!"shr.u32 {d.raw}, {a.raw}, {n}"
 def andR  (d a : Reg .u32) (n : Nat)     : PTX Unit := emit s!"and.b32 {d.raw}, {a.raw}, {n}"
+def xorRR (d a b : Reg .u32)             : PTX Unit := emit s!"xor.b32 {d.raw}, {a.raw}, {b.raw}"
+def xorRI (d a : Reg .u32) (n : Nat)     : PTX Unit := emit s!"xor.b32 {d.raw}, {a.raw}, {n}"
+def orRR  (d a b : Reg .u32)             : PTX Unit := emit s!"or.b32 {d.raw}, {a.raw}, {b.raw}"
 
 -- ── Integer (u64) ─────────────────────────────────────────────────────────────
 
@@ -115,6 +159,8 @@ def shlRd  (d a : Reg .u64) (n : Nat)   : PTX Unit := emit s!"shl.b64 {d.raw}, {
 def mulLoRd (d a b : Reg .u64)           : PTX Unit := emit s!"mul.lo.u64 {d.raw}, {a.raw}, {b.raw}"
 def addS64  (d a b : Reg .u64)           : PTX Unit := emit s!"add.s64 {d.raw}, {a.raw}, {b.raw}"
 def mulLoS64 (d a b : Reg .u64)          : PTX Unit := emit s!"mul.lo.s64 {d.raw}, {a.raw}, {b.raw}"
+def mulWideRI (d : Reg .u64) (a : Reg .u32) (n : Nat) : PTX Unit :=
+  emit s!"mul.wide.u32 {d.raw}, {a.raw}, {n}"
 
 -- ── Conversions ───────────────────────────────────────────────────────────────
 
@@ -125,17 +171,32 @@ def cvtF32 (d : Reg .f32) (s : Reg .u32): PTX Unit := emit s!"cvt.rn.f32.u32 {d.
 -- ── Float arithmetic ──────────────────────────────────────────────────────────
 
 def movF  (d s : Reg .f32)               : PTX Unit := emit s!"mov.f32 {d.raw}, {s.raw}"
+def movFI (d : Reg .f32) (imm : FImm) : PTX Unit := emit s!"mov.f32 {d.raw}, {imm.render}"
 def movFC (d : Reg .f32) (bits : UInt32) : PTX Unit := emit s!"mov.f32 {d.raw}, {f32Bits bits}"
 def addF  (d a b : Reg .f32)             : PTX Unit := emit s!"add.f32 {d.raw}, {a.raw}, {b.raw}"
+def addFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"add.f32 {d.raw}, {a.raw}, {imm.render}"
+def addFIR (d : Reg .f32) (imm : FImm) (b : Reg .f32) : PTX Unit := emit s!"add.f32 {d.raw}, {imm.render}, {b.raw}"
 def subF  (d a b : Reg .f32)             : PTX Unit := emit s!"sub.f32 {d.raw}, {a.raw}, {b.raw}"
+def subFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"sub.f32 {d.raw}, {a.raw}, {imm.render}"
+def subFIR (d : Reg .f32) (imm : FImm) (b : Reg .f32) : PTX Unit := emit s!"sub.f32 {d.raw}, {imm.render}, {b.raw}"
 def mulF  (d a b : Reg .f32)             : PTX Unit := emit s!"mul.f32 {d.raw}, {a.raw}, {b.raw}"
+def mulFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"mul.f32 {d.raw}, {a.raw}, {imm.render}"
 def maxF  (d a b : Reg .f32)             : PTX Unit := emit s!"max.f32 {d.raw}, {a.raw}, {b.raw}"
+def maxFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"max.f32 {d.raw}, {a.raw}, {imm.render}"
+def minF  (d a b : Reg .f32)             : PTX Unit := emit s!"min.f32 {d.raw}, {a.raw}, {b.raw}"
+def minFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"min.f32 {d.raw}, {a.raw}, {imm.render}"
+def absF  (d a : Reg .f32)               : PTX Unit := emit s!"abs.f32 {d.raw}, {a.raw}"
 def negF  (d a : Reg .f32)               : PTX Unit := emit s!"neg.f32 {d.raw}, {a.raw}"
 def fmaRn (d a b c : Reg .f32)           : PTX Unit := emit s!"fma.rn.f32 {d.raw}, {a.raw}, {b.raw}, {c.raw}"
+def fmaFII (d a : Reg .f32) (b c : FImm) : PTX Unit :=
+  emit s!"fma.rn.f32 {d.raw}, {a.raw}, {b.render}, {c.render}"
+def fmaFIR (d a : Reg .f32) (b : FImm) (c : Reg .f32) : PTX Unit :=
+  emit s!"fma.rn.f32 {d.raw}, {a.raw}, {b.render}, {c.raw}"
 def divRn (d a b : Reg .f32)             : PTX Unit := emit s!"div.rn.f32 {d.raw}, {a.raw}, {b.raw}"
 def ex2   (d a : Reg .f32)               : PTX Unit := emit s!"ex2.approx.f32 {d.raw}, {a.raw}"
 def rcp   (d a : Reg .f32)               : PTX Unit := emit s!"rcp.approx.f32 {d.raw}, {a.raw}"
 def rsqrt (d a : Reg .f32)               : PTX Unit := emit s!"rsqrt.approx.f32 {d.raw}, {a.raw}"
+def sqrtApprox (d a : Reg .f32)          : PTX Unit := emit s!"sqrt.approx.f32 {d.raw}, {a.raw}"
 
 -- ── Control flow ──────────────────────────────────────────────────────────────
 
@@ -143,6 +204,15 @@ def setpGe  (p : Reg .pred) (a b : Reg .u32)  : PTX Unit := emit s!"setp.ge.u32 
 def setpGeI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.ge.u32 {p.raw}, {a.raw}, {n}"
 def setpLt  (p : Reg .pred) (a b : Reg .u32)  : PTX Unit := emit s!"setp.lt.u32 {p.raw}, {a.raw}, {b.raw}"
 def setpLtI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.lt.u32 {p.raw}, {a.raw}, {n}"
+def setpEqI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.eq.u32 {p.raw}, {a.raw}, {n}"
+def setpLtF (p : Reg .pred) (a b : Reg .f32) : PTX Unit := emit s!"setp.lt.f32 {p.raw}, {a.raw}, {b.raw}"
+def setpLtFI (p : Reg .pred) (a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"setp.lt.f32 {p.raw}, {a.raw}, {imm.render}"
+def setpLeF (p : Reg .pred) (a b : Reg .f32) : PTX Unit := emit s!"setp.le.f32 {p.raw}, {a.raw}, {b.raw}"
+def setpLeFI (p : Reg .pred) (a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"setp.le.f32 {p.raw}, {a.raw}, {imm.render}"
+def setpGeF (p : Reg .pred) (a b : Reg .f32) : PTX Unit := emit s!"setp.ge.f32 {p.raw}, {a.raw}, {b.raw}"
+def setpGeFI (p : Reg .pred) (a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"setp.ge.f32 {p.raw}, {a.raw}, {imm.render}"
+def setpGtF (p : Reg .pred) (a b : Reg .f32) : PTX Unit := emit s!"setp.gt.f32 {p.raw}, {a.raw}, {b.raw}"
+def setpGtFI (p : Reg .pred) (a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"setp.gt.f32 {p.raw}, {a.raw}, {imm.render}"
 def setpNe0 (p : Reg .pred) (a : Reg .u32)    : PTX Unit := emit s!"setp.ne.u32 {p.raw}, {a.raw}, 0"
 def andPred (d a b : Reg .pred)                : PTX Unit := emit s!"and.pred {d.raw}, {a.raw}, {b.raw}"
 def braIf   (p : Reg .pred) (lbl : String)    : PTX Unit :=
@@ -163,6 +233,10 @@ def shflBfly (dst src : Reg .f32) (mask : Nat) : PTX Unit :=
 -- Load a u64 param and return its register
 def ldParam (name : String) : PTX (Reg .u64) := do
   let r ← freshRd; ldParam64 r name; return r
+
+def cvtRniU32F32 (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"cvt.rni.u32.f32 {d.raw}, {s.raw}"
+def cvtRziS32F32 (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"cvt.rzi.s32.f32 {d.raw}, {s.raw}"
+def stGlobalU32 (a : Reg .u64) (v : Reg .u32) : PTX Unit := emit s!"st.global.u32 [{a.raw}], {v.raw}"
 
 -- Standard warp-ID decomposition: (tid, warpId, laneId)
 def getWarpIds : PTX (Reg .u32 × Reg .u32 × Reg .u32) := do

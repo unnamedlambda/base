@@ -1,6 +1,8 @@
 import AlgorithmLib
+set_option maxRecDepth 8192
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.PTX
 
 namespace Algorithm
 
@@ -80,22 +82,22 @@ def bounceCount (spec : SceneSpec) : Nat := spec.maxBounces.value
 def pixelCount (spec : SceneSpec) : Nat := imageWidth spec * imageHeight spec
 def pixelBytes (spec : SceneSpec) : Nat := pixelCount spec * 4
 
-def f32Nat (n : Nat) : String :=
-  s!"{n}.0"
+def f32Nat (n : Nat) : FImm :=
+  AlgorithmLib.PTX.FImm.nat n
 
-def f32Float (x : Float) : String :=
-  toString x
+def f32Float (x : Float) : FImm :=
+  AlgorithmLib.PTX.FImm.float x
 
-def channelF32 (channel : Channel) : String :=
+def channelF32 (channel : Channel) : FImm :=
   f32Float (Float.ofNat channel.value / 255.0)
 
-def colorF32 (color : Color) : String × String × String :=
+def colorF32 (color : Color) : FImm × FImm × FImm :=
   (channelF32 color.red, channelF32 color.green, channelF32 color.blue)
 
-def invSamplesF32 (spec : SceneSpec) : String :=
+def invSamplesF32 (spec : SceneSpec) : FImm :=
   f32Float (1.0 / Float.ofNat (sampleCount spec))
 
-def aspectF32 (spec : SceneSpec) : String :=
+def aspectF32 (spec : SceneSpec) : FImm :=
   f32Float (Float.ofNat (imageWidth spec) / Float.ofNat (imageHeight spec))
 
 def bmpHeader (spec : SceneSpec) : List UInt8 :=
@@ -120,858 +122,797 @@ def bmpHeader (spec : SceneSpec) : List UInt8 :=
   biCompression ++ biSizeImage ++ biXPelsPerMeter ++ biYPelsPerMeter ++
   biClrUsed ++ biClrImportant
 
-namespace Ptx
+private def pReg (n : Nat) : Reg .pred := ⟨s!"%p{n}"⟩
+private def uReg (n : Nat) : Reg .u32 := ⟨s!"%r{n}"⟩
+private def dReg (n : Nat) : Reg .u64 := ⟨s!"%rd{n}"⟩
+private def fReg (n : Nat) : Reg .f32 := ⟨s!"%f{n}"⟩
 
-inductive Line where
-  | blank
-  | comment (text : String)
-  | decl (text : String)
-  | instr (text : String)
-  | label (name : String)
-  | raw (text : String)
+namespace SceneReg
 
-def blank : Line := .blank
-def comment (text : String) : Line := .comment text
-def decl (text : String) : Line := .decl text
-def instr (text : String) : Line := .instr text
-def label (name : String) : Line := .label name
-def raw (text : String) : Line := .raw text
+def pixelX : Reg .u32 := uReg 4
+def pixelY : Reg .u32 := uReg 5
+def sampleIdx : Reg .u32 := uReg 20
+def rng : Reg .u32 := uReg 21
+def bounceIdx : Reg .u32 := uReg 30
+def hitKind : Reg .u32 := uReg 31
+def rayOx : Reg .f32 := fReg 30
+def rayOy : Reg .f32 := fReg 31
+def rayOz : Reg .f32 := fReg 32
+def rayDx : Reg .f32 := fReg 33
+def rayDy : Reg .f32 := fReg 34
+def rayDz : Reg .f32 := fReg 35
+def throughputR : Reg .f32 := fReg 40
+def throughputG : Reg .f32 := fReg 41
+def throughputB : Reg .f32 := fReg 42
+def radianceR : Reg .f32 := fReg 43
+def radianceG : Reg .f32 := fReg 44
+def radianceB : Reg .f32 := fReg 45
+def hitT : Reg .f32 := fReg 50
+def normalX : Reg .f32 := fReg 51
+def normalY : Reg .f32 := fReg 52
+def normalZ : Reg .f32 := fReg 53
 
-structure Program (paramCount : Nat) where
-  version : String
-  target : String
-  addressSize : Nat
-  entryName : String
-  params : List String
-  params_length : params.length = paramCount
-  body : List Line
+end SceneReg
 
-def renderLine : Line → String
-  | .blank => ""
-  | .comment text => s!"    // {text}"
-  | .decl text => s!"    {text}"
-  | .instr text => s!"    {text}"
-  | .label name => s!"{name}:"
-  | .raw text => text
+private def emitKernelSetupAndSampleLoop (spec : SceneSpec) : PTX Unit := do
+  declPredRegs 64
+  declU32Regs 192
+  declU64Regs 32
+  declF32Regs 512
+  movRIText (uReg 0) ("%ctaid.x")
+  movRIText (uReg 1) ("%ctaid.y")
+  movRIText (uReg 2) ("%tid.x")
+  movRIText (uReg 3) ("%tid.y")
+  madLoRC (SceneReg.pixelX) (uReg 0) (16) (uReg 2)
+  madLoRC (SceneReg.pixelY) (uReg 1) (16) (uReg 3)
+  setpGeI (pReg 0) (SceneReg.pixelX) (imageWidth spec)
+  braIf (pReg 0) "DONE"
+  setpGeI (pReg 1) (SceneReg.pixelY) (imageHeight spec)
+  braIf (pReg 1) "DONE"
+  ldParam64 (dReg 0) "out_ptr"
+  madLoRC (uReg 6) (SceneReg.pixelY) (imageWidth spec) (SceneReg.pixelX)
+  mulWideRI (dReg 1) (uReg 6) (4)
+  addS64 (dReg 2) (dReg 0) (dReg 1)
+  movFI (fReg 400) (0x00000000 : UInt32)
+  movFI (fReg 401) (0x3F800000 : UInt32)
+  movFI (fReg 402) (0x40000000 : UInt32)
+  movFI (fReg 403) (0x3F000000 : UInt32)
+  movFI (fReg 404) (0xBF000000 : UInt32)
+  movFI (fReg 405) (0x437F0000 : UInt32)
+  movFI (fReg 406) (0x2F800000 : UInt32)
+  movFI (fReg 407) (0x3A83126F : UInt32)
+  movFI (fReg 408) (f32Nat (imageWidth spec))
+  movFI (fReg 409) (f32Nat (imageHeight spec))
+  movFI (fReg 410) (16.0 : Float)
+  movFI (fReg 411) (-1.6 : Float)
+  movFI (fReg 412) (-1.0 : Float)
+  movFI (fReg 413) (-10.0 : Float)
+  movFI (fReg 414) (0.001 : Float)
+  movFI (fReg 415) ("1.0e20" : String)
+  movFI (fReg 416) (invSamplesF32 spec)
+  movFI (fReg 417) (0.03 : Float)
+  movFI (fReg 418) (0.97 : Float)
+  movFI (fReg 419) (0.08 : Float)
+  movFI (fReg 420) (1.45 : Float)
+  movFI (fReg 421) (0.6896552 : Float)
+  movFI (fReg 422) (0.04 : Float)
+  movFI (fReg 423) (0.96 : Float)
+  movFI (fReg 424) (aspectF32 spec)
+  cvtF32 (fReg 0) (SceneReg.pixelX)
+  cvtF32 (fReg 1) (SceneReg.pixelY)
+  movRIText (SceneReg.sampleIdx) ("0")
+  xorRR (SceneReg.rng) (SceneReg.pixelX) (SceneReg.pixelY)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1973) (9277)
+  xorRI (SceneReg.rng) (SceneReg.rng) (26699)
+  movFI (fReg 10) (0.0 : Float)
+  movFI (fReg 11) (0.0 : Float)
+  movFI (fReg 12) (0.0 : Float)
+  label "SAMPLE_LOOP"
+  setpGeI (pReg 2) (SceneReg.sampleIdx) (sampleCount spec)
+  braIf (pReg 2) "SAMPLE_DONE"
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 20) (SceneReg.rng)
+  mulF (fReg 20) (fReg 20) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 21) (SceneReg.rng)
+  mulF (fReg 21) (fReg 21) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 26) (SceneReg.rng)
+  mulF (fReg 26) (fReg 26) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 27) (SceneReg.rng)
+  mulF (fReg 27) (fReg 27) (fReg 406)
+  addF (fReg 22) (fReg 0) (fReg 20)
+  addF (fReg 23) (fReg 1) (fReg 21)
 
-def renderParam (param : String) : String :=
-  s!"    .param {param}"
+private def emitPrimaryRayAndInitialIntersections (spec : SceneSpec) : PTX Unit := do
+  divRn (fReg 24) (fReg 22) (fReg 408)
+  divRn (fReg 25) (fReg 23) (fReg 409)
+  mulF (fReg 24) (fReg 24) (fReg 402)
+  mulF (fReg 25) (fReg 25) (fReg 402)
+  addFI (fReg 24) (fReg 24) (-1.0 : Float)
+  subFIR (fReg 25) (1.0 : Float) (fReg 25)
+  mulF (fReg 24) (fReg 24) (fReg 424)
+  addFI (fReg 28) (fReg 26) (-0.5 : Float)
+  addFI (fReg 29) (fReg 27) (-0.5 : Float)
+  mulFI (fReg 28) (fReg 28) (0.07 : Float)
+  mulFI (fReg 29) (fReg 29) (0.07 : Float)
+  movF (SceneReg.rayOx) (fReg 28)
+  addFIR (SceneReg.rayOy) (1.15 : Float) (fReg 29)
+  movFI (SceneReg.rayOz) (2.7 : Float)
+  mulFI (SceneReg.rayDx) (fReg 24) (4.8125 : Float)
+  mulFI (SceneReg.rayDy) (fReg 25) (4.8125 : Float)
+  movFI (SceneReg.rayDz) (-5.0 : Float)
+  subF (SceneReg.rayDx) (SceneReg.rayDx) (SceneReg.rayOx)
+  addFI (SceneReg.rayDy) (SceneReg.rayDy) (1.15 : Float)
+  subF (SceneReg.rayDy) (SceneReg.rayDy) (SceneReg.rayOy)
+  subF (SceneReg.rayDz) (SceneReg.rayDz) (SceneReg.rayOz)
+  mulF (fReg 36) (SceneReg.rayDx) (SceneReg.rayDx)
+  fmaRn (fReg 36) (SceneReg.rayDy) (SceneReg.rayDy) (fReg 36)
+  fmaRn (fReg 36) (SceneReg.rayDz) (SceneReg.rayDz) (fReg 36)
+  rsqrt (fReg 37) (fReg 36)
+  mulF (SceneReg.rayDx) (SceneReg.rayDx) (fReg 37)
+  mulF (SceneReg.rayDy) (SceneReg.rayDy) (fReg 37)
+  mulF (SceneReg.rayDz) (SceneReg.rayDz) (fReg 37)
+  movFI (SceneReg.throughputR) (1.0 : Float)
+  movFI (SceneReg.throughputG) (1.0 : Float)
+  movFI (SceneReg.throughputB) (1.0 : Float)
+  movFI (SceneReg.radianceR) (0.0 : Float)
+  movFI (SceneReg.radianceG) (0.0 : Float)
+  movFI (SceneReg.radianceB) (0.0 : Float)
+  movRIText (SceneReg.bounceIdx) ("0")
+  label "BOUNCE_LOOP"
+  setpGeI (pReg 3) (SceneReg.bounceIdx) (bounceCount spec)
+  braIf (pReg 3) "PATH_DONE"
+  movF (SceneReg.hitT) (fReg 415)
+  movRIText (SceneReg.hitKind) ("0")
+  movFI (SceneReg.normalX) ("0.0")
+  movFI (SceneReg.normalY) ("0.0")
+  movFI (SceneReg.normalZ) ("0.0")
+  movFI (fReg 54) ("0.0")
+  movFI (fReg 55) ("0.0")
+  movFI (fReg 56) ("0.0")
+  absF (fReg 57) (SceneReg.rayDy)
+  setpLtFI (pReg 4) (fReg 57) ("1.0e-6")
+  braIf (pReg 4) "GROUND_DONE"
+  subF (fReg 58) (fReg 412) (SceneReg.rayOy)
+  divRn (fReg 59) (fReg 58) (SceneReg.rayDy)
+  setpLeF (pReg 5) (fReg 59) (fReg 414)
+  braIf (pReg 5) "GROUND_DONE"
+  setpGeF (pReg 6) (fReg 59) (SceneReg.hitT)
+  braIf (pReg 6) "GROUND_DONE"
+  movF (SceneReg.hitT) (fReg 59)
+  movRIText (SceneReg.hitKind) ("1")
+  movFI (SceneReg.normalX) ("0.0")
+  movFI (SceneReg.normalY) ("1.0")
+  movFI (SceneReg.normalZ) ("0.0")
+  label "GROUND_DONE"
+  absF (fReg 60) (SceneReg.rayDz)
+  setpLtFI (pReg 7) (fReg 60) ("1.0e-6")
+  braIf (pReg 7) "WALL_DONE"
+  subF (fReg 61) (fReg 413) (SceneReg.rayOz)
+  divRn (fReg 62) (fReg 61) (SceneReg.rayDz)
+  setpLeF (pReg 8) (fReg 62) (fReg 414)
+  braIf (pReg 8) "WALL_DONE"
+  setpGeF (pReg 9) (fReg 62) (SceneReg.hitT)
 
-def renderProgram {paramCount : Nat} (program : Program paramCount) : String :=
-  let paramLines := program.params.map renderParam
-  let header := [
-    s!".version {program.version}",
-    s!".target {program.target}",
-    s!".address_size {program.addressSize}",
-    "",
-    s!".visible .entry {program.entryName}("
-  ]
-  let params := match paramLines with
-    | [] => []
-    | first :: rest =>
-      let rec commaParams : List String → List String
-        | [] => []
-        | [last] => [last]
-        | line :: more => (line ++ ",") :: commaParams more
-      commaParams (first :: rest)
-  String.intercalate "\n" (header ++ params ++ [")", "{"] ++ program.body.map renderLine ++ ["}", ""])
+private def emitSphereIntersectionPassA (_spec : SceneSpec) : PTX Unit := do
+  braIf (pReg 9) "WALL_DONE"
+  movF (SceneReg.hitT) (fReg 62)
+  movRIText (SceneReg.hitKind) ("2")
+  movFI (SceneReg.normalX) ("0.0")
+  movFI (SceneReg.normalY) ("0.0")
+  movFI (SceneReg.normalZ) ("1.0")
+  label "WALL_DONE"
+  addFI (fReg 63) (SceneReg.rayOx) ("1.35")
+  addFI (fReg 64) (SceneReg.rayOy) ("0.05")
+  addFI (fReg 65) (SceneReg.rayOz) ("4.7")
+  mulF (fReg 66) (fReg 63) (SceneReg.rayDx)
+  fmaRn (fReg 66) (fReg 64) (SceneReg.rayDy) (fReg 66)
+  fmaRn (fReg 66) (fReg 65) (SceneReg.rayDz) (fReg 66)
+  mulF (fReg 67) (fReg 63) (fReg 63)
+  fmaRn (fReg 67) (fReg 64) (fReg 64) (fReg 67)
+  fmaRn (fReg 67) (fReg 65) (fReg 65) (fReg 67)
+  addFI (fReg 67) (fReg 67) ("-0.9025")
+  mulF (fReg 68) (fReg 66) (fReg 66)
+  subF (fReg 68) (fReg 68) (fReg 67)
+  setpLtFI (pReg 10) (fReg 68) ("0.0")
+  braIf (pReg 10) "GLASS_DONE"
+  sqrtApprox (fReg 69) (fReg 68)
+  negF (fReg 70) (fReg 66)
+  subF (fReg 71) (fReg 70) (fReg 69)
+  addF (fReg 72) (fReg 70) (fReg 69)
+  setpGtF (pReg 11) (fReg 71) (fReg 414)
+  braIf (pReg 11) "GLASS_T0"
+  movF (fReg 71) (fReg 72)
+  label "GLASS_T0"
+  setpLeF (pReg 12) (fReg 71) (fReg 414)
+  braIf (pReg 12) "GLASS_DONE"
+  setpGeF (pReg 13) (fReg 71) (SceneReg.hitT)
+  braIf (pReg 13) "GLASS_DONE"
+  movF (SceneReg.hitT) (fReg 71)
+  movRIText (SceneReg.hitKind) ("3")
+  fmaRn (fReg 73) (SceneReg.rayDx) (fReg 71) (fReg 63)
+  fmaRn (fReg 74) (SceneReg.rayDy) (fReg 71) (fReg 64)
+  fmaRn (fReg 75) (SceneReg.rayDz) (fReg 71) (fReg 65)
+  mulFI (SceneReg.normalX) (fReg 73) ("1.0526316")
+  mulFI (SceneReg.normalY) (fReg 74) ("1.0526316")
+  mulFI (SceneReg.normalZ) (fReg 75) ("1.0526316")
+  label "GLASS_DONE"
+  addFI (fReg 76) (SceneReg.rayOx) ("-1.35")
+  addFI (fReg 77) (SceneReg.rayOy) ("0.25")
+  addFI (fReg 78) (SceneReg.rayOz) ("4.2")
+  mulF (fReg 79) (fReg 76) (SceneReg.rayDx)
+  fmaRn (fReg 79) (fReg 77) (SceneReg.rayDy) (fReg 79)
+  fmaRn (fReg 79) (fReg 78) (SceneReg.rayDz) (fReg 79)
+  mulF (fReg 80) (fReg 76) (fReg 76)
+  fmaRn (fReg 80) (fReg 77) (fReg 77) (fReg 80)
+  fmaRn (fReg 80) (fReg 78) (fReg 78) (fReg 80)
+  addFI (fReg 80) (fReg 80) ("-0.5625")
+  mulF (fReg 81) (fReg 79) (fReg 79)
+  subF (fReg 81) (fReg 81) (fReg 80)
+  setpLtFI (pReg 14) (fReg 81) ("0.0")
+  braIf (pReg 14) "GOLD_DONE"
+  sqrtApprox (fReg 82) (fReg 81)
+  negF (fReg 83) (fReg 79)
+  subF (fReg 84) (fReg 83) (fReg 82)
+  addF (fReg 85) (fReg 83) (fReg 82)
+  setpGtF (pReg 15) (fReg 84) (fReg 414)
+  braIf (pReg 15) "GOLD_T0"
+  movF (fReg 84) (fReg 85)
+  label "GOLD_T0"
+  setpLeF (pReg 16) (fReg 84) (fReg 414)
+  braIf (pReg 16) "GOLD_DONE"
+  setpGeF (pReg 17) (fReg 84) (SceneReg.hitT)
+  braIf (pReg 17) "GOLD_DONE"
+  movF (SceneReg.hitT) (fReg 84)
+  movRIText (SceneReg.hitKind) ("4")
+  fmaRn (fReg 86) (SceneReg.rayDx) (fReg 84) (fReg 76)
+  fmaRn (fReg 87) (SceneReg.rayDy) (fReg 84) (fReg 77)
+  fmaRn (fReg 88) (SceneReg.rayDz) (fReg 84) (fReg 78)
+  mulFI (SceneReg.normalX) (fReg 86) ("1.3333334")
+  mulFI (SceneReg.normalY) (fReg 87) ("1.3333334")
+  mulFI (SceneReg.normalZ) (fReg 88) ("1.3333334")
 
-end Ptx
+private def emitHitDispatchAndLightSamplingSetup (_spec : SceneSpec) : PTX Unit := do
+  label "GOLD_DONE"
+  addFI (fReg 89) (SceneReg.rayOx) ("-0.1")
+  addFI (fReg 90) (SceneReg.rayOy) ("-0.15")
+  addFI (fReg 91) (SceneReg.rayOz) ("6.5")
+  mulF (fReg 92) (fReg 89) (SceneReg.rayDx)
+  fmaRn (fReg 92) (fReg 90) (SceneReg.rayDy) (fReg 92)
+  fmaRn (fReg 92) (fReg 91) (SceneReg.rayDz) (fReg 92)
+  mulF (fReg 93) (fReg 89) (fReg 89)
+  fmaRn (fReg 93) (fReg 90) (fReg 90) (fReg 93)
+  fmaRn (fReg 93) (fReg 91) (fReg 91) (fReg 93)
+  addFI (fReg 93) (fReg 93) ("-1.3225")
+  mulF (fReg 94) (fReg 92) (fReg 92)
+  subF (fReg 94) (fReg 94) (fReg 93)
+  setpLtFI (pReg 18) (fReg 94) ("0.0")
+  braIf (pReg 18) "BLUE_DONE"
+  sqrtApprox (fReg 95) (fReg 94)
+  negF (fReg 96) (fReg 92)
+  subF (fReg 97) (fReg 96) (fReg 95)
+  addF (fReg 98) (fReg 96) (fReg 95)
+  setpGtF (pReg 19) (fReg 97) (fReg 414)
+  braIf (pReg 19) "BLUE_T0"
+  movF (fReg 97) (fReg 98)
+  label "BLUE_T0"
+  setpLeF (pReg 20) (fReg 97) (fReg 414)
+  braIf (pReg 20) "BLUE_DONE"
+  setpGeF (pReg 21) (fReg 97) (SceneReg.hitT)
+  braIf (pReg 21) "BLUE_DONE"
+  movF (SceneReg.hitT) (fReg 97)
+  movRIText (SceneReg.hitKind) ("5")
+  fmaRn (fReg 99) (SceneReg.rayDx) (fReg 97) (fReg 89)
+  fmaRn (fReg 100) (SceneReg.rayDy) (fReg 97) (fReg 90)
+  fmaRn (fReg 101) (SceneReg.rayDz) (fReg 97) (fReg 91)
+  mulFI (SceneReg.normalX) (fReg 99) ("0.86956525")
+  mulFI (SceneReg.normalY) (fReg 100) ("0.86956525")
+  mulFI (SceneReg.normalZ) (fReg 101) ("0.86956525")
+  label "BLUE_DONE"
+  setpEqI (pReg 22) (SceneReg.hitKind) (0)
+  braIf (pReg 22) "SHADE_SKY"
+  fmaRn (fReg 102) (SceneReg.rayDx) (SceneReg.hitT) (SceneReg.rayOx)
+  fmaRn (fReg 103) (SceneReg.rayDy) (SceneReg.hitT) (SceneReg.rayOy)
+  fmaRn (fReg 104) (SceneReg.rayDz) (SceneReg.hitT) (SceneReg.rayOz)
+  fmaRn (fReg 105) (SceneReg.normalX) (fReg 414) (fReg 102)
+  fmaRn (fReg 106) (SceneReg.normalY) (fReg 414) (fReg 103)
+  fmaRn (fReg 107) (SceneReg.normalZ) (fReg 414) (fReg 104)
+  mulF (fReg 108) (SceneReg.hitT) (fReg 417)
+  minFI (fReg 108) (fReg 108) ("0.35")
+  mulFI (fReg 109) (fReg 108) ("0.04")
+  mulFI (fReg 210) (fReg 108) ("0.07")
+  mulFI (fReg 211) (fReg 108) ("0.12")
+  fmaRn (SceneReg.radianceR) (SceneReg.throughputR) (fReg 109) (SceneReg.radianceR)
+  fmaRn (SceneReg.radianceG) (SceneReg.throughputG) (fReg 210) (SceneReg.radianceG)
+  fmaRn (SceneReg.radianceB) (SceneReg.throughputB) (fReg 211) (SceneReg.radianceB)
+  movFI (fReg 110) ("0.0")
+  movFI (fReg 111) ("0.0")
+  movFI (fReg 112) ("0.0")
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 113) (SceneReg.rng)
+  mulF (fReg 113) (fReg 113) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 114) (SceneReg.rng)
+  mulF (fReg 114) (fReg 114) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 115) (SceneReg.rng)
+  mulF (fReg 115) (fReg 115) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 116) (SceneReg.rng)
+  mulF (fReg 116) (fReg 116) (fReg 406)
+  addFI (fReg 113) (fReg 113) ("-0.5")
+  addFI (fReg 114) (fReg 114) ("-0.5")
+  addFI (fReg 115) (fReg 115) ("-0.5")
 
-def ptxProgram (spec : SceneSpec) : Ptx.Program 1 := {
-  version := "7.0"
-  target := "sm_50"
-  addressSize := 64
-  entryName := "main"
-  params := [".u64 out_ptr"]
-  params_length := rfl
-  body := [
-  Ptx.decl ".reg .pred %p<64>;",
-  Ptx.decl ".reg .b32 %r<192>;",
-  Ptx.decl ".reg .b64 %rd<32>;",
-  Ptx.decl ".reg .f32 %f<512>;",
-  Ptx.blank,
-  Ptx.instr "mov.u32 %r0, %ctaid.x;",
-  Ptx.instr "mov.u32 %r1, %ctaid.y;",
-  Ptx.instr "mov.u32 %r2, %tid.x;",
-  Ptx.instr "mov.u32 %r3, %tid.y;",
-  Ptx.instr "mad.lo.u32 %r4, %r0, 16, %r2;",
-  Ptx.instr "mad.lo.u32 %r5, %r1, 16, %r3;",
-  Ptx.instr s!"setp.ge.u32 %p0, %r4, {imageWidth spec};",
-  Ptx.instr "@%p0 bra DONE;",
-  Ptx.instr s!"setp.ge.u32 %p1, %r5, {imageHeight spec};",
-  Ptx.instr "@%p1 bra DONE;",
-  Ptx.blank,
-  Ptx.instr "ld.param.u64 %rd0, [out_ptr];",
-  Ptx.instr s!"mad.lo.u32 %r6, %r5, {imageWidth spec}, %r4;",
-  Ptx.instr "mul.wide.u32 %rd1, %r6, 4;",
-  Ptx.instr "add.s64 %rd2, %rd0, %rd1;",
-  Ptx.blank,
-  Ptx.comment "constants",
-  Ptx.instr "mov.f32 %f400, 0f00000000;",
-  Ptx.instr "mov.f32 %f401, 0f3F800000;",
-  Ptx.instr "mov.f32 %f402, 0f40000000;",
-  Ptx.instr "mov.f32 %f403, 0f3F000000;",
-  Ptx.instr "mov.f32 %f404, 0fBF000000;",
-  Ptx.instr "mov.f32 %f405, 0f437F0000;",
-  Ptx.instr "mov.f32 %f406, 0f2F800000;",
-  Ptx.instr "mov.f32 %f407, 0f3A83126F;",
-  Ptx.instr s!"mov.f32 %f408, {f32Nat (imageWidth spec)};",
-  Ptx.instr s!"mov.f32 %f409, {f32Nat (imageHeight spec)};",
-  Ptx.instr "mov.f32 %f410, 16.0;",
-  Ptx.instr "mov.f32 %f411, -1.6;",
-  Ptx.instr "mov.f32 %f412, -1.0;",
-  Ptx.instr "mov.f32 %f413, -10.0;",
-  Ptx.instr "mov.f32 %f414, 0.001;",
-  Ptx.instr "mov.f32 %f415, 1.0e20;",
-  Ptx.instr s!"mov.f32 %f416, {invSamplesF32 spec};",
-  Ptx.instr "mov.f32 %f417, 0.03;",
-  Ptx.instr "mov.f32 %f418, 0.97;",
-  Ptx.instr "mov.f32 %f419, 0.08;",
-  Ptx.instr "mov.f32 %f420, 1.45;",
-  Ptx.instr "mov.f32 %f421, 0.6896552;",
-  Ptx.instr "mov.f32 %f422, 0.04;",
-  Ptx.instr "mov.f32 %f423, 0.96;",
-  Ptx.instr s!"mov.f32 %f424, {aspectF32 spec};",
-  Ptx.blank,
-  Ptx.instr "cvt.rn.f32.u32 %f0, %r4;",
-  Ptx.instr "cvt.rn.f32.u32 %f1, %r5;",
-  Ptx.blank,
-  Ptx.instr "mov.u32 %r20, 0;",
-  Ptx.instr "xor.b32 %r21, %r4, %r5;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1973, 9277;",
-  Ptx.instr "xor.b32 %r21, %r21, 26699;",
-  Ptx.blank,
-  Ptx.instr "mov.f32 %f10, 0.0;",
-  Ptx.instr "mov.f32 %f11, 0.0;",
-  Ptx.instr "mov.f32 %f12, 0.0;",
-  Ptx.blank,
-  Ptx.label "SAMPLE_LOOP",
-  Ptx.instr s!"setp.ge.u32 %p2, %r20, {sampleCount spec};",
-  Ptx.instr "@%p2 bra SAMPLE_DONE;",
-  Ptx.blank,
-  Ptx.comment "jitter",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f20, %r21;",
-  Ptx.instr "mul.f32 %f20, %f20, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f21, %r21;",
-  Ptx.instr "mul.f32 %f21, %f21, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f26, %r21;",
-  Ptx.instr "mul.f32 %f26, %f26, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f27, %r21;",
-  Ptx.instr "mul.f32 %f27, %f27, %f406;",
-  Ptx.blank,
-  Ptx.instr "add.f32 %f22, %f0, %f20;",
-  Ptx.instr "add.f32 %f23, %f1, %f21;",
-  Ptx.instr "div.rn.f32 %f24, %f22, %f408;",
-  Ptx.instr "div.rn.f32 %f25, %f23, %f409;",
-  Ptx.instr "mul.f32 %f24, %f24, %f402;",
-  Ptx.instr "mul.f32 %f25, %f25, %f402;",
-  Ptx.instr "add.f32 %f24, %f24, -1.0;",
-  Ptx.instr "sub.f32 %f25, 1.0, %f25;",
-  Ptx.instr "mul.f32 %f24, %f24, %f424;",
-  Ptx.blank,
-  Ptx.instr "add.f32 %f28, %f26, -0.5;",
-  Ptx.instr "add.f32 %f29, %f27, -0.5;",
-  Ptx.instr "mul.f32 %f28, %f28, 0.07;",
-  Ptx.instr "mul.f32 %f29, %f29, 0.07;",
-  Ptx.blank,
-  Ptx.instr "mov.f32 %f30, %f28;",
-  Ptx.instr "add.f32 %f31, 1.15, %f29;",
-  Ptx.instr "mov.f32 %f32, 2.7;",
-  Ptx.blank,
-  Ptx.instr "mul.f32 %f33, %f24, 4.8125;",
-  Ptx.instr "mul.f32 %f34, %f25, 4.8125;",
-  Ptx.instr "mov.f32 %f35, -5.0;",
-  Ptx.instr "sub.f32 %f33, %f33, %f30;",
-  Ptx.instr "add.f32 %f34, %f34, 1.15;",
-  Ptx.instr "sub.f32 %f34, %f34, %f31;",
-  Ptx.instr "sub.f32 %f35, %f35, %f32;",
-  Ptx.instr "mul.f32 %f36, %f33, %f33;",
-  Ptx.instr "fma.rn.f32 %f36, %f34, %f34, %f36;",
-  Ptx.instr "fma.rn.f32 %f36, %f35, %f35, %f36;",
-  Ptx.instr "rsqrt.approx.f32 %f37, %f36;",
-  Ptx.instr "mul.f32 %f33, %f33, %f37;",
-  Ptx.instr "mul.f32 %f34, %f34, %f37;",
-  Ptx.instr "mul.f32 %f35, %f35, %f37;",
-  Ptx.blank,
-  Ptx.instr "mov.f32 %f40, 1.0;",
-  Ptx.instr "mov.f32 %f41, 1.0;",
-  Ptx.instr "mov.f32 %f42, 1.0;",
-  Ptx.instr "mov.f32 %f43, 0.0;",
-  Ptx.instr "mov.f32 %f44, 0.0;",
-  Ptx.instr "mov.f32 %f45, 0.0;",
-  Ptx.instr "mov.u32 %r30, 0;",
-  Ptx.blank,
-  Ptx.label "BOUNCE_LOOP",
-  Ptx.instr s!"setp.ge.u32 %p3, %r30, {bounceCount spec};",
-  Ptx.instr "@%p3 bra PATH_DONE;",
-  Ptx.blank,
-  Ptx.comment "Scene intersection",
-  Ptx.instr "mov.f32 %f50, %f415;",
-  Ptx.instr "mov.u32 %r31, 0;",
-  Ptx.instr "mov.f32 %f51, 0.0;",
-  Ptx.instr "mov.f32 %f52, 0.0;",
-  Ptx.instr "mov.f32 %f53, 0.0;",
-  Ptx.instr "mov.f32 %f54, 0.0;",
-  Ptx.instr "mov.f32 %f55, 0.0;",
-  Ptx.instr "mov.f32 %f56, 0.0;",
-  Ptx.blank,
-  Ptx.comment "ground plane y = -1",
-  Ptx.instr "abs.f32 %f57, %f34;",
-  Ptx.instr "setp.lt.f32 %p4, %f57, 1.0e-6;",
-  Ptx.instr "@%p4 bra GROUND_DONE;",
-  Ptx.instr "sub.f32 %f58, %f412, %f31;",
-  Ptx.instr "div.rn.f32 %f59, %f58, %f34;",
-  Ptx.instr "setp.le.f32 %p5, %f59, %f414;",
-  Ptx.instr "@%p5 bra GROUND_DONE;",
-  Ptx.instr "setp.ge.f32 %p6, %f59, %f50;",
-  Ptx.instr "@%p6 bra GROUND_DONE;",
-  Ptx.instr "mov.f32 %f50, %f59;",
-  Ptx.instr "mov.u32 %r31, 1;",
-  Ptx.instr "mov.f32 %f51, 0.0;",
-  Ptx.instr "mov.f32 %f52, 1.0;",
-  Ptx.instr "mov.f32 %f53, 0.0;",
-  Ptx.label "GROUND_DONE",
-  Ptx.blank,
-  Ptx.comment "back wall z = -10",
-  Ptx.instr "abs.f32 %f60, %f35;",
-  Ptx.instr "setp.lt.f32 %p7, %f60, 1.0e-6;",
-  Ptx.instr "@%p7 bra WALL_DONE;",
-  Ptx.instr "sub.f32 %f61, %f413, %f32;",
-  Ptx.instr "div.rn.f32 %f62, %f61, %f35;",
-  Ptx.instr "setp.le.f32 %p8, %f62, %f414;",
-  Ptx.instr "@%p8 bra WALL_DONE;",
-  Ptx.instr "setp.ge.f32 %p9, %f62, %f50;",
-  Ptx.instr "@%p9 bra WALL_DONE;",
-  Ptx.instr "mov.f32 %f50, %f62;",
-  Ptx.instr "mov.u32 %r31, 2;",
-  Ptx.instr "mov.f32 %f51, 0.0;",
-  Ptx.instr "mov.f32 %f52, 0.0;",
-  Ptx.instr "mov.f32 %f53, 1.0;",
-  Ptx.label "WALL_DONE",
-  Ptx.blank,
-  Ptx.comment "glass sphere (-1.35, -0.05, -4.7), r=0.95",
-  Ptx.instr "add.f32 %f63, %f30, 1.35;",
-  Ptx.instr "add.f32 %f64, %f31, 0.05;",
-  Ptx.instr "add.f32 %f65, %f32, 4.7;",
-  Ptx.instr "mul.f32 %f66, %f63, %f33;",
-  Ptx.instr "fma.rn.f32 %f66, %f64, %f34, %f66;",
-  Ptx.instr "fma.rn.f32 %f66, %f65, %f35, %f66;",
-  Ptx.instr "mul.f32 %f67, %f63, %f63;",
-  Ptx.instr "fma.rn.f32 %f67, %f64, %f64, %f67;",
-  Ptx.instr "fma.rn.f32 %f67, %f65, %f65, %f67;",
-  Ptx.instr "add.f32 %f67, %f67, -0.9025;",
-  Ptx.instr "mul.f32 %f68, %f66, %f66;",
-  Ptx.instr "sub.f32 %f68, %f68, %f67;",
-  Ptx.instr "setp.lt.f32 %p10, %f68, 0.0;",
-  Ptx.instr "@%p10 bra GLASS_DONE;",
-  Ptx.instr "sqrt.approx.f32 %f69, %f68;",
-  Ptx.instr "neg.f32 %f70, %f66;",
-  Ptx.instr "sub.f32 %f71, %f70, %f69;",
-  Ptx.instr "add.f32 %f72, %f70, %f69;",
-  Ptx.instr "setp.gt.f32 %p11, %f71, %f414;",
-  Ptx.instr "@%p11 bra GLASS_T0;",
-  Ptx.instr "mov.f32 %f71, %f72;",
-  Ptx.label "GLASS_T0",
-  Ptx.instr "setp.le.f32 %p12, %f71, %f414;",
-  Ptx.instr "@%p12 bra GLASS_DONE;",
-  Ptx.instr "setp.ge.f32 %p13, %f71, %f50;",
-  Ptx.instr "@%p13 bra GLASS_DONE;",
-  Ptx.instr "mov.f32 %f50, %f71;",
-  Ptx.instr "mov.u32 %r31, 3;",
-  Ptx.instr "fma.rn.f32 %f73, %f33, %f71, %f63;",
-  Ptx.instr "fma.rn.f32 %f74, %f34, %f71, %f64;",
-  Ptx.instr "fma.rn.f32 %f75, %f35, %f71, %f65;",
-  Ptx.instr "mul.f32 %f51, %f73, 1.0526316;",
-  Ptx.instr "mul.f32 %f52, %f74, 1.0526316;",
-  Ptx.instr "mul.f32 %f53, %f75, 1.0526316;",
-  Ptx.label "GLASS_DONE",
-  Ptx.blank,
-  Ptx.comment "gold sphere (1.35, -0.25, -4.2), r=0.75",
-  Ptx.instr "add.f32 %f76, %f30, -1.35;",
-  Ptx.instr "add.f32 %f77, %f31, 0.25;",
-  Ptx.instr "add.f32 %f78, %f32, 4.2;",
-  Ptx.instr "mul.f32 %f79, %f76, %f33;",
-  Ptx.instr "fma.rn.f32 %f79, %f77, %f34, %f79;",
-  Ptx.instr "fma.rn.f32 %f79, %f78, %f35, %f79;",
-  Ptx.instr "mul.f32 %f80, %f76, %f76;",
-  Ptx.instr "fma.rn.f32 %f80, %f77, %f77, %f80;",
-  Ptx.instr "fma.rn.f32 %f80, %f78, %f78, %f80;",
-  Ptx.instr "add.f32 %f80, %f80, -0.5625;",
-  Ptx.instr "mul.f32 %f81, %f79, %f79;",
-  Ptx.instr "sub.f32 %f81, %f81, %f80;",
-  Ptx.instr "setp.lt.f32 %p14, %f81, 0.0;",
-  Ptx.instr "@%p14 bra GOLD_DONE;",
-  Ptx.instr "sqrt.approx.f32 %f82, %f81;",
-  Ptx.instr "neg.f32 %f83, %f79;",
-  Ptx.instr "sub.f32 %f84, %f83, %f82;",
-  Ptx.instr "add.f32 %f85, %f83, %f82;",
-  Ptx.instr "setp.gt.f32 %p15, %f84, %f414;",
-  Ptx.instr "@%p15 bra GOLD_T0;",
-  Ptx.instr "mov.f32 %f84, %f85;",
-  Ptx.label "GOLD_T0",
-  Ptx.instr "setp.le.f32 %p16, %f84, %f414;",
-  Ptx.instr "@%p16 bra GOLD_DONE;",
-  Ptx.instr "setp.ge.f32 %p17, %f84, %f50;",
-  Ptx.instr "@%p17 bra GOLD_DONE;",
-  Ptx.instr "mov.f32 %f50, %f84;",
-  Ptx.instr "mov.u32 %r31, 4;",
-  Ptx.instr "fma.rn.f32 %f86, %f33, %f84, %f76;",
-  Ptx.instr "fma.rn.f32 %f87, %f34, %f84, %f77;",
-  Ptx.instr "fma.rn.f32 %f88, %f35, %f84, %f78;",
-  Ptx.instr "mul.f32 %f51, %f86, 1.3333334;",
-  Ptx.instr "mul.f32 %f52, %f87, 1.3333334;",
-  Ptx.instr "mul.f32 %f53, %f88, 1.3333334;",
-  Ptx.label "GOLD_DONE",
-  Ptx.blank,
-  Ptx.comment "blue sphere (0.1, 0.15, -6.5), r=1.15",
-  Ptx.instr "add.f32 %f89, %f30, -0.1;",
-  Ptx.instr "add.f32 %f90, %f31, -0.15;",
-  Ptx.instr "add.f32 %f91, %f32, 6.5;",
-  Ptx.instr "mul.f32 %f92, %f89, %f33;",
-  Ptx.instr "fma.rn.f32 %f92, %f90, %f34, %f92;",
-  Ptx.instr "fma.rn.f32 %f92, %f91, %f35, %f92;",
-  Ptx.instr "mul.f32 %f93, %f89, %f89;",
-  Ptx.instr "fma.rn.f32 %f93, %f90, %f90, %f93;",
-  Ptx.instr "fma.rn.f32 %f93, %f91, %f91, %f93;",
-  Ptx.instr "add.f32 %f93, %f93, -1.3225;",
-  Ptx.instr "mul.f32 %f94, %f92, %f92;",
-  Ptx.instr "sub.f32 %f94, %f94, %f93;",
-  Ptx.instr "setp.lt.f32 %p18, %f94, 0.0;",
-  Ptx.instr "@%p18 bra BLUE_DONE;",
-  Ptx.instr "sqrt.approx.f32 %f95, %f94;",
-  Ptx.instr "neg.f32 %f96, %f92;",
-  Ptx.instr "sub.f32 %f97, %f96, %f95;",
-  Ptx.instr "add.f32 %f98, %f96, %f95;",
-  Ptx.instr "setp.gt.f32 %p19, %f97, %f414;",
-  Ptx.instr "@%p19 bra BLUE_T0;",
-  Ptx.instr "mov.f32 %f97, %f98;",
-  Ptx.label "BLUE_T0",
-  Ptx.instr "setp.le.f32 %p20, %f97, %f414;",
-  Ptx.instr "@%p20 bra BLUE_DONE;",
-  Ptx.instr "setp.ge.f32 %p21, %f97, %f50;",
-  Ptx.instr "@%p21 bra BLUE_DONE;",
-  Ptx.instr "mov.f32 %f50, %f97;",
-  Ptx.instr "mov.u32 %r31, 5;",
-  Ptx.instr "fma.rn.f32 %f99, %f33, %f97, %f89;",
-  Ptx.instr "fma.rn.f32 %f100, %f34, %f97, %f90;",
-  Ptx.instr "fma.rn.f32 %f101, %f35, %f97, %f91;",
-  Ptx.instr "mul.f32 %f51, %f99, 0.86956525;",
-  Ptx.instr "mul.f32 %f52, %f100, 0.86956525;",
-  Ptx.instr "mul.f32 %f53, %f101, 0.86956525;",
-  Ptx.label "BLUE_DONE",
-  Ptx.blank,
-  Ptx.instr "setp.eq.u32 %p22, %r31, 0;",
-  Ptx.instr "@%p22 bra SHADE_SKY;",
-  Ptx.blank,
-  Ptx.instr "fma.rn.f32 %f102, %f33, %f50, %f30;",
-  Ptx.instr "fma.rn.f32 %f103, %f34, %f50, %f31;",
-  Ptx.instr "fma.rn.f32 %f104, %f35, %f50, %f32;",
-  Ptx.instr "fma.rn.f32 %f105, %f51, %f414, %f102;",
-  Ptx.instr "fma.rn.f32 %f106, %f52, %f414, %f103;",
-  Ptx.instr "fma.rn.f32 %f107, %f53, %f414, %f104;",
-  Ptx.blank,
-  Ptx.comment "Fog / atmosphere",
-  Ptx.instr "mul.f32 %f108, %f50, %f417;",
-  Ptx.instr "min.f32 %f108, %f108, 0.35;",
-  Ptx.instr "mul.f32 %f109, %f108, 0.04;",
-  Ptx.instr "mul.f32 %f210, %f108, 0.07;",
-  Ptx.instr "mul.f32 %f211, %f108, 0.12;",
-  Ptx.instr "fma.rn.f32 %f43, %f40, %f109, %f43;",
-  Ptx.instr "fma.rn.f32 %f44, %f41, %f210, %f44;",
-  Ptx.instr "fma.rn.f32 %f45, %f42, %f211, %f45;",
-  Ptx.blank,
-  Ptx.comment "Direct lighting accumulator",
-  Ptx.instr "mov.f32 %f110, 0.0;",
-  Ptx.instr "mov.f32 %f111, 0.0;",
-  Ptx.instr "mov.f32 %f112, 0.0;",
-  Ptx.blank,
-  Ptx.comment "Per-bounce light jitter for softer highlights/shadows.",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f113, %r21;",
-  Ptx.instr "mul.f32 %f113, %f113, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f114, %r21;",
-  Ptx.instr "mul.f32 %f114, %f114, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f115, %r21;",
-  Ptx.instr "mul.f32 %f115, %f115, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f116, %r21;",
-  Ptx.instr "mul.f32 %f116, %f116, %f406;",
-  Ptx.instr "add.f32 %f113, %f113, -0.5;",
-  Ptx.instr "add.f32 %f114, %f114, -0.5;",
-  Ptx.instr "add.f32 %f115, %f115, -0.5;",
-  Ptx.instr "add.f32 %f116, %f116, -0.5;",
-  Ptx.blank,
-  Ptx.comment "Light A at (-4, 5.5, -2), warm",
-  Ptx.instr "fma.rn.f32 %f117, %f113, 1.25, -4.0;",
-  Ptx.instr "fma.rn.f32 %f118, %f114, 0.35, 5.5;",
-  Ptx.instr "fma.rn.f32 %f119, %f115, 1.25, -2.0;",
-  Ptx.instr "sub.f32 %f116, %f117, %f105;",
-  Ptx.instr "sub.f32 %f117, %f118, %f106;",
-  Ptx.instr "sub.f32 %f118, %f119, %f107;",
-  Ptx.instr "mul.f32 %f119, %f116, %f116;",
-  Ptx.instr "fma.rn.f32 %f119, %f117, %f117, %f119;",
-  Ptx.instr "fma.rn.f32 %f119, %f118, %f118, %f119;",
-  Ptx.instr "rsqrt.approx.f32 %f120, %f119;",
-  Ptx.instr "mul.f32 %f121, %f116, %f120;",
-  Ptx.instr "mul.f32 %f122, %f117, %f120;",
-  Ptx.instr "mul.f32 %f123, %f118, %f120;",
-  Ptx.instr "mul.f32 %f124, %f51, %f121;",
-  Ptx.instr "fma.rn.f32 %f124, %f52, %f122, %f124;",
-  Ptx.instr "fma.rn.f32 %f124, %f53, %f123, %f124;",
-  Ptx.instr "max.f32 %f124, %f124, 0.0;",
-  Ptx.instr "setp.le.f32 %p23, %f124, 0.0;",
-  Ptx.instr "@%p23 bra LIGHTA_DONE;",
-  Ptx.comment "shadow against spheres only",
-  Ptx.instr "mov.f32 %f125, 0.999;",
-  Ptx.instr "sqrt.approx.f32 %f126, %f119;",
-  Ptx.instr "mul.f32 %f126, %f126, %f125;",
-  Ptx.comment "glass shadow",
-  Ptx.instr "add.f32 %f127, %f105, 1.35;",
-  Ptx.instr "add.f32 %f128, %f106, 0.05;",
-  Ptx.instr "add.f32 %f129, %f107, 4.7;",
-  Ptx.instr "mul.f32 %f130, %f127, %f121;",
-  Ptx.instr "fma.rn.f32 %f130, %f128, %f122, %f130;",
-  Ptx.instr "fma.rn.f32 %f130, %f129, %f123, %f130;",
-  Ptx.instr "mul.f32 %f131, %f127, %f127;",
-  Ptx.instr "fma.rn.f32 %f131, %f128, %f128, %f131;",
-  Ptx.instr "fma.rn.f32 %f131, %f129, %f129, %f131;",
-  Ptx.instr "add.f32 %f131, %f131, -0.9025;",
-  Ptx.instr "mul.f32 %f132, %f130, %f130;",
-  Ptx.instr "sub.f32 %f132, %f132, %f131;",
-  Ptx.instr "setp.ge.f32 %p24, %f132, 0.0;",
-  Ptx.instr "@!%p24 bra LIGHTA_GOLD;",
-  Ptx.instr "sqrt.approx.f32 %f133, %f132;",
-  Ptx.instr "neg.f32 %f134, %f130;",
-  Ptx.instr "sub.f32 %f135, %f134, %f133;",
-  Ptx.instr "setp.gt.f32 %p25, %f135, %f414;",
-  Ptx.instr "@!%p25 bra LIGHTA_GOLD;",
-  Ptx.instr "setp.lt.f32 %p26, %f135, %f126;",
-  Ptx.instr "@%p26 bra LIGHTA_DONE;",
-  Ptx.label "LIGHTA_GOLD",
-  Ptx.instr "add.f32 %f136, %f105, -1.35;",
-  Ptx.instr "add.f32 %f137, %f106, 0.25;",
-  Ptx.instr "add.f32 %f138, %f107, 4.2;",
-  Ptx.instr "mul.f32 %f139, %f136, %f121;",
-  Ptx.instr "fma.rn.f32 %f139, %f137, %f122, %f139;",
-  Ptx.instr "fma.rn.f32 %f139, %f138, %f123, %f139;",
-  Ptx.instr "mul.f32 %f140, %f136, %f136;",
-  Ptx.instr "fma.rn.f32 %f140, %f137, %f137, %f140;",
-  Ptx.instr "fma.rn.f32 %f140, %f138, %f138, %f140;",
-  Ptx.instr "add.f32 %f140, %f140, -0.5625;",
-  Ptx.instr "mul.f32 %f141, %f139, %f139;",
-  Ptx.instr "sub.f32 %f141, %f141, %f140;",
-  Ptx.instr "setp.ge.f32 %p27, %f141, 0.0;",
-  Ptx.instr "@!%p27 bra LIGHTA_BLUE;",
-  Ptx.instr "sqrt.approx.f32 %f142, %f141;",
-  Ptx.instr "neg.f32 %f143, %f139;",
-  Ptx.instr "sub.f32 %f144, %f143, %f142;",
-  Ptx.instr "setp.gt.f32 %p28, %f144, %f414;",
-  Ptx.instr "@!%p28 bra LIGHTA_BLUE;",
-  Ptx.instr "setp.lt.f32 %p29, %f144, %f126;",
-  Ptx.instr "@%p29 bra LIGHTA_DONE;",
-  Ptx.label "LIGHTA_BLUE",
-  Ptx.instr "add.f32 %f145, %f105, -0.1;",
-  Ptx.instr "add.f32 %f146, %f106, -0.15;",
-  Ptx.instr "add.f32 %f147, %f107, 6.5;",
-  Ptx.instr "mul.f32 %f148, %f145, %f121;",
-  Ptx.instr "fma.rn.f32 %f148, %f146, %f122, %f148;",
-  Ptx.instr "fma.rn.f32 %f148, %f147, %f123, %f148;",
-  Ptx.instr "mul.f32 %f149, %f145, %f145;",
-  Ptx.instr "fma.rn.f32 %f149, %f146, %f146, %f149;",
-  Ptx.instr "fma.rn.f32 %f149, %f147, %f147, %f149;",
-  Ptx.instr "add.f32 %f149, %f149, -1.3225;",
-  Ptx.instr "mul.f32 %f150, %f148, %f148;",
-  Ptx.instr "sub.f32 %f150, %f150, %f149;",
-  Ptx.instr "setp.ge.f32 %p30, %f150, 0.0;",
-  Ptx.instr "@!%p30 bra LIGHTA_APPLY;",
-  Ptx.instr "sqrt.approx.f32 %f151, %f150;",
-  Ptx.instr "neg.f32 %f152, %f148;",
-  Ptx.instr "sub.f32 %f153, %f152, %f151;",
-  Ptx.instr "setp.gt.f32 %p31, %f153, %f414;",
-  Ptx.instr "@!%p31 bra LIGHTA_APPLY;",
-  Ptx.instr "setp.lt.f32 %p32, %f153, %f126;",
-  Ptx.instr "@%p32 bra LIGHTA_DONE;",
-  Ptx.label "LIGHTA_APPLY",
-  Ptx.instr "rcp.approx.f32 %f154, %f119;",
-  Ptx.instr "mul.f32 %f155, %f124, %f154;",
-  Ptx.instr "fma.rn.f32 %f110, %f155, 90.0, %f110;",
-  Ptx.instr "fma.rn.f32 %f111, %f155, 74.0, %f111;",
-  Ptx.instr "fma.rn.f32 %f112, %f155, 58.0, %f112;",
-  Ptx.label "LIGHTA_DONE",
-  Ptx.blank,
-  Ptx.comment "Light B at (4.5, 4.0, -7.0), cool",
-  Ptx.instr "fma.rn.f32 %f156, %f115, 1.35, 4.5;",
-  Ptx.instr "fma.rn.f32 %f157, %f116, 0.45, 4.0;",
-  Ptx.instr "fma.rn.f32 %f158, %f114, 1.45, -7.0;",
-  Ptx.instr "sub.f32 %f159, %f156, %f105;",
-  Ptx.instr "sub.f32 %f160, %f157, %f106;",
-  Ptx.instr "sub.f32 %f161, %f158, %f107;",
-  Ptx.instr "mul.f32 %f162, %f159, %f159;",
-  Ptx.instr "fma.rn.f32 %f162, %f160, %f160, %f162;",
-  Ptx.instr "fma.rn.f32 %f162, %f161, %f161, %f162;",
-  Ptx.instr "rsqrt.approx.f32 %f163, %f162;",
-  Ptx.instr "mul.f32 %f164, %f159, %f163;",
-  Ptx.instr "mul.f32 %f165, %f160, %f163;",
-  Ptx.instr "mul.f32 %f166, %f161, %f163;",
-  Ptx.instr "mul.f32 %f167, %f51, %f164;",
-  Ptx.instr "fma.rn.f32 %f167, %f52, %f165, %f167;",
-  Ptx.instr "fma.rn.f32 %f167, %f53, %f166, %f167;",
-  Ptx.instr "max.f32 %f167, %f167, 0.0;",
-  Ptx.instr "setp.le.f32 %p33, %f167, 0.0;",
-  Ptx.instr "@%p33 bra LIGHTB_DONE;",
-  Ptx.instr "rcp.approx.f32 %f168, %f162;",
-  Ptx.instr "mul.f32 %f169, %f167, %f168;",
-  Ptx.instr "fma.rn.f32 %f110, %f169, 40.0, %f110;",
-  Ptx.instr "fma.rn.f32 %f111, %f169, 66.0, %f111;",
-  Ptx.instr "fma.rn.f32 %f112, %f169, 110.0, %f112;",
-  Ptx.label "LIGHTB_DONE",
-  Ptx.blank,
-  Ptx.comment "Light C at (0, 6.5, 2.5), cool top fill.",
-  Ptx.instr "fma.rn.f32 %f170, %f113, 2.0, 0.0;",
-  Ptx.instr "fma.rn.f32 %f171, %f114, 0.6, 6.5;",
-  Ptx.instr "fma.rn.f32 %f172, %f116, 1.8, 2.5;",
-  Ptx.instr "sub.f32 %f173, %f170, %f105;",
-  Ptx.instr "sub.f32 %f174, %f171, %f106;",
-  Ptx.instr "sub.f32 %f175, %f172, %f107;",
-  Ptx.instr "mul.f32 %f176, %f173, %f173;",
-  Ptx.instr "fma.rn.f32 %f176, %f174, %f174, %f176;",
-  Ptx.instr "fma.rn.f32 %f176, %f175, %f175, %f176;",
-  Ptx.instr "rsqrt.approx.f32 %f177, %f176;",
-  Ptx.instr "mul.f32 %f178, %f173, %f177;",
-  Ptx.instr "mul.f32 %f179, %f174, %f177;",
-  Ptx.instr "mul.f32 %f180, %f175, %f177;",
-  Ptx.instr "mul.f32 %f181, %f51, %f178;",
-  Ptx.instr "fma.rn.f32 %f181, %f52, %f179, %f181;",
-  Ptx.instr "fma.rn.f32 %f181, %f53, %f180, %f181;",
-  Ptx.instr "max.f32 %f181, %f181, 0.0;",
-  Ptx.instr "setp.le.f32 %p34, %f181, 0.0;",
-  Ptx.instr "@%p34 bra LIGHTC_DONE;",
-  Ptx.instr "rcp.approx.f32 %f182, %f176;",
-  Ptx.instr "mul.f32 %f183, %f181, %f182;",
-  Ptx.instr "fma.rn.f32 %f110, %f183, 28.0, %f110;",
-  Ptx.instr "fma.rn.f32 %f111, %f183, 40.0, %f111;",
-  Ptx.instr "fma.rn.f32 %f112, %f183, 72.0, %f112;",
-  Ptx.label "LIGHTC_DONE",
-  Ptx.blank,
-  Ptx.instr "setp.eq.u32 %p35, %r31, 1;",
-  Ptx.instr "@%p35 bra SHADE_GROUND;",
-  Ptx.instr "setp.eq.u32 %p36, %r31, 2;",
-  Ptx.instr "@%p36 bra SHADE_WALL;",
-  Ptx.instr "setp.eq.u32 %p37, %r31, 3;",
-  Ptx.instr "@%p37 bra SHADE_GLASS;",
-  Ptx.instr "setp.eq.u32 %p38, %r31, 4;",
-  Ptx.instr "@%p38 bra SHADE_GOLD;",
-  Ptx.instr "bra SHADE_BLUE;",
-  Ptx.blank,
-  Ptx.label "SHADE_GROUND",
-  Ptx.instr "cvt.rzi.s32.f32 %r40, %f102;",
-  Ptx.instr "cvt.rzi.s32.f32 %r41, %f104;",
-  Ptx.instr "and.b32 %r42, %r40, 1;",
-  Ptx.instr "and.b32 %r43, %r41, 1;",
-  Ptx.instr "xor.b32 %r44, %r42, %r43;",
-  Ptx.instr "setp.eq.u32 %p39, %r44, 0;",
-  Ptx.instr "@%p39 bra GROUND_LIGHT;",
-  Ptx.instr s!"mov.f32 %f170, {channelF32 spec.palette.groundLight.red};",
-  Ptx.instr s!"mov.f32 %f171, {channelF32 spec.palette.groundLight.green};",
-  Ptx.instr s!"mov.f32 %f172, {channelF32 spec.palette.groundLight.blue};",
-  Ptx.instr "bra GROUND_APPLY;",
-  Ptx.label "GROUND_LIGHT",
-  Ptx.instr s!"mov.f32 %f170, {channelF32 spec.palette.groundDark.red};",
-  Ptx.instr s!"mov.f32 %f171, {channelF32 spec.palette.groundDark.green};",
-  Ptx.instr s!"mov.f32 %f172, {channelF32 spec.palette.groundDark.blue};",
-  Ptx.label "GROUND_APPLY",
-  Ptx.instr "mul.f32 %f212, %f110, %f170;",
-  Ptx.instr "mul.f32 %f213, %f111, %f171;",
-  Ptx.instr "mul.f32 %f214, %f112, %f172;",
-  Ptx.instr "fma.rn.f32 %f43, %f40, %f212, %f43;",
-  Ptx.instr "fma.rn.f32 %f44, %f41, %f213, %f44;",
-  Ptx.instr "fma.rn.f32 %f45, %f42, %f214, %f45;",
-  Ptx.instr "mul.f32 %f40, %f40, %f170;",
-  Ptx.instr "mul.f32 %f41, %f41, %f171;",
-  Ptx.instr "mul.f32 %f42, %f42, %f172;",
-  Ptx.instr "bra DIFFUSE_BOUNCE;",
-  Ptx.blank,
-  Ptx.label "SHADE_WALL",
-  Ptx.instr s!"mov.f32 %f173, {channelF32 spec.palette.wall.red};",
-  Ptx.instr s!"mov.f32 %f174, {channelF32 spec.palette.wall.green};",
-  Ptx.instr s!"mov.f32 %f175, {channelF32 spec.palette.wall.blue};",
-  Ptx.instr "mul.f32 %f212, %f110, %f173;",
-  Ptx.instr "mul.f32 %f213, %f111, %f174;",
-  Ptx.instr "mul.f32 %f214, %f112, %f175;",
-  Ptx.instr "fma.rn.f32 %f43, %f40, %f212, %f43;",
-  Ptx.instr "fma.rn.f32 %f44, %f41, %f213, %f44;",
-  Ptx.instr "fma.rn.f32 %f45, %f42, %f214, %f45;",
-  Ptx.instr "mul.f32 %f40, %f40, %f173;",
-  Ptx.instr "mul.f32 %f41, %f41, %f174;",
-  Ptx.instr "mul.f32 %f42, %f42, %f175;",
-  Ptx.instr "bra DIFFUSE_BOUNCE;",
-  Ptx.blank,
-  Ptx.label "SHADE_BLUE",
-  Ptx.instr s!"mov.f32 %f176, {channelF32 spec.palette.diffuseSphere.red};",
-  Ptx.instr s!"mov.f32 %f177, {channelF32 spec.palette.diffuseSphere.green};",
-  Ptx.instr s!"mov.f32 %f178, {channelF32 spec.palette.diffuseSphere.blue};",
-  Ptx.instr "mul.f32 %f212, %f110, %f176;",
-  Ptx.instr "mul.f32 %f213, %f111, %f177;",
-  Ptx.instr "mul.f32 %f214, %f112, %f178;",
-  Ptx.instr "fma.rn.f32 %f43, %f40, %f212, %f43;",
-  Ptx.instr "fma.rn.f32 %f44, %f41, %f213, %f44;",
-  Ptx.instr "fma.rn.f32 %f45, %f42, %f214, %f45;",
-  Ptx.instr "mul.f32 %f40, %f40, %f176;",
-  Ptx.instr "mul.f32 %f41, %f41, %f177;",
-  Ptx.instr "mul.f32 %f42, %f42, %f178;",
-  Ptx.instr "bra DIFFUSE_BOUNCE;",
-  Ptx.blank,
-  Ptx.label "SHADE_GOLD",
-  Ptx.instr s!"mov.f32 %f179, {channelF32 spec.palette.metalSphere.red};",
-  Ptx.instr s!"mov.f32 %f180, {channelF32 spec.palette.metalSphere.green};",
-  Ptx.instr s!"mov.f32 %f181, {channelF32 spec.palette.metalSphere.blue};",
-  Ptx.instr "mul.f32 %f212, %f110, 0.15;",
-  Ptx.instr "mul.f32 %f213, %f111, 0.13;",
-  Ptx.instr "mul.f32 %f214, %f112, 0.09;",
-  Ptx.instr "fma.rn.f32 %f43, %f40, %f212, %f43;",
-  Ptx.instr "fma.rn.f32 %f44, %f41, %f213, %f44;",
-  Ptx.instr "fma.rn.f32 %f45, %f42, %f214, %f45;",
-  Ptx.instr "mul.f32 %f182, %f33, %f51;",
-  Ptx.instr "fma.rn.f32 %f182, %f34, %f52, %f182;",
-  Ptx.instr "fma.rn.f32 %f182, %f35, %f53, %f182;",
-  Ptx.instr "mul.f32 %f183, %f182, 2.0;",
-  Ptx.instr "neg.f32 %f226, %f51;",
-  Ptx.instr "neg.f32 %f227, %f52;",
-  Ptx.instr "neg.f32 %f228, %f53;",
-  Ptx.instr "fma.rn.f32 %f33, %f226, %f183, %f33;",
-  Ptx.instr "fma.rn.f32 %f34, %f227, %f183, %f34;",
-  Ptx.instr "fma.rn.f32 %f35, %f228, %f183, %f35;",
-  Ptx.comment "roughness jitter",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f184, %r21;",
-  Ptx.instr "mul.f32 %f184, %f184, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f185, %r21;",
-  Ptx.instr "mul.f32 %f185, %f185, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f186, %r21;",
-  Ptx.instr "mul.f32 %f186, %f186, %f406;",
-  Ptx.instr "add.f32 %f184, %f184, -0.5;",
-  Ptx.instr "add.f32 %f185, %f185, -0.5;",
-  Ptx.instr "add.f32 %f186, %f186, -0.5;",
-  Ptx.instr "fma.rn.f32 %f33, %f184, %f419, %f33;",
-  Ptx.instr "fma.rn.f32 %f34, %f185, %f419, %f34;",
-  Ptx.instr "fma.rn.f32 %f35, %f186, %f419, %f35;",
-  Ptx.instr "mul.f32 %f187, %f33, %f33;",
-  Ptx.instr "fma.rn.f32 %f187, %f34, %f34, %f187;",
-  Ptx.instr "fma.rn.f32 %f187, %f35, %f35, %f187;",
-  Ptx.instr "rsqrt.approx.f32 %f188, %f187;",
-  Ptx.instr "mul.f32 %f33, %f33, %f188;",
-  Ptx.instr "mul.f32 %f34, %f34, %f188;",
-  Ptx.instr "mul.f32 %f35, %f35, %f188;",
-  Ptx.instr "mul.f32 %f40, %f40, %f179;",
-  Ptx.instr "mul.f32 %f41, %f41, %f180;",
-  Ptx.instr "mul.f32 %f42, %f42, %f181;",
-  Ptx.instr "mov.f32 %f30, %f105;",
-  Ptx.instr "mov.f32 %f31, %f106;",
-  Ptx.instr "mov.f32 %f32, %f107;",
-  Ptx.instr "bra RR_STEP;",
-  Ptx.blank,
-  Ptx.label "SHADE_GLASS",
-  Ptx.instr "mul.f32 %f189, %f33, %f51;",
-  Ptx.instr "fma.rn.f32 %f189, %f34, %f52, %f189;",
-  Ptx.instr "fma.rn.f32 %f189, %f35, %f53, %f189;",
-  Ptx.instr "setp.gt.f32 %p39, %f189, 0.0;",
-  Ptx.instr "@%p39 bra GLASS_INSIDE;",
-  Ptx.instr "mov.f32 %f190, %f51;",
-  Ptx.instr "mov.f32 %f191, %f52;",
-  Ptx.instr "mov.f32 %f192, %f53;",
-  Ptx.instr "neg.f32 %f193, %f189;",
-  Ptx.instr "mov.f32 %f194, %f421;",
-  Ptx.instr "bra GLASS_COMMON;",
-  Ptx.label "GLASS_INSIDE",
-  Ptx.instr "neg.f32 %f190, %f51;",
-  Ptx.instr "neg.f32 %f191, %f52;",
-  Ptx.instr "neg.f32 %f192, %f53;",
-  Ptx.instr "mov.f32 %f193, %f189;",
-  Ptx.instr "mov.f32 %f194, %f420;",
-  Ptx.label "GLASS_COMMON",
-  Ptx.instr "sub.f32 %f195, 1.0, %f193;",
-  Ptx.instr "mul.f32 %f196, %f195, %f195;",
-  Ptx.instr "mul.f32 %f196, %f196, %f196;",
-  Ptx.instr "mul.f32 %f196, %f196, %f195;",
-  Ptx.instr "fma.rn.f32 %f197, %f196, %f423, %f422;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f198, %r21;",
-  Ptx.instr "mul.f32 %f198, %f198, %f406;",
-  Ptx.instr "mul.f32 %f199, %f193, %f193;",
-  Ptx.instr "sub.f32 %f200, 1.0, %f199;",
-  Ptx.instr "mul.f32 %f201, %f194, %f194;",
-  Ptx.instr "mul.f32 %f200, %f200, %f201;",
-  Ptx.instr "sub.f32 %f202, 1.0, %f200;",
-  Ptx.instr "setp.lt.f32 %p40, %f202, 0.0;",
-  Ptx.instr "@%p40 bra GLASS_REFLECT;",
-  Ptx.instr "setp.lt.f32 %p41, %f198, %f197;",
-  Ptx.instr "@%p41 bra GLASS_REFLECT;",
-  Ptx.instr "sqrt.approx.f32 %f203, %f202;",
-  Ptx.instr "mul.f32 %f204, %f194, %f33;",
-  Ptx.instr "mul.f32 %f205, %f194, %f34;",
-  Ptx.instr "mul.f32 %f206, %f194, %f35;",
-  Ptx.instr "mul.f32 %f207, %f194, %f193;",
-  Ptx.instr "sub.f32 %f207, %f207, %f203;",
-  Ptx.instr "fma.rn.f32 %f33, %f190, %f207, %f204;",
-  Ptx.instr "fma.rn.f32 %f34, %f191, %f207, %f205;",
-  Ptx.instr "fma.rn.f32 %f35, %f192, %f207, %f206;",
-  Ptx.instr "mul.f32 %f40, %f40, 0.98;",
-  Ptx.instr "mul.f32 %f41, %f41, 0.99;",
-  Ptx.instr "mul.f32 %f42, %f42, 1.0;",
-  Ptx.instr "mov.f32 %f30, %f102;",
-  Ptx.instr "mov.f32 %f31, %f103;",
-  Ptx.instr "mov.f32 %f32, %f104;",
-  Ptx.instr "bra RR_STEP;",
-  Ptx.label "GLASS_REFLECT",
-  Ptx.instr "mul.f32 %f208, %f33, %f190;",
-  Ptx.instr "fma.rn.f32 %f208, %f34, %f191, %f208;",
-  Ptx.instr "fma.rn.f32 %f208, %f35, %f192, %f208;",
-  Ptx.instr "mul.f32 %f209, %f208, 2.0;",
-  Ptx.instr "neg.f32 %f229, %f190;",
-  Ptx.instr "neg.f32 %f230, %f191;",
-  Ptx.instr "neg.f32 %f231, %f192;",
-  Ptx.instr "fma.rn.f32 %f33, %f229, %f209, %f33;",
-  Ptx.instr "fma.rn.f32 %f34, %f230, %f209, %f34;",
-  Ptx.instr "fma.rn.f32 %f35, %f231, %f209, %f35;",
-  Ptx.instr "mul.f32 %f40, %f40, 0.99;",
-  Ptx.instr "mul.f32 %f41, %f41, 0.99;",
-  Ptx.instr "mul.f32 %f42, %f42, 1.0;",
-  Ptx.instr "mov.f32 %f30, %f105;",
-  Ptx.instr "mov.f32 %f31, %f106;",
-  Ptx.instr "mov.f32 %f32, %f107;",
-  Ptx.instr "bra RR_STEP;",
-  Ptx.blank,
-  Ptx.label "DIFFUSE_BOUNCE",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f210, %r21;",
-  Ptx.instr "mul.f32 %f210, %f210, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f211, %r21;",
-  Ptx.instr "mul.f32 %f211, %f211, %f406;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f212, %r21;",
-  Ptx.instr "mul.f32 %f212, %f212, %f406;",
-  Ptx.instr "add.f32 %f210, %f210, -0.5;",
-  Ptx.instr "add.f32 %f211, %f211, -0.5;",
-  Ptx.instr "add.f32 %f212, %f212, -0.5;",
-  Ptx.instr "fma.rn.f32 %f33, %f51, 1.4, %f210;",
-  Ptx.instr "fma.rn.f32 %f34, %f52, 1.4, %f211;",
-  Ptx.instr "fma.rn.f32 %f35, %f53, 1.4, %f212;",
-  Ptx.instr "mul.f32 %f213, %f33, %f33;",
-  Ptx.instr "fma.rn.f32 %f213, %f34, %f34, %f213;",
-  Ptx.instr "fma.rn.f32 %f213, %f35, %f35, %f213;",
-  Ptx.instr "rsqrt.approx.f32 %f214, %f213;",
-  Ptx.instr "mul.f32 %f33, %f33, %f214;",
-  Ptx.instr "mul.f32 %f34, %f34, %f214;",
-  Ptx.instr "mul.f32 %f35, %f35, %f214;",
-  Ptx.instr "mov.f32 %f30, %f105;",
-  Ptx.instr "mov.f32 %f31, %f106;",
-  Ptx.instr "mov.f32 %f32, %f107;",
-  Ptx.instr "bra RR_STEP;",
-  Ptx.blank,
-  Ptx.label "SHADE_SKY",
-  Ptx.instr "add.f32 %f215, %f34, 1.0;",
-  Ptx.instr "mul.f32 %f215, %f215, 0.5;",
-  Ptx.instr "mul.f32 %f216, %f215, 0.35;",
-  Ptx.instr "mul.f32 %f217, %f215, 0.45;",
-  Ptx.instr "mul.f32 %f218, %f215, 0.75;",
-  Ptx.instr "add.f32 %f216, %f216, 0.04;",
-  Ptx.instr "add.f32 %f217, %f217, 0.06;",
-  Ptx.instr "add.f32 %f218, %f218, 0.12;",
-  Ptx.instr "fma.rn.f32 %f43, %f40, %f216, %f43;",
-  Ptx.instr "fma.rn.f32 %f44, %f41, %f217, %f44;",
-  Ptx.instr "fma.rn.f32 %f45, %f42, %f218, %f45;",
-  Ptx.instr "bra PATH_DONE;",
-  Ptx.blank,
-  Ptx.label "RR_STEP",
-  Ptx.instr "setp.lt.u32 %p42, %r30, 2;",
-  Ptx.instr "@%p42 bra RR_SKIP;",
-  Ptx.instr "max.f32 %f216, %f40, %f41;",
-  Ptx.instr "max.f32 %f216, %f216, %f42;",
-  Ptx.instr "min.f32 %f216, %f216, %f418;",
-  Ptx.instr "max.f32 %f216, %f216, 0.10;",
-  Ptx.instr "mad.lo.u32 %r21, %r21, 1664525, 1013904223;",
-  Ptx.instr "cvt.rn.f32.u32 %f217, %r21;",
-  Ptx.instr "mul.f32 %f217, %f217, %f406;",
-  Ptx.instr "setp.gt.f32 %p43, %f217, %f216;",
-  Ptx.instr "@%p43 bra PATH_DONE;",
-  Ptx.instr "rcp.approx.f32 %f218, %f216;",
-  Ptx.instr "mul.f32 %f40, %f40, %f218;",
-  Ptx.instr "mul.f32 %f41, %f41, %f218;",
-  Ptx.instr "mul.f32 %f42, %f42, %f218;",
-  Ptx.label "RR_SKIP",
-  Ptx.instr "add.u32 %r30, %r30, 1;",
-  Ptx.instr "bra BOUNCE_LOOP;",
-  Ptx.blank,
-  Ptx.label "PATH_DONE",
-  Ptx.instr "add.f32 %f10, %f10, %f43;",
-  Ptx.instr "add.f32 %f11, %f11, %f44;",
-  Ptx.instr "add.f32 %f12, %f12, %f45;",
-  Ptx.instr "add.u32 %r20, %r20, 1;",
-  Ptx.instr "bra SAMPLE_LOOP;",
-  Ptx.blank,
-  Ptx.label "SAMPLE_DONE",
-  Ptx.instr "mul.f32 %f10, %f10, %f416;",
-  Ptx.instr "mul.f32 %f11, %f11, %f416;",
-  Ptx.instr "mul.f32 %f12, %f12, %f416;",
-  Ptx.blank,
-  Ptx.instr "add.f32 %f220, %f10, 1.0;",
-  Ptx.instr "add.f32 %f221, %f11, 1.0;",
-  Ptx.instr "add.f32 %f222, %f12, 1.0;",
-  Ptx.instr "div.rn.f32 %f10, %f10, %f220;",
-  Ptx.instr "div.rn.f32 %f11, %f11, %f221;",
-  Ptx.instr "div.rn.f32 %f12, %f12, %f222;",
-  Ptx.instr "sqrt.approx.f32 %f10, %f10;",
-  Ptx.instr "sqrt.approx.f32 %f11, %f11;",
-  Ptx.instr "sqrt.approx.f32 %f12, %f12;",
-  Ptx.instr "min.f32 %f10, %f10, 1.0;",
-  Ptx.instr "min.f32 %f11, %f11, 1.0;",
-  Ptx.instr "min.f32 %f12, %f12, 1.0;",
-  Ptx.blank,
-  Ptx.instr "div.rn.f32 %f223, %f0, %f408;",
-  Ptx.instr "div.rn.f32 %f224, %f1, %f409;",
-  Ptx.instr "sub.f32 %f223, %f223, 0.5;",
-  Ptx.instr "sub.f32 %f224, %f224, 0.5;",
-  Ptx.instr "mul.f32 %f225, %f223, %f223;",
-  Ptx.instr "fma.rn.f32 %f225, %f224, %f224, %f225;",
-  Ptx.instr "mul.f32 %f225, %f225, 1.85;",
-  Ptx.instr "sub.f32 %f226, 1.0, %f225;",
-  Ptx.instr "max.f32 %f226, %f226, 0.72;",
-  Ptx.instr "mul.f32 %f10, %f10, %f226;",
-  Ptx.instr "mul.f32 %f11, %f11, %f226;",
-  Ptx.instr "mul.f32 %f12, %f12, %f226;",
-  Ptx.blank,
-  Ptx.instr "mul.f32 %f223, %f10, %f405;",
-  Ptx.instr "mul.f32 %f224, %f11, %f405;",
-  Ptx.instr "mul.f32 %f225, %f12, %f405;",
-  Ptx.instr "cvt.rni.u32.f32 %r60, %f223;",
-  Ptx.instr "cvt.rni.u32.f32 %r61, %f224;",
-  Ptx.instr "cvt.rni.u32.f32 %r62, %f225;",
-  Ptx.instr "shl.b32 %r61, %r61, 8;",
-  Ptx.instr "shl.b32 %r60, %r60, 16;",
-  Ptx.instr "mov.u32 %r63, 0xFF000000;",
-  Ptx.instr "or.b32 %r64, %r62, %r61;",
-  Ptx.instr "or.b32 %r65, %r64, %r60;",
-  Ptx.instr "or.b32 %r66, %r65, %r63;",
-  Ptx.instr "st.global.u32 [%rd2], %r66;",
-  Ptx.blank,
-  Ptx.label "DONE",
-  Ptx.instr "ret;"
-  ]
-}
+private def emitDirectLightVisibilityA (_spec : SceneSpec) : PTX Unit := do
+  addFI (fReg 116) (fReg 116) ("-0.5")
+  fmaFII (fReg 117) (fReg 113) ("1.25") ("-4.0")
+  fmaFII (fReg 118) (fReg 114) ("0.35") ("5.5")
+  fmaFII (fReg 119) (fReg 115) ("1.25") ("-2.0")
+  subF (fReg 116) (fReg 117) (fReg 105)
+  subF (fReg 117) (fReg 118) (fReg 106)
+  subF (fReg 118) (fReg 119) (fReg 107)
+  mulF (fReg 119) (fReg 116) (fReg 116)
+  fmaRn (fReg 119) (fReg 117) (fReg 117) (fReg 119)
+  fmaRn (fReg 119) (fReg 118) (fReg 118) (fReg 119)
+  rsqrt (fReg 120) (fReg 119)
+  mulF (fReg 121) (fReg 116) (fReg 120)
+  mulF (fReg 122) (fReg 117) (fReg 120)
+  mulF (fReg 123) (fReg 118) (fReg 120)
+  mulF (fReg 124) (SceneReg.normalX) (fReg 121)
+  fmaRn (fReg 124) (SceneReg.normalY) (fReg 122) (fReg 124)
+  fmaRn (fReg 124) (SceneReg.normalZ) (fReg 123) (fReg 124)
+  maxFI (fReg 124) (fReg 124) ("0.0")
+  setpLeFI (pReg 23) (fReg 124) ("0.0")
+  braIf (pReg 23) "LIGHTA_DONE"
+  movFI (fReg 125) ("0.999")
+  sqrtApprox (fReg 126) (fReg 119)
+  mulF (fReg 126) (fReg 126) (fReg 125)
+  addFI (fReg 127) (fReg 105) ("1.35")
+  addFI (fReg 128) (fReg 106) ("0.05")
+  addFI (fReg 129) (fReg 107) ("4.7")
+  mulF (fReg 130) (fReg 127) (fReg 121)
+  fmaRn (fReg 130) (fReg 128) (fReg 122) (fReg 130)
+  fmaRn (fReg 130) (fReg 129) (fReg 123) (fReg 130)
+  mulF (fReg 131) (fReg 127) (fReg 127)
+  fmaRn (fReg 131) (fReg 128) (fReg 128) (fReg 131)
+  fmaRn (fReg 131) (fReg 129) (fReg 129) (fReg 131)
+  addFI (fReg 131) (fReg 131) ("-0.9025")
+  mulF (fReg 132) (fReg 130) (fReg 130)
+  subF (fReg 132) (fReg 132) (fReg 131)
+  setpGeFI (pReg 24) (fReg 132) ("0.0")
+  braIfNot (pReg 24) "LIGHTA_GOLD"
+  sqrtApprox (fReg 133) (fReg 132)
+  negF (fReg 134) (fReg 130)
+  subF (fReg 135) (fReg 134) (fReg 133)
+  setpGtF (pReg 25) (fReg 135) (fReg 414)
+  braIfNot (pReg 25) "LIGHTA_GOLD"
+  setpLtF (pReg 26) (fReg 135) (fReg 126)
+  braIf (pReg 26) "LIGHTA_DONE"
+  label "LIGHTA_GOLD"
+  addFI (fReg 136) (fReg 105) ("-1.35")
+  addFI (fReg 137) (fReg 106) ("0.25")
+  addFI (fReg 138) (fReg 107) ("4.2")
+  mulF (fReg 139) (fReg 136) (fReg 121)
+  fmaRn (fReg 139) (fReg 137) (fReg 122) (fReg 139)
+  fmaRn (fReg 139) (fReg 138) (fReg 123) (fReg 139)
+  mulF (fReg 140) (fReg 136) (fReg 136)
+  fmaRn (fReg 140) (fReg 137) (fReg 137) (fReg 140)
+  fmaRn (fReg 140) (fReg 138) (fReg 138) (fReg 140)
+  addFI (fReg 140) (fReg 140) ("-0.5625")
+  mulF (fReg 141) (fReg 139) (fReg 139)
+  subF (fReg 141) (fReg 141) (fReg 140)
+  setpGeFI (pReg 27) (fReg 141) ("0.0")
+  braIfNot (pReg 27) "LIGHTA_BLUE"
+  sqrtApprox (fReg 142) (fReg 141)
+  negF (fReg 143) (fReg 139)
+  subF (fReg 144) (fReg 143) (fReg 142)
+  setpGtF (pReg 28) (fReg 144) (fReg 414)
+  braIfNot (pReg 28) "LIGHTA_BLUE"
+  setpLtF (pReg 29) (fReg 144) (fReg 126)
+  braIf (pReg 29) "LIGHTA_DONE"
+  label "LIGHTA_BLUE"
+  addFI (fReg 145) (fReg 105) ("-0.1")
+  addFI (fReg 146) (fReg 106) ("-0.15")
+  addFI (fReg 147) (fReg 107) ("6.5")
+  mulF (fReg 148) (fReg 145) (fReg 121)
+  fmaRn (fReg 148) (fReg 146) (fReg 122) (fReg 148)
+  fmaRn (fReg 148) (fReg 147) (fReg 123) (fReg 148)
+  mulF (fReg 149) (fReg 145) (fReg 145)
+  fmaRn (fReg 149) (fReg 146) (fReg 146) (fReg 149)
+  fmaRn (fReg 149) (fReg 147) (fReg 147) (fReg 149)
+
+private def emitDirectLightVisibilityBAndDispatch (_spec : SceneSpec) : PTX Unit := do
+  addFI (fReg 149) (fReg 149) ("-1.3225")
+  mulF (fReg 150) (fReg 148) (fReg 148)
+  subF (fReg 150) (fReg 150) (fReg 149)
+  setpGeFI (pReg 30) (fReg 150) ("0.0")
+  braIfNot (pReg 30) "LIGHTA_APPLY"
+  sqrtApprox (fReg 151) (fReg 150)
+  negF (fReg 152) (fReg 148)
+  subF (fReg 153) (fReg 152) (fReg 151)
+  setpGtF (pReg 31) (fReg 153) (fReg 414)
+  braIfNot (pReg 31) "LIGHTA_APPLY"
+  setpLtF (pReg 32) (fReg 153) (fReg 126)
+  braIf (pReg 32) "LIGHTA_DONE"
+  label "LIGHTA_APPLY"
+  rcp (fReg 154) (fReg 119)
+  mulF (fReg 155) (fReg 124) (fReg 154)
+  fmaFIR (fReg 110) (fReg 155) ("90.0") (fReg 110)
+  fmaFIR (fReg 111) (fReg 155) ("74.0") (fReg 111)
+  fmaFIR (fReg 112) (fReg 155) ("58.0") (fReg 112)
+  label "LIGHTA_DONE"
+  fmaFII (fReg 156) (fReg 115) ("1.35") ("4.5")
+  fmaFII (fReg 157) (fReg 116) ("0.45") ("4.0")
+  fmaFII (fReg 158) (fReg 114) ("1.45") ("-7.0")
+  subF (fReg 159) (fReg 156) (fReg 105)
+  subF (fReg 160) (fReg 157) (fReg 106)
+  subF (fReg 161) (fReg 158) (fReg 107)
+  mulF (fReg 162) (fReg 159) (fReg 159)
+  fmaRn (fReg 162) (fReg 160) (fReg 160) (fReg 162)
+  fmaRn (fReg 162) (fReg 161) (fReg 161) (fReg 162)
+  rsqrt (fReg 163) (fReg 162)
+  mulF (fReg 164) (fReg 159) (fReg 163)
+  mulF (fReg 165) (fReg 160) (fReg 163)
+  mulF (fReg 166) (fReg 161) (fReg 163)
+  mulF (fReg 167) (SceneReg.normalX) (fReg 164)
+  fmaRn (fReg 167) (SceneReg.normalY) (fReg 165) (fReg 167)
+  fmaRn (fReg 167) (SceneReg.normalZ) (fReg 166) (fReg 167)
+  maxFI (fReg 167) (fReg 167) ("0.0")
+  setpLeFI (pReg 33) (fReg 167) ("0.0")
+  braIf (pReg 33) "LIGHTB_DONE"
+  rcp (fReg 168) (fReg 162)
+  mulF (fReg 169) (fReg 167) (fReg 168)
+  fmaFIR (fReg 110) (fReg 169) ("40.0") (fReg 110)
+  fmaFIR (fReg 111) (fReg 169) ("66.0") (fReg 111)
+  fmaFIR (fReg 112) (fReg 169) ("110.0") (fReg 112)
+  label "LIGHTB_DONE"
+  fmaFII (fReg 170) (fReg 113) ("2.0") ("0.0")
+  fmaFII (fReg 171) (fReg 114) ("0.6") ("6.5")
+  fmaFII (fReg 172) (fReg 116) ("1.8") ("2.5")
+  subF (fReg 173) (fReg 170) (fReg 105)
+  subF (fReg 174) (fReg 171) (fReg 106)
+  subF (fReg 175) (fReg 172) (fReg 107)
+  mulF (fReg 176) (fReg 173) (fReg 173)
+  fmaRn (fReg 176) (fReg 174) (fReg 174) (fReg 176)
+  fmaRn (fReg 176) (fReg 175) (fReg 175) (fReg 176)
+  rsqrt (fReg 177) (fReg 176)
+  mulF (fReg 178) (fReg 173) (fReg 177)
+  mulF (fReg 179) (fReg 174) (fReg 177)
+  mulF (fReg 180) (fReg 175) (fReg 177)
+  mulF (fReg 181) (SceneReg.normalX) (fReg 178)
+  fmaRn (fReg 181) (SceneReg.normalY) (fReg 179) (fReg 181)
+  fmaRn (fReg 181) (SceneReg.normalZ) (fReg 180) (fReg 181)
+  maxFI (fReg 181) (fReg 181) ("0.0")
+  setpLeFI (pReg 34) (fReg 181) ("0.0")
+  braIf (pReg 34) "LIGHTC_DONE"
+  rcp (fReg 182) (fReg 176)
+  mulF (fReg 183) (fReg 181) (fReg 182)
+  fmaFIR (fReg 110) (fReg 183) ("28.0") (fReg 110)
+  fmaFIR (fReg 111) (fReg 183) ("40.0") (fReg 111)
+  fmaFIR (fReg 112) (fReg 183) ("72.0") (fReg 112)
+  label "LIGHTC_DONE"
+  setpEqI (pReg 35) (SceneReg.hitKind) (1)
+  braIf (pReg 35) "SHADE_GROUND"
+  setpEqI (pReg 36) (SceneReg.hitKind) (2)
+  braIf (pReg 36) "SHADE_WALL"
+  setpEqI (pReg 37) (SceneReg.hitKind) (3)
+  braIf (pReg 37) "SHADE_GLASS"
+
+private def emitMaterialShading (spec : SceneSpec) : PTX Unit := do
+  setpEqI (pReg 38) (SceneReg.hitKind) (4)
+  braIf (pReg 38) "SHADE_GOLD"
+  bra "SHADE_BLUE"
+  label "SHADE_GROUND"
+  cvtRziS32F32 (uReg 40) (fReg 102)
+  cvtRziS32F32 (uReg 41) (fReg 104)
+  andR (uReg 42) (uReg 40) (1)
+  andR (uReg 43) (uReg 41) (1)
+  xorRR (uReg 44) (uReg 42) (uReg 43)
+  setpEqI (pReg 39) (uReg 44) (0)
+  braIf (pReg 39) "GROUND_LIGHT"
+  movFI (fReg 170) (channelF32 spec.palette.groundLight.red)
+  movFI (fReg 171) (channelF32 spec.palette.groundLight.green)
+  movFI (fReg 172) (channelF32 spec.palette.groundLight.blue)
+  bra "GROUND_APPLY"
+  label "GROUND_LIGHT"
+  movFI (fReg 170) (channelF32 spec.palette.groundDark.red)
+  movFI (fReg 171) (channelF32 spec.palette.groundDark.green)
+  movFI (fReg 172) (channelF32 spec.palette.groundDark.blue)
+  label "GROUND_APPLY"
+  mulF (fReg 212) (fReg 110) (fReg 170)
+  mulF (fReg 213) (fReg 111) (fReg 171)
+  mulF (fReg 214) (fReg 112) (fReg 172)
+  fmaRn (SceneReg.radianceR) (SceneReg.throughputR) (fReg 212) (SceneReg.radianceR)
+  fmaRn (SceneReg.radianceG) (SceneReg.throughputG) (fReg 213) (SceneReg.radianceG)
+  fmaRn (SceneReg.radianceB) (SceneReg.throughputB) (fReg 214) (SceneReg.radianceB)
+  mulF (SceneReg.throughputR) (SceneReg.throughputR) (fReg 170)
+  mulF (SceneReg.throughputG) (SceneReg.throughputG) (fReg 171)
+  mulF (SceneReg.throughputB) (SceneReg.throughputB) (fReg 172)
+  bra "DIFFUSE_BOUNCE"
+  label "SHADE_WALL"
+  movFI (fReg 173) (channelF32 spec.palette.wall.red)
+  movFI (fReg 174) (channelF32 spec.palette.wall.green)
+  movFI (fReg 175) (channelF32 spec.palette.wall.blue)
+  mulF (fReg 212) (fReg 110) (fReg 173)
+  mulF (fReg 213) (fReg 111) (fReg 174)
+  mulF (fReg 214) (fReg 112) (fReg 175)
+  fmaRn (SceneReg.radianceR) (SceneReg.throughputR) (fReg 212) (SceneReg.radianceR)
+  fmaRn (SceneReg.radianceG) (SceneReg.throughputG) (fReg 213) (SceneReg.radianceG)
+  fmaRn (SceneReg.radianceB) (SceneReg.throughputB) (fReg 214) (SceneReg.radianceB)
+  mulF (SceneReg.throughputR) (SceneReg.throughputR) (fReg 173)
+  mulF (SceneReg.throughputG) (SceneReg.throughputG) (fReg 174)
+  mulF (SceneReg.throughputB) (SceneReg.throughputB) (fReg 175)
+  bra "DIFFUSE_BOUNCE"
+  label "SHADE_BLUE"
+  movFI (fReg 176) (channelF32 spec.palette.diffuseSphere.red)
+  movFI (fReg 177) (channelF32 spec.palette.diffuseSphere.green)
+  movFI (fReg 178) (channelF32 spec.palette.diffuseSphere.blue)
+  mulF (fReg 212) (fReg 110) (fReg 176)
+  mulF (fReg 213) (fReg 111) (fReg 177)
+  mulF (fReg 214) (fReg 112) (fReg 178)
+  fmaRn (SceneReg.radianceR) (SceneReg.throughputR) (fReg 212) (SceneReg.radianceR)
+  fmaRn (SceneReg.radianceG) (SceneReg.throughputG) (fReg 213) (SceneReg.radianceG)
+  fmaRn (SceneReg.radianceB) (SceneReg.throughputB) (fReg 214) (SceneReg.radianceB)
+  mulF (SceneReg.throughputR) (SceneReg.throughputR) (fReg 176)
+  mulF (SceneReg.throughputG) (SceneReg.throughputG) (fReg 177)
+  mulF (SceneReg.throughputB) (SceneReg.throughputB) (fReg 178)
+  bra "DIFFUSE_BOUNCE"
+  label "SHADE_GOLD"
+  movFI (fReg 179) (channelF32 spec.palette.metalSphere.red)
+  movFI (fReg 180) (channelF32 spec.palette.metalSphere.green)
+  movFI (fReg 181) (channelF32 spec.palette.metalSphere.blue)
+  mulFI (fReg 212) (fReg 110) ("0.15")
+  mulFI (fReg 213) (fReg 111) ("0.13")
+  mulFI (fReg 214) (fReg 112) ("0.09")
+  fmaRn (SceneReg.radianceR) (SceneReg.throughputR) (fReg 212) (SceneReg.radianceR)
+  fmaRn (SceneReg.radianceG) (SceneReg.throughputG) (fReg 213) (SceneReg.radianceG)
+  fmaRn (SceneReg.radianceB) (SceneReg.throughputB) (fReg 214) (SceneReg.radianceB)
+  mulF (fReg 182) (SceneReg.rayDx) (SceneReg.normalX)
+  fmaRn (fReg 182) (SceneReg.rayDy) (SceneReg.normalY) (fReg 182)
+  fmaRn (fReg 182) (SceneReg.rayDz) (SceneReg.normalZ) (fReg 182)
+  mulFI (fReg 183) (fReg 182) ("2.0")
+  negF (fReg 226) (SceneReg.normalX)
+  negF (fReg 227) (SceneReg.normalY)
+  negF (fReg 228) (SceneReg.normalZ)
+  fmaRn (SceneReg.rayDx) (fReg 226) (fReg 183) (SceneReg.rayDx)
+
+private def emitMetalAndGlassSetup (_spec : SceneSpec) : PTX Unit := do
+  fmaRn (SceneReg.rayDy) (fReg 227) (fReg 183) (SceneReg.rayDy)
+  fmaRn (SceneReg.rayDz) (fReg 228) (fReg 183) (SceneReg.rayDz)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 184) (SceneReg.rng)
+  mulF (fReg 184) (fReg 184) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 185) (SceneReg.rng)
+  mulF (fReg 185) (fReg 185) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 186) (SceneReg.rng)
+  mulF (fReg 186) (fReg 186) (fReg 406)
+  addFI (fReg 184) (fReg 184) ("-0.5")
+  addFI (fReg 185) (fReg 185) ("-0.5")
+  addFI (fReg 186) (fReg 186) ("-0.5")
+  fmaRn (SceneReg.rayDx) (fReg 184) (fReg 419) (SceneReg.rayDx)
+  fmaRn (SceneReg.rayDy) (fReg 185) (fReg 419) (SceneReg.rayDy)
+  fmaRn (SceneReg.rayDz) (fReg 186) (fReg 419) (SceneReg.rayDz)
+  mulF (fReg 187) (SceneReg.rayDx) (SceneReg.rayDx)
+  fmaRn (fReg 187) (SceneReg.rayDy) (SceneReg.rayDy) (fReg 187)
+  fmaRn (fReg 187) (SceneReg.rayDz) (SceneReg.rayDz) (fReg 187)
+  rsqrt (fReg 188) (fReg 187)
+  mulF (SceneReg.rayDx) (SceneReg.rayDx) (fReg 188)
+  mulF (SceneReg.rayDy) (SceneReg.rayDy) (fReg 188)
+  mulF (SceneReg.rayDz) (SceneReg.rayDz) (fReg 188)
+  mulF (SceneReg.throughputR) (SceneReg.throughputR) (fReg 179)
+  mulF (SceneReg.throughputG) (SceneReg.throughputG) (fReg 180)
+  mulF (SceneReg.throughputB) (SceneReg.throughputB) (fReg 181)
+  movF (SceneReg.rayOx) (fReg 105)
+  movF (SceneReg.rayOy) (fReg 106)
+  movF (SceneReg.rayOz) (fReg 107)
+  bra "RR_STEP"
+  label "SHADE_GLASS"
+  mulF (fReg 189) (SceneReg.rayDx) (SceneReg.normalX)
+  fmaRn (fReg 189) (SceneReg.rayDy) (SceneReg.normalY) (fReg 189)
+  fmaRn (fReg 189) (SceneReg.rayDz) (SceneReg.normalZ) (fReg 189)
+  setpGtFI (pReg 39) (fReg 189) ("0.0")
+  braIf (pReg 39) "GLASS_INSIDE"
+  movF (fReg 190) (SceneReg.normalX)
+  movF (fReg 191) (SceneReg.normalY)
+  movF (fReg 192) (SceneReg.normalZ)
+  negF (fReg 193) (fReg 189)
+  movF (fReg 194) (fReg 421)
+  bra "GLASS_COMMON"
+  label "GLASS_INSIDE"
+  negF (fReg 190) (SceneReg.normalX)
+  negF (fReg 191) (SceneReg.normalY)
+  negF (fReg 192) (SceneReg.normalZ)
+  movF (fReg 193) (fReg 189)
+  movF (fReg 194) (fReg 420)
+  label "GLASS_COMMON"
+  subFIR (fReg 195) ("1.0") (fReg 193)
+  mulF (fReg 196) (fReg 195) (fReg 195)
+  mulF (fReg 196) (fReg 196) (fReg 196)
+  mulF (fReg 196) (fReg 196) (fReg 195)
+  fmaRn (fReg 197) (fReg 196) (fReg 423) (fReg 422)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 198) (SceneReg.rng)
+  mulF (fReg 198) (fReg 198) (fReg 406)
+  mulF (fReg 199) (fReg 193) (fReg 193)
+  subFIR (fReg 200) ("1.0") (fReg 199)
+  mulF (fReg 201) (fReg 194) (fReg 194)
+  mulF (fReg 200) (fReg 200) (fReg 201)
+  subFIR (fReg 202) ("1.0") (fReg 200)
+  setpLtFI (pReg 40) (fReg 202) ("0.0")
+  braIf (pReg 40) "GLASS_REFLECT"
+  setpLtF (pReg 41) (fReg 198) (fReg 197)
+  braIf (pReg 41) "GLASS_REFLECT"
+  sqrtApprox (fReg 203) (fReg 202)
+  mulF (fReg 204) (fReg 194) (SceneReg.rayDx)
+  mulF (fReg 205) (fReg 194) (SceneReg.rayDy)
+  mulF (fReg 206) (fReg 194) (SceneReg.rayDz)
+  mulF (fReg 207) (fReg 194) (fReg 193)
+  subF (fReg 207) (fReg 207) (fReg 203)
+  fmaRn (SceneReg.rayDx) (fReg 190) (fReg 207) (fReg 204)
+  fmaRn (SceneReg.rayDy) (fReg 191) (fReg 207) (fReg 205)
+  fmaRn (SceneReg.rayDz) (fReg 192) (fReg 207) (fReg 206)
+  mulFI (SceneReg.throughputR) (SceneReg.throughputR) ("0.98")
+  mulFI (SceneReg.throughputG) (SceneReg.throughputG) ("0.99")
+
+private def emitGlassResolveAndDiffuseBounce (_spec : SceneSpec) : PTX Unit := do
+  mulFI (SceneReg.throughputB) (SceneReg.throughputB) ("1.0")
+  movF (SceneReg.rayOx) (fReg 102)
+  movF (SceneReg.rayOy) (fReg 103)
+  movF (SceneReg.rayOz) (fReg 104)
+  bra "RR_STEP"
+  label "GLASS_REFLECT"
+  mulF (fReg 208) (SceneReg.rayDx) (fReg 190)
+  fmaRn (fReg 208) (SceneReg.rayDy) (fReg 191) (fReg 208)
+  fmaRn (fReg 208) (SceneReg.rayDz) (fReg 192) (fReg 208)
+  mulFI (fReg 209) (fReg 208) ("2.0")
+  negF (fReg 229) (fReg 190)
+  negF (fReg 230) (fReg 191)
+  negF (fReg 231) (fReg 192)
+  fmaRn (SceneReg.rayDx) (fReg 229) (fReg 209) (SceneReg.rayDx)
+  fmaRn (SceneReg.rayDy) (fReg 230) (fReg 209) (SceneReg.rayDy)
+  fmaRn (SceneReg.rayDz) (fReg 231) (fReg 209) (SceneReg.rayDz)
+  mulFI (SceneReg.throughputR) (SceneReg.throughputR) ("0.99")
+  mulFI (SceneReg.throughputG) (SceneReg.throughputG) ("0.99")
+  mulFI (SceneReg.throughputB) (SceneReg.throughputB) ("1.0")
+  movF (SceneReg.rayOx) (fReg 105)
+  movF (SceneReg.rayOy) (fReg 106)
+  movF (SceneReg.rayOz) (fReg 107)
+  bra "RR_STEP"
+  label "DIFFUSE_BOUNCE"
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 210) (SceneReg.rng)
+  mulF (fReg 210) (fReg 210) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 211) (SceneReg.rng)
+  mulF (fReg 211) (fReg 211) (fReg 406)
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 212) (SceneReg.rng)
+  mulF (fReg 212) (fReg 212) (fReg 406)
+  addFI (fReg 210) (fReg 210) ("-0.5")
+  addFI (fReg 211) (fReg 211) ("-0.5")
+  addFI (fReg 212) (fReg 212) ("-0.5")
+  fmaFIR (SceneReg.rayDx) (SceneReg.normalX) ("1.4") (fReg 210)
+  fmaFIR (SceneReg.rayDy) (SceneReg.normalY) ("1.4") (fReg 211)
+  fmaFIR (SceneReg.rayDz) (SceneReg.normalZ) ("1.4") (fReg 212)
+  mulF (fReg 213) (SceneReg.rayDx) (SceneReg.rayDx)
+  fmaRn (fReg 213) (SceneReg.rayDy) (SceneReg.rayDy) (fReg 213)
+  fmaRn (fReg 213) (SceneReg.rayDz) (SceneReg.rayDz) (fReg 213)
+  rsqrt (fReg 214) (fReg 213)
+  mulF (SceneReg.rayDx) (SceneReg.rayDx) (fReg 214)
+  mulF (SceneReg.rayDy) (SceneReg.rayDy) (fReg 214)
+  mulF (SceneReg.rayDz) (SceneReg.rayDz) (fReg 214)
+  movF (SceneReg.rayOx) (fReg 105)
+  movF (SceneReg.rayOy) (fReg 106)
+  movF (SceneReg.rayOz) (fReg 107)
+  bra "RR_STEP"
+  label "SHADE_SKY"
+  addFI (fReg 215) (SceneReg.rayDy) ("1.0")
+  mulFI (fReg 215) (fReg 215) ("0.5")
+  mulFI (fReg 216) (fReg 215) ("0.35")
+  mulFI (fReg 217) (fReg 215) ("0.45")
+  mulFI (fReg 218) (fReg 215) ("0.75")
+  addFI (fReg 216) (fReg 216) ("0.04")
+  addFI (fReg 217) (fReg 217) ("0.06")
+  addFI (fReg 218) (fReg 218) ("0.12")
+  fmaRn (SceneReg.radianceR) (SceneReg.throughputR) (fReg 216) (SceneReg.radianceR)
+  fmaRn (SceneReg.radianceG) (SceneReg.throughputG) (fReg 217) (SceneReg.radianceG)
+  fmaRn (SceneReg.radianceB) (SceneReg.throughputB) (fReg 218) (SceneReg.radianceB)
+  bra "PATH_DONE"
+  label "RR_STEP"
+  setpLtI (pReg 42) (SceneReg.bounceIdx) (2)
+  braIf (pReg 42) "RR_SKIP"
+  maxF (fReg 216) (SceneReg.throughputR) (SceneReg.throughputG)
+  maxF (fReg 216) (fReg 216) (SceneReg.throughputB)
+  minF (fReg 216) (fReg 216) (fReg 418)
+  maxFI (fReg 216) (fReg 216) ("0.10")
+  madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
+  cvtF32 (fReg 217) (SceneReg.rng)
+  mulF (fReg 217) (fReg 217) (fReg 406)
+  setpGtF (pReg 43) (fReg 217) (fReg 216)
+  braIf (pReg 43) "PATH_DONE"
+  rcp (fReg 218) (fReg 216)
+  mulF (SceneReg.throughputR) (SceneReg.throughputR) (fReg 218)
+
+private def emitSkyRrAndFinalize (_spec : SceneSpec) : PTX Unit := do
+  mulF (SceneReg.throughputG) (SceneReg.throughputG) (fReg 218)
+  mulF (SceneReg.throughputB) (SceneReg.throughputB) (fReg 218)
+  label "RR_SKIP"
+  addRI (SceneReg.bounceIdx) (SceneReg.bounceIdx) (1)
+  bra "BOUNCE_LOOP"
+  label "PATH_DONE"
+  addF (fReg 10) (fReg 10) (SceneReg.radianceR)
+  addF (fReg 11) (fReg 11) (SceneReg.radianceG)
+  addF (fReg 12) (fReg 12) (SceneReg.radianceB)
+  addRI (SceneReg.sampleIdx) (SceneReg.sampleIdx) (1)
+  bra "SAMPLE_LOOP"
+  label "SAMPLE_DONE"
+  mulF (fReg 10) (fReg 10) (fReg 416)
+  mulF (fReg 11) (fReg 11) (fReg 416)
+  mulF (fReg 12) (fReg 12) (fReg 416)
+  addFI (fReg 220) (fReg 10) ("1.0")
+  addFI (fReg 221) (fReg 11) ("1.0")
+  addFI (fReg 222) (fReg 12) ("1.0")
+  divRn (fReg 10) (fReg 10) (fReg 220)
+  divRn (fReg 11) (fReg 11) (fReg 221)
+  divRn (fReg 12) (fReg 12) (fReg 222)
+  sqrtApprox (fReg 10) (fReg 10)
+  sqrtApprox (fReg 11) (fReg 11)
+  sqrtApprox (fReg 12) (fReg 12)
+  minFI (fReg 10) (fReg 10) ("1.0")
+  minFI (fReg 11) (fReg 11) ("1.0")
+  minFI (fReg 12) (fReg 12) ("1.0")
+  divRn (fReg 223) (fReg 0) (fReg 408)
+  divRn (fReg 224) (fReg 1) (fReg 409)
+  subFI (fReg 223) (fReg 223) ("0.5")
+  subFI (fReg 224) (fReg 224) ("0.5")
+  mulF (fReg 225) (fReg 223) (fReg 223)
+  fmaRn (fReg 225) (fReg 224) (fReg 224) (fReg 225)
+  mulFI (fReg 225) (fReg 225) ("1.85")
+  subFIR (fReg 226) ("1.0") (fReg 225)
+  maxFI (fReg 226) (fReg 226) ("0.72")
+  mulF (fReg 10) (fReg 10) (fReg 226)
+  mulF (fReg 11) (fReg 11) (fReg 226)
+  mulF (fReg 12) (fReg 12) (fReg 226)
+  mulF (fReg 223) (fReg 10) (fReg 405)
+  mulF (fReg 224) (fReg 11) (fReg 405)
+  mulF (fReg 225) (fReg 12) (fReg 405)
+  cvtRniU32F32 (uReg 60) (fReg 223)
+  cvtRniU32F32 (uReg 61) (fReg 224)
+  cvtRniU32F32 (uReg 62) (fReg 225)
+  shlR (uReg 61) (uReg 61) (8)
+  shlR (uReg 60) (uReg 60) (16)
+  movRIText (uReg 63) ("0xFF000000")
+  orRR (uReg 64) (uReg 62) (uReg 61)
+  orRR (uReg 65) (uReg 64) (uReg 60)
+  orRR (uReg 66) (uReg 65) (uReg 63)
+  stGlobalU32 (dReg 2) (uReg 66)
+  label "DONE"
+  ptxRet
+
+def emitSceneKernel (spec : SceneSpec) : PTX Unit := do
+  emitKernelSetupAndSampleLoop spec
+  emitPrimaryRayAndInitialIntersections spec
+  emitSphereIntersectionPassA spec
+  emitHitDispatchAndLightSamplingSetup spec
+  emitDirectLightVisibilityA spec
+  emitDirectLightVisibilityBAndDispatch spec
+  emitMaterialShading spec
+  emitMetalAndGlassSetup spec
+  emitGlassResolveAndDiffuseBounce spec
+  emitSkyRrAndFinalize spec
 
 def ptxSource (spec : SceneSpec) : String :=
-  Ptx.renderProgram (ptxProgram spec)
-
+  buildModuleWith { version := "7.0", target := "sm_50" } [{
+    name := "main"
+    params := ["out_ptr"]
+    body := do
+      emitSceneKernel spec
+  }]
 
 def ptxOff : Nat := 0x0100
 def ptxRegion : Nat := 131072
