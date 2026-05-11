@@ -2,8 +2,7 @@ use arrow_array::{Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use base::{run, Base, RecordBatch};
 use base_types::{
-    Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType,
-    RuntimeHeader,
+    Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType, RuntimeHeader,
 };
 use std::fs;
 use std::sync::Arc;
@@ -8591,8 +8590,7 @@ block0(v0: i64):
 
     call fn5(v90)
     return
-}
-"#;
+}"#;
 
     let mut memory = vec![0u8; 8192];
     memory[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
@@ -8644,6 +8642,1662 @@ block0(v0: i64):
     assert_eq!(download_bad_rc, -1, "download(buf_id=99) should return -1");
     assert_eq!(launch_bad_grid_rc, -1, "launch(grid_x=0) should return -1");
     assert_eq!(create_neg_rc, -1, "create_buffer(size=-1) should return -1");
+}
+
+#[test]
+fn test_clif_ffi_cuda_stream_event_pinned_lifecycle() {
+    let mem_size: usize = 0x0400;
+    let out_size: usize = 48;
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    return
+}
+
+function u0:1(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+    sig3 = (i64, i64) -> i32 system_v
+    sig4 = (i64, i32) -> i64 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_stream_create sig1
+    fn2 = %cl_cuda_stream_sync sig2
+    fn3 = %cl_cuda_stream_destroy sig2
+    fn4 = %cl_cuda_event_create sig1
+    fn5 = %cl_cuda_event_destroy sig2
+    fn6 = %cl_cuda_pinned_alloc sig3
+    fn7 = %cl_cuda_pinned_ptr sig4
+    fn8 = %cl_cuda_pinned_free sig2
+    fn9 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = call fn1(v91)
+    v11 = call fn2(v91, v10)
+    v12 = call fn3(v91, v10)
+    v13 = call fn3(v91, v10)
+
+    v14 = call fn4(v91)
+    v15 = call fn5(v91, v14)
+
+    v16 = iconst.i64 64
+    v17 = call fn6(v91, v16)
+    v18 = call fn7(v91, v17)
+    v19 = call fn8(v91, v17)
+    v20 = call fn8(v91, v17)
+
+    store.i32 v10, v2
+    v21 = iconst.i64 4
+    v22 = iadd v2, v21
+    store.i32 v11, v22
+    v23 = iconst.i64 8
+    v24 = iadd v2, v23
+    store.i32 v12, v24
+    v25 = iconst.i64 12
+    v26 = iadd v2, v25
+    store.i32 v13, v26
+    v27 = iconst.i64 16
+    v28 = iadd v2, v27
+    store.i32 v14, v28
+    v29 = iconst.i64 20
+    v30 = iadd v2, v29
+    store.i32 v15, v30
+    v31 = iconst.i64 24
+    v32 = iadd v2, v31
+    store.i32 v17, v32
+    v33 = iconst.i64 28
+    v34 = iadd v2, v33
+    store.i32 v19, v34
+    v35 = iconst.i64 32
+    v36 = iadd v2, v35
+    store.i32 v20, v36
+    v37 = iconst.i64 40
+    v38 = iadd v2, v37
+    store.i64 v18, v38
+
+    call fn9(v90)
+    return
+}"#
+    .to_string();
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &[], &mut out).unwrap();
+
+    let stream_id = i32::from_le_bytes(out[0..4].try_into().unwrap());
+    let sync_rc = i32::from_le_bytes(out[4..8].try_into().unwrap());
+    let destroy_rc = i32::from_le_bytes(out[8..12].try_into().unwrap());
+    let destroy_again_rc = i32::from_le_bytes(out[12..16].try_into().unwrap());
+    let event_id = i32::from_le_bytes(out[16..20].try_into().unwrap());
+    let event_destroy_rc = i32::from_le_bytes(out[20..24].try_into().unwrap());
+    let pinned_id = i32::from_le_bytes(out[24..28].try_into().unwrap());
+    let pinned_free_rc = i32::from_le_bytes(out[28..32].try_into().unwrap());
+    let pinned_free_again_rc = i32::from_le_bytes(out[32..36].try_into().unwrap());
+    let pinned_ptr = i64::from_le_bytes(out[40..48].try_into().unwrap());
+
+    assert!(stream_id >= 0, "stream_create should return a valid handle");
+    assert_eq!(sync_rc, 0);
+    assert_eq!(destroy_rc, 0);
+    assert_eq!(destroy_again_rc, -1);
+    assert!(event_id >= 0, "event_create should return a valid handle");
+    assert_eq!(event_destroy_rc, 0);
+    assert!(pinned_id >= 0, "pinned_alloc should return a valid handle");
+    assert_ne!(
+        pinned_ptr, 0,
+        "pinned_ptr should expose a non-null host pointer"
+    );
+    assert_eq!(pinned_free_rc, 0);
+    assert_eq!(pinned_free_again_rc, -1);
+}
+
+#[test]
+fn test_clif_ffi_cuda_resource_invalid_handles() {
+    let mem_size: usize = 0x0400;
+    let out_size: usize = 56;
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    return
+}
+
+function u0:1(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+    sig3 = (i64, i32) -> i64 system_v
+    sig4 = (i64, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_stream_sync sig2
+    fn2 = %cl_cuda_stream_destroy sig2
+    fn3 = %cl_cuda_event_record sig4
+    fn4 = %cl_cuda_stream_wait_event sig4
+    fn5 = %cl_cuda_event_elapsed_ms_bits sig4
+    fn6 = %cl_cuda_event_destroy sig2
+    fn7 = %cl_cuda_pinned_ptr sig3
+    fn8 = %cl_cuda_pinned_free sig2
+    fn9 = %cl_cuda_graph_upload sig4
+    fn10 = %cl_cuda_graph_launch sig4
+    fn11 = %cl_cuda_graph_destroy sig2
+    fn12 = %cl_cuda_graph_begin_capture sig2
+    fn13 = %cl_cuda_graph_end_capture sig2
+    fn14 = %cl_cuda_event_create sig1
+    fn15 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i32 77
+    v11 = call fn1(v91, v10)
+    v12 = call fn2(v91, v10)
+    v13 = call fn3(v91, v10, v10)
+    v14 = call fn4(v91, v10, v10)
+    v15 = call fn5(v91, v10, v10)
+    v16 = call fn6(v91, v10)
+    v17 = call fn7(v91, v10)
+    v18 = call fn8(v91, v10)
+    v19 = call fn9(v91, v10, v10)
+    v20 = call fn10(v91, v10, v10)
+    v21 = call fn11(v91, v10)
+    v22 = call fn12(v91, v10)
+    v23 = call fn13(v91, v10)
+
+    v24 = call fn14(v91)
+    v25 = call fn6(v91, v24)
+    v26 = call fn6(v91, v24)
+
+    store.i32 v11, v2
+    v30 = iadd_imm v2, 4
+    store.i32 v12, v30
+    v31 = iadd_imm v2, 8
+    store.i32 v13, v31
+    v32 = iadd_imm v2, 12
+    store.i32 v14, v32
+    v33 = iadd_imm v2, 16
+    store.i32 v15, v33
+    v34 = iadd_imm v2, 20
+    store.i32 v16, v34
+    v35 = iadd_imm v2, 24
+    store.i64 v17, v35
+    v36 = iadd_imm v2, 32
+    store.i32 v18, v36
+    v37 = iadd_imm v2, 36
+    store.i32 v19, v37
+    v38 = iadd_imm v2, 40
+    store.i32 v20, v38
+    v39 = iadd_imm v2, 44
+    store.i32 v21, v39
+    v40 = iadd_imm v2, 48
+    store.i32 v22, v40
+    v41 = iadd_imm v2, 52
+    store.i32 v23, v41
+
+    call fn15(v90)
+    return
+}"#
+    .to_string();
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &[], &mut out).unwrap();
+
+    let sync_invalid = i32::from_le_bytes(out[0..4].try_into().unwrap());
+    let destroy_invalid = i32::from_le_bytes(out[4..8].try_into().unwrap());
+    let event_record_invalid = i32::from_le_bytes(out[8..12].try_into().unwrap());
+    let wait_invalid = i32::from_le_bytes(out[12..16].try_into().unwrap());
+    let elapsed_invalid = i32::from_le_bytes(out[16..20].try_into().unwrap());
+    let event_destroy_invalid = i32::from_le_bytes(out[20..24].try_into().unwrap());
+    let pinned_ptr_invalid = i64::from_le_bytes(out[24..32].try_into().unwrap());
+    let pinned_free_invalid = i32::from_le_bytes(out[32..36].try_into().unwrap());
+    let graph_upload_invalid = i32::from_le_bytes(out[36..40].try_into().unwrap());
+    let graph_launch_invalid = i32::from_le_bytes(out[40..44].try_into().unwrap());
+    let graph_destroy_invalid = i32::from_le_bytes(out[44..48].try_into().unwrap());
+    let begin_capture_invalid = i32::from_le_bytes(out[48..52].try_into().unwrap());
+    let end_capture_invalid = i32::from_le_bytes(out[52..56].try_into().unwrap());
+
+    assert_eq!(sync_invalid, -1);
+    assert_eq!(destroy_invalid, -1);
+    assert_eq!(event_record_invalid, -1);
+    assert_eq!(wait_invalid, -1);
+    assert_eq!(elapsed_invalid, -1);
+    assert_eq!(event_destroy_invalid, -1);
+    assert_eq!(pinned_ptr_invalid, -1);
+    assert_eq!(pinned_free_invalid, -1);
+    assert_eq!(graph_upload_invalid, -1);
+    assert_eq!(graph_launch_invalid, -1);
+    assert_eq!(graph_destroy_invalid, -1);
+    assert_eq!(begin_capture_invalid, -1);
+    assert_eq!(end_capture_invalid, -1);
+}
+
+#[test]
+fn test_clif_ffi_cuda_async_stream_vec_add() {
+    let n: usize = 64;
+    let data_bytes = n * 4;
+    let payload_bytes = data_bytes * 2;
+    let ptx_off = 0x0100;
+    let bind_off = 0x0800;
+    let mem_size = 0x1000;
+
+    let ptx = "\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 a_ptr,
+    .param .u64 b_ptr,
+    .param .u64 result_ptr
+)
+{
+    .reg .u32 %r0;
+    .reg .u64 %ra, %rb, %rc, %off;
+    .reg .f32 %fa, %fb, %fr;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+
+    ld.param.u64 %ra, [a_ptr];
+    ld.param.u64 %rb, [b_ptr];
+    ld.param.u64 %rc, [result_ptr];
+
+    add.u64 %ra, %ra, %off;
+    add.u64 %rb, %rb, %off;
+    add.u64 %rc, %rc, %off;
+
+    ld.global.f32 %fa, [%ra];
+    ld.global.f32 %fb, [%rb];
+    add.f32 %fr, %fa, %fb;
+    st.global.f32 [%rc], %fr;
+
+    ret;
+}\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_async sig2
+    fn3 = %cl_cuda_launch_on_stream sig3
+    fn4 = %cl_cuda_stream_create sig4
+    fn5 = %cl_cuda_stream_sync sig5
+    fn6 = %cl_cuda_download_ptr_async sig2
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn1(v91, v10)
+    v13 = call fn1(v91, v10)
+    v14 = call fn4(v91)
+
+    v16 = call fn2(v91, v11, v1, v10, v14)
+    v17 = iadd v1, v10
+    v18 = call fn2(v91, v12, v17, v10, v14)
+
+    v19 = iadd_imm v0, {ptx_off}
+    v20 = iconst.i32 3
+    v21 = iadd_imm v0, {bind_off}
+    v22 = iconst.i32 1
+    v23 = iconst.i32 64
+    v24 = call fn3(v91, v19, v20, v21, v22, v22, v22, v23, v22, v22, v14)
+
+    v25 = call fn6(v91, v13, v2, v10, v14)
+    v26 = call fn5(v91, v14)
+
+    call fn7(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
+    memory[bind_off + 8..bind_off + 12].copy_from_slice(&2i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let mut payload = vec![0u8; payload_bytes];
+    for i in 0..n {
+        let a_val = (i + 1) as f32;
+        let b_val = 100.0f32;
+        payload[i * 4..i * 4 + 4].copy_from_slice(&a_val.to_le_bytes());
+        payload[data_bytes + i * 4..data_bytes + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
+    }
+    let mut out = vec![0u8; data_bytes];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 + 100.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_async_copy_bounds_errors() {
+    let total_bytes: usize = 16;
+    let mem_size: usize = 0x0400;
+    let out_size: usize = 24;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_offset_async sig2
+    fn3 = %cl_cuda_download_ptr_async sig3
+    fn4 = %cl_cuda_stream_create sig4
+    fn5 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {total_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn4(v91)
+
+    v13 = iconst.i64 8
+    v14 = iconst.i64 12
+    v15 = call fn2(v91, v11, v13, v1, v14, v12)
+
+    v16 = iconst.i64 32
+    v17 = call fn3(v91, v11, v2, v16, v12)
+
+    v18 = iconst.i32 123
+    v19 = call fn3(v91, v11, v2, v10, v18)
+
+    store.i32 v15, v2
+    v20 = iadd_imm v2, 4
+    store.i32 v17, v20
+    v21 = iadd_imm v2, 8
+    store.i32 v19, v21
+
+    call fn5(v90)
+    return
+}}"#,
+        total_bytes = total_bytes,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let bytes = vec![0u8; total_bytes];
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &bytes, &mut out).unwrap();
+
+    let upload_oob = i32::from_le_bytes(out[0..4].try_into().unwrap());
+    let download_oob = i32::from_le_bytes(out[4..8].try_into().unwrap());
+    let bad_stream = i32::from_le_bytes(out[8..12].try_into().unwrap());
+
+    assert_eq!(upload_oob, -1);
+    assert_eq!(download_oob, -1);
+    assert_eq!(bad_stream, -1);
+}
+
+#[test]
+fn test_clif_ffi_cuda_stream_wait_event_and_elapsed() {
+    let n: usize = 64;
+    let data_bytes = n * 4;
+    let payload_bytes = data_bytes * 2;
+    let out_bytes = data_bytes + 4;
+    let ptx_off = 0x0100;
+    let bind_off = 0x0800;
+    let mem_size = 0x1000;
+
+    let ptx = "\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 a_ptr,
+    .param .u64 b_ptr,
+    .param .u64 result_ptr
+)
+{
+    .reg .u32 %r0;
+    .reg .u64 %ra, %rb, %rc, %off;
+    .reg .f32 %fa, %fb, %fr;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+
+    ld.param.u64 %ra, [a_ptr];
+    ld.param.u64 %rb, [b_ptr];
+    ld.param.u64 %rc, [result_ptr];
+
+    add.u64 %ra, %ra, %off;
+    add.u64 %rb, %rb, %off;
+    add.u64 %rc, %rc, %off;
+
+    ld.global.f32 %fa, [%ra];
+    ld.global.f32 %fb, [%rb];
+    add.f32 %fr, %fa, %fb;
+    st.global.f32 [%rc], %fr;
+
+    ret;
+}\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+    sig6 = (i64, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_async sig2
+    fn3 = %cl_cuda_launch_on_stream sig3
+    fn4 = %cl_cuda_stream_create sig4
+    fn5 = %cl_cuda_stream_sync sig5
+    fn6 = %cl_cuda_download_ptr_async sig2
+    fn7 = %cl_cuda_event_create sig4
+    fn8 = %cl_cuda_event_record sig6
+    fn9 = %cl_cuda_stream_wait_event sig6
+    fn10 = %cl_cuda_event_elapsed_ms_bits sig6
+    fn11 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn1(v91, v10)
+    v13 = call fn1(v91, v10)
+    v14 = call fn4(v91)
+    v15 = call fn4(v91)
+    v16 = call fn7(v91)
+    v17 = call fn7(v91)
+
+    v18 = call fn2(v91, v11, v1, v10, v14)
+    v19 = iadd v1, v10
+    v20 = call fn2(v91, v12, v19, v10, v14)
+    v21 = call fn8(v91, v16, v14)
+    v22 = call fn9(v91, v15, v16)
+
+    v23 = iadd_imm v0, {ptx_off}
+    v24 = iconst.i32 3
+    v25 = iadd_imm v0, {bind_off}
+    v26 = iconst.i32 1
+    v27 = iconst.i32 64
+    v28 = call fn3(v91, v23, v24, v25, v26, v26, v26, v27, v26, v26, v15)
+    v29 = call fn8(v91, v17, v15)
+    v30 = call fn6(v91, v13, v2, v10, v15)
+    v31 = call fn5(v91, v15)
+    v32 = call fn10(v91, v16, v17)
+
+    v33 = iadd v2, v10
+    store.i32 v32, v33
+
+    call fn11(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
+    memory[bind_off + 8..bind_off + 12].copy_from_slice(&2i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let mut payload = vec![0u8; payload_bytes];
+    for i in 0..n {
+        let a_val = (i + 1) as f32;
+        let b_val = 10.0f32;
+        payload[i * 4..i * 4 + 4].copy_from_slice(&a_val.to_le_bytes());
+        payload[data_bytes + i * 4..data_bytes + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
+    }
+    let mut out = vec![0u8; out_bytes];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 + 10.0;
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Mismatch at index {}: got {}, expected {}",
+            i,
+            actual,
+            expected
+        );
+    }
+
+    let elapsed_bits = i32::from_le_bytes(out[data_bytes..data_bytes + 4].try_into().unwrap());
+    let elapsed_ms = f32::from_bits(u32::from_ne_bytes(elapsed_bits.to_ne_bytes()));
+    assert!(elapsed_ms.is_finite(), "elapsed ms should be finite");
+    assert!(elapsed_ms >= 0.0, "elapsed ms should be nonnegative");
+}
+
+#[test]
+fn test_clif_ffi_cuda_graph_edge_cases() {
+    let n: usize = 4;
+    let data_bytes: usize = n * 4;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0300;
+    let mem_size: usize = 0x0800;
+    let out_size: usize = 24;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f3F800000;\n\
+                   add.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+    sig6 = (i64, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_launch_on_stream sig3
+    fn4 = %cl_cuda_stream_create sig4
+    fn5 = %cl_cuda_graph_begin_capture sig5
+    fn6 = %cl_cuda_graph_end_capture sig5
+    fn7 = %cl_cuda_graph_upload sig6
+    fn8 = %cl_cuda_graph_launch sig6
+    fn9 = %cl_cuda_graph_destroy sig5
+    fn10 = %cl_cuda_stream_sync sig5
+    fn11 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = call fn4(v91)
+    v11 = call fn6(v91, v10)
+
+    v12 = iconst.i64 {data_bytes}
+    v13 = call fn1(v91, v12)
+    v14 = call fn2(v91, v13, v1, v12)
+    v15 = call fn5(v91, v10)
+    v16 = iadd_imm v0, {ptx_off}
+    v17 = iconst.i32 1
+    v18 = iadd_imm v0, {bind_off}
+    v19 = iconst.i32 {n}
+    v20 = call fn3(v91, v16, v17, v18, v17, v17, v17, v19, v17, v17, v10)
+    v21 = call fn6(v91, v10)
+    v22 = call fn9(v91, v21)
+    v23 = call fn9(v91, v21)
+    v24 = call fn8(v91, v21, v10)
+    v25 = call fn7(v91, v21, v10)
+    v26 = call fn10(v91, v10)
+
+    store.i32 v11, v2
+    v30 = iadd_imm v2, 4
+    store.i32 v22, v30
+    v31 = iadd_imm v2, 8
+    store.i32 v23, v31
+    v32 = iadd_imm v2, 12
+    store.i32 v24, v32
+    v33 = iadd_imm v2, 16
+    store.i32 v25, v33
+
+    call fn11(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let payload: Vec<u8> = (1..=n)
+        .map(|x| x as f32)
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    let end_without_begin = i32::from_le_bytes(out[0..4].try_into().unwrap());
+    let destroy_ok = i32::from_le_bytes(out[4..8].try_into().unwrap());
+    let destroy_again = i32::from_le_bytes(out[8..12].try_into().unwrap());
+    let launch_after_destroy = i32::from_le_bytes(out[12..16].try_into().unwrap());
+    let upload_after_destroy = i32::from_le_bytes(out[16..20].try_into().unwrap());
+
+    assert_eq!(end_without_begin, -1);
+    assert_eq!(destroy_ok, 0);
+    assert_eq!(destroy_again, -1);
+    assert_eq!(launch_after_destroy, -1);
+    assert_eq!(upload_after_destroy, -1);
+}
+
+#[test]
+fn test_clif_ffi_cuda_graph_capture_and_replay() {
+    let n: usize = 8;
+    let data_bytes: usize = n * 4;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0300;
+    let mem_size: usize = 0x0800;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f3F800000;\n\
+                   add.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+    sig6 = (i64, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_launch_on_stream sig3
+    fn4 = %cl_cuda_stream_create sig4
+    fn5 = %cl_cuda_graph_begin_capture sig5
+    fn6 = %cl_cuda_graph_end_capture sig5
+    fn7 = %cl_cuda_graph_upload sig6
+    fn8 = %cl_cuda_graph_launch sig6
+    fn9 = %cl_cuda_stream_sync sig5
+    fn10 = %cl_cuda_download_ptr sig2
+    fn11 = %cl_cuda_graph_destroy sig5
+    fn12 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn2(v91, v11, v1, v10)
+    v13 = call fn4(v91)
+
+    v14 = call fn5(v91, v13)
+    v15 = iadd_imm v0, {ptx_off}
+    v16 = iconst.i32 1
+    v17 = iadd_imm v0, {bind_off}
+    v18 = iconst.i32 {n}
+    v19 = call fn3(v91, v15, v16, v17, v16, v16, v16, v18, v16, v16, v13)
+    v20 = call fn6(v91, v13)
+    v21 = call fn7(v91, v20, v13)
+    v22 = call fn8(v91, v20, v13)
+    v23 = call fn8(v91, v20, v13)
+    v24 = call fn9(v91, v13)
+    v25 = call fn10(v91, v11, v2, v10)
+    v26 = call fn11(v91, v20)
+
+    call fn12(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let payload: Vec<f32> = (1..=n).map(|x| x as f32).collect();
+    let mut bytes = Vec::with_capacity(data_bytes);
+    for v in &payload {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out = vec![0u8; data_bytes];
+    base.execute_into(&alg, &bytes, &mut out).unwrap();
+    for (i, input) in payload.iter().enumerate() {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - (*input + 2.0)).abs() < 0.001);
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_upload_ptr_offset_async_reuse() {
+    let total_bytes: usize = 16;
+    let mem_size: usize = 0x0400;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_offset_async sig2
+    fn3 = %cl_cuda_download_ptr_async sig3
+    fn4 = %cl_cuda_stream_create sig4
+    fn5 = %cl_cuda_stream_sync sig5
+    fn6 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {total_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn4(v91)
+
+    v13 = iconst.i64 8
+    v14 = iconst.i64 0
+    v15 = call fn2(v91, v11, v14, v1, v13, v12)
+
+    v16 = iadd v1, v13
+    v17 = call fn2(v91, v11, v13, v16, v13, v12)
+
+    v18 = call fn3(v91, v11, v2, v10, v12)
+    v19 = call fn5(v91, v12)
+
+    call fn6(v90)
+    return
+}}"#,
+        total_bytes = total_bytes,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let payload1: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+    let mut bytes1 = Vec::with_capacity(total_bytes);
+    for v in payload1 {
+        bytes1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; total_bytes];
+    base.execute_into(&alg, &bytes1, &mut out1).unwrap();
+    for (i, expected) in [1.0f32, 2.0, 3.0, 4.0].iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - expected).abs() < 0.001);
+    }
+
+    let payload2: [f32; 4] = [10.0, 20.0, 30.0, 40.0];
+    let mut bytes2 = Vec::with_capacity(total_bytes);
+    for v in payload2 {
+        bytes2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; total_bytes];
+    base.execute_into(&alg, &bytes2, &mut out2).unwrap();
+    for (i, expected) in [10.0f32, 20.0, 30.0, 40.0].iter().enumerate() {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - expected).abs() < 0.001);
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_launch_named_on_stream_reuses_named_kernel() {
+    let n: usize = 8;
+    let data_bytes: usize = n * 4;
+    let ptx_off: usize = 0x0100;
+    let name_off: usize = 0x0600;
+    let bind_off: usize = 0x0700;
+    let mem_size: usize = 0x0800;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry add_one(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f3F800000;\n\
+                   add.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cuda_launch_named_on_stream sig3
+    fn5 = %cl_cuda_stream_create sig4
+    fn6 = %cl_cuda_stream_sync sig5
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn2(v91, v11, v1, v10)
+    v13 = call fn5(v91)
+
+    v14 = iadd_imm v0, {ptx_off}
+    v15 = iadd_imm v0, {name_off}
+    v16 = iconst.i32 1
+    v17 = iadd_imm v0, {bind_off}
+    v18 = iconst.i32 1
+    v19 = iconst.i32 {n}
+    v20 = call fn4(v91, v14, v15, v16, v17, v18, v18, v18, v19, v18, v18, v13)
+    v21 = call fn4(v91, v14, v15, v16, v17, v18, v18, v18, v19, v18, v18, v13)
+    v22 = call fn6(v91, v13)
+    v23 = call fn3(v91, v11, v2, v10)
+
+    call fn7(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        name_off = name_off,
+        bind_off = bind_off,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[name_off..name_off + 8].copy_from_slice(b"add_one\0");
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let payload1: Vec<f32> = (1..=n).map(|x| x as f32).collect();
+    let mut bytes1 = Vec::with_capacity(data_bytes);
+    for v in &payload1 {
+        bytes1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; data_bytes];
+    base.execute_into(&alg, &bytes1, &mut out1).unwrap();
+    for (i, input) in payload1.iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - (*input + 2.0)).abs() < 0.001);
+    }
+
+    let payload2: Vec<f32> = vec![5.0; n];
+    let mut bytes2 = Vec::with_capacity(data_bytes);
+    for v in &payload2 {
+        bytes2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; data_bytes];
+    base.execute_into(&alg, &bytes2, &mut out2).unwrap();
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - 7.0).abs() < 0.001);
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_pinned_buffer_async_roundtrip() {
+    let mem_size: usize = 0x0800;
+    let out_size: usize = 16;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0300;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f3F800000;\n\
+                   add.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i32 system_v
+    sig4 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig5 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig6 = (i64) -> i32 system_v
+    sig7 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_pinned_alloc sig1
+    fn3 = %cl_cuda_pinned_ptr sig2
+    fn4 = %cl_cuda_stream_create sig6
+    fn5 = %cl_cuda_upload_ptr_async sig4
+    fn6 = %cl_cuda_launch_on_stream sig5
+    fn7 = %cl_cuda_download_ptr_async sig4
+    fn8 = %cl_cuda_stream_sync sig7
+    fn9 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 16
+    v11 = call fn1(v91, v10)
+    v12 = call fn2(v91, v10)
+    v13 = call fn2(v91, v10)
+    v14 = call fn3(v91, v12)
+    v15 = call fn3(v91, v13)
+    v16 = call fn4(v91)
+
+    v17 = iconst.i32 0x3f800000
+    store.i32 v17, v14
+    v18 = iadd_imm v14, 4
+    v19 = iconst.i32 0x40000000
+    store.i32 v19, v18
+    v20 = iadd_imm v14, 8
+    v21 = iconst.i32 0x40400000
+    store.i32 v21, v20
+    v22 = iadd_imm v14, 12
+    v23 = iconst.i32 0x40800000
+    store.i32 v23, v22
+
+    v24 = call fn5(v91, v11, v14, v10, v16)
+
+    v25 = iadd_imm v0, {ptx_off}
+    v26 = iconst.i32 1
+    v27 = iadd_imm v0, {bind_off}
+    v28 = iconst.i32 1
+    v29 = iconst.i32 4
+    v30 = call fn6(v91, v25, v26, v27, v28, v28, v28, v29, v28, v28, v16)
+    v31 = call fn7(v91, v11, v15, v10, v16)
+    v32 = call fn8(v91, v16)
+
+    v33 = load.i32 v15
+    store.i32 v33, v2
+    v34 = iadd_imm v15, 4
+    v35 = load.i32 v34
+    v36 = iadd_imm v2, 4
+    store.i32 v35, v36
+    v37 = iadd_imm v15, 8
+    v38 = load.i32 v37
+    v39 = iadd_imm v2, 8
+    store.i32 v38, v39
+    v40 = iadd_imm v15, 12
+    v41 = load.i32 v40
+    v42 = iadd_imm v2, 12
+    store.i32 v41, v42
+
+    call fn9(v90)
+    return
+}}"#,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &[], &mut out).unwrap();
+    let vals: Vec<f32> = (0..4)
+        .map(|i| f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap()))
+        .collect();
+    assert_eq!(vals, vec![2.0, 3.0, 4.0, 5.0]);
+}
+
+#[test]
+fn test_cublas_sgemv_on_stream_reuse() {
+    let rows: usize = 2;
+    let cols: usize = 3;
+    let a_elems: usize = rows * cols;
+    let x_elems: usize = cols;
+    let y_elems: usize = rows;
+    let a_bytes: usize = a_elems * 4;
+    let x_bytes: usize = x_elems * 4;
+    let y_bytes: usize = y_elems * 4;
+    let mem_size: usize = 0x0400;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cublas_sgemv_on_stream sig3
+    fn5 = %cl_cuda_stream_create sig4
+    fn6 = %cl_cuda_stream_sync sig5
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {a_bytes}
+    v11 = iconst.i64 {x_bytes}
+    v12 = iconst.i64 {y_bytes}
+    v13 = call fn1(v91, v10)
+    v14 = call fn1(v91, v11)
+    v15 = call fn1(v91, v12)
+    v16 = call fn2(v91, v13, v1, v10)
+    v17 = iadd v1, v10
+    v18 = call fn2(v91, v14, v17, v11)
+    v19 = call fn5(v91)
+
+    v20 = iconst.i32 1
+    v21 = iconst.i32 {cols}
+    v22 = iconst.i32 {rows}
+    v23 = iconst.i32 0x3f800000
+    v24 = iconst.i32 0
+    v25 = call fn4(v91, v20, v21, v22, v23, v13, v14, v24, v15, v19)
+    v26 = call fn6(v91, v19)
+    v27 = call fn3(v91, v15, v2, v12)
+
+    call fn7(v90)
+    return
+}}"#,
+        a_bytes = a_bytes,
+        x_bytes = x_bytes,
+        y_bytes = y_bytes,
+        cols = cols,
+        rows = rows,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let x1: [f32; 3] = [1.0, 1.0, 1.0];
+    let expected1: [f32; 2] = [6.0, 15.0];
+    let mut payload1 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+    for (i, expected) in expected1.iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - expected).abs() < 0.01);
+    }
+
+    let a2: [f32; 6] = [-1.0, 0.0, 2.0, 3.0, -2.0, 1.0];
+    let x2: [f32; 3] = [2.0, -1.0, 4.0];
+    let expected2: [f32; 2] = [6.0, 12.0];
+    let mut payload2 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+    for (i, expected) in expected2.iter().enumerate() {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - expected).abs() < 0.01);
+    }
+}
+
+#[test]
+fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
+    let batch_count: usize = 2;
+    let m: usize = 2;
+    let k: usize = 3;
+    let a_elems: usize = batch_count * m * k;
+    let x_elems: usize = batch_count * k;
+    let y_elems: usize = batch_count * m;
+    let a_bytes: usize = a_elems * 4;
+    let x_bytes: usize = x_elems * 4;
+    let y_bytes: usize = y_elems * 4;
+    let mem_size: usize = 0x0800;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cublas_sgemm_strided_batched_on_stream sig3
+    fn5 = %cl_cuda_stream_create sig4
+    fn6 = %cl_cuda_stream_sync sig5
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+
+    v91 = load.i64 notrap aligned v0+0
+    v10 = iconst.i64 {a_bytes}
+    v11 = iconst.i64 {x_bytes}
+    v12 = iconst.i64 {y_bytes}
+    v13 = call fn1(v91, v10)
+    v14 = call fn1(v91, v11)
+    v15 = call fn1(v91, v12)
+    v16 = call fn2(v91, v13, v1, v10)
+    v17 = iadd v1, v10
+    v18 = call fn2(v91, v14, v17, v11)
+    v19 = call fn5(v91)
+
+    v20 = iconst.i32 1
+    v21 = iconst.i32 0
+    v22 = iconst.i32 {m}
+    v23 = iconst.i32 1
+    v24 = iconst.i32 {k}
+    v25 = iconst.i32 0x3f800000
+    v26 = iconst.i64 {stride_a}
+    v27 = iconst.i64 {stride_b}
+    v28 = iconst.i64 {stride_c}
+    v29 = iconst.i32 {batch_count}
+    v30 = call fn4(v91, v20, v21, v22, v23, v24, v25, v13, v26, v14, v27, v21, v15, v28, v29, v19)
+
+    v31 = call fn6(v91, v19)
+    v32 = call fn3(v91, v15, v2, v12)
+
+    call fn7(v90)
+    return
+}}"#,
+        a_bytes = a_bytes,
+        x_bytes = x_bytes,
+        y_bytes = y_bytes,
+        m = m,
+        k = k,
+        stride_a = m * k,
+        stride_b = k,
+        stride_c = m,
+        batch_count = batch_count,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+
+    let alg = Algorithm {
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let a1: [f32; 12] = [
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ];
+    let x1: [f32; 6] = [1.0, 1.0, 1.0, 2.0, 0.0, -1.0];
+    let expected1: [f32; 4] = [6.0, 15.0, 5.0, 8.0];
+
+    let mut payload1 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x1 {
+        payload1.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out1 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+
+    for (i, expected) in expected1.iter().enumerate() {
+        let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 1, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
+
+    let a2: [f32; 12] = [
+        -1.0, 0.0, 1.0, 2.0, -2.0, 0.5, 3.0, 1.0, -4.0, 0.0, 2.0, 5.0,
+    ];
+    let x2: [f32; 6] = [3.0, -1.0, 2.0, -2.0, 4.0, 1.0];
+    let expected2: [f32; 4] = [-1.0, 9.0, -6.0, 13.0];
+
+    let mut payload2 = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x2 {
+        payload2.extend_from_slice(&v.to_le_bytes());
+    }
+    let mut out2 = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+
+    for (i, expected) in expected2.iter().enumerate() {
+        let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "Run 2, element {}: expected {}, got {}",
+            i,
+            expected,
+            actual
+        );
+    }
 }
 
 #[test]
@@ -10082,19 +11736,10 @@ block0(v0: i64):
     };
 
     let a1: [f32; 12] = [
-        1.0, 2.0, 3.0,
-        4.0, 5.0, 6.0,
-        7.0, 8.0, 9.0,
-        10.0, 11.0, 12.0,
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
     ];
-    let x1: [f32; 6] = [
-        1.0, 1.0, 1.0,
-        2.0, 0.0, -1.0,
-    ];
-    let expected1: [f32; 4] = [
-        6.0, 15.0,
-        5.0, 8.0,
-    ];
+    let x1: [f32; 6] = [1.0, 1.0, 1.0, 2.0, 0.0, -1.0];
+    let expected1: [f32; 4] = [6.0, 15.0, 5.0, 8.0];
 
     let mut payload1 = Vec::with_capacity(a_bytes + x_bytes);
     for v in a1 {
@@ -10118,19 +11763,10 @@ block0(v0: i64):
     }
 
     let a2: [f32; 12] = [
-        -1.0, 0.0, 1.0,
-        2.0, -2.0, 0.5,
-        3.0, 1.0, -4.0,
-        0.0, 2.0, 5.0,
+        -1.0, 0.0, 1.0, 2.0, -2.0, 0.5, 3.0, 1.0, -4.0, 0.0, 2.0, 5.0,
     ];
-    let x2: [f32; 6] = [
-        3.0, -1.0, 2.0,
-        -2.0, 4.0, 1.0,
-    ];
-    let expected2: [f32; 4] = [
-        -1.0, 9.0,
-        -6.0, 13.0,
-    ];
+    let x2: [f32; 6] = [3.0, -1.0, 2.0, -2.0, 4.0, 1.0];
+    let expected2: [f32; 4] = [-1.0, 9.0, -6.0, 13.0];
 
     let mut payload2 = Vec::with_capacity(a_bytes + x_bytes);
     for v in a2 {
@@ -10558,5 +12194,1218 @@ block0(v0: i64):
             expected,
             actual
         );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// cuBLAS-on-stream tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clif_ffi_cublas_sgemv_on_stream() {
+    // y = A*x where A is 3×2 row-major, x is 2-element, y is 3-element
+    let rows: usize = 3;
+    let cols: usize = 2;
+    let a_bytes = rows * cols * 4;
+    let x_bytes = cols * 4;
+    let y_bytes = rows * 4;
+    let mem_size: usize = 0x0400;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i64, i64) -> i32 system_v
+    sig4 = (i64, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig5 = (i64) -> i32 system_v
+    sig6 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig3
+    fn4 = %cl_cublas_sgemv_on_stream sig4
+    fn5 = %cl_cuda_stream_create sig5
+    fn6 = %cl_cuda_stream_sync sig6
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {a_bytes}
+    v11 = iconst.i64 {x_bytes}
+    v12 = iconst.i64 {y_bytes}
+    v13 = call fn1(v91, v10)
+    v14 = call fn1(v91, v11)
+    v15 = call fn1(v91, v12)
+    v16 = call fn5(v91)
+
+    v17 = call fn2(v91, v13, v1, v10)
+    v18 = iadd v1, v10
+    v19 = call fn2(v91, v14, v18, v11)
+
+    ; sgemv_on_stream: trans=1 (T), m=cols, n=rows, alpha=1.0, a, x, beta=0.0, y, stream
+    v20 = iconst.i32 1
+    v21 = iconst.i32 {cols}
+    v22 = iconst.i32 {rows}
+    v23 = iconst.i32 0x3f800000
+    v24 = iconst.i32 0
+    v25 = call fn4(v91, v20, v21, v22, v23, v13, v14, v24, v15, v16)
+    v26 = call fn6(v91, v16)
+    v27 = call fn3(v91, v15, v2, v12)
+
+    call fn7(v90)
+    return
+}}"#,
+        a_bytes = a_bytes,
+        x_bytes = x_bytes,
+        y_bytes = y_bytes,
+        cols = cols,
+        rows = rows,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    // A = [[1,2],[3,4],[5,6]], x = [1,1] => y = [3,7,11]
+    let a: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let x: [f32; 2] = [1.0, 1.0];
+    let mut payload = Vec::with_capacity(a_bytes + x_bytes);
+    for v in a { payload.extend_from_slice(&v.to_le_bytes()); }
+    for v in x { payload.extend_from_slice(&v.to_le_bytes()); }
+    let mut out = vec![0u8; y_bytes];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    let expected = [3.0f32, 7.0, 11.0];
+    for (i, &exp) in expected.iter().enumerate() {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - exp).abs() < 0.01, "elem {i}: got {actual}, expected {exp}");
+    }
+}
+
+#[test]
+fn test_clif_ffi_cublas_sgemm_strided_batched_on_stream() {
+    // Two 2×2 matrices multiplied independently: batch_count=2, stride=4 (4 f32s per mat)
+    let m: i32 = 2;
+    let n: i32 = 2;
+    let k: i32 = 2;
+    let batch: i32 = 2;
+    let mat_floats: usize = (m * k) as usize;
+    let a_bytes = batch as usize * mat_floats * 4;
+    let b_bytes = batch as usize * (k as usize * n as usize) * 4;
+    let c_bytes = batch as usize * (m as usize * n as usize) * 4;
+    let mem_size: usize = 0x0400;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cublas_sgemm_strided_batched_on_stream sig3
+    fn5 = %cl_cuda_stream_create sig4
+    fn6 = %cl_cuda_stream_sync sig5
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {a_bytes}
+    v11 = iconst.i64 {b_bytes}
+    v12 = iconst.i64 {c_bytes}
+    v13 = call fn1(v91, v10)
+    v14 = call fn1(v91, v11)
+    v15 = call fn1(v91, v12)
+    v16 = call fn5(v91)
+
+    v17 = call fn2(v91, v13, v1, v10)
+    v18 = iadd v1, v10
+    v19 = call fn2(v91, v14, v18, v11)
+
+    ; transa=0, transb=0, m, n, k, alpha=1.0, a, stride_a=4, b, stride_b=4, beta=0, c, stride_c=4, batch=2, stream
+    v20 = iconst.i32 0
+    v21 = iconst.i32 {m}
+    v22 = iconst.i32 {n}
+    v23 = iconst.i32 {k}
+    v24 = iconst.i32 0x3f800000
+    v25 = iconst.i64 {mat_floats}
+    v26 = iconst.i32 0
+    v27 = iconst.i32 {batch}
+    v28 = call fn4(v91, v20, v20, v21, v22, v23, v24, v13, v25, v14, v25, v26, v15, v25, v27, v16)
+    v29 = call fn6(v91, v16)
+    v30 = call fn3(v91, v15, v2, v12)
+
+    call fn7(v90)
+    return
+}}"#,
+        a_bytes = a_bytes,
+        b_bytes = b_bytes,
+        c_bytes = c_bytes,
+        m = m,
+        n = n,
+        k = k,
+        mat_floats = mat_floats,
+        batch = batch,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    // Batch 0: A=[[1,0],[0,1]] (identity), B=[[2,3],[4,5]] => C=[[2,3],[4,5]]
+    // Batch 1: A=[[2,0],[0,2]] (2*I),      B=[[1,1],[1,1]] => C=[[2,2],[2,2]]
+    let a: [f32; 8] = [1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0];
+    let b: [f32; 8] = [2.0, 3.0, 4.0, 5.0, 1.0, 1.0, 1.0, 1.0];
+    let mut payload = Vec::with_capacity(a_bytes + b_bytes);
+    for v in a { payload.extend_from_slice(&v.to_le_bytes()); }
+    for v in b { payload.extend_from_slice(&v.to_le_bytes()); }
+    let mut out = vec![0u8; c_bytes];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    let expected: [f32; 8] = [2.0, 3.0, 4.0, 5.0, 2.0, 2.0, 2.0, 2.0];
+    for (i, &exp) in expected.iter().enumerate() {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - exp).abs() < 0.01, "elem {i}: got {actual}, expected {exp}");
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Multiple independent streams
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clif_ffi_cuda_two_streams_independent_launches() {
+    // Launch two kernels on separate streams over disjoint buffers;
+    // sync both streams and verify results are independent.
+    let n: usize = 8;
+    let data_bytes = n * 4;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0400;
+    let mem_size: usize = 0x0800;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f3F800000;\n\
+                   add.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_async sig2
+    fn3 = %cl_cuda_launch_on_stream sig3
+    fn4 = %cl_cuda_download_ptr_async sig2
+    fn5 = %cl_cuda_stream_create sig4
+    fn6 = %cl_cuda_stream_sync sig5
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn1(v91, v10)
+    v13 = call fn5(v91)
+    v14 = call fn5(v91)
+
+    v15 = call fn2(v91, v11, v1, v10, v13)
+    v16 = iadd v1, v10
+    v17 = call fn2(v91, v12, v16, v10, v14)
+
+    v18 = iadd_imm v0, {ptx_off}
+    v19 = iconst.i32 1
+    v20 = iadd_imm v0, {bind_off}
+    v21 = iconst.i32 {n}
+    v22 = call fn3(v91, v18, v19, v20, v19, v19, v19, v21, v19, v19, v13)
+    v23 = iadd_imm v0, {bind_off2}
+    v24 = call fn3(v91, v18, v19, v23, v19, v19, v19, v21, v19, v19, v14)
+
+    v25 = call fn4(v91, v11, v2, v10, v13)
+    v26 = iadd v2, v10
+    v27 = call fn4(v91, v12, v26, v10, v14)
+
+    v28 = call fn6(v91, v13)
+    v29 = call fn6(v91, v14)
+
+    call fn7(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        bind_off2 = bind_off + 4,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    // buf0: [1..8], buf1: [10..17] — each should get +1
+    let mut payload = vec![0u8; data_bytes * 2];
+    for i in 0..n {
+        ((i + 1) as f32).to_le_bytes().iter().enumerate().for_each(|(b, &v)| payload[i * 4 + b] = v);
+        ((i + 10) as f32).to_le_bytes().iter().enumerate().for_each(|(b, &v)| payload[data_bytes + i * 4 + b] = v);
+    }
+    let mut out = vec![0u8; data_bytes * 2];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let a = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let b = f32::from_le_bytes(out[data_bytes + i * 4..data_bytes + i * 4 + 4].try_into().unwrap());
+        assert!((a - (i + 2) as f32).abs() < 0.001, "stream0 elem {i}: got {a}");
+        assert!((b - (i + 11) as f32).abs() < 0.001, "stream1 elem {i}: got {b}");
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Double stream sync — syncing a completed stream must succeed
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clif_ffi_cuda_stream_double_sync() {
+    let mem_size: usize = 0x0200;
+    let out_size: usize = 8;
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    return
+}
+
+function u0:1(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_stream_create sig1
+    fn2 = %cl_cuda_stream_sync sig2
+    fn3 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = call fn1(v91)
+    v11 = call fn2(v91, v10)
+    v12 = call fn2(v91, v10)
+
+    store.i32 v11, v2
+    v20 = iadd_imm v2, 4
+    store.i32 v12, v20
+
+    call fn3(v90)
+    return
+}"#.to_string();
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: vec![],
+    };
+
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &[], &mut out).unwrap();
+
+    let sync1 = i32::from_le_bytes(out[0..4].try_into().unwrap());
+    let sync2 = i32::from_le_bytes(out[4..8].try_into().unwrap());
+    assert_eq!(sync1, 0, "first sync should succeed");
+    assert_eq!(sync2, 0, "second sync on idle stream should also succeed");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Graph upload before repeated launch (pre-warming to device memory)
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clif_ffi_cuda_graph_upload_then_repeated_launch() {
+    let n: usize = 4;
+    let data_bytes: usize = n * 4;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0300;
+    let mem_size: usize = 0x0800;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f3F800000;\n\
+                   add.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+    sig6 = (i64, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr sig2
+    fn3 = %cl_cuda_download_ptr sig2
+    fn4 = %cl_cuda_launch_on_stream sig3
+    fn5 = %cl_cuda_stream_create sig4
+    fn6 = %cl_cuda_graph_begin_capture sig5
+    fn7 = %cl_cuda_graph_end_capture sig5
+    fn8 = %cl_cuda_graph_upload sig6
+    fn9 = %cl_cuda_graph_launch sig6
+    fn10 = %cl_cuda_stream_sync sig5
+    fn11 = %cl_cuda_graph_destroy sig5
+    fn12 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn2(v91, v11, v1, v10)
+    v13 = call fn5(v91)
+
+    v14 = call fn6(v91, v13)
+    v15 = iadd_imm v0, {ptx_off}
+    v16 = iconst.i32 1
+    v17 = iadd_imm v0, {bind_off}
+    v18 = iconst.i32 {n}
+    v19 = call fn4(v91, v15, v16, v17, v16, v16, v16, v18, v16, v16, v13)
+    v20 = call fn7(v91, v13)
+
+    ; upload graph to device memory before first launch
+    v21 = call fn8(v91, v20, v13)
+    ; launch 3 times (each +1.0 to all elements)
+    v22 = call fn9(v91, v20, v13)
+    v23 = call fn9(v91, v20, v13)
+    v24 = call fn9(v91, v20, v13)
+    v25 = call fn10(v91, v13)
+    v26 = call fn3(v91, v11, v2, v10)
+    v27 = call fn11(v91, v20)
+
+    call fn12(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    // [1.0, 2.0, 3.0, 4.0] + 1 applied 3 times = [4.0, 5.0, 6.0, 7.0]
+    let payload: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut out = vec![0u8; data_bytes];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for (i, expected) in [4.0f32, 5.0, 6.0, 7.0].iter().enumerate() {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        assert!((actual - expected).abs() < 0.001, "elem {i}: got {actual}, expected {expected}");
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Stream destroy syncs pending work before teardown
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clif_ffi_cuda_stream_destroy_flushes_work() {
+    // Upload and launch on a stream, destroy it (which fences), then sync-download.
+    // If the fence in stream_destroy works correctly the kernel result is visible.
+    let n: usize = 8;
+    let data_bytes = n * 4;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0400;
+    let mem_size: usize = 0x0800;
+
+    let ptx = ".version 7.0\n\
+               .target sm_50\n\
+               .address_size 64\n\
+               \n\
+               .visible .entry main(\n\
+                   .param .u64 data_ptr\n\
+               )\n\
+               {\n\
+                   .reg .u32 %r0;\n\
+                   .reg .u64 %rd, %off;\n\
+                   .reg .f32 %fv, %fc;\n\
+                   mov.u32 %r0, %tid.x;\n\
+                   cvt.u64.u32 %off, %r0;\n\
+                   shl.b64 %off, %off, 2;\n\
+                   ld.param.u64 %rd, [data_ptr];\n\
+                   add.u64 %rd, %rd, %off;\n\
+                   ld.global.f32 %fv, [%rd];\n\
+                   mov.f32 %fc, 0f40000000;\n\
+                   mul.f32 %fv, %fv, %fc;\n\
+                   st.global.f32 [%rd], %fv;\n\
+                   ret;\n\
+               }\n\0";
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig4 = (i64) -> i32 system_v
+    sig5 = (i64, i32) -> i32 system_v
+    sig6 = (i64, i32, i64, i64) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_async sig2
+    fn3 = %cl_cuda_launch_on_stream sig3
+    fn4 = %cl_cuda_stream_create sig4
+    fn5 = %cl_cuda_stream_destroy sig5
+    fn6 = %cl_cuda_download_ptr sig6
+    fn7 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {data_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn4(v91)
+
+    v13 = call fn2(v91, v11, v1, v10, v12)
+    v14 = iadd_imm v0, {ptx_off}
+    v15 = iconst.i32 1
+    v16 = iadd_imm v0, {bind_off}
+    v17 = iconst.i32 {n}
+    v18 = call fn3(v91, v14, v15, v16, v15, v15, v15, v17, v15, v15, v12)
+    ; destroy flushes the stream via fence event
+    v19 = call fn5(v91, v12)
+    ; now sync download on default stream — work must be visible
+    v20 = call fn6(v91, v11, v2, v10)
+
+    call fn7(v90)
+    return
+}}"#,
+        data_bytes = data_bytes,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    // Each element multiplied by 2.0
+    let payload: Vec<u8> = (1..=n).map(|x| x as f32).flat_map(|v| v.to_le_bytes()).collect();
+    let mut out = vec![0u8; data_bytes];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let expected = (i + 1) as f32 * 2.0;
+        assert!((actual - expected).abs() < 0.001, "elem {i}: got {actual}, expected {expected}");
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Event elapsed before any record returns -1
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clif_ffi_cuda_event_elapsed_unrecorded_returns_error() {
+    let mem_size: usize = 0x0200;
+    let out_size: usize = 4;
+
+    let clif_ir = r#"function u0:0(i64) system_v {
+block0(v0: i64):
+    return
+}
+
+function u0:1(i64) system_v {
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i32 system_v
+    sig2 = (i64, i32, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_event_create sig1
+    fn2 = %cl_cuda_event_elapsed_ms_bits sig2
+    fn3 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = call fn1(v91)
+    v11 = call fn1(v91)
+    ; query elapsed before either event has been recorded
+    v12 = call fn2(v91, v10, v11)
+
+    store.i32 v12, v2
+
+    call fn3(v90)
+    return
+}"#.to_string();
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: vec![],
+    };
+
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &[], &mut out).unwrap();
+
+    let rc = i32::from_le_bytes(out[0..4].try_into().unwrap());
+    assert_eq!(rc, -1, "elapsed on unrecorded events must return -1");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Async offset upload exact boundary — last valid byte vs one-past-end
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_clif_ffi_cuda_upload_offset_exact_boundary() {
+    // Buffer is 16 bytes. Upload 8 bytes at offset 8 (fills exactly). Upload 1 byte at offset 16 must fail.
+    let total_bytes: usize = 16;
+    let mem_size: usize = 0x0400;
+    let out_size: usize = 8;
+
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64, i32, i64, i64, i64, i32) -> i32 system_v
+    sig3 = (i64) -> i32 system_v
+    sig4 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_upload_ptr_offset_async sig2
+    fn3 = %cl_cuda_stream_create sig3
+    fn4 = %cl_cuda_cleanup sig0
+
+block0(v0: i64):
+    v1 = load.i64 notrap aligned v0+0x08
+    v2 = load.i64 notrap aligned v0+0x18
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {total_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn3(v91)
+
+    ; upload 8 bytes at offset 8 — exactly fills the buffer
+    v13 = iconst.i64 8
+    v14 = call fn2(v91, v11, v13, v1, v13, v12)
+
+    ; upload 1 byte at offset 16 — one past the end, must fail
+    v15 = iconst.i64 16
+    v16 = iconst.i64 1
+    v17 = call fn2(v91, v11, v15, v1, v16, v12)
+
+    store.i32 v14, v2
+    v20 = iadd_imm v2, 4
+    store.i32 v17, v20
+
+    call fn4(v90)
+    return
+}}"#,
+        total_bytes = total_bytes,
+    );
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: vec![0u8; mem_size],
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        cranelift_units: 0,
+        timeout_ms: Some(5000),
+        output: vec![],
+    };
+
+    let payload = vec![0u8; total_bytes];
+    let mut out = vec![0u8; out_size];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    let exact_fit = i32::from_le_bytes(out[0..4].try_into().unwrap());
+    let one_past = i32::from_le_bytes(out[4..8].try_into().unwrap());
+    assert_eq!(exact_fit, 0, "upload at offset 8 size 8 into 16-byte buf should succeed");
+    assert_eq!(one_past, -1, "upload at offset 16 into 16-byte buf should fail");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Two host threads sharing one CUDA context, independent streams
+// Thread 0: uploads A, launches +1.0 kernel on stream0, downloads to out[0..n]
+// Thread 1: uploads B, launches +10.0 kernel on stream1, downloads to out[n..2n]
+// Both run concurrently via ClifCallAsync + Wait. Results must not cross-contaminate.
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn test_clif_ffi_cuda_shared_context_two_threads() {
+    let n: usize = 8;
+    let elem_bytes = n * 4;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0800;
+    let mem_size: usize = 0x1000;
+    // Slots in shared memory (legacy header: ctx@0x00, data@0x08, data_len@0x10, out@0x18, out_len@0x20)
+    let buf0_slot: usize = 0x28;  // i32: gpu buffer id for thread0
+    let buf1_slot: usize = 0x2C;  // i32: gpu buffer id for thread1
+    let sid0_slot: usize = 0x30;  // i32: stream id for thread0
+    let sid1_slot: usize = 0x34;  // i32: stream id for thread1
+    let flag0_off: usize = 0x38;  // u64: wait flag for thread0
+    let flag1_off: usize = 0x3C;  // u64: wait flag for thread1
+    // bind_off layout: [buf_id0: i32] for each thread kernel (1 binding each)
+    let bind_t0 = bind_off;
+    let bind_t1 = bind_off + 8;
+
+    // PTX: reads one f32 buffer, adds a constant, writes back. Constant chosen per-test via bind slot.
+    // We use two separate bind descriptors pointing to buf0 and buf1 respectively.
+    // Single kernel that adds +1.0 — we use it for both threads (results are independent buffers).
+    let ptx = format!("\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 buf_ptr
+)
+{{
+    .reg .u32 %r0;
+    .reg .u64 %base, %off;
+    .reg .f32 %val, %one;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+    ld.param.u64 %base, [buf_ptr];
+    add.u64 %base, %base, %off;
+    ld.global.f32 %val, [%base];
+    mov.f32 %one, 0f3F800000;
+    add.f32 %val, %val, %one;
+    st.global.f32 [%base], %val;
+    ret;
+}}\0");
+
+    // CLIF:
+    //   u0:0  — noop
+    //   u0:1  — init: cuda_init, create 2 bufs, 2 streams, store ids
+    //   u0:2  — thread0: upload from data_ptr+0, launch on stream0, sync, download to out_ptr+0
+    //   u0:3  — thread1: upload from data_ptr+elem_bytes, launch on stream1, sync, download to out_ptr+elem_bytes
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_stream_create sig2
+
+block0(v0: i64):
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {elem_bytes}
+    v11 = call fn1(v91, v10)
+    v12 = call fn1(v91, v10)
+    v13 = call fn2(v91)
+    v14 = call fn2(v91)
+
+    store.i32 v11, v0+{buf0_slot}
+    store.i32 v12, v0+{buf1_slot}
+    store.i32 v13, v0+{sid0_slot}
+    store.i32 v14, v0+{sid1_slot}
+    return
+}}
+
+function u0:2(i64) system_v {{
+    sig0 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_upload_ptr_async sig0
+    fn1 = %cl_cuda_launch_on_stream sig1
+    fn2 = %cl_cuda_stream_sync sig2
+    fn3 = %cl_cuda_download_ptr_async sig0
+
+block0(v0: i64):
+    v91 = load.i64 notrap aligned v0+0
+    v11 = load.i32 notrap v0+{buf0_slot}
+    v13 = load.i32 notrap v0+{sid0_slot}
+    v2  = load.i64 notrap aligned v0+0x08
+    v3  = load.i64 notrap aligned v0+0x18
+
+    v10 = iconst.i64 {elem_bytes}
+    v16 = call fn0(v91, v11, v2, v10, v13)
+
+    v19 = iadd_imm v0, {ptx_off}
+    v20 = iconst.i32 1
+    v21 = iadd_imm v0, {bind_t0}
+    v22 = iconst.i32 {n}
+    v23 = call fn1(v91, v19, v20, v21, v20, v20, v20, v22, v20, v20, v13)
+
+    v24 = call fn3(v91, v11, v3, v10, v13)
+    v25 = call fn2(v91, v13)
+    return
+}}
+
+function u0:3(i64) system_v {{
+    sig0 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_upload_ptr_async sig0
+    fn1 = %cl_cuda_launch_on_stream sig1
+    fn2 = %cl_cuda_stream_sync sig2
+    fn3 = %cl_cuda_download_ptr_async sig0
+
+block0(v0: i64):
+    v91 = load.i64 notrap aligned v0+0
+    v12 = load.i32 notrap v0+{buf1_slot}
+    v14 = load.i32 notrap v0+{sid1_slot}
+    v2  = load.i64 notrap aligned v0+0x08
+    v3  = load.i64 notrap aligned v0+0x18
+
+    v10 = iconst.i64 {elem_bytes}
+    v17 = iadd_imm v2, {elem_bytes}
+    v18 = call fn0(v91, v12, v17, v10, v14)
+
+    v19 = iadd_imm v0, {ptx_off}
+    v20 = iconst.i32 1
+    v21 = iadd_imm v0, {bind_t1}
+    v22 = iconst.i32 {n}
+    v23 = call fn1(v91, v19, v20, v21, v20, v20, v20, v22, v20, v20, v14)
+
+    v26 = iadd_imm v3, {elem_bytes}
+    v27 = call fn3(v91, v12, v26, v10, v14)
+    v28 = call fn2(v91, v14)
+    return
+}}"#,
+        elem_bytes = elem_bytes,
+        buf0_slot = buf0_slot,
+        buf1_slot = buf1_slot,
+        sid0_slot = sid0_slot,
+        sid1_slot = sid1_slot,
+        ptx_off = ptx_off,
+        bind_t0 = bind_t0,
+        bind_t1 = bind_t1,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    // bind descriptors: each is [buf_id: i32, padding: i32] — buf_id filled at runtime
+    // thread0 bind: points to buf0 (id=0, will be stored at runtime)
+    // thread1 bind: points to buf1 (id=1, will be stored at runtime)
+    // Pre-fill with expected buf ids (init creates them in order: 0 and 1)
+    memory[bind_t0..bind_t0 + 4].copy_from_slice(&0i32.to_le_bytes());
+    memory[bind_t1..bind_t1 + 4].copy_from_slice(&1i32.to_le_bytes());
+
+    // Action list:
+    //   0: Describe { src=2, dst=0 }  — worker0 calls u0:2(ptr+0)
+    //   1: Describe { src=3, dst=0 }  — worker1 calls u0:3(ptr+0)
+    //   2: ClifCall  { src=1 }        — sync init
+    //   3: ClifCallAsync { dst=0, src=0, offset=flag0, size=1 } → unit0
+    //   4: ClifCallAsync { dst=1, src=1, offset=flag1, size=1 } → unit1
+    //   5: Wait { dst=flag0 }
+    //   6: Wait { dst=flag1 }
+    let actions = vec![
+        // Describe actions (consumed by ClifCallAsync workers)
+        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::Describe, dst: 0, src: 3, offset: 0, size: 0 },
+        // Sync init
+        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
+        // Dispatch both workers
+        Action {
+            kind: Kind::ClifCallAsync,
+            dst: 0,
+            src: 0,
+            offset: flag0_off as u32,
+            size: 1,
+        },
+        Action {
+            kind: Kind::ClifCallAsync,
+            dst: 1,
+            src: 1,
+            offset: flag1_off as u32,
+            size: 1,
+        },
+        // Wait for both
+        Action { kind: Kind::Wait, dst: flag0_off as u32, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::Wait, dst: flag1_off as u32, src: 0, offset: 0, size: 0 },
+    ];
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions,
+        cranelift_units: 2,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    // Thread0 input: [1.0, 2.0, ..., 8.0], expected output: each +1.0
+    // Thread1 input: [10.0, 20.0, ..., 80.0], expected output: each +1.0
+    let mut payload = vec![0u8; elem_bytes * 2];
+    for i in 0..n {
+        let a = (i as f32 + 1.0).to_le_bytes();
+        let b = ((i as f32 + 1.0) * 10.0).to_le_bytes();
+        payload[i * 4..i * 4 + 4].copy_from_slice(&a);
+        payload[elem_bytes + i * 4..elem_bytes + i * 4 + 4].copy_from_slice(&b);
+    }
+    let mut out = vec![0u8; elem_bytes * 2];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let got0 = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let got1 = f32::from_le_bytes(out[elem_bytes + i * 4..elem_bytes + i * 4 + 4].try_into().unwrap());
+        let exp0 = (i as f32 + 1.0) + 1.0;
+        let exp1 = (i as f32 + 1.0) * 10.0 + 1.0;
+        assert!((got0 - exp0).abs() < 0.01, "thread0[{i}]: got {got0}, expected {exp0}");
+        assert!((got1 - exp1).abs() < 0.01, "thread1[{i}]: got {got1}, expected {exp1}");
+    }
+}
+
+#[test]
+fn test_clif_ffi_cuda_async_worker_single_thread() {
+    // Verifies CUDA upload+kernel+download+sync works from a ClifCallAsync worker thread
+    let n: usize = 8;
+    let elem_bytes = n * 4;
+    let ptx_off: usize = 0x0100;
+    let bind_off: usize = 0x0800;
+    let mem_size: usize = 0x1000;
+    let buf0_slot: usize = 0x28;
+    let sid0_slot: usize = 0x30;
+
+    let ptx = format!("\
+.version 7.0
+.target sm_50
+.address_size 64
+
+.visible .entry main(
+    .param .u64 buf_ptr
+)
+{{
+    .reg .u32 %r0;
+    .reg .u64 %base, %off;
+    .reg .f32 %val, %one;
+
+    mov.u32 %r0, %tid.x;
+    cvt.u64.u32 %off, %r0;
+    shl.b64 %off, %off, 2;
+    ld.param.u64 %base, [buf_ptr];
+    add.u64 %base, %base, %off;
+    ld.global.f32 %val, [%base];
+    mov.f32 %one, 0f3F800000;
+    add.f32 %val, %val, %one;
+    st.global.f32 [%base], %val;
+    ret;
+}}\0");
+
+    let clif_ir = format!(r#"function u0:0(i64) system_v {{
+block0(v0: i64):
+    return
+}}
+
+function u0:1(i64) system_v {{
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i32 system_v
+    sig2 = (i64) -> i32 system_v
+
+    fn0 = %cl_cuda_init sig0
+    fn1 = %cl_cuda_create_buffer sig1
+    fn2 = %cl_cuda_stream_create sig2
+
+block0(v0: i64):
+    v90 = iadd_imm v0, 0
+    call fn0(v90)
+    v91 = load.i64 notrap aligned v0+0
+
+    v10 = iconst.i64 {elem_bytes}
+    v11 = call fn1(v91, v10)
+    v13 = call fn2(v91)
+    store.i32 v11, v0+{buf0_slot}
+    store.i32 v13, v0+{sid0_slot}
+    return
+}}
+
+function u0:2(i64) system_v {{
+    sig0 = (i64, i32, i64, i64, i32) -> i32 system_v
+    sig1 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
+    sig2 = (i64, i32) -> i32 system_v
+
+    fn0 = %cl_cuda_upload_ptr_async sig0
+    fn1 = %cl_cuda_launch_on_stream sig1
+    fn2 = %cl_cuda_stream_sync sig2
+    fn3 = %cl_cuda_download_ptr_async sig0
+
+block0(v0: i64):
+    v91 = load.i64 notrap aligned v0+0
+    v11 = load.i32 notrap v0+{buf0_slot}
+    v13 = load.i32 notrap v0+{sid0_slot}
+    v2  = load.i64 notrap aligned v0+0x08
+    v3  = load.i64 notrap aligned v0+0x18
+
+    v10 = iconst.i64 {elem_bytes}
+    v16 = call fn0(v91, v11, v2, v10, v13)
+
+    v19 = iadd_imm v0, {ptx_off}
+    v20 = iconst.i32 1
+    v21 = iadd_imm v0, {bind_off}
+    v22 = iconst.i32 {n}
+    v23 = call fn1(v91, v19, v20, v21, v20, v20, v20, v22, v20, v20, v13)
+
+    v24 = call fn3(v91, v11, v3, v10, v13)
+    v25 = call fn2(v91, v13)
+    return
+}}"#,
+        elem_bytes = elem_bytes,
+        buf0_slot = buf0_slot,
+        sid0_slot = sid0_slot,
+        ptx_off = ptx_off,
+        bind_off = bind_off,
+        n = n,
+    );
+
+    let mut memory = vec![0u8; mem_size];
+    memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
+    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
+
+    let flag_off: u32 = 0x50;
+    let actions = vec![
+        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: flag_off, size: 1 },
+        Action { kind: Kind::Wait, dst: flag_off, src: 0, offset: 0, size: 0 },
+    ];
+
+    let config = BaseConfig {
+        cranelift_ir: clif_ir,
+        memory_size: mem_size,
+        runtime_header: legacy_runtime_header(),
+        context_offset: 0,
+        initial_memory: memory,
+    };
+    let mut base = Base::new(config).unwrap();
+    let alg = Algorithm {
+        actions,
+        cranelift_units: 1,
+        timeout_ms: Some(15000),
+        output: vec![],
+    };
+
+    let payload: Vec<u8> = (0..n).flat_map(|i| (i as f32 + 1.0).to_le_bytes()).collect();
+    let mut out = vec![0u8; elem_bytes];
+    base.execute_into(&alg, &payload, &mut out).unwrap();
+
+    for i in 0..n {
+        let got = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
+        let exp = i as f32 + 2.0;
+        assert!((got - exp).abs() < 0.01, "elem[{i}]: got {got}, expected {exp}");
     }
 }

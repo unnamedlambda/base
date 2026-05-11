@@ -1170,10 +1170,31 @@ structure CudaSetup where
   fnCreateBuffer : FnRef
   fnUpload : FnRef
   fnUploadOffset : FnRef   -- cl_cuda_upload_ptr_offset: (ctx, buf_id, buf_offset, src_ptr, size) → i32
+  fnUploadAsync : FnRef
+  fnUploadOffsetAsync : FnRef
   fnDownload : FnRef
+  fnDownloadAsync : FnRef
   fnFreeBuffer : FnRef
+  fnStreamCreate : FnRef
+  fnStreamSync : FnRef
+  fnStreamDestroy : FnRef
+  fnEventCreate : FnRef
+  fnEventRecord : FnRef
+  fnStreamWaitEvent : FnRef
+  fnEventElapsedMsBits : FnRef
+  fnEventDestroy : FnRef
+  fnGraphBeginCapture : FnRef
+  fnGraphEndCapture : FnRef
+  fnGraphUpload : FnRef
+  fnGraphLaunch : FnRef
+  fnGraphDestroy : FnRef
+  fnPinnedAlloc : FnRef
+  fnPinnedPtr : FnRef
+  fnPinnedFree : FnRef
   fnLaunch : FnRef
   fnLaunchNamed : FnRef    -- cl_cuda_launch_named: adds name_ptr arg between kernel and n_bufs
+  fnLaunchOnStream : FnRef
+  fnLaunchNamedOnStream : FnRef
   fnSync : FnRef           -- cl_cuda_sync: (ctx) → i32
   fnCleanup : FnRef
 
@@ -1183,28 +1204,62 @@ def declareCudaFFI : IRBuilder CudaSetup := do
   let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer"     [.i64, .i64]                         (some .i32)
   let fnUpload       ← declareFFI "cl_cuda_upload_ptr"        [.i64, .i32, .i64, .i64]             (some .i32)
   let fnUploadOffset ← declareFFI "cl_cuda_upload_ptr_offset" [.i64, .i32, .i64, .i64, .i64]      (some .i32)
+  let fnUploadAsync  ← declareFFI "cl_cuda_upload_ptr_async"  [.i64, .i32, .i64, .i64, .i32]       (some .i32)
+  let fnUploadOffsetAsync ← declareFFI "cl_cuda_upload_ptr_offset_async"
+    [.i64, .i32, .i64, .i64, .i64, .i32] (some .i32)
   let fnDownload     ← declareFFI "cl_cuda_download_ptr"      [.i64, .i32, .i64, .i64]             (some .i32)
+  let fnDownloadAsync ← declareFFI "cl_cuda_download_ptr_async" [.i64, .i32, .i64, .i64, .i32]     (some .i32)
   let fnFreeBuffer   ← declareFFI "cl_cuda_free_buffer"       [.i64, .i32]                         (some .i32)
+  let fnStreamCreate ← declareFFI "cl_cuda_stream_create"     [.i64]                               (some .i32)
+  let fnStreamSync   ← declareFFI "cl_cuda_stream_sync"       [.i64, .i32]                         (some .i32)
+  let fnStreamDestroy ← declareFFI "cl_cuda_stream_destroy"   [.i64, .i32]                         (some .i32)
+  let fnEventCreate  ← declareFFI "cl_cuda_event_create"      [.i64]                               (some .i32)
+  let fnEventRecord  ← declareFFI "cl_cuda_event_record"      [.i64, .i32, .i32]                   (some .i32)
+  let fnStreamWaitEvent ← declareFFI "cl_cuda_stream_wait_event" [.i64, .i32, .i32]                (some .i32)
+  let fnEventElapsedMsBits ← declareFFI "cl_cuda_event_elapsed_ms_bits" [.i64, .i32, .i32]         (some .i32)
+  let fnEventDestroy ← declareFFI "cl_cuda_event_destroy"     [.i64, .i32]                         (some .i32)
+  let fnGraphBeginCapture ← declareFFI "cl_cuda_graph_begin_capture" [.i64, .i32]                  (some .i32)
+  let fnGraphEndCapture ← declareFFI "cl_cuda_graph_end_capture" [.i64, .i32]                      (some .i32)
+  let fnGraphUpload ← declareFFI "cl_cuda_graph_upload" [.i64, .i32, .i32]                         (some .i32)
+  let fnGraphLaunch ← declareFFI "cl_cuda_graph_launch" [.i64, .i32, .i32]                         (some .i32)
+  let fnGraphDestroy ← declareFFI "cl_cuda_graph_destroy" [.i64, .i32]                             (some .i32)
+  let fnPinnedAlloc  ← declareFFI "cl_cuda_pinned_alloc"      [.i64, .i64]                         (some .i32)
+  let fnPinnedPtr    ← declareFFI "cl_cuda_pinned_ptr"        [.i64, .i32]                         (some .i64)
+  let fnPinnedFree   ← declareFFI "cl_cuda_pinned_free"       [.i64, .i32]                         (some .i32)
   let fnLaunch       ← declareFFI "cl_cuda_launch"
     [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
   let fnLaunchNamed  ← declareFFI "cl_cuda_launch_named"
     [.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnLaunchOnStream ← declareFFI "cl_cuda_launch_on_stream"
+    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnLaunchNamedOnStream ← declareFFI "cl_cuda_launch_named_on_stream"
+    [.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
   let fnSync         ← declareFFI "cl_cuda_sync"              [.i64]                               (some .i32)
   let fnCleanup      ← declareFFI "cl_cuda_cleanup"           [.i64]                               none
-  pure { fnInit, fnCreateBuffer, fnUpload, fnUploadOffset, fnDownload,
-         fnFreeBuffer, fnLaunch, fnLaunchNamed, fnSync, fnCleanup }
+  pure { fnInit, fnCreateBuffer, fnUpload, fnUploadOffset, fnUploadAsync, fnUploadOffsetAsync,
+         fnDownload, fnDownloadAsync, fnFreeBuffer, fnStreamCreate, fnStreamSync, fnStreamDestroy,
+         fnEventCreate, fnEventRecord, fnStreamWaitEvent, fnEventElapsedMsBits, fnEventDestroy,
+         fnGraphBeginCapture, fnGraphEndCapture, fnGraphUpload, fnGraphLaunch, fnGraphDestroy,
+         fnPinnedAlloc, fnPinnedPtr, fnPinnedFree, fnLaunch, fnLaunchNamed, fnLaunchOnStream,
+         fnLaunchNamedOnStream, fnSync, fnCleanup }
 
 /-- cuBLAS FFI function bundle -/
 structure CuBlasSetup where
   fnSgemv : FnRef   -- (ctx, trans, m, n, alpha_bits, a_buf, x_buf, beta_bits, y_buf) → i32
+  fnSgemvOnStream : FnRef
   fnSgemm : FnRef   -- (ctx, transa, transb, m, n, k, alpha_bits, a_buf, stride_a, b_buf, stride_b, beta_bits, c_buf, stride_c, batch) → i32
+  fnSgemmOnStream : FnRef
 
 def declareCuBlasFFI : IRBuilder CuBlasSetup := do
   let fnSgemv ← declareFFI "cl_cublas_sgemv"
     [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let fnSgemvOnStream ← declareFFI "cl_cublas_sgemv_on_stream"
+    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
   let fnSgemm ← declareFFI "cl_cublas_sgemm_strided_batched"
     [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32] (some .i32)
-  pure { fnSgemv, fnSgemm }
+  let fnSgemmOnStream ← declareFFI "cl_cublas_sgemm_strided_batched_on_stream"
+    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32, .i32] (some .i32)
+  pure { fnSgemv, fnSgemvOnStream, fnSgemm, fnSgemmOnStream }
 
 def cudaCtxSlotPtr (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val :=
   absAddr ptr slotOffset
@@ -1235,11 +1290,29 @@ def cudaUploadOffset (cuda : CudaSetup) (ptr bufId bufOff srcOff size : Val)
   let srcPtr ← iadd ptr srcOff
   call cuda.fnUploadOffset [ctxPtr, bufId, bufOff, srcPtr, size]
 
+def cudaUploadAsync (cuda : CudaSetup) (ptr bufId srcOff size streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let srcPtr ← iadd ptr srcOff
+  call cuda.fnUploadAsync [ctxPtr, bufId, srcPtr, size, streamId]
+
+def cudaUploadOffsetAsync (cuda : CudaSetup) (ptr bufId bufOff srcOff size streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let srcPtr ← iadd ptr srcOff
+  call cuda.fnUploadOffsetAsync [ctxPtr, bufId, bufOff, srcPtr, size, streamId]
+
 def cudaDownload (cuda : CudaSetup) (ptr bufId dstOff size : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
   let ctxPtr ← cudaCtxPtr ptr slotOffset
   let dstPtr ← iadd ptr dstOff
   call cuda.fnDownload [ctxPtr, bufId, dstPtr, size]
+
+def cudaDownloadAsync (cuda : CudaSetup) (ptr bufId dstOff size streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let dstPtr ← iadd ptr dstOff
+  call cuda.fnDownloadAsync [ctxPtr, bufId, dstPtr, size, streamId]
 
 def cudaSync (cuda : CudaSetup) (ptr : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
@@ -1250,6 +1323,86 @@ def cudaFreeBuffer (cuda : CudaSetup) (ptr bufId : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
   let ctxPtr ← cudaCtxPtr ptr slotOffset
   call cuda.fnFreeBuffer [ctxPtr, bufId]
+
+def cudaStreamCreate (cuda : CudaSetup) (ptr : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnStreamCreate [ctxPtr]
+
+def cudaStreamSync (cuda : CudaSetup) (ptr streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnStreamSync [ctxPtr, streamId]
+
+def cudaStreamDestroy (cuda : CudaSetup) (ptr streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnStreamDestroy [ctxPtr, streamId]
+
+def cudaEventCreate (cuda : CudaSetup) (ptr : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnEventCreate [ctxPtr]
+
+def cudaEventRecord (cuda : CudaSetup) (ptr eventId streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnEventRecord [ctxPtr, eventId, streamId]
+
+def cudaStreamWaitEvent (cuda : CudaSetup) (ptr streamId eventId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnStreamWaitEvent [ctxPtr, streamId, eventId]
+
+def cudaEventElapsedMsBits (cuda : CudaSetup) (ptr startEventId endEventId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnEventElapsedMsBits [ctxPtr, startEventId, endEventId]
+
+def cudaEventDestroy (cuda : CudaSetup) (ptr eventId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnEventDestroy [ctxPtr, eventId]
+
+def cudaGraphBeginCapture (cuda : CudaSetup) (ptr streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnGraphBeginCapture [ctxPtr, streamId]
+
+def cudaGraphEndCapture (cuda : CudaSetup) (ptr streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnGraphEndCapture [ctxPtr, streamId]
+
+def cudaGraphUpload (cuda : CudaSetup) (ptr graphId streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnGraphUpload [ctxPtr, graphId, streamId]
+
+def cudaGraphLaunch (cuda : CudaSetup) (ptr graphId streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnGraphLaunch [ctxPtr, graphId, streamId]
+
+def cudaGraphDestroy (cuda : CudaSetup) (ptr graphId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnGraphDestroy [ctxPtr, graphId]
+
+def cudaPinnedAlloc (cuda : CudaSetup) (ptr size : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnPinnedAlloc [ctxPtr, size]
+
+def cudaPinnedPtr (cuda : CudaSetup) (ptr pinnedId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnPinnedPtr [ctxPtr, pinnedId]
+
+def cudaPinnedFree (cuda : CudaSetup) (ptr pinnedId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnPinnedFree [ctxPtr, pinnedId]
 
 def cudaLaunch (cuda : CudaSetup) (ptr kernelOff nBufs bindOff gridX gridY gridZ blockX blockY blockZ : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
@@ -1266,9 +1419,49 @@ def cudaLaunchNamed (cuda : CudaSetup) (ptr kernelOff nameOff nBufs bindOff grid
   let bindPtr ← iadd ptr bindOff
   call cuda.fnLaunchNamed [ctxPtr, kernelPtr, namePtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ]
 
+def cudaLaunchOnStream (cuda : CudaSetup) (ptr kernelOff nBufs bindOff gridX gridY gridZ blockX blockY blockZ streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let kernelPtr ← iadd ptr kernelOff
+  let bindPtr ← iadd ptr bindOff
+  call cuda.fnLaunchOnStream [ctxPtr, kernelPtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ, streamId]
+
+def cudaLaunchNamedOnStream (cuda : CudaSetup) (ptr kernelOff nameOff nBufs bindOff gridX gridY gridZ blockX blockY blockZ streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let kernelPtr ← iadd ptr kernelOff
+  let namePtr ← iadd ptr nameOff
+  let bindPtr ← iadd ptr bindOff
+  call cuda.fnLaunchNamedOnStream [ctxPtr, kernelPtr, namePtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ, streamId]
+
 def cudaCleanup (cuda : CudaSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Unit := do
   let slotPtr ← cudaCtxSlotPtr ptr slotOffset
   callVoid cuda.fnCleanup [slotPtr]
+
+def cublasSgemv (cublas : CuBlasSetup) (ptr trans m n alphaBits aBuf xBuf betaBits yBuf : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cublas.fnSgemv [ctxPtr, trans, m, n, alphaBits, aBuf, xBuf, betaBits, yBuf]
+
+def cublasSgemvOnStream (cublas : CuBlasSetup)
+    (ptr trans m n alphaBits aBuf xBuf betaBits yBuf streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cublas.fnSgemvOnStream [ctxPtr, trans, m, n, alphaBits, aBuf, xBuf, betaBits, yBuf, streamId]
+
+def cublasSgemmStridedBatched (cublas : CuBlasSetup)
+    (ptr transA transB m n k alphaBits aBuf strideA bBuf strideB betaBits cBuf strideC batchCount : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cublas.fnSgemm
+    [ctxPtr, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB, betaBits, cBuf, strideC, batchCount]
+
+def cublasSgemmStridedBatchedOnStream (cublas : CuBlasSetup)
+    (ptr transA transB m n k alphaBits aBuf strideA bBuf strideB betaBits cBuf strideC batchCount streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cublas.fnSgemmOnStream
+    [ctxPtr, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB, betaBits, cBuf, strideC, batchCount, streamId]
 
 /-- Read a file using typed field handles for filename and data regions -/
 def fldReadFile (ptr : Val) (fnRead : FnRef)
@@ -1345,10 +1538,7 @@ def Tensor.input0 {n : Nat} : Tensor (n + 1) :=
   .ofExpr (.input ⟨0, by simp⟩)
 
 def Tensor.input1 {n : Nat} : Tensor (n + 2) :=
-  .ofExpr (.input ⟨1, by
-    have h : 1 < Nat.succ (Nat.succ n) :=
-      Nat.succ_lt_succ (Nat.succ_pos n)
-    simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using h⟩)
+  .ofExpr (.input ⟨1, by simp⟩)
 
 def Tensor.scalarBits {n : Nat} (bits : String) : Tensor n :=
   .ofExpr (.const bits)
