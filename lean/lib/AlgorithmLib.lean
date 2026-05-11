@@ -1293,11 +1293,21 @@ end IR
 
 namespace CudaTensor
 
+/-- Low-level scalar IR for one lane of an elementwise CUDA kernel. -/
 inductive Expr : Nat → Type where
   | input : Fin n → Expr n
   | const : String → Expr n
   | add : Expr n → Expr n → Expr n
   | mul : Expr n → Expr n → Expr n
+
+/--
+A staged tensor value for elementwise CUDA kernels.
+
+At the surface level, users compose whole tensors. Lowering later turns that
+into one scalar `Expr` evaluated at each element index.
+-/
+structure Tensor (inputs : Nat) where
+  expr : Expr inputs
 
 structure PersistentKernel (inputs : Nat) where
   expr : Expr inputs
@@ -1328,6 +1338,41 @@ def mul {n : Nat} (a b : Expr n) : Expr n := .mul a b
 
 scoped infixl:65 " + " => add
 scoped infixl:70 " * " => mul
+
+def Tensor.ofExpr {n : Nat} (expr : Expr n) : Tensor n := ⟨expr⟩
+
+def Tensor.input0 {n : Nat} : Tensor (n + 1) :=
+  .ofExpr (.input ⟨0, by simp⟩)
+
+def Tensor.input1 {n : Nat} : Tensor (n + 2) :=
+  .ofExpr (.input ⟨1, by
+    have h : 1 < Nat.succ (Nat.succ n) :=
+      Nat.succ_lt_succ (Nat.succ_pos n)
+    simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using h⟩)
+
+def Tensor.scalarBits {n : Nat} (bits : String) : Tensor n :=
+  .ofExpr (.const bits)
+
+def Tensor.add {n : Nat} (x y : Tensor n) : Tensor n :=
+  .ofExpr (.add x.expr y.expr)
+
+def Tensor.mul {n : Nat} (x y : Tensor n) : Tensor n :=
+  .ofExpr (.mul x.expr y.expr)
+
+def Tensor.saxpy {n : Nat} (alpha x y : Tensor n) : Tensor n :=
+  Tensor.add (Tensor.mul alpha x) y
+
+instance {n : Nat} : HAdd (Tensor n) (Tensor n) (Tensor n) where
+  hAdd := Tensor.add
+
+instance {n : Nat} : HMul (Tensor n) (Tensor n) (Tensor n) where
+  hMul := Tensor.mul
+
+def Tensor.writeTo {n : Nat} (tensor : Tensor n) (out : Nat) (h : out < n := by decide) :
+    PersistentKernel n := {
+  expr := tensor.expr
+  output := ⟨out, h⟩
+}
 
 private def paramName (i : Nat) : String :=
   s!"in{i}_ptr"
@@ -1558,6 +1603,10 @@ def compile {inputs : Nat} (spec : PersistentKernel inputs) : CompileResult :=
     prepAlgorithm := mkAlg 2
     inferAlgorithm := mkAlg 3
   }
+
+def Tensor.compileTo {n : Nat} (tensor : Tensor n) (out : Nat) (h : out < n := by decide) :
+    CompileResult :=
+  compile (tensor.writeTo out h)
 
 end CudaTensor
 

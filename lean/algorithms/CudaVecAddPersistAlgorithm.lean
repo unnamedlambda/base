@@ -5,30 +5,27 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.CudaTensor
-open scoped AlgorithmLib.CudaTensor
 
 namespace CudaVecAddPersist
 
-def x : Expr 2 := AlgorithmLib.CudaTensor.input (n := 2) ⟨0, by decide⟩
-def y : Expr 2 := AlgorithmLib.CudaTensor.input (n := 2) ⟨1, by decide⟩
+def x : AlgorithmLib.CudaTensor.Tensor 2 :=
+  AlgorithmLib.CudaTensor.Tensor.input0
 
-def result : CompileResult := AlgorithmLib.CudaTensor.compile {
-  expr := x + y
-  output := ⟨1, by decide⟩
-}
+def y : AlgorithmLib.CudaTensor.Tensor 2 :=
+  AlgorithmLib.CudaTensor.Tensor.input1
+
+def result : CompileResult := (x + y).compileTo 1
 
 -- Uncomment to see elaboration-time rejection:
 --
--- def badOutput : CompileResult := AlgorithmLib.CudaTensor.compile {
---   expr := x + y
---   output := ⟨2, by decide⟩   -- impossible: output index 2 ∉ Fin 2
--- }
+-- def badOutput : CompileResult := (x + y).compileTo 2
+-- -- impossible: output index 2 ∉ Fin 2
 
--- def badArity : CompileResult := AlgorithmLib.CudaTensor.compile {
---   expr := x + AlgorithmLib.CudaTensor.input (n := 3) ⟨2, by decide⟩
---   -- type error: Expr 2 and Expr 3 cannot be combined
---   output := ⟨1, by decide⟩
--- }
+-- def badArity : CompileResult :=
+--   (x + (AlgorithmLib.CudaTensor.Tensor.ofExpr
+--     (AlgorithmLib.CudaTensor.input (n := 3) ⟨2, by decide⟩) :
+--     AlgorithmLib.CudaTensor.Tensor 3)).compileTo 1
+-- -- type error: Tensor 2 and Tensor 3 cannot be combined
 
 def artifacts : Array Json :=
   let r := result
