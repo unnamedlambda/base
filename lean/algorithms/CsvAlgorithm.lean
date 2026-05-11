@@ -10,13 +10,14 @@ namespace CsvDemo
 --
 -- Schemas are declared as concrete List String matching the CSV headers.
 -- A runtime assertion (in the CLIF orchestrator) validates the header row.
--- CsvQuery (s1 s2 : Schema) carries three proof obligations:
---   filterColInS1 : filterCol ∈ s1   — filter column exists in left table
---   joinKeyInS1   : joinKey ∈ s1     — join key exists in left table
---   joinKeyInS2   : joinKey ∈ s2     — join key exists in right table
+-- QueryPlan carries proof obligations at each staged combinator:
+--   whereEq      : selected filter column ∈ current schema
+--   innerJoinOn  : join key ∈ left schema and ∈ right schema
+--   project      : every projected column ∈ current schema
 --
--- All three close by `decide` because the schemas are concrete literals.
--- A typo or nonexistent column name fails at elaboration — before any
+-- These obligations usually close by `decide` because the schemas are
+-- concrete literals. A typo or nonexistent column name fails at
+-- elaboration — before any
 -- CLIF or LMDB code is generated.
 -- ===========================================================================
 
@@ -30,8 +31,9 @@ def mkTable (s : Schema) : Table s := Table.mk
   s1 ++ s2.filter (fun c => !s1.elem c)
 
 -- QueryPlan s is a typed query tree whose index is the output schema.
--- filter preserves the schema; join computes mergeSchema at the type level;
--- select projects to exactly the chosen columns — all checked at elaboration.
+-- `whereEq` preserves the schema; `innerJoinOn` computes mergeSchema at the
+-- type level; `project` narrows the schema to exactly the requested columns.
+-- All of it is checked at elaboration.
 inductive QueryPlan : Schema → Type where
   | table  : Table s → QueryPlan s
   | filter : (col pat : String) → QueryPlan s → col ∈ s → QueryPlan s
@@ -515,6 +517,29 @@ def extractPattern : QueryPlan s → String
 def compile {s : Schema} (p : QueryPlan s) : BaseConfig × Algorithm :=
   buildQueryMonomorphic ("," ++ extractPattern p ++ ",")
 
+def source {s : Schema} (t : Table s) : QueryPlan s :=
+  plan t
+
+def QueryPlan.whereEq {s : Schema} (p : QueryPlan s)
+    (col pat : String) (h : col ∈ s := by decide) : QueryPlan s :=
+  filter col pat p h
+
+def QueryPlan.project {s : Schema} (p : QueryPlan s)
+    (cols : List String) (h : ∀ c ∈ cols, c ∈ s := by decide) : QueryPlan cols :=
+  select cols p h
+
+def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s) : BaseConfig × Algorithm :=
+  compile p
+
+def QueryPlan.innerJoinOn {s1 : Schema} (lhs : QueryPlan s1)
+    (key : String) {s2 : Schema} (rhs : QueryPlan s2)
+    (h1 : key ∈ s1 := by decide) (h2 : key ∈ s2 := by decide)
+    : QueryPlan (mergeSchema s1 s2) :=
+  join key lhs rhs h1 h2
+
+def Table.query {s : Schema} (t : Table s) : QueryPlan s :=
+  source t
+
 -- ---------------------------------------------------------------------------
 -- Schemas declared to match the actual CSV headers.
 -- Runtime assertion in the CLIF orchestrator checks the header row matches
@@ -529,40 +554,34 @@ def employees   : Table employeeSchema   := Table.mk
 def departments : Table departmentSchema := Table.mk
 def locations   : Table locationSchema   := Table.mk
 
--- Tree-shaped query — two-level join with independent filters on both branches.
--- Schema propagates through every node; mergeSchema is computed at each join.
--- All membership proofs discharge automatically via `decide`.
+-- Tree-shaped query expressed with higher-level combinators.
+-- Schema propagates through every node; mergeSchema is computed at each join;
+-- column membership proofs discharge automatically via `decide`.
 --
---   join "dept_id"
---     ├─ join "city"
---     │    ├─ filter "city" "Seattle" employees
---     │    └─ locations
---     └─ filter "dept_name" "Engineering" departments
---   |> select ["name", "city", "region", "dept_name", "floor"]
+--   employees.query.whereEq "city" "Seattle"
+--     |> innerJoinOn "city" locations.query
+--     |> innerJoinOn "dept_id" (departments.query.whereEq "dept_name" "Engineering")
+--     |> project ["name", "city", "region", "dept_name", "floor"]
+--     |> compileQuery
 def result : BaseConfig × Algorithm :=
-  join "dept_id"
-    (join "city"
-      (plan employees |> filter "city" "Seattle")
-      (plan locations))
-    (plan departments |> filter "dept_name" "Engineering")
-  |> select ["name", "city", "region", "dept_name", "floor"]
-  |> compile
+  let employeesInSeattle := employees.query.whereEq "city" "Seattle"
+  let departmentsInEngineering := departments.query.whereEq "dept_name" "Engineering"
+  let employeesWithLocations := employeesInSeattle.innerJoinOn "city" locations.query
+  let fullQuery := employeesWithLocations.innerJoinOn "dept_id" departmentsInEngineering
+  (fullQuery.project ["name", "city", "region", "dept_name", "floor"]).compileQuery
 
--- Uncomment either def to see elaboration-time rejection:
+-- Uncomment either def to see elaboration-time rejection at the combinator call
+-- that introduces the bad column/key:
 --
 -- def badJoinKey : BaseConfig × Algorithm :=
---   join "nonexistent_key"              -- ∉ employeeSchema → decide fails
---     (plan employees |> filter "city" "Seattle")
---     (plan departments)
---   |> select ["name", "dept_name"]
---   |> compile
+--   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
+--   let brokenJoin := employeesInSeattle.innerJoinOn "nonexistent_key" departments.query
+--   (brokenJoin.project ["name", "dept_name"]).compileQuery
 --
 -- def badSelectCol : BaseConfig × Algorithm :=
---   join "dept_id"
---     (plan employees |> filter "city" "Seattle")
---     (plan departments)
---   |> select ["name", "salary_band"]   -- ∉ merged schema → decide fails
---   |> compile
+--   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
+--   let joined := employeesInSeattle.innerJoinOn "dept_id" departments.query
+--   (joined.project ["name", "salary_band"]).compileQuery
 
 end CsvDemo
 
