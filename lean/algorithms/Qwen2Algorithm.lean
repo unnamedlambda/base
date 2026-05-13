@@ -48,8 +48,8 @@ def WK_BYTES    : Nat := KV_DIM * D * 4  -- 458752
 def WO_BYTES    : Nat := WQ_BYTES
 def WG_BYTES    : Nat := D_FF * D * 4   -- 17432576
 def EMBED_BYTES : Nat := VOCAB * D * 4   -- 544620544
--- KV cache: [N_Q, MAX_SEQ, HEAD_DIM] (GQA expanded)
-def KV_CACHE_BYTES : Nat := N_Q * MAX_SEQ * HEAD_DIM * 4  -- 7340032
+-- KV cache: [N_KV, MAX_SEQ, HEAD_DIM] (GQA-proper, broadcast at attention time)
+def KV_CACHE_BYTES : Nat := N_KV * MAX_SEQ * HEAD_DIM * 4  -- 1048576 (was 7340032 GQA-expanded)
 
 -- Per-layer file offsets from layer base:
 def LF_RMS_ATTN : Nat := 0
@@ -135,8 +135,8 @@ def rmsFfn  : BufferSlot [.sta D]                                 := slotOfAt 32
 def wg      : BufferSlot [.sta D_FF, .sta D]                      := slotOfAt 36
 def wu      : BufferSlot [.sta D_FF, .sta D]                      := slotOfAt 40
 def wd      : BufferSlot [.sta D, .sta D_FF]                      := slotOfAt 44
-def kCache  : BufferSlot [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM]  := slotOfAt 48
-def vCache  : BufferSlot [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM]  := slotOfAt 52
+def kCache  : BufferSlot [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM] := slotOfAt 48
+def vCache  : BufferSlot [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM] := slotOfAt 52
 end LayerSlot
 
 -- Bind descriptor areas (kernel arg tables in shared memory):
@@ -225,7 +225,7 @@ abbrev VecDff   := Tensor [.sta D_FF]           -- FFN intermediate
 abbrev VecVocab := Tensor [.sta VOCAB]          -- logits, embed table row
 abbrev VecMeta  := Tensor [.sta 2]              -- meta buffer ([token_id, pos])
 abbrev EmbedTbl := Tensor [.sta VOCAB, .sta D]  -- full embed/lm_head table
-abbrev KVCache  := Tensor [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM]  -- GQA-expanded
+abbrev KVCache  := Tensor [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM]  -- GQA-proper (one copy per KV head)
 abbrev RopeTbl  := Tensor [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)]
 abbrev VecScores := Tensor [.sta N_Q, .dyn]     -- attention scores [head, seq_len]
 abbrev MatDD     := Tensor [.sta D, .sta D]              -- Wq, Wo
@@ -510,11 +510,12 @@ private def launchResidualAdd (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
     (x add_ : VecD) : IRBuilder Unit :=
   launch2 residualAddKernel cuda ptr bindOff x add_
 
--- KV store with GQA expansion (7:1).  Grid=N_KV, Block=HEAD_DIM.
+-- KV store (GQA-proper). Writes k_cur[kvHead, elemIdx] → kCache[kvHead, pos, elemIdx].
+-- One thread per (kvHead, elemIdx). Grid=N_KV, Block=HEAD_DIM.
 def kvStoreKernel : Kernel := {
   name := "main"
   params := [{ name := "k_cur_buf",   shape := [.sta KV_DIM], ro := true },
-             { name := "k_cache_buf", shape := [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM] },
+             { name := "k_cache_buf", shape := [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM] },
              { name := "meta_buf",    shape := [.sta 2], ro := true }]
   body := do
     let kCurBuf   ← ldParam "k_cur_buf"
@@ -523,20 +524,20 @@ def kvStoreKernel : Kernel := {
     let kvHead ← freshR; movR kvHead ctaX
     let elemIdx ← freshR; movR elemIdx tidX
     let pos ← freshR; ldGlobalUO pos metaBuf 4
+    -- src offset: kvHead * HEAD_DIM + elemIdx (within [N_KV, HEAD_DIM] k_cur)
     let srcOff ← freshR; madLoRC srcOff kvHead HEAD_DIM elemIdx
     let srcOff64 ← freshRd; mulWideRI srcOff64 srcOff 4
     let srcAddr ← freshRd; addRd srcAddr kCurBuf srcOff64
     let kVal ← freshF; ldGlobalF kVal srcAddr
-    let baseQH ← freshR; madLoRII baseQH kvHead GQA_RATIO 0
-    for g in List.range GQA_RATIO do
-      let qHead ← freshR; addRI qHead baseQH g
-      let qh64 ← freshRd; mulWideRI qh64 qHead (MAX_SEQ * HEAD_DIM)
-      let pos64 ← freshRd; mulWideRI pos64 pos HEAD_DIM
-      let elem64 ← freshRd; cvtU64 elem64 elemIdx
-      addRd qh64 qh64 pos64; addRd qh64 qh64 elem64
-      let byteOff ← freshRd; shlRd byteOff qh64 2
-      let dstAddr ← freshRd; addRd dstAddr kCacheBuf byteOff
-      stGlobalF dstAddr kVal
+    -- dst index: kvHead * MAX_SEQ * HEAD_DIM + pos * HEAD_DIM + elemIdx
+    let kvH64  ← freshRd; mulWideRI kvH64  kvHead  (MAX_SEQ * HEAD_DIM)
+    let pos64  ← freshRd; mulWideRI pos64  pos     HEAD_DIM
+    let elem64 ← freshRd; cvtU64    elem64 elemIdx
+    addRd kvH64 kvH64 pos64
+    addRd kvH64 kvH64 elem64
+    let byteOff ← freshRd; shlRd byteOff kvH64 2
+    let dstAddr ← freshRd; addRd dstAddr kCacheBuf byteOff
+    stGlobalF dstAddr kVal
     ptxRet
   geom := Kernel.Geom.static N_KV 1 1 HEAD_DIM 1 1
   ptxOff := PTX_KVSTORE_OFF
@@ -990,14 +991,18 @@ private def attnMixPhase (ptr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
     (b : AttnBufs) (c : AttnConsts) : IRBuilder Unit := do
   let seqLen64 ← load64At ptr SEQ_LEN_SLOT_OFF
   let seqLen32 ← ireduce32 seqLen64
-  -- Q and AttnOut are flat [D] views of [N_Q, HEAD_DIM] (D = N_Q * HEAD_DIM = 14 * 64).
-  let qHeads      : Tensor [.sta N_Q, .sta HEAD_DIM] := b.bufQ.reshape
-  let attnOutHeads : Tensor [.sta N_Q, .sta HEAD_DIM] := b.bufAttnOut.reshape
-  -- scores[h, :seqLen] = attnAlpha * K[h, :seqLen, :] @ Q[h]
-  CuBlas.attnScoresQK blas ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qHeads b.bufScores
+  -- Q, AttnOut, scores, probs are flat memory; view them as GQA-grouped
+  -- [N_KV, GQA_RATIO, ...] for the batched-by-KV-head GEMMs.  K/V cache is
+  -- now stored once per KV head and broadcast across the gqaRatio Q heads.
+  let qGqa      : Tensor [.sta N_KV, .sta GQA_RATIO, .sta HEAD_DIM] := b.bufQ.reshape
+  let outGqa    : Tensor [.sta N_KV, .sta GQA_RATIO, .sta HEAD_DIM] := b.bufAttnOut.reshape
+  let scoresGqa : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufScores.reshape
+  let probsGqa  : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufProbs.reshape
+  -- scores[kv, i, :seqLen] = attnAlpha * K[kv, :seqLen, :] @ Q[kv, i]
+  CuBlas.attnScoresQK blas ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qGqa scoresGqa
   launchSoftmax cuda ptr BIND_SOFTMAX b.bufScores b.bufMeta b.bufProbs
-  -- attnOut[h] = V[h, :seqLen, :]^T @ probs[h, :seqLen]
-  CuBlas.attnMixV blas ptr c.alpha seqLen32 seqLen64 b.bufVCache b.bufProbs attnOutHeads
+  -- attnOut[kv, i] = V[kv, :seqLen, :]^T @ probs[kv, i, :seqLen]
+  CuBlas.attnMixV blas ptr c.alpha seqLen32 seqLen64 b.bufVCache probsGqa outGqa
   -- O projection: Wo:[D,D]·attnOut:[D] → hdNorm:[D]
   CuBlas.linear blas ptr b.bufWo b.bufAttnOut b.bufHdNorm
   launchResidualAdd cuda ptr BIND_ADD1 b.bufHidden b.bufHdNorm

@@ -265,52 +265,64 @@ def linearAB {inN outN : Nat} (cublas : CuBlasSetup) (ptr : Val)
   let _ ← cublasSgemv cublas ptr trans m32 n32 alphaBits a.buf x.buf betaBits y.buf
   pure ()
 
-/-- Per-head attention scores: for each `h ∈ [0, nQ)`,
-    `scores[h, :seqLen] = alpha * K[h, :seqLen, :] @ Q[h]`.
+/-- GQA-aware per-head attention scores: for each `(kv, i) ∈ [0, nKV) × [0, gqaRatio)`,
+    `scores[kv, i, :seqLen] = alpha * K[kv, :seqLen, :] @ Q[kv, i]`.
 
-    Shapes (statically checked across all three tensors):
-    - `K` : `[nQ, maxSeq, headDim]`
-    - `Q` : `[nQ, headDim]`
-    - `scores` : `[nQ, .dyn]` (dynamic seq dim) -/
-def attnScoresQK {nQ headDim maxSeq : Nat}
-    (cublas : CuBlasSetup) (ptr : Val)
-    (alphaBits : Val) (seqLen32 seqLen64 : Val)
-    (k : Tensor [.sta nQ, .sta maxSeq, .sta headDim])
-    (q : Tensor [.sta nQ, .sta headDim])
-    (scores : Tensor [.sta nQ, .dyn]) : IRBuilder Unit := do
-  let one32   ← iconst32 1
-  let zero32  ← iconst32 0
-  let k32     ← iconst32 headDim
-  let strideK ← iconst64 (maxSeq * headDim)
-  let strideQ ← iconst64 headDim
-  let nQ32    ← iconst32 nQ
-  let _ ← cublasSgemmStridedBatched cublas ptr one32 zero32
-    seqLen32 one32 k32 alphaBits
-    k.buf strideK q.buf strideQ zero32 scores.buf seqLen64 nQ32
-  pure ()
-
-/-- Per-head V-mix: for each `h ∈ [0, nQ)`,
-    `out[h] = V[h, :seqLen, :]^T @ probs[h, :seqLen]`.
+    K is stored once per KV head and broadcast across the `gqaRatio` Q heads that
+    share it.  Total Q heads = `nKV * gqaRatio`.  Reduces to standard MHA when
+    `gqaRatio = 1`.
 
     Shapes (statically checked):
-    - `V`     : `[nQ, maxSeq, headDim]`
-    - `probs` : `[nQ, .dyn]`
-    - `out`   : `[nQ, headDim]` -/
-def attnMixV {nQ headDim maxSeq : Nat}
+    - `K`      : `[nKV, maxSeq, headDim]`
+    - `Q`      : `[nKV, gqaRatio, headDim]`
+    - `scores` : `[nKV, gqaRatio, .dyn]` -/
+def attnScoresQK {nKV gqaRatio headDim maxSeq : Nat}
     (cublas : CuBlasSetup) (ptr : Val)
     (alphaBits : Val) (seqLen32 seqLen64 : Val)
-    (v : Tensor [.sta nQ, .sta maxSeq, .sta headDim])
-    (probs : Tensor [.sta nQ, .dyn])
-    (out : Tensor [.sta nQ, .sta headDim]) : IRBuilder Unit := do
+    (k : Tensor [.sta nKV, .sta maxSeq, .sta headDim])
+    (q : Tensor [.sta nKV, .sta gqaRatio, .sta headDim])
+    (scores : Tensor [.sta nKV, .sta gqaRatio, .dyn]) : IRBuilder Unit := do
   let zero32   ← iconst32 0
   let one32    ← iconst32 1
+  let k32      ← iconst32 headDim
+  let gqaR32   ← iconst32 gqaRatio
+  let strideK  ← iconst64 (maxSeq * headDim)
+  let strideQ  ← iconst64 (gqaRatio * headDim)
+  -- strideC between KV-head batches = gqaRatio * seqLen elements (rows tight-packed)
+  let gqaR64   ← iconst64 gqaRatio
+  let strideC  ← imul gqaR64 seqLen64
+  let nKV32    ← iconst32 nKV
+  let _ ← cublasSgemmStridedBatched cublas ptr one32 zero32
+    seqLen32 gqaR32 k32 alphaBits
+    k.buf strideK q.buf strideQ zero32 scores.buf strideC nKV32
+  pure ()
+
+/-- GQA-aware V-mix: for each `(kv, i)`,
+    `out[kv, i] = V[kv, :seqLen, :]^T @ probs[kv, i, :seqLen]`.
+
+    Shapes (statically checked):
+    - `V`     : `[nKV, maxSeq, headDim]`
+    - `probs` : `[nKV, gqaRatio, .dyn]`
+    - `out`   : `[nKV, gqaRatio, headDim]` -/
+def attnMixV {nKV gqaRatio headDim maxSeq : Nat}
+    (cublas : CuBlasSetup) (ptr : Val)
+    (alphaBits : Val) (seqLen32 seqLen64 : Val)
+    (v : Tensor [.sta nKV, .sta maxSeq, .sta headDim])
+    (probs : Tensor [.sta nKV, .sta gqaRatio, .dyn])
+    (out : Tensor [.sta nKV, .sta gqaRatio, .sta headDim]) : IRBuilder Unit := do
+  let zero32   ← iconst32 0
   let hd32     ← iconst32 headDim
-  let hd64     ← iconst64 headDim
+  let gqaR32   ← iconst32 gqaRatio
   let strideV  ← iconst64 (maxSeq * headDim)
-  let nQ32     ← iconst32 nQ
+  -- strideB between KV-head batches in probs = gqaRatio * seqLen elements
+  let gqaR64   ← iconst64 gqaRatio
+  let strideP  ← imul gqaR64 seqLen64
+  -- strideC = gqaRatio * headDim elements (gqaRatio rows of headDim)
+  let strideC  ← iconst64 (gqaRatio * headDim)
+  let nKV32    ← iconst32 nKV
   let _ ← cublasSgemmStridedBatched cublas ptr zero32 zero32
-    hd32 one32 seqLen32 alphaBits
-    v.buf strideV probs.buf seqLen64 zero32 out.buf hd64 nQ32
+    hd32 gqaR32 seqLen32 alphaBits
+    v.buf strideV probs.buf strideP zero32 out.buf strideC nKV32
   pure ()
 
 end CuBlas
