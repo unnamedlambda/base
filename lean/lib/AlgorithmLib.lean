@@ -382,6 +382,7 @@ inductive Inst where
   | rawInst (s : String)
   -- Additional float / int ops
   | fneg (dst a : Val)
+  | fcvtFromSint (dst : Val) (ty : ClifTy) (src : Val)
   | fcmp (dst : Val) (cond : String) (a b : Val)
   | bitcast (dst : Val) (ty : ClifTy) (src : Val)
   | ctz (dst a : Val)
@@ -657,6 +658,9 @@ def iconst8 (value : Int) : IRBuilder Val := do
 def fneg (a : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.fneg v a); pure v
 
+def fcvtFromSint (ty : ClifTy) (src : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fcvtFromSint v ty src); pure v
+
 def fcmpGt (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.fcmp v "gt" a b); pure v
 
@@ -862,6 +866,8 @@ def renderInst : Inst → String
     s!"    store.{renderClifTy ty} notrap aligned {renderVal val}, {renderVal addr}"
   | .rawInst s => s!"    {s}"
   | .fneg dst a => s!"    {renderVal dst} = fneg {renderVal a}"
+  | .fcvtFromSint dst ty src =>
+    s!"    {renderVal dst} = fcvt_from_sint.{renderClifTy ty} {renderVal src}"
   | .fcmp dst cond a b => s!"    {renderVal dst} = fcmp {cond} {renderVal a}, {renderVal b}"
   | .bitcast dst ty src => s!"    {renderVal dst} = bitcast.{renderClifTy ty} {renderVal src}"
   | .ctz dst a => s!"    {renderVal dst} = ctz {renderVal a}"
@@ -1081,6 +1087,28 @@ def declareLmdbFFI : IRBuilder LmdbSetup := do
   let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
   let fnCleanup ← declareFFI "cl_lmdb_cleanup" [.i64] none
   pure { fnInit, fnOpen, fnBeginWriteTxn, fnPut, fnCommitWriteTxn, fnCursorScan, fnCleanup }
+
+-- ---------------------------------------------------------------------------
+-- Hash-table FFI wrappers
+-- ---------------------------------------------------------------------------
+
+/-- Hash-table FFI bundle (colocated: resolved within the same JIT module) -/
+structure HtSetup where
+  fnCreate : FnRef
+  fnLookup : FnRef
+  fnInsert : FnRef
+
+/-- Declare ht_create / ht_lookup / ht_insert as colocated FFI functions. -/
+def declareHtFFI : IRBuilder HtSetup := do
+  let fnCreate ← declareColocatedFFI "ht_create" [.i64] (some .i32)
+  let fnLookup ← declareColocatedFFI "ht_lookup" [.i64, .i64, .i32, .i64] (some .i32)
+  let fnInsert ← declareColocatedFFI "ht_insert" [.i64, .i64, .i32, .i64, .i32] none
+  pure { fnCreate, fnLookup, fnInsert }
+
+/-- Initialise the HT context; pass `ptr` (shared-memory base) — context ptr written to ptr[0]. -/
+def htInit (ptr : Val) : IRBuilder Unit := do
+  let fnInit ← declareFFI "cl_ht_init" [.i64] none
+  callVoid fnInit [ptr]
 
 -- ---------------------------------------------------------------------------
 -- Layout-aware IR combinators (typed field handles)

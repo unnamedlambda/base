@@ -2627,6 +2627,43 @@ unsafe extern "C" fn cl_file_read(
     }
 }
 
+/// Scalar libm wrappers callable from CLIF FFI.
+unsafe extern "C" fn cl_sinf(x: f32) -> f32 { x.sin() }
+unsafe extern "C" fn cl_cosf(x: f32) -> f32 { x.cos() }
+unsafe extern "C" fn cl_powf(base: f32, exp: f32) -> f32 { base.powf(exp) }
+
+/// Read `size` bytes from a file directly into an arbitrary host pointer.
+unsafe extern "C" fn cl_file_read_to_ptr(
+    path_ptr: *const u8,
+    dst_ptr: *mut u8,
+    file_offset: i64,
+    size: i64,
+) -> i64 {
+    if path_ptr.is_null() || dst_ptr.is_null() || size <= 0 {
+        return -1;
+    }
+    let path = read_cstr_ptr(path_ptr);
+    let mut file = match fs::File::open(&path) {
+        Ok(f) => f,
+        Err(_) => return -1,
+    };
+    if file_offset > 0 {
+        if file.seek(std::io::SeekFrom::Start(file_offset as u64)).is_err() {
+            return -1;
+        }
+    }
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, size as usize);
+    let mut total = 0usize;
+    while total < dst.len() {
+        match file.read(&mut dst[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(_) => return -1,
+        }
+    }
+    total as i64
+}
+
 unsafe extern "C" fn cl_file_write(
     ptr: *mut u8,
     path_off: i64,
@@ -3459,7 +3496,11 @@ pub(crate) fn compile_cranelift_ir(
     builder.symbol("cl_cuda_cleanup", cl_cuda_cleanup as *const u8);
 
     builder.symbol("cl_file_read", cl_file_read as *const u8);
+    builder.symbol("cl_file_read_to_ptr", cl_file_read_to_ptr as *const u8);
     builder.symbol("cl_file_write", cl_file_write as *const u8);
+    builder.symbol("cl_sinf", cl_sinf as *const u8);
+    builder.symbol("cl_cosf", cl_cosf as *const u8);
+    builder.symbol("cl_powf", cl_powf as *const u8);
     builder.symbol("cl_stdin_readline", cl_stdin_readline as *const u8);
     builder.symbol("cl_stdout_write", cl_stdout_write as *const u8);
 

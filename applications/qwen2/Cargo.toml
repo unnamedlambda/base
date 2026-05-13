@@ -1,0 +1,16 @@
+[package]
+name = "qwen2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../../base" }
+base-types = { path = "../../base-types" }
+bincode = "1"
+
+[build-dependencies]
+build-support = { path = "../../build-support" }
+
+[[bin]]
+name = "qwen2"
+path = "src/main.rs"

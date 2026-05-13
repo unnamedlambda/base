@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 lean/data/
 lean/**/.lake/
+
+# Locally-generated model artifacts (see tools/qwen2_convert.py).
+qwen2*.bin
