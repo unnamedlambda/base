@@ -85,23 +85,32 @@ def PINNED_CHUNK_BYTES : Nat := 64 * 1024 * 1024
 -- Maximum tokenizer file size we'll hold in pinned host memory. The Qwen2
 -- tokenizer is ~10 MiB; 32 MiB is plenty of headroom and bounds host RAM.
 def TOK_FILE_MAX_BYTES : Nat := 32 * 1024 * 1024
-def BUF_HIDDEN_OFF    : Nat := 0x0048  -- i32: hidden state [D f32]
-def BUF_HDNORM_OFF    : Nat := 0x004C  -- i32: RMSNorm output [D f32]
-def BUF_Q_OFF         : Nat := 0x0050  -- i32: query [D f32]
-def BUF_K_CUR_OFF     : Nat := 0x0054  -- i32: current key [KV_DIM f32]
-def BUF_V_CUR_OFF     : Nat := 0x0058  -- i32: current value [KV_DIM f32]
-def BUF_ATTN_OUT_OFF  : Nat := 0x005C  -- i32: attention output [D f32]
-def BUF_FF_GATE_OFF   : Nat := 0x0060  -- i32: FFN gate [D_FF f32]
-def BUF_FF_UP_OFF     : Nat := 0x0064  -- i32: FFN up [D_FF f32]
-def BUF_FF_ACT_OFF    : Nat := 0x0068  -- i32: SiLU(gate)*up [D_FF f32]
-def BUF_EMBED_OFF     : Nat := 0x006C  -- i32: embedding table [VOCAB×D f32]
-def BUF_LM_HEAD_OFF   : Nat := 0x0070  -- i32: lm_head [VOCAB×D f32]
-def BUF_LOGITS_OFF    : Nat := 0x0074  -- i32: logits [VOCAB f32]
-def BUF_RMS_FINAL_OFF : Nat := 0x0078  -- i32: final RMSNorm weights [D f32]
-def BUF_SCORES_OFF    : Nat := 0x007C  -- i32: attention scores [N_Q×MAX_SEQ f32]
-def BUF_PROBS_OFF     : Nat := 0x0080  -- i32: attention probs [N_Q×MAX_SEQ f32]
-def BUF_META_OFF      : Nat := 0x0084  -- i32: GPU meta buf [token_id:u32][pos:u32]
-def BUF_ROPE_TABLE_OFF : Nat := 0x0638 -- i32: RoPE sin/cos table [2 × MAX_SEQ × HEAD_DIM/2 f32]
+-- Per-call buffer slots in shared memory at 0x0048–0x0087 (16 × i32 ids).
+-- Each `BufferSlot s` makes the *shape* of the underlying tensor part of the
+-- type: `slotHidden.load ptr : VecD`, no per-call cast.  The fixed hex
+-- offsets are the single source of truth — no `BUF_*_OFF` constants.
+def slotHidden   : BufferSlot [.sta D]              := slotOfAt 0x0048
+def slotHdNorm   : BufferSlot [.sta D]              := slotOfAt 0x004C
+def slotQ        : BufferSlot [.sta D]              := slotOfAt 0x0050
+def slotKCur     : BufferSlot [.sta KV_DIM]         := slotOfAt 0x0054
+def slotVCur     : BufferSlot [.sta KV_DIM]         := slotOfAt 0x0058
+def slotAttnOut  : BufferSlot [.sta D]              := slotOfAt 0x005C
+def slotFfGate   : BufferSlot [.sta D_FF]           := slotOfAt 0x0060
+def slotFfUp     : BufferSlot [.sta D_FF]           := slotOfAt 0x0064
+def slotFfAct    : BufferSlot [.sta D_FF]           := slotOfAt 0x0068
+def slotEmbed    : BufferSlot [.sta VOCAB, .sta D]  := slotOfAt 0x006C
+def slotLmHead   : BufferSlot [.sta VOCAB, .sta D]  := slotOfAt 0x0070
+def slotLogits   : BufferSlot [.sta VOCAB]          := slotOfAt 0x0074
+def slotRmsFinal : BufferSlot [.sta D]              := slotOfAt 0x0078
+def slotScores   : BufferSlot [.sta N_Q, .dyn]      := slotOfAt 0x007C
+def slotProbs    : BufferSlot [.sta N_Q, .dyn]      := slotOfAt 0x0080
+def slotMeta     : BufferSlot [.sta 2]              := slotOfAt 0x0084
+
+-- RoPE sin/cos table slot — separate region at 0x0638 since the table is
+-- created once and reused across all layers.
+def slotRopeTable : BufferSlot [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)] :=
+  slotOfAt 0x0638
+-- (Rope table slot defined below alongside the typed BufferSlots; uses 0x0638.)
 def LAYER_IDX_OFF     : Nat := 0x0088  -- i64: current layer for inferLayerFn
 def POS_SLOT_OFF      : Nat := 0x0090  -- i64: current pos
 def SEQ_LEN_SLOT_OFF  : Nat := 0x0098  -- i64: seq_len = pos+1
@@ -110,20 +119,25 @@ def LAYER_BUFS_BASE   : Nat := 0x00A0  -- 0x00A0 .. 0x05DF
 def LAYER_BUF_STRIDE  : Nat := 56      -- 14 × 4
 
 -- Per-layer buffer slots (offsets within stride):
-def LBF_RMS_ATTN : Nat := 0
-def LBF_WQ       : Nat := 4
-def LBF_BQ       : Nat := 8
-def LBF_WK       : Nat := 12
-def LBF_BK       : Nat := 16
-def LBF_WV       : Nat := 20
-def LBF_BV       : Nat := 24
-def LBF_WO       : Nat := 28
-def LBF_RMS_FFN  : Nat := 32
-def LBF_WG       : Nat := 36
-def LBF_WU       : Nat := 40
-def LBF_WD       : Nat := 44
-def LBF_K_CACHE  : Nat := 48
-def LBF_V_CACHE  : Nat := 52
+-- Per-layer slots within a 56-byte layer cell.  Each `BufferSlot s` knows
+-- its tensor shape and its offset relative to the start of the cell.  To
+-- load a layer's slot: `LayerSlot.rmsAttn.load cellBaseAddr`.
+namespace LayerSlot
+def rmsAttn : BufferSlot [.sta D]                                 := slotOfAt 0
+def wq      : BufferSlot [.sta D, .sta D]                         := slotOfAt 4
+def bq      : BufferSlot [.sta D]                                 := slotOfAt 8
+def wk      : BufferSlot [.sta KV_DIM, .sta D]                    := slotOfAt 12
+def bk      : BufferSlot [.sta KV_DIM]                            := slotOfAt 16
+def wv      : BufferSlot [.sta KV_DIM, .sta D]                    := slotOfAt 20
+def bv      : BufferSlot [.sta KV_DIM]                            := slotOfAt 24
+def wo      : BufferSlot [.sta D, .sta D]                         := slotOfAt 28
+def rmsFfn  : BufferSlot [.sta D]                                 := slotOfAt 32
+def wg      : BufferSlot [.sta D_FF, .sta D]                      := slotOfAt 36
+def wu      : BufferSlot [.sta D_FF, .sta D]                      := slotOfAt 40
+def wd      : BufferSlot [.sta D, .sta D_FF]                      := slotOfAt 44
+def kCache  : BufferSlot [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM]  := slotOfAt 48
+def vCache  : BufferSlot [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM]  := slotOfAt 52
+end LayerSlot
 
 -- Bind descriptor areas (kernel arg tables in shared memory):
 def BIND_BASE    : Nat := 0x0800
@@ -594,9 +608,10 @@ def parseArgsFn : IRBuilder Unit := do
     Statically unrolls into one (read, upload) pair per PINNED_CHUNK_BYTES chunk.
     The scratch buffer is reused for every chunk (host→GPU is synchronous), and
     each chunk goes to a distinct offset within the destination GPU buffer. -/
-private def uploadFromFile (cuda : CudaSetup) (fnFileRead : FnRef)
-    (ctxPtr pathPtr scratchPtr bufId : Val)
+private def uploadFromFile {s : Shape} (cuda : CudaSetup) (fnFileRead : FnRef)
+    (ctxPtr pathPtr scratchPtr : Val) (t : Tensor s)
     (fileOff totalSize : Nat) : IRBuilder Unit := do
+  let bufId := t.buf
   let numChunks := (totalSize + PINNED_CHUNK_BYTES - 1) / PINNED_CHUNK_BYTES
   (List.range numChunks).forM fun i => do
     let off      := i * PINNED_CHUNK_BYTES
@@ -613,7 +628,8 @@ private def uploadFromFile (cuda : CudaSetup) (fnFileRead : FnRef)
     Table layout: [sin: MAX_SEQ × HEAD_DIM/2 f32][cos: MAX_SEQ × HEAD_DIM/2 f32].
     All trig goes through libm via FFI (cl_sinf/cl_cosf/cl_powf). -/
 private def buildRopeTable (cuda : CudaSetup) (fnSinf fnCosf fnPowf : FnRef)
-    (ctxPtr scratchPtr bufRopeTable : Val) : IRBuilder Unit := do
+    (ctxPtr scratchPtr : Val) (ropeTable : RopeTbl) : IRBuilder Unit := do
+  let bufRopeTable := ropeTable.buf
   let hdh   : Nat := HEAD_DIM / 2
   let tableBytes := 2 * MAX_SEQ * hdh * 4
   let cosOff     := MAX_SEQ * hdh * 4
@@ -680,25 +696,25 @@ def loadInitFn : IRBuilder Unit := do
   let kvBytes  ← iconst64 KV_BYTES
   let dffBytes ← iconst64 (D_FF * 4)
 
-  let bufHidden  ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufHdNorm  ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufQ       ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufKCur    ← call cuda.fnCreateBuffer [ctxPtr, kvBytes]
-  let bufVCur    ← call cuda.fnCreateBuffer [ctxPtr, kvBytes]
-  let bufAttnOut ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufFfGate  ← call cuda.fnCreateBuffer [ctxPtr, dffBytes]
-  let bufFfUp    ← call cuda.fnCreateBuffer [ctxPtr, dffBytes]
-  let bufFfAct   ← call cuda.fnCreateBuffer [ctxPtr, dffBytes]
+  let bufHidden  : VecD   ← Tensor.create cuda ptr dBytes
+  let bufHdNorm  : VecD   ← Tensor.create cuda ptr dBytes
+  let bufQ       : VecD   ← Tensor.create cuda ptr dBytes
+  let bufKCur    : VecKV  ← Tensor.create cuda ptr kvBytes
+  let bufVCur    : VecKV  ← Tensor.create cuda ptr kvBytes
+  let bufAttnOut : VecD   ← Tensor.create cuda ptr dBytes
+  let bufFfGate  : VecDff ← Tensor.create cuda ptr dffBytes
+  let bufFfUp    : VecDff ← Tensor.create cuda ptr dffBytes
+  let bufFfAct   : VecDff ← Tensor.create cuda ptr dffBytes
 
-  storeI32 bufHidden  (← absAddr ptr BUF_HIDDEN_OFF)
-  storeI32 bufHdNorm  (← absAddr ptr BUF_HDNORM_OFF)
-  storeI32 bufQ       (← absAddr ptr BUF_Q_OFF)
-  storeI32 bufKCur    (← absAddr ptr BUF_K_CUR_OFF)
-  storeI32 bufVCur    (← absAddr ptr BUF_V_CUR_OFF)
-  storeI32 bufAttnOut (← absAddr ptr BUF_ATTN_OUT_OFF)
-  storeI32 bufFfGate  (← absAddr ptr BUF_FF_GATE_OFF)
-  storeI32 bufFfUp    (← absAddr ptr BUF_FF_UP_OFF)
-  storeI32 bufFfAct   (← absAddr ptr BUF_FF_ACT_OFF)
+  slotHidden.store  ptr bufHidden
+  slotHdNorm.store  ptr bufHdNorm
+  slotQ.store       ptr bufQ
+  slotKCur.store    ptr bufKCur
+  slotVCur.store    ptr bufVCur
+  slotAttnOut.store ptr bufAttnOut
+  slotFfGate.store  ptr bufFfGate
+  slotFfUp.store    ptr bufFfUp
+  slotFfAct.store   ptr bufFfAct
 
   -- Create embed, lm_head, logits, rms_final, scores, probs, meta buffers
   let embedBytes  ← iconst64 EMBED_BYTES
@@ -706,26 +722,26 @@ def loadInitFn : IRBuilder Unit := do
   let scoreBytes  ← iconst64 (N_Q * MAX_SEQ * 4)
   let metaBytes   ← iconst64 8
 
-  let bufEmbed    ← call cuda.fnCreateBuffer [ctxPtr, embedBytes]
-  let bufLmHead   ← call cuda.fnCreateBuffer [ctxPtr, embedBytes]
-  let bufLogits   ← call cuda.fnCreateBuffer [ctxPtr, vocabBytes]
-  let bufRmsFinal ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufScores   ← call cuda.fnCreateBuffer [ctxPtr, scoreBytes]
-  let bufProbs    ← call cuda.fnCreateBuffer [ctxPtr, scoreBytes]
-  let bufMeta     ← call cuda.fnCreateBuffer [ctxPtr, metaBytes]
+  let bufEmbed    : EmbedTbl  ← Tensor.create cuda ptr embedBytes
+  let bufLmHead   : EmbedTbl  ← Tensor.create cuda ptr embedBytes
+  let bufLogits   : VecVocab  ← Tensor.create cuda ptr vocabBytes
+  let bufRmsFinal : VecD      ← Tensor.create cuda ptr dBytes
+  let bufScores   : VecScores ← Tensor.create cuda ptr scoreBytes
+  let bufProbs    : VecScores ← Tensor.create cuda ptr scoreBytes
+  let bufMeta     : VecMeta   ← Tensor.create cuda ptr metaBytes
 
-  storeI32 bufEmbed    (← absAddr ptr BUF_EMBED_OFF)
-  storeI32 bufLmHead   (← absAddr ptr BUF_LM_HEAD_OFF)
-  storeI32 bufLogits   (← absAddr ptr BUF_LOGITS_OFF)
-  storeI32 bufRmsFinal (← absAddr ptr BUF_RMS_FINAL_OFF)
-  storeI32 bufScores   (← absAddr ptr BUF_SCORES_OFF)
-  storeI32 bufProbs    (← absAddr ptr BUF_PROBS_OFF)
-  storeI32 bufMeta     (← absAddr ptr BUF_META_OFF)
+  slotEmbed.store    ptr bufEmbed
+  slotLmHead.store   ptr bufLmHead
+  slotLogits.store   ptr bufLogits
+  slotRmsFinal.store ptr bufRmsFinal
+  slotScores.store   ptr bufScores
+  slotProbs.store    ptr bufProbs
+  slotMeta.store     ptr bufMeta
 
-  -- Create RoPE sin/cos table buffer and populate it via libm-driven loop into pinned scratch
+  -- Create RoPE sin/cos table buffer (typed) and populate via libm-driven loop.
   let ropeTableBytes ← iconst64 (2 * MAX_SEQ * (HEAD_DIM / 2) * 4)  -- 524288
-  let bufRopeTable ← call cuda.fnCreateBuffer [ctxPtr, ropeTableBytes]
-  storeI32 bufRopeTable (← absAddr ptr BUF_ROPE_TABLE_OFF)
+  let bufRopeTable : RopeTbl ← Tensor.create cuda ptr ropeTableBytes
+  slotRopeTable.store ptr bufRopeTable
   buildRopeTable cuda fnSinf fnCosf fnPowf ctxPtr pinnedPtr bufRopeTable
 
   -- Stream-upload embedding, rms_final, lm_head through pinned scratch
@@ -754,42 +770,42 @@ def loadLayerFn (l : Nat) : IRBuilder Unit := do
   let wgBytes ← iconst64 WG_BYTES
   let kvCacheBytes ← iconst64 KV_CACHE_BYTES
 
-  -- Create weight buffers
-  let bufRmsAttn ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufWq      ← call cuda.fnCreateBuffer [ctxPtr, wqBytes]
-  let bufBq      ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufWk      ← call cuda.fnCreateBuffer [ctxPtr, wkBytes]
-  let bufBk      ← call cuda.fnCreateBuffer [ctxPtr, kvBytes]
-  let bufWv      ← call cuda.fnCreateBuffer [ctxPtr, wkBytes]
-  let bufBv      ← call cuda.fnCreateBuffer [ctxPtr, kvBytes]
-  let bufWo      ← call cuda.fnCreateBuffer [ctxPtr, wqBytes]
-  let bufRmsFfn  ← call cuda.fnCreateBuffer [ctxPtr, dBytes]
-  let bufWg      ← call cuda.fnCreateBuffer [ctxPtr, wgBytes]
-  let bufWu      ← call cuda.fnCreateBuffer [ctxPtr, wgBytes]
-  let bufWd      ← call cuda.fnCreateBuffer [ctxPtr, wgBytes]
-  let bufKCache  ← call cuda.fnCreateBuffer [ctxPtr, kvCacheBytes]
-  let bufVCache  ← call cuda.fnCreateBuffer [ctxPtr, kvCacheBytes]
+  -- Create weight buffers — shape in the type, byte size in the runtime arg.
+  let bufRmsAttn : VecD     ← Tensor.create cuda ptr dBytes
+  let bufWq      : MatDD    ← Tensor.create cuda ptr wqBytes
+  let bufBq      : VecD     ← Tensor.create cuda ptr dBytes
+  let bufWk      : MatKVD   ← Tensor.create cuda ptr wkBytes
+  let bufBk      : VecKV    ← Tensor.create cuda ptr kvBytes
+  let bufWv      : MatKVD   ← Tensor.create cuda ptr wkBytes
+  let bufBv      : VecKV    ← Tensor.create cuda ptr kvBytes
+  let bufWo      : MatDD    ← Tensor.create cuda ptr wqBytes
+  let bufRmsFfn  : VecD     ← Tensor.create cuda ptr dBytes
+  let bufWg      : MatDffD  ← Tensor.create cuda ptr wgBytes
+  let bufWu      : MatDffD  ← Tensor.create cuda ptr wgBytes
+  let bufWd      : MatDDff  ← Tensor.create cuda ptr wgBytes
+  let bufKCache  : KVCache  ← Tensor.create cuda ptr kvCacheBytes
+  let bufVCache  : KVCache  ← Tensor.create cuda ptr kvCacheBytes
 
-  -- Store buffer IDs in layer slot
-  let slotBase := LAYER_BUFS_BASE + l * LAYER_BUF_STRIDE
-  storeI32 bufRmsAttn (← absAddr ptr (slotBase + LBF_RMS_ATTN))
-  storeI32 bufWq      (← absAddr ptr (slotBase + LBF_WQ))
-  storeI32 bufBq      (← absAddr ptr (slotBase + LBF_BQ))
-  storeI32 bufWk      (← absAddr ptr (slotBase + LBF_WK))
-  storeI32 bufBk      (← absAddr ptr (slotBase + LBF_BK))
-  storeI32 bufWv      (← absAddr ptr (slotBase + LBF_WV))
-  storeI32 bufBv      (← absAddr ptr (slotBase + LBF_BV))
-  storeI32 bufWo      (← absAddr ptr (slotBase + LBF_WO))
-  storeI32 bufRmsFfn  (← absAddr ptr (slotBase + LBF_RMS_FFN))
-  storeI32 bufWg      (← absAddr ptr (slotBase + LBF_WG))
-  storeI32 bufWu      (← absAddr ptr (slotBase + LBF_WU))
-  storeI32 bufWd      (← absAddr ptr (slotBase + LBF_WD))
-  storeI32 bufKCache  (← absAddr ptr (slotBase + LBF_K_CACHE))
-  storeI32 bufVCache  (← absAddr ptr (slotBase + LBF_V_CACHE))
+  -- Store buffer IDs into layer `l`'s slot (cell base = ptr + LAYER_BUFS_BASE + l*STRIDE).
+  let cellBase ← absAddr ptr (LAYER_BUFS_BASE + l * LAYER_BUF_STRIDE)
+  LayerSlot.rmsAttn.store cellBase bufRmsAttn
+  LayerSlot.wq.store      cellBase bufWq
+  LayerSlot.bq.store      cellBase bufBq
+  LayerSlot.wk.store      cellBase bufWk
+  LayerSlot.bk.store      cellBase bufBk
+  LayerSlot.wv.store      cellBase bufWv
+  LayerSlot.bv.store      cellBase bufBv
+  LayerSlot.wo.store      cellBase bufWo
+  LayerSlot.rmsFfn.store  cellBase bufRmsFfn
+  LayerSlot.wg.store      cellBase bufWg
+  LayerSlot.wu.store      cellBase bufWu
+  LayerSlot.wd.store      cellBase bufWd
+  LayerSlot.kCache.store  cellBase bufKCache
+  LayerSlot.vCache.store  cellBase bufVCache
 
   -- Stream-upload weight tensors through pinned scratch
-  let up (bufId : Val) (fileOff size : Nat) : IRBuilder Unit :=
-    uploadFromFile cuda fnFileRead ctxPtr pathPtr pinnedPtr bufId (layerOff + fileOff) size
+  let up {s : Shape} (t : Tensor s) (fileOff size : Nat) : IRBuilder Unit :=
+    uploadFromFile cuda fnFileRead ctxPtr pathPtr pinnedPtr t (layerOff + fileOff) size
   up bufRmsAttn LF_RMS_ATTN D_BYTES
   up bufWq      LF_WQ       WQ_BYTES
   up bufBq      LF_BQ       D_BYTES
@@ -827,7 +843,6 @@ def inferFn : IRBuilder Unit := do
   let fnLayerStep ← declareColocatedFFI "fn_28" [.i64] none
   let fnFinalStep ← declareColocatedFFI "fn_31" [.i64] none
 
-  let ctxPtr  ← load64 (← absAddr ptr 0x10)
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
   -- Read token_id and pos from host data
@@ -840,14 +855,14 @@ def inferFn : IRBuilder Unit := do
   storeI64 seqLen64 (← absAddr ptr SEQ_LEN_SLOT_OFF)
 
   -- Upload [token_id, pos] (8 bytes) to GPU meta buffer
-  let metaBufId ← load32 (← absAddr ptr BUF_META_OFF)
-  let eight     ← iconst64 8
-  let _ ← call cuda.fnUpload [ctxPtr, metaBufId, dataPtr, eight]
+  let metaT ← slotMeta.load ptr
+  let eight ← iconst64 8
+  Tensor.upload cuda ptr metaT dataPtr eight
 
   -- Embedding lookup: bind = [embed_table, meta_buf, hidden_out]
-  let bufEmbed  ← load32 (← absAddr ptr BUF_EMBED_OFF)
-  let bufHidden ← load32 (← absAddr ptr BUF_HIDDEN_OFF)
-  launchEmbed cuda ptr BIND_EMBED ⟨bufEmbed⟩ ⟨metaBufId⟩ ⟨bufHidden⟩
+  let embedT  ← slotEmbed.load ptr
+  let hiddenT ← slotHidden.load ptr
+  launchEmbed cuda ptr BIND_EMBED embedT metaT hiddenT
 
   -- 24-layer loop: calls inferLayerFn(fn_28) with layer index in LAYER_IDX_OFF
   let nLayers ← iconst64 N_LAYERS
@@ -914,31 +929,28 @@ private def load64At (base : Val) (off : Nat) : IRBuilder Val :=
   load64 =<< iaddImm base off
 
 private def attnLoadBufs (ptr slotBaseA : Val) : IRBuilder AttnBufs := do
-  let bufRmsAttn ← load32At slotBaseA LBF_RMS_ATTN
-  let bufWq      ← load32At slotBaseA LBF_WQ
-  let bufBq      ← load32At slotBaseA LBF_BQ
-  let bufWk      ← load32At slotBaseA LBF_WK
-  let bufBk      ← load32At slotBaseA LBF_BK
-  let bufWv      ← load32At slotBaseA LBF_WV
-  let bufBv      ← load32At slotBaseA LBF_BV
-  let bufWo      ← load32At slotBaseA LBF_WO
-  let bufKCache  ← load32At slotBaseA LBF_K_CACHE
-  let bufVCache  ← load32At slotBaseA LBF_V_CACHE
-  let bufHidden  ← load32At ptr BUF_HIDDEN_OFF
-  let bufHdNorm  ← load32At ptr BUF_HDNORM_OFF
-  let bufQ       ← load32At ptr BUF_Q_OFF
-  let bufKCur    ← load32At ptr BUF_K_CUR_OFF
-  let bufVCur    ← load32At ptr BUF_V_CUR_OFF
-  let bufAttnOut ← load32At ptr BUF_ATTN_OUT_OFF
-  let bufScores  ← load32At ptr BUF_SCORES_OFF
-  let bufProbs   ← load32At ptr BUF_PROBS_OFF
-  let bufMeta    ← load32At ptr BUF_META_OFF
-  return { bufRmsAttn := ⟨bufRmsAttn⟩, bufWq := ⟨bufWq⟩, bufBq := ⟨bufBq⟩,
-           bufWk := ⟨bufWk⟩, bufBk := ⟨bufBk⟩, bufWv := ⟨bufWv⟩, bufBv := ⟨bufBv⟩,
-           bufWo := ⟨bufWo⟩, bufKCache := ⟨bufKCache⟩, bufVCache := ⟨bufVCache⟩,
-           bufHidden := ⟨bufHidden⟩, bufHdNorm := ⟨bufHdNorm⟩, bufQ := ⟨bufQ⟩,
-           bufKCur := ⟨bufKCur⟩, bufVCur := ⟨bufVCur⟩, bufAttnOut := ⟨bufAttnOut⟩,
-           bufScores := ⟨bufScores⟩, bufProbs := ⟨bufProbs⟩, bufMeta := ⟨bufMeta⟩ }
+  let bufRmsAttn ← LayerSlot.rmsAttn.load slotBaseA
+  let bufWq      ← LayerSlot.wq.load      slotBaseA
+  let bufBq      ← LayerSlot.bq.load      slotBaseA
+  let bufWk      ← LayerSlot.wk.load      slotBaseA
+  let bufBk      ← LayerSlot.bk.load      slotBaseA
+  let bufWv      ← LayerSlot.wv.load      slotBaseA
+  let bufBv      ← LayerSlot.bv.load      slotBaseA
+  let bufWo      ← LayerSlot.wo.load      slotBaseA
+  let bufKCache  ← LayerSlot.kCache.load  slotBaseA
+  let bufVCache  ← LayerSlot.vCache.load  slotBaseA
+  let bufHidden  ← slotHidden.load  ptr
+  let bufHdNorm  ← slotHdNorm.load  ptr
+  let bufQ       ← slotQ.load       ptr
+  let bufKCur    ← slotKCur.load    ptr
+  let bufVCur    ← slotVCur.load    ptr
+  let bufAttnOut ← slotAttnOut.load ptr
+  let bufScores  ← slotScores.load  ptr
+  let bufProbs   ← slotProbs.load   ptr
+  let bufMeta    ← slotMeta.load    ptr
+  return { bufRmsAttn, bufWq, bufBq, bufWk, bufBk, bufWv, bufBv, bufWo,
+           bufKCache, bufVCache, bufHidden, bufHdNorm, bufQ, bufKCur, bufVCur,
+           bufAttnOut, bufScores, bufProbs, bufMeta }
 
 private def mkAttnConsts : IRBuilder AttnConsts := do
   let one32 ← iconst32 1;    let two32 ← iconst32 2;    let three32 ← iconst32 3
@@ -952,12 +964,14 @@ private def mkAttnConsts : IRBuilder AttnConsts := do
            hdim64, maxSeq64, alpha, attnAlpha, zero32 }
 
 -- RMSNorm → QKV projections → bias adds
-private def attnProjPhase (ptr ctxPtr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
-    (b : AttnBufs) (c : AttnConsts) : IRBuilder Unit := do
+private def attnProjPhase (ptr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
+    (b : AttnBufs) : IRBuilder Unit := do
   launchRms cuda ptr BIND_RMS1 b.bufHidden b.bufRmsAttn b.bufHdNorm
-  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.dm32, c.alpha, b.bufWq.buf, b.bufHdNorm.buf, c.zero32, b.bufQ.buf]
-  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.kv32, c.alpha, b.bufWk.buf, b.bufHdNorm.buf, c.zero32, b.bufKCur.buf]
-  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.kv32, c.alpha, b.bufWv.buf, b.bufHdNorm.buf, c.zero32, b.bufVCur.buf]
+  -- Q/K/V projections: shape-typed.  Wq:[D,D]·hidden:[D] → q:[D];
+  -- Wk:[KV_DIM,D]·hidden:[D] → kCur:[KV_DIM]; same for Wv.
+  CuBlas.linear blas ptr b.bufWq b.bufHdNorm b.bufQ
+  CuBlas.linear blas ptr b.bufWk b.bufHdNorm b.bufKCur
+  CuBlas.linear blas ptr b.bufWv b.bufHdNorm b.bufVCur
   launchBiasD  cuda ptr BIND_BIAS_Q b.bufQ    b.bufBq
   launchBiasKV cuda ptr BIND_BIAS_K b.bufKCur b.bufBk
   launchBiasKV cuda ptr BIND_BIAS_V b.bufVCur b.bufBv
@@ -965,26 +979,27 @@ private def attnProjPhase (ptr ctxPtr : Val) (cuda : CudaSetup) (blas : CuBlasSe
 -- RoPE → KV store
 private def attnRopePhase (ptr : Val) (cuda : CudaSetup) (b : AttnBufs)
     (_c : AttnConsts) : IRBuilder Unit := do
-  let bufRopeTable : RopeTbl := ⟨← load32 =<< iaddImm ptr BUF_ROPE_TABLE_OFF⟩
+  let bufRopeTable ← slotRopeTable.load ptr
   launchRopeQ  cuda ptr BIND_ROPE_Q b.bufQ    b.bufMeta bufRopeTable
   launchRopeK  cuda ptr BIND_ROPE_K b.bufKCur b.bufMeta bufRopeTable
   launchKVStore cuda ptr BIND_KV_K  b.bufKCur b.bufKCache b.bufMeta
   launchKVStore cuda ptr BIND_KV_V  b.bufVCur b.bufVCache b.bufMeta
 
 -- Attention scores → softmax → V-mix → Wo → residual
-private def attnMixPhase (ptr ctxPtr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
+private def attnMixPhase (ptr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
     (b : AttnBufs) (c : AttnConsts) : IRBuilder Unit := do
   let seqLen64 ← load64At ptr SEQ_LEN_SLOT_OFF
   let seqLen32 ← ireduce32 seqLen64
-  let _ ← call blas.fnSgemm
-    [ctxPtr, c.one32, c.zero32, seqLen32, c.one32, c.hdim32, c.attnAlpha,
-     b.bufKCache.buf, c.maxSeq64, b.bufQ.buf, c.hdim64, c.zero32, b.bufScores.buf, seqLen64, c.nq32]
+  -- Q and AttnOut are flat [D] views of [N_Q, HEAD_DIM] (D = N_Q * HEAD_DIM = 14 * 64).
+  let qHeads      : Tensor [.sta N_Q, .sta HEAD_DIM] := b.bufQ.reshape
+  let attnOutHeads : Tensor [.sta N_Q, .sta HEAD_DIM] := b.bufAttnOut.reshape
+  -- scores[h, :seqLen] = attnAlpha * K[h, :seqLen, :] @ Q[h]
+  CuBlas.attnScoresQK blas ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qHeads b.bufScores
   launchSoftmax cuda ptr BIND_SOFTMAX b.bufScores b.bufMeta b.bufProbs
-  let _ ← call blas.fnSgemm
-    [ctxPtr, c.zero32, c.zero32, c.hdim32, c.one32, seqLen32, c.alpha,
-     b.bufVCache.buf, c.maxSeq64, b.bufProbs.buf, seqLen64, c.zero32, b.bufAttnOut.buf, c.hdim64, c.nq32]
-  let _ ← call blas.fnSgemv
-    [ctxPtr, c.one32, c.dm32, c.dm32, c.alpha, b.bufWo.buf, b.bufAttnOut.buf, c.zero32, b.bufHdNorm.buf]
+  -- attnOut[h] = V[h, :seqLen, :]^T @ probs[h, :seqLen]
+  CuBlas.attnMixV blas ptr c.alpha seqLen32 seqLen64 b.bufVCache b.bufProbs attnOutHeads
+  -- O projection: Wo:[D,D]·attnOut:[D] → hdNorm:[D]
+  CuBlas.linear blas ptr b.bufWo b.bufAttnOut b.bufHdNorm
   launchResidualAdd cuda ptr BIND_ADD1 b.bufHidden b.bufHdNorm
 
 /-- inferLayerAttnFn (fn_29): attention sub-layer.
@@ -993,7 +1008,6 @@ def inferLayerAttnFn : IRBuilder Unit := do
   let ptr      ← entryBlock
   let cuda     ← declareCudaFFI
   let blas     ← declareCuBlasFFI
-  let ctxPtr   ← load64At ptr 0x10
   let layerIdx ← load64At ptr LAYER_IDX_OFF
   let stride64 ← iconst64 LAYER_BUF_STRIDE
   let base64   ← iconst64 LAYER_BUFS_BASE
@@ -1002,9 +1016,9 @@ def inferLayerAttnFn : IRBuilder Unit := do
   let slotBaseA ← iadd ptr slotBase
   let b ← attnLoadBufs ptr slotBaseA
   let c ← mkAttnConsts
-  attnProjPhase ptr ctxPtr cuda blas b c
+  attnProjPhase ptr cuda blas b
   attnRopePhase ptr cuda b c
-  attnMixPhase ptr ctxPtr cuda blas b c
+  attnMixPhase ptr cuda blas b c
   ret
 
 /-- inferLayerFfnFn (fn_30): FFN sub-layer.
@@ -1013,33 +1027,30 @@ def inferLayerFfnFn : IRBuilder Unit := do
   let ptr      ← entryBlock
   let cuda     ← declareCudaFFI
   let blas     ← declareCuBlasFFI
-  let ctxPtr   ← load64At ptr 0x10
   let layerIdx ← load64At ptr LAYER_IDX_OFF
   let stride64 ← iconst64 LAYER_BUF_STRIDE
   let base64   ← iconst64 LAYER_BUFS_BASE
   let slotOff  ← imul layerIdx stride64
   let slotBase ← iadd base64 slotOff
   let slotBaseA ← iadd ptr slotBase
-  let bufRmsFfn  ← load32At slotBaseA LBF_RMS_FFN
-  let bufWg      ← load32At slotBaseA LBF_WG
-  let bufWu      ← load32At slotBaseA LBF_WU
-  let bufWd      ← load32At slotBaseA LBF_WD
-  let bufHidden  ← load32At ptr BUF_HIDDEN_OFF
-  let bufHdNorm  ← load32At ptr BUF_HDNORM_OFF
-  let bufFfGate  ← load32At ptr BUF_FF_GATE_OFF
-  let bufFfUp    ← load32At ptr BUF_FF_UP_OFF
-  let bufFfAct   ← load32At ptr BUF_FF_ACT_OFF
-  let bufAttnOut ← load32At ptr BUF_ATTN_OUT_OFF
-  let one32   ← iconst32 1
-  let dm32    ← iconst32 D;   let dff32   ← iconst32 D_FF
-  let alpha   ← iconst32 0x3F800000; let zero32 ← iconst32 0
-  launchRms cuda ptr BIND_RMS2 ⟨bufHidden⟩ ⟨bufRmsFfn⟩ ⟨bufHdNorm⟩
-  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dff32, alpha, bufWg, bufHdNorm, zero32, bufFfGate]
-  let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dff32, alpha, bufWu, bufHdNorm, zero32, bufFfUp]
-  launchSiluGate cuda ptr BIND_SILU ⟨bufFfGate⟩ ⟨bufFfUp⟩ ⟨bufFfAct⟩
-  -- Wd sgemv: down = Wd @ act (D_FF → D); output to bufAttnOut (reused as temp)
-  let _ ← call blas.fnSgemv [ctxPtr, one32, dff32, dm32, alpha, bufWd, bufFfAct, zero32, bufAttnOut]
-  launchResidualAdd cuda ptr BIND_ADD2 ⟨bufHidden⟩ ⟨bufAttnOut⟩
+  let bufRmsFfn  ← LayerSlot.rmsFfn.load slotBaseA
+  let bufWg      ← LayerSlot.wg.load     slotBaseA
+  let bufWu      ← LayerSlot.wu.load     slotBaseA
+  let bufWd      ← LayerSlot.wd.load     slotBaseA
+  let bufHidden  ← slotHidden.load  ptr
+  let bufHdNorm  ← slotHdNorm.load  ptr
+  let bufFfGate  ← slotFfGate.load  ptr
+  let bufFfUp    ← slotFfUp.load    ptr
+  let bufFfAct   ← slotFfAct.load   ptr
+  let bufAttnOut ← slotAttnOut.load ptr
+  launchRms cuda ptr BIND_RMS2 bufHidden bufRmsFfn bufHdNorm
+  -- Wg/Wu projections: Wg:[D_FF,D]·hdNorm:[D] → ffGate:[D_FF]; same for Wu.
+  CuBlas.linear blas ptr bufWg bufHdNorm bufFfGate
+  CuBlas.linear blas ptr bufWu bufHdNorm bufFfUp
+  launchSiluGate cuda ptr BIND_SILU bufFfGate bufFfUp bufFfAct
+  -- Wd down projection: Wd:[D,D_FF]·ffAct:[D_FF] → attnOut:[D] (reused as temp)
+  CuBlas.linear blas ptr bufWd bufFfAct bufAttnOut
+  launchResidualAdd cuda ptr BIND_ADD2 bufHidden bufAttnOut
   ret
 
 /-- inferFinalFn (fn_31): final RMSNorm → lm_head → argmax → sync → download next_token. -/
@@ -1047,24 +1058,20 @@ def inferFinalFn : IRBuilder Unit := do
   let ptr     ← entryBlock
   let cuda    ← declareCudaFFI
   let blas    ← declareCuBlasFFI
-  let ctxPtr  ← load64At ptr 0x10
   let outPtr  ← load64At ptr 0x28
-  let bufHidden   ← load32At ptr BUF_HIDDEN_OFF
-  let bufHdNorm   ← load32At ptr BUF_HDNORM_OFF
-  let bufRmsFinal ← load32At ptr BUF_RMS_FINAL_OFF
-  let bufLmHead   ← load32At ptr BUF_LM_HEAD_OFF
-  let bufLogits   ← load32At ptr BUF_LOGITS_OFF
-  let bufMeta     ← load32At ptr BUF_META_OFF
-  let one32   ← iconst32 1
-  let dm32    ← iconst32 D; let vocab32 ← iconst32 VOCAB
-  let alpha   ← iconst32 0x3F800000; let zero32 ← iconst32 0
+  let bufHidden   ← slotHidden.load   ptr
+  let bufHdNorm   ← slotHdNorm.load   ptr
+  let bufRmsFinal ← slotRmsFinal.load ptr
+  let bufLmHead   ← slotLmHead.load   ptr
+  let bufLogits   ← slotLogits.load   ptr
+  let bufMeta     ← slotMeta.load     ptr
   let eight64 ← iconst64 8
-  launchRms cuda ptr BIND_RMS2 ⟨bufHidden⟩ ⟨bufRmsFinal⟩ ⟨bufHdNorm⟩
-  let _ ← call blas.fnSgemv
-    [ctxPtr, one32, dm32, vocab32, alpha, bufLmHead, bufHdNorm, zero32, bufLogits]
-  launchArgmax cuda ptr BIND_ARGMAX ⟨bufLogits⟩ ⟨bufMeta⟩
+  launchRms cuda ptr BIND_RMS2 bufHidden bufRmsFinal bufHdNorm
+  -- LM head projection: lmHead:[VOCAB,D]·hdNorm:[D] → logits:[VOCAB]
+  CuBlas.linear blas ptr bufLmHead bufHdNorm bufLogits
+  launchArgmax cuda ptr BIND_ARGMAX bufLogits bufMeta
   let _ ← cudaSync cuda ptr 0x10
-  let _ ← call cuda.fnDownload [ctxPtr, bufMeta, outPtr, eight64]
+  Tensor.download cuda ptr bufMeta outPtr eight64
   ret
 
 -- ── Tokenizer functions ───────────────────────────────────────────────────────
