@@ -1,6 +1,7 @@
 import Lean
 import Std
 import AlgorithmLib
+import AlgorithmLib.Cuda
 
 set_option maxRecDepth 4096
 
@@ -8,6 +9,7 @@ open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
 open AlgorithmLib.PTX
+open AlgorithmLib.Tensor
 
 namespace Qwen2
 
@@ -202,11 +204,31 @@ def MEM_SIZE        : Nat := 0x10000 -- 64 KB total
 
 def D_AS_BITS : UInt32 := 0x44600000  -- 896.0f
 
+-- ── Tensor shape abbreviations for Qwen2 ────────────────────────────────────
+abbrev VecD     := Tensor [.sta D]              -- hidden state, rmsnorm weights, residual
+abbrev VecKV    := Tensor [.sta KV_DIM]         -- current K/V vector for one position
+abbrev VecDff   := Tensor [.sta D_FF]           -- FFN intermediate
+abbrev VecVocab := Tensor [.sta VOCAB]          -- logits, embed table row
+abbrev VecMeta  := Tensor [.sta 2]              -- meta buffer ([token_id, pos])
+abbrev EmbedTbl := Tensor [.sta VOCAB, .sta D]  -- full embed/lm_head table
+abbrev KVCache  := Tensor [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM]  -- GQA-expanded
+abbrev RopeTbl  := Tensor [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)]
+abbrev VecScores := Tensor [.sta N_Q, .dyn]     -- attention scores [head, seq_len]
+abbrev MatDD     := Tensor [.sta D, .sta D]              -- Wq, Wo
+abbrev MatKVD    := Tensor [.sta KV_DIM, .sta D]         -- Wk, Wv
+abbrev MatDffD   := Tensor [.sta D_FF, .sta D]           -- Wg, Wu
+abbrev MatDDff   := Tensor [.sta D, .sta D_FF]           -- Wd
+
 -- Embedding row copy: out = embed[token_id]
--- Bind: [embed_buf, meta_buf, hidden_buf]  meta_buf[0]=token_id
--- Grid=(1,1,1), Block=(256,1,1)
-def ptxEmbedLookup : String :=
-  buildModule 0 [{ name := "main", params := ["embed_buf", "meta_buf", "out_buf"], body := do
+-- Bind: [embed, meta, hidden]; Grid=(1,1,1), Block=(256,1,1)
+def embedKernel : Kernel := {
+  name := "main"
+  params := [
+    { name := "embed_buf", shape := [.sta VOCAB, .sta D], ro := true },
+    { name := "meta_buf",  shape := [.sta 2],            ro := true },
+    { name := "out_buf",   shape := [.sta D] }
+  ]
+  body := do
     let embedBuf ← ldParam "embed_buf"
     let metaBuf  ← ldParam "meta_buf"
     let outBuf   ← ldParam "out_buf"
@@ -219,137 +241,166 @@ def ptxEmbedLookup : String :=
     strideLoop tid nReg 256 "el_loop" "el_done" fun i => do
       let srcA ← elemAddr rowBase i; let dstA ← elemAddr outBuf i
       let xi ← freshF; ldGlobalF xi srcA; stGlobalF dstA xi
-    ptxRet }]
+    ptxRet
+  geom := Kernel.Geom.static 1 1 1 256 1 1
+  ptxOff := PTX_EMBED_OFF
+}
+def ptxEmbedLookup : String := embedKernel.ptxSource
+
+private def launchEmbed (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (table : EmbedTbl) (metaT : VecMeta) (outT : VecD) : IRBuilder Unit :=
+  launch3 embedKernel cuda ptr bindOff table metaT outT
 
 -- RMSNorm: y = rms_norm(x, w)
--- Bind: [x_buf, w_buf, y_buf]
--- Grid=(1,1,1), Block=(256,1,1), smem=36
-def ptxRmsNorm : String :=
-  buildModule 36 [{ name := "main", params := ["x_buf", "w_buf", "y_buf"], body := do
+-- Bind: [x_buf, w_buf, y_buf]; Grid=(1,1,1), Block=(256,1,1), smem=36
+--
+-- Declarative typed kernel: shape-indexed bindings, declarative geometry,
+-- and the PTX body in one value. `ptxRmsNorm` (below) is now derived.
+def rmsNormKernel : Kernel := {
+  name := "main"
+  params := [
+    { name := "x_buf", shape := [.sta D] },
+    { name := "w_buf", shape := [.sta D] },
+    { name := "y_buf", shape := [.sta D] }
+  ]
+  smemBytes := 36
+  body := do
     let xPtr ← ldParam "x_buf"; let wPtr ← ldParam "w_buf"; let yPtr ← ldParam "y_buf"
     let nReg ← freshR; movRC nReg D
     let (tid, wid, lid) ← getWarpIds
-    rmsNormBody xPtr wPtr yPtr tid wid lid nReg D_AS_BITS "" }]
+    rmsNormBody xPtr wPtr yPtr tid wid lid nReg D_AS_BITS ""
+  geom := Kernel.Geom.static 1 1 1 256 1 1
+  ptxOff := PTX_RMS_OFF
+}
 
--- Bias add: x[i] += b[i], n=D elements
--- Bind: [x_buf, b_buf]
--- Grid=(1,1,1), Block=(256,1,1)
-def ptxBiasAddD : String :=
-  buildModule 0 [{ name := "main", params := ["x_buf", "b_buf"], body := do
-    let xBuf ← ldParam "x_buf"; let bBuf ← ldParam "b_buf"
-    let nReg ← freshR; movRC nReg D
-    let (tid, _, _) ← getWarpIds
-    strideLoop tid nReg 256 "bd_loop" "bd_done" fun i => do
-      let xA ← elemAddr xBuf i; let bA ← elemAddr bBuf i
-      let xi ← freshF; ldGlobalF xi xA; let bi ← freshF; ldGlobalF bi bA
-      addF xi xi bi; stGlobalF xA xi
-    ptxRet }]
+def ptxRmsNorm : String := rmsNormKernel.ptxSource
 
--- Bias add: x[i] += b[i], n=KV_DIM elements
-def ptxBiasAddKV : String :=
-  buildModule 0 [{ name := "main", params := ["x_buf", "b_buf"], body := do
-    let xBuf ← ldParam "x_buf"; let bBuf ← ldParam "b_buf"
-    let nReg ← freshR; movRC nReg KV_DIM
-    let (tid, _, _) ← getWarpIds
-    strideLoop tid nReg 256 "bk_loop" "bk_done" fun i => do
-      let xA ← elemAddr xBuf i; let bA ← elemAddr bBuf i
-      let xi ← freshF; ldGlobalF xi xA; let bi ← freshF; ldGlobalF bi bA
-      addF xi xi bi; stGlobalF xA xi
-    ptxRet }]
+/-- Typed RMSNorm launcher.  `x` is the input, `w` the weights, `y` the output —
+    all `[D]` f32. The bind region is the only call-site-specific value. -/
+private def launchRms (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (x w y : Tensor [.sta D]) : IRBuilder Unit :=
+  launch3 rmsNormKernel cuda ptr bindOff x w y
 
--- RoPE for Q: apply rotary encoding to q[N_Q, HEAD_DIM] at position pos
--- Bind: [q_buf, meta_buf, rope_table]  meta_buf[4]=pos
--- rope_table layout: [sin: MAX_SEQ×HEAD_DIM_HALF f32][cos: MAX_SEQ×HEAD_DIM_HALF f32]
--- Grid=(N_Q=14,1,1), Block=(HEAD_DIM/2=32,1,1)
--- Thread (headIdx, freqIdx) handles q[head, freq] and q[head, freq+32]
-def ptxRoPEQ : String :=
-  buildModule 0 [{ name := "main", params := ["q_buf", "meta_buf", "rope_table"], body := do
-    let qBuf      ← ldParam "q_buf"
-    let metaBuf   ← ldParam "meta_buf"
-    let ropeTable ← ldParam "rope_table"
-    let headIdx ← freshR; movR headIdx ctaX
-    let freqIdx ← freshR; movR freqIdx tidX
-    let pos ← freshR; ldGlobalUO pos metaBuf 4
-    -- table index = pos * HEAD_DIM_HALF + freqIdx
-    let tblIdx ← freshR; madLoRC tblIdx pos (HEAD_DIM / 2) freqIdx
-    let tblOff64 ← freshRd; mulWideRI tblOff64 tblIdx 4
-    -- sin = rope_table[tblIdx]
-    let sinAddr ← freshRd; addRd sinAddr ropeTable tblOff64
-    let sinT ← freshF; ldGlobalF sinT sinAddr
-    -- cos = rope_table[MAX_SEQ*HEAD_DIM_HALF + tblIdx]
-    let cosBaseOff ← freshR; movRC cosBaseOff (MAX_SEQ * (HEAD_DIM / 2) * 4)
-    let cosBaseOff64 ← freshRd; cvtU64 cosBaseOff64 cosBaseOff
-    let cosAddr ← freshRd; addRd cosAddr ropeTable cosBaseOff64
-    addRd cosAddr cosAddr tblOff64
-    let cosT ← freshF; ldGlobalF cosT cosAddr
-    -- Address of q[head, freq]: head*HEAD_DIM*4 + freq*4
-    let loOff ← freshR; madLoRC loOff headIdx HEAD_DIM freqIdx
-    let hiOff ← freshR; addRI hiOff loOff (HEAD_DIM / 2)
-    let loOff64 ← freshRd; mulWideRI loOff64 loOff 4; let loAddr ← freshRd; addRd loAddr qBuf loOff64
-    let hiOff64 ← freshRd; mulWideRI hiOff64 hiOff 4; let hiAddr ← freshRd; addRd hiAddr qBuf hiOff64
-    let qLo ← freshF; ldGlobalF qLo loAddr
-    let qHi ← freshF; ldGlobalF qHi hiAddr
-    -- new_lo = qLo*cos - qHi*sin
-    let qHiSin ← freshF; mulF qHiSin qHi sinT
-    let negQHiSin ← freshF; negF negQHiSin qHiSin
-    let newLo ← freshF; fmaRn newLo qLo cosT negQHiSin
-    -- new_hi = qLo*sin + qHi*cos
-    let qHiCos ← freshF; mulF qHiCos qHi cosT
-    let newHi ← freshF; fmaRn newHi qLo sinT qHiCos
-    stGlobalF loAddr newLo
-    stGlobalF hiAddr newHi
-    ptxRet }]
+-- Bias add: x[i] += b[i]; same kernel body parameterized by N at PTX level.
+-- We emit two specializations (D and KV_DIM) since N is folded as a constant.
+private def biasAddBody (n : Nat) (loopL doneL : String) : PTX Unit := do
+  let xBuf ← ldParam "x_buf"; let bBuf ← ldParam "b_buf"
+  let nReg ← freshR; movRC nReg n
+  let (tid, _, _) ← getWarpIds
+  strideLoop tid nReg 256 loopL doneL fun i => do
+    let xA ← elemAddr xBuf i; let bA ← elemAddr bBuf i
+    let xi ← freshF; ldGlobalF xi xA; let bi ← freshF; ldGlobalF bi bA
+    addF xi xi bi; stGlobalF xA xi
+  ptxRet
 
--- RoPE for K (same as Q but N_KV heads, uses same precomputed table)
--- Bind: [k_buf, meta_buf, rope_table]  meta_buf[4]=pos
--- Grid=(N_KV=2,1,1), Block=(HEAD_DIM/2=32,1,1)
-def ptxRoPEK : String :=
-  buildModule 0 [{ name := "main", params := ["k_buf", "meta_buf", "rope_table"], body := do
-    let kBuf      ← ldParam "k_buf"
-    let metaBuf   ← ldParam "meta_buf"
-    let ropeTable ← ldParam "rope_table"
-    let headIdx ← freshR; movR headIdx ctaX
-    let freqIdx ← freshR; movR freqIdx tidX
-    let pos ← freshR; ldGlobalUO pos metaBuf 4
-    -- table index = pos * HEAD_DIM_HALF + freqIdx
-    let tblIdx ← freshR; madLoRC tblIdx pos (HEAD_DIM / 2) freqIdx
-    let tblOff64 ← freshRd; mulWideRI tblOff64 tblIdx 4
-    -- sin = rope_table[tblIdx]
-    let sinAddr ← freshRd; addRd sinAddr ropeTable tblOff64
-    let sinT ← freshF; ldGlobalF sinT sinAddr
-    -- cos = rope_table[MAX_SEQ*HEAD_DIM_HALF + tblIdx]
-    let cosBaseOff ← freshR; movRC cosBaseOff (MAX_SEQ * (HEAD_DIM / 2) * 4)
-    let cosBaseOff64 ← freshRd; cvtU64 cosBaseOff64 cosBaseOff
-    let cosAddr ← freshRd; addRd cosAddr ropeTable cosBaseOff64
-    addRd cosAddr cosAddr tblOff64
-    let cosT ← freshF; ldGlobalF cosT cosAddr
-    -- Address of k[head, freq]
-    let loOff ← freshR; madLoRC loOff headIdx HEAD_DIM freqIdx
-    let hiOff ← freshR; addRI hiOff loOff (HEAD_DIM / 2)
-    let loOff64 ← freshRd; mulWideRI loOff64 loOff 4; let loAddr ← freshRd; addRd loAddr kBuf loOff64
-    let hiOff64 ← freshRd; mulWideRI hiOff64 hiOff 4; let hiAddr ← freshRd; addRd hiAddr kBuf hiOff64
-    let kLo ← freshF; ldGlobalF kLo loAddr
-    let kHi ← freshF; ldGlobalF kHi hiAddr
-    -- new_lo = kLo*cos - kHi*sin
-    let kHiSin ← freshF; mulF kHiSin kHi sinT
-    let negKHiSin ← freshF; negF negKHiSin kHiSin
-    let newLo ← freshF; fmaRn newLo kLo cosT negKHiSin
-    -- new_hi = kLo*sin + kHi*cos
-    let kHiCos ← freshF; mulF kHiCos kHi cosT
-    let newHi ← freshF; fmaRn newHi kLo sinT kHiCos
-    stGlobalF loAddr newLo
-    stGlobalF hiAddr newHi
-    ptxRet }]
+def biasAddDKernel : Kernel := {
+  name := "main"
+  params := [{ name := "x_buf", shape := [.sta D] },
+             { name := "b_buf", shape := [.sta D], ro := true }]
+  body := biasAddBody D "bd_loop" "bd_done"
+  geom := Kernel.Geom.static 1 1 1 256 1 1
+  ptxOff := PTX_BIAS_D_OFF
+}
 
--- Softmax over per-head scores (variable seq_len from meta_buf[4]+1)
--- Bind: [scores_buf, meta_buf, probs_buf]
--- Grid=(N_Q=14,1,1), Block=(256,1,1), smem=40
-def ptxSoftmax : String :=
-  buildModule 40 [{ name := "main", params := ["scores_buf", "meta_buf", "probs_buf"], body := do
+def biasAddKVKernel : Kernel := {
+  name := "main"
+  params := [{ name := "x_buf", shape := [.sta KV_DIM] },
+             { name := "b_buf", shape := [.sta KV_DIM], ro := true }]
+  body := biasAddBody KV_DIM "bk_loop" "bk_done"
+  geom := Kernel.Geom.static 1 1 1 256 1 1
+  ptxOff := PTX_BIAS_KV_OFF
+}
+
+def ptxBiasAddD  : String := biasAddDKernel.ptxSource
+def ptxBiasAddKV : String := biasAddKVKernel.ptxSource
+
+private def launchBiasD (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (x b : VecD) : IRBuilder Unit :=
+  launch2 biasAddDKernel cuda ptr bindOff x b
+
+private def launchBiasKV (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (x b : VecKV) : IRBuilder Unit :=
+  launch2 biasAddKVKernel cuda ptr bindOff x b
+
+-- RoPE rotation body — identical for Q and K, parameterized by buffer-param name.
+-- Thread (headIdx=ctaX, freqIdx=tidX) handles vec[head, freq] and vec[head, freq+HEAD_DIM/2].
+-- meta_buf[4]=pos; rope_table = [sin; cos] each MAX_SEQ × HEAD_DIM/2 f32.
+private def ropeBody (vecParam : String) : PTX Unit := do
+  let vBuf      ← ldParam vecParam
+  let metaBuf   ← ldParam "meta_buf"
+  let ropeTable ← ldParam "rope_table"
+  let headIdx ← freshR; movR headIdx ctaX
+  let freqIdx ← freshR; movR freqIdx tidX
+  let pos ← freshR; ldGlobalUO pos metaBuf 4
+  let tblIdx ← freshR; madLoRC tblIdx pos (HEAD_DIM / 2) freqIdx
+  let tblOff64 ← freshRd; mulWideRI tblOff64 tblIdx 4
+  let sinAddr ← freshRd; addRd sinAddr ropeTable tblOff64
+  let sinT ← freshF; ldGlobalF sinT sinAddr
+  let cosBaseOff ← freshR; movRC cosBaseOff (MAX_SEQ * (HEAD_DIM / 2) * 4)
+  let cosBaseOff64 ← freshRd; cvtU64 cosBaseOff64 cosBaseOff
+  let cosAddr ← freshRd; addRd cosAddr ropeTable cosBaseOff64
+  addRd cosAddr cosAddr tblOff64
+  let cosT ← freshF; ldGlobalF cosT cosAddr
+  let loOff ← freshR; madLoRC loOff headIdx HEAD_DIM freqIdx
+  let hiOff ← freshR; addRI hiOff loOff (HEAD_DIM / 2)
+  let loOff64 ← freshRd; mulWideRI loOff64 loOff 4; let loAddr ← freshRd; addRd loAddr vBuf loOff64
+  let hiOff64 ← freshRd; mulWideRI hiOff64 hiOff 4; let hiAddr ← freshRd; addRd hiAddr vBuf hiOff64
+  let vLo ← freshF; ldGlobalF vLo loAddr
+  let vHi ← freshF; ldGlobalF vHi hiAddr
+  let hiSin ← freshF; mulF hiSin vHi sinT
+  let negHiSin ← freshF; negF negHiSin hiSin
+  let newLo ← freshF; fmaRn newLo vLo cosT negHiSin
+  let hiCos ← freshF; mulF hiCos vHi cosT
+  let newHi ← freshF; fmaRn newHi vLo sinT hiCos
+  stGlobalF loAddr newLo
+  stGlobalF hiAddr newHi
+  ptxRet
+
+-- RoPE Q: grid=N_Q, block=HEAD_DIM/2. Rotates Q in place.
+def ropeQKernel : Kernel := {
+  name := "main"
+  params := [{ name := "q_buf",      shape := [.sta D] },
+             { name := "meta_buf",   shape := [.sta 2], ro := true },
+             { name := "rope_table", shape := [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)], ro := true }]
+  body := ropeBody "q_buf"
+  geom := Kernel.Geom.static N_Q 1 1 (HEAD_DIM/2) 1 1
+  ptxOff := PTX_ROPE_Q_OFF
+}
+
+-- RoPE K: grid=N_KV, block=HEAD_DIM/2.
+def ropeKKernel : Kernel := {
+  name := "main"
+  params := [{ name := "k_buf",      shape := [.sta KV_DIM] },
+             { name := "meta_buf",   shape := [.sta 2], ro := true },
+             { name := "rope_table", shape := [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)], ro := true }]
+  body := ropeBody "k_buf"
+  geom := Kernel.Geom.static N_KV 1 1 (HEAD_DIM/2) 1 1
+  ptxOff := PTX_ROPE_K_OFF
+}
+
+def ptxRoPEQ : String := ropeQKernel.ptxSource
+def ptxRoPEK : String := ropeKKernel.ptxSource
+
+private def launchRopeQ (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (q : VecD) (mb : VecMeta) (rope : RopeTbl) : IRBuilder Unit :=
+  launch3 ropeQKernel cuda ptr bindOff q mb rope
+
+private def launchRopeK (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (k : VecKV) (mb : VecMeta) (rope : RopeTbl) : IRBuilder Unit :=
+  launch3 ropeKKernel cuda ptr bindOff k mb rope
+
+-- Softmax over per-head scores. seq_len = meta_buf[4]+1 (dynamic).
+-- Grid=N_Q, Block=256, smem=40.
+def softmaxKernel : Kernel := {
+  name := "main"
+  params := [{ name := "scores_buf", shape := [.sta N_Q, .dyn] },
+             { name := "meta_buf",   shape := [.sta 2], ro := true },
+             { name := "probs_buf",  shape := [.sta N_Q, .dyn] }]
+  smemBytes := 40
+  body := do
     let scoresBuf ← ldParam "scores_buf"
     let metaPtr   ← ldParam "meta_buf"
     let probsBuf  ← ldParam "probs_buf"
-    -- seq_len = pos+1; meta_buf[4]=pos
     let seqLen ← freshR; ldGlobalUO seqLen metaPtr 4; addRI seqLen seqLen 1
     let (tid, wid, lid) ← getWarpIds
     let headIdx  ← freshR; movR headIdx ctaX
@@ -384,13 +435,24 @@ def ptxSoftmax : String :=
       let xi ← freshF; ldGlobalF xi sAddr
       subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
       stGlobalF pAddr xi
-    ptxRet }]
+    ptxRet
+  geom := Kernel.Geom.static N_Q 1 1 256 1 1
+  ptxOff := PTX_SOFTMAX_OFF
+}
 
--- SiLU-gate: out = silu(gate) * up
--- Bind: [gate_buf, up_buf, out_buf]
--- Grid=(ceil(D_FF/256),1,1), Block=(256,1,1)
-def ptxSiluGate : String :=
-  buildModule 0 [{ name := "main", params := ["gate_buf", "up_buf", "out_buf"], body := do
+def ptxSoftmax : String := softmaxKernel.ptxSource
+
+private def launchSoftmax (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (scores : VecScores) (mb : VecMeta) (probs : VecScores) : IRBuilder Unit :=
+  launch3 softmaxKernel cuda ptr bindOff scores mb probs
+
+-- SiLU-gate: out = silu(gate) * up.  Grid=ceil(D_FF/256), Block=256.
+def siluGateKernel : Kernel := {
+  name := "main"
+  params := [{ name := "gate_buf", shape := [.sta D_FF] },
+             { name := "up_buf",   shape := [.sta D_FF], ro := true },
+             { name := "out_buf",  shape := [.sta D_FF] }]
+  body := do
     let gatePtr ← ldParam "gate_buf"; let upPtr ← ldParam "up_buf"; let outPtr ← ldParam "out_buf"
     let nReg ← freshR; movRC nReg D_FF
     let (gid, _) ← gridStrideSetup nReg "sg_done"
@@ -400,44 +462,60 @@ def ptxSiluGate : String :=
     let l ← freshF; movFC l f32_log2e; mulF ng ng l; ex2 ng ng
     let one ← freshF; movFC one f32_1; addF ng ng one; rcp ng ng
     mulF g g ng; mulF g g u; stGlobalF oA g
-    label "sg_done"; ptxRet }]
+    label "sg_done"; ptxRet
+  geom := Kernel.Geom.static ((D_FF + 255) / 256) 1 1 256 1 1
+  ptxOff := PTX_SILU_OFF
+}
 
--- Residual add: x[i] += a[i], n=D elements
--- Bind: [x_buf, add_buf]
--- Grid=(ceil(D/256),1,1), Block=(256,1,1)
-def ptxResidualAdd : String :=
-  buildModule 0 [{ name := "main", params := ["x_buf", "add_buf"], body := do
+def ptxSiluGate : String := siluGateKernel.ptxSource
+
+private def launchSiluGate (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (gate up out_ : VecDff) : IRBuilder Unit :=
+  launch3 siluGateKernel cuda ptr bindOff gate up out_
+
+-- Residual add: x[i] += a[i], n=D. Grid=ceil(D/256), Block=256.
+def residualAddKernel : Kernel := {
+  name := "main"
+  params := [{ name := "x_buf",   shape := [.sta D] },
+             { name := "add_buf", shape := [.sta D], ro := true }]
+  body := do
     let xPtr ← ldParam "x_buf"; let addPtr ← ldParam "add_buf"
     let nReg ← freshR; movRC nReg D
     let (gid, _) ← gridStrideSetup nReg "ra_done"
     let xA ← elemAddr xPtr gid; let aA ← elemAddr addPtr gid
     let xi ← freshF; ldGlobalF xi xA; let ai ← freshF; ldGlobalF ai aA
     addF xi xi ai; stGlobalF xA xi
-    label "ra_done"; ptxRet }]
+    label "ra_done"; ptxRet
+  geom := Kernel.Geom.static ((D + 255) / 256) 1 1 256 1 1
+  ptxOff := PTX_ADD_OFF
+}
 
--- KV store with GQA expansion (7:1): writes k_cur[N_KV, HEAD_DIM] to
--- k_cache[N_Q, MAX_SEQ, HEAD_DIM] at position pos.
--- Bind: [k_cur_buf, k_cache_buf, meta_buf]  meta_buf[4]=pos
--- Grid=(N_KV=2,1,1), Block=(HEAD_DIM=64,1,1)
-def ptxKVStore : String :=
-  buildModule 0 [{ name := "main", params := ["k_cur_buf", "k_cache_buf", "meta_buf"], body := do
+def ptxResidualAdd : String := residualAddKernel.ptxSource
+
+private def launchResidualAdd (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (x add_ : VecD) : IRBuilder Unit :=
+  launch2 residualAddKernel cuda ptr bindOff x add_
+
+-- KV store with GQA expansion (7:1).  Grid=N_KV, Block=HEAD_DIM.
+def kvStoreKernel : Kernel := {
+  name := "main"
+  params := [{ name := "k_cur_buf",   shape := [.sta KV_DIM], ro := true },
+             { name := "k_cache_buf", shape := [.sta N_Q, .sta MAX_SEQ, .sta HEAD_DIM] },
+             { name := "meta_buf",    shape := [.sta 2], ro := true }]
+  body := do
     let kCurBuf   ← ldParam "k_cur_buf"
     let kCacheBuf ← ldParam "k_cache_buf"
     let metaBuf   ← ldParam "meta_buf"
     let kvHead ← freshR; movR kvHead ctaX
     let elemIdx ← freshR; movR elemIdx tidX
     let pos ← freshR; ldGlobalUO pos metaBuf 4
-    -- Load k_cur[kvHead, elemIdx]: offset = kvHead*HEAD_DIM + elemIdx
     let srcOff ← freshR; madLoRC srcOff kvHead HEAD_DIM elemIdx
     let srcOff64 ← freshRd; mulWideRI srcOff64 srcOff 4
     let srcAddr ← freshRd; addRd srcAddr kCurBuf srcOff64
     let kVal ← freshF; ldGlobalF kVal srcAddr
-    -- Base Q-head for this KV head: baseQH = kvHead * GQA_RATIO
     let baseQH ← freshR; madLoRII baseQH kvHead GQA_RATIO 0
-    -- Unroll 7 writes: for each g in 0..6, write to q-head (baseQH+g) at pos
     for g in List.range GQA_RATIO do
       let qHead ← freshR; addRI qHead baseQH g
-      -- dst_idx = qHead*MAX_SEQ*HEAD_DIM + pos*HEAD_DIM + elemIdx
       let qh64 ← freshRd; mulWideRI qh64 qHead (MAX_SEQ * HEAD_DIM)
       let pos64 ← freshRd; mulWideRI pos64 pos HEAD_DIM
       let elem64 ← freshRd; cvtU64 elem64 elemIdx
@@ -445,16 +523,26 @@ def ptxKVStore : String :=
       let byteOff ← freshRd; shlRd byteOff qh64 2
       let dstAddr ← freshRd; addRd dstAddr kCacheBuf byteOff
       stGlobalF dstAddr kVal
-    ptxRet }]
+    ptxRet
+  geom := Kernel.Geom.static N_KV 1 1 HEAD_DIM 1 1
+  ptxOff := PTX_KVSTORE_OFF
+}
 
--- Argmax over VOCAB logits (single-thread, correctness over speed)
--- Bind: [logits_buf, meta_buf]  → writes result to meta_buf[0]
--- Grid=(1,1,1), Block=(1,1,1)
-def ptxArgmax : String :=
-  buildModule 0 [{ name := "main", params := ["logits_buf", "meta_buf"], body := do
+def ptxKVStore : String := kvStoreKernel.ptxSource
+
+private def launchKVStore (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (kCur : VecKV) (kCache : KVCache) (mb : VecMeta) : IRBuilder Unit :=
+  launch3 kvStoreKernel cuda ptr bindOff kCur kCache mb
+
+-- Argmax over VOCAB logits. Single-thread; writes result to meta_buf[0].
+def argmaxKernel : Kernel := {
+  name := "main"
+  params := [{ name := "logits_buf", shape := [.sta VOCAB], ro := true },
+             { name := "meta_buf",   shape := [.sta 2] }]
+  body := do
     let logitsBuf ← ldParam "logits_buf"
     let metaBuf   ← ldParam "meta_buf"
-    let maxVal ← freshF; movFC maxVal 0xFF800000  -- -inf
+    let maxVal ← freshF; movFC maxVal 0xFF800000
     let maxIdx ← freshR; movRC maxIdx 0
     let i ← freshR; movRC i 0
     label "ax_loop"
@@ -470,7 +558,16 @@ def ptxArgmax : String :=
     addRI i i 1; bra "ax_loop"
     label "ax_done"
     stGlobalU32 metaBuf maxIdx
-    ptxRet }]
+    ptxRet
+  geom := Kernel.Geom.static 1 1 1 1 1 1
+  ptxOff := PTX_ARGMAX_OFF
+}
+
+def ptxArgmax : String := argmaxKernel.ptxSource
+
+private def launchArgmax (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
+    (logits : VecVocab) (mb : VecMeta) : IRBuilder Unit :=
+  launch2 argmaxKernel cuda ptr bindOff logits mb
 
 -- ── CLIF Load Functions ───────────────────────────────────────────────────────
 
@@ -788,15 +885,10 @@ def inferFn : IRBuilder Unit := do
   let eight     ← iconst64 8
   let _ ← call cuda.fnUpload [ctxPtr, metaBufId, dataPtr, eight]
 
-  -- Embedding lookup: bind = [embed_buf, meta_buf, hidden_buf]
+  -- Embedding lookup: bind = [embed_table, meta_buf, hidden_out]
   let bufEmbed  ← load32 (← absAddr ptr BUF_EMBED_OFF)
   let bufHidden ← load32 (← absAddr ptr BUF_HIDDEN_OFF)
-  storeI32 bufEmbed  (← absAddr ptr BIND_EMBED)
-  storeI32 metaBufId (← absAddr ptr (BIND_EMBED + 4))
-  storeI32 bufHidden (← absAddr ptr (BIND_EMBED + 8))
-  let three32 ← iconst32 3; let one32 ← iconst32 1; let blk256 ← iconst32 256
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_EMBED_OFF) three32
-             (← iconst64 BIND_EMBED) one32 one32 one32 blk256 one32 one32
+  launchEmbed cuda ptr BIND_EMBED ⟨bufEmbed⟩ ⟨metaBufId⟩ ⟨bufHidden⟩
 
   -- 24-layer loop: calls inferLayerFn(fn_28) with layer index in LAYER_IDX_OFF
   let zero64   ← iconst64 0
@@ -836,25 +928,25 @@ def inferLayerFn : IRBuilder Unit := do
 -- ── Attention helper types and sub-builders ───────────────────────────────────
 
 private structure AttnBufs where
-  bufRmsAttn : Val
-  bufWq      : Val
-  bufBq      : Val
-  bufWk      : Val
-  bufBk      : Val
-  bufWv      : Val
-  bufBv      : Val
-  bufWo      : Val
-  bufKCache  : Val
-  bufVCache  : Val
-  bufHidden  : Val
-  bufHdNorm  : Val
-  bufQ       : Val
-  bufKCur    : Val
-  bufVCur    : Val
-  bufAttnOut : Val
-  bufScores  : Val
-  bufProbs   : Val
-  bufMeta    : Val
+  bufRmsAttn : VecD
+  bufWq      : MatDD
+  bufBq      : VecD
+  bufWk      : MatKVD
+  bufBk      : VecKV
+  bufWv      : MatKVD
+  bufBv      : VecKV
+  bufWo      : MatDD
+  bufKCache  : KVCache
+  bufVCache  : KVCache
+  bufHidden  : VecD
+  bufHdNorm  : VecD
+  bufQ       : VecD
+  bufKCur    : VecKV
+  bufVCur    : VecKV
+  bufAttnOut : VecD
+  bufScores  : VecScores
+  bufProbs   : VecScores
+  bufMeta    : VecMeta
 
 private structure AttnConsts where
   one32     : Val
@@ -879,9 +971,6 @@ private def load32At (base : Val) (off : Nat) : IRBuilder Val :=
 private def load64At (base : Val) (off : Nat) : IRBuilder Val :=
   load64 =<< iaddImm base off
 
-private def si32At (ptr : Val) (off : Nat) (v : Val) : IRBuilder Unit := do
-  storeI32 v (← iaddImm ptr off)
-
 private def attnLoadBufs (ptr slotBaseA : Val) : IRBuilder AttnBufs := do
   let bufRmsAttn ← load32At slotBaseA LBF_RMS_ATTN
   let bufWq      ← load32At slotBaseA LBF_WQ
@@ -902,8 +991,12 @@ private def attnLoadBufs (ptr slotBaseA : Val) : IRBuilder AttnBufs := do
   let bufScores  ← load32At ptr BUF_SCORES_OFF
   let bufProbs   ← load32At ptr BUF_PROBS_OFF
   let bufMeta    ← load32At ptr BUF_META_OFF
-  return { bufRmsAttn, bufWq, bufBq, bufWk, bufBk, bufWv, bufBv, bufWo, bufKCache, bufVCache,
-           bufHidden, bufHdNorm, bufQ, bufKCur, bufVCur, bufAttnOut, bufScores, bufProbs, bufMeta }
+  return { bufRmsAttn := ⟨bufRmsAttn⟩, bufWq := ⟨bufWq⟩, bufBq := ⟨bufBq⟩,
+           bufWk := ⟨bufWk⟩, bufBk := ⟨bufBk⟩, bufWv := ⟨bufWv⟩, bufBv := ⟨bufBv⟩,
+           bufWo := ⟨bufWo⟩, bufKCache := ⟨bufKCache⟩, bufVCache := ⟨bufVCache⟩,
+           bufHidden := ⟨bufHidden⟩, bufHdNorm := ⟨bufHdNorm⟩, bufQ := ⟨bufQ⟩,
+           bufKCur := ⟨bufKCur⟩, bufVCur := ⟨bufVCur⟩, bufAttnOut := ⟨bufAttnOut⟩,
+           bufScores := ⟨bufScores⟩, bufProbs := ⟨bufProbs⟩, bufMeta := ⟨bufMeta⟩ }
 
 private def mkAttnConsts : IRBuilder AttnConsts := do
   let one32 ← iconst32 1;    let two32 ← iconst32 2;    let three32 ← iconst32 3
@@ -916,64 +1009,41 @@ private def mkAttnConsts : IRBuilder AttnConsts := do
   return { one32, two32, three32, blk256, nq32, nkv32, dm32, kv32, hdim32, blk32_2,
            hdim64, maxSeq64, alpha, attnAlpha, zero32 }
 
--- RMSNorm → QKV projections → bias adds (~24 binds)
+-- RMSNorm → QKV projections → bias adds
 private def attnProjPhase (ptr ctxPtr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
     (b : AttnBufs) (c : AttnConsts) : IRBuilder Unit := do
-  si32At ptr BIND_RMS1 b.bufHidden
-  si32At ptr (BIND_RMS1 + 4) b.bufRmsAttn
-  si32At ptr (BIND_RMS1 + 8) b.bufHdNorm
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_RMS_OFF) c.three32
-               (← iconst64 BIND_RMS1) c.one32 c.one32 c.one32 c.blk256 c.one32 c.one32
-  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.dm32, c.alpha, b.bufWq, b.bufHdNorm, c.zero32, b.bufQ]
-  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.kv32, c.alpha, b.bufWk, b.bufHdNorm, c.zero32, b.bufKCur]
-  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.kv32, c.alpha, b.bufWv, b.bufHdNorm, c.zero32, b.bufVCur]
-  si32At ptr BIND_BIAS_Q b.bufQ;    si32At ptr (BIND_BIAS_Q + 4) b.bufBq
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_BIAS_D_OFF) c.two32
-               (← iconst64 BIND_BIAS_Q) c.one32 c.one32 c.one32 c.blk256 c.one32 c.one32
-  si32At ptr BIND_BIAS_K b.bufKCur; si32At ptr (BIND_BIAS_K + 4) b.bufBk
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_BIAS_KV_OFF) c.two32
-               (← iconst64 BIND_BIAS_K) c.one32 c.one32 c.one32 c.blk256 c.one32 c.one32
-  si32At ptr BIND_BIAS_V b.bufVCur; si32At ptr (BIND_BIAS_V + 4) b.bufBv
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_BIAS_KV_OFF) c.two32
-               (← iconst64 BIND_BIAS_V) c.one32 c.one32 c.one32 c.blk256 c.one32 c.one32
+  launchRms cuda ptr BIND_RMS1 b.bufHidden b.bufRmsAttn b.bufHdNorm
+  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.dm32, c.alpha, b.bufWq.buf, b.bufHdNorm.buf, c.zero32, b.bufQ.buf]
+  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.kv32, c.alpha, b.bufWk.buf, b.bufHdNorm.buf, c.zero32, b.bufKCur.buf]
+  let _ ← call blas.fnSgemv [ctxPtr, c.one32, c.dm32, c.kv32, c.alpha, b.bufWv.buf, b.bufHdNorm.buf, c.zero32, b.bufVCur.buf]
+  launchBiasD  cuda ptr BIND_BIAS_Q b.bufQ    b.bufBq
+  launchBiasKV cuda ptr BIND_BIAS_K b.bufKCur b.bufBk
+  launchBiasKV cuda ptr BIND_BIAS_V b.bufVCur b.bufBv
 
--- RoPE → KV store (~22 binds)
-private def attnRopePhase (ptr : Val) (cuda : CudaSetup) (b : AttnBufs) (c : AttnConsts) : IRBuilder Unit := do
-  let bufRopeTable ← load32 =<< iaddImm ptr BUF_ROPE_TABLE_OFF
-  si32At ptr BIND_ROPE_Q b.bufQ; si32At ptr (BIND_ROPE_Q + 4) b.bufMeta; si32At ptr (BIND_ROPE_Q + 8) bufRopeTable
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ROPE_Q_OFF) c.three32
-               (← iconst64 BIND_ROPE_Q) c.nq32 c.one32 c.one32 c.blk32_2 c.one32 c.one32
-  si32At ptr BIND_ROPE_K b.bufKCur; si32At ptr (BIND_ROPE_K + 4) b.bufMeta; si32At ptr (BIND_ROPE_K + 8) bufRopeTable
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ROPE_K_OFF) c.three32
-               (← iconst64 BIND_ROPE_K) c.nkv32 c.one32 c.one32 c.blk32_2 c.one32 c.one32
-  si32At ptr BIND_KV_K b.bufKCur; si32At ptr (BIND_KV_K + 4) b.bufKCache; si32At ptr (BIND_KV_K + 8) b.bufMeta
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_KVSTORE_OFF) c.three32
-               (← iconst64 BIND_KV_K) c.nkv32 c.one32 c.one32 c.hdim32 c.one32 c.one32
-  si32At ptr BIND_KV_V b.bufVCur; si32At ptr (BIND_KV_V + 4) b.bufVCache; si32At ptr (BIND_KV_V + 8) b.bufMeta
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_KVSTORE_OFF) c.three32
-               (← iconst64 BIND_KV_V) c.nkv32 c.one32 c.one32 c.hdim32 c.one32 c.one32
+-- RoPE → KV store
+private def attnRopePhase (ptr : Val) (cuda : CudaSetup) (b : AttnBufs)
+    (_c : AttnConsts) : IRBuilder Unit := do
+  let bufRopeTable : RopeTbl := ⟨← load32 =<< iaddImm ptr BUF_ROPE_TABLE_OFF⟩
+  launchRopeQ  cuda ptr BIND_ROPE_Q b.bufQ    b.bufMeta bufRopeTable
+  launchRopeK  cuda ptr BIND_ROPE_K b.bufKCur b.bufMeta bufRopeTable
+  launchKVStore cuda ptr BIND_KV_K  b.bufKCur b.bufKCache b.bufMeta
+  launchKVStore cuda ptr BIND_KV_V  b.bufVCur b.bufVCache b.bufMeta
 
--- Attention scores → softmax → V-mix → Wo → residual (~17 binds)
+-- Attention scores → softmax → V-mix → Wo → residual
 private def attnMixPhase (ptr ctxPtr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
     (b : AttnBufs) (c : AttnConsts) : IRBuilder Unit := do
   let seqLen64 ← load64At ptr SEQ_LEN_SLOT_OFF
   let seqLen32 ← ireduce32 seqLen64
   let _ ← call blas.fnSgemm
     [ctxPtr, c.one32, c.zero32, seqLen32, c.one32, c.hdim32, c.attnAlpha,
-     b.bufKCache, c.maxSeq64, b.bufQ, c.hdim64, c.zero32, b.bufScores, seqLen64, c.nq32]
-  si32At ptr BIND_SOFTMAX b.bufScores; si32At ptr (BIND_SOFTMAX + 4) b.bufMeta; si32At ptr (BIND_SOFTMAX + 8) b.bufProbs
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SOFTMAX_OFF) c.three32
-               (← iconst64 BIND_SOFTMAX) c.nq32 c.one32 c.one32 c.blk256 c.one32 c.one32
+     b.bufKCache.buf, c.maxSeq64, b.bufQ.buf, c.hdim64, c.zero32, b.bufScores.buf, seqLen64, c.nq32]
+  launchSoftmax cuda ptr BIND_SOFTMAX b.bufScores b.bufMeta b.bufProbs
   let _ ← call blas.fnSgemm
     [ctxPtr, c.zero32, c.zero32, c.hdim32, c.one32, seqLen32, c.alpha,
-     b.bufVCache, c.maxSeq64, b.bufProbs, seqLen64, c.zero32, b.bufAttnOut, c.hdim64, c.nq32]
-  -- O projection: Wo @ attn_out → bufHdNorm, then residual add bufHidden += bufHdNorm
+     b.bufVCache.buf, c.maxSeq64, b.bufProbs.buf, seqLen64, c.zero32, b.bufAttnOut.buf, c.hdim64, c.nq32]
   let _ ← call blas.fnSgemv
-    [ctxPtr, c.one32, c.dm32, c.dm32, c.alpha, b.bufWo, b.bufAttnOut, c.zero32, b.bufHdNorm]
-  let ceilD256 ← iconst32 (Nat.div (D + 255) 256)
-  si32At ptr BIND_ADD1 b.bufHidden; si32At ptr (BIND_ADD1 + 4) b.bufHdNorm
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ADD_OFF) c.two32
-               (← iconst64 BIND_ADD1) ceilD256 c.one32 c.one32 c.blk256 c.one32 c.one32
+    [ctxPtr, c.one32, c.dm32, c.dm32, c.alpha, b.bufWo.buf, b.bufAttnOut.buf, c.zero32, b.bufHdNorm.buf]
+  launchResidualAdd cuda ptr BIND_ADD1 b.bufHidden b.bufHdNorm
 
 /-- inferLayerAttnFn (fn_29): attention sub-layer.
     RMSNorm → Q/K/V projections → biases → RoPE → KV store → GQA attention → Wo → residual. -/
@@ -1018,29 +1088,16 @@ def inferLayerFfnFn : IRBuilder Unit := do
   let bufFfUp    ← load32At ptr BUF_FF_UP_OFF
   let bufFfAct   ← load32At ptr BUF_FF_ACT_OFF
   let bufAttnOut ← load32At ptr BUF_ATTN_OUT_OFF
-  let one32   ← iconst32 1;   let two32   ← iconst32 2;   let three32 ← iconst32 3
-  let blk256  ← iconst32 256; let dm32    ← iconst32 D;   let dff32   ← iconst32 D_FF
+  let one32   ← iconst32 1
+  let dm32    ← iconst32 D;   let dff32   ← iconst32 D_FF
   let alpha   ← iconst32 0x3F800000; let zero32 ← iconst32 0
-  let ceilDff ← iconst32 (Nat.div (D_FF + 255) 256)
-  let ceilD   ← iconst32 (Nat.div (D + 255) 256)
-  si32At ptr BIND_RMS2 bufHidden
-  si32At ptr (BIND_RMS2 + 4) bufRmsFfn
-  si32At ptr (BIND_RMS2 + 8) bufHdNorm
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_RMS_OFF) three32
-               (← iconst64 BIND_RMS2) one32 one32 one32 blk256 one32 one32
+  launchRms cuda ptr BIND_RMS2 ⟨bufHidden⟩ ⟨bufRmsFfn⟩ ⟨bufHdNorm⟩
   let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dff32, alpha, bufWg, bufHdNorm, zero32, bufFfGate]
   let _ ← call blas.fnSgemv [ctxPtr, one32, dm32, dff32, alpha, bufWu, bufHdNorm, zero32, bufFfUp]
-  si32At ptr BIND_SILU bufFfGate
-  si32At ptr (BIND_SILU + 4) bufFfUp
-  si32At ptr (BIND_SILU + 8) bufFfAct
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SILU_OFF) three32
-               (← iconst64 BIND_SILU) ceilDff one32 one32 blk256 one32 one32
+  launchSiluGate cuda ptr BIND_SILU ⟨bufFfGate⟩ ⟨bufFfUp⟩ ⟨bufFfAct⟩
   -- Wd sgemv: down = Wd @ act (D_FF → D); output to bufAttnOut (reused as temp)
   let _ ← call blas.fnSgemv [ctxPtr, one32, dff32, dm32, alpha, bufWd, bufFfAct, zero32, bufAttnOut]
-  si32At ptr BIND_ADD2 bufHidden
-  si32At ptr (BIND_ADD2 + 4) bufAttnOut
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ADD_OFF) two32
-               (← iconst64 BIND_ADD2) ceilD one32 one32 blk256 one32 one32
+  launchResidualAdd cuda ptr BIND_ADD2 ⟨bufHidden⟩ ⟨bufAttnOut⟩
   ret
 
 /-- inferFinalFn (fn_31): final RMSNorm → lm_head → argmax → sync → download next_token. -/
@@ -1056,20 +1113,14 @@ def inferFinalFn : IRBuilder Unit := do
   let bufLmHead   ← load32At ptr BUF_LM_HEAD_OFF
   let bufLogits   ← load32At ptr BUF_LOGITS_OFF
   let bufMeta     ← load32At ptr BUF_META_OFF
-  let one32   ← iconst32 1;   let two32   ← iconst32 2; let three32 ← iconst32 3
-  let blk256  ← iconst32 256; let dm32    ← iconst32 D; let vocab32 ← iconst32 VOCAB
+  let one32   ← iconst32 1
+  let dm32    ← iconst32 D; let vocab32 ← iconst32 VOCAB
   let alpha   ← iconst32 0x3F800000; let zero32 ← iconst32 0
   let eight64 ← iconst64 8
-  si32At ptr BIND_RMS2 bufHidden
-  si32At ptr (BIND_RMS2 + 4) bufRmsFinal
-  si32At ptr (BIND_RMS2 + 8) bufHdNorm
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_RMS_OFF) three32
-               (← iconst64 BIND_RMS2) one32 one32 one32 blk256 one32 one32
+  launchRms cuda ptr BIND_RMS2 ⟨bufHidden⟩ ⟨bufRmsFinal⟩ ⟨bufHdNorm⟩
   let _ ← call blas.fnSgemv
     [ctxPtr, one32, dm32, vocab32, alpha, bufLmHead, bufHdNorm, zero32, bufLogits]
-  si32At ptr BIND_ARGMAX bufLogits; si32At ptr (BIND_ARGMAX + 4) bufMeta
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ARGMAX_OFF) two32
-               (← iconst64 BIND_ARGMAX) one32 one32 one32 one32 one32 one32
+  launchArgmax cuda ptr BIND_ARGMAX ⟨bufLogits⟩ ⟨bufMeta⟩
   let _ ← cudaSync cuda ptr 0x10
   let _ ← call cuda.fnDownload [ctxPtr, bufMeta, outPtr, eight64]
   ret
