@@ -764,6 +764,148 @@ def ret : IRBuilder Unit :=
   emit .ret
 
 -- ---------------------------------------------------------------------------
+-- Loop combinators
+--
+-- Hide the canonical CLIF three-block loop choreography
+-- (loopHdr / loopBody / loopExit).  `LoopTy` selects the counter width;
+-- the same combinator emits either i32 or i64 loops.
+-- ---------------------------------------------------------------------------
+
+inductive LoopTy where | i32 | i64
+  deriving BEq, Repr
+
+def LoopTy.clif : LoopTy → ClifTy
+  | .i32 => .i32
+  | .i64 => .i64
+
+def LoopTy.iconst (ty : LoopTy) (n : Int) : IRBuilder Val :=
+  match ty with
+  | .i32 => iconst32 n
+  | .i64 => iconst64 n
+
+/-- `forLoop ty limit body` — emit a counter loop from 0 to `limit` (exclusive),
+    step 1. `body i` runs with the loop counter `i` bound. No carry. -/
+def forLoop (ty : LoopTy) (limit : Val) (body : Val → IRBuilder Unit) : IRBuilder Unit := do
+  let hdr  ← declareBlock [ty.clif]
+  let bdy  ← declareBlock [ty.clif]
+  let exit ← declareBlock []
+  jump hdr.ref [← ty.iconst 0]
+  startBlock hdr
+  let iHdr := hdr.param 0
+  let cond ← icmp .ult iHdr limit
+  brif cond bdy.ref [iHdr] exit.ref []
+  startBlock bdy
+  let iBdy := bdy.param 0
+  body iBdy
+  let inc ← iaddImm iBdy 1
+  jump hdr.ref [inc]
+  startBlock exit
+
+/-- `forLoopFromTo ty start limit body` — counter from `start` to `limit`. -/
+def forLoopFromTo (ty : LoopTy) (start limit : Val)
+    (body : Val → IRBuilder Unit) : IRBuilder Unit := do
+  let hdr  ← declareBlock [ty.clif]
+  let bdy  ← declareBlock [ty.clif]
+  let exit ← declareBlock []
+  jump hdr.ref [start]
+  startBlock hdr
+  let iHdr := hdr.param 0
+  let cond ← icmp .ult iHdr limit
+  brif cond bdy.ref [iHdr] exit.ref []
+  startBlock bdy
+  let iBdy := bdy.param 0
+  body iBdy
+  let inc ← iaddImm iBdy 1
+  jump hdr.ref [inc]
+  startBlock exit
+
+/-- `forLoopAcc ty accTy limit acc0 body` — counter loop with a single Val
+    accumulator. `body i acc` returns the next `acc`. After the loop, the
+    final accumulator is returned. -/
+def forLoopAcc (ty : LoopTy) (accTy : ClifTy)
+    (limit acc0 : Val) (body : Val → Val → IRBuilder Val) : IRBuilder Val := do
+  let hdr  ← declareBlock [ty.clif, accTy]
+  let bdy  ← declareBlock [ty.clif, accTy]
+  let exit ← declareBlock [accTy]
+  jump hdr.ref [← ty.iconst 0, acc0]
+  startBlock hdr
+  let iHdr := hdr.param 0
+  let aHdr := hdr.param 1
+  let cond ← icmp .ult iHdr limit
+  brif cond bdy.ref [iHdr, aHdr] exit.ref [aHdr]
+  startBlock bdy
+  let iBdy := bdy.param 0
+  let aBdy := bdy.param 1
+  let nextAcc ← body iBdy aBdy
+  let inc ← iaddImm iBdy 1
+  jump hdr.ref [inc, nextAcc]
+  startBlock exit
+  return exit.param 0
+
+/-- `whileLoop1 carryTy init cond body` — while-loop with a single Val carry.
+    `cond c` returns the loop-continue bool; `body c` returns the next carry.
+    The final carry value is returned. -/
+def whileLoop1 (carryTy : ClifTy) (init : Val)
+    (cond : Val → IRBuilder Val)
+    (body : Val → IRBuilder Val) : IRBuilder Val := do
+  let hdr  ← declareBlock [carryTy]
+  let bdy  ← declareBlock [carryTy]
+  let exit ← declareBlock [carryTy]
+  jump hdr.ref [init]
+  startBlock hdr
+  let cHdr := hdr.param 0
+  let ok ← cond cHdr
+  brif ok bdy.ref [cHdr] exit.ref [cHdr]
+  startBlock bdy
+  let cBdy := bdy.param 0
+  let next ← body cBdy
+  jump hdr.ref [next]
+  startBlock exit
+  return exit.param 0
+
+/-- `whileLoop2 a b ia ib cond body` — while loop with two Val carries. -/
+def whileLoop2 (a b : ClifTy) (ia ib : Val)
+    (cond : Val → Val → IRBuilder Val)
+    (body : Val → Val → IRBuilder (Val × Val)) : IRBuilder (Val × Val) := do
+  let hdr  ← declareBlock [a, b]
+  let bdy  ← declareBlock [a, b]
+  let exit ← declareBlock [a, b]
+  jump hdr.ref [ia, ib]
+  startBlock hdr
+  let x := hdr.param 0; let y := hdr.param 1
+  let ok ← cond x y
+  brif ok bdy.ref [x, y] exit.ref [x, y]
+  startBlock bdy
+  let xb := bdy.param 0; let yb := bdy.param 1
+  let (nx, ny) ← body xb yb
+  jump hdr.ref [nx, ny]
+  startBlock exit
+  return (exit.param 0, exit.param 1)
+
+/-- `forLoopAcc2 ty aTy bTy limit ia ib body` — counter loop with two
+    accumulator carries.  Body returns `(nextA, nextB)`. -/
+def forLoopAcc2 (ty : LoopTy) (aTy bTy : ClifTy)
+    (limit ia ib : Val)
+    (body : Val → Val → Val → IRBuilder (Val × Val)) : IRBuilder (Val × Val) := do
+  let hdr  ← declareBlock [ty.clif, aTy, bTy]
+  let bdy  ← declareBlock [ty.clif, aTy, bTy]
+  let exit ← declareBlock [aTy, bTy]
+  jump hdr.ref [← ty.iconst 0, ia, ib]
+  startBlock hdr
+  let i := hdr.param 0; let x := hdr.param 1; let y := hdr.param 2
+  let cond ← icmp .ult i limit
+  brif cond bdy.ref [i, x, y] exit.ref [x, y]
+  startBlock bdy
+  let iBdy := bdy.param 0
+  let xBdy := bdy.param 1
+  let yBdy := bdy.param 2
+  let (nx, ny) ← body iBdy xBdy yBdy
+  let inc ← iaddImm iBdy 1
+  jump hdr.ref [inc, nx, ny]
+  startBlock exit
+  return (exit.param 0, exit.param 1)
+
+-- ---------------------------------------------------------------------------
 -- String renderer
 -- ---------------------------------------------------------------------------
 

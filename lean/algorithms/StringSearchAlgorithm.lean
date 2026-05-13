@@ -46,7 +46,6 @@ def mainFn : IRBuilder Unit := do
   let searchL   ← declareBlock [.i64, .i64]   -- (pos, count)
   let searchB   ← declareBlock [.i64, .i64]
   let itoaStart ← declareBlock [.i64]          -- (total)
-  let itoaScale ← declareBlock [.i64, .i64]    -- (value, div): find highest divisor
   let itoaWr    ← declareBlock [.i64, .i64, .i64]  -- (value, div, wpos): write digits
   let itoaNL    ← declareBlock [.i64]
 
@@ -105,17 +104,13 @@ def mainFn : IRBuilder Unit := do
   let hits  ← uextend64 (← popcnt32 bits)
   jump searchL.ref [← iaddImm pos2 16, ← iadd cnt2 hits]
 
-  -- itoa: start with divisor=1, scale up
+  -- itoa: start with divisor=1, scale up while div*10 <= val
   startBlock itoaStart
   let total := itoaStart.param 0
-  jump itoaScale.ref [total, ← iconst64 1]
-
-  startBlock itoaScale
-  let valS := itoaScale.param 0; let divS := itoaScale.param 1
-  let ten   ← iconst64 10
-  let div10 ← imul divS ten
-  brif (← icmp .ugt div10 valS) itoaWr.ref [valS, divS, ← iconst64 OUTPUT_BUF]
-                                  itoaScale.ref [valS, div10]
+  let finalDiv ← whileLoop1 .i64 (← iconst64 1)
+    (fun div => do icmp .ule (← imul div (← iconst64 10)) total)
+    (fun div => do imul div (← iconst64 10))
+  jump itoaWr.ref [total, finalDiv, ← iconst64 OUTPUT_BUF]
 
   -- Write digits loop
   startBlock itoaWr

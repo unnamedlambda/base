@@ -96,24 +96,10 @@ def mainFn : IRBuilder Unit := do
   -- workgroups = (floatBytes/4 + 63) / 64 = (floatBytes + 252) / 256
   let wg ← ireduce32 (← ushrImm (← iaddImm floatBytes 252) 8)
 
-  -- Loop: dispatch scale `passes` times
-  let loop ← declareBlock [.i64]
-  let body ← declareBlock [.i64]
-  let after← declareBlock []
-
-  let i0 ← iconst64 0
-  jump loop.ref [i0]
-
-  startBlock loop
-  let i := loop.param 0
-  brif (← icmp .uge i passes) after.ref [] body.ref [i]
-
-  startBlock body
-  let i2 := body.param 0
-  let _ ← call fnDispatch [ctxPtr, scalePipeId, wg, one, one]
-  jump loop.ref [← iaddImm i2 1]
-
-  startBlock after
+  -- Dispatch scale `passes` times, then a final reduce
+  forLoop .i64 passes fun _ => do
+    let _ ← call fnDispatch [ctxPtr, scalePipeId, wg, one, one]
+    pure ()
   let _ ← call fnDispatch [ctxPtr, reducePipeId, wg, one, one]
   let bufOff ← iconst64 0
   let _ ← call fnDownloadPtr [ctxPtr, sumsBufId, bufOff, outPtr, sumsBufSize]

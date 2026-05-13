@@ -335,43 +335,27 @@ def clifIrSource (bs : Nat) : String :=
     let c8        ← iconst64 8
     let maxCompBlkV ← iconst64 mcbSz
 
-    let loopHdr  ← declareBlock [.i64, .i64]   -- block_i, file_offset
-    let bi        := loopHdr.param 0
-    let foff      := loopHdr.param 1
-    let loopDone ← declareBlock [.i64]          -- receives final file_offset
-    let loopBody ← declareBlock []
-    jump loopHdr.ref [zero, c7]
-    startBlock loopHdr
-    let done ← icmp .uge bi numBlocks
-    brif done loopDone.ref [foff] loopBody.ref []
+    -- For block_i in 0..numBlocks: write block size (4 bytes) + block data;
+    -- carry the running output-file offset.  Starts at 7 (frame header bytes).
+    let finalFoff ← forLoopAcc .i64 .i64 numBlocks c7 fun bi foff => do
+      -- Read compressed size from block_meta[1 + block_i*2] = metaOff + 4 + block_i*8
+      let bi8      ← imul bi c8
+      let bi8p4    ← iadd bi8 c4
+      let metaRel  ← iadd metaOffV bi8p4
+      let metaAbsI ← iadd ptr metaRel
+      let compSz32 ← load32 metaAbsI
+      -- Write block_size (u32 LE) into scratch, then to file
+      store compSz32 scratchAddr
+      let _ ← call fnWrite [ptr, outFname, inData, foff, c4]
+      -- Write block data
+      let biTimesMax ← imul bi maxCompBlkV
+      let blkDataRel ← iadd outDataV biTimesMax
+      let compSz64   ← uextend64 compSz32
+      let foffP4     ← iadd foff c4
+      let _ ← call fnWrite [ptr, outFname, blkDataRel, foffP4, compSz64]
+      iadd foffP4 compSz64
 
-    startBlock loopBody
-    -- Read compressed size from block_meta[1 + block_i*2] = metaOff + 4 + block_i*8
-    let bi8      ← imul bi c8
-    let bi8p4    ← iadd bi8 c4
-    let metaRel  ← iadd metaOffV bi8p4
-    let metaAbsI ← iadd ptr metaRel
-    let compSz32 ← load32 metaAbsI
-
-    -- Write block_size (u32 LE) into scratch, then to file
-    store compSz32 scratchAddr
-    let _ ← call fnWrite [ptr, outFname, inData, foff, c4]
-
-    -- Write block data
-    let biTimesMax ← imul bi maxCompBlkV
-    let blkDataRel ← iadd outDataV biTimesMax
-    let compSz64   ← uextend64 compSz32
-    let foffP4     ← iadd foff c4
-    let _ ← call fnWrite [ptr, outFname, blkDataRel, foffP4, compSz64]
-
-    -- Advance
-    let nextFoff ← iadd foffP4 compSz64
-    let nextBi   ← iadd bi c1
-    jump loopHdr.ref [nextBi, nextFoff]
-
-    -- Write 4-byte end mark (0x00000000)
-    startBlock loopDone
-    let finalFoff := loopDone.param 0
+    -- Write 4-byte end mark (0x00000000) at the final offset
     let endMark ← iconst32 0
     store endMark scratchAddr
     let _ ← call fnWrite [ptr, outFname, inData, finalFoff, c4]

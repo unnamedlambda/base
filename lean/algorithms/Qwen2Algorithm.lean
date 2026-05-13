@@ -574,20 +574,10 @@ private def launchArgmax (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
 /-- Advance past the next null byte in a host buffer and return the pointer
     immediately after it. Used to split a concatenated `a\0b\0c\0` arg payload. -/
 private def walkPastNull (start : Val) : IRBuilder Val := do
-  let hdr  ← declareBlock [.i64]
-  let body ← declareBlock [.i64]
-  let done ← declareBlock [.i64]
-  jump hdr.ref [start]
-  startBlock hdr
-  let p := hdr.param 0
-  let b ← uload8_64 p
-  let isNull ← icmp .eq b (← iconst64 0)
-  brif isNull done.ref [p] body.ref [p]
-  startBlock body
-  let pb := body.param 0
-  jump hdr.ref [(← iaddImm pb 1)]
-  startBlock done
-  iaddImm (done.param 0) 1
+  let atNull ← whileLoop1 .i64 start
+    (fun p => do icmp .ne (← uload8_64 p) (← iconst64 0))
+    (fun p => iaddImm p 1)
+  iaddImm atNull 1
 
 /-- parseArgsFn (fn_37): split the caller's data buffer (two null-terminated
     strings: `weights_path\0tokenizer_path\0`) into two pointers and store them
@@ -628,7 +618,6 @@ private def buildRopeTable (cuda : CudaSetup) (fnSinf fnCosf fnPowf : FnRef)
   let tableBytes := 2 * MAX_SEQ * hdh * 4
   let cosOff     := MAX_SEQ * hdh * 4
 
-  let zero64    ← iconst64 0
   let hdh64     ← iconst64 hdh
   let posLim64  ← iconst64 MAX_SEQ
   let freqLim64 ← iconst64 hdh
@@ -638,58 +627,28 @@ private def buildRopeTable (cuda : CudaSetup) (fnSinf fnCosf fnPowf : FnRef)
   -- exponent factor = -2.0 / HEAD_DIM = -1/32 for HEAD_DIM=64
   let expFactor ← fconst32 "-0x1.000000p-5"
 
-  let freqHdr  ← declareBlock [.i64]
-  let freqBody ← declareBlock [.i64]
-  let posHdr   ← declareBlock [.i64, .i64, .f32]   -- (pos, freq, inv_freq)
-  let posBody  ← declareBlock [.i64, .i64, .f32]
-  let posDone  ← declareBlock [.i64]               -- (freq)
-  let freqDone ← declareBlock []
+  forLoop .i64 freqLim64 fun freq => do
+    let freqF ← fcvtFromSint .f32 freq
+    let exponent ← fmul freqF expFactor
+    let invFreq ← call fnPowf [ropeTheta, exponent]
+    -- Inner loop carries invFreq through (loop-invariant; could also rely on
+    -- dominance, but threading is more conservative across the back-edge).
+    let _ ← forLoopAcc .i64 .f32 posLim64 invFreq fun pos invF => do
+      let posF ← fcvtFromSint .f32 pos
+      let theta ← fmul posF invF
+      let sinV ← call fnSinf [theta]
+      let cosV ← call fnCosf [theta]
+      let row     ← imul pos hdh64
+      let idx     ← iadd row freq
+      let byteOff ← imul idx four64
+      let sinAddr ← iadd scratchPtr byteOff
+      let cosAddrOff ← iadd byteOff cosOff64
+      let cosAddr ← iadd scratchPtr cosAddrOff
+      storeF32 sinV sinAddr
+      storeF32 cosV cosAddr
+      return invF
+    pure ()
 
-  jump freqHdr.ref [zero64]
-
-  startBlock freqHdr
-  let fIdx := freqHdr.param 0
-  let fDone ← icmp .uge fIdx freqLim64
-  brif fDone freqDone.ref [] freqBody.ref [fIdx]
-
-  startBlock freqBody
-  let freq := freqBody.param 0
-  let freqF ← fcvtFromSint .f32 freq
-  let exponent ← fmul freqF expFactor
-  let invFreq ← call fnPowf [ropeTheta, exponent]
-  jump posHdr.ref [zero64, freq, invFreq]
-
-  startBlock posHdr
-  let pIdx := posHdr.param 0
-  let freq1 := posHdr.param 1
-  let invFreq1 := posHdr.param 2
-  let pDone ← icmp .uge pIdx posLim64
-  brif pDone posDone.ref [freq1] posBody.ref [pIdx, freq1, invFreq1]
-
-  startBlock posBody
-  let pos := posBody.param 0
-  let freq2 := posBody.param 1
-  let invFreq2 := posBody.param 2
-  let posF ← fcvtFromSint .f32 pos
-  let theta ← fmul posF invFreq2
-  let sinV ← call fnSinf [theta]
-  let cosV ← call fnCosf [theta]
-  -- idx = pos * (HEAD_DIM/2) + freq;  byteOff = idx * 4
-  let row     ← imul pos hdh64
-  let idx     ← iadd row freq2
-  let byteOff ← imul idx four64
-  let sinAddr ← iadd scratchPtr byteOff
-  let cosAddrOff ← iadd byteOff cosOff64
-  let cosAddr ← iadd scratchPtr cosAddrOff
-  storeF32 sinV sinAddr
-  storeF32 cosV cosAddr
-  jump posHdr.ref [(← iaddImm pos 1), freq2, invFreq2]
-
-  startBlock posDone
-  let freqEnd := posDone.param 0
-  jump freqHdr.ref [(← iaddImm freqEnd 1)]
-
-  startBlock freqDone
   let _ ← call cuda.fnUpload [ctxPtr, bufRopeTable, scratchPtr, (← iconst64 tableBytes)]
 
 /-- loadInitFn (fn_1): init CUDA, allocate pinned scratch, create activation+embed+
@@ -891,27 +850,10 @@ def inferFn : IRBuilder Unit := do
   launchEmbed cuda ptr BIND_EMBED ⟨bufEmbed⟩ ⟨metaBufId⟩ ⟨bufHidden⟩
 
   -- 24-layer loop: calls inferLayerFn(fn_28) with layer index in LAYER_IDX_OFF
-  let zero64   ← iconst64 0
-  let nLayers  ← iconst64 N_LAYERS
-
-  let loopHdr  ← declareBlock [.i64]
-  let loopBody ← declareBlock []
-  let loopExit ← declareBlock []
-  let layerIdx := loopHdr.param 0
-
-  jump loopHdr.ref [zero64]
-
-  startBlock loopHdr
-  let done ← icmp .uge layerIdx nLayers
-  brif done loopExit.ref [] loopBody.ref []
-
-  startBlock loopBody
-  storeI64 layerIdx (← absAddr ptr LAYER_IDX_OFF)
-  callVoid fnLayerStep [ptr]
-  let nextIdx ← iaddImm layerIdx 1
-  jump loopHdr.ref [nextIdx]
-
-  startBlock loopExit
+  let nLayers ← iconst64 N_LAYERS
+  forLoop .i64 nLayers fun layerIdx => do
+    storeI64 layerIdx (← absAddr ptr LAYER_IDX_OFF)
+    callVoid fnLayerStep [ptr]
   callVoid fnFinalStep [ptr]
   ret
 
@@ -1165,31 +1107,20 @@ def loadTokenizerFn : IRBuilder Unit := do
   let valAddr  ← iaddImm ptr HT_VAL_OFF
   let keyLen8  ← iconst32 8
   let valLen8  ← iconst32 8
-  let zero64   ← iconst64 0
   let twelve64 ← iconst64 12
-  -- Loop: for i in 0..n_merges, insert (tok_a, tok_b) → (rank, result) into HT
-  let loopHdr  ← declareBlock [.i64]
-  let loopBody ← declareBlock []
-  let loopDone ← declareBlock []
-  jump loopHdr.ref [zero64]
-  startBlock loopHdr
-  let i := loopHdr.param 0
-  let done ← icmp .uge i nMerges
-  brif done loopDone.ref [] loopBody.ref []
-  startBlock loopBody
-  let mergeOff ← imul i twelve64
-  let mergePtr ← iadd mergeBase mergeOff
-  let tok_a    ← load32 (← iaddImm mergePtr 0)
-  let tok_b    ← load32 (← iaddImm mergePtr 4)
-  let result   ← load32 (← iaddImm mergePtr 8)
-  let rank32   ← ireduce32 i
-  storeI32 tok_a   keyAddr
-  storeI32 tok_b   (← iaddImm keyAddr 4)
-  storeI32 rank32  valAddr
-  storeI32 result  (← iaddImm valAddr 4)
-  callVoid ht.fnInsert [htCtx, keyAddr, keyLen8, valAddr, valLen8]
-  jump loopHdr.ref [← iaddImm i 1]
-  startBlock loopDone
+  -- For i in 0..n_merges, insert (tok_a, tok_b) → (rank, result) into HT
+  forLoop .i64 nMerges fun i => do
+    let mergeOff ← imul i twelve64
+    let mergePtr ← iadd mergeBase mergeOff
+    let tok_a    ← load32 (← iaddImm mergePtr 0)
+    let tok_b    ← load32 (← iaddImm mergePtr 4)
+    let result   ← load32 (← iaddImm mergePtr 8)
+    let rank32   ← ireduce32 i
+    storeI32 tok_a   keyAddr
+    storeI32 tok_b   (← iaddImm keyAddr 4)
+    storeI32 rank32  valAddr
+    storeI32 result  (← iaddImm valAddr 4)
+    callVoid ht.fnInsert [htCtx, keyAddr, keyLen8, valAddr, valLen8]
   ret
 
 /-- tokenizeInitFn (fn_33): convert each byte of text (TEXT_IN_OFF, TEXT_LEN_OFF) to its
@@ -1202,23 +1133,12 @@ def tokenizeInitFn : IRBuilder Unit := do
   let byteInit  ← iaddImm tokMmap 16
   let textBase  ← iaddImm ptr TEXT_IN_OFF
   let tokBuf    ← iaddImm ptr TOKEN_BUF_OFF
-  let zero64    ← iconst64 0
-  let loopHdr   ← declareBlock [.i64]
-  let loopBody  ← declareBlock []
-  let loopDone  ← declareBlock []
-  jump loopHdr.ref [zero64]
-  startBlock loopHdr
-  let i := loopHdr.param 0
-  let done ← icmp .uge i textLen
-  brif done loopDone.ref [] loopBody.ref []
-  startBlock loopBody
-  let byt     ← uload8_64 (← iadd textBase i)
-  let byteOff ← ishlImm byt 2
-  let initTok ← load32 (← iadd byteInit byteOff)
-  let tokOff  ← ishlImm i 2
-  storeI32 initTok (← iadd tokBuf tokOff)
-  jump loopHdr.ref [← iaddImm i 1]
-  startBlock loopDone
+  forLoop .i64 textLen fun i => do
+    let byt     ← uload8_64 (← iadd textBase i)
+    let byteOff ← ishlImm byt 2
+    let initTok ← load32 (← iadd byteInit byteOff)
+    let tokOff  ← ishlImm i 2
+    storeI32 initTok (← iadd tokBuf tokOff)
   storeI64 textLen (← absAddr ptr TOKEN_COUNT_OFF)
   ret
 
@@ -1357,44 +1277,18 @@ def detokenizeFn : IRBuilder Unit := do
   let n_toks    ← load64At ptr TOKEN_COUNT_OFF
   let textOut   ← iaddImm ptr TEXT_OUT_OFF
   let zero64    ← iconst64 0
-  -- outer loop: for each token
-  let tokHdr  ← declareBlock [.i64, .i64]
-  let tokBody ← declareBlock [.i64, .i64]
-  -- inner loop: copy bytes
-  let cpyHdr  ← declareBlock [.i64, .i64, .i64, .i64]
-  let cpyBody ← declareBlock [.i64, .i64, .i64, .i64]
-  let tokNext ← declareBlock [.i64, .i64]
-  let tokDone ← declareBlock [.i64]
-  jump tokHdr.ref [zero64, zero64]
-  startBlock tokHdr
-  let ti := tokHdr.param 0
-  let tp := tokHdr.param 1
-  let done ← icmp .uge ti n_toks
-  brif done tokDone.ref [tp] tokBody.ref [ti, tp]
-  startBlock tokBody
-  let tok_id ← uload32_64 (← iadd tokBuf (← ishlImm ti 2))
-  let decOff ← uload32_64 (← iadd decOffPtr (← ishlImm tok_id 2))
-  let decLen ← uload32_64 (← iadd decLenPtr (← ishlImm tok_id 2))
-  let srcPtr ← iadd bytePool decOff
-  jump cpyHdr.ref [ti, tp, srcPtr, decLen]
-  startBlock cpyHdr
-  let ci := cpyHdr.param 0
-  let cp := cpyHdr.param 1
-  let cs := cpyHdr.param 2
-  let cl := cpyHdr.param 3
-  let cpDone ← icmp .eq cl zero64
-  brif cpDone tokNext.ref [ci, cp] cpyBody.ref [ci, cp, cs, cl]
-  startBlock cpyBody
-  let byt ← uload8_64 (cpyHdr.param 2)
-  istore8 byt (← iadd textOut (cpyHdr.param 1))
-  jump cpyHdr.ref [ci, ← iaddImm cp 1, ← iaddImm cs 1, ← iaddImm cl (-1)]
-  startBlock tokNext
-  let li := tokNext.param 0
-  let lp := tokNext.param 1
-  jump tokHdr.ref [← iaddImm li 1, lp]
-  startBlock tokDone
-  let outLen := tokDone.param 0
-  storeI64 outLen (← absAddr ptr TEXT_LEN_OFF)
+  -- Outer: counter `ti` over tokens; accumulator `tp` = output byte offset.
+  -- Inner: copy `decLen` bytes from srcPtr[..] to textOut[tp..].
+  let finalTp ← forLoopAcc .i64 .i64 n_toks zero64 fun ti tp => do
+    let tok_id ← uload32_64 (← iadd tokBuf (← ishlImm ti 2))
+    let decOff ← uload32_64 (← iadd decOffPtr (← ishlImm tok_id 2))
+    let decLen ← uload32_64 (← iadd decLenPtr (← ishlImm tok_id 2))
+    let srcPtr ← iadd bytePool decOff
+    forLoop .i64 decLen fun i => do
+      let byt ← uload8_64 (← iadd srcPtr i)
+      istore8 byt (← iadd textOut (← iadd tp i))
+    iadd tp decLen
+  storeI64 finalTp (← absAddr ptr TEXT_LEN_OFF)
   ret
 
 /-- cliFn (fn_36): stdin/stdout chat loop.

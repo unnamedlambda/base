@@ -133,24 +133,13 @@ def emitPadding (k : Consts) (fileSize : Val) : IRBuilder (Val × Val) := do
   -- Zero bytes from file_size+1 to padded_len-8
   let zeroEnd ← isub paddedLen k.c8
 
-  -- Zero-fill loop
-  let zeroHdr ← declareBlock [.i64]
-  let zi := zeroHdr.param 0
-  let zeroDone ← declareBlock []
-  let zeroBody ← declareBlock []
-  jump zeroHdr.ref [fsp1]
-  startBlock zeroHdr
-  let ziDone ← icmp .uge zi zeroEnd
-  brif ziDone zeroDone.ref [] zeroBody.ref []
-  startBlock zeroBody
-  let zrel ← iadd k.dataOff zi
-  let zabs ← iadd k.ptr zrel
-  istore8 k.zero zabs
-  let ziNext ← iadd zi k.c1
-  jump zeroHdr.ref [ziNext]
+  -- Zero-fill loop: for zi in [fsp1, zeroEnd)
+  forLoopFromTo .i64 fsp1 zeroEnd fun zi => do
+    let zrel ← iadd k.dataOff zi
+    let zabs ← iadd k.ptr zrel
+    istore8 k.zero zabs
 
   -- Write big-endian 64-bit bit length at padded_len - 8
-  startBlock zeroDone
   let bitLen ← ishl fileSize k.c3
   let beRel ← iadd k.dataOff zeroEnd
   let beAddr ← iadd k.ptr beRel
@@ -199,159 +188,54 @@ def emitPadding (k : Consts) (fileSize : Val) : IRBuilder (Val × Val) := do
 def emitCopyH (k : Consts) : IRBuilder Unit := do
   let hInitBase ← fldOffset f.H_init
   let hWorkBase ← fldOffset f.H_work
-  let copyHdr ← declareBlock [.i64]
-  let ci := copyHdr.param 0
-  let copyDone ← declareBlock []
-  let copyBody ← declareBlock []
-  jump copyHdr.ref [k.zero]
-  startBlock copyHdr
-  let ciDone ← icmp .uge ci k.c8
-  brif ciDone copyDone.ref [] copyBody.ref []
-  startBlock copyBody
-  let byteOff ← imul ci k.c4
-  let srcRel ← iadd hInitBase byteOff
-  let srcAbs ← iadd k.ptr srcRel
-  let val ← load32 srcAbs
-  let dstRel ← iadd hWorkBase byteOff
-  let dstAbs ← iadd k.ptr dstRel
-  store val dstAbs
-  let ciNext ← iadd ci k.c1
-  jump copyHdr.ref [ciNext]
-  startBlock copyDone
+  forLoop .i64 k.c8 fun ci => do
+    let byteOff ← imul ci k.c4
+    let srcAbs ← iadd k.ptr (← iadd hInitBase byteOff)
+    let dstAbs ← iadd k.ptr (← iadd hWorkBase byteOff)
+    store (← load32 srcAbs) dstAbs
 
 -- Load W[0..15] big-endian from message block
 def emitLoadW (k : Consts) (blkBase : Val) : IRBuilder Unit := do
-  let wHdr ← declareBlock [.i64, .i64]
-  let wi := wHdr.param 0
-  let wBase := wHdr.param 1
-  let wDone ← declareBlock []
-  let wBody ← declareBlock []
-  jump wHdr.ref [k.zero, blkBase]
-  startBlock wHdr
-  let wiDone ← icmp .uge wi k.c16
-  brif wiDone wDone.ref [] wBody.ref []
-
-  startBlock wBody
-  let wi4 ← imul wi k.c4
-  let bRel ← iadd wBase wi4
-  let bAbs ← iadd k.ptr bRel
-
-  let byte0 ← uload8_64 bAbs
-  let s0 ← ishl byte0 k.c24
-  let a1 ← iadd bAbs k.c1
-  let byte1 ← uload8_64 a1
-  let s1 ← ishl byte1 k.c16
-  let a2 ← iadd a1 k.c1
-  let byte2 ← uload8_64 a2
-  let s2 ← ishl byte2 k.c8
-  let a3 ← iadd a2 k.c1
-  let byte3 ← uload8_64 a3
-  let or1 ← bor s0 s1
-  let or2 ← bor or1 s2
-  let or3 ← bor or2 byte3
-  let w32 ← ireduce32 or3
   let wOffC ← fldOffset f.W
-  let wRel ← iadd wOffC wi4
-  let wAbs ← iadd k.ptr wRel
-  store w32 wAbs
-  let wiNext ← iadd wi k.c1
-  jump wHdr.ref [wiNext, wBase]
-
-  startBlock wDone
+  forLoop .i64 k.c16 fun wi => do
+    let wi4 ← imul wi k.c4
+    let bAbs ← iadd k.ptr (← iadd blkBase wi4)
+    let byte0 ← uload8_64 bAbs
+    let s0 ← ishl byte0 k.c24
+    let a1 ← iadd bAbs k.c1
+    let byte1 ← uload8_64 a1
+    let s1 ← ishl byte1 k.c16
+    let a2 ← iadd a1 k.c1
+    let byte2 ← uload8_64 a2
+    let s2 ← ishl byte2 k.c8
+    let a3 ← iadd a2 k.c1
+    let byte3 ← uload8_64 a3
+    let w32 ← ireduce32 (← bor (← bor (← bor s0 s1) s2) byte3)
+    let wAbs ← iadd k.ptr (← iadd wOffC wi4)
+    store w32 wAbs
 
 -- Expand W[16..63]
 def emitExpandW (k : Consts) : IRBuilder Unit := do
-  let expHdr ← declareBlock [.i64]
-  let ei := expHdr.param 0
-  let expDone ← declareBlock []
-  let expBody ← declareBlock []
-  jump expHdr.ref [k.c16]
-  startBlock expHdr
-  let eiDone ← icmp .uge ei k.c64
-  brif eiDone expDone.ref [] expBody.ref []
-
-  startBlock expBody
-  let c2 ← iconst64 2
-  let im2 ← isub ei c2
-  let im2x4 ← imul im2 k.c4
   let wOff' ← fldOffset f.W
-  let wi2Rel ← iadd wOff' im2x4
-  let wi2Abs ← iadd k.ptr wi2Rel
-  let wi2val ← uload32_64 wi2Abs
-
-  -- sigma1(x): rotr(x,17) ^ rotr(x,19) ^ (x >> 10)
-  let c17 ← iconst64 17
-  let r17a ← ushr wi2val c17
-  let c15 ← iconst64 15
-  let r17b ← ishl wi2val c15
-  let r17 ← bor r17a r17b
-  let rotr17 ← band r17 k.mask32
-
-  let c19 ← iconst64 19
-  let r19a ← ushr wi2val c19
-  let r19b ← ishl wi2val k.c13
-  let r19 ← bor r19a r19b
-  let rotr19 ← band r19 k.mask32
-
-  let shr10 ← ushr wi2val k.c10
-
-  let sig1a ← bxor rotr17 rotr19
-  let sigma1 ← bxor sig1a shr10
-
-  -- Load W[i-7]
-  let im7 ← isub ei k.c7
-  let im7x4 ← imul im7 k.c4
-  let wi7Rel ← iadd wOff' im7x4
-  let wi7Abs ← iadd k.ptr wi7Rel
-  let wi7val ← uload32_64 wi7Abs
-
-  -- Load W[i-15]
-  let im15 ← isub ei c15
-  let im15x4 ← imul im15 k.c4
-  let wi15Rel ← iadd wOff' im15x4
-  let wi15Abs ← iadd k.ptr wi15Rel
-  let wi15val ← uload32_64 wi15Abs
-
-  -- sigma0(x): rotr(x,7) ^ rotr(x,18) ^ (x >> 3)
-  let r7a ← ushr wi15val k.c7
-  let c25 ← iconst64 25
-  let r7b ← ishl wi15val c25
-  let r7 ← bor r7a r7b
-  let rotr7 ← band r7 k.mask32
-
-  let c18 ← iconst64 18
-  let r18a ← ushr wi15val c18
-  let c14 ← iconst64 14
-  let r18b ← ishl wi15val c14
-  let r18 ← bor r18a r18b
-  let rotr18 ← band r18 k.mask32
-
-  let shr3 ← ushr wi15val k.c3
-
-  let sig0a ← bxor rotr7 rotr18
-  let sigma0 ← bxor sig0a shr3
-
-  -- Load W[i-16]
-  let im16 ← isub ei k.c16
-  let im16x4 ← imul im16 k.c4
-  let wi16Rel ← iadd wOff' im16x4
-  let wi16Abs ← iadd k.ptr wi16Rel
-  let wi16val ← uload32_64 wi16Abs
-
-  -- W[i] = (sigma1 + W[i-7] + sigma0 + W[i-16]) & mask32
-  let ws1 ← iadd sigma1 wi7val
-  let ws2 ← iadd ws1 sigma0
-  let ws3 ← iadd ws2 wi16val
-  let wNew ← band ws3 k.mask32
-  let eix4 ← imul ei k.c4
-  let wiNewRel ← iadd wOff' eix4
-  let wiNewAbs ← iadd k.ptr wiNewRel
-  let wNew32 ← ireduce32 wNew
-  store wNew32 wiNewAbs
-  let eiNext ← iadd ei k.c1
-  jump expHdr.ref [eiNext]
-
-  startBlock expDone
+  let loadWAt (idxRel : Val) : IRBuilder Val := do
+    uload32_64 (← iadd k.ptr (← iadd wOff' (← imul idxRel k.c4)))
+  -- For ei in [16, 64): W[ei] = (sigma1(W[ei-2]) + W[ei-7] + sigma0(W[ei-15]) + W[ei-16]) & mask32
+  forLoopFromTo .i64 k.c16 k.c64 fun ei => do
+    let wi2val  ← loadWAt (← isub ei (← iconst64 2))
+    -- sigma1(x): rotr(x,17) ^ rotr(x,19) ^ (x >> 10)
+    let rotr17 ← band (← bor (← ushr wi2val (← iconst64 17)) (← ishl wi2val (← iconst64 15))) k.mask32
+    let rotr19 ← band (← bor (← ushr wi2val (← iconst64 19)) (← ishl wi2val k.c13))            k.mask32
+    let sigma1 ← bxor (← bxor rotr17 rotr19) (← ushr wi2val k.c10)
+    let wi7val  ← loadWAt (← isub ei k.c7)
+    let wi15val ← loadWAt (← isub ei (← iconst64 15))
+    -- sigma0(x): rotr(x,7) ^ rotr(x,18) ^ (x >> 3)
+    let rotr7  ← band (← bor (← ushr wi15val k.c7)            (← ishl wi15val (← iconst64 25))) k.mask32
+    let rotr18 ← band (← bor (← ushr wi15val (← iconst64 18)) (← ishl wi15val (← iconst64 14))) k.mask32
+    let sigma0 ← bxor (← bxor rotr7 rotr18) (← ushr wi15val k.c3)
+    let wi16val ← loadWAt (← isub ei k.c16)
+    let wNew    ← band (← iadd (← iadd (← iadd sigma1 wi7val) sigma0) wi16val) k.mask32
+    let wAbs ← iadd k.ptr (← iadd wOff' (← imul ei k.c4))
+    store (← ireduce32 wNew) wAbs
 
 -- 64-round compression loop body
 -- Returns (addBackBlk, roundHdr) for wiring
@@ -542,74 +426,25 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) (hexBlk : DeclaredBlock) : IRBu
   let hexOutC ← fldOffset f.hexOutput
   let hexTblC ← fldOffset f.hexTable
 
-  let hexOuter ← declareBlock [.i64, .i64]
-  let hwi := hexOuter.param 0
-  let hcp := hexOuter.param 1
-  let hexDone ← declareBlock [.i64]
-  let hexWordBody ← declareBlock []
-  jump hexOuter.ref [k.zero, k.zero]
-  startBlock hexOuter
-  let hwiDone ← icmp .uge hwi k.c8
-  brif hwiDone hexDone.ref [hcp] hexWordBody.ref []
-
-  startBlock hexWordBody
-  let hwOff ← imul hwi k.c4
-  let hwRel ← iadd hWorkC hwOff
-  let hwAbs ← iadd k.ptr hwRel
-  let wordVal ← uload32_64 hwAbs
-
-  let hexInner ← declareBlock [.i64, .i64, .i64]
-  let hWord := hexInner.param 0
-  let hbi := hexInner.param 1
-  let hcpI := hexInner.param 2
-  let hexInnerDone ← declareBlock [.i64]
-  let hexByteBody ← declareBlock []
-  jump hexInner.ref [wordVal, k.zero, hcp]
-  startBlock hexInner
-  let hbiDone ← icmp .uge hbi k.c4
-  brif hbiDone hexInnerDone.ref [hcpI] hexByteBody.ref []
-
-  startBlock hexByteBody
-  let c3' ← iconst64 3
-  let shift ← isub c3' hbi
-  let shiftBits ← imul shift k.c8
-  let shifted ← ushr hWord shiftBits
   let cFF ← iconst64 0xFF
-  let byteVal ← band shifted cFF
-
-  let hiNib ← ushr byteVal k.c4
-  let hiRel ← iadd hexTblC hiNib
-  let hiAbs ← iadd k.ptr hiRel
-  let hiChar ← uload8_64 hiAbs
-  let hcRel ← iadd hexOutC hcpI
-  let hcAbs ← iadd k.ptr hcRel
-  istore8 hiChar hcAbs
-
   let c0F ← iconst64 0x0F
-  let loNib ← band byteVal c0F
-  let loRel ← iadd hexTblC loNib
-  let loAbs ← iadd k.ptr loRel
-  let loChar ← uload8_64 loAbs
-  let hcpNext ← iadd hcpI k.c1
-  let lcRel ← iadd hexOutC hcpNext
-  let lcAbs ← iadd k.ptr lcRel
-  istore8 loChar lcAbs
-
-  let hcpNext2 ← iadd hcpNext k.c1
-  let hbiNext ← iadd hbi k.c1
-  jump hexInner.ref [hWord, hbiNext, hcpNext2]
-
-  startBlock hexInnerDone
-  let finalCp := hexInnerDone.param 0
-  let hwiNext ← iadd hwi k.c1
-  jump hexOuter.ref [hwiNext, finalCp]
-
-  startBlock hexDone
-  let totalChars := hexDone.param 0
-  let nlRel ← iadd hexOutC totalChars
-  let nlAbs ← iadd k.ptr nlRel
+  let c3' ← iconst64 3
+  -- Outer: for each of 8 H_work words, accumulating hex output byte offset.
+  -- Inner: for each of 4 bytes per word, write two hex chars and advance by 2.
+  let totalChars ← forLoopAcc .i64 .i64 k.c8 k.zero fun hwi hcp => do
+    let hwAbs ← iadd k.ptr (← iadd hWorkC (← imul hwi k.c4))
+    let wordVal ← uload32_64 hwAbs
+    forLoopAcc .i64 .i64 k.c4 hcp fun hbi hcpI => do
+      let shift ← isub c3' hbi
+      let byteVal ← band (← ushr wordVal (← imul shift k.c8)) cFF
+      let hiChar ← uload8_64 (← iadd k.ptr (← iadd hexTblC (← ushr byteVal k.c4)))
+      istore8 hiChar (← iadd k.ptr (← iadd hexOutC hcpI))
+      let hcpNext ← iadd hcpI k.c1
+      let loChar ← uload8_64 (← iadd k.ptr (← iadd hexTblC (← band byteVal c0F)))
+      istore8 loChar (← iadd k.ptr (← iadd hexOutC hcpNext))
+      iadd hcpNext k.c1
   let nlChar ← iconst64 10
-  istore8 nlChar nlAbs
+  istore8 nlChar (← iadd k.ptr (← iadd hexOutC totalChars))
   let outLen ← iadd totalChars k.c1
   let outFname ← fldOffset f.outputFilename
   let outData ← fldOffset f.hexOutput

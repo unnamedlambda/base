@@ -139,84 +139,31 @@ def clifIrSource : String := buildProgram do
   let c3 ← iconst64 3
   let bigN ← ushr bytesRead c3
 
-  -- Step 2: Compute log2(N) — loop: shift right until ≤ 1
-  let log2Hdr ← declareBlock [.i64, .i64]  -- tmp, log2n
-  let log2Body ← declareBlock []
-  let log2Done ← declareBlock [.i64]       -- log2n result
-  jump log2Hdr.ref [bigN, c0]
+  -- Step 2: Compute log2(N) — while tmp > 1, tmp >>= 1, log2n += 1.
+  let (_, log2Result) ← whileLoop2 .i64 .i64 bigN c0
+    (fun tmp _ => icmp .ugt tmp c1)
+    (fun tmp log2n => do
+      let tmp2  ← ushr tmp c1
+      let log2n2 ← iadd log2n c1
+      return (tmp2, log2n2))
 
-  startBlock log2Hdr
-  let tmp := log2Hdr.param 0
-  let log2n := log2Hdr.param 1
-  let cmpGt ← icmp .ugt tmp c1
-  brif cmpGt log2Body.ref [] log2Done.ref [log2n]
-
-  startBlock log2Body
-  let tmp2 ← ushr tmp c1
-  let log2n2 ← iadd log2n c1
-  jump log2Hdr.ref [tmp2, log2n2]
-
-  -- log2(N) computed, now bit-reverse permutation
-  startBlock log2Done
-  let log2Result := log2Done.param 0
   let bufAOff ← iconst64 bufA_off
 
-  -- Outer loop: for i in [0, N)
-  let outerHdr ← declareBlock [.i64]    -- i
-  let outerBody ← declareBlock []
-  let gpuBlk ← declareBlock []          -- after permutation
-  jump outerHdr.ref [c0]
-
-  startBlock outerHdr
-  let i := outerHdr.param 0
-  let iDone ← icmp .uge i bigN
-  brif iDone gpuBlk.ref [] outerBody.ref []
-
-  -- Compute bit-reverse of i with log2Result bits
-  startBlock outerBody
-  let revHdr ← declareBlock [.i64, .i64, .i64]  -- val, rev, bit
-  let revBody ← declareBlock []
-  let revDone ← declareBlock [.i64]              -- final rev
-  jump revHdr.ref [i, c0, c0]
-
-  startBlock revHdr
-  let val := revHdr.param 0
-  let rev := revHdr.param 1
-  let bit := revHdr.param 2
-  let bitDone ← icmp .uge bit log2Result
-  brif bitDone revDone.ref [rev] revBody.ref []
-
-  startBlock revBody
-  let lsb ← band val c1
-  let revShift ← ishl rev c1
-  let revNew ← bor revShift lsb
-  let valShift ← ushr val c1
-  let bitNext ← iadd bit c1
-  jump revHdr.ref [valShift, revNew, bitNext]
-
-  -- Copy inputData[i] (8 bytes) to bufA[rev]
-  startBlock revDone
-  let revIdx := revDone.param 0
-  -- src = inputData_off + i * 8
-  let iMul8 ← imul i c8
-  let srcOff ← iadd inDatOff iMul8
-  let srcAbs ← iadd ptr srcOff
-  -- dst = bufA_off + rev * 8
-  let revMul8 ← imul revIdx c8
-  let dstOff ← iadd bufAOff revMul8
-  let dstAbs ← iadd ptr dstOff
-  -- Copy 8 bytes as two i32
-  let lo ← load32 srcAbs
-  store lo dstAbs
-  let srcHi ← iadd srcAbs c4
-  let dstHi ← iadd dstAbs c4
-  let hi ← load32 srcHi
-  store hi dstHi
-  let iNext ← iadd i c1
-  jump outerHdr.ref [iNext]
-
-  -- Step 3: GPU init
-  startBlock gpuBlk
+  -- For i in [0, bigN): compute bit-reverse(i, log2Result), then copy
+  -- inputData[i] (8 bytes) to bufA[rev].
+  forLoop .i64 bigN fun i => do
+    -- Inner: fold log2Result bits, carrying (val, rev). bit-count is the loop counter.
+    let (_, revIdx) ← forLoopAcc2 .i64 .i64 .i64 log2Result i c0 fun _ val rev => do
+      let lsb      ← band val c1
+      let revShift ← ishl rev c1
+      let revNew   ← bor revShift lsb
+      let valShift ← ushr val c1
+      return (valShift, revNew)
+    -- src = inputData_off + i * 8;   dst = bufA_off + rev * 8
+    let srcAbs ← iadd ptr (← iadd inDatOff (← imul i c8))
+    let dstAbs ← iadd ptr (← iadd bufAOff (← imul revIdx c8))
+    store (← load32 srcAbs) dstAbs
+    store (← load32 (← iadd srcAbs c4)) (← iadd dstAbs c4)
   gpuInit gpu ptr
 
   -- Align data size to multiple of 4: (N*8 + 3) & ~3
@@ -253,43 +200,24 @@ def clifIrSource : String := buildProgram do
   let wgCount32 ← ireduce32 wgCount
   let one32 ← iconst32 1
 
-  -- Step 4: Stage loop
-  let stageHdr ← declareBlock [.i64, .i64]   -- stage, direction
-  let stageBody ← declareBlock []
-  let downloadBlk ← declareBlock [.i64]      -- final direction
-  jump stageHdr.ref [c0, c0]
+  -- Step 4: Stage loop — counter `stage` for log2Result iterations,
+  -- accumulator `dir` toggled each iteration.
+  let finalDir ← forLoopAcc .i64 .i64 log2Result c0 fun stage dir => do
+    -- Write stage and direction into meta
+    let metaStage ← iadd metaAbs c4
+    store (← ireduce32 stage) metaStage
+    let metaDir ← iadd metaStage c4
+    store (← ireduce32 dir) metaDir
+    -- Upload meta, dispatch, then sync via download-to-scratch
+    let _ ← gpuUpload gpu ptr buf2 metaOffC metaSzC
+    let _ ← gpuDispatch gpu ptr pipeId wgCount32 one32 one32
+    let scratchOff ← iconst64 64
+    let _ ← gpuDownload gpu ptr buf2 scratchOff metaSzC
+    bxor dir c1   -- next direction
 
-  startBlock stageHdr
-  let stage := stageHdr.param 0
-  let dir := stageHdr.param 1
-  let stageDone ← icmp .uge stage log2Result
-  brif stageDone downloadBlk.ref [dir] stageBody.ref []
-
-  startBlock stageBody
-  -- Write stage and direction into meta
-  let metaStage ← iadd metaAbs c4
-  let stageI32 ← ireduce32 stage
-  store stageI32 metaStage
-  let metaDir ← iadd metaStage c4
-  let dirI32 ← ireduce32 dir
-  store dirI32 metaDir
-  -- Upload meta
-  let _ ← gpuUpload gpu ptr buf2 metaOffC metaSzC
-  -- Dispatch
-  let _ ← gpuDispatch gpu ptr pipeId wgCount32 one32 one32
-  -- Sync: download meta to scratch to force GPU completion
-  let scratchOff ← iconst64 64
-  let _ ← gpuDownload gpu ptr buf2 scratchOff metaSzC
-  -- Next stage, toggle direction
-  let stageNext ← iadd stage c1
-  let dirNext ← bxor dir c1
-  jump stageHdr.ref [stageNext, dirNext]
-
-  -- Step 5: Download result
+  -- Step 5: Download result.
   -- direction==0 after loop → last was dir=1 → wrote to buf_a → download buf_a
   -- direction==1 after loop → last was dir=0 → wrote to buf_b → download buf_b
-  startBlock downloadBlk
-  let finalDir := downloadBlk.param 0
   let bufAOffC ← iconst64 bufA_off
   let bufBOffC ← iconst64 bufB_off
   let dirIsZero ← icmp .eq finalDir c0

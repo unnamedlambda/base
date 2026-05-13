@@ -54,7 +54,6 @@ structure WcCtx where
   extractB  : DeclaredBlock
   writeTab  : DeclaredBlock
   writeByte : DeclaredBlock
-  itoaFind  : DeclaredBlock
   itoaWr    : DeclaredBlock
   writeNL   : DeclaredBlock
   writeFile : DeclaredBlock
@@ -194,16 +193,12 @@ def emitFormatPhase (k : WcCtx) : IRBuilder Unit := do
   let ctx13 := k.writeTab.param 2; let tot6  := k.writeTab.param 3
   let cnt5  := k.writeTab.param 4
   istore8 (← iconst64 9) (← iadd k.ptr opos6)   -- tab
-  jump k.itoaFind.ref [idx6, ← iaddImm opos6 1, ctx13, tot6, cnt5, one]
-
-  startBlock k.itoaFind
-  let idx7  := k.itoaFind.param 0; let opos7 := k.itoaFind.param 1
-  let ctx14 := k.itoaFind.param 2; let tot7  := k.itoaFind.param 3
-  let cnt6  := k.itoaFind.param 4; let div   := k.itoaFind.param 5
-  let div10 ← imul div ten
-  brif (← icmp .ugt div10 cnt6)
-       k.itoaWr.ref [idx7, opos7, ctx14, tot7, cnt6, div]
-       k.itoaFind.ref [idx7, opos7, ctx14, tot7, cnt6, div10]
+  let opos6' ← iaddImm opos6 1
+  -- Scale `div` up while div*10 <= cnt5, to find the highest divisor.
+  let finalDiv ← whileLoop1 .i64 one
+    (fun d => do icmp .ule (← imul d ten) cnt5)
+    (fun d => do imul d ten)
+  jump k.itoaWr.ref [idx6, opos6', ctx13, tot6, cnt5, finalDiv]
 
   startBlock k.itoaWr
   let idx8  := k.itoaWr.param 0; let opos8 := k.itoaWr.param 1
@@ -263,7 +258,6 @@ def mainFn : IRBuilder Unit := do
   let extractB  ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64]
   let writeByte ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
   let writeTab  ← declareBlock [.i64, .i64, .i64, .i64, .i64]
-  let itoaFind  ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64]
   let itoaWr    ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64]
   let writeNL   ← declareBlock [.i64, .i64, .i64, .i64]
   let writeFile ← declareBlock [.i64]
@@ -274,7 +268,7 @@ def mainFn : IRBuilder Unit := do
     cpIn, cpOut1, cpOut, readBlk, skipWS, chkByte,
     readWord, readByte, wordDone, accumByte,
     fmtStart, fmtLoop, getEntry, unpackW, extractB, writeByte,
-    writeTab, itoaFind, itoaWr, writeNL, writeFile
+    writeTab, itoaWr, writeNL, writeFile
   }
 
   emitPathCopy k

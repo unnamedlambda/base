@@ -43,7 +43,6 @@ def mainFn : IRBuilder Unit := do
   let digitFlsh ← declareBlock [.i64, .i64, .i64]
   let acDigit   ← declareBlock [.i64, .i64, .i64, .i64]
   let done      ← declareBlock [.i64]
-  let itoaBlk   ← declareBlock [.i64, .i64]
   let itoaWr    ← declareBlock [.i64, .i64, .i64]
   let itoaNL    ← declareBlock [.i64]
 
@@ -159,16 +158,13 @@ def mainFn : IRBuilder Unit := do
   let acc3' ← iadd (← imul acc3 (← iconst64 10)) d2
   jump digitLoop.ref [← iaddImm dp3 1, tot9, acc3']
 
-  -- itoa + write
+  -- itoa + write: scale div up while div*10 <= total
   startBlock done
   let total := done.param 0
-  jump itoaBlk.ref [total, ← iconst64 1]
-
-  startBlock itoaBlk
-  let totF := itoaBlk.param 0; let divF := itoaBlk.param 1
-  let divF10 ← imul divF (← iconst64 10)
-  brif (← icmp .ugt divF10 totF) itoaWr.ref [totF, divF, ← iconst64 OUTPUT_BUF]
-                                  itoaBlk.ref [totF, divF10]
+  let finalDiv ← whileLoop1 .i64 (← iconst64 1)
+    (fun div => do icmp .ule (← imul div (← iconst64 10)) total)
+    (fun div => do imul div (← iconst64 10))
+  jump itoaWr.ref [total, finalDiv, ← iconst64 OUTPUT_BUF]
 
   startBlock itoaWr
   let valW := itoaWr.param 0; let divW := itoaWr.param 1; let wposW := itoaWr.param 2
