@@ -1773,6 +1773,40 @@ unsafe extern "C" fn cl_cuda_download_ptr(
     .unwrap_or(-1)
 }
 
+/// Download `size` bytes from a GPU buffer at `buf_offset` into a host pointer.
+unsafe extern "C" fn cl_cuda_download_ptr_offset(
+    ctx_ptr: *mut CraneliftCudaContext,
+    buf_id: i32,
+    buf_offset: i64,
+    dst_ptr: *mut u8,
+    size: i64,
+) -> i32 {
+    use cudarc::driver::DevicePtr;
+    if buf_id < 0 || buf_offset < 0 || size <= 0 || dst_ptr.is_null() {
+        return -1;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        let Ok(mut state) = lock_cuda_state(ctx) else {
+            return -1;
+        };
+        let bid = buf_id as usize;
+        let Some(buf) = state.buffers.get(bid).and_then(|b| b.as_ref()) else {
+            return -1;
+        };
+        let base = *buf.device_ptr();
+        let dev = base + buf_offset as u64;
+        let dst = std::slice::from_raw_parts_mut(dst_ptr, size as usize);
+        match unsafe { cudarc::driver::result::memcpy_dtoh_sync(dst, dev) } {
+            Ok(_) => 0,
+            Err(_) => -1,
+        }
+    }))
+    .unwrap_or(-1)
+}
+
 unsafe extern "C" fn cl_cuda_download(
     ctx_ptr: *mut CraneliftCudaContext,
     buf_id: i32,
@@ -2632,6 +2666,32 @@ unsafe extern "C" fn cl_sinf(x: f32) -> f32 { x.sin() }
 unsafe extern "C" fn cl_cosf(x: f32) -> f32 { x.cos() }
 unsafe extern "C" fn cl_powf(base: f32, exp: f32) -> f32 { base.powf(exp) }
 
+/// Write `size` bytes from an arbitrary host pointer into a file at the given
+/// offset.  Opens (creating if needed), seeks, writes, and closes each call.
+unsafe extern "C" fn cl_file_write_from_ptr(
+    path_ptr: *const u8,
+    src_ptr: *const u8,
+    file_offset: i64,
+    size: i64,
+) -> i64 {
+    if path_ptr.is_null() || src_ptr.is_null() || size <= 0 || file_offset < 0 {
+        return -1;
+    }
+    let path = read_cstr_ptr(path_ptr);
+    let mut file = match fs::OpenOptions::new().write(true).create(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => return -1,
+    };
+    if file.seek(std::io::SeekFrom::Start(file_offset as u64)).is_err() {
+        return -1;
+    }
+    let src = std::slice::from_raw_parts(src_ptr, size as usize);
+    match file.write_all(src) {
+        Ok(_) => size,
+        Err(_) => -1,
+    }
+}
+
 /// Read `size` bytes from a file directly into an arbitrary host pointer.
 unsafe extern "C" fn cl_file_read_to_ptr(
     path_ptr: *const u8,
@@ -3432,6 +3492,7 @@ pub(crate) fn compile_cranelift_ir(
     );
     builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
     builder.symbol("cl_cuda_download_ptr", cl_cuda_download_ptr as *const u8);
+    builder.symbol("cl_cuda_download_ptr_offset", cl_cuda_download_ptr_offset as *const u8);
     builder.symbol(
         "cl_cuda_download_ptr_async",
         cl_cuda_download_ptr_async as *const u8,
@@ -3498,6 +3559,7 @@ pub(crate) fn compile_cranelift_ir(
     builder.symbol("cl_file_read", cl_file_read as *const u8);
     builder.symbol("cl_file_read_to_ptr", cl_file_read_to_ptr as *const u8);
     builder.symbol("cl_file_write", cl_file_write as *const u8);
+    builder.symbol("cl_file_write_from_ptr", cl_file_write_from_ptr as *const u8);
     builder.symbol("cl_sinf", cl_sinf as *const u8);
     builder.symbol("cl_cosf", cl_cosf as *const u8);
     builder.symbol("cl_powf", cl_powf as *const u8);

@@ -51,4 +51,6 @@ lean_lib RaytraceAlgorithm
 lean_lib SatAlgorithm
 lean_lib SceneAlgorithm
 lean_lib Sha256Algorithm
+lean_lib Qwen2Common
 lean_lib Qwen2Algorithm
+lean_lib Qwen2OnDiskAlgorithm

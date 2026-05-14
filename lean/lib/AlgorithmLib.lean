@@ -1343,6 +1343,7 @@ structure CudaSetup where
   fnUploadAsync : FnRef
   fnUploadOffsetAsync : FnRef
   fnDownload : FnRef
+  fnDownloadOffset : FnRef -- cl_cuda_download_ptr_offset: (ctx, buf_id, buf_offset, dst_ptr, size) → i32
   fnDownloadAsync : FnRef
   fnFreeBuffer : FnRef
   fnStreamCreate : FnRef
@@ -1378,6 +1379,7 @@ def declareCudaFFI : IRBuilder CudaSetup := do
   let fnUploadOffsetAsync ← declareFFI "cl_cuda_upload_ptr_offset_async"
     [.i64, .i32, .i64, .i64, .i64, .i32] (some .i32)
   let fnDownload     ← declareFFI "cl_cuda_download_ptr"      [.i64, .i32, .i64, .i64]             (some .i32)
+  let fnDownloadOffset ← declareFFI "cl_cuda_download_ptr_offset" [.i64, .i32, .i64, .i64, .i64]   (some .i32)
   let fnDownloadAsync ← declareFFI "cl_cuda_download_ptr_async" [.i64, .i32, .i64, .i64, .i32]     (some .i32)
   let fnFreeBuffer   ← declareFFI "cl_cuda_free_buffer"       [.i64, .i32]                         (some .i32)
   let fnStreamCreate ← declareFFI "cl_cuda_stream_create"     [.i64]                               (some .i32)
@@ -1407,7 +1409,7 @@ def declareCudaFFI : IRBuilder CudaSetup := do
   let fnSync         ← declareFFI "cl_cuda_sync"              [.i64]                               (some .i32)
   let fnCleanup      ← declareFFI "cl_cuda_cleanup"           [.i64]                               none
   pure { fnInit, fnCreateBuffer, fnUpload, fnUploadOffset, fnUploadAsync, fnUploadOffsetAsync,
-         fnDownload, fnDownloadAsync, fnFreeBuffer, fnStreamCreate, fnStreamSync, fnStreamDestroy,
+         fnDownload, fnDownloadOffset, fnDownloadAsync, fnFreeBuffer, fnStreamCreate, fnStreamSync, fnStreamDestroy,
          fnEventCreate, fnEventRecord, fnStreamWaitEvent, fnEventElapsedMsBits, fnEventDestroy,
          fnGraphBeginCapture, fnGraphEndCapture, fnGraphUpload, fnGraphLaunch, fnGraphDestroy,
          fnPinnedAlloc, fnPinnedPtr, fnPinnedFree, fnLaunch, fnLaunchNamed, fnLaunchOnStream,
