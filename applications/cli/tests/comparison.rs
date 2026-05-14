@@ -175,9 +175,19 @@ fn test_array_variable_addition_is_asymmetric() {
 fn test_array_assignments_from_expressions_follow_current_parser_rules() {
     assert_cli_transcript(
         "a=[1,2,3]+[4,5,6]\na\nb=[1,2,3]*2\nb\nc=2*[1,2,3]\nc\n",
-        &[None, Some("[5,7,9]"), None, Some("[2,4,6]"), None, Some("[2,4,6]")],
+        &[
+            None,
+            Some("[5,7,9]"),
+            None,
+            Some("[2,4,6]"),
+            None,
+            Some("[2,4,6]"),
+        ],
     );
-    assert_cli_transcript("a=[1,2,3]\nb=a+[4,5,6]\nb\n", &[None, None, Some("[1,2,3]")]);
+    assert_cli_transcript(
+        "a=[1,2,3]\nb=a+[4,5,6]\nb\n",
+        &[None, None, Some("[1,2,3]")],
+    );
     assert_cli_transcript("a=[1,2,3]\nc=[4,5,6]+a\nc\n", &[None, None, Some("0")]);
 }
 

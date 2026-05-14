@@ -12283,7 +12283,13 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(15000),
         output: vec![],
@@ -12293,15 +12299,22 @@ block0(v0: i64):
     let a: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x: [f32; 2] = [1.0, 1.0];
     let mut payload = Vec::with_capacity(a_bytes + x_bytes);
-    for v in a { payload.extend_from_slice(&v.to_le_bytes()); }
-    for v in x { payload.extend_from_slice(&v.to_le_bytes()); }
+    for v in a {
+        payload.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in x {
+        payload.extend_from_slice(&v.to_le_bytes());
+    }
     let mut out = vec![0u8; y_bytes];
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
     let expected = [3.0f32, 7.0, 11.0];
     for (i, &exp) in expected.iter().enumerate() {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
-        assert!((actual - exp).abs() < 0.01, "elem {i}: got {actual}, expected {exp}");
+        assert!(
+            (actual - exp).abs() < 0.01,
+            "elem {i}: got {actual}, expected {exp}"
+        );
     }
 }
 
@@ -12395,7 +12408,13 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(15000),
         output: vec![],
@@ -12406,15 +12425,22 @@ block0(v0: i64):
     let a: [f32; 8] = [1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0];
     let b: [f32; 8] = [2.0, 3.0, 4.0, 5.0, 1.0, 1.0, 1.0, 1.0];
     let mut payload = Vec::with_capacity(a_bytes + b_bytes);
-    for v in a { payload.extend_from_slice(&v.to_le_bytes()); }
-    for v in b { payload.extend_from_slice(&v.to_le_bytes()); }
+    for v in a {
+        payload.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in b {
+        payload.extend_from_slice(&v.to_le_bytes());
+    }
     let mut out = vec![0u8; c_bytes];
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
     let expected: [f32; 8] = [2.0, 3.0, 4.0, 5.0, 2.0, 2.0, 2.0, 2.0];
     for (i, &exp) in expected.iter().enumerate() {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
-        assert!((actual - exp).abs() < 0.01, "elem {i}: got {actual}, expected {exp}");
+        assert!(
+            (actual - exp).abs() < 0.01,
+            "elem {i}: got {actual}, expected {exp}"
+        );
     }
 }
 
@@ -12534,7 +12560,13 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(15000),
         output: vec![],
@@ -12543,17 +12575,35 @@ block0(v0: i64):
     // buf0: [1..8], buf1: [10..17] — each should get +1
     let mut payload = vec![0u8; data_bytes * 2];
     for i in 0..n {
-        ((i + 1) as f32).to_le_bytes().iter().enumerate().for_each(|(b, &v)| payload[i * 4 + b] = v);
-        ((i + 10) as f32).to_le_bytes().iter().enumerate().for_each(|(b, &v)| payload[data_bytes + i * 4 + b] = v);
+        ((i + 1) as f32)
+            .to_le_bytes()
+            .iter()
+            .enumerate()
+            .for_each(|(b, &v)| payload[i * 4 + b] = v);
+        ((i + 10) as f32)
+            .to_le_bytes()
+            .iter()
+            .enumerate()
+            .for_each(|(b, &v)| payload[data_bytes + i * 4 + b] = v);
     }
     let mut out = vec![0u8; data_bytes * 2];
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
     for i in 0..n {
         let a = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
-        let b = f32::from_le_bytes(out[data_bytes + i * 4..data_bytes + i * 4 + 4].try_into().unwrap());
-        assert!((a - (i + 2) as f32).abs() < 0.001, "stream0 elem {i}: got {a}");
-        assert!((b - (i + 11) as f32).abs() < 0.001, "stream1 elem {i}: got {b}");
+        let b = f32::from_le_bytes(
+            out[data_bytes + i * 4..data_bytes + i * 4 + 4]
+                .try_into()
+                .unwrap(),
+        );
+        assert!(
+            (a - (i + 2) as f32).abs() < 0.001,
+            "stream0 elem {i}: got {a}"
+        );
+        assert!(
+            (b - (i + 11) as f32).abs() < 0.001,
+            "stream1 elem {i}: got {b}"
+        );
     }
 }
 
@@ -12597,7 +12647,8 @@ block0(v0: i64):
 
     call fn3(v90)
     return
-}"#.to_string();
+}"#
+    .to_string();
 
     let config = BaseConfig {
         cranelift_ir: clif_ir,
@@ -12608,7 +12659,13 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(5000),
         output: vec![],
@@ -12739,20 +12796,32 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(15000),
         output: vec![],
     };
 
     // [1.0, 2.0, 3.0, 4.0] + 1 applied 3 times = [4.0, 5.0, 6.0, 7.0]
-    let payload: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+    let payload: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
     let mut out = vec![0u8; data_bytes];
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
     for (i, expected) in [4.0f32, 5.0, 6.0, 7.0].iter().enumerate() {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
-        assert!((actual - expected).abs() < 0.001, "elem {i}: got {actual}, expected {expected}");
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "elem {i}: got {actual}, expected {expected}"
+        );
     }
 }
 
@@ -12861,21 +12930,33 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(15000),
         output: vec![],
     };
 
     // Each element multiplied by 2.0
-    let payload: Vec<u8> = (1..=n).map(|x| x as f32).flat_map(|v| v.to_le_bytes()).collect();
+    let payload: Vec<u8> = (1..=n)
+        .map(|x| x as f32)
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
     let mut out = vec![0u8; data_bytes];
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
         let expected = (i + 1) as f32 * 2.0;
-        assert!((actual - expected).abs() < 0.001, "elem {i}: got {actual}, expected {expected}");
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "elem {i}: got {actual}, expected {expected}"
+        );
     }
 }
 
@@ -12918,7 +12999,8 @@ block0(v0: i64):
 
     call fn3(v90)
     return
-}"#.to_string();
+}"#
+    .to_string();
 
     let config = BaseConfig {
         cranelift_ir: clif_ir,
@@ -12929,7 +13011,13 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(5000),
         output: vec![],
@@ -13011,7 +13099,13 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 }],
+        actions: vec![Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        }],
         cranelift_units: 0,
         timeout_ms: Some(5000),
         output: vec![],
@@ -13023,8 +13117,14 @@ block0(v0: i64):
 
     let exact_fit = i32::from_le_bytes(out[0..4].try_into().unwrap());
     let one_past = i32::from_le_bytes(out[4..8].try_into().unwrap());
-    assert_eq!(exact_fit, 0, "upload at offset 8 size 8 into 16-byte buf should succeed");
-    assert_eq!(one_past, -1, "upload at offset 16 into 16-byte buf should fail");
+    assert_eq!(
+        exact_fit, 0,
+        "upload at offset 8 size 8 into 16-byte buf should succeed"
+    );
+    assert_eq!(
+        one_past, -1,
+        "upload at offset 16 into 16-byte buf should fail"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -13041,20 +13141,21 @@ fn test_clif_ffi_cuda_shared_context_two_threads() {
     let bind_off: usize = 0x0800;
     let mem_size: usize = 0x1000;
     // Slots in shared memory (legacy header: ctx@0x00, data@0x08, data_len@0x10, out@0x18, out_len@0x20)
-    let buf0_slot: usize = 0x28;  // i32: gpu buffer id for thread0
-    let buf1_slot: usize = 0x2C;  // i32: gpu buffer id for thread1
-    let sid0_slot: usize = 0x30;  // i32: stream id for thread0
-    let sid1_slot: usize = 0x34;  // i32: stream id for thread1
-    let flag0_off: usize = 0x38;  // u64: wait flag for thread0
-    let flag1_off: usize = 0x3C;  // u64: wait flag for thread1
-    // bind_off layout: [buf_id0: i32] for each thread kernel (1 binding each)
+    let buf0_slot: usize = 0x28; // i32: gpu buffer id for thread0
+    let buf1_slot: usize = 0x2C; // i32: gpu buffer id for thread1
+    let sid0_slot: usize = 0x30; // i32: stream id for thread0
+    let sid1_slot: usize = 0x34; // i32: stream id for thread1
+    let flag0_off: usize = 0x38; // u64: wait flag for thread0
+    let flag1_off: usize = 0x3C; // u64: wait flag for thread1
+                                 // bind_off layout: [buf_id0: i32] for each thread kernel (1 binding each)
     let bind_t0 = bind_off;
     let bind_t1 = bind_off + 8;
 
     // PTX: reads one f32 buffer, adds a constant, writes back. Constant chosen per-test via bind slot.
     // We use two separate bind descriptors pointing to buf0 and buf1 respectively.
     // Single kernel that adds +1.0 — we use it for both threads (results are independent buffers).
-    let ptx = format!("\
+    let ptx = format!(
+        "\
 .version 7.0
 .target sm_50
 .address_size 64
@@ -13077,7 +13178,8 @@ fn test_clif_ffi_cuda_shared_context_two_threads() {
     add.f32 %val, %val, %one;
     st.global.f32 [%base], %val;
     ret;
-}}\0");
+}}\0"
+    );
 
     // CLIF:
     //   u0:0  — noop
@@ -13210,10 +13312,28 @@ block0(v0: i64):
     //   6: Wait { dst=flag1 }
     let actions = vec![
         // Describe actions (consumed by ClifCallAsync workers)
-        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
-        Action { kind: Kind::Describe, dst: 0, src: 3, offset: 0, size: 0 },
+        Action {
+            kind: Kind::Describe,
+            dst: 0,
+            src: 2,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Describe,
+            dst: 0,
+            src: 3,
+            offset: 0,
+            size: 0,
+        },
         // Sync init
-        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
+        Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        },
         // Dispatch both workers
         Action {
             kind: Kind::ClifCallAsync,
@@ -13230,8 +13350,20 @@ block0(v0: i64):
             size: 1,
         },
         // Wait for both
-        Action { kind: Kind::Wait, dst: flag0_off as u32, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Wait, dst: flag1_off as u32, src: 0, offset: 0, size: 0 },
+        Action {
+            kind: Kind::Wait,
+            dst: flag0_off as u32,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag1_off as u32,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
     ];
 
     let config = BaseConfig {
@@ -13263,11 +13395,21 @@ block0(v0: i64):
 
     for i in 0..n {
         let got0 = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
-        let got1 = f32::from_le_bytes(out[elem_bytes + i * 4..elem_bytes + i * 4 + 4].try_into().unwrap());
+        let got1 = f32::from_le_bytes(
+            out[elem_bytes + i * 4..elem_bytes + i * 4 + 4]
+                .try_into()
+                .unwrap(),
+        );
         let exp0 = (i as f32 + 1.0) + 1.0;
         let exp1 = (i as f32 + 1.0) * 10.0 + 1.0;
-        assert!((got0 - exp0).abs() < 0.01, "thread0[{i}]: got {got0}, expected {exp0}");
-        assert!((got1 - exp1).abs() < 0.01, "thread1[{i}]: got {got1}, expected {exp1}");
+        assert!(
+            (got0 - exp0).abs() < 0.01,
+            "thread0[{i}]: got {got0}, expected {exp0}"
+        );
+        assert!(
+            (got1 - exp1).abs() < 0.01,
+            "thread1[{i}]: got {got1}, expected {exp1}"
+        );
     }
 }
 
@@ -13282,7 +13424,8 @@ fn test_clif_ffi_cuda_async_worker_single_thread() {
     let buf0_slot: usize = 0x28;
     let sid0_slot: usize = 0x30;
 
-    let ptx = format!("\
+    let ptx = format!(
+        "\
 .version 7.0
 .target sm_50
 .address_size 64
@@ -13305,9 +13448,11 @@ fn test_clif_ffi_cuda_async_worker_single_thread() {
     add.f32 %val, %val, %one;
     st.global.f32 [%base], %val;
     ret;
-}}\0");
+}}\0"
+    );
 
-    let clif_ir = format!(r#"function u0:0(i64) system_v {{
+    let clif_ir = format!(
+        r#"function u0:0(i64) system_v {{
 block0(v0: i64):
     return
 }}
@@ -13378,10 +13523,34 @@ block0(v0: i64):
 
     let flag_off: u32 = 0x50;
     let actions = vec![
-        Action { kind: Kind::Describe, dst: 0, src: 2, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: flag_off, size: 1 },
-        Action { kind: Kind::Wait, dst: flag_off, src: 0, offset: 0, size: 0 },
+        Action {
+            kind: Kind::Describe,
+            dst: 0,
+            src: 2,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::ClifCall,
+            dst: 0,
+            src: 1,
+            offset: 0,
+            size: 0,
+        },
+        Action {
+            kind: Kind::ClifCallAsync,
+            dst: 0,
+            src: 0,
+            offset: flag_off,
+            size: 1,
+        },
+        Action {
+            kind: Kind::Wait,
+            dst: flag_off,
+            src: 0,
+            offset: 0,
+            size: 0,
+        },
     ];
 
     let config = BaseConfig {
@@ -13399,13 +13568,18 @@ block0(v0: i64):
         output: vec![],
     };
 
-    let payload: Vec<u8> = (0..n).flat_map(|i| (i as f32 + 1.0).to_le_bytes()).collect();
+    let payload: Vec<u8> = (0..n)
+        .flat_map(|i| (i as f32 + 1.0).to_le_bytes())
+        .collect();
     let mut out = vec![0u8; elem_bytes];
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
     for i in 0..n {
         let got = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
         let exp = i as f32 + 2.0;
-        assert!((got - exp).abs() < 0.01, "elem[{i}]: got {got}, expected {exp}");
+        assert!(
+            (got - exp).abs() < 0.01,
+            "elem[{i}]: got {got}, expected {exp}"
+        );
     }
 }

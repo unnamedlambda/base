@@ -17,7 +17,10 @@ const QWEN2_ON_DISK_BIN: &str = env!("CARGO_BIN_EXE_qwen2_on_disk");
 const EXPECTED_HELLO: &str = "hello! how can i assist you today?\n";
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap()
 }
 
 /// Returns (weights_path, tokenizer_path) if both exist, else None.
@@ -26,8 +29,14 @@ fn locate_files() -> Option<(PathBuf, PathBuf)> {
     let root = repo_root();
     let weights_candidates = ["qwen2_instruct_weights.bin", "qwen2_weights.bin"];
     let tokenizer_candidates = ["qwen2_instruct_tokenizer.bin", "qwen2_tokenizer.bin"];
-    let weights = weights_candidates.iter().map(|n| root.join(n)).find(|p| p.exists())?;
-    let tokenizer = tokenizer_candidates.iter().map(|n| root.join(n)).find(|p| p.exists())?;
+    let weights = weights_candidates
+        .iter()
+        .map(|n| root.join(n))
+        .find(|p| p.exists())?;
+    let tokenizer = tokenizer_candidates
+        .iter()
+        .map(|n| root.join(n))
+        .find(|p| p.exists())?;
     Some((weights, tokenizer))
 }
 
@@ -42,7 +51,9 @@ fn ask(bin: &str, weights: &PathBuf, tokenizer: &PathBuf, prompt: &str) -> Strin
     let mut stdin = child.stdin.take().unwrap();
     writeln!(stdin, "{prompt}").unwrap();
     drop(stdin);
-    let out = child.wait_with_output().unwrap_or_else(|e| panic!("wait {bin}: {e}"));
+    let out = child
+        .wait_with_output()
+        .unwrap_or_else(|e| panic!("wait {bin}: {e}"));
     assert!(out.status.success(), "{bin} exited {:?}", out.status.code());
     String::from_utf8(out.stdout).expect("utf-8 response")
 }
@@ -60,7 +71,10 @@ fn cli_golden_hello() {
         skip_message("cli_golden_hello");
         return;
     };
-    assert_eq!(ask(QWEN2_BIN, &weights, &tokenizer, "hello"), EXPECTED_HELLO);
+    assert_eq!(
+        ask(QWEN2_BIN, &weights, &tokenizer, "hello"),
+        EXPECTED_HELLO
+    );
 }
 
 /// The on-disk variant streams weights layer-by-layer from the .bin file and
@@ -72,5 +86,8 @@ fn on_disk_golden_hello() {
         skip_message("on_disk_golden_hello");
         return;
     };
-    assert_eq!(ask(QWEN2_ON_DISK_BIN, &weights, &tokenizer, "hello"), EXPECTED_HELLO);
+    assert_eq!(
+        ask(QWEN2_ON_DISK_BIN, &weights, &tokenizer, "hello"),
+        EXPECTED_HELLO
+    );
 }

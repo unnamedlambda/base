@@ -3,7 +3,11 @@ use std::process::Command;
 
 fn get_matmul_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/matmul", manifest_dir, profile)
 }
 
@@ -30,7 +34,10 @@ fn test_matmul_smoke_writes_nontrivial_output() {
         .chunks_exact(4)
         .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
         .collect();
-    assert!(first.iter().all(|v| v.is_finite()), "non-finite output values");
+    assert!(
+        first.iter().all(|v| v.is_finite()),
+        "non-finite output values"
+    );
     assert!(
         first.iter().any(|v| *v != 0.0),
         "first output values were all zero"

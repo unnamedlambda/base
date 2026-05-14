@@ -242,7 +242,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "All Lean files passed to build_all must share the same parent directory")]
+    #[should_panic(
+        expected = "All Lean files passed to build_all must share the same parent directory"
+    )]
     fn build_all_rejects_mixed_parent_directories() {
         let lean_files = vec![
             PathBuf::from("/tmp/project_a/Foo.lean"),

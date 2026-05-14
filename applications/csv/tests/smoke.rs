@@ -3,7 +3,11 @@ use std::process::Command;
 
 fn get_csv_binary() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
     format!("{}/../../target/{}/csv", manifest_dir, profile)
 }
 
@@ -44,5 +48,8 @@ fn test_csv_smoke_outputs_expected_files() {
     assert!(scan.contains("1,Alice,30,Seattle,1,85000\n"));
     assert!(filter.starts_with("id,name,age,city,dept_id,salary\n"));
     assert!(filter.contains("10,Jack,41,Seattle,3,105000\n"));
-    assert_eq!(join, "dept_id,dept_name,floor\n1,Engineering,3\n2,Marketing,5\n3,Sales,2\n");
+    assert_eq!(
+        join,
+        "dept_id,dept_name,floor\n1,Engineering,3\n2,Marketing,5\n3,Sales,2\n"
+    );
 }

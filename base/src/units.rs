@@ -790,9 +790,7 @@ impl Drop for CraneliftCudaContext {
     }
 }
 
-fn lock_cuda_state(
-    ctx: &CraneliftCudaContext,
-) -> Result<MutexGuard<'_, CraneliftCudaState>, ()> {
+fn lock_cuda_state(ctx: &CraneliftCudaContext) -> Result<MutexGuard<'_, CraneliftCudaState>, ()> {
     ctx.state.lock().map_err(|_| ())
 }
 
@@ -1910,8 +1908,7 @@ unsafe extern "C" fn cl_cuda_launch(
         unsafe {
             launch_raw_cuda_kernel(
                 &state, function, n_bufs, bind_ptr, grid_x, grid_y, grid_z, block_x, block_y,
-                block_z,
-                stream,
+                block_z, stream,
             )
         }
     }))
@@ -1982,8 +1979,7 @@ unsafe extern "C" fn cl_cuda_launch_named(
         unsafe {
             launch_raw_cuda_kernel(
                 &state, function, n_bufs, bind_ptr, grid_x, grid_y, grid_z, block_x, block_y,
-                block_z,
-                stream,
+                block_z, stream,
             )
         }
     }))
@@ -2029,8 +2025,7 @@ unsafe extern "C" fn cl_cuda_launch_on_stream(
         unsafe {
             launch_raw_cuda_kernel(
                 &state, function, n_bufs, bind_ptr, grid_x, grid_y, grid_z, block_x, block_y,
-                block_z,
-                stream,
+                block_z, stream,
             )
         }
     }))
@@ -2077,8 +2072,7 @@ unsafe extern "C" fn cl_cuda_launch_named_on_stream(
         unsafe {
             launch_raw_cuda_kernel(
                 &state, function, n_bufs, bind_ptr, grid_x, grid_y, grid_z, block_x, block_y,
-                block_z,
-                stream,
+                block_z, stream,
             )
         }
     }))
@@ -2662,9 +2656,15 @@ unsafe extern "C" fn cl_file_read(
 }
 
 /// Scalar libm wrappers callable from CLIF FFI.
-unsafe extern "C" fn cl_sinf(x: f32) -> f32 { x.sin() }
-unsafe extern "C" fn cl_cosf(x: f32) -> f32 { x.cos() }
-unsafe extern "C" fn cl_powf(base: f32, exp: f32) -> f32 { base.powf(exp) }
+unsafe extern "C" fn cl_sinf(x: f32) -> f32 {
+    x.sin()
+}
+unsafe extern "C" fn cl_cosf(x: f32) -> f32 {
+    x.cos()
+}
+unsafe extern "C" fn cl_powf(base: f32, exp: f32) -> f32 {
+    base.powf(exp)
+}
 
 /// Write `size` bytes from an arbitrary host pointer into a file at the given
 /// offset.  Opens (creating if needed), seeks, writes, and closes each call.
@@ -2682,7 +2682,10 @@ unsafe extern "C" fn cl_file_write_from_ptr(
         Ok(f) => f,
         Err(_) => return -1,
     };
-    if file.seek(std::io::SeekFrom::Start(file_offset as u64)).is_err() {
+    if file
+        .seek(std::io::SeekFrom::Start(file_offset as u64))
+        .is_err()
+    {
         return -1;
     }
     let src = std::slice::from_raw_parts(src_ptr, size as usize);
@@ -2708,7 +2711,10 @@ unsafe extern "C" fn cl_file_read_to_ptr(
         Err(_) => return -1,
     };
     if file_offset > 0 {
-        if file.seek(std::io::SeekFrom::Start(file_offset as u64)).is_err() {
+        if file
+            .seek(std::io::SeekFrom::Start(file_offset as u64))
+            .is_err()
+        {
             return -1;
         }
     }
@@ -3492,7 +3498,10 @@ pub(crate) fn compile_cranelift_ir(
     );
     builder.symbol("cl_cuda_download", cl_cuda_download as *const u8);
     builder.symbol("cl_cuda_download_ptr", cl_cuda_download_ptr as *const u8);
-    builder.symbol("cl_cuda_download_ptr_offset", cl_cuda_download_ptr_offset as *const u8);
+    builder.symbol(
+        "cl_cuda_download_ptr_offset",
+        cl_cuda_download_ptr_offset as *const u8,
+    );
     builder.symbol(
         "cl_cuda_download_ptr_async",
         cl_cuda_download_ptr_async as *const u8,
@@ -3559,7 +3568,10 @@ pub(crate) fn compile_cranelift_ir(
     builder.symbol("cl_file_read", cl_file_read as *const u8);
     builder.symbol("cl_file_read_to_ptr", cl_file_read_to_ptr as *const u8);
     builder.symbol("cl_file_write", cl_file_write as *const u8);
-    builder.symbol("cl_file_write_from_ptr", cl_file_write_from_ptr as *const u8);
+    builder.symbol(
+        "cl_file_write_from_ptr",
+        cl_file_write_from_ptr as *const u8,
+    );
     builder.symbol("cl_sinf", cl_sinf as *const u8);
     builder.symbol("cl_cosf", cl_cosf as *const u8);
     builder.symbol("cl_powf", cl_powf as *const u8);
