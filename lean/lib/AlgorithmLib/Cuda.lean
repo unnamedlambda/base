@@ -5,23 +5,6 @@ namespace AlgorithmLib
 open AlgorithmLib.IR
 open AlgorithmLib.PTX
 
-/-!
-  Layer 2: typed CUDA tensor + kernel surface.
-
-  Sits between Layer 3 (model code — e.g. Qwen2) and Layer 1 (PTX.lean,
-  register-level emission). Provides:
-
-  - `Dim`, `Shape`            — tensor shapes with mixed static/dynamic dims
-  - `Tensor s`                — phantom-typed handle to a CUDA buffer
-  - `Kernel`                  — declarative kernel: bind shapes + PTX body +
-                                 launch geometry + assigned PTX offset.
-  - typed launchers           — `launch3 k cuda ptr bindOff t1 t2 t3` etc.
-
-  All build-time machinery. Emitted PTX bytes and `cudaLaunch` calls match
-  what the hand-written form produces — the typing is a compile-time
-  discipline.
--/
-
 namespace Tensor
 
 /-- A tensor dimension: static compile-time `Nat` or runtime placeholder. -/
