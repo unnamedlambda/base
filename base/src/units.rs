@@ -1171,7 +1171,7 @@ unsafe extern "C" fn cl_cuda_stream_sync(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
@@ -1278,7 +1278,7 @@ unsafe extern "C" fn cl_cuda_event_record(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(event) = resolve_cuda_event(&state, event_id) else {
@@ -1307,7 +1307,7 @@ unsafe extern "C" fn cl_cuda_stream_wait_event(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
@@ -1342,7 +1342,7 @@ unsafe extern "C" fn cl_cuda_event_elapsed_ms_bits(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(start) = resolve_cuda_event(&state, start_event_id) else {
@@ -1396,7 +1396,7 @@ unsafe extern "C" fn cl_cuda_graph_begin_capture(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
@@ -1471,7 +1471,7 @@ unsafe extern "C" fn cl_cuda_graph_upload(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(graph) = resolve_cuda_graph_exec(&state, graph_id) else {
@@ -1500,7 +1500,7 @@ unsafe extern "C" fn cl_cuda_graph_launch(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(graph) = resolve_cuda_graph_exec(&state, graph_id) else {
@@ -1582,7 +1582,7 @@ unsafe extern "C" fn cl_cuda_pinned_ptr(ctx_ptr: *mut CraneliftCudaContext, pinn
         let Some(ctx) = read_ctx_ref::<CraneliftCudaContext>(ctx_ptr) else {
             return -1;
         };
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let pid = pinned_id as usize;
@@ -1637,7 +1637,7 @@ unsafe extern "C" fn cl_cuda_upload_ptr_async(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
@@ -1673,7 +1673,7 @@ unsafe extern "C" fn cl_cuda_upload_ptr_offset_async(
         if !bind_cuda_ctx_if_needed(ctx) {
             return -1;
         }
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
@@ -1752,7 +1752,7 @@ unsafe extern "C" fn cl_cuda_download_ptr(
         let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
             return -1;
         };
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let bid = buf_id as usize;
@@ -1787,7 +1787,7 @@ unsafe extern "C" fn cl_cuda_download_ptr_offset(
         let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
             return -1;
         };
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let bid = buf_id as usize;
@@ -1818,7 +1818,7 @@ unsafe extern "C" fn cl_cuda_download(
         let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
             return -1;
         };
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
         let bid = buf_id as usize;
