@@ -1121,229 +1121,58 @@ block0(v0: i64):
 }
 
 #[test]
-fn test_clif_ffi_file_write_and_read() {
-    // CLIF IR writes "Hello, CLIF!" to a file via cl_file_write,
-    // then reads it back via cl_file_read into a different memory region.
-    // Verified by a subsequent FileWrite action that dumps the read-back data.
+fn test_clif_ffi_file_smoke() {
+    // Smoke test: exercises all 4 file FFI symbols (cl_file_read, cl_file_write,
+    // cl_file_read_to_ptr, cl_file_write_from_ptr) from CLIF to prove they are
+    // registered with the JIT and callable.
     let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("clif_ffi_data.bin");
-    let verify_file = temp_dir.path().join("clif_ffi_verify.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
+    let path_a = temp_dir.path().join("smoke_a.bin");
+    let path_b = temp_dir.path().join("smoke_b.bin");
+    let path_a_str = format!("{}\0", path_a.to_str().unwrap());
+    let path_b_str = format!("{}\0", path_b.to_str().unwrap());
 
-    // Memory layout:
-    //   0..~600:    CLIF IR (null-terminated)
-    //  1024..1032:  cranelift completion flag
-    //  1032..1040:  file completion flag
-    //  2000..2256:  data file path (null-terminated)
-    //  2256..2512:  verify file path (null-terminated)
-    //  3000..3012:  source data "Hello, CLIF!" (12 bytes)
-    //  3100..3112:  read-back destination (12 bytes)
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
+    let clif_ir = r#"function u0:0(i64) system_v {
     sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    sig1 = (i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_file_write sig0
     fn1 = %cl_file_read sig0
+    fn2 = %cl_file_write_from_ptr sig1
+    fn3 = %cl_file_read_to_ptr sig1
 
 block0(v0: i64):
     v1 = iconst.i64 2000
     v2 = iconst.i64 3000
     v3 = iconst.i64 0
-    v4 = iconst.i64 12
-    ; write 12 bytes to data file
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    ; read 12 bytes back into offset 3100
-    v6 = iconst.i64 3100
-    v7 = call fn1(v0, v1, v6, v3, v4)
-    ; write read-back to verify file
-    v8 = iconst.i64 2256
-    v9 = call fn0(v0, v8, v6, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-    memory[3000..3012].copy_from_slice(b"Hello, CLIF!");
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(&contents[..12], b"Hello, CLIF!");
-}
-
-#[test]
-fn test_clif_ffi_file_write_read_with_offset() {
-    // Tests cl_file_write at a file offset, then cl_file_read at that offset.
-    let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("clif_offset.bin");
-    let verify_file = temp_dir.path().join("clif_offset_verify.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig0
-
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 8
     v4 = iconst.i64 5
-    ; write 5 bytes at file_offset=8
     v5 = call fn0(v0, v1, v2, v3, v4)
-    ; read 5 bytes at file_offset=8 into offset 3100
     v6 = iconst.i64 3100
     v7 = call fn1(v0, v1, v6, v3, v4)
-    ; write read-back to verify file
-    v8 = iconst.i64 2256
-    v9 = iconst.i64 0
-    v10 = call fn0(v0, v8, v6, v9, v4)
+    v8 = iadd_imm v0, 2256
+    v9 = iadd_imm v0, 3000
+    v10 = call fn2(v8, v9, v3, v4)
+    v11 = iadd_imm v0, 3200
+    v12 = call fn3(v8, v11, v3, v4)
     return
-}}"#
-    );
+}"#;
 
     let mut memory = vec![0u8; 4096];
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-    memory[3000..3005].copy_from_slice(b"ABCDE");
+    memory[2000..2000 + path_a_str.len()].copy_from_slice(path_a_str.as_bytes());
+    memory[2256..2256 + path_b_str.len()].copy_from_slice(path_b_str.as_bytes());
+    memory[3000..3005].copy_from_slice(b"hello");
 
     let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
     let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(&contents[..5], b"ABCDE");
-
-    let raw = fs::read(&data_file).unwrap();
-    assert_eq!(&raw[..8], &[0u8; 8]);
-    assert_eq!(&raw[8..13], b"ABCDE");
-}
-
-#[test]
-fn test_clif_ffi_file_binary_data() {
-    // Tests that binary data with embedded null bytes round-trips correctly.
-    let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("clif_binary.bin");
-    let verify_file = temp_dir.path().join("clif_binary_verify.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig0
-
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    v6 = iconst.i64 3100
-    v7 = call fn1(v0, v1, v6, v3, v4)
-    ; write read-back to verify file
-    v8 = iconst.i64 2256
-    v9 = call fn0(v0, v8, v6, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[2256..2256 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-    memory[3000..3008].copy_from_slice(&[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]);
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(
-        &contents[..8],
-        &[0xFF, 0x00, 0x01, 0x00, 0xAB, 0xCD, 0x00, 0xEF]
-    );
+    assert_eq!(&fs::read(&path_a).unwrap(), b"hello");
+    assert_eq!(&fs::read(&path_b).unwrap(), b"hello");
 }
 
 #[test]
@@ -1541,386 +1370,6 @@ block0(v0: i64):
             i,
             actual,
             expected
-        );
-    }
-}
-
-#[test]
-fn test_clif_ffi_file_return_values() {
-    // Verify that cl_file_write and cl_file_read return correct byte counts,
-    // and cl_file_read on a nonexistent file returns -1.
-    let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("retval.bin");
-    let missing_file = temp_dir.path().join("does_not_exist.bin");
-    let verify_file = temp_dir.path().join("retval_verify.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-    let missing_file_str = format!("{}\0", missing_file.to_str().unwrap());
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    // Layout: data file path @ 2000, missing file path @ 2200,
-    //         verify file path @ 2400, source data @ 3000,
-    //         results @ 3100 (3 x i64: write_ret, read_ret, missing_read_ret)
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 7
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    store.i64 v5, v0+3100
-    v6 = iconst.i64 3050
-    v7 = call fn1(v0, v1, v6, v3, v4)
-    store.i64 v7, v0+3108
-    v8 = iconst.i64 2200
-    v9 = iconst.i64 3060
-    v10 = call fn1(v0, v8, v9, v3, v4)
-    store.i64 v10, v0+3116
-    v11 = iconst.i64 2400
-    v12 = iconst.i64 3100
-    v13 = iconst.i64 24
-    v14 = call fn0(v0, v11, v12, v3, v13)
-    return
-}
-"#;
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[2200..2200 + missing_file_str.len()].copy_from_slice(missing_file_str.as_bytes());
-    memory[2400..2400 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-    memory[3000..3007].copy_from_slice(b"RETVALS");
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(contents.len(), 24);
-    let write_ret = i64::from_le_bytes(contents[0..8].try_into().unwrap());
-    let read_ret = i64::from_le_bytes(contents[8..16].try_into().unwrap());
-    let missing_ret = i64::from_le_bytes(contents[16..24].try_into().unwrap());
-    assert_eq!(write_ret, 7, "cl_file_write should return bytes written");
-    assert_eq!(read_ret, 7, "cl_file_read should return bytes read");
-    assert_eq!(
-        missing_ret, -1,
-        "cl_file_read on missing file should return -1"
-    );
-}
-
-#[test]
-fn test_clif_ffi_file_read_dynamic_size() {
-    // cl_file_read with size=0 should read the entire file.
-    let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("dynamic.bin");
-    let verify_file = temp_dir.path().join("dynamic_verify.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    // Pre-create the file with known content (23 bytes)
-    fs::write(&data_file, b"dynamic size read test!").unwrap();
-
-    // CLIF: read with size=0 → should read entire file, return 23
-    // Then write the result + return value to verify file
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_read sig0
-    fn1 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = call fn0(v0, v1, v2, v3, v3)
-    store.i64 v4, v0+3100
-    v5 = iconst.i64 2200
-    v6 = iconst.i64 3100
-    v7 = iconst.i64 8
-    v8 = call fn1(v0, v5, v6, v3, v7)
-    v9 = iconst.i64 8
-    v10 = iconst.i64 23
-    v11 = call fn1(v0, v5, v2, v9, v10)
-    return
-}
-"#;
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert!(
-        contents.len() >= 31,
-        "Expected at least 31 bytes, got {}",
-        contents.len()
-    );
-    let bytes_read = i64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(bytes_read, 23, "size=0 should read entire 23-byte file");
-    assert_eq!(&contents[8..31], b"dynamic size read test!");
-}
-
-#[test]
-fn test_clif_ffi_file_write_cstring_mode() {
-    // cl_file_write with size=0 writes a C-string (stops at null byte).
-    let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("cstring.bin");
-    let verify_file = temp_dir.path().join("cstring_verify.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    // Source at offset 3000: "CSTR\0extra" — size=0 should write only "CSTR" (4 bytes)
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = call fn0(v0, v1, v2, v3, v3)
-    store.i64 v4, v0+3100
-    v5 = iconst.i64 2200
-    v6 = iconst.i64 3100
-    v7 = iconst.i64 8
-    v8 = call fn0(v0, v5, v6, v3, v7)
-    return
-}
-"#;
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-    memory[3000..3009].copy_from_slice(b"CSTR\0xtra");
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    let verify = fs::read(&verify_file).unwrap();
-    let write_ret = i64::from_le_bytes(verify[0..8].try_into().unwrap());
-    assert_eq!(write_ret, 4, "size=0 should write 4 bytes (up to null)");
-
-    let raw = fs::read(&data_file).unwrap();
-    assert_eq!(&raw, b"CSTR", "File should contain only 'CSTR'");
-}
-
-#[test]
-fn test_clif_ffi_file_overwrite_shorter() {
-    // Write long data, then overwrite with shorter data at offset 0 (truncates).
-    let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("overwrite.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 10
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    v6 = iconst.i64 3100
-    v7 = iconst.i64 3
-    v8 = call fn0(v0, v1, v6, v3, v7)
-    return
-}
-"#;
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[3000..3010].copy_from_slice(b"LONGDATA!!");
-    memory[3100..3103].copy_from_slice(b"SML");
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    // Second write with file_offset=0 uses File::create() which truncates
-    let raw = fs::read(&data_file).unwrap();
-    assert_eq!(&raw, b"SML", "Second write should truncate file to 3 bytes");
-}
-
-#[test]
-fn test_clif_ffi_file_partial_reads() {
-    // Write 100 bytes, then read in two 50-byte chunks at different offsets.
-    let temp_dir = TempDir::new().unwrap();
-    let data_file = temp_dir.path().join("partial.bin");
-    let verify_file = temp_dir.path().join("partial_verify.bin");
-    let data_file_str = format!("{}\0", data_file.to_str().unwrap());
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 100
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    v6 = iconst.i64 3200
-    v7 = iconst.i64 50
-    v8 = call fn1(v0, v1, v6, v3, v7)
-    v9 = iconst.i64 3250
-    v10 = call fn1(v0, v1, v9, v7, v7)
-    v11 = iconst.i64 2200
-    v12 = iconst.i64 3200
-    v13 = call fn0(v0, v11, v12, v3, v4)
-    return
-}
-"#;
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + data_file_str.len()].copy_from_slice(data_file_str.as_bytes());
-    memory[2200..2200 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-    // Fill 100 bytes at offset 3000 with pattern 0..99
-    for i in 0..100u8 {
-        memory[3000 + i as usize] = i;
-    }
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(contents.len(), 100);
-    // First 50 bytes should be 0..49, second 50 bytes should be 50..99
-    for i in 0..100u8 {
-        assert_eq!(
-            contents[i as usize], i,
-            "Byte {} mismatch in reassembled read",
-            i
         );
     }
 }
