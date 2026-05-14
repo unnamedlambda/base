@@ -13,12 +13,12 @@ use std::{
 use tracing::{debug, info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-mod units;
+mod coordination;
+mod ffi;
+mod jit;
 
-use crate::units::{
-    compile_cranelift_ir, cranelift_unit_task_mailbox, load_sized, order_from_u32, Mailbox,
-    SharedMemory, THREAD_COMPILED_FNS,
-};
+use crate::coordination::{load_sized, order_from_u32, Mailbox, SharedMemory};
+use crate::jit::{compile_cranelift_ir, cranelift_unit_task_mailbox, THREAD_COMPILED_FNS};
 use base_types::RuntimeHeader;
 
 #[derive(Debug)]
