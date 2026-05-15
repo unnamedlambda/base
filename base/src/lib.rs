@@ -4,21 +4,18 @@ use arrow_schema::{DataType, Field, Schema};
 pub use base_types::{
     Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType,
 };
-use std::sync::atomic::Ordering;
 use std::{
     pin::Pin,
     sync::{Arc, Once},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::{debug, info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-mod coordination;
 mod ffi;
 mod jit;
 
-use crate::coordination::{load_sized, order_from_u32, Mailbox, SharedMemory};
-use crate::jit::{compile_cranelift_ir, cranelift_unit_task_mailbox, THREAD_COMPILED_FNS};
+use crate::jit::{compile_cranelift_ir, THREAD_COMPILED_FNS};
 use base_types::RuntimeHeader;
 
 #[derive(Debug)]
@@ -30,7 +27,6 @@ pub enum Error {
 pub struct Base {
     memory: Pin<Box<[u8]>>,
     mem_ptr: *mut u8,
-    shared: Arc<SharedMemory>,
     clif_fns: Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>,
     _module: Option<cranelift_jit::JITModule>,
     runtime_header: RuntimeHeader,
@@ -68,7 +64,6 @@ impl Base {
 
         let mut memory = Pin::new(memory);
         let mem_ptr = memory.as_mut().as_mut_ptr();
-        let shared = Arc::new(SharedMemory::new(mem_ptr));
 
         let (module, clif_fns) = if !cranelift_ir.is_empty() {
             let (module, fns) = compile_cranelift_ir(&cranelift_ir).map_err(Error::ClifParse)?;
@@ -88,7 +83,6 @@ impl Base {
         Ok(Base {
             memory,
             mem_ptr,
-            shared,
             clif_fns,
             _module: module,
             runtime_header,
@@ -109,18 +103,11 @@ impl Base {
         data: &[u8],
         out: &mut [u8],
     ) -> Result<Vec<RecordBatch>, Error> {
-        let _span = info_span!(
-            "execute",
-            cranelift_units = algorithm.cranelift_units,
-            actions_count = algorithm.actions.len(),
-        )
-        .entered();
+        let _span = info_span!("execute", actions_count = algorithm.actions.len()).entered();
         info!("starting execution");
 
-        let actions = algorithm.actions.clone();
-        let cranelift_units = algorithm.cranelift_units;
-        let timeout_ms = algorithm.timeout_ms;
-        let output_schemas = &algorithm.output;
+        let timeout_duration = algorithm.timeout_ms.map(Duration::from_millis);
+        let timeout_start = Instant::now();
 
         // Write data/out pointer + length into reserved region so CLIF code can access
         // the caller's buffer directly via pointer (zero-copy).
@@ -143,234 +130,25 @@ impl Base {
             );
         }
 
-        let cranelift_mailboxes: Vec<_> = (0..cranelift_units)
-            .map(|_| Arc::new(Mailbox::new()))
-            .collect();
-
-        let mut thread_handles = Vec::new();
-        let actions_arc = Arc::new(actions);
-
-        for (cl_id, mailbox) in cranelift_mailboxes.iter().enumerate() {
-            if let Some(ref compiled_fns) = self.clif_fns {
-                info!(cl_id, "spawning Cranelift unit thread");
-                let mailbox = mailbox.clone();
-                let actions = actions_arc.clone();
-                let shared = self.shared.clone();
-                let compiled_fns = compiled_fns.clone();
-
-                thread_handles.push(std::thread::spawn(move || {
-                    cranelift_unit_task_mailbox(mailbox, actions, shared, compiled_fns);
-                }));
-            }
-        }
-
-        let actions = &*actions_arc;
-        let mem_ptr = self.mem_ptr;
-        let shared = &self.shared;
-        let clif_fns = &self.clif_fns;
-
-        let mut pc: usize = 0;
-        let timeout_start = std::time::Instant::now();
-        let timeout_duration = timeout_ms.map(Duration::from_millis);
-
-        while pc < actions.len() {
-            if let Some(timeout) = timeout_duration {
-                if timeout_start.elapsed() > timeout {
-                    return Err(Error::Execution("Timeout".into()));
+        if let Some(ref fns) = self.clif_fns {
+            for (pc, action) in algorithm.actions.iter().enumerate() {
+                if let Some(timeout) = timeout_duration {
+                    if timeout_start.elapsed() > timeout {
+                        return Err(Error::Execution("Timeout".into()));
+                    }
                 }
-            }
-
-            let action = &actions[pc];
-
-            match action.kind {
-                Kind::ClifCall => {
-                    let fn_idx = action.src as usize;
-                    debug!(pc, fn_idx, "clif_call");
-                    if let Some(ref fns) = clif_fns {
+                match action.kind {
+                    Kind::ClifCall => {
+                        let fn_idx = action.src as usize;
+                        debug!(pc, fn_idx, "clif_call");
                         let f = fns[fn_idx % fns.len()];
-                        unsafe { f(mem_ptr) };
+                        unsafe { f(self.mem_ptr) };
                     }
-                    pc += 1;
-                }
-
-                Kind::ConditionalJump => {
-                    let check_size = if action.size == 0 {
-                        8
-                    } else {
-                        action.size as usize
-                    };
-                    let cond_bytes = unsafe {
-                        shared.read(action.src as usize + action.offset as usize, check_size)
-                    };
-                    let cond_nonzero = cond_bytes.iter().take(check_size).any(|&b| b != 0);
-                    debug!(pc, cond_nonzero, target = action.dst, "conditional_jump");
-
-                    if cond_nonzero {
-                        pc = action.dst as usize;
-                    } else {
-                        pc += 1;
-                    }
-                }
-
-                Kind::ClifCallAsync => {
-                    let desc_start = action.src;
-                    let count = action.size;
-                    let flag = action.offset;
-                    let unit_id =
-                        (action.dst as usize).min(cranelift_mailboxes.len().saturating_sub(1));
-
-                    unsafe {
-                        shared.store_u64(flag as usize, 0, Ordering::Release);
-                    }
-
-                    debug!(pc, desc_start, count, flag, unit_id, "clif_call_async");
-
-                    if !cranelift_mailboxes.is_empty() {
-                        cranelift_mailboxes[unit_id].post(desc_start, count, flag);
-                    }
-
-                    pc += 1;
-                }
-
-                Kind::Wait => {
-                    debug!(pc, flag_addr = action.dst, "wait_begin");
-                    loop {
-                        let flag =
-                            unsafe { shared.load_u64(action.dst as usize, Ordering::Acquire) };
-                        if flag != 0 {
-                            break;
-                        }
-                        std::thread::yield_now();
-                    }
-                    debug!(pc, "wait_complete");
-                    pc += 1;
-                }
-
-                Kind::WaitUntil => {
-                    let invert = (action.offset & 1) != 0;
-                    let order = order_from_u32((action.offset >> 1) & 0x7);
-                    let size = if action.size == 0 { 8 } else { action.size };
-                    let expected = unsafe { load_sized(shared, action.src as usize, size, order) };
-                    debug!(
-                        pc,
-                        dst = action.dst,
-                        expected,
-                        invert,
-                        ?order,
-                        size,
-                        "wait_until_begin"
-                    );
-                    loop {
-                        let current =
-                            unsafe { load_sized(shared, action.dst as usize, size, order) };
-                        let equal = current == expected;
-                        if equal != invert {
-                            break;
-                        }
-                        if let Some(timeout) = timeout_duration {
-                            if timeout_start.elapsed() > timeout {
-                                return Err(Error::Execution("Timeout".into()));
-                            }
-                        }
-                        std::thread::yield_now();
-                    }
-                    debug!(pc, "wait_until_complete");
-                    pc += 1;
-                }
-
-                Kind::Park => {
-                    let wake_addr = action.dst as usize;
-                    let expected = if action.src == 0 {
-                        0u64
-                    } else {
-                        unsafe { shared.load_u64(action.src as usize, Ordering::Acquire) }
-                    };
-                    let status_addr = action.offset as usize;
-                    let per_timeout_ms = action.size as u64;
-                    debug!(
-                        pc,
-                        wake_addr, expected, status_addr, per_timeout_ms, "park_begin"
-                    );
-
-                    let park_start = std::time::Instant::now();
-                    let per_timeout = if per_timeout_ms > 0 {
-                        Some(Duration::from_millis(per_timeout_ms))
-                    } else {
-                        None
-                    };
-
-                    let woken = loop {
-                        let current = unsafe { shared.load_u64(wake_addr, Ordering::Acquire) };
-                        if current != expected {
-                            break true;
-                        }
-                        if let Some(pt) = per_timeout {
-                            if park_start.elapsed() > pt {
-                                break false;
-                            }
-                        }
-                        if let Some(timeout) = timeout_duration {
-                            if timeout_start.elapsed() > timeout {
-                                return Err(Error::Execution("Timeout".into()));
-                            }
-                        }
-                        std::thread::sleep(Duration::from_micros(50));
-                    };
-
-                    if status_addr != 0 {
-                        let status_val: u64 = if woken { 1 } else { 0 };
-                        unsafe { shared.store_u64(status_addr, status_val, Ordering::Release) };
-                    }
-                    debug!(pc, woken, "park_complete");
-                    pc += 1;
-                }
-
-                Kind::Wake => {
-                    let wake_addr = action.dst as usize;
-                    let delta = if action.src == 0 {
-                        1u64
-                    } else {
-                        unsafe { shared.load_u64(action.src as usize, Ordering::Acquire) }
-                    };
-                    debug!(pc, wake_addr, delta, "wake");
-
-                    loop {
-                        let current = unsafe { shared.load_u64(wake_addr, Ordering::Acquire) };
-                        let new_val = current.wrapping_add(delta);
-                        let result = unsafe { shared.cas64(wake_addr, current, new_val) };
-                        if result == current {
-                            if action.offset != 0 {
-                                unsafe {
-                                    shared.store_u64(
-                                        action.offset as usize,
-                                        new_val,
-                                        Ordering::Release,
-                                    )
-                                };
-                            }
-                            break;
-                        }
-                        std::hint::spin_loop();
-                    }
-                    pc += 1;
-                }
-
-                _ => {
-                    pc += 1;
                 }
             }
         }
 
-        info!("shutting down all units");
-        for mailbox in cranelift_mailboxes.iter() {
-            mailbox.shutdown();
-        }
-        for handle in thread_handles {
-            let _ = handle.join();
-        }
-        info!("all unit threads joined");
-
-        let batches = build_record_batches(&self.memory, &output_schemas);
+        let batches = build_record_batches(&self.memory, &algorithm.output);
         info!("execution complete");
         Ok(batches)
     }

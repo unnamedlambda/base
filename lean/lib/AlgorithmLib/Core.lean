@@ -18,26 +18,12 @@ instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
 inductive Kind where
-  | Describe
   | ClifCall
-  | ConditionalJump
-  | ClifCallAsync
-  | Wait
-  | WaitUntil
-  | Park
-  | Wake
   deriving Repr
 
 instance : ToJson Kind where
   toJson
-    | .Describe => "describe"
     | .ClifCall => "clif_call"
-    | .ConditionalJump => "conditional_jump"
-    | .ClifCallAsync => "clif_call_async"
-    | .Wait => "wait"
-    | .WaitUntil => "wait_until"
-    | .Park => "park"
-    | .Wake => "wake"
 
 structure Action where
   kind : Kind

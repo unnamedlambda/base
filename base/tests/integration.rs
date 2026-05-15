@@ -40,267 +40,6 @@ fn create_cranelift_algorithm(
 }
 
 #[test]
-fn test_integration_conditional_jump() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file_a = temp_dir.path().join("result_a.txt");
-    let test_file_b = temp_dir.path().join("result_b.txt");
-    let file_a_str = format!("{}\0", test_file_a.to_str().unwrap());
-    let file_b_str = format!("{}\0", test_file_b.to_str().unwrap());
-
-    // Two CLIF functions: fn0 writes to file A, fn1 writes to file B
-    // Both write 8 bytes from offset 3016 (data value 42)
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2256
-    v2 = iconst.i64 3016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 8192];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + file_a_str.len()].copy_from_slice(file_a_str.as_bytes());
-    memory[2256..2256 + file_b_str.len()].copy_from_slice(file_b_str.as_bytes());
-    // Conditions: 1 (true) and 0 (false)
-    memory[3000..3008].copy_from_slice(&1u64.to_le_bytes());
-    memory[3008..3016].copy_from_slice(&0u64.to_le_bytes());
-    // Data value
-    memory[3016..3024].copy_from_slice(&42u64.to_le_bytes());
-
-    let flag_a = 1024u32;
-    let flag_b = 1032u32;
-
-    let actions = vec![
-        // Action 0: CLIF fn0 writes file A (dispatched by src=0)
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: CLIF fn1 writes file B (dispatched by src=1)
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        // Action 2: ConditionalJump — condition true → jump to 5 (skip A dispatch)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 3000,
-            dst: 5,
-            offset: 0,
-            size: 0,
-        },
-        // Action 3: ClifCallAsync CLIF fn0 (SKIPPED)
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: flag_a,
-            size: 1,
-        },
-        // Action 4: Wait (SKIPPED)
-        Action {
-            kind: Kind::Wait,
-            dst: flag_a,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 5: ConditionalJump — condition false → fall through
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 3008,
-            dst: 99,
-            offset: 0,
-            size: 0,
-        },
-        // Action 6: ClifCallAsync CLIF fn1 (EXECUTED)
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 1,
-            offset: flag_b,
-            size: 1,
-        },
-        // Action 7: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: flag_b,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    assert!(!test_file_a.exists());
-    assert!(test_file_b.exists());
-    let contents = fs::read(&test_file_b).unwrap();
-    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(value, 42);
-}
-
-#[test]
-fn test_integration_conditional_jump_variable_size() {
-    // size=4 checks only first 4 bytes; size=8 checks all 8
-    let temp_dir = TempDir::new().unwrap();
-    let test_file_4byte = temp_dir.path().join("result_4byte.txt");
-    let test_file_8byte = temp_dir.path().join("result_8byte.txt");
-    let file_4_str = format!("{}\0", test_file_4byte.to_str().unwrap());
-    let file_8_str = format!("{}\0", test_file_8byte.to_str().unwrap());
-
-    // Two CLIF functions: fn0 writes to 4byte file, fn1 writes to 8byte file
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2256
-    v2 = iconst.i64 3016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 8192];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + file_4_str.len()].copy_from_slice(file_4_str.as_bytes());
-    memory[2256..2256 + file_8_str.len()].copy_from_slice(file_8_str.as_bytes());
-    // Condition at 3000: first 4 bytes zero, next 4 non-zero
-    memory[3000..3004].copy_from_slice(&0u32.to_le_bytes());
-    memory[3004..3008].copy_from_slice(&0xFFu32.to_le_bytes());
-    // Data value
-    memory[3016..3024].copy_from_slice(&99u64.to_le_bytes());
-
-    let flag_4 = 1024u32;
-    let flag_8 = 1032u32;
-
-    let actions = vec![
-        // Action 0: CLIF fn0 writes 4byte file
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: CLIF fn1 writes 8byte file
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        // Action 2: ConditionalJump size=4 (first 4 bytes zero → no jump)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 3000,
-            dst: 5,
-            offset: 0,
-            size: 4,
-        },
-        // Action 3: ClifCallAsync CLIF fn0 (EXECUTED)
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: flag_4,
-            size: 1,
-        },
-        // Action 4: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: flag_4,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 5: ConditionalJump size=8 (bytes 4-7 non-zero → jump)
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 3000,
-            dst: 8,
-            offset: 0,
-            size: 8,
-        },
-        // Action 6: ClifCallAsync CLIF fn1 (SKIPPED)
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 1,
-            offset: flag_8,
-            size: 1,
-        },
-        // Action 7: Wait (SKIPPED)
-        Action {
-            kind: Kind::Wait,
-            dst: flag_8,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    assert!(
-        test_file_4byte.exists(),
-        "4-byte check should NOT jump when first 4 bytes are zero"
-    );
-    let contents = fs::read(&test_file_4byte).unwrap();
-    let value = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(value, 99);
-
-    assert!(
-        !test_file_8byte.exists(),
-        "8-byte check SHOULD jump when any of 8 bytes are non-zero"
-    );
-}
-
-#[test]
 fn test_cranelift_basic_compilation() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("cranelift_basic.txt");
@@ -333,51 +72,11 @@ block0(v0: i64):
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 1,
-            offset: 1032,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1032,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -392,14 +91,14 @@ fn test_cranelift_arithmetic_add() {
     let test_file = temp_dir.path().join("cranelift_add.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    // fn0: add, fn1: write result to file
+    // fn0: add operands at 2000/2008, store at 2016. fn1: write result to file.
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
 block0(v0: i64):
-    v1 = load.i64 v0
-    v2 = load.i64 v0+8
+    v1 = load.i64 v0+2000
+    v2 = load.i64 v0+2008
     v3 = iadd v1, v2
-    store.i64 v3, v0+16
+    store.i64 v3, v0+2016
     return
 }}
 
@@ -424,51 +123,11 @@ block0(v0: i64):
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 2000,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 1,
-            offset: 1032,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1032,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -485,10 +144,10 @@ fn test_cranelift_arithmetic_multiply() {
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
 block0(v0: i64):
-    v1 = load.i64 v0
-    v2 = load.i64 v0+8
+    v1 = load.i64 v0+2000
+    v2 = load.i64 v0+2008
     v3 = imul v1, v2
-    store.i64 v3, v0+16
+    store.i64 v3, v0+2016
     return
 }}
 
@@ -513,51 +172,11 @@ block0(v0: i64):
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 2000,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 1,
-            offset: 1032,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1032,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -574,12 +193,12 @@ fn test_cranelift_memory_operations() {
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
 block0(v0: i64):
-    v1 = load.i32 v0
-    v2 = load.i32 v0+4
-    v3 = load.i32 v0+8
+    v1 = load.i32 v0+2000
+    v2 = load.i32 v0+2004
+    v3 = load.i32 v0+2008
     v4 = iadd v1, v2
     v5 = iadd v4, v3
-    store.i32 v5, v0+12
+    store.i32 v5, v0+2012
     return
 }}
 
@@ -605,239 +224,16 @@ block0(v0: i64):
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 2000,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 1,
-            offset: 1032,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1032,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u32::from_le_bytes(contents[0..4].try_into().unwrap());
     assert_eq!(result, 60);
-}
-
-#[test]
-fn test_cranelift_multiple_units() {
-    let temp_dir = TempDir::new().unwrap();
-    let test_file1 = temp_dir.path().join("unit1_add.txt");
-    let test_file2 = temp_dir.path().join("unit2_mul.txt");
-    let file1_str = format!("{}\0", test_file1.to_str().unwrap());
-    let file2_str = format!("{}\0", test_file2.to_str().unwrap());
-
-    // Single CLIF source with 4 functions:
-    //   fn0: add (for worker 0)
-    //   fn1: write to file1 (for worker 0)
-    //   fn2: multiply (for worker 1)
-    //   fn3: write to file2 (for worker 1)
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    v1 = load.i64 v0
-    v2 = load.i64 v0+8
-    v3 = iadd v1, v2
-    store.i64 v3, v0+16
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}
-
-function u0:2(i64) system_v {{
-block0(v0: i64):
-    v1 = load.i64 v0
-    v2 = load.i64 v0+8
-    v3 = imul v1, v2
-    store.i64 v3, v0+16
-    return
-}}
-
-function u0:3(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3200
-    v2 = iconst.i64 2116
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 8192];
-
-    // Unit 0 data: 5 + 3 = 8 at offset 2000
-    memory[2000..2008].copy_from_slice(&5u64.to_le_bytes());
-    memory[2008..2016].copy_from_slice(&3u64.to_le_bytes());
-    // Unit 1 data: 4 * 6 = 24 at offset 2100
-    memory[2100..2108].copy_from_slice(&4u64.to_le_bytes());
-    memory[2108..2116].copy_from_slice(&6u64.to_le_bytes());
-    // Filenames
-    memory[3000..3000 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
-    memory[3200..3200 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
-
-    let actions = vec![
-        // Action 0: worker 0 compute (fn0: add)
-        Action {
-            kind: Kind::Describe,
-            dst: 2000,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: worker 1 compute (fn2: multiply)
-        Action {
-            kind: Kind::Describe,
-            dst: 2100,
-            src: 2,
-            offset: 0,
-            size: 0,
-        },
-        // Action 2: worker 0 write (fn1: write file1)
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        // Action 3: worker 1 write (fn3: write file2)
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 3,
-            offset: 0,
-            size: 0,
-        },
-        // Dispatch compute
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 1,
-            src: 1,
-            offset: 1032,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1032,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Dispatch writes
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 2,
-            offset: 1040,
-            size: 1,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 1,
-            src: 3,
-            offset: 1048,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1040,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1048,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let config = BaseConfig {
-        cranelift_ir: clif_ir,
-        memory_size: memory.len(),
-        runtime_header: legacy_runtime_header(),
-        context_offset: 0,
-        initial_memory: memory,
-    };
-    let algorithm = Algorithm {
-        actions,
-        cranelift_units: 2,
-        timeout_ms: Some(5000),
-        output: vec![],
-    };
-    run(config, algorithm).unwrap();
-
-    let contents1 = fs::read(&test_file1).unwrap();
-    assert_eq!(u64::from_le_bytes(contents1[0..8].try_into().unwrap()), 8);
-    let contents2 = fs::read(&test_file2).unwrap();
-    assert_eq!(u64::from_le_bytes(contents2[0..8].try_into().unwrap()), 24);
 }
 
 #[test]
@@ -849,18 +245,18 @@ fn test_cranelift_conditional_logic() {
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
 block0(v0: i64):
-    v1 = load.i64 v0
-    v2 = load.i64 v0+8
-    v3 = load.i64 v0+16
+    v1 = load.i64 v0+2000
+    v2 = load.i64 v0+2008
+    v3 = load.i64 v0+2016
     v4 = icmp_imm eq v1, 0
     brif v4, block2, block1
 
 block1:
-    store.i64 v2, v0+24
+    store.i64 v2, v0+2024
     return
 
 block2:
-    store.i64 v3, v0+24
+    store.i64 v3, v0+2024
     return
 }}
 
@@ -887,237 +283,16 @@ block0(v0: i64):
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 2000,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 1,
-            offset: 1032,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1032,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
     ];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(result, 100);
-}
-
-#[test]
-fn test_integration_wake_then_park_progresses() {
-    // Wake increments wake word 0→1, Park sees word != expected(0) and passes immediately.
-    // CLIF FFI writes wake word + status to file for verification.
-    let tmp_dir = TempDir::new().unwrap();
-    let test_file = tmp_dir.path().join("park_wake.bin");
-    let file_str = format!("{}\0", test_file.to_str().unwrap());
-
-    // CLIF fn: write 24 bytes from offset 3000 (wake_addr) to file at offset 2000
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 24
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + file_str.len()].copy_from_slice(file_str.as_bytes());
-    // 3000..3008 = wake word (starts 0)
-    // 3008..3016 = expected value (0)
-    // 3016..3024 = status output
-    memory[3008..3016].copy_from_slice(&0u64.to_le_bytes());
-
-    let clif_flag = 1024u32;
-
-    let actions = vec![
-        // 0: placeholder for CLIF dispatch
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // 1: Wake — increments wake word 0→1
-        Action {
-            kind: Kind::Wake,
-            dst: 3000,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // 2: Park — wake word is already 1 != expected(0), passes immediately
-        Action {
-            kind: Kind::Park,
-            dst: 3000,
-            src: 3008,
-            offset: 3016,
-            size: 0,
-        },
-        // 3: ClifCallAsync CLIF (writes to file)
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: clif_flag,
-            size: 1,
-        },
-        // 4: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: clif_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    algorithm.timeout_ms = Some(5000);
-    run(config, algorithm).unwrap();
-
-    assert!(test_file.exists());
-    let contents = fs::read(&test_file).unwrap();
-    let wake_val = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(wake_val, 1, "wake word should be 1 after Wake");
-    let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
-    assert_eq!(status_val, 1, "status should be 1 (woken)");
-}
-
-#[test]
-fn test_integration_park_times_out_without_wake() {
-    // Park with 10ms timeout, no wake fires. Status should be 0 (timed out).
-    let tmp_dir = TempDir::new().unwrap();
-    let test_file = tmp_dir.path().join("park_timeout.bin");
-    let file_str = format!("{}\0", test_file.to_str().unwrap());
-
-    // CLIF fn: write 32 bytes from offset 3000 to file at offset 2000
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 32
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + file_str.len()].copy_from_slice(file_str.as_bytes());
-    // 3000..3008 = wake word (stays 0)
-    // 3008..3016 = expected value (0)
-    // 3016..3024 = status output
-    // 3024..3032 = expected status (0, for WaitUntil)
-    memory[3008..3016].copy_from_slice(&0u64.to_le_bytes());
-    memory[3024..3032].copy_from_slice(&0u64.to_le_bytes());
-
-    let clif_flag = 1024u32;
-
-    let actions = vec![
-        // 0: placeholder for CLIF dispatch
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // 1: Park with 10ms timeout — wake word 0 == expected(0), times out
-        Action {
-            kind: Kind::Park,
-            dst: 3000,
-            src: 3008,
-            offset: 3016,
-            size: 10,
-        },
-        // 2: WaitUntil — status == expected_status (0 == 0)
-        Action {
-            kind: Kind::WaitUntil,
-            dst: 3016,
-            src: 3024,
-            offset: 0,
-            size: 0,
-        },
-        // 3: ClifCallAsync CLIF (writes to file)
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: clif_flag,
-            size: 1,
-        },
-        // 4: Wait
-        Action {
-            kind: Kind::Wait,
-            dst: clif_flag,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    algorithm.timeout_ms = Some(5000);
-    run(config, algorithm).unwrap();
-
-    assert!(test_file.exists());
-    let contents = fs::read(&test_file).unwrap();
-    let wake_val = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(wake_val, 0, "wake word should still be 0");
-    let status_val = u64::from_le_bytes(contents[16..24].try_into().unwrap());
-    assert_eq!(status_val, 0, "status should be 0 (timed out)");
 }
 
 #[test]
@@ -1182,11 +357,7 @@ fn test_clif_ffi_all_symbols_linkable() {
          }}"
     );
 
-    let actions = vec![
-        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
-        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-    ];
+    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
     let memory = vec![0u8; 4096];
     let (config, mut algorithm) =
         create_cranelift_algorithm(actions, memory, 1, clif_ir.clone());
@@ -1235,11 +406,7 @@ block0(v0: i64):
     memory[2256..2256 + path_b_str.len()].copy_from_slice(path_b_str.as_bytes());
     memory[3000..3005].copy_from_slice(b"hello");
 
-    let actions = vec![
-        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
-        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-    ];
+    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
     let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
     run(config, algorithm).unwrap();
@@ -1324,11 +491,7 @@ block0(v0: i64):
             .copy_from_slice(&((i + 1) as f32).to_le_bytes());
     }
 
-    let actions = vec![
-        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
-        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-    ];
+    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
     let (config, mut algorithm) =
         create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
@@ -1393,11 +556,7 @@ block0(v0: i64):
     memory[2100..2100 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
     memory[3000..3005].copy_from_slice(b"hello");
 
-    let actions = vec![
-        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
-        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-    ];
+    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
     let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
     run(config, algorithm).unwrap();
@@ -1461,29 +620,7 @@ block0(v0: i64):
     memory[3000..3005].copy_from_slice(b"hello");
     memory[3100..3105].copy_from_slice(b"world");
 
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
+    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
     let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
     run(config, algorithm).unwrap();
@@ -1558,13 +695,11 @@ block0(v0: i64):
 }"#;
 
     let actions = vec![
-        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::Describe, dst: 0, src: 3, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 2016, size: 3 },
-        Action { kind: Kind::Wait, dst: 2016, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCall, dst: 0, src: 3, offset: 0, size: 0 },
     ];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1575,107 +710,36 @@ block0(v0: i64):
 
 #[test]
 fn test_clif_atomic_rmw_add() {
+    // Verifies Cranelift's atomic_rmw.i64 IR op compiles and runs through our JIT.
+    // Memory: accumulator at offset 64 (init 0), file path at offset 3000.
     let temp_dir = TempDir::new().unwrap();
     let verify_file = temp_dir.path().join("atomic_rmw.bin");
     let file_str = format!("{}\0", verify_file.to_str().unwrap());
 
-    // Memory layout:
-    //   64:       accumulator (u64, init 0)
-    //   200-215:  descriptor { addend: u64=10, acc_rel: i64 }
-    //   216-231:  descriptor { addend: u64=32, acc_rel: i64 }
-    //   3000+:    file path
     let mut memory = vec![0u8; 4096];
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
-
-    // accumulator = 0
     memory[64..72].copy_from_slice(&0u64.to_le_bytes());
 
-    // desc0 at 200: addend=10, acc_rel = 64 - 200 = -136
-    memory[200..208].copy_from_slice(&10u64.to_le_bytes());
-    memory[208..216].copy_from_slice(&(-136i64).to_le_bytes());
-
-    // desc1 at 216: addend=32, acc_rel = 64 - 216 = -152
-    memory[216..224].copy_from_slice(&32u64.to_le_bytes());
-    memory[224..232].copy_from_slice(&(-152i64).to_le_bytes());
-
-    // fn0: noop
-    // fn1: atomic add worker — reads addend + rel offset, does atomic_rmw add
-    // fn2: write accumulator (8 bytes at offset 64) to file
+    // Two atomic adds (10 then 32) onto the accumulator, then write it to a file.
     let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    return
-}
-
-function u0:1(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0
-    v2 = load.i64 notrap aligned v0+8
-    v3 = iadd v0, v2
-    v4 = atomic_rmw.i64 little add v3, v1
-    return
-}
-
-function u0:2(i64) system_v {
     sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_file_write sig0
 block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 64
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
+    v1 = iadd_imm v0, 64
+    v2 = iconst.i64 10
+    v3 = atomic_rmw.i64 little add v1, v2
+    v4 = iconst.i64 32
+    v5 = atomic_rmw.i64 little add v1, v4
+    v6 = iconst.i64 3000
+    v7 = iconst.i64 64
+    v8 = iconst.i64 0
+    v9 = iconst.i64 8
+    v10 = call fn0(v0, v6, v7, v8, v9)
     return
 }"#;
 
-    let clif_off = 3200usize;
-    memory[clif_off..clif_off + clif_ir.len()].copy_from_slice(clif_ir.as_bytes());
-    memory[clif_off + clif_ir.len()] = 0;
-
-    // Actions:
-    //   0: Describe (fn1, ptr=base+200 → first descriptor)
-    //   1: Describe (fn1, ptr=base+216 → second descriptor)
-    //   2: Describe (fn2, ptr=base → write file)
-    //   3: ClifCallAsync (dispatches actions 0..3)
-    //   4: Wait
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 200,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Describe,
-            dst: 216,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 2,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 2016,
-            size: 3,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 2016,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
+    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -1948,105 +1012,6 @@ block0(v0: i64):
 }
 
 #[test]
-fn test_clif_call_with_conditional_jump() {
-    // ClifCall combined with ConditionalJump.
-    // fn0: sets condition to nonzero
-    // ConditionalJump skips fn1 (writes "bad"), falls through to fn2 (writes "good")
-    let temp_dir = TempDir::new().unwrap();
-    let test_file_bad = temp_dir.path().join("clif_call_bad.txt");
-    let test_file_good = temp_dir.path().join("clif_call_good.txt");
-    let file_bad_str = format!("{}\0", test_file_bad.to_str().unwrap());
-    let file_good_str = format!("{}\0", test_file_good.to_str().unwrap());
-
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    v1 = iconst.i64 1
-    store.i64 v1, v0+1000
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}
-
-function u0:2(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2256
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + file_bad_str.len()].copy_from_slice(file_bad_str.as_bytes());
-    memory[2256..2256 + file_good_str.len()].copy_from_slice(file_good_str.as_bytes());
-    memory[3000..3008].copy_from_slice(&99u64.to_le_bytes());
-
-    let actions = vec![
-        // Action 0: ClifCall fn0 — sets condition at offset 1000 to 1
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: ConditionalJump — condition at 1000 is nonzero → jump to action 3
-        Action {
-            kind: Kind::ConditionalJump,
-            src: 1000,
-            dst: 3,
-            offset: 0,
-            size: 0,
-        },
-        // Action 2: ClifCall fn1 — writes "bad" file (SKIPPED)
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        // Action 3: ClifCall fn2 — writes "good" file (EXECUTED)
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 2,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    assert!(
-        !test_file_bad.exists(),
-        "fn1 should be skipped by conditional jump"
-    );
-    assert!(test_file_good.exists(), "fn2 should be executed");
-    let contents = fs::read(&test_file_good).unwrap();
-    let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(result, 99);
-}
-
-#[test]
 fn test_clif_call_no_workers_needed() {
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
@@ -2113,107 +1078,6 @@ block0(v0: i64):
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
     assert_eq!(result, 77);
-}
-
-#[test]
-fn test_clif_call_mixed_with_async() {
-    // ClifCall and ClifCallAsync can coexist in the same algorithm.
-    // ClifCall runs fn0 synchronously, then ClifCallAsync dispatches fn1 to worker.
-    let temp_dir = TempDir::new().unwrap();
-    let test_file_sync = temp_dir.path().join("clif_call_sync.txt");
-    let test_file_async = temp_dir.path().join("clif_call_async.txt");
-    let file_sync_str = format!("{}\0", test_file_sync.to_str().unwrap());
-    let file_async_str = format!("{}\0", test_file_async.to_str().unwrap());
-
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2256
-    v2 = iconst.i64 3008
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
-
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + file_sync_str.len()].copy_from_slice(file_sync_str.as_bytes());
-    memory[2256..2256 + file_async_str.len()].copy_from_slice(file_async_str.as_bytes());
-    memory[3000..3008].copy_from_slice(&111u64.to_le_bytes());
-    memory[3008..3016].copy_from_slice(&222u64.to_le_bytes());
-
-    let flag_async = 1024u32;
-
-    let actions = vec![
-        // Describe for the async path
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        // Action 1: ClifCall fn0 synchronously
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        // Action 2: ClifCallAsync dispatches descriptor 0 (fn1) to worker
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: flag_async,
-            size: 1,
-        },
-        // Action 3: Wait for async completion
-        Action {
-            kind: Kind::Wait,
-            dst: flag_async,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    // Need 1 worker unit for the async dispatch
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    assert!(test_file_sync.exists(), "sync ClifCall should write file");
-    let sync_val = u64::from_le_bytes(fs::read(&test_file_sync).unwrap()[0..8].try_into().unwrap());
-    assert_eq!(sync_val, 111);
-
-    assert!(
-        test_file_async.exists(),
-        "async ClifCallAsync should write file"
-    );
-    let async_val = u64::from_le_bytes(
-        fs::read(&test_file_async).unwrap()[0..8]
-            .try_into()
-            .unwrap(),
-    );
-    assert_eq!(async_val, 222);
 }
 
 #[test]
@@ -4012,11 +2876,7 @@ block0(v0: i64):
             .copy_from_slice(&((i + 1) as f32).to_le_bytes());
     }
 
-    let actions = vec![
-        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
-        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
-    ];
+    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
     let (config, mut algorithm) =
         create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());

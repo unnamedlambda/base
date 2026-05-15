@@ -3,14 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    Describe = 0,
     ClifCall = 24,
-    ConditionalJump = 25,
-    ClifCallAsync = 32,
-    Wait = 33,
-    WaitUntil = 76,
-    Park = 77,
-    Wake = 78,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

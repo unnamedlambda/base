@@ -1,12 +1,9 @@
-use base_types::Action;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::JITBuilder;
 use cranelift_module::Module;
-use portable_atomic::Ordering;
 use std::sync::Arc;
-use tracing::{debug, info, info_span};
+use tracing::info;
 
-use crate::coordination::{spin_backoff, Mailbox, MailboxPoll, SharedMemory};
 use crate::ffi::{
     cl_cosf, cl_powf, cl_sinf, cuda, file, ht, lmdb, net, stdio, thread, wgpu as gpu,
 };
@@ -207,45 +204,3 @@ pub(crate) fn compile_cranelift_ir(
     Ok((module, Arc::new(compiled_fns)))
 }
 
-pub(crate) fn cranelift_unit_task_mailbox(
-    mailbox: Arc<Mailbox>,
-    actions: Arc<Vec<Action>>,
-    shared: Arc<SharedMemory>,
-    compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
-) {
-    let _span = info_span!("cranelift_unit").entered();
-    info!("Cranelift unit started");
-
-    THREAD_COMPILED_FNS.with(|cell| {
-        *cell.borrow_mut() = Some(compiled_fns.clone());
-    });
-
-    let compiled = &*compiled_fns;
-    let ptr = shared.ptr;
-    let mut spin_count = 0u32;
-
-    loop {
-        match mailbox.poll() {
-            MailboxPoll::Work { src, count, flag } => {
-                debug!(src, count, flag, "cranelift_work_received");
-                let start = src as usize;
-                let end = start + count as usize;
-                for idx in start..end {
-                    let desc = &actions[idx];
-                    let fn_idx = (desc.src as usize) % compiled.len();
-                    unsafe { compiled[fn_idx](ptr.add(desc.dst as usize)) };
-                }
-                unsafe {
-                    shared.store_u64(flag as usize, 1, Ordering::Release);
-                }
-                debug!(flag, "cranelift_work_complete");
-                spin_count = 0;
-            }
-            MailboxPoll::Closed => {
-                info!("Cranelift unit shutting down");
-                return;
-            }
-            MailboxPoll::Empty => spin_backoff(&mut spin_count),
-        }
-    }
-}
