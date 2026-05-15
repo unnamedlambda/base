@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::net::{TcpListener, TcpStream};
 
-use super::{clear_ctx_slot, read_cstr_ptr, read_ctx_mut, write_ctx_slot};
+use super::{clear_ctx_slot, read_cstr_ptr, read_ctx_mut, read_ctx_ref, write_ctx_slot};
 
 pub(crate) struct CraneliftNetContext {
     connections: HashMap<u32, TcpStream>,
@@ -54,6 +54,22 @@ pub(crate) unsafe extern "C" fn cl_net_connect(
             handle as i64
         }
         Err(_) => 0,
+    }
+}
+
+pub(crate) unsafe extern "C" fn cl_net_listener_port(
+    ctx_ptr: *const CraneliftNetContext,
+    listener: i64,
+) -> i64 {
+    let Some(ctx) = read_ctx_ref::<CraneliftNetContext>(ctx_ptr) else {
+        return -1;
+    };
+    match ctx.listeners.get(&(listener as u32)) {
+        Some(l) => match l.local_addr() {
+            Ok(a) => a.port() as i64,
+            Err(_) => -1,
+        },
+        None => -1,
     }
 }
 
@@ -132,14 +148,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
 
-    /// Discover a free port by binding to 127.0.0.1:0 and immediately dropping.
-    /// The OS won't reassign the port for a brief window, long enough to hand
-    /// it to cl_net_listen.
-    fn free_port() -> u16 {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        l.local_addr().unwrap().port()
-    }
-
     #[test]
     fn init_then_cleanup_lifecycle() {
         let mut slot: *mut CraneliftNetContext = std::ptr::null_mut();
@@ -199,9 +207,31 @@ mod tests {
     }
 
     #[test]
+    fn listener_port_returns_assigned_port() {
+        let mut slot: *mut CraneliftNetContext = std::ptr::null_mut();
+        let addr = CString::new("127.0.0.1:0").unwrap();
+        unsafe {
+            cl_net_init(&mut slot);
+            let h = cl_net_listen(slot, addr.as_ptr() as *const u8);
+            let port = cl_net_listener_port(slot, h);
+            assert!(port > 0 && port <= 65535);
+            cl_net_cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn listener_port_invalid_handle_returns_neg1() {
+        let mut slot: *mut CraneliftNetContext = std::ptr::null_mut();
+        unsafe {
+            cl_net_init(&mut slot);
+            assert_eq!(cl_net_listener_port(slot, 999), -1);
+            cl_net_cleanup(&mut slot);
+        }
+    }
+
+    #[test]
     fn listen_accept_send_recv_roundtrip() {
-        let port = free_port();
-        let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
+        let addr = CString::new("127.0.0.1:0").unwrap();
         let payload = b"roundtrip payload";
 
         let mut slot: *mut CraneliftNetContext = std::ptr::null_mut();
@@ -209,6 +239,7 @@ mod tests {
             cl_net_init(&mut slot);
             let listen_h = cl_net_listen(slot, addr.as_ptr() as *const u8);
             assert!(listen_h > 0);
+            let port = cl_net_listener_port(slot, listen_h) as u16;
 
             let client = std::thread::spawn(move || {
                 let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -302,6 +333,7 @@ mod tests {
         let buf = [0u8; 4];
         unsafe {
             assert_eq!(cl_net_listen(null_ctx, addr.as_ptr() as *const u8), 0);
+            assert_eq!(cl_net_listener_port(null_ctx as *const _, 1), -1);
             assert_eq!(cl_net_connect(null_ctx, addr.as_ptr() as *const u8), 0);
             assert_eq!(cl_net_accept(null_ctx, 1), 0);
             assert_eq!(cl_net_send(null_ctx, 1, buf.as_ptr(), 4), -1);

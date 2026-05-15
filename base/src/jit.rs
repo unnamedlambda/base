@@ -94,6 +94,10 @@ fn register_symbols(builder: &mut JITBuilder) {
     // Net
     builder.symbol("cl_net_init", net::cl_net_init as *const u8);
     builder.symbol("cl_net_listen", net::cl_net_listen as *const u8);
+    builder.symbol(
+        "cl_net_listener_port",
+        net::cl_net_listener_port as *const u8,
+    );
     builder.symbol("cl_net_connect", net::cl_net_connect as *const u8);
     builder.symbol("cl_net_accept", net::cl_net_accept as *const u8);
     builder.symbol("cl_net_send", net::cl_net_send as *const u8);
