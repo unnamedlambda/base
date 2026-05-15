@@ -97,3 +97,188 @@ pub(crate) unsafe extern "C" fn cl_thread_call(
     func(arg_ptr);
     0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" fn write_42(p: *mut u8) {
+        *(p as *mut u64) = 42;
+    }
+    unsafe extern "C" fn write_99(p: *mut u8) {
+        *(p as *mut u64) = 99;
+    }
+    unsafe extern "C" fn write_88(p: *mut u8) {
+        *(p as *mut u64) = 88;
+    }
+    unsafe extern "C" fn slow_write_77(p: *mut u8) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        *(p as *mut u64) = 77;
+    }
+
+    fn install_fns(fns: Vec<unsafe extern "C" fn(*mut u8)>) {
+        THREAD_COMPILED_FNS.with(|cell| {
+            *cell.borrow_mut() = Some(Arc::new(fns));
+        });
+    }
+
+    #[test]
+    fn init_then_cleanup_lifecycle() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        unsafe {
+            cl_thread_init(&mut slot);
+            assert!(!slot.is_null());
+            cl_thread_cleanup(&mut slot);
+            assert!(slot.is_null());
+        }
+    }
+
+    #[test]
+    fn spawn_then_join_executes_fn() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut val: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            let h = cl_thread_spawn(slot, 0, &mut val as *mut u64 as *mut u8);
+            assert!(h > 0);
+            assert_eq!(cl_thread_join(slot, h), 0);
+            cl_thread_cleanup(&mut slot);
+        }
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn multiple_workers_run_in_parallel() {
+        install_fns(vec![write_42, write_99, write_88]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut v0: u64 = 0;
+        let mut v1: u64 = 0;
+        let mut v2: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            let h0 = cl_thread_spawn(slot, 0, &mut v0 as *mut u64 as *mut u8);
+            let h1 = cl_thread_spawn(slot, 1, &mut v1 as *mut u64 as *mut u8);
+            let h2 = cl_thread_spawn(slot, 2, &mut v2 as *mut u64 as *mut u8);
+            assert!(h0 > 0 && h1 > 0 && h2 > 0);
+            assert!(h0 != h1 && h1 != h2 && h0 != h2);
+            assert_eq!(cl_thread_join(slot, h0), 0);
+            assert_eq!(cl_thread_join(slot, h1), 0);
+            assert_eq!(cl_thread_join(slot, h2), 0);
+            cl_thread_cleanup(&mut slot);
+        }
+        assert_eq!(v0, 42);
+        assert_eq!(v1, 99);
+        assert_eq!(v2, 88);
+    }
+
+    #[test]
+    fn join_invalid_handle_returns_neg1() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        unsafe {
+            cl_thread_init(&mut slot);
+            assert_eq!(cl_thread_join(slot, 999), -1);
+            cl_thread_cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn double_join_returns_neg1_second_time() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut val: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            let h = cl_thread_spawn(slot, 0, &mut val as *mut u64 as *mut u8);
+            assert_eq!(cl_thread_join(slot, h), 0);
+            assert_eq!(cl_thread_join(slot, h), -1);
+            cl_thread_cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn spawn_oob_fn_index_returns_neg1() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut val: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            assert_eq!(
+                cl_thread_spawn(slot, 5, &mut val as *mut u64 as *mut u8),
+                -1
+            );
+            assert_eq!(
+                cl_thread_spawn(slot, -1, &mut val as *mut u64 as *mut u8),
+                -1
+            );
+            cl_thread_cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn cleanup_joins_unjoined_threads() {
+        install_fns(vec![slow_write_77]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut val: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            let h = cl_thread_spawn(slot, 0, &mut val as *mut u64 as *mut u8);
+            assert!(h > 0);
+            // do NOT join — cleanup must wait for it.
+            cl_thread_cleanup(&mut slot);
+        }
+        assert_eq!(val, 77, "cleanup should have waited for the worker");
+    }
+
+    #[test]
+    fn call_runs_fn_inline_on_current_thread() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut val: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            let rc = cl_thread_call(slot, 0, &mut val as *mut u64 as *mut u8);
+            assert_eq!(rc, 0);
+            cl_thread_cleanup(&mut slot);
+        }
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn call_oob_fn_index_returns_neg1() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut val: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            assert_eq!(
+                cl_thread_call(slot, 5, &mut val as *mut u64 as *mut u8),
+                -1
+            );
+            cl_thread_cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn null_ctx_pointers_return_neg1() {
+        let null_ctx = std::ptr::null_mut::<CraneliftThreadContext>();
+        let mut val: u64 = 0;
+        unsafe {
+            assert_eq!(
+                cl_thread_spawn(null_ctx, 0, &mut val as *mut u64 as *mut u8),
+                -1
+            );
+            assert_eq!(cl_thread_join(null_ctx, 1), -1);
+            assert_eq!(
+                cl_thread_call(
+                    null_ctx as *const _,
+                    0,
+                    &mut val as *mut u64 as *mut u8
+                ),
+                -1
+            );
+        }
+    }
+}
