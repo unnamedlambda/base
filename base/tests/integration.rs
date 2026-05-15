@@ -1121,10 +1121,83 @@ block0(v0: i64):
 }
 
 #[test]
+fn test_clif_ffi_all_symbols_linkable() {
+    // Authoritative check that every FFI symbol registered in jit.rs is
+    // resolvable from CLIF. Generates a function that takes each symbol's
+    // address (via func_addr) and stores it; if any symbol were missing,
+    // Base::new would fail to link the module.
+    //
+    // Per-FFI smoke tests below exercise the runtime call path; this one
+    // exists so that adding a new FFI symbol without wiring it into jit.rs
+    // is caught by a dedicated, fast-failing test.
+    let symbols: &[&str] = &[
+        "cl_ht_init", "cl_ht_cleanup", "ht_create", "ht_lookup", "ht_insert",
+        "ht_count", "ht_get_entry", "ht_increment",
+        "cl_gpu_init", "cl_gpu_create_buffer", "cl_gpu_create_pipeline",
+        "cl_gpu_upload", "cl_gpu_upload_ptr", "cl_gpu_dispatch", "cl_gpu_download",
+        "cl_gpu_download_ptr", "cl_gpu_cleanup",
+        "cl_cuda_init", "cl_cuda_create_buffer", "cl_cuda_upload",
+        "cl_cuda_upload_ptr", "cl_cuda_upload_ptr_offset", "cl_cuda_upload_ptr_async",
+        "cl_cuda_upload_ptr_offset_async", "cl_cuda_download", "cl_cuda_download_ptr",
+        "cl_cuda_download_ptr_offset", "cl_cuda_download_ptr_async", "cl_cuda_free_buffer",
+        "cl_cuda_stream_create", "cl_cuda_stream_sync", "cl_cuda_stream_destroy",
+        "cl_cuda_event_create", "cl_cuda_event_record", "cl_cuda_stream_wait_event",
+        "cl_cuda_event_elapsed_ms_bits", "cl_cuda_event_destroy",
+        "cl_cuda_graph_begin_capture", "cl_cuda_graph_end_capture",
+        "cl_cuda_graph_upload", "cl_cuda_graph_launch", "cl_cuda_graph_destroy",
+        "cl_cuda_pinned_alloc", "cl_cuda_pinned_ptr", "cl_cuda_pinned_free",
+        "cl_cuda_launch", "cl_cuda_launch_named", "cl_cuda_launch_on_stream",
+        "cl_cuda_launch_named_on_stream", "cl_cuda_sync", "cl_cuda_cleanup",
+        "cl_cublas_sgemm", "cl_cublas_sgemv", "cl_cublas_sgemv_on_stream",
+        "cl_cublas_sgemm_strided_batched", "cl_cublas_sgemm_strided_batched_on_stream",
+        "cl_file_read", "cl_file_read_to_ptr", "cl_file_write", "cl_file_write_from_ptr",
+        "cl_sinf", "cl_cosf", "cl_powf",
+        "cl_stdin_readline", "cl_stdout_write",
+        "cl_net_init", "cl_net_listen", "cl_net_listener_port", "cl_net_connect",
+        "cl_net_accept", "cl_net_send", "cl_net_recv", "cl_net_cleanup",
+        "cl_lmdb_init", "cl_lmdb_open", "cl_lmdb_put", "cl_lmdb_get", "cl_lmdb_delete",
+        "cl_lmdb_begin_write_txn", "cl_lmdb_commit_write_txn", "cl_lmdb_cursor_scan",
+        "cl_lmdb_sync", "cl_lmdb_cleanup",
+        "cl_thread_init", "cl_thread_spawn", "cl_thread_join", "cl_thread_cleanup",
+        "cl_thread_call",
+    ];
+
+    let mut decls = String::new();
+    let mut body = String::new();
+    for (i, sym) in symbols.iter().enumerate() {
+        decls.push_str(&format!("    fn{i} = %{sym} sig0\n"));
+        // func_addr forces the linker to resolve the symbol.
+        body.push_str(&format!("    v{} = func_addr.i64 fn{i}\n", i + 100));
+        body.push_str(&format!(
+            "    store.i64 notrap aligned v{}, v0+0\n",
+            i + 100
+        ));
+    }
+    let clif_ir = format!(
+        "function u0:0(i64) system_v {{\n\
+         \x20   sig0 = (i64) -> i32 system_v\n\
+         {decls}\n\
+         block0(v0: i64):\n\
+         {body}    return\n\
+         }}"
+    );
+
+    let actions = vec![
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
+    ];
+    let memory = vec![0u8; 4096];
+    let (config, mut algorithm) =
+        create_cranelift_algorithm(actions, memory, 1, clif_ir.clone());
+    algorithm.timeout_ms = Some(5000);
+    run(config, algorithm).expect("all FFI symbols must be linkable from CLIF");
+}
+
+#[test]
 fn test_clif_ffi_file_smoke() {
-    // Smoke test: exercises all 4 file FFI symbols (cl_file_read, cl_file_write,
-    // cl_file_read_to_ptr, cl_file_write_from_ptr) from CLIF to prove they are
-    // registered with the JIT and callable.
+    // Runtime smoke: exercises cl_file_read, cl_file_write, cl_file_read_to_ptr,
+    // cl_file_write_from_ptr via a real round-trip.
     let temp_dir = TempDir::new().unwrap();
     let path_a = temp_dir.path().join("smoke_a.bin");
     let path_b = temp_dir.path().join("smoke_b.bin");
@@ -1177,7 +1250,9 @@ block0(v0: i64):
 
 #[test]
 fn test_clif_ffi_gpu_smoke() {
-    // Smoke: verifies all cl_gpu_* symbols are registered and the core ABI is intact.
+    // Runtime smoke: exercises the wgpu FFI call path
+    // (init → create_buffer → upload → dispatch → download → cleanup).
+    // Symbol linkability is verified by test_clif_ffi_all_symbols_linkable.
     let wgsl = "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\
                 @compute @workgroup_size(64)\n\
                 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
@@ -1333,8 +1408,8 @@ block0(v0: i64):
 
 #[test]
 fn test_clif_ffi_lmdb_smoke() {
-    // Smoke: verifies cl_lmdb_init, cl_lmdb_open, cl_lmdb_put, cl_lmdb_get,
-    // cl_lmdb_cursor_scan, cl_lmdb_cleanup are registered with correct ABI.
+    // Runtime smoke: exercises the lmdb FFI call path
+    // (init → open → put → get → cursor_scan → cleanup).
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("lmdb_smoke");
     let db_path_str = format!("{}\0", db_path.to_str().unwrap());
@@ -1416,8 +1491,8 @@ block0(v0: i64):
 
 #[test]
 fn test_clif_ffi_thread_smoke() {
-    // Smoke: exercises all 5 thread FFI symbols (init, spawn, join, call, cleanup)
-    // from CLIF to prove they are registered with the JIT and callable.
+    // Runtime smoke: exercises the thread FFI call path
+    // (init → spawn → join → call → cleanup).
     // Memory layout:
     //   16-23:   thread context pointer slot
     //   200-207: spawn target writes 42 here
@@ -3932,7 +4007,8 @@ fn clif_parse_error_empty_ir_no_error() {
 
 #[test]
 fn test_clif_ffi_cuda_smoke() {
-    // Smoke: verifies all cl_cuda_* symbols are registered and the core ABI is intact.
+    // Runtime smoke: exercises the cuda FFI call path
+    // (init → create_buffer → upload → launch → sync → download → cleanup).
     let ptx = "\
 .version 7.0
 .target sm_50
