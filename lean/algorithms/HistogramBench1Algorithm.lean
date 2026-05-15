@@ -21,7 +21,6 @@ def HIST_BYTES      : Nat := BINS * 8
 def DATA_OFF        : Nat := HIST_OFF + HIST_BYTES
 def MAX_DATA_BYTES  : Nat := 64 * 1024 * 1024
 def MEM_SIZE        : Nat := DATA_OFF + MAX_DATA_BYTES
-def TIMEOUT_MS      : Nat := 60000
 
 set_option maxRecDepth 2048 in
 def orchFn : IRBuilder Unit := do
@@ -147,9 +146,7 @@ def artifacts : Array Json :=
     memory_size := MEM_SIZE,
     context_offset := 0
   } {
-    actions := mkCallActions 2,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 2
   }]
 
 end HistogramBench1

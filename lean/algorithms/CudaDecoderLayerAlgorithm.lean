@@ -51,7 +51,6 @@ def PTX_SILU_OFF : Nat := 0x1C00
 def PTX_ADDRMS_OFF : Nat := 0x2800
 def PTX_ADD_OFF : Nat := 0x3800
 def MEM_SIZE : Nat := 0x4800
-def TIMEOUT_MS : Nat := 30000
 
 -- App fields: buf IDs stored as i32 (4 bytes each), starting at 0x38
 -- (beyond the 56-byte RuntimeHeader at 0x00-0x37)
@@ -358,12 +357,18 @@ def finalizeFn : IRBuilder Unit := do
   startBlock skipDl
   ret
 
+def STACK16_DEPTH : Nat := 16
+def STACK32_DEPTH : Nat := 32
+
 def clifIR : String :=
   noopFunction ++ "\n" ++
   buildFunction 1 loadFn ++ "\n" ++
   buildFunction 2 prepFn ++ "\n" ++
   buildFunction 3 inferFn ++ "\n" ++
-  buildFunction 4 finalizeFn
+  buildFunction 4 finalizeFn ++
+  clifSequenceWrapper 5 [3, 4] ++
+  clifSequenceWrapper 6 (List.replicate STACK16_DEPTH 3 ++ [4]) ++
+  clifSequenceWrapper 7 (List.replicate STACK32_DEPTH 3 ++ [4])
 
 def ptxRmsBytes : List UInt8 := ptxRmsNorm.toUTF8.toList ++ [0]
 def ptxSiluBytes : List UInt8 := ptxSiluGate.toUTF8.toList ++ [0]
@@ -378,9 +383,6 @@ def buildInitialMemory : List UInt8 :=
   let add := ptxAddBytes ++ zeros (MEM_SIZE - PTX_ADD_OFF - ptxAddBytes.length)
   pre ++ rms ++ silu ++ addrms ++ add
 
-def actions (src : UInt32) : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := src, offset := 0, size := 0 }]
-
 def buildConfig : BaseConfig := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
@@ -388,39 +390,19 @@ def buildConfig : BaseConfig := {
   initial_memory := buildInitialMemory
 }
 
-def loadAlgorithm : Algorithm := {
-  actions := actions 1,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
-def prepAlgorithm : Algorithm := {
-  actions := actions 2,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
-def inferAlgorithm : Algorithm := {
-  actions := [{ kind := .ClifCall, dst := 0, src := 3, offset := 0, size := 0 },
-              { kind := .ClifCall, dst := 0, src := 4, offset := 0, size := 0 }],
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-
-def stackAlgorithm (depth : Nat) : Algorithm := {
-  actions := List.replicate depth { kind := .ClifCall, dst := 0, src := 3, offset := 0, size := 0 } ++
-             [{ kind := .ClifCall, dst := 0, src := 4, offset := 0, size := 0 }],
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
+def loadAlgorithm   : Algorithm := { fn_idx := u32 1 }
+def prepAlgorithm   : Algorithm := { fn_idx := u32 2 }
+def inferAlgorithm  : Algorithm := { fn_idx := u32 5 }
+def stack16Algorithm : Algorithm := { fn_idx := u32 6 }
+def stack32Algorithm : Algorithm := { fn_idx := u32 7 }
 
 def artifacts : Array Json :=
   #[
     toJsonEntry "cuda_decoder_load" buildConfig loadAlgorithm,
     toJsonEntry "cuda_decoder_prep" buildConfig prepAlgorithm,
     toJsonEntry "cuda_decoder_infer" buildConfig inferAlgorithm,
-    toJsonEntry "cuda_decoder_stack16" buildConfig (stackAlgorithm 16),
-    toJsonEntry "cuda_decoder_stack32" buildConfig (stackAlgorithm 32),
+    toJsonEntry "cuda_decoder_stack16" buildConfig stack16Algorithm,
+    toJsonEntry "cuda_decoder_stack32" buildConfig stack32Algorithm,
   ]
 
 end CudaDecoderLayer

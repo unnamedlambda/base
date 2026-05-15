@@ -17,31 +17,6 @@ instance : ToJson UInt32 where
 instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
-inductive Kind where
-  | ClifCall
-  deriving Repr
-
-instance : ToJson Kind where
-  toJson
-    | .ClifCall => "clif_call"
-
-structure Action where
-  kind : Kind
-  dst : UInt32
-  src : UInt32
-  offset : UInt32
-  size : UInt32
-  deriving Repr
-
-instance : ToJson Action where
-  toJson a := Json.mkObj [
-    ("kind", toJson a.kind),
-    ("dst", toJson a.dst),
-    ("src", toJson a.src),
-    ("offset", toJson a.offset),
-    ("size", toJson a.size)
-  ]
-
 structure RuntimeHeader where
   dataPtrOffset : Nat := 0x18
   dataLenOffset : Nat := 0x20
@@ -91,16 +66,12 @@ instance : ToJson BaseConfig where
   ]
 
 structure Algorithm where
-  actions : List Action
-  cranelift_units : Nat
-  timeout_ms : Option Nat
+  fn_idx : UInt32
   output : List Json := []
 
 instance : ToJson Algorithm where
   toJson alg := Json.mkObj [
-    ("actions", toJson alg.actions),
-    ("cranelift_units", toJson alg.cranelift_units),
-    ("timeout_ms", toJson alg.timeout_ms),
+    ("fn_idx", toJson alg.fn_idx),
     ("output", Json.arr alg.output.toArray)
   ]
 
@@ -130,10 +101,22 @@ def emitArtifacts (dir : String) (entries : Array Json) : IO Unit := do
     | _ =>
         throw <| IO.userError s!"invalid artifact entry: {Json.compress entry}"
 
-/-- Common single-call action list used by most benchmark artifacts. -/
-def mkCallActions (src : UInt32) : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := src, offset := 0, size := 0 }]
-
 def u32 (n : Nat) : UInt32 := UInt32.ofNat n
+
+/-- Emit a wrapper CLIF function at index `wrapperIdx` that calls each of `callees`
+    in order (passing the base pointer `v0` unchanged) and returns. Used by algorithms
+    that need to invoke multiple helper CLIF functions in sequence from a single
+    `Algorithm.fn_idx`. The result string is meant to be appended to the existing
+    CLIF IR for the program. Distinct callee indices are declared once and reused
+    across calls so a 64-deep stack of one callee produces 1 decl + 64 calls. -/
+def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat) : String :=
+  let unique : List Nat := callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
+  let slotOf (c : Nat) : Nat := (unique.idxOf? c).getD 0
+  let header := s!"\nfunction u0:{wrapperIdx}(i64) system_v \{\n    sig0 = (i64) system_v\n"
+  let fnDecls := String.join <|
+    unique.zipIdx.map fun (callee, i) => s!"    fn{i} = colocated u0:{callee} sig0\n"
+  let body := String.join <|
+    callees.map fun c => s!"    call fn{slotOf c}(v0)\n"
+  header ++ fnDecls ++ "block0(v0: i64):\n" ++ body ++ "    return\n}\n"
 
 end AlgorithmLib

@@ -966,9 +966,7 @@ def config (spec : SceneSpec) : BaseConfig := {
 }
 
 def algorithm : Algorithm := {
-  actions := [IR.clifCallAction],
-  cranelift_units := 0,
-  timeout_ms := some 300000
+  fn_idx := IR.mainFnIdx
 }
 
 def renderScene (spec : SceneSpec) : BaseConfig × Algorithm :=

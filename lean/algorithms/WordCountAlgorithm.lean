@@ -22,7 +22,6 @@ def OUTPUT_BUF      : Nat := 0x4000
 def INPUT_DATA      : Nat := 0x14000
 def MAX_TEXT_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_TEXT_BYTES
-def TIMEOUT_MS      : Nat := 300000
 
 structure WcCtx where
   ptr       : Val
@@ -293,9 +292,7 @@ def artifacts : Array Json :=
     memory_size := MEM_SIZE,
     context_offset := 0
   } {
-    actions := mkCallActions 1,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 1
   }]
 
 end WordCountBench

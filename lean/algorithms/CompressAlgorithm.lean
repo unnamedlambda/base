@@ -400,9 +400,7 @@ def buildCompressor {bs : Nat} (_p : LZ4Params bs) : BaseConfig × Algorithm :=
     initial_memory := payload
   }
   let alg : Algorithm := {
-    actions         := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms      := some 120000
+    fn_idx := IR.mainFnIdx
   }
   (cfg, alg)
 

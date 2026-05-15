@@ -1,21 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    ClifCall = 24,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Action {
-    pub kind: Kind,
-    pub dst: u32,
-    pub src: u32,
-    pub offset: u32,
-    pub size: u32,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OutputType {
     I64,
     F64,
@@ -68,8 +53,6 @@ pub struct BaseConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Algorithm {
-    pub actions: Vec<Action>,
-    pub cranelift_units: usize,
-    pub timeout_ms: Option<u64>,
+    pub fn_idx: u32,
     pub output: Vec<OutputBatchSchema>,
 }

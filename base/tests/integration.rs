@@ -2,7 +2,7 @@ use arrow_array::{Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use base::{run, Base, RecordBatch};
 use base_types::{
-    Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType, RuntimeHeader,
+    Algorithm, BaseConfig, OutputBatchSchema, OutputColumn, OutputType, RuntimeHeader,
 };
 use std::fs;
 use std::sync::Arc;
@@ -17,26 +17,29 @@ fn legacy_runtime_header() -> RuntimeHeader {
     }
 }
 
-fn create_cranelift_algorithm(
-    actions: Vec<Action>,
-    memory: Vec<u8>,
-    cranelift_units: usize,
-    cranelift_ir: String,
-) -> (BaseConfig, Algorithm) {
-    let config = BaseConfig {
+fn cranelift_config(memory: Vec<u8>, cranelift_ir: String) -> BaseConfig {
+    BaseConfig {
         cranelift_ir,
         memory_size: memory.len(),
         runtime_header: legacy_runtime_header(),
         context_offset: 0,
         initial_memory: memory,
-    };
-    let algorithm = Algorithm {
-        actions,
-        cranelift_units,
-        timeout_ms: Some(5000),
+    }
+}
+
+fn cranelift_algorithm(fn_idx: u32) -> Algorithm {
+    Algorithm {
+        fn_idx,
         output: vec![],
-    };
-    (config, algorithm)
+    }
+}
+
+fn create_cranelift_algorithm(
+    fn_idx: u32,
+    memory: Vec<u8>,
+    cranelift_ir: String,
+) -> (BaseConfig, Algorithm) {
+    (cranelift_config(memory, cranelift_ir), cranelift_algorithm(fn_idx))
 }
 
 #[test]
@@ -45,14 +48,9 @@ fn test_cranelift_basic_compilation() {
     let test_file = temp_dir.path().join("cranelift_basic.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    // No-op CLIF + verify fn that writes data_offset(8 bytes) to file
+    // Single CLIF function that writes 8 bytes at offset 2000 to the file at offset 3000.
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
     sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_file_write sig0
 block0(v0: i64):
@@ -71,12 +69,7 @@ block0(v0: i64):
     memory[2000..2008].copy_from_slice(&42u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![
-        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -91,26 +84,21 @@ fn test_cranelift_arithmetic_add() {
     let test_file = temp_dir.path().join("cranelift_add.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    // fn0: add operands at 2000/2008, store at 2016. fn1: write result to file.
+    // Add operands at 2000/2008, store at 2016, write 2016 to file.
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
 block0(v0: i64):
     v1 = load.i64 v0+2000
     v2 = load.i64 v0+2008
     v3 = iadd v1, v2
     store.i64 v3, v0+2016
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
+    v4 = iconst.i64 3000
+    v5 = iconst.i64 2016
+    v6 = iconst.i64 0
+    v7 = iconst.i64 8
+    v8 = call fn0(v0, v4, v5, v6, v7)
     return
 }}"#
     );
@@ -122,12 +110,7 @@ block0(v0: i64):
     memory[2008..2016].copy_from_slice(&200u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![
-        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -143,23 +126,18 @@ fn test_cranelift_arithmetic_multiply() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
 block0(v0: i64):
     v1 = load.i64 v0+2000
     v2 = load.i64 v0+2008
     v3 = imul v1, v2
     store.i64 v3, v0+2016
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
+    v4 = iconst.i64 3000
+    v5 = iconst.i64 2016
+    v6 = iconst.i64 0
+    v7 = iconst.i64 8
+    v8 = call fn0(v0, v4, v5, v6, v7)
     return
 }}"#
     );
@@ -171,12 +149,7 @@ block0(v0: i64):
     memory[2008..2016].copy_from_slice(&9u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![
-        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -192,6 +165,8 @@ fn test_cranelift_memory_operations() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
 block0(v0: i64):
     v1 = load.i32 v0+2000
     v2 = load.i32 v0+2004
@@ -199,18 +174,11 @@ block0(v0: i64):
     v4 = iadd v1, v2
     v5 = iadd v4, v3
     store.i32 v5, v0+2012
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2012
-    v3 = iconst.i64 0
-    v4 = iconst.i64 4
-    v5 = call fn0(v0, v1, v2, v3, v4)
+    v6 = iconst.i64 3000
+    v7 = iconst.i64 2012
+    v8 = iconst.i64 0
+    v9 = iconst.i64 4
+    v10 = call fn0(v0, v6, v7, v8, v9)
     return
 }}"#
     );
@@ -223,12 +191,7 @@ block0(v0: i64):
     memory[2008..2012].copy_from_slice(&30u32.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![
-        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -244,6 +207,8 @@ fn test_cranelift_conditional_logic() {
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
 block0(v0: i64):
     v1 = load.i64 v0+2000
     v2 = load.i64 v0+2008
@@ -253,22 +218,18 @@ block0(v0: i64):
 
 block1:
     store.i64 v2, v0+2024
-    return
+    jump block3
 
 block2:
     store.i64 v3, v0+2024
-    return
-}}
+    jump block3
 
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2024
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
+block3:
+    v5 = iconst.i64 3000
+    v6 = iconst.i64 2024
+    v7 = iconst.i64 0
+    v8 = iconst.i64 8
+    v9 = call fn0(v0, v5, v6, v7, v8)
     return
 }}"#
     );
@@ -282,12 +243,7 @@ block0(v0: i64):
     memory[2016..2024].copy_from_slice(&200u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![
-        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCall, dst: 0, src: 1, offset: 0, size: 0 },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -357,11 +313,9 @@ fn test_clif_ffi_all_symbols_linkable() {
          }}"
     );
 
-    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
     let memory = vec![0u8; 4096];
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.clone());
-    algorithm.timeout_ms = Some(5000);
+    let (config, algorithm) =
+        create_cranelift_algorithm(0, memory, clif_ir.clone());
     run(config, algorithm).expect("all FFI symbols must be linkable from CLIF");
 }
 
@@ -406,9 +360,8 @@ block0(v0: i64):
     memory[2256..2256 + path_b_str.len()].copy_from_slice(path_b_str.as_bytes());
     memory[3000..3005].copy_from_slice(b"hello");
 
-    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     assert_eq!(&fs::read(&path_a).unwrap(), b"hello");
@@ -491,11 +444,9 @@ block0(v0: i64):
             .copy_from_slice(&((i + 1) as f32).to_le_bytes());
     }
 
-    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    algorithm.timeout_ms = Some(15000);
+    let (config, algorithm) =
+        create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 }
 
@@ -556,9 +507,8 @@ block0(v0: i64):
     memory[2100..2100 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
     memory[3000..3005].copy_from_slice(b"hello");
 
-    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
     server.join().unwrap();
 
@@ -620,9 +570,8 @@ block0(v0: i64):
     memory[3000..3005].copy_from_slice(b"hello");
     memory[3100..3105].copy_from_slice(b"world");
 
-    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 }
 
@@ -653,6 +602,8 @@ fn test_clif_ffi_thread_smoke() {
     fn3 = %cl_thread_cleanup sig3
     sig4 = (i64, i64, i64) -> i64 system_v
     fn4 = %cl_thread_call sig4
+    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn5 = %cl_file_write sig5
 block0(v0: i64):
     v1 = iadd_imm v0, 16
     call fn0(v1)
@@ -665,6 +616,11 @@ block0(v0: i64):
     v7 = iadd_imm v0, 208
     v8 = call fn4(v10, v6, v7)
     call fn3(v1)
+    v20 = iconst.i64 3000
+    v21 = iconst.i64 200
+    v22 = iconst.i64 0
+    v23 = iconst.i64 16
+    v24 = call fn5(v0, v20, v21, v22, v23)
     return
 }
 
@@ -680,26 +636,9 @@ block0(v0: i64):
     v1 = iconst.i64 99
     store.i64 v1, v0
     return
-}
-
-function u0:3(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 200
-    v3 = iconst.i64 0
-    v4 = iconst.i64 16
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
 }"#;
 
-    let actions = vec![
-        Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 },
-        Action { kind: Kind::ClifCall, dst: 0, src: 3, offset: 0, size: 0 },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -738,8 +677,7 @@ block0(v0: i64):
     return
 }"#;
 
-    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -774,15 +712,8 @@ block0(v0: i64):
     memory[2000..2008].copy_from_slice(&42u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
 
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -835,25 +766,11 @@ block0(v0: i64):
     memory[3000..3008].copy_from_slice(&100u64.to_le_bytes());
     memory[3008..3016].copy_from_slice(&200u64.to_le_bytes());
 
-    let actions = vec![
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
-    run(config, algorithm).unwrap();
+    // Demonstrates JIT-once, run-many: one Base, two execute() calls picking different
+    // fn_idx into the same compiled module.
+    let mut base = Base::new(cranelift_config(memory, clif_ir.to_string())).unwrap();
+    base.execute(&cranelift_algorithm(0), &[]).unwrap();
+    base.execute(&cranelift_algorithm(1), &[]).unwrap();
 
     assert!(test_file_a.exists());
     let contents_a = fs::read(&test_file_a).unwrap();
@@ -872,32 +789,25 @@ block0(v0: i64):
 
 #[test]
 fn test_clif_call_arithmetic() {
-    // ClifCall runs a function that does arithmetic and stores result in shared memory.
-    // fn0: load two values, add them, store result back.
-    // fn1: write result to file for verification.
+    // ClifCall runs a CLIF function that does arithmetic then writes the result to a file.
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("clif_call_arith.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
+    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
+    fn0 = %cl_file_write sig0
 block0(v0: i64):
     v1 = load.i64 v0+2000
     v2 = load.i64 v0+2008
     v3 = iadd v1, v2
     store.i64 v3, v0+2016
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2016
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
+    v4 = iconst.i64 3000
+    v5 = iconst.i64 2016
+    v6 = iconst.i64 0
+    v7 = iconst.i64 8
+    v8 = call fn0(v0, v4, v5, v6, v7)
     return
 }}"#
     );
@@ -909,24 +819,7 @@ block0(v0: i64):
     memory[2008..2016].copy_from_slice(&12u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -938,8 +831,11 @@ block0(v0: i64):
 fn test_clif_call_sequential_mutations() {
     // Multiple ClifCall actions run sequentially, each mutating shared memory.
     // fn0: store 10 at offset 2000
-    // fn1: load offset 2000, multiply by 5, store at 2008
-    // fn2: write offset 2008 to file
+    // Three execute() calls on the same Base, each running a different fn:
+    //   fn0 stores 10 at offset 2000
+    //   fn1 loads 2000, multiplies by 5, stores at 2008
+    //   fn2 writes offset 2008 to file
+    // Shared memory persists across execute() calls, demonstrating run-many semantics.
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("clif_call_seq.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
@@ -979,32 +875,10 @@ block0(v0: i64):
     memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions = vec![
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 2,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
-    run(config, algorithm).unwrap();
+    let mut base = Base::new(cranelift_config(memory, clif_ir.to_string())).unwrap();
+    base.execute(&cranelift_algorithm(0), &[]).unwrap();
+    base.execute(&cranelift_algorithm(1), &[]).unwrap();
+    base.execute(&cranelift_algorithm(2), &[]).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -1026,16 +900,9 @@ block0(v0: i64):
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
 
     // cranelift_units: 0 — no workers
-    let (_config, _algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
+    let (_config, _algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
 
     // Rebuild with file write verification
     let temp_dir = TempDir::new().unwrap();
@@ -1063,16 +930,9 @@ block0(v0: i64):
     memory2[0..clif_bytes2.len()].copy_from_slice(&clif_bytes2);
     memory2[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let actions2 = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
 
     let (config2, algorithm2) =
-        create_cranelift_algorithm(actions2, memory2, 0, clif_ir2.to_string());
+        create_cranelift_algorithm(0, memory2, clif_ir2.to_string());
     run(config2, algorithm2).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -1127,25 +987,10 @@ block0(v0: i64):
     memory[2000..2000 + input_str.len()].copy_from_slice(input_str.as_bytes());
     memory[2256..2256 + output_str.len()].copy_from_slice(output_str.as_bytes());
 
-    let actions = vec![
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, algorithm) = create_cranelift_algorithm(actions, memory, 0, clif_ir.to_string());
-    run(config, algorithm).unwrap();
+    // Two execute() calls on one Base: fn0 reads input file, fn1 writes output file.
+    let mut base = Base::new(cranelift_config(memory, clif_ir.to_string())).unwrap();
+    base.execute(&cranelift_algorithm(0), &[]).unwrap();
+    base.execute(&cranelift_algorithm(1), &[]).unwrap();
 
     assert!(output_file.exists());
     let output_data = fs::read(&output_file).unwrap();
@@ -1172,15 +1017,7 @@ fn create_output_algorithm(
         initial_memory: p,
     };
     let algorithm = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 1,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output,
     };
     (config, algorithm)
@@ -1815,13 +1652,6 @@ block0(v0: i64):
     let mut memory = vec![0u8; 4096];
     memory[100..108].copy_from_slice(&6i64.to_le_bytes());
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
     let output_schema = vec![OutputBatchSchema {
         row_count_offset: 208,
         columns: vec![OutputColumn {
@@ -1841,9 +1671,7 @@ block0(v0: i64):
         initial_memory: memory.clone(),
     };
     let alg1 = Algorithm {
-        actions: actions.clone(),
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema.clone(),
     };
     let batches1 = run(config1, alg1).unwrap();
@@ -1857,9 +1685,7 @@ block0(v0: i64):
         initial_memory: memory,
     };
     let alg2 = Algorithm {
-        actions,
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
     let mut base = Base::new(config2).unwrap();
@@ -1910,13 +1736,6 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
     let output_schema = vec![OutputBatchSchema {
         row_count_offset: 208,
         columns: vec![OutputColumn {
@@ -1932,9 +1751,7 @@ block0(v0: i64):
     let batches1 = base
         .execute(
             &Algorithm {
-                actions: actions.clone(),
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema.clone(),
             },
             &data1,
@@ -1953,9 +1770,7 @@ block0(v0: i64):
     let batches2 = base
         .execute(
             &Algorithm {
-                actions,
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema,
             },
             &data2,
@@ -2019,15 +1834,7 @@ block0(v0: i64):
 
     // First execute: call fn0 only
     let alg1 = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema.clone(),
     };
     let batches1 = base.execute(&alg1, &vec![0u8; 4096]).unwrap();
@@ -2040,15 +1847,7 @@ block0(v0: i64):
 
     // Second execute: call fn1 only
     let alg2 = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 1,
         output: output_schema,
     };
     let batches2 = base.execute(&alg2, &vec![0u8; 4096]).unwrap();
@@ -2098,22 +1897,12 @@ block0(v0: i64):
         }],
     }];
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
-
     // Execute 1: add 10 → total = 10
     let d1 = 10i64.to_le_bytes();
     let batches = base
         .execute(
             &Algorithm {
-                actions: actions.clone(),
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema.clone(),
             },
             &d1,
@@ -2131,9 +1920,7 @@ block0(v0: i64):
     let batches = base
         .execute(
             &Algorithm {
-                actions: actions.clone(),
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema.clone(),
             },
             &d2,
@@ -2151,9 +1938,7 @@ block0(v0: i64):
     let batches = base
         .execute(
             &Algorithm {
-                actions,
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema,
             },
             &d3,
@@ -2189,14 +1974,6 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
-
     // Execute 1: write value 42 to file1
     let mut mem1 = vec![0u8; 4096];
     mem1[256..256 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
@@ -2211,9 +1988,7 @@ block0(v0: i64):
     let mut base = Base::new(config1).unwrap();
     base.execute(
         &Algorithm {
-            actions: actions.clone(),
-            cranelift_units: 0,
-            timeout_ms: Some(5000),
+            fn_idx: 0,
             output: vec![],
         },
         &[],
@@ -2238,9 +2013,7 @@ block0(v0: i64):
     base2
         .execute(
             &Algorithm {
-                actions,
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: vec![],
             },
             &[],
@@ -2274,20 +2047,10 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
-
     // Execute with 0 units
     base.execute(
         &Algorithm {
-            actions: actions.clone(),
-            cranelift_units: 0,
-            timeout_ms: Some(5000),
+            fn_idx: 0,
             output: vec![],
         },
         &vec![0u8; 4096],
@@ -2297,9 +2060,7 @@ block0(v0: i64):
     // Execute with 2 units
     base.execute(
         &Algorithm {
-            actions: actions.clone(),
-            cranelift_units: 2,
-            timeout_ms: Some(5000),
+            fn_idx: 0,
             output: vec![],
         },
         &vec![0u8; 4096],
@@ -2309,9 +2070,7 @@ block0(v0: i64):
     // Execute with 4 units
     base.execute(
         &Algorithm {
-            actions,
-            cranelift_units: 4,
-            timeout_ms: Some(5000),
+            fn_idx: 0,
             output: vec![],
         },
         &vec![0u8; 4096],
@@ -2362,15 +2121,7 @@ block0(v0: i64):
     let batches = base
         .execute(
             &Algorithm {
-                actions: vec![Action {
-                    kind: Kind::ClifCall,
-                    dst: 0,
-                    src: 0,
-                    offset: 0,
-                    size: 0,
-                }],
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema,
             },
             &data,
@@ -2422,15 +2173,7 @@ block0(v0: i64):
     // Execute 1: seed 77 at offset 200
     base.execute(
         &Algorithm {
-            actions: vec![Action {
-                kind: Kind::ClifCall,
-                dst: 0,
-                src: 0,
-                offset: 0,
-                size: 0,
-            }],
-            cranelift_units: 0,
-            timeout_ms: Some(5000),
+            fn_idx: 0,
             output: vec![],
         },
         &[],
@@ -2452,15 +2195,7 @@ block0(v0: i64):
     let batches = base
         .execute(
             &Algorithm {
-                actions: vec![Action {
-                    kind: Kind::ClifCall,
-                    dst: 0,
-                    src: 1,
-                    offset: 0,
-                    size: 0,
-                }],
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 1,
                 output: output_schema,
             },
             &data,
@@ -2510,22 +2245,12 @@ block0(v0: i64):
             len_offset: 0,
         }],
     }];
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
-
     // Three executes with empty memory — counter should increment each time
     for expected in 1..=3 {
         let batches = base
             .execute(
                 &Algorithm {
-                    actions: actions.clone(),
-                    cranelift_units: 0,
-                    timeout_ms: Some(5000),
+                    fn_idx: 0,
                     output: output_schema.clone(),
                 },
                 &[],
@@ -2575,14 +2300,6 @@ block0(v0: i64):
             len_offset: 0,
         }],
     }];
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
-
     // Execute 1: 10 + 20 = 30
     let mut d1 = vec![0u8; 16];
     d1[0..8].copy_from_slice(&10i64.to_le_bytes());
@@ -2590,9 +2307,7 @@ block0(v0: i64):
     let batches = base
         .execute(
             &Algorithm {
-                actions: actions.clone(),
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema.clone(),
             },
             &d1,
@@ -2612,9 +2327,7 @@ block0(v0: i64):
     let batches = base
         .execute(
             &Algorithm {
-                actions,
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema,
             },
             &d2,
@@ -2661,22 +2374,12 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
 
-    let actions = vec![Action {
-        kind: Kind::ClifCall,
-        dst: 0,
-        src: 0,
-        offset: 0,
-        size: 0,
-    }];
-
     // Execute 3 times with values 100, 200, 300
     for &val in &[100i64, 200, 300] {
         let d = val.to_le_bytes();
         base.execute(
             &Algorithm {
-                actions: actions.clone(),
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: vec![],
             },
             &d,
@@ -2700,9 +2403,7 @@ block0(v0: i64):
     let batches = base
         .execute(
             &Algorithm {
-                actions,
-                cranelift_units: 0,
-                timeout_ms: Some(5000),
+                fn_idx: 0,
                 output: output_schema,
             },
             &d,
@@ -2748,9 +2449,7 @@ fn clif_parse_error_via_run() {
         initial_memory: vec![],
     };
     let algorithm = Algorithm {
-        actions: vec![],
-        cranelift_units: 0,
-        timeout_ms: Some(1000),
+        fn_idx: 0,
         output: vec![],
     };
     let Err(err) = run(config, algorithm) else {
@@ -2876,11 +2575,9 @@ block0(v0: i64):
             .copy_from_slice(&((i + 1) as f32).to_le_bytes());
     }
 
-    let actions = vec![Action { kind: Kind::ClifCall, dst: 0, src: 0, offset: 0, size: 0 }];
 
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    algorithm.timeout_ms = Some(15000);
+    let (config, algorithm) =
+        create_cranelift_algorithm(0, memory, clif_ir.to_string());
     run(config, algorithm).unwrap();
 }
 
@@ -2966,15 +2663,7 @@ block0(v0: i64):
     };
     let mut base = Base::new(config).unwrap();
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -3106,15 +2795,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -3229,15 +2910,7 @@ block0(v0: i64):
         ],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -3295,15 +2968,7 @@ block0(v0: i64):
         }],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -3355,15 +3020,7 @@ block0(v0: i64):
         }],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -3414,15 +3071,7 @@ block0(v0: i64):
     let mut out = vec![0u8; 8];
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: vec![],
     };
 
@@ -3458,15 +3107,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: vec![],
     };
 
@@ -3540,15 +3181,7 @@ block0(v0: i64):
         ],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -3615,15 +3248,7 @@ block0(v0: i64):
         }],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -3673,15 +3298,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: vec![],
     };
 
@@ -3733,15 +3350,7 @@ block0(v0: i64):
         }],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -3792,15 +3401,7 @@ block0(v0: i64):
         }],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -3859,15 +3460,7 @@ block0(v0: i64):
         ],
     }];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(5000),
+        fn_idx: 0,
         output: output_schema,
     };
 
@@ -4004,15 +3597,7 @@ block0(v0: i64):
 
     let mut out = vec![0u8; n * 4];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -4113,15 +3698,7 @@ block0(v0: i64):
 
     let mut out = vec![0u8; n * 4];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -4281,15 +3858,7 @@ block0(v0: i64):
 
     let mut out = vec![0u8; n * 4];
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -4430,15 +3999,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -4596,15 +4157,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -4727,15 +4280,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -4878,15 +4423,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 
@@ -5011,15 +4548,7 @@ block0(v0: i64):
     let mut base = Base::new(config).unwrap();
 
     let alg = Algorithm {
-        actions: vec![Action {
-            kind: Kind::ClifCall,
-            dst: 0,
-            src: 1,
-            offset: 0,
-            size: 0,
-        }],
-        cranelift_units: 0,
-        timeout_ms: Some(15000),
+        fn_idx: 1,
         output: vec![],
     };
 

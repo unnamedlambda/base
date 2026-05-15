@@ -28,7 +28,6 @@ namespace CudaGemvPersist
 -/
 
 def MEM_SIZE   : Nat := 0x50
-def TIMEOUT_MS : Nat := 30000
 def M_OFF      : Nat := 0x38
 def N_OFF      : Nat := 0x40
 
@@ -106,18 +105,15 @@ def clifIR : String :=
   buildFunction 2 prepFn ++ "\n" ++
   buildFunction 3 inferFn
 
-def actions (src : UInt32) : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := src, offset := 0, size := 0 }]
-
 def buildConfig : BaseConfig := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
   context_offset := 0
 }
 
-def loadAlgorithm : Algorithm := { actions := actions 1, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
-def prepAlgorithm : Algorithm := { actions := actions 2, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
-def inferAlgorithm : Algorithm := { actions := actions 3, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
+def loadAlgorithm : Algorithm := { fn_idx := u32 1 }
+def prepAlgorithm : Algorithm := { fn_idx := u32 2 }
+def inferAlgorithm : Algorithm := { fn_idx := u32 3 }
 
 def artifacts : Array Json :=
   #[

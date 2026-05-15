@@ -150,7 +150,29 @@ pub(crate) fn compile_cranelift_ir(
 
     let mut module = cranelift_jit::JITModule::new(builder);
 
-    // cranelift_reader parses `%name` as ExternalName::TestCase; fix up to ExternalName::User
+    // Declare all user-defined functions FIRST so their FuncIds match the
+    // source-file `u0:N` indices. CLIF text like `fn1 = colocated u0:3 sig0`
+    // is parsed as `UserExternalName{ namespace: 0, index: 3 }`, and at
+    // relocation time the JIT resolves the call target by treating `index`
+    // as a `FuncId`. If we declared imports first, FuncId(3) would point at
+    // some FFI symbol instead of the intended local function.
+    let mut func_ids = Vec::with_capacity(functions.len());
+    for (i, func) in functions.iter().enumerate() {
+        let name = format!("fn_{}", i);
+        let func_id = module
+            .declare_function(&name, cranelift_module::Linkage::Local, &func.signature)
+            .expect("Failed to declare function");
+        assert_eq!(
+            func_id.as_u32(),
+            i as u32,
+            "user function {i} got FuncId {} — declaration order mismatch",
+            func_id.as_u32()
+        );
+        func_ids.push(func_id);
+    }
+
+    // cranelift_reader parses `%name` as ExternalName::TestCase; fix up to ExternalName::User.
+    // Imports declared here get FuncIds starting at N (the number of user functions).
     for func in functions.iter_mut() {
         let mut fixups = Vec::new();
         for (fref, data) in func.dfg.ext_funcs.iter() {
@@ -175,17 +197,11 @@ pub(crate) fn compile_cranelift_ir(
         }
     }
 
-    let mut func_ids = Vec::with_capacity(functions.len());
     for (i, func) in functions.into_iter().enumerate() {
-        let name = format!("fn_{}", i);
-        let func_id = module
-            .declare_function(&name, cranelift_module::Linkage::Local, &func.signature)
-            .expect("Failed to declare function");
         let mut ctx = cranelift_codegen::Context::for_function(func);
         module
-            .define_function(func_id, &mut ctx)
+            .define_function(func_ids[i], &mut ctx)
             .expect("Failed to compile function");
-        func_ids.push(func_id);
     }
     module.finalize_definitions().unwrap();
 

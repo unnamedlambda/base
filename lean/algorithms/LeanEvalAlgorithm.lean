@@ -20,7 +20,6 @@ def OUTPUT_BUF_SZ  : Nat := 64
 def STACK_BASE     : Nat := 0x1210
 def STACK_SZ       : Nat := 512
 
-def TIMEOUT_MS : Nat := 30000
 
 -- ---------------------------------------------------------------------------
 -- CLIF IR via DSL
@@ -1877,9 +1876,7 @@ def buildConfig : BaseConfig := {
 }
 
 def buildAlgorithm : Algorithm := {
-  actions := [IR.clifCallAction],
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
+  fn_idx := IR.mainFnIdx
 }
 
 end LeanEval

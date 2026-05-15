@@ -16,7 +16,6 @@ namespace ReductionBench
   CLIF: 4x-unrolled SIMD sum of f32 array → f64 result.
 -/
 
-def TIMEOUT_MS : Nat := 30000
 
 def mainFn : IRBuilder Unit := do
   let ptr     ← entryBlock
@@ -107,9 +106,7 @@ def artifacts : Array Json :=
     memory_size := 40,
     context_offset := 0
   } {
-    actions := mkCallActions 1,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 1
   }]
 
 end ReductionBench

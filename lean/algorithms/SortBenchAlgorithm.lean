@@ -21,7 +21,6 @@ namespace SortBench
 
 def COUNTERS_OFF : Nat := 0x28  -- 256 × 4 = 1024 bytes for counting
 def MEM_SIZE : Nat := 0x0428    -- 0x28 + 1024
-def TIMEOUT_MS : Nat := 300000
 
 -- Zero 1024 bytes of counters at COUNTERS_OFF using 8-byte stores
 def emitZeroCounters (ptr : Val) : IRBuilder Unit := do
@@ -108,9 +107,6 @@ def clifIR : String := buildProgram mainFn
 
 def buildInitialMemory : List UInt8 := zeros MEM_SIZE
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
-
 def buildConfig : BaseConfig := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
@@ -119,9 +115,7 @@ def buildConfig : BaseConfig := {
 }
 
 def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
+  fn_idx := u32 1
 }
 
 def artifacts : Array Json :=

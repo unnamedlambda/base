@@ -269,7 +269,11 @@ def clifIR : String :=
   buildFunction 37 parseArgsFn ++ "\n" ++
   buildFunction 38 streamLayerFn ++ "\n" ++
   buildFunction 39 kvLoadLayerFn ++ "\n" ++
-  buildFunction 40 kvSaveLayerFn
+  buildFunction 40 kvSaveLayerFn ++
+  -- fn41: orchestrator wrapper — parse args (37), load weights (1..26),
+  --       load tokenizer (32), server (36 — runs forever).
+  clifSequenceWrapper 41
+    (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])
 
 -- ── Initial memory ───────────────────────────────────────────────────────────
 
@@ -287,17 +291,8 @@ def buildConfig : BaseConfig := {
   initial_memory := buildInitialMemory
 }
 
-private def mkAction (src : Nat) : Action :=
-  { kind := .ClifCall, dst := 0, src := u32 src, offset := 0, size := 0 }
-
-def qwen2OnDiskAlgorithm : Algorithm := {
-  actions :=
-    mkAction 37 ::
-    (List.range 26).map (fun i => mkAction (i + 1)) ++
-    [mkAction 32, mkAction 36],
-  cranelift_units := 0,
-  timeout_ms := none
-}
+/-- Orchestrator at `fn41` runs the full pipeline (see `clifIR`). -/
+def qwen2OnDiskAlgorithm : Algorithm := { fn_idx := u32 41 }
 
 end Qwen2OnDisk
 

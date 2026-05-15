@@ -947,9 +947,7 @@ def satConfig : BaseConfig := {
 }
 
 def satAlgorithm : Algorithm := {
-    actions := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms := some 300000
+    fn_idx := IR.mainFnIdx
   }
 
 end Algorithm

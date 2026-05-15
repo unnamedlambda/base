@@ -16,7 +16,6 @@ namespace CudaSaxpyBench
 def PTX_SOURCE_OFF : Nat := 0x0100
 def BIND_DESC_OFF  : Nat := 0x1100
 def MEM_SIZE       : Nat := 0x1200
-def TIMEOUT_MS     : Nat := 120000
 
 def ptxSource : String := buildModuleWith { version := "7.0", target := "sm_50" } [{
   name := "main", params := ["x_ptr", "y_ptr"], body := do
@@ -100,9 +99,7 @@ def artifacts : Array Json :=
     context_offset := 0,
     initial_memory := buildInitialMemory
   } {
-    actions := mkCallActions 1,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 1
   }]
 
 end CudaSaxpyBench

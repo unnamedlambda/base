@@ -183,7 +183,7 @@ fn read_generated_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::{Action, Kind, RuntimeHeader};
+    use base_types::RuntimeHeader;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_entry(name: &str) -> (String, BaseConfig, Algorithm) {
@@ -202,15 +202,7 @@ mod tests {
                 initial_memory: vec![1, 2, 3],
             },
             Algorithm {
-                actions: vec![Action {
-                    kind: Kind::ClifCall,
-                    dst: 0,
-                    src: 1,
-                    offset: 2,
-                    size: 3,
-                }],
-                cranelift_units: 1,
-                timeout_ms: Some(123),
+                fn_idx: 1,
                 output: vec![],
             },
         )

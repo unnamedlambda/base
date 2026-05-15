@@ -486,9 +486,7 @@ def buildQueryMonomorphic (patternStr : String) : BaseConfig × Algorithm :=
     initial_memory := payload
   }
   let alg : Algorithm := {
-    actions         := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms      := some 30000
+    fn_idx := IR.mainFnIdx
   }
   (cfg, alg)
 

@@ -272,9 +272,7 @@ def fftConfig : BaseConfig := {
 }
 
 def fftAlgorithm : Algorithm := {
-    actions := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms := some 300000
+    fn_idx := IR.mainFnIdx
   }
 
 end Algorithm

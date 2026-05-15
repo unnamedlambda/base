@@ -172,7 +172,7 @@ private def inferFn {n : Nat} (output : Fin n) (blockSize : Nat) : IRBuilder Uni
 -- ---------------------------------------------------------------------------
 
 def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
-    (blockSize : Nat := 256) (timeoutMs : Nat := 30000) : CompileResult :=
+    (blockSize : Nat := 256) : CompileResult :=
   let output : Fin n := ⟨out, h⟩
   let ptxBytes := (ptxSource e output blockSize).toUTF8.toList ++ [0]
   let bindDesc := (List.range (n + 1)).foldr
@@ -188,7 +188,7 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     buildFunction 2 (prepFn n) ++ "\n" ++
     buildFunction 3 (inferFn output blockSize)
   let mkAlg (src : UInt32) : Algorithm :=
-    { actions := mkCallActions src, cranelift_units := 0, timeout_ms := some timeoutMs }
+    { fn_idx := src }
   {
     config := {
       cranelift_ir := clifIr

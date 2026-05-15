@@ -15,7 +15,6 @@ namespace GpuMatMulBench
 def WGSL_SHADER_OFF : Nat := 0x0100
 def BIND_DESC_OFF   : Nat := 0x1100
 def MEM_SIZE        : Nat := 0x1200
-def TIMEOUT_MS      : Nat := 120000
 
 def wgslShader : String :=
   let data : AlgorithmLib.WGSL.Expr (.arr .f32) := ⟨"data"⟩
@@ -97,9 +96,7 @@ def artifacts : Array Json :=
     context_offset := 0,
     initial_memory := buildInitialMemory
   } {
-    actions := mkCallActions 1,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 1
   }]
 
 end GpuMatMulBench

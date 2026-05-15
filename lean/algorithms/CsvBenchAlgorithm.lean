@@ -19,7 +19,6 @@ def LEFT_VAL        : Nat := 0x0350
 def CSV_DATA        : Nat := 0x2000
 def MAX_CSV_BYTES   : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := CSV_DATA + MAX_CSV_BYTES
-def TIMEOUT_MS      : Nat := 300000
 
 set_option maxRecDepth 4096 in
 def mainFn : IRBuilder Unit := do
@@ -217,9 +216,7 @@ def artifacts : Array Json :=
     memory_size := MEM_SIZE,
     context_offset := 0
   } {
-    actions := mkCallActions 1,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 1
   }]
 
 end CsvBench

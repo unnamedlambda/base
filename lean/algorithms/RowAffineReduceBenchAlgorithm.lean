@@ -14,7 +14,6 @@ namespace RowAffineReduceBench
 -/
 
 def MEM_SIZE : Nat := 40
-def TIMEOUT_MS : Nat := 30000
 
 set_option maxRecDepth 2048 in
 def mainFn : IRBuilder Unit := do
@@ -148,9 +147,7 @@ def artifacts : Array Json :=
     memory_size := MEM_SIZE,
     context_offset := 0
   } {
-    actions := mkCallActions 1,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 1
   }]
 
 end RowAffineReduceBench

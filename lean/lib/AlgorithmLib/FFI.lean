@@ -553,10 +553,9 @@ def fldWriteFile0 (ptr : Val) (fnWrite : FnRef)
     (filenameFld : Layout.Fld ft) (srcFld : Layout.Fld st) (size : Val) : IRBuilder Val :=
   writeFile0 ptr fnWrite filenameFld.offset srcFld.offset size
 
-/-- The standard ClifCall action used by all applications -/
-def clifCallAction : Action := {
-  kind := .ClifCall, dst := u32 0, src := u32 1, offset := u32 0, size := u32 0
-}
+/-- The fn_idx of the main entry point that every application emits as `u0:1`
+    (with `u0:0` reserved as a no-op stub). Use this in `Algorithm.fn_idx`. -/
+def mainFnIdx : UInt32 := u32 1
 
 
 end IR

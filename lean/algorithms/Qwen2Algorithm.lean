@@ -161,7 +161,11 @@ def clifIR : String :=
   buildFunction 34 tokenizeBpeFn ++ "\n" ++
   buildFunction 35 detokenizeFn ++ "\n" ++
   buildFunction 36 cliFn ++ "\n" ++
-  buildFunction 37 parseArgsFn
+  buildFunction 37 parseArgsFn ++
+  -- fn38: orchestrator wrapper — parse args (37), load weights (1..26),
+  --       load tokenizer (32), server (36 — runs forever).
+  clifSequenceWrapper 38
+    (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])
 
 -- ── Initial memory ───────────────────────────────────────────────────────────
 
@@ -178,19 +182,10 @@ def buildConfig : BaseConfig := {
   initial_memory := buildInitialMemory
 }
 
-private def mkAction (src : Nat) : Action :=
-  { kind := .ClifCall, dst := 0, src := u32 src, offset := 0, size := 0 }
-
 /-- Single end-to-end algorithm: parse args → load weights → load tokenizer → server.
-    `data` must be `weights_path\0tokenizer_path\0`. -/
-def qwen2Algorithm : Algorithm := {
-  actions :=
-    mkAction 37 ::                                       -- parse args
-    (List.range 26).map (fun i => mkAction (i + 1)) ++   -- load weights (init + 24 layers + finalize)
-    [mkAction 32, mkAction 36],                          -- load tokenizer, then server (forever)
-  cranelift_units := 0,
-  timeout_ms := none
-}
+    `data` must be `weights_path\0tokenizer_path\0`. The orchestrator is `fn38`,
+    a CLIF wrapper that calls each step in sequence (see `clifIR`). -/
+def qwen2Algorithm : Algorithm := { fn_idx := u32 38 }
 
 end Qwen2
 

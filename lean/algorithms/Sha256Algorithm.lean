@@ -555,9 +555,7 @@ def sha256Config : BaseConfig := {
 }
 
 def sha256Algorithm : Algorithm := {
-    actions := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms := some 300000
+    fn_idx := IR.mainFnIdx
   }
 
 end Algorithm

@@ -19,7 +19,6 @@ def OUTPUT_BUF      : Nat := 0x0350
 def INPUT_DATA      : Nat := 0x4000
 def MAX_JSON_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_JSON_BYTES
-def TIMEOUT_MS      : Nat := 300000
 
 set_option maxRecDepth 4096 in
 def mainFn : IRBuilder Unit := do
@@ -192,9 +191,7 @@ def artifacts : Array Json :=
     memory_size := MEM_SIZE,
     context_offset := 0
   } {
-    actions := mkCallActions 1,
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := u32 1
   }]
 
 end JsonBench

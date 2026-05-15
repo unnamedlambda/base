@@ -181,9 +181,7 @@ def drawConfig : BaseConfig := {
 }
 
 def drawAlgorithm : Algorithm := {
-    actions := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms := some 120000
+    fn_idx := IR.mainFnIdx
   }
 
 end Algorithm

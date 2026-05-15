@@ -29,7 +29,6 @@ def OUTPUT_BUF      : Nat := 0x0350
 def INPUT_DATA      : Nat := 0x4000
 def MAX_TEXT_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_TEXT_BYTES
-def TIMEOUT_MS      : Nat := 300000
 
 set_option maxRecDepth 2048 in
 def mainFn : IRBuilder Unit := do
@@ -134,9 +133,6 @@ def mainFn : IRBuilder Unit := do
 
 def clifIR : String := buildProgram mainFn
 
-def controlActions : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := 1, offset := 0, size := 0 }]
-
 def buildConfig : BaseConfig := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
@@ -144,9 +140,7 @@ def buildConfig : BaseConfig := {
 }
 
 def buildAlgorithm : Algorithm := {
-  actions := controlActions,
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
+  fn_idx := u32 1
 }
 
 def artifacts : Array Json :=

@@ -1,13 +1,10 @@
 pub use arrow_array::RecordBatch;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-pub use base_types::{
-    Action, Algorithm, BaseConfig, Kind, OutputBatchSchema, OutputColumn, OutputType,
-};
+pub use base_types::{Algorithm, BaseConfig, OutputBatchSchema, OutputColumn, OutputType};
 use std::{
     pin::Pin,
     sync::{Arc, Once},
-    time::{Duration, Instant},
 };
 use tracing::{debug, info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -103,11 +100,8 @@ impl Base {
         data: &[u8],
         out: &mut [u8],
     ) -> Result<Vec<RecordBatch>, Error> {
-        let _span = info_span!("execute", actions_count = algorithm.actions.len()).entered();
+        let _span = info_span!("execute", fn_idx = algorithm.fn_idx).entered();
         info!("starting execution");
-
-        let timeout_duration = algorithm.timeout_ms.map(Duration::from_millis);
-        let timeout_start = Instant::now();
 
         // Write data/out pointer + length into reserved region so CLIF code can access
         // the caller's buffer directly via pointer (zero-copy).
@@ -131,21 +125,15 @@ impl Base {
         }
 
         if let Some(ref fns) = self.clif_fns {
-            for (pc, action) in algorithm.actions.iter().enumerate() {
-                if let Some(timeout) = timeout_duration {
-                    if timeout_start.elapsed() > timeout {
-                        return Err(Error::Execution("Timeout".into()));
-                    }
-                }
-                match action.kind {
-                    Kind::ClifCall => {
-                        let fn_idx = action.src as usize;
-                        debug!(pc, fn_idx, "clif_call");
-                        let f = fns[fn_idx % fns.len()];
-                        unsafe { f(self.mem_ptr) };
-                    }
-                }
+            let fn_idx = algorithm.fn_idx as usize;
+            if fn_idx >= fns.len() {
+                return Err(Error::Execution(format!(
+                    "fn_idx {fn_idx} out of range (have {} fns)",
+                    fns.len()
+                )));
             }
+            debug!(fn_idx, "clif_call");
+            unsafe { fns[fn_idx](self.mem_ptr) };
         }
 
         let batches = build_record_batches(&self.memory, &algorithm.output);

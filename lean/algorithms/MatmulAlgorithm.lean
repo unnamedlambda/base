@@ -160,7 +160,6 @@ def BIND_OFF : Nat := PTX_OFF + PTX_REGION            -- 0x2100
 def PARAMS_OFF : Nat := BIND_OFF + 16                  -- 0x2110
 def OUTPUT_FN_OFF : Nat := PARAMS_OFF + 16             -- 0x2120
 def DATA_OFF : Nat := 0x3000
-def TIMEOUT_MS : Nat := 300000
 
 -- ---------------------------------------------------------------------------
 -- Payload: PTX source, bind desc, params, output filename, random A & B data
@@ -268,9 +267,7 @@ def buildMatmulConfig (m k n : Nat) : BaseConfig × Algorithm :=
     initial_memory := payload
   }
   let alg : Algorithm := {
-    actions := [IR.clifCallAction],
-    cranelift_units := 0,
-    timeout_ms := some TIMEOUT_MS
+    fn_idx := IR.mainFnIdx
   }
   (cfg, alg)
 

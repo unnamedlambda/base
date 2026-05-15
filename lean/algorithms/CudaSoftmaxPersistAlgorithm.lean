@@ -48,7 +48,6 @@ def BIND_K2_OFF        : Nat := 0x4710  -- [2,3,4]  meta, partials, params
 def BIND_K3_OFF        : Nat := 0x4720  -- [0,2,4,1] x, meta, params, y
 def BIND_SMALL_OFF     : Nat := 0x4730  -- [0,2,1] x, meta, y
 def MEM_SIZE           : Nat := 0x4740
-def TIMEOUT_MS         : Nat := 30000
 
 /-
   PTX: three kernels share one module. smem[0..31] = 8 warp maxes,
@@ -283,12 +282,17 @@ def finalizeFn : IRBuilder Unit := do
   startBlock skipDl
   ret
 
+/-- Stack depth baked into the `stackAlgorithm` wrapper. -/
+def STACK_DEPTH : Nat := 64
+
 def clifIR : String :=
   noopFunction ++ "\n" ++
   buildFunction 1 loadFn ++ "\n" ++
   buildFunction 2 prepFn ++ "\n" ++
   buildFunction 3 coreFn ++ "\n" ++
-  buildFunction 4 finalizeFn
+  buildFunction 4 finalizeFn ++
+  clifSequenceWrapper 5 [3, 4] ++                                       -- infer
+  clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4])           -- stack
 
 -- initial_memory: names, PTX source, bind descriptors
 def nameBlockReduce  : List UInt8 := "block_reduce".toUTF8.toList ++ [0]
@@ -321,9 +325,6 @@ def buildInitialMemory : List UInt8 :=
     bindSmall ++ zeros (MEM_SIZE - BIND_SMALL_OFF - bindSmall.length)
   names ++ ptx ++ bind
 
-def actions (src : UInt32) : List Action :=
-  [{ kind := .ClifCall, dst := 0, src := src, offset := 0, size := 0 }]
-
 def buildConfig : BaseConfig := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
@@ -331,27 +332,17 @@ def buildConfig : BaseConfig := {
   initial_memory := buildInitialMemory
 }
 
-def loadAlgorithm  : Algorithm := { actions := actions 1, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
-def prepAlgorithm  : Algorithm := { actions := actions 2, cranelift_units := 0, timeout_ms := some TIMEOUT_MS }
-def inferAlgorithm : Algorithm := {
-  actions := [{ kind := .ClifCall, dst := 0, src := 3, offset := 0, size := 0 },
-              { kind := .ClifCall, dst := 0, src := 4, offset := 0, size := 0 }],
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
-def stackAlgorithm (depth : Nat) : Algorithm := {
-  actions := List.replicate depth { kind := .ClifCall, dst := 0, src := 3, offset := 0, size := 0 } ++
-             [{ kind := .ClifCall, dst := 0, src := 4, offset := 0, size := 0 }],
-  cranelift_units := 0,
-  timeout_ms := some TIMEOUT_MS
-}
+def loadAlgorithm  : Algorithm := { fn_idx := u32 1 }
+def prepAlgorithm  : Algorithm := { fn_idx := u32 2 }
+def inferAlgorithm : Algorithm := { fn_idx := u32 5 }
+def stackAlgorithm : Algorithm := { fn_idx := u32 6 }
 
 def artifacts : Array Json :=
   #[
     toJsonEntry "cuda_softmax_load" buildConfig loadAlgorithm,
     toJsonEntry "cuda_softmax_prep" buildConfig prepAlgorithm,
     toJsonEntry "cuda_softmax_infer" buildConfig inferAlgorithm,
-    toJsonEntry "cuda_softmax_stack" buildConfig (stackAlgorithm 64),
+    toJsonEntry "cuda_softmax_stack" buildConfig stackAlgorithm,
   ]
 
 end CudaSoftmaxPersist
