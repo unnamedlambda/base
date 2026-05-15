@@ -408,3 +408,400 @@ pub(crate) unsafe extern "C" fn cl_lmdb_cleanup(ctx_slot_ptr: *mut *mut Cranelif
     let ctx_ptr = clear_ctx_slot::<CraneliftLmdbContext>(ctx_slot_ptr);
     drop(Box::from_raw(ctx_ptr));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn init() -> *mut CraneliftLmdbContext {
+        let mut slot: *mut CraneliftLmdbContext = std::ptr::null_mut();
+        unsafe { cl_lmdb_init(&mut slot) };
+        slot
+    }
+
+    unsafe fn cleanup(slot: &mut *mut CraneliftLmdbContext) {
+        cl_lmdb_cleanup(slot as *mut _);
+    }
+
+    fn open_db(slot: *mut CraneliftLmdbContext, dir: &std::path::Path) -> u32 {
+        let path = CString::new(dir.to_str().unwrap()).unwrap();
+        let h = unsafe { cl_lmdb_open(slot, path.as_ptr() as *const u8, 10) };
+        assert!(h >= 0, "cl_lmdb_open failed");
+        h as u32
+    }
+
+    unsafe fn put(slot: *mut CraneliftLmdbContext, h: u32, key: &[u8], val: &[u8]) -> i32 {
+        cl_lmdb_put(slot, h, key.as_ptr(), key.len() as i32, val.as_ptr(), val.len() as i32)
+    }
+
+    unsafe fn get(slot: *mut CraneliftLmdbContext, h: u32, key: &[u8]) -> Option<Vec<u8>> {
+        let mut buf = vec![0u8; 4 + 4096];
+        let rc = cl_lmdb_get(slot, h, key.as_ptr(), key.len() as i32, buf.as_mut_ptr());
+        if rc < 0 {
+            return None;
+        }
+        Some(buf[4..4 + rc as usize].to_vec())
+    }
+
+    unsafe fn del(slot: *mut CraneliftLmdbContext, h: u32, key: &[u8]) -> i32 {
+        cl_lmdb_delete(slot, h, key.as_ptr(), key.len() as i32)
+    }
+
+    // Decode cursor scan output: [u32 count][u16 klen][u16 vlen][key][val]...
+    fn decode_scan(buf: &[u8], count: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut entries = Vec::new();
+        let mut pos = 4;
+        for _ in 0..count {
+            let klen = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
+            let vlen = u16::from_le_bytes(buf[pos + 2..pos + 4].try_into().unwrap()) as usize;
+            pos += 4;
+            let key = buf[pos..pos + klen].to_vec();
+            pos += klen;
+            let val = buf[pos..pos + vlen].to_vec();
+            pos += vlen;
+            entries.push((key, val));
+        }
+        entries
+    }
+
+    // ── lifecycle ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn init_then_cleanup_lifecycle() {
+        let mut slot = init();
+        assert!(!slot.is_null());
+        unsafe { cleanup(&mut slot) };
+        assert!(slot.is_null());
+    }
+
+    #[test]
+    fn open_returns_nonneg_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert!(h < u32::MAX);
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn open_bad_path_returns_neg1() {
+        let mut slot = init();
+        // Path is a null byte — CString would fail, so use a known-unwritable path
+        let path = CString::new("/proc/1/cannot_create_here/lmdb").unwrap();
+        unsafe {
+            assert_eq!(cl_lmdb_open(slot, path.as_ptr() as *const u8, 10), -1);
+            cleanup(&mut slot);
+        }
+    }
+
+    // ── put / get / delete ────────────────────────────────────────────────────
+
+    #[test]
+    fn put_get_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(put(slot, h, b"foo", b"barbaz"), 0);
+            assert_eq!(get(slot, h, b"foo").unwrap(), b"barbaz");
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn get_nonexistent_returns_neg1() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert!(get(slot, h, b"missing").is_none());
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn put_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(put(slot, h, b"k", b"first"), 0);
+            assert_eq!(put(slot, h, b"k", b"second"), 0);
+            assert_eq!(get(slot, h, b"k").unwrap(), b"second");
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn put_empty_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(put(slot, h, b"k", b""), 0);
+            // get returns 0 (empty value), buf[4..4] is empty
+            let mut buf = [0u8; 4];
+            let rc = cl_lmdb_get(slot, h, b"k".as_ptr(), 1, buf.as_mut_ptr());
+            assert_eq!(rc, 0);
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn delete_then_get_returns_neg1() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            put(slot, h, b"key", b"val");
+            assert_eq!(del(slot, h, b"key"), 0);
+            assert!(get(slot, h, b"key").is_none());
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_neg1() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(del(slot, h, b"nope"), -1);
+            cleanup(&mut slot);
+        }
+    }
+
+    // ── batch transactions ────────────────────────────────────────────────────
+
+    #[test]
+    fn batch_write_begin_put_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(cl_lmdb_begin_write_txn(slot, h), 0);
+            assert_eq!(put(slot, h, b"a", b"1"), 0);
+            assert_eq!(put(slot, h, b"b", b"2"), 0);
+            assert_eq!(put(slot, h, b"c", b"3"), 0);
+            assert_eq!(cl_lmdb_commit_write_txn(slot, h), 0);
+            assert_eq!(get(slot, h, b"a").unwrap(), b"1");
+            assert_eq!(get(slot, h, b"b").unwrap(), b"2");
+            assert_eq!(get(slot, h, b"c").unwrap(), b"3");
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn empty_batch_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(cl_lmdb_begin_write_txn(slot, h), 0);
+            assert_eq!(cl_lmdb_commit_write_txn(slot, h), 0);
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn commit_without_begin_returns_neg1() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(cl_lmdb_commit_write_txn(slot, h), -1);
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn double_begin_aborts_previous_txn() {
+        // begin → put k=v → begin again (aborts first) → commit empty → k not present
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(cl_lmdb_begin_write_txn(slot, h), 0);
+            assert_eq!(put(slot, h, b"k", b"v"), 0);
+            assert_eq!(cl_lmdb_begin_write_txn(slot, h), 0);
+            assert_eq!(cl_lmdb_commit_write_txn(slot, h), 0);
+            assert!(get(slot, h, b"k").is_none());
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn uncommitted_batch_cleanup_aborts() {
+        let dir = tempfile::tempdir().unwrap();
+        // Open, begin write txn, put k=v, then cleanup without committing.
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert_eq!(cl_lmdb_begin_write_txn(slot, h), 0);
+            assert_eq!(put(slot, h, b"k", b"v"), 0);
+            cleanup(&mut slot);
+        }
+        // Reopen and verify write was not persisted.
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            assert!(get(slot, h, b"k").is_none());
+            cleanup(&mut slot);
+        }
+    }
+
+    // ── cursor scan ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn cursor_scan_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            put(slot, h, b"a", b"1");
+            put(slot, h, b"b", b"2");
+            put(slot, h, b"c", b"3");
+
+            let mut buf = vec![0u8; 1024];
+            let count = cl_lmdb_cursor_scan(slot, h, std::ptr::null(), 0, 100, buf.as_mut_ptr());
+            assert_eq!(count, 3);
+
+            let entries = decode_scan(&buf, count as usize);
+            assert_eq!(entries[0], (b"a".to_vec(), b"1".to_vec()));
+            assert_eq!(entries[1], (b"b".to_vec(), b"2".to_vec()));
+            assert_eq!(entries[2], (b"c".to_vec(), b"3".to_vec()));
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn cursor_scan_empty_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            let mut buf = vec![0u8; 64];
+            let count = cl_lmdb_cursor_scan(slot, h, std::ptr::null(), 0, 100, buf.as_mut_ptr());
+            assert_eq!(count, 0);
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn cursor_scan_with_start_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            put(slot, h, b"a", b"1");
+            put(slot, h, b"b", b"2");
+            put(slot, h, b"c", b"3");
+
+            let start = b"b";
+            let mut buf = vec![0u8; 1024];
+            let count = cl_lmdb_cursor_scan(
+                slot, h, start.as_ptr(), start.len() as i32, 100, buf.as_mut_ptr(),
+            );
+            assert_eq!(count, 2);
+            let entries = decode_scan(&buf, count as usize);
+            assert_eq!(entries[0].0, b"b");
+            assert_eq!(entries[1].0, b"c");
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn cursor_scan_max_entries_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            put(slot, h, b"a", b"1");
+            put(slot, h, b"b", b"2");
+            put(slot, h, b"c", b"3");
+
+            let mut buf = vec![0u8; 1024];
+            let count = cl_lmdb_cursor_scan(slot, h, std::ptr::null(), 0, 2, buf.as_mut_ptr());
+            assert_eq!(count, 2);
+            let entries = decode_scan(&buf, count as usize);
+            assert_eq!(entries[0].0, b"a");
+            assert_eq!(entries[1].0, b"b");
+            cleanup(&mut slot);
+        }
+    }
+
+    // ── sync ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sync_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h = open_db(slot, dir.path());
+            put(slot, h, b"k", b"v");
+            assert_eq!(cl_lmdb_sync(slot, h), 0);
+            cleanup(&mut slot);
+        }
+    }
+
+    // ── multi-db & error cases ────────────────────────────────────────────────
+
+    #[test]
+    fn multiple_databases_isolated() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        unsafe {
+            let h1 = open_db(slot, dir1.path());
+            let h2 = open_db(slot, dir2.path());
+            assert_ne!(h1, h2);
+            put(slot, h1, b"key", b"db1val");
+            put(slot, h2, b"key", b"db2val");
+            assert_eq!(get(slot, h1, b"key").unwrap(), b"db1val");
+            assert_eq!(get(slot, h2, b"key").unwrap(), b"db2val");
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn invalid_handle_operations_return_neg1() {
+        let mut slot = init();
+        let mut buf = [0u8; 32];
+        unsafe {
+            assert_eq!(put(slot, 999, b"k", b"v"), -1);
+            assert_eq!(cl_lmdb_get(slot, 999, b"k".as_ptr(), 1, buf.as_mut_ptr()), -1);
+            assert_eq!(del(slot, 999, b"k"), -1);
+            assert_eq!(cl_lmdb_begin_write_txn(slot, 999), -1);
+            assert_eq!(cl_lmdb_commit_write_txn(slot, 999), -1);
+            assert_eq!(cl_lmdb_sync(slot, 999), -1);
+            cleanup(&mut slot);
+        }
+    }
+
+    #[test]
+    fn null_ctx_returns_errors() {
+        let null = std::ptr::null_mut::<CraneliftLmdbContext>();
+        let mut buf = [0u8; 32];
+        let path = b"/tmp/x\0";
+        unsafe {
+            assert_eq!(cl_lmdb_open(null, path.as_ptr(), 10), -1);
+            assert_eq!(cl_lmdb_put(null, 0, b"k".as_ptr(), 1, b"v".as_ptr(), 1), -1);
+            assert_eq!(cl_lmdb_get(null, 0, b"k".as_ptr(), 1, buf.as_mut_ptr()), -1);
+            assert_eq!(cl_lmdb_delete(null, 0, b"k".as_ptr(), 1), -1);
+            assert_eq!(cl_lmdb_begin_write_txn(null, 0), -1);
+            assert_eq!(cl_lmdb_commit_write_txn(null, 0), -1);
+            assert_eq!(cl_lmdb_sync(null as *const _, 0), -1);
+            // cursor_scan returns 0 (not -1) for null ctx
+            let mut sbuf = [0u8; 32];
+            assert_eq!(
+                cl_lmdb_cursor_scan(null, 0, std::ptr::null(), 0, 10, sbuf.as_mut_ptr()),
+                0
+            );
+        }
+    }
+}
