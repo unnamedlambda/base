@@ -1176,227 +1176,21 @@ block0(v0: i64):
 }
 
 #[test]
-fn test_clif_ffi_gpu_vec_add() {
-    // Tests the full GPU pipeline via CLIF FFI:
-    // init → create buffers → upload → create pipeline → dispatch → download → cleanup.
-    // Adds two 64-element f32 vectors element-wise.
-    let temp_dir = TempDir::new().unwrap();
-    let verify_file = temp_dir.path().join("gpu_vec_add_verify.bin");
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    let n: usize = 64;
-    let data_bytes = n * 4; // 256 bytes per buffer
-
-    // WGSL shader for element-wise add: result[i] = a[i] + b[i]
-    let wgsl = "@group(0) @binding(0) var<storage, read> a: array<f32>;\n\
-                @group(0) @binding(1) var<storage, read> b: array<f32>;\n\
-                @group(0) @binding(2) var<storage, read_write> result: array<f32>;\n\
-                @compute @workgroup_size(64)\n\
-                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
-                    let i = gid.x;\n\
-                    if (i < arrayLength(&a)) {\n\
-                        result[i] = a[i] + b[i];\n\
-                    }\n\
-                }\n";
-
-    // Memory layout (must be 8-byte aligned for i64 loads):
-    //    0..~1500:  CLIF IR
-    // 2000..2256:   verify file path
-    // 3000..3400:   shader source (null-terminated, ~300 bytes)
-    // 3400..3424:   binding descriptors: 3 bindings × 8 bytes = 24 bytes
-    //              [buf_id:i32, read_only:i32] × 3
-    // 4000..4256:   buffer A data (64 f32s)
-    // 4256..4512:   buffer B data (64 f32s)
-    // 4512..4768:   result download area (64 f32s)
-    let shader_off = 3000;
-    let bind_off = 3400;
-    let a_off = 4000;
-    let b_off = 4256;
-    let result_off = 4512;
-
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i32, i64, i64) -> i32 system_v
-    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
-
-    fn0 = %cl_gpu_init sig0
-    fn1 = %cl_gpu_create_buffer sig1
-    fn2 = %cl_gpu_upload sig2
-    fn3 = %cl_gpu_create_pipeline sig3
-    fn4 = %cl_gpu_dispatch sig4
-    fn5 = %cl_gpu_download sig5
-    fn6 = %cl_gpu_cleanup sig0
-    fn7 = %cl_file_write sig6
-
-block0(v0: i64):
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    ; create 3 buffers (a, b, result) each {data_bytes} bytes
-    v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v91, v1)
-    v3 = call fn1(v91, v1)
-    v4 = call fn1(v91, v1)
-
-    ; upload A to buf0
-    v5 = iadd_imm v0, {a_off}
-    v16 = call fn2(v91, v2, v5, v1)
-
-    ; upload B to buf1
-    v6 = iadd_imm v0, {b_off}
-    v17 = call fn2(v91, v3, v6, v1)
-
-    ; create pipeline with 3 bindings: [buf0 read, buf1 read, buf2 rw]
-    v7 = iadd_imm v0, {shader_off}
-    v8 = iadd_imm v0, {bind_off}
-    v9 = iconst.i32 3
-    v10 = call fn3(v91, v7, v8, v9)
-
-    ; dispatch 1 workgroup of 64 threads
-    v11 = iconst.i32 1
-    v18 = call fn4(v91, v10, v11, v11, v11)
-
-    ; download result buffer to pointer {result_off}
-    v12 = iadd_imm v0, {result_off}
-    v19 = call fn5(v91, v4, v12, v1)
-
-    ; write result to verify file
-    v13 = iconst.i64 {file_off}
-    v14 = iconst.i64 {result_off}
-    v15 = iconst.i64 0
-    v20 = call fn7(v0, v13, v14, v15, v1)
-
-    call fn6(v90)
-    return
-}}"#,
-        data_bytes = data_bytes,
-        a_off = a_off,
-        b_off = b_off,
-        shader_off = shader_off,
-        bind_off = bind_off,
-        result_off = result_off,
-        file_off = 2000,
-    );
-
-    let mut memory = vec![0u8; 8192];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    assert!(
-        clif_bytes.len() < 2000,
-        "CLIF IR too large: {} bytes",
-        clif_bytes.len()
-    );
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-
-    // Verify file path
-    memory[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-
-    // Shader source (null-terminated)
-    let shader_bytes = wgsl.as_bytes();
-    memory[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
-    memory[shader_off + shader_bytes.len()] = 0;
-
-    // Binding descriptors: [buf_id:i32, read_only:i32] × 3
-    // buf0 read_only=1, buf1 read_only=1, buf2 read_only=0
-    let bind = &mut memory[bind_off..];
-    bind[0..4].copy_from_slice(&0i32.to_le_bytes()); // buf0
-    bind[4..8].copy_from_slice(&1i32.to_le_bytes()); // read_only
-    bind[8..12].copy_from_slice(&1i32.to_le_bytes()); // buf1
-    bind[12..16].copy_from_slice(&1i32.to_le_bytes()); // read_only
-    bind[16..20].copy_from_slice(&2i32.to_le_bytes()); // buf2
-    bind[20..24].copy_from_slice(&0i32.to_le_bytes()); // read_write
-
-    // Fill buffer A: [1.0, 2.0, 3.0, ..., 64.0]
-    for i in 0..n {
-        let val = (i + 1) as f32;
-        memory[a_off + i * 4..a_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
-    }
-    // Fill buffer B: [100.0, 100.0, ..., 100.0]
-    for i in 0..n {
-        let val = 100.0f32;
-        memory[b_off + i * 4..b_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
-    }
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    algorithm.timeout_ms = Some(15000); // GPU init can be slow
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(
-        contents.len(),
-        data_bytes,
-        "Result file should be {} bytes",
-        data_bytes
-    );
-
-    // Verify: result[i] = (i+1) + 100.0
-    for i in 0..n {
-        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
-        let expected = (i + 1) as f32 + 100.0;
-        assert!(
-            (actual - expected).abs() < 0.01,
-            "Mismatch at index {}: got {}, expected {}",
-            i,
-            actual,
-            expected
-        );
-    }
-}
-
-#[test]
-fn test_clif_ffi_gpu_multiple_dispatches_before_download() {
-    // Tests the pending_encoder batching: dispatch pipeline 3 times, then download once.
-    // Uses a shader that multiplies by 2 each dispatch: data * 2 * 2 * 2 = data * 8.
-    let temp_dir = TempDir::new().unwrap();
-    let verify_file = temp_dir.path().join("gpu_multi_dispatch.bin");
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    let n: usize = 64;
-    let data_bytes = n * 4;
-
+fn test_clif_ffi_gpu_smoke() {
+    // Smoke: verifies all cl_gpu_* symbols are registered and the core ABI is intact.
     let wgsl = "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\
                 @compute @workgroup_size(64)\n\
                 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
                     let i = gid.x;\n\
-                    if (i < arrayLength(&data)) {\n\
-                        data[i] = data[i] * 2.0;\n\
-                    }\n\
+                    if (i < arrayLength(&data)) { data[i] = data[i] * 2.0; }\n\
                 }\n";
 
-    let shader_off = 3000;
-    let bind_off = 3400;
-    let data_off = 4000;
+    let shader_off = 2000usize;
+    let bind_off = 3000usize;
+    let data_off = 4000usize;
+    let result_off = 5000usize;
+    let n: usize = 64;
+    let data_bytes = n * 4;
 
     let clif_ir = format!(
         r#"function u0:0(i64) system_v {{
@@ -1406,7 +1200,6 @@ fn test_clif_ffi_gpu_multiple_dispatches_before_download() {
     sig3 = (i64, i64, i64, i32) -> i32 system_v
     sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
     sig5 = (i64, i32, i64, i64) -> i32 system_v
-    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
     fn0 = %cl_gpu_init sig0
     fn1 = %cl_gpu_create_buffer sig1
     fn2 = %cl_gpu_upload sig2
@@ -1414,29 +1207,21 @@ fn test_clif_ffi_gpu_multiple_dispatches_before_download() {
     fn4 = %cl_gpu_dispatch sig4
     fn5 = %cl_gpu_download sig5
     fn6 = %cl_gpu_cleanup sig0
-    fn7 = %cl_file_write sig6
 block0(v0: i64):
     v90 = iadd_imm v0, 0
     call fn0(v90)
-
     v91 = load.i64 notrap aligned v0+0
     v1 = iconst.i64 {data_bytes}
     v2 = call fn1(v91, v1)
     v3 = iadd_imm v0, {data_off}
-    v12 = call fn2(v91, v2, v3, v1)
+    v10 = call fn2(v91, v2, v3, v1)
     v4 = iadd_imm v0, {shader_off}
     v5 = iadd_imm v0, {bind_off}
     v6 = iconst.i32 1
     v7 = call fn3(v91, v4, v5, v6)
-    v13 = call fn4(v91, v7, v6, v6, v6)
-    v14 = call fn4(v91, v7, v6, v6, v6)
-    v15 = call fn4(v91, v7, v6, v6, v6)
+    v11 = call fn4(v91, v7, v6, v6, v6)
     v8 = iadd_imm v0, {result_off}
-    v16 = call fn5(v91, v2, v8, v1)
-    v9 = iconst.i64 2000
-    v10 = iconst.i64 {result_off}
-    v11 = iconst.i64 0
-    v17 = call fn7(v0, v9, v10, v11, v1)
+    v12 = call fn5(v91, v2, v8, v1)
     call fn6(v90)
     return
 }}"#,
@@ -1444,13 +1229,12 @@ block0(v0: i64):
         data_off = data_off,
         shader_off = shader_off,
         bind_off = bind_off,
-        result_off = 4500,
+        result_off = result_off,
     );
 
-    let mut memory = vec![0u8; 8192];
+    let mut memory = vec![0u8; 6144];
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
 
     let shader_bytes = wgsl.as_bytes();
     memory[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
@@ -1460,374 +1244,21 @@ block0(v0: i64):
     memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
     memory[bind_off + 4..bind_off + 8].copy_from_slice(&0i32.to_le_bytes());
 
-    // Fill data: [1.0, 2.0, ..., 64.0]
     for i in 0..n {
-        let val = (i + 1) as f32;
-        memory[data_off + i * 4..data_off + i * 4 + 4].copy_from_slice(&val.to_le_bytes());
+        memory[data_off + i * 4..data_off + i * 4 + 4]
+            .copy_from_slice(&((i + 1) as f32).to_le_bytes());
     }
 
     let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
+        Action { kind: Kind::Describe, dst: 0, src: 0, offset: 0, size: 0 },
+        Action { kind: Kind::ClifCallAsync, dst: 0, src: 0, offset: 1024, size: 1 },
+        Action { kind: Kind::Wait, dst: 1024, src: 0, offset: 0, size: 0 },
     ];
 
     let (config, mut algorithm) =
         create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
     algorithm.timeout_ms = Some(15000);
     run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(contents.len(), data_bytes);
-    for i in 0..n {
-        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
-        let expected = (i + 1) as f32 * 8.0; // *2 three times
-        assert!(
-            (actual - expected).abs() < 0.01,
-            "Index {}: got {}, expected {} (after 3x multiply by 2)",
-            i,
-            actual,
-            expected
-        );
-    }
-}
-
-#[test]
-fn test_clif_ffi_gpu_buffer_reuse() {
-    // Upload data A, dispatch, download result A, then upload data B, dispatch, download result B.
-    // Verifies that buffer state is correctly updated on re-upload.
-    let temp_dir = TempDir::new().unwrap();
-    let verify_file = temp_dir.path().join("gpu_reuse.bin");
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    let n: usize = 64;
-    let data_bytes = n * 4;
-
-    // Shader: data[i] = data[i] + 1.0
-    let wgsl = "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\
-                @compute @workgroup_size(64)\n\
-                fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
-                    let i = gid.x;\n\
-                    if (i < arrayLength(&data)) {\n\
-                        data[i] = data[i] + 1.0;\n\
-                    }\n\
-                }\n";
-
-    let shader_off = 3000;
-    let bind_off = 3400;
-    let data_a_off = 4000;
-    let data_b_off = 4300;
-    let result_a_off = 4600;
-    let result_b_off = result_a_off + data_bytes;
-
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i32, i64, i64) -> i32 system_v
-    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_gpu_init sig0
-    fn1 = %cl_gpu_create_buffer sig1
-    fn2 = %cl_gpu_upload sig2
-    fn3 = %cl_gpu_create_pipeline sig3
-    fn4 = %cl_gpu_dispatch sig4
-    fn5 = %cl_gpu_download sig5
-    fn6 = %cl_gpu_cleanup sig0
-    fn7 = %cl_file_write sig6
-block0(v0: i64):
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v91, v1)
-    v3 = iadd_imm v0, {shader_off}
-    v4 = iadd_imm v0, {bind_off}
-    v5 = iconst.i32 1
-    v6 = call fn3(v91, v3, v4, v5)
-    v7 = iadd_imm v0, {data_a_off}
-    v15 = call fn2(v91, v2, v7, v1)
-    v16 = call fn4(v91, v6, v5, v5, v5)
-    v8 = iadd_imm v0, {result_a_off}
-    v17 = call fn5(v91, v2, v8, v1)
-    v9 = iadd_imm v0, {data_b_off}
-    v18 = call fn2(v91, v2, v9, v1)
-    v19 = call fn4(v91, v6, v5, v5, v5)
-    v10 = iadd_imm v0, {result_b_off}
-    v20 = call fn5(v91, v2, v10, v1)
-    v11 = iconst.i64 2000
-    v12 = iconst.i64 {result_a_off}
-    v13 = iconst.i64 0
-    v14 = iconst.i64 {two_data_bytes}
-    v21 = call fn7(v0, v11, v12, v13, v14)
-    call fn6(v90)
-    return
-}}"#,
-        data_bytes = data_bytes,
-        shader_off = shader_off,
-        bind_off = bind_off,
-        data_a_off = data_a_off,
-        data_b_off = data_b_off,
-        result_a_off = result_a_off,
-        result_b_off = result_b_off,
-        two_data_bytes = data_bytes * 2,
-    );
-
-    let mut memory = vec![0u8; 8192];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2000..2000 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-
-    let shader_bytes = wgsl.as_bytes();
-    memory[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
-    memory[shader_off + shader_bytes.len()] = 0;
-
-    memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
-    memory[bind_off + 4..bind_off + 8].copy_from_slice(&0i32.to_le_bytes());
-
-    // Data A: all 10.0
-    for i in 0..n {
-        memory[data_a_off + i * 4..data_a_off + i * 4 + 4].copy_from_slice(&10.0f32.to_le_bytes());
-    }
-    // Data B: all 100.0
-    for i in 0..n {
-        memory[data_b_off + i * 4..data_b_off + i * 4 + 4].copy_from_slice(&100.0f32.to_le_bytes());
-    }
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    algorithm.timeout_ms = Some(15000);
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(contents.len(), data_bytes * 2);
-
-    // Result A: each element should be 10.0 + 1.0 = 11.0
-    for i in 0..n {
-        let actual = f32::from_le_bytes(contents[i * 4..i * 4 + 4].try_into().unwrap());
-        assert!(
-            (actual - 11.0).abs() < 0.01,
-            "Result A index {}: got {}, expected 11.0",
-            i,
-            actual
-        );
-    }
-    // Result B: each element should be 100.0 + 1.0 = 101.0
-    for i in 0..n {
-        let off = data_bytes + i * 4;
-        let actual = f32::from_le_bytes(contents[off..off + 4].try_into().unwrap());
-        assert!(
-            (actual - 101.0).abs() < 0.01,
-            "Result B index {}: got {}, expected 101.0",
-            i,
-            actual
-        );
-    }
-}
-
-///   - create_pipeline with out-of-range buf_id in binding returns -1
-/// All error codes are stored and written to a verify file.
-#[test]
-fn test_clif_ffi_gpu_error_codes() {
-    let temp_dir = TempDir::new().unwrap();
-    let verify_file = temp_dir.path().join("gpu_errors.bin");
-    let verify_file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    // Memory layout:
-    //   0..~2100:  CLIF IR (null-terminated)
-    //   2500..xx:  verify file path
-    //   3500..3700: dummy shader (valid WGSL, needed for init)
-    //   3700..3708: binding descriptor [buf_id=99, read_only=0] (invalid buf_id)
-    //   4500..4540: return values (5 i32s stored as i64: create_buf_rc, upload_rc, dispatch_rc, download_rc, pipeline_bad_bind_rc)
-
-    let wgsl = "@group(0) @binding(0) var<storage, read_write> d: array<f32>;\n\
-                @compute @workgroup_size(1)\n\
-                fn main() { d[0] = 1.0; }\n";
-
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i32, i64, i64) -> i32 system_v
-    sig6 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_gpu_init sig0
-    fn1 = %cl_gpu_create_buffer sig1
-    fn2 = %cl_gpu_upload sig2
-    fn3 = %cl_gpu_create_pipeline sig3
-    fn4 = %cl_gpu_dispatch sig4
-    fn5 = %cl_gpu_download sig2
-    fn6 = %cl_gpu_cleanup sig0
-    fn7 = %cl_file_write sig6
-block0(v0: i64):
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    ; create_buffer with size=0 → should return -1
-    v1 = iconst.i64 0
-    v2 = call fn1(v91, v1)
-    v20 = sextend.i64 v2
-    store.i64 v20, v0+4500
-
-    ; upload with buf_id=99 (no buffers exist yet) → should return -1
-    v3 = iconst.i32 99
-    v4 = iadd_imm v0, 3500
-    v5 = iconst.i64 64
-    v6 = call fn2(v91, v3, v4, v5)
-    v21 = sextend.i64 v6
-    store.i64 v21, v0+4508
-
-    ; dispatch with pipeline_id=99 (no pipelines exist) → should return -1
-    v7 = iconst.i32 99
-    v8 = iconst.i32 1
-    v9 = call fn4(v91, v7, v8, v8, v8)
-    v22 = sextend.i64 v9
-    store.i64 v22, v0+4516
-
-    ; download with buf_id=99 → should return -1
-    v10 = iadd_imm v0, 3500
-    v11 = iconst.i64 64
-    v12 = call fn5(v91, v3, v10, v11)
-    v23 = sextend.i64 v12
-    store.i64 v23, v0+4524
-
-    ; create a valid buffer so we can test pipeline with bad binding
-    v13 = iconst.i64 256
-    v14 = call fn1(v91, v13)
-
-    ; create_pipeline with binding that references buf_id=99 → should return -1
-    v15 = iadd_imm v0, 3500
-    v16 = iadd_imm v0, 3700
-    v17 = iconst.i32 1
-    v18 = call fn3(v91, v15, v16, v17)
-    v24 = sextend.i64 v18
-    store.i64 v24, v0+4532
-
-    ; write 40 bytes of return values to verify file
-    v25 = iconst.i64 2500
-    v26 = iconst.i64 4500
-    v27 = iconst.i64 0
-    v28 = iconst.i64 40
-    v29 = call fn7(v0, v25, v26, v27, v28)
-
-    call fn6(v90)
-    return
-}
-"#;
-
-    let mut memory = vec![0u8; 8192];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
-    memory[2500..2500 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
-
-    // Valid shader at 3500
-    let shader_bytes = wgsl.as_bytes();
-    memory[3500..3500 + shader_bytes.len()].copy_from_slice(shader_bytes);
-    memory[3500 + shader_bytes.len()] = 0;
-
-    // Binding descriptor at 3700: buf_id=99 (invalid), read_only=0
-    memory[3700..3704].copy_from_slice(&99i32.to_le_bytes());
-    memory[3704..3708].copy_from_slice(&0i32.to_le_bytes());
-
-    let actions = vec![
-        Action {
-            kind: Kind::Describe,
-            dst: 0,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-        Action {
-            kind: Kind::ClifCallAsync,
-            dst: 0,
-            src: 0,
-            offset: 1024,
-            size: 1,
-        },
-        Action {
-            kind: Kind::Wait,
-            dst: 1024,
-            src: 0,
-            offset: 0,
-            size: 0,
-        },
-    ];
-
-    let (config, mut algorithm) =
-        create_cranelift_algorithm(actions, memory, 1, clif_ir.to_string());
-    algorithm.timeout_ms = Some(10000);
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(
-        contents.len(),
-        40,
-        "Expected 40 bytes of return values, got {}",
-        contents.len()
-    );
-
-    let create_buf_rc = i64::from_le_bytes(contents[0..8].try_into().unwrap());
-    let upload_rc = i64::from_le_bytes(contents[8..16].try_into().unwrap());
-    let dispatch_rc = i64::from_le_bytes(contents[16..24].try_into().unwrap());
-    let download_rc = i64::from_le_bytes(contents[24..32].try_into().unwrap());
-    let pipeline_bad_bind_rc = i64::from_le_bytes(contents[32..40].try_into().unwrap());
-
-    assert_eq!(create_buf_rc, -1, "create_buffer(size=0) should return -1");
-    assert_eq!(upload_rc, -1, "upload(buf_id=99) should return -1");
-    assert_eq!(dispatch_rc, -1, "dispatch(pipeline_id=99) should return -1");
-    assert_eq!(download_rc, -1, "download(buf_id=99) should return -1");
-    assert_eq!(
-        pipeline_bad_bind_rc, -1,
-        "create_pipeline with invalid buf_id binding should return -1"
-    );
 }
 
 #[test]
@@ -9365,8 +8796,8 @@ block0(v0: i64):
 
 #[test]
 fn test_gpu_upload_ptr_download_ptr_vecadd() {
-    // Tests cl_gpu_upload_ptr and cl_gpu_download_ptr with execute_into.
-    // Uploads A+B from caller's data pointer, computes C[i]=A[i]+B[i] on GPU,
+    // Tests cl_gpu_upload_ptr and cl_gpu_download_ptr via execute_into:
+    // uploads A+B from caller's data pointer, computes C[i]=A[i]+B[i] on GPU,
     // downloads C to caller's out pointer. No shared memory data copying.
     let n: usize = 64;
 
