@@ -176,7 +176,6 @@ dependencies = [
  "arrow-schema",
  "base-types",
  "cranelift-codegen",
- "cranelift-frontend",
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
@@ -185,9 +184,6 @@ dependencies = [
  "liblmdb-sys",
  "lmdb-zero",
  "pollster 0.3.0",
- "portable-atomic",
- "quanta",
- "rand 0.8.5",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -809,18 +805,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b2d0d9618275474fbf679dd018ac6e009acbd6ae6850f6a67be33fb3b00b323"
 dependencies = [
  "cranelift-bitset",
-]
-
-[[package]]
-name = "cranelift-frontend"
-version = "0.116.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fac41e16729107393174b0c9e3730fb072866100e1e64e80a1a963b2e484d57"
-dependencies = [
- "cranelift-codegen",
- "log",
- "smallvec",
- "target-lexicon 0.13.4",
 ]
 
 [[package]]
@@ -2722,21 +2706,6 @@ dependencies = [
  "pyo3-build-config",
  "quote",
  "syn 2.0.104",
-]
-
-[[package]]
-name = "quanta"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3ab5a9d756f0d97bdc89019bd2e4ea098cf9cde50ee7564dde6b81ccc8f06c7"
-dependencies = [
- "crossbeam-utils",
- "libc",
- "once_cell",
- "raw-cpuid 11.5.0",
- "wasi",
- "web-sys",
- "winapi",
 ]
 
 [[package]]
