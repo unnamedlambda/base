@@ -125,28 +125,33 @@ block0(v0: i64):
 """
 
 
+LEGACY_RUNTIME_HEADER = {
+    "data_ptr_offset": 8,
+    "data_len_offset": 16,
+    "out_ptr_offset": 24,
+    "out_len_offset": 32,
+}
+
+
 def make_double_config():
     return json.dumps({
         "cranelift_ir": DOUBLE_I32_CLIF,
         "memory_size": 256,
+        "runtime_header": LEGACY_RUNTIME_HEADER,
         "context_offset": 0,
         "initial_memory": [0] * 256,
     })
 
 
 def make_algorithm():
-    return json.dumps({
-        "actions": [{"kind": "clif_call", "dst": 0, "src": 1, "offset": 0, "size": 0}],
-        "cranelift_units": 0,
-        "timeout_ms": 10000,
-        "output": [],
-    })
+    return json.dumps({"fn_idx": 1, "output": []})
 
 
 def make_arrow_config():
     return json.dumps({
         "cranelift_ir": ARROW_CLIF,
         "memory_size": 1024,
+        "runtime_header": LEGACY_RUNTIME_HEADER,
         "context_offset": 0,
         "initial_memory": [0] * 1024,
     })
@@ -155,9 +160,7 @@ def make_arrow_config():
 def make_arrow_algorithm_i64():
     """Single i64 column output."""
     return json.dumps({
-        "actions": [{"kind": "clif_call", "dst": 0, "src": 1, "offset": 0, "size": 0}],
-        "cranelift_units": 0,
-        "timeout_ms": 10000,
+        "fn_idx": 1,
         "output": [{
             "columns": [{"name": "ids", "dtype": "I64", "data_offset": 48, "len_offset": 0}],
             "row_count_offset": 40,
@@ -168,9 +171,7 @@ def make_arrow_algorithm_i64():
 def make_arrow_algorithm_f64():
     """Single f64 column output."""
     return json.dumps({
-        "actions": [{"kind": "clif_call", "dst": 0, "src": 1, "offset": 0, "size": 0}],
-        "cranelift_units": 0,
-        "timeout_ms": 10000,
+        "fn_idx": 1,
         "output": [{
             "columns": [{"name": "scores", "dtype": "F64", "data_offset": 304, "len_offset": 0}],
             "row_count_offset": 40,
@@ -181,9 +182,7 @@ def make_arrow_algorithm_f64():
 def make_arrow_algorithm_utf8():
     """Single utf8 column output."""
     return json.dumps({
-        "actions": [{"kind": "clif_call", "dst": 0, "src": 1, "offset": 0, "size": 0}],
-        "cranelift_units": 0,
-        "timeout_ms": 10000,
+        "fn_idx": 1,
         "output": [{
             "columns": [{"name": "names", "dtype": "Utf8", "data_offset": 560, "len_offset": 816}],
             "row_count_offset": 40,
@@ -194,9 +193,7 @@ def make_arrow_algorithm_utf8():
 def make_arrow_algorithm_multi_column():
     """Multiple columns (i64 + f64) in one batch."""
     return json.dumps({
-        "actions": [{"kind": "clif_call", "dst": 0, "src": 1, "offset": 0, "size": 0}],
-        "cranelift_units": 0,
-        "timeout_ms": 10000,
+        "fn_idx": 1,
         "output": [{
             "columns": [
                 {"name": "ids", "dtype": "I64", "data_offset": 48, "len_offset": 0},
@@ -210,9 +207,7 @@ def make_arrow_algorithm_multi_column():
 def make_arrow_algorithm_multi_batch():
     """Two separate batches from the same execution."""
     return json.dumps({
-        "actions": [{"kind": "clif_call", "dst": 0, "src": 1, "offset": 0, "size": 0}],
-        "cranelift_units": 0,
-        "timeout_ms": 10000,
+        "fn_idx": 1,
         "output": [
             {
                 "columns": [{"name": "ids", "dtype": "I64", "data_offset": 48, "len_offset": 0}],
@@ -274,6 +269,7 @@ class TestBase:
         config_json = json.dumps({
             "cranelift_ir": "not valid clif",
             "memory_size": 256,
+            "runtime_header": LEGACY_RUNTIME_HEADER,
             "context_offset": 0,
             "initial_memory": [0] * 256,
         })
@@ -536,13 +532,12 @@ block0(v0: i64):
         config = BaseConfig(json.dumps({
             "cranelift_ir": noop_clif,
             "memory_size": 256,
+            "runtime_header": LEGACY_RUNTIME_HEADER,
             "context_offset": 0,
             "initial_memory": [0] * 256,
         }))
         alg = Algorithm(json.dumps({
-            "actions": [{"kind": "clif_call", "dst": 0, "src": 1, "offset": 0, "size": 0}],
-            "cranelift_units": 0,
-            "timeout_ms": 10000,
+            "fn_idx": 1,
             "output": [{
                 "columns": [{"name": "x", "dtype": "I64", "data_offset": 48, "len_offset": 0}],
                 "row_count_offset": 40,
