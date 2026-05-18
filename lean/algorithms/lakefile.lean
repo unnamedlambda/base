@@ -50,6 +50,7 @@ lean_lib MatmulAlgorithm
 lean_lib RaytraceAlgorithm
 lean_lib SatAlgorithm
 lean_lib SceneAlgorithm
+lean_lib BlackHoleAlgorithm
 lean_lib Sha256Algorithm
 lean_lib Qwen2Common
 lean_lib Qwen2Algorithm

@@ -1,0 +1,18 @@
+[package]
+name = "blackhole"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../../base" }
+bincode = "1"
+
+[build-dependencies]
+build-support = { path = "../../build-support" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "blackhole"
+path = "src/main.rs"
