@@ -30,7 +30,7 @@ source "$VENV/bin/activate"
 pip install -q maturin
 
 echo "Building py_base ..."
-(cd "$SCRIPT_DIR/.." && maturin develop -q)
+(cd "$SCRIPT_DIR/.." && maturin develop --release -q)
 
 pip install -q -r "$SCRIPT_DIR/requirements-bench.txt"
 
