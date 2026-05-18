@@ -103,21 +103,6 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let expected = generate_csv(&csv_path, n);
         let payload = build_payload(&csv_path, &output_path);
 
-        // Python
-        let python_ms = harness::median_of(iterations, || {
-            match harness::run_python("csv_sum.py", &[&csv_path]) {
-                Some((ms, stdout)) => {
-                    if let Ok(sum) = stdout.parse::<i64>() {
-                        if sum != expected {
-                            eprintln!("WARNING: Python sum {} != expected {}", sum, expected);
-                        }
-                    }
-                    ms
-                }
-                None => f64::NAN,
-            }
-        });
-
         // Pure Rust
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -168,12 +153,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         results.push(BenchResult {
             name: format!("CSV ({})", format_count(n)),
-            col_a_ms: if python_ms.is_nan() {
-                None
-            } else {
-                Some(python_ms)
-            },
-            col_b_ms: Some(rust_ms),
+            col_a_ms: Some(rust_ms),
+            col_b_ms: None,
             base_ms,
             verified,
         });

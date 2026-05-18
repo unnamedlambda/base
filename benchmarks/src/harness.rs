@@ -1,45 +1,9 @@
-use std::path::Path;
-use std::process::Command;
-use std::time::Instant;
-
 pub struct BenchResult {
     pub name: String,
     pub col_a_ms: Option<f64>,
     pub col_b_ms: Option<f64>,
     pub base_ms: f64,
     pub verified: Option<bool>,
-}
-
-/// Run a Python script and return wall-clock time in ms, plus stdout.
-/// Returns None if python3 is not available or the script printed SKIP to stderr.
-pub fn run_python(script: &str, args: &[&str]) -> Option<(f64, String)> {
-    let script_path = python_dir().join(script);
-    if !script_path.exists() {
-        return None;
-    }
-
-    let python_cmd = "python3";
-
-    let start = Instant::now();
-    let output = Command::new(&python_cmd)
-        .arg(&script_path)
-        .args(args)
-        .output();
-
-    let output = match output {
-        Ok(o) => o,
-        Err(_) => return None,
-    };
-
-    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if stderr.contains("SKIP") || !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Some((elapsed_ms, stdout))
 }
 
 /// Run a benchmark function `iterations` times and return the median.
@@ -97,10 +61,6 @@ pub fn print_results(results: &[BenchResult], col_a: &str, col_b: &str) {
     println!();
 }
 
-pub fn print_table(results: &[BenchResult]) {
-    print_results(results, "Python", "Rust");
-}
-
 pub fn print_burn_table(results: &[BenchResult]) {
     print_results(results, "Rust", "Burn");
 }
@@ -134,11 +94,6 @@ pub fn print_results_2col(results: &[BenchResult], col_a: &str) {
         );
     }
     println!();
-}
-
-fn python_dir() -> std::path::PathBuf {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest).join("python")
 }
 
 // ---------------------------------------------------------------------------

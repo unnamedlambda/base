@@ -79,24 +79,6 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let expected = generate_text(&text_path, n);
         let payload = build_payload(&text_path, &output_path);
 
-        // Python
-        let python_ms = harness::median_of(iterations, || {
-            match harness::run_python("regex_bench.py", &[&text_path]) {
-                Some((ms, stdout)) => {
-                    if let Ok(count) = stdout.parse::<usize>() {
-                        if count != expected {
-                            eprintln!(
-                                "WARNING: Python regex count {} != expected {} (n={})",
-                                count, expected, n
-                            );
-                        }
-                    }
-                    ms
-                }
-                None => f64::NAN,
-            }
-        });
-
         // Pure Rust
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -147,12 +129,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         results.push(BenchResult {
             name: format!("Regex ({})", format_count(n)),
-            col_a_ms: if python_ms.is_nan() {
-                None
-            } else {
-                Some(python_ms)
-            },
-            col_b_ms: Some(rust_ms),
+            col_a_ms: Some(rust_ms),
+            col_b_ms: None,
             base_ms,
             verified,
         });

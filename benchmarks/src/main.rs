@@ -86,17 +86,17 @@ fn main() {
 
     if run_csv {
         let results = csv_bench::run(rounds);
-        harness::print_table(&results);
+        harness::print_results_2col(&results, "Rust");
     }
 
     if run_json {
         let results = json_bench::run(rounds);
-        harness::print_table(&results);
+        harness::print_results_2col(&results, "Rust");
     }
 
     if run_regex {
         let results = regex_bench::run(rounds);
-        harness::print_table(&results);
+        harness::print_results_2col(&results, "Rust");
     }
 
     if run_matmul {
@@ -141,11 +141,11 @@ fn main() {
 
     if run_strsearch {
         let results = string_search_bench::run(rounds);
-        harness::print_table(&results);
+        harness::print_results_2col(&results, "Rust");
     }
 
     if run_wc {
         let results = wordcount_bench::run(rounds);
-        harness::print_table(&results);
+        harness::print_results_2col(&results, "Rust");
     }
 }
