@@ -30,17 +30,6 @@ pub struct RuntimeHeader {
     pub out_len_offset: usize,
 }
 
-impl Default for RuntimeHeader {
-    fn default() -> Self {
-        Self {
-            data_ptr_offset: 0x18,
-            data_len_offset: 0x20,
-            out_ptr_offset: 0x28,
-            out_len_offset: 0x30,
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Setup {
     pub cranelift_ir: String,
