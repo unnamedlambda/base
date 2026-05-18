@@ -167,9 +167,10 @@ def inferAlgorithm : Algorithm := { fn_idx := u32 3 }
 
 def artifacts : Array Json :=
   #[
-    toJsonEntry "cuda_rmsnorm_load" buildConfig loadAlgorithm,
-    toJsonEntry "cuda_rmsnorm_prep" buildConfig prepAlgorithm,
-    toJsonEntry "cuda_rmsnorm_infer" buildConfig inferAlgorithm,
+    toJsonArtifact "cuda_rmsnorm" buildConfig loadAlgorithm [
+      ("prep",  prepAlgorithm),
+      ("infer", inferAlgorithm)
+    ]
   ]
 
 end CudaRmsNormPersist

@@ -57,7 +57,9 @@ def parse_output(content: str) -> dict[str, int]:
 
 
 def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
-    engine, alg = py_base.load(algo_path)
+    artifact = py_base.load_artifact(algo_path)
+    engine = py_base.Base(artifact.config)
+    alg = artifact.main
     results = []
 
     for n in SIZES:
@@ -75,7 +77,9 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
         def run_pybase():
             if os.path.exists(output_path):
                 os.remove(output_path)
-            eng, a = py_base.load(algo_path)
+            art = py_base.load_artifact(algo_path)
+            eng = py_base.Base(art.config)
+            a = art.main
             return harness.time_ms(lambda: eng.execute(a, payload))
 
         # Warmup

@@ -1,5 +1,5 @@
 use crate::harness::{self, format_count, gen_floats, BenchResult};
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 
 // ---------------------------------------------------------------------------
 // Vector Addition Benchmark
@@ -15,10 +15,6 @@ const VECOPS_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/vecops_algorithm.bin"
 ));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(VECOPS_ARTIFACT).expect("Failed to deserialize vecops artifact")
-}
 
 fn rust_vec_add(a: &[f32], b: &[f32]) -> f64 {
     let mut sum = 0.0f64;
@@ -65,8 +61,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_artifact();
-    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+    let artifact = Artifact::from_bytes(VECOPS_ARTIFACT);
+    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
     for &n in sizes {
         let a = gen_floats(n, 42);
@@ -99,11 +95,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let mut out_buf = [0u8; 8];
 
         // Warmup
-        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

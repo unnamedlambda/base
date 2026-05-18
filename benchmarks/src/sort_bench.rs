@@ -1,14 +1,10 @@
 use crate::harness::{self, format_count, BenchResult};
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 
 const SORT_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/sort_algorithm.bin"
 ));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(SORT_ARTIFACT).expect("Failed to deserialize sort artifact")
-}
 
 fn generate_data(n: usize) -> Vec<i32> {
     let mut values = Vec::with_capacity(n);
@@ -67,8 +63,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let sizes = [10_000, 100_000, 500_000, 1_000_000, 5_000_000];
     let mut results = Vec::new();
 
-    let (config, alg) = load_artifact();
-    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+    let artifact = Artifact::from_bytes(SORT_ARTIFACT);
+    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
     for &n in &sizes {
         let label = format!("Sort ({})", format_count(n));
@@ -86,12 +82,12 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         });
 
         // Warmup Base
-        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
         // Base
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

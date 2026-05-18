@@ -42,7 +42,9 @@ def build_payload(text_path: str, output_path: str) -> bytes:
 
 
 def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
-    engine, alg = py_base.load(algo_path)
+    artifact = py_base.load_artifact(algo_path)
+    engine = py_base.Base(artifact.config)
+    alg = artifact.main
     results = []
 
     for n in SIZES:

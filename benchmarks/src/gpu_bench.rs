@@ -1,5 +1,5 @@
 use crate::harness::{self, BenchResult};
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 type Gpu = burn::backend::wgpu::Wgpu;
 
 const GPU_VECADD_ARTIFACT: &[u8] = include_bytes!(concat!(
@@ -14,19 +14,6 @@ const GPU_REDUCTION_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/gpu_reduction_algorithm.bin"
 ));
-
-fn load_vecadd_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_VECADD_ARTIFACT).expect("Failed to deserialize gpu_vecadd artifact")
-}
-
-fn load_matmul_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_MATMUL_ARTIFACT).expect("Failed to deserialize gpu_matmul artifact")
-}
-
-fn load_reduction_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_REDUCTION_ARTIFACT)
-        .expect("Failed to deserialize gpu_reduction artifact")
-}
 
 use harness::{build_f32_payload, f32_sum, format_count, gen_floats};
 
@@ -179,8 +166,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- VecAdd ----
     {
-        let (config, alg) = load_vecadd_artifact();
-        let mut base_instance = base::Base::new(config).expect("Base::new failed");
+        let artifact = Artifact::from_bytes(GPU_VECADD_ARTIFACT);
+        let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
         for &n in &[256_000usize, 500_000] {
             eprintln!("  VecAdd {} ...", format_count(n));
@@ -194,7 +181,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
             // Warmup
             std::hint::black_box(burn_vec_add_gpu(&a, &b, &burn_dev));
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
             let burn_ms = harness::median_of(iterations, || {
                 let start = std::time::Instant::now();
@@ -204,7 +191,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
             let base_ms = harness::median_of(iterations, || {
                 let start = std::time::Instant::now();
-                let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+                let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
                 start.elapsed().as_secs_f64() * 1000.0
             });
 
@@ -228,8 +215,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- MatMul ----
     {
-        let (config, alg) = load_matmul_artifact();
-        let mut base_instance = base::Base::new(config).expect("Base::new failed");
+        let artifact = Artifact::from_bytes(GPU_MATMUL_ARTIFACT);
+        let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
         for &n in &[256usize, 512] {
             eprintln!("  MatMul {}x{} ...", n, n);
@@ -244,7 +231,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
             // Warmup
             std::hint::black_box(burn_matmul_gpu(&a, &b, n, &burn_dev));
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
             let burn_ms = harness::median_of(iterations, || {
                 let start = std::time::Instant::now();
@@ -254,7 +241,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
             let base_ms = harness::median_of(iterations, || {
                 let start = std::time::Instant::now();
-                let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+                let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
                 start.elapsed().as_secs_f64() * 1000.0
             });
 
@@ -273,8 +260,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- Reduction (partial sums, groups of 64) ----
     {
-        let (config, alg) = load_reduction_artifact();
-        let mut base_instance = base::Base::new(config).expect("Base::new failed");
+        let artifact = Artifact::from_bytes(GPU_REDUCTION_ARTIFACT);
+        let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
         for &n in &[256_000usize, 512_000, 896_000] {
             let num_groups = n / 64;
@@ -292,7 +279,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
             // Warmup
             std::hint::black_box(burn_reduction_gpu(&data, num_groups, &burn_dev));
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
             let burn_ms = harness::median_of(iterations, || {
                 let start = std::time::Instant::now();
@@ -302,7 +289,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
             let base_ms = harness::median_of(iterations, || {
                 let start = std::time::Instant::now();
-                let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+                let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
                 start.elapsed().as_secs_f64() * 1000.0
             });
 

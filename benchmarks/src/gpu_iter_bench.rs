@@ -1,5 +1,5 @@
 use crate::harness::{self, BenchResult};
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 
 // ---------------------------------------------------------------------------
 // Iterative GPU Benchmark: apply a trivial kernel N times to the same data.
@@ -17,10 +17,6 @@ const GPU_ITER_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/gpu_iter_algorithm.bin"
 ));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(GPU_ITER_ARTIFACT).expect("Failed to deserialize gpu_iter artifact")
-}
 
 const WGSL_SCALE: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<f32>;
@@ -390,8 +386,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let num_groups = (n + 63) / 64;
     let out_size = num_groups * 4;
 
-    let (config, alg) = load_artifact();
-    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+    let artifact = Artifact::from_bytes(GPU_ITER_ARTIFACT);
+    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
     for &passes in &[1, 10, 100, 500, 1000] {
         let label = format!("{}x scale {}", passes, format_count(n));
@@ -405,7 +401,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Warmup all three
         std::hint::black_box(wgpu_iterative(&data, passes));
         std::hint::black_box(burn_iterative(&data, passes));
-        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
         // Raw wgpu (GPU-resident)
         let wgpu_ms = harness::median_of(iterations, || {
@@ -424,7 +420,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Base+GPU (GPU-resident via CLIF loop)
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

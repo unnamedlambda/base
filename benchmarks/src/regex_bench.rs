@@ -1,4 +1,4 @@
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -9,10 +9,6 @@ const REGEX_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/regex_algorithm.bin"
 ));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(REGEX_ARTIFACT).expect("Failed to deserialize regex artifact")
-}
 
 const VOCABULARY: &[&str] = &[
     "the", "running", "of", "singing", "and", "to", "jumping", "in", "a", "is", "that", "finding",
@@ -69,8 +65,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_artifact();
-    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+    let artifact = Artifact::from_bytes(REGEX_ARTIFACT);
+    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
     for &n in &sizes {
         let text_path = format!("/tmp/bench-data/regex_{}.txt", n);
@@ -96,12 +92,12 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Base (Cranelift JIT) — execute with payload, verify output file
         // Warmup
         let _ = fs::remove_file(&output_path);
-        let _ = base_instance.execute(&alg, &payload);
+        let _ = base_instance.execute(&artifact.main, &payload);
 
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
             let start = std::time::Instant::now();
-            let _ = base_instance.execute(&alg, &payload);
+            let _ = base_instance.execute(&artifact.main, &payload);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

@@ -5,7 +5,7 @@
 //! tokenizer, stdin/stdout chat loop). End-to-end behavior is covered by
 //! `tests/golden_cli.rs`.
 
-use base::{init_tracing, Algorithm, Base, BaseConfig};
+use base::{init_tracing, Base, Artifact};
 
 const QWEN2_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/Qwen2Algorithm/qwen2.bin"));
 
@@ -26,10 +26,10 @@ fn main() {
         data.push(0);
     }
 
-    let (config, alg): (BaseConfig, Algorithm) =
-        bincode::deserialize(QWEN2_BINARY).expect("deserialize qwen2");
-    let mut base = Base::new(config).expect("Base::new");
+    let artifact = Artifact::from_bytes(QWEN2_BINARY);
+    let mut base = Base::new(artifact.config).expect("Base::new");
 
     eprintln!("Starting qwen2 (weights={weights_path}, tokenizer={tokenizer_path})");
-    base.execute_into(&alg, &data, &mut []).expect("qwen2 run");
+    base.execute_into(&artifact.main, &data, &mut [])
+        .expect("qwen2 run");
 }

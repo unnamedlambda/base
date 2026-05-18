@@ -339,10 +339,11 @@ def stackAlgorithm : Algorithm := { fn_idx := u32 6 }
 
 def artifacts : Array Json :=
   #[
-    toJsonEntry "cuda_softmax_load" buildConfig loadAlgorithm,
-    toJsonEntry "cuda_softmax_prep" buildConfig prepAlgorithm,
-    toJsonEntry "cuda_softmax_infer" buildConfig inferAlgorithm,
-    toJsonEntry "cuda_softmax_stack" buildConfig stackAlgorithm,
+    toJsonArtifact "cuda_softmax" buildConfig loadAlgorithm [
+      ("prep",  prepAlgorithm),
+      ("infer", inferAlgorithm),
+      ("stack", stackAlgorithm)
+    ]
   ]
 
 end CudaSoftmaxPersist

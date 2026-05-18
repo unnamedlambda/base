@@ -150,7 +150,7 @@ structure B where
   itoaWriteDigit   : IR.DeclaredBlock
   itoaDone         : IR.DeclaredBlock
 
--- ---- Sub-function 1: Setup, file read, skip_spaces ----
+-- ---- Sub-function 1: BaseConfig, file read, skip_spaces ----
 def emitSetup (k : K) (b : B) : IRBuilder Val := do
   -- Read source file
   let _ ← readFile k.ptr k.fnFileRead INPUT_PATH SOURCE_BUF

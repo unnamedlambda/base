@@ -398,11 +398,12 @@ def stack32Algorithm : Algorithm := { fn_idx := u32 7 }
 
 def artifacts : Array Json :=
   #[
-    toJsonEntry "cuda_decoder_load" buildConfig loadAlgorithm,
-    toJsonEntry "cuda_decoder_prep" buildConfig prepAlgorithm,
-    toJsonEntry "cuda_decoder_infer" buildConfig inferAlgorithm,
-    toJsonEntry "cuda_decoder_stack16" buildConfig stack16Algorithm,
-    toJsonEntry "cuda_decoder_stack32" buildConfig stack32Algorithm,
+    toJsonArtifact "cuda_decoder" buildConfig loadAlgorithm [
+      ("prep",    prepAlgorithm),
+      ("infer",   inferAlgorithm),
+      ("stack16", stack16Algorithm),
+      ("stack32", stack32Algorithm)
+    ]
   ]
 
 end CudaDecoderLayer

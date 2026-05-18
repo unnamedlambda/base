@@ -1,7 +1,7 @@
 pub use arrow_array::RecordBatch;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-pub use base_types::{Algorithm, BaseConfig, OutputBatchSchema, OutputColumn, OutputType};
+pub use base_types::{Algorithm, Artifact, BaseConfig, OutputBatchSchema, OutputColumn, OutputType};
 use std::{
     pin::Pin,
     sync::{Arc, Once},

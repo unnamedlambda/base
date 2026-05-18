@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OutputType {
@@ -55,4 +56,18 @@ pub struct BaseConfig {
 pub struct Algorithm {
     pub fn_idx: u32,
     pub output: Vec<OutputBatchSchema>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Artifact {
+    pub config: BaseConfig,
+    pub main: Algorithm,
+    #[serde(default)]
+    pub extras: HashMap<String, Algorithm>,
+}
+
+impl Artifact {
+    pub fn from_bytes(bytes: &[u8]) -> Artifact {
+        bincode::deserialize(bytes).expect("failed to deserialize artifact")
+    }
 }

@@ -281,10 +281,11 @@ def stackAlgorithm : Algorithm := { fn_idx := u32 6 }
 
 def artifacts : Array Json :=
   #[
-    toJsonEntry "cuda_decode_attn_load" buildConfig loadAlgorithm,
-    toJsonEntry "cuda_decode_attn_prep" buildConfig prepAlgorithm,
-    toJsonEntry "cuda_decode_attn_infer" buildConfig inferAlgorithm,
-    toJsonEntry "cuda_decode_attn_stack" buildConfig stackAlgorithm,
+    toJsonArtifact "cuda_decode_attn" buildConfig loadAlgorithm [
+      ("prep",  prepAlgorithm),
+      ("infer", inferAlgorithm),
+      ("stack", stackAlgorithm)
+    ]
   ]
 
 end CudaDecodeAttention

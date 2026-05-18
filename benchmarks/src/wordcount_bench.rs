@@ -1,4 +1,4 @@
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -8,10 +8,6 @@ use crate::harness::{self, format_count, BenchResult};
 
 const WC_ARTIFACT: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/RustBenchmarks/wc_algorithm.bin"));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(WC_ARTIFACT).expect("Failed to deserialize wc artifact")
-}
 
 const VOCABULARY: &[&str] = &[
     "the", "of", "and", "to", "in", "a", "is", "that", "for", "it", "was", "on", "are", "as",
@@ -96,18 +92,18 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // accumulates across execute() calls (ht_increment on handle 0 persists).
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
-            let (config, alg) = load_artifact();
-            let mut base_instance = base::Base::new(config).expect("Base::new failed");
+            let artifact = Artifact::from_bytes(WC_ARTIFACT);
+            let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
             let start = std::time::Instant::now();
-            let _ = base_instance.execute(&alg, &payload);
+            let _ = base_instance.execute(&artifact.main, &payload);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
         // Run one more time with fresh instance for verification
         let _ = fs::remove_file(&output_path);
-        let (config, alg) = load_artifact();
-        let mut base_instance = base::Base::new(config).expect("Base::new failed");
-        let _ = base_instance.execute(&alg, &payload);
+        let artifact = Artifact::from_bytes(WC_ARTIFACT);
+        let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+        let _ = base_instance.execute(&artifact.main, &payload);
 
         let verified = if let Ok(content) = fs::read_to_string(&output_path) {
             let got = parse_output(content.trim());

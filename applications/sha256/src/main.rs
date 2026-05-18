@@ -1,4 +1,4 @@
-use base::{run, Algorithm, BaseConfig};
+use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/Sha256Algorithm/sha256_app.bin"));
@@ -14,8 +14,7 @@ fn main() {
     }
     let input_path = &args[1];
 
-    let (mut config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
-        .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
+    let mut artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 
     // Write input filename into initial_memory (null-terminated)
     let path_bytes = input_path.as_bytes();
@@ -23,11 +22,11 @@ fn main() {
         path_bytes.len() < 255,
         "Input path too long (max 254 chars)"
     );
-    config.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
+    artifact.config.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
         .copy_from_slice(path_bytes);
-    config.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
+    artifact.config.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
 
-    match run(config, alg) {
+    match run(artifact.config, artifact.main) {
         Ok(_) => match std::fs::read_to_string("sha256_output.txt") {
             Ok(result) => print!("{}", result),
             Err(e) => eprintln!("Failed to read output: {}", e),

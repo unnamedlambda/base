@@ -1,4 +1,4 @@
-use base::{init_tracing, run, Algorithm, BaseConfig};
+use base::{init_tracing, run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/CsvAlgorithm/csv_app.bin"));
@@ -6,11 +6,10 @@ const ARTIFACT_BINARY: &[u8] =
 fn main() {
     init_tracing();
 
-    let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
-        .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 
     let start = std::time::Instant::now();
-    match run(config, alg) {
+    match run(artifact.config, artifact.main) {
         Ok(_) => {
             let elapsed = start.elapsed();
             eprintln!(

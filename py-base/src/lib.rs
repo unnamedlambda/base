@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 use arrow_array::ffi::{to_ffi, FFI_ArrowArray};
 use arrow_array::{Array, RecordBatch, StructArray};
 use arrow_schema::ffi::FFI_ArrowSchema;
-use base_types::{Algorithm, BaseConfig};
+use base_types::{Algorithm, Artifact, BaseConfig};
 
 #[pyclass(name = "BaseConfig")]
 struct PyBaseConfig {
@@ -22,6 +22,7 @@ impl PyBaseConfig {
 }
 
 #[pyclass(name = "Algorithm")]
+#[derive(Clone)]
 struct PyAlgorithm {
     inner: Algorithm,
 }
@@ -33,6 +34,43 @@ impl PyAlgorithm {
         let inner: Algorithm = serde_json::from_str(json)
             .map_err(|e| PyValueError::new_err(format!("Invalid Algorithm JSON: {}", e)))?;
         Ok(Self { inner })
+    }
+}
+
+#[pyclass(name = "Artifact")]
+struct PyArtifact {
+    inner: Artifact,
+}
+
+#[pymethods]
+impl PyArtifact {
+    #[getter]
+    fn config(&self) -> PyBaseConfig {
+        PyBaseConfig {
+            inner: self.inner.config.clone(),
+        }
+    }
+
+    #[getter]
+    fn main(&self) -> PyAlgorithm {
+        PyAlgorithm {
+            inner: self.inner.main.clone(),
+        }
+    }
+
+    #[getter]
+    fn extras(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        for (name, alg) in &self.inner.extras {
+            let py_alg = Py::new(
+                py,
+                PyAlgorithm {
+                    inner: alg.clone(),
+                },
+            )?;
+            dict.set_item(name, py_alg)?;
+        }
+        Ok(dict.into())
     }
 }
 
@@ -128,18 +166,15 @@ impl PyBase {
     }
 }
 
-/// Load a pre-serialized artifact from a JSON file usually produced by `lake env lean --run`.
-/// The file must contain a JSON array `[BaseConfig, Algorithm]`.
-/// Returns a JIT-compiled Base instance and the Algorithm from that artifact, ready to use.
+/// Read and deserialize an Artifact from a JSON file.
+/// Returns an Artifact object exposing `.config`, `.main`, and `.extras`.
 #[pyfunction]
-fn load(path: &str) -> PyResult<(PyBase, PyAlgorithm)> {
+fn load_artifact(path: &str) -> PyResult<PyArtifact> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| PyValueError::new_err(format!("Cannot read {}: {}", path, e)))?;
-    let (config, algorithm): (BaseConfig, Algorithm) = serde_json::from_str(&text)
+    let inner: Artifact = serde_json::from_str(&text)
         .map_err(|e| PyValueError::new_err(format!("Invalid artifact JSON in {}: {}", path, e)))?;
-    let inner = base::Base::new(config)
-        .map_err(|e| PyValueError::new_err(format!("Base::new failed: {:?}", e)))?;
-    Ok((PyBase { inner }, PyAlgorithm { inner: algorithm }))
+    Ok(PyArtifact { inner })
 }
 
 /// One-shot execution: JIT compile and execute in a single call.
@@ -156,8 +191,9 @@ fn run(py: Python<'_>, config: &PyBaseConfig, algorithm: &PyAlgorithm) -> PyResu
 fn py_base(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBaseConfig>()?;
     m.add_class::<PyAlgorithm>()?;
+    m.add_class::<PyArtifact>()?;
     m.add_class::<PyBase>()?;
-    m.add_function(wrap_pyfunction!(load, m)?)?;
+    m.add_function(wrap_pyfunction!(load_artifact, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
     Ok(())
 }

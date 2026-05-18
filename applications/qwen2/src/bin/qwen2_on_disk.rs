@@ -4,7 +4,7 @@
 //! storage strategy differs.  Useful on systems where the model is larger than
 //! VRAM (e.g. point at a 32B weights file on NVMe).
 
-use base::{init_tracing, Algorithm, Base, BaseConfig};
+use base::{init_tracing, Base, Artifact};
 
 const QWEN2_ON_DISK_BINARY: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
@@ -41,11 +41,10 @@ fn main() {
         data.push(0);
     }
 
-    let (config, alg): (BaseConfig, Algorithm) =
-        bincode::deserialize(QWEN2_ON_DISK_BINARY).expect("deserialize qwen2_on_disk");
-    let mut base = Base::new(config).expect("Base::new");
+    let artifact = Artifact::from_bytes(QWEN2_ON_DISK_BINARY);
+    let mut base = Base::new(artifact.config).expect("Base::new");
 
     eprintln!("Starting qwen2_on_disk (weights={weights_path}, tokenizer={tokenizer_path})");
-    base.execute_into(&alg, &data, &mut [])
+    base.execute_into(&artifact.main, &data, &mut [])
         .expect("qwen2_on_disk run");
 }

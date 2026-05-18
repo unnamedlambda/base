@@ -41,7 +41,9 @@ CLAMP_HI =  0.5
 
 
 def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
-    engine, alg = py_base.load(algo_path)
+    artifact = py_base.load_artifact(algo_path)
+    engine = py_base.Base(artifact.config)
+    alg = artifact.main
     out = bytearray(8)
     results = []
     rng = np.random.default_rng(42)
@@ -80,7 +82,9 @@ def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 
 def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
-    engine, alg = py_base.load(algo_path)
+    artifact = py_base.load_artifact(algo_path)
+    engine = py_base.Base(artifact.config)
+    alg = artifact.main
     out = bytearray(8)
     results = []
     rng = np.random.default_rng(99)
@@ -115,7 +119,9 @@ def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 
 def _run_rowdot(algo_path: str, rounds: int) -> list[harness.BenchResult]:
-    engine, alg = py_base.load(algo_path)
+    artifact = py_base.load_artifact(algo_path)
+    engine = py_base.Base(artifact.config)
+    alg = artifact.main
     results = []
     rng = np.random.default_rng(123)
 
@@ -151,7 +157,9 @@ def _run_rowdot(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 
 def _run_row_affine_reduce(algo_path: str, rounds: int) -> list[harness.BenchResult]:
-    engine, alg = py_base.load(algo_path)
+    artifact = py_base.load_artifact(algo_path)
+    engine = py_base.Base(artifact.config)
+    alg = artifact.main
     results = []
     rng = np.random.default_rng(321)
 

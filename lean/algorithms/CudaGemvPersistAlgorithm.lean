@@ -117,9 +117,10 @@ def inferAlgorithm : Algorithm := { fn_idx := u32 3 }
 
 def artifacts : Array Json :=
   #[
-    toJsonEntry "cuda_gemv_load" buildConfig loadAlgorithm,
-    toJsonEntry "cuda_gemv_prep" buildConfig prepAlgorithm,
-    toJsonEntry "cuda_gemv_infer" buildConfig inferAlgorithm,
+    toJsonArtifact "cuda_gemv" buildConfig loadAlgorithm [
+      ("prep",  prepAlgorithm),
+      ("infer", inferAlgorithm)
+    ]
   ]
 
 end CudaGemvPersist

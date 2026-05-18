@@ -1,13 +1,12 @@
-use base::{run, Algorithm, BaseConfig};
+use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/CliAlgorithm/cli_app.bin"));
 
 fn main() {
-    let (config, alg): (BaseConfig, Algorithm) = bincode::deserialize(ARTIFACT_BINARY)
-        .expect("Failed to deserialize (BaseConfig, Algorithm) binary");
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 
-    match run(config, alg) {
+    match run(artifact.config, artifact.main) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Execution failed: {:?}", e);

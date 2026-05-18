@@ -78,12 +78,8 @@ def main():
 
     if bench in ("all", "torchops"):
         results = torchops_bench.run(
-            artifact_path("cuda_vecadd_persist_load"),
-            artifact_path("cuda_vecadd_persist_prep"),
-            artifact_path("cuda_vecadd_persist_infer"),
-            artifact_path("cuda_saxpy_persist_load"),
-            artifact_path("cuda_saxpy_persist_prep"),
-            artifact_path("cuda_saxpy_persist_infer"),
+            artifact_path("cuda_vecadd_persist"),
+            artifact_path("cuda_saxpy_persist"),
             rounds,
         )
         harness.print_table(results, col_a="PyTorch")
@@ -98,25 +94,11 @@ def main():
 
     if bench in ("all", "vllm"):
         results = vllm_bench.run(
-            artifact_path("cuda_gemv_load"),
-            artifact_path("cuda_gemv_prep"),
-            artifact_path("cuda_gemv_infer"),
-            artifact_path("cuda_rmsnorm_load"),
-            artifact_path("cuda_rmsnorm_prep"),
-            artifact_path("cuda_rmsnorm_infer"),
-            artifact_path("cuda_softmax_load"),
-            artifact_path("cuda_softmax_prep"),
-            artifact_path("cuda_softmax_infer"),
-            artifact_path("cuda_softmax_stack"),
-            artifact_path("cuda_decoder_load"),
-            artifact_path("cuda_decoder_prep"),
-            artifact_path("cuda_decoder_infer"),
-            artifact_path("cuda_decoder_stack16"),
-            artifact_path("cuda_decoder_stack32"),
-            artifact_path("cuda_decode_attn_load"),
-            artifact_path("cuda_decode_attn_prep"),
-            artifact_path("cuda_decode_attn_infer"),
-            artifact_path("cuda_decode_attn_stack"),
+            artifact_path("cuda_gemv"),
+            artifact_path("cuda_rmsnorm"),
+            artifact_path("cuda_softmax"),
+            artifact_path("cuda_decoder"),
+            artifact_path("cuda_decode_attn"),
             rounds,
         )
         harness.print_table(results, col_a="PyTorch")

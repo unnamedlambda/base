@@ -22,7 +22,6 @@ Decode attention: persistent batch-1 decode attention over a resident KV cache.
 PyTorch times are CUDA-synchronized and use resident GPU tensors.
 """
 
-import json
 import os
 import struct
 import sys
@@ -63,21 +62,17 @@ def _time_torch(fn):
     return harness.time_ms(synced)
 
 
-def _load_artifact(path: str):
-    raw = json.loads(open(path).read())
-    return py_base.BaseConfig(json.dumps(raw[0])), py_base.Algorithm(json.dumps(raw[1]))
-
-
-def _run_gemv(load_path: str, prep_path: str, infer_path: str, rounds: int) -> list[harness.BenchResult]:
-    config, load_alg = _load_artifact(load_path)
-    _, prep_alg = _load_artifact(prep_path)
-    _, infer_alg = _load_artifact(infer_path)
+def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
+    artifact = py_base.load_artifact(artifact_path)
+    engine = py_base.Base(artifact.config)
+    load_alg = artifact.main
+    prep_alg = artifact.extras["prep"]
+    infer_alg = artifact.extras["infer"]
 
     results = []
     rng = np.random.default_rng(42)
 
     for m, n in GEMV_SIZES:
-        engine = py_base.Base(config)
         a_np = rng.standard_normal((m, n)).astype(np.float32)
         x_np = rng.standard_normal(n).astype(np.float32)
         out = bytearray(m * 4)
@@ -129,15 +124,16 @@ def _run_gemv(load_path: str, prep_path: str, infer_path: str, rounds: int) -> l
     return results
 
 
-def _run_rmsnorm(load_path: str, prep_path: str, infer_path: str, rounds: int) -> list[harness.BenchResult]:
-    config, load_alg = _load_artifact(load_path)
-    _, prep_alg = _load_artifact(prep_path)
-    _, infer_alg = _load_artifact(infer_path)
+def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
+    artifact = py_base.load_artifact(artifact_path)
+    engine = py_base.Base(artifact.config)
+    load_alg = artifact.main
+    prep_alg = artifact.extras["prep"]
+    infer_alg = artifact.extras["infer"]
     results = []
     rng = np.random.default_rng(7)
 
     for n in NORM_SIZES:
-        engine = py_base.Base(config)
         x_np = rng.standard_normal(n).astype(np.float32)
         w_np = rng.standard_normal(n).astype(np.float32) * 0.5 + 1.0
         out = bytearray(n * 4)
@@ -191,18 +187,17 @@ def _run_rmsnorm(load_path: str, prep_path: str, infer_path: str, rounds: int) -
     return results
 
 
-def _run_softmax(
-    load_path: str, prep_path: str, infer_path: str, stack_path: str, rounds: int
-) -> list[harness.BenchResult]:
-    config, load_alg = _load_artifact(load_path)
-    _, prep_alg = _load_artifact(prep_path)
-    _, infer_alg = _load_artifact(infer_path)
-    _, stack_alg = _load_artifact(stack_path)
+def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
+    artifact = py_base.load_artifact(artifact_path)
+    engine = py_base.Base(artifact.config)
+    load_alg = artifact.main
+    prep_alg = artifact.extras["prep"]
+    _infer_alg = artifact.extras["infer"]
+    stack_alg = artifact.extras["stack"]
     results = []
     rng = np.random.default_rng(13)
 
     for n in SOFTMAX_SIZES:
-        engine = py_base.Base(config)
         x_np = rng.standard_normal(n).astype(np.float32)
         out = bytearray(n * 4)
         load_data = struct.pack("<Q", n)
@@ -255,20 +250,14 @@ def _rms_torch(x, w):
     return x * w * torch.rsqrt(x.pow(2).mean() + 1e-5)
 
 
-def _run_decoder_layer(
-    load_path: str,
-    prep_path: str,
-    infer_path: str,
-    stack16_path: str,
-    stack32_path: str,
-    rounds: int,
-) -> list[harness.BenchResult]:
-    config, load_alg = _load_artifact(load_path)
-    _, prep_alg = _load_artifact(prep_path)
-    _, infer_alg = _load_artifact(infer_path)
-    _, stack16_alg = _load_artifact(stack16_path)
-    _, stack32_alg = _load_artifact(stack32_path)
-    engine = py_base.Base(config)
+def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
+    artifact = py_base.load_artifact(artifact_path)
+    engine = py_base.Base(artifact.config)
+    load_alg = artifact.main
+    prep_alg = artifact.extras["prep"]
+    infer_alg = artifact.extras["infer"]
+    stack16_alg = artifact.extras["stack16"]
+    stack32_alg = artifact.extras["stack32"]
 
     rng = np.random.default_rng(23)
 
@@ -421,20 +410,19 @@ def _run_decoder_layer(
     return results
 
 
-def _run_decode_attention(
-    load_path: str, prep_path: str, infer_path: str, stack_path: str, rounds: int
-) -> list[harness.BenchResult]:
-    config, load_alg = _load_artifact(load_path)
-    _, prep_alg = _load_artifact(prep_path)
-    _, infer_alg = _load_artifact(infer_path)
-    _, stack_alg = _load_artifact(stack_path)
+def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
+    artifact = py_base.load_artifact(artifact_path)
+    engine = py_base.Base(artifact.config)
+    load_alg = artifact.main
+    prep_alg = artifact.extras["prep"]
+    _infer_alg = artifact.extras["infer"]
+    stack_alg = artifact.extras["stack"]
     results = []
     rng = np.random.default_rng(29)
 
     scale = float(D_HEAD ** -0.5)
 
     for seq_len in ATTN_SEQS:
-        engine = py_base.Base(config)
         q_np = rng.standard_normal((N_HEADS, D_HEAD)).astype(np.float32) * 0.2
         k_np = rng.standard_normal((N_HEADS, seq_len, D_HEAD)).astype(np.float32) * 0.2
         v_np = rng.standard_normal((N_HEADS, seq_len, D_HEAD)).astype(np.float32) * 0.2
@@ -497,31 +485,17 @@ def _run_decode_attention(
 
 
 def run(
-    gemv_load: str,
-    gemv_prep: str,
-    gemv_infer: str,
-    rmsnorm_load: str,
-    rmsnorm_prep: str,
-    rmsnorm_infer: str,
-    softmax_load: str,
-    softmax_prep: str,
-    softmax_infer: str,
-    softmax_stack: str,
-    decoder_load: str,
-    decoder_prep: str,
-    decoder_infer: str,
-    decoder_stack16: str,
-    decoder_stack32: str,
-    decode_attn_load: str,
-    decode_attn_prep: str,
-    decode_attn_infer: str,
-    decode_attn_stack: str,
+    gemv: str,
+    rmsnorm: str,
+    softmax: str,
+    decoder: str,
+    decode_attn: str,
     rounds: int,
 ) -> list[harness.BenchResult]:
     return (
-        _run_gemv(gemv_load, gemv_prep, gemv_infer, rounds)
-        + _run_rmsnorm(rmsnorm_load, rmsnorm_prep, rmsnorm_infer, rounds)
-        + _run_softmax(softmax_load, softmax_prep, softmax_infer, softmax_stack, rounds)
-        + _run_decoder_layer(decoder_load, decoder_prep, decoder_infer, decoder_stack16, decoder_stack32, rounds)
-        + _run_decode_attention(decode_attn_load, decode_attn_prep, decode_attn_infer, decode_attn_stack, rounds)
+        _run_gemv(gemv, rounds)
+        + _run_rmsnorm(rmsnorm, rounds)
+        + _run_softmax(softmax, rounds)
+        + _run_decoder_layer(decoder, rounds)
+        + _run_decode_attention(decode_attn, rounds)
     )

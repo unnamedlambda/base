@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Output;
 
-use base_types::{Algorithm, BaseConfig};
+use base_types::Artifact;
 
 pub fn build(lean_file: &Path, watch_dir: &Path) {
     build_all(&[lean_file.to_path_buf()], watch_dir);
@@ -108,9 +108,8 @@ fn ensure_success(output: Output, header: &str, panic_message: &str) -> Output {
 }
 
 fn write_binaries(lean_file: &Path, generator_out_dir: &Path) {
-    for (artifact_name, config, algorithm) in read_generated_artifacts(lean_file, generator_out_dir)
-    {
-        let binary = bincode::serialize(&(config, algorithm)).expect("Failed to serialize bincode");
+    for (artifact_name, artifact) in read_generated_artifacts(lean_file, generator_out_dir) {
+        let binary = bincode::serialize(&artifact).expect("Failed to serialize bincode");
         fs::write(
             generator_out_dir.join(format!("{artifact_name}.bin")),
             binary,
@@ -149,7 +148,7 @@ fn recreate_dir(path: &Path) {
 fn read_generated_artifacts(
     lean_file: &Path,
     generator_out_dir: &Path,
-) -> Vec<(String, BaseConfig, Algorithm)> {
+) -> Vec<(String, Artifact)> {
     let mut json_paths: Vec<PathBuf> = fs::read_dir(generator_out_dir)
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", generator_out_dir.display()))
         .map(|entry| entry.expect("Failed to read directory entry").path())
@@ -167,15 +166,14 @@ fn read_generated_artifacts(
             .to_string();
         let text = fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
-        let (config, algorithm): (BaseConfig, Algorithm) = serde_json::from_str(&text)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "BUILD FAILED: {} artifact {} does not match (BaseConfig, Algorithm): {e}",
-                    lean_file.display(),
-                    path.display()
-                )
-            });
-        entries.push((artifact_name, config, algorithm));
+        let artifact: Artifact = serde_json::from_str(&text).unwrap_or_else(|e| {
+            panic!(
+                "BUILD FAILED: {} artifact {} does not match Artifact: {e}",
+                lean_file.display(),
+                path.display()
+            )
+        });
+        entries.push((artifact_name, artifact));
     }
     entries
 }
@@ -183,13 +181,13 @@ fn read_generated_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::RuntimeHeader;
+    use base_types::{Algorithm, BaseConfig, RuntimeHeader};
+    use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn sample_entry(name: &str) -> (String, BaseConfig, Algorithm) {
-        (
-            name.to_string(),
-            BaseConfig {
+    fn sample_artifact() -> Artifact {
+        Artifact {
+            config: BaseConfig {
                 cranelift_ir: "function u0:0() { return }".to_string(),
                 memory_size: 64,
                 runtime_header: RuntimeHeader {
@@ -201,11 +199,12 @@ mod tests {
                 context_offset: 16,
                 initial_memory: vec![1, 2, 3],
             },
-            Algorithm {
+            main: Algorithm {
                 fn_idx: 1,
                 output: vec![],
             },
-        )
+            extras: HashMap::new(),
+        }
     }
 
     fn temp_dir() -> PathBuf {
@@ -222,8 +221,8 @@ mod tests {
         dir
     }
 
-    fn write_artifact(path: &Path, config: &BaseConfig, algorithm: &Algorithm) {
-        let json = serde_json::to_string(&(config, algorithm)).expect("serialize artifact");
+    fn write_artifact(path: &Path, artifact: &Artifact) {
+        let json = serde_json::to_string(artifact).expect("serialize artifact");
         fs::write(path, json).expect("write artifact");
     }
 
@@ -264,13 +263,9 @@ mod tests {
         let out_dir = temp_dir();
         let lean_file = Path::new("CsvBenchAlgorithm.lean");
         let generator_out_dir = generator_output_dir(&out_dir, lean_file);
-        let entry = sample_entry("csv_algorithm");
+        let artifact = sample_artifact();
         fs::create_dir_all(&generator_out_dir).expect("create generator out dir");
-        write_artifact(
-            &generator_out_dir.join("csv_algorithm.json"),
-            &entry.1,
-            &entry.2,
-        );
+        write_artifact(&generator_out_dir.join("csv_algorithm.json"), &artifact);
 
         let entries = read_generated_artifacts(lean_file, &generator_out_dir);
         assert_eq!(entries.len(), 1);
@@ -284,13 +279,9 @@ mod tests {
         let out_dir = temp_dir();
         let lean_file = Path::new("CsvBenchAlgorithm.lean");
         let generator_out_dir = generator_output_dir(&out_dir, lean_file);
-        let entry = sample_entry("csv_algorithm");
+        let artifact = sample_artifact();
         fs::create_dir_all(&generator_out_dir).expect("create generator out dir");
-        write_artifact(
-            &generator_out_dir.join("csv_algorithm.json"),
-            &entry.1,
-            &entry.2,
-        );
+        write_artifact(&generator_out_dir.join("csv_algorithm.json"), &artifact);
 
         write_binaries(lean_file, &generator_out_dir);
 

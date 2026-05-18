@@ -75,10 +75,24 @@ instance : ToJson Algorithm where
     ("output", Json.arr alg.output.toArray)
   ]
 
-/-- Serialize a named artifact entry: ["name", config, algorithm].
-    Use this in def main to declare artifact names that the build system will use as file names. -/
+/-- Serialize an artifact: ["fileName", { config, main, extras }]. `main` is
+    the primary entry point algorithm; `extras` is a JSON object mapping any
+    additional named algorithms (e.g., prep/infer stages of a pipeline). Use
+    `toJsonEntry` for the common single-algorithm case. For pipelines without a
+    single primary step, `main` is the entry point you call first (typically
+    the load/init step) and the remaining stages go into `extras`. -/
+def toJsonArtifact (name : String) (config : BaseConfig) (main : Algorithm)
+    (extras : List (String × Algorithm) := []) : Json :=
+  let extrasMap := Json.mkObj (extras.map fun (n, a) => (n, toJson a))
+  .arr #[.str name, Json.mkObj [
+    ("config", toJson config),
+    ("main", toJson main),
+    ("extras", extrasMap)
+  ]]
+
+/-- Serialize a single-algorithm artifact. -/
 def toJsonEntry (name : String) (config : BaseConfig) (algorithm : Algorithm) : Json :=
-  .arr #[.str name, toJson config, toJson algorithm]
+  toJsonArtifact name config algorithm
 
 /-- Parse the sole CLI argument as an output directory. -/
 def requireOutputDir (args : List String) : IO String :=
@@ -87,17 +101,17 @@ def requireOutputDir (args : List String) : IO String :=
   | _ => throw <| IO.userError "expected exactly one argument: output directory"
 
 /-- Emit artifacts to a directory as one `{name}.json` file per entry, where each
-    file contains `[config, algorithm]`. -/
+    file contains `{ config, main, extras }`. -/
 def emitArtifacts (dir : String) (entries : Array Json) : IO Unit := do
   IO.FS.createDirAll dir
   let mut seen : List String := []
   for entry in entries do
     match entry with
-    | .arr #[.str name, config, algorithm] =>
+    | .arr #[.str name, body] =>
         if seen.contains name then
           throw <| IO.userError s!"duplicate artifact name: {name}"
         seen := name :: seen
-        IO.FS.writeFile s!"{dir}/{name}.json" (Json.compress (.arr #[config, algorithm]))
+        IO.FS.writeFile s!"{dir}/{name}.json" (Json.compress body)
     | _ =>
         throw <| IO.userError s!"invalid artifact entry: {Json.compress entry}"
 

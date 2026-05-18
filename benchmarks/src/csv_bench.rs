@@ -1,18 +1,14 @@
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const CSV_ARTIFACT: &[u8] = include_bytes!(concat!(
+const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/csv_algorithm.bin"
 ));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(CSV_ARTIFACT).expect("Failed to deserialize csv artifact")
-}
 
 /// Generate a deterministic CSV file with a salary column.
 /// Salaries are in range 1000–9999 to keep the i32 total within range.
@@ -93,8 +89,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_artifact();
-    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
     for &n in &sizes {
         let csv_path = format!("/tmp/bench-data/employees_{}.csv", n);
@@ -120,12 +116,12 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Base (Cranelift JIT) — execute with payload, verify output file
         // Warmup
         let _ = fs::remove_file(&output_path);
-        let _ = base_instance.execute(&alg, &payload);
+        let _ = base_instance.execute(&artifact.main, &payload);
 
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
             let start = std::time::Instant::now();
-            let _ = base_instance.execute(&alg, &payload);
+            let _ = base_instance.execute(&artifact.main, &payload);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

@@ -1,5 +1,5 @@
 use crate::harness::{self, BenchResult};
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 
 type CudaBackend = burn::backend::CudaJit;
 
@@ -7,10 +7,6 @@ const CUDA_SAXPY_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/cuda_saxpy_algorithm.bin"
 ));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(CUDA_SAXPY_ARTIFACT).expect("Failed to deserialize cuda_saxpy artifact")
-}
 
 use harness::{build_f32_payload, f32_from_bytes, format_count, gen_floats};
 
@@ -82,8 +78,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     eprintln!("  SAXPY: y[i] = 2.0 * x[i] + y[i]");
     eprintln!("  Both: upload + compute + full readback via execute_into\n");
 
-    let (config, alg) = load_artifact();
-    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+    let artifact = Artifact::from_bytes(CUDA_SAXPY_ARTIFACT);
+    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
     for &n in &[262_144usize, 524_288, 1_048_576] {
         eprintln!("  SAXPY {} ...", format_count(n));
@@ -98,7 +94,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Warmup both
         std::hint::black_box(burn_saxpy_cuda(2.0, &x, &y));
-        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
         let burn_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -108,7 +104,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

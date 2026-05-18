@@ -1,5 +1,5 @@
 use crate::harness::{self, format_count, BenchResult};
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 use rayon::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -24,13 +24,13 @@ const HIST4_ARTIFACT: &[u8] = include_bytes!(concat!(
     "/RustBenchmarks/hist4_algorithm.bin"
 ));
 
-fn load_artifact(workers: usize) -> (BaseConfig, Algorithm) {
-    let data = if workers == 1 {
+fn load_artifact(workers: usize) -> Artifact {
+    let bytes = if workers == 1 {
         HIST1_ARTIFACT
     } else {
         HIST4_ARTIFACT
     };
-    bincode::deserialize(data).expect("Failed to deserialize histogram artifact")
+    Artifact::from_bytes(bytes)
 }
 
 fn gen_data(n: usize, seed: u64) -> Vec<u32> {
@@ -208,8 +208,8 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             base_payload.push(0);
 
             // Load Lean-built algorithm and JIT compile once
-            let (config, alg) = load_artifact(w);
-            let mut base_instance = base::Base::new(config).expect("Base::new failed");
+            let artifact = load_artifact(w);
+            let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
             let rayon_out = format!("/tmp/hist_bench_rayon_{}_{}.bin", n, w);
 
@@ -219,7 +219,7 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             // Warmup all three
             rust_histogram(&mut file_buf, input_path, &rust_out, w);
             rayon_histogram(&mut file_buf, input_path, &rayon_out, w);
-            let _ = base_instance.execute(&alg, &base_payload);
+            let _ = base_instance.execute(&artifact.main, &base_payload);
 
             let rust_ms = harness::median_of(rounds, || {
                 let start = std::time::Instant::now();
@@ -236,7 +236,7 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             let mut base_ok = true;
             let base_ms = harness::median_of(rounds, || {
                 let start = std::time::Instant::now();
-                if base_instance.execute(&alg, &base_payload).is_err() {
+                if base_instance.execute(&artifact.main, &base_payload).is_err() {
                     base_ok = false;
                 }
                 start.elapsed().as_secs_f64() * 1000.0

@@ -1,5 +1,5 @@
 use crate::harness::{self, BenchResult};
-use base::{Algorithm, BaseConfig};
+use base::Artifact;
 
 // ---------------------------------------------------------------------------
 // Matrix Multiplication Benchmark
@@ -15,10 +15,6 @@ const MATMUL_ARTIFACT: &[u8] = include_bytes!(concat!(
     env!("OUT_DIR"),
     "/RustBenchmarks/matmul_algorithm.bin"
 ));
-
-fn load_artifact() -> (BaseConfig, Algorithm) {
-    bincode::deserialize(MATMUL_ARTIFACT).expect("Failed to deserialize matmul artifact")
-}
 
 fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;
@@ -85,8 +81,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     // JIT compile once
-    let (config, alg) = load_artifact();
-    let mut base_instance = base::Base::new(config).expect("Base::new failed");
+    let artifact = Artifact::from_bytes(MATMUL_ARTIFACT);
+    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
 
     for &n in sizes {
         let total = n * n * 2;
@@ -121,11 +117,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let mut out_buf = [0u8; 8];
 
         // Warmup
-        let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&alg, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

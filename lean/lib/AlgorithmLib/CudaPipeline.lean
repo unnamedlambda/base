@@ -203,9 +203,11 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
 
 def CompileResult.toArtifacts (r : CompileResult) (name : String) : Array Json :=
   #[
-    toJsonEntry s!"{name}_load"  r.config r.loadAlgorithm,
-    toJsonEntry s!"{name}_prep"  r.config r.prepAlgorithm,
-    toJsonEntry s!"{name}_infer" r.config r.inferAlgorithm
+    -- `load` is the entry point (called first); prep/infer go to extras.
+    toJsonArtifact name r.config r.loadAlgorithm [
+      ("prep",  r.prepAlgorithm),
+      ("infer", r.inferAlgorithm)
+    ]
   ]
 
 end CudaPipeline

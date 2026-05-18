@@ -9,7 +9,6 @@ load / prep / infer split so the timed path matches the resident-tensor PyTorch
 reference instead of including host-device transfers.
 """
 
-import json
 import os
 import struct
 import sys
@@ -40,27 +39,21 @@ def _time_torch(fn):
     return harness.time_ms(synced)
 
 
-def _load_artifact(path: str):
-    raw = json.loads(open(path).read())
-    return py_base.BaseConfig(json.dumps(raw[0])), py_base.Algorithm(json.dumps(raw[1]))
-
-
 def _run_binary(
-    load_path: str,
-    prep_path: str,
-    infer_path: str,
+    artifact_path: str,
     rounds: int,
     label: str,
     torch_ref,
 ) -> list[harness.BenchResult]:
-    config, load_alg = _load_artifact(load_path)
-    _, prep_alg = _load_artifact(prep_path)
-    _, infer_alg = _load_artifact(infer_path)
+    artifact = py_base.load_artifact(artifact_path)
+    engine = py_base.Base(artifact.config)
+    load_alg = artifact.main
+    prep_alg = artifact.extras["prep"]
+    infer_alg = artifact.extras["infer"]
     results = []
     rng = np.random.default_rng(2026)
 
     for n in SIZES:
-        engine = py_base.Base(config)
         engine.execute(load_alg, struct.pack("<Q", n))
 
         x_np = rng.standard_normal(n).astype(np.float32)
@@ -112,15 +105,11 @@ def _run_binary(
 
 
 def run(
-    vecadd_load: str,
-    vecadd_prep: str,
-    vecadd_infer: str,
-    saxpy_load: str,
-    saxpy_prep: str,
-    saxpy_infer: str,
+    vecadd_artifact: str,
+    saxpy_artifact: str,
     rounds: int,
 ) -> list[harness.BenchResult]:
     return (
-        _run_binary(vecadd_load, vecadd_prep, vecadd_infer, rounds, "VecAdd ", lambda x, y: x + y)
-        + _run_binary(saxpy_load, saxpy_prep, saxpy_infer, rounds, "SAXPY  ", lambda x, y: 2.0 * x + y)
+        _run_binary(vecadd_artifact, rounds, "VecAdd ", lambda x, y: x + y)
+        + _run_binary(saxpy_artifact, rounds, "SAXPY  ", lambda x, y: 2.0 * x + y)
     )
