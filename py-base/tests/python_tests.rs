@@ -20,8 +20,14 @@ fn python_tests() {
     );
 
     // Rebuild the extension into the venv so tests run against the current source.
+    // Match the profile cargo itself was invoked with, so `cargo test --release`
+    // exercises the release build and plain `cargo test` stays fast.
+    let mut args = vec!["-m", "maturin", "develop", "-q"];
+    if !cfg!(debug_assertions) {
+        args.push("--release");
+    }
     let build = Command::new(&venv_python)
-        .args(["-m", "maturin", "develop", "-q"])
+        .args(&args)
         .current_dir(&manifest_dir)
         .status()
         .expect("failed to spawn `maturin develop`");
