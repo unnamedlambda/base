@@ -7,7 +7,7 @@ fn main() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 
     let start = std::time::Instant::now();
-    match run(artifact.config, artifact.main) {
+    match run(artifact.setup, artifact.main) {
         Ok(_) => {
             let elapsed = start.elapsed();
             eprintln!(

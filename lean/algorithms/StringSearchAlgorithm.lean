@@ -133,7 +133,7 @@ def mainFn : IRBuilder Unit := do
 
 def clifIR : String := buildProgram mainFn
 
-def buildConfig : BaseConfig := {
+def buildSetup : Setup := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
   context_offset := 0
@@ -144,6 +144,6 @@ def buildAlgorithm : Algorithm := {
 }
 
 def artifacts : Array Json :=
-  #[toJsonEntry "strsearch_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "strsearch_algorithm" buildSetup buildAlgorithm]
 
 end StringSearchBench

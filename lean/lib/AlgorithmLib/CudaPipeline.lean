@@ -18,7 +18,7 @@ private instance : Inhabited (Reg k) := ⟨⟨""⟩⟩
 -- ---------------------------------------------------------------------------
 -- Expression DSL: small staged language for elementwise GPU kernels.
 -- One Expr describes the per-element computation; `compileTo` produces a
--- BaseConfig + load/prep/infer algorithms that wire up the persistent kernel
+-- Setup + load/prep/infer algorithms that wire up the persistent kernel
 -- pattern (alloc → upload → launch → download).
 -- ---------------------------------------------------------------------------
 
@@ -37,7 +37,7 @@ def Expr.scalarBits (bits : String) : Expr n := .const bits
 def Expr.saxpy (a x y : Expr n) : Expr n := a * x + y
 
 structure CompileResult where
-  config : BaseConfig
+  setup : Setup
   loadAlgorithm : Algorithm
   prepAlgorithm : Algorithm
   inferAlgorithm : Algorithm
@@ -190,7 +190,7 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
   let mkAlg (src : UInt32) : Algorithm :=
     { fn_idx := src }
   {
-    config := {
+    setup := {
       cranelift_ir := clifIr
       memory_size := memSize
       context_offset := 0
@@ -204,7 +204,7 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
 def CompileResult.toArtifacts (r : CompileResult) (name : String) : Array Json :=
   #[
     -- `load` is the entry point (called first); prep/infer go to extras.
-    toJsonArtifact name r.config r.loadAlgorithm [
+    toJsonArtifact name r.setup r.loadAlgorithm [
       ("prep",  r.prepAlgorithm),
       ("infer", r.inferAlgorithm)
     ]

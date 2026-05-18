@@ -150,7 +150,7 @@ structure B where
   itoaWriteDigit   : IR.DeclaredBlock
   itoaDone         : IR.DeclaredBlock
 
--- ---- Sub-function 1: BaseConfig, file read, skip_spaces ----
+-- ---- Sub-function 1: Setup, file read, skip_spaces ----
 def emitSetup (k : K) (b : B) : IRBuilder Val := do
   -- Read source file
   let _ ← readFile k.ptr k.fnFileRead INPUT_PATH SOURCE_BUF
@@ -1868,7 +1868,7 @@ def buildPayload : List UInt8 :=
     trueStr ++ falseStr ++ identBuf ++ htValBuf ++ outputBuf ++
     stackRegion
 
-def buildConfig : BaseConfig := {
+def buildSetup : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := buildPayload.length,
   context_offset := 0,
@@ -1883,4 +1883,4 @@ end LeanEval
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "lean_eval_app" LeanEval.buildConfig LeanEval.buildAlgorithm]
+  emitArtifacts outDir #[toJsonEntry "lean_eval_app" LeanEval.buildSetup LeanEval.buildAlgorithm]

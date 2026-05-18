@@ -173,7 +173,7 @@ def payloads : List UInt8 :=
     f.bmpHeader.init bmpHeader
   ]
 
-def drawConfig : BaseConfig := {
+def drawConfig : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := layoutMeta.totalSize,
   context_offset := 0,

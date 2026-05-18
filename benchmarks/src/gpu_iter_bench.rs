@@ -387,7 +387,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let out_size = num_groups * 4;
 
     let artifact = Artifact::from_bytes(GPU_ITER_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
 
     for &passes in &[1, 10, 100, 500, 1000] {
         let label = format!("{}x scale {}", passes, format_count(n));

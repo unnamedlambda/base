@@ -6,7 +6,7 @@ const ARTIFACT_BINARY: &[u8] =
 fn main() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 
-    match run(artifact.config, artifact.main) {
+    match run(artifact.setup, artifact.main) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Execution failed: {:?}", e);

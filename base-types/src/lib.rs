@@ -42,7 +42,7 @@ impl Default for RuntimeHeader {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct BaseConfig {
+pub struct Setup {
     pub cranelift_ir: String,
     pub memory_size: usize,
     pub runtime_header: RuntimeHeader,
@@ -60,7 +60,7 @@ pub struct Algorithm {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Artifact {
-    pub config: BaseConfig,
+    pub setup: Setup,
     pub main: Algorithm,
     #[serde(default)]
     pub extras: HashMap<String, Algorithm>,

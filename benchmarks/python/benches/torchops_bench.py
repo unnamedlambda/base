@@ -46,7 +46,7 @@ def _run_binary(
     torch_ref,
 ) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.config)
+    engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
     infer_alg = artifact.extras["infer"]

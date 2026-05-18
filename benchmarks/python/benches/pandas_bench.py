@@ -108,10 +108,10 @@ def run(revagg_path: str, filter_path: str, rounds: int) -> list[harness.BenchRe
         return []
 
     art_rev = py_base.load_artifact(revagg_path)
-    eng_rev = py_base.Base(art_rev.config)
+    eng_rev = py_base.Base(art_rev.setup)
     alg_rev = art_rev.main
     art_filter = py_base.load_artifact(filter_path)
-    eng_filter = py_base.Base(art_filter.config)
+    eng_filter = py_base.Base(art_filter.setup)
     alg_filter = art_filter.main
     results = []
     rng = np.random.default_rng(42)

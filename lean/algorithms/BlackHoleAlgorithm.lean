@@ -1478,7 +1478,7 @@ def payloads (spec : BlackHoleSpec) : List UInt8 :=
   reserved ++ ptxBytes ++ nameA ++ nameB ++ bindAPad ++ bindBPad ++
     filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : BlackHoleSpec) : BaseConfig := {
+def config (spec : BlackHoleSpec) : Setup := {
   cranelift_ir := clifIrSource spec,
   memory_size := (payloads spec).length + pixelBytes spec,
   context_offset := 0,
@@ -1489,7 +1489,7 @@ def algorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
 
-def renderScene (spec : BlackHoleSpec) : BaseConfig × Algorithm :=
+def renderScene (spec : BlackHoleSpec) : Setup × Algorithm :=
   (config spec, algorithm)
 
 /-- ============================================================

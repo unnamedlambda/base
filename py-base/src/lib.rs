@@ -4,19 +4,19 @@ use pyo3::prelude::*;
 use arrow_array::ffi::{to_ffi, FFI_ArrowArray};
 use arrow_array::{Array, RecordBatch, StructArray};
 use arrow_schema::ffi::FFI_ArrowSchema;
-use base_types::{Algorithm, Artifact, BaseConfig};
+use base_types::{Algorithm, Artifact, Setup};
 
-#[pyclass(name = "BaseConfig")]
-struct PyBaseConfig {
-    inner: BaseConfig,
+#[pyclass(name = "Setup")]
+struct PySetup {
+    inner: Setup,
 }
 
 #[pymethods]
-impl PyBaseConfig {
+impl PySetup {
     #[new]
     fn new(json: &str) -> PyResult<Self> {
-        let inner: BaseConfig = serde_json::from_str(json)
-            .map_err(|e| PyValueError::new_err(format!("Invalid BaseConfig JSON: {}", e)))?;
+        let inner: Setup = serde_json::from_str(json)
+            .map_err(|e| PyValueError::new_err(format!("Invalid Setup JSON: {}", e)))?;
         Ok(Self { inner })
     }
 }
@@ -45,9 +45,9 @@ struct PyArtifact {
 #[pymethods]
 impl PyArtifact {
     #[getter]
-    fn config(&self) -> PyBaseConfig {
-        PyBaseConfig {
-            inner: self.inner.config.clone(),
+    fn setup(&self) -> PySetup {
+        PySetup {
+            inner: self.inner.setup.clone(),
         }
     }
 
@@ -131,8 +131,8 @@ struct PyBase {
 #[pymethods]
 impl PyBase {
     #[new]
-    fn new(config: &PyBaseConfig) -> PyResult<Self> {
-        let inner = base::Base::new(config.inner.clone())
+    fn new(setup: &PySetup) -> PyResult<Self> {
+        let inner = base::Base::new(setup.inner.clone())
             .map_err(|e| PyValueError::new_err(format!("Base::new failed: {:?}", e)))?;
         Ok(Self { inner })
     }
@@ -167,7 +167,7 @@ impl PyBase {
 }
 
 /// Read and deserialize an Artifact from a JSON file.
-/// Returns an Artifact object exposing `.config`, `.main`, and `.extras`.
+/// Returns an Artifact object exposing `.setup`, `.main`, and `.extras`.
 #[pyfunction]
 fn load_artifact(path: &str) -> PyResult<PyArtifact> {
     let text = std::fs::read_to_string(path)
@@ -179,17 +179,17 @@ fn load_artifact(path: &str) -> PyResult<PyArtifact> {
 
 /// One-shot execution: JIT compile and execute in a single call.
 #[pyfunction]
-fn run(py: Python<'_>, config: &PyBaseConfig, algorithm: &PyAlgorithm) -> PyResult<PyObject> {
-    let config = config.inner.clone();
+fn run(py: Python<'_>, setup: &PySetup, algorithm: &PyAlgorithm) -> PyResult<PyObject> {
+    let setup = setup.inner.clone();
     let algorithm = algorithm.inner.clone();
-    let batches = allow_threads_unsafe(py, || base::run(config, algorithm))
+    let batches = allow_threads_unsafe(py, || base::run(setup, algorithm))
         .map_err(|e| PyValueError::new_err(format!("run failed: {:?}", e)))?;
     batches_to_pyarrow(py, batches)
 }
 
 #[pymodule]
 fn py_base(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyBaseConfig>()?;
+    m.add_class::<PySetup>()?;
     m.add_class::<PyAlgorithm>()?;
     m.add_class::<PyArtifact>()?;
     m.add_class::<PyBase>()?;

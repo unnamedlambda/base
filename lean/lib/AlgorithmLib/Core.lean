@@ -40,7 +40,7 @@ def byteSize : Nat := 56
 
 end RuntimeHeader
 
-structure BaseConfig where
+structure Setup where
   cranelift_ir : String
   memory_size : Nat
   runtime_header : RuntimeHeader := {}
@@ -56,7 +56,7 @@ def cuda : Nat := 0x10
 
 end ContextSlots
 
-instance : ToJson BaseConfig where
+instance : ToJson Setup where
   toJson c := Json.mkObj [
     ("cranelift_ir", toJson c.cranelift_ir),
     ("memory_size", toJson c.memory_size),
@@ -75,24 +75,24 @@ instance : ToJson Algorithm where
     ("output", Json.arr alg.output.toArray)
   ]
 
-/-- Serialize an artifact: ["fileName", { config, main, extras }]. `main` is
+/-- Serialize an artifact: ["fileName", { setup, main, extras }]. `main` is
     the primary entry point algorithm; `extras` is a JSON object mapping any
     additional named algorithms (e.g., prep/infer stages of a pipeline). Use
     `toJsonEntry` for the common single-algorithm case. For pipelines without a
     single primary step, `main` is the entry point you call first (typically
     the load/init step) and the remaining stages go into `extras`. -/
-def toJsonArtifact (name : String) (config : BaseConfig) (main : Algorithm)
+def toJsonArtifact (name : String) (setup : Setup) (main : Algorithm)
     (extras : List (String × Algorithm) := []) : Json :=
   let extrasMap := Json.mkObj (extras.map fun (n, a) => (n, toJson a))
   .arr #[.str name, Json.mkObj [
-    ("config", toJson config),
+    ("setup", toJson setup),
     ("main", toJson main),
     ("extras", extrasMap)
   ]]
 
 /-- Serialize a single-algorithm artifact. -/
-def toJsonEntry (name : String) (config : BaseConfig) (algorithm : Algorithm) : Json :=
-  toJsonArtifact name config algorithm
+def toJsonEntry (name : String) (setup : Setup) (algorithm : Algorithm) : Json :=
+  toJsonArtifact name setup algorithm
 
 /-- Parse the sole CLI argument as an output directory. -/
 def requireOutputDir (args : List String) : IO String :=
@@ -101,7 +101,7 @@ def requireOutputDir (args : List String) : IO String :=
   | _ => throw <| IO.userError "expected exactly one argument: output directory"
 
 /-- Emit artifacts to a directory as one `{name}.json` file per entry, where each
-    file contains `{ config, main, extras }`. -/
+    file contains `{ setup, main, extras }`. -/
 def emitArtifacts (dir : String) (entries : Array Json) : IO Unit := do
   IO.FS.createDirAll dir
   let mut seen : List String := []

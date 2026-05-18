@@ -391,9 +391,9 @@ def buildPayload (bs : Nat) : List UInt8 :=
 -- The block size is fixed per instance; all layout is derived from it.
 -- ---------------------------------------------------------------------------
 
-def buildCompressor {bs : Nat} (_p : LZ4Params bs) : BaseConfig × Algorithm :=
+def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
   let payload := buildPayload bs
-  let cfg : BaseConfig := {
+  let cfg : Setup := {
     cranelift_ir  := clifIrSource bs,
     memory_size   := payload.length + totalAdditionalMemory bs,
     context_offset := 0,
@@ -411,7 +411,7 @@ def buildCompressor {bs : Nat} (_p : LZ4Params bs) : BaseConfig × Algorithm :=
 
 def defaultParams : LZ4Params 16384 := ⟨by omega, by omega⟩
 
-def result : BaseConfig × Algorithm := buildCompressor defaultParams
+def result : Setup × Algorithm := buildCompressor defaultParams
 
 -- Uncomment to see the constraint in action:
 --

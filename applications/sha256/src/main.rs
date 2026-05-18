@@ -22,11 +22,11 @@ fn main() {
         path_bytes.len() < 255,
         "Input path too long (max 254 chars)"
     );
-    artifact.config.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
+    artifact.setup.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
         .copy_from_slice(path_bytes);
-    artifact.config.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
+    artifact.setup.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
 
-    match run(artifact.config, artifact.main) {
+    match run(artifact.setup, artifact.main) {
         Ok(_) => match std::fs::read_to_string("sha256_output.txt") {
             Ok(result) => print!("{}", result),
             Err(e) => eprintln!("Failed to read output: {}", e),

@@ -58,7 +58,7 @@ def parse_output(content: str) -> dict[str, int]:
 
 def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    engine = py_base.Base(artifact.config)
+    engine = py_base.Base(artifact.setup)
     alg = artifact.main
     results = []
 
@@ -78,7 +78,7 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
             if os.path.exists(output_path):
                 os.remove(output_path)
             art = py_base.load_artifact(algo_path)
-            eng = py_base.Base(art.config)
+            eng = py_base.Base(art.setup)
             a = art.main
             return harness.time_ms(lambda: eng.execute(a, payload))
 

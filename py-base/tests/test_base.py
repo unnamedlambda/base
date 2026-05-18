@@ -1,7 +1,7 @@
 import json
 import struct
 import pytest
-from py_base import BaseConfig, Algorithm, Base, run
+from py_base import Setup, Algorithm, Base, run
 
 
 # CLIF reads data_ptr (offset 0x08), data_len (offset 0x10), out_ptr (offset 0x18).
@@ -229,18 +229,18 @@ def unpack_i32s(data, count):
     return list(struct.unpack(f"<{count}i", data[:count * 4]))
 
 
-class TestBaseConfig:
+class TestSetup:
     def test_valid_json(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         assert config is not None
 
     def test_invalid_json(self):
-        with pytest.raises(ValueError, match="Invalid BaseConfig JSON"):
-            BaseConfig("not json")
+        with pytest.raises(ValueError, match="Invalid Setup JSON"):
+            Setup("not json")
 
     def test_missing_fields(self):
         with pytest.raises(ValueError):
-            BaseConfig('{"cranelift_ir": ""}')
+            Setup('{"cranelift_ir": ""}')
 
 
 class TestAlgorithm:
@@ -261,7 +261,7 @@ class TestAlgorithm:
 
 class TestBase:
     def test_new(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         base = Base(config)
         assert base is not None
 
@@ -274,10 +274,10 @@ class TestBase:
             "initial_memory": [0] * 256,
         })
         with pytest.raises(ValueError, match="Base::new failed"):
-            Base(BaseConfig(config_json))
+            Base(Setup(config_json))
 
     def test_execute_returns_list(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
         result = base.execute(alg)
@@ -285,14 +285,14 @@ class TestBase:
         assert len(result) == 0
 
     def test_execute_no_data(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
         result = base.execute(alg)
         assert isinstance(result, list)
 
     def test_execute_into_doubles(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
 
@@ -305,7 +305,7 @@ class TestBase:
         assert result == [v * 2 for v in values]
 
     def test_execute_into_reuse(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
 
@@ -318,7 +318,7 @@ class TestBase:
             assert result == [v * 2 for v in values]
 
     def test_execute_into_large(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
 
@@ -333,14 +333,14 @@ class TestBase:
             assert result[i] == values[i] * 2, f"Mismatch at index {i}"
 
     def test_execute_into_empty(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
         out = bytearray(0)
         base.execute_into(alg, b"", out)
 
     def test_bytes_input(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
 
@@ -350,7 +350,7 @@ class TestBase:
         assert unpack_i32s(out, 3) == [84, -2, 0]
 
     def test_execute_into_returns_list(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
 
@@ -362,7 +362,7 @@ class TestBase:
 
 class TestRun:
     def test_oneshot(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         result = run(config, alg)
         assert isinstance(result, list)
@@ -374,7 +374,7 @@ pa = pytest.importorskip("pyarrow")
 
 class TestArrowI64:
     def test_single_i64_column(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_i64())
         base = Base(config)
 
@@ -388,7 +388,7 @@ class TestArrowI64:
         assert batch.column("ids").to_pylist() == [100, 200, 300]
 
     def test_i64_column_types(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_i64())
         base = Base(config)
 
@@ -396,7 +396,7 @@ class TestArrowI64:
         assert batch.schema.field("ids").type == pa.int64()
 
     def test_i64_reuse_across_executes(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_i64())
         base = Base(config)
 
@@ -408,7 +408,7 @@ class TestArrowI64:
 
 class TestArrowF64:
     def test_single_f64_column(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_f64())
         base = Base(config)
 
@@ -421,7 +421,7 @@ class TestArrowF64:
         assert abs(values[2] - 3.5) < 1e-10
 
     def test_f64_column_type(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_f64())
         base = Base(config)
 
@@ -431,7 +431,7 @@ class TestArrowF64:
 
 class TestArrowUtf8:
     def test_single_utf8_column(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_utf8())
         base = Base(config)
 
@@ -441,7 +441,7 @@ class TestArrowUtf8:
         assert batch.column("names").to_pylist() == ["hello", "world", "foo"]
 
     def test_utf8_column_type(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_utf8())
         base = Base(config)
 
@@ -451,7 +451,7 @@ class TestArrowUtf8:
 
 class TestArrowMultiColumn:
     def test_two_columns(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_multi_column())
         base = Base(config)
 
@@ -466,7 +466,7 @@ class TestArrowMultiColumn:
         assert abs(scores[2] - 3.5) < 1e-10
 
     def test_multi_column_schema(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_multi_column())
         base = Base(config)
 
@@ -477,7 +477,7 @@ class TestArrowMultiColumn:
 
 class TestArrowMultiBatch:
     def test_two_batches(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_multi_batch())
         base = Base(config)
 
@@ -495,7 +495,7 @@ class TestArrowMultiBatch:
 class TestArrowWithExecuteInto:
     def test_arrow_and_bytearray_together(self):
         """execute_into can return Arrow batches AND write to bytearray."""
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_i64())
         base = Base(config)
 
@@ -507,7 +507,7 @@ class TestArrowWithExecuteInto:
 
 class TestArrowEmpty:
     def test_no_output_schema(self):
-        config = BaseConfig(make_double_config())
+        config = Setup(make_double_config())
         alg = Algorithm(make_algorithm())
         base = Base(config)
 
@@ -529,7 +529,7 @@ block0(v0: i64):
     return
 }
 """
-        config = BaseConfig(json.dumps({
+        config = Setup(json.dumps({
             "cranelift_ir": noop_clif,
             "memory_size": 256,
             "runtime_header": LEGACY_RUNTIME_HEADER,
@@ -550,7 +550,7 @@ block0(v0: i64):
 
 class TestArrowRunOneshot:
     def test_run_returns_arrow(self):
-        config = BaseConfig(make_arrow_config())
+        config = Setup(make_arrow_config())
         alg = Algorithm(make_arrow_algorithm_i64())
         result = run(config, alg)
         assert len(result) == 1

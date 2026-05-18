@@ -181,13 +181,13 @@ fn read_generated_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::{Algorithm, BaseConfig, RuntimeHeader};
+    use base_types::{Algorithm, Setup, RuntimeHeader};
     use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_artifact() -> Artifact {
         Artifact {
-            config: BaseConfig {
+            setup: Setup {
                 cranelift_ir: "function u0:0() { return }".to_string(),
                 memory_size: 64,
                 runtime_header: RuntimeHeader {

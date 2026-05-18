@@ -351,7 +351,7 @@ def payloads : List UInt8 :=
 -- Algorithm definition
 -- ---------------------------------------------------------------------------
 
-def raytraceConfig : BaseConfig := {
+def raytraceConfig : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := payloads.length + pixelBytes,
   context_offset := 0,

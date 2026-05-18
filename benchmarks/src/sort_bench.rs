@@ -64,7 +64,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     let artifact = Artifact::from_bytes(SORT_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
 
     for &n in &sizes {
         let label = format!("Sort ({})", format_count(n));

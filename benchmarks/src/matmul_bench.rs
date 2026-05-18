@@ -82,7 +82,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // JIT compile once
     let artifact = Artifact::from_bytes(MATMUL_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
 
     for &n in sizes {
         let total = n * n * 2;

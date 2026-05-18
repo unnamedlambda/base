@@ -64,7 +64,7 @@ def _time_torch(fn):
 
 def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.config)
+    engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
     infer_alg = artifact.extras["infer"]
@@ -126,7 +126,7 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.config)
+    engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
     infer_alg = artifact.extras["infer"]
@@ -189,7 +189,7 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.config)
+    engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
     _infer_alg = artifact.extras["infer"]
@@ -252,7 +252,7 @@ def _rms_torch(x, w):
 
 def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.config)
+    engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
     infer_alg = artifact.extras["infer"]
@@ -412,7 +412,7 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
 
 def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.config)
+    engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
     _infer_alg = artifact.extras["infer"]

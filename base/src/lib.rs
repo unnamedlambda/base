@@ -1,7 +1,7 @@
 pub use arrow_array::RecordBatch;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-pub use base_types::{Algorithm, Artifact, BaseConfig, OutputBatchSchema, OutputColumn, OutputType};
+pub use base_types::{Algorithm, Artifact, OutputBatchSchema, OutputColumn, OutputType, Setup};
 use std::{
     pin::Pin,
     sync::{Arc, Once},
@@ -33,20 +33,20 @@ unsafe impl Send for Base {}
 unsafe impl Sync for Base {}
 
 impl Base {
-    pub fn new(config: BaseConfig) -> Result<Self, Error> {
-        let header_end = config
+    pub fn new(setup: Setup) -> Result<Self, Error> {
+        let header_end = setup
             .runtime_header
             .out_len_offset
             .saturating_add(std::mem::size_of::<usize>());
-        let needed = config
+        let needed = setup
             .memory_size
-            .max(config.initial_memory.len())
+            .max(setup.initial_memory.len())
             .max(header_end);
-        let mut memory = config.initial_memory;
+        let mut memory = setup.initial_memory;
         memory.resize(needed, 0);
         Self::from_parts(
-            config.cranelift_ir,
-            config.runtime_header,
+            setup.cranelift_ir,
+            setup.runtime_header,
             memory.into_boxed_slice(),
         )
     }
@@ -142,8 +142,8 @@ impl Base {
     }
 }
 
-pub fn run(config: BaseConfig, algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
-    let mut base = Base::new(config)?;
+pub fn run(setup: Setup, algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
+    let mut base = Base::new(setup)?;
     base.execute(&algorithm, &[])
 }
 

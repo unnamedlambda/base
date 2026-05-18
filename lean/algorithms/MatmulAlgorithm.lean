@@ -12,7 +12,7 @@ namespace Matmul
 -- The Matrix type carries its shape at the type level. Incompatible shapes
 -- are rejected at Lean elaboration time, before any PTX or CLIF is generated.
 --
---   matmul {m k n} (A : Matrix m k) (B : Matrix k n) : BaseConfig × Algorithm
+--   matmul {m k n} (A : Matrix m k) (B : Matrix k n) : Setup × Algorithm
 -- ===========================================================================
 
 structure Matrix (m n : Nat) : Type where
@@ -254,13 +254,13 @@ def clifIrSource (m k n : Nat) : String :=
     ret
 
 -- ---------------------------------------------------------------------------
--- Monomorphic builder: takes concrete dims, returns (BaseConfig, Algorithm).
+-- Monomorphic builder: takes concrete dims, returns (Setup, Algorithm).
 -- ---------------------------------------------------------------------------
 
-def buildMatmulConfig (m k n : Nat) : BaseConfig × Algorithm :=
+def buildMatmulConfig (m k n : Nat) : Setup × Algorithm :=
   let payload := buildPayload m k n
   let memSize := payload.length
-  let cfg : BaseConfig := {
+  let cfg : Setup := {
     cranelift_ir := clifIrSource m k n,
     memory_size := memSize,
     context_offset := 0,
@@ -276,7 +276,7 @@ def buildMatmulConfig (m k n : Nat) : BaseConfig × Algorithm :=
 -- Passing incompatible shapes fails at Lean elaboration time.
 -- ---------------------------------------------------------------------------
 
-def matmul {m k n : Nat} (_A : Matrix m k) (_B : Matrix k n) : BaseConfig × Algorithm :=
+def matmul {m k n : Nat} (_A : Matrix m k) (_B : Matrix k n) : Setup × Algorithm :=
   buildMatmulConfig m k n
 
 -- ---------------------------------------------------------------------------
@@ -291,11 +291,11 @@ def N : Nat := 256
 def A : Matrix M K := mkMatrix M K
 def B : Matrix K N := mkMatrix K N
 
-def result : BaseConfig × Algorithm := matmul A B  -- : Matrix M N (erased)
+def result : Setup × Algorithm := matmul A B  -- : Matrix M N (erased)
 
 -- Uncomment to see the dependent-type check in action:
 --
---   def bad : BaseConfig × Algorithm := matmul A (mkMatrix 128 128)
+--   def bad : Setup × Algorithm := matmul A (mkMatrix 128 128)
 --   -- error: type mismatch
 --   --   mkMatrix 128 128 has type Matrix 128 128
 --   --   but is expected to have type Matrix K ?n

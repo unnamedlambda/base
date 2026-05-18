@@ -90,7 +90,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // JIT compile once
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
-    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
 
     for &n in &sizes {
         let csv_path = format!("/tmp/bench-data/employees_{}.csv", n);

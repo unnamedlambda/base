@@ -105,7 +105,7 @@ def clifIR : String :=
   buildFunction 2 prepFn ++ "\n" ++
   buildFunction 3 inferFn
 
-def buildConfig : BaseConfig := {
+def buildSetup : Setup := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
   context_offset := 0
@@ -117,7 +117,7 @@ def inferAlgorithm : Algorithm := { fn_idx := u32 3 }
 
 def artifacts : Array Json :=
   #[
-    toJsonArtifact "cuda_gemv" buildConfig loadAlgorithm [
+    toJsonArtifact "cuda_gemv" buildSetup loadAlgorithm [
       ("prep",  prepAlgorithm),
       ("infer", inferAlgorithm)
     ]

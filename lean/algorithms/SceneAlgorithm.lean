@@ -958,7 +958,7 @@ def payloads (spec : SceneSpec) : List UInt8 :=
   let clifPad := zeros clifIrRegion
   reserved ++ ptxBytes ++ bindDesc ++ bindPad ++ filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : SceneSpec) : BaseConfig := {
+def config (spec : SceneSpec) : Setup := {
   cranelift_ir := clifIrSource spec,
   memory_size := (payloads spec).length + pixelBytes spec,
   context_offset := 0,
@@ -969,7 +969,7 @@ def algorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
 
-def renderScene (spec : SceneSpec) : BaseConfig × Algorithm :=
+def renderScene (spec : SceneSpec) : Setup × Algorithm :=
   (config spec, algorithm)
 
 def defaultPalette : ScenePalette := {

@@ -79,7 +79,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     eprintln!("  Both: upload + compute + full readback via execute_into\n");
 
     let artifact = Artifact::from_bytes(CUDA_SAXPY_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
 
     for &n in &[262_144usize, 524_288, 1_048_576] {
         eprintln!("  SAXPY {} ...", format_count(n));

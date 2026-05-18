@@ -2220,7 +2220,7 @@ def payloads : List UInt8 :=
     f.arrayAddPtx.init (stringToBytes arrayAddPtxSource)
   ]
 
-def cliConfig : BaseConfig := {
+def cliConfig : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := layoutMeta.totalSize,
   context_offset := 0,

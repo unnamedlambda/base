@@ -2,7 +2,7 @@ use arrow_array::{Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use base::{run, Base, RecordBatch};
 use base_types::{
-    Algorithm, BaseConfig, OutputBatchSchema, OutputColumn, OutputType, RuntimeHeader,
+    Algorithm, Setup, OutputBatchSchema, OutputColumn, OutputType, RuntimeHeader,
 };
 use std::fs;
 use std::sync::Arc;
@@ -17,8 +17,8 @@ fn legacy_runtime_header() -> RuntimeHeader {
     }
 }
 
-fn cranelift_config(memory: Vec<u8>, cranelift_ir: String) -> BaseConfig {
-    BaseConfig {
+fn cranelift_config(memory: Vec<u8>, cranelift_ir: String) -> Setup {
+    Setup {
         cranelift_ir,
         memory_size: memory.len(),
         runtime_header: legacy_runtime_header(),
@@ -38,7 +38,7 @@ fn create_cranelift_algorithm(
     fn_idx: u32,
     memory: Vec<u8>,
     cranelift_ir: String,
-) -> (BaseConfig, Algorithm) {
+) -> (Setup, Algorithm) {
     (cranelift_config(memory, cranelift_ir), cranelift_algorithm(fn_idx))
 }
 
@@ -1001,7 +1001,7 @@ fn create_output_algorithm(
     clif_ir: &str,
     memory: Vec<u8>,
     output: Vec<OutputBatchSchema>,
-) -> (BaseConfig, Algorithm) {
+) -> (Setup, Algorithm) {
     let mut p = memory;
     let clif_bytes = format!("{}\0", clif_ir).into_bytes();
     if p.len() < clif_bytes.len() {
@@ -1009,7 +1009,7 @@ fn create_output_algorithm(
     }
     p[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir.to_string(),
         memory_size: p.len(),
         runtime_header: legacy_runtime_header(),
@@ -1663,7 +1663,7 @@ block0(v0: i64):
     }];
 
     // Standalone
-    let config1 = BaseConfig {
+    let config1 = Setup {
         cranelift_ir: clif_ir.clone(),
         memory_size: memory.len(),
         runtime_header: legacy_runtime_header(),
@@ -1677,7 +1677,7 @@ block0(v0: i64):
     let batches1 = run(config1, alg1).unwrap();
 
     // Base struct
-    let config2 = BaseConfig {
+    let config2 = Setup {
         cranelift_ir: clif_ir,
         memory_size: memory.len(),
         runtime_header: legacy_runtime_header(),
@@ -1727,7 +1727,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -1813,7 +1813,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -1878,7 +1878,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -1978,7 +1978,7 @@ block0(v0: i64):
     let mut mem1 = vec![0u8; 4096];
     mem1[256..256 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
     mem1[512..520].copy_from_slice(&42u64.to_le_bytes());
-    let config1 = BaseConfig {
+    let config1 = Setup {
         cranelift_ir: clif_ir.clone(),
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2002,7 +2002,7 @@ block0(v0: i64):
     let mut mem2 = vec![0u8; 4096];
     mem2[256..256 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
     mem2[512..520].copy_from_slice(&99u64.to_le_bytes());
-    let config2 = BaseConfig {
+    let config2 = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2038,7 +2038,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2098,7 +2098,7 @@ block0(v0: i64):
     let mut mem = vec![0u8; 4096];
     mem[100..108].copy_from_slice(&11i64.to_le_bytes());
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2161,7 +2161,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2227,7 +2227,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2282,7 +2282,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2365,7 +2365,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2426,7 +2426,7 @@ block0(v0: i64):
 
 #[test]
 fn clif_parse_error_garbage_ir() {
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: "this is not valid CLIF".to_string(),
         memory_size: 256,
         runtime_header: legacy_runtime_header(),
@@ -2441,7 +2441,7 @@ fn clif_parse_error_garbage_ir() {
 
 #[test]
 fn clif_parse_error_via_run() {
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: "not valid clif at all {}[]".to_string(),
         memory_size: 256,
         runtime_header: legacy_runtime_header(),
@@ -2460,7 +2460,7 @@ fn clif_parse_error_via_run() {
 
 #[test]
 fn clif_parse_error_incomplete_function() {
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: "function %f0(i64) {\n".to_string(),
         memory_size: 256,
         runtime_header: legacy_runtime_header(),
@@ -2476,7 +2476,7 @@ fn clif_parse_error_incomplete_function() {
 #[test]
 fn clif_parse_error_empty_ir_no_error() {
     // Empty string should NOT error — it skips compilation entirely
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: String::new(),
         memory_size: 256,
         runtime_header: legacy_runtime_header(),
@@ -2654,7 +2654,7 @@ block0(v0: i64):
         rows = rows,
     );
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -2785,7 +2785,7 @@ block0(v0: i64):
         batch_count = batch_count,
     );
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -2879,7 +2879,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -2950,7 +2950,7 @@ block0(v0: i64):
     let mut initial = vec![0u8; 4096];
     initial[16..24].copy_from_slice(&0xCAFEBABEu64.to_le_bytes());
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3002,7 +3002,7 @@ block0(v0: i64):
     let mut initial = vec![0u8; 4096];
     initial[32..40].copy_from_slice(&0x22222222u64.to_le_bytes());
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3056,7 +3056,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3097,7 +3097,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3149,7 +3149,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 256,
         runtime_header: legacy_runtime_header(),
@@ -3229,7 +3229,7 @@ block0(v0: i64):
     // Static multiplier = 13
     initial[100..108].copy_from_slice(&13i64.to_le_bytes());
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3288,7 +3288,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 64,
         runtime_header: legacy_runtime_header(),
@@ -3332,7 +3332,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3383,7 +3383,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3433,7 +3433,7 @@ block0(v0: i64):
 }"#
     .to_string();
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
         runtime_header: legacy_runtime_header(),
@@ -3577,7 +3577,7 @@ block0(v0: i64):
     // bind desc: buf_id=0, read_only=0
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -3678,7 +3678,7 @@ block0(v0: i64):
     memory[shader_off + shader_bytes.len()] = 0;
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -3838,7 +3838,7 @@ block0(v0: i64):
     memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
     memory[bind_off + 8..bind_off + 12].copy_from_slice(&2i32.to_le_bytes());
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -3989,7 +3989,7 @@ block0(v0: i64):
     memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
     memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -4147,7 +4147,7 @@ block0(v0: i64):
         batch_count = batch_count,
     );
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -4270,7 +4270,7 @@ block0(v0: i64):
         total_bytes = total_bytes,
     );
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -4413,7 +4413,7 @@ block0(v0: i64):
     memory[name_off..name_off + 8].copy_from_slice(b"add_one\0");
     memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),
@@ -4538,7 +4538,7 @@ block0(v0: i64):
         rows = rows,
     );
 
-    let config = BaseConfig {
+    let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
         runtime_header: legacy_runtime_header(),

@@ -175,7 +175,7 @@ def buildInitialMemory : List UInt8 :=
 
 -- ── Algorithm definition ─────────────────────────────────────────────────────
 
-def buildConfig : BaseConfig := {
+def buildSetup : Setup := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
   context_offset := 0,
@@ -192,5 +192,5 @@ end Qwen2
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[
-    toJsonEntry "qwen2" Qwen2.buildConfig Qwen2.qwen2Algorithm
+    toJsonEntry "qwen2" Qwen2.buildSetup Qwen2.qwen2Algorithm
   ]

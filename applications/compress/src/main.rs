@@ -31,12 +31,12 @@ fn main() {
         path_bytes.len() < 255,
         "Input path too long (max 254 chars)"
     );
-    artifact.config.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
+    artifact.setup.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
         .copy_from_slice(path_bytes);
-    artifact.config.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
+    artifact.setup.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
 
     let start = std::time::Instant::now();
-    match run(artifact.config, artifact.main) {
+    match run(artifact.setup, artifact.main) {
         Ok(_) => {
             let elapsed = start.elapsed();
             // Parse standard LZ4 frame to compute actual compressed data size

@@ -93,7 +93,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let base_ms = harness::median_of(iterations, || {
             let _ = fs::remove_file(&output_path);
             let artifact = Artifact::from_bytes(WC_ARTIFACT);
-            let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+            let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
             let start = std::time::Instant::now();
             let _ = base_instance.execute(&artifact.main, &payload);
             start.elapsed().as_secs_f64() * 1000.0
@@ -102,7 +102,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Run one more time with fresh instance for verification
         let _ = fs::remove_file(&output_path);
         let artifact = Artifact::from_bytes(WC_ARTIFACT);
-        let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+        let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
         let _ = base_instance.execute(&artifact.main, &payload);
 
         let verified = if let Ok(content) = fs::read_to_string(&output_path) {

@@ -267,7 +267,7 @@ def buildInitialMemory : List UInt8 :=
   let bind := bindDesc ++ zeros (MEM_SIZE - BIND_DESC_OFF - bindDesc.length)
   reserved ++ ptx ++ bind
 
-def buildConfig : BaseConfig := {
+def buildSetup : Setup := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
   context_offset := 0,
@@ -281,7 +281,7 @@ def stackAlgorithm : Algorithm := { fn_idx := u32 6 }
 
 def artifacts : Array Json :=
   #[
-    toJsonArtifact "cuda_decode_attn" buildConfig loadAlgorithm [
+    toJsonArtifact "cuda_decode_attn" buildSetup loadAlgorithm [
       ("prep",  prepAlgorithm),
       ("infer", inferAlgorithm),
       ("stack", stackAlgorithm)

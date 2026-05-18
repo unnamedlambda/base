@@ -476,10 +476,10 @@ def buildPayload (patternBytes : List UInt8) : List UInt8 :=
 -- Monomorphic builder
 -- ---------------------------------------------------------------------------
 
-def buildQueryMonomorphic (patternStr : String) : BaseConfig × Algorithm :=
+def buildQueryMonomorphic (patternStr : String) : Setup × Algorithm :=
   let patternBytes := patternStr.toUTF8.toList  -- no null terminator
   let payload := buildPayload patternBytes
-  let cfg : BaseConfig := {
+  let cfg : Setup := {
     cranelift_ir   := clifIrSource patternBytes.length,
     memory_size    := payload.length,
     context_offset := 0,
@@ -512,7 +512,7 @@ def extractPattern : QueryPlan s → String
   | .join _ p1 _ _ _    => extractPattern p1
   | .select _ p _       => extractPattern p
 
-def compile {s : Schema} (p : QueryPlan s) : BaseConfig × Algorithm :=
+def compile {s : Schema} (p : QueryPlan s) : Setup × Algorithm :=
   buildQueryMonomorphic ("," ++ extractPattern p ++ ",")
 
 def source {s : Schema} (t : Table s) : QueryPlan s :=
@@ -526,7 +526,7 @@ def QueryPlan.project {s : Schema} (p : QueryPlan s)
     (cols : List String) (h : ∀ c ∈ cols, c ∈ s := by decide) : QueryPlan cols :=
   select cols p h
 
-def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s) : BaseConfig × Algorithm :=
+def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s) : Setup × Algorithm :=
   compile p
 
 def QueryPlan.innerJoinOn {s1 : Schema} (lhs : QueryPlan s1)
@@ -561,7 +561,7 @@ def locations   : Table locationSchema   := Table.mk
 --     |> innerJoinOn "dept_id" (departments.query.whereEq "dept_name" "Engineering")
 --     |> project ["name", "city", "region", "dept_name", "floor"]
 --     |> compileQuery
-def result : BaseConfig × Algorithm :=
+def result : Setup × Algorithm :=
   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
   let departmentsInEngineering := departments.query.whereEq "dept_name" "Engineering"
   let employeesWithLocations := employeesInSeattle.innerJoinOn "city" locations.query
@@ -571,12 +571,12 @@ def result : BaseConfig × Algorithm :=
 -- Uncomment either def to see elaboration-time rejection at the combinator call
 -- that introduces the bad column/key:
 --
--- def badJoinKey : BaseConfig × Algorithm :=
+-- def badJoinKey : Setup × Algorithm :=
 --   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
 --   let brokenJoin := employeesInSeattle.innerJoinOn "nonexistent_key" departments.query
 --   (brokenJoin.project ["name", "dept_name"]).compileQuery
 --
--- def badSelectCol : BaseConfig × Algorithm :=
+-- def badSelectCol : Setup × Algorithm :=
 --   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
 --   let joined := employeesInSeattle.innerJoinOn "dept_id" departments.query
 --   (joined.project ["name", "salary_band"]).compileQuery

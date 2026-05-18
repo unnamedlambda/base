@@ -209,7 +209,7 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
 
             // Load Lean-built algorithm and JIT compile once
             let artifact = load_artifact(w);
-            let mut base_instance = base::Base::new(artifact.config).expect("Base::new failed");
+            let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
 
             let rayon_out = format!("/tmp/hist_bench_rayon_{}_{}.bin", n, w);
 

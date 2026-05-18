@@ -107,7 +107,7 @@ def clifIR : String := buildProgram mainFn
 
 def buildInitialMemory : List UInt8 := zeros MEM_SIZE
 
-def buildConfig : BaseConfig := {
+def buildSetup : Setup := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
   context_offset := 0,
@@ -119,6 +119,6 @@ def buildAlgorithm : Algorithm := {
 }
 
 def artifacts : Array Json :=
-  #[toJsonEntry "sort_algorithm" buildConfig buildAlgorithm]
+  #[toJsonEntry "sort_algorithm" buildSetup buildAlgorithm]
 
 end SortBench

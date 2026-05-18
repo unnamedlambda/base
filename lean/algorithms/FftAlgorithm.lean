@@ -264,7 +264,7 @@ def payloads : List UInt8 :=
 -- Configuration
 -- ---------------------------------------------------------------------------
 
-def fftConfig : BaseConfig := {
+def fftConfig : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := payloads.length + totalAdditionalMemory,
   context_offset := 0,

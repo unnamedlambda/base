@@ -939,7 +939,7 @@ def payloads : List UInt8 :=
   let outputFname := padTo (stringToBytes "sat_output.txt") (cnf_off - outputFilename_off)
   reserved ++ inputFname ++ outputFname
 
-def satConfig : BaseConfig := {
+def satConfig : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := totalMemory,
   context_offset := 0,
