@@ -17,33 +17,36 @@ instance : ToJson UInt32 where
 instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
-structure RuntimeHeader where
-  dataPtrOffset : Nat := 0x18
-  dataLenOffset : Nat := 0x20
-  outPtrOffset : Nat := 0x28
-  outLenOffset : Nat := 0x30
+/-- Offsets in shared memory where the Rust host writes the caller's input and
+    output buffer pointers + lengths before each `execute`. CLIF code reads from
+    these slots to access the caller's buffers. -/
+structure IoOffsets where
+  dataPtr : Nat := 0x18
+  dataLen : Nat := 0x20
+  outPtr  : Nat := 0x28
+  outLen  : Nat := 0x30
   deriving Repr
 
-instance : ToJson RuntimeHeader where
+instance : ToJson IoOffsets where
   toJson h := Json.mkObj [
-    ("data_ptr_offset", toJson h.dataPtrOffset),
-    ("data_len_offset", toJson h.dataLenOffset),
-    ("out_ptr_offset", toJson h.outPtrOffset),
-    ("out_len_offset", toJson h.outLenOffset)
+    ("data_ptr", toJson h.dataPtr),
+    ("data_len", toJson h.dataLen),
+    ("out_ptr",  toJson h.outPtr),
+    ("out_len",  toJson h.outLen)
   ]
 
-namespace RuntimeHeader
+namespace IoOffsets
 
-def default : RuntimeHeader := {}
+def default : IoOffsets := {}
 
 def byteSize : Nat := 56
 
-end RuntimeHeader
+end IoOffsets
 
 structure Setup where
   cranelift_ir : String
   memory_size : Nat
-  runtime_header : RuntimeHeader := {}
+  io_offsets : IoOffsets := {}
   initial_memory : List UInt8 := []
   deriving Repr
 
@@ -59,7 +62,7 @@ instance : ToJson Setup where
   toJson c := Json.mkObj [
     ("cranelift_ir", toJson c.cranelift_ir),
     ("memory_size", toJson c.memory_size),
-    ("runtime_header", toJson c.runtime_header),
+    ("io_offsets", toJson c.io_offsets),
     ("initial_memory", toJson c.initial_memory)
   ]
 

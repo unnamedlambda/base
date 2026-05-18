@@ -56,7 +56,7 @@ def PTX_SOURCE_OFF : Nat := 0x0200
 def BIND_DESC_OFF  : Nat := 0x5000
 def MEM_SIZE       : Nat := 0x5100
 
--- App fields: stored starting at 0x38 (beyond the 56-byte RuntimeHeader)
+-- App fields: stored starting at 0x38 (beyond the 56-byte IoOffsets)
 def BUF_Q_OFF      : Nat := 0x38
 def BUF_K_OFF      : Nat := 0x3C
 def BUF_V_OFF      : Nat := 0x40

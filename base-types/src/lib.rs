@@ -23,18 +23,18 @@ pub struct OutputBatchSchema {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RuntimeHeader {
-    pub data_ptr_offset: usize,
-    pub data_len_offset: usize,
-    pub out_ptr_offset: usize,
-    pub out_len_offset: usize,
+pub struct IoOffsets {
+    pub data_ptr: usize,
+    pub data_len: usize,
+    pub out_ptr: usize,
+    pub out_len: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Setup {
     pub cranelift_ir: String,
     pub memory_size: usize,
-    pub runtime_header: RuntimeHeader,
+    pub io_offsets: IoOffsets,
     #[serde(default)]
     pub initial_memory: Vec<u8>,
 }

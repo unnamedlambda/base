@@ -181,7 +181,7 @@ fn read_generated_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::{Algorithm, Setup, RuntimeHeader};
+    use base_types::{Algorithm, Setup, IoOffsets};
     use std::collections::HashMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -190,11 +190,11 @@ mod tests {
             setup: Setup {
                 cranelift_ir: "function u0:0() { return }".to_string(),
                 memory_size: 64,
-                runtime_header: RuntimeHeader {
-                    data_ptr_offset: 0x18,
-                    data_len_offset: 0x20,
-                    out_ptr_offset: 0x28,
-                    out_len_offset: 0x30,
+                io_offsets: IoOffsets {
+                    data_ptr: 0x18,
+                    data_len: 0x20,
+                    out_ptr: 0x28,
+                    out_len: 0x30,
                 },
                 initial_memory: vec![1, 2, 3],
             },

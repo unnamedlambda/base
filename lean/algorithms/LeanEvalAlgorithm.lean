@@ -5,7 +5,7 @@ open AlgorithmLib
 
 namespace LeanEval
 
--- Payload layout (app fields start at 0x0038 = 56 to clear the new 56-byte RuntimeHeader)
+-- Payload layout (app fields start at 0x0038 = 56 to clear the new 56-byte IoOffsets)
 def OUTPUT_PATH    : Nat := 0x0038
 def INPUT_PATH     : Nat := 0x0078
 def SOURCE_BUF     : Nat := 0x0178
@@ -1853,7 +1853,7 @@ def clifIrSource : String := buildProgram do
 -- ---------------------------------------------------------------------------
 
 def buildPayload : List UInt8 :=
-  let reserved    := zeros 56                              -- 0x0000-0x0037: runtime reserved (56-byte RuntimeHeader)
+  let reserved    := zeros 56                              -- 0x0000-0x0037: runtime reserved (56-byte IoOffsets)
   let outputPath  := padTo (stringToBytes "output.txt") 64 -- 0x0038
   let inputPath   := zeros 256                             -- 0x0078
   let sourceBuf   := zeros SOURCE_BUF_SZ                   -- 0x0178

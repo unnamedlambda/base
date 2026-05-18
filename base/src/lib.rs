@@ -13,7 +13,7 @@ mod ffi;
 mod jit;
 
 use crate::jit::{compile_cranelift_ir, THREAD_COMPILED_FNS};
-use base_types::RuntimeHeader;
+use base_types::IoOffsets;
 
 #[derive(Debug)]
 pub enum Error {
@@ -26,7 +26,7 @@ pub struct Base {
     mem_ptr: *mut u8,
     clif_fns: Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>,
     _module: Option<cranelift_jit::JITModule>,
-    runtime_header: RuntimeHeader,
+    io_offsets: IoOffsets,
 }
 
 unsafe impl Send for Base {}
@@ -35,8 +35,8 @@ unsafe impl Sync for Base {}
 impl Base {
     pub fn new(setup: Setup) -> Result<Self, Error> {
         let header_end = setup
-            .runtime_header
-            .out_len_offset
+            .io_offsets
+            .out_len
             .saturating_add(std::mem::size_of::<usize>());
         let needed = setup
             .memory_size
@@ -46,14 +46,14 @@ impl Base {
         memory.resize(needed, 0);
         Self::from_parts(
             setup.cranelift_ir,
-            setup.runtime_header,
+            setup.io_offsets,
             memory.into_boxed_slice(),
         )
     }
 
     fn from_parts(
         cranelift_ir: String,
-        runtime_header: RuntimeHeader,
+        io_offsets: IoOffsets,
         memory: Box<[u8]>,
     ) -> Result<Self, Error> {
         let _span = info_span!("base_new", memory_size = memory.len()).entered();
@@ -82,7 +82,7 @@ impl Base {
             mem_ptr,
             clif_fns,
             _module: module,
-            runtime_header,
+            io_offsets,
         })
     }
 
@@ -107,19 +107,19 @@ impl Base {
         // the caller's buffer directly via pointer (zero-copy).
         unsafe {
             std::ptr::write_unaligned(
-                self.memory[self.runtime_header.data_ptr_offset..].as_mut_ptr() as *mut *const u8,
+                self.memory[self.io_offsets.data_ptr..].as_mut_ptr() as *mut *const u8,
                 data.as_ptr(),
             );
             std::ptr::write_unaligned(
-                self.memory[self.runtime_header.data_len_offset..].as_mut_ptr() as *mut usize,
+                self.memory[self.io_offsets.data_len..].as_mut_ptr() as *mut usize,
                 data.len(),
             );
             std::ptr::write_unaligned(
-                self.memory[self.runtime_header.out_ptr_offset..].as_mut_ptr() as *mut *mut u8,
+                self.memory[self.io_offsets.out_ptr..].as_mut_ptr() as *mut *mut u8,
                 out.as_mut_ptr(),
             );
             std::ptr::write_unaligned(
-                self.memory[self.runtime_header.out_len_offset..].as_mut_ptr() as *mut usize,
+                self.memory[self.io_offsets.out_len..].as_mut_ptr() as *mut usize,
                 out.len(),
             );
         }

@@ -73,7 +73,7 @@ def FILE_LM_HEAD_OFF   : Nat := FILE_RMS_FINAL_OFF + D_BYTES
 
 -- ── Shared memory layout ─────────────────────────────────────────────────────
 
--- 0x0000-0x0037: RuntimeHeader (56 bytes, written by runtime)
+-- 0x0000-0x0037: IoOffsets (56 bytes, written by runtime)
 def PINNED_HOST_PTR_OFF : Nat := 0x0038  -- i64: host ptr of pinned scratch buffer (cl_cuda_pinned_ptr)
 def PINNED_ID_OFF       : Nat := 0x0040  -- i32: pinned buffer id (for free at finalize)
 

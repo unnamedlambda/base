@@ -53,7 +53,7 @@ def PTX_ADD_OFF : Nat := 0x3800
 def MEM_SIZE : Nat := 0x4800
 
 -- App fields: buf IDs stored as i32 (4 bytes each), starting at 0x38
--- (beyond the 56-byte RuntimeHeader at 0x00-0x37)
+-- (beyond the 56-byte IoOffsets at 0x00-0x37)
 def BUF_X_OFF      : Nat := 0x38
 def BUF_XN1_OFF    : Nat := 0x3C
 def BUF_Q_OFF      : Nat := 0x40

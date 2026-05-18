@@ -26,7 +26,7 @@ namespace CudaSoftmaxPersist
     u0:4  finalize  — cl_cuda_sync, optional download y
 
   Shared memory layout:
-    0x00-0x37  reserved (56-byte RuntimeHeader)
+    0x00-0x37  reserved (56-byte IoOffsets)
     0x38-0x3F  n (i64)
     0x40-0x47  num_blocks (i64)
     0x48-0x4F  packed meta [n:u32][num_blocks:u32] staging area

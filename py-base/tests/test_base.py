@@ -125,11 +125,11 @@ block0(v0: i64):
 """
 
 
-LEGACY_RUNTIME_HEADER = {
-    "data_ptr_offset": 8,
-    "data_len_offset": 16,
-    "out_ptr_offset": 24,
-    "out_len_offset": 32,
+COMPACT_IO_OFFSETS = {
+    "data_ptr": 8,
+    "data_len": 16,
+    "out_ptr": 24,
+    "out_len": 32,
 }
 
 
@@ -137,7 +137,7 @@ def make_double_config():
     return json.dumps({
         "cranelift_ir": DOUBLE_I32_CLIF,
         "memory_size": 256,
-        "runtime_header": LEGACY_RUNTIME_HEADER,
+        "io_offsets": COMPACT_IO_OFFSETS,
         "initial_memory": [0] * 256,
     })
 
@@ -150,7 +150,7 @@ def make_arrow_config():
     return json.dumps({
         "cranelift_ir": ARROW_CLIF,
         "memory_size": 1024,
-        "runtime_header": LEGACY_RUNTIME_HEADER,
+        "io_offsets": COMPACT_IO_OFFSETS,
         "initial_memory": [0] * 1024,
     })
 
@@ -267,7 +267,7 @@ class TestBase:
         config_json = json.dumps({
             "cranelift_ir": "not valid clif",
             "memory_size": 256,
-            "runtime_header": LEGACY_RUNTIME_HEADER,
+            "io_offsets": COMPACT_IO_OFFSETS,
             "initial_memory": [0] * 256,
         })
         with pytest.raises(ValueError, match="Base::new failed"):
@@ -529,7 +529,7 @@ block0(v0: i64):
         config = Setup(json.dumps({
             "cranelift_ir": noop_clif,
             "memory_size": 256,
-            "runtime_header": LEGACY_RUNTIME_HEADER,
+            "io_offsets": COMPACT_IO_OFFSETS,
             "initial_memory": [0] * 256,
         }))
         alg = Algorithm(json.dumps({

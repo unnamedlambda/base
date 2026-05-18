@@ -2,18 +2,18 @@ use arrow_array::{Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use base::{run, Base, RecordBatch};
 use base_types::{
-    Algorithm, Setup, OutputBatchSchema, OutputColumn, OutputType, RuntimeHeader,
+    Algorithm, Setup, OutputBatchSchema, OutputColumn, OutputType, IoOffsets,
 };
 use std::fs;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-fn legacy_runtime_header() -> RuntimeHeader {
-    RuntimeHeader {
-        data_ptr_offset: 8,
-        data_len_offset: 16,
-        out_ptr_offset: 24,
-        out_len_offset: 32,
+fn compact_io_offsets() -> IoOffsets {
+    IoOffsets {
+        data_ptr: 8,
+        data_len: 16,
+        out_ptr: 24,
+        out_len: 32,
     }
 }
 
@@ -21,7 +21,7 @@ fn cranelift_config(memory: Vec<u8>, cranelift_ir: String) -> Setup {
     Setup {
         cranelift_ir,
         memory_size: memory.len(),
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     }
 }
@@ -1011,7 +1011,7 @@ fn create_output_algorithm(
     let config = Setup {
         cranelift_ir: clif_ir.to_string(),
         memory_size: p.len(),
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: p,
     };
     let algorithm = Algorithm {
@@ -1664,7 +1664,7 @@ block0(v0: i64):
     let config1 = Setup {
         cranelift_ir: clif_ir.clone(),
         memory_size: memory.len(),
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory.clone(),
     };
     let alg1 = Algorithm {
@@ -1677,7 +1677,7 @@ block0(v0: i64):
     let config2 = Setup {
         cranelift_ir: clif_ir,
         memory_size: memory.len(),
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let alg2 = Algorithm {
@@ -1726,7 +1726,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -1811,7 +1811,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -1875,7 +1875,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -1974,7 +1974,7 @@ block0(v0: i64):
     let config1 = Setup {
         cranelift_ir: clif_ir.clone(),
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: mem1,
     };
     let mut base = Base::new(config1).unwrap();
@@ -1997,7 +1997,7 @@ block0(v0: i64):
     let config2 = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: mem2,
     };
     let mut base2 = Base::new(config2).unwrap();
@@ -2032,7 +2032,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2091,7 +2091,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: mem,
     };
     let mut base = Base::new(config).unwrap();
@@ -2153,7 +2153,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2218,7 +2218,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2272,7 +2272,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2354,7 +2354,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2414,7 +2414,7 @@ fn clif_parse_error_garbage_ir() {
     let config = Setup {
         cranelift_ir: "this is not valid CLIF".to_string(),
         memory_size: 256,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let Err(err) = Base::new(config) else {
@@ -2428,7 +2428,7 @@ fn clif_parse_error_via_run() {
     let config = Setup {
         cranelift_ir: "not valid clif at all {}[]".to_string(),
         memory_size: 256,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let algorithm = Algorithm {
@@ -2446,7 +2446,7 @@ fn clif_parse_error_incomplete_function() {
     let config = Setup {
         cranelift_ir: "function %f0(i64) {\n".to_string(),
         memory_size: 256,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let Err(err) = Base::new(config) else {
@@ -2461,7 +2461,7 @@ fn clif_parse_error_empty_ir_no_error() {
     let config = Setup {
         cranelift_ir: String::new(),
         memory_size: 256,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let base = Base::new(config);
@@ -2638,7 +2638,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -2768,7 +2768,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -2861,7 +2861,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2931,7 +2931,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: initial,
     };
 
@@ -2982,7 +2982,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: initial,
     };
 
@@ -3035,7 +3035,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3075,7 +3075,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3126,7 +3126,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 256,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3205,7 +3205,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: initial,
     };
     let mut base = Base::new(config).unwrap();
@@ -3263,7 +3263,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 64,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3306,7 +3306,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
 
@@ -3356,7 +3356,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
 
@@ -3405,7 +3405,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: 4096,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3548,7 +3548,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -3648,7 +3648,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -3807,7 +3807,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -3957,7 +3957,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -4114,7 +4114,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -4236,7 +4236,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -4378,7 +4378,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -4502,7 +4502,7 @@ block0(v0: i64):
     let config = Setup {
         cranelift_ir: clif_ir,
         memory_size: mem_size,
-        runtime_header: legacy_runtime_header(),
+        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
