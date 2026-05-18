@@ -136,7 +136,6 @@ def payloads : List UInt8 :=
 def saxpyConfig : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := layoutMeta.totalSize,
-  context_offset := 0,
   initial_memory := payloads
 }
 

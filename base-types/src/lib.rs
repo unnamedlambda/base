@@ -36,8 +36,6 @@ pub struct Setup {
     pub memory_size: usize,
     pub runtime_header: RuntimeHeader,
     #[serde(default)]
-    pub context_offset: usize,
-    #[serde(default)]
     pub initial_memory: Vec<u8>,
 }
 

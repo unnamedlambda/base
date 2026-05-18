@@ -135,8 +135,7 @@ def clifIR : String := buildProgram mainFn
 
 def buildSetup : Setup := {
   cranelift_ir := clifIR,
-  memory_size := MEM_SIZE,
-  context_offset := 0
+  memory_size := MEM_SIZE
 }
 
 def buildAlgorithm : Algorithm := {

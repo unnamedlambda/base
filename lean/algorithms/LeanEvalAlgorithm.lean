@@ -1871,7 +1871,6 @@ def buildPayload : List UInt8 :=
 def buildSetup : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := buildPayload.length,
-  context_offset := 0,
   initial_memory := buildPayload
 }
 

@@ -196,7 +196,6 @@ mod tests {
                     out_ptr_offset: 0x28,
                     out_len_offset: 0x30,
                 },
-                context_offset: 16,
                 initial_memory: vec![1, 2, 3],
             },
             main: Algorithm {

@@ -482,7 +482,6 @@ def buildQueryMonomorphic (patternStr : String) : Setup × Algorithm :=
   let cfg : Setup := {
     cranelift_ir   := clifIrSource patternBytes.length,
     memory_size    := payload.length,
-    context_offset := 0,
     initial_memory := payload
   }
   let alg : Algorithm := {

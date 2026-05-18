@@ -193,7 +193,6 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     setup := {
       cranelift_ir := clifIr
       memory_size := memSize
-      context_offset := 0
       initial_memory := initialMemory
     }
     loadAlgorithm  := mkAlg 1

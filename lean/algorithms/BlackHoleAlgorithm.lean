@@ -1481,7 +1481,6 @@ def payloads (spec : BlackHoleSpec) : List UInt8 :=
 def config (spec : BlackHoleSpec) : Setup := {
   cranelift_ir := clifIrSource spec,
   memory_size := (payloads spec).length + pixelBytes spec,
-  context_offset := 0,
   initial_memory := payloads spec
 }
 

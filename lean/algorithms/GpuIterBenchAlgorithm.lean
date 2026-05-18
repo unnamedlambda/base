@@ -125,7 +125,6 @@ def artifacts : Array Json :=
   #[toJsonEntry "gpu_iter_algorithm" {
     cranelift_ir := clifIR,
     memory_size := MEM_SIZE,
-    context_offset := 0,
     initial_memory := buildInitialMemory
   } {
     fn_idx := u32 1

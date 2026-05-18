@@ -942,7 +942,6 @@ def payloads : List UInt8 :=
 def satConfig : Setup := {
   cranelift_ir := clifIrSource,
   memory_size := totalMemory,
-  context_offset := 0,
   initial_memory := payloads
 }
 

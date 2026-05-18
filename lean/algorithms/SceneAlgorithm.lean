@@ -961,7 +961,6 @@ def payloads (spec : SceneSpec) : List UInt8 :=
 def config (spec : SceneSpec) : Setup := {
   cranelift_ir := clifIrSource spec,
   memory_size := (payloads spec).length + pixelBytes spec,
-  context_offset := 0,
   initial_memory := payloads spec
 }
 

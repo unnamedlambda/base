@@ -103,8 +103,7 @@ def clifIR : String := buildProgram mainFn
 def artifacts : Array Json :=
   #[toJsonEntry "reduction_algorithm" {
     cranelift_ir := clifIR,
-    memory_size := 40,
-    context_offset := 0
+    memory_size := 40
   } {
     fn_idx := u32 1
   }]

@@ -396,7 +396,6 @@ def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
   let cfg : Setup := {
     cranelift_ir  := clifIrSource bs,
     memory_size   := payload.length + totalAdditionalMemory bs,
-    context_offset := 0,
     initial_memory := payload
   }
   let alg : Algorithm := {

@@ -263,7 +263,6 @@ def buildMatmulConfig (m k n : Nat) : Setup × Algorithm :=
   let cfg : Setup := {
     cranelift_ir := clifIrSource m k n,
     memory_size := memSize,
-    context_offset := 0,
     initial_memory := payload
   }
   let alg : Algorithm := {

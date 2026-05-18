@@ -44,7 +44,6 @@ structure Setup where
   cranelift_ir : String
   memory_size : Nat
   runtime_header : RuntimeHeader := {}
-  context_offset : Nat := 0
   initial_memory : List UInt8 := []
   deriving Repr
 
@@ -61,7 +60,6 @@ instance : ToJson Setup where
     ("cranelift_ir", toJson c.cranelift_ir),
     ("memory_size", toJson c.memory_size),
     ("runtime_header", toJson c.runtime_header),
-    ("context_offset", toJson c.context_offset),
     ("initial_memory", toJson c.initial_memory)
   ]
 

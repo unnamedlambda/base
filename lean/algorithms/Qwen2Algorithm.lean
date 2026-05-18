@@ -178,7 +178,6 @@ def buildInitialMemory : List UInt8 :=
 def buildSetup : Setup := {
   cranelift_ir := clifIR,
   memory_size := MEM_SIZE,
-  context_offset := 0,
   initial_memory := buildInitialMemory
 }
 

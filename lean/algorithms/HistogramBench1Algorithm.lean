@@ -143,8 +143,7 @@ def clifIR : String :=
 def artifacts : Array Json :=
   #[toJsonEntry "hist1_algorithm" {
     cranelift_ir := clifIR,
-    memory_size := MEM_SIZE,
-    context_offset := 0
+    memory_size := MEM_SIZE
   } {
     fn_idx := u32 2
   }]
