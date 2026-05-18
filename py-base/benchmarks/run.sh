@@ -6,7 +6,7 @@
 # and benchmark JSONs are regenerated on each run.
 #
 # Usage: ./run.sh [--bench <name>] [--rounds <n>]
-#   --bench   csv | json | regex | strsearch | vecops | torchops | pandas | vllm | all  (default: all)
+#   --bench   csv | json | regex | strsearch | wordcount | vecops | torchops | pandas | vllm | all  (default: all)
 #   --rounds  timed iterations per size                      (default: 10)
 
 set -euo pipefail

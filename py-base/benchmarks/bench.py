@@ -4,7 +4,7 @@ import os
 BENCHMARKS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BENCHMARKS_DIR)
 
-from benches import csv_bench, json_bench, pandas_bench, regex_bench, strsearch_bench, torchops_bench, vecops_bench, vllm_bench
+from benches import csv_bench, json_bench, pandas_bench, regex_bench, strsearch_bench, torchops_bench, vecops_bench, vllm_bench, wordcount_bench
 import harness
 
 
@@ -62,6 +62,10 @@ def main():
         results = strsearch_bench.run(artifact_path("strsearch_algorithm"), rounds)
         harness.print_table(results)
 
+    if bench in ("all", "wordcount"):
+        results = wordcount_bench.run(artifact_path("wc_algorithm"), rounds)
+        harness.print_table(results)
+
     if bench in ("all", "vecops"):
         results = vecops_bench.run(
             artifact_path("vecops_algorithm"),
@@ -117,7 +121,7 @@ def main():
         )
         harness.print_table(results, col_a="PyTorch")
 
-    if bench not in ("all", "csv", "json", "regex", "strsearch", "vecops", "torchops", "pandas", "vllm"):
+    if bench not in ("all", "csv", "json", "regex", "strsearch", "wordcount", "vecops", "torchops", "pandas", "vllm"):
         print(f"Unknown benchmark: {bench}", file=sys.stderr)
         print_usage()
         sys.exit(1)

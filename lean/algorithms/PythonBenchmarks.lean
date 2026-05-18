@@ -18,6 +18,7 @@ import RowAffineReduceBenchAlgorithm
 import RowDotBenchAlgorithm
 import StringSearchAlgorithm
 import VecOpsBenchAlgorithm
+import WordCountAlgorithm
 
 open Lean
 open AlgorithmLib
@@ -29,6 +30,7 @@ def main (args : List String) : IO Unit := do
     JsonBench.artifacts ++
     RegexBench.artifacts ++
     StringSearchBench.artifacts ++
+    WordCountBench.artifacts ++
     VecOpsBench.artifacts ++
     ClampSumBench.artifacts ++
     RowDotBench.artifacts ++
