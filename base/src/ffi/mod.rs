@@ -6,6 +6,7 @@ pub(crate) mod net;
 pub(crate) mod stdio;
 pub(crate) mod thread;
 pub(crate) mod wgpu;
+pub(crate) mod window;
 
 pub(super) unsafe fn read_ctx_ref<T>(ctx_ptr: *const T) -> Option<&'static T> {
     ctx_ptr.as_ref()

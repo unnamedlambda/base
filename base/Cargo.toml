@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 base-types = { path = "../base-types" }
 wgpu = "0.20"
+winit = "0.30"
 cudarc = { version = "0.12", default-features = false, features = ["std", "driver", "cublas", "cuda-12050"] }
 pollster = "0.3"
 tracing = { version = "0.1", features = ["release_max_level_off"] }

@@ -117,6 +117,72 @@ def alignUp4 (v : Val) : IRBuilder Val := do
   let negFour ← iconst64 (-4)
   band sum negFour
 
+/-- Window / input / present FFI bundle. The window shares the wgpu device, so
+    `fnPresentGpuBuffer` blits a game framebuffer straight from a wgpu storage
+    buffer to the swapchain with no host round trip. -/
+structure WindowSetup where
+  fnInit : FnRef
+  fnOpen : FnRef
+  fnPoll : FnRef
+  fnPresentGpuBuffer : FnRef
+  fnCleanup : FnRef
+
+/-- Declare the minimal window FFI (init/open/poll/present/cleanup). -/
+def declareWindowFFI : IRBuilder WindowSetup := do
+  let fnInit ← declareFFI "cl_window_init" [.i64] none
+  let fnOpen ← declareFFI "cl_window_open" [.i64, .i64, .i64, .i64, .i64, .i64, .i64] (some .i32)
+  let fnPoll ← declareFFI "cl_window_poll" [.i64, .i64, .i32] (some .i32)
+  let fnPresentGpuBuffer ← declareFFI "cl_window_present_gpu_buffer"
+    [.i64, .i64, .i32] (some .i32)
+  let fnCleanup ← declareFFI "cl_window_cleanup" [.i64] none
+  pure { fnInit, fnOpen, fnPoll, fnPresentGpuBuffer, fnCleanup }
+
+def windowCtxSlotPtr (ptr : Val) (slotOffset : Nat := ContextSlots.window) : IRBuilder Val :=
+  absAddr ptr slotOffset
+
+def windowCtxPtr (ptr : Val) (slotOffset : Nat := ContextSlots.window) : IRBuilder Val := do
+  let slotPtr ← windowCtxSlotPtr ptr slotOffset
+  load64 slotPtr
+
+def windowInit (win : WindowSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.window) : IRBuilder Unit := do
+  let slotPtr ← windowCtxSlotPtr ptr slotOffset
+  callVoid win.fnInit [slotPtr]
+
+/-- Open the (single) window and build the blit pipeline from the WGSL at
+    `blitOff` (a byte offset into shared memory, `blitLen` bytes). The blit
+    shader must expose one read-only storage buffer at `@group(0) @binding(0)`
+    (the packed-RGBA framebuffer) with entry points `vs_main`/`fs_main`, and bake
+    in the framebuffer dimensions. `titleOff`/`titleLen` name the window title.
+    Returns 0 on success, -1 on error. -/
+def windowOpen (win : WindowSetup) (ptr width height titleOff titleLen blitOff blitLen : Val)
+    (slotOffset : Nat := ContextSlots.window) : IRBuilder Val := do
+  let ctxPtr ← windowCtxPtr ptr slotOffset
+  let titlePtr ← iadd ptr titleOff
+  let blitPtr ← iadd ptr blitOff
+  call win.fnOpen [ctxPtr, width, height, titlePtr, titleLen, blitPtr, blitLen]
+
+/-- Drain up to `maxEvents` input events into the buffer at `eventsOff` (32 bytes
+    each: kind, a, b, c as i64). Returns the number of events written, or -1. -/
+def windowPoll (win : WindowSetup) (ptr eventsOff maxEvents : Val)
+    (slotOffset : Nat := ContextSlots.window) : IRBuilder Val := do
+  let ctxPtr ← windowCtxPtr ptr slotOffset
+  let eventsPtr ← iadd ptr eventsOff
+  call win.fnPoll [ctxPtr, eventsPtr, maxEvents]
+
+/-- Present a game framebuffer (wgpu storage buffer `bufId` of packed RGBA u32)
+    to the window, zero-copy. The framebuffer size is baked into the blit shader,
+    so no dimensions are passed. Reads the gpu context pointer from its slot. -/
+def windowPresentGpuBuffer (win : WindowSetup) (ptr bufId : Val)
+    (slotOffset : Nat := ContextSlots.window) (gpuSlotOffset : Nat := ContextSlots.wgpu)
+    : IRBuilder Val := do
+  let ctxPtr ← windowCtxPtr ptr slotOffset
+  let gpuCtxPtr ← gpuCtxPtr ptr gpuSlotOffset
+  call win.fnPresentGpuBuffer [ctxPtr, gpuCtxPtr, bufId]
+
+def windowCleanup (win : WindowSetup) (ptr : Val) (slotOffset : Nat := ContextSlots.window) : IRBuilder Unit := do
+  let slotPtr ← windowCtxSlotPtr ptr slotOffset
+  callVoid win.fnCleanup [slotPtr]
+
 /-- LMDB FFI function bundle -/
 structure LmdbSetup where
   fnInit : FnRef

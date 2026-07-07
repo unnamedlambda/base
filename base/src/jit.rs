@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::ffi::{
-    cl_cosf, cl_powf, cl_sinf, cuda, file, ht, lmdb, net, stdio, thread, wgpu as gpu,
+    cl_cosf, cl_powf, cl_sinf, cuda, file, ht, lmdb, net, stdio, thread, wgpu as gpu, window,
 };
 
 thread_local! {
@@ -33,6 +33,16 @@ fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("cl_gpu_download", gpu::cl_gpu_download as *const u8);
     builder.symbol("cl_gpu_download_ptr", gpu::cl_gpu_download_ptr as *const u8);
     builder.symbol("cl_gpu_cleanup", gpu::cl_gpu_cleanup as *const u8);
+
+    // Window / input / present (shares the wgpu device for zero-copy present)
+    builder.symbol("cl_window_init", window::cl_window_init as *const u8);
+    builder.symbol("cl_window_open", window::cl_window_open as *const u8);
+    builder.symbol("cl_window_poll", window::cl_window_poll as *const u8);
+    builder.symbol(
+        "cl_window_present_gpu_buffer",
+        window::cl_window_present_gpu_buffer as *const u8,
+    );
+    builder.symbol("cl_window_cleanup", window::cl_window_cleanup as *const u8);
 
     // CUDA core
     builder.symbol("cl_cuda_init", cuda::cl_cuda_init as *const u8);

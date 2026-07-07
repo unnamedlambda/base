@@ -10,13 +10,24 @@ use wgpu::{
 
 use super::{clear_ctx_slot, read_ctx_mut, read_ctx_ref, write_ctx_slot};
 
-// Cached wgpu Device + Queue. Creating many wgpu Devices exhausts OS GPU driver
-// handles (~60 limit). One device per process; callers create fresh
-// buffers/pipelines per use.
-fn cached_gpu_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
+// Shared wgpu handles. Creating many wgpu Devices exhausts OS GPU driver handles
+// (~60 limit), so there is exactly one Instance/Adapter/Device/Queue per process.
+// The instance + adapter are kept (not forgotten) so the window FFI can create a
+// presentation surface on the SAME device the compute contexts render into —
+// that shared device is what makes zero-copy present possible (a game buffer can
+// be blit to the swapchain without a round trip through host memory).
+#[derive(Clone)]
+pub(crate) struct GpuHandles {
+    pub(crate) instance: Arc<wgpu::Instance>,
+    pub(crate) adapter: Arc<wgpu::Adapter>,
+    pub(crate) device: Arc<wgpu::Device>,
+    pub(crate) queue: Arc<wgpu::Queue>,
+}
+
+pub(crate) fn cached_gpu_handles() -> GpuHandles {
     use std::sync::OnceLock;
-    static GPU: OnceLock<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> = OnceLock::new();
-    let (d, q) = GPU.get_or_init(|| {
+    static GPU: OnceLock<GpuHandles> = OnceLock::new();
+    GPU.get_or_init(|| {
         let instance = wgpu::Instance::new(InstanceDescriptor::default());
         let adapter = block_on(instance.request_adapter(&RequestAdapterOptions {
             power_preference: PowerPreference::HighPerformance,
@@ -25,11 +36,19 @@ fn cached_gpu_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
         .expect("Failed to find GPU adapter");
         let (device, queue) = block_on(adapter.request_device(&DeviceDescriptor::default(), None))
             .expect("Failed to create GPU device");
-        std::mem::forget(instance);
-        std::mem::forget(adapter);
-        (Arc::new(device), Arc::new(queue))
-    });
-    (d.clone(), q.clone())
+        GpuHandles {
+            instance: Arc::new(instance),
+            adapter: Arc::new(adapter),
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+        }
+    })
+    .clone()
+}
+
+fn cached_gpu_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
+    let h = cached_gpu_handles();
+    (h.device, h.queue)
 }
 
 pub(crate) struct CraneliftGpuContext {
@@ -39,6 +58,22 @@ pub(crate) struct CraneliftGpuContext {
     staging_buffers: Vec<wgpu::Buffer>,
     pipelines: Vec<(wgpu::ComputePipeline, wgpu::BindGroup)>,
     pending_encoder: Option<wgpu::CommandEncoder>,
+}
+
+impl CraneliftGpuContext {
+    /// Borrow a storage buffer by id (used by the window FFI to present a game
+    /// framebuffer directly, without copying it back through host memory).
+    pub(crate) fn buffer(&self, id: usize) -> Option<&wgpu::Buffer> {
+        self.buffers.get(id)
+    }
+
+    /// Submit any pending compute encoder so its results are visible to a
+    /// subsequent read on the same queue (e.g. a present that samples the buffer).
+    pub(crate) fn flush_pending(&mut self) {
+        if let Some(enc) = self.pending_encoder.take() {
+            self.queue.submit(Some(enc.finish()));
+        }
+    }
 }
 
 pub(crate) unsafe extern "C" fn cl_gpu_init(ctx_slot_ptr: *mut *mut CraneliftGpuContext) {
