@@ -56,32 +56,32 @@ def shaderSource : String :=
     []
     { name := "main", wgX := 8, wgY := 8 }
     (do
-      let width ← letV "width" (arrIdx params (litU 1))
-      let height ← letV "height" (arrIdx params (litU 2))
-      let x ← letV "x" gidX
-      let y ← letV "y" gidY
+      let width ← letV (arrIdx params (litU 1))
+      let height ← letV (arrIdx params (litU 2))
+      let x ← letV gidX
+      let y ← letV gidY
       ifB ((x .>= width) .|| (y .>= height)) retV
-      let playerX ← letV "player_x" (i32OfU (arrIdx params (litU 3)))
-      let playerY ← letV "player_y" (i32OfU (arrIdx params (litU 4)))
-      let frame ← letV "frame" (f32OfU (arrIdx params (litU 0)) * litF "0.02")
-      let fx ← letV "fx" (f32OfU x / f32OfU width)
-      let fy ← letV "fy" (f32OfU y / f32OfU height)
-      let wave ← letV "wave" (litF "0.5" + litF "0.5" * wSin (tau * (fx * litF "0.8" + frame)))
-      let r ← varV "r" (litF "0.08" + litF "0.15" * wave)
-      let g ← varV "g" (litF "0.10" + litF "0.20" *
+      let playerX ← letV (i32OfU (arrIdx params (litU 3)))
+      let playerY ← letV (i32OfU (arrIdx params (litU 4)))
+      let frame ← letV (f32OfU (arrIdx params (litU 0)) * litF "0.02")
+      let fx ← letV (f32OfU x / f32OfU width)
+      let fy ← letV (f32OfU y / f32OfU height)
+      let wave ← letV (litF "0.5" + litF "0.5" * wSin (tau * (fx * litF "0.8" + frame)))
+      let r ← varV (litF "0.08" + litF "0.15" * wave)
+      let g ← varV (litF "0.10" + litF "0.20" *
         (litF "0.5" + litF "0.5" * wSin (tau * (fy + frame * litF "0.7"))))
-      let b ← varV "b" (litF "0.18" + litF "0.25" *
+      let b ← varV (litF "0.18" + litF "0.25" *
         (litF "0.5" + litF "0.5" * wSin (tau * (fx + fy + frame * litF "0.35"))))
-      let dx ← letV "dx" (i32OfU x - playerX)
-      let dy ← letV "dy" (i32OfU y - playerY)
+      let dx ← letV (i32OfU x - playerX)
+      let dy ← letV (i32OfU y - playerY)
       ifB ((wAbsI dx .<= litI 10) .&& (wAbsI dy .<= litI 10)) (do
         assign r (litF "0.95"); assign g (litF "0.92"); assign b (litF "0.25")
         ifB ((wAbsI dx .<= litI 7) .&& (wAbsI dy .<= litI 7)) (do
           assign r (litF "0.99"); assign g (litF "0.35"); assign b (litF "0.18")))
-      let ri ← letV "ri" (u32OfF (wClamp (r * litF "255.0") (litF "0.0") (litF "255.0")))
-      let gi ← letV "gi" (u32OfF (wClamp (g * litF "255.0") (litF "0.0") (litF "255.0")))
-      let bi ← letV "bi" (u32OfF (wClamp (b * litF "255.0") (litF "0.0") (litF "255.0")))
-      let idx ← letV "idx" (y * width + x)
+      let ri ← letV (u32OfF (wClamp (r * litF "255.0") (litF "0.0") (litF "255.0")))
+      let gi ← letV (u32OfF (wClamp (g * litF "255.0") (litF "0.0") (litF "255.0")))
+      let bi ← letV (u32OfF (wClamp (b * litF "255.0") (litF "0.0") (litF "255.0")))
+      let idx ← letV (y * width + x)
       assign (arrIdx pixels idx) (((ri .| (gi .<< litU 8)) .| (bi .<< litU 16)) .| (litU 0xFF .<< litU 24)))
 
 /-- Present blit shader (Lean-generated, so *all* WGSL lives here). A fullscreen

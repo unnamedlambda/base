@@ -22,14 +22,14 @@ def wgslShader : String :=
     [{ binding := 0, name := "data", ty := .arr .f32 }]
     [] [] {}
     do
-      let total ← letV "total" (wArrayLen data)
-      let nn    ← letV "nn"    (total / litU 3)
-      let bigN  ← letV "N"     (u32OfF (wSqrt (f32OfU nn)))
-      let idx   ← letV "idx"   gidX
+      let total ← letV (wArrayLen data)
+      let nn    ← letV    (total / litU 3)
+      let bigN  ← letV     (u32OfF (wSqrt (f32OfU nn)))
+      let idx   ← letV   gidX
       ifB (idx .>= nn) retV
-      let ci    ← letV "i"     (idx / bigN)
-      let cj    ← letV "j"     (idx % bigN)
-      let sum   ← varV "sum"   (litF "0.0")
+      let ci    ← letV     (idx / bigN)
+      let cj    ← letV     (idx % bigN)
+      let sum   ← varV   (litF "0.0")
       forU "k" (litU 0) (fun k => ltE k bigN) (fun k => k + litU 1) fun k => do
         assign sum (sum + arrIdx data (ci * bigN + k) * arrIdx data (nn + k * bigN + cj))
       assign (arrIdx data (litU 2 * nn + idx)) sum

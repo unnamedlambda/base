@@ -22,8 +22,8 @@ def wgslShader : String :=
     [{ binding := 0, name := "data", ty := .arr .f32 }]
     [] [] {}
     do
-      let n ← letV "n" (wArrayLen data / litU 2)
-      let i ← letV "i" gidX
+      let n ← letV (wArrayLen data / litU 2)
+      let i ← letV gidX
       ifB (i .>= n) retV
       assign (arrIdx data i) (arrIdx data i + arrIdx data (n + i))
 

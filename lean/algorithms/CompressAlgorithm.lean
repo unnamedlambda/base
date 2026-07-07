@@ -92,8 +92,8 @@ def compressionShader (bs : Nat) : String :=
        body := do
          let base : AlgorithmLib.WGSL.Expr .u32 := ⟨"base"⟩
          let idx : AlgorithmLib.WGSL.Expr .u32 := ⟨"idx"⟩
-         let wordIdx ← letV "word_idx" (base + idx / litU 4)
-         let shift ← letV "shift" ((idx % litU 4) * litU 8)
+         let wordIdx ← letV (base + idx / litU 4)
+         let shift ← letV ((idx % litU 4) * litU 8)
          retE (bandU (shrU (arrIdx inputData wordIdx) shift) (litU 0xFF))
      },
      .fn {
@@ -103,10 +103,10 @@ def compressionShader (bs : Nat) : String :=
        body := do
          let base : AlgorithmLib.WGSL.Expr .u32 := ⟨"base"⟩
          let idx : AlgorithmLib.WGSL.Expr .u32 := ⟨"idx"⟩
-         let b0 ← letV "b0" (readByteE base idx)
-         let b1 ← letV "b1" (readByteE base (idx + litU 1))
-         let b2 ← letV "b2" (readByteE base (idx + litU 2))
-         let b3 ← letV "b3" (readByteE base (idx + litU 3))
+         let b0 ← letV (readByteE base idx)
+         let b1 ← letV (readByteE base (idx + litU 1))
+         let b2 ← letV (readByteE base (idx + litU 2))
+         let b3 ← letV (readByteE base (idx + litU 3))
          retE (borU (borU b0 (shlU b1 (litU 8))) (borU (shlU b2 (litU 16)) (shlU b3 (litU 24))))
      },
      .fn {
@@ -117,10 +117,10 @@ def compressionShader (bs : Nat) : String :=
          let base : AlgorithmLib.WGSL.Expr .u32 := ⟨"base"⟩
          let idx : AlgorithmLib.WGSL.Expr .u32 := ⟨"idx"⟩
          let val : AlgorithmLib.WGSL.Expr .u32 := ⟨"val"⟩
-         let wordIdx ← letV "word_idx" (base + idx / litU 4)
-         let shift ← letV "shift" ((idx % litU 4) * litU 8)
-         let mask ← letV "mask" (bnotU (shlU (litU 0xFF) shift))
-         let oldVal ← letV "old_val" (arrIdx outputData wordIdx)
+         let wordIdx ← letV (base + idx / litU 4)
+         let shift ← letV ((idx % litU 4) * litU 8)
+         let mask ← letV (bnotU (shlU (litU 0xFF) shift))
+         let oldVal ← letV (arrIdx outputData wordIdx)
          assign (arrIdx outputData wordIdx) (borU (bandU oldVal mask) (shlU (bandU val (litU 0xFF)) shift))
      },
      .fn {
@@ -133,39 +133,39 @@ def compressionShader (bs : Nat) : String :=
      }]
     { lid := true, wid := true }
     do
-      let blockId ← letV "block_id" widX
-      let threadId ← letV "thread_id" lidX
-      let totalInputSize ← letV "total_input_size" (arrIdx blockMeta (litU 0))
+      let blockId ← letV widX
+      let threadId ← letV lidX
+      let totalInputSize ← letV (arrIdx blockMeta (litU 0))
       ifB (ltE threadId (litU 4)) do
         forU "i" (threadId * litU 64) (fun i => ltE i ((threadId + litU 1) * litU 64)) (fun i => i + litU 1) fun i => do
           assign (arrIdxN hashTable i) (litU 0xFFFFFFFF)
       wBarrier
-      let inputByteStart ← letV "input_byte_start" (blockId * blockSize)
-      let inputWordStart ← letV "input_word_start" (inputByteStart / litU 4)
-      let blockLen ← letV "block_len" (wMinU blockSize (totalInputSize - inputByteStart))
-      let outputByteStart ← letV "output_byte_start" (blockId * maxCompBlockSize)
-      let outputWordStart ← letV "output_word_start" (outputByteStart / litU 4)
-      let stride ← letV "stride" (litU 64)
-      let pos ← varV "pos" threadId
+      let inputByteStart ← letV (blockId * blockSize)
+      let inputWordStart ← letV (inputByteStart / litU 4)
+      let blockLen ← letV (wMinU blockSize (totalInputSize - inputByteStart))
+      let outputByteStart ← letV (blockId * maxCompBlockSize)
+      let outputWordStart ← letV (outputByteStart / litU 4)
+      let stride ← letV (litU 64)
+      let pos ← varV threadId
       whileB (ltE (pos + litU 3) blockLen) do
-        let val ← letV "val" (read4E inputWordStart pos)
-        let h ← letV "h" (hash4E val)
+        let val ← letV (read4E inputWordStart pos)
+        let h ← letV (hash4E val)
         assign (arrIdxN hashTable h) pos
         assign pos (pos + stride)
       wBarrier
       ifB (eqE threadId (litU 0)) do
-        let ip ← varV "ip" (litU 0)
-        let op ← varV "op" (litU 0)
-        let anchor ← varV "anchor" (litU 0)
-        let matchLimit ← letV "match_limit" (blockLen - wMinU blockLen (litU 5))
+        let ip ← varV (litU 0)
+        let op ← varV (litU 0)
+        let anchor ← varV (litU 0)
+        let matchLimit ← letV (blockLen - wMinU blockLen (litU 5))
         whileB (leE (ip + litU 4) matchLimit) do
-          let cur4 ← letV "cur4" (read4E inputWordStart ip)
-          let h ← letV "h" (hash4E cur4)
-          let refPos ← letV "ref_pos" (arrIdxN hashTable h)
+          let cur4 ← letV (read4E inputWordStart ip)
+          let h ← letV (hash4E cur4)
+          let refPos ← letV (arrIdxN hashTable h)
           assign (arrIdxN hashTable h) ip
-          let matchLen ← varV "match_len" (litU 0)
+          let matchLen ← varV (litU 0)
           ifB (andE (andE (neE refPos (litU 0xFFFFFFFF)) (ltE refPos ip)) (ltE (ip - refPos) (litU 65536))) do
-            let ref4 ← letV "ref4" (read4E inputWordStart refPos)
+            let ref4 ← letV (read4E inputWordStart refPos)
             ifB (eqE ref4 cur4) do
               assign matchLen (litU 4)
               whileB (andE (ltE (ip + matchLen) matchLimit) (ltE matchLen maxMatchLen)) do
@@ -173,14 +173,14 @@ def compressionShader (bs : Nat) : String :=
                   breakS
                 assign matchLen (matchLen + litU 1)
           ifB (geE matchLen minMatchLen) do
-            let literalLen ← letV "literal_len" (ip - anchor)
-            let matchOffset ← letV "match_offset" (ip - refPos)
-            let litToken ← letV "lit_token" (wMinU literalLen (litU 15))
-            let matchToken ← letV "match_token" (wMinU (matchLen - minMatchLen) (litU 15))
+            let literalLen ← letV (ip - anchor)
+            let matchOffset ← letV (ip - refPos)
+            let litToken ← letV (wMinU literalLen (litU 15))
+            let matchToken ← letV (wMinU (matchLen - minMatchLen) (litU 15))
             callS "write_byte" [toString outputWordStart, toString op, toString (borU (shlU litToken (litU 4)) matchToken)]
             assign op (op + litU 1)
             ifB (geE literalLen (litU 15)) do
-              let rem ← varV "rem" (literalLen - litU 15)
+              let rem ← varV (literalLen - litU 15)
               whileB (geE rem (litU 255)) do
                 callS "write_byte" [toString outputWordStart, toString op, toString (litU 255)]
                 assign op (op + litU 1)
@@ -194,7 +194,7 @@ def compressionShader (bs : Nat) : String :=
             callS "write_byte" [toString outputWordStart, toString (op + litU 1), toString (bandU (shrU matchOffset (litU 8)) (litU 0xFF))]
             assign op (op + litU 2)
             ifB (geE (matchLen - minMatchLen) (litU 15)) do
-              let rem ← varV "rem" (matchLen - minMatchLen - litU 15)
+              let rem ← varV (matchLen - minMatchLen - litU 15)
               whileB (geE rem (litU 255)) do
                 callS "write_byte" [toString outputWordStart, toString op, toString (litU 255)]
                 assign op (op + litU 1)
@@ -205,13 +205,13 @@ def compressionShader (bs : Nat) : String :=
             assign anchor ip
           ifB (ltE matchLen minMatchLen) do
             assign ip (ip + litU 1)
-        let finalLit ← letV "final_lit" (blockLen - anchor)
+        let finalLit ← letV (blockLen - anchor)
         ifB (gtE finalLit (litU 0)) do
-          let litToken ← letV "lit_token" (wMinU finalLit (litU 15))
+          let litToken ← letV (wMinU finalLit (litU 15))
           callS "write_byte" [toString outputWordStart, toString op, toString (shlU litToken (litU 4))]
           assign op (op + litU 1)
           ifB (geE finalLit (litU 15)) do
-            let rem ← varV "rem" (finalLit - litU 15)
+            let rem ← varV (finalLit - litU 15)
             whileB (geE rem (litU 255)) do
               callS "write_byte" [toString outputWordStart, toString op, toString (litU 255)]
               assign op (op + litU 1)

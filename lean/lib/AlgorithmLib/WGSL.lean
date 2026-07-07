@@ -292,18 +292,28 @@ def deref  (e : Expr (.ptrFn ty)) : Expr ty := ⟨s!"*{e}"⟩
 -- Statement builders
 -- ---------------------------------------------------------------------------
 
-/-- `let name = e;`  — returns handle `⟨name⟩` -/
-def letV (name : String) (e : Expr ty) : WB (Expr ty) := do
+/-- Allocate a fresh, unique local name (`v0`, `v1`, …) — reset per function body,
+    so callers thread the returned `Expr` handle rather than naming locals. -/
+private def freshName : WB String := do
+  let n := (← get).varCount
+  modify fun st => { st with varCount := n + 1 }
+  return s!"v{n}"
+
+/-- `let v_ = e;`  — returns the handle to the fresh local -/
+def letV (e : Expr ty) : WB (Expr ty) := do
+  let name ← freshName
   emit s!"let {name} = {e};"
   return ⟨name⟩
 
-/-- `var name = e;`  (mutable) -/
-def varV (name : String) (e : Expr ty) : WB (Expr ty) := do
+/-- `var v_ = e;`  (mutable) -/
+def varV (e : Expr ty) : WB (Expr ty) := do
+  let name ← freshName
   emit s!"var {name} = {e};"
   return ⟨name⟩
 
-/-- `var name: T;`  (mutable, uninitialized) -/
-def varVT (name : String) (ty : WTy) : WB (Expr ty) := do
+/-- `var v_: T;`  (mutable, uninitialized) -/
+def varVT (ty : WTy) : WB (Expr ty) := do
+  let name ← freshName
   emit s!"var {name}: {ty.render};"
   return ⟨name⟩
 

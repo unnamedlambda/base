@@ -89,8 +89,8 @@ def cornellBoxShader : String :=
        retTy := some .u32,
        body := do
          let v : AlgorithmLib.WGSL.Expr .u32 := ⟨"v"⟩
-         let s ← varV "s" (v * litU 747796405 + litU 2891336453)
-         let w ← letV "w" ((bxorU (shrU s (shrU s (litU 28) + litU 4)) s) * litU 277803737)
+         let s ← varV (v * litU 747796405 + litU 2891336453)
+         let w ← letV ((bxorU (shrU s (shrU s (litU 28) + litU 4)) s) * litU 277803737)
          retE (bxorU (shrU w (litU 22)) w)
      },
      .fn {
@@ -109,18 +109,18 @@ def cornellBoxShader : String :=
        body := do
          let n : AlgorithmLib.WGSL.Expr .vec3f := ⟨"n"⟩
          let seed : AlgorithmLib.WGSL.Expr (.ptrFn .u32) := ⟨"seed"⟩
-         let u1 ← letV "u1" (randFE seed)
-         let u2 ← letV "u2" (randFE seed)
-         let r ← letV "r" (wSqrt u1)
-         let theta ← letV "theta" (litF "6.283185307" * u2)
-         let x ← letV "x" (r * wCos theta)
-         let y ← letV "y" (r * wSin theta)
-         let z ← letV "z" (wSqrt (litF "1.0" - u1))
-         let up ← varV "up" (v3 "0.0" "1.0" "0.0")
+         let u1 ← letV (randFE seed)
+         let u2 ← letV (randFE seed)
+         let r ← letV (wSqrt u1)
+         let theta ← letV (litF "6.283185307" * u2)
+         let x ← letV (r * wCos theta)
+         let y ← letV (r * wSin theta)
+         let z ← letV (wSqrt (litF "1.0" - u1))
+         let up ← varV (v3 "0.0" "1.0" "0.0")
          ifB (gtE (wAbs (vy n)) (litF "0.999")) do
            assign up (v3 "1.0" "0.0" "0.0")
-         let tangent ← letV "tangent" (wNorm (wCross up n))
-         let bitangent ← letV "bitangent" (wCross n tangent)
+         let tangent ← letV (wNorm (wCross up n))
+         let bitangent ← letV (wCross n tangent)
          retE (wNorm (tangent * x + bitangent * y + n * z))
      },
      .fn {
@@ -135,20 +135,20 @@ def cornellBoxShader : String :=
          let bmin : AlgorithmLib.WGSL.Expr .vec3f := ⟨"bmin"⟩
          let bmax : AlgorithmLib.WGSL.Expr .vec3f := ⟨"bmax"⟩
          let outNormal : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f) := ⟨"out_normal"⟩
-         let invD ← letV "inv_d" (splatV3 (litF "1.0") / rd)
-         let t1 ← letV "t1" ((bmin - ro) * invD)
-         let t2 ← letV "t2" ((bmax - ro) * invD)
-         let tminV ← letV "tmin_v" (wMinV3 t1 t2)
-         let tmaxV ← letV "tmax_v" (wMaxV3 t1 t2)
-         let tmin ← letV "tmin" (wMax (wMax (vx tminV) (vy tminV)) (vz tminV))
-         let tmax ← letV "tmax" (wMin (wMin (vx tmaxV) (vy tmaxV)) (vz tmaxV))
+         let invD ← letV (splatV3 (litF "1.0") / rd)
+         let t1 ← letV ((bmin - ro) * invD)
+         let t2 ← letV ((bmax - ro) * invD)
+         let tminV ← letV (wMinV3 t1 t2)
+         let tmaxV ← letV (wMaxV3 t1 t2)
+         let tmin ← letV (wMax (wMax (vx tminV) (vy tminV)) (vz tminV))
+         let tmax ← letV (wMin (wMin (vx tmaxV) (vy tmaxV)) (vz tmaxV))
          ifB ((gtE tmin tmax) .|| (ltE tmax (litF "0.001"))) do
            retE (litF "-1.0")
-         let t ← letV "t" (wSelect tmin tmax (ltE tmin (litF "0.001")))
-         let hit ← letV "hit" (ro + t * rd)
-         let ce ← letV "ce" ((bmin + bmax) * litF "0.5")
-         let d ← letV "d" ((hit - ce) / (bmax - bmin))
-         let ad ← letV "ad" (wAbsV3 d)
+         let t ← letV (wSelect tmin tmax (ltE tmin (litF "0.001")))
+         let hit ← letV (ro + t * rd)
+         let ce ← letV ((bmin + bmax) * litF "0.5")
+         let d ← letV ((hit - ce) / (bmax - bmin))
+         let ad ← letV (wAbsV3 d)
          ifElse ((gtE (vx ad) (vy ad)) .&& (gtE (vx ad) (vz ad)))
            (derefAssign outNormal (mkVec3f (wSign (vx d)) (litF "0.0") (litF "0.0")))
            (ifElse (gtE (vy ad) (vz ad))
@@ -170,7 +170,7 @@ def cornellBoxShader : String :=
          let outColor : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f) := ⟨"out_color"⟩
          let outEmit : AlgorithmLib.WGSL.Expr (.ptrFn .vec3f) := ⟨"out_emit"⟩
          let white := v3 "0.73" "0.73" "0.73"
-         let closest ← varV "closest" (litF "1e20")
+         let closest ← varV (litF "1e20")
          derefAssign outEmit (v3 "0.0" "0.0" "0.0")
          let inUnitXZ (p : AlgorithmLib.WGSL.Expr .vec3f) : AlgorithmLib.WGSL.Expr .bool :=
            (geE (vx p) (litF "0.0")) .&& (leE (vx p) (litF "1.0")) .&& (geE (vz p) (litF "0.0")) .&& (leE (vz p) (litF "1.0"))
@@ -183,16 +183,16 @@ def cornellBoxShader : String :=
                (inside : AlgorithmLib.WGSL.Expr .vec3f → AlgorithmLib.WGSL.Expr .bool)
                (normal color : AlgorithmLib.WGSL.Expr .vec3f) => do
              ifB ((gtE t (litF "0.001")) .&& (ltE t closest)) do
-               let p ← letV "p" (ro + t * rd)
+               let p ← letV (ro + t * rd)
                ifB (inside p) do
                  assign closest t
                  derefAssign outN normal
                  derefAssign outColor color
-         let tFloor ← letV "t_floor" (-vy ro / vy rd)
+         let tFloor ← letV (-vy ro / vy rd)
          considerPlane tFloor inUnitXZ (v3 "0.0" "1.0" "0.0") white
-         let tCeil ← letV "t_ceil" ((litF "1.0" - vy ro) / vy rd)
+         let tCeil ← letV ((litF "1.0" - vy ro) / vy rd)
          ifB ((gtE tCeil (litF "0.001")) .&& (ltE tCeil closest)) do
-           let p ← letV "p" (ro + tCeil * rd)
+           let p ← letV (ro + tCeil * rd)
            ifB (inUnitXZ p) do
              assign closest tCeil
              derefAssign outN (v3 "0.0" "-1.0" "0.0")
@@ -201,21 +201,21 @@ def cornellBoxShader : String :=
                  derefAssign outColor (v3 "0.78" "0.78" "0.78")
                  derefAssign outEmit (v3 "15.0" "15.0" "15.0"))
                (derefAssign outColor white)
-         let tBack ← letV "t_back" (-vz ro / vz rd)
+         let tBack ← letV (-vz ro / vz rd)
          considerPlane tBack inUnitXY (v3 "0.0" "0.0" "1.0") white
-         let tLeft ← letV "t_left" (-vx ro / vx rd)
+         let tLeft ← letV (-vx ro / vx rd)
          considerPlane tLeft inUnitYZ (v3 "1.0" "0.0" "0.0") (v3 "0.65" "0.05" "0.05")
-         let tRight ← letV "t_right" ((litF "1.0" - vx ro) / vx rd)
+         let tRight ← letV ((litF "1.0" - vx ro) / vx rd)
          considerPlane tRight inUnitYZ (v3 "-1.0" "0.0" "0.0") (v3 "0.12" "0.45" "0.15")
-         let tFront ← letV "t_front" ((litF "1.0" - vz ro) / vz rd)
+         let tFront ← letV ((litF "1.0" - vz ro) / vz rd)
          considerPlane tFront inUnitXY (v3 "0.0" "0.0" "-1.0") white
-         let bn ← varVT "bn" .vec3f
-         let tTall ← letV "t_tall" (rayAabbE ro rd (v3 "0.53" "0.0" "0.09") (v3 "0.83" "0.60" "0.38") (addrOf bn))
+         let bn ← varVT .vec3f
+         let tTall ← letV (rayAabbE ro rd (v3 "0.53" "0.0" "0.09") (v3 "0.83" "0.60" "0.38") (addrOf bn))
          ifB ((gtE tTall (litF "0.001")) .&& (ltE tTall closest)) do
            assign closest tTall
            derefAssign outN bn
            derefAssign outColor white
-         let tShort ← letV "t_short" (rayAabbE ro rd (v3 "0.13" "0.0" "0.37") (v3 "0.43" "0.30" "0.67") (addrOf bn))
+         let tShort ← letV (rayAabbE ro rd (v3 "0.13" "0.0" "0.37") (v3 "0.43" "0.30" "0.67") (addrOf bn))
          ifB ((gtE tShort (litF "0.001")) .&& (ltE tShort closest)) do
            assign closest tShort
            derefAssign outN bn
@@ -224,65 +224,65 @@ def cornellBoxShader : String :=
      }]
     { wgX := 16, wgY := 16 }
     do
-      let px ← letV "px" gidX
-      let py ← letV "py" gidY
+      let px ← letV gidX
+      let py ← letV gidY
       ifB ((geE px imgW) .|| (geE py imgH)) retV
-      let idx ← letV "idx" (py * imgW + px)
-      let camPos ← letV "cam_pos" (v3 "0.5" "0.5" "0.9")
-      let camTarget ← letV "cam_target" (v3 "0.5" "0.4" "0.0")
-      let camFwd ← letV "cam_fwd" (wNorm (camTarget - camPos))
-      let camRight ← letV "cam_right" (wNorm (wCross camFwd (v3 "0.0" "1.0" "0.0")))
-      let camUp ← letV "cam_up" (wCross camRight camFwd)
-      let fov ← letV "fov" (litF "0.55")
-      let accum ← varV "accum" (v3 "0.0" "0.0" "0.0")
-      let seed ← varV "seed" (pcgE (idx * litU 1973 + px * litU 9277 + py * litU 26699))
+      let idx ← letV (py * imgW + px)
+      let camPos ← letV (v3 "0.5" "0.5" "0.9")
+      let camTarget ← letV (v3 "0.5" "0.4" "0.0")
+      let camFwd ← letV (wNorm (camTarget - camPos))
+      let camRight ← letV (wNorm (wCross camFwd (v3 "0.0" "1.0" "0.0")))
+      let camUp ← letV (wCross camRight camFwd)
+      let fov ← letV (litF "0.55")
+      let accum ← varV (v3 "0.0" "0.0" "0.0")
+      let seed ← varV (pcgE (idx * litU 1973 + px * litU 9277 + py * litU 26699))
       forU "s" (litU 0) (fun s => ltE s numSamplesE) (fun s => s + litU 1) fun _ => do
-        let jx ← letV "jx" ((f32OfU px + randFE (addrOf seed)) / f32OfU imgW)
-        let jy ← letV "jy" ((f32OfU py + randFE (addrOf seed)) / f32OfU imgH)
-        let uv ← letV "uv" (mkVec2f (jx - litF "0.5") (litF "0.5" - jy))
-        let rayDir ← varV "ray_dir" (wNorm (camFwd + fov * v2x uv * camRight + fov * v2y uv * camUp))
-        let rayOrg ← varV "ray_org" camPos
-        let throughput ← varV "throughput" (v3 "1.0" "1.0" "1.0")
-        let color ← varV "color" (v3 "0.0" "0.0" "0.0")
+        let jx ← letV ((f32OfU px + randFE (addrOf seed)) / f32OfU imgW)
+        let jy ← letV ((f32OfU py + randFE (addrOf seed)) / f32OfU imgH)
+        let uv ← letV (mkVec2f (jx - litF "0.5") (litF "0.5" - jy))
+        let rayDir ← varV (wNorm (camFwd + fov * v2x uv * camRight + fov * v2y uv * camUp))
+        let rayOrg ← varV camPos
+        let throughput ← varV (v3 "1.0" "1.0" "1.0")
+        let color ← varV (v3 "0.0" "0.0" "0.0")
         forU "bounce" (litU 0) (fun bounce => ltE bounce maxBouncesE) (fun bounce => bounce + litU 1) fun bounce => do
-          let hitN ← varVT "hit_n" .vec3f
-          let hitColor ← varVT "hit_color" .vec3f
-          let hitEmit ← varVT "hit_emit" .vec3f
-          let t ← letV "t" (sceneHitE rayOrg rayDir (addrOf hitN) (addrOf hitColor) (addrOf hitEmit))
+          let hitN ← varVT .vec3f
+          let hitColor ← varVT .vec3f
+          let hitEmit ← varVT .vec3f
+          let t ← letV (sceneHitE rayOrg rayDir (addrOf hitN) (addrOf hitColor) (addrOf hitEmit))
           ifB (geE t (litF "1e19")) breakS
           assign color (color + throughput * hitEmit)
-          let hitP ← letV "hit_p" (rayOrg + t * rayDir + litF "0.001" * hitN)
-          let lightU ← letV "light_u" (litF "0.35" + randFE (addrOf seed) * litF "0.30")
-          let lightV ← letV "light_v" (litF "0.35" + randFE (addrOf seed) * litF "0.30")
-          let lightPos ← letV "light_pos" (mkVec3f lightU (litF "0.999") lightV)
-          let toLight ← letV "to_light" (lightPos - hitP)
-          let lightDist ← letV "light_dist" (wLen toLight)
-          let lightDir ← letV "light_dir" (toLight / lightDist)
-          let nDotL ← letV "n_dot_l" (wMax (wDot hitN lightDir) (litF "0.0"))
+          let hitP ← letV (rayOrg + t * rayDir + litF "0.001" * hitN)
+          let lightU ← letV (litF "0.35" + randFE (addrOf seed) * litF "0.30")
+          let lightV ← letV (litF "0.35" + randFE (addrOf seed) * litF "0.30")
+          let lightPos ← letV (mkVec3f lightU (litF "0.999") lightV)
+          let toLight ← letV (lightPos - hitP)
+          let lightDist ← letV (wLen toLight)
+          let lightDir ← letV (toLight / lightDist)
+          let nDotL ← letV (wMax (wDot hitN lightDir) (litF "0.0"))
           ifB (gtE nDotL (litF "0.0")) do
-            let shadowN ← varVT "shadow_n" .vec3f
-            let shadowC ← varVT "shadow_c" .vec3f
-            let shadowE ← varVT "shadow_e" .vec3f
-            let st ← letV "st" (sceneHitE hitP lightDir (addrOf shadowN) (addrOf shadowC) (addrOf shadowE))
+            let shadowN ← varVT .vec3f
+            let shadowC ← varVT .vec3f
+            let shadowE ← varVT .vec3f
+            let st ← letV (sceneHitE hitP lightDir (addrOf shadowN) (addrOf shadowC) (addrOf shadowE))
             ifB (geE st (lightDist - litF "0.01")) do
-              let lightArea ← letV "light_area" (litF "0.09")
-              let lightNDot ← letV "light_n_dot" (wMax (-vy lightDir) (litF "0.0"))
-              let solidAngle ← letV "solid_angle" (lightArea * lightNDot / (lightDist * lightDist))
-              let lightIntensity ← letV "light_intensity" (v3 "15.0" "15.0" "15.0")
+              let lightArea ← letV (litF "0.09")
+              let lightNDot ← letV (wMax (-vy lightDir) (litF "0.0"))
+              let solidAngle ← letV (lightArea * lightNDot / (lightDist * lightDist))
+              let lightIntensity ← letV (v3 "15.0" "15.0" "15.0")
               assign color (color + throughput * hitColor * lightIntensity * nDotL * solidAngle / litF "3.14159265")
           ifB (gtE bounce (litU 1)) do
-            let pContinue ← letV "p_continue" (wMax (wMax (vx hitColor) (vy hitColor)) (vz hitColor))
+            let pContinue ← letV (wMax (wMax (vx hitColor) (vy hitColor)) (vz hitColor))
             ifB (gtE (randFE (addrOf seed)) pContinue) breakS
             assign throughput (throughput / pContinue)
           assign throughput (throughput * hitColor)
           assign rayOrg hitP
           assign rayDir (cosineHemisphereE hitN (addrOf seed))
         assign accum (accum + color)
-      let finalColor ← letV "final_color" (accum / f32OfU numSamplesE)
-      let mapped ← letV "mapped" (wPow (wClampV3 finalColor (v3 "0.0" "0.0" "0.0") (v3 "1.0" "1.0" "1.0")) (v3 "0.45454545" "0.45454545" "0.45454545"))
-      let ri ← letV "ri" (u32OfF (wClamp (vx mapped * litF "255.0") (litF "0.0") (litF "255.0")))
-      let gi ← letV "gi" (u32OfF (wClamp (vy mapped * litF "255.0") (litF "0.0") (litF "255.0")))
-      let bi ← letV "bi" (u32OfF (wClamp (vz mapped * litF "255.0") (litF "0.0") (litF "255.0")))
+      let finalColor ← letV (accum / f32OfU numSamplesE)
+      let mapped ← letV (wPow (wClampV3 finalColor (v3 "0.0" "0.0" "0.0") (v3 "1.0" "1.0" "1.0")) (v3 "0.45454545" "0.45454545" "0.45454545"))
+      let ri ← letV (u32OfF (wClamp (vx mapped * litF "255.0") (litF "0.0") (litF "255.0")))
+      let gi ← letV (u32OfF (wClamp (vy mapped * litF "255.0") (litF "0.0") (litF "255.0")))
+      let bi ← letV (u32OfF (wClamp (vz mapped * litF "255.0") (litF "0.0") (litF "255.0")))
       assign (arrIdx pixels idx) (borU (borU bi (shlU gi (litU 8))) (borU (shlU ri (litU 16)) (shlU (litU 0xFF) (litU 24))))
 
 -- ---------------------------------------------------------------------------

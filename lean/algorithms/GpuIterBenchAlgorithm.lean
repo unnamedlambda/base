@@ -25,8 +25,8 @@ def scaleShader : String :=
     [{ binding := 0, name := "data", ty := .arr .f32 }]
     [] [] {}
     do
-      let n ← letV "n" (wArrayLen data)
-      let i ← letV "i" gidX
+      let n ← letV (wArrayLen data)
+      let i ← letV gidX
       ifB (i .>= n) retV
       assign (arrIdx data i) (arrIdx data i * litF "1.001")
 
@@ -40,10 +40,10 @@ def reduceShader : String :=
     [("partial", .f32, 64)] []
     { lid := true, wid := true }
     do
-      let n ← letV "n" (wArrayLen data)
+      let n ← letV (wArrayLen data)
       assign (arrIdxN partialArr lidX) (wSelect (litF "0.0") (arrIdx data gidX) (gidX .< n))
       wBarrier
-      let s ← varV "s" (litU 32)
+      let s ← varV (litU 32)
       whileB (gtE s (litU 0)) do
         ifB (lidX .< s) do
           assign (arrIdxN partialArr lidX) (arrIdxN partialArr lidX + arrIdxN partialArr (lidX + s))

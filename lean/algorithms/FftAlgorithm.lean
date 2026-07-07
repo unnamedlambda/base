@@ -68,22 +68,22 @@ def fftShader : String :=
     [.constF "PI" "3.14159265358979323846"]
     {}
     do
-      let n         ← letV "n" (arrIdx params (litU 0))
-      let stage     ← letV "stage" (arrIdx params (litU 1))
-      let direction ← letV "direction" (arrIdx params (litU 2))
-      let halfN     ← letV "half_n" (n / litU 2)
-      let tid       ← letV "tid" gidX
+      let n         ← letV (arrIdx params (litU 0))
+      let stage     ← letV (arrIdx params (litU 1))
+      let direction ← letV (arrIdx params (litU 2))
+      let halfN     ← letV (n / litU 2)
+      let tid       ← letV gidX
       ifB (tid .>= halfN) retV
-      let halfBlock ← letV "half_block" ((litU 1) .<< stage)
-      let blockSize ← letV "block_size" (halfBlock .<< litU 1)
-      let blockId   ← letV "block_id" (tid / halfBlock)
-      let j         ← letV "j" (tid % halfBlock)
-      let iTop      ← letV "i_top" (blockId * blockSize + j)
-      let iBot      ← letV "i_bot" (iTop + halfBlock)
-      let angle     ← letV "angle" (-litF "2.0" * ⟨"PI"⟩ * f32OfU j / f32OfU blockSize)
-      let tw        ← letV "tw" (mkVec2f (wCos angle) (wSin angle))
-      let aVal      ← varVT "a_val" .vec2f
-      let bVal      ← varVT "b_val" .vec2f
+      let halfBlock ← letV ((litU 1) .<< stage)
+      let blockSize ← letV (halfBlock .<< litU 1)
+      let blockId   ← letV (tid / halfBlock)
+      let j         ← letV (tid % halfBlock)
+      let iTop      ← letV (blockId * blockSize + j)
+      let iBot      ← letV (iTop + halfBlock)
+      let angle     ← letV (-litF "2.0" * ⟨"PI"⟩ * f32OfU j / f32OfU blockSize)
+      let tw        ← letV (mkVec2f (wCos angle) (wSin angle))
+      let aVal      ← varVT .vec2f
+      let bVal      ← varVT .vec2f
       ifElse (direction .== litU 0)
         (do
           assign aVal (arrIdx bufA iTop)
@@ -91,11 +91,11 @@ def fftShader : String :=
         (do
           assign aVal (arrIdx bufB iTop)
           assign bVal (arrIdx bufB iBot))
-      let tb ← letV "tb" (mkVec2f
+      let tb ← letV (mkVec2f
         (v2x tw * v2x bVal - v2y tw * v2y bVal)
         (v2x tw * v2y bVal + v2y tw * v2x bVal))
-      let outTop ← letV "out_top" (aVal + tb)
-      let outBot ← letV "out_bot" (aVal - tb)
+      let outTop ← letV (aVal + tb)
+      let outBot ← letV (aVal - tb)
       ifElse (direction .== litU 0)
         (do
           assign (arrIdx bufB iTop) outTop

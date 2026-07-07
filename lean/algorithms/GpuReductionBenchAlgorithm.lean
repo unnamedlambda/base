@@ -25,9 +25,9 @@ def wgslShader : String :=
     [("sdata", .f32, 64)] []
     { lid := true, wid := true }
     do
-      let total   ← letV "total"    (wArrayLen data)
-      let numGrps ← letV "num_groups" (total / litU 65)
-      let inputN  ← letV "input_n"  (numGrps * litU 64)
+      let total   ← letV    (wArrayLen data)
+      let numGrps ← letV (total / litU 65)
+      let inputN  ← letV  (numGrps * litU 64)
       ifElse (gidX .< inputN)
         (assign (arrIdxN sdata lidX) (arrIdx data gidX))
         (assign (arrIdxN sdata lidX) (litF "0.0"))
