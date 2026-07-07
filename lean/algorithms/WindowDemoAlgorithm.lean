@@ -5,6 +5,7 @@ set_option maxRecDepth 8192
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
+open AlgorithmLib.WGSL
 
 namespace Algorithm
 
@@ -44,40 +45,44 @@ def bitDown  : Int := 8
 
 def titleText : String := "Base Game"
 
-/-- Compute shader: procedural background + a player square read from `params`.
-    `pixels[y*w+x] = R | G<<8 | B<<16 | 0xFF<<24` (matches the window blit). -/
 def shaderSource : String :=
-  "@group(0) @binding(0)\n" ++
-  "var<storage, read_write> pixels: array<u32>;\n" ++
-  "@group(0) @binding(1)\n" ++
-  "var<storage, read> params: array<u32>;\n\n" ++
-  "@compute @workgroup_size(8, 8)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  "    let width: u32 = params[1];\n" ++
-  "    let height: u32 = params[2];\n" ++
-  "    let player_x: i32 = i32(params[3]);\n" ++
-  "    let player_y: i32 = i32(params[4]);\n" ++
-  "    let x: u32 = gid.x;\n" ++
-  "    let y: u32 = gid.y;\n" ++
-  "    if (x >= width || y >= height) { return; }\n" ++
-  "    let frame: f32 = f32(params[0]) * 0.02;\n" ++
-  "    let fx: f32 = f32(x) / f32(width);\n" ++
-  "    let fy: f32 = f32(y) / f32(height);\n" ++
-  "    let wave: f32 = 0.5 + 0.5 * sin(6.2831853 * (fx * 0.8 + frame));\n" ++
-  "    var r: f32 = 0.08 + 0.15 * wave;\n" ++
-  "    var g: f32 = 0.10 + 0.20 * (0.5 + 0.5 * sin(6.2831853 * (fy + frame * 0.7)));\n" ++
-  "    var b: f32 = 0.18 + 0.25 * (0.5 + 0.5 * sin(6.2831853 * (fx + fy + frame * 0.35)));\n" ++
-  "    let dx: i32 = i32(x) - player_x;\n" ++
-  "    let dy: i32 = i32(y) - player_y;\n" ++
-  "    if (abs(dx) <= 10 && abs(dy) <= 10) {\n" ++
-  "        r = 0.95; g = 0.92; b = 0.25;\n" ++
-  "        if (abs(dx) <= 7 && abs(dy) <= 7) { r = 0.99; g = 0.35; b = 0.18; }\n" ++
-  "    }\n" ++
-  "    let ri: u32 = u32(clamp(r * 255.0, 0.0, 255.0));\n" ++
-  "    let gi: u32 = u32(clamp(g * 255.0, 0.0, 255.0));\n" ++
-  "    let bi: u32 = u32(clamp(b * 255.0, 0.0, 255.0));\n" ++
-  "    pixels[y * width + x] = ri | (gi << 8u) | (bi << 16u) | (0xFFu << 24u);\n" ++
-  "}\n"
+  let pixels : Expr (.arr .u32) := ⟨"pixels"⟩
+  let params : Expr (.arr .u32) := ⟨"params"⟩
+  let tau := litF "6.2831853"
+  buildShader
+    [ { binding := 0, name := "pixels", ty := .arr .u32, ro := false },
+      { binding := 1, name := "params", ty := .arr .u32, ro := true } ]
+    []
+    []
+    { name := "main", wgX := 8, wgY := 8 }
+    (do
+      let width ← letV "width" (arrIdx params (litU 1))
+      let height ← letV "height" (arrIdx params (litU 2))
+      let x ← letV "x" gidX
+      let y ← letV "y" gidY
+      ifB ((x .>= width) .|| (y .>= height)) retV
+      let playerX ← letV "player_x" (i32OfU (arrIdx params (litU 3)))
+      let playerY ← letV "player_y" (i32OfU (arrIdx params (litU 4)))
+      let frame ← letV "frame" (f32OfU (arrIdx params (litU 0)) * litF "0.02")
+      let fx ← letV "fx" (f32OfU x / f32OfU width)
+      let fy ← letV "fy" (f32OfU y / f32OfU height)
+      let wave ← letV "wave" (litF "0.5" + litF "0.5" * wSin (tau * (fx * litF "0.8" + frame)))
+      let r ← varV "r" (litF "0.08" + litF "0.15" * wave)
+      let g ← varV "g" (litF "0.10" + litF "0.20" *
+        (litF "0.5" + litF "0.5" * wSin (tau * (fy + frame * litF "0.7"))))
+      let b ← varV "b" (litF "0.18" + litF "0.25" *
+        (litF "0.5" + litF "0.5" * wSin (tau * (fx + fy + frame * litF "0.35"))))
+      let dx ← letV "dx" (i32OfU x - playerX)
+      let dy ← letV "dy" (i32OfU y - playerY)
+      ifB ((wAbsI dx .<= litI 10) .&& (wAbsI dy .<= litI 10)) (do
+        assign r (litF "0.95"); assign g (litF "0.92"); assign b (litF "0.25")
+        ifB ((wAbsI dx .<= litI 7) .&& (wAbsI dy .<= litI 7)) (do
+          assign r (litF "0.99"); assign g (litF "0.35"); assign b (litF "0.18")))
+      let ri ← letV "ri" (u32OfF (wClamp (r * litF "255.0") (litF "0.0") (litF "255.0")))
+      let gi ← letV "gi" (u32OfF (wClamp (g * litF "255.0") (litF "0.0") (litF "255.0")))
+      let bi ← letV "bi" (u32OfF (wClamp (b * litF "255.0") (litF "0.0") (litF "255.0")))
+      let idx ← letV "idx" (y * width + x)
+      assign (arrIdx pixels idx) (((ri .| (gi .<< litU 8)) .| (bi .<< litU 16)) .| (litU 0xFF .<< litU 24)))
 
 /-- Present blit shader (Lean-generated, so *all* WGSL lives here). A fullscreen
     triangle samples the packed-RGBA framebuffer at `@binding(0)` and stretches it

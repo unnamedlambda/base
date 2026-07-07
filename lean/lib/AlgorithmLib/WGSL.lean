@@ -241,6 +241,7 @@ notation:30 a " .|| " b => orE  a b
 -- ---------------------------------------------------------------------------
 
 def wAbs    (a : Expr .f32)   : Expr .f32   := ⟨s!"abs({a})"⟩
+def wAbsI   (a : Expr .i32)   : Expr .i32   := ⟨s!"abs({a})"⟩
 def wSqrt   (a : Expr .f32)   : Expr .f32   := ⟨s!"sqrt({a})"⟩
 def wLog2   (a : Expr .f32)   : Expr .f32   := ⟨s!"log2({a})"⟩
 def wCos    (a : Expr .f32)   : Expr .f32   := ⟨s!"cos({a})"⟩
