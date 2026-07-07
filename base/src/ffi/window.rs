@@ -23,6 +23,19 @@ const EVENT_CLOSE: i64 = 1;
 const EVENT_RESIZE: i64 = 2;
 const EVENT_KEY_DOWN: i64 = 3;
 const EVENT_KEY_UP: i64 = 4;
+const EVENT_MOUSE_MOVE: i64 = 5;
+const EVENT_MOUSE_DOWN: i64 = 6;
+const EVENT_MOUSE_UP: i64 = 7;
+
+fn map_mouse_button(button: winit::event::MouseButton) -> i64 {
+    use winit::event::MouseButton as B;
+    match button {
+        B::Left => 1,
+        B::Right => 2,
+        B::Middle => 3,
+        _ => 0,
+    }
+}
 
 /// Portable, keyboard-layout-independent ids for physical keys — the game owns
 /// what they mean. Unmapped keys return 0 (dropped). Extend as games need more;
@@ -413,6 +426,26 @@ fn pump_events(ctx: &mut CraneliftWindowContext) {
                             EVENT_KEY_UP
                         },
                         a: key,
+                        b: 0,
+                        c: 0,
+                    });
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    pending.push_back(EventRecord {
+                        kind: EVENT_MOUSE_MOVE,
+                        a: position.x.round() as i64,
+                        b: position.y.round() as i64,
+                        c: 0,
+                    });
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    pending.push_back(EventRecord {
+                        kind: if state == ElementState::Pressed {
+                            EVENT_MOUSE_DOWN
+                        } else {
+                            EVENT_MOUSE_UP
+                        },
+                        a: map_mouse_button(button),
                         b: 0,
                         c: 0,
                     });

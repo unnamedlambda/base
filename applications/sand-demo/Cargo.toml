@@ -1,0 +1,18 @@
+[package]
+name = "sand-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../../base" }
+bincode = "1"
+
+[build-dependencies]
+build-support = { path = "../../build-support" }
+
+[dev-dependencies]
+arrow-array = { version = "54", default-features = false }
+
+[[bin]]
+name = "sand-demo"
+path = "src/main.rs"

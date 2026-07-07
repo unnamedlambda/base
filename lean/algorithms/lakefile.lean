@@ -57,3 +57,4 @@ lean_lib Qwen2Algorithm
 lean_lib Qwen2OnDiskAlgorithm
 lean_lib WindowDemoAlgorithm
 lean_lib RaymarchDemoAlgorithm
+lean_lib FallingSandAlgorithm
