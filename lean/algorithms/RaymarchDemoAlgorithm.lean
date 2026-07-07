@@ -5,6 +5,7 @@ set_option maxRecDepth 8192
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
+open AlgorithmLib.WGSL
 
 namespace Algorithm
 
@@ -49,78 +50,102 @@ def centerX : Nat := imageWidth / 2
 def skyByteOff : Nat := (10 * imageWidth + centerX) * 4 + 2
 def groundByteOff : Nat := ((imageHeight - 10) * imageWidth + centerX) * 4 + 2
 
+private def v3 (x y z : String) : Expr .vec3f := mkVec3f (litF x) (litF y) (litF z)
+
+def fnSdSphere : WGSLFn :=
+  { name := "sdSphere", retTy := some .f32,
+    params := [⟨"p", .vec3f⟩, ⟨"c", .vec3f⟩, ⟨"r", .f32⟩],
+    body := do
+      let p : Expr .vec3f := ⟨"p"⟩; let c : Expr .vec3f := ⟨"c"⟩; let r : Expr .f32 := ⟨"r"⟩
+      retE (wLen (p - c) - r) }
+
+def fnSdBox : WGSLFn :=
+  { name := "sdBox", retTy := some .f32,
+    params := [⟨"p", .vec3f⟩, ⟨"c", .vec3f⟩, ⟨"b", .vec3f⟩],
+    body := do
+      let p : Expr .vec3f := ⟨"p"⟩; let c : Expr .vec3f := ⟨"c"⟩; let b : Expr .vec3f := ⟨"b"⟩
+      let q ← letV "q" (wAbsV3 (p - c) - b)
+      let outer := wLen (wMaxV3 q (splatV3 (litF "0.0")))
+      let inner := wMin (wMax (vx q) (wMax (vy q) (vz q))) (litF "0.0")
+      retE (outer + inner) }
+
+def fnScene : WGSLFn :=
+  { name := "scene", retTy := some .f32, params := [⟨"p", .vec3f⟩],
+    body := do
+      let p : Expr .vec3f := ⟨"p"⟩
+      let s1 : Expr .f32 := call3 "sdSphere" p (v3 "0.0" "1.0" "-6.0") (litF "1.0")
+      let s2 : Expr .f32 := call3 "sdSphere" p (v3 "-2.5" "0.7" "-8.0") (litF "0.7")
+      let b1 : Expr .f32 := call3 "sdBox" p (v3 "2.5" "1.0" "-9.0") (v3 "1.0" "1.0" "1.0")
+      retE (wMin (vy p) (wMin s1 (wMin s2 b1))) }
+
+def fnCalcNormal : WGSLFn :=
+  { name := "calcNormal", retTy := some .vec3f, params := [⟨"p", .vec3f⟩],
+    body := do
+      let p : Expr .vec3f := ⟨"p"⟩
+      let dx := v3 "0.001" "0.0" "0.0"
+      let dy := v3 "0.0" "0.001" "0.0"
+      let dz := v3 "0.0" "0.0" "0.001"
+      let nx := (call1 "scene" (p + dx) : Expr .f32) - (call1 "scene" (p - dx) : Expr .f32)
+      let ny := (call1 "scene" (p + dy) : Expr .f32) - (call1 "scene" (p - dy) : Expr .f32)
+      let nz := (call1 "scene" (p + dz) : Expr .f32) - (call1 "scene" (p - dz) : Expr .f32)
+      retE (wNorm (mkVec3f nx ny nz)) }
+
 def shaderSource : String :=
-  "@group(0) @binding(0)\n" ++
-  "var<storage, read_write> pixels: array<u32>;\n" ++
-  "@group(0) @binding(1)\n" ++
-  "var<storage, read> params: array<u32>;\n\n" ++
-  "fn sdSphere(p: vec3<f32>, c: vec3<f32>, r: f32) -> f32 { return length(p - c) - r; }\n" ++
-  "fn sdBox(p: vec3<f32>, c: vec3<f32>, b: vec3<f32>) -> f32 {\n" ++
-  "  let q = abs(p - c) - b;\n" ++
-  "  return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);\n" ++
-  "}\n" ++
-  "fn scene(p: vec3<f32>) -> f32 {\n" ++
-  "  let ground = p.y;\n" ++
-  "  let s1 = sdSphere(p, vec3<f32>(0.0, 1.0, -6.0), 1.0);\n" ++
-  "  let s2 = sdSphere(p, vec3<f32>(-2.5, 0.7, -8.0), 0.7);\n" ++
-  "  let b1 = sdBox(p, vec3<f32>(2.5, 1.0, -9.0), vec3<f32>(1.0, 1.0, 1.0));\n" ++
-  "  return min(ground, min(s1, min(s2, b1)));\n" ++
-  "}\n" ++
-  "fn calcNormal(p: vec3<f32>) -> vec3<f32> {\n" ++
-  "  let e = vec2<f32>(0.001, 0.0);\n" ++
-  "  return normalize(vec3<f32>(\n" ++
-  "    scene(p + e.xyy) - scene(p - e.xyy),\n" ++
-  "    scene(p + e.yxy) - scene(p - e.yxy),\n" ++
-  "    scene(p + e.yyx) - scene(p - e.yyx)));\n" ++
-  "}\n\n" ++
-  "@compute @workgroup_size(8, 8)\n" ++
-  "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n" ++
-  "  let width = params[1];\n" ++
-  "  let height = params[2];\n" ++
-  "  let x = gid.x;\n" ++
-  "  let y = gid.y;\n" ++
-  "  if (x >= width || y >= height) { return; }\n" ++
-  "  let camX = f32(bitcast<i32>(params[3])) / 100.0;\n" ++
-  "  let camY = f32(bitcast<i32>(params[4])) / 100.0;\n" ++
-  "  let camZ = f32(bitcast<i32>(params[5])) / 100.0;\n" ++
-  "  let res = vec2<f32>(f32(width), f32(height));\n" ++
-  "  let frag = vec2<f32>(f32(x), f32(height - 1u - y));\n" ++
-  "  let uv = (frag - 0.5 * res) / f32(height);\n" ++
-  "  let ro = vec3<f32>(camX, camY, camZ);\n" ++
-  "  let rd = normalize(vec3<f32>(uv.x, uv.y, -1.0));\n" ++
-  "  var t = 0.0;\n" ++
-  "  var hit = false;\n" ++
-  "  var p = ro;\n" ++
-  "  for (var i = 0; i < 96; i = i + 1) {\n" ++
-  "    p = ro + rd * t;\n" ++
-  "    let d = scene(p);\n" ++
-  "    if (d < 0.001) { hit = true; break; }\n" ++
-  "    t = t + d;\n" ++
-  "    if (t > 60.0) { break; }\n" ++
-  "  }\n" ++
-  "  var col: vec3<f32>;\n" ++
-  "  if (hit) {\n" ++
-  "    let n = calcNormal(p);\n" ++
-  "    let ld = normalize(vec3<f32>(0.6, 0.8, 0.3));\n" ++
-  "    let diff = max(dot(n, ld), 0.0);\n" ++
-  "    var base: vec3<f32>;\n" ++
-  "    if (p.y < 0.01) {\n" ++
-  "      let checker = f32((i32(floor(p.x)) + i32(floor(p.z))) & 1);\n" ++
-  "      let c = 0.25 + 0.15 * checker;\n" ++
-  "      base = vec3<f32>(c, c * 1.1, c * 0.7);\n" ++
-  "    } else {\n" ++
-  "      base = 0.5 + 0.5 * n;\n" ++
-  "    }\n" ++
-  "    col = base * (0.2 + 0.8 * diff);\n" ++
-  "  } else {\n" ++
-  "    col = mix(vec3<f32>(0.5, 0.7, 1.0), vec3<f32>(0.1, 0.2, 0.5), clamp(rd.y * 0.5 + 0.5, 0.0, 1.0));\n" ++
-  "  }\n" ++
-  "  col = clamp(col, vec3<f32>(0.0), vec3<f32>(1.0));\n" ++
-  "  let ri = u32(col.x * 255.0);\n" ++
-  "  let gi = u32(col.y * 255.0);\n" ++
-  "  let bi = u32(col.z * 255.0);\n" ++
-  "  pixels[y * width + x] = ri | (gi << 8u) | (bi << 16u) | (0xFFu << 24u);\n" ++
-  "}\n"
+  let pixels : Expr (.arr .u32) := ⟨"pixels"⟩
+  let params : Expr (.arr .u32) := ⟨"params"⟩
+  buildShader
+    [ { binding := 0, name := "pixels", ty := .arr .u32, ro := false },
+      { binding := 1, name := "params", ty := .arr .u32, ro := true } ]
+    []
+    [.fn fnSdSphere, .fn fnSdBox, .fn fnScene, .fn fnCalcNormal]
+    { name := "main", wgX := 8, wgY := 8 }
+    (do
+      let width ← letV "width" (arrIdx params (litU 1))
+      let height ← letV "height" (arrIdx params (litU 2))
+      let x ← letV "x" gidX
+      let y ← letV "y" gidY
+      ifB ((x .>= width) .|| (y .>= height)) retV
+      let camX ← letV "camX" (f32OfI (i32BitsOfU (arrIdx params (litU 3))) / litF "100.0")
+      let camY ← letV "camY" (f32OfI (i32BitsOfU (arrIdx params (litU 4))) / litF "100.0")
+      let camZ ← letV "camZ" (f32OfI (i32BitsOfU (arrIdx params (litU 5))) / litF "100.0")
+      let fw ← letV "fw" (f32OfU width)
+      let fh ← letV "fh" (f32OfU height)
+      let uvx ← letV "uvx" ((f32OfU x - litF "0.5" * fw) / fh)
+      let uvy ← letV "uvy" ((f32OfU (height - litU 1 - y) - litF "0.5" * fh) / fh)
+      let ro ← letV "ro" (mkVec3f camX camY camZ)
+      let rd ← letV "rd" (wNorm (mkVec3f uvx uvy (litF "-1.0")))
+      let t ← varV "t" (litF "0.0")
+      let hit ← varV "hit" litFalse
+      let p ← varV "p" ro
+      forU "i" (litU 0) (fun i => i .< litU 96) (fun i => i + litU 1) (fun _ => do
+        assign p (ro + rd * t)
+        let d ← letV "d" (call1 "scene" p : Expr .f32)
+        ifB (d .< litF "0.001") (do assign hit litTrue; breakS)
+        assign t (t + d)
+        ifB (t .> litF "60.0") breakS)
+      let col ← varVT "col" .vec3f
+      ifElse hit
+        (do
+          let n ← letV "n" (call1 "calcNormal" p : Expr .vec3f)
+          let ld ← letV "ld" (wNorm (v3 "0.6" "0.8" "0.3"))
+          let diff ← letV "diff" (wMax (wDot n ld) (litF "0.0"))
+          let base ← varVT "base" .vec3f
+          ifElse (vy p .< litF "0.01")
+            (do
+              let parity ← letV "parity" (bandI (i32OfF (wFloor (vx p)) + i32OfF (wFloor (vz p))) (litI 1))
+              let c ← letV "c" (litF "0.25" + litF "0.15" * f32OfI parity)
+              assign base (mkVec3f c (c * litF "1.1") (c * litF "0.7")))
+            (assign base (splatV3 (litF "0.5") + litF "0.5" * n))
+          assign col (base * (litF "0.2" + litF "0.8" * diff)))
+        (do
+          assign col (wMix (v3 "0.5" "0.7" "1.0") (v3 "0.1" "0.2" "0.5")
+            (wClamp (vy rd * litF "0.5" + litF "0.5") (litF "0.0") (litF "1.0"))))
+      let out ← letV "out" (wClampV3 col (splatV3 (litF "0.0")) (splatV3 (litF "1.0")))
+      let ri ← letV "ri" (u32OfF (vx out * litF "255.0"))
+      let gi ← letV "gi" (u32OfF (vy out * litF "255.0"))
+      let bi ← letV "bi" (u32OfF (vz out * litF "255.0"))
+      let idx ← letV "idx" (y * width + x)
+      assign (arrIdx pixels idx) (((ri .| (gi .<< litU 8)) .| (bi .<< litU 16)) .| (litU 0xFF .<< litU 24)))
 
 def blitShaderSource : String :=
   let w := toString imageWidth

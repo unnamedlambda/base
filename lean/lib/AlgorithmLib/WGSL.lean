@@ -149,6 +149,9 @@ def f32OfU (e : Expr .u32) : Expr .f32 := ⟨s!"f32({e})"⟩
 def f32OfI (e : Expr .i32) : Expr .f32 := ⟨s!"f32({e})"⟩
 def u32OfF (e : Expr .f32) : Expr .u32 := ⟨s!"u32({e})"⟩
 def i32OfU (e : Expr .u32) : Expr .i32 := ⟨s!"i32({e})"⟩
+def i32OfF (e : Expr .f32) : Expr .i32 := ⟨s!"i32({e})"⟩
+/-- Reinterpret the bits of a u32 as a signed i32 (`bitcast`, not a numeric cast). -/
+def i32BitsOfU (e : Expr .u32) : Expr .i32 := ⟨s!"bitcast<i32>({e})"⟩
 
 -- ---------------------------------------------------------------------------
 -- Arithmetic — standard typeclass instances (same-type)
@@ -196,6 +199,7 @@ def bandU (a b : Expr .u32) : Expr .u32 := ⟨s!"({a} & {b})"⟩
 def borU  (a b : Expr .u32) : Expr .u32 := ⟨s!"({a} | {b})"⟩
 def bxorU (a b : Expr .u32) : Expr .u32 := ⟨s!"({a} ^ {b})"⟩
 def bnotU (a   : Expr .u32) : Expr .u32 := ⟨s!"~({a})"⟩
+def bandI (a b : Expr .i32) : Expr .i32 := ⟨s!"({a} & {b})"⟩
 
 notation:75 a " .<< " b => shlU  a b
 notation:75 a " .>> " b => shrU  a b
@@ -242,6 +246,7 @@ def wLog2   (a : Expr .f32)   : Expr .f32   := ⟨s!"log2({a})"⟩
 def wCos    (a : Expr .f32)   : Expr .f32   := ⟨s!"cos({a})"⟩
 def wSin    (a : Expr .f32)   : Expr .f32   := ⟨s!"sin({a})"⟩
 def wSign   (a : Expr .f32)   : Expr .f32   := ⟨s!"sign({a})"⟩
+def wFloor  (a : Expr .f32)   : Expr .f32   := ⟨s!"floor({a})"⟩
 def wAbsV3  (a : Expr .vec3f) : Expr .vec3f := ⟨s!"abs({a})"⟩
 def wSignV3 (a : Expr .vec3f) : Expr .vec3f := ⟨s!"sign({a})"⟩
 def wMin    (a b : Expr .f32)   : Expr .f32   := ⟨s!"min({a}, {b})"⟩
@@ -252,6 +257,7 @@ def wMinU   (a b : Expr .u32)   : Expr .u32   := ⟨s!"min({a}, {b})"⟩
 def wMaxU   (a b : Expr .u32)   : Expr .u32   := ⟨s!"max({a}, {b})"⟩
 def wClamp  (v lo hi : Expr .f32)   : Expr .f32   := ⟨s!"clamp({v}, {lo}, {hi})"⟩
 def wClampV3 (v lo hi : Expr .vec3f) : Expr .vec3f := ⟨s!"clamp({v}, {lo}, {hi})"⟩
+def wMix    (a b : Expr .vec3f) (t : Expr .f32) : Expr .vec3f := ⟨s!"mix({a}, {b}, {t})"⟩
 def wPow    (b e : Expr .vec3f) : Expr .vec3f := ⟨s!"pow({b}, {e})"⟩
 def wNorm   (v : Expr .vec3f)   : Expr .vec3f := ⟨s!"normalize({v})"⟩
 def wCross  (a b : Expr .vec3f) : Expr .vec3f := ⟨s!"cross({a}, {b})"⟩
