@@ -55,6 +55,86 @@ def evMouseUp   : Int := 7
 def keyEscape : Int := 1
 def titleText : String := "Base Sand"
 
+inductive Cell | empty | sand | wall
+  deriving DecidableEq
+
+def Cell.code : Cell → Nat
+  | .empty => EMPTY | .sand => SAND | .wall => WALL
+
+def Cell.isSand : Cell → Nat
+  | .sand => 1 | _ => 0
+
+inductive CName | tl | tr | bl | br
+
+structure Block where
+  tl : Cell
+  tr : Cell
+  bl : Cell
+  br : Cell
+
+def Block.sandCount (b : Block) : Nat :=
+  b.tl.isSand + b.tr.isSand + b.bl.isSand + b.br.isSand
+
+def Block.get : Block → CName → Cell
+  | b, .tl => b.tl | b, .tr => b.tr | b, .bl => b.bl | b, .br => b.br
+
+def Block.set : Block → CName → Cell → Block
+  | b, .tl, v => { b with tl := v } | b, .tr, v => { b with tr := v }
+  | b, .bl, v => { b with bl := v } | b, .br, v => { b with br := v }
+
+inductive GAtom | is (c : CName) (v : Cell) | isnt (c : CName) (v : Cell) | rnd (v : Bool)
+abbrev Guard := List GAtom
+
+structure Move where
+  guard : Guard
+  src : CName
+  dst : CName
+
+def GAtom.eval : GAtom → Block → Bool → Bool
+  | .is c v, b, _   => b.get c == v
+  | .isnt c v, b, _ => !(b.get c == v)
+  | .rnd v, _, r    => r == v
+
+def Guard.eval (g : Guard) (b : Block) (r : Bool) : Bool := g.all (fun a => a.eval b r)
+
+/-- Semantics of one move: if its guard holds, move a grain src→dst. -/
+def Move.apply (m : Move) (r : Bool) (b : Block) : Block :=
+  cond (m.guard.eval b r) ((b.set m.src .empty).set m.dst .sand) b
+
+abbrev Program := List Move
+
+def Program.eval (ms : Program) (r : Bool) (b : Block) : Block :=
+  ms.foldl (fun acc m => m.apply r acc) b
+
+/-- The Margolus sand rule as data: straight fall, RNG scatter, then diagonal. -/
+def sandProgram : Program :=
+  [ { guard := [.is .tl .sand, .is .bl .empty, .rnd true, .is .br .empty], src := .tl, dst := .br },
+    { guard := [.is .tl .sand, .is .bl .empty],                             src := .tl, dst := .bl },
+    { guard := [.is .tr .sand, .is .br .empty, .rnd false, .is .bl .empty], src := .tr, dst := .bl },
+    { guard := [.is .tr .sand, .is .br .empty],                             src := .tr, dst := .br },
+    { guard := [.is .tl .sand, .isnt .bl .empty, .is .br .empty],           src := .tl, dst := .br },
+    { guard := [.is .tr .sand, .isnt .br .empty, .is .bl .empty],           src := .tr, dst := .bl } ]
+
+theorem sandProgram_conserves (b : Block) (r : Bool) :
+    (sandProgram.eval r b).sandCount = b.sandCount := by
+  obtain ⟨tl, tr, bl, br⟩ := b
+  cases tl <;> cases tr <;> cases bl <;> cases br <;> cases r <;> rfl
+
+-- The WGSL renderer for the same `sandProgram` (used by stepShader). `cv` maps
+-- each cell name to its shader `var` handle; `rndE` is the RNG bit expression.
+def renderAtom (cv : CName → Expr .u32) (rndE : Expr .u32) : GAtom → Expr .bool
+  | .is c v   => (cv c) .== litU v.code
+  | .isnt c v => neE (cv c) (litU v.code)
+  | .rnd v    => rndE .== litU (if v then 1 else 0)
+
+def renderGuard (cv : CName → Expr .u32) (rndE : Expr .u32) (g : Guard) : Expr .bool :=
+  g.foldl (fun acc a => acc .&& renderAtom cv rndE a) litTrue
+
+def renderProgram (cv : CName → Expr .u32) (rndE : Expr .u32) (ms : Program) : WB Unit :=
+  ms.forM fun m =>
+    ifB (renderGuard cv rndE m.guard)
+      (do assign (cv m.src) (litU EMPTY); assign (cv m.dst) (litU SAND))
+
 def stepShader : String :=
   let gridIn  : Expr (.arr .u32) := ⟨"gridIn"⟩
   let gridOut : Expr (.arr .u32) := ⟨"gridOut"⟩
@@ -95,18 +175,8 @@ def stepShader : String :=
           let bl ← varV (readAt cx0 (cy0 + litU 1))
           let br ← varV (readAt (cx0 + litU 1) (cy0 + litU 1))
           let rnd ← letV (hashbit cx0 cy0 frame)
-          ifB ((tl .== litU SAND) .&& (bl .== litU EMPTY))
-            (ifElse ((rnd .== litU 1) .&& (br .== litU EMPTY))
-              (do assign tl (litU EMPTY); assign br (litU SAND))
-              (do assign tl (litU EMPTY); assign bl (litU SAND)))
-          ifB ((tr .== litU SAND) .&& (br .== litU EMPTY))
-            (ifElse ((rnd .== litU 0) .&& (bl .== litU EMPTY))
-              (do assign tr (litU EMPTY); assign bl (litU SAND))
-              (do assign tr (litU EMPTY); assign br (litU SAND)))
-          ifB ((tl .== litU SAND) .&& (neE bl (litU EMPTY)) .&& (br .== litU EMPTY))
-            (do assign tl (litU EMPTY); assign br (litU SAND))
-          ifB ((tr .== litU SAND) .&& (neE br (litU EMPTY)) .&& (bl .== litU EMPTY))
-            (do assign tr (litU EMPTY); assign bl (litU SAND))
+          renderProgram (fun c => match c with
+              | .tl => tl | .tr => tr | .bl => bl | .br => br) rnd sandProgram
           let top := wSelect tr tl (lx .== litU 0)
           let bot := wSelect br bl (lx .== litU 0)
           assign (arrIdx gridOut idx) (wSelect bot top (ly .== litU 0))))
