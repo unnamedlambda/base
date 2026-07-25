@@ -1,0 +1,13 @@
+[package]
+name = "lz4-ptx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../../base" }
+bincode = "1"
+arrow-array = { version = "54", default-features = false }
+lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
+
+[build-dependencies]
+build-support = { path = "../../build-support" }

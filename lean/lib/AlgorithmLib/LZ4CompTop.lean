@@ -1,0 +1,258 @@
+import AlgorithmLib.LZ4Prologue
+namespace AlgorithmLib.LZ4WarpDSL
+open AlgorithmLib AlgorithmLib.LZ4 AlgorithmLib.LZ4Simt AlgorithmLib.LZ4Plan AlgorithmLib.LZ4Imp
+open AlgorithmLib.LZ4Ptx (toNat_ofNat_lt)
+
+theorem initGmem_size (inp outB : List UInt8) :
+    (initGmem inp outB).size = inp.length + outB.length := by
+  simp [initGmem]
+
+/-- The input block warp `w` owns: `iS` bytes of the launch input at offset `w*iS`. -/
+def blockAt (inpAll : List UInt8) (w iS : Nat) : List UInt8 :=
+  (List.range iS).map (fun i => inpAll.getD (w * iS + i) 0)
+
+theorem blockAt_length (inpAll : List UInt8) (w iS : Nat) :
+    (blockAt inpAll w iS).length = iS := by simp [blockAt]
+
+/-- Warp `w`'s `gmem` input view IS its own block of the launch input. -/
+theorem gmemInpAt_initGmem (inpAll outB : List UInt8) (b len : Nat)
+    (hfit : b + len ≤ inpAll.length) :
+    gmemInpAt (initGmem inpAll outB) b len
+      = (List.range len).map (fun i => inpAll.getD (b + i) 0) := by
+  simp only [gmemInpAt]
+  apply List.map_congr_left
+  intro i hi
+  rw [List.mem_range] at hi
+  have hlt : b + i < inpAll.length := by omega
+  have hsz : b + i < (initGmem inpAll outB).size := by rw [initGmem_size]; omega
+  show (if h : b + i < (initGmem inpAll outB).size then (initGmem inpAll outB)[b + i] else 0)
+    = inpAll.getD (b + i) 0
+  rw [dif_pos hsz]
+  simp only [initGmem]
+  rw [Array.getElem_append_left (by simpa using hlt)]
+  simp [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hlt]
+
+theorem encSeqLen_le9 (s : PlanStep) (h : 4 ≤ s.mlen) : encSeqLen s ≤ 8 * (s.litLen + s.mlen) := by
+  have h1 := encNib_len_le s.litLen
+  have h2 := encNib_len_le (s.mlen - 4)
+  simp only [encSeqLen]; omega
+
+theorem encFinalLen_le9 (fl : Nat) : encFinalLen fl ≤ 8 * fl + 1 := by
+  have := encNib_len_le fl; simp only [encFinalLen]; omega
+
+theorem encodeSum_le9 (inp : List UInt8) : ∀ (anchor : Nat) (steps : List PlanStep) (fl : Nat),
+    ValidStepsFrom inp anchor steps fl → (steps.map encSeqLen).sum ≤ 8 * stepsLen steps
+  | _, [], _, _ => by simp [stepsLen]
+  | anchor, st :: rest, fl, hv => by
+    obtain ⟨hag, hrest⟩ := hv
+    have ih := encodeSum_le9 inp (anchor + st.litLen + st.mlen) rest fl hrest
+    have hs := encSeqLen_le9 st hag.2.2.1
+    simp only [List.map_cons, List.sum_cons, stepsLen]; omega
+
+theorem planBlock_encode_le9 (inp : List UInt8) (p : Plan) (hv : ValidPlan inp p)
+    (hpos : 1 ≤ inp.length) : (planToBlock inp p).encode.length ≤ 9 * inp.length := by
+  have hlen := encode_planBlockFrom_length inp 0 p.steps p.finalLen hv
+  have hsum := encodeSum_le9 inp 0 p.steps p.finalLen hv
+  have hf := encFinalLen_le9 p.finalLen
+  have htot := ValidStepsFrom_sum inp 0 p.steps p.finalLen hv
+  simp only [planToBlock]; rw [hlen]; omega
+
+section WarpLaunch
+
+variable (nb iS oS lO hL w iT : Nat) (inpAll outB smemB : List UInt8)
+
+/-- **End-to-end roundtrip for the shipped warp-LZ4 compressor kernel, down to the
+    `sstep` machine floor — for EVERY warp of the launch.**  Warp `w` of `nb` reads
+    its own block at `w*iS` and writes at `outBase = iT + w*oS`; the emitted window
+    decompresses (via the verified decoder) back to that block. -/
+theorem warpKernelDSL_prologue_roundtrips
+    (hiT : inpAll.length = iT) (hblk : nb * iS ≤ iT)
+    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hHash : hL ≤ 32)
+    (hstride : iS ≤ 65536) (hipos : 12 ≤ iS)
+    (hw64 : w * 32 + 32 < 2 ^ 64) (hib40 : w * iS < 2 ^ 40)
+    (htop : iT + w * oS + 9 * iS < 2 ^ 32)
+    (hbuf : w * oS + 9 * iS ≤ outB.length) :
+    ∃ (n : Nat) (ss' : SState) (k : Nat),
+      SReaches (warpKernelDSL nb iS oS lO hL) n (initSt w inpAll outB smemB) ss' ∧
+      decompress ((List.range k).map (fun i => ss'.gmem.getD (iT + w * oS + i) 0)) iS
+        = some (blockAt inpAll w iS) := by
+  obtain ⟨hpc39, hMI, hCouple, hop0, hla0, hsp0, hinB0, houtB0, hgmem⟩ :=
+    prologue_couple nb iS oS lO hL w iT outB smemB inpAll hiT hnb hnb2 hw hw64 hHash
+  obtain ⟨S0, hS0⟩ : ∃ x, snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
+      (initSt w inpAll outB smemB) = x := ⟨_, rfl⟩
+  rw [hS0] at hpc39 hMI hCouple hop0 hla0 hsp0 hinB0 houtB0 hgmem
+  have hblkfit : w * iS + iS ≤ iT := by
+    have : (w + 1) * iS ≤ nb * iS := Nat.mul_le_mul_right iS (by omega)
+    have he : (w + 1) * iS = w * iS + iS := Nat.succ_mul w iS
+    omega
+  have hoT : (S0.regs "outBase" 0).toNat = iT + w * oS := by
+    rw [houtB0, toNat_ofNat_lt _ (by omega)]
+  have hiB : (S0.regs "inBase" 0).toNat = w * iS := by
+    rw [hinB0, toNat_ofNat_lt _ (by omega)]
+  have hgS : S0.gmem.size = iT + outB.length := by rw [hgmem, initGmem_size, hiT]
+  have hgi : gmemInpAt S0.gmem (w * iS) iS = blockAt inpAll w iS := by
+    rw [hgmem]; exact gmemInpAt_initGmem inpAll outB (w * iS) iS (by omega)
+  have hEnc : (planToBlock (gmemInpAt S0.gmem (w * iS) iS)
+      (evalPlan S0.gmem S0.smem (w * iS) iS hL)).encode.length ≤ 9 * iS := by
+    have hv := evalPlan_valid S0.gmem S0.smem (w * iS) iS hL hstride
+    have hb := planBlock_encode_le9 _ _ hv
+      (by simp only [gmemInpAt, List.length_map, List.length_range]; omega)
+    simpa only [gmemInpAt, List.length_map, List.length_range] using hb
+  obtain ⟨m, ss', hr2, hdec, hcpl, hmiF, hobPres, hopVal, hgsz, hpcF⟩ :=
+    warpKernelDSL_sstep_roundtrips_discharged iS hL
+    "Lh0" "Lx1" "Le2" "Ln3" "Lh4" "Lx5" "Le6" "Ln7" "Lh8" "Lx9" "Ch10" "Cx11" "Le12" "Ln13" "Lh14" "Lx15"
+    "Le16" "Ln17" "Lh18" "Lx19" "Ch20" "Cx21"
+    (myLsic "litExtra") (myLsic "matExtra") (myLsic "litExtraF")
+    rfl rfl rfl hstride hipos (by omega) hib40 (by omega) hHash
+    { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }
+    hop0 hla0 hsp0
+    (by show (S0.regs "inBase" 0).toNat < 2 ^ 40; rw [hiB]; exact hib40)
+    (by show (S0.regs "outBase" 0).toNat + 9 * iS < 2 ^ 32; rw [hoT]; omega)
+    (by show (S0.regs "outBase" 0).toNat + 9 * iS ≤ S0.gmem.size; rw [hoT, hgS]; omega)
+    (by show (S0.regs "inBase" 0).toNat + iS ≤ (S0.regs "outBase" 0).toNat; rw [hiB, hoT]; omega)
+    (by show (S0.regs "inBase" 0).toNat + iS ≤ (S0.regs "outBase" 0).toNat; rw [hiB, hoT]; omega)
+    (by show (S0.regs "inBase" 0).toNat + iS < 2 ^ 64; rw [hiB]; omega)
+    (by show (planToBlock (gmemInpAt S0.gmem (S0.regs "inBase" 0).toNat iS)
+          (evalPlan S0.gmem S0.smem (S0.regs "inBase" 0).toNat iS hL)).encode.length ≤ 9 * iS
+        rw [hiB]; exact hEnc)
+    (warpKernelDSL nb iS oS lO hL) 39 S0 hpc39
+    (body_segAt nb iS oS lO hL) (body_labelsResolve nb iS oS lO hL) hCouple hMI
+  have hreach0 : SReaches (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
+      (initSt w inpAll outB smemB) S0 := by
+    rw [← hS0]
+    exact sreaches_snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
+      (initSt w inpAll outB smemB)
+  dsimp only at hdec
+  rw [hiB, hgi, hoT, blockAt_length] at hdec
+  exact ⟨_, ss', _, sreaches_trans _ _ _ _ _ _ hreach0 hr2, hdec⟩
+
+/-- **Whole-kernel roundtrip, through the length-store tail — for EVERY warp.**
+    Extends `warpKernelDSL_prologue_roundtrips` past the encode body: warp `w` also
+    runs the four length-store bytes, ending at the `OOB` label (one `sstep` from
+    `ret`), and its compressed window *still* decodes to its own input block — the
+    tail writes only at `outBase+lO … +3`, which the tight LZ4 bound
+    (`planBlock_encode_le_lenOff`) places beyond the window.  This is the memory the
+    host actually downloads. -/
+theorem warpKernelDSL_tail_roundtrips
+    (hiT : inpAll.length = iT) (hblk : nb * iS ≤ iT)
+    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hHash : hL ≤ 32)
+    (hstride : iS ≤ 65536) (hipos : 12 ≤ iS)
+    (hw64 : w * 32 + 32 < 2 ^ 64) (hib40 : w * iS < 2 ^ 40)
+    (htop : iT + w * oS + 9 * iS < 2 ^ 32)
+    (hbuf : w * oS + 9 * iS ≤ outB.length)
+    (hlO : iS + iS / 16 + 256 ≤ lO) (hlOtop : iT + w * oS + lO + 3 < 2 ^ 64)
+    (hlOfit : w * oS + lO + 4 ≤ outB.length) :
+    ∃ (n : Nat) (ss' : SState) (k : Nat),
+      SReaches (warpKernelDSL nb iS oS lO hL) n (initSt w inpAll outB smemB) ss' ∧
+      ss'.pc = 272 ∧ k ≤ lO ∧
+      AlgorithmLib.readU32LE ss'.gmem (iT + w * oS + lO) = k ∧
+      decompress ((List.range k).map (fun i => ss'.gmem.getD (iT + w * oS + i) 0)) iS
+        = some (blockAt inpAll w iS) := by
+  obtain ⟨hpc39, hMI, hCouple, hop0, hla0, hsp0, hinB0, houtB0, hgmem⟩ :=
+    prologue_couple nb iS oS lO hL w iT outB smemB inpAll hiT hnb hnb2 hw hw64 hHash
+  obtain ⟨S0, hS0⟩ : ∃ x, snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
+      (initSt w inpAll outB smemB) = x := ⟨_, rfl⟩
+  rw [hS0] at hpc39 hMI hCouple hop0 hla0 hsp0 hinB0 houtB0 hgmem
+  have hblkfit : w * iS + iS ≤ iT := by
+    have : (w + 1) * iS ≤ nb * iS := Nat.mul_le_mul_right iS (by omega)
+    have he : (w + 1) * iS = w * iS + iS := Nat.succ_mul w iS
+    omega
+  have hoT : (S0.regs "outBase" 0).toNat = iT + w * oS := by
+    rw [houtB0, toNat_ofNat_lt _ (by omega)]
+  have hiB : (S0.regs "inBase" 0).toNat = w * iS := by
+    rw [hinB0, toNat_ofNat_lt _ (by omega)]
+  have hgS : S0.gmem.size = iT + outB.length := by rw [hgmem, initGmem_size, hiT]
+  have hgi : gmemInpAt S0.gmem (w * iS) iS = blockAt inpAll w iS := by
+    rw [hgmem]; exact gmemInpAt_initGmem inpAll outB (w * iS) iS (by omega)
+  have hvalid := evalPlan_valid S0.gmem S0.smem (w * iS) iS hL hstride
+  have hTight : (planToBlock (gmemInpAt S0.gmem (w * iS) iS)
+      (evalPlan S0.gmem S0.smem (w * iS) iS hL)).encode.length ≤ iS + iS / 16 + 256 :=
+    planBlock_encode_le_lenOff _ _ hvalid iS
+      (by simp only [gmemInpAt, List.length_map, List.length_range])
+  have hEncTight : (planToBlock (gmemInpAt S0.gmem (w * iS) iS)
+      (evalPlan S0.gmem S0.smem (w * iS) iS hL)).encode.length ≤ lO := by omega
+  have hEnc : (planToBlock (gmemInpAt S0.gmem (w * iS) iS)
+      (evalPlan S0.gmem S0.smem (w * iS) iS hL)).encode.length ≤ 9 * iS := by
+    have hb := planBlock_encode_le9 _ _ hvalid
+      (by simp only [gmemInpAt, List.length_map, List.length_range]; omega)
+    simpa only [gmemInpAt, List.length_map, List.length_range] using hb
+  obtain ⟨m, ss', hr2, hdec, hcpl, hmiF, hobPres, hopVal, hgsz, hpcF⟩ :=
+    warpKernelDSL_sstep_roundtrips_discharged iS hL
+    "Lh0" "Lx1" "Le2" "Ln3" "Lh4" "Lx5" "Le6" "Ln7" "Lh8" "Lx9" "Ch10" "Cx11" "Le12" "Ln13" "Lh14" "Lx15"
+    "Le16" "Ln17" "Lh18" "Lx19" "Ch20" "Cx21"
+    (myLsic "litExtra") (myLsic "matExtra") (myLsic "litExtraF")
+    rfl rfl rfl hstride hipos (by omega) hib40 (by omega) hHash
+    { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }
+    hop0 hla0 hsp0
+    (by show (S0.regs "inBase" 0).toNat < 2 ^ 40; rw [hiB]; exact hib40)
+    (by show (S0.regs "outBase" 0).toNat + 9 * iS < 2 ^ 32; rw [hoT]; omega)
+    (by show (S0.regs "outBase" 0).toNat + 9 * iS ≤ S0.gmem.size; rw [hoT, hgS]; omega)
+    (by show (S0.regs "inBase" 0).toNat + iS ≤ (S0.regs "outBase" 0).toNat; rw [hiB, hoT]; omega)
+    (by show (S0.regs "inBase" 0).toNat + iS ≤ (S0.regs "outBase" 0).toNat; rw [hiB, hoT]; omega)
+    (by show (S0.regs "inBase" 0).toNat + iS < 2 ^ 64; rw [hiB]; omega)
+    (by show (planToBlock (gmemInpAt S0.gmem (S0.regs "inBase" 0).toNat iS)
+          (evalPlan S0.gmem S0.smem (S0.regs "inBase" 0).toNat iS hL)).encode.length ≤ 9 * iS
+        rw [hiB]; exact hEnc)
+    (warpKernelDSL nb iS oS lO hL) 39 S0 hpc39
+    (body_segAt nb iS oS lO hL) (body_labelsResolve nb iS oS lO hL) hCouple hMI
+  have hpc257 : ss'.pc = 257 := by
+    have h218 : (bodyPrefixSeg iS hL).length = 218 := bodyPrefixSeg_length iS hL
+    simp only [bodyPrefixSeg] at h218
+    rw [hpcF, h218]
+  obtain ⟨n3, ss3, hr3, hpc3, hcpl3, _⟩ :=
+    tail_sim (w * iS) lO (warpKernelDSL nb iS oS lO hL) 257 ss'
+      ((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }) (iS + 34 * iS)
+      hpc257 (tail_segAt nb iS oS lO hL) (tail_labelsResolve nb iS oS lO hL) hcpl hmiF
+  have hreach0 : SReaches (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
+      (initSt w inpAll outB smemB) S0 := by
+    rw [← hS0]
+    exact sreaches_snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
+      (initSt w inpAll outB smemB)
+  dsimp only at hdec
+  rw [hiB, hgi, hoT, blockAt_length] at hdec
+  rw [hgi] at hEncTight hTight
+  rw [hiB, hgi] at hopVal
+  refine ⟨_, ss3, (planToBlock (blockAt inpAll w iS) (evalPlan S0.gmem S0.smem (w * iS) iS hL)).encode.length,
+    sreaches_trans _ _ _ _ _ _ hreach0 (sreaches_trans _ _ _ _ _ _ hr2 hr3), ?_, hEncTight, ?_, ?_⟩
+  · rw [hpc3, tailEmit_length]
+  · have hobN2 : (((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }).regs "outBase").toNat
+        = iT + w * oS := by rw [hobPres]; exact hoT
+    have hopN : (((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }).regs "op").toNat
+        = (planToBlock (blockAt inpAll w iS) (evalPlan S0.gmem S0.smem (w * iS) iS hL)).encode.length := by
+      rw [hopVal, toNat_ofNat_lt]
+      exact Nat.lt_of_le_of_lt hEncTight (by omega)
+    have hszN : (((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }).gmem).size
+        = iT + outB.length := by rw [hgsz]; exact hgS
+    have hlf := tailStmt_lenField lO ((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }) (iS + 34 * iS)
+      (by rw [hobN2]; omega) (by rw [hobN2, hszN]; omega)
+      (by rw [hopN]; omega)
+    rw [hobN2] at hlf
+    rw [show ss3.gmem = ((tailStmt lO).eval (iS + 34 * iS)
+      ((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem })).gmem from hcpl3.gmem]
+    rw [hlf, hopN]
+  · rw [← hdec]
+    congr 1
+    apply List.map_congr_left
+    intro i hi
+    rw [List.mem_range] at hi
+    have hobN : (((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }).regs "outBase").toNat
+        = iT + w * oS := by rw [hobPres]; exact hoT
+    have hgm3 : ss3.gmem = ((tailStmt lO).eval (iS + 34 * iS)
+        ((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+          { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem })).gmem := hcpl3.gmem
+    have hgmPrev : ((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
+        { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }).gmem = ss'.gmem :=
+      hcpl.gmem.symm
+    rw [hgm3, tailStmt_frame lO _ (iS + 34 * iS) (iT + w * oS + i)
+      (by rw [hobN]; omega) (by rw [hobN]; omega), hgmPrev]
+
+end WarpLaunch
+
+end AlgorithmLib.LZ4WarpDSL

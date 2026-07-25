@@ -17,6 +17,8 @@ inductive RK | pred | u32 | u64 | f32
 structure Reg (k : RK) where
   raw : String
 
+instance : Inhabited (Reg k) := ⟨⟨"%invalid"⟩⟩
+
 -- Special system registers
 def tidX  : Reg .u32 := ⟨"%tid.x"⟩
 def tidY  : Reg .u32 := ⟨"%tid.y"⟩
@@ -113,6 +115,8 @@ def ldGlobalFO (dst : Reg .f32) (a : Reg .u64) (off : Int) : PTX Unit :=
 def ldGlobalU  (dst : Reg .u32) (a : Reg .u64): PTX Unit := emit s!"ld.global.u32 {dst.raw}, [{a.raw}]"
 def ldGlobalUO (dst : Reg .u32) (a : Reg .u64) (off : Nat) : PTX Unit :=
   emit s!"ld.global.u32 {dst.raw}, [{a.raw}+{off}]"
+def ldGlobalU8 (dst : Reg .u64) (a : Reg .u64): PTX Unit := emit s!"ld.global.u8 {dst.raw}, [{a.raw}]"
+def stGlobalU8 (a : Reg .u64) (v : Reg .u64) : PTX Unit := emit s!"st.global.u8 [{a.raw}], {v.raw}"
 def ldGlobalU64 (dst : Reg .u64) (a : Reg .u64): PTX Unit := emit s!"ld.global.u64 {dst.raw}, [{a.raw}]"
 def ldGlobalS64 (dst : Reg .u64) (a : Reg .u64): PTX Unit := emit s!"ld.global.s64 {dst.raw}, [{a.raw}]"
 def stGlobalF  (a : Reg .u64) (v : Reg .f32)  : PTX Unit := emit s!"st.global.f32 [{a.raw}], {v.raw}"
@@ -153,9 +157,19 @@ def orRR  (d a b : Reg .u32)             : PTX Unit := emit s!"or.b32 {d.raw}, {
 -- ── Integer (u64) ─────────────────────────────────────────────────────────────
 
 def movRd  (d s : Reg .u64)              : PTX Unit := emit s!"mov.u64 {d.raw}, {s.raw}"
+def movRdI (d : Reg .u64) (n : Nat)      : PTX Unit := emit s!"mov.u64 {d.raw}, {n}"
 def addRd  (d a b : Reg .u64)            : PTX Unit := emit s!"add.u64 {d.raw}, {a.raw}, {b.raw}"
 def addRdI (d a : Reg .u64) (n : Nat)   : PTX Unit := emit s!"add.u64 {d.raw}, {a.raw}, {n}"
+def subRd  (d a b : Reg .u64)            : PTX Unit := emit s!"sub.u64 {d.raw}, {a.raw}, {b.raw}"
+def subRdI (d a : Reg .u64) (n : Nat)   : PTX Unit := emit s!"sub.u64 {d.raw}, {a.raw}, {n}"
+def andRd  (d a b : Reg .u64)            : PTX Unit := emit s!"and.b64 {d.raw}, {a.raw}, {b.raw}"
+def andRdI (d a : Reg .u64) (n : Nat)   : PTX Unit := emit s!"and.b64 {d.raw}, {a.raw}, {n}"
+def orRd   (d a b : Reg .u64)            : PTX Unit := emit s!"or.b64 {d.raw}, {a.raw}, {b.raw}"
+def orRdI  (d a : Reg .u64) (n : Nat)   : PTX Unit := emit s!"or.b64 {d.raw}, {a.raw}, {n}"
 def shlRd  (d a : Reg .u64) (n : Nat)   : PTX Unit := emit s!"shl.b64 {d.raw}, {a.raw}, {n}"
+def shlRdR (d a : Reg .u64) (n : Reg .u32) : PTX Unit := emit s!"shl.b64 {d.raw}, {a.raw}, {n.raw}"
+def shrRd  (d a : Reg .u64) (n : Nat)   : PTX Unit := emit s!"shr.u64 {d.raw}, {a.raw}, {n}"
+def shrRdR (d a : Reg .u64) (n : Reg .u32) : PTX Unit := emit s!"shr.u64 {d.raw}, {a.raw}, {n.raw}"
 def mulLoRd (d a b : Reg .u64)           : PTX Unit := emit s!"mul.lo.u64 {d.raw}, {a.raw}, {b.raw}"
 def addS64  (d a b : Reg .u64)           : PTX Unit := emit s!"add.s64 {d.raw}, {a.raw}, {b.raw}"
 def mulLoS64 (d a b : Reg .u64)          : PTX Unit := emit s!"mul.lo.s64 {d.raw}, {a.raw}, {b.raw}"
@@ -165,6 +179,7 @@ def mulWideRI (d : Reg .u64) (a : Reg .u32) (n : Nat) : PTX Unit :=
 -- ── Conversions ───────────────────────────────────────────────────────────────
 
 def cvtU64 (d : Reg .u64) (s : Reg .u32): PTX Unit := emit s!"cvt.u64.u32 {d.raw}, {s.raw}"
+def cvtU32of64 (d : Reg .u32) (s : Reg .u64): PTX Unit := emit s!"cvt.u32.u64 {d.raw}, {s.raw}"
 def cvtS64 (d : Reg .u64) (s : Reg .u32): PTX Unit := emit s!"cvt.s64.s32 {d.raw}, {s.raw}"
 def cvtF32 (d : Reg .f32) (s : Reg .u32): PTX Unit := emit s!"cvt.rn.f32.u32 {d.raw}, {s.raw}"
 
@@ -205,6 +220,14 @@ def setpGeI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.
 def setpLt  (p : Reg .pred) (a b : Reg .u32)  : PTX Unit := emit s!"setp.lt.u32 {p.raw}, {a.raw}, {b.raw}"
 def setpLtI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.lt.u32 {p.raw}, {a.raw}, {n}"
 def setpEqI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.eq.u32 {p.raw}, {a.raw}, {n}"
+def setpEqRd  (p : Reg .pred) (a b : Reg .u64) : PTX Unit := emit s!"setp.eq.u64 {p.raw}, {a.raw}, {b.raw}"
+def setpEqRdI (p : Reg .pred) (a : Reg .u64) (n : Nat) : PTX Unit := emit s!"setp.eq.u64 {p.raw}, {a.raw}, {n}"
+def setpNeRd  (p : Reg .pred) (a b : Reg .u64) : PTX Unit := emit s!"setp.ne.u64 {p.raw}, {a.raw}, {b.raw}"
+def setpNeRdI (p : Reg .pred) (a : Reg .u64) (n : Nat) : PTX Unit := emit s!"setp.ne.u64 {p.raw}, {a.raw}, {n}"
+def setpLtRd  (p : Reg .pred) (a b : Reg .u64) : PTX Unit := emit s!"setp.lt.u64 {p.raw}, {a.raw}, {b.raw}"
+def setpLtRdI (p : Reg .pred) (a : Reg .u64) (n : Nat) : PTX Unit := emit s!"setp.lt.u64 {p.raw}, {a.raw}, {n}"
+def setpGeRd  (p : Reg .pred) (a b : Reg .u64) : PTX Unit := emit s!"setp.ge.u64 {p.raw}, {a.raw}, {b.raw}"
+def setpGeRdI (p : Reg .pred) (a : Reg .u64) (n : Nat) : PTX Unit := emit s!"setp.ge.u64 {p.raw}, {a.raw}, {n}"
 def setpLtF (p : Reg .pred) (a b : Reg .f32) : PTX Unit := emit s!"setp.lt.f32 {p.raw}, {a.raw}, {b.raw}"
 def setpLtFI (p : Reg .pred) (a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"setp.lt.f32 {p.raw}, {a.raw}, {imm.render}"
 def setpLeF (p : Reg .pred) (a b : Reg .f32) : PTX Unit := emit s!"setp.le.f32 {p.raw}, {a.raw}, {b.raw}"
@@ -237,6 +260,59 @@ def ldParam (name : String) : PTX (Reg .u64) := do
 def cvtRniU32F32 (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"cvt.rni.u32.f32 {d.raw}, {s.raw}"
 def cvtRziS32F32 (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"cvt.rzi.s32.f32 {d.raw}, {s.raw}"
 def stGlobalU32 (a : Reg .u64) (v : Reg .u32) : PTX Unit := emit s!"st.global.u32 [{a.raw}], {v.raw}"
+def stGlobalU32P (p : Reg .pred) (a : Reg .u64) (v : Reg .u32) : PTX Unit :=
+  emit s!"@{p.raw} st.global.u32 [{a.raw}], {v.raw}"
+
+-- ── Integer shared memory + warp cooperation (LZ4 warp-cooperative compressor) ──
+-- Integer shared load/store, dynamic address in a u32 register (shared addrs are 32-bit)
+def ldSharedU32D (d a : Reg .u32) : PTX Unit := emit s!"ld.shared.u32 {d.raw}, [{a.raw}]"
+def stSharedU32D (a v : Reg .u32) : PTX Unit := emit s!"st.shared.u32 [{a.raw}], {v.raw}"
+def ldSharedU16D (d a : Reg .u32) : PTX Unit := emit s!"ld.shared.u16 {d.raw}, [{a.raw}]"
+def stSharedU16D (a v : Reg .u32) : PTX Unit := emit s!"st.shared.u16 [{a.raw}], {v.raw}"
+def stSharedU16DP (p : Reg .pred) (a v : Reg .u32) : PTX Unit :=
+  emit s!"@{p.raw} st.shared.u16 [{a.raw}], {v.raw}"
+def ldSharedU32O (d a : Reg .u32) (off : Nat) : PTX Unit := emit s!"ld.shared.u32 {d.raw}, [{a.raw}+{off}]"
+def stSharedU32O (a : Reg .u32) (off : Nat) (v : Reg .u32) : PTX Unit := emit s!"st.shared.u32 [{a.raw}+{off}], {v.raw}"
+
+-- Global byte / word loads into a u32 register (input scan + emit)
+def ldGlobalU8R  (d : Reg .u32) (a : Reg .u64) : PTX Unit := emit s!"ld.global.u8 {d.raw}, [{a.raw}]"
+def ldGlobalU8RO (d : Reg .u32) (a : Reg .u64) (off : Nat) : PTX Unit := emit s!"ld.global.u8 {d.raw}, [{a.raw}+{off}]"
+def ldGlobalU32R (d : Reg .u32) (a : Reg .u64) : PTX Unit := emit s!"ld.global.u32 {d.raw}, [{a.raw}]"
+def stGlobalU8R  (a : Reg .u64) (v : Reg .u32) : PTX Unit := emit s!"st.global.u8 [{a.raw}], {v.raw}"
+def stGlobalU8RO (a : Reg .u64) (off : Nat) (v : Reg .u32) : PTX Unit := emit s!"st.global.u8 [{a.raw}+{off}], {v.raw}"
+def stGlobalU8RP (p : Reg .pred) (a : Reg .u64) (v : Reg .u32) : PTX Unit :=
+  emit s!"@{p.raw} st.global.u8 [{a.raw}], {v.raw}"
+def notR (d a : Reg .u32) : PTX Unit := emit s!"not.b32 {d.raw}, {a.raw}"
+
+-- u32 ALU extras
+def subR   (d a b : Reg .u32)         : PTX Unit := emit s!"sub.u32 {d.raw}, {a.raw}, {b.raw}"
+def subRI  (d a : Reg .u32) (n : Nat) : PTX Unit := emit s!"sub.u32 {d.raw}, {a.raw}, {n}"
+def minRU  (d a b : Reg .u32)         : PTX Unit := emit s!"min.u32 {d.raw}, {a.raw}, {b.raw}"
+def maxRU  (d a b : Reg .u32)         : PTX Unit := emit s!"max.u32 {d.raw}, {a.raw}, {b.raw}"
+def brevR  (d a : Reg .u32)           : PTX Unit := emit s!"brev.b32 {d.raw}, {a.raw}"
+def clzR   (d a : Reg .u32)           : PTX Unit := emit s!"clz.b32 {d.raw}, {a.raw}"
+def popcR  (d a : Reg .u32)           : PTX Unit := emit s!"popc.b32 {d.raw}, {a.raw}"
+def selpR  (d a b : Reg .u32) (p : Reg .pred) : PTX Unit := emit s!"selp.b32 {d.raw}, {a.raw}, {b.raw}, {p.raw}"
+def movRR  (d s : Reg .u32)           : PTX Unit := emit s!"mov.u32 {d.raw}, {s.raw}"
+
+-- setp u32 extras
+def setpLe  (p : Reg .pred) (a b : Reg .u32) : PTX Unit := emit s!"setp.le.u32 {p.raw}, {a.raw}, {b.raw}"
+def setpEq  (p : Reg .pred) (a b : Reg .u32) : PTX Unit := emit s!"setp.eq.u32 {p.raw}, {a.raw}, {b.raw}"
+def setpNe  (p : Reg .pred) (a b : Reg .u32) : PTX Unit := emit s!"setp.ne.u32 {p.raw}, {a.raw}, {b.raw}"
+def setpGt  (p : Reg .pred) (a b : Reg .u32) : PTX Unit := emit s!"setp.gt.u32 {p.raw}, {a.raw}, {b.raw}"
+def setpGtI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.gt.u32 {p.raw}, {a.raw}, {n}"
+def setpLeI (p : Reg .pred) (a : Reg .u32) (n : Nat) : PTX Unit := emit s!"setp.le.u32 {p.raw}, {a.raw}, {n}"
+
+-- Warp vote (32-bit ballot mask) and index shuffle (broadcast from a lane)
+def voteBallot (d : Reg .u32) (p : Reg .pred) : PTX Unit :=
+  emit s!"vote.sync.ballot.b32 {d.raw}, {p.raw}, 0xffffffff"
+def shflIdx (d src lane : Reg .u32) : PTX Unit :=
+  emit s!"shfl.sync.idx.b32 {d.raw}, {src.raw}, {lane.raw}, 0x1f, 0xffffffff"
+-- Warp-scoped barrier (syncs only the 32 lanes, so several warps per CTA can run
+-- independent blocks without deadlocking on a CTA-wide bar.sync)
+def barWarpSync : PTX Unit := emit "bar.warp.sync 0xffffffff"
+-- Multiply u32 by an immediate constant
+def mulLoRI (d a : Reg .u32) (n : Nat) : PTX Unit := emit s!"mul.lo.u32 {d.raw}, {a.raw}, {n}"
 
 -- Standard warp-ID decomposition: (tid, warpId, laneId)
 def getWarpIds : PTX (Reg .u32 × Reg .u32 × Reg .u32) := do

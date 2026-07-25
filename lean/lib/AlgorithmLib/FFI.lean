@@ -429,6 +429,19 @@ def cudaUpload (cuda : CudaSetup) (ptr bufId srcOff size : Val)
   let srcPtr ← iadd ptr srcOff
   call cuda.fnUpload [ctxPtr, bufId, srcPtr, size]
 
+/-- Upload from an arbitrary host pointer (e.g. the caller's zero-copy data buffer). -/
+def cudaUploadRaw (cuda : CudaSetup) (ptr bufId srcPtr size : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnUpload [ctxPtr, bufId, srcPtr, size]
+
+/-- Download into an arbitrary host pointer (e.g. the caller's out buffer).
+    The pointee must be exactly the device buffer's size. -/
+def cudaDownloadRaw (cuda : CudaSetup) (ptr bufId dstPtr size : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnDownload [ctxPtr, bufId, dstPtr, size]
+
 /-- Upload to a specific offset within a GPU buffer. -/
 def cudaUploadOffset (cuda : CudaSetup) (ptr bufId bufOff srcOff size : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
