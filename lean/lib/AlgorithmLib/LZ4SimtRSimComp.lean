@@ -9,9 +9,9 @@ open AlgorithmLib
 
 /-- Registers pre-set at launch for the warp in CTA `w`: `%tid.x = lane`,
     `%ctaid.x = w`, `%ntid.x = modelBlockDim`; `in_ptr = 0`, `out_ptr = iTot`. -/
-def initRegs (w iTot : Nat) : String → Fin 32 → UInt64 := fun name lane =>
-  if name = "in_ptr" then 0
-  else if name = "out_ptr" then UInt64.ofNat iTot
+def initRegs (w inPtr outPtr : Nat) : String → Fin 32 → UInt64 := fun name lane =>
+  if name = "in_ptr" then UInt64.ofNat inPtr
+  else if name = "out_ptr" then UInt64.ofNat outPtr
   else if name = "%tid.x" then UInt64.ofNat lane.val
   else if name = "%ctaid.x" then UInt64.ofNat w
   else if name = "%ntid.x" then 32
@@ -36,17 +36,11 @@ theorem u64_gwarp (w : Nat) (hw : w * 32 + 32 < 2 ^ 64) (l : Fin 32) :
     Nat.shiftRight_eq_div_pow]
   omega
 
-/-- Launch memory: the input block followed by an output region of ARBITRARY
-    content (a relaunch sees the previous run's bytes), and shared memory of
-    ARBITRARY content (real `.shared` is uninitialized at launch — the kernel's
-    clear loop is what makes it usable). -/
-def initGmem (inp outB : List UInt8) : Array UInt8 := inp.toArray ++ outB.toArray
-
 def initSmem (smemB : List UInt8) : Array UInt8 := smemB.toArray
 
-def initSt (w : Nat) (inp outB smemB : List UInt8) : SState :=
-  { regs := initRegs w inp.length
-    gmem := initGmem inp outB
+def initSt (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) : SState :=
+  { regs := initRegs w inPtr outPtr
+    gmem := gm
     smem := initSmem smemB
     pc := 0 }
 
@@ -55,8 +49,8 @@ def initSt (w : Nat) (inp outB smemB : List UInt8) : SState :=
     returns it — so the model and the launch cannot drift apart. -/
 def modelBlockDim : Nat := 32
 
-theorem initRegs_ntid (w iTot : Nat) (l : Fin 32) :
-    initRegs w iTot "%ntid.x" l = UInt64.ofNat modelBlockDim := rfl
+theorem initRegs_ntid (w inPtr outPtr : Nat) (l : Fin 32) :
+    initRegs w inPtr outPtr "%ntid.x" l = UInt64.ofNat modelBlockDim := rfl
 
 def clearIters (hashLog : Nat) : Nat :=
   if hashLog < 5 then 1 else 2 ^ (hashLog - 5)

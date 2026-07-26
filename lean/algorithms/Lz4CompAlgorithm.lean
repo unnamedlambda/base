@@ -145,68 +145,60 @@ def warpArtifactDSL (name : String) (blkLog : Nat) :=
 section ShippedClaim
 open AlgorithmLib.LZ4WarpDSL
 
-/-- The warp-dependent side conditions, from `w < numBlk` plus three numeric facts.
-    Symbolic in `w`, so it covers the last warp as well as the first. -/
-private theorem guard_sidecond (nb iS oS lO iT w : Nat)
-    (hw : w < nb) (hoS : oS = lO + 8)
-    (hN1 : nb * iS < 2 ^ 40)
-    (hN2 : iT + nb * oS + 9 * iS < 2 ^ 32)
-    (hN4 : nb * 32 + 32 < 2 ^ 64) :
-    w * 32 + 32 < 2 ^ 64
-    ∧ w * iS < 2 ^ 40
-    ∧ iT + w * oS + 9 * iS < 2 ^ 32
-    ∧ w * oS + 9 * iS ≤ nb * oS + 9 * iS
-    ∧ iT + w * oS + lO + 3 < 2 ^ 64
-    ∧ w * oS + lO + 4 ≤ nb * oS + 9 * iS := by
-  have h1 : w * 32 ≤ nb * 32 := Nat.mul_le_mul_right 32 (Nat.le_of_lt hw)
-  have h2 : w * iS ≤ nb * iS := Nat.mul_le_mul_right iS (Nat.le_of_lt hw)
-  have h3 : w * oS ≤ nb * oS := Nat.mul_le_mul_right oS (Nat.le_of_lt hw)
-  have h4 : (w + 1) * oS ≤ nb * oS := Nat.mul_le_mul_right oS hw
-  have h5 : (w + 1) * oS = w * oS + oS := Nat.succ_mul w oS
-  refine ⟨by omega, by omega, by omega, by omega, by omega, by omega⟩
-
-/-- Whole-kernel guarantee for warp `w`, assuming only the host's allocation. -/
+/-- Correctness of the artifact `warpArtifactDSL _ b` emits, for warp `w`, with the
+    two device allocations placed ANYWHERE satisfying the stated layout contract —
+    the runtime makes two independent `cudaCreateBuffer` calls, so their addresses
+    are not related. -/
 def ShippedCorrect (b : Nat) : Prop :=
-  ∀ (w : Nat) (inpAll outB smemB : List UInt8),
-    inpAll.length = (WP.mk b).totIn →
+  ∀ (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8),
     w < (WP.mk b).numBlk →
-    outB.length = (WP.mk b).outAlloc →
+    -- layout contract on the two buffers
+    inPtr + w * (WP.mk b).inStride < 2 ^ 40 →
+    outPtr + w * (WP.mk b).outStride + 9 * (WP.mk b).inStride < 2 ^ 32 →
+    outPtr + w * (WP.mk b).outStride + 9 * (WP.mk b).inStride ≤ gm.size →
+    inPtr + w * (WP.mk b).inStride + (WP.mk b).inStride
+      ≤ outPtr + w * (WP.mk b).outStride →
+    outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 3 < 2 ^ 64 →
+    outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 4 ≤ gm.size →
     ∃ (n : Nat) (ss' : AlgorithmLib.LZ4Simt.SState) (k : Nat),
-      AlgorithmLib.LZ4Simt.SReaches
-        (WP.mk b).kernel n
-        (AlgorithmLib.LZ4Simt.initSt w inpAll outB smemB) ss' ∧
+      AlgorithmLib.LZ4Simt.SReaches (WP.mk b).kernel n
+        (AlgorithmLib.LZ4Simt.initSt w inPtr outPtr gm smemB) ss' ∧
       ss'.pc = 272 ∧ 0 < k ∧ k ≤ (WP.mk b).lenOff ∧
       AlgorithmLib.readU32LE ss'.gmem
-        ((WP.mk b).totIn + w * (WP.mk b).outStride + (WP.mk b).lenOff) = k ∧
+        (outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff) = k ∧
       AlgorithmLib.LZ4Imp.decompress
         ((List.range k).map (fun i => ss'.gmem.getD
-          ((WP.mk b).totIn + w * (WP.mk b).outStride + i) 0))
+          (outPtr + w * (WP.mk b).outStride + i) 0))
         (WP.mk b).inStride
-        = some (blockAt inpAll w (WP.mk b).inStride)
+        = some (gmemInpAt gm (inPtr + w * (WP.mk b).inStride) (WP.mk b).inStride) ∧
+      -- warp `w` writes ONLY its own stride, so the per-warp results compose
+      (∀ j, j < outPtr + w * (WP.mk b).outStride ∨
+            outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 4 ≤ j →
+        ss'.gmem.getD j 0 = gm.getD j 0)
 
 theorem shipped32_correct : ShippedCorrect 15 := by
-  intro w inpAll outB smemB hiT hw hout
-  obtain ⟨a1, a2, a3, a4, a5, a6⟩ :=
-    guard_sidecond (WP.mk 15).numBlk (WP.mk 15).inStride (WP.mk 15).outStride
-      (WP.mk 15).lenOff (WP.mk 15).totIn w hw rfl (by decide) (by decide) (by decide)
+  intro w inPtr outPtr gm smemB hw hib40 htop hbuf hdisj hlOtop hlOfit
+  have hw64 : w * 32 + 32 < 2 ^ 64 := by
+    have h1 : w * 32 ≤ (WP.mk 15).numBlk * 32 := Nat.mul_le_mul_right 32 (Nat.le_of_lt hw)
+    have h2 : (WP.mk 15).numBlk * 32 + 32 < 2 ^ 64 := by decide
+    omega
   exact warpKernelDSL_tail_roundtrips
     (WP.mk 15).numBlk (WP.mk 15).inStride (WP.mk 15).outStride (WP.mk 15).lenOff wHashLog
-    w (WP.mk 15).totIn inpAll outB smemB
-    hiT (Nat.le_refl _) (by decide) (by decide) hw (by decide) (by decide) (by decide)
-    a1 a2 a3 (by rw [hout]; exact a4) (Nat.le_refl _) (by rw [hout] at *; exact a5)
-    (by rw [hout]; exact a6)
+    w inPtr outPtr gm smemB
+    (by decide) (by decide) hw (by decide) (by decide) (by decide)
+    hw64 hib40 htop hbuf hdisj (Nat.le_refl _) hlOtop hlOfit
 
 theorem shipped64_correct : ShippedCorrect 16 := by
-  intro w inpAll outB smemB hiT hw hout
-  obtain ⟨a1, a2, a3, a4, a5, a6⟩ :=
-    guard_sidecond (WP.mk 16).numBlk (WP.mk 16).inStride (WP.mk 16).outStride
-      (WP.mk 16).lenOff (WP.mk 16).totIn w hw rfl (by decide) (by decide) (by decide)
+  intro w inPtr outPtr gm smemB hw hib40 htop hbuf hdisj hlOtop hlOfit
+  have hw64 : w * 32 + 32 < 2 ^ 64 := by
+    have h1 : w * 32 ≤ (WP.mk 16).numBlk * 32 := Nat.mul_le_mul_right 32 (Nat.le_of_lt hw)
+    have h2 : (WP.mk 16).numBlk * 32 + 32 < 2 ^ 64 := by decide
+    omega
   exact warpKernelDSL_tail_roundtrips
     (WP.mk 16).numBlk (WP.mk 16).inStride (WP.mk 16).outStride (WP.mk 16).lenOff wHashLog
-    w (WP.mk 16).totIn inpAll outB smemB
-    hiT (Nat.le_refl _) (by decide) (by decide) hw (by decide) (by decide) (by decide)
-    a1 a2 a3 (by rw [hout]; exact a4) (Nat.le_refl _) (by rw [hout] at *; exact a5)
-    (by rw [hout]; exact a6)
+    w inPtr outPtr gm smemB
+    (by decide) (by decide) hw (by decide) (by decide) (by decide)
+    hw64 hib40 htop hbuf hdisj (Nat.le_refl _) hlOtop hlOfit
 
 /-- info: 'Algorithm.shipped32_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
@@ -215,6 +207,100 @@ theorem shipped64_correct : ShippedCorrect 16 := by
 /-- info: 'Algorithm.shipped64_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
 #print axioms shipped64_correct
+
+
+/-- The buffer-placement contract the runtime must satisfy: the two allocations
+    are far enough apart and large enough, for every warp of the launch. -/
+def LayoutOK (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8) : Prop :=
+  -- The WHOLE input buffer precedes the WHOLE output buffer.  Per-warp
+  -- disjointness is not enough: warp `w'`'s output must also miss warp `w`'s
+  -- INPUT slice, or warps could clobber each other's source data.
+  inPtr + (WP.mk b).numBlk * (WP.mk b).inStride ≤ outPtr ∧
+  ∀ w, w < (WP.mk b).numBlk →
+    inPtr + w * (WP.mk b).inStride < 2 ^ 40 ∧
+    outPtr + w * (WP.mk b).outStride + 9 * (WP.mk b).inStride < 2 ^ 32 ∧
+    outPtr + w * (WP.mk b).outStride + 9 * (WP.mk b).inStride ≤ gm.size ∧
+    outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 3 < 2 ^ 64 ∧
+    outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 4 ≤ gm.size
+
+/-- **Disjointness / data-race-freedom.**  Distinct warps write disjoint ranges:
+    warp `w` touches only `[outPtr + w*outStride, … + lenOff + 4)`, and consecutive
+    strides are `outStride = lenOff + 8` apart, leaving 4 bytes of clearance. -/
+theorem warp_regions_disjoint (b outPtr w w' : Nat) (hne : w ≠ w') (j : Nat)
+    (hj : outPtr + w * (WP.mk b).outStride ≤ j)
+    (hj2 : j < outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 4) :
+    j < outPtr + w' * (WP.mk b).outStride ∨
+      outPtr + w' * (WP.mk b).outStride + (WP.mk b).lenOff + 4 ≤ j := by
+  have hstride : (WP.mk b).outStride = (WP.mk b).lenOff + 8 := rfl
+  rcases Nat.lt_or_ge w w' with h | h
+  · have h1 : (w + 1) * (WP.mk b).outStride ≤ w' * (WP.mk b).outStride :=
+      Nat.mul_le_mul_right _ h
+    have he : (w + 1) * (WP.mk b).outStride = w * (WP.mk b).outStride + (WP.mk b).outStride :=
+      Nat.succ_mul w _
+    left; omega
+  · have hlt : w' < w := by omega
+    have h1 : (w' + 1) * (WP.mk b).outStride ≤ w * (WP.mk b).outStride :=
+      Nat.mul_le_mul_right _ hlt
+    have he : (w' + 1) * (WP.mk b).outStride = w' * (WP.mk b).outStride + (WP.mk b).outStride :=
+      Nat.succ_mul w' _
+    right; omega
+
+def LaunchAgreesPerWarp (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8)
+    (smemB : List UInt8) (gfinal : Array UInt8) : Prop :=
+  ∀ w, w < (WP.mk b).numBlk → ∀ (ss' : AlgorithmLib.LZ4Simt.SState),
+    (∃ n, AlgorithmLib.LZ4Simt.SReaches (WP.mk b).kernel n
+            (AlgorithmLib.LZ4Simt.initSt w inPtr outPtr gm smemB) ss') →
+    ss'.pc = 272 →
+    ∀ j, outPtr + w * (WP.mk b).outStride ≤ j →
+         j < outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 4 →
+      gfinal.getD j 0 = ss'.gmem.getD j 0
+
+/-- **Whole-launch correctness.**  Given the memory-model assumption, EVERY block
+    decodes correctly out of the FINAL memory — not merely each warp in isolation.
+    This is what the host's download relies on. -/
+theorem launch_correct (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8)
+    (smemB : List UInt8) (gfinal : Array UInt8)
+    (hcorrect : ShippedCorrect b)
+    (hlayout : LayoutOK b inPtr outPtr gm)
+    (hSC : LaunchAgreesPerWarp b inPtr outPtr gm smemB gfinal) :
+    ∀ w, w < (WP.mk b).numBlk →
+      ∃ k, 0 < k ∧ k ≤ (WP.mk b).lenOff ∧
+        AlgorithmLib.readU32LE gfinal
+          (outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff) = k ∧
+        AlgorithmLib.LZ4Imp.decompress
+          ((List.range k).map (fun i => gfinal.getD
+            (outPtr + w * (WP.mk b).outStride + i) 0))
+          (WP.mk b).inStride
+          = some (gmemInpAt gm (inPtr + w * (WP.mk b).inStride) (WP.mk b).inStride) := by
+  intro w hw
+  obtain ⟨hglob, hper⟩ := hlayout
+  obtain ⟨l1, l2, l3, l5, l6⟩ := hper w hw
+  -- per-warp input/output disjointness follows from the whole-buffer version
+  have l4 : inPtr + w * (WP.mk b).inStride + (WP.mk b).inStride
+      ≤ outPtr + w * (WP.mk b).outStride := by
+    have h1 : (w + 1) * (WP.mk b).inStride ≤ (WP.mk b).numBlk * (WP.mk b).inStride :=
+      Nat.mul_le_mul_right _ hw
+    have h2 : (w + 1) * (WP.mk b).inStride
+        = w * (WP.mk b).inStride + (WP.mk b).inStride := Nat.succ_mul w _
+    omega
+  obtain ⟨n, ss', k, hreach, hpc272, hk0, hkle, hlenf, hdec, _hconf⟩ :=
+    hcorrect w inPtr outPtr gm smemB hw l1 l2 l3 l4 l5 l6
+  have hagree := hSC w hw ss' ⟨n, hreach⟩ hpc272
+  refine ⟨k, hk0, hkle, ?_, ?_⟩
+  · rw [← hlenf]
+    unfold AlgorithmLib.readU32LE
+    rw [hagree _ (by omega) (by omega), hagree _ (by omega) (by omega),
+      hagree _ (by omega) (by omega), hagree _ (by omega) (by omega)]
+  · rw [← hdec]
+    congr 1
+    apply List.map_congr_left
+    intro i hi
+    rw [List.mem_range] at hi
+    exact hagree _ (by omega) (by omega)
+
+/-- info: 'Algorithm.launch_correct' depends on axioms: [propext, Quot.sound] -/
+#guard_msgs in
+#print axioms launch_correct
 
 end ShippedClaim
 

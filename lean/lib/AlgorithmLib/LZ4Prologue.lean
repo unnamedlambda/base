@@ -134,14 +134,13 @@ def prologueW : List String :=
 /-- **Head slice A** (indices 0–11): compute the thread ids and pass the `oob` guard
     (not taken since `gwarp = 0 < nb`).  Exposes the raw values (`inP = 0`, `outP = iS`,
     `gwarp = lwarp = 0`, lane identity) that slice B consumes. -/
-theorem headA (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List UInt8)
-    (hlen : inp.length = iT)
+theorem headA (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) :
     let prog := warpKernelDSL nb iS oS lO hL
-    let s0 := initSt w inp outB smemB
+    let s0 := initSt w inPtr outPtr gm smemB
     (snsteps prog 12 s0).pc = 12 ∧
-      (∀ l : Fin 32, (snsteps prog 12 s0).regs "inP" l = 0) ∧
-      (∀ l : Fin 32, (snsteps prog 12 s0).regs "outP" l = UInt64.ofNat iT) ∧
+      (∀ l : Fin 32, (snsteps prog 12 s0).regs "inP" l = UInt64.ofNat inPtr) ∧
+      (∀ l : Fin 32, (snsteps prog 12 s0).regs "outP" l = UInt64.ofNat outPtr) ∧
       (∀ l : Fin 32, (snsteps prog 12 s0).regs "gwarp" l = UInt64.ofNat w) ∧
       (∀ l : Fin 32, (snsteps prog 12 s0).regs "lwarp" l = 0) ∧
       (∀ l : Fin 32, (snsteps prog 12 s0).regs rLane l = UInt64.ofNat l.val) ∧
@@ -161,8 +160,8 @@ theorem headA (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List 
   have i10 : prog[10]? = some (.setp .ge "oob" "gwarp" (.imm nb)) := wk_idx nb iS oS lO hL 10 _ (by omega) rfl
   have i11 : prog[11]? = some (.braif "oob" "OOB") := wk_idx nb iS oS lO hL 11 _ (by omega) rfl
   have hpc0 : s0.pc = 0 := rfl
-  have hregs : s0.regs = initRegs w inp.length := rfl
-  have hgmem0 : s0.gmem = initGmem inp outB := rfl
+  have hregs : s0.regs = initRegs w inPtr outPtr := rfl
+  have hgmem0 : s0.gmem = gm := rfl
   have hg0 : s0.gmem = s0.gmem := rfl
   simp only [snsteps]
   -- step 0
@@ -237,27 +236,27 @@ theorem headA (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List 
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero, hlen,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero, hlen,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero, hlen,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero, hlen,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero, hlen,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · exact hg12
   · intro r hr
@@ -271,18 +270,18 @@ theorem headA (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List 
 /-- **Head slice B** (indices 12–24): from the post-guard state `s` (whose base values
     are given as hypotheses), set the base pointers and table cursor.  All computed
     values bottom out at the hypotheses, so extraction stays shallow. -/
-theorem headB (nb iS oS lO hL w iT : Nat) (s : SState) (hpc : s.pc = 12)
-    (hinP : ∀ l : Fin 32, s.regs "inP" l = 0)
-    (houtP : ∀ l : Fin 32, s.regs "outP" l = UInt64.ofNat iT)
+theorem headB (nb iS oS lO hL w inPtr outPtr : Nat) (s : SState) (hpc : s.pc = 12)
+    (hinP : ∀ l : Fin 32, s.regs "inP" l = UInt64.ofNat inPtr)
+    (houtP : ∀ l : Fin 32, s.regs "outP" l = UInt64.ofNat outPtr)
     (hgw : ∀ l : Fin 32, s.regs "gwarp" l = UInt64.ofNat w)
     (hlw : ∀ l : Fin 32, s.regs "lwarp" l = 0)
     (hlaneS : ∀ l : Fin 32, s.regs rLane l = UInt64.ofNat l.val) :
     let prog := warpKernelDSL nb iS oS lO hL
     (snsteps prog 13 s).pc = 25 ∧
       (∀ l : Fin 32, (snsteps prog 13 s).regs rLane l = UInt64.ofNat l.val) ∧
-      (∀ l : Fin 32, (snsteps prog 13 s).regs rInBase l = UInt64.ofNat (w * iS)) ∧
+      (∀ l : Fin 32, (snsteps prog 13 s).regs rInBase l = UInt64.ofNat (inPtr + w * iS)) ∧
       (∀ l : Fin 32, (snsteps prog 13 s).regs rTbl l = 0) ∧
-      (∀ l : Fin 32, (snsteps prog 13 s).regs rOutBase l = UInt64.ofNat (iT + w * oS)) ∧
+      (∀ l : Fin 32, (snsteps prog 13 s).regs rOutBase l = UInt64.ofNat (outPtr + w * oS)) ∧
       (snsteps prog 13 s).regs "ci" 0 = 0 ∧
       (snsteps prog 13 s).gmem = s.gmem ∧
       (∀ r, r ∉ prologueW → (snsteps prog 13 s).regs r = s.regs r) := by
@@ -393,22 +392,21 @@ theorem headB (nb iS oS lO hL w iT : Nat) (s : SState) (hpc : s.pc = 12)
 /-- **Strong head simulation** (indices 0–24): compose slices A and B.  From the launch
     state the machine reaches the `loop` head (index 25) with `MachInv`'s constants
     (`lane = l`, `inBase = tbl = 0`), `outBase = iS`, `ci 0 = 0`, and a frame. -/
-theorem head25 (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List UInt8)
-    (hlen : inp.length = iT)
+theorem head25 (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) :
-    (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).pc = 25 ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).regs rLane l = UInt64.ofNat l.val) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).regs rInBase l = UInt64.ofNat (w * iS)) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).regs rTbl l = 0) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).regs rOutBase l = UInt64.ofNat (iT + w * oS)) ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).regs "ci" 0 = 0 ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).gmem = (initSt w inp outB smemB).gmem ∧
+    (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).pc = 25 ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs rLane l = UInt64.ofNat l.val) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs rInBase l = UInt64.ofNat (inPtr + w * iS)) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs rTbl l = 0) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs rOutBase l = UInt64.ofNat (outPtr + w * oS)) ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs "ci" 0 = 0 ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).gmem = (initSt w inPtr outPtr gm smemB).gmem ∧
       (∀ r, r ∉ prologueW →
-        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)).regs r = (initSt w inp outB smemB).regs r) := by
+        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs r = (initSt w inPtr outPtr gm smemB).regs r) := by
   obtain ⟨hpcA, hinP, houtP, hgw, hlw, hlaneA, hgmemA, hframeA⟩ :=
-    headA nb iS oS lO hL w iT outB smemB inp hlen hnb hnb2 hw hw64
+    headA nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64
   obtain ⟨hpcB, hlaneB, hinB, htbl, houtB, hciB, hgmemB, hframeB⟩ :=
-    headB nb iS oS lO hL w iT (snsteps (warpKernelDSL nb iS oS lO hL) 12 (initSt w inp outB smemB))
+    headB nb iS oS lO hL w inPtr outPtr (snsteps (warpKernelDSL nb iS oS lO hL) 12 (initSt w inPtr outPtr gm smemB))
       hpcA hinP houtP hgw hlw hlaneA
   rw [show (25 : Nat) = 12 + 13 from rfl, snsteps_add]
   exact ⟨hpcB, hlaneB, hinB, htbl, houtB, hciB, hgmemB.trans hgmemA,
@@ -659,20 +657,19 @@ theorem clr_exit_frame (prog : Array SInstr) (st : SState) (entries : Nat)
     `MachInv`'s constants (`lane = l`, `inBase = tbl = 0`), `outBase = iS`, the three
     `mov`-initialized regs `op = litAnchor = searchPos = 0` (uniform), `gmem` intact,
     and a frame for every register outside the prologue's write set. -/
-theorem head38 (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List UInt8)
-    (hlen : inp.length = iT)
+theorem head38 (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) (hHash : hL ≤ 32) :
-    (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).pc = 38 ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs rLane l = UInt64.ofNat l.val) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs rInBase l = UInt64.ofNat (w * iS)) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs rTbl l = 0) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs rOutBase l = UInt64.ofNat (iT + w * oS)) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs rLitAnchor l = 0) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs rSearchPos l = 0) ∧
-      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs rOp l = 0) ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).gmem = (initSt w inp outB smemB).gmem ∧
+    (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).pc = 38 ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rLane l = UInt64.ofNat l.val) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rInBase l = UInt64.ofNat (inPtr + w * iS)) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rTbl l = 0) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rOutBase l = UInt64.ofNat (outPtr + w * oS)) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rLitAnchor l = 0) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rSearchPos l = 0) ∧
+      (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rOp l = 0) ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).gmem = (initSt w inPtr outPtr gm smemB).gmem ∧
       (∀ r, r ∉ prologueW →
-        (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs r = (initSt w inp outB smemB).regs r) := by
+        (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs r = (initSt w inPtr outPtr gm smemB).regs r) := by
   have e25 : (warpKernelDSL nb iS oS lO hL)[25]? = some (.lbl "clr") := wk_idx nb iS oS lO hL 25 _ (by omega) rfl
   have e26 : (warpKernelDSL nb iS oS lO hL)[26]? = some (.setp .ge "pcnd" "ci" (.imm (2 ^ hL))) := wk_idx nb iS oS lO hL 26 _ (by omega) rfl
   have e27 : (warpKernelDSL nb iS oS lO hL)[27]? = some (.braif "pcnd" "clrDone") := wk_idx nb iS oS lO hL 27 _ (by omega) rfl
@@ -689,19 +686,19 @@ theorem head38 (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List
   have hclr : sfindLabel (warpKernelDSL nb iS oS lO hL) "clr" = 25 := by rfl
   have hfind : sfindLabel (warpKernelDSL nb iS oS lO hL) "clrDone" = 33 := by rfl
   obtain ⟨hpc25, hlane25, hinB25, htbl25, houtB25, hci25, hgmem25, hframe25⟩ :=
-    head25 nb iS oS lO hL w iT outB smemB inp hlen hnb hnb2 hw hw64
+    head25 nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64
   have hiter := prologue_clear_body_iter (warpKernelDSL nb iS oS lO hL)
-    (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)) hL (2 ^ hL)
+    (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)) hL (2 ^ hL)
     e25 e26 e27 e28 e29 e30 e31 e32 hclr rfl hHash hpc25 hci25 hlane25 (clearIters hL) (Nat.le_refl _)
   dsimp only at hiter
   have hloopfr := clr_loop_frame (warpKernelDSL nb iS oS lO hL)
-    (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)) hL (2 ^ hL)
+    (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)) hL (2 ^ hL)
     e25 e26 e27 e28 e29 e30 e31 e32 hclr rfl hHash hpc25 hci25 hlane25 (clearIters hL) (Nat.le_refl _)
   have hbrHead : ((if SCmp.run .ge
       ((snsteps (warpKernelDSL nb iS oS lO hL) (8 * clearIters hL)
-        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB))).regs "ci" 0)
+        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB))).regs "ci" 0)
       ((snsteps (warpKernelDSL nb iS oS lO hL) (8 * clearIters hL)
-        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB))).get 0 (.imm (2 ^ hL)))
+        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB))).get 0 (.imm (2 ^ hL)))
       then (1 : UInt64) else 0) == 1) = true := by
     rw [hiter.2.1]
     change ((if SCmp.run .ge (UInt64.ofNat (32 * clearIters hL)) (UInt64.ofNat (2 ^ hL)) then
@@ -709,21 +706,21 @@ theorem head38 (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List
     exact clearLoop_exit_branch_true hL hHash
   have hexitfr := clr_exit_frame (warpKernelDSL nb iS oS lO hL)
     (snsteps (warpKernelDSL nb iS oS lO hL) (8 * clearIters hL)
-      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB))) (2 ^ hL)
+      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB))) (2 ^ hL)
     (by rw [hiter.1]; exact e25) (by rw [hiter.1]; exact e26) (by rw [hiter.1]; exact e27)
     e33 e34 e35 e36 e37 hfind hiter.1 hbrHead
   have hexitgmem := prologue_clr_exit_to_loop_slice (warpKernelDSL nb iS oS lO hL)
     (snsteps (warpKernelDSL nb iS oS lO hL) (8 * clearIters hL)
-      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB))) (2 ^ hL)
+      (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB))) (2 ^ hL)
     (by rw [hiter.1]; exact e25) (by rw [hiter.1]; exact e26) (by rw [hiter.1]; exact e27)
     e33 e34 e35 e36 e37 hfind hiter.1 hbrHead hiter.2.2.1
   rw [show 25 + 8 * clearIters hL + 8 = (25 + 8 * clearIters hL) + 8 from rfl, snsteps_add, snsteps_add]
   have hframeExit : ∀ r, r ≠ "pcnd" → r ≠ rLitAnchor → r ≠ rSearchPos → r ≠ rOp →
       (snsteps (warpKernelDSL nb iS oS lO hL) 8
         (snsteps (warpKernelDSL nb iS oS lO hL) (8 * clearIters hL)
-          (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB)))).regs r =
+          (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)))).regs r =
       (snsteps (warpKernelDSL nb iS oS lO hL) (8 * clearIters hL)
-        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inp outB smemB))).regs r :=
+        (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB))).regs r :=
     hexitfr.2.2.2.2
   refine ⟨hexitfr.1, ?_, ?_, ?_, ?_, hexitfr.2.1, hexitfr.2.2.1, hexitfr.2.2.2.1, ?_, ?_⟩
   · intro l
@@ -755,43 +752,42 @@ theorem head38 (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List
     `loopR` (every loop register is uniform: the five prologue-set ones by value, the
     thirty scratch ones at their uniform launch value `0`).  Plus the scalar facts
     the body roundtrip consumes: `op = litAnchor = searchPos = inBase = 0`,
-    `outBase = iS`, `gmem = initGmem`. -/
-theorem prologue_couple (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (inp : List UInt8)
-    (hlen : inp.length = iT)
+    `outBase = outPtr + w*oS`, `gmem` unchanged. -/
+theorem prologue_couple (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
     (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) (hHash : hL ≤ 32) :
-    (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).pc = 39 ∧
-      MachInv (w * iS) (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)) ∧
-      Couple loopR (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB))
-        { regs := fun r => (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs r 0,
-          gmem := (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).gmem,
-          smem := (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).smem } ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs "op" 0 = 0 ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs "litAnchor" 0 = 0 ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs "searchPos" 0 = 0 ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs "inBase" 0 = UInt64.ofNat (w * iS) ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs "outBase" 0 = UInt64.ofNat (iT + w * oS) ∧
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).gmem = initGmem inp outB := by
+    (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).pc = 39 ∧
+      MachInv (inPtr + w * iS) (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)) ∧
+      Couple loopR (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB))
+        { regs := fun r => (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs r 0,
+          gmem := (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).gmem,
+          smem := (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).smem } ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs "op" 0 = 0 ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs "litAnchor" 0 = 0 ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs "searchPos" 0 = 0 ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs "inBase" 0 = UInt64.ofNat (inPtr + w * iS) ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs "outBase" 0 = UInt64.ofNat (outPtr + w * oS) ∧
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).gmem = gm := by
   obtain ⟨h38pc, h38lane, h38inB, h38tbl, h38outB, h38la, h38sp, h38op, h38gmem, h38frame⟩ :=
-    head38 nb iS oS lO hL w iT outB smemB inp hlen hnb hnb2 hw hw64 hHash
+    head38 nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hHash
   have e38 : (warpKernelDSL nb iS oS lO hL)[38]? = some (.lbl "loop") := wk_idx nb iS oS lO hL 38 _ (by omega) rfl
-  have hstep : snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB) =
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).setPc 39 := by
+  have hstep : snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB) =
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).setPc 39 := by
     rw [snsteps_add]
     show sstep (warpKernelDSL nb iS oS lO hL)
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)) = _
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)) = _
     rw [lbl_step _ _ "loop" (by rw [h38pc]; exact e38), h38pc]
-  have hreg : (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs =
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs := by rw [hstep]; rfl
-  have hgm : (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).gmem =
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).gmem := by rw [hstep]; rfl
+  have hreg : (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs =
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs := by rw [hstep]; rfl
+  have hgm : (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).gmem =
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).gmem := by rw [hstep]; rfl
   -- string-literal forms of head38's value facts (accepted by defeq of the reg-name defs)
-  have hlaneS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs "lane" l = UInt64.ofNat l.val := h38lane
-  have hinBS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs "inBase" l = UInt64.ofNat (w * iS) := h38inB
-  have htblS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs "tbl" l = 0 := h38tbl
-  have houtBS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs "outBase" l = UInt64.ofNat (iT + w * oS) := h38outB
-  have hlaS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs "litAnchor" l = 0 := h38la
-  have hspS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs "searchPos" l = 0 := h38sp
-  have hopS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inp outB smemB)).regs "op" l = 0 := h38op
+  have hlaneS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs "lane" l = UInt64.ofNat l.val := h38lane
+  have hinBS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs "inBase" l = UInt64.ofNat (inPtr + w * iS) := h38inB
+  have htblS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs "tbl" l = 0 := h38tbl
+  have houtBS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs "outBase" l = UInt64.ofNat (outPtr + w * oS) := h38outB
+  have hlaS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs "litAnchor" l = 0 := h38la
+  have hspS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs "searchPos" l = 0 := h38sp
+  have hopS : ∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs "op" l = 0 := h38op
   refine ⟨by rw [hstep]; simp [SState.setPc], ⟨fun l => ?_, fun l => ?_, fun l => ?_⟩,
     ⟨rfl, rfl, ?_⟩, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · rw [hreg]; exact hlaneS l
@@ -799,8 +795,8 @@ theorem prologue_couple (nb iS oS lO hL w iT : Nat) (outB smemB : List UInt8) (i
   · rw [hreg]; exact htblS l
   · -- Couple register uniformity over loopR
     intro r hr l
-    show (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs r l =
-      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inp outB smemB)).regs r 0
+    show (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs r l =
+      (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs r 0
     rw [hreg]
     simp only [loopR, List.mem_cons, List.mem_singleton, List.not_mem_nil, or_false] at hr
     rcases hr with rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl|rfl <;>
@@ -985,10 +981,11 @@ theorem tailStmt_gmem (lO : Nat) (ws : WState) (F : Nat) :
           ((ws.regs "op" >>> 24) &&& 255).toUInt8) := by
   simp [tailStmt, wseq, WStmt.eval, WState.setReg, WState.stgByte, WArg.eval, WOp.run]
 
-/-- Every address the tail writes is `≥ outBase + lO`, so any prefix of the output
-    window shorter than `lO` is untouched. -/
+/-- The tail writes ONLY the four length bytes at `outBase+lO … +3`; every other
+    address is untouched.  (Generalised from `j < outBase+lO` to both sides, so it
+    can carry a full write-confinement frame, not just the window below.) -/
 theorem tailStmt_frame (lO : Nat) (ws : WState) (F : Nat) (j : Nat)
-    (hj : j < (ws.regs "outBase").toNat + lO)
+    (hj : j < (ws.regs "outBase").toNat + lO ∨ (ws.regs "outBase").toNat + lO + 4 ≤ j)
     (hnw : (ws.regs "outBase").toNat + lO + 3 < 2 ^ 64) :
     ((tailStmt lO).eval F ws).gmem.getD j 0 = ws.gmem.getD j 0 := by
   have hlO : (UInt64.ofNat lO).toNat = lO := by
@@ -1004,10 +1001,14 @@ theorem tailStmt_frame (lO : Nat) (ws : WState) (F : Nat) (j : Nat)
   have h3 : (ws.regs "outBase" + UInt64.ofNat lO + 3).toNat
       = (ws.regs "outBase").toNat + lO + 3 := by
     rw [UInt64.toNat_add, hb, show (3 : UInt64).toNat = 3 from rfl, Nat.mod_eq_of_lt (by omega)]
-  have e0 : (ws.regs "outBase" + UInt64.ofNat lO).toNat ≠ j := by omega
-  have e1 : (ws.regs "outBase" + UInt64.ofNat lO + 1).toNat ≠ j := by omega
-  have e2 : (ws.regs "outBase" + UInt64.ofNat lO + 2).toNat ≠ j := by omega
-  have e3 : (ws.regs "outBase" + UInt64.ofNat lO + 3).toNat ≠ j := by omega
+  have e0 : (ws.regs "outBase" + UInt64.ofNat lO).toNat ≠ j := by
+    rcases hj with h | h <;> omega
+  have e1 : (ws.regs "outBase" + UInt64.ofNat lO + 1).toNat ≠ j := by
+    rcases hj with h | h <;> omega
+  have e2 : (ws.regs "outBase" + UInt64.ofNat lO + 2).toNat ≠ j := by
+    rcases hj with h | h <;> omega
+  have e3 : (ws.regs "outBase" + UInt64.ofNat lO + 3).toNat ≠ j := by
+    rcases hj with h | h <;> omega
   rw [tailStmt_gmem]
   simp only [Array.set!_eq_setIfInBounds]
   rw [Array.getD_eq_getD_getElem?, Array.getD_eq_getD_getElem?,
