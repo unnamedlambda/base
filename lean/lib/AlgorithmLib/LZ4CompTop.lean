@@ -61,10 +61,15 @@ section WarpLaunch
 
 variable (nb iS oS lO hL w iT : Nat) (inpAll outB smemB : List UInt8)
 
-/-- **End-to-end roundtrip for the shipped warp-LZ4 compressor kernel, down to the
-    `sstep` machine floor — for EVERY warp of the launch.**  Warp `w` of `nb` reads
-    its own block at `w*iS` and writes at `outBase = iT + w*oS`; the emitted window
-    decompresses (via the verified decoder) back to that block. -/
+/-- Every encoded block is non-empty: the final literal run emits its token byte. -/
+theorem planBlock_encode_pos (inp : List UInt8) (p : Plan) (hv : ValidPlan inp p) :
+    0 < (planToBlock inp p).encode.length := by
+  have hlen := encode_planBlockFrom_length inp 0 p.steps p.finalLen hv
+  have hf : 1 ≤ encFinalLen p.finalLen := by simp only [encFinalLen]; omega
+  simp only [planToBlock]; rw [hlen]; omega
+
+/-- Roundtrip to the `sstep` floor, for every warp `w < nb`: warp `w` reads its
+    block at `w*iS`, writes at `iT + w*oS`, and that window decodes back to it. -/
 theorem warpKernelDSL_prologue_roundtrips
     (hiT : inpAll.length = iT) (hblk : nb * iS ≤ iT)
     (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hHash : hL ≤ 32)
@@ -126,13 +131,9 @@ theorem warpKernelDSL_prologue_roundtrips
   rw [hiB, hgi, hoT, blockAt_length] at hdec
   exact ⟨_, ss', _, sreaches_trans _ _ _ _ _ _ hreach0 hr2, hdec⟩
 
-/-- **Whole-kernel roundtrip, through the length-store tail — for EVERY warp.**
-    Extends `warpKernelDSL_prologue_roundtrips` past the encode body: warp `w` also
-    runs the four length-store bytes, ending at the `OOB` label (one `sstep` from
-    `ret`), and its compressed window *still* decodes to its own input block — the
-    tail writes only at `outBase+lO … +3`, which the tight LZ4 bound
-    (`planBlock_encode_le_lenOff`) places beyond the window.  This is the memory the
-    host actually downloads. -/
+/-- As `warpKernelDSL_prologue_roundtrips` but through the length-store tail to
+    `pc = 272`: the tail writes only at `outBase+lO … +3`, which the tight bound
+    places beyond the window, so the window still decodes. -/
 theorem warpKernelDSL_tail_roundtrips
     (hiT : inpAll.length = iT) (hblk : nb * iS ≤ iT)
     (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hHash : hL ≤ 32)
@@ -144,7 +145,7 @@ theorem warpKernelDSL_tail_roundtrips
     (hlOfit : w * oS + lO + 4 ≤ outB.length) :
     ∃ (n : Nat) (ss' : SState) (k : Nat),
       SReaches (warpKernelDSL nb iS oS lO hL) n (initSt w inpAll outB smemB) ss' ∧
-      ss'.pc = 272 ∧ k ≤ lO ∧
+      ss'.pc = 272 ∧ 0 < k ∧ k ≤ lO ∧
       AlgorithmLib.readU32LE ss'.gmem (iT + w * oS + lO) = k ∧
       decompress ((List.range k).map (fun i => ss'.gmem.getD (iT + w * oS + i) 0)) iS
         = some (blockAt inpAll w iS) := by
@@ -211,10 +212,11 @@ theorem warpKernelDSL_tail_roundtrips
       (initSt w inpAll outB smemB)
   dsimp only at hdec
   rw [hiB, hgi, hoT, blockAt_length] at hdec
-  rw [hgi] at hEncTight hTight
+  rw [hgi] at hEncTight hTight hvalid
   rw [hiB, hgi] at hopVal
   refine ⟨_, ss3, (planToBlock (blockAt inpAll w iS) (evalPlan S0.gmem S0.smem (w * iS) iS hL)).encode.length,
-    sreaches_trans _ _ _ _ _ _ hreach0 (sreaches_trans _ _ _ _ _ _ hr2 hr3), ?_, hEncTight, ?_, ?_⟩
+    sreaches_trans _ _ _ _ _ _ hreach0 (sreaches_trans _ _ _ _ _ _ hr2 hr3), ?_,
+    planBlock_encode_pos _ _ hvalid, hEncTight, ?_, ?_⟩
   · rw [hpc3, tailEmit_length]
   · have hobN2 : (((bodyEncodePrefix iS hL).eval (iS + 34 * iS)
         { regs := fun r => S0.regs r 0, gmem := S0.gmem, smem := S0.smem }).regs "outBase").toNat

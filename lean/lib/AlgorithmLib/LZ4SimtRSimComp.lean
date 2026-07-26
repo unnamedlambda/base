@@ -7,9 +7,8 @@ open AlgorithmLib
 
 -- ── Initial state for one warp compressing block `inp` (length = inStride) ──────
 
-/-- Registers pre-set at launch for the warp in CTA `w`: params + the special SM
-    registers (one warp per CTA, so `%tid.x = lane`, `%ctaid.x = w`, `%ntid.x = 32`);
-    `in_ptr = 0`, `out_ptr = iTot` (the output region follows the whole input). -/
+/-- Registers pre-set at launch for the warp in CTA `w`: `%tid.x = lane`,
+    `%ctaid.x = w`, `%ntid.x = modelBlockDim`; `in_ptr = 0`, `out_ptr = iTot`. -/
 def initRegs (w iTot : Nat) : String → Fin 32 → UInt64 := fun name lane =>
   if name = "in_ptr" then 0
   else if name = "out_ptr" then UInt64.ofNat iTot
@@ -50,6 +49,14 @@ def initSt (w : Nat) (inp outB smemB : List UInt8) : SState :=
     gmem := initGmem inp outB
     smem := initSmem smemB
     pc := 0 }
+
+/-- The block dimension this launch model assumes (one warp per CTA).  The shipped
+    `wBlockDim` is DEFINED to be this, and `initRegs_ntid` proves `initRegs` really
+    returns it — so the model and the launch cannot drift apart. -/
+def modelBlockDim : Nat := 32
+
+theorem initRegs_ntid (w iTot : Nat) (l : Fin 32) :
+    initRegs w iTot "%ntid.x" l = UInt64.ofNat modelBlockDim := rfl
 
 def clearIters (hashLog : Nat) : Nat :=
   if hashLog < 5 then 1 else 2 ^ (hashLog - 5)
