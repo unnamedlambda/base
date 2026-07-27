@@ -1,0 +1,27 @@
+[package]
+name = "bench-scaling"
+version = "0.1.0"
+edition = "2021"
+default-run = "bench-scaling"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+
+# clifbench links the real runtime to time Cranelift parse+JIT. Optional so the
+# harness itself builds without pulling in wgpu/cudarc.
+base = { path = "../base", optional = true }
+base-types = { path = "../base-types", optional = true }
+
+[features]
+jit = ["dep:base", "dep:base-types"]
+
+[[bin]]
+name = "bench-scaling"
+path = "src/main.rs"
+
+[[bin]]
+name = "clifbench"
+path = "src/bin/clifbench.rs"
+required-features = ["jit"]
