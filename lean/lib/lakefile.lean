@@ -5,4 +5,5 @@ package algorithmLib where
   srcDir := "."
 
 @[default_target]
-lean_lib AlgorithmLib
+lean_lib AlgorithmLib where
+  globs := #[.andSubmodules `AlgorithmLib]

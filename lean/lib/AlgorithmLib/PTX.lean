@@ -212,6 +212,9 @@ def ex2   (d a : Reg .f32)               : PTX Unit := emit s!"ex2.approx.f32 {d
 def rcp   (d a : Reg .f32)               : PTX Unit := emit s!"rcp.approx.f32 {d.raw}, {a.raw}"
 def rsqrt (d a : Reg .f32)               : PTX Unit := emit s!"rsqrt.approx.f32 {d.raw}, {a.raw}"
 def sqrtApprox (d a : Reg .f32)          : PTX Unit := emit s!"sqrt.approx.f32 {d.raw}, {a.raw}"
+/-- IEEE round-to-nearest square root — matches `Float.sqrt` exactly, unlike
+    `sqrt.approx.f32`. -/
+def sqrtRn (d a : Reg .f32)              : PTX Unit := emit s!"sqrt.rn.f32 {d.raw}, {a.raw}"
 
 -- ── Control flow ──────────────────────────────────────────────────────────────
 

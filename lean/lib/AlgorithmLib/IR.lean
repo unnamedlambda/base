@@ -79,6 +79,11 @@ inductive Inst where
   -- Additional float / int ops
   | fneg (dst a : Val)
   | fcvtFromSint (dst : Val) (ty : ClifTy) (src : Val)
+  /-- Saturating float-to-unsigned conversion.  Saturating rather than trapping
+      so an out-of-range value clamps instead of aborting the process — the
+      only consumer is a token id read back from a kernel that computed it as
+      an exactly-representable integer. -/
+  | fcvtToUint (dst : Val) (ty : ClifTy) (src : Val)
   | fcmp (dst : Val) (cond : String) (a b : Val)
   | bitcast (dst : Val) (ty : ClifTy) (src : Val)
   | ctz (dst a : Val)
@@ -356,6 +361,9 @@ def fneg (a : Val) : IRBuilder Val := do
 
 def fcvtFromSint (ty : ClifTy) (src : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.fcvtFromSint v ty src); pure v
+
+def fcvtToUint (ty : ClifTy) (src : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fcvtToUint v ty src); pure v
 
 def fcmpGt (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.fcmp v "gt" a b); pure v
@@ -706,6 +714,8 @@ def renderInst : Inst → String
   | .fneg dst a => s!"    {renderVal dst} = fneg {renderVal a}"
   | .fcvtFromSint dst ty src =>
     s!"    {renderVal dst} = fcvt_from_sint.{renderClifTy ty} {renderVal src}"
+  | .fcvtToUint dst ty src =>
+    s!"    {renderVal dst} = fcvt_to_uint_sat.{renderClifTy ty} {renderVal src}"
   | .fcmp dst cond a b => s!"    {renderVal dst} = fcmp {cond} {renderVal a}, {renderVal b}"
   | .bitcast dst ty src => s!"    {renderVal dst} = bitcast.{renderClifTy ty} {renderVal src}"
   | .ctz dst a => s!"    {renderVal dst} = ctz {renderVal a}"

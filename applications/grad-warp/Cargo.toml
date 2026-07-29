@@ -1,0 +1,11 @@
+[package]
+name = "grad-warp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base = { path = "../../base" }
+base-types = { path = "../../base-types" }
+
+[build-dependencies]
+build-support = { path = "../../build-support" }

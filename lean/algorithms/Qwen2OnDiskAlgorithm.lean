@@ -293,6 +293,24 @@ def buildSetup : Setup := {
 /-- Orchestrator at `fn41` runs the full pipeline (see `clifIR`). -/
 def qwen2OnDiskAlgorithm : Algorithm := { fn_idx := u32 41 }
 
+-- ── The memory map, as data ──────────────────────────────────────────────────
+
+/-- The shared map plus this variant's two extra regions.  Both live in the
+    0x06xx band, which is the most crowded part of the layout — `WORKING_SET_BASE`
+    sits between `running_pos` and `system_tokens`, and the KV-cache path string
+    between that and `system_tokens` again.  Checking them here means the
+    in-memory variant cannot claim that space without breaking this build. -/
+def memMapOnDisk : AlgorithmLib.Layout.RegionMap :=
+  Qwen2Common.memMap ++
+    [ ⟨"working_set",   WORKING_SET_BASE, LAYER_BUF_STRIDE⟩,
+      ⟨"kv_cache_path", KV_CACHE_PATH_OFF, kvCachePathBytes.length⟩ ]
+
+theorem memMapOnDisk_ok : memMapOnDisk.okB = true := by native_decide
+
+theorem memMapOnDisk_within :
+    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMapOnDisk = true := by
+  native_decide
+
 end Qwen2OnDisk
 
 def main (args : List String) : IO Unit := do

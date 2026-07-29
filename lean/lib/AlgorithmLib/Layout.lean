@@ -110,6 +110,100 @@ def mkPayload (size : Nat) (inits : List FieldInit) : List UInt8 :=
   inits.foldl (init := buf) fun acc init =>
     writeBytesAux acc init.offset init.bytes size
 
+-- ---------------------------------------------------------------------------
+-- Region maps: hand-maintained offsets, checked at build time
+-- ---------------------------------------------------------------------------
+
+/-!
+  ## Why this exists
+
+  `LayoutBuilder` allocates offsets automatically, but large applications keep
+  a *hand-written* memory map: fixed hex constants, chosen once and referenced
+  from CLIF code all over the file.  Qwen2's map has forty-odd of them.
+
+  Nothing checked that map, and the failure mode is brutal — a new constant
+  landing on an existing one produces a segfault inside JIT'd code with no
+  usable backtrace, three seconds into a run.  That happened: `META_STAGE_OFF`
+  was placed at `0x05E0`, already occupied by `TOK_BUF_PTR_OFF`.
+
+  A `RegionMap` states the map as data and makes both properties `decide`-able:
+  regions do not overlap, and they fit inside the declared memory.  A collision
+  becomes a build error, which is the whole point of doing layout at build time.
+-/
+
+/-- A named half-open byte range `[off, off + size)`. -/
+structure Region where
+  name : String
+  off  : Nat
+  size : Nat
+  deriving Repr, DecidableEq
+
+/-- Two regions are disjoint when one ends at or before the other begins.
+    Zero-sized regions are vacuously disjoint from everything. -/
+def Region.disjointB (a b : Region) : Bool :=
+  a.size == 0 || b.size == 0 || a.off + a.size ≤ b.off || b.off + b.size ≤ a.off
+
+abbrev RegionMap := List Region
+
+namespace RegionMap
+
+/-- Every pair of regions is disjoint. -/
+def okB : RegionMap → Bool
+  | []      => true
+  | r :: rs => rs.all (Region.disjointB r) && okB rs
+
+/-- Every region fits inside `size` bytes. -/
+def withinB (size : Nat) (m : RegionMap) : Bool :=
+  m.all (fun r => r.off + r.size ≤ size)
+
+/-- The colliding pairs, by name — for `#eval` when a check fails.  `okB`
+    answers *whether*; this answers *which*, which is what you actually need at
+    3am with a segfault. -/
+def collisions : RegionMap → List (String × String)
+  | []      => []
+  | r :: rs =>
+      (rs.filter (fun s => !Region.disjointB r s)).map (fun s => (r.name, s.name))
+        ++ collisions rs
+
+/-- Regions that run past the end of memory, by name. -/
+def overflows (size : Nat) (m : RegionMap) : List String :=
+  (m.filter (fun r => !(r.off + r.size ≤ size))).map Region.name
+
+/-- **Regions laid end to end, in order, from `start`** — no gaps, no overlap,
+    *and* the list order is the memory order.
+
+    Stronger than `okB`, and it is the property a **packed payload** needs: a
+    host writes fields back to back, so a gap or a reordering is a silent
+    misread rather than a collision.  `okB` would not catch either. -/
+def packedB (start : Nat) : RegionMap → Bool
+  | []      => true
+  | r :: rs => r.off == start && packedB (start + r.size) rs
+
+/-- Total bytes the regions occupy. -/
+def total (m : RegionMap) : Nat := m.foldl (fun a r => a + r.size) 0
+
+/-- Offset of region `i`, or `0` if there is none.  Reading offsets *out* of the
+    map is what keeps one source of truth: the uploader and the layout check
+    cannot drift because they are the same list. -/
+def offAt (m : RegionMap) (i : Nat) : Nat := ((m[i]?).map Region.off).getD 0
+
+/-- Size of region `i`. -/
+def sizeAt (m : RegionMap) (i : Nat) : Nat := ((m[i]?).map Region.size).getD 0
+
+/-- Free gaps, largest first — where a new constant can safely go.  Answers the
+    question you ask immediately after a collision. -/
+def gaps (size : Nat) (m : RegionMap) : List (Nat × Nat) :=
+  let ends := (m.map (fun r => (r.off, r.off + r.size))).mergeSort
+                (fun a b => a.1 ≤ b.1)
+  let rec go (cur : Nat) : List (Nat × Nat) → List (Nat × Nat)
+    | [] => if cur < size then [(cur, size - cur)] else []
+    | (s, e) :: rest =>
+        let here := if cur < s then [(cur, s - cur)] else []
+        here ++ go (max cur e) rest
+  go 0 ends
+
+end RegionMap
+
 end Layout
 
 end AlgorithmLib

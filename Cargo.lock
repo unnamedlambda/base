@@ -278,6 +278,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "backward-wide"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "base-types",
+ "build-support",
+]
+
+[[package]]
 name = "base"
 version = "0.1.0"
 dependencies = [
@@ -1991,6 +2000,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gemv-warp"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "base-types",
+ "build-support",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2162,6 +2180,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags 2.9.1",
+]
+
+[[package]]
+name = "grad-warp"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "base-types",
+ "build-support",
 ]
 
 [[package]]
@@ -2658,6 +2685,15 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mlp-warp"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "base-types",
+ "build-support",
 ]
 
 [[package]]
@@ -3940,6 +3976,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "silu-warp"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "base-types",
+ "build-support",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4473,6 +4518,15 @@ checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
 dependencies = [
  "same-file",
  "winapi-util",
+]
+
+[[package]]
+name = "warp-demo"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "base-types",
+ "build-support",
 ]
 
 [[package]]

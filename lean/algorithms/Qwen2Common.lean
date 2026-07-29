@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib
 import AlgorithmLib.Cuda
+import Qwen2Proven
 
 set_option maxRecDepth 4096
 
@@ -10,6 +11,7 @@ open AlgorithmLib
 open AlgorithmLib.IR
 open AlgorithmLib.PTX
 open AlgorithmLib.Tensor
+open AlgorithmLib.Layout (Region RegionMap)
 
 namespace Qwen2Common
 
@@ -104,7 +106,7 @@ def slotLogits   : BufferSlot [.sta VOCAB]          := slotOfAt 0x0074
 def slotRmsFinal : BufferSlot [.sta D]              := slotOfAt 0x0078
 def slotScores   : BufferSlot [.sta N_Q, .dyn]      := slotOfAt 0x007C
 def slotProbs    : BufferSlot [.sta N_Q, .dyn]      := slotOfAt 0x0080
-def slotMeta     : BufferSlot [.sta 2]              := slotOfAt 0x0084
+def slotMeta     : BufferSlot [.sta 6]              := slotOfAt 0x0084
 
 -- RoPE sin/cos table slot — separate region at 0x0638 since the table is
 -- created once and reused across all layers.
@@ -157,6 +159,14 @@ def BIND_ADD1    : Nat := BIND_BASE + 0xA0
 def BIND_ADD2    : Nat := BIND_BASE + 0xA8
 def BIND_ARGMAX  : Nat := BIND_BASE + 0xB0
 
+-- Staging for the GPU meta buffer: six u32s assembled here, then uploaded in
+-- one shot.  Words 2..5 are the softmax loop bounds — see `Qwen2Proven`'s
+-- `SEQ_SLOT`/`CHUNKS_SLOT`/`TAIL_SLOT`/`REM_SLOT`.  They are derived on the
+-- host because the warp machine has no shift or mask instruction.  Sits in the
+-- free span between the bind tables (which end at `BIND_BASE + 0xB8`) and
+-- `PTX_EMBED_OFF`.
+def META_STAGE_OFF : Nat := 0x0900  -- 24 bytes
+
 -- Tokenizer + CLI slots (free space 0x05E0–0x07FF):
 def TOK_BUF_PTR_OFF : Nat := 0x05E0  -- i64: host ptr to tokenizer file contents
 def INFER_IN_OFF    : Nat := 0x0600  -- 8 bytes: [token_id:u32][pos:u32] for inferFn
@@ -200,19 +210,23 @@ def PTX_EMBED_OFF   : Nat := 0x1000
 def PTX_RMS_OFF     : Nat := 0x2000
 def PTX_BIAS_D_OFF  : Nat := 0x3000  -- was 0x2800; RMS needs 4096-byte slot
 def PTX_BIAS_KV_OFF : Nat := 0x3800
-def PTX_ROPE_Q_OFF  : Nat := 0x4000
-def PTX_ROPE_K_OFF  : Nat := 0x4800
-def PTX_SOFTMAX_OFF : Nat := 0x5000
-def PTX_SILU_OFF    : Nat := 0x6800
-def PTX_ADD_OFF     : Nat := 0x7400
-def PTX_KVSTORE_OFF : Nat := 0x8000
-def PTX_ARGMAX_OFF  : Nat := 0x9000
+-- The proven kernels are larger than the hand-written ones they replace (they
+-- print one instruction per line with a label on each), so the slots grew.
+def PTX_ROPE_Q_OFF  : Nat := 0x4000  -- proven RoPE needs a 4096-byte slot
+def PTX_ROPE_K_OFF  : Nat := 0x5000
+-- The proven softmax is six loops (a chunk sweep and a remainder sweep per
+-- pass), so it needs an 8 KB slot; everything after it moved up.
+def PTX_SOFTMAX_OFF : Nat := 0x6000
+def PTX_SILU_OFF    : Nat := 0x8000
+def PTX_ADD_OFF     : Nat := 0x8C00
+def PTX_KVSTORE_OFF : Nat := 0x9800
+def PTX_ARGMAX_OFF  : Nat := 0xA800
 
--- Tokenize / server buffers (extend MEM_SIZE to 64 KB):
-def TOKEN_BUF_OFF   : Nat := 0xA000  -- 2048 × u32 = 8192 bytes
-def TEXT_IN_OFF     : Nat := 0xC000  -- 8 KB text input buffer
-def TEXT_OUT_OFF    : Nat := 0xE000  -- 8 KB text output buffer
-def MEM_SIZE        : Nat := 0x10000 -- 64 KB total
+-- Tokenize / server buffers.
+def TOKEN_BUF_OFF   : Nat := 0xB800  -- 2048 × u32 = 8192 bytes
+def TEXT_IN_OFF     : Nat := 0xD800  -- 8 KB text input buffer
+def TEXT_OUT_OFF    : Nat := 0xF800  -- 8 KB text output buffer
+def MEM_SIZE        : Nat := 0x11800 -- 70 KB total
 
 -- ── PTX Kernels ──────────────────────────────────────────────────────────────
 
@@ -223,7 +237,7 @@ abbrev VecD     := Tensor [.sta D]              -- hidden state, rmsnorm weights
 abbrev VecKV    := Tensor [.sta KV_DIM]         -- current K/V vector for one position
 abbrev VecDff   := Tensor [.sta D_FF]           -- FFN intermediate
 abbrev VecVocab := Tensor [.sta VOCAB]          -- logits, embed table row
-abbrev VecMeta  := Tensor [.sta 2]              -- meta buffer ([token_id, pos])
+abbrev VecMeta  := Tensor [.sta 6]              -- [token_id, pos, seqLen, chunks, tail, rem]
 abbrev EmbedTbl := Tensor [.sta VOCAB, .sta D]  -- full embed/lm_head table
 abbrev KVCache  := Tensor [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM]  -- GQA-proper (one copy per KV head)
 abbrev RopeTbl  := Tensor [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)]
@@ -239,25 +253,12 @@ def embedKernel : Kernel := {
   name := "main"
   params := [
     { name := "embed_buf", shape := [.sta VOCAB, .sta D], ro := true },
-    { name := "meta_buf",  shape := [.sta 2],            ro := true },
+    { name := "meta_buf",  shape := [.sta 6],            ro := true },
     { name := "out_buf",   shape := [.sta D] }
   ]
-  body := do
-    let embedBuf ← ldParam "embed_buf"
-    let metaBuf  ← ldParam "meta_buf"
-    let outBuf   ← ldParam "out_buf"
-    let tokId ← freshR; ldGlobalU tokId metaBuf
-    let tokId64 ← freshRd; cvtU64 tokId64 tokId
-    let rowBytes ← freshRd; mulWideRI rowBytes tokId D_BYTES
-    let rowBase ← freshRd; addRd rowBase embedBuf rowBytes
-    let nReg ← freshR; movRC nReg D
-    let (tid, _, _) ← getWarpIds
-    strideLoop tid nReg 256 "el_loop" "el_done" fun i => do
-      let srcA ← elemAddr rowBase i; let dstA ← elemAddr outBuf i
-      let xi ← freshF; ldGlobalF xi srcA; stGlobalF dstA xi
-    ptxRet
-  geom := Kernel.Geom.static 1 1 1 256 1 1
+  geom := Kernel.Geom.static ((D + 31) / 32) 1 1 32 1 1
   ptxOff := PTX_EMBED_OFF
+  ptxText := some Qwen2Proven.ptxEmbed
 }
 def ptxEmbedLookup : String := embedKernel.ptxSource
 
@@ -278,13 +279,9 @@ def rmsNormKernel : Kernel := {
     { name := "y_buf", shape := [.sta D] }
   ]
   smemBytes := 36
-  body := do
-    let xPtr ← ldParam "x_buf"; let wPtr ← ldParam "w_buf"; let yPtr ← ldParam "y_buf"
-    let nReg ← freshR; movRC nReg D
-    let (tid, wid, lid) ← getWarpIds
-    rmsNormBody xPtr wPtr yPtr tid wid lid nReg D_AS_BITS ""
-  geom := Kernel.Geom.static 1 1 1 256 1 1
+  geom := Kernel.Geom.static 1 1 1 32 1 1
   ptxOff := PTX_RMS_OFF
+  ptxText := some Qwen2Proven.ptxRmsNorm
 }
 
 def ptxRmsNorm : String := rmsNormKernel.ptxSource
@@ -295,34 +292,25 @@ private def launchRms (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
     (x w y : Tensor [.sta D]) : IRBuilder Unit :=
   launch3 rmsNormKernel cuda ptr bindOff x w y
 
--- Bias add: x[i] += b[i]; same kernel body parameterized by N at PTX level.
--- We emit two specializations (D and KV_DIM) since N is folded as a constant.
-private def biasAddBody (n : Nat) (loopL doneL : String) : PTX Unit := do
-  let xBuf ← ldParam "x_buf"; let bBuf ← ldParam "b_buf"
-  let nReg ← freshR; movRC nReg n
-  let (tid, _, _) ← getWarpIds
-  strideLoop tid nReg 256 loopL doneL fun i => do
-    let xA ← elemAddr xBuf i; let bA ← elemAddr bBuf i
-    let xi ← freshF; ldGlobalF xi xA; let bi ← freshF; ldGlobalF bi bA
-    addF xi xi bi; stGlobalF xA xi
-  ptxRet
-
 def biasAddDKernel : Kernel := {
   name := "main"
   params := [{ name := "x_buf", shape := [.sta D] },
              { name := "b_buf", shape := [.sta D], ro := true }]
-  body := biasAddBody D "bd_loop" "bd_done"
-  geom := Kernel.Geom.static 1 1 1 256 1 1
+  -- **Migrated.**  `x[i] + b[i]` is literally `Qwen2Proven.addSpec`, so this is
+  -- the *same proven kernel* at a different width — one spec, two instances.
+  geom := Kernel.Geom.static ((D + 31) / 32) 1 1 32 1 1
   ptxOff := PTX_BIAS_D_OFF
+  ptxText := some Qwen2Proven.ptxAdd
 }
 
 def biasAddKVKernel : Kernel := {
   name := "main"
   params := [{ name := "x_buf", shape := [.sta KV_DIM] },
              { name := "b_buf", shape := [.sta KV_DIM], ro := true }]
-  body := biasAddBody KV_DIM "bk_loop" "bk_done"
-  geom := Kernel.Geom.static 1 1 1 256 1 1
+  -- **Migrated**, same spec again at the KV width.
+  geom := Kernel.Geom.static ((KV_DIM + 31) / 32) 1 1 32 1 1
   ptxOff := PTX_BIAS_KV_OFF
+  ptxText := some Qwen2Proven.ptxAdd
 }
 
 def ptxBiasAddD  : String := biasAddDKernel.ptxSource
@@ -339,57 +327,29 @@ private def launchBiasKV (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
 -- RoPE rotation body — identical for Q and K, parameterized by buffer-param name.
 -- Thread (headIdx=ctaX, freqIdx=tidX) handles vec[head, freq] and vec[head, freq+HEAD_DIM/2].
 -- meta_buf[4]=pos; rope_table = [sin; cos] each MAX_SEQ × HEAD_DIM/2 f32.
-private def ropeBody (vecParam : String) : PTX Unit := do
-  let vBuf      ← ldParam vecParam
-  let metaBuf   ← ldParam "meta_buf"
-  let ropeTable ← ldParam "rope_table"
-  let headIdx ← freshR; movR headIdx ctaX
-  let freqIdx ← freshR; movR freqIdx tidX
-  let pos ← freshR; ldGlobalUO pos metaBuf 4
-  let tblIdx ← freshR; madLoRC tblIdx pos (HEAD_DIM / 2) freqIdx
-  let tblOff64 ← freshRd; mulWideRI tblOff64 tblIdx 4
-  let sinAddr ← freshRd; addRd sinAddr ropeTable tblOff64
-  let sinT ← freshF; ldGlobalF sinT sinAddr
-  let cosBaseOff ← freshR; movRC cosBaseOff (MAX_SEQ * (HEAD_DIM / 2) * 4)
-  let cosBaseOff64 ← freshRd; cvtU64 cosBaseOff64 cosBaseOff
-  let cosAddr ← freshRd; addRd cosAddr ropeTable cosBaseOff64
-  addRd cosAddr cosAddr tblOff64
-  let cosT ← freshF; ldGlobalF cosT cosAddr
-  let loOff ← freshR; madLoRC loOff headIdx HEAD_DIM freqIdx
-  let hiOff ← freshR; addRI hiOff loOff (HEAD_DIM / 2)
-  let loOff64 ← freshRd; mulWideRI loOff64 loOff 4; let loAddr ← freshRd; addRd loAddr vBuf loOff64
-  let hiOff64 ← freshRd; mulWideRI hiOff64 hiOff 4; let hiAddr ← freshRd; addRd hiAddr vBuf hiOff64
-  let vLo ← freshF; ldGlobalF vLo loAddr
-  let vHi ← freshF; ldGlobalF vHi hiAddr
-  let hiSin ← freshF; mulF hiSin vHi sinT
-  let negHiSin ← freshF; negF negHiSin hiSin
-  let newLo ← freshF; fmaRn newLo vLo cosT negHiSin
-  let hiCos ← freshF; mulF hiCos vHi cosT
-  let newHi ← freshF; fmaRn newHi vLo sinT hiCos
-  stGlobalF loAddr newLo
-  stGlobalF hiAddr newHi
-  ptxRet
-
 -- RoPE Q: grid=N_Q, block=HEAD_DIM/2. Rotates Q in place.
 def ropeQKernel : Kernel := {
   name := "main"
   params := [{ name := "q_buf",      shape := [.sta D] },
-             { name := "meta_buf",   shape := [.sta 2], ro := true },
+             { name := "meta_buf",   shape := [.sta 6], ro := true },
              { name := "rope_table", shape := [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)], ro := true }]
-  body := ropeBody "q_buf"
+  -- **Migrated.**  `HEAD_DIM/2 = 32` was already exactly one warp, so the
+  -- geometry is unchanged.  See `Qwen2Proven.rope_ptx_exact`.
   geom := Kernel.Geom.static N_Q 1 1 (HEAD_DIM/2) 1 1
   ptxOff := PTX_ROPE_Q_OFF
+  ptxText := some Qwen2Proven.ptxRope
 }
 
 -- RoPE K: grid=N_KV, block=HEAD_DIM/2.
 def ropeKKernel : Kernel := {
   name := "main"
   params := [{ name := "k_buf",      shape := [.sta KV_DIM] },
-             { name := "meta_buf",   shape := [.sta 2], ro := true },
+             { name := "meta_buf",   shape := [.sta 6], ro := true },
              { name := "rope_table", shape := [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)], ro := true }]
-  body := ropeBody "k_buf"
+  -- **Migrated** — the same proven kernel, fewer heads.
   geom := Kernel.Geom.static N_KV 1 1 (HEAD_DIM/2) 1 1
   ptxOff := PTX_ROPE_K_OFF
+  ptxText := some Qwen2Proven.ptxRope
 }
 
 def ptxRoPEQ : String := ropeQKernel.ptxSource
@@ -403,55 +363,17 @@ private def launchRopeK (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
     (k : VecKV) (mb : VecMeta) (rope : RopeTbl) : IRBuilder Unit :=
   launch3 ropeKKernel cuda ptr bindOff k mb rope
 
--- Softmax over per-head scores. seq_len = meta_buf[4]+1 (dynamic).
--- Grid=N_Q, Block=256, smem=40.
+-- Softmax over per-head scores.  **Migrated** to the proven stack: the trip
+-- counts come from the meta buffer (`forM`), so one kernel and one theorem
+-- cover every sequence length.  Grid=N_Q, Block=32, no shared memory.
 def softmaxKernel : Kernel := {
   name := "main"
   params := [{ name := "scores_buf", shape := [.sta N_Q, .dyn] },
-             { name := "meta_buf",   shape := [.sta 2], ro := true },
+             { name := "meta_buf",   shape := [.sta 6], ro := true },
              { name := "probs_buf",  shape := [.sta N_Q, .dyn] }]
-  smemBytes := 40
-  body := do
-    let scoresBuf ← ldParam "scores_buf"
-    let metaPtr   ← ldParam "meta_buf"
-    let probsBuf  ← ldParam "probs_buf"
-    let seqLen ← freshR; ldGlobalUO seqLen metaPtr 4; addRI seqLen seqLen 1
-    let (tid, wid, lid) ← getWarpIds
-    let headIdx  ← freshR; movR headIdx ctaX
-    let headId64 ← freshRd; cvtU64 headId64 headIdx
-    let seqLen64 ← freshRd; cvtU64 seqLen64 seqLen
-    let headOff  ← freshRd; mulLoRd headOff headId64 seqLen64
-    let byteOff  ← freshRd; shlRd byteOff headOff 2
-    let scoresBase ← freshRd; addRd scoresBase scoresBuf byteOff
-    let probsBase  ← freshRd; addRd probsBase probsBuf byteOff
-    let log2e ← freshF; movFC log2e f32_log2e
-    let lMax ← freshF; movFC lMax 0xFF800000; let mTmp ← freshF
-    strideLoop tid seqLen 256 "sm_lmax" "sm_dmax" fun i => do
-      let addr ← elemAddr scoresBase i; ldGlobalF mTmp addr; maxF lMax lMax mTmp
-    warpReduceMax lMax mTmp
-    lane0WriteSmem lid wid "sm_skip1" fun wAddr => stSharedFD wAddr lMax
-    thread0Op tid "sm_skip2" do
-      let sBase ← smemBase; let gMax ← freshF
-      crossWarp8 gMax mTmp sBase 0 maxF; stSharedF sBase 32 gMax
-    let sBase1 ← smemBase; let gMax ← freshF; ldSharedF gMax sBase1 32
-    let lSum ← freshF; movFC lSum f32_0; let sTmp ← freshF
-    strideLoop tid seqLen 256 "sm_lsum" "sm_dsum" fun i => do
-      let addr ← elemAddr scoresBase i; let xi ← freshF; ldGlobalF xi addr
-      subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; addF lSum lSum xi
-    warpReduceSum lSum sTmp
-    lane0WriteSmem lid wid "sm_skip3" fun wAddr => stSharedFD wAddr lSum
-    thread0Op tid "sm_skip4" do
-      let sBase ← smemBase
-      crossWarp8 lSum sTmp sBase 0 addF; rcp lSum lSum; stSharedF sBase 36 lSum
-    let sBase2 ← smemBase; let invSum ← freshF; ldSharedF invSum sBase2 36
-    strideLoop tid seqLen 256 "sm_lout" "sm_dout" fun i => do
-      let sAddr ← elemAddr scoresBase i; let pAddr ← elemAddr probsBase i
-      let xi ← freshF; ldGlobalF xi sAddr
-      subF xi xi gMax; mulF xi xi log2e; ex2 xi xi; mulF xi xi invSum
-      stGlobalF pAddr xi
-    ptxRet
-  geom := Kernel.Geom.static N_Q 1 1 256 1 1
+  geom := Kernel.Geom.static N_Q 1 1 32 1 1
   ptxOff := PTX_SOFTMAX_OFF
+  ptxText := some Qwen2Proven.ptxSoftmax
 }
 
 def ptxSoftmax : String := softmaxKernel.ptxSource
@@ -466,19 +388,9 @@ def siluGateKernel : Kernel := {
   params := [{ name := "gate_buf", shape := [.sta D_FF] },
              { name := "up_buf",   shape := [.sta D_FF], ro := true },
              { name := "out_buf",  shape := [.sta D_FF] }]
-  body := do
-    let gatePtr ← ldParam "gate_buf"; let upPtr ← ldParam "up_buf"; let outPtr ← ldParam "out_buf"
-    let nReg ← freshR; movRC nReg D_FF
-    let (gid, _) ← gridStrideSetup nReg "sg_done"
-    let gA ← elemAddr gatePtr gid; let uA ← elemAddr upPtr gid; let oA ← elemAddr outPtr gid
-    let g ← freshF; ldGlobalF g gA; let u ← freshF; ldGlobalF u uA
-    let ng ← freshF; negF ng g
-    let l ← freshF; movFC l f32_log2e; mulF ng ng l; ex2 ng ng
-    let one ← freshF; movFC one f32_1; addF ng ng one; rcp ng ng
-    mulF g g ng; mulF g g u; stGlobalF oA g
-    label "sg_done"; ptxRet
-  geom := Kernel.Geom.static ((D_FF + 255) / 256) 1 1 256 1 1
+  geom := Kernel.Geom.static ((D_FF + 31) / 32) 1 1 32 1 1
   ptxOff := PTX_SILU_OFF
+  ptxText := some Qwen2Proven.ptxSilu
 }
 
 def ptxSiluGate : String := siluGateKernel.ptxSource
@@ -492,16 +404,9 @@ def residualAddKernel : Kernel := {
   name := "main"
   params := [{ name := "x_buf",   shape := [.sta D] },
              { name := "add_buf", shape := [.sta D], ro := true }]
-  body := do
-    let xPtr ← ldParam "x_buf"; let addPtr ← ldParam "add_buf"
-    let nReg ← freshR; movRC nReg D
-    let (gid, _) ← gridStrideSetup nReg "ra_done"
-    let xA ← elemAddr xPtr gid; let aA ← elemAddr addPtr gid
-    let xi ← freshF; ldGlobalF xi xA; let ai ← freshF; ldGlobalF ai aA
-    addF xi xi ai; stGlobalF xA xi
-    label "ra_done"; ptxRet
-  geom := Kernel.Geom.static ((D + 255) / 256) 1 1 256 1 1
+  geom := Kernel.Geom.static ((D + 31) / 32) 1 1 32 1 1
   ptxOff := PTX_ADD_OFF
+  ptxText := some Qwen2Proven.ptxAdd
 }
 
 def ptxResidualAdd : String := residualAddKernel.ptxSource
@@ -516,31 +421,10 @@ def kvStoreKernel : Kernel := {
   name := "main"
   params := [{ name := "k_cur_buf",   shape := [.sta KV_DIM], ro := true },
              { name := "k_cache_buf", shape := [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM] },
-             { name := "meta_buf",    shape := [.sta 2], ro := true }]
-  body := do
-    let kCurBuf   ← ldParam "k_cur_buf"
-    let kCacheBuf ← ldParam "k_cache_buf"
-    let metaBuf   ← ldParam "meta_buf"
-    let kvHead ← freshR; movR kvHead ctaX
-    let elemIdx ← freshR; movR elemIdx tidX
-    let pos ← freshR; ldGlobalUO pos metaBuf 4
-    -- src offset: kvHead * HEAD_DIM + elemIdx (within [N_KV, HEAD_DIM] k_cur)
-    let srcOff ← freshR; madLoRC srcOff kvHead HEAD_DIM elemIdx
-    let srcOff64 ← freshRd; mulWideRI srcOff64 srcOff 4
-    let srcAddr ← freshRd; addRd srcAddr kCurBuf srcOff64
-    let kVal ← freshF; ldGlobalF kVal srcAddr
-    -- dst index: kvHead * MAX_SEQ * HEAD_DIM + pos * HEAD_DIM + elemIdx
-    let kvH64  ← freshRd; mulWideRI kvH64  kvHead  (MAX_SEQ * HEAD_DIM)
-    let pos64  ← freshRd; mulWideRI pos64  pos     HEAD_DIM
-    let elem64 ← freshRd; cvtU64    elem64 elemIdx
-    addRd kvH64 kvH64 pos64
-    addRd kvH64 kvH64 elem64
-    let byteOff ← freshRd; shlRd byteOff kvH64 2
-    let dstAddr ← freshRd; addRd dstAddr kCacheBuf byteOff
-    stGlobalF dstAddr kVal
-    ptxRet
-  geom := Kernel.Geom.static N_KV 1 1 HEAD_DIM 1 1
+             { name := "meta_buf",    shape := [.sta 6], ro := true }]
+  geom := Kernel.Geom.static N_KV 1 1 32 1 1
   ptxOff := PTX_KVSTORE_OFF
+  ptxText := some Qwen2Proven.ptxKVStore
 }
 
 def ptxKVStore : String := kvStoreKernel.ptxSource
@@ -553,29 +437,10 @@ private def launchKVStore (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
 def argmaxKernel : Kernel := {
   name := "main"
   params := [{ name := "logits_buf", shape := [.sta VOCAB], ro := true },
-             { name := "meta_buf",   shape := [.sta 2] }]
-  body := do
-    let logitsBuf ← ldParam "logits_buf"
-    let metaBuf   ← ldParam "meta_buf"
-    let maxVal ← freshF; movFC maxVal 0xFF800000
-    let maxIdx ← freshR; movRC maxIdx 0
-    let i ← freshR; movRC i 0
-    label "ax_loop"
-    let p1 ← freshP; setpGeI p1 i VOCAB; braIf p1 "ax_done"
-    let i64 ← freshRd; cvtU64 i64 i
-    let byteOff ← freshRd; shlRd byteOff i64 2
-    let addr ← freshRd; addRd addr logitsBuf byteOff
-    let xi ← freshF; ldGlobalF xi addr
-    let p2 ← freshP; setpGtF p2 xi maxVal
-    braIfNot p2 "ax_no_upd"
-    movF maxVal xi; movR maxIdx i
-    label "ax_no_upd"
-    addRI i i 1; bra "ax_loop"
-    label "ax_done"
-    stGlobalU32 metaBuf maxIdx
-    ptxRet
-  geom := Kernel.Geom.static 1 1 1 1 1 1
+             { name := "meta_buf",   shape := [.sta 6] }]
+  geom := Kernel.Geom.static 1 1 1 32 1 1
   ptxOff := PTX_ARGMAX_OFF
+  ptxText := some Qwen2Proven.ptxArgmax
 }
 
 def ptxArgmax : String := argmaxKernel.ptxSource
@@ -717,7 +582,7 @@ def loadInitCommon (cuda : CudaSetup)
   let embedBytes  ← iconst64 EMBED_BYTES
   let vocabBytes  ← iconst64 (VOCAB * 4)
   let scoreBytes  ← iconst64 (N_Q * MAX_SEQ * 4)
-  let metaBytes   ← iconst64 8
+  let metaBytes   ← iconst64 24
 
   let bufEmbed    : EmbedTbl  ← Tensor.create cuda ptr embedBytes
   let bufLmHead   : EmbedTbl  ← Tensor.create cuda ptr embedBytes
@@ -772,10 +637,26 @@ def inferFn : IRBuilder Unit := do
   storeI64 pos64    (← absAddr ptr POS_SLOT_OFF)
   storeI64 seqLen64 (← absAddr ptr SEQ_LEN_SLOT_OFF)
 
-  -- Upload [token_id, pos] (8 bytes) to GPU meta buffer
+  -- Assemble the meta buffer: [token_id, pos, seqLen, chunks, tail, rem].
+  -- `chunks`/`tail`/`rem` are the proven softmax's loop bounds; deriving them
+  -- here keeps the kernel free of the shift and mask it cannot express, and
+  -- keeps them lane-uniform by construction (they live in memory, not a
+  -- register).  See `Qwen2Proven.smMax` for why the split is needed at all.
+  let tokId32   ← load32 dataPtr
+  let seqLen32b ← ireduce32 seqLen64
+  let chunks32  ← ushrImm seqLen32b 5
+  let tail32    ← ishlImm chunks32 5
+  let rem32     ← isub seqLen32b tail32
+  let stage     ← absAddr ptr META_STAGE_OFF
+  storeI32 tokId32   stage
+  storeI32 pos32     (← iaddImm stage 4)
+  storeI32 seqLen32b (← iaddImm stage 8)
+  storeI32 chunks32  (← iaddImm stage 12)
+  storeI32 tail32    (← iaddImm stage 16)
+  storeI32 rem32     (← iaddImm stage 20)
   let metaT ← slotMeta.load ptr
-  let eight ← iconst64 8
-  Tensor.upload cuda ptr metaT dataPtr eight
+  let metaBytes24 ← iconst64 24
+  Tensor.upload cuda ptr metaT stage metaBytes24
 
   -- Embedding lookup: bind = [embed_table, meta_buf, hidden_out]
   let embedT  ← slotEmbed.load ptr
@@ -963,13 +844,22 @@ def inferFinalFn : IRBuilder Unit := do
   let bufLmHead   ← slotLmHead.load   ptr
   let bufLogits   ← slotLogits.load   ptr
   let bufMeta     ← slotMeta.load     ptr
-  let eight64 ← iconst64 8
+  let meta64  ← iconst64 24
   launchRms cuda ptr BIND_RMS2 bufHidden bufRmsFinal bufHdNorm
   -- LM head projection: lmHead:[VOCAB,D]·hdNorm:[D] → logits:[VOCAB]
   CuBlas.linear blas ptr bufLmHead bufHdNorm bufLogits
   launchArgmax cuda ptr BIND_ARGMAX bufLogits bufMeta
   let _ ← cudaSync cuda ptr 0x10
-  Tensor.download cuda ptr bufMeta outPtr eight64
+  -- The meta buffer is six words now (the softmax loop bounds ride along), so
+  -- it lands in the staging area and only [token_id, pos] goes to the caller.
+  let stage ← absAddr ptr META_STAGE_OFF
+  Tensor.download cuda ptr bufMeta stage meta64
+  -- The proven argmax writes the token id as an exactly-representable float;
+  -- convert it in place before handing [token_id, pos] back to the caller.
+  let tokF   ← loadF32 stage
+  let tok32  ← fcvtToUint .i32 tokF
+  storeI32 tok32 stage
+  storeI64 (← load64 stage) outPtr
   ret
 
 -- ── Tokenizer functions ───────────────────────────────────────────────────────
@@ -1425,6 +1315,31 @@ def cliFn : IRBuilder Unit := do
 
 -- ── Initial memory: PTX kernel byte tail (shared by both algorithms) ─────────
 
+theorem qwen2_all_proven_text :
+    embedKernel.ptxText.isSome ∧ rmsNormKernel.ptxText.isSome
+      ∧ biasAddDKernel.ptxText.isSome ∧ biasAddKVKernel.ptxText.isSome
+      ∧ ropeQKernel.ptxText.isSome ∧ ropeKKernel.ptxText.isSome
+      ∧ softmaxKernel.ptxText.isSome ∧ siluGateKernel.ptxText.isSome
+      ∧ residualAddKernel.ptxText.isSome ∧ kvStoreKernel.ptxText.isSome
+      ∧ argmaxKernel.ptxText.isSome := by
+  refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- …and the text it carries is exactly the blob `Qwen2Proven` proves about —
+    not a copy that could drift. -/
+theorem qwen2_ships_proven_ptx :
+    ptxEmbedLookup = Qwen2Proven.ptxEmbed
+      ∧ ptxRmsNorm = Qwen2Proven.ptxRmsNorm
+      ∧ ptxBiasAddD = Qwen2Proven.ptxAdd
+      ∧ ptxBiasAddKV = Qwen2Proven.ptxAdd
+      ∧ ptxRoPEQ = Qwen2Proven.ptxRope
+      ∧ ptxRoPEK = Qwen2Proven.ptxRope
+      ∧ ptxSoftmax = Qwen2Proven.ptxSoftmax
+      ∧ ptxSiluGate = Qwen2Proven.ptxSilu
+      ∧ ptxResidualAdd = Qwen2Proven.ptxAdd
+      ∧ ptxKVStore = Qwen2Proven.ptxKVStore
+      ∧ ptxArgmax = Qwen2Proven.ptxArgmax := by
+  refine ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
 def ptxEmbedBytes   : List UInt8 := ptxEmbedLookup.toUTF8.toList ++ [0]
 def ptxRmsBytes     : List UInt8 := ptxRmsNorm.toUTF8.toList ++ [0]
 def ptxBiasDBytes   : List UInt8 := ptxBiasAddD.toUTF8.toList ++ [0]
@@ -1462,5 +1377,79 @@ def buildInitialMemoryTail : List UInt8 :=
   let kvstore := ptxKvStoreBytes ++ zeros (PTX_ARGMAX_OFF  - PTX_KVSTORE_OFF - ptxKvStoreBytes.length)
   let argmax  := ptxArgmaxBytes  ++ zeros (MEM_SIZE        - PTX_ARGMAX_OFF  - ptxArgmaxBytes.length)
   embed ++ rms ++ biasD ++ biasKv ++ ropeQ ++ ropeK ++ softmax ++ silu ++ add ++ kvstore ++ argmax
+
+-- ── The memory map, as data ──────────────────────────────────────────────────
+
+def memMap : RegionMap :=
+  [ ⟨"io_offsets",         0x0000, 0x38⟩,
+    ⟨"pinned_host_ptr",    PINNED_HOST_PTR_OFF, 8⟩,
+    ⟨"pinned_id",          PINNED_ID_OFF, 4⟩,
+    -- 16 typed buffer-id slots, 0x0048..0x0088
+    ⟨"buffer_slots",       0x0048, 16 * 4⟩,
+    ⟨"layer_idx",          LAYER_IDX_OFF, 8⟩,
+    ⟨"pos",                POS_SLOT_OFF, 8⟩,
+    ⟨"seq_len",            SEQ_LEN_SLOT_OFF, 8⟩,
+    ⟨"layer_bufs",         LAYER_BUFS_BASE, N_LAYERS * LAYER_BUF_STRIDE⟩,
+    ⟨"tok_buf_ptr",        TOK_BUF_PTR_OFF, 8⟩,
+    ⟨"infer_in",           INFER_IN_OFF, 8⟩,
+    ⟨"infer_out",          INFER_OUT_OFF, 4⟩,
+    ⟨"token_count",        TOKEN_COUNT_OFF, 8⟩,
+    ⟨"n_prompt",           N_PROMPT_OFF, 8⟩,
+    ⟨"text_len",           TEXT_LEN_OFF, 8⟩,
+    ⟨"ht_key",             HT_KEY_OFF, 8⟩,
+    ⟨"ht_val",             HT_VAL_OFF, 8⟩,
+    ⟨"rope_table_slot",    0x0638, 4⟩,
+    ⟨"weights_path_ptr",   WEIGHTS_PATH_PTR_OFF, 8⟩,
+    ⟨"tokenizer_path_ptr", TOKENIZER_PATH_PTR_OFF, 8⟩,
+    ⟨"running_pos",        RUNNING_POS_OFF, 8⟩,
+    ⟨"system_tokens",      SYSTEM_TOKENS_OFF, 256⟩,
+    ⟨"bind_tables",        BIND_BASE, 0xC0⟩,
+    ⟨"meta_stage",         META_STAGE_OFF, 24⟩,
+    -- PTX slots.  Sizes are the gap to the next slot; `ptxFitsB` checks the
+    -- emitted bytes actually fit, which `buildInitialMemoryTail` cannot — its
+    -- `zeros (NEXT - THIS - len)` truncates to zero on `Nat` underflow and
+    -- silently shifts every later slot.
+    ⟨"ptx_embed",   PTX_EMBED_OFF,   PTX_RMS_OFF     - PTX_EMBED_OFF⟩,
+    ⟨"ptx_rms",     PTX_RMS_OFF,     PTX_BIAS_D_OFF  - PTX_RMS_OFF⟩,
+    ⟨"ptx_bias_d",  PTX_BIAS_D_OFF,  PTX_BIAS_KV_OFF - PTX_BIAS_D_OFF⟩,
+    ⟨"ptx_bias_kv", PTX_BIAS_KV_OFF, PTX_ROPE_Q_OFF  - PTX_BIAS_KV_OFF⟩,
+    ⟨"ptx_rope_q",  PTX_ROPE_Q_OFF,  PTX_ROPE_K_OFF  - PTX_ROPE_Q_OFF⟩,
+    ⟨"ptx_rope_k",  PTX_ROPE_K_OFF,  PTX_SOFTMAX_OFF - PTX_ROPE_K_OFF⟩,
+    ⟨"ptx_softmax", PTX_SOFTMAX_OFF, PTX_SILU_OFF    - PTX_SOFTMAX_OFF⟩,
+    ⟨"ptx_silu",    PTX_SILU_OFF,    PTX_ADD_OFF     - PTX_SILU_OFF⟩,
+    ⟨"ptx_add",     PTX_ADD_OFF,     PTX_KVSTORE_OFF - PTX_ADD_OFF⟩,
+    ⟨"ptx_kvstore", PTX_KVSTORE_OFF, PTX_ARGMAX_OFF  - PTX_KVSTORE_OFF⟩,
+    ⟨"ptx_argmax",  PTX_ARGMAX_OFF,  TOKEN_BUF_OFF   - PTX_ARGMAX_OFF⟩,
+    ⟨"token_buf",   TOKEN_BUF_OFF,   2048 * 4⟩,
+    ⟨"text_in",     TEXT_IN_OFF,     8 * 1024⟩,
+    ⟨"text_out",    TEXT_OUT_OFF,    8 * 1024⟩ ]
+
+/-- **No two regions overlap.** -/
+theorem memMap_ok : memMap.okB = true := by decide
+
+/-- **Every region fits inside the declared memory.** -/
+theorem memMap_within : RegionMap.withinB MEM_SIZE memMap = true := by decide
+
+/-- Each emitted PTX module, against the slot it is written into. -/
+def ptxSlotFits : List (String × Nat × Nat) :=
+  [ ("embed",   ptxEmbedBytes.length,   PTX_RMS_OFF     - PTX_EMBED_OFF),
+    ("rms",     ptxRmsBytes.length,     PTX_BIAS_D_OFF  - PTX_RMS_OFF),
+    ("bias_d",  ptxBiasDBytes.length,   PTX_BIAS_KV_OFF - PTX_BIAS_D_OFF),
+    ("bias_kv", ptxBiasKvBytes.length,  PTX_ROPE_Q_OFF  - PTX_BIAS_KV_OFF),
+    ("rope_q",  ptxRopeQBytes.length,   PTX_ROPE_K_OFF  - PTX_ROPE_Q_OFF),
+    ("rope_k",  ptxRopeKBytes.length,   PTX_SOFTMAX_OFF - PTX_ROPE_K_OFF),
+    ("softmax", ptxSoftmaxBytes.length, PTX_SILU_OFF    - PTX_SOFTMAX_OFF),
+    ("silu",    ptxSiluBytes.length,    PTX_ADD_OFF     - PTX_SILU_OFF),
+    ("add",     ptxAddBytes.length,     PTX_KVSTORE_OFF - PTX_ADD_OFF),
+    ("kvstore", ptxKvStoreBytes.length, PTX_ARGMAX_OFF  - PTX_KVSTORE_OFF),
+    ("argmax",  ptxArgmaxBytes.length,  TOKEN_BUF_OFF   - PTX_ARGMAX_OFF) ]
+
+def ptxFitsB : Bool := ptxSlotFits.all (fun e => e.2.1 ≤ e.2.2)
+
+/-- **Every emitted kernel fits its slot.**  Without this, an oversized kernel
+    truncates its own zero padding and shifts every later kernel's base — the
+    symptom being `cl_cuda_launch: load kernel failed`, or worse, a *different*
+    kernel loading successfully at the wrong offset. -/
+theorem ptx_fits : ptxFitsB = true := by native_decide
 
 end Qwen2Common

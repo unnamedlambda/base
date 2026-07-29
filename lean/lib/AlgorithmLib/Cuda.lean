@@ -80,9 +80,22 @@ structure Kernel where
   name      : String
   params    : List Kernel.ParamSpec
   smemBytes : Nat := 0
-  body      : PTX Unit
+  /-- The raw PTX builder.  Only used when `ptxText` is absent, so a kernel on
+      the proven lowering supplies nothing here.
+
+      It defaults to empty rather than being required because keeping a dead
+      hand-written body next to a proven one is an active hazard, not
+      documentation: it looks like the kernel, is never emitted, is never
+      checked against anything, and drifts.  The declarative record that
+      matters — name, params, geometry, slot — is still right here; the *shape*
+      is documented by the `EWStmt` that actually ships. -/
+  body      : PTX Unit := pure ()
   geom      : Kernel.Geom
   ptxOff    : Nat                          -- where its PTX null-term string lives
+  /-- Emit this text instead of rendering `body`.  Set when the kernel has been
+      migrated onto the proven lowering, whose PTX comes from
+      `ML.emitProvenKernel` rather than from the raw builder. -/
+  ptxText   : Option String := none
 
 namespace Kernel
 
@@ -90,9 +103,12 @@ def Kernel.arity (k : _root_.AlgorithmLib.Kernel) : Nat := k.params.length
 
 /-- Render the PTX module string for this kernel. -/
 def ptxSource (k : _root_.AlgorithmLib.Kernel) : String :=
-  buildModuleWith
-    { smemSize := k.smemBytes }
-    [{ name := k.name, params := k.params.map (·.name), body := k.body }]
+  match k.ptxText with
+  | some t => t
+  | none =>
+    buildModuleWith
+      { smemSize := k.smemBytes }
+      [{ name := k.name, params := k.params.map (·.name), body := k.body }]
 
 /-- Null-terminated UTF-8 bytes ready for embedding at `k.ptxOff`. -/
 def ptxBytes (k : _root_.AlgorithmLib.Kernel) : List UInt8 :=

@@ -38,6 +38,24 @@ lean_lib CudaRmsNormPersistAlgorithm
 lean_lib CudaSaxpyPersistAlgorithm
 lean_lib CudaSoftmaxPersistAlgorithm
 lean_lib CudaVecAddPersistAlgorithm
+@[default_target]
+lean_lib WarpSumSqAlgorithm
+@[default_target]
+lean_lib SiluWarpAlgorithm
+@[default_target]
+lean_lib MlpWarpAlgorithm
+@[default_target]
+lean_lib GradWarpAlgorithm
+@[default_target]
+lean_lib Qwen2Proven
+@[default_target]
+lean_lib GemvWarpAlgorithm
+@[default_target]
+lean_lib BackwardWideAlgorithm
+@[default_target]
+lean_lib BigModelAlgorithm
+@[default_target]
+lean_lib NonVacuity
 
 -- Application algorithms
 lean_lib CliAlgorithm
@@ -52,8 +70,11 @@ lean_lib SatAlgorithm
 lean_lib SceneAlgorithm
 lean_lib BlackHoleAlgorithm
 lean_lib Sha256Algorithm
+@[default_target]
 lean_lib Qwen2Common
+@[default_target]
 lean_lib Qwen2Algorithm
+@[default_target]
 lean_lib Qwen2OnDiskAlgorithm
 lean_lib WindowDemoAlgorithm
 lean_lib RaymarchDemoAlgorithm
