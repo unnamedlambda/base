@@ -2,7 +2,7 @@ import Lean
 import Std
 import AlgorithmLib
 
-open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
+open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 namespace BackwardWide
 
@@ -221,7 +221,7 @@ theorem bwd_bufs_bound :
     are the ones checked: `GRID` blocks, `K` trips, `N` elements. -/
 theorem bwd_geometry : K * 32 = N ∧ GRID = N ∧ EGRID * 32 = N := by decide
 
-/-- **Seam guard: every branch in the emitted text resolves.**
+/-! **Seam guard: every branch in the emitted text resolves.**
 
     `flatKernel` emits absolute instruction indices as branch targets and the
     printer labels instruction `i` as `L{i}` (`programText_label`).  This checks
@@ -230,6 +230,27 @@ theorem bwd_geometry : K * 32 = N ∧ GRID = N ∧ EGRID * 32 = N := by decide
 
     That is not printer correctness, and `A46` does not claim it; it is the one
     failure this seam is actually exposed to. -/
+/-! Checked one kernel at a time.  `native_decide` compiles the expression it
+    decides, so a seven-way conjunction is one compilation unit carrying seven
+    PTX emissions — measured at several GB, enough to exhaust the machine.
+    Seven separate units prove exactly the same thing at a seventh the peak.
+    The conjunction is reassembled below so nothing downstream changes. -/
+
+theorem bwd_targets_ok_kernel : FlatTargetsOkB (flatKernel (expandEW kernel)) = true := by
+  native_decide
+theorem bwd_targets_ok_dw : FlatTargetsOkB (flatKernel (expandEW dwKernel)) = true := by
+  native_decide
+theorem bwd_targets_ok_silu : FlatTargetsOkB (flatKernel (expandEW siluBwd.ew)) = true := by
+  native_decide
+theorem bwd_targets_ok_dxr : FlatTargetsOkB (flatKernel (expandEW dxrKernel.ew)) = true := by
+  native_decide
+theorem bwd_targets_ok_t : FlatTargetsOkB (flatKernel (expandEW tKernel.ew)) = true := by
+  native_decide
+theorem bwd_targets_ok_q : FlatTargetsOkB (flatKernel (expandEW qKernel)) = true := by
+  native_decide
+theorem bwd_targets_ok_sK : FlatTargetsOkB (flatKernel (expandEW sKernel)) = true := by
+  native_decide
+
 theorem bwd_targets_ok :
     FlatTargetsOkB (flatKernel (expandEW kernel)) = true
       ∧ FlatTargetsOkB (flatKernel (expandEW dwKernel)) = true
@@ -237,8 +258,9 @@ theorem bwd_targets_ok :
       ∧ FlatTargetsOkB (flatKernel (expandEW dxrKernel.ew)) = true
       ∧ FlatTargetsOkB (flatKernel (expandEW tKernel.ew)) = true
       ∧ FlatTargetsOkB (flatKernel (expandEW qKernel)) = true
-      ∧ FlatTargetsOkB (flatKernel (expandEW sKernel)) = true := by
-  native_decide
+      ∧ FlatTargetsOkB (flatKernel (expandEW sKernel)) = true :=
+  ⟨bwd_targets_ok_kernel, bwd_targets_ok_dw, bwd_targets_ok_silu, bwd_targets_ok_dxr,
+   bwd_targets_ok_t, bwd_targets_ok_q, bwd_targets_ok_sK⟩
 
 /-- **Seam guard: every shipped kernel is stage-eligible.**
 
@@ -260,6 +282,21 @@ theorem bwd_stage_eligible :
     `siText` turns `.loop` and `.ext` into comments, so either one arriving
     would produce a silently wrong kernel instead of an error.  Checked, not
     assumed (`A47` G6). -/
+theorem bwd_printable_kernel : FlatPrintableB (flatKernel (expandEW kernel)) = true := by
+  native_decide
+theorem bwd_printable_dw : FlatPrintableB (flatKernel (expandEW dwKernel)) = true := by
+  native_decide
+theorem bwd_printable_silu : FlatPrintableB (flatKernel (expandEW siluBwd.ew)) = true := by
+  native_decide
+theorem bwd_printable_dxr : FlatPrintableB (flatKernel (expandEW dxrKernel.ew)) = true := by
+  native_decide
+theorem bwd_printable_t : FlatPrintableB (flatKernel (expandEW tKernel.ew)) = true := by
+  native_decide
+theorem bwd_printable_q : FlatPrintableB (flatKernel (expandEW qKernel)) = true := by
+  native_decide
+theorem bwd_printable_sK : FlatPrintableB (flatKernel (expandEW sKernel)) = true := by
+  native_decide
+
 theorem bwd_printable :
     FlatPrintableB (flatKernel (expandEW kernel)) = true
       ∧ FlatPrintableB (flatKernel (expandEW dwKernel)) = true
@@ -267,7 +304,23 @@ theorem bwd_printable :
       ∧ FlatPrintableB (flatKernel (expandEW dxrKernel.ew)) = true
       ∧ FlatPrintableB (flatKernel (expandEW tKernel.ew)) = true
       ∧ FlatPrintableB (flatKernel (expandEW qKernel)) = true
-      ∧ FlatPrintableB (flatKernel (expandEW sKernel)) = true := by
+      ∧ FlatPrintableB (flatKernel (expandEW sKernel)) = true :=
+  ⟨bwd_printable_kernel, bwd_printable_dw, bwd_printable_silu, bwd_printable_dxr,
+   bwd_printable_t, bwd_printable_q, bwd_printable_sK⟩
+
+theorem bwdPtx_fits_a : ptx.toUTF8.toList.length + 1 ≤ PTX_DW_OFF - PTX_OFF := by
+  native_decide
+theorem bwdPtx_fits_b : ptxDw.toUTF8.toList.length + 1 ≤ PTX_SB_OFF - PTX_DW_OFF := by
+  native_decide
+theorem bwdPtx_fits_c : ptxSiluBwd.toUTF8.toList.length + 1 ≤ PTX_T_OFF - PTX_SB_OFF := by
+  native_decide
+theorem bwdPtx_fits_d : ptxT.toUTF8.toList.length + 1 ≤ PTX_Q_OFF - PTX_T_OFF := by
+  native_decide
+theorem bwdPtx_fits_e : ptxQ.toUTF8.toList.length + 1 ≤ PTX_S_OFF - PTX_Q_OFF := by
+  native_decide
+theorem bwdPtx_fits_f : ptxS.toUTF8.toList.length + 1 ≤ PTX_DXR_OFF - PTX_S_OFF := by
+  native_decide
+theorem bwdPtx_fits_g : ptxDxr.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_DXR_OFF := by
   native_decide
 
 theorem bwdPtx_fits :
@@ -277,8 +330,9 @@ theorem bwdPtx_fits :
       ∧ (ptxT.toUTF8.toList.length + 1 ≤ PTX_Q_OFF - PTX_T_OFF)
       ∧ (ptxQ.toUTF8.toList.length + 1 ≤ PTX_S_OFF - PTX_Q_OFF)
       ∧ (ptxS.toUTF8.toList.length + 1 ≤ PTX_DXR_OFF - PTX_S_OFF)
-      ∧ (ptxDxr.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_DXR_OFF) := by
-  native_decide
+      ∧ (ptxDxr.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_DXR_OFF) :=
+  ⟨bwdPtx_fits_a, bwdPtx_fits_b, bwdPtx_fits_c, bwdPtx_fits_d,
+   bwdPtx_fits_e, bwdPtx_fits_f, bwdPtx_fits_g⟩
 
 /-! ### The host input layout — one source, checked
 
@@ -659,9 +713,238 @@ def dxStage : StageSpec :=
 def dwStage : StageSpec :=
   outerStage adjB xB dwB N K GRID (by decide) (by decide) (by decide)
 
+-- ---------------------------------------------------------------------------
+-- The backward pass as a pipeline value
+-- ---------------------------------------------------------------------------
+
+/-- **The launch sequence, as data.**  `bwd_chain` below states what running
+    `sbStage` then `dxStage` computes, but it does so by writing the composite
+    into its own conclusion — so it describes one pipeline and cannot be reused.
+    This is the same sequence as a value, which `Pipeline.run_denote` covers
+    generically at any length. -/
+def bwdPipeline : Pipeline := ⟨[sbStage, dxStage]⟩
+
+theorem bwdPipeline_exclusive : bwdPipeline.Exclusive := by
+  intro S hS
+  rcases List.mem_cons.mp hS with h | h
+  · subst h; exact mapStage_exclusive _ _ _ _ _
+  · rcases List.mem_cons.mp h with h' | h'
+    · subst h'; exact reduceStage_exclusive _ _ _ _ _ _ _ _ _
+    · exact absurd h' (by simp)
+
+/-- **The two-stage backward pass computes its denotation.**  No composite is
+    written here: `Pipeline.denote` derives it from the stage list. -/
+theorem bwdPipeline_runs (st : WSt) :
+    (bwdPipeline.run st).mem = bwdPipeline.denote st.mem :=
+  bwdPipeline.run_denote bwdPipeline_exclusive st
+
+/-- **Adding the weight-gradient stage needs no new proof.**  The three-stage
+    pipeline is covered by the same theorem — which is the point of reifying
+    the sequence rather than proving one composition at a time. -/
+def bwdPipelineFull : Pipeline := ⟨[sbStage, dxStage, dwStage]⟩
+
+theorem bwdPipelineFull_exclusive : bwdPipelineFull.Exclusive := by
+  intro S hS
+  rcases List.mem_cons.mp hS with h | h
+  · subst h; exact mapStage_exclusive _ _ _ _ _
+  · rcases List.mem_cons.mp h with h' | h'
+    · subst h'; exact reduceStage_exclusive _ _ _ _ _ _ _ _ _
+    · rcases List.mem_cons.mp h' with h'' | h''
+      · subst h''; exact outerStage_exclusive _ _ _ _ _ _ (by decide) _ _
+      · exact absurd h'' (by simp)
+
+-- ---------------------------------------------------------------------------
+-- The host program that launches them
+-- ---------------------------------------------------------------------------
+
+/-- **Which PTX slot holds which stage.**  The single place the host-to-kernel
+    correspondence is asserted; everything below is derived from it. -/
+def bwdTable : List KernelBinding :=
+  [ ⟨0,  100, [.near 0x40, .near 0x48],              sbStage⟩
+  , ⟨8,  108, [.near 0x48, .near 0x50, .near 0x58], dxStage⟩
+  , ⟨16, 116, [.near 0x48, .near 0x60, .near 0x68], dwStage⟩ ]
+
+/-- The slots each launch stores into its pointer array — the `ExternArg` side
+    of the same three entries.  `HStmt.binds` maps these through
+    `ExternArg.toBuf`, so a disagreement with `bwdTable` above makes the
+    realisation theorems fail rather than quietly match. -/
+def sbBinds : List ExternArg := [.slot 0x40, .slot 0x48]
+def dxBinds : List ExternArg := [.slot 0x48, .slot 0x50, .slot 0x58]
+def dwBinds : List ExternArg := [.slot 0x48, .slot 0x60, .slot 0x68]
+
+/-- **The driver, as a host program.**  Three launches in pipeline order, with
+    the geometry each stage declares — not a grid number written twice. -/
+def bwdDriver : HStmt :=
+  .seq (.launch ⟨0, 2, 100, EGRID, 32, sbBinds⟩)
+    (.seq (.launch ⟨8, 3, 108, GRID, 32, dxBinds⟩)
+          (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))
+
+def bwdFns : List FnDecl :=
+  [{ ref := ⟨0⟩, name := "cl_cuda_launch", sig := ⟨0⟩ }]
+
+/-- The emitted host code — a real instruction list, compiled by `flatHI`. -/
+def bwdCode : List HI := code ⟨0⟩ ⟨0⟩ 1 0 bwdDriver
+
+/-- **The driver's launch sequence is the backward pipeline.**  Decided, not
+    assumed: a drifted slot or a grid disagreeing with the stage's own `grid`
+    field makes this `none` and the proof fails. -/
+theorem bwdDriver_realises :
+    pipelineOf? bwdTable bwdDriver.deviceOps = some bwdPipelineFull := rfl
+
+/-- **The whole host side, end to end, on the kernels this file ships.**
+
+    Executing the emitted CLIF instruction by instruction performs three
+    launches; under `bwdTable` those launches *are* `bwdPipelineFull`; and that
+    pipeline computes its denotation.  Every hypothesis is discharged at a
+    concrete value, so nothing here is vacuous.
+
+    The remaining trusted step is `bwdTable` itself — that the PTX at slot `0`
+    is `sbStage.ew` compiled, and so on.  `sb_ptx_exact`, `dx_ptx_exact` and
+    `dW_ptx_exact` above are what make each of those three claims checkable. -/
+theorem bwd_host_computes (st : WSt) :
+    ∃ k c', hsteps bwdFns 0 bwdCode k
+              ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
+      ∧ pipelineOf? bwdTable (c'.trace.zip c'.btrace) = some bwdPipelineFull
+      ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
+  host_computes_denote bwdFns ⟨0⟩ ⟨0⟩ rfl bwdCode bwdDriver 1 0
+    AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
+    (AlgorithmLib.Host.FarOk.of_noBases (by decide))
+    (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)
+    (fun j _ => by rw [Nat.zero_add]; rfl)
+    bwdTable bwdPipelineFull bwdDriver_realises bwdPipelineFull_exclusive st
+
+-- ---------------------------------------------------------------------------
+-- The same driver with a vendor call in it
+-- ---------------------------------------------------------------------------
+
+/-!
+  The shipped inference model does not consist only of kernels this development
+  compiled: about 99.9% of Qwen2's arithmetic goes through `cl_cublas_sgemv`,
+  whose fold order NVIDIA does not specify.  What follows is the same driver
+  with such a call in the middle of it — a `DeclaredStep`, sitting *in* the
+  sequence rather than excluded from it, so the composition covers every device
+  write and the number of assumed steps is a value.
+-/
+
+def bwdBlasRef : FnRef := ⟨1⟩
+
+def bwdFnsBlas : List FnDecl :=
+  [ { ref := ⟨0⟩, name := "cl_cuda_launch",  sig := ⟨0⟩ }
+  , { ref := ⟨1⟩, name := "cl_cublas_sgemv", sig := ⟨0⟩ } ]
+
+/-- Buffer-handle slots, as a generator would lay them out. -/
+def SLOT_W : Nat := 0x100
+def SLOT_X : Nat := 0x108
+def SLOT_Z : Nat := 0x110
+def SLOT_Q : Nat := 0x118
+
+/-- `cl_cublas_sgemv(ctx, trans, m, n, alpha, A, x, beta, y)` — the real
+    signature.  The scalars are immediates; the three buffers are handles loaded
+    from their slots, which is what makes this call site distinguishable from
+    another of the same shape. -/
+def sgemvArgs (aSlot xSlot ySlot : Nat) : List ExternArg :=
+  [ .const 0, .const (Int.ofNat N), .const (Int.ofNat K), .const 1
+  , .slot aSlot, .slot xSlot, .const 0, .slot ySlot ]
+
+def blasCall (aSlot xSlot ySlot : Nat) : HStmt :=
+  .extern { name := "cl_cublas_sgemv", fn := bwdBlasRef
+            argv := sgemvArgs aSlot xSlot ySlot }
+
+/-- Two vendor calls of **identical shape**, differing only in which buffers
+    they touch — the situation Qwen2 is in with `Wq`/`Wk`/`Wv`. -/
+noncomputable def zStep : DeclaredStep := cublasStep wB xB zB N K
+noncomputable def qStep : DeclaredStep := cublasStep wB xB qB N K
+
+noncomputable def bwdDeclared : List DeclaredBinding :=
+  [ { name := "cl_cublas_sgemv", args := (sgemvArgs SLOT_W SLOT_X SLOT_Z).map ExternArg.toBuf
+      decl := zStep }
+  , { name := "cl_cublas_sgemv", args := (sgemvArgs SLOT_W SLOT_X SLOT_Q).map ExternArg.toBuf
+      decl := qStep } ]
+
+/-- Launch, two same-shape vendor calls, launch, launch. -/
+def bwdDriverBlas : HStmt :=
+  .seq (.launch ⟨0, 2, 100, EGRID, 32, sbBinds⟩)
+    (.seq (blasCall SLOT_W SLOT_X SLOT_Z)
+      (.seq (blasCall SLOT_W SLOT_X SLOT_Q)
+        (.seq (.launch ⟨8, 3, 108, GRID, 32, dxBinds⟩)
+              (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))))
+
+def bwdCodeBlas : List HI := code ⟨0⟩ ⟨0⟩ 1 0 bwdDriverBlas
+
+/-- **The plan: three proven steps and two declared ones, in host order.**
+
+    The two declared steps are *different* — `zStep` writes `zB`, `qStep` writes
+    `qB` — and the only thing separating their two launch records is the slot
+    each output handle was loaded from.  Keying on the primitive's name alone
+    would collapse them. -/
+noncomputable def bwdPlan : Plan :=
+  ⟨[ .proven sbStage, .declared zStep, .declared qStep,
+     .proven dxStage, .proven dwStage ]⟩
+
+/-- The device-write sequence realises it — vendor calls included, in position,
+    and told apart by their arguments. -/
+theorem bwdDriverBlas_realises :
+    planOf? bwdTable bwdDeclared bwdDriverBlas.deviceOps = some bwdPlan := rfl
+
+/-- **How much of this plan is assumed: two steps.**  A number, not a caveat. -/
+theorem bwdPlan_declaredCount : bwdPlan.declaredCount = 2 := rfl
+
+/-- …and they name themselves. -/
+theorem bwdPlan_declaredNames :
+    bwdPlan.declaredNames = ["cl_cublas_sgemv", "cl_cublas_sgemv"] := rfl
+
+theorem bwdPlan_exclusive : bwdPlan.Exclusive := by
+  intro S hS
+  simp only [bwdPlan, List.mem_cons, List.not_mem_nil, or_false, reduceCtorEq,
+             false_or, PStep.proven.injEq] at hS
+  rcases hS with h | h | h
+  · subst h; exact mapStage_exclusive _ _ _ _ _
+  · subst h; exact reduceStage_exclusive _ _ _ _ _ _ _ _ _
+  · subst h; exact outerStage_exclusive _ _ _ _ _ _ (by decide) _ _
+
+/-- **Proven all the way, with the gap named and counted.**
+
+    Executing the emitted CLIF performs five device writes; under the kernel and
+    declared tables those *are* `bwdPlan`; and the plan computes its denotation.
+    What it rests on is `Honours R` — one hypothesis, covering exactly the two
+    declared steps, which `bwdPlan_declaredNames` identifies.  Everything else
+    in the chain is proven. -/
+theorem bwd_host_computes_plan (R : Realisation) (hR : Honours R) (st : WSt) :
+    ∃ k c', hsteps bwdFnsBlas 0 bwdCodeBlas k
+              ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
+      ∧ planOf? bwdTable bwdDeclared (c'.trace.zip c'.btrace) = some bwdPlan
+      ∧ (bwdPlan.run R st).mem = bwdPlan.denote st.mem :=
+  host_computes_plan bwdFnsBlas ⟨0⟩ ⟨0⟩ rfl bwdCodeBlas bwdDriverBlas 1 0
+    AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
+    (AlgorithmLib.Host.FarOk.of_noBases (by decide))
+    (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)
+    (fun j _ => by rw [Nat.zero_add]; rfl)
+    bwdTable bwdDeclared bwdPlan bwdDriverBlas_realises R hR
+    bwdPlan_exclusive st
+
+
+theorem bwdPipelineFull_runs (st : WSt) :
+    (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
+  bwdPipelineFull.run_denote bwdPipelineFull_exclusive st
+
 example : siluBwd.ew = sbStage.ew := rfl
 example : kernel    = dxStage.ew := rfl
 example : dwKernel  = dwStage.ew := rfl
+
+/-- **Delta-only unfoldings of the two stages.**
+
+    These exist so `bwd_chain` can be proven by *rewriting* rather than by
+    definitional unification.  Unifying `map_then_reduce`'s conclusion against
+    `dxStage.run (sbStage.run st)` directly makes the elaborator `whnf` its way
+    through `StageSpec.run`, which is a fold over `GRID = 896` blocks: measured
+    at **over 9 GB**, and with `maxRecDepth` raised it stack-overflows instead.
+    Neither `rfl` below mentions `.run`, so `rw` replaces the stages
+    syntactically and the unification that follows is immediate. -/
+theorem dxStage_def : dxStage
+    = reduceStage adjB wB adjIx wIx dxB K GRID (by decide) (by decide) := rfl
+
+theorem sbStage_def : sbStage
+    = mapStage siluBwdSpec siluBwdIn adjB EGRID (by decide) := rfl
 
 theorem bwd_chain (st : WSt) (cta : Nat) (hlt : cta < GRID) :
     (dxStage.run (sbStage.run st)).mem dxB cta
@@ -669,8 +952,9 @@ theorem bwd_chain (st : WSt) (cta : Nat) (hlt : cta < GRID) :
           (fun a => denote (fun i => st.mem (siluBwdIn i) a) siluBwdSpec)
           (st.mem wB)
           (fun i l => adjIx.eval cta i l) (fun i l => wIx.eval cta i l) K)
-          ⟨0, by decide⟩ :=
-  map_then_reduce siluBwdSpec siluBwdIn adjB wB dxB adjIx wIx
+          ⟨0, by decide⟩ := by
+  rw [dxStage_def, sbStage_def]
+  exact map_then_reduce siluBwdSpec siluBwdIn adjB wB dxB adjIx wIx
     (by decide) (by decide) (by decide) (by decide) K EGRID GRID st cta hlt
     (fun i hi l => ⟨i, by simpa [K, geom, EGRID, egeom, MapGeom.simple] using hi, l, rfl⟩)
 

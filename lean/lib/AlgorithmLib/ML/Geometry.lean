@@ -184,11 +184,25 @@ def EWStmt.WritesBufB (b : Buf) : EWStmt → Bool
 /-- **The condition a stage must satisfy**: it writes `out`, and does not read
     it.
 
-    Both halves matter.  Checking only "does not read `out`" passes **vacuously**
-    for any buffer the kernel never touches, so a guard written against the wrong
-    buffer number would report success.  Requiring `WritesBufB` turns a wrong
-    buffer number into a build failure. -/
+    A stage must at minimum write the buffer it claims as its output; that is
+    what this checks.  It is *necessary*, not sufficient — `StageSpec.valOnly`
+    is the semantic obligation and is discharged per stage.  For the stronger,
+    fully syntactic condition see `IdempotentEligibleB` below. -/
 def EWStmt.StageEligibleB (out : Buf) (s : EWStmt) : Bool :=
+  s.WritesBufB out
+
+/-- **Syntactically idempotent**: writes `out` and never reads it.
+
+    This is the precondition for `StageSpec.Idempotent`, which is what
+    re-running a block requires — and therefore what the arbitrary-list and
+    permutation results need.  A grid runs each block once and does *not* need
+    it, so an in-place kernel is still a stage; `runGrid_value` covers it.
+
+    Both halves matter.  Checking only "does not read `out`" passes vacuously
+    for any buffer the kernel never touches, so a guard written against the
+    wrong buffer number would report success.  Requiring `WritesBufB` turns a
+    wrong buffer number into a build failure. -/
+def EWStmt.IdempotentEligibleB (out : Buf) (s : EWStmt) : Bool :=
   s.WritesBufB out && !(s.ReadsBufB out)
 
 end AlgorithmLib.ML

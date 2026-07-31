@@ -7,11 +7,64 @@ import AlgorithmLib.ML.KVCache
 import AlgorithmLib.ML.Rewrite
 import AlgorithmLib.ML.Backprop
 import AlgorithmLib.ML.Pipeline
+import AlgorithmLib.ML.Compose
 import AlgorithmLib.ML.Geometry
 import AlgorithmLib.Layout
 import AlgorithmLib.ML.Frontend
 import AlgorithmLib.ML.Sched
 import AlgorithmLib.ML.QuantMX
+
+/-!
+  # What the ML stack proves, and what it rests on
+
+  Every theorem named below is anchored in `LedgerAnchors` at the foot of this
+  file, so renaming or deleting one breaks the build.  A ledger that can claim
+  more than the code contains is worse than none.
+
+  ## Scope
+
+  Proven: a model written as an `Expr` compiles to an `EWStmt`, elaborates into
+  the warp machine, lowers through `PtxM`/`PtxFlat`/`PtxPrint`, and the emitted
+  PTX runs the spec — from raw launch, at exact `Float32` equality, under the
+  declared laws below.  This covers **each kernel this library emits**.
+
+  Composition is proven at the `Pipeline` level: `run_denote` derives an n-ary
+  composite from the stage list rather than restating it, and
+  `equiv_of_denote_eq` is the criterion for swapping one schedule for another.
+  What is *not* covered is the host program that orders the launches.
+
+  ## Trusted base
+
+  These carry no theorem.  Everything above rests on them.
+
+  | # | trusted | extent |
+  |---|---|---|
+  | 1 | PTX opcode text encoding | `PtxPrint` renders ~20 opcodes; no theorem ties the emitted text to `PInstr` semantics.  Everything *structural* — registers, addresses, branches, loops — is proven, and `qwen2_emit_ok` discharges branch resolution and printability.  Same position CompCert's assembly printer occupies. |
+  | 2 | `ptxas` and the GPU | instruction semantics, and that `ptxas` does not contract `mul`+`add` into `fma`.  The second is not assumed blindly: `.rn` variants are emitted to prevent it, after a bit-exact test caught it. |
+  | 3 | cuBLAS `sgemv` | ~99.9% of the shipped model's arithmetic — now a **named** assumption, `Law.cublasIsMatvec`, stated at the real numbers because NVIDIA pins no fold order, so no exact-`Float32` claim is available at any version.  It appears in the type of anything depending on it. |
+  | 4 | the CLIF host program | `IR.lean` carries no theorems.  `Clif.lean` models the launch structure — `scanBlock_length` proves the extraction neither invents nor misses a launch, for every block and environment — but the builder itself is a `StateM` action, so facts about a *specific* generator are checked at generation time rather than proven. |
+  | 5 | the ℝ bridge | `instNumOpsReal` maps DSL operations to Mathlib operations by name.  `instNumLawsReal` is *proven* on top of it, and `sderiv_hasDerivAt` proves `sderiv` is Mathlib's derivative — but only on the `Regular` fragment, which excludes `letE`. |
+  | 6 | `Float32` | native operations with no IEEE model.  `NumLaws` is inhabited at `ℝ` and `Int` only, so no theorem here reasons about float rounding. |
+
+  ## Declared laws
+
+  Named propositions that are *false* at `Float32` and are therefore never
+  applied silently: each appears in the type of any theorem depending on it.
+
+  | law | content |
+  |---|---|
+  | `ExpIsEx2` | `e^x = 2^(x·log₂e)` — PTX has no exact `exp`.  Measured 5.06e-7 on silu. |
+  | `SumAssoc` | butterfly reduction = sequential fold.  Measured: 100000024 vs 100000000. |
+  | `StridedRegroup` | a strided walk regrouped as a flat sum; two schedules of one reduction differ by 14%. |
+  | `CuBlasIsMatvec` | a vendor GEMM equals the real-valued matvec; the one law stated at ℝ rather than at `Float32`, because its fold order is unspecified. |
+  | `ZeroTermFree` | dropping zero terms from a gradient sum. |
+
+  ## Non-vacuity
+
+  A theorem with an unsatisfiable hypothesis typechecks.  `NonVacuity.lean`
+  instantiates the headline theorems at concrete values and guards them with
+  deliberately-broken variants, because `0 sorry` does not imply non-vacuous.
+-/
 
 namespace AlgorithmLib.ML.Assumptions
 
@@ -103,6 +156,8 @@ example := @strideCover
 example := @ExpIsEx2
 example := @ZeroTermFree
 example := @ZeroLaws
+example := @CuBlasIsMatvec
+example := @cublasSgemvResult
 
 -- results stated about shipped artifacts, reachable only from here
 example := @AlgorithmLib.ML.blockKernel_sound
@@ -136,6 +191,19 @@ example := @AlgorithmLib.ML.Vec.hadamard_eq
 example := @AlgorithmLib.ML.matVec_eq
 example := @AlgorithmLib.ML.rmsNorm_eq
 example := @AlgorithmLib.ML.softmax_eq
+
+-- composition: the launch sequence as a value
+example := @runGrid_step
+example := @Pipeline.run_denote
+example := @Pipeline.equiv_of_denote_eq
+example := @Pipeline.denote_append
+example := @StageSpec.Idempotent
+example := @StageSpec.step_val
+example := @runGrid_otherAddr
+example := @mapStageIP
+example := @mapStage_idempotent
+example := @reduceStage_idempotent
+example := @outerStage_idempotent
 
 end LedgerAnchors
 

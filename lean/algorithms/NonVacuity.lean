@@ -36,10 +36,12 @@ example (st : WSt) :
 /-- Block-order independence, at concrete permuted lists. -/
 example (st : WSt) :
     (runBlocks (mapStage idE (fun _ => (0 : Buf)) 1 4
-        (fun _ => (by decide : (0:Buf) ≠ 1))).ew [0,1,2] st).mem
+        (fun _ => (by decide : (0:Buf) ≠ 1))).blk [0,1,2] st).mem
       = (runBlocks (mapStage idE (fun _ => (0 : Buf)) 1 4
-        (fun _ => (by decide : (0:Buf) ≠ 1))).ew [2,0,1] st).mem :=
-  runBlocks_perm_invariant _ (mapStage_exclusive _ _ _ _ _) _ _
+        (fun _ => (by decide : (0:Buf) ≠ 1))).blk [2,0,1] st).mem :=
+  runBlocks_perm_invariant _ (mapStage_exclusive _ _ _ _ _)
+    (mapStage_idempotent _ _ _ _ _) _ _
+    (by intro c h; show c < 4; simp at h; omega)
     (by intro c; constructor <;> (intro h; simp at h ⊢; omega)) st
 
 /-- At the first block. -/
@@ -77,7 +79,7 @@ example (env : Fin (layerCtx 4) → Int) (i j : Fin 4) :
 /-- A real execution chain exists and lands where `runGrid` says. -/
 example (m : MState) : ∃ m' : MState,
     gridRuns (flatKernel (expandEW BackwardWide.siluBwd.ew)) 28 m m'
-      ∧ m'.toWSt = runGrid (expandEW BackwardWide.siluBwd.ew) 28 m.toWSt :=
+      ∧ m'.toWSt = runGrid (expandEW BackwardWide.siluBwd.ew).elabIn 28 m.toWSt :=
   flatGrid_realises _ (expandEW_expFree _)
     (expandEW_idxFree _ (compileWKernel_idxFree _ _ _ _ _ _
       (fun _ => (by decide : IdxE.IregFree elemIx)) (by decide)))
@@ -94,7 +96,10 @@ def outOfTableKernel : EWStmt := .seq (.loadIdx 0 7 elemIx) (.storeLane 1 elemIx
 
 example : okKernel.StageEligibleB 1 = true := by decide
 /-- Rejects a kernel that reads its own output. -/
-example : inPlaceKernel.StageEligibleB 1 = false := by decide
+example : inPlaceKernel.StageEligibleB 1 = true := by decide
+-- …but it is not idempotent, which is the property re-running needs.
+example : inPlaceKernel.IdempotentEligibleB 1 = false := by decide
+example : okKernel.IdempotentEligibleB 1 = true := by decide
 /-- **Rejects a buffer the kernel never writes** — the G13 failure. -/
 example : okKernel.StageEligibleB 5 = false := by decide
 /-- …and one it only reads. -/

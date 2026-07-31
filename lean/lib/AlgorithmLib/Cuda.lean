@@ -64,6 +64,23 @@ def Geom.static (gx : Nat) (gy : Nat := 1) (gz : Nat := 1)
     gridZ  := iconst32 gz
     blockX := bx, blockY := by_, blockZ := bz }
 
+/-- **A grid derived from the work it covers.**
+
+    `Geom.static` takes a block count as a bare number: nothing relates the
+    grid to the element count the kernel is proven over, so a wrong count
+    leaves every kernel theorem intact while the launch reduces the wrong set.
+    These two constructors carry that relation as an elaboration obligation.
+
+    `covering n blocks lanes` — `blocks × lanes` work items, one per lane. -/
+def Geom.covering (n blocks lanes : Nat) (h : blocks * lanes = n := by decide) : Geom :=
+  Geom.static blocks 1 1 lanes 1 1
+
+/-- `sweeping n lanes trips` — one block, whose `lanes` threads each loop
+    `trips` times.  The reduction kernels: the grid is 1 and the coverage lives
+    entirely in the trip count. -/
+def Geom.sweeping (n lanes trips : Nat) (h : lanes * trips = n := by decide) : Geom :=
+  Geom.static 1 1 1 lanes 1 1
+
 /-- One kernel parameter — shape + role + the `ldParam` name. -/
 structure ParamSpec where
   shape : Shape
@@ -119,14 +136,18 @@ end Kernel
 namespace Tensor
 
 /-- Untyped launch — writes `bufs` to bind descriptor at `bindOff` and
-    issues the cudaLaunch. Checks arity. Used internally; callers normally
-    use the typed `launch1/2/3/4` wrappers. -/
+    issues the cudaLaunch.  Used internally; callers normally use the typed
+    `launch1/2/3/4` wrappers.
+
+    **Arity is an elaboration obligation.**  `_harity` is discharged where the
+    launch is written, so a buffer list whose length does not match `k.params`
+    is a build error rather than a generation-time failure.  The typed wrappers
+    derive it from the `hsh` shape obligation they already carry. -/
 def Kernel.launchAt
     (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val)
-    (bindOff : Nat) (bufs : List Val) : IRBuilder Unit := do
+    (bindOff : Nat) (bufs : List Val)
+    (_harity : bufs.length = k.params.length := by rfl) : IRBuilder Unit := do
   let expected := k.params.length
-  if bufs.length ≠ expected then
-    panic! s!"kernel {k.name}: launched with {bufs.length} bufs, expected {expected}"
   -- Write bind descriptor: one i32 per buffer at bindOff + 4*i
   for (b, i) in bufs.zip (List.range bufs.length) do
     storeI32 b (← iaddImm ptr (bindOff + i * 4))
@@ -142,29 +163,43 @@ def Kernel.launchAt
   let _ ← cudaLaunch cuda ptr ptxOff64 arity32 bindOff64 gx gy gz bx by_ bz
   pure ()
 
-/-- Typed 1-binding launch. -/
+/-- **Shapes are checked against the kernel's declared parameters.**
+
+    `s1 … sn` are otherwise free variables with nothing relating them to
+    `k.params`, so a kernel declaring `[.sta D]` would accept a
+    `Tensor [.sta KV_DIM]`.  The `by rfl` auto-parameter closes that at
+    elaboration — a mismatch is an error in the generator, not a wrong answer
+    on the GPU — and it implies the arity `launchAt` asks for. -/
 def launch1 {s1 : Shape}
     (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1) : IRBuilder Unit :=
+    (t1 : Tensor s1)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1] := by rfl) : IRBuilder Unit :=
   Kernel.launchAt k cuda ptr bindOff [t1.buf]
+    (by simpa using (congrArg List.length hsh).symm)
 
-/-- Typed 2-binding launch. -/
+/-- Typed 2-binding launch; shapes checked against `k.params`. -/
 def launch2 {s1 s2 : Shape}
     (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1) (t2 : Tensor s2) : IRBuilder Unit :=
+    (t1 : Tensor s1) (t2 : Tensor s2)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2] := by rfl) : IRBuilder Unit :=
   Kernel.launchAt k cuda ptr bindOff [t1.buf, t2.buf]
+    (by simpa using (congrArg List.length hsh).symm)
 
-/-- Typed 3-binding launch. -/
+/-- Typed 3-binding launch; shapes checked against `k.params`. -/
 def launch3 {s1 s2 s3 : Shape}
     (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3) : IRBuilder Unit :=
+    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2, s3] := by rfl) : IRBuilder Unit :=
   Kernel.launchAt k cuda ptr bindOff [t1.buf, t2.buf, t3.buf]
+    (by simpa using (congrArg List.length hsh).symm)
 
-/-- Typed 4-binding launch. -/
+/-- Typed 4-binding launch; shapes checked against `k.params`. -/
 def launch4 {s1 s2 s3 s4 : Shape}
     (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3) (t4 : Tensor s4) : IRBuilder Unit :=
+    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3) (t4 : Tensor s4)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2, s3, s4] := by rfl) : IRBuilder Unit :=
   Kernel.launchAt k cuda ptr bindOff [t1.buf, t2.buf, t3.buf, t4.buf]
+    (by simpa using (congrArg List.length hsh).symm)
 
 end Tensor
 

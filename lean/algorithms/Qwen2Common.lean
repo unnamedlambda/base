@@ -223,10 +223,35 @@ def PTX_KVSTORE_OFF : Nat := 0x9800
 def PTX_ARGMAX_OFF  : Nat := 0xA800
 
 -- Tokenize / server buffers.
-def TOKEN_BUF_OFF   : Nat := 0xB800  -- 2048 × u32 = 8192 bytes
-def TEXT_IN_OFF     : Nat := 0xD800  -- 8 KB text input buffer
-def TEXT_OUT_OFF    : Nat := 0xF800  -- 8 KB text output buffer
-def MEM_SIZE        : Nat := 0x11800 -- 70 KB total
+--
+-- `TOKEN_BUF_CAP` and `MAX_RECV` are two constants that must agree:
+-- `tokenizeInitFn` writes **one u32 per input byte**, so the token buffer must
+-- hold as many entries as the reader can deliver bytes.  `tokenBuf_holds_input`
+-- below is that obligation; before it existed the two numbers disagreed and a
+-- single input line over the buffer's capacity wrote through into `text_in`,
+-- the buffer being read.
+-- The chat wrapper written around every prompt: `<|im_start|>user\n` (6 tokens)
+-- and `<|im_end|>\n<|im_start|>assistant\n` (13), so 19 in total.
+def PREFIX_LEN      : Nat := 6
+def WRAP_LEN        : Nat := 19
+/-- Tokens the decode loop may generate before stopping. -/
+def MAX_DECODE      : Nat := 128
+
+/-- Bytes `cl_stdin_readline` may deliver.  **Derived, not chosen**: one initial
+    token per input byte, plus the wrapper, plus whatever decode generates, must
+    all fit the KV cache alongside the system prompt.  Picking this number by
+    hand is what let it sit at 8192 against a 2048-position cache. -/
+def MAX_RECV        : Nat := MAX_SEQ - SYSTEM_TOKEN_COUNT - WRAP_LEN - MAX_DECODE
+/-- Token slots: the initial one-per-byte pass, then the wrapper shifted in. -/
+def TOKEN_BUF_CAP   : Nat := MAX_RECV + WRAP_LEN
+def TOKEN_BUF_BYTES : Nat := TOKEN_BUF_CAP * 4
+def TEXT_IN_BYTES   : Nat := 8 * 1024
+def TEXT_OUT_BYTES  : Nat := 8 * 1024
+
+def TOKEN_BUF_OFF   : Nat := 0xB800
+def TEXT_IN_OFF     : Nat := TOKEN_BUF_OFF + TOKEN_BUF_BYTES
+def TEXT_OUT_OFF    : Nat := TEXT_IN_OFF   + TEXT_IN_BYTES
+def MEM_SIZE        : Nat := TEXT_OUT_OFF  + TEXT_OUT_BYTES
 
 -- ── PTX Kernels ──────────────────────────────────────────────────────────────
 
@@ -256,7 +281,7 @@ def embedKernel : Kernel := {
     { name := "meta_buf",  shape := [.sta 6],            ro := true },
     { name := "out_buf",   shape := [.sta D] }
   ]
-  geom := Kernel.Geom.static ((D + 31) / 32) 1 1 32 1 1
+  geom := Kernel.Geom.covering D (D / 32) 32
   ptxOff := PTX_EMBED_OFF
   ptxText := some Qwen2Proven.ptxEmbed
 }
@@ -279,7 +304,7 @@ def rmsNormKernel : Kernel := {
     { name := "y_buf", shape := [.sta D] }
   ]
   smemBytes := 36
-  geom := Kernel.Geom.static 1 1 1 32 1 1
+  geom := Kernel.Geom.sweeping D 32 (D / 32)
   ptxOff := PTX_RMS_OFF
   ptxText := some Qwen2Proven.ptxRmsNorm
 }
@@ -298,7 +323,7 @@ def biasAddDKernel : Kernel := {
              { name := "b_buf", shape := [.sta D], ro := true }]
   -- **Migrated.**  `x[i] + b[i]` is literally `Qwen2Proven.addSpec`, so this is
   -- the *same proven kernel* at a different width — one spec, two instances.
-  geom := Kernel.Geom.static ((D + 31) / 32) 1 1 32 1 1
+  geom := Kernel.Geom.covering D (D / 32) 32
   ptxOff := PTX_BIAS_D_OFF
   ptxText := some Qwen2Proven.ptxAdd
 }
@@ -308,7 +333,7 @@ def biasAddKVKernel : Kernel := {
   params := [{ name := "x_buf", shape := [.sta KV_DIM] },
              { name := "b_buf", shape := [.sta KV_DIM], ro := true }]
   -- **Migrated**, same spec again at the KV width.
-  geom := Kernel.Geom.static ((KV_DIM + 31) / 32) 1 1 32 1 1
+  geom := Kernel.Geom.covering KV_DIM (KV_DIM / 32) 32
   ptxOff := PTX_BIAS_KV_OFF
   ptxText := some Qwen2Proven.ptxAdd
 }
@@ -335,7 +360,7 @@ def ropeQKernel : Kernel := {
              { name := "rope_table", shape := [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)], ro := true }]
   -- **Migrated.**  `HEAD_DIM/2 = 32` was already exactly one warp, so the
   -- geometry is unchanged.  See `Qwen2Proven.rope_ptx_exact`.
-  geom := Kernel.Geom.static N_Q 1 1 (HEAD_DIM/2) 1 1
+  geom := Kernel.Geom.covering (N_Q * (HEAD_DIM/2)) N_Q (HEAD_DIM/2)
   ptxOff := PTX_ROPE_Q_OFF
   ptxText := some Qwen2Proven.ptxRope
 }
@@ -347,7 +372,7 @@ def ropeKKernel : Kernel := {
              { name := "meta_buf",   shape := [.sta 6], ro := true },
              { name := "rope_table", shape := [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)], ro := true }]
   -- **Migrated** — the same proven kernel, fewer heads.
-  geom := Kernel.Geom.static N_KV 1 1 (HEAD_DIM/2) 1 1
+  geom := Kernel.Geom.covering (N_KV * (HEAD_DIM/2)) N_KV (HEAD_DIM/2)
   ptxOff := PTX_ROPE_K_OFF
   ptxText := some Qwen2Proven.ptxRope
 }
@@ -371,7 +396,7 @@ def softmaxKernel : Kernel := {
   params := [{ name := "scores_buf", shape := [.sta N_Q, .dyn] },
              { name := "meta_buf",   shape := [.sta 6], ro := true },
              { name := "probs_buf",  shape := [.sta N_Q, .dyn] }]
-  geom := Kernel.Geom.static N_Q 1 1 32 1 1
+  geom := Kernel.Geom.covering (N_Q * 32) N_Q 32
   ptxOff := PTX_SOFTMAX_OFF
   ptxText := some Qwen2Proven.ptxSoftmax
 }
@@ -388,7 +413,7 @@ def siluGateKernel : Kernel := {
   params := [{ name := "gate_buf", shape := [.sta D_FF] },
              { name := "up_buf",   shape := [.sta D_FF], ro := true },
              { name := "out_buf",  shape := [.sta D_FF] }]
-  geom := Kernel.Geom.static ((D_FF + 31) / 32) 1 1 32 1 1
+  geom := Kernel.Geom.covering D_FF (D_FF / 32) 32
   ptxOff := PTX_SILU_OFF
   ptxText := some Qwen2Proven.ptxSilu
 }
@@ -404,7 +429,7 @@ def residualAddKernel : Kernel := {
   name := "main"
   params := [{ name := "x_buf",   shape := [.sta D] },
              { name := "add_buf", shape := [.sta D], ro := true }]
-  geom := Kernel.Geom.static ((D + 31) / 32) 1 1 32 1 1
+  geom := Kernel.Geom.covering D (D / 32) 32
   ptxOff := PTX_ADD_OFF
   ptxText := some Qwen2Proven.ptxAdd
 }
@@ -422,7 +447,7 @@ def kvStoreKernel : Kernel := {
   params := [{ name := "k_cur_buf",   shape := [.sta KV_DIM], ro := true },
              { name := "k_cache_buf", shape := [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM] },
              { name := "meta_buf",    shape := [.sta 6], ro := true }]
-  geom := Kernel.Geom.static N_KV 1 1 32 1 1
+  geom := Kernel.Geom.covering (N_KV * 32) N_KV 32
   ptxOff := PTX_KVSTORE_OFF
   ptxText := some Qwen2Proven.ptxKVStore
 }
@@ -438,7 +463,7 @@ def argmaxKernel : Kernel := {
   name := "main"
   params := [{ name := "logits_buf", shape := [.sta VOCAB], ro := true },
              { name := "meta_buf",   shape := [.sta 6] }]
-  geom := Kernel.Geom.static 1 1 1 32 1 1
+  geom := Kernel.Geom.sweeping VOCAB 32 (VOCAB / 32)
   ptxOff := PTX_ARGMAX_OFF
   ptxText := some Qwen2Proven.ptxArgmax
 }
@@ -615,6 +640,188 @@ def loadInitCommon (cuda : CudaSetup)
 
 -- ── CLIF Infer Functions ──────────────────────────────────────────────────────
 
+/-- **The meta buffer's six words, as an extracted fragment.**
+
+    `[token_id, pos, seqLen, chunks, tail, rem]`.  `chunks`/`tail`/`rem` are the
+    proven softmax's loop bounds; deriving them here keeps the kernel free of
+    the shift and mask it cannot express, and keeps them lane-uniform by
+    construction (they live in memory, not a register).  See `Qwen2Proven.smMax`
+    for why the split is needed at all.
+
+    Split out of `inferFn` **only** so it can be scanned: `metaStageFrag_emits`
+    below is a statement about a nineteen-instruction list rather than about
+    `inferFn`'s whole body, and it is what turns "the host publishes `seq`,
+    `seq/32`, `(seq/32)*32`, `seq%32`" from something a reader checks by eye
+    into a theorem.  The emitted instructions are unchanged — `do`-notation is
+    associative and the artifact md5 is the same. -/
+def metaStageFrag (ptr dataPtr pos32 seqLen64 : Val) : IRBuilder Val := do
+  let tokId32   ← load32 dataPtr
+  let seqLen32b ← ireduce32 seqLen64
+  let chunks32  ← ushrImm seqLen32b 5
+  let tail32    ← ishlImm chunks32 5
+  let rem32     ← isub seqLen32b tail32
+  let stage     ← absAddr ptr META_STAGE_OFF
+  storeI32 tokId32   stage
+  storeI32 pos32     (← iaddImm stage 4)
+  storeI32 seqLen32b (← iaddImm stage 8)
+  storeI32 chunks32  (← iaddImm stage 12)
+  storeI32 tail32    (← iaddImm stage 16)
+  storeI32 rem32     (← iaddImm stage 20)
+  pure stage
+
+/-- **Exactly what `metaStageFrag` emits**, in program order, as a function of
+    the SSA counter it starts from.
+
+    Read the four lines that matter off it: `%(n+3) = ushr %(n+1), 5`,
+    `%(n+5) = ishl %(n+3), 5`, `%(n+6) = isub %(n+1), %(n+5)`, and the four
+    `store.i32` at `stage + 8/12/16/20` — which are `SEQ_SLOT`, `CHUNKS_SLOT`,
+    `TAIL_SLOT`, `REM_SLOT` of the meta buffer, the four values
+    `Qwen2NonVacuity.smMeta_of_seqLen` needs. -/
+def metaFragInsts (ptr dataPtr pos32 seqLen64 : Val) (n : Nat) : List Inst :=
+  [ .load ⟨n⟩ "load.i32" dataPtr                     -- token id
+  , .ireduce32 ⟨n+1⟩ seqLen64                        -- seq   := (i32) seqLen
+  , .iconst ⟨n+2⟩ .i64 5
+  , .ushr ⟨n+3⟩ ⟨n+1⟩ ⟨n+2⟩                          -- chunks := seq >>> 5
+  , .iconst ⟨n+4⟩ .i64 5
+  , .ishl ⟨n+5⟩ ⟨n+3⟩ ⟨n+4⟩                          -- tail   := chunks <<< 5
+  , .isub ⟨n+6⟩ ⟨n+1⟩ ⟨n+5⟩                          -- rem    := seq - tail
+  , .iconst ⟨n+7⟩ .i64 META_STAGE_OFF
+  , .iadd ⟨n+8⟩ ptr ⟨n+7⟩                            -- stage
+  , .storeTyped .i32 ⟨n⟩ ⟨n+8⟩                       -- stage[0]  = token id
+  , .iconst ⟨n+9⟩ .i64 4
+  , .iadd ⟨n+10⟩ ⟨n+8⟩ ⟨n+9⟩
+  , .storeTyped .i32 pos32 ⟨n+10⟩                    -- stage[4]  = pos
+  , .iconst ⟨n+11⟩ .i64 8
+  , .iadd ⟨n+12⟩ ⟨n+8⟩ ⟨n+11⟩
+  , .storeTyped .i32 ⟨n+1⟩ ⟨n+12⟩                    -- stage[8]  = seq     (SEQ_SLOT)
+  , .iconst ⟨n+13⟩ .i64 12
+  , .iadd ⟨n+14⟩ ⟨n+8⟩ ⟨n+13⟩
+  , .storeTyped .i32 ⟨n+3⟩ ⟨n+14⟩                    -- stage[12] = chunks  (CHUNKS_SLOT)
+  , .iconst ⟨n+15⟩ .i64 16
+  , .iadd ⟨n+16⟩ ⟨n+8⟩ ⟨n+15⟩
+  , .storeTyped .i32 ⟨n+5⟩ ⟨n+16⟩                    -- stage[16] = tail    (TAIL_SLOT)
+  , .iconst ⟨n+17⟩ .i64 20
+  , .iadd ⟨n+18⟩ ⟨n+8⟩ ⟨n+17⟩
+  , .storeTyped .i32 ⟨n+6⟩ ⟨n+18⟩ ]                  -- stage[20] = rem     (REM_SLOT)
+
+/-- **The fragment emits exactly that, from any state.**
+
+    `currentInsts` is kept reversed for O(1) prepend, hence the `.reverse`.
+    Quantified over the incoming `IRState`, so this says what the fragment does
+    wherever it is called from — it is not a claim about one call site. -/
+theorem metaStageFrag_emits (ptr dataPtr pos32 seqLen64 : Val) (s : IRState) :
+    ((metaStageFrag ptr dataPtr pos32 seqLen64).run s).2.currentInsts
+      = (metaFragInsts ptr dataPtr pos32 seqLen64 s.nextVal).reverse
+          ++ s.currentInsts := rfl
+
+open AlgorithmLib.Clif in
+/-- **What the fragment leaves in memory, as expressions over the runtime
+    sequence length.**
+
+    This is the step `SmMeta` was missing.  `metaStageFrag_emits` says which
+    instructions are emitted; this says what the store map holds afterwards —
+    `seq`, `seq >>> 5`, `(seq >>> 5) <<< 5` and `seq − ((seq >>> 5) <<< 5)` at
+    the four slots the softmax kernel reads.  `seq` itself is a runtime load, so
+    none of this was expressible before `Clif.DExp`: every one of the four was
+    `unknown`, and "the host publishes the loop bounds the kernel assumes" was
+    not a sentence this model could write down.
+
+    Nothing is assumed about the incoming store map — the fragment writes all
+    six words itself, and `StoreMap.get?` returns the most recent.  The token id
+    is left as the model's own reading of a load through a pointer it does not
+    resolve; the softmax kernel does not read it.
+
+    The `< n` hypotheses are the compiler's own convention: the values the
+    fragment is handed were allocated before it, so they cannot collide with its
+    temporaries.  `he` is the other half of the same convention — the descriptor
+    pointer is a runtime input.
+
+    `hnc` is the one hypothesis that is about this program rather than about the
+    compiler's conventions: `stepPure` constant-folds, so a *compile-time*
+    sequence length would put four constants in these slots instead of four
+    expressions.  That case is not a gap — it is `Qwen2NonVacuity.smMetaW`, where
+    `SmMeta` is decided outright.  This theorem is about the other one, which is
+    what the shipped program does: `seq` is `pos + 1` and `pos` is a load. -/
+theorem metaFrag_mem (ptr dataPtr pos32 seqLen64 : Val)
+    (e : Env) (m : StoreMap) (n : Nat) (S : DExp)
+    (hptr : ptr.id < n) (hdp : dataPtr.id < n) (hpo : pos32.id < n)
+    (hseq : seqLen64.id < n) (he : e ptr = SymVal.unknown)
+    (hS : (e seqLen64).toD? = some S) (hnc : ∀ k : Int, e seqLen64 ≠ SymVal.const k) :
+    (bevalPure ⟨e, m⟩ (metaFragInsts ptr dataPtr pos32 seqLen64 n)).mem
+        = [ ((ptr.id, (META_STAGE_OFF : Int) + 20),
+             SymVal.derived (.sub S (.shl (.shr S 5) 5)))
+          , ((ptr.id, (META_STAGE_OFF : Int) + 16),
+             SymVal.derived (.shl (.shr S 5) 5))
+          , ((ptr.id, (META_STAGE_OFF : Int) + 12), SymVal.derived (.shr S 5))
+          , ((ptr.id, (META_STAGE_OFF : Int) + 8),  e seqLen64)
+          , ((ptr.id, (META_STAGE_OFF : Int) + 4),  e pos32)
+          , ((ptr.id, (META_STAGE_OFF : Int)),
+             (match e dataPtr with
+              | .offset p k => SymVal.slot p k
+              | _           => SymVal.unknown)) ] ++ m := by
+  -- the fragment's temporaries are all `n + j`, and everything it was handed
+  -- sits below `n`; stating that once keeps the reduction linear
+  have hpj : ∀ j : Nat, (ptr.id = n + j) = False := by
+    intro j; simp only [eq_iff_iff, iff_false]; omega
+  have hdj : ∀ j : Nat, (dataPtr.id = n + j) = False := by
+    intro j; simp only [eq_iff_iff, iff_false]; omega
+  have hoj : ∀ j : Nat, (pos32.id = n + j) = False := by
+    intro j; simp only [eq_iff_iff, iff_false]; omega
+  have hsj : ∀ j : Nat, (seqLen64.id = n + j) = False := by
+    intro j; simp only [eq_iff_iff, iff_false]; omega
+  have hp0 : (ptr.id = n) = False := by simp only [eq_iff_iff, iff_false]; omega
+  have hd0 : (dataPtr.id = n) = False := by simp only [eq_iff_iff, iff_false]; omega
+  have ho0 : (pos32.id = n) = False := by simp only [eq_iff_iff, iff_false]; omega
+  have hs0 : (seqLen64.id = n) = False := by simp only [eq_iff_iff, iff_false]; omega
+  have hnn : ∀ a b : Nat, (n + a = n + b) = (a = b) := by
+    intro a b; simp only [eq_iff_iff]; omega
+  have hn0 : ∀ a : Nat, (n = n + (a + 1)) = False := by
+    intro a; simp only [eq_iff_iff, iff_false]; omega
+  -- `toD?` allows exactly three shapes for `seq`, and `dOf` ignores the SSA
+  -- name in all three — which is why the expression the fragment builds at
+  -- `%(n+3)` is the one this theorem states about the caller's `seqLen64`.
+  cases hv : e seqLen64
+  case const k => exact absurd hv (hnc k)
+  case slot q k => rw [hv] at hS; exact absurd hS (by simp [SymVal.toD?])
+  case unknown => rw [hv] at hS; exact absurd hS (by simp [SymVal.toD?])
+  all_goals
+    (rw [hv] at hS
+     simp only [SymVal.toD?, Option.some.injEq] at hS
+     subst hS
+     simp only [metaFragInsts, bevalPure, bstep, stepPure, stepMem, Inst.storeOf?,
+       Env.set_apply, addSym, dOf, he, hv, hpj, hdj, hoj, hsj, hp0, hd0, ho0, hs0,
+       hnn, hn0, if_false, reduceIte]
+     simp
+     all_goals rfl)
+
+open AlgorithmLib.Clif in
+/-- **The four slots the softmax kernel reads**, straight off the store map. -/
+theorem metaFrag_stores (ptr dataPtr pos32 seqLen64 : Val)
+    (e : Env) (m : StoreMap) (n : Nat) (S : DExp)
+    (hptr : ptr.id < n) (hdp : dataPtr.id < n) (hpo : pos32.id < n)
+    (hseq : seqLen64.id < n) (he : e ptr = SymVal.unknown)
+    (hS : (e seqLen64).toD? = some S) (hnc : ∀ k : Int, e seqLen64 ≠ SymVal.const k) :
+    let mm := (bevalPure ⟨e, m⟩ (metaFragInsts ptr dataPtr pos32 seqLen64 n)).mem
+    mm.get? ptr.id ((META_STAGE_OFF : Int) + 8)  = some (e seqLen64)
+      ∧ mm.get? ptr.id ((META_STAGE_OFF : Int) + 12) = some (.derived (.shr S 5))
+      ∧ mm.get? ptr.id ((META_STAGE_OFF : Int) + 16)
+          = some (.derived (.shl (.shr S 5) 5))
+      ∧ mm.get? ptr.id ((META_STAGE_OFF : Int) + 20)
+          = some (.derived (.sub S (.shl (.shr S 5) 5))) := by
+  intro mm
+  have hm : mm = _ :=
+    metaFrag_mem ptr dataPtr pos32 seqLen64 e m n S hptr hdp hpo hseq he hS hnc
+  rw [hm]
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> simp [StoreMap.get?, META_STAGE_OFF]
+
+/-- …and the byte offsets it stores to are the four slots the softmax kernel
+    reads, by `SEQ_SLOT`/`CHUNKS_SLOT`/`TAIL_SLOT`/`REM_SLOT`'s own definitions
+    — four `Nat` words at four-byte stride. -/
+theorem metaFrag_slots :
+    (8, 12, 16, 20)
+      = (Qwen2Proven.SEQ_SLOT * 4, Qwen2Proven.CHUNKS_SLOT * 4,
+         Qwen2Proven.TAIL_SLOT * 4, Qwen2Proven.REM_SLOT * 4) := by decide
+
 /-- inferFn (fn_27): one decode step.
     Reads [token_id:u32][pos:u32] from data_ptr.
     Uploads meta to GPU, launches embed lookup, runs 24-layer loop (calls fn_28),
@@ -637,23 +844,7 @@ def inferFn : IRBuilder Unit := do
   storeI64 pos64    (← absAddr ptr POS_SLOT_OFF)
   storeI64 seqLen64 (← absAddr ptr SEQ_LEN_SLOT_OFF)
 
-  -- Assemble the meta buffer: [token_id, pos, seqLen, chunks, tail, rem].
-  -- `chunks`/`tail`/`rem` are the proven softmax's loop bounds; deriving them
-  -- here keeps the kernel free of the shift and mask it cannot express, and
-  -- keeps them lane-uniform by construction (they live in memory, not a
-  -- register).  See `Qwen2Proven.smMax` for why the split is needed at all.
-  let tokId32   ← load32 dataPtr
-  let seqLen32b ← ireduce32 seqLen64
-  let chunks32  ← ushrImm seqLen32b 5
-  let tail32    ← ishlImm chunks32 5
-  let rem32     ← isub seqLen32b tail32
-  let stage     ← absAddr ptr META_STAGE_OFF
-  storeI32 tokId32   stage
-  storeI32 pos32     (← iaddImm stage 4)
-  storeI32 seqLen32b (← iaddImm stage 8)
-  storeI32 chunks32  (← iaddImm stage 12)
-  storeI32 tail32    (← iaddImm stage 16)
-  storeI32 rem32     (← iaddImm stage 20)
+  let stage ← metaStageFrag ptr dataPtr pos32 seqLen64
   let metaT ← slotMeta.load ptr
   let metaBytes24 ← iconst64 24
   Tensor.upload cuda ptr metaT stage metaBytes24
@@ -1106,8 +1297,8 @@ def cliFn : IRBuilder Unit := do
   storeI64 inferOutAddr (← absAddr ptr 0x28)
   -- Constants
   let zero64    ← iconst64 0
-  let maxRecv   ← iconst64 8192
-  let maxDecode ← iconst64 128
+  let maxRecv   ← iconst64 MAX_RECV
+  let maxDecode ← iconst64 MAX_DECODE
   let textInOff64  ← iconst64 TEXT_IN_OFF
   let textOutOff64 ← iconst64 TEXT_OUT_OFF
   let eosTok    ← iconst32 151643   -- <|endoftext|>
@@ -1132,8 +1323,8 @@ def cliFn : IRBuilder Unit := do
   let t_as_a2   ← iconst32 64
   let t_as_n    ← iconst32 77
   let t_as_t2   ← iconst32 83
-  let prefixLen ← iconst64 6
-  let wrapLen   ← iconst64 19
+  let prefixLen ← iconst64 PREFIX_LEN
+  let wrapLen   ← iconst64 WRAP_LEN
   -- Blocks
   let bootHdr      ← declareBlock [.i64]               -- (i)  system-prompt prefill loop
   let bootBody     ← declareBlock [.i64]
@@ -1420,15 +1611,273 @@ def memMap : RegionMap :=
     ⟨"ptx_add",     PTX_ADD_OFF,     PTX_KVSTORE_OFF - PTX_ADD_OFF⟩,
     ⟨"ptx_kvstore", PTX_KVSTORE_OFF, PTX_ARGMAX_OFF  - PTX_KVSTORE_OFF⟩,
     ⟨"ptx_argmax",  PTX_ARGMAX_OFF,  TOKEN_BUF_OFF   - PTX_ARGMAX_OFF⟩,
-    ⟨"token_buf",   TOKEN_BUF_OFF,   2048 * 4⟩,
-    ⟨"text_in",     TEXT_IN_OFF,     8 * 1024⟩,
-    ⟨"text_out",    TEXT_OUT_OFF,    8 * 1024⟩ ]
+    ⟨"token_buf",   TOKEN_BUF_OFF,   TOKEN_BUF_BYTES⟩,
+    ⟨"text_in",     TEXT_IN_OFF,     TEXT_IN_BYTES⟩,
+    ⟨"text_out",    TEXT_OUT_OFF,    TEXT_OUT_BYTES⟩ ]
+
+-- ---------------------------------------------------------------------------
+-- The host program, against the kernels it launches
+-- ---------------------------------------------------------------------------
+
+/-- The layer-forward function, as a value. -/
+def inferState : AlgorithmLib.IR.IRState := (inferFn.run {}).2
+
+/-- **Device writes the launch model does not see, in `inferFn` itself.**
+
+    `inferFn` directly performs the embed launch and the projection matvecs it
+    does not delegate; the per-layer cuBLAS calls sit inside `layerStepFn`.
+    This number is not a target to drive to zero by weakening the check — it is
+    the size of the gap between "the launches are proven" and "the program is
+    proven", and it goes to zero only when the calls themselves are replaced by
+    kernels with `StageSpec`s. -/
+def EXPECTED_UNMODELLED_WRITES : Nat := 1
+
+/-- A device write the model **records but does not interpret** — a vendor call
+    or a host→device copy.  Every field is `none`: its position in the sequence
+    is what a composition needs, and claiming to have recovered a slot or a grid
+    for a vendor call would be an invention. -/
+def externRec (nm : String) (args : List AlgorithmLib.Clif.ArgDesc) :
+    AlgorithmLib.Clif.LaunchRec :=
+  { fnName := nm, kernelOff := none, nBufs := none, bindOff := none,
+    gridX := none, blockX := none, args := args }
+
+/-- **The LM-head projection's arguments, as the scan recovers them.**
+
+    `cl_cublas_sgemv(ctx, trans, m, n, alpha, A, x, beta, y)`.  The dimensions
+    are `D × VOCAB`, and the three buffer handles are identified by the slots
+    they were loaded from — which is what distinguishes this call from the seven
+    per-layer matvecs, three of which are the same `D × D` shape as each other.
+    `1065353216` is `0x3F800000`, the bit pattern of `1.0f`. -/
+def CUBLAS_LMHEAD_ARGS : List AlgorithmLib.Clif.ArgDesc :=
+  [ .slot 16                       -- cuda context pointer
+  , .const 1                       -- transpose
+  , .const (Int.ofNat D)           -- m = 896
+  , .const (Int.ofNat VOCAB)       -- n = 151936
+  , .const 1065353216              -- alpha = 1.0f
+  , .slot 112                      -- A = lmHead weights
+  , .slot 76                       -- x = hdNorm
+  , .const 0                       -- beta = 0.0f
+  , .slot 116 ]                    -- y = logits
+
+/-- **The final stage's launches**: the second RMS norm, then the argmax.  The
+    LM-head projection between them is `cl_cublas_sgemv`, which is why this list
+    has two entries and not three — the gap is visible in the shape of the
+    declaration itself. -/
+def expectedFinalLaunches : List AlgorithmLib.Clif.LaunchRec :=
+  [ { fnName    := "cl_cuda_launch"
+      kernelOff := some (Int.ofNat PTX_RMS_OFF)
+      nBufs     := some (Int.ofNat rmsNormKernel.params.length)
+      bindOff   := some (Int.ofNat BIND_RMS2)
+      gridX     := some 1
+      blockX    := some 32 }
+    -- the LM-head projection: declared, not interpreted
+  , externRec "cl_cublas_sgemv" CUBLAS_LMHEAD_ARGS
+  , { fnName    := "cl_cuda_launch"
+      kernelOff := some (Int.ofNat PTX_ARGMAX_OFF)
+      nBufs     := some (Int.ofNat argmaxKernel.params.length)
+      bindOff   := some (Int.ofNat BIND_ARGMAX)
+      gridX     := some 1
+      blockX    := some 32 } ]
+
+
+/-- **The launch sequence this program must perform.**
+
+    **These are now elaboration-time theorems, not a generator-time check.**
+    The fallback to an `IO` check existed because `native_decide` on a statement
+    about an `IRBuilder` run measured 43.5 s, and kernel `decide` did not finish
+    in 180 s. Both numbers were artefacts of a bug: `Clif.Env` was a chain of
+    closures storing recipes rather than values, so every lookup re-derived the
+    binding it landed on and the cost doubled with depth. With `Env` a strict
+    association list the same four statements elaborate in **1.26 s total**, so
+    they are stated below as theorems and the check is gone.
+
+    Kernel `decide` is still out of reach — reducing a monadic builder in the
+    kernel exhausts the stack — so these carry `Lean.ofReduceBool` and
+    `Lean.trustCompiler`. That is the price of a closed fact about a program;
+    the *general* facts (`scanBlock_length`, `scanBlock_fnName`) are ordinary
+    inductions and carry nothing. -/
+def expectedLaunches : List AlgorithmLib.Clif.LaunchRec :=
+  [ -- the weight upload: source and destination handles recovered from the
+    -- slots they were loaded from, which is what tells one vendor-ish call
+    -- from another of the same shape
+    externRec "cl_cuda_upload_ptr" [.slot 16, .slot 132, .opaque, .const 24]
+  , { fnName    := "cl_cuda_launch"
+      kernelOff := some (Int.ofNat PTX_EMBED_OFF)
+      nBufs     := some (Int.ofNat embedKernel.params.length)
+      bindOff   := some 2048
+      gridX     := some (Int.ofNat (D / 32))
+      blockX    := some 32 } ]
+
+/-- **A device write, reduced to what a drift check needs**: which primitive,
+    which PTX slot, how many blocks.  Enough to catch a wrong kernel, a wrong
+    grid, a reordering, or an op appearing or disappearing — without pinning
+    every bind offset by hand. -/
+def opSig (r : AlgorithmLib.Clif.LaunchRec) : String × Option Int × Option Int :=
+  (r.fnName, r.kernelOff, r.gridX)
+
+/-- Shorthands for the two kinds of entry. -/
+def kl (ptx grid : Nat) : String × Option Int × Option Int :=
+  ("cl_cuda_launch", some (Int.ofNat ptx), some (Int.ofNat grid))
+def bl (nm : String) : String × Option Int × Option Int := (nm, none, none)
+
+/-- **One transformer layer's attention half.**
+
+    Ten kernel launches, four `sgemv`s and two batched `sgemm`s, in this order.
+    The `sgemm`s are the score and output contractions; like the `sgemv`s they
+    write device memory and are not modelled kernels, which is why they appear
+    here rather than being invisible. -/
+def expectedAttnOps : List (String × Option Int × Option Int) :=
+  [ kl PTX_RMS_OFF 1
+  , bl "cl_cublas_sgemv", bl "cl_cublas_sgemv", bl "cl_cublas_sgemv"
+  , kl PTX_BIAS_D_OFF 28
+  , kl PTX_BIAS_KV_OFF 4, kl PTX_BIAS_KV_OFF 4
+  , kl PTX_ROPE_Q_OFF 14, kl PTX_ROPE_K_OFF 2
+  , kl PTX_KVSTORE_OFF 2, kl PTX_KVSTORE_OFF 2
+  , bl "cl_cublas_sgemm_strided_batched"
+  , kl PTX_SOFTMAX_OFF 14
+  , bl "cl_cublas_sgemm_strided_batched"
+  , bl "cl_cublas_sgemv"
+  , kl PTX_ADD_OFF 28 ]
+
+/-- …and its feed-forward half: three launches and three `sgemv`s. -/
+def expectedFfnOps : List (String × Option Int × Option Int) :=
+  [ kl PTX_RMS_OFF 1
+  , bl "cl_cublas_sgemv", bl "cl_cublas_sgemv"
+  , kl PTX_SILU_OFF 152
+  , bl "cl_cublas_sgemv"
+  , kl PTX_ADD_OFF 28 ]
+
+/-- **The per-token totals, derived from the parts.**
+
+    `LAYERS · (attn + ffn) + embed + upload + final`.  Stated as a definition so
+    the numbers cannot drift from the sequences above. -/
+def opsPerLayer : Nat := expectedAttnOps.length + expectedFfnOps.length
+def opsPerToken : Nat := N_LAYERS * opsPerLayer + 2 + 3
+
+-- ---------------------------------------------------------------------------
+-- Which launched kernels are stages — the ledger, as a theorem
+-- ---------------------------------------------------------------------------
+
+/-! A kernel proven in isolation and a kernel usable as a *step of a pipeline*
+    are different claims.  The second needs a `StageSpec`: a frame condition, a
+    value, and a guarantee the value ignores what the block does not own.
+
+    Every one of the model's kernels now has one (`Qwen2Proven.Stage`).  The
+    risk this section guards is not that some are missing — it is that the list
+    stops being maintained while the pipeline grows, and a later reader takes
+    "the kernels are proven" to mean "the pipeline is proven".
+
+    So the list is derived from the launch sequence rather than written down:
+    `stagedSlots` names what has a stage, and `unstagedSlots` is *computed* by
+    filtering the actual op lists.  Add a kernel to a layer without giving it a
+    stage and `unstaged_kernels` below changes — the ledger cannot silently
+    drift from the pipeline. -/
+
+/-- PTX slots whose kernel has a `StageSpec`. -/
+def stagedSlots : List Nat :=
+  [ PTX_EMBED_OFF, PTX_RMS_OFF, PTX_BIAS_D_OFF, PTX_BIAS_KV_OFF
+  , PTX_ROPE_Q_OFF, PTX_ROPE_K_OFF, PTX_KVSTORE_OFF, PTX_SILU_OFF, PTX_ADD_OFF
+  , PTX_SOFTMAX_OFF, PTX_ARGMAX_OFF ]
+
+/-- Every kernel slot the per-token op lists actually launch. -/
+def launchedSlots : List Nat :=
+  (expectedAttnOps ++ expectedFfnOps).filterMap
+    (fun op => match op.2.1 with | some k => some k.toNat | none => none)
+
+/-- …minus the ones with a stage.  This is the gap, computed. -/
+def unstagedSlots : List Nat :=
+  launchedSlots.filter (fun k => !stagedSlots.contains k) |>.eraseDups
+
+/-- **Every kernel the per-token loop launches is a stage.**
+
+    Stated by `decide`, from the op lists the launch-model theorems also use, so
+    it is the same sequence in both places.  Add a kernel to a layer without
+    giving it a `StageSpec` and this stops being `[]`. -/
+theorem unstaged_kernels : unstagedSlots = [] := by decide
+
+def finalSlots : List Nat := [PTX_RMS_OFF, PTX_ARGMAX_OFF]
+
+/-- …and the sampling tail adds none. -/
+theorem unstaged_final :
+    finalSlots.filter (fun k => !stagedSlots.contains k) = [] := by decide
+
+/-- **All eleven shipped kernels are stages.**  The count is derived,
+    not asserted: `stagedSlots` is checked against the kernel table by
+    `staged_are_real` below, so a slot that is not a real kernel cannot pad it. -/
+theorem staged_count : stagedSlots.length = 11 := by decide
+
+/-- Every slot claimed to have a stage is a slot the model actually writes a
+    kernel into.  Without this the ledger could be inflated with invented
+    offsets and every theorem above would still hold. -/
+theorem staged_are_real :
+    stagedSlots.all (fun k => (memMap.map (fun r => r.off)).contains k) = true := by
+  decide
+
+-- ---------------------------------------------------------------------------
+-- The device-write sequence, as theorems
+-- ---------------------------------------------------------------------------
+
+/-- Every instruction in the entry function has a meaning in this model. -/
+theorem inferFn_modellable :
+    AlgorithmLib.Clif.blocksModellableB (inferFn.run {}).2.allBlocks = true := by
+  native_decide
+
+/-- **The entry function's device writes are exactly the declared ones.** -/
+theorem inferFn_writes :
+    AlgorithmLib.Clif.launchesOf (inferFn.run {}).2 = expectedLaunches := by
+  native_decide
+
+theorem inferFinalFn_modellable :
+    AlgorithmLib.Clif.blocksModellableB (inferFinalFn.run {}).2.allBlocks = true := by
+  native_decide
+
+/-- **The sampling tail's, likewise** — norm, vendor projection, argmax. -/
+theorem inferFinalFn_writes :
+    AlgorithmLib.Clif.launchesOf (inferFinalFn.run {}).2 = expectedFinalLaunches := by
+  native_decide
 
 /-- **No two regions overlap.** -/
 theorem memMap_ok : memMap.okB = true := by decide
 
 /-- **Every region fits inside the declared memory.** -/
 theorem memMap_within : RegionMap.withinB MEM_SIZE memMap = true := by decide
+
+/-- **The token buffer holds every token the reader can produce.**
+
+    `tokenizeInitFn` loops `textLen` times writing one `u32` per input byte, and
+    `textLen` comes from `cl_stdin_readline` bounded by `MAX_RECV`.  So the loop
+    bound and the region capacity are two separate constants that must agree,
+    and nothing in `memMap_ok` relates them — the regions were disjoint the
+    whole time the writer was running past one of them.
+
+    Depends on the FFI contract that `cl_stdin_readline(_, _, n)` returns at
+    most `n`; the subsequent CR/LF trims only shrink it. -/
+theorem tokenBuf_holds_input : memMap.holdsB "token_buf" MAX_RECV 4 = true := by decide
+
+/-- The same obligation for the text buffers, so a wider reader cannot outrun
+    the buffer it reads into either. -/
+theorem textIn_holds_input : memMap.holdsB "text_in" MAX_RECV 1 = true := by decide
+
+/-- **…and after the chat wrapper is shifted in.**  `wrapWrite` moves every
+    prompt token up by `PREFIX_LEN` and appends the suffix, so the highest slot
+    touched is `rawPromptN + WRAP_LEN − 1`.  Tokenization bounds `rawPromptN` by
+    `MAX_RECV` (BPE only merges), which is what makes this decidable. -/
+theorem tokenBuf_holds_wrapped :
+    memMap.holdsB "token_buf" (MAX_RECV + WRAP_LEN) 4 = true := by decide
+
+/-- **The whole turn fits the KV cache.**  System preamble, then the wrapped
+    prompt, then everything decode may generate — all indexed into a cache with
+    `MAX_SEQ` positions.  This is the constraint `MAX_RECV` is *derived* from;
+    stating it separately is what catches a change to any other term. -/
+theorem turn_fits_kv_cache :
+    SYSTEM_TOKEN_COUNT + MAX_RECV + WRAP_LEN + MAX_DECODE ≤ MAX_SEQ := by decide
+
+/-! **Negative guards.**  A check that cannot fail proves nothing, so these
+    pin the two ways `holdsB` could be vacuously true: an over-large bound must
+    be rejected, and a region that is not there must be `false` rather than
+    silently unchecked. -/
+example : memMap.holdsB "token_buf" (TOKEN_BUF_CAP + 1) 4 = false := by decide
+example : memMap.holdsB "no_such_region" 1 1 = false := by decide
 
 /-- Each emitted PTX module, against the slot it is written into. -/
 def ptxSlotFits : List (String × Nat × Nat) :=
@@ -1451,5 +1900,1079 @@ def ptxFitsB : Bool := ptxSlotFits.all (fun e => e.2.1 ≤ e.2.2)
     symptom being `cl_cuda_launch: load kernel failed`, or worse, a *different*
     kernel loading successfully at the wrong offset. -/
 theorem ptx_fits : ptxFitsB = true := by native_decide
+
+-- ---------------------------------------------------------------------------
+-- One layer, as a plan the shipped program realises
+-- ---------------------------------------------------------------------------
+
+section Realisation
+open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage
+set_option maxHeartbeats 2000000
+
+/-!
+  **The last hand-chosen thing, removed.**
+
+  `Qwen2Proven.Stage` proves what a layer's twenty-two device writes do to
+  memory.  Which *buffers* they do it to was, until now, a numbering written
+  next to the plan — so the theorem was about a layer-shaped transformation,
+  not about this program's.  The two disagreed in three places, none of them
+  visible to `0 sorry`: the attention half and the feed-forward half used
+  different numbers for the same residual stream, five kernels read five
+  different "meta" buffers, and the output projection wrote a buffer the
+  residual add did not read.
+
+  Now the numbering is `Qwen2Proven.Stage.bufOf` applied to handles
+  `Clif.bindsOf` recovered from the emitted stores, the binds are computed from
+  the same arrays, and the table below supplies those arrays to both.  What is
+  left assumed is exactly `bufOf`: a renaming, injective, from recovered
+  handles to buffer numbers.
+-/
+
+/-- The descriptor pointer.  `entryBlock` returns `v0` in every generated
+    function, so a fixed layout slot is `near k` and a per-layer weight, whose
+    base is a runtime-computed address, is `far`. -/
+def ROOT : Nat := 0
+
+/-- A launch, in the form `Clif.deviceOpsOf` produces. -/
+def klOp (ptx nb bo grid : Nat) (bs : List BufDesc) : DeviceOp :=
+  ( { fnName    := "cl_cuda_launch"
+      kernelOff := some (Int.ofNat ptx)
+      nBufs     := some (Int.ofNat nb)
+      bindOff   := some (Int.ofNat bo)
+      gridX     := some (Int.ofNat grid)
+      blockX    := some 32 }
+  , { bufs := some bs } )
+
+/-- …and a vendor call.  `LaunchRec.args` is *derived* from the base-aware
+    descriptors by `BufDesc.toArg`, which is what `bufDescOf_toArg` says the
+    scan does — so the two views cannot be written inconsistently. -/
+def vlOp (nm : String) (as : List BufDesc) : DeviceOp :=
+  (externRec nm (as.map BufDesc.toArg), { args := as })
+
+/-- `1.0f` and `0.5f` as bit patterns, and the attention scale. -/
+private def F1 : BufDesc := .const 1065353216
+private def FR : BufDesc := .const 1040187392   -- 1/8, the 1/√head_dim scale
+
+/-- **The attention half's device writes, with what each one bound.**  Pinned
+    to `inferLayerAttnFn` by `Qwen2.attn_ops_are`. -/
+def attnOps : List DeviceOp :=
+  [ klOp PTX_RMS_OFF     3 BIND_RMS1   1   BS_A_NORM
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 896, .const 896, F1, .far 8 4,  .near 76, .const 0, .near 80]
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 896, .const 128, F1, .far 8 12, .near 76, .const 0, .near 84]
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 896, .const 128, F1, .far 8 20, .near 76, .const 0, .near 88]
+  , klOp PTX_BIAS_D_OFF  2 BIND_BIAS_Q 28  BS_A_BIASQ
+  , klOp PTX_BIAS_KV_OFF 2 BIND_BIAS_K 4   BS_A_BIASK
+  , klOp PTX_BIAS_KV_OFF 2 BIND_BIAS_V 4   BS_A_BIASV
+  , klOp PTX_ROPE_Q_OFF  3 BIND_ROPE_Q 14  BS_A_ROPEQ
+  , klOp PTX_ROPE_K_OFF  3 BIND_ROPE_K 2   BS_A_ROPEK
+  , klOp PTX_KVSTORE_OFF 3 BIND_KV_K   2   BS_A_KVK
+  , klOp PTX_KVSTORE_OFF 3 BIND_KV_V   2   BS_A_KVV
+  , vlOp "cl_cublas_sgemm_strided_batched"
+      [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
+       .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
+       .opaque, .const 2]
+  , klOp PTX_SOFTMAX_OFF 3 BIND_SOFTMAX 14 BS_A_SOFT
+  , vlOp "cl_cublas_sgemm_strided_batched"
+      [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
+       .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
+       .const 448, .const 2]
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76]
+  , klOp PTX_ADD_OFF     2 BIND_ADD1   28  BS_A_ADD ]
+
+/-- **…and the feed-forward half's.** -/
+def ffnOps : List DeviceOp :=
+  [ klOp PTX_RMS_OFF  3 BIND_RMS2 1   BS_FFN_NORM
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 36, .near 76, .const 0, .near 96]
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 40, .near 76, .const 0, .near 100]
+  , klOp PTX_SILU_OFF 3 BIND_SILU 152 BS_FFN_SILU
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 4864, .const 896, F1, .far 8 44, .near 104, .const 0, .near 92]
+  , klOp PTX_ADD_OFF  2 BIND_ADD2 28  BS_FFN_ADD ]
+
+
+-- ---------------------------------------------------------------------------
+-- The same sequences, as a declared host program
+-- ---------------------------------------------------------------------------
+
+/-! `attnOps`, `ffnOps`, `entryOps` and `finalOps` are *lists*.  A list of
+    twenty-two device writes says nothing about a loop running twenty-four
+    times — `tokenOps` had `List.replicate N_LAYERS layerOps` in its definition,
+    and a definition is not a theorem: it could have said 23 and nothing would
+    have noticed.
+
+    `HStmt` is the program those lists come from.  `forN 24` is a node, and
+    `HStmt.launches`/`binds` recurse through it, so the repetition is *derived*.
+    Everything below is written from the same literals as the ops lists via
+    `argOf`, and the two are then proven equal. -/
+
+open AlgorithmLib.Host in
+/-- The attention half, declared. -/
+def attnDriver (fnOf : String → FnRef) : HStmt :=
+  HStmt.seqs
+    [ .launch (kStep PTX_RMS_OFF     3 BIND_RMS1   1   BS_A_NORM)
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 896, .const 896, F1, .far 8 4,  .near 76, .const 0, .near 80])
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 896, .const 128, F1, .far 8 12, .near 76, .const 0, .near 84])
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 896, .const 128, F1, .far 8 20, .near 76, .const 0, .near 88])
+    , .launch (kStep PTX_BIAS_D_OFF  2 BIND_BIAS_Q 28  BS_A_BIASQ)
+    , .launch (kStep PTX_BIAS_KV_OFF 2 BIND_BIAS_K 4   BS_A_BIASK)
+    , .launch (kStep PTX_BIAS_KV_OFF 2 BIND_BIAS_V 4   BS_A_BIASV)
+    , .launch (kStep PTX_ROPE_Q_OFF  3 BIND_ROPE_Q 14  BS_A_ROPEQ)
+    , .launch (kStep PTX_ROPE_K_OFF  3 BIND_ROPE_K 2   BS_A_ROPEK)
+    , .launch (kStep PTX_KVSTORE_OFF 3 BIND_KV_K   2   BS_A_KVK)
+    , .launch (kStep PTX_KVSTORE_OFF 3 BIND_KV_V   2   BS_A_KVV)
+    , .extern (vStep fnOf "cl_cublas_sgemm_strided_batched"
+        [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
+         .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
+         .opaque, .const 2])
+    , .launch (kStep PTX_SOFTMAX_OFF 3 BIND_SOFTMAX 14 BS_A_SOFT)
+    , .extern (vStep fnOf "cl_cublas_sgemm_strided_batched"
+        [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
+         .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
+         .const 448, .const 2])
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76])
+    , .launch (kStep PTX_ADD_OFF     2 BIND_ADD1   28  BS_A_ADD) ]
+
+open AlgorithmLib.Host in
+/-- …and the feed-forward half. -/
+def ffnDriver (fnOf : String → FnRef) : HStmt :=
+  HStmt.seqs
+    [ .launch (kStep PTX_RMS_OFF  3 BIND_RMS2 1   BS_FFN_NORM)
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 36, .near 76, .const 0, .near 96])
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 40, .near 76, .const 0, .near 100])
+    , .launch (kStep PTX_SILU_OFF 3 BIND_SILU 152 BS_FFN_SILU)
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 4864, .const 896, F1, .far 8 44, .near 104, .const 0, .near 92])
+    , .launch (kStep PTX_ADD_OFF  2 BIND_ADD2 28  BS_FFN_ADD) ]
+
+open AlgorithmLib.Host in
+/-- **The declared attention half performs `attnOps`.** -/
+theorem attnDriver_deviceOps (fnOf : String → FnRef) :
+    (attnDriver fnOf).deviceOps = attnOps := rfl
+
+open AlgorithmLib.Host in
+/-- **…and the declared feed-forward half performs `ffnOps`.** -/
+theorem ffnDriver_deviceOps (fnOf : String → FnRef) :
+    (ffnDriver fnOf).deviceOps = ffnOps := rfl
+
+variable (gim : Buf → Nat → Nat)
+
+/-- **Which PTX slot, bound to which buffers, is which proven stage.**
+
+    Thirteen entries for a layer's thirteen launches.  Each supplies the *same*
+    recovered array (`BS_*`) that the stage's own bind was derived from, so a
+    table entry cannot name a stage proven about different buffers: the two
+    read the same value. -/
+noncomputable def layerKernels (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) : List KernelBinding :=
+  [ ⟨PTX_RMS_OFF,     BIND_RMS1,    BS_A_NORM,   aNormStage gim⟩
+  , ⟨PTX_BIAS_D_OFF,  BIND_BIAS_Q,  BS_A_BIASQ,  aBiasQStage gim⟩
+  , ⟨PTX_BIAS_KV_OFF, BIND_BIAS_K,  BS_A_BIASK,  aBiasKStage gim⟩
+  , ⟨PTX_BIAS_KV_OFF, BIND_BIAS_V,  BS_A_BIASV,  aBiasVStage gim⟩
+  , ⟨PTX_ROPE_Q_OFF,  BIND_ROPE_Q,  BS_A_ROPEQ,  aRopeQStage gim⟩
+  , ⟨PTX_ROPE_K_OFF,  BIND_ROPE_K,  BS_A_ROPEK,  aRopeKStage gim⟩
+  , ⟨PTX_KVSTORE_OFF, BIND_KV_K,    BS_A_KVK,    aKvKStage gim⟩
+  , ⟨PTX_KVSTORE_OFF, BIND_KV_V,    BS_A_KVV,    aKvVStage gim⟩
+  , ⟨PTX_SOFTMAX_OFF, BIND_SOFTMAX, BS_A_SOFT,   aSoftStage gim h hm⟩
+  , ⟨PTX_ADD_OFF,     BIND_ADD1,    BS_A_ADD,    aAddStage gim⟩
+  , ⟨PTX_RMS_OFF,     BIND_RMS2,    BS_FFN_NORM, ffnNormStage⟩
+  , ⟨PTX_SILU_OFF,    BIND_SILU,    BS_FFN_SILU, ffnSiluStage⟩
+  , ⟨PTX_ADD_OFF,     BIND_ADD2,    BS_FFN_ADD,  ffnAddStage⟩ ]
+
+/-- **…and which vendor call is which declared step.**
+
+    Keyed on the recovered argument descriptors, because a vendor call has no
+    PTX slot: three of a layer's seven `sgemv`s are the same 896×896 shape and
+    only the matrix handle tells them apart.  Base-aware, so `far 8 4` (Wq, at
+    offset 4 of the per-layer base) is not the same descriptor as a fixed slot
+    4 would be. -/
+noncomputable def layerDeclared : List DeclaredBinding :=
+  [ ⟨"cl_cublas_sgemv",
+     [.near 16, .const 1, .const 896, .const 896, F1, .far 8 4, .near 76, .const 0, .near 80],
+     cublasStep B_WQ B_XN B_Q D D⟩
+  , ⟨"cl_cublas_sgemv",
+     [.near 16, .const 1, .const 896, .const 128, F1, .far 8 12, .near 76, .const 0, .near 84],
+     cublasStep B_WK B_XN B_K KV_DIM D⟩
+  , ⟨"cl_cublas_sgemv",
+     [.near 16, .const 1, .const 896, .const 128, F1, .far 8 20, .near 76, .const 0, .near 88],
+     cublasStep B_WV B_XN B_V KV_DIM D⟩
+  , ⟨"cl_cublas_sgemm_strided_batched",
+     [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
+      .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
+      .opaque, .const 2],
+     sgemmBatchedStep B_KC B_Q B_SC MAX_SEQ HEAD_DIM⟩
+  , ⟨"cl_cublas_sgemm_strided_batched",
+     [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
+      .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
+      .const 448, .const 2],
+     sgemmBatchedStep B_VC B_PR B_AO D MAX_SEQ⟩
+  , ⟨"cl_cublas_sgemv",
+     [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76],
+     cublasStep B_WO B_AO B_XN D D⟩
+  , ⟨"cl_cublas_sgemv",
+     [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 36, .near 76, .const 0, .near 96],
+     cublasStep B_WG B_XN B_GATE D_FF D⟩
+  , ⟨"cl_cublas_sgemv",
+     [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 40, .near 76, .const 0, .near 100],
+     cublasStep B_WU B_XN B_UP D_FF D⟩
+  , ⟨"cl_cublas_sgemv",
+     [.near 16, .const 1, .const 4864, .const 896, F1, .far 8 44, .near 104, .const 0, .near 92],
+     cublasStep B_WD B_ACT B_AO D D_FF⟩ ]
+
+/-- **The attention half's sixteen device writes resolve to `attnPlan`.**
+
+    Not "a plan with sixteen steps" — *that* plan, the one `attn_computes` is
+    about.  Every launch had to match on slot, bind offset, bind contents and
+    grid; every vendor call on name and recovered arguments. -/
+theorem attn_ops_steps (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    stepsOf? (layerKernels gim h hm) layerDeclared attnOps
+      = some (attnPlan gim h hm).steps := rfl
+
+theorem attn_ops_realise_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (layerKernels gim h hm) layerDeclared attnOps = some (attnPlan gim h hm) := by
+  show (stepsOf? (layerKernels gim h hm) layerDeclared attnOps).map Plan.mk = _
+  rw [attn_ops_steps]
+  rfl
+
+/-- **…and the feed-forward half's six resolve to `ffnPlan`.** -/
+theorem ffn_ops_steps (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    stepsOf? (layerKernels gim h hm) layerDeclared ffnOps = some ffnPlan.steps := rfl
+
+theorem ffn_ops_realise_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (layerKernels gim h hm) layerDeclared ffnOps = some ffnPlan := by
+  show (stepsOf? (layerKernels gim h hm) layerDeclared ffnOps).map Plan.mk = _
+  rw [ffn_ops_steps]
+  rfl
+
+/-- **A whole layer: twenty-two device writes, one plan.**
+
+    Assembled from the two halves rather than re-scanned.  The scan is what
+    costs — each op is a linear walk of the kernel and declared tables — so
+    resolving the layer a third time after resolving both halves is the same
+    search done twice.  `stepsOf?_append` is exactly the lemma that avoids it,
+    and it is the same move `replicate_ops_steps` makes for the loop. -/
+theorem layer_ops_realise_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)
+      = some (layerPlan gim h hm) := by
+  show (stepsOf? (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)).map Plan.mk = _
+  rw [stepsOf?_append _ _ _ _ _ _ (attn_ops_steps gim h hm) (ffn_ops_steps gim h hm)]
+  rfl
+
+/-- The gap, still counted, now against the program's own write sequence. -/
+theorem layer_ops_declaredCount (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    declaredCountOf (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)
+      = some 9 := by
+  show ((planOf? (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)).map
+          Plan.declaredCount) = _
+  rw [layer_ops_realise_plan]
+  rfl
+
+/-- **…and how much of that gap no law even describes.**
+
+    Nine of a layer's twenty-two steps are vendor calls.  Seven of the nine are
+    `cl_cublas_sgemv`, and `cublasStep_isMatvec` says what those compute given
+    `Law.cublasIsMatvec`.  The remaining two are the batched contractions, for
+    which no equation is stated at all — so this is the number of steps that
+    are assumed *without a statement of what is assumed*. -/
+theorem layer_declaredLawGap (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    (layerPlan gim h hm).declaredLawGap = 2 := rfl
+
+-- ── The prologue and the tail, likewise ────────────────────────────────────
+
+/-- **`inferFn`'s two device writes**: the meta upload, then the embedding
+    gather.  Pinned by `entry_ops_are`. -/
+def entryOps : List DeviceOp :=
+  [ vlOp "cl_cuda_upload_ptr" [.near 16, .near 132, .opaque, .const 24]
+  , klOp PTX_EMBED_OFF 3 BIND_EMBED 28 BS_EMBED ]
+
+/-- **`inferFinalFn`'s three**: the final norm, the LM-head projection, the
+    argmax.  The projection is a vendor GEMV, which is why this list has three
+    entries and only two of them are launches. -/
+def finalOps : List DeviceOp :=
+  [ klOp PTX_RMS_OFF 3 BIND_RMS2 1 BS_F_NORM
+  , vlOp "cl_cublas_sgemv"
+      [.near 16, .const 1, .const 896, .const 151936, F1, .near 112, .near 76,
+       .const 0, .near 116]
+  , klOp PTX_ARGMAX_OFF 2 BIND_ARGMAX 1 BS_ARGMAX ]
+
+/-- The layer table, extended to the whole token.
+
+    The final RMSNorm reuses `BIND_RMS2` — the same slot *and* the same bind
+    offset as the feed-forward norm — and is a different step, because it binds
+    a different weight buffer.  Nothing but the recovered array distinguishes
+    them, which is the case the bind check exists for. -/
+noncomputable def tokenKernels (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) : List KernelBinding :=
+  layerKernels gim h hm ++
+    [ ⟨PTX_EMBED_OFF,  BIND_EMBED,  BS_EMBED,  eEmbedStage gim⟩
+    , ⟨PTX_RMS_OFF,    BIND_RMS2,   BS_F_NORM, fNormStage gim⟩
+    , ⟨PTX_ARGMAX_OFF, BIND_ARGMAX, BS_ARGMAX, fArgmaxStage gim⟩ ]
+
+noncomputable def tokenDeclared : List DeclaredBinding :=
+  layerDeclared ++
+    [ ⟨"cl_cuda_upload_ptr", [.near 16, .near 132, .opaque, .const 24],
+       uploadStep B_META⟩
+    , ⟨"cl_cublas_sgemv",
+       [.near 16, .const 1, .const 896, .const 151936, F1, .near 112, .near 76,
+        .const 0, .near 116],
+       cublasStep B_LMH B_XN B_LOG VOCAB D⟩ ]
+
+/-- **`inferFn`'s device writes, and what each bound.** -/
+theorem entry_ops_are :
+    deviceOpsOf ROOT (inferFn.run {}).2 = entryOps := by native_decide
+
+/-- **…and `inferFinalFn`'s.** -/
+theorem final_ops_are :
+    deviceOpsOf ROOT (inferFinalFn.run {}).2 = finalOps := by native_decide
+
+theorem entry_ops_realise_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (tokenKernels gim h hm) tokenDeclared entryOps = some (entryPlan gim) := rfl
+
+theorem final_ops_realise_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (tokenKernels gim h hm) tokenDeclared finalOps = some (finalPlan gim) := rfl
+
+/-- **The shipped prologue realises `entryPlan`.** -/
+theorem entry_program_realises_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (tokenKernels gim h hm) tokenDeclared
+        (deviceOpsOf ROOT (inferFn.run {}).2) = some (entryPlan gim) := by
+  rw [entry_ops_are]; exact entry_ops_realise_plan gim h hm
+
+/-- **…and the shipped sampling tail realises `finalPlan`.** -/
+theorem final_program_realises_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (tokenKernels gim h hm) tokenDeclared
+        (deviceOpsOf ROOT (inferFinalFn.run {}).2) = some (finalPlan gim) := by
+  rw [final_ops_are]; exact final_ops_realise_plan gim h hm
+
+/-- **Every one of the eleven staged kernels is now in a plan tied to the
+    program.**  Nine sit in the layer, two outside it; before this the ledger
+    said all eleven had a `StageSpec` while only nine appeared in a plan. -/
+theorem every_staged_kernel_planned :
+    stagedSlots.all (fun k =>
+      (attnOps ++ ffnOps ++ entryOps ++ finalOps).any
+        (fun op => op.1.kernelOff = some (Int.ofNat k))) = true := by
+  decide
+
+-- ── A whole token ──────────────────────────────────────────────────────────
+
+/-- One layer's twenty-two device writes. -/
+def layerOps : List DeviceOp := attnOps ++ ffnOps
+
+/-- **A token's five hundred and thirty-three**: the prologue, twenty-four
+    layers, the sampling tail.  `inferLayerFn` writes nothing itself, so a
+    layer's sequence is the two halves concatenated, and the loop contributes
+    that sequence `N_LAYERS` times. -/
+def tokenOps : List DeviceOp :=
+  entryOps ++ ((List.replicate N_LAYERS layerOps).flatten ++ finalOps)
+
+noncomputable def tokenPlan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) : Plan where
+  steps := (entryPlan gim).steps
+    ++ ((List.replicate N_LAYERS (layerPlan gim h hm).steps).flatten
+        ++ (finalPlan gim).steps)
+
+/-- **The same twenty-two writes, against the token's tables.**
+
+    Derived, not re-resolved.  `tokenKernels` is `layerKernels` plus three
+    entries and `tokenDeclared` is `layerDeclared` plus two, so
+    `stepsOf?_appendTable` carries the layer's resolution across — and the
+    layer's own resolution is itself assembled from the two halves.  Restating
+    this as `rfl` costs 12.1 s: every one of the twenty-two ops rescans a table
+    that is now three entries longer, and the scan is where the time goes. -/
+theorem layer_ops_steps (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    stepsOf? (tokenKernels gim h hm) tokenDeclared layerOps
+      = some (layerPlan gim h hm).steps :=
+  stepsOf?_append _ _ _ _ _ _
+    (stepsOf?_appendTable _ _ _ _ attnOps _ (attn_ops_steps gim h hm))
+    (stepsOf?_appendTable _ _ _ _ ffnOps _ (ffn_ops_steps gim h hm))
+
+/-- **The loop, as an induction.**  The layer is resolved once; repeating it
+    `n` times is a theorem rather than `n` more reductions — which is what
+    makes a 533-step claim cost the same as a 22-step one. -/
+theorem replicate_ops_steps (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) : ∀ n : Nat,
+    stepsOf? (tokenKernels gim h hm) tokenDeclared (List.replicate n layerOps).flatten
+      = some (List.replicate n (layerPlan gim h hm).steps).flatten := by
+  intro n
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+      show stepsOf? _ _ (layerOps ++ (List.replicate n layerOps).flatten)
+          = some ((layerPlan gim h hm).steps
+                  ++ (List.replicate n (layerPlan gim h hm).steps).flatten)
+      exact stepsOf?_append _ _ _ _ _ _ (layer_ops_steps gim h hm) ih
+
+
+-- ---------------------------------------------------------------------------
+-- …and the whole decode step, declared
+-- ---------------------------------------------------------------------------
+
+open AlgorithmLib.Host in
+/-- `inferFn`'s two device writes. -/
+def entryDriver (fnOf : String → FnRef) : HStmt :=
+  HStmt.seqs
+    [ .extern (vStep fnOf "cl_cuda_upload_ptr" [.near 16, .near 132, .opaque, .const 24])
+    , .launch (kStep PTX_EMBED_OFF 3 BIND_EMBED 28 BS_EMBED) ]
+
+open AlgorithmLib.Host in
+/-- …and `inferFinalFn`'s three. -/
+def finalDriver (fnOf : String → FnRef) : HStmt :=
+  HStmt.seqs
+    [ .launch (kStep PTX_RMS_OFF 3 BIND_RMS2 1 BS_F_NORM)
+    , .extern (vStep fnOf "cl_cublas_sgemv"
+        [.near 16, .const 1, .const 896, .const 151936, F1, .near 112, .near 76,
+         .const 0, .near 116])
+    , .launch (kStep PTX_ARGMAX_OFF 2 BIND_ARGMAX 1 BS_ARGMAX) ]
+
+open AlgorithmLib.Host in
+/-- **One layer**: the two halves, each reached by a call — which is what the
+    generator does (`inferLayerFn` dispatches to `fn_29` and `fn_30`). -/
+def layerDriver (fnOf : String → FnRef) : HStmt :=
+  .call (.seq (.call (attnDriver fnOf)) (.call (ffnDriver fnOf)))
+
+open AlgorithmLib.Host in
+/-- **One decode step**: the prologue, the twenty-four-layer loop, the sampling
+    tail.  The loop is a `forN` node, not twenty-four copies. -/
+def tokenDriver (fnOf : String → FnRef) : HStmt :=
+  .seq (entryDriver fnOf)
+    (.seq (.forN N_LAYERS (layerDriver fnOf)) (finalDriver fnOf))
+
+open AlgorithmLib.Host in
+theorem entryDriver_deviceOps (fnOf : String → FnRef) :
+    (entryDriver fnOf).deviceOps = entryOps := rfl
+
+open AlgorithmLib.Host in
+theorem finalDriver_deviceOps (fnOf : String → FnRef) :
+    (finalDriver fnOf).deviceOps = finalOps := rfl
+
+open AlgorithmLib.Host in
+/-- **A layer performs `layerOps`** — the two halves concatenated, through two
+    calls, which `HStmt.deviceOps_call`/`_seq` see through. -/
+theorem layerDriver_deviceOps (fnOf : String → FnRef) :
+    (layerDriver fnOf).deviceOps = layerOps := by
+  show (HStmt.call (.seq (.call (attnDriver fnOf)) (.call (ffnDriver fnOf)))).deviceOps = _
+  rw [HStmt.deviceOps_call, HStmt.deviceOps_seq, HStmt.deviceOps_call,
+      HStmt.deviceOps_call, attnDriver_deviceOps, ffnDriver_deviceOps]
+  rfl
+
+open AlgorithmLib.Host in
+/-- **The loop performs the layer's twenty-two writes, twenty-four times.**
+
+    This is the theorem `tokenOps`'s definition was standing in for.  It comes
+    from `HStmt.deviceOps_forN` — a structural recursion over the `forN` node —
+    so the twenty-four is the program's, not a numeral someone typed into a
+    list. -/
+theorem loopDriver_deviceOps (fnOf : String → FnRef) :
+    (HStmt.forN N_LAYERS (layerDriver fnOf)).deviceOps
+      = (List.replicate N_LAYERS layerOps).flatten := by
+  rw [HStmt.deviceOps_forN, layerDriver_deviceOps]
+
+open AlgorithmLib.Host in
+/-- **A whole decode step's five hundred and thirty-three device writes,
+    derived from a declared program.**
+
+    `tokenOps` is still the list the plan machinery consumes; what changed is
+    that it is now *equal to* the device-write sequence of a host program whose
+    loop is a node, rather than a list whose length nobody checked. -/
+theorem tokenDriver_deviceOps (fnOf : String → FnRef) :
+    (tokenDriver fnOf).deviceOps = tokenOps := by
+  show (HStmt.seq (entryDriver fnOf)
+          (.seq (.forN N_LAYERS (layerDriver fnOf)) (finalDriver fnOf))).deviceOps = _
+  rw [HStmt.deviceOps_seq, HStmt.deviceOps_seq, entryDriver_deviceOps,
+      finalDriver_deviceOps, loopDriver_deviceOps]
+  rfl
+
+open AlgorithmLib.Host in
+/-- …and it is five hundred and thirty-three of them. -/
+theorem tokenDriver_count (fnOf : String → FnRef) :
+    (tokenDriver fnOf).deviceOps.length = 533 := by
+  rw [tokenDriver_deviceOps]
+  rfl
+
+-- ---------------------------------------------------------------------------
+-- The control flow, recovered
+-- ---------------------------------------------------------------------------
+
+/-! What `deviceOpsOf` could never see: a static scan of `inferFn` reports the
+    layer's kernels **once**, because they are behind a loop and a call.  So
+    `tokenOps`'s `List.replicate N_LAYERS layerOps` was the one place in the
+    chain where a number came from a definition rather than from the program.
+
+    `Clif.loopsOf` recovers the counted loops from the emitted blocks, bound
+    included.  The four facts below pin the whole control-flow shape of a decode
+    step, and each is decided against the built CLIF. -/
+
+open AlgorithmLib.Clif in
+/-- **The decode step contains exactly one counted loop, and it runs
+    `N_LAYERS` times.**  The bound is read out of the emitted `icmp`, resolved
+    in the same environment a launch's PTX slot is resolved in — not off the
+    generator's source. -/
+theorem infer_loop_is_layers :
+    loopsOf (inferFn.run {}).2 = [⟨1, 2, 3, N_LAYERS⟩] := by native_decide
+
+open AlgorithmLib.Clif in
+/-- **…and its body dispatches to the layer function and nothing else.** -/
+theorem infer_loop_body_calls :
+    (blockInsts? (inferFn.run {}).2 2).map (callsIn (inferFn.run {}).2.fns)
+      = some ["fn_28"] := by native_decide
+
+open AlgorithmLib.Clif in
+/-- **The sampling tail has no loop**, so its static scan is its whole
+    sequence. -/
+theorem final_no_loops : loopsOf (inferFinalFn.run {}).2 = [] := by native_decide
+
+open AlgorithmLib.Host in
+/-- **The declared prologue and the built one perform the same device writes.**
+
+    Not a restatement: the left is a `HStmt` whose structure the composition
+    theorems recurse through, the right is a scan of the CLIF the generator
+    actually produced.  Chaining them is what turns `tokenDriver` from a
+    description into a claim about this program. -/
+theorem entryDriver_is_built (fnOf : String → FnRef) :
+    (entryDriver fnOf).deviceOps = deviceOpsOf ROOT (inferFn.run {}).2 := by
+  rw [entry_ops_are, entryDriver_deviceOps]
+
+open AlgorithmLib.Host in
+/-- **…and the sampling tail's.** -/
+theorem finalDriver_is_built (fnOf : String → FnRef) :
+    (finalDriver fnOf).deviceOps = deviceOpsOf ROOT (inferFinalFn.run {}).2 := by
+  rw [final_ops_are, finalDriver_deviceOps]
+
+/-- **A whole token's device-write sequence realises `tokenPlan`.** -/
+theorem token_ops_realise_plan (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (tokenKernels gim h hm) tokenDeclared tokenOps = some (tokenPlan gim h hm) := by
+  have he : stepsOf? (tokenKernels gim h hm) tokenDeclared entryOps
+      = some (entryPlan gim).steps := rfl
+  have hf : stepsOf? (tokenKernels gim h hm) tokenDeclared finalOps
+      = some (finalPlan gim).steps := rfl
+  show (stepsOf? _ _ (entryOps ++ ((List.replicate N_LAYERS layerOps).flatten
+          ++ finalOps))).map Plan.mk = _
+  rw [stepsOf?_append _ _ _ _ _ _ he
+        (stepsOf?_append _ _ _ _ _ _ (replicate_ops_steps gim h hm N_LAYERS) hf)]
+  rfl
+
+theorem tokenPlan_exclusive (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) : (tokenPlan gim h hm).Exclusive := by
+  intro S hS
+  have hrep : ∀ n : Nat, PStep.proven S ∈
+      (List.replicate n (layerPlan gim h hm).steps).flatten →
+      PStep.proven S ∈ (layerPlan gim h hm).steps := by
+    intro n; induction n with
+    | zero => intro hm'; exact absurd hm' (by simp)
+    | succ n ih =>
+        intro hm'
+        rcases List.mem_append.mp hm' with hx | hx
+        · exact hx
+        · exact ih hx
+  rcases List.mem_append.mp hS with hx | hx
+  · exact entryPlan_exclusive gim S hx
+  · rcases List.mem_append.mp hx with hy | hy
+    · exact layerPlan_exclusive gim h hm S (hrep N_LAYERS hy)
+    · exact finalPlan_exclusive gim S hy
+
+/-- **What one token of the shipped program does to memory.**
+
+    Five hundred and thirty-three device writes — the embedding gather, twenty-
+    four transformer layers, the LM head and the argmax — as a single equation
+    between `run` and `denote`.  `Honours R` covers every declared step and
+    `Law.combinerComm` softmax's remainder pass. -/
+theorem token_computes (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b)))
+    (R : Realisation) (hR : Honours R) (st : WSt) :
+    ((tokenPlan gim h hm).run R st).mem = (tokenPlan gim h hm).denote st.mem :=
+  Plan.run_denote R hR (tokenPlan gim h hm) (tokenPlan_exclusive gim h hm) st
+
+/-! **Negative guards.**  The theorems above are equations ending in `some`, so
+    they are not vacuous — but a check that cannot *fail* still proves nothing
+    about what it would catch.  These pin the three ways a launch could be
+    matched to a stage it is not: a right slot with the wrong bind array, a
+    right array at the wrong bind offset, and a right everything on the wrong
+    number of blocks.  Each must be `none`, which is what makes the positive
+    results say something. -/
+
+example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (layerKernels gim h hm) layerDeclared
+      [klOp PTX_RMS_OFF 3 BIND_RMS1 1 BS_FFN_NORM] = none := rfl
+
+example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (layerKernels gim h hm) layerDeclared
+      [klOp PTX_RMS_OFF 3 BIND_RMS2 1 BS_A_NORM] = none := rfl
+
+example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (layerKernels gim h hm) layerDeclared
+      [klOp PTX_ADD_OFF 2 BIND_ADD1 27 BS_A_ADD] = none := rfl
+
+/-- …and a launch whose bind array the scan could not recover is refused
+    outright, rather than matched on its slot and grid alone. -/
+example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (layerKernels gim h hm) layerDeclared
+      [({ fnName := "cl_cuda_launch", kernelOff := some (Int.ofNat PTX_RMS_OFF),
+          nBufs := some 3, bindOff := some (Int.ofNat BIND_RMS1),
+          gridX := some 1, blockX := some 32 }, {})] = none := rfl
+
+-- ── Reading a value back out of the plan ───────────────────────────────────
+
+/-!
+  **The second gap, and the first step across it.**
+
+  `layer_computes` says the plan's `run` equals its `denote`.  It does not say
+  that `denote` is a transformer layer — `denote` is a fold of opaque steps,
+  and asking "what is at the gate buffer at the end" was not a question the
+  development could answer.
+
+  It is now, and the route is: split the fold (`Plan.denote_append`), show the
+  later steps write other buffers (`denote_frame_list`), and rewrite the one
+  step that wrote it.  For a vendor GEMV that rewrite is `cublasStep_isMatvec`,
+  which is where `Law.cublasIsMatvec` enters — the law that until now
+  constrained a symbol no plan mentioned.
+
+  Below is that route run to completion for one of a layer's twenty-two steps.
+  The remaining twenty-one are the same shape; the batched contractions are
+  where it stops, because no equation for them exists to rewrite with.
+-/
+
+/-- **The gate projection in the shipped feed-forward plan is a matrix–vector
+    product of the recovered weight buffer with the normalised activation.**
+
+    Every buffer here is `bufOf` of a handle `Clif.bindsOf` read out of the
+    emitted stores: `B_WG` is the matrix the GEMV was handed, `B_XN` the vector
+    RMSNorm wrote.  So this is a statement about the program, not about a
+    plan-shaped object — modulo `Law.cublasIsMatvec`, which is exactly the fold
+    order NVIDIA declines to specify. -/
+theorem ffn_gate_is_matvec (hl : CuBlasIsMatvec) (m : Buf → Nat → Float32)
+    (i : Nat) (hi : i < D_FF) :
+    ffnPlan.denote m B_GATE i
+      = (List.finRange D).foldl
+          (fun acc j => NumOps.add acc
+            (NumOps.mul (m B_WG (i * D + j.val)) (ffnNormStage.step m B_XN j.val)))
+          (NumOps.ofNat 0) := by
+  -- the four steps after the gate GEMV all write elsewhere
+  have hlater : ffnPlan.denote m B_GATE
+      = (Plan.mk [PStep.proven ffnNormStage,
+                  PStep.declared (cublasStep B_WG B_XN B_GATE D_FF D)]).denote m B_GATE := by
+    show (Plan.mk ([PStep.proven ffnNormStage,
+                    PStep.declared (cublasStep B_WG B_XN B_GATE D_FF D)]
+                   ++ [PStep.declared (cublasStep B_WU B_XN B_UP D_FF D),
+                       PStep.proven ffnSiluStage,
+                       PStep.declared (cublasStep B_WD B_ACT B_AO D D_FF),
+                       PStep.proven ffnAddStage])).denote m B_GATE = _
+    rw [Plan.denote_append]
+    refine denote_frame_list _ _ B_GATE ?_
+    intro s hs
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hs
+    rcases hs with rfl | rfl | rfl | rfl <;> exact by decide
+  rw [hlater]
+  show (cublasStep B_WG B_XN B_GATE D_FF D).step (ffnNormStage.step m) B_GATE i = _
+  rw [cublasStep_isMatvec hl _ _ _ _ _ _ i hi]
+  -- the norm stage wrote `B_XN`, so the weight buffer still reads as it did
+  have hwg : ∀ a, ffnNormStage.step m B_WG a = m B_WG a := fun a =>
+    StageSpec.step_otherBuf ffnNormStage m B_WG a (by decide)
+  simp only [hwg]
+
+/-- **The up projection, likewise** — and this one runs the route through *two*
+    preceding steps rather than one, which is what shows it is mechanical: the
+    weight and the normalised activation are carried past the gate GEMV by its
+    own `frame` field, exactly as they were carried past RMSNorm. -/
+theorem ffn_up_is_matvec (hl : CuBlasIsMatvec) (m : Buf → Nat → Float32)
+    (i : Nat) (hi : i < D_FF) :
+    ffnPlan.denote m B_UP i
+      = (List.finRange D).foldl
+          (fun acc j => NumOps.add acc
+            (NumOps.mul (m B_WU (i * D + j.val)) (ffnNormStage.step m B_XN j.val)))
+          (NumOps.ofNat 0) := by
+  have hlater : ffnPlan.denote m B_UP
+      = (Plan.mk [PStep.proven ffnNormStage,
+                  PStep.declared (cublasStep B_WG B_XN B_GATE D_FF D),
+                  PStep.declared (cublasStep B_WU B_XN B_UP D_FF D)]).denote m B_UP := by
+    show (Plan.mk ([PStep.proven ffnNormStage,
+                    PStep.declared (cublasStep B_WG B_XN B_GATE D_FF D),
+                    PStep.declared (cublasStep B_WU B_XN B_UP D_FF D)]
+                   ++ [PStep.proven ffnSiluStage,
+                       PStep.declared (cublasStep B_WD B_ACT B_AO D D_FF),
+                       PStep.proven ffnAddStage])).denote m B_UP = _
+    rw [Plan.denote_append]
+    refine denote_frame_list _ _ B_UP ?_
+    intro s hs
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hs
+    rcases hs with rfl | rfl | rfl <;> exact by decide
+  rw [hlater]
+  show (cublasStep B_WU B_XN B_UP D_FF D).step
+        ((cublasStep B_WG B_XN B_GATE D_FF D).step (ffnNormStage.step m)) B_UP i = _
+  rw [cublasStep_isMatvec hl _ _ _ _ _ _ i hi]
+  have hwu : ∀ a, ((cublasStep B_WG B_XN B_GATE D_FF D).step (ffnNormStage.step m))
+      B_WU a = m B_WU a := by
+    intro a
+    rw [congrFun ((cublasStep B_WG B_XN B_GATE D_FF D).frame
+          (ffnNormStage.step m) B_WU (by decide)) a]
+    exact StageSpec.step_otherBuf ffnNormStage m B_WU a (by decide)
+  have hxn : ∀ a, ((cublasStep B_WG B_XN B_GATE D_FF D).step (ffnNormStage.step m))
+      B_XN a = ffnNormStage.step m B_XN a := fun a =>
+    congrFun ((cublasStep B_WG B_XN B_GATE D_FF D).frame
+      (ffnNormStage.step m) B_XN (by decide)) a
+  simp only [hwu, hxn]
+
+/-- The memory the down projection reads: four steps into the plan. -/
+noncomputable def ffnMem3 (m : Buf → Nat → Float32) : Buf → Nat → Float32 :=
+  ffnSiluStage.step ((cublasStep B_WU B_XN B_UP D_FF D).step
+    ((cublasStep B_WG B_XN B_GATE D_FF D).step (ffnNormStage.step m)))
+
+/-- **The down projection** — the third and last GEMV of the feed-forward half.
+
+    Its weight is carried past *four* preceding steps, two proven and two
+    declared, by nothing but their frame fields.  With this the whole
+    feed-forward half's vendor content is read out: every `sgemv` in `ffnPlan`
+    is a matrix–vector product over buffers the program itself bound. -/
+theorem ffn_down_is_matvec (hl : CuBlasIsMatvec) (m : Buf → Nat → Float32)
+    (i : Nat) (hi : i < D) :
+    ffnPlan.denote m B_AO i
+      = (List.finRange D_FF).foldl
+          (fun acc j => NumOps.add acc
+            (NumOps.mul (m B_WD (i * D_FF + j.val)) (ffnMem3 m B_ACT j.val)))
+          (NumOps.ofNat 0) := by
+  have hlater : ffnPlan.denote m B_AO
+      = (Plan.mk [PStep.proven ffnNormStage,
+                  PStep.declared (cublasStep B_WG B_XN B_GATE D_FF D),
+                  PStep.declared (cublasStep B_WU B_XN B_UP D_FF D),
+                  PStep.proven ffnSiluStage,
+                  PStep.declared (cublasStep B_WD B_ACT B_AO D D_FF)]).denote m B_AO := by
+    show (Plan.mk ([PStep.proven ffnNormStage,
+                    PStep.declared (cublasStep B_WG B_XN B_GATE D_FF D),
+                    PStep.declared (cublasStep B_WU B_XN B_UP D_FF D),
+                    PStep.proven ffnSiluStage,
+                    PStep.declared (cublasStep B_WD B_ACT B_AO D D_FF)]
+                   ++ [PStep.proven ffnAddStage])).denote m B_AO = _
+    rw [Plan.denote_append]
+    refine denote_frame_list _ _ B_AO ?_
+    intro s hs
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hs
+    rcases hs with rfl <;> exact by decide
+  rw [hlater]
+  show (cublasStep B_WD B_ACT B_AO D D_FF).step (ffnMem3 m) B_AO i = _
+  rw [cublasStep_isMatvec hl _ _ _ _ _ _ i hi]
+  have hwd : ∀ a, ffnMem3 m B_WD a = m B_WD a := by
+    intro a
+    show ffnSiluStage.step _ B_WD a = _
+    rw [StageSpec.step_otherBuf ffnSiluStage _ B_WD a (by decide),
+        congrFun ((cublasStep B_WU B_XN B_UP D_FF D).frame _ B_WD (by decide)) a,
+        congrFun ((cublasStep B_WG B_XN B_GATE D_FF D).frame _ B_WD (by decide)) a]
+    exact StageSpec.step_otherBuf ffnNormStage m B_WD a (by decide)
+  simp only [hwd]
+
+/-!
+  ### Attention's vendor content
+
+  The feed-forward half read out against `ffnPlan.denote` because nothing
+  later overwrites a GEMV's output.  Attention's four projections do not have
+  that luxury: `attn_outputs_distinct` says `B_Q` and `B_K` each get written
+  three times, since the bias add and RoPE update them in place.  So the
+  *final* contents of `B_Q` are not the Q projection, and a theorem phrased
+  against `attnPlan.denote m B_Q` would be about RoPE, not about cuBLAS.
+
+  The honest statement is about memory at a point in the sequence, and
+  `attnMem` names those points by `take`ing a prefix of `attnPlan`'s *own*
+  step list.  Nothing here can drift from the plan the program realises: the
+  prefix is cut from the same object `attn_ops_realise_plan` matches against
+  the recovered launches.
+-/
+
+/-- Memory `n` device writes into the shipped attention plan. -/
+noncomputable def attnMem (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (n : Nat)
+    (m : Buf → Nat → Float32) : Buf → Nat → Float32 :=
+  (Plan.mk ((attnPlan gim h hm).steps.take n)).denote m
+
+/-- **Where attention's sixteen device writes land, in order.**
+
+    `attn_outputs_distinct` covered the ten proven ones; this covers the
+    vendor steps too, and does it against the plan rather than against a list
+    of stages, so it is the sequence the launches realise. -/
+theorem attn_outs :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (attnPlan gim h hm).steps
+      = [B_XN, B_Q, B_K, B_V, B_Q, B_K, B_V, B_Q, B_K, B_KC, B_VC,
+         B_SC, B_PR, B_AO, B_XN, B_X] := fun _ _ => rfl
+
+theorem attn_outs_1 (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    outsOf ((attnPlan gim h hm).steps.take 1) = [B_XN] := rfl
+
+theorem attn_outs_2 (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    outsOf ((attnPlan gim h hm).steps.take 2) = [B_XN, B_Q] := rfl
+
+theorem attn_outs_3 (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    outsOf ((attnPlan gim h hm).steps.take 3) = [B_XN, B_Q, B_K] := rfl
+
+theorem attn_outs_14 (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) :
+    outsOf ((attnPlan gim h hm).steps.take 14)
+      = [B_XN, B_Q, B_K, B_V, B_Q, B_K, B_V, B_Q, B_K, B_KC, B_VC,
+         B_SC, B_PR, B_AO] := rfl
+
+/-- A buffer none of the first `n` steps writes still holds its input value.
+    Stated over `outsOf` so the side condition is a closed list of numerals
+    even though the plan is parameterised by an index map and two laws. -/
+theorem attnMem_frame (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (n : Nat)
+    (m : Buf → Nat → Float32) (b : Buf)
+    (hb : ∀ o ∈ outsOf ((attnPlan gim h hm).steps.take n), b ≠ o) :
+    ∀ a, attnMem gim h hm n m b a = m b a := fun a =>
+  congrFun (denote_frame_outs _ m b hb) a
+
+/-- **The Q projection is a matrix–vector product** of the recovered weight
+    handle with what RMSNorm wrote — read out two steps into the shipped
+    attention plan. -/
+theorem attn_q_is_matvec (hl : CuBlasIsMatvec) (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32)
+    (i : Nat) (hi : i < D) :
+    attnMem gim h hm 2 m B_Q i
+      = (List.finRange D).foldl
+          (fun acc j => NumOps.add acc
+            (NumOps.mul (m B_WQ (i * D + j.val)) (attnMem gim h hm 1 m B_XN j.val)))
+          (NumOps.ofNat 0) := by
+  have hwq := attnMem_frame gim h hm 1 m B_WQ (by rw [attn_outs_1]; decide)
+  show (cublasStep B_WQ B_XN B_Q D D).step (attnMem gim h hm 1 m) B_Q i = _
+  rw [cublasStep_isMatvec hl _ _ _ _ _ _ i hi]
+  simp only [hwq]
+
+/-- **The K projection**, one step further in — the weight is carried past the
+    Q GEMV by that step's own `frame`, and so is the normalised activation. -/
+theorem attn_k_is_matvec (hl : CuBlasIsMatvec) (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32)
+    (i : Nat) (hi : i < KV_DIM) :
+    attnMem gim h hm 3 m B_K i
+      = (List.finRange D).foldl
+          (fun acc j => NumOps.add acc
+            (NumOps.mul (m B_WK (i * D + j.val)) (attnMem gim h hm 1 m B_XN j.val)))
+          (NumOps.ofNat 0) := by
+  have hwk := attnMem_frame gim h hm 2 m B_WK (by rw [attn_outs_2]; decide)
+  have hxn : ∀ a, attnMem gim h hm 2 m B_XN a = attnMem gim h hm 1 m B_XN a := fun a =>
+    congrFun ((cublasStep B_WQ B_XN B_Q D D).frame
+      (attnMem gim h hm 1 m) B_XN (by decide)) a
+  show (cublasStep B_WK B_XN B_K KV_DIM D).step (attnMem gim h hm 2 m) B_K i = _
+  rw [cublasStep_isMatvec hl _ _ _ _ _ _ i hi]
+  simp only [hwk, hxn]
+
+/-- **The V projection**, carried past both preceding GEMVs. -/
+theorem attn_v_is_matvec (hl : CuBlasIsMatvec) (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32)
+    (i : Nat) (hi : i < KV_DIM) :
+    attnMem gim h hm 4 m B_V i
+      = (List.finRange D).foldl
+          (fun acc j => NumOps.add acc
+            (NumOps.mul (m B_WV (i * D + j.val)) (attnMem gim h hm 1 m B_XN j.val)))
+          (NumOps.ofNat 0) := by
+  have hwv := attnMem_frame gim h hm 3 m B_WV (by rw [attn_outs_3]; decide)
+  have hxn2 : ∀ a, attnMem gim h hm 2 m B_XN a = attnMem gim h hm 1 m B_XN a := fun a =>
+    congrFun ((cublasStep B_WQ B_XN B_Q D D).frame
+      (attnMem gim h hm 1 m) B_XN (by decide)) a
+  have hxn : ∀ a, attnMem gim h hm 3 m B_XN a = attnMem gim h hm 1 m B_XN a := by
+    intro a
+    rw [show attnMem gim h hm 3 m B_XN a
+          = (cublasStep B_WK B_XN B_K KV_DIM D).step (attnMem gim h hm 2 m) B_XN a from rfl,
+        congrFun ((cublasStep B_WK B_XN B_K KV_DIM D).frame
+          (attnMem gim h hm 2 m) B_XN (by decide)) a, hxn2]
+  show (cublasStep B_WV B_XN B_V KV_DIM D).step (attnMem gim h hm 3 m) B_V i = _
+  rw [cublasStep_isMatvec hl _ _ _ _ _ _ i hi]
+  simp only [hwv, hxn]
+
+/-- **The output projection** — the fourth and last `sgemv` of the attention
+    half, and the only one whose result survives to the end of the plan (the
+    residual add reads `B_X`, not `B_XN`).  Its weight is carried past
+    *fourteen* preceding steps — ten proven kernels and two batched
+    contractions among them — on frame fields alone.
+
+    With this, every `sgemv` in a transformer layer is read out as a matrix–
+    vector product over buffers the program itself bound.  What remains
+    unexplained in the layer is exactly `Plan.declaredLawGap = 2`: the two
+    batched contractions, for which no equation exists to state. -/
+theorem attn_o_is_matvec (hl : CuBlasIsMatvec) (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32)
+    (i : Nat) (hi : i < D) :
+    (attnPlan gim h hm).denote m B_XN i
+      = (List.finRange D).foldl
+          (fun acc j => NumOps.add acc
+            (NumOps.mul (m B_WO (i * D + j.val)) (attnMem gim h hm 14 m B_AO j.val)))
+          (NumOps.ofNat 0) := by
+  have hwo := attnMem_frame gim h hm 14 m B_WO (by rw [attn_outs_14]; decide)
+  -- the one step after the output projection writes the residual stream
+  have hlater : (attnPlan gim h hm).denote m B_XN
+      = (Plan.mk ((attnPlan gim h hm).steps.take 15)).denote m B_XN := by
+    show (Plan.mk ((attnPlan gim h hm).steps.take 15
+                   ++ [PStep.proven (aAddStage gim)])).denote m B_XN = _
+    rw [Plan.denote_append]
+    refine denote_frame_outs _ _ B_XN ?_
+    rw [show outsOf [PStep.proven (aAddStage gim)] = [B_X] from rfl]
+    decide
+  rw [hlater]
+  show (cublasStep B_WO B_AO B_XN D D).step (attnMem gim h hm 14 m) B_XN i = _
+  rw [cublasStep_isMatvec hl _ _ _ _ _ _ i hi]
+  simp only [hwo]
+
+/-!
+  ### One tensor, all the way through
+
+  `attn_q_is_matvec` says what lands in `B_Q` two steps in.  Three steps write
+  that buffer — the projection, the bias add and RoPE — and eleven more run
+  after the last of them, so "what attention leaves in `B_Q`" is a different
+  question, and the one a model spec asks.  The three theorems below answer it
+  by exhibiting the whole path: what carries between the writes, and what each
+  write is.
+-/
+
+/-- The whole plan is its own sixteen-step prefix. -/
+theorem attnMem_full (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32) :
+    attnMem gim h hm 16 m = (attnPlan gim h hm).denote m := rfl
+
+/-- **A tensor no step in a segment writes carries its value across it.**
+
+    The segment is *cut from* the plan with `take`/`drop` rather than written
+    out again, so the proof never has to compare two `StageSpec`s — only the
+    buffer each step writes is ever computed.  Spelling the steps out instead
+    is the same theorem and costs minutes of elaboration. -/
+theorem attnMem_carry (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (j k : Nat) (hjk : j ≤ k)
+    (m : Buf → Nat → Float32) (b : Buf)
+    (hb : ∀ o ∈ outsOf (((attnPlan gim h hm).steps.take k).drop j), b ≠ o) :
+    attnMem gim h hm k m b = attnMem gim h hm j m b := by
+  have hmin : (attnPlan gim h hm).steps.take j
+      = ((attnPlan gim h hm).steps.take k).take j := by
+    rw [List.take_take, Nat.min_eq_left hjk]
+  have hsplit : (attnPlan gim h hm).steps.take k
+      = (attnPlan gim h hm).steps.take j ++ ((attnPlan gim h hm).steps.take k).drop j := by
+    rw [hmin]; exact (List.take_append_drop j _).symm
+  show (Plan.mk ((attnPlan gim h hm).steps.take k)).denote m b = _
+  rw [hsplit, Plan.denote_append]
+  exact denote_frame_outs _ _ b hb
+
+theorem attn_seg_2_4 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 4).drop 2) = [B_K, B_V] := fun _ _ => rfl
+
+theorem attn_seg_5_7 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 7).drop 5) = [B_K, B_V] := fun _ _ => rfl
+
+theorem attn_seg_8_16 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 16).drop 8)
+      = [B_K, B_KC, B_VC, B_SC, B_PR, B_AO, B_XN, B_X] := fun _ _ => rfl
+
+theorem attn_q_carried_2_4 (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32) :
+    attnMem gim h hm 4 m B_Q = attnMem gim h hm 2 m B_Q :=
+  attnMem_carry gim h hm 2 4 (by omega) m B_Q (by rw [attn_seg_2_4]; decide)
+
+theorem attn_q_carried_5_7 (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32) :
+    attnMem gim h hm 7 m B_Q = attnMem gim h hm 5 m B_Q :=
+  attnMem_carry gim h hm 5 7 (by omega) m B_Q (by rw [attn_seg_5_7]; decide)
+
+theorem attn_q_settled (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32) :
+    (attnPlan gim h hm).denote m B_Q = attnMem gim h hm 8 m B_Q := by
+  rw [← attnMem_full gim h hm m]
+  exact attnMem_carry gim h hm 8 16 (by omega) m B_Q (by rw [attn_seg_8_16]; decide)
+
+/-- **The Q path of attention, end to end.**
+
+    Read bottom-up: the projection GEMV writes `B_Q` (`attn_q_is_matvec`);
+    the K and V projections carry it (first conjunct); the bias add is the
+    second write (second conjunct); the K and V bias adds carry it; RoPE is the
+    third and last (third conjunct); and the eleven steps after RoPE leave it
+    alone, so what the plan *ends* with is what RoPE wrote.
+
+    Every one of those eleven is checked, not waved at — including both batched
+    contractions, which read `B_Q` but do not write it.  That is the difference
+    between "the GEMV computes a matrix-vector product" and "this is the query
+    tensor attention produced". -/
+theorem attn_q_path (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32) :
+    (attnPlan gim h hm).denote m B_Q
+        = (aRopeQStage gim).step (attnMem gim h hm 7 m) B_Q
+      ∧ attnMem gim h hm 7 m B_Q = (aBiasQStage gim).step (attnMem gim h hm 4 m) B_Q
+      ∧ attnMem gim h hm 4 m B_Q = attnMem gim h hm 2 m B_Q := by
+  refine ⟨?_, ?_, attn_q_carried_2_4 gim h hm m⟩
+  · exact attn_q_settled gim h hm m
+  · exact attn_q_carried_5_7 gim h hm m
+
+/-!
+  The K and V paths, by the same route.  `B_K` is written three times (the
+  projection, its bias, RoPE) and `B_V` twice; nothing after the last write of
+  each touches it, and every intervening step is checked rather than assumed.
+-/
+
+theorem attn_seg_3_5 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 5).drop 3) = [B_V, B_Q] := fun _ _ => rfl
+
+theorem attn_seg_4_6 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 6).drop 4) = [B_Q, B_K] := fun _ _ => rfl
+
+theorem attn_seg_6_8 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 8).drop 6) = [B_V, B_Q] := fun _ _ => rfl
+
+theorem attn_seg_7_16 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 16).drop 7)
+      = [B_Q, B_K, B_KC, B_VC, B_SC, B_PR, B_AO, B_XN, B_X] := fun _ _ => rfl
+
+theorem attn_seg_9_16 :
+    ∀ (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))),
+    outsOf (((attnPlan gim h hm).steps.take 16).drop 9)
+      = [B_KC, B_VC, B_SC, B_PR, B_AO, B_XN, B_X] := fun _ _ => rfl
+
+/-- **The K path of attention, end to end** — projection, bias, RoPE, and
+    nothing after. -/
+theorem attn_k_path (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32) :
+    (attnPlan gim h hm).denote m B_K
+        = (aRopeKStage gim).step (attnMem gim h hm 8 m) B_K
+      ∧ attnMem gim h hm 8 m B_K = (aBiasKStage gim).step (attnMem gim h hm 5 m) B_K
+      ∧ attnMem gim h hm 5 m B_K = attnMem gim h hm 3 m B_K := by
+  refine ⟨?_, ?_, attnMem_carry gim h hm 3 5 (by omega) m B_K (by rw [attn_seg_3_5]; decide)⟩
+  · rw [← attnMem_full gim h hm m]
+    exact attnMem_carry gim h hm 9 16 (by omega) m B_K (by rw [attn_seg_9_16]; decide)
+  · exact attnMem_carry gim h hm 6 8 (by omega) m B_K (by rw [attn_seg_6_8]; decide)
+
+/-- **The V path** — projection then bias, and nothing after; `B_V` is the one
+    of the three projections RoPE does not touch. -/
+theorem attn_v_path (h : AllHold [Law.combinerComm])
+    (hm : SmMeta (fun b => gim (bSoft b))) (m : Buf → Nat → Float32) :
+    (attnPlan gim h hm).denote m B_V
+        = (aBiasVStage gim).step (attnMem gim h hm 6 m) B_V
+      ∧ attnMem gim h hm 6 m B_V = attnMem gim h hm 4 m B_V := by
+  refine ⟨?_, attnMem_carry gim h hm 4 6 (by omega) m B_V (by rw [attn_seg_4_6]; decide)⟩
+  rw [← attnMem_full gim h hm m]
+  exact attnMem_carry gim h hm 7 16 (by omega) m B_V (by rw [attn_seg_7_16]; decide)
+
+end Realisation
 
 end Qwen2Common

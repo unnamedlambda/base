@@ -1,6 +1,8 @@
 import AlgorithmLib.Core
 import AlgorithmLib.Bytes
 import AlgorithmLib.Layout
+import AlgorithmLib.Clif
+import AlgorithmLib.HostIR
 import AlgorithmLib.IR
 import AlgorithmLib.FFI
 import AlgorithmLib.CudaPipeline
@@ -47,6 +49,11 @@ import AlgorithmLib.ML.Kernels
 import AlgorithmLib.ML.Backprop
 import AlgorithmLib.ML.Geometry
 import AlgorithmLib.ML.Pipeline
+import AlgorithmLib.ML.StageFrame
+import AlgorithmLib.ML.Bind
+import AlgorithmLib.ML.Butterfly
+import AlgorithmLib.ML.Compose
+import AlgorithmLib.ML.HostBridge
 import AlgorithmLib.ML.Sched
 import AlgorithmLib.ML.Frontend
 import AlgorithmLib.ML.Assumptions
