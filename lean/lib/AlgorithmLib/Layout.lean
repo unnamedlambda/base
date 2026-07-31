@@ -190,6 +190,33 @@ def offAt (m : RegionMap) (i : Nat) : Nat := ((m[i]?).map Region.off).getD 0
 /-- Size of region `i`. -/
 def sizeAt (m : RegionMap) (i : Nat) : Nat := ((m[i]?).map Region.size).getD 0
 
+/-- Size of the region called `name`, or `none`. -/
+def sizeOf? (m : RegionMap) (name : String) : Option Nat :=
+  (m.find? (fun r => r.name == name)).map Region.size
+
+/-- **Region `name` has room for `n` elements of `elemBytes` bytes each.**
+
+    `okB` relates regions to *each other*; this relates a region to the loop
+    that fills it.  That is a different property of the same declaration, and
+    the one nothing else checks: a map whose regions are perfectly disjoint
+    still corrupts its neighbour if a writer runs past a region's declared
+    size.  A missing region is `false`, not vacuously true — a renamed region
+    must fail rather than silently stop checking.
+
+    Use it wherever a bound and a capacity are two separate constants:
+
+        theorem buf_holds_input : memMap.holdsB "token_buf" MAX_RECV 4 = true := by decide
+    -/
+def holdsB (m : RegionMap) (name : String) (n elemBytes : Nat) : Bool :=
+  match m.find? (fun r => r.name == name) with
+  | some r => n * elemBytes ≤ r.size
+  | none   => false
+
+/-- How many `elemBytes`-sized elements region `name` holds — what to widen a
+    bound to, once `holdsB` has told you it does not fit. -/
+def capacityOf? (m : RegionMap) (name : String) (elemBytes : Nat) : Option Nat :=
+  (m.sizeOf? name).map (fun s => s / max elemBytes 1)
+
 /-- Free gaps, largest first — where a new constant can safely go.  Answers the
     question you ask immediately after a collision. -/
 def gaps (size : Nat) (m : RegionMap) : List (Nat × Nat) :=

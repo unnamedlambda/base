@@ -169,6 +169,20 @@ private def finalizeCurrentBlock : IRBuilder Unit := do
       currentInsts := []
     }
 
+/-- **Every block, including the one still being emitted.**
+
+    `finalizeCurrentBlock` runs only from `startBlock`, so a builder's *last*
+    block sits in `currentInsts` and never reaches `blocks`.  `buildFunction`
+    finalizes before rendering, so the emitted CLIF is complete — but anything
+    reading `IRState.blocks` directly sees a program with its final block
+    missing.  Every analysis must go through this, not through `.blocks`. -/
+def IRState.allBlocks (s : IRState) : List BlockData :=
+  match s.currentBlock with
+  | none      => s.blocks
+  | some bref => s.blocks ++ [{ ref := bref
+                                params := s.currentBlockParams
+                                insts := s.currentInsts.reverse }]
+
 /-- Declare a block with typed parameters. Returns the block and its param Vals.
     Does not start emitting into it yet. -/
 def declareBlock (paramTys : List ClifTy) : IRBuilder DeclaredBlock := do
