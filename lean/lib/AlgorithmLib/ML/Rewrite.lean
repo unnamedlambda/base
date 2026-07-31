@@ -1,6 +1,7 @@
 import AlgorithmLib.ML.WarpCompile
 import AlgorithmLib.ML.Quant
 import AlgorithmLib.ML.Schema
+import AlgorithmLib.ML.Butterfly
 
 /-!
   # A rewrite calculus: transformations that carry their own justification
@@ -105,6 +106,12 @@ def ex2Approx {Γ : Nat} : Approx Γ where
   was trained with is not recorded anywhere.
 -/
 
+/-- The value a vendor GEMM lands. Opaque on purpose: the point of
+    `CuBlasIsMatvec` is that nothing in this development knows how it was
+    computed, only what it is claimed to equal. -/
+opaque cublasSgemvResult (rows cols : Nat) (a : Fin rows → Fin cols → Float32)
+    (x : Fin cols → Float32) (i : Fin rows) : Float32
+
 /-- The idealised order: fold the lanes left to right. -/
 def laneSum (v : Lane → Float32) : Float32 :=
   (List.finRange W).foldl (fun a l => NumOps.add a (v l)) (NumOps.ofNat 0)
@@ -126,6 +133,33 @@ def SumAssoc : Prop :=
   ∀ v : Lane → Float32,
     bflyFoldOp (fun a b => NumOps.add a b) v ⟨0, by decide⟩ = laneSum v
 
+/-- **What relying on a vendor GEMM costs.**
+
+    `cl_cublas_sgemv` computes `y = A·x`, and the shipped Qwen2 model routes
+    every matmul through it — around 99.9% of the model's arithmetic.
+
+    It differs from `SumAssoc` in a way that matters. `SumAssoc` names a
+    *specific* identity you can write down: butterfly equals sequential fold.
+    cuBLAS's fold order is not merely different, it is **unspecified** — it
+    varies with library version, architecture, and shape, and NVIDIA documents
+    no guarantee about it. So there is no exact-`Float32` statement to make.
+
+    What can be stated is the ℝ-level one: the result is *the* matrix-vector
+    product, with the float discrepancy declared rather than assumed away. That
+    is weaker than the other laws here, and deliberately so — pretending to a
+    bit-level claim about a closed-source kernel would be the dishonest option.
+
+    This is the gap every framework has. PyTorch defaulted `allow_tf32` on for
+    matmul across several releases — silently truncating the mantissa to 10
+    bits on Ampere — and it was discoverable only from release notes. Here it
+    appears in the type of every theorem downstream of a matmul. -/
+def CuBlasIsMatvec : Prop :=
+  ∀ (rows cols : Nat) (a : Fin rows → Fin cols → Float32) (x : Fin cols → Float32)
+    (i : Fin rows),
+    cublasSgemvResult rows cols a x i
+      = (List.finRange cols).foldl (fun acc j => NumOps.add acc (NumOps.mul (a i j) (x j)))
+          (NumOps.ofNat 0)
+
 /-- **What it costs to read a lane-partitioned fold as a flat one.**
 
     `SumAssoc` bridges the *butterfly* to a sequential lane fold.  A kernel does
@@ -141,13 +175,47 @@ def SumAssoc : Prop :=
 
     False at `Float32` for the same reason `SumAssoc` is — measured there:
     `.vec4` and `.strided` schedules of one reduction differ by 14% on a
-    cancelling input (`Sched.lean`). -/
+    cancelling input (`Sched.lean`).
+
+    **Stated for an arbitrary per-element summand `f`, not for `aᵢ·bᵢ`.**  The
+    regrouping is a fact about the *shape of the fold*, not about what is being
+    summed: the same two-level walk appears in RMSNorm at `f i = xᵢ·xᵢ` and in
+    softmax's denominator at `f i = exp(zᵢ − max)`.  Specialising the law to a
+    dot product would have meant a second, separately-named assumption for
+    softmax describing the identical rearrangement, which is worse — one law
+    covering both is the smaller surface, not the larger.  `base` is there for
+    the same reason: softmax reduces one attention row, which starts at
+    `cta·seqLen`, not at zero.  `strided_eq_flatSum` below recovers the
+    dot-product form. -/
 def StridedRegroup : Prop :=
-  ∀ (memA memB : Nat → Float32) (K : Nat),
-    bflyFold (dotStridedLane memA memB
-        (fun i l => i * 32 + l.val) (fun i l => i * 32 + l.val) K) ⟨0, by decide⟩
+  ∀ (f : Nat → Float32) (base K : Nat),
+    bflyFoldOp (fun a b => NumOps.add a b)
+        (fun l => (List.range K).foldl
+          (fun acc j => NumOps.add acc (f (base + (j * 32 + l.val)))) NumOps.zero)
+        ⟨0, by decide⟩
       = (List.range (K * 32)).foldl
-          (fun a i => NumOps.add a (NumOps.mul (memA i) (memB i))) (NumOps.ofNat 0)
+          (fun a i => NumOps.add a (f (base + i))) NumOps.zero
+
+/-- **The two warp combiners commute.**
+
+    Needed for exactly one thing: a butterfly reduction leaves the *same* value
+    in every lane.  Softmax's remainder pass has all 32 lanes write one address,
+    so the kernel is correct only if they agree on the row maximum and the
+    reciprocal sum; `bflyFoldOp_const` derives that from this and nothing else.
+
+    Deliberately **not** `sumAssoc`.  Every lane of a butterfly walks a tree of
+    the *same shape* over the *same* leaves — only the argument order within
+    each node differs — so commutativity suffices, and unlike associativity it
+    is *true* at IEEE-754 for all non-NaN inputs.  `Float32.add` is opaque in
+    Lean, which is the only reason this is a law rather than a theorem.
+
+    The NaN caveat is real and small: IEEE-754 leaves the payload of a NaN
+    result from `a + b` implementation-defined, so bit-exact commutativity can
+    fail when an operand is NaN.  A softmax row that is entirely NaN is already
+    outside what any of these theorems say something useful about. -/
+def CombinerComm : Prop :=
+  (∀ a b : Float32, NumOps.add a b = NumOps.add b a)
+    ∧ (∀ a b : Float32, NumOps.max a b = NumOps.max b a)
 
 /-- A named numerical law.  Transformations and specs that need one say so in
     their type; `Assumptions.lean` names it; nothing applies one silently. -/
@@ -158,12 +226,18 @@ inductive Law where
   | sumAssoc
   /-- A lane-partitioned strided fold equals the flat fold. -/
   | stridedRegroup
+  /-- A vendor GEMM equals the real-valued matrix-vector product. -/
+  | cublasIsMatvec
+  /-- The warp combiners commute, so a butterfly is lane-uniform. -/
+  | combinerComm
   deriving DecidableEq, Repr
 
 def Law.title : Law → String
   | .expIsEx2 => "ex2.approx-for-exp"
   | .sumAssoc => "sum-reassociation"
   | .stridedRegroup => "strided-fold-regrouping"
+  | .cublasIsMatvec => "cublas-is-matvec"
+  | .combinerComm => "warp-combiner-commutes"
 
 def Law.why : Law → String
   | .expIsEx2 =>
@@ -173,15 +247,29 @@ def Law.why : Law → String
       "A warp butterfly and a left fold are different functions on Float32. " ++
       "Every kernel here is proven against the butterfly, which is what the " ++
       "hardware does; this law is what it would cost to claim Expr.sum instead."
+  | .cublasIsMatvec =>
+      "cl_cublas_sgemv computes y = A·x, but NVIDIA specifies no fold order, " ++
+      "so no exact-Float32 claim about it is available at any version. The " ++
+      "law is therefore stated at the real numbers. ~99.9% of the shipped " ++
+      "Qwen2 model's arithmetic depends on it. Compare TF32, which other " ++
+      "frameworks enable by default without stating it at all."
   | .stridedRegroup =>
       "A lane-partitioned strided fold regrouped as a flat sum. The second " ++
       "half of the bridge from a launched pipeline to sderiv; measured to " ++
       "fail at Float32 (two schedules of one reduction differ by 14%)."
+  | .combinerComm =>
+      "Float32 add and max commute. Strictly weaker than sumAssoc and, unlike " ++
+      "it, true at IEEE-754 for non-NaN inputs: a butterfly's lanes walk the " ++
+      "same tree shape and differ only in argument order within each node. " ++
+      "Needed only so softmax's remainder pass, where all 32 lanes write one " ++
+      "address, has all 32 lanes agreeing on what to write."
 
 def Law.holds : Law → Prop
   | .expIsEx2 => ExpIsEx2
   | .sumAssoc => SumAssoc
   | .stridedRegroup => StridedRegroup
+  | .cublasIsMatvec => CuBlasIsMatvec
+  | .combinerComm => CombinerComm
 
 /-- Laws a claim depends on.  `[]` means exact — which is what every shipped
     lowering theorem in this stack actually is. -/
@@ -209,8 +297,38 @@ theorem strided_eq_flatSum (h : AllHold [Law.stridedRegroup])
     bflyFold (dotStridedLane memA memB
         (fun i l => i * 32 + l.val) (fun i l => i * 32 + l.val) K) ⟨0, by decide⟩
       = (List.range (K * 32)).foldl
-          (fun a i => NumOps.add a (NumOps.mul (memA i) (memB i))) (NumOps.ofNat 0) :=
-  h Law.stridedRegroup (by simp) memA memB K
+          (fun a i => NumOps.add a (NumOps.mul (memA i) (memB i))) (NumOps.ofNat 0) := by
+  have h0 := h Law.stridedRegroup (by simp) (fun i => NumOps.mul (memA i) (memB i)) 0 K
+  simp only [Nat.zero_add] at h0
+  exact h0
+
+/-- **The regrouping at an arbitrary row base and summand** — the law itself,
+    named so call sites do not have to spell out the registry lookup.  Softmax's
+    denominator uses it at `f i = exp(zᵢ − max)`, `base = cta·seqLen`. -/
+theorem strided_regroup_at (h : AllHold [Law.stridedRegroup])
+    (f : Nat → Float32) (base K : Nat) :
+    bflyFoldOp (fun a b => NumOps.add a b)
+        (fun l => (List.range K).foldl
+          (fun acc j => NumOps.add acc (f (base + (j * 32 + l.val)))) NumOps.zero)
+        ⟨0, by decide⟩
+      = (List.range (K * 32)).foldl
+          (fun a i => NumOps.add a (f (base + i))) NumOps.zero :=
+  h Law.stridedRegroup (by simp) f base K
+
+/-- **The butterfly is lane-uniform, under its named law.**
+
+    The bridge `softmax_stores_tail` needs: all 32 lanes hold the same reduction
+    result, so the remainder pass — where they all write one address — writes
+    one value.  `Law.combinerComm` is visible in the type, which is the point. -/
+theorem bfly_lane_uniform_add (h : AllHold [Law.combinerComm]) (v : Lane → Float32)
+    (l l' : Lane) :
+    bflyFoldOp (fun a b => NumOps.add a b) v l = bflyFoldOp (fun a b => NumOps.add a b) v l' :=
+  bflyFoldOp_const _ (h Law.combinerComm (by simp)).1 v l l'
+
+theorem bfly_lane_uniform_max (h : AllHold [Law.combinerComm]) (v : Lane → Float32)
+    (l l' : Lane) :
+    bflyFoldOp (fun a b => NumOps.max a b) v l = bflyFoldOp (fun a b => NumOps.max a b) v l' :=
+  bflyFoldOp_const _ (h Law.combinerComm (by simp)).2 v l l'
 
 /-- The laws a "launched pipeline = `sderiv`" claim rests on, as a list.
 
