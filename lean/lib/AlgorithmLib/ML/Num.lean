@@ -127,9 +127,18 @@ end NumLaws
     `Float32` and the spec is denoted at `Float32` alongside it.
 
     `Expr`/`denote`/`grad` are carrier-generic, so the spec language is
-    unchanged — this is a choice of interpretation, not of language. -/
+    unchanged — this is a choice of interpretation, not of language.
+
+    `zero` is spelled `ofNat 0` rather than `0.0` **deliberately**.  They are
+    the same binary32 value, but `Float32.ofScientific` is opaque, so the two
+    spellings are not definitionally equal — and a kernel fold initialised from
+    a `.lit (ofNat 0)` then cannot meet `denote`'s `.sum`, whose accumulator
+    starts at `zero`.  Writing the instance this way makes the join `rfl`
+    instead of an unprovable side goal.  It is also exactly what `NumLaws`
+    demands (`ofNat_zero`), so this aligns the computable instance with the law
+    an exact carrier would satisfy. -/
 instance : NumOps Float32 where
-  zero  := 0.0
+  zero  := Float32.ofNat 0
   one   := 1.0
   add   := Float32.add
   mul   := Float32.mul
@@ -145,7 +154,7 @@ instance : NumOps Float32 where
     `NumLaws`: floating-point addition does not associate, so the autodiff
     theorem genuinely does not hold here.  Same for `Float32`. -/
 instance : NumOps Float where
-  zero  := 0.0
+  zero  := Nat.toFloat 0
   one   := 1.0
   add   := Float.add
   mul   := Float.mul
