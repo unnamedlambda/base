@@ -78,6 +78,8 @@ lean_lib Qwen2Algorithm
 -- if any public claim reaches an axiom or opaque outside the declared surface.
 lean_lib Qwen2Spec
 
+lean_lib Qwen2Top
+
 lean_lib ScanCore
 
 lean_lib TrustScan

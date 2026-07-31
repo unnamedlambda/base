@@ -2,6 +2,7 @@ import ScanCore
 import Qwen2Algorithm
 import Qwen2NonVacuity
 import Qwen2Spec
+import Qwen2Top
 
 /-!
   # What the inference claims actually rest on — computed, not documented
@@ -50,6 +51,8 @@ def roots : List Name :=
   , `Qwen2Common.attn_v_path
   , `layer_program_realises_plan
   , `layer_program_computes
+  -- the single statement the rest exists for
+  , `shipped_layer_is_transformer
   -- the concrete instantiations: these are what make the rest non-vacuous
   , `Qwen2NonVacuity.smMetaW
   , `Qwen2NonVacuity.layer_realises_concrete
