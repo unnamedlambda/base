@@ -77,6 +77,12 @@ lean_lib Qwen2Algorithm
 -- Build-enforced: recomputes the trusted base from the proof terms and fails
 -- if any public claim reaches an axiom or opaque outside the declared surface.
 lean_lib Qwen2Spec
+
+lean_lib ScanCore
+
+lean_lib TrustScan
+
+lean_lib BackwardScan
 lean_lib Qwen2NonVacuity
 -- …and the same scan over the training pipeline.  A separate module because
 -- each generator defines its own `main`.
