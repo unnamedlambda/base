@@ -188,6 +188,173 @@ def qwen2Algorithm : Algorithm := { fn_idx := u32 38 }
 
 end Qwen2
 
+-- ---------------------------------------------------------------------------
+-- The rest of the per-token device-write sequence, as theorems
+-- ---------------------------------------------------------------------------
+
+/-!
+  `inferFn` performs two device writes directly; the other 531 are inside the
+  layer function, behind a `forLoop` and a `callVoid` that a per-function scan
+  cannot follow.  Stating the callees' sequences here is what pins the whole
+  per-token path rather than just its first two entries.
+
+  Per layer: 22 device writes — 13 kernel launches, 7 `sgemv`, 2 batched
+  `sgemm`.  Per token: `2 + 24·22 + 3 = 533`.
+-/
+
+open AlgorithmLib.Clif in
+/-- **One layer's attention half**: ten launches, four matvecs, two batched
+    contractions, in this order. -/
+theorem attn_writes :
+    (launchesOf (Qwen2.inferLayerAttnFn.run {}).2).map Qwen2Common.opSig
+      = Qwen2Common.expectedAttnOps := by
+  native_decide
+
+open AlgorithmLib.Clif in
+/-- **…and its feed-forward half**: three launches, three matvecs. -/
+theorem ffn_writes :
+    (launchesOf (Qwen2.inferLayerFfnFn.run {}).2).map Qwen2Common.opSig
+      = Qwen2Common.expectedFfnOps := by
+  native_decide
+
+open AlgorithmLib.Clif in
+/-- **The layer function itself writes nothing** — it only dispatches, which is
+    precisely why a per-function scan of it reported an empty sequence. -/
+theorem layer_writes_nothing :
+    launchesOf (Qwen2.inferLayerFn.run {}).2 = [] := by
+  native_decide
+
+-- ---------------------------------------------------------------------------
+-- …and what each of those writes bound
+-- ---------------------------------------------------------------------------
+
+/-!
+  The theorems above pin *which* kernel runs on *how many* blocks, in what
+  order.  They say nothing about which buffers each launch was handed, and that
+  was the last place a number could be chosen rather than derived: a stage
+  proven about "buffer 10" had no connection to the pointer the host stored.
+
+  `Clif.deviceOpsOf` recovers the pointer arrays from the stores preceding each
+  launch, and the vendor calls' arguments, both keyed to the base they were
+  loaded from.  Pinning *those* is what makes `Qwen2Common.layerKernels` a
+  claim about this program rather than a table of intentions.
+-/
+
+open AlgorithmLib.Clif in
+/-- **The attention half's device writes, and what each one bound.** -/
+theorem attn_ops_are :
+    deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2 = Qwen2Common.attnOps := by
+  native_decide
+
+open AlgorithmLib.Clif in
+/-- **…and the feed-forward half's.** -/
+theorem ffn_ops_are :
+    deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2 = Qwen2Common.ffnOps := by
+  native_decide
+
+open AlgorithmLib.Clif in
+/-- **The layer function dispatches to the two halves and to nothing else** —
+    which, with `layer_writes_nothing`, is the whole of what it does. -/
+theorem layer_fn_calls :
+    callsOf (Qwen2.inferLayerFn.run {}).2 = ["fn_29", "fn_30"] := by native_decide
+
+open AlgorithmLib.Clif in
+/-- **…and none of the three leaf functions loops**, so each one's static scan
+    is its complete device-write sequence.  Together with
+    `Qwen2Common.infer_loop_is_layers` this accounts for every repetition in a
+    decode step. -/
+theorem leaf_fns_no_loops :
+    loopsOf (Qwen2.inferLayerFn.run {}).2 = []
+      ∧ loopsOf (Qwen2.inferLayerAttnFn.run {}).2 = []
+      ∧ loopsOf (Qwen2.inferLayerFfnFn.run {}).2 = [] := by native_decide
+
+open AlgorithmLib.Clif AlgorithmLib.Host in
+/-- **The declared attention half and the built one perform the same device
+    writes** — same records, same bind arrays, in the same order.
+
+    The left is a term whose `forN`/`call` structure the composition theorems
+    recurse through; the right is a scan of the emitted CLIF.  With
+    `Qwen2Common.tokenDriver_deviceOps` above, the only part of a decode step
+    not covered by a pair like this is the *call and loop structure* of
+    `inferFn` and `inferLayerFn` — which is why those two are what
+    `ScanCore.openObligations` names. -/
+theorem attnDriver_is_built (fnOf : String → FnRef) :
+    (Qwen2Common.attnDriver fnOf).deviceOps
+      = deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2 := by
+  rw [attn_ops_are, Qwen2Common.attnDriver_deviceOps]
+
+open AlgorithmLib.Clif AlgorithmLib.Host in
+/-- **…and the feed-forward half's.** -/
+theorem ffnDriver_is_built (fnOf : String → FnRef) :
+    (Qwen2Common.ffnDriver fnOf).deviceOps
+      = deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2 := by
+  rw [ffn_ops_are, Qwen2Common.ffnDriver_deviceOps]
+
+open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
+/-- **The shipped attention function realises `attnPlan`.**
+
+    Read the chain: the emitted CLIF performs these sixteen device writes with
+    these bind arrays (`attn_ops_are`, by evaluation of the builder); those
+    sixteen resolve, under the kernel and vendor tables, to exactly the plan
+    `attn_computes` is about (`attn_ops_realise_plan`, by reduction).  The
+    buffers in that plan are `bufOf` of the handles the program stored.
+
+    What is assumed between the two: that `cl_cuda_launch off n bind gx` runs
+    the PTX at `off` on `gx` blocks over the pointer array at `bind` — row
+    three of `Clif.lean`'s trusted table — and `bufOf` itself, a renaming. -/
+theorem attn_program_realises_plan (gim : Buf → Nat → Nat)
+    (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+        (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2)
+      = some (attnPlan gim h hm) := by
+  rw [attn_ops_are]; exact Qwen2Common.attn_ops_realise_plan gim h hm
+
+open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
+/-- **…and the shipped feed-forward function realises `ffnPlan`.** -/
+theorem ffn_program_realises_plan (gim : Buf → Nat → Nat)
+    (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+        (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
+      = some ffnPlan := by
+  rw [ffn_ops_are]; exact Qwen2Common.ffn_ops_realise_plan gim h hm
+
+open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
+/-- **One transformer layer of the shipped program is `layerPlan`.**
+
+    `inferLayerFn` calls attention then feed-forward and writes nothing itself
+    (`layer_writes_nothing`), so the layer's device-write sequence is the
+    concatenation — and the plan it realises is `layerPlan`, whose memory
+    transformation `layer_computes` gives in one equation.
+
+    This is the sentence gap 1 was blocking: not "a layer-shaped plan is
+    proven", but *this program's* layer is that plan. -/
+theorem layer_program_realises_plan (gim : Buf → Nat → Nat)
+    (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
+    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+        (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2
+          ++ deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
+      = some (layerPlan gim h hm) := by
+  rw [attn_ops_are, ffn_ops_are]; exact Qwen2Common.layer_ops_realise_plan gim h hm
+
+open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
+/-- **What one layer of the shipped program does to memory.**
+
+    The composition of everything: the device writes the emitted CLIF performs,
+    the plan they realise, and that plan's denotation.  `Honours R` covers the
+    nine vendor calls and `Law.combinerComm` softmax's remainder pass; nothing
+    else is assumed beyond the trusted rows named in `Clif.lean` and
+    `ML/Ptx.lean`. -/
+theorem layer_program_computes (gim : Buf → Nat → Nat)
+    (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b)))
+    (R : Realisation) (hR : Honours R) (st : WSt) :
+    ∃ Pl, planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+            (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2
+              ++ deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
+          = some Pl
+      ∧ (Pl.run R st).mem = Pl.denote st.mem :=
+  ⟨layerPlan gim h hm, layer_program_realises_plan gim h hm,
+   layer_computes gim h hm R hR st⟩
+
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[
