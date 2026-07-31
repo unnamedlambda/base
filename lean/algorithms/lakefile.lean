@@ -74,6 +74,12 @@ lean_lib Sha256Algorithm
 lean_lib Qwen2Common
 @[default_target]
 lean_lib Qwen2Algorithm
+-- Build-enforced: recomputes the trusted base from the proof terms and fails
+-- if any public claim reaches an axiom or opaque outside the declared surface.
+lean_lib Qwen2Spec
+lean_lib Qwen2NonVacuity
+-- …and the same scan over the training pipeline.  A separate module because
+-- each generator defines its own `main`.
 @[default_target]
 lean_lib Qwen2OnDiskAlgorithm
 lean_lib WindowDemoAlgorithm
