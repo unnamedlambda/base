@@ -54,6 +54,7 @@ def roots : List Name :=
   -- the single statement the rest exists for
   , `shipped_layer_is_transformer
   , `token_is_layers
+  , `shipped_token_is_layers
   -- the concrete instantiations: these are what make the rest non-vacuous
   , `Qwen2NonVacuity.smMetaW
   , `Qwen2NonVacuity.layer_realises_concrete
