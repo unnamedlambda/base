@@ -58,3 +58,40 @@ theorem shipped_layer_is_transformer (gim : Buf → Nat → Nat)
   ⟨layer_program_realises_plan gim h hm,
    by rw [layer_computes gim h hm R hR st]
       exact Qwen2Spec.layer_is_spec gim hl h hm st.mem i hi⟩
+
+/-- Apply `f` to `x` `n` times.  Written here rather than reused because the
+    recursion has to unfold on the left, matching how `List.replicate` grows. -/
+def iterN {α : Type} (f : α → α) : Nat → α → α
+  | 0,     x => x
+  | n + 1, x => iterN f n (f x)
+
+/-- A plan repeated `n` times denotes `n` iterations of its denotation. -/
+theorem denote_replicate (S : List PStep) :
+    ∀ (n : Nat) (m : Buf → Nat → Float32),
+      (Plan.mk ((List.replicate n S).flatten)).denote m
+        = iterN (fun mm => (Plan.mk S).denote mm) n m := by
+  intro n
+  induction n with
+  | zero => intro m; rfl
+  | succ k ih =>
+      intro m
+      show (Plan.mk (S ++ (List.replicate k S).flatten)).denote m = _
+      rw [Plan.denote_append, ih]
+      rfl
+
+/-- **A token is twenty-four layers.**  The structural half of the token-level
+    statement: `tokenPlan`'s denotation is the embedding, then the layer
+    denotation iterated `N_LAYERS` times, then the sampling tail.  Combined
+    with `Qwen2Spec.layer_is_spec`, which identifies one iteration with the
+    transformer layer, this carries the spec across the whole token. -/
+theorem token_is_layers (gim : Buf → Nat → Nat)
+    (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b)))
+    (m : Buf → Nat → Float32) :
+    (tokenPlan gim h hm).denote m
+      = (finalPlan gim).denote
+          (iterN (fun mm => (layerPlan gim h hm).denote mm)
+            Qwen2Common.N_LAYERS ((entryPlan gim).denote m)) := by
+  show (Plan.mk ((entryPlan gim).steps
+        ++ ((List.replicate Qwen2Common.N_LAYERS (layerPlan gim h hm).steps).flatten
+            ++ (finalPlan gim).steps))).denote m = _
+  rw [Plan.denote_append, Plan.denote_append, denote_replicate]
