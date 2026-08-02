@@ -11,3 +11,8 @@ lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
 
 [build-dependencies]
 build-support = { path = "../../build-support" }
+
+# Real-corpus compression throughput vs nvCOMP. Needs scratch/silesia_all.bin.
+[[bin]]
+name = "lz4-comp-warp"
+path = "src/bin/bench_comp_warp.rs"

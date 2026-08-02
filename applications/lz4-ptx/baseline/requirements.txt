@@ -1,0 +1,4 @@
+# GPU LZ4 baseline. nvCOMP is NVIDIA's proprietary GPU compression library,
+# shipped as a prebuilt wheel; version pinned so the quoted numbers are reproducible.
+nvidia-nvcomp-cu12==5.3.0.16
+numpy>=2.0

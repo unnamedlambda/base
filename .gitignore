@@ -10,3 +10,7 @@ lean/**/.lake/
 
 # Locally-generated model artifacts (see tools/qwen2_convert.py).
 qwen2*.bin
+
+# LZ4 benchmark corpus + nvCOMP baseline venv (applications/lz4-ptx/baseline/setup.sh).
+applications/lz4-ptx/corpus/
+applications/lz4-ptx/baseline/.venv/
