@@ -5,6 +5,7 @@ import Lz4NonVacuity
 import Lz4Launches
 import Lz4Interleave
 import Lz4Confine64
+import Lz4Whole
 import Lz4Host
 import Lz4Sites
 import Lz4Extend
@@ -41,11 +42,8 @@ open TrustScan
       reaches is a definition or a theorem.  The trusted base of
       `Lz4Assumptions` lives *below* Lean (the printer, `ptxas`, the memory
       model, the Rust FFI), so it is invisible to a closure walk.  That is the
-      point of the ledger: those rows cannot be found by any scan.  The two that
-      once *were* expressible as unproven hypotheses — `LaunchAgreesPerWarp` and
-      `LayoutOK`'s placement clause — are now discharged and established by
-      construction respectively; what is left open is listed below and reported
-      per claim.
+      point of the ledger: those rows cannot be found by any scan.  What *is*
+      expressible as a hypothesis is listed below and reported per claim.
 
     * `allowedHyp` is the arithmetic side-conditions: block-size and pointer
       bounds (`w < nb`, `iS ≤ 65536`, `outPtr + w * oS + 9 * iS < 2 ^ 32`, …).
@@ -84,7 +82,15 @@ def lz4Surface : Surface :=
         -- `LsicInv` is the tail LSIC loop's OWN region invariant (potential +
         -- loop guard + lane-uniformity), established at pc 222 and proven
         -- preserved on the region.  `Or` is the two-store case split.
-      , `Lz4Sites.LsicInv, `Lz4Sites.LsicInvL, `Lz4Sites.LsicInvM, `Lz4Sites.TokInv, `Or ]
+      , `Lz4Sites.LsicInv, `Lz4Sites.LsicInvL, `Lz4Sites.LsicInvM, `Lz4Sites.TokInv, `Or
+        -- `TailOOB b` is the two-instruction shape of the kernel's tail.  Like
+        -- `PcClosed` it is decidable at a concrete program and every use
+        -- discharges it — `Lz4Interleave.tail32` and `tail64`, both `decide`.
+      , `Lz4Interleave.TailOOB
+        -- `SchedComplete` names a schedule long enough for every warp to finish.
+        -- It is CONSTRUCTED, not assumed: `schedComplete_exists` builds one from
+        -- the step counts `ShippedCorrect` provides.
+      , `Lz4Interleave.SchedComplete ]
     derivedObligations :=
       [ (`Algorithm.ShippedCorrect, `Algorithm.shipped32_correct)
         -- race-freedom is not assumed: it follows from `KernelConfined` plus the
@@ -110,7 +116,11 @@ def lz4Surface : Surface :=
       , (`Lz4Sites.CursorAtSites, `Lz4Sites.cursorAtSites_shipped) ]
     openObligations :=
       [ `Algorithm.LayoutOK
+        -- a hypothesis of the GENERIC lemmas (`launches_correct` and friends,
+        -- which are stated about any run).  At the shipped geometries it is a
+        -- CONCLUSION, built by `Lz4Interleave.launchesTo_of_layout`.
       , `Lz4Launches.LaunchesTo ] }
+
 
 /-- **The public claims.**  Adding a claim here subjects it to the scan. -/
 def roots : List Name :=
@@ -165,6 +175,9 @@ def roots : List Name :=
   , `Lz4Host.host_loop_is_rLaunches32
   , `Lz4Host.host_loop_is_rLaunches64
   , `Lz4Host.host_launch_in_loop_body32
+  , `Lz4Host.host_launch_in_loop_body64
+  , `Lz4Host.hostShape32
+  , `Lz4Host.hostShape64
     -- where the kernel can touch global memory at all, enumerated from the
     -- shipped program, so `KernelConfined` is a located obligation
   , `Lz4Sites.reads_at_site
@@ -258,17 +271,39 @@ def roots : List Name :=
     -- and the same two at the 64 KiB geometry
   , `Lz4Sites.regConfined_shipped64
   , `Lz4Sites.kernelConfined_shipped64
+    -- the composition: `LayoutOK` gives confinement at every memory the run
+    -- passes through, a long-enough schedule is CONSTRUCTED rather than
+    -- assumed, and the twenty launches follow
+  , `Lz4Interleave.exists_nAt
+  , `Lz4Interleave.schedComplete_exists
+  , `Lz4Interleave.confineHyps_of_layoutOK
+  , `Lz4Interleave.oneLaunch_ok
+  , `Lz4Interleave.launchesTo_of_layout
+  , `Lz4Whole.confined32
+  , `Lz4Whole.confined64
+  , `Lz4Whole.run_correct
+  , `Lz4Whole.shipped32_run_correct
+  , `Lz4Whole.shipped64_run_correct
+  , `Lz4Whole.run_correct_witness
+    -- …and the launch count and grid the run is stated at, read out of the
+    -- emitted CLIF rather than taken from the generator's constants
+  , `Lz4Whole.emittedLaunches32
+  , `Lz4Whole.emittedLaunches64
+  , `Lz4Whole.emittedGrid32
+  , `Lz4Whole.emittedGrid64
+  , `Lz4Whole.shipped32_run_at_emitted
+  , `Lz4Whole.shipped64_run_at_emitted
     -- the ledger itself: this fails to elaborate if a named theorem moves
   , `Lz4Assumptions.anchors
   ]
 
 end Lz4Scan
 
--- The scan's cost grows with the development it scans: 108 claims, each a
+-- The scan's cost grows with the development it scans: 130 claims, each a
 -- transitive-closure walk plus an `isProp` per binder.  This is accounting, not
 -- proof, so the default 200k elaboration budget has nothing to say about it —
--- but the growth is linear in the claim count and it passes at 250k, so the
--- limit is kept low enough to still be a canary if that ever stops being true.
-set_option maxHeartbeats 400000 in
+-- but the growth is linear in the claim count, so the limit is kept close enough
+-- to the measured cost to still be a canary if that ever stops being true.
+set_option maxHeartbeats 600000 in
 open Lz4Scan TrustScan in
 #eval runScanWith lz4Surface "lz4-compressor" roots

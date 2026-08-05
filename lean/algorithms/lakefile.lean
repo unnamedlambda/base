@@ -121,3 +121,4 @@ lean_lib Lz4Ckpt64
 lean_lib Lz4OpLe64
 lean_lib Lz4Stores64
 lean_lib Lz4Confine64
+lean_lib Lz4Whole

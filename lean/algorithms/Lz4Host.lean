@@ -146,4 +146,43 @@ theorem host_launch_in_loop_body32 :
       = some ["cl_cuda_launch"] := by
   native_decide
 
+theorem host_launch_in_loop_body64 :
+    (blockInsts? ((warpBuilder (WP.mk 16)).run {}).2 2).map
+        (callsIn ((warpBuilder (WP.mk 16)).run {}).2.fns)
+      = some ["cl_cuda_launch"] := by
+  native_decide
+
+-- ── The shape, as one value ──────────────────────────────────────────────────
+
+/-- **Everything the emitted host program's device side is known to do**, bundled
+    so it can be anchored and so the two geometries stay in step: a field proven
+    at 15 and missing at 16 fails to build.
+
+    Nothing below the host uses these — the runtime semantics that would let a
+    kernel theorem consume them is trusted base row 5.  What they do is fix the
+    program's shape, so a generator change that moved a launch out of the loop,
+    added an allocation, or altered the grid stops the build. -/
+structure HostShape (b : Nat) : Prop where
+  calls : callsOf ((warpBuilder (WP.mk b)).run {}).2
+      = ["cl_cuda_init", "cl_cuda_create_buffer", "cl_cuda_upload_ptr_offset",
+         "cl_cuda_launch", "cl_cuda_download_ptr_offset", "cl_cuda_cleanup"]
+  oneAlloc : ((callsOf ((warpBuilder (WP.mk b)).run {}).2).filter
+      (· == "cl_cuda_create_buffer")).length = 1
+  geom : (launchesOf ((warpBuilder (WP.mk b)).run {}).2).map (fun r => (r.gridX, r.blockX))
+      = [(none, none),
+         (some ((WP.mk b).numBlk : Int), some (AlgorithmLib.LZ4Simt.modelBlockDim : Int))]
+  loop : loopsOf ((warpBuilder (WP.mk b)).run {}).2 = [⟨1, 2, 3, rLaunches⟩]
+  launchInBody : (blockInsts? ((warpBuilder (WP.mk b)).run {}).2 2).map
+      (callsIn ((warpBuilder (WP.mk b)).run {}).2.fns) = some ["cl_cuda_launch"]
+  bindTable : ∃ pre : List UInt8, pre.length = (WP.mk b).bindOff ∧
+      warpPayloadDSL (WP.mk b) = pre ++ (uint32ToBytes 0 ++ uint32ToBytes 0)
+
+theorem hostShape32 : HostShape 15 :=
+  ⟨host_calls32, host_single_allocation.1, host_grid_is_numBlk32,
+   host_loop_is_rLaunches32, host_launch_in_loop_body32, bind_table_same_buffer _⟩
+
+theorem hostShape64 : HostShape 16 :=
+  ⟨host_calls64, host_single_allocation.2, host_grid_is_numBlk64,
+   host_loop_is_rLaunches64, host_launch_in_loop_body64, bind_table_same_buffer _⟩
+
 end Lz4Host

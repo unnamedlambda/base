@@ -7,7 +7,7 @@ import Lz4NonVacuity
   `rLaunches = 20` of them over the same two device buffers, so launches 2…20
   start from an output buffer the previous launch already wrote, and read an
   input buffer that has been sitting under 19 prior launches.  That the result is
-  still correct was, until now, an argument in prose.
+  still correct is a theorem below rather than an argument in prose.
 
   It composes for two reasons, and both are theorems below rather than
   assertions: a launch changes nothing outside the union of the warps' output
@@ -120,7 +120,11 @@ theorem launches_correct (b : Nat) (inPtr outPtr : Nat) (gm gfinal : Array UInt8
       exact ⟨k, hk0, hkle, hlen,
         by rw [hdec, input_preserved b inPtr outPtr gm gmid hlayout hframe w hw]⟩
 
-/-- The shipped 32 KiB artifact, over its `rLaunches` repetitions. -/
+/-- The shipped 32 KiB artifact, over its `rLaunches` repetitions.
+
+    This is the *given the launches happened* form — it takes `LaunchesTo`.  The
+    endpoint that constructs it is `Lz4Whole.shipped32_run_correct`, which assumes
+    only `LayoutOK`. -/
 theorem shipped32_launches_correct (inPtr outPtr : Nat) (gm gfinal : Array UInt8)
     (smemB : List UInt8)
     (hlayout : LayoutOK 15 inPtr outPtr gm)

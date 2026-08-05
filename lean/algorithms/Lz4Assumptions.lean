@@ -1,4 +1,4 @@
-import Lz4CompAlgorithm
+import Lz4Whole
 
 /-!
   # What the LZ4 compressor proves, and what it rests on
@@ -17,6 +17,12 @@ import Lz4CompAlgorithm
   bytes returns exactly that warp's input slice.  `launch_correct` lifts this to
   the FINAL device memory, so every block decodes out of the memory the host
   downloads rather than each warp in isolation.
+
+  `Lz4Whole.shipped32_run_correct` / `shipped64_run_correct` compose that with
+  every layer under it — confinement, race-freedom, the interleaving theorem, and
+  the twenty repetitions — into one statement whose only hypothesis is
+  `LayoutOK`.  The schedule is not assumed: `schedComplete_exists` constructs a
+  long-enough one for each launch, and `launch_agrees` holds for all of them.
 
   The proven object is the executed object by construction: `WP.kernel w` is one
   definition, `serializeKernel` prints it, `warpPayloadDSL` embeds those bytes,
@@ -37,8 +43,9 @@ import Lz4CompAlgorithm
 
   ## Open obligations
 
-  Hypotheses of `launch_correct` that no theorem discharges.  Both are host-side;
-  no kernel-level obligation is left.  `Lz4Scan` reports every claim carrying one.
+  One, and it is host-side.  `Lz4Scan` reports every claim carrying it, and the
+  `endpoints` list there fails the build if the composed claims ever assume
+  anything else.
 
   * `LayoutOK` — the buffer-placement contract.  Satisfiable
     (`Lz4NonVacuity.layoutOK_witness`), so the claims below it are not vacuous.
@@ -50,13 +57,16 @@ import Lz4CompAlgorithm
     per-warp clause from that one equation.  What remains is that
     `cudaCreateBuffer n` yields `n` contiguous addressable bytes — row 5.
 
-  * `LaunchesTo` — that the host repeats the launch as the recovered loop says.
+  The chain below it is proven throughout, at both geometries, and — the part a
+  name-based check cannot see — each link is *applied* to the next, ending at the
+  `Anchors` fields `whole32`/`whole64`:
 
-  `RegConfined` and `CursorAtSites` are theorems at both geometries
-  (`regConfined_shipped`, `regConfined_shipped64`, `cursorAtSites_shipped`), and
-  the chain below them is proven throughout:
+      WholeRun  ←  LaunchesTo  ←  LaunchAgreesPerWarp / LaunchFrame
+                ←  RaceFree  ←  KernelConfined  ←  RegConfined / CursorAtSites
 
-      LaunchAgreesPerWarp / LaunchFrame  ←  RaceFree  ←  KernelConfined  ←  RegConfined
+  `LaunchesTo` appears in `Lz4Scan`'s open list because the *generic* lemmas
+  (`launches_correct`) take it — they are stated about any run.  At the shipped
+  geometries it is a conclusion, built by `Lz4Interleave.launchesTo_of_layout`.
 
   ## Known gaps that are not hypotheses
 
@@ -68,6 +78,28 @@ import Lz4CompAlgorithm
 namespace Lz4Assumptions
 
 open Algorithm
+open AlgorithmLib.LZ4WarpDSL
+
+/-- **The whole claim for one geometry, written out.**
+
+    `Anchors` holds this at `b = 15` and `b = 16`, so the ledger cannot be
+    satisfied by a theorem proven at one geometry and missing at the other — the
+    gap that a name-based check cannot see.  Written out rather than referring to
+    the theorem's own statement, so weakening the conclusion breaks it too. -/
+def WholeRun (b : Nat) : Prop :=
+  ∀ (inPtr outPtr : Nat) (smemB : List UInt8) (gm : Array UInt8),
+    LayoutOK b inPtr outPtr gm →
+    ∃ gfinal,
+      Lz4Launches.LaunchesTo b inPtr outPtr smemB rLaunches gm gfinal ∧
+      ∀ w, w < (WP.mk b).numBlk →
+        ∃ k, 0 < k ∧ k ≤ (WP.mk b).lenOff ∧
+          AlgorithmLib.readU32LE gfinal
+            (outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff) = k ∧
+          AlgorithmLib.LZ4Imp.decompress
+            ((List.range k).map (fun i => gfinal.getD
+              (outPtr + w * (WP.mk b).outStride + i) 0))
+            (WP.mk b).inStride
+            = some (gmemInpAt gm (inPtr + w * (WP.mk b).inStride) (WP.mk b).inStride)
 
 /-- **The ledger's anchors.**  Each field is the *type* of a theorem named in the
     prose above.  Renaming or deleting one of them fails to elaborate, so the
@@ -76,6 +108,15 @@ structure Anchors where
   /-- The per-warp claim, at both shipped geometries. -/
   shipped32 : ShippedCorrect 15
   shipped64 : ShippedCorrect 16
+  /-- **The composition**, at both shipped geometries: the buffer contract in,
+      the twenty launches and every block's decode out.  A layer that is proven
+      but never applied leaves its obligation in this field's hypothesis list,
+      which is what makes the field fail rather than merely read well. -/
+  whole32 : WholeRun 15
+  whole64 : WholeRun 16
+  /-- The emitted host program's device side, at both geometries. -/
+  hostShape32 : Lz4Host.HostShape 15
+  hostShape64 : Lz4Host.HostShape 16
   /-- Distinct warps write disjoint ranges — the proven half of DRF. -/
   disjoint :
     ∀ (b outPtr w w' : Nat), w ≠ w' → ∀ j : Nat,
@@ -90,6 +131,10 @@ structure Anchors where
 def anchors : Anchors :=
   { shipped32   := shipped32_correct
     shipped64   := shipped64_correct
+    whole32     := fun i o s g h => Lz4Whole.shipped32_run_correct i o s g h
+    whole64     := fun i o s g h => Lz4Whole.shipped64_run_correct i o s g h
+    hostShape32 := Lz4Host.hostShape32
+    hostShape64 := Lz4Host.hostShape64
     disjoint    := warp_regions_disjoint
     payloadLen  := payload_length
     payloadFits := payload_fits }
