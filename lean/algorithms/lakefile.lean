@@ -94,3 +94,9 @@ lean_lib WindowDemoAlgorithm
 lean_lib RaymarchDemoAlgorithm
 lean_lib FallingSandAlgorithm
 lean_lib Lz4CompAlgorithm
+-- The compressor's ledger, its non-vacuity witnesses, and the scan that fails
+-- the build when a claim leaves the declared surface.
+lean_lib Lz4NonVacuity
+lean_lib Lz4Launches
+lean_lib Lz4Interleave
+lean_lib Lz4Host
