@@ -163,6 +163,11 @@ theorem host_launch_in_loop_body64 :
     program's shape, so a generator change that moved a launch out of the loop,
     added an allocation, or altered the grid stops the build. -/
 structure HostShape (b : Nat) : Prop where
+  ops : (launchesOf ((warpBuilder (WP.mk b)).run {}).2).map
+      (fun r => (r.fnName, r.gridX, r.blockX, r.kernelOff, r.nBufs))
+      = [("cl_cuda_upload_ptr_offset", none, none, none, none),
+         ("cl_cuda_launch", some ((WP.mk b).numBlk : Int),
+          some (AlgorithmLib.LZ4Simt.modelBlockDim : Int), some 256, some 2)]
   calls : callsOf ((warpBuilder (WP.mk b)).run {}).2
       = ["cl_cuda_init", "cl_cuda_create_buffer", "cl_cuda_upload_ptr_offset",
          "cl_cuda_launch", "cl_cuda_download_ptr_offset", "cl_cuda_cleanup"]
@@ -178,11 +183,13 @@ structure HostShape (b : Nat) : Prop where
       warpPayloadDSL (WP.mk b) = pre ++ (uint32ToBytes 0 ++ uint32ToBytes 0)
 
 theorem hostShape32 : HostShape 15 :=
-  ⟨host_calls32, host_single_allocation.1, host_grid_is_numBlk32,
+  ⟨by rw [host_ops32]; decide,
+   host_calls32, host_single_allocation.1, host_grid_is_numBlk32,
    host_loop_is_rLaunches32, host_launch_in_loop_body32, bind_table_same_buffer _⟩
 
 theorem hostShape64 : HostShape 16 :=
-  ⟨host_calls64, host_single_allocation.2, host_grid_is_numBlk64,
+  ⟨by rw [host_ops64]; decide,
+   host_calls64, host_single_allocation.2, host_grid_is_numBlk64,
    host_loop_is_rLaunches64, host_launch_in_loop_body64, bind_table_same_buffer _⟩
 
 end Lz4Host

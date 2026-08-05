@@ -308,6 +308,7 @@ def roots : List Name :=
   , `Lz4Whole.shipped64_run_at_emitted
     -- the ledger itself: this fails to elaborate if a named theorem moves
   , `Lz4Assumptions.anchors
+  , `Lz4Assumptions.hostAnchors
   ]
 
 end Lz4Scan

@@ -68,6 +68,19 @@ import Lz4Whole
   (`launches_correct`) take it — they are stated about any run.  At the shipped
   geometries it is a conclusion, built by `Lz4Interleave.launchesTo_of_layout`.
 
+  ## Two endpoints, and what each costs
+
+  They differ only in where the launch count and the warp bound come from.
+
+  * `shipped32_run_correct` uses `rLaunches` and `numBlk`, the generator's own
+    constants.  It stays inside the three ordinary axioms.
+  * `shipped32_run_at_emitted` uses the trip count and grid read back out of the
+    emitted CLIF, so a generator change that altered either would break it.  That
+    costs the Lean compiler: recovering device operations from a CLIF program is
+    `native_decide`.  `Lz4Assumptions.hostAnchors` is kept separate from
+    `anchors` for the same reason, and `Lz4Scan` names every claim that reaches
+    it.
+
   ## Known gaps that are not hypotheses
 
   * **`dataLen` is unenforced.**  The host uploads whatever the caller passes.
@@ -114,9 +127,6 @@ structure Anchors where
       which is what makes the field fail rather than merely read well. -/
   whole32 : WholeRun 15
   whole64 : WholeRun 16
-  /-- The emitted host program's device side, at both geometries. -/
-  hostShape32 : Lz4Host.HostShape 15
-  hostShape64 : Lz4Host.HostShape 16
   /-- Distinct warps write disjoint ranges — the proven half of DRF. -/
   disjoint :
     ∀ (b outPtr w w' : Nat), w ≠ w' → ∀ j : Nat,
@@ -133,10 +143,22 @@ def anchors : Anchors :=
     shipped64   := shipped64_correct
     whole32     := fun i o s g h => Lz4Whole.shipped32_run_correct i o s g h
     whole64     := fun i o s g h => Lz4Whole.shipped64_run_correct i o s g h
-    hostShape32 := Lz4Host.hostShape32
-    hostShape64 := Lz4Host.hostShape64
     disjoint    := warp_regions_disjoint
     payloadLen  := payload_length
     payloadFits := payload_fits }
+
+/-- **The host program's shape, anchored separately.**
+
+    Kept out of `Anchors` because reading device operations back out of the
+    emitted CLIF is `native_decide` — `Lz4Scan` reports both of these as reaching
+    the Lean compiler.  `anchors` stays inside the three ordinary axioms, and
+    what costs the compiler is visible as its own value. -/
+structure HostAnchors where
+  shape32 : Lz4Host.HostShape 15
+  shape64 : Lz4Host.HostShape 16
+
+def hostAnchors : HostAnchors :=
+  { shape32 := Lz4Host.hostShape32
+    shape64 := Lz4Host.hostShape64 }
 
 end Lz4Assumptions
