@@ -78,6 +78,19 @@ def hypsOf (n : Name) : MetaM (Array Expr) := do
   | none => return #[]
   | some ci => hypsGo ci.type #[]
 
+private partial def conclGo (e : Expr) : MetaM Expr := do
+  match e with
+  | .forallE nm d b bi => Meta.withLocalDecl nm bi d fun x => conclGo (b.instantiate1 x)
+  | _ => return e
+
+/-- The head constant a claim concludes with.  Pairing an obligation with a
+    discharger that exists but proves something else is otherwise invisible. -/
+def conclHead (n : Name) : MetaM (Option Name) := do
+  let env ← getEnv
+  match env.find? n with
+  | none => return none
+  | some ci => return (← conclGo ci.type).getAppFn.constName?
+
 /-- **Hypotheses a claim may carry without comment.**
 
     * `AllHold` — the named float laws (`Law.combinerComm` &c.).  Float
@@ -194,6 +207,14 @@ structure Surface where
   allowedHyp         : List Name := []
   derivedObligations : List (Name × Name) := []
   openObligations    : List Name := []
+  /-- **Endpoints, and the exact hypotheses each may carry.**
+
+      `derivedObligations` says a component is proven; it cannot say the
+      component is *used*.  An unused layer leaves its obligation in the top
+      claim's hypothesis list, so pinning that list catches it.  Adding an
+      assumption, or proving a layer at one geometry and not the other, fails
+      here. -/
+  endpoints          : List (Name × List Name) := []
 
 /-- The inference/training surface: the four lists documented above. -/
 def mlSurface : Surface :=
@@ -285,8 +306,34 @@ def runScanWith (surf : Surface) (label : String) (roots : List Name) : CoreM Un
         if (env.find? by_).isNone then
           bad := bad + 1
           IO.println s!"MISSING DISCHARGE  {d}: {by_} is not in the environment"
-        else IO.println s!"[{label}]   {d} is discharged by {by_}"
+        else
+          -- existing is not enough: the discharger must conclude the obligation
+          match ← Meta.MetaM.run' (conclHead by_) with
+          | some c =>
+              if c != d then
+                bad := bad + 1
+                IO.println s!"WRONG DISCHARGE  {d}: {by_} concludes {c}"
+              else IO.println s!"[{label}]   {d} is discharged by {by_}"
+          | none =>
+              bad := bad + 1
+              IO.println s!"WRONG DISCHARGE  {d}: {by_} has no head constant"
     | none => pure ()
+  -- endpoints: the exact hypothesis set, so a proven layer cannot go unused
+  for (e, allowed) in surf.endpoints do
+    if (env.find? e).isNone then
+      bad := bad + 1
+      IO.println s!"MISSING ENDPOINT  {e}"
+    else
+      let hs ← Meta.MetaM.run' (hypsOf e)
+      let mut extra : Array Name := #[]
+      for h in hs do
+        match h.getAppFn with
+        | .const c _ => if !(c ∈ allowed) then extra := extra.push c
+        | _ => pure ()
+      if extra.size != 0 then
+        bad := bad + 1
+        IO.println s!"ENDPOINT ASSUMES MORE THAN DECLARED  {e}: {extra.toList}"
+      else IO.println s!"[{label}] endpoint {e} rests on exactly {allowed}"
   if missing.size != 0 then
     throwError s!"TRUST SCAN [{label}]: unknown claim(s) {missing.toList}"
   if bad != 0 then

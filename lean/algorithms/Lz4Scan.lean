@@ -89,7 +89,8 @@ def lz4Surface : Surface :=
       , `Lz4Interleave.TailOOB
         -- `SchedComplete` names a schedule long enough for every warp to finish.
         -- It is CONSTRUCTED, not assumed: `schedComplete_exists` builds one from
-        -- the step counts `ShippedCorrect` provides.
+        -- the step counts `ShippedCorrect` provides.  It reaches no endpoint —
+        -- the `endpoints` check below is what enforces that.
       , `Lz4Interleave.SchedComplete ]
     derivedObligations :=
       [ (`Algorithm.ShippedCorrect, `Algorithm.shipped32_correct)
@@ -117,10 +118,22 @@ def lz4Surface : Surface :=
     openObligations :=
       [ `Algorithm.LayoutOK
         -- a hypothesis of the GENERIC lemmas (`launches_correct` and friends,
-        -- which are stated about any run).  At the shipped geometries it is a
-        -- CONCLUSION, built by `Lz4Interleave.launchesTo_of_layout`.
-      , `Lz4Launches.LaunchesTo ] }
-
+        -- which are stated about any run) and a CONCLUSION of the endpoints
+        -- below, where `launchesTo_of_layout` constructs it.
+      , `Lz4Launches.LaunchesTo ]
+    endpoints :=
+      -- the composed claims, and everything they are allowed to assume.  Both
+      -- geometries, so proving a layer at 32 KiB and forgetting 64 KiB fails
+      -- here; and `LayoutOK` alone, so re-introducing an assumption the layers
+      -- below already discharge fails here too.
+      [ (`Lz4Whole.shipped32_run_correct, [`Algorithm.LayoutOK])
+      , (`Lz4Whole.shipped64_run_correct, [`Algorithm.LayoutOK])
+        -- …and applied to concrete addresses and a concrete memory, so the
+        -- contract cannot be silently unsatisfiable
+      , (`Lz4Whole.run_correct_witness, [])
+        -- the same, at the emitted program's own launch count and grid
+      , (`Lz4Whole.shipped32_run_at_emitted, [`Algorithm.LayoutOK, `Eq])
+      , (`Lz4Whole.shipped64_run_at_emitted, [`Algorithm.LayoutOK, `Eq]) ] }
 
 /-- **The public claims.**  Adding a claim here subjects it to the scan. -/
 def roots : List Name :=
