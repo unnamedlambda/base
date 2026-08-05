@@ -100,3 +100,14 @@ lean_lib Lz4NonVacuity
 lean_lib Lz4Launches
 lean_lib Lz4Interleave
 lean_lib Lz4Host
+lean_lib Lz4Sites
+lean_lib Lz4Cursor
+lean_lib Lz4Splice
+lean_lib Lz4OpLe
+lean_lib Lz4Ckpt
+lean_lib Lz4Stores
+lean_lib Lz4Geo
+lean_lib Lz4ExtShape
+lean_lib Lz4ExtGuard
+lean_lib Lz4ExtLoop
+lean_lib Lz4Extend
