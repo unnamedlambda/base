@@ -210,13 +210,6 @@ theorem ivExit_at (p : Array SInstr) (lo n b : Nat) (hsz : p.size = 274)
   · exact Or.inl ((mem_ivList lo n q').mpr ((inIv_iff lo n q').mp h1))
   · exact Or.inr h1
 
-/-- Nothing outside `R` jumps into `R` except at `e`.  Stated through `cfgAll`
-    so it is one traversal, not 274 indexings. -/
-def regionEntryB (p : Array SInstr) (R : List Nat) (e : Nat) : Bool :=
-  cfgAll p (fun q q' => decide (q ∈ R) || !decide (q' ∈ R) || decide (q' = e))
-
-/-- The regions' entry facts.  Kept out of `loopShapeB` so that bundle's conjunct
-    order — and every `obtain` pattern that destructures it — is untouched. -/
 def entryShapeB (p : Array SInstr) : Bool :=
   ivEntryB p 38 170 38
   && ivEntryB p 94 27 94
@@ -487,21 +480,6 @@ class Geo (p : Array SInstr) (S : Nat) : Prop extends Shape p where
   ibShape : ibShapeB p S = true
 
 
-/-- **Nothing outside a region jumps into it except at its entry pc.** -/
-theorem region_entry_lt {p : Array SInstr} [Shape p] {R : List Nat} {e : Nat}
-    (h : regionEntryB p R e = true) :
-    ∀ q, q < 274 → q ∉ R → ∀ q' ∈ succsOf p q, q' ∈ R → q' = e := by
-  intro q hq hnm q' hq' hmem
-  have hs : q < p.size := by rw [Shape.size (p := p)]; exact hq
-  have := List.all_eq_true.mp (cfgAll_at p _ h q hs) q' hq'
-  simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.not_eq_true',
-    decide_eq_false_iff_not] at this
-  rcases this with (h1 | h1) | h1
-  · exact absurd h1 hnm
-  · exact absurd hmem h1
-  · exact h1
-
-/-- Everything reachable from pc ≥ `b` stays at pc ≥ `b`.  One traversal. -/
 def upClosedB (p : Array SInstr) (b : Nat) : Bool :=
   cfgAll p (fun q q' => !decide (b ≤ q) || decide (b ≤ q'))
 
@@ -517,39 +495,7 @@ theorem upClosed_at (p : Array SInstr) (b : Nat) (hsz : p.size = 274)
   · exact absurd hb h1
   · exact h1
 
-/-- `region_entry_lt` with the size as a hypothesis rather than a `Shape`
-    instance, so it is usable upstream of the geometry instances. -/
-theorem regionEntry_at (p : Array SInstr) (R : List Nat) (e : Nat) (hsz : p.size = 274)
-    (h : regionEntryB p R e = true) :
-    ∀ q, q < 274 → q ∉ R → ∀ q' ∈ succsOf p q, q' ∈ R → q' = e := by
-  intro q hq hnm q' hq' hmem
-  have hs : q < p.size := by rw [hsz]; exact hq
-  have := List.all_eq_true.mp (cfgAll_at p _ h q hs) q' hq'
-  simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.not_eq_true',
-    decide_eq_false_iff_not] at this
-  rcases this with (h1 | h1) | h1
-  · exact absurd h1 hnm
-  · exact absurd hmem h1
-  · exact h1
 
-/-- Every successor of a pc inside `R` is inside `R` or at/after `b`. -/
-def regionExitB (p : Array SInstr) (R : List Nat) (b : Nat) : Bool :=
-  cfgAll p (fun q q' => !decide (q ∈ R) || decide (q' ∈ R) || decide (b ≤ q'))
-
-theorem regionExit_at (p : Array SInstr) (R : List Nat) (b : Nat) (hsz : p.size = 274)
-    (hR : ∀ q ∈ R, q < 274) (h : regionExitB p R b = true) :
-    ∀ q ∈ R, ∀ q' ∈ succsOf p q, q' ∈ R ∨ b ≤ q' := by
-  intro q hq q' hq'
-  have hs : q < p.size := by rw [hsz]; exact hR q hq
-  have := List.all_eq_true.mp (cfgAll_at p _ h q hs) q' hq'
-  simp only [Bool.or_eq_true, decide_eq_true_eq, Bool.not_eq_true',
-    decide_eq_false_iff_not] at this
-  rcases this with (h1 | h1) | h1
-  · exact absurd hq h1
-  · exact Or.inl h1
-  · exact Or.inr h1
-
-/-- Two `cfgAll` scans with pointwise-equal predicates agree. -/
 theorem cfgAll_congr (p : Array SInstr) (f g : Nat → Nat → Bool)
     (h : ∀ q q', f q q' = g q q') : cfgAll p f = cfgAll p g := by
   unfold cfgAll
@@ -577,6 +523,7 @@ theorem cfgRegion_eq (p : Array SInstr) (hsz : p.size = 274) (lo n e : Nat) :
   cases inIv lo n q <;> cases inIv lo n q' <;> cases (decide (q' = e)) <;> rfl
 
 /-- The same, for a scan already in `cfgAll` form (no size hypothesis needed). -/
+
 theorem cfgAllRegion_eq (p : Array SInstr) (lo n e : Nat) :
     cfgAll p (fun q q' => !decide (q' ∈ (List.range n).map (· + lo)) || decide (q' = e)
       || decide (q ∈ (List.range n).map (· + lo)))

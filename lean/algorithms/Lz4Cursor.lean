@@ -76,24 +76,7 @@ theorem bodyRegion_exit : ∀ q ∈ bodyRegion,
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ bodyRegion ∨ 272 ≤ q' :=
   ivExit_at K 40 232 272 shipped32_size (by omega) (by decide)
 
-theorem bodyRegion_entry_lt : ∀ q, q < 274 → q ∉ bodyRegion →
-    ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ bodyRegion → q' = 40 :=
-  ivEntry_at K 40 232 40 shipped32_size (by decide)
 
-theorem bodyRegion_entry : ∀ q, q ∉ bodyRegion →
-    ∀ q', q' ∈ AlgorithmLib.LZ4Simt.succsOf K q → q' ∈ bodyRegion → q' = 40 := by
-  intro q hq q' hq' hin
-  rcases Nat.lt_or_ge q 274 with h | h
-  · exact bodyRegion_entry_lt q h hq q' hq' hin
-  · rw [show AlgorithmLib.LZ4Simt.succsOf K q = [q] from by
-      simp only [AlgorithmLib.LZ4Simt.succsOf,
-        Array.getElem?_eq_none_iff.mpr (by rw [shipped32_size]; omega)]] at hq'
-    rw [List.mem_singleton] at hq'
-    exact absurd (hq' ▸ hin) hq
-
-/-- The four up-closure facts this file needs, in ONE `decide`: the emitted
-    array is built once instead of four times, and each scan is a traversal
-    rather than 274 indexings. -/
 def cursorUpB (p : Array SInstr) : Bool :=
   upClosedB p 208 && upClosedB p 217 && upClosedB p 235 && upClosedB p 272
 
@@ -253,10 +236,6 @@ theorem tail_pc_stg (st : SState) (q : Nat) (d a : String) (hq : st.pc = q)
   rw [sstep, show K[st.pc]? = some (.stg d a) from by rw [hq]; exact hi]
   show st.pc + 1 = q + 1; rw [hq]
 
-theorem tail_pc_lbl (st : SState) (q : Nat) (L : String) (hq : st.pc = q)
-    (hi : K[q]? = some (.lbl L)) : (sstep K st).pc = q + 1 := by
-  rw [sstep, show K[st.pc]? = some (.lbl L) from by rw [hq]; exact hi]
-  show st.pc + 1 = q + 1; rw [hq]
 
 theorem tail_frame (st : SState) (q : Nat) (i : SInstr) (r : String) (hq : st.pc = q)
     (hi : K[q]? = some i) (hne : AlgorithmLib.LZ4WarpDSL.wtgt i ≠ some r) :
@@ -410,34 +389,6 @@ theorem stays_from_235 (ss : SState) (a : Nat) (h : 235 ≤ (siter K a ss).pc) :
             List.mem_singleton] at hs
           omega
 
-/-- The LSIC region `[222, 234]` is left only upward, to 235. -/
-theorem lsic_region_exit : ∀ q, q < 235 → 222 ≤ q → ∀ q' ∈ succsOf K q,
-    (222 ≤ q' ∧ q' ≤ 234) ∨ 235 ≤ q' := by decide
-
-/-- Once in the LSIC region the machine is in it or past it. -/
-theorem lsic_or_beyond (ss : SState) (a : Nat)
-    (h : 222 ≤ (siter K a ss).pc ∧ (siter K a ss).pc ≤ 234) :
-    ∀ b, a ≤ b → (222 ≤ (siter K b ss).pc ∧ (siter K b ss).pc ≤ 234)
-      ∨ 235 ≤ (siter K b ss).pc := by
-  intro b
-  induction b with
-  | zero => intro hb; rw [show a = 0 from by omega] at h; exact Or.inl h
-  | succ m ih =>
-      intro hb
-      rcases Nat.lt_or_ge m a with hlt | hge
-      · rw [show m + 1 = a from by omega]; exact Or.inl h
-      · have hs : (siter K (m + 1) ss).pc ∈ succsOf K (siter K m ss).pc := by
-          rw [siter_succ]; exact sstep_pc_mem_succs K _
-        rcases ih hge with hin | hbe
-        · exact lsic_region_exit _ (by omega) hin.1 _ hs
-        · exact Or.inr (stays_from_235 ss m hbe (m + 1) (by omega))
-
-/-- **From the loop exit through the tail's token store to its LSIC head.**
-
-    Both outcomes of the length-extension branch at pc 219, because the caller
-    needs each: when the final literal run is at least 15 bytes the machine walks
-    on to the LSIC loop head at 222 with `litExtraF`/`lsicC` set up, and when it
-    is not, the branch leaves for 236 and the LSIC stores are never reached. -/
 theorem tail_run (E : SState) (h209 : E.pc = 209)
     (hlaN : (E.regs "litAnchor" 0).toNat ≤ 32768)
     (hlau : ∀ j : Lane, E.regs "litAnchor" j = E.regs "litAnchor" 0) :

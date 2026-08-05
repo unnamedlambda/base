@@ -33,21 +33,8 @@ theorem bodyRegion_exit64 : ∀ q ∈ bodyRegion,
   ivExit_at K16 40 232 272 kSize16 (by omega) (by decide)
 
 
-theorem bodyRegion_entry_lt64 : ∀ q, q < 274 → q ∉ bodyRegion →
-    ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K16 q, q' ∈ bodyRegion → q' = 40 :=
-  ivEntry_at K16 40 232 40 kSize16 (by decide)
 
 
-theorem bodyRegion_entry64 : ∀ q, q ∉ bodyRegion →
-    ∀ q', q' ∈ AlgorithmLib.LZ4Simt.succsOf K16 q → q' ∈ bodyRegion → q' = 40 := by
-  intro q hq q' hq' hin
-  rcases Nat.lt_or_ge q 274 with h | h
-  · exact bodyRegion_entry_lt64 q h hq q' hq' hin
-  · rw [show AlgorithmLib.LZ4Simt.succsOf K16 q = [q] from by
-      simp only [AlgorithmLib.LZ4Simt.succsOf,
-        Array.getElem?_eq_none_iff.mpr (by rw [kSize16]; omega)]] at hq'
-    rw [List.mem_singleton] at hq'
-    exact absurd (hq' ▸ hin) hq
 
 theorem cursorUp_true64 : cursorUpB K16 = true := by decide
 
@@ -177,10 +164,6 @@ theorem tail_pc_stg64 (st : SState) (q : Nat) (d a : String) (hq : st.pc = q)
   show st.pc + 1 = q + 1; rw [hq]
 
 
-theorem tail_pc_lbl64 (st : SState) (q : Nat) (L : String) (hq : st.pc = q)
-    (hi : K16[q]? = some (.lbl L)) : (sstep K16 st).pc = q + 1 := by
-  rw [sstep, show K16[st.pc]? = some (.lbl L) from by rw [hq]; exact hi]
-  show st.pc + 1 = q + 1; rw [hq]
 
 
 theorem tail_frame64 (st : SState) (q : Nat) (i : SInstr) (r : String) (hq : st.pc = q)
@@ -328,25 +311,7 @@ theorem stays_from_23564 (ss : SState) (a : Nat) (h : 235 ≤ (siter K16 a ss).p
             List.mem_singleton] at hs
           omega
 
-theorem lsic_region_exit64 : ∀ q, q < 235 → 222 ≤ q → ∀ q' ∈ succsOf K16 q,
-    (222 ≤ q' ∧ q' ≤ 234) ∨ 235 ≤ q' := by decide
 
-theorem lsic_or_beyond64 (ss : SState) (a : Nat)
-    (h : 222 ≤ (siter K16 a ss).pc ∧ (siter K16 a ss).pc ≤ 234) :
-    ∀ b, a ≤ b → (222 ≤ (siter K16 b ss).pc ∧ (siter K16 b ss).pc ≤ 234)
-      ∨ 235 ≤ (siter K16 b ss).pc := by
-  intro b
-  induction b with
-  | zero => intro hb; rw [show a = 0 from by omega] at h; exact Or.inl h
-  | succ m ih =>
-      intro hb
-      rcases Nat.lt_or_ge m a with hlt | hge
-      · rw [show m + 1 = a from by omega]; exact Or.inl h
-      · have hs : (siter K16 (m + 1) ss).pc ∈ succsOf K16 (siter K16 m ss).pc := by
-          rw [siter_succ]; exact sstep_pc_mem_succs K16 _
-        rcases ih hge with hin | hbe
-        · exact lsic_region_exit64 _ (by omega) hin.1 _ hs
-        · exact Or.inr (stays_from_23564 ss m hbe (m + 1) (by omega))
 
 theorem tail_run64 (E : SState) (h209 : E.pc = 209)
     (hlaN : (E.regs "litAnchor" 0).toNat ≤ 65536)

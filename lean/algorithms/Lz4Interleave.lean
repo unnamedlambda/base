@@ -75,11 +75,6 @@ def launchInit (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List U
     Fin (WP.mk b).numBlk → LState :=
   fun w => (initSt w.val inPtr outPtr gm smemB).loc
 
-theorem launchInit_withMem (b inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
-    (w : Fin (WP.mk b).numBlk) :
-    (launchInit b inPtr outPtr gm smemB w).withMem gm
-      = initSt w.val inPtr outPtr gm smemB := rfl
-
 /-- **Race-freedom for the compressor**, from the one structure above plus the
     already-proven disjointness. -/
 theorem raceFree_of_confined (b inPtr outPtr : Nat) (gm : Array UInt8)

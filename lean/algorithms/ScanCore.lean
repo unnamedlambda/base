@@ -215,6 +215,16 @@ structure Surface where
       assumption, or proving a layer at one geometry and not the other, fails
       here. -/
   endpoints          : List (Name × List Name) := []
+  /-- **Modules whose every declaration a root must reach.**
+
+      The closure walk runs over elaborated proof *terms*, so a lemma used only
+      through a simp set or an instance still counts as reached — which a
+      textual search cannot tell.  Anything in these modules that no root reaches
+      is either dead or a proof that was written and never connected, and those
+      are the same finding from the build's point of view. -/
+  reachedModules     : List Name := []
+  /-- Declarations in `reachedModules` that are deliberately unreached. -/
+  reachedExempt      : List Name := []
 
 /-- The inference/training surface: the four lists documented above. -/
 def mlSurface : Surface :=
@@ -245,6 +255,21 @@ def scan (surf : Surface) (env : Environment) (root : Name) : Finding := Id.run 
     | _ => pure ()
   return { root := root, badAxioms := badA.qsort Name.lt,
            badOpaque := badO.qsort Name.lt, usesNative := nat }
+
+/-- Auto-generated companions of a declaration, which no one references by hand.
+    Recognised by name, because they are what a reachability report would
+    otherwise drown in. -/
+def isGenerated (env : Environment) (n : Name) : Bool :=
+  n.isInternal || (env.getProjectionFnInfo? n).isSome ||
+  (match n with
+   | .str _ s =>
+       s.startsWith "proof_" || s.startsWith "eq_" || s.startsWith "match_" ||
+       s.startsWith "_" || s.endsWith "_cstage1" || s.endsWith "_cstage2" ||
+       s ∈ ["rec", "recOn", "casesOn", "below", "brecOn", "ibelow",
+            "binductionOn", "noConfusion", "noConfusionType", "injEq", "inj",
+            "sizeOf_spec", "ctorIdx", "toCtorIdx", "ofNat_toCtorIdx", "induct",
+            "fun_cases", "mk", "eq_def", "sizeOf_inst"]
+   | _ => false)
 
 /-- **The scan, as a driver.**  Takes the claim list so a pipeline's scanner is
     just its `roots` plus one call.  Throws — i.e. fails the build — on anything
@@ -334,6 +359,27 @@ def runScanWith (surf : Surface) (label : String) (roots : List Name) : CoreM Un
         bad := bad + 1
         IO.println s!"ENDPOINT ASSUMES MORE THAN DECLARED  {e}: {extra.toList}"
       else IO.println s!"[{label}] endpoint {e} rests on exactly {allowed}"
+  -- reachability: a declaration no root reaches is dead, or a proof never wired in
+  if !surf.reachedModules.isEmpty then
+    let mut reach : Std.HashSet Name := {}
+    for r in roots do reach := closure env reach r
+    let mut orphan : Array Name := #[]
+    for (n, ci) in env.constants.toList do
+      match ci with
+      | .thmInfo _ | .defnInfo _ =>
+          if !(isGenerated env n) && !(reach.contains n) && !(n ∈ surf.reachedExempt) then
+            match env.getModuleIdxFor? n with
+            | some idx =>
+                if env.header.moduleNames[idx.toNat]! ∈ surf.reachedModules then
+                  orphan := orphan.push n
+            | none => pure ()
+      | _ => pure ()
+    if orphan.size != 0 then
+      bad := bad + 1
+      IO.println s!"UNREACHED ({orphan.size}) — no claim uses these:"
+      for n in orphan.qsort Name.lt do IO.println s!"    {n}"
+    else
+      IO.println s!"[{label}] every declaration in {surf.reachedModules.length} module(s) is reached by a claim"
   if missing.size != 0 then
     throwError s!"TRUST SCAN [{label}]: unknown claim(s) {missing.toList}"
   if bad != 0 then

@@ -133,7 +133,21 @@ def lz4Surface : Surface :=
       , (`Lz4Whole.run_correct_witness, [])
         -- the same, at the emitted program's own launch count and grid
       , (`Lz4Whole.shipped32_run_at_emitted, [`Algorithm.LayoutOK, `Eq])
-      , (`Lz4Whole.shipped64_run_at_emitted, [`Algorithm.LayoutOK, `Eq]) ] }
+      , (`Lz4Whole.shipped64_run_at_emitted, [`Algorithm.LayoutOK, `Eq]) ]
+    reachedExempt :=
+      -- named in a `simp only` list where it never fires, so it is live at
+      -- ELABORATION and absent from the proof term.  Reachability is computed
+      -- over terms, so it cannot see this one; deleting it fails the build.
+      [ `Lz4Sites.cfgRegion_eq ]
+    reachedModules :=
+      -- the compressor's own proof modules.  Every declaration in them must be
+      -- reached by some claim above; one that is not was either written and
+      -- never wired in, or is dead.
+      [ `Lz4Whole, `Lz4Interleave, `Lz4Launches, `Lz4Host, `Lz4NonVacuity,
+        `Lz4Geo, `Lz4Sites, `Lz4Cursor, `Lz4Splice, `Lz4Ckpt, `Lz4OpLe,
+        `Lz4Stores, `Lz4ExtShape, `Lz4ExtGuard, `Lz4ExtLoop, `Lz4Extend,
+        `Lz4Shape64, `Lz4Sites64, `Lz4Cursor64, `Lz4Splice64, `Lz4Ckpt64,
+        `Lz4OpLe64, `Lz4Stores64, `Lz4Confine64, `Lz4Assumptions ] }
 
 /-- **The public claims.**  Adding a claim here subjects it to the scan. -/
 def roots : List Name :=

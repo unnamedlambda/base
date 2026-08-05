@@ -38,26 +38,7 @@ theorem load_regs3264 :
     ∀ s ∈ loadSites K16, s.2.1 ∈ loadRegs ∧ s.2.2 ≤ 3 := by
   rw [shipped64_load_sites]; decide
 
-theorem store_regs3264 :
-    ∀ s ∈ storeSites K16, s.2 ∈ storeRegs := by
-  rw [shipped64_store_sites]; decide
 
-theorem unconditioned_form_is_false64 (gm : Array UInt8) (smemB : List UInt8) :
-    ¬ (∀ (w : Fin (WP.mk 16).numBlk) (k : Nat) (r : String), r ∈ storeRegs →
-        ∀ l : Lane,
-          Lz4Interleave.outRegion 16 (WP.mk 16).totIn w.val
-            (((siter K16 k (initSt w.val 0 (WP.mk 16).totIn gm smemB)).regs
-              r l).toNat)) := by
-  intro h
-  have hw : (0 : Nat) < (WP.mk 16).numBlk := by decide
-  have := h ⟨0, hw⟩ 0 "sbAddr" (by decide) 0
-  -- at `k = 0` the state is the launch state and `sbAddr` is still the default 0
-  have hz : ((siter K16 0 (initSt 0 0 (WP.mk 16).totIn gm smemB)).regs
-      "sbAddr" (0 : Lane)).toNat = 0 := rfl
-  rw [hz] at this
-  obtain ⟨hge, _⟩ := this
-  have : (WP.mk 16).totIn = 209715200 := by decide
-  omega
 
 theorem sbAddr_is_outBase_add_op64 (w inPtr outPtr : Nat) (gm : Array UInt8)
     (smemB : List UInt8) (k q : Nat) (hq : q ∈ sbAddrSites)
@@ -185,15 +166,6 @@ theorem prologue_pc_shape64 (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : L
           shape_hi64 _ hhi
         rcases pc_next K16 272 _ _ rfl hs with e | e | e <;> omega
 
-theorem prologue_not_at_store_site64 (w inPtr outPtr : Nat) (gm : Array UInt8)
-    (smemB : List UInt8) (k : Nat) (hk : k ≤ 25) (r : String) :
-    ¬ ((siter K16 k (initSt w inPtr outPtr gm smemB)).pc, r)
-        ∈ storeSites K16 := by
-  intro hmem
-  have hrange : ∀ s ∈ storeSites K16, 130 ≤ s.1 ∧ s.1 < 272 := by
-    rw [shipped64_store_sites]; decide
-  obtain ⟨h1, h2⟩ := hrange _ hmem
-  rcases prologue_pc_shape64 w inPtr outPtr gm smemB k hk with e | e <;> omega
 
 theorem noDest2064 : noDestFrom K16 "outBase" 20 = true := by
   rw [noDestFrom_eq _ _ _ (by rw [kSize16]; omega)]; decide
@@ -264,38 +236,11 @@ theorem sbAddr_confined_of_cursor64 (inPtr outPtr : Nat) (gm : Array UInt8)
   have hos : (WP.mk 16).outStride = 69896 := by decide
   exact ⟨by omega, by omega⟩
 
-theorem outBase_const_after_prologue64 (st0 : AlgorithmLib.LZ4Simt.SState)
-    (h0 : 39 ≤ st0.pc) (k : Nat) :
-    (siter K16 k st0).regs "outBase" = st0.regs "outBase" ∧
-    39 ≤ (siter K16 k st0).pc :=
-  regs_const_from K16 "outBase" 39
-    (by rw [noDestFrom_eq _ _ _ (by rw [kSize16]; omega)]; decide)
-    (by rw [noExitBelow_eq _ _ (by rw [kSize16]; omega)]; decide) st0 h0 k
-
-theorem inBase_const_after_prologue64 (st0 : AlgorithmLib.LZ4Simt.SState)
-    (h0 : 39 ≤ st0.pc) (k : Nat) :
-    (siter K16 k st0).regs "inBase" = st0.regs "inBase" ∧
-    39 ≤ (siter K16 k st0).pc :=
-  regs_const_from K16 "inBase" 39
-    (by rw [noDestFrom_eq _ _ _ (by rw [kSize16]; omega)]; decide)
-    (by rw [noExitBelow_eq _ _ (by rw [kSize16]; omega)]; decide) st0 h0 k
-
-theorem shipped64_op_accumulates :
-    ((opWriteSites K16).filter (fun s => decide (37 < s.1))).all
-      (fun s => match s.2 with
-                | .bin .add "op" "op" _ => true
-                | _ => false) = true := by
-  rw [shipped64_op_writes]; decide
 
 
-theorem tailPre_closed64 : PcClosed K16 tailPre [216] :=
-  tailPre_iv ▸ ivClosed_at K16 208 9 [216] kSize16 (by omega) (by decide)
 
-theorem op_const_to_21664 (st : SState) (h0 : st.pc = 208) (k : Nat)
-    (hne : ∀ j, j < k → (siter K16 j st).pc ∉ [216]) :
-    (siter K16 k st).regs "op" = st.regs "op" :=
-  regs_const_on K16 "op" tailPre [216] tailPre_closed64 (by decide) st
-    (by rw [h0]; decide) k hne
+
+
 
 theorem lsicFS_closed64 : PcClosed K16 lsicFS [234] :=
   lsicFS_iv ▸ ivClosed_at K16 222 13 [234] kSize16 (by omega) (by decide)
@@ -618,528 +563,42 @@ theorem lsic_op_lt64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
     (inv_on K16 (LsicInv l B) lsicFS [234] lsicFS_closed64
       (fun s hsm hexs hh => lsicFS_hstep64 l B hB s hsm hexs hh) st (by rw [h0]; decide) h k hne) hq
 
-theorem lsicLS_closed64 : PcClosed K16 lsicLS [148] :=
-  lsicLS_iv ▸ ivClosed_at K16 136 13 [148] kSize16 (by omega) (by decide)
-
-theorem lsicL_frame64 (l : Lane) (B : Nat) (st : SState) (q' : Nat)
-    (hpc' : (sstep K16 st).pc = q')
-    (hfr : ∀ (r : String) (j : Lane), r = "op" ∨ r = "litExtra" ∨ r = "lsicC" →
-      (sstep K16 st).regs r j = st.regs r j)
-    (hrem : ∀ x : Nat, lsicRemL q' x ≤ lsicRemL st.pc x)
-    (h3' : (q' = 136 ∨ q' = 137 ∨ q' = 144) → (st.pc = 136 ∨ st.pc = 137 ∨ st.pc = 144))
-    (h4' : 138 ≤ q' → q' ≤ 142 → 138 ≤ st.pc ∧ st.pc ≤ 142)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hfr "op" l (Or.inl rfl), hfr "litExtra" l (Or.inr (Or.inl rfl))]
-    exact Nat.le_trans (Nat.add_le_add_left (hrem _) _) h1
-  · rw [hfr "litExtra" l (Or.inr (Or.inl rfl)), hfr "litExtra" 0 (Or.inr (Or.inl rfl))]
-    exact h2
-  · rw [hpc']; intro hq
-    rw [hfr "lsicC" 0 (Or.inr (Or.inr rfl)), hfr "litExtra" 0 (Or.inr (Or.inl rfl))]
-    exact h3 (h3' hq)
-  · rw [hpc']; intro ha hb
-    rw [hfr "litExtra" l (Or.inr (Or.inl rfl))]
-    exact h4 (h4' ha hb).1 (h4' ha hb).2
-
-theorem lsicL_at22264 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 136)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.lbl "Lh8") := by rw [he]; decide
-  have hstep : sstep K16 st = st.setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 137 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicL_at22464 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 138)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.mov "c255" (SArg.imm 255)) := by rw [he]; decide
-  have hstep : sstep K16 st = (st.setReg "c255" (fun l => st.get l (SArg.imm 255))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 139 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicL_at22564 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 139)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .add "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
-  have hstep : sstep K16 st = (st.setReg "sbAddr" (fun l => SOp.add.run (st.regs "outBase" l) (st.get l (SArg.reg "op")))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 140 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicL_at22664 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 140)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.stg "sbAddr" "c255") := by rw [he]; decide
-  have hstep : sstep K16 st = { st with gmem := storeBytes st.gmem (fun _ => true) (st.regs "sbAddr") (st.regs "c255"), pc := st.pc + 1 } := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 141 (by rw [hstep, he])
-    (fun r j _ => by rw [hstep])
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicL_at23164 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 145)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.lbl "Lx9") := by rw [he]; decide
-  have hstep : sstep K16 st = st.setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 146 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicL_at23264 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 146)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .add "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
-  have hstep : sstep K16 st = (st.setReg "sbAddr" (fun l => SOp.add.run (st.regs "outBase" l) (st.get l (SArg.reg "op")))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 147 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicL_at23364 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 147)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.stg "sbAddr" "litExtra") := by rw [he]; decide
-  have hstep : sstep K16 st = { st with gmem := storeBytes st.gmem (fun _ => true) (st.regs "sbAddr") (st.regs "litExtra"), pc := st.pc + 1 } := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 148 (by rw [hstep, he])
-    (fun r j _ => by rw [hstep])
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicL_at23064 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 144)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bra "Lh8") := by rw [he]; decide
-  have hstep : sstep K16 st = st.setPc (sfindLabel K16 "Lh8") := by rw [sstep, hp]; rfl
-  refine lsicL_frame64 l B st 136 (by rw [hstep]; show sfindLabel K16 "Lh8" = 136; decide)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
 
-theorem lsicL_at22364 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 137)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.braifnot "lsicC" "Lx9") := by rw [he]; decide
-  have hstep : sstep K16 st
-      = st.setPc (if st.regs "lsicC" 0 == 1 then st.pc + 1 else sfindLabel K16 "Lx9") := by
-    rw [sstep, hp]; rfl
-  have hlbl : sfindLabel K16 "Lx9" = 145 := by decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hfr : ∀ (r : String) (j : Lane), (sstep K16 st).regs r j = st.regs r j := by
-    intro r j; rw [hstep]; rfl
-  rw [he] at h1
-  by_cases hg : (st.regs "lsicC" 0 == 1) = true
-  · have hpc' : (sstep K16 st).pc = 138 := by rw [hstep, he, if_pos hg]; rfl
-    have hlx : 255 ≤ (st.regs "litExtra" l).toNat := by
-      rw [h2]; exact (h3 (Or.inr (Or.inl he))).mp hg
-    refine ⟨?_, ?_, ?_, ?_⟩
-    · rw [hpc', hfr, hfr]
-      have hr : lsicRemL 138 ((st.regs "litExtra" l).toNat)
-          = lsicRemL 137 ((st.regs "litExtra" l).toNat) := rfl
-      omega
-    · rw [hfr, hfr]; exact h2
-    · rw [hpc']; intro hq; exact absurd hq (by omega)
-    · rw [hpc', hfr]; intro _ _; exact hlx
-  · have hpc' : (sstep K16 st).pc = 145 := by rw [hstep, if_neg hg, hlbl]; rfl
-    refine ⟨?_, ?_, ?_, ?_⟩
-    · rw [hpc', hfr, hfr]
-      have hr223 : lsicRemL 137 ((st.regs "litExtra" l).toNat)
-          = (st.regs "litExtra" l).toNat / 255 + 1 := rfl
-      have hr231 : lsicRemL 145 ((st.regs "litExtra" l).toNat) = 1 := rfl
-      omega
-    · rw [hfr, hfr]; exact h2
-    · rw [hpc']; intro hq; exact absurd hq (by omega)
-    · rw [hpc']; intro _ hb; omega
-
-theorem lsicL_at22764 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 141)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .add "op" "op" (SArg.imm 1)) := by rw [he]; decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hstep : sstep K16 st = (st.setReg "op"
-      (fun l => SOp.add.run (st.regs "op" l) (st.get l (SArg.imm 1)))).setPc (st.pc + 1) := by
-    rw [sstep, hp]; rfl
-  have hpc' : (sstep K16 st).pc = 142 := by rw [hstep, he]; rfl
-  have hop' : ∀ j : Lane, (sstep K16 st).regs "op" j = st.regs "op" j + 1 := by
-    intro j; rw [hstep]; rfl
-  have hlx' : ∀ j : Lane, (sstep K16 st).regs "litExtra" j = st.regs "litExtra" j := by
-    intro j; rw [hstep]; rfl
-  have hlc' : ∀ j : Lane, (sstep K16 st).regs "lsicC" j = st.regs "lsicC" j := by
-    intro j; rw [hstep]; rfl
-  have hlx : 255 ≤ (st.regs "litExtra" l).toNat := h4 (by omega) (by omega)
-  rw [he] at h1
-  have hr227 : lsicRemL 141 ((st.regs "litExtra" l).toNat)
-      = (st.regs "litExtra" l).toNat / 255 + 1 := rfl
-  have hr228 : lsicRemL 142 ((st.regs "litExtra" l).toNat)
-      = (st.regs "litExtra" l).toNat / 255 := rfl
-  have hopN : ((st.regs "op" l) + 1).toNat = (st.regs "op" l).toNat + 1 := by
-    have hb := (st.regs "op" l).toNat_lt
-    have hle : (st.regs "op" l).toNat + 1 ≤ B := by omega
-    have hL := (toNat_add_ofNat_of_lt (st.regs "op" l) 1 (by omega)).1
-    rw [show (UInt64.ofNat 1) = 1 from rfl] at hL
-    omega
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hop' l, hlx' l, hopN]; omega
-  · rw [hlx' l, hlx' 0]; exact h2
-  · rw [hpc']; intro hq; exact absurd hq (by omega)
-  · rw [hpc', hlx' l]; intro _ _; exact hlx
-
-theorem lsicL_at22864 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 142)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .sub "litExtra" "litExtra" (SArg.imm 255)) := by
-    rw [he]; decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hstep : sstep K16 st = (st.setReg "litExtra"
-      (fun l => SOp.sub.run (st.regs "litExtra" l) (st.get l (SArg.imm 255)))).setPc
-      (st.pc + 1) := by
-    rw [sstep, hp]; rfl
-  have hlx : 255 ≤ (st.regs "litExtra" l).toNat := h4 (by omega) (by omega)
-  have hpc' : (sstep K16 st).pc = 143 := by rw [hstep, he]; rfl
-  have hop' : ∀ j : Lane, (sstep K16 st).regs "op" j = st.regs "op" j := by
-    intro j; rw [hstep]; rfl
-  have hlxs : ∀ j : Lane,
-      (sstep K16 st).regs "litExtra" j = st.regs "litExtra" j - UInt64.ofNat 255 := by
-    intro j; rw [hstep]; rfl
-  have hsubN : ∀ a : UInt64, 255 ≤ a.toNat → (a - UInt64.ofNat 255).toNat = a.toNat - 255 := by
-    intro a ha
-    rw [UInt64.toNat_sub, show ((UInt64.ofNat 255).toNat) = 255 from by decide,
-      show 2 ^ 64 - 255 + a.toNat = 2 ^ 64 + (a.toNat - 255) from by
-        have := a.toNat_lt; omega,
-      Nat.add_mod_left, Nat.mod_eq_of_lt (by have := a.toNat_lt; omega)]
-  rw [he] at h1
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hop' l, hlxs l, hsubN _ hlx]
-    have hr228 : lsicRemL 142 ((st.regs "litExtra" l).toNat)
-        = (st.regs "litExtra" l).toNat / 255 := rfl
-    have hr229 : lsicRemL 143 ((st.regs "litExtra" l).toNat - 255)
-        = ((st.regs "litExtra" l).toNat - 255) / 255 + 1 := rfl
-    have hdiv := Nat.div_eq_sub_div (Nat.zero_lt_succ 254) hlx
-    omega
-  · rw [hlxs l, hlxs 0, h2]
-  · rw [hpc']; intro hq; exact absurd hq (by omega)
-  · rw [hpc']; intro _ hb; omega
-
-theorem lsicL_at22964 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 143)
-    (h : LsicInvL l B st) : LsicInvL l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.setp .ge "lsicC" "litExtra" (SArg.imm 255)) := by rw [he]; decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hstep : sstep K16 st = (st.setReg "lsicC"
-      (fun l => if SCmp.ge.run (st.regs "litExtra" l) (st.get l (SArg.imm 255)) then 1
-                else 0)).setPc (st.pc + 1) := by
-    rw [sstep, hp]; rfl
-  have hpc' : (sstep K16 st).pc = 144 := by rw [hstep, he]; rfl
-  have hop' : ∀ j : Lane, (sstep K16 st).regs "op" j = st.regs "op" j := by
-    intro j; rw [hstep]; rfl
-  have hlx' : ∀ j : Lane, (sstep K16 st).regs "litExtra" j = st.regs "litExtra" j := by
-    intro j; rw [hstep]; rfl
-  have hlc' : (sstep K16 st).regs "lsicC" 0
-      = (if SCmp.ge.run (st.regs "litExtra" 0) (UInt64.ofNat 255) then 1 else 0) := by
-    rw [hstep]; rfl
-  rw [he] at h1
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hop' l, hlx' l]
-    have hr229 : lsicRemL 143 ((st.regs "litExtra" l).toNat)
-        = (st.regs "litExtra" l).toNat / 255 + 1 := rfl
-    have hr230 : lsicRemL 144 ((st.regs "litExtra" l).toNat)
-        = (st.regs "litExtra" l).toNat / 255 + 1 := rfl
-    omega
-  · rw [hlx' l, hlx' 0]; exact h2
-  · rw [hpc', hlc', hlx' 0]; intro _
-    have hiff : SCmp.ge.run (st.regs "litExtra" 0) (UInt64.ofNat 255) = true
-        ↔ 255 ≤ (st.regs "litExtra" 0).toNat := by
-      simp only [SCmp.run, decide_eq_true_eq, UInt64.le_iff_toNat_le,
-        show ((UInt64.ofNat 255).toNat) = 255 from by decide]
-    by_cases hc : SCmp.ge.run (st.regs "litExtra" 0) (UInt64.ofNat 255) = true
-    · rw [if_pos hc]
-      exact ⟨fun _ => hiff.mp hc, fun _ => rfl⟩
-    · rw [if_neg hc]
-      constructor
-      · intro hcon; exact absurd hcon (by decide)
-      · intro hn; exact absurd (hiff.mpr hn) hc
-  · rw [hpc']; intro _ hb; omega
-
-theorem lsicLS_hstep64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
-    (hs : st.pc ∈ lsicLS) (hex : st.pc ∉ [148]) (h : LsicInvL l B st) :
-    LsicInvL l B (sstep K16 st) := by
-  simp only [lsicLS, List.mem_cons, List.not_mem_nil, or_false] at hs
-  rcases hs with e | e | e | e | e | e | e | e | e | e | e | e | e
-  · exact lsicL_at22264 l B st e h
-  · exact lsicL_at22364 l B st e h
-  · exact lsicL_at22464 l B st e h
-  · exact lsicL_at22564 l B st e h
-  · exact lsicL_at22664 l B st e h
-  · exact lsicL_at22764 l B st hB e h
-  · exact lsicL_at22864 l B st e h
-  · exact lsicL_at22964 l B st e h
-  · exact lsicL_at23064 l B st e h
-  · exact lsicL_at23164 l B st e h
-  · exact lsicL_at23264 l B st e h
-  · exact lsicL_at23364 l B st e h
-  · exact absurd (by simp [e]) hex
-
-theorem lsicL_op_lt64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
-    (h0 : st.pc = 136) (h : LsicInvL l B st) (k : Nat)
-    (hne : ∀ j, j < k → (siter K16 j st).pc ∉ [148])
-    (hq : (siter K16 k st).pc = 140 ∨ (siter K16 k st).pc = 147) :
-    ((siter K16 k st).regs "op" l).toNat < B :=
-  lsicLInv_op_le l B _
-    (inv_on K16 (LsicInvL l B) lsicLS [148] lsicLS_closed64
-      (fun s hsm hexs hh => lsicLS_hstep64 l B hB s hsm hexs hh) st (by rw [h0]; decide) h k hne) hq
 
 
-theorem lsicMS_closed64 : PcClosed K16 lsicMS [196] :=
-  lsicMS_iv ▸ ivClosed_at K16 184 13 [196] kSize16 (by omega) (by decide)
-
-theorem lsicM_frame64 (l : Lane) (B : Nat) (st : SState) (q' : Nat)
-    (hpc' : (sstep K16 st).pc = q')
-    (hfr : ∀ (r : String) (j : Lane), r = "op" ∨ r = "matExtra" ∨ r = "lsicC" →
-      (sstep K16 st).regs r j = st.regs r j)
-    (hrem : ∀ x : Nat, lsicRemM q' x ≤ lsicRemM st.pc x)
-    (h3' : (q' = 184 ∨ q' = 185 ∨ q' = 192) → (st.pc = 184 ∨ st.pc = 185 ∨ st.pc = 192))
-    (h4' : 186 ≤ q' → q' ≤ 190 → 186 ≤ st.pc ∧ st.pc ≤ 190)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hfr "op" l (Or.inl rfl), hfr "matExtra" l (Or.inr (Or.inl rfl))]
-    exact Nat.le_trans (Nat.add_le_add_left (hrem _) _) h1
-  · rw [hfr "matExtra" l (Or.inr (Or.inl rfl)), hfr "matExtra" 0 (Or.inr (Or.inl rfl))]
-    exact h2
-  · rw [hpc']; intro hq
-    rw [hfr "lsicC" 0 (Or.inr (Or.inr rfl)), hfr "matExtra" 0 (Or.inr (Or.inl rfl))]
-    exact h3 (h3' hq)
-  · rw [hpc']; intro ha hb
-    rw [hfr "matExtra" l (Or.inr (Or.inl rfl))]
-    exact h4 (h4' ha hb).1 (h4' ha hb).2
-
-theorem lsicM_at22264 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 184)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.lbl "Lh14") := by rw [he]; decide
-  have hstep : sstep K16 st = st.setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 185 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicM_at22464 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 186)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.mov "c255" (SArg.imm 255)) := by rw [he]; decide
-  have hstep : sstep K16 st = (st.setReg "c255" (fun l => st.get l (SArg.imm 255))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 187 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicM_at22564 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 187)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .add "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
-  have hstep : sstep K16 st = (st.setReg "sbAddr" (fun l => SOp.add.run (st.regs "outBase" l) (st.get l (SArg.reg "op")))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 188 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicM_at22664 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 188)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.stg "sbAddr" "c255") := by rw [he]; decide
-  have hstep : sstep K16 st = { st with gmem := storeBytes st.gmem (fun _ => true) (st.regs "sbAddr") (st.regs "c255"), pc := st.pc + 1 } := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 189 (by rw [hstep, he])
-    (fun r j _ => by rw [hstep])
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicM_at23164 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 193)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.lbl "Lx15") := by rw [he]; decide
-  have hstep : sstep K16 st = st.setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 194 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicM_at23264 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 194)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .add "sbAddr" "outBase" (SArg.reg "op")) := by rw [he]; decide
-  have hstep : sstep K16 st = (st.setReg "sbAddr" (fun l => SOp.add.run (st.regs "outBase" l) (st.get l (SArg.reg "op")))).setPc (st.pc + 1) := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 195 (by rw [hstep, he]; rfl)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicM_at23364 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 195)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.stg "sbAddr" "matExtra") := by rw [he]; decide
-  have hstep : sstep K16 st = { st with gmem := storeBytes st.gmem (fun _ => true) (st.regs "sbAddr") (st.regs "matExtra"), pc := st.pc + 1 } := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 196 (by rw [hstep, he])
-    (fun r j _ => by rw [hstep])
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
-
-theorem lsicM_at23064 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 192)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bra "Lh14") := by rw [he]; decide
-  have hstep : sstep K16 st = st.setPc (sfindLabel K16 "Lh14") := by rw [sstep, hp]; rfl
-  refine lsicM_frame64 l B st 184 (by rw [hstep]; show sfindLabel K16 "Lh14" = 184; decide)
-    (fun r j hr => by rw [hstep]; rcases hr with rfl | rfl | rfl <;> rfl)
-    (by rw [he]; intro x; exact Nat.le_of_eq rfl) (by rw [he]; omega) (by rw [he]; omega) h
 
 
-theorem lsicM_at22364 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 185)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.braifnot "lsicC" "Lx15") := by rw [he]; decide
-  have hstep : sstep K16 st
-      = st.setPc (if st.regs "lsicC" 0 == 1 then st.pc + 1 else sfindLabel K16 "Lx15") := by
-    rw [sstep, hp]; rfl
-  have hlbl : sfindLabel K16 "Lx15" = 193 := by decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hfr : ∀ (r : String) (j : Lane), (sstep K16 st).regs r j = st.regs r j := by
-    intro r j; rw [hstep]; rfl
-  rw [he] at h1
-  by_cases hg : (st.regs "lsicC" 0 == 1) = true
-  · have hpc' : (sstep K16 st).pc = 186 := by rw [hstep, he, if_pos hg]; rfl
-    have hlx : 255 ≤ (st.regs "matExtra" l).toNat := by
-      rw [h2]; exact (h3 (Or.inr (Or.inl he))).mp hg
-    refine ⟨?_, ?_, ?_, ?_⟩
-    · rw [hpc', hfr, hfr]
-      have hr : lsicRemM 186 ((st.regs "matExtra" l).toNat)
-          = lsicRemM 185 ((st.regs "matExtra" l).toNat) := rfl
-      omega
-    · rw [hfr, hfr]; exact h2
-    · rw [hpc']; intro hq; exact absurd hq (by omega)
-    · rw [hpc', hfr]; intro _ _; exact hlx
-  · have hpc' : (sstep K16 st).pc = 193 := by rw [hstep, if_neg hg, hlbl]; rfl
-    refine ⟨?_, ?_, ?_, ?_⟩
-    · rw [hpc', hfr, hfr]
-      have hr223 : lsicRemM 185 ((st.regs "matExtra" l).toNat)
-          = (st.regs "matExtra" l).toNat / 255 + 1 := rfl
-      have hr231 : lsicRemM 193 ((st.regs "matExtra" l).toNat) = 1 := rfl
-      omega
-    · rw [hfr, hfr]; exact h2
-    · rw [hpc']; intro hq; exact absurd hq (by omega)
-    · rw [hpc']; intro _ hb; omega
 
-theorem lsicM_at22764 (l : Lane) (B : Nat) (st : SState) (hB : B < 2 ^ 64) (he : st.pc = 189)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .add "op" "op" (SArg.imm 1)) := by rw [he]; decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hstep : sstep K16 st = (st.setReg "op"
-      (fun l => SOp.add.run (st.regs "op" l) (st.get l (SArg.imm 1)))).setPc (st.pc + 1) := by
-    rw [sstep, hp]; rfl
-  have hpc' : (sstep K16 st).pc = 190 := by rw [hstep, he]; rfl
-  have hop' : ∀ j : Lane, (sstep K16 st).regs "op" j = st.regs "op" j + 1 := by
-    intro j; rw [hstep]; rfl
-  have hlx' : ∀ j : Lane, (sstep K16 st).regs "matExtra" j = st.regs "matExtra" j := by
-    intro j; rw [hstep]; rfl
-  have hlc' : ∀ j : Lane, (sstep K16 st).regs "lsicC" j = st.regs "lsicC" j := by
-    intro j; rw [hstep]; rfl
-  have hlx : 255 ≤ (st.regs "matExtra" l).toNat := h4 (by omega) (by omega)
-  rw [he] at h1
-  have hr227 : lsicRemM 189 ((st.regs "matExtra" l).toNat)
-      = (st.regs "matExtra" l).toNat / 255 + 1 := rfl
-  have hr228 : lsicRemM 190 ((st.regs "matExtra" l).toNat)
-      = (st.regs "matExtra" l).toNat / 255 := rfl
-  have hopN : ((st.regs "op" l) + 1).toNat = (st.regs "op" l).toNat + 1 := by
-    have hb := (st.regs "op" l).toNat_lt
-    have hle : (st.regs "op" l).toNat + 1 ≤ B := by omega
-    have hL := (toNat_add_ofNat_of_lt (st.regs "op" l) 1 (by omega)).1
-    rw [show (UInt64.ofNat 1) = 1 from rfl] at hL
-    omega
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hop' l, hlx' l, hopN]; omega
-  · rw [hlx' l, hlx' 0]; exact h2
-  · rw [hpc']; intro hq; exact absurd hq (by omega)
-  · rw [hpc', hlx' l]; intro _ _; exact hlx
 
-theorem lsicM_at22864 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 190)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.bin .sub "matExtra" "matExtra" (SArg.imm 255)) := by
-    rw [he]; decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hstep : sstep K16 st = (st.setReg "matExtra"
-      (fun l => SOp.sub.run (st.regs "matExtra" l) (st.get l (SArg.imm 255)))).setPc
-      (st.pc + 1) := by
-    rw [sstep, hp]; rfl
-  have hlx : 255 ≤ (st.regs "matExtra" l).toNat := h4 (by omega) (by omega)
-  have hpc' : (sstep K16 st).pc = 191 := by rw [hstep, he]; rfl
-  have hop' : ∀ j : Lane, (sstep K16 st).regs "op" j = st.regs "op" j := by
-    intro j; rw [hstep]; rfl
-  have hlxs : ∀ j : Lane,
-      (sstep K16 st).regs "matExtra" j = st.regs "matExtra" j - UInt64.ofNat 255 := by
-    intro j; rw [hstep]; rfl
-  have hsubN : ∀ a : UInt64, 255 ≤ a.toNat → (a - UInt64.ofNat 255).toNat = a.toNat - 255 := by
-    intro a ha
-    rw [UInt64.toNat_sub, show ((UInt64.ofNat 255).toNat) = 255 from by decide,
-      show 2 ^ 64 - 255 + a.toNat = 2 ^ 64 + (a.toNat - 255) from by
-        have := a.toNat_lt; omega,
-      Nat.add_mod_left, Nat.mod_eq_of_lt (by have := a.toNat_lt; omega)]
-  rw [he] at h1
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hop' l, hlxs l, hsubN _ hlx]
-    have hr228 : lsicRemM 190 ((st.regs "matExtra" l).toNat)
-        = (st.regs "matExtra" l).toNat / 255 := rfl
-    have hr229 : lsicRemM 191 ((st.regs "matExtra" l).toNat - 255)
-        = ((st.regs "matExtra" l).toNat - 255) / 255 + 1 := rfl
-    have hdiv := Nat.div_eq_sub_div (Nat.zero_lt_succ 254) hlx
-    omega
-  · rw [hlxs l, hlxs 0, h2]
-  · rw [hpc']; intro hq; exact absurd hq (by omega)
-  · rw [hpc']; intro _ hb; omega
 
-theorem lsicM_at22964 (l : Lane) (B : Nat) (st : SState) (he : st.pc = 191)
-    (h : LsicInvM l B st) : LsicInvM l B (sstep K16 st) := by
-  have hp : K16[st.pc]? = some (.setp .ge "lsicC" "matExtra" (SArg.imm 255)) := by rw [he]; decide
-  obtain ⟨h1, h2, h3, h4⟩ := h
-  have hstep : sstep K16 st = (st.setReg "lsicC"
-      (fun l => if SCmp.ge.run (st.regs "matExtra" l) (st.get l (SArg.imm 255)) then 1
-                else 0)).setPc (st.pc + 1) := by
-    rw [sstep, hp]; rfl
-  have hpc' : (sstep K16 st).pc = 192 := by rw [hstep, he]; rfl
-  have hop' : ∀ j : Lane, (sstep K16 st).regs "op" j = st.regs "op" j := by
-    intro j; rw [hstep]; rfl
-  have hlx' : ∀ j : Lane, (sstep K16 st).regs "matExtra" j = st.regs "matExtra" j := by
-    intro j; rw [hstep]; rfl
-  have hlc' : (sstep K16 st).regs "lsicC" 0
-      = (if SCmp.ge.run (st.regs "matExtra" 0) (UInt64.ofNat 255) then 1 else 0) := by
-    rw [hstep]; rfl
-  rw [he] at h1
-  refine ⟨?_, ?_, ?_, ?_⟩
-  · rw [hpc', hop' l, hlx' l]
-    have hr229 : lsicRemM 191 ((st.regs "matExtra" l).toNat)
-        = (st.regs "matExtra" l).toNat / 255 + 1 := rfl
-    have hr230 : lsicRemM 192 ((st.regs "matExtra" l).toNat)
-        = (st.regs "matExtra" l).toNat / 255 + 1 := rfl
-    omega
-  · rw [hlx' l, hlx' 0]; exact h2
-  · rw [hpc', hlc', hlx' 0]; intro _
-    have hiff : SCmp.ge.run (st.regs "matExtra" 0) (UInt64.ofNat 255) = true
-        ↔ 255 ≤ (st.regs "matExtra" 0).toNat := by
-      simp only [SCmp.run, decide_eq_true_eq, UInt64.le_iff_toNat_le,
-        show ((UInt64.ofNat 255).toNat) = 255 from by decide]
-    by_cases hc : SCmp.ge.run (st.regs "matExtra" 0) (UInt64.ofNat 255) = true
-    · rw [if_pos hc]
-      exact ⟨fun _ => hiff.mp hc, fun _ => rfl⟩
-    · rw [if_neg hc]
-      constructor
-      · intro hcon; exact absurd hcon (by decide)
-      · intro hn; exact absurd (hiff.mpr hn) hc
-  · rw [hpc']; intro _ hb; omega
 
-theorem lsicMS_hstep64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
-    (hs : st.pc ∈ lsicMS) (hex : st.pc ∉ [196]) (h : LsicInvM l B st) :
-    LsicInvM l B (sstep K16 st) := by
-  simp only [lsicMS, List.mem_cons, List.not_mem_nil, or_false] at hs
-  rcases hs with e | e | e | e | e | e | e | e | e | e | e | e | e
-  · exact lsicM_at22264 l B st e h
-  · exact lsicM_at22364 l B st e h
-  · exact lsicM_at22464 l B st e h
-  · exact lsicM_at22564 l B st e h
-  · exact lsicM_at22664 l B st e h
-  · exact lsicM_at22764 l B st hB e h
-  · exact lsicM_at22864 l B st e h
-  · exact lsicM_at22964 l B st e h
-  · exact lsicM_at23064 l B st e h
-  · exact lsicM_at23164 l B st e h
-  · exact lsicM_at23264 l B st e h
-  · exact lsicM_at23364 l B st e h
-  · exact absurd (by simp [e]) hex
 
-theorem lsicM_op_lt64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
-    (h0 : st.pc = 184) (h : LsicInvM l B st) (k : Nat)
-    (hne : ∀ j, j < k → (siter K16 j st).pc ∉ [196])
-    (hq : (siter K16 k st).pc = 188 ∨ (siter K16 k st).pc = 195) :
-    ((siter K16 k st).regs "op" l).toNat < B :=
-  lsicMInv_op_le l B _
-    (inv_on K16 (LsicInvM l B) lsicMS [196] lsicMS_closed64
-      (fun s hsm hexs hh => lsicMS_hstep64 l B hB s hsm hexs hh) st (by rw [h0]; decide) h k hne) hq
 
-theorem bodyPre_closed64 : PcClosed K16 bodyPre [130, 208] := by decide
 
-theorem op_const_to_13064 (st : SState) (h0 : st.pc = 40) (k : Nat)
-    (hne : ∀ j, j < k → (siter K16 j st).pc ∉ [130, 208]) :
-    (siter K16 k st).regs "op" = st.regs "op" :=
-  regs_const_on K16 "op" bodyPre [130, 208] bodyPre_closed64 (by decide) st
-    (by rw [h0]; decide) k hne
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 theorem tokS_closed64 : PcClosed K16 tokS [197, 198] :=
   tokS_iv ▸ ivClosed_at K16 129 70 [197, 198] kSize16 (by omega) (by decide)
@@ -2555,10 +2014,7 @@ theorem tok_op_lt64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
     (inv_on K16 (TokInv l B) tokS [197, 198] tokS_closed64
       (fun s hsm hexs hh => tokS_hstep64 l B hB s hsm hexs hh) st (by rw [h0]; decide) h k hne) hq
 
-theorem loopBodyS_closed64 : PcClosed K16 loopBodyS [207] :=
-  ivClosed_at K16 42 166 [207] kSize16 (by omega) (by decide)
 
-theorem mb_succs64 : AlgorithmLib.LZ4Simt.succsOf K16 124 = [125] := by decide
 
 theorem mb_top64 : ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K16 124, 124 < q' := by decide
 

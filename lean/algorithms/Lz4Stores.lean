@@ -167,10 +167,6 @@ theorem stores_except_copy (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List
     on `cpI` itself is needed. -/
 def copyS : List Nat := (List.range 18).map (· + 152)
 
-theorem copyS_closed : PcClosed K copyS [169] :=
-  ivClosed_at K 152 18 [169] shipped32_size (by omega) (by decide)
-
-/-- The single entry: only `151 → 152` enters the region from outside. -/
 theorem copyS_entry_lt : ∀ q, q < 274 → q ∉ copyS →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ copyS → q' = 152 :=
   ivEntry_at K 152 18 152 shipped32_size (by decide)
@@ -691,10 +687,6 @@ theorem stores_cpDo165 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UIn
 -- ── The tail copy, pcs 238–254 (same shape, shifted by 86) ──────────────────
 def copyS2 : List Nat := (List.range 18).map (· + 238)
 
-theorem copyS2_closed : PcClosed K copyS2 [255] :=
-  ivClosed_at K 238 18 [255] shipped32_size (by omega) (by decide)
-
-/-- The single entry: only `237 → 238` enters the region from outside. -/
 theorem copyS2_entryLt : ∀ q, q < 274 → q ∉ copyS2 →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K q, q' ∈ copyS2 → q' = 238 :=
   ivEntry_at K 238 18 238 shipped32_size (by decide)
@@ -1165,13 +1157,6 @@ theorem rc_clampedG (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winShape
 
 theorem winShapeB_32 : winShapeB K 32768 = true := by decide
 
-theorem cap4_in_window (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
-    ∀ k : Nat, 45 ≤ (siter K k (initSt w inPtr outPtr gm smemB)).pc →
-      (siter K k (initSt w inPtr outPtr gm smemB)).pc ≤ 92 →
-      ∀ l : Lane, (siter K k (initSt w inPtr outPtr gm smemB)).regs "cap4" l
-        = UInt64.ofNat 32764 :=
-  cap4_in_windowG K 32768 winShapeB_32 (initSt w inPtr outPtr gm smemB)
-    (by show (0:Nat) < 45; decide)
 
 theorem rp_clamped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     ∀ k : Nat, 46 ≤ (siter K k (initSt w inPtr outPtr gm smemB)).pc →
@@ -1187,9 +1172,6 @@ theorem rc_clamped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8
   rc_clampedG K 32768 (by decide) winShapeB_32 (initSt w inPtr outPtr gm smemB)
     (by show (0:Nat) < 45; decide)
 
-/-- The window is fallthrough-only, at the shipped 32 KiB geometry. -/
-theorem win_ft : ∀ q, 42 ≤ q → q ≤ 92 → (K[q]?.map fallthroughOnlyB) = some true :=
-  win_ftG K 32768 winShapeB_32
 
 -- ── The same window check at the 64 KiB geometry ───────────────────────────
 

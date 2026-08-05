@@ -620,11 +620,6 @@ instance loads32 : Loads (WP.mk 15).kernel where
   storeCpDo := by rw [shipped32_store_sites]; decide
   loadSitesEq := shipped32_load_sites
 
-/-- The same, machine-checked against the 64 KiB kernel. -/
-instance loads64 : Loads (WP.mk 16).kernel where
-  loadAt := load_at_site64
-  storeCpDo := by decide
-  loadSitesEq := by decide
 
 -- ── What the ten `sbAddr` stores still need, named ───────────────────────────
 
@@ -3649,14 +3644,6 @@ theorem head_not_in_loopBodyS : (40 ∈ loopBodyS) = False := by decide
 
 -- ── The token-emit entry, at the shipped kernel ──────────────────────────────
 
-/-- `MB` — the base of `wEmitMatchSeqEmit` inside the `loopC` body — is pc 124:
-    the body starts at 42, `coopWindowEmit` is 51 wide, the `uif found` branch adds
-    one, the four found movs four, and the extend `uwhile` twenty-four
-    (`coopExtendEmit` 18 + `bin`/`setp` 2, plus the four scaffolding instructions).
-    `42 + 51 + 1 + 4 + 24 + 2 = 124`, one below the token region `tokS`. -/
-theorem mb_succs : AlgorithmLib.LZ4Simt.succsOf K 124 = [125] := by decide
-
-/-- `hMBtop` at the shipped kernel: 124's only successor is above it. -/
 theorem mb_top : ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K 124, 124 < q' := by decide
 
 /-- `hMBno` at the shipped kernel, in the decidable bounded form: nothing in the

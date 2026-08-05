@@ -147,8 +147,6 @@ theorem stores_except_copy64 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : Li
 
 def copyS64 : List Nat := (List.range 18).map (· + 152)
 
-theorem copyS_closed64 : PcClosed K16 copyS64 [169] :=
-  ivClosed_at K16 152 18 [169] kSize16 (by omega) (by decide)
 
 theorem copyS_entry_lt64 : ∀ q, q < 274 → q ∉ copyS64 →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K16 q, q' ∈ copyS64 → q' = 152 :=
@@ -626,8 +624,6 @@ theorem stores_cpDo16564 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List U
 -- ── The tail copy, pcs 238–254 (same shape, shifted by 86) ──────────────────
 def copyS264 : List Nat := (List.range 18).map (· + 238)
 
-theorem copyS2_closed64 : PcClosed K16 copyS264 [255] :=
-  ivClosed_at K16 238 18 [255] kSize16 (by omega) (by decide)
 
 theorem copyS2_entryLt64 : ∀ q, q < 274 → q ∉ copyS264 →
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K16 q, q' ∈ copyS264 → q' = 238 :=
@@ -1075,13 +1071,6 @@ theorem rc_clampedG64 (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winSha
 -- ── The shipped 32 KiB instance ─────────────────────────────────────────────
 
 
-theorem cap4_in_window64 (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
-    ∀ k : Nat, 45 ≤ (siter K16 k (initSt w inPtr outPtr gm smemB)).pc →
-      (siter K16 k (initSt w inPtr outPtr gm smemB)).pc ≤ 92 →
-      ∀ l : Lane, (siter K16 k (initSt w inPtr outPtr gm smemB)).regs "cap4" l
-        = UInt64.ofNat 65532 :=
-  cap4_in_windowG64 K16 65536 winShapeB_64 (initSt w inPtr outPtr gm smemB)
-    (by show (0:Nat) < 45; decide)
 
 theorem rp_clamped64 (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     ∀ k : Nat, 46 ≤ (siter K16 k (initSt w inPtr outPtr gm smemB)).pc →
@@ -1097,8 +1086,6 @@ theorem rc_clamped64 (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UIn
   rc_clampedG64 K16 65536 (by decide) winShapeB_64 (initSt w inPtr outPtr gm smemB)
     (by show (0:Nat) < 45; decide)
 
-theorem win_ft64 : ∀ q, 42 ≤ q → q ≤ 92 → (K16[q]?.map fallthroughOnlyB) = some true :=
-  win_ftG64 K16 65536 winShapeB_64
 
 -- ── …and the 64 KiB one, which is now one `decide` ──────────────────────────
 
