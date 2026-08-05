@@ -519,7 +519,14 @@ theorem loopCBody_Qadvance (inStride hashLog fuel : Nat) (ws : WState)
     (hQ : LoopCQ inStride ws) (hguard : (ws.regs "loopC" == 1) = true) :
     LoopCQ inStride ((loopCBodyStmt inStride hashLog).eval fuel ws)
     ∧ (ws.regs "searchPos").toNat + 1
-        ≤ (((loopCBodyStmt inStride hashLog).eval fuel ws).regs "searchPos").toNat := by
+        ≤ (((loopCBodyStmt inStride hashLog).eval fuel ws).regs "searchPos").toNat
+    -- **the output cursor does not run backwards over an iteration.**  A
+    -- not-found step leaves `op`; a found step adds the token, the literal run
+    -- and the two offset bytes.  Both branches already compute this equation for
+    -- the budget clauses, so the bound costs one `omega` each and needs no
+    -- overflow reasoning: `hF_opN` is stated in `Nat`.
+    ∧ (ws.regs "op").toNat
+        ≤ (((loopCBodyStmt inStride hashLog).eval fuel ws).regs "op").toNat := by
   obtain ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ := hQ
   have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
     loopCQ_guard inStride ws hstride hipos ⟨hib0, hlaSp, hlc, hobLB, hbud32, hbudsz⟩ hguard
@@ -542,7 +549,7 @@ theorem loopCBody_Qadvance (inStride hashLog fuel : Nat) (ws : WState)
       have e_loopC : ((loopCBodyStmt inStride hashLog).eval fuel ws).regs "loopC"
           = (if UInt64.ofNat ((ws.regs "searchPos").toNat + 32) < UInt64.ofNat (inStride - 12)
              then 1 else 0) := hN_loopC
-      refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_⟩, ?_⟩
+      refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · rw [e_ib]; exact hib0
       · rw [e_la, e_sp]; omega
       · rw [e_loopC, e_sp]
@@ -550,6 +557,7 @@ theorem loopCBody_Qadvance (inStride hashLog fuel : Nat) (ws : WState)
       · rw [e_ob, e_op, e_la]; exact hbud32
       · rw [e_ob, e_op, e_la, e_gmem]; exact hbudsz
       · rw [e_sp]; omega
+      · rw [e_op]; omega
   | some pc =>
       obtain ⟨p, c⟩ := pc
       obtain ⟨hsps, hpsl, _hcp, _hv⟩ := window_sound (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride)
@@ -605,7 +613,7 @@ theorem loopCBody_Qadvance (inStride hashLog fuel : Nat) (ws : WState)
       have e_loopC : ((loopCBodyStmt inStride hashLog).eval fuel ws).regs "loopC"
           = (if UInt64.ofNat (p + extendFrom (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) p c (inStride - 5) fuel 4)
                 < UInt64.ofNat (inStride - 12) then 1 else 0) := hF_loopC
-      refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_⟩, ?_⟩
+      refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_⟩, ?_, ?_⟩
       · rw [e_ib]; exact hib0
       · rw [e_la, e_sp]; omega
       · rw [e_loopC, e_sp]
@@ -613,6 +621,7 @@ theorem loopCBody_Qadvance (inStride hashLog fuel : Nat) (ws : WState)
       · rw [e_ob, hF_opN, e_la]; omega
       · rw [e_ob, hF_opN, e_la, e_gmem, EmitContent.putBytesU_size]; omega
       · rw [e_sp]; omega
+      · rw [hF_opN]; omega
 
 /-- One active `loopC` iteration keeps `litAnchor ≤ inStride − 5` (a not-found step
     leaves `litAnchor`; a found step sets it to the match end `p + ml ≤ endCap`). -/
@@ -1077,7 +1086,9 @@ theorem loopCBody_bodySim (inStride hashLog F : Nat)
   have hsp_lt : (ws.regs "searchPos").toNat < inStride - 12 :=
     loopCQ_guard inStride ws hstride hipos hQ hguard
   have hfuelb : inStride ≤ fuel := by omega
-  refine ⟨?_, loopCBody_Qadvance inStride hashLog fuel ws hstride hipos (by omega) hfuelb hQ hguard⟩
+  refine ⟨?_, (loopCBody_Qadvance inStride hashLog fuel ws hstride hipos (by omega)
+    hfuelb hQ hguard).1, (loopCBody_Qadvance inStride hashLog fuel ws hstride hipos (by omega)
+    hfuelb hQ hguard).2.1⟩
   cases hw : window (gmemInpAt ws.gmem (ws.regs "inBase").toNat inStride) (tableOracle ws.gmem ws.smem hashLog 0 (ws.regs "inBase").toNat)
       (inStride - 12) (ws.regs "searchPos").toNat with
   | none =>

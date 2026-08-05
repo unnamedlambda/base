@@ -587,6 +587,35 @@ def loopBodyOkB (hdr : Nat) (b : BlockData) : Bool :=
                   | _ => false)))
   | _, _ => false
 
+/-- **The accumulator-carrying header.**  `forLoopAcc` threads a carry alongside
+    the induction variable, so its header takes two parameters and its `brif`
+    passes the carry to both successors.  `loopHdrOf?` requires exactly one
+    parameter, which is why every `forLoopAcc` in the codebase was invisible to
+    the loop scan — including the one that performs LZ4's twenty launches.
+
+    Same shape otherwise: the bound must resolve to a compile-time constant, so
+    the trip count is read out of the program rather than assumed. -/
+def loopHdrAccOf? (e : Env) (b : BlockData) : Option (Nat × Nat × Nat) :=
+  match b.params, b.insts with
+  | [(p, _), (a, _)], [Inst.icmp c .ult i lim, Inst.brif c' bdy [j, a1] ex [a2]] =>
+      if c.id = c'.id ∧ i.id = p.id ∧ j.id = p.id ∧ a1.id = a.id ∧ a2.id = a.id then
+        match e lim with
+        | .const k => some (bdy.id, ex.id, k.toNat)
+        | _        => none
+      else none
+  | _, _ => none
+
+/-- `loopBodyOkB` for the accumulator form: the body ends by incrementing its
+    induction parameter and jumping back with the new carry. -/
+def loopBodyAccOkB (hdr : Nat) (b : BlockData) : Bool :=
+  match b.params, b.insts.reverse with
+  | [(p, _), _], (Inst.jump t [inc, _]) :: (Inst.iadd d q o) :: _ =>
+      t.id == hdr && d.id == inc.id && q.id == p.id
+        && b.insts.any (fun i => match i with
+              | Inst.iconst dd _ 1 => dd.id == o.id
+              | _ => false)
+  | _, _ => false
+
 /-- **The counted loops a built function contains**, in block order.
 
     The environment each header is resolved in is `evalPure` over every block
@@ -600,7 +629,12 @@ def loopsOf (s : IRState) : List LoopRec :=
         | some (bdy, ex, k) =>
             if s.allBlocks.any (fun c => c.ref.id == bdy && loopBodyOkB b.ref.id c)
             then acc.2 ++ [⟨b.ref.id, bdy, ex, k⟩] else acc.2
-        | none => acc.2
+        | none =>
+            match loopHdrAccOf? e b with
+            | some (bdy, ex, k) =>
+                if s.allBlocks.any (fun c => c.ref.id == bdy && loopBodyAccOkB b.ref.id c)
+                then acc.2 ++ [⟨b.ref.id, bdy, ex, k⟩] else acc.2
+            | none => acc.2
       (evalPure e b.insts, acc2)) (Env.empty, [])).2
 
 /-- The instructions of a named block, if the function has one. -/

@@ -135,7 +135,8 @@ def prologueW : List String :=
     (not taken since `gwarp = 0 < nb`).  Exposes the raw values (`inP = 0`, `outP = iS`,
     `gwarp = lwarp = 0`, lane identity) that slice B consumes. -/
 theorem headA (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
-    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) :
+    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64)
+    (hderive : outPtr = inPtr + (nb * iS + copySlack)) :
     let prog := warpKernelDSL nb iS oS lO hL
     let s0 := initSt w inPtr outPtr gm smemB
     (snsteps prog 12 s0).pc = 12 ∧
@@ -148,7 +149,8 @@ theorem headA (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : 
       (∀ r, r ∉ prologueW → (snsteps prog 12 s0).regs r = s0.regs r) := by
   intro prog s0
   have i0 : prog[0]? = some (.mov "inP" (.reg rInPtr)) := wk_idx nb iS oS lO hL 0 _ (by omega) rfl
-  have i1 : prog[1]? = some (.mov "outP" (.reg rOutPtr)) := wk_idx nb iS oS lO hL 1 _ (by omega) rfl
+  have i1 : prog[1]? = some (.bin .add "outP" rInPtr (.imm (nb * iS + copySlack))) :=
+    wk_idx nb iS oS lO hL 1 _ (by omega) rfl
   have i2 : prog[2]? = some (.mov "tid" (.reg rTidX)) := wk_idx nb iS oS lO hL 2 _ (by omega) rfl
   have i3 : prog[3]? = some (.mov "ctab" (.reg rCtaX)) := wk_idx nb iS oS lO hL 3 _ (by omega) rfl
   have i4 : prog[4]? = some (.mov "ntid" (.reg rNtidX)) := wk_idx nb iS oS lO hL 4 _ (by omega) rfl
@@ -169,8 +171,9 @@ theorem headA (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : 
   generalize hs1 : (s0.setReg "inP" (fun l => s0.get l (.reg rInPtr))).setPc (s0.pc + 1) = s1
   have hpc1 : s1.pc = 1 := by rw [← hs1]; simp [SState.setPc, hpc0]
   have hg1 : s1.gmem = s0.gmem := by rw [← hs1]; exact hg0
-  rw [mov_step prog s1 "outP" (.reg rOutPtr) (by rw [hpc1]; exact i1)]
-  generalize hs2 : (s1.setReg "outP" (fun l => s1.get l (.reg rOutPtr))).setPc (s1.pc + 1) = s2
+  rw [bin_step prog s1 .add "outP" rInPtr (.imm (nb * iS + copySlack)) (by rw [hpc1]; exact i1)]
+  generalize hs2 : (s1.setReg "outP"
+    (fun l => SOp.run .add (s1.regs rInPtr l) (s1.get l (.imm (nb * iS + copySlack))))).setPc (s1.pc + 1) = s2
   have hpc2 : s2.pc = 2 := by rw [← hs2]; simp [SState.setPc, hpc1]
   have hg2 : s2.gmem = s0.gmem := by rw [← hs2]; exact hg1
   rw [mov_step prog s2 "tid" (.reg rTidX) (by rw [hpc2]; exact i2)]
@@ -236,27 +239,32 @@ theorem headA (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : 
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, u64_outBase, hderive,
+      SOp.run, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, u64_outBase, hderive,
+      SOp.run, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, u64_outBase, hderive,
+      SOp.run, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, u64_outBase, hderive,
+      SOp.run, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · intro l
     simp only [SState.setReg, SState.setPc, SState.get, SOp.run, hregs, initRegs,
       rLane, rTidX, rCtaX, rNtidX, rInPtr, rOutPtr,
-      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, UInt64.zero_add, UInt64.add_zero,
+      u64_and31, u64_and31', u64_shr5, u64_shr5', u64_gwarp w hw64, u64_outBase, hderive,
+      SOp.run, UInt64.zero_add, UInt64.add_zero,
       String.reduceEq, reduceIte]
   · exact hg12
   · intro r hr
@@ -393,7 +401,8 @@ theorem headB (nb iS oS lO hL w inPtr outPtr : Nat) (s : SState) (hpc : s.pc = 1
     state the machine reaches the `loop` head (index 25) with `MachInv`'s constants
     (`lane = l`, `inBase = tbl = 0`), `outBase = iS`, `ci 0 = 0`, and a frame. -/
 theorem head25 (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
-    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) :
+    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64)
+    (hderive : outPtr = inPtr + (nb * iS + copySlack)) :
     (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).pc = 25 ∧
       (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs rLane l = UInt64.ofNat l.val) ∧
       (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs rInBase l = UInt64.ofNat (inPtr + w * iS)) ∧
@@ -404,7 +413,7 @@ theorem head25 (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB :
       (∀ r, r ∉ prologueW →
         (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)).regs r = (initSt w inPtr outPtr gm smemB).regs r) := by
   obtain ⟨hpcA, hinP, houtP, hgw, hlw, hlaneA, hgmemA, hframeA⟩ :=
-    headA nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64
+    headA nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hderive
   obtain ⟨hpcB, hlaneB, hinB, htbl, houtB, hciB, hgmemB, hframeB⟩ :=
     headB nb iS oS lO hL w inPtr outPtr (snsteps (warpKernelDSL nb iS oS lO hL) 12 (initSt w inPtr outPtr gm smemB))
       hpcA hinP houtP hgw hlw hlaneA
@@ -658,7 +667,8 @@ theorem clr_exit_frame (prog : Array SInstr) (st : SState) (entries : Nat)
     `mov`-initialized regs `op = litAnchor = searchPos = 0` (uniform), `gmem` intact,
     and a frame for every register outside the prologue's write set. -/
 theorem head38 (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
-    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) (hHash : hL ≤ 32) :
+    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64)
+    (hderive : outPtr = inPtr + (nb * iS + copySlack)) (hHash : hL ≤ 32) :
     (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).pc = 38 ∧
       (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rLane l = UInt64.ofNat l.val) ∧
       (∀ l : Fin 32, (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).regs rInBase l = UInt64.ofNat (inPtr + w * iS)) ∧
@@ -686,7 +696,7 @@ theorem head38 (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB :
   have hclr : sfindLabel (warpKernelDSL nb iS oS lO hL) "clr" = 25 := by rfl
   have hfind : sfindLabel (warpKernelDSL nb iS oS lO hL) "clrDone" = 33 := by rfl
   obtain ⟨hpc25, hlane25, hinB25, htbl25, houtB25, hci25, hgmem25, hframe25⟩ :=
-    head25 nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64
+    head25 nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hderive
   have hiter := prologue_clear_body_iter (warpKernelDSL nb iS oS lO hL)
     (snsteps (warpKernelDSL nb iS oS lO hL) 25 (initSt w inPtr outPtr gm smemB)) hL (2 ^ hL)
     e25 e26 e27 e28 e29 e30 e31 e32 hclr rfl hHash hpc25 hci25 hlane25 (clearIters hL) (Nat.le_refl _)
@@ -754,7 +764,8 @@ theorem head38 (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB :
     the body roundtrip consumes: `op = litAnchor = searchPos = inBase = 0`,
     `outBase = outPtr + w*oS`, `gmem` unchanged. -/
 theorem prologue_couple (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
-    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64) (hHash : hL ≤ 32) :
+    (hnb : 0 < nb) (hnb2 : nb < 2 ^ 64) (hw : w < nb) (hw64 : w * 32 + 32 < 2 ^ 64)
+    (hderive : outPtr = inPtr + (nb * iS + copySlack)) (hHash : hL ≤ 32) :
     (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).pc = 39 ∧
       MachInv (inPtr + w * iS) (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)) ∧
       Couple loopR (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB))
@@ -768,7 +779,7 @@ theorem prologue_couple (nb iS oS lO hL w inPtr outPtr : Nat) (gm : Array UInt8)
       (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).regs "outBase" 0 = UInt64.ofNat (outPtr + w * oS) ∧
       (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB)).gmem = gm := by
   obtain ⟨h38pc, h38lane, h38inB, h38tbl, h38outB, h38la, h38sp, h38op, h38gmem, h38frame⟩ :=
-    head38 nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hHash
+    head38 nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hderive hHash
   have e38 : (warpKernelDSL nb iS oS lO hL)[38]? = some (.lbl "loop") := wk_idx nb iS oS lO hL 38 _ (by omega) rfl
   have hstep : snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1) (initSt w inPtr outPtr gm smemB) =
       (snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8) (initSt w inPtr outPtr gm smemB)).setPc 39 := by

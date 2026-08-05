@@ -34,6 +34,7 @@ inductive SInstr where
   | andp  (d a b : String)                       -- and.pred
   | selp  (d a b p : String)                     -- d = (p ? a : b), per lane
   | ldgo  (d addr : String) (off : Nat)          -- ld.global.u8 [addr+off]
+  | ldgop (p d addr : String) (off : Nat)        -- @p ld.global.u8 [addr+off]
   | stg   (addr s : String)                      -- st.global.u8 (all lanes)
   | stgp  (p addr s : String)                    -- @p st.global.u8
   | stg32p (p addr s : String)                   -- @p st.global.u32 (LE)
@@ -136,6 +137,12 @@ def sstepInstr (prog : Array SInstr) (i : SInstr) (st : SState) : SState :=
   | .ldgo d addr off =>
       (st.setReg d (fun l =>
         UInt64.ofNat (st.gmem.getD ((st.regs addr l).toNat + off) 0).toNat)).setPc (st.pc + 1)
+  | .ldgop p d addr off =>
+      -- a masked lane does not read: it keeps whatever `d` held
+      (st.setReg d (fun l =>
+        if st.regs p l == 1 then
+          UInt64.ofNat (st.gmem.getD ((st.regs addr l).toNat + off) 0).toNat
+        else st.regs d l)).setPc (st.pc + 1)
   | .stg addr s =>
       { st with gmem := storeBytes st.gmem (fun _ => true) (st.regs addr) (st.regs s),
                 pc := st.pc + 1 }

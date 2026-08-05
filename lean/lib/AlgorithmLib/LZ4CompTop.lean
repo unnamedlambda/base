@@ -20,6 +20,25 @@ theorem encodeSum_le9 (inp : List UInt8) : ∀ (anchor : Nat) (steps : List Plan
     have hs := encSeqLen_le9 st hag.2.2.1
     simp only [List.map_cons, List.sum_cons, stepsLen]; omega
 
+/-- **The generous 9x output budget, from an ARBITRARY literal anchor.**
+
+    `planBlock_encode_le9` below is this at `anchor = 0`.  The suffix form is what
+    the emit loop needs: its invariant is indexed by the literal anchor, and the
+    quantity it must bound is what is still to be emitted from there.
+
+    Every ingredient was already anchor-parametric (`encode_planBlockFrom_length`,
+    `encodeSum_le9`, `ValidStepsFrom_sum`); only the instance at `0` had been
+    stated.  This is the no-overflow side condition for showing the output cursor
+    never runs backwards. -/
+theorem planBlockFrom_encode_le9 (inp : List UInt8) (anchor : Nat) (steps : List PlanStep)
+    (fl : Nat) (hv : ValidStepsFrom inp anchor steps fl) (hpos : anchor < inp.length) :
+    (planBlockFrom inp anchor steps fl).encode.length ≤ 9 * (inp.length - anchor) := by
+  have hlen := encode_planBlockFrom_length inp anchor steps fl hv
+  have hsum := encodeSum_le9 inp anchor steps fl hv
+  have hf := encFinalLen_le9 fl
+  have htot := ValidStepsFrom_sum inp anchor steps fl hv
+  rw [hlen]; omega
+
 theorem planBlock_encode_le9 (inp : List UInt8) (p : Plan) (hv : ValidPlan inp p)
     (hpos : 1 ≤ inp.length) : (planToBlock inp p).encode.length ≤ 9 * inp.length := by
   have hlen := encode_planBlockFrom_length inp 0 p.steps p.finalLen hv
@@ -47,13 +66,13 @@ theorem warpKernelDSL_prologue_roundtrips
     (hw64 : w * 32 + 32 < 2 ^ 64) (hib40 : inPtr + w * iS < 2 ^ 40)
     (htop : outPtr + w * oS + 9 * iS < 2 ^ 32)
     (hbuf : outPtr + w * oS + 9 * iS ≤ gm.size)
-    (hdisj : inPtr + w * iS + iS ≤ outPtr + w * oS) :
+    (hderive : outPtr = inPtr + (nb * iS + copySlack)) (hdisj : inPtr + w * iS + iS ≤ outPtr + w * oS) :
     ∃ (n : Nat) (ss' : SState) (k : Nat),
       SReaches (warpKernelDSL nb iS oS lO hL) n (initSt w inPtr outPtr gm smemB) ss' ∧
       decompress ((List.range k).map (fun i => ss'.gmem.getD (outPtr + w * oS + i) 0)) iS
         = some (gmemInpAt gm (inPtr + w * iS) iS) := by
   obtain ⟨hpc39, hMI, hCouple, hop0, hla0, hsp0, hinB0, houtB0, hgmem⟩ :=
-    prologue_couple nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hHash
+    prologue_couple nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hderive hHash
   obtain ⟨S0, hS0⟩ : ∃ x, snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
       (initSt w inPtr outPtr gm smemB) = x := ⟨_, rfl⟩
   rw [hS0] at hpc39 hMI hCouple hop0 hla0 hsp0 hinB0 houtB0 hgmem
@@ -108,7 +127,7 @@ theorem warpKernelDSL_tail_roundtrips
     (hw64 : w * 32 + 32 < 2 ^ 64) (hib40 : inPtr + w * iS < 2 ^ 40)
     (htop : outPtr + w * oS + 9 * iS < 2 ^ 32)
     (hbuf : outPtr + w * oS + 9 * iS ≤ gm.size)
-    (hdisj : inPtr + w * iS + iS ≤ outPtr + w * oS)
+    (hderive : outPtr = inPtr + (nb * iS + copySlack)) (hdisj : inPtr + w * iS + iS ≤ outPtr + w * oS)
     (hlO : iS + iS / 16 + 256 ≤ lO) (hlOtop : outPtr + w * oS + lO + 3 < 2 ^ 64)
     (hlOfit : outPtr + w * oS + lO + 4 ≤ gm.size) :
     ∃ (n : Nat) (ss' : SState) (k : Nat),
@@ -122,7 +141,7 @@ theorem warpKernelDSL_tail_roundtrips
       (∀ j, j < outPtr + w * oS ∨ outPtr + w * oS + lO + 4 ≤ j →
         ss'.gmem.getD j 0 = gm.getD j 0) := by
   obtain ⟨hpc39, hMI, hCouple, hop0, hla0, hsp0, hinB0, houtB0, hgmem⟩ :=
-    prologue_couple nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hHash
+    prologue_couple nb iS oS lO hL w inPtr outPtr gm smemB hnb hnb2 hw hw64 hderive hHash
   obtain ⟨S0, hS0⟩ : ∃ x, snsteps (warpKernelDSL nb iS oS lO hL) (25 + 8 * clearIters hL + 8 + 1)
       (initSt w inPtr outPtr gm smemB) = x := ⟨_, rfl⟩
   rw [hS0] at hpc39 hMI hCouple hop0 hla0 hsp0 hinB0 houtB0 hgmem

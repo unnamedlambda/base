@@ -451,6 +451,14 @@ def cudaDownloadRawOffset (cuda : CudaSetup) (ptr bufId bufOff dstPtr size : Val
   let ctxPtr ← cudaCtxPtr ptr slotOffset
   call cuda.fnDownloadOffset [ctxPtr, bufId, bufOff, dstPtr, size]
 
+/-- Upload `size` bytes from an arbitrary host pointer into the device buffer at
+    `bufOff`.  Unlike `cudaUploadRaw`, the host pointee need NOT be the whole
+    device buffer, so this can fill a prefix of an over-allocated one. -/
+def cudaUploadRawOffset (cuda : CudaSetup) (ptr bufId bufOff srcPtr size : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cuda.fnUploadOffset [ctxPtr, bufId, bufOff, srcPtr, size]
+
 /-- Upload to a specific offset within a GPU buffer. -/
 def cudaUploadOffset (cuda : CudaSetup) (ptr bufId bufOff srcOff size : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do

@@ -36,6 +36,10 @@ def WP.totOut    (w : WP) : Nat := w.numBlk * w.outStride
 -- `9*inStride` of headroom past the last warp's stride: the body simulation's
 -- budget is 9 bytes per remaining input byte, which `hbuf` needs for every warp.
 def WP.outAlloc  (w : WP) : Nat := w.totOut + 9 * w.inStride
+/-- Where warp 0's output begins.  `copySlack` is the KERNEL's constant
+    (`LZ4SimtEmit.copySlack`, baked into the prologue's `outP` immediate); using it
+    here is what keeps the host allocation and the kernel's own base in step. -/
+def WP.outOff    (w : WP) : Nat := w.totIn + AlgorithmLib.LZ4Simt.copySlack
 
 /-- The kernel this artifact ships.  `warpKernelDSLStr` serializes THIS, and
     `ShippedCorrect` is stated about THIS — one definition, so the proven object and
@@ -76,37 +80,57 @@ def compSchema (w : WP) : List Json :=
       Output.column "num_blk" .i64 w.numblkOff ]
     w.rowOff]
 
+-- The host program as a *builder*, so `Clif`'s scanners can read the blocks it
+-- emits.  `warpClif` is this printed; the two cannot drift because there is only
+-- one of them.
+-- Every store offset below is derived from `bo`, the binding-table offset, which
+-- at the call site is `WP.bindOff` — a value that can only be computed by
+-- serializing the whole PTX kernel.  Holding it as a PARAMETER makes that
+-- dependency explicit and was an attempt to let `Lz4Host`'s recovery theorems
+-- reduce symbolically; measured, it does not (reducing the `IRBuilder` state
+-- monad is itself the cost), so those theorems use `native_decide`.  Kept
+-- because the separation is worth stating.  `warpBuilder` instantiates it at
+-- `w.bindOff`, so the program that ships is byte-identical.
 open AlgorithmLib.IR in
-def warpClif (w : WP) : String := buildProgram do
+def warpBuilderAt (w : WP) (bo : Nat) : IRBuilder Unit := do
   let cuda ← declareCudaFFI
   let ptr ← entryBlock
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
   let outPtr ← load64 (← absAddr ptr 0x28)
   cudaInit cuda ptr
-  let inBuf ← cudaCreateBuffer cuda ptr dataLen
-  let outBuf ← cudaCreateBuffer cuda ptr (← iconst64 w.outAlloc)
-  let _ ← cudaUploadRaw cuda ptr inBuf dataPtr dataLen
+  -- ONE allocation: input at offset 0, output immediately after it.  Both kernel
+  -- parameters are bound to this buffer and the kernel derives its output base as
+  -- `in_ptr + totIn`, so the placement contract `LayoutOK` asks for holds by
+  -- construction instead of relating two independent allocations.
+  let inBuf ← cudaCreateBuffer cuda ptr (← iconst64 (w.outOff + w.outAlloc))
+  let _ ← cudaUploadRawOffset cuda ptr inBuf (← iconst64 0) dataPtr dataLen
   let g ← iconst32 w.gridX
   let bk ← iconst32 wBlockDim
   let one32 ← iconst32 1
   let nbufs ← ireduce32 (← iconst64 2)
   let ptxOff ← iconst64 rPTX_OFF
-  let bindOff ← iconst64 w.bindOff
+  let bindOff ← iconst64 bo
   let _ ← forLoopAcc .i64 .i64 (← iconst64 rLaunches) (← iconst64 0) (fun _ acc => do
     let _ ← cudaLaunch cuda ptr ptxOff nbufs bindOff g one32 one32 bk one32 one32
     pure acc)
-  let _ ← cudaDownloadRawOffset cuda ptr outBuf (← iconst64 0) outPtr (← iconst64 w.totOut)
+  let _ ← cudaDownloadRawOffset cuda ptr inBuf (← iconst64 w.outOff) outPtr (← iconst64 w.totOut)
   cudaCleanup cuda ptr
-  storeAt ptr w.rowOff (← iconst64 1)
-  storeAt ptr w.passOff (← iconst64 1)
-  storeAt ptr w.launOff (← iconst64 rLaunches)
-  storeAt ptr w.bytesOff (← iconst64 w.totIn)
-  storeAt ptr w.instrOff (← iconst64 w.inStride)
-  storeAt ptr w.outstrOff (← iconst64 w.outStride)
-  storeAt ptr w.lenoffOff (← iconst64 w.lenOff)
-  storeAt ptr w.numblkOff (← iconst64 w.numBlk)
+  storeAt ptr (bo + 0x40) (← iconst64 1)
+  storeAt ptr (bo + 0x48) (← iconst64 1)
+  storeAt ptr (bo + 0x50) (← iconst64 rLaunches)
+  storeAt ptr (bo + 0x58) (← iconst64 w.totIn)
+  storeAt ptr (bo + 0x60) (← iconst64 w.inStride)
+  storeAt ptr (bo + 0x68) (← iconst64 w.outStride)
+  storeAt ptr (bo + 0x70) (← iconst64 w.lenOff)
+  storeAt ptr (bo + 0x78) (← iconst64 w.numBlk)
   ret
+
+open AlgorithmLib.IR in
+def warpBuilder (w : WP) : IRBuilder Unit := warpBuilderAt w w.bindOff
+
+open AlgorithmLib.IR in
+def warpClif (w : WP) : String := buildProgram (warpBuilder w)
 
 
 
@@ -114,7 +138,7 @@ def warpClif (w : WP) : String := buildProgram do
 def warpPayloadDSL (w : WP) : List UInt8 :=
   zeros rPTX_OFF ++
   (w.ptxBytes ++ zeros (w.bindOff - rPTX_OFF - w.ptxLen)) ++
-  (uint32ToBytes 0 ++ uint32ToBytes 1)
+  (uint32ToBytes 0 ++ uint32ToBytes 0)
 
 /-- The binding table lands at `bindOff` and the image fits `memSize`: `bindOff`
     is `rPTX_OFF + ptxLen` rounded up, so the padding is alignment only. -/
@@ -145,19 +169,22 @@ def warpArtifactDSL (name : String) (blkLog : Nat) :=
 section ShippedClaim
 open AlgorithmLib.LZ4WarpDSL
 
-/-- Correctness of the artifact `warpArtifactDSL _ b` emits, for warp `w`, with the
-    two device allocations placed ANYWHERE satisfying the stated layout contract —
-    the runtime makes two independent `cudaCreateBuffer` calls, so their addresses
-    are not related. -/
+/-- Correctness of the artifact `warpArtifactDSL _ b` emits, for warp `w`.
+
+    The output base is not a free parameter: the kernel computes it as
+    `in_ptr + totIn` (`prologueInstrs` index 1), so the only placements the
+    theorem admits are the ones the program actually produces.  That is the
+    equation `hderive`, which the host establishes by making one allocation. -/
 def ShippedCorrect (b : Nat) : Prop :=
   ∀ (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8),
     w < (WP.mk b).numBlk →
-    -- layout contract on the two buffers
+    -- the output buffer is the tail of the input allocation — by construction
+    outPtr = inPtr + ((WP.mk b).numBlk * (WP.mk b).inStride
+      + AlgorithmLib.LZ4Simt.copySlack) →
+    -- remaining layout contract: sizes and address-space bounds
     inPtr + w * (WP.mk b).inStride < 2 ^ 40 →
     outPtr + w * (WP.mk b).outStride + 9 * (WP.mk b).inStride < 2 ^ 32 →
     outPtr + w * (WP.mk b).outStride + 9 * (WP.mk b).inStride ≤ gm.size →
-    inPtr + w * (WP.mk b).inStride + (WP.mk b).inStride
-      ≤ outPtr + w * (WP.mk b).outStride →
     outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 3 < 2 ^ 64 →
     outPtr + w * (WP.mk b).outStride + (WP.mk b).lenOff + 4 ≤ gm.size →
     ∃ (n : Nat) (ss' : AlgorithmLib.LZ4Simt.SState) (k : Nat),
@@ -177,28 +204,48 @@ def ShippedCorrect (b : Nat) : Prop :=
         ss'.gmem.getD j 0 = gm.getD j 0)
 
 theorem shipped32_correct : ShippedCorrect 15 := by
-  intro w inPtr outPtr gm smemB hw hib40 htop hbuf hdisj hlOtop hlOfit
+  intro w inPtr outPtr gm smemB hw hderive hib40 htop hbuf hlOtop hlOfit
   have hw64 : w * 32 + 32 < 2 ^ 64 := by
     have h1 : w * 32 ≤ (WP.mk 15).numBlk * 32 := Nat.mul_le_mul_right 32 (Nat.le_of_lt hw)
     have h2 : (WP.mk 15).numBlk * 32 + 32 < 2 ^ 64 := by decide
+    omega
+  -- the input/output separation the body simulation wants is now a CONSEQUENCE
+  have hdisj : inPtr + w * (WP.mk 15).inStride + (WP.mk 15).inStride
+      ≤ outPtr + w * (WP.mk 15).outStride := by
+    have h1 : (w + 1) * (WP.mk 15).inStride ≤ (WP.mk 15).numBlk * (WP.mk 15).inStride :=
+      Nat.mul_le_mul_right _ hw
+    have h2 : (w + 1) * (WP.mk 15).inStride
+        = w * (WP.mk 15).inStride + (WP.mk 15).inStride := Nat.succ_mul w _
+    have h3 : w * (WP.mk 15).inStride ≤ w * (WP.mk 15).outStride :=
+      Nat.mul_le_mul_left _ (by decide)
     omega
   exact warpKernelDSL_tail_roundtrips
     (WP.mk 15).numBlk (WP.mk 15).inStride (WP.mk 15).outStride (WP.mk 15).lenOff wHashLog
     w inPtr outPtr gm smemB
     (by decide) (by decide) hw (by decide) (by decide) (by decide)
-    hw64 hib40 htop hbuf hdisj (Nat.le_refl _) hlOtop hlOfit
+    hw64 hib40 htop hbuf hderive hdisj (Nat.le_refl _) hlOtop hlOfit
 
 theorem shipped64_correct : ShippedCorrect 16 := by
-  intro w inPtr outPtr gm smemB hw hib40 htop hbuf hdisj hlOtop hlOfit
+  intro w inPtr outPtr gm smemB hw hderive hib40 htop hbuf hlOtop hlOfit
   have hw64 : w * 32 + 32 < 2 ^ 64 := by
     have h1 : w * 32 ≤ (WP.mk 16).numBlk * 32 := Nat.mul_le_mul_right 32 (Nat.le_of_lt hw)
     have h2 : (WP.mk 16).numBlk * 32 + 32 < 2 ^ 64 := by decide
+    omega
+  -- the input/output separation the body simulation wants is now a CONSEQUENCE
+  have hdisj : inPtr + w * (WP.mk 16).inStride + (WP.mk 16).inStride
+      ≤ outPtr + w * (WP.mk 16).outStride := by
+    have h1 : (w + 1) * (WP.mk 16).inStride ≤ (WP.mk 16).numBlk * (WP.mk 16).inStride :=
+      Nat.mul_le_mul_right _ hw
+    have h2 : (w + 1) * (WP.mk 16).inStride
+        = w * (WP.mk 16).inStride + (WP.mk 16).inStride := Nat.succ_mul w _
+    have h3 : w * (WP.mk 16).inStride ≤ w * (WP.mk 16).outStride :=
+      Nat.mul_le_mul_left _ (by decide)
     omega
   exact warpKernelDSL_tail_roundtrips
     (WP.mk 16).numBlk (WP.mk 16).inStride (WP.mk 16).outStride (WP.mk 16).lenOff wHashLog
     w inPtr outPtr gm smemB
     (by decide) (by decide) hw (by decide) (by decide) (by decide)
-    hw64 hib40 htop hbuf hdisj (Nat.le_refl _) hlOtop hlOfit
+    hw64 hib40 htop hbuf hderive hdisj (Nat.le_refl _) hlOtop hlOfit
 
 /-- info: 'Algorithm.shipped32_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in
@@ -209,13 +256,20 @@ theorem shipped64_correct : ShippedCorrect 16 := by
 #print axioms shipped64_correct
 
 
-/-- The buffer-placement contract the runtime must satisfy: the two allocations
-    are far enough apart and large enough, for every warp of the launch. -/
+/-- The buffer-placement contract the runtime must satisfy.
+
+    The first clause is an EQUATION, not an inequality between two independent
+    allocations, and the host makes it true by construction: one
+    `cudaCreateBuffer` of `totIn + outAlloc` bytes, and a kernel that computes its
+    output base as `in_ptr + totIn`.  `Lz4Host.host_single_allocation` reads that
+    back out of the emitted program.  An inequality here would be the one clause
+    no theorem could reach. -/
 def LayoutOK (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8) : Prop :=
-  -- The WHOLE input buffer precedes the WHOLE output buffer.  Per-warp
-  -- disjointness is not enough: warp `w'`'s output must also miss warp `w`'s
-  -- INPUT slice, or warps could clobber each other's source data.
-  inPtr + (WP.mk b).numBlk * (WP.mk b).inStride ≤ outPtr ∧
+  -- The output region is the tail of the single allocation.  Per-warp
+  -- disjointness would not be enough: warp `w'`'s output must also miss warp
+  -- `w`'s INPUT slice, or warps could clobber each other's source data.
+  outPtr = inPtr + ((WP.mk b).numBlk * (WP.mk b).inStride
+    + AlgorithmLib.LZ4Simt.copySlack) ∧
   ∀ w, w < (WP.mk b).numBlk →
     inPtr + w * (WP.mk b).inStride < 2 ^ 40 ∧
     outPtr + w * (WP.mk b).outStride + 9 * (WP.mk b).inStride < 2 ^ 32 ∧
@@ -275,16 +329,8 @@ theorem launch_correct (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8)
   intro w hw
   obtain ⟨hglob, hper⟩ := hlayout
   obtain ⟨l1, l2, l3, l5, l6⟩ := hper w hw
-  -- per-warp input/output disjointness follows from the whole-buffer version
-  have l4 : inPtr + w * (WP.mk b).inStride + (WP.mk b).inStride
-      ≤ outPtr + w * (WP.mk b).outStride := by
-    have h1 : (w + 1) * (WP.mk b).inStride ≤ (WP.mk b).numBlk * (WP.mk b).inStride :=
-      Nat.mul_le_mul_right _ hw
-    have h2 : (w + 1) * (WP.mk b).inStride
-        = w * (WP.mk b).inStride + (WP.mk b).inStride := Nat.succ_mul w _
-    omega
   obtain ⟨n, ss', k, hreach, hpc272, hk0, hkle, hlenf, hdec, _hconf⟩ :=
-    hcorrect w inPtr outPtr gm smemB hw l1 l2 l3 l4 l5 l6
+    hcorrect w inPtr outPtr gm smemB hw hglob l1 l2 l3 l5 l6
   have hagree := hSC w hw ss' ⟨n, hreach⟩ hpc272
   refine ⟨k, hk0, hkle, ?_, ?_⟩
   · rw [← hlenf]

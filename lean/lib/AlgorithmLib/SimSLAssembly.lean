@@ -58,7 +58,7 @@ def wtgt : SInstr → Option String
   | .brev d _ => some d         | .clz d _ => some d
   | .bnot d _ => some d         | .setp _ d _ _ => some d
   | .andp d _ _ => some d       | .selp d _ _ _ => some d
-  | .ldgo d _ _ => some d       | .ldsh d _ => some d
+  | .ldgo d _ _ => some d       | .ldgop _ d _ _ => some d       | .ldsh d _ => some d
   | .vote d _ => some d         | .shfl d _ _ => some d
   | _ => none   -- stg/stgp/stg32p/stsh/stshp/barwarp/bra*/lbl/ret: no reg write
 

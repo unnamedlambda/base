@@ -255,4 +255,154 @@ example :
     (clz32 (brev32 (ballotOf (fun _ l => if l.val = 5 ∨ l.val = 11 then 1 else 0) "p"))).toNat
       = firstSetNat (fun i => decide (i = 5 ∨ i = 11)) 32 0 := by native_decide
 
+-- ── What the selected lane, and a full ballot, actually say ──────────────────
+
+/-- Complementing a `UInt64` flips every bit below 64.  `bnot` is how the extend
+    loop turns "which lanes matched" into "which lanes mismatched". -/
+theorem uint64_not_testBit (x : UInt64) (k : Nat) (h : k < 64) :
+    (~~~x).toNat.testBit k = !(x.toNat.testBit k) := by
+  have e : ∀ y : UInt64, y.toNat.testBit k = y.toBitVec.getLsbD k := by
+    intro y; simp [BitVec.getLsbD]
+  rw [e, e, UInt64.toBitVec_not, BitVec.getLsbD_not]
+  simp [h]
+
+/-- If the least set bit is a real lane index, that bit is set. -/
+theorem leastSetBit_testBit (n k : Nat) (h : leastSetBit n = k) (hk : k < 32) :
+    n.testBit k = true := by
+  unfold leastSetBit at h
+  cases hf : (List.range 32).find? (fun i => n.testBit i) with
+  | none => rw [hf] at h; simp at h; omega
+  | some v =>
+      rw [hf] at h
+      simp only [Option.getD] at h
+      rw [← h]
+      exact List.find?_some hf
+
+/-- …and if it is 32, no lane's bit is set. -/
+theorem leastSetBit_eq_32 (n : Nat) (h : leastSetBit n = 32) :
+    ∀ k, k < 32 → n.testBit k = false := by
+  intro k hk
+  unfold leastSetBit at h
+  cases hf : (List.range 32).find? (fun i => n.testBit i) with
+  | none =>
+      have := List.find?_eq_none.mp hf k (by simp [List.mem_range, hk])
+      simpa using this
+  | some v =>
+      rw [hf] at h
+      simp only [Option.getD] at h
+      have hv : v ∈ List.range 32 := List.mem_of_find?_eq_some hf
+      rw [List.mem_range] at hv
+      omega
+
+/-- Everything strictly below the first set bit is clear.  With the scan read as
+    "the first lane that failed", this says every earlier lane succeeded — which
+    is what bounds the extend loop when it stops part-way through the warp. -/
+theorem firstSetNat_lt_false (g : Nat → Bool) :
+    ∀ b start a, firstSetNat g b start = a → ∀ k, start ≤ k → k < a → g k = false := by
+  intro b
+  induction b with
+  | zero => intro start a h k h1 h2; rw [firstSetNat] at h; omega
+  | succ m ih =>
+      intro start a h k h1 h2
+      rw [firstSetNat] at h
+      by_cases hg : g start = true
+      · rw [if_pos hg] at h; omega
+      · rw [if_neg hg] at h
+        rcases Nat.eq_or_lt_of_le h1 with he | hlt
+        · rw [← he]
+          cases hb : g start
+          · rfl
+          · exact absurd hb hg
+        · exact ih (start + 1) a h k (by omega) h2
+
+/-- **Every lane below the one the extend loop stopped at had its predicate
+    set.**  The `bnot` makes `mis` the complement of the ballot, so a clear bit
+    of `mis` is a lane that matched. -/
+theorem ballot_below_clz_not (regs : String → Lane → UInt64) (p : String)
+    (l : Lane) (h : l.val < (clz32 (brev32 (~~~ (ballotOf regs p)))).toNat) :
+    regs p l = 1 := by
+  have hzero : (~~~ (ballotOf regs p)).toNat.testBit l.val = false := by
+    have hcs : (clz32 (brev32 (~~~ (ballotOf regs p)))).toNat
+        = firstSetNat (fun k => (~~~ (ballotOf regs p)).toNat.testBit k) 32 0 := by
+      rw [clz32_brev32, firstSetNat_eq_find]
+      simp only [leastSetBit, List.range_eq_range', Nat.zero_add]
+    rw [hcs] at h
+    exact firstSetNat_lt_false _ 32 0 _ rfl l.val (by omega) h
+  rw [uint64_not_testBit _ l.val (Nat.lt_trans l.isLt (by decide))] at hzero
+  have hbit : (ballotOf regs p).toNat.testBit l.val = true := by
+    cases hb : (ballotOf regs p).toNat.testBit l.val
+    · rw [hb] at hzero; simp at hzero
+    · rfl
+  have := ballotOf_testBit regs p l
+  rw [hbit] at this
+  exact beq_iff_eq.mp this.symm
+
+/-- A non-empty ballot selects a real lane: `clz∘brev` lands below 32. -/
+theorem clz_brev_ballot_lt (regs : String → Lane → UInt64) (p : String)
+    (h : ballotOf regs p ≠ 0) : (clz32 (brev32 (ballotOf regs p))).toNat < 32 := by
+  rw [clz32_brev32]
+  by_cases he : leastSetBit (ballotOf regs p).toNat = 32
+  · -- no bit set below 32, but the ballot only ever has bits below 32
+    exfalso
+    obtain ⟨k, hk⟩ := Nat.exists_testBit_of_ne_zero
+      (fun hz => h (by rw [← UInt64.toNat_inj]; simpa using hz))
+    rcases Nat.lt_or_ge k 32 with hlt | hge
+    · rw [leastSetBit_eq_32 _ he k hlt] at hk; exact absurd hk (by simp)
+    · -- bits at or above 32 are impossible: the fold only ever sets bits `< 32`
+      rw [ballotOf_toNat] at hk
+      have hb := foldl_or_bound (fun l => regs p l == 1) (fun l : Lane => l.val)
+        (fun l => l.isLt) (List.finRange 32) 0 (by decide)
+      exact absurd (Nat.testBit_lt_two_pow (Nat.lt_of_lt_of_le hb
+        (Nat.pow_le_pow_right (by decide) hge))) (by rw [hk]; simp)
+  · -- otherwise it is the index of a set bit, hence a lane
+    unfold leastSetBit at he ⊢
+    cases hf : (List.range 32).find? (fun i => (ballotOf regs p).toNat.testBit i) with
+    | none => rw [hf] at he; simp at he
+    | some v =>
+        have hv : v ∈ List.range 32 := List.mem_of_find?_eq_some hf
+        rw [List.mem_range] at hv
+        exact hv
+
+/-- **The lane the ballot selects really is a hitting lane.**
+
+    `vote → brev → clz` picks the earliest lane whose predicate is set, and the
+    kernel then `shfl`s that lane's registers to everybody.  This is what makes
+    the shuffled values inherit the selected lane's guards — which is how the
+    match candidate inherits `cand < posP` and `posP < searchLim`. -/
+theorem ballot_select_holds (regs : String → Lane → UInt64) (p : String)
+    (h : ballotOf regs p ≠ 0) :
+    regs p (toLane (clz32 (brev32 (ballotOf regs p)))) = 1 := by
+  have hlt := clz_brev_ballot_lt regs p h
+  have hbit : (ballotOf regs p).toNat.testBit
+      (clz32 (brev32 (ballotOf regs p))).toNat = true :=
+    leastSetBit_testBit _ _ (clz32_brev32 _).symm hlt
+  have := ballotOf_testBit regs p ⟨(clz32 (brev32 (ballotOf regs p))).toNat, hlt⟩
+  rw [hbit] at this
+  have hl : toLane (clz32 (brev32 (ballotOf regs p)))
+      = (⟨(clz32 (brev32 (ballotOf regs p))).toNat, hlt⟩ : Lane) := by
+    apply Fin.ext
+    simp only [toLane]
+    exact Nat.mod_eq_of_lt hlt
+  rw [hl]
+  exact beq_iff_eq.mp this.symm
+
+/-- **A saturated ballot means every lane set its predicate.**
+
+    The extend loop's continue-condition is `clz(brev(~ballot)) = 32` — "the
+    first mismatching lane is past the end of the warp" — so this is what turns
+    "the loop went round again" into a fact about all thirty-two lanes. -/
+theorem ballot_full_of_clz_not (regs : String → Lane → UInt64) (p : String)
+    (h : (clz32 (brev32 (~~~ (ballotOf regs p)))).toNat = 32) (l : Lane) :
+    regs p l = 1 := by
+  rw [clz32_brev32] at h
+  have hnot := leastSetBit_eq_32 _ h l.val l.isLt
+  rw [uint64_not_testBit _ l.val (Nat.lt_trans l.isLt (by decide))] at hnot
+  have hbit : (ballotOf regs p).toNat.testBit l.val = true := by
+    cases hb : (ballotOf regs p).toNat.testBit l.val
+    · rw [hb] at hnot; simp at hnot
+    · rfl
+  have := ballotOf_testBit regs p l
+  rw [hbit] at this
+  exact beq_iff_eq.mp this.symm
+
 end AlgorithmLib.LZ4SimtBits

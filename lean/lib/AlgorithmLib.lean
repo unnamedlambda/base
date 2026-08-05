@@ -18,6 +18,8 @@ import AlgorithmLib.LZ4WarpSched
 import AlgorithmLib.LZ4Simt
 import AlgorithmLib.LZ4SimtBits
 import AlgorithmLib.LZ4SimtRSim
+import AlgorithmLib.LZ4Concurrent
+import AlgorithmLib.LZ4Confine
 import AlgorithmLib.LZ4SimtEmit
 import AlgorithmLib.LZ4WarpDSL
 import AlgorithmLib.LZ4WarpEmit

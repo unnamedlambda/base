@@ -41,6 +41,7 @@ def valueRegsOf (prog : Array SInstr) (preds : List String) : List String :=
     | .andp _ _ _       => acc
     | .selp d a b _     => add (add (add acc d) a) b
     | .ldgo d addr _    => add (add acc d) addr
+    | .ldgop p d addr _ => add (add (add acc p) d) addr
     | .stg addr s | .stsh addr s => add (add acc addr) s
     | .stgp _ addr s | .stshp _ addr s | .stg32p _ addr s => add (add acc addr) s
     | .ldsh d addr      => add (add acc d) addr
@@ -88,6 +89,9 @@ def instrLines : SInstr → List String
   | .ldgo d addr off    =>
       let a := if off == 0 then "[" ++ addr ++ "]" else "[" ++ addr ++ "+" ++ toString off ++ "]"
       ["ld.global.u8 " ++ d ++ ", " ++ a]
+  | .ldgop p d addr off =>
+      let a := if off == 0 then "[" ++ addr ++ "]" else "[" ++ addr ++ "+" ++ toString off ++ "]"
+      ["@" ++ p ++ " ld.global.u8 " ++ d ++ ", " ++ a]
   | .stg addr s         => ["st.global.u8 [" ++ addr ++ "], " ++ s]
   | .stgp p addr s      => ["@" ++ p ++ " st.global.u8 [" ++ addr ++ "], " ++ s]
   | .stg32p p addr s    => ["@" ++ p ++ " st.global.u32 [" ++ addr ++ "], " ++ s]
