@@ -111,3 +111,11 @@ lean_lib Lz4ExtShape
 lean_lib Lz4ExtGuard
 lean_lib Lz4ExtLoop
 lean_lib Lz4Extend
+lean_lib Lz4Shape64
+lean_lib Lz4Sites64
+lean_lib Lz4Cursor64
+lean_lib Lz4Splice64
+lean_lib Lz4Ckpt64
+lean_lib Lz4OpLe64
+lean_lib Lz4Stores64
+lean_lib Lz4Confine64
