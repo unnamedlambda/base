@@ -181,13 +181,34 @@ def derivedObligations : List (Name × Name) :=
     build reads. -/
 def openObligations : List Name := []
 
+/-- **A pipeline's declared surface, as one value.**
+
+    The four lists above are the *inference* pipeline's answers.  A second
+    development — the LZ4 compressor — rests on a different base (no floats, no
+    cuBLAS; a PTX machine and a memory model instead), and a scan is only
+    meaningful against the surface of the thing being scanned.  Bundling them
+    lets each pipeline declare its own without either being able to quietly
+    borrow the other's allowances. -/
+structure Surface where
+  allowedOpaque      : List Name := []
+  allowedHyp         : List Name := []
+  derivedObligations : List (Name × Name) := []
+  openObligations    : List Name := []
+
+/-- The inference/training surface: the four lists documented above. -/
+def mlSurface : Surface :=
+  { allowedOpaque      := allowedOpaque
+    allowedHyp         := allowedHyp
+    derivedObligations := derivedObligations
+    openObligations    := openObligations }
+
 structure Finding where
   root       : Name
   badAxioms  : Array Name
   badOpaque  : Array Name
   usesNative : Bool
 
-def scan (env : Environment) (root : Name) : Finding := Id.run do
+def scan (surf : Surface) (env : Environment) (root : Name) : Finding := Id.run do
   let cl := closure env {} root
   let mut badA : Array Name := #[]
   let mut badO : Array Name := #[]
@@ -199,7 +220,7 @@ def scan (env : Environment) (root : Name) : Finding := Id.run do
         else if !(n ∈ allowedAxiom) then badA := badA.push n
     | some (.opaqueInfo _) =>
         if n ∈ nativeDecideOpaque then nat := true
-        else if !(n ∈ allowedOpaque) then badO := badO.push n
+        else if !(n ∈ surf.allowedOpaque) then badO := badO.push n
     | _ => pure ()
   return { root := root, badAxioms := badA.qsort Name.lt,
            badOpaque := badO.qsort Name.lt, usesNative := nat }
@@ -208,7 +229,7 @@ def scan (env : Environment) (root : Name) : Finding := Id.run do
     just its `roots` plus one call.  Throws — i.e. fails the build — on anything
     outside the declared surface, on an unknown claim name, and on an
     undeclared hypothesis. -/
-def runScan (label : String) (roots : List Name) : CoreM Unit := do
+def runScanWith (surf : Surface) (label : String) (roots : List Name) : CoreM Unit := do
   let env ← getEnv
   let mut bad := 0
   let mut native : Array Name := #[]
@@ -217,7 +238,7 @@ def runScan (label : String) (roots : List Name) : CoreM Unit := do
     if (env.find? r).isNone then
       missing := missing.push r
     else
-      let f := scan env r
+      let f := scan surf env r
       if f.usesNative then native := native.push r
       if f.badAxioms.size != 0 || f.badOpaque.size != 0 then
         bad := bad + 1
@@ -239,9 +260,9 @@ def runScan (label : String) (roots : List Name) : CoreM Unit := do
       for e in hs do
         match e.getAppFn with
         | .const c _ =>
-            if c ∈ openObligations then obls := obls.push c
-            else if derivedObligations.any (fun q => q.1 == c) then derived := derived.push c
-            else if !(c ∈ allowedHyp) then bads := bads.push c
+            if c ∈ surf.openObligations then obls := obls.push c
+            else if surf.derivedObligations.any (fun q => q.1 == c) then derived := derived.push c
+            else if !(c ∈ surf.allowedHyp) then bads := bads.push c
         | _ => pure ()
       if derived.size != 0 then
         withDerived := withDerived + 1
@@ -259,7 +280,7 @@ def runScan (label : String) (roots : List Name) : CoreM Unit := do
   -- for obligations this scan actually reaches: the two pipelines share this
   -- machinery but not their environments.
   for d in seenDerived do
-    match derivedObligations.find? (fun q => q.1 == d) with
+    match surf.derivedObligations.find? (fun q => q.1 == d) with
     | some (_, by_) =>
         if (env.find? by_).isNone then
           bad := bad + 1
@@ -271,5 +292,9 @@ def runScan (label : String) (roots : List Name) : CoreM Unit := do
   if bad != 0 then
     throwError s!"TRUST SCAN [{label}] FAILED: {bad} claim(s) outside the declared surface"
   IO.println s!"[{label}] TRUST SCAN OK — every claim inside the declared surface"
+
+/-- The inference/training pipelines' scan, at `mlSurface`. -/
+def runScan (label : String) (roots : List Name) : CoreM Unit :=
+  runScanWith mlSurface label roots
 
 end TrustScan

@@ -96,11 +96,13 @@ lean_lib FallingSandAlgorithm
 lean_lib Lz4CompAlgorithm
 -- The compressor's ledger, its non-vacuity witnesses, and the scan that fails
 -- the build when a claim leaves the declared surface.
+lean_lib Lz4Assumptions
 lean_lib Lz4NonVacuity
 lean_lib Lz4Launches
 lean_lib Lz4Interleave
 lean_lib Lz4Host
 lean_lib Lz4Sites
+lean_lib Lz4Scan
 lean_lib Lz4Cursor
 lean_lib Lz4Splice
 lean_lib Lz4OpLe
