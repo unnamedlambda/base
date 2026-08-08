@@ -304,7 +304,7 @@ open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
     three of `Clif.lean`'s trusted table — and `bufOf` itself, a renaming. -/
 theorem attn_program_realises_plan (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
         (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2)
       = some (attnPlan gim h hm) := by
   rw [attn_ops_are]; exact Qwen2Common.attn_ops_realise_plan gim h hm
@@ -313,7 +313,7 @@ open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
 /-- **…and the shipped feed-forward function realises `ffnPlan`.** -/
 theorem ffn_program_realises_plan (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
         (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
       = some ffnPlan := by
   rw [ffn_ops_are]; exact Qwen2Common.ffn_ops_realise_plan gim h hm
@@ -330,7 +330,7 @@ open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
     proven", but *this program's* layer is that plan. -/
 theorem layer_program_realises_plan (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+    planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
         (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2
           ++ deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
       = some (layerPlan gim h hm) := by
@@ -347,7 +347,7 @@ open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
 theorem layer_program_computes (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b)))
     (R : Realisation) (hR : Honours R) (st : WSt) :
-    ∃ Pl, planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared
+    ∃ Pl, planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
             (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2
               ++ deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
           = some Pl

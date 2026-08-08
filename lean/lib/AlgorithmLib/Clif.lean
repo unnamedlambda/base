@@ -370,6 +370,19 @@ structure LaunchRec where
       leaves this empty — its identity is the PTX slot, already recovered above.
       A vendor call has no slot, so its identity is its arguments. -/
   args     : List ArgDesc := []
+  /-- **Which stream the launch was issued on**, as the identity of the value
+      passed rather than its number.
+
+      A stream id is created at runtime, so there is no constant to recover:
+      two distinct streams both evaluate to an unknown and would be recorded
+      identically.  What *is* visible is which SSA value each launch was handed,
+      and within one function that is exactly the question — launches carrying
+      the same value are on the same stream, and a second stream is a second
+      definition.
+
+      `none` for a launch on the default stream, which is ordered against
+      everything, and for a device write that is not a launch. -/
+  stream   : Option Nat := none
   deriving Repr, DecidableEq, BEq
 
 /-- The declared name of a function reference. -/
@@ -426,8 +439,12 @@ def launchAt (fns : List FnDecl) (e : Env) : Inst → Option LaunchRec
           if nm ∈ launchNames then
             let arg (k : Nat) : Option Int :=
               (args[k]?).bind (fun v => (e v).offsetOf?)
+            -- The stream is argument 10 of the `_on_stream` variants and absent
+            -- from the others, so the plain launch records `none` without a
+            -- case on the name.
             some { fnName := nm, kernelOff := arg 1, nBufs := arg 2,
-                   bindOff := arg 3, gridX := arg 4, blockX := arg 7 }
+                   bindOff := arg 3, gridX := arg 4, blockX := arg 7,
+                   stream := (args[10]?).map Val.id }
           else if nm ∈ deviceWriterNames then
             -- A device write this model does not interpret.  Recorded, with
             -- every field `none`: the *position* in the sequence is what a

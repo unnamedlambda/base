@@ -36,7 +36,7 @@ theorem shipped_layer_is_transformer (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b)))
     (R : Realisation) (hR : Honours R) (st : WSt)
     (i : Nat) (hi : i < Qwen2Common.D) :
-    planOf? (layerKernels gim h hm) layerDeclared
+    planOf? (layerKernels gim h hm) layerDeclared none
         (deviceOpsOf ROOT (Qwen2.inferLayerAttnFn.run {}).2
           ++ deviceOpsOf ROOT (Qwen2.inferLayerFfnFn.run {}).2)
       = some (layerPlan gim h hm)
@@ -116,7 +116,7 @@ theorem token_is_layers (gim : Buf → Nat → Nat)
     computes for a token is the transformer, twenty-four times over. -/
 theorem shipped_token_is_layers (h : AllHold [Law.combinerComm]) (st : WSt) :
     planOf? (tokenKernels Qwen2NonVacuity.gimW h Qwen2NonVacuity.smMetaW)
-        tokenDeclared tokenOps
+        tokenDeclared none tokenOps
       = some (tokenPlan Qwen2NonVacuity.gimW h Qwen2NonVacuity.smMetaW)
     ∧ ((tokenPlan Qwen2NonVacuity.gimW h Qwen2NonVacuity.smMetaW).run
           idealR st).mem

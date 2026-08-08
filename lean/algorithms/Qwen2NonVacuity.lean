@@ -186,7 +186,7 @@ example : SmMeta (fun b => gimW (bSoft b)) :=
     index map with a *proven* `SmMeta`, so the hypotheses are jointly
     satisfiable and this is not an empty implication. -/
 theorem layer_realises_concrete (h : AllHold [Law.combinerComm]) :
-    planOf? (layerKernels gimW h smMetaW) layerDeclared (attnOps ++ ffnOps)
+    planOf? (layerKernels gimW h smMetaW) layerDeclared none (attnOps ++ ffnOps)
       = some (layerPlan gimW h smMetaW) :=
   layer_ops_realise_plan gimW h smMetaW
 
@@ -197,7 +197,7 @@ theorem lawGap_concrete (h : AllHold [Law.combinerComm]) :
 
 /-- A whole token's device writes resolve to `tokenPlan`. -/
 theorem token_realises_concrete (h : AllHold [Law.combinerComm]) :
-    planOf? (tokenKernels gimW h smMetaW) tokenDeclared tokenOps
+    planOf? (tokenKernels gimW h smMetaW) tokenDeclared none tokenOps
       = some (tokenPlan gimW h smMetaW) :=
   token_ops_realise_plan gimW h smMetaW
 

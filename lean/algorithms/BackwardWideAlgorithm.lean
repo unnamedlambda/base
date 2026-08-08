@@ -789,7 +789,7 @@ def bwdCode : List HI := code ⟨0⟩ ⟨0⟩ 1 0 bwdDriver
     assumed: a drifted slot or a grid disagreeing with the stage's own `grid`
     field makes this `none` and the proof fails. -/
 theorem bwdDriver_realises :
-    pipelineOf? bwdTable bwdDriver.deviceOps = some bwdPipelineFull := rfl
+    pipelineOf? bwdTable none bwdDriver.deviceOps = some bwdPipelineFull := rfl
 
 /-- **The whole host side, end to end, on the kernels this file ships.**
 
@@ -804,14 +804,14 @@ theorem bwdDriver_realises :
 theorem bwd_host_computes (st : WSt) :
     ∃ k c', hsteps bwdFns 0 bwdCode k
               ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
-      ∧ pipelineOf? bwdTable (c'.trace.zip c'.btrace) = some bwdPipelineFull
+      ∧ pipelineOf? bwdTable none (c'.trace.zip c'.btrace) = some bwdPipelineFull
       ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
   host_computes_denote bwdFns ⟨0⟩ ⟨0⟩ rfl bwdCode bwdDriver 1 0
     AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
     (AlgorithmLib.Host.FarOk.of_noBases (by decide))
     (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)
     (fun j _ => by rw [Nat.zero_add]; rfl)
-    bwdTable bwdPipelineFull bwdDriver_realises bwdPipelineFull_exclusive st
+    bwdTable bwdPipelineFull none bwdDriver_realises bwdPipelineFull_exclusive st
 
 -- ---------------------------------------------------------------------------
 -- The same driver with a vendor call in it
@@ -884,7 +884,7 @@ noncomputable def bwdPlan : Plan :=
 /-- The device-write sequence realises it — vendor calls included, in position,
     and told apart by their arguments. -/
 theorem bwdDriverBlas_realises :
-    planOf? bwdTable bwdDeclared bwdDriverBlas.deviceOps = some bwdPlan := rfl
+    planOf? bwdTable bwdDeclared none bwdDriverBlas.deviceOps = some bwdPlan := rfl
 
 /-- **How much of this plan is assumed: two steps.**  A number, not a caveat. -/
 theorem bwdPlan_declaredCount : bwdPlan.declaredCount = 2 := rfl
@@ -912,14 +912,14 @@ theorem bwdPlan_exclusive : bwdPlan.Exclusive := by
 theorem bwd_host_computes_plan (R : Realisation) (hR : Honours R) (st : WSt) :
     ∃ k c', hsteps bwdFnsBlas 0 bwdCodeBlas k
               ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
-      ∧ planOf? bwdTable bwdDeclared (c'.trace.zip c'.btrace) = some bwdPlan
+      ∧ planOf? bwdTable bwdDeclared none (c'.trace.zip c'.btrace) = some bwdPlan
       ∧ (bwdPlan.run R st).mem = bwdPlan.denote st.mem :=
   host_computes_plan bwdFnsBlas ⟨0⟩ ⟨0⟩ rfl bwdCodeBlas bwdDriverBlas 1 0
     AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
     (AlgorithmLib.Host.FarOk.of_noBases (by decide))
     (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)
     (fun j _ => by rw [Nat.zero_add]; rfl)
-    bwdTable bwdDeclared bwdPlan bwdDriverBlas_realises R hR
+    bwdTable bwdDeclared bwdPlan none bwdDriverBlas_realises R hR
     bwdPlan_exclusive st
 
 

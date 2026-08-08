@@ -5,7 +5,7 @@ import AlgorithmLib.ML.Rewrite
 /-!
   # From the host program to the pipeline
 
-  Two halves of the story existed and did not meet.
+  Two halves of the story meet here.
 
   `HostIR.lean` proves what the *host* does: `flatHI_sound` says the emitted
   CLIF — a real loop, body once, executed by a program counter — performs
@@ -16,8 +16,7 @@ import AlgorithmLib.ML.Rewrite
   says a list of `StageSpec`s executed in order computes the fold of their
   `step`s, for any length.
 
-  Nothing connected a PTX slot to a `StageSpec`.  That connection is a fact
-  about the *runtime* — that `cl_cuda_launch off … gx` runs the module at `off`
+  What connects a PTX slot to a `StageSpec` is a fact about the *runtime* — that `cl_cuda_launch off … gx` runs the module at `off`
   on `gx` blocks — and it is the third row of `Clif.lean`'s trusted table.  This
   file makes it a value: a `KernelBinding` list, checked against each launch
   record by a decidable function.  A drifted slot or a grid that disagrees with
@@ -43,18 +42,18 @@ structure KernelBinding where
       — and those are different memory transformations.  What tells them apart
       is the *bind*: the pointer array the host filled in before the launch.
 
-      Keying the table on the slot alone made all of them resolve to one stage,
-      which is precisely the confusion `StageSpec.rename` exists to remove.  A
-      launch whose bind offset is not in the table is now refused rather than
-      matched to a stage proven about different buffers. -/
+      Keying the table on the slot alone would resolve all of them to one
+      stage, which is precisely the confusion `StageSpec.rename` exists to
+      remove.  A launch whose bind offset is not in the table is refused rather
+      than matched to a stage proven about different buffers. -/
   bindOff : Nat
   /-- **…and what it wrote into it.**
 
-      The offset says only *where* the pointer array is.  It was still the case
-      that the buffers a stage is proven about were numbers chosen by hand, with
-      nothing relating them to the handles the host actually stored — so a table
-      entry could bind `rmsStage` to an array holding entirely different
-      buffers and every downstream theorem would still go through.
+      The offset says only *where* the pointer array is.  Without its contents,
+      the buffers a stage is proven about are numbers chosen by hand with
+      nothing relating them to the handles the host stored — so a table entry
+      could bind `rmsStage` to an array holding entirely different buffers and
+      every downstream theorem would still go through.
 
       `Clif.bindsOf` recovers the array's *contents* from the stores preceding
       each launch: `near k` for a handle loaded from layout slot `k` of the
@@ -108,13 +107,19 @@ abbrev DeviceOp := LaunchRec × OpBinds
     * the launched grid must equal the stage's own `grid`, because every theorem
       in `Compose.lean` is about `runGrid S.ew S.grid`, so a record launching a
       different number of blocks realises a *different* function;
-    * the primitive must be `cl_cuda_launch` itself, not one of the
-      `_on_stream` variants.  `Pipeline.run` is a sequential fold, and two
-      kernels issued on different streams are not ordered with respect to each
-      other — so a stream launch is outside what this composition proves, and is
-      refused rather than folded in as though it were ordered. -/
-def stageOf? (T : List KernelBinding) (op : DeviceOp) : Option StageSpec :=
-  if op.1.fnName ≠ "cl_cuda_launch" then none else
+    * the launch must be on the stream this fragment is being realised at.
+      `Pipeline.run` is a sequential fold, and two kernels issued on different
+      streams are not ordered with respect to each other — so what makes a
+      sequence of launches a pipeline is that they share one stream.  `str` is
+      that stream: `none` is the default stream, which is ordered against
+      everything, and a fragment whose records disagree realises nothing.
+
+      A `_named` variant is refused outright: its extra argument shifts every
+      later one, so `Clif.launchAt` declines to recover its fields and the
+      match below would be reading the wrong positions. -/
+def stageOf? (T : List KernelBinding) (str : Option Nat) (op : DeviceOp) : Option StageSpec :=
+  if op.1.fnName ∉ AlgorithmLib.Clif.positionalLaunchNames then none
+  else if op.1.stream ≠ str then none else
   match op.1.kernelOff, op.1.gridX, op.1.bindOff, op.1.nBufs, op.2.bufs with
   | some off, some g, some bo, some nb, some bs =>
       if bs.length = nb.toNat then
@@ -127,73 +132,16 @@ def stageOf? (T : List KernelBinding) (op : DeviceOp) : Option StageSpec :=
 /-- **The stages a launch sequence realises**, or `none` if any record fails.
     Written as a structural recursion rather than `mapM` so that the two facts
     below are inductions rather than unfoldings of a monadic bind. -/
-def stagesOf? (T : List KernelBinding) : List DeviceOp → Option (List StageSpec)
+def stagesOf? (T : List KernelBinding) (str : Option Nat) :
+    List DeviceOp → Option (List StageSpec)
   | []      => some []
-  | r :: rs => match stageOf? T r with
+  | r :: rs => match stageOf? T str r with
                | none   => none
-               | some S => (stagesOf? T rs).map (S :: ·)
+               | some S => (stagesOf? T str rs).map (S :: ·)
 
 /-- Order-preserving: the pipeline's stage order is the host's launch order. -/
-def pipelineOf? (T : List KernelBinding) (rs : List DeviceOp) : Option Pipeline :=
-  (stagesOf? T rs).map Pipeline.mk
-
-/-- Realising a sequence realises each of its parts, in order — so a driver's
-    pipeline is assembled from its fragments' pipelines. -/
-theorem stagesOf?_append (T : List KernelBinding) :
-    ∀ (r₁ r₂ : List DeviceOp) (L₁ L₂ : List StageSpec),
-      stagesOf? T r₁ = some L₁ → stagesOf? T r₂ = some L₂ →
-      stagesOf? T (r₁ ++ r₂) = some (L₁ ++ L₂) := by
-  intro r₁
-  induction r₁ with
-  | nil => intro r₂ L₁ L₂ h1 h2; cases h1; exact h2
-  | cons r rs ih =>
-      intro r₂ L₁ L₂ h1 h2
-      show (match stageOf? T r with
-            | none => none
-            | some S => (stagesOf? T (rs ++ r₂)).map (S :: ·)) = _
-      revert h1
-      cases hS : stageOf? T r with
-      | none => intro h1; exact absurd h1 (by simp [stagesOf?, hS])
-      | some S =>
-          intro h1
-          have h1' : (stagesOf? T rs).map (S :: ·) = some L₁ := by
-            rw [← h1]; show _ = (match stageOf? T r with
-                                  | none => none
-                                  | some S => (stagesOf? T rs).map (S :: ·))
-            rw [hS]
-          cases hrest : stagesOf? T rs with
-          | none => rw [hrest] at h1'; exact absurd h1' (by simp)
-          | some rest =>
-              rw [hrest] at h1'
-              have : S :: rest = L₁ := by simpa using h1'
-              rw [ih r₂ rest L₂ hrest h2, ← this]
-              rfl
-
-/-- A realised pipeline has exactly one stage per launch. -/
-theorem stagesOf?_length (T : List KernelBinding) :
-    ∀ (rs : List DeviceOp) (L : List StageSpec),
-      stagesOf? T rs = some L → L.length = rs.length := by
-  intro rs
-  induction rs with
-  | nil => intro L h; cases h; rfl
-  | cons r rs ih =>
-      intro L h
-      revert h
-      cases hS : stageOf? T r with
-      | none => intro h; exact absurd h (by simp [stagesOf?, hS])
-      | some S =>
-          cases hrest : stagesOf? T rs with
-          | none => intro h; exact absurd h (by simp [stagesOf?, hS, hrest])
-          | some rest =>
-              intro h
-              rw [show stagesOf? T (r :: rs) = some (S :: rest) from by
-                    show (match stageOf? T r with
-                          | none => none
-                          | some S => (stagesOf? T rs).map (S :: ·)) = _
-                    rw [hS, hrest]; rfl] at h
-              have hL := Option.some.inj h
-              rw [← hL]
-              simp [ih rest hrest]
+def pipelineOf? (T : List KernelBinding) (str : Option Nat) (rs : List DeviceOp) : Option Pipeline :=
+  (stagesOf? T str rs).map Pipeline.mk
 
 -- ---------------------------------------------------------------------------
 -- The vendor GEMV, as a declared step
@@ -209,13 +157,13 @@ def vecAt (mem : Buf → Nat → Float32) (xB : Buf) (cols : Nat) :
 
 /-- **`y = A·x` as a plan step.**
 
-    Assumed in exactly one respect — *what* lands in `y` — and that one respect
-    is now the *named law's* opaque rather than a second one.  It used to be a
-    local `opaque cublasRow`, which meant `Law.cublasIsMatvec` constrained a
-    symbol no plan mentioned: the law was stated, listed in the assumption
-    ledger, and load-bearing for nothing.  Writing the step in terms of
-    `cublasSgemvResult` is what makes `cublasStep_isMatvec` below provable, and
-    with it the law actually reaches the seven `sgemv`s a layer performs.
+    Assumed in exactly one respect — *what* lands in `y` — and that respect is
+    the *named law's* own opaque, `cublasSgemvResult`, not a second symbol
+    beside it.  A step written against any other opaque would leave
+    `Law.cublasIsMatvec` constraining something no plan mentions: stated,
+    listed in the assumption ledger, and load-bearing for nothing.  Writing it
+    this way is what makes `cublasStep_isMatvec` below provable, and with it
+    the law reaches the seven `sgemv`s a layer performs.
 
     *Where* it can land is proven: `frame` is discharged here, so the step
     cannot touch a buffer the rest of the plan reasons about. -/
@@ -237,8 +185,8 @@ noncomputable def cublasStep (aB xB yB : Buf) (rows cols : Nat) : DeclaredStep w
     The statement `Law.cublasIsMatvec` exists to license: row `i` of the output
     is `Σⱼ A[i,j]·x[j]` over the buffer's own contents.  Everything a plan
     containing `cublasStep` denotes is this, up to the fold order the law
-    abstracts away — which is the whole of the gap, and it is now a rewrite a
-    downstream spec can apply rather than a sentence in a docstring. -/
+    abstracts away — which is the whole of the gap, and it is a rewrite a
+    downstream spec applies rather than a sentence in a docstring. -/
 theorem cublasStep_isMatvec (hl : CuBlasIsMatvec) (aB xB yB : Buf) (rows cols : Nat)
     (mem : Buf → Nat → Float32) (i : Nat) (hi : i < rows) :
     (cublasStep aB xB yB rows cols).step mem yB i
@@ -253,19 +201,11 @@ theorem cublasStep_isMatvec (hl : CuBlasIsMatvec) (aB xB yB : Buf) (rows cols : 
   rw [dif_pos (And.intro rfl hi), hl]
   rfl
 
-/-- …and it leaves every other row of `y` alone, so a plan can reason about a
-    partially written output buffer. -/
-theorem cublasStep_out_of_range (aB xB yB : Buf) (rows cols : Nat)
-    (mem : Buf → Nat → Float32) (i : Nat) (hi : ¬ i < rows) :
-    (cublasStep aB xB yB rows cols).step mem yB i = mem yB i := by
-  show (if h : yB = yB ∧ i < rows then _ else mem yB i) = _
-  rw [dif_neg (fun h => hi h.2)]
-
 /-- **A batched GEMM's row**, and this one really is opaque.
 
     Attention issues two of these per layer — the score contraction and the
     output contraction — and they are a *stronger* assumption than the GEMV,
-    not a weaker one.  `cublasStep` is now written in terms of the law's own
+    not a weaker one.  `cublasStep` is written in terms of the law's own
     symbol, so `Law.cublasIsMatvec` says what it computes.  Nothing says what
     this computes: batched strided mode selects its operand slices by four
     stride and batch-count arguments the launch model recovers as constants but
@@ -289,15 +229,20 @@ noncomputable def sgemmBatchedStep (aB bB cB : Buf) (rows k : Nat) : DeclaredSte
     funext a
     simp [show b ≠ cB from fun h => hb (by simp [h])]
 
+/-- **The primitives assumed with no stated equation behind them.**
+
+    Derived by filtering `VendorKernel.all`, which `VendorKernel.all_covers`
+    holds to every constructor — so a primitive added without a law cannot be
+    missing from this bill. -/
+def lawlessNames : List String :=
+  (VendorKernel.all.filter VendorKernel.lawless).map VendorKernel.symbol
+
 /-- **How many of a plan's declared steps no law says anything about.**
 
     `Plan.declaredCount` counts what is not proven.  This counts what is not
     even *stated*: a step whose primitive has a law is assumed only up to that
     law's content, and one without is assumed entirely.  For a Qwen2 layer the
     two numbers are 9 and 2. -/
-def lawlessNames : List String :=
-  (VendorKernel.all.filter VendorKernel.lawless).map VendorKernel.symbol
-
 def Plan.declaredLawGap (P : Plan) : Nat :=
   (P.declaredNames.filter (fun n => n ∈ lawlessNames)).length
 
@@ -334,57 +279,59 @@ def declaredOf? : List DeclaredBinding → String → List BufDesc → Option De
 
 /-- **The plan step a device-write record realises.**
 
-    A `cl_cuda_launch` record goes through the kernel table and yields a proven
-    stage; anything named in `deviceWriterNames` goes through the declared table
-    and yields an assumed one.  Anything else — an `_on_stream` launch, an
-    unbound slot, a grid disagreeing with the stage's own — yields `none`, so a
-    plan claim is simply unavailable rather than quietly wrong. -/
+    A launch record on this fragment's stream goes through the kernel table and
+    yields a proven stage; anything named in `deviceWriterNames` goes through
+    the declared table and yields an assumed one.  Anything else — a launch on
+    another stream, an unbound slot, a grid disagreeing with the stage's own —
+    yields `none`, so a plan claim is simply unavailable rather than quietly
+    wrong. -/
 def stepOf? (T : List KernelBinding) (D : List DeclaredBinding)
-    (op : DeviceOp) : Option PStep :=
-  if op.1.fnName = "cl_cuda_launch" then
-    (stageOf? T op).map PStep.proven
+    (str : Option Nat) (op : DeviceOp) : Option PStep :=
+  if op.1.fnName ∈ AlgorithmLib.Clif.launchNames then
+    (stageOf? T str op).map PStep.proven
   else if op.1.fnName ∈ deviceWriterNames then
     (declaredOf? D op.1.fnName op.2.args).map PStep.declared
   else none
 
-def stepsOf? (T : List KernelBinding) (D : List DeclaredBinding) :
-    List DeviceOp → Option (List PStep)
+def stepsOf? (T : List KernelBinding) (D : List DeclaredBinding)
+    (str : Option Nat) : List DeviceOp → Option (List PStep)
   | []      => some []
-  | r :: rs => match stepOf? T D r with
+  | r :: rs => match stepOf? T D str r with
                | none   => none
-               | some t => (stepsOf? T D rs).map (t :: ·)
+               | some t => (stepsOf? T D str rs).map (t :: ·)
 
 def planOf? (T : List KernelBinding) (D : List DeclaredBinding)
-    (rs : List DeviceOp) : Option Plan :=
-  (stepsOf? T D rs).map Plan.mk
+    (str : Option Nat) (rs : List DeviceOp) : Option Plan :=
+  (stepsOf? T D str rs).map Plan.mk
 
 /-- **Realising a sequence realises each of its parts** — the `PStep` analogue
     of `stagesOf?_append`, and what makes a whole token's 533 device writes a
     plan without reducing 533 steps: the layer is resolved once and the loop is
     an induction. -/
-theorem stepsOf?_append (T : List KernelBinding) (D : List DeclaredBinding) :
+theorem stepsOf?_append (T : List KernelBinding) (D : List DeclaredBinding)
+    (str : Option Nat) :
     ∀ (r₁ r₂ : List DeviceOp) (L₁ L₂ : List PStep),
-      stepsOf? T D r₁ = some L₁ → stepsOf? T D r₂ = some L₂ →
-      stepsOf? T D (r₁ ++ r₂) = some (L₁ ++ L₂) := by
+      stepsOf? T D str r₁ = some L₁ → stepsOf? T D str r₂ = some L₂ →
+      stepsOf? T D str (r₁ ++ r₂) = some (L₁ ++ L₂) := by
   intro r₁
   induction r₁ with
   | nil => intro r₂ L₁ L₂ h1 h2; cases h1; exact h2
   | cons r rs ih =>
       intro r₂ L₁ L₂ h1 h2
-      show (match stepOf? T D r with
+      show (match stepOf? T D str r with
             | none => none
-            | some t => (stepsOf? T D (rs ++ r₂)).map (t :: ·)) = _
+            | some t => (stepsOf? T D str (rs ++ r₂)).map (t :: ·)) = _
       revert h1
-      cases hS : stepOf? T D r with
+      cases hS : stepOf? T D str r with
       | none => intro h1; exact absurd h1 (by simp [stepsOf?, hS])
       | some t =>
           intro h1
-          have h1' : (stepsOf? T D rs).map (t :: ·) = some L₁ := by
-            rw [← h1]; show _ = (match stepOf? T D r with
+          have h1' : (stepsOf? T D str rs).map (t :: ·) = some L₁ := by
+            rw [← h1]; show _ = (match stepOf? T D str r with
                                   | none => none
-                                  | some t => (stepsOf? T D rs).map (t :: ·))
+                                  | some t => (stepsOf? T D str rs).map (t :: ·))
             rw [hS]
-          cases hrest : stepsOf? T D rs with
+          cases hrest : stepsOf? T D str rs with
           | none => rw [hrest] at h1'; exact absurd h1' (by simp)
           | some rest =>
               rw [hrest] at h1'
@@ -441,12 +388,16 @@ theorem declaredOf?_append : ∀ (D D' : List DeclaredBinding) (nm : String)
       · rw [if_pos hc]; rw [if_pos hc] at h'; exact h'
       · rw [if_neg hc]; rw [if_neg hc] at h'; exact ih D' nm ar d h'
 
-theorem stageOf?_append (T T' : List KernelBinding) (op : DeviceOp) (S : StageSpec)
-    (h : stageOf? T op = some S) : stageOf? (T ++ T') op = some S := by
+theorem stageOf?_append (T T' : List KernelBinding) (str : Option Nat)
+    (op : DeviceOp) (S : StageSpec)
+    (h : stageOf? T str op = some S) : stageOf? (T ++ T') str op = some S := by
   unfold stageOf? at h ⊢
-  by_cases hn : op.1.fnName ≠ "cl_cuda_launch"
+  by_cases hn : op.1.fnName ∉ AlgorithmLib.Clif.positionalLaunchNames
   · rw [if_pos hn] at h; exact Option.noConfusion h
   rw [if_neg hn] at h ⊢
+  by_cases hst : op.1.stream ≠ str
+  · rw [if_pos hst] at h; exact Option.noConfusion h
+  rw [if_neg hst] at h ⊢
   -- `split` reduces both sides: the two `match`es have the same discriminants,
   -- and the table is the only thing that differs.
   split at h
@@ -463,21 +414,23 @@ theorem stageOf?_append (T T' : List KernelBinding) (op : DeviceOp) (S : StageSp
   · exact Option.noConfusion h
 
 theorem stepOf?_append (T T' : List KernelBinding) (D D' : List DeclaredBinding)
-    (op : DeviceOp) (t : PStep) (h : stepOf? T D op = some t) :
-    stepOf? (T ++ T') (D ++ D') op = some t := by
-  have h0 : (if op.1.fnName = "cl_cuda_launch" then (stageOf? T op).map PStep.proven
+    (str : Option Nat) (op : DeviceOp) (t : PStep) (h : stepOf? T D str op = some t) :
+    stepOf? (T ++ T') (D ++ D') str op = some t := by
+  have h0 : (if op.1.fnName ∈ AlgorithmLib.Clif.launchNames then
+               (stageOf? T str op).map PStep.proven
              else if op.1.fnName ∈ Clif.deviceWriterNames then
                (declaredOf? D op.1.fnName op.2.args).map PStep.declared
              else none) = some t := h
-  show (if op.1.fnName = "cl_cuda_launch" then (stageOf? (T ++ T') op).map PStep.proven
+  show (if op.1.fnName ∈ AlgorithmLib.Clif.launchNames then
+          (stageOf? (T ++ T') str op).map PStep.proven
         else if op.1.fnName ∈ Clif.deviceWriterNames then
           (declaredOf? (D ++ D') op.1.fnName op.2.args).map PStep.declared
         else none) = some t
-  by_cases hl : op.1.fnName = "cl_cuda_launch"
+  by_cases hl : op.1.fnName ∈ AlgorithmLib.Clif.launchNames
   · rw [if_pos hl] at h0 ⊢
-    cases hs : stageOf? T op with
+    cases hs : stageOf? T str op with
     | none => rw [hs] at h0; exact Option.noConfusion h0
-    | some S => rw [stageOf?_append T T' op S hs]; rw [hs] at h0; exact h0
+    | some S => rw [stageOf?_append T T' str op S hs]; rw [hs] at h0; exact h0
   rw [if_neg hl] at h0 ⊢
   by_cases hw : op.1.fnName ∈ Clif.deviceWriterNames
   · rw [if_pos hw] at h0 ⊢
@@ -491,26 +444,27 @@ theorem stepOf?_append (T T' : List KernelBinding) (D D' : List DeclaredBinding)
 
 /-- **The whole sequence, widened.**  This is the one call sites use: a plan
     resolved against a layer's tables is the same plan against the token's. -/
-theorem stepsOf?_appendTable (T T' : List KernelBinding) (D D' : List DeclaredBinding) :
+theorem stepsOf?_appendTable (T T' : List KernelBinding) (D D' : List DeclaredBinding)
+    (str : Option Nat) :
     ∀ (ops : List DeviceOp) (L : List PStep),
-      stepsOf? T D ops = some L → stepsOf? (T ++ T') (D ++ D') ops = some L := by
+      stepsOf? T D str ops = some L → stepsOf? (T ++ T') (D ++ D') str ops = some L := by
   intro ops
   induction ops with
   | nil => intro L h; exact h
   | cons op rest ih =>
       intro L h
-      have h0 : (match stepOf? T D op with
+      have h0 : (match stepOf? T D str op with
                  | none => none
-                 | some t => (stepsOf? T D rest).map (t :: ·)) = some L := h
-      show (match stepOf? (T ++ T') (D ++ D') op with
+                 | some t => (stepsOf? T D str rest).map (t :: ·)) = some L := h
+      show (match stepOf? (T ++ T') (D ++ D') str op with
             | none => none
-            | some t => (stepsOf? (T ++ T') (D ++ D') rest).map (t :: ·)) = some L
-      cases hs : stepOf? T D op with
+            | some t => (stepsOf? (T ++ T') (D ++ D') str rest).map (t :: ·)) = some L
+      cases hs : stepOf? T D str op with
       | none => rw [hs] at h0; exact Option.noConfusion h0
       | some t =>
-          rw [stepOf?_append T T' D D' op t hs]
+          rw [stepOf?_append T T' D D' str op t hs]
           rw [hs] at h0
-          cases hr : stepsOf? T D rest with
+          cases hr : stepsOf? T D str rest with
           | none => rw [hr] at h0; exact Option.noConfusion h0
           | some rest' => rw [ih rest' hr]; rw [hr] at h0; exact h0
 
@@ -520,8 +474,8 @@ theorem stepsOf?_appendTable (T T' : List KernelBinding) (D D' : List DeclaredBi
     projection of the plan, and it reaches zero exactly when every step has a
     `StageSpec`. -/
 def declaredCountOf (T : List KernelBinding) (D : List DeclaredBinding)
-    (rs : List DeviceOp) : Option Nat :=
-  (planOf? T D rs).map Plan.declaredCount
+    (str : Option Nat) (rs : List DeviceOp) : Option Nat :=
+  (planOf? T D str rs).map Plan.declaredCount
 
 -- ---------------------------------------------------------------------------
 -- The two halves, joined
@@ -552,9 +506,9 @@ theorem host_realises_pipeline
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hfit : Fits P p (code fnLaunch ptr n p s))
     (T : List KernelBinding) (Pl : Pipeline)
-    (hpl : pipelineOf? T s.deviceOps = some Pl) :
+    (str : Option Nat) (hpl : pipelineOf? T str s.deviceOps = some Pl) :
     ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
-      ∧ pipelineOf? T (c'.trace.zip c'.btrace) = some Pl := by
+      ∧ pipelineOf? T str (c'.trace.zip c'.btrace) = some Pl := by
   obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
     flatHI_sound fns fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
   exact ⟨k, c', hr, by
@@ -582,13 +536,14 @@ theorem host_computes_denote
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hfit : Fits P p (code fnLaunch ptr n p s))
     (T : List KernelBinding) (Pl : Pipeline)
-    (hpl : pipelineOf? T s.deviceOps = some Pl)
+    (str : Option Nat) (hpl : pipelineOf? T str s.deviceOps = some Pl)
     (hex : Pl.Exclusive) (st : WSt) :
     ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
-      ∧ pipelineOf? T (c'.trace.zip c'.btrace) = some Pl
+      ∧ pipelineOf? T str (c'.trace.zip c'.btrace) = some Pl
       ∧ (Pl.run st).mem = Pl.denote st.mem := by
   obtain ⟨k, c', hr, hp⟩ :=
-    host_realises_pipeline fns fnLaunch ptr hfn P s n p e sm ct hptr he htame hfar hfd hfit T Pl hpl
+    host_realises_pipeline fns fnLaunch ptr hfn P s n p e sm ct hptr he htame hfar hfd hfit
+      T Pl str hpl
   exact ⟨k, c', hr, hp, Pipeline.run_denote Pl hex st⟩
 
 /-- **The whole thing, with the declared steps in it.**
@@ -604,12 +559,11 @@ theorem host_computes_denote
     performance gaps taken deliberately — float associativity, and cuBLAS's
     unspecified fold order. `Plan.declaredCount` measures the last of these.
 
-    **Nothing is supplied alongside the program.**  This used to take the bind
-    list as a parameter, because the host machine's trace was launch records
-    only and the arrays had to come from a separate static scan — which cannot
-    see through the layer loop, so what the twenty-fourth iteration bound was
-    outside the theorem.  The machine now executes the bind stores, so the
-    arrays in the conclusion are the ones the program wrote. -/
+    **Nothing is supplied alongside the program.**  Taking the bind list as a
+    parameter would mean sourcing it from a separate static scan, which cannot
+    see through the layer loop — leaving what the twenty-fourth iteration bound
+    outside the theorem.  The machine executes the bind stores, so the arrays
+    in the conclusion are the ones the program wrote. -/
 theorem host_computes_plan
     (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
@@ -620,45 +574,15 @@ theorem host_computes_plan
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hfit : Fits P p (code fnLaunch ptr n p s))
     (T : List KernelBinding) (D : List DeclaredBinding) (Pl : Plan)
-    (hpl : planOf? T D s.deviceOps = some Pl)
+    (str : Option Nat) (hpl : planOf? T D str s.deviceOps = some Pl)
     (R : Realisation) (hR : Honours R) (hex : Pl.Exclusive) (st : WSt) :
     ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
-      ∧ planOf? T D (c'.trace.zip c'.btrace) = some Pl
+      ∧ planOf? T D str (c'.trace.zip c'.btrace) = some Pl
       ∧ (Pl.run R st).mem = Pl.denote st.mem := by
   obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
     flatHI_sound fns fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
   exact ⟨k, c', hr,
          by rw [htr, hbt, List.nil_append, List.nil_append]; exact hpl,
          Plan.run_denote R hR Pl hex st⟩
-
-/-- **The same, matched against what a *static* scan of the emitted CLIF
-    recovers.**
-
-    Useful for the branch-free fragments — four of Qwen2's five per-token
-    functions — where `Clif.deviceOpsOf` is available and is the form the rest
-    of the pipeline's theorems are stated against.  For the layer loop the form
-    above applies, and `HStmt.deviceOps` is derived rather than scanned. -/
-theorem host_computes_plan_of_program
-    (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
-    (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
-    (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
-    (htame : HStmt.TameB fns ptr s = true)
-    (hfar : FarOk e ptr n s.farArgs)
-    (hheld : s.farArgs.all ExternArg.HeldFreeB = true)
-    (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
-    (hbf : s.BranchFreeB = true)
-    (hfit : Fits P p (code fnLaunch ptr n p s))
-    (T : List KernelBinding) (D : List DeclaredBinding) (Pl : Plan)
-    (hpl : planOf? T D (deviceOpsOf ptr.id (stateOf fns fnLaunch ptr n s)) = some Pl)
-    (R : Realisation) (hR : Honours R) (hex : Pl.Exclusive) (st : WSt) :
-    ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
-      ∧ planOf? T D (c'.trace.zip c'.btrace) = some Pl
-      ∧ (Pl.run R st).mem = Pl.denote st.mem := by
-  rw [deviceOpsOf_stateOf fns fnLaunch ptr hfn s n hbf htame
-        (FarOk.empty_of_flat hheld
-          (fun x hx b hb => ⟨(hfar.base x hx b hb).1, (hfar.base x hx b hb).2.1⟩)) hfd hptr] at hpl
-  exact host_computes_plan fns fnLaunch ptr hfn P s n p e sm ct hptr he htame hfar hfd hfit
-    T D Pl hpl R hR hex st
 
 end AlgorithmLib.ML

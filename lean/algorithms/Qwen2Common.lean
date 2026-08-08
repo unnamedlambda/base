@@ -215,7 +215,8 @@ def PTX_BIAS_KV_OFF : Nat := 0x3800
 def PTX_ROPE_Q_OFF  : Nat := 0x4000  -- proven RoPE needs a 4096-byte slot
 def PTX_ROPE_K_OFF  : Nat := 0x5000
 -- The proven softmax is six loops (a chunk sweep and a remainder sweep per
--- pass), so it needs an 8 KB slot; everything after it moved up.
+-- pass), so it takes a 12 KB slot -- the largest kernel here by a factor of
+-- two, and `ptx_fits` is what keeps that number honest.
 def PTX_SOFTMAX_OFF : Nat := 0x6000
 def PTX_SILU_OFF    : Nat := 0x9000
 def PTX_ADD_OFF     : Nat := 0x9C00
@@ -2137,25 +2138,25 @@ noncomputable def layerDeclared : List DeclaredBinding :=
     grid; every vendor call on name and recovered arguments. -/
 theorem attn_ops_steps (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    stepsOf? (layerKernels gim h hm) layerDeclared attnOps
+    stepsOf? (layerKernels gim h hm) layerDeclared none attnOps
       = some (attnPlan gim h hm).steps := rfl
 
 theorem attn_ops_realise_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (layerKernels gim h hm) layerDeclared attnOps = some (attnPlan gim h hm) := by
-  show (stepsOf? (layerKernels gim h hm) layerDeclared attnOps).map Plan.mk = _
+    planOf? (layerKernels gim h hm) layerDeclared none attnOps = some (attnPlan gim h hm) := by
+  show (stepsOf? (layerKernels gim h hm) layerDeclared none attnOps).map Plan.mk = _
   rw [attn_ops_steps]
   rfl
 
 /-- **…and the feed-forward half's six resolve to `ffnPlan`.** -/
 theorem ffn_ops_steps (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    stepsOf? (layerKernels gim h hm) layerDeclared ffnOps = some ffnPlan.steps := rfl
+    stepsOf? (layerKernels gim h hm) layerDeclared none ffnOps = some ffnPlan.steps := rfl
 
 theorem ffn_ops_realise_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (layerKernels gim h hm) layerDeclared ffnOps = some ffnPlan := by
-  show (stepsOf? (layerKernels gim h hm) layerDeclared ffnOps).map Plan.mk = _
+    planOf? (layerKernels gim h hm) layerDeclared none ffnOps = some ffnPlan := by
+  show (stepsOf? (layerKernels gim h hm) layerDeclared none ffnOps).map Plan.mk = _
   rw [ffn_ops_steps]
   rfl
 
@@ -2168,18 +2169,18 @@ theorem ffn_ops_realise_plan (h : AllHold [Law.combinerComm])
     and it is the same move `replicate_ops_steps` makes for the loop. -/
 theorem layer_ops_realise_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)
+    planOf? (layerKernels gim h hm) layerDeclared none (attnOps ++ ffnOps)
       = some (layerPlan gim h hm) := by
-  show (stepsOf? (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)).map Plan.mk = _
-  rw [stepsOf?_append _ _ _ _ _ _ (attn_ops_steps gim h hm) (ffn_ops_steps gim h hm)]
+  show (stepsOf? (layerKernels gim h hm) layerDeclared none (attnOps ++ ffnOps)).map Plan.mk = _
+  rw [stepsOf?_append _ _ _ _ _ _ _ (attn_ops_steps gim h hm) (ffn_ops_steps gim h hm)]
   rfl
 
 /-- The gap, still counted, now against the program's own write sequence. -/
 theorem layer_ops_declaredCount (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    declaredCountOf (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)
+    declaredCountOf (layerKernels gim h hm) layerDeclared none (attnOps ++ ffnOps)
       = some 9 := by
-  show ((planOf? (layerKernels gim h hm) layerDeclared (attnOps ++ ffnOps)).map
+  show ((planOf? (layerKernels gim h hm) layerDeclared none (attnOps ++ ffnOps)).map
           Plan.declaredCount) = _
   rw [layer_ops_realise_plan]
   rfl
@@ -2245,23 +2246,23 @@ theorem final_ops_are :
 
 theorem entry_ops_realise_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (tokenKernels gim h hm) tokenDeclared entryOps = some (entryPlan gim) := rfl
+    planOf? (tokenKernels gim h hm) tokenDeclared none entryOps = some (entryPlan gim) := rfl
 
 theorem final_ops_realise_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (tokenKernels gim h hm) tokenDeclared finalOps = some (finalPlan gim) := rfl
+    planOf? (tokenKernels gim h hm) tokenDeclared none finalOps = some (finalPlan gim) := rfl
 
 /-- **The shipped prologue realises `entryPlan`.** -/
 theorem entry_program_realises_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (tokenKernels gim h hm) tokenDeclared
+    planOf? (tokenKernels gim h hm) tokenDeclared none
         (deviceOpsOf ROOT (inferFn.run {}).2) = some (entryPlan gim) := by
   rw [entry_ops_are]; exact entry_ops_realise_plan gim h hm
 
 /-- **…and the shipped sampling tail realises `finalPlan`.** -/
 theorem final_program_realises_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (tokenKernels gim h hm) tokenDeclared
+    planOf? (tokenKernels gim h hm) tokenDeclared none
         (deviceOpsOf ROOT (inferFinalFn.run {}).2) = some (finalPlan gim) := by
   rw [final_ops_are]; exact final_ops_realise_plan gim h hm
 
@@ -2302,27 +2303,27 @@ noncomputable def tokenPlan (h : AllHold [Law.combinerComm])
     that is now three entries longer, and the scan is where the time goes. -/
 theorem layer_ops_steps (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    stepsOf? (tokenKernels gim h hm) tokenDeclared layerOps
+    stepsOf? (tokenKernels gim h hm) tokenDeclared none layerOps
       = some (layerPlan gim h hm).steps :=
-  stepsOf?_append _ _ _ _ _ _
-    (stepsOf?_appendTable _ _ _ _ attnOps _ (attn_ops_steps gim h hm))
-    (stepsOf?_appendTable _ _ _ _ ffnOps _ (ffn_ops_steps gim h hm))
+  stepsOf?_append _ _ _ _ _ _ _
+    (stepsOf?_appendTable _ _ _ _ _ attnOps _ (attn_ops_steps gim h hm))
+    (stepsOf?_appendTable _ _ _ _ _ ffnOps _ (ffn_ops_steps gim h hm))
 
 /-- **The loop, as an induction.**  The layer is resolved once; repeating it
     `n` times is a theorem rather than `n` more reductions — which is what
     makes a 533-step claim cost the same as a 22-step one. -/
 theorem replicate_ops_steps (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) : ∀ n : Nat,
-    stepsOf? (tokenKernels gim h hm) tokenDeclared (List.replicate n layerOps).flatten
+    stepsOf? (tokenKernels gim h hm) tokenDeclared none (List.replicate n layerOps).flatten
       = some (List.replicate n (layerPlan gim h hm).steps).flatten := by
   intro n
   induction n with
   | zero => rfl
   | succ n ih =>
-      show stepsOf? _ _ (layerOps ++ (List.replicate n layerOps).flatten)
+      show stepsOf? _ _ _ (layerOps ++ (List.replicate n layerOps).flatten)
           = some ((layerPlan gim h hm).steps
                   ++ (List.replicate n (layerPlan gim h hm).steps).flatten)
-      exact stepsOf?_append _ _ _ _ _ _ (layer_ops_steps gim h hm) ih
+      exact stepsOf?_append _ _ _ _ _ _ _ (layer_ops_steps gim h hm) ih
 
 
 -- ---------------------------------------------------------------------------
@@ -2463,15 +2464,15 @@ theorem finalDriver_is_built (fnOf : String → FnRef) :
 /-- **A whole token's device-write sequence realises `tokenPlan`.** -/
 theorem token_ops_realise_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (tokenKernels gim h hm) tokenDeclared tokenOps = some (tokenPlan gim h hm) := by
-  have he : stepsOf? (tokenKernels gim h hm) tokenDeclared entryOps
+    planOf? (tokenKernels gim h hm) tokenDeclared none tokenOps = some (tokenPlan gim h hm) := by
+  have he : stepsOf? (tokenKernels gim h hm) tokenDeclared none entryOps
       = some (entryPlan gim).steps := rfl
-  have hf : stepsOf? (tokenKernels gim h hm) tokenDeclared finalOps
+  have hf : stepsOf? (tokenKernels gim h hm) tokenDeclared none finalOps
       = some (finalPlan gim).steps := rfl
-  show (stepsOf? _ _ (entryOps ++ ((List.replicate N_LAYERS layerOps).flatten
+  show (stepsOf? _ _ _ (entryOps ++ ((List.replicate N_LAYERS layerOps).flatten
           ++ finalOps))).map Plan.mk = _
-  rw [stepsOf?_append _ _ _ _ _ _ he
-        (stepsOf?_append _ _ _ _ _ _ (replicate_ops_steps gim h hm N_LAYERS) hf)]
+  rw [stepsOf?_append _ _ _ _ _ _ _ he
+        (stepsOf?_append _ _ _ _ _ _ _ (replicate_ops_steps gim h hm N_LAYERS) hf)]
   rfl
 
 theorem tokenPlan_exclusive (h : AllHold [Law.combinerComm])
@@ -2514,21 +2515,21 @@ theorem token_computes (h : AllHold [Law.combinerComm])
     results say something. -/
 
 example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (layerKernels gim h hm) layerDeclared
+    planOf? (layerKernels gim h hm) layerDeclared none
       [klOp PTX_RMS_OFF 3 BIND_RMS1 1 BS_FFN_NORM] = none := rfl
 
 example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (layerKernels gim h hm) layerDeclared
+    planOf? (layerKernels gim h hm) layerDeclared none
       [klOp PTX_RMS_OFF 3 BIND_RMS2 1 BS_A_NORM] = none := rfl
 
 example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (layerKernels gim h hm) layerDeclared
+    planOf? (layerKernels gim h hm) layerDeclared none
       [klOp PTX_ADD_OFF 2 BIND_ADD1 27 BS_A_ADD] = none := rfl
 
 /-- …and a launch whose bind array the scan could not recover is refused
     outright, rather than matched on its slot and grid alone. -/
 example (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
-    planOf? (layerKernels gim h hm) layerDeclared
+    planOf? (layerKernels gim h hm) layerDeclared none
       [({ fnName := "cl_cuda_launch", kernelOff := some (Int.ofNat PTX_RMS_OFF),
           nBufs := some 3, bindOff := some (Int.ofNat BIND_RMS1),
           gridX := some 1, blockX := some 32 }, {})] = none := rfl
