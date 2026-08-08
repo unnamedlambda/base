@@ -50,6 +50,15 @@ instance IdxE.decBufBelow (n : Nat) : ∀ e : IdxE, Decidable (e.BufBelow n)
   | .add a b => @instDecidableAnd _ _ (decBufBelow n a) (decBufBelow n b)
   | .mul a b => @instDecidableAnd _ _ (decBufBelow n a) (decBufBelow n b)
 
+/-- **Every buffer an address expression names**, as a list rather than a
+    proposition — so a bound can be *derived* from the buffers an operation
+    declares instead of decided at each one. -/
+def IdxE.bufsOf : IdxE → List Buf
+  | .ldIdx b off => b :: off.bufsOf
+  | .add a b     => a.bufsOf ++ b.bufsOf
+  | .mul a b     => a.bufsOf ++ b.bufsOf
+  | _            => []
+
 /-- **Every buffer the kernel touches is inside the binding table.**
 
     The check that makes the emitted PTX well-formed: buffer `b` becomes
@@ -69,6 +78,76 @@ def EWStmt.BufBelow (n : Nat) : EWStmt → Prop
   | .forN _ body          => body.BufBelow n
   | .forM bu _ body       => bu < n ∧ body.BufBelow n
   | .cvtIF _ ix           => ix.BufBelow n
+
+/-- Every buffer a kernel names. -/
+def EWStmt.bufsOf : EWStmt → List Buf
+  | .skip                 => []
+  | .seq a b              => a.bufsOf ++ b.bufsOf
+  | .setR _ _             => []
+  | .shflXor _ _ _        => []
+  | .barrier              => []
+  | .loadIdx _ b ix       => b :: ix.bufsOf
+  | .loadV4 _ _ _ _ b ix  => b :: ix.bufsOf
+  | .storeLane0 b ix _    => b :: ix.bufsOf
+  | .storeLane b ix _     => b :: ix.bufsOf
+  | .stSm ix _            => ix.bufsOf
+  | .ldSm _ ix            => ix.bufsOf
+  | .forN _ body          => body.bufsOf
+  | .forM bu _ body       => bu :: body.bufsOf
+  | .cvtIF _ ix           => ix.bufsOf
+
+/-- **A bound on the names is a bound on the statement.**  Proven once, for
+    every statement: what a kernel needs checked is which buffers it mentions,
+    and `bufsOf` answers that without traversing it again per model. -/
+theorem IdxE.bufBelow_of_bufsOf (n : Nat) : ∀ ix : IdxE,
+    (∀ b ∈ ix.bufsOf, b < n) → ix.BufBelow n := by
+  intro ix
+  induction ix with
+  | ldIdx b off ih =>
+      intro h
+      exact ⟨h b (by simp [IdxE.bufsOf]), ih (fun c hc => h c (by simp [IdxE.bufsOf, hc]))⟩
+  | add a b iha ihb =>
+      intro h
+      exact ⟨iha (fun c hc => h c (by simp [IdxE.bufsOf, hc])),
+             ihb (fun c hc => h c (by simp [IdxE.bufsOf, hc]))⟩
+  | mul a b iha ihb =>
+      intro h
+      exact ⟨iha (fun c hc => h c (by simp [IdxE.bufsOf, hc])),
+             ihb (fun c hc => h c (by simp [IdxE.bufsOf, hc]))⟩
+  | _ => intro _; trivial
+
+theorem EWStmt.bufBelow_of_bufsOf (n : Nat) : ∀ s : EWStmt,
+    (∀ b ∈ s.bufsOf, b < n) → s.BufBelow n := by
+  intro s
+  induction s with
+  | seq a b iha ihb =>
+      intro h
+      exact ⟨iha (fun c hc => h c (by simp [EWStmt.bufsOf, hc])),
+             ihb (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))⟩
+  | loadIdx d b ix =>
+      intro h
+      exact ⟨h b (by simp [EWStmt.bufsOf]),
+             IdxE.bufBelow_of_bufsOf n ix (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))⟩
+  | loadV4 a b c d bu ix =>
+      intro h
+      exact ⟨h bu (by simp [EWStmt.bufsOf]),
+             IdxE.bufBelow_of_bufsOf n ix (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))⟩
+  | storeLane0 b ix r =>
+      intro h
+      exact ⟨h b (by simp [EWStmt.bufsOf]),
+             IdxE.bufBelow_of_bufsOf n ix (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))⟩
+  | storeLane b ix r =>
+      intro h
+      exact ⟨h b (by simp [EWStmt.bufsOf]),
+             IdxE.bufBelow_of_bufsOf n ix (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))⟩
+  | stSm ix r => intro h; exact IdxE.bufBelow_of_bufsOf n ix h
+  | ldSm d ix => intro h; exact IdxE.bufBelow_of_bufsOf n ix h
+  | forN k body ih => intro h; exact ih h
+  | forM bu a body ih =>
+      intro h
+      exact ⟨h bu (by simp [EWStmt.bufsOf]), ih (fun c hc => h c (by simp [EWStmt.bufsOf, hc]))⟩
+  | cvtIF d ix => intro h; exact IdxE.bufBelow_of_bufsOf n ix h
+  | _ => intro _; trivial
 
 instance EWStmt.decBufBelow (n : Nat) : ∀ s : EWStmt, Decidable (s.BufBelow n)
   | .skip => .isTrue trivial

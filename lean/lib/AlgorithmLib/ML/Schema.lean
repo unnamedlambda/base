@@ -240,7 +240,7 @@ theorem warpDotV4_sumsq (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
 /-- One accumulation step of the strided dot: `acc += a·b`. -/
 def dotStepSE : WFExp := .add (.reg 0) (.mul (.reg 1) (.reg 2))
 
-private def stepWS (bA bB : Buf) (fA fB : Nat → Lane → Nat) (i : Nat) : WStmt :=
+def stepWS (bA bB : Buf) (fA fB : Nat → Lane → Nat) (i : Nat) : WStmt :=
   .seq (.seq (.loadIdx 1 bA (fA i)) (.loadIdx 2 bB (fB i))) (.setR 0 dotStepSE)
 
 /-- The strided sweep: zero the accumulator, then `K` scalar-load steps. -/
@@ -364,6 +364,59 @@ theorem dotStrided_spec (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
         (((warpReduceSum 0 1).run
           (((dotStridedBody bA bB ixA ixB K).elabAt cta 0).run st)).regs 0 ⟨0, by decide⟩)).mem out _ = _
   rw [WSt.mem_store1_same, warpReduceSum_spec 0 1 (by decide), dotStridedBody_spec]
+
+/-- The maximum's step: one load, one `max.f32` into the accumulator. -/
+def maxStepSE : WFExp := .maxW (.reg 0) (.reg 1)
+
+def stepMaxWS (b : Buf) (f : Nat → Lane → Nat) (i : Nat) : WStmt :=
+  .seq (.loadIdx 1 b (f i)) (.setR 0 maxStepSE)
+
+/-- The strided maximum sweep: seed the accumulator, then `K` load-and-max
+    steps.  The seed is a parameter because a row maximum over a bounded
+    quantity has a known floor and a softmax should not have to invent one. -/
+def maxStridedBody (b : Buf) (ix : IdxE) (K : Nat) (init : Float32) : EWStmt :=
+  .seq (.setR 0 (.lit init))
+       (.forN K (.seq (.loadIdx 1 b ix) (.setR 0 maxStepSE)))
+
+/-- The fold one lane performs — sequential, one element per step, in load
+    order, exactly as the sum's is. -/
+def maxStridedLane (mem : Nat → Float32) (f : Nat → Lane → Nat) (K : Nat)
+    (init : Float32) (l : Lane) : Float32 :=
+  (List.range K).foldl (fun acc i => NumOps.max acc (mem (f i l))) init
+
+theorem maxStrided_fold (b : Buf) (f : Nat → Lane → Nat) :
+    ∀ (L : List Nat) (st : WSt) (l : Lane),
+      ((L.foldl (fun s' i => (stepMaxWS b f i).run s') st).regs 0 l)
+        = L.foldl (fun acc i => NumOps.max acc (st.mem b (f i l))) (st.regs 0 l) := by
+  intro L
+  induction L with
+  | nil => intro st l; rfl
+  | cons i L ih =>
+      intro st l
+      have hmem : ((stepMaxWS b f i).run st).mem = st.mem := rfl
+      have hacc : ((stepMaxWS b f i).run st).regs 0
+          = fun l => NumOps.max (st.regs 0 l) (st.mem b (f i l)) := by
+        show ((WStmt.setR 0 maxStepSE).run ((WStmt.loadIdx 1 b (f i)).run st)).regs 0 = _
+        simp only [wrun_setR, WSt.regs_setReg_same]
+        funext l'
+        simp only [maxStepSE, WFExp.eval, wrun_loadIdx, WSt.mem_setReg,
+          WSt.regs_setReg_other _ 1 0 _ (by decide), WSt.regs_setReg_same]
+      show ((L.foldl _ ((stepMaxWS b f i).run st)).regs 0 l) = _
+      rw [ih _ l, hmem, hacc]
+      rfl
+
+theorem maxStridedBody_spec (b : Buf) (ix : IdxE) (K cta : Nat) (init : Float32)
+    (st : WSt) :
+    (((maxStridedBody b ix K init).elabAt cta 0).run st).regs 0
+      = maxStridedLane (st.mem b) (fun i l => ix.eval cta i l) K init := by
+  funext l
+  show ((List.range K).foldl _ ((WStmt.setR 0 (.lit init)).run st)).regs 0 l = _
+  have hstep : (fun j => EWStmt.elabAt cta j (fun _ _ => 0) (fun _ _ => 0)
+        ((EWStmt.loadIdx 1 b ix).seq (EWStmt.setR 0 maxStepSE)))
+      = stepMaxWS b (fun i l => ix.eval cta i l) := rfl
+  rw [hstep, maxStrided_fold b (fun i l => ix.eval cta i l) (List.range K) _ l]
+  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, maxStridedLane]
+  rfl
 
 /-- The strided per-lane fold, as a spec-language term. -/
 def dotStridedLaneE (ae be : Nat → Expr Γ) (fA fB : Nat → Lane → Nat) (K : Nat)
@@ -973,6 +1026,44 @@ theorem warpReduceMaxE_spec (cta i : Nat) (ir : Nat → Lane → Nat)
 theorem warpReduceMaxE_mem (cta i : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt) :
     ((warpReduceMaxE.elabAt cta i ir im).run st).mem = st.mem := rfl
+
+theorem maxStridedBody_mem (b : Buf) (ix : IdxE) (K cta : Nat) (init : Float32)
+    (st : WSt) :
+    (((maxStridedBody b ix K init).elabAt cta 0).run st).mem = st.mem := by
+  show ((WStmt.forN K (fun j => (stepMaxWS b (fun i l => ix.eval cta i l) j))).run
+        ((WStmt.setR 0 (.lit init)).run st)).mem = _
+  have key : ∀ (L : List Nat) (s : WSt),
+      (L.foldl (fun s' i => (stepMaxWS b (fun i l => ix.eval cta i l) i).run s') s).mem
+        = s.mem := by
+    intro L
+    induction L with
+    | nil => intro _; rfl
+    | cons i L ih =>
+        intro s
+        show (L.foldl _ ((stepMaxWS b _ i).run s)).mem = _
+        rw [ih _]
+        rfl
+  exact key (List.range K) _
+
+/-- **The strided maximum**: sweep, max butterfly, lane-0 store — the sum's
+    schema at `max`, and the reduction a stable softmax needs. -/
+def maxStrided (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE) (K : Nat)
+    (init : Float32) : EWStmt :=
+  .seq (.seq (maxStridedBody b ix K init) warpReduceMaxE) (.storeLane0 out oi 0)
+
+theorem maxStrided_spec (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
+    (K cta : Nat) (init : Float32) (st : WSt) :
+    (((maxStrided b ix out oi K init).elabIn cta).run st).mem out
+        (oi.eval cta 0 ⟨0, by decide⟩)
+      = bflyFoldOp (fun a c => NumOps.max a c)
+          (maxStridedLane (st.mem b) (fun i l => ix.eval cta i l) K init)
+          ⟨0, by decide⟩ := by
+  show (((warpReduceMaxE.elabAt cta 0 (fun _ _ => 0) (fun _ _ => 0)).run
+          (((maxStridedBody b ix K init).elabAt cta 0).run st)).store1 out _
+        (((warpReduceMaxE.elabAt cta 0 (fun _ _ => 0) (fun _ _ => 0)).run
+          (((maxStridedBody b ix K init).elabAt cta 0).run st)).regs 0
+            ⟨0, by decide⟩)).mem out _ = _
+  rw [WSt.mem_store1_same, warpReduceMaxE_spec, maxStridedBody_spec]
 
 /-- The sum butterfly is the same instance at `add` — stated so both reductions
     visibly stand on one theorem. -/

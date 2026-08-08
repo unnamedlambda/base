@@ -217,10 +217,10 @@ def PTX_ROPE_K_OFF  : Nat := 0x5000
 -- The proven softmax is six loops (a chunk sweep and a remainder sweep per
 -- pass), so it needs an 8 KB slot; everything after it moved up.
 def PTX_SOFTMAX_OFF : Nat := 0x6000
-def PTX_SILU_OFF    : Nat := 0x8000
-def PTX_ADD_OFF     : Nat := 0x8C00
-def PTX_KVSTORE_OFF : Nat := 0x9800
-def PTX_ARGMAX_OFF  : Nat := 0xA800
+def PTX_SILU_OFF    : Nat := 0x9000
+def PTX_ADD_OFF     : Nat := 0x9C00
+def PTX_KVSTORE_OFF : Nat := 0xA800
+def PTX_ARGMAX_OFF  : Nat := 0xB800
 
 -- Tokenize / server buffers.
 --
@@ -248,7 +248,7 @@ def TOKEN_BUF_BYTES : Nat := TOKEN_BUF_CAP * 4
 def TEXT_IN_BYTES   : Nat := 8 * 1024
 def TEXT_OUT_BYTES  : Nat := 8 * 1024
 
-def TOKEN_BUF_OFF   : Nat := 0xB800
+def TOKEN_BUF_OFF   : Nat := 0xC800
 def TEXT_IN_OFF     : Nat := TOKEN_BUF_OFF + TOKEN_BUF_BYTES
 def TEXT_OUT_OFF    : Nat := TEXT_IN_OFF   + TEXT_IN_BYTES
 def MEM_SIZE        : Nat := TEXT_OUT_OFF  + TEXT_OUT_BYTES
