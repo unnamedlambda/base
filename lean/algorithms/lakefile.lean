@@ -82,6 +82,8 @@ lean_lib Qwen2Top
 
 lean_lib ScanCore
 
+lean_lib MlSurface
+
 lean_lib TrustScan
 
 lean_lib BackwardScan

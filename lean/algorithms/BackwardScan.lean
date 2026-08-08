@@ -1,4 +1,4 @@
-import ScanCore
+import MlSurface
 import BackwardWideAlgorithm
 
 /-!
@@ -7,7 +7,8 @@ import BackwardWideAlgorithm
   The same scan `TrustScan.lean` runs over inference, run over the backward
   pipeline.  Two files rather than one because each generator defines its own
   `main`, so `Qwen2Algorithm` and `BackwardWideAlgorithm` cannot be imported
-  into a single module; the machinery they share lives in `ScanCore`.
+  into a single module; the machinery they share lives in `ScanCore` and the
+  surface they share in `MlSurface`.
 
   This existing at all is the point.  The backward pipeline had no scanner, so
   "the training claims rest on the same surface as the inference claims" was a
