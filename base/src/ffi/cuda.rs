@@ -190,18 +190,67 @@ fn load_raw_cuda_main_kernel(
         return Err(());
     }
     let ptx_src = unsafe { read_cstr_ptr(kernel_ptr) };
+    let ptx_len = ptx_src.len();
     let ptx_cstr = std::ffi::CString::new(ptx_src).map_err(|_| ())?;
-    let module = unsafe {
+    let load = || unsafe {
         cudarc::driver::result::module::load_data(ptx_cstr.as_ptr() as *const std::ffi::c_void)
-    }
-    .map_err(|_| ())?;
-    let function = unsafe {
+    };
+    let module = match load() {
+        Ok(m) => m,
+        Err(_) => {
+            // A load can fail because the context is out of room for modules.
+            // Drop what is resident and try once more: the cache is a
+            // launch-cost optimisation, never a correctness condition, so
+            // evicting it can only cost time.  A tape of 90 distinct kernels
+            // never reaches this path, so the number of modules a context
+            // holds is not a bound any artifact here has met.
+            //
+            // Launches are enqueued asynchronously, so a module may still be
+            // running when its entry is dropped.  Waiting for the device first
+            // is what makes the eviction safe rather than merely plausible.
+            // It also turns a *sticky* error — an illegal access from an
+            // earlier launch poisons the context, and every later load returns
+            // that error — into something the message below names, rather than
+            // into an apparent module-count limit.
+            eprintln!("cl_cuda_launch: module load failed with {} resident; evicting",
+                      state.main_kernel_cache.len());
+            let _ = ctx.device.synchronize();
+            for (_, entry) in std::mem::take(&mut state.main_kernel_cache) {
+                let _ = unsafe { cudarc::driver::result::module::unload(entry.module) };
+            }
+            match load() {
+                Ok(m) => m,
+                Err(e) => {
+                    // Say which error: collapsing every driver failure into
+                    // `Err(())` makes a module-count limit indistinguishable
+                    // from malformed PTX.
+                    eprintln!(
+                        "cl_cuda_launch: module load failed after evicting {} bytes of PTX: {:?}",
+                        ptx_len,
+                        e
+                    );
+                    return Err(());
+                }
+            }
+        }
+    };
+    let function = match unsafe {
         cudarc::driver::result::module::get_function(
             module,
             std::ffi::CString::new("main").expect("main CString"),
         )
-    }
-    .map_err(|_| ())?;
+    } {
+        Ok(f) => f,
+        Err(e) => {
+            // A module that loads but has no `main` is a different failure from
+            // a module that will not load at all; keep them apart.
+            eprintln!(
+                "cl_cuda_launch: module loaded ({} bytes of PTX) but `main` is absent: {:?}",
+                ptx_len, e
+            );
+            return Err(());
+        }
+    };
     state
         .main_kernel_cache
         .insert(kernel_ptr, RawCudaKernelCacheEntry { module, function });
@@ -1255,7 +1304,12 @@ pub(crate) unsafe extern "C" fn cl_cuda_sync(ctx_ptr: *const CraneliftCudaContex
         };
         match ctx.device.synchronize() {
             Ok(_) => 0,
-            Err(_) => -1,
+            Err(e) => {
+                // A launch reports out-of-range addressing only when something
+                // waits for it, and the CLIF caller does not read this result.
+                eprintln!("cl_cuda_sync: {:?}", e);
+                -1
+            }
         }
     }))
     .unwrap_or(-1)
