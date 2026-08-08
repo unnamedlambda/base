@@ -71,7 +71,7 @@ fn line(label: &str, pts: &[(f64, f64)], bad: &[f64], fmt: fn(f64) -> String, no
     let mut cells: Vec<String> =
         pts.iter().map(|(x, y)| format!("{}:{}", n(*x), fmt(*y))).collect();
     cells.extend(bad.iter().map(|x| format!("{}:FAILS", n(*x))));
-    println!("  {:<13} {:<46} {:<14} {}", label, cells.join("  "), growth(pts), note);
+    println!("  {:<15} {:<46} {:<16} {}", label, cells.join("  "), growth(pts), note);
 }
 
 pub fn all(raw: &Raw) {
@@ -179,7 +179,7 @@ pub fn all(raw: &Raw) {
         }
     }
 
-    // two pairs, each proving the same thing twice.
+    // three pairs, each proving the same thing twice.
     let rg = rows(raw, "regimes");
     if !rg.is_empty() {
         println!("\nproof cost vs structure size (steps), by how the obligation is written");
@@ -188,6 +188,8 @@ pub fn all(raw: &Raw) {
             ("reflect-quad", "reflect-quad", "same check, checker indexes instead of traversing"),
             ("named", "named", "one lemma per step, intermediates named -- goals stay O(1)"),
             ("inlined", "inlined", "one lemma per step, prefix inlined -- goals carry it"),
+            ("disjoint-pairs", "disjoint-pairs", "n regions pairwise disjoint, checked as stated"),
+            ("disjoint-sorted", "disjoint-sorted", "same property, neighbours only -- order is the witness"),
         ] {
             let (pts, bad) = series(rg, "steps", "net_secs", |r| s(r, "regime") == Some(v));
             // growth is what this suite is about, so flag it rather than the label
@@ -233,7 +235,7 @@ pub fn all(raw: &Raw) {
         } else {
             "net of importing them"
         };
-        println!("  {:<13} {:<46} {:<14} {}", "opaque spec", cells.join("  "), "", note);
+        println!("  {:<15} {:<46} {:<16} {}", "opaque spec", cells.join("  "), "", note);
 
         println!("\ncomposite proof cost vs component INTERNAL size (32 chained, body 1 vs 400 nodes)");
         for (label, spec, note) in [
@@ -249,7 +251,7 @@ pub fn all(raw: &Raw) {
                 (Some(_), Some(b)) if b > RES => format!(">{:.0}x", b / RES),
                 _ => "both under 0.05s".into(),
             };
-            println!("  {:<13} {:<46} {:<14} {}", label, cells.join("  "), ratio, note);
+            println!("  {:<15} {:<46} {:<16} {}", label, cells.join("  "), ratio, note);
         }
     }
 

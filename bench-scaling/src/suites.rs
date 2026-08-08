@@ -404,7 +404,7 @@ pub fn smoke(ctx: &Ctx) -> Vec<Value> {
     rows
 }
 
-//  regimes: two pairs, each proving the same thing twice
+//  regimes: three pairs, each proving the same thing twice
 
 pub fn regimes(ctx: &Ctx) -> Vec<Value> {
     use crate::channels::{self, Regime};
@@ -422,6 +422,8 @@ pub fn regimes(ctx: &Ctx) -> Vec<Value> {
             Regime::ReflectQuad,
             Regime::Named,
             Regime::Inlined,
+            Regime::PairsAll,
+            Regime::PairsSorted,
         ] {
             let src = ctx.work.join(format!("rg_{n}_{}.lean", r.name()));
             if channels::regimes(n, r, &src).is_err() {

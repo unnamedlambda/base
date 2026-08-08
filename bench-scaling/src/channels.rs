@@ -2,7 +2,7 @@
 //!
 //! Two axes the other suites do not reach:
 //!
-//! * `regimes` — two pairs, each proving the same thing twice.  One of each
+//! * `regimes` — three pairs, each proving the same thing twice.  One of each
 //!   pair is linear and the other is not, and the difference is a property of
 //!   how the obligation was written, not of what it guarantees.
 //! * `compose` — K separately-proven components chained in a user module.  The
@@ -54,6 +54,13 @@ pub enum Regime {
     /// one lemma application per step, with the prefix INLINED so statement k
     /// carries k steps of accumulated structure.
     Inlined,
+    /// a property RELATING every element to every other -- n regions are
+    /// pairwise disjoint -- checked the way it is stated.
+    PairsAll,
+    /// the same property, checked adjacent-only.  Sound because the generator
+    /// emits regions in address order, which the check also verifies: the
+    /// witness costs nothing because whoever built the structure knew it.
+    PairsSorted,
 }
 
 impl Regime {
@@ -63,6 +70,8 @@ impl Regime {
             Regime::ReflectQuad => "reflect-quad",
             Regime::Named => "named",
             Regime::Inlined => "inlined",
+            Regime::PairsAll => "disjoint-pairs",
+            Regime::PairsSorted => "disjoint-sorted",
         }
     }
 }
@@ -104,6 +113,36 @@ pub fn regimes(n: usize, r: Regime, out: &Path) -> std::io::Result<()> {
                      theorem h{k} : s{k}.n = {k} := by unfold s{k}; rw [step_n, h{}]\n",
                     k - 1,
                     k - 1
+                ));
+            }
+        }
+        // n regions, laid out end to end, as a generator would emit them.
+        Regime::PairsAll | Regime::PairsSorted => {
+            s.push_str("def regs : List (Nat × Nat) := [");
+            for i in 0..n {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&format!("({}, {})", i * 16, i * 16 + 16));
+            }
+            s.push_str("]\n\n");
+            if r == Regime::PairsAll {
+                s.push_str(concat!(
+                    "-- every region against every other\n",
+                    "def disjAll (l : List (Nat × Nat)) : Bool :=\n",
+                    "  l.all (fun a => l.all (fun b =>\n",
+                    "    decide (a.1 = b.1) || decide (a.2 <= b.1) || decide (b.2 <= a.1)))\n\n",
+                    "theorem t : disjAll regs = true := rfl\n",
+                ));
+            } else {
+                s.push_str(concat!(
+                    "-- neighbours only; the `<=` chain also establishes the order\n",
+                    "-- that makes adjacent-disjointness imply pairwise-disjointness\n",
+                    "def disjAdj : List (Nat × Nat) -> Bool\n",
+                    "  | [] => true\n",
+                    "  | [_] => true\n",
+                    "  | a :: b :: r => decide (a.2 <= b.1) && disjAdj (b :: r)\n\n",
+                    "theorem t : disjAdj regs = true := rfl\n",
                 ));
             }
         }
