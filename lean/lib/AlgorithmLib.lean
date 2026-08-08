@@ -59,3 +59,5 @@ import AlgorithmLib.ML.HostBridge
 import AlgorithmLib.ML.Sched
 import AlgorithmLib.ML.Frontend
 import AlgorithmLib.ML.Assumptions
+import AlgorithmLib.ML.Batch
+import AlgorithmLib.ML.SoftmaxCE
