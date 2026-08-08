@@ -63,3 +63,7 @@ import AlgorithmLib.ML.Batch
 import AlgorithmLib.ML.SoftmaxCE
 import AlgorithmLib.ML.TenDenote
 import AlgorithmLib.ML.Fuse
+import AlgorithmLib.ML.LocalBind
+import AlgorithmLib.ML.BufsOf
+import AlgorithmLib.ML.EmitFacts
+import AlgorithmLib.ML.RegBound
