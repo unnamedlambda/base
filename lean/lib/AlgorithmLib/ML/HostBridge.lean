@@ -220,10 +220,8 @@ def vecAt (mem : Buf → Nat → Float32) (xB : Buf) (cols : Nat) :
     *Where* it can land is proven: `frame` is discharged here, so the step
     cannot touch a buffer the rest of the plan reasons about. -/
 noncomputable def cublasStep (aB xB yB : Buf) (rows cols : Nat) : DeclaredStep where
-  name  := "cl_cublas_sgemv"
-  why   := "vendor GEMV; NVIDIA specifies no fold order, so no exact Float32 \
-            claim is available. Law.cublasIsMatvec states y = A·x at ℝ."
-  out   := yB
+  kernel := .cublasSgemv
+  outs  := [yB]
   step  := fun mem b a =>
              if h : b = yB ∧ a < rows then
                cublasSgemvResult rows cols (matAt mem aB rows cols)
@@ -232,7 +230,7 @@ noncomputable def cublasStep (aB xB yB : Buf) (rows cols : Nat) : DeclaredStep w
   frame := by
     intro mem b hb
     funext a
-    rw [dif_neg (fun h => hb h.1)]
+    rw [dif_neg (fun h => hb (by simp [h.1]))]
 
 /-- **What the vendor GEMV computes, under the law that names it.**
 
@@ -282,16 +280,14 @@ opaque sgemmBatchedRow (mem : Buf → Nat → Float32) (aB bB : Buf) (k i : Nat)
 /-- `C = A·B`, batched, as a plan step.  As with `cublasStep`, *what* lands in
     `C` is assumed and *where* it can land is proven. -/
 noncomputable def sgemmBatchedStep (aB bB cB : Buf) (rows k : Nat) : DeclaredStep where
-  name  := "cl_cublas_sgemm_strided_batched"
-  why   := "vendor batched GEMM; NVIDIA specifies no fold order, so no exact \
-            Float32 claim is available. Same standing as cl_cublas_sgemv."
-  out   := cB
+  kernel := .cublasSgemmStridedBatched
+  outs  := [cB]
   step  := fun mem b a =>
              if b = cB ∧ a < rows then sgemmBatchedRow mem aB bB k a else mem b a
   frame := by
     intro mem b hb
     funext a
-    simp [hb]
+    simp [show b ≠ cB from fun h => hb (by simp [h])]
 
 /-- **How many of a plan's declared steps no law says anything about.**
 
@@ -299,8 +295,8 @@ noncomputable def sgemmBatchedStep (aB bB cB : Buf) (rows k : Nat) : DeclaredSte
     even *stated*: a step whose primitive has a law is assumed only up to that
     law's content, and one without is assumed entirely.  For a Qwen2 layer the
     two numbers are 9 and 2. -/
-def lawlessNames : List String := ["cl_cublas_sgemm_strided_batched",
-  "cl_cublas_sgemm_strided_batched_on_stream", "cl_cuda_graph_launch"]
+def lawlessNames : List String :=
+  (VendorKernel.all.filter VendorKernel.lawless).map VendorKernel.symbol
 
 def Plan.declaredLawGap (P : Plan) : Nat :=
   (P.declaredNames.filter (fun n => n ∈ lawlessNames)).length

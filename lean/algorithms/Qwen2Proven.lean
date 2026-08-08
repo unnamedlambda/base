@@ -2413,15 +2413,13 @@ def fArgmaxStage : StageSpec :=
 opaque uploadedValue (dstB : Buf) (a : Nat) : Float32
 
 noncomputable def uploadStep (dstB : Buf) : DeclaredStep where
-  name  := "cl_cuda_upload_ptr"
-  why   := "host→device copy; the source is host memory, which this model does \
-            not describe. Framed, so it cannot touch any other buffer."
-  out   := dstB
+  kernel := .uploadPtr
+  outs  := [dstB]
   step  := fun mem b a => if b = dstB then uploadedValue dstB a else mem b a
   frame := by
     intro mem b hb
     funext a
-    simp [hb]
+    simp [show b ≠ dstB from fun h => hb (by simp [h])]
 
 /-- **The prologue: upload, then gather the token's embedding.** -/
 noncomputable def entryPlan : Plan where
