@@ -68,9 +68,6 @@ def ofWSt (m : MState) (st : WSt) : MState :=
 @[simp] theorem toWSt_ofWSt (m : MState) (st : WSt) : (m.ofWSt st).toWSt = st := by
   cases st; rfl
 
-@[simp] theorem ir_ofWSt (m : MState) (st : WSt) : (m.ofWSt st).ir = m.ir := rfl
-@[simp] theorem pr_ofWSt (m : MState) (st : WSt) : (m.ofWSt st).pr = m.pr := rfl
-
 def getF (m : MState) : PReg → Lane → Float32
   | .tmp n  => m.f n
   | .mach n => m.fw n
@@ -88,17 +85,12 @@ def setPr (m : MState) (n : Nat) (v : Lane → Bool) : MState :=
 @[simp] theorem toP_ofP (m : MState) (ps : PState) : (m.ofP ps).toP = ps := by
   cases ps; rfl
 
-@[simp] theorem ir_ofP (m : MState) (ps : PState) : (m.ofP ps).ir = m.ir := rfl
-@[simp] theorem pr_ofP (m : MState) (ps : PState) : (m.ofP ps).pr = m.pr := rfl
-@[simp] theorem sm_ofP (m : MState) (ps : PState) : (m.ofP ps).sm = m.sm := rfl
 @[simp] theorem ofP_toP (m : MState) : m.ofP m.toP = m := by cases m; rfl
 
 @[simp] theorem ir_setI_same (m : MState) (n : Nat) (v : Lane → Nat) :
     (m.setI n v).ir n = v := by simp [setI]
 @[simp] theorem ir_setI_other (m : MState) (n x : Nat) (v : Lane → Nat) (h : x ≠ n) :
     (m.setI n v).ir x = m.ir x := by simp [setI, h]
-@[simp] theorem toP_setI (m : MState) (n : Nat) (v : Lane → Nat) :
-    (m.setI n v).toP = m.toP := rfl
 @[simp] theorem toWSt_setI (m : MState) (n : Nat) (v : Lane → Nat) :
     (m.setI n v).toWSt = m.toWSt := rfl
 @[simp] theorem pr_setI (m : MState) (n : Nat) (v : Lane → Nat) :
@@ -108,30 +100,17 @@ def setPr (m : MState) (n : Nat) (v : Lane → Bool) : MState :=
     (m.setPr n v).pr n = v := by simp [setPr]
 @[simp] theorem ir_setPr (m : MState) (n : Nat) (v : Lane → Bool) :
     (m.setPr n v).ir = m.ir := rfl
-@[simp] theorem toP_setPr (m : MState) (n : Nat) (v : Lane → Bool) :
-    (m.setPr n v).toP = m.toP := rfl
 @[simp] theorem toWSt_setPr (m : MState) (n : Nat) (v : Lane → Bool) :
     (m.setPr n v).toWSt = m.toWSt := rfl
 
-@[simp] theorem getF_setF_same (m : MState) (r : PReg) (v : Lane → Float32) :
-    (m.setF r v).getF r = v := by cases r <;> simp [getF, setF]
 @[simp] theorem ir_setF (m : MState) (r : PReg) (v : Lane → Float32) :
     (m.setF r v).ir = m.ir := by cases r <;> rfl
-@[simp] theorem pr_setF (m : MState) (r : PReg) (v : Lane → Float32) :
-    (m.setF r v).pr = m.pr := by cases r <;> rfl
-@[simp] theorem sm_setF (m : MState) (r : PReg) (v : Lane → Float32) :
-    (m.setF r v).sm = m.sm := by cases r <;> rfl
 @[simp] theorem mem_setF (m : MState) (r : PReg) (v : Lane → Float32) :
     (m.setF r v).mem = m.mem := by cases r <;> rfl
 
 /-- Writing a machine register is exactly `WSt.setReg` on the warp view. -/
 @[simp] theorem toWSt_setF_mach (m : MState) (n : Nat) (v : Lane → Float32) :
     (m.setF (.mach n) v).toWSt = m.toWSt.setReg n v := rfl
-
-/-- Writing a temporary is invisible to the warp view — the register-aliasing
-    bug, ruled out at the level of the state. -/
-@[simp] theorem toWSt_setF_tmp (m : MState) (n : Nat) (v : Lane → Float32) :
-    (m.setF (.tmp n) v).toWSt = m.toWSt := rfl
 
 end MState
 

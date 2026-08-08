@@ -99,15 +99,6 @@ theorem Tele.env_cons_last {n : Nat} (t : Tele Γ n) (e : Expr (Γ + n))
 -- `bindVec` is a telescope
 -- ---------------------------------------------------------------------------
 
-/-- A vector of same-context bindings, viewed as a telescope.  Each value is
-    weakened into the context its predecessors built — which is exactly the
-    degenerate case where nothing refers to anything earlier. -/
-def Tele.ofVec : (d : Nat) → (Fin d → Expr Γ) → Tele Γ d
-  | 0,     _  => .nil
-  | d + 1, vs => (Tele.ofVec d (fun i => vs ⟨i.val, by omega⟩)).cons
-                    (wkBy d (vs ⟨d, by omega⟩))
-
-
 -- ---------------------------------------------------------------------------
 -- Context casts and composition
 -- ---------------------------------------------------------------------------
@@ -205,13 +196,6 @@ structure Prog (Γ : Nat) where
   {size : Nat}
   binds : Tele Γ size
   out   : Expr (Γ + size)
-
-/-- The single `Expr` a program denotes. -/
-def Prog.toExpr (p : Prog Γ) : Expr Γ := p.binds.bind p.out
-
-@[simp] theorem Prog.denote_toExpr (p : Prog Γ) (env : Fin Γ → R) :
-    denote env p.toExpr = denote (p.binds.env env) p.out :=
-  denote_bind p.binds p.out env
 
 /-- A program with `Γ` results — the shape a gradient needs, where every output
     shares one telescope. -/

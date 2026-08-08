@@ -42,9 +42,6 @@ def xorLane (l : Lane) (m : Nat) : Lane :=
     consecutive floats per step, each lane taking an aligned quad. -/
 def v4BaseOff (off i : Nat) (l : Lane) : Nat := i * (4 * W) + l.val * 4 + off
 
-/-- The single-block case. -/
-def v4Base (i : Nat) (l : Lane) : Nat := v4BaseOff 0 i l
-
 /-- Addresses a kernel can actually *emit*.
 
     An address is an `IdxE` term, not a Lean function `Lane → Nat`: a closure
@@ -206,25 +203,10 @@ theorem IdxE.eval_frame (cta i : Nat) (l : Lane) (n : Nat) (ir ir' : Nat → Lan
   | mul a b iha ihb =>
       intro hab; show _ * _ = _ * _; rw [iha hab.1, ihb hab.2]
 
-/-- The address pattern of a coalesced stride-`W` sweep: `i*W + lane`. -/
-def strideIx : IdxE := .add (.mul .loopI (.lit W)) .laneId
-
-/-- The address pattern of a vectorised sweep: `i*4W + lane*4`. -/
-def strideIxV4 : IdxE := .add (.mul .loopI (.lit (4 * W))) (.mul .laneId (.lit 4))
-
 /-- Grid form: block `c` owns the chunk starting at `c * chunk`. -/
 def strideIxV4Cta (chunk : Nat) : IdxE :=
   .add (.add (.mul .loopI (.lit (4 * W))) (.mul .laneId (.lit 4)))
        (.mul .ctaId (.lit chunk))
-
-@[simp] theorem strideIx_eval (cta i : Nat) (l : Lane) :
-    strideIx.eval cta i l = i * W + l.val := rfl
-
-@[simp] theorem strideIxV4_eval (cta i : Nat) (l : Lane) :
-    strideIxV4.eval cta i l = v4Base i l := rfl
-
-@[simp] theorem strideIxV4Cta_eval (chunk cta i : Nat) (l : Lane) :
-    (strideIxV4Cta chunk).eval cta i l = v4BaseOff (cta * chunk) i l := rfl
 
 /-- An external operation, identified by name, with the contract it is assumed
     to satisfy.  `deterministic` records whether the vendor path is pinned to a
@@ -269,14 +251,8 @@ def store1 (st : WSt) (b : Buf) (i : Nat) (v : Float32) : WSt :=
 @[simp] theorem mem_setReg (st : WSt) (r : Nat) (f : Lane → Float32) :
     (st.setReg r f).mem = st.mem := rfl
 
-@[simp] theorem smem_setReg (st : WSt) (r : Nat) (f : Lane → Float32) :
-    (st.setReg r f).smem = st.smem := rfl
-
 @[simp] theorem mem_store1_same (st : WSt) (b : Buf) (i : Nat) (v : Float32) :
     (st.store1 b i v).mem b i = v := by simp [store1]
-
-@[simp] theorem regs_store1 (st : WSt) (b : Buf) (i : Nat) (v : Float32) :
-    (st.store1 b i v).regs = st.regs := rfl
 
 end WSt
 
@@ -412,14 +388,6 @@ def WStmt.run (s : WStmt) (st : WSt) : WSt :=
     WStmt.run (.setLaneF d f) st = st.setReg d (fun l => NumOps.ofNat (f l)) := rfl
 @[simp] theorem wrun_storeLane0 (b : Buf) (i r : Nat) (st : WSt) :
     WStmt.run (.storeLane0 b i r) st = st.store1 b i (st.regs r ⟨0, by decide⟩) := rfl
-@[simp] theorem wrun_barrier (st : WSt) : WStmt.run .barrier st = st := rfl
-@[simp] theorem wrun_ldSmem (d : Nat) (ix : Lane → Nat) (st : WSt) :
-    WStmt.run (.ldSmem d ix) st = st.setReg d (fun l => st.smem (ix l)) := rfl
-@[simp] theorem wrun_storeLane (b : Buf) (ix : Lane → Nat) (r : Nat) (st : WSt) :
-    WStmt.run (.storeLane b ix r)
-      = fun st => (List.finRange W).foldl
-          (fun s l => s.store1 b (ix l) (st.regs r l)) st := rfl
-
 -- ---------------------------------------------------------------------------
 -- Reading a store back
 -- ---------------------------------------------------------------------------
@@ -848,23 +816,6 @@ theorem warpSumSqV4Store_implements (off : Nat) (b out : Buf) (oi k : Nat) (st :
     instead of `n` about `Float32.add`.  What it does cost is the *reduction-order
     commitment*: with split-K and atomics the vendor result is not reproducible,
     so `deterministic` must be set for any bit-exactness claim. -/
-
-/-- The value an extern leaves in the output buffer is exactly its contract. -/
-@[simp] theorem extern_spec (op : ExternOp) (inB outB : Buf) (st : WSt) (j : Nat) :
-    ((WStmt.extern op inB outB).run st).mem outB j = op.spec (st.mem inB) j := by
-  show (if outB = outB then _ else _) = _
-  simp
-
-/-- An extern leaves every other buffer alone. -/
-@[simp] theorem extern_frame (op : ExternOp) (inB outB : Buf) (st : WSt) (c : Buf)
-    (h : c ≠ outB) (j : Nat) :
-    ((WStmt.extern op inB outB).run st).mem c j = st.mem c j := by
-  show (if c = outB then _ else _) = _
-  simp [h]
-
-/-- Registers are untouched by an extern — the warp is idle while it runs. -/
-@[simp] theorem extern_regs (op : ExternOp) (inB outB : Buf) (st : WSt) :
-    ((WStmt.extern op inB outB).run st).regs = st.regs := rfl
 
 /-- Matrix-vector product as a vendor contract: `y i = Σₖ A[i·n+k]·x[k]`,
     committed to a left fold so a *deterministic* vendor mode can meet it

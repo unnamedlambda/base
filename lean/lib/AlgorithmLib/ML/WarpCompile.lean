@@ -273,11 +273,6 @@ theorem compileW_elabAt {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Na
   rfl
 
 @[simp] theorem runW_skip (st : WSt) : runW .skip st = st := rfl
-@[simp] theorem runW_seq (a b : EWStmt) (st : WSt) :
-    runW (.seq a b) st = runW b (runW a st) := rfl
-@[simp] theorem runW_setR (r : Nat) (e : WFExp) (st : WSt) :
-    runW (.setR r e) st = st.setReg r (fun l => e.eval st l) := rfl
-
 /-- The generated body only reads registers below the end of its range. -/
 theorem compileW_regsIn :
     ∀ {Γ : Nat} (e : Expr Γ) (ve : Fin Γ → WFExp) (c : Nat),

@@ -90,8 +90,6 @@ def denote {R : Type} [NumOps R] : {Γ : Nat} → (Fin Γ → R) → Expr Γ →
 
 variable {R : Type} [NumOps R] {Γ : Nat}
 
-@[simp] theorem denote_var (env : Fin Γ → R) (i : Fin Γ) :
-    denote env (.var i) = env i := rfl
 @[simp] theorem denote_add (env : Fin Γ → R) (a b : Expr Γ) :
     denote env (.add a b) = add (denote env a) (denote env b) := rfl
 @[simp] theorem denote_mul (env : Fin Γ → R) (a b : Expr Γ) :
@@ -106,13 +104,6 @@ variable {R : Type} [NumOps R] {Γ : Nat}
     denote env (.rsqrt a) = rsqrt (denote env a) := rfl
 @[simp] theorem denote_lit (env : Fin Γ → R) (n : Nat) :
     denote env (.lit n : Expr Γ) = ofNat n := rfl
-@[simp] theorem denote_sum (env : Fin Γ → R) (n : Nat) (f : Fin n → Expr Γ) :
-    denote env (.sum n f)
-      = (List.finRange n).foldl (fun acc j => add acc (denote env (f j))) zero := rfl
-@[simp] theorem denote_letE (env : Fin Γ → R) (a : Expr Γ) (b : Expr (Γ + 1)) :
-    denote env (.letE a b) = denote (extend env (denote env a)) b := rfl
-
-
 -- ---------------------------------------------------------------------------
 -- Renaming, and weakening under a binder
 -- ---------------------------------------------------------------------------
@@ -205,12 +196,6 @@ instance : Inv (Expr Γ) := ⟨.inv⟩
 instance : OfNat (Expr Γ) n := ⟨.lit n⟩
 
 @[simp] theorem hAdd_def (a b : Expr Γ) : a + b = .add a b := rfl
-@[simp] theorem hMul_def (a b : Expr Γ) : a * b = .mul a b := rfl
-@[simp] theorem neg_def  (a : Expr Γ)   : -a = .neg a := rfl
-@[simp] theorem hSub_def (a b : Expr Γ) : a - b = .add a (.neg b) := rfl
-@[simp] theorem hDiv_def (a b : Expr Γ) : a / b = .mul a (.inv b) := rfl
-@[simp] theorem ofNat_def (n : Nat) : (OfNat.ofNat n : Expr Γ) = .lit n := rfl
-
 /-- Variable `i`, with the bound discharged by `decide` — so specs write
     `x 0 * x 1 + x 2` instead of `.var ⟨0, by decide⟩`. -/
 def x {Γ : Nat} (i : Nat) (h : i < Γ := by decide) : Expr Γ := .var ⟨i, h⟩

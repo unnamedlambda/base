@@ -63,12 +63,6 @@ def ifGe (a b x y : R) : R := if le b a then x else y
 /-- `max` is a select on its own arguments — not a separate primitive. -/
 def max (a b : R) : R := ifGe a b a b
 
-@[simp] theorem ifGe_pos (a b x y : R) (h : le b a = true) : ifGe a b x y = x := by
-  simp [ifGe, h]
-
-@[simp] theorem ifGe_neg (a b x y : R) (h : le b a = false) : ifGe a b x y = y := by
-  simp [ifGe, h]
-
 end NumOps
 
 open NumOps in

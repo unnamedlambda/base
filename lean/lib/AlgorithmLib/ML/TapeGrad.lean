@@ -205,9 +205,6 @@ def adjSem : {n : Nat} → Tele Γ n → Expr (Γ + n) → (Fin Γ → R) → Fi
       if h : q.val < Γ + n then adjSem t (.letE e b) env ⟨q.val, h⟩
       else denote ((Tele.cons t e).env env) (sderiv b q)
 
-@[simp] theorem adjSem_nil (b : Expr (Γ + 0)) (env : Fin Γ → R) (q : Fin (Γ + 0)) :
-    adjSem .nil b env q = denote env (sderiv b q) := rfl
-
 theorem adjSem_cons_lt {n : Nat} (t : Tele Γ n) (e : Expr (Γ + n)) (b : Expr (Γ + n + 1))
     (env : Fin Γ → R) (q : Fin (Γ + (n + 1))) (h : q.val < Γ + n) :
     adjSem (.cons t e) b env q = adjSem t (.letE e b) env ⟨q.val, h⟩ := by

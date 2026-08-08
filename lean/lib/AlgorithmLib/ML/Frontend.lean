@@ -63,14 +63,6 @@ def applyVars : (k : Nat) → {Γ : Nat} → (s : Nat) → s + k ≤ Γ → Curr
     the clearest possible statement of how many inputs the spec takes. -/
 def ofFn (Γ : Nat) (f : Curried Γ Γ) : Expr Γ := applyVars Γ 0 (by omega) f
 
-/-- The unfolding, at the arities specs actually use.  Each is `rfl`, which is
-    the point: `ofFn` is not a translation step that could go wrong. -/
-@[simp] theorem ofFn_one (f : Curried 1 1) : ofFn 1 f = f (.var ⟨0, by decide⟩) := rfl
-@[simp] theorem ofFn_two (f : Curried 2 2) :
-    ofFn 2 f = f (.var ⟨0, by decide⟩) (.var ⟨1, by decide⟩) := rfl
-@[simp] theorem ofFn_three (f : Curried 3 3) :
-    ofFn 3 f = f (.var ⟨0, by decide⟩) (.var ⟨1, by decide⟩) (.var ⟨2, by decide⟩) := rfl
-
 /-- `let v = a in body v` — the binder, function-first.  The body receives the
     bound variable, so nothing counts de Bruijn indices by hand.
 
@@ -228,13 +220,6 @@ instance {n : Nat} : HMul (Expr Γ) (Vec n Γ) (Vec n Γ) := ⟨Vec.scale⟩
 /-- Matrix × vector — the one place `*` does contract, and the shapes make it
     unambiguous. -/
 instance {m n : Nat} : HMul (Mat m n Γ) (Vec n Γ) (Vec m Γ) := ⟨matVec⟩
-
-@[simp] theorem vec_add_def {n : Nat} (a b : Vec n Γ) : a + b = Vec.add a b := rfl
-@[simp] theorem vec_mul_def {n : Nat} (a b : Vec n Γ) : a * b = Vec.hadamard a b := rfl
-@[simp] theorem vec_smul_def {n : Nat} (s : Expr Γ) (v : Vec n Γ) :
-    s * v = Vec.scale s v := rfl
-@[simp] theorem mat_mul_def {m n : Nat} (w : Mat m n Γ) (v : Vec n Γ) :
-    w * v = matVec w v := rfl
 
 -- ---------------------------------------------------------------------------
 -- Stacking layers *with sharing*

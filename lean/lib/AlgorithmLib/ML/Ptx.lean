@@ -33,9 +33,6 @@ def set (ps : PState) : PReg → (Lane → Float32) → PState
 @[simp] theorem get_set_tmp_mach (ps : PState) (n m : Nat) (v : Lane → Float32) :
     (ps.set (.tmp n) v).get (.mach m) = ps.get (.mach m) := by simp [get, set]
 
-@[simp] theorem get_set_mach_tmp (ps : PState) (n m : Nat) (v : Lane → Float32) :
-    (ps.set (.mach n) v).get (.tmp m) = ps.get (.tmp m) := by simp [get, set]
-
 @[simp] theorem get_set_tmp_other (ps : PState) (n m : Nat) (v : Lane → Float32)
     (h : m ≠ n) : (ps.set (.tmp n) v).get (.tmp m) = ps.get (.tmp m) := by
   simp [get, set, h]
@@ -606,79 +603,5 @@ theorem SFrag_mem : ∀ (s : WStmt), s.SFrag → ∀ (st : WSt),
   | barrier => intro hf _; exact absurd hf (by simp [WStmt.SFrag])
   | extern _ _ _ => intro hf _; exact absurd hf (by simp [WStmt.SFrag])
   | setLaneF _ _ => intro hf _; exact absurd hf (by simp [WStmt.SFrag])
-
-/-- **The lowered statement reproduces the machine's register file.**
-
-    Composed with `emitP_sound`, this proves the emitted PTX for a warp
-    reduction's body computes what `WStmt.run` says — the whole chain from
-    `Expr` down to instructions, for the control-free fragment. -/
-theorem emitS_sound : ∀ (s : WStmt), s.SFrag → ∀ (n : Nat) (ps : PState),
-    (prun (emitS n s) ps).fw = (s.run ps.toWSt).regs := by
-  intro s
-  induction s with
-  | skip => intro _ n ps; rfl
-  | seq a b iha ihb =>
-      intro hf n ps
-      show (prun (emitS n a ++ emitS n b) ps).fw = _
-      rw [prun_append]
-      have hmem : (prun (emitS n a) ps).toWSt = (a.run ps.toWSt) := by
-        have hsm := SFrag_mem a hf.1 ps.toWSt
-        refine WSt.ext ?_ ?_ ?_
-        · show (prun (emitS n a) ps).fw = (a.run ps.toWSt).regs
-          exact iha hf.1 n ps
-        · show (prun (emitS n a) ps).mem = (a.run ps.toWSt).mem
-          rw [emitS_mem a n ps, hsm.1]; rfl
-        · show (fun _ => (0.0:Float32)) = (a.run ps.toWSt).smem
-          rw [hsm.2]; rfl
-      rw [ihb hf.2 n (prun (emitS n a) ps), hmem]
-      rfl
-  | setR r e =>
-      intro hf n ps
-      show (prun ((emitP n e).2.1 ++ [PInstr.mov (.mach r) (emitP n e).1]) ps).fw = _
-      rw [prun_append]
-      funext m l
-      show ((PInstr.mov (.mach r) (emitP n e).1).step (prun (emitP n e).2.1 ps)).fw m l = _
-      by_cases hm : m = r
-      · subst hm
-        show (PState.set _ (.mach m) _).fw m l = _
-        have : ((prun (emitP n e).2.1 ps).set (.mach m)
-                  ((prun (emitP n e).2.1 ps).get (emitP n e).1)).get (.mach m) l
-              = (prun (emitP n e).2.1 ps).get (emitP n e).1 l :=
-          congrFun (PState.get_set_same _ (.mach m) _) l
-        show ((prun (emitP n e).2.1 ps).set (.mach m) _).get (.mach m) l = _
-        rw [this, emitP_sound e hf n ps l]
-        show _ = (WSt.setReg ps.toWSt m _).regs m l
-        rw [WSt.regs_setReg_same]
-      · show ((prun (emitP n e).2.1 ps).set (.mach r) _).get (.mach m) l = _
-        rw [PState.get_set_mach_other _ r m _ hm]
-        show (prun (emitP n e).2.1 ps).fw m l = (WSt.setReg ps.toWSt r _).regs m l
-        rw [WSt.regs_setReg_other _ r m _ hm, emitP_fw e n ps]
-        rfl
-  | shflXor d s m =>
-      intro _ n ps
-      funext x l
-      show ((PInstr.shflBfly (.mach d) (.mach s) m).step ps).fw x l = _
-      by_cases hx : x = d
-      · subst hx
-        show ((ps.set (.mach x) _).get (.mach x)) l = _
-        rw [PState.get_set_same]
-        show ps.get (.mach s) (xorLane l m) = (WSt.setReg ps.toWSt x _).regs x l
-        rw [WSt.regs_setReg_same]
-        rfl
-      · show ((ps.set (.mach d) _).get (.mach x)) l = _
-        rw [PState.get_set_mach_other _ d x _ hx]
-        show ps.fw x l = (WSt.setReg ps.toWSt d _).regs x l
-        rw [WSt.regs_setReg_other _ d x _ hx]
-        rfl
-  | loadIdx _ _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | loadV4 _ _ _ _ _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | forN _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | storeLane0 _ _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | storeLane _ _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | stSmem _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | ldSmem _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | barrier => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | extern _ _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
-  | setLaneF _ _ => intro hf _ _; exact absurd hf (by simp [WStmt.SFrag])
 
 end AlgorithmLib.ML
