@@ -1,4 +1,5 @@
 use base::{Artifact, Base};
+use warp_check::{dot_by, floats, gbs, roofline, Walk};
 
 const ART: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/BackwardWideAlgorithm/backward_wide.bin"));
@@ -27,13 +28,22 @@ fn main() {
 
     let gam: Vec<f32> = (0..N).map(|i| 1.0 + ((i % 13) as f32 - 6.0) * 0.05).collect();
 
-    let mut bytes: Vec<u8> = Vec::with_capacity((5 * N + N * N) * 4);
+    // The training target: silu of a smooth pre-activation, so it is reachable.
+    let ystar: Vec<f32> = (0..N)
+        .map(|i| {
+            let z = ((i % 37) as f32 - 18.0) * 0.05;
+            z / (1.0 + (-z).exp())
+        })
+        .collect();
+
+    let mut bytes: Vec<u8> = Vec::with_capacity((6 * N + N * N) * 4);
     bytes.extend(adj.iter().flat_map(|f| f.to_le_bytes()));
     bytes.extend(xa.iter().flat_map(|f| f.to_le_bytes()));
     bytes.extend(z.iter().flat_map(|f| f.to_le_bytes()));
     bytes.extend(dy.iter().flat_map(|f| f.to_le_bytes()));
     bytes.extend(gam.iter().flat_map(|f| f.to_le_bytes()));
     bytes.extend(w.iter().flat_map(|f| f.to_le_bytes()));
+    bytes.extend(ystar.iter().flat_map(|f| f.to_le_bytes()));
 
     let artifact = Artifact::from_bytes(ART);
 
@@ -67,28 +77,14 @@ fn main() {
 
     let mut out = vec![0u8; N * 4];
     base.execute_into(fetch, b"", &mut out).expect("fetch");
-    let gpu: Vec<f32> = out
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let gpu: Vec<f32> = floats(&out);
 
     // Reference, in the *committed* order the kernel is proven against:
     // each lane folds its own rows sequentially, then a five-round butterfly.
+    // The transposed walk: successive rows are `N` floats apart, so no `Walk`
+    // describes it and the index functions are given directly.
     let reference = |j: usize| -> f32 {
-        let mut lane = [0f32; 32];
-        for (l, acc) in lane.iter_mut().enumerate() {
-            for t in 0..N / 32 {
-                let i = t * 32 + l;
-                *acc += adj[i] * w[i * N + j];
-            }
-        }
-        for m in [16usize, 8, 4, 2, 1] {
-            let prev = lane;
-            for l in 0..32 {
-                lane[l] = prev[l] + prev[l ^ m];
-            }
-        }
-        lane[0]
+        dot_by(N / 32, 1, &adj, &w, |t, l| t * 32 + l, |t, l| (t * 32 + l) * N + j)
     };
 
     let mut worst = 0f32;
@@ -127,10 +123,7 @@ fn main() {
 
     let mut dwbytes = vec![0u8; N * N * 4];
     base.execute_into(fetch_dw, b"", &mut dwbytes).expect("fetchDw");
-    let dw: Vec<f32> = dwbytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let dw: Vec<f32> = floats(&dwbytes);
 
     let mut dw_exact = 0usize;
     for i in 0..N {
@@ -158,10 +151,7 @@ fn main() {
     // It writes `adj`, so re-running dW now reads the GPU-computed adjoint.
     base.execute_into(run_dw, b"", &mut []).expect("runDw");
     base.execute_into(fetch_dw, b"", &mut dwbytes).expect("fetchDw");
-    let dw2: Vec<f32> = dwbytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let dw2: Vec<f32> = floats(&dwbytes);
 
     let mut chain_worst = 0f32;
     for i in 0..N {
@@ -194,27 +184,11 @@ fn main() {
     let mut dxrbytes = vec![0u8; N * 4];
     base.execute_into(&artifact.extras["fetchDxr"], b"", &mut dxrbytes)
         .expect("fetchDxr");
-    let dxr: Vec<f32> = dxrbytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let dxr: Vec<f32> = floats(&dxrbytes);
 
     // Host reference, in the committed order: lane folds then butterfly.
     let committed = |a: &[f32], b: &[f32]| -> f32 {
-        let mut lane = [0f32; 32];
-        for (l, acc) in lane.iter_mut().enumerate() {
-            for t in 0..N / 32 {
-                let i = t * 32 + l;
-                *acc += a[i] * b[i];
-            }
-        }
-        for m in [16usize, 8, 4, 2, 1] {
-            let prev = lane;
-            for l in 0..32 {
-                lane[l] = prev[l] + prev[l ^ m];
-            }
-        }
-        lane[0]
+        warp_check::dot(Walk::Strided, a, b, 0, 0, N)
     };
     let tv: Vec<f32> = (0..N).map(|i| dy[i] * gam[i]).collect();
     let qq = committed(&xa, &xa);
@@ -247,28 +221,13 @@ fn main() {
     base.execute_into(run, b"", &mut []).expect("run");
     let mut chain_out = vec![0u8; N * 4];
     base.execute_into(fetch, b"", &mut chain_out).expect("fetch");
-    let dx_chained: Vec<f32> = chain_out
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
+    let dx_chained: Vec<f32> = floats(&chain_out);
 
     // Host reference in the committed order, from the *composed* spec.
     let mut pipe_worst = 0f32;
     for j in 0..N {
-        let mut lane = [0f32; 32];
-        for (l, acc) in lane.iter_mut().enumerate() {
-            for t in 0..N / 32 {
-                let i = t * 32 + l;
-                *acc += adj[i] * w[i * N + j];
-            }
-        }
-        for m in [16usize, 8, 4, 2, 1] {
-            let prev = lane;
-            for l in 0..32 {
-                lane[l] = prev[l] + prev[l ^ m];
-            }
-        }
-        let d = (dx_chained[j] - lane[0]).abs() / lane[0].abs().max(1e-6);
+        let want = dot_by(N / 32, 1, &adj, &w, |t, l| t * 32 + l, |t, l| (t * 32 + l) * N + j);
+        let d = (dx_chained[j] - want).abs() / want.abs().max(1e-6);
         if d > pipe_worst {
             pipe_worst = d;
         }
@@ -277,6 +236,150 @@ fn main() {
     println!("worst rel. err  : {pipe_worst:.3e}  vs the composed spec");
     assert!(pipe_worst < 1e-4, "the pipeline must match the composed spec");
 
+    // ── The same three stages as ONE emitted function ────────────────────
+    // `bwdAll_host_computes` recovers the launch sequence from `runBwdAll`'s
+    // own instructions and matches it against `bwdPipelineFull`. Three
+    // separate host calls never exhibited that order inside any one program,
+    // so the theorem would have been about a program nothing ran. This runs it.
+    base.execute_into(&artifact.extras["runBwdAll"], b"", &mut []).expect("runBwdAll");
+    let mut fused_out = vec![0u8; N * 4];
+    base.execute_into(fetch, b"", &mut fused_out).expect("fetch");
+    let dx_fused: Vec<f32> = floats(&fused_out);
+    let fused_worst = dx_fused
+        .iter()
+        .zip(&dx_chained)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0f32, f32::max);
+    let mut dw_fused = vec![0u8; N * N * 4];
+    base.execute_into(fetch_dw, b"", &mut dw_fused).expect("fetchDw");
+    println!("fused function  : runBwdAll — the 3 launches `bwdAllTable` binds");
+    println!("worst abs. diff : {fused_worst:.3e}  vs the same three calls separately");
+    assert_eq!(fused_worst, 0.0, "the fused function must be bit-identical");
+
     println!("\nOK — dense+silu and RMSNorm backward, both at width 896:");
     println!("   7 kernels, every one a schema instance, PTX size independent of N.");
+
+    train(&mut base, &artifact.extras, &xa, &ystar);
+}
+
+/// **Training.** Everything above checks a gradient against a spec. This runs
+/// the loop that gradient exists for:
+///
+///     z = W·x    y = silu(z)    L = ½‖y − y*‖²    adj = dy⊙silu'(z)
+///     dW = adj⊗x                W ← W − lr·dW
+///
+/// Six launches per step, every one a schema instance proven against its own
+/// spec. The target `y*` is a fixed vector the model has to reach, so a falling
+/// loss is evidence the whole chain — forward, derivative-from-spec, outer
+/// product, optimiser — agrees on what it is differentiating.
+fn train(
+    base: &mut Base,
+    extras: &std::collections::HashMap<String, base_types::Algorithm>,
+    xa: &[f32],
+    ystar: &[f32],
+) {
+    // The fused step: the three elementwise passes (y, dy, siluBwd) are one
+    // kernel, because at 3.5 KB each a launch costs more than the work.
+    let step = ["runFwd", "runAdj", "runDw", "runSgd"];
+    let fetch_y = &extras["fetchY"];
+
+    let loss = |base: &mut Base| -> f32 {
+        let mut out = vec![0u8; N * 4];
+        base.execute_into(fetch_y, b"", &mut out).expect("fetchY");
+        let y: Vec<f32> = floats(&out);
+        0.5 * (0..N).map(|i| (y[i] - ystar[i]).powi(2)).sum::<f32>()
+    };
+
+    // One forward to establish the starting loss.
+    for k in ["runFwd", "runY"] {
+        base.execute_into(&extras[k], b"", &mut []).unwrap();
+    }
+    let l0 = loss(base);
+
+    println!("\n── training: z = W·x, y = silu(z), L = ½‖y − y*‖², SGD on W ──");
+    println!("width {N}, lr = 1/1024, {} launches per step", step.len());
+    println!("{:>6}  {:>12}  {:>10}", "step", "loss", "vs start");
+
+    let mut losses = vec![l0];
+    println!("{:>6}  {:>12.6}  {:>10}", 0, l0, "1.000");
+    let iters = 200;
+    let t0 = std::time::Instant::now();
+    for it in 1..=iters {
+        for k in step {
+            base.execute_into(&extras[k], b"", &mut []).unwrap();
+        }
+        if it % 25 == 0 || it == 1 {
+            // The step's forward ran *before* its update, so y is one step
+            // stale; refresh it so the row is the loss at the current W.
+            for k in ["runFwd", "runY"] {
+                base.execute_into(&extras[k], b"", &mut []).unwrap();
+            }
+            let l = loss(base);
+            losses.push(l);
+            println!("{it:>6}  {l:>12.6}  {:>10.3}", l / l0);
+        }
+    }
+    let dt = t0.elapsed().as_secs_f64() / iters as f64;
+    let lf = *losses.last().unwrap();
+
+    println!("step time       : {:.3} ms   ({} launches; the optimiser dominates, see below)",
+             dt * 1e3, step.len());
+    println!("loss            : {l0:.6} → {lf:.6}   ({:.1}x reduction)", l0 / lf);
+
+    // The gradient direction, checked against the loss it claims to be the
+    // gradient of: `dW` should be an outer product `adj ⊗ x`, so every row is
+    // parallel to `x`. That is a property of the *shape* of the gradient, not
+    // a restatement of how it was computed.
+    let mut dwbytes = vec![0u8; N * N * 4];
+    base.execute_into(&extras["fetchDw"], b"", &mut dwbytes).unwrap();
+    let dw: Vec<f32> = floats(&dwbytes);
+    let xnorm: f32 = xa.iter().map(|v| v * v).sum();
+    let mut rank1_worst = 0f32;
+    for i in (0..N).step_by(97) {
+        // project row i onto x, then measure the residual
+        let dot: f32 = (0..N).map(|j| dw[i * N + j] * xa[j]).sum();
+        let c = dot / xnorm;
+        let num: f32 = (0..N).map(|j| (dw[i * N + j] - c * xa[j]).powi(2)).sum();
+        let den: f32 = (0..N).map(|j| dw[i * N + j].powi(2)).sum::<f32>().max(1e-12);
+        let r = (num / den).sqrt();
+        if r > rank1_worst {
+            rank1_worst = r;
+        }
+    }
+    println!("dW is rank-1    : worst off-x residual {rank1_worst:.2e}  (dW = adj ⊗ x)");
+    assert!(rank1_worst < 1e-3, "the weight gradient must be an outer product with x");
+
+    // Per-kernel cost, measured *after* the loop: each of these reps performs a
+    // real update, so timing before training would apply 200 stale gradients.
+    println!("\nper-kernel cost of one training step:");
+    let mut total = 0f64;
+    for k in step {
+        base.execute_into(&extras[k], b"", &mut []).unwrap();
+        let t = std::time::Instant::now();
+        for _ in 0..200 {
+            base.execute_into(&extras[k], b"", &mut []).unwrap();
+        }
+        let dt = t.elapsed().as_secs_f64() / 200.0;
+        total += dt;
+        // Bytes each kernel must move, at minimum.
+        let bytes = match k {
+            "runFwd" => (N * N + 2 * N) * 4,
+            "runAdj" => 3 * N * 4,
+            "runDw" => (N * N + 2 * N) * 4,
+            "runSgd" => (3 * N * N) * 4,
+            _ => 0,
+        };
+        println!(
+            "  {k:<10}: {:>7.1} us   {:>6.1} GB/s   {:>3.0}% roofline",
+            dt * 1e6,
+            gbs(bytes, dt),
+            100.0 * roofline(bytes, dt)
+        );
+    }
+    println!("  {:<10}: {:>7.1} us", "sum", total * 1e6);
+
+    assert!(lf < l0, "training must reduce the loss");
+    assert!(losses.windows(2).all(|w| w[1] < w[0]),
+            "loss must fall at every sampled step");
+    println!("OK — the proven backward pass trains: loss falls monotonically.");
 }

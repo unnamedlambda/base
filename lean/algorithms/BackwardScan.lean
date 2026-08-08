@@ -53,7 +53,18 @@ def roots : List Name :=
   , `BackwardWide.bwdDriver_realises
   , `BackwardWide.bwdDriverBlas_realises
   , `BackwardWide.bwd_host_computes
+  , `BackwardWide.bwdAll_ops_are
+  , `BackwardWide.bwdAll_host_computes
   , `BackwardWide.bwd_host_computes_plan
+    -- the training step: forward, activation, loss gradient, optimiser
+  , `BackwardWide.fwd_computes_spec
+  , `BackwardWide.y_stores
+  , `BackwardWide.dy_stores
+  , `BackwardWide.sgd_stores
+  , `BackwardWide.train_ptx_exact
+  , `BackwardWide.adj_stores
+  , `BackwardWide.adj_ptx_exact
+  , `BackwardWide.trainPtx_fits
     -- the gap, as a number
   , `BackwardWide.bwdPlan_declaredCount
     -- the emitted PTX is well-formed and fits where the loader puts it

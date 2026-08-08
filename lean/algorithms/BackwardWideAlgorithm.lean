@@ -38,7 +38,10 @@ def qB   : Buf := 9        -- scratch: `Q = Σx²`   (one float)
 def sB   : Buf := 10       -- scratch: `S = Σ tᵢxᵢ` (one float)
 def dxrB : Buf := 11       -- result: RMSNorm's ∂L/∂xⱼ
 
-def NBUF : Nat := 12
+def yB   : Buf := 12       -- forward activations `y = silu(z)`
+def ysB  : Buf := 13       -- the training target `y*`
+
+def NBUF : Nat := 14
 
 /-- Lane `l`, iteration `t` handles row `i = t·32 + l`. -/
 def rowIx : IdxE := .add (.mul .loopI (.lit 32)) .laneId
@@ -164,6 +167,92 @@ def dxrIx : Fin 4 → IdxE := fun i =>
 def dxrKernel : MapKernel 4 := mapKernelAt dxrSpec dxrIn dxrIx dxrB
 def ptxDxr : String := dxrKernel.ptx NBUF
 
+-- ── the forward half, and an optimiser: enough to actually train ────────────
+
+/-! Everything above computes a gradient and checks it.  Training needs three
+    more passes and a loop:
+
+      z = W·x     y = silu(z)     dy = y − y*     W ← W − lr·dW
+
+    Each is an instance of a schema that is already proven, so the training
+    step adds launches rather than machinery.  The loss `½‖y − y*‖²` is not a
+    kernel: it is `N` floats the host reads back, and reading it is what makes
+    the demo a measurement rather than an assertion. -/
+
+/-- The forward walk: row `ctaid` of `W`, dotted with `x`.  Rows are contiguous,
+    so this is the *untransposed* walk — the same schema as the backward matvec
+    at a different address expression. -/
+def wFwdIx : IdxE := .add (.mul .ctaId (.lit N)) rowIx
+
+/-- Quad addressing for the same walk: lane `l` takes four contiguous weights
+    per trip, `N/128` trips. -/
+def wFwdIx4 : IdxE :=
+  .add (.mul .ctaId (.lit N)) (.add (.mul .loopI (.lit 128)) (.mul .laneId (.lit 4)))
+def xIx4 : IdxE := .add (.mul .loopI (.lit 128)) (.mul .laneId (.lit 4))
+
+/-- `z = W·x`, one warp per output row.
+
+    **A tuning choice, not a rewrite.**  The backward matvec walks a column, so
+    its four elements are `N` floats apart and only `dotStrided` applies.  The
+    forward walks a *row*, so the quad schema does apply — same reduction, same
+    committed butterfly, wider loads.  Picking it here is one constructor of
+    `Sched`; `sched_agree_at_idx` is what says the choice does not change the
+    answer beyond the declared law. -/
+def fwdKernel : EWStmt := warpDotV4 wB xB wFwdIx4 xIx4 zB .ctaId (N / 128)
+def ptxFwd : String := emitProvenKernelN "main" NBUF 0 fwdKernel
+
+/-- `y = silu(z)` — the *same* `Transformer.silu` whose `sderiv` the backward
+    kernel above uses.  One spec, differentiated for the backward pass and
+    evaluated for the forward one. -/
+def ySpec : Expr 1 := Transformer.silu (.var ⟨0, by decide⟩)
+def yKernel : MapKernel 1 := mapKernel ySpec (fun _ => zB) yB
+def ptxY : String := yKernel.ptx NBUF
+
+/-- `dy = y − y*`, the gradient of `½‖y − y*‖²` with respect to `y`. -/
+def dySpec : Expr 2 := .add (.var ⟨0, by decide⟩) (.neg (.var ⟨1, by decide⟩))
+def dyIn : Fin 2 → Buf := fun i => if i.val = 0 then yB else ysB
+def dyKernel : MapKernel 2 := mapKernel dySpec dyIn dyB
+def ptxDy : String := dyKernel.ptx NBUF
+
+/-- **The whole activation half of the step, in one pass.**
+
+    `y = silu(z)`, `dy = y − y*` and `adj = dy·silu'(z)` are three elementwise
+    passes over `N` floats — three launches whose combined traffic is 14 KB.  At
+    that size a launch costs more than the work, so they are one kernel:
+
+      adj = (silu(z) − y*) · silu'(z)
+
+    Still one `mapKernel`, still one spec, and `silu'` is still `sderiv` of the
+    same `Transformer.silu` evaluated in the first factor.  Fusing here costs no
+    proof because the schema never cared how big the expression was. -/
+def adjSpec : Expr 2 :=
+  .mul (.add (Transformer.silu (.var ⟨0, by decide⟩)) (.neg (.var ⟨1, by decide⟩)))
+       (sderiv (Transformer.silu (.var ⟨0, by decide⟩)) ⟨0, by decide⟩)
+def adjIn : Fin 2 → Buf := fun i => if i.val = 0 then zB else ysB
+def adjKernel : MapKernel 2 := mapKernel adjSpec adjIn adjB
+def ptxAdj : String := adjKernel.ptx NBUF
+
+/-- The learning rate, as an exact binary fraction so the update is a `Float32`
+    identity rather than a rounding of a decimal. -/
+def LR_RECIP : Nat := 1024
+
+/-- `W ← W − lr·dW`, one element per lane over all `N²` weights.
+
+    In place, deliberately: an optimiser step is the one kernel whose whole job
+    is to overwrite its input, so it is *not* claimed `StageEligible` below —
+    that guard asks a kernel not to read what it writes, which is exactly what
+    an update does.  Correctness is unaffected: each lane touches one weight. -/
+def sgdSpec : Expr 2 :=
+  .add (.var ⟨0, by decide⟩)
+       (.neg (.mul (.inv (.lit LR_RECIP)) (.var ⟨1, by decide⟩)))
+def sgdIn : Fin 2 → Buf := fun i => if i.val = 0 then wB else dwB
+def sgdKernel : MapKernel 2 := mapKernel sgdSpec sgdIn wB
+def ptxSgd : String := sgdKernel.ptx NBUF
+
+/-- The optimiser's geometry: one weight per lane, checked to cover `N²`. -/
+def wgeom : MapGeom := MapGeom.simple (N * N) (N * N / 32)
+def WGRID : Nat := wgeom.grid
+
 -- ── memory layout ───────────────────────────────────────────────────────────
 
 /-- Where the expected host-input size is published, so the Rust side can
@@ -177,7 +266,12 @@ def PTX_T_OFF  : Nat := 0x3E00
 def PTX_Q_OFF  : Nat := 0x5000
 def PTX_S_OFF  : Nat := 0x6200
 def PTX_DXR_OFF: Nat := 0x7400
-def BIND_OFF   : Nat := 0x8C00
+def PTX_FWD_OFF: Nat := 0x8C00
+def PTX_Y_OFF  : Nat := 0xA400
+def PTX_DY_OFF : Nat := 0xBC00
+def PTX_SGD_OFF: Nat := 0xD400
+def PTX_ADJ_OFF: Nat := 0xEC00
+def BIND_OFF   : Nat := 0x10400
 def ADJ_ID     : Nat := 0x0040
 def W_ID       : Nat := 0x0044
 def DX_ID      : Nat := 0x0048
@@ -187,10 +281,12 @@ def Z_ID       : Nat := 0x0054
 def DY_ID      : Nat := 0x0058
 def GAM_ID     : Nat := 0x005C
 def T_ID       : Nat := 0x0060
+def Y_ID       : Nat := 0x0070
+def YS_ID      : Nat := 0x0074
 def Q_ID       : Nat := 0x0064
 def S_ID       : Nat := 0x0068
 def DXR_ID     : Nat := 0x006C
-def MEM_SIZE   : Nat := 0x8D00
+def MEM_SIZE   : Nat := 0x10500
 
 /-- Both kernels fit their slots, and the slots do not overlap. -/
 theorem bwdMap_ok :
@@ -201,7 +297,12 @@ theorem bwdMap_ok :
        ⟨"ptxT", PTX_T_OFF, PTX_Q_OFF - PTX_T_OFF⟩,
        ⟨"ptxQ", PTX_Q_OFF, PTX_S_OFF - PTX_Q_OFF⟩,
        ⟨"ptxS", PTX_S_OFF, PTX_DXR_OFF - PTX_S_OFF⟩,
-       ⟨"ptxDxr", PTX_DXR_OFF, BIND_OFF - PTX_DXR_OFF⟩,
+       ⟨"ptxDxr", PTX_DXR_OFF, PTX_FWD_OFF - PTX_DXR_OFF⟩,
+       ⟨"ptxFwd", PTX_FWD_OFF, PTX_Y_OFF - PTX_FWD_OFF⟩,
+       ⟨"ptxY", PTX_Y_OFF, PTX_DY_OFF - PTX_Y_OFF⟩,
+       ⟨"ptxDy", PTX_DY_OFF, PTX_SGD_OFF - PTX_DY_OFF⟩,
+       ⟨"ptxSgd", PTX_SGD_OFF, PTX_ADJ_OFF - PTX_SGD_OFF⟩,
+       ⟨"ptxAdj", PTX_ADJ_OFF, BIND_OFF - PTX_ADJ_OFF⟩,
        ⟨"bind", BIND_OFF, 4 * NBUF⟩] = true := by decide
 
 /-- **Seam guard: every kernel's buffers are inside the binding table.**
@@ -320,8 +421,17 @@ theorem bwdPtx_fits_e : ptxQ.toUTF8.toList.length + 1 ≤ PTX_S_OFF - PTX_Q_OFF 
   native_decide
 theorem bwdPtx_fits_f : ptxS.toUTF8.toList.length + 1 ≤ PTX_DXR_OFF - PTX_S_OFF := by
   native_decide
-theorem bwdPtx_fits_g : ptxDxr.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_DXR_OFF := by
+theorem bwdPtx_fits_g : ptxDxr.toUTF8.toList.length + 1 ≤ PTX_FWD_OFF - PTX_DXR_OFF := by
   native_decide
+
+/-- The four training kernels fit their slots too. -/
+theorem trainPtx_fits :
+    (ptxFwd.toUTF8.toList.length + 1 ≤ PTX_Y_OFF - PTX_FWD_OFF)
+      ∧ (ptxY.toUTF8.toList.length + 1 ≤ PTX_DY_OFF - PTX_Y_OFF)
+      ∧ (ptxDy.toUTF8.toList.length + 1 ≤ PTX_SGD_OFF - PTX_DY_OFF)
+      ∧ (ptxSgd.toUTF8.toList.length + 1 ≤ PTX_ADJ_OFF - PTX_SGD_OFF)
+      ∧ (ptxAdj.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_ADJ_OFF) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩ <;> native_decide
 
 theorem bwdPtx_fits :
     (ptx.toUTF8.toList.length + 1 ≤ PTX_DW_OFF - PTX_OFF)
@@ -330,7 +440,7 @@ theorem bwdPtx_fits :
       ∧ (ptxT.toUTF8.toList.length + 1 ≤ PTX_Q_OFF - PTX_T_OFF)
       ∧ (ptxQ.toUTF8.toList.length + 1 ≤ PTX_S_OFF - PTX_Q_OFF)
       ∧ (ptxS.toUTF8.toList.length + 1 ≤ PTX_DXR_OFF - PTX_S_OFF)
-      ∧ (ptxDxr.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_DXR_OFF) :=
+      ∧ (ptxDxr.toUTF8.toList.length + 1 ≤ PTX_FWD_OFF - PTX_DXR_OFF) :=
   ⟨bwdPtx_fits_a, bwdPtx_fits_b, bwdPtx_fits_c, bwdPtx_fits_d,
    bwdPtx_fits_e, bwdPtx_fits_f, bwdPtx_fits_g⟩
 
@@ -352,7 +462,8 @@ def hostIn : AlgorithmLib.Layout.RegionMap :=
    ⟨"z",   2 * N * 4, N * 4⟩,
    ⟨"dy",  3 * N * 4, N * 4⟩,
    ⟨"gam", 4 * N * 4, N * 4⟩,
-   ⟨"W",   5 * N * 4, N * N * 4⟩]
+   ⟨"W",   5 * N * 4, N * N * 4⟩,
+   ⟨"ystar", 5 * N * 4 + N * N * 4, N * 4⟩]
 
 /-- **Seam guard: the host layout is packed, in order, with no gaps.** -/
 theorem hostIn_packed : AlgorithmLib.Layout.RegionMap.packedB 0 hostIn = true := by
@@ -367,12 +478,12 @@ def hostOff (i : Nat) : Nat := AlgorithmLib.Layout.RegionMap.offAt hostIn i
 /-! ### The binding table, from one list
 
     `EWStmt.BufBelow` checks the *kernels* name no buffer past `NBUF`.  It says
-    nothing about whether the CLIF actually **writes** `NBUF` ids — those were
-    twelve independent `storeI32` calls next to an independent `NBUF = 12`
-    (`A47` G7).  The table is now a list, the uploader indexes it, and its
-    length is checked against `NBUF`. -/
+    nothing about whether the CLIF actually **writes** `NBUF` ids.  Independent
+    `storeI32` calls beside an independent `NBUF` would leave those two free to
+    disagree; the table is one list, the uploader indexes it, and its length is
+    checked against `NBUF`. -/
 def bindSlots : List String :=
-  ["adj", "W", "dx", "x", "dW", "z", "dy", "gam", "t", "Q", "S", "dxr"]
+  ["adj", "W", "dx", "x", "dW", "z", "dy", "gam", "t", "Q", "S", "dxr", "y", "ystar"]
 
 /-- **Seam guard: the binding table has exactly `NBUF` entries.** -/
 theorem bind_count : bindSlots.length = NBUF := by decide
@@ -414,6 +525,10 @@ def loadFn : IRBuilder Unit := do
   storeI32 sId (← absAddr ptr S_ID)
   let dxrId ← cudaCreateBuffer cuda ptr dxBytes
   storeI32 dxrId (← absAddr ptr DXR_ID)
+  let yId ← cudaCreateBuffer cuda ptr dxBytes
+  storeI32 yId (← absAddr ptr Y_ID)
+  let ysId ← cudaCreateBuffer cuda ptr dxBytes
+  storeI32 ysId (← absAddr ptr YS_ID)
   -- host buffer holds `adj`, then `x`, then `W`, contiguously
   let _ ← call cuda.fnUpload [ctxPtr, adjId, dataPtr, adjBytes]
   let xSrc ← iaddImm dataPtr (hostOff 1)
@@ -424,6 +539,8 @@ def loadFn : IRBuilder Unit := do
   let _ ← call cuda.fnUpload [ctxPtr, dyId, dySrc, dxBytes]
   let gamSrc ← iaddImm dataPtr (hostOff 4)
   let _ ← call cuda.fnUpload [ctxPtr, gamId, gamSrc, dxBytes]
+  let ysSrc ← iaddImm dataPtr (hostOff 6)
+  let _ ← call cuda.fnUpload [ctxPtr, ysId, ysSrc, dxBytes]
   let wSrc ← iaddImm dataPtr (hostOff 5)
   let _ ← call cuda.fnUpload [ctxPtr, wId, wSrc, wBytes]
   storeI32 adjId (← absAddr ptr (bindOff 0))
@@ -438,6 +555,8 @@ def loadFn : IRBuilder Unit := do
   storeI32 qId (← absAddr ptr (bindOff 9))
   storeI32 sId (← absAddr ptr (bindOff 10))
   storeI32 dxrId (← absAddr ptr (bindOff 11))
+  storeI32 yId (← absAddr ptr (bindOff 12))
+  storeI32 ysId (← absAddr ptr (bindOff 13))
   ret
 
 def runFn : IRBuilder Unit := do
@@ -486,6 +605,24 @@ def runQFn   : IRBuilder Unit := launchAt PTX_Q_OFF 1
 def runSFn   : IRBuilder Unit := launchAt PTX_S_OFF 1
 def runDxrFn : IRBuilder Unit := launchAt PTX_DXR_OFF EGRID
 
+/-- The training step's four launches.  `runSgd` covers all `N²` weights. -/
+def runFwdFn : IRBuilder Unit := launchAt PTX_FWD_OFF GRID
+def runYFn   : IRBuilder Unit := launchAt PTX_Y_OFF EGRID
+def runDyFn  : IRBuilder Unit := launchAt PTX_DY_OFF EGRID
+def runSgdFn : IRBuilder Unit := launchAt PTX_SGD_OFF WGRID
+def runAdjFn : IRBuilder Unit := launchAt PTX_ADJ_OFF EGRID
+
+/-- Fetch the forward activations, so the host can compute the loss. -/
+def fetchYFn : IRBuilder Unit := do
+  let ptr ← entryBlock
+  let cuda ← declareCudaFFI
+  let ctxPtr ← cudaCtxPtr ptr
+  let outPtr ← load64 (← absAddr ptr 0x28)
+  let yId ← load32 (← absAddr ptr Y_ID)
+  let dxBytes ← iconst64 (N * 4)
+  let _ ← call cuda.fnDownload [ctxPtr, yId, outPtr, dxBytes]
+  ret
+
 /-- Fetch RMSNorm's `dx`. -/
 def fetchDxrFn : IRBuilder Unit := do
   let ptr ← entryBlock
@@ -495,6 +632,41 @@ def fetchDxrFn : IRBuilder Unit := do
   let dxrId ← load32 (← absAddr ptr DXR_ID)
   let dxBytes ← iconst64 (N * 4)
   let _ ← call cuda.fnDownload [ctxPtr, dxrId, outPtr, dxBytes]
+  ret
+
+/-- **Fill the launch argument array from the buffer table.**
+
+    `Clif.bindsOf` recovers a launch's buffer-pointer array from the stores
+    preceding it, so a function that only launches recovers `bufs := none` and
+    realises no stage.  Re-establishing the array here changes no handle — it is
+    the same one `loadFn` wrote — and makes the run function *say* what it
+    launches over.
+
+    Before **every** launch, not once: `Clif.stepMem` maps a call to the empty
+    store map, because a call could write anything. -/
+def bindPass (ptr : Val) : IRBuilder Unit := do
+  for i in List.range NBUF do
+    let id ← load32 (← absAddr ptr (bindOff i))
+    storeI32 id (← absAddr ptr (bindOff i))
+
+/-- **The backward pass as one function**, so the launch sequence the pipeline
+    claims is a sequence *some emitted program actually performs*.
+
+    The three stages otherwise run as three separate host calls, and a pipeline
+    is a claim about an order — an order no single program exhibited. -/
+def runBwdAllFn : IRBuilder Unit := do
+  let ptr ← entryBlock
+  let cuda ← declareCudaFFI
+  for (off, g) in [(PTX_SB_OFF, EGRID), (PTX_OFF, GRID), (PTX_DW_OFF, GRID)] do
+    bindPass ptr
+    let ptxOff ← iconst64 off
+    let nBufs ← iconst32 NBUF
+    let bindBase ← iconst64 BIND_OFF
+    let one ← iconst32 1
+    let warp ← iconst32 32
+    let grid ← iconst32 g
+    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync cuda ptr
   ret
 
 /-- The weight gradient, same geometry: one warp per row. -/
@@ -539,7 +711,11 @@ def clifIR : String :=
     ++ buildFunction 6 runSiluBwdFn ++ "\n"
     ++ buildFunction 7 runTFn ++ "\n" ++ buildFunction 8 runQFn ++ "\n"
     ++ buildFunction 9 runSFn ++ "\n" ++ buildFunction 10 runDxrFn ++ "\n"
-    ++ buildFunction 11 fetchDxrFn
+    ++ buildFunction 11 fetchDxrFn ++ "\n"
+    ++ buildFunction 12 runFwdFn ++ "\n" ++ buildFunction 13 runYFn ++ "\n"
+    ++ buildFunction 14 runDyFn ++ "\n" ++ buildFunction 15 runSgdFn ++ "\n"
+    ++ buildFunction 16 fetchYFn ++ "\n" ++ buildFunction 17 runAdjFn ++ "\n"
+    ++ buildFunction 18 runBwdAllFn
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -554,6 +730,11 @@ def initialMemory : List UInt8 :=
   let u := ptxQ.toUTF8.toList ++ [0]
   let v := ptxS.toUTF8.toList ++ [0]
   let w := ptxDxr.toUTF8.toList ++ [0]
+  let f := ptxFwd.toUTF8.toList ++ [0]
+  let g := ptxY.toUTF8.toList ++ [0]
+  let h := ptxDy.toUTF8.toList ++ [0]
+  let k := ptxSgd.toUTF8.toList ++ [0]
+  let a := ptxAdj.toUTF8.toList ++ [0]
   zeros HOST_LEN_OFF ++ u32le HOST_BYTES
     ++ zeros (PTX_OFF - HOST_LEN_OFF - 4)
     ++ p ++ zeros (PTX_DW_OFF - PTX_OFF - p.length)
@@ -562,7 +743,12 @@ def initialMemory : List UInt8 :=
     ++ t ++ zeros (PTX_Q_OFF - PTX_T_OFF - t.length)
     ++ u ++ zeros (PTX_S_OFF - PTX_Q_OFF - u.length)
     ++ v ++ zeros (PTX_DXR_OFF - PTX_S_OFF - v.length)
-    ++ w ++ zeros (MEM_SIZE - PTX_DXR_OFF - w.length)
+    ++ w ++ zeros (PTX_FWD_OFF - PTX_DXR_OFF - w.length)
+    ++ f ++ zeros (PTX_Y_OFF - PTX_FWD_OFF - f.length)
+    ++ g ++ zeros (PTX_DY_OFF - PTX_Y_OFF - g.length)
+    ++ h ++ zeros (PTX_SGD_OFF - PTX_DY_OFF - h.length)
+    ++ k ++ zeros (PTX_ADJ_OFF - PTX_SGD_OFF - k.length)
+    ++ a ++ zeros (MEM_SIZE - PTX_ADJ_OFF - a.length)
 
 def setup : Setup := {
   cranelift_ir := clifIR
@@ -576,7 +762,11 @@ def artifacts : Array Json :=
         ("runDw", { fn_idx := u32 4 }), ("fetchDw", { fn_idx := u32 5 }),
         ("runSiluBwd", { fn_idx := u32 6 }), ("runT", { fn_idx := u32 7 }),
         ("runQ", { fn_idx := u32 8 }), ("runS", { fn_idx := u32 9 }),
-        ("runDxr", { fn_idx := u32 10 }), ("fetchDxr", { fn_idx := u32 11 })] ]
+        ("runDxr", { fn_idx := u32 10 }), ("fetchDxr", { fn_idx := u32 11 }),
+        ("runFwd", { fn_idx := u32 12 }), ("runY", { fn_idx := u32 13 }),
+        ("runDy", { fn_idx := u32 14 }), ("runSgd", { fn_idx := u32 15 }),
+        ("fetchY", { fn_idx := u32 16 }), ("runAdj", { fn_idx := u32 17 }),
+         ("runBwdAll", { fn_idx := u32 18 })] ]
 
 end BackwardWide
 
@@ -658,6 +848,65 @@ theorem siluBwd_ptx_exact (cta : Nat) (m : MState) :
           = some ((flatKernel (expandEW siluBwd.ew)).length, m')
       ∧ m'.toWSt = ((expandEW siluBwd.ew).elabIn cta).run m.toWSt :=
   mapKernel_ptx_exact siluBwdSpec siluBwdIn adjB cta m
+
+/-! ### The training step's four kernels, each against its spec -/
+
+/-- **The forward matvec computes its spec** — the same strided schema as the
+    backward one, at the untransposed address expression.  Exact `Float32`, no
+    hypothesis: forward and backward are proven against the *same* committed
+    fold order, which is what lets a gradient be checked against a loss that
+    actually moved. -/
+theorem fwd_computes_spec (cta : Nat) (st : WSt) :
+    ((fwdKernel.elabIn cta).run st).mem zB cta
+      = bflyFold (dotLane (st.mem wB) (st.mem xB)
+          (fun i l => wFwdIx4.eval cta i l) (fun i l => xIx4.eval cta i l) (N / 128))
+          ⟨0, by decide⟩ :=
+  warpDotV4_spec wB xB wFwdIx4 xIx4 zB .ctaId (N / 128) cta st
+
+/-- `y = silu(z)`, from the same `Transformer.silu` the backward differentiates. -/
+theorem y_stores (st : WSt) (l : Lane) :
+    ((yKernel.ew.elabIn 0).run st).mem yB (elemIx.eval 0 0 l)
+      = denote (fun _ => st.mem zB (elemIx.eval 0 0 l)) ySpec :=
+  yKernel.stores st l
+
+/-- `dy = y − y*`: the loss gradient, as one elementwise pass. -/
+theorem dy_stores (st : WSt) (l : Lane) :
+    ((dyKernel.ew.elabIn 0).run st).mem dyB (elemIx.eval 0 0 l)
+      = denote (fun i => st.mem (dyIn i) (elemIx.eval 0 0 l)) dySpec :=
+  dyKernel.stores st l
+
+/-- **The optimiser step computes its spec** — `W ← W − lr·dW`, per weight. -/
+theorem sgd_stores (st : WSt) (l : Lane) :
+    ((sgdKernel.ew.elabIn 0).run st).mem wB (elemIx.eval 0 0 l)
+      = denote (fun i => st.mem (sgdIn i) (elemIx.eval 0 0 l)) sgdSpec :=
+  sgdKernel.stores st l
+
+/-- **The fused activation pass stores its spec** — the three-in-one kernel is
+    held to the same standard as the three it replaces. -/
+theorem adj_stores (st : WSt) (l : Lane) :
+    ((adjKernel.ew.elabIn 0).run st).mem adjB (elemIx.eval 0 0 l)
+      = denote (fun i => st.mem (adjIn i) (elemIx.eval 0 0 l)) adjSpec :=
+  adjKernel.stores st l
+
+theorem adj_ptx_exact (cta : Nat) (m : MState) :
+    ∃ k m', steps cta (flatKernel (expandEW adjKernel.ew)) k (0, m)
+          = some ((flatKernel (expandEW adjKernel.ew)).length, m')
+      ∧ m'.toWSt = ((expandEW adjKernel.ew).elabIn cta).run m.toWSt :=
+  mapKernel_ptx_exact adjSpec adjIn adjB cta m
+
+theorem train_ptx_exact (cta : Nat) (m : MState) :
+    (∃ k m', steps cta (flatKernel (expandEW yKernel.ew)) k (0, m)
+        = some ((flatKernel (expandEW yKernel.ew)).length, m')
+      ∧ m'.toWSt = ((expandEW yKernel.ew).elabIn cta).run m.toWSt)
+    ∧ (∃ k m', steps cta (flatKernel (expandEW dyKernel.ew)) k (0, m)
+        = some ((flatKernel (expandEW dyKernel.ew)).length, m')
+      ∧ m'.toWSt = ((expandEW dyKernel.ew).elabIn cta).run m.toWSt)
+    ∧ (∃ k m', steps cta (flatKernel (expandEW sgdKernel.ew)) k (0, m)
+        = some ((flatKernel (expandEW sgdKernel.ew)).length, m')
+      ∧ m'.toWSt = ((expandEW sgdKernel.ew).elabIn cta).run m.toWSt) :=
+  ⟨mapKernel_ptx_exact ySpec (fun _ => zB) yB cta m,
+   mapKernel_ptx_exact dySpec dyIn dyB cta m,
+   mapKernel_ptx_exact sgdSpec sgdIn wB cta m⟩
 
 /-- **RMSNorm's epilogue stores its spec, with broadcast inputs.**
 
@@ -756,6 +1005,67 @@ theorem bwdPipelineFull_exclusive : bwdPipelineFull.Exclusive := by
 -- ---------------------------------------------------------------------------
 -- The host program that launches them
 -- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- The shipped function launches exactly this pipeline
+-- ---------------------------------------------------------------------------
+
+/-! `bwdDriver` below is a *model* of a host program.  Nothing emits it: the
+    shipped CLIF comes from `IRBuilder`, and until `runBwdAllFn` existed the
+    three stages ran as three separate host calls, so no single emitted program
+    exhibited the order a `Pipeline` claims.
+
+    What follows recovers the launches from `runBwdAllFn`'s own instruction
+    stream and matches them against `bwdPipelineFull`. -/
+
+def ROOT : Nat := 0
+
+/-- The bind array as `Clif.bindsOf` recovers it — entry `i` is the handle at
+    layout slot `bindOff i`, which is buffer `i`. -/
+def bwdBufs : List AlgorithmLib.Clif.BufDesc :=
+  (List.range NBUF).map (fun i => .near (Int.ofNat (bindOff i)))
+
+def bwdRec (off g : Nat) : AlgorithmLib.Clif.LaunchRec :=
+  { fnName    := "cl_cuda_launch"
+    kernelOff := some (Int.ofNat off)
+    nBufs     := some (Int.ofNat NBUF)
+    bindOff   := some (Int.ofNat BIND_OFF)
+    gridX     := some (Int.ofNat g)
+    blockX    := some 32 }
+
+/-- The three launches, in pipeline order. -/
+def bwdAllOps : List DeviceOp :=
+  [(bwdRec PTX_SB_OFF EGRID, { bufs := some bwdBufs }),
+   (bwdRec PTX_OFF GRID,     { bufs := some bwdBufs }),
+   (bwdRec PTX_DW_OFF GRID,  { bufs := some bwdBufs })]
+
+/-- **Which slot holds which stage**, for the shipped function.  One shared
+    pointer array, so the slot is what tells the three apart. -/
+def bwdAllTable : List KernelBinding :=
+  [ ⟨PTX_SB_OFF, BIND_OFF, bwdBufs, sbStage⟩
+  , ⟨PTX_OFF,    BIND_OFF, bwdBufs, dxStage⟩
+  , ⟨PTX_DW_OFF, BIND_OFF, bwdBufs, dwStage⟩ ]
+
+/-- **Seam guard: the emitted CLIF performs these launches**, in this order,
+    over these buffers, at these grids. -/
+theorem bwdAll_ops_are :
+    AlgorithmLib.Clif.deviceOpsOf ROOT (runBwdAllFn.run {}).2 = bwdAllOps := by
+  native_decide
+
+/-- …and those launches are the proven three-stage pipeline. -/
+theorem bwdAll_realises :
+    pipelineOf? bwdAllTable none bwdAllOps = some bwdPipelineFull := rfl
+
+/-- **The shipped backward pass computes its denotation.**
+
+    Unlike `bwd_host_computes` below, the launch sequence here is read out of a
+    function that is actually built into the artifact. -/
+theorem bwdAll_host_computes (st : WSt) :
+    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (runBwdAllFn.run {}).2)
+        = some bwdPipelineFull
+      ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
+  ⟨by rw [bwdAll_ops_are]; exact bwdAll_realises,
+   bwdPipelineFull.run_denote bwdPipelineFull_exclusive st⟩
 
 /-- **Which PTX slot holds which stage.**  The single place the host-to-kernel
     correspondence is asserted; everything below is derived from it. -/
