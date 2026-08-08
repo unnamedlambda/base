@@ -30,10 +30,11 @@ enum Suite {
     Binds,
     Clif,
     Regimes,
+    Compose,
 }
 
 impl Suite {
-    const ALL: [Suite; 8] = [
+    const ALL: [Suite; 9] = [
         Suite::Smoke,
         Suite::Derive,
         Suite::Shapes,
@@ -42,6 +43,7 @@ impl Suite {
         Suite::Binds,
         Suite::Clif,
         Suite::Regimes,
+        Suite::Compose,
     ];
     fn name(self) -> &'static str {
         match self {
@@ -53,6 +55,7 @@ impl Suite {
             Suite::Binds => "binds",
             Suite::Clif => "clif",
             Suite::Regimes => "regimes",
+            Suite::Compose => "compose",
         }
     }
 }
@@ -136,6 +139,7 @@ fn main() -> std::process::ExitCode {
             Suite::Binds => suites::binds(&ctx),
             Suite::Clif => suites::clif(&ctx),
             Suite::Regimes => suites::regimes(&ctx),
+            Suite::Compose => suites::compose(&ctx),
         };
         // a suite whose measurements all failed yields plausible zeros rather
         // than an error, which reads as a pass

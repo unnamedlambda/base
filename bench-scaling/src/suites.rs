@@ -404,7 +404,7 @@ pub fn smoke(ctx: &Ctx) -> Vec<Value> {
     rows
 }
 
-//  regimes: the same obligation, discharged two ways twice over
+//  regimes: two pairs, each proving the same thing twice
 
 pub fn regimes(ctx: &Ctx) -> Vec<Value> {
     use crate::channels::{self, Regime};
@@ -434,6 +434,77 @@ pub fn regimes(ctx: &Ctx) -> Vec<Value> {
                 "net_secs": m.secs.map(|s| (s - floor).max(0.001)),
                 "err": err_of(&m),
             }));
+        }
+    }
+    rows
+}
+
+//  compose: K separately-proven components chained in a user module
+
+pub fn compose(ctx: &Ctx) -> Vec<Value> {
+    use crate::channels;
+
+    // the composite proof is cheap enough that at small K it sits under the
+    // resolution of subprocess timing; chain enough of them to measure.
+    const KMAX: usize = 64;
+    const KCMP: usize = 32;
+    let widths = [1usize, 400];
+    let mut rows = Vec::new();
+
+    // components first: each is its own module, built to an olean, so the
+    // composite below pays nothing to re-check them.
+    for &w in &widths {
+        for (leaky, upto) in [(false, if w == 1 { KMAX } else { KCMP }), (true, KCMP)] {
+            for k in 0..upto {
+                let p = if leaky { "CmpL" } else { "Cmp" };
+                let src = ctx.work.join(format!("{p}{w}_{k}.lean"));
+                if channels::component(k, w, leaky, &src).is_err() {
+                    continue;
+                }
+                let m = ctx.lean(&src, Some(&src.with_extension("olean")), 600);
+                if !m.ok {
+                    rows.push(json!({
+                        "kind": "component", "width": w, "leaky": leaky,
+                        "ok": false, "err": err_of(&m),
+                    }));
+                }
+            }
+        }
+    }
+
+    // (K, width, leaky): the K sweep at the small body, then the body contrast
+    // at K=KCMP with specs opaque and leaky.
+    let points = [
+        (8usize, 1usize, false),
+        (16, 1, false),
+        (KCMP, 1, false),
+        (KMAX, 1, false),
+        (KCMP, 400, false),
+        (KCMP, 1, true),
+        (KCMP, 400, true),
+    ];
+    for (k, w, leaky) in points {
+        let tag = if leaky { "leaky" } else { "opaque" };
+        let mut t = [None, None];
+        for (i, prove) in [false, true].into_iter().enumerate() {
+            let src = ctx.work.join(format!(
+                "cps_{k}_{w}_{tag}{}.lean",
+                if prove { "" } else { "_base" }
+            ));
+            if channels::composite(k, w, leaky, prove, &src).is_err() {
+                continue;
+            }
+            let m = ctx.lean(&src, None, 900);
+            t[i] = m.secs;
+            if prove {
+                rows.push(json!({
+                    "kind": "composite", "components": k, "width": w, "spec": tag,
+                    "ok": m.ok, "secs": m.secs, "rss_mb": m.rss_mb,
+                    // imports of K oleans are not free and grow with K
+                    "proof_secs": m.secs.zip(t[0]).map(|(a, b)| (a - b).max(0.001)),
+                    "err": err_of(&m),
+                }));
+            }
         }
     }
     rows

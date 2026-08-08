@@ -179,7 +179,7 @@ pub fn all(raw: &Raw) {
         }
     }
 
-    // the same obligation, discharged two ways twice over.
+    // two pairs, each proving the same thing twice.
     let rg = rows(raw, "regimes");
     if !rg.is_empty() {
         println!("\nproof cost vs structure size (steps), by how the obligation is written");
@@ -199,6 +199,57 @@ pub fn all(raw: &Raw) {
             };
             let note = if sup { &format!("SUPERLINEAR -- {note}") } else { note };
             line(label, &pts, &bad, |t| format!("{t:.2}s"), note);
+        }
+    }
+
+    // K separately-proven components chained in a user module.
+    let cp = rows(raw, "compose");
+    if !cp.is_empty() {
+        let pick = |k: i64, w: i64, spec: &'static str| -> Option<f64> {
+            cp.iter()
+                .find(|r| {
+                    ok(r)
+                        && s(r, "kind") == Some("composite")
+                        && s(r, "spec") == Some(spec)
+                        && f(r, "components") == Some(k as f64)
+                        && f(r, "width") == Some(w as f64)
+                })
+                .and_then(|r| f(r, "proof_secs"))
+        };
+        // the timer reports hundredths and these are DIFFERENCES of two of its
+        // readings, so anything under a few of them is noise; a ratio built
+        // from such numbers would be reporting float dust
+        const RES: f64 = 0.05;
+        println!("\ncomposite proof cost vs components chained (each proven once, cached)");
+        let (pts, _) = series(cp, "components", "proof_secs", |r| {
+            s(r, "kind") == Some("composite") && s(r, "spec") == Some("opaque")
+                && f(r, "width") == Some(1.0)
+        });
+        let cells: Vec<String> =
+            pts.iter().map(|(x, y)| format!("{}:{y:.3}s", n(*x))).collect();
+        // a growth ratio off numbers this small would be reporting noise
+        let note = if pts.iter().filter(|(_, t)| *t > RES).count() < 2 {
+            "at the timing floor throughout -- net of importing them"
+        } else {
+            "net of importing them"
+        };
+        println!("  {:<13} {:<46} {:<14} {}", "opaque spec", cells.join("  "), "", note);
+
+        println!("\ncomposite proof cost vs component INTERNAL size (32 chained, body 1 vs 400 nodes)");
+        for (label, spec, note) in [
+            ("opaque spec", "opaque", "callers see the statement, never the body"),
+            ("leaky spec", "leaky", "the body reaches every caller"),
+        ] {
+            let cells: Vec<String> = [1i64, 400]
+                .iter()
+                .filter_map(|w| pick(32, *w, spec).map(|t| format!("body {w}:{t:.3}s")))
+                .collect();
+            let ratio = match (pick(32, 1, spec), pick(32, 400, spec)) {
+                (Some(a), Some(b)) if a > RES => format!("{:.0}x", b / a),
+                (Some(_), Some(b)) if b > RES => format!(">{:.0}x", b / RES),
+                _ => "both under 0.05s".into(),
+            };
+            println!("  {:<13} {:<46} {:<14} {}", label, cells.join("  "), ratio, note);
         }
     }
 

@@ -1,9 +1,13 @@
 //! Where per-declaration proof cost lands, and what makes it superlinear.
 //!
-//! `regimes` is an axis the other suites do not reach: an obligation over an
-//! n-step structure, discharged two ways twice over.  One of each pair is
-//! linear and the other is not, and the difference is a property of how the
-//! obligation was written, not of what it guarantees.
+//! Two axes the other suites do not reach:
+//!
+//! * `regimes` — two pairs, each proving the same thing twice.  One of each
+//!   pair is linear and the other is not, and the difference is a property of
+//!   how the obligation was written, not of what it guarantees.
+//! * `compose` — K separately-proven components chained in a user module.  The
+//!   row that matters is composite cost against component *internal* size: if
+//!   specs are opaque it is flat, and if they leak it is not.
 
 use std::fs;
 use std::io::Write;
@@ -14,15 +18,18 @@ fn write(path: &Path, contents: &str) -> std::io::Result<()> {
     f.write_all(contents.as_bytes())
 }
 
-/// A state and a step that advances it.  `step_n` is the opaque statement — it
-/// says what a step does to `n` without unfolding its argument, which is the
-/// whole point of the `named` variant below.
+/// Shared by both suites: a state, a step that advances it, and a `bump` that
+/// does not.  `step_n`/`bump_n` are the opaque statements — they say what a
+/// step does to `n` without unfolding its argument, which is the whole point.
 pub const BASE: &str = r#"structure St where
   v : Nat
   n : Nat
 
 def step (k : Nat) (s : St) : St := { v := s.v + k, n := s.n + 1 }
 theorem step_n (k : Nat) (s : St) : (step k s).n = s.n + 1 := rfl
+
+def bump (s : St) : St := { s with v := s.v + 1 }
+theorem bump_n (s : St) : (bump s).n = s.n := rfl
 
 def s0 : St := { v := 0, n := 0 }
 theorem h0 : s0.n = 0 := rfl
@@ -110,6 +117,69 @@ pub fn regimes(n: usize, r: Regime, out: &Path) -> std::io::Result<()> {
                 ));
             }
         }
+    }
+    write(out, &s)
+}
+
+// ── compose ─────────────────────────────────────────────────────────────────
+
+/// A component: a body of `w` internal operations, and a spec.
+///
+/// `leaky = false` states the spec in the shared vocabulary (`.n` after the
+/// call), so the body is invisible to callers.  `leaky = true` states it as an
+/// equation on the body, so every caller inherits `w` nodes of it.
+pub fn component(k: usize, w: usize, leaky: bool, out: &Path) -> std::io::Result<()> {
+    let mut body = String::from("s");
+    for _ in 0..w {
+        body = format!("(bump {body})");
+    }
+    let nm = if leaky { format!("g{k}") } else { format!("f{k}") };
+    let mut s = String::from("import ChBase\nset_option maxRecDepth 1000000\n\n");
+    s.push_str(&format!("def {nm} (s : St) : St := step 1 {body}\n\n"));
+    if leaky {
+        s.push_str(&format!(
+            "theorem {nm}_spec (s : St) : {nm} s = step 1 {body} := rfl\n"
+        ));
+    } else {
+        s.push_str(&format!(
+            "theorem {nm}_spec (s : St) : ({nm} s).n = s.n + 1 := by\n  \
+             unfold {nm}; rw [step_n]; simp only [bump_n]\n"
+        ));
+    }
+    write(out, &s)
+}
+
+/// Chain `k` components and prove the composite, using only their statements.
+///
+/// `prove = false` emits the same imports and the same `pipe` and stops, so
+/// subtracting it leaves the cost of the composite proof alone -- importing K
+/// oleans is not free and grows with K.
+pub fn composite(k: usize, w: usize, leaky: bool, prove: bool, out: &Path) -> std::io::Result<()> {
+    let (p, nm) = if leaky { ("CmpL", "g") } else { ("Cmp", "f") };
+    let mut s = String::new();
+    for i in 0..k {
+        s.push_str(&format!("import {p}{w}_{i}\n"));
+    }
+    s.push_str("set_option maxRecDepth 1000000\n\n");
+
+    let mut call = String::from("s");
+    for i in 0..k {
+        call = format!("{nm}{i} {call}");
+        if i + 1 < k {
+            call = format!("({call})");
+        }
+    }
+    s.push_str(&format!("def pipe (s : St) : St := {call}\n\n"));
+    if prove {
+        let specs: Vec<String> = (0..k).map(|i| format!("{nm}{i}_spec")).collect();
+        s.push_str(&format!(
+            "theorem pipe_spec (s : St) : (pipe s).n = s.n + {k} := by\n  \
+             unfold pipe\n  \
+             simp only [{}{}]\n  \
+             all_goals omega\n",
+            specs.join(", "),
+            if leaky { ", step_n, bump_n" } else { "" }
+        ));
     }
     write(out, &s)
 }
