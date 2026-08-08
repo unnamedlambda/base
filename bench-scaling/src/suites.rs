@@ -47,8 +47,10 @@ pub fn build_fixtures(ctx: &Ctx) -> Result<(), String> {
         .map_err(|e| format!("writing ToyG.lean: {e}"))?;
     let eff = ctx.work.join("Eff.lean");
     gen::eff(&eff).map_err(|e| format!("writing Eff.lean: {e}"))?;
+    let chb = ctx.work.join("ChBase.lean");
+    crate::channels::base(&chb).map_err(|e| format!("writing ChBase.lean: {e}"))?;
 
-    for src in [&toy, &eff] {
+    for src in [&toy, &eff, &chb] {
         let m = ctx.lean(src, Some(&src.with_extension("olean")), 300);
         if !m.ok {
             return Err(format!(
@@ -397,6 +399,41 @@ pub fn smoke(ctx: &Ctx) -> Vec<Value> {
         if program(fe, 4, &p).is_ok() {
             let m = ctx.lean(&p, None, 300);
             fail(&mut rows, format!("frontend/{}", fe.name()), m);
+        }
+    }
+    rows
+}
+
+//  regimes: the same obligation, discharged two ways twice over
+
+pub fn regimes(ctx: &Ctx) -> Vec<Value> {
+    use crate::channels::{self, Regime};
+
+    // import cost is the same in every file; subtract it so the growth ratios
+    // are about the obligation rather than about starting Lean.
+    let empty = ctx.work.join("rg_empty.lean");
+    let _ = std::fs::write(&empty, "import ChBase\n");
+    let floor = ctx.lean(&empty, None, 300).secs.unwrap_or(0.0);
+
+    let mut rows = Vec::new();
+    for &n in &[50usize, 100, 200] {
+        for r in [
+            Regime::Reflect,
+            Regime::ReflectQuad,
+            Regime::Named,
+            Regime::Inlined,
+        ] {
+            let src = ctx.work.join(format!("rg_{n}_{}.lean", r.name()));
+            if channels::regimes(n, r, &src).is_err() {
+                continue;
+            }
+            let m = ctx.lean(&src, None, 900);
+            rows.push(json!({
+                "steps": n, "regime": r.name(), "ok": m.ok,
+                "secs": m.secs, "rss_mb": m.rss_mb,
+                "net_secs": m.secs.map(|s| (s - floor).max(0.001)),
+                "err": err_of(&m),
+            }));
         }
     }
     rows

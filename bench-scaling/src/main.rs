@@ -5,6 +5,7 @@
 //!   cargo run --release -p bench-scaling
 //!   cargo run --release -p bench-scaling -- --only derive,frontends
 
+mod channels;
 mod dslgen;
 mod frontend;
 mod gen;
@@ -28,10 +29,11 @@ enum Suite {
     Frontends,
     Binds,
     Clif,
+    Regimes,
 }
 
 impl Suite {
-    const ALL: [Suite; 7] = [
+    const ALL: [Suite; 8] = [
         Suite::Smoke,
         Suite::Derive,
         Suite::Shapes,
@@ -39,6 +41,7 @@ impl Suite {
         Suite::Frontends,
         Suite::Binds,
         Suite::Clif,
+        Suite::Regimes,
     ];
     fn name(self) -> &'static str {
         match self {
@@ -49,6 +52,7 @@ impl Suite {
             Suite::Frontends => "frontends",
             Suite::Binds => "binds",
             Suite::Clif => "clif",
+            Suite::Regimes => "regimes",
         }
     }
 }
@@ -131,6 +135,7 @@ fn main() -> std::process::ExitCode {
             Suite::Frontends => suites::frontends(&ctx),
             Suite::Binds => suites::binds(&ctx),
             Suite::Clif => suites::clif(&ctx),
+            Suite::Regimes => suites::regimes(&ctx),
         };
         // a suite whose measurements all failed yields plausible zeros rather
         // than an error, which reads as a pass

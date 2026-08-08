@@ -179,6 +179,29 @@ pub fn all(raw: &Raw) {
         }
     }
 
+    // the same obligation, discharged two ways twice over.
+    let rg = rows(raw, "regimes");
+    if !rg.is_empty() {
+        println!("\nproof cost vs structure size (steps), by how the obligation is written");
+        for (label, v, note) in [
+            ("reflect", "reflect", "one check, linear checker"),
+            ("reflect-quad", "reflect-quad", "same check, checker indexes instead of traversing"),
+            ("named", "named", "one lemma per step, intermediates named -- goals stay O(1)"),
+            ("inlined", "inlined", "one lemma per step, prefix inlined -- goals carry it"),
+        ] {
+            let (pts, bad) = series(rg, "steps", "net_secs", |r| s(r, "regime") == Some(v));
+            // growth is what this suite is about, so flag it rather than the label
+            let sup = match (pts.first(), pts.last()) {
+                (Some((x0, y0)), Some((x1, y1))) if *x0 > 0.0 && *y0 > 0.0 => {
+                    (y1 / y0) / (x1 / x0) > 1.8
+                }
+                _ => false,
+            };
+            let note = if sup { &format!("SUPERLINEAR -- {note}") } else { note };
+            line(label, &pts, &bad, |t| format!("{t:.2}s"), note);
+        }
+    }
+
     // indexed families.
     if !sh.is_empty() {
         println!("\nelaboration time vs program size (leaves), indexed vs not");
