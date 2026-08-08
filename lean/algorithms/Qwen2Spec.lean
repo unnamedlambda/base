@@ -167,7 +167,7 @@ end AttnAdds
     that way keeps the stage exact.
 
     Joining it to the model's flat `Σ x²` is exactly what the law registry is
-    for: `Law.combinerComm` to move off lane 0, `Law.stridedRegroup` to flatten
+    for: `Law.combinerComm` to move off lane 0, `Law.laneRegroup` to flatten
     the two levels.  Both are already on the trusted surface, and both stay
     visible in the type below — which is the point. -/
 
@@ -179,7 +179,7 @@ theorem rmsLaneFold_eq_dot (mem : Nat → Float32) (cta : Nat) :
 
 /-- **RMSNorm's value is the model's**, under the two named laws. -/
 theorem rms_val_is_spec (hc : AllHold [Law.combinerComm])
-    (hs : AllHold [Law.stridedRegroup])
+    (hs : AllHold [Law.laneRegroup])
     (mem : Buf → Nat → Float32) (cta a : Nat) :
     rmsVal mem cta a
       = NumOps.mul (NumOps.mul (mem 0 a) (mem 1 a))
@@ -539,13 +539,13 @@ theorem foldl_finRange_range {α : Type} (g : α → Nat → α) :
 /-- **The kernel's `Σ exp(z − max)` is the flat sum over the row.**
 
     Two levels come apart here.  The chunk sweep is lane-partitioned and closed
-    by a butterfly — that is `Law.stridedRegroup`, at `f i = exp(zᵢ − max)` and
+    by a butterfly — that is `Law.laneRegroup`, at `f i = exp(zᵢ − max)` and
     at this row's base rather than at zero, which is exactly why the law is
     stated for an arbitrary summand and base.  The remainder sweep is a plain
     sequential fold on top, and needs no law at all: `SmMeta.tail` says the
     remainder starts where the chunks stopped, so the two together walk
     `0 … CHUNKS·32 + REM` once each, in order. -/
-theorem softmax_inv_is_flat_sum (h : AllHold [Law.stridedRegroup])
+theorem softmax_inv_is_flat_sum (h : AllHold [Law.laneRegroup])
     (im : Buf → Nat → Nat) (hm : SmMeta im) (mem : Buf → Nat → Float32) (cta : Nat) :
     smxInv im mem cta
       = NumOps.inv
@@ -601,9 +601,9 @@ def rowShift (n : Nat) : Expr (n + 1) := .var ⟨0, by omega⟩
     against subtracts a shift too (`torch.nn.functional.softmax`), so the
     shifted form is the definition and no law pays for it.
 
-    The one law is `Law.stridedRegroup`, for the denominator's two-level fold —
+    The one law is `Law.laneRegroup`, for the denominator's two-level fold —
     the same law RMSNorm already uses, at a different summand. -/
-theorem softmax_is_spec (h : AllHold [Law.stridedRegroup])
+theorem softmax_is_spec (h : AllHold [Law.laneRegroup])
     (im : Buf → Nat → Nat) (hm : SmMeta im) (mem : Buf → Nat → Float32) (cta : Nat)
     (i : Fin (im 1 Qwen2Proven.CHUNKS_SLOT * 32 + im 1 Qwen2Proven.REM_SLOT)) :
     smxVal im mem cta (cta * im 1 Qwen2Proven.SEQ_SLOT + i.val)
