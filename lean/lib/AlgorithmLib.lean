@@ -67,3 +67,4 @@ import AlgorithmLib.ML.LocalBind
 import AlgorithmLib.ML.BufsOf
 import AlgorithmLib.ML.EmitFacts
 import AlgorithmLib.ML.RegBound
+import AlgorithmLib.ML.Schedule
