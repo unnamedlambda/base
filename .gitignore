@@ -14,3 +14,6 @@ qwen2*.bin
 # LZ4 benchmark corpus + nvCOMP baseline venv (applications/lz4-ptx/baseline/setup.sh).
 applications/lz4-ptx/corpus/
 applications/lz4-ptx/baseline/.venv/
+
+# CIFAR-10, downloaded by applications/mlp-cifar/train.py
+cifar-10-batches-bin/

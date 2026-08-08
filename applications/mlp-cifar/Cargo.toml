@@ -1,0 +1,10 @@
+[package]
+name = "mlp-cifar"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+base = { path = "../../base" }
+base-types = { path = "../../base-types" }
+warp-check = { path = "../warp-check" }
+[build-dependencies]
+build-support = { path = "../../build-support" }

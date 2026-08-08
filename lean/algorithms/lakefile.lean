@@ -53,6 +53,8 @@ lean_lib GemvWarpAlgorithm
 @[default_target]
 lean_lib BackwardWideAlgorithm
 @[default_target]
+lean_lib MlpCifarAlgorithm
+@[default_target]
 lean_lib BigModelAlgorithm
 @[default_target]
 lean_lib NonVacuity
@@ -86,10 +88,11 @@ lean_lib MlSurface
 
 lean_lib TrustScan
 
-lean_lib BackwardScan
-lean_lib Qwen2NonVacuity
--- …and the same scan over the training pipeline.  A separate module because
+-- …and the same scan over each training pipeline.  Separate modules because
 -- each generator defines its own `main`.
+lean_lib BackwardScan
+lean_lib MlpScan
+lean_lib Qwen2NonVacuity
 @[default_target]
 lean_lib Qwen2OnDiskAlgorithm
 lean_lib WindowDemoAlgorithm
