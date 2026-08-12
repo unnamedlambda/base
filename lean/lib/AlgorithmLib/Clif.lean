@@ -121,38 +121,68 @@ def SymVal.slotOf? : SymVal → Option Int
 
 /-- **SSA environment.**
 
-    A strict association list, *not* a chain of closures.  That distinction is
-    not cosmetic: with `Env := Val → SymVal` and
+    Values are stored, not re-derived, and they are stored *positionally*: slot
+    `v.id` holds what `v` was bound to, and anything past the end reads as
+    `unknown`, which is what a runtime input — a block parameter and the like —
+    is.
+
+    Both halves of that are measured.  With `Env := Val → SymVal` and
     `set e v x = fun w => if w.id = v.id then x else e w`, each stored value is
     re-derived on every lookup that reaches it, and since a value's expression
-    contains further lookups the cost doubles with depth — measured at
-    270 / 451 / 807 / 1554 ms across successive three-instruction groups of a
-    92-instruction function, i.e. `2 ^ (n/3)`, on a scan that should take
-    microseconds.  Storing the value instead of a recipe for it makes lookup a
-    plain list walk over data that was computed exactly once.
+    contains further lookups the cost doubles with depth — 270 / 451 / 807 /
+    1554 ms across successive three-instruction groups of a 92-instruction
+    function, i.e. `2 ^ (n/3)`, on a scan that should take microseconds.  With a
+    strict association list the lookup is a walk, so a scan of `n` instructions
+    is `O(n²)`: recovering a ViT step's launches from 80110 instructions took
+    76 s against 6.4 s for the forward's 23582 — 3.4× the instructions for 12×
+    the time.  An array indexed by the id is `O(1)` either way.
 
-    Values not bound here are runtime inputs — block parameters and the like —
-    and read as `unknown`. -/
+    Nothing outside this file may see which of the three it is: every proof
+    goes through `Env.set_apply` below. -/
 structure Env where
-  bindings : List (Nat × SymVal)
+  slots : Array SymVal
 
-def lookupBindings : List (Nat × SymVal) → Val → SymVal
-  | [],          _ => .unknown
-  | (i, x) :: r, v => if v.id = i then x else lookupBindings r v
-
-def Env.get (e : Env) (v : Val) : SymVal := lookupBindings e.bindings v
+/-- Slot `v.id`, or `unknown` past the end. -/
+def Env.get (e : Env) (v : Val) : SymVal :=
+  if h : v.id < e.slots.size then e.slots[v.id] else .unknown
 
 instance : CoeFun Env (fun _ => Val → SymVal) := ⟨Env.get⟩
 
 /-- Nothing bound: every value reads as a runtime input. -/
-def Env.empty : Env := ⟨[]⟩
+def Env.empty : Env := ⟨#[]⟩
 
-def Env.set (e : Env) (v : Val) (x : SymVal) : Env := ⟨(v.id, x) :: e.bindings⟩
+/-- Bind `v`, growing the array with `unknown` if the id runs past its end.
+    Ids are dense in practice, so the growth path is the entry after the last
+    one. -/
+def Env.set (e : Env) (v : Val) (x : SymVal) : Env :=
+  if h : v.id < e.slots.size then ⟨e.slots.set v.id x h⟩
+  else ⟨(e.slots ++ Array.replicate (v.id - e.slots.size) SymVal.unknown).push x⟩
 
 /-- The characterisation everything else goes through, so no proof depends on
     the representation. -/
 theorem Env.set_apply (e : Env) (v w : Val) (x : SymVal) :
-    (e.set v x) w = if w.id = v.id then x else e w := rfl
+    (e.set v x) w = if w.id = v.id then x else e w := by
+  by_cases h : v.id < e.slots.size
+  · simp only [Env.set, Env.get, dif_pos h, Array.size_set]
+    by_cases hw : w.id = v.id
+    · rw [dif_pos (hw ▸ h), if_pos hw, Array.getElem_set, if_pos hw.symm]
+    · by_cases hb : w.id < e.slots.size
+      · rw [dif_pos hb, if_neg hw, dif_pos hb, Array.getElem_set,
+            if_neg (fun hc => hw hc.symm)]
+      · rw [dif_neg hb, if_neg hw, dif_neg hb]
+  · have hs : e.slots.size ≤ v.id := Nat.le_of_not_lt h
+    simp only [Env.set, Env.get, dif_neg h, Array.size_push, Array.size_append,
+               Array.size_replicate]
+    have hsz : e.slots.size + (v.id - e.slots.size) = v.id := Nat.add_sub_cancel' hs
+    by_cases hw : w.id = v.id
+    · rw [dif_pos (by omega), if_pos hw, Array.getElem_push, dif_neg (by simp; omega)]
+    · by_cases hb : w.id < v.id + 1
+      · rw [dif_pos (by omega), if_neg hw, Array.getElem_push, dif_pos (by simp; omega)]
+        by_cases hb2 : w.id < e.slots.size
+        · rw [Array.getElem_append_left hb2, dif_pos hb2]
+        · rw [Array.getElem_append_right (by omega), dif_neg hb2,
+              Array.getElem_replicate]
+      · rw [dif_neg (by omega), if_neg hw, dif_neg (by omega)]
 
 theorem Env.set_eq (e : Env) (v w : Val) (x : SymVal) (h : w.id = v.id) :
     (e.set v x) w = x := by rw [Env.set_apply, if_pos h]
@@ -452,6 +482,45 @@ def scanBlock (fns : List FnDecl) : Env → List Inst → Env × List LaunchRec
   | e, i :: is =>
       let rest := scanBlock fns (stepPure e i) is
       (rest.1, (launchAt fns e i).toList ++ rest.2)
+
+/-- **The same walk as a loop.**
+
+    `scanBlock` builds its list on the way *out* of the recursion, which is what
+    makes the theorems below plain inductions — and what makes it recurse once
+    per instruction.  A generator whose host program is one straight-line block
+    of tens of thousands of instructions overflows the stack before the walk
+    finishes, so the reference definition is kept and the compiler is given an
+    accumulator loop instead, with `scanBlock_eq_TR` as the proof that they are
+    the same function. -/
+def scanBlockTR.go (fns : List FnDecl) :
+    Env → List Inst → Array LaunchRec → Env × List LaunchRec
+  | e, [],      acc => (e, acc.toList)
+  | e, i :: is, acc =>
+      scanBlockTR.go fns (stepPure e i) is
+        (match launchAt fns e i with | some r => acc.push r | none => acc)
+
+def scanBlockTR (fns : List FnDecl) (e : Env) (is : List Inst) : Env × List LaunchRec :=
+  scanBlockTR.go fns e is #[]
+
+theorem scanBlockTR_go_eq (fns : List FnDecl) :
+    ∀ (is : List Inst) (e : Env) (acc : Array LaunchRec),
+      scanBlockTR.go fns e is acc
+        = ((scanBlock fns e is).1, acc.toList ++ (scanBlock fns e is).2) := by
+  intro is
+  induction is with
+  | nil => intro e acc; simp [scanBlockTR.go, scanBlock]
+  | cons i is ih =>
+      intro e acc
+      rw [scanBlockTR.go, ih]
+      cases h : launchAt fns e i <;>
+        simp [scanBlock, h, List.append_assoc]
+
+/-- **…and it is the same function**, so every theorem about `scanBlock` holds
+    of what actually runs. -/
+@[csimp] theorem scanBlock_eq_TR : @scanBlock = @scanBlockTR := by
+  funext fns e is
+  rw [scanBlockTR, scanBlockTR_go_eq]
+  simp
 
 /-- **The launch sequence a built function performs**, in program order.
 
