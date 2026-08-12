@@ -111,6 +111,9 @@ inductive Inst where
   | fcvtToUint (dst : Val) (ty : ClifTy) (src : Val)
   | fcmp (dst : Val) (cond : FloatCC) (a b : Val)
   | bitcast (dst : Val) (ty : ClifTy) (src : Val)
+  /-- Lane-wise `c ? a : b` on the *bits* of `c`, which is how a vector
+      comparison's all-ones/all-zeros mask is consumed. -/
+  | bitselect (dst c a b : Val)
   | ctz (dst a : Val)
   | popcnt (dst a : Val)
   | vhighBits (dst a : Val)
@@ -255,6 +258,7 @@ def Inst.json : Inst → Lean.Json
   | .fcvtToUint d t s => tagged "FcvtToUint" [toJson d, toJson t, toJson s]
   | .fcmp d c a b => tagged "Fcmp" [toJson d, toJson c, toJson a, toJson b]
   | .bitcast d t s => tagged "Bitcast" [toJson d, toJson t, toJson s]
+  | .bitselect d c a b => tagged "Bitselect" [toJson d, toJson c, toJson a, toJson b]
   | .ctz d a => tagged "Ctz" [toJson d, toJson a]
   | .popcnt d a => tagged "Popcnt" [toJson d, toJson a]
   | .vhighBits d a => tagged "VhighBits" [toJson d, toJson a]

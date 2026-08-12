@@ -75,6 +75,8 @@ inductive Op where
   | sextend64 (a : R)
   | icmp    (cond : ICmpCond) (a b : R)
   | select  (c a b : R)
+  /-- Lane-wise `c ? a : b` on the bits of `c`. -/
+  | bitselect (c a b : R)
   | ctz     (a : R)
   | popcnt  (a : R)
   | fconst  (ty : ClifTy) (bits : UInt64)
@@ -110,7 +112,7 @@ def Op.regs : Op → List R
   | .sextend64 a | .fneg a | .fpromote a | .vhighBits a
   | .fcvtFromSint _ a | .fcvtToUint _ a | .splat _ a
   | .extractlane a _ | .bitcast _ a | .load _ a => [a]
-  | .select c a b => [c, a, b]
+  | .select c a b | .bitselect c a b => [c, a, b]
 
 /-- Statements. `op` and `call` define the next slot; the rest define nothing. -/
 inductive Stmt where
@@ -248,6 +250,11 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
   | .select c a b => do
       let tc ← Γ[c]?; let ta ← Γ[a]?; let tb ← Γ[b]?
       need (tc.isInt && ta == tb) ta
+  -- The mask is the operands' own type: it comes from a comparison that was
+  -- bitcast to that width, which is what makes the lane-wise select expressible.
+  | .bitselect c a b => do
+      let tc ← Γ[c]?; let ta ← Γ[a]?; let tb ← Γ[b]?
+      need (tc == ta && ta == tb) ta
   | .fadd a b | .fsub a b | .fmul a b | .fmax a b | .fmin a b => do
       let ta ← Γ[a]?; let tb ← Γ[b]?
       need (ta == tb && (ta.isFloat || ta.isVec)) ta
@@ -466,6 +473,7 @@ def emitStmt (s : CS) : Stmt → CS
         | .sextend64 a  => .sextend64 v (s.get a)
         | .icmp c a b   => .icmp v c (s.get a) (s.get b)
         | .select c a b => .select v (s.get c) (s.get a) (s.get b)
+        | .bitselect c a b => .bitselect v (s.get c) (s.get a) (s.get b)
         | .ctz a        => .ctz v (s.get a)
         | .popcnt a     => .popcnt v (s.get a)
         | .fconst ty b  => .fconst v ty b
@@ -641,6 +649,7 @@ def uextend64 (a : R) : M R := bindOp (.uextend64 a)
 def sextend64 (a : R) : M R := bindOp (.sextend64 a)
 def icmp (c : ICmpCond) (a b : R) : M R := bindOp (.icmp c a b)
 def select (c a b : R) : M R := bindOp (.select c a b)
+def bitselect (c a b : R) : M R := bindOp (.bitselect c a b)
 def ctz (a : R) : M R := bindOp (.ctz a)
 def popcnt (a : R) : M R := bindOp (.popcnt a)
 def fconst (ty : ClifTy) (bits : UInt64) : M R := bindOp (.fconst ty bits)
@@ -839,6 +848,7 @@ instance : ToExpr Op where
     | .sextend64 a => mkApp (mkConst ``Op.sextend64) (toExpr a)
     | .icmp c a b => mkApp3 (mkConst ``Op.icmp) (toExpr c) (toExpr a) (toExpr b)
     | .select c a b => mkApp3 (mkConst ``Op.select) (toExpr c) (toExpr a) (toExpr b)
+    | .bitselect c a b => mkApp3 (mkConst ``Op.bitselect) (toExpr c) (toExpr a) (toExpr b)
     | .ctz a => mkApp (mkConst ``Op.ctz) (toExpr a)
     | .popcnt a => mkApp (mkConst ``Op.popcnt) (toExpr a)
     | .fconst ty b => mkApp2 (mkConst ``Op.fconst) (toExpr ty) (toExpr b)

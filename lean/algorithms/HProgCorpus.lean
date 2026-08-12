@@ -296,10 +296,41 @@ def casesCfg : List Case := Id.run do
     pure (j.headD 0))]
   return cs
 
+open Sur in
+/-- The `pmin`/`pmax` pattern, appended last so adding to it cannot renumber
+    any case above. -/
+def casesPminmax : List Case := Id.run do
+  let mut cs : List Case := []
+  -- `pmin`/`pmax` as the generators build them: a lane-wise compare bitcast to
+  -- the operand width, then a bit-for-bit select. Both orders, because the rule
+  -- Cranelift matches for `pmax` reverses the compare — a mistake there computes
+  -- the minimum, and nothing else in the corpus would say so.
+  --
+  -- Curated pairs rather than a cross product: these are the ones where `pmin`
+  -- and IEEE `fmin` disagree, which is the whole reason the pattern is used.
+  let pairs : List (String × UInt64 × UInt64) :=
+    [("nan/1.5", 0x7fc00000, f32Bits 1.5), ("1.5/nan", f32Bits 1.5, 0x7fc00000),
+     ("0/-0", 0x00000000, 0x80000000), ("-0/0", 0x80000000, 0x00000000),
+     ("inf/-inf", 0x7f800000, 0xff800000), ("sub/0", 0x00000001, 0x00000000),
+     ("1.5/-2.25", f32Bits 1.5, f32Bits (-2.25))]
+  for (nm, x, y) in pairs do
+    cs := cs ++ [
+      (s!"pmin/{nm}", do
+         let a ← splat .f32x4 (← fconst .f32 x)
+         let b ← splat .f32x4 (← fconst .f32 y)
+         uextend64 (← bitcast .i32 (← extractlane
+           (← bitselect (← bitcast .f32x4 (← fcmp .lt a b)) a b) 0))),
+      (s!"pmax/{nm}", do
+         let a ← splat .f32x4 (← fconst .f32 x)
+         let b ← splat .f32x4 (← fconst .f32 y)
+         uextend64 (← bitcast .i32 (← extractlane
+           (← bitselect (← bitcast .f32x4 (← fcmp .lt b a)) a b) 0)))]
+  return cs
+
 /-- Every case, named so a failure says which one. -/
 def cases : List Case :=
   casesInt ++ casesShift ++ casesUnary ++ casesCmp ++ casesFloat ++ casesConv
-    ++ casesVec ++ casesCfg
+    ++ casesVec ++ casesCfg ++ casesPminmax
 
 open Sur in
 /-- Every case, storing its result at its own stride in the output buffer. -/

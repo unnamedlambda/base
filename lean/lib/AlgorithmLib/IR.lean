@@ -277,6 +277,30 @@ def fcvtToUint (ty : ClifTy) (src : Val) : IRBuilder Val := do
 def fcmpGt (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.fcmp v .gt a b); pure v
 
+def fcmpLt (a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.fcmp v .lt a b); pure v
+
+def bitcastTo (ty : ClifTy) (a : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.bitcast v ty a); pure v
+
+def bitselect (c a b : Val) : IRBuilder Val := do
+  let v ← freshVal; emit (.bitselect v c a b); pure v
+
+/-- `min(a, b)` with the hardware's NaN behaviour rather than IEEE
+    `minimumNumber`. Cranelift lowers exactly this shape — the wasm `pmin`
+    pattern — to a single `minps`, where `fmin` costs a NaN-correct sequence of
+    about eight instructions. Use this when the data cannot be NaN.
+
+    **Vector types only**: a scalar `fcmp` yields a one-bit mask, which cannot
+    be bitcast to the operand width. Scalar tails should use `fmin`. -/
+def pmin (ty : ClifTy) (a b : Val) : IRBuilder Val := do
+  bitselect (← bitcastTo ty (← fcmpLt a b)) a b
+
+/-- `max(a, b)`, likewise a single `maxps`. Note the reversed compare: the rule
+    Cranelift matches is `bitselect(fcmp lt b a, a, b)`. -/
+def pmax (ty : ClifTy) (a b : Val) : IRBuilder Val := do
+  bitselect (← bitcastTo ty (← fcmpLt b a)) a b
+
 def bitcastI64 (a : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.bitcast v .i64 a); pure v
 

@@ -314,6 +314,16 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
   | .select c a b => do
       let cv ← get Γ c
       if isTrue cv then get Γ a else get Γ b
+  -- Bit-for-bit, per lane: the mask decides each bit, not each lane as a whole.
+  -- That is what `bitselect` means and why a comparison result has to be
+  -- bitcast to the operand width before it can be used here.
+  | .bitselect c a b => do
+      let cv ← get Γ c
+      let av ← get Γ a
+      let bv ← get Γ b
+      let masked ← zipBits cv av (fun _ m x => m &&& x)
+      let other ← zipBits cv bv (fun _ m y => (~~~m) &&& y)
+      zipBits masked other (fun _ x y => x ||| y)
   | .fadd a b => do zipF (← get Γ a) (← get Γ b) (· + ·) (· + ·)
   | .fsub a b => do zipF (← get Γ a) (← get Γ b) (· - ·) (· - ·)
   | .fmul a b => do zipF (← get Γ a) (← get Γ b) (· * ·) (· * ·)
@@ -337,6 +347,14 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
       match ← get Γ a, ← get Γ b with
       | .sc .f32 x, .sc .f32 y => some (boolV (cmpF32 c (f32 x) (f32 y)))
       | .sc .f64 x, .sc .f64 y => some (boolV (cmpF64 c (f64 x) (f64 y)))
+      -- On vectors the result is a per-lane mask of all-ones or all-zeros, at
+      -- the lane's own width — which is why `bitselect` consumes it directly
+      -- once it has been bitcast to the operand type.
+      | .vec .f32x4 xs, .vec .f32x4 ys =>
+          if xs.size == ys.size then
+            some (.vec .f32x4 (xs.zipWith
+              (fun x y => if cmpF32 c (f32 x) (f32 y) then 0xffffffff else 0) ys))
+          else none
       | _, _ => none
   | .fcvtFromSint ty a => do
       let (.sc t x) ← get Γ a | none
