@@ -29,7 +29,17 @@ lean_lib SortBenchAlgorithm
 lean_lib ClampSumBenchAlgorithm
 lean_lib HProgPilots
 lean_lib HProgCorpus
+lean_lib PlainSumBenchAlgorithm
+lean_lib BranchyBenchAlgorithm
+lean_lib SelectBenchAlgorithm
+lean_lib SelectLeaBenchAlgorithm
+lean_lib SelectRotBenchAlgorithm
+lean_lib SelectMaskBenchAlgorithm
+lean_lib StoreBenchAlgorithm
+lean_lib PminSumBenchAlgorithm
 lean_lib PandasBenchAlgorithm
+lean_lib RegPressureBenchAlgorithm
+lean_lib IntSumBenchAlgorithm
 lean_lib PandasFilterBenchAlgorithm
 lean_lib RowAffineReduceBenchAlgorithm
 lean_lib RowDotBenchAlgorithm
@@ -56,6 +66,14 @@ lean_lib GemvWarpAlgorithm
 lean_lib BackwardWideAlgorithm
 @[default_target]
 lean_lib MlpCifarAlgorithm
+lean_lib VitAlgorithm
+lean_lib VitUnits
+lean_lib VitGuards
+lean_lib VitDag
+lean_lib VitDagStep
+lean_lib VitRegs
+lean_lib VitSlot
+lean_lib VitScan
 @[default_target]
 lean_lib BigModelAlgorithm
 @[default_target]

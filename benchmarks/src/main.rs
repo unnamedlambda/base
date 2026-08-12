@@ -1,3 +1,4 @@
+mod codegen_bench;
 mod csv_bench;
 mod cuda_bench;
 mod gpu_bench;
@@ -19,6 +20,7 @@ fn print_usage() {
     eprintln!("Usage: benchmarks [OPTIONS]");
     eprintln!();
     eprintln!("  --bench <name>     Benchmark to run: csv, json, regex, burn, vecops, reduction,");
+    eprintln!("                     codegen,");
     eprintln!("                     gpu, gpu-iter, cuda,");
     eprintln!("                     histogram, sort, strsearch, wc, all (default: all)");
     eprintln!("  --rounds <n>       Rounds per measurement (default: 10)");
@@ -83,6 +85,12 @@ fn main() {
     let run_sort = bench == "all" || bench == "sort";
     let run_strsearch = bench == "all" || bench == "strsearch";
     let run_wc = bench == "all" || bench == "wc";
+    let run_codegen = bench == "all" || bench == "codegen";
+
+    if run_codegen {
+        let results = codegen_bench::run(rounds);
+        codegen_bench::print(&results);
+    }
 
     if run_csv {
         let results = csv_bench::run(rounds);

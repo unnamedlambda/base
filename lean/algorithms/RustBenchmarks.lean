@@ -1,6 +1,17 @@
 import Lean
 import Std
 import AlgorithmLib
+import ClampSumBenchAlgorithm
+import PlainSumBenchAlgorithm
+import BranchyBenchAlgorithm
+import SelectBenchAlgorithm
+import SelectLeaBenchAlgorithm
+import SelectRotBenchAlgorithm
+import SelectMaskBenchAlgorithm
+import StoreBenchAlgorithm
+import PminSumBenchAlgorithm
+import RegPressureBenchAlgorithm
+import IntSumBenchAlgorithm
 import CsvBenchAlgorithm
 import CudaSaxpyBenchAlgorithm
 import GpuIterBenchAlgorithm
@@ -41,4 +52,15 @@ def main (args : List String) : IO Unit := do
     GpuReductionBench.artifacts ++
     CudaSaxpyBench.artifacts ++
     GpuIterBench.artifacts ++
-    SortBench.artifacts
+    SortBench.artifacts ++
+    ClampSumBench.artifacts ++
+    PlainSumBench.artifacts ++
+    BranchyBench.artifacts ++
+    SelectBench.artifacts ++
+    SelectLeaBench.artifacts ++
+    SelectRotBench.artifacts ++
+    SelectMaskBench.artifacts ++
+    StoreBench.artifacts ++
+    PminSumBench.artifacts ++
+    RegPressureBench.artifacts ++
+    IntSumBench.artifacts
