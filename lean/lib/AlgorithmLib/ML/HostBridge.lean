@@ -201,6 +201,70 @@ theorem cublasStep_isMatvec (hl : CuBlasIsMatvec) (aB xB yB : Buf) (rows cols : 
   rw [dif_pos (And.intro rfl hi), hl]
   rfl
 
+/-- **`C = A·B` as a plan step, at a batch of one.**
+
+    The GEMM counterpart of `cublasStep`, and written the same way and for the
+    same reason: against the *named law's* own opaque, `cublasSgemmResult`, so
+    that `Law.cublasGemmIsSomeReassoc` constrains something a plan mentions
+    rather than sitting in the registry.  Output address `a` is read row-major
+    as element `(a / n, a % n)`, which is the shape entering — the one place it
+    does.
+
+    What the law does not say, and this step does not either: which operand of
+    the column-major call plays `A`.  That is the lowering's business
+    (`vGemmOf` picks it per operation) and a transposition is not a
+    reassociation, so it could not be smuggled in here.
+
+    *Where* it can land is proven: `frame` is discharged, so the step cannot
+    touch a buffer the rest of the plan reasons about. -/
+noncomputable def cublasGemmStep (aB bB cB : Buf) (m n k : Nat) : DeclaredStep where
+  kernel := .cublasSgemmAt1OnStream
+  outs  := [cB]
+  step  := fun mem b a =>
+             if h : b = cB ∧ a < m * n then
+               have hn : 0 < n := Nat.pos_of_ne_zero (fun h0 => by
+                 rw [h0, Nat.mul_zero] at h; exact Nat.not_lt_zero a h.2)
+               cublasSgemmResult m n k (matAt mem aB m k) (matAt mem bB k n)
+                 ⟨a / n, Nat.div_lt_of_lt_mul (by rw [Nat.mul_comm]; exact h.2)⟩
+                 ⟨a % n, Nat.mod_lt _ hn⟩
+             else mem b a
+  frame := by
+    intro mem b hb
+    funext a
+    rw [dif_neg (fun h => hb (by simp [h.1]))]
+
+/-- **What the vendor GEMM computes, under the law that names it.**
+
+    Output element `(i, j)` sums that element's own `k` products, each once, in
+    some association.  Weaker than `cublasStep_isMatvec` in exactly the way the
+    two laws differ — there is a tree here rather than a fold — and that is the
+    whole of what a batch-of-one contraction may be assumed to be. -/
+theorem cublasGemmStep_isSomeReassoc (hg : CuBlasGemmIsSomeReassoc)
+    (aB bB cB : Buf) (m n k : Nat) (mem : Buf → Nat → Float32)
+    (i j : Nat) (hi : i < m) (hj : j < n) :
+    ∃ t : SumTree, t.indices.Perm (List.range k) ∧
+      (cublasGemmStep aB bB cB m n k).step mem cB (i * n + j)
+        = t.eval (gemmTerm (matAt mem aB m k) (matAt mem bB k n) ⟨i, hi⟩ ⟨j, hj⟩) := by
+  have ha : i * n + j < m * n := by
+    calc i * n + j < i * n + n := Nat.add_lt_add_left hj _
+      _ = (i + 1) * n := by rw [Nat.succ_mul]
+      _ ≤ m * n := Nat.mul_le_mul_right n hi
+  obtain ⟨t, hperm, ht⟩ :=
+    hg m n k (matAt mem aB m k) (matAt mem bB k n) ⟨i, hi⟩ ⟨j, hj⟩
+  refine ⟨t, hperm, ?_⟩
+  show (if h : cB = cB ∧ i * n + j < m * n then
+          cublasSgemmResult m n k (matAt mem aB m k) (matAt mem bB k n)
+            ⟨(i * n + j) / n, _⟩ ⟨(i * n + j) % n, _⟩
+        else mem cB (i * n + j)) = _
+  rw [dif_pos (And.intro rfl ha)]
+  have hd : (i * n + j) / n = i := by
+    rw [Nat.mul_comm, Nat.mul_add_div (by omega), Nat.div_eq_of_lt hj, Nat.add_zero]
+  have hm : (i * n + j) % n = j := by
+    rw [Nat.mul_comm, Nat.mul_add_mod, Nat.mod_eq_of_lt hj]
+  rw [show (⟨(i * n + j) / n, by omega⟩ : Fin m) = ⟨i, hi⟩ from Fin.ext hd,
+      show (⟨(i * n + j) % n, by omega⟩ : Fin n) = ⟨j, hj⟩ from Fin.ext hm]
+  exact ht
+
 /-- **A batched GEMM's row**, and this one really is opaque.
 
     Attention issues two of these per layer — the score contraction and the

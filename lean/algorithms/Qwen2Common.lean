@@ -1965,12 +1965,12 @@ def attnOps : List DeviceOp :=
   , vlOp "cl_cublas_sgemm_strided_batched"
       [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
        .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
-       .opaque, .const 2]
+       .opaque, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
   , klOp PTX_SOFTMAX_OFF 3 BIND_SOFTMAX 14 BS_A_SOFT
   , vlOp "cl_cublas_sgemm_strided_batched"
       [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
        .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
-       .const 448, .const 2]
+       .const 448, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
   , vlOp "cl_cublas_sgemv"
       [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76]
   , klOp PTX_ADD_OFF     2 BIND_ADD1   28  BS_A_ADD ]
@@ -2024,12 +2024,12 @@ def attnDriver (fnOf : String → FnRef) : HStmt :=
     , .extern (vStep fnOf "cl_cublas_sgemm_strided_batched"
         [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
          .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
-         .opaque, .const 2])
+         .opaque, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0])
     , .launch (kStep PTX_SOFTMAX_OFF 3 BIND_SOFTMAX 14 BS_A_SOFT)
     , .extern (vStep fnOf "cl_cublas_sgemm_strided_batched"
         [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
          .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
-         .const 448, .const 2])
+         .const 448, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0])
     , .extern (vStep fnOf "cl_cublas_sgemv"
         [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76])
     , .launch (kStep PTX_ADD_OFF     2 BIND_ADD1   28  BS_A_ADD) ]
@@ -2102,12 +2102,12 @@ noncomputable def layerDeclared : List DeclaredBinding :=
   , ⟨"cl_cublas_sgemm_strided_batched",
      [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
       .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
-      .opaque, .const 2],
+      .opaque, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0],
      sgemmBatchedStep B_KC B_Q B_SC MAX_SEQ HEAD_DIM⟩
   , ⟨"cl_cublas_sgemm_strided_batched",
      [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
       .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
-      .const 448, .const 2],
+      .const 448, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0],
      sgemmBatchedStep B_VC B_PR B_AO D MAX_SEQ⟩
   , ⟨"cl_cublas_sgemv",
      [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76],

@@ -265,6 +265,67 @@ theorem cublasIsMatvec_strengthens (h : CuBlasIsMatvec) : CuBlasIsSomeReassoc :=
     funext acc j; rw [gemvTerm_val]
   rw [hfun]
 
+
+
+
+/-! ### A batch of contractions, and what batching costs
+
+    `cublasSgemmBatched` performs `P` contractions of one shape in one launch,
+    its members named by pointer rather than by a stride, so they need share no
+    allocation.  A per-head projection is exactly that shape: `P` contractions
+    of one shape that a tape otherwise issues one at a time.
+
+    **The obvious law is false, and it was measured false rather than argued
+    about.**  The natural thing to assume is that batching changes *which
+    launch* does the work and not the arithmetic each member does — that member
+    `p` lands what its own separate call would.  Running the same ViT forward
+    both ways, the logits agree with timm either way (8.4e-07 batched, 8.0e-07
+    not) and **differ from each other in the last bits**, where every other
+    schedule change in this development is bit-identical.  So cuBLAS picks a
+    different fold for a batch of `P` than for `P` calls, and the equality is
+    not available.
+
+    What *is* available is the weaker statement the unbatched call already gets:
+    the right products, each once, in some association.  That is what is stated
+    below.  It is a real loss — an equation that chains through a sequence is
+    what `CuBlasIsMatvec` exists to give, and batching gives it up — which is
+    why the price appears here rather than in a comment. -/
+
+/-- The value member `p` of a batched vendor GEMM lands.  Opaque for the same
+    reason as `cublasSgemvResult`: nothing here knows how it was computed. -/
+opaque cublasBatchedResult (batch rows cols : Nat)
+  (a : Fin batch → Fin rows → Fin cols → Float32)
+  (x : Fin batch → Fin cols → Float32) (p : Fin batch) (i : Fin rows) : Float32
+
+/-- **What a batched vendor GEMM promises.**
+
+    Member `p` sums `p`'s own products, each once, in some association.  The
+    same shape as `CuBlasIsSomeReassoc` and for the same reason — it is all of
+    the leeway expressible over `Float32` — with the batch index threaded
+    through so the law says the members do not mix.
+
+    Deliberately *not* stated against `cublasSgemvResult`: that would say a
+    batch member equals its own separate call, which the measurement above
+    refutes. -/
+def CuBlasBatchedIsSomeReassoc : Prop :=
+  ∀ (batch rows cols : Nat) (a : Fin batch → Fin rows → Fin cols → Float32)
+    (x : Fin batch → Fin cols → Float32) (p : Fin batch) (i : Fin rows),
+    ∃ t : SumTree, t.indices.Perm (List.range cols) ∧
+      cublasBatchedResult batch rows cols a x p i = t.eval (gemvTerm (a p) (x p) i)
+
+/-- **Batching does not mix the members.**
+
+    The content of the law that survives: whatever fold member `p` gets, its
+    leaves are `p`'s products and no one else's.  Stated separately because it
+    is the part a schedule actually needs — that batching is safe — as distinct
+    from the part it does not get, which is a closed form. -/
+theorem cublasBatched_sums_own (hb : CuBlasBatchedIsSomeReassoc)
+    (batch rows cols : Nat) (a : Fin batch → Fin rows → Fin cols → Float32)
+    (x : Fin batch → Fin cols → Float32) (p : Fin batch) (i : Fin rows) :
+    ∃ t : SumTree, t.indices.Perm (List.range cols) ∧
+      cublasBatchedResult batch rows cols a x p i = t.eval (gemvTerm (a p) (x p) i) :=
+  hb batch rows cols a x p i
+
 /-- **What it costs to read a lane-partitioned fold as a flat one.**
 
     `SumAssoc` bridges the *butterfly* to a sequential lane fold.  A kernel does
@@ -516,6 +577,91 @@ def CombinerComm : Prop :=
   (∀ a b : Float32, NumOps.add a b = NumOps.add b a)
     ∧ (∀ a b : Float32, NumOps.max a b = NumOps.max b a)
 
+/-- **A padded key takes exactly zero softmax weight.**
+
+    The two lane expressions the shipped softmax evaluates, composed: a masked
+    score is a finite raw score plus the floor, softmax subtracts the row
+    maximum and exponentiates, then scales by the reciprocal of the row sum.
+    In `Float32` the exponential underflows to zero — `exp` is zero below about
+    −87.34 and the floor is at most −1e9 — and zero times a finite reciprocal is
+    zero.  So the value behind a padded key never reaches the output.
+
+    The range hypotheses are what make this true rather than a blanket claim: an
+    unbounded `raw` would absorb the floor, an unbounded `mx` would cancel it,
+    and an infinite row sum would make the product a NaN.  `s ≥ 1` is free — the
+    row's own maximum contributes `exp 0`.
+
+    This is the one fact this development needs about `Float32.exp`'s underflow,
+    and `Float32` is opaque by declaration, so it is stated rather than
+    proven — the same standing as every other law here. -/
+def MaskUnderflows : Prop :=
+  ∀ floor bound raw mx s : Float32,
+    NumOps.le floor (NumOps.neg (NumOps.ofNat 1000000000)) = true →
+    NumOps.le raw bound = true →
+    NumOps.le (NumOps.neg bound) mx = true →
+    NumOps.le mx bound = true →
+    NumOps.le bound (NumOps.ofNat 1000000) = true →
+    NumOps.le NumOps.one s = true →
+    NumOps.le s (NumOps.ofNat 1000000) = true →
+    NumOps.mul (NumOps.exp (NumOps.add (NumOps.add raw floor) (NumOps.neg mx)))
+      (NumOps.inv s) = NumOps.ofNat 0
+
+/-! ### The contraction a batch of one performs
+
+    Every contraction the ViT ships is `cl_cublas_sgemm_strided_batched` at
+    `batchCount = 1`, with zero strides, zero operand offsets and the leading
+    dimensions its shape implies — `vit_contractions_are_plain_gemms` decides
+    that from the emitted instruction stream rather than assuming it, and
+    `cublas_gemm_batch_one_vs_plain` (a GPU test over the fifteen shapes the
+    model launches) measures that call bit-identical to `cl_cublas_sgemm`.  So
+    one opaque stands for both entry points in that configuration, and there is
+    a contraction to state a law about.
+
+    What is stated is the weak form, for the reason `CuBlasIsSomeReassoc` is:
+    the strong one names an association NVIDIA does not promise, and here it
+    would additionally have to hold across `m · n` output elements of one call
+    rather than one dot product.  Claiming the GEMV law per output column would
+    say a GEMM computes each column exactly as that column's separate GEMV
+    would — the same over-reading that was measured *false* for batching. -/
+
+/-- The value a vendor GEMM lands at output element `(i, j)`.  Opaque for the
+    same reason as `cublasSgemvResult`: nothing here knows how it was
+    computed. -/
+opaque cublasSgemmResult (m n k : Nat) (a : Fin m → Fin k → Float32)
+  (b : Fin k → Fin n → Float32) (i : Fin m) (j : Fin n) : Float32
+
+/-- The product at depth `p` of output element `(i, j)`, total in `p` for the
+    same reason `gemvTerm` is. -/
+def gemmTerm {m n k : Nat} (a : Fin m → Fin k → Float32)
+    (b : Fin k → Fin n → Float32) (i : Fin m) (j : Fin n) (p : Nat) : Float32 :=
+  if h : p < k then NumOps.mul (a i ⟨p, h⟩) (b ⟨p, h⟩ j) else NumOps.ofNat 0
+
+/-- **What a vendor GEMM promises.**
+
+    Each output element sums its own `k` products, each once, in some
+    association — the leeway the vendor takes, and all of it that is
+    expressible over `Float32`.  What remains outside is what
+    `VendorKernel.withholds` names: fusing a multiply-add into one rounding,
+    and accumulating at another width.
+
+    The output index is bound *inside* the quantifier, so nothing here says the
+    associations of two elements agree; a GEMM is free to tile. -/
+def CuBlasGemmIsSomeReassoc : Prop :=
+  ∀ (m n k : Nat) (a : Fin m → Fin k → Float32) (b : Fin k → Fin n → Float32)
+    (i : Fin m) (j : Fin n),
+    ∃ t : SumTree, t.indices.Perm (List.range k) ∧
+      cublasSgemmResult m n k a b i j = t.eval (gemmTerm a b i j)
+
+/-- **Every element sums its own products.**  The content a schedule uses: an
+    output element's leaves are the products of its own row and column, so a
+    contraction cannot leak one element's operands into another's. -/
+theorem cublasGemm_sums_own (hg : CuBlasGemmIsSomeReassoc)
+    (m n k : Nat) (a : Fin m → Fin k → Float32) (b : Fin k → Fin n → Float32)
+    (i : Fin m) (j : Fin n) :
+    ∃ t : SumTree, t.indices.Perm (List.range k) ∧
+      cublasSgemmResult m n k a b i j = t.eval (gemmTerm a b i j) :=
+  hg m n k a b i j
+
 /-- A named numerical law.  Transformations and specs that need one say so in
     their type; `Assumptions.lean` names it; nothing applies one silently. -/
 inductive Law where
@@ -531,6 +677,14 @@ inductive Law where
   | combinerComm
   /-- Any lane-partitioned fold equals the flat fold, given coverage. -/
   | laneRegroup
+  /-- A member of a batched vendor GEMM computes what its own call would. -/
+  | cublasBatchedIsSomeReassoc
+  /-- Each output element of a vendor GEMM sums its own products in *some*
+      association. -/
+  | cublasGemmIsSomeReassoc
+  /-- A score at the padding floor exponentiates to zero, so a padded key takes
+      no softmax weight. -/
+  | maskUnderflows
   deriving DecidableEq, Repr
 
 /-- **The registry, as a list.**
@@ -541,7 +695,8 @@ inductive Law where
     than it has. -/
 def Law.all : List Law :=
   [.expIsEx2, .sumAssoc, .cublasIsMatvec, .cublasIsSomeReassoc,
-   .combinerComm, .laneRegroup]
+   .combinerComm, .laneRegroup, .cublasBatchedIsSomeReassoc, .maskUnderflows,
+   .cublasGemmIsSomeReassoc]
 
 theorem Law.all_covers : ∀ l : Law, l ∈ Law.all := by
   intro l; cases l <;> decide
@@ -553,6 +708,9 @@ def Law.title : Law → String
   | .cublasIsMatvec => "cublas-is-matvec"
   | .cublasIsSomeReassoc => "cublas-sums-in-some-order"
   | .combinerComm => "warp-combiner-commutes"
+  | .cublasBatchedIsSomeReassoc => "cublas-batching-is-scheduling"
+  | .maskUnderflows => "masked-key-underflows"
+  | .cublasGemmIsSomeReassoc => "cublas-gemm-sums-in-some-order"
 
 def Law.why : Law → String
   | .laneRegroup =>
@@ -582,6 +740,32 @@ def Law.why : Law → String
       "cost of having no R semantics for Float32 to state it at instead. " ++
       "~99.9% of the shipped Qwen2 model's arithmetic depends on it. Compare " ++
       "TF32, which other frameworks enable by default without stating it at all."
+  | .cublasBatchedIsSomeReassoc =>
+      "cl_cublas_sgemm_batched performs P contractions of one shape in one " ++
+      "launch, and member p sums p's own products in some association. The " ++
+      "stronger reading -- that a member lands what its own separate call " ++
+      "would -- was MEASURED FALSE: the same ViT forward batched and not " ++
+      "agrees with timm either way and differs from itself in the last bits. " ++
+      "So batching gives up the closed form that chains through a sequence, " ++
+      "which is what cublas-is-matvec buys for the unbatched call."
+  | .cublasGemmIsSomeReassoc =>
+      "cl_cublas_sgemm_strided_batched at a batch of one is a plain GEMM -- " ++
+      "measured bit-identical to cl_cublas_sgemm on all fifteen shapes the " ++
+      "ViT launches -- and each of its output elements sums that element's own " ++
+      "k products, each once, in some association. The weak form, for the " ++
+      "reason cublas-sums-in-some-order is weak, and one step further: the " ++
+      "strong form would have to hold across m*n elements of one call, which " ++
+      "is the reading that was measured FALSE for batching. Says nothing about " ++
+      "a call at batch > 1 or with non-zero strides, where the operand slices " ++
+      "come from arguments this model does not interpret."
+  | .maskUnderflows =>
+      "A padded key's score is the floor (at most -1e9) plus a bounded raw " ++
+      "score; softmax subtracts the row maximum and exponentiates, and Float32 " ++
+      "exp underflows to zero below about -87.34, so the weight is exactly " ++
+      "zero and the value behind that key never reaches the output. Float32 is " ++
+      "opaque here, so the underflow is stated rather than proven. It is what " ++
+      "lets a sequence be padded to the multiple of 32 a row pass reduces over " ++
+      "while the tokens are not."
   | .combinerComm =>
       "Float32 add and max commute. Strictly weaker than sumAssoc and, unlike " ++
       "it, true at IEEE-754 for non-NaN inputs: a butterfly's lanes walk the " ++
@@ -606,6 +790,9 @@ def Law.holds : Law → Prop
   | .cublasIsSomeReassoc => CuBlasIsSomeReassoc
   | .combinerComm => CombinerComm
   | .laneRegroup => LaneRegroup
+  | .cublasBatchedIsSomeReassoc => CuBlasBatchedIsSomeReassoc
+  | .maskUnderflows => MaskUnderflows
+  | .cublasGemmIsSomeReassoc => CuBlasGemmIsSomeReassoc
 
 /-- **Assuming the strict law gives you the weak one.**  General over the
     registry, so a new refinement entry without a proof behind it fails here. -/

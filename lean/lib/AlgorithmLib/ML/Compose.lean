@@ -176,6 +176,27 @@ inductive VendorKernel where
   | cublasSgemm
   | cublasSgemmStridedBatched
   | cublasSgemmStridedBatchedOnStream
+  /-- **The strided-batched call at a batch of one**: zero strides, zero
+      operand offsets, the leading dimensions the shape implies.  In that
+      configuration there are no stride or batch arguments left uninterpreted
+      and the call is a plain GEMM — measured bit-identical to
+      `cl_cublas_sgemm` on all fifteen shapes the ViT launches — so there is an
+      equation to state, and `Law.cublasGemmIsSomeReassoc` states it.
+
+      A constructor of its own rather than a note on the general form, because
+      the difference is exactly what may be assumed: a call in this
+      configuration is billed a law, and one outside it is billed nothing.
+      Which one the emitted program makes is decided, not asserted
+      (`vit_contractions_are_plain_gemms`). -/
+  | cublasSgemmAt1
+  | cublasSgemmAt1OnStream
+  /-- **A batch named by pointer.**  `P` contractions of one shape in one
+      launch, their operands named by three device arrays of pointers rather
+      than by a base and a stride — so the members need share no allocation and
+      each member's output stays a contiguous matrix of its own. -/
+  | cublasSgemmBatchedOnStream
+  /-- Store one buffer's device pointer into an entry of such an array. -/
+  | cublasPtrArray
   /-- The host→device copy.  Not a contraction and not cuBLAS, but declared for
       the same reason: its source is host memory, which this model does not
       describe, so what it lands is assumed while where it can land is proven. -/
@@ -197,6 +218,11 @@ def VendorKernel.symbol : VendorKernel → String
   | .cublasSgemmStridedBatched        => "cl_cublas_sgemm_strided_batched"
   | .cublasSgemmStridedBatchedOnStream =>
       "cl_cublas_sgemm_strided_batched_on_stream"
+  | .cublasSgemmAt1                    => "cl_cublas_sgemm_strided_batched"
+  | .cublasSgemmAt1OnStream            =>
+      "cl_cublas_sgemm_strided_batched_on_stream"
+  | .cublasSgemmBatchedOnStream        => "cl_cublas_sgemm_batched_on_stream"
+  | .cublasPtrArray                    => "cl_cublas_ptr_array"
   | .uploadPtr                        => "cl_cuda_upload_ptr"
   | .cudaGraphLaunch                  => "cl_cuda_graph_launch"
 
@@ -221,6 +247,23 @@ def VendorKernel.assumes : VendorKernel → List Law
   -- `Float32` survives that, so none is stated.
   | .cublasSgemmStridedBatched         => []
   | .cublasSgemmStridedBatchedOnStream => []
+  -- The same symbol at a batch of one, where the strides are zero and nothing
+  -- is left uninterpreted: each output element sums its own products in some
+  -- association.  The weak form, for the reason the GEMV's is weak.
+  | .cublasSgemmAt1                    => [.cublasGemmIsSomeReassoc]
+  | .cublasSgemmAt1OnStream            => [.cublasGemmIsSomeReassoc]
+  -- The pointer-array form is the batched call that *does* state an equation,
+  -- and it is the weak one: member `p` sums `p`'s own products in some
+  -- association.  The strong reading was measured false, so what a batch buys
+  -- in launches it pays for in the closed form it gives up.  It names its
+  -- members by pointer, so unlike the strided form there are no stride
+  -- arguments left uninterpreted and each member's output is a whole matrix.
+  | .cublasSgemmBatchedOnStream        => [.cublasBatchedIsSomeReassoc]
+  -- Stores a device pointer.  It performs no arithmetic on model values, so
+  -- there is no equation to state; which buffers a batch reaches is decided by
+  -- these stores and is proven of the emitting program, the same standing a
+  -- bind array has.
+  | .cublasPtrArray                    => []
   -- What the copy lands is `uploadedValue`, an opaque on the declared trust
   -- surface, rather than an equation this development states.
   | .uploadPtr                         => []
@@ -236,7 +279,8 @@ def VendorKernel.assumes : VendorKernel → List Law
     build, so a bill computed by filtering `all` cannot quietly omit one. -/
 def VendorKernel.all : List VendorKernel :=
   [.cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmStridedBatched,
-   .cublasSgemmStridedBatchedOnStream, .uploadPtr, .cudaGraphLaunch]
+   .cublasSgemmStridedBatchedOnStream, .cublasSgemmAt1, .cublasSgemmAt1OnStream,
+   .cublasSgemmBatchedOnStream, .cublasPtrArray, .uploadPtr, .cudaGraphLaunch]
 
 theorem VendorKernel.all_covers : ∀ k : VendorKernel, k ∈ VendorKernel.all := by
   intro k; cases k <;> decide
@@ -267,6 +311,25 @@ def VendorKernel.withholds : VendorKernel → String
   | .uploadPtr =>
       "host→device copy; the source is host memory, which this model does not " ++
       "describe. Framed, so it cannot touch any other buffer."
+  | .cublasSgemmBatchedOnStream =>
+      "may pick a different algorithm for a batch of P than for P separate " ++
+      "calls, and measurably does: the same forward batched and unbatched " ++
+      "differs from itself in the last bits. So no closed form is claimed for " ++
+      "a batch member, only that it sums that member's own products in some " ++
+      "association -- `Law.cublasBatchedIsSomeReassoc`."
+  | .cublasPtrArray =>
+      "stores a device pointer, so it decides which buffers a batch reaches. " ++
+      "That is proven of the emitting program rather than assumed; what is " ++
+      "assumed is that a device pointer does not move, which is why the " ++
+      "arrays are filled once at load and never rewritten."
+  | .cublasSgemmAt1 | .cublasSgemmAt1OnStream =>
+      "at a batch of one the strides are gone, so the operands are the whole " ++
+      "matrices and an equation is available -- but the weak one: each output " ++
+      "element sums its own products in SOME association. Still outside it, " ++
+      "as for every vendor call here: fusing a multiply-add into one rounding " ++
+      "and accumulating at another width. And the law is about the row-major " ++
+      "reading of the operands; which of them plays which role at a " ++
+      "column-major call is the lowering's business, not the law's."
   | .cublasSgemmStridedBatched | .cublasSgemmStridedBatchedOnStream =>
       "batched strided mode selects operand slices by stride and batch-count " ++
       "arguments this model does not interpret, and may contract multiply-add " ++
@@ -519,6 +582,14 @@ def reduceStageX (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
     (h1 : bA ≠ out) (h2 : bB ≠ out) : XStage :=
   ⟨reduceStage bA bB ixA ixB out K grid h1 h2, reduceStage_exclusive _ _ _ _ _ _ _ _ _⟩
 
+/-- The reduction with a row pass folded into it, bundled. -/
+def reduce4StageX (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (hf : f.tripleOnly = true) (out : Buf) (K grid : Nat)
+    (h1 : bA ≠ out) (h2 : bB ≠ out) (h3 : bC ≠ out) (h4 : bD ≠ out) : XStage :=
+  ⟨reduce4Stage bA bB bC bD ixA ixB ixC ixD f (fun x y z => f.evalTriple x y z)
+     (fun st l => WFExp.evalTriple_eq f hf st l) out K grid h1 h2 h3 h4,
+   reduce4Stage_exclusive _ _ _ _ _ _ _ _ _ _ _ _ _ _ h1 h2 h3 h4⟩
+
 /-- Softmax and the cross-entropy gradient, bundled. -/
 def softmaxCEStageX (logits bias oneHot out : Buf) (biasIx : IdxE) (grid : Nat)
     (h1 : logits ≠ out) (h2 : bias ≠ out) (h3 : oneHot ≠ out) : XStage :=
@@ -546,6 +617,18 @@ def zipRow3StageX (bA bB bC out : Buf) (f : WFExp) (hf : f.tripleOnly = true)
      (fun st l => WFExp.evalTriple_eq f hf st l)
      (BCast.ix_ev mA) (BCast.ix_ev mB) (BCast.ix_ev mC) hAo hBo hCo,
    zipRow3Stage_exclusive _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ hw _ _ _ _ hAo hBo hCo⟩
+
+/-- The four-operand row pass, bundled. -/
+def zipRow4StageX (bA bB bC bD out : Buf) (f : WFExp) (hf : f.quadOnly = true)
+    (mA mB mC mD : BCast) (n off K grid : Nat) (hw : off + K * 32 ≤ n)
+    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) : XStage :=
+  ⟨zipRow4Stage bA bB bC bD out f (fun x y z u => f.evalQuad x y z u)
+     mA.ix mB.ix mC.ix mD.ix mA.ev mB.ev mC.ev mD.ev n off K grid hw
+     (fun st l => WFExp.evalQuad_eq f hf st l)
+     (BCast.ix_ev mA) (BCast.ix_ev mB) (BCast.ix_ev mC) (BCast.ix_ev mD)
+     hAo hBo hCo hDo,
+   zipRow4Stage_exclusive _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ hw _ _ _ _ _
+     hAo hBo hCo hDo⟩
 
 /-- A batched strided reduction, bundled. -/
 def dotBatchedStageX (bA bB : Buf) (ixA : IdxE) (ixB : Nat → IdxE) (out : Buf)
@@ -956,10 +1039,19 @@ inductive Node where
       fused elementwise steps reach. -/
   | ziprow3 : (a b c out : Ref) → (f : WFExp) → (mA mB mC : BCast) →
               (n off w rows : Nat) → Node
+  /-- The same row pass with a fourth operand.  A chain of three row passes
+      reaches this arity: two of them collapse into `ziprow3`, and the third
+      has nowhere to go without it. -/
+  | ziprow4 : (a b c d out : Ref) → (f : WFExp) → (mA mB mC mD : BCast) →
+              (n off w rows : Nat) → Node
   /-- `out[s] = Σᵢ a[…]·b[…]` — one fold per block, each operand addressed by
       its own broadcast mode.  A row sum is this against a shared vector of
       ones; a softmax denominator is that. -/
   | rowdot : (a b out : Ref) → (mA mB : BCast) → (n rows : Nat) → Node
+  /-- The same fold with a row pass folded into its left factor:
+      `out[s] = Σᵢ f(a,b,c)[…]·d[…]`.  Only a fusion builds one. -/
+  | rowdot4 : (a b c d out : Ref) → (f : WFExp) → (mA mB mC mD : BCast) →
+              (n rows : Nat) → Node
   /-- `out[s] = maxᵢ x[s][i]`, seeded below anything the row can hold.  The
       value a stable softmax subtracts, and the one an argmax reads. -/
   | rowmax : (x out : Ref) → (n rows : Nat) → (init : Float32) → Node
@@ -1016,6 +1108,19 @@ noncomputable def Node.stage? (batch : Nat) : Node → Option (Option XStage)
              ∧ a ≠ out ∧ b ≠ out ∧ c ≠ out then
         some (some (zipRow3StageX a b c out f h.1 mA mB mC n off (w / 32) rows
           (by rw [h.2.1]; exact h.2.2.1) h.2.2.2.1 h.2.2.2.2.1 h.2.2.2.2.2))
+      else none
+  | .rowdot4 a b c d out f mA mB mC mD n rows =>
+      if h : f.tripleOnly = true ∧ (n / 32) * 32 = n
+             ∧ a ≠ out ∧ b ≠ out ∧ c ≠ out ∧ d ≠ out then
+        some (some (reduce4StageX a b c d mA.ix mB.ix mC.ix mD.ix f h.1 out
+          (n / 32) rows h.2.2.1 h.2.2.2.1 h.2.2.2.2.1 h.2.2.2.2.2))
+      else none
+  | .ziprow4 a b c d out f mA mB mC mD n off w rows =>
+      if h : f.quadOnly = true ∧ (w / 32) * 32 = w ∧ off + w ≤ n
+             ∧ a ≠ out ∧ b ≠ out ∧ c ≠ out ∧ d ≠ out then
+        some (some (zipRow4StageX a b c d out f h.1 mA mB mC mD n off (w / 32) rows
+          (by rw [h.2.1]; exact h.2.2.1) h.2.2.2.1 h.2.2.2.2.1 h.2.2.2.2.2.1
+          h.2.2.2.2.2.2))
       else none
   | .rowmax x out n rows init =>
       if h : (n / 32) * 32 = n ∧ x ≠ out then
@@ -1216,6 +1321,10 @@ def Node.sig : Node → Nat × List Ref × List Nat
   | .ziprow a b o _ mA mB n f w r => (8, [a, b, o], [mA.tag, mB.tag, n, f, w, r])
   | .ziprow3 a b c o _ mA mB mC n f w r =>
       (10, [a, b, c, o], [mA.tag, mB.tag, mC.tag, n, f, w, r])
+  | .ziprow4 a b c d o _ mA mB mC mD n f w r =>
+      (12, [a, b, c, d, o], [mA.tag, mB.tag, mC.tag, mD.tag, n, f, w, r])
+  | .rowdot4 a b c d o _ mA mB mC mD n r =>
+      (13, [a, b, c, d, o], [mA.tag, mB.tag, mC.tag, mD.tag, n, r])
 
 -- ---------------------------------------------------------------------------
 -- Tensor terms: shapes in the type, sharing in the term
@@ -1264,6 +1373,21 @@ inductive Ten (v : Nat → Nat → Type) : Nat → Nat → Type where
   /-- `y[s][o] = Σᵢ W[o][i]·x[s][i]`. The contraction width is shared by the
       two operand types, so a mismatch does not elaborate. -/
   | mv    : {b i o : Nat} → Backend → Ten v o i → Ten v b i → Ten v b o
+  /-- **A contraction of `b` rows landing in a tensor of `bAlloc`.**
+
+      What needs it is a shape whose two sides disagree about padding: a row
+      pass reduces a row of width `w` in `w/32` lane-strided trips, so an
+      attention's *keys* must be a multiple of 32, while its *queries* are a
+      grid and need not be.  The keys are then a taller tensor than anything
+      that produces them, and this is the operation that says so.
+
+      The rows in `[b, bAlloc)` are written by nothing.  A device buffer is
+      allocated zeroed, so they read as zero — and what makes zero the right
+      answer rather than merely a definite one is the mask: a padded key scores
+      `-1e30`, so softmax gives it weight exactly zero and its value never
+      reaches the output. -/
+  | mvAt  : {b i o : Nat} → (bAlloc : Nat) → Backend → Ten v o i → Ten v b i →
+            Ten v bAlloc o
   /-- `dx[s][i] = Σₒ dy[s][o]·W[o][i]` — the transposed walk. -/
   | mvT   : {b i o : Nat} → Backend → Ten v o i → Ten v b o → Ten v b i
   /-- `dW[o][i] = Σₛ dy[s][o]·x[s][i]` — the batch sum. -/
@@ -1305,6 +1429,34 @@ inductive Ten (v : Nat → Nat → Type) : Nat → Nat → Type where
       contiguous, so this is a *view*: it emits no operation, and the equality
       is what stops it being a reshape that would need one. -/
   | view  : {r c r' c' : Nat} → r * c = r' * c' → Ten v r c → Ten v r' c'
+  /-- **Columns `[off, off+w)` of every row.**
+
+      Unlike `view` this is *not* free: a column window of a row-major buffer is
+      strided, so it costs one pass that gathers the window into a buffer of its
+      own.  What it buys is that everything downstream sees an ordinary
+      contiguous tensor — in particular a contraction, which takes whole
+      pointers.
+
+      It carries the row pass's expression, so the split is not a separate copy:
+      a head's share of a projection and its bias are one pass, reading the
+      window and the head's own bias vector and writing a contiguous buffer.
+
+      It exists so a projection can be computed for every head at once and split
+      afterwards.  `P` per-head contractions sharing an input are one `P` times
+      taller contraction, which is measurably 1.8-3.7x faster than issuing them
+      separately *and* faster than batching them, and this is what expresses the
+      split. -/
+  | cols  : {r c w c' : Nat} → (off : Nat) → WFExp → Ten v r c → Ten v 1 c' → Ten v r w
+  /-- **Three windows laid side by side** — the inverse of `cols`.
+
+      Three per-head results become one tensor, so what was a sum of three
+      contractions over three narrow matrices is one contraction over the whole
+      matrix: `Σ_h Wo_h · hd_h = [Wo_0|Wo_1|Wo_2] · [hd_0;hd_1;hd_2]`.  Like
+      `cols` it is a real pass — three of them, each writing its own window —
+      and like `cols` it pays for itself by what it lets the contraction
+      become. -/
+  | cat3  : {r w c c' : Nat} → w * 3 = c → Ten v r w → Ten v r w → Ten v r w →
+            Ten v 1 c' → Ten v r c
   /-- A name for the buffer this subterm lands in.  Emits nothing and changes
       nothing: `flat` passes straight through it, so a labelled model flattens
       to the identical tape.  It exists so a *schedule* can say where to act by
@@ -1325,7 +1477,12 @@ inductive Ten (v : Nat → Nat → Type) : Nat → Nat → Type where
     what lets a reverse pass match on an elementwise op without a dependent
     match on an implicit `Expr` arity. -/
 inductive TOp where
-  | mv    : Backend → (w x out : Ref) → (b inW outW : Nat) → TOp
+  /-- `bAlloc` is how many rows the output buffer holds and `b` how many the
+      contraction writes.  They differ where a consumer's extent is taller than
+      the contraction's own — attention keys, padded to the multiple of 32 a row
+      pass reduces over, read by queries that are not — and the rows between
+      them are written by nothing. -/
+  | mv    : Backend → (w x out : Ref) → (b inW outW bAlloc : Nat) → TOp
   | mvT   : Backend → (w dy out : Ref) → (b inW outW : Nat) → TOp
   | outer : Backend → (dy x out : Ref) → (b inW outW : Nat) → TOp
   | ew1   : Expr 1 → (a out : Ref) → (grid : Nat) → TOp
@@ -1337,13 +1494,21 @@ inductive TOp where
   | ziprow : (a b out : Ref) → WFExp → BCast → BCast → (n off w rows : Nat) → TOp
   | ziprow3 : (a b c out : Ref) → WFExp → BCast → BCast → BCast →
               (n off w rows : Nat) → TOp
+  /-- The four-operand row pass.  Only a fusion builds one: a chain of three row
+      passes needs this arity, and nothing a model writes has it. -/
+  | ziprow4 : (a b c d out : Ref) → WFExp → BCast → BCast → BCast → BCast →
+              (n off w rows : Nat) → TOp
+  /-- The reduction with a row pass folded into its left factor.  Only a fusion
+      builds one; nothing a model writes has this shape. -/
+  | rowdot4 : (a b c d out : Ref) → WFExp → BCast → BCast → BCast → BCast →
+              (n rows : Nat) → TOp
   | rowdot : (a b out : Ref) → BCast → BCast → (n rows : Nat) → TOp
   | rowmax : (x out : Ref) → (n rows : Nat) → Float32 → TOp
   | upd2  : Expr 2 → (a b : Ref) → (grid : Nat) → TOp
 
 /-- The graph node an operation is, with its implementation choice. -/
 def TOp.node : TOp → Node × Backend
-  | .mv bk w x o b i ow  => (.matvec w x o b i ow, bk)
+  | .mv bk w x o b i ow _  => (.matvec w x o b i ow, bk)
   | .mvT bk w d o b i ow => (.matvecT w d o b i ow, bk)
   | .outer bk d x o b i ow => (.outer d x o b i ow, bk)
   | .ew1 f a o g         => (.ew f (fun _ => a) o g, .proven)
@@ -1357,6 +1522,10 @@ def TOp.node : TOp → Node × Backend
   | .ziprow a b o f mA mB n k w r => (.ziprow a b o f mA mB n k w r, .proven)
   | .ziprow3 a b c o f mA mB mC n k w r =>
       (.ziprow3 a b c o f mA mB mC n k w r, .proven)
+  | .ziprow4 a b c d o f mA mB mC mD n k w r =>
+      (.ziprow4 a b c d o f mA mB mC mD n k w r, .proven)
+  | .rowdot4 a b c d o f mA mB mC mD n r =>
+      (.rowdot4 a b c d o f mA mB mC mD n r, .proven)
   | .upd2 f a b g        => (.ewIP f (fun j : Fin 2 => if j.val = 0 then a else b) a g, .proven)
 
 /-- **The derivative of a lane expression with respect to one register.**
@@ -1463,6 +1632,189 @@ theorem Expr.toWF_deriv : ∀ {Γ : Nat} (e : Expr Γ), e.laneable = true →
   | sum n f _ => intro h; exact absurd h (by simp [Expr.laneable])
   | letE a b _ _ => intro h; exact absurd h (by simp [Expr.laneable])
 
+/-- **A laneable term's lane code computes the term.**
+
+    `toWF_deriv` ties the two languages at the derivative; this ties them at the
+    value, which is what lets one operation be restated as another carrying the
+    same scalar function.  The offset is `toWF`'s own convention: variable `i` is
+    register `i+1`. -/
+theorem Expr.toWF_eval : ∀ {Γ : Nat} (e : Expr Γ), e.laneable = true →
+    ∀ (st : WSt) (l : Lane) (env : Fin Γ → Float32),
+      (∀ i : Fin Γ, st.regs (i.val + 1) l = env i) →
+      (e.toWF).eval st l = denote env e := by
+  intro Γ e
+  induction e with
+  | var i => intro _ _ _ _ he; exact he i
+  | lit n => intro _ _ _ _ _; rfl
+  | add a b iha ihb =>
+      intro h st l env he
+      simp only [Expr.laneable, Bool.and_eq_true] at h
+      show NumOps.add _ _ = NumOps.add _ _
+      rw [iha h.1 st l env he, ihb h.2 st l env he]
+  | mul a b iha ihb =>
+      intro h st l env he
+      simp only [Expr.laneable, Bool.and_eq_true] at h
+      show NumOps.mul _ _ = NumOps.mul _ _
+      rw [iha h.1 st l env he, ihb h.2 st l env he]
+  | neg a ih => intro h st l env he; show NumOps.neg _ = _; rw [ih h st l env he]; rfl
+  | inv a ih => intro h st l env he; show NumOps.inv _ = _; rw [ih h st l env he]; rfl
+  | exp a ih => intro h st l env he; show NumOps.exp _ = _; rw [ih h st l env he]; rfl
+  | rsqrt a ih => intro h st l env he; show NumOps.rsqrt _ = _; rw [ih h st l env he]; rfl
+  | sum n f _ => intro h; exact absurd h (by simp [Expr.laneable])
+  | letE a b _ _ => intro h; exact absurd h (by simp [Expr.laneable])
+
+/-- At two variables the lane code reads only the two operand registers. -/
+theorem Expr.toWF_pairOnly : ∀ {Γ : Nat} (e : Expr Γ), Γ ≤ 2 → e.laneable = true →
+    (e.toWF).pairOnly = true := by
+  intro Γ e
+  induction e with
+  | var i =>
+      intro hΓ _
+      have hi := i.isLt
+      have : i.val = 0 ∨ i.val = 1 := by omega
+      rcases this with h | h <;> simp [Expr.toWF, WFExp.pairOnly, h]
+  | lit n => intro _ _; rfl
+  | add a b iha ihb =>
+      intro hΓ h
+      simp only [Expr.laneable, Bool.and_eq_true] at h
+      simp [Expr.toWF, WFExp.pairOnly, iha hΓ h.1, ihb hΓ h.2]
+  | mul a b iha ihb =>
+      intro hΓ h
+      simp only [Expr.laneable, Bool.and_eq_true] at h
+      simp [Expr.toWF, WFExp.pairOnly, iha hΓ h.1, ihb hΓ h.2]
+  | neg a ih => intro hΓ h; simpa [Expr.toWF, WFExp.pairOnly] using ih hΓ h
+  | inv a ih => intro hΓ h; simpa [Expr.toWF, WFExp.pairOnly] using ih hΓ h
+  | exp a ih => intro hΓ h; simpa [Expr.toWF, WFExp.pairOnly] using ih hΓ h
+  | rsqrt a ih => intro hΓ h; simpa [Expr.toWF, WFExp.pairOnly] using ih hΓ h
+  | sum n f _ => intro _ h; exact absurd h (by simp [Expr.laneable])
+  | letE a b _ _ => intro _ h; exact absurd h (by simp [Expr.laneable])
+
+/-- At three variables, the three operand registers. -/
+theorem Expr.toWF_tripleOnly : ∀ {Γ : Nat} (e : Expr Γ), Γ ≤ 3 → e.laneable = true →
+    (e.toWF).tripleOnly = true := by
+  intro Γ e
+  induction e with
+  | var i =>
+      intro hΓ _
+      have hi := i.isLt
+      have : i.val = 0 ∨ i.val = 1 ∨ i.val = 2 := by omega
+      rcases this with h | h | h <;> simp [Expr.toWF, WFExp.tripleOnly, h]
+  | lit n => intro _ _; rfl
+  | add a b iha ihb =>
+      intro hΓ h
+      simp only [Expr.laneable, Bool.and_eq_true] at h
+      simp [Expr.toWF, WFExp.tripleOnly, iha hΓ h.1, ihb hΓ h.2]
+  | mul a b iha ihb =>
+      intro hΓ h
+      simp only [Expr.laneable, Bool.and_eq_true] at h
+      simp [Expr.toWF, WFExp.tripleOnly, iha hΓ h.1, ihb hΓ h.2]
+  | neg a ih => intro hΓ h; simpa [Expr.toWF, WFExp.tripleOnly] using ih hΓ h
+  | inv a ih => intro hΓ h; simpa [Expr.toWF, WFExp.tripleOnly] using ih hΓ h
+  | exp a ih => intro hΓ h; simpa [Expr.toWF, WFExp.tripleOnly] using ih hΓ h
+  | rsqrt a ih => intro hΓ h; simpa [Expr.toWF, WFExp.tripleOnly] using ih hΓ h
+  | sum n f _ => intro _ h; exact absurd h (by simp [Expr.laneable])
+  | letE a b _ _ => intro _ h; exact absurd h (by simp [Expr.laneable])
+
+/-- A register file holding `x` at 1, `y` at 2, `z` at 3 and nothing elsewhere —
+    the state the pair and triple readings are stated against. -/
+def wstOf (x y z : Float32) : WSt :=
+  { regs := fun r _ => if r = 1 then x else if r = 2 then y else
+                       if r = 3 then z else NumOps.ofNat 0,
+    mem := fun _ _ => NumOps.ofNat 0, smem := fun _ => NumOps.ofNat 0 }
+
+/-- **Two operands: the lane code's pair reading is the term's denotation.** -/
+theorem Expr.toWF_evalPair (e : Expr 2) (h : e.laneable = true) (x y : Float32) :
+    (e.toWF).evalPair x y
+      = denote (fun v : Fin 2 => if v.val = 0 then x else y) e := by
+  have hp := Expr.toWF_pairOnly e (by decide) h
+  have hs := WFExp.evalPair_eq (e.toWF) hp (wstOf x y (NumOps.ofNat 0)) ⟨0, by decide⟩
+  have hx : (wstOf x y (NumOps.ofNat 0)).regs 1 ⟨0, by decide⟩ = x := rfl
+  have hy : (wstOf x y (NumOps.ofNat 0)).regs 2 ⟨0, by decide⟩ = y := rfl
+  rw [hx, hy] at hs
+  rw [← hs]
+  refine Expr.toWF_eval e h _ _ _ ?_
+  intro i
+  have hi := i.isLt
+  have : i.val = 0 ∨ i.val = 1 := by omega
+  rcases this with hv | hv <;> simp [wstOf, hv]
+
+/-- **Three operands: the same, one register wider.** -/
+theorem Expr.toWF_evalTriple (e : Expr 3) (h : e.laneable = true) (x y z : Float32) :
+    (e.toWF).evalTriple x y z
+      = denote (fun v : Fin 3 => if v.val = 0 then x else if v.val = 1 then y else z) e := by
+  have hp := Expr.toWF_tripleOnly e (by decide) h
+  have hs := WFExp.evalTriple_eq (e.toWF) hp (wstOf x y z) ⟨0, by decide⟩
+  have hx : (wstOf x y z).regs 1 ⟨0, by decide⟩ = x := rfl
+  have hy : (wstOf x y z).regs 2 ⟨0, by decide⟩ = y := rfl
+  have hz : (wstOf x y z).regs 3 ⟨0, by decide⟩ = z := rfl
+  rw [hx, hy, hz] at hs
+  rw [← hs]
+  refine Expr.toWF_eval e h _ _ _ ?_
+  intro i
+  have hi := i.isLt
+  have : i.val = 0 ∨ i.val = 1 ∨ i.val = 2 := by omega
+  rcases this with hv | hv | hv <;> simp [wstOf, hv]
+
+/-- **One operand, read through the pair reading.**  A row pass takes two
+    operands; a one-operand elementwise pass supplies the same buffer twice and
+    its lane code never mentions the second register. -/
+theorem Expr.toWF_evalPair1 (e : Expr 1) (h : e.laneable = true) (x y : Float32) :
+    (e.toWF).evalPair x y = denote (fun _ : Fin 1 => x) e := by
+  have hp := Expr.toWF_pairOnly e (by decide) h
+  have hs := WFExp.evalPair_eq (e.toWF) hp (wstOf x y (NumOps.ofNat 0)) ⟨0, by decide⟩
+  have hx : (wstOf x y (NumOps.ofNat 0)).regs 1 ⟨0, by decide⟩ = x := rfl
+  have hy : (wstOf x y (NumOps.ofNat 0)).regs 2 ⟨0, by decide⟩ = y := rfl
+  rw [hx, hy] at hs
+  rw [← hs]
+  refine Expr.toWF_eval e h _ _ _ ?_
+  intro i
+  have hi := i.isLt
+  have hv : i.val = 0 := by omega
+  simp [wstOf, hv]
+
+/-- **The chunk shape an elementwise pass is written at.**
+
+    An elementwise operation covers `grid·32` addresses one lane at a time.  The
+    same addresses are `rows` rows of `grid·32/rows`, and a row pass whose
+    operands and destination all walk `.rowOf w 0` covers exactly those.
+    `TOp.rowShape_den` says the two denote the same function, so this is a
+    schedule choice: it decides which operations can share a kernel, and a kernel
+    costs about a microsecond before it moves a byte.
+
+    An operation that writes one of its own operands is left alone, and in-place
+    updates have no case at all: a row pass is proven under
+    `operand ≠ destination`. -/
+def TOp.rowShape (rows : Nat) : TOp → Option TOp
+  | .ew1 f a o g =>
+      let w := g * 32 / rows
+      if (w != 0) && (rows * w == g * 32) && f.laneable && (a != o) then
+        some (.ziprow a a o f.toWF (.rowOf w 0) (.rowOf w 0) w 0 w rows)
+      else none
+  | .ew2 f a b o g =>
+      let w := g * 32 / rows
+      if (w != 0) && (rows * w == g * 32) && f.laneable && (a != o) && (b != o) then
+        some (.ziprow a b o f.toWF (.rowOf w 0) (.rowOf w 0) w 0 w rows)
+      else none
+  -- A sum of squares is a dot of a row with itself.  `rowsq` hard-codes its
+  -- addressing where `rowdot` takes a `BCast`, and a `BCast` is the only place a
+  -- base offset can go -- so this is what lets a row statistic read a slice of a
+  -- fused buffer.  Same kernel either way: both build `dotStrided`.
+  | .rowsq a o n rows =>
+      if a != o then
+        some (.rowdot a a o (.rowOf n 0) (.rowOf n 0) n rows)
+      else none
+  | .ew3 f a b c o g =>
+      let w := g * 32 / rows
+      if (w != 0) && (rows * w == g * 32) && f.laneable
+           && (a != o) && (b != o) && (c != o) then
+        some (.ziprow3 a b c o f.toWF (.rowOf w 0) (.rowOf w 0) (.rowOf w 0)
+                w 0 w rows)
+      else none
+  | _ => none
+
+/-- Re-chunk where it applies and leave the operation alone where it does not. -/
+def TOp.atRows (rows : Nat) (op : TOp) : TOp := (op.rowShape rows).getD op
+
 /-- The three combinations a rotation is built from, in the scalar language —
     so `Expr.toWF_deriv` applies to them and their adjoints are `sderiv`.
 
@@ -1492,7 +1844,7 @@ theorem laneW_unchanged :
     what stops it being a second definition of the model: it says, on the
     shipped list, that these are the very statements the proven stages carry. -/
 def TOp.stmt (batch : Nat) : TOp → EWStmt
-  | .mv _ w x o b inW outW =>
+  | .mv _ w x o b inW outW _ =>
       dotBatched w x (stride32 (.mul .ctaId (.lit inW)))
         (fun s => stride32 (.lit (s * inW))) o
         (fun s => .add (.lit (s * outW)) .ctaId) b (inW / 32)
@@ -1528,11 +1880,16 @@ def TOp.stmt (batch : Nat) : TOp → EWStmt
   | .ziprow3 a b c o f mA mB mC n off w _ =>
       zip3PassEW a b c o 1 2 3 0 f mA.ix mB.ix mC.ix
         (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) (w / 32)
+  | .ziprow4 a b c d o f mA mB mC mD n off w _ =>
+      zip4PassEW a b c d o 1 2 3 4 0 f mA.ix mB.ix mC.ix mD.ix
+        (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) (w / 32)
+  | .rowdot4 a b c d o f mA mB mC mD n _ =>
+      dotStrided4 a b c d mA.ix mB.ix mC.ix mD.ix f o .ctaId (n / 32)
 
 /-- **The blocks an operation launches over** — the stage's grid, on the
     runnable side.  `qwen_grids_are_the_stages` is what keeps it honest. -/
 def TOp.gridOf : TOp → Nat
-  | .mv _ _ _ _ _ _ outW    => outW
+  | .mv _ _ _ _ _ _ outW _  => outW
   | .mvT _ _ _ _ _ inW _    => inW
   | .outer _ _ _ _ _ _ outW => outW
   | .ew1 _ _ _ g          => g
@@ -1546,13 +1903,15 @@ def TOp.gridOf : TOp → Nat
   | .rowmax _ _ _ r _     => r
   | .ziprow _ _ _ _ _ _ _ _ _ r => r
   | .ziprow3 _ _ _ _ _ _ _ _ _ _ _ r => r
+  | .ziprow4 _ _ _ _ _ _ _ _ _ _ _ _ _ r => r
+  | .rowdot4 _ _ _ _ _ _ _ _ _ _ _ r => r
 
 /-- **The buffer an operation writes, and how many bytes it needs.**
 
     A host allocates from this rather than from a table written beside the
     model, so a shape that changed in the model changes the allocation. -/
 def TOp.outSize (batch : Nat) : TOp → Ref × Nat
-  | .mv _ _ _ o b _ outW    => (o, b * outW * 4)
+  | .mv _ _ _ o _ _ outW bA => (o, bA * outW * 4)
   | .mvT _ _ _ o b inW _    => (o, b * inW * 4)
   | .outer _ _ _ o _ inW outW => (o, outW * inW * 4)
   | .ew1 _ _ o g          => (o, g * 32 * 4)
@@ -1566,6 +1925,8 @@ def TOp.outSize (batch : Nat) : TOp → Ref × Nat
   | .rowmax _ o _ r _     => (o, r * 4)
   | .ziprow _ _ o _ _ _ n _ _ r => (o, r * n * 4)
   | .ziprow3 _ _ _ o _ _ _ _ n _ _ r => (o, r * n * 4)
+  | .ziprow4 _ _ _ _ o _ _ _ _ _ n _ _ r => (o, r * n * 4)
+  | .rowdot4 _ _ _ _ o _ _ _ _ _ _ rows => (o, rows * 4)
 
 /-- Flatten to the graph, allocating computed buffers from `n` upward.
 
@@ -1577,7 +1938,11 @@ def Ten.flat : {r c : Nat} → Ten RefV r c → Ref → Ref × Ref × List TOp
   | _, _, @Ten.mv _ b i o bk w x, n =>
       let (rw, n1, fw) := w.flat n
       let (rx, n2, fx) := x.flat n1
-      (n2, n2 + 1, fw ++ fx ++ [TOp.mv bk rw rx n2 b i o])
+      (n2, n2 + 1, fw ++ fx ++ [TOp.mv bk rw rx n2 b i o b])
+  | _, _, @Ten.mvAt _ b i o bA bk w x, n =>
+      let (rw, n1, fw) := w.flat n
+      let (rx, n2, fx) := x.flat n1
+      (n2, n2 + 1, fw ++ fx ++ [TOp.mv bk rw rx n2 b i o bA])
   | _, _, @Ten.mvT _ b i o bk w d, n =>
       let (rw, n1, fw) := w.flat n
       let (rd, n2, fd) := d.flat n1
@@ -1611,6 +1976,26 @@ def Ten.flat : {r c : Nat} → Ten RefV r c → Ref → Ref × Ref × List TOp
       let (rb, n2, fb) := b.flat n1
       (n2, n2 + 1, fa ++ fb ++ [TOp.ziprow ra rb n2 f (.rowOf c 0) (.sharedAt 0) c 0 c r])
   | _, _, .view _ t, n => t.flat n
+  -- The read is `.rowOf c off` — element `j` of row `s` is at `s*c + off + j` —
+  -- and the write is at pitch `w`, so the window lands contiguous.  The same
+  -- shape `rope` uses to split a row in half.
+  | r, c, @Ten.cat3 _ _ w _ _ _ a b d z, n =>
+      let (ra, n1, fa) := a.flat n
+      let (rb, n2, fb) := b.flat n1
+      let (rd, n3, fd) := d.flat n2
+      let (rz, n4, fz) := z.flat n3
+      -- Each pass reads its operand contiguously and writes the window
+      -- `[h*w, (h+1)*w)` of one shared buffer; the three windows are disjoint,
+      -- so between them they write all of it.
+      (n4, n4 + 1, fa ++ fb ++ fd ++ fz ++
+        [ TOp.ziprow ra rz n4 (.reg 1) (.rowOf w 0) (.sharedAt 0) c 0 w r
+        , TOp.ziprow rb rz n4 (.reg 1) (.rowOf w 0) (.sharedAt 0) c w w r
+        , TOp.ziprow rd rz n4 (.reg 1) (.rowOf w 0) (.sharedAt 0) c (w + w) w r ])
+  | r, w, @Ten.cols _ _ c _ _ off f t z, n =>
+      let (rt, n1, ft) := t.flat n
+      let (rz, n2, fz) := z.flat n1
+      (n2, n2 + 1, ft ++ fz ++
+        [TOp.ziprow rt rz n2 f (.rowOf c off) (.sharedAt 0) w 0 w r])
   | _, _, .named _ t, n => t.flat n
   | r, c, @Ten.zipC _ _ _ _ f k a b, n =>
       let (ra, n1, fa) := a.flat n
@@ -1681,7 +2066,11 @@ def Ten.labels : {r c : Nat} → Ten RefV r c → Ref → List (String × Ref)
   | _, _, .var _, _ => []
   | _, _, .inp _, _ => []
   | _, _, .view _ t, n => t.labels n
+  | _, _, .cols _ _ t z, n => t.labels n ++ z.labels (t.flat n).2.1
+  | _, _, .cat3 _ a b d _, n =>
+      a.labels n ++ b.labels (a.flat n).2.1 ++ d.labels (b.flat (a.flat n).2.1).2.1
   | _, _, @Ten.mv _ _ _ _ _ w x, n => w.labels n ++ x.labels (w.flat n).2.1
+  | _, _, @Ten.mvAt _ _ _ _ _ _ w x, n => w.labels n ++ x.labels (w.flat n).2.1
   | _, _, @Ten.mvT _ _ _ _ _ w d, n => w.labels n ++ d.labels (w.flat n).2.1
   | _, _, @Ten.outer _ _ _ _ _ d x, n => d.labels n ++ x.labels (d.flat n).2.1
   | _, _, .ew1 _ a, n => a.labels n
@@ -1935,6 +2324,7 @@ def Ten.zipWith {v : Nat → Nat → Type} {r c : Nat} (f : Expr 2)
 def Ten.on {v : Nat → Nat → Type} {r c : Nat} (impl : Backend) :
     Ten v r c → Ten v r c
   | .mv _ w x    => .mv impl w x
+  | .mvAt bA _ w x => .mvAt bA impl w x
   | .mvT _ w d   => .mvT impl w d
   | .outer _ d x => .outer impl d x
   | t            => t
@@ -1980,6 +2370,62 @@ def wk3 (e : Expr 3) : Expr 4 := rename (Fin.castLE (by decide)) e
 def ewBack3 (f : Expr 3) (i : Fin 3) : Expr 4 :=
   .mul (.var ⟨3, by decide⟩) (sderiv (wk3 f) i.castSucc)
 
+/-- Fold the constants out of a lane expression.
+
+    `WFExp.deriv` is syntactic: the derivative of `a + b` with respect to `a` is
+    `1 + 0`, not `1`.  This is what makes those literals visible. -/
+def WFExp.fold : WFExp → WFExp
+  | .add a b =>
+      match a.fold, b.fold with
+      | .lit x, .lit y => .lit (x + y)
+      | .lit x, e      => if x == 0 then e else .add (.lit x) e
+      | e, .lit y      => if y == 0 then e else .add e (.lit y)
+      | x, y           => .add x y
+  | .mul a b =>
+      match a.fold, b.fold with
+      | .lit x, .lit y => .lit (x * y)
+      | .lit x, e      => if x == 1 then e else if x == 0 then .lit 0 else .mul (.lit x) e
+      | e, .lit y      => if y == 1 then e else if y == 0 then .lit 0 else .mul e (.lit y)
+      | x, y           => .mul x y
+  | .neg a => match a.fold with | .lit x => .lit (-x) | e => .neg e
+  | e => e
+
+/-- **The adjoint is the incoming gradient itself.**
+
+    An addition's derivative is one, so its adjoint pass computes `d · 1` — a
+    kernel that copies a tensor.  Where this holds the contribution *is* `d`,
+    and the cotangent map can be given `d` directly. -/
+def WFExp.isReg (f : WFExp) (r : Nat) : Bool :=
+  match f.fold with
+  | .reg k => k == r
+  | _      => false
+
+/-- Fold the constants out of a scalar spec, for the same reason `WFExp.fold`
+    exists: `sderiv` of `a + b` is `1 + 0`, not `1`. -/
+def Expr.fold : {Γ : Nat} → Expr Γ → Expr Γ
+  | _, .add a b =>
+      match a.fold, b.fold with
+      | .lit x, .lit y => .lit (x + y)
+      | .lit 0, e      => e
+      | e, .lit 0      => e
+      | x, y           => .add x y
+  | _, .mul a b =>
+      match a.fold, b.fold with
+      | .lit x, .lit y => .lit (x * y)
+      | .lit 1, e      => e
+      | e, .lit 1      => e
+      | .lit 0, _      => .lit 0
+      | _, .lit 0      => .lit 0
+      | x, y           => .mul x y
+  | _, e => e
+
+/-- **The adjoint is the incoming cotangent itself**, as `WFExp.isReg` is for a
+    lane expression: an addition's adjoint is `d · 1`, a kernel that copies. -/
+def Expr.isVar {Γ : Nat} (e : Expr Γ) (i : Fin Γ) : Bool :=
+  match e.fold with
+  | .var j => j == i
+  | _      => false
+
 /-- `a + b`, the cotangent accumulator. -/
 def addSpec : Expr 2 := .add (.var ⟨0, by decide⟩) (.var ⟨1, by decide⟩)
 
@@ -2006,9 +2452,9 @@ def CoT.accum (m : CoT) (r d : Ref) (fresh grid : Nat) : List TOp × CoT × Nat 
     gradient only where one is wanted, so a model does not compute a gradient
     with respect to its own input.  `smce` emits nothing: it *is* the seed —
     the buffer it already writes is the cotangent of its logits. -/
-def TOp.grad (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat) (ct : CoT) :
-    TOp → Option (List TOp × CoT × Nat)
-  | .mv bk w x out bb inW outW =>
+def TOp.grad (elideIdent : Bool) (needs : Ref → Bool) (ones : Ref)
+    (batch fresh : Nat) (ct : CoT) : TOp → Option (List TOp × CoT × Nat)
+  | .mv bk w x out bb inW outW _ =>
       match ct.get out with
       | none   => none
       | some d =>
@@ -2029,10 +2475,21 @@ def TOp.grad (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat) (ct : CoT) 
       match ct.get out with
       | none   => none
       | some d =>
-          let (addA, ct1, f1) := CoT.accum ct a fresh (fresh + 1) grid
-          let (addB, ct2, f2) := CoT.accum ct1 b f1 (f1 + 1) grid
-          some ([.ew3 (ewBack2 f ⟨0, by decide⟩) a b d fresh grid] ++ addA
-                  ++ [.ew3 (ewBack2 f ⟨1, by decide⟩) a b d f1 grid] ++ addB, ct2, f2)
+          -- An input the operation merely adds gets `d` itself, not a copy of
+          -- it: the cotangent is in variable 2 of the adjoint spec.
+          let fA := ewBack2 f ⟨0, by decide⟩
+          let fB := ewBack2 f ⟨1, by decide⟩
+          let idA := elideIdent && fA.isVar ⟨2, by decide⟩
+          let idB := elideIdent && fB.isVar ⟨2, by decide⟩
+          let opsA := if idA then [] else [TOp.ew3 fA a b d fresh grid]
+          let (addA, ct1, f1) :=
+            if idA then CoT.accum ct a d fresh grid
+            else CoT.accum ct a fresh (fresh + 1) grid
+          let opsB := if idB then [] else [TOp.ew3 fB a b d f1 grid]
+          let (addB, ct2, f2) :=
+            if idB then CoT.accum ct1 b d f1 grid
+            else CoT.accum ct1 b f1 (f1 + 1) grid
+          some (opsA ++ addA ++ opsB ++ addB, ct2, f2)
   | .ew3 f a b c out grid =>
       match ct.get out with
       | none   => none
@@ -2061,7 +2518,7 @@ def TOp.grad (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat) (ct : CoT) 
           if needs d then
             let (addD, ct2, f2) := CoT.accum ct1 d f1 (f1 + 1) (b * outW / 32)
             some ([.outer bk d g fresh b inW outW] ++ addW
-                    ++ [.mv bk w g f1 b inW outW] ++ addD, ct2, f2)
+                    ++ [.mv bk w g f1 b inW outW b] ++ addD, ct2, f2)
           else
             some ([.outer bk d g fresh b inW outW] ++ addW, ct1, f1)
   | .rowdot i j out mA mB n rows =>
@@ -2098,8 +2555,15 @@ def TOp.grad (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat) (ct : CoT) 
       | some d =>
           match mA, adjW f 1 with
           | .rowOf nA kA, some fa =>
-              let opA := TOp.ziprow3 a b d fresh fa mA mB (.rowOf n off) nA kA w rows
-              let (addA, ct1, f1) := CoT.accum ct a fresh (fresh + 1) (rows * nA / 32)
+              -- When the adjoint is the incoming gradient and lands exactly
+              -- where `d` already sits, the pass would copy a tensor: give the
+              -- cotangent map `d` and emit nothing.
+              let identA := elideIdent && fa.isReg 3 && nA == n && kA == off
+              let opsA := if identA then [] else
+                [TOp.ziprow3 a b d fresh fa mA mB (.rowOf n off) nA kA w rows]
+              let (addA, ct1, f1) :=
+                if identA then CoT.accum ct a d fresh (rows * nA / 32)
+                else CoT.accum ct a fresh (fresh + 1) (rows * nA / 32)
               if needs b then
                 match adjW f 2 with
                 | none => none
@@ -2107,7 +2571,7 @@ def TOp.grad (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat) (ct : CoT) 
                     match mB with
                     | .rowOf nB kB =>
                         let (addB, ct2, f2) := CoT.accum ct1 b f1 (f1 + 1) (rows * nB / 32)
-                        some ([opA] ++ addA
+                        some (opsA ++ addA
                                 ++ [TOp.ziprow3 a b d f1 fb mA mB
                                       (.rowOf n off) nB kB w rows]
                                 ++ addB, ct2, f2)
@@ -2115,7 +2579,7 @@ def TOp.grad (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat) (ct : CoT) 
                         -- one value per row: the products, then a row sum
                         let (addB, ct2, f2) :=
                           CoT.accum ct1 b (f1 + 1) (f1 + 2) ((rows + 31) / 32)
-                        some ([opA] ++ addA
+                        some (opsA ++ addA
                                 ++ [TOp.ziprow3 a b d f1 fb mA mB
                                       (.rowOf n off) w 0 w rows,
                                     TOp.rowdot f1 ones (f1 + 1)
@@ -2126,24 +2590,24 @@ def TOp.grad (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat) (ct : CoT) 
                         -- column sum, which is an outer product against ones
                         let (addB, ct2, f2) :=
                           CoT.accum ct1 b (f1 + 1) (f1 + 2) (w / 32)
-                        some ([opA] ++ addA
+                        some (opsA ++ addA
                                 ++ [TOp.ziprow3 a b d f1 fb mA mB
                                       (.rowOf n off) w 0 w rows,
                                     TOp.outer Backend.proven ones f1 (f1 + 1) rows w 1]
                                 ++ addB, ct2, f2)
                     | _ => none
-              else some ([opA] ++ addA, ct1, f1)
+              else some (opsA ++ addA, ct1, f1)
           | _, _ => none
   | _ => none
 
-def gradRev (needs : Ref → Bool) (ones : Ref) (batch : Nat) :
+def gradRev (elideIdent : Bool) (needs : Ref → Bool) (ones : Ref) (batch : Nat) :
     List TOp → Nat → CoT → Option (List TOp × CoT × Nat)
   | [],         fresh, ct => some ([], ct, fresh)
   | op :: rest, fresh, ct =>
-      match op.grad needs ones batch fresh ct with
+      match op.grad elideIdent needs ones batch fresh ct with
       | none => none
       | some (bs, ct', f1) =>
-          match gradRev needs ones batch rest f1 ct' with
+          match gradRev elideIdent needs ones batch rest f1 ct' with
           | none => none
           | some (rs, ct'', f2) => some (bs ++ rs, ct'', f2)
 
@@ -2158,21 +2622,21 @@ def gradRev (needs : Ref → Bool) (ones : Ref) (batch : Nat) :
     cotangent, yields `none` rather than an empty contribution — a missing
     gradient is a build failure, not a silently untrained parameter. -/
 def Ten.backward (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat)
-    (ops : List TOp) : Option (List TOp) :=
-  (gradRev needs ones batch ops.reverse fresh []).map Prod.fst
+    (ops : List TOp) (elideIdent : Bool := false) : Option (List TOp) :=
+  (gradRev elideIdent needs ones batch ops.reverse fresh []).map Prod.fst
 
 /-- The same, from a cotangent already known — a slice of a tape whose loss is
     computed elsewhere, or a block differentiated on its own. -/
 def Ten.backwardFrom (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat)
-    (seed : CoT) (ops : List TOp) : Option (List TOp) :=
-  (gradRev needs ones batch ops.reverse fresh seed).map Prod.fst
+    (seed : CoT) (ops : List TOp) (elideIdent : Bool := false) : Option (List TOp) :=
+  (gradRev elideIdent needs ones batch ops.reverse fresh seed).map Prod.fst
 
 /-- **Where each gradient lands.**  The reverse pass allocates as it goes, so
     which buffer holds `∂L/∂w` is a fact about the derivation, not a convention
     a host can assume. -/
 def Ten.backwardCoT (needs : Ref → Bool) (ones : Ref) (batch fresh : Nat)
-    (seed : CoT) (ops : List TOp) : Option CoT :=
-  (gradRev needs ones batch ops.reverse fresh seed).map (fun r => r.2.1)
+    (seed : CoT) (ops : List TOp) (elideIdent : Bool := false) : Option CoT :=
+  (gradRev elideIdent needs ones batch ops.reverse fresh seed).map (fun r => r.2.1)
 
 /-- `tlet x := e; body` — the tensor binder. -/
 syntax "tlet " ident " := " term "; " ppLine term : term

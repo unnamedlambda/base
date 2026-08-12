@@ -328,6 +328,161 @@ theorem dotStridedBody_spec (bA bB : Buf) (ixA ixB : IdxE) (K cta : Nat) (st : W
   simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, dotStridedLane]
   rfl
 
+/-! ### The reduction with a row pass folded into it
+
+    A row pass whose only consumer is a reduction is the largest single family
+    of intermediates the pair fusion cannot reach: 43 MiB on the ViT step, all
+    of it written to memory and read straight back inside one kernel.  Folding
+    it in means the reduction's per-element term is an expression of three
+    operands times a fourth, rather than a product of two. -/
+
+/-- One accumulation step of the fused reduction: `acc += f(a,b,c)·d`. -/
+def dotStep4SE (f : WFExp) : WFExp := .add (.reg 0) (.mul f (.reg 4))
+
+def stepWS4 (bA bB bC bD : Buf) (fA fB fC fD : Nat → Lane → Nat) (f : WFExp)
+    (i : Nat) : WStmt :=
+  .seq (.seq (.seq (.loadIdx 1 bA (fA i)) (.loadIdx 2 bB (fB i)))
+             (.seq (.loadIdx 3 bC (fC i)) (.loadIdx 4 bD (fD i))))
+       (.setR 0 (dotStep4SE f))
+
+/-- The fused strided sweep: zero the accumulator, then `K` four-load steps. -/
+def dotStrided4Body (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (K : Nat) : EWStmt :=
+  .seq (.setR 0 (.lit (NumOps.ofNat 0)))
+       (.forN K (.seq (.seq (.seq (.loadIdx 1 bA ixA) (.loadIdx 2 bB ixB))
+                            (.seq (.loadIdx 3 bC ixC) (.loadIdx 4 bD ixD)))
+                      (.setR 0 (dotStep4SE f))))
+
+/-- **The fused strided schema**: sweep, butterfly, lane-0 store. -/
+def dotStrided4 (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (out : Buf) (oi : IdxE) (K : Nat) : EWStmt :=
+  .seq (.seq (dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K)
+             (.seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)
+               (.seq (warpRoundE 2) (warpRoundE 1))))))
+       (.storeLane0 out oi 0)
+
+/-- The fold one lane performs, in load order — the same commitment as
+    `dotStridedLane`, with the product's left factor an expression. -/
+def dotStridedLane4 (memA memB memC memD : Nat → Float32)
+    (fA fB fC fD : Nat → Lane → Nat)
+    (g : Float32 → Float32 → Float32 → Float32) (K : Nat) (l : Lane) : Float32 :=
+  (List.range K).foldl
+    (fun acc i => NumOps.add acc
+      (NumOps.mul (g (memA (fA i l)) (memB (fB i l)) (memC (fC i l)))
+        (memD (fD i l))))
+    (NumOps.ofNat 0)
+
+theorem dotStrided4_fold (bA bB bC bD : Buf) (fA fB fC fD : Nat → Lane → Nat)
+    (f : WFExp) (g : Float32 → Float32 → Float32 → Float32)
+    (hf : ∀ (st' : WSt) (l : Lane),
+      f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l)) :
+    ∀ (L : List Nat) (st : WSt) (l : Lane),
+      ((L.foldl (fun s' i => (stepWS4 bA bB bC bD fA fB fC fD f i).run s') st).regs 0 l)
+        = L.foldl (fun acc i =>
+            NumOps.add acc
+              (NumOps.mul (g (st.mem bA (fA i l)) (st.mem bB (fB i l))
+                (st.mem bC (fC i l))) (st.mem bD (fD i l))))
+          (st.regs 0 l) := by
+  intro L
+  induction L with
+  | nil => intro st l; rfl
+  | cons i L ih =>
+      intro st l
+      have hmem : ((stepWS4 bA bB bC bD fA fB fC fD f i).run st).mem = st.mem := rfl
+      have hacc : ((stepWS4 bA bB bC bD fA fB fC fD f i).run st).regs 0
+          = fun l => NumOps.add (st.regs 0 l)
+              (NumOps.mul (g (st.mem bA (fA i l)) (st.mem bB (fB i l))
+                (st.mem bC (fC i l))) (st.mem bD (fD i l))) := by
+        show ((WStmt.setR 0 (dotStep4SE f)).run
+                ((WStmt.seq (.seq (.loadIdx 1 bA (fA i)) (.loadIdx 2 bB (fB i)))
+                  (.seq (.loadIdx 3 bC (fC i)) (.loadIdx 4 bD (fD i)))).run st)).regs 0 = _
+        simp only [wrun_setR, WSt.regs_setReg_same]
+        funext l'
+        show NumOps.add _ (NumOps.mul (f.eval _ l') _) = _
+        rw [hf]
+        simp only [WFExp.eval, wrun_seq, wrun_loadIdx, WSt.mem_setReg,
+          WSt.regs_setReg_other _ 4 0 _ (by decide),
+          WSt.regs_setReg_other _ 3 0 _ (by decide),
+          WSt.regs_setReg_other _ 2 0 _ (by decide),
+          WSt.regs_setReg_other _ 1 0 _ (by decide),
+          WSt.regs_setReg_other _ 4 1 _ (by decide),
+          WSt.regs_setReg_other _ 3 1 _ (by decide),
+          WSt.regs_setReg_other _ 2 1 _ (by decide),
+          WSt.regs_setReg_other _ 4 2 _ (by decide),
+          WSt.regs_setReg_other _ 3 2 _ (by decide),
+          WSt.regs_setReg_other _ 4 3 _ (by decide),
+          WSt.regs_setReg_same]
+      show ((L.foldl _ ((stepWS4 bA bB bC bD fA fB fC fD f i).run st)).regs 0 l) = _
+      rw [ih _ l, hmem, hacc]
+      rfl
+
+theorem dotStrided4Body_mem (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (K cta : Nat) (st : WSt) :
+    (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run st).mem
+      = st.mem := by
+  show ((WStmt.forN K (fun j => (stepWS4 bA bB bC bD (fun i l => ixA.eval cta i l)
+          (fun i l => ixB.eval cta i l) (fun i l => ixC.eval cta i l)
+          (fun i l => ixD.eval cta i l) f j))).run
+        ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).mem = _
+  have key : ∀ (L : List Nat) (s : WSt),
+      (L.foldl (fun s' i => (stepWS4 bA bB bC bD (fun i l => ixA.eval cta i l)
+        (fun i l => ixB.eval cta i l) (fun i l => ixC.eval cta i l)
+        (fun i l => ixD.eval cta i l) f i).run s') s).mem = s.mem := by
+    intro L
+    induction L with
+    | nil => intro _; rfl
+    | cons i L ih =>
+        intro s
+        rw [List.foldl_cons, ih]
+        rfl
+  exact key (List.range K) _
+
+theorem dotStrided4Body_spec (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (g : Float32 → Float32 → Float32 → Float32)
+    (hf : ∀ (st' : WSt) (l : Lane),
+      f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
+    (K cta : Nat) (st : WSt) :
+    (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run st).regs 0
+      = dotStridedLane4 (st.mem bA) (st.mem bB) (st.mem bC) (st.mem bD)
+          (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
+          (fun i l => ixC.eval cta i l) (fun i l => ixD.eval cta i l) g K := by
+  funext l
+  show ((List.range K).foldl _ ((WStmt.setR 0 (.lit (NumOps.ofNat 0))).run st)).regs 0 l = _
+  have hstep : (fun j => EWStmt.elabAt cta j (fun _ _ => 0) (fun _ _ => 0)
+        ((((EWStmt.loadIdx 1 bA ixA).seq (EWStmt.loadIdx 2 bB ixB)).seq
+          ((EWStmt.loadIdx 3 bC ixC).seq (EWStmt.loadIdx 4 bD ixD))).seq
+          (EWStmt.setR 0 (dotStep4SE f))))
+      = stepWS4 bA bB bC bD (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
+          (fun i l => ixC.eval cta i l) (fun i l => ixD.eval cta i l) f := rfl
+  rw [hstep, dotStrided4_fold bA bB bC bD (fun i l => ixA.eval cta i l)
+        (fun i l => ixB.eval cta i l) (fun i l => ixC.eval cta i l)
+        (fun i l => ixD.eval cta i l) f g hf (List.range K) _ l]
+  simp only [wrun_setR, WSt.regs_setReg_same, WFExp.eval, dotStridedLane4]
+  rfl
+
+/-- **The fused strided schema is correct** — the same statement as
+    `dotStrided_spec` with the product's left factor an expression of three
+    operands rather than one. -/
+theorem dotStrided4_spec (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (g : Float32 → Float32 → Float32 → Float32)
+    (hf : ∀ (st' : WSt) (l : Lane),
+      f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
+    (out : Buf) (oi : IdxE) (K cta : Nat) (st : WSt) :
+    (((dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).elabIn cta).run st).mem out
+        (oi.eval cta 0 ⟨0, by decide⟩)
+      = bflyFold (dotStridedLane4 (st.mem bA) (st.mem bB) (st.mem bC) (st.mem bD)
+          (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
+          (fun i l => ixC.eval cta i l) (fun i l => ixD.eval cta i l) g K)
+          ⟨0, by decide⟩ := by
+  show (((warpReduceSum 0 1).run
+          (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run st)).store1
+        out _
+        (((warpReduceSum 0 1).run
+          (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run
+            st)).regs 0 ⟨0, by decide⟩)).mem out _ = _
+  rw [WSt.mem_store1_same, warpReduceSum_spec 0 1 (by decide),
+      dotStrided4Body_spec bA bB bC bD ixA ixB ixC ixD f g hf]
+
 /-- The fold depends on memory only at the addresses it reads.  What a pipeline
     needs: an upstream stage need only agree where the reduction looks. -/
 theorem dotStridedLane_congr (memA memA' memB memB' : Nat → Float32)
@@ -347,6 +502,34 @@ theorem dotStridedLane_congr (memA memA' memB memB' : Nat → Float32)
         intro hm a
         rw [List.foldl_cons, List.foldl_cons,
             hA i (hm i (List.mem_cons_self)) l, hB i (hm i (List.mem_cons_self)) l,
+            ih (fun i' hi' => hm i' (List.mem_cons_of_mem i hi'))]
+  exact key (List.range K) (fun i hi => List.mem_range.mp hi) _
+
+/-- **A reduction over a produced buffer is the fused reduction over what
+    produced it**, when the two agree element by element.
+
+    The fold order is the same list in the same order on both sides, so this is
+    exact at `Float32` — no reassociation, which is what lets a fusion into a
+    reduction be bit-identical rather than merely equal in exact arithmetic. -/
+theorem dotStridedLane_of_fused (memT memG memA memB memC : Nat → Float32)
+    (fT fG fA fB fC : Nat → Lane → Nat)
+    (g : Float32 → Float32 → Float32 → Float32) (K : Nat) (l : Lane)
+    (h : ∀ i, i < K →
+      memT (fT i l) = g (memA (fA i l)) (memB (fB i l)) (memC (fC i l))) :
+    dotStridedLane memT memG fT fG K l
+      = dotStridedLane4 memA memB memC memG fA fB fC fG g K l := by
+  show (List.range K).foldl _ (NumOps.ofNat 0) = (List.range K).foldl _ (NumOps.ofNat 0)
+  have key : ∀ (L : List Nat), (∀ i ∈ L, i < K) → ∀ (a : Float32),
+      L.foldl (fun acc i => NumOps.add acc (NumOps.mul (memT (fT i l)) (memG (fG i l)))) a
+        = L.foldl (fun acc i =>
+            NumOps.add acc (NumOps.mul (g (memA (fA i l)) (memB (fB i l))
+              (memC (fC i l))) (memG (fG i l)))) a := by
+    intro L
+    induction L with
+    | nil => intro _ _; rfl
+    | cons i L ih =>
+        intro hm a
+        rw [List.foldl_cons, List.foldl_cons, h i (hm i (List.mem_cons_self)),
             ih (fun i' hi' => hm i' (List.mem_cons_of_mem i hi'))]
   exact key (List.range K) (fun i hi => List.mem_range.mp hi) _
 

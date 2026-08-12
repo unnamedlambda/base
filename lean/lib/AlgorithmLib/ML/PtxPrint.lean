@@ -101,11 +101,43 @@ def flatStores (P : List FI) : List Buf := P.filterMap FI.storesTo
     is decided from the instructions themselves rather than assumed. -/
 def flatReadOnly (P : List FI) (b : Buf) : Bool := !(flatStores P).contains b
 
-def siText (ro : Buf → Bool) : SI → List String
+/-- **How many warps a CTA is launched with.**
+
+    The machine model's `cta` is *this warp's chunk index* — the thing every
+    address is affine in.  With one warp per block that is `%ctaid.x`, which is
+    what every artifact in the tree emits.  With `W` warps it is
+    `%ctaid.x·W + %tid.x/32`, and the launch supplies `grid/W` blocks of `32·W`
+    threads: the same set of chunk indices, packed fewer to a block.
+
+    Nothing about the kernel's meaning moves — `flatKernel_sound` is stated at a
+    given `cta` and is untouched. What moves is only how a launch enumerates
+    them, which is why this is a printer argument and a launch geometry rather
+    than a change to any kernel schema.
+
+    It is worth having because 32-thread blocks cap occupancy: a pure streaming
+    pass measured 83 GB/s of this card's 360 at `W = 1`.
+
+    **Only for kernels that use no shared memory.**  The `W` warps of a block
+    never communicate — `.bar` is `bar.warp.sync`, which is within a warp — but
+    `smemSym` is one array per *block*, so warps sharing a block would share it.
+    A kernel with `smemBytes > 0` must stay at `W = 1`.
+
+    The scratch register is above `smemLines`' own `PTX_ADDR_SCRATCH + 1`: both
+    are transient within one instruction's expansion, but sharing an index
+    between two expansions is the shape of printer bug this tree has already
+    paid for once. -/
+def PTX_WARP_SCRATCH : Nat := PTX_ADDR_SCRATCH + 2
+
+def siText (ro : Buf → Bool) (warps : Nat := 1) : SI → List String
   | .fp p          => [pinstrText p]
   | .movIC d c     => [s!"    mov.u32 %r{d}, {c};"]
   | .movLane d     => [s!"    mov.u32 %r{d}, %laneid;"]
-  | .movCta d      => [s!"    mov.u32 %r{d}, %ctaid.x;"]
+  | .movCta d      =>
+      if warps ≤ 1 then [s!"    mov.u32 %r{d}, %ctaid.x;"]
+      else [s!"    mov.u32 %r{d}, %tid.x;",
+            s!"    shr.u32 %r{d}, %r{d}, 5;",
+            s!"    mov.u32 %r{PTX_WARP_SCRATCH}, %ctaid.x;",
+            s!"    mad.lo.u32 %r{d}, %r{PTX_WARP_SCRATCH}, {warps}, %r{d};"]
   | .addR d a b    => [s!"    add.u32 %r{d}, %r{a}, %r{b};"]
   | .mulR d a b    => [s!"    mul.lo.u32 %r{d}, %r{a}, %r{b};"]
   | .addRC d a c   => [s!"    add.u32 %r{d}, %r{a}, {c};"]
@@ -131,8 +163,8 @@ def siText (ro : Buf → Bool) : SI → List String
   | .ext op _ _    => [s!"    // extern {op.name}: dispatched from the host"]
   | .loop _ _ _    => ["    // unreachable: loops are flattened before printing"]
 
-def fiText (ro : Buf → Bool) : FI → List String
-  | .si i      => siText ro i
+def fiText (ro : Buf → Bool) (warps : Nat := 1) : FI → List String
+  | .si i      => siText ro warps i
   | .jmp t     => [s!"    bra L{t};"]
   | .jmpIf p t => [s!"    @%p{p} bra L{t};"]
 
@@ -150,15 +182,16 @@ def fiText (ro : Buf → Bool) : FI → List String
     emitted. -/
 
 /-- The instruction lines, labelled from `start`. -/
-def bodyLines (ro : Buf → Bool) (start : Nat) : List FI → List String
+def bodyLines (ro : Buf → Bool) (warps : Nat) (start : Nat) : List FI → List String
   | []      => []
-  | x :: xs => (s!"L{start}:" :: fiText ro x) ++ bodyLines ro (start + 1) xs
+  | x :: xs => (s!"L{start}:" :: fiText ro warps x) ++ bodyLines ro warps (start + 1) xs
 
 /-- Render the program.  Instruction `i` is preceded by the label `L{i}`, so a
     branch target — which *is* an instruction index — always names exactly the
     instruction the machine model jumps to. -/
-def programText (P : List FI) (ro : Buf → Bool := flatReadOnly P) : List String :=
-  bodyLines ro 0 P ++ [s!"L{P.length}:"]
+def programText (P : List FI) (ro : Buf → Bool := flatReadOnly P)
+    (warps : Nat := 1) : List String :=
+  bodyLines ro warps 0 P ++ [s!"L{P.length}:"]
 
 /-- **Which loads take the read-only path, as a schedule rather than a rule.**
 
@@ -176,11 +209,23 @@ inductive ROPolicy where
   | under (bytes : Nat) (sizeOf : Buf → Nat)
   | none
 
-def ROPolicy.pred (p : ROPolicy) (P : List FI) : Buf → Bool
+/-- The policy against a list of stored-to buffers already in hand.
+
+    `flatStores` walks the whole program, and the predicate is asked once per
+    load, so computing it inside the predicate makes emission quadratic in the
+    program.  Measured on the ViT artifact's kernels: 62s, against 34s once the
+    walk is shared. -/
+def ROPolicy.predWith (p : ROPolicy) (stores : List Buf) : Buf → Bool
   | b => match p with
-    | .all         => flatReadOnly P b
-    | .under k sz  => flatReadOnly P b && decide (sz b ≤ k)
+    | .all         => !stores.contains b
+    | .under k sz  => !stores.contains b && decide (sz b ≤ k)
     | .none        => false
+
+def ROPolicy.pred (p : ROPolicy) (P : List FI) : Buf → Bool :=
+  p.predWith (flatStores P)
+
+theorem ROPolicy.pred_eq (p : ROPolicy) (P : List FI) :
+    p.pred P = p.predWith (flatStores P) := rfl
 
 /-- **Every instruction is labelled with its own index.**
 
@@ -188,9 +233,9 @@ def ROPolicy.pred (p : ROPolicy) (P : List FI) : Buf → Bool
     range — this gives: *every branch in the emitted text resolves to the label
     of the instruction the machine model jumps to*.  That is not full printer
     correctness and is not claimed to be. -/
-theorem bodyLines_label (ro : Buf → Bool) :
+theorem bodyLines_label (ro : Buf → Bool) (warps : Nat) :
     ∀ (P : List FI) (start i : Nat), i < P.length →
-    s!"L{start + i}:" ∈ bodyLines ro start P := by
+    s!"L{start + i}:" ∈ bodyLines ro warps start P := by
   intro P
   induction P with
   | nil => intro _ i h; exact absurd h (by simp)
@@ -327,7 +372,7 @@ private def regDecls : String :=
     `flatKernel_sound` proves the instruction list this renders computes
     `s.elabIn cta`; this function is the text encoding of that list. -/
 def emitProvenKernelN (name : String) (nbuf : Nat) (smemBytes : Nat) (s : EWStmt)
-    (rop : ROPolicy := .all) : String :=
+    (rop : ROPolicy := .all) (warps : Nat := 1) : String :=
   -- `expandEW` first: it discharges the emitter's exactness precondition for
   -- *any* input (`expandEW_expFree`), so what is printed is always inside the
   -- proven fragment.
@@ -335,7 +380,7 @@ def emitProvenKernelN (name : String) (nbuf : Nat) (smemBytes : Nat) (s : EWStmt
   let params := String.intercalate ",\n" ((List.range nbuf).map (fun i => s!"    .param .u64 b{i}_ptr"))
   let loads := String.intercalate "\n"
     ((List.range nbuf).map (fun i => s!"    ld.param.u64 %rd{i}, [b{i}_ptr];"))
-  let body := String.intercalate "\n" (programText P (rop.pred P))
+  let body := String.intercalate "\n" (programText P (rop.predWith (flatStores P)) warps)
   let smem := if smemBytes > 0 then s!".shared .align 4 .b8 {smemSym}[{smemBytes}];\n\n" else ""
   ".version 7.5\n.target sm_75\n.address_size 64\n\n" ++ smem
     ++ ".visible .entry " ++ name ++ "(\n" ++ params ++ "\n)\n{\n"

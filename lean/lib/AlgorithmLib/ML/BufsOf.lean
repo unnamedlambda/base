@@ -38,6 +38,16 @@ theorem dotStrided_bufsOf (bA bB out : Buf) (ixA ixB oi : IdxE) (K : Nat)
     (dotStrided bA bB ixA ixB out oi K).bufsOf ⊆ [bA, bB, out] := by
   simp [dotStrided, dotStridedBody, EWStmt.bufsOf, warpRoundE_bufsOf, hA, hB, ho]
 
+/-- **The fused reduction names its four operands and its output.** -/
+theorem dotStrided4_bufsOf (bA bB bC bD out : Buf) (ixA ixB ixC ixD oi : IdxE)
+    (f : WFExp) (K : Nat)
+    (hA : ixA.bufsOf = []) (hB : ixB.bufsOf = []) (hC : ixC.bufsOf = [])
+    (hD : ixD.bufsOf = []) (ho : oi.bufsOf = []) :
+    (dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).bufsOf
+      ⊆ [bA, bB, bC, bD, out] := by
+  simp [dotStrided4, dotStrided4Body, EWStmt.bufsOf, warpRoundE_bufsOf,
+        hA, hB, hC, hD, ho]
+
 /-- **The batched reduction names the same three.** -/
 theorem dotBatched_bufsOf (bA bB out : Buf) (ixA : IdxE) (ixB oi : Nat → IdxE)
     (B K : Nat) (hA : ixA.bufsOf = []) (hB : ∀ s, (ixB s).bufsOf = [])
@@ -83,6 +93,15 @@ theorem zip3PassEW_bufsOf (bA bB bC out : Buf) (dA dB dC r : Nat) (f : WFExp)
     (zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC oix K).bufsOf
       ⊆ [bA, bB, bC, out] := by
   simp [zip3PassEW, storeBody, EWStmt.bufsOf, hA, hB, hC, ho]
+
+/-- **…and a four-buffer pass names four.** -/
+theorem zip4PassEW_bufsOf (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
+    (ixA ixB ixC ixD oix : IdxE) (K : Nat)
+    (hA : ixA.bufsOf = []) (hB : ixB.bufsOf = []) (hC : ixC.bufsOf = [])
+    (hD : ixD.bufsOf = []) (ho : oix.bufsOf = []) :
+    (zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).bufsOf
+      ⊆ [bA, bB, bC, bD, out] := by
+  simp [zip4PassEW, storeBody, EWStmt.bufsOf, hA, hB, hC, hD, ho]
 
 /-- **The softmax and cross-entropy pass names its three inputs and its
     output** — the butterflies in between touch no memory. -/
@@ -178,7 +197,7 @@ theorem TOp.stmt_reads (batch : Nat) (op : TOp) :
   cases op <;>
     simp only [TOp.stmt, TOp.reads, TOp.outSize, List.cons_append,
                List.nil_append]
-  case mv _ w x o b inW outW =>
+  case mv _ w x o b inW outW _ =>
       refine dotBatched_bufsOf w x o _ _ _ b (inW / 32) ?_ ?_ ?_ <;>
         intros <;> simp [stride32, IdxE.bufsOf]
   case mvT _ w d o b inW outW =>
@@ -213,6 +232,9 @@ theorem TOp.stmt_reads (batch : Nat) (op : TOp) :
   case rowdot a b o mA mB n r =>
       refine dotStrided_bufsOf a b o _ _ _ (n / 32) ?_ ?_ ?_ <;>
         simp [BCast_ix_bufsOf, IdxE.bufsOf]
+  case rowdot4 a b c d o f mA mB mC mD n r =>
+      refine dotStrided4_bufsOf a b c d o _ _ _ _ _ f (n / 32) ?_ ?_ ?_ ?_ ?_ <;>
+        simp [BCast_ix_bufsOf, IdxE.bufsOf]
   case rowmax x o n r init =>
       refine maxStrided_bufsOf x o _ _ (n / 32) init ?_ ?_ <;>
         simp [stride32, IdxE.bufsOf]
@@ -221,6 +243,9 @@ theorem TOp.stmt_reads (batch : Nat) (op : TOp) :
         simp [BCast_ix_bufsOf, stride32, IdxE.bufsOf]
   case ziprow3 a b c o f mA mB mC n off w r =>
       refine zip3PassEW_bufsOf a b c o 1 2 3 0 f _ _ _ _ (w / 32) ?_ ?_ ?_ ?_ <;>
+        simp [BCast_ix_bufsOf, stride32, IdxE.bufsOf]
+  case ziprow4 a b c d o f mA mB mC mD n off w r =>
+      refine zip4PassEW_bufsOf a b c d o 1 2 3 4 0 f _ _ _ _ _ (w / 32) ?_ ?_ ?_ ?_ ?_ <;>
         simp [BCast_ix_bufsOf, stride32, IdxE.bufsOf]
 
 /-- **…and so only the buffers its own table holds.**

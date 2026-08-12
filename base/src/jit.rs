@@ -86,6 +86,8 @@ fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("cl_cublas_sgemv_on_stream", cuda::cl_cublas_sgemv_on_stream as *const u8);
     builder.symbol("cl_cublas_sgemm_strided_batched", cuda::cl_cublas_sgemm_strided_batched as *const u8);
     builder.symbol("cl_cublas_sgemm_strided_batched_on_stream", cuda::cl_cublas_sgemm_strided_batched_on_stream as *const u8);
+    builder.symbol("cl_cublas_ptr_array", cuda::cl_cublas_ptr_array as *const u8);
+    builder.symbol("cl_cublas_sgemm_batched_on_stream", cuda::cl_cublas_sgemm_batched_on_stream as *const u8);
 
     // File + math + stdio
     builder.symbol("cl_file_read", file::cl_file_read as *const u8);

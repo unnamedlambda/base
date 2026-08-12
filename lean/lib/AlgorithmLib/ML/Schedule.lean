@@ -27,7 +27,7 @@ namespace AlgorithmLib.ML
     denotations: it is a lowering choice, so moving it is a schedule and not an
     edit to the model. -/
 def TOp.retarget (bk : Backend) : TOp → TOp
-  | .mv    _ w x o b i ow => .mv    bk w x o b i ow
+  | .mv    _ w x o b i ow bA => .mv    bk w x o b i ow bA
   | .mvT   _ w d o b i ow => .mvT   bk w d o b i ow
   | .outer _ d x o b i ow => .outer bk d x o b i ow
   | op => op

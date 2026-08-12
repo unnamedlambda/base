@@ -5,6 +5,8 @@ import AlgorithmLib.ML.TapeGrad
 import AlgorithmLib.ML.Layered
 import AlgorithmLib.ML.KVCache
 import AlgorithmLib.ML.Rewrite
+import AlgorithmLib.ML.Interchange
+import AlgorithmLib.ML.HostBridge
 import AlgorithmLib.ML.Backprop
 import AlgorithmLib.ML.Pipeline
 import AlgorithmLib.ML.Compose
@@ -61,6 +63,8 @@ import AlgorithmLib.ML.QuantMX
   | `LaneRegroup` | any lane-partitioned fold read as the flat one, given a proof that the walk covers each element once.  Two schedules of one reduction differ by 14%.  `StridedRegroup` is its instance at the interleaved walk. |
   | `CuBlasIsMatvec` | a vendor GEMV equals a left-to-right `Float32` fold of the matvec.  The only form expressible without an ℝ semantics for `Float32`, and therefore *stronger* than NVIDIA guarantees, whose fold order is unspecified. |
   | `CuBlasIsSomeReassoc` | a vendor GEMV sums the right products, each once, in *some* association — what NVIDIA actually promises, and all of the leeway expressible over `Float32`.  `cublasIsMatvec_strengthens` proves the row above refines it. |
+  | `CuBlasBatchedIsSomeReassoc` | a member of a batched vendor GEMM sums *that member's* products, each once, in some association.  The stronger reading — that a member lands what its own separate call would — was **measured false**: the same ViT forward batched and unbatched agrees with timm either way and differs from itself in the last bits.  So batching gives up the closed form `CuBlasIsMatvec` buys, and keeps only that the members do not mix. |
+  | `CuBlasGemmIsSomeReassoc` | each output element of a vendor GEMM sums *that element's* `k` products, each once, in some association.  Stated of the configuration every shipped contraction uses — a batch of one, zero strides, zero offsets — which `vit_contractions_are_plain_gemms` decides from the emitted instruction stream and `cublas_gemm_batch_one_vs_plain` measures bit-identical to `cl_cublas_sgemm` on all fifteen shapes.  The output index is bound inside the quantifier, so two elements need not share an association: a GEMM is free to tile. |
   | `CombinerComm` | `Float32` add and max commute, so a butterfly is lane-uniform.  True at IEEE-754 for non-NaN inputs. |
 
   Beyond the registry, and therefore never carried in a `Law` list:
@@ -169,9 +173,26 @@ example := @ZeroTermFree
 example := @ZeroLaws
 example := @CuBlasIsMatvec
 example := @CuBlasIsSomeReassoc
+example := @CuBlasBatchedIsSomeReassoc
+example := @CuBlasGemmIsSomeReassoc
 example := @LaneRegroup
 example := @CombinerComm
 example := @cublasSgemvResult
+example := @cublasSgemmResult
+example := @AlgorithmLib.ML.cublasGemmStep_isSomeReassoc
+example := @AlgorithmLib.ML.group_runs_as_pipeline
+example := @AlgorithmLib.ML.mapStages_group_runs_as_pipeline
+example := @AlgorithmLib.ML.commute_of_footprints
+example := @AlgorithmLib.ML.commute_of_reads
+example := @AlgorithmLib.ML.zipRowStage_readsIn
+example := @AlgorithmLib.ML.zipRow3Stage_readsIn
+example := @AlgorithmLib.ML.zipRow4Stage_readsIn
+example := @AlgorithmLib.ML.reduceStage_readsIn
+example := @AlgorithmLib.ML.reduce4Stage_readsIn
+example := @AlgorithmLib.ML.maxRowStage_readsIn
+example := @AlgorithmLib.ML.dotBatchedStage_readsIn
+example := @AlgorithmLib.ML.outerBatchedStage_readsIn
+example := @AlgorithmLib.ML.mapStage_readsIn
 
 -- results stated about shipped artifacts, reachable only from here
 example := @AlgorithmLib.ML.blockKernel_sound

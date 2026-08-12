@@ -662,6 +662,19 @@ theorem dotStrided_frame (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (oi : IdxE)
   rw [wrun_storeLane0, mem_store1_other _ _ _ _ _ _ h, warpReduceSum_mem,
       dotStridedBody_mem]
 
+/-- **The fused reduction's only memory effect is its one lane-0 store.** -/
+theorem dotStrided4_frame (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (out : Buf) (oi : IdxE) (K cta : Nat) (st : WSt) (c : Buf) (j : Nat)
+    (h : ¬ (c = out ∧ j = oi.eval cta 0 ⟨0, by decide⟩)) :
+    (((dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).elabIn cta).run st).mem c j
+      = st.mem c j := by
+  show ((WStmt.storeLane0 out (oi.eval cta 0 ⟨0, by decide⟩) 0).run
+          ((warpReduceSum 0 1).run
+            (((dotStrided4Body bA bB bC bD ixA ixB ixC ixD f K).elabAt cta 0).run
+              st))).mem c j = _
+  rw [wrun_storeLane0, mem_store1_other _ _ _ _ _ _ h, warpReduceSum_mem,
+      dotStrided4Body_mem]
+
 /-- **The strided maximum's only memory effect is its one lane-0 store.** -/
 theorem maxStrided_frame (b : Buf) (ix : IdxE) (out : Buf) (oi : IdxE)
     (K cta : Nat) (init : Float32) (st : WSt) (c : Buf) (j : Nat)
@@ -737,6 +750,50 @@ def reduceStage (bA bB : Buf) (ixA ixB : IdxE) (out : Buf) (K grid : Nat)
   valOnly := by
     intro m m' _ a _ h _
     rw [h bA hA, h bB hB]
+
+/-- **A reduction with a row pass folded into it, as a stage.**
+
+    The same shape as `reduceStage`: one warp per output, the committed
+    two-level fold as its value.  What differs is the per-element term, which is
+    an expression of three operands times a fourth — so a row pass whose only
+    consumer is this reduction never has to reach memory. -/
+def reduce4Stage (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE) (f : WFExp)
+    (g : Float32 → Float32 → Float32 → Float32)
+    (hf : ∀ (st' : WSt) (l : Lane),
+      f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l))
+    (out : Buf) (K grid : Nat)
+    (hA : bA ≠ out) (hB : bB ≠ out) (hC : bC ≠ out) (hD : bD ≠ out) : StageSpec where
+  ew   := dotStrided4 bA bB bC bD ixA ixB ixC ixD f out .ctaId K
+  grid := grid
+  out  := out
+  dom  := fun cta a => a = cta
+  val  := fun m cta _ => bflyFold (dotStridedLane4 (m bA) (m bB) (m bC) (m bD)
+            (fun i l => ixA.eval cta i l) (fun i l => ixB.eval cta i l)
+            (fun i l => ixC.eval cta i l) (fun i l => ixD.eval cta i l) g K)
+            ⟨0, by decide⟩
+  frame := by
+    intro cta st b a hb
+    refine dotStrided4_frame bA bB bC bD ixA ixB ixC ixD f out .ctaId K cta st b a ?_
+    intro hc
+    rcases hb with hb | hb
+    · exact hb hc.1
+    · exact hb hc.2
+  value := by
+    intro cta st a hdom
+    subst hdom
+    exact dotStrided4_spec bA bB bC bD ixA ixB ixC ixD f g hf out .ctaId K a st
+  valOnly := by
+    intro m m' _ a _ h _
+    rw [h bA hA, h bB hB, h bC hC, h bD hD]
+
+theorem reduce4Stage_exclusive (bA bB bC bD : Buf) (ixA ixB ixC ixD : IdxE)
+    (f : WFExp) (g : Float32 → Float32 → Float32 → Float32) (hf) (out : Buf)
+    (K grid : Nat) (hA : bA ≠ out) (hB : bB ≠ out) (hC : bC ≠ out) (hD : bD ≠ out) :
+    (reduce4Stage bA bB bC bD ixA ixB ixC ixD f g hf out K grid hA hB hC hD).Exclusive := by
+  refine StageSpec.Exclusive.ofUnbounded ?_
+  intro cta cta' a h h'
+  show cta = cta'
+  rw [← h, ← h']
 
 /-- **The reduce stage is idempotent** — it folds two buffers, neither `out`. -/
 theorem reduceStage_idempotent (bA bB : Buf) (ixA ixB : IdxE) (out : Buf)
@@ -969,6 +1026,26 @@ theorem zip3Pass_frame (bA bB bC out : Buf) (dA dB dC r : Nat) (f : WFExp)
       exact storeLoop_otherAddr _ r oix _ cta ir im hmem a (List.range K) st hno
     · exact congrFun (storeLoop_otherBuf out r oix _ cta ir im hmem c hco (List.range K) st) a
 
+/-- **The four-buffer pass touches only its own output addresses.** -/
+theorem zip4Pass_frame (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
+    (ixA ixB ixC ixD oix : IdxE) (K cta : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) (st : WSt) (c : Buf) (a : Nat)
+    (h : c ≠ out ∨ ∀ j ∈ List.range K, ∀ l : Lane, oix.eval cta j l ir im ≠ a) :
+    (((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).elabAt
+        cta 0 ir im).run st).mem c a = st.mem c a := by
+  have hmem : ∀ (j : Nat) (s : WSt),
+      (((EWStmt.seq (.loadIdx dA bA ixA)
+          (.seq (.loadIdx dB bB ixB)
+            (.seq (.loadIdx dC bC ixC)
+              (.seq (.loadIdx dD bD ixD) (.setR r f))))).elabAt cta j ir im).run s).mem
+        = s.mem := fun _ _ => rfl
+  rcases h with hc | hno
+  · exact congrFun (storeLoop_otherBuf out r oix _ cta ir im hmem c hc (List.range K) st) a
+  · by_cases hco : c = out
+    · subst hco
+      exact storeLoop_otherAddr _ r oix _ cta ir im hmem a (List.range K) st hno
+    · exact congrFun (storeLoop_otherBuf out r oix _ cta ir im hmem c hco (List.range K) st) a
+
 /-- The lane expression reads nothing but the two operand registers. -/
 def WFExp.pairOnly : WFExp → Bool
   | .reg r     => r == 1 || r == 2
@@ -1145,6 +1222,160 @@ theorem WFExp.evalTriple_of_pairOnly : ∀ (f : WFExp), f.pairOnly = true →
       show NumOps.ifGe _ _ _ _ = NumOps.ifGe _ _ _ _
       rw [iha h'.1 x y z, ihb h'.2 x y z]
 
+/-- The lane expression reads nothing but the four operand registers. -/
+def WFExp.quadOnly : WFExp → Bool
+  | .reg r     => r == 1 || r == 2 || r == 3 || r == 4
+  | .lit _     => true
+  | .add a b   => a.quadOnly && b.quadOnly
+  | .mul a b   => a.quadOnly && b.quadOnly
+  | .neg a     => a.quadOnly
+  | .inv a     => a.quadOnly
+  | .exp a     => a.quadOnly
+  | .ex2 a     => a.quadOnly
+  | .rsqrt a   => a.quadOnly
+  | .maxW a b  => a.quadOnly && b.quadOnly
+  | .geF a b   => a.quadOnly && b.quadOnly
+
+/-- …and is therefore a function of those four. -/
+def WFExp.evalQuad (x y z u : Float32) : WFExp → Float32
+  | .reg r     => if r == 1 then x else if r == 2 then y else
+                    if r == 3 then z else if r == 4 then u else NumOps.ofNat 0
+  | .lit v     => v
+  | .add a b   => NumOps.add (a.evalQuad x y z u) (b.evalQuad x y z u)
+  | .mul a b   => NumOps.mul (a.evalQuad x y z u) (b.evalQuad x y z u)
+  | .neg a     => NumOps.neg (a.evalQuad x y z u)
+  | .inv a     => NumOps.inv (a.evalQuad x y z u)
+  | .exp a     => NumOps.exp (a.evalQuad x y z u)
+  | .ex2 a     => NumOps.ex2 (a.evalQuad x y z u)
+  | .rsqrt a   => NumOps.rsqrt (a.evalQuad x y z u)
+  | .maxW a b  => NumOps.max (a.evalQuad x y z u) (b.evalQuad x y z u)
+  | .geF a b   => NumOps.ifGe (a.evalQuad x y z u) (b.evalQuad x y z u) 1.0 0.0
+
+theorem WFExp.evalQuad_eq : ∀ (f : WFExp), f.quadOnly = true →
+    ∀ (st : WSt) (l : Lane),
+      f.eval st l
+        = f.evalQuad (st.regs 1 l) (st.regs 2 l) (st.regs 3 l) (st.regs 4 l) := by
+  intro f
+  induction f with
+  | reg r =>
+      intro h st l
+      simp only [WFExp.quadOnly, Bool.or_eq_true, beq_iff_eq] at h
+      rcases h with ((h | h) | h) | h <;> subst h <;> rfl
+  | lit v => intro _ _ _; rfl
+  | add a b iha ihb =>
+      intro h st l
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.add _ _ = NumOps.add _ _
+      rw [iha h'.1 st l, ihb h'.2 st l]
+  | mul a b iha ihb =>
+      intro h st l
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.mul _ _ = NumOps.mul _ _
+      rw [iha h'.1 st l, ihb h'.2 st l]
+  | neg a iha => intro h st l; show NumOps.neg _ = NumOps.neg _; rw [iha h st l]
+  | inv a iha => intro h st l; show NumOps.inv _ = NumOps.inv _; rw [iha h st l]
+  | exp a iha => intro h st l; show NumOps.exp _ = NumOps.exp _; rw [iha h st l]
+  | ex2 a iha => intro h st l; show NumOps.ex2 _ = NumOps.ex2 _; rw [iha h st l]
+  | rsqrt a iha => intro h st l; show NumOps.rsqrt _ = NumOps.rsqrt _; rw [iha h st l]
+  | maxW a b iha ihb =>
+      intro h st l
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.max _ _ = NumOps.max _ _
+      rw [iha h'.1 st l, ihb h'.2 st l]
+  | geF a b iha ihb =>
+      intro h st l
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.ifGe _ _ _ _ = NumOps.ifGe _ _ _ _
+      rw [iha h'.1 st l, ihb h'.2 st l]
+
+/-- **Exchange a pair expression's two operand registers.**
+
+    A row pass is symmetric: reading `(a, b)` through `f` is reading `(b, a)`
+    through this.  It exists so a fusion that only knows how to consume the
+    produced value in the *first* operand slot can still take a consumer that
+    holds it in the second — commuting is cheaper than a second fusion lemma,
+    and unlike one it introduces no new shape. -/
+def WFExp.swap12 : WFExp → WFExp
+  | .reg r     => if r == 1 then .reg 2 else if r == 2 then .reg 1 else .reg r
+  | .lit v     => .lit v
+  | .add a b   => .add a.swap12 b.swap12
+  | .mul a b   => .mul a.swap12 b.swap12
+  | .neg a     => .neg a.swap12
+  | .inv a     => .inv a.swap12
+  | .exp a     => .exp a.swap12
+  | .ex2 a     => .ex2 a.swap12
+  | .rsqrt a   => .rsqrt a.swap12
+  | .maxW a b  => .maxW a.swap12 b.swap12
+  | .geF a b   => .geF a.swap12 b.swap12
+
+theorem WFExp.swap12_pairOnly : ∀ (e : WFExp), e.pairOnly = true → e.swap12.pairOnly = true := by
+  intro e
+  induction e with
+  | reg r =>
+      intro h
+      simp only [WFExp.pairOnly, Bool.or_eq_true, beq_iff_eq] at h
+      rcases h with h | h <;> subst h <;> rfl
+  | lit v => intro _; rfl
+  | add a b iha ihb =>
+      intro h
+      have h' := Bool.and_eq_true .. |>.mp h
+      exact Bool.and_eq_true .. |>.mpr ⟨iha h'.1, ihb h'.2⟩
+  | mul a b iha ihb =>
+      intro h
+      have h' := Bool.and_eq_true .. |>.mp h
+      exact Bool.and_eq_true .. |>.mpr ⟨iha h'.1, ihb h'.2⟩
+  | neg a iha => intro h; exact iha h
+  | inv a iha => intro h; exact iha h
+  | exp a iha => intro h; exact iha h
+  | ex2 a iha => intro h; exact iha h
+  | rsqrt a iha => intro h; exact iha h
+  | maxW a b iha ihb =>
+      intro h
+      have h' := Bool.and_eq_true .. |>.mp h
+      exact Bool.and_eq_true .. |>.mpr ⟨iha h'.1, ihb h'.2⟩
+  | geF a b iha ihb =>
+      intro h
+      have h' := Bool.and_eq_true .. |>.mp h
+      exact Bool.and_eq_true .. |>.mpr ⟨iha h'.1, ihb h'.2⟩
+
+/-- **…and commuting the registers commutes the arguments.**  Nothing is
+    reassociated: every operation survives in place, so the commuted pass is
+    bit-identical to the original read the other way round. -/
+theorem WFExp.swap12_evalPair : ∀ (e : WFExp), e.pairOnly = true →
+    ∀ (x y : Float32), e.swap12.evalPair x y = e.evalPair y x := by
+  intro e
+  induction e with
+  | reg r =>
+      intro h x y
+      simp only [WFExp.pairOnly, Bool.or_eq_true, beq_iff_eq] at h
+      rcases h with h | h <;> subst h <;> rfl
+  | lit v => intro _ _ _; rfl
+  | add a b iha ihb =>
+      intro h x y
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.add _ _ = NumOps.add _ _
+      rw [iha h'.1 x y, ihb h'.2 x y]
+  | mul a b iha ihb =>
+      intro h x y
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.mul _ _ = NumOps.mul _ _
+      rw [iha h'.1 x y, ihb h'.2 x y]
+  | neg a iha => intro h x y; show NumOps.neg _ = NumOps.neg _; rw [iha h x y]
+  | inv a iha => intro h x y; show NumOps.inv _ = NumOps.inv _; rw [iha h x y]
+  | exp a iha => intro h x y; show NumOps.exp _ = NumOps.exp _; rw [iha h x y]
+  | ex2 a iha => intro h x y; show NumOps.ex2 _ = NumOps.ex2 _; rw [iha h x y]
+  | rsqrt a iha => intro h x y; show NumOps.rsqrt _ = NumOps.rsqrt _; rw [iha h x y]
+  | maxW a b iha ihb =>
+      intro h x y
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.max _ _ = NumOps.max _ _
+      rw [iha h'.1 x y, ihb h'.2 x y]
+  | geF a b iha ihb =>
+      intro h x y
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.ifGe _ _ _ _ = NumOps.ifGe _ _ _ _
+      rw [iha h'.1 x y, ihb h'.2 x y]
+
 /-- **Fusing one row pass into the next.**  In the consumer, the produced value
     (register 1) becomes the producer's whole expression, and the consumer's
     other operand (register 2) moves to register 3 — which is the slot the
@@ -1204,6 +1435,107 @@ theorem WFExp.fuseA_eval : ∀ (outer : WFExp), outer.pairOnly = true →
       show NumOps.ifGe _ _ _ _ = NumOps.ifGe _ _ _ _
       rw [iha h'.1 inner x y z, ihb h'.2 inner x y z]
 
+/-- A three-operand expression read as a four-operand one ignores the fourth. -/
+theorem WFExp.evalQuad_of_tripleOnly : ∀ (f : WFExp), f.tripleOnly = true →
+    ∀ (x y z u : Float32), f.evalQuad x y z u = f.evalTriple x y z := by
+  intro f
+  induction f with
+  | reg r =>
+      intro h x y z u
+      simp only [WFExp.tripleOnly, Bool.or_eq_true, beq_iff_eq] at h
+      rcases h with (h | h) | h <;> subst h <;> rfl
+  | lit v => intro _ _ _ _ _; rfl
+  | add a b iha ihb =>
+      intro h x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.add _ _ = NumOps.add _ _
+      rw [iha h'.1 x y z u, ihb h'.2 x y z u]
+  | mul a b iha ihb =>
+      intro h x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.mul _ _ = NumOps.mul _ _
+      rw [iha h'.1 x y z u, ihb h'.2 x y z u]
+  | neg a iha => intro h x y z u; show NumOps.neg _ = NumOps.neg _; rw [iha h x y z u]
+  | inv a iha => intro h x y z u; show NumOps.inv _ = NumOps.inv _; rw [iha h x y z u]
+  | exp a iha => intro h x y z u; show NumOps.exp _ = NumOps.exp _; rw [iha h x y z u]
+  | ex2 a iha => intro h x y z u; show NumOps.ex2 _ = NumOps.ex2 _; rw [iha h x y z u]
+  | rsqrt a iha =>
+      intro h x y z u; show NumOps.rsqrt _ = NumOps.rsqrt _; rw [iha h x y z u]
+  | maxW a b iha ihb =>
+      intro h x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.max _ _ = NumOps.max _ _
+      rw [iha h'.1 x y z u, ihb h'.2 x y z u]
+  | geF a b iha ihb =>
+      intro h x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.ifGe _ _ _ _ = NumOps.ifGe _ _ _ _
+      rw [iha h'.1 x y z u, ihb h'.2 x y z u]
+
+/-- **Fusing a three-operand row pass into the next one.**
+
+    The same substitution as `fuseA` one arity up: the produced value (register
+    1) becomes the producer's whole expression, and the consumer's other
+    operand moves to register 4, which is where the four-operand pass binds it.
+    A chain of three row passes needs exactly this. -/
+def WFExp.fuseA4 (outer inner : WFExp) : WFExp :=
+  match outer with
+  | .reg r     => if r == 1 then inner else if r == 2 then .reg 4 else .reg r
+  | .lit v     => .lit v
+  | .add a b   => .add (a.fuseA4 inner) (b.fuseA4 inner)
+  | .mul a b   => .mul (a.fuseA4 inner) (b.fuseA4 inner)
+  | .neg a     => .neg (a.fuseA4 inner)
+  | .inv a     => .inv (a.fuseA4 inner)
+  | .exp a     => .exp (a.fuseA4 inner)
+  | .ex2 a     => .ex2 (a.fuseA4 inner)
+  | .rsqrt a   => .rsqrt (a.fuseA4 inner)
+  | .maxW a b  => .maxW (a.fuseA4 inner) (b.fuseA4 inner)
+  | .geF a b   => .geF (a.fuseA4 inner) (b.fuseA4 inner)
+
+/-- **…and it too computes the composition**, with no arithmetic reassociated. -/
+theorem WFExp.fuseA4_eval : ∀ (outer : WFExp), outer.pairOnly = true →
+    ∀ (inner : WFExp) (x y z u : Float32),
+      (outer.fuseA4 inner).evalQuad x y z u
+        = outer.evalPair (inner.evalQuad x y z u) u := by
+  intro outer
+  induction outer with
+  | reg r =>
+      intro h inner x y z u
+      simp only [WFExp.pairOnly, Bool.or_eq_true, beq_iff_eq] at h
+      rcases h with h | h <;> subst h <;> rfl
+  | lit v => intro _ _ _ _ _ _; rfl
+  | add a b iha ihb =>
+      intro h inner x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.add _ _ = NumOps.add _ _
+      rw [iha h'.1 inner x y z u, ihb h'.2 inner x y z u]
+  | mul a b iha ihb =>
+      intro h inner x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.mul _ _ = NumOps.mul _ _
+      rw [iha h'.1 inner x y z u, ihb h'.2 inner x y z u]
+  | neg a iha =>
+      intro h inner x y z u; show NumOps.neg _ = NumOps.neg _; rw [iha h inner x y z u]
+  | inv a iha =>
+      intro h inner x y z u; show NumOps.inv _ = NumOps.inv _; rw [iha h inner x y z u]
+  | exp a iha =>
+      intro h inner x y z u; show NumOps.exp _ = NumOps.exp _; rw [iha h inner x y z u]
+  | ex2 a iha =>
+      intro h inner x y z u; show NumOps.ex2 _ = NumOps.ex2 _; rw [iha h inner x y z u]
+  | rsqrt a iha =>
+      intro h inner x y z u
+      show NumOps.rsqrt _ = NumOps.rsqrt _; rw [iha h inner x y z u]
+  | maxW a b iha ihb =>
+      intro h inner x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.max _ _ = NumOps.max _ _
+      rw [iha h'.1 inner x y z u, ihb h'.2 inner x y z u]
+  | geF a b iha ihb =>
+      intro h inner x y z u
+      have h' := Bool.and_eq_true .. |>.mp h
+      show NumOps.ifGe _ _ _ _ = NumOps.ifGe _ _ _ _
+      rw [iha h'.1 inner x y z u, ihb h'.2 inner x y z u]
+
 /-- How a row pass addresses one of its operands.
 
     Every mode builds its address out of the block index and the trip offset
@@ -1245,6 +1577,36 @@ def BCast.ev : BCast → Nat → Nat → Nat
 theorem BCast.ix_ev (m : BCast) (cta j : Nat) (l : Lane) :
     m.ix.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = m.ev cta (j * 32 + l.val) := by
   cases m <;> rfl
+
+/-- **The same addressing, `d` elements further into the buffer.**
+
+    What buffer fusion needs: if several operations' operands are laid end to end
+    in one buffer, a reader of the `p`th reaches it by shifting its base.  Every
+    mode carries a constant that does exactly that — except `.scalar`, whose
+    address *is* the chunk index with nowhere to put one, so shifting it is
+    refused rather than approximated.  `.rowOf 1 d` is not a substitute: it adds
+    the intra-chunk offset that `.scalar` deliberately drops.
+
+    A row statistic is what `.scalar` reads, and those are the smallest buffers
+    in a tape, so refusing costs little. -/
+def BCast.shift : BCast → Nat → Option BCast
+  | m,            0 => some m
+  | .rowOf s k,   d => some (.rowOf s (k + d))
+  | .sharedAt k,  d => some (.sharedAt (k + d))
+  | .constAt k,   d => some (.constAt (k + d))
+  | .scalar,      _ => none
+
+/-- …and it addresses exactly `d` further along. -/
+theorem BCast.shift_ev (m : BCast) (d : Nat) (m' : BCast) (h : m.shift d = some m')
+    (cta o : Nat) : m'.ev cta o = m.ev cta o + d := by
+  cases d with
+  | zero => cases h; simp
+  | succ e =>
+    cases m with
+    | rowOf s k => cases h; show cta * s + (k + (e+1)) + o = cta * s + k + o + (e+1); omega
+    | sharedAt k => cases h; show k + (e+1) + o = k + o + (e+1); omega
+    | constAt k => cases h; show k + (e+1) = k + (e+1); rfl
+    | scalar => exact absurd h (by simp [BCast.shift])
 
 /-- **A three-operand row pass, as a pipeline stage.**
 
@@ -1311,6 +1673,86 @@ theorem zipRow3Stage_exclusive (bA bB bC out : Buf) (f : WFExp)
     (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) :
     (zipRow3Stage bA bB bC out f g ixA ixB ixC evA evB evC n off K grid hw hf
       hA hB hC hAo hBo hCo).Exclusive := by
+  refine StageSpec.Exclusive.ofUnbounded ?_
+  intro cta cta' a h h'
+  obtain ⟨j, hj, l, hl⟩ := h
+  obtain ⟨j', hj', l', hl'⟩ := h'
+  have h1 : l.val < 32 := l.isLt
+  have h2 : l'.val < 32 := l'.isLt
+  have hb : off + (j * 32 + l.val) < n := by
+    have : j + 1 ≤ K := hj
+    have : (j + 1) * 32 ≤ K * 32 := Nat.mul_le_mul_right 32 this
+    rw [Nat.succ_mul] at this
+    omega
+  have hb' : off + (j' * 32 + l'.val) < n := by
+    have : j' + 1 ≤ K := hj'
+    have : (j' + 1) * 32 ≤ K * 32 := Nat.mul_le_mul_right 32 this
+    rw [Nat.succ_mul] at this
+    omega
+  exact (rowMajor_inj hb hb' (by
+    show cta * n + (off + (j * 32 + l.val)) = cta' * n + (off + (j' * 32 + l'.val))
+    omega)).1
+
+/-- **A four-operand row pass as a stage.**
+
+    The arity a chain of row passes reaches: two collapse into `zipRow3Stage`,
+    and without this the third has to store its input and read it back. -/
+def zipRow4Stage (bA bB bC bD out : Buf) (f : WFExp)
+    (g : Float32 → Float32 → Float32 → Float32 → Float32)
+    (ixA ixB ixC ixD : IdxE) (evA evB evC evD : Nat → Nat → Nat)
+    (n off K grid : Nat) (_hw : off + K * 32 ≤ n)
+    (hf : ∀ (st' : WSt) (l : Lane),
+      f.eval st' l = g (st'.regs 1 l) (st'.regs 2 l) (st'.regs 3 l) (st'.regs 4 l))
+    (hA : ∀ cta j (l : Lane),
+        ixA.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evA cta (j * 32 + l.val))
+    (hB : ∀ cta j (l : Lane),
+        ixB.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evB cta (j * 32 + l.val))
+    (hC : ∀ cta j (l : Lane),
+        ixC.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evC cta (j * 32 + l.val))
+    (hD : ∀ cta j (l : Lane),
+        ixD.eval cta j l (fun _ _ => 0) (fun _ _ => 0) = evD cta (j * 32 + l.val))
+    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) : StageSpec where
+  ew   := zip4PassEW bA bB bC bD out 1 2 3 4 0 f ixA ixB ixC ixD
+            (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) K
+  grid := grid
+  out  := out
+  dom  := fun cta a => ∃ j, j < K ∧ ∃ l : Lane, cta * n + off + (j * 32 + l.val) = a
+  val  := fun m cta a =>
+            g (m bA (evA cta (a - (cta * n + off))))
+              (m bB (evB cta (a - (cta * n + off))))
+              (m bC (evC cta (a - (cta * n + off))))
+              (m bD (evD cta (a - (cta * n + off))))
+  frame := by
+    intro cta st b a hb
+    refine zip4Pass_frame bA bB bC bD out 1 2 3 4 0 f ixA ixB ixC ixD
+      (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) K cta _ _ st b a ?_
+    rcases hb with hb | hb
+    · exact Or.inl hb
+    · exact Or.inr (fun j hj l hc => hb ⟨j, List.mem_range.mp hj, l, hc⟩)
+  value := by
+    intro cta st a hdom
+    obtain ⟨j, hj, l, hl⟩ := hdom
+    subst hl
+    have h := zip4Pass_spec bA bB bC bD out 1 2 3 4 0
+      (by decide) (by decide) (by decide) (by decide) (by decide) (by decide) f
+      (.add (.mul .ctaId (.lit n)) (.lit off)) rfl ixA ixB ixC ixD K cta
+      hAo hBo hCo hDo (fun _ _ => 0) (fun _ _ => 0) st g hf j l hj
+    have hsub : cta * n + off + (j * 32 + l.val) - (cta * n + off) = j * 32 + l.val := by
+      omega
+    rw [hsub, ← hA cta j l, ← hB cta j l, ← hC cta j l, ← hD cta j l]
+    exact h
+  valOnly := by
+    intro m m' _ a _ h _
+    rw [h bA hAo, h bB hBo, h bC hCo, h bD hDo]
+
+/-- Rows own disjoint address ranges, exactly as at the lower arities. -/
+theorem zipRow4Stage_exclusive (bA bB bC bD out : Buf) (f : WFExp)
+    (g : Float32 → Float32 → Float32 → Float32 → Float32)
+    (ixA ixB ixC ixD : IdxE) (evA evB evC evD : Nat → Nat → Nat)
+    (n off K grid : Nat) (hw : off + K * 32 ≤ n) (hf) (hA) (hB) (hC) (hD)
+    (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out) :
+    (zipRow4Stage bA bB bC bD out f g ixA ixB ixC ixD evA evB evC evD n off K grid hw hf
+      hA hB hC hD hAo hBo hCo hDo).Exclusive := by
   refine StageSpec.Exclusive.ofUnbounded ?_
   intro cta cta' a h h'
   obtain ⟨j, hj, l, hl⟩ := h

@@ -60,6 +60,7 @@ import AlgorithmLib.ML.StageFrame
 import AlgorithmLib.ML.Bind
 import AlgorithmLib.ML.Butterfly
 import AlgorithmLib.ML.Compose
+import AlgorithmLib.ML.Interchange
 import AlgorithmLib.ML.HostBridge
 import AlgorithmLib.ML.Sched
 import AlgorithmLib.ML.Frontend

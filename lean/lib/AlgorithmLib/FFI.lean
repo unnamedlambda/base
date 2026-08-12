@@ -395,17 +395,35 @@ structure CuBlasSetup where
   fnSgemvOnStream : FnRef
   fnSgemm : FnRef   -- (ctx, transa, transb, m, n, k, alpha_bits, a_buf, stride_a, b_buf, stride_b, beta_bits, c_buf, stride_c, batch) → i32
   fnSgemmOnStream : FnRef
+  /-- `(ctx, arr_buf, slot, src_buf, off) → i32`: store one buffer's device
+      pointer into an array of pointers. -/
+  fnPtrArray : FnRef
+  /-- `(ctx, transa, transb, m, n, k, alpha_bits, a_arr, b_arr, beta_bits,
+      c_arr, batch, stream) → i32`: a batch whose members are named by pointer
+      rather than by stride, so they need not share an allocation. -/
+  fnSgemmBatchedOnStream : FnRef
 
 def declareCuBlasFFI : IRBuilder CuBlasSetup := do
   let fnSgemv ← declareFFI "cl_cublas_sgemv"
     [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
   let fnSgemvOnStream ← declareFFI "cl_cublas_sgemv_on_stream"
     [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  -- The three trailing `.i64`s are element offsets into the A, B and C
+  -- operands.  An offset moves the pointer and leaves the matrix the call
+  -- contracts alone, so it lets one buffer hold several operands without
+  -- touching what `Law.cublasIsMatvec` says a contraction computes.
   let fnSgemm ← declareFFI "cl_cublas_sgemm_strided_batched"
-    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32] (some .i32)
+    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32,
+     .i64, .i64, .i64, .i32, .i32, .i32] (some .i32)
   let fnSgemmOnStream ← declareFFI "cl_cublas_sgemm_strided_batched_on_stream"
-    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32, .i32] (some .i32)
-  pure { fnSgemv, fnSgemvOnStream, fnSgemm, fnSgemmOnStream }
+    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32, .i32,
+     .i64, .i64, .i64, .i32, .i32, .i32] (some .i32)
+  let fnPtrArray ← declareFFI "cl_cublas_ptr_array"
+    [.i64, .i32, .i32, .i32, .i64] (some .i32)
+  let fnSgemmBatchedOnStream ← declareFFI "cl_cublas_sgemm_batched_on_stream"
+    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  pure { fnSgemv, fnSgemvOnStream, fnSgemm, fnSgemmOnStream, fnPtrArray,
+         fnSgemmBatchedOnStream }
 
 def cudaCtxSlotPtr (ptr : Val) (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val :=
   absAddr ptr slotOffset
@@ -627,17 +645,54 @@ def cublasSgemvOnStream (cublas : CuBlasSetup)
 
 def cublasSgemmStridedBatched (cublas : CuBlasSetup)
     (ptr transA transB m n k alphaBits aBuf strideA bBuf strideB betaBits cBuf strideC batchCount : Val)
-    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+    (slotOffset : Nat := ContextSlots.cuda)
+    (offA offB offC : Nat := 0) (ldA ldB ldC : Nat := 0) : IRBuilder Val := do
   let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let oa ← iconst64 offA
+  let ob ← iconst64 offB
+  let oc ← iconst64 offC
+  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
   call cublas.fnSgemm
-    [ctxPtr, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB, betaBits, cBuf, strideC, batchCount]
+    [ctxPtr, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB, betaBits, cBuf, strideC, batchCount,
+     oa, ob, oc, la, lb, lc]
 
 def cublasSgemmStridedBatchedOnStream (cublas : CuBlasSetup)
     (ptr transA transB m n k alphaBits aBuf strideA bBuf strideB betaBits cBuf strideC batchCount streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda)
+    (offA offB offC : Nat := 0) (ldA ldB ldC : Nat := 0) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  let oa ← iconst64 offA
+  let ob ← iconst64 offB
+  let oc ← iconst64 offC
+  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
+  call cublas.fnSgemmOnStream
+    [ctxPtr, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB, betaBits, cBuf, strideC, batchCount, streamId,
+     oa, ob, oc, la, lb, lc]
+
+/-- Store `srcBuf`'s device pointer, advanced by `off` f32 elements, into entry
+    `slot` of the pointer array held in `arrBuf`.
+
+    The arrays a batched contraction reads are built once, after the buffers
+    exist and before anything launches: a device pointer does not move. -/
+def cublasPtrArray (cublas : CuBlasSetup) (ptr arrBuf slot srcBuf off : Val)
     (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
   let ctxPtr ← cudaCtxPtr ptr slotOffset
-  call cublas.fnSgemmOnStream
-    [ctxPtr, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB, betaBits, cBuf, strideC, batchCount, streamId]
+  call cublas.fnPtrArray [ctxPtr, arrBuf, slot, srcBuf, off]
+
+/-- A batch of contractions of one shape whose members are named by pointer.
+
+    `cublasSgemmStridedBatched` requires the members to sit at a uniform stride
+    inside one allocation; this one does not, so a batch can be assembled from
+    buffers that were allocated independently.  Each member's `C` is a full
+    `m x n` matrix in its own buffer, so a member's result stays contiguous and
+    whatever reads it needs no strided view. -/
+def cublasSgemmBatchedOnStream (cublas : CuBlasSetup)
+    (ptr transA transB m n k alphaBits aArr bArr betaBits cArr batchCount streamId : Val)
+    (slotOffset : Nat := ContextSlots.cuda) : IRBuilder Val := do
+  let ctxPtr ← cudaCtxPtr ptr slotOffset
+  call cublas.fnSgemmBatchedOnStream
+    [ctxPtr, transA, transB, m, n, k, alphaBits, aArr, bArr, betaBits, cArr,
+     batchCount, streamId]
 
 /-- Read a file using typed field handles for filename and data regions -/
 def fldReadFile (ptr : Val) (fnRead : FnRef)

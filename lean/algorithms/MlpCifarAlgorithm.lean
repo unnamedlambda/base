@@ -1144,14 +1144,14 @@ def gemmArgsA : (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) →
   | (tA, tB, m, n, k, a, b, c) =>
       [.slot (Int.ofNat ContextSlots.cuda), .const tA, .const tB, .const m, .const n,
        .const k, .const F32_ONE, .slot (bindOff a), .const 0, .slot (bindOff b),
-       .const 0, .const F32_ZERO, .slot (bindOff c), .const 0, .const 1]
+       .const 0, .const F32_ZERO, .slot (bindOff c), .const 0, .const 1, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
 
 def gemmArgsB : (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) →
     List AlgorithmLib.Clif.BufDesc
   | (tA, tB, m, n, k, a, b, c) =>
       [.near (Int.ofNat ContextSlots.cuda), .const tA, .const tB, .const m, .const n,
        .const k, .const F32_ONE, .near (bindOff a), .const 0, .near (bindOff b),
-       .const 0, .const F32_ZERO, .near (bindOff c), .const 0, .const 1]
+       .const 0, .const F32_ZERO, .near (bindOff c), .const 0, .const 1, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
 
 /-- A vendor call carries no slot, arity, bind offset or geometry — its record
     is its name and its arguments. -/
@@ -1876,7 +1876,7 @@ theorem qwen_run_den (st : WSt) :
     from an ambient batch would read `1` here and compute one head. -/
 theorem qwen_extents_are_typed :
     qwenFwd.filterMap (fun op => match op with
-      | .mv _ _ _ _ b _ _ => some b
+      | .mv _ _ _ _ b _ _ _ => some b
       | .mvT _ _ _ _ b _ _ => some b
       | _ => none) = [1, NH, NH, 1, 1, 1, 1] := rfl
 
@@ -2606,7 +2606,7 @@ theorem moe_kernels_are_the_stages :
     six integers. -/
 theorem moe_slots_are_bound :
     (mExpertTape.filterMap (fun op => match op with
-      | .mv _ w _ _ _ _ _ => some w
+      | .mv _ w _ _ _ _ _ _ => some w
       | _ => none)).all (fun b => decide (b < MSTORE ∨ MBASE ≤ b)) = true := by
   decide
 

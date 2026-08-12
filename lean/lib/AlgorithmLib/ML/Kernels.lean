@@ -551,4 +551,71 @@ theorem zip3Pass_spec (bA bB bC out : Buf) (dA dB dC r : Nat)
     rw [hj', hl']
   · exact Or.inl ⟨j0, List.mem_range.mpr hj0, l0, rfl⟩
 
+/-- **A four-buffer strided store pass.**
+
+    The arity a *chain* of row passes reaches.  Two of them collapse into
+    `zip3PassEW`; the third has nowhere to go without this, which is why a tape
+    of three-deep chains still stores and reloads every second intermediate. -/
+def zip4PassEW (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
+    (ixA ixB ixC ixD oix : IdxE) (K : Nat) : EWStmt :=
+  .forN K (storeBody out r oix
+    (.seq (.loadIdx dA bA ixA)
+      (.seq (.loadIdx dB bB ixB)
+        (.seq (.loadIdx dC bC ixC) (.seq (.loadIdx dD bD ixD) (.setR r f))))))
+
+/-- **What a four-buffer pass leaves in memory** — the three-buffer statement
+    with one more operand, and the same three caller obligations. -/
+theorem zip4Pass_spec (bA bB bC bD out : Buf) (dA dB dC dD r : Nat)
+    (hAB : dA ≠ dB) (hAC : dA ≠ dC) (hBC : dB ≠ dC)
+    (hAD : dA ≠ dD) (hBD : dB ≠ dD) (hCD : dC ≠ dD) (f : WFExp)
+    (base : IdxE) (hbase : base.laneLoopFreeB = true) (ixA ixB ixC ixD : IdxE)
+    (K cta : Nat) (hAo : bA ≠ out) (hBo : bB ≠ out) (hCo : bC ≠ out) (hDo : bD ≠ out)
+    (ir : Nat → Lane → Nat) (im : Buf → Nat → Nat) (st : WSt)
+    (g : Float32 → Float32 → Float32 → Float32 → Float32)
+    (hf : ∀ (st' : WSt) (l : Lane),
+      f.eval st' l = g (st'.regs dA l) (st'.regs dB l) (st'.regs dC l) (st'.regs dD l))
+    (j0 : Nat) (l0 : Lane) (hj0 : j0 < K) :
+    (((zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD (stride32 base) K).elabAt
+        cta 0 ir im).run st).mem out ((stride32 base).eval cta j0 l0 ir im)
+      = g (st.mem bA (ixA.eval cta j0 l0 ir im))
+          (st.mem bB (ixB.eval cta j0 l0 ir im))
+          (st.mem bC (ixC.eval cta j0 l0 ir im))
+          (st.mem bD (ixD.eval cta j0 l0 ir im)) := by
+  refine storeLoop_at out r (stride32 base)
+    (.seq (.loadIdx dA bA ixA)
+      (.seq (.loadIdx dB bB ixB)
+        (.seq (.loadIdx dC bC ixC) (.seq (.loadIdx dD bD ixD) (.setR r f)))))
+    cta ir im st
+    (fun j l => g (st.mem bA (ixA.eval cta j l ir im))
+                  (st.mem bB (ixB.eval cta j l ir im))
+                  (st.mem bC (ixC.eval cta j l ir im))
+                  (st.mem bD (ixD.eval cta j l ir im)))
+    ((stride32 base).eval cta j0 l0 ir im)
+    (g (st.mem bA (ixA.eval cta j0 l0 ir im))
+       (st.mem bB (ixB.eval cta j0 l0 ir im))
+       (st.mem bC (ixC.eval cta j0 l0 ir im))
+       (st.mem bD (ixD.eval cta j0 l0 ir im))) []
+    (fun _ _ => rfl) (fun _ _ r' h => absurd h (by simp))
+    (fun j s hinv _ l => by
+      show WSt.regs ((WStmt.setR r f).run
+              ((WStmt.loadIdx dD bD (fun l' => ixD.eval cta j l' ir im)).run
+                ((WStmt.loadIdx dC bC (fun l' => ixC.eval cta j l' ir im)).run
+                  ((WStmt.loadIdx dB bB (fun l' => ixB.eval cta j l' ir im)).run
+                    ((WStmt.loadIdx dA bA (fun l' => ixA.eval cta j l' ir im)).run s)))))
+            r l = _
+      rw [wrun_setR, WSt.regs_setReg_same, hf, wrun_loadIdx, WSt.regs_setReg_same,
+          WSt.regs_setReg_other _ dD dC _ hCD,
+          WSt.regs_setReg_other _ dD dB _ hBD,
+          WSt.regs_setReg_other _ dD dA _ hAD, wrun_loadIdx,
+          WSt.regs_setReg_same, WSt.regs_setReg_other _ dC dB _ hBC,
+          WSt.regs_setReg_other _ dC dA _ hAC, wrun_loadIdx,
+          WSt.regs_setReg_same, WSt.regs_setReg_other _ dB dA _ hAB,
+          wrun_loadIdx, WSt.regs_setReg_same]
+      simp only [WSt.mem_setReg, hinv bA hAo, hinv bB hBo, hinv bC hCo, hinv bD hDo])
+    (List.range K) st (fun _ _ => rfl) (fun _ h => absurd h (by simp)) ?_ ?_
+  · intro j hj l hl
+    obtain ⟨hj', hl'⟩ := stride32_inj base hbase cta j j0 l l0 ir im hl
+    rw [hj', hl']
+  · exact Or.inl ⟨j0, List.mem_range.mpr hj0, l0, rfl⟩
+
 end AlgorithmLib.ML

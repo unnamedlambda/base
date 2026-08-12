@@ -908,6 +908,15 @@ theorem dotStrided_flenCheap (bA bB out : Buf) (ixA ixB oi : IdxE) (K : Nat) :
         WFExp.emitLen, dotStepSE]
   omega
 
+theorem dotStrided4_flenCheap (bA bB bC bD out : Buf) (ixA ixB ixC ixD oi : IdxE)
+    (f : WFExp) (K : Nat) :
+    (dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).flenCheap
+      = ixA.emitLen + ixB.emitLen + ixC.emitLen + ixD.emitLen + oi.emitLen
+          + f.emitLen + 31 := by
+  simp [dotStrided4, dotStrided4Body, warpRoundE, bflyRoundE, EWStmt.flenCheap,
+        WFExp.emitLen, dotStep4SE]
+  omega
+
 theorem maxStrided_flenCheap (b out : Buf) (ix oi : IdxE) (K : Nat) (init : Float32) :
     (maxStrided b ix out oi K init).flenCheap = ix.emitLen + oi.emitLen + 27 := by
   simp [maxStrided, maxStridedBody, warpReduceMaxE, warpMaxRoundE, EWStmt.flenCheap,
@@ -926,6 +935,14 @@ theorem zip3PassEW_flenCheap (bA bB bC out : Buf) (dA dB dC r : Nat) (f : WFExp)
     (zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC oix K).flenCheap
       = ixA.emitLen + ixB.emitLen + ixC.emitLen + oix.emitLen + f.emitLen + 10 := by
   simp [zip3PassEW, storeBody, EWStmt.flenCheap]
+  omega
+
+theorem zip4PassEW_flenCheap (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
+    (ixA ixB ixC ixD oix : IdxE) (K : Nat) :
+    (zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).flenCheap
+      = ixA.emitLen + ixB.emitLen + ixC.emitLen + ixD.emitLen + oix.emitLen
+          + f.emitLen + 11 := by
+  simp [zip4PassEW, storeBody, EWStmt.flenCheap]
   omega
 
 theorem softmaxCE_flenCheap (logits bias oneHot out : Buf) (biasIx : IdxE) :
@@ -1021,6 +1038,26 @@ theorem dotStrided_regs (bA bB out : Buf) (ixA ixB oi : IdxE) (K : Nat)
     omega
   · simp [dotStrided, dotStridedBody, warpRoundE, bflyRoundE, EWStmt.iregsOf, hA, hB, ho]
 
+theorem dotStrided4_regs (bA bB bC bD out : Buf) (ixA ixB ixC ixD oi : IdxE)
+    (f : WFExp) (K : Nat)
+    (hA : ixA.iregsOf = []) (hB : ixB.iregsOf = []) (hC : ixC.iregsOf = [])
+    (hD : ixD.iregsOf = []) (ho : oi.iregsOf = []) :
+    (∀ r ∈ (dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).machRegsOf,
+        r < max 5 f.maxReg)
+      ∧ (dotStrided4 bA bB bC bD ixA ixB ixC ixD f out oi K).iregsOf = [] := by
+  constructor
+  · intro r hr
+    have h5 : (5 : Nat) ≤ max 5 f.maxReg := Nat.le_max_left _ _
+    simp only [dotStrided4, dotStrided4Body, warpRoundE, bflyRoundE,
+          EWStmt.machRegsOf, WFExp.machRegs, dotStep4SE, List.append_assoc,
+          List.mem_append, List.mem_cons, List.not_mem_nil, or_false] at hr
+    repeat' rcases hr with hr | hr
+    all_goals first
+      | omega
+      | exact Nat.lt_of_lt_of_le (f.machRegs_lt _ hr) (Nat.le_max_right _ _)
+  · simp [dotStrided4, dotStrided4Body, warpRoundE, bflyRoundE, EWStmt.iregsOf,
+          hA, hB, hC, hD, ho]
+
 theorem maxStrided_regs (b out : Buf) (ix oi : IdxE) (K : Nat) (init : Float32)
     (hix : ix.iregsOf = []) (ho : oi.iregsOf = []) :
     (∀ r ∈ (maxStrided b ix out oi K init).machRegsOf, r < 2)
@@ -1107,6 +1144,19 @@ theorem zip3PassEW_machRegsOf (bA bB bC out : Buf) (dA dB dC r : Nat) (f : WFExp
     (zip3PassEW bA bB bC out dA dB dC r f ixA ixB ixC oix K).machRegsOf
       = [dA, dB, dC, r] ++ f.machRegs ++ [r] := by
   simp [zip3PassEW, storeBody, EWStmt.machRegsOf]
+
+theorem zip4PassEW_machRegsOf (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
+    (ixA ixB ixC ixD oix : IdxE) (K : Nat) :
+    (zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).machRegsOf
+      = [dA, dB, dC, dD, r] ++ f.machRegs ++ [r] := by
+  simp [zip4PassEW, storeBody, EWStmt.machRegsOf]
+
+theorem zip4PassEW_iregsOf (bA bB bC bD out : Buf) (dA dB dC dD r : Nat) (f : WFExp)
+    (ixA ixB ixC ixD oix : IdxE) (K : Nat)
+    (hA : ixA.iregsOf = []) (hB : ixB.iregsOf = []) (hC : ixC.iregsOf = [])
+    (hD : ixD.iregsOf = []) (ho : oix.iregsOf = []) :
+    (zip4PassEW bA bB bC bD out dA dB dC dD r f ixA ixB ixC ixD oix K).iregsOf = [] := by
+  simp [zip4PassEW, storeBody, EWStmt.iregsOf, hA, hB, hC, hD, ho]
 
 theorem zipPassEW_iregsOf (bA bB out : Buf) (dA dB r : Nat) (f : WFExp)
     (ixA ixB oix : IdxE) (K : Nat)
@@ -1527,7 +1577,7 @@ theorem BCast_ix_emitLen (m : BCast) : m.ix.emitLen = m.ixLen := by
 
 /-- An exclusive bound on the machine registers the operation's kernel names. -/
 def TOp.regHi : TOp → Nat
-  | .mv _ _ _ _ b _ _                => b + 3
+  | .mv _ _ _ _ b _ _ _              => b + 3
   | .mvT _ _ _ _ b _ _               => b + 3
   | .outer _ _ _ _ _ _ _             => 3
   | .ew1 f _ _ _                     => slots f + 3
@@ -1538,15 +1588,17 @@ def TOp.regHi : TOp → Nat
   | .smce _ _ _ _ _                  => 6
   | .rowsq _ _ _ _                   => 3
   | .rowdot _ _ _ _ _ _ _            => 3
+  | .rowdot4 _ _ _ _ _ f _ _ _ _ _ _ => max 5 f.maxReg
   | .rowmax _ _ _ _ _                => 2
   | .ziprow _ _ _ f _ _ _ _ _ _      => max 3 f.maxReg
   | .ziprow3 _ _ _ _ f _ _ _ _ _ _ _ => max 4 f.maxReg
+  | .ziprow4 _ _ _ _ _ f _ _ _ _ _ _ _ _ => max 5 f.maxReg
 
 /-- How many instructions the operation's kernel body becomes.  Exact — the
     batched schemas are linear in the batch because unrolling is what a batch
     is, and nothing depends on a trip count. -/
 def TOp.flenOf : TOp → Nat
-  | .mv _ _ _ _ b _ _                => 30 * b + 12
+  | .mv _ _ _ _ b _ _ _              => 30 * b + 12
   | .mvT _ _ _ _ b _ _               => 30 * b + 12
   | .outer _ _ _ _ b _ _             => 12 * b + 14
   | .ew1 f _ _ _                     => f.codeLen + f.valLen + 9
@@ -1557,10 +1609,14 @@ def TOp.flenOf : TOp → Nat
   | .smce _ _ _ _ _                  => 57
   | .rowsq _ _ _ _                   => 41
   | .rowdot _ _ _ mA mB _ _          => mA.ixLen + mB.ixLen + 29
+  | .rowdot4 _ _ _ _ _ f mA mB mC mD _ _ =>
+      mA.ixLen + mB.ixLen + mC.ixLen + mD.ixLen + f.emitLen + 31
   | .rowmax _ _ _ _ _                => 33
   | .ziprow _ _ _ f mA mB _ _ _ _    => mA.ixLen + mB.ixLen + f.emitLen + 17
   | .ziprow3 _ _ _ _ f mA mB mC _ _ _ _ =>
       mA.ixLen + mB.ixLen + mC.ixLen + f.emitLen + 18
+  | .ziprow4 _ _ _ _ _ f mA mB mC mD _ _ _ _ =>
+      mA.ixLen + mB.ixLen + mC.ixLen + mD.ixLen + f.emitLen + 19
 
 /-- **The number a tape is checked against**, covering both obligations: the
     registers the body names, and the count that bounds the ones the emitter
@@ -1604,6 +1660,10 @@ theorem TOp.stmt_regNames (batch : Nat) : ∀ op : TOp,
   | rowdot a b o mA mB n rows =>
       exact dotStrided_regs a b o mA.ix mB.ix .ctaId (n / 32)
         (BCast_ix_iregsOf mA) (BCast_ix_iregsOf mB) (by simp [IdxE.iregsOf])
+  | rowdot4 a b c d o f mA mB mC mD n rows =>
+      exact dotStrided4_regs a b c d o mA.ix mB.ix mC.ix mD.ix .ctaId f (n / 32)
+        (BCast_ix_iregsOf mA) (BCast_ix_iregsOf mB) (BCast_ix_iregsOf mC)
+        (BCast_ix_iregsOf mD) (by simp [IdxE.iregsOf])
   | rowmax x o n rows init =>
       exact maxStrided_regs x o (stride32 (.mul .ctaId (.lit n))) .ctaId (n / 32) init
         (by simp [stride32, IdxE.iregsOf]) (by simp [IdxE.iregsOf])
@@ -1637,6 +1697,20 @@ theorem TOp.stmt_regNames (batch : Nat) : ∀ op : TOp,
           (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) (w / 32)
           (BCast_ix_iregsOf mA) (BCast_ix_iregsOf mB) (BCast_ix_iregsOf mC)
           (by simp [stride32, IdxE.iregsOf])
+  | ziprow4 a b c d o f mA mB mC mD n off w rows =>
+      refine ⟨fun r hr => ?_, ?_⟩
+      · rw [TOp.stmt, zip4PassEW_machRegsOf] at hr
+        show r < max 5 f.maxReg
+        have h5 : (5 : Nat) ≤ max 5 f.maxReg := Nat.le_max_left _ _
+        rcases List.mem_append.mp hr with h | h
+        · rcases List.mem_append.mp h with h | h
+          · simp only [List.mem_cons, List.not_mem_nil, or_false] at h; omega
+          · exact Nat.lt_of_lt_of_le (f.machRegs_lt r h) (Nat.le_max_right _ _)
+        · simp only [List.mem_cons, List.not_mem_nil, or_false] at h; omega
+      · exact zip4PassEW_iregsOf a b c d o 1 2 3 4 0 f mA.ix mB.ix mC.ix mD.ix
+          (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) (w / 32)
+          (BCast_ix_iregsOf mA) (BCast_ix_iregsOf mB) (BCast_ix_iregsOf mC)
+          (BCast_ix_iregsOf mD) (by simp [stride32, IdxE.iregsOf])
   | ew1 f a o g =>
       obtain ⟨_, p, q⟩ := mapKernelAt_bounds f (fun _ => a) (fun _ => elemIx) o 3
         (fun _ => rfl) (fun _ => rfl)
@@ -1695,6 +1769,13 @@ theorem TOp.stmt_flen (batch : Nat) : ∀ op : TOp,
       rw [TOp.stmt, dotStrided_flenCheap a b o mA.ix mB.ix .ctaId (n / 32),
         BCast_ix_emitLen, BCast_ix_emitLen]
       rfl
+  | rowdot4 a b c d o f mA mB mC mD n rows =>
+      rw [TOp.stmt, dotStrided4_flenCheap a b c d o mA.ix mB.ix mC.ix mD.ix .ctaId f
+        (n / 32), BCast_ix_emitLen, BCast_ix_emitLen, BCast_ix_emitLen,
+        BCast_ix_emitLen]
+      show mA.ixLen + mB.ixLen + mC.ixLen + mD.ixLen + 0 + f.emitLen + 31
+              = mA.ixLen + mB.ixLen + mC.ixLen + mD.ixLen + f.emitLen + 31
+      omega
   | rowmax x o n rows init =>
       rw [TOp.stmt, maxStrided_flenCheap x o (stride32 (.mul .ctaId (.lit n)))
         .ctaId (n / 32) init]
@@ -1715,6 +1796,13 @@ theorem TOp.stmt_flen (batch : Nat) : ∀ op : TOp,
         BCast_ix_emitLen, BCast_ix_emitLen, BCast_ix_emitLen]
       show mA.ixLen + mB.ixLen + mC.ixLen + 8 + f.emitLen + 10
               = mA.ixLen + mB.ixLen + mC.ixLen + f.emitLen + 18
+      omega
+  | ziprow4 a b c d o f mA mB mC mD n off w rows =>
+      rw [TOp.stmt, zip4PassEW_flenCheap a b c d o 1 2 3 4 0 f mA.ix mB.ix mC.ix mD.ix
+        (stride32 (.add (.mul .ctaId (.lit n)) (.lit off))) (w / 32),
+        BCast_ix_emitLen, BCast_ix_emitLen, BCast_ix_emitLen, BCast_ix_emitLen]
+      show mA.ixLen + mB.ixLen + mC.ixLen + mD.ixLen + 8 + f.emitLen + 11
+              = mA.ixLen + mB.ixLen + mC.ixLen + mD.ixLen + f.emitLen + 19
       omega
   | ew1 f a o g =>
       have h := (mapKernelAt_bounds f (fun _ => a) (fun _ => elemIx) o 3
@@ -1789,6 +1877,158 @@ theorem TOp.kernelRegsOk (batch : Nat) (op : TOp)
   · have hl : (op.localStmt batch).flenCheap = op.flenOf := by
       simp only [TOp.localStmt, EWStmt.flenCheap_renameBuf]; exact hf
     have e1 := expandEW_flenCheap_le (op.localStmt batch)
+    rw [hl] at e1
+    omega
+
+
+/-! ### A *group* of operations, emitted as one kernel
+
+    A fused launch is a sequence of operations sharing one buffer table, and its
+    kernel is their statements renamed onto that table and joined by `.seq`.  It
+    is not `TOp.localStmt` of anything — the table is the group's, not an
+    operation's — so the guards above do not reach it, and a tape that fuses is
+    exactly a tape whose emitted kernels none of them describe.
+
+    What follows is the same argument at group scale.  The budget is arithmetic
+    on widths the operations already carry, so checking a fused tape still
+    builds no instruction: registers take the group's *maximum* (each member
+    numbers its own from zero) and instructions take the group's *sum*. -/
+
+/-- The kernel a group of operations is emitted from. -/
+def TOp.groupStmt (batch : Nat) (bs : List Buf) (ops : List TOp) : EWStmt :=
+  ops.foldl (fun acc op => .seq acc ((op.stmt batch).renameBuf (compactMap bs))) .skip
+
+/-- Registers are shared across a group and instructions accumulate, so the two
+    halves of the budget combine differently: a maximum and a sum. -/
+def TOp.groupBudget (ops : List TOp) : Nat :=
+  max (ops.foldl (fun a op => max a op.regHi) 0)
+      (3 + 3 * ops.foldl (fun a op => a + op.flenOf) 0)
+
+theorem groupStmt_machRegsOf (batch : Nat) (bs : List Buf) (ops : List TOp) :
+    ∀ acc : EWStmt,
+      (ops.foldl (fun acc op => .seq acc ((op.stmt batch).renameBuf (compactMap bs)))
+        acc).machRegsOf
+        = acc.machRegsOf ++ ops.flatMap (fun op => (op.stmt batch).machRegsOf) := by
+  induction ops with
+  | nil => intro acc; simp
+  | cons o os ih =>
+      intro acc
+      simp [List.foldl, ih, EWStmt.machRegsOf, EWStmt.machRegsOf_renameBuf,
+            List.append_assoc]
+
+theorem groupStmt_iregsOf (batch : Nat) (bs : List Buf) (ops : List TOp)
+    (h : ∀ op ∈ ops, (op.stmt batch).iregsOf = []) :
+    ∀ acc : EWStmt, acc.iregsOf = [] →
+      (ops.foldl (fun acc op => .seq acc ((op.stmt batch).renameBuf (compactMap bs)))
+        acc).iregsOf = [] := by
+  induction ops with
+  | nil => intro acc hacc; simpa using hacc
+  | cons o os ih =>
+      intro acc hacc
+      refine ih (fun op hop => h op (List.mem_cons_of_mem _ hop)) _ ?_
+      simp [EWStmt.iregsOf, EWStmt.iregsOf_renameBuf, hacc,
+            h o List.mem_cons_self]
+
+theorem groupStmt_bufsOf (batch : Nat) (bs : List Buf) (ops : List TOp) :
+    ∀ acc : EWStmt,
+      (ops.foldl (fun acc op => .seq acc ((op.stmt batch).renameBuf (compactMap bs)))
+        acc).bufsOf
+        = acc.bufsOf ++ ops.flatMap (fun op => (op.stmt batch).bufsOf.map (compactMap bs)) := by
+  induction ops with
+  | nil => intro acc; simp
+  | cons o os ih =>
+      intro acc
+      simp [List.foldl, ih, EWStmt.bufsOf, EWStmt.bufsOf_renameBuf,
+            List.append_assoc]
+
+/-- A running sum started higher stays higher by the same amount. -/
+theorem foldl_flen_shift : ∀ (os : List TOp) (a b : Nat),
+    os.foldl (fun x op => x + op.flenOf) (a + b)
+      = a + os.foldl (fun x op => x + op.flenOf) b := by
+  intro os
+  induction os with
+  | nil => intro a b; rfl
+  | cons o rest ih =>
+      intro a b
+      show rest.foldl _ (a + b + o.flenOf) = a + rest.foldl _ (b + o.flenOf)
+      rw [Nat.add_assoc, ih]
+
+theorem groupStmt_flenCheap (batch : Nat) (bs : List Buf) (ops : List TOp) :
+    ∀ acc : EWStmt,
+      (ops.foldl (fun acc op => .seq acc ((op.stmt batch).renameBuf (compactMap bs)))
+        acc).flenCheap
+        = acc.flenCheap + ops.foldl (fun a op => a + op.flenOf) 0 := by
+  induction ops with
+  | nil => intro acc; simp [EWStmt.flenCheap]
+  | cons o os ih =>
+      intro acc
+      have hstep : (EWStmt.seq acc ((o.stmt batch).renameBuf (compactMap bs))).flenCheap
+          = acc.flenCheap + o.flenOf := by
+        simp [EWStmt.flenCheap, EWStmt.flenCheap_renameBuf, TOp.stmt_flen batch o]
+      show (os.foldl _ (EWStmt.seq acc _)).flenCheap
+        = acc.flenCheap + os.foldl (fun a op => a + op.flenOf) (0 + o.flenOf)
+      rw [ih, hstep, Nat.zero_add, Nat.add_assoc,
+          ← foldl_flen_shift os o.flenOf 0, Nat.add_zero]
+
+/-- A running maximum is at least every member, and at least where it started. -/
+theorem foldl_regHi_mono : ∀ (os : List TOp) (a : Nat),
+    a ≤ os.foldl (fun x op => max x op.regHi) a := by
+  intro os
+  induction os with
+  | nil => intro a; exact Nat.le_refl _
+  | cons o rest ih =>
+      intro a
+      exact Nat.le_trans (Nat.le_max_left a o.regHi) (ih _)
+
+theorem le_foldl_regHi : ∀ (os : List TOp) (op : TOp), op ∈ os →
+    ∀ a : Nat, op.regHi ≤ os.foldl (fun x o => max x o.regHi) a := by
+  intro os
+  induction os with
+  | nil => intro op h; exact absurd h List.not_mem_nil
+  | cons o rest ih =>
+      intro op h a
+      rcases List.mem_cons.mp h with rfl | h'
+      · exact Nat.le_trans (Nat.le_max_right a op.regHi) (foldl_regHi_mono rest _)
+      · exact ih op h' _
+
+/-- **A fused kernel names no reserved register**, from the group's budget and
+    the fact that its members' buffers are in the group's table.
+
+    The two hypotheses are what a grouping has to establish anyway: the table
+    covers the members, and it is short.  Everything else is arithmetic. -/
+theorem TOp.groupRegsOk (batch : Nat) (bs : List Buf) (ops : List TOp)
+    (hbs : bs.length ≤ PTX_ADDR_SCRATCH)
+    (hcov : ∀ op ∈ ops, ∀ c ∈ (op.stmt batch).bufsOf, c ∈ bs)
+    (h : TOp.groupBudget ops ≤ PTX_ADDR_SCRATCH) :
+    (expandEW (TOp.groupStmt batch bs ops)).kernelRegsOkB = true := by
+  have hmax : ops.foldl (fun a op => max a op.regHi) 0 ≤ PTX_ADDR_SCRATCH :=
+    Nat.le_trans (Nat.le_max_left _ _) h
+  have hsum : 3 + 3 * ops.foldl (fun a op => a + op.flenOf) 0 ≤ PTX_ADDR_SCRATCH :=
+    Nat.le_trans (Nat.le_max_right _ _) h
+  simp only [EWStmt.kernelRegsOkB, EWStmt.namesOkB, Bool.and_eq_true,
+             List.all_eq_true, decide_eq_true_eq]
+  refine ⟨⟨⟨?_, ?_⟩, ?_⟩, ?_⟩
+  · intro r hr
+    rw [expandEW_machRegsOf, TOp.groupStmt, groupStmt_machRegsOf] at hr
+    simp only [EWStmt.machRegsOf, List.nil_append, List.mem_flatMap] at hr
+    obtain ⟨op, hop, hr⟩ := hr
+    have := (TOp.stmt_regNames batch op).1 r hr
+    exact Nat.lt_of_lt_of_le this
+      (Nat.le_trans (le_foldl_regHi ops op hop 0) hmax)
+  · intro r hr
+    rw [expandEW_iregsOf, TOp.groupStmt] at hr
+    rw [groupStmt_iregsOf batch bs ops
+          (fun op _ => (TOp.stmt_regNames batch op).2) _ rfl] at hr
+    exact absurd hr List.not_mem_nil
+  · intro c hc
+    rw [expandEW_bufsOf, TOp.groupStmt, groupStmt_bufsOf] at hc
+    simp only [EWStmt.bufsOf, List.nil_append, List.mem_flatMap, List.mem_map] at hc
+    obtain ⟨op, hop, c0, hc0, rfl⟩ := hc
+    exact Nat.lt_of_lt_of_le (compactMap_lt bs c0 (hcov op hop c0 hc0)) hbs
+  · have hl : (TOp.groupStmt batch bs ops).flenCheap
+        = ops.foldl (fun a op => a + op.flenOf) 0 := by
+      simp [TOp.groupStmt, groupStmt_flenCheap, EWStmt.flenCheap]
+    have e1 := expandEW_flenCheap_le (TOp.groupStmt batch bs ops)
     rw [hl] at e1
     omega
 

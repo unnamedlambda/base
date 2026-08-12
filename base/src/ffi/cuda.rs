@@ -1718,6 +1718,12 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched(
     c_buf: i32,
     stride_c: i64,
     batch_count: i32,
+    off_a: i64,
+    off_b: i64,
+    off_c: i64,
+    ld_a: i32,
+    ld_b: i32,
+    ld_c: i32,
 ) -> i32 {
     use cudarc::cublas::sys::cublasOperation_t;
 
@@ -1728,6 +1734,12 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched(
         || stride_b < 0
         || stride_c < 0
         || batch_count <= 0
+        || off_a < 0
+        || off_b < 0
+        || off_c < 0
+        || ld_a < 0
+        || ld_b < 0
+        || ld_c < 0
     {
         return -1;
     }
@@ -1752,20 +1764,27 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched(
         } else {
             cublasOperation_t::CUBLAS_OP_N
         };
-        let lda = if transa != 0 { k } else { m };
-        let ldb = if transb != 0 { n } else { k };
-        let ldc = m;
+        // A leading dimension of zero means "the one this shape implies".  A
+        // non-zero one says the operand is a *column slice* of a wider matrix:
+        // the rows it contracts are unchanged, they are just further apart, so
+        // like the offsets this costs no law.
+        let lda = if ld_a != 0 { ld_a } else if transa != 0 { k } else { m };
+        let ldb = if ld_b != 0 { ld_b } else if transb != 0 { n } else { k };
+        let ldc = if ld_c != 0 { ld_c } else { m };
 
+        // An operand may name a slice of its buffer: the offset moves the
+        // pointer and leaves the matrix it contracts alone, which is why this
+        // costs no law.  Counted in f32 elements, as `stride_a` already is.
         let a_dev = match unsafe { cuda_buffer_device_ptr(&state, a_buf) } {
-            Some(p) => p,
+            Some(p) => p + (off_a as u64) * 4,
             None => return -1,
         };
         let b_dev = match unsafe { cuda_buffer_device_ptr(&state, b_buf) } {
-            Some(p) => p,
+            Some(p) => p + (off_b as u64) * 4,
             None => return -1,
         };
         let c_dev = match unsafe { cuda_buffer_device_ptr(&state, c_buf) } {
-            Some(p) => p,
+            Some(p) => p + (off_c as u64) * 4,
             None => return -1,
         };
         let blas = match ensure_default_cuda_blas(ctx, &mut state) {
@@ -1795,7 +1814,15 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched(
                 batch_count,
             )
         } {
-            eprintln!("cl_cublas_sgemm_strided_batched: sgemm failed: {:?}", e);
+            // Name the shape as well as the status: a cuBLAS status alone does
+            // not say whether the fault is the handle or the arguments.
+            eprintln!(
+                "cl_cublas_sgemm_strided_batched: sgemm failed: {:?} \
+                 (transa={} transb={} m={} n={} k={} lda={} ldb={} ldc={} \
+                 batch={} bufs a={} b={} c={})",
+                e, transa, transb, m, n, k, lda, ldb, ldc, batch_count,
+                a_buf, b_buf, c_buf
+            );
             return -1;
         }
 
@@ -1898,6 +1925,12 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched_on_stream(
     stride_c: i64,
     batch_count: i32,
     stream_id: i32,
+    off_a: i64,
+    off_b: i64,
+    off_c: i64,
+    ld_a: i32,
+    ld_b: i32,
+    ld_c: i32,
 ) -> i32 {
     use cudarc::cublas::sys::cublasOperation_t;
 
@@ -1908,6 +1941,12 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched_on_stream(
         || stride_b < 0
         || stride_c < 0
         || batch_count <= 0
+        || off_a < 0
+        || off_b < 0
+        || off_c < 0
+        || ld_a < 0
+        || ld_b < 0
+        || ld_c < 0
     {
         return -1;
     }
@@ -1935,20 +1974,27 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched_on_stream(
         } else {
             cublasOperation_t::CUBLAS_OP_N
         };
-        let lda = if transa != 0 { k } else { m };
-        let ldb = if transb != 0 { n } else { k };
-        let ldc = m;
+        // A leading dimension of zero means "the one this shape implies".  A
+        // non-zero one says the operand is a *column slice* of a wider matrix:
+        // the rows it contracts are unchanged, they are just further apart, so
+        // like the offsets this costs no law.
+        let lda = if ld_a != 0 { ld_a } else if transa != 0 { k } else { m };
+        let ldb = if ld_b != 0 { ld_b } else if transb != 0 { n } else { k };
+        let ldc = if ld_c != 0 { ld_c } else { m };
 
+        // An operand may name a slice of its buffer: the offset moves the
+        // pointer and leaves the matrix it contracts alone, which is why this
+        // costs no law.  Counted in f32 elements, as `stride_a` already is.
         let a_dev = match unsafe { cuda_buffer_device_ptr(&state, a_buf) } {
-            Some(p) => p,
+            Some(p) => p + (off_a as u64) * 4,
             None => return -1,
         };
         let b_dev = match unsafe { cuda_buffer_device_ptr(&state, b_buf) } {
-            Some(p) => p,
+            Some(p) => p + (off_b as u64) * 4,
             None => return -1,
         };
         let c_dev = match unsafe { cuda_buffer_device_ptr(&state, c_buf) } {
-            Some(p) => p,
+            Some(p) => p + (off_c as u64) * 4,
             None => return -1,
         };
         let blas = match ensure_stream_cuda_blas(ctx, &mut state, stream_id, stream) {
@@ -1985,6 +2031,181 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_strided_batched_on_stream(
             return -1;
         }
 
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// Write one buffer's device pointer into an array of pointers held in another
+/// buffer.
+///
+/// `cublasSgemmBatched` takes three device arrays of pointers rather than three
+/// base pointers and a stride, which is what lets a batch be assembled out of
+/// buffers that were allocated separately — no adjacency, no merged allocation,
+/// and no strided view of anybody's output.  The pointers are fixed once the
+/// buffers exist, so the arrays are filled at load time and reused by every
+/// launch.
+///
+/// - `arr_buf`: the buffer holding the array; must be at least `8*(slot+1)` bytes
+/// - `slot`: which entry to write
+/// - `src_buf`: the buffer whose device pointer to store
+/// - `off`: element offset into `src_buf`, in f32 elements, as elsewhere
+pub(crate) unsafe extern "C" fn cl_cublas_ptr_array(
+    ctx_ptr: *mut CraneliftCudaContext,
+    arr_buf: i32,
+    slot: i32,
+    src_buf: i32,
+    off: i64,
+) -> i32 {
+    if arr_buf < 0 || slot < 0 || src_buf < 0 || off < 0 {
+        return -1;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        let Ok(state) = lock_cuda_state(ctx) else {
+            return -1;
+        };
+        let Some(src) = (unsafe { cuda_buffer_device_ptr(&state, src_buf) }) else {
+            return -1;
+        };
+        let val = (src + (off as u64) * 4).to_ne_bytes();
+
+        let aid = arr_buf as usize;
+        if aid >= state.buffers.len() {
+            return -1;
+        }
+        let Some(arr) = state.buffers[aid].as_ref() else {
+            return -1;
+        };
+        let Some(dst) = (unsafe { cuda_buffer_device_ptr(&state, arr_buf) }) else {
+            return -1;
+        };
+        if cudarc::driver::DeviceSlice::len(arr) < 8 * (slot as usize + 1) {
+            return -1;
+        }
+        // A byte-level copy into the middle of an allocation: `htod_sync_copy_into`
+        // takes the whole buffer, and only one entry moves here.
+        let rc = unsafe {
+            cudarc::driver::sys::lib().cuMemcpyHtoD_v2(
+                dst + (slot as u64) * 8,
+                val.as_ptr() as *const std::ffi::c_void,
+                8,
+            )
+        };
+        if rc != cudarc::driver::sys::CUresult::CUDA_SUCCESS {
+            return -1;
+        }
+        0
+    }))
+    .unwrap_or(-1)
+}
+
+/// cuBLAS SGEMM batched over arrays of pointers: `C_i = alpha*op(A_i)*op(B_i)`.
+///
+/// The dimensions are shared by every member; only the pointers differ, and they
+/// come from `cl_cublas_ptr_array`.  This is the shape a per-head projection
+/// has: one contraction repeated over heads whose operands are separate
+/// buffers.  Unlike `cl_cublas_sgemm_strided_batched` the members need no
+/// uniform stride, so nothing has to be reallocated to use it.
+///
+/// Each `C_i` is a full `m x n` matrix in its own buffer, so a member's output
+/// stays contiguous — which is why the callers downstream read it with an
+/// ordinary buffer binding rather than a strided view.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe extern "C" fn cl_cublas_sgemm_batched_on_stream(
+    ctx_ptr: *mut CraneliftCudaContext,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha_bits: i32,
+    a_arr: i32,
+    b_arr: i32,
+    beta_bits: i32,
+    c_arr: i32,
+    batch_count: i32,
+    stream_id: i32,
+) -> i32 {
+    use cudarc::cublas::sys::cublasOperation_t;
+
+    if m <= 0 || n <= 0 || k <= 0 || batch_count <= 0 || a_arr < 0 || b_arr < 0 || c_arr < 0 {
+        return -1;
+    }
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        let Ok(mut state) = lock_cuda_state(ctx) else {
+            return -1;
+        };
+        let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
+            return -1;
+        };
+
+        let alpha = f32::from_bits(alpha_bits as u32);
+        let beta = f32::from_bits(beta_bits as u32);
+        let op_a = if transa != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let op_b = if transb != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let lda = if transa != 0 { k } else { m };
+        let ldb = if transb != 0 { n } else { k };
+        let ldc = m;
+
+        let a_dev = match unsafe { cuda_buffer_device_ptr(&state, a_arr) } {
+            Some(p) => p,
+            None => return -1,
+        };
+        let b_dev = match unsafe { cuda_buffer_device_ptr(&state, b_arr) } {
+            Some(p) => p,
+            None => return -1,
+        };
+        let c_dev = match unsafe { cuda_buffer_device_ptr(&state, c_arr) } {
+            Some(p) => p,
+            None => return -1,
+        };
+        let blas = match ensure_stream_cuda_blas(ctx, &mut state, stream_id, stream) {
+            Ok(blas) => blas,
+            Err(rc) => return rc,
+        };
+
+        let st = unsafe {
+            cudarc::cublas::sys::lib().cublasSgemmBatched(
+                *blas.handle(),
+                op_a,
+                op_b,
+                m,
+                n,
+                k,
+                &alpha,
+                a_dev as *const *const f32,
+                lda,
+                b_dev as *const *const f32,
+                ldb,
+                &beta,
+                c_dev as *const *mut f32,
+                ldc,
+                batch_count,
+            )
+        };
+        if st != cudarc::cublas::sys::cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+            eprintln!(
+                "cl_cublas_sgemm_batched_on_stream: failed: {:?} \
+                 (transa={} transb={} m={} n={} k={} lda={} ldb={} ldc={} batch={})",
+                st, transa, transb, m, n, k, lda, ldb, ldc, batch_count
+            );
+            return -1;
+        }
         0
     }))
     .unwrap_or(-1)
@@ -2749,11 +2970,91 @@ mod tests {
             let alpha = 1.0f32.to_bits() as i32;
             let beta = 0.0f32.to_bits() as i32;
             let rc = cl_cublas_sgemm_strided_batched(
-                ctx, 0, 0, 1, 1, 1, alpha, a, 1, b, 1, beta, c, 1, 2,
+                ctx, 0, 0, 1, 1, 1, alpha, a, 1, b, 1, beta, c, 1, 2, 0, 0, 0, 0, 0, 0,
             );
             assert_eq!(rc, 0);
             assert_eq!(cl_cuda_sync(ctx as *const _), 0);
             assert!(approx_eq(&download_f32(ctx, c, 2), &[8.0, 15.0]));
+            cleanup_ctx(ctx);
+        }
+    }
+
+    /// **Differential: a batch of one against a plain GEMM.**
+    ///
+    /// Every contraction this repository's ViT issues goes through
+    /// `cl_cublas_sgemm_strided_batched`, and the question this settles is
+    /// whether that is the same arithmetic as `cl_cublas_sgemm` — i.e. whether
+    /// a stronger law could be claimed by moving the call.  The fifteen shapes
+    /// are the fifteen the model actually launches, at `batch_count = 1`,
+    /// compared bit for bit.
+    #[test]
+    fn cublas_gemm_batch_one_vs_plain() {
+        const SHAPES: [(i32, i32, i32, i32, i32); 15] = [
+            (1, 0, 192, 200, 192), (1, 0, 224, 200, 64),  (0, 0, 64, 200, 224),
+            (1, 0, 768, 200, 192), (1, 0, 192, 200, 768), (1, 0, 128, 200, 192),
+            (0, 1, 192, 128, 200), (0, 0, 192, 200, 128), (0, 1, 768, 192, 200),
+            (0, 0, 768, 200, 192), (0, 1, 192, 768, 200), (0, 0, 192, 200, 768),
+            (0, 1, 192, 192, 200), (0, 0, 192, 200, 192), (0, 1, 64, 224, 200),
+        ];
+        // Deterministic, and spread over enough of the exponent range that a
+        // different summation order shows up in the low bits.
+        fn val(i: usize) -> f32 {
+            let x = ((i as u32).wrapping_mul(2654435761) >> 8) as f32 / 8388608.0;
+            x - 1.0
+        }
+        unsafe {
+            let ctx = init_ctx();
+            let alpha = 1.0f32.to_bits() as i32;
+            let beta = 0.0f32.to_bits() as i32;
+            let mut differing = Vec::new();
+            for (ta, tb, m, n, k) in SHAPES {
+                let a: Vec<f32> = (0..(m * k) as usize).map(val).collect();
+                let b: Vec<f32> = (0..(k * n) as usize).map(|i| val(i + 7)).collect();
+                let zero = vec![0.0f32; (m * n) as usize];
+                let a_buf = make_buf_with(ctx, &a);
+                let b_buf = make_buf_with(ctx, &b);
+                let c1 = make_buf_with(ctx, &zero);
+                let c2 = make_buf_with(ctx, &zero);
+                assert_eq!(
+                    cl_cublas_sgemm(ctx, ta, tb, m, n, k, alpha, a_buf, b_buf, beta, c1),
+                    0
+                );
+                assert_eq!(
+                    cl_cublas_sgemm_strided_batched(
+                        ctx, ta, tb, m, n, k, alpha, a_buf, 0, b_buf, 0, beta, c2, 0, 1,
+                        0, 0, 0, 0, 0, 0,
+                    ),
+                    0
+                );
+                assert_eq!(cl_cuda_sync(ctx as *const _), 0);
+                let g1 = download_f32(ctx, c1, (m * n) as usize);
+                let g2 = download_f32(ctx, c2, (m * n) as usize);
+                let bad = g1
+                    .iter()
+                    .zip(g2.iter())
+                    .filter(|(x, y)| x.to_bits() != y.to_bits())
+                    .count();
+                if bad > 0 {
+                    let worst = g1
+                        .iter()
+                        .zip(g2.iter())
+                        .map(|(x, y)| (x - y).abs() / x.abs().max(1e-30))
+                        .fold(0.0f32, f32::max);
+                    differing.push(((ta, tb, m, n, k), bad, g1.len(), worst));
+                }
+            }
+            for (shape, bad, total, worst) in &differing {
+                eprintln!(
+                    "shape {:?}: {}/{} elements differ, worst relative {:e}",
+                    shape, bad, total, worst
+                );
+            }
+            assert!(
+                differing.is_empty(),
+                "{} of {} shapes are not bit-identical",
+                differing.len(),
+                SHAPES.len()
+            );
             cleanup_ctx(ctx);
         }
     }
@@ -2778,6 +3079,47 @@ mod tests {
     }
 
     #[test]
+    fn cublas_sgemm_batched_pointer_arrays() {
+        // batch=2 of 1x1 GEMMs whose operands live in *separate* allocations:
+        // what the pointer-array form buys over the strided one.
+        unsafe {
+            let ctx = init_ctx();
+            let s = cl_cuda_stream_create(ctx);
+            let a0 = make_buf_with(ctx, &[2.0]);
+            let a1 = make_buf_with(ctx, &[3.0]);
+            let b0 = make_buf_with(ctx, &[4.0]);
+            let b1 = make_buf_with(ctx, &[5.0]);
+            let c0 = make_buf_with(ctx, &[0.0]);
+            let c1 = make_buf_with(ctx, &[0.0]);
+            let aa = cl_cuda_create_buffer(ctx, 16);
+            let ba = cl_cuda_create_buffer(ctx, 16);
+            let ca = cl_cuda_create_buffer(ctx, 16);
+            for (arr, bufs) in [(aa, [a0, a1]), (ba, [b0, b1]), (ca, [c0, c1])] {
+                for (slot, buf) in bufs.iter().enumerate() {
+                    assert_eq!(cl_cublas_ptr_array(ctx, arr, slot as i32, *buf, 0), 0);
+                }
+            }
+            let alpha = 1.0f32.to_bits() as i32;
+            let beta = 0.0f32.to_bits() as i32;
+            let rc = cl_cublas_sgemm_batched_on_stream(
+                ctx, 0, 0, 1, 1, 1, alpha, aa, ba, beta, ca, 2, s,
+            );
+            assert_eq!(rc, 0);
+            assert_eq!(cl_cuda_stream_sync(ctx, s), 0);
+            assert!(approx_eq(&download_f32(ctx, c0, 1), &[8.0]));
+            assert!(approx_eq(&download_f32(ctx, c1, 1), &[15.0]));
+
+            // An array too small for the slot is refused rather than written past.
+            let tiny = cl_cuda_create_buffer(ctx, 8);
+            assert_eq!(cl_cublas_ptr_array(ctx, tiny, 1, a0, 0), -1);
+            assert_eq!(cl_cublas_ptr_array(ctx, tiny, 0, 999, 0), -1);
+
+            assert_eq!(cl_cuda_stream_destroy(ctx, s), 0);
+            cleanup_ctx(ctx);
+        }
+    }
+
+    #[test]
     fn cublas_sgemm_strided_batched_on_stream() {
         unsafe {
             let ctx = init_ctx();
@@ -2788,7 +3130,7 @@ mod tests {
             let alpha = 1.0f32.to_bits() as i32;
             let beta = 0.0f32.to_bits() as i32;
             let rc = cl_cublas_sgemm_strided_batched_on_stream(
-                ctx, 0, 0, 1, 1, 1, alpha, a, 1, b, 1, beta, c, 1, 2, s,
+                ctx, 0, 0, 1, 1, 1, alpha, a, 1, b, 1, beta, c, 1, 2, s, 0, 0, 0, 0, 0, 0,
             );
             assert_eq!(rc, 0);
             assert_eq!(cl_cuda_stream_sync(ctx, s), 0);
@@ -2814,20 +3156,20 @@ mod tests {
             );
             assert_eq!(
                 cl_cublas_sgemm_strided_batched(
-                    ctx, 0, 0, 1, 1, 1, alpha, 999, 1, 999, 1, beta, 999, 1, 1
+                    ctx, 0, 0, 1, 1, 1, alpha, 999, 1, 999, 1, beta, 999, 1, 1, 0, 0, 0, 0, 0, 0
                 ),
                 -1
             );
             // Invalid dims rejected upfront.
             assert_eq!(
                 cl_cublas_sgemm_strided_batched(
-                    ctx, 0, 0, 0, 1, 1, alpha, 0, 1, 0, 1, beta, 0, 1, 1
+                    ctx, 0, 0, 0, 1, 1, alpha, 0, 1, 0, 1, beta, 0, 1, 1, 0, 0, 0, 0, 0, 0
                 ),
                 -1
             );
             assert_eq!(
                 cl_cublas_sgemm_strided_batched(
-                    ctx, 0, 0, 1, 1, 1, alpha, 0, 1, 0, 1, beta, 0, 1, 0
+                    ctx, 0, 0, 1, 1, 1, alpha, 0, 1, 0, 1, beta, 0, 1, 0, 0, 0, 0, 0, 0, 0
                 ),
                 -1
             );

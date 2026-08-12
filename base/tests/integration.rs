@@ -275,6 +275,7 @@ fn test_clif_ffi_all_symbols_linkable() {
         "cl_cuda_launch_named_on_stream", "cl_cuda_sync", "cl_cuda_cleanup",
         "cl_cublas_sgemm", "cl_cublas_sgemv", "cl_cublas_sgemv_on_stream",
         "cl_cublas_sgemm_strided_batched", "cl_cublas_sgemm_strided_batched_on_stream",
+        "cl_cublas_ptr_array", "cl_cublas_sgemm_batched_on_stream",
         "cl_file_read", "cl_file_read_to_ptr", "cl_file_write", "cl_file_write_from_ptr",
         "cl_sinf", "cl_cosf", "cl_powf",
         "cl_stdin_readline", "cl_stdout_write",
@@ -2631,7 +2632,8 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32, I32], Some(I32))
+            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32, I32,
+                      I64, I64, I64, I32, I32, I32], Some(I32))
             .sig(4, &[I64], Some(I32))
             .sig(5, &[I64, I32], Some(I32))
             .import(0, "cl_cuda_init", 0)
@@ -2668,7 +2670,11 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
                 iconst64(v(27), k as i64),
                 iconst64(v(28), m as i64),
                 iconst32(v(29), batch_count as i64),
-                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29), v(19)]),
+                // Element offsets into each operand, and explicit leading
+                // dimensions; zero means "start at the buffer, shape-implied".
+                iconst64(v(33), 0),
+                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29), v(19),
+                                       v(33), v(33), v(33), v(21), v(21), v(21)]),
                 call(Some(v(31)), 6, &[v(91), v(19)]),
                 call(Some(v(32)), 3, &[v(91), v(15), v(2), v(12)]),
                 call(None, 7, &[v(90)]),
@@ -3931,7 +3937,8 @@ fn test_cublas_sgemm_strided_batched_reuse() {
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32], Some(I32))
+            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32,
+                      I64, I64, I64, I32, I32, I32], Some(I32))
             .sig(4, &[I64], Some(I32))
             .import(0, "cl_cuda_init", 0)
             .import(1, "cl_cuda_create_buffer", 1)
@@ -3971,7 +3978,11 @@ fn test_cublas_sgemm_strided_batched_reuse() {
                 iconst64(v(27), k as i64),
                 iconst64(v(28), m as i64),
                 iconst32(v(29), batch_count as i64),
-                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29)]),
+                // Element offsets into each operand, and explicit leading
+                // dimensions; zero means "start at the buffer, shape-implied".
+                iconst64(v(33), 0),
+                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29),
+                                       v(33), v(33), v(33), v(21), v(21), v(21)]),
                 call(Some(v(31)), 5, &[v(91)]),
                 call(Some(v(32)), 3, &[v(91), v(15), v(2), v(12)]),
                 call(None, 6, &[v(90)]),
