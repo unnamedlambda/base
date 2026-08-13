@@ -940,7 +940,7 @@ def cuda : IR.CudaSetup := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
 
 def code (spec : SceneSpec) : HProg.Code :=
-  HProg.Sur.build do
+  HProg.Sur.build (env := env) do
     let ptr := basePtr
     cudaInit cuda ptr
     let dataSz ← iconst64 (pixelBytes spec)
@@ -962,7 +962,7 @@ def code (spec : SceneSpec) : HProg.Code :=
 
 
 def clifIrSource (spec : SceneSpec) : Program :=
-  IR.program [noopFunction, HProg.compileBody 1 (code spec)]
+  IR.program [noopFunction, HProg.compileBody 1 (code spec) env]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
   let reserved := zeros ptxOff

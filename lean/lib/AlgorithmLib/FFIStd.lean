@@ -10,8 +10,11 @@ declaration block permits is not expressible here.
 
 The table is also what `Sur.build`, `buildChecked` and `compileFn` default
 their `env` to, which is why a body carries no callee table in its text.
-`compileFn` ships only the declarations a body actually calls, so a function
-that calls two entry points declares two.
+
+A function declares the whole table it was compiled against, not the part it
+calls, so a generator that wants a small declaration list names the bundles it
+uses and passes that table at every site — the builder and the compiler both,
+since they take it separately.
 -/
 
 namespace AlgorithmLib

@@ -187,7 +187,7 @@ def emitFilter (ptr resOff count fnameOff : R) (patternLen : Nat) : M Unit := do
 
 set_option maxRecDepth 4096 in
 def mainCode (patternLen : Nat) : HProg.Code :=
-  HProg.Sur.build do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let empBufOff ← iconst64 empBuf_off
   let zero ← iconst64 0
@@ -241,7 +241,7 @@ theorem bodies_wf :
 
 set_option maxRecDepth 4096 in
 def clifIrSource (patternLen : Nat) : Program :=
-  IR.program [IR.noopFunction, HProg.compileBody 1 (mainCode patternLen)]
+  IR.program [IR.noopFunction, HProg.compileBody 1 (mainCode patternLen) env]
 
 -- ---------------------------------------------------------------------------
 -- Payload builder (parameterized by filter pattern bytes)

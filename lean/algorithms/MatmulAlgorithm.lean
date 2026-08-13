@@ -215,7 +215,7 @@ def code (m k n : Nat) : HProg.Code :=
   let aOff := DATA_OFF
   let bOff := aOff + aBytes
   let cOff := bOff + bBytes
-  HProg.Sur.build do
+  HProg.Sur.build (env := env) do
     let ptr := basePtr
     let c0 ← iconst64 0
 
@@ -268,7 +268,7 @@ def code (m k n : Nat) : HProg.Code :=
 theorem code_wf : HProg.wf env HProg.ptrParams (code 64 64 64) = true := by decide
 
 def clifIrSource (m k n : Nat) : Program :=
-  IR.program [noopFunction, HProg.compileBody 1 (code m k n)]
+  IR.program [noopFunction, HProg.compileBody 1 (code m k n) env]
 
 -- ---------------------------------------------------------------------------
 -- Monomorphic builder: takes concrete dims, returns (Setup, Algorithm).

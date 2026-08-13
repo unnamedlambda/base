@@ -269,7 +269,7 @@ def code (bs : Nat) : HProg.Code :=
   let mSz   := metaSize bs
   let mOff  := blockMeta_off bs
   let mcbSz := maxCompressedBlockSize bs
-  HProg.Sur.build do
+  HProg.Sur.build (env := env) do
     let ptr := basePtr
 
     -- Step 1: Read input file
@@ -419,7 +419,7 @@ theorem code_wf : HProg.wf env HProg.ptrParams (code 16384) = true := by decide
 def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
   let payload := buildPayload bs
   let cfg : Setup := {
-    clif := IR.program [noopFunction, HProg.compileBody 1 (code bs)],
+    clif := IR.program [noopFunction, HProg.compileBody 1 (code bs) env],
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }
