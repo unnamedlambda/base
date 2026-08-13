@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib
 import AlgorithmLib.Cuda
+import AlgorithmLib.HProgCuda
 import Qwen2Common
 
 set_option maxRecDepth 4096
@@ -11,6 +12,8 @@ open AlgorithmLib
 open AlgorithmLib.IR
 open AlgorithmLib.PTX
 open AlgorithmLib.Tensor
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 open Qwen2Common
 
 namespace Qwen2
@@ -18,22 +21,16 @@ namespace Qwen2
 /-- loadInitFn (fn_1): in-memory init.  Shared prefix allocates pinned scratch
     + activation/embed/lm_head/rope buffers and streams those weights from disk.
     No per-layer alloc here — that's done by `loadLayerFn`. -/
-def loadInitFn : IRBuilder Unit := do
-  let ptr        ← entryBlock
-  let cuda       ← declareCudaFFI
-  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
-  let fnSinf     ← declareFFI "cl_sinf" [.f32]       (some .f32)
-  let fnCosf     ← declareFFI "cl_cosf" [.f32]       (some .f32)
-  let fnPowf     ← declareFFI "cl_powf" [.f32, .f32] (some .f32)
-  loadInitCommon cuda fnFileRead fnSinf fnCosf fnPowf ptr
-  ret
+def loadInitFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
+  loadInitCommon ptr
 
 /-- loadLayerFn (fn_2+l): create per-layer GPU buffers and stream-upload weights
     via the pinned scratch buffer.  Stores 14 buffer IDs in layer slot. -/
-def loadLayerFn (l : Nat) : IRBuilder Unit := do
-  let ptr    ← entryBlock
-  let cuda   ← declareCudaFFI
-  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+def loadLayerFn (l : Nat) : HProg.Code :=
+  HProg.Sur.build Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pathPtr   ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
   let pinnedPtr ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
@@ -49,41 +46,41 @@ def loadLayerFn (l : Nat) : IRBuilder Unit := do
   let kvCacheBytes ← iconst64 KV_CACHE_BYTES
 
   -- Create weight buffers — shape in the type, byte size in the runtime arg.
-  let bufRmsAttn : VecD     ← Tensor.create cuda ptr dBytes
-  let bufWq      : MatDD    ← Tensor.create cuda ptr wqBytes
-  let bufBq      : VecD     ← Tensor.create cuda ptr dBytes
-  let bufWk      : MatKVD   ← Tensor.create cuda ptr wkBytes
-  let bufBk      : VecKV    ← Tensor.create cuda ptr kvBytes
-  let bufWv      : MatKVD   ← Tensor.create cuda ptr wkBytes
-  let bufBv      : VecKV    ← Tensor.create cuda ptr kvBytes
-  let bufWo      : MatDD    ← Tensor.create cuda ptr wqBytes
-  let bufRmsFfn  : VecD     ← Tensor.create cuda ptr dBytes
-  let bufWg      : MatDffD  ← Tensor.create cuda ptr wgBytes
-  let bufWu      : MatDffD  ← Tensor.create cuda ptr wgBytes
-  let bufWd      : MatDDff  ← Tensor.create cuda ptr wgBytes
-  let bufKCache  : KVCache  ← Tensor.create cuda ptr kvCacheBytes
-  let bufVCache  : KVCache  ← Tensor.create cuda ptr kvCacheBytes
+  let bufRmsAttn : VecD     ← tensorCreate cuda ptr dBytes
+  let bufWq      : MatDD    ← tensorCreate cuda ptr wqBytes
+  let bufBq      : VecD     ← tensorCreate cuda ptr dBytes
+  let bufWk      : MatKVD   ← tensorCreate cuda ptr wkBytes
+  let bufBk      : VecKV    ← tensorCreate cuda ptr kvBytes
+  let bufWv      : MatKVD   ← tensorCreate cuda ptr wkBytes
+  let bufBv      : VecKV    ← tensorCreate cuda ptr kvBytes
+  let bufWo      : MatDD    ← tensorCreate cuda ptr wqBytes
+  let bufRmsFfn  : VecD     ← tensorCreate cuda ptr dBytes
+  let bufWg      : MatDffD  ← tensorCreate cuda ptr wgBytes
+  let bufWu      : MatDffD  ← tensorCreate cuda ptr wgBytes
+  let bufWd      : MatDDff  ← tensorCreate cuda ptr wgBytes
+  let bufKCache  : KVCache  ← tensorCreate cuda ptr kvCacheBytes
+  let bufVCache  : KVCache  ← tensorCreate cuda ptr kvCacheBytes
 
   -- Store buffer IDs into layer `l`'s slot (cell base = ptr + LAYER_BUFS_BASE + l*STRIDE).
   let cellBase ← absAddr ptr (LAYER_BUFS_BASE + l * LAYER_BUF_STRIDE)
-  LayerSlot.rmsAttn.store cellBase bufRmsAttn
-  LayerSlot.wq.store      cellBase bufWq
-  LayerSlot.bq.store      cellBase bufBq
-  LayerSlot.wk.store      cellBase bufWk
-  LayerSlot.bk.store      cellBase bufBk
-  LayerSlot.wv.store      cellBase bufWv
-  LayerSlot.bv.store      cellBase bufBv
-  LayerSlot.wo.store      cellBase bufWo
-  LayerSlot.rmsFfn.store  cellBase bufRmsFfn
-  LayerSlot.wg.store      cellBase bufWg
-  LayerSlot.wu.store      cellBase bufWu
-  LayerSlot.wd.store      cellBase bufWd
-  LayerSlot.kCache.store  cellBase bufKCache
-  LayerSlot.vCache.store  cellBase bufVCache
+  slotStore LayerSlot.rmsAttn cellBase bufRmsAttn
+  slotStore LayerSlot.wq      cellBase bufWq
+  slotStore LayerSlot.bq      cellBase bufBq
+  slotStore LayerSlot.wk      cellBase bufWk
+  slotStore LayerSlot.bk      cellBase bufBk
+  slotStore LayerSlot.wv      cellBase bufWv
+  slotStore LayerSlot.bv      cellBase bufBv
+  slotStore LayerSlot.wo      cellBase bufWo
+  slotStore LayerSlot.rmsFfn  cellBase bufRmsFfn
+  slotStore LayerSlot.wg      cellBase bufWg
+  slotStore LayerSlot.wu      cellBase bufWu
+  slotStore LayerSlot.wd      cellBase bufWd
+  slotStore LayerSlot.kCache  cellBase bufKCache
+  slotStore LayerSlot.vCache  cellBase bufVCache
 
   -- Stream-upload weight tensors through pinned scratch
-  let up {s : Shape} (t : Tensor s) (fileOff size : Nat) : IRBuilder Unit :=
-    uploadFromFile cuda fnFileRead ctxPtr pathPtr pinnedPtr t (layerOff + fileOff) size
+  let up {s : Shape} (t : Tensor s) (fileOff size : Nat) : M Unit :=
+    uploadFromFile ctxPtr pathPtr pinnedPtr t (layerOff + fileOff) size
   up bufRmsAttn LF_RMS_ATTN D_BYTES
   up bufWq      LF_WQ       WQ_BYTES
   up bufBq      LF_BQ       D_BYTES
@@ -96,29 +93,25 @@ def loadLayerFn (l : Nat) : IRBuilder Unit := do
   up bufWg      LF_WG       WG_BYTES
   up bufWu      LF_WU       WG_BYTES
   up bufWd      LF_WD       WG_BYTES
-  ret
 
 /-- loadFinalizeFn (fn_26): sync GPU then free the pinned scratch buffer. -/
-def loadFinalizeFn : IRBuilder Unit := do
-  let ptr      ← entryBlock
-  let cuda     ← declareCudaFFI
+def loadFinalizeFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr   ← load64 (← absAddr ptr 0x10)
   let pinnedId ← load32 (← absAddr ptr PINNED_ID_OFF)
   let _ ← cudaSync cuda ptr 0x10
-  let _ ← call cuda.fnPinnedFree [ctxPtr, pinnedId]
-  ret
+  let _ ← call cuda.fnPinnedFree.id [ctxPtr, pinnedId]
 
 /-- inferLayerFn (fn_28): runs one transformer layer — calls attn then ffn. -/
-def inferLayerFn : IRBuilder Unit := do
-  let ptr    ← entryBlock
-  let fnAttn ← declareColocatedFFI "fn_29" [.i64] none
-  let fnFfn  ← declareColocatedFFI "fn_30" [.i64] none
-  callVoid fnAttn [ptr]
-  callVoid fnFfn  [ptr]
-  ret
+def inferLayerFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
+  callVoid Qwen2Common.q.fnAttn.id [ptr]
+  callVoid Qwen2Common.q.fnFfn.id  [ptr]
 
 /-- Compute the per-layer slot base address for the current `LAYER_IDX_OFF`. -/
-private def currentLayerSlot (ptr : Val) : IRBuilder Val := do
+private def currentLayerSlot (ptr : R) : M R := do
   let layerIdx ← load64 (← absAddr ptr LAYER_IDX_OFF)
   let stride64 ← iconst64 LAYER_BUF_STRIDE
   let base64   ← iconst64 LAYER_BUFS_BASE
@@ -128,41 +121,39 @@ private def currentLayerSlot (ptr : Val) : IRBuilder Val := do
 
 /-- inferLayerAttnFn (fn_29): attention sub-layer.  Reads per-layer slot from
     `LAYER_BUFS_BASE + layerIdx * STRIDE`. -/
-def inferLayerAttnFn : IRBuilder Unit := do
-  let ptr       ← entryBlock
-  let cuda      ← declareCudaFFI
-  let blas      ← declareCuBlasFFI
+def inferLayerAttnFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let slotBaseA ← currentLayerSlot ptr
-  attnBody cuda blas ptr slotBaseA
+  attnBody ptr slotBaseA
 
 /-- inferLayerFfnFn (fn_30): FFN sub-layer.  Same slot lookup as attn. -/
-def inferLayerFfnFn : IRBuilder Unit := do
-  let ptr       ← entryBlock
-  let cuda      ← declareCudaFFI
-  let blas      ← declareCuBlasFFI
+def inferLayerFfnFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let slotBaseA ← currentLayerSlot ptr
-  ffnBody cuda blas ptr slotBaseA
+  ffnBody ptr slotBaseA
 
 -- ── CLIF IR ──────────────────────────────────────────────────────────────────
 
 def clifIR : Program :=
   program <|
     [noopFunction,
-     buildFunction 1 loadInitFn]
-    ++ (List.range N_LAYERS).map (fun l => buildFunction (2 + l) (loadLayerFn l))
+     HProg.compileFn 1 Qwen2Common.env HProg.ptrParams loadInitFn]
+    ++ (List.range N_LAYERS).map (fun l => HProg.compileFn (2 + l) Qwen2Common.env HProg.ptrParams (loadLayerFn l))
     ++ [
-     buildFunction 26 loadFinalizeFn,
-     buildFunction 27 inferFn,
-     buildFunction 28 inferLayerFn,
-     buildFunction 29 inferLayerAttnFn,
-     buildFunction 30 inferLayerFfnFn,
-     buildFunction 31 inferFinalFn,
-     buildFunction 32 loadTokenizerFn,
-     buildFunction 33 tokenizeInitFn,
-     buildFunction 34 tokenizeBpeFn,
-     buildFunction 35 detokenizeFn,
-     buildFunction 36 cliFn,
-     buildFunction 37 parseArgsFn,
+     HProg.compileFn 26 Qwen2Common.env HProg.ptrParams loadFinalizeFn,
+     HProg.compileFn 27 Qwen2Common.env HProg.ptrParams inferFn,
+     HProg.compileFn 28 Qwen2Common.env HProg.ptrParams inferLayerFn,
+     HProg.compileFn 29 Qwen2Common.env HProg.ptrParams inferLayerAttnFn,
+     HProg.compileFn 30 Qwen2Common.env HProg.ptrParams inferLayerFfnFn,
+     HProg.compileFn 31 Qwen2Common.env HProg.ptrParams inferFinalFn,
+     HProg.compileFn 32 Qwen2Common.env HProg.ptrParams loadTokenizerFn,
+     HProg.compileFn 33 Qwen2Common.env HProg.ptrParams tokenizeInitFn,
+     HProg.compileFn 34 Qwen2Common.env HProg.ptrParams tokenizeBpeFn,
+     HProg.compileFn 35 Qwen2Common.env HProg.ptrParams detokenizeFn,
+     HProg.compileFn 36 Qwen2Common.env HProg.ptrParams cliFn,
+     HProg.compileFn 37 Qwen2Common.env HProg.ptrParams parseArgsFn,
      -- fn38: orchestrator wrapper — parse args (37), load weights (1..26),
      --       load tokenizer (32), server (36 — runs forever).
      clifSequenceWrapper 38
@@ -207,14 +198,14 @@ open AlgorithmLib.Clif in
 /-- **One layer's attention half**: ten launches, four matvecs, two batched
     contractions, in this order. -/
 theorem attn_writes :
-    (launchesOf (Qwen2.inferLayerAttnFn.run {}).2).map Qwen2Common.opSig
+    (launchesOf (Qwen2Common.stateOf Qwen2.inferLayerAttnFn)).map Qwen2Common.opSig
       = Qwen2Common.expectedAttnOps := by
   native_decide
 
 open AlgorithmLib.Clif in
 /-- **…and its feed-forward half**: three launches, three matvecs. -/
 theorem ffn_writes :
-    (launchesOf (Qwen2.inferLayerFfnFn.run {}).2).map Qwen2Common.opSig
+    (launchesOf (Qwen2Common.stateOf Qwen2.inferLayerFfnFn)).map Qwen2Common.opSig
       = Qwen2Common.expectedFfnOps := by
   native_decide
 
@@ -222,7 +213,7 @@ open AlgorithmLib.Clif in
 /-- **The layer function itself writes nothing** — it only dispatches, which is
     precisely why a per-function scan of it reported an empty sequence. -/
 theorem layer_writes_nothing :
-    launchesOf (Qwen2.inferLayerFn.run {}).2 = [] := by
+    launchesOf (Qwen2Common.stateOf Qwen2.inferLayerFn) = [] := by
   native_decide
 
 -- ---------------------------------------------------------------------------
@@ -244,20 +235,20 @@ theorem layer_writes_nothing :
 open AlgorithmLib.Clif in
 /-- **The attention half's device writes, and what each one bound.** -/
 theorem attn_ops_are :
-    deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2 = Qwen2Common.attnOps := by
+    deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerAttnFn) = Qwen2Common.attnOps := by
   native_decide
 
 open AlgorithmLib.Clif in
 /-- **…and the feed-forward half's.** -/
 theorem ffn_ops_are :
-    deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2 = Qwen2Common.ffnOps := by
+    deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerFfnFn) = Qwen2Common.ffnOps := by
   native_decide
 
 open AlgorithmLib.Clif in
 /-- **The layer function dispatches to the two halves and to nothing else** —
     which, with `layer_writes_nothing`, is the whole of what it does. -/
 theorem layer_fn_calls :
-    callsOf (Qwen2.inferLayerFn.run {}).2 = ["fn_29", "fn_30"] := by native_decide
+    callsOf (Qwen2Common.stateOf Qwen2.inferLayerFn) = ["fn_29", "fn_30"] := by native_decide
 
 open AlgorithmLib.Clif in
 /-- **…and none of the three leaf functions loops**, so each one's static scan
@@ -265,9 +256,9 @@ open AlgorithmLib.Clif in
     `Qwen2Common.infer_loop_is_layers` this accounts for every repetition in a
     decode step. -/
 theorem leaf_fns_no_loops :
-    loopsOf (Qwen2.inferLayerFn.run {}).2 = []
-      ∧ loopsOf (Qwen2.inferLayerAttnFn.run {}).2 = []
-      ∧ loopsOf (Qwen2.inferLayerFfnFn.run {}).2 = [] := by native_decide
+    loopsOf (Qwen2Common.stateOf Qwen2.inferLayerFn) = []
+      ∧ loopsOf (Qwen2Common.stateOf Qwen2.inferLayerAttnFn) = []
+      ∧ loopsOf (Qwen2Common.stateOf Qwen2.inferLayerFfnFn) = [] := by native_decide
 
 open AlgorithmLib.Clif AlgorithmLib.Host in
 /-- **The declared attention half and the built one perform the same device
@@ -281,14 +272,14 @@ open AlgorithmLib.Clif AlgorithmLib.Host in
     `ScanCore.openObligations` names. -/
 theorem attnDriver_is_built (fnOf : String → FnRef) :
     (Qwen2Common.attnDriver fnOf).deviceOps
-      = deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2 := by
+      = deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerAttnFn) := by
   rw [attn_ops_are, Qwen2Common.attnDriver_deviceOps]
 
 open AlgorithmLib.Clif AlgorithmLib.Host in
 /-- **…and the feed-forward half's.** -/
 theorem ffnDriver_is_built (fnOf : String → FnRef) :
     (Qwen2Common.ffnDriver fnOf).deviceOps
-      = deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2 := by
+      = deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerFfnFn) := by
   rw [ffn_ops_are, Qwen2Common.ffnDriver_deviceOps]
 
 open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
@@ -306,7 +297,7 @@ open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
 theorem attn_program_realises_plan (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
     planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
-        (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2)
+        (deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerAttnFn))
       = some (attnPlan gim h hm) := by
   rw [attn_ops_are]; exact Qwen2Common.attn_ops_realise_plan gim h hm
 
@@ -315,7 +306,7 @@ open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
 theorem ffn_program_realises_plan (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
     planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
-        (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
+        (deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerFfnFn))
       = some ffnPlan := by
   rw [ffn_ops_are]; exact Qwen2Common.ffn_ops_realise_plan gim h hm
 
@@ -332,8 +323,8 @@ open AlgorithmLib.Clif AlgorithmLib.ML Qwen2Proven.Stage in
 theorem layer_program_realises_plan (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b))) :
     planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
-        (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2
-          ++ deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
+        (deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerAttnFn)
+          ++ deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerFfnFn))
       = some (layerPlan gim h hm) := by
   rw [attn_ops_are, ffn_ops_are]; exact Qwen2Common.layer_ops_realise_plan gim h hm
 
@@ -349,8 +340,8 @@ theorem layer_program_computes (gim : Buf → Nat → Nat)
     (h : AllHold [Law.combinerComm]) (hm : SmMeta (fun b => gim (bSoft b)))
     (R : Realisation) (hR : Honours R) (st : WSt) :
     ∃ Pl, planOf? (Qwen2Common.layerKernels gim h hm) Qwen2Common.layerDeclared none
-            (deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerAttnFn.run {}).2
-              ++ deviceOpsOf Qwen2Common.ROOT (Qwen2.inferLayerFfnFn.run {}).2)
+            (deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerAttnFn)
+              ++ deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerFfnFn))
           = some Pl
       ∧ (Pl.run R st).mem = Pl.denote st.mem :=
   ⟨layerPlan gim h hm, layer_program_realises_plan gim h hm,

@@ -89,51 +89,72 @@ def compSchema (w : WP) : List Json :=
 -- dependency explicit and was an attempt to let `Lz4Host`'s recovery theorems
 -- reduce symbolically; measured, it does not (reducing the `IRBuilder` state
 -- monad is itself the cost), so those theorems use `native_decide`.  Kept
--- because the separation is worth stating.  `warpBuilder` instantiates it at
+-- because the separation is worth stating.  `warpCode` instantiates it at
 -- `w.bindOff`, so the program that ships is byte-identical.
-open AlgorithmLib.IR in
-def warpBuilderAt (w : WP) (bo : Nat) : IRBuilder Unit := do
-  let cuda ← declareCudaFFI
-  let ptr ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  cudaInit cuda ptr
-  -- ONE allocation: input at offset 0, output immediately after it.  Both kernel
-  -- parameters are bound to this buffer and the kernel derives its output base as
-  -- `in_ptr + totIn`, so the placement contract `LayoutOK` asks for holds by
-  -- construction instead of relating two independent allocations.
-  let inBuf ← cudaCreateBuffer cuda ptr (← iconst64 (w.outOff + w.outAlloc))
-  let _ ← cudaUploadRawOffset cuda ptr inBuf (← iconst64 0) dataPtr dataLen
-  let g ← iconst32 w.gridX
-  let bk ← iconst32 wBlockDim
-  let one32 ← iconst32 1
-  let nbufs ← ireduce32 (← iconst64 2)
-  let ptxOff ← iconst64 rPTX_OFF
-  let bindOff ← iconst64 bo
-  let _ ← forLoopAcc .i64 .i64 (← iconst64 rLaunches) (← iconst64 0) (fun _ acc => do
-    let _ ← cudaLaunch cuda ptr ptxOff nbufs bindOff g one32 one32 bk one32 one32
-    pure acc)
-  let _ ← cudaDownloadRawOffset cuda ptr inBuf (← iconst64 w.outOff) outPtr (← iconst64 w.totOut)
-  cudaCleanup cuda ptr
-  storeAt ptr (bo + 0x40) (← iconst64 1)
-  storeAt ptr (bo + 0x48) (← iconst64 1)
-  storeAt ptr (bo + 0x50) (← iconst64 rLaunches)
-  storeAt ptr (bo + 0x58) (← iconst64 w.totIn)
-  storeAt ptr (bo + 0x60) (← iconst64 w.inStride)
-  storeAt ptr (bo + 0x68) (← iconst64 w.outStride)
-  storeAt ptr (bo + 0x70) (← iconst64 w.lenOff)
-  storeAt ptr (bo + 0x78) (← iconst64 w.numBlk)
-  ret
+open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur in
+/-- The CUDA entry points, declared through the same helper the `IRBuilder`
+    path used, so the callee table the term is checked against is the runtime's
+    own. -/
+def cudaEnv : IR.CudaSetup × FnEnv := envOf declareCudaFFI
 
-open AlgorithmLib.IR in
-def warpBuilder (w : WP) : IRBuilder Unit := warpBuilderAt w w.bindOff
+open AlgorithmLib.IR AlgorithmLib.HProg in
+def cuda : IR.CudaSetup := cudaEnv.1
 
-open AlgorithmLib.IR in
-def warpClif (w : WP) : Program := buildProgram (warpBuilder w)
+open AlgorithmLib.IR AlgorithmLib.HProg in
+def hostEnv : FnEnv := cudaEnv.2
 
+open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur in
+/-- The host program, as a term.
 
+    `bo` is the binding-table offset, which can only be computed by serializing
+    the whole PTX kernel; holding it as a parameter keeps that dependency
+    explicit. Because it is open, this runs the builder the ordinary way rather
+    than through `clif%` — the shipped instance is what `warpCode` checks. -/
+def warpCodeAt (w : WP) (bo : Nat) : HProg.Code :=
+  HProg.Sur.build hostEnv HProg.ptrParams do
+    let ptr := basePtr
+    let dataPtr ← load64 (← absAddr ptr 0x18)
+    let dataLen ← load64 (← absAddr ptr 0x20)
+    let outPtr ← load64 (← absAddr ptr 0x28)
+    cudaInit cuda ptr
+    -- ONE allocation: input at offset 0, output immediately after it.  Both
+    -- kernel parameters are bound to this buffer and the kernel derives its
+    -- output base as `in_ptr + totIn`, so the placement contract `LayoutOK`
+    -- asks for holds by construction instead of relating two independent
+    -- allocations.
+    let inBuf ← cudaCreateBuffer cuda ptr (← iconst64 (w.outOff + w.outAlloc))
+    let _ ← cudaUploadRawOffset cuda ptr inBuf (← iconst64 0) dataPtr dataLen
+    let g ← iconst32 w.gridX
+    let bk ← iconst32 wBlockDim
+    let one32 ← iconst32 1
+    let nbufs ← ireduce32 (← iconst64 2)
+    let ptxOff ← iconst64 rPTX_OFF
+    let bindOff ← iconst64 bo
+    let _ ← forLoopAcc (← iconst64 rLaunches) (← iconst64 0) (fun _ acc => do
+      let _ ← cudaLaunch cuda ptr ptxOff nbufs bindOff g one32 one32 bk one32 one32
+      pure acc)
+    let _ ← cudaDownloadRawOffset cuda ptr inBuf (← iconst64 w.outOff) outPtr
+              (← iconst64 w.totOut)
+    cudaCleanup cuda ptr
+    storeAt ptr (bo + 0x40) (← iconst64 1)
+    storeAt ptr (bo + 0x48) (← iconst64 1)
+    storeAt ptr (bo + 0x50) (← iconst64 rLaunches)
+    storeAt ptr (bo + 0x58) (← iconst64 w.totIn)
+    storeAt ptr (bo + 0x60) (← iconst64 w.inStride)
+    storeAt ptr (bo + 0x68) (← iconst64 w.outStride)
+    storeAt ptr (bo + 0x70) (← iconst64 w.lenOff)
+    storeAt ptr (bo + 0x78) (← iconst64 w.numBlk)
 
+open AlgorithmLib.HProg in
+def warpCode (w : WP) : HProg.Code := warpCodeAt w w.bindOff
+
+open AlgorithmLib.IR AlgorithmLib.HProg in
+/-- The emitted function, which every host theorem is now stated over. -/
+def warpFn (w : WP) : FuncData :=
+  HProg.compileFn 1 hostEnv HProg.ptrParams (warpCode w)
+
+open AlgorithmLib.IR AlgorithmLib.HProg in
+def warpClif (w : WP) : Program := IR.program [noopFunction, warpFn w]
 
 def warpPayloadDSL (w : WP) : List UInt8 :=
   zeros rPTX_OFF ++

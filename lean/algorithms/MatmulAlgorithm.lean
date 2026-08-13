@@ -2,6 +2,8 @@ import AlgorithmLib
 set_option maxRecDepth 4096
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.PTX
 
 namespace Matmul
@@ -194,18 +196,27 @@ def buildPayload (m k n : Nat) : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.IR in
-def clifIrSource (m k n : Nat) : Program :=
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
+def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := envOf (do
+  let w ← declareFileWrite
+  let c ← declareCudaFFI
+  pure (w, c))
+def fnWrite : FnRef := ffiEnv.1.1
+def cuda : IR.CudaSetup := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
+
+def code (m k n : Nat) : HProg.Code :=
   let aBytes := m * k * 4
   let bBytes := k * n * 4
   let cBytes := m * n * 4
   let aOff := DATA_OFF
   let bOff := aOff + aBytes
   let cOff := bOff + bBytes
-  buildProgram do
-    let fnWrite ← declareFileWrite
-    let cuda ← declareCudaFFI
-
-    let ptr ← entryBlock
+  HProg.Sur.build env HProg.ptrParams do
+    let ptr := basePtr
     let c0 ← iconst64 0
 
     -- CUDA init
@@ -250,8 +261,14 @@ def clifIrSource (m k n : Nat) : Program :=
 
     -- Write output file: bytes [cOff .. cOff + cBytes)
     let fnOffV ← iconst64 OUTPUT_FN_OFF
-    let _ ← call fnWrite [ptr, fnOffV, cOffV, c0, cSz]
-    ret
+    let _ ← call fnWrite.id [ptr, fnOffV, cOffV, c0, cSz]
+
+
+/-- Well-formed at the dimensions that ship. -/
+theorem code_wf : HProg.wf env HProg.ptrParams (code 64 64 64) = true := by decide
+
+def clifIrSource (m k n : Nat) : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code m k n)]
 
 -- ---------------------------------------------------------------------------
 -- Monomorphic builder: takes concrete dims, returns (Setup, Algorithm).

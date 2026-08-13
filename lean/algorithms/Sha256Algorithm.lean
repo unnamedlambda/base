@@ -96,25 +96,28 @@ def hInitial : List UInt32 := [
 open AlgorithmLib.IR
 
 -- Bundle of commonly-used constants from block0
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
 structure Consts where
-  ptr : Val
-  zero : Val
-  c1 : Val
-  c3 : Val
-  c4 : Val
-  c7 : Val
-  c8 : Val
-  c10 : Val
-  c13 : Val
-  c16 : Val
-  c24 : Val
-  c32 : Val
-  c64 : Val
-  mask32 : Val
-  dataOff : Val
+  ptr : R
+  zero : R
+  c1 : R
+  c3 : R
+  c4 : R
+  c7 : R
+  c8 : R
+  c10 : R
+  c13 : R
+  c16 : R
+  c24 : R
+  c32 : R
+  c64 : R
+  mask32 : R
+  dataOff : R
 
 -- Step 2: SHA-256 padding — returns (paddedLen, numBlocks)
-def emitPadding (k : Consts) (fileSize : Val) : IRBuilder (Val × Val) := do
+def emitPadding (k : Consts) (fileSize : R) : M (R × R) := do
   -- Append 0x80 byte at file_data[file_size]
   let relOff ← iadd k.dataOff fileSize
   let absOff ← iadd k.ptr relOff
@@ -134,7 +137,7 @@ def emitPadding (k : Consts) (fileSize : Val) : IRBuilder (Val × Val) := do
   let zeroEnd ← isub paddedLen k.c8
 
   -- Zero-fill loop: for zi in [fsp1, zeroEnd)
-  forLoopFromTo .i64 fsp1 zeroEnd fun zi => do
+  forLoopFromTo fsp1 zeroEnd fun zi => do
     let zrel ← iadd k.dataOff zi
     let zabs ← iadd k.ptr zrel
     istore8 k.zero zabs
@@ -185,19 +188,19 @@ def emitPadding (k : Consts) (fileSize : Val) : IRBuilder (Val × Val) := do
   pure (paddedLen, numBlocks)
 
 -- Step 3: Copy H_initial → H_working
-def emitCopyH (k : Consts) : IRBuilder Unit := do
+def emitCopyH (k : Consts) : M Unit := do
   let hInitBase ← fldOffset f.H_init
   let hWorkBase ← fldOffset f.H_work
-  forLoop .i64 k.c8 fun ci => do
+  forLoop k.c8 fun ci => do
     let byteOff ← imul ci k.c4
     let srcAbs ← iadd k.ptr (← iadd hInitBase byteOff)
     let dstAbs ← iadd k.ptr (← iadd hWorkBase byteOff)
     store (← load32 srcAbs) dstAbs
 
 -- Load W[0..15] big-endian from message block
-def emitLoadW (k : Consts) (blkBase : Val) : IRBuilder Unit := do
+def emitLoadW (k : Consts) (blkBase : R) : M Unit := do
   let wOffC ← fldOffset f.W
-  forLoop .i64 k.c16 fun wi => do
+  forLoop k.c16 fun wi => do
     let wi4 ← imul wi k.c4
     let bAbs ← iadd k.ptr (← iadd blkBase wi4)
     let byte0 ← uload8_64 bAbs
@@ -215,12 +218,12 @@ def emitLoadW (k : Consts) (blkBase : Val) : IRBuilder Unit := do
     store w32 wAbs
 
 -- Expand W[16..63]
-def emitExpandW (k : Consts) : IRBuilder Unit := do
+def emitExpandW (k : Consts) : M Unit := do
   let wOff' ← fldOffset f.W
-  let loadWAt (idxRel : Val) : IRBuilder Val := do
+  let loadWAt (idxRel : R) : M R := do
     uload32_64 (← iadd k.ptr (← iadd wOff' (← imul idxRel k.c4)))
   -- For ei in [16, 64): W[ei] = (sigma1(W[ei-2]) + W[ei-7] + sigma0(W[ei-15]) + W[ei-16]) & mask32
-  forLoopFromTo .i64 k.c16 k.c64 fun ei => do
+  forLoopFromTo k.c16 k.c64 fun ei => do
     let wi2val  ← loadWAt (← isub ei (← iconst64 2))
     -- sigma1(x): rotr(x,17) ^ rotr(x,19) ^ (x >> 10)
     let rotr17 ← band (← bor (← ushr wi2val (← iconst64 17)) (← ishl wi2val (← iconst64 15))) k.mask32
@@ -237,136 +240,112 @@ def emitExpandW (k : Consts) : IRBuilder Unit := do
     let wAbs ← iadd k.ptr (← iadd wOff' (← imul ei k.c4))
     store (← ireduce32 wNew) wAbs
 
--- 64-round compression loop body
--- Returns (addBackBlk, roundHdr) for wiring
-def emitCompressionRound (k : Consts) (blkIdx : Val)
-    (va vb vc vd ve vf vg vh : Val)
-    (addBackBlk : DeclaredBlock) : IRBuilder DeclaredBlock := do
-  let roundHdr ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
-  let ri := roundHdr.param 0
-  let ra := roundHdr.param 1
-  let rb := roundHdr.param 2
-  let rc := roundHdr.param 3
-  let rd := roundHdr.param 4
-  let re := roundHdr.param 5
-  let rf := roundHdr.param 6
-  let rg := roundHdr.param 7
-  let rh := roundHdr.param 8
-  let roundBody ← declareBlock []
+/-- The 64 rounds over the eight working words. The result is `a..h` after the
+    last round. -/
+def emitCompressionRound (k : Consts)
+    (va vb vc vd ve vf vg vh : R) : M (List R) := do
+  wloop [k.zero, va, vb, vc, vd, ve, vf, vg, vh]
+    (head := fun c => return (contIf .ult (c.headD 0) k.c64, c.drop 1, ()))
+    (body := fun c _ => do
+      let ri := c.headD 0
+      let ra := c.getD 1 0; let rb := c.getD 2 0; let rc := c.getD 3 0
+      let rd := c.getD 4 0; let re := c.getD 5 0; let rf := c.getD 6 0
+      let rg := c.getD 7 0; let rh := c.getD 8 0
+      -- Sigma1(e) = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25)
+      let c6 ← iconst64 6
+      let re6a ← ushr re c6
+      let c26 ← iconst64 26
+      let re6b ← ishl re c26
+      let re6 ← bor re6a re6b
+      let rotrE6 ← band re6 k.mask32
 
-  jump roundHdr.ref [k.zero, va, vb, vc, vd, ve, vf, vg, vh]
-  startBlock roundHdr
-  let roundDone ← icmp .uge ri k.c64
-  brif roundDone addBackBlk.ref [blkIdx, ra, rb, rc, rd, re, rf, rg, rh] roundBody.ref []
+      let c11 ← iconst64 11
+      let re11a ← ushr re c11
+      let c21 ← iconst64 21
+      let re11b ← ishl re c21
+      let re11 ← bor re11a re11b
+      let rotrE11 ← band re11 k.mask32
 
-  startBlock roundBody
-  -- Sigma1(e) = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25)
-  let c6 ← iconst64 6
-  let re6a ← ushr re c6
-  let c26 ← iconst64 26
-  let re6b ← ishl re c26
-  let re6 ← bor re6a re6b
-  let rotrE6 ← band re6 k.mask32
+      let c25 ← iconst64 25
+      let re25a ← ushr re c25
+      let re25b ← ishl re k.c7
+      let re25 ← bor re25a re25b
+      let rotrE25 ← band re25 k.mask32
 
-  let c11 ← iconst64 11
-  let re11a ← ushr re c11
-  let c21 ← iconst64 21
-  let re11b ← ishl re c21
-  let re11 ← bor re11a re11b
-  let rotrE11 ← band re11 k.mask32
+      let sig1e1 ← bxor rotrE6 rotrE11
+      let sigma1e ← bxor sig1e1 rotrE25
 
-  let c25 ← iconst64 25
-  let re25a ← ushr re c25
-  let re25b ← ishl re k.c7
-  let re25 ← bor re25a re25b
-  let rotrE25 ← band re25 k.mask32
+      -- Ch(e,f,g) = (e & f) ^ (~e & g)
+      let ef ← band re rf
+      let notE ← bxor re k.mask32
+      let notEg ← band notE rg
+      let ch ← bxor ef notEg
 
-  let sig1e1 ← bxor rotrE6 rotrE11
-  let sigma1e ← bxor sig1e1 rotrE25
+      -- Load K[round_i] and W[round_i]
+      let kBase ← fldOffset f.K
+      let ri4 ← imul ri k.c4
+      let kRel ← iadd kBase ri4
+      let kAbs ← iadd k.ptr kRel
+      let kVal ← uload32_64 kAbs
 
-  -- Ch(e,f,g) = (e & f) ^ (~e & g)
-  let ef ← band re rf
-  let notE ← bxor re k.mask32
-  let notEg ← band notE rg
-  let ch ← bxor ef notEg
+      let wBase ← fldOffset f.W
+      let wRiRel ← iadd wBase ri4
+      let wRiAbs ← iadd k.ptr wRiRel
+      let wVal ← uload32_64 wRiAbs
 
-  -- Load K[round_i] and W[round_i]
-  let kBase ← fldOffset f.K
-  let ri4 ← imul ri k.c4
-  let kRel ← iadd kBase ri4
-  let kAbs ← iadd k.ptr kRel
-  let kVal ← uload32_64 kAbs
+      -- temp1 = (h + Sigma1 + Ch + K[i] + W[i]) & mask32
+      let t1a ← iadd rh sigma1e
+      let t1b ← iadd t1a ch
+      let t1c ← iadd t1b kVal
+      let t1d ← iadd t1c wVal
+      let temp1 ← band t1d k.mask32
 
-  let wBase ← fldOffset f.W
-  let wRiRel ← iadd wBase ri4
-  let wRiAbs ← iadd k.ptr wRiRel
-  let wVal ← uload32_64 wRiAbs
+      -- Sigma0(a) = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22)
+      let c2 ← iconst64 2
+      let ra2a ← ushr ra c2
+      let c30 ← iconst64 30
+      let ra2b ← ishl ra c30
+      let ra2 ← bor ra2a ra2b
+      let rotrA2 ← band ra2 k.mask32
 
-  -- temp1 = (h + Sigma1 + Ch + K[i] + W[i]) & mask32
-  let t1a ← iadd rh sigma1e
-  let t1b ← iadd t1a ch
-  let t1c ← iadd t1b kVal
-  let t1d ← iadd t1c wVal
-  let temp1 ← band t1d k.mask32
+      let ra13a ← ushr ra k.c13
+      let c19 ← iconst64 19
+      let ra13b ← ishl ra c19
+      let ra13 ← bor ra13a ra13b
+      let rotrA13 ← band ra13 k.mask32
 
-  -- Sigma0(a) = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22)
-  let c2 ← iconst64 2
-  let ra2a ← ushr ra c2
-  let c30 ← iconst64 30
-  let ra2b ← ishl ra c30
-  let ra2 ← bor ra2a ra2b
-  let rotrA2 ← band ra2 k.mask32
+      let c22 ← iconst64 22
+      let ra22a ← ushr ra c22
+      let ra22b ← ishl ra k.c10
+      let ra22 ← bor ra22a ra22b
+      let rotrA22 ← band ra22 k.mask32
 
-  let ra13a ← ushr ra k.c13
-  let c19 ← iconst64 19
-  let ra13b ← ishl ra c19
-  let ra13 ← bor ra13a ra13b
-  let rotrA13 ← band ra13 k.mask32
+      let sig0a1 ← bxor rotrA2 rotrA13
+      let sigma0a ← bxor sig0a1 rotrA22
 
-  let c22 ← iconst64 22
-  let ra22a ← ushr ra c22
-  let ra22b ← ishl ra k.c10
-  let ra22 ← bor ra22a ra22b
-  let rotrA22 ← band ra22 k.mask32
+      -- Maj(a,b,c) = (a & b) ^ (a & c) ^ (b & c)
+      let ab ← band ra rb
+      let ac ← band ra rc
+      let bc ← band rb rc
+      let m1 ← bxor ab ac
+      let maj ← bxor m1 bc
 
-  let sig0a1 ← bxor rotrA2 rotrA13
-  let sigma0a ← bxor sig0a1 rotrA22
+      -- temp2 = (Sigma0 + Maj) & mask32
+      let t2a ← iadd sigma0a maj
+      let temp2 ← band t2a k.mask32
 
-  -- Maj(a,b,c) = (a & b) ^ (a & c) ^ (b & c)
-  let ab ← band ra rb
-  let ac ← band ra rc
-  let bc ← band rb rc
-  let m1 ← bxor ab ac
-  let maj ← bxor m1 bc
+      -- new_e = (d + temp1) & mask32, new_a = (temp1 + temp2) & mask32
+      let newEa ← iadd rd temp1
+      let newE ← band newEa k.mask32
+      let newAa ← iadd temp1 temp2
+      let newA ← band newAa k.mask32
 
-  -- temp2 = (Sigma0 + Maj) & mask32
-  let t2a ← iadd sigma0a maj
-  let temp2 ← band t2a k.mask32
+      let riNext ← iadd ri k.c1
 
-  -- new_e = (d + temp1) & mask32, new_a = (temp1 + temp2) & mask32
-  let newEa ← iadd rd temp1
-  let newE ← band newEa k.mask32
-  let newAa ← iadd temp1 temp2
-  let newA ← band newAa k.mask32
-
-  let riNext ← iadd ri k.c1
-  jump roundHdr.ref [riNext, newA, ra, rb, rc, newE, re, rf, rg]
-
-  pure roundHdr
-
--- Add a-h back to H_working, then jump to outer loop
-def emitAddBack (k : Consts) (addBackBlk : DeclaredBlock)
-    (outerHdr : DeclaredBlock) : IRBuilder Unit := do
-  startBlock addBackBlk
-  let abBlkIdx := addBackBlk.param 0
-  let abA := addBackBlk.param 1
-  let abB := addBackBlk.param 2
-  let abC := addBackBlk.param 3
-  let abD := addBackBlk.param 4
-  let abE := addBackBlk.param 5
-  let abF := addBackBlk.param 6
-  let abG := addBackBlk.param 7
-  let abH := addBackBlk.param 8
+      return [riNext, newA, ra, rb, rc, newE, re, rf, rg])
+/-- The round result added back into the working hash. -/
+def emitAddBack (k : Consts)
+    (abA abB abC abD abE abF abG abH : R) : M Unit := do
 
   let oldH0 ← fldLoad32At k.ptr f.H_work 0
   let newH0 ← iadd oldH0 abA
@@ -416,12 +395,9 @@ def emitAddBack (k : Consts) (addBackBlk : DeclaredBlock)
   let rH7 ← ireduce32 mH7
   fldStore32At k.ptr f.H_work 28 rH7
 
-  let nextBlkIdx ← iadd abBlkIdx k.c1
-  jump outerHdr.ref [nextBlkIdx]
 
 -- Step 6: Hex formatting and file output
-def emitHexFormat (k : Consts) (fnWrite : FnRef) (hexBlk : DeclaredBlock) : IRBuilder Unit := do
-  startBlock hexBlk
+def emitHexFormat (k : Consts) (fnWrite : FnRef) : M Unit := do
   let hWorkC ← fldOffset f.H_work
   let hexOutC ← fldOffset f.hexOutput
   let hexTblC ← fldOffset f.hexTable
@@ -431,10 +407,10 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) (hexBlk : DeclaredBlock) : IRBu
   let c3' ← iconst64 3
   -- Outer: for each of 8 H_work words, accumulating hex output byte offset.
   -- Inner: for each of 4 bytes per word, write two hex chars and advance by 2.
-  let totalChars ← forLoopAcc .i64 .i64 k.c8 k.zero fun hwi hcp => do
+  let totalChars ← forLoopAcc k.c8 k.zero fun hwi hcp => do
     let hwAbs ← iadd k.ptr (← iadd hWorkC (← imul hwi k.c4))
     let wordVal ← uload32_64 hwAbs
-    forLoopAcc .i64 .i64 k.c4 hcp fun hbi hcpI => do
+    forLoopAcc k.c4 hcp fun hbi hcpI => do
       let shift ← isub c3' hbi
       let byteVal ← band (← ushr wordVal (← imul shift k.c8)) cFF
       let hiChar ← uload8_64 (← iadd k.ptr (← iadd hexTblC (← ushr byteVal k.c4)))
@@ -448,24 +424,28 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) (hexBlk : DeclaredBlock) : IRBu
   let outLen ← iadd totalChars k.c1
   let outFname ← fldOffset f.outputFilename
   let outData ← fldOffset f.hexOutput
-  let _ ← call fnWrite [k.ptr, outFname, outData, k.zero, outLen]
-  ret
+  let _ ← call fnWrite.id [k.ptr, outFname, outData, k.zero, outLen]
 
 -- Main builder: compose the sub-builders
 set_option maxRecDepth 2048 in
-def clifIrSource : Program := buildProgram do
-  let fnRead ← declareFileRead
-  let fnWrite ← declareFileWrite
+/-- The externals every emitted function declares, in one order. -/
+def ffiEnv : (FnRef × FnRef) × FnEnv := envOf (do
+  let rd ← declareFileRead
+  let wr ← declareFileWrite
+  pure (rd, wr))
+def fnRead : FnRef := ffiEnv.1.1
+def fnWrite : FnRef := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
 
-  let ptr ← entryBlock
+def mainCode : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
 
-  -- Step 1: Read input file
   let fileSize ← fldReadFile ptr fnRead f.inputFilename f.fileData
   let dataOff ← fldOffset f.fileData
   let zero ← iconst64 0
   fldStore ptr f.fileSize fileSize
 
-  -- Common constants
   let c1 ← iconst64 1
   let c4 ← iconst64 4
   let c8 ← iconst64 8
@@ -479,56 +459,39 @@ def clifIrSource : Program := buildProgram do
   let c13 ← iconst64 13
   let c24 ← iconst64 24
 
-  let k : Consts := {
-    ptr, zero, c1, c3, c4, c7, c8, c10, c13, c16, c24, c32, c64, mask32, dataOff
-  }
+  let k : Consts :=
+    { ptr := ptr, zero := zero, c1 := c1, c3 := c3, c4 := c4, c7 := c7,
+      c8 := c8, c10 := c10, c13 := c13, c16 := c16, c24 := c24, c32 := c32,
+      c64 := c64, mask32 := mask32, dataOff := dataOff }
 
-  -- Step 2: Padding
   let (_, numBlocks) ← emitPadding k fileSize
-
-  -- Step 3: Copy H_initial → H_working
   emitCopyH k
 
-  -- Step 4: Outer loop over blocks
-  let hexBlk ← declareBlock []
-  let outerHdr ← declareBlock [.i64]
-  let blkIdx := outerHdr.param 0
-  let outerBody ← declareBlock []
+  -- Each 64-byte block expanded to its message schedule, compressed, and added
+  -- back into the working hash.
+  let _ ← wloop1 zero
+    (head := fun blkIdx => return (contIf .ult blkIdx numBlocks, ([] : List R), ()))
+    (body := fun blkIdx _ => do
+      let blkBase ← iadd dataOff (← imul blkIdx c64)
+      emitLoadW k blkBase
+      emitExpandW k
+      let va ← fldLoad32At ptr f.H_work 0
+      let vb ← fldLoad32At ptr f.H_work 4
+      let vc ← fldLoad32At ptr f.H_work 8
+      let vd ← fldLoad32At ptr f.H_work 12
+      let ve ← fldLoad32At ptr f.H_work 16
+      let vf ← fldLoad32At ptr f.H_work 20
+      let vg ← fldLoad32At ptr f.H_work 24
+      let vh ← fldLoad32At ptr f.H_work 28
+      let r ← emitCompressionRound k va vb vc vd ve vf vg vh
+      emitAddBack k (r.headD 0) (r.getD 1 0) (r.getD 2 0) (r.getD 3 0)
+        (r.getD 4 0) (r.getD 5 0) (r.getD 6 0) (r.getD 7 0)
+      return [← iadd blkIdx c1])
 
-  jump outerHdr.ref [zero]
-  startBlock outerHdr
-  let outerDone ← icmp .uge blkIdx numBlocks
-  brif outerDone hexBlk.ref [] outerBody.ref []
+  emitHexFormat k fnWrite
 
-  startBlock outerBody
-  let blkOff ← imul blkIdx c64
-  let blkBase ← iadd dataOff blkOff
-
-  -- Load W[0..15]
-  emitLoadW k blkBase
-
-  -- Expand W[16..63]
-  emitExpandW k
-
-  -- Init working vars a-h (bounds-checked at compile time: 0..28 + 4 ≤ 32)
-  let va ← fldLoad32At ptr f.H_work 0
-  let vb ← fldLoad32At ptr f.H_work 4
-  let vc ← fldLoad32At ptr f.H_work 8
-  let vd ← fldLoad32At ptr f.H_work 12
-  let ve ← fldLoad32At ptr f.H_work 16
-  let vf ← fldLoad32At ptr f.H_work 20
-  let vg ← fldLoad32At ptr f.H_work 24
-  let vh ← fldLoad32At ptr f.H_work 28
-
-  -- 64-round compression
-  let addBackBlk ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
-  let _ ← emitCompressionRound k blkIdx va vb vc vd ve vf vg vh addBackBlk
-
-  -- Add a-h back to H_working
-  emitAddBack k addBackBlk outerHdr
-
-  -- Step 6: Hex formatting
-  emitHexFormat k fnWrite hexBlk
+def clifIrSource : Program :=
+  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams mainCode]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction (generated from layout)

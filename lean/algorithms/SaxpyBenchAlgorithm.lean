@@ -3,6 +3,8 @@ import AlgorithmLib
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
+open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.PTX
 
 namespace Algorithm
@@ -71,10 +73,20 @@ def layoutMeta : LayoutMeta := mkLayout.2
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.IR in
-def clifIrSource : Program := buildProgram do
-  let cuda ← declareCudaFFI
-  let fnWr ← declareFileWrite
-  let ptr  ← entryBlock
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The CUDA entry points then `cl_file_write`, in callee-table order. -/
+def ffiEnv : (IR.CudaSetup × FnRef) × FnEnv := envOf (do
+  let c ← declareCudaFFI
+  let w ← declareFileWrite
+  pure (c, w))
+def cuda : IR.CudaSetup := ffiEnv.1.1
+def fnWr : FnRef := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
 
   -- Init CUDA context
   cudaInit cuda ptr
@@ -117,11 +129,15 @@ def clifIrSource : Program := buildProgram do
   -- Write y to verify file
   let fnameOff ← iconst64 f.filename.offset
   let zero64   ← iconst64 0
-  let _ ← call fnWr [ptr, fnameOff, yOff, zero64, bufSz]
+  let _ ← call fnWr.id [ptr, fnameOff, yOff, zero64, bufSz]
 
   -- Cleanup
   cudaCleanup cuda ptr
-  ret
+
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIrSource : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 -- ---------------------------------------------------------------------------
 -- Payloads

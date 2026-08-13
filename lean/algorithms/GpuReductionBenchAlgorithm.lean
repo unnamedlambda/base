@@ -4,6 +4,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
 namespace GpuReductionBench
@@ -39,19 +40,33 @@ def wgslShader : String :=
       ifB (lidX .== litU 0) do
         assign (arrIdx data (inputN + widX)) (arrIdxN sdata (litU 0))
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The GPU entry points, in the order the callee table numbers them. -/
+def env : FnEnv := (envOf (do
+  let _ ← declareFFI "cl_gpu_init"            [.i64]                         none
+  let _ ← declareFFI "cl_gpu_create_buffer"   [.i64, .i64]                   (some .i32)
+  let _ ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32]       (some .i32)
+  let _ ← declareFFI "cl_gpu_upload_ptr"      [.i64, .i32, .i64, .i64]       (some .i32)
+  let _ ← declareFFI "cl_gpu_dispatch"        [.i64, .i32, .i32, .i32, .i32] (some .i32)
+  let _ ← declareFFI "cl_gpu_download_ptr"    [.i64, .i32, .i64, .i64, .i64] (some .i32)
+  let _ ← declareFFI "cl_gpu_cleanup"         [.i64]                         none)).2
+
+def fnInit : Nat := 0
+def fnCreateBuffer : Nat := 1
+def fnCreatePipeline : Nat := 2
+def fnUploadPtr : Nat := 3
+def fnDispatch : Nat := 4
+def fnDownloadPtr : Nat := 5
+def fnCleanup : Nat := 6
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
   let outPtr  ← load64 (← absAddr ptr 0x28)
 
-  let fnInit          ← declareFFI "cl_gpu_init"            [.i64]                    none
-  let fnCreateBuffer  ← declareFFI "cl_gpu_create_buffer"   [.i64, .i64]             (some .i32)
-  let fnCreatePipeline← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
-  let fnUploadPtr     ← declareFFI "cl_gpu_upload_ptr"      [.i64, .i32, .i64, .i64] (some .i32)
-  let fnDispatch      ← declareFFI "cl_gpu_dispatch"        [.i64, .i32, .i32, .i32, .i32] (some .i32)
-  let fnDownloadPtr   ← declareFFI "cl_gpu_download_ptr"    [.i64, .i32, .i64, .i64, .i64] (some .i32)
-  let fnCleanup       ← declareFFI "cl_gpu_cleanup"         [.i64]                    none
 
   let ctxSlotPtr ← absAddr ptr 8
   callVoid fnInit [ctxSlotPtr]
@@ -77,9 +92,12 @@ def mainFn : IRBuilder Unit := do
   let _ ← call fnDownloadPtr [ctxPtr, bufId, dataLen, outPtr, dlSize]
 
   callVoid fnCleanup [ctxSlotPtr]
-  ret
 
-def clifIR : Program := buildProgram mainFn
+
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def wgslBytes : List UInt8 :=
   wgslShader.toUTF8.toList ++ [0]

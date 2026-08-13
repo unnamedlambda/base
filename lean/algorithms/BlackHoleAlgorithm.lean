@@ -2,6 +2,8 @@ import AlgorithmLib
 set_option maxRecDepth 8192
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.PTX
 
 namespace Algorithm
@@ -1423,48 +1425,61 @@ def pixelsOff : Nat := bmpHeaderOff + 54
 def hdrPixelBytes (spec : BlackHoleSpec) : Nat := pixelCount spec * 16
 
 open AlgorithmLib.IR in
-def clifIrSource (spec : BlackHoleSpec) : Program := buildProgram do
-  let fnWrite ← declareFileWrite
-  let cuda ← declareCudaFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 
-  let ptr ← entryBlock
-  cudaInit cuda ptr
-  -- Allocate device buffers: HDR scratch (RGB f32, padded to 16 B/pixel)
-  -- and final BGRA u32 output.
-  let hdrSz ← iconst64 (hdrPixelBytes spec)
-  let bgraSz ← iconst64 (pixelBytes spec)
-  let hdrBuf ← cudaCreateBuffer cuda ptr hdrSz
-  let bgraBuf ← cudaCreateBuffer cuda ptr bgraSz
-  -- Write the two binding descriptors into host memory at the
-  -- pre-reserved offsets.  Each is just a packed list of i32
-  -- buffer IDs; the FFI side reads N=`nBufs` of them.
-  storeI32 hdrBuf (← absAddr ptr bindOffA)
-  storeI32 hdrBuf (← absAddr ptr bindOffB)
-  storeI32 bgraBuf (← absAddr ptr (bindOffB + 4))
-  -- Launch kernel A: HDR render.
-  let ptxOffV ← iconst64 ptxOff
-  let nameAV ← iconst64 nameOffRender
-  let nBufs1 ← iconst32 1
-  let bindAV ← iconst64 bindOffA
-  let gridX ← iconst32 ((imageWidth spec + 15) / 16)
-  let gridY ← iconst32 ((imageHeight spec + 15) / 16)
-  let one32 ← iconst32 1
-  let blk16 ← iconst32 16
-  let _ ← cudaLaunchNamed cuda ptr ptxOffV nameAV nBufs1 bindAV gridX gridY one32 blk16 blk16 one32
-  let _ ← cudaSync cuda ptr
-  -- Launch kernel B: bloom composite (HDR + bloom → BGRA).
-  let nameBV ← iconst64 nameOffComposite
-  let nBufs2 ← iconst32 2
-  let bindBV ← iconst64 bindOffB
-  let _ ← cudaLaunchNamed cuda ptr ptxOffV nameBV nBufs2 bindBV gridX gridY one32 blk16 blk16 one32
-  let _ ← cudaSync cuda ptr
-  -- Download final BGRA pixels and write the BMP file.
-  let pxOffV ← iconst64 pixelsOff
-  let _ ← cudaDownload cuda ptr bgraBuf pxOffV bgraSz
-  cudaCleanup cuda ptr
-  let total ← iconst64 (54 + pixelBytes spec)
-  let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
-  ret
+/-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
+def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := envOf (do
+  let w ← declareFileWrite
+  let c ← declareCudaFFI
+  pure (w, c))
+def fnWrite : FnRef := ffiEnv.1.1
+def cuda : IR.CudaSetup := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
+
+def code (spec : BlackHoleSpec) : HProg.Code :=
+  HProg.Sur.build env HProg.ptrParams do
+    let ptr := basePtr
+    cudaInit cuda ptr
+    -- Allocate device buffers: HDR scratch (RGB f32, padded to 16 B/pixel)
+    -- and final BGRA u32 output.
+    let hdrSz ← iconst64 (hdrPixelBytes spec)
+    let bgraSz ← iconst64 (pixelBytes spec)
+    let hdrBuf ← cudaCreateBuffer cuda ptr hdrSz
+    let bgraBuf ← cudaCreateBuffer cuda ptr bgraSz
+    -- Write the two binding descriptors into host memory at the
+    -- pre-reserved offsets.  Each is just a packed list of i32
+    -- buffer IDs; the FFI side reads N=`nBufs` of them.
+    store hdrBuf (← absAddr ptr bindOffA)
+    store hdrBuf (← absAddr ptr bindOffB)
+    store bgraBuf (← absAddr ptr (bindOffB + 4))
+    -- Launch kernel A: HDR render.
+    let ptxOffV ← iconst64 ptxOff
+    let nameAV ← iconst64 nameOffRender
+    let nBufs1 ← iconst32 1
+    let bindAV ← iconst64 bindOffA
+    let gridX ← iconst32 ((imageWidth spec + 15) / 16)
+    let gridY ← iconst32 ((imageHeight spec + 15) / 16)
+    let one32 ← iconst32 1
+    let blk16 ← iconst32 16
+    let _ ← cudaLaunchNamed cuda ptr ptxOffV nameAV nBufs1 bindAV gridX gridY one32 blk16 blk16 one32
+    let _ ← cudaSync cuda ptr
+    -- Launch kernel B: bloom composite (HDR + bloom → BGRA).
+    let nameBV ← iconst64 nameOffComposite
+    let nBufs2 ← iconst32 2
+    let bindBV ← iconst64 bindOffB
+    let _ ← cudaLaunchNamed cuda ptr ptxOffV nameBV nBufs2 bindBV gridX gridY one32 blk16 blk16 one32
+    let _ ← cudaSync cuda ptr
+    -- Download final BGRA pixels and write the BMP file.
+    let pxOffV ← iconst64 pixelsOff
+    let _ ← cudaDownload cuda ptr bgraBuf pxOffV bgraSz
+    cudaCleanup cuda ptr
+    let total ← iconst64 (54 + pixelBytes spec)
+    let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
+
+
+def clifIrSource (spec : BlackHoleSpec) : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code spec)]
 
 def payloads (spec : BlackHoleSpec) : List UInt8 :=
   let reserved := zeros ptxOff

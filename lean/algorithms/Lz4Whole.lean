@@ -98,14 +98,14 @@ theorem shipped64_run_correct (inPtr outPtr : Nat) (smemB : List UInt8)
 open AlgorithmLib.Clif in
 /-- The trip count of the loop the emitted host program runs its launch in. -/
 def emittedLaunches (b : Nat) : Nat :=
-  match loopsOf ((warpBuilder (WP.mk b)).run {}).2 with
+  match loopsOf (warpFn (WP.mk b)).asState with
   | [l] => l.trip
   | _ => 0
 
 open AlgorithmLib.Clif in
 /-- The grid the emitted host program launches with. -/
 def emittedGrid (b : Nat) : Option Int :=
-  match (launchesOf ((warpBuilder (WP.mk b)).run {}).2).map
+  match (launchesOf (warpFn (WP.mk b)).asState).map
       (fun r => (r.gridX, r.blockX)) with
   | [_, (g, _)] => g
   | _ => none

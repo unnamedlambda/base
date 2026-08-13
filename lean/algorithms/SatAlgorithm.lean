@@ -32,822 +32,390 @@ def decStack_off : Nat := clauseIndex_off + maxClauses * 8
 def solver_scratch_off : Nat := decStack_off + maxVars * 8
 def totalMemory : Nat := solver_scratch_off + 0x10000
 
--- ---------------------------------------------------------------------------
--- CLIF IR via DSL — split into sub-functions
--- ---------------------------------------------------------------------------
-
 open AlgorithmLib.IR
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 
--- Shared constants
+def ffiEnv : (FnRef × FnRef) × FnEnv :=
+  envOf (do
+    let rd ← declareFileRead
+    let wr ← declareFileWrite
+    return (rd, wr))
+
+def fnRead : FnRef := ffiEnv.1.1
+def fnWrite : FnRef := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
+
+/-- The constants and base addresses the whole body reads, made once in the
+    entry block. -/
 structure K where
-  ptr : Val
-  c0 : Val
-  c1 : Val
-  c4 : Val
-  c8 : Val
-  c10 : Val
-  c32 : Val
-  c45 : Val
-  c48 : Val
-  c58 : Val
-  assignBase : Val
-  cnfOffV : Val
-  dbOffV : Val
-  clIdxOffV : Val
-  trailOffV : Val
-  outOffV : Val
-  decStackV : Val
-  numVarsAddr : Val
-  clauseCountAddr : Val
-  resultFlagAddr : Val
-  bytesRead : Val
-  fnWrite : FnRef
+  ptr : R
+  z8 : R
+  c0 : R
+  c1 : R
+  c2 : R
+  cM1 : R
+  c4 : R
+  c8 : R
+  c9 : R
+  c10 : R
+  c13 : R
+  c32 : R
+  c45 : R
+  c48 : R
+  c58 : R
+  c99 : R
+  c112 : R
+  assignBase : R
+  cnfOffV : R
+  dbOffV : R
+  clIdxOffV : R
+  trailOffV : R
+  outOffV : R
+  decStackV : R
+  numVarsAddr : R
+  numClausesAddr : R
+  clauseCountAddr : R
+  resultFlagAddr : R
+  bytesRead : R
 
--- Phase 1: Zero assignment array
-def emitZeroAssign (k : K) (doneBlk : DeclaredBlock) : IRBuilder Unit := do
-  let hdr ← declareBlock [.i64]
-  let body ← declareBlock []
-  let maxV ← iconst64 maxVars
-  jump hdr.ref [k.c0]
-  startBlock hdr
-  let i := hdr.param 0
-  let done ← icmp .uge i maxV
-  brif done doneBlk.ref [] body.ref []
-  startBlock body
-  let addr ← iadd k.assignBase i
-  istore8 k.c0 addr
-  let next ← iadd i k.c1
-  jump hdr.ref [next]
+/-- The address of element `idx` of the region starting at relative `base`. -/
+def atOff (k : K) (base idx : R) : M R := do iadd k.ptr (← iadd base idx)
 
--- Phase 2a: Skip to end of line
-def emitSkipLine (k : K) (skipLineBlk newLineBlk doneBlk : DeclaredBlock) : IRBuilder Unit := do
-  let body ← declareBlock []
-  startBlock skipLineBlk
-  let pos := skipLineBlk.param 0
-  let dbp := skipLineBlk.param 1
-  let eof ← icmp .uge pos k.bytesRead
-  brif eof doneBlk.ref [] body.ref []
-  startBlock body
-  let relOff ← iadd k.cnfOffV pos
-  let addr ← iadd k.ptr relOff
-  let byte ← uload8_64 addr
-  let isNl ← icmp .eq byte k.c10
-  let pos1 ← iadd pos k.c1
-  brif isNl newLineBlk.ref [pos1, dbp] skipLineBlk.ref [pos1, dbp]
+/-- The CNF text byte at `pos`. -/
+def cnfByte (k : K) (pos : R) : M R := do
+  uload8_64 (← atOff k k.cnfOffV pos)
 
--- Phase 2b: New line dispatcher
-def emitNewLine (k : K) (newLineBlk skipLineBlk headerBlk clauseBlk doneBlk : DeclaredBlock) : IRBuilder Unit := do
-  let checkByte ← declareBlock []
-  let chkP ← declareBlock []
-  let chkNl ← declareBlock []
-  let chkCr ← declareBlock []
-  let chkSp ← declareBlock []
-  let chkTab ← declareBlock []
+/-- Nonzero when `byte` is an ASCII digit. -/
+def isDigitByte (k : K) (byte : R) : M R := do
+  band (← icmp .uge byte k.c48) (← icmp .ult byte k.c58)
 
-  startBlock newLineBlk
-  let pos := newLineBlk.param 0
-  let dbp := newLineBlk.param 1
-  let eof ← icmp .uge pos k.bytesRead
-  brif eof doneBlk.ref [] checkByte.ref []
+-- ---------------------------------------------------------------------------
+-- Parser
+-- ---------------------------------------------------------------------------
 
-  startBlock checkByte
-  let relOff ← iadd k.cnfOffV pos
-  let addr ← iadd k.ptr relOff
-  let byte ← uload8_64 addr
-  let c99 ← iconst64 99
-  let isC ← icmp .eq byte c99
-  brif isC skipLineBlk.ref [pos, dbp] chkP.ref []
+/-- Advance past the next newline, or to the end of the text. -/
+def skipLine (k : K) (start : R) : M R := do
+  let e ← wloop1 start
+    (head := fun p => return (exitIf .uge p k.bytesRead, [p], ()))
+    (body := fun p _ => do
+      let byte ← cnfByte k p
+      let p1 ← iaddImm p 1
+      let _ ← ifte .eq byte k.c10 (do brk [p1]; pure []) (pure [])
+      return [p1])
+  return e.headD 0
 
-  startBlock chkP
-  let c112 ← iconst64 112
-  let isP ← icmp .eq byte c112
-  brif isP headerBlk.ref [pos, dbp] chkNl.ref []
+/-- Advance to the next digit, or to the end of the text. -/
+def skipToDigit (k : K) (start : R) : M R := do
+  let e ← wloop1 start
+    (head := fun p => return (exitIf .uge p k.bytesRead, [p], ()))
+    (body := fun p _ => do
+      let d ← isDigitByte k (← cnfByte k p)
+      let _ ← ifte .ne d k.z8 (do brk [p]; pure []) (pure [])
+      return [← iaddImm p 1])
+  return e.headD 0
 
-  startBlock chkNl
-  let isNl ← icmp .eq byte k.c10
-  let pos1 ← iadd pos k.c1
-  brif isNl newLineBlk.ref [pos1, dbp] chkCr.ref []
+/-- Read a run of digits as an unsigned decimal; the result is the position of
+    the first byte that is not one, and the value. -/
+def parseDigits (k : K) (start : R) : M (R × R) := do
+  let e ← wloop2 start k.c0
+    (head := fun p a => return (exitIf .uge p k.bytesRead, [p, a], ()))
+    (body := fun p a _ => do
+      let byte ← cnfByte k p
+      let d ← isDigitByte k byte
+      let _ ← ifte .eq d k.z8 (do brk [p, a]; pure []) (pure [])
+      let a' ← iadd (← imul a k.c10) (← isub byte k.c48)
+      return [← iaddImm p 1, a'])
+  return (e.headD 0, e.getD 1 0)
 
-  startBlock chkCr
-  let c13 ← iconst64 13
-  let isCr ← icmp .eq byte c13
-  brif isCr newLineBlk.ref [pos1, dbp] chkSp.ref []
+/-- `p cnf <vars> <clauses>`; `pos` is at the `p`. Text that runs out mid-header
+    leaves the counts at the zero the entry block stored. -/
+def parseHeader (k : K) (pos : R) : M R := do
+  let pa ← skipToDigit k (← iaddImm pos 1)
+  let (pb, nv) ← parseDigits k pa
+  store nv k.numVarsAddr
+  let pc ← skipToDigit k pb
+  let (pd, nc) ← parseDigits k pc
+  store nc k.numClausesAddr
+  skipLine k pd
 
-  startBlock chkSp
-  let isSp ← icmp .eq byte k.c32
-  brif isSp newLineBlk.ref [pos1, dbp] chkTab.ref []
+/-- One clause, terminated by `0`, a newline, or the end of the text. The
+    result is the position after it and the next free database offset — the
+    same offset when the clause held no literals. -/
+def parseClause (k : K) (pos dbp : R) : M (R × R) := do
+  let e ← wloop [pos, ← iadd dbp k.c4, k.c0]
+    (head := fun cs => return (exitIf .uge (cs.headD 0) k.bytesRead, cs, ()))
+    (body := fun cs _ => do
+      let p := cs.headD 0
+      let lit := cs.getD 1 0
+      let cnt := cs.getD 2 0
+      let byte ← cnfByte k p
+      let p1 ← iaddImm p 1
+      let _ ← ifte .eq byte k.c10 (do brk [p1, lit, cnt]; pure [])
+        (ifte .eq byte k.c13 (do brk [p1, lit, cnt]; pure [])
+          (ifte .eq byte k.c32 (do continueWith [p1, lit, cnt]; pure [])
+            (ifte .eq byte k.c9 (do continueWith [p1, lit, cnt]; pure [])
+              (do
+                let isMinus ← icmp .eq byte k.c45
+                let (pEnd, acc) ← parseDigits k (← select isMinus p1 p)
+                let _ ← ifte .eq acc k.c0 (do brk [pEnd, lit, cnt]; pure []) (pure [])
+                let litVal ← select isMinus (← ineg acc) acc
+                storeI32 (← ireduce32 litVal) (← atOff k k.dbOffV lit)
+                continueWith [pEnd, ← iaddImm lit 4, ← iaddImm cnt 1]
+                pure []))))
+      return cs)
+  let cnt := e.getD 2 0
+  let r ← ifte .eq cnt k.c0 (return [dbp])
+    (do
+      storeI32 (← ireduce32 cnt) (← atOff k k.dbOffV dbp)
+      let cc ← load64 k.clauseCountAddr
+      store dbp (← atOff k k.clIdxOffV (← imul cc k.c8))
+      store (← iadd cc k.c1) k.clauseCountAddr
+      return [e.getD 1 0])
+  return (e.headD 0, r.headD 0)
 
-  startBlock chkTab
-  let c9 ← iconst64 9
-  let isTab ← icmp .eq byte c9
-  brif isTab newLineBlk.ref [pos1, dbp] clauseBlk.ref [pos, dbp]
+/-- The whole file: one loop whose body dispatches on the first byte of a line.
+    Every state the DIMACS grammar has returns here, so there is nothing else
+    to carry but the position and the next free database offset. -/
+def parseCnf (k : K) : M Unit := do
+  let _ ← wloop2 k.c0 k.c0
+    (head := fun p _ => return (exitIf .uge p k.bytesRead, ([] : List R), ()))
+    (body := fun p dbp _ => do
+      let byte ← cnfByte k p
+      let p1 ← iaddImm p 1
+      let _ ← ifte .eq byte k.c99
+        (do continueWith [← skipLine k p, dbp]; pure [])
+        (ifte .eq byte k.c112
+          (do continueWith [← parseHeader k p, dbp]; pure [])
+          (ifte .eq byte k.c10 (do continueWith [p1, dbp]; pure [])
+            (ifte .eq byte k.c13 (do continueWith [p1, dbp]; pure [])
+              (ifte .eq byte k.c32 (do continueWith [p1, dbp]; pure [])
+                (ifte .eq byte k.c9 (do continueWith [p1, dbp]; pure [])
+                  (do
+                    let (np, ndb) ← parseClause k p dbp
+                    continueWith [np, ndb]
+                    pure []))))))
+      return [p, dbp])
 
--- Phase 2c: Parse 'p cnf' header
-def emitHeader (k : K) (headerBlk skipLineBlk doneBlk : DeclaredBlock) : IRBuilder Unit := do
-  -- Skip non-digits to find nvars
-  let skipToNvars ← declareBlock [.i64, .i64]  -- pos, db_ptr
-  let skipNvBody ← declareBlock []
-  let skipNvAdvance ← declareBlock []
-  let parseNvars ← declareBlock [.i64, .i64, .i64]  -- pos, db_ptr, accum
-  let parseNvBody ← declareBlock []
-  let parseNvDigit ← declareBlock []
-  let nvarsDone ← declareBlock [.i64, .i64, .i64]
-  -- Skip non-digits to find nclauses
-  let skipToNcl ← declareBlock [.i64, .i64]
-  let skipNclBody ← declareBlock []
-  let skipNclAdvance ← declareBlock []
-  let parseNcl ← declareBlock [.i64, .i64, .i64]
-  let parseNclBody ← declareBlock []
-  let parseNclDigit ← declareBlock []
-  let nclDone ← declareBlock [.i64, .i64, .i64]
+-- ---------------------------------------------------------------------------
+-- DPLL solver
+-- ---------------------------------------------------------------------------
 
-  startBlock headerBlk
-  let hPos := headerBlk.param 0
-  let hDbp := headerBlk.param 1
-  let hPos1 ← iadd hPos k.c1  -- skip 'p'
-  jump skipToNvars.ref [hPos1, hDbp]
+/-- One pass over every clause, assigning what it forces. The result is a
+    status — `1` when a clause came out false under the current assignment —
+    the trail depth, and whether anything was assigned. -/
+def unitPropagate (k : K) (td0 : R) : M (R × R × R) := do
+  let e ← wloop [k.c0, td0, k.c0]
+    (head := fun cs => do
+      let cc ← load64 k.clauseCountAddr
+      return (exitIf .uge (cs.headD 0) cc, [k.c0, cs.getD 1 0, cs.getD 2 0], ()))
+    (body := fun cs _ => do
+      let idx := cs.headD 0
+      let td := cs.getD 1 0
+      let fu := cs.getD 2 0
+      let dbPtrOff ← load64 (← atOff k k.clIdxOffV (← imul idx k.c8))
+      let clLen ← uextend64 (← load32 (← atOff k k.dbOffV dbPtrOff))
+      -- Count the unassigned literals, remember the last of them, and note
+      -- whether any literal is already true.
+      let r ← wloop [← iadd dbPtrOff k.c4, clLen, k.c0, k.c0, k.c0]
+        (head := fun ls =>
+          return (exitIfEq (ls.getD 1 0) k.c0,
+                  [ls.getD 2 0, ls.getD 3 0, ls.getD 4 0], ()))
+        (body := fun ls _ => do
+          let off := ls.headD 0
+          let rem := ls.getD 1 0
+          let cu := ls.getD 2 0
+          let lastLit := ls.getD 3 0
+          let sat := ls.getD 4 0
+          let lit ← sextend64 (← load32 (← atOff k k.dbOffV off))
+          let isNeg ← icmp .slt lit k.c0
+          let absLit ← select isNeg (← ineg lit) lit
+          let aVal ← sload8_64 (← iadd k.assignBase (← isub absLit k.c1))
+          let off' ← iaddImm off 4
+          let rem' ← isub rem k.c1
+          let _ ← ifte .eq aVal k.c0
+            (do continueWith [off', rem', ← iaddImm cu 1, lit, sat]; pure [])
+            (do
+              let sign ← select (← icmp .sgt lit k.c0) k.c1 k.cM1
+              let sat' ← select (← icmp .eq sign aVal) k.c1 sat
+              continueWith [off', rem', cu, lastLit, sat']
+              pure [])
+          return ls)
+      let cu := r.headD 0
+      let lastLit := r.getD 1 0
+      let nextIdx ← iaddImm idx 1
+      let _ ← ifte .eq (r.getD 2 0) k.c1
+        (do continueWith [nextIdx, td, fu]; pure [])
+        (ifte .eq cu k.c0
+          (do brk [k.c1, td, fu]; pure [])
+          (ifte .eq cu k.c1
+            (do
+              let uAbs ← select (← icmp .slt lastLit k.c0) (← ineg lastLit) lastLit
+              let uAssign ← select (← icmp .sgt lastLit k.c0) k.c1 k.cM1
+              istore8 uAssign (← iadd k.assignBase (← isub uAbs k.c1))
+              storeI32 (← ireduce32 lastLit) (← atOff k k.trailOffV (← imul td k.c4))
+              continueWith [nextIdx, ← iaddImm td 1, k.c1]
+              pure [])
+            (do continueWith [nextIdx, td, fu]; pure [])))
+      return cs)
+  return (e.headD 0, e.getD 1 0, e.getD 2 0)
 
-  -- Skip non-digits for nvars
-  startBlock skipToNvars
-  let snPos := skipToNvars.param 0
-  let snDbp := skipToNvars.param 1
-  let snEof ← icmp .uge snPos k.bytesRead
-  brif snEof doneBlk.ref [] skipNvBody.ref []
-  startBlock skipNvBody
-  let snRelOff ← iadd k.cnfOffV snPos
-  let snAddr ← iadd k.ptr snRelOff
-  let snByte ← uload8_64 snAddr
-  let snGe0 ← icmp .uge snByte k.c48
-  let snLt10 ← icmp .ult snByte k.c58
-  let snIsDigit ← band snGe0 snLt10
-  brif snIsDigit parseNvars.ref [snPos, snDbp, k.c0] skipNvAdvance.ref []
-  startBlock skipNvAdvance
-  let snPos1 ← iadd snPos k.c1
-  jump skipToNvars.ref [snPos1, snDbp]
-
-  -- Parse nvars digits
-  startBlock parseNvars
-  let pnPos := parseNvars.param 0
-  let pnDbp := parseNvars.param 1
-  let pnAcc := parseNvars.param 2
-  let pnEof ← icmp .uge pnPos k.bytesRead
-  brif pnEof nvarsDone.ref [pnPos, pnDbp, pnAcc] parseNvBody.ref []
-  startBlock parseNvBody
-  let pnRelOff ← iadd k.cnfOffV pnPos
-  let pnAddr ← iadd k.ptr pnRelOff
-  let pnByte ← uload8_64 pnAddr
-  let pnGe0 ← icmp .uge pnByte k.c48
-  let pnLt10 ← icmp .ult pnByte k.c58
-  let pnIsDigit ← band pnGe0 pnLt10
-  brif pnIsDigit parseNvDigit.ref [] nvarsDone.ref [pnPos, pnDbp, pnAcc]
-  startBlock parseNvDigit
-  let pnAcc10 ← imul pnAcc k.c10
-  let pnDv ← isub pnByte k.c48
-  let pnAccNew ← iadd pnAcc10 pnDv
-  let pnPos1 ← iadd pnPos k.c1
-  jump parseNvars.ref [pnPos1, pnDbp, pnAccNew]
-
-  -- Store nvars, skip to nclauses
-  startBlock nvarsDone
-  let ndPos := nvarsDone.param 0
-  let ndDbp := nvarsDone.param 1
-  let ndVal := nvarsDone.param 2
-  store ndVal k.numVarsAddr
-  jump skipToNcl.ref [ndPos, ndDbp]
-
-  -- Skip non-digits for nclauses
-  startBlock skipToNcl
-  let scPos := skipToNcl.param 0
-  let scDbp := skipToNcl.param 1
-  let scEof ← icmp .uge scPos k.bytesRead
-  brif scEof doneBlk.ref [] skipNclBody.ref []
-  startBlock skipNclBody
-  let scRelOff ← iadd k.cnfOffV scPos
-  let scAddr ← iadd k.ptr scRelOff
-  let scByte ← uload8_64 scAddr
-  let scGe0 ← icmp .uge scByte k.c48
-  let scLt10 ← icmp .ult scByte k.c58
-  let scIsDigit ← band scGe0 scLt10
-  brif scIsDigit parseNcl.ref [scPos, scDbp, k.c0] skipNclAdvance.ref []
-  startBlock skipNclAdvance
-  let scPos1 ← iadd scPos k.c1
-  jump skipToNcl.ref [scPos1, scDbp]
-
-  -- Parse nclauses digits
-  startBlock parseNcl
-  let ncPos := parseNcl.param 0
-  let ncDbp := parseNcl.param 1
-  let ncAcc := parseNcl.param 2
-  let ncEof ← icmp .uge ncPos k.bytesRead
-  brif ncEof nclDone.ref [ncPos, ncDbp, ncAcc] parseNclBody.ref []
-  startBlock parseNclBody
-  let ncRelOff ← iadd k.cnfOffV ncPos
-  let ncAddr ← iadd k.ptr ncRelOff
-  let ncByte ← uload8_64 ncAddr
-  let ncGe0 ← icmp .uge ncByte k.c48
-  let ncLt10 ← icmp .ult ncByte k.c58
-  let ncIsDigit ← band ncGe0 ncLt10
-  brif ncIsDigit parseNclDigit.ref [] nclDone.ref [ncPos, ncDbp, ncAcc]
-  startBlock parseNclDigit
-  let ncAcc10 ← imul ncAcc k.c10
-  let ncDv ← isub ncByte k.c48
-  let ncAccNew ← iadd ncAcc10 ncDv
-  let ncPos1 ← iadd ncPos k.c1
-  jump parseNcl.ref [ncPos1, ncDbp, ncAccNew]
-
-  -- Store nclauses, skip to end of header line
-  startBlock nclDone
-  let ncdPos := nclDone.param 0
-  let ncdDbp := nclDone.param 1
-  let ncdVal := nclDone.param 2
-  let numClAddr ← absAddr k.ptr numClauses_off
-  store ncdVal numClAddr
-  jump skipLineBlk.ref [ncdPos, ncdDbp]
-
--- Phase 2d: Clause parser
-def emitClauseParser (k : K) (clauseBlk : DeclaredBlock)
-    (newLineBlk : DeclaredBlock) : IRBuilder Unit := do
-  -- Blocks
-  let wsHdr ← declareBlock [.i64, .i64, .i64, .i64]  -- pos, db_start, lit_ptr, lit_count
-  let wsBody ← declareBlock []
-  let endClause ← declareBlock [.i64, .i64, .i64, .i64]
-  let chkCr ← declareBlock []
-  let chkSp ← declareBlock []
-  let chkTab ← declareBlock []
-  let parseIntBlk ← declareBlock [.i64, .i64, .i64, .i64]
-  let digitLoop ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64]  -- pos,db,lit,cnt,accum,is_neg
-  let digitBody ← declareBlock []
-  let digitAccum ← declareBlock []
-  let intDone ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64]
-  let storeLit ← declareBlock []
-  let finalizeClause ← declareBlock []
-
-  startBlock clauseBlk
-  let cPos := clauseBlk.param 0
-  let cDbp := clauseBlk.param 1
-  let litPtr ← iadd cDbp k.c4
-  jump wsHdr.ref [cPos, cDbp, litPtr, k.c0]
-
-  -- Skip whitespace
-  startBlock wsHdr
-  let wPos := wsHdr.param 0
-  let wDb := wsHdr.param 1
-  let wLit := wsHdr.param 2
-  let wCnt := wsHdr.param 3
-  let eof ← icmp .uge wPos k.bytesRead
-  brif eof endClause.ref [wPos, wDb, wLit, wCnt] wsBody.ref []
-
-  startBlock wsBody
-  let relOff ← iadd k.cnfOffV wPos
-  let addr ← iadd k.ptr relOff
-  let byte ← uload8_64 addr
-  let pos1 ← iadd wPos k.c1
-  let isNl ← icmp .eq byte k.c10
-  brif isNl endClause.ref [pos1, wDb, wLit, wCnt] chkCr.ref []
-
-  startBlock chkCr
-  let c13 ← iconst64 13
-  let isCr ← icmp .eq byte c13
-  brif isCr endClause.ref [pos1, wDb, wLit, wCnt] chkSp.ref []
-
-  startBlock chkSp
-  let isSp ← icmp .eq byte k.c32
-  brif isSp wsHdr.ref [pos1, wDb, wLit, wCnt] chkTab.ref []
-
-  startBlock chkTab
-  let c9 ← iconst64 9
-  let isTab ← icmp .eq byte c9
-  brif isTab wsHdr.ref [pos1, wDb, wLit, wCnt] parseIntBlk.ref [wPos, wDb, wLit, wCnt]
-
-  -- Parse signed integer
-  startBlock parseIntBlk
-  let piPos := parseIntBlk.param 0
-  let piDb := parseIntBlk.param 1
-  let piLit := parseIntBlk.param 2
-  let piCnt := parseIntBlk.param 3
-  let piRelOff ← iadd k.cnfOffV piPos
-  let piAddr ← iadd k.ptr piRelOff
-  let piByte ← uload8_64 piAddr
-  let isMinus ← icmp .eq piByte k.c45
-  let posAfterSign ← iadd piPos k.c1
-  brif isMinus digitLoop.ref [posAfterSign, piDb, piLit, piCnt, k.c0, k.c1]
-              digitLoop.ref [piPos, piDb, piLit, piCnt, k.c0, k.c0]
-
-  -- Digit loop
-  startBlock digitLoop
-  let dPos := digitLoop.param 0
-  let dDb := digitLoop.param 1
-  let dLit := digitLoop.param 2
-  let dCnt := digitLoop.param 3
-  let dAcc := digitLoop.param 4
-  let dNeg := digitLoop.param 5
-  let dEof ← icmp .uge dPos k.bytesRead
-  brif dEof intDone.ref [dPos, dDb, dLit, dCnt, dAcc, dNeg] digitBody.ref []
-
-  startBlock digitBody
-  let dRelOff ← iadd k.cnfOffV dPos
-  let dAddr ← iadd k.ptr dRelOff
-  let dByte ← uload8_64 dAddr
-  let ge0 ← icmp .uge dByte k.c48
-  let lt10 ← icmp .ult dByte k.c58
-  let isDigit ← band ge0 lt10
-  brif isDigit digitAccum.ref [] intDone.ref [dPos, dDb, dLit, dCnt, dAcc, dNeg]
-
-  startBlock digitAccum
-  let acc10 ← imul dAcc k.c10
-  let dv ← isub dByte k.c48
-  let accNew ← iadd acc10 dv
-  let dPos1 ← iadd dPos k.c1
-  jump digitLoop.ref [dPos1, dDb, dLit, dCnt, accNew, dNeg]
-
-  -- Integer parsed
-  startBlock intDone
-  let idPos := intDone.param 0
-  let idDb := intDone.param 1
-  let idLit := intDone.param 2
-  let idCnt := intDone.param 3
-  let idAcc := intDone.param 4
-  let idNeg := intDone.param 5
-  let isZero ← icmp .eq idAcc k.c0
-  brif isZero endClause.ref [idPos, idDb, idLit, idCnt] storeLit.ref []
-
-  -- Store literal
-  startBlock storeLit
-  let negAcc ← ineg idAcc
-  let isNegFlag ← icmp .eq idNeg k.c1
-  let litVal ← select' isNegFlag negAcc idAcc
-  let litI32 ← ireduce32 litVal
-  let litRelAddr ← iadd k.dbOffV idLit
-  let litAbsAddr ← iadd k.ptr litRelAddr
-  store litI32 litAbsAddr
-  let litNext ← iadd idLit k.c4
-  let cntNext ← iadd idCnt k.c1
-  jump wsHdr.ref [idPos, idDb, litNext, cntNext]
-
-  -- End clause
-  startBlock endClause
-  let ecPos := endClause.param 0
-  let ecDb := endClause.param 1
-  let ecLit := endClause.param 2
-  let ecCnt := endClause.param 3
-  let isEmpty ← icmp .eq ecCnt k.c0
-  brif isEmpty newLineBlk.ref [ecPos, ecDb] finalizeClause.ref []
-
-  startBlock finalizeClause
-  let lenI32 ← ireduce32 ecCnt
-  let clRelAddr ← iadd k.dbOffV ecDb
-  let clAbsAddr ← iadd k.ptr clRelAddr
-  store lenI32 clAbsAddr
-  let cc ← load64 k.clauseCountAddr
-  let ccTimes8 ← imul cc k.c8
-  let idxOff ← iadd k.clIdxOffV ccTimes8
-  let idxAddr ← iadd k.ptr idxOff
-  store ecDb idxAddr
-  let cc1 ← iadd cc k.c1
-  store cc1 k.clauseCountAddr
-  jump newLineBlk.ref [ecPos, ecLit]
-
--- Phase 3a: Unit propagation scan
-def emitUnitPropScan (k : K) (scanHdr : DeclaredBlock)
-    (decideBlk conflictBlk upEntry : DeclaredBlock) : IRBuilder Unit := do
-  let scanDone ← declareBlock [.i64, .i64, .i64]
-  let evalClause ← declareBlock [.i64, .i64, .i64, .i64]
-  let litScan ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
-  let litBody ← declareBlock []
-  let litDone ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64, .i64, .i64]
-  let unsetBlk ← declareBlock []
-  let setBlk ← declareBlock []
-  let chkConflict ← declareBlock []
-  let chkUnit ← declareBlock []
-  let assignUnit ← declareBlock []
-  let skipClause ← declareBlock []
-
-  startBlock scanHdr
-  let sTd := scanHdr.param 0
-  let sDd := scanHdr.param 1
-  let sIdx := scanHdr.param 2
-  let sFu := scanHdr.param 3
-  let cc ← load64 k.clauseCountAddr
-  let done ← icmp .uge sIdx cc
-  brif done scanDone.ref [sTd, sDd, sFu] evalClause.ref [sTd, sDd, sIdx, sFu]
-
-  -- Evaluate clause
-  startBlock evalClause
-  let eTd := evalClause.param 0
-  let eDd := evalClause.param 1
-  let eIdx := evalClause.param 2
-  let eFu := evalClause.param 3
-  let idxOff ← imul eIdx k.c8
-  let idxRelAddr ← iadd k.clIdxOffV idxOff
-  let idxAbsAddr ← iadd k.ptr idxRelAddr
-  let dbPtrOff ← load64 idxAbsAddr
-  let clRelAddr ← iadd k.dbOffV dbPtrOff
-  let clAbsAddr ← iadd k.ptr clRelAddr
-  let clLen32 ← load32 clAbsAddr
-  let clLen ← uextend64 clLen32
-  let firstLit ← iadd dbPtrOff k.c4
-  jump litScan.ref [eTd, eDd, eIdx, eFu, firstLit, clLen, k.c0, k.c0, k.c0, k.c0]
-
-  -- Scan literal
-  startBlock litScan
-  let lTd := litScan.param 0
-  let lDd := litScan.param 1
-  let lIdx := litScan.param 2
-  let lFu := litScan.param 3
-  let lOff := litScan.param 4
-  let lRem := litScan.param 5
-  let lCF := litScan.param 6
-  let lCU := litScan.param 7
-  let lLast := litScan.param 8
-  let lSat := litScan.param 9
-  let remZero ← icmp .eq lRem k.c0
-  brif remZero litDone.ref [lTd, lDd, lIdx, lFu, lCF, lCU, lLast, lSat] litBody.ref []
-
-  startBlock litBody
-  let litRelAddr ← iadd k.dbOffV lOff
-  let litAbsAddr ← iadd k.ptr litRelAddr
-  let litI32 ← load32 litAbsAddr
-  let litI64 ← sextend64 litI32
-  let isNeg ← icmp .slt litI64 k.c0
-  let negLit ← ineg litI64
-  let absLit ← select' isNeg negLit litI64
-  let varIdx ← isub absLit k.c1
-  let assignAddr ← iadd k.assignBase varIdx
-  let assignVal ← sload8_64 assignAddr
-  let isUnset ← icmp .eq assignVal k.c0
-  brif isUnset unsetBlk.ref [] setBlk.ref []
-
-  startBlock unsetBlk
-  let cuNew ← iadd lCU k.c1
-  let offNext ← iadd lOff k.c4
-  let remNext ← isub lRem k.c1
-  jump litScan.ref [lTd, lDd, lIdx, lFu, offNext, remNext, lCF, cuNew, litI64, lSat]
-
-  startBlock setBlk
-  let posOne ← iconst64 1
-  let negOne ← iconst64 (-1)
-  let litPos ← icmp .sgt litI64 k.c0
-  let sign ← select' litPos posOne negOne
-  let isSatisfied ← icmp .eq sign assignVal
-  let newSat ← select' isSatisfied k.c1 lSat
-  let litFalse ← select' isSatisfied k.c0 k.c1
-  let newCF ← iadd lCF litFalse
-  let offNext2 ← iadd lOff k.c4
-  let remNext2 ← isub lRem k.c1
-  jump litScan.ref [lTd, lDd, lIdx, lFu, offNext2, remNext2, newCF, lCU, lLast, newSat]
-
-  -- Clause evaluation
-  startBlock litDone
-  let dTd := litDone.param 0
-  let dDd := litDone.param 1
-  let dIdx := litDone.param 2
-  let dFu := litDone.param 3
-  let dCF := litDone.param 4
-  let dCU := litDone.param 5
-  let dLast := litDone.param 6
-  let dSat := litDone.param 7
-  let nextIdx ← iadd dIdx k.c1
-  let clauseSat ← icmp .eq dSat k.c1
-  brif clauseSat scanHdr.ref [dTd, dDd, nextIdx, dFu] chkConflict.ref []
-
-  startBlock chkConflict
-  let noUnset ← icmp .eq dCU k.c0
-  brif noUnset conflictBlk.ref [dTd, dDd] chkUnit.ref []
-
-  startBlock chkUnit
-  let isUnit ← icmp .eq dCU k.c1
-  brif isUnit assignUnit.ref [] skipClause.ref []
-
-  startBlock assignUnit
-  let uNeg ← icmp .slt dLast k.c0
-  let uNegLit ← ineg dLast
-  let uAbs ← select' uNeg uNegLit dLast
-  let uVarIdx ← isub uAbs k.c1
-  let uPosOne ← iconst64 1
-  let uNegOne ← iconst64 (-1)
-  let uIsPos ← icmp .sgt dLast k.c0
-  let uAssign ← select' uIsPos uPosOne uNegOne
-  let uAddr ← iadd k.assignBase uVarIdx
-  istore8 uAssign uAddr
-  let tOff ← imul dTd k.c4
-  let tRelAddr ← iadd k.trailOffV tOff
-  let tAbsAddr ← iadd k.ptr tRelAddr
-  let uLitI32 ← ireduce32 dLast
-  store uLitI32 tAbsAddr
-  let newTd ← iadd dTd k.c1
-  jump scanHdr.ref [newTd, dDd, nextIdx, k.c1]
-
-  startBlock skipClause
-  jump scanHdr.ref [dTd, dDd, nextIdx, dFu]
-
-  -- Scan complete
-  startBlock scanDone
-  let sdTd := scanDone.param 0
-  let sdDd := scanDone.param 1
-  let sdFu := scanDone.param 2
-  let foundAny ← icmp .eq sdFu k.c1
-  brif foundAny upEntry.ref [sdTd, sdDd] decideBlk.ref [sdTd, sdDd]
-
--- Phase 3b: Decide
-def emitDecide (k : K) (decideBlk satBlk upEntry : DeclaredBlock) : IRBuilder Unit := do
-  let searchHdr ← declareBlock [.i64, .i64, .i64, .i64]
-  let checkVar ← declareBlock []
-  let tryTrue ← declareBlock []
-  let nextVar ← declareBlock []
-
-  startBlock decideBlk
-  let dTd := decideBlk.param 0
-  let dDd := decideBlk.param 1
+/-- Assign the lowest unassigned variable true and push a decision level, or
+    leave the solver loop with the satisfied flag when there is none. -/
+def decide (k : K) (td dd : R) : M Unit := do
   let nv ← load64 k.numVarsAddr
-  jump searchHdr.ref [dTd, dDd, k.c0, nv]
+  let e ← wloop1 k.c0
+    (head := fun vi => return (exitIf .uge vi nv, [vi], ()))
+    (body := fun vi _ => do
+      let aVal ← sload8_64 (← iadd k.assignBase vi)
+      let _ ← ifte .eq aVal k.c0 (do brk [vi]; pure []) (pure [])
+      return [← iaddImm vi 1])
+  let vi := e.headD 0
+  let _ ← ifte .uge vi nv
+    (do brk [k.c1]; pure [])
+    (do
+      store td (← atOff k k.decStackV (← imul dd k.c8))
+      istore8 k.c1 (← iadd k.assignBase vi)
+      storeI32 (← ireduce32 (← iaddImm vi 1)) (← atOff k k.trailOffV (← imul td k.c4))
+      continueWith [← iaddImm td 1, ← iaddImm dd 1]
+      pure [])
 
-  startBlock searchHdr
-  let sTd := searchHdr.param 0
-  let sDd := searchHdr.param 1
-  let sVi := searchHdr.param 2
-  let sNv := searchHdr.param 3
-  let allDone ← icmp .uge sVi sNv
-  brif allDone satBlk.ref [sTd] checkVar.ref []
+/-- Undo the trail entry at `i`, leaving its variable unassigned. -/
+def undoTrail (k : K) (i : R) : M Unit := do
+  let lit ← sextend64 (← load32 (← atOff k k.trailOffV (← imul i k.c4)))
+  let absLit ← select (← icmp .slt lit k.c0) (← ineg lit) lit
+  istore8 k.c0 (← iadd k.assignBase (← isub absLit k.c1))
 
-  startBlock checkVar
-  let aAddr ← iadd k.assignBase sVi
-  let aVal ← sload8_64 aAddr
-  let isUnset ← icmp .eq aVal k.c0
-  brif isUnset tryTrue.ref [] nextVar.ref []
+/-- Pop decision levels until one is found that was only tried true, and flip
+    it; with no level left the formula is unsatisfiable. The inner loop is the
+    only place a state of this solver goes back to itself. -/
+def handleConflict (k : K) (td dd : R) : M Unit := do
+  let r ← wloop2 td dd
+    (head := fun t d => return (exitIf .eq d k.c0, [k.c0, t, d], ()))
+    (body := fun t d _ => do
+      let ddM1 ← isub d k.c1
+      let savedTd ← load64 (← atOff k k.decStackV (← imul ddM1 k.c8))
+      let _ ← wloop1 (← isub t k.c1)
+        (head := fun i => return (exitIf .slt i savedTd, ([] : List R), ()))
+        (body := fun i _ => do
+          undoTrail k i
+          return [← isub i k.c1])
+      let decLit ← sextend64 (← load32 (← atOff k k.trailOffV (← imul savedTd k.c4)))
+      let decAbs ← select (← icmp .slt decLit k.c0) (← ineg decLit) decLit
+      let decVar ← isub decAbs k.c1
+      istore8 k.c0 (← iadd k.assignBase decVar)
+      let _ ← ifte .sgt decLit k.c0
+        (do
+          istore8 k.cM1 (← iadd k.assignBase decVar)
+          storeI32 (← ireduce32 (← ineg (← iaddImm decVar 1)))
+                   (← atOff k k.trailOffV (← imul savedTd k.c4))
+          brk [k.c1, ← iaddImm savedTd 1, ← iaddImm ddM1 1]
+          pure [])
+        (pure [])
+      return [savedTd, ddM1])
+  let _ ← ifte .eq (r.headD 0) k.c0
+    (do brk [k.c2]; pure [])
+    (do continueWith [r.getD 1 0, r.getD 2 0]; pure [])
 
-  startBlock tryTrue
-  let dsOff ← imul sDd k.c8
-  let dsRelAddr ← iadd k.decStackV dsOff
-  let dsAbsAddr ← iadd k.ptr dsRelAddr
-  store sTd dsAbsAddr
-  let aAddr2 ← iadd k.assignBase sVi
-  istore8 k.c1 aAddr2
-  let lit ← iadd sVi k.c1
-  let tOff ← imul sTd k.c4
-  let tRelAddr ← iadd k.trailOffV tOff
-  let tAbsAddr ← iadd k.ptr tRelAddr
-  let litI32 ← ireduce32 lit
-  store litI32 tAbsAddr
-  let newTd ← iadd sTd k.c1
-  let newDd ← iadd sDd k.c1
-  jump upEntry.ref [newTd, newDd]
+/-- The search: propagate, then either backtrack, propagate again, or decide.
+    The loop is left only by `brk`, carrying the flag the output phase reads. -/
+def solve (k : K) : M Unit := do
+  let e ← wloop2 k.c0 k.c0
+    (head := fun _ _ => return (exitIf .ne k.c0 k.c0, [k.c0], ()))
+    (body := fun td dd _ => do
+      let (status, td', fu) ← unitPropagate k td
+      let _ ← ifte .eq status k.c1
+        (do handleConflict k td' dd; pure [])
+        (ifte .eq fu k.c1
+          (do continueWith [td', dd]; pure [])
+          (do decide k td' dd; pure []))
+      return [td, dd])
+  store (e.headD 0) k.resultFlagAddr
 
-  startBlock nextVar
-  let vi1 ← iadd sVi k.c1
-  jump searchHdr.ref [sTd, sDd, vi1, sNv]
+-- ---------------------------------------------------------------------------
+-- Output
+-- ---------------------------------------------------------------------------
 
--- Phase 3c: Conflict/backtrack
-def emitConflict (k : K) (conflictBlk unsatBlk upEntry : DeclaredBlock) : IRBuilder Unit := do
-  let backtrack ← declareBlock []
-  let undoHdr ← declareBlock [.i64, .i64, .i64]
-  let undoBody ← declareBlock []
-  let undoDone ← declareBlock [.i64, .i64]
-  let tryFalseBlk ← declareBlock [.i64, .i64, .i64]
-
-  startBlock conflictBlk
-  let cTd := conflictBlk.param 0
-  let cDd := conflictBlk.param 1
-  let noDecisions ← icmp .eq cDd k.c0
-  brif noDecisions unsatBlk.ref [] backtrack.ref []
-
-  startBlock backtrack
-  let ddM1 ← isub cDd k.c1
-  let dsOff ← imul ddM1 k.c8
-  let dsRelAddr ← iadd k.decStackV dsOff
-  let dsAbsAddr ← iadd k.ptr dsRelAddr
-  let savedTd ← load64 dsAbsAddr
-  let undoStart ← isub cTd k.c1
-  jump undoHdr.ref [undoStart, savedTd, ddM1]
-
-  startBlock undoHdr
-  let uI := undoHdr.param 0
-  let uSaved := undoHdr.param 1
-  let uDd := undoHdr.param 2
-  let undoComplete ← icmp .slt uI uSaved
-  brif undoComplete undoDone.ref [uSaved, uDd] undoBody.ref []
-
-  startBlock undoBody
-  let tOff ← imul uI k.c4
-  let tRelAddr ← iadd k.trailOffV tOff
-  let tAbsAddr ← iadd k.ptr tRelAddr
-  let litI32 ← load32 tAbsAddr
-  let litI64 ← sextend64 litI32
-  let isNeg ← icmp .slt litI64 k.c0
-  let negLit ← ineg litI64
-  let absLit ← select' isNeg negLit litI64
-  let varIdx ← isub absLit k.c1
-  let aAddr ← iadd k.assignBase varIdx
-  istore8 k.c0 aAddr
-  let uIM1 ← isub uI k.c1
-  jump undoHdr.ref [uIM1, uSaved, uDd]
-
-  startBlock undoDone
-  let udSaved := undoDone.param 0
-  let udDd := undoDone.param 1
-  let tOff2 ← imul udSaved k.c4
-  let tRelAddr2 ← iadd k.trailOffV tOff2
-  let tAbsAddr2 ← iadd k.ptr tRelAddr2
-  let decLitI32 ← load32 tAbsAddr2
-  let decLitI64 ← sextend64 decLitI32
-  let isNeg2 ← icmp .slt decLitI64 k.c0
-  let negDecLit ← ineg decLitI64
-  let absDecLit ← select' isNeg2 negDecLit decLitI64
-  let decVarIdx ← isub absDecLit k.c1
-  let aAddr2 ← iadd k.assignBase decVarIdx
-  istore8 k.c0 aAddr2
-  let wasPositive ← icmp .sgt decLitI64 k.c0
-  brif wasPositive tryFalseBlk.ref [udSaved, udDd, decVarIdx] conflictBlk.ref [udSaved, udDd]
-
-  startBlock tryFalseBlk
-  let tfSaved := tryFalseBlk.param 0
-  let tfDd := tryFalseBlk.param 1
-  let tfVar := tryFalseBlk.param 2
-  let negOneV ← iconst64 (-1)
-  let tfAddr ← iadd k.assignBase tfVar
-  istore8 negOneV tfAddr
-  let posLit ← iadd tfVar k.c1
-  let negLitV ← ineg posLit
-  let tOff3 ← imul tfSaved k.c4
-  let tRelAddr3 ← iadd k.trailOffV tOff3
-  let tAbsAddr3 ← iadd k.ptr tRelAddr3
-  let negLitI32 ← ireduce32 negLitV
-  store negLitI32 tAbsAddr3
-  let newTd ← iadd tfSaved k.c1
-  let newDd2 ← iadd tfDd k.c1
-  jump upEntry.ref [newTd, newDd2]
-
--- Helper: emit a string as istore8 sequence
-def emitStringBytes (base : Val) (s : String) : IRBuilder Unit := do
-  let bytes := s.toList.map (·.toNat)
+/-- A literal string, one `istore8` per byte. -/
+def emitStringBytes (base : R) (s : String) : M Unit := do
+  let one ← iconst64 1
   let mut addr := base
-  let c1 ← iconst64 1
-  for b in bytes do
-    let bv ← iconst64 b
-    istore8 bv addr
-    addr ← iadd addr c1
+  for b in s.toList.map (·.toNat) do
+    istore8 (← iconst64 b) addr
+    addr := (← iadd addr one)
 
--- Phase 4: Output formatting
-def emitOutput (k : K) (outputBlk : DeclaredBlock) : IRBuilder Unit := do
-  let writeFileBlk ← declareBlock [.i64]
-  let satOutBlk ← declareBlock []
-  let unsatOutBlk ← declareBlock []
-  let varLoop ← declareBlock [.i64, .i64, .i64]
-  let varDone ← declareBlock [.i64]
-  let writeVar ← declareBlock []
-  let writeNeg ← declareBlock [.i64, .i64, .i64, .i64]
-  let writeDigits ← declareBlock [.i64, .i64, .i64, .i64]
-  let digitLoop ← declareBlock [.i64, .i64, .i64, .i64, .i64, .i64]
-  let digitBody ← declareBlock []
-  let emitDigit ← declareBlock []
-  let skipDigit ← declareBlock []
-  let writeSpace ← declareBlock [.i64, .i64, .i64]
-
-  startBlock outputBlk
+/-- The DIMACS answer line, written to the output file. -/
+def emitOutput (k : K) : M Unit := do
   let resFlag ← load64 k.resultFlagAddr
-  let isSat ← icmp .eq resFlag k.c1
-  brif isSat satOutBlk.ref [] unsatOutBlk.ref []
-
-  -- UNSAT
-  startBlock unsatOutBlk
   let outBase ← iadd k.ptr k.outOffV
-  emitStringBytes outBase "s UNSATISFIABLE\n"
-  let unsatLen ← iconst64 16
-  jump writeFileBlk.ref [unsatLen]
+  let len ← ifte .eq resFlag k.c1
+    (do
+      emitStringBytes outBase "s SATISFIABLE\nv "
+      let nv ← load64 k.numVarsAddr
+      let e ← wloop2 (← iconst64 16) k.c0
+        (head := fun off vi => return (exitIf .uge vi nv, [off], ()))
+        (body := fun off vi _ => do
+          let aVal ← sload8_64 (← iadd k.assignBase vi)
+          let signed ← ifte .sgt aVal k.c0 (return [off])
+            (do
+              istore8 k.c45 (← atOff k k.outOffV off)
+              return [← iaddImm off 1])
+          -- Decimal, most significant digit first, suppressing leading zeros.
+          let d ← wloop [signed.headD 0, ← iaddImm vi 1, ← iconst64 10000, k.c0]
+            (head := fun cs => return (exitIf .eq (cs.getD 2 0) k.c0, [cs.headD 0], ()))
+            (body := fun cs _ => do
+              let o := cs.headD 0
+              let rem := cs.getD 1 0
+              let dv := cs.getD 2 0
+              let started := cs.getD 3 0
+              let digit ← udiv rem dv
+              let rem' ← isub rem (← imul digit dv)
+              let nz ← uextend64 (← icmp .ne digit k.c0)
+              let last ← uextend64 (← icmp .eq dv k.c1)
+              let write ← bor (← bor started nz) last
+              let dv' ← udiv dv k.c10
+              let _ ← ifte .ne write k.c0
+                (do
+                  istore8 (← iadd digit k.c48) (← atOff k k.outOffV o)
+                  continueWith [← iaddImm o 1, rem', dv', k.c1]
+                  pure [])
+                (do continueWith [o, rem', dv', k.c0]; pure [])
+              return cs)
+          let o := d.headD 0
+          istore8 k.c32 (← atOff k k.outOffV o)
+          return [← iaddImm o 1, ← iaddImm vi 1])
+      let fOff := e.headD 0
+      istore8 k.c48 (← atOff k k.outOffV fOff)
+      istore8 k.c10 (← atOff k k.outOffV (← iaddImm fOff 1))
+      return [← iaddImm fOff 2])
+    (do
+      emitStringBytes outBase "s UNSATISFIABLE\n"
+      return [← iconst64 16])
+  let _ ← writeFile k.ptr fnWrite outputFilename_off out_off k.c0 (len.headD 0)
 
-  -- SAT
-  startBlock satOutBlk
-  let outBase2 ← iadd k.ptr k.outOffV
-  emitStringBytes outBase2 "s SATISFIABLE\nv "
-  let nv ← load64 k.numVarsAddr
-  let c16 ← iconst64 16
-  jump varLoop.ref [c16, k.c0, nv]
+-- ---------------------------------------------------------------------------
+-- Main body
+-- ---------------------------------------------------------------------------
 
-  -- Variable loop
-  startBlock varLoop
-  let vOff := varLoop.param 0
-  let vI := varLoop.param 1
-  let vNv := varLoop.param 2
-  let allDone ← icmp .uge vI vNv
-  brif allDone varDone.ref [vOff] writeVar.ref []
-
-  startBlock writeVar
-  let aAddr ← iadd k.assignBase vI
-  let aVal ← sload8_64 aAddr
-  let posLit ← iadd vI k.c1
-  let negLit ← ineg posLit
-  let isPos ← icmp .sgt aVal k.c0
-  let litVal ← select' isPos posLit negLit
-  let isNegLit ← icmp .slt litVal k.c0
-  brif isNegLit writeNeg.ref [vOff, vI, vNv, posLit] writeDigits.ref [vOff, vI, vNv, posLit]
-
-  -- Write '-'
-  startBlock writeNeg
-  let wnOff := writeNeg.param 0
-  let wnI := writeNeg.param 1
-  let wnNv := writeNeg.param 2
-  let wnAbs := writeNeg.param 3
-  let outAddr ← iadd k.outOffV wnOff
-  let outAbsAddr ← iadd k.ptr outAddr
-  istore8 k.c45 outAbsAddr
-  let wnOff1 ← iadd wnOff k.c1
-  jump writeDigits.ref [wnOff1, wnI, wnNv, wnAbs]
-
-  -- Write digits
-  startBlock writeDigits
-  let wdOff := writeDigits.param 0
-  let wdI := writeDigits.param 1
-  let wdNv := writeDigits.param 2
-  let wdAbs := writeDigits.param 3
-  let c10000 ← iconst64 10000
-  jump digitLoop.ref [wdOff, wdI, wdNv, wdAbs, c10000, k.c0]
-
-  startBlock digitLoop
-  let dlOff := digitLoop.param 0
-  let dlI := digitLoop.param 1
-  let dlNv := digitLoop.param 2
-  let dlRem := digitLoop.param 3
-  let dlDiv := digitLoop.param 4
-  let dlStarted := digitLoop.param 5
-  let divZero ← icmp .eq dlDiv k.c0
-  brif divZero writeSpace.ref [dlOff, dlI, dlNv] digitBody.ref []
-
-  startBlock digitBody
-  let digit ← udiv dlRem dlDiv
-  let digitTimesDiv ← imul digit dlDiv
-  let remainder ← isub dlRem digitTimesDiv
-  let digitNZ ← icmp .ne digit k.c0
-  let dnzExt ← uextend64 digitNZ
-  let startedOrNZ ← bor dlStarted dnzExt
-  let divIs1 ← icmp .eq dlDiv k.c1
-  let di1Ext ← uextend64 divIs1
-  let shouldWrite ← bor startedOrNZ di1Ext
-  brif shouldWrite emitDigit.ref [] skipDigit.ref []
-
-  startBlock emitDigit
-  let ascii ← iadd digit k.c48
-  let dOutAddr ← iadd k.outOffV dlOff
-  let dOutAbsAddr ← iadd k.ptr dOutAddr
-  istore8 ascii dOutAbsAddr
-  let dlOff1 ← iadd dlOff k.c1
-  let nextDiv ← udiv dlDiv k.c10
-  jump digitLoop.ref [dlOff1, dlI, dlNv, remainder, nextDiv, k.c1]
-
-  startBlock skipDigit
-  let nextDiv2 ← udiv dlDiv k.c10
-  jump digitLoop.ref [dlOff, dlI, dlNv, remainder, nextDiv2, k.c0]
-
-  -- Write space
-  startBlock writeSpace
-  let wsOff := writeSpace.param 0
-  let wsI := writeSpace.param 1
-  let wsNv := writeSpace.param 2
-  let spOutAddr ← iadd k.outOffV wsOff
-  let spOutAbsAddr ← iadd k.ptr spOutAddr
-  istore8 k.c32 spOutAbsAddr
-  let wsOff1 ← iadd wsOff k.c1
-  let wsI1 ← iadd wsI k.c1
-  jump varLoop.ref [wsOff1, wsI1, wsNv]
-
-  -- Finish SAT: write "0\n"
-  startBlock varDone
-  let fOff := varDone.param 0
-  let fOutAddr ← iadd k.outOffV fOff
-  let fOutAbsAddr ← iadd k.ptr fOutAddr
-  istore8 k.c48 fOutAbsAddr
-  let fOff1 ← iadd fOff k.c1
-  let fOutAddr2 ← iadd k.outOffV fOff1
-  let fOutAbsAddr2 ← iadd k.ptr fOutAddr2
-  istore8 k.c10 fOutAbsAddr2
-  let totalLen ← iadd fOff1 k.c1
-  jump writeFileBlk.ref [totalLen]
-
-  -- Write to file
-  startBlock writeFileBlk
-  let outLen := writeFileBlk.param 0
-  let outFnameV ← iconst64 outputFilename_off
-  let outStartV ← iconst64 out_off
-  let _ ← call k.fnWrite [k.ptr, outFnameV, outStartV, k.c0, outLen]
-  ret
-
--- ============================================================
--- Main builder
--- ============================================================
-
-set_option maxRecDepth 4096 in
-def clifIrSource : Program := buildProgram do
-  let fnRead ← declareFileRead
-  let fnWrite ← declareFileWrite
-
-  let ptr ← entryBlock
+def mainCode : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
+  let z8 ← iconst .i8 0
   let c0 ← iconst64 0
   let c1 ← iconst64 1
+  let c2 ← iconst64 2
+  let cM1 ← iconst64 (-1)
   let c4 ← iconst64 4
   let c8 ← iconst64 8
+  let c9 ← iconst64 9
   let c10 ← iconst64 10
+  let c13 ← iconst64 13
   let c32 ← iconst64 32
   let c45 ← iconst64 45
   let c48 ← iconst64 48
   let c58 ← iconst64 58
+  let c99 ← iconst64 99
+  let c112 ← iconst64 112
 
   let assignBase ← absAddr ptr assign_off
   let cnfOffV ← iconst64 cnf_off
@@ -857,77 +425,35 @@ def clifIrSource : Program := buildProgram do
   let outOffV ← iconst64 out_off
   let decStackV ← iconst64 decStack_off
   let numVarsAddr ← absAddr ptr numVars_off
+  let numClausesAddr ← absAddr ptr numClauses_off
   let clauseCountAddr ← absAddr ptr clauseCount_off
   let resultFlagAddr ← absAddr ptr resultFlag_off
 
-  -- Read CNF file
   let bytesRead ← readFile ptr fnRead inputFilename_off cnf_off
 
-  -- Initialize scratch
   store c0 numVarsAddr
-  let numClAddr ← absAddr ptr numClauses_off
-  store c0 numClAddr
+  store c0 numClausesAddr
   store c0 clauseCountAddr
   store c0 resultFlagAddr
 
   let k : K := {
-    ptr, c0, c1, c4, c8, c10, c32, c45, c48, c58,
-    assignBase, cnfOffV, dbOffV, clIdxOffV, trailOffV, outOffV, decStackV,
-    numVarsAddr, clauseCountAddr, resultFlagAddr,
-    bytesRead, fnWrite
-  }
+    ptr := ptr, z8 := z8,
+    c0 := c0, c1 := c1, c2 := c2, cM1 := cM1, c4 := c4, c8 := c8, c9 := c9,
+    c10 := c10, c13 := c13, c32 := c32, c45 := c45, c48 := c48, c58 := c58,
+    c99 := c99, c112 := c112,
+    assignBase := assignBase, cnfOffV := cnfOffV, dbOffV := dbOffV,
+    clIdxOffV := clIdxOffV, trailOffV := trailOffV, outOffV := outOffV,
+    decStackV := decStackV, numVarsAddr := numVarsAddr,
+    numClausesAddr := numClausesAddr, clauseCountAddr := clauseCountAddr,
+    resultFlagAddr := resultFlagAddr, bytesRead := bytesRead }
 
-  -- Phase 1: Zero assignment array
-  let parserStartBlk ← declareBlock []
-  emitZeroAssign k parserStartBlk
+  forLoop (← iconst64 maxVars) (fun i => do istore8 c0 (← iadd assignBase i))
+  parseCnf k
+  solve k
+  emitOutput k
 
-  -- Phase 2: Parser
-  let solverBlk ← declareBlock []
-  startBlock parserStartBlk
-  let newLineBlk ← declareBlock [.i64, .i64]
-  let skipLineBlk ← declareBlock [.i64, .i64]
-  let headerBlk ← declareBlock [.i64, .i64]
-  let clauseBlk ← declareBlock [.i64, .i64]
-  jump newLineBlk.ref [c0, c0]
-
-  emitSkipLine k skipLineBlk newLineBlk solverBlk
-  emitNewLine k newLineBlk skipLineBlk headerBlk clauseBlk solverBlk
-  emitHeader k headerBlk skipLineBlk solverBlk
-  emitClauseParser k clauseBlk newLineBlk
-
-  -- Phase 3: DPLL solver
-  let outputBlk ← declareBlock []
-  let upEntry ← declareBlock [.i64, .i64]
-  let decideBlk ← declareBlock [.i64, .i64]
-  let conflictBlk ← declareBlock [.i64, .i64]
-  let satBlk ← declareBlock [.i64]
-  let unsatBlk ← declareBlock []
-
-  startBlock solverBlk
-  jump upEntry.ref [c0, c0]
-
-  startBlock upEntry
-  let upTd := upEntry.param 0
-  let upDd := upEntry.param 1
-  let scanHdr ← declareBlock [.i64, .i64, .i64, .i64]
-  jump scanHdr.ref [upTd, upDd, c0, c0]
-
-  emitUnitPropScan k scanHdr decideBlk conflictBlk upEntry
-  emitDecide k decideBlk satBlk upEntry
-  emitConflict k conflictBlk unsatBlk upEntry
-
-  startBlock satBlk
-  let one ← iconst64 1
-  store one k.resultFlagAddr
-  jump outputBlk.ref []
-
-  startBlock unsatBlk
-  let two ← iconst64 2
-  store two k.resultFlagAddr
-  jump outputBlk.ref []
-
-  -- Phase 4: Output
-  emitOutput k outputBlk
+def clifIrSource : Program :=
+  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams mainCode]
 
 -- ---------------------------------------------------------------------------
 -- Payload / Config / Algorithm

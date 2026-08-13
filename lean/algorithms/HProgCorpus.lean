@@ -327,10 +327,302 @@ def casesPminmax : List Case := Id.run do
            (← bitselect (← bitcast .f32x4 (← fcmp .lt b a)) a b) 0)))]
   return cs
 
+open Sur in
+/-- Leaving a loop early, appended last so adding to it cannot renumber any case
+    above.
+
+    `br` is the one construct whose compiled shape depends on what the code
+    around it does — a block already closed must not be closed again, and an
+    exit block reached from two places must bind its parameters at the index
+    both agree on. Every case here is a different way for that to go wrong. -/
+def casesBr : List Case := Id.run do
+  let mut cs : List Case := []
+  -- the plain case: leave from inside the body, carrying the accumulator
+  cs := cs ++ [("br/early", do
+    let e ← wloop2 (← iconst64 0) (← iconst64 0)
+      (head := fun i acc => return (exitIfSGe i (← iconst64 100), [acc], ()))
+      (body := fun i acc _ => do
+        when .eq i (← iconst64 5) (brk [acc])
+        return [← iadd i (← iconst64 1), ← iadd acc i])
+    pure (e.headD 0))]
+  -- the guard never fires, so the loop still leaves through its own test
+  cs := cs ++ [("br/neverTaken", do
+    let e ← wloop2 (← iconst64 0) (← iconst64 0)
+      (head := fun i acc => return (exitIfSGe i (← iconst64 6), [acc], ()))
+      (body := fun i acc _ => do
+        when .eq i (← iconst64 99) (brk [← iconst64 (-1)])
+        return [← iadd i (← iconst64 1), ← iadd acc i])
+    pure (e.headD 0))]
+  -- two values across the exit, so the exit block takes two parameters and the
+  -- early path has to agree with the normal one about both
+  cs := cs ++ [("br/twoVals", do
+    let e ← wloop2 (← iconst64 0) (← iconst64 1)
+      (head := fun i acc => return (exitIfSGe i (← iconst64 100), [acc, i], ()))
+      (body := fun i acc _ => do
+        when .eq i (← iconst64 4) (brk [acc, i])
+        return [← iadd i (← iconst64 1), ← imul acc (← iconst64 3)])
+    iadd (e.headD 0) (← imul (e.getD 1 0) (← iconst64 1000)))]
+  -- both arms leave: there is no join block, and the body has no back edge
+  for (nm, i0, acc0) in [("then", 5, 0), ("else", 0, 7)] do
+    cs := cs ++ [(s!"br/bothArms.{nm}", do
+      let e ← wloop2 (← iconst64 i0) (← iconst64 acc0)
+        (head := fun i acc => return (exitIfSGe i (← iconst64 100), [acc], ()))
+        (body := fun i acc _ => do
+          let _ ← ifte .sge i (← iconst64 3)
+            (thn := do brk [← iconst64 777]; pure [])
+            (els := do brk [← iadd acc i]; pure [])
+          return [i, acc])
+      pure (e.headD 0))]
+  -- an inner loop leaves the outer one, which is what a depth other than 0 is
+  cs := cs ++ [("br/depth1", do
+    let e ← wloop2 (← iconst64 0) (← iconst64 0)
+      (head := fun i acc => return (exitIfSGe i (← iconst64 10), [acc], ()))
+      (body := fun i acc _ => do
+        let inner ← wloop2 (← iconst64 0) acc
+          (head := fun j a => return (exitIfSGe j (← iconst64 10), [a], ()))
+          (body := fun j a _ => do
+            when .sge a (← iconst64 20) (brkTo 1 [a])
+            return [← iadd j (← iconst64 1), ← iadd a (← iconst64 3)])
+        return [← iadd i (← iconst64 1), inner.headD 0])
+    pure (e.headD 0))]
+  -- leaving from a point after a whole inner loop ran, so the exit block's
+  -- parameters sit past every slot that loop defined
+  cs := cs ++ [("br/afterInner", do
+    let e ← wloop2 (← iconst64 0) (← iconst64 0)
+      (head := fun i acc => return (exitIfSGe i (← iconst64 100), [acc], ()))
+      (body := fun i acc _ => do
+        let inner ← wloop2 (← iconst64 0) acc
+          (head := fun j a => return (exitIfSGe j (← iconst64 2), [a], ()))
+          (body := fun j a _ => return [← iadd j (← iconst64 1),
+                                        ← iadd a (← iconst64 5)])
+        when .sge i (← iconst64 3) (brk [inner.headD 0])
+        return [← iadd i (← iconst64 1), inner.headD 0])
+    pure (e.headD 0))]
+  return cs
+
+open Sur in
+/-- The bottom-tested loop, appended last so adding to it cannot renumber any
+    case above.
+
+    `dloop` makes its test twice from one term — on `init` before the body and
+    on `cont` after it — so what these separate is the two scopes agreeing: a
+    guard that reads the wrong carry, or an exit that takes the initial value
+    where it should take the final one, changes only these answers. -/
+def casesDLoop : List Case := Id.run do
+  let mut cs : List Case := []
+  -- the ordinary trip: Σ i for i < 10
+  cs := cs ++ [("dloop/sum10", do
+    let lim ← iconst64 10
+    let e ← dwloop [← iconst64 0, ← iconst64 0] .slt lim (contOnTrue := true) [1]
+      (body := fun c => do
+        let i' ← iaddImm (c.headD 0) 1
+        return (i', [i', ← iadd (c.getD 1 0) (c.headD 0)]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  -- the guard fails on entry, so the body never runs and the exit still binds
+  cs := cs ++ [("dloop/zeroTrips", do
+    let lim ← iconst64 0
+    let e ← dwloop [← iconst64 0, ← iconst64 7] .slt lim (contOnTrue := true) [1]
+      (body := fun c => do
+        let i' ← iaddImm (c.headD 0) 1
+        return (i', [i', ← iadd (c.getD 1 0) (c.headD 0)]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  -- exactly one trip, which is the case a top-tested loop and a bottom-tested
+  -- one disagree about if the guard is wrong
+  cs := cs ++ [("dloop/oneTrip", do
+    let lim ← iconst64 1
+    let e ← dwloop [← iconst64 0, ← iconst64 100] .slt lim (contOnTrue := true) [1]
+      (body := fun c => do
+        let i' ← iaddImm (c.headD 0) 1
+        return (i', [i', ← iadd (c.getD 1 0) (← iconst64 5)]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  -- both carries leave, so the exit block takes two parameters in `exitIdx`
+  -- order rather than carry order
+  cs := cs ++ [("dloop/twoOut", do
+    let lim ← iconst64 4
+    let e ← dwloop [← iconst64 0, ← iconst64 1] .slt lim (contOnTrue := true) [1, 0]
+      (body := fun c => do
+        let i' ← iaddImm (c.headD 0) 1
+        return (i', [i', ← imul (c.getD 1 0) (← iconst64 3)]))
+      (guardIdx := some 0)
+    iadd (e.headD 0) (← imul (e.getD 1 0) (← iconst64 1000)))]
+  -- a bottom-tested loop inside a bottom-tested loop
+  cs := cs ++ [("dloop/nested", do
+    let lo ← iconst64 3
+    let li ← iconst64 4
+    let e ← dwloop [← iconst64 0, ← iconst64 0] .slt lo (contOnTrue := true) [1]
+      (body := fun c => do
+        let inner ← dwloop [← iconst64 0, c.getD 1 0] .slt li (contOnTrue := true) [1]
+          (body := fun d => do
+            let j' ← iaddImm (d.headD 0) 1
+            return (j', [j', ← iadd (d.getD 1 0) (c.headD 0)]))
+          (guardIdx := some 0)
+        let i' ← iaddImm (c.headD 0) 1
+        return (i', [i', inner.headD 0]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  -- leaving one early, so `br` and `dloop` compose
+  cs := cs ++ [("dloop/br", do
+    let lim ← iconst64 100
+    let e ← dwloop [← iconst64 0, ← iconst64 0] .slt lim (contOnTrue := true) [1]
+      (body := fun c => do
+        when .eq (c.headD 0) (← iconst64 6) (brk [c.getD 1 0])
+        let i' ← iaddImm (c.headD 0) 1
+        return (i', [i', ← iadd (c.getD 1 0) (c.headD 0)]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  return cs
+
+open Sur in
+/-- Taking the back edge from inside a branch, appended last.
+
+    `continue` is the only construct that jumps *backwards* from somewhere other
+    than the end of a body, so what these separate is the carries it supplies
+    reaching the header: a `continue` that passed the old carries instead of the
+    new ones would spin, and one that passed them in the wrong order would
+    count with the accumulator. -/
+def casesCont : List Case := Id.run do
+  let mut cs : List Case := []
+  -- both arms take the back edge, with different accumulator updates
+  cs := cs ++ [("cont/bothArms", do
+    let lim ← iconst64 8
+    let e ← wloop2 (← iconst64 0) (← iconst64 0)
+      (head := fun i acc => return (exitIfSGe i lim, [acc], ()))
+      (body := fun i acc _ => do
+        let _ ← ifte .eq (← band i (← iconst64 1)) (← iconst64 0)
+          (thn := do continueWith [← iaddImm i 1, ← iadd acc i]; pure [])
+          (els := do continueWith [← iaddImm i 1, ← iadd acc (← iconst64 100)]; pure [])
+        return [i, acc])
+    pure (e.headD 0))]
+  -- one arm continues, the other falls through to the end of the body
+  cs := cs ++ [("cont/oneArm", do
+    let lim ← iconst64 6
+    let e ← wloop2 (← iconst64 0) (← iconst64 0)
+      (head := fun i acc => return (exitIfSGe i lim, [acc], ()))
+      (body := fun i acc _ => do
+        let j ← ifte .eq (← band i (← iconst64 1)) (← iconst64 0)
+          (thn := do continueWith [← iaddImm i 1, acc]; pure [])
+          (els := do pure [← iadd acc i])
+        return [← iaddImm i 1, j.headD 0])
+    pure (e.headD 0))]
+  -- an inner loop takes the outer one's back edge, which is depth 1
+  cs := cs ++ [("cont/depth1", do
+    let lo ← iconst64 4
+    let li ← iconst64 3
+    let e ← wloop2 (← iconst64 0) (← iconst64 0)
+      (head := fun i acc => return (exitIfSGe i lo, [acc], ()))
+      (body := fun i acc _ => do
+        let inner ← wloop2 (← iconst64 0) acc
+          (head := fun j a => return (exitIfSGe j li, [a], ()))
+          (body := fun j a _ => do
+            when .sge a (← iconst64 9) (contTo 1 [← iaddImm i 1, a])
+            return [← iaddImm j 1, ← iadd a (← iconst64 2)])
+        return [← iaddImm i 1, inner.headD 0])
+    pure (e.headD 0))]
+  return cs
+
+open Sur in
+/-- Integer comparison and bitwise logic on vectors, appended last.
+
+    `Op.check` has always accepted a vector for `band`/`bandNot`/`bor`/`bxor`,
+    but `evalOp` modelled only scalars — a term could pass the checker and get
+    stuck in the interpreter. `icmp` was rejected outright, which is what a
+    SIMD string search needs. These cases are what pin the lane-wise answers to
+    the machine rather than to a reading of the documentation. -/
+def casesVecInt : List Case := Id.run do
+  let mut cs : List Case := []
+  -- a lane-wise comparison, read back through the mask `vhighBits` extracts
+  for (nm, cc, x, y) in
+      [("eq.hit", ICmpCond.eq, 7, 7), ("eq.miss", .eq, 7, 9),
+       ("ult", .ult, 1, 200), ("slt", .slt, 1, 200),
+       ("ugt", .ugt, 200, 1), ("sgt", .sgt, 200, 1),
+       ("sle.eq", .sle, 5, 5), ("uge.eq", .uge, 5, 5)] do
+    cs := cs ++ [(s!"veccmp/{nm}", do
+      let a ← splat .i8x16 (← iconst .i8 x)
+      let b ← splat .i8x16 (← iconst .i8 y)
+      uextend64 (← vhighBits (← icmp cc a b)))]
+  -- the bitwise operations, lane-wise, read back one lane at a time
+  for (nm, f) in
+      [("band", (Sur.band : R → R → Sur.M R)), ("bandNot", Sur.bandNot),
+       ("bor", Sur.bor), ("bxor", Sur.bxor)] do
+    cs := cs ++ [(s!"vecbits/{nm}", do
+      let a ← splat .i8x16 (← iconst .i8 0xF0)
+      let b ← splat .i8x16 (← iconst .i8 0x3C)
+      uextend64 (← vhighBits (← f a b)))]
+  -- and a mask fed straight into `bitselect`, which is what the comparison is
+  -- produced for
+  cs := cs ++ [("veccmp/select", do
+    let a ← splat .i8x16 (← iconst .i8 3)
+    let b ← splat .i8x16 (← iconst .i8 3)
+    let x ← splat .i8x16 (← iconst .i8 0x11)
+    let y ← splat .i8x16 (← iconst .i8 0x22)
+    uextend64 (← vhighBits (← bitselect (← icmp .eq a b) x y)))]
+  return cs
+
+open Sur in
+/-- Taking a bottom-tested loop's back edge from inside it, appended last.
+
+    A `dloop` has no header — its body block branches to itself — so `cont` into
+    one targets that body block. What these separate is that the carries a
+    `cont` supplies reach the *next trip* rather than the exit, and that the
+    loop's own back-edge test is skipped when a `cont` takes the edge instead. -/
+def casesDCont : List Case := Id.run do
+  let mut cs : List Case := []
+  -- a `cont` on even trips, the ordinary back edge on odd ones
+  cs := cs ++ [("dcont/alternate", do
+    let lim ← iconst64 10
+    let e ← dwloop [← iconst64 0, ← iconst64 0] .slt lim (contOnTrue := true) [1]
+      (body := fun c => do
+        let i := c.headD 0; let acc := c.getD 1 0
+        let _ ← ifte .eq (← band i (← iconst64 1)) (← iconst64 0)
+          (thn := do
+            continueWith [← iaddImm i 1, ← iadd acc (← iconst64 100)]
+            pure [])
+          (els := pure [])
+        let i' ← iaddImm i 1
+        return (i', [i', ← iadd acc i]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  -- a `cont` that skips the loop's own test, so the trip count is what the
+  -- continue path decides
+  cs := cs ++ [("dcont/skipTest", do
+    let lim ← iconst64 3
+    let e ← dwloop [← iconst64 0, ← iconst64 0] .slt lim (contOnTrue := true) [1]
+      (body := fun c => do
+        let i := c.headD 0; let acc := c.getD 1 0
+        let _ ← ifte .eq i (← iconst64 0)
+          (thn := do
+            continueWith [← iaddImm i 1, ← iadd acc (← iconst64 7)]
+            pure [])
+          (els := pure [])
+        let i' ← iaddImm i 1
+        return (i', [i', ← iadd acc (← iconst64 1)]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  -- `br` and `cont` in the same bottom-tested loop
+  cs := cs ++ [("dcont/withBr", do
+    let lim ← iconst64 100
+    let e ← dwloop [← iconst64 0, ← iconst64 0] .slt lim (contOnTrue := true) [1]
+      (body := fun c => do
+        let i := c.headD 0; let acc := c.getD 1 0
+        when .eq i (← iconst64 5) (brk [acc])
+        let _ ← ifte .eq (← band i (← iconst64 1)) (← iconst64 0)
+          (thn := do
+            continueWith [← iaddImm i 1, ← iadd acc (← iconst64 10)]
+            pure [])
+          (els := pure [])
+        let i' ← iaddImm i 1
+        return (i', [i', ← iadd acc (← iconst64 1)]))
+      (guardIdx := some 0)
+    pure (e.headD 0))]
+  return cs
+
 /-- Every case, named so a failure says which one. -/
 def cases : List Case :=
   casesInt ++ casesShift ++ casesUnary ++ casesCmp ++ casesFloat ++ casesConv
-    ++ casesVec ++ casesCfg ++ casesPminmax
+    ++ casesVec ++ casesCfg ++ casesPminmax ++ casesBr ++ casesDLoop ++ casesCont ++ casesVecInt ++ casesDCont
 
 open Sur in
 /-- Every case, storing its result at its own stride in the output buffer. -/

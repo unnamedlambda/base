@@ -199,11 +199,14 @@ def vGroupSharedReadsOk : Bool :=
     stream.  Named so that the several things decided about them share one
     walk. -/
 def vFwdLaunches : List AlgorithmLib.Clif.LaunchRec :=
-  AlgorithmLib.Clif.launchesOf ((vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF).run {}).2
+  AlgorithmLib.Clif.launchesOf
+    (AlgorithmLib.HProg.compileFn 1 Vit.env AlgorithmLib.HProg.ptrParams
+      (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)).asState
 
 def vStepLaunches : List AlgorithmLib.Clif.LaunchRec :=
   AlgorithmLib.Clif.launchesOf
-    ((vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF).run {}).2
+    (AlgorithmLib.HProg.compileFn 1 Vit.env AlgorithmLib.HProg.ptrParams
+      (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)).asState
 
 /-- **Is this recovered call a contraction in the configuration a law covers?**
 

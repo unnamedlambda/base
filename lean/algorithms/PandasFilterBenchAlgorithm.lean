@@ -17,55 +17,54 @@ def ACC_OFF  : Nat := 0x28
 def N_CATS   : Nat := 16
 def MEM_SIZE : Nat := ACC_OFF + N_CATS * 8
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
-  let accBase ← absAddr ptr ACC_OFF
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Nothing here crosses the FFI. -/
+def env : FnEnv := { sigs := [], fns := [] }
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let dataLen ← load64 (← absAddr basePtr 0x20)
+  let outPtr  ← load64 (← absAddr basePtr 0x28)
+  let accBase ← absAddr basePtr ACC_OFF
   let dataEnd ← iadd dataPtr dataLen
   let zero    ← iconst64 0
   let accEnd  ← iaddImm accBase 128    -- 16 * 8
   let thresh  ← fconst32 50.0   -- 50.0f
 
-  let zloop ← declareBlock [.i64]
-  let chk   ← declareBlock []
-  let rowL  ← declareBlock [.i64]
-  let done  ← declareBlock []
-
   -- Zero 16 f64 accumulators
-  jump zloop.ref [accBase]
-  startBlock zloop
-  let z := zloop.param 0
-  store zero z
-  let z' ← iaddImm z 8
-  brif (← icmp .ult z' accEnd) zloop.ref [z'] chk.ref []
+  let _ ← dwloop [accBase] .ult accEnd (contOnTrue := true) []
+    (body := fun c => do
+      let z := c.headD 0
+      storeUnaligned zero z
+      let z' ← iaddImm z 8
+      return (z', [z']))
+    (guardIdx := none)
 
-  -- Empty check
-  startBlock chk
-  brif (← icmp .uge dataPtr dataEnd) done.ref [] rowL.ref [dataPtr]
-
-  -- Row loop: branchless filter via integer bit-mask
-  startBlock rowL
-  let row  := rowL.param 0
-  let cat  ← uload32_64 row
-  let acc  ← iadd accBase (← ishlImm cat 3)
-  let price ← loadF32 (← iaddImm row 4)
-  let qty   ← loadF32 (← iaddImm row 8)
-  let rev   ← fmul (← fpromote price) (← fpromote qty)
-  let mask8 ← fcmpGt price thresh     -- i8: 1 (pass) or 0 (skip)
-  let neg8  ← ineg mask8              -- i8: 0xFF (pass) or 0x00 (skip)
-  let mask  ← sextend64 neg8          -- i64: all-1s or all-0s
-  let bits  ← bitcastI64 rev          -- revenue bits as i64
-  let mrev  ← band mask bits          -- mask: revenue bits or 0
-  let frev  ← bitcastF64 mrev         -- back to f64: revenue or 0.0
-  let old   ← loadF64 acc
-  storeF64 (← fadd old frev) acc
-  let row' ← iaddImm row 12
-  brif (← icmp .ult row' dataEnd) rowL.ref [row'] done.ref []
+  -- Row loop: branchless filter via integer bit-mask. The guard is the empty
+  -- check, so a zero-row input never enters.
+  let _ ← dwloop [dataPtr] .uge dataEnd (contOnTrue := false) []
+    (body := fun c => do
+      let row := c.headD 0
+      let cat  ← uload32_64 row
+      let acc  ← iadd accBase (← ishlImm cat 3)
+      let price ← loadF32 (← iaddImm row 4)
+      let qty   ← loadF32 (← iaddImm row 8)
+      let rev   ← fmul (← fpromote price) (← fpromote qty)
+      let mask8 ← fcmp .gt price thresh   -- i8: 1 (pass) or 0 (skip)
+      let neg8  ← ineg mask8              -- i8: 0xFF (pass) or 0x00 (skip)
+      let mask  ← sextend64 neg8          -- i64: all-1s or all-0s
+      let bits  ← bitcast .i64 rev        -- revenue bits as i64
+      let mrev  ← band mask bits          -- mask: revenue bits or 0
+      let frev  ← bitcast .f64 mrev       -- back to f64: revenue or 0.0
+      let old   ← loadF64 acc
+      store (← fadd old frev) acc
+      let row' ← iaddImm row 12
+      return (row', [row']))
+    (guardIdx := some 0)
 
   -- Pairwise fmax reduction: 16 → 1
-  startBlock done
   let v0  ← loadF64 (← iaddImm accBase 0)
   let v1  ← loadF64 (← iaddImm accBase 8)
   let v2  ← loadF64 (← iaddImm accBase 16)
@@ -76,12 +75,12 @@ def mainFn : IRBuilder Unit := do
   let v7  ← loadF64 (← iaddImm accBase 56)
   let v8  ← loadF64 (← iaddImm accBase 64)
   let v9  ← loadF64 (← iaddImm accBase 72)
-  let v10 ← loadF64 (← iaddImm accBase 80)
-  let v11 ← loadF64 (← iaddImm accBase 88)
-  let v12 ← loadF64 (← iaddImm accBase 96)
-  let v13 ← loadF64 (← iaddImm accBase 104)
-  let v14 ← loadF64 (← iaddImm accBase 112)
-  let v15 ← loadF64 (← iaddImm accBase 120)
+  let v10  ← loadF64 (← iaddImm accBase 80)
+  let v11  ← loadF64 (← iaddImm accBase 88)
+  let v12  ← loadF64 (← iaddImm accBase 96)
+  let v13  ← loadF64 (← iaddImm accBase 104)
+  let v14  ← loadF64 (← iaddImm accBase 112)
+  let v15  ← loadF64 (← iaddImm accBase 120)
   let m01   ← fmax v0  v1;   let m23    ← fmax v2  v3
   let m45   ← fmax v4  v5;   let m67    ← fmax v6  v7
   let m89   ← fmax v8  v9;   let m1011  ← fmax v10 v11
@@ -89,10 +88,12 @@ def mainFn : IRBuilder Unit := do
   let m0123   ← fmax m01 m23;    let m4567    ← fmax m45 m67
   let m891011 ← fmax m89 m1011;  let m12131415 ← fmax m1213 m1415
   let top ← fmax (← fmax m0123 m4567) (← fmax m891011 m12131415)
-  storeF64 top outPtr
-  ret
+  store top outPtr
 
-def clifIR : Program := buildProgram mainFn
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "pandas_filter_algorithm" {

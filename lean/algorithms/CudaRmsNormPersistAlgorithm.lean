@@ -63,17 +63,30 @@ def ptxSource : String := buildModule 36 [{ name := "main", params := ["buf0", "
   upload N + weights into buf0.
   Shared memory app fields: N_OFF (i64), BUF0_OFF (i32), BUF1_OFF (i32)
 -/
-def loadFn : IRBuilder Unit := do
-  let ptr  ← entryBlock
-  let cuda ← declareCudaFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The CUDA entry points, declared through the same helper the runtime's
+    signatures come from. -/
+def cudaEnv : CudaSetup × FnEnv := envOf declareCudaFFI
+def cuda : CudaSetup := cudaEnv.1
+def env : FnEnv := cudaEnv.2
+
+/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
+def CTX_OFF : Nat := 0x10
+
+/-- Load: init CUDA, read N and weights from data, alloc 2 GPU bufs, upload
+    N + weights into buf0. -/
+def loadCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
-  cudaInit cuda ptr 0x10
-  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  cudaInit cuda ptr CTX_OFF
+  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   -- Read N from data[0], store at N_OFF
   let n    ← load64 dataPtr
-  storeI64 n (← absAddr ptr N_OFF)
+  store n (← absAddr ptr N_OFF)
 
   -- buf0 size = N*4 (input x) + 8 (N header) + N*4 (weights) = 8 + N*8
   let nBytes ← ishlImm n 2
@@ -81,70 +94,67 @@ def loadFn : IRBuilder Unit := do
   -- buf1 size = N*4 (output)
   let buf1Sz ← ishlImm n 2
 
-  let buf0 ← call cuda.fnCreateBuffer [ctxPtr, buf0Sz]
-  let buf1 ← call cuda.fnCreateBuffer [ctxPtr, buf1Sz]
-  storeI32 buf0 (← absAddr ptr BUF0_OFF)
-  storeI32 buf1 (← absAddr ptr BUF1_OFF)
+  let buf0 ← call cuda.fnCreateBuffer.id [ctxPtr, buf0Sz]
+  let buf1 ← call cuda.fnCreateBuffer.id [ctxPtr, buf1Sz]
+  store buf0 (← absAddr ptr BUF0_OFF)
+  store buf1 (← absAddr ptr BUF1_OFF)
 
   -- Upload N (8 bytes) to buf0 at offset 0
   let nAddr  ← absAddr ptr N_OFF
-  let _ ← call cuda.fnUploadOffset [ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
+  let _ ← call cuda.fnUploadOffset.id [ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
 
   -- Upload weights (data[1..N], N*4 bytes) to buf0 at offset 8 + N*4
   let wSrc ← iaddImm dataPtr 8
   let wOff ← iaddImm nBytes 8
-  let _ ← call cuda.fnUploadOffset [ctxPtr, buf0, wOff, wSrc, nBytes]
-  ret
+  let _ ← call cuda.fnUploadOffset.id [ctxPtr, buf0, wOff, wSrc, nBytes]
 
-/-
-  Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8.
--/
-def prepFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let cuda    ← declareCudaFFI
+/-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8. -/
+def prepCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let n       ← load64 (← absAddr ptr N_OFF)
   let buf0    ← load32 (← absAddr ptr BUF0_OFF)
-  let ctxPtr  ← load64 (← absAddr ptr 0x10)
+  let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let nBytes  ← ishlImm n 2
-  let _ ← call cuda.fnUploadOffset [ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
-  ret
+  let _ ← call cuda.fnUploadOffset.id [ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
 
-/-
-  Infer: launch kernel (1 block, 256 threads), sync, optionally download buf1 to out_ptr.
--/
-def inferFn : IRBuilder Unit := do
-  let ptr    ← entryBlock
-  let cuda   ← declareCudaFFI
+/-- Infer: launch the kernel (1 block, 256 threads), sync, and download only if
+    the caller asked for output.
+
+    The download branch joins rather than returning from each arm: `Code` has no
+    early return, so both arms reach one `ret`. The join block holds nothing but
+    that `ret`, which costs nothing once the backend threads the jump. -/
+def inferCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
-  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let nBufs  ← iconst32 2
   let one32  ← iconst32 1
   let blk256 ← iconst32 256
 
-  let skipDl     ← declareBlock []
-  let doDownload ← declareBlock []
-
   let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SOURCE_OFF) nBufs
              (← iconst64 BIND_DESC_OFF) one32 one32 one32 blk256 one32 one32
-  let _ ← cudaSync cuda ptr 0x10
-  brif (← icmpImm .eq outLen 0) skipDl.ref [] doDownload.ref []
+  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← ifte .eq outLen (← iconst64 0)
+    (thn := pure [])
+    (els := do
+      let buf1 ← load32 (← absAddr ptr BUF1_OFF)
+      let _ ← call cuda.fnDownload.id [ctxPtr, buf1, outPtr, outLen]
+      pure [])
+  return ()
 
-  startBlock doDownload
-  let buf1 ← load32 (← absAddr ptr BUF1_OFF)
-  let _ ← call cuda.fnDownload [ctxPtr, buf1, outPtr, outLen]
-  ret
-
-  startBlock skipDl
-  ret
+theorem bodies_wf :
+    HProg.wf env HProg.ptrParams loadCode = true &&
+    HProg.wf env HProg.ptrParams prepCode = true &&
+    HProg.wf env HProg.ptrParams inferCode = true := by decide
 
 def clifIR : Program :=
-  program
+  IR.program
     [noopFunction,
-     buildFunction 1 loadFn,
-     buildFunction 2 prepFn,
-     buildFunction 3 inferFn]
+     HProg.compileFn 1 env HProg.ptrParams loadCode,
+     HProg.compileFn 2 env HProg.ptrParams prepCode,
+     HProg.compileFn 3 env HProg.ptrParams inferCode]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]

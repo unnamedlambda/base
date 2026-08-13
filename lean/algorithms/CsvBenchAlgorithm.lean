@@ -4,6 +4,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.HProg
 
 namespace CsvBench
 
@@ -21,194 +22,169 @@ def MAX_CSV_BYTES   : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := CSV_DATA + MAX_CSV_BYTES
 
 set_option maxRecDepth 4096 in
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let fnRead  ← declareFileRead
-  let fnWrite ← declareFileWrite
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
+def env : FnEnv := (envOf (do
+  let _ ← declareFileRead
+  let _ ← declareFileWrite)).2
+
+def fnRead : Nat := 0
+def fnWrite : Nat := 1
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero    ← iconst64 0
   let zero32  ← iconst32 0
 
-  let cpIn       ← declareBlock [.i64]
-  let cpOut1     ← declareBlock [.i64]
-  let cpOut      ← declareBlock [.i64, .i64]
-  let readBlk    ← declareBlock []
-  -- header skip
-  let skipHdr16  ← declareBlock [.i64]
-  let skipHdrB   ← declareBlock [.i64]
-  let skipHdrFnd ← declareBlock [.i64, .i32]
-  let skipHdrSc  ← declareBlock [.i64]
-  let hdrDone    ← declareBlock [.i64]
-  -- comma scan (comma count is i64 to avoid iadd_imm type mismatch)
-  let commaSc16  ← declareBlock [.i64, .i64, .i64]
-  let commaScB   ← declareBlock [.i64, .i64, .i64]
-  let commaF16   ← declareBlock [.i64, .i64, .i64, .i32]
-  let commaF1    ← declareBlock [.i64, .i64, .i64]
-  let commaInc1  ← declareBlock [.i64, .i64, .i64]
-  -- digit accumulation
-  let digitLp    ← declareBlock [.i64, .i64, .i64]
-  let digitAcc   ← declareBlock [.i64, .i64, .i64, .i64]
-  let salDone    ← declareBlock [.i64, .i64, .i64]
-  -- itoa/write
-  let itoaStart  ← declareBlock [.i64]
-  let itoaFind   ← declareBlock [.i64, .i64]
-  let itoaWr     ← declareBlock [.i64, .i64, .i64]
-  let itoaNL     ← declareBlock [.i64]
+  let inEnd ← dwloop [zero] .eq zero (contOnTrue := false) [0]
+    (body := fun c => do
+      let si := c.headD 0
+      let ch ← uload8_64 (← iadd dataPtr si)
+      istore8 ch (← iadd (← absAddr ptr INPUT_PATH_OFF) si)
+      let si' ← iaddImm si 1
+      return (ch, [si']))
 
-  jump cpIn.ref [zero]
+  let _ ← dwloop [inEnd.headD 0, zero] .eq zero (contOnTrue := false) []
+    (body := fun c => do
+      let si := c.headD 0; let di := c.getD 1 0
+      let ch ← uload8_64 (← iadd dataPtr si)
+      istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di)
+      let si' ← iaddImm si 1
+      let di' ← iaddImm di 1
+      return (ch, [si', di']))
 
-  -- Copy input path
-  startBlock cpIn
-  let si1 := cpIn.param 0
-  let ch1  ← uload8_64 (← iadd dataPtr si1)
-  istore8 ch1 (← iadd (← absAddr ptr INPUT_PATH_OFF) si1)
-  let si1' ← iaddImm si1 1
-  brif (← icmpImm .eq ch1 0) cpOut1.ref [si1'] cpIn.ref [si1']
-
-  startBlock cpOut1
-  jump cpOut.ref [cpOut1.param 0, zero]
-
-  -- Copy output path
-  startBlock cpOut
-  let si3 := cpOut.param 0; let di3 := cpOut.param 1
-  let ch3  ← uload8_64 (← iadd dataPtr si3)
-  istore8 ch3 (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di3)
-  let si3' ← iaddImm si3 1; let di3' ← iaddImm di3 1
-  brif (← icmpImm .eq ch3 0) readBlk.ref [] cpOut.ref [si3', di3']
-
-  -- Read file; fileSize and csvBase dominate all scan blocks
-  startBlock readBlk
-  let fileSize ← readFile ptr fnRead INPUT_PATH_OFF CSV_DATA
+  let fileSize ← call fnRead
+    [ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 CSV_DATA, zero, zero]
   let csvBase  ← absAddr ptr CSV_DATA
-  let nlVec    ← splat .i8x16 (← iconst8 10)
-  let cmVec    ← splat .i8x16 (← iconst8 44)
-  jump skipHdr16.ref [zero]
+  let nlVec    ← splat .i8x16 (← iconst .i8 10)
+  let cmVec    ← splat .i8x16 (← iconst .i8 44)
 
-  -- SIMD newline scan: skip header row
-  startBlock skipHdr16
-  let hp := skipHdr16.param 0
-  brif (← icmp .sle (← iaddImm hp 16) fileSize) skipHdrB.ref [hp] skipHdrSc.ref [hp]
+  -- Skip the header row. Dispatches between a SIMD chunk and a scalar byte;
+  -- every path either leaves with the newline's position or takes the edge, so
+  -- the loop needs no test of its own.
+  let hdr ← dwloop [zero] .eq zero (contOnTrue := true) [0]
+    (body := fun c => do
+      let hp := c.headD 0
+      let _ ← ifte .sle (← iaddImm hp 16) fileSize
+        (thn := do
+          let row  ← loadI8x16 (← iadd csvBase hp)
+          let eq   ← icmp .eq row nlVec
+          let mask ← vhighBits eq
+          let _ ← ifte .ne mask zero32
+            (thn := do
+              let off ← uextend64 (← ctz mask)
+              brk [← iadd hp off]
+              pure [])
+            (els := do continueWith [← iaddImm hp 16]; pure [])
+          pure [])
+        (els := do
+          let b ← uload8_64 (← iadd csvBase hp)
+          let _ ← ifte .eq b (← iconst64 10)
+            (thn := do brk [hp]; pure [])
+            (els := do continueWith [← iaddImm hp 1]; pure [])
+          pure [])
+      return (zero, [hp]))
 
-  startBlock skipHdrB
-  let hp2 := skipHdrB.param 0
-  let row  ← loadI8x16 (← iadd csvBase hp2)
-  let eq   ← icmp .eq row nlVec
-  let mask ← vhighBits eq
-  brif (← icmp .ne mask zero32) skipHdrFnd.ref [hp2, mask]
-                                 skipHdr16.ref [← iaddImm hp2 16]
+  -- Sum the sixth field of every row. Same shape: a dispatch with several back
+  -- edges and one way out, when the scan passes the end of the file.
+  let scanned ← dwloop [← iaddImm (hdr.headD 0) 1, zero, zero]
+      .eq zero (contOnTrue := true) [1]
+    (body := fun c => do
+      let cp := c.headD 0; let tot := c.getD 1 0; let cc := c.getD 2 0
+      let _ ← ifte .sle (← iaddImm cp 16) fileSize
+        (thn := do
+          let row2 ← loadI8x16 (← iadd csvBase cp)
+          let eq2  ← icmp .eq row2 cmVec
+          let msk2 ← vhighBits eq2
+          let _ ← ifte .ne msk2 zero32
+            (thn := do
+              let off2 ← uextend64 (← ctz msk2)
+              let abs  ← iadd cp off2
+              let cc'  ← iaddImm cc 1
+              let _ ← ifte .eq cc' (← iconst64 5)
+                (thn := do
+                  let d ← wloop2 (← iaddImm abs 1) zero
+                    (head := fun dp acc => do
+                      let b3 ← uload8_64 (← iadd csvBase dp)
+                      return (exitIf .eq b3 (← iconst64 10), [dp, acc], ()))
+                    (body := fun dp acc _ => do
+                      let b4 ← uload8_64 (← iadd csvBase dp)
+                      return [← iaddImm dp 1,
+                              ← iadd (← imul acc (← iconst64 10))
+                                     (← isub b4 (← iconst64 48))])
+                  let dp' ← iaddImm (d.headD 0) 1
+                  let tot' ← iadd tot (d.getD 1 0)
+                  let _ ← ifte .sge dp' fileSize
+                    (thn := do brk [tot']; pure [])
+                    (els := do continueWith [dp', tot', zero]; pure [])
+                  pure [])
+                (els := do continueWith [← iaddImm abs 1, tot, cc']; pure [])
+              pure [])
+            (els := do continueWith [← iaddImm cp 16, tot, cc]; pure [])
+          pure [])
+        (els := do
+          let b2 ← uload8_64 (← iadd csvBase cp)
+          let _ ← ifte .eq b2 (← iconst64 44)
+            (thn := do
+              let cc' ← iaddImm cc 1
+              let _ ← ifte .eq cc' (← iconst64 5)
+                (thn := do
+                  let d ← wloop2 (← iaddImm cp 1) zero
+                    (head := fun dp acc => do
+                      let b3 ← uload8_64 (← iadd csvBase dp)
+                      return (exitIf .eq b3 (← iconst64 10), [dp, acc], ()))
+                    (body := fun dp acc _ => do
+                      let b4 ← uload8_64 (← iadd csvBase dp)
+                      return [← iaddImm dp 1,
+                              ← iadd (← imul acc (← iconst64 10))
+                                     (← isub b4 (← iconst64 48))])
+                  let dp' ← iaddImm (d.headD 0) 1
+                  let tot' ← iadd tot (d.getD 1 0)
+                  let _ ← ifte .sge dp' fileSize
+                    (thn := do brk [tot']; pure [])
+                    (els := do continueWith [dp', tot', zero]; pure [])
+                  pure [])
+                (els := do continueWith [← iaddImm cp 1, tot, cc']; pure [])
+              pure [])
+            (els := do continueWith [← iaddImm cp 1, tot, cc]; pure [])
+          pure [])
+      return (zero, [cp, tot, cc]))
+  let total := scanned.headD 0
 
-  -- Found newline in SIMD chunk: extract position
-  startBlock skipHdrFnd
-  let hp3 := skipHdrFnd.param 0; let msk := skipHdrFnd.param 1
-  let off  ← uextend64 (← ctz32 msk)
-  jump hdrDone.ref [← iadd hp3 off]
+  -- itoa + write
+  let ten ← iconst64 10
+  let scaled ← wloop1 (← iconst64 1)
+    (head := fun div => do
+      let d10 ← imul div ten
+      return (exitIf .ugt d10 total, [div], ()))
+    (body := fun div _ => return [← imul div ten])
 
-  -- Scalar fallback header skip
-  startBlock skipHdrSc
-  let hp4 := skipHdrSc.param 0
-  let b    ← uload8_64 (← iadd csvBase hp4)
-  brif (← icmpImm .eq b 10) hdrDone.ref [hp4] skipHdrSc.ref [← iaddImm hp4 1]
+  let written ← dwloop [total, scaled.headD 0, ← iconst64 LEFT_VAL]
+      .eq zero (contOnTrue := false) [2]
+    (body := fun c => do
+      let valW := c.headD 0; let divW := c.getD 1 0; let wposW := c.getD 2 0
+      let dig  ← udiv valW divW
+      let digB ← iadd dig (← iconst64 48)
+      istore8 digB (← iadd ptr wposW)
+      let rem  ← isub valW (← imul dig divW)
+      let divW'← udiv divW ten
+      let wpos'← iaddImm wposW 1
+      return (divW', [rem, divW', wpos']))
 
-  startBlock hdrDone
-  let hp5 := hdrDone.param 0
-  jump commaSc16.ref [← iaddImm hp5 1, zero, zero]
-
-  -- SIMD comma scan (pos, total, comma_count)
-  startBlock commaSc16
-  let cp := commaSc16.param 0; let tot := commaSc16.param 1
-  let cc  := commaSc16.param 2
-  brif (← icmp .sle (← iaddImm cp 16) fileSize) commaScB.ref [cp, tot, cc]
-                                                   commaF1.ref [cp, tot, cc]
-
-  startBlock commaScB
-  let cp2 := commaScB.param 0; let tot2 := commaScB.param 1
-  let cc2  := commaScB.param 2
-  let row2 ← loadI8x16 (← iadd csvBase cp2)
-  let eq2  ← icmp .eq row2 cmVec
-  let msk2 ← vhighBits eq2
-  brif (← icmp .ne msk2 zero32) commaF16.ref [cp2, tot2, cc2, msk2]
-                                  commaSc16.ref [← iaddImm cp2 16, tot2, cc2]
-
-  -- Found commas in SIMD chunk — process first, then continue or go to digits
-  startBlock commaF16
-  let cb  := commaF16.param 0; let tot3 := commaF16.param 1
-  let cc3 := commaF16.param 2; let msk3 := commaF16.param 3
-  let off2 ← uextend64 (← ctz32 msk3)
-  let abs  ← iadd cb off2
-  let cc3' ← iaddImm cc3 1
-  let five ← iconst64 5
-  brif (← icmp .eq cc3' five) digitLp.ref [← iaddImm abs 1, tot3, zero]
-                                commaSc16.ref [← iaddImm abs 1, tot3, cc3']
-
-  -- Scalar comma fallback
-  startBlock commaF1
-  let cp3 := commaF1.param 0; let tot4 := commaF1.param 1
-  let cc4  := commaF1.param 2
-  let b2   ← uload8_64 (← iadd csvBase cp3)
-  brif (← icmpImm .eq b2 44) commaInc1.ref [← iaddImm cp3 1, tot4, cc4]
-                               commaF1.ref [← iaddImm cp3 1, tot4, cc4]
-
-  -- Scalar comma found: increment count, check ==5
-  startBlock commaInc1
-  let cp4 := commaInc1.param 0; let tot5 := commaInc1.param 1
-  let cc5  := commaInc1.param 2
-  let cc5' ← iaddImm cc5 1
-  let five2 ← iconst64 5
-  brif (← icmp .eq cc5' five2) digitLp.ref [cp4, tot5, zero]
-                                 commaSc16.ref [cp4, tot5, cc5']
-
-  -- Digit accumulation loop
-  startBlock digitLp
-  let dp  := digitLp.param 0; let tot6 := digitLp.param 1
-  let acc := digitLp.param 2
-  let b3  ← uload8_64 (← iadd csvBase dp)
-  brif (← icmpImm .eq b3 10) salDone.ref [dp, tot6, acc]
-                               digitAcc.ref [dp, tot6, acc, b3]
-
-  startBlock digitAcc
-  let dp2  := digitAcc.param 0; let tot7 := digitAcc.param 1
-  let acc2 := digitAcc.param 2; let b4   := digitAcc.param 3
-  let acc2'← iadd (← imul acc2 (← iconst64 10)) (← isub b4 (← iconst64 48))
-  jump digitLp.ref [← iaddImm dp2 1, tot7, acc2']
-
-  -- Salary row done
-  startBlock salDone
-  let dp3 := salDone.param 0; let tot8 := salDone.param 1
-  let acc3 := salDone.param 2
-  let dp3' ← iaddImm dp3 1
-  brif (← icmp .sge dp3' fileSize) itoaStart.ref [← iadd tot8 acc3]
-                                     commaSc16.ref [dp3', ← iadd tot8 acc3, zero]
-
-  -- itoa + write result
-  startBlock itoaStart
-  let total := itoaStart.param 0
-  jump itoaFind.ref [total, ← iconst64 1]
-
-  startBlock itoaFind
-  let totF := itoaFind.param 0; let divF := itoaFind.param 1
-  let divF10 ← imul divF (← iconst64 10)
-  brif (← icmp .ugt divF10 totF) itoaWr.ref [totF, divF, ← iconst64 LEFT_VAL]
-                                   itoaFind.ref [totF, divF10]
-
-  startBlock itoaWr
-  let valW := itoaWr.param 0; let divW := itoaWr.param 1; let wposW := itoaWr.param 2
-  let dig  ← udiv valW divW
-  let digB ← iadd dig (← iconst64 48)
-  istore8 digB (← iadd ptr wposW)
-  let rem  ← isub valW (← imul dig divW)
-  let divW'← udiv divW (← iconst64 10)
-  let wpos'← iaddImm wposW 1
-  brif (← icmpImm .eq divW' 0) itoaNL.ref [wpos'] itoaWr.ref [rem, divW', wpos']
-
-  startBlock itoaNL
-  let wp := itoaNL.param 0
+  let wp := written.headD 0
   istore8 (← iconst64 10) (← iadd ptr wp)
   istore8 (← iconst32 0) (← iadd ptr (← iaddImm wp 1))
   let _ ← call fnWrite [ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 LEFT_VAL,
-                         zero, zero]
-  ret
+                        zero, zero]
 
-def clifIR : Program := buildProgram mainFn
+set_option maxRecDepth 1000000 in
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "csv_algorithm" {

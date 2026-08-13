@@ -491,9 +491,17 @@ theorem bind_count : bindSlots.length = NBUF := by decide
 /-- Byte offset of binding slot `i`. -/
 def bindOff (i : Nat) : Nat := BIND_OFF + 4 * i
 
-def loadFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The CUDA entry points, declared through the same helper the runtime's
+    signatures come from. -/
+def cudaEnv : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cuda : IR.CudaSetup := cudaEnv.1
+def env : FnEnv := cudaEnv.2
+
+def loadFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -501,67 +509,65 @@ def loadFn : IRBuilder Unit := do
   let wBytes ← iconst64 (N * N * 4)
   let dxBytes ← iconst64 (N * 4)
   let adjId ← cudaCreateBuffer cuda ptr adjBytes
-  storeI32 adjId (← absAddr ptr ADJ_ID)
+  store adjId (← absAddr ptr ADJ_ID)
   let wId ← cudaCreateBuffer cuda ptr wBytes
-  storeI32 wId (← absAddr ptr W_ID)
+  store wId (← absAddr ptr W_ID)
   let dxId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 dxId (← absAddr ptr DX_ID)
+  store dxId (← absAddr ptr DX_ID)
   let xId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 xId (← absAddr ptr X_ID)
+  store xId (← absAddr ptr X_ID)
   let dwId ← cudaCreateBuffer cuda ptr wBytes
-  storeI32 dwId (← absAddr ptr DW_ID)
+  store dwId (← absAddr ptr DW_ID)
   let zId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 zId (← absAddr ptr Z_ID)
+  store zId (← absAddr ptr Z_ID)
   let dyId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 dyId (← absAddr ptr DY_ID)
+  store dyId (← absAddr ptr DY_ID)
   let gamId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 gamId (← absAddr ptr GAM_ID)
+  store gamId (← absAddr ptr GAM_ID)
   let tId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 tId (← absAddr ptr T_ID)
+  store tId (← absAddr ptr T_ID)
   let four ← iconst64 4
   let qId ← cudaCreateBuffer cuda ptr four
-  storeI32 qId (← absAddr ptr Q_ID)
+  store qId (← absAddr ptr Q_ID)
   let sId ← cudaCreateBuffer cuda ptr four
-  storeI32 sId (← absAddr ptr S_ID)
+  store sId (← absAddr ptr S_ID)
   let dxrId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 dxrId (← absAddr ptr DXR_ID)
+  store dxrId (← absAddr ptr DXR_ID)
   let yId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 yId (← absAddr ptr Y_ID)
+  store yId (← absAddr ptr Y_ID)
   let ysId ← cudaCreateBuffer cuda ptr dxBytes
-  storeI32 ysId (← absAddr ptr YS_ID)
+  store ysId (← absAddr ptr YS_ID)
   -- host buffer holds `adj`, then `x`, then `W`, contiguously
-  let _ ← call cuda.fnUpload [ctxPtr, adjId, dataPtr, adjBytes]
+  let _ ← call cuda.fnUpload.id [ctxPtr, adjId, dataPtr, adjBytes]
   let xSrc ← iaddImm dataPtr (hostOff 1)
-  let _ ← call cuda.fnUpload [ctxPtr, xId, xSrc, dxBytes]
+  let _ ← call cuda.fnUpload.id [ctxPtr, xId, xSrc, dxBytes]
   let zSrc ← iaddImm dataPtr (hostOff 2)
-  let _ ← call cuda.fnUpload [ctxPtr, zId, zSrc, dxBytes]
+  let _ ← call cuda.fnUpload.id [ctxPtr, zId, zSrc, dxBytes]
   let dySrc ← iaddImm dataPtr (hostOff 3)
-  let _ ← call cuda.fnUpload [ctxPtr, dyId, dySrc, dxBytes]
+  let _ ← call cuda.fnUpload.id [ctxPtr, dyId, dySrc, dxBytes]
   let gamSrc ← iaddImm dataPtr (hostOff 4)
-  let _ ← call cuda.fnUpload [ctxPtr, gamId, gamSrc, dxBytes]
+  let _ ← call cuda.fnUpload.id [ctxPtr, gamId, gamSrc, dxBytes]
   let ysSrc ← iaddImm dataPtr (hostOff 6)
-  let _ ← call cuda.fnUpload [ctxPtr, ysId, ysSrc, dxBytes]
+  let _ ← call cuda.fnUpload.id [ctxPtr, ysId, ysSrc, dxBytes]
   let wSrc ← iaddImm dataPtr (hostOff 5)
-  let _ ← call cuda.fnUpload [ctxPtr, wId, wSrc, wBytes]
-  storeI32 adjId (← absAddr ptr (bindOff 0))
-  storeI32 wId (← absAddr ptr (bindOff 1))
-  storeI32 dxId (← absAddr ptr (bindOff 2))
-  storeI32 xId (← absAddr ptr (bindOff 3))
-  storeI32 dwId (← absAddr ptr (bindOff 4))
-  storeI32 zId (← absAddr ptr (bindOff 5))
-  storeI32 dyId (← absAddr ptr (bindOff 6))
-  storeI32 gamId (← absAddr ptr (bindOff 7))
-  storeI32 tId (← absAddr ptr (bindOff 8))
-  storeI32 qId (← absAddr ptr (bindOff 9))
-  storeI32 sId (← absAddr ptr (bindOff 10))
-  storeI32 dxrId (← absAddr ptr (bindOff 11))
-  storeI32 yId (← absAddr ptr (bindOff 12))
-  storeI32 ysId (← absAddr ptr (bindOff 13))
-  ret
+  let _ ← call cuda.fnUpload.id [ctxPtr, wId, wSrc, wBytes]
+  store adjId (← absAddr ptr (bindOff 0))
+  store wId (← absAddr ptr (bindOff 1))
+  store dxId (← absAddr ptr (bindOff 2))
+  store xId (← absAddr ptr (bindOff 3))
+  store dwId (← absAddr ptr (bindOff 4))
+  store zId (← absAddr ptr (bindOff 5))
+  store dyId (← absAddr ptr (bindOff 6))
+  store gamId (← absAddr ptr (bindOff 7))
+  store tId (← absAddr ptr (bindOff 8))
+  store qId (← absAddr ptr (bindOff 9))
+  store sId (← absAddr ptr (bindOff 10))
+  store dxrId (← absAddr ptr (bindOff 11))
+  store yId (← absAddr ptr (bindOff 12))
+  store ysId (← absAddr ptr (bindOff 13))
 
-def runFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def runFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ptxOff ← iconst64 PTX_OFF
   let nBufs ← iconst32 NBUF
   let bindOff ← iconst64 BIND_OFF
@@ -570,12 +576,10 @@ def runFn : IRBuilder Unit := do
   let grid ← iconst32 GRID
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
   let _ ← cudaSync cuda ptr
-  ret
 
 /-- The activation backward: one element per lane, `N/32` blocks. -/
-def runSiluBwdFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def runSiluBwdFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ptxOff ← iconst64 PTX_SB_OFF
   let nBufs ← iconst32 NBUF
   let bindOff ← iconst64 BIND_OFF
@@ -584,12 +588,10 @@ def runSiluBwdFn : IRBuilder Unit := do
   let grid ← iconst32 EGRID
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
   let _ ← cudaSync cuda ptr
-  ret
 
 /-- A launch of the kernel at `off` over `g` blocks of one warp. -/
-def launchAt (off g : Nat) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def launchAt (off g : Nat) : Sur.M Unit := do
+  let ptr := basePtr
   let ptxOff ← iconst64 off
   let nBufs ← iconst32 NBUF
   let bindOff ← iconst64 BIND_OFF
@@ -598,41 +600,36 @@ def launchAt (off g : Nat) : IRBuilder Unit := do
   let grid ← iconst32 g
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
   let _ ← cudaSync cuda ptr
-  ret
 
-def runTFn   : IRBuilder Unit := launchAt PTX_T_OFF EGRID
-def runQFn   : IRBuilder Unit := launchAt PTX_Q_OFF 1
-def runSFn   : IRBuilder Unit := launchAt PTX_S_OFF 1
-def runDxrFn : IRBuilder Unit := launchAt PTX_DXR_OFF EGRID
+def runTFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_T_OFF EGRID)
+def runQFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_Q_OFF 1)
+def runSFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_S_OFF 1)
+def runDxrFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_DXR_OFF EGRID)
 
 /-- The training step's four launches.  `runSgd` covers all `N²` weights. -/
-def runFwdFn : IRBuilder Unit := launchAt PTX_FWD_OFF GRID
-def runYFn   : IRBuilder Unit := launchAt PTX_Y_OFF EGRID
-def runDyFn  : IRBuilder Unit := launchAt PTX_DY_OFF EGRID
-def runSgdFn : IRBuilder Unit := launchAt PTX_SGD_OFF WGRID
-def runAdjFn : IRBuilder Unit := launchAt PTX_ADJ_OFF EGRID
+def runFwdFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_FWD_OFF GRID)
+def runYFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_Y_OFF EGRID)
+def runDyFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_DY_OFF EGRID)
+def runSgdFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_SGD_OFF WGRID)
+def runAdjFn : HProg.Code := clif% env HProg.ptrParams (launchAt PTX_ADJ_OFF EGRID)
 
 /-- Fetch the forward activations, so the host can compute the loss. -/
-def fetchYFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def fetchYFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let yId ← load32 (← absAddr ptr Y_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call cuda.fnDownload [ctxPtr, yId, outPtr, dxBytes]
-  ret
+  let _ ← call cuda.fnDownload.id [ctxPtr, yId, outPtr, dxBytes]
 
 /-- Fetch RMSNorm's `dx`. -/
-def fetchDxrFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def fetchDxrFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dxrId ← load32 (← absAddr ptr DXR_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call cuda.fnDownload [ctxPtr, dxrId, outPtr, dxBytes]
-  ret
+  let _ ← call cuda.fnDownload.id [ctxPtr, dxrId, outPtr, dxBytes]
 
 /-- **Fill the launch argument array from the buffer table.**
 
@@ -644,19 +641,18 @@ def fetchDxrFn : IRBuilder Unit := do
 
     Before **every** launch, not once: `Clif.stepMem` maps a call to the empty
     store map, because a call could write anything. -/
-def bindPass (ptr : Val) : IRBuilder Unit := do
+def bindPass (ptr : R) : Sur.M Unit := do
   for i in List.range NBUF do
     let id ← load32 (← absAddr ptr (bindOff i))
-    storeI32 id (← absAddr ptr (bindOff i))
+    store id (← absAddr ptr (bindOff i))
 
 /-- **The backward pass as one function**, so the launch sequence the pipeline
     claims is a sequence *some emitted program actually performs*.
 
     The three stages otherwise run as three separate host calls, and a pipeline
     is a claim about an order — an order no single program exhibited. -/
-def runBwdAllFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def runBwdAllFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   for (off, g) in [(PTX_SB_OFF, EGRID), (PTX_OFF, GRID), (PTX_DW_OFF, GRID)] do
     bindPass ptr
     let ptxOff ← iconst64 off
@@ -667,12 +663,10 @@ def runBwdAllFn : IRBuilder Unit := do
     let grid ← iconst32 g
     let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
   let _ ← cudaSync cuda ptr
-  ret
 
 /-- The weight gradient, same geometry: one warp per row. -/
-def runDwFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def runDwFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ptxOff ← iconst64 PTX_DW_OFF
   let nBufs ← iconst32 NBUF
   let bindOff ← iconst64 BIND_OFF
@@ -681,50 +675,45 @@ def runDwFn : IRBuilder Unit := do
   let grid ← iconst32 GRID
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
   let _ ← cudaSync cuda ptr
-  ret
 
-def fetchFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def fetchFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dxId ← load32 (← absAddr ptr DX_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call cuda.fnDownload [ctxPtr, dxId, outPtr, dxBytes]
-  ret
+  let _ ← call cuda.fnDownload.id [ctxPtr, dxId, outPtr, dxBytes]
 
 /-- Fetch the weight gradient — `N·N` floats. -/
-def fetchDwFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def fetchDwFn : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dwId ← load32 (← absAddr ptr DW_ID)
   let wBytes ← iconst64 (N * N * 4)
-  let _ ← call cuda.fnDownload [ctxPtr, dwId, outPtr, wBytes]
-  ret
+  let _ ← call cuda.fnDownload.id [ctxPtr, dwId, outPtr, wBytes]
 
 def clifIR : Program :=
   program
     [noopFunction,
-     buildFunction 1 loadFn,
-     buildFunction 2 runFn,
-     buildFunction 3 fetchFn,
-     buildFunction 4 runDwFn,
-     buildFunction 5 fetchDwFn,
-     buildFunction 6 runSiluBwdFn,
-     buildFunction 7 runTFn,
-     buildFunction 8 runQFn,
-     buildFunction 9 runSFn,
-     buildFunction 10 runDxrFn,
-     buildFunction 11 fetchDxrFn,
-     buildFunction 12 runFwdFn,
-     buildFunction 13 runYFn,
-     buildFunction 14 runDyFn,
-     buildFunction 15 runSgdFn,
-     buildFunction 16 fetchYFn,
-     buildFunction 17 runAdjFn,
-     buildFunction 18 runBwdAllFn]
+     HProg.compileFn 1 env HProg.ptrParams loadFn,
+     HProg.compileFn 2 env HProg.ptrParams runFn,
+     HProg.compileFn 3 env HProg.ptrParams fetchFn,
+     HProg.compileFn 4 env HProg.ptrParams runDwFn,
+     HProg.compileFn 5 env HProg.ptrParams fetchDwFn,
+     HProg.compileFn 6 env HProg.ptrParams runSiluBwdFn,
+     HProg.compileFn 7 env HProg.ptrParams runTFn,
+     HProg.compileFn 8 env HProg.ptrParams runQFn,
+     HProg.compileFn 9 env HProg.ptrParams runSFn,
+     HProg.compileFn 10 env HProg.ptrParams runDxrFn,
+     HProg.compileFn 11 env HProg.ptrParams fetchDxrFn,
+     HProg.compileFn 12 env HProg.ptrParams runFwdFn,
+     HProg.compileFn 13 env HProg.ptrParams runYFn,
+     HProg.compileFn 14 env HProg.ptrParams runDyFn,
+     HProg.compileFn 15 env HProg.ptrParams runSgdFn,
+     HProg.compileFn 16 env HProg.ptrParams fetchYFn,
+     HProg.compileFn 17 env HProg.ptrParams runAdjFn,
+     HProg.compileFn 18 env HProg.ptrParams runBwdAllFn]
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -1019,10 +1008,9 @@ theorem bwdPipelineFull_exclusive : bwdPipelineFull.Exclusive := by
 -- The shipped function launches exactly this pipeline
 -- ---------------------------------------------------------------------------
 
-/-! `bwdDriver` below is a *model* of a host program.  Nothing emits it: the
-    shipped CLIF comes from `IRBuilder`, and until `runBwdAllFn` existed the
-    three stages ran as three separate host calls, so no single emitted program
-    exhibited the order a `Pipeline` claims.
+/-! `bwdDriver` below is a *model* of a host program: nothing emits it.
+    `runBwdAllFn` is the shipped function, and it is what carries the three
+    stages in one program, so it is the one a `Pipeline` claim can be about.
 
     What follows recovers the launches from `runBwdAllFn`'s own instruction
     stream and matches them against `bwdPipelineFull`. -/
@@ -1056,9 +1044,12 @@ def bwdAllTable : List KernelBinding :=
   , ⟨PTX_DW_OFF, BIND_OFF, bwdBufs, dwStage⟩ ]
 
 /-- **Seam guard: the emitted CLIF performs these launches**, in this order,
-    over these buffers, at these grids. -/
+    over these buffers, at these grids.
+
+    Stated over `compileFn`'s output, so what the generator is written in does
+    not enter the claim — only what was emitted. -/
 theorem bwdAll_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (runBwdAllFn.run {}).2 = bwdAllOps := by
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileFn 18 env HProg.ptrParams runBwdAllFn).asState = bwdAllOps := by
   native_decide
 
 /-- …and those launches are the proven three-stage pipeline. -/
@@ -1070,7 +1061,7 @@ theorem bwdAll_realises :
     Unlike `bwd_host_computes` below, the launch sequence here is read out of a
     function that is actually built into the artifact. -/
 theorem bwdAll_host_computes (st : WSt) :
-    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (runBwdAllFn.run {}).2)
+    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileFn 18 env HProg.ptrParams runBwdAllFn).asState)
         = some bwdPipelineFull
       ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
   ⟨by rw [bwdAll_ops_are]; exact bwdAll_realises,

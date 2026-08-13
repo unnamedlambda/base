@@ -21,40 +21,36 @@ namespace StoreBench
 
 def MEM_SIZE : Nat := 40
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Nothing here crosses the FFI. -/
+def env : FnEnv := { sigs := [], fns := [] }
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let dataLen ← load64 (← absAddr basePtr 0x20)
+  let outPtr  ← load64 (← absAddr basePtr 0x28)
   let n       ← ushrImm dataLen 2
   -- floor(n/16) trips of 16 elements = 64 bytes each
   let mainEnd ← ishlImm (← ushrImm n 4) 6
   let two     ← fconst32 2.0
   let twoV    ← splat .f32x4 two
-  let i0      ← iconst64 0
 
-  let loop ← declareBlock [.i64]
-  let body ← declareBlock [.i64]
-  let fin  ← declareBlock []
-  jump loop.ref [i0]
+  let _ ← wloop1 (← iconst64 0)
+    (head := fun i => return (exitIfSGe i mainEnd, ([] : List R), ()))
+    (body := fun bi _ => do
+      let src ← iadd dataPtr bi
+      let dst ← iadd outPtr bi
+      for k in [0:4] do
+        let v ← loadF32x4 (← iaddImm src (16 * k))
+        storeUnaligned (← fmul v twoV) (← iaddImm dst (16 * k))
+      return [← iaddImm bi 64])
 
-  startBlock loop
-  let li := loop.param 0
-  brif (← icmp .sge li mainEnd) fin.ref [] body.ref [li]
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-  startBlock body
-  let bi   ← pure (body.param 0)
-  let src  ← iadd dataPtr bi
-  let dst  ← iadd outPtr bi
-  for k in [0:4] do
-    let v ← loadF32x4 (← iaddImm src (16 * k))
-    store (← fmul v twoV) (← iaddImm dst (16 * k))
-  jump loop.ref [← iaddImm bi 64]
-
-  startBlock fin
-  ret
-
-def clifIR : Program := buildProgram mainFn
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "store_algorithm" {

@@ -115,13 +115,32 @@ def ptxSource : String := buildModule 64 [{ name := "main", params := ["scores_b
   ptxRet }]
 
 -- Load: init CUDA, alloc 7 bufs, upload K/V/meta, store buf IDs and seq_len
-def loadFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let cuda    ← declareCudaFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Two callee tables: `load`/`prep`/`finalize` reach CUDA alone, `core` also
+    reaches cuBLAS, and a function declares only what it calls. -/
+def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := envOf (do
+  let cuda ← declareCudaFFI
+  let blas ← declareCuBlasFFI
+  pure (cuda, blas))
+
+def cudaOnly : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+
+def cuda : IR.CudaSetup := ffiEnv.1.1
+def blas : IR.CuBlasSetup := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
+def envCuda : FnEnv := cudaOnly.2
+
+/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
+def CTX_OFF : Nat := 0x10
+
+def loadCode : HProg.Code := clif% envCuda HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
-  cudaInit cuda ptr 0x10
-  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  cudaInit cuda ptr CTX_OFF
+  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   let seqLen    ← load64 dataPtr
   let dMBytes   ← iconst64 D_MODEL_BYTES
@@ -131,53 +150,48 @@ def loadFn : IRBuilder Unit := do
   let eight     ← iconst64 8
 
   -- buf order: 0=q, 1=K, 2=V, 3=scores, 4=probs, 5=out, 6=meta
-  let bufQ      ← call cuda.fnCreateBuffer [ctxPtr, dMBytes]
-  let bufK      ← call cuda.fnCreateBuffer [ctxPtr, kvBytes]
-  let bufV      ← call cuda.fnCreateBuffer [ctxPtr, kvBytes]
-  let bufScores ← call cuda.fnCreateBuffer [ctxPtr, scoreBytes]
-  let bufProbs  ← call cuda.fnCreateBuffer [ctxPtr, scoreBytes]
-  let bufOut    ← call cuda.fnCreateBuffer [ctxPtr, dMBytes]
-  let bufMeta   ← call cuda.fnCreateBuffer [ctxPtr, eight]
+  let bufQ      ← call cuda.fnCreateBuffer.id [ctxPtr, dMBytes]
+  let bufK      ← call cuda.fnCreateBuffer.id [ctxPtr, kvBytes]
+  let bufV      ← call cuda.fnCreateBuffer.id [ctxPtr, kvBytes]
+  let bufScores ← call cuda.fnCreateBuffer.id [ctxPtr, scoreBytes]
+  let bufProbs  ← call cuda.fnCreateBuffer.id [ctxPtr, scoreBytes]
+  let bufOut    ← call cuda.fnCreateBuffer.id [ctxPtr, dMBytes]
+  let bufMeta   ← call cuda.fnCreateBuffer.id [ctxPtr, eight]
 
-  storeI32 bufQ      (← absAddr ptr BUF_Q_OFF)
-  storeI32 bufK      (← absAddr ptr BUF_K_OFF)
-  storeI32 bufV      (← absAddr ptr BUF_V_OFF)
-  storeI32 bufScores (← absAddr ptr BUF_SCORES_OFF)
-  storeI32 bufProbs  (← absAddr ptr BUF_PROBS_OFF)
-  storeI32 bufOut    (← absAddr ptr BUF_OUT_OFF)
-  storeI32 bufMeta   (← absAddr ptr BUF_META_OFF)
+  store bufQ      (← absAddr ptr BUF_Q_OFF)
+  store bufK      (← absAddr ptr BUF_K_OFF)
+  store bufV      (← absAddr ptr BUF_V_OFF)
+  store bufScores (← absAddr ptr BUF_SCORES_OFF)
+  store bufProbs  (← absAddr ptr BUF_PROBS_OFF)
+  store bufOut    (← absAddr ptr BUF_OUT_OFF)
+  store bufMeta   (← absAddr ptr BUF_META_OFF)
 
   -- Pack [seq_len:u32][0:u32] at SEQ_LEN_OFF, upload to meta buf
   let seqLen32 ← ireduce32 seqLen
   let seqLen64 ← uextend64 seqLen32
   let metaSlot ← absAddr ptr SEQ_LEN_OFF
-  storeI64 seqLen64 metaSlot
-  let _ ← call cuda.fnUpload [ctxPtr, bufMeta, metaSlot, eight]
+  store seqLen64 metaSlot
+  let _ ← call cuda.fnUpload.id [ctxPtr, bufMeta, metaSlot, eight]
 
   -- Upload K and V from data (K at data+8, V at data+8+kvBytes)
   let kSrc ← iaddImm dataPtr 8
-  let _ ← call cuda.fnUpload [ctxPtr, bufK, kSrc, kvBytes]
+  let _ ← call cuda.fnUpload.id [ctxPtr, bufK, kSrc, kvBytes]
   let vSrc ← iadd kSrc kvBytes
-  let _ ← call cuda.fnUpload [ctxPtr, bufV, vSrc, kvBytes]
-  ret
+  let _ ← call cuda.fnUpload.id [ctxPtr, bufV, vSrc, kvBytes]
 
--- Prep: upload q from data_ptr to buf0
-def prepFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let cuda    ← declareCudaFFI
+/-- Prep: upload q from data_ptr to buf0. -/
+def prepCode : HProg.Code := clif% envCuda HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  let ctxPtr  ← load64 (← absAddr ptr 0x10)
+  let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let bufQ    ← load32 (← absAddr ptr BUF_Q_OFF)
   let dMBytes ← iconst64 D_MODEL_BYTES
-  let _ ← call cuda.fnUpload [ctxPtr, bufQ, dataPtr, dMBytes]
-  ret
+  let _ ← call cuda.fnUpload.id [ctxPtr, bufQ, dataPtr, dMBytes]
 
--- Core: K@q scores, softmax, V^T@probs output
-def coreFn : IRBuilder Unit := do
-  let ptr       ← entryBlock
-  let cuda      ← declareCudaFFI
-  let blas      ← declareCuBlasFFI
-  let ctxPtr    ← load64 (← absAddr ptr 0x10)
+/-- Core: K@q scores, softmax, V^T@probs output. -/
+def coreCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr       := basePtr
+  let ctxPtr    ← load64 (← absAddr ptr CTX_OFF)
   let seqLen    ← load64 (← absAddr ptr SEQ_LEN_OFF)
   let seqLen32  ← ireduce32 seqLen
   let headDim64 ← iconst64 HEAD_DIM
@@ -188,6 +202,10 @@ def coreFn : IRBuilder Unit := do
   let zero32    ← iconst32 0
   let alpha0125 ← iconst32 0x3e000000   -- 0.125f
   let alpha1f   ← iconst32 0x3f800000   -- 1.0f
+  -- No operand offsets, and `0` asks the wrapper for the default leading
+  -- dimension. Six arguments the signature has carried since it gained
+  -- `off_a/b/c` and `ld_a/b/c`; these call sites never grew them.
+  let zero64    ← iconst64 0
   let blk256    ← iconst32 256
   let three32   ← iconst32 3
 
@@ -200,62 +218,57 @@ def coreFn : IRBuilder Unit := do
   let bufMeta   ← load32 (← absAddr ptr BUF_META_OFF)
 
   -- scores = 0.125 * K @ q, batched over N_HEADS heads
-  -- sgemm(ctx, transa=1, transb=0, m=seq_len, n=1, k=head_dim, alpha=0.125,
-  --       a=K, stride_a=seq*head, b=q, stride_b=head_dim, beta=0,
-  --       c=scores, stride_c=seq_len, batch=N_HEADS)
-  let _ ← call blas.fnSgemm
+  let _ ← call blas.fnSgemm.id
     [ctxPtr, one32, zero32, seqLen32, one32, headDim32, alpha0125,
-     bufK, seqHead, bufQ, headDim64, zero32, bufScores, seqLen, nHeads32]
+     bufK, seqHead, bufQ, headDim64, zero32, bufScores, seqLen, nHeads32,
+     zero64, zero64, zero64, zero32, zero32, zero32]
 
   -- Write bind descriptor for softmax: [bufScores, bufMeta, bufProbs]
-  storeI32 bufScores (← absAddr ptr BIND_DESC_OFF)
-  storeI32 bufMeta   (← absAddr ptr (BIND_DESC_OFF + 4))
-  storeI32 bufProbs  (← absAddr ptr (BIND_DESC_OFF + 8))
+  store bufScores (← absAddr ptr BIND_DESC_OFF)
+  store bufMeta   (← absAddr ptr (BIND_DESC_OFF + 4))
+  store bufProbs  (← absAddr ptr (BIND_DESC_OFF + 8))
 
   -- Launch softmax kernel: gridDim=(N_HEADS,1,1), blockDim=(256,1,1), 3 bufs
   let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SOURCE_OFF) three32
              (← iconst64 BIND_DESC_OFF) nHeads32 one32 one32 blk256 one32 one32
 
   -- out = V^T @ probs, batched over N_HEADS heads
-  -- sgemm(ctx, transa=0, transb=0, m=head_dim, n=1, k=seq_len, alpha=1.0,
-  --       a=V, stride_a=seq*head, b=probs, stride_b=seq_len, beta=0,
-  --       c=out, stride_c=head_dim, batch=N_HEADS)
-  let _ ← call blas.fnSgemm
+  let _ ← call blas.fnSgemm.id
     [ctxPtr, zero32, zero32, headDim32, one32, seqLen32, alpha1f,
-     bufV, seqHead, bufProbs, seqLen, zero32, bufOut, headDim64, nHeads32]
-  ret
+     bufV, seqHead, bufProbs, seqLen, zero32, bufOut, headDim64, nHeads32,
+     zero64, zero64, zero64, zero32, zero32, zero32]
 
--- Finalize: sync, optional download out
-def finalizeFn : IRBuilder Unit := do
-  let ptr    ← entryBlock
-  let cuda   ← declareCudaFFI
+/-- Finalize: sync, then download only if the caller asked for output. -/
+def finalizeCode : HProg.Code := clif% envCuda HProg.ptrParams do
+  let ptr    := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
-  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let bufOut ← load32 (← absAddr ptr BUF_OUT_OFF)
 
-  let skipDl     ← declareBlock []
-  let doDownload ← declareBlock []
+  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← ifte .eq outLen (← iconst64 0)
+    (thn := pure [])
+    (els := do
+      let _ ← call cuda.fnDownload.id [ctxPtr, bufOut, outPtr, outLen]
+      pure [])
+  return ()
 
-  let _ ← cudaSync cuda ptr 0x10
-  brif (← icmpImm .eq outLen 0) skipDl.ref [] doDownload.ref []
-
-  startBlock doDownload
-  let _ ← call cuda.fnDownload [ctxPtr, bufOut, outPtr, outLen]
-  ret
-
-  startBlock skipDl
-  ret
+theorem bodies_wf :
+    HProg.wf envCuda HProg.ptrParams loadCode = true &&
+    HProg.wf envCuda HProg.ptrParams prepCode = true &&
+    HProg.wf env HProg.ptrParams coreCode = true &&
+    HProg.wf envCuda HProg.ptrParams finalizeCode = true := by decide
 
 def STACK_DEPTH : Nat := 64
 
 def clifIR : Program :=
   program
     [noopFunction,
-     buildFunction 1 loadFn,
-     buildFunction 2 prepFn,
-     buildFunction 3 coreFn,
-     buildFunction 4 finalizeFn,
+     HProg.compileFn 1 envCuda HProg.ptrParams loadCode,
+     HProg.compileFn 2 envCuda HProg.ptrParams prepCode,
+     HProg.compileFn 3 env HProg.ptrParams coreCode,
+     HProg.compileFn 4 envCuda HProg.ptrParams finalizeCode,
      clifSequenceWrapper 5 [3, 4],
      clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4])]
 

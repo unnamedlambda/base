@@ -235,86 +235,109 @@ def X_ID : Nat := 0x0044
 def Y_ID : Nat := 0x0048
 def MEM_SIZE : Nat := BIND_OFF + 0x100
 
-def loadFn (sh : Shape) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr
-  let ctxPtr ← cudaCtxPtr ptr
-  let aBytes ← iconst64 (sh.m * sh.n * 4)
-  let xBytes ← iconst64 (sh.n * 4)
-  let yBytes ← iconst64 (sh.m * 4)
-  let aId ← cudaCreateBuffer cuda ptr aBytes
-  storeI32 aId (← absAddr ptr A_ID)
-  let xId ← cudaCreateBuffer cuda ptr xBytes
-  storeI32 xId (← absAddr ptr X_ID)
-  let yId ← cudaCreateBuffer cuda ptr yBytes
-  storeI32 yId (← absAddr ptr Y_ID)
-  let _ ← call cuda.fnUpload [ctxPtr, aId, dataPtr, aBytes]
-  let xSrc ← iadd dataPtr aBytes
-  let _ ← call cuda.fnUpload [ctxPtr, xId, xSrc, xBytes]
-  storeI32 aId (← absAddr ptr BIND_OFF)
-  storeI32 xId (← absAddr ptr (BIND_OFF + 4))
-  storeI32 yId (← absAddr ptr (BIND_OFF + 8))
-  ret
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Two callee tables: only the cuBLAS baseline reaches cuBLAS. -/
+def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := envOf (do
+  let c ← declareCudaFFI
+  let bl ← declareCuBlasFFI
+  pure (c, bl))
+def cudaOnly : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cuda : IR.CudaSetup := ffiEnv.1.1
+def cublas : IR.CuBlasSetup := ffiEnv.1.2
+def envAll : FnEnv := ffiEnv.2
+def envCuda : FnEnv := cudaOnly.2
+
+def loadCode (sh : Shape) : HProg.Code :=
+  HProg.Sur.build envCuda HProg.ptrParams do
+    let ptr := basePtr
+    let dataPtr ← load64 (← absAddr ptr 0x18)
+    cudaInit cuda ptr
+    let ctxPtr ← cudaCtxPtr ptr
+    let aBytes ← iconst64 (sh.m * sh.n * 4)
+    let xBytes ← iconst64 (sh.n * 4)
+    let yBytes ← iconst64 (sh.m * 4)
+    let aId ← cudaCreateBuffer cuda ptr aBytes
+    store aId (← absAddr ptr A_ID)
+    let xId ← cudaCreateBuffer cuda ptr xBytes
+    store xId (← absAddr ptr X_ID)
+    let yId ← cudaCreateBuffer cuda ptr yBytes
+    store yId (← absAddr ptr Y_ID)
+    let _ ← call cuda.fnUpload.id [ctxPtr, aId, dataPtr, aBytes]
+    let xSrc ← iadd dataPtr aBytes
+    let _ ← call cuda.fnUpload.id [ctxPtr, xId, xSrc, xBytes]
+    store aId (← absAddr ptr BIND_OFF)
+    store xId (← absAddr ptr (BIND_OFF + 4))
+    store yId (← absAddr ptr (BIND_OFF + 8))
 
 /-- One launch per schedule: same grid, same buffers, same output, differing
     only in which PTX slot it reads.  That is what makes the timings
     comparable. -/
-def runFn (sh : Shape) (sq : Bool) (s : Sched) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
-  let ptxOff ← iconst64 (slotOf sq s)
-  let nBufs ← iconst32 3
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 sh.m
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-  let _ ← cudaSync cuda ptr
-  ret
+def runCode (sh : Shape) (sq : Bool) (s : Sched) : HProg.Code :=
+  HProg.Sur.build envCuda HProg.ptrParams do
+    let ptr := basePtr
+    let ptxOff ← iconst64 (slotOf sq s)
+    let nBufs ← iconst32 3
+    let bindOff ← iconst64 BIND_OFF
+    let one ← iconst32 1
+    let warp ← iconst32 32
+    let grid ← iconst32 sh.m
+    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
+    let _ ← cudaSync cuda ptr
 
 /-- The cuBLAS baseline on the same buffers: `y = A·x`, `A` is `m x n`. -/
-def blasFn (sh : Shape) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
-  let cublas ← declareCuBlasFFI
-  let ctxPtr ← cudaCtxPtr ptr
-  let aId ← load32 (← absAddr ptr A_ID)
-  let xId ← load32 (← absAddr ptr X_ID)
-  let yId ← load32 (← absAddr ptr Y_ID)
-  -- row-major A (m x n) is column-major (n x m); trans=1 gives yᵢ = Σₖ A[i,k]·xₖ
-  let trans ← iconst32 1
-  let mm ← iconst32 sh.n
-  let nn ← iconst32 sh.m
-  let alpha ← iconst32 0x3F800000
-  let beta ← iconst32 0
-  let _ ← call cublas.fnSgemv [ctxPtr, trans, mm, nn, alpha, aId, xId, beta, yId]
-  let _ ← cudaSync cuda ptr
-  ret
+def blasCode (sh : Shape) : HProg.Code :=
+  HProg.Sur.build envAll HProg.ptrParams do
+    let ptr := basePtr
+    let ctxPtr ← cudaCtxPtr ptr
+    let aId ← load32 (← absAddr ptr A_ID)
+    let xId ← load32 (← absAddr ptr X_ID)
+    let yId ← load32 (← absAddr ptr Y_ID)
+    -- row-major A (m x n) is column-major (n x m); trans=1 gives yᵢ = Σₖ A[i,k]·xₖ
+    let trans ← iconst32 1
+    let mm ← iconst32 sh.n
+    let nn ← iconst32 sh.m
+    let alpha ← iconst32 0x3F800000
+    let beta ← iconst32 0
+    let _ ← call cublas.fnSgemv.id [ctxPtr, trans, mm, nn, alpha, aId, xId, beta, yId]
+    let _ ← cudaSync cuda ptr
 
-def fetchFn (sh : Shape) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
-  let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  let yId ← load32 (← absAddr ptr Y_ID)
-  let yBytes ← iconst64 (sh.m * 4)
-  let _ ← call cuda.fnDownload [ctxPtr, yId, outPtr, yBytes]
-  ret
+def fetchCode (sh : Shape) : HProg.Code :=
+  HProg.Sur.build envCuda HProg.ptrParams do
+    let ptr := basePtr
+    let ctxPtr ← cudaCtxPtr ptr
+    let outPtr ← load64 (← absAddr ptr 0x28)
+    let yId ← load32 (← absAddr ptr Y_ID)
+    let yBytes ← iconst64 (sh.m * 4)
+    let _ ← call cuda.fnDownload.id [ctxPtr, yId, outPtr, yBytes]
+
+set_option maxHeartbeats 4000000 in
+/-- Every body well-formed at every shipped shape and schedule — the parameter
+    is open, so `clif%` cannot check these as it elaborates; this is the same
+    check at the instances that ship. -/
+theorem bodies_wf :
+    shapes.all (fun sh =>
+      HProg.wf envCuda HProg.ptrParams (loadCode sh) &&
+      HProg.wf envCuda HProg.ptrParams (fetchCode sh) &&
+      HProg.wf envAll HProg.ptrParams (blasCode sh) &&
+      Sched.all.all (fun sc =>
+        HProg.wf envCuda HProg.ptrParams (runCode sh false sc) &&
+        HProg.wf envCuda HProg.ptrParams (runCode sh true sc))) = true := by
+  decide
 
 def clifIR (sh : Shape) : Program :=
   program
     [noopFunction,
-     buildFunction 1 (loadFn sh),
-     buildFunction 2 (runFn sh false .vec4),
-     buildFunction 3 (fetchFn sh),
-     buildFunction 4 (blasFn sh),
-     buildFunction 5 (runFn sh false .strided),
-     buildFunction 6 (runFn sh false .blocked),
-     buildFunction 7 (runFn sh true .vec4),
-     buildFunction 8 (runFn sh true .strided),
-     buildFunction 9 (runFn sh true .blocked)]
+     HProg.compileFn 1 envCuda HProg.ptrParams (loadCode sh),
+     HProg.compileFn 2 envCuda HProg.ptrParams (runCode sh false .vec4),
+     HProg.compileFn 3 envCuda HProg.ptrParams (fetchCode sh),
+     HProg.compileFn 4 envAll HProg.ptrParams (blasCode sh),
+     HProg.compileFn 5 envCuda HProg.ptrParams (runCode sh false .strided),
+     HProg.compileFn 6 envCuda HProg.ptrParams (runCode sh false .blocked),
+     HProg.compileFn 7 envCuda HProg.ptrParams (runCode sh true .vec4),
+     HProg.compileFn 8 envCuda HProg.ptrParams (runCode sh true .strided),
+     HProg.compileFn 9 envCuda HProg.ptrParams (runCode sh true .blocked)]
 
 /-- Every emitted kernel fits the slot it is written into — all six kernels at
     all four shapes, checked rather than assumed. -/

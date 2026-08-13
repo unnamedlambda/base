@@ -2,6 +2,8 @@ import AlgorithmLib
 set_option maxRecDepth 8192
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.PTX
 
 namespace Algorithm
@@ -925,29 +927,42 @@ def bmpHeaderOff : Nat := clifIrOff + clifIrRegion
 def pixelsOff : Nat := bmpHeaderOff + 54
 
 open AlgorithmLib.IR in
-def clifIrSource (spec : SceneSpec) : Program := buildProgram do
-  let fnWrite ← declareFileWrite
-  let cuda ← declareCudaFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 
-  let ptr ← entryBlock
-  cudaInit cuda ptr
-  let dataSz ← iconst64 (pixelBytes spec)
-  let bufId ← cudaCreateBuffer cuda ptr dataSz
-  let ptxOffV ← iconst64 ptxOff
-  let nBufs ← iconst32 1
-  let bindOffV ← iconst64 bindOff
-  let gridX ← iconst32 ((imageWidth spec + 15) / 16)
-  let gridY ← iconst32 ((imageHeight spec + 15) / 16)
-  let one32 ← iconst32 1
-  let blk16 ← iconst32 16
-  let _ := bufId
-  let _ ← cudaLaunch cuda ptr ptxOffV nBufs bindOffV gridX gridY one32 blk16 blk16 one32
-  let pxOffV ← iconst64 pixelsOff
-  let _ ← cudaDownload cuda ptr bufId pxOffV dataSz
-  cudaCleanup cuda ptr
-  let total ← iconst64 (54 + pixelBytes spec)
-  let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
-  ret
+/-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
+def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := envOf (do
+  let w ← declareFileWrite
+  let c ← declareCudaFFI
+  pure (w, c))
+def fnWrite : FnRef := ffiEnv.1.1
+def cuda : IR.CudaSetup := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
+
+def code (spec : SceneSpec) : HProg.Code :=
+  HProg.Sur.build env HProg.ptrParams do
+    let ptr := basePtr
+    cudaInit cuda ptr
+    let dataSz ← iconst64 (pixelBytes spec)
+    let bufId ← cudaCreateBuffer cuda ptr dataSz
+    let ptxOffV ← iconst64 ptxOff
+    let nBufs ← iconst32 1
+    let bindOffV ← iconst64 bindOff
+    let gridX ← iconst32 ((imageWidth spec + 15) / 16)
+    let gridY ← iconst32 ((imageHeight spec + 15) / 16)
+    let one32 ← iconst32 1
+    let blk16 ← iconst32 16
+    let _ := bufId
+    let _ ← cudaLaunch cuda ptr ptxOffV nBufs bindOffV gridX gridY one32 blk16 blk16 one32
+    let pxOffV ← iconst64 pixelsOff
+    let _ ← cudaDownload cuda ptr bufId pxOffV dataSz
+    cudaCleanup cuda ptr
+    let total ← iconst64 (54 + pixelBytes spec)
+    let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
+
+
+def clifIrSource (spec : SceneSpec) : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code spec)]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
   let reserved := zeros ptxOff

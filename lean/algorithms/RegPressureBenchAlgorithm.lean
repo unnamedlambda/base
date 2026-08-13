@@ -24,11 +24,16 @@ namespace RegPressureBench
 def MEM_SIZE : Nat := 40
 def ACCS : Nat := 16
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Nothing here crosses the FFI. -/
+def env : FnEnv := { sigs := [], fns := [] }
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let dataLen ← load64 (← absAddr basePtr 0x20)
+  let outPtr  ← load64 (← absAddr basePtr 0x28)
   let n       ← ushrImm dataLen 2            -- element count
   -- floor(n/64) trips of 64 elements = 256 bytes each
   let mainEnd ← ishlImm (← ushrImm n 6) 8
@@ -36,39 +41,31 @@ def mainFn : IRBuilder Unit := do
   let acc0    ← splat .f32x4 zero
   let i0      ← iconst64 0
 
-  let tys   := ClifTy.i64 :: List.replicate ACCS ClifTy.f32x4
-  let loop  ← declareBlock tys
-  let body  ← declareBlock tys
-  let fin   ← declareBlock tys
-  jump loop.ref (i0 :: List.replicate ACCS acc0)
+  let fin ← wloop (i0 :: List.replicate ACCS acc0)
+    (head := fun c => return (exitIfSGe (c.headD 0) mainEnd, c, ()))
+    (body := fun c _ => do
+      let bi := c.headD 0
+      let off ← iadd dataPtr bi
+      let mut accs' : List R := []
+      for k in [0:ACCS] do
+        let v ← loadF32x4 (← iaddImm off (16 * k))
+        accs' := accs' ++ [← fadd (c.getD (k + 1) 0) v]
+      return (← iaddImm bi 256) :: accs')
 
-  startBlock loop
-  let li := loop.param 0
-  let laccs := (List.range ACCS).map (fun k => loop.param (k + 1))
-  brif (← icmp .sge li mainEnd) fin.ref (li :: laccs) body.ref (li :: laccs)
-
-  startBlock body
-  let bi := body.param 0
-  let off ← iadd dataPtr bi
-  let mut accs' : List Val := []
-  for k in [0:ACCS] do
-    let v ← loadF32x4 (← iaddImm off (16 * k))
-    accs' := accs' ++ [← fadd (body.param (k + 1)) v]
-  jump loop.ref ((← iaddImm bi 256) :: accs')
-
-  startBlock fin
   -- left fold, so the Rust mirror can reproduce the order exactly
-  let mut acc := fin.param 1
+  let mut acc := fin.getD 1 0
   for k in [1:ACCS] do
-    acc ← fadd acc (fin.param (k + 1))
+    acc ← fadd acc (fin.getD (k + 1) 0)
   let sum64 ← fadd (← fadd (← fpromote (← extractlane acc 0))
                             (← fpromote (← extractlane acc 1)))
                    (← fadd (← fpromote (← extractlane acc 2))
                             (← fpromote (← extractlane acc 3)))
-  storeF64 sum64 outPtr
-  ret
+  store sum64 outPtr
 
-def clifIR : Program := buildProgram mainFn
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "regpressure_sum_algorithm" {

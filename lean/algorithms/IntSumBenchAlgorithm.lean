@@ -26,11 +26,16 @@ namespace IntSumBench
 
 def MEM_SIZE : Nat := 40
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Nothing here crosses the FFI. -/
+def env : FnEnv := { sigs := [], fns := [] }
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let dataLen ← load64 (← absAddr basePtr 0x20)
+  let outPtr  ← load64 (← absAddr basePtr 0x28)
   let n       ← ushrImm dataLen 2
   -- floor(n/4) trips of 4 elements = 16 bytes each
   let mainEnd ← ishlImm (← ushrImm n 2) 4
@@ -40,36 +45,29 @@ def mainFn : IRBuilder Unit := do
   let mask    ← iconst64 0xFFFF
   let keep    ← iconst64 0xFFFFFF
 
-  let tys  := [ClifTy.i64, .i64, .i64, .i64, .i64]
-  let loop ← declareBlock tys
-  let body ← declareBlock tys
-  let fin  ← declareBlock tys
-  jump loop.ref [i0, h0, h0, h0, h0]
+  -- One counter and four independent hash chains, carried together.
+  let fin ← wloop [i0, h0, h0, h0, h0]
+    (head := fun c => return (exitIfSGe (c.headD 0) mainEnd, c, ()))
+    (body := fun c _ => do
+      let bi := c.headD 0
+      let off ← iadd dataPtr bi
+      let mut hs : List R := []
+      for k in [0:4] do
+        let w ← uload32_64 (← iaddImm off (4 * k))
+        let x ← band w mask
+        hs := hs ++ [← band (← iadd (← imul (c.getD (k + 1) 0) k31) x) keep]
+      return (← iaddImm bi 16) :: hs)
 
-  startBlock loop
-  let li := loop.param 0
-  let ls := (List.range 4).map (fun k => loop.param (k + 1))
-  brif (← icmp .sge li mainEnd) fin.ref (li :: ls) body.ref (li :: ls)
-
-  startBlock body
-  let bi := body.param 0
-  let off ← iadd dataPtr bi
-  let mut hs : List Val := []
-  for k in [0:4] do
-    let w ← uload32_64 (← iaddImm off (4 * k))
-    let x ← band w mask
-    hs := hs ++ [← band (← iadd (← imul (body.param (k + 1)) k31) x) keep]
-  jump loop.ref ((← iaddImm bi 16) :: hs)
-
-  startBlock fin
   -- left fold, matching the Rust mirror
-  let mut tot := fin.param 1
+  let mut tot := fin.getD 1 0
   for k in [1:4] do
-    tot ← iadd tot (fin.param (k + 1))
-  storeF64 (← fcvtFromSint .f64 tot) outPtr
-  ret
+    tot ← iadd tot (fin.getD (k + 1) 0)
+  store (← fcvtFromSint .f64 tot) outPtr
 
-def clifIR : Program := buildProgram mainFn
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "intsum_algorithm" {

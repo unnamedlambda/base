@@ -4,6 +4,7 @@ import AlgorithmLib
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.PTX
 
 namespace CudaSaxpyBench
@@ -34,19 +35,32 @@ def ptxSource : String := buildModuleWith { version := "7.0", target := "sm_50" 
   stGlobalF ya fy
   ptxRet }]
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The CUDA entry points, in the order the callee table numbers them. -/
+def env : FnEnv := (envOf (do
+  let _ ← declareFFI "cl_cuda_init"          [.i64]                    none
+  let _ ← declareFFI "cl_cuda_create_buffer" [.i64, .i64]              (some .i32)
+  let _ ← declareFFI "cl_cuda_upload_ptr"    [.i64, .i32, .i64, .i64]  (some .i32)
+  let _ ← declareFFI "cl_cuda_download_ptr"  [.i64, .i32, .i64, .i64]  (some .i32)
+  let _ ← declareFFI "cl_cuda_launch"
+    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
+  let _ ← declareFFI "cl_cuda_cleanup"       [.i64]                    none)).2
+
+def fnInit : Nat := 0
+def fnCreateBuffer : Nat := 1
+def fnUploadPtr : Nat := 2
+def fnDownloadPtr : Nat := 3
+def fnLaunch : Nat := 4
+def fnCleanup : Nat := 5
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
   let outPtr  ← load64 (← absAddr ptr 0x28)
 
-  let fnInit         ← declareFFI "cl_cuda_init"          [.i64]                    none
-  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer" [.i64, .i64]             (some .i32)
-  let fnUploadPtr    ← declareFFI "cl_cuda_upload_ptr"    [.i64, .i32, .i64, .i64] (some .i32)
-  let fnDownloadPtr  ← declareFFI "cl_cuda_download_ptr"  [.i64, .i32, .i64, .i64] (some .i32)
-  let fnLaunch       ← declareFFI "cl_cuda_launch"
-    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnCleanup      ← declareFFI "cl_cuda_cleanup"       [.i64]                    none
 
   let ctxSlotPtr ← absAddr ptr 0x10   -- ContextSlots.cuda
   callVoid fnInit [ctxSlotPtr]
@@ -79,9 +93,12 @@ def mainFn : IRBuilder Unit := do
   let _ ← call fnDownloadPtr [ctxPtr, yBufId, outPtr, bufSize]
 
   callVoid fnCleanup [ctxSlotPtr]
-  ret
 
-def clifIR : Program := buildProgram mainFn
+
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]

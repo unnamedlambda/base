@@ -24,11 +24,16 @@ namespace SelectRotBench
 
 def MEM_SIZE : Nat := 40
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Nothing here crosses the FFI. -/
+def env : FnEnv := { sigs := [], fns := [] }
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let dataLen ← load64 (← absAddr basePtr 0x20)
+  let outPtr  ← load64 (← absAddr basePtr 0x28)
   let n       ← ushrImm dataLen 2
   let mainEnd ← ishlImm n 2
   let i0      ← iconst64 0
@@ -36,27 +41,27 @@ def mainFn : IRBuilder Unit := do
   let one     ← iconst64 1
   let keep    ← iconst64 0xFFFFFF
 
-  let body ← declareBlock [.i64, .i64]
-  let fin  ← declareBlock [.i64]
-  -- guard once, so an empty input skips the loop rather than testing inside it
-  brif (← icmp .slt i0 mainEnd) body.ref [i0, h0] fin.ref [h0]
+  -- Bottom-tested: the guard runs once, so an empty input never enters and the
+  -- body block branches to itself rather than through a header.
+  let fin ← dwloop [i0, h0] .slt mainEnd (contOnTrue := true) [1]
+    (body := fun c => do
+      let bi := c.headD 0
+      let bh := c.getD 1 0
+      let x  ← uload32_64 (← iadd dataPtr bi)
+      let hE ← band (← iadd bh x) keep
+      let hO ← band (← iadd (← ishlImm bh 1) bh) keep
+      let cnd ← icmp .eq (← band x one) (← iconst64 0)
+      let h' ← select cnd hE hO
+      let i' ← iaddImm bi 4
+      return (i', [i', h']))
+    (guardIdx := some 0)
 
-  startBlock body
-  let bi := body.param 0
-  let bh := body.param 1
-  let x  ← uload32_64 (← iadd dataPtr bi)
-  let hE ← band (← iadd bh x) keep
-  let hO ← band (← iadd (← ishlImm bh 1) bh) keep
-  let c  ← icmpImm .eq (← band x one) 0
-  let h' ← select' c hE hO
-  let i' ← iaddImm bi 4
-  brif (← icmp .slt i' mainEnd) body.ref [i', h'] fin.ref [h']
+  store (← fcvtFromSint .f64 (fin.headD 0)) outPtr
 
-  startBlock fin
-  storeF64 (← fcvtFromSint .f64 (fin.param 0)) outPtr
-  ret
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program := buildProgram mainFn
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "selectrot_algorithm" {

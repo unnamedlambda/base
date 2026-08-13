@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib
 import AlgorithmLib.Cuda
+import AlgorithmLib.HProgCuda
 import Qwen2Common
 
 set_option maxRecDepth 4096
@@ -12,6 +13,8 @@ open AlgorithmLib.IR
 open AlgorithmLib.PTX
 open AlgorithmLib.Tensor
 open Qwen2Common
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 
 namespace Qwen2OnDisk
 
@@ -42,66 +45,59 @@ def kvCachePathBytes : List UInt8 :=
 
 /-- loadInitFn (fn_1): shared prefix, then allocate the working-set slot
     (12 weight buffers + shared K/V cache pair) reused across all layers. -/
-def loadInitFn : IRBuilder Unit := do
-  let ptr        ← entryBlock
-  let cuda       ← declareCudaFFI
-  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
-  let fnSinf     ← declareFFI "cl_sinf" [.f32]       (some .f32)
-  let fnCosf     ← declareFFI "cl_cosf" [.f32]       (some .f32)
-  let fnPowf     ← declareFFI "cl_powf" [.f32, .f32] (some .f32)
-  loadInitCommon cuda fnFileRead fnSinf fnCosf fnPowf ptr
+def loadInitFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
+  loadInitCommon ptr
 
   -- Working-set weight buffers — one set, reused across all 24 layers.
   -- streamLayerFn rewrites their contents per-layer from disk.
   let wsBaseA ← absAddr ptr WORKING_SET_BASE
   let dBytes  ← iconst64 D_BYTES
-  let bufRmsAttn : VecD    ← Tensor.create cuda ptr dBytes
-  let bufWq      : MatDD   ← Tensor.create cuda ptr (← iconst64 WQ_BYTES)
-  let bufBq      : VecD    ← Tensor.create cuda ptr dBytes
-  let bufWk      : MatKVD  ← Tensor.create cuda ptr (← iconst64 WK_BYTES)
-  let bufBk      : VecKV   ← Tensor.create cuda ptr (← iconst64 KV_BYTES)
-  let bufWv      : MatKVD  ← Tensor.create cuda ptr (← iconst64 WK_BYTES)
-  let bufBv      : VecKV   ← Tensor.create cuda ptr (← iconst64 KV_BYTES)
-  let bufWo      : MatDD   ← Tensor.create cuda ptr (← iconst64 WQ_BYTES)
-  let bufRmsFfn  : VecD    ← Tensor.create cuda ptr dBytes
-  let bufWg      : MatDffD ← Tensor.create cuda ptr (← iconst64 WG_BYTES)
-  let bufWu      : MatDffD ← Tensor.create cuda ptr (← iconst64 WG_BYTES)
-  let bufWd      : MatDDff ← Tensor.create cuda ptr (← iconst64 WG_BYTES)
-  LayerSlot.rmsAttn.store wsBaseA bufRmsAttn
-  LayerSlot.wq.store      wsBaseA bufWq
-  LayerSlot.bq.store      wsBaseA bufBq
-  LayerSlot.wk.store      wsBaseA bufWk
-  LayerSlot.bk.store      wsBaseA bufBk
-  LayerSlot.wv.store      wsBaseA bufWv
-  LayerSlot.bv.store      wsBaseA bufBv
-  LayerSlot.wo.store      wsBaseA bufWo
-  LayerSlot.rmsFfn.store  wsBaseA bufRmsFfn
-  LayerSlot.wg.store      wsBaseA bufWg
-  LayerSlot.wu.store      wsBaseA bufWu
-  LayerSlot.wd.store      wsBaseA bufWd
+  let bufRmsAttn : VecD    ← tensorCreate cuda ptr dBytes
+  let bufWq      : MatDD   ← tensorCreate cuda ptr (← iconst64 WQ_BYTES)
+  let bufBq      : VecD    ← tensorCreate cuda ptr dBytes
+  let bufWk      : MatKVD  ← tensorCreate cuda ptr (← iconst64 WK_BYTES)
+  let bufBk      : VecKV   ← tensorCreate cuda ptr (← iconst64 KV_BYTES)
+  let bufWv      : MatKVD  ← tensorCreate cuda ptr (← iconst64 WK_BYTES)
+  let bufBv      : VecKV   ← tensorCreate cuda ptr (← iconst64 KV_BYTES)
+  let bufWo      : MatDD   ← tensorCreate cuda ptr (← iconst64 WQ_BYTES)
+  let bufRmsFfn  : VecD    ← tensorCreate cuda ptr dBytes
+  let bufWg      : MatDffD ← tensorCreate cuda ptr (← iconst64 WG_BYTES)
+  let bufWu      : MatDffD ← tensorCreate cuda ptr (← iconst64 WG_BYTES)
+  let bufWd      : MatDDff ← tensorCreate cuda ptr (← iconst64 WG_BYTES)
+  slotStore LayerSlot.rmsAttn wsBaseA bufRmsAttn
+  slotStore LayerSlot.wq      wsBaseA bufWq
+  slotStore LayerSlot.bq      wsBaseA bufBq
+  slotStore LayerSlot.wk      wsBaseA bufWk
+  slotStore LayerSlot.bk      wsBaseA bufBk
+  slotStore LayerSlot.wv      wsBaseA bufWv
+  slotStore LayerSlot.bv      wsBaseA bufBv
+  slotStore LayerSlot.wo      wsBaseA bufWo
+  slotStore LayerSlot.rmsFfn  wsBaseA bufRmsFfn
+  slotStore LayerSlot.wg      wsBaseA bufWg
+  slotStore LayerSlot.wu      wsBaseA bufWu
+  slotStore LayerSlot.wd      wsBaseA bufWd
 
   -- Shared K/V cache buffers — stored at the kCache/vCache offsets within the
   -- same working-set slot, so attnLoadBufs unifies with the in-memory variant.
   let kvCacheBytes ← iconst64 KV_CACHE_BYTES
-  let bufKvK : KVCache ← Tensor.create cuda ptr kvCacheBytes
-  let bufKvV : KVCache ← Tensor.create cuda ptr kvCacheBytes
-  LayerSlot.kCache.store wsBaseA bufKvK
-  LayerSlot.vCache.store wsBaseA bufKvV
-  ret
+  let bufKvK : KVCache ← tensorCreate cuda ptr kvCacheBytes
+  let bufKvV : KVCache ← tensorCreate cuda ptr kvCacheBytes
+  slotStore LayerSlot.kCache wsBaseA bufKvK
+  slotStore LayerSlot.vCache wsBaseA bufKvV
 
 /-- loadLayerFn (fn_2+l): no-op.  Per-layer state is streamed from disk on
     demand by `streamLayerFn` + `kvLoadLayerFn` just before each layer runs. -/
-def loadLayerFn (_l : Nat) : IRBuilder Unit := do
-  let _ptr ← entryBlock
-  ret
+def loadLayerFn (_l : Nat) : HProg.Code :=
+  HProg.Sur.build Qwen2Common.env HProg.ptrParams (pure ())
 
 /-- loadFinalizeFn (fn_26): sync GPU.  Pinned scratch stays alive for the
     program's lifetime; streamLayerFn re-uses it on every layer. -/
-def loadFinalizeFn : IRBuilder Unit := do
-  let ptr  ← entryBlock
-  let cuda ← declareCudaFFI
+def loadFinalizeFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let _ ← cudaSync cuda ptr 0x10
-  ret
 
 -- ── inferLayerFn: stream weights/KV → attn → ffn → save KV ───────────────────
 
@@ -111,44 +107,36 @@ def loadFinalizeFn : IRBuilder Unit := do
     3) attention (which also writes the new K/V slot via kvStoreKernel),
     4) FFN,
     5) save new K/V slot back to disk for next-token retrieval. -/
-def inferLayerFn : IRBuilder Unit := do
-  let ptr      ← entryBlock
-  let fnStream ← declareColocatedFFI "fn_38" [.i64] none
-  let fnKvLoad ← declareColocatedFFI "fn_39" [.i64] none
-  let fnAttn   ← declareColocatedFFI "fn_29" [.i64] none
-  let fnFfn    ← declareColocatedFFI "fn_30" [.i64] none
-  let fnKvSave ← declareColocatedFFI "fn_40" [.i64] none
-  callVoid fnStream [ptr]
-  callVoid fnKvLoad [ptr]
-  callVoid fnAttn   [ptr]
-  callVoid fnFfn    [ptr]
-  callVoid fnKvSave [ptr]
-  ret
+def inferLayerFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
+  callVoid Qwen2Common.q.fnStream.id [ptr]
+  callVoid Qwen2Common.q.fnKvLoad.id [ptr]
+  callVoid Qwen2Common.q.fnAttn.id   [ptr]
+  callVoid Qwen2Common.q.fnFfn.id    [ptr]
+  callVoid Qwen2Common.q.fnKvSave.id [ptr]
 
 /-- inferLayerAttnFn (fn_29): attention sub-layer.  Slot base = working set. -/
-def inferLayerAttnFn : IRBuilder Unit := do
-  let ptr       ← entryBlock
-  let cuda      ← declareCudaFFI
-  let blas      ← declareCuBlasFFI
+def inferLayerAttnFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let slotBaseA ← absAddr ptr WORKING_SET_BASE
-  attnBody cuda blas ptr slotBaseA
+  attnBody ptr slotBaseA
 
 /-- inferLayerFfnFn (fn_30): FFN sub-layer.  Slot base = working set. -/
-def inferLayerFfnFn : IRBuilder Unit := do
-  let ptr       ← entryBlock
-  let cuda      ← declareCudaFFI
-  let blas      ← declareCuBlasFFI
+def inferLayerFfnFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let slotBaseA ← absAddr ptr WORKING_SET_BASE
-  ffnBody cuda blas ptr slotBaseA
+  ffnBody ptr slotBaseA
 
 -- ── streamLayerFn / kvLoadLayerFn / kvSaveLayerFn ────────────────────────────
 
 /-- streamLayerFn (fn_38): pull this layer's 12 weight tensors from disk into
     the GPU working-set buffers.  One big file-read + 12 H→D uploads. -/
-def streamLayerFn : IRBuilder Unit := do
-  let ptr        ← entryBlock
-  let cuda       ← declareCudaFFI
-  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+def streamLayerFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pathPtr   ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
   let pinnedPtr ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
@@ -161,72 +149,64 @@ def streamLayerFn : IRBuilder Unit := do
   let wsBaseA      ← absAddr ptr WORKING_SET_BASE
   -- ONE big read pulls the entire layer (~57 MB) into pinned scratch in one
   -- syscall.  The on-disk layout matches the pinned scratch layout 1:1.
-  let _ ← call fnFileRead [pathPtr, pinnedPtr, baseOff, layerBytes64]
+  let _ ← call Qwen2Common.q.fnFileRead.id [pathPtr, pinnedPtr, baseOff, layerBytes64]
   -- 12 synchronous H→D uploads.  Sync semantics keep the pinned scratch safe
   -- to reuse on the next streamLayerFn call without an extra device sync.
-  let upOne (bufId : Val) (scratchOff size : Nat) : IRBuilder Unit := do
+  let upOne (bufId : R) (scratchOff size : Nat) : M Unit := do
     let pinnedAt ← iaddImm pinnedPtr scratchOff
     let size64   ← iconst64 size
-    let _ ← call cuda.fnUpload [ctxPtr, bufId, pinnedAt, size64]
-  let tRms  ← LayerSlot.rmsAttn.load wsBaseA; upOne tRms.buf  LF_RMS_ATTN D_BYTES
-  let tWq   ← LayerSlot.wq.load      wsBaseA; upOne tWq.buf   LF_WQ       WQ_BYTES
-  let tBq   ← LayerSlot.bq.load      wsBaseA; upOne tBq.buf   LF_BQ       D_BYTES
-  let tWk   ← LayerSlot.wk.load      wsBaseA; upOne tWk.buf   LF_WK       WK_BYTES
-  let tBk   ← LayerSlot.bk.load      wsBaseA; upOne tBk.buf   LF_BK       KV_BYTES
-  let tWv   ← LayerSlot.wv.load      wsBaseA; upOne tWv.buf   LF_WV       WK_BYTES
-  let tBv   ← LayerSlot.bv.load      wsBaseA; upOne tBv.buf   LF_BV       KV_BYTES
-  let tWo   ← LayerSlot.wo.load      wsBaseA; upOne tWo.buf   LF_WO       WQ_BYTES
-  let tRmsF ← LayerSlot.rmsFfn.load  wsBaseA; upOne tRmsF.buf LF_RMS_FFN  D_BYTES
-  let tWg   ← LayerSlot.wg.load      wsBaseA; upOne tWg.buf   LF_WG       WG_BYTES
-  let tWu   ← LayerSlot.wu.load      wsBaseA; upOne tWu.buf   LF_WU       WG_BYTES
-  let tWd   ← LayerSlot.wd.load      wsBaseA; upOne tWd.buf   LF_WD       WG_BYTES
-  ret
+    let _ ← call cuda.fnUpload.id [ctxPtr, bufId, pinnedAt, size64]
+  let tRms  ← slotLoad LayerSlot.rmsAttn wsBaseA; upOne tRms.slot  LF_RMS_ATTN D_BYTES
+  let tWq   ← slotLoad LayerSlot.wq      wsBaseA; upOne tWq.slot   LF_WQ       WQ_BYTES
+  let tBq   ← slotLoad LayerSlot.bq      wsBaseA; upOne tBq.slot   LF_BQ       D_BYTES
+  let tWk   ← slotLoad LayerSlot.wk      wsBaseA; upOne tWk.slot   LF_WK       WK_BYTES
+  let tBk   ← slotLoad LayerSlot.bk      wsBaseA; upOne tBk.slot   LF_BK       KV_BYTES
+  let tWv   ← slotLoad LayerSlot.wv      wsBaseA; upOne tWv.slot   LF_WV       WK_BYTES
+  let tBv   ← slotLoad LayerSlot.bv      wsBaseA; upOne tBv.slot   LF_BV       KV_BYTES
+  let tWo   ← slotLoad LayerSlot.wo      wsBaseA; upOne tWo.slot   LF_WO       WQ_BYTES
+  let tRmsF ← slotLoad LayerSlot.rmsFfn  wsBaseA; upOne tRmsF.slot LF_RMS_FFN  D_BYTES
+  let tWg   ← slotLoad LayerSlot.wg      wsBaseA; upOne tWg.slot   LF_WG       WG_BYTES
+  let tWu   ← slotLoad LayerSlot.wu      wsBaseA; upOne tWu.slot   LF_WU       WG_BYTES
+  let tWd   ← slotLoad LayerSlot.wd      wsBaseA; upOne tWd.slot   LF_WD       WG_BYTES
 
 /-- kvLoadLayerFn (fn_39): stream this layer's K/V cache history from disk into
     the shared K/V VRAM buffers.  Skips when pos==0 (no history yet). -/
-def kvLoadLayerFn : IRBuilder Unit := do
-  let ptr        ← entryBlock
-  let cuda       ← declareCudaFFI
-  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+def kvLoadLayerFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr     ← load64 (← absAddr ptr 0x10)
   let pinnedPtr  ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
   let pos        ← load64 (← absAddr ptr POS_SLOT_OFF)
   let layerIdx   ← load64 (← absAddr ptr LAYER_IDX_OFF)
   let wsBaseA    ← absAddr ptr WORKING_SET_BASE
-  let tK         ← LayerSlot.kCache.load wsBaseA
-  let tV         ← LayerSlot.vCache.load wsBaseA
+  let tK         ← slotLoad LayerSlot.kCache wsBaseA
+  let tV         ← slotLoad LayerSlot.vCache wsBaseA
   let kvPath     ← absAddr ptr KV_CACHE_PATH_OFF
   let kvBytes64  ← iconst64 KV_CACHE_BYTES
   let perLayer64 ← iconst64 (2 * KV_CACHE_BYTES)
   let kFileOff   ← imul layerIdx perLayer64
   let vFileOff   ← iadd kFileOff kvBytes64
   let zero64     ← iconst64 0
-  let posIsZero  ← icmp .eq pos zero64
-  let doLoad     ← declareBlock []
-  let doneBlk    ← declareBlock []
-  brif posIsZero doneBlk.ref [] doLoad.ref []
-  startBlock doLoad
-  let _ ← call fnFileRead    [kvPath, pinnedPtr, kFileOff, kvBytes64]
-  let _ ← call cuda.fnUpload [ctxPtr, tK.buf, pinnedPtr, kvBytes64]
-  let _ ← call fnFileRead    [kvPath, pinnedPtr, vFileOff, kvBytes64]
-  let _ ← call cuda.fnUpload [ctxPtr, tV.buf, pinnedPtr, kvBytes64]
-  jump doneBlk.ref []
-  startBlock doneBlk
-  ret
+  -- position zero has nothing cached yet
+  when .ne pos zero64 (do
+    let _ ← call Qwen2Common.q.fnFileRead.id [kvPath, pinnedPtr, kFileOff, kvBytes64]
+    let _ ← call cuda.fnUpload.id [ctxPtr, tK.slot, pinnedPtr, kvBytes64]
+    let _ ← call Qwen2Common.q.fnFileRead.id [kvPath, pinnedPtr, vFileOff, kvBytes64]
+    let _ ← call cuda.fnUpload.id [ctxPtr, tV.slot, pinnedPtr, kvBytes64]
+    pure ())
 
 /-- kvSaveLayerFn (fn_40): write this layer's newly-computed K/V slot at the
     current position back to disk so the next token can stream it back in. -/
-def kvSaveLayerFn : IRBuilder Unit := do
-  let ptr         ← entryBlock
-  let cuda        ← declareCudaFFI
-  let fnFileWrite ← declareFFI "cl_file_write_from_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+def kvSaveLayerFn : HProg.Code :=
+  clif% Qwen2Common.env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pinnedPtr ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
   let pos       ← load64 (← absAddr ptr POS_SLOT_OFF)
   let layerIdx  ← load64 (← absAddr ptr LAYER_IDX_OFF)
   let wsBaseA   ← absAddr ptr WORKING_SET_BASE
-  let tK        ← LayerSlot.kCache.load wsBaseA
-  let tV        ← LayerSlot.vCache.load wsBaseA
+  let tK        ← slotLoad LayerSlot.kCache wsBaseA
+  let tV        ← slotLoad LayerSlot.vCache wsBaseA
   let kvPath    ← absAddr ptr KV_CACHE_PATH_OFF
   let perLayer64  ← iconst64 (2 * KV_CACHE_BYTES)
   let kvBytes64   ← iconst64 KV_CACHE_BYTES
@@ -242,35 +222,34 @@ def kvSaveLayerFn : IRBuilder Unit := do
     let slotOff       ← iadd headByteOff64 posByteOff
     let kSlotFile     ← iadd kFileOff slotOff
     let vSlotFile     ← iadd vFileOff slotOff
-    let _ ← call cuda.fnDownloadOffset [ctxPtr, tK.buf, slotOff, pinnedPtr, slotBytes64]
-    let _ ← call fnFileWrite           [kvPath, pinnedPtr, kSlotFile, slotBytes64]
-    let _ ← call cuda.fnDownloadOffset [ctxPtr, tV.buf, slotOff, pinnedPtr, slotBytes64]
-    let _ ← call fnFileWrite           [kvPath, pinnedPtr, vSlotFile, slotBytes64]
-  ret
+    let _ ← call cuda.fnDownloadOffset.id [ctxPtr, tK.slot, slotOff, pinnedPtr, slotBytes64]
+    let _ ← call Qwen2Common.q.fnFileWrite.id           [kvPath, pinnedPtr, kSlotFile, slotBytes64]
+    let _ ← call cuda.fnDownloadOffset.id [ctxPtr, tV.slot, slotOff, pinnedPtr, slotBytes64]
+    let _ ← call Qwen2Common.q.fnFileWrite.id           [kvPath, pinnedPtr, vSlotFile, slotBytes64]
 
 -- ── CLIF IR ──────────────────────────────────────────────────────────────────
 
 def clifIR : Program :=
   program <|
     [noopFunction,
-     buildFunction 1 loadInitFn]
-    ++ (List.range N_LAYERS).map (fun l => buildFunction (2 + l) (loadLayerFn l))
+     HProg.compileFn 1 Qwen2Common.env HProg.ptrParams loadInitFn]
+    ++ (List.range N_LAYERS).map (fun l => HProg.compileFn (2 + l) Qwen2Common.env HProg.ptrParams (loadLayerFn l))
     ++ [
-     buildFunction 26 loadFinalizeFn,
-     buildFunction 27 inferFn,
-     buildFunction 28 inferLayerFn,
-     buildFunction 29 inferLayerAttnFn,
-     buildFunction 30 inferLayerFfnFn,
-     buildFunction 31 inferFinalFn,
-     buildFunction 32 loadTokenizerFn,
-     buildFunction 33 tokenizeInitFn,
-     buildFunction 34 tokenizeBpeFn,
-     buildFunction 35 detokenizeFn,
-     buildFunction 36 cliFn,
-     buildFunction 37 parseArgsFn,
-     buildFunction 38 streamLayerFn,
-     buildFunction 39 kvLoadLayerFn,
-     buildFunction 40 kvSaveLayerFn,
+     HProg.compileFn 26 Qwen2Common.env HProg.ptrParams loadFinalizeFn,
+     HProg.compileFn 27 Qwen2Common.env HProg.ptrParams inferFn,
+     HProg.compileFn 28 Qwen2Common.env HProg.ptrParams inferLayerFn,
+     HProg.compileFn 29 Qwen2Common.env HProg.ptrParams inferLayerAttnFn,
+     HProg.compileFn 30 Qwen2Common.env HProg.ptrParams inferLayerFfnFn,
+     HProg.compileFn 31 Qwen2Common.env HProg.ptrParams inferFinalFn,
+     HProg.compileFn 32 Qwen2Common.env HProg.ptrParams loadTokenizerFn,
+     HProg.compileFn 33 Qwen2Common.env HProg.ptrParams tokenizeInitFn,
+     HProg.compileFn 34 Qwen2Common.env HProg.ptrParams tokenizeBpeFn,
+     HProg.compileFn 35 Qwen2Common.env HProg.ptrParams detokenizeFn,
+     HProg.compileFn 36 Qwen2Common.env HProg.ptrParams cliFn,
+     HProg.compileFn 37 Qwen2Common.env HProg.ptrParams parseArgsFn,
+     HProg.compileFn 38 Qwen2Common.env HProg.ptrParams streamLayerFn,
+     HProg.compileFn 39 Qwen2Common.env HProg.ptrParams kvLoadLayerFn,
+     HProg.compileFn 40 Qwen2Common.env HProg.ptrParams kvSaveLayerFn,
      -- fn41: orchestrator wrapper — parse args (37), load weights (1..26),
      --       load tokenizer (32), server (36 — runs forever).
      clifSequenceWrapper 41

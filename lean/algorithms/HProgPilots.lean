@@ -347,6 +347,57 @@ def program : Program :=
 end Nested
 
 -- ---------------------------------------------------------------------------
+-- Leaving a loop early
+-- ---------------------------------------------------------------------------
+
+namespace Early
+
+def env : FnEnv := Hist.env
+
+open Sur in
+/-- A scan that stops at the first zero byte and reports where it stopped, and
+    a nested pair of loops the inner one leaves outright.
+
+    Every rule `br` adds is exercised: nothing follows it, an arm that leaves
+    means the join carries only what the other arm exports, both arms leaving
+    means there is no join and the body has no back edge, and a depth above zero
+    names an outer loop. `wf` below is what says so in the kernel — the corpus
+    says the same thing by running it. -/
+def code : Code := clif% env ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let one ← iconst64 1
+  let zero ← iconst64 0
+  -- stop at the first zero byte, or at 64, whichever comes first
+  let stopped ← wloop1 zero
+    (head := fun i => return (exitIfSGe i (← iconst64 64), [i], ()))
+    (body := fun i _ => do
+      let ch ← uload8_64 (← iadd dataPtr i)
+      when .eq ch zero (brk [i])
+      return [← iadd i one])
+  store (stopped.headD 0) (← absAddr basePtr 0x400)
+  -- both arms leave, so the inner loop's body ends without a back edge, and the
+  -- deeper `brk` names the outer loop from inside the inner one
+  let picked ← wloop2 zero zero
+    (head := fun i acc => return (exitIfSGe i (← iconst64 8), [acc], ()))
+    (body := fun i acc _ => do
+      let inner ← wloop1 zero
+        (head := fun j => return (exitIfSGe j (← iconst64 8), [j], ()))
+        (body := fun j _ => do
+          let _ ← ifte .sge (← iadd i j) (← iconst64 6)
+            (thn := do brkTo 1 [← iadd acc one]; pure [])
+            (els := do brk [j]; pure [])
+          return [j])
+      return [← iadd i one, ← iadd acc (inner.headD 0)])
+  store (picked.headD 0) (← absAddr basePtr 0x408)
+  return ()
+
+theorem code_wf : wf env ptrParams code = true := by decide
+
+def program : Program := IR.program [noopFunction, compileFn 1 env ptrParams code]
+
+end Early
+
+-- ---------------------------------------------------------------------------
 -- A term with an open parameter
 -- ---------------------------------------------------------------------------
 
@@ -354,7 +405,7 @@ open Sur in
 /-- Slot numbering never depends on an immediate's *value*, so the builder
     reduces symbolically with `k` still open. -/
 def openFrag (k : Int) : Code :=
-  Sur.build { sigs := [], fns := [] } ptrParams do
+  HProg.Sur.build { sigs := [], fns := [] } ptrParams do
     let a ← Sur.iconst .i64 k
     let b ← Sur.iadd Sur.basePtr a
     let c ← Sur.load64 b

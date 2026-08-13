@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib
 import AlgorithmLib.Cuda
+import AlgorithmLib.HProgCuda
 import Qwen2Proven
 
 set_option maxRecDepth 4096
@@ -89,7 +90,7 @@ def PINNED_CHUNK_BYTES : Nat := 64 * 1024 * 1024
 def TOK_FILE_MAX_BYTES : Nat := 32 * 1024 * 1024
 -- Per-call buffer slots in shared memory at 0x0048–0x0087 (16 × i32 ids).
 -- Each `BufferSlot s` makes the *shape* of the underlying tensor part of the
--- type: `slotHidden.load ptr : VecD`, no per-call cast.  The fixed hex
+-- type: `slotLoad slotHidden ptr : VecD`, no per-call cast.  The fixed hex
 -- offsets are the single source of truth — no `BUF_*_OFF` constants.
 def slotHidden   : BufferSlot [.sta D]              := slotOfAt 0x0048
 def slotHdNorm   : BufferSlot [.sta D]              := slotOfAt 0x004C
@@ -123,7 +124,7 @@ def LAYER_BUF_STRIDE  : Nat := 56      -- 14 × 4
 -- Per-layer buffer slots (offsets within stride):
 -- Per-layer slots within a 56-byte layer cell.  Each `BufferSlot s` knows
 -- its tensor shape and its offset relative to the start of the cell.  To
--- load a layer's slot: `LayerSlot.rmsAttn.load cellBaseAddr`.
+-- load a layer's slot: `slotLoad LayerSlot.rmsAttn cellBaseAddr`.
 namespace LayerSlot
 def rmsAttn : BufferSlot [.sta D]                                 := slotOfAt 0
 def wq      : BufferSlot [.sta D, .sta D]                         := slotOfAt 4
@@ -288,8 +289,70 @@ def embedKernel : Kernel := {
 }
 def ptxEmbedLookup : String := embedKernel.ptxSource
 
-private def launchEmbed (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (table : EmbedTbl) (metaT : VecMeta) (outT : VecD) : IRBuilder Unit :=
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Every externally-callable thing any Qwen2 function uses, declared once so a
+    slot index means the same thing in all of them. -/
+structure Q2Ffi where
+  cuda : IR.CudaSetup
+  blas : IR.CuBlasSetup
+  ht : IR.HtSetup
+  fnHtInit : IR.FnRef
+  fnFileRead : IR.FnRef
+  fnFileWrite : IR.FnRef
+  fnSinf : IR.FnRef
+  fnCosf : IR.FnRef
+  fnPowf : IR.FnRef
+  fnStdinRead : IR.FnRef
+  fnStdoutWrite : IR.FnRef
+  fnInfer : IR.FnRef
+  fnLayerStep : IR.FnRef
+  fnAttn : IR.FnRef
+  fnFfn : IR.FnRef
+  fnFinalStep : IR.FnRef
+  fnTokInit : IR.FnRef
+  fnTokBpe : IR.FnRef
+  fnDetok : IR.FnRef
+  fnStream : IR.FnRef
+  fnKvLoad : IR.FnRef
+  fnKvSave : IR.FnRef
+
+def ffiEnv : Q2Ffi × FnEnv := envOf (do
+  let cuda ← declareCudaFFI
+  let blas ← declareCuBlasFFI
+  let ht ← declareHtFFI
+  let fnHtInit ← declareFFI "cl_ht_init" [.i64] none
+  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+  let fnFileWrite ← declareFFI "cl_file_write_from_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+  let fnSinf ← declareFFI "cl_sinf" [.f32] (some .f32)
+  let fnCosf ← declareFFI "cl_cosf" [.f32] (some .f32)
+  let fnPowf ← declareFFI "cl_powf" [.f32, .f32] (some .f32)
+  let fnStdinRead ← declareFFI "cl_stdin_readline" [.i64, .i64, .i64] (some .i64)
+  let fnStdoutWrite ← declareFFI "cl_stdout_write" [.i64, .i64, .i64] (some .i64)
+  let fnInfer ← declareColocatedFFI "fn_27" [.i64] none
+  let fnLayerStep ← declareColocatedFFI "fn_28" [.i64] none
+  let fnAttn ← declareColocatedFFI "fn_29" [.i64] none
+  let fnFfn ← declareColocatedFFI "fn_30" [.i64] none
+  let fnFinalStep ← declareColocatedFFI "fn_31" [.i64] none
+  let fnTokInit ← declareColocatedFFI "fn_33" [.i64] none
+  let fnTokBpe ← declareColocatedFFI "fn_34" [.i64] none
+  let fnDetok ← declareColocatedFFI "fn_35" [.i64] none
+  let fnStream ← declareColocatedFFI "fn_38" [.i64] none
+  let fnKvLoad ← declareColocatedFFI "fn_39" [.i64] none
+  let fnKvSave ← declareColocatedFFI "fn_40" [.i64] none
+  pure { cuda, blas, ht, fnHtInit, fnFileRead, fnFileWrite, fnSinf, fnCosf, fnPowf, fnStdinRead,
+         fnStdoutWrite, fnInfer, fnLayerStep, fnAttn, fnFfn, fnFinalStep,
+         fnTokInit, fnTokBpe, fnDetok, fnStream, fnKvLoad, fnKvSave })
+
+def q : Q2Ffi := ffiEnv.1
+def cuda : IR.CudaSetup := q.cuda
+def blas : IR.CuBlasSetup := q.blas
+def ht : IR.HtSetup := q.ht
+def env : FnEnv := ffiEnv.2
+
+private def launchEmbed (ptr : R) (bindOff : Nat)
+    (table : EmbedTbl) (metaT : VecMeta) (outT : VecD) : M Unit :=
   launch3 embedKernel cuda ptr bindOff table metaT outT
 
 -- RMSNorm: y = rms_norm(x, w)
@@ -314,8 +377,8 @@ def ptxRmsNorm : String := rmsNormKernel.ptxSource
 
 /-- Typed RMSNorm launcher.  `x` is the input, `w` the weights, `y` the output —
     all `[D]` f32. The bind region is the only call-site-specific value. -/
-private def launchRms (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (x w y : Tensor [.sta D]) : IRBuilder Unit :=
+private def launchRms (ptr : R) (bindOff : Nat)
+    (x w y : Tensor [.sta D]) : M Unit :=
   launch3 rmsNormKernel cuda ptr bindOff x w y
 
 def biasAddDKernel : Kernel := {
@@ -342,12 +405,12 @@ def biasAddKVKernel : Kernel := {
 def ptxBiasAddD  : String := biasAddDKernel.ptxSource
 def ptxBiasAddKV : String := biasAddKVKernel.ptxSource
 
-private def launchBiasD (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (x b : VecD) : IRBuilder Unit :=
+private def launchBiasD (ptr : R) (bindOff : Nat)
+    (x b : VecD) : M Unit :=
   launch2 biasAddDKernel cuda ptr bindOff x b
 
-private def launchBiasKV (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (x b : VecKV) : IRBuilder Unit :=
+private def launchBiasKV (ptr : R) (bindOff : Nat)
+    (x b : VecKV) : M Unit :=
   launch2 biasAddKVKernel cuda ptr bindOff x b
 
 -- RoPE rotation body — identical for Q and K, parameterized by buffer-param name.
@@ -381,12 +444,12 @@ def ropeKKernel : Kernel := {
 def ptxRoPEQ : String := ropeQKernel.ptxSource
 def ptxRoPEK : String := ropeKKernel.ptxSource
 
-private def launchRopeQ (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (q : VecD) (mb : VecMeta) (rope : RopeTbl) : IRBuilder Unit :=
+private def launchRopeQ (ptr : R) (bindOff : Nat)
+    (q : VecD) (mb : VecMeta) (rope : RopeTbl) : M Unit :=
   launch3 ropeQKernel cuda ptr bindOff q mb rope
 
-private def launchRopeK (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (k : VecKV) (mb : VecMeta) (rope : RopeTbl) : IRBuilder Unit :=
+private def launchRopeK (ptr : R) (bindOff : Nat)
+    (k : VecKV) (mb : VecMeta) (rope : RopeTbl) : M Unit :=
   launch3 ropeKKernel cuda ptr bindOff k mb rope
 
 -- Softmax over per-head scores.  **Migrated** to the proven stack: the trip
@@ -404,8 +467,8 @@ def softmaxKernel : Kernel := {
 
 def ptxSoftmax : String := softmaxKernel.ptxSource
 
-private def launchSoftmax (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (scores : VecScores) (mb : VecMeta) (probs : VecScores) : IRBuilder Unit :=
+private def launchSoftmax (ptr : R) (bindOff : Nat)
+    (scores : VecScores) (mb : VecMeta) (probs : VecScores) : M Unit :=
   launch3 softmaxKernel cuda ptr bindOff scores mb probs
 
 -- SiLU-gate: out = silu(gate) * up.  Grid=ceil(D_FF/256), Block=256.
@@ -421,8 +484,8 @@ def siluGateKernel : Kernel := {
 
 def ptxSiluGate : String := siluGateKernel.ptxSource
 
-private def launchSiluGate (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (gate up out_ : VecDff) : IRBuilder Unit :=
+private def launchSiluGate (ptr : R) (bindOff : Nat)
+    (gate up out_ : VecDff) : M Unit :=
   launch3 siluGateKernel cuda ptr bindOff gate up out_
 
 -- Residual add: x[i] += a[i], n=D. Grid=ceil(D/256), Block=256.
@@ -437,8 +500,8 @@ def residualAddKernel : Kernel := {
 
 def ptxResidualAdd : String := residualAddKernel.ptxSource
 
-private def launchResidualAdd (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (x add_ : VecD) : IRBuilder Unit :=
+private def launchResidualAdd (ptr : R) (bindOff : Nat)
+    (x add_ : VecD) : M Unit :=
   launch2 residualAddKernel cuda ptr bindOff x add_
 
 -- KV store (GQA-proper). Writes k_cur[kvHead, elemIdx] → kCache[kvHead, pos, elemIdx].
@@ -455,8 +518,8 @@ def kvStoreKernel : Kernel := {
 
 def ptxKVStore : String := kvStoreKernel.ptxSource
 
-private def launchKVStore (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (kCur : VecKV) (kCache : KVCache) (mb : VecMeta) : IRBuilder Unit :=
+private def launchKVStore (ptr : R) (bindOff : Nat)
+    (kCur : VecKV) (kCache : KVCache) (mb : VecMeta) : M Unit :=
   launch3 kvStoreKernel cuda ptr bindOff kCur kCache mb
 
 -- Argmax over VOCAB logits. Single-thread; writes result to meta_buf[0].
@@ -471,57 +534,60 @@ def argmaxKernel : Kernel := {
 
 def ptxArgmax : String := argmaxKernel.ptxSource
 
-private def launchArgmax (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (logits : VecVocab) (mb : VecMeta) : IRBuilder Unit :=
+private def launchArgmax (ptr : R) (bindOff : Nat)
+    (logits : VecVocab) (mb : VecMeta) : M Unit :=
   launch2 argmaxKernel cuda ptr bindOff logits mb
 
 -- ── CLIF Load Functions ───────────────────────────────────────────────────────
 
 /-- Advance past the next null byte in a host buffer and return the pointer
     immediately after it. Used to split a concatenated `a\0b\0c\0` arg payload. -/
-private def walkPastNull (start : Val) : IRBuilder Val := do
-  let atNull ← whileLoop1 .i64 start
-    (fun p => do icmp .ne (← uload8_64 p) (← iconst64 0))
-    (fun p => iaddImm p 1)
-  iaddImm atNull 1
+private def walkPastNull (start : R) : M R := do
+  let e ← wloop1 start
+    (head := fun p => do
+      let b ← uload8_64 p
+      let z ← iconst64 0
+      return (contIf .ne b z, [p], ()))
+    (body := fun p _ => return [← iaddImm p 1])
+  iaddImm (e.headD 0) 1
 
 /-- parseArgsFn (fn_37): split the caller's data buffer (two null-terminated
     strings: `weights_path\0tokenizer_path\0`) into two pointers and store them
     in shared memory so later actions can locate their argument. -/
-def parseArgsFn : IRBuilder Unit := do
-  let ptr ← entryBlock
+def parseArgsFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   storeI64 dataPtr (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
   let tokenizerPtr ← walkPastNull dataPtr
   storeI64 tokenizerPtr (← absAddr ptr TOKENIZER_PATH_PTR_OFF)
-  ret
 
 /-- Upload a tensor from disk into a GPU buffer via a pinned host scratch buffer.
     Statically unrolls into one (read, upload) pair per PINNED_CHUNK_BYTES chunk.
     The scratch buffer is reused for every chunk (host→GPU is synchronous), and
     each chunk goes to a distinct offset within the destination GPU buffer. -/
-def uploadFromFile {s : Shape} (cuda : CudaSetup) (fnFileRead : FnRef)
-    (ctxPtr pathPtr scratchPtr : Val) (t : Tensor s)
-    (fileOff totalSize : Nat) : IRBuilder Unit := do
-  let bufId := t.buf
+def uploadFromFile {s : Shape}
+    (ctxPtr pathPtr scratchPtr : R) (t : Tensor s)
+    (fileOff totalSize : Nat) : M Unit := do
+  let bufId := t.slot
   let numChunks := (totalSize + PINNED_CHUNK_BYTES - 1) / PINNED_CHUNK_BYTES
   (List.range numChunks).forM fun i => do
     let off      := i * PINNED_CHUNK_BYTES
     let thisSize := min PINNED_CHUNK_BYTES (totalSize - off)
     let fileOff64 ← iconst64 (fileOff + off)
     let size64    ← iconst64 thisSize
-    let _ ← call fnFileRead [pathPtr, scratchPtr, fileOff64, size64]
+    let _ ← call q.fnFileRead.id [pathPtr, scratchPtr, fileOff64, size64]
     let bufOff64  ← iconst64 off
-    let _ ← call cuda.fnUploadOffset [ctxPtr, bufId, bufOff64, scratchPtr, size64]
+    let _ ← call cuda.fnUploadOffset.id [ctxPtr, bufId, bufOff64, scratchPtr, size64]
 
 /-- Generate the RoPE sin/cos table into the pinned scratch buffer, then upload it.
     Loop: for each freq in 0..HEAD_DIM/2, inv_freq = rope_theta^(-2*freq/HEAD_DIM);
           for each pos in 0..MAX_SEQ, write sin/cos of (pos*inv_freq) to scratch.
     Table layout: [sin: MAX_SEQ × HEAD_DIM/2 f32][cos: MAX_SEQ × HEAD_DIM/2 f32].
     All trig goes through libm via FFI (cl_sinf/cl_cosf/cl_powf). -/
-private def buildRopeTable (cuda : CudaSetup) (fnSinf fnCosf fnPowf : FnRef)
-    (ctxPtr scratchPtr : Val) (ropeTable : RopeTbl) : IRBuilder Unit := do
-  let bufRopeTable := ropeTable.buf
+private def buildRopeTable
+    (ctxPtr scratchPtr : R) (ropeTable : RopeTbl) : M Unit := do
+  let bufRopeTable := ropeTable.slot
   let hdh   : Nat := HEAD_DIM / 2
   let tableBytes := 2 * MAX_SEQ * hdh * 4
   let cosOff     := MAX_SEQ * hdh * 4
@@ -535,36 +601,35 @@ private def buildRopeTable (cuda : CudaSetup) (fnSinf fnCosf fnPowf : FnRef)
   -- exponent factor = -2.0 / HEAD_DIM = -1/32 for HEAD_DIM=64
   let expFactor ← fconst32 (-0.03125)
 
-  forLoop .i64 freqLim64 fun freq => do
+  forLoop freqLim64 fun freq => do
     let freqF ← fcvtFromSint .f32 freq
     let exponent ← fmul freqF expFactor
-    let invFreq ← call fnPowf [ropeTheta, exponent]
+    let invFreq ← call q.fnPowf.id [ropeTheta, exponent]
     -- Inner loop carries invFreq through (loop-invariant; could also rely on
     -- dominance, but threading is more conservative across the back-edge).
-    let _ ← forLoopAcc .i64 .f32 posLim64 invFreq fun pos invF => do
+    let _ ← forLoopAcc posLim64 invFreq fun pos invF => do
       let posF ← fcvtFromSint .f32 pos
       let theta ← fmul posF invF
-      let sinV ← call fnSinf [theta]
-      let cosV ← call fnCosf [theta]
+      let sinV ← call q.fnSinf.id [theta]
+      let cosV ← call q.fnCosf.id [theta]
       let row     ← imul pos hdh64
       let idx     ← iadd row freq
       let byteOff ← imul idx four64
       let sinAddr ← iadd scratchPtr byteOff
       let cosAddrOff ← iadd byteOff cosOff64
       let cosAddr ← iadd scratchPtr cosAddrOff
-      storeF32 sinV sinAddr
-      storeF32 cosV cosAddr
+      storeW .f32 sinV sinAddr
+      storeW .f32 cosV cosAddr
       return invF
     pure ()
 
-  let _ ← call cuda.fnUpload [ctxPtr, bufRopeTable, scratchPtr, (← iconst64 tableBytes)]
+  let _ ← call cuda.fnUpload.id [ctxPtr, bufRopeTable, scratchPtr, (← iconst64 tableBytes)]
 
 /-- Shared body of `loadInitFn`: allocates pinned scratch, activation/embed/
     lm_head/rope buffers, streams the embed table, lm_head, and rms_final
     weights from disk.  Does NOT emit `entryBlock` or `ret` — caller wraps it.
     The caller passes in already-declared FFI handles to avoid duplicate decls. -/
-def loadInitCommon (cuda : CudaSetup)
-    (fnFileRead fnSinf fnCosf fnPowf : FnRef) (ptr : Val) : IRBuilder Unit := do
+def loadInitCommon (ptr : R) : M Unit := do
   -- Weights file path was parsed into a shared-memory slot by fn_37.
   let pathPtr ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
 
@@ -574,8 +639,8 @@ def loadInitCommon (cuda : CudaSetup)
 
   -- Allocate pinned host scratch buffer for streaming weight uploads
   let chunkBytes64 ← iconst64 PINNED_CHUNK_BYTES
-  let pinnedId  ← call cuda.fnPinnedAlloc [ctxPtr, chunkBytes64]
-  let pinnedPtr ← call cuda.fnPinnedPtr   [ctxPtr, pinnedId]
+  let pinnedId  ← call cuda.fnPinnedAlloc.id [ctxPtr, chunkBytes64]
+  let pinnedPtr ← call cuda.fnPinnedPtr.id   [ctxPtr, pinnedId]
   storeI32 pinnedId  (← absAddr ptr PINNED_ID_OFF)
   storeI64 pinnedPtr (← absAddr ptr PINNED_HOST_PTR_OFF)
 
@@ -584,25 +649,25 @@ def loadInitCommon (cuda : CudaSetup)
   let kvBytes  ← iconst64 KV_BYTES
   let dffBytes ← iconst64 (D_FF * 4)
 
-  let bufHidden  : VecD   ← Tensor.create cuda ptr dBytes
-  let bufHdNorm  : VecD   ← Tensor.create cuda ptr dBytes
-  let bufQ       : VecD   ← Tensor.create cuda ptr dBytes
-  let bufKCur    : VecKV  ← Tensor.create cuda ptr kvBytes
-  let bufVCur    : VecKV  ← Tensor.create cuda ptr kvBytes
-  let bufAttnOut : VecD   ← Tensor.create cuda ptr dBytes
-  let bufFfGate  : VecDff ← Tensor.create cuda ptr dffBytes
-  let bufFfUp    : VecDff ← Tensor.create cuda ptr dffBytes
-  let bufFfAct   : VecDff ← Tensor.create cuda ptr dffBytes
+  let bufHidden  : VecD   ← tensorCreate cuda ptr dBytes
+  let bufHdNorm  : VecD   ← tensorCreate cuda ptr dBytes
+  let bufQ       : VecD   ← tensorCreate cuda ptr dBytes
+  let bufKCur    : VecKV  ← tensorCreate cuda ptr kvBytes
+  let bufVCur    : VecKV  ← tensorCreate cuda ptr kvBytes
+  let bufAttnOut : VecD   ← tensorCreate cuda ptr dBytes
+  let bufFfGate  : VecDff ← tensorCreate cuda ptr dffBytes
+  let bufFfUp    : VecDff ← tensorCreate cuda ptr dffBytes
+  let bufFfAct   : VecDff ← tensorCreate cuda ptr dffBytes
 
-  slotHidden.store  ptr bufHidden
-  slotHdNorm.store  ptr bufHdNorm
-  slotQ.store       ptr bufQ
-  slotKCur.store    ptr bufKCur
-  slotVCur.store    ptr bufVCur
-  slotAttnOut.store ptr bufAttnOut
-  slotFfGate.store  ptr bufFfGate
-  slotFfUp.store    ptr bufFfUp
-  slotFfAct.store   ptr bufFfAct
+  slotStore slotHidden ptr bufHidden
+  slotStore slotHdNorm ptr bufHdNorm
+  slotStore slotQ ptr bufQ
+  slotStore slotKCur ptr bufKCur
+  slotStore slotVCur ptr bufVCur
+  slotStore slotAttnOut ptr bufAttnOut
+  slotStore slotFfGate ptr bufFfGate
+  slotStore slotFfUp ptr bufFfUp
+  slotStore slotFfAct ptr bufFfAct
 
   -- Create embed, lm_head, logits, rms_final, scores, probs, meta buffers
   let embedBytes  ← iconst64 EMBED_BYTES
@@ -610,32 +675,32 @@ def loadInitCommon (cuda : CudaSetup)
   let scoreBytes  ← iconst64 (N_Q * MAX_SEQ * 4)
   let metaBytes   ← iconst64 24
 
-  let bufEmbed    : EmbedTbl  ← Tensor.create cuda ptr embedBytes
-  let bufLmHead   : EmbedTbl  ← Tensor.create cuda ptr embedBytes
-  let bufLogits   : VecVocab  ← Tensor.create cuda ptr vocabBytes
-  let bufRmsFinal : VecD      ← Tensor.create cuda ptr dBytes
-  let bufScores   : VecScores ← Tensor.create cuda ptr scoreBytes
-  let bufProbs    : VecScores ← Tensor.create cuda ptr scoreBytes
-  let bufMeta     : VecMeta   ← Tensor.create cuda ptr metaBytes
+  let bufEmbed    : EmbedTbl  ← tensorCreate cuda ptr embedBytes
+  let bufLmHead   : EmbedTbl  ← tensorCreate cuda ptr embedBytes
+  let bufLogits   : VecVocab  ← tensorCreate cuda ptr vocabBytes
+  let bufRmsFinal : VecD      ← tensorCreate cuda ptr dBytes
+  let bufScores   : VecScores ← tensorCreate cuda ptr scoreBytes
+  let bufProbs    : VecScores ← tensorCreate cuda ptr scoreBytes
+  let bufMeta     : VecMeta   ← tensorCreate cuda ptr metaBytes
 
-  slotEmbed.store    ptr bufEmbed
-  slotLmHead.store   ptr bufLmHead
-  slotLogits.store   ptr bufLogits
-  slotRmsFinal.store ptr bufRmsFinal
-  slotScores.store   ptr bufScores
-  slotProbs.store    ptr bufProbs
-  slotMeta.store     ptr bufMeta
+  slotStore slotEmbed ptr bufEmbed
+  slotStore slotLmHead ptr bufLmHead
+  slotStore slotLogits ptr bufLogits
+  slotStore slotRmsFinal ptr bufRmsFinal
+  slotStore slotScores ptr bufScores
+  slotStore slotProbs ptr bufProbs
+  slotStore slotMeta ptr bufMeta
 
   -- Create RoPE sin/cos table buffer (typed) and populate via libm-driven loop.
   let ropeTableBytes ← iconst64 (2 * MAX_SEQ * (HEAD_DIM / 2) * 4)  -- 524288
-  let bufRopeTable : RopeTbl ← Tensor.create cuda ptr ropeTableBytes
-  slotRopeTable.store ptr bufRopeTable
-  buildRopeTable cuda fnSinf fnCosf fnPowf ctxPtr pinnedPtr bufRopeTable
+  let bufRopeTable : RopeTbl ← tensorCreate cuda ptr ropeTableBytes
+  slotStore slotRopeTable ptr bufRopeTable
+  buildRopeTable ctxPtr pinnedPtr bufRopeTable
 
   -- Stream-upload embedding, rms_final, lm_head through pinned scratch
-  uploadFromFile cuda fnFileRead ctxPtr pathPtr pinnedPtr bufEmbed    FILE_EMBED_OFF     EMBED_BYTES
-  uploadFromFile cuda fnFileRead ctxPtr pathPtr pinnedPtr bufRmsFinal FILE_RMS_FINAL_OFF D_BYTES
-  uploadFromFile cuda fnFileRead ctxPtr pathPtr pinnedPtr bufLmHead   FILE_LM_HEAD_OFF   EMBED_BYTES
+  uploadFromFile ctxPtr pathPtr pinnedPtr bufEmbed    FILE_EMBED_OFF     EMBED_BYTES
+  uploadFromFile ctxPtr pathPtr pinnedPtr bufRmsFinal FILE_RMS_FINAL_OFF D_BYTES
+  uploadFromFile ctxPtr pathPtr pinnedPtr bufLmHead   FILE_LM_HEAD_OFF   EMBED_BYTES
 
 
 
@@ -655,7 +720,7 @@ def loadInitCommon (cuda : CudaSetup)
     `seq/32`, `(seq/32)*32`, `seq%32`" from something a reader checks by eye
     into a theorem.  The emitted instructions are unchanged — `do`-notation is
     associative and the artifact md5 is the same. -/
-def metaStageFrag (ptr dataPtr pos32 seqLen64 : Val) : IRBuilder Val := do
+def metaStageFrag (ptr dataPtr pos32 seqLen64 : R) : M R := do
   let tokId32   ← load32 dataPtr
   let seqLen32b ← ireduce32 seqLen64
   let chunks32  ← ushrImm seqLen32b 5
@@ -705,15 +770,35 @@ def metaFragInsts (ptr dataPtr pos32 seqLen64 : Val) (n : Nat) : List Inst :=
   , .iadd ⟨n+18⟩ ⟨n+8⟩ ⟨n+17⟩
   , .storeTyped .i32 ⟨n+6⟩ ⟨n+18⟩ ]                  -- stage[20] = rem     (REM_SLOT)
 
-/-- **The fragment emits exactly that, from any state.**
+/-- The fragment on its own, compiled, so its instruction stream can be named.
+    The parameters are the four values it is handed, in the order `inferFn`
+    hands them: descriptor, data pointer, `pos`, `seqLen`. -/
+def metaFragParams : List ClifTy := [.i64, .i64, .i32, .i64]
 
-    `currentInsts` is kept reversed for O(1) prepend, hence the `.reverse`.
-    Quantified over the incoming `IRState`, so this says what the fragment does
-    wherever it is called from — it is not a claim about one call site. -/
-theorem metaStageFrag_emits (ptr dataPtr pos32 seqLen64 : Val) (s : IRState) :
-    ((metaStageFrag ptr dataPtr pos32 seqLen64).run s).2.currentInsts
-      = (metaFragInsts ptr dataPtr pos32 seqLen64 s.nextVal).reverse
-          ++ s.currentInsts := rfl
+/-- The fragment calls nothing, so its code does not depend on the callee
+    table; building it against the empty one keeps this reducible. -/
+def metaFragEnv : HProg.FnEnv := { sigs := [], fns := [] }
+
+def metaFragCode : HProg.Code :=
+  clif% metaFragEnv metaFragParams
+    (do let _ ← metaStageFrag 0 1 2 3; pure ())
+
+def metaFragEmitted : List Inst :=
+  match (HProg.compileFn 1 metaFragEnv metaFragParams metaFragCode).blocks with
+  | b :: _ => b.insts
+  | []     => []
+
+/-- **The fragment emits exactly that.**
+
+    Stated of the *compiled* instruction stream rather than of a builder state:
+    `Sur.St` carries a type environment, so the `∀ s` form does not reduce,
+    while the emitted code is first-order and this closes by `rfl`. The trailing
+    `.ret` is the block's terminator — everything before it is the fragment.
+    Stated through `BEq`: `Inst` carries a `Float`, so it has no `DecidableEq`,
+    and `compileFn` does not reduce definitionally at this size. -/
+theorem metaStageFrag_emits :
+    (metaFragEmitted == metaFragInsts ⟨0⟩ ⟨1⟩ ⟨2⟩ ⟨3⟩ 4 ++ [.ret]) = true := by
+  native_decide
 
 open AlgorithmLib.Clif in
 /-- **What the fragment leaves in memory, as expressions over the runtime
@@ -827,12 +912,10 @@ theorem metaFrag_slots :
     Reads [token_id:u32][pos:u32] from data_ptr.
     Uploads meta to GPU, launches embed lookup, runs 24-layer loop (calls fn_28),
     then calls fn_31 for final rms+lm_head+argmax. -/
-def inferFn : IRBuilder Unit := do
-  let ptr    ← entryBlock
-  let cuda   ← declareCudaFFI
+def inferFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   -- Declare colocated callees
-  let fnLayerStep ← declareColocatedFFI "fn_28" [.i64] none
-  let fnFinalStep ← declareColocatedFFI "fn_31" [.i64] none
 
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
@@ -846,22 +929,21 @@ def inferFn : IRBuilder Unit := do
   storeI64 seqLen64 (← absAddr ptr SEQ_LEN_SLOT_OFF)
 
   let stage ← metaStageFrag ptr dataPtr pos32 seqLen64
-  let metaT ← slotMeta.load ptr
+  let metaT ← slotLoad slotMeta ptr
   let metaBytes24 ← iconst64 24
-  Tensor.upload cuda ptr metaT stage metaBytes24
+  tensorUpload cuda ptr metaT stage metaBytes24
 
   -- Embedding lookup: bind = [embed_table, meta_buf, hidden_out]
-  let embedT  ← slotEmbed.load ptr
-  let hiddenT ← slotHidden.load ptr
-  launchEmbed cuda ptr BIND_EMBED embedT metaT hiddenT
+  let embedT  ← slotLoad slotEmbed ptr
+  let hiddenT ← slotLoad slotHidden ptr
+  launchEmbed ptr BIND_EMBED embedT metaT hiddenT
 
   -- 24-layer loop: calls inferLayerFn(fn_28) with layer index in LAYER_IDX_OFF
   let nLayers ← iconst64 N_LAYERS
-  forLoop .i64 nLayers fun layerIdx => do
+  forLoop nLayers fun layerIdx => do
     storeI64 layerIdx (← absAddr ptr LAYER_IDX_OFF)
-    callVoid fnLayerStep [ptr]
-  callVoid fnFinalStep [ptr]
-  ret
+    callVoid q.fnLayerStep.id [ptr]
+  callVoid q.fnFinalStep.id [ptr]
 
 
 -- ── Attention helper types and sub-builders ───────────────────────────────────
@@ -888,53 +970,53 @@ private structure AttnBufs where
   bufMeta    : VecMeta
 
 private structure AttnConsts where
-  one32     : Val
-  two32     : Val
-  three32   : Val
-  blk256    : Val
-  nq32      : Val
-  nkv32     : Val
-  dm32      : Val
-  kv32      : Val
-  hdim32    : Val
-  blk32_2   : Val
-  hdim64    : Val
-  maxSeq64  : Val
-  alpha     : Val
-  attnAlpha : Val
-  zero32    : Val
+  one32     : R
+  two32     : R
+  three32   : R
+  blk256    : R
+  nq32      : R
+  nkv32     : R
+  dm32      : R
+  kv32      : R
+  hdim32    : R
+  blk32_2   : R
+  hdim64    : R
+  maxSeq64  : R
+  alpha     : R
+  attnAlpha : R
+  zero32    : R
 
-private def load32At (base : Val) (off : Nat) : IRBuilder Val :=
+private def load32At (base : R) (off : Nat) : M R :=
   load32 =<< iaddImm base off
 
-private def load64At (base : Val) (off : Nat) : IRBuilder Val :=
+private def load64At (base : R) (off : Nat) : M R :=
   load64 =<< iaddImm base off
 
-private def attnLoadBufs (ptr slotBaseA : Val) : IRBuilder AttnBufs := do
-  let bufRmsAttn ← LayerSlot.rmsAttn.load slotBaseA
-  let bufWq      ← LayerSlot.wq.load      slotBaseA
-  let bufBq      ← LayerSlot.bq.load      slotBaseA
-  let bufWk      ← LayerSlot.wk.load      slotBaseA
-  let bufBk      ← LayerSlot.bk.load      slotBaseA
-  let bufWv      ← LayerSlot.wv.load      slotBaseA
-  let bufBv      ← LayerSlot.bv.load      slotBaseA
-  let bufWo      ← LayerSlot.wo.load      slotBaseA
-  let bufKCache  ← LayerSlot.kCache.load  slotBaseA
-  let bufVCache  ← LayerSlot.vCache.load  slotBaseA
-  let bufHidden  ← slotHidden.load  ptr
-  let bufHdNorm  ← slotHdNorm.load  ptr
-  let bufQ       ← slotQ.load       ptr
-  let bufKCur    ← slotKCur.load    ptr
-  let bufVCur    ← slotVCur.load    ptr
-  let bufAttnOut ← slotAttnOut.load ptr
-  let bufScores  ← slotScores.load  ptr
-  let bufProbs   ← slotProbs.load   ptr
-  let bufMeta    ← slotMeta.load    ptr
+private def attnLoadBufs (ptr slotBaseA : R) : M AttnBufs := do
+  let bufRmsAttn ← slotLoad LayerSlot.rmsAttn slotBaseA
+  let bufWq      ← slotLoad LayerSlot.wq      slotBaseA
+  let bufBq      ← slotLoad LayerSlot.bq      slotBaseA
+  let bufWk      ← slotLoad LayerSlot.wk      slotBaseA
+  let bufBk      ← slotLoad LayerSlot.bk      slotBaseA
+  let bufWv      ← slotLoad LayerSlot.wv      slotBaseA
+  let bufBv      ← slotLoad LayerSlot.bv      slotBaseA
+  let bufWo      ← slotLoad LayerSlot.wo      slotBaseA
+  let bufKCache  ← slotLoad LayerSlot.kCache  slotBaseA
+  let bufVCache  ← slotLoad LayerSlot.vCache  slotBaseA
+  let bufHidden  ← slotLoad slotHidden  ptr
+  let bufHdNorm  ← slotLoad slotHdNorm  ptr
+  let bufQ       ← slotLoad slotQ       ptr
+  let bufKCur    ← slotLoad slotKCur    ptr
+  let bufVCur    ← slotLoad slotVCur    ptr
+  let bufAttnOut ← slotLoad slotAttnOut ptr
+  let bufScores  ← slotLoad slotScores  ptr
+  let bufProbs   ← slotLoad slotProbs   ptr
+  let bufMeta    ← slotLoad slotMeta    ptr
   return { bufRmsAttn, bufWq, bufBq, bufWk, bufBk, bufWv, bufBv, bufWo,
            bufKCache, bufVCache, bufHidden, bufHdNorm, bufQ, bufKCur, bufVCur,
            bufAttnOut, bufScores, bufProbs, bufMeta }
 
-private def mkAttnConsts : IRBuilder AttnConsts := do
+private def mkAttnConsts : M AttnConsts := do
   let one32 ← iconst32 1;    let two32 ← iconst32 2;    let three32 ← iconst32 3
   let blk256 ← iconst32 256; let nq32 ← iconst32 N_Q;   let nkv32 ← iconst32 N_KV
   let dm32 ← iconst32 D;     let kv32 ← iconst32 KV_DIM; let hdim32 ← iconst32 HEAD_DIM
@@ -942,34 +1024,33 @@ private def mkAttnConsts : IRBuilder AttnConsts := do
   let maxSeq64 ← iconst64 (MAX_SEQ * HEAD_DIM)
   let alpha ← iconst32 0x3F800000; let attnAlpha ← iconst32 0x3E000000
   let zero32 ← iconst32 0
-  return { one32, two32, three32, blk256, nq32, nkv32, dm32, kv32, hdim32, blk32_2,
-           hdim64, maxSeq64, alpha, attnAlpha, zero32 }
+  return { one32 := one32, two32 := two32, three32 := three32, blk256 := blk256, nq32 := nq32, nkv32 := nkv32, dm32 := dm32, kv32 := kv32, hdim32 := hdim32, blk32_2 := blk32_2, hdim64 := hdim64, maxSeq64 := maxSeq64, alpha := alpha, attnAlpha := attnAlpha, zero32 := zero32 }
 
 -- RMSNorm → QKV projections → bias adds
-private def attnProjPhase (ptr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
-    (b : AttnBufs) : IRBuilder Unit := do
-  launchRms cuda ptr BIND_RMS1 b.bufHidden b.bufRmsAttn b.bufHdNorm
+private def attnProjPhase (ptr : R) 
+    (b : AttnBufs) : M Unit := do
+  launchRms ptr BIND_RMS1 b.bufHidden b.bufRmsAttn b.bufHdNorm
   -- Q/K/V projections: shape-typed.  Wq:[D,D]·hidden:[D] → q:[D];
   -- Wk:[KV_DIM,D]·hidden:[D] → kCur:[KV_DIM]; same for Wv.
-  CuBlas.linear blas ptr b.bufWq b.bufHdNorm b.bufQ
-  CuBlas.linear blas ptr b.bufWk b.bufHdNorm b.bufKCur
-  CuBlas.linear blas ptr b.bufWv b.bufHdNorm b.bufVCur
-  launchBiasD  cuda ptr BIND_BIAS_Q b.bufQ    b.bufBq
-  launchBiasKV cuda ptr BIND_BIAS_K b.bufKCur b.bufBk
-  launchBiasKV cuda ptr BIND_BIAS_V b.bufVCur b.bufBv
+  cublasLinear blas ptr b.bufWq b.bufHdNorm b.bufQ
+  cublasLinear blas ptr b.bufWk b.bufHdNorm b.bufKCur
+  cublasLinear blas ptr b.bufWv b.bufHdNorm b.bufVCur
+  launchBiasD  ptr BIND_BIAS_Q b.bufQ    b.bufBq
+  launchBiasKV ptr BIND_BIAS_K b.bufKCur b.bufBk
+  launchBiasKV ptr BIND_BIAS_V b.bufVCur b.bufBv
 
 -- RoPE → KV store
-private def attnRopePhase (ptr : Val) (cuda : CudaSetup) (b : AttnBufs)
-    (_c : AttnConsts) : IRBuilder Unit := do
-  let bufRopeTable ← slotRopeTable.load ptr
-  launchRopeQ  cuda ptr BIND_ROPE_Q b.bufQ    b.bufMeta bufRopeTable
-  launchRopeK  cuda ptr BIND_ROPE_K b.bufKCur b.bufMeta bufRopeTable
-  launchKVStore cuda ptr BIND_KV_K  b.bufKCur b.bufKCache b.bufMeta
-  launchKVStore cuda ptr BIND_KV_V  b.bufVCur b.bufVCache b.bufMeta
+private def attnRopePhase (ptr : R) (b : AttnBufs)
+    (_c : AttnConsts) : M Unit := do
+  let bufRopeTable ← slotLoad slotRopeTable ptr
+  launchRopeQ  ptr BIND_ROPE_Q b.bufQ    b.bufMeta bufRopeTable
+  launchRopeK  ptr BIND_ROPE_K b.bufKCur b.bufMeta bufRopeTable
+  launchKVStore ptr BIND_KV_K  b.bufKCur b.bufKCache b.bufMeta
+  launchKVStore ptr BIND_KV_V  b.bufVCur b.bufVCache b.bufMeta
 
 -- Attention scores → softmax → V-mix → Wo → residual
-private def attnMixPhase (ptr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
-    (b : AttnBufs) (c : AttnConsts) : IRBuilder Unit := do
+private def attnMixPhase (ptr : R) 
+    (b : AttnBufs) (c : AttnConsts) : M Unit := do
   let seqLen64 ← load64At ptr SEQ_LEN_SLOT_OFF
   let seqLen32 ← ireduce32 seqLen64
   -- Q, AttnOut, scores, probs are flat memory; view them as GQA-grouped
@@ -980,79 +1061,75 @@ private def attnMixPhase (ptr : Val) (cuda : CudaSetup) (blas : CuBlasSetup)
   let scoresGqa : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufScores.reshape
   let probsGqa  : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufProbs.reshape
   -- scores[kv, i, :seqLen] = attnAlpha * K[kv, :seqLen, :] @ Q[kv, i]
-  CuBlas.attnScoresQK blas ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qGqa scoresGqa
-  launchSoftmax cuda ptr BIND_SOFTMAX b.bufScores b.bufMeta b.bufProbs
+  attnScoresQK blas ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qGqa scoresGqa
+  launchSoftmax ptr BIND_SOFTMAX b.bufScores b.bufMeta b.bufProbs
   -- attnOut[kv, i] = V[kv, :seqLen, :]^T @ probs[kv, i, :seqLen]
-  CuBlas.attnMixV blas ptr c.alpha seqLen32 seqLen64 b.bufVCache probsGqa outGqa
+  attnMixV blas ptr c.alpha seqLen32 seqLen64 b.bufVCache probsGqa outGqa
   -- O projection: Wo:[D,D]·attnOut:[D] → hdNorm:[D]
-  CuBlas.linear blas ptr b.bufWo b.bufAttnOut b.bufHdNorm
-  launchResidualAdd cuda ptr BIND_ADD1 b.bufHidden b.bufHdNorm
+  cublasLinear blas ptr b.bufWo b.bufAttnOut b.bufHdNorm
+  launchResidualAdd ptr BIND_ADD1 b.bufHidden b.bufHdNorm
 
 /-- Attention sub-layer body (RMSNorm → Q/K/V proj → biases → RoPE → KV store
     → GQA attention → Wo → residual).  Caller computes `slotBaseA` (the per-
     layer slot containing weight + K/V cache buffer IDs).  Emits `ret`. -/
-def attnBody (cuda : CudaSetup) (blas : CuBlasSetup)
-    (ptr slotBaseA : Val) : IRBuilder Unit := do
+def attnBody 
+    (ptr slotBaseA : R) : M Unit := do
   let b ← attnLoadBufs ptr slotBaseA
   let c ← mkAttnConsts
-  attnProjPhase ptr cuda blas b
-  attnRopePhase ptr cuda b c
-  attnMixPhase  ptr cuda blas b c
-  ret
+  attnProjPhase ptr b
+  attnRopePhase ptr b c
+  attnMixPhase  ptr b c
 
 /-- FFN sub-layer body (RMSNorm → Wg/Wu → SiLU-gate → Wd → residual).  Caller
     computes `slotBaseA`.  Emits `ret`. -/
-def ffnBody (cuda : CudaSetup) (blas : CuBlasSetup)
-    (ptr slotBaseA : Val) : IRBuilder Unit := do
-  let bufRmsFfn  ← LayerSlot.rmsFfn.load slotBaseA
-  let bufWg      ← LayerSlot.wg.load     slotBaseA
-  let bufWu      ← LayerSlot.wu.load     slotBaseA
-  let bufWd      ← LayerSlot.wd.load     slotBaseA
-  let bufHidden  ← slotHidden.load  ptr
-  let bufHdNorm  ← slotHdNorm.load  ptr
-  let bufFfGate  ← slotFfGate.load  ptr
-  let bufFfUp    ← slotFfUp.load    ptr
-  let bufFfAct   ← slotFfAct.load   ptr
-  let bufAttnOut ← slotAttnOut.load ptr
-  launchRms cuda ptr BIND_RMS2 bufHidden bufRmsFfn bufHdNorm
+def ffnBody 
+    (ptr slotBaseA : R) : M Unit := do
+  let bufRmsFfn  ← slotLoad LayerSlot.rmsFfn slotBaseA
+  let bufWg      ← slotLoad LayerSlot.wg     slotBaseA
+  let bufWu      ← slotLoad LayerSlot.wu     slotBaseA
+  let bufWd      ← slotLoad LayerSlot.wd     slotBaseA
+  let bufHidden  ← slotLoad slotHidden  ptr
+  let bufHdNorm  ← slotLoad slotHdNorm  ptr
+  let bufFfGate  ← slotLoad slotFfGate  ptr
+  let bufFfUp    ← slotLoad slotFfUp    ptr
+  let bufFfAct   ← slotLoad slotFfAct   ptr
+  let bufAttnOut ← slotLoad slotAttnOut ptr
+  launchRms ptr BIND_RMS2 bufHidden bufRmsFfn bufHdNorm
   -- Wg/Wu projections: Wg:[D_FF,D]·hdNorm:[D] → ffGate:[D_FF]; same for Wu.
-  CuBlas.linear blas ptr bufWg bufHdNorm bufFfGate
-  CuBlas.linear blas ptr bufWu bufHdNorm bufFfUp
-  launchSiluGate cuda ptr BIND_SILU bufFfGate bufFfUp bufFfAct
+  cublasLinear blas ptr bufWg bufHdNorm bufFfGate
+  cublasLinear blas ptr bufWu bufHdNorm bufFfUp
+  launchSiluGate ptr BIND_SILU bufFfGate bufFfUp bufFfAct
   -- Wd down projection: Wd:[D,D_FF]·ffAct:[D_FF] → attnOut:[D] (reused as temp)
-  CuBlas.linear blas ptr bufWd bufFfAct bufAttnOut
-  launchResidualAdd cuda ptr BIND_ADD2 bufHidden bufAttnOut
-  ret
+  cublasLinear blas ptr bufWd bufFfAct bufAttnOut
+  launchResidualAdd ptr BIND_ADD2 bufHidden bufAttnOut
 
 /-- inferFinalFn (fn_31): final RMSNorm → lm_head → argmax → sync → download next_token. -/
-def inferFinalFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let cuda    ← declareCudaFFI
-  let blas    ← declareCuBlasFFI
+def inferFinalFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   let outPtr  ← load64At ptr 0x28
-  let bufHidden   ← slotHidden.load   ptr
-  let bufHdNorm   ← slotHdNorm.load   ptr
-  let bufRmsFinal ← slotRmsFinal.load ptr
-  let bufLmHead   ← slotLmHead.load   ptr
-  let bufLogits   ← slotLogits.load   ptr
-  let bufMeta     ← slotMeta.load     ptr
+  let bufHidden   ← slotLoad slotHidden   ptr
+  let bufHdNorm   ← slotLoad slotHdNorm   ptr
+  let bufRmsFinal ← slotLoad slotRmsFinal ptr
+  let bufLmHead   ← slotLoad slotLmHead   ptr
+  let bufLogits   ← slotLoad slotLogits   ptr
+  let bufMeta     ← slotLoad slotMeta     ptr
   let meta64  ← iconst64 24
-  launchRms cuda ptr BIND_RMS2 bufHidden bufRmsFinal bufHdNorm
+  launchRms ptr BIND_RMS2 bufHidden bufRmsFinal bufHdNorm
   -- LM head projection: lmHead:[VOCAB,D]·hdNorm:[D] → logits:[VOCAB]
-  CuBlas.linear blas ptr bufLmHead bufHdNorm bufLogits
-  launchArgmax cuda ptr BIND_ARGMAX bufLogits bufMeta
+  cublasLinear blas ptr bufLmHead bufHdNorm bufLogits
+  launchArgmax ptr BIND_ARGMAX bufLogits bufMeta
   let _ ← cudaSync cuda ptr 0x10
   -- The meta buffer is six words now (the softmax loop bounds ride along), so
   -- it lands in the staging area and only [token_id, pos] goes to the caller.
   let stage ← absAddr ptr META_STAGE_OFF
-  Tensor.download cuda ptr bufMeta stage meta64
+  tensorDownload cuda ptr bufMeta stage meta64
   -- The proven argmax writes the token id as an exactly-representable float;
   -- convert it in place before handing [token_id, pos] back to the caller.
   let tokF   ← loadF32 stage
   let tok32  ← fcvtToUint .i32 tokF
   storeI32 tok32 stage
   storeI64 (← load64 stage) outPtr
-  ret
 
 -- ── Tokenizer functions ───────────────────────────────────────────────────────
 
@@ -1068,24 +1145,22 @@ def inferFinalFn : IRBuilder Unit := do
       [1040+n_merges*12] decode_offsets[vocab_size]: u32
       [1040+n_merges*12+vocab_size*4] decode_lens[vocab_size]: u32
       [1040+n_merges*12+vocab_size*8] byte_pool -/
-def loadTokenizerFn : IRBuilder Unit := do
-  let ptr      ← entryBlock
-  let cuda     ← declareCudaFFI
-  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
-  let ht       ← declareHtFFI
+def loadTokenizerFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr   ← load64 (← absAddr ptr 0x10)
   let dataPtr  ← load64 (← absAddr ptr TOKENIZER_PATH_PTR_OFF)
   -- Allocate a pinned host buffer and slurp the tokenizer file into it.
   let tokBytes64 ← iconst64 TOK_FILE_MAX_BYTES
-  let tokPinId   ← call cuda.fnPinnedAlloc [ctxPtr, tokBytes64]
-  let tokBufPtr  ← call cuda.fnPinnedPtr   [ctxPtr, tokPinId]
+  let tokPinId   ← call cuda.fnPinnedAlloc.id [ctxPtr, tokBytes64]
+  let tokBufPtr  ← call cuda.fnPinnedPtr.id   [ctxPtr, tokPinId]
   let zero64     ← iconst64 0
-  let _ ← call fnFileRead [dataPtr, tokBufPtr, zero64, tokBytes64]
+  let _ ← call q.fnFileRead.id [dataPtr, tokBufPtr, zero64, tokBytes64]
   storeI64 tokBufPtr (← absAddr ptr TOK_BUF_PTR_OFF)
   -- Init HT context (writes context ptr to ptr[0x00])
-  htInit ptr
+  callVoid q.fnHtInit.id [ptr]
   let htCtx    ← load64At ptr 0x00
-  let _        ← call ht.fnCreate [htCtx]
+  let _        ← call ht.fnCreate.id [htCtx]
   -- Read n_merges from header
   let nMerges  ← uload32_64 (← iaddImm tokBufPtr 0)
   -- Merge base: offset 1040 in the binary (16 byte header + 256×4 byte_init)
@@ -1096,7 +1171,7 @@ def loadTokenizerFn : IRBuilder Unit := do
   let valLen8  ← iconst32 8
   let twelve64 ← iconst64 12
   -- For i in 0..n_merges, insert (tok_a, tok_b) → (rank, result) into HT
-  forLoop .i64 nMerges fun i => do
+  forLoop nMerges fun i => do
     let mergeOff ← imul i twelve64
     let mergePtr ← iadd mergeBase mergeOff
     let tok_a    ← load32 (← iaddImm mergePtr 0)
@@ -1107,34 +1182,33 @@ def loadTokenizerFn : IRBuilder Unit := do
     storeI32 tok_b   (← iaddImm keyAddr 4)
     storeI32 rank32  valAddr
     storeI32 result  (← iaddImm valAddr 4)
-    callVoid ht.fnInsert [htCtx, keyAddr, keyLen8, valAddr, valLen8]
-  ret
+    callVoid ht.fnInsert.id [htCtx, keyAddr, keyLen8, valAddr, valLen8]
 
 /-- tokenizeInitFn (fn_33): convert each byte of text (TEXT_IN_OFF, TEXT_LEN_OFF) to its
     initial token id using the byte_init table; store results in TOKEN_BUF_OFF.
     Sets TOKEN_COUNT_OFF = text length (before BPE). -/
-def tokenizeInitFn : IRBuilder Unit := do
-  let ptr       ← entryBlock
+def tokenizeInitFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   let tokMmap   ← load64At ptr TOK_BUF_PTR_OFF
   let textLen   ← load64At ptr TEXT_LEN_OFF
   let byteInit  ← iaddImm tokMmap 16
   let textBase  ← iaddImm ptr TEXT_IN_OFF
   let tokBuf    ← iaddImm ptr TOKEN_BUF_OFF
-  forLoop .i64 textLen fun i => do
+  forLoop textLen fun i => do
     let byt     ← uload8_64 (← iadd textBase i)
     let byteOff ← ishlImm byt 2
     let initTok ← load32 (← iadd byteInit byteOff)
     let tokOff  ← ishlImm i 2
     storeI32 initTok (← iadd tokBuf tokOff)
   storeI64 textLen (← absAddr ptr TOKEN_COUNT_OFF)
-  ret
 
 /-- tokenizeBpeFn (fn_34): run BPE merge passes over TOKEN_BUF_OFF until no more merges apply.
     Uses the HT (populated by loadTokenizerFn) for O(1) pair lookups.
     Updates TOKEN_COUNT_OFF to the final token count. -/
-def tokenizeBpeFn : IRBuilder Unit := do
-  let ptr        ← entryBlock
-  let ht         ← declareHtFFI
+def tokenizeBpeFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   let htCtx      ← load64At ptr 0x00
   let tokBuf     ← iaddImm ptr TOKEN_BUF_OFF
   let keyAddr    ← iaddImm ptr HT_KEY_OFF
@@ -1146,108 +1220,56 @@ def tokenizeBpeFn : IRBuilder Unit := do
   let maxRank    ← iconst32 (-1)  -- 0xFFFFFFFF: "no best found yet"
   let negOne64   ← iconst64 (-1)  -- sentinel "no best pos"
   let zero32     ← iconst32 0
-  -- blocks
-  let bpeCheck    ← declareBlock [.i64]
-  let bpeScanHdr  ← declareBlock [.i64, .i64, .i32, .i64]
-  let bpeScanBody ← declareBlock [.i64, .i64, .i32, .i64]
-  let bpeScanFnd  ← declareBlock [.i64, .i64, .i32, .i64]
-  let bpeScanNext ← declareBlock [.i64, .i64, .i32, .i64]
-  let bpeApply    ← declareBlock [.i64, .i64]
-  let bpeDoApply  ← declareBlock [.i64, .i64]
-  let shiftHdr    ← declareBlock [.i64, .i64, .i64]
-  let shiftBody   ← declareBlock [.i64, .i64, .i64]
-  let bpeDone     ← declareBlock [.i64]
-  jump bpeCheck.ref [tokCount]
-  -- bpeCheck: if n_toks <= 1, done
-  startBlock bpeCheck
-  let n_toks := bpeCheck.param 0
-  let small ← icmp .ule n_toks one64
-  brif small bpeDone.ref [n_toks] bpeScanHdr.ref [n_toks, zero64, maxRank, negOne64]
-  -- bpeScanHdr: scan adjacent pairs for the lowest-rank merge
-  startBlock bpeScanHdr
-  let sn   := bpeScanHdr.param 0
-  let si   := bpeScanHdr.param 1
-  let sr   := bpeScanHdr.param 2
-  let sp   := bpeScanHdr.param 3
-  let n1   ← iaddImm sn (-1)
-  let done ← icmp .uge si n1
-  brif done bpeApply.ref [sn, sp] bpeScanBody.ref [sn, si, sr, sp]
-  -- bpeScanBody: look up pair (tokens[i], tokens[i+1]) in HT
-  startBlock bpeScanBody
-  let bn   := bpeScanBody.param 0
-  let bi   := bpeScanBody.param 1
-  let br   := bpeScanBody.param 2
-  let bp   := bpeScanBody.param 3
-  let iOff ← ishlImm bi 2
-  let tokA ← load32 (← iadd tokBuf iOff)
-  let tokB ← load32 (← iadd tokBuf (← iaddImm iOff 4))
-  storeI32 tokA keyAddr
-  storeI32 tokB (← iaddImm keyAddr 4)
-  let found ← call ht.fnLookup [htCtx, keyAddr, keyLen8, valAddr]
-  let notFound ← icmp .slt found zero32
-  brif notFound bpeScanNext.ref [bn, bi, br, bp] bpeScanFnd.ref [bn, bi, br, bp]
-  -- bpeScanFnd: pair found — check if its rank is better than current best
-  startBlock bpeScanFnd
-  let fn_  := bpeScanFnd.param 0
-  let fi   := bpeScanFnd.param 1
-  let fr   := bpeScanFnd.param 2
-  let fp   := bpeScanFnd.param 3
-  let rank ← load32 valAddr
-  let better ← icmp .ult rank fr
-  brif better bpeScanNext.ref [fn_, fi, rank, fi] bpeScanNext.ref [fn_, fi, fr, fp]
-  -- bpeScanNext: advance i
-  startBlock bpeScanNext
-  let nn   := bpeScanNext.param 0
-  let ni   := bpeScanNext.param 1
-  let nr   := bpeScanNext.param 2
-  let np   := bpeScanNext.param 3
-  jump bpeScanHdr.ref [nn, ← iaddImm ni 1, nr, np]
-  -- bpeApply: check if any merge was found
-  startBlock bpeApply
-  let an   := bpeApply.param 0
-  let ap   := bpeApply.param 1
-  let noMerge ← icmp .eq ap negOne64
-  brif noMerge bpeDone.ref [an] bpeDoApply.ref [an, ap]
-  -- bpeDoApply: apply merge at best_pos — re-lookup to get result token, then shift
-  startBlock bpeDoApply
-  let dn   := bpeDoApply.param 0
-  let dp   := bpeDoApply.param 1
-  let dOff ← ishlImm dp 2
-  let dA   ← load32 (← iadd tokBuf dOff)
-  let dB   ← load32 (← iadd tokBuf (← iaddImm dOff 4))
-  storeI32 dA keyAddr
-  storeI32 dB (← iaddImm keyAddr 4)
-  let _ ← call ht.fnLookup [htCtx, keyAddr, keyLen8, valAddr]
-  let resT ← load32 (← iaddImm valAddr 4)
-  storeI32 resT (← iadd tokBuf dOff)
-  jump shiftHdr.ref [dn, dp, ← iaddImm dp 1]
-  -- shiftHdr: shift tokens left by one starting from j = best_pos+1
-  startBlock shiftHdr
-  let shn  := shiftHdr.param 0
-  let shp  := shiftHdr.param 1
-  let shj  := shiftHdr.param 2
-  let shn1 ← iaddImm shn (-1)
-  let shDone ← icmp .uge shj shn1
-  brif shDone bpeCheck.ref [← iaddImm shn (-1)] shiftBody.ref [shn, shp, shj]
-  -- shiftBody: tokens[j] = tokens[j+1]
-  startBlock shiftBody
-  let sbn  := shiftBody.param 0
-  let sbp  := shiftBody.param 1
-  let sbj  := shiftBody.param 2
-  let sbOff  ← ishlImm sbj 2
-  let nextT  ← load32 (← iadd tokBuf (← iaddImm sbOff 4))
-  storeI32 nextT (← iadd tokBuf sbOff)
-  jump shiftHdr.ref [sbn, sbp, ← iaddImm sbj 1]
-  -- bpeDone
-  startBlock bpeDone
-  let finalN := bpeDone.param 0
-  storeI64 finalN (← absAddr ptr TOKEN_COUNT_OFF)
-  ret
+  -- Merge passes: each pass finds the lowest-rank adjacent pair, merges it,
+  -- and shifts the tail down. A pass that finds none is the last.
+  let e ← wloop1 tokCount
+    (head := fun n => return (contIf .ugt n one64, [n], ()))
+    (body := fun n _ => do
+      let n1 ← iaddImm n (-1)
+      let sc ← wloop [zero64, maxRank, negOne64]
+        (head := fun c =>
+          return (contIf .ult (c.headD 0) n1, [c.getD 1 0, c.getD 2 0], ()))
+        (body := fun c _ => do
+          let i := c.headD 0
+          let r := c.getD 1 0
+          let p := c.getD 2 0
+          let iOff ← ishlImm i 2
+          let tokA ← load32 (← iadd tokBuf iOff)
+          let tokB ← load32 (← iadd tokBuf (← iaddImm iOff 4))
+          storeI32 tokA keyAddr
+          storeI32 tokB (← iaddImm keyAddr 4)
+          let found ← call ht.fnLookup.id [htCtx, keyAddr, keyLen8, valAddr]
+          let nextI ← iaddImm i 1
+          when .slt found zero32 (continueWith [nextI, r, p])
+          let rank ← load32 valAddr
+          let rp ← ifte .ult rank r (pure [rank, i]) (pure [r, p])
+          return [nextI, rp.headD 0, rp.getD 1 0])
+      let bestPos := sc.getD 1 0
+      when .eq bestPos negOne64 (brk [n])
+      -- the merge itself: re-look-up to get the result token, then close the gap
+      let dOff ← ishlImm bestPos 2
+      let dA ← load32 (← iadd tokBuf dOff)
+      let dB ← load32 (← iadd tokBuf (← iaddImm dOff 4))
+      storeI32 dA keyAddr
+      storeI32 dB (← iaddImm keyAddr 4)
+      let _ ← call ht.fnLookup.id [htCtx, keyAddr, keyLen8, valAddr]
+      let resT ← load32 (← iaddImm valAddr 4)
+      storeI32 resT (← iadd tokBuf dOff)
+      let _ ← wloop1 (← iaddImm bestPos 1)
+        (head := fun j => return (contIf .ult j n1, ([] : List R), ()))
+        (body := fun j _ => do
+          let sbOff ← ishlImm j 2
+          let nextT ← load32 (← iadd tokBuf (← iaddImm sbOff 4))
+          storeI32 nextT (← iadd tokBuf sbOff)
+          return [← iaddImm j 1])
+      return [n1])
+  storeI64 (e.headD 0) (← absAddr ptr TOKEN_COUNT_OFF)
 
 /-- detokenizeFn (fn_35): convert token IDs in TOKEN_BUF_OFF (count = TOKEN_COUNT_OFF) to bytes
     in TEXT_OUT_OFF; stores output byte count in TEXT_LEN_OFF. -/
-def detokenizeFn : IRBuilder Unit := do
-  let ptr       ← entryBlock
+def detokenizeFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   let tokMmap   ← load64At ptr TOK_BUF_PTR_OFF
   -- Compute table pointers from binary header
   let nMerges   ← uload32_64 (← iaddImm tokMmap 0)
@@ -1266,31 +1288,25 @@ def detokenizeFn : IRBuilder Unit := do
   let zero64    ← iconst64 0
   -- Outer: counter `ti` over tokens; accumulator `tp` = output byte offset.
   -- Inner: copy `decLen` bytes from srcPtr[..] to textOut[tp..].
-  let finalTp ← forLoopAcc .i64 .i64 n_toks zero64 fun ti tp => do
+  let finalTp ← forLoopAcc n_toks zero64 fun ti tp => do
     let tok_id ← uload32_64 (← iadd tokBuf (← ishlImm ti 2))
     let decOff ← uload32_64 (← iadd decOffPtr (← ishlImm tok_id 2))
     let decLen ← uload32_64 (← iadd decLenPtr (← ishlImm tok_id 2))
     let srcPtr ← iadd bytePool decOff
-    forLoop .i64 decLen fun i => do
+    forLoop decLen fun i => do
       let byt ← uload8_64 (← iadd srcPtr i)
       istore8 byt (← iadd textOut (← iadd tp i))
     iadd tp decLen
   storeI64 finalTp (← absAddr ptr TEXT_LEN_OFF)
-  ret
 
 /-- cliFn (fn_36): stdin/stdout chat loop.
     Per line: read stdin → tokenize → prefill+decode via fn_27 → detokenize → write stdout.
     Exits when stdin closes (EOF). -/
-def cliFn : IRBuilder Unit := do
-  let ptr         ← entryBlock
+def cliFn : HProg.Code :=
+  clif% env HProg.ptrParams do
+  let ptr := basePtr
   -- Colocated callees
-  let fnInfer     ← declareColocatedFFI "fn_27" [.i64] none
-  let fnTokInit   ← declareColocatedFFI "fn_33" [.i64] none
-  let fnTokBpe    ← declareColocatedFFI "fn_34" [.i64] none
-  let fnDetok     ← declareColocatedFFI "fn_35" [.i64] none
   -- Stdin/stdout FFI
-  let fnStdinRead   ← declareFFI "cl_stdin_readline" [.i64, .i64, .i64] (some .i64)
-  let fnStdoutWrite ← declareFFI "cl_stdout_write"   [.i64, .i64, .i64] (some .i64)
   -- Redirect inferFn's data_ptr and out_ptr to our step buffers
   let inferInAddr ← absAddr ptr INFER_IN_OFF
   let inferOutAddr ← absAddr ptr INFER_OUT_OFF
@@ -1326,183 +1342,138 @@ def cliFn : IRBuilder Unit := do
   let t_as_t2   ← iconst32 83
   let prefixLen ← iconst64 PREFIX_LEN
   let wrapLen   ← iconst64 WRAP_LEN
-  -- Blocks
-  let bootHdr      ← declareBlock [.i64]               -- (i)  system-prompt prefill loop
-  let bootBody     ← declareBlock [.i64]
-  let cliLoop      ← declareBlock []
-  let exitBlock    ← declareBlock []
-  let trimLfChk    ← declareBlock [.i64]
-  let trimLfYes    ← declareBlock [.i64]
-  let trimCrChk    ← declareBlock [.i64]
-  let trimCrYes    ← declareBlock [.i64]
-  let trimCrDone   ← declareBlock [.i64]
-  let trimCrKeep   ← declareBlock [.i64]
-  let trimDone     ← declareBlock [.i64]
-  let wrapShiftHdr ← declareBlock [.i64]
-  let wrapShiftBody ← declareBlock [.i64]
-  let wrapWrite    ← declareBlock []
-  let prefHdr      ← declareBlock [.i64]
-  let prefBody     ← declareBlock [.i64]
-  let decInit      ← declareBlock []
-  let decHdr       ← declareBlock [.i64, .i32, .i64]   -- (pos, tok, n_out)
-  let decBody      ← declareBlock [.i64, .i32, .i64]
-  let writeResp    ← declareBlock [.i64]               -- (n_out)
-  -- First, prefill the static system prompt into the KV cache once.
-  jump bootHdr.ref [zero64]
-  startBlock exitBlock
-  ret
-  startBlock bootHdr
-  let bI := bootHdr.param 0
-  let bDone ← icmp .uge bI (← iconst64 SYSTEM_TOKEN_COUNT)
-  brif bDone cliLoop.ref [] bootBody.ref [bI]
-  startBlock bootBody
-  let bbI := bootBody.param 0
-  let bbOff ← ishlImm bbI 2
-  let bbAddr ← iadd (← iaddImm ptr SYSTEM_TOKENS_OFF) bbOff
-  let bbTok  ← load32 bbAddr
-  storeI32 bbTok               (← absAddr ptr INFER_IN_OFF)
-  storeI32 (← ireduce32 bbI)   (← absAddr ptr (INFER_IN_OFF + 4))
-  callVoid fnInfer [ptr]
-  jump bootHdr.ref [(← iaddImm bbI 1)]
-  startBlock cliLoop
-  -- Seed the running position past the system prompt on first entry, then re-read
-  -- it from shared memory on subsequent iterations (writeResp updates it per turn).
-  storeI64 (← iconst64 SYSTEM_TOKEN_COUNT) (← absAddr ptr RUNNING_POS_OFF)
-  let runningPos ← load64 (← absAddr ptr RUNNING_POS_OFF)
-  let nRecv  ← call fnStdinRead [ptr, textInOff64, maxRecv]
-  let hasInput ← icmp .ugt nRecv zero64
-  brif hasInput trimLfChk.ref [nRecv] exitBlock.ref []
-  startBlock trimLfChk
-  let tlLen0 := trimLfChk.param 0
-  let tlLast ← uload8_64 (← iadd textInPtr (← iaddImm tlLen0 (-1)))
-  let isLf   ← icmp .eq tlLast (← iconst64 10)
-  brif isLf trimLfYes.ref [tlLen0] trimCrChk.ref [tlLen0]
-  startBlock trimLfYes
-  let tlyLen0 := trimLfYes.param 0
-  jump trimCrChk.ref [(← iaddImm tlyLen0 (-1))]
-  startBlock trimCrChk
-  let tcLen1 := trimCrChk.param 0
-  let hasRemain ← icmp .ugt tcLen1 zero64
-  brif hasRemain trimCrYes.ref [tcLen1] trimDone.ref [tcLen1]
-  startBlock trimCrYes
-  let tcyLen1 := trimCrYes.param 0
-  let tcyLast ← uload8_64 (← iadd textInPtr (← iaddImm tcyLen1 (-1)))
-  let isCr   ← icmp .eq tcyLast (← iconst64 13)
-  brif isCr trimCrDone.ref [tcyLen1] trimCrKeep.ref [tcyLen1]
-  startBlock trimCrDone
-  jump trimDone.ref [(← iaddImm (trimCrDone.param 0) (-1))]
-  startBlock trimCrKeep
-  jump trimDone.ref [trimCrKeep.param 0]
-  startBlock trimDone
-  let tsLen := trimDone.param 0
-  storeI64 tsLen (← absAddr ptr TEXT_LEN_OFF)
-  callVoid fnTokInit [ptr]
-  callVoid fnTokBpe  [ptr]
-  let rawPromptN ← load64At ptr TOKEN_COUNT_OFF
-  jump wrapShiftHdr.ref [rawPromptN]
-  startBlock wrapShiftHdr
-  let wsI := wrapShiftHdr.param 0
-  let wsDone ← icmp .eq wsI zero64
-  brif wsDone wrapWrite.ref [] wrapShiftBody.ref [wsI]
-  startBlock wrapShiftBody
-  let wbI := wrapShiftBody.param 0
-  let srcIdx ← iaddImm wbI (-1)
-  let srcOff ← ishlImm srcIdx 2
-  let tok    ← load32 (← iadd tokBuf srcOff)
-  let dstIdx ← iadd srcIdx prefixLen
-  let dstOff ← ishlImm dstIdx 2
-  storeI32 tok (← iadd tokBuf dstOff)
-  jump wrapShiftHdr.ref [srcIdx]
-  startBlock wrapWrite
-  -- Prefix: <|im_start|>user\n
-  storeI32 imStartTok (← iadd tokBuf (← iconst64 0))
-  storeI32 t_user_u   (← iadd tokBuf (← iconst64 4))
-  storeI32 t_user_s   (← iadd tokBuf (← iconst64 8))
-  storeI32 t_user_e   (← iadd tokBuf (← iconst64 12))
-  storeI32 t_user_r   (← iadd tokBuf (← iconst64 16))
-  storeI32 nlTok      (← iadd tokBuf (← iconst64 20))
-  let suffixBaseIdx ← iadd rawPromptN prefixLen
-  let suffixBaseOff ← ishlImm suffixBaseIdx 2
-  -- Suffix: <|im_end|>\n<|im_start|>assistant\n
-  storeI32 imEndTok   (← iadd tokBuf suffixBaseOff)
-  storeI32 nlTok      (← iadd tokBuf (← iaddImm suffixBaseOff 4))
-  storeI32 imStartTok (← iadd tokBuf (← iaddImm suffixBaseOff 8))
-  storeI32 t_as_a1    (← iadd tokBuf (← iaddImm suffixBaseOff 12))
-  storeI32 t_as_s1    (← iadd tokBuf (← iaddImm suffixBaseOff 16))
-  storeI32 t_as_s2    (← iadd tokBuf (← iaddImm suffixBaseOff 20))
-  storeI32 t_as_i     (← iadd tokBuf (← iaddImm suffixBaseOff 24))
-  storeI32 t_as_s3    (← iadd tokBuf (← iaddImm suffixBaseOff 28))
-  storeI32 t_as_t     (← iadd tokBuf (← iaddImm suffixBaseOff 32))
-  storeI32 t_as_a2    (← iadd tokBuf (← iaddImm suffixBaseOff 36))
-  storeI32 t_as_n     (← iadd tokBuf (← iaddImm suffixBaseOff 40))
-  storeI32 t_as_t2    (← iadd tokBuf (← iaddImm suffixBaseOff 44))
-  storeI32 nlTok      (← iadd tokBuf (← iaddImm suffixBaseOff 48))
-  let nPrompt ← iadd rawPromptN wrapLen
-  storeI64 nPrompt (← absAddr ptr N_PROMPT_OFF)
-  -- Reset output token count for decode phase
-  storeI64 zero64 (← absAddr ptr TOKEN_COUNT_OFF)
-  jump prefHdr.ref [zero64]
-  -- Prefill: feed each prompt token through inferFn
-  startBlock prefHdr
-  let phI := prefHdr.param 0
-  let phDone ← icmp .uge phI nPrompt
-  brif phDone decInit.ref [] prefBody.ref [phI]
-  startBlock prefBody
-  let pbI := prefBody.param 0
-  let pbTok ← load32 (← iadd tokBuf (← ishlImm pbI 2))
-  let pbAbsPos ← iadd runningPos pbI
-  storeI32 pbTok                  (← absAddr ptr INFER_IN_OFF)
-  storeI32 (← ireduce32 pbAbsPos) (← absAddr ptr (INFER_IN_OFF + 4))
-  callVoid fnInfer [ptr]
-  jump prefHdr.ref [(← iaddImm pbI 1)]
-  startBlock decInit
-  let diTok ← load32 (← absAddr ptr INFER_OUT_OFF)
-  let diStartPos ← iadd runningPos nPrompt
-  jump decHdr.ref [diStartPos, diTok, zero64]
-  -- Decode loop: generate new tokens until EOS or budget exhausted
-  startBlock decHdr
-  let dhPos  := decHdr.param 0
-  let dhTok  := decHdr.param 1
-  let dhNOut := decHdr.param 2
-  -- Stop only on the real end-of-turn tokens or hitting the decode budget.
-  -- Plain newlines occur naturally inside multi-line responses (lists, code).
-  let isEos   ← icmp .eq dhTok eosTok
-  let isImEnd ← icmp .eq dhTok imEndTok
-  let stopTok ← bor isEos isImEnd
-  let isFull  ← icmp .uge dhNOut maxDecode
-  let dhStop  ← bor stopTok isFull
-  brif dhStop writeResp.ref [dhNOut] decBody.ref [dhPos, dhTok, dhNOut]
-  startBlock decBody
-  let dbPos  := decBody.param 0
-  let dbTok  := decBody.param 1
-  let dbNOut := decBody.param 2
-  storeI32 dbTok (← iadd tokBuf (← ishlImm dbNOut 2))
-  storeI32 dbTok               (← absAddr ptr INFER_IN_OFF)
-  storeI32 (← ireduce32 dbPos) (← absAddr ptr (INFER_IN_OFF + 4))
-  callVoid fnInfer [ptr]
-  let nextTok ← load32 (← absAddr ptr INFER_OUT_OFF)
-  jump decHdr.ref [(← iaddImm dbPos 1), nextTok, (← iaddImm dbNOut 1)]
-  -- Write response: detokenize output tokens to text_out, append newline, write to stdout.
-  -- Then feed <|im_end|>\n through inferFn so the KV cache reflects a properly
-  -- closed assistant turn; advance running_pos so the next turn picks up cleanly.
-  startBlock writeResp
-  let wrNOut := writeResp.param 0
-  storeI64 wrNOut (← absAddr ptr TOKEN_COUNT_OFF)
-  callVoid fnDetok [ptr]
-  let outLen ← load64At ptr TEXT_LEN_OFF
-  istore8 (← iconst32 10) (← iadd textOutPtr outLen)
-  let _ ← call fnStdoutWrite [ptr, textOutOff64, (← iaddImm outLen 1)]
-  -- Append assistant closing tokens to the cache: <|im_end|> then \n
-  let endImPos ← iadd runningPos (← iadd nPrompt wrNOut)
-  storeI32 imEndTok                (← absAddr ptr INFER_IN_OFF)
-  storeI32 (← ireduce32 endImPos)  (← absAddr ptr (INFER_IN_OFF + 4))
-  callVoid fnInfer [ptr]
-  let endNlPos ← iaddImm endImPos 1
-  storeI32 nlTok                   (← absAddr ptr INFER_IN_OFF)
-  storeI32 (← ireduce32 endNlPos)  (← absAddr ptr (INFER_IN_OFF + 4))
-  callVoid fnInfer [ptr]
-  storeI64 (← iaddImm endNlPos 1) (← absAddr ptr RUNNING_POS_OFF)
-  jump cliLoop.ref []
+  let z8 ← iconst .i8 0
+
+  -- The system prompt, prefilled into the KV cache once.
+  let _ ← wloop1 zero64
+    (head := fun i => do
+      let lim ← iconst64 SYSTEM_TOKEN_COUNT
+      return (contIf .ult i lim, ([] : List R), ()))
+    (body := fun i _ => do
+      let off ← ishlImm i 2
+      let tok ← load32 (← iadd (← iaddImm ptr SYSTEM_TOKENS_OFF) off)
+      storeI32 tok (← absAddr ptr INFER_IN_OFF)
+      storeI32 (← ireduce32 i) (← absAddr ptr (INFER_IN_OFF + 4))
+      callVoid q.fnInfer.id [ptr]
+      return [← iaddImm i 1])
+
+  -- One turn per iteration; an empty read ends the session.
+  let _ ← wloop []
+    (head := fun _ => do
+      storeI64 (← iconst64 SYSTEM_TOKEN_COUNT) (← absAddr ptr RUNNING_POS_OFF)
+      let runningPos ← load64 (← absAddr ptr RUNNING_POS_OFF)
+      let nRecv ← call q.fnStdinRead.id [ptr, textInOff64, maxRecv]
+      return (contIf .ugt nRecv zero64, ([] : List R), (runningPos, nRecv)))
+    (body := fun _ rp => do
+      let runningPos := rp.1
+      let nRecv := rp.2
+      -- trailing LF, then a trailing CR before it
+      let lf ← iconst64 10
+      let cr ← iconst64 13
+      let l1 ← do
+        let last ← uload8_64 (← iadd textInPtr (← iaddImm nRecv (-1)))
+        ifte .eq last lf (pure [← iaddImm nRecv (-1)]) (pure [nRecv])
+      let len1 := l1.headD 0
+      let l2 ← ifte .ugt len1 zero64
+        (do
+          let last ← uload8_64 (← iadd textInPtr (← iaddImm len1 (-1)))
+          ifte .eq last cr (pure [← iaddImm len1 (-1)]) (pure [len1]))
+        (pure [len1])
+      let tsLen := l2.headD 0
+      storeI64 tsLen (← absAddr ptr TEXT_LEN_OFF)
+      callVoid q.fnTokInit.id [ptr]
+      callVoid q.fnTokBpe.id  [ptr]
+      let rawPromptN ← load64At ptr TOKEN_COUNT_OFF
+
+      -- room for the chat prefix: shift the prompt up, highest index first
+      let _ ← wloop1 rawPromptN
+        (head := fun i => return (contIf .ne i zero64, ([] : List R), ()))
+        (body := fun i _ => do
+          let srcIdx ← iaddImm i (-1)
+          let srcOff ← ishlImm srcIdx 2
+          let tok ← load32 (← iadd tokBuf srcOff)
+          let dstOff ← ishlImm (← iadd srcIdx prefixLen) 2
+          storeI32 tok (← iadd tokBuf dstOff)
+          return [srcIdx])
+
+      -- Prefix: <|im_start|>user\n
+      storeI32 imStartTok (← iadd tokBuf (← iconst64 0))
+      storeI32 t_user_u   (← iadd tokBuf (← iconst64 4))
+      storeI32 t_user_s   (← iadd tokBuf (← iconst64 8))
+      storeI32 t_user_e   (← iadd tokBuf (← iconst64 12))
+      storeI32 t_user_r   (← iadd tokBuf (← iconst64 16))
+      storeI32 nlTok      (← iadd tokBuf (← iconst64 20))
+      let suffixBaseOff ← ishlImm (← iadd rawPromptN prefixLen) 2
+      -- Suffix: <|im_end|>\n<|im_start|>assistant\n
+      storeI32 imEndTok   (← iadd tokBuf suffixBaseOff)
+      storeI32 nlTok      (← iadd tokBuf (← iaddImm suffixBaseOff 4))
+      storeI32 imStartTok (← iadd tokBuf (← iaddImm suffixBaseOff 8))
+      storeI32 t_as_a1    (← iadd tokBuf (← iaddImm suffixBaseOff 12))
+      storeI32 t_as_s1    (← iadd tokBuf (← iaddImm suffixBaseOff 16))
+      storeI32 t_as_s2    (← iadd tokBuf (← iaddImm suffixBaseOff 20))
+      storeI32 t_as_i     (← iadd tokBuf (← iaddImm suffixBaseOff 24))
+      storeI32 t_as_s3    (← iadd tokBuf (← iaddImm suffixBaseOff 28))
+      storeI32 t_as_t     (← iadd tokBuf (← iaddImm suffixBaseOff 32))
+      storeI32 t_as_a2    (← iadd tokBuf (← iaddImm suffixBaseOff 36))
+      storeI32 t_as_n     (← iadd tokBuf (← iaddImm suffixBaseOff 40))
+      storeI32 t_as_t2    (← iadd tokBuf (← iaddImm suffixBaseOff 44))
+      storeI32 nlTok      (← iadd tokBuf (← iaddImm suffixBaseOff 48))
+      let nPrompt ← iadd rawPromptN wrapLen
+      storeI64 nPrompt (← absAddr ptr N_PROMPT_OFF)
+      storeI64 zero64 (← absAddr ptr TOKEN_COUNT_OFF)
+
+      -- prefill: every prompt token through `inferFn`
+      let _ ← wloop1 zero64
+        (head := fun i => return (contIf .ult i nPrompt, ([] : List R), ()))
+        (body := fun i _ => do
+          let tok ← load32 (← iadd tokBuf (← ishlImm i 2))
+          let absPos ← iadd runningPos i
+          storeI32 tok (← absAddr ptr INFER_IN_OFF)
+          storeI32 (← ireduce32 absPos) (← absAddr ptr (INFER_IN_OFF + 4))
+          callVoid q.fnInfer.id [ptr]
+          return [← iaddImm i 1])
+
+      -- decode until an end-of-turn token or the budget
+      let diTok ← load32 (← absAddr ptr INFER_OUT_OFF)
+      let diStartPos ← iadd runningPos nPrompt
+      let dec ← wloop [diStartPos, diTok, zero64]
+        (head := fun c => do
+          let tok := c.getD 1 0
+          let nOut := c.getD 2 0
+          let isEos ← icmp .eq tok eosTok
+          let isImEnd ← icmp .eq tok imEndTok
+          let stopTok ← bor isEos isImEnd
+          let isFull ← icmp .uge nOut maxDecode
+          let stop ← bor stopTok isFull
+          return (contIf .eq stop z8, [nOut], ()))
+        (body := fun c _ => do
+          let pos := c.headD 0
+          let tok := c.getD 1 0
+          let nOut := c.getD 2 0
+          storeI32 tok (← iadd tokBuf (← ishlImm nOut 2))
+          storeI32 tok (← absAddr ptr INFER_IN_OFF)
+          storeI32 (← ireduce32 pos) (← absAddr ptr (INFER_IN_OFF + 4))
+          callVoid q.fnInfer.id [ptr]
+          let nextTok ← load32 (← absAddr ptr INFER_OUT_OFF)
+          return [← iaddImm pos 1, nextTok, ← iaddImm nOut 1])
+      let wrNOut := dec.headD 0
+
+      -- detokenize, print, then close the assistant turn in the cache
+      storeI64 wrNOut (← absAddr ptr TOKEN_COUNT_OFF)
+      callVoid q.fnDetok.id [ptr]
+      let outLen ← load64At ptr TEXT_LEN_OFF
+      istore8 (← iconst32 10) (← iadd textOutPtr outLen)
+      let _ ← call q.fnStdoutWrite.id [ptr, textOutOff64, (← iaddImm outLen 1)]
+      let endImPos ← iadd runningPos (← iadd nPrompt wrNOut)
+      storeI32 imEndTok (← absAddr ptr INFER_IN_OFF)
+      storeI32 (← ireduce32 endImPos) (← absAddr ptr (INFER_IN_OFF + 4))
+      callVoid q.fnInfer.id [ptr]
+      let endNlPos ← iaddImm endImPos 1
+      storeI32 nlTok (← absAddr ptr INFER_IN_OFF)
+      storeI32 (← ireduce32 endNlPos) (← absAddr ptr (INFER_IN_OFF + 4))
+      callVoid q.fnInfer.id [ptr]
+      storeI64 (← iaddImm endNlPos 1) (← absAddr ptr RUNNING_POS_OFF)
+      return [])
 
 
 -- ── Initial memory: PTX kernel byte tail (shared by both algorithms) ─────────
@@ -1620,8 +1591,13 @@ def memMap : RegionMap :=
 -- The host program, against the kernels it launches
 -- ---------------------------------------------------------------------------
 
+/-- The compiled form of a generated function, as the `Clif` extractors read
+    it. The function index is immaterial to what they look at. -/
+def stateOf (c : HProg.Code) : AlgorithmLib.IR.IRState :=
+  (HProg.compileFn 1 env HProg.ptrParams c).asState
+
 /-- The layer-forward function, as a value. -/
-def inferState : AlgorithmLib.IR.IRState := (inferFn.run {}).2
+def inferState : AlgorithmLib.IR.IRState := (stateOf inferFn)
 
 /-- **Device writes the launch model does not see, in `inferFn` itself.**
 
@@ -1820,12 +1796,12 @@ theorem staged_are_real :
 
 /-- **The entry function's device writes are exactly the declared ones.** -/
 theorem inferFn_writes :
-    AlgorithmLib.Clif.launchesOf (inferFn.run {}).2 = expectedLaunches := by
+    AlgorithmLib.Clif.launchesOf (stateOf inferFn) = expectedLaunches := by
   native_decide
 
 /-- **The sampling tail's, likewise** — norm, vendor projection, argmax. -/
 theorem inferFinalFn_writes :
-    AlgorithmLib.Clif.launchesOf (inferFinalFn.run {}).2 = expectedFinalLaunches := by
+    AlgorithmLib.Clif.launchesOf (stateOf inferFinalFn) = expectedFinalLaunches := by
   native_decide
 
 /-- **No two regions overlap.** -/
@@ -2229,11 +2205,11 @@ noncomputable def tokenDeclared : List DeclaredBinding :=
 
 /-- **`inferFn`'s device writes, and what each bound.** -/
 theorem entry_ops_are :
-    deviceOpsOf ROOT (inferFn.run {}).2 = entryOps := by native_decide
+    deviceOpsOf ROOT (stateOf inferFn) = entryOps := by native_decide
 
 /-- **…and `inferFinalFn`'s.** -/
 theorem final_ops_are :
-    deviceOpsOf ROOT (inferFinalFn.run {}).2 = finalOps := by native_decide
+    deviceOpsOf ROOT (stateOf inferFinalFn) = finalOps := by native_decide
 
 theorem entry_ops_realise_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
@@ -2247,14 +2223,14 @@ theorem final_ops_realise_plan (h : AllHold [Law.combinerComm])
 theorem entry_program_realises_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
     planOf? (tokenKernels gim h hm) tokenDeclared none
-        (deviceOpsOf ROOT (inferFn.run {}).2) = some (entryPlan gim) := by
+        (deviceOpsOf ROOT (stateOf inferFn)) = some (entryPlan gim) := by
   rw [entry_ops_are]; exact entry_ops_realise_plan gim h hm
 
 /-- **…and the shipped sampling tail realises `finalPlan`.** -/
 theorem final_program_realises_plan (h : AllHold [Law.combinerComm])
     (hm : SmMeta (fun b => gim (bSoft b))) :
     planOf? (tokenKernels gim h hm) tokenDeclared none
-        (deviceOpsOf ROOT (inferFinalFn.run {}).2) = some (finalPlan gim) := by
+        (deviceOpsOf ROOT (stateOf inferFinalFn)) = some (finalPlan gim) := by
   rw [final_ops_are]; exact final_ops_realise_plan gim h hm
 
 /-- **Every one of the eleven staged kernels is now in a plan tied to the
@@ -2422,18 +2398,18 @@ open AlgorithmLib.Clif in
     in the same environment a launch's PTX slot is resolved in — not off the
     generator's source. -/
 theorem infer_loop_is_layers :
-    loopsOf (inferFn.run {}).2 = [⟨1, 2, 3, N_LAYERS⟩] := by native_decide
+    loopsOf (stateOf inferFn) = [⟨1, 2, 3, N_LAYERS⟩] := by native_decide
 
 open AlgorithmLib.Clif in
 /-- **…and its body dispatches to the layer function and nothing else.** -/
 theorem infer_loop_body_calls :
-    (blockInsts? (inferFn.run {}).2 2).map (callsIn (inferFn.run {}).2.fns)
+    (blockInsts? (stateOf inferFn) 2).map (callsIn (stateOf inferFn).fns)
       = some ["fn_28"] := by native_decide
 
 open AlgorithmLib.Clif in
 /-- **The sampling tail has no loop**, so its static scan is its whole
     sequence. -/
-theorem final_no_loops : loopsOf (inferFinalFn.run {}).2 = [] := by native_decide
+theorem final_no_loops : loopsOf (stateOf inferFinalFn) = [] := by native_decide
 
 open AlgorithmLib.Host in
 /-- **The declared prologue and the built one perform the same device writes.**
@@ -2443,13 +2419,13 @@ open AlgorithmLib.Host in
     actually produced.  Chaining them is what turns `tokenDriver` from a
     description into a claim about this program. -/
 theorem entryDriver_is_built (fnOf : String → FnRef) :
-    (entryDriver fnOf).deviceOps = deviceOpsOf ROOT (inferFn.run {}).2 := by
+    (entryDriver fnOf).deviceOps = deviceOpsOf ROOT (stateOf inferFn) := by
   rw [entry_ops_are, entryDriver_deviceOps]
 
 open AlgorithmLib.Host in
 /-- **…and the sampling tail's.** -/
 theorem finalDriver_is_built (fnOf : String → FnRef) :
-    (finalDriver fnOf).deviceOps = deviceOpsOf ROOT (inferFinalFn.run {}).2 := by
+    (finalDriver fnOf).deviceOps = deviceOpsOf ROOT (stateOf inferFinalFn) := by
   rw [final_ops_are, finalDriver_deviceOps]
 
 /-- **A whole token's device-write sequence realises `tokenPlan`.** -/

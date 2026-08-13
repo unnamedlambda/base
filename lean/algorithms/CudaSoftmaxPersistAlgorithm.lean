@@ -179,29 +179,40 @@ def ptxSource : String := buildModule 64
 
 -- CLIF: u0:0 noop, u0:1 load, u0:2 prep, u0:3 core, u0:4 finalize
 -- Load: init CUDA, alloc 5 bufs, pack/upload meta, store n/num_blocks
-def loadFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let cuda    ← declareCudaFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The CUDA entry points, declared through the same helper the runtime's
+    signatures come from. -/
+def cudaEnv : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cuda : IR.CudaSetup := cudaEnv.1
+def env : FnEnv := cudaEnv.2
+
+/-- The CUDA context pointer lives at a fixed slot in shared memory. -/
+def CTX_OFF : Nat := 0x10
+
+def loadCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
-  cudaInit cuda ptr 0x10
-  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  cudaInit cuda ptr CTX_OFF
+  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   let n         ← load64 dataPtr
   let numBlocks ← ushrImm (← iaddImm n 255) 8   -- (n + 255) >> 8
-  storeI64 n         (← absAddr ptr 0x38)
-  storeI64 numBlocks (← absAddr ptr 0x40)
+  store n         (← absAddr ptr 0x38)
+  store numBlocks (← absAddr ptr 0x40)
 
   let xBytes       ← ishlImm n 2          -- n*4
   let partialsBytes← ishlImm numBlocks 3  -- num_blocks*8
   let eight        ← iconst64 8
 
   -- buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
-  let _ ← call cuda.fnCreateBuffer [ctxPtr, xBytes]
-  let _ ← call cuda.fnCreateBuffer [ctxPtr, xBytes]
-  let metaBuf ← call cuda.fnCreateBuffer [ctxPtr, eight]
-  let _ ← call cuda.fnCreateBuffer [ctxPtr, partialsBytes]
-  let _ ← call cuda.fnCreateBuffer [ctxPtr, eight]
+  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, xBytes]
+  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, xBytes]
+  let metaBuf ← call cuda.fnCreateBuffer.id [ctxPtr, eight]
+  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, partialsBytes]
+  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, eight]
 
   -- Pack [n:u32, num_blocks:u32] as i64 LE into staging slot at 0x48
   let n32   ← ireduce32 n
@@ -210,27 +221,26 @@ def loadFn : IRBuilder Unit := do
   let nb64  ← uextend64 nb32
   let packed← bor n64 (← ishlImm nb64 32)
   let metaSlot ← absAddr ptr 0x48
-  storeI64 packed metaSlot
+  store packed metaSlot
 
   -- Upload packed meta to buf2
-  let _ ← call cuda.fnUpload [ctxPtr, metaBuf, metaSlot, eight]
-  ret
+  let _ ← call cuda.fnUpload.id [ctxPtr, metaBuf, metaSlot, eight]
 
--- Prep: upload x from data_ptr to buf0
-def prepFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let cuda    ← declareCudaFFI
+/-- Prep: upload x from data_ptr to buf0. -/
+def prepCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
-  let ctxPtr  ← load64 (← absAddr ptr 0x10)
+  let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let xBuf    ← iconst32 0
-  let _ ← call cuda.fnUpload [ctxPtr, xBuf, dataPtr, dataLen]
-  ret
+  let _ ← call cuda.fnUpload.id [ctxPtr, xBuf, dataPtr, dataLen]
 
--- Core: launch kernels (small path or 3-kernel path)
-def coreFn : IRBuilder Unit := do
-  let ptr    ← entryBlock
-  let cuda   ← declareCudaFFI
+/-- Core: one kernel for a short row, three for a long one.
+
+    Both arms end the function, and a term has one exit, so they join on it.
+    The join block holds only the `ret`. -/
+def coreCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr    := basePtr
   let n      ← load64 (← absAddr ptr 0x38)
   let numBlocks ← load64 (← absAddr ptr 0x40)
   let nb32   ← ireduce32 numBlocks
@@ -239,48 +249,48 @@ def coreFn : IRBuilder Unit := do
   let four32 ← iconst32 4
   let blk256 ← iconst32 256
 
-  let smallPath ← declareBlock []
-  let largePath ← declareBlock []
+  let _ ← ifte .ule n (← iconst64 2048)
+    (thn := do
+      -- Small path: single kernel
+      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+                 (← iconst64 NAME_SMALL_SOFTMAX)
+                 three32 (← iconst64 BIND_SMALL_OFF) one32 one32 one32 blk256 one32 one32
+      pure [])
+    (els := do
+      -- Large path: block_reduce → global_reduce → normalize
+      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+                 (← iconst64 NAME_BLOCK_REDUCE)
+                 three32 (← iconst64 BIND_K1_OFF) nb32 one32 one32 blk256 one32 one32
+      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+                 (← iconst64 NAME_GLOBAL_REDUCE)
+                 three32 (← iconst64 BIND_K2_OFF) one32 one32 one32 blk256 one32 one32
+      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+                 (← iconst64 NAME_NORMALIZE)
+                 four32 (← iconst64 BIND_K3_OFF) nb32 one32 one32 blk256 one32 one32
+      pure [])
+  return ()
 
-  brif (← icmp .ule n (← iconst64 2048)) smallPath.ref [] largePath.ref []
-
-  -- Small path: single kernel
-  startBlock smallPath
-  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_SMALL_SOFTMAX)
-             three32 (← iconst64 BIND_SMALL_OFF) one32 one32 one32 blk256 one32 one32
-  ret
-
-  -- Large path: block_reduce → global_reduce → normalize
-  startBlock largePath
-  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_BLOCK_REDUCE)
-             three32 (← iconst64 BIND_K1_OFF) nb32 one32 one32 blk256 one32 one32
-  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_GLOBAL_REDUCE)
-             three32 (← iconst64 BIND_K2_OFF) one32 one32 one32 blk256 one32 one32
-  let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF) (← iconst64 NAME_NORMALIZE)
-             four32 (← iconst64 BIND_K3_OFF) nb32 one32 one32 blk256 one32 one32
-  ret
-
--- Finalize: sync, optional download y from buf1
-def finalizeFn : IRBuilder Unit := do
-  let ptr    ← entryBlock
-  let cuda   ← declareCudaFFI
+/-- Finalize: sync, then download `y` only if the caller asked for output. -/
+def finalizeCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr    := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
-  let ctxPtr ← load64 (← absAddr ptr 0x10)
+  let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
-  let skipDl     ← declareBlock []
-  let doDownload ← declareBlock []
+  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← ifte .eq outLen (← iconst64 0)
+    (thn := pure [])
+    (els := do
+      let yBuf ← iconst32 1
+      let _ ← call cuda.fnDownload.id [ctxPtr, yBuf, outPtr, outLen]
+      pure [])
+  return ()
 
-  let _ ← cudaSync cuda ptr 0x10
-  brif (← icmpImm .eq outLen 0) skipDl.ref [] doDownload.ref []
-
-  startBlock doDownload
-  let yBuf ← iconst32 1
-  let _ ← call cuda.fnDownload [ctxPtr, yBuf, outPtr, outLen]
-  ret
-
-  startBlock skipDl
-  ret
+theorem bodies_wf :
+    HProg.wf env HProg.ptrParams loadCode = true &&
+    HProg.wf env HProg.ptrParams prepCode = true &&
+    HProg.wf env HProg.ptrParams coreCode = true &&
+    HProg.wf env HProg.ptrParams finalizeCode = true := by decide
 
 /-- Stack depth baked into the `stackAlgorithm` wrapper. -/
 def STACK_DEPTH : Nat := 64
@@ -288,10 +298,10 @@ def STACK_DEPTH : Nat := 64
 def clifIR : Program :=
   program
     [noopFunction,
-     buildFunction 1 loadFn,
-     buildFunction 2 prepFn,
-     buildFunction 3 coreFn,
-     buildFunction 4 finalizeFn,
+     HProg.compileFn 1 env HProg.ptrParams loadCode,
+     HProg.compileFn 2 env HProg.ptrParams prepCode,
+     HProg.compileFn 3 env HProg.ptrParams coreCode,
+     HProg.compileFn 4 env HProg.ptrParams finalizeCode,
      clifSequenceWrapper 5 [3, 4],
      clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4])]
 

@@ -37,8 +37,8 @@ theorem shipped_layer_is_transformer (gim : Buf → Nat → Nat)
     (R : Realisation) (hR : Honours R) (st : WSt)
     (i : Nat) (hi : i < Qwen2Common.D) :
     planOf? (layerKernels gim h hm) layerDeclared none
-        (deviceOpsOf ROOT (Qwen2.inferLayerAttnFn.run {}).2
-          ++ deviceOpsOf ROOT (Qwen2.inferLayerFfnFn.run {}).2)
+        (deviceOpsOf ROOT (Qwen2Common.stateOf Qwen2.inferLayerAttnFn)
+          ++ deviceOpsOf ROOT (Qwen2Common.stateOf Qwen2.inferLayerFfnFn))
       = some (layerPlan gim h hm)
     ∧ ((layerPlan gim h hm).run R st).mem B_X i
         = NumOps.add

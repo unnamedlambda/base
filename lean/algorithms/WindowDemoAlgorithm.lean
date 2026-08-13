@@ -172,8 +172,29 @@ open AlgorithmLib.IR
 
 -- Game-logic helpers (emit inline CLIF; shared by the live loop and tests) ---
 
+-- Every body below is a term, so the builder names can be opened once for the
+-- whole section rather than per declaration.
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Two callee tables: the live loop reaches the window and the GPU, the render
+    test reaches the GPU, and the four state tests reach nothing. -/
+def declsMain : (GpuSetup × WindowSetup) × FnEnv := envOf (do
+  let gpu ← declareGpuFFI
+  let win ← declareWindowFFI
+  pure (gpu, win))
+
+def declsGpu : GpuSetup × FnEnv := envOf declareGpuFFI
+
+def envMain : FnEnv := declsMain.2
+def gpuM : GpuSetup := declsMain.1.1
+def winM : WindowSetup := declsMain.1.2
+def envGpu : FnEnv := declsGpu.2
+def gpuT : GpuSetup := declsGpu.1
+def envNone : FnEnv := { sigs := [], fns := [] }
+
 /-- Put the player at (x, y) and clear held-keys / quit / frame. -/
-def clearState (ptr : Val) (x y : Int) : IRBuilder Unit := do
+def clearState (ptr : R) (x y : Int) : Sur.M Unit := do
   let z ← iconst64 0
   fldStore ptr f.keyMask z
   fldStore ptr f.quit z
@@ -183,34 +204,37 @@ def clearState (ptr : Val) (x y : Int) : IRBuilder Unit := do
 /-- Scan events [0, nEvents): update the held-key bitmask + quit flag. Branchless
     (no per-event blocks): each key contributes a bit that is OR'd in on key-down
     and cleared on key-up, so holding a key persists across frames. -/
-def processEvents (ptr : Val) : IRBuilder Unit := do
+def processEvents (ptr : R) : Sur.M Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
   let n ← fldLoad ptr f.nEvents
   let recSz ← iconst64 32
-  forLoop .i64 n (fun i => do
-    let base ← iadd evBase (← imul i recSz)
-    let kind ← load64 base
-    let keyCode ← load64 (← iaddImm base 8)
-    let isDown  ← sextend64 (← icmp .eq kind (← iconst64 evKeyDown))
-    let isUp    ← sextend64 (← icmp .eq kind (← iconst64 evKeyUp))
-    let isClose ← sextend64 (← icmp .eq kind (← iconst64 evClose))
-    let isL ← sextend64 (← icmp .eq keyCode (← iconst64 keyLeft))
-    let isR ← sextend64 (← icmp .eq keyCode (← iconst64 keyRight))
-    let isU ← sextend64 (← icmp .eq keyCode (← iconst64 keyUp))
-    let isD ← sextend64 (← icmp .eq keyCode (← iconst64 keyDown))
-    let isEsc ← sextend64 (← icmp .eq keyCode (← iconst64 keyEscape))
-    let bit ← iadd (← iadd (← imul isL (← iconst64 bitLeft)) (← imul isR (← iconst64 bitRight)))
-                   (← iadd (← imul isU (← iconst64 bitUp)) (← imul isD (← iconst64 bitDown)))
-    let mask0 ← fldLoad ptr f.keyMask
-    let mask1 ← bor mask0 (← imul bit isDown)
-    let mask2 ← bandNot mask1 (← imul bit isUp)
-    fldStore ptr f.keyMask mask2
-    let q0 ← fldLoad ptr f.quit
-    let q1 ← bor q0 (← bor isClose (← imul isDown isEsc))
-    fldStore ptr f.quit q1)
+  let _ ← wloop1 (← iconst64 0)
+    (head := fun i => return (contIfULt i n, ([] : List R), ()))
+    (body := fun i _ => do
+      let base ← iadd evBase (← imul i recSz)
+      let kind ← load64 base
+      let keyCode ← load64 (← iaddImm base 8)
+      let isDown  ← sextend64 (← icmp .eq kind (← iconst64 evKeyDown))
+      let isUp    ← sextend64 (← icmp .eq kind (← iconst64 evKeyUp))
+      let isClose ← sextend64 (← icmp .eq kind (← iconst64 evClose))
+      let isL ← sextend64 (← icmp .eq keyCode (← iconst64 keyLeft))
+      let isR ← sextend64 (← icmp .eq keyCode (← iconst64 keyRight))
+      let isU ← sextend64 (← icmp .eq keyCode (← iconst64 keyUp))
+      let isD ← sextend64 (← icmp .eq keyCode (← iconst64 keyDown))
+      let isEsc ← sextend64 (← icmp .eq keyCode (← iconst64 keyEscape))
+      let bit ← iadd (← iadd (← imul isL (← iconst64 bitLeft)) (← imul isR (← iconst64 bitRight)))
+                     (← iadd (← imul isU (← iconst64 bitUp)) (← imul isD (← iconst64 bitDown)))
+      let mask0 ← fldLoad ptr f.keyMask
+      let mask1 ← bor mask0 (← imul bit isDown)
+      let mask2 ← bandNot mask1 (← imul bit isUp)
+      fldStore ptr f.keyMask mask2
+      let q0 ← fldLoad ptr f.quit
+      let q1 ← bor q0 (← bor isClose (← imul isDown isEsc))
+      fldStore ptr f.quit q1
+      return [← iaddImm i 1])
 
 /-- Clamp field `fld` into [lo, hi] in place. Branchless. -/
-def clampField (ptr : Val) (fld : Fld .i64) (lo hi : Int) : IRBuilder Unit := do
+def clampField (ptr : R) (fld : Fld .i64) (lo hi : Int) : Sur.M Unit := do
   let x ← fldLoad ptr fld
   let over ← sextend64 (← icmp .sgt x (← iconst64 hi))
   let x1 ← iadd x (← imul over (← isub (← iconst64 hi) x))
@@ -219,7 +243,7 @@ def clampField (ptr : Val) (fld : Fld .i64) (lo hi : Int) : IRBuilder Unit := do
   fldStore ptr fld x2
 
 /-- Move the player one step from the held-key mask, then clamp to the screen. -/
-def applyMovement (ptr : Val) : IRBuilder Unit := do
+def applyMovement (ptr : R) : Sur.M Unit := do
   let mask ← fldLoad ptr f.keyMask
   let speed ← iconst64 playerSpeed
   let leftOn  ← sextend64 (← icmp .ne (← band mask (← iconst64 bitLeft)) (← iconst64 0))
@@ -235,19 +259,19 @@ def applyMovement (ptr : Val) : IRBuilder Unit := do
 
 /-- Write the per-frame uniform (frame, player x/y) into the packed-u32 region.
     Width/height stay from the initial payload. -/
-def writeParams (ptr : Val) (frame : Val) : IRBuilder Unit := do
+def writeParams (ptr : R) (frame : R) : Sur.M Unit := do
   fldStore32At ptr f.params 0 (← ireduce32 frame) (by decide)
   fldStore32At ptr f.params 12 (← ireduce32 (← fldLoad ptr f.playerX)) (by decide)
   fldStore32At ptr f.params 16 (← ireduce32 (← fldLoad ptr f.playerY)) (by decide)
 
 /-- Write a synthetic input event into event `slot` (for tests). -/
-def writeEvent (ptr : Val) (slot : Nat) (kind keyCode : Int) : IRBuilder Unit := do
+def writeEvent (ptr : R) (slot : Nat) (kind keyCode : Int) : Sur.M Unit := do
   let base ← absAddr ptr (f.events.offset + slot * 32)
-  store (← iconst64 kind) base
-  store (← iconst64 keyCode) (← iaddImm base 8)
+  storeUnaligned (← iconst64 kind) base
+  storeUnaligned (← iconst64 keyCode) (← iaddImm base 8)
 
 /-- Emit one output row: pass (1/0), actual, expected. -/
-def writeOutput (ptr : Val) (passV actualV expectedV : Val) : IRBuilder Unit := do
+def writeOutput (ptr : R) (passV actualV expectedV : R) : Sur.M Unit := do
   fldStore ptr f.rowCount (← iconst64 1)
   fldStore ptr f.outPass passV
   fldStore ptr f.outActual actualV
@@ -255,115 +279,120 @@ def writeOutput (ptr : Val) (passV actualV expectedV : Val) : IRBuilder Unit := 
 
 /-- Run the shared logic `steps` times (each step re-scans events, so a held key
     keeps moving — exactly what the live loop does with real poll results). -/
-def stepN (ptr : Val) (steps : Int) : IRBuilder Unit := do
+def stepN (ptr : R) (steps : Int) : Sur.M Unit := do
   let limit ← iconst64 steps
-  forLoop .i64 limit (fun _ => do
-    processEvents ptr
-    applyMovement ptr)
+  let _ ← wloop1 (← iconst64 0)
+    (head := fun i => return (contIfULt i limit, ([] : List R), ()))
+    (body := fun i _ => do
+      processEvents ptr
+      applyMovement ptr
+      return [← iaddImm i 1])
 
 /-- Assert `actual == expected`; store pass/actual/expected as the output row. -/
-def assertEq (ptr actual : Val) (expected : Int) : IRBuilder Unit := do
+def assertEq (ptr actual : R) (expected : Int) : Sur.M Unit := do
   let exp ← iconst64 expected
   writeOutput ptr (← sextend64 (← icmp .eq actual exp)) actual exp
 
 -- Live entry (fn 1): open window, then loop poll → logic → render → present ----
-def mainBody : IRBuilder Unit := do
-  let gpu ← declareGpuFFI
-  let win ← declareWindowFFI
-  let ptr ← entryBlock
-  windowInit win ptr
-  gpuInit gpu ptr
-  let pixelBuf ← gpuCreateBuffer gpu ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer gpu ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline gpu ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+def mainBody : HProg.Code := clif% envMain HProg.ptrParams do
+  let ptr := basePtr
+  windowInit winM ptr
+  gpuInit gpuM ptr
+  let pixelBuf ← gpuCreateBuffer gpuM ptr (← iconst64 pixelBytes)
+  let paramBuf ← gpuCreateBuffer gpuM ptr (← iconst64 paramsBytes)
+  let pipeId ← gpuCreatePipeline gpuM ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
   let w64 ← iconst64 imageWidth
   let h64 ← iconst64 imageHeight
-  let _ ← windowOpen win ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
+  let _ ← windowOpen winM ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
                       (← fldOffset f.blitShader) (← iconst64 (blitShaderSource.length : Int))
   clearState ptr playerStartX playerStartY
-  let _ ← whileLoop1 .i64 (← iconst64 0)
-    (fun _ => do icmp .eq (← fldLoad ptr f.quit) (← iconst64 0))
-    (fun frame => do
-      let n ← windowPoll win ptr (← fldOffset f.events) (← iconst32 eventSlots)
+  let _ ← wloop1 (← iconst64 0)
+    (head := fun c => do
+      let q ← fldLoad ptr f.quit
+      let z ← iconst64 0
+      return (contIf .eq q z, [c], ()))
+    (body := fun frame _ => do
+      let n ← windowPoll winM ptr (← fldOffset f.events) (← iconst32 eventSlots)
       fldStore ptr f.nEvents (← sextend64 n)
       processEvents ptr
       applyMovement ptr
       writeParams ptr frame
-      let _ ← gpuUpload gpu ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-      let _ ← gpuDispatch gpu ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
-      let _ ← windowPresentGpuBuffer win ptr pixelBuf
-      iaddImm frame 1)
-  windowCleanup win ptr
-  gpuCleanup gpu ptr
-  ret
+      let _ ← gpuUpload gpuM ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
+      let _ ← gpuDispatch gpuM ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+      let _ ← windowPresentGpuBuffer winM ptr pixelBuf
+      return [← iaddImm frame 1])
+  windowCleanup winM ptr
+  gpuCleanup gpuM ptr
 
 -- Headless test scenarios (fn 2+): inject events, step, assert player state ----
-def testMoveRight : IRBuilder Unit := do
-  let ptr ← entryBlock
+def testMoveRight : HProg.Code := clif% envNone HProg.ptrParams do
+  let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyRight
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.playerX) (playerStartX + 10 * playerSpeed)
-  ret
 
-def testMoveLeft : IRBuilder Unit := do
-  let ptr ← entryBlock
+def testMoveLeft : HProg.Code := clif% envNone HProg.ptrParams do
+  let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyLeft
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.playerX) (playerStartX - 10 * playerSpeed)
-  ret
 
-def testMoveUpClamp : IRBuilder Unit := do
-  let ptr ← entryBlock
+def testMoveUpClamp : HProg.Code := clif% envNone HProg.ptrParams do
+  let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyUp
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 100   -- 100*speed = 400 > startY 180 ⇒ clamps at the top edge (0)
   assertEq ptr (← fldLoad ptr f.playerY) minY
-  ret
 
-def testQuitOnClose : IRBuilder Unit := do
-  let ptr ← entryBlock
+def testQuitOnClose : HProg.Code := clif% envNone HProg.ptrParams do
+  let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evClose 0
   fldStore ptr f.nEvents (← iconst64 1)
   processEvents ptr
   assertEq ptr (← fldLoad ptr f.quit) 1
-  ret
 
 -- Headless render test (fn 6): dispatch the real WGSL kernel, download the frame
 -- into memory, and assert the player pixel is player-coloured. GPU, no window.
-def testRenderPixel : IRBuilder Unit := do
-  let gpu ← declareGpuFFI
-  let ptr ← entryBlock
-  gpuInit gpu ptr
-  let pixelBuf ← gpuCreateBuffer gpu ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer gpu ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline gpu ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+def testRenderPixel : HProg.Code := clif% envGpu HProg.ptrParams do
+  let ptr := basePtr
+  gpuInit gpuT ptr
+  let pixelBuf ← gpuCreateBuffer gpuT ptr (← iconst64 pixelBytes)
+  let paramBuf ← gpuCreateBuffer gpuT ptr (← iconst64 paramsBytes)
+  let pipeId ← gpuCreatePipeline gpuT ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
   clearState ptr 100 100
   writeParams ptr (← iconst64 0)
-  let _ ← gpuUpload gpu ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-  let _ ← gpuDispatch gpu ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
-  let _ ← gpuDownload gpu ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
-  gpuCleanup gpu ptr
+  let _ ← gpuUpload gpuT ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
+  let _ ← gpuDispatch gpuT ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+  let _ ← gpuDownload gpuT ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
+  gpuCleanup gpuT ptr
   -- red byte of pixel (100,100): (y*width + x)*4
   let red ← uload8_64 (← absAddr ptr (f.pixels.offset + (100 * imageWidth + 100) * 4))
   writeOutput ptr (← sextend64 (← icmp .uge red (← iconst64 250))) red (← iconst64 252)
-  ret
+
+theorem bodies_wf :
+    HProg.wf envMain HProg.ptrParams mainBody = true &&
+    HProg.wf envNone HProg.ptrParams testMoveRight = true &&
+    HProg.wf envNone HProg.ptrParams testMoveLeft = true &&
+    HProg.wf envNone HProg.ptrParams testMoveUpClamp = true &&
+    HProg.wf envNone HProg.ptrParams testQuitOnClose = true &&
+    HProg.wf envGpu HProg.ptrParams testRenderPixel = true := by decide
 
 -- Program assembly -----------------------------------------------------------
 def clifIrSource : Program :=
   program
     [noopFunction,
-     buildFunction 1 mainBody,
-     buildFunction 2 testMoveRight,
-     buildFunction 3 testMoveLeft,
-     buildFunction 4 testMoveUpClamp,
-     buildFunction 5 testQuitOnClose,
-     buildFunction 6 testRenderPixel]
+     HProg.compileFn 1 envMain HProg.ptrParams mainBody,
+     HProg.compileFn 2 envNone HProg.ptrParams testMoveRight,
+     HProg.compileFn 3 envNone HProg.ptrParams testMoveLeft,
+     HProg.compileFn 4 envNone HProg.ptrParams testMoveUpClamp,
+     HProg.compileFn 5 envNone HProg.ptrParams testQuitOnClose,
+     HProg.compileFn 6 envGpu HProg.ptrParams testRenderPixel]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [

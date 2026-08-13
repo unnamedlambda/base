@@ -3,6 +3,8 @@ import AlgorithmLib
 open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.Layout
+open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
 namespace Algorithm
@@ -140,10 +142,20 @@ def wgY : Nat := imageHeight / 16   -- 256
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.IR in
-def clifIrSource : Program := buildProgram do
-  let gpu ← declareGpuFFI
-  let fnWr ← declareFileWrite
-  let ptr ← entryBlock
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The GPU entry points then `cl_file_write`, in callee-table order. -/
+def ffiEnv : (GpuSetup × FnRef) × FnEnv := envOf (do
+  let g ← declareGpuFFI
+  let w ← declareFileWrite
+  pure (g, w))
+def gpu : GpuSetup := ffiEnv.1.1
+def fnWr : FnRef := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   gpuInit gpu ptr
   let dataSz ← iconst64 pixelBytes
   let bufId  ← gpuCreateBuffer gpu ptr dataSz
@@ -159,7 +171,12 @@ def clifIrSource : Program := buildProgram do
   gpuCleanup gpu ptr
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← fldWriteFile0 ptr fnWr f.filename f.bmpHeader total
-  ret
+
+
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIrSource : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 -- ---------------------------------------------------------------------------
 -- Payload & config

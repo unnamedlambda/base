@@ -72,26 +72,32 @@ def IN_ID    : Nat := 0x0040
 def OUT_ID   : Nat := 0x0044
 def MEM_SIZE : Nat := 0x30100
 
-def loadFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- The CUDA entry points, declared through the same helper the runtime's
+    signatures come from. -/
+def cudaEnv : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cuda : IR.CudaSetup := cudaEnv.1
+def env : FnEnv := cudaEnv.2
+
+def loadFnCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
   let ctxPtr ← cudaCtxPtr ptr
   let inBytes ← iconst64 (NIN * 4)
   let inId ← cudaCreateBuffer cuda ptr inBytes
-  storeI32 inId (← absAddr ptr IN_ID)
+  store inId (← absAddr ptr IN_ID)
   let outBytes ← iconst64 (NOUT * 4)
   let outId ← cudaCreateBuffer cuda ptr outBytes
-  storeI32 outId (← absAddr ptr OUT_ID)
-  let _ ← call cuda.fnUpload [ctxPtr, inId, dataPtr, inBytes]
-  storeI32 inId  (← absAddr ptr BIND_OFF)
-  storeI32 outId (← absAddr ptr (BIND_OFF + 4))
-  ret
+  store outId (← absAddr ptr OUT_ID)
+  let _ ← call cuda.fnUpload.id [ctxPtr, inId, dataPtr, inBytes]
+  store inId  (← absAddr ptr BIND_OFF)
+  store outId (← absAddr ptr (BIND_OFF + 4))
 
-def runFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def runFnCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ptxOff ← iconst64 PTX_OFF
   let nBufs ← iconst32 2
   let bindOff ← iconst64 BIND_OFF
@@ -100,24 +106,26 @@ def runFn : IRBuilder Unit := do
   let grid ← iconst32 GRID
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
   let _ ← cudaSync cuda ptr
-  ret
 
-def fetchFn : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+def fetchFnCode : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outId ← load32 (← absAddr ptr OUT_ID)
   let outBytes ← iconst64 (NOUT * 4)
-  let _ ← call cuda.fnDownload [ctxPtr, outId, outPtr, outBytes]
-  ret
+  let _ ← call cuda.fnDownload.id [ctxPtr, outId, outPtr, outBytes]
+
+theorem bodies_wf :
+    HProg.wf env HProg.ptrParams loadFnCode = true &&
+    HProg.wf env HProg.ptrParams runFnCode = true &&
+    HProg.wf env HProg.ptrParams fetchFnCode = true := by decide
 
 def clifIR : Program :=
   program
     [noopFunction,
-     buildFunction 1 loadFn,
-     buildFunction 2 runFn,
-     buildFunction 3 fetchFn]
+     HProg.compileFn 1 env HProg.ptrParams loadFnCode,
+     HProg.compileFn 2 env HProg.ptrParams runFnCode,
+     HProg.compileFn 3 env HProg.ptrParams fetchFnCode]
 
 theorem ptx_fits_slot : ptx.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_OFF := by
   native_decide

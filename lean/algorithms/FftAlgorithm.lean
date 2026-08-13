@@ -1,6 +1,8 @@
 import AlgorithmLib
 open Lean (Json toJson)
 open AlgorithmLib
+open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
 namespace Algorithm
@@ -119,13 +121,24 @@ def fftShader : String :=
 
 set_option maxRecDepth 2048 in
 open AlgorithmLib.IR in
-def clifIrSource : Program := buildProgram do
-  -- FFI declarations
-  let fnRead ← declareFileRead
-  let fnWrite ← declareFileWrite
-  let gpu ← declareGpuFFI
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 
-  let ptr ← entryBlock
+/-- The GPU entry points, then the two file ones, in callee-table order. -/
+def ffiEnv : (GpuSetup × FnRef × FnRef) × FnEnv := envOf (do
+  let g ← declareGpuFFI
+  let r ← declareFileRead
+  let w ← declareFileWrite
+  pure (g, r, w))
+def gpu : GpuSetup := ffiEnv.1.1
+def fnRead : FnRef := ffiEnv.1.2.1
+def fnWrite : FnRef := ffiEnv.1.2.2
+def env : FnEnv := ffiEnv.2
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let ptr := basePtr
+  -- FFI declarations
+
   let c0  ← iconst64 0
   let c1  ← iconst64 1
   let c4  ← iconst64 4
@@ -140,7 +153,7 @@ def clifIrSource : Program := buildProgram do
   let bigN ← ushr bytesRead c3
 
   -- Step 2: Compute log2(N) — while tmp > 1, tmp >>= 1, log2n += 1.
-  let (_, log2Result) ← whileLoop2 .i64 .i64 bigN c0
+  let (_, log2Result) ← whileLoop2 bigN c0
     (fun tmp _ => icmp .ugt tmp c1)
     (fun tmp log2n => do
       let tmp2  ← ushr tmp c1
@@ -151,9 +164,9 @@ def clifIrSource : Program := buildProgram do
 
   -- For i in [0, bigN): compute bit-reverse(i, log2Result), then copy
   -- inputData[i] (8 bytes) to bufA[rev].
-  forLoop .i64 bigN fun i => do
+  forLoop bigN fun i => do
     -- Inner: fold log2Result bits, carrying (val, rev). bit-count is the loop counter.
-    let (_, revIdx) ← forLoopAcc2 .i64 .i64 .i64 log2Result i c0 fun _ val rev => do
+    let (_, revIdx) ← forLoopAcc2 log2Result i c0 fun _ val rev => do
       let lsb      ← band val c1
       let revShift ← ishl rev c1
       let revNew   ← bor revShift lsb
@@ -162,8 +175,8 @@ def clifIrSource : Program := buildProgram do
     -- src = inputData_off + i * 8;   dst = bufA_off + rev * 8
     let srcAbs ← iadd ptr (← iadd inDatOff (← imul i c8))
     let dstAbs ← iadd ptr (← iadd bufAOff (← imul revIdx c8))
-    store (← load32 srcAbs) dstAbs
-    store (← load32 (← iadd srcAbs c4)) (← iadd dstAbs c4)
+    storeUnaligned (← load32 srcAbs) dstAbs
+    storeUnaligned (← load32 (← iadd srcAbs c4)) (← iadd dstAbs c4)
   gpuInit gpu ptr
 
   -- Align data size to multiple of 4: (N*8 + 3) & ~3
@@ -202,12 +215,12 @@ def clifIrSource : Program := buildProgram do
 
   -- Step 4: Stage loop — counter `stage` for log2Result iterations,
   -- accumulator `dir` toggled each iteration.
-  let finalDir ← forLoopAcc .i64 .i64 log2Result c0 fun stage dir => do
+  let finalDir ← forLoopAcc log2Result c0 fun stage dir => do
     -- Write stage and direction into meta
     let metaStage ← iadd metaAbs c4
-    store (← ireduce32 stage) metaStage
+    storeUnaligned (← ireduce32 stage) metaStage
     let metaDir ← iadd metaStage c4
-    store (← ireduce32 dir) metaDir
+    storeUnaligned (← ireduce32 dir) metaDir
     -- Upload meta, dispatch, then sync via download-to-scratch
     let _ ← gpuUpload gpu ptr buf2 metaOffC metaSzC
     let _ ← gpuDispatch gpu ptr pipeId wgCount32 one32 one32
@@ -220,21 +233,25 @@ def clifIrSource : Program := buildProgram do
   -- direction==1 after loop → last was dir=0 → wrote to buf_b → download buf_b
   let bufAOffC ← iconst64 bufA_off
   let bufBOffC ← iconst64 bufB_off
-  let dirIsZero ← icmp .eq finalDir c0
-  -- Use brif to pass both dst_offset (i64) and gpu_buf_id (i32) to final block
-  let finalBlk ← declareBlock [.i64, .i32]  -- dst_off, gpu_buf_id
-  brif dirIsZero finalBlk.ref [bufAOffC, buf0] finalBlk.ref [bufBOffC, buf1]
-
-  startBlock finalBlk
-  let dstOff2 := finalBlk.param 0
-  let bufId := finalBlk.param 1
+  -- Both arms reach one join carrying (dst_offset, gpu_buf_id)
+  let fin ← ifte .eq finalDir c0
+    (thn := pure [bufAOffC, buf0])
+    (els := pure [bufBOffC, buf1])
+  let dstOff2 := fin.headD 0
+  let bufId := fin.getD 1 0
   let _ ← gpuDownload gpu ptr bufId dstOff2 alignedSz
   gpuCleanup gpu ptr
 
   -- Step 6: Write output file
   let outFnOff ← iconst64 outputFilename_off
-  let _ ← call fnWrite [ptr, outFnOff, dstOff2, c0, dataSz]
-  ret
+  let _ ← call fnWrite.id [ptr, outFnOff, dstOff2, c0, dataSz]
+
+
+set_option maxHeartbeats 2000000 in
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
+
+def clifIrSource : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction

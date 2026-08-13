@@ -1,7 +1,11 @@
 import AlgorithmLib
 
+set_option maxRecDepth 100000
+
 open Lean (Json)
 open AlgorithmLib
+open AlgorithmLib.IR
+open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
 namespace Algorithm
@@ -239,18 +243,35 @@ def compressionShader (bs : Nat) : String :=
 --   9. cl_file_write (compressed output — concatenated blocks with size header)
 -- ---------------------------------------------------------------------------
 
-open AlgorithmLib.IR in
-def clifIrSource (bs : Nat) : Program :=
+/-- The file and GPU entry points, declared once. `envOf` runs the same
+    `declare*` actions the `IRBuilder` path uses, so the callee table a term is
+    checked against is the one those helpers define. -/
+def decls : (FnRef × FnRef × GpuSetup) × FnEnv := envOf (do
+  let fnRead ← declareFileRead
+  let fnWrite ← declareFileWrite
+  let gpu ← declareGpuFFI
+  pure (fnRead, fnWrite, gpu))
+
+def env : FnEnv := decls.2
+def fnRead : FnRef := decls.1.1
+def fnWrite : FnRef := decls.1.2.1
+def gpu : GpuSetup := decls.1.2.2
+
+open HProg.Sur in
+/-- The body, for any block size.
+
+    `clif%` is the checked surface, but it evaluates while the file elaborates
+    and so needs every parameter concrete. This generator stays a function of
+    `bs` — that is what makes an invalid block size a type error — so it runs
+    the builder the ordinary way and `code_wf` below checks the size that
+    ships. -/
+def code (bs : Nat) : HProg.Code :=
   let obSz  := outputBufSize bs
   let mSz   := metaSize bs
   let mOff  := blockMeta_off bs
   let mcbSz := maxCompressedBlockSize bs
-  buildProgram do
-    let fnRead  ← declareFileRead
-    let fnWrite ← declareFileWrite
-    let gpu     ← declareGpuFFI
-
-    let ptr ← entryBlock
+  HProg.Sur.build env HProg.ptrParams do
+    let ptr := basePtr
 
     -- Step 1: Read input file
     let inData    ← iconst64 inputData_off
@@ -282,7 +303,7 @@ def clifIrSource (bs : Nat) : Program :=
     let inputSz32 ← ireduce32 bytesRead
     let metaOffV  ← iconst64 mOff
     let metaAddr  ← iadd ptr metaOffV
-    store inputSz32 metaAddr
+    storeUnaligned inputSz32 metaAddr
 
     -- Step 7: Upload input data and metadata
     let _ ← gpuUpload gpu ptr buf0 inData alignedSz
@@ -312,7 +333,7 @@ def clifIrSource (bs : Nat) : Program :=
 
     -- Write magic number 0x184D2204 LE
     let magic ← iconst32 0x184D2204
-    store magic scratchAddr
+    storeUnaligned magic scratchAddr
     let c4      ← iconst64 4
     let scratchP4 ← iadd scratchAddr c4
 
@@ -329,7 +350,7 @@ def clifIrSource (bs : Nat) : Program :=
     -- Write 7-byte frame header to file
     let outFname ← iconst64 outputFilename_off
     let c7 ← iconst64 7
-    let _ ← call fnWrite [ptr, outFname, inData, zero, c7]
+    let _ ← call fnWrite.id [ptr, outFname, inData, zero, c7]
 
     -- Loop over blocks: write [block_size:4][block_data:N] for each
     let c8        ← iconst64 8
@@ -337,29 +358,32 @@ def clifIrSource (bs : Nat) : Program :=
 
     -- For block_i in 0..numBlocks: write block size (4 bytes) + block data;
     -- carry the running output-file offset.  Starts at 7 (frame header bytes).
-    let finalFoff ← forLoopAcc .i64 .i64 numBlocks c7 fun bi foff => do
-      -- Read compressed size from block_meta[1 + block_i*2] = metaOff + 4 + block_i*8
-      let bi8      ← imul bi c8
-      let bi8p4    ← iadd bi8 c4
-      let metaRel  ← iadd metaOffV bi8p4
-      let metaAbsI ← iadd ptr metaRel
-      let compSz32 ← load32 metaAbsI
-      -- Write block_size (u32 LE) into scratch, then to file
-      store compSz32 scratchAddr
-      let _ ← call fnWrite [ptr, outFname, inData, foff, c4]
-      -- Write block data
-      let biTimesMax ← imul bi maxCompBlkV
-      let blkDataRel ← iadd outDataV biTimesMax
-      let compSz64   ← uextend64 compSz32
-      let foffP4     ← iadd foff c4
-      let _ ← call fnWrite [ptr, outFname, blkDataRel, foffP4, compSz64]
-      iadd foffP4 compSz64
+    let blkExit ← wloop2 (← iconst64 0) c7
+      (head := fun bi foff => return (contIfULt bi numBlocks, [foff], ()))
+      (body := fun bi foff _ => do
+        -- Read compressed size from block_meta[1 + block_i*2] = metaOff + 4 + block_i*8
+        let bi8      ← imul bi c8
+        let bi8p4    ← iadd bi8 c4
+        let metaRel  ← iadd metaOffV bi8p4
+        let metaAbsI ← iadd ptr metaRel
+        let compSz32 ← load32 metaAbsI
+        -- Write block_size (u32 LE) into scratch, then to file
+        storeUnaligned compSz32 scratchAddr
+        let _ ← call fnWrite.id [ptr, outFname, inData, foff, c4]
+        -- Write block data
+        let biTimesMax ← imul bi maxCompBlkV
+        let blkDataRel ← iadd outDataV biTimesMax
+        let compSz64   ← uextend64 compSz32
+        let foffP4     ← iadd foff c4
+        let _ ← call fnWrite.id [ptr, outFname, blkDataRel, foffP4, compSz64]
+        let nextFoff ← iadd foffP4 compSz64
+        return [← iaddImm bi 1, nextFoff])
+    let finalFoff := blkExit.headD 0
 
     -- Write 4-byte end mark (0x00000000) at the final offset
     let endMark ← iconst32 0
-    store endMark scratchAddr
-    let _ ← call fnWrite [ptr, outFname, inData, finalFoff, c4]
-    ret
+    storeUnaligned endMark scratchAddr
+    let _ ← call fnWrite.id [ptr, outFname, inData, finalFoff, c4]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction (parameterized by blockSize)
@@ -391,10 +415,12 @@ def buildPayload (bs : Nat) : List UInt8 :=
 -- The block size is fixed per instance; all layout is derived from it.
 -- ---------------------------------------------------------------------------
 
+theorem code_wf : HProg.wf env HProg.ptrParams (code 16384) = true := by decide
+
 def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
   let payload := buildPayload bs
   let cfg : Setup := {
-    clif := clifIrSource bs,
+    clif := IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code bs)],
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }

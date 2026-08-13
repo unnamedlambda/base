@@ -347,13 +347,32 @@ def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
 
 open AlgorithmLib.IR
+open AlgorithmLib.HProg
 
 -- Scan events: set quit on close/escape, track mouse position + brush state.
-def processEvents (ptr : Val) : IRBuilder Unit := do
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Two callee tables: the live loop reaches the window and the GPU, the two
+    headless tests reach the GPU alone. -/
+def declsMain : (GpuSetup × WindowSetup) × FnEnv := envOf (do
+  let gpu ← declareGpuFFI
+  let win ← declareWindowFFI
+  pure (gpu, win))
+
+def declsGpu : GpuSetup × FnEnv := envOf declareGpuFFI
+
+def envMain : FnEnv := declsMain.2
+def gpuM : GpuSetup := declsMain.1.1
+def winM : WindowSetup := declsMain.1.2
+def envGpu : FnEnv := declsGpu.2
+def gpuT : GpuSetup := declsGpu.1
+
+def processEvents (ptr : R) : Sur.M Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
   let n ← fldLoad ptr f.nEvents
   let recSz ← iconst64 32
-  forLoop .i64 n (fun i => do
+  forLoop n (fun i => do
     let base ← iadd evBase (← imul i recSz)
     let kind ← load64 base
     let a ← load64 (← iaddImm base 8)
@@ -383,16 +402,16 @@ def processEvents (ptr : Val) : IRBuilder Unit := do
     let bd1 ← iadd bd (← imul isMDown (← isub (← iconst64 1) bd))
     fldStore ptr f.brushDown (← isub bd1 (← imul isMUp bd1)))
 
-def pollAndProcess (win : WindowSetup) (ptr : Val) : IRBuilder Unit := do
+def pollAndProcess (win : WindowSetup) (ptr : R) : Sur.M Unit := do
   let n ← windowPoll win ptr (← fldOffset f.events) (← iconst32 eventSlots)
   fldStore ptr f.nEvents (← sextend64 n)
   processEvents ptr
 
-def putParam (ptr : Val) (idx : Nat) (v : Val) : IRBuilder Unit := do
-  store (← ireduce32 v) (← absAddr ptr (f.paramsMem.offset + idx * 4))
+def putParam (ptr : R) (idx : Nat) (v : R) : Sur.M Unit := do
+  storeUnaligned (← ireduce32 v) (← absAddr ptr (f.paramsMem.offset + idx * 4))
 
 -- Fill the params staging region for a given parity, then it's uploaded.
-def writeParams (ptr parity : Val) : IRBuilder Unit := do
+def writeParams (ptr parity : R) : Sur.M Unit := do
   putParam ptr pPARITY parity
   putParam ptr pFRAME (← fldLoad ptr f.frame)
   putParam ptr pMOUSEX (← fldLoad ptr f.mouseX)
@@ -401,27 +420,27 @@ def writeParams (ptr parity : Val) : IRBuilder Unit := do
   putParam ptr pBMAT (← fldLoad ptr f.brushMat)
   putParam ptr pBR (← iconst64 brushR)
 
-def clearGrid (ptr : Val) : IRBuilder Unit := do
+def clearGrid (ptr : R) : Sur.M Unit := do
   let base ← iadd ptr (← fldOffset f.gridInit)
   let z ← iconst32 0
   let four ← iconst64 4
-  forLoop .i64 (← iconst64 gridCells) (fun i => do
+  forLoop (← iconst64 gridCells) (fun i => do
     store z (← iadd base (← imul i four)))
 
-def setCell (ptr : Val) (cx cy val : Nat) : IRBuilder Unit := do
-  store (← iconst32 val) (← absAddr ptr (f.gridInit.offset + (cy * gw + cx) * 4))
+def setCell (ptr : R) (cx cy val : Nat) : Sur.M Unit := do
+  storeUnaligned (← iconst32 val) (← absAddr ptr (f.gridInit.offset + (cy * gw + cx) * 4))
 
-def readOut (ptr : Val) (cx cy : Nat) : IRBuilder Val := do
+def readOut (ptr : R) (cx cy : Nat) : Sur.M R := do
   uload32_64 (← absAddr ptr (f.gridOut.offset + (cy * gw + cx) * 4))
 
-def writeOutput (ptr : Val) (passV actualV expectedV : Val) : IRBuilder Unit := do
+def writeOutput (ptr : R) (passV actualV expectedV : R) : Sur.M Unit := do
   fldStore ptr f.rowCount (← iconst64 1)
   fldStore ptr f.outPass passV
   fldStore ptr f.outActual actualV
   fldStore ptr f.outExpected expectedV
 
 -- Create the 4 buffers (gridA=0, gridB=1, pixels=2, params=3).
-def mkBuffers (ptr : Val) (gpu : GpuSetup) : IRBuilder (Val × Val × Val × Val) := do
+def mkBuffers (ptr : R) (gpu : GpuSetup) : Sur.M (R × R × R × R) := do
   gpuInit gpu ptr
   let gridA ← gpuCreateBuffer gpu ptr (← iconst64 gridBytes)
   let gridB ← gpuCreateBuffer gpu ptr (← iconst64 gridBytes)
@@ -429,10 +448,10 @@ def mkBuffers (ptr : Val) (gpu : GpuSetup) : IRBuilder (Val × Val × Val × Val
   let params ← gpuCreateBuffer gpu ptr (← iconst64 32)
   pure (gridA, gridB, pixels, params)
 
-def mainBody : IRBuilder Unit := do
-  let gpu ← declareGpuFFI
-  let win ← declareWindowFFI
-  let ptr ← entryBlock
+def mainBody : HProg.Code := clif% envMain HProg.ptrParams do
+  let gpu := gpuM
+  let win := winM
+  let ptr := basePtr
   windowInit win ptr
   let (_gridA, _gridB, pixels, params) ← mkBuffers ptr gpu
   let seedP ← gpuCreatePipeline gpu ptr (← fldOffset f.seedSh) (← fldOffset f.bindSeed) (← iconst32 1)
@@ -456,41 +475,36 @@ def mainBody : IRBuilder Unit := do
   fldStore ptr f.frame (← iconst64 0)
   fldStore ptr f.brushDown (← iconst64 0)
   fldStore ptr f.brushMat (← iconst64 SAND)
-  let bumpFrame : IRBuilder Unit := do
+  let bumpFrame : Sur.M Unit := do
     fldStore ptr f.frame (← iadd (← fldLoad ptr f.frame) (← iconst64 1))
-  let subStep : Val → Val → IRBuilder Unit := fun parity pipe => do
+  let subStep : R → R → Sur.M Unit := fun parity pipe => do
     writeParams ptr parity
     let _ ← gpuUpload gpu ptr params paramsOff p32
     let _ ← gpuDispatch gpu ptr pipe gwg ghg one32
     bumpFrame
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
-  let loopHdr ← declareBlock []
-  let cont ← declareBlock []
-  let done ← declareBlock []
-  jump loopHdr.ref []
-  startBlock loopHdr
-  pollAndProcess win ptr
-  brif (← icmp .ne (← fldLoad ptr f.quit) zero64) done.ref [] cont.ref []
-  startBlock cont
-  -- stamp the brush into A once, then run 8 Margolus sub-steps (4 ping-pong
-  -- pairs, parity alternating) so sand advances fast; render A and present once.
-  writeParams ptr zero64
-  let _ ← gpuUpload gpu ptr params paramsOff p32
-  let _ ← gpuDispatch gpu ptr paintA gwg ghg one32
-  for _ in List.range 4 do
-    subStep zero64 stepAB
-    subStep one64 stepBA
-  let _ ← gpuDispatch gpu ptr renderA rwx rwy one32
-  let _ ← windowPresentGpuBuffer win ptr pixels
-  jump loopHdr.ref []
-  startBlock done
+  let _ ← wloop [] (head := fun _ => do
+      pollAndProcess win ptr
+      let q ← fldLoad ptr f.quit
+      return (exitIf .ne q zero64, ([] : List R), ()))
+    (body := fun _ _ => do
+      -- stamp the brush into A once, then run 8 Margolus sub-steps (4 ping-pong
+      -- pairs, parity alternating) so sand advances fast; render A and present once.
+      writeParams ptr zero64
+      let _ ← gpuUpload gpu ptr params paramsOff p32
+      let _ ← gpuDispatch gpu ptr paintA gwg ghg one32
+      for _ in List.range 4 do
+        subStep zero64 stepAB
+        subStep one64 stepBA
+      let _ ← gpuDispatch gpu ptr renderA rwx rwy one32
+      let _ ← windowPresentGpuBuffer win ptr pixels
+      return ([] : List R))
   windowCleanup win ptr
   gpuCleanup gpu ptr
-  ret
 
 -- Shared test setup: buffers + stepAB pipeline, params zeroed (parity 0, brush off).
-def testSetup (ptr : Val) (gpu : GpuSetup) : IRBuilder (Val × Val × Val) := do
+def testSetup (ptr : R) (gpu : GpuSetup) : Sur.M (R × R × R) := do
   let (gridA, gridB, _pixels, params) ← mkBuffers ptr gpu
   let stepAB ← gpuCreatePipeline gpu ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
   fldStore ptr f.frame (← iconst64 0)
@@ -503,9 +517,9 @@ def testSetup (ptr : Val) (gpu : GpuSetup) : IRBuilder (Val × Val × Val) := do
   pure (gridA, gridB, stepAB)
 
 -- A lone grain with empty below drops to the next row (straight or scattered).
-def testGrainFalls : IRBuilder Unit := do
-  let gpu ← declareGpuFFI
-  let ptr ← entryBlock
+def testGrainFalls : HProg.Code := clif% envGpu HProg.ptrParams do
+  let gpu := gpuT
+  let ptr := basePtr
   let (gridA, gridB, stepAB) ← testSetup ptr gpu
   clearGrid ptr
   setCell ptr 10 10 SAND
@@ -520,12 +534,11 @@ def testGrainFalls : IRBuilder Unit := do
                    (← sextend64 (← icmp .eq br (← iconst64 SAND)))
   let vacated ← sextend64 (← icmp .eq orig (← iconst64 EMPTY))
   writeOutput ptr (← band landed vacated) (← iadd bl br) (← iconst64 SAND)
-  ret
 
 -- Sand is conserved: a 4×4 blob keeps its 16 grains after one step.
-def testConservation : IRBuilder Unit := do
-  let gpu ← declareGpuFFI
-  let ptr ← entryBlock
+def testConservation : HProg.Code := clif% envGpu HProg.ptrParams do
+  let gpu := gpuT
+  let ptr := basePtr
   let (gridA, gridB, stepAB) ← testSetup ptr gpu
   clearGrid ptr
   for cy in [20, 21, 22, 23] do
@@ -538,19 +551,26 @@ def testConservation : IRBuilder Unit := do
   let gridOutBase ← iadd ptr (← fldOffset f.gridOut)
   let four ← iconst64 4
   let sandC ← iconst64 SAND
-  let count ← forLoopAcc .i64 .i64 (← iconst64 gridCells) (← iconst64 0) (fun i acc => do
+  let count ← forLoopAcc (← iconst64 gridCells) (← iconst64 0) (fun i acc => do
     let cell ← uload32_64 (← iadd gridOutBase (← imul i four))
     iadd acc (← sextend64 (← icmp .eq cell sandC)))
   let expected ← iconst64 16
   writeOutput ptr (← sextend64 (← icmp .eq count expected)) count expected
-  ret
+
+
+set_option maxHeartbeats 4000000 in
+set_option maxRecDepth 1000000 in
+theorem bodies_wf :
+    HProg.wf envMain HProg.ptrParams mainBody = true &&
+    HProg.wf envGpu HProg.ptrParams testGrainFalls = true &&
+    HProg.wf envGpu HProg.ptrParams testConservation = true := by decide
 
 def clifIrSource : IR.Program :=
   program
     [noopFunction,
-     buildFunction 1 mainBody,
-     buildFunction 2 testGrainFalls,
-     buildFunction 3 testConservation]
+     HProg.compileFn 1 envMain HProg.ptrParams mainBody,
+     HProg.compileFn 2 envGpu HProg.ptrParams testGrainFalls,
+     HProg.compileFn 3 envGpu HProg.ptrParams testConservation]
 
 def bindBytes (pairs : List (Nat × Nat)) : List UInt8 :=
   pairs.foldl (fun acc (b, ro) => acc ++ uint32ToBytes (UInt32.ofNat b) ++ uint32ToBytes (UInt32.ofNat ro)) []

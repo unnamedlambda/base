@@ -29,11 +29,16 @@ namespace SelectLeaBench
 
 def MEM_SIZE : Nat := 40
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Nothing here crosses the FFI. -/
+def env : FnEnv := { sigs := [], fns := [] }
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let dataLen ← load64 (← absAddr basePtr 0x20)
+  let outPtr  ← load64 (← absAddr basePtr 0x28)
   let n       ← ushrImm dataLen 2
   let mainEnd ← ishlImm n 2
   let i0      ← iconst64 0
@@ -42,29 +47,21 @@ def mainFn : IRBuilder Unit := do
   let three   ← iconst64 3
   let keep    ← iconst64 0xFFFFFF
 
-  let loop ← declareBlock [.i64, .i64]
-  let body ← declareBlock [.i64, .i64]
-  let fin  ← declareBlock [.i64]
-  jump loop.ref [i0, h0]
+  let fin ← wloop2 i0 h0
+    (head := fun i h => return (exitIfSGe i mainEnd, [h], ()))
+    (body := fun bi bh _ => do
+      let x  ← uload32_64 (← iadd dataPtr bi)
+      let hE ← band (← iadd bh x) keep
+      let hO ← band (← iadd (← ishlImm bh 1) bh) keep
+      let c  ← icmp .eq (← band x one) (← iconst64 0)
+      return [← iaddImm bi 4, ← select c hE hO])
 
-  startBlock loop
-  brif (← icmp .sge (loop.param 0) mainEnd)
-    fin.ref [loop.param 1] body.ref [loop.param 0, loop.param 1]
+  store (← fcvtFromSint .f64 (fin.headD 0)) outPtr
 
-  startBlock body
-  let bi := body.param 0
-  let bh := body.param 1
-  let x  ← uload32_64 (← iadd dataPtr bi)
-  let hE ← band (← iadd bh x) keep
-  let hO ← band (← iadd (← ishlImm bh 1) bh) keep
-  let c  ← icmpImm .eq (← band x one) 0
-  jump loop.ref [← iaddImm bi 4, ← select' c hE hO]
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-  startBlock fin
-  storeF64 (← fcvtFromSint .f64 (fin.param 0)) outPtr
-  ret
-
-def clifIR : Program := buildProgram mainFn
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "selectlea_algorithm" {

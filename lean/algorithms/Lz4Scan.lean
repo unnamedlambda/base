@@ -49,7 +49,12 @@ open TrustScan
       bounds (`w < nb`, `iS ≤ 65536`, `outPtr + w * oS + 9 * iS < 2 ^ 32`, …).
       These constrain the caller, not the world. -/
 def lz4Surface : Surface :=
-  { allowedOpaque := [`Lean.opaqueId, `String.Internal.append]
+  { allowedOpaque :=
+      [ `Lean.opaqueId, `String.Internal.append
+        -- Reached because the host body is built by `Sur`, whose diagnostics
+        -- assemble a message string. `Op.name` keeps that to plain literals so
+        -- the rendering machinery behind `repr` stays out of the closure.
+      , `String.Internal.length, `String.Internal.pushn ]
     allowedHyp :=
       [ `LT.lt, `LE.le, `Eq, `Ne, `Nat.lt, `Nat.le, `Not
         -- structural, not assumptions about the world: `Sim` is the interleaving

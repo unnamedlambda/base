@@ -26,11 +26,16 @@ namespace BranchyBench
 
 def MEM_SIZE : Nat := 40
 
-def mainFn : IRBuilder Unit := do
-  let ptr     ← entryBlock
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
+
+/-- Nothing here crosses the FFI. -/
+def env : FnEnv := { sigs := [], fns := [] }
+
+def code : HProg.Code := clif% env HProg.ptrParams do
+  let dataPtr ← load64 (← absAddr basePtr 0x18)
+  let dataLen ← load64 (← absAddr basePtr 0x20)
+  let outPtr  ← load64 (← absAddr basePtr 0x28)
   let n       ← ushrImm dataLen 2
   let mainEnd ← ishlImm n 2
   let i0      ← iconst64 0
@@ -39,37 +44,27 @@ def mainFn : IRBuilder Unit := do
   let three   ← iconst64 3
   let keep    ← iconst64 0xFFFFFF
 
-  let loop ← declareBlock [.i64, .i64]
-  let body ← declareBlock [.i64, .i64]
-  let evn  ← declareBlock [.i64, .i64, .i64]
-  let odd  ← declareBlock [.i64, .i64]
-  let fin  ← declareBlock [.i64]
-  jump loop.ref [i0, h0]
+  -- Each arm takes the back edge itself, so there is no join between the
+  -- branch and the loop header — which is the shape being measured.
+  let fin ← wloop2 i0 h0
+    (head := fun i h => return (exitIfSGe i mainEnd, [h], ()))
+    (body := fun bi bh _ => do
+      let x ← uload32_64 (← iadd dataPtr bi)
+      let _ ← ifte .eq (← band x one) (← iconst64 0)
+        (thn := do
+          continueWith [← iaddImm bi 4, ← band (← iadd bh x) keep]
+          pure [])
+        (els := do
+          continueWith [← iaddImm bi 4, ← band (← imul bh three) keep]
+          pure [])
+      return [bi, bh])
 
-  startBlock loop
-  brif (← icmp .sge (loop.param 0) mainEnd)
-    fin.ref [loop.param 1] body.ref [loop.param 0, loop.param 1]
+  store (← fcvtFromSint .f64 (fin.headD 0)) outPtr
 
-  startBlock body
-  let bi := body.param 0
-  let bh := body.param 1
-  let x  ← uload32_64 (← iadd dataPtr bi)
-  brif (← icmpImm .eq (← band x one) 0)
-    evn.ref [bi, bh, x] odd.ref [bi, bh]
+theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-  startBlock evn
-  jump loop.ref [← iaddImm (evn.param 0) 4,
-                 ← band (← iadd (evn.param 1) (evn.param 2)) keep]
-
-  startBlock odd
-  jump loop.ref [← iaddImm (odd.param 0) 4,
-                 ← band (← imul (odd.param 1) three) keep]
-
-  startBlock fin
-  storeF64 (← fcvtFromSint .f64 (fin.param 0)) outPtr
-  ret
-
-def clifIR : Program := buildProgram mainFn
+def clifIR : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "branchy_algorithm" {

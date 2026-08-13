@@ -69,376 +69,168 @@ def scanResult2Size  : Nat := 8192
 
 open AlgorithmLib.IR
 
--- ---------------------------------------------------------------------------
--- Shared values threaded across sub-functions
--- ---------------------------------------------------------------------------
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 
-structure K where
-  ptr         : Val
-  zero        : Val
-  one         : Val
-  keyLen4     : Val
-  newline     : Val
-  keyScrOff   : Val
-  empBufOff   : Val
-  deptBufOff  : Val
-  empSize     : Val
-  deptSize    : Val
-  empHandle   : Val
-  deptHandle  : Val
-  lmdbSlot    : Val
-  lmdbCtx     : Val
-  patternLen  : Nat
-  fnLmdbPut      : FnRef
-  fnCommitTxn    : FnRef
-  fnBeginTxn     : FnRef
-  fnCursorScan   : FnRef
-  fnFileWrite    : FnRef
-  fnCleanup      : FnRef
+/-- The externals every emitted function declares, in one order. -/
+def ffiEnv : ((FnRef × IR.LmdbSetup) × FnRef) × FnEnv := envOf (do
+  let rd ← declareFileRead
+  let lmdb ← declareLmdbFFI
+  let wr ← declareFileWrite
+  pure ((rd, lmdb), wr))
+def fnFileRead : FnRef := ffiEnv.1.1.1
+def lmdb : IR.LmdbSetup := ffiEnv.1.1.2
+def fnFileWrite : FnRef := ffiEnv.1.2
+def env : FnEnv := ffiEnv.2
 
--- ---------------------------------------------------------------------------
--- Employee + department ingest loops
--- ---------------------------------------------------------------------------
+/-- One CSV buffer's rows written to a database, one row per key. A row runs to
+    the next newline, or to the end of the buffer. -/
+def emitIngest (ptr lmdbCtx handle bufOff size keyScrOff : R) : M Unit := do
+  let zero ← iconst64 0
+  let one ← iconst64 1
+  let newline ← iconst64 10
+  let keyLen4 ← iconst32 4
+  let _ ← wloop2 zero zero
+    (head := fun pos _ => return (contIf .ult pos size, ([] : List R), ()))
+    (body := fun pos key _ => do
+      -- the row's last byte: a newline, or the buffer's end
+      let sc ← wloop1 pos
+        (head := fun sPos => return (contIf .eq zero zero, [sPos], ()))
+        (body := fun sPos _ => do
+          let byte ← uextend64 (← load_i8 (← iadd ptr (← iadd bufOff sPos)))
+          when .eq byte newline (brk [sPos])
+          let nextPos ← iadd sPos one
+          when .uge nextPos size (brk [sPos])
+          return [nextPos])
+      let rowEnd ← iadd (sc.headD 0) one
+      let rowLen32 ← ireduce32 (← isub rowEnd pos)
+      let keyPtr ← iadd ptr keyScrOff
+      store (← ireduce32 key) keyPtr
+      let valPtr ← iadd ptr (← iadd bufOff pos)
+      let _ ← call lmdb.fnPut.id [lmdbCtx, handle, keyPtr, keyLen4, valPtr, rowLen32]
+      return [rowEnd, ← iadd key one])
 
-def emitIngest (k : K)
-    (empLoop empScan empAdvance empPut empDone : DeclaredBlock)
-    (deptLoop deptScan deptAdv deptPut deptDone : DeclaredBlock)
-    : IRBuilder Unit := do
-  startBlock empLoop
-  let pos := empLoop.param 0
-  let key := empLoop.param 1
-  let posEnd ← icmp .uge pos k.empSize
-  brif posEnd empDone.ref [] empScan.ref [pos]
+/-- Every scanned value written to one file, back to back. -/
+def emitWriteAll (ptr lmdbCtx handle resOff count fnameOff : R) : M Unit := do
+  let zero ← iconst64 0
+  let one ← iconst64 1
+  let two ← iconst64 2
+  let four ← iconst64 4
+  let count64 ← sextend64 count
+  let _ ← wloop [zero, four, zero]
+    (head := fun c => return (contIf .slt (c.headD 0) count64, ([] : List R), ()))
+    (body := fun c _ => do
+      let i := c.headD 0
+      let byteOff := c.getD 1 0
+      let fileOff := c.getD 2 0
+      let entryAddr ← iadd ptr (← iadd resOff byteOff)
+      let klen ← uextend64 (← load_i16 entryAddr)
+      let vlen ← uextend64 (← load_i16 (← iadd entryAddr two))
+      let dataOff ← iadd (← iadd byteOff four) klen
+      let valOff ← iadd resOff dataOff
+      let vlenSigned ← sextend64 (← ireduce32 vlen)
+      let _ ← call fnFileWrite.id [ptr, fnameOff, valOff, fileOff, vlenSigned]
+      return [← iadd i one, ← iadd dataOff vlen, ← iadd fileOff vlen])
 
-  startBlock empScan
-  let sPos := empScan.param 0
-  let relAddr ← iadd k.empBufOff sPos
-  let absAddr ← iadd k.ptr relAddr
-  let byte ← load_i8 absAddr
-  let byteExt ← uextend64 byte
-  let isNl ← icmp .eq byteExt k.newline
-  brif isNl empPut.ref [] empAdvance.ref []
-
-  startBlock empAdvance
-  let nextPos ← iadd sPos k.one
-  let atEnd ← icmp .uge nextPos k.empSize
-  brif atEnd empPut.ref [] empScan.ref [nextPos]
-
-  startBlock empPut
-  let rowEnd ← iadd sPos k.one
-  let rowLen ← isub rowEnd pos
-  let rowLen32 ← ireduce32 rowLen
-  let key32 ← ireduce32 key
-  let keyAddr ← iadd k.ptr k.keyScrOff
-  store key32 keyAddr
-  let valOff ← iadd k.empBufOff pos
-  let keyPtr ← iadd k.ptr k.keyScrOff
-  let valPtr ← iadd k.ptr valOff
-  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.empHandle, keyPtr, k.keyLen4, valPtr, rowLen32]
-  let nextKey ← iadd key k.one
-  jump empLoop.ref [rowEnd, nextKey]
-
-  startBlock empDone
-  let _ ← call k.fnCommitTxn [k.lmdbCtx, k.empHandle]
-  let _ ← call k.fnBeginTxn [k.lmdbCtx, k.deptHandle]
-  jump deptLoop.ref [k.zero, k.zero]
-
-  startBlock deptLoop
-  let dPos := deptLoop.param 0
-  let dKey := deptLoop.param 1
-  let dEnd ← icmp .uge dPos k.deptSize
-  brif dEnd deptDone.ref [] deptScan.ref [dPos]
-
-  startBlock deptScan
-  let dsPos := deptScan.param 0
-  let dRelAddr ← iadd k.deptBufOff dsPos
-  let dAbsAddr ← iadd k.ptr dRelAddr
-  let dByte ← load_i8 dAbsAddr
-  let dByteExt ← uextend64 dByte
-  let dIsNl ← icmp .eq dByteExt k.newline
-  brif dIsNl deptPut.ref [] deptAdv.ref []
-
-  startBlock deptAdv
-  let dNextPos ← iadd dsPos k.one
-  let dAtEnd ← icmp .uge dNextPos k.deptSize
-  brif dAtEnd deptPut.ref [] deptScan.ref [dNextPos]
-
-  startBlock deptPut
-  let dRowEnd ← iadd dsPos k.one
-  let dRowLen ← isub dRowEnd dPos
-  let dRowLen32 ← ireduce32 dRowLen
-  let dKey32 ← ireduce32 dKey
-  let dKeyAddr ← iadd k.ptr k.keyScrOff
-  store dKey32 dKeyAddr
-  let dValOff ← iadd k.deptBufOff dPos
-  let dKeyPtr ← iadd k.ptr k.keyScrOff
-  let dValPtr ← iadd k.ptr dValOff
-  let _ ← call k.fnLmdbPut [k.lmdbCtx, k.deptHandle, dKeyPtr, k.keyLen4, dValPtr, dRowLen32]
-  let dNextKey ← iadd dKey k.one
-  jump deptLoop.ref [dRowEnd, dNextKey]
-
--- ---------------------------------------------------------------------------
--- Scan + filter + join output phases
--- ---------------------------------------------------------------------------
+/-- The scanned rows whose value contains the pattern, plus the header row. -/
+def emitFilter (ptr resOff count fnameOff : R) (patternLen : Nat) : M Unit := do
+  let zero ← iconst64 0
+  let one ← iconst64 1
+  let two ← iconst64 2
+  let four ← iconst64 4
+  let zero32 ← iconst32 0
+  let seaLen ← iconst64 patternLen
+  let patOff ← iconst64 patternStr_off
+  let count64 ← sextend64 count
+  let _ ← wloop [zero, four, zero]
+    (head := fun c => return (contIf .slt (c.headD 0) count64, ([] : List R), ()))
+    (body := fun c _ => do
+      let i := c.headD 0
+      let byteOff := c.getD 1 0
+      let fileOff := c.getD 2 0
+      let entryAddr ← iadd ptr (← iadd resOff byteOff)
+      let klen ← uextend64 (← load_i16 entryAddr)
+      let vlen ← uextend64 (← load_i16 (← iadd entryAddr two))
+      let dataOff ← iadd byteOff four
+      let dataOff2 ← iadd dataOff klen
+      let valOff ← iadd resOff dataOff2
+      let keyVal ← load32 (← iadd ptr (← iadd resOff dataOff))
+      let isHeader ← icmp .eq keyVal zero32
+      -- the header row is kept whatever the pattern says
+      let hit ← ifte .ne isHeader (← iconst .i8 0) (pure [one])
+        (do
+          -- the pattern searched for at every position it still fits in
+          let sc ← wloop1 zero
+            (head := fun scanPos => do
+              let scanEnd ← iadd scanPos seaLen
+              return (contIf .ule scanEnd vlen, [zero], ()))
+            (body := fun scanPos _ => do
+              let m ← wloop1 zero
+                (head := fun mi => return (contIf .ult mi seaLen, [one], ()))
+                (body := fun mi _ => do
+                  let valByte ← load_i8 (← iadd ptr (← iadd valOff (← iadd scanPos mi)))
+                  let patByte ← load_i8 (← iadd ptr (← iadd patOff mi))
+                  when .ne valByte patByte (brk [zero])
+                  return [← iadd mi one])
+              when .ne (m.headD 0) zero (brk [one])
+              return [← iadd scanPos one])
+          pure [sc.headD 0])
+      let _ ← ifte .ne (hit.headD 0) zero
+        (do
+          let vlenSigned ← sextend64 (← ireduce32 vlen)
+          let _ ← call fnFileWrite.id [ptr, fnameOff, valOff, fileOff, vlenSigned]
+          pure [])
+        (pure [])
+      let nextFile ← ifte .ne (hit.headD 0) zero
+        (pure [← iadd fileOff vlen]) (pure [fileOff])
+      return [← iadd i one, ← iadd dataOff2 vlen, nextFile.headD 0])
 
 set_option maxRecDepth 4096 in
-def emitOutputPhases (k : K)
-    (deptDone : DeclaredBlock)
-    (scanHdr scanBody scanDone : DeclaredBlock)
-    (filterHdr filterParse : DeclaredBlock)
-    (substrScan substrCmp substrByte : DeclaredBlock)
-    (filterMatch substrAdv filterSkip filterDone : DeclaredBlock)
-    (joinHdr joinBody joinDone : DeclaredBlock)
-    : IRBuilder Unit := do
-  startBlock deptDone
-  let _ ← call k.fnCommitTxn [k.lmdbCtx, k.deptHandle]
-  let scanResOff ← iconst64 scanResult_off
+def mainCode (patternLen : Nat) : HProg.Code :=
+  HProg.Sur.build env HProg.ptrParams do
+  let ptr := basePtr
+  let empBufOff ← iconst64 empBuf_off
+  let zero ← iconst64 0
+  let empSize ← readFile ptr fnFileRead empCsvPath_off empBuf_off
+  let deptBufOff ← iconst64 deptBuf_off
+  let deptSize ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
+  let lmdbSlot := ptr
+  callVoid lmdb.fnInit.id [lmdbSlot]
+  let lmdbCtx ← load64 ptr
+  let maxDbs ← iconst32 10
+  let empHandle ← call lmdb.fnOpen.id [lmdbCtx, ← iadd ptr (← iconst64 empDbPath_off), maxDbs]
+  let deptHandle ← call lmdb.fnOpen.id [lmdbCtx, ← iadd ptr (← iconst64 deptDbPath_off), maxDbs]
+  let keyScrOff ← iconst64 keyScratch_off
+
+  let _ ← call lmdb.fnBeginWriteTxn.id [lmdbCtx, empHandle]
+  emitIngest ptr lmdbCtx empHandle empBufOff empSize keyScrOff
+  let _ ← call lmdb.fnCommitWriteTxn.id [lmdbCtx, empHandle]
+
+  let _ ← call lmdb.fnBeginWriteTxn.id [lmdbCtx, deptHandle]
+  emitIngest ptr lmdbCtx deptHandle deptBufOff deptSize keyScrOff
+  let _ ← call lmdb.fnCommitWriteTxn.id [lmdbCtx, deptHandle]
+
   let keyLen0 ← iconst32 0
   let maxEntries ← iconst32 100
-  let scanResPtr ← iadd k.ptr scanResOff
-  let scanCount ← call k.fnCursorScan [k.lmdbCtx, k.empHandle, k.ptr, keyLen0, maxEntries, scanResPtr]
-  let four ← iconst64 4
-  jump scanHdr.ref [k.zero, four, k.zero]
+  let scanResOff ← iconst64 scanResult_off
+  let scanCount ← call lmdb.fnCursorScan.id
+    [lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
+  emitWriteAll ptr lmdbCtx empHandle scanResOff scanCount (← iconst64 scanFname_off)
 
-  startBlock scanHdr
-  let si := scanHdr.param 0
-  let sByteOff := scanHdr.param 1
-  let sFileOff := scanHdr.param 2
-  let scanCount64 ← sextend64 scanCount
-  let sDone ← icmp .uge si scanCount64
-  brif sDone scanDone.ref [] scanBody.ref []
-
-  startBlock scanBody
-  let sEntryOff ← iadd scanResOff sByteOff
-  let sEntryAddr ← iadd k.ptr sEntryOff
-  let sKlen ← load_i16 sEntryAddr
-  let sKlen64 ← uextend64 sKlen
-  let two ← iconst64 2
-  let sVlenAddr ← iadd sEntryAddr two
-  let sVlen ← load_i16 sVlenAddr
-  let sVlen64 ← uextend64 sVlen
-  let sDataOff ← iadd sByteOff four
-  let sDataOff2 ← iadd sDataOff sKlen64
-  let sValOff ← iadd scanResOff sDataOff2
-  let sVlen32 ← ireduce32 sVlen64
-  let sVlenSigned ← sextend64 sVlen32
-  let scanFnOff ← iconst64 scanFname_off
-  let _ ← call k.fnFileWrite [k.ptr, scanFnOff, sValOff, sFileOff, sVlenSigned]
-  let sNextI ← iadd si k.one
-  let sNextByte ← iadd sDataOff2 sVlen64
-  let sNextFile ← iadd sFileOff sVlen64
-  jump scanHdr.ref [sNextI, sNextByte, sNextFile]
-
-  startBlock scanDone
   let scanRes2Off ← iconst64 scanResult2_off
-  let scanRes2Ptr ← iadd k.ptr scanRes2Off
-  let filterCount ← call k.fnCursorScan [k.lmdbCtx, k.empHandle, k.ptr, keyLen0, maxEntries, scanRes2Ptr]
-  jump filterHdr.ref [k.zero, four, k.zero]
+  let filterCount ← call lmdb.fnCursorScan.id
+    [lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanRes2Off]
+  emitFilter ptr scanRes2Off filterCount (← iconst64 filterFname_off) patternLen
 
-  startBlock filterHdr
-  let fi := filterHdr.param 0
-  let fByteOff := filterHdr.param 1
-  let fFileOff := filterHdr.param 2
-  let filterCount64 ← sextend64 filterCount
-  let fDone ← icmp .uge fi filterCount64
-  brif fDone filterDone.ref [] filterParse.ref []
+  let joinCount ← call lmdb.fnCursorScan.id
+    [lmdbCtx, deptHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
+  emitWriteAll ptr lmdbCtx deptHandle scanResOff joinCount (← iconst64 joinFname_off)
 
-  startBlock filterParse
-  let fEntryOff ← iadd scanRes2Off fByteOff
-  let fEntryAddr ← iadd k.ptr fEntryOff
-  let fKlen ← load_i16 fEntryAddr
-  let fKlen64 ← uextend64 fKlen
-  let ftwo ← iconst64 2
-  let fVlenAddr ← iadd fEntryAddr ftwo
-  let fVlen ← load_i16 fVlenAddr
-  let fVlen64 ← uextend64 fVlen
-  let fDataOff ← iadd fByteOff four
-  let fDataOff2 ← iadd fDataOff fKlen64
-  let fValOff ← iadd scanRes2Off fDataOff2
-  let fKeyOff ← iadd scanRes2Off fDataOff
-  let fKeyAddr ← iadd k.ptr fKeyOff
-  let fKeyVal ← load32 fKeyAddr
-  let zero32 ← iconst32 0
-  let isHeader ← icmp .eq fKeyVal zero32
-  brif isHeader filterMatch.ref [] substrScan.ref [k.zero]
-
-  -- Substring search using pattern baked into payload at patternStr_off.
-  -- k.patternLen is an elaboration-time constant derived from the CsvQuery.
-  startBlock substrScan
-  let scanPos := substrScan.param 0
-  let seaLen ← iconst64 k.patternLen
-  let scanEnd ← iadd scanPos seaLen
-  let noRoom ← icmp .ugt scanEnd fVlen64
-  brif noRoom filterSkip.ref [] substrCmp.ref [k.zero]
-
-  startBlock substrCmp
-  let matchIdx := substrCmp.param 0
-  let allMatch ← icmp .uge matchIdx seaLen
-  brif allMatch filterMatch.ref [] substrByte.ref []
-
-  startBlock substrByte
-  let bytePos ← iadd scanPos matchIdx
-  let valByteOff ← iadd fValOff bytePos
-  let valByteAddr ← iadd k.ptr valByteOff
-  let valByte ← load_i8 valByteAddr
-  let patOff ← iconst64 patternStr_off
-  let patByteOff ← iadd patOff matchIdx
-  let patByteAddr ← iadd k.ptr patByteOff
-  let patByte ← load_i8 patByteAddr
-  let bytesEq ← icmp .eq valByte patByte
-  let nextMatch ← iadd matchIdx k.one
-  brif bytesEq substrCmp.ref [nextMatch] substrAdv.ref []
-
-  startBlock filterMatch
-  let fVlen32 ← ireduce32 fVlen64
-  let fVlenSigned ← sextend64 fVlen32
-  let filterFnOff ← iconst64 filterFname_off
-  let _ ← call k.fnFileWrite [k.ptr, filterFnOff, fValOff, fFileOff, fVlenSigned]
-  let fNextI ← iadd fi k.one
-  let fNextByte ← iadd fDataOff2 fVlen64
-  let fNextFile ← iadd fFileOff fVlen64
-  jump filterHdr.ref [fNextI, fNextByte, fNextFile]
-
-  startBlock substrAdv
-  let nextScanPos ← iadd scanPos k.one
-  jump substrScan.ref [nextScanPos]
-
-  startBlock filterSkip
-  let skipNextI ← iadd fi k.one
-  let skipNextByte ← iadd fDataOff2 fVlen64
-  jump filterHdr.ref [skipNextI, skipNextByte, fFileOff]
-
-  startBlock filterDone
-  let joinScanPtr ← iadd k.ptr scanResOff
-  let joinCount ← call k.fnCursorScan [k.lmdbCtx, k.deptHandle, k.ptr, keyLen0, maxEntries, joinScanPtr]
-  jump joinHdr.ref [k.zero, four, k.zero]
-
-  startBlock joinHdr
-  let ji := joinHdr.param 0
-  let jByteOff := joinHdr.param 1
-  let jFileOff := joinHdr.param 2
-  let joinCount64 ← sextend64 joinCount
-  let jDone ← icmp .uge ji joinCount64
-  brif jDone joinDone.ref [] joinBody.ref []
-
-  startBlock joinBody
-  let jEntryOff ← iadd scanResOff jByteOff
-  let jEntryAddr ← iadd k.ptr jEntryOff
-  let jKlen ← load_i16 jEntryAddr
-  let jKlen64 ← uextend64 jKlen
-  let jtwo ← iconst64 2
-  let jVlenAddr ← iadd jEntryAddr jtwo
-  let jVlen ← load_i16 jVlenAddr
-  let jVlen64 ← uextend64 jVlen
-  let jDataOff ← iadd jByteOff four
-  let jDataOff2 ← iadd jDataOff jKlen64
-  let jValOff ← iadd scanResOff jDataOff2
-  let jVlen32 ← ireduce32 jVlen64
-  let jVlenSigned ← sextend64 jVlen32
-  let joinFnOff ← iconst64 joinFname_off
-  let _ ← call k.fnFileWrite [k.ptr, joinFnOff, jValOff, jFileOff, jVlenSigned]
-  let jNextI ← iadd ji k.one
-  let jNextByte ← iadd jDataOff2 jVlen64
-  let jNextFile ← iadd jFileOff jVlen64
-  jump joinHdr.ref [jNextI, jNextByte, jNextFile]
-
-  startBlock joinDone
-  callVoid k.fnCleanup [k.lmdbSlot]
-  ret
-
--- ---------------------------------------------------------------------------
--- CLIF IR (parameterized by filter pattern length)
--- ---------------------------------------------------------------------------
+  callVoid lmdb.fnCleanup.id [lmdbSlot]
 
 set_option maxRecDepth 4096 in
-def clifIrSource (patternLen : Nat) : Program := buildProgram do
-  let fnFileRead ← declareFileRead
-  let lmdb ← declareLmdbFFI
-  let fnFileWrite ← declareFileWrite
-
-  let ptr ← entryBlock
-
-  let empLoop     ← declareBlock [.i64, .i64]
-  let empScan     ← declareBlock [.i64]
-  let empAdvance  ← declareBlock []
-  let empPut      ← declareBlock []
-  let empDone     ← declareBlock []
-  let deptLoop    ← declareBlock [.i64, .i64]
-  let deptScan    ← declareBlock [.i64]
-  let deptAdv     ← declareBlock []
-  let deptPut     ← declareBlock []
-  let deptDone    ← declareBlock []
-  let scanHdr     ← declareBlock [.i64, .i64, .i64]
-  let scanBody    ← declareBlock []
-  let scanDone    ← declareBlock []
-  let filterHdr   ← declareBlock [.i64, .i64, .i64]
-  let filterParse ← declareBlock []
-  let substrScan  ← declareBlock [.i64]
-  let substrCmp   ← declareBlock [.i64]
-  let substrByte  ← declareBlock []
-  let filterMatch ← declareBlock []
-  let substrAdv   ← declareBlock []
-  let filterSkip  ← declareBlock []
-  let filterDone  ← declareBlock []
-  let joinHdr     ← declareBlock [.i64, .i64, .i64]
-  let joinBody    ← declareBlock []
-  let joinDone    ← declareBlock []
-
-  let empBufOff  ← iconst64 empBuf_off
-  let zero       ← iconst64 0
-  let empSize    ← readFile ptr fnFileRead empCsvPath_off empBuf_off
-  let deptBufOff ← iconst64 deptBuf_off
-  let deptSize   ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
-  let lmdbSlot   := ptr
-  callVoid lmdb.fnInit [lmdbSlot]
-  let lmdbCtx    ← load64 ptr
-  let empDbOff   ← iconst64 empDbPath_off
-  let maxDbs     ← iconst32 10
-  let empDbPtr ← iadd ptr empDbOff
-  let empHandle  ← call lmdb.fnOpen [lmdbCtx, empDbPtr, maxDbs]
-  let deptDbOff  ← iconst64 deptDbPath_off
-  let deptDbPtr ← iadd ptr deptDbOff
-  let deptHandle ← call lmdb.fnOpen [lmdbCtx, deptDbPtr, maxDbs]
-  let _          ← call lmdb.fnBeginWriteTxn [lmdbCtx, empHandle]
-  let one        ← iconst64 1
-  let keyLen4    ← iconst32 4
-  let newline    ← iconst64 10
-  let keyScrOff  ← iconst64 keyScratch_off
-  jump empLoop.ref [zero, zero]
-
-  let k : K := {
-    ptr        := ptr,
-    zero       := zero,
-    one        := one,
-    keyLen4    := keyLen4,
-    newline    := newline,
-    keyScrOff  := keyScrOff,
-    empBufOff  := empBufOff,
-    deptBufOff := deptBufOff,
-    empSize    := empSize,
-    deptSize   := deptSize,
-    empHandle  := empHandle,
-    deptHandle := deptHandle,
-    lmdbSlot   := lmdbSlot,
-    lmdbCtx    := lmdbCtx,
-    patternLen := patternLen,
-    fnLmdbPut    := lmdb.fnPut,
-    fnCommitTxn  := lmdb.fnCommitWriteTxn,
-    fnBeginTxn   := lmdb.fnBeginWriteTxn,
-    fnCursorScan := lmdb.fnCursorScan,
-    fnFileWrite  := fnFileWrite,
-    fnCleanup    := lmdb.fnCleanup
-  }
-
-  emitIngest k empLoop empScan empAdvance empPut empDone
-               deptLoop deptScan deptAdv deptPut deptDone
-
-  emitOutputPhases k deptDone
-    scanHdr scanBody scanDone
-    filterHdr filterParse
-    substrScan substrCmp substrByte
-    filterMatch substrAdv filterSkip filterDone
-    joinHdr joinBody joinDone
+def clifIrSource (patternLen : Nat) : Program :=
+  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams (mainCode patternLen)]
 
 -- ---------------------------------------------------------------------------
 -- Payload builder (parameterized by filter pattern bytes)
