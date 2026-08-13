@@ -3,10 +3,13 @@ import AlgorithmLib.Bytes
 import AlgorithmLib.Layout
 import AlgorithmLib.IR
 import AlgorithmLib.FFI
+import AlgorithmLib.HProgFFI
 import AlgorithmLib.PTX
 
 open Lean
 open AlgorithmLib.IR
+open AlgorithmLib.HProg
+open AlgorithmLib.HProg.Sur
 open AlgorithmLib.PTX
 
 namespace AlgorithmLib
@@ -105,12 +108,20 @@ private def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) 
   buildModule 0 [{ name := "main", params, body := kernelBody e output blockSize }]
 
 -- ---------------------------------------------------------------------------
--- CLIF emission via the typed builder in AlgorithmLib.IR + FFI helpers.
+-- CLIF emission: each stage is a term, compiled against one callee table.
 -- ---------------------------------------------------------------------------
 
-private def loadFn (inputs : Nat) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+/-- The CUDA callee table all three stages share, so their signatures are
+    written once. -/
+private def ffiEnv : CudaSetup × FnEnv := envOf declareCudaFFI
+
+private def cuda : CudaSetup := ffiEnv.1
+private def env : FnEnv := ffiEnv.2
+
+/-- Allocate the device buffers and publish the element count. -/
+private def loadCode (inputs : Nat) : HProg.Code :=
+  HProg.Sur.build env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
   let n ← load64 dataPtr
@@ -119,28 +130,29 @@ private def loadFn (inputs : Nat) : IRBuilder Unit := do
   let metaBytes ← iconst64 8
   let metaBuf ← cudaCreateBuffer cuda ptr metaBytes
   storeI32 metaBuf (← absAddr ptr 0x40)
-  for i in List.range inputs do
+  for (i : Nat) in List.range inputs do
     let buf ← cudaCreateBuffer cuda ptr nBytes
     storeI32 buf (← absAddr ptr (0x44 + 4*i))
   let _ ← cudaUpload cuda ptr metaBuf (← iconst64 0x38) metaBytes
-  ret
 
-private def prepFn (inputs : Nat) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+/-- Upload the inputs, which lie back to back from the caller's data pointer. -/
+private def prepCode (inputs : Nat) : HProg.Code :=
+  HProg.Sur.build env HProg.ptrParams do
+  let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let n ← load64 (← absAddr ptr 0x38)
   let nBytes ← ishlImm n 2
   let ctxPtr ← cudaCtxPtr ptr
-  let _ ← (List.range inputs).foldlM (init := dataPtr) fun curSrc i => do
+  let _ ← (List.range inputs).foldlM (init := dataPtr) fun (curSrc : R) (i : Nat) => do
     let bufId ← load32 (← absAddr ptr (0x44 + 4*i))
-    let _ ← call cuda.fnUpload [ctxPtr, bufId, curSrc, nBytes]
+    let _ ← call cuda.fnUpload.id [ctxPtr, bufId, curSrc, nBytes]
     iadd curSrc nBytes
-  ret
 
-private def inferFn {n : Nat} (output : Fin n) (blockSize : Nat) : IRBuilder Unit := do
-  let ptr ← entryBlock
-  let cuda ← declareCudaFFI
+/-- Launch, synchronise, and download the output — the last only when the
+    caller asked for one. -/
+private def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : HProg.Code :=
+  HProg.Sur.build env HProg.ptrParams do
+  let ptr := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
   let nElems ← load64 (← absAddr ptr 0x38)
@@ -155,17 +167,10 @@ private def inferFn {n : Nat} (output : Fin n) (blockSize : Nat) : IRBuilder Uni
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff wg one32 one32 blkX one32 one32
   let _ ← cudaSync cuda ptr
   let zero64 ← iconst64 0
-  let cond ← icmp .eq outLen zero64
-  let skipBlk ← declareBlock []
-  let downloadBlk ← declareBlock []
-  brif cond skipBlk.ref [] downloadBlk.ref []
-  startBlock skipBlk
-  ret
-  startBlock downloadBlk
-  let ctxPtr ← cudaCtxPtr ptr
-  let outBufId ← load32 (← absAddr ptr (0x44 + 4*output.val))
-  let _ ← call cuda.fnDownload [ctxPtr, outBufId, outPtr, outLen]
-  ret
+  when .ne outLen zero64 do
+    let ctxPtr ← cudaCtxPtr ptr
+    let outBufId ← load32 (← absAddr ptr (0x44 + 4*output.val))
+    let _ ← call cuda.fnDownload.id [ctxPtr, outBufId, outPtr, outLen]
 
 -- ---------------------------------------------------------------------------
 -- Compile: assemble PTX + CLIF + initial memory into a CompileResult.
@@ -184,9 +189,9 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     ++ bindDesc ++ zeros (memSize - bindDescOff - bindDesc.length)
   let clifProg := program
     [noopFunction,
-     buildFunction 1 (loadFn n),
-     buildFunction 2 (prepFn n),
-     buildFunction 3 (inferFn output blockSize)]
+     HProg.compileFn 1 env HProg.ptrParams (loadCode n),
+     HProg.compileFn 2 env HProg.ptrParams (prepCode n),
+     HProg.compileFn 3 env HProg.ptrParams (inferCode output blockSize)]
   let mkAlg (src : UInt32) : Algorithm :=
     { fn_idx := src }
   {
