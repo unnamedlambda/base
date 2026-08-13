@@ -153,71 +153,6 @@ end Kernel
 
 namespace Tensor
 
-/-- Untyped launch — writes `bufs` to bind descriptor at `bindOff` and
-    issues the cudaLaunch.  Used internally; callers normally use the typed
-    `launch1/2/3/4` wrappers.
-
-    **Arity is an elaboration obligation.**  `_harity` is discharged where the
-    launch is written, so a buffer list whose length does not match `k.params`
-    is a build error rather than a generation-time failure.  The typed wrappers
-    derive it from the `hsh` shape obligation they already carry. -/
-def Kernel.launchAt
-    (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val)
-    (bindOff : Nat) (bufs : List Val)
-    (_harity : bufs.length = k.params.length := by rfl) : IRBuilder Unit := do
-  let expected := k.params.length
-  -- Write bind descriptor: one i32 per buffer at bindOff + 4*i
-  for (b, i) in bufs.zip (List.range bufs.length) do
-    storeI32 b (← iaddImm ptr (bindOff + i * 4))
-  let arity32 ← iconst32 expected
-  let ptxOff64  ← iconst64 k.ptxOff
-  let bindOff64 ← iconst64 bindOff
-  let gx ← iconst32 k.geom.gridX
-  let gy ← iconst32 k.geom.gridY
-  let gz ← iconst32 k.geom.gridZ
-  let bx ← iconst32 k.geom.blockX
-  let by_ ← iconst32 k.geom.blockY
-  let bz ← iconst32 k.geom.blockZ
-  let _ ← cudaLaunch cuda ptr ptxOff64 arity32 bindOff64 gx gy gz bx by_ bz
-  pure ()
-
-/-- **Shapes are checked against the kernel's declared parameters.**
-
-    `s1 … sn` are otherwise free variables with nothing relating them to
-    `k.params`, so a kernel declaring `[.sta D]` would accept a
-    `Tensor [.sta KV_DIM]`.  The `by rfl` auto-parameter closes that at
-    elaboration — a mismatch is an error in the generator, not a wrong answer
-    on the GPU — and it implies the arity `launchAt` asks for. -/
-def launch1 {s1 : Shape}
-    (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1)
-    (hsh : k.params.map Kernel.ParamSpec.shape = [s1] := by rfl) : IRBuilder Unit :=
-  Kernel.launchAt k cuda ptr bindOff [t1.val]
-    (by simpa using (congrArg List.length hsh).symm)
-
-/-- Typed 2-binding launch; shapes checked against `k.params`. -/
-def launch2 {s1 s2 : Shape}
-    (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1) (t2 : Tensor s2)
-    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2] := by rfl) : IRBuilder Unit :=
-  Kernel.launchAt k cuda ptr bindOff [t1.val, t2.val]
-    (by simpa using (congrArg List.length hsh).symm)
-
-/-- Typed 3-binding launch; shapes checked against `k.params`. -/
-def launch3 {s1 s2 s3 : Shape}
-    (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3)
-    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2, s3] := by rfl) : IRBuilder Unit :=
-  Kernel.launchAt k cuda ptr bindOff [t1.val, t2.val, t3.val]
-    (by simpa using (congrArg List.length hsh).symm)
-
-/-- Typed 4-binding launch; shapes checked against `k.params`. -/
-def launch4 {s1 s2 s3 s4 : Shape}
-    (k : _root_.AlgorithmLib.Kernel) (cuda : CudaSetup) (ptr : Val) (bindOff : Nat)
-    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3) (t4 : Tensor s4)
-    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2, s3, s4] := by rfl) : IRBuilder Unit :=
-  Kernel.launchAt k cuda ptr bindOff [t1.val, t2.val, t3.val, t4.val]
-    (by simpa using (congrArg List.length hsh).symm)
 
 end Tensor
 
@@ -253,31 +188,6 @@ def reshape {s1 s2 : Shape} (t : Tensor s1)
     (_h : Shape.staticElems? s1 = Shape.staticElems? s2 := by decide) : Tensor s2 :=
   ⟨t.buf⟩
 
-/-- Load the typed `Tensor s` from this slot. -/
-def BufferSlot.load (b : BufferSlot s) (ptr : Val) : IRBuilder (Tensor s) := do
-  let v ← load32 (← iaddImm ptr b.fld.offset)
-  return Tensor.ofVal v
-
-/-- Store a typed `Tensor s` into the slot.  Shape mismatch is a type error. -/
-def BufferSlot.store (b : BufferSlot s) (ptr : Val) (t : Tensor s) : IRBuilder Unit := do
-  storeI32 t.val (← iaddImm ptr b.fld.offset)
-
-/-- Allocate a CUDA buffer with shape `s`, returning a typed `Tensor s`.
-    `bytes` is the runtime size in bytes; for fully-static shapes use
-    `createStatic` which derives the size from the type. -/
-def Tensor.create {s : Shape} (cuda : CudaSetup) (ptr : Val) (bytes : Val) :
-    IRBuilder (Tensor s) := do
-  let buf ← cudaCreateBuffer cuda ptr bytes
-  return Tensor.ofVal buf
-
-/-- Allocate a CUDA buffer with a fully-static shape.  Byte size is computed
-    from the shape at elaboration time (`f32` elements assumed).  If `s`
-    contains any `.dyn` dimension, this fails to elaborate. -/
-def Tensor.createStatic (cuda : CudaSetup) (ptr : Val) (s : Shape)
-    (_h : Shape.staticElems? s = some n := by decide) : IRBuilder (Tensor s) := do
-  let bytes ← iconst64 (n * 4)
-  let buf ← cudaCreateBuffer cuda ptr bytes
-  return Tensor.ofVal buf
 
 end Tensor
 
@@ -290,92 +200,6 @@ end Tensor
 
 namespace CuBlas
 
-/-- Linear projection: `y = A @ x` where `A : [outN, inN]`, `x : [inN]`, `y : [outN]`.
-    Shape errors are elaboration errors.  Uses cuBLAS sgemv with trans=1
-    (since weights are stored row-major as PyTorch convention). -/
-def linear {inN outN : Nat} (cublas : CuBlasSetup) (ptr : Val)
-    (a : Tensor [.sta outN, .sta inN])
-    (x : Tensor [.sta inN])
-    (y : Tensor [.sta outN]) : IRBuilder Unit := do
-  let trans ← iconst32 1
-  let m32   ← iconst32 inN
-  let n32   ← iconst32 outN
-  let alpha ← iconst32 0x3F800000   -- 1.0
-  let beta  ← iconst32 0            -- 0.0
-  let _ ← cublasSgemv cublas ptr trans m32 n32 alpha a.val x.val beta y.val
-  pure ()
-
-/-- Linear projection with explicit alpha/beta scalars (raw f32 bit patterns). -/
-def linearAB {inN outN : Nat} (cublas : CuBlasSetup) (ptr : Val)
-    (alphaBits betaBits : Val)
-    (a : Tensor [.sta outN, .sta inN])
-    (x : Tensor [.sta inN])
-    (y : Tensor [.sta outN]) : IRBuilder Unit := do
-  let trans ← iconst32 1
-  let m32   ← iconst32 inN
-  let n32   ← iconst32 outN
-  let _ ← cublasSgemv cublas ptr trans m32 n32 alphaBits a.val x.val betaBits y.val
-  pure ()
-
-/-- GQA-aware per-head attention scores: for each `(kv, i) ∈ [0, nKV) × [0, gqaRatio)`,
-    `scores[kv, i, :seqLen] = alpha * K[kv, :seqLen, :] @ Q[kv, i]`.
-
-    K is stored once per KV head and broadcast across the `gqaRatio` Q heads that
-    share it.  Total Q heads = `nKV * gqaRatio`.  Reduces to standard MHA when
-    `gqaRatio = 1`.
-
-    Shapes (statically checked):
-    - `K`      : `[nKV, maxSeq, headDim]`
-    - `Q`      : `[nKV, gqaRatio, headDim]`
-    - `scores` : `[nKV, gqaRatio, .dyn]` -/
-def attnScoresQK {nKV gqaRatio headDim maxSeq : Nat}
-    (cublas : CuBlasSetup) (ptr : Val)
-    (alphaBits : Val) (seqLen32 seqLen64 : Val)
-    (k : Tensor [.sta nKV, .sta maxSeq, .sta headDim])
-    (q : Tensor [.sta nKV, .sta gqaRatio, .sta headDim])
-    (scores : Tensor [.sta nKV, .sta gqaRatio, .dyn]) : IRBuilder Unit := do
-  let zero32   ← iconst32 0
-  let one32    ← iconst32 1
-  let k32      ← iconst32 headDim
-  let gqaR32   ← iconst32 gqaRatio
-  let strideK  ← iconst64 (maxSeq * headDim)
-  let strideQ  ← iconst64 (gqaRatio * headDim)
-  -- strideC between KV-head batches = gqaRatio * seqLen elements (rows tight-packed)
-  let gqaR64   ← iconst64 gqaRatio
-  let strideC  ← imul gqaR64 seqLen64
-  let nKV32    ← iconst32 nKV
-  let _ ← cublasSgemmStridedBatched cublas ptr one32 zero32
-    seqLen32 gqaR32 k32 alphaBits
-    k.val strideK q.val strideQ zero32 scores.val strideC nKV32
-  pure ()
-
-/-- GQA-aware V-mix: for each `(kv, i)`,
-    `out[kv, i] = V[kv, :seqLen, :]^T @ probs[kv, i, :seqLen]`.
-
-    Shapes (statically checked):
-    - `V`     : `[nKV, maxSeq, headDim]`
-    - `probs` : `[nKV, gqaRatio, .dyn]`
-    - `out`   : `[nKV, gqaRatio, headDim]` -/
-def attnMixV {nKV gqaRatio headDim maxSeq : Nat}
-    (cublas : CuBlasSetup) (ptr : Val)
-    (alphaBits : Val) (seqLen32 seqLen64 : Val)
-    (v : Tensor [.sta nKV, .sta maxSeq, .sta headDim])
-    (probs : Tensor [.sta nKV, .sta gqaRatio, .dyn])
-    (out : Tensor [.sta nKV, .sta gqaRatio, .sta headDim]) : IRBuilder Unit := do
-  let zero32   ← iconst32 0
-  let hd32     ← iconst32 headDim
-  let gqaR32   ← iconst32 gqaRatio
-  let strideV  ← iconst64 (maxSeq * headDim)
-  -- strideB between KV-head batches in probs = gqaRatio * seqLen elements
-  let gqaR64   ← iconst64 gqaRatio
-  let strideP  ← imul gqaR64 seqLen64
-  -- strideC = gqaRatio * headDim elements (gqaRatio rows of headDim)
-  let strideC  ← iconst64 (gqaRatio * headDim)
-  let nKV32    ← iconst32 nKV
-  let _ ← cublasSgemmStridedBatched cublas ptr zero32 zero32
-    hd32 gqaR32 seqLen32 alphaBits
-    v.val strideV probs.val strideP zero32 out.val strideC nKV32
-  pure ()
 
 end CuBlas
 
@@ -385,19 +209,6 @@ end CuBlas
 
 namespace Tensor
 
-/-- Upload `bytes` bytes from host buffer `hostPtr` into typed tensor `t`. -/
-def upload {s} (cuda : CudaSetup) (ptr : Val) (t : Tensor s)
-    (hostPtr bytes : Val) : IRBuilder Unit := do
-  let ctxPtr ← cudaCtxPtr ptr
-  let _ ← call cuda.fnUpload [ctxPtr, t.val, hostPtr, bytes]
-  pure ()
-
-/-- Download `bytes` bytes from typed tensor `t` into host buffer `hostPtr`. -/
-def download {s} (cuda : CudaSetup) (ptr : Val) (t : Tensor s)
-    (hostPtr bytes : Val) : IRBuilder Unit := do
-  let ctxPtr ← cudaCtxPtr ptr
-  let _ ← call cuda.fnDownload [ctxPtr, t.val, hostPtr, bytes]
-  pure ()
 
 end Tensor
 
@@ -423,19 +234,6 @@ def arrayField (cellSize : Nat) (count : Nat) : LayoutBuilder (ArrayFld cellSize
     let f : ArrayFld cellSize count := { offset := s.cursor }
     let anyFld : AnyFld := { offset := s.cursor, ty := .bytes totalBytes }
     (f, { fields := s.fields ++ [anyFld], cursor := s.cursor + totalBytes })
-
-/-- Byte offset of cell `i` from the base of shared memory, computed at runtime. -/
-def ArrayFld.cellOffset (a : ArrayFld cs n) (i : AlgorithmLib.IR.Val) :
-    AlgorithmLib.IR.IRBuilder AlgorithmLib.IR.Val := do
-  let stride ← AlgorithmLib.IR.iconst64 cs
-  let scaled ← AlgorithmLib.IR.imul i stride
-  AlgorithmLib.IR.iaddImm scaled a.offset
-
-/-- Absolute address of cell `i`: `ptr + cellOffset(i)`. -/
-def ArrayFld.cellAddr (a : ArrayFld cs n) (ptr : AlgorithmLib.IR.Val) (i : AlgorithmLib.IR.Val) :
-    AlgorithmLib.IR.IRBuilder AlgorithmLib.IR.Val := do
-  let off ← a.cellOffset i
-  AlgorithmLib.IR.iadd ptr off
 
 /-- Static-index cell offset (compile-time `Nat` index). -/
 def ArrayFld.cellOffsetStatic (a : ArrayFld cs n) (i : Nat) : Nat :=

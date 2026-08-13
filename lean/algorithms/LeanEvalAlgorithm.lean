@@ -556,6 +556,10 @@ def mainCode : HProg.Code :=
       callVoid fnHtCleanup.id [htSlotPtr]
       pure [])
 
+-- Deciding `wf` walks the whole body: deeper than the default recursion budget,
+-- and long enough that the kernel does not finish inside the default heartbeats.
+set_option maxRecDepth 100000 in
+set_option maxHeartbeats 2000000 in
 def clifIrSource : Program :=
   IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams mainCode]
 

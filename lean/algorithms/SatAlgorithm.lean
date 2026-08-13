@@ -452,6 +452,8 @@ def mainCode : HProg.Code :=
   solve k
   emitOutput k
 
+-- Deciding `wf` walks the whole body, which is deeper than the default budget.
+set_option maxRecDepth 100000 in
 def clifIrSource : Program :=
   IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams mainCode]
 

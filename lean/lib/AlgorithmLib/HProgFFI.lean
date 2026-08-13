@@ -414,3 +414,25 @@ def cudaLaunchNamedOnStream (cuda : CudaSetup)
     [c, kernelPtr, namePtr, nBufs, bindPtr, gridX, gridY, gridZ, blockX, blockY, blockZ, streamId]
 
 end AlgorithmLib.HProg.Sur
+
+namespace AlgorithmLib.IR
+
+/-- A function at `u0:wrapperIdx` that calls each of `callees` in order.
+
+    Composes stages without the caller having to build the call sequence
+    itself; the callees are named by index, so nothing here resolves a symbol.
+
+    The callee table is the wrapper's own — `declareLocal` for each distinct
+    index — so it is built here rather than passed in. -/
+def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat) : FuncData :=
+  let unique : List Nat :=
+    callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
+  let (refs, env) :=
+    HProg.envOf (unique.mapM fun c => declareLocal c [ClifTy.i64] none)
+  HProg.compileBody wrapperIdx env HProg.ptrParams <|
+    HProg.Sur.build env HProg.ptrParams do
+      for c in callees do
+        let slot := (unique.idxOf? c).getD 0
+        HProg.Sur.callVoid (refs[slot]!).id [HProg.Sur.basePtr]
+
+end AlgorithmLib.IR
