@@ -236,7 +236,9 @@ pub(crate) fn compile_program(
         }
         module
             .define_function(func_ids[i], &mut ctx)
-            .map_err(|e| format!("compiling u0:{i}: {e}"))?;
+            // Debug rather than Display: a verifier rejection names the
+            // offending instructions only in the former.
+            .map_err(|e| format!("compiling u0:{i}: {e:?}"))?;
         if dump {
             if let Some(vc) = ctx.compiled_code().and_then(|c| c.vcode.as_deref()) {
                 eprintln!("=== fn {i} ===\n{vc}");

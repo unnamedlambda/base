@@ -427,10 +427,11 @@ def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat) : FuncData :=
     callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
   let (refs, env) :=
     HProg.envOf (unique.mapM fun c => declareLocal c [ClifTy.i64] none)
-  HProg.compileBody wrapperIdx <|
-    HProg.Sur.build do
+  HProg.compileBody wrapperIdx
+    (HProg.Sur.build (env := env) do
       for c in callees do
         let slot := (unique.idxOf? c).getD 0
-        HProg.Sur.callVoid (refs[slot]!).id [HProg.Sur.basePtr]
+        HProg.Sur.callVoid (refs[slot]!).id [HProg.Sur.basePtr])
+    env
 
 end AlgorithmLib.IR
