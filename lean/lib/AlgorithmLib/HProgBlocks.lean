@@ -71,6 +71,9 @@ def evalInst (m : Mem) (vs : Vals) : Inst → Option (Val × V)
   | .select d c a b => do
       let cv ← getV vs c; let x ← getV vs a; let y ← getV vs b
       pure (d, ← viaOp m [cv, x, y] (.select 0 1 2))
+  | .bitselect d c a b => do
+      let cv ← getV vs c; let x ← getV vs a; let y ← getV vs b
+      pure (d, ← viaOp m [cv, x, y] (.bitselect 0 1 2))
   | _ => none
 where
   bin (d : Val) (a b : Val) (f : R → R → Op) : Option (Val × V) := do

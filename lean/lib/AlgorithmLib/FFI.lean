@@ -393,7 +393,11 @@ def declareCudaFFI : IRBuilder CudaSetup := do
 structure CuBlasSetup where
   fnSgemv : FnRef   -- (ctx, trans, m, n, alpha_bits, a_buf, x_buf, beta_bits, y_buf) → i32
   fnSgemvOnStream : FnRef
-  fnSgemm : FnRef   -- (ctx, transa, transb, m, n, k, alpha_bits, a_buf, stride_a, b_buf, stride_b, beta_bits, c_buf, stride_c, batch) → i32
+  /-- `(ctx, transa, transb, m, n, k, alpha_bits, a_buf, stride_a, b_buf,
+      stride_b, beta_bits, c_buf, stride_c, batch, off_a, off_b, off_c,
+      ld_a, ld_b, ld_c) → i32`. A zero `ld_*` asks for the default leading
+      dimension; `off_*` are element offsets into the operands. -/
+  fnSgemm : FnRef
   fnSgemmOnStream : FnRef
   /-- `(ctx, arr_buf, slot, src_buf, off) → i32`: store one buffer's device
       pointer into an array of pointers. -/

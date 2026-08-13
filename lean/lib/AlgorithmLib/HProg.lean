@@ -23,13 +23,12 @@ Three things follow from the term being first-order:
 
 ## Control flow
 
-`loop` and `ite` are the only constructs, and they are enough: measured over
-every emitted artifact, all 300 functions have reducible control flow. Both
-constructs are top-tested and single-exit — a loop whose body `break`s from more
-than one place is expressible in CLIF but not here, which is why the six
-parser-shaped generators (`Cli`, `LeanEval`, `Sat`, `csv`, `json`, `wc`) stay on
-`IRBuilder`. A loop's condition prefix is a whole `Code`, so a test that follows
-an inner loop — a bottom-tested loop — is already covered.
+Four constructs: `loop` (top-tested), `dloop` (bottom-tested, so the body block
+branches to itself and there is no header), `ite`, and `br`, which leaves the
+`depth`-th enclosing loop. Measured over every emitted artifact, all 300
+functions have reducible control flow, and these cover the shapes the generators
+emit. A loop's condition prefix is a whole `Code`, so a test that follows an
+inner loop is expressible too.
 
 ## Types
 
@@ -114,6 +113,31 @@ def Op.regs : Op → List R
   | .extractlane a _ | .bitcast _ a | .load _ a => [a]
   | .select c a b | .bitselect c a b => [c, a, b]
 
+/-- An operation's name, for diagnostics.
+
+    A plain `String` rather than `repr`: `Repr` renders through `Std.Format`,
+    whose internals are `@[extern]`, and a generator's *error path* has no
+    business enlarging what a trust scan has to account for. -/
+def Op.name : Op → String
+  | .iconst _ _ => "iconst" | .fconst _ _ => "fconst"
+  | .iadd _ _ => "iadd" | .isub _ _ => "isub" | .imul _ _ => "imul"
+  | .udiv _ _ => "udiv" | .ineg _ => "ineg"
+  | .ishl _ _ => "ishl" | .ushr _ _ => "ushr"
+  | .band _ _ => "band" | .bandNot _ _ => "bandNot"
+  | .bor _ _ => "bor" | .bxor _ _ => "bxor"
+  | .ireduce32 _ => "ireduce32" | .uextend64 _ => "uextend64"
+  | .sextend64 _ => "sextend64"
+  | .icmp _ _ _ => "icmp" | .select _ _ _ => "select"
+  | .bitselect _ _ _ => "bitselect"
+  | .ctz _ => "ctz" | .popcnt _ => "popcnt"
+  | .fadd _ _ => "fadd" | .fsub _ _ => "fsub" | .fmul _ _ => "fmul"
+  | .fmax _ _ => "fmax" | .fmin _ _ => "fmin" | .fneg _ => "fneg"
+  | .fpromote _ => "fpromote" | .fcmp _ _ _ => "fcmp"
+  | .fcvtFromSint _ _ => "fcvtFromSint" | .fcvtToUint _ _ => "fcvtToUint"
+  | .splat _ _ => "splat" | .extractlane _ _ => "extractlane"
+  | .vhighBits _ => "vhighBits" | .bitcast _ _ => "bitcast"
+  | .load _ _ => "load"
+
 /-- Statements. `op` and `call` define the next slot; the rest define nothing. -/
 inductive Stmt where
   | op       (o : Op)
@@ -147,6 +171,35 @@ structure Loop where
   exitTys    : List ClifTy
   deriving Repr
 
+/-- A bottom-tested loop: the test is made once before entry and again at the
+    end of each trip, so the body block branches to itself and there is no
+    header. One fewer block on the hot path, and an empty input never enters.
+
+    The test and the exit values are given as *carry positions* rather than
+    slots, because they are read in two different scopes — from `init` at the
+    guard, and from `cont` at the end of the body — and a slot number could
+    only ever name one of them. -/
+structure DLoop where
+  pTys    : List ClifTy
+  init    : List R
+  cc      : ICmpCond
+  /-- The slot the back-edge test reads, in the body's scope — so it may be
+      something the body computed rather than a carry. -/
+  ca      : R
+  /-- Which carry the *entry* guard tests, or `none` for a loop entered
+      unconditionally. A loop whose trip count is known non-zero — zeroing a
+      fixed-size region, say — needs no guard, and one whose test reads a value
+      the body produces cannot have one: there is nothing to read yet. -/
+  guardIdx : Option Nat
+  /-- The test's right operand, which the loop does not change. -/
+  cb      : R
+  contOnTrue : Bool
+  cont    : List R
+  /-- Which carries leave, in the order the exit block binds them. -/
+  exitIdx : List Nat
+  exitTys : List ClifTy
+  deriving Repr
+
 /-- A two-way branch: `cc ca cb` is tested in the current block, each arm ends
     with its export list, and the join binds one fresh slot per export. -/
 structure IteMeta where
@@ -161,10 +214,43 @@ inductive Piece where
   /-- Both the condition prefix and the body are whole `Code`, so loops nest. -/
   | loop (l : Loop) (pre body : List Piece)
   | ite (m : IteMeta) (thn els : List Piece) (thnR elsR : List R)
+  /-- A bottom-tested loop; `body` is the whole trip, test included. -/
+  | dloop (l : DLoop) (body : List Piece)
+  /-- Leave the `depth`-th enclosing loop, innermost first, carrying `args` as
+      that loop's exit values.
+
+      Labels are loop exits and nothing else: a branch is not a label, so the
+      depth counts only the loops a piece sits inside. Backward branches need no
+      construct — that is the loop's own back edge. -/
+  | br (depth : Nat) (args : List R)
+  /-- Go round the `depth`-th enclosing loop again, with `args` as the next
+      carries — the back edge, taken from somewhere other than the end of the
+      body. For a `dloop` the target is its body block, which is where its own
+      self-branch goes. -/
+  | cont (depth : Nat) (args : List R)
   deriving Repr
 
 /-- A function body; compilation appends the final `ret`. -/
 abbrev Code := List Piece
+
+/-- Whether a piece leaves its region unconditionally, so the block it ends is
+    already closed and nothing may follow it.
+
+    A branch counts only when *both* arms leave — one arm leaving still falls
+    through on the other. A loop never counts: its head always has an exit edge. -/
+def termsGo : Nat → List Piece → Bool
+  | 0, _ => false
+  | _ + 1, [] => false
+  | _ + 1, [.br _ _] | _ + 1, [.cont _ _] => true
+  | fuel + 1, [.ite _ thn els _ _] => termsGo fuel thn && termsGo fuel els
+  | _ + 1, [_] => false
+  | fuel + 1, _ :: ps => termsGo fuel ps
+
+/-- Fuel large enough for every body written against this library. -/
+def fuel : Nat := 1000
+
+/-- `c` leaves its region unconditionally. -/
+def terminates (c : Code) : Bool := termsGo fuel c
 
 /-- The callee table a body is checked and compiled against — exactly the
     `sigs` and `fns` the emitted function will declare. -/
@@ -194,6 +280,15 @@ abbrev TyEnv := List ClifTy
 
 -- What the checker needs to know about a CLIF type, declared where dot
 -- notation finds it.
+
+/-- A type's name, for diagnostics; see `Op.name` for why not `repr`. -/
+def _root_.AlgorithmLib.IR.ClifTy.name : ClifTy → String
+  | .i8 => "i8" | .i16 => "i16" | .i32 => "i32" | .i64 => "i64"
+  | .f32 => "f32" | .f64 => "f64" | .f32x4 => "f32x4" | .i8x16 => "i8x16"
+
+/-- A type list, as diagnostics print it. -/
+def tyListName (ts : List ClifTy) : String :=
+  "[" ++ String.intercalate ", " (ts.map (·.name)) ++ "]"
 
 def _root_.AlgorithmLib.IR.ClifTy.isInt : ClifTy → Bool
   | .i8 | .i16 | .i32 | .i64 => true
@@ -244,9 +339,12 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       let ta ← Γ[a]?; need (ta.isInt && ta.width > 32) .i32
   | .uextend64 a | .sextend64 a => do
       let ta ← Γ[a]?; need (ta.isInt && ta.width < 64) .i64
+  -- On vectors the result is a per-lane mask at the lane's own width, the same
+  -- shape `fcmp` produces and the one `bitselect` and `vhighBits` consume.
   | .icmp _ a b => do
       let ta ← Γ[a]?; let tb ← Γ[b]?
-      need (ta == tb && ta.isInt) .i8
+      if ta.isVec then need (ta == tb) ta
+      else need (ta == tb && ta.isInt) .i8
   | .select c a b => do
       let tc ← Γ[c]?; let ta ← Γ[a]?; let tb ← Γ[b]?
       need (tc.isInt && ta == tb) ta
@@ -262,9 +360,15 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       let ta ← Γ[a]?; need (ta.isFloat || ta.isVec) ta
   | .fpromote a => do
       let ta ← Γ[a]?; need (ta == .f32) .f64
+  -- On vectors the result is a per-lane mask at the lane's own width, which is
+  -- the type `evalOp` produces and the width `bitselect` needs. Cranelift calls
+  -- that type `i32x4`; there is no such `ClifTy`, and `Inst.fcmp` carries no
+  -- result annotation for one to disagree with, so the mask keeps the operand
+  -- type and `bitcast` — which compares widths — accepts it either way.
   | .fcmp _ a b => do
       let ta ← Γ[a]?; let tb ← Γ[b]?
-      need (ta == tb && ta.isFloat) .i8
+      if ta.isVec then need (ta == tb) ta
+      else need (ta == tb && ta.isFloat) .i8
   | .fcvtFromSint ty a => do
       let ta ← Γ[a]?; need (ta.isInt && ty.isFloat) ty
   | .fcvtToUint ty a => do
@@ -297,8 +401,10 @@ def Stmt.check (env : FnEnv) (Γ : TyEnv) : Stmt → Bool × Option ClifTy
       (Γ[v]? == some ty && Γ[a]? == some .i64, none)
   | .storeUnaligned v a =>
       ((Γ[v]?).isSome && Γ[a]? == some .i64, none)
+  -- Any integer: `istore8` narrows to the low byte whatever width it is given,
+  -- which is what Cranelift does and what `runStmt` already accepted.
   | .istore8 v a =>
-      (Γ[v]? == some .i64 && Γ[a]? == some .i64, none)
+      (((Γ[v]?).map (·.isInt)).getD false && Γ[a]? == some .i64, none)
   | .call fn args => match env.sigOf fn with
       | some sig => match sig.result with
           | some t => (argsOk Γ sig args, some t)
@@ -330,45 +436,84 @@ private def tysOf (Γ : TyEnv) : List R → Option (List ClifTy)
 private def tysAre (Γ : TyEnv) (rs : List R) (ts : List ClifTy) : Bool :=
   tysOf Γ rs == some ts
 
+/-- The carry types of the `depth`-th enclosing loop, when it has a header to go
+    back to. `none` marks a `dloop`, which does not. -/
+def carryOf (lbl : List (List ClifTy × Option (List ClifTy))) (depth : Nat) :
+    Option (List ClifTy) :=
+  (lbl[depth]?).bind (·.2)
+
 /-- Fuel-driven so the kernel reduces it (`decide`); nested-inductive mutual
     recursion compiles to well-founded fix, which does not. Fuel bounds the
     piece count along one chain, not the program size. -/
-def wfGo (env : FnEnv) : Nat → TyEnv → List Piece → Bool × TyEnv
-  | 0, Γ, _ => (false, Γ)
-  | _ + 1, Γ, [] => (true, Γ)
-  | fuel + 1, Γ, .straight ss :: ps =>
+def wfGo (env : FnEnv) : Nat → List (List ClifTy × Option (List ClifTy)) → TyEnv →
+    List Piece → Bool × TyEnv
+  | 0, _, Γ, _ => (false, Γ)
+  | _ + 1, _, Γ, [] => (true, Γ)
+  | fuel + 1, lbl, Γ, .straight ss :: ps =>
       let r := wfStmts env Γ ss
-      let r' := wfGo env fuel r.2 ps
+      let r' := wfGo env fuel lbl r.2 ps
       (r.1 && r'.1, r'.2)
-  | fuel + 1, Γ, .loop l pre body :: ps =>
+  | fuel + 1, lbl, Γ, .loop l pre body :: ps =>
+      let lbl' := (l.exitTys, some l.pTys) :: lbl
       let Γcarry := Γ ++ l.pTys
-      let rPre := wfGo env fuel Γcarry pre
+      let rPre := wfGo env fuel lbl' Γcarry pre
       let Γhead := rPre.2
-      let rBody := wfGo env fuel Γhead body
+      let rBody := wfGo env fuel lbl' Γhead body
       let ok :=
         tysAre Γ l.init l.pTys &&
-        rPre.1 &&
+        rPre.1 && !termsGo fuel pre &&
         (Γhead[l.ca]?).isSome && (Γhead[l.ca]? == Γhead[l.cb]?) &&
         tysAre Γhead l.exitR l.exitTys &&
         rBody.1 &&
-        tysAre rBody.2 l.cont l.pTys
+        (termsGo fuel body || tysAre rBody.2 l.cont l.pTys)
       -- The exit block binds its parameters after everything the head and body
       -- defined, which is the numbering `emitLoop` uses.
-      let r := wfGo env fuel (rBody.2 ++ l.exitTys) ps
+      let r := wfGo env fuel lbl (rBody.2 ++ l.exitTys) ps
       (ok && r.1, r.2)
-  | fuel + 1, Γ, .ite m thn els thnR elsR :: ps =>
-      let rT := wfGo env fuel Γ thn
-      let rE := wfGo env fuel rT.2 els
+  | fuel + 1, lbl, Γ, .ite m thn els thnR elsR :: ps =>
+      let rT := wfGo env fuel lbl Γ thn
+      let rE := wfGo env fuel lbl rT.2 els
+      let tT := termsGo fuel thn
+      let tE := termsGo fuel els
+      -- An arm that leaves never reaches the join, so its exports are not a
+      -- constraint; when neither arm reaches it there is no join block at all.
+      let jTys := if tT && tE then [] else m.jTys
       let ok :=
         (Γ[m.ca]?).isSome && (Γ[m.ca]? == Γ[m.cb]?) &&
         rT.1 && rE.1 &&
-        tysAre rT.2 thnR m.jTys &&
-        tysAre rE.2 elsR m.jTys
-      let r := wfGo env fuel (rE.2 ++ m.jTys) ps
+        (tT || tysAre rT.2 thnR jTys) &&
+        (tE || tysAre rE.2 elsR jTys)
+      let r := wfGo env fuel lbl (rE.2 ++ jTys) ps
       (ok && r.1, r.2)
-
-/-- Fuel large enough for every body written against this library. -/
-def fuel : Nat := 1000
+  | fuel + 1, lbl, Γ, .dloop l body :: ps =>
+      let Γcarry := Γ ++ l.pTys
+      let lbl' := (l.exitTys, some l.pTys) :: lbl
+      let rBody := wfGo env fuel lbl' Γcarry body
+      -- `caIdx` and `exitIdx` name carries, so they are checked against the
+      -- carry types once and hold at both the guard and the back edge.
+      let carryTy (i : Nat) : Option ClifTy := l.pTys[i]?
+      let guardOk := match l.guardIdx with
+        | none => true
+        | some i => (carryTy i).isSome && (carryTy i == Γ[l.cb]?)
+      let ok :=
+        tysAre Γ l.init l.pTys && guardOk &&
+        (rBody.2[l.ca]?).isSome && (rBody.2[l.ca]? == Γ[l.cb]?) &&
+        l.exitIdx.length == l.exitTys.length &&
+        (List.zip l.exitIdx l.exitTys).all (fun (i, t) => carryTy i == some t) &&
+        rBody.1 &&
+        -- A body where every path leaves or takes the edge itself never
+        -- reaches the back-edge test, so it need not supply carries for one.
+        (termsGo fuel body || tysAre rBody.2 l.cont l.pTys)
+      let r := wfGo env fuel lbl (rBody.2 ++ l.exitTys) ps
+      (ok && r.1, r.2)
+  | _ + 1, lbl, Γ, .br depth args :: ps =>
+      -- Nothing may follow: the block is closed and the slots stop here.
+      (ps.isEmpty && (lbl[depth]?).isSome && tysAre Γ args (((lbl[depth]?).map (·.1)).getD []),
+       Γ)
+  | _ + 1, lbl, Γ, .cont depth args :: ps =>
+      (ps.isEmpty && (lbl[depth]?).isSome &&
+        (carryOf lbl depth).isSome && tysAre Γ args ((carryOf lbl depth).getD []),
+       Γ)
 
 /-- Every reference names a slot that exists, with the type the use demands,
     and every annotation matches what its operands compute.
@@ -377,7 +522,7 @@ def fuel : Nat := 1000
     the loop defined, used after the loop, satisfies `wf` and is caught by
     Cranelift's verifier instead. -/
 def wf (env : FnEnv) (params : List ClifTy) (c : Code) : Bool :=
-  (wfGo env fuel params c).1
+  (wfGo env fuel [] params c).1
 
 -- ---------------------------------------------------------------------------
 -- Observations
@@ -397,6 +542,8 @@ def callsGo : Nat → List Piece → List Nat
       callsGo fuel pre ++ callsGo fuel body ++ callsGo fuel ps
   | fuel + 1, .ite _ thn els _ _ :: ps =>
       callsGo fuel thn ++ callsGo fuel els ++ callsGo fuel ps
+  | fuel + 1, .dloop _ body :: ps => callsGo fuel body ++ callsGo fuel ps
+  | fuel + 1, .br _ _ :: ps | fuel + 1, .cont _ _ :: ps => callsGo fuel ps
 
 /-- The FFI calls a body performs, in program order — one iteration of each
     loop, both arms of each branch. -/
@@ -418,6 +565,10 @@ structure CS where
   curPars : List (Val × ClifTy)
   cur     : List Inst              -- reversed
   done    : List BlockData
+  /-- Per enclosing loop, innermost first: the block it leaves to, and the block
+      its back edge returns to when it has one. `br` resolves against the first,
+      `cont` against the second. -/
+  labels  : List (Nat × Option Nat) := []
 
 def CS.fresh (s : CS) : Val × CS :=
   (⟨s.nextVal⟩, { s with nextVal := s.nextVal + 1 })
@@ -510,19 +661,28 @@ def emitPiece (fuel : Nat) (s : CS) : Piece → CS
   | .straight ss => emitStmts s ss
   | .ite m thn els thnR elsR => emitIte fuel s m thn els thnR elsR
   | .loop l pre body => emitLoop fuel s l pre body
+  | .dloop l body => emitDLoop fuel s l body
+  -- An out-of-range depth leaves a jump to a block nothing defines: visible in
+  -- a dump and rejected by Cranelift's verifier. `wf` is what rules it out.
+  | .br depth args =>
+      s.close (.jump ⟨((s.labels[depth]?).map (·.1)).getD 1000000⟩ (args.map s.get))
+  | .cont depth args =>
+      s.close (.jump ⟨((s.labels[depth]?).bind (·.2)).getD 1000000⟩ (args.map s.get))
 
 def emitLoop (fuel : Nat) (s : CS) (l : Loop) (pre body : List Piece) : CS :=
   -- Reserve ids so every branch can name its target before it exists.
   let headId := s.nextBlk
   let bodyId := headId + 1
   let exitId := headId + 2
+  let outerLabels := s.labels
   let s := { s with nextBlk := headId + 3 }
   let firstCarry := s.slots
   -- the current block ends by entering the loop
   let s := s.close (.jump ⟨headId⟩ (l.init.map s.get))
   -- head: carries as parameters, then the condition prefix, then the test
   let s := { s.open' headId l.pTys firstCarry with
-             slots := firstCarry + l.pTys.length }
+             slots := firstCarry + l.pTys.length,
+             labels := (exitId, some headId) :: outerLabels }
   let s := emitCode fuel s pre
   let fr := s.fresh
   let flag := fr.1
@@ -541,11 +701,59 @@ def emitLoop (fuel : Nat) (s : CS) (l : Loop) (pre body : List Piece) : CS :=
   let s := s.open' bodyId l.pTys firstCarry
   let s := { s with slots := bodySlots }
   let s := emitCode fuel s body
-  let s := s.close (.jump ⟨headId⟩ (l.cont.map s.get))
+  -- A body that leaves on every path has already closed its block; the back
+  -- edge would be a second terminator for a block that no longer exists.
+  let s := if termsGo fuel body then s
+           else s.close (.jump ⟨headId⟩ (l.cont.map s.get))
   -- exit: the code after the loop starts here, with the exit values as params
   let exitFirst := s.slots
   let s := s.open' exitId l.exitTys exitFirst
-  { s with slots := exitFirst + l.exitTys.length }
+  { s with slots := exitFirst + l.exitTys.length, labels := outerLabels }
+
+def emitDLoop (fuel : Nat) (s : CS) (l : DLoop) (body : List Piece) : CS :=
+  let outerLabels := s.labels
+  let bodyId := s.nextBlk
+  let exitId := bodyId + 1
+  let s := { s with nextBlk := bodyId + 2 }
+  -- The guard: tested on the initial carries, in the block already open.
+  let initVals := l.init.map s.get
+  let s :=
+    match l.guardIdx with
+    | some gi =>
+      let ca0 := (l.init[gi]?).getD 0
+      let fr := s.fresh
+      let flag := fr.1
+      let sG := { fr.2 with cur := .icmp flag l.cc (fr.2.get ca0) (fr.2.get l.cb) :: fr.2.cur }
+      let exit0 := l.exitIdx.map (fun i => (initVals[i]?).getD (⟨1000000⟩ : Val))
+      let te0 :=
+        if l.contOnTrue then (bodyId, initVals, exitId, exit0)
+        else (exitId, exit0, bodyId, initVals)
+      sG.close (.brif flag ⟨te0.1⟩ te0.2.1 ⟨te0.2.2.1⟩ te0.2.2.2)
+    | none => s.close (.jump ⟨bodyId⟩ initVals)
+  -- The body: the carries as its parameters, the trip, then the same test.
+  let firstCarry := s.slots
+  let s := { s.open' bodyId l.pTys firstCarry with
+             slots := firstCarry + l.pTys.length,
+             labels := (exitId, some bodyId) :: outerLabels }
+  let s := emitCode fuel s body
+  -- A body where every path leaves or takes the edge itself has already closed
+  -- its block; the back-edge test would be a second terminator for it.
+  let s :=
+    if termsGo fuel body then s
+    else
+      let contVals := l.cont.map s.get
+      let fr2 := s.fresh
+      let flag2 := fr2.1
+      let sB := { fr2.2 with
+                  cur := .icmp flag2 l.cc (fr2.2.get l.ca) (fr2.2.get l.cb) :: fr2.2.cur }
+      let exitN := l.exitIdx.map (fun i => (contVals[i]?).getD ⟨1000000⟩)
+      let teN :=
+        if l.contOnTrue then (bodyId, contVals, exitId, exitN)
+        else (exitId, exitN, bodyId, contVals)
+      sB.close (.brif flag2 ⟨teN.1⟩ teN.2.1 ⟨teN.2.2.1⟩ teN.2.2.2)
+  let exitFirst := s.slots
+  let s := s.open' exitId l.exitTys exitFirst
+  { s with slots := exitFirst + l.exitTys.length, labels := outerLabels }
 
 def emitIte (fuel : Nat) (s : CS) (m : IteMeta) (thn els : List Piece)
     (thnR elsR : List R) : CS :=
@@ -557,15 +765,21 @@ def emitIte (fuel : Nat) (s : CS) (m : IteMeta) (thn els : List Piece)
   let flag := fr.1
   let s := { fr.2 with cur := .icmp flag m.cc (fr.2.get m.ca) (fr.2.get m.cb) :: fr.2.cur }
   let s := s.close (.brif flag ⟨thnId⟩ [] ⟨elsId⟩ [])
+  let tT := termsGo fuel thn
+  let tE := termsGo fuel els
   let s := s.open' thnId [] s.slots
   let s := emitCode fuel s thn
-  let s := s.close (.jump ⟨joinId⟩ (thnR.map s.get))
+  let s := if tT then s else s.close (.jump ⟨joinId⟩ (thnR.map s.get))
   let s := s.open' elsId [] s.slots
   let s := emitCode fuel s els
-  let s := s.close (.jump ⟨joinId⟩ (elsR.map s.get))
-  let joinFirst := s.slots
-  let s := s.open' joinId m.jTys joinFirst
-  { s with slots := joinFirst + m.jTys.length }
+  let s := if tE then s else s.close (.jump ⟨joinId⟩ (elsR.map s.get))
+  -- Neither arm falls through: there is no join, and the branch is itself a
+  -- terminator, so `joinId` stays reserved and unused.
+  if tT && tE then s
+  else
+    let joinFirst := s.slots
+    let s := s.open' joinId m.jTys joinFirst
+    { s with slots := joinFirst + m.jTys.length }
 
 def emitCode : Nat → CS → List Piece → CS
   | 0, s, _ => s
@@ -594,6 +808,17 @@ def compileFn (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code) : Func
 /-- The base pointer every generator's entry block takes. -/
 def ptrParams : List ClifTy := [.i64]
 
+/-- A compiled function, viewed as the builder state `Clif.lean`'s extractors
+    read.
+
+    Those extractors — `launchesOf`, `loopsOf`, `bindsOf`, `callsOf` — use only
+    `sigs`, `fns` and `blocks`, and a `FuncData` has all three with the same
+    types. So a claim about an emitted program keeps its exact statement when the
+    generator behind it moves from `IRBuilder` to a term: what changes is how the
+    program is *produced*, not what is being read. -/
+def _root_.AlgorithmLib.IR.FuncData.asState (f : FuncData) : IRState :=
+  { sigs := f.sigs, fns := f.fns, blocks := f.blocks }
+
 -- ---------------------------------------------------------------------------
 -- `Sur` — a binder surface evaluated at elaboration time
 --
@@ -611,22 +836,44 @@ structure St where
   tys    : TyEnv          -- slot types, in definition order
   pieces : List Piece     -- reversed
   cur    : List Stmt      -- reversed: the open straight-line run
+  /-- The exit types of each enclosing loop, innermost first. A loop's own entry
+      is `none` while its condition prefix runs, because the exit types are what
+      that prefix returns — so `brk` from a prefix is the one thing the surface
+      cannot type, and says so. -/
+  labels : List (Option (List ClifTy) × Option (List ClifTy)) := []
+  /-- The first thing that went wrong, kept so `clif%` can refuse the term.
+      Only the first: everything after a failure is built against a scope the
+      program never meant to have, so later complaints are noise. -/
+  err    : Option String := none
   deriving Inhabited
 
 abbrev M := StateM St
 
-/-- The type the surface computed for a slot. A mistyped program stops here
-    rather than at the artifact: `panic!` names the operation that went wrong
-    while the file is still elaborating. -/
-private def tyOf (s : St) (r : R) : ClifTy :=
-  match s.tys[r]? with
-  | some t => t
-  | none => panic! s!"HProg.Sur: slot {r} is not in scope"
+/-- Record a failure, keeping the first. The state is otherwise left alone: a
+    surface that gave up must still hand back slot numbers its caller can use,
+    or the numbering shifts and one mistake reads as a hundred. -/
+private def note (s : St) (msg : String) : St :=
+  if s.err.isSome then s else { s with err := some msg }
+
+/-- The type the surface computed for a slot, and the types of a list of them.
+    An unknown slot yields `i64` and a recorded failure. -/
+private def tysAt (s : St) (rs : List R) : List ClifTy × St :=
+  rs.foldl (fun (ts, s) r =>
+    match s.tys[r]? with
+    | some t => (ts ++ [t], s)
+    | none => (ts ++ [default], note s s!"slot {r} is not in scope")) ([], s)
+
+private def tyOf (s : St) (r : R) : ClifTy := (s.tys[r]?).getD default
 
 private def bindOp (o : Op) : M R := fun s =>
   match o.check s.tys with
   | some t => (s.tys.length, { s with tys := s.tys ++ [t], cur := .op o :: s.cur })
-  | none => panic! s!"HProg.Sur: operation is not well-typed: {repr o}"
+  | none =>
+      -- The slot is still handed out, typed `i64`, so the caller's numbering
+      -- survives and the message names the one operation that failed.
+      (s.tys.length,
+       note { s with tys := s.tys ++ [default], cur := .op o :: s.cur }
+         s!"operation is not well-typed: {o.name}")
 
 private def bind0 (st : Stmt) : M Unit := fun s => ((), { s with cur := st :: s.cur })
 
@@ -673,14 +920,27 @@ def bitcast (ty : ClifTy) (a : R) : M R := bindOp (.bitcast ty a)
 def load (op : LoadOp) (a : R) : M R := bindOp (.load op a)
 def load64 (a : R) : M R := load { ty := .i64 } a
 def load32 (a : R) : M R := load { ty := .i32 } a
+def load_i8 (a : R) : M R := load { ty := .i8 } a
+def load_i16 (a : R) : M R := load { ty := .i16 } a
 def uload8_64 (a : R) : M R := load { kind := .uload8, ty := .i64 } a
+def sload8_64 (a : R) : M R := load { kind := .sload8, ty := .i64 } a
 def uload32_64 (a : R) : M R := load { kind := .uload32, ty := .i64 } a
 def loadF32 (a : R) : M R := load { ty := .f32, notrapAligned := true } a
 def loadF64 (a : R) : M R := load { ty := .f64, notrapAligned := true } a
 def loadF32x4 (a : R) : M R := load { ty := .f32x4, notrapAligned := true } a
+def loadI8x16 (a : R) : M R := load { ty := .i8x16, notrapAligned := true } a
 
 /-- Stores under `notrap aligned`, typed from the value's own slot. -/
-def store (v a : R) : M Unit := fun s => bind0 (.store (tyOf s v) v a) s
+def store (v a : R) : M Unit := fun s =>
+  let (ts, s) := tysAt s [v]
+  bind0 (.store (ts.headD default) v a) s
+/-- Stores exactly `ty` bytes, whatever width the value's slot carries. Use
+    these where the width is the point — `store` reads it off the value, so a
+    value that widened upstream would silently write past the field. -/
+def storeW (ty : ClifTy) (v a : R) : M Unit := bind0 (.store ty v a)
+def storeI32 (v a : R) : M Unit := storeW .i32 v a
+def storeI64 (v a : R) : M Unit := storeW .i64 v a
+
 def storeUnaligned (v a : R) : M Unit := bind0 (.storeUnaligned v a)
 def istore8 (v a : R) : M Unit := bind0 (.istore8 v a)
 
@@ -689,12 +949,36 @@ def istore8 (v a : R) : M Unit := bind0 (.istore8 v a)
 def call (fn : Nat) (args : List R) : M R := fun s =>
   match (s.env.sigOf fn).bind (·.result) with
   | some t => (s.tys.length, { s with tys := s.tys ++ [t], cur := .call fn args :: s.cur })
-  | none => panic! s!"HProg.Sur: fn{fn} is undeclared or has no result"
+  | none =>
+      (s.tys.length,
+       note { s with tys := s.tys ++ [default], cur := .call fn args :: s.cur }
+         s!"fn{fn} is undeclared or has no result")
 
 def callVoid (fn : Nat) (args : List R) : M Unit := bind0 (.callVoid fn args)
 
+/-- `min(a, b)` with the hardware's NaN behaviour rather than IEEE
+    `minimumNumber`. Cranelift lowers exactly this shape — the wasm `pmin`
+    pattern — to a single `minps`, where `fmin` costs a NaN-correct sequence. -/
+def pmin (ty : ClifTy) (a b : R) : M R := do
+  bitselect (← bitcast ty (← fcmp .lt a b)) a b
+
+/-- `max(a, b)`, likewise a single `maxps`. Note the reversed compare: the rule
+    Cranelift matches is `bitselect(fcmp lt b a, a, b)`. -/
+def pmax (ty : ClifTy) (a b : R) : M R := do
+  bitselect (← bitcast ty (← fcmp .lt b a)) a b
+
 /-- The address of `base + off`, the shape every fixed-offset access takes. -/
 def absAddr (base : R) (off : Int) : M R := do iadd base (← iconst64 off)
+
+/-- An `i64` immediate and the operation that consumes it, which is how every
+    constant operand reaches an instruction. -/
+def iaddImm (a : R) (imm : Int) : M R := do iadd a (← iconst64 imm)
+
+/-- Store at `base + offset`, under default memory flags. -/
+def storeAt (base : R) (offset : Nat) (val : R) : M Unit := do
+  storeUnaligned val (← absAddr base offset)
+def ishlImm (a : R) (imm : Int) : M R := do ishl a (← iconst64 imm)
+def ushrImm (a : R) (imm : Int) : M R := do ushr a (← iconst64 imm)
 
 /-- The entry block's base pointer. -/
 def basePtr : R := 0
@@ -716,6 +1000,8 @@ def exitIfEq (a b : R) : Cond := exitIf .eq a b
 def exitIfSGe (a b : R) : Cond := exitIf .sge a b
 def contIfULt (a b : R) : Cond := contIf .ult a b
 def contIfSLt (a b : R) : Cond := contIf .slt a b
+def exitIfSGt (a b : R) : Cond := exitIf .sgt a b
+def contIfULe (a b : R) : Cond := contIf .ule a b
 
 private def flushAux : M Unit := fun s =>
   ((), if s.cur.isEmpty then s
@@ -726,6 +1012,37 @@ private def regionC (m : M α) : M (α × List Piece) := fun s =>
   let (a, s') := (do let a ← m; flushAux; pure a) { s with cur := [], pieces := [] }
   ((a, s'.pieces.reverse), { s' with cur := s.cur, pieces := s.pieces })
 
+/-- Leave the `depth`-th enclosing loop, innermost first, with `args` as its
+    exit values. Their types must be the ones the loop's normal exit exports. -/
+def brkTo (depth : Nat) (args : List R) : M Unit := fun s0 =>
+  let (_, s) := flushAux s0
+  let (argTys, s) := tysAt s args
+  let s := { s with pieces := .br depth args :: s.pieces }
+  match (s.labels[depth]?).map (·.1) with
+  | none => ((), note s s!"brk {depth} is outside that many loops")
+  | some none => ((), note s "brk from a loop's condition prefix")
+  | some (some tys) =>
+      if argTys == tys then ((), s)
+      else ((), note s s!"brk carries {tyListName argTys}, but the loop exits with {tyListName tys}")
+
+/-- Go round the `depth`-th enclosing top-tested loop again. -/
+def contTo (depth : Nat) (args : List R) : M Unit := fun s0 =>
+  let (_, s) := flushAux s0
+  let (argTys, s) := tysAt s args
+  let s := { s with pieces := .cont depth args :: s.pieces }
+  match (s.labels[depth]?).map (·.2) with
+  | none => ((), note s s!"continue {depth} is outside that many loops")
+  | some none => ((), note s "continue names a loop with no header to return to")
+  | some (some tys) =>
+      if argTys == tys then ((), s)
+      else ((), note s s!"continue carries {tyListName argTys}, but the loop carries {tyListName tys}")
+
+/-- Go round the innermost enclosing loop again. -/
+def continueWith (args : List R) : M Unit := contTo 0 args
+
+/-- Leave the innermost enclosing loop. -/
+def brk (args : List R) : M Unit := brkTo 0 args
+
 /-- A top-tested loop over `n` carried slots.
 
     `head` receives the carries and yields the condition, the slots to export
@@ -735,13 +1052,16 @@ private def regionC (m : M α) : M (α × List Piece) := fun s =>
 def wloop (inits : List R) (head : List R → M (Cond × List R × α))
     (body : List R → α → M (List R)) : M (List R) := fun s0 => Id.run do
   let (_, s) := flushAux s0
-  let pTys := inits.map (tyOf s)
+  let (pTys, s) := tysAt s inits
   let firstCarry := s.tys.length
   let carries := (List.range inits.length).map (firstCarry + ·)
-  let s := { s with tys := s.tys ++ pTys }
+  let outerLabels := s.labels
+  let s := { s with tys := s.tys ++ pTys, labels := (none, some pTys) :: outerLabels }
   let (((c, exitR, x), preCode), s) := regionC (head carries) s
-  let exitTys := exitR.map (tyOf s)
+  let (exitTys, s) := tysAt s exitR
+  let s := { s with labels := (some exitTys, some pTys) :: outerLabels }
   let ((cont, bodyCode), s) := regionC (body carries x) s
+  let s := { s with labels := outerLabels }
   -- The code after the loop resumes at the exit block, whose parameters are
   -- numbered after every slot the head and body defined.
   let exits := (List.range exitR.length).map (s.tys.length + ·)
@@ -749,6 +1069,39 @@ def wloop (inits : List R) (head : List R → M (Cond × List R × α))
   let l : Loop := { pTys, init := inits, cc := c.cc, ca := c.a, cb := c.b,
                     exitOnTrue := c.exitOnTrue, cont, exitR, exitTys }
   return (exits, { sAfter with pieces := .loop l preCode bodyCode :: s.pieces })
+
+/-- A bottom-tested loop over `n` carried slots.
+
+    `guardIdx` defaults to *no* entry guard, because that is the failure that
+    shows: a loop that should have been skipped runs once and the answer is
+    wrong in a way a test sees. Defaulting to a guard on carry 0 fails the other
+    way — a copy loop whose counter starts at zero and whose bound is zero
+    exits before doing anything, and every shape check still passes.
+
+    The test reads carry `caIdx` against `cb`, which the loop does not change,
+    and `exitIdx` says which carries the code after the loop receives. `body`
+    yields the next carries; the test is made on those, so the body always runs
+    at least the work of one trip before the loop can be left — and never runs
+    at all if the guard fails on `inits`. -/
+def dwloop (inits : List R) (cc : ICmpCond) (cb : R)
+    (contOnTrue : Bool) (exitIdx : List Nat)
+    (body : List R → M (R × List R)) (guardIdx : Option Nat := none) :
+    M (List R) := fun s0 => Id.run do
+  let (_, s) := flushAux s0
+  let (pTys, s) := tysAt s inits
+  let exitTys := exitIdx.map (fun i => (pTys[i]?).getD default)
+  let firstCarry := s.tys.length
+  let carries := (List.range inits.length).map (firstCarry + ·)
+  let outerLabels := s.labels
+  let s := { s with tys := s.tys ++ pTys,
+                    labels := (some exitTys, some pTys) :: outerLabels }
+  let (((ca, cont), bodyCode), s) := regionC (body carries) s
+  let s := { s with labels := outerLabels }
+  let exits := (List.range exitIdx.length).map (s.tys.length + ·)
+  let sAfter := { s with tys := s.tys ++ exitTys }
+  let l : DLoop := { pTys, init := inits, cc, ca, guardIdx, cb, contOnTrue,
+                     cont, exitIdx, exitTys }
+  return (exits, { sAfter with pieces := .dloop l bodyCode :: s.pieces })
 
 /-- One-carry loop, with the carry as a plain binder. -/
 def wloop1 (init : R) (head : R → M (Cond × List R × α))
@@ -761,15 +1114,74 @@ def wloop2 (a b : R) (head : R → R → M (Cond × List R × α))
   wloop [a, b] (fun cs => head (cs.headD 0) (cs.getD 1 0))
         (fun cs x => body (cs.headD 0) (cs.getD 1 0) x)
 
+/-- A counted loop over `[0, limit)`, carrying nothing else — the shape most
+    generators want, and the one `IR.forLoop` has.
+
+    Writing it here rather than at each call site also fixes the emission order
+    once: the limit is a slot the caller already made, the counter's `iconst 0`
+    is emitted just before entry, and the increment comes after everything the
+    body did. -/
+def forLoop (limit : R) (body : R → M Unit) : M Unit := do
+  let _ ← wloop1 (← iconst64 0)
+    (head := fun i => return (contIfULt i limit, ([] : List R), ()))
+    (body := fun i _ => do body i; return [← iaddImm i 1])
+
+/-- A counted loop from `start`, as `IR.forLoopFromTo` does. -/
+def forLoopFromTo (start limit : R) (body : R → M Unit) : M Unit := do
+  let _ ← wloop1 start
+    (head := fun i => return (contIfULt i limit, ([] : List R), ()))
+    (body := fun i _ => do body i; return [← iaddImm i 1])
+
+/-- A counted loop threading one accumulator, as `IR.forLoopAcc` does. The
+    accumulator's initial value is a slot the caller made, so it is emitted
+    before the counter's. -/
+def forLoopAcc (limit acc0 : R) (body : R → R → M R) : M R := do
+  let e ← wloop2 (← iconst64 0) acc0
+    (head := fun i a => return (contIfULt i limit, [a], ()))
+    (body := fun i a _ => do
+      let nextAcc ← body i a
+      return [← iaddImm i 1, nextAcc])
+  return e.headD 0
+
+/-- A counted loop threading two accumulators, as `IR.forLoopAcc2` does. -/
+def forLoopAcc2 (limit ia ib : R) (body : R → R → R → M (R × R)) : M (R × R) := do
+  let e ← wloop [← iconst64 0, ia, ib]
+    (head := fun c => return (contIfULt (c.headD 0) limit, c.drop 1, ()))
+    (body := fun c _ => do
+      let (nx, ny) ← body (c.headD 0) (c.getD 1 0) (c.getD 2 0)
+      return [← iaddImm (c.headD 0) 1, nx, ny])
+  return (e.headD 0, e.getD 1 0)
+
+/-- A while loop over two carries, as `IR.whileLoop2` does: the condition is
+    computed at the head and both carries leave. -/
+def whileLoop2 (ia ib : R) (cond : R → R → M R) (body : R → R → M (R × R)) :
+    M (R × R) := do
+  let e ← wloop2 ia ib
+    (head := fun x y => do
+      let ok ← cond x y
+      let z ← iconst .i8 0
+      return (contIf .ne ok z, [x, y], ()))
+    (body := fun x y _ => do
+      let (nx, ny) ← body x y
+      return [nx, ny])
+  return (e.headD 0, e.getD 1 0)
+
 /-- Two-way branch with join values: each arm yields its exports, and the
     result slots carry whichever arm ran. -/
 def ifte (cc : ICmpCond) (a b : R) (thn els : M (List R)) : M (List R) :=
   fun s0 => Id.run do
     let (_, s) := flushAux s0
     let ((thnR, thnC), s) := regionC thn s
-    let jTys := thnR.map (tyOf s)
+    let (thnTys, s) := tysAt s thnR
     let ((elsR, elsC), s) := regionC els s
-    let joins := (List.range thnR.length).map (s.tys.length + ·)
+    let (elsTys, s) := tysAt s elsR
+    -- The join carries what the arms that reach it export; an arm that leaves
+    -- exports nothing, and when neither reaches it there is no join.
+    let jTys :=
+      if !terminates thnC then thnTys
+      else if !terminates elsC then elsTys
+      else []
+    let joins := (List.range jTys.length).map (s.tys.length + ·)
     let sAfter := { s with tys := s.tys ++ jTys }
     return (joins, { sAfter with pieces := .ite ⟨cc, a, b, jTys⟩ thnC elsC thnR elsR :: s.pieces })
 
@@ -783,6 +1195,30 @@ def build (env : FnEnv) (params : List ClifTy) (m : M Unit) : Code :=
   let (_, s) := (do m; flushAux)
     { env, tys := params, pieces := [], cur := [] }
   s.pieces.reverse
+
+/-- Which top-level piece first makes the body ill-formed, found by checking
+    growing prefixes. Only ever run on a body already known to be bad, so its
+    quadratic shape costs nothing on the path everything takes. -/
+private def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat :=
+  (List.range c.length).find? (fun k => !(wfGo env fuel [] params (c.take (k + 1))).1)
+    |>.getD c.length
+
+/-- The term a builder denotes, or why it is not one.
+
+    Both failures a body can have are reported here rather than reaching an
+    artifact: the surface's own — an operation whose operands do not typecheck,
+    a slot out of scope, a `brk` that does not match its loop — and `wf`, which
+    catches what the surface hands out correctly but assembles wrongly. -/
+def buildChecked (env : FnEnv) (params : List ClifTy) (m : M Unit) :
+    Except String Code :=
+  let (_, s) := (do m; flushAux)
+    { env, tys := params, pieces := [], cur := [] }
+  let c := s.pieces.reverse
+  match s.err with
+  | some e => .error e
+  | none =>
+      if wf env params c then .ok c
+      else .error s!"the body is not well-formed, from piece {firstBadPiece env params c} on"
 
 end Sur
 
@@ -888,6 +1324,15 @@ instance : ToExpr Loop where
         toExpr l.exitOnTrue, toExpr l.cont, toExpr l.exitR, toExpr l.exitTys]
 
 open Lean in
+instance : ToExpr DLoop where
+  toTypeExpr := mkConst ``DLoop
+  toExpr l :=
+    mkAppN (mkConst ``DLoop.mk)
+      #[toExpr l.pTys, toExpr l.init, toExpr l.cc, toExpr l.ca, toExpr l.guardIdx,
+        toExpr l.cb, toExpr l.contOnTrue, toExpr l.cont, toExpr l.exitIdx,
+        toExpr l.exitTys]
+
+open Lean in
 instance : ToExpr IteMeta where
   toTypeExpr := mkConst ``IteMeta
   toExpr m :=
@@ -903,6 +1348,9 @@ partial def pieceToExpr : Piece → Expr
   | .ite m thn els thnR elsR =>
       mkAppN (mkConst ``Piece.ite)
         #[toExpr m, codeToExpr thn, codeToExpr els, toExpr thnR, toExpr elsR]
+  | .dloop l body => mkApp2 (mkConst ``Piece.dloop) (toExpr l) (codeToExpr body)
+  | .br depth args => mkApp2 (mkConst ``Piece.br) (toExpr depth) (toExpr args)
+  | .cont depth args => mkApp2 (mkConst ``Piece.cont) (toExpr depth) (toExpr args)
 where
   codeToExpr (body : List Piece) : Expr :=
     body.foldr (fun p acc =>
@@ -919,23 +1367,33 @@ instance : ToExpr Piece where
 -- The `clif%` elaborator
 -- ---------------------------------------------------------------------------
 
-open Lean Meta Elab Term in
-unsafe def evalCodeUnsafe (e : Expr) : TermElabM Code :=
-  evalExpr Code (mkConst ``Code) e
+open Lean in
+private def codeResultType : Expr :=
+  mkApp2 (mkConst ``Except [levelZero, levelZero]) (mkConst ``String) (mkConst ``Code)
 
-instance : Inhabited (Lean.Elab.TermElabM Code) := ⟨pure []⟩
+open Lean Meta Elab Term in
+unsafe def evalCodeUnsafe (e : Expr) : TermElabM (Except String Code) :=
+  evalExpr (Except String Code) codeResultType e
+
+instance : Inhabited (Lean.Elab.TermElabM (Except String Code)) := ⟨pure (.ok [])⟩
 
 @[implemented_by evalCodeUnsafe]
-opaque evalCode (e : Lean.Expr) : Lean.Elab.TermElabM Code
+opaque evalCode (e : Lean.Expr) : Lean.Elab.TermElabM (Except String Code)
 
 open Lean Elab Term in
 /-- `clif% env params do …` — evaluate a `Sur.M Unit` builder while elaborating
     and splice the `Code` literal it builds. The binder surface is ordinary
-    do-notation; what the artifact carries is first-order data. -/
+    do-notation; what the artifact carries is first-order data.
+
+    The term is checked here, so a body that does not typecheck or does not
+    satisfy `wf` is an error on the block that wrote it. Nobody writes that
+    check and there is nothing to forget: every use of this syntax has it, and
+    none of it survives elaboration. -/
 elab "clif% " env:term:max params:term:max b:term : term => do
-  let e ← elabTermEnsuringType (← ``(Sur.build $env $params $b)) (Lean.mkConst ``Code)
+  let e ← elabTermEnsuringType (← ``(Sur.buildChecked $env $params $b)) codeResultType
   synthesizeSyntheticMVarsNoPostponing
-  let code ← evalCode (← instantiateMVars e)
-  return Lean.toExpr code
+  match ← evalCode (← instantiateMVars e) with
+  | .error msg => throwError "clif%: {msg}"
+  | .ok code => return Lean.toExpr code
 
 end AlgorithmLib.HProg

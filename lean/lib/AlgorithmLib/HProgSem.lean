@@ -209,6 +209,24 @@ private def zipBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) : Op
       | none => none
   | _, _ => none
 
+/-- A bitwise operation applied to two integers or lane-wise to two vectors.
+
+    `zipBits` is the float-shaped twin: it rejects integer scalars because the
+    operations that use it are float ones. The bitwise operations apply to both,
+    and `Op.check` accepts a vector for every one of them, so the semantics has
+    to as well or a term can pass the checker and get stuck here. -/
+private def zipIntBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) : Option V :=
+  match u, v with
+  | .sc t x, .sc t' y => if t == t' then some (norm t (f t x y)) else none
+  | .vec t xs, .vec t' ys =>
+      match t.lanes with
+      | some (lane, _) =>
+          if t == t' && xs.size == ys.size then
+            some (.vec t (xs.zipWith (fun x y => f lane x y &&& widthMask lane) ys))
+          else none
+      | none => none
+  | _, _ => none
+
 private def isNaNBits (t : ClifTy) (x : UInt64) : Bool :=
   match t with
   | .f32 => (x &&& 0x7f800000) == 0x7f800000 && (x &&& 0x007fffff) != 0
@@ -266,6 +284,23 @@ private def cmpF64 : FloatCC → Float → Float → Bool
 
 private def boolV (b : Bool) : V := .sc .i8 (if b then 1 else 0)
 
+/-- A comparison applied to two integers, or lane-wise to two vectors, where a
+    true lane is all ones at the lane's own width — the mask `vhighBits` and
+    `bitselect` read. -/
+private def zipIntCmp (c : ICmpCond) (u v : V) : Option V :=
+  match u, v with
+  | .sc t x, .sc t' y => if t == t' then some (boolV (cmpInt c t x y)) else none
+  | .vec t xs, .vec t' ys =>
+      match t.lanes with
+      | some (lane, _) =>
+          if t == t' && xs.size == ys.size then
+            some (.vec t (xs.zipWith
+              (fun x y => if cmpInt c lane x y then widthMask lane else 0) ys))
+          else none
+      | none => none
+  | _, _ => none
+
+
 /-- Saturating float-to-unsigned: NaN and everything below zero give zero, and
     everything above the type's range gives its maximum. -/
 private def satToUint (ty : ClifTy) (x : Float) : V :=
@@ -286,10 +321,10 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
   -- The shift amount is taken modulo the *shifted operand's* width, not 64.
   | .ishl a b => bin Γ a b fun t x y => some (norm t (x <<< (y % UInt64.ofNat t.width)))
   | .ushr a b => bin Γ a b fun t x y => some (norm t ((x &&& widthMask t) >>> (y % UInt64.ofNat t.width)))
-  | .band a b => bin Γ a b fun t x y => some (norm t (x &&& y))
-  | .bandNot a b => bin Γ a b fun t x y => some (norm t (x &&& ~~~y))
-  | .bor a b => bin Γ a b fun t x y => some (norm t (x ||| y))
-  | .bxor a b => bin Γ a b fun t x y => some (norm t (x ^^^ y))
+  | .band a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x &&& y)
+  | .bandNot a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x &&& ~~~y)
+  | .bor a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x ||| y)
+  | .bxor a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x ^^^ y)
   | .ineg a => do
       let (.sc t x) ← get Γ a | none
       some (norm t (0 - x))
@@ -310,7 +345,7 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
   | .sextend64 a => do
       let (.sc t x) ← get Γ a | none
       some (ofInt .i64 (signed t x))
-  | .icmp c a b => bin Γ a b fun t x y => some (boolV (cmpInt c t x y))
+  | .icmp c a b => do zipIntCmp c (← get Γ a) (← get Γ b)
   | .select c a b => do
       let cv ← get Γ c
       if isTrue cv then get Γ a else get Γ b
@@ -639,7 +674,12 @@ def slotsGo : Nat → Nat → List Piece → Nat
       slotsGo fuel (afterBody + l.exitTys.length) ps
   | fuel + 1, n, .ite m thn els _ _ :: ps =>
       let afterEls := slotsGo fuel (slotsGo fuel n thn) els
-      slotsGo fuel (afterEls + m.jTys.length) ps
+      let jn := if termsGo fuel thn && termsGo fuel els then 0 else m.jTys.length
+      slotsGo fuel (afterEls + jn) ps
+  | fuel + 1, n, .dloop l body :: ps =>
+      let afterBody := slotsGo fuel (n + l.pTys.length) body
+      slotsGo fuel (afterBody + l.exitTys.length) ps
+  | fuel + 1, n, .br _ _ :: ps | fuel + 1, n, .cont _ _ :: ps => slotsGo fuel n ps
 
 /-- The number of slots in scope after `c`, starting from `n`. -/
 def slotsOf (n : Nat) (c : Code) : Nat := slotsGo fuel n c
@@ -729,6 +769,16 @@ def runStmts (cfg : Cfg) : Env → World → List Stmt → Outcome Env
       | .ok Γ' w' => runStmts cfg Γ' w' ss
       | .stuck m => .stuck m
 
+/-- What running a region can do: finish, leave an enclosing loop, or get stuck.
+    `brk` carries the environment it left from, because the exit block binds its
+    parameters at a static index that may be past what the abandoned path had. -/
+inductive CodeRes where
+  | ok    (Γ : Env) (w : World)
+  | brk   (depth : Nat) (Γ : Env) (vals : List V) (w : World)
+  /-- Go round the `depth`-th enclosing top-tested loop again. -/
+  | cont  (depth : Nat) (vals : List V) (w : World)
+  | stuck (why : String)
+
 mutual
 
 /-- Fuel bounds every loop iteration and every nested region, **and is the
@@ -736,9 +786,26 @@ mutual
     reason it is written this way: a `partial def` runs the same programs and
     proves nothing, because Lean gives partial definitions no equations. These
     have equations, so `compile_sound` is a statement one can actually work on. -/
-def runPiece : Nat → Cfg → Env → World → Piece → Outcome Env
+def runPiece : Nat → Cfg → Env → World → Piece → CodeRes
   | 0, _, _, _, _ => .stuck "step budget exhausted"
-  | _ + 1, cfg, Γ, w, .straight ss => runStmts cfg Γ w ss
+  | _ + 1, cfg, Γ, w, .straight ss =>
+      match runStmts cfg Γ w ss with
+      | .ok Γ' w' => .ok Γ' w'
+      | .stuck m => .stuck m
+  | _ + 1, _, Γ, w, .br depth args =>
+      match args.mapM (get Γ) with
+      | none => .stuck "branch-out value is not in scope"
+      | some vs => .brk depth Γ vs w
+  | _ + 1, _, Γ, w, .cont depth args =>
+      match args.mapM (get Γ) with
+      | none => .stuck "loop carry is not in scope"
+      | some vs => .cont depth vs w
+  | fuel + 1, cfg, Γ, w, .dloop l body =>
+      let n0 := Γ.size
+      let afterBody := slotsOf (n0 + l.pTys.length) body
+      match l.init.mapM (get Γ) with
+      | none => .stuck "loop initializer is not in scope"
+      | some inits => dtrip fuel cfg Γ w l body n0 afterBody inits l.guardIdx.isSome
   | fuel + 1, cfg, Γ, w, .loop l pre body =>
       let n0 := Γ.size
       let afterBody := slotsOf (slotsOf (n0 + l.pTys.length) pre) body
@@ -758,6 +825,8 @@ def runPiece : Nat → Cfg → Env → World → Piece → Outcome Env
             if cmpInt m.cc t x y then (thn, thnR, Γ) else (els, elsR, bindAt Γ thnEnd [])
           match runCode fuel cfg Γ0 w arm with
           | .stuck s => .stuck s
+          | .brk d Γb vs w' => .brk d Γb vs w'
+          | .cont d vs w' => .cont d vs w'
           | .ok Γ' w' =>
               match exports.mapM (get Γ') with
               | none => .stuck "branch export is not in scope"
@@ -765,13 +834,20 @@ def runPiece : Nat → Cfg → Env → World → Piece → Outcome Env
       | _, _ => .stuck "branch condition is not in scope"
 
 /-- One trip of a loop: bind the carries, run the condition prefix, test, then
-    either leave with the exit values or run the body and go round again. -/
+    either leave with the exit values or run the body and go round again.
+
+    A `br 0` from either region leaves here, binding its values where the normal
+    exit would have; a deeper one is passed out with its depth reduced. -/
 def iter : Nat → Cfg → Env → World → Loop → List Piece → List Piece →
-    Nat → Nat → List V → Outcome Env
+    Nat → Nat → List V → CodeRes
   | 0, _, _, _, _, _, _, _, _, _ => .stuck "loop exceeded its step budget"
   | fuel + 1, cfg, Γ, w, l, pre, body, n0, afterBody, carries =>
       match runCode fuel cfg (bindAt Γ n0 carries) w pre with
       | .stuck s => .stuck s
+      | .brk 0 Γb vs w' => .ok (bindAt Γb afterBody vs) w'
+      | .brk (d + 1) Γb vs w' => .brk d Γb vs w'
+      | .cont 0 vs w' => iter fuel cfg Γ w' l pre body n0 afterBody vs
+      | .cont (d + 1) vs w' => .cont d vs w'
       | .ok Γ1 w1 =>
           match get Γ1 l.ca, get Γ1 l.cb with
           | some (.sc t x), some (.sc _ y) =>
@@ -782,18 +858,68 @@ def iter : Nat → Cfg → Env → World → Loop → List Piece → List Piece 
               else
                 match runCode fuel cfg Γ1 w1 body with
                 | .stuck s => .stuck s
+                | .brk 0 Γb vs w2 => .ok (bindAt Γb afterBody vs) w2
+                | .brk (d + 1) Γb vs w2 => .brk d Γb vs w2
+                | .cont 0 vs w2 => iter fuel cfg Γ w2 l pre body n0 afterBody vs
+                | .cont (d + 1) vs w2 => .cont d vs w2
                 | .ok Γ2 w2 =>
                     match l.cont.mapM (get Γ2) with
                     | none => .stuck "loop carry is not in scope"
                     | some next => iter fuel cfg Γ w2 l pre body n0 afterBody next
           | _, _ => .stuck "loop condition is not in scope"
 
-def runCode : Nat → Cfg → Env → World → List Piece → Outcome Env
+/-- One trip of a bottom-tested loop. `first` says the test has not run yet, so
+    the guard is made before the body rather than after it; every later call
+    arrives with the test already passed. -/
+def dtrip : Nat → Cfg → Env → World → DLoop → List Piece →
+    Nat → Nat → List V → Bool → CodeRes
+  | 0, _, _, _, _, _, _, _, _, _ => .stuck "loop exceeded its step budget"
+  | fuel + 1, cfg, Γ, w, l, body, n0, afterBody, carries, first =>
+      let leave (Γ' : Env) (vs : List V) (w' : World) : CodeRes :=
+        match l.exitIdx.mapM (fun i => vs[i]?) with
+        | none => .stuck "loop exit value is not a carry"
+        | some outs => .ok (bindAt Γ' afterBody outs) w'
+      -- At the guard the tested value is a carry; at the back edge it is a slot
+      -- the body defined, so the two reads differ.
+      let testAt (Γ' : Env) (v : Option V) : Option Bool := do
+        let (.sc t x) ← v | none
+        let (.sc _ y) ← get Γ' l.cb | none
+        pure (cmpInt l.cc t x y)
+      if first then
+        match testAt Γ (l.guardIdx.bind (carries[·]?)) with
+        | none => .stuck "loop condition is not in scope"
+        | some c =>
+            if c == l.contOnTrue then
+              dtrip fuel cfg Γ w l body n0 afterBody carries false
+            else leave Γ carries w
+      else
+        match runCode fuel cfg (bindAt Γ n0 carries) w body with
+        | .stuck s => .stuck s
+        | .brk 0 Γb vs w' => .ok (bindAt Γb afterBody vs) w'
+        | .brk (d + 1) Γb vs w' => .brk d Γb vs w'
+        | .cont 0 vs w2 => dtrip fuel cfg Γ w2 l body n0 afterBody vs false
+        | .cont (d + 1) vs w' => .cont d vs w'
+        | .ok Γ2 w2 =>
+            -- Reaching here means the body fell through, so it did supply
+            -- carries and a value for the back-edge test.
+            match l.cont.mapM (get Γ2) with
+            | none => .stuck "loop carry is not in scope"
+            | some next =>
+                match testAt Γ2 (get Γ2 l.ca) with
+                | none => .stuck "loop condition is not in scope"
+                | some c =>
+                    if c == l.contOnTrue then
+                      dtrip fuel cfg Γ w2 l body n0 afterBody next false
+                    else leave Γ2 next w2
+
+def runCode : Nat → Cfg → Env → World → List Piece → CodeRes
   | 0, _, _, _, _ => .stuck "step budget exhausted"
   | _ + 1, _, Γ, w, [] => .ok Γ w
   | fuel + 1, cfg, Γ, w, p :: ps =>
       match runPiece fuel cfg Γ w p with
       | .stuck s => .stuck s
+      | .brk d Γb vs w' => .brk d Γb vs w'
+      | .cont d vs w' => .cont d vs w'
       | .ok Γ' w' => runCode fuel cfg Γ' w' ps
 end
 
@@ -802,6 +928,8 @@ end
 def run (cfg : Cfg) (args : List V) (w : World) (c : Code) : Outcome (List Obs) :=
   match runCode cfg.steps cfg args.toArray w c with
   | .stuck m => .stuck m
+  | .brk d _ _ _ => .stuck s!"br {d} leaves the function body"
+  | .cont d _ _ => .stuck s!"continue {d} leaves the function body"
   | .ok _ w' => .ok w'.obs.reverse w'
 
 

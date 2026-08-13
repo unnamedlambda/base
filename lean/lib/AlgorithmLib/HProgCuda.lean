@@ -1,0 +1,184 @@
+import AlgorithmLib.Cuda
+import AlgorithmLib.HProgFFI
+
+/-!
+# The typed CUDA layer, over `HProg.Sur`
+
+Not re-exported from the root module: `Cuda.lean` imports the root, so a
+generator that wants this surface imports `AlgorithmLib.HProgCuda` directly.
+
+`Cuda.lean` carries the descriptions — `Kernel`, `Kernel.Geom`, `Tensor s`,
+`BufferSlot s` — and the `IRBuilder` wrappers that launch and move them. The
+descriptions are surface-independent: a `Geom` is six `Nat`s and a `Tensor` is a
+slot number, so nothing here re-declares them. What is mirrored is the *call*
+side, in the surface a term is written in.
+
+The elaboration obligations come across unchanged. `launch1/2/3/4` still check
+each argument's shape against the kernel's declared parameters by `rfl`, and
+still derive the arity `launchAt` needs from that check, so a mismatch is a
+build error on the generator rather than a wrong grid on the device.
+-/
+
+namespace AlgorithmLib.HProg.Sur
+
+open AlgorithmLib.IR
+open AlgorithmLib.Tensor (Dim Shape)
+
+/-- Write the bind descriptor and issue the launch. Buffers are named by slot,
+    one `i32` per binding at `bindOff + 4i`, which is the table the kernel's
+    parameters were emitted against. -/
+def kernelLaunchAt
+    (k : AlgorithmLib.Kernel) (cuda : IR.CudaSetup) (ptr : R)
+    (bindOff : Nat) (bufs : List R)
+    (_harity : bufs.length = k.params.length := by rfl) : M Unit := do
+  let expected := k.params.length
+  for (b, i) in bufs.zip (List.range bufs.length) do
+    storeUnaligned b (← iaddImm ptr (bindOff + i * 4))
+  let arity32 ← iconst32 expected
+  let ptxOff64  ← iconst64 k.ptxOff
+  let bindOff64 ← iconst64 bindOff
+  let gx ← iconst32 k.geom.gridX
+  let gy ← iconst32 k.geom.gridY
+  let gz ← iconst32 k.geom.gridZ
+  let bx ← iconst32 k.geom.blockX
+  let by_ ← iconst32 k.geom.blockY
+  let bz ← iconst32 k.geom.blockZ
+  let _ ← cudaLaunch cuda ptr ptxOff64 arity32 bindOff64 gx gy gz bx by_ bz
+  pure ()
+
+/-- One binding, shape checked against `k.params`. -/
+def launch1 {s1 : Shape}
+    (k : AlgorithmLib.Kernel) (cuda : IR.CudaSetup) (ptr : R) (bindOff : Nat)
+    (t1 : Tensor s1)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1] := by rfl) : M Unit :=
+  kernelLaunchAt k cuda ptr bindOff [t1.slot]
+    (by simpa using (congrArg List.length hsh).symm)
+
+def launch2 {s1 s2 : Shape}
+    (k : AlgorithmLib.Kernel) (cuda : IR.CudaSetup) (ptr : R) (bindOff : Nat)
+    (t1 : Tensor s1) (t2 : Tensor s2)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2] := by rfl) : M Unit :=
+  kernelLaunchAt k cuda ptr bindOff [t1.slot, t2.slot]
+    (by simpa using (congrArg List.length hsh).symm)
+
+def launch3 {s1 s2 s3 : Shape}
+    (k : AlgorithmLib.Kernel) (cuda : IR.CudaSetup) (ptr : R) (bindOff : Nat)
+    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2, s3] := by rfl) : M Unit :=
+  kernelLaunchAt k cuda ptr bindOff [t1.slot, t2.slot, t3.slot]
+    (by simpa using (congrArg List.length hsh).symm)
+
+def launch4 {s1 s2 s3 s4 : Shape}
+    (k : AlgorithmLib.Kernel) (cuda : IR.CudaSetup) (ptr : R) (bindOff : Nat)
+    (t1 : Tensor s1) (t2 : Tensor s2) (t3 : Tensor s3) (t4 : Tensor s4)
+    (hsh : k.params.map Kernel.ParamSpec.shape = [s1, s2, s3, s4] := by rfl) : M Unit :=
+  kernelLaunchAt k cuda ptr bindOff [t1.slot, t2.slot, t3.slot, t4.slot]
+    (by simpa using (congrArg List.length hsh).symm)
+
+/-- Read the typed handle out of its layout slot. -/
+def slotLoad {s : Shape} (b : AlgorithmLib.Tensor.BufferSlot s) (ptr : R) : M (Tensor s) := do
+  let v ← load32 (← iaddImm ptr b.fld.offset)
+  return ⟨v⟩
+
+/-- Write a typed handle into its slot; a shape mismatch is a type error. -/
+def slotStore {s : Shape} (b : AlgorithmLib.Tensor.BufferSlot s) (ptr : R) (t : Tensor s) :
+    M Unit := do
+  storeUnaligned t.slot (← iaddImm ptr b.fld.offset)
+
+/-- Allocate a buffer of shape `s`; `bytes` is the runtime size. -/
+def tensorCreate {s : Shape} (cuda : IR.CudaSetup) (ptr bytes : R) : M (Tensor s) := do
+  let buf ← cudaCreateBuffer cuda ptr bytes
+  return ⟨buf⟩
+
+/-- Allocate a fully-static shape, size derived from the type at elaboration. -/
+def tensorCreateStatic (cuda : IR.CudaSetup) (ptr : R) (s : Shape)
+    (_h : AlgorithmLib.Tensor.Shape.staticElems? s = some n := by decide) :
+    M (Tensor s) := do
+  let bytes ← iconst64 (n * 4)
+  let buf ← cudaCreateBuffer cuda ptr bytes
+  return ⟨buf⟩
+
+/-- Copy `bytes` from the host buffer at `hostPtr` into `t`. -/
+def tensorUpload {s : Shape} (cuda : IR.CudaSetup) (ptr : R) (t : Tensor s)
+    (hostPtr bytes : R) : M Unit := do
+  let ctxPtr ← cudaCtxPtr ptr
+  let _ ← call cuda.fnUpload.id [ctxPtr, t.slot, hostPtr, bytes]
+  pure ()
+
+/-- Copy `bytes` out of `t` into the host buffer at `hostPtr`. -/
+def tensorDownload {s : Shape} (cuda : IR.CudaSetup) (ptr : R) (t : Tensor s)
+    (hostPtr bytes : R) : M Unit := do
+  let ctxPtr ← cudaCtxPtr ptr
+  let _ ← call cuda.fnDownload.id [ctxPtr, t.slot, hostPtr, bytes]
+  pure ()
+
+/-- `y = A · x`, with `A` row-major so the call transposes — the PyTorch
+    convention the weights are stored in. -/
+def cublasLinear {inN outN : Nat} (cublas : IR.CuBlasSetup) (ptr : R)
+    (a : Tensor [.sta outN, .sta inN])
+    (x : Tensor [.sta inN])
+    (y : Tensor [.sta outN]) : M Unit := do
+  let trans ← iconst32 1
+  let m32   ← iconst32 inN
+  let n32   ← iconst32 outN
+  let alpha ← iconst32 0x3F800000   -- 1.0
+  let beta  ← iconst32 0            -- 0.0
+  let _ ← cublasSgemv cublas ptr trans m32 n32 alpha a.slot x.slot beta y.slot
+  pure ()
+
+/-- The same with explicit `alpha`/`beta`, as raw f32 bit patterns. -/
+def cublasLinearAB {inN outN : Nat} (cublas : IR.CuBlasSetup) (ptr : R)
+    (alphaBits betaBits : R)
+    (a : Tensor [.sta outN, .sta inN])
+    (x : Tensor [.sta inN])
+    (y : Tensor [.sta outN]) : M Unit := do
+  let trans ← iconst32 1
+  let m32   ← iconst32 inN
+  let n32   ← iconst32 outN
+  let _ ← cublasSgemv cublas ptr trans m32 n32 alphaBits a.slot x.slot betaBits y.slot
+  pure ()
+
+/-- GQA attention scores: for each `(kv, i)`,
+    `scores[kv, i, :seqLen] = alpha * K[kv, :seqLen, :] @ Q[kv, i]`. -/
+def attnScoresQK {nKV gqaRatio headDim maxSeq : Nat}
+    (cublas : IR.CuBlasSetup) (ptr : R)
+    (alphaBits seqLen32 seqLen64 : R)
+    (k : Tensor [.sta nKV, .sta maxSeq, .sta headDim])
+    (q : Tensor [.sta nKV, .sta gqaRatio, .sta headDim])
+    (scores : Tensor [.sta nKV, .sta gqaRatio, .dyn]) : M Unit := do
+  let zero32   ← iconst32 0
+  let one32    ← iconst32 1
+  let k32      ← iconst32 headDim
+  let gqaR32   ← iconst32 gqaRatio
+  let strideK  ← iconst64 (maxSeq * headDim)
+  let strideQ  ← iconst64 (gqaRatio * headDim)
+  let gqaR64   ← iconst64 gqaRatio
+  let strideC  ← imul gqaR64 seqLen64
+  let nKV32    ← iconst32 nKV
+  let _ ← cublasSgemmStridedBatched cublas ptr one32 zero32
+    seqLen32 gqaR32 k32 alphaBits
+    k.slot strideK q.slot strideQ zero32 scores.slot strideC nKV32
+  pure ()
+
+/-- GQA V-mix: for each `(kv, i)`,
+    `out[kv, i] = V[kv, :seqLen, :]^T @ probs[kv, i, :seqLen]`. -/
+def attnMixV {nKV gqaRatio headDim maxSeq : Nat}
+    (cublas : IR.CuBlasSetup) (ptr : R)
+    (alphaBits seqLen32 seqLen64 : R)
+    (v : Tensor [.sta nKV, .sta maxSeq, .sta headDim])
+    (probs : Tensor [.sta nKV, .sta gqaRatio, .dyn])
+    (out : Tensor [.sta nKV, .sta gqaRatio, .sta headDim]) : M Unit := do
+  let zero32   ← iconst32 0
+  let hd32     ← iconst32 headDim
+  let gqaR32   ← iconst32 gqaRatio
+  let strideV  ← iconst64 (maxSeq * headDim)
+  let gqaR64   ← iconst64 gqaRatio
+  let strideP  ← imul gqaR64 seqLen64
+  let strideC  ← iconst64 (gqaRatio * headDim)
+  let nKV32    ← iconst32 nKV
+  let _ ← cublasSgemmStridedBatched cublas ptr zero32 zero32
+    hd32 gqaR32 seqLen32 alphaBits
+    v.slot strideV probs.slot strideP zero32 out.slot strideC nKV32
+  pure ()
+
+end AlgorithmLib.HProg.Sur

@@ -43,7 +43,7 @@ structure FnRef where
 /-- Comparison condition codes -/
 inductive ICmpCond where
   | eq | ne | uge | ugt | ule | ult | slt | sle | sgt | sge
-  deriving Repr
+  deriving Repr, BEq
 
 /-- Float comparison conditions -/
 inductive FloatCC where
@@ -117,6 +117,7 @@ inductive Inst where
   | ctz (dst a : Val)
   | popcnt (dst a : Val)
   | vhighBits (dst a : Val)
+  deriving BEq
 
 /-- A finalized block -/
 structure BlockData where

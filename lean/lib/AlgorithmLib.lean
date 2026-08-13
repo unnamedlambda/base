@@ -10,6 +10,7 @@ import AlgorithmLib.HProgBlocks
 import AlgorithmLib.HProgFrames
 import AlgorithmLib.HProgTrust
 import AlgorithmLib.FFI
+import AlgorithmLib.HProgFFI
 import AlgorithmLib.CudaPipeline
 import AlgorithmLib.PTX
 import AlgorithmLib.WGSL
