@@ -37,10 +37,10 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 def ffiEnv : (FnRef × FnRef) × FnEnv :=
-  envOf (do
-    let rd ← declareFileRead
-    let wr ← declareFileWrite
-    return (rd, wr))
+  (Id.run (do
+    let rd := IR.FFI.std.fileRead
+    let wr := IR.FFI.std.fileWrite
+    return (rd, wr)), env% [.fileIO])
 
 def fnRead : FnRef := ffiEnv.1.1
 def fnWrite : FnRef := ffiEnv.1.2
@@ -398,7 +398,7 @@ def emitOutput (k : K) : M Unit := do
 -- ---------------------------------------------------------------------------
 
 def mainCode : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif% do
   let ptr := basePtr
   let z8 ← iconst .i8 0
   let c0 ← iconst64 0
@@ -455,7 +455,7 @@ def mainCode : HProg.Code :=
 -- Deciding `wf` walks the whole body, which is deeper than the default budget.
 set_option maxRecDepth 100000 in
 def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams mainCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode]
 
 -- ---------------------------------------------------------------------------
 -- Payload / Config / Algorithm

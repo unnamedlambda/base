@@ -179,12 +179,12 @@ open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: the live loop reaches the window and the GPU, the render
     test reaches the GPU, and the four state tests reach nothing. -/
-def declsMain : (GpuSetup × WindowSetup) × FnEnv := envOf (do
-  let gpu ← declareGpuFFI
-  let win ← declareWindowFFI
-  pure (gpu, win))
+def declsMain : (GpuSetup × WindowSetup) × FnEnv := (Id.run (do
+  let gpu := IR.FFI.std.gpu
+  let win := IR.FFI.std.window
+  pure (gpu, win)), env% [.gpu, .window])
 
-def declsGpu : GpuSetup × FnEnv := envOf declareGpuFFI
+def declsGpu : GpuSetup × FnEnv := (IR.FFI.std.gpu, env% [.gpu, .window])
 
 def envMain : FnEnv := declsMain.2
 def gpuM : GpuSetup := declsMain.1.1
@@ -294,7 +294,7 @@ def assertEq (ptr actual : R) (expected : Int) : Sur.M Unit := do
   writeOutput ptr (← sextend64 (← icmp .eq actual exp)) actual exp
 
 -- Live entry (fn 1): open window, then loop poll → logic → render → present ----
-def mainBody : HProg.Code := clif% envMain HProg.ptrParams do
+def mainBody : HProg.Code := clif% do
   let ptr := basePtr
   windowInit winM ptr
   gpuInit gpuM ptr
@@ -325,7 +325,7 @@ def mainBody : HProg.Code := clif% envMain HProg.ptrParams do
   gpuCleanup gpuM ptr
 
 -- Headless test scenarios (fn 2+): inject events, step, assert player state ----
-def testMoveRight : HProg.Code := clif% envNone HProg.ptrParams do
+def testMoveRight : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyRight
@@ -333,7 +333,7 @@ def testMoveRight : HProg.Code := clif% envNone HProg.ptrParams do
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.playerX) (playerStartX + 10 * playerSpeed)
 
-def testMoveLeft : HProg.Code := clif% envNone HProg.ptrParams do
+def testMoveLeft : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyLeft
@@ -341,7 +341,7 @@ def testMoveLeft : HProg.Code := clif% envNone HProg.ptrParams do
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.playerX) (playerStartX - 10 * playerSpeed)
 
-def testMoveUpClamp : HProg.Code := clif% envNone HProg.ptrParams do
+def testMoveUpClamp : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyUp
@@ -349,7 +349,7 @@ def testMoveUpClamp : HProg.Code := clif% envNone HProg.ptrParams do
   stepN ptr 100   -- 100*speed = 400 > startY 180 ⇒ clamps at the top edge (0)
   assertEq ptr (← fldLoad ptr f.playerY) minY
 
-def testQuitOnClose : HProg.Code := clif% envNone HProg.ptrParams do
+def testQuitOnClose : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evClose 0
@@ -359,7 +359,7 @@ def testQuitOnClose : HProg.Code := clif% envNone HProg.ptrParams do
 
 -- Headless render test (fn 6): dispatch the real WGSL kernel, download the frame
 -- into memory, and assert the player pixel is player-coloured. GPU, no window.
-def testRenderPixel : HProg.Code := clif% envGpu HProg.ptrParams do
+def testRenderPixel : HProg.Code := clif% do
   let ptr := basePtr
   gpuInit gpuT ptr
   let pixelBuf ← gpuCreateBuffer gpuT ptr (← iconst64 pixelBytes)
@@ -387,12 +387,12 @@ theorem bodies_wf :
 def clifIrSource : Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 envMain HProg.ptrParams mainBody,
-     HProg.compileFn 2 envNone HProg.ptrParams testMoveRight,
-     HProg.compileFn 3 envNone HProg.ptrParams testMoveLeft,
-     HProg.compileFn 4 envNone HProg.ptrParams testMoveUpClamp,
-     HProg.compileFn 5 envNone HProg.ptrParams testQuitOnClose,
-     HProg.compileFn 6 envGpu HProg.ptrParams testRenderPixel]
+     HProg.compileFn 1 mainBody,
+     HProg.compileFn 2 testMoveRight,
+     HProg.compileFn 3 testMoveLeft,
+     HProg.compileFn 4 testMoveUpClamp,
+     HProg.compileFn 5 testQuitOnClose,
+     HProg.compileFn 6 testRenderPixel]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [

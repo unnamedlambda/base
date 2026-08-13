@@ -36,24 +36,18 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The thread and file entry points, in callee-table order. -/
-def env : FnEnv := (envOf (do
-  let _ ← declareFFI "cl_thread_init"    [.i64]             none
-  let _ ← declareFFI "cl_thread_spawn"   [.i64, .i64, .i64] (some .i64)
-  let _ ← declareFFI "cl_thread_join"    [.i64, .i64]       (some .i64)
-  let _ ← declareFFI "cl_thread_cleanup" [.i64]             none
-  let _ ← declareFileRead
-  let _ ← declareFileWrite)).2
+def env : FnEnv := env% [.thread, .fileIO]
 
-def fnThInit : Nat := 0
-def fnThSpawn : Nat := 1
-def fnThJoin : Nat := 2
-def fnThCleanup : Nat := 3
-def fnRead : Nat := 4
-def fnWrite : Nat := 5
+def fnThInit : Nat := IR.FFI.std.thread.fnInit.id
+def fnThSpawn : Nat := IR.FFI.std.thread.fnSpawn.id
+def fnThJoin : Nat := IR.FFI.std.thread.fnJoin.id
+def fnThCleanup : Nat := IR.FFI.std.thread.fnCleanup.id
+def fnRead : Nat := IR.FFI.std.fileRead.id
+def fnWrite : Nat := IR.FFI.std.fileWrite.id
 
 /-- The orchestrator: copy both paths, read, spawn `WORKERS`, join them, and
     merge their per-worker histograms bin by bin. -/
-def orchCode : HProg.Code := clif% env HProg.ptrParams do
+def orchCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero    ← iconst64 0
@@ -140,7 +134,7 @@ def orchCode : HProg.Code := clif% env HProg.ptrParams do
   callVoid fnThCleanup [← absAddr ptr THREAD_CTX_OFF]
 
 /-- One worker: zero its own histogram, then count its slice. -/
-def workerCode : HProg.Code := clif% env HProg.ptrParams do
+def workerCode : HProg.Code := clif% do
   let desc := basePtr
   let zero ← iconst64 0
 
@@ -198,8 +192,8 @@ def clifIR : Program :=
   program
     [noopFunction,
      noopAt 1,
-     HProg.compileFn 2 env HProg.ptrParams orchCode,
-     HProg.compileFn 3 env HProg.ptrParams workerCode]
+     HProg.compileFn 2 orchCode,
+     HProg.compileFn 3 workerCode]
 
 def artifacts : Array Json :=
   #[toJsonEntry "hist4_algorithm" {

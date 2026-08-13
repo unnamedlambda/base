@@ -75,6 +75,45 @@ def noopAt (funcIdx : Nat) : FuncData :=
 /-- The standard noop function u0:0 -/
 def noopFunction : FuncData := noopAt 0
 
+/-- The zero a `fconst` names, at each float width. Written out because `0.0`
+    elaborates to whichever type the surrounding term forces, and these are the
+    widths the emitters take. -/
+def f32Zero : Float := 0.0
+def f64Zero : Float := 0.0
+
+/-- The callee table a body is checked and compiled against — exactly the
+    `sigs` and `fns` the emitted function will declare. -/
+structure FnEnv where
+  sigs : List SigDecl
+  fns  : List FnDecl
+  deriving Inhabited, Lean.ToExpr
+
+/-- The signature `fn` resolves to, or `none` when nothing declares it. -/
+def FnEnv.sigOf (env : FnEnv) (fn : Nat) : Option SigDecl := do
+  let d ← env.fns.find? (·.ref.id == fn)
+  env.sigs.find? (·.ref.id == d.sig.id)
+
+/-- The callee table a declaration-only `IRBuilder` action produces, so a body
+    names its FFI through the same `declare*` helpers as every other generator
+    and cannot drift from their signatures. -/
+def envOf (decls : IRBuilder α) : α × FnEnv :=
+  let (a, st) := decls.run {}
+  (a, { sigs := st.sigs, fns := st.fns })
+
+/-- The table `base` extends with this program's own declarations. A program
+    that calls its own functions declares them after the shared entry points,
+    so the ids the shared table hands out do not move. -/
+def envAfter (base : FnEnv) (decls : IRBuilder α) : α × FnEnv :=
+  -- Past the largest id in use, not past the count: `base` may be a selection
+  -- from a larger table, in which case its ids are sparse and numbering from
+  -- the count would hand a new declaration an id an existing one already holds.
+  -- `sigOf` resolves by id and takes the first match, so the collision would not
+  -- be an error — the call would quietly land on the wrong signature.
+  let nextSig := base.sigs.foldl (fun m s => max m (s.ref.id + 1)) 0
+  let nextFn := base.fns.foldl (fun m d => max m (d.ref.id + 1)) 0
+  let (a, st) := decls.run { nextSig, nextFn }
+  (a, { sigs := base.sigs ++ st.sigs, fns := base.fns ++ st.fns })
+
 /-- Assemble functions into a program. They must be in `u0:N` order: the
     runtime resolves call targets by treating the index as a `FuncId`. -/
 def program (fs : List FuncData) : Program := { functions := fs }

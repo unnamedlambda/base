@@ -73,11 +73,11 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The externals every emitted function declares, in one order. -/
-def ffiEnv : ((FnRef × IR.LmdbSetup) × FnRef) × FnEnv := envOf (do
-  let rd ← declareFileRead
-  let lmdb ← declareLmdbFFI
-  let wr ← declareFileWrite
-  pure ((rd, lmdb), wr))
+def ffiEnv : ((FnRef × IR.LmdbSetup) × FnRef) × FnEnv := (Id.run (do
+  let rd := IR.FFI.std.fileRead
+  let lmdb := IR.FFI.std.lmdb
+  let wr := IR.FFI.std.fileWrite
+  pure ((rd, lmdb), wr)), env% [.lmdb, .fileIO])
 def fnFileRead : FnRef := ffiEnv.1.1.1
 def lmdb : IR.LmdbSetup := ffiEnv.1.1.2
 def fnFileWrite : FnRef := ffiEnv.1.2
@@ -187,7 +187,7 @@ def emitFilter (ptr resOff count fnameOff : R) (patternLen : Nat) : M Unit := do
 
 set_option maxRecDepth 4096 in
 def mainCode (patternLen : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let empBufOff ← iconst64 empBuf_off
   let zero ← iconst64 0
@@ -228,9 +228,20 @@ def mainCode (patternLen : Nat) : HProg.Code :=
 
   callVoid lmdb.fnCleanup.id [lmdbSlot]
 
+/-- Well-formed at every pattern length the monomorphic builder can produce.
+
+    `clifIrSource` is generic in the length, so `compileFn` has no instance to
+    `decide` at; it takes `compileBody` and this theorem stands in for the
+    check. The bound covers a filter pattern of up to fourteen bytes; the
+    longest this file builds is `"Engineering"`, which the comma delimiters
+    take to thirteen. -/
+theorem bodies_wf :
+    (List.range 16).all (fun n => HProg.wf env HProg.ptrParams (mainCode n)) = true := by
+  decide
+
 set_option maxRecDepth 4096 in
 def clifIrSource (patternLen : Nat) : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams (mainCode patternLen)]
+  IR.program [IR.noopFunction, HProg.compileBody 1 (mainCode patternLen)]
 
 -- ---------------------------------------------------------------------------
 -- Payload builder (parameterized by filter pattern bytes)

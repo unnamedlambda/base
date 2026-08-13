@@ -184,14 +184,14 @@ open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
-def cudaEnv : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
 def cuda : IR.CudaSetup := cudaEnv.1
 def env : FnEnv := cudaEnv.2
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
 
-def loadCode : HProg.Code := clif% env HProg.ptrParams do
+def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
@@ -227,7 +227,7 @@ def loadCode : HProg.Code := clif% env HProg.ptrParams do
   let _ ← call cuda.fnUpload.id [ctxPtr, metaBuf, metaSlot, eight]
 
 /-- Prep: upload x from data_ptr to buf0. -/
-def prepCode : HProg.Code := clif% env HProg.ptrParams do
+def prepCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
@@ -239,7 +239,7 @@ def prepCode : HProg.Code := clif% env HProg.ptrParams do
 
     Both arms end the function, and a term has one exit, so they join on it.
     The join block holds only the `ret`. -/
-def coreCode : HProg.Code := clif% env HProg.ptrParams do
+def coreCode : HProg.Code := clif% do
   let ptr    := basePtr
   let n      ← load64 (← absAddr ptr 0x38)
   let numBlocks ← load64 (← absAddr ptr 0x40)
@@ -271,7 +271,7 @@ def coreCode : HProg.Code := clif% env HProg.ptrParams do
   return ()
 
 /-- Finalize: sync, then download `y` only if the caller asked for output. -/
-def finalizeCode : HProg.Code := clif% env HProg.ptrParams do
+def finalizeCode : HProg.Code := clif% do
   let ptr    := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
@@ -298,10 +298,10 @@ def STACK_DEPTH : Nat := 64
 def clifIR : Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 env HProg.ptrParams loadCode,
-     HProg.compileFn 2 env HProg.ptrParams prepCode,
-     HProg.compileFn 3 env HProg.ptrParams coreCode,
-     HProg.compileFn 4 env HProg.ptrParams finalizeCode,
+     HProg.compileFn 1 loadCode,
+     HProg.compileFn 2 prepCode,
+     HProg.compileFn 3 coreCode,
+     HProg.compileFn 4 finalizeCode,
      clifSequenceWrapper 5 [3, 4],
      clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4])]
 

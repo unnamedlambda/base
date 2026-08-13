@@ -434,17 +434,17 @@ open AlgorithmLib.HProg.Sur
 /-- The device callee table every function here shares, so their signatures are
     written once. -/
 def ffiEnv : (CudaSetup × CuBlasSetup) × FnEnv :=
-  envOf (do
-    let cuda ← declareCudaFFI
-    let blas ← declareCuBlasFFI
-    return (cuda, blas))
+  (Id.run (do
+    let cuda := IR.FFI.std.cuda
+    let blas := IR.FFI.std.cublas
+    return (cuda, blas)), env% [.cuda, .cublas])
 
 def cuda : CudaSetup := ffiEnv.1.1
 def blas : CuBlasSetup := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
 
 def loadCode : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
@@ -463,7 +463,7 @@ def loadCode : HProg.Code :=
 
 /-- Upload `n` bytes from the caller's data pointer into buffer `b`. -/
 def uploadCode (b n : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -473,7 +473,7 @@ def uploadCode (b n : Nat) : HProg.Code :=
 
 /-- Download `n` bytes of buffer `b` into the caller's output pointer. -/
 def fetchCode (b n : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -529,7 +529,7 @@ def enqueueSlot (cuda : CudaSetup) (ptr : R) (i g : Nat) : M Unit := do
     The one place a sync is genuinely required is before a download, and
     `fetchFn` is what follows a run. -/
 def runSeq (steps : List (Nat × Nat)) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for (i, g) in steps do
     enqueueSlot cuda ptr i g
@@ -615,7 +615,7 @@ def gemmBwd : List (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) :=
     `.inl` is a PTX slot with its grid; `.inr` is a cuBLAS call. -/
 def runMixed (steps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
     : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for st in steps do
     match st with
@@ -661,7 +661,7 @@ theorem shipped_wf :
 def clifIR : Program :=
   program <|
     noopFunction :: shippedBodies.zipIdx.map
-      (fun p => HProg.compileBody (p.2 + 1) env HProg.ptrParams p.1)
+      (fun p => HProg.compileBody (p.2 + 1) p.1)
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -1007,10 +1007,10 @@ def mlpTable : List KernelBinding :=
     surface.  It buys a fixed nine-stage fact — the depth-carrying host code is
     a loop, and `Clif.loopsOf` recovers that instead of unrolling it. -/
 theorem fwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runSeq fwdSteps)).asState = mlpOps fwdSteps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps)).asState = mlpOps fwdSteps := by native_decide
 
 theorem bwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runSeq bwdSteps)).asState = mlpOps bwdSteps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps)).asState = mlpOps bwdSteps := by native_decide
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.** -/
@@ -1023,13 +1023,13 @@ theorem bwd_realises : pipelineOf? mlpTable none (mlpOps bwdSteps) = some bwdPip
     `mlpTable` into `fwdPipeline`, and that pipeline computes the composite of
     its stages — with no intermediate assumed anywhere along the way. -/
 theorem fwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runSeq fwdSteps)).asState) = some fwdPipeline
+    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps)).asState) = some fwdPipeline
       ∧ (fwdPipeline.run st).mem = fwdPipeline.denote st.mem :=
   ⟨by rw [fwd_ops_are]; exact fwd_realises, fwdPipeline_runs st⟩
 
 /-- …and the backward half-step, optimiser included. -/
 theorem bwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runSeq bwdSteps)).asState) = some bwdPipeline
+    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps)).asState) = some bwdPipeline
       ∧ (bwdPipeline.run st).mem = bwdPipeline.denote st.mem :=
   ⟨by rw [bwd_ops_are]; exact bwd_realises, bwdPipeline_runs st⟩
 
@@ -1214,11 +1214,11 @@ noncomputable def blasDeclared : List DeclaredBinding :=
 
 /-- **Seam guard: the emitted cuBLAS driver performs these device writes.** -/
 theorem fwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runMixed fwdBlasSteps)).asState
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps)).asState
       = mixedOps fwdBlasSteps := by native_decide
 
 theorem bwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runMixed bwdBlasSteps)).asState
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps)).asState
       = mixedOps bwdBlasSteps := by native_decide
 
 /-- …and they are the plan — five declared steps and four proven ones, in the
@@ -1237,10 +1237,10 @@ theorem bwd_blas_realises :
     being `Honours R`, which is `Law.cublasIsMatvec` at these five call sites. -/
 theorem blas_host_computes (R : Realisation) (hR : Honours R) (st : WSt) :
     planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runMixed fwdBlasSteps)).asState)
+        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps)).asState)
           = some fwdBlasPlan
       ∧ planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (runMixed bwdBlasSteps)).asState)
+        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps)).asState)
           = some bwdBlasPlan
       ∧ (Plan.run R fwdBlasPlan st).mem = fwdPipeline.denote st.mem
       ∧ (Plan.run R bwdBlasPlan st).mem = bwdPipeline.denote st.mem :=
@@ -2140,7 +2140,7 @@ theorem qwenMap_ok :
 
 /-- Allocate every buffer, then upload the thirteen inputs. -/
 def qLoadFn : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
@@ -2156,7 +2156,7 @@ def qLoadFn : HProg.Code :=
     let _ ← call cuda.fnUpload.id [ctxPtr, id, src, bytes]
 
 def qUploadFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -2165,7 +2165,7 @@ def qUploadFn (b n : Nat) : HProg.Code :=
   let _ ← call cuda.fnUpload.id [ctxPtr, id, dataPtr, bytes]
 
 def qFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -2189,7 +2189,7 @@ def qBindLocal (ptr : R) (bs : List Buf) : M Unit := do
     The steps are `qwenSteps` — the slots and grids the stages declare — so the
     driver names no geometry of its own. -/
 def qRunFn : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for (i, g, bs) in qLaunches 0 qwenTape do
     qBindLocal ptr bs
@@ -2205,7 +2205,7 @@ def qRunFn : HProg.Code :=
 /-- The first `k` launches only — the forward half at `k = 28`, and a way to
     find which launch a fault comes from. -/
 def qRunUpto (k : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for (i, g, bs) in (qLaunches 0 qwenTape).take k do
     qBindLocal ptr bs
@@ -2235,7 +2235,7 @@ def QGRAPH_OFF : Nat := 0x0094
     launches are not re-derived from the graph — and it is named in the ledger
     beside the other things the hardware is trusted to do. -/
 def qCaptureFn : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, g, bs) in qLaunches 0 qwenTape do
@@ -2307,7 +2307,7 @@ def qOps : List DeviceOp :=
 
 /-- **Seam guard: the emitted block driver performs these launches.** -/
 theorem qwen_run_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams qRunFn).asState = qOps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qRunFn).asState = qOps := by native_decide
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.**
@@ -2336,7 +2336,7 @@ set_option maxRecDepth 100000 in
     what was proven. -/
 theorem qwen_capture_records_the_run :
     ∃ s : Nat,
-      AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams qCaptureFn).asState
+      AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qCaptureFn).asState
           = qOps ++ qOps.map (onStream s)
         ∧ pipelineOf? qTable none qOps = some qwenPipeline
         ∧ pipelineOf? qTable (some s) (qOps.map (onStream s)) = some qwenPipeline :=
@@ -2351,7 +2351,7 @@ theorem qwen_capture_records_the_run :
     a graph holds the parameters it was captured with, which is exactly why
     this entry exists for the training step and not for the dispatch one. -/
 def qReplayFn (k : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let sid ← load32 (← absAddr ptr QSTREAM_OFF)
@@ -2391,11 +2391,11 @@ noncomputable def qReplayPlan (k : Nat) : Plan :=
 
 /-- **Seam guard: the replay entries perform exactly `k` graph launches.** -/
 theorem qwen_replay_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (qReplayFn 1)).asState
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 1)).asState
         = List.replicate 1 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (qReplayFn 2)).asState
+      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 2)).asState
         = List.replicate 2 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 env HProg.ptrParams (qReplayFn 4)).asState
+      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 4)).asState
         = List.replicate 4 (qGraphRec, { args := qGraphArgs }) := by native_decide
 
 /-- **…and those launches are `k` replays of the captured pipeline.**
@@ -2452,7 +2452,7 @@ theorem qwen_replay_denote : ∀ (k : Nat) (m : Buf → Nat → Float32),
 /-- One synchronisation per launch, so a fault is attributed to the launch
     that caused it rather than to whatever call next waits on the device. -/
 def qRunSynced : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for (i, g, bs) in qLaunches 0 qwenTape do
     qBindLocal ptr bs
@@ -2468,7 +2468,7 @@ def qRunSynced : HProg.Code :=
 /-- The forward half only, so a host can re-evaluate the loss at a perturbed
     weight without also recomputing gradients. -/
 def qRunFwd : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for (i, g, bs) in (qLaunches 0 qwenTape).take 28 do
     qBindLocal ptr bs
@@ -2485,7 +2485,7 @@ def qRunFwd : HProg.Code :=
     norm's scale and gain in one kernel.  Its slots sit after the tape's, which
     is why the launch base is `qwenTape.length`. -/
 def qRunFused : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for (i, g, bs) in qLaunches qwenTape.length qwenFwdFused do
     qBindLocal ptr bs
@@ -2500,7 +2500,7 @@ def qRunFused : HProg.Code :=
 
 def qClifIR : Program :=
   program <|
-    [noopFunction, HProg.compileBody 1 env HProg.ptrParams qLoadFn, HProg.compileBody 2 env HProg.ptrParams qRunFn, HProg.compileBody 3 env HProg.ptrParams (qFetchFn 39 (DM * 4)), HProg.compileBody 4 env HProg.ptrParams qRunFwd, HProg.compileBody 5 env HProg.ptrParams (qUploadFn 40 (DM * 4)), HProg.compileBody 6 env HProg.ptrParams (qFetchFn 43 (DM * DFF * 4)), HProg.compileBody 7 env HProg.ptrParams (qUploadFn 12 (DM * DFF * 4)), HProg.compileBody 8 env HProg.ptrParams (qRunUpto 30), HProg.compileBody 9 env HProg.ptrParams (qRunUpto 45), HProg.compileBody 10 env HProg.ptrParams (qRunUpto 60), HProg.compileBody 11 env HProg.ptrParams (qRunUpto 75), HProg.compileBody 12 env HProg.ptrParams qRunSynced, HProg.compileBody 13 env HProg.ptrParams qCaptureFn, HProg.compileBody 14 env HProg.ptrParams (qReplayFn 1), HProg.compileBody 15 env HProg.ptrParams (qReplayFn 2), HProg.compileBody 16 env HProg.ptrParams (qReplayFn 4), HProg.compileBody 17 env HProg.ptrParams (qRunUpto 31), HProg.compileBody 18 env HProg.ptrParams (qRunUpto 34), HProg.compileBody 19 env HProg.ptrParams (qRunUpto 35), HProg.compileBody 20 env HProg.ptrParams (qRunUpto 37), HProg.compileBody 21 env HProg.ptrParams qRunFused]
+    [noopFunction, HProg.compileBody 1 qLoadFn, HProg.compileBody 2 qRunFn, HProg.compileBody 3 (qFetchFn 39 (DM * 4)), HProg.compileBody 4 qRunFwd, HProg.compileBody 5 (qUploadFn 40 (DM * 4)), HProg.compileBody 6 (qFetchFn 43 (DM * DFF * 4)), HProg.compileBody 7 (qUploadFn 12 (DM * DFF * 4)), HProg.compileBody 8 (qRunUpto 30), HProg.compileBody 9 (qRunUpto 45), HProg.compileBody 10 (qRunUpto 60), HProg.compileBody 11 (qRunUpto 75), HProg.compileBody 12 qRunSynced, HProg.compileBody 13 qCaptureFn, HProg.compileBody 14 (qReplayFn 1), HProg.compileBody 15 (qReplayFn 2), HProg.compileBody 16 (qReplayFn 4), HProg.compileBody 17 (qRunUpto 31), HProg.compileBody 18 (qRunUpto 34), HProg.compileBody 19 (qRunUpto 35), HProg.compileBody 20 (qRunUpto 37), HProg.compileBody 21 qRunFused]
 
 def qSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -2740,7 +2740,7 @@ theorem moeMap_ok :
 
 /-- Allocate every buffer, then upload the weights that never move. -/
 def mLoadFn : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
@@ -2770,7 +2770,7 @@ def mLoadFn : HProg.Code :=
     computed at run time; nothing about which expert is chosen is baked into
     the image. -/
 def mBindExperts : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let four ← iconst64 4
@@ -2800,7 +2800,7 @@ def mLaunches : List (Nat × Nat × List Buf) :=
 
 /-- Launches `[lo, hi)` of the dispatch tape. -/
 def mRunRange (lo hi : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   for (i, g, bs) in (mLaunches.take hi).drop lo do
     mBindLocal ptr bs
@@ -2814,7 +2814,7 @@ def mRunRange (lo hi : Nat) : HProg.Code :=
   let _ ← cudaSync cuda ptr
 
 def mUploadFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -2823,7 +2823,7 @@ def mUploadFn (b n : Nat) : HProg.Code :=
   let _ ← call cuda.fnUpload.id [ctxPtr, id, dataPtr, bytes]
 
 def mFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -2833,7 +2833,7 @@ def mFetchFn (b n : Nat) : HProg.Code :=
 
 def mClifIR : Program :=
   program <|
-    [noopFunction, HProg.compileBody 1 env HProg.ptrParams mLoadFn, HProg.compileBody 2 env HProg.ptrParams (mRunRange 0 mRouterTape.length), HProg.compileBody 3 env HProg.ptrParams (mFetchFn MGATE (NE * 4)), HProg.compileBody 4 env HProg.ptrParams mBindExperts, HProg.compileBody 5 env HProg.ptrParams (mUploadFn 3 128), HProg.compileBody 6 env HProg.ptrParams (mRunRange mRouterTape.length moeTape.length), HProg.compileBody 7 env HProg.ptrParams (mFetchFn MOUT (MD * 4))]
+    [noopFunction, HProg.compileBody 1 mLoadFn, HProg.compileBody 2 (mRunRange 0 mRouterTape.length), HProg.compileBody 3 (mFetchFn MGATE (NE * 4)), HProg.compileBody 4 mBindExperts, HProg.compileBody 5 (mUploadFn 3 128), HProg.compileBody 6 (mRunRange mRouterTape.length moeTape.length), HProg.compileBody 7 (mFetchFn MOUT (MD * 4))]
 
 def mInitialMemory : List UInt8 :=
   zeros QHOST_LEN_OFF ++ u32le MHOST_BYTES

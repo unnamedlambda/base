@@ -22,7 +22,7 @@ open AlgorithmLib.HProg.Sur
 /-- Nothing here crosses the FFI. -/
 def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   let dataLen ← load64 (← absAddr basePtr 0x20)
   let outPtr  ← load64 (← absAddr basePtr 0x28)
@@ -75,7 +75,7 @@ def code : HProg.Code := clif% env HProg.ptrParams do
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "plain_sum_algorithm" {

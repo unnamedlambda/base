@@ -14,6 +14,14 @@ def declareFileRead : IRBuilder FnRef :=
 def declareFileWrite : IRBuilder FnRef :=
   declareFFI "cl_file_write" [.i64, .i64, .i64, .i64, .i64] (some .i64)
 
+/-- Declare cl_file_read_to_ptr: (ptr, fname_off, dst_ptr, size) -> bytes_read -/
+def declareFileReadToPtr : IRBuilder FnRef :=
+  declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+
+/-- Declare cl_file_write_from_ptr: (ptr, fname_off, src_ptr, size) -> bytes_written -/
+def declareFileWriteFromPtr : IRBuilder FnRef :=
+  declareFFI "cl_file_write_from_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+
 /-- Declare cl_stdin_readline: (ptr, dst_off, max_len) -> bytes_read -/
 def declareStdinReadline : IRBuilder FnRef :=
   declareFFI "cl_stdin_readline" [.i64, .i64, .i64] (some .i64)
@@ -31,8 +39,13 @@ structure GpuSetup where
   fnCreatePipeline : FnRef
   fnDispatch : FnRef
   fnCleanup : FnRef
+  /-- `(ctx, buf, src_ptr, size)`: upload from a raw host pointer. -/
+  fnUploadPtr : FnRef
+  /-- `(ctx, buf, dst_ptr, size, buf_offset)`: download to a raw host pointer. -/
+  fnDownloadPtr : FnRef
+  deriving Inhabited, Lean.ToExpr
 
-/-- Declare all 7 GPU FFI functions -/
+/-- Declare every GPU entry point. -/
 def declareGpuFFI : IRBuilder GpuSetup := do
   let fnInit ← declareFFI "cl_gpu_init" [.i64] none
   let fnCreateBuffer ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
@@ -41,7 +54,10 @@ def declareGpuFFI : IRBuilder GpuSetup := do
   let fnDownload ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
   let fnDispatch ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
   let fnCleanup ← declareFFI "cl_gpu_cleanup" [.i64] none
-  pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnCreatePipeline, fnDispatch, fnCleanup }
+  let fnUploadPtr ← declareFFI "cl_gpu_upload_ptr" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnDownloadPtr ← declareFFI "cl_gpu_download_ptr" [.i64, .i32, .i64, .i64, .i64] (some .i32)
+  pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnCreatePipeline, fnDispatch, fnCleanup,
+         fnUploadPtr, fnDownloadPtr }
 
 
 /-- Window / input / present FFI bundle. The window shares the wgpu device, so
@@ -53,6 +69,7 @@ structure WindowSetup where
   fnPoll : FnRef
   fnPresentGpuBuffer : FnRef
   fnCleanup : FnRef
+  deriving Inhabited, Lean.ToExpr
 
 /-- Declare the minimal window FFI (init/open/poll/present/cleanup). -/
 def declareWindowFFI : IRBuilder WindowSetup := do
@@ -74,6 +91,7 @@ structure LmdbSetup where
   fnCommitWriteTxn : FnRef
   fnCursorScan : FnRef
   fnCleanup : FnRef
+  deriving Inhabited, Lean.ToExpr
 
 /-- Declare all 7 LMDB FFI functions -/
 def declareLmdbFFI : IRBuilder LmdbSetup := do
@@ -95,13 +113,60 @@ structure HtSetup where
   fnCreate : FnRef
   fnLookup : FnRef
   fnInsert : FnRef
+  /-- `(ptr, ht, key_off, key_len, delta) -> new_count`, one call for the
+      read-modify-write a word counter would otherwise spell out. -/
+  fnIncrement : FnRef
+  /-- `(ptr, ht) -> entries` -/
+  fnCount : FnRef
+  /-- `(ptr, ht, index, out_off) -> found`: entry `index` in table order. -/
+  fnGetEntry : FnRef
+  /-- `(ptr)`: release every table this context allocated. -/
+  fnCleanup : FnRef
+  /-- `(ptr)`: allocate the table context. -/
+  fnInit : FnRef
+  deriving Inhabited, Lean.ToExpr
 
-/-- Declare ht_create / ht_lookup / ht_insert as colocated FFI functions. -/
+/-- Declare the hash table as colocated FFI (resolved within the JIT module). -/
 def declareHtFFI : IRBuilder HtSetup := do
   let fnCreate ← declareColocatedFFI "ht_create" [.i64] (some .i32)
   let fnLookup ← declareColocatedFFI "ht_lookup" [.i64, .i64, .i32, .i64] (some .i32)
   let fnInsert ← declareColocatedFFI "ht_insert" [.i64, .i64, .i32, .i64, .i32] none
-  pure { fnCreate, fnLookup, fnInsert }
+  let fnIncrement ← declareColocatedFFI "ht_increment" [.i64, .i64, .i32, .i64] (some .i64)
+  let fnCount ← declareColocatedFFI "ht_count" [.i64] (some .i32)
+  let fnGetEntry ← declareColocatedFFI "ht_get_entry" [.i64, .i32, .i64, .i64] (some .i32)
+  let fnCleanup ← declareFFI "cl_ht_cleanup" [.i64] none
+  let fnInit ← declareFFI "cl_ht_init" [.i64] none
+  pure { fnCreate, fnLookup, fnInsert, fnIncrement, fnCount, fnGetEntry, fnCleanup, fnInit }
+
+/-- The libm entry points the runtime re-exports. -/
+structure MathSetup where
+  fnSinf : FnRef
+  fnCosf : FnRef
+  fnPowf : FnRef
+  deriving Inhabited, Lean.ToExpr
+
+def declareMathFFI : IRBuilder MathSetup := do
+  let fnSinf ← declareFFI "cl_sinf" [.f32] (some .f32)
+  let fnCosf ← declareFFI "cl_cosf" [.f32] (some .f32)
+  let fnPowf ← declareFFI "cl_powf" [.f32, .f32] (some .f32)
+  pure { fnSinf, fnCosf, fnPowf }
+
+/-- Host threads: spawn runs one of this program's own functions. -/
+structure ThreadSetup where
+  fnInit : FnRef
+  /-- `(ptr, fn_idx, arg) -> handle` -/
+  fnSpawn : FnRef
+  /-- `(ptr, handle) -> status` -/
+  fnJoin : FnRef
+  fnCleanup : FnRef
+  deriving Inhabited, Lean.ToExpr
+
+def declareThreadFFI : IRBuilder ThreadSetup := do
+  let fnInit ← declareFFI "cl_thread_init" [.i64] none
+  let fnSpawn ← declareFFI "cl_thread_spawn" [.i64, .i64, .i64] (some .i64)
+  let fnJoin ← declareFFI "cl_thread_join" [.i64, .i64] (some .i64)
+  let fnCleanup ← declareFFI "cl_thread_cleanup" [.i64] none
+  pure { fnInit, fnSpawn, fnJoin, fnCleanup }
 
 
 /-- CUDA FFI function bundle -/
@@ -138,6 +203,7 @@ structure CudaSetup where
   fnLaunchNamedOnStream : FnRef
   fnSync : FnRef           -- cl_cuda_sync: (ctx) → i32
   fnCleanup : FnRef
+  deriving Inhabited, Lean.ToExpr
 
 /-- Declare all CUDA FFI functions. -/
 def declareCudaFFI : IRBuilder CudaSetup := do
@@ -202,6 +268,7 @@ structure CuBlasSetup where
       c_arr, batch, stream) → i32`: a batch whose members are named by pointer
       rather than by stride, so they need not share an allocation. -/
   fnSgemmBatchedOnStream : FnRef
+  deriving Inhabited, Lean.ToExpr
 
 def declareCuBlasFFI : IRBuilder CuBlasSetup := do
   let fnSgemv ← declareFFI "cl_cublas_sgemv"

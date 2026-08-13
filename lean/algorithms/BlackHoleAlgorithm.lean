@@ -1429,16 +1429,16 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := envOf (do
-  let w ← declareFileWrite
-  let c ← declareCudaFFI
-  pure (w, c))
+def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := (Id.run (do
+  let w := IR.FFI.std.fileWrite
+  let c := IR.FFI.std.cuda
+  pure (w, c)), env% [.cuda, .fileIO])
 def fnWrite : FnRef := ffiEnv.1.1
 def cuda : IR.CudaSetup := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
 
 def code (spec : BlackHoleSpec) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     cudaInit cuda ptr
     -- Allocate device buffers: HDR scratch (RGB f32, padded to 16 B/pixel)
@@ -1478,8 +1478,11 @@ def code (spec : BlackHoleSpec) : HProg.Code :=
     let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
 
 
+-- `clifIrSource` is generic in the spec, so `compileFn` has no instance to
+-- `decide` at; it takes `compileBody` and `code_wf` below stands in for the
+-- check, at the spec that ships.
 def clifIrSource (spec : BlackHoleSpec) : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code spec)]
+  IR.program [noopFunction, HProg.compileBody 1 (code spec) env]
 
 def payloads (spec : BlackHoleSpec) : List UInt8 :=
   let reserved := zeros ptxOff
@@ -1531,6 +1534,9 @@ def defaultBlackHole : BlackHoleSpec :=
     (by decide) (by decide) (by decide) (by decide)
     (by native_decide) (by native_decide) (by native_decide)
     (by native_decide) (by native_decide) (by native_decide)
+
+/-- Well-formed at the spec that ships. -/
+theorem code_wf : HProg.wf env HProg.ptrParams (code defaultBlackHole) = true := by decide
 
 def previewBlackHole : BlackHoleSpec :=
   checkedBlackHole

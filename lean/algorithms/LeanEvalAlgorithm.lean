@@ -25,15 +25,15 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 def ffiEnv : (((FnRef × FnRef) × (FnRef × FnRef)) × ((FnRef × FnRef) × FnRef)) × FnEnv :=
-  envOf (do
-    let rd ← declareFileRead
-    let wr ← declareFileWrite
-    let init ← declareFFI "cl_ht_init" [.i64] none
-    let cleanup ← declareFFI "cl_ht_cleanup" [.i64] none
-    let create ← declareFFI "ht_create" [.i64] (some .i32)
-    let insert ← declareFFI "ht_insert" [.i64, .i64, .i32, .i64, .i32] none
-    let lookup ← declareFFI "ht_lookup" [.i64, .i64, .i32, .i64] (some .i32)
-    return (((rd, wr), (init, cleanup)), ((create, insert), lookup)))
+  (Id.run (do
+    let rd := IR.FFI.std.fileRead
+    let wr := IR.FFI.std.fileWrite
+    let init := IR.FFI.std.ht.fnInit
+    let cleanup := IR.FFI.std.ht.fnCleanup
+    let create := IR.FFI.std.ht.fnCreate
+    let insert := IR.FFI.std.ht.fnInsert
+    let lookup := IR.FFI.std.ht.fnLookup
+    return (((rd, wr), (init, cleanup)), ((create, insert), lookup))), env% [.ht, .fileIO])
 
 def fnFileRead : FnRef := ffiEnv.1.1.1.1
 def fnFileWrite : FnRef := ffiEnv.1.1.1.2
@@ -398,7 +398,7 @@ def writeDecimal (k : K) (value : R) : M Unit := do
 
 set_option maxRecDepth 8192 in
 def mainCode : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif% do
   let ptr := basePtr
   let z8 ← iconst .i8 0
   let zero ← iconst64 0
@@ -561,7 +561,7 @@ def mainCode : HProg.Code :=
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 2000000 in
 def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams mainCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction

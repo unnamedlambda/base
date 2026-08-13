@@ -232,14 +232,13 @@ open AlgorithmLib.HProg.Sur
 
 /-- Three callee tables, because the six entry points do not all reach the FFI:
     the game loop needs the window and the GPU, the render test needs the GPU,
-    and the four state tests need nothing. `envOf` runs the same `declare*`
-    actions the helpers use, so no signature is written twice. -/
-def declsMain : (GpuSetup × WindowSetup) × FnEnv := envOf (do
-  let gpu ← declareGpuFFI
-  let win ← declareWindowFFI
-  pure (gpu, win))
+    and the four state tests need nothing. -/
+def declsMain : (GpuSetup × WindowSetup) × FnEnv := (Id.run (do
+  let gpu := IR.FFI.std.gpu
+  let win := IR.FFI.std.window
+  pure (gpu, win)), env% [.gpu, .window])
 
-def declsGpu : GpuSetup × FnEnv := envOf declareGpuFFI
+def declsGpu : GpuSetup × FnEnv := (IR.FFI.std.gpu, env% [.gpu, .window])
 
 def envMain : FnEnv := declsMain.2
 def gpuM : GpuSetup := declsMain.1.1
@@ -350,7 +349,7 @@ def dispatchScene (gpu : GpuSetup) (ptr paramBuf pipeId : R) : Sur.M Unit := do
   let _ ← gpuDispatch gpu ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
   pure ()
 
-def mainBody : HProg.Code := clif% envMain HProg.ptrParams do
+def mainBody : HProg.Code := clif% do
   let ptr := basePtr
   windowInit winM ptr
   gpuInit gpuM ptr
@@ -379,7 +378,7 @@ def mainBody : HProg.Code := clif% envMain HProg.ptrParams do
   windowCleanup winM ptr
   gpuCleanup gpuM ptr
 
-def testMoveForward : HProg.Code := clif% envNone HProg.ptrParams do
+def testMoveForward : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr
   writeEvent ptr 0 evKeyDown keyFwd
@@ -387,7 +386,7 @@ def testMoveForward : HProg.Code := clif% envNone HProg.ptrParams do
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.camZ) (camStartZ - 10 * moveSpeed)
 
-def testStrafeRight : HProg.Code := clif% envNone HProg.ptrParams do
+def testStrafeRight : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr
   writeEvent ptr 0 evKeyDown keyRight
@@ -395,7 +394,7 @@ def testStrafeRight : HProg.Code := clif% envNone HProg.ptrParams do
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.camX) (camStartX + 10 * moveSpeed)
 
-def testRiseClamp : HProg.Code := clif% envNone HProg.ptrParams do
+def testRiseClamp : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr
   writeEvent ptr 0 evKeyDown keyUpK
@@ -403,7 +402,7 @@ def testRiseClamp : HProg.Code := clif% envNone HProg.ptrParams do
   stepN ptr 200
   assertEq ptr (← fldLoad ptr f.camY) maxY
 
-def testQuitOnClose : HProg.Code := clif% envNone HProg.ptrParams do
+def testQuitOnClose : HProg.Code := clif% do
   let ptr := basePtr
   clearState ptr
   writeEvent ptr 0 evClose 0
@@ -411,7 +410,7 @@ def testQuitOnClose : HProg.Code := clif% envNone HProg.ptrParams do
   processEvents ptr
   assertEq ptr (← fldLoad ptr f.quit) 1
 
-def testRenderScene : HProg.Code := clif% envGpu HProg.ptrParams do
+def testRenderScene : HProg.Code := clif% do
   let ptr := basePtr
   gpuInit gpuT ptr
   let pixelBuf ← gpuCreateBuffer gpuT ptr (← iconst64 pixelBytes)
@@ -438,12 +437,12 @@ theorem bodies_wf :
 def clifIrSource : Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 envMain HProg.ptrParams mainBody,
-     HProg.compileFn 2 envNone HProg.ptrParams testMoveForward,
-     HProg.compileFn 3 envNone HProg.ptrParams testStrafeRight,
-     HProg.compileFn 4 envNone HProg.ptrParams testRiseClamp,
-     HProg.compileFn 5 envNone HProg.ptrParams testQuitOnClose,
-     HProg.compileFn 6 envGpu HProg.ptrParams testRenderScene]
+     HProg.compileFn 1 mainBody,
+     HProg.compileFn 2 testMoveForward,
+     HProg.compileFn 3 testStrafeRight,
+     HProg.compileFn 4 testRiseClamp,
+     HProg.compileFn 5 testQuitOnClose,
+     HProg.compileFn 6 testRenderScene]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [

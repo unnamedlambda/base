@@ -3,6 +3,7 @@ import Std
 import AlgorithmLib
 import MlSurface
 
+
 /-!
   # A proven GEMV, versus cuBLAS — and across schedules
 
@@ -239,18 +240,18 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: only the cuBLAS baseline reaches cuBLAS. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := envOf (do
-  let c ← declareCudaFFI
-  let bl ← declareCuBlasFFI
-  pure (c, bl))
-def cudaOnly : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
+  let c := IR.FFI.std.cuda
+  let bl := IR.FFI.std.cublas
+  pure (c, bl)), env% [.cuda, .cublas])
+def cudaOnly : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
 def cuda : IR.CudaSetup := ffiEnv.1.1
 def cublas : IR.CuBlasSetup := ffiEnv.1.2
 def envAll : FnEnv := ffiEnv.2
 def envCuda : FnEnv := cudaOnly.2
 
 def loadCode (sh : Shape) : HProg.Code :=
-  HProg.Sur.build envCuda HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     let dataPtr ← load64 (← absAddr ptr 0x18)
     cudaInit cuda ptr
@@ -275,7 +276,7 @@ def loadCode (sh : Shape) : HProg.Code :=
     only in which PTX slot it reads.  That is what makes the timings
     comparable. -/
 def runCode (sh : Shape) (sq : Bool) (s : Sched) : HProg.Code :=
-  HProg.Sur.build envCuda HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     let ptxOff ← iconst64 (slotOf sq s)
     let nBufs ← iconst32 3
@@ -288,7 +289,7 @@ def runCode (sh : Shape) (sq : Bool) (s : Sched) : HProg.Code :=
 
 /-- The cuBLAS baseline on the same buffers: `y = A·x`, `A` is `m x n`. -/
 def blasCode (sh : Shape) : HProg.Code :=
-  HProg.Sur.build envAll HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     let ctxPtr ← cudaCtxPtr ptr
     let aId ← load32 (← absAddr ptr A_ID)
@@ -304,7 +305,7 @@ def blasCode (sh : Shape) : HProg.Code :=
     let _ ← cudaSync cuda ptr
 
 def fetchCode (sh : Shape) : HProg.Code :=
-  HProg.Sur.build envCuda HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     let ctxPtr ← cudaCtxPtr ptr
     let outPtr ← load64 (← absAddr ptr 0x28)
@@ -333,15 +334,15 @@ theorem bodies_wf :
 def clifIR (sh : Shape) : Program :=
   program
     [noopFunction,
-     HProg.compileBody 1 envCuda HProg.ptrParams (loadCode sh),
-     HProg.compileBody 2 envCuda HProg.ptrParams (runCode sh false .vec4),
-     HProg.compileBody 3 envCuda HProg.ptrParams (fetchCode sh),
-     HProg.compileBody 4 envAll HProg.ptrParams (blasCode sh),
-     HProg.compileBody 5 envCuda HProg.ptrParams (runCode sh false .strided),
-     HProg.compileBody 6 envCuda HProg.ptrParams (runCode sh false .blocked),
-     HProg.compileBody 7 envCuda HProg.ptrParams (runCode sh true .vec4),
-     HProg.compileBody 8 envCuda HProg.ptrParams (runCode sh true .strided),
-     HProg.compileBody 9 envCuda HProg.ptrParams (runCode sh true .blocked)]
+     HProg.compileBody 1 (loadCode sh),
+     HProg.compileBody 2 (runCode sh false .vec4),
+     HProg.compileBody 3 (fetchCode sh),
+     HProg.compileBody 4 (blasCode sh),
+     HProg.compileBody 5 (runCode sh false .strided),
+     HProg.compileBody 6 (runCode sh false .blocked),
+     HProg.compileBody 7 (runCode sh true .vec4),
+     HProg.compileBody 8 (runCode sh true .strided),
+     HProg.compileBody 9 (runCode sh true .blocked)]
 
 /-- Every emitted kernel fits the slot it is written into — all six kernels at
     all four shapes, checked rather than assumed. -/

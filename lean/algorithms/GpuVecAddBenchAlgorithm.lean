@@ -32,24 +32,17 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The GPU entry points, in the order the callee table numbers them. -/
-def env : FnEnv := (envOf (do
-  let _ ← declareFFI "cl_gpu_init"            [.i64]                         none
-  let _ ← declareFFI "cl_gpu_create_buffer"   [.i64, .i64]                   (some .i32)
-  let _ ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32]       (some .i32)
-  let _ ← declareFFI "cl_gpu_upload_ptr"      [.i64, .i32, .i64, .i64]       (some .i32)
-  let _ ← declareFFI "cl_gpu_dispatch"        [.i64, .i32, .i32, .i32, .i32] (some .i32)
-  let _ ← declareFFI "cl_gpu_download_ptr"    [.i64, .i32, .i64, .i64, .i64] (some .i32)
-  let _ ← declareFFI "cl_gpu_cleanup"         [.i64]                         none)).2
+def env : FnEnv := env% [.gpu]
 
-def fnInit : Nat := 0
-def fnCreateBuffer : Nat := 1
-def fnCreatePipeline : Nat := 2
-def fnUploadPtr : Nat := 3
-def fnDispatch : Nat := 4
-def fnDownloadPtr : Nat := 5
-def fnCleanup : Nat := 6
+def fnInit : Nat := IR.FFI.std.gpu.fnInit.id
+def fnCreateBuffer : Nat := IR.FFI.std.gpu.fnCreateBuffer.id
+def fnCreatePipeline : Nat := IR.FFI.std.gpu.fnCreatePipeline.id
+def fnUploadPtr : Nat := IR.FFI.std.gpu.fnUploadPtr.id
+def fnDispatch : Nat := IR.FFI.std.gpu.fnDispatch.id
+def fnDownloadPtr : Nat := IR.FFI.std.gpu.fnDownloadPtr.id
+def fnCleanup : Nat := IR.FFI.std.gpu.fnCleanup.id
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
@@ -83,7 +76,7 @@ def code : HProg.Code := clif% env HProg.ptrParams do
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 def wgslBytes : List UInt8 :=
   wgslShader.toUTF8.toList ++ [0]

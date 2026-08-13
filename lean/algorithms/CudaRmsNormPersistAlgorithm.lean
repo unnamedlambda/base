@@ -68,7 +68,7 @@ open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
-def cudaEnv : CudaSetup × FnEnv := envOf declareCudaFFI
+def cudaEnv : CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
 def cuda : CudaSetup := cudaEnv.1
 def env : FnEnv := cudaEnv.2
 
@@ -77,7 +77,7 @@ def CTX_OFF : Nat := 0x10
 
 /-- Load: init CUDA, read N and weights from data, alloc 2 GPU bufs, upload
     N + weights into buf0. -/
-def loadCode : HProg.Code := clif% env HProg.ptrParams do
+def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
@@ -109,7 +109,7 @@ def loadCode : HProg.Code := clif% env HProg.ptrParams do
   let _ ← call cuda.fnUploadOffset.id [ctxPtr, buf0, wOff, wSrc, nBytes]
 
 /-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8. -/
-def prepCode : HProg.Code := clif% env HProg.ptrParams do
+def prepCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let n       ← load64 (← absAddr ptr N_OFF)
@@ -124,7 +124,7 @@ def prepCode : HProg.Code := clif% env HProg.ptrParams do
     The download branch joins rather than returning from each arm: `Code` has no
     early return, so both arms reach one `ret`. The join block holds nothing but
     that `ret`, which costs nothing once the backend threads the jump. -/
-def inferCode : HProg.Code := clif% env HProg.ptrParams do
+def inferCode : HProg.Code := clif% do
   let ptr := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
@@ -152,9 +152,9 @@ theorem bodies_wf :
 def clifIR : Program :=
   IR.program
     [noopFunction,
-     HProg.compileFn 1 env HProg.ptrParams loadCode,
-     HProg.compileFn 2 env HProg.ptrParams prepCode,
-     HProg.compileFn 3 env HProg.ptrParams inferCode]
+     HProg.compileFn 1 loadCode,
+     HProg.compileFn 2 prepCode,
+     HProg.compileFn 3 inferCode]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]

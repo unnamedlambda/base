@@ -1,5 +1,7 @@
 import AlgorithmLib
 
+
+
 set_option maxRecDepth 8192
 
 open Lean (Json)
@@ -355,12 +357,10 @@ open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: the live loop reaches the window and the GPU, the two
     headless tests reach the GPU alone. -/
-def declsMain : (GpuSetup × WindowSetup) × FnEnv := envOf (do
-  let gpu ← declareGpuFFI
-  let win ← declareWindowFFI
-  pure (gpu, win))
+def declsMain : (GpuSetup × WindowSetup) × FnEnv :=
+  ((IR.FFI.std.gpu, IR.FFI.std.window), env% [.gpu, .window])
 
-def declsGpu : GpuSetup × FnEnv := envOf declareGpuFFI
+def declsGpu : GpuSetup × FnEnv := (IR.FFI.std.gpu, env% [.gpu])
 
 def envMain : FnEnv := declsMain.2
 def gpuM : GpuSetup := declsMain.1.1
@@ -448,7 +448,7 @@ def mkBuffers (ptr : R) (gpu : GpuSetup) : Sur.M (R × R × R × R) := do
   let params ← gpuCreateBuffer gpu ptr (← iconst64 32)
   pure (gridA, gridB, pixels, params)
 
-def mainBody : HProg.Code := clif% envMain HProg.ptrParams do
+def mainBody : HProg.Code := clif% do
   let gpu := gpuM
   let win := winM
   let ptr := basePtr
@@ -517,7 +517,7 @@ def testSetup (ptr : R) (gpu : GpuSetup) : Sur.M (R × R × R) := do
   pure (gridA, gridB, stepAB)
 
 -- A lone grain with empty below drops to the next row (straight or scattered).
-def testGrainFalls : HProg.Code := clif% envGpu HProg.ptrParams do
+def testGrainFalls : HProg.Code := clif% do
   let gpu := gpuT
   let ptr := basePtr
   let (gridA, gridB, stepAB) ← testSetup ptr gpu
@@ -536,7 +536,7 @@ def testGrainFalls : HProg.Code := clif% envGpu HProg.ptrParams do
   writeOutput ptr (← band landed vacated) (← iadd bl br) (← iconst64 SAND)
 
 -- Sand is conserved: a 4×4 blob keeps its 16 grains after one step.
-def testConservation : HProg.Code := clif% envGpu HProg.ptrParams do
+def testConservation : HProg.Code := clif% do
   let gpu := gpuT
   let ptr := basePtr
   let (gridA, gridB, stepAB) ← testSetup ptr gpu
@@ -558,19 +558,20 @@ def testConservation : HProg.Code := clif% envGpu HProg.ptrParams do
   writeOutput ptr (← sextend64 (← icmp .eq count expected)) count expected
 
 
-set_option maxHeartbeats 4000000 in
-set_option maxRecDepth 1000000 in
 theorem bodies_wf :
     HProg.wf envMain HProg.ptrParams mainBody = true &&
     HProg.wf envGpu HProg.ptrParams testGrainFalls = true &&
     HProg.wf envGpu HProg.ptrParams testConservation = true := by decide
 
+-- The three bodies are checked once, by `bodies_wf`. `compileFn` would decide
+-- the same three facts again at each call, so these take `compileBody` and rest
+-- on the theorem above.
 def clifIrSource : IR.Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 envMain HProg.ptrParams mainBody,
-     HProg.compileFn 2 envGpu HProg.ptrParams testGrainFalls,
-     HProg.compileFn 3 envGpu HProg.ptrParams testConservation]
+     HProg.compileBody 1 mainBody envMain,
+     HProg.compileBody 2 testGrainFalls envGpu,
+     HProg.compileBody 3 testConservation envGpu]
 
 def bindBytes (pairs : List (Nat × Nat)) : List UInt8 :=
   pairs.foldl (fun acc (b, ro) => acc ++ uint32ToBytes (UInt32.ofNat b) ++ uint32ToBytes (UInt32.ofNat ro)) []

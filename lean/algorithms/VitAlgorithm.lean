@@ -2276,10 +2276,10 @@ open AlgorithmLib.HProg.Sur
 
 /-- Every emitted function declares the same externals in the same order, so a
     slot index means the same thing in all of them. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := envOf (do
-  let c ← declareCudaFFI
-  let bl ← declareCuBlasFFI
-  pure (c, bl))
+def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
+  let c := IR.FFI.std.cuda
+  let bl := IR.FFI.std.cublas
+  pure (c, bl)), env% [.cuda, .cublas])
 def cuda : IR.CudaSetup := ffiEnv.1.1
 def blas : IR.CuBlasSetup := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
@@ -2361,7 +2361,7 @@ def vGemmUnitOn (ptr : R) (k : Nat) (sid : R) :
 
 
 def vLoadFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
@@ -2541,7 +2541,7 @@ def vIssueDag (ptr : R) (sids : List R)
     The eager pass first, as every capture here does: a module load is not
     something a stream capture may perform. -/
 def vCaptureDagAt (lo hi gOff : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
@@ -2573,7 +2573,7 @@ def vCaptureDagAt (lo hi gOff : Nat) : HProg.Code :=
     the split between vendor and proven time is the one number that decides
     where the remaining gap is. -/
 def vCaptureClassAt (isBlas : Bool) (gOff : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
@@ -2592,7 +2592,7 @@ def vCaptureClassAt (isBlas : Bool) (gOff : Nat) : HProg.Code :=
   let _ ← call cuda.fnStreamSync.id [ctxPtr, sid]
 
 def vRunFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
   vIssue ptr none 0 VFWD_N
@@ -2602,7 +2602,7 @@ def vRunFn : HProg.Code :=
 
 /-- A range of the tape, issued from the host and synced. -/
 def vRangeFn (lo hi : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
   vIssue ptr none lo hi
@@ -2623,7 +2623,7 @@ def vRangeFn (lo hi : Nat) : HProg.Code :=
     The stream is created once and reused, so the forward capture and the step
     capture replay on the same stream and never interleave. -/
 def vCaptureAt (lo hi gOff : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
@@ -2647,7 +2647,7 @@ def vCaptureAt (lo hi gOff : Nat) : HProg.Code :=
     parameters it was captured with, which is why the training step can replay
     at all — every buffer it touches is the same one every step. -/
 def vReplayAt (gOff k : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let sid ← load32 (← absAddr ptr VSTREAM_OFF)
@@ -2663,7 +2663,7 @@ def vReplayAt (gOff k : Nat) : HProg.Code :=
     option once a graph has been captured — a capture holds the addresses it
     recorded, and new buffers would not be them. -/
 def vReloadFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -2678,7 +2678,7 @@ def vReloadFn : HProg.Code :=
 
 /-- Upload `dL/dlogits` into the buffer the backward is seeded from. -/
 def vSeedFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -2690,7 +2690,7 @@ def vSeedFn : HProg.Code :=
     and the byte count.  A gradient check reads a few hundred buffers, and one
     emitted function per buffer would be a CLIF function per parameter. -/
 def vFetchAnyFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -2703,7 +2703,7 @@ def vFetchAnyFn : HProg.Code :=
   let _ ← call cuda.fnDownload.id [ctxPtr, id, outPtr, (← uextend64 nb)]
 
 def vFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -2719,34 +2719,53 @@ def VDBG : Nat := if NL <= 2 then VNBUF else 0
     contiguous at either geometry. -/
 def VFN : Nat := 4 + VDBG
 
-def vClifIR : Program := IR.program (
-  [ noopFunction
-  , HProg.compileFn 1 env HProg.ptrParams vLoadFn
-  , HProg.compileFn 2 env HProg.ptrParams vRunFn
-  , HProg.compileFn 3 env HProg.ptrParams (vFetchFn VOUT (SQ * NC * 4)) ]
-    ++ (List.range VDBG).map (fun b => HProg.compileFn (4 + b) env HProg.ptrParams (vFetchFn b (vBufBytes.getD b 0)))
-    ++ [ HProg.compileFn VFN env HProg.ptrParams        (vCaptureAt 0 VFWD_N VGRAPH_OFF)
-       , HProg.compileFn (VFN + 1) env HProg.ptrParams  (vReplayAt VGRAPH_OFF 1)
-       , HProg.compileFn (VFN + 2) env HProg.ptrParams  (vRangeFn 0 VSTEP_N)
+/-- Every emitted body with the CLIF function index it ships as.
+
+    The bodies are named here rather than at the `compileFn` calls so that one
+    well-formedness fact covers all of them, including the debug fetches, which
+    are built under a binder and so have no expected type of their own to check
+    against. -/
+def vBodies : List (Nat × HProg.Code) :=
+  [ (1, vLoadFn)
+  , (2, vRunFn)
+  , (3, vFetchFn VOUT (SQ * NC * 4)) ]
+    ++ (List.range VDBG).map (fun b => (4 + b, vFetchFn b (vBufBytes.getD b 0)))
+    ++ [ (VFN,        vCaptureAt 0 VFWD_N VGRAPH_OFF)
+       , (VFN + 1,    vReplayAt VGRAPH_OFF 1)
+       , (VFN + 2,    vRangeFn 0 VSTEP_N)
        -- The backward and the updates, from where the seed was uploaded. Not
        -- the whole step: `dL/dlogits` is written between the forward and the
        -- backward, so a graph spanning both would replay against the seed it
        -- captured.
-       , HProg.compileFn (VFN + 3) env HProg.ptrParams  (vCaptureAt VFWD_N VSTEP_N VGRAPH_STEP_OFF)
-       , HProg.compileFn (VFN + 4) env HProg.ptrParams  (vReplayAt VGRAPH_STEP_OFF 1)
-       , HProg.compileFn (VFN + 5) env HProg.ptrParams  vSeedFn
-       , HProg.compileFn (VFN + 6) env HProg.ptrParams  vFetchAnyFn
-       , HProg.compileFn (VFN + 7) env HProg.ptrParams  (vRangeFn VFWD_N VBWD_N)
-       , HProg.compileFn (VFN + 8) env HProg.ptrParams  (vRangeFn VBWD_N VSTEP_N)
-       , HProg.compileFn (VFN + 9) env HProg.ptrParams  vReloadFn
-       , HProg.compileFn (VFN + 10) env HProg.ptrParams (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)
-       , HProg.compileFn (VFN + 11) env HProg.ptrParams (vReplayAt VGRAPH_DFWD_OFF 1)
-       , HProg.compileFn (VFN + 12) env HProg.ptrParams (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)
-       , HProg.compileFn (VFN + 13) env HProg.ptrParams (vReplayAt VGRAPH_DSTEP_OFF 1)
-       , HProg.compileFn (VFN + 14) env HProg.ptrParams (vCaptureClassAt true VGRAPH_BLAS_OFF)
-       , HProg.compileFn (VFN + 15) env HProg.ptrParams (vReplayAt VGRAPH_BLAS_OFF 1)
-       , HProg.compileFn (VFN + 16) env HProg.ptrParams (vCaptureClassAt false VGRAPH_ROW_OFF)
-       , HProg.compileFn (VFN + 17) env HProg.ptrParams (vReplayAt VGRAPH_ROW_OFF 1) ])
+       , (VFN + 3,    vCaptureAt VFWD_N VSTEP_N VGRAPH_STEP_OFF)
+       , (VFN + 4,    vReplayAt VGRAPH_STEP_OFF 1)
+       , (VFN + 5,    vSeedFn)
+       , (VFN + 6,    vFetchAnyFn)
+       , (VFN + 7,    vRangeFn VFWD_N VBWD_N)
+       , (VFN + 8,    vRangeFn VBWD_N VSTEP_N)
+       , (VFN + 9,    vReloadFn)
+       , (VFN + 10,   vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)
+       , (VFN + 11,   vReplayAt VGRAPH_DFWD_OFF 1)
+       , (VFN + 12,   vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)
+       , (VFN + 13,   vReplayAt VGRAPH_DSTEP_OFF 1)
+       , (VFN + 14,   vCaptureClassAt true VGRAPH_BLAS_OFF)
+       , (VFN + 15,   vReplayAt VGRAPH_BLAS_OFF 1)
+       , (VFN + 16,   vCaptureClassAt false VGRAPH_ROW_OFF)
+       , (VFN + 17,   vReplayAt VGRAPH_ROW_OFF 1) ]
+
+/-- Every shipped body is well formed against the CUDA and cuBLAS entry points.
+
+    The bodies are `Sur.build` runs rather than `clif%` splices — a spliced
+    literal of this size nests deeper than the elaborator's stack — so the
+    kernel would have to reduce the builder before it could look at a
+    statement. The compiler evaluates the same check directly. -/
+theorem vBodies_wf :
+    vBodies.all (fun p => HProg.wf env HProg.ptrParams p.2) = true := by
+  native_decide
+
+def vClifIR : Program := IR.program (noopFunction ::
+  vBodies.attach.map (fun ⟨p, hp⟩ =>
+    HProg.compileFn p.1 p.2 env (hwf := List.all_eq_true.mp vBodies_wf p hp)))
 
 /-- Where each input's gradient landed, one `u32` per input, `0` for the
     constants and the patch embedding that are not trained.  A host reads this

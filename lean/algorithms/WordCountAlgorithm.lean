@@ -28,16 +28,16 @@ open AlgorithmLib.HProg.Sur
 
 /-- Every emitted function declares the same externals in the same order. -/
 def ffiEnv : ((((FnRef × FnRef) × (FnRef × FnRef)) × ((FnRef × FnRef) × (FnRef × FnRef)))) × FnEnv :=
-  envOf (do
-    let htInit ← declareFFI "cl_ht_init" [.i64] none
-    let htClean ← declareFFI "cl_ht_cleanup" [.i64] none
-    let rd ← declareFileRead
-    let wr ← declareFileWrite
-    let create ← declareColocatedFFI "ht_create" [.i64] (some .i32)
-    let incr ← declareColocatedFFI "ht_increment" [.i64, .i64, .i32, .i64] (some .i64)
-    let count ← declareColocatedFFI "ht_count" [.i64] (some .i32)
-    let getEntry ← declareColocatedFFI "ht_get_entry" [.i64, .i32, .i64, .i64] (some .i32)
-    pure (((htInit, htClean), (rd, wr)), ((create, incr), (count, getEntry))))
+  (Id.run (do
+    let htInit := IR.FFI.std.ht.fnInit
+    let htClean := IR.FFI.std.ht.fnCleanup
+    let rd := IR.FFI.std.fileRead
+    let wr := IR.FFI.std.fileWrite
+    let create := IR.FFI.std.ht.fnCreate
+    let incr := IR.FFI.std.ht.fnIncrement
+    let count := IR.FFI.std.ht.fnCount
+    let getEntry := IR.FFI.std.ht.fnGetEntry
+    pure (((htInit, htClean), (rd, wr)), ((create, incr), (count, getEntry)))), env% [.ht, .fileIO])
 def fnHtInit : FnRef := ffiEnv.1.1.1.1
 def fnHtClean : FnRef := ffiEnv.1.1.1.2
 def fnRead : FnRef := ffiEnv.1.1.2.1
@@ -146,7 +146,7 @@ def emitFormatPhase (ptr ctxPtr : R) : M R := do
   return e.headD 0
 
 def mainCode : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero ← iconst64 0
@@ -167,7 +167,7 @@ def mainCode : HProg.Code :=
   callVoid fnHtClean.id [← absAddr ptr 0]
 
 def clifIR : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams mainCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode]
 
 def artifacts : Array Json :=
   #[toJsonEntry "wc_algorithm" {

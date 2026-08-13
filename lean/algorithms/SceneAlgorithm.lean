@@ -931,16 +931,16 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := envOf (do
-  let w ← declareFileWrite
-  let c ← declareCudaFFI
-  pure (w, c))
+def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := (Id.run (do
+  let w := IR.FFI.std.fileWrite
+  let c := IR.FFI.std.cuda
+  pure (w, c)), env% [.cuda, .fileIO])
 def fnWrite : FnRef := ffiEnv.1.1
 def cuda : IR.CudaSetup := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
 
 def code (spec : SceneSpec) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     cudaInit cuda ptr
     let dataSz ← iconst64 (pixelBytes spec)
@@ -962,7 +962,7 @@ def code (spec : SceneSpec) : HProg.Code :=
 
 
 def clifIrSource (spec : SceneSpec) : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code spec)]
+  IR.program [noopFunction, HProg.compileBody 1 (code spec)]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
   let reserved := zeros ptxOff
@@ -1013,6 +1013,13 @@ def studioPalette : ScenePalette := {
 def defaultScene : SceneSpec :=
   checkedScene 1280 720 128 5 defaultPalette "scene.bmp"
     (by decide) (by decide) (by decide) (by decide)
+
+/-- Well-formed at the scene that ships.
+
+    `clifIrSource` is generic in the spec, so `compileFn` has no instance to
+    `decide` at; it takes `compileBody` and this theorem stands in for the
+    check. -/
+theorem code_wf : HProg.wf env HProg.ptrParams (code defaultScene) = true := by decide
 
 def previewScene : SceneSpec :=
   checkedScene 640 360 16 3 sunsetPalette "scene.bmp"

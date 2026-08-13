@@ -4,16 +4,14 @@ import AlgorithmLib.HProg
 /-!
 # The FFI call wrappers, over `HProg.Sur`
 
-`FFI.lean` declares every entry point the runtime exposes and wraps each in an
-`IRBuilder` helper. The declarations are shared — `HProg.envOf` runs the same
-`declare*` action to build a term's callee table, so a signature cannot differ
-between the two paths. What is duplicated here is only the *call* side: reading a
-context pointer out of its slot, turning offsets into addresses, and issuing the
-call, in the surface a term is written in.
+`FFI.lean` declares every entry point the runtime exposes and `FFIStd.lean`
+runs those declarations once, into the table every body is checked and compiled
+against. So a signature is written in exactly one place and two generators
+cannot describe the same C symbol differently.
 
-Each wrapper emits the same instructions in the same order as its `IRBuilder`
-twin, so a generator ported to `HProg` produces the same CLIF up to a renaming of
-SSA values.
+What lives here is the *call* side: reading a context pointer out of its slot,
+turning offsets into addresses, and issuing the call, in the surface a term is
+written in.
 -/
 
 namespace AlgorithmLib.HProg.Sur
@@ -429,8 +427,8 @@ def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat) : FuncData :=
     callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
   let (refs, env) :=
     HProg.envOf (unique.mapM fun c => declareLocal c [ClifTy.i64] none)
-  HProg.compileBody wrapperIdx env HProg.ptrParams <|
-    HProg.Sur.build env HProg.ptrParams do
+  HProg.compileBody wrapperIdx <|
+    HProg.Sur.build do
       for c in callees do
         let slot := (unique.idxOf? c).getD 0
         HProg.Sur.callVoid (refs[slot]!).id [HProg.Sur.basePtr]

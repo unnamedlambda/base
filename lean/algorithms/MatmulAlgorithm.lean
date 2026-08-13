@@ -200,10 +200,10 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := envOf (do
-  let w ← declareFileWrite
-  let c ← declareCudaFFI
-  pure (w, c))
+def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := (Id.run (do
+  let w := IR.FFI.std.fileWrite
+  let c := IR.FFI.std.cuda
+  pure (w, c)), env% [.cuda, .fileIO])
 def fnWrite : FnRef := ffiEnv.1.1
 def cuda : IR.CudaSetup := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
@@ -215,7 +215,7 @@ def code (m k n : Nat) : HProg.Code :=
   let aOff := DATA_OFF
   let bOff := aOff + aBytes
   let cOff := bOff + bBytes
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     let c0 ← iconst64 0
 
@@ -268,7 +268,7 @@ def code (m k n : Nat) : HProg.Code :=
 theorem code_wf : HProg.wf env HProg.ptrParams (code 64 64 64) = true := by decide
 
 def clifIrSource (m k n : Nat) : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code m k n)]
+  IR.program [noopFunction, HProg.compileBody 1 (code m k n)]
 
 -- ---------------------------------------------------------------------------
 -- Monomorphic builder: takes concrete dims, returns (Setup, Algorithm).

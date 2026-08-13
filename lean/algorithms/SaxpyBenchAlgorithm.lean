@@ -77,15 +77,15 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points then `cl_file_write`, in callee-table order. -/
-def ffiEnv : (IR.CudaSetup × FnRef) × FnEnv := envOf (do
-  let c ← declareCudaFFI
-  let w ← declareFileWrite
-  pure (c, w))
+def ffiEnv : (IR.CudaSetup × FnRef) × FnEnv := (Id.run (do
+  let c := IR.FFI.std.cuda
+  let w := IR.FFI.std.fileWrite
+  pure (c, w)), env% [.cuda, .fileIO])
 def cuda : IR.CudaSetup := ffiEnv.1.1
 def fnWr : FnRef := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let ptr := basePtr
 
   -- Init CUDA context
@@ -137,7 +137,7 @@ def code : HProg.Code := clif% env HProg.ptrParams do
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIrSource : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 -- ---------------------------------------------------------------------------
 -- Payloads

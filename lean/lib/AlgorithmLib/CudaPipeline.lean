@@ -113,14 +113,14 @@ private def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) 
 
 /-- The CUDA callee table all three stages share, so their signatures are
     written once. -/
-def ffiEnv : CudaSetup × FnEnv := envOf declareCudaFFI
+def ffiEnv : CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
 
 def cuda : CudaSetup := ffiEnv.1
 def env : FnEnv := ffiEnv.2
 
 /-- Allocate the device buffers and publish the element count. -/
 def loadCode (inputs : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
@@ -130,14 +130,14 @@ def loadCode (inputs : Nat) : HProg.Code :=
   let metaBytes ← iconst64 8
   let metaBuf ← cudaCreateBuffer cuda ptr metaBytes
   storeI32 metaBuf (← absAddr ptr 0x40)
-  for (i : Nat) in List.range inputs do
+  (List.range inputs).forM fun (i : Nat) => do
     let buf ← cudaCreateBuffer cuda ptr nBytes
     storeI32 buf (← absAddr ptr (0x44 + 4*i))
   let _ ← cudaUpload cuda ptr metaBuf (← iconst64 0x38) metaBytes
 
 /-- Upload the inputs, which lie back to back from the caller's data pointer. -/
 def prepCode (inputs : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let n ← load64 (← absAddr ptr 0x38)
@@ -151,7 +151,7 @@ def prepCode (inputs : Nat) : HProg.Code :=
 /-- Launch, synchronise, and download the output — the last only when the
     caller asked for one. -/
 def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : HProg.Code :=
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
@@ -178,13 +178,20 @@ def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : HProg.Code :=
 
 /-- The three stages are terms only once `n`, `out` and `blockSize` are given,
     so the well-formedness each owes `compileFn` travels out to here and is
-    discharged by `decide` where a caller names the arity — which every caller
-    does. -/
+    discharged where a caller names the arity — which every caller does.
+
+    By `native_decide`, not `decide`: `loadCode` and `prepCode` build their
+    buffer list by iterating, and the kernel will not reduce meta-level
+    iteration inside a builder — only straight-line bodies reduce. This is the
+    same footing as `clif%`, which checks the bodies it splices by running
+    compiled code at elaboration; these two cannot use it because they are
+    parameterised by the arity. -/
 def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     (blockSize : Nat := 256)
-    (hLoad : HProg.wf env HProg.ptrParams (loadCode n) = true := by decide)
-    (hPrep : HProg.wf env HProg.ptrParams (prepCode n) = true := by decide)
-    (hInfer : HProg.wf env HProg.ptrParams (inferCode ⟨out, h⟩ blockSize) = true := by decide) :
+    (hLoad : HProg.wf env HProg.ptrParams (loadCode n) = true := by native_decide)
+    (hPrep : HProg.wf env HProg.ptrParams (prepCode n) = true := by native_decide)
+    (hInfer : HProg.wf env HProg.ptrParams (inferCode ⟨out, h⟩ blockSize) = true
+      := by native_decide) :
     CompileResult :=
   let output : Fin n := ⟨out, h⟩
   let ptxBytes := (ptxSource e output blockSize).toUTF8.toList ++ [0]
@@ -197,9 +204,9 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     ++ bindDesc ++ zeros (memSize - bindDescOff - bindDesc.length)
   let clifProg := program
     [noopFunction,
-     HProg.compileFn 1 env HProg.ptrParams (loadCode n) (hwf := hLoad),
-     HProg.compileFn 2 env HProg.ptrParams (prepCode n) (hwf := hPrep),
-     HProg.compileFn 3 env HProg.ptrParams (inferCode output blockSize) (hwf := hInfer)]
+     HProg.compileFn 1 (loadCode n) env (hwf := hLoad),
+     HProg.compileFn 2 (prepCode n) env (hwf := hPrep),
+     HProg.compileFn 3 (inferCode output blockSize) env (hwf := hInfer)]
   let mkAlg (src : UInt32) : Algorithm :=
     { fn_idx := src }
   {

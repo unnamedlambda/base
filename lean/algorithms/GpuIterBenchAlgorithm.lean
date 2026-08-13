@@ -56,25 +56,18 @@ def reduceShader : String :=
 
 /-- The GPU entry points, declared through the same helpers every generator
     uses, so the term's callee table cannot drift from their signatures. -/
-def env : FnEnv := (envOf (do
-  let _ ← declareFFI "cl_gpu_init"            [.i64]                         none
-  let _ ← declareFFI "cl_gpu_create_buffer"   [.i64, .i64]                   (some .i32)
-  let _ ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32]       (some .i32)
-  let _ ← declareFFI "cl_gpu_upload_ptr"      [.i64, .i32, .i64, .i64]       (some .i32)
-  let _ ← declareFFI "cl_gpu_dispatch"        [.i64, .i32, .i32, .i32, .i32] (some .i32)
-  let _ ← declareFFI "cl_gpu_download_ptr"    [.i64, .i32, .i64, .i64, .i64] (some .i32)
-  let _ ← declareFFI "cl_gpu_cleanup"         [.i64]                         none)).2
+def env : FnEnv := env% [.gpu]
 
-def fnInit : Nat := 0
-def fnCreateBuffer : Nat := 1
-def fnCreatePipeline : Nat := 2
-def fnUploadPtr : Nat := 3
-def fnDispatch : Nat := 4
-def fnDownloadPtr : Nat := 5
-def fnCleanup : Nat := 6
+def fnInit : Nat := IR.FFI.std.gpu.fnInit.id
+def fnCreateBuffer : Nat := IR.FFI.std.gpu.fnCreateBuffer.id
+def fnCreatePipeline : Nat := IR.FFI.std.gpu.fnCreatePipeline.id
+def fnUploadPtr : Nat := IR.FFI.std.gpu.fnUploadPtr.id
+def fnDispatch : Nat := IR.FFI.std.gpu.fnDispatch.id
+def fnDownloadPtr : Nat := IR.FFI.std.gpu.fnDownloadPtr.id
+def fnCleanup : Nat := IR.FFI.std.gpu.fnCleanup.id
 
 open HProg.Sur in
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   let dataLen ← load64 (← absAddr basePtr 0x20)
   let outPtr  ← load64 (← absAddr basePtr 0x28)
@@ -123,7 +116,7 @@ def code : HProg.Code := clif% env HProg.ptrParams do
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 /-- The FFI calls the *emitted* function performs, in order.
 
@@ -132,7 +125,7 @@ def clifIR : Program :=
     is the shape those proofs take after their generators move to terms: the
     claim is unchanged, only what produced the program is. -/
 theorem emitted_calls :
-    Clif.callsOf (HProg.compileBody 1 env HProg.ptrParams code).asState
+    Clif.callsOf (HProg.compileBody 1 code).asState
       = ["cl_gpu_init", "cl_gpu_create_buffer", "cl_gpu_create_buffer",
          "cl_gpu_upload_ptr", "cl_gpu_create_pipeline", "cl_gpu_create_pipeline",
          "cl_gpu_dispatch", "cl_gpu_dispatch", "cl_gpu_download_ptr",
@@ -143,7 +136,7 @@ theorem emitted_calls :
     Recorded because it is the limit that makes recovery-from-a-CFG the weaker
     route: the term says `Piece.loop` whatever the bound is. -/
 theorem emitted_loops_not_static :
-    Clif.loopsOf (HProg.compileBody 1 env HProg.ptrParams code).asState = [] := by
+    Clif.loopsOf (HProg.compileBody 1 code).asState = [] := by
   native_decide
 
 def scaleShaderBytes  : List UInt8 := scaleShader.toUTF8.toList ++ [0]

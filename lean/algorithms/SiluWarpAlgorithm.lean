@@ -2,6 +2,8 @@ import Lean
 import Std
 import AlgorithmLib
 
+
+
 /-!
   # A user's spec, compiled to the GPU
 
@@ -140,11 +142,11 @@ open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
-def cudaEnv : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
 def cuda : IR.CudaSetup := cudaEnv.1
 def env : FnEnv := cudaEnv.2
 
-def loadFnCode : HProg.Code := clif% env HProg.ptrParams do
+def loadFnCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
@@ -158,7 +160,7 @@ def loadFnCode : HProg.Code := clif% env HProg.ptrParams do
   store inId (← absAddr ptr BIND_OFF)
   store outId (← absAddr ptr (BIND_OFF + 4))
 
-def runFnCode : HProg.Code := clif% env HProg.ptrParams do
+def runFnCode : HProg.Code := clif% do
   let ptr := basePtr
   let ptxOff ← iconst64 PTX_OFF
   let nBufs ← iconst32 2
@@ -170,7 +172,7 @@ def runFnCode : HProg.Code := clif% env HProg.ptrParams do
   let _ ← cudaSync cuda ptr
 
 /-- The same work, `E` elements per lane: `LGRID` blocks instead of `GRID`. -/
-def runLoopFnCode : HProg.Code := clif% env HProg.ptrParams do
+def runLoopFnCode : HProg.Code := clif% do
   let ptr := basePtr
   let ptxOff ← iconst64 PTX_L_OFF
   let nBufs ← iconst32 2
@@ -181,7 +183,7 @@ def runLoopFnCode : HProg.Code := clif% env HProg.ptrParams do
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
   let _ ← cudaSync cuda ptr
 
-def fetchFnCode : HProg.Code := clif% env HProg.ptrParams do
+def fetchFnCode : HProg.Code := clif% do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -199,10 +201,10 @@ theorem bodies_wf :
 def clifIR : Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 env HProg.ptrParams loadFnCode,
-     HProg.compileFn 2 env HProg.ptrParams runFnCode,
-     HProg.compileFn 3 env HProg.ptrParams fetchFnCode,
-     HProg.compileFn 4 env HProg.ptrParams runLoopFnCode]
+     HProg.compileFn 1 loadFnCode,
+     HProg.compileFn 2 runFnCode,
+     HProg.compileFn 3 fetchFnCode,
+     HProg.compileFn 4 runLoopFnCode]
 
 def initialMemory : List UInt8 :=
   let p := ptx.toUTF8.toList ++ [0]

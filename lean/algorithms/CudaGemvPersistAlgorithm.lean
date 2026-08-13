@@ -40,12 +40,12 @@ open AlgorithmLib.HProg.Sur
     Two callee tables, because a function declares only what it calls: `load`
     and `prep` reach CUDA alone, and carrying cuBLAS in their tables would put
     six signatures in the emitted function that nothing there uses. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := envOf (do
-  let cuda ← declareCudaFFI
-  let blas ← declareCuBlasFFI
-  pure (cuda, blas))
+def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
+  let cuda := IR.FFI.std.cuda
+  let blas := IR.FFI.std.cublas
+  pure (cuda, blas)), env% [.cuda, .cublas])
 
-def cudaEnvOnly : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cudaEnvOnly : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
 
 def cuda : IR.CudaSetup := ffiEnv.1.1
 def blas : IR.CuBlasSetup := ffiEnv.1.2
@@ -55,7 +55,7 @@ def envCuda : FnEnv := cudaEnvOnly.2
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
 
-def loadCode : HProg.Code := clif% envCuda HProg.ptrParams do
+def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
@@ -79,7 +79,7 @@ def loadCode : HProg.Code := clif% envCuda HProg.ptrParams do
   let aPtr ← iaddImm dataPtr 16
   let _ ← call cuda.fnUpload.id [ctxPtr, buf0, aPtr, mNBytes]
 
-def prepCode : HProg.Code := clif% envCuda HProg.ptrParams do
+def prepCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
@@ -89,7 +89,7 @@ def prepCode : HProg.Code := clif% envCuda HProg.ptrParams do
 
 /-- The download branch joins rather than returning from each arm: `Code` has no
     early return, so both arms reach one `ret`. -/
-def inferCode : HProg.Code := clif% env HProg.ptrParams do
+def inferCode : HProg.Code := clif% do
   let ptr := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
@@ -121,9 +121,9 @@ theorem bodies_wf :
 def clifIR : Program :=
   IR.program
     [noopFunction,
-     HProg.compileFn 1 envCuda HProg.ptrParams loadCode,
-     HProg.compileFn 2 envCuda HProg.ptrParams prepCode,
-     HProg.compileFn 3 env HProg.ptrParams inferCode]
+     HProg.compileFn 1 loadCode,
+     HProg.compileFn 2 prepCode,
+     HProg.compileFn 3 inferCode]
 
 
 def buildSetup : Setup := {

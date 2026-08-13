@@ -142,11 +142,11 @@ open AlgorithmLib.HProg.Sur
 
 /-- The externals every emitted function declares, in one order, so a slot
     index means the same thing in all of them. -/
-def ffiEnv : ((IR.FnRef × IR.FnRef) × IR.CudaSetup) × FnEnv := envOf (do
-  let rd ← AlgorithmLib.IR.declareStdinReadline
-  let wr ← AlgorithmLib.IR.declareStdoutWrite
-  let c ← declareCudaFFI
-  pure ((rd, wr), c))
+def ffiEnv : ((IR.FnRef × IR.FnRef) × IR.CudaSetup) × FnEnv := (Id.run (do
+  let rd := IR.FFI.std.stdinReadline
+  let wr := IR.FFI.std.stdoutWrite
+  let c := IR.FFI.std.cuda
+  pure ((rd, wr), c)), env% [.cuda, .fileIO])
 def fnRead : IR.FnRef := ffiEnv.1.1.1
 def fnWrite : IR.FnRef := ffiEnv.1.1.2
 def cuda : IR.CudaSetup := ffiEnv.1.2
@@ -1306,7 +1306,7 @@ def emitEvalLine (ptr len : R) : M (R × R) := do
   return (r.headD 0, r.getD 1 0)
 
 def clifCode : HProg.Code :=
-  clif% env HProg.ptrParams do
+  HProg.Sur.build (env := env) do
   let ptr := basePtr
   let inputOff ← fldOffset f.input
   let inputMax ← iconst64 256
@@ -1380,8 +1380,16 @@ def clifCode : HProg.Code :=
 
   cudaCleanup cuda ptr
 
+/-- The body is well formed against the two bundles it calls.
+
+    `clifCode` is a `Sur.build` rather than a `clif%` splice, so the builder run
+    is still part of the term and the kernel would have to reduce it before it
+    could look at a single statement. The compiler evaluates the same check
+    directly. -/
+theorem clif_wf : HProg.wf env HProg.ptrParams clifCode = true := by native_decide
+
 def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 env HProg.ptrParams clifCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 clifCode env (hwf := clif_wf)]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [

@@ -626,7 +626,7 @@ def cases : List Case :=
 
 open Sur in
 /-- Every case, storing its result at its own stride in the output buffer. -/
-def code : Code := clif% env ptrParams do
+def code : Code := clif%(env, ptrParams) do
   let outPtr ← load64 (← absAddr basePtr 0x28)
   for (c, k) in (cases.map (·.2)).zipIdx do
     let r ← c
@@ -639,7 +639,7 @@ def code : Code := clif% env ptrParams do
 -- would mean a `native_decide` over several thousand slots, which buys nothing
 -- and costs trust surface.
 
-def program : Program := IR.program [noopFunction, compileFn 1 env ptrParams code]
+def program : Program := IR.program [noopFunction, compileBody 1 code env]
 
 def outBytes : Nat := cases.length * STRIDE
 
@@ -685,7 +685,7 @@ def startWorld : Except String Sem.Mem :=
     both sides first is what rules that out. -/
 def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
-  let f := compileFn 1 env ptrParams code
+  let f := compileBody 1 code env
   match Blocks.run env f [.sc .i64 (Sem.regionBase .arena)] { mem := m } with
   | .stuck why => .error why
   | .ok obs w => .ok (obs, w.mem.out)

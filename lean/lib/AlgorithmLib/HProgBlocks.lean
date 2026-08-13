@@ -230,7 +230,7 @@ open AlgorithmLib.HProg.Sem
 def CompileSound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     (args : List V) (w : World) (fuel : Nat) : Prop :=
   Sem.run { env, steps := fuel } args w c
-    = Blocks.run env (compileBody idx env params c) args w fuel
+    = Blocks.run env (compileBody idx c env params) args w fuel
 
 
 /-- The base case, proved. An empty body compiles to one block that returns,
@@ -1825,7 +1825,7 @@ theorem run_mono (env : FnEnv) (f : FuncData) (args : List Sem.V) (w : Sem.World
 def CompileSoundE (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     (args : List V) (w : World) (fuel : Nat) : Prop :=
   ∃ steps, Sem.run { env, steps := fuel } args w c
-    = Blocks.run env (compileBody idx env params c) args w steps
+    = Blocks.run env (compileBody idx c env params) args w steps
 
 /-- Everything already proved at the matched-budget statement carries over, so
     separating the budgets costs none of the existing results. -/

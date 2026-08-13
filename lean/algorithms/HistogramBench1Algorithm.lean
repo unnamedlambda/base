@@ -28,14 +28,12 @@ open AlgorithmLib.HProg.Sur
 set_option maxRecDepth 100000
 
 /-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
-def env : FnEnv := (envOf (do
-  let _ ← declareFileRead
-  let _ ← declareFileWrite)).2
+def env : FnEnv := env% [.fileIO]
 
-def fnRead : Nat := 0
-def fnWrite : Nat := 1
+def fnRead : Nat := IR.FFI.std.fileRead.id
+def fnWrite : Nat := IR.FFI.std.fileWrite.id
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero    ← iconst64 0
@@ -117,7 +115,7 @@ def clifIR : Program :=
   program
     [noopFunction,
      noopAt 1,
-     HProg.compileFn 2 env HProg.ptrParams code]
+     HProg.compileFn 2 code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "hist1_algorithm" {

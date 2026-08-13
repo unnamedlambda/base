@@ -35,18 +35,16 @@ namespace Hist
 
 open HistogramBench1 (INPUT_PATH_OFF OUTPUT_PATH_OFF HIST_OFF HIST_BYTES DATA_OFF MEM_SIZE)
 
-/-- `cl_file_read` as fn0, `cl_file_write` as fn1 — declared by the same
-    helpers `HistogramBench1.orchFn` calls. -/
-def env : FnEnv := (envOf (do
-  let _ ← declareFileRead
-  let _ ← declareFileWrite)).2
+/-- The standard table, which is what `HistogramBench1.orchFn` is checked
+    against too. -/
+def env : FnEnv := env% [.cuda, .fileIO]
 
-def fnRead : Nat := 0
-def fnWrite : Nat := 1
+def fnRead : Nat := IR.FFI.std.fileRead.id
+def fnWrite : Nat := IR.FFI.std.fileWrite.id
 
 open Sur in
 /-- `HistogramBench1.orchFn`, as a term. -/
-def code : Code := clif% env ptrParams do
+def code : Code := clif%(env, ptrParams) do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   let zeroI ← iconst64 0
   -- copy the input path until NUL
@@ -116,7 +114,7 @@ theorem code_wf : wf env ptrParams code = true := by decide
 theorem code_calls : callsOf code = [fnRead, fnWrite] := rfl
 
 def program : Program :=
-  IR.program [noopFunction, noopAt 1, compileFn 2 env ptrParams code]
+  IR.program [noopFunction, noopAt 1, compileFn 2 code env]
 
 end Hist
 
@@ -135,7 +133,7 @@ open Sur in
 /-- `ClampSumBench.mainFn`, as a term. The four vector accumulators and the
     `f64` tail accumulator are ordinary binders; their types reach the emitted
     block parameters because the surface tracked them. -/
-def code : Code := clif% env ptrParams do
+def code : Code := clif%(env, ptrParams) do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   let dataLen ← load64 (← absAddr basePtr 0x20)
   let outPtr ← load64 (← absAddr basePtr 0x28)
@@ -193,7 +191,7 @@ theorem code_wf : wf env ptrParams code = true := by decide
 theorem code_calls : callsOf code = [] := rfl
 
 def program : Program :=
-  IR.program [noopFunction, compileFn 1 env ptrParams code]
+  IR.program [noopFunction, compileFn 1 code env]
 
 end ClampSum
 
@@ -207,7 +205,7 @@ open CudaRmsNormPersist (PTX_SOURCE_OFF BIND_DESC_OFF MEM_SIZE N_OFF BUF0_OFF BU
 
 /-- The same `declareCudaFFI` the original calls, so the signatures the checker
     holds these bodies to are the runtime's own. -/
-def cudaEnv : CudaSetup × FnEnv := envOf declareCudaFFI
+def cudaEnv : CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .fileIO])
 def cuda : CudaSetup := cudaEnv.1
 def env : FnEnv := cudaEnv.2
 
@@ -217,7 +215,7 @@ def CTX_OFF : Int := 0x10
 open Sur in
 /-- Initialize CUDA, allocate the two device buffers, upload `N` and the
     weights. -/
-def loadCode : Code := clif% env ptrParams do
+def loadCode : Code := clif%(env, ptrParams) do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   callVoid cuda.fnInit.id [← absAddr basePtr CTX_OFF]
   let ctxPtr ← load64 (← absAddr basePtr CTX_OFF)
@@ -239,7 +237,7 @@ def loadCode : Code := clif% env ptrParams do
 
 open Sur in
 /-- Upload the input vector ahead of a launch. -/
-def prepCode : Code := clif% env ptrParams do
+def prepCode : Code := clif% do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   let n ← load64 (← absAddr basePtr N_OFF)
   let buf0 ← load32 (← absAddr basePtr BUF0_OFF)
@@ -250,7 +248,7 @@ def prepCode : Code := clif% env ptrParams do
 
 open Sur in
 /-- Launch, synchronize, and download only when the caller asked for output. -/
-def inferCode : Code := clif% env ptrParams do
+def inferCode : Code := clif% do
   let outPtr ← load64 (← absAddr basePtr 0x28)
   let outLen ← load64 (← absAddr basePtr 0x30)
   let ctxPtr ← load64 (← absAddr basePtr CTX_OFF)
@@ -285,9 +283,9 @@ theorem infer_calls :
 def program : Program :=
   IR.program
     [noopFunction,
-     compileFn 1 env ptrParams loadCode,
-     compileFn 2 env ptrParams prepCode,
-     compileFn 3 env ptrParams inferCode]
+     compileFn 1 loadCode,
+     compileFn 2 prepCode,
+     compileFn 3 inferCode]
 
 end RmsNorm
 
@@ -304,7 +302,7 @@ open Sur in
     on the total, written to a file. The inner body reads the outer body's
     carry and the prologue's constants, which is the cross-scope dataflow
     nesting has to carry. -/
-def code : Code := clif% env ptrParams do
+def code : Code := clif%(env, ptrParams) do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   let zeroI ← iconst64 0
   let _ ← wloop1 zeroI
@@ -342,7 +340,7 @@ theorem code_wf : wf env ptrParams code = true := by decide
 theorem code_calls : callsOf code = [Hist.fnWrite] := rfl
 
 def program : Program :=
-  IR.program [noopFunction, noopAt 1, compileFn 2 env ptrParams code]
+  IR.program [noopFunction, noopAt 1, compileFn 2 code env]
 
 end Nested
 
@@ -363,7 +361,7 @@ open Sur in
     means there is no join and the body has no back edge, and a depth above zero
     names an outer loop. `wf` below is what says so in the kernel — the corpus
     says the same thing by running it. -/
-def code : Code := clif% env ptrParams do
+def code : Code := clif%(env, ptrParams) do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
   let one ← iconst64 1
   let zero ← iconst64 0
@@ -393,7 +391,7 @@ def code : Code := clif% env ptrParams do
 
 theorem code_wf : wf env ptrParams code = true := by decide
 
-def program : Program := IR.program [noopFunction, compileFn 1 env ptrParams code]
+def program : Program := IR.program [noopFunction, compileFn 1 code env]
 
 end Early
 
@@ -405,7 +403,7 @@ open Sur in
 /-- Slot numbering never depends on an immediate's *value*, so the builder
     reduces symbolically with `k` still open. -/
 def openFrag (k : Int) : Code :=
-  HProg.Sur.build { sigs := [], fns := [] } ptrParams do
+  HProg.Sur.build (env := { sigs := [], fns := [] }) do
     let a ← Sur.iconst .i64 k
     let b ← Sur.iadd Sur.basePtr a
     let c ← Sur.load64 b
@@ -445,7 +443,7 @@ def histCompileSound : Except String (Nat × Nat) :=
       let w : Sem.World := { mem := m, fs := { files := [("in.bin", input)] } }
       let ptr : Sem.V := .sc .i64 (Sem.regionBase .arena)
       match Sem.run { env := Hist.env } [ptr] w Hist.code,
-            Blocks.run Hist.env (compileFn 2 Hist.env ptrParams Hist.code) [ptr] w with
+            Blocks.run Hist.env (compileFn 2 Hist.code) [ptr] w with
       | .stuck e, _ => .error s!"term: {e}"
       | _, .stuck e => .error s!"blocks: {e}"
       | .ok tObs tw, .ok bObs bw =>

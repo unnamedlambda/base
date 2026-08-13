@@ -318,18 +318,18 @@ structure Q2Ffi where
   fnKvLoad : IR.FnRef
   fnKvSave : IR.FnRef
 
-def ffiEnv : Q2Ffi × FnEnv := envOf (do
-  let cuda ← declareCudaFFI
-  let blas ← declareCuBlasFFI
-  let ht ← declareHtFFI
-  let fnHtInit ← declareFFI "cl_ht_init" [.i64] none
-  let fnFileRead ← declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
-  let fnFileWrite ← declareFFI "cl_file_write_from_ptr" [.i64, .i64, .i64, .i64] (some .i64)
-  let fnSinf ← declareFFI "cl_sinf" [.f32] (some .f32)
-  let fnCosf ← declareFFI "cl_cosf" [.f32] (some .f32)
-  let fnPowf ← declareFFI "cl_powf" [.f32, .f32] (some .f32)
-  let fnStdinRead ← declareFFI "cl_stdin_readline" [.i64, .i64, .i64] (some .i64)
-  let fnStdoutWrite ← declareFFI "cl_stdout_write" [.i64, .i64, .i64] (some .i64)
+def ffiEnv : Q2Ffi × FnEnv := IR.envAfter (env% [.ht, .cuda, .cublas, .math, .fileIO]) (do
+  let cuda := IR.FFI.std.cuda
+  let blas := IR.FFI.std.cublas
+  let ht := IR.FFI.std.ht
+  let fnHtInit := IR.FFI.std.ht.fnInit
+  let fnFileRead := IR.FFI.std.fileReadToPtr
+  let fnFileWrite := IR.FFI.std.fileWriteFromPtr
+  let fnSinf := IR.FFI.std.math.fnSinf
+  let fnCosf := IR.FFI.std.math.fnCosf
+  let fnPowf := IR.FFI.std.math.fnPowf
+  let fnStdinRead := IR.FFI.std.stdinReadline
+  let fnStdoutWrite := IR.FFI.std.stdoutWrite
   let fnInfer ← declareColocatedFFI "fn_27" [.i64] none
   let fnLayerStep ← declareColocatedFFI "fn_28" [.i64] none
   let fnAttn ← declareColocatedFFI "fn_29" [.i64] none
@@ -555,7 +555,7 @@ private def walkPastNull (start : R) : M R := do
     strings: `weights_path\0tokenizer_path\0`) into two pointers and store them
     in shared memory so later actions can locate their argument. -/
 def parseArgsFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   storeI64 dataPtr (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
@@ -780,11 +780,11 @@ def metaFragParams : List ClifTy := [.i64, .i64, .i32, .i64]
 def metaFragEnv : HProg.FnEnv := { sigs := [], fns := [] }
 
 def metaFragCode : HProg.Code :=
-  clif% metaFragEnv metaFragParams
+  clif%(metaFragEnv, metaFragParams)
     (do let _ ← metaStageFrag 0 1 2 3; pure ())
 
 def metaFragEmitted : List Inst :=
-  match (HProg.compileFn 1 metaFragEnv metaFragParams metaFragCode).blocks with
+  match (HProg.compileFn 1 metaFragCode metaFragEnv metaFragParams).blocks with
   | b :: _ => b.insts
   | []     => []
 
@@ -913,7 +913,7 @@ theorem metaFrag_slots :
     Uploads meta to GPU, launches embed lookup, runs 24-layer loop (calls fn_28),
     then calls fn_31 for final rms+lm_head+argmax. -/
 def inferFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   -- Declare colocated callees
 
@@ -1105,7 +1105,7 @@ def ffnBody
 
 /-- inferFinalFn (fn_31): final RMSNorm → lm_head → argmax → sync → download next_token. -/
 def inferFinalFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let outPtr  ← load64At ptr 0x28
   let bufHidden   ← slotLoad slotHidden   ptr
@@ -1146,7 +1146,7 @@ def inferFinalFn : HProg.Code :=
       [1040+n_merges*12+vocab_size*4] decode_lens[vocab_size]: u32
       [1040+n_merges*12+vocab_size*8] byte_pool -/
 def loadTokenizerFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr   ← load64 (← absAddr ptr 0x10)
   let dataPtr  ← load64 (← absAddr ptr TOKENIZER_PATH_PTR_OFF)
@@ -1188,7 +1188,7 @@ def loadTokenizerFn : HProg.Code :=
     initial token id using the byte_init table; store results in TOKEN_BUF_OFF.
     Sets TOKEN_COUNT_OFF = text length (before BPE). -/
 def tokenizeInitFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let tokMmap   ← load64At ptr TOK_BUF_PTR_OFF
   let textLen   ← load64At ptr TEXT_LEN_OFF
@@ -1207,7 +1207,7 @@ def tokenizeInitFn : HProg.Code :=
     Uses the HT (populated by loadTokenizerFn) for O(1) pair lookups.
     Updates TOKEN_COUNT_OFF to the final token count. -/
 def tokenizeBpeFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let htCtx      ← load64At ptr 0x00
   let tokBuf     ← iaddImm ptr TOKEN_BUF_OFF
@@ -1268,7 +1268,7 @@ def tokenizeBpeFn : HProg.Code :=
 /-- detokenizeFn (fn_35): convert token IDs in TOKEN_BUF_OFF (count = TOKEN_COUNT_OFF) to bytes
     in TEXT_OUT_OFF; stores output byte count in TEXT_LEN_OFF. -/
 def detokenizeFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let tokMmap   ← load64At ptr TOK_BUF_PTR_OFF
   -- Compute table pointers from binary header
@@ -1303,7 +1303,7 @@ def detokenizeFn : HProg.Code :=
     Per line: read stdin → tokenize → prefill+decode via fn_27 → detokenize → write stdout.
     Exits when stdin closes (EOF). -/
 def cliFn : HProg.Code :=
-  clif% env HProg.ptrParams do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   -- Colocated callees
   -- Stdin/stdout FFI
@@ -1360,6 +1360,9 @@ def cliFn : HProg.Code :=
   -- One turn per iteration; an empty read ends the session.
   let _ ← wloop []
     (head := fun _ => do
+      -- The running position is reset here, so each turn starts decoding from
+      -- the end of the system prompt rather than from the end of the previous
+      -- turn.
       storeI64 (← iconst64 SYSTEM_TOKEN_COUNT) (← absAddr ptr RUNNING_POS_OFF)
       let runningPos ← load64 (← absAddr ptr RUNNING_POS_OFF)
       let nRecv ← call q.fnStdinRead.id [ptr, textInOff64, maxRecv]
@@ -1598,7 +1601,7 @@ def memMap : RegionMap :=
     is about — so it takes the compiler that does not demand `wf`. The bodies
     that reach an artifact are checked where `clifIR` assembles them. -/
 def stateOf (c : HProg.Code) : AlgorithmLib.IR.IRState :=
-  (HProg.compileBody 1 env HProg.ptrParams c).asState
+  (HProg.compileBody 1 c env).asState
 
 /-- The layer-forward function, as a value. -/
 def inferState : AlgorithmLib.IR.IRState := (stateOf inferFn)

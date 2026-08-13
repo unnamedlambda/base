@@ -125,17 +125,17 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The GPU entry points, then the two file ones, in callee-table order. -/
-def ffiEnv : (GpuSetup × FnRef × FnRef) × FnEnv := envOf (do
-  let g ← declareGpuFFI
-  let r ← declareFileRead
-  let w ← declareFileWrite
-  pure (g, r, w))
+def ffiEnv : (GpuSetup × FnRef × FnRef) × FnEnv := (Id.run (do
+  let g := IR.FFI.std.gpu
+  let r := IR.FFI.std.fileRead
+  let w := IR.FFI.std.fileWrite
+  pure (g, r, w)), env% [.gpu, .fileIO])
 def gpu : GpuSetup := ffiEnv.1.1
 def fnRead : FnRef := ffiEnv.1.2.1
 def fnWrite : FnRef := ffiEnv.1.2.2
 def env : FnEnv := ffiEnv.2
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let ptr := basePtr
   -- FFI declarations
 
@@ -251,7 +251,7 @@ set_option maxHeartbeats 2000000 in
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIrSource : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction

@@ -243,14 +243,13 @@ def compressionShader (bs : Nat) : String :=
 --   9. cl_file_write (compressed output — concatenated blocks with size header)
 -- ---------------------------------------------------------------------------
 
-/-- The file and GPU entry points, declared once. `envOf` runs the same
-    `declare*` actions the `IRBuilder` path uses, so the callee table a term is
-    checked against is the one those helpers define. -/
-def decls : (FnRef × FnRef × GpuSetup) × FnEnv := envOf (do
-  let fnRead ← declareFileRead
-  let fnWrite ← declareFileWrite
-  let gpu ← declareGpuFFI
-  pure (fnRead, fnWrite, gpu))
+/-- The file and GPU entry points this program calls, named out of the
+    standard table. -/
+def decls : (FnRef × FnRef × GpuSetup) × FnEnv := (Id.run (do
+  let fnRead := IR.FFI.std.fileRead
+  let fnWrite := IR.FFI.std.fileWrite
+  let gpu := IR.FFI.std.gpu
+  pure (fnRead, fnWrite, gpu)), env% [.gpu, .fileIO])
 
 def env : FnEnv := decls.2
 def fnRead : FnRef := decls.1.1
@@ -270,7 +269,7 @@ def code (bs : Nat) : HProg.Code :=
   let mSz   := metaSize bs
   let mOff  := blockMeta_off bs
   let mcbSz := maxCompressedBlockSize bs
-  HProg.Sur.build env HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
 
     -- Step 1: Read input file
@@ -420,7 +419,7 @@ theorem code_wf : HProg.wf env HProg.ptrParams (code 16384) = true := by decide
 def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
   let payload := buildPayload bs
   let cfg : Setup := {
-    clif := IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams (code bs)],
+    clif := IR.program [noopFunction, HProg.compileBody 1 (code bs)],
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }

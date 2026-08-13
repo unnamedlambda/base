@@ -26,14 +26,12 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
-def env : FnEnv := (envOf (do
-  let _ ← declareFileRead
-  let _ ← declareFileWrite)).2
+def env : FnEnv := env% [.fileIO]
 
-def fnRead : Nat := 0
-def fnWrite : Nat := 1
+def fnRead : Nat := IR.FFI.std.fileRead.id
+def fnWrite : Nat := IR.FFI.std.fileWrite.id
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero    ← iconst64 0
@@ -153,7 +151,7 @@ def code : HProg.Code := clif% env HProg.ptrParams do
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 def artifacts : Array Json :=
   #[toJsonEntry "json_algorithm" {

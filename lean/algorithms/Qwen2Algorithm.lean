@@ -22,14 +22,14 @@ namespace Qwen2
     + activation/embed/lm_head/rope buffers and streams those weights from disk.
     No per-layer alloc here — that's done by `loadLayerFn`. -/
 def loadInitFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   loadInitCommon ptr
 
 /-- loadLayerFn (fn_2+l): create per-layer GPU buffers and stream-upload weights
     via the pinned scratch buffer.  Stores 14 buffer IDs in layer slot. -/
 def loadLayerFn (l : Nat) : HProg.Code :=
-  HProg.Sur.build Qwen2Common.env HProg.ptrParams do
+  HProg.Sur.build (env := Qwen2Common.env) do
   let ptr := basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pathPtr   ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
@@ -96,7 +96,7 @@ def loadLayerFn (l : Nat) : HProg.Code :=
 
 /-- loadFinalizeFn (fn_26): sync GPU then free the pinned scratch buffer. -/
 def loadFinalizeFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr   ← load64 (← absAddr ptr 0x10)
   let pinnedId ← load32 (← absAddr ptr PINNED_ID_OFF)
@@ -105,7 +105,7 @@ def loadFinalizeFn : HProg.Code :=
 
 /-- inferLayerFn (fn_28): runs one transformer layer — calls attn then ffn. -/
 def inferLayerFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   callVoid Qwen2Common.q.fnAttn.id [ptr]
   callVoid Qwen2Common.q.fnFfn.id  [ptr]
@@ -122,14 +122,14 @@ private def currentLayerSlot (ptr : R) : M R := do
 /-- inferLayerAttnFn (fn_29): attention sub-layer.  Reads per-layer slot from
     `LAYER_BUFS_BASE + layerIdx * STRIDE`. -/
 def inferLayerAttnFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let slotBaseA ← currentLayerSlot ptr
   attnBody ptr slotBaseA
 
 /-- inferLayerFfnFn (fn_30): FFN sub-layer.  Same slot lookup as attn. -/
 def inferLayerFfnFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let slotBaseA ← currentLayerSlot ptr
   ffnBody ptr slotBaseA
@@ -158,7 +158,7 @@ theorem shipped_wf :
 def clifIR : Program :=
   program <|
     (noopFunction :: shippedBodies.zipIdx.map
-      (fun p => HProg.compileBody (p.2 + 1) Qwen2Common.env HProg.ptrParams p.1))
+      (fun p => HProg.compileBody (p.2 + 1) p.1 Qwen2Common.env))
     ++ [
      -- fn38: orchestrator wrapper — parse args (37), load weights (1..26),
      --       load tokenizer (32), server (36 — runs forever).

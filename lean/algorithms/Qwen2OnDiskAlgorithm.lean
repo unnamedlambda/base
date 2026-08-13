@@ -46,7 +46,7 @@ def kvCachePathBytes : List UInt8 :=
 /-- loadInitFn (fn_1): shared prefix, then allocate the working-set slot
     (12 weight buffers + shared K/V cache pair) reused across all layers. -/
 def loadInitFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   loadInitCommon ptr
 
@@ -90,12 +90,12 @@ def loadInitFn : HProg.Code :=
 /-- loadLayerFn (fn_2+l): no-op.  Per-layer state is streamed from disk on
     demand by `streamLayerFn` + `kvLoadLayerFn` just before each layer runs. -/
 def loadLayerFn (_l : Nat) : HProg.Code :=
-  HProg.Sur.build Qwen2Common.env HProg.ptrParams (pure ())
+  HProg.Sur.build (env := Qwen2Common.env) (pure ())
 
 /-- loadFinalizeFn (fn_26): sync GPU.  Pinned scratch stays alive for the
     program's lifetime; streamLayerFn re-uses it on every layer. -/
 def loadFinalizeFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let _ ← cudaSync cuda ptr 0x10
 
@@ -108,7 +108,7 @@ def loadFinalizeFn : HProg.Code :=
     4) FFN,
     5) save new K/V slot back to disk for next-token retrieval. -/
 def inferLayerFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   callVoid Qwen2Common.q.fnStream.id [ptr]
   callVoid Qwen2Common.q.fnKvLoad.id [ptr]
@@ -118,14 +118,14 @@ def inferLayerFn : HProg.Code :=
 
 /-- inferLayerAttnFn (fn_29): attention sub-layer.  Slot base = working set. -/
 def inferLayerAttnFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let slotBaseA ← absAddr ptr WORKING_SET_BASE
   attnBody ptr slotBaseA
 
 /-- inferLayerFfnFn (fn_30): FFN sub-layer.  Slot base = working set. -/
 def inferLayerFfnFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let slotBaseA ← absAddr ptr WORKING_SET_BASE
   ffnBody ptr slotBaseA
@@ -135,7 +135,7 @@ def inferLayerFfnFn : HProg.Code :=
 /-- streamLayerFn (fn_38): pull this layer's 12 weight tensors from disk into
     the GPU working-set buffers.  One big file-read + 12 H→D uploads. -/
 def streamLayerFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pathPtr   ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
@@ -172,7 +172,7 @@ def streamLayerFn : HProg.Code :=
 /-- kvLoadLayerFn (fn_39): stream this layer's K/V cache history from disk into
     the shared K/V VRAM buffers.  Skips when pos==0 (no history yet). -/
 def kvLoadLayerFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr     ← load64 (← absAddr ptr 0x10)
   let pinnedPtr  ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
@@ -198,7 +198,7 @@ def kvLoadLayerFn : HProg.Code :=
 /-- kvSaveLayerFn (fn_40): write this layer's newly-computed K/V slot at the
     current position back to disk so the next token can stream it back in. -/
 def kvSaveLayerFn : HProg.Code :=
-  clif% Qwen2Common.env HProg.ptrParams do
+  clif%(Qwen2Common.env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pinnedPtr ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
@@ -251,7 +251,7 @@ theorem shipped_wf :
 def clifIR : Program :=
   program <|
     (noopFunction :: shippedBodies.zipIdx.map
-      (fun p => HProg.compileBody (p.2 + 1) Qwen2Common.env HProg.ptrParams p.1))
+      (fun p => HProg.compileBody (p.2 + 1) p.1 Qwen2Common.env))
     ++ [
      -- fn41: orchestrator wrapper — parse args (37), load weights (1..26),
      --       load tokenizer (32), server (36 — runs forever).

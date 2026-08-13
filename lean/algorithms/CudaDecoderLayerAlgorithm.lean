@@ -168,12 +168,12 @@ open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: only `infer` reaches cuBLAS, and a function declares
     what it calls. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := envOf (do
-  let cuda ← declareCudaFFI
-  let blas ← declareCuBlasFFI
-  pure (cuda, blas))
+def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
+  let cuda := IR.FFI.std.cuda
+  let blas := IR.FFI.std.cublas
+  pure (cuda, blas)), env% [.cuda, .cublas])
 
-def cudaOnly : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cudaOnly : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
 
 def cuda : IR.CudaSetup := ffiEnv.1.1
 def blas : IR.CuBlasSetup := ffiEnv.1.2
@@ -183,7 +183,7 @@ def envCuda : FnEnv := cudaOnly.2
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
 
-def loadCode : HProg.Code := clif% envCuda HProg.ptrParams do
+def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr CTX_OFF
@@ -258,7 +258,7 @@ def loadCode : HProg.Code := clif% envCuda HProg.ptrParams do
   let p8 ← iaddImm p7 W_FF_DM_BYTES
   let _ ← call cuda.fnUpload.id [ctxPtr, bufWd, p8, wdfBytes]
 
-def prepCode : HProg.Code := clif% envCuda HProg.ptrParams do
+def prepCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
@@ -266,7 +266,7 @@ def prepCode : HProg.Code := clif% envCuda HProg.ptrParams do
   let dmBytes ← iconst64 D_MODEL_BYTES
   let _ ← call cuda.fnUpload.id [ctxPtr, bufX, dataPtr, dmBytes]
 
-def inferCode : HProg.Code := clif% env HProg.ptrParams do
+def inferCode : HProg.Code := clif% do
   let ptr := basePtr
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
@@ -350,7 +350,7 @@ def inferCode : HProg.Code := clif% env HProg.ptrParams do
              (← iconst64 BIND_ADD2_OFF) four32 one32 one32 blk256 one32 one32
 
 /-- Finalize: sync, then download only if the caller asked for output. -/
-def finalizeCode : HProg.Code := clif% envCuda HProg.ptrParams do
+def finalizeCode : HProg.Code := clif% do
   let ptr    := basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
@@ -378,10 +378,10 @@ def STACK32_DEPTH : Nat := 32
 def clifIR : Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 envCuda HProg.ptrParams loadCode,
-     HProg.compileFn 2 envCuda HProg.ptrParams prepCode,
-     HProg.compileFn 3 env HProg.ptrParams inferCode,
-     HProg.compileFn 4 envCuda HProg.ptrParams finalizeCode,
+     HProg.compileFn 1 loadCode,
+     HProg.compileFn 2 prepCode,
+     HProg.compileFn 3 inferCode,
+     HProg.compileFn 4 finalizeCode,
      clifSequenceWrapper 5 [3, 4],
      clifSequenceWrapper 6 (List.replicate STACK16_DEPTH 3 ++ [4]),
      clifSequenceWrapper 7 (List.replicate STACK32_DEPTH 3 ++ [4])]

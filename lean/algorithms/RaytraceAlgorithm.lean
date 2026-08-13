@@ -312,15 +312,15 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The GPU entry points then `cl_file_write`, in callee-table order. -/
-def ffiEnv : (GpuSetup × FnRef) × FnEnv := envOf (do
-  let g ← declareGpuFFI
-  let w ← declareFileWrite
-  pure (g, w))
+def ffiEnv : (GpuSetup × FnRef) × FnEnv := (Id.run (do
+  let g := IR.FFI.std.gpu
+  let w := IR.FFI.std.fileWrite
+  pure (g, w)), env% [.gpu, .fileIO])
 def gpu : GpuSetup := ffiEnv.1.1
 def fnWr : FnRef := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let ptr := basePtr
   gpuInit gpu ptr
   let dataSz ← iconst64 pixelBytes
@@ -342,7 +342,7 @@ def code : HProg.Code := clif% env HProg.ptrParams do
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIrSource : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction

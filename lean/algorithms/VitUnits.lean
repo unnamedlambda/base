@@ -197,16 +197,22 @@ def vGroupSharedReadsOk : Bool :=
 
 /-- **The launches each capture makes**, recovered from the emitted instruction
     stream.  Named so that the several things decided about them share one
-    walk. -/
+    walk.
+
+    The bodies are compiled against `env`, the table the artifact ships them
+    with; against a different table the same body declares different callees and
+    the recovered stream would not be the shipped one.  Well-formedness is not
+    re-decided here — `vBodies_wf` establishes it for every body the artifact
+    carries, these two among them. -/
 def vFwdLaunches : List AlgorithmLib.Clif.LaunchRec :=
   AlgorithmLib.Clif.launchesOf
-    (AlgorithmLib.HProg.compileFn 1 Vit.env AlgorithmLib.HProg.ptrParams
-      (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)).asState
+    (AlgorithmLib.HProg.compileBody 1
+      (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF) env).asState
 
 def vStepLaunches : List AlgorithmLib.Clif.LaunchRec :=
   AlgorithmLib.Clif.launchesOf
-    (AlgorithmLib.HProg.compileFn 1 Vit.env AlgorithmLib.HProg.ptrParams
-      (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)).asState
+    (AlgorithmLib.HProg.compileBody 1
+      (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF) env).asState
 
 /-- **Is this recovered call a contraction in the configuration a law covers?**
 

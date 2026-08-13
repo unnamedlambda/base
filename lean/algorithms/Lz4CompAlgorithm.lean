@@ -95,7 +95,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur in
 /-- The CUDA entry points, declared through the same helper the `IRBuilder`
     path used, so the callee table the term is checked against is the runtime's
     own. -/
-def cudaEnv : IR.CudaSetup × FnEnv := envOf declareCudaFFI
+def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
 def cuda : IR.CudaSetup := cudaEnv.1
@@ -111,7 +111,7 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur in
     explicit. Because it is open, this runs the builder the ordinary way rather
     than through `clif%` — the shipped instance is what `warpCode` checks. -/
 def warpCodeAt (w : WP) (bo : Nat) : HProg.Code :=
-  HProg.Sur.build hostEnv HProg.ptrParams do
+  HProg.Sur.build do
     let ptr := basePtr
     let dataPtr ← load64 (← absAddr ptr 0x18)
     let dataLen ← load64 (← absAddr ptr 0x20)
@@ -149,9 +149,20 @@ open AlgorithmLib.HProg in
 def warpCode (w : WP) : HProg.Code := warpCodeAt w w.bindOff
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
+/-- Well-formed at both shipped geometries.
+
+    `warpFn` is generic in the block size, so `compileFn` has no instance to
+    `decide` at; it takes `compileBody` and this theorem stands in for the
+    check. The two arguments are the `blkLog`s `artifacts` ships: 32 KiB and
+    64 KiB blocks. -/
+theorem warp_wf :
+    (HProg.wf FFI.stdEnv HProg.ptrParams (warpCode ⟨15⟩)
+      && HProg.wf FFI.stdEnv HProg.ptrParams (warpCode ⟨16⟩)) = true := by decide
+
+open AlgorithmLib.IR AlgorithmLib.HProg in
 /-- The emitted function, which every host theorem is now stated over. -/
 def warpFn (w : WP) : FuncData :=
-  HProg.compileFn 1 hostEnv HProg.ptrParams (warpCode w)
+  HProg.compileBody 1 (warpCode w)
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
 def warpClif (w : WP) : Program := IR.program [noopFunction, warpFn w]

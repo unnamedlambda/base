@@ -39,23 +39,16 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, in the order the callee table numbers them. -/
-def env : FnEnv := (envOf (do
-  let _ ← declareFFI "cl_cuda_init"          [.i64]                    none
-  let _ ← declareFFI "cl_cuda_create_buffer" [.i64, .i64]              (some .i32)
-  let _ ← declareFFI "cl_cuda_upload_ptr"    [.i64, .i32, .i64, .i64]  (some .i32)
-  let _ ← declareFFI "cl_cuda_download_ptr"  [.i64, .i32, .i64, .i64]  (some .i32)
-  let _ ← declareFFI "cl_cuda_launch"
-    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let _ ← declareFFI "cl_cuda_cleanup"       [.i64]                    none)).2
+def env : FnEnv := env% [.cuda]
 
-def fnInit : Nat := 0
-def fnCreateBuffer : Nat := 1
-def fnUploadPtr : Nat := 2
-def fnDownloadPtr : Nat := 3
-def fnLaunch : Nat := 4
-def fnCleanup : Nat := 5
+def fnInit : Nat := IR.FFI.std.cuda.fnInit.id
+def fnCreateBuffer : Nat := IR.FFI.std.cuda.fnCreateBuffer.id
+def fnUploadPtr : Nat := IR.FFI.std.cuda.fnUpload.id
+def fnDownloadPtr : Nat := IR.FFI.std.cuda.fnDownload.id
+def fnLaunch : Nat := IR.FFI.std.cuda.fnLaunch.id
+def fnCleanup : Nat := IR.FFI.std.cuda.fnCleanup.id
 
-def code : HProg.Code := clif% env HProg.ptrParams do
+def code : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
@@ -98,7 +91,7 @@ def code : HProg.Code := clif% env HProg.ptrParams do
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 env HProg.ptrParams code]
+  IR.program [noopFunction, HProg.compileFn 1 code]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]

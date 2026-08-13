@@ -18,7 +18,7 @@ inductive ClifTy where
   | i8 | i16 | i32 | i64
   | f32 | f64
   | f32x4 | i8x16
-  deriving Repr, BEq
+  deriving Repr, BEq, Lean.ToExpr
 
 /-- An SSA value reference -/
 structure Val where
@@ -33,12 +33,12 @@ structure BlockRef where
 /-- A signature reference -/
 structure SigRef where
   id : Nat
-  deriving Repr, BEq
+  deriving Repr, BEq, Lean.ToExpr
 
 /-- An FFI function reference -/
 structure FnRef where
   id : Nat
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Lean.ToExpr
 
 /-- Comparison condition codes -/
 inductive ICmpCond where
@@ -130,6 +130,7 @@ structure SigDecl where
   ref : SigRef
   params : List ClifTy
   result : Option ClifTy
+  deriving Lean.ToExpr
 
 /-- What a `fn` declaration names. -/
 inductive Callee where
@@ -137,7 +138,7 @@ inductive Callee where
   | import (name : String)
   /-- Another function of this same program, by its `u0:N` index. -/
   | local (index : Nat)
-  deriving Repr, BEq, DecidableEq
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- A callee declaration -/
 structure FnDecl where
@@ -145,6 +146,7 @@ structure FnDecl where
   callee : Callee
   sig : SigRef
   colocated : Bool := false
+  deriving Lean.ToExpr
 
 -- ---------------------------------------------------------------------------
 -- The emitted program
