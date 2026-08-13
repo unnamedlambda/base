@@ -6,6 +6,11 @@ open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 namespace BackwardWide
 
+-- `wf` is decided at every `compileFn` call in this file; the launch-sequence
+-- bodies are long enough that the default recursion budget does not reach the
+-- end of one.
+set_option maxRecDepth 100000
+
 /-- Qwen2-0.5B's hidden size.  `896 = 28 · 32`, so the warp sweep divides. -/
 def N : Nat := 896
 
@@ -1049,7 +1054,7 @@ def bwdAllTable : List KernelBinding :=
     Stated over `compileFn`'s output, so what the generator is written in does
     not enter the claim — only what was emitted. -/
 theorem bwdAll_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileFn 18 env HProg.ptrParams runBwdAllFn).asState = bwdAllOps := by
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 env HProg.ptrParams runBwdAllFn).asState = bwdAllOps := by
   native_decide
 
 /-- …and those launches are the proven three-stage pipeline. -/
@@ -1061,7 +1066,7 @@ theorem bwdAll_realises :
     Unlike `bwd_host_computes` below, the launch sequence here is read out of a
     function that is actually built into the artifact. -/
 theorem bwdAll_host_computes (st : WSt) :
-    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileFn 18 env HProg.ptrParams runBwdAllFn).asState)
+    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 env HProg.ptrParams runBwdAllFn).asState)
         = some bwdPipelineFull
       ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
   ⟨by rw [bwdAll_ops_are]; exact bwdAll_realises,

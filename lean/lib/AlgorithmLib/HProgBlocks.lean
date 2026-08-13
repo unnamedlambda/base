@@ -4,7 +4,7 @@ import AlgorithmLib.HProgSem
 # `HProgBlocks` — executing the compiled form
 
 `HProgSem` says what a *term* does. This says what the `IR.FuncData` that
-`compileFn` produces does: blocks, block parameters, `jump`, `brif`, and a
+`compileBody` produces does: blocks, block parameters, `jump`, `brif`, and a
 value numbering rather than a slot numbering.
 
 Two interpreters, one instruction semantics. Every arithmetic arm here goes
@@ -16,7 +16,7 @@ only thing the two forms can disagree about — and the only thing that has
 actually gone wrong so far (exit and join parameters twice).
 
 Scope: this interprets compiler output, not arbitrary CLIF. Instructions
-`compileFn` never emits are stuck rather than silently ignored.
+`compileBody` never emits are stuck rather than silently ignored.
 -/
 
 namespace AlgorithmLib.HProg.Blocks
@@ -25,7 +25,7 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sem
 
-/-- Values numbered as `compileFn` numbers them: densely, from zero. -/
+/-- Values numbered as `compileBody` numbers them: densely, from zero. -/
 abbrev Vals := Array V
 
 def getV (vs : Vals) (v : Val) : Option V := vs[v.id]?
@@ -214,7 +214,7 @@ namespace AlgorithmLib.HProg
 open AlgorithmLib.IR
 open AlgorithmLib.HProg.Sem
 
-/-- **The statement.** A term and the function `compileFn` builds from it make
+/-- **The statement.** A term and the function `compileBody` builds from it make
     the same observations, in the same order, and leave the same memory.
 
     The trace is the right grade: it pins each call with its concrete arguments
@@ -230,7 +230,7 @@ open AlgorithmLib.HProg.Sem
 def CompileSound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     (args : List V) (w : World) (fuel : Nat) : Prop :=
   Sem.run { env, steps := fuel } args w c
-    = Blocks.run env (compileFn idx env params c) args w fuel
+    = Blocks.run env (compileBody idx env params c) args w fuel
 
 
 /-- The base case, proved. An empty body compiles to one block that returns,
@@ -244,7 +244,7 @@ theorem empty_sound (idx : Nat) (env : FnEnv) (a : V) (w : World) (fuel : Nat) :
     CompileSound idx env ptrParams [] [a] w (fuel + 1) := by
   have hEmit : ∀ s : CS, emitCode HProg.fuel s [] = s := by
     intro s; simp [emitCode, HProg.fuel]
-  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, compileFn, ptrParams,
+  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, compileBody, ptrParams,
         CS.open', CS.open'.go, CS.close, CS.fresh, Blocks.runFrom, Blocks.runInsts,
         Blocks.setV, hEmit]
 
@@ -263,7 +263,7 @@ theorem single_iconst_sound (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
         = emitStmt s (Stmt.op (Op.iconst t k)) := by
     intro s; simp [emitCode, emitPiece, emitStmts, HProg.fuel]
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
-        Sem.runStmt, compileFn, ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
+        Sem.runStmt, compileBody, ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
         Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.evalInst, Blocks.viaOp,
         emitStmt, hEmit, Sem.evalOp]
 
@@ -1700,7 +1700,7 @@ theorem Grows.bump (s : CS) (k : Nat) (cur : List Inst) (nv sl : Nat)
 -- ---------------------------------------------------------------------------
 
 /-!
-`compileFn` does not ship `done` as emitted: it ships
+`compileBody` does not ship `done` as emitted: it ships
 `s.done.mergeSort (fun a b => a.ref.id ≤ b.ref.id)`. Every fact proved about the
 emitter is therefore about a *permutation* of the list `runFrom` actually walks.
 
@@ -1721,7 +1721,7 @@ theorem sorted_mem (blocks : List BlockData) (le : BlockData → BlockData → B
     (b : BlockData) (h : b ∈ blocks) : b ∈ blocks.mergeSort le :=
   (List.mergeSort_perm blocks le).mem_iff.mpr h
 
-/-- **The lookup `runFrom` performs, against the list `compileFn` ships.**
+/-- **The lookup `runFrom` performs, against the list `compileBody` ships.**
 
     `find_blk` for the sorted list: what the emitter finished is what the
     interpreter finds. This is the seam between everything proved about `CS.done`
@@ -1825,7 +1825,7 @@ theorem run_mono (env : FnEnv) (f : FuncData) (args : List Sem.V) (w : Sem.World
 def CompileSoundE (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     (args : List V) (w : World) (fuel : Nat) : Prop :=
   ∃ steps, Sem.run { env, steps := fuel } args w c
-    = Blocks.run env (compileFn idx env params c) args w steps
+    = Blocks.run env (compileBody idx env params c) args w steps
 
 /-- Everything already proved at the matched-budget statement carries over, so
     separating the budgets costs none of the existing results. -/

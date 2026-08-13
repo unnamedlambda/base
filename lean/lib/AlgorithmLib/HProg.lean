@@ -787,11 +787,15 @@ def emitCode : Nat → CS → List Piece → CS
   | fuel + 1, s, p :: ps => emitCode fuel (emitPiece fuel s p) ps
 end
 
-/-- Compile a body to the function the artifact ships.
+/-- Compile a body, well-formed or not.
+
+    This is what the semantics is stated against: `CompileSound` relates the two
+    runs of an *arbitrary* body, so the compiler it names cannot demand one that
+    passes `wf`. Anything headed for an artifact goes through `compileFn`.
 
     `params` types the entry block, whose parameters are slots `0..`; every
     generator here takes the shared-memory base pointer alone. -/
-def compileFn (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code) : FuncData :=
+def compileBody (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code) : FuncData :=
   Id.run do
     let s0 : CS := { nextVal := 0, nextBlk := 1, slots := 0, env := [],
                      curRef := 0, curPars := [], cur := [], done := [] }
@@ -804,6 +808,23 @@ def compileFn (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code) : Func
       fns := env.fns
       blocks := s.done.mergeSort (fun a b => a.ref.id ≤ b.ref.id)
     }
+
+-- `hwf` is a gate, not data: `compileBody` is total and will compile an
+-- ill-formed body into nonsense blocks quite happily, so the proof has no
+-- computational role. Its whole job is to make the elaborator run `decide` at
+-- the call site, which is why it goes unused here.
+set_option linter.unusedVariables false in
+/-- Compile a body to the function the artifact ships.
+
+    `wf` is decidable, so the obligation is an auto-param: it is discharged
+    where the call is written, and a body that fails it is an error on that line
+    rather than a function in an artifact. Every path from a term to a shipped
+    function runs through here, so the check does not depend on which surface
+    built the body — `clif%` checks while it splices, and a body that could not
+    be spliced is checked here instead. -/
+def compileFn (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
+    (hwf : wf env params c = true := by decide) : FuncData :=
+  compileBody idx env params c
 
 /-- The base pointer every generator's entry block takes. -/
 def ptrParams : List ClifTy := [.i64]

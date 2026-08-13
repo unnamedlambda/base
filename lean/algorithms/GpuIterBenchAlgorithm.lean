@@ -132,7 +132,7 @@ def clifIR : Program :=
     is the shape those proofs take after their generators move to terms: the
     claim is unchanged, only what produced the program is. -/
 theorem emitted_calls :
-    Clif.callsOf (HProg.compileFn 1 env HProg.ptrParams code).asState
+    Clif.callsOf (HProg.compileBody 1 env HProg.ptrParams code).asState
       = ["cl_gpu_init", "cl_gpu_create_buffer", "cl_gpu_create_buffer",
          "cl_gpu_upload_ptr", "cl_gpu_create_pipeline", "cl_gpu_create_pipeline",
          "cl_gpu_dispatch", "cl_gpu_dispatch", "cl_gpu_download_ptr",
@@ -143,7 +143,7 @@ theorem emitted_calls :
     Recorded because it is the limit that makes recovery-from-a-CFG the weaker
     route: the term says `Piece.loop` whatever the bound is. -/
 theorem emitted_loops_not_static :
-    Clif.loopsOf (HProg.compileFn 1 env HProg.ptrParams code).asState = [] := by
+    Clif.loopsOf (HProg.compileBody 1 env HProg.ptrParams code).asState = [] := by
   native_decide
 
 def scaleShaderBytes  : List UInt8 := scaleShader.toUTF8.toList ++ [0]

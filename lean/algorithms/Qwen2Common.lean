@@ -1592,9 +1592,13 @@ def memMap : RegionMap :=
 -- ---------------------------------------------------------------------------
 
 /-- The compiled form of a generated function, as the `Clif` extractors read
-    it. The function index is immaterial to what they look at. -/
+    it. The function index is immaterial to what they look at.
+
+    A view rather than a shipping path — it is applied to whatever body a claim
+    is about — so it takes the compiler that does not demand `wf`. The bodies
+    that reach an artifact are checked where `clifIR` assembles them. -/
 def stateOf (c : HProg.Code) : AlgorithmLib.IR.IRState :=
-  (HProg.compileFn 1 env HProg.ptrParams c).asState
+  (HProg.compileBody 1 env HProg.ptrParams c).asState
 
 /-- The layer-forward function, as a value. -/
 def inferState : AlgorithmLib.IR.IRState := (stateOf inferFn)

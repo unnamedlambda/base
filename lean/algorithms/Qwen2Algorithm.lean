@@ -136,24 +136,30 @@ def inferLayerFfnFn : HProg.Code :=
 
 -- ── CLIF IR ──────────────────────────────────────────────────────────────────
 
+/-- The bodies this artifact ships, in the order their function indices run.
+    `clifIR` numbers them from this list, so an index cannot drift from the body
+    it names. -/
+def shippedBodies : List HProg.Code :=
+  [loadInitFn]
+  ++ (List.range N_LAYERS).map loadLayerFn
+  ++ [loadFinalizeFn, inferFn, inferLayerFn, inferLayerAttnFn, inferLayerFfnFn,
+      inferFinalFn, loadTokenizerFn, tokenizeInitFn, tokenizeBpeFn, detokenizeFn,
+      cliFn, parseArgsFn]
+
+/-- Every shipped body is well-formed.
+
+    The per-layer loaders are built under a binder and several of the rest are
+    large enough that a kernel `decide` at each `compileFn` does not finish, so
+    the check is made once over the whole list. -/
+theorem shipped_wf :
+    shippedBodies.all (HProg.wf Qwen2Common.env HProg.ptrParams) = true := by
+  native_decide
+
 def clifIR : Program :=
   program <|
-    [noopFunction,
-     HProg.compileFn 1 Qwen2Common.env HProg.ptrParams loadInitFn]
-    ++ (List.range N_LAYERS).map (fun l => HProg.compileFn (2 + l) Qwen2Common.env HProg.ptrParams (loadLayerFn l))
+    (noopFunction :: shippedBodies.zipIdx.map
+      (fun p => HProg.compileBody (p.2 + 1) Qwen2Common.env HProg.ptrParams p.1))
     ++ [
-     HProg.compileFn 26 Qwen2Common.env HProg.ptrParams loadFinalizeFn,
-     HProg.compileFn 27 Qwen2Common.env HProg.ptrParams inferFn,
-     HProg.compileFn 28 Qwen2Common.env HProg.ptrParams inferLayerFn,
-     HProg.compileFn 29 Qwen2Common.env HProg.ptrParams inferLayerAttnFn,
-     HProg.compileFn 30 Qwen2Common.env HProg.ptrParams inferLayerFfnFn,
-     HProg.compileFn 31 Qwen2Common.env HProg.ptrParams inferFinalFn,
-     HProg.compileFn 32 Qwen2Common.env HProg.ptrParams loadTokenizerFn,
-     HProg.compileFn 33 Qwen2Common.env HProg.ptrParams tokenizeInitFn,
-     HProg.compileFn 34 Qwen2Common.env HProg.ptrParams tokenizeBpeFn,
-     HProg.compileFn 35 Qwen2Common.env HProg.ptrParams detokenizeFn,
-     HProg.compileFn 36 Qwen2Common.env HProg.ptrParams cliFn,
-     HProg.compileFn 37 Qwen2Common.env HProg.ptrParams parseArgsFn,
      -- fn38: orchestrator wrapper — parse args (37), load weights (1..26),
      --       load tokenizer (32), server (36 — runs forever).
      clifSequenceWrapper 38

@@ -313,9 +313,13 @@ def fetchCode (sh : Shape) : HProg.Code :=
     let _ ← call cuda.fnDownload.id [ctxPtr, yId, outPtr, yBytes]
 
 set_option maxHeartbeats 4000000 in
-/-- Every body well-formed at every shipped shape and schedule — the parameter
-    is open, so `clif%` cannot check these as it elaborates; this is the same
-    check at the instances that ship. -/
+/-- Every body well-formed at every shipped shape and schedule.
+
+    `clifIR` is generic in the shape and so are `artifactOf` and the map that
+    builds `artifacts`, so there is no point at which `compileFn` could discharge
+    its obligation by `decide`; those sites take `compileBody` and this theorem
+    is what stands in for the check. It covers exactly the nine bodies `clifIR`
+    ships, at all four shapes. -/
 theorem bodies_wf :
     shapes.all (fun sh =>
       HProg.wf envCuda HProg.ptrParams (loadCode sh) &&
@@ -329,15 +333,15 @@ theorem bodies_wf :
 def clifIR (sh : Shape) : Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 envCuda HProg.ptrParams (loadCode sh),
-     HProg.compileFn 2 envCuda HProg.ptrParams (runCode sh false .vec4),
-     HProg.compileFn 3 envCuda HProg.ptrParams (fetchCode sh),
-     HProg.compileFn 4 envAll HProg.ptrParams (blasCode sh),
-     HProg.compileFn 5 envCuda HProg.ptrParams (runCode sh false .strided),
-     HProg.compileFn 6 envCuda HProg.ptrParams (runCode sh false .blocked),
-     HProg.compileFn 7 envCuda HProg.ptrParams (runCode sh true .vec4),
-     HProg.compileFn 8 envCuda HProg.ptrParams (runCode sh true .strided),
-     HProg.compileFn 9 envCuda HProg.ptrParams (runCode sh true .blocked)]
+     HProg.compileBody 1 envCuda HProg.ptrParams (loadCode sh),
+     HProg.compileBody 2 envCuda HProg.ptrParams (runCode sh false .vec4),
+     HProg.compileBody 3 envCuda HProg.ptrParams (fetchCode sh),
+     HProg.compileBody 4 envAll HProg.ptrParams (blasCode sh),
+     HProg.compileBody 5 envCuda HProg.ptrParams (runCode sh false .strided),
+     HProg.compileBody 6 envCuda HProg.ptrParams (runCode sh false .blocked),
+     HProg.compileBody 7 envCuda HProg.ptrParams (runCode sh true .vec4),
+     HProg.compileBody 8 envCuda HProg.ptrParams (runCode sh true .strided),
+     HProg.compileBody 9 envCuda HProg.ptrParams (runCode sh true .blocked)]
 
 /-- Every emitted kernel fits the slot it is written into — all six kernels at
     all four shapes, checked rather than assumed. -/
