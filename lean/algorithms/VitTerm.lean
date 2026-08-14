@@ -1,6 +1,10 @@
 import AlgorithmLib
 open AlgorithmLib AlgorithmLib.ML
 
+-- The twelve-block lowering is one `rfl` over the whole tape, which nests
+-- deeper than the default allows.
+set_option maxRecDepth 4000
+
 /-! DeiT-Tiny's twelve blocks as one `Ten` term, at the padded geometry. -/
 namespace Vit
 

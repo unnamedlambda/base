@@ -77,6 +77,7 @@ lean_lib VitDagStep
 lean_lib VitRegs
 lean_lib VitSlot
 lean_lib VitScan
+lean_lib VitTerm
 @[default_target]
 lean_lib BigModelAlgorithm
 @[default_target]
