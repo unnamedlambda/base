@@ -1385,8 +1385,13 @@ instance : ToExpr IteMeta where
 open Lean in
 /-- A cons chain, built without recursing per element.
 
-    `List.toExpr` recurses once per element and a straight-line body reaches ten
-    thousand statements, which is past what the runtime stack holds. -/
+    `List.toExpr` recurses once per element, and a body spliced here reaches
+    thousands of statements — past what the stack holds while reifying them.
+
+    Bounding the *nesting* of the result as well, by emitting runs joined with
+    `++`, does not raise the size a body can be spliced at: it removes this
+    recursion and Lean's own traversal of the result overflows instead. Bodies
+    that large take `Sur.build`, which reifies nothing. -/
 private def consChain (ty : Expr) (es : List Expr) : Expr :=
   es.reverse.foldl (fun acc e => mkApp3 (mkConst ``List.cons [levelZero]) ty e acc)
     (mkApp (mkConst ``List.nil [levelZero]) ty)
