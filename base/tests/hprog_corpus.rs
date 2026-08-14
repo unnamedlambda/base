@@ -10,18 +10,17 @@
 //! * `HProgSem.evalOp` states Cranelift's semantics wrongly — the assumption
 //!   that file names and cannot prove.
 //!
-//! Runs by default against the corpus checked in at `base/tests/data/`, so a
-//! bare `cargo test` exercises it. Regenerate after changing the model or the
-//! case list with
+//! The corpus is generated from `HProgCorpus.lean` into the build directory and
+//! cached against that file's contents, so what the machine is compared against
+//! is always what the model in the tree says. A corpus committed beside the test
+//! would agree with the model only until someone changed the model, and this is
+//! the comparison the migration rests on.
 //!
-//! ```text
-//! cd lean/algorithms && lake env lean --run HProgCorpus.lean ../../base/tests/data
-//! ```
-//!
-//! and set `BASE_HPROG_DIR` to point somewhere else to run a corpus generated
-//! outside the tree.
+//! Set `BASE_HPROG_DIR` to a directory holding both artifacts to run one
+//! generated elsewhere.
 
 use base_types::Artifact;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 struct Corpus {
@@ -61,11 +60,51 @@ impl Corpus {
     }
 }
 
+/// Generate the corpus from the model in the tree, reusing the last run when
+/// `HProgCorpus.lean` has not changed since it.
+///
+/// Keyed by that file's contents rather than its timestamp: a checkout or a
+/// branch switch moves timestamps around without changing what the model says.
+fn generated_corpus() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let lean_dir = root.join("lean/algorithms");
+    let src = lean_dir.join("HProgCorpus.lean");
+    let text = std::fs::read(&src)
+        .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
+
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    let out = root.join("target/hprog-corpus").join(format!("{:x}", h.finish()));
+
+    if out.join("hprog_corpus.json").exists() && out.join("hprog_corpus_expected.json").exists() {
+        return out;
+    }
+    std::fs::create_dir_all(&out).expect("create corpus dir");
+
+    // The generator is interpreted against built imports, so the library has to
+    // exist before it can run at all.
+    let built = std::process::Command::new("lake")
+        .args(["build", "+HProgCorpus:olean"])
+        .current_dir(&lean_dir)
+        .status()
+        .unwrap_or_else(|e| panic!("run lake — the corpus is generated from the model: {e}"));
+    assert!(built.success(), "building the corpus generator failed");
+
+    let st = std::process::Command::new("lake")
+        .args(["env", "lean", "--run", "HProgCorpus.lean"])
+        .arg(&out)
+        .current_dir(&lean_dir)
+        .status()
+        .unwrap_or_else(|e| panic!("run the corpus generator: {e}"));
+    assert!(st.success(), "the corpus generator failed: {st}");
+    out
+}
+
 #[test]
 fn interpreter_and_machine_agree() {
     let dir = match std::env::var("BASE_HPROG_DIR") {
         Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data"),
+        Err(_) => generated_corpus(),
     };
 
     let corpus = Corpus::read(&dir.join("hprog_corpus_expected.json"));

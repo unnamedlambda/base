@@ -823,10 +823,15 @@ def compileBody (idx : Nat) (c : Code) (env : FnEnv := IR.FFI.stdEnv)
     let s := { s0.open' 0 params 0 with slots := params.length }
     let s := emitCode fuel s c
     let s := s.close .ret
+    -- Declare what this body calls, not the whole table it was checked against.
+    -- The ids a call names are the table's, and the decoder resolves by id, so
+    -- dropping the rest renames nothing.
+    let used := callsOf c
+    let fns := env.fns.filter (fun d => used.contains d.ref.id)
     return {
       index := idx
-      sigs := env.sigs
-      fns := env.fns
+      sigs := env.sigs.filter (fun sg => fns.any (·.sig.id == sg.ref.id))
+      fns
       blocks := s.done.mergeSort (fun a b => a.ref.id ≤ b.ref.id)
     }
 
