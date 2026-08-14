@@ -1,4 +1,4 @@
-import Lz4NonVacuity
+import Lz4Kernel
 
 /-!
   # Repeated launches over the same buffers

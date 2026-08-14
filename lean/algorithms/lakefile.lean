@@ -119,6 +119,7 @@ lean_lib Qwen2OnDiskAlgorithm
 lean_lib WindowDemoAlgorithm
 lean_lib RaymarchDemoAlgorithm
 lean_lib FallingSandAlgorithm
+lean_lib Lz4Kernel
 lean_lib Lz4CompAlgorithm
 -- The compressor's ledger, its non-vacuity witnesses, and the scan that fails
 -- the build when a claim leaves the declared surface.

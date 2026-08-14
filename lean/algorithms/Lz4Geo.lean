@@ -1,4 +1,4 @@
-import Lz4Interleave
+import Lz4Kernel
 import AlgorithmLib.LZ4Confine
 import AlgorithmLib.LZ4OpBound
 

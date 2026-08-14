@@ -1,3 +1,4 @@
+import AlgorithmLib.LZ4Confine
 import AlgorithmLib.SimSLAssembly
 
 /-!

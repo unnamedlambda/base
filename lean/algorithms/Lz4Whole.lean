@@ -1,3 +1,4 @@
+import Lz4NonVacuity
 import Lz4Confine64
 import Lz4Host
 
