@@ -1,7 +1,6 @@
 import Lz4CompAlgorithm
 import AlgorithmLib.Clif
 
-set_option maxRecDepth 8192
 
 /-!
   # What the emitted host program actually does

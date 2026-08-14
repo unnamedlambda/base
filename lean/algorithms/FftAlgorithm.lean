@@ -119,7 +119,6 @@ def fftShader : String :=
 -- 8. Write output file
 -- ---------------------------------------------------------------------------
 
-set_option maxRecDepth 2048 in
 open AlgorithmLib.IR in
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
@@ -247,7 +246,6 @@ def code : HProg.Code := clif% do
   let _ ← call fnWrite.id [ptr, outFnOff, dstOff2, c0, dataSz]
 
 
-set_option maxHeartbeats 2000000 in
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
 def clifIrSource : Program :=

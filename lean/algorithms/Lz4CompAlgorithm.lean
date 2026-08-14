@@ -3,7 +3,6 @@ import AlgorithmLib.LZ4SimtSerialize
 import AlgorithmLib.LZ4WarpKernel
 import AlgorithmLib.LZ4CompTop
 
-set_option maxRecDepth 8192
 
 open Lean (Json)
 open AlgorithmLib

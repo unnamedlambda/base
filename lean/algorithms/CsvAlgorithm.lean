@@ -185,7 +185,6 @@ def emitFilter (ptr resOff count fnameOff : R) (patternLen : Nat) : M Unit := do
         (pure [← iadd fileOff vlen]) (pure [fileOff])
       return [← iadd i one, ← iadd dataOff2 vlen, nextFile.headD 0])
 
-set_option maxRecDepth 4096 in
 def mainCode (patternLen : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
@@ -239,7 +238,6 @@ theorem bodies_wf :
     (List.range 16).all (fun n => HProg.wf env HProg.ptrParams (mainCode n)) = true := by
   decide
 
-set_option maxRecDepth 4096 in
 def clifIrSource (patternLen : Nat) : Program :=
   IR.program [IR.noopFunction, HProg.compileBody 1 (mainCode patternLen) env]
 

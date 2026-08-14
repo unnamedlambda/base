@@ -505,7 +505,7 @@ def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
 def cuda : IR.CudaSetup := cudaEnv.1
 def env : FnEnv := cudaEnv.2
 
-def loadFn : HProg.Code := clif% do
+def loadFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit cuda ptr
@@ -571,7 +571,7 @@ def loadFn : HProg.Code := clif% do
   store yId (← absAddr ptr (bindOff 12))
   store ysId (← absAddr ptr (bindOff 13))
 
-def runFn : HProg.Code := clif% do
+def runFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ptxOff ← iconst64 PTX_OFF
   let nBufs ← iconst32 NBUF
@@ -583,7 +583,7 @@ def runFn : HProg.Code := clif% do
   let _ ← cudaSync cuda ptr
 
 /-- The activation backward: one element per lane, `N/32` blocks. -/
-def runSiluBwdFn : HProg.Code := clif% do
+def runSiluBwdFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ptxOff ← iconst64 PTX_SB_OFF
   let nBufs ← iconst32 NBUF
@@ -619,7 +619,7 @@ def runSgdFn : HProg.Code := clif% (launchAt PTX_SGD_OFF WGRID)
 def runAdjFn : HProg.Code := clif% (launchAt PTX_ADJ_OFF EGRID)
 
 /-- Fetch the forward activations, so the host can compute the loss. -/
-def fetchYFn : HProg.Code := clif% do
+def fetchYFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -628,7 +628,7 @@ def fetchYFn : HProg.Code := clif% do
   let _ ← call cuda.fnDownload.id [ctxPtr, yId, outPtr, dxBytes]
 
 /-- Fetch RMSNorm's `dx`. -/
-def fetchDxrFn : HProg.Code := clif% do
+def fetchDxrFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -656,7 +656,7 @@ def bindPass (ptr : R) : Sur.M Unit := do
 
     The three stages otherwise run as three separate host calls, and a pipeline
     is a claim about an order — an order no single program exhibited. -/
-def runBwdAllFn : HProg.Code := clif% do
+def runBwdAllFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   for (off, g) in [(PTX_SB_OFF, EGRID), (PTX_OFF, GRID), (PTX_DW_OFF, GRID)] do
     bindPass ptr
@@ -670,7 +670,7 @@ def runBwdAllFn : HProg.Code := clif% do
   let _ ← cudaSync cuda ptr
 
 /-- The weight gradient, same geometry: one warp per row. -/
-def runDwFn : HProg.Code := clif% do
+def runDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ptxOff ← iconst64 PTX_DW_OFF
   let nBufs ← iconst32 NBUF
@@ -681,7 +681,7 @@ def runDwFn : HProg.Code := clif% do
   let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
   let _ ← cudaSync cuda ptr
 
-def fetchFn : HProg.Code := clif% do
+def fetchFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -690,7 +690,7 @@ def fetchFn : HProg.Code := clif% do
   let _ ← call cuda.fnDownload.id [ctxPtr, dxId, outPtr, dxBytes]
 
 /-- Fetch the weight gradient — `N·N` floats. -/
-def fetchDwFn : HProg.Code := clif% do
+def fetchDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -701,24 +701,24 @@ def fetchDwFn : HProg.Code := clif% do
 def clifIR : Program :=
   program
     [noopFunction,
-     HProg.compileFn 1 loadFn,
-     HProg.compileFn 2 runFn,
-     HProg.compileFn 3 fetchFn,
-     HProg.compileFn 4 runDwFn,
-     HProg.compileFn 5 fetchDwFn,
-     HProg.compileFn 6 runSiluBwdFn,
-     HProg.compileFn 7 runTFn,
-     HProg.compileFn 8 runQFn,
-     HProg.compileFn 9 runSFn,
-     HProg.compileFn 10 runDxrFn,
-     HProg.compileFn 11 fetchDxrFn,
-     HProg.compileFn 12 runFwdFn,
-     HProg.compileFn 13 runYFn,
-     HProg.compileFn 14 runDyFn,
-     HProg.compileFn 15 runSgdFn,
-     HProg.compileFn 16 fetchYFn,
-     HProg.compileFn 17 runAdjFn,
-     HProg.compileFn 18 runBwdAllFn]
+     HProg.compileFn 1 loadFn env,
+     HProg.compileFn 2 runFn env,
+     HProg.compileFn 3 fetchFn env,
+     HProg.compileFn 4 runDwFn env,
+     HProg.compileFn 5 fetchDwFn env,
+     HProg.compileFn 6 runSiluBwdFn env,
+     HProg.compileFn 7 runTFn env,
+     HProg.compileFn 8 runQFn env,
+     HProg.compileFn 9 runSFn env,
+     HProg.compileFn 10 runDxrFn env,
+     HProg.compileFn 11 fetchDxrFn env,
+     HProg.compileFn 12 runFwdFn env,
+     HProg.compileFn 13 runYFn env,
+     HProg.compileFn 14 runDyFn env,
+     HProg.compileFn 15 runSgdFn env,
+     HProg.compileFn 16 fetchYFn env,
+     HProg.compileFn 17 runAdjFn env,
+     HProg.compileFn 18 runBwdAllFn env]
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=

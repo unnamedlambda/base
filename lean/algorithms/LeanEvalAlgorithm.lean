@@ -398,7 +398,7 @@ def writeDecimal (k : K) (value : R) : M Unit := do
 
 set_option maxRecDepth 8192 in
 def mainCode : HProg.Code :=
-  clif% do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let z8 ← iconst .i8 0
   let zero ← iconst64 0
@@ -561,7 +561,7 @@ def mainCode : HProg.Code :=
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 2000000 in
 def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction

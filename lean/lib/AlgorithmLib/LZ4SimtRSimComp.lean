@@ -1,6 +1,5 @@
 import AlgorithmLib.LZ4SimtEmit
 import AlgorithmLib.LZ4WarpColl
-set_option maxRecDepth 8192
 
 namespace AlgorithmLib.LZ4Simt
 open AlgorithmLib

@@ -427,7 +427,6 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) : M Unit := do
   let _ ← call fnWrite.id [k.ptr, outFname, outData, k.zero, outLen]
 
 -- Main builder: compose the sub-builders
-set_option maxRecDepth 2048 in
 /-- The externals every emitted function declares, in one order. -/
 def ffiEnv : (FnRef × FnRef) × FnEnv := (Id.run (do
   let rd := IR.FFI.std.fileRead
@@ -438,7 +437,7 @@ def fnWrite : FnRef := ffiEnv.1.2
 def env : FnEnv := ffiEnv.2
 
 def mainCode : HProg.Code :=
-  clif% do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
 
   let fileSize ← fldReadFile ptr fnRead f.inputFilename f.fileData
@@ -491,7 +490,7 @@ def mainCode : HProg.Code :=
   emitHexFormat k fnWrite
 
 def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction (generated from layout)

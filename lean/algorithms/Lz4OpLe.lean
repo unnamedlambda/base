@@ -1,6 +1,5 @@
 import Lz4Ckpt
 
-set_option maxRecDepth 8192
 
 /-!
   # `CursorAtSites.opLe` at the shipped kernel — the audit's last obligation
@@ -11,7 +10,6 @@ namespace Lz4Sites
 open Algorithm
 open AlgorithmLib.LZ4Simt
 
-set_option maxHeartbeats 1000000 in
 /-- **The output cursor is below `lenOff` at every one of the ten `sbAddr`
     stores, for the whole run of every warp.** -/
 theorem cursorAtSites_shipped (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)

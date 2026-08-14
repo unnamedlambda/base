@@ -146,7 +146,7 @@ def emitFormatPhase (ptr ctxPtr : R) : M R := do
   return e.headD 0
 
 def mainCode : HProg.Code :=
-  clif% do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero ← iconst64 0
@@ -167,7 +167,7 @@ def mainCode : HProg.Code :=
   callVoid fnHtClean.id [← absAddr ptr 0]
 
 def clifIR : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
 
 def artifacts : Array Json :=
   #[toJsonEntry "wc_algorithm" {

@@ -25,7 +25,6 @@ def MEM_SIZE        : Nat := DATA_OFF + MAX_DATA_BYTES
 
 open AlgorithmLib.HProg.Sur
 
-set_option maxRecDepth 100000
 
 /-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
 def env : FnEnv := env% [.fileIO]

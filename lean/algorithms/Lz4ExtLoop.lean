@@ -1,6 +1,5 @@
 import Lz4ExtGuard
 
-set_option maxRecDepth 8192
 
 namespace Lz4Sites
 

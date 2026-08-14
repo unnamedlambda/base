@@ -1,6 +1,5 @@
 import AlgorithmLib.LZ4WarpDSL
 import AlgorithmLib.LZ4SimtRSim
-set_option maxRecDepth 4096
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib AlgorithmLib.LZ4Simt

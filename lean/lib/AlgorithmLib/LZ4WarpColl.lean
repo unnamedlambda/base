@@ -1,7 +1,6 @@
 import AlgorithmLib.LZ4WarpEmit
 import AlgorithmLib.LZ4SimtBits
 import AlgorithmLib.LZ4WarpSched
-set_option maxRecDepth 4096
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib AlgorithmLib.LZ4Simt AlgorithmLib.LZ4SimtBits AlgorithmLib.LZ4WarpFind

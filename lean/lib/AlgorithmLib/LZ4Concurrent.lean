@@ -1,6 +1,5 @@
 import AlgorithmLib.LZ4SimtRSim
 
-set_option maxRecDepth 8192
 
 /-!
   # Many warps, one memory

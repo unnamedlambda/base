@@ -398,7 +398,7 @@ def emitOutput (k : K) : M Unit := do
 -- ---------------------------------------------------------------------------
 
 def mainCode : HProg.Code :=
-  clif% do
+  clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let z8 ← iconst .i8 0
   let c0 ← iconst64 0
@@ -453,9 +453,8 @@ def mainCode : HProg.Code :=
   emitOutput k
 
 -- Deciding `wf` walks the whole body, which is deeper than the default budget.
-set_option maxRecDepth 100000 in
 def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode]
+  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
 
 -- ---------------------------------------------------------------------------
 -- Payload / Config / Algorithm

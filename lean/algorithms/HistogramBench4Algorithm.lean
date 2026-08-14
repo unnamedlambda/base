@@ -31,7 +31,6 @@ def DATA_OFF        : Nat := 19712
 def MAX_DATA_BYTES  : Nat := 64 * 1024 * 1024
 def MEM_SIZE        : Nat := DATA_OFF + MAX_DATA_BYTES
 
-set_option maxRecDepth 2048 in
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 

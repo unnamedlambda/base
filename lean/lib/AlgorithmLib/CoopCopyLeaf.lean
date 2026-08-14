@@ -1,5 +1,4 @@
 import AlgorithmLib.LZ4WarpKernel
-set_option maxRecDepth 4096
 
 namespace CoopCopyModel
 open AlgorithmLib.LZ4WarpDSL (copyGmem copyGmem_size copyGmem_getD_lt copyGmem_getD)

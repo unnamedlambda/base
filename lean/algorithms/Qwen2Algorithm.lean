@@ -5,7 +5,6 @@ import AlgorithmLib.Cuda
 import AlgorithmLib.HProgCuda
 import Qwen2Common
 
-set_option maxRecDepth 4096
 
 open Lean
 open AlgorithmLib

@@ -1,6 +1,5 @@
 import AlgorithmLib
 
-set_option maxRecDepth 4096
 
 open Lean (Json)
 open AlgorithmLib

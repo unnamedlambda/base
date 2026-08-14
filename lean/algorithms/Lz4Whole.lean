@@ -1,7 +1,6 @@
 import Lz4Confine64
 import Lz4Host
 
-set_option maxRecDepth 8192
 
 /-!
   # The composed claim

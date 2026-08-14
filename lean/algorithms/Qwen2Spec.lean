@@ -22,7 +22,6 @@ import Qwen2Common
 -/
 
 open AlgorithmLib AlgorithmLib.ML Qwen2Proven.Stage Qwen2Common
-set_option maxRecDepth 8000
 
 namespace Qwen2Spec
 /-- Memory after RMSNorm and both projection GEMVs. -/
@@ -303,7 +302,6 @@ theorem ffn_ao_at_end (m : Buf → Nat → Float32) :
   rw [← ffnMem_full m]
   exact ffnMem_carry 5 6 (by omega) m B_AO (by rw [ffn_seg_5_6]; decide)
 
-set_option maxHeartbeats 1000000 in
 /-- **The whole feed-forward half, in the model's terms.**
 
     Residual plus `W_down · (silu(gate) ⊙ up)`, where the activation is
@@ -368,7 +366,6 @@ theorem embed_is_gather (im : Buf → Nat → Nat) (grid : Nat)
     to the residual is the model's.  What it does *not* claim is that
     `B_PR` holds `Transformer.softmax` of the scores. -/
 
-set_option maxHeartbeats 1000000 in
 /-- **The attention half's residual output, in the model's terms.**
 
     `x + Wo · attnOut`, with the add being `addSpec`'s denotation and the
@@ -457,7 +454,6 @@ theorem attn_wd_untouched (gim : Buf → Nat → Nat) (h : AllHold [Law.combiner
                  B_SC, B_PR, B_AO, B_XN] ++ [B_X] from rfl]
         decide) a
 
-set_option maxHeartbeats 1000000 in
 /-- **A whole decoder layer, in the model's terms.**
 
     `x + W_o·attnOut + W_down·(silu(gate) ⊙ up)` — the double-residual shape of

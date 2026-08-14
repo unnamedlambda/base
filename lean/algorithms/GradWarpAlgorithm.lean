@@ -143,7 +143,6 @@ def fetchFnCode : HProg.Code := clif% do
   let outBytes ← iconst64 (NOUT * 4)
   let _ ← call cuda.fnDownload.id [ctxPtr, outId, outPtr, outBytes]
 
-set_option maxHeartbeats 1000000 in
 theorem bodies_wf :
     HProg.wf env HProg.ptrParams loadFnCode = true &&
     HProg.wf env HProg.ptrParams runFnCode = true &&

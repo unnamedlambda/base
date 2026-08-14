@@ -1,7 +1,5 @@
 import Lz4Ckpt64
 
-set_option maxRecDepth 100000
-set_option maxHeartbeats 2000000
 
 namespace Lz4Sites
 

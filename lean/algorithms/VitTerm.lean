@@ -94,10 +94,8 @@ end Vit
   IO.println s!"[vit] ops, 1 block  : {(Vit.model 1).graph 1000 |>.length}"
   IO.println s!"[vit] ops, 12 blocks: {(Vit.model 12).graph 1000 |>.length}"
 
-set_option maxRecDepth 100000 in
 theorem vit1_lowers  : ((Vit.model 1).stages Vit.SQ 1000).isSome = true := by rfl
 
-set_option maxRecDepth 4000000 in
 theorem vit12_lowers : ((Vit.model 12).stages Vit.SQ 1000).isSome = true := by rfl
 
 #eval do

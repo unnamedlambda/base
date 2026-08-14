@@ -2,7 +2,6 @@ import Lz4Interleave
 import AlgorithmLib.LZ4Confine
 import AlgorithmLib.LZ4OpBound
 
-set_option maxRecDepth 8192
 
 /-!
   # The extend loop's read addresses

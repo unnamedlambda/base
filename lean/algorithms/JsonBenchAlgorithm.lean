@@ -21,7 +21,6 @@ def INPUT_DATA      : Nat := 0x4000
 def MAX_JSON_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_JSON_BYTES
 
-set_option maxRecDepth 4096 in
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 

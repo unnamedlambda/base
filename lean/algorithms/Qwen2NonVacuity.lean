@@ -22,7 +22,6 @@ import Qwen2Common
 
 open AlgorithmLib AlgorithmLib.ML Qwen2Proven.Stage Qwen2Common
 
-set_option maxRecDepth 8000
 
 namespace Qwen2NonVacuity
 

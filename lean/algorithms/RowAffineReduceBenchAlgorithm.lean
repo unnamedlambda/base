@@ -16,7 +16,6 @@ namespace RowAffineReduceBench
 
 def MEM_SIZE : Nat := 40
 
-set_option maxRecDepth 2048 in
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 

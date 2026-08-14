@@ -1,6 +1,5 @@
 import Lz4ExtShape
 
-set_option maxRecDepth 8192
 
 namespace Lz4Sites
 

@@ -1,5 +1,4 @@
 import AlgorithmLib.LZ4Simt
-set_option maxRecDepth 8192
 
 namespace AlgorithmLib.LZ4Simt
 open AlgorithmLib

@@ -21,7 +21,6 @@ def INPUT_DATA      : Nat := 0x4000
 def MAX_TEXT_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_TEXT_BYTES
 
-set_option maxRecDepth 2048 in
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 

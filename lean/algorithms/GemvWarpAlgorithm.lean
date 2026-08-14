@@ -313,7 +313,6 @@ def fetchCode (sh : Shape) : HProg.Code :=
     let yBytes ← iconst64 (sh.m * 4)
     let _ ← call cuda.fnDownload.id [ctxPtr, yId, outPtr, yBytes]
 
-set_option maxHeartbeats 4000000 in
 /-- Every body well-formed at every shipped shape and schedule.
 
     `clifIR` is generic in the shape and so are `artifactOf` and the map that
