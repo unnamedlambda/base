@@ -660,8 +660,10 @@ theorem shipped_wf :
 
 def clifIR : Program :=
   program <|
-    noopFunction :: shippedBodies.zipIdx.map
-      (fun p => HProg.compileBody (p.2 + 1) p.1 env)
+    noopFunction :: shippedBodies.attach.zipIdx.map
+      (fun p =>
+        HProg.compileFn (p.2 + 1) p.1.1 env
+          (hwf := List.all_eq_true.mp shipped_wf p.1.1 p.1.2))
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
