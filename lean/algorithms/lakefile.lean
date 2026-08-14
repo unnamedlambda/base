@@ -67,6 +67,7 @@ lean_lib BackwardWideAlgorithm
 @[default_target]
 lean_lib MlpCifarAlgorithm
 lean_lib VitAlgorithm
+lean_lib VitShip
 lean_lib VitUnits
 lean_lib VitGuards
 lean_lib VitDag
