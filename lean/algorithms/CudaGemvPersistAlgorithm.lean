@@ -1,6 +1,6 @@
 import Lean
 import Std
-import AlgorithmLib
+import AlgorithmLib.Gen
 
 open Lean
 open AlgorithmLib

@@ -1,4 +1,4 @@
-import AlgorithmLib
+import AlgorithmLib.Gen
 set_option maxRecDepth 8192
 open Lean (Json toJson)
 open AlgorithmLib

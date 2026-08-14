@@ -1,5 +1,5 @@
 import Lean
-import AlgorithmLib
+import AlgorithmLib.Gen
 import HistogramBench1Algorithm
 import ClampSumBenchAlgorithm
 import CudaRmsNormPersistAlgorithm

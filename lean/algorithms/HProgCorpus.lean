@@ -1,5 +1,5 @@
 import Lean
-import AlgorithmLib
+import AlgorithmLib.Gen
 
 /-!
 # The differential corpus

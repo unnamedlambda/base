@@ -1,4 +1,4 @@
-import AlgorithmLib
+import AlgorithmLib.Gen
 
 
 

@@ -1,5 +1,5 @@
 import Lean
-import AlgorithmLib
+import AlgorithmLib.Gen
 
 open Lean
 open AlgorithmLib
