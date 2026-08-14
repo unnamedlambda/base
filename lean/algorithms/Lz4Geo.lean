@@ -535,6 +535,54 @@ theorem cfgAllRegion_eq (p : Array SInstr) (lo n e : Nat) :
   rw [h1, h2]
   cases inIv lo n q <;> cases inIv lo n q' <;> cases (decide (q' = e)) <;> rfl
 
+/-- Every successor of a pc in the window is in the window or exactly at `e` —
+    the `ivExitB` shape with an exact exit rather than a lower bound. -/
+def ivExitAtB (p : Array SInstr) (lo n e : Nat) : Bool :=
+  cfgAll p (fun q q' => !inIv lo n q || inIv lo n q' || decide (q' = e))
+
+/-- **The region-exit scan, stated over the region's own pcs, equals the
+    interval form.**  `cfgRegion_eq` bounds what enters a region; this bounds
+    what leaves it.
+
+    The scan it replaces runs over the region rather than over the whole
+    program, so it pays twice: an array index per pc, and a linear search of the
+    region list per successor.  One traversal of the instruction list does
+    neither.  Statement-preserving — the shape bundles keep their spelling and
+    every consumer projection is untouched.  Measured on the 170-pc loop region:
+    7.76s -> 1.27s. -/
+theorem cfgExitRegion_eq (p : Array SInstr) (hsz : p.size = 274) (lo n e : Nat)
+    (hlo : lo + n ≤ 274) :
+    ((List.range n).map (· + lo)).all (fun q => (succsOf p q).all
+        (fun q' => decide (q' ∈ (List.range n).map (· + lo)) || decide (q' = e)))
+      = ivExitAtB p lo n e := by
+  have hmem : ∀ q' : Nat, decide (q' ∈ (List.range n).map (· + lo)) = inIv lo n q' :=
+    fun q' => by simp [mem_ivList, inIv]
+  apply Bool.eq_iff_iff.mpr
+  rw [ivExitAtB, ← range_succs_eq_cfgAll p 274 hsz.symm]
+  constructor
+  · intro h
+    refine List.all_eq_true.mpr (fun q _ => List.all_eq_true.mpr (fun q' hq' => ?_))
+    cases hin : inIv lo n q with
+    | false => simp
+    | true =>
+        have hqmem : q ∈ (List.range n).map (· + lo) :=
+          (mem_ivList lo n q).mpr ((inIv_iff lo n q).mp hin)
+        have h2 := List.all_eq_true.mp (List.all_eq_true.mp h q hqmem) q' hq'
+        rw [hmem] at h2
+        simp only [Bool.or_eq_true] at h2 ⊢
+        rcases h2 with h2 | h2
+        · exact Or.inl (Or.inr h2)
+        · exact Or.inr h2
+  · intro h
+    refine List.all_eq_true.mpr (fun q hq => List.all_eq_true.mpr (fun q' hq' => ?_))
+    have hqi := (mem_ivList lo n q).mp hq
+    have hin : inIv lo n q = true := (inIv_iff lo n q).mpr hqi
+    have h2 := List.all_eq_true.mp
+      (List.all_eq_true.mp h q (List.mem_range.mpr (by omega))) q' hq'
+    rw [hmem]
+    simp only [hin, Bool.not_true, Bool.false_or, Bool.or_eq_true] at h2 ⊢
+    exact h2
+
 /-- `PcClosed` for an interval region, by one traversal. -/
 def ivClosedB (p : Array SInstr) (lo n : Nat) (exits : List Nat) : Bool :=
   cfgAll p (fun q q' => !inIv lo n q || decide (q ∈ exits) || inIv lo n q')

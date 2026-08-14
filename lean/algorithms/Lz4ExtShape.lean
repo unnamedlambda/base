@@ -14,102 +14,102 @@ theorem uni_ok : K.toList.all (unifOK uniR) = true := by decide
 -- ── The shipped kernel's witnesses: every `decide` in the chain lives here ──
 
 theorem preShapeOK_true : preShapeB K = true := by
-  simp only [preShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [preShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem guardShapeOK_true : guardShapeB K 32768 = true := by
-  simp only [guardShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [guardShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem loopShapeOK_true : loopShapeB K = true := by
-  simp only [loopShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [loopShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem selShapeOK_true : selShapeB K 32768 = true := by
-  simp only [selShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [selShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem selFrameOK_true : selFrameB K = true := by
-  simp only [selFrameB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [selFrameB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem entryShapeOK_true : entryShapeB K = true := by
-  simp only [entryShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [entryShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem extShapeOK_true : extShapeB K 32768 = true := by
-  simp only [extShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [extShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem extLoadShapeOK_true : extLoadShapeB K = true := by
-  simp only [extLoadShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [extLoadShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem advShapeOK_true : advShapeB K = true := by
-  simp only [advShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [advShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem mlShapeOK_true : mlShapeB K = true := by
-  simp only [mlShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [mlShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem caShapeOK_true : caShapeB K = true := by
-  simp only [caShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [caShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem matchShapeOK_true : matchShapeB K = true := by
-  simp only [matchShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [matchShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem litShapeOK_true : litShapeB K = true := by
-  simp only [litShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [litShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem cpShapeOK_true : cpShapeB K = true := by
-  simp only [cpShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [cpShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem tailShapeOK_true : tailShapeB K = true := by
-  simp only [tailShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [tailShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem laShapeOK_true : laShapeB K = true := by
-  simp only [laShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [laShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem ftShapeOK_true : ftShapeB K 32768 = true := by
-  simp only [ftShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [ftShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem cp2ShapeOK_true : cp2ShapeB K = true := by
-  simp only [cp2ShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [cp2ShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem ibShapeOK_true : ibShapeB K 32768 = true := by
-  simp only [ibShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [ibShapeB, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
 theorem ibRegOK_true : ibRegOK K = true := by
-  simp only [ibRegOK, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, winG_eqG K shipped32_size, win_eqG K shipped32_size,
+  simp only [ibRegOK, loopS, extS, matchS, litS, tailS, laS, ftS, ibS, cfg_eqG K shipped32_size, cfgRegion_eq K shipped32_size, cfgAllRegion_eq, cfgExitRegion_eq K shipped32_size, winG_eqG K shipped32_size, win_eqG K shipped32_size,
     Nat.reduceLeDiff, Nat.reduceAdd]
   decide
 
