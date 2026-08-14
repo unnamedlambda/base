@@ -410,10 +410,16 @@ def openFrag (k : Int) : Code :=
     Sur.store c b
 
 /-- One characterization lemma per parameterized fragment, by `rfl` and generic
-    in the parameter; every proof after it works on the literal. -/
+    in the parameter; every proof after it works on the literal.
+
+    Reducing the slot map descends by halving the slot number, and `Nat.div` is
+    irreducible, so the elaborator needs telling to unfold it. The kernel checks
+    the same `rfl` either way — reducibility is an elaboration setting and the
+    proof term this produces is the one a bare `rfl` would. -/
 theorem openFrag_eq (k : Int) :
     openFrag k = [.straight [.op (.iconst .i64 k), .op (.iadd 0 1),
-                             .op (.load { ty := .i64 } 2), .store .i64 3 2]] := rfl
+                             .op (.load { ty := .i64 } 2), .store .i64 3 2]] := by
+  with_unfolding_all rfl
 
 
 

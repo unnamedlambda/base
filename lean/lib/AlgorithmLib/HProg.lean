@@ -260,32 +260,128 @@ export _root_.AlgorithmLib.IR (FnEnv envOf envAfter)
 -- Types
 -- ---------------------------------------------------------------------------
 
-/-- Slot types, newest first, with the count carried.
+/-- A map from slot numbers, holding the value for `k` at the tree position
+    whose children are `2k+1` and `2k+2`.
 
-    Slots are numbered in definition order, but the list runs the other way, so
-    `push` is a cons rather than an append and a reference to a recently defined
-    slot is found near the front. Both matter: the checker is reduced by the
-    kernel for `decide`, and with definition-order storage a body of `n` slots
-    costs `n^2` list cells to build and walk. -/
+    Slots are keyed by a number that only grows, so a sequence container is the
+    obvious choice — and it is the wrong one, whichever end it makes cheap.
+    Slot `0` is the base pointer and nearly every statement reads it, while the
+    slots a statement's other operands name are the most recent ones. A tree
+    costs `log k` either way, so no slot is a bad slot, and bodies here run to
+    tens of thousands of them.
+
+    Both the checker and the compiler key their slot maps on this, and both are
+    reduced by the kernel: `wf` under the `decide` that `compileFn` demands,
+    `emitStmt` under the `rfl` steps `HProgBlocks` takes. So the recursion is
+    structural throughout — `get` on the tree, `set` on a fuel of `k + 1`,
+    which is past what halving `k` can consume. -/
+inductive Trie (α : Type) where
+  | nil
+  | node (v : Option α) (l r : Trie α)
+  deriving Inhabited, BEq
+
+/-- What is recorded at key `k`. -/
+def Trie.get {α : Type} : Trie α → Nat → Option α
+  | .nil, _ => none
+  | .node v _ _, 0 => v
+  | .node _ l r, k + 1 =>
+      match k % 2 with
+      | 0 => l.get (k / 2)
+      | _ => r.get (k / 2)
+
+/-- `set` with its measure exposed, for the lemmas to run their induction on. -/
+def Trie.setGo {α : Type} : Nat → Trie α → Nat → α → Trie α
+  | _, .nil, 0, x => .node (some x) .nil .nil
+  | _, .node _ l r, 0, x => .node (some x) l r
+  | 0, t, _, _ => t
+  | d + 1, .nil, k + 1, x =>
+      match k % 2 with
+      | 0 => .node none (Trie.setGo d .nil (k / 2) x) .nil
+      | _ => .node none .nil (Trie.setGo d .nil (k / 2) x)
+  | d + 1, .node v l r, k + 1, x =>
+      match k % 2 with
+      | 0 => .node v (Trie.setGo d l (k / 2) x) r
+      | _ => .node v l (Trie.setGo d r (k / 2) x)
+
+/-- Record `x` at key `k`, growing the tree along the way. -/
+def Trie.set {α : Type} (t : Trie α) (k : Nat) (x : α) : Trie α :=
+  Trie.setGo (k + 1) t k x
+
+theorem Trie.get_setGo_self {α : Type} : ∀ (d : Nat) (t : Trie α) (k : Nat) (x : α), k < d →
+    (Trie.setGo d t k x).get k = some x
+  | 0, _, _, _, h => absurd h (by omega)
+  | _ + 1, .nil, 0, _, _ => rfl
+  | _ + 1, .node _ _ _, 0, _, _ => rfl
+  | d + 1, .nil, k + 1, x, h => by
+      have hd : k / 2 < d := by omega
+      by_cases hk : k % 2 = 0 <;>
+        simp [Trie.setGo, Trie.get, hk, Trie.get_setGo_self d .nil (k / 2) x hd]
+  | d + 1, .node _ l r, k + 1, x, h => by
+      have hd : k / 2 < d := by omega
+      by_cases hk : k % 2 = 0 <;>
+        simp [Trie.setGo, Trie.get, hk, Trie.get_setGo_self d l (k / 2) x hd,
+              Trie.get_setGo_self d r (k / 2) x hd]
+
+theorem Trie.get_setGo_ne {α : Type} : ∀ (d : Nat) (t : Trie α) (k j : Nat) (x : α), j ≠ k →
+    (Trie.setGo d t k x).get j = t.get j
+  | _, .nil, 0, 0, _, h => absurd rfl h
+  | _, .node _ _ _, 0, 0, _, h => absurd rfl h
+  | _, .nil, 0, j + 1, _, _ => by
+      by_cases hj : j % 2 = 0 <;> simp [Trie.setGo, Trie.get, hj]
+  | _, .node _ _ _, 0, j + 1, _, _ => by
+      by_cases hj : j % 2 = 0 <;> simp [Trie.setGo, Trie.get, hj]
+  | 0, .nil, _ + 1, _, _, _ => rfl
+  | 0, .node _ _ _, _ + 1, _, _, _ => rfl
+  | d + 1, .nil, k + 1, 0, _, _ => by
+      by_cases hk : k % 2 = 0 <;> simp [Trie.setGo, Trie.get, hk]
+  | d + 1, .node _ _ _, k + 1, 0, _, _ => by
+      by_cases hk : k % 2 = 0 <;> simp [Trie.setGo, Trie.get, hk]
+  -- Matching parity sends both to the same child, at halves that stay apart;
+  -- differing parity sends `j` to the child `set` left alone.
+  | d + 1, .nil, k + 1, j + 1, x, h => by
+      have hne : j ≠ k := by omega
+      by_cases hk : k % 2 = 0 <;> by_cases hj : j % 2 = 0 <;>
+        simp [Trie.setGo, Trie.get, hk, hj] <;>
+        exact Trie.get_setGo_ne d .nil (k / 2) (j / 2) x (by omega)
+  | d + 1, .node _ l r, k + 1, j + 1, x, h => by
+      have hne : j ≠ k := by omega
+      by_cases hk : k % 2 = 0 <;> by_cases hj : j % 2 = 0 <;>
+        simp [Trie.setGo, Trie.get, hk, hj] <;>
+        first
+          | exact Trie.get_setGo_ne d l (k / 2) (j / 2) x (by omega)
+          | exact Trie.get_setGo_ne d r (k / 2) (j / 2) x (by omega)
+
+/-- The key just written reads back. -/
+theorem Trie.get_set_self {α : Type} (t : Trie α) (k : Nat) (x : α) :
+    (t.set k x).get k = some x :=
+  Trie.get_setGo_self (k + 1) t k x (by omega)
+
+/-- And every other key is untouched. -/
+theorem Trie.get_set_ne {α : Type} (t : Trie α) (k j : Nat) (x : α) (h : j ≠ k) :
+    (t.set k x).get j = t.get j :=
+  Trie.get_setGo_ne (k + 1) t k j x h
+
+/-- Slot types with the count carried, so the next slot's number is at hand and
+    a lookup can reject an out-of-scope slot without searching for it. -/
 structure TyEnv where
-  /-- Slot `n - 1 - i` is `rev[i]`. -/
-  rev : List ClifTy
-  /-- `rev.length`, carried so a lookup never measures the list. -/
+  /-- Slot `k`'s type is at key `k`. -/
+  slots : Trie ClifTy
+  /-- How many slots are bound; they are `0` to `n - 1`. -/
   n : Nat
   deriving Inhabited, BEq
 
 /-- The type of slot `r`, or `none` when `r` is out of scope. -/
 def TyEnv.get (Γ : TyEnv) (r : Nat) : Option ClifTy :=
-  if r < Γ.n then Γ.rev[Γ.n - 1 - r]? else none
+  if r < Γ.n then Γ.slots.get r else none
 
 /-- Bind the next slot. -/
-def TyEnv.push (Γ : TyEnv) (t : ClifTy) : TyEnv := ⟨t :: Γ.rev, Γ.n + 1⟩
+def TyEnv.push (Γ : TyEnv) (t : ClifTy) : TyEnv := ⟨Γ.slots.set Γ.n t, Γ.n + 1⟩
 
 /-- Bind several, in order. -/
 def TyEnv.pushAll (Γ : TyEnv) (ts : List ClifTy) : TyEnv := ts.foldl TyEnv.push Γ
 
 /-- The environment binding `ts` as slots `0..`. -/
-def TyEnv.ofList (ts : List ClifTy) : TyEnv := TyEnv.pushAll ⟨[], 0⟩ ts
+def TyEnv.ofList (ts : List ClifTy) : TyEnv := TyEnv.pushAll ⟨.nil, 0⟩ ts
 
 -- What the checker needs to know about a CLIF type, declared where dot
 -- notation finds it.
@@ -571,13 +667,14 @@ def wf (env : FnEnv) (params : List ClifTy) (c : Code) : Bool :=
 -- ---------------------------------------------------------------------------
 
 /-- Blocks are numbered as reserved, values as created, and `env` maps slots to
-    the `Val` carrying them in the region being emitted — an assoc list, newest
-    binding wins, which is how a loop body's parameters shadow the head's. -/
+    the `Val` carrying them in the region being emitted. A slot written twice
+    keeps the later value, which is how a loop body's parameters shadow the
+    head's. -/
 structure CS where
   nextVal : Nat
   nextBlk : Nat
   slots   : Nat
-  env     : List (Nat × Val)
+  env     : Trie Val
   curRef  : Nat
   curPars : List (Val × ClifTy)
   cur     : List Inst              -- reversed
@@ -593,7 +690,7 @@ def CS.fresh (s : CS) : Val × CS :=
 /-- An unresolvable slot yields a value nothing defines: visible in a dump and
     rejected by Cranelift's verifier. `wf` is what rules it out. -/
 def CS.get (s : CS) (r : R) : Val :=
-  match s.env.lookup r with
+  match s.env.get r with
   | some v => v
   | none => ⟨1000000 + r⟩
 
@@ -611,7 +708,7 @@ def CS.open'.go (firstSlot : Nat) : CS → Nat → List ClifTy → CS
       let (v, st') := st.fresh
       go firstSlot
         { st' with curPars := st'.curPars ++ [(v, t)],
-                   env := (firstSlot + i, v) :: st'.env } (i + 1) ts
+                   env := st'.env.set (firstSlot + i) v } (i + 1) ts
 
 /-- Structural rather than a `for` loop, so the numbering it establishes can be
     reasoned about: `open'` is where a block's parameters become slots, and the
@@ -660,14 +757,14 @@ def emitStmt (s : CS) : Stmt → CS
         | .vhighBits a  => .vhighBits v (s.get a)
         | .bitcast ty a => .bitcast v ty (s.get a)
         | .load op a    => .load v op (s.get a)
-      { s with cur := inst :: s.cur, env := (s.slots, v) :: s.env, slots := s.slots + 1 }
+      { s with cur := inst :: s.cur, env := s.env.set s.slots v, slots := s.slots + 1 }
   | .store ty v a => { s with cur := .storeTyped ty (s.get v) (s.get a) :: s.cur }
   | .storeUnaligned v a => { s with cur := .store (s.get v) (s.get a) :: s.cur }
   | .istore8 v a => { s with cur := .istore8 (s.get v) (s.get a) :: s.cur }
   | .call fn args =>
       let (v, s) := s.fresh
       { s with cur := .call (some v) ⟨fn⟩ (args.map s.get) :: s.cur,
-               env := (s.slots, v) :: s.env, slots := s.slots + 1 }
+               env := s.env.set s.slots v, slots := s.slots + 1 }
   | .callVoid fn args =>
       { s with cur := .call none ⟨fn⟩ (args.map s.get) :: s.cur }
 
@@ -818,7 +915,7 @@ def ptrParams : List ClifTy := [.i64]
 def compileBody (idx : Nat) (c : Code) (env : FnEnv := IR.FFI.stdEnv)
     (params : List ClifTy := ptrParams) : FuncData :=
   Id.run do
-    let s0 : CS := { nextVal := 0, nextBlk := 1, slots := 0, env := [],
+    let s0 : CS := { nextVal := 0, nextBlk := 1, slots := 0, env := .nil,
                      curRef := 0, curPars := [], cur := [], done := [] }
     let s := { s0.open' 0 params 0 with slots := params.length }
     let s := emitCode fuel s c

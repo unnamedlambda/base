@@ -276,14 +276,7 @@ theorem single_iconst_sound (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
     `simp` reduce works for a single statement and times out at two, so the
     proof has to reason about the emitter rather than evaluate it. -/
 def Aligned (s : CS) (n : Nat) : Prop :=
-  s.nextVal = n ∧ s.slots = n ∧ ∀ i, i < n → s.env.lookup i = some ⟨i⟩
-
-/-- Looking past a binding for a different slot. Isolated because it is the
-    one step the alignment proof turns on. -/
-theorem lookup_cons_ne (i n : Nat) (v : Val) (env : List (Nat × Val)) (h : i ≠ n) :
-    List.lookup i ((n, v) :: env) = List.lookup i env := by
-  have : (i == n) = false := by simp [h]
-  simp [List.lookup, this]
+  s.nextVal = n ∧ s.slots = n ∧ ∀ i, i < n → s.env.get i = some ⟨i⟩
 
 /-- **Emitting one statement preserves the alignment**, advancing it by exactly
     the number of slots that statement defines.
@@ -302,10 +295,10 @@ theorem emitStmt_aligned (s : CS) (n : Nat) (h : Aligned s n) (st : Stmt) :
       simp [Stmt.binds] at hi
       by_cases hin : i = n
       · subst hin
-        simp [emitStmt, CS.fresh, hs, hv, List.lookup]
+        simp [emitStmt, CS.fresh, hs, hv, Trie.get_set_self]
       · have hlt : i < n := by omega
         simp only [emitStmt, CS.fresh, hs]
-        rw [lookup_cons_ne i n _ _ hin]
+        rw [Trie.get_set_ne _ n i _ hin]
         exact he i hlt
   | call fn args =>
       refine ⟨by simp [emitStmt, CS.fresh, hv, Stmt.binds], by
@@ -314,10 +307,10 @@ theorem emitStmt_aligned (s : CS) (n : Nat) (h : Aligned s n) (st : Stmt) :
       simp [Stmt.binds] at hi
       by_cases hin : i = n
       · subst hin
-        simp [emitStmt, CS.fresh, hs, hv, List.lookup]
+        simp [emitStmt, CS.fresh, hs, hv, Trie.get_set_self]
       · have hlt : i < n := by omega
         simp only [emitStmt, CS.fresh, hs]
-        rw [lookup_cons_ne i n _ _ hin]
+        rw [Trie.get_set_ne _ n i _ hin]
         exact he i hlt
   | store t v a => exact ⟨by simpa [emitStmt, Stmt.binds] using hv,
       by simpa [emitStmt, Stmt.binds] using hs, by simpa [emitStmt, Stmt.binds] using he⟩
@@ -1558,7 +1551,7 @@ theorem runFrom_block (env : FnEnv) (f : FuncData) (steps : Nat) (s : Blocks.BSt
 /-- `Aligned` without the `slots` field, which `open'` does not set — its
     callers do, right after. -/
 def EnvAligned (s : CS) (n : Nat) : Prop :=
-  s.nextVal = n ∧ ∀ i, i < n → s.env.lookup i = some ⟨i⟩
+  s.nextVal = n ∧ ∀ i, i < n → s.env.get i = some ⟨i⟩
 
 /-- **Opening a block extends the numbering by its parameters.**
 
@@ -1582,16 +1575,16 @@ theorem open'_go_aligned : ∀ (tys : List ClifTy) (st : CS) (n0 i : Nat),
       have hstep : EnvAligned
           { st.fresh.2 with
             curPars := st.fresh.2.curPars ++ [(st.fresh.1, t)],
-            env := (n0 + i, st.fresh.1) :: st.fresh.2.env } (n0 + (i + 1)) := by
+            env := st.fresh.2.env.set (n0 + i) st.fresh.1 } (n0 + (i + 1)) := by
         constructor
         · simp [CS.fresh, hn]; omega
         · intro j hj
           rcases Nat.lt_or_ge j (n0 + i) with hlt | hge
-          · rw [lookup_cons_ne j (n0 + i) _ _ (Nat.ne_of_lt hlt)]
+          · rw [Trie.get_set_ne _ (n0 + i) j _ (Nat.ne_of_lt hlt)]
             exact he j hlt
           · have hje : j = n0 + i := by omega
             subst hje
-            simp [List.lookup, CS.fresh, hn]
+            simp [Trie.get_set_self, CS.fresh, hn]
       have := ih _ n0 (i + 1) hstep
       simpa [CS.open'.go, Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using this
 
@@ -1689,7 +1682,7 @@ theorem Grows.emitStmts (s : CS) (ss : List Stmt) : Grows s (emitStmts s ss) := 
     growth, so the record updates the emitters perform between their calls need
     no separate argument. -/
 theorem Grows.bump (s : CS) (k : Nat) (cur : List Inst) (nv sl : Nat)
-    (env : List (Nat × Val)) (cr : Nat) (pars : List (Val × ClifTy)) :
+    (env : Trie Val) (cr : Nat) (pars : List (Val × ClifTy)) :
     Grows s { s with nextBlk := s.nextBlk + k, cur := cur, nextVal := nv,
                      slots := sl, env := env, curRef := cr, curPars := pars } :=
   ⟨by simp, by simp⟩
