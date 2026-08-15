@@ -1,5 +1,4 @@
 import VitModel
-import AlgorithmLib
 import AlgorithmLib.HProgCuda
 
 /-!
