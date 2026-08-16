@@ -9,6 +9,8 @@ use std::{
 use tracing::{debug, info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+mod clif_decode;
+
 mod ffi;
 mod jit;
 
