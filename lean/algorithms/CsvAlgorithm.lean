@@ -67,6 +67,35 @@ def scanResultSize   : Nat := 8192
 def scanResult2_off  : Nat := scanResult_off + scanResultSize
 def scanResult2Size  : Nat := 8192
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"emp_db_path",   empDbPath_off, deptDbPath_off - empDbPath_off⟩,
+   ⟨"dept_db_path",  deptDbPath_off, empCsvPath_off - deptDbPath_off⟩,
+   ⟨"emp_csv_path",  empCsvPath_off, deptCsvPath_off - empCsvPath_off⟩,
+   ⟨"dept_csv_path", deptCsvPath_off, scanFname_off - deptCsvPath_off⟩,
+   ⟨"scan_fname",    scanFname_off, filterFname_off - scanFname_off⟩,
+   ⟨"filter_fname",  filterFname_off, joinFname_off - filterFname_off⟩,
+   ⟨"join_fname",    joinFname_off, patternStr_off - joinFname_off⟩,
+   ⟨"pattern",       patternStr_off, patternRegion⟩,
+   ⟨"flag",          flag_off, clifIr_off - flag_off⟩,
+   ⟨"clif_ir",       clifIr_off, clifIrRegionSize⟩,
+   ⟨"emp_buf",       empBuf_off, empBufSize⟩,
+   ⟨"dept_buf",      deptBuf_off, deptBufSize⟩,
+   ⟨"key_scratch",   keyScratch_off, scanResult_off - keyScratch_off⟩,
+   ⟨"scan_result",   scanResult_off, scanResultSize⟩,
+   ⟨"scan_result2",  scanResult2_off, scanResult2Size⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+-- The memory this ships is sized from the payload it builds, so there is no
+-- constant to bound the regions against; `okB` is the whole check here.
+
 open AlgorithmLib.IR
 
 open AlgorithmLib.HProg

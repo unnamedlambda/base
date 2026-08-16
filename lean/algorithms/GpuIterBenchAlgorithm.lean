@@ -152,6 +152,26 @@ def buildInitialMemory : List UInt8 :=
   let reduceBind  := reduceBindDesc ++ zeros (MEM_SIZE - REDUCE_BIND_OFF - reduceBindDesc.length)
   reserved ++ scale ++ reduce ++ scaleBind ++ reduceBind
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_wgpu",      ContextSlots.wgpu, 8⟩,
+   ⟨"io_offsets",    0x18, 0x20⟩,
+   ⟨"scale_shader",  SCALE_SHADER_OFF, REDUCE_SHADER_OFF - SCALE_SHADER_OFF⟩,
+   ⟨"reduce_shader", REDUCE_SHADER_OFF, SCALE_BIND_OFF - REDUCE_SHADER_OFF⟩,
+   ⟨"scale_bind",    SCALE_BIND_OFF, REDUCE_BIND_OFF - SCALE_BIND_OFF⟩,
+   ⟨"reduce_bind",   REDUCE_BIND_OFF, MEM_SIZE - REDUCE_BIND_OFF⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+theorem memMap_within :
+    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
+
 def artifacts : Array Json :=
   #[toJsonEntry "gpu_iter_algorithm" {
     clif := clifIR,

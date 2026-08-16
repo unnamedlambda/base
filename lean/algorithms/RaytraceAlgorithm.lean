@@ -307,6 +307,29 @@ def pixels_off : Nat := bmpHeader_off + 54
 def wgX : Nat := imageWidth / 16    -- 256
 def wgY : Nat := imageHeight / 16   -- 256
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x18`-`0x38` are the input and output descriptors the runtime writes, so
+    naming them is what stops an offset being placed where it is overwritten.
+
+    The memory this ships is sized from the payload it builds plus the frame
+    buffer, so there is no constant to bound the regions against; `okB` is the
+    whole check here. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"hdr",        hdrBase, bindDesc_off - hdrBase⟩,
+   ⟨"bind",       bindDesc_off, shader_off - bindDesc_off⟩,
+   ⟨"shader",     shader_off, shaderRegionSize⟩,
+   ⟨"filename",   filename_off, filenameRegionSize⟩,
+   ⟨"flag",       flag_off, clifIr_off - flag_off⟩,
+   ⟨"clif_ir",    clifIr_off, clifIrRegionSize⟩,
+   ⟨"bmp_header", bmpHeader_off, pixels_off - bmpHeader_off⟩,
+   ⟨"pixels",     pixels_off, pixelBytes⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
 open AlgorithmLib.IR in
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur

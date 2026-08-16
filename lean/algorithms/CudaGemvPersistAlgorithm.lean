@@ -119,6 +119,24 @@ def clifIR : Program :=
      HProg.compileFn 3 inferCode]
 
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda",   CTX_OFF, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"m",          M_OFF, 8⟩,
+   ⟨"n",          N_OFF, 8⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+theorem memMap_within :
+    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
+
 def buildSetup : Setup := {
   clif := clifIR,
   memory_size := MEM_SIZE

@@ -159,6 +159,28 @@ def mainCode : HProg.Code :=
 def clifIR : Program :=
   IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"io_offsets",  0x18, 0x20⟩,
+   ⟨"current_key", CURRENT_KEY, 8⟩,
+   ⟨"new_value",   NEW_VALUE, 8⟩,
+   ⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
+   ⟨"output_path", OUTPUT_PATH_OFF, RESULT_SLOT - OUTPUT_PATH_OFF⟩,
+   ⟨"result_slot", RESULT_SLOT, 8⟩,
+   ⟨"output_buf",  OUTPUT_BUF, INPUT_DATA - OUTPUT_BUF⟩,
+   ⟨"input_data",  INPUT_DATA, MAX_TEXT_BYTES⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+theorem memMap_within :
+    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
+
 def artifacts : Array Json :=
   #[toJsonEntry "wc_algorithm" {
     clif := clifIR,

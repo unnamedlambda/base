@@ -573,6 +573,30 @@ def buildPayload : List UInt8 :=
     trueStr ++ falseStr ++ identBuf ++ htValBuf ++ outputBuf ++
     stackRegion
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"io_offsets",  0x18, 0x20⟩,
+   ⟨"output_path", OUTPUT_PATH, INPUT_PATH - OUTPUT_PATH⟩,
+   ⟨"input_path",  INPUT_PATH, SOURCE_BUF - INPUT_PATH⟩,
+   ⟨"source_buf",  SOURCE_BUF, SOURCE_BUF_SZ⟩,
+   ⟨"true_str",    TRUE_STR, FALSE_STR - TRUE_STR⟩,
+   ⟨"false_str",   FALSE_STR, IDENT_BUF - FALSE_STR⟩,
+   ⟨"ident_buf",   IDENT_BUF, IDENT_BUF_SZ⟩,
+   ⟨"ht_val_buf",  HT_VAL_BUF, OUTPUT_BUF - HT_VAL_BUF⟩,
+   ⟨"output_buf",  OUTPUT_BUF, OUTPUT_BUF_SZ⟩,
+   ⟨"stack",       STACK_BASE, STACK_SZ⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+-- The memory this ships is sized from the payload it builds, so there is no
+-- constant to bound the regions against; `okB` is the whole check here.
+
 def buildSetup : Setup := {
   clif := clifIrSource,
   memory_size := buildPayload.length,

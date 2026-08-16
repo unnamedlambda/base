@@ -32,6 +32,38 @@ def decStack_off : Nat := clauseIndex_off + maxClauses * 8
 def solver_scratch_off : Nat := decStack_off + maxVars * 8
 def totalMemory : Nat := solver_scratch_off + 0x10000
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"reserved",    reserved_off, numVars_off - reserved_off⟩,
+   ⟨"num_vars",    numVars_off, 8⟩,
+   ⟨"num_clauses", numClauses_off, 8⟩,
+   ⟨"clause_count", clauseCount_off, 8⟩,
+   ⟨"result_flag", resultFlag_off, 8⟩,
+   ⟨"out_len",     outLen_off, 8⟩,
+   ⟨"input_name",  inputFilename_off, outputFilename_off - inputFilename_off⟩,
+   ⟨"output_name", outputFilename_off, outputStr_off - outputFilename_off⟩,
+   ⟨"output_str",  outputStr_off, cnf_off - outputStr_off⟩,
+   ⟨"cnf",         cnf_off, maxCnfFileSize⟩,
+   ⟨"db",          db_off, maxClauseWords * 4⟩,
+   ⟨"assign",      assign_off, maxVars + 16⟩,
+   ⟨"trail",       trail_off, maxVars * 4 + 16⟩,
+   -- `clauseIndex_off` is `out_off`: the output string is built where the
+   -- clause index sat, once solving is over. One region, named for both.
+   ⟨"out_clause_index", out_off, maxClauses * 8⟩,
+   ⟨"dec_stack",   decStack_off, maxVars * 8⟩,
+   ⟨"scratch",     solver_scratch_off, 0x10000⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+theorem memMap_within :
+    AlgorithmLib.Layout.RegionMap.withinB totalMemory memMap = true := by decide
+
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
