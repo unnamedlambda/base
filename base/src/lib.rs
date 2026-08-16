@@ -10,16 +10,18 @@ use tracing::{debug, info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 mod clif_decode;
-
 mod ffi;
 mod jit;
 
-use crate::jit::{compile_cranelift_ir, THREAD_COMPILED_FNS};
+use crate::jit::THREAD_COMPILED_FNS;
 use base_types::IoOffsets;
 
 #[derive(Debug)]
 pub enum Error {
-    ClifParse(String),
+    /// The program an artifact carries could not be built. Nothing parses, so
+    /// this is a malformed program — a value used before it is defined, a
+    /// branch to a block that is not declared — rather than bad syntax.
+    Clif(String),
     Execution(String),
 }
 
@@ -47,14 +49,14 @@ impl Base {
         let mut memory = setup.initial_memory;
         memory.resize(needed, 0);
         Self::from_parts(
-            setup.cranelift_ir,
+            setup.clif,
             setup.io_offsets,
             memory.into_boxed_slice(),
         )
     }
 
     fn from_parts(
-        cranelift_ir: String,
+        clif: base_types::clif::Program,
         io_offsets: IoOffsets,
         memory: Box<[u8]>,
     ) -> Result<Self, Error> {
@@ -64,11 +66,11 @@ impl Base {
         let mut memory = Pin::new(memory);
         let mem_ptr = memory.as_mut().as_mut_ptr();
 
-        let (module, clif_fns) = if !cranelift_ir.is_empty() {
-            let (module, fns) = compile_cranelift_ir(&cranelift_ir).map_err(Error::ClifParse)?;
-            (Some(module), Some(fns))
-        } else {
+        let (module, clif_fns) = if clif.is_empty() {
             (None, None)
+        } else {
+            let (module, fns) = jit::compile_program(&clif).map_err(Error::Clif)?;
+            (Some(module), Some(fns))
         };
 
         // Set thread-local compiled fns so FFI functions (cl_thread_init etc.) work on interpreter thread
@@ -253,4 +255,33 @@ fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<Rec
         }
     }
     batches
+}
+
+/// The program as CLIF text — what was built, rather than what the caller
+/// believes was built. For eyeballing a test or a generated artifact; nothing
+/// in the pipeline reads it.
+pub fn clif_text(prog: &base_types::clif::Program) -> Result<String, String> {
+    use base_types::clif::Callee;
+    let mut out = String::new();
+    for f in &prog.functions {
+        // Cranelift prints a callee as the `FuncId` it was declared with, so
+        // the stub resolver records what each id stood for and the names are
+        // put back afterward.
+        let mut names: Vec<String> = Vec::new();
+        let mut declare = |c: &Callee, _: &cranelift_codegen::ir::Signature| {
+            names.push(match c {
+                Callee::Import(n) => format!("%{n}"),
+                Callee::Local(i) => format!("u0:{i}"),
+            });
+            Ok(names.len() as u32 - 1)
+        };
+        let text = format!("{}", clif_decode::decode_function(f, &mut declare)?);
+        let mut text = text;
+        for (i, name) in names.iter().enumerate().rev() {
+            text = text.replace(&format!("= u0:{i} sig"), &format!("= {name} sig"));
+        }
+        out.push_str(&text);
+        out.push('\n');
+    }
+    Ok(out)
 }

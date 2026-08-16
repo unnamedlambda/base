@@ -704,18 +704,27 @@ def fetchDwFn : IRBuilder Unit := do
   let _ ← call cuda.fnDownload [ctxPtr, dwId, outPtr, wBytes]
   ret
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++ buildFunction 1 loadFn ++ "\n"
-    ++ buildFunction 2 runFn ++ "\n" ++ buildFunction 3 fetchFn ++ "\n"
-    ++ buildFunction 4 runDwFn ++ "\n" ++ buildFunction 5 fetchDwFn ++ "\n"
-    ++ buildFunction 6 runSiluBwdFn ++ "\n"
-    ++ buildFunction 7 runTFn ++ "\n" ++ buildFunction 8 runQFn ++ "\n"
-    ++ buildFunction 9 runSFn ++ "\n" ++ buildFunction 10 runDxrFn ++ "\n"
-    ++ buildFunction 11 fetchDxrFn ++ "\n"
-    ++ buildFunction 12 runFwdFn ++ "\n" ++ buildFunction 13 runYFn ++ "\n"
-    ++ buildFunction 14 runDyFn ++ "\n" ++ buildFunction 15 runSgdFn ++ "\n"
-    ++ buildFunction 16 fetchYFn ++ "\n" ++ buildFunction 17 runAdjFn ++ "\n"
-    ++ buildFunction 18 runBwdAllFn
+def clifIR : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 loadFn,
+     buildFunction 2 runFn,
+     buildFunction 3 fetchFn,
+     buildFunction 4 runDwFn,
+     buildFunction 5 fetchDwFn,
+     buildFunction 6 runSiluBwdFn,
+     buildFunction 7 runTFn,
+     buildFunction 8 runQFn,
+     buildFunction 9 runSFn,
+     buildFunction 10 runDxrFn,
+     buildFunction 11 fetchDxrFn,
+     buildFunction 12 runFwdFn,
+     buildFunction 13 runYFn,
+     buildFunction 14 runDyFn,
+     buildFunction 15 runSgdFn,
+     buildFunction 16 fetchYFn,
+     buildFunction 17 runAdjFn,
+     buildFunction 18 runBwdAllFn]
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -751,7 +760,7 @@ def initialMemory : List UInt8 :=
     ++ a ++ zeros (MEM_SIZE - PTX_ADJ_OFF - a.length)
 
 def setup : Setup := {
-  cranelift_ir := clifIR
+  clif := clifIR
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
@@ -1090,7 +1099,7 @@ def bwdDriver : HStmt :=
           (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))
 
 def bwdFns : List FnDecl :=
-  [{ ref := ⟨0⟩, name := "cl_cuda_launch", sig := ⟨0⟩ }]
+  [{ ref := ⟨0⟩, callee := .import "cl_cuda_launch", sig := ⟨0⟩ }]
 
 /-- The emitted host code — a real instruction list, compiled by `flatHI`. -/
 def bwdCode : List HI := code ⟨0⟩ ⟨0⟩ 1 0 bwdDriver
@@ -1139,8 +1148,8 @@ theorem bwd_host_computes (st : WSt) :
 def bwdBlasRef : FnRef := ⟨1⟩
 
 def bwdFnsBlas : List FnDecl :=
-  [ { ref := ⟨0⟩, name := "cl_cuda_launch",  sig := ⟨0⟩ }
-  , { ref := ⟨1⟩, name := "cl_cublas_sgemv", sig := ⟨0⟩ } ]
+  [ { ref := ⟨0⟩, callee := .import "cl_cuda_launch",  sig := ⟨0⟩ }
+  , { ref := ⟨1⟩, callee := .import "cl_cublas_sgemv", sig := ⟨0⟩ } ]
 
 /-- Buffer-handle slots, as a generator would lay them out. -/
 def SLOT_W : Nat := 0x100

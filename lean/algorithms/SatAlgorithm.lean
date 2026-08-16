@@ -834,7 +834,7 @@ def emitOutput (k : K) (outputBlk : DeclaredBlock) : IRBuilder Unit := do
 -- ============================================================
 
 set_option maxRecDepth 4096 in
-def clifIrSource : String := buildProgram do
+def clifIrSource : Program := buildProgram do
   let fnRead ← declareFileRead
   let fnWrite ← declareFileWrite
 
@@ -940,7 +940,7 @@ def payloads : List UInt8 :=
   reserved ++ inputFname ++ outputFname
 
 def satConfig : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := totalMemory,
   initial_memory := payloads
 }

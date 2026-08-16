@@ -360,15 +360,16 @@ def finalizeFn : IRBuilder Unit := do
 def STACK16_DEPTH : Nat := 16
 def STACK32_DEPTH : Nat := 32
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 loadFn ++ "\n" ++
-  buildFunction 2 prepFn ++ "\n" ++
-  buildFunction 3 inferFn ++ "\n" ++
-  buildFunction 4 finalizeFn ++
-  clifSequenceWrapper 5 [3, 4] ++
-  clifSequenceWrapper 6 (List.replicate STACK16_DEPTH 3 ++ [4]) ++
-  clifSequenceWrapper 7 (List.replicate STACK32_DEPTH 3 ++ [4])
+def clifIR : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 loadFn,
+     buildFunction 2 prepFn,
+     buildFunction 3 inferFn,
+     buildFunction 4 finalizeFn,
+     clifSequenceWrapper 5 [3, 4],
+     clifSequenceWrapper 6 (List.replicate STACK16_DEPTH 3 ++ [4]),
+     clifSequenceWrapper 7 (List.replicate STACK32_DEPTH 3 ++ [4])]
 
 def ptxRmsBytes : List UInt8 := ptxRmsNorm.toUTF8.toList ++ [0]
 def ptxSiluBytes : List UInt8 := ptxSiluGate.toUTF8.toList ++ [0]
@@ -384,7 +385,7 @@ def buildInitialMemory : List UInt8 :=
   pre ++ rms ++ silu ++ addrms ++ add
 
 def buildSetup : Setup := {
-  cranelift_ir := clifIR,
+  clif := clifIR,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }

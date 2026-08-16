@@ -405,14 +405,15 @@ def testRenderScene : IRBuilder Unit := do
   writeOutput ptr (← sextend64 (← icmp .ugt skyB thresh)) groundB skyB
   ret
 
-def clifIrSource : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 mainBody ++ "\n" ++
-  buildFunction 2 testMoveForward ++ "\n" ++
-  buildFunction 3 testStrafeRight ++ "\n" ++
-  buildFunction 4 testRiseClamp ++ "\n" ++
-  buildFunction 5 testQuitOnClose ++ "\n" ++
-  buildFunction 6 testRenderScene
+def clifIrSource : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 mainBody,
+     buildFunction 2 testMoveForward,
+     buildFunction 3 testStrafeRight,
+     buildFunction 4 testRiseClamp,
+     buildFunction 5 testQuitOnClose,
+     buildFunction 6 testRenderScene]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
@@ -430,7 +431,7 @@ def payloads : List UInt8 :=
   ]
 
 def gameSetup : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }

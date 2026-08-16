@@ -1,7 +1,3 @@
-// Not on the path that compiles a program: the artifact carries
-// Cranelift's text format, which the parser in `jit` handles.
-#![allow(dead_code)]
-
 //! Builds `cranelift_codegen::ir::Function` from the program an artifact
 //! carries.
 //!

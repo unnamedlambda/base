@@ -137,12 +137,15 @@ def orchFn : IRBuilder Unit := do
                          zero, ← iconst64 HIST_BYTES]
   ret
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++ noopAt 1 ++ "\n" ++ buildFunction 2 orchFn
+def clifIR : Program :=
+  program
+    [noopFunction,
+     noopAt 1,
+     buildFunction 2 orchFn]
 
 def artifacts : Array Json :=
   #[toJsonEntry "hist1_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 2

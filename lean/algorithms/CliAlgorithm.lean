@@ -2112,7 +2112,7 @@ def emitEvalLine (cuda : CudaSetup) (ptr len : Val) : IRBuilder (Val × Val) := 
   startBlock done
   pure (done.param 0, done.param 1)
 
-def clifIrSource : String := buildProgram do
+def clifIrSource : Program := buildProgram do
   let fnRead ← AlgorithmLib.IR.declareStdinReadline
   let fnWrite ← AlgorithmLib.IR.declareStdoutWrite
   let cuda ← declareCudaFFI
@@ -2221,7 +2221,7 @@ def payloads : List UInt8 :=
   ]
 
 def cliConfig : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }

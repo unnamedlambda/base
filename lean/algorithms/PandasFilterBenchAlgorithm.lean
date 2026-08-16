@@ -26,7 +26,7 @@ def mainFn : IRBuilder Unit := do
   let dataEnd ← iadd dataPtr dataLen
   let zero    ← iconst64 0
   let accEnd  ← iaddImm accBase 128    -- 16 * 8
-  let thresh  ← fconst32 "0x1.900000p5"   -- 50.0f
+  let thresh  ← fconst32 50.0   -- 50.0f
 
   let zloop ← declareBlock [.i64]
   let chk   ← declareBlock []
@@ -92,11 +92,11 @@ def mainFn : IRBuilder Unit := do
   storeF64 top outPtr
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def artifacts : Array Json :=
   #[toJsonEntry "pandas_filter_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

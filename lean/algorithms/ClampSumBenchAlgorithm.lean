@@ -27,7 +27,7 @@ def mainFn : IRBuilder Unit := do
   let simdEnd ← ishlImm (← ushrImm n 2) 4   -- (n/4)*16
   let scEnd   ← ishlImm n 2                  -- n*4
   -- Constants: hi=0.5, lo=-0.5
-  let hi      ← fconst32 "0x1.000000p-1"
+  let hi      ← fconst32 0.5
   let lo      ← fneg hi
   let hiV     ← splat .f32x4 hi
   let loV     ← splat .f32x4 lo
@@ -105,11 +105,11 @@ def mainFn : IRBuilder Unit := do
   storeF64 (done.param 0) outPtr
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def artifacts : Array Json :=
   #[toJsonEntry "clamp_sum_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

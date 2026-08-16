@@ -298,11 +298,11 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
- "cranelift-reader",
  "cudarc",
  "liblmdb-sys",
  "lmdb-zero",
  "pollster 0.3.0",
+ "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",
@@ -1123,18 +1123,6 @@ checksum = "ca62ab1d9f48cad97da5843b913ccf96c3dfde935af5d750cb5a6d367ccfb262"
 dependencies = [
  "cranelift-codegen",
  "libc",
- "target-lexicon 0.13.4",
-]
-
-[[package]]
-name = "cranelift-reader"
-version = "0.123.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7a8ddebe1a0e02d60cc2bf3ce8585887da35132888950f6c1430da86f3b615"
-dependencies = [
- "anyhow",
- "cranelift-codegen",
- "smallvec",
  "target-lexicon 0.13.4",
 ]
 

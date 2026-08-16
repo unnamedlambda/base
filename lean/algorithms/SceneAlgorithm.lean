@@ -925,7 +925,7 @@ def bmpHeaderOff : Nat := clifIrOff + clifIrRegion
 def pixelsOff : Nat := bmpHeaderOff + 54
 
 open AlgorithmLib.IR in
-def clifIrSource (spec : SceneSpec) : String := buildProgram do
+def clifIrSource (spec : SceneSpec) : Program := buildProgram do
   let fnWrite ← declareFileWrite
   let cuda ← declareCudaFFI
 
@@ -959,7 +959,7 @@ def payloads (spec : SceneSpec) : List UInt8 :=
   reserved ++ ptxBytes ++ bindDesc ++ bindPad ++ filenameBytes ++ clifPad ++ bmpHeader spec
 
 def config (spec : SceneSpec) : Setup := {
-  cranelift_ir := clifIrSource spec,
+  clif := clifIrSource spec,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }

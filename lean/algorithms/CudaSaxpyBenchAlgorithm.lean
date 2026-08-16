@@ -81,7 +81,7 @@ def mainFn : IRBuilder Unit := do
   callVoid fnCleanup [ctxSlotPtr]
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]
@@ -94,7 +94,7 @@ def buildInitialMemory : List UInt8 :=
 
 def artifacts : Array Json :=
   #[toJsonEntry "cuda_saxpy_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE,
     initial_memory := buildInitialMemory
   } {

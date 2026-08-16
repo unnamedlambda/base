@@ -125,9 +125,12 @@ def fetchFn : IRBuilder Unit := do
   let _ ← call cuda.fnDownload [ctxPtr, outId, outPtr, outBytes]
   ret
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++ buildFunction 1 loadFn ++ "\n"
-    ++ buildFunction 2 runFn ++ "\n" ++ buildFunction 3 fetchFn
+def clifIR : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 loadFn,
+     buildFunction 2 runFn,
+     buildFunction 3 fetchFn]
 
 theorem ptx_fits_slot : ptx.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_OFF := by
   native_decide
@@ -144,7 +147,7 @@ def initialMemory : List UInt8 :=
     ++ zeros (MEM_SIZE - PTX_OFF - ptxBytes.length)
 
 def setup : Setup := {
-  cranelift_ir := clifIR
+  clif := clifIR
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }

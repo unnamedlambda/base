@@ -18,7 +18,7 @@ inductive ClifTy where
   | i8 | i16 | i32 | i64
   | f32 | f64
   | f32x4 | i8x16
-  deriving Repr, BEq, Lean.ToExpr
+  deriving Repr, BEq
 
 /-- An SSA value reference -/
 structure Val where
@@ -33,17 +33,17 @@ structure BlockRef where
 /-- A signature reference -/
 structure SigRef where
   id : Nat
-  deriving Repr, BEq, Lean.ToExpr
+  deriving Repr, BEq
 
 /-- An FFI function reference -/
 structure FnRef where
   id : Nat
-  deriving Repr, BEq, Inhabited, Lean.ToExpr
+  deriving Repr, BEq, Inhabited
 
 /-- Comparison condition codes -/
 inductive ICmpCond where
   | eq | ne | uge | ugt | ule | ult | slt | sle | sgt | sge
-  deriving Repr, BEq
+  deriving Repr
 
 /-- Float comparison conditions -/
 inductive FloatCC where
@@ -111,13 +111,9 @@ inductive Inst where
   | fcvtToUint (dst : Val) (ty : ClifTy) (src : Val)
   | fcmp (dst : Val) (cond : FloatCC) (a b : Val)
   | bitcast (dst : Val) (ty : ClifTy) (src : Val)
-  /-- Lane-wise `c ? a : b` on the *bits* of `c`, which is how a vector
-      comparison's all-ones/all-zeros mask is consumed. -/
-  | bitselect (dst c a b : Val)
   | ctz (dst a : Val)
   | popcnt (dst a : Val)
   | vhighBits (dst a : Val)
-  deriving BEq
 
 /-- A finalized block -/
 structure BlockData where
@@ -130,7 +126,6 @@ structure SigDecl where
   ref : SigRef
   params : List ClifTy
   result : Option ClifTy
-  deriving Lean.ToExpr
 
 /-- What a `fn` declaration names. -/
 inductive Callee where
@@ -138,7 +133,7 @@ inductive Callee where
   | import (name : String)
   /-- Another function of this same program, by its `u0:N` index. -/
   | local (index : Nat)
-  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+  deriving Repr, BEq, DecidableEq
 
 /-- A callee declaration -/
 structure FnDecl where
@@ -146,7 +141,6 @@ structure FnDecl where
   callee : Callee
   sig : SigRef
   colocated : Bool := false
-  deriving Lean.ToExpr
 
 -- ---------------------------------------------------------------------------
 -- The emitted program
@@ -261,7 +255,6 @@ def Inst.json : Inst → Lean.Json
   | .fcvtToUint d t s => tagged "FcvtToUint" [toJson d, toJson t, toJson s]
   | .fcmp d c a b => tagged "Fcmp" [toJson d, toJson c, toJson a, toJson b]
   | .bitcast d t s => tagged "Bitcast" [toJson d, toJson t, toJson s]
-  | .bitselect d c a b => tagged "Bitselect" [toJson d, toJson c, toJson a, toJson b]
   | .ctz d a => tagged "Ctz" [toJson d, toJson a]
   | .popcnt d a => tagged "Popcnt" [toJson d, toJson a]
   | .vhighBits d a => tagged "VhighBits" [toJson d, toJson a]

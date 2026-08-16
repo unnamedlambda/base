@@ -188,10 +188,13 @@ def fetchFn : IRBuilder Unit := do
   let _ ← call cuda.fnDownload [ctxPtr, outId, outPtr, nBytes]
   ret
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++ buildFunction 1 loadFn ++ "\n"
-    ++ buildFunction 2 runFn ++ "\n" ++ buildFunction 3 fetchFn ++ "\n"
-    ++ buildFunction 4 runLoopFn
+def clifIR : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 loadFn,
+     buildFunction 2 runFn,
+     buildFunction 3 fetchFn,
+     buildFunction 4 runLoopFn]
 
 def initialMemory : List UInt8 :=
   let p := ptx.toUTF8.toList ++ [0]
@@ -201,7 +204,7 @@ def initialMemory : List UInt8 :=
 
 def artifacts : Array Json :=
   #[ toJsonArtifact "silu_warp"
-      { cranelift_ir := clifIR, memory_size := MEM_SIZE, initial_memory := initialMemory }
+      { clif := clifIR, memory_size := MEM_SIZE, initial_memory := initialMemory }
       { fn_idx := u32 1 }
       [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
        ("runLoop", { fn_idx := u32 4 })] ]

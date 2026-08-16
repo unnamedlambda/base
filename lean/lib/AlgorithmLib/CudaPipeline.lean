@@ -182,16 +182,16 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     zeros ptxSourceOff
     ++ ptxBytes ++ zeros (bindDescOff - ptxSourceOff - ptxBytes.length)
     ++ bindDesc ++ zeros (memSize - bindDescOff - bindDesc.length)
-  let clifIr :=
-    noopFunction ++ "\n" ++
-    buildFunction 1 (loadFn n) ++ "\n" ++
-    buildFunction 2 (prepFn n) ++ "\n" ++
-    buildFunction 3 (inferFn output blockSize)
+  let clifProg := program
+    [noopFunction,
+     buildFunction 1 (loadFn n),
+     buildFunction 2 (prepFn n),
+     buildFunction 3 (inferFn output blockSize)]
   let mkAlg (src : UInt32) : Algorithm :=
     { fn_idx := src }
   {
     setup := {
-      cranelift_ir := clifIr
+      clif := clifProg
       memory_size := memSize
       initial_memory := initialMemory
     }

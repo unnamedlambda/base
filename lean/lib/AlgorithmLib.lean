@@ -4,6 +4,11 @@ import AlgorithmLib.Layout
 import AlgorithmLib.Clif
 import AlgorithmLib.HostIR
 import AlgorithmLib.IR
+import AlgorithmLib.HProg
+import AlgorithmLib.HProgSem
+import AlgorithmLib.HProgBlocks
+import AlgorithmLib.HProgFrames
+import AlgorithmLib.HProgTrust
 import AlgorithmLib.FFI
 import AlgorithmLib.CudaPipeline
 import AlgorithmLib.PTX

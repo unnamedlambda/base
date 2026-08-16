@@ -284,11 +284,11 @@ def mainFn : IRBuilder Unit := do
   emitParsePhase k fileSize inputBase
   emitFormatPhase k
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def artifacts : Array Json :=
   #[toJsonEntry "wc_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

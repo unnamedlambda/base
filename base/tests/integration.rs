@@ -6,6 +6,9 @@ use base_types::{
 };
 use std::fs;
 use std::sync::Arc;
+
+mod common;
+use common::*;
 use tempfile::TempDir;
 
 fn compact_io_offsets() -> IoOffsets {
@@ -17,9 +20,10 @@ fn compact_io_offsets() -> IoOffsets {
     }
 }
 
-fn cranelift_config(memory: Vec<u8>, cranelift_ir: String) -> Setup {
+fn cranelift_config(memory: Vec<u8>, clif: Program) -> Setup {
+    dump(&clif);
     Setup {
-        cranelift_ir,
+        clif,
         memory_size: memory.len(),
         io_offsets: compact_io_offsets(),
         initial_memory: memory,
@@ -36,9 +40,9 @@ fn cranelift_algorithm(fn_idx: u32) -> Algorithm {
 fn create_cranelift_algorithm(
     fn_idx: u32,
     memory: Vec<u8>,
-    cranelift_ir: String,
+    clif: Program,
 ) -> (Setup, Algorithm) {
-    (cranelift_config(memory, cranelift_ir), cranelift_algorithm(fn_idx))
+    (cranelift_config(memory, clif), cranelift_algorithm(fn_idx))
 }
 
 #[test]
@@ -48,27 +52,25 @@ fn test_cranelift_basic_compilation() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     // Single CLIF function that writes 8 bytes at offset 2000 to the file at offset 3000.
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 3000),
+                iconst64(v(2), 2000),
+                iconst64(v(3), 0),
+                iconst64(v(4), 8),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2008].copy_from_slice(&42u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -84,32 +86,30 @@ fn test_cranelift_arithmetic_add() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     // Add operands at 2000/2008, store at 2016, write 2016 to file.
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = load.i64 v0+2000
-    v2 = load.i64 v0+2008
-    v3 = iadd v1, v2
-    store.i64 v3, v0+2016
-    v4 = iconst.i64 3000
-    v5 = iconst.i64 2016
-    v6 = iconst.i64 0
-    v7 = iconst.i64 8
-    v8 = call fn0(v0, v4, v5, v6, v7)
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                load64(v(1), v(0), 2000),
+                load64(v(2), v(0), 2008),
+                iadd(v(3), v(1), v(2)),
+                store(v(3), v(0), 2016),
+                iconst64(v(4), 3000),
+                iconst64(v(5), 2016),
+                iconst64(v(6), 0),
+                iconst64(v(7), 8),
+                call(Some(v(8)), 0, &[v(0), v(4), v(5), v(6), v(7)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2008].copy_from_slice(&100u64.to_le_bytes());
     memory[2008..2016].copy_from_slice(&200u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -123,32 +123,30 @@ fn test_cranelift_arithmetic_multiply() {
     let test_file = temp_dir.path().join("cranelift_mul.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = load.i64 v0+2000
-    v2 = load.i64 v0+2008
-    v3 = imul v1, v2
-    store.i64 v3, v0+2016
-    v4 = iconst.i64 3000
-    v5 = iconst.i64 2016
-    v6 = iconst.i64 0
-    v7 = iconst.i64 8
-    v8 = call fn0(v0, v4, v5, v6, v7)
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                load64(v(1), v(0), 2000),
+                load64(v(2), v(0), 2008),
+                imul(v(3), v(1), v(2)),
+                store(v(3), v(0), 2016),
+                iconst64(v(4), 3000),
+                iconst64(v(5), 2016),
+                iconst64(v(6), 0),
+                iconst64(v(7), 8),
+                call(Some(v(8)), 0, &[v(0), v(4), v(5), v(6), v(7)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2008].copy_from_slice(&7u64.to_le_bytes());
     memory[2008..2016].copy_from_slice(&9u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -162,35 +160,33 @@ fn test_cranelift_memory_operations() {
     let test_file = temp_dir.path().join("cranelift_mem.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = load.i32 v0+2000
-    v2 = load.i32 v0+2004
-    v3 = load.i32 v0+2008
-    v4 = iadd v1, v2
-    v5 = iadd v4, v3
-    store.i32 v5, v0+2012
-    v6 = iconst.i64 3000
-    v7 = iconst.i64 2012
-    v8 = iconst.i64 0
-    v9 = iconst.i64 4
-    v10 = call fn0(v0, v6, v7, v8, v9)
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                load32(v(1), v(0), 2000),
+                load32(v(2), v(0), 2004),
+                load32(v(3), v(0), 2008),
+                iadd(v(4), v(1), v(2)),
+                iadd(v(5), v(4), v(3)),
+                store(v(5), v(0), 2012),
+                iconst64(v(6), 3000),
+                iconst64(v(7), 2012),
+                iconst64(v(8), 0),
+                iconst64(v(9), 4),
+                call(Some(v(10)), 0, &[v(0), v(6), v(7), v(8), v(9)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2004].copy_from_slice(&10u32.to_le_bytes());
     memory[2004..2008].copy_from_slice(&20u32.to_le_bytes());
     memory[2008..2012].copy_from_slice(&30u32.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -204,45 +200,44 @@ fn test_cranelift_conditional_logic() {
     let test_file = temp_dir.path().join("cranelift_cond.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = load.i64 v0+2000
-    v2 = load.i64 v0+2008
-    v3 = load.i64 v0+2016
-    v4 = icmp_imm eq v1, 0
-    brif v4, block2, block1
-
-block1:
-    store.i64 v2, v0+2024
-    jump block3
-
-block2:
-    store.i64 v3, v0+2024
-    jump block3
-
-block3:
-    v5 = iconst.i64 3000
-    v6 = iconst.i64 2024
-    v7 = iconst.i64 0
-    v8 = iconst.i64 8
-    v9 = call fn0(v0, v5, v6, v7, v8)
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                load64(v(1), v(0), 2000),
+                load64(v(2), v(0), 2008),
+                load64(v(3), v(0), 2016),
+                iconst64(v(9001), 0),
+                icmp(v(4), IntCC::Eq, v(1), v(9001)),
+                brif(v(4), 2, &[], 1, &[]),
+            ])
+            .block(1, &[], vec![
+                store(v(2), v(0), 2024),
+                jump(3, &[]),
+            ])
+            .block(2, &[], vec![
+                store(v(3), v(0), 2024),
+                jump(3, &[]),
+            ])
+            .block(3, &[], vec![
+                iconst64(v(5), 3000),
+                iconst64(v(6), 2024),
+                iconst64(v(7), 0),
+                iconst64(v(8), 8),
+                call(Some(v(9)), 0, &[v(0), v(5), v(6), v(7), v(8)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     // condition=1, value_a=100, value_b=200 → should store value_a
     memory[2000..2008].copy_from_slice(&1u64.to_le_bytes());
     memory[2008..2016].copy_from_slice(&100u64.to_le_bytes());
     memory[2016..2024].copy_from_slice(&200u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -292,29 +287,21 @@ fn test_clif_ffi_all_symbols_linkable() {
         "cl_thread_call",
     ];
 
-    let mut decls = String::new();
-    let mut body = String::new();
+    let mut f = function(0).sig(0, &[I64], Some(I32));
+    let mut insts = Vec::new();
     for (i, sym) in symbols.iter().enumerate() {
-        decls.push_str(&format!("    fn{i} = %{sym} sig0\n"));
-        // func_addr forces the linker to resolve the symbol.
-        body.push_str(&format!("    v{} = func_addr.i64 fn{i}\n", i + 100));
-        body.push_str(&format!(
-            "    store.i64 notrap aligned v{}, v0+0\n",
-            i + 100
-        ));
+        let i = i as u32;
+        f = f.import(i, sym, 0);
+        // Taking the address is what forces the linker to resolve the symbol.
+        insts.push(func_addr(v(100 + i), i));
+        insts.push(store(v(100 + i), v(0), 0));
     }
-    let clif_ir = format!(
-        "function u0:0(i64) system_v {{\n\
-         \x20   sig0 = (i64) -> i32 system_v\n\
-         {decls}\n\
-         block0(v0: i64):\n\
-         {body}    return\n\
-         }}"
-    );
+    insts.push(ret());
+    let clif_prog = program(f.entry(insts));
 
     let memory = vec![0u8; 4096];
     let (config, algorithm) =
-        create_cranelift_algorithm(0, memory, clif_ir.clone());
+        create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).expect("all FFI symbols must be linkable from CLIF");
 }
 
@@ -328,39 +315,38 @@ fn test_clif_ffi_file_smoke() {
     let path_a_str = format!("{}\0", path_a.to_str().unwrap());
     let path_b_str = format!("{}\0", path_b.to_str().unwrap());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    sig1 = (i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-    fn1 = %cl_file_read sig0
-    fn2 = %cl_file_write_from_ptr sig1
-    fn3 = %cl_file_read_to_ptr sig1
-
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 5
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    v6 = iconst.i64 3100
-    v7 = call fn1(v0, v1, v6, v3, v4)
-    v8 = iadd_imm v0, 2256
-    v9 = iadd_imm v0, 3000
-    v10 = call fn2(v8, v9, v3, v4)
-    v11 = iadd_imm v0, 3200
-    v12 = call fn3(v8, v11, v3, v4)
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .sig(1, &[I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .import(1, "cl_file_read", 0)
+            .import(2, "cl_file_write_from_ptr", 1)
+            .import(3, "cl_file_read_to_ptr", 1)
+            .entry(vec![
+                iconst64(v(1), 2000),
+                iconst64(v(2), 3000),
+                iconst64(v(3), 0),
+                iconst64(v(4), 5),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                iconst64(v(6), 3100),
+                call(Some(v(7)), 1, &[v(0), v(1), v(6), v(3), v(4)]),
+                iadd_imm(v(8), v(0), 2256),
+                iadd_imm(v(9), v(0), 3000),
+                call(Some(v(10)), 2, &[v(8), v(9), v(3), v(4)]),
+                iadd_imm(v(11), v(0), 3200),
+                call(Some(v(12)), 3, &[v(8), v(11), v(3), v(4)]),
+                ret(),
+            ]),
+    );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2000 + path_a_str.len()].copy_from_slice(path_a_str.as_bytes());
     memory[2256..2256 + path_b_str.len()].copy_from_slice(path_b_str.as_bytes());
     memory[3000..3005].copy_from_slice(b"hello");
 
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     assert_eq!(&fs::read(&path_a).unwrap(), b"hello");
@@ -386,49 +372,42 @@ fn test_clif_ffi_gpu_smoke() {
     let n: usize = 64;
     let data_bytes = n * 4;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32) -> i32 system_v
-    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i32, i64, i64) -> i32 system_v
-    fn0 = %cl_gpu_init sig0
-    fn1 = %cl_gpu_create_buffer sig1
-    fn2 = %cl_gpu_upload sig2
-    fn3 = %cl_gpu_create_pipeline sig3
-    fn4 = %cl_gpu_dispatch sig4
-    fn5 = %cl_gpu_download sig5
-    fn6 = %cl_gpu_cleanup sig0
-block0(v0: i64):
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-    v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v91, v1)
-    v3 = iadd_imm v0, {data_off}
-    v10 = call fn2(v91, v2, v3, v1)
-    v4 = iadd_imm v0, {shader_off}
-    v5 = iadd_imm v0, {bind_off}
-    v6 = iconst.i32 1
-    v7 = call fn3(v91, v4, v5, v6)
-    v11 = call fn4(v91, v7, v6, v6, v6)
-    v8 = iadd_imm v0, {result_off}
-    v12 = call fn5(v91, v2, v8, v1)
-    call fn6(v90)
-    return
-}}"#,
-        data_bytes = data_bytes,
-        data_off = data_off,
-        shader_off = shader_off,
-        bind_off = bind_off,
-        result_off = result_off,
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I64, I64, I32], Some(I32))
+            .sig(4, &[I64, I32, I32, I32, I32], Some(I32))
+            .sig(5, &[I64, I32, I64, I64], Some(I32))
+            .import(0, "cl_gpu_init", 0)
+            .import(1, "cl_gpu_create_buffer", 1)
+            .import(2, "cl_gpu_upload", 2)
+            .import(3, "cl_gpu_create_pipeline", 3)
+            .import(4, "cl_gpu_dispatch", 4)
+            .import(5, "cl_gpu_download", 5)
+            .import(6, "cl_gpu_cleanup", 0)
+            .entry(vec![
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iconst64(v(1), data_bytes as i64),
+                call(Some(v(2)), 1, &[v(91), v(1)]),
+                iadd_imm(v(3), v(0), data_off as i64),
+                call(Some(v(10)), 2, &[v(91), v(2), v(3), v(1)]),
+                iadd_imm(v(4), v(0), shader_off as i64),
+                iadd_imm(v(5), v(0), bind_off as i64),
+                iconst32(v(6), 1),
+                call(Some(v(7)), 3, &[v(91), v(4), v(5), v(6)]),
+                call(Some(v(11)), 4, &[v(91), v(7), v(6), v(6), v(6)]),
+                iadd_imm(v(8), v(0), result_off as i64),
+                call(Some(v(12)), 5, &[v(91), v(2), v(8), v(1)]),
+                call(None, 6, &[v(90)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 6144];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
 
     let shader_bytes = wgsl.as_bytes();
     memory[shader_off..shader_off + shader_bytes.len()].copy_from_slice(shader_bytes);
@@ -445,7 +424,7 @@ block0(v0: i64):
 
 
     let (config, algorithm) =
-        create_cranelift_algorithm(0, memory, clif_ir.to_string());
+        create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 }
 
@@ -469,45 +448,44 @@ fn test_clif_ffi_net_smoke() {
         stream.write_all(&buf).unwrap();
     });
 
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i64 system_v
-    sig2 = (i64, i64, i64, i64) -> i64 system_v
-    sig3 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_net_init sig0
-    fn1 = %cl_net_connect sig1
-    fn2 = %cl_net_send sig2
-    fn3 = %cl_net_recv sig2
-    fn4 = %cl_net_cleanup sig0
-    fn5 = %cl_file_write sig3
-
-block0(v0: i64):
-    call fn0(v0)
-    v1 = load.i64 notrap aligned v0+0
-    v2 = iadd_imm v0, 2000
-    v3 = call fn1(v1, v2)
-    v4 = iadd_imm v0, 3000
-    v5 = iconst.i64 5
-    v6 = call fn2(v1, v3, v4, v5)
-    v7 = iadd_imm v0, 3100
-    v8 = call fn3(v1, v3, v7, v5)
-    v9 = iconst.i64 2100
-    v10 = iconst.i64 3100
-    v11 = iconst.i64 0
-    v12 = call fn5(v0, v9, v10, v11, v5)
-    call fn4(v0)
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I64))
+            .sig(2, &[I64, I64, I64, I64], Some(I64))
+            .sig(3, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_net_init", 0)
+            .import(1, "cl_net_connect", 1)
+            .import(2, "cl_net_send", 2)
+            .import(3, "cl_net_recv", 2)
+            .import(4, "cl_net_cleanup", 0)
+            .import(5, "cl_file_write", 3)
+            .entry(vec![
+                call(None, 0, &[v(0)]),
+                load_trusted(v(1), I64, v(0), 0),
+                iadd_imm(v(2), v(0), 2000),
+                call(Some(v(3)), 1, &[v(1), v(2)]),
+                iadd_imm(v(4), v(0), 3000),
+                iconst64(v(5), 5),
+                call(Some(v(6)), 2, &[v(1), v(3), v(4), v(5)]),
+                iadd_imm(v(7), v(0), 3100),
+                call(Some(v(8)), 3, &[v(1), v(3), v(7), v(5)]),
+                iconst64(v(9), 2100),
+                iconst64(v(10), 3100),
+                iconst64(v(11), 0),
+                call(Some(v(12)), 5, &[v(0), v(9), v(10), v(11), v(5)]),
+                call(None, 4, &[v(0)]),
+                ret(),
+            ]),
+    );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2000 + addr_str.len()].copy_from_slice(addr_str.as_bytes());
     memory[2100..2100 + verify_file_str.len()].copy_from_slice(verify_file_str.as_bytes());
     memory[3000..3005].copy_from_slice(b"hello");
 
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
     server.join().unwrap();
 
@@ -529,48 +507,48 @@ fn test_clif_ffi_lmdb_smoke() {
     //   3100:  value "world" (5 bytes)
     //   3200:  get result buffer (4-byte len + value)
     //   3500:  cursor scan result buffer
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64) system_v
-    sig1 = (i64, i64, i32) -> i32 system_v
-    sig2 = (i64, i32, i64, i32, i64, i32) -> i32 system_v
-    sig3 = (i64, i32, i64, i32, i64) -> i32 system_v
-    sig4 = (i64, i32, i64, i32, i32, i64) -> i32 system_v
-    fn0 = %cl_lmdb_init sig0
-    fn1 = %cl_lmdb_open sig1
-    fn2 = %cl_lmdb_put sig2
-    fn3 = %cl_lmdb_get sig3
-    fn4 = %cl_lmdb_cursor_scan sig4
-    fn5 = %cl_lmdb_cleanup sig0
-block0(v0: i64):
-    call fn0(v0)
-    v91 = load.i64 notrap aligned v0+0
-    v1 = iadd_imm v0, 2000
-    v2 = iconst.i32 10
-    v3 = call fn1(v91, v1, v2)
-    v4 = iadd_imm v0, 3000
-    v5 = iconst.i32 5
-    v6 = iadd_imm v0, 3100
-    v10 = call fn2(v91, v3, v4, v5, v6, v5)
-    v7 = iadd_imm v0, 3200
-    v11 = call fn3(v91, v3, v4, v5, v7)
-    v8 = iadd_imm v0, 3500
-    v9 = iconst.i64 0
-    v14 = iconst.i32 0
-    v12 = iconst.i32 100
-    v13 = call fn4(v91, v3, v9, v14, v12, v8)
-    call fn5(v0)
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64, I32], Some(I32))
+            .sig(2, &[I64, I32, I64, I32, I64, I32], Some(I32))
+            .sig(3, &[I64, I32, I64, I32, I64], Some(I32))
+            .sig(4, &[I64, I32, I64, I32, I32, I64], Some(I32))
+            .import(0, "cl_lmdb_init", 0)
+            .import(1, "cl_lmdb_open", 1)
+            .import(2, "cl_lmdb_put", 2)
+            .import(3, "cl_lmdb_get", 3)
+            .import(4, "cl_lmdb_cursor_scan", 4)
+            .import(5, "cl_lmdb_cleanup", 0)
+            .entry(vec![
+                call(None, 0, &[v(0)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iadd_imm(v(1), v(0), 2000),
+                iconst32(v(2), 10),
+                call(Some(v(3)), 1, &[v(91), v(1), v(2)]),
+                iadd_imm(v(4), v(0), 3000),
+                iconst32(v(5), 5),
+                iadd_imm(v(6), v(0), 3100),
+                call(Some(v(10)), 2, &[v(91), v(3), v(4), v(5), v(6), v(5)]),
+                iadd_imm(v(7), v(0), 3200),
+                call(Some(v(11)), 3, &[v(91), v(3), v(4), v(5), v(7)]),
+                iadd_imm(v(8), v(0), 3500),
+                iconst64(v(9), 0),
+                iconst32(v(14), 0),
+                iconst32(v(12), 100),
+                call(Some(v(13)), 4, &[v(91), v(3), v(9), v(14), v(12), v(8)]),
+                call(None, 5, &[v(0)]),
+                ret(),
+            ]),
+    );
 
     let mut memory = vec![0u8; 6144];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2000 + db_path_str.len()].copy_from_slice(db_path_str.as_bytes());
     memory[3000..3005].copy_from_slice(b"hello");
     memory[3100..3105].copy_from_slice(b"world");
 
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 }
 
@@ -590,54 +568,54 @@ fn test_clif_ffi_thread_smoke() {
     let mut memory = vec![0u8; 8192];
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64) system_v
-    fn0 = %cl_thread_init sig0
-    sig1 = (i64, i64, i64) -> i64 system_v
-    fn1 = %cl_thread_spawn sig1
-    sig2 = (i64, i64) -> i64 system_v
-    fn2 = %cl_thread_join sig2
-    sig3 = (i64) system_v
-    fn3 = %cl_thread_cleanup sig3
-    sig4 = (i64, i64, i64) -> i64 system_v
-    fn4 = %cl_thread_call sig4
-    sig5 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn5 = %cl_file_write sig5
-block0(v0: i64):
-    v1 = iadd_imm v0, 16
-    call fn0(v1)
-    v10 = load.i64 notrap aligned v0+16
-    v2 = iconst.i64 1
-    v3 = iadd_imm v0, 200
-    v4 = call fn1(v10, v2, v3)
-    v5 = call fn2(v10, v4)
-    v6 = iconst.i64 2
-    v7 = iadd_imm v0, 208
-    v8 = call fn4(v10, v6, v7)
-    call fn3(v1)
-    v20 = iconst.i64 3000
-    v21 = iconst.i64 200
-    v22 = iconst.i64 0
-    v23 = iconst.i64 16
-    v24 = call fn5(v0, v20, v21, v22, v23)
-    return
-}
+    let clif_prog = programs(vec![
+        function(0)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64, I64], Some(I64))
+            .sig(2, &[I64, I64], Some(I64))
+            .sig(3, &[I64], None)
+            .sig(4, &[I64, I64, I64], Some(I64))
+            .sig(5, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_thread_init", 0)
+            .import(1, "cl_thread_spawn", 1)
+            .import(2, "cl_thread_join", 2)
+            .import(3, "cl_thread_cleanup", 3)
+            .import(4, "cl_thread_call", 4)
+            .import(5, "cl_file_write", 5)
+            .entry(vec![
+                iadd_imm(v(1), v(0), 16),
+                call(None, 0, &[v(1)]),
+                load_trusted(v(10), I64, v(0), 16),
+                iconst64(v(2), 1),
+                iadd_imm(v(3), v(0), 200),
+                call(Some(v(4)), 1, &[v(10), v(2), v(3)]),
+                call(Some(v(5)), 2, &[v(10), v(4)]),
+                iconst64(v(6), 2),
+                iadd_imm(v(7), v(0), 208),
+                call(Some(v(8)), 4, &[v(10), v(6), v(7)]),
+                call(None, 3, &[v(1)]),
+                iconst64(v(20), 3000),
+                iconst64(v(21), 200),
+                iconst64(v(22), 0),
+                iconst64(v(23), 16),
+                call(Some(v(24)), 5, &[v(0), v(20), v(21), v(22), v(23)]),
+                ret(),
+            ]),
+        function(1)
+            .entry(vec![
+                iconst64(v(1), 42),
+                store(v(1), v(0), 0),
+                ret(),
+            ]),
+        function(2)
+            .entry(vec![
+                iconst64(v(1), 99),
+                store(v(1), v(0), 0),
+                ret(),
+            ]),
+    ]);
 
-function u0:1(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 42
-    store.i64 v1, v0
-    return
-}
-
-function u0:2(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 99
-    store.i64 v1, v0
-    return
-}"#;
-
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&verify_file).unwrap();
@@ -647,72 +625,31 @@ block0(v0: i64):
 }
 
 #[test]
-fn test_clif_atomic_rmw_add() {
-    // Verifies Cranelift's atomic_rmw.i64 IR op compiles and runs through our JIT.
-    // Memory: accumulator at offset 64 (init 0), file path at offset 3000.
-    let temp_dir = TempDir::new().unwrap();
-    let verify_file = temp_dir.path().join("atomic_rmw.bin");
-    let file_str = format!("{}\0", verify_file.to_str().unwrap());
-
-    let mut memory = vec![0u8; 4096];
-    memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
-    memory[64..72].copy_from_slice(&0u64.to_le_bytes());
-
-    // Two atomic adds (10 then 32) onto the accumulator, then write it to a file.
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iadd_imm v0, 64
-    v2 = iconst.i64 10
-    v3 = atomic_rmw.i64 little add v1, v2
-    v4 = iconst.i64 32
-    v5 = atomic_rmw.i64 little add v1, v4
-    v6 = iconst.i64 3000
-    v7 = iconst.i64 64
-    v8 = iconst.i64 0
-    v9 = iconst.i64 8
-    v10 = call fn0(v0, v6, v7, v8, v9)
-    return
-}"#;
-
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
-    run(config, algorithm).unwrap();
-
-    let contents = fs::read(&verify_file).unwrap();
-    assert_eq!(contents.len(), 8);
-    let acc = u64::from_le_bytes(contents[0..8].try_into().unwrap());
-    assert_eq!(acc, 42, "accumulator should be 10 + 32 = 42");
-}
-
-#[test]
 fn test_clif_call_basic() {
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("clif_call_basic.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 3000),
+                iconst64(v(2), 2000),
+                iconst64(v(3), 0),
+                iconst64(v(4), 8),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2008].copy_from_slice(&42u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     assert!(test_file.exists());
@@ -731,35 +668,32 @@ fn test_clif_call_multiple_functions() {
     let file_a_str = format!("{}\0", test_file_a.to_str().unwrap());
     let file_b_str = format!("{}\0", test_file_b.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2256
-    v2 = iconst.i64 3008
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 2000),
+                iconst64(v(2), 3000),
+                iconst64(v(3), 0),
+                iconst64(v(4), 8),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 2256),
+                iconst64(v(2), 3008),
+                iconst64(v(3), 0),
+                iconst64(v(4), 8),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2000 + file_a_str.len()].copy_from_slice(file_a_str.as_bytes());
     memory[2256..2256 + file_b_str.len()].copy_from_slice(file_b_str.as_bytes());
     memory[3000..3008].copy_from_slice(&100u64.to_le_bytes());
@@ -767,7 +701,7 @@ block0(v0: i64):
 
     // Demonstrates JIT-once, run-many: one Base, two execute() calls picking different
     // fn_idx into the same compiled module.
-    let mut base = Base::new(cranelift_config(memory, clif_ir.to_string())).unwrap();
+    let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&cranelift_algorithm(0), &[]).unwrap();
     base.execute(&cranelift_algorithm(1), &[]).unwrap();
 
@@ -793,32 +727,30 @@ fn test_clif_call_arithmetic() {
     let test_file = temp_dir.path().join("clif_call_arith.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = load.i64 v0+2000
-    v2 = load.i64 v0+2008
-    v3 = iadd v1, v2
-    store.i64 v3, v0+2016
-    v4 = iconst.i64 3000
-    v5 = iconst.i64 2016
-    v6 = iconst.i64 0
-    v7 = iconst.i64 8
-    v8 = call fn0(v0, v4, v5, v6, v7)
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                load64(v(1), v(0), 2000),
+                load64(v(2), v(0), 2008),
+                iadd(v(3), v(1), v(2)),
+                store(v(3), v(0), 2016),
+                iconst64(v(4), 3000),
+                iconst64(v(5), 2016),
+                iconst64(v(6), 0),
+                iconst64(v(7), 8),
+                call(Some(v(8)), 0, &[v(0), v(4), v(5), v(6), v(7)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2008].copy_from_slice(&30u64.to_le_bytes());
     memory[2008..2016].copy_from_slice(&12u64.to_le_bytes());
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -839,42 +771,38 @@ fn test_clif_call_sequential_mutations() {
     let test_file = temp_dir.path().join("clif_call_seq.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    v1 = iconst.i64 10
-    store.i64 v1, v0+2000
-    return
-}}
-
-function u0:1(i64) system_v {{
-block0(v0: i64):
-    v1 = load.i64 v0+2000
-    v2 = iconst.i64 5
-    v3 = imul v1, v2
-    store.i64 v3, v0+2008
-    return
-}}
-
-function u0:2(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 3000
-    v2 = iconst.i64 2008
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 10),
+                store(v(1), v(0), 2000),
+                ret(),
+            ]),
+        function(1)
+            .entry(vec![
+                load64(v(1), v(0), 2000),
+                iconst64(v(2), 5),
+                imul(v(3), v(1), v(2)),
+                store(v(3), v(0), 2008),
+                ret(),
+            ]),
+        function(2)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 3000),
+                iconst64(v(2), 2008),
+                iconst64(v(3), 0),
+                iconst64(v(4), 8),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let mut base = Base::new(cranelift_config(memory, clif_ir.to_string())).unwrap();
+    let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&cranelift_algorithm(0), &[]).unwrap();
     base.execute(&cranelift_algorithm(1), &[]).unwrap();
     base.execute(&cranelift_algorithm(2), &[]).unwrap();
@@ -886,52 +814,48 @@ block0(v0: i64):
 
 #[test]
 fn test_clif_call_no_workers_needed() {
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    v1 = iconst.i64 77
-    store.i64 v1, v0+2000
-    return
-}}"#
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 77),
+                store(v(1), v(0), 2000),
+                ret(),
+            ]),
     );
 
-    let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    let memory = vec![0u8; 4096];
 
 
     // cranelift_units: 0 — no workers
-    let (_config, _algorithm) = create_cranelift_algorithm(0, memory, clif_ir.to_string());
+    let (_config, _algorithm) = create_cranelift_algorithm(0, memory, clif_prog);
 
     // Rebuild with file write verification
     let temp_dir = TempDir::new().unwrap();
     let test_file = temp_dir.path().join("clif_call_no_workers.txt");
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
-    let clif_ir2 = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 77
-    store.i64 v1, v0+2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 2000
-    v4 = iconst.i64 0
-    v5 = iconst.i64 8
-    v6 = call fn0(v0, v2, v3, v4, v5)
-    return
-}}"#
+    let clif_prog2 = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 77),
+                store(v(1), v(0), 2000),
+                iconst64(v(2), 3000),
+                iconst64(v(3), 2000),
+                iconst64(v(4), 0),
+                iconst64(v(5), 8),
+                call(Some(v(6)), 0, &[v(0), v(2), v(3), v(4), v(5)]),
+                ret(),
+            ]),
     );
 
     let mut memory2 = vec![0u8; 4096];
-    let clif_bytes2 = format!("{}\0", clif_ir2).into_bytes();
-    memory2[0..clif_bytes2.len()].copy_from_slice(&clif_bytes2);
     memory2[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
 
     let (config2, algorithm2) =
-        create_cranelift_algorithm(0, memory2, clif_ir2.to_string());
+        create_cranelift_algorithm(0, memory2, clif_prog2);
     run(config2, algorithm2).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
@@ -954,40 +878,37 @@ fn test_clif_call_file_read_write() {
     let input_str = format!("{}\0", input_file.to_str().unwrap());
     let output_str = format!("{}\0", output_file.to_str().unwrap());
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_read sig0
-block0(v0: i64):
-    v1 = iconst.i64 2000
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 256
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 2256
-    v2 = iconst.i64 3000
-    v3 = iconst.i64 0
-    v4 = iconst.i64 256
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}}"#
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_read", 0)
+            .entry(vec![
+                iconst64(v(1), 2000),
+                iconst64(v(2), 3000),
+                iconst64(v(3), 0),
+                iconst64(v(4), 256),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 2256),
+                iconst64(v(2), 3000),
+                iconst64(v(3), 0),
+                iconst64(v(4), 256),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; 4096];
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    memory[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
     memory[2000..2000 + input_str.len()].copy_from_slice(input_str.as_bytes());
     memory[2256..2256 + output_str.len()].copy_from_slice(output_str.as_bytes());
 
     // Two execute() calls on one Base: fn0 reads input file, fn1 writes output file.
-    let mut base = Base::new(cranelift_config(memory, clif_ir.to_string())).unwrap();
+    let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&cranelift_algorithm(0), &[]).unwrap();
     base.execute(&cranelift_algorithm(1), &[]).unwrap();
 
@@ -997,19 +918,15 @@ block0(v0: i64):
 }
 
 fn create_output_algorithm(
-    clif_ir: &str,
+    clif: Program,
     memory: Vec<u8>,
     output: Vec<OutputBatchSchema>,
 ) -> (Setup, Algorithm) {
-    let mut p = memory;
-    let clif_bytes = format!("{}\0", clif_ir).into_bytes();
-    if p.len() < clif_bytes.len() {
-        p.resize(clif_bytes.len().max(p.len()), 0);
-    }
-    p[0..clif_bytes.len()].copy_from_slice(&clif_bytes);
+    dump(&clif);
+    let p = memory;
 
     let config = Setup {
-        cranelift_ir: clif_ir.to_string(),
+        clif,
         memory_size: p.len(),
         io_offsets: compact_io_offsets(),
         initial_memory: p,
@@ -1025,17 +942,19 @@ fn create_output_algorithm(
 fn test_output_no_schema_returns_empty() {
     // A simple CLIF that writes a value but has no output schema —
     // execute should return an empty Vec<RecordBatch>.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 42
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 42),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, vec![]);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, vec![]);
     let batches = run(cfg, alg).unwrap();
     assert!(batches.is_empty());
 }
@@ -1043,18 +962,20 @@ block0(v0: i64):
 #[test]
 fn test_output_single_i64_column() {
     // CLIF writes i64 value 99 at offset 2000 and row_count=1 at offset 2008.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 99
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    v4 = iconst.i64 1
-    v5 = iconst.i64 2008
-    v6 = iadd v0, v5
-    store.i64 v4, v6
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 99),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                iconst64(v(4), 1),
+                iconst64(v(5), 2008),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![OutputBatchSchema {
@@ -1067,7 +988,7 @@ block0(v0: i64):
         }],
     }];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
@@ -1086,22 +1007,24 @@ block0(v0: i64):
 #[test]
 fn test_output_i64_and_f64_columns() {
     // CLIF writes an i64 at 2000, an f64 at 2008, and row_count=1 at 2016.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 42
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    v4 = f64const 0x1.921fb54442d18p1
-    v5 = iconst.i64 2008
-    v6 = iadd v0, v5
-    store.f64 v4, v6
-    v7 = iconst.i64 1
-    v8 = iconst.i64 2016
-    v9 = iadd v0, v8
-    store.i64 v7, v9
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 42),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                f64const(v(4), 3.141592653589793f64),
+                iconst64(v(5), 2008),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                iconst64(v(7), 1),
+                iconst64(v(8), 2016),
+                iadd(v(9), v(0), v(8)),
+                store(v(7), v(9), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![OutputBatchSchema {
@@ -1122,7 +1045,7 @@ block0(v0: i64):
         ],
     }];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
@@ -1144,22 +1067,24 @@ block0(v0: i64):
 fn test_output_utf8_single_row() {
     // CLIF writes "hello" (5 bytes) at offset 2000, string length 5 at offset 2008,
     // and row_count=1 at offset 2016.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 0x6f6c6c6568
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    v4 = iconst.i64 5
-    v5 = iconst.i64 2008
-    v6 = iadd v0, v5
-    store.i64 v4, v6
-    v7 = iconst.i64 1
-    v8 = iconst.i64 2016
-    v9 = iadd v0, v8
-    store.i64 v7, v9
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 0x6f6c6c6568),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                iconst64(v(4), 5),
+                iconst64(v(5), 2008),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                iconst64(v(7), 1),
+                iconst64(v(8), 2016),
+                iadd(v(9), v(0), v(8)),
+                store(v(7), v(9), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![OutputBatchSchema {
@@ -1172,7 +1097,7 @@ block0(v0: i64):
         }],
     }];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
@@ -1191,26 +1116,28 @@ block0(v0: i64):
 #[test]
 fn test_output_multi_row_i64() {
     // CLIF writes 3 i64 values at offsets 2000, 2008, 2016, and row_count=3 at 2024.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 10
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    v4 = iconst.i64 20
-    v5 = iconst.i64 2008
-    v6 = iadd v0, v5
-    store.i64 v4, v6
-    v7 = iconst.i64 30
-    v8 = iconst.i64 2016
-    v9 = iadd v0, v8
-    store.i64 v7, v9
-    v10 = iconst.i64 3
-    v11 = iconst.i64 2024
-    v12 = iadd v0, v11
-    store.i64 v10, v12
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 10),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                iconst64(v(4), 20),
+                iconst64(v(5), 2008),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                iconst64(v(7), 30),
+                iconst64(v(8), 2016),
+                iadd(v(9), v(0), v(8)),
+                store(v(7), v(9), 0),
+                iconst64(v(10), 3),
+                iconst64(v(11), 2024),
+                iadd(v(12), v(0), v(11)),
+                store(v(10), v(12), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![OutputBatchSchema {
@@ -1223,7 +1150,7 @@ block0(v0: i64):
         }],
     }];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
@@ -1243,10 +1170,12 @@ block0(v0: i64):
 fn test_output_zero_row_count_skips_batch() {
     // CLIF writes nothing — row_count stays 0 in zeroed memory.
     // The batch should be skipped entirely.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![OutputBatchSchema {
@@ -1259,7 +1188,7 @@ block0(v0: i64):
         }],
     }];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert!(batches.is_empty());
 }
@@ -1269,26 +1198,28 @@ fn test_output_multiple_batches() {
     // Two output schemas — each becomes a separate RecordBatch.
     // Batch 1: single i64 at 2000, row_count at 2008.
     // Batch 2: single f64 at 2016, row_count at 2024.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 7
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    v4 = iconst.i64 1
-    v5 = iconst.i64 2008
-    v6 = iadd v0, v5
-    store.i64 v4, v6
-    v7 = f64const 0x1.c000000000000p2
-    v8 = iconst.i64 2016
-    v9 = iadd v0, v8
-    store.f64 v7, v9
-    v10 = iconst.i64 1
-    v11 = iconst.i64 2024
-    v12 = iadd v0, v11
-    store.i64 v10, v12
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 7),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                iconst64(v(4), 1),
+                iconst64(v(5), 2008),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                f64const(v(7), 7.0f64),
+                iconst64(v(8), 2016),
+                iadd(v(9), v(0), v(8)),
+                store(v(7), v(9), 0),
+                iconst64(v(10), 1),
+                iconst64(v(11), 2024),
+                iadd(v(12), v(0), v(11)),
+                store(v(10), v(12), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![
@@ -1312,7 +1243,7 @@ block0(v0: i64):
         },
     ];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 2);
 
@@ -1344,22 +1275,24 @@ fn test_output_utf8_multi_row() {
     // CLIF writes two null-terminated strings at offset 2000: "abc\0def\0"
     // len_offset at 2100 holds total byte length (not used for multi-row; strings are null-terminated).
     // row_count=2 at 2108.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 0x0066656400636261
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    v4 = iconst.i64 7
-    v5 = iconst.i64 2100
-    v6 = iadd v0, v5
-    store.i64 v4, v6
-    v7 = iconst.i64 2
-    v8 = iconst.i64 2108
-    v9 = iadd v0, v8
-    store.i64 v7, v9
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 0x66656400636261),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                iconst64(v(4), 7),
+                iconst64(v(5), 2100),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                iconst64(v(7), 2),
+                iconst64(v(8), 2108),
+                iadd(v(9), v(0), v(8)),
+                store(v(7), v(9), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![OutputBatchSchema {
@@ -1372,7 +1305,7 @@ block0(v0: i64):
         }],
     }];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 1);
 
@@ -1401,75 +1334,68 @@ fn test_output_multiple_batches_multi_row_mixed() {
     //   2032: batch1 col0 "id" i64[3] = [1, 2, 3] (24 bytes)
     //   2056: batch1 col1 "name" strings = "alice\0bob\0charlie\0" (19 bytes)
     //   2080: batch1 col1 len_offset (8 bytes) = 19
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    ; batch0 row_count = 1
-    v1 = iconst.i64 1
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-
-    ; batch0 total = 300
-    v4 = iconst.i64 300
-    v5 = iconst.i64 2008
-    v6 = iadd v0, v5
-    store.i64 v4, v6
-
-    ; batch0 average = 100.0
-    v7 = f64const 0x1.9000000000000p6
-    v8 = iconst.i64 2016
-    v9 = iadd v0, v8
-    store.f64 v7, v9
-
-    ; batch1 row_count = 3
-    v10 = iconst.i64 3
-    v11 = iconst.i64 2024
-    v12 = iadd v0, v11
-    store.i64 v10, v12
-
-    ; batch1 id[0] = 1
-    v13 = iconst.i64 1
-    v14 = iconst.i64 2032
-    v15 = iadd v0, v14
-    store.i64 v13, v15
-
-    ; batch1 id[1] = 2
-    v16 = iconst.i64 2
-    v17 = iconst.i64 2040
-    v18 = iadd v0, v17
-    store.i64 v16, v18
-
-    ; batch1 id[2] = 3
-    v19 = iconst.i64 3
-    v20 = iconst.i64 2048
-    v21 = iadd v0, v20
-    store.i64 v19, v21
-
-    ; batch1 names: "alice\0bob\0charlie\0" packed at 2056
-    ; "alice\0bo" = 0x6f62_0065_6369_6c61
-    v22 = iconst.i64 0x6f62006563696c61
-    v23 = iconst.i64 2056
-    v24 = iadd v0, v23
-    store.i64 v22, v24
-    ; "b\0charli" = 0x696c_7261_6863_0062
-    v25 = iconst.i64 0x696c726168630062
-    v26 = iconst.i64 2064
-    v27 = iadd v0, v26
-    store.i64 v25, v27
-    ; "e\0" + padding = 0x0065
-    v28 = iconst.i64 0x0065
-    v29 = iconst.i64 2072
-    v30 = iadd v0, v29
-    store.i64 v28, v30
-
-    ; batch1 name len_offset = 19
-    v31 = iconst.i64 19
-    v32 = iconst.i64 2080
-    v33 = iadd v0, v32
-    store.i64 v31, v33
-
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                // batch0 row_count = 1
+                iconst64(v(1), 1),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                // batch0 total = 300
+                iconst64(v(4), 300),
+                iconst64(v(5), 2008),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                // batch0 average = 100.0
+                f64const(v(7), 100.0f64),
+                iconst64(v(8), 2016),
+                iadd(v(9), v(0), v(8)),
+                store(v(7), v(9), 0),
+                // batch1 row_count = 3
+                iconst64(v(10), 3),
+                iconst64(v(11), 2024),
+                iadd(v(12), v(0), v(11)),
+                store(v(10), v(12), 0),
+                // batch1 id[0] = 1
+                iconst64(v(13), 1),
+                iconst64(v(14), 2032),
+                iadd(v(15), v(0), v(14)),
+                store(v(13), v(15), 0),
+                // batch1 id[1] = 2
+                iconst64(v(16), 2),
+                iconst64(v(17), 2040),
+                iadd(v(18), v(0), v(17)),
+                store(v(16), v(18), 0),
+                // batch1 id[2] = 3
+                iconst64(v(19), 3),
+                iconst64(v(20), 2048),
+                iadd(v(21), v(0), v(20)),
+                store(v(19), v(21), 0),
+                // batch1 names: "alice\0bob\0charlie\0" packed at 2056
+                // "alice\0bo" = 0x6f62_0065_6369_6c61
+                iconst64(v(22), 0x6f62006563696c61),
+                iconst64(v(23), 2056),
+                iadd(v(24), v(0), v(23)),
+                store(v(22), v(24), 0),
+                // "b\0charli" = 0x696c_7261_6863_0062
+                iconst64(v(25), 0x696c726168630062),
+                iconst64(v(26), 2064),
+                iadd(v(27), v(0), v(26)),
+                store(v(25), v(27), 0),
+                // "e\0" + padding = 0x0065
+                iconst64(v(28), 0x65),
+                iconst64(v(29), 2072),
+                iadd(v(30), v(0), v(29)),
+                store(v(28), v(30), 0),
+                // batch1 name len_offset = 19
+                iconst64(v(31), 19),
+                iconst64(v(32), 2080),
+                iadd(v(33), v(0), v(32)),
+                store(v(31), v(33), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![
@@ -1509,7 +1435,7 @@ block0(v0: i64):
         },
     ];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(batches.len(), 2);
 
@@ -1546,36 +1472,35 @@ block0(v0: i64):
 fn test_output_multiple_batches_partial_skip() {
     // Three schemas declared, but only batch 0 and batch 2 have row_count > 0.
     // Batch 1 should be skipped, resulting in 2 returned batches.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    ; batch0: row_count=1, value=42
-    v1 = iconst.i64 1
-    v2 = iconst.i64 2000
-    v3 = iadd v0, v2
-    store.i64 v1, v3
-    v4 = iconst.i64 42
-    v5 = iconst.i64 2008
-    v6 = iadd v0, v5
-    store.i64 v4, v6
-
-    ; batch1: row_count stays 0 (skipped)
-
-    ; batch2: row_count=2, values=[10, 20]
-    v7 = iconst.i64 2
-    v8 = iconst.i64 2032
-    v9 = iadd v0, v8
-    store.i64 v7, v9
-    v10 = iconst.i64 10
-    v11 = iconst.i64 2040
-    v12 = iadd v0, v11
-    store.i64 v10, v12
-    v13 = iconst.i64 20
-    v14 = iconst.i64 2048
-    v15 = iadd v0, v14
-    store.i64 v13, v15
-
-    return
-}"#;
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                // batch0: row_count=1, value=42
+                iconst64(v(1), 1),
+                iconst64(v(2), 2000),
+                iadd(v(3), v(0), v(2)),
+                store(v(1), v(3), 0),
+                iconst64(v(4), 42),
+                iconst64(v(5), 2008),
+                iadd(v(6), v(0), v(5)),
+                store(v(4), v(6), 0),
+                // batch1: row_count stays 0 (skipped)
+                // batch2: row_count=2, values=[10, 20]
+                iconst64(v(7), 2),
+                iconst64(v(8), 2032),
+                iadd(v(9), v(0), v(8)),
+                store(v(7), v(9), 0),
+                iconst64(v(10), 10),
+                iconst64(v(11), 2040),
+                iadd(v(12), v(0), v(11)),
+                store(v(10), v(12), 0),
+                iconst64(v(13), 20),
+                iconst64(v(14), 2048),
+                iadd(v(15), v(0), v(14)),
+                store(v(13), v(15), 0),
+                ret(),
+            ]),
+    );
 
     let memory = vec![0u8; 4096];
     let output = vec![
@@ -1608,7 +1533,7 @@ block0(v0: i64):
         },
     ];
 
-    let (cfg, alg) = create_output_algorithm(clif_ir, memory, output);
+    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
     let batches = run(cfg, alg).unwrap();
     assert_eq!(
         batches.len(),
@@ -1635,17 +1560,18 @@ block0(v0: i64):
 fn test_base_single_execute_matches_standalone() {
     // Base::new + execute should produce the same result as standalone run.
     // CLIF: load i64 from offset 100, multiply by 7, store at 200, row_count=1 at 208.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+100
-    v2 = iconst.i64 7
-    v3 = imul v1, v2
-    store v3, v0+200
-    v4 = iconst.i64 1
-    store v4, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 100),
+                iconst64(v(2), 7),
+                imul(v(3), v(1), v(2)),
+                store(v(3), v(0), 200),
+                iconst64(v(4), 1),
+                store(v(4), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let mut memory = vec![0u8; 4096];
     memory[100..108].copy_from_slice(&6i64.to_le_bytes());
@@ -1662,7 +1588,7 @@ block0(v0: i64):
 
     // Standalone
     let config1 = Setup {
-        cranelift_ir: clif_ir.clone(),
+        clif: clif_prog.clone(),
         memory_size: memory.len(),
         io_offsets: compact_io_offsets(),
         initial_memory: memory.clone(),
@@ -1675,7 +1601,7 @@ block0(v0: i64):
 
     // Base struct
     let config2 = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: memory.len(),
         io_offsets: compact_io_offsets(),
         initial_memory: memory,
@@ -1708,23 +1634,24 @@ block0(v0: i64):
 fn test_base_multi_execute_different_data() {
     // Compile once, execute twice with different input data via pointer.
     // CLIF reads i64 from data pointer, multiplies by 3, stores result at 200, row_count=1 at 208.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    v3 = iconst.i64 3
-    v4 = imul v2, v3
-    store v4, v0+200
-    v5 = iconst.i64 1
-    v6 = iconst.i64 208
-    v7 = iadd v0, v6
-    store.i64 v5, v7
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                iconst64(v(3), 3),
+                imul(v(4), v(2), v(3)),
+                store(v(4), v(0), 200),
+                iconst64(v(5), 1),
+                iconst64(v(6), 208),
+                iadd(v(7), v(0), v(6)),
+                store(v(5), v(7), 0),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -1785,31 +1712,31 @@ fn test_base_multi_execute_different_actions() {
     // Compile once with two CLIF functions, execute with different action sequences.
     // fn0: stores 42 at offset 200, row_count=1 at 208
     // fn1: stores 99 at offset 200, row_count=1 at 208
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 42
-    store v1, v0+200
-    v2 = iconst.i64 1
-    v3 = iconst.i64 208
-    v4 = iadd v0, v3
-    store.i64 v2, v4
-    return
-}
-
-function u0:1(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 99
-    store v1, v0+200
-    v2 = iconst.i64 1
-    v3 = iconst.i64 208
-    v4 = iadd v0, v3
-    store.i64 v2, v4
-    return
-}"#
-    .to_string();
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 42),
+                store(v(1), v(0), 200),
+                iconst64(v(2), 1),
+                iconst64(v(3), 208),
+                iadd(v(4), v(0), v(3)),
+                store(v(2), v(4), 0),
+                ret(),
+            ]),
+        function(1)
+            .entry(vec![
+                iconst64(v(1), 99),
+                store(v(1), v(0), 200),
+                iconst64(v(2), 1),
+                iconst64(v(3), 208),
+                iadd(v(4), v(0), v(3)),
+                store(v(2), v(4), 0),
+                ret(),
+            ]),
+    ]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -1857,23 +1784,24 @@ block0(v0: i64):
 fn test_base_multi_execute_accumulates_in_memory() {
     // Accumulator in shared memory persists across executes.
     // CLIF: load accumulator from v0+200, add input from data pointer, store back.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+200
-    v2 = load.i64 v0+8
-    v3 = load.i64 v2
-    v4 = iadd v1, v3
-    store v4, v0+200
-    v5 = iconst.i64 1
-    v6 = iconst.i64 208
-    v7 = iadd v0, v6
-    store.i64 v5, v7
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 200),
+                load64(v(2), v(0), 8),
+                load64(v(3), v(2), 0),
+                iadd(v(4), v(1), v(3)),
+                store(v(4), v(0), 200),
+                iconst64(v(5), 1),
+                iconst64(v(6), 208),
+                iadd(v(7), v(0), v(6)),
+                store(v(5), v(7), 0),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -1954,25 +1882,26 @@ fn test_base_multi_execute_with_file_io() {
     let file1_str = format!("{}\0", file1.to_str().unwrap());
     let file2_str = format!("{}\0", file2.to_str().unwrap());
 
-    let clif_ir = r#"function u0:0(i64) system_v {
-    sig0 = (i64, i64, i64, i64, i64) -> i64 system_v
-    fn0 = %cl_file_write sig0
-block0(v0: i64):
-    v1 = iconst.i64 256
-    v2 = iconst.i64 512
-    v3 = iconst.i64 0
-    v4 = iconst.i64 8
-    v5 = call fn0(v0, v1, v2, v3, v4)
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(vec![
+                iconst64(v(1), 256),
+                iconst64(v(2), 512),
+                iconst64(v(3), 0),
+                iconst64(v(4), 8),
+                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
+    );
 
     // Execute 1: write value 42 to file1
     let mut mem1 = vec![0u8; 4096];
     mem1[256..256 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
     mem1[512..520].copy_from_slice(&42u64.to_le_bytes());
     let config1 = Setup {
-        cranelift_ir: clif_ir.clone(),
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: mem1,
@@ -1995,7 +1924,7 @@ block0(v0: i64):
     mem2[256..256 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
     mem2[512..520].copy_from_slice(&99u64.to_le_bytes());
     let config2 = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: mem2,
@@ -2021,16 +1950,17 @@ fn test_base_multi_execute_varying_cranelift_units() {
     // fn0: stores 1 at offset 200
     // Workers also call fn0, each adding to the same location (but with sync ClifCall
     // only the interpreter calls it, so this just verifies units can vary).
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 1
-    store v1, v0+200
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 1),
+                store(v(1), v(0), 200),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -2072,24 +2002,25 @@ block0(v0: i64):
 fn test_base_initial_memory_and_data_pointer_coexist() {
     // initial_memory provides static config at v0+100, data pointer provides dynamic input.
     // CLIF reads both and adds them.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+100
-    v2 = load.i64 v0+8
-    v3 = load.i64 v2
-    v4 = iadd v1, v3
-    store v4, v0+300
-    v5 = iconst.i64 1
-    store v5, v0+308
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 100),
+                load64(v(2), v(0), 8),
+                load64(v(3), v(2), 0),
+                iadd(v(4), v(1), v(3)),
+                store(v(4), v(0), 300),
+                iconst64(v(5), 1),
+                store(v(5), v(0), 308),
+                ret(),
+            ]),
+    );
 
     let mut mem = vec![0u8; 4096];
     mem[100..108].copy_from_slice(&11i64.to_le_bytes());
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: mem,
@@ -2130,28 +2061,28 @@ fn test_base_persistent_memory_survives_across_executes() {
     // Shared memory persists across executes. fn0 seeds a value, fn1 reads it.
     // CLIF fn0: stores 77 at offset 200
     // CLIF fn1: reads data pointer input + offset 200 → stores at 300
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = iconst.i64 77
-    store v1, v0+200
-    return
-}
-
-function u0:1(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    v3 = load.i64 v0+200
-    v4 = iadd v2, v3
-    store v4, v0+300
-    v5 = iconst.i64 1
-    store v5, v0+308
-    return
-}"#
-    .to_string();
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                iconst64(v(1), 77),
+                store(v(1), v(0), 200),
+                ret(),
+            ]),
+        function(1)
+            .entry(vec![
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                load64(v(3), v(0), 200),
+                iadd(v(4), v(2), v(3)),
+                store(v(4), v(0), 300),
+                iconst64(v(5), 1),
+                store(v(5), v(0), 308),
+                ret(),
+            ]),
+    ]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -2203,20 +2134,21 @@ block0(v0: i64):
 fn test_base_empty_data_leaves_memory_intact() {
     // Empty memory don't touch memory at all — persistent state survives.
     // CLIF: accumulate into offset 200 (read, add 1, store back). row_count at 208.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+200
-    v2 = iconst.i64 1
-    v3 = iadd v1, v2
-    store v3, v0+200
-    v4 = iconst.i64 1
-    store v4, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 200),
+                iconst64(v(2), 1),
+                iadd(v(3), v(1), v(2)),
+                store(v(3), v(0), 200),
+                iconst64(v(4), 1),
+                store(v(4), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -2256,21 +2188,22 @@ block0(v0: i64):
 fn test_base_data_pointer_updates_each_execute() {
     // Data pointer is updated each execute call with fresh caller buffer.
     // CLIF reads two i64s from data pointer and adds them.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    v3 = load.i64 v1+8
-    v4 = iadd v2, v3
-    store v4, v0+200
-    v5 = iconst.i64 1
-    store v5, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                load64(v(3), v(1), 8),
+                iadd(v(4), v(2), v(3)),
+                store(v(4), v(0), 200),
+                iconst64(v(5), 1),
+                store(v(5), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -2332,27 +2265,28 @@ fn test_base_output_in_persistent_region() {
     // Shared memory persists across executes. CLIF appends values from data pointer
     // into a growing buffer at offset 500+.
     // fn0: reads input from data_ptr, reads count from offset 400, stores at 500+8*count, increments count.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    v3 = load.i64 v0+400
-    v4 = iconst.i64 8
-    v5 = imul v3, v4
-    v6 = iconst.i64 500
-    v7 = iadd v5, v6
-    v8 = iadd v0, v7
-    store v2, v8
-    v9 = iconst.i64 1
-    v10 = iadd v3, v9
-    store v10, v0+400
-    store v10, v0+408
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                load64(v(3), v(0), 400),
+                iconst64(v(4), 8),
+                imul(v(5), v(3), v(4)),
+                iconst64(v(6), 500),
+                iadd(v(7), v(5), v(6)),
+                iadd(v(8), v(0), v(7)),
+                store(v(2), v(8), 0),
+                iconst64(v(9), 1),
+                iadd(v(10), v(3), v(9)),
+                store(v(10), v(0), 400),
+                store(v(10), v(0), 408),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -2410,56 +2344,65 @@ block0(v0: i64):
 }
 
 #[test]
-fn clif_parse_error_garbage_ir() {
-    let config = Setup {
-        cranelift_ir: "this is not valid CLIF".to_string(),
-        memory_size: 256,
-        io_offsets: compact_io_offsets(),
-        initial_memory: vec![],
-    };
+fn clif_error_value_used_before_defined() {
+    // v9 is never defined. The text path reported this as a parse error; the
+    // decoder reports it against the program, which is where the defect is.
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(function(0).entry(vec![store(v(9), v(0), 0), ret()])),
+    );
     let Err(err) = Base::new(config) else {
-        panic!("expected ClifParse error for garbage IR");
+        panic!("expected an error for a value used before it is defined");
     };
-    assert!(matches!(err, base::Error::ClifParse(_)));
+    let base::Error::Clif(msg) = err else {
+        panic!("expected Error::Clif");
+    };
+    assert!(msg.contains("v9"), "message should name the value: {msg}");
 }
 
 #[test]
-fn clif_parse_error_via_run() {
-    let config = Setup {
-        cranelift_ir: "not valid clif at all {}[]".to_string(),
-        memory_size: 256,
-        io_offsets: compact_io_offsets(),
-        initial_memory: vec![],
+fn clif_error_branch_to_undeclared_block() {
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(function(0).entry(vec![jump(7, &[])])),
+    );
+    let Err(err) = run(config, cranelift_algorithm(0)) else {
+        panic!("expected an error for a branch to an undeclared block");
     };
-    let algorithm = Algorithm {
-        fn_idx: 0,
-        output: vec![],
-    };
-    let Err(err) = run(config, algorithm) else {
-        panic!("expected ClifParse error for invalid CLIF via run()");
-    };
-    assert!(matches!(err, base::Error::ClifParse(_)));
+    assert!(matches!(err, base::Error::Clif(_)));
 }
 
 #[test]
-fn clif_parse_error_incomplete_function() {
-    let config = Setup {
-        cranelift_ir: "function %f0(i64) {\n".to_string(),
-        memory_size: 256,
-        io_offsets: compact_io_offsets(),
-        initial_memory: vec![],
-    };
+fn clif_error_call_to_undeclared_fn() {
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(function(0).entry(vec![call(None, 3, &[v(0)]), ret()])),
+    );
     let Err(err) = Base::new(config) else {
-        panic!("expected ClifParse error for incomplete function");
+        panic!("expected an error for a call to an undeclared callee");
     };
-    assert!(matches!(err, base::Error::ClifParse(_)));
+    assert!(matches!(err, base::Error::Clif(_)));
+}
+
+#[test]
+fn clif_error_function_index_disagrees_with_position() {
+    // `u0:N` is resolved as a FuncId, so a program whose indices do not match
+    // their positions would silently call the wrong function.
+    let config = cranelift_config(vec![0u8; 256], program(noop(4)));
+    let Err(err) = Base::new(config) else {
+        panic!("expected an error for a function index that disagrees");
+    };
+    let base::Error::Clif(msg) = err else {
+        panic!("expected Error::Clif");
+    };
+    assert!(msg.contains("u0:4"), "message should name the index: {msg}");
 }
 
 #[test]
 fn clif_parse_error_empty_ir_no_error() {
     // Empty string should NOT error — it skips compilation entirely
     let config = Setup {
-        cranelift_ir: String::new(),
+        clif: Default::default(),
         memory_size: 256,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -2507,44 +2450,39 @@ fn test_clif_ffi_cuda_smoke() {
     let n: usize = 4;
     let data_bytes = n * 4;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
-    sig4 = (i64) -> i32 system_v
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload sig2
-    fn3 = %cl_cuda_launch sig3
-    fn4 = %cl_cuda_sync sig4
-    fn5 = %cl_cuda_download sig2
-    fn6 = %cl_cuda_cleanup sig0
-block0(v0: i64):
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-    v91 = load.i64 notrap aligned v0+0
-    v1 = iconst.i64 {data_bytes}
-    v2 = call fn1(v91, v1)
-    v3 = iadd_imm v0, {data_off}
-    v10 = call fn2(v91, v2, v3, v1)
-    v4 = iadd_imm v0, {ptx_off}
-    v5 = iconst.i32 1
-    v6 = iadd_imm v0, {bind_off}
-    v7 = iconst.i32 4
-    v11 = call fn3(v91, v4, v5, v6, v5, v5, v5, v7, v5, v5)
-    v12 = call fn4(v91)
-    v9 = iadd_imm v0, {result_off}
-    v13 = call fn5(v91, v2, v9, v1)
-    call fn6(v90)
-    return
-}}"#,
-        data_bytes = data_bytes,
-        data_off = data_off,
-        ptx_off = ptx_off,
-        bind_off = bind_off,
-        result_off = result_off,
+    let clif_prog = program(
+        function(0)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
+            .sig(4, &[I64], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload", 2)
+            .import(3, "cl_cuda_launch", 3)
+            .import(4, "cl_cuda_sync", 4)
+            .import(5, "cl_cuda_download", 2)
+            .import(6, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iconst64(v(1), data_bytes as i64),
+                call(Some(v(2)), 1, &[v(91), v(1)]),
+                iadd_imm(v(3), v(0), data_off as i64),
+                call(Some(v(10)), 2, &[v(91), v(2), v(3), v(1)]),
+                iadd_imm(v(4), v(0), ptx_off as i64),
+                iconst32(v(5), 1),
+                iadd_imm(v(6), v(0), bind_off as i64),
+                iconst32(v(7), 4),
+                call(Some(v(11)), 3, &[v(91), v(4), v(5), v(6), v(5), v(5), v(5), v(7), v(5), v(5)]),
+                call(Some(v(12)), 4, &[v(91)]),
+                iadd_imm(v(9), v(0), result_off as i64),
+                call(Some(v(13)), 5, &[v(91), v(2), v(9), v(1)]),
+                call(None, 6, &[v(90)]),
+                ret(),
+            ]),
     );
 
     let mut memory = vec![0u8; 6144];
@@ -2558,7 +2496,7 @@ block0(v0: i64):
 
 
     let (config, algorithm) =
-        create_cranelift_algorithm(0, memory, clif_ir.to_string());
+        create_cranelift_algorithm(0, memory, clif_prog);
     run(config, algorithm).unwrap();
 }
 
@@ -2575,68 +2513,57 @@ fn test_cublas_sgemv_on_stream_reuse() {
     let y_bytes: usize = y_elems * 4;
     let mem_size: usize = 0x0400;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
-    sig4 = (i64) -> i32 system_v
-    sig5 = (i64, i32) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr sig2
-    fn3 = %cl_cuda_download_ptr sig2
-    fn4 = %cl_cublas_sgemv_on_stream sig3
-    fn5 = %cl_cuda_stream_create sig4
-    fn6 = %cl_cuda_stream_sync sig5
-    fn7 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-    v91 = load.i64 notrap aligned v0+0
-
-    v10 = iconst.i64 {a_bytes}
-    v11 = iconst.i64 {x_bytes}
-    v12 = iconst.i64 {y_bytes}
-    v13 = call fn1(v91, v10)
-    v14 = call fn1(v91, v11)
-    v15 = call fn1(v91, v12)
-    v16 = call fn2(v91, v13, v1, v10)
-    v17 = iadd v1, v10
-    v18 = call fn2(v91, v14, v17, v11)
-    v19 = call fn5(v91)
-
-    v20 = iconst.i32 1
-    v21 = iconst.i32 {cols}
-    v22 = iconst.i32 {rows}
-    v23 = iconst.i32 0x3f800000
-    v24 = iconst.i32 0
-    v25 = call fn4(v91, v20, v21, v22, v23, v13, v14, v24, v15, v19)
-    v26 = call fn6(v91, v19)
-    v27 = call fn3(v91, v15, v2, v12)
-
-    call fn7(v90)
-    return
-}}"#,
-        a_bytes = a_bytes,
-        x_bytes = x_bytes,
-        y_bytes = y_bytes,
-        cols = cols,
-        rows = rows,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I32, I32], Some(I32))
+            .sig(4, &[I64], Some(I32))
+            .sig(5, &[I64, I32], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr", 2)
+            .import(3, "cl_cuda_download_ptr", 2)
+            .import(4, "cl_cublas_sgemv_on_stream", 3)
+            .import(5, "cl_cuda_stream_create", 4)
+            .import(6, "cl_cuda_stream_sync", 5)
+            .import(7, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iconst64(v(10), a_bytes as i64),
+                iconst64(v(11), x_bytes as i64),
+                iconst64(v(12), y_bytes as i64),
+                call(Some(v(13)), 1, &[v(91), v(10)]),
+                call(Some(v(14)), 1, &[v(91), v(11)]),
+                call(Some(v(15)), 1, &[v(91), v(12)]),
+                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                iadd(v(17), v(1), v(10)),
+                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
+                call(Some(v(19)), 5, &[v(91)]),
+                iconst32(v(20), 1),
+                iconst32(v(21), cols as i64),
+                iconst32(v(22), rows as i64),
+                iconst32(v(23), 0x3f800000),
+                iconst32(v(24), 0),
+                call(Some(v(25)), 4, &[v(91), v(20), v(21), v(22), v(23), v(13), v(14), v(24), v(15), v(19)]),
+                call(Some(v(26)), 6, &[v(91), v(19)]),
+                call(Some(v(27)), 3, &[v(91), v(15), v(2), v(12)]),
+                call(None, 7, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
@@ -2695,78 +2622,62 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
     let y_bytes: usize = y_elems * 4;
     let mem_size: usize = 0x0800;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32, i32) -> i32 system_v
-    sig4 = (i64) -> i32 system_v
-    sig5 = (i64, i32) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr sig2
-    fn3 = %cl_cuda_download_ptr sig2
-    fn4 = %cl_cublas_sgemm_strided_batched_on_stream sig3
-    fn5 = %cl_cuda_stream_create sig4
-    fn6 = %cl_cuda_stream_sync sig5
-    fn7 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-    v10 = iconst.i64 {a_bytes}
-    v11 = iconst.i64 {x_bytes}
-    v12 = iconst.i64 {y_bytes}
-    v13 = call fn1(v91, v10)
-    v14 = call fn1(v91, v11)
-    v15 = call fn1(v91, v12)
-    v16 = call fn2(v91, v13, v1, v10)
-    v17 = iadd v1, v10
-    v18 = call fn2(v91, v14, v17, v11)
-    v19 = call fn5(v91)
-
-    v20 = iconst.i32 1
-    v21 = iconst.i32 0
-    v22 = iconst.i32 {m}
-    v23 = iconst.i32 1
-    v24 = iconst.i32 {k}
-    v25 = iconst.i32 0x3f800000
-    v26 = iconst.i64 {stride_a}
-    v27 = iconst.i64 {stride_b}
-    v28 = iconst.i64 {stride_c}
-    v29 = iconst.i32 {batch_count}
-    v30 = call fn4(v91, v20, v21, v22, v23, v24, v25, v13, v26, v14, v27, v21, v15, v28, v29, v19)
-
-    v31 = call fn6(v91, v19)
-    v32 = call fn3(v91, v15, v2, v12)
-
-    call fn7(v90)
-    return
-}}"#,
-        a_bytes = a_bytes,
-        x_bytes = x_bytes,
-        y_bytes = y_bytes,
-        m = m,
-        k = k,
-        stride_a = m * k,
-        stride_b = k,
-        stride_c = m,
-        batch_count = batch_count,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32, I32], Some(I32))
+            .sig(4, &[I64], Some(I32))
+            .sig(5, &[I64, I32], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr", 2)
+            .import(3, "cl_cuda_download_ptr", 2)
+            .import(4, "cl_cublas_sgemm_strided_batched_on_stream", 3)
+            .import(5, "cl_cuda_stream_create", 4)
+            .import(6, "cl_cuda_stream_sync", 5)
+            .import(7, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iconst64(v(10), a_bytes as i64),
+                iconst64(v(11), x_bytes as i64),
+                iconst64(v(12), y_bytes as i64),
+                call(Some(v(13)), 1, &[v(91), v(10)]),
+                call(Some(v(14)), 1, &[v(91), v(11)]),
+                call(Some(v(15)), 1, &[v(91), v(12)]),
+                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                iadd(v(17), v(1), v(10)),
+                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
+                call(Some(v(19)), 5, &[v(91)]),
+                iconst32(v(20), 1),
+                iconst32(v(21), 0),
+                iconst32(v(22), m as i64),
+                iconst32(v(23), 1),
+                iconst32(v(24), k as i64),
+                iconst32(v(25), 0x3f800000),
+                iconst64(v(26), (m * k) as i64),
+                iconst64(v(27), k as i64),
+                iconst64(v(28), m as i64),
+                iconst32(v(29), batch_count as i64),
+                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29), v(19)]),
+                call(Some(v(31)), 6, &[v(91), v(19)]),
+                call(Some(v(32)), 3, &[v(91), v(15), v(2), v(12)]),
+                call(None, 7, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
@@ -2838,28 +2749,29 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     // CLIF reads data_ptr from offset 8, data_len from offset 16,
     // then loads a value from the caller's buffer via the pointer.
     // This is the zero-copy path — no shared memory copy needed.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    ; load data_ptr from offset 8
-    v1 = load.i64 v0+8
-    ; load data_len from offset 16
-    v2 = load.i64 v0+16
-    ; read first i64 from caller's buffer
-    v3 = load.i64 v1
-    ; read second i64 from caller's buffer (offset 8)
-    v4 = load.i64 v1+8
-    v5 = iadd v3, v4
-    ; store result and row_count
-    store v5, v0+200
-    store v2, v0+208
-    v6 = iconst.i64 1
-    store v6, v0+216
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                // load data_ptr from offset 8
+                load64(v(1), v(0), 8),
+                // load data_len from offset 16
+                load64(v(2), v(0), 16),
+                // read first i64 from caller's buffer
+                load64(v(3), v(1), 0),
+                // read second i64 from caller's buffer (offset 8)
+                load64(v(4), v(1), 8),
+                iadd(v(5), v(3), v(4)),
+                // store result and row_count
+                store(v(5), v(0), 200),
+                store(v(2), v(0), 208),
+                iconst64(v(6), 1),
+                store(v(6), v(0), 216),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -2915,21 +2827,22 @@ block0(v0: i64):
 fn test_data_ptr_written_even_when_data_empty() {
     // Offsets 8-16 are always written — even with empty data.
     // Seed those offsets with sentinels to verify they get overwritten.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+16
-    store v1, v0+200
-    v3 = iconst.i64 1
-    store v3, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 16),
+                store(v(1), v(0), 200),
+                iconst64(v(3), 1),
+                store(v(3), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let mut initial = vec![0u8; 4096];
     initial[16..24].copy_from_slice(&0xCAFEBABEu64.to_le_bytes());
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: initial,
@@ -2966,21 +2879,22 @@ block0(v0: i64):
 fn test_out_ptr_written_even_when_out_empty() {
     // Offsets 24-32 are always written — even with empty out.
     // Seed those offsets with sentinels to verify they get overwritten.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+32
-    store v1, v0+200
-    v3 = iconst.i64 1
-    store v3, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 32),
+                store(v(1), v(0), 200),
+                iconst64(v(3), 1),
+                store(v(3), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let mut initial = vec![0u8; 4096];
     initial[32..40].copy_from_slice(&0x22222222u64.to_le_bytes());
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: initial,
@@ -3017,23 +2931,24 @@ block0(v0: i64):
 fn test_execute_into_clif_writes_to_caller_out_buffer() {
     // CLIF reads out_ptr from offset 24, writes a computed value into caller's out buffer.
     // This tests the full zero-copy output path.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    ; read data_ptr, load input from caller's data buffer
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    ; compute: input * 7
-    v3 = iconst.i64 7
-    v4 = imul v2, v3
-    ; read out_ptr, write result into caller's out buffer
-    v5 = load.i64 v0+24
-    store v4, v5
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                // read data_ptr, load input from caller's data buffer
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                // compute: input * 7
+                iconst64(v(3), 7),
+                imul(v(4), v(2), v(3)),
+                // read out_ptr, write result into caller's out buffer
+                load64(v(5), v(0), 24),
+                store(v(4), v(5), 0),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -3062,18 +2977,19 @@ block0(v0: i64):
 fn test_execute_into_multiple_calls_different_data() {
     // execute_into called twice with different data and out buffers.
     // Verifies pointers are updated each call.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    v3 = load.i64 v0+24
-    store v2, v3
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                load64(v(3), v(0), 24),
+                store(v(2), v(3), 0),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -3105,26 +3021,27 @@ block0(v0: i64):
 fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     // Data buffer is larger than memory_size. The data pointer gives CLIF
     // access to the full buffer without copying it into shared memory.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    ; read data_ptr and data_len
-    v1 = load.i64 v0+8
-    v2 = load.i64 v0+16
-    ; read last i64 from caller buffer: data_ptr + data_len - 8
-    v3 = iconst.i64 8
-    v4 = isub v2, v3
-    v5 = iadd v1, v4
-    v6 = load.i64 v5
-    store v6, v0+200
-    store v2, v0+208
-    v7 = iconst.i64 1
-    store v7, v0+216
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                // read data_ptr and data_len
+                load64(v(1), v(0), 8),
+                load64(v(2), v(0), 16),
+                // read last i64 from caller buffer: data_ptr + data_len - 8
+                iconst64(v(3), 8),
+                isub(v(4), v(2), v(3)),
+                iadd(v(5), v(1), v(4)),
+                load64(v(6), v(5), 0),
+                store(v(6), v(0), 200),
+                store(v(2), v(0), 208),
+                iconst64(v(7), 1),
+                store(v(7), v(0), 216),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 256,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -3182,28 +3099,29 @@ fn test_initial_memory_and_data_coexist() {
     // initial_memory sets up static config (e.g., a multiplier at offset 100).
     // data provides dynamic input via pointer.
     // CLIF reads multiplier from shared memory AND input from data pointer.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    ; read static multiplier from shared memory (set by initial_memory)
-    v1 = load.i64 v0+100
-    ; read dynamic input from data pointer
-    v2 = load.i64 v0+8
-    v3 = load.i64 v2
-    ; multiply
-    v4 = imul v1, v3
-    store v4, v0+200
-    v5 = iconst.i64 1
-    store v5, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                // read static multiplier from shared memory (set by initial_memory)
+                load64(v(1), v(0), 100),
+                // read dynamic input from data pointer
+                load64(v(2), v(0), 8),
+                load64(v(3), v(2), 0),
+                // multiply
+                imul(v(4), v(1), v(3)),
+                store(v(4), v(0), 200),
+                iconst64(v(5), 1),
+                store(v(5), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let mut initial = vec![0u8; 4096];
     // Static multiplier = 13
     initial[100..108].copy_from_slice(&13i64.to_le_bytes());
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: initial,
@@ -3243,25 +3161,26 @@ block0(v0: i64):
 fn test_execute_into_out_buffer_larger_than_memory() {
     // Out buffer can be any size — it's caller-owned, not bounded by memory_size.
     // CLIF writes multiple values into a large out buffer.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+24
-    v2 = load.i64 v0+32
-    ; write values at out[0], out[8], out[16]
-    v3 = iconst.i64 100
-    store v3, v1
-    v4 = iconst.i64 200
-    store v4, v1+8
-    v5 = iconst.i64 300
-    store v5, v1+16
-    ; write out_len at the end for verification
-    store v2, v1+24
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 24),
+                load64(v(2), v(0), 32),
+                // write values at out[0], out[8], out[16]
+                iconst64(v(3), 100),
+                store(v(3), v(1), 0),
+                iconst64(v(4), 200),
+                store(v(4), v(1), 8),
+                iconst64(v(5), 300),
+                store(v(5), v(1), 16),
+                // write out_len at the end for verification
+                store(v(2), v(1), 24),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 64,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -3292,19 +3211,20 @@ block0(v0: i64):
 fn test_run_with_data_argument() {
     // The standalone run() function also accepts data.
     // Verify the pointer path works through the simple API.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    store v2, v0+200
-    v3 = iconst.i64 1
-    store v3, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                store(v(2), v(0), 200),
+                iconst64(v(3), 1),
+                store(v(3), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -3343,18 +3263,19 @@ block0(v0: i64):
 fn test_data_single_byte_still_writes_pointer() {
     // Even a 1-byte data buffer should write the pointer.
     // Edge case: smallest possible non-empty data.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+16
-    store v1, v0+200
-    v2 = iconst.i64 1
-    store v2, v0+208
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 16),
+                store(v(1), v(0), 200),
+                iconst64(v(2), 1),
+                store(v(2), v(0), 208),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -3389,21 +3310,22 @@ block0(v0: i64):
 fn test_data_ptr_survives_across_multi_execute() {
     // Multiple execute calls with data — each call gets fresh pointers.
     // Verify that stale pointers from previous calls don't leak.
-    let clif_ir = r#"function u0:0(i64) system_v {
-block0(v0: i64):
-    v1 = load.i64 v0+8
-    v2 = load.i64 v1
-    v3 = load.i64 v0+16
-    store v2, v0+200
-    store v3, v0+208
-    v4 = iconst.i64 1
-    store v4, v0+216
-    return
-}"#
-    .to_string();
+    let clif_prog = program(
+        function(0)
+            .entry(vec![
+                load64(v(1), v(0), 8),
+                load64(v(2), v(1), 0),
+                load64(v(3), v(0), 16),
+                store(v(2), v(0), 200),
+                store(v(3), v(0), 208),
+                iconst64(v(4), 1),
+                store(v(4), v(0), 216),
+                ret(),
+            ]),
+    );
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: 4096,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![],
@@ -3490,53 +3412,49 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     let bind_off: usize = 0x1100;
     let mem_size: usize = 0x1200;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i64, i64, i32) -> i32 system_v
-    sig3 = (i64, i32, i64, i64) -> i32 system_v
-    sig4 = (i64, i32, i32, i32, i32) -> i32 system_v
-    sig5 = (i64, i32, i64, i64, i64) -> i32 system_v
-
-    fn0 = %cl_gpu_init sig0
-    fn1 = %cl_gpu_create_buffer sig1
-    fn2 = %cl_gpu_create_pipeline sig2
-    fn3 = %cl_gpu_upload_ptr sig3
-    fn4 = %cl_gpu_dispatch sig4
-    fn5 = %cl_gpu_download_ptr sig5
-    fn6 = %cl_gpu_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x10
-    v3 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-    v4 = call fn1(v91, v2)
-    v5 = call fn3(v91, v4, v1, v2)
-    v6 = iadd_imm v0, {shader_off}
-    v7 = iadd_imm v0, {bind_off}
-    v8 = iconst.i32 1
-    v9 = call fn2(v91, v6, v7, v8)
-    v10 = call fn4(v91, v9, v8, v8, v8)
-    v11 = ushr_imm v2, 3
-    v12 = ishl_imm v11, 2
-    v13 = iconst.i64 0
-    v14 = call fn5(v91, v4, v13, v3, v12)
-    call fn6(v90)
-    return
-}}"#,
-        shader_off = shader_off,
-        bind_off = bind_off,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I64, I64, I32], Some(I32))
+            .sig(3, &[I64, I32, I64, I64], Some(I32))
+            .sig(4, &[I64, I32, I32, I32, I32], Some(I32))
+            .sig(5, &[I64, I32, I64, I64, I64], Some(I32))
+            .import(0, "cl_gpu_init", 0)
+            .import(1, "cl_gpu_create_buffer", 1)
+            .import(2, "cl_gpu_create_pipeline", 2)
+            .import(3, "cl_gpu_upload_ptr", 3)
+            .import(4, "cl_gpu_dispatch", 4)
+            .import(5, "cl_gpu_download_ptr", 5)
+            .import(6, "cl_gpu_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x10),
+                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                call(Some(v(4)), 1, &[v(91), v(2)]),
+                call(Some(v(5)), 3, &[v(91), v(4), v(1), v(2)]),
+                iadd_imm(v(6), v(0), shader_off as i64),
+                iadd_imm(v(7), v(0), bind_off as i64),
+                iconst32(v(8), 1),
+                call(Some(v(9)), 2, &[v(91), v(6), v(7), v(8)]),
+                call(Some(v(10)), 4, &[v(91), v(9), v(8), v(8), v(8)]),
+                iconst64(v(9001), 3),
+                ushr(v(11), v(2), v(9001)),
+                iconst64(v(9002), 2),
+                ishl(v(12), v(11), v(9002)),
+                iconst64(v(13), 0),
+                call(Some(v(14)), 5, &[v(91), v(4), v(13), v(3), v(12)]),
+                call(None, 6, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; mem_size];
     let shader_bytes = wgsl.as_bytes();
@@ -3546,7 +3464,7 @@ block0(v0: i64):
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: memory,
@@ -3600,44 +3518,39 @@ fn test_gpu_download_ptr_with_offset() {
     let bind_off: usize = 0x1100;
     let mem_size: usize = 0x1200;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i32, i64, i64, i64) -> i32 system_v
-
-    fn0 = %cl_gpu_init sig0
-    fn1 = %cl_gpu_create_buffer sig1
-    fn2 = %cl_gpu_upload_ptr sig2
-    fn3 = %cl_gpu_download_ptr sig3
-    fn4 = %cl_gpu_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x10
-    v3 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-    ; create buffer for full data (2*64*4 = 512 bytes)
-    v4 = call fn1(v91, v2)
-    ; upload all data from payload
-    v5 = call fn2(v91, v4, v1, v2)
-    ; download only second half: buf_offset = 256, size = 256, to out_ptr
-    v6 = iconst.i64 {half}
-    v7 = call fn3(v91, v4, v6, v3, v6)
-    call fn4(v90)
-    return
-}}"#,
-        half = n * 4,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I32, I64, I64, I64], Some(I32))
+            .import(0, "cl_gpu_init", 0)
+            .import(1, "cl_gpu_create_buffer", 1)
+            .import(2, "cl_gpu_upload_ptr", 2)
+            .import(3, "cl_gpu_download_ptr", 3)
+            .import(4, "cl_gpu_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x10),
+                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                // create buffer for full data (2*64*4 = 512 bytes)
+                call(Some(v(4)), 1, &[v(91), v(2)]),
+                // upload all data from payload
+                call(Some(v(5)), 2, &[v(91), v(4), v(1), v(2)]),
+                // download only second half: buf_offset = 256, size = 256, to out_ptr
+                iconst64(v(6), (n * 4) as i64),
+                call(Some(v(7)), 3, &[v(91), v(4), v(6), v(3), v(6)]),
+                call(None, 4, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; mem_size];
     let shader_bytes = wgsl.as_bytes();
@@ -3646,7 +3559,7 @@ block0(v0: i64):
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: memory,
@@ -3736,65 +3649,52 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
 
     // CLIF: uses cl_cuda_upload_ptr / cl_cuda_download_ptr with payload pointers
     // sig for upload_ptr/download_ptr: (ptr: i64, buf_id: i32, abs_ptr: i64, size: i64) -> i32
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr sig2
-    fn3 = %cl_cuda_download_ptr sig2
-    fn4 = %cl_cuda_launch sig3
-    fn5 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x10
-    v3 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    ; create 3 buffers of {data_bytes} bytes each
-    v4 = iconst.i64 {data_bytes}
-    v5 = call fn1(v91, v4)
-    v6 = call fn1(v91, v4)
-    v7 = call fn1(v91, v4)
-
-    ; upload A from data_ptr
-    v8 = call fn2(v91, v5, v1, v4)
-
-    ; upload B from data_ptr + data_bytes
-    v9 = iadd v1, v4
-    v10 = call fn2(v91, v6, v9, v4)
-
-    ; launch PTX kernel: grid(1,1,1) block(64,1,1)
-    v11 = iadd_imm v0, {ptx_off}
-    v12 = iconst.i32 3
-    v13 = iadd_imm v0, {bind_off}
-    v14 = iconst.i32 1
-    v15 = iconst.i32 64
-    v16 = call fn4(v91, v11, v12, v13, v14, v14, v14, v15, v14, v14)
-
-    ; download result from buf 2 to out_ptr
-    v17 = call fn3(v91, v7, v3, v4)
-
-    call fn5(v90)
-    return
-}}"#,
-        data_bytes = data_bytes,
-        ptx_off = ptx_off,
-        bind_off = bind_off,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr", 2)
+            .import(3, "cl_cuda_download_ptr", 2)
+            .import(4, "cl_cuda_launch", 3)
+            .import(5, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x10),
+                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                // create 3 buffers of {data_bytes} bytes each
+                iconst64(v(4), data_bytes as i64),
+                call(Some(v(5)), 1, &[v(91), v(4)]),
+                call(Some(v(6)), 1, &[v(91), v(4)]),
+                call(Some(v(7)), 1, &[v(91), v(4)]),
+                // upload A from data_ptr
+                call(Some(v(8)), 2, &[v(91), v(5), v(1), v(4)]),
+                // upload B from data_ptr + data_bytes
+                iadd(v(9), v(1), v(4)),
+                call(Some(v(10)), 2, &[v(91), v(6), v(9), v(4)]),
+                // launch PTX kernel: grid(1,1,1) block(64,1,1)
+                iadd_imm(v(11), v(0), ptx_off as i64),
+                iconst32(v(12), 3),
+                iadd_imm(v(13), v(0), bind_off as i64),
+                iconst32(v(14), 1),
+                iconst32(v(15), 64),
+                call(Some(v(16)), 4, &[v(91), v(11), v(12), v(13), v(14), v(14), v(14), v(15), v(14), v(14)]),
+                // download result from buf 2 to out_ptr
+                call(Some(v(17)), 3, &[v(91), v(7), v(3), v(4)]),
+                call(None, 5, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; mem_size];
     let ptx_bytes = ptx.as_bytes();
@@ -3805,7 +3705,7 @@ block0(v0: i64):
     memory[bind_off + 8..bind_off + 12].copy_from_slice(&2i32.to_le_bytes());
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: memory,
@@ -3888,64 +3788,51 @@ fn test_cuda_download_ptr_different_data() {
     let mem_size: usize = 0x1200;
 
     // CLIF: upload A to buf 0, B to buf 1, launch, download buf 1 to out_ptr
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr sig2
-    fn3 = %cl_cuda_download_ptr sig2
-    fn4 = %cl_cuda_launch sig3
-    fn5 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x10
-    v3 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    ; create 2 buffers
-    v4 = iconst.i64 {data_bytes}
-    v5 = call fn1(v91, v4)
-    v6 = call fn1(v91, v4)
-
-    ; upload A from data_ptr to buf 0
-    v7 = call fn2(v91, v5, v1, v4)
-
-    ; upload B from data_ptr + data_bytes to buf 1
-    v8 = iadd v1, v4
-    v9 = call fn2(v91, v6, v8, v4)
-
-    ; launch: grid(1,1,1) block(64,1,1)
-    v10 = iadd_imm v0, {ptx_off}
-    v11 = iconst.i32 2
-    v12 = iadd_imm v0, {bind_off}
-    v13 = iconst.i32 1
-    v14 = iconst.i32 64
-    v15 = call fn4(v91, v10, v11, v12, v13, v13, v13, v14, v13, v13)
-
-    ; download buf 1 (result) to out_ptr
-    v16 = call fn3(v91, v6, v3, v4)
-
-    call fn5(v90)
-    return
-}}"#,
-        data_bytes = data_bytes,
-        ptx_off = ptx_off,
-        bind_off = bind_off,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr", 2)
+            .import(3, "cl_cuda_download_ptr", 2)
+            .import(4, "cl_cuda_launch", 3)
+            .import(5, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x10),
+                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                // create 2 buffers
+                iconst64(v(4), data_bytes as i64),
+                call(Some(v(5)), 1, &[v(91), v(4)]),
+                call(Some(v(6)), 1, &[v(91), v(4)]),
+                // upload A from data_ptr to buf 0
+                call(Some(v(7)), 2, &[v(91), v(5), v(1), v(4)]),
+                // upload B from data_ptr + data_bytes to buf 1
+                iadd(v(8), v(1), v(4)),
+                call(Some(v(9)), 2, &[v(91), v(6), v(8), v(4)]),
+                // launch: grid(1,1,1) block(64,1,1)
+                iadd_imm(v(10), v(0), ptx_off as i64),
+                iconst32(v(11), 2),
+                iadd_imm(v(12), v(0), bind_off as i64),
+                iconst32(v(13), 1),
+                iconst32(v(14), 64),
+                call(Some(v(15)), 4, &[v(91), v(10), v(11), v(12), v(13), v(13), v(13), v(14), v(13), v(13)]),
+                // download buf 1 (result) to out_ptr
+                call(Some(v(16)), 3, &[v(91), v(6), v(3), v(4)]),
+                call(None, 5, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; mem_size];
     let ptx_bytes = ptx.as_bytes();
@@ -3955,7 +3842,7 @@ block0(v0: i64):
     memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: memory,
@@ -4035,84 +3922,65 @@ fn test_cublas_sgemm_strided_batched_reuse() {
 
     let mem_size: usize = 0x0800;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32) -> i32 system_v
-    sig4 = (i64) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr sig2
-    fn3 = %cl_cuda_download_ptr sig2
-    fn4 = %cl_cublas_sgemm_strided_batched sig3
-    fn5 = %cl_cuda_sync sig4
-    fn6 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    ; create A, x, y buffers
-    v10 = iconst.i64 {a_bytes}
-    v11 = iconst.i64 {x_bytes}
-    v12 = iconst.i64 {y_bytes}
-    v13 = call fn1(v91, v10)
-    v14 = call fn1(v91, v11)
-    v15 = call fn1(v91, v12)
-
-    ; upload A from data_ptr
-    v16 = call fn2(v91, v13, v1, v10)
-
-    ; upload x from data_ptr + a_bytes
-    v17 = iadd v1, v10
-    v18 = call fn2(v91, v14, v17, v11)
-
-    ; batched GEMV using SGEMM-strided-batched
-    ; row-major A (2x3) => transa=1, transb=0, m=2, n=1, k=3
-    ; stride_a=6, stride_b=3, stride_c=2 elements, batch_count=2
-    v20 = iconst.i32 1
-    v21 = iconst.i32 0
-    v22 = iconst.i32 {m}
-    v23 = iconst.i32 1
-    v24 = iconst.i32 {k}
-    v25 = iconst.i32 0x3f800000
-    v26 = iconst.i64 {stride_a}
-    v27 = iconst.i64 {stride_b}
-    v28 = iconst.i64 {stride_c}
-    v29 = iconst.i32 {batch_count}
-    v30 = call fn4(v91, v20, v21, v22, v23, v24, v25, v13, v26, v14, v27, v21, v15, v28, v29)
-
-    v31 = call fn5(v91)
-    v32 = call fn3(v91, v15, v2, v12)
-
-    call fn6(v90)
-    return
-}}"#,
-        a_bytes = a_bytes,
-        x_bytes = x_bytes,
-        y_bytes = y_bytes,
-        m = m,
-        k = k,
-        stride_a = m * k,
-        stride_b = k,
-        stride_c = m,
-        batch_count = batch_count,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32], Some(I32))
+            .sig(4, &[I64], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr", 2)
+            .import(3, "cl_cuda_download_ptr", 2)
+            .import(4, "cl_cublas_sgemm_strided_batched", 3)
+            .import(5, "cl_cuda_sync", 4)
+            .import(6, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                // create A, x, y buffers
+                iconst64(v(10), a_bytes as i64),
+                iconst64(v(11), x_bytes as i64),
+                iconst64(v(12), y_bytes as i64),
+                call(Some(v(13)), 1, &[v(91), v(10)]),
+                call(Some(v(14)), 1, &[v(91), v(11)]),
+                call(Some(v(15)), 1, &[v(91), v(12)]),
+                // upload A from data_ptr
+                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                // upload x from data_ptr + a_bytes
+                iadd(v(17), v(1), v(10)),
+                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
+                // batched GEMV using SGEMM-strided-batched
+                // row-major A (2x3) => transa=1, transb=0, m=2, n=1, k=3
+                // stride_a=6, stride_b=3, stride_c=2 elements, batch_count=2
+                iconst32(v(20), 1),
+                iconst32(v(21), 0),
+                iconst32(v(22), m as i64),
+                iconst32(v(23), 1),
+                iconst32(v(24), k as i64),
+                iconst32(v(25), 0x3f800000),
+                iconst64(v(26), (m * k) as i64),
+                iconst64(v(27), k as i64),
+                iconst64(v(28), m as i64),
+                iconst32(v(29), batch_count as i64),
+                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29)]),
+                call(Some(v(31)), 5, &[v(91)]),
+                call(Some(v(32)), 3, &[v(91), v(15), v(2), v(12)]),
+                call(None, 6, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
@@ -4186,55 +4054,45 @@ fn test_cuda_upload_ptr_offset_reuse() {
     let total_bytes: usize = 16; // 4 f32s
     let mem_size: usize = 0x0400;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64, i64) -> i32 system_v
-    sig3 = (i64, i32, i64, i64) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr_offset sig2
-    fn3 = %cl_cuda_download_ptr sig3
-    fn4 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    v10 = iconst.i64 {total_bytes}
-    v11 = call fn1(v91, v10)
-
-    ; upload first 2 floats to offset 0
-    v12 = iconst.i64 8
-    v13 = iconst.i64 0
-    v14 = call fn2(v91, v11, v13, v1, v12)
-
-    ; upload second 2 floats to offset 8
-    v15 = iadd v1, v12
-    v16 = call fn2(v91, v11, v12, v15, v12)
-
-    ; download full 4-float buffer
-    v17 = call fn3(v91, v11, v2, v10)
-
-    call fn4(v90)
-    return
-}}"#,
-        total_bytes = total_bytes,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64, I64], Some(I32))
+            .sig(3, &[I64, I32, I64, I64], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr_offset", 2)
+            .import(3, "cl_cuda_download_ptr", 3)
+            .import(4, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iconst64(v(10), total_bytes as i64),
+                call(Some(v(11)), 1, &[v(91), v(10)]),
+                // upload first 2 floats to offset 0
+                iconst64(v(12), 8),
+                iconst64(v(13), 0),
+                call(Some(v(14)), 2, &[v(91), v(11), v(13), v(1), v(12)]),
+                // upload second 2 floats to offset 8
+                iadd(v(15), v(1), v(12)),
+                call(Some(v(16)), 2, &[v(91), v(11), v(12), v(15), v(12)]),
+                // download full 4-float buffer
+                call(Some(v(17)), 3, &[v(91), v(11), v(2), v(10)]),
+                call(None, 4, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
@@ -4317,58 +4175,45 @@ fn test_cuda_launch_named_reuses_named_kernel() {
                    ret;\n\
                }\n\0";
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i64, i64, i32, i64, i32, i32, i32, i32, i32, i32) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr sig2
-    fn3 = %cl_cuda_download_ptr sig2
-    fn4 = %cl_cuda_launch_named sig3
-    fn5 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    v10 = iconst.i64 {data_bytes}
-    v11 = call fn1(v91, v10)
-    v12 = call fn2(v91, v11, v1, v10)
-
-    ; launch named kernel twice: x -> x+1 -> x+2
-    v13 = iadd_imm v0, {ptx_off}
-    v14 = iadd_imm v0, {name_off}
-    v15 = iconst.i32 1
-    v16 = iadd_imm v0, {bind_off}
-    v17 = iconst.i32 1
-    v18 = iconst.i32 {n}
-    v19 = call fn4(v91, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
-    v20 = call fn4(v91, v13, v14, v15, v16, v17, v17, v17, v18, v17, v17)
-
-    v21 = call fn3(v91, v11, v2, v10)
-
-    call fn5(v90)
-    return
-}}"#,
-        data_bytes = data_bytes,
-        ptx_off = ptx_off,
-        name_off = name_off,
-        bind_off = bind_off,
-        n = n,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr", 2)
+            .import(3, "cl_cuda_download_ptr", 2)
+            .import(4, "cl_cuda_launch_named", 3)
+            .import(5, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iconst64(v(10), data_bytes as i64),
+                call(Some(v(11)), 1, &[v(91), v(10)]),
+                call(Some(v(12)), 2, &[v(91), v(11), v(1), v(10)]),
+                // launch named kernel twice: x -> x+1 -> x+2
+                iadd_imm(v(13), v(0), ptx_off as i64),
+                iadd_imm(v(14), v(0), name_off as i64),
+                iconst32(v(15), 1),
+                iadd_imm(v(16), v(0), bind_off as i64),
+                iconst32(v(17), 1),
+                iconst32(v(18), n as i64),
+                call(Some(v(19)), 4, &[v(91), v(13), v(14), v(15), v(16), v(17), v(17), v(17), v(18), v(17), v(17)]),
+                call(Some(v(20)), 4, &[v(91), v(13), v(14), v(15), v(16), v(17), v(17), v(17), v(18), v(17), v(17)]),
+                call(Some(v(21)), 3, &[v(91), v(11), v(2), v(10)]),
+                call(None, 5, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let mut memory = vec![0u8; mem_size];
     memory[ptx_off..ptx_off + ptx.len()].copy_from_slice(ptx.as_bytes());
@@ -4376,7 +4221,7 @@ block0(v0: i64):
     memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: memory,
@@ -4438,69 +4283,55 @@ fn test_cublas_sgemv_reuse() {
     let y_bytes: usize = y_elems * 4;
     let mem_size: usize = 0x0400;
 
-    let clif_ir = format!(
-        r#"function u0:0(i64) system_v {{
-block0(v0: i64):
-    return
-}}
-
-function u0:1(i64) system_v {{
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i32 system_v
-    sig2 = (i64, i32, i64, i64) -> i32 system_v
-    sig3 = (i64, i32, i32, i32, i32, i32, i32, i32, i32) -> i32 system_v
-    sig4 = (i64) -> i32 system_v
-
-    fn0 = %cl_cuda_init sig0
-    fn1 = %cl_cuda_create_buffer sig1
-    fn2 = %cl_cuda_upload_ptr sig2
-    fn3 = %cl_cuda_download_ptr sig2
-    fn4 = %cl_cublas_sgemv sig3
-    fn5 = %cl_cuda_sync sig4
-    fn6 = %cl_cuda_cleanup sig0
-
-block0(v0: i64):
-    v1 = load.i64 notrap aligned v0+0x08
-    v2 = load.i64 notrap aligned v0+0x18
-    v90 = iadd_imm v0, 0
-    call fn0(v90)
-
-    v91 = load.i64 notrap aligned v0+0
-
-    v10 = iconst.i64 {a_bytes}
-    v11 = iconst.i64 {x_bytes}
-    v12 = iconst.i64 {y_bytes}
-    v13 = call fn1(v91, v10)
-    v14 = call fn1(v91, v11)
-    v15 = call fn1(v91, v12)
-
-    v16 = call fn2(v91, v13, v1, v10)
-    v17 = iadd v1, v10
-    v18 = call fn2(v91, v14, v17, v11)
-
-    ; row-major A[rows, cols] -> sgemv(trans=1, m=cols, n=rows)
-    v19 = iconst.i32 1
-    v20 = iconst.i32 {cols}
-    v21 = iconst.i32 {rows}
-    v22 = iconst.i32 0x3f800000
-    v23 = iconst.i32 0
-    v24 = call fn4(v91, v19, v20, v21, v22, v13, v14, v23, v15)
-
-    v25 = call fn5(v91)
-    v26 = call fn3(v91, v15, v2, v12)
-
-    call fn6(v90)
-    return
-}}"#,
-        a_bytes = a_bytes,
-        x_bytes = x_bytes,
-        y_bytes = y_bytes,
-        cols = cols,
-        rows = rows,
-    );
+    let clif_prog = programs(vec![
+        function(0)
+            .entry(vec![
+                ret(),
+            ]),
+        function(1)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64], Some(I32))
+            .sig(2, &[I64, I32, I64, I64], Some(I32))
+            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I32], Some(I32))
+            .sig(4, &[I64], Some(I32))
+            .import(0, "cl_cuda_init", 0)
+            .import(1, "cl_cuda_create_buffer", 1)
+            .import(2, "cl_cuda_upload_ptr", 2)
+            .import(3, "cl_cuda_download_ptr", 2)
+            .import(4, "cl_cublas_sgemv", 3)
+            .import(5, "cl_cuda_sync", 4)
+            .import(6, "cl_cuda_cleanup", 0)
+            .entry(vec![
+                load_trusted(v(1), I64, v(0), 0x8),
+                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(90), v(0), 0),
+                call(None, 0, &[v(90)]),
+                load_trusted(v(91), I64, v(0), 0),
+                iconst64(v(10), a_bytes as i64),
+                iconst64(v(11), x_bytes as i64),
+                iconst64(v(12), y_bytes as i64),
+                call(Some(v(13)), 1, &[v(91), v(10)]),
+                call(Some(v(14)), 1, &[v(91), v(11)]),
+                call(Some(v(15)), 1, &[v(91), v(12)]),
+                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                iadd(v(17), v(1), v(10)),
+                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
+                // row-major A[rows, cols] -> sgemv(trans=1, m=cols, n=rows)
+                iconst32(v(19), 1),
+                iconst32(v(20), cols as i64),
+                iconst32(v(21), rows as i64),
+                iconst32(v(22), 0x3f800000),
+                iconst32(v(23), 0),
+                call(Some(v(24)), 4, &[v(91), v(19), v(20), v(21), v(22), v(13), v(14), v(23), v(15)]),
+                call(Some(v(25)), 5, &[v(91)]),
+                call(Some(v(26)), 3, &[v(91), v(15), v(2), v(12)]),
+                call(None, 6, &[v(90)]),
+                ret(),
+            ]),
+    ]);
 
     let config = Setup {
-        cranelift_ir: clif_ir,
+        clif: clif_prog.clone(),
         memory_size: mem_size,
         io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
@@ -4559,3 +4390,400 @@ block0(v0: i64):
     }
 }
 
+
+// --- instruction coverage ---------------------------------------------------
+//
+// The tests above are about FFI linkage and reach only a third of the
+// instruction set. These reach the rest: each builds a program using
+// instructions nothing else exercises, runs it, and checks the values it
+// computed. A decode arm mapped to the wrong Cranelift instruction shows up
+// here as a wrong number rather than as a latent bug an application discovers
+// later.
+
+/// Runs `insts` and returns `n` bytes written from memory offset 2000.
+fn compute(insts: Vec<Inst>, n: i64) -> Vec<u8> {
+    let temp_dir = TempDir::new().unwrap();
+    let out = temp_dir.path().join("out.bin");
+    let path = format!("{}\0", out.to_str().unwrap());
+
+    let mut body = insts;
+    body.extend([
+        iconst64(v(900), 3000),
+        iconst64(v(901), 2000),
+        iconst64(v(902), 0),
+        iconst64(v(903), n),
+        call(Some(v(904)), 0, &[v(0), v(900), v(901), v(902), v(903)]),
+        ret(),
+    ]);
+    let prog = program(
+        function(0)
+            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
+            .import(0, "cl_file_write", 0)
+            .entry(body),
+    );
+
+    let mut memory = vec![0u8; 4096];
+    memory[3000..3000 + path.len()].copy_from_slice(path.as_bytes());
+    let (config, algorithm) = create_cranelift_algorithm(0, memory, prog);
+    run(config, algorithm).unwrap();
+    fs::read(&out).unwrap()
+}
+
+fn i64s(bytes: &[u8]) -> Vec<i64> {
+    bytes
+        .chunks_exact(8)
+        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+#[test]
+fn instr_integer_arithmetic() {
+    // udiv, ineg, band, band_not, bor, bxor
+    let bytes = compute(
+        vec![
+            // A negative dividend: unsigned division of -100 is a huge
+            // quotient, signed division would be -14.
+            iconst64(v(1), -100),
+            iconst64(v(2), 7),
+            udiv(v(3), v(1), v(2)),
+            store(v(3), v(0), 2000),
+            ineg(v(4), v(2)),
+            store(v(4), v(0), 2008),
+            iconst64(v(5), 0xF0),
+            iconst64(v(6), 0x3C),
+            band(v(7), v(5), v(6)),
+            store(v(7), v(0), 2016),
+            band_not(v(8), v(5), v(6)),
+            store(v(8), v(0), 2024),
+            bor(v(9), v(5), v(6)),
+            store(v(9), v(0), 2032),
+            bxor(v(10), v(5), v(6)),
+            store(v(10), v(0), 2040),
+        ],
+        48,
+    );
+    assert_eq!(
+        i64s(&bytes),
+        vec![
+            ((-100i64) as u64 / 7) as i64, // unsigned, not -14
+            -7,           // -(7)
+            0x30,         // F0 & 3C
+            0xC0,         // F0 & !3C
+            0xFC,         // F0 | 3C
+            0xCC,         // F0 ^ 3C
+        ]
+    );
+}
+
+#[test]
+fn instr_bit_counting_and_select() {
+    // ctz, popcnt, select, bitselect
+    let bytes = compute(
+        vec![
+            // 0b1_0000 has one set bit and four trailing zeros, so a swap of
+            // the two would show.
+            iconst64(v(1), 0b1_0000),
+            ctz(v(2), v(1)),
+            store(v(2), v(0), 2000),
+            popcnt(v(3), v(1)),
+            store(v(3), v(0), 2008),
+            // select picks by a condition, bitselect picks by a mask
+            iconst64(v(4), 111),
+            iconst64(v(5), 222),
+            iconst64(v(6), 1),
+            iconst64(v(7), 2),
+            icmp(v(8), IntCC::Ult, v(6), v(7)),
+            select(v(9), v(8), v(4), v(5)),
+            store(v(9), v(0), 2016),
+            iconst64(v(10), 0xFF00),
+            bitselect(v(11), v(10), v(4), v(5)),
+            store(v(11), v(0), 2024),
+        ],
+        32,
+    );
+    let got = i64s(&bytes);
+    assert_eq!(got[0], 4, "ctz(0b1_0000)");
+    assert_eq!(got[1], 1, "popcnt(0b1_0000)");
+    assert_eq!(got[2], 111, "select(1 < 2, 111, 222)");
+    assert_eq!(got[3], (111 & 0xFF00) | (222 & !0xFF00), "bitselect");
+}
+
+#[test]
+fn instr_width_conversions() {
+    // ireduce32, uextend64, sextend64, istore8, store_typed
+    let bytes = compute(
+        vec![
+            // sign extension differs from zero extension for a negative i32
+            iconst32(v(1), -5),
+            sextend64(v(2), v(1)),
+            store(v(2), v(0), 2000),
+            uextend64(v(3), v(1)),
+            store(v(3), v(0), 2008),
+            // narrowing keeps the low 32 bits
+            iconst64(v(4), 0x1_0000_002A),
+            ireduce32(v(5), v(4)),
+            uextend64(v(6), v(5)),
+            store(v(6), v(0), 2016),
+            // istore8 writes one byte; store_typed carries `notrap aligned`
+            iconst64(v(7), 0xAB),
+            istore8(v(7), v(0), 2024),
+            iconst64(v(8), 77),
+            store_typed(I64, v(8), v(0), 2032),
+        ],
+        40,
+    );
+    let got = i64s(&bytes);
+    assert_eq!(got[0], -5, "sextend64(-5i32)");
+    assert_eq!(got[1], 0xFFFF_FFFB, "uextend64(-5i32)");
+    assert_eq!(got[2], 0x2A, "ireduce32 keeps the low word");
+    assert_eq!(got[3] & 0xFF, 0xAB, "istore8");
+    assert_eq!(got[4], 77, "store_typed");
+}
+
+#[test]
+fn instr_float_arithmetic() {
+    // f32const, f64const, fadd, fsub, fmul, fneg, fmax, fmin, fpromote
+    let bytes = compute(
+        vec![
+            f64const(v(1), 3.5),
+            f64const(v(2), 1.25),
+            fadd(v(3), v(1), v(2)),
+            store(v(3), v(0), 2000),
+            fsub(v(4), v(1), v(2)),
+            store(v(4), v(0), 2008),
+            fmul(v(5), v(1), v(2)),
+            store(v(5), v(0), 2016),
+            fneg(v(6), v(1)),
+            store(v(6), v(0), 2024),
+            fmax(v(7), v(1), v(2)),
+            store(v(7), v(0), 2032),
+            fmin(v(8), v(1), v(2)),
+            store(v(8), v(0), 2040),
+            // f32 -> f64 keeps the value
+            f32const(v(9), 2.5),
+            fpromote(v(10), v(9)),
+            store(v(10), v(0), 2048),
+        ],
+        56,
+    );
+    let got: Vec<f64> = bytes
+        .chunks_exact(8)
+        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(got, vec![4.75, 2.25, 4.375, -3.5, 3.5, 1.25, 2.5]);
+}
+
+#[test]
+fn instr_float_conversions_and_compare() {
+    // fcvt_from_sint, fcvt_to_uint, bitcast, fcmp
+    let bytes = compute(
+        vec![
+            iconst64(v(1), 9),
+            fcvt_from_sint(v(2), F64, v(1)),
+            f64const(v(3), 0.5),
+            fmul(v(4), v(2), v(3)),
+            store(v(4), v(0), 2000), // 4.5
+            fcvt_to_uint(v(5), I64, v(4)),
+            store(v(5), v(0), 2008), // 4, truncated
+            // bitcast reinterprets rather than converts
+            bitcast(v(6), I64, v(3)),
+            store(v(6), v(0), 2016),
+            // fcmp yields a one-byte flag, widened here so it can be read back
+            fcmp(v(7), FloatCC::Gt, v(2), v(3)),
+            uextend64(v(70), v(7)),
+            store(v(70), v(0), 2024),
+            fcmp(v(8), FloatCC::Lt, v(2), v(3)),
+            uextend64(v(80), v(8)),
+            store(v(80), v(0), 2032),
+        ],
+        40,
+    );
+    assert_eq!(f64::from_le_bytes(bytes[0..8].try_into().unwrap()), 4.5);
+    let got = i64s(&bytes);
+    assert_eq!(got[1], 4, "fcvt_to_uint truncates");
+    assert_eq!(got[2], 0.5f64.to_bits() as i64, "bitcast is a reinterpretation");
+    assert_eq!(got[3], 1, "9.0 > 0.5");
+    assert_eq!(got[4], 0, "9.0 < 0.5 is false");
+}
+
+#[test]
+fn instr_vector_lanes() {
+    // splat, extractlane, vhigh_bits
+    let bytes = compute(
+        vec![
+            // Four distinct lanes staged in memory, so the lane index is what
+            // decides the answer. Bits: [1.0, 2.0] then [3.0, 4.0].
+            iconst64(v(1), 0x4000_0000_3F80_0000u64 as i64),
+            store(v(1), v(0), 2200),
+            iconst64(v(2), 0x4080_0000_4040_0000u64 as i64),
+            store(v(2), v(0), 2208),
+            load_trusted(v(3), F32X4, v(0), 2200),
+            extractlane(v(4), v(3), 2),
+            fpromote(v(5), v(4)),
+            store(v(5), v(0), 2000),
+            // and a splat really does fill every lane
+            f32const(v(20), 1.5),
+            splat(v(21), F32X4, v(20)),
+            extractlane(v(22), v(21), 3),
+            fpromote(v(23), v(22)),
+            store(v(23), v(0), 2016),
+            // vhigh_bits gathers the sign bit of each byte lane: sixteen 0xFF
+            // bytes staged in memory, read back as one vector.
+            iconst64(v(6), -1),
+            store(v(6), v(0), 2100),
+            store(v(6), v(0), 2108),
+            load_trusted(v(7), I8X16, v(0), 2100),
+            vhigh_bits(v(8), v(7)),
+            uextend64(v(9), v(8)),
+            store(v(9), v(0), 2008),
+        ],
+        24,
+    );
+    assert_eq!(
+        f64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+        3.0,
+        "lane 2 of [1, 2, 3, 4]"
+    );
+    assert_eq!(i64s(&bytes)[1], 0xFFFF, "every one of the sixteen lanes is negative");
+    assert_eq!(
+        f64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+        1.5,
+        "splat fills lane 3 too"
+    );
+}
+
+// --- multi-function programs ------------------------------------------------
+
+#[test]
+fn local_calls_dispatch_to_other_functions() {
+    // A wrapper function calling two others by `u0:N` index, which is the shape
+    // `clifSequenceWrapper` emits for every multi-stage artifact. Resolution
+    // goes through `Callee::Local`, not the symbol table.
+    let temp_dir = TempDir::new().unwrap();
+    let out = temp_dir.path().join("locals.bin");
+    let path = format!("{}\0", out.to_str().unwrap());
+
+    let clif_prog = programs(vec![
+        // u0:0 writes 11 at 2000
+        function(0).entry(vec![
+            iconst64(v(1), 11),
+            store(v(1), v(0), 2000),
+            ret(),
+        ]),
+        // u0:1 writes 22 at 2008
+        function(1).entry(vec![
+            iconst64(v(1), 22),
+            store(v(1), v(0), 2008),
+            ret(),
+        ]),
+        // u0:2 calls both, then writes the pair out
+        function(2)
+            .sig(0, &[I64], None)
+            .sig(1, &[I64, I64, I64, I64, I64], Some(I64))
+            .local(0, 0, 0)
+            .local(1, 1, 0)
+            .import(2, "cl_file_write", 1)
+            .entry(vec![
+                call(None, 0, &[v(0)]),
+                call(None, 1, &[v(0)]),
+                iconst64(v(1), 3000),
+                iconst64(v(2), 2000),
+                iconst64(v(3), 0),
+                iconst64(v(4), 16),
+                call(Some(v(5)), 2, &[v(0), v(1), v(2), v(3), v(4)]),
+                ret(),
+            ]),
+    ]);
+
+    let mut memory = vec![0u8; 4096];
+    memory[3000..3000 + path.len()].copy_from_slice(path.as_bytes());
+    let (config, algorithm) = create_cranelift_algorithm(2, memory, clif_prog);
+    run(config, algorithm).unwrap();
+
+    let bytes = fs::read(&out).unwrap();
+    assert_eq!(
+        i64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+        11,
+        "u0:0 ran"
+    );
+    assert_eq!(
+        i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+        22,
+        "u0:1 ran"
+    );
+}
+
+#[test]
+fn clif_error_local_call_to_missing_function() {
+    // A program of one function whose wrapper names u0:3.
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(
+            function(0)
+                .sig(0, &[I64], None)
+                .local(0, 3, 0)
+                .entry(vec![call(None, 0, &[v(0)]), ret()]),
+        ),
+    );
+    let Err(err) = Base::new(config) else {
+        panic!("expected an error for a local call to a function that is not defined");
+    };
+    let base::Error::Clif(msg) = err else {
+        panic!("expected Error::Clif");
+    };
+    assert!(msg.contains("u0:3"), "message should name the callee: {msg}");
+}
+
+#[test]
+fn clif_error_callee_names_undeclared_sig() {
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(
+            function(0)
+                .import(0, "cl_file_write", 7)
+                .entry(vec![ret()]),
+        ),
+    );
+    let Err(err) = Base::new(config) else {
+        panic!("expected an error for a callee naming a signature that is not declared");
+    };
+    let base::Error::Clif(msg) = err else {
+        panic!("expected Error::Clif");
+    };
+    assert!(msg.contains("sig7"), "message should name the signature: {msg}");
+}
+
+#[test]
+fn clif_error_binding_the_result_of_a_void_callee() {
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(
+            function(0)
+                .sig(0, &[I64], None)
+                .import(0, "cl_gpu_init", 0)
+                .entry(vec![call(Some(v(1)), 0, &[v(0)]), ret()]),
+        ),
+    );
+    let Err(err) = Base::new(config) else {
+        panic!("expected an error for binding the result of a callee that returns nothing");
+    };
+    assert!(matches!(err, base::Error::Clif(_)));
+}
+
+#[test]
+fn clif_error_float_constant_of_integer_type() {
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(function(0).entry(vec![
+            base_types::clif::Inst::Fconst(v(1), I64, 0),
+            ret(),
+        ])),
+    );
+    let Err(err) = Base::new(config) else {
+        panic!("expected an error for a float constant of a non-float type");
+    };
+    let base::Error::Clif(msg) = err else {
+        panic!("expected Error::Clif");
+    };
+    assert!(msg.contains("fconst"), "message should say what is wrong: {msg}");
+}

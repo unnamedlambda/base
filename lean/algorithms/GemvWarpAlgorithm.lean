@@ -303,15 +303,18 @@ def fetchFn (sh : Shape) : IRBuilder Unit := do
   let _ ← call cuda.fnDownload [ctxPtr, yId, outPtr, yBytes]
   ret
 
-def clifIR (sh : Shape) : String :=
-  noopFunction ++ "\n" ++ buildFunction 1 (loadFn sh)
-    ++ "\n" ++ buildFunction 2 (runFn sh false .vec4)
-    ++ "\n" ++ buildFunction 3 (fetchFn sh) ++ "\n" ++ buildFunction 4 (blasFn sh)
-    ++ "\n" ++ buildFunction 5 (runFn sh false .strided)
-    ++ "\n" ++ buildFunction 6 (runFn sh false .blocked)
-    ++ "\n" ++ buildFunction 7 (runFn sh true .vec4)
-    ++ "\n" ++ buildFunction 8 (runFn sh true .strided)
-    ++ "\n" ++ buildFunction 9 (runFn sh true .blocked)
+def clifIR (sh : Shape) : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 (loadFn sh),
+     buildFunction 2 (runFn sh false .vec4),
+     buildFunction 3 (fetchFn sh),
+     buildFunction 4 (blasFn sh),
+     buildFunction 5 (runFn sh false .strided),
+     buildFunction 6 (runFn sh false .blocked),
+     buildFunction 7 (runFn sh true .vec4),
+     buildFunction 8 (runFn sh true .strided),
+     buildFunction 9 (runFn sh true .blocked)]
 
 /-- Every emitted kernel fits the slot it is written into — all six kernels at
     all four shapes, checked rather than assumed. -/
@@ -342,7 +345,7 @@ def initialMemory (sh : Shape) : List UInt8 :=
 
 def artifactOf (sh : Shape) : Json :=
   toJsonArtifact sh.tag
-    { cranelift_ir := clifIR sh, memory_size := MEM_SIZE,
+    { clif := clifIR sh, memory_size := MEM_SIZE,
       initial_memory := initialMemory sh }
     { fn_idx := u32 1 }
     [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),

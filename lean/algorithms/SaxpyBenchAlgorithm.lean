@@ -71,7 +71,7 @@ def layoutMeta : LayoutMeta := mkLayout.2
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.IR in
-def clifIrSource : String := buildProgram do
+def clifIrSource : Program := buildProgram do
   let cuda ← declareCudaFFI
   let fnWr ← declareFileWrite
   let ptr  ← entryBlock
@@ -134,7 +134,7 @@ def payloads : List UInt8 :=
   ]
 
 def saxpyConfig : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }

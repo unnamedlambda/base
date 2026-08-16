@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub mod clif;
-use std::collections::HashMap;
 
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OutputType {
@@ -34,7 +34,8 @@ pub struct IoOffsets {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Setup {
-    pub cranelift_ir: String,
+    /// The program the runtime compiles.
+    pub clif: clif::Program,
     pub memory_size: usize,
     pub io_offsets: IoOffsets,
     #[serde(default)]

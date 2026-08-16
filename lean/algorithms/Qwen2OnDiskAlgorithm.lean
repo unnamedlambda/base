@@ -250,30 +250,31 @@ def kvSaveLayerFn : IRBuilder Unit := do
 
 -- ── CLIF IR ──────────────────────────────────────────────────────────────────
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 loadInitFn ++ "\n" ++
-  (List.range N_LAYERS).foldl
-    (fun acc l => acc ++ buildFunction (2 + l) (loadLayerFn l) ++ "\n") "" ++
-  buildFunction 26 loadFinalizeFn ++ "\n" ++
-  buildFunction 27 inferFn ++ "\n" ++
-  buildFunction 28 inferLayerFn ++ "\n" ++
-  buildFunction 29 inferLayerAttnFn ++ "\n" ++
-  buildFunction 30 inferLayerFfnFn ++ "\n" ++
-  buildFunction 31 inferFinalFn ++ "\n" ++
-  buildFunction 32 loadTokenizerFn ++ "\n" ++
-  buildFunction 33 tokenizeInitFn ++ "\n" ++
-  buildFunction 34 tokenizeBpeFn ++ "\n" ++
-  buildFunction 35 detokenizeFn ++ "\n" ++
-  buildFunction 36 cliFn ++ "\n" ++
-  buildFunction 37 parseArgsFn ++ "\n" ++
-  buildFunction 38 streamLayerFn ++ "\n" ++
-  buildFunction 39 kvLoadLayerFn ++ "\n" ++
-  buildFunction 40 kvSaveLayerFn ++
-  -- fn41: orchestrator wrapper — parse args (37), load weights (1..26),
-  --       load tokenizer (32), server (36 — runs forever).
-  clifSequenceWrapper 41
-    (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])
+def clifIR : Program :=
+  program <|
+    [noopFunction,
+     buildFunction 1 loadInitFn]
+    ++ (List.range N_LAYERS).map (fun l => buildFunction (2 + l) (loadLayerFn l))
+    ++ [
+     buildFunction 26 loadFinalizeFn,
+     buildFunction 27 inferFn,
+     buildFunction 28 inferLayerFn,
+     buildFunction 29 inferLayerAttnFn,
+     buildFunction 30 inferLayerFfnFn,
+     buildFunction 31 inferFinalFn,
+     buildFunction 32 loadTokenizerFn,
+     buildFunction 33 tokenizeInitFn,
+     buildFunction 34 tokenizeBpeFn,
+     buildFunction 35 detokenizeFn,
+     buildFunction 36 cliFn,
+     buildFunction 37 parseArgsFn,
+     buildFunction 38 streamLayerFn,
+     buildFunction 39 kvLoadLayerFn,
+     buildFunction 40 kvSaveLayerFn,
+     -- fn41: orchestrator wrapper — parse args (37), load weights (1..26),
+     --       load tokenizer (32), server (36 — runs forever).
+     clifSequenceWrapper 41
+       (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])]
 
 -- ── Initial memory ───────────────────────────────────────────────────────────
 
@@ -285,7 +286,7 @@ def buildInitialMemory : List UInt8 :=
 -- ── Algorithm definition ─────────────────────────────────────────────────────
 
 def buildSetup : Setup := {
-  cranelift_ir := clifIR,
+  clif := clifIR,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }

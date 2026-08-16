@@ -148,11 +148,11 @@ def mainFn : IRBuilder Unit := do
   let _ ← call fnWrite [ptr, outOff, bufOff, zz, zz]
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def artifacts : Array Json :=
   #[toJsonEntry "regex_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

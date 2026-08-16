@@ -175,11 +175,11 @@ def mainFn : IRBuilder Unit := do
   startBlock done
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def artifacts : Array Json :=
   #[toJsonEntry "row_dot_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

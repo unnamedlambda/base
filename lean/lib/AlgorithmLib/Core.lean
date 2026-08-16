@@ -1,4 +1,5 @@
 import Lean
+import AlgorithmLib.ClifData
 
 open Lean
 
@@ -44,11 +45,10 @@ def byteSize : Nat := 56
 end IoOffsets
 
 structure Setup where
-  cranelift_ir : String
+  clif : IR.Program
   memory_size : Nat
   io_offsets : IoOffsets := {}
   initial_memory : List UInt8 := []
-  deriving Repr
 
 namespace ContextSlots
 
@@ -63,7 +63,7 @@ end ContextSlots
 
 instance : ToJson Setup where
   toJson c := Json.mkObj [
-    ("cranelift_ir", toJson c.cranelift_ir),
+    ("clif", toJson c.clif),
     ("memory_size", toJson c.memory_size),
     ("io_offsets", toJson c.io_offsets),
     ("initial_memory", toJson c.initial_memory)
@@ -153,21 +153,5 @@ def emitArtifacts (dir : String) (entries : Array Json) : IO Unit := do
         throw <| IO.userError s!"invalid artifact entry: {Json.compress entry}"
 
 def u32 (n : Nat) : UInt32 := UInt32.ofNat n
-
-/-- Emit a wrapper CLIF function at index `wrapperIdx` that calls each of `callees`
-    in order (passing the base pointer `v0` unchanged) and returns. Used by algorithms
-    that need to invoke multiple helper CLIF functions in sequence from a single
-    `Algorithm.fn_idx`. The result string is meant to be appended to the existing
-    CLIF IR for the program. Distinct callee indices are declared once and reused
-    across calls so a 64-deep stack of one callee produces 1 decl + 64 calls. -/
-def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat) : String :=
-  let unique : List Nat := callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
-  let slotOf (c : Nat) : Nat := (unique.idxOf? c).getD 0
-  let header := s!"\nfunction u0:{wrapperIdx}(i64) system_v \{\n    sig0 = (i64) system_v\n"
-  let fnDecls := String.join <|
-    unique.zipIdx.map fun (callee, i) => s!"    fn{i} = colocated u0:{callee} sig0\n"
-  let body := String.join <|
-    callees.map fun c => s!"    call fn{slotOf c}(v0)\n"
-  header ++ fnDecls ++ "block0(v0: i64):\n" ++ body ++ "    return\n}\n"
 
 end AlgorithmLib

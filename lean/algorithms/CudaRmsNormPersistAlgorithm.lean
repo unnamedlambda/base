@@ -139,11 +139,12 @@ def inferFn : IRBuilder Unit := do
   startBlock skipDl
   ret
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 loadFn ++ "\n" ++
-  buildFunction 2 prepFn ++ "\n" ++
-  buildFunction 3 inferFn
+def clifIR : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 loadFn,
+     buildFunction 2 prepFn,
+     buildFunction 3 inferFn]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]
@@ -155,7 +156,7 @@ def buildInitialMemory : List UInt8 :=
   reserved ++ ptx ++ bind
 
 def buildSetup : Setup := {
-  cranelift_ir := clifIR,
+  clif := clifIR,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }

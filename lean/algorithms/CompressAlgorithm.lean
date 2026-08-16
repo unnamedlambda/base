@@ -240,7 +240,7 @@ def compressionShader (bs : Nat) : String :=
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.IR in
-def clifIrSource (bs : Nat) : String :=
+def clifIrSource (bs : Nat) : Program :=
   let obSz  := outputBufSize bs
   let mSz   := metaSize bs
   let mOff  := blockMeta_off bs
@@ -394,7 +394,7 @@ def buildPayload (bs : Nat) : List UInt8 :=
 def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
   let payload := buildPayload bs
   let cfg : Setup := {
-    cranelift_ir  := clifIrSource bs,
+    clif := clifIrSource bs,
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }

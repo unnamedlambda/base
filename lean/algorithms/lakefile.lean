@@ -27,6 +27,8 @@ lean_lib CudaSaxpyBenchAlgorithm
 lean_lib GpuIterBenchAlgorithm
 lean_lib SortBenchAlgorithm
 lean_lib ClampSumBenchAlgorithm
+lean_lib HProgPilots
+lean_lib HProgCorpus
 lean_lib PandasBenchAlgorithm
 lean_lib PandasFilterBenchAlgorithm
 lean_lib RowAffineReduceBenchAlgorithm

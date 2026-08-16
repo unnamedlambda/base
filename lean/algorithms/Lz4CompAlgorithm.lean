@@ -130,7 +130,7 @@ open AlgorithmLib.IR in
 def warpBuilder (w : WP) : IRBuilder Unit := warpBuilderAt w w.bindOff
 
 open AlgorithmLib.IR in
-def warpClif (w : WP) : String := buildProgram (warpBuilder w)
+def warpClif (w : WP) : Program := buildProgram (warpBuilder w)
 
 
 
@@ -156,7 +156,7 @@ theorem payload_fits (w : WP) : (warpPayloadDSL w).length ≤ w.memSize := by
 def warpArtifactDSL (name : String) (blkLog : Nat) :=
   let w : WP := ⟨blkLog⟩
   AlgorithmLib.toJsonArtifact name
-    { cranelift_ir := warpClif w,
+    { clif := warpClif w,
       memory_size := w.memSize,
       initial_memory := warpPayloadDSL w }
     { fn_idx := AlgorithmLib.IR.mainFnIdx, output := compSchema w }

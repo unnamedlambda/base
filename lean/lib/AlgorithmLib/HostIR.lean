@@ -806,10 +806,10 @@ def emitArg (ptr : Val) (n : Nat) : ExternArg → Nat × List Inst × Val
   | .const c => (n + 1, [Inst.iconst ⟨n⟩ .i64 c], ⟨n⟩)
   | .slot k  => (n + 3, [ Inst.iconst ⟨n⟩ .i64 (Int.ofNat k)
                         , Inst.iadd ⟨n+1⟩ ptr ⟨n⟩
-                        , Inst.load ⟨n+2⟩ "load.i64" ⟨n+1⟩ ], ⟨n+2⟩)
+                        , Inst.load ⟨n+2⟩ { ty := .i64 } ⟨n+1⟩ ], ⟨n+2⟩)
   | .far b k => (n + 3, [ Inst.iconst ⟨n⟩ .i64 k
                         , Inst.iadd ⟨n+1⟩ ⟨b⟩ ⟨n⟩
-                        , Inst.load ⟨n+2⟩ "load.i64" ⟨n+1⟩ ], ⟨n+2⟩)
+                        , Inst.load ⟨n+2⟩ { ty := .i64 } ⟨n+1⟩ ], ⟨n+2⟩)
   | .addr k  => (n + 2, [ Inst.iconst ⟨n⟩ .i64 (Int.ofNat k)
                         , Inst.iadd ⟨n+1⟩ ptr ⟨n⟩ ], ⟨n+1⟩)
   | .held v _ => (n, [], ⟨v⟩)
@@ -1204,7 +1204,7 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
       show (bevalPure ⟨e, m⟩
               [ Inst.iconst ⟨n⟩ .i64 k
               , Inst.iadd ⟨n + 1⟩ ⟨b⟩ ⟨n⟩
-              , Inst.load ⟨n + 2⟩ "load.i64" ⟨n + 1⟩
+              , Inst.load ⟨n + 2⟩ { ty := .i64 } ⟨n + 1⟩
               , Inst.iconst ⟨n + 3⟩ .i64 off
               , Inst.iadd ⟨n + 4⟩ ptr ⟨n + 3⟩
               , Inst.store ⟨n + 2⟩ ⟨n + 4⟩ ]).mem = _
@@ -1223,7 +1223,7 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
       show (bevalPure ⟨e, m⟩
               [ Inst.iconst ⟨n⟩ .i64 (Int.ofNat k)
               , Inst.iadd ⟨n + 1⟩ ptr ⟨n⟩
-              , Inst.load ⟨n + 2⟩ "load.i64" ⟨n + 1⟩
+              , Inst.load ⟨n + 2⟩ { ty := .i64 } ⟨n + 1⟩
               , Inst.iconst ⟨n + 3⟩ .i64 off
               , Inst.iadd ⟨n + 4⟩ ptr ⟨n + 3⟩
               , Inst.store ⟨n + 2⟩ ⟨n + 4⟩ ]).mem = _
@@ -2364,7 +2364,7 @@ theorem deviceOpsOf_stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
   loop *and* a call, then the sampling tail.
 -/
 
-def demoFns : List FnDecl := [{ ref := ⟨0⟩, name := "cl_cuda_launch", sig := ⟨0⟩ }]
+def demoFns : List FnDecl := [{ ref := ⟨0⟩, callee := .import "cl_cuda_launch", sig := ⟨0⟩ }]
 
 def demoLaunch : FnRef := ⟨0⟩
 
@@ -2450,8 +2450,8 @@ theorem demo_trace :
 -/
 
 def demoFfnFns : List FnDecl :=
-  [ { ref := ⟨0⟩, name := "cl_cuda_launch",  sig := ⟨0⟩ }
-  , { ref := ⟨1⟩, name := "cl_cublas_sgemv", sig := ⟨0⟩ } ]
+  [ { ref := ⟨0⟩, callee := .import "cl_cuda_launch",  sig := ⟨0⟩ }
+  , { ref := ⟨1⟩, callee := .import "cl_cublas_sgemv", sig := ⟨0⟩ } ]
 
 /-- `y := A·x`, with the three buffer handles loaded from their slots. -/
 def demoSgemv (a x y : Nat) : HStmt :=

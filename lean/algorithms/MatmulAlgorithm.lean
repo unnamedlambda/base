@@ -194,7 +194,7 @@ def buildPayload (m k n : Nat) : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 open AlgorithmLib.IR in
-def clifIrSource (m k n : Nat) : String :=
+def clifIrSource (m k n : Nat) : Program :=
   let aBytes := m * k * 4
   let bBytes := k * n * 4
   let cBytes := m * n * 4
@@ -261,7 +261,7 @@ def buildMatmulConfig (m k n : Nat) : Setup × Algorithm :=
   let payload := buildPayload m k n
   let memSize := payload.length
   let cfg : Setup := {
-    cranelift_ir := clifIrSource m k n,
+    clif := clifIrSource m k n,
     memory_size := memSize,
     initial_memory := payload
   }

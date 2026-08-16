@@ -99,14 +99,15 @@ def inferFn : IRBuilder Unit := do
   startBlock skipDl
   ret
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 loadFn ++ "\n" ++
-  buildFunction 2 prepFn ++ "\n" ++
-  buildFunction 3 inferFn
+def clifIR : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 loadFn,
+     buildFunction 2 prepFn,
+     buildFunction 3 inferFn]
 
 def buildSetup : Setup := {
-  cranelift_ir := clifIR,
+  clif := clifIR,
   memory_size := MEM_SIZE
 }
 

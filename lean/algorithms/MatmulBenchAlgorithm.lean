@@ -113,11 +113,11 @@ def mainFn : IRBuilder Unit := do
   storeF64 (done.param 0) outPtr
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def artifacts : Array Json :=
   #[toJsonEntry "matmul_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := 40
   } {
     fn_idx := u32 1

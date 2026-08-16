@@ -624,36 +624,9 @@ def bwdBlasSteps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Na
   [ .inr gemmBwd[0]!, .inr gemmBwd[1]!, .inl (6, GRIDH), .inr gemmBwd[2]!
   , .inl (8, GRIDW1), .inl (9, GRIDW2) ]
 
-def clifIR : String :=
-  noopFunction ++ "\n"
-    ++ buildFunction 1 loadFn ++ "\n"
-    ++ buildFunction 2 (uploadFn xB (B * IN * 4)) ++ "\n"
-    ++ buildFunction 3 (uploadFn ohB (B * C * 4)) ++ "\n"
-    ++ buildFunction 4 (fetchFn logB (B * C * 4)) ++ "\n"
-    ++ buildFunction 5 (launchSlot 0 GRID1) ++ "\n"
-    ++ buildFunction 6 (launchSlot 1 GRIDH) ++ "\n"
-    ++ buildFunction 7 (launchSlot 2 GRID2) ++ "\n"
-    ++ buildFunction 8 (launchSlot 4 GRID2) ++ "\n"
-    ++ buildFunction 9 (launchSlot 5 GRIDDH) ++ "\n"
-    ++ buildFunction 10 (launchSlot 6 GRIDH) ++ "\n"
-    ++ buildFunction 11 (launchSlot 7 GRID1) ++ "\n"
-    ++ buildFunction 12 (launchSlot 8 GRIDW1) ++ "\n"
-    ++ buildFunction 13 (launchSlot 9 GRIDW2) ++ "\n"
-    ++ buildFunction 14 (fetchFn hB (B * H * 4)) ++ "\n"
-    ++ buildFunction 15 (fetchFn z1B (B * H * 4)) ++ "\n"
-    ++ buildFunction 16 (fetchFn dhB (B * H * 4)) ++ "\n"
-    ++ buildFunction 17 (fetchFn adjB (B * H * 4)) ++ "\n"
-    ++ buildFunction 18 (fetchFn dw1B (H * IN * 4)) ++ "\n"
-    ++ buildFunction 19 (fetchFn dw2B (C * H * 4)) ++ "\n"
-    ++ buildFunction 20 (fetchFn w1B (H * IN * 4)) ++ "\n"
-    ++ buildFunction 21 (fetchFn w2B (C * H * 4)) ++ "\n"
-    ++ buildFunction 22 (runSeq fwdSteps) ++ "\n"
-    ++ buildFunction 23 (runSeq bwdSteps) ++ "\n"
-    ++ buildFunction 24 (launchSlot 3 B) ++ "\n"
-    ++ buildFunction 25 (uploadFn biasB (C * 4)) ++ "\n"
-    ++ buildFunction 26 (fetchFn dlogB (B * C * 4)) ++ "\n"
-    ++ buildFunction 27 (runMixed fwdBlasSteps) ++ "\n"
-    ++ buildFunction 28 (runMixed bwdBlasSteps)
+def clifIR : Program :=
+  program <|
+    [noopFunction, buildFunction 1 loadFn, buildFunction 2 (uploadFn xB (B * IN * 4)), buildFunction 3 (uploadFn ohB (B * C * 4)), buildFunction 4 (fetchFn logB (B * C * 4)), buildFunction 5 (launchSlot 0 GRID1), buildFunction 6 (launchSlot 1 GRIDH), buildFunction 7 (launchSlot 2 GRID2), buildFunction 8 (launchSlot 4 GRID2), buildFunction 9 (launchSlot 5 GRIDDH), buildFunction 10 (launchSlot 6 GRIDH), buildFunction 11 (launchSlot 7 GRID1), buildFunction 12 (launchSlot 8 GRIDW1), buildFunction 13 (launchSlot 9 GRIDW2), buildFunction 14 (fetchFn hB (B * H * 4)), buildFunction 15 (fetchFn z1B (B * H * 4)), buildFunction 16 (fetchFn dhB (B * H * 4)), buildFunction 17 (fetchFn adjB (B * H * 4)), buildFunction 18 (fetchFn dw1B (H * IN * 4)), buildFunction 19 (fetchFn dw2B (C * H * 4)), buildFunction 20 (fetchFn w1B (H * IN * 4)), buildFunction 21 (fetchFn w2B (C * H * 4)), buildFunction 22 (runSeq fwdSteps), buildFunction 23 (runSeq bwdSteps), buildFunction 24 (launchSlot 3 B), buildFunction 25 (uploadFn biasB (C * 4)), buildFunction 26 (fetchFn dlogB (B * C * 4)), buildFunction 27 (runMixed fwdBlasSteps), buildFunction 28 (runMixed bwdBlasSteps)]
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -672,7 +645,7 @@ def initialMemory : List UInt8 :=
     ++ zeros (MEM_SIZE - BIND_OFF)
 
 def setup : Setup := {
-  cranelift_ir := clifIR
+  clif := clifIR
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
@@ -2499,29 +2472,9 @@ def qRunFused : IRBuilder Unit := do
   let _ ← cudaSync cuda ptr
   ret
 
-def qClifIR : String :=
-  noopFunction ++ "\n"
-    ++ buildFunction 1 qLoadFn ++ "\n"
-    ++ buildFunction 2 qRunFn ++ "\n"
-    ++ buildFunction 3 (qFetchFn 39 (DM * 4)) ++ "\n"
-    ++ buildFunction 4 qRunFwd ++ "\n"
-    ++ buildFunction 5 (qUploadFn 40 (DM * 4)) ++ "\n"
-    ++ buildFunction 6 (qFetchFn 43 (DM * DFF * 4)) ++ "\n"
-    ++ buildFunction 7 (qUploadFn 12 (DM * DFF * 4)) ++ "\n"
-    ++ buildFunction 8 (qRunUpto 30) ++ "\n"
-    ++ buildFunction 9 (qRunUpto 45) ++ "\n"
-    ++ buildFunction 10 (qRunUpto 60) ++ "\n"
-    ++ buildFunction 11 (qRunUpto 75) ++ "\n"
-    ++ buildFunction 12 qRunSynced ++ "\n"
-    ++ buildFunction 13 qCaptureFn ++ "\n"
-    ++ buildFunction 14 (qReplayFn 1) ++ "\n"
-    ++ buildFunction 15 (qReplayFn 2) ++ "\n"
-    ++ buildFunction 16 (qReplayFn 4) ++ "\n"
-    ++ buildFunction 17 (qRunUpto 31) ++ "\n"
-    ++ buildFunction 18 (qRunUpto 34) ++ "\n"
-    ++ buildFunction 19 (qRunUpto 35) ++ "\n"
-    ++ buildFunction 20 (qRunUpto 37) ++ "\n"
-    ++ buildFunction 21 qRunFused
+def qClifIR : Program :=
+  program <|
+    [noopFunction, buildFunction 1 qLoadFn, buildFunction 2 qRunFn, buildFunction 3 (qFetchFn 39 (DM * 4)), buildFunction 4 qRunFwd, buildFunction 5 (qUploadFn 40 (DM * 4)), buildFunction 6 (qFetchFn 43 (DM * DFF * 4)), buildFunction 7 (qUploadFn 12 (DM * DFF * 4)), buildFunction 8 (qRunUpto 30), buildFunction 9 (qRunUpto 45), buildFunction 10 (qRunUpto 60), buildFunction 11 (qRunUpto 75), buildFunction 12 qRunSynced, buildFunction 13 qCaptureFn, buildFunction 14 (qReplayFn 1), buildFunction 15 (qReplayFn 2), buildFunction 16 (qReplayFn 4), buildFunction 17 (qRunUpto 31), buildFunction 18 (qRunUpto 34), buildFunction 19 (qRunUpto 35), buildFunction 20 (qRunUpto 37), buildFunction 21 qRunFused]
 
 def qSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -2534,7 +2487,7 @@ def qInitialMemory : List UInt8 :=
     ++ zeros (QMEM_SIZE - QBIND_OFF)
 
 def qSetup : Setup := {
-  cranelift_ir := qClifIR
+  clif := qClifIR
   memory_size := QMEM_SIZE
   initial_memory := qInitialMemory
 }
@@ -2856,15 +2809,9 @@ def mFetchFn (b n : Nat) : IRBuilder Unit := do
   let _ ← call cuda.fnDownload [ctxPtr, id, outPtr, bytes]
   ret
 
-def mClifIR : String :=
-  noopFunction ++ "\n"
-    ++ buildFunction 1 mLoadFn ++ "\n"
-    ++ buildFunction 2 (mRunRange 0 mRouterTape.length) ++ "\n"
-    ++ buildFunction 3 (mFetchFn MGATE (NE * 4)) ++ "\n"
-    ++ buildFunction 4 mBindExperts ++ "\n"
-    ++ buildFunction 5 (mUploadFn 3 128) ++ "\n"
-    ++ buildFunction 6 (mRunRange mRouterTape.length moeTape.length) ++ "\n"
-    ++ buildFunction 7 (mFetchFn MOUT (MD * 4))
+def mClifIR : Program :=
+  program <|
+    [noopFunction, buildFunction 1 mLoadFn, buildFunction 2 (mRunRange 0 mRouterTape.length), buildFunction 3 (mFetchFn MGATE (NE * 4)), buildFunction 4 mBindExperts, buildFunction 5 (mUploadFn 3 128), buildFunction 6 (mRunRange mRouterTape.length moeTape.length), buildFunction 7 (mFetchFn MOUT (MD * 4))]
 
 def mInitialMemory : List UInt8 :=
   zeros QHOST_LEN_OFF ++ u32le MHOST_BYTES
@@ -2873,7 +2820,7 @@ def mInitialMemory : List UInt8 :=
     ++ zeros (MMEM_SIZE - MBIND_OFF)
 
 def mSetup : Setup := {
-  cranelift_ir := mClifIR
+  clif := mClifIR
   memory_size := MMEM_SIZE
   initial_memory := mInitialMemory
 }

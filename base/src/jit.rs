@@ -131,23 +131,9 @@ fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("cl_thread_call", thread::cl_thread_call as *const u8);
 }
 
-pub(crate) fn compile_cranelift_ir(
-    clif_source: &str,
-) -> Result<
-    (
-        cranelift_jit::JITModule,
-        Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
-    ),
-    String,
-> {
-    info!(ir_len = clif_source.len(), "compiling Cranelift IR");
-
-    let mut functions =
-        cranelift_reader::parse_functions(clif_source).map_err(|e| format!("{e}"))?;
-    if functions.is_empty() {
-        return Err("No functions in CLIF IR".into());
-    }
-
+/// The JIT module every compilation starts from: host ISA, speed, all FFI
+/// symbols registered.
+fn new_module() -> cranelift_jit::JITModule {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
@@ -155,66 +141,23 @@ pub(crate) fn compile_cranelift_ir(
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-
     register_symbols(&mut builder);
+    cranelift_jit::JITModule::new(builder)
+}
 
-    let mut module = cranelift_jit::JITModule::new(builder);
-
-    // Declare all user-defined functions FIRST so their FuncIds match the
-    // source-file `u0:N` indices. CLIF text like `fn1 = colocated u0:3 sig0`
-    // is parsed as `UserExternalName{ namespace: 0, index: 3 }`, and at
-    // relocation time the JIT resolves the call target by treating `index`
-    // as a `FuncId`. If we declared imports first, FuncId(3) would point at
-    // some FFI symbol instead of the intended local function.
-    let mut func_ids = Vec::with_capacity(functions.len());
-    for (i, func) in functions.iter().enumerate() {
-        let name = format!("fn_{}", i);
-        let func_id = module
-            .declare_function(&name, cranelift_module::Linkage::Local, &func.signature)
-            .expect("Failed to declare function");
-        assert_eq!(
-            func_id.as_u32(),
-            i as u32,
-            "user function {i} got FuncId {} — declaration order mismatch",
-            func_id.as_u32()
-        );
-        func_ids.push(func_id);
-    }
-
-    // cranelift_reader parses `%name` as ExternalName::TestCase; fix up to ExternalName::User.
-    // Imports declared here get FuncIds starting at N (the number of user functions).
-    for func in functions.iter_mut() {
-        let mut fixups = Vec::new();
-        for (fref, data) in func.dfg.ext_funcs.iter() {
-            if let cranelift_codegen::ir::ExternalName::TestCase(testcase) = &data.name {
-                let name = testcase.to_string();
-                let name = name.strip_prefix('%').unwrap_or(&name).to_string();
-                let sig = func.dfg.signatures[data.signature].clone();
-                fixups.push((fref, name, sig));
-            }
-        }
-        for (fref, name, sig) in fixups {
-            let fid = module
-                .declare_function(&name, cranelift_module::Linkage::Import, &sig)
-                .expect("Failed to declare imported function");
-            let user_ref =
-                func.declare_imported_user_function(cranelift_codegen::ir::UserExternalName {
-                    namespace: 0,
-                    index: fid.as_u32(),
-                });
-            func.dfg.ext_funcs[fref].name = cranelift_codegen::ir::ExternalName::user(user_ref);
-            func.dfg.ext_funcs[fref].colocated = false;
-        }
-    }
-
-    for (i, func) in functions.into_iter().enumerate() {
-        let mut ctx = cranelift_codegen::Context::for_function(func);
-        module
-            .define_function(func_ids[i], &mut ctx)
-            .expect("Failed to compile function");
-    }
-    module.finalize_definitions().unwrap();
-
+/// Finalizes a module whose functions have all been defined, and hands back
+/// pointers to them.
+fn finalize(
+    mut module: cranelift_jit::JITModule,
+    func_ids: Vec<cranelift_module::FuncId>,
+) -> Result<
+    (
+        cranelift_jit::JITModule,
+        Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
+    ),
+    String,
+> {
+    module.finalize_definitions().map_err(|e| format!("{e}"))?;
     let compiled_fns: Vec<unsafe extern "C" fn(*mut u8)> = func_ids
         .iter()
         .map(|&id| {
@@ -222,11 +165,83 @@ pub(crate) fn compile_cranelift_ir(
             unsafe { std::mem::transmute(code_ptr) }
         })
         .collect();
-
-    info!(
-        count = compiled_fns.len(),
-        "Cranelift IR compiled successfully"
-    );
+    info!(count = compiled_fns.len(), "CLIF compiled successfully");
     Ok((module, Arc::new(compiled_fns)))
+}
+
+/// Compiles the program an artifact carries.
+///
+/// Unlike the text path, callees are declared while the function is built, so
+/// there is no name to rewrite afterward and no dependence on declaration order
+/// happening to match the indices a parser recovered.
+pub(crate) fn compile_program(
+    prog: &base_types::clif::Program,
+) -> Result<
+    (
+        cranelift_jit::JITModule,
+        Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
+    ),
+    String,
+> {
+    info!(functions = prog.functions.len(), "compiling CLIF program");
+    let mut module = new_module();
+
+    // Declared before any body is built, so `u0:N` resolves to FuncId(N).
+    let mut func_ids = Vec::with_capacity(prog.functions.len());
+    for (i, f) in prog.functions.iter().enumerate() {
+        if f.index as usize != i {
+            return Err(format!(
+                "function at position {i} declares index u0:{} — they must agree",
+                f.index
+            ));
+        }
+        let mut sig = cranelift_codegen::ir::Signature::new(
+            cranelift_codegen::isa::CallConv::SystemV,
+        );
+        sig.params.push(cranelift_codegen::ir::AbiParam::new(
+            cranelift_codegen::ir::types::I64,
+        ));
+        func_ids.push(
+            module
+                .declare_function(&format!("fn_{i}"), cranelift_module::Linkage::Local, &sig)
+                .map_err(|e| format!("declaring fn_{i}: {e}"))?,
+        );
+    }
+
+    let mut decoded = Vec::with_capacity(prog.functions.len());
+    for f in &prog.functions {
+        let mut declare = |callee: &base_types::clif::Callee,
+                           sig: &cranelift_codegen::ir::Signature| {
+            match callee {
+                base_types::clif::Callee::Import(name) => module
+                    .declare_function(name, cranelift_module::Linkage::Import, sig)
+                    .map(|id| id.as_u32())
+                    .map_err(|e| format!("declaring import {name}: {e}")),
+                base_types::clif::Callee::Local(n) => func_ids
+                    .get(*n as usize)
+                    .map(|id| id.as_u32())
+                    .ok_or_else(|| format!("call to u0:{n}, which the program does not define")),
+            }
+        };
+        decoded.push(crate::clif_decode::decode_function(f, &mut declare)?);
+    }
+
+    let dump = std::env::var("BASE_DISASM").is_ok();
+    for (i, func) in decoded.into_iter().enumerate() {
+        let mut ctx = cranelift_codegen::Context::for_function(func);
+        if dump {
+            ctx.set_disasm(true);
+        }
+        module
+            .define_function(func_ids[i], &mut ctx)
+            .map_err(|e| format!("compiling u0:{i}: {e}"))?;
+        if dump {
+            if let Some(vc) = ctx.compiled_code().and_then(|c| c.vcode.as_deref()) {
+                eprintln!("=== fn {i} ===\n{vc}");
+            }
+        }
+    }
+
+    finalize(module, func_ids)
 }
 

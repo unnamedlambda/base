@@ -1,4 +1,4 @@
-//! Cranelift parse + JIT timing for generated CLIF.
+//! JIT timing for generated CLIF programs.
 //!
 //! Separate binary because it links `base` (and therefore wgpu/cudarc), which
 //! the harness itself has no reason to pull in. The `clif` suite invokes this if
@@ -6,23 +6,31 @@
 //!
 //!   cargo build --release -p bench-scaling --bin clifbench
 //!
-//! Prints one `file<TAB>bytes<TAB>seconds` line per input.
+//! Takes generated artifact JSON files. Prints one
+//! `file<TAB>bytes<TAB>seconds` line per input.
 
 use base::{Base, Setup};
-use base_types::IoOffsets;
+use base_types::{Artifact, IoOffsets};
 
 fn main() {
     for path in std::env::args().skip(1) {
-        let ir = match std::fs::read_to_string(&path) {
+        let text = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
                 println!("{path}\t0\tERR {e}");
                 continue;
             }
         };
-        let bytes = ir.len();
+        let bytes = text.len();
+        let artifact: Artifact = match serde_json::from_str(&text) {
+            Ok(a) => a,
+            Err(e) => {
+                println!("{path}\t{bytes}\tERR {e}");
+                continue;
+            }
+        };
         let setup = Setup {
-            cranelift_ir: ir,
+            clif: artifact.setup.clif,
             memory_size: 1 << 20,
             io_offsets: IoOffsets { data_ptr: 8, data_len: 16, out_ptr: 24, out_len: 32 },
             initial_memory: Vec::new(),

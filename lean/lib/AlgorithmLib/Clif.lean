@@ -13,9 +13,6 @@ import AlgorithmLib.IR
 
   This file supplies both, for the fragment the generators actually emit:
 
-  * `Modellable` — a decidable gate. `rawInst` embeds an unparsed assembly
-    string and cannot be given a meaning; a program containing one is rejected
-    rather than silently half-modelled. No generator in the repo emits one.
   * `evalPure` — an SSA environment semantics for the integer fragment that
     computes launch arguments (`iconst`, `iadd`, `imul`, `ishl`, …). Enough to
     say *which* PTX slot and *what* geometry a launch names.
@@ -29,24 +26,6 @@ import AlgorithmLib.IR
 namespace AlgorithmLib.Clif
 
 open AlgorithmLib.IR
-
--- ---------------------------------------------------------------------------
--- The modellable fragment
--- ---------------------------------------------------------------------------
-
-/-- Instructions this model gives a meaning to.
-
-    `rawInst` is the only exclusion, and it is a genuine one: its payload is an
-    opaque string handed to the assembler, so no semantics can be assigned
-    without parsing it. Gating on it means a program that reaches for the escape
-    hatch fails the check rather than being modelled as if it had not. -/
-def Inst.ModellableB : Inst → Bool
-  | .rawInst _ => false
-  | _          => true
-
-/-- …lifted to a whole function. -/
-def blocksModellableB (bs : List BlockData) : Bool :=
-  bs.all (fun b => b.insts.all Inst.ModellableB)
 
 -- ---------------------------------------------------------------------------
 -- The pure integer fragment: enough to evaluate a launch's arguments
@@ -385,9 +364,14 @@ structure LaunchRec where
   stream   : Option Nat := none
   deriving Repr, DecidableEq, BEq
 
-/-- The declared name of a function reference. -/
+/-- The declared name of a function reference. A call to another function of
+    the same program has no symbol name, and is not what any caller of this is
+    looking for. -/
 def fnNameOf (fns : List FnDecl) (r : FnRef) : Option String :=
-  (fns.find? (fun d => d.ref.id = r.id)).map FnDecl.name
+  (fns.find? (fun d => d.ref.id = r.id)).bind fun d =>
+    match d.callee with
+    | .import n => some n
+    | .local _  => none
 
 /-- **Primitives that write device memory without being a modelled launch.**
 
@@ -1222,9 +1206,6 @@ theorem deviceOpsOf_length (root : Nat) (s : IRState) :
   | 1 | the CLIF backend | that Cranelift's `iadd`/`load`/`brif`/`call` mean what `stepPure` and the FFI contracts say. The host-side counterpart of the PTX opcode table. |
   | 2 | each FFI primitive | 75 of them. `file`/`stdio`/`ht`/`thread` have contracts statable in an afternoon; `cuda`/`wgpu`/`lmdb` wrap third-party surfaces and stay named assumptions. |
   | 3 | `cl_cuda_launch` | that it runs the PTX at the given slot with the given grid — the seam between this file's `LaunchRec` and `ML/Compose.lean`'s `Pipeline`. |
-
-  `Modellable` is what keeps (1) honest: a program reaching for `rawInst` fails
-  the gate instead of being modelled as though it had not.
 -/
 
 end AlgorithmLib.Clif

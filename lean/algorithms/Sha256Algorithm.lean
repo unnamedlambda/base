@@ -453,7 +453,7 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) (hexBlk : DeclaredBlock) : IRBu
 
 -- Main builder: compose the sub-builders
 set_option maxRecDepth 2048 in
-def clifIrSource : String := buildProgram do
+def clifIrSource : Program := buildProgram do
   let fnRead ← declareFileRead
   let fnWrite ← declareFileWrite
 
@@ -548,7 +548,7 @@ def payloads : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 def sha256Config : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }

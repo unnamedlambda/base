@@ -219,13 +219,16 @@ def workerFn : IRBuilder Unit := do
   startBlock done
   ret
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++ noopAt 1 ++ "\n" ++
-  buildFunction 2 orchFn ++ "\n" ++ buildFunction 3 workerFn
+def clifIR : Program :=
+  program
+    [noopFunction,
+     noopAt 1,
+     buildFunction 2 orchFn,
+     buildFunction 3 workerFn]
 
 def artifacts : Array Json :=
   #[toJsonEntry "hist4_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 2

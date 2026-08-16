@@ -119,7 +119,7 @@ def fftShader : String :=
 
 set_option maxRecDepth 2048 in
 open AlgorithmLib.IR in
-def clifIrSource : String := buildProgram do
+def clifIrSource : Program := buildProgram do
   -- FFI declarations
   let fnRead ← declareFileRead
   let fnWrite ← declareFileWrite
@@ -265,7 +265,7 @@ def payloads : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 def fftConfig : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := payloads.length + totalAdditionalMemory,
   initial_memory := payloads
 }

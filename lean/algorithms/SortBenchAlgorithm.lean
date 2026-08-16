@@ -103,12 +103,12 @@ def mainFn : IRBuilder Unit := do
 
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def buildInitialMemory : List UInt8 := zeros MEM_SIZE
 
 def buildSetup : Setup := {
-  cranelift_ir := clifIR,
+  clif := clifIR,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }

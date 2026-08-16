@@ -351,7 +351,7 @@ def emitOutputPhases (k : K)
 -- ---------------------------------------------------------------------------
 
 set_option maxRecDepth 4096 in
-def clifIrSource (patternLen : Nat) : String := buildProgram do
+def clifIrSource (patternLen : Nat) : Program := buildProgram do
   let fnFileRead ← declareFileRead
   let lmdb ← declareLmdbFFI
   let fnFileWrite ← declareFileWrite
@@ -480,7 +480,7 @@ def buildQueryMonomorphic (patternStr : String) : Setup × Algorithm :=
   let patternBytes := patternStr.toUTF8.toList  -- no null terminator
   let payload := buildPayload patternBytes
   let cfg : Setup := {
-    cranelift_ir   := clifIrSource patternBytes.length,
+    clif := clifIrSource patternBytes.length,
     memory_size    := payload.length,
     initial_memory := payload
   }

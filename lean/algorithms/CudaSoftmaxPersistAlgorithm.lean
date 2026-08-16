@@ -285,14 +285,15 @@ def finalizeFn : IRBuilder Unit := do
 /-- Stack depth baked into the `stackAlgorithm` wrapper. -/
 def STACK_DEPTH : Nat := 64
 
-def clifIR : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 loadFn ++ "\n" ++
-  buildFunction 2 prepFn ++ "\n" ++
-  buildFunction 3 coreFn ++ "\n" ++
-  buildFunction 4 finalizeFn ++
-  clifSequenceWrapper 5 [3, 4] ++                                       -- infer
-  clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4])           -- stack
+def clifIR : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 loadFn,
+     buildFunction 2 prepFn,
+     buildFunction 3 coreFn,
+     buildFunction 4 finalizeFn,
+     clifSequenceWrapper 5 [3, 4],
+     clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4])]
 
 -- initial_memory: names, PTX source, bind descriptors
 def nameBlockReduce  : List UInt8 := "block_reduce".toUTF8.toList ++ [0]
@@ -326,7 +327,7 @@ def buildInitialMemory : List UInt8 :=
   names ++ ptx ++ bind
 
 def buildSetup : Setup := {
-  cranelift_ir := clifIR,
+  clif := clifIR,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }

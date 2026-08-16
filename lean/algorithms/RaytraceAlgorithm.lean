@@ -306,7 +306,7 @@ def wgX : Nat := imageWidth / 16    -- 256
 def wgY : Nat := imageHeight / 16   -- 256
 
 open AlgorithmLib.IR in
-def clifIrSource : String := buildProgram do
+def clifIrSource : Program := buildProgram do
   let gpu ← declareGpuFFI
   let fnWr ← declareFileWrite
   let ptr ← entryBlock
@@ -352,7 +352,7 @@ def payloads : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 def raytraceConfig : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := payloads.length + pixelBytes,
   initial_memory := payloads
 }

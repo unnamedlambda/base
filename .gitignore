@@ -19,6 +19,9 @@ applications/lz4-ptx/baseline/.venv/
 cifar-10-batches-bin/
 
 # Root-level dataset directory only (data/flowers-102, data/vit, …) — an
-# unanchored `data/` would also swallow e.g. applications/csv/data/, which is a
-# tracked input.
+# unanchored `data/` would also swallow e.g. applications/csv/data/ and
+# base/tests/data/, which are tracked inputs.
 /data/
+
+# Local Claude Code settings.
+.claude/

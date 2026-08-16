@@ -1,94 +1,10 @@
+import AlgorithmLib.ClifData
 import AlgorithmLib.Core
 import AlgorithmLib.Bytes
 
 namespace AlgorithmLib
 
 namespace IR
-
-/-- CLIF value types -/
-inductive ClifTy where
-  | i8 | i32 | i64
-  | f32 | f64
-  | f32x4 | i8x16
-  deriving Repr, BEq
-
-/-- An SSA value reference -/
-structure Val where
-  id : Nat
-  deriving Repr, BEq
-
-/-- A block reference -/
-structure BlockRef where
-  id : Nat
-  deriving Repr, BEq
-
-/-- A signature reference -/
-structure SigRef where
-  id : Nat
-  deriving Repr, BEq
-
-/-- An FFI function reference -/
-structure FnRef where
-  id : Nat
-  deriving Repr, BEq
-
-/-- Comparison condition codes -/
-inductive ICmpCond where
-  | eq | ne | uge | ugt | ule | ult | slt | sle | sgt | sge
-  deriving Repr
-
-/-- A single CLIF instruction -/
-inductive Inst where
-  | iconst (dst : Val) (ty : ClifTy) (value : Int)
-  | iadd (dst : Val) (a b : Val)
-  | isub (dst : Val) (a b : Val)
-  | imul (dst : Val) (a b : Val)
-  | udiv (dst : Val) (a b : Val)
-  | ineg (dst : Val) (a : Val)
-  | ishl (dst : Val) (a b : Val)
-  | ushr (dst : Val) (a b : Val)
-  | band (dst : Val) (a b : Val)
-  | bandNot (dst : Val) (a b : Val)
-  | bor (dst : Val) (a b : Val)
-  | bxor (dst : Val) (a b : Val)
-  | ireduce32 (dst : Val) (a : Val)
-  | uextend64 (dst : Val) (a : Val)
-  | sextend64 (dst : Val) (a : Val)
-  | store (val addr : Val)
-  | istore8 (val addr : Val)
-  | load (dst : Val) (loadOp : String) (addr : Val)
-  | icmp (dst : Val) (cond : ICmpCond) (a b : Val)
-  | select (dst : Val) (cond a b : Val)
-  | call (dst : Option Val) (fn : FnRef) (args : List Val)
-  | jump (target : BlockRef) (args : List Val)
-  | brif (cond : Val) (thenBlk : BlockRef) (thenArgs : List Val)
-         (elseBlk : BlockRef) (elseArgs : List Val)
-  | ret
-  -- Float / SIMD
-  | fconst (dst : Val) (ty : ClifTy) (hexBits : String)
-  | fadd (dst a b : Val)
-  | fsub (dst a b : Val)
-  | fmul (dst a b : Val)
-  | fmax (dst a b : Val)
-  | fmin (dst a b : Val)
-  | fpromote (dst a : Val)
-  | splat (dst : Val) (ty : ClifTy) (src : Val)
-  | extractlane (dst : Val) (src : Val) (lane : Nat)
-  | storeTyped (ty : ClifTy) (val addr : Val)
-  | rawInst (s : String)
-  -- Additional float / int ops
-  | fneg (dst a : Val)
-  | fcvtFromSint (dst : Val) (ty : ClifTy) (src : Val)
-  /-- Saturating float-to-unsigned conversion.  Saturating rather than trapping
-      so an out-of-range value clamps instead of aborting the process — the
-      only consumer is a token id read back from a kernel that computed it as
-      an exactly-representable integer. -/
-  | fcvtToUint (dst : Val) (ty : ClifTy) (src : Val)
-  | fcmp (dst : Val) (cond : String) (a b : Val)
-  | bitcast (dst : Val) (ty : ClifTy) (src : Val)
-  | ctz (dst a : Val)
-  | popcnt (dst a : Val)
-  | vhighBits (dst a : Val)
 
 /-- A declared block with its parameter values -/
 structure DeclaredBlock where
@@ -100,25 +16,6 @@ def DeclaredBlock.param (blk : DeclaredBlock) (i : Nat) : Val :=
   match blk.params[i]? with
   | some (v, _) => v
   | none => { id := 0 }
-
-/-- A finalized block -/
-structure BlockData where
-  ref : BlockRef
-  params : List (Val × ClifTy)
-  insts : List Inst
-
-/-- A signature declaration -/
-structure SigDecl where
-  ref : SigRef
-  params : List ClifTy
-  result : Option ClifTy
-
-/-- An FFI function declaration -/
-structure FnDecl where
-  ref : FnRef
-  name : String
-  sig : SigRef
-  colocated : Bool := false
 
 /-- IR builder state -/
 structure IRState where
@@ -233,7 +130,7 @@ def declareFFI (name : String) (params : List ClifTy) (result : Option ClifTy) :
   let ref : FnRef := { id := s.nextFn }
   set { s with
     nextFn := s.nextFn + 1
-    fns := s.fns ++ [{ ref := ref, name := name, sig := sig : FnDecl }]
+    fns := s.fns ++ [{ ref := ref, callee := .import name, sig := sig : FnDecl }]
   }
   pure ref
 
@@ -304,17 +201,18 @@ def ushrImm (a : Val) (imm : Int) : IRBuilder Val := do
 -- Instruction emitters — float / SIMD
 -- ---------------------------------------------------------------------------
 
-/-- Emit a 32-bit float constant; hexBits is the IEEE 754 bit pattern, e.g. "0x00000000" for 0.0 -/
-def fconst32 (hexBits : String) : IRBuilder Val := do
-  let v ← freshVal; emit (.fconst v .f32 hexBits); pure v
+/-- Emit a 32-bit float constant. The value is carried as its IEEE 754 bit
+    pattern, so a constant that cannot be spelled is a type error here rather
+    than a parse failure at compile time. -/
+def fconst32 (x : Float) : IRBuilder Val := do
+  let v ← freshVal; emit (.fconst v .f32 x.toFloat32.toBits.toUInt64); pure v
 
-/-- Emit a 64-bit float constant; hexBits is the IEEE 754 bit pattern, e.g. "0x0000000000000000" for 0.0 -/
-def fconst64 (hexBits : String) : IRBuilder Val := do
-  let v ← freshVal; emit (.fconst v .f64 hexBits); pure v
+/-- Emit a 64-bit float constant. -/
+def fconst64 (x : Float) : IRBuilder Val := do
+  let v ← freshVal; emit (.fconst v .f64 x.toBits); pure v
 
--- Common float constants (CLIF accepts decimal and C99 hex-float, e.g. "0x1.000000p-1" for 0.5)
-def f32Zero : String := "0.0"
-def f64Zero : String := "0.0"
+def f32Zero : Float := 0.0
+def f64Zero : Float := 0.0
 
 def fadd (a b : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.fadd v a b); pure v
@@ -341,16 +239,16 @@ def extractlane (src : Val) (lane : Nat) : IRBuilder Val := do
   let v ← freshVal; emit (.extractlane v src lane); pure v
 
 def loadF32 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.f32 notrap aligned" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .f32, notrapAligned := true } addr); pure v
 
 def loadF64 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.f64 notrap aligned" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .f64, notrapAligned := true } addr); pure v
 
 def loadF32x4 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.f32x4 notrap aligned" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .f32x4, notrapAligned := true } addr); pure v
 
 def loadI8x16 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.i8x16 notrap aligned" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .i8x16, notrapAligned := true } addr); pure v
 
 def storeF32 (val addr : Val) : IRBuilder Unit :=
   emit (.storeTyped .f32 val addr)
@@ -363,9 +261,6 @@ def storeI64 (val addr : Val) : IRBuilder Unit :=
 
 def storeI32 (val addr : Val) : IRBuilder Unit :=
   emit (.storeTyped .i32 val addr)
-
-def rawInst (s : String) : IRBuilder Unit :=
-  emit (.rawInst s)
 
 def iconst8 (value : Int) : IRBuilder Val := do
   let v ← freshVal; emit (.iconst v .i8 value); pure v
@@ -380,7 +275,7 @@ def fcvtToUint (ty : ClifTy) (src : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.fcvtToUint v ty src); pure v
 
 def fcmpGt (a b : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.fcmp v "gt" a b); pure v
+  let v ← freshVal; emit (.fcmp v .gt a b); pure v
 
 def bitcastI64 (a : Val) : IRBuilder Val := do
   let v ← freshVal; emit (.bitcast v .i64 a); pure v
@@ -422,25 +317,25 @@ def istore8 (val addr : Val) : IRBuilder Unit :=
   emit (.istore8 val addr)
 
 def load64 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.i64" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .i64 } addr); pure v
 
 def load32 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.i32" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .i32 } addr); pure v
 
 def uload8_64 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "uload8.i64" addr); pure v
+  let v ← freshVal; emit (.load v { kind := .uload8, ty := .i64 } addr); pure v
 
 def uload32_64 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "uload32.i64" addr); pure v
+  let v ← freshVal; emit (.load v { kind := .uload32, ty := .i64 } addr); pure v
 
 def sload8_64 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "sload8.i64" addr); pure v
+  let v ← freshVal; emit (.load v { kind := .sload8, ty := .i64 } addr); pure v
 
 def load_i8 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.i8" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .i8 } addr); pure v
 
 def load_i16 (addr : Val) : IRBuilder Val := do
-  let v ← freshVal; emit (.load v "load.i16" addr); pure v
+  let v ← freshVal; emit (.load v { ty := .i16 } addr); pure v
 
 -- ---------------------------------------------------------------------------
 -- Instruction emitters — comparison and selection
@@ -624,174 +519,32 @@ def forLoopAcc2 (ty : LoopTy) (aTy bTy : ClifTy)
   return (exit.param 0, exit.param 1)
 
 -- ---------------------------------------------------------------------------
--- String renderer
--- ---------------------------------------------------------------------------
-
-def renderClifTy : ClifTy → String
-  | .i8  => "i8"
-  | .i32 => "i32"
-  | .i64 => "i64"
-  | .f32 => "f32"
-  | .f64 => "f64"
-  | .f32x4 => "f32x4"
-  | .i8x16 => "i8x16"
-
-def renderVal (v : Val) : String := s!"v{v.id}"
-
-def renderBlockRef (b : BlockRef) : String := s!"block{b.id}"
-
-def renderICmpCond : ICmpCond → String
-  | .eq => "eq"
-  | .ne => "ne"
-  | .uge => "uge"
-  | .ugt => "ugt"
-  | .ule => "ule"
-  | .ult => "ult"
-  | .slt => "slt"
-  | .sle => "sle"
-  | .sgt => "sgt"
-  | .sge => "sge"
-
-def renderArgs (vals : List Val) : String :=
-  String.intercalate ", " (vals.map renderVal)
-
-def renderInst : Inst → String
-  | .iconst dst ty val =>
-    s!"    {renderVal dst} = iconst.{renderClifTy ty} {val}"
-  | .iadd dst a b =>
-    s!"    {renderVal dst} = iadd {renderVal a}, {renderVal b}"
-  | .isub dst a b =>
-    s!"    {renderVal dst} = isub {renderVal a}, {renderVal b}"
-  | .imul dst a b =>
-    s!"    {renderVal dst} = imul {renderVal a}, {renderVal b}"
-  | .udiv dst a b =>
-    s!"    {renderVal dst} = udiv {renderVal a}, {renderVal b}"
-  | .ineg dst a =>
-    s!"    {renderVal dst} = ineg {renderVal a}"
-  | .ishl dst a b =>
-    s!"    {renderVal dst} = ishl {renderVal a}, {renderVal b}"
-  | .ushr dst a b =>
-    s!"    {renderVal dst} = ushr {renderVal a}, {renderVal b}"
-  | .band dst a b =>
-    s!"    {renderVal dst} = band {renderVal a}, {renderVal b}"
-  | .bandNot dst a b =>
-    s!"    {renderVal dst} = band_not {renderVal a}, {renderVal b}"
-  | .bor dst a b =>
-    s!"    {renderVal dst} = bor {renderVal a}, {renderVal b}"
-  | .bxor dst a b =>
-    s!"    {renderVal dst} = bxor {renderVal a}, {renderVal b}"
-  | .ireduce32 dst a =>
-    s!"    {renderVal dst} = ireduce.i32 {renderVal a}"
-  | .uextend64 dst a =>
-    s!"    {renderVal dst} = uextend.i64 {renderVal a}"
-  | .sextend64 dst a =>
-    s!"    {renderVal dst} = sextend.i64 {renderVal a}"
-  | .store val addr =>
-    s!"    store {renderVal val}, {renderVal addr}"
-  | .istore8 val addr =>
-    s!"    istore8 {renderVal val}, {renderVal addr}"
-  | .load dst loadOp addr =>
-    s!"    {renderVal dst} = {loadOp} {renderVal addr}"
-  | .icmp dst cond a b =>
-    s!"    {renderVal dst} = icmp {renderICmpCond cond} {renderVal a}, {renderVal b}"
-  | .select dst cond a b =>
-    s!"    {renderVal dst} = select {renderVal cond}, {renderVal a}, {renderVal b}"
-  | .call dst fn args =>
-    let argStr := renderArgs args
-    match dst with
-    | some v => s!"    {renderVal v} = call fn{fn.id}({argStr})"
-    | none => s!"    call fn{fn.id}({argStr})"
-  | .jump target args =>
-    if args.isEmpty then s!"    jump {renderBlockRef target}"
-    else s!"    jump {renderBlockRef target}({renderArgs args})"
-  | .brif cond tb ta eb ea =>
-    let tStr := if ta.isEmpty then renderBlockRef tb
-                else s!"{renderBlockRef tb}({renderArgs ta})"
-    let eStr := if ea.isEmpty then renderBlockRef eb
-                else s!"{renderBlockRef eb}({renderArgs ea})"
-    s!"    brif {renderVal cond}, {tStr}, {eStr}"
-  | .ret => "    return"
-  | .fconst dst ty hexBits =>
-    let op := if ty == .f32 then "f32const" else "f64const"
-    s!"    {renderVal dst} = {op} {hexBits}"
-  | .fadd dst a b => s!"    {renderVal dst} = fadd {renderVal a}, {renderVal b}"
-  | .fsub dst a b => s!"    {renderVal dst} = fsub {renderVal a}, {renderVal b}"
-  | .fmul dst a b => s!"    {renderVal dst} = fmul {renderVal a}, {renderVal b}"
-  | .fmax dst a b => s!"    {renderVal dst} = fmax {renderVal a}, {renderVal b}"
-  | .fmin dst a b => s!"    {renderVal dst} = fmin {renderVal a}, {renderVal b}"
-  | .fpromote dst a => s!"    {renderVal dst} = fpromote.f64 {renderVal a}"
-  | .splat dst ty src => s!"    {renderVal dst} = splat.{renderClifTy ty} {renderVal src}"
-  | .extractlane dst src lane => s!"    {renderVal dst} = extractlane {renderVal src}, {lane}"
-  | .storeTyped ty val addr =>
-    s!"    store.{renderClifTy ty} notrap aligned {renderVal val}, {renderVal addr}"
-  | .rawInst s => s!"    {s}"
-  | .fneg dst a => s!"    {renderVal dst} = fneg {renderVal a}"
-  | .fcvtFromSint dst ty src =>
-    s!"    {renderVal dst} = fcvt_from_sint.{renderClifTy ty} {renderVal src}"
-  | .fcvtToUint dst ty src =>
-    s!"    {renderVal dst} = fcvt_to_uint_sat.{renderClifTy ty} {renderVal src}"
-  | .fcmp dst cond a b => s!"    {renderVal dst} = fcmp {cond} {renderVal a}, {renderVal b}"
-  | .bitcast dst ty src => s!"    {renderVal dst} = bitcast.{renderClifTy ty} {renderVal src}"
-  | .ctz dst a => s!"    {renderVal dst} = ctz {renderVal a}"
-  | .popcnt dst a => s!"    {renderVal dst} = popcnt {renderVal a}"
-  | .vhighBits dst a => s!"    {renderVal dst} = vhigh_bits.i32 {renderVal a}"
-
-def renderSigDecl (s : SigDecl) : String :=
-  let params := String.intercalate ", " (s.params.map renderClifTy)
-  let retPart := match s.result with
-    | some t => s!" -> {renderClifTy t}"
-    | none => ""
-  s!"    sig{s.ref.id} = ({params}){retPart} system_v"
-
-def renderFnDecl (f : FnDecl) : String :=
-  s!"    fn{f.ref.id} = {if f.colocated then "colocated %" else "%"}{f.name} sig{f.sig.id}"
-
-def renderBlock (b : BlockData) : String :=
-  let paramStr := if b.params.isEmpty then ""
-    else "(" ++ String.intercalate ", " (b.params.map fun (v, t) =>
-      s!"{renderVal v}: {renderClifTy t}") ++ ")"
-  let header := s!"{renderBlockRef b.ref}{paramStr}:"
-  let body := String.intercalate "\n" (b.insts.map renderInst)
-  if b.insts.isEmpty then header
-  else header ++ "\n" ++ body
-
-/-- Finalize and render a CLIF function from the builder state -/
-def renderFunction (funcIdx : Nat) (st : IRState) : String :=
-  let sigLines := st.sigs.map renderSigDecl
-  let fnLines := st.fns.map renderFnDecl
-  let prologueLines := sigLines ++ fnLines
-  let prologueStr := if prologueLines.isEmpty then ""
-    else String.intercalate "\n" prologueLines ++ "\n\n"
-  let blockStr := String.intercalate "\n" (st.blocks.map renderBlock)
-  s!"function u0:{funcIdx}(i64) system_v \{\n" ++
-  prologueStr ++ blockStr ++ "\n}\n"
-
--- ---------------------------------------------------------------------------
 -- Top-level builders
 -- ---------------------------------------------------------------------------
 
-/-- Run an IR builder and produce a CLIF function string -/
-def buildFunction (funcIdx : Nat) (builder : IRBuilder Unit) : String :=
+/-- Run an IR builder and produce one function of the program. -/
+def buildFunction (funcIdx : Nat) (builder : IRBuilder Unit) : FuncData :=
   let (_, st) := builder.run {}
   -- Finalize last block if still open
   let (_, st) := finalizeCurrentBlock.run st
-  renderFunction funcIdx st
+  { index := funcIdx, sigs := st.sigs, fns := st.fns, blocks := st.blocks }
 
-/-- The standard noop function u0:0 -/
-def noopFunction : String :=
-  buildFunction 0 do
-    let _ ← entryBlock
-    ret
-
-/-- Build a complete two-function CLIF program (noop + main) -/
-def buildProgram (mainBuilder : IRBuilder Unit) : String :=
-  noopFunction ++ "\n" ++ buildFunction 1 mainBuilder
-
-/-- Build a noop function at a given function index (for multi-function programs) -/
-def noopAt (funcIdx : Nat) : String :=
+/-- A function that does nothing, at a given index. -/
+def noopAt (funcIdx : Nat) : FuncData :=
   buildFunction funcIdx do
     let _ ← entryBlock
     ret
+
+/-- The standard noop function u0:0 -/
+def noopFunction : FuncData := noopAt 0
+
+/-- Assemble functions into a program. They must be in `u0:N` order: the
+    runtime resolves call targets by treating the index as a `FuncId`. -/
+def program (fs : List FuncData) : Program := { functions := fs }
+
+/-- A two-function program: the noop slot, then the entry function. -/
+def buildProgram (mainBuilder : IRBuilder Unit) : Program :=
+  program [noopFunction, buildFunction 1 mainBuilder]
 
 /-- Declare a colocated FFI function (intra-module call, e.g. colocated %ht_create) -/
 def declareColocatedFFI (name : String) (params : List ClifTy) (result : Option ClifTy) : IRBuilder FnRef := do
@@ -800,9 +553,35 @@ def declareColocatedFFI (name : String) (params : List ClifTy) (result : Option 
   let ref : FnRef := { id := s.nextFn }
   set { s with
     nextFn := s.nextFn + 1
-    fns := s.fns ++ [{ ref := ref, name := name, sig := sig, colocated := true : FnDecl }]
+    fns := s.fns ++ [{ ref := ref, callee := .import name, sig := sig, colocated := true : FnDecl }]
   }
   pure ref
+
+/-- Declare a call to another function of this same program, by `u0:N` index. -/
+def declareLocal (index : Nat) (params : List ClifTy) (result : Option ClifTy) : IRBuilder FnRef := do
+  let sig ← declareSig params result
+  let s ← get
+  let ref : FnRef := { id := s.nextFn }
+  set { s with
+    nextFn := s.nextFn + 1
+    fns := s.fns ++ [{ ref := ref, callee := .local index, sig := sig, colocated := true : FnDecl }]
+  }
+  pure ref
+
+/-- A function at `u0:wrapperIdx` that calls each of `callees` in order.
+
+    Composes stages without the caller having to build the call sequence
+    itself; the callees are named by index, so nothing here resolves a symbol. -/
+def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat) : FuncData :=
+  let unique : List Nat :=
+    callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
+  buildFunction wrapperIdx do
+    let refs ← unique.mapM fun c => declareLocal c [ClifTy.i64] none
+    let arg ← entryBlock
+    for c in callees do
+      let slot := (unique.idxOf? c).getD 0
+      callVoid (refs[slot]!) [arg]
+    ret
 
 -- ---------------------------------------------------------------------------
 -- High-level combinators

@@ -355,14 +355,15 @@ def testRenderPixel : IRBuilder Unit := do
   ret
 
 -- Program assembly -----------------------------------------------------------
-def clifIrSource : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 mainBody ++ "\n" ++
-  buildFunction 2 testMoveRight ++ "\n" ++
-  buildFunction 3 testMoveLeft ++ "\n" ++
-  buildFunction 4 testMoveUpClamp ++ "\n" ++
-  buildFunction 5 testQuitOnClose ++ "\n" ++
-  buildFunction 6 testRenderPixel
+def clifIrSource : Program :=
+  program
+    [noopFunction,
+     buildFunction 1 mainBody,
+     buildFunction 2 testMoveRight,
+     buildFunction 3 testMoveLeft,
+     buildFunction 4 testMoveUpClamp,
+     buildFunction 5 testQuitOnClose,
+     buildFunction 6 testRenderPixel]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
@@ -381,7 +382,7 @@ def payloads : List UInt8 :=
   ]
 
 def gameSetup : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }

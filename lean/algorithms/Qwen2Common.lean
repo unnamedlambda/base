@@ -531,9 +531,9 @@ private def buildRopeTable (cuda : CudaSetup) (fnSinf fnCosf fnPowf : FnRef)
   let freqLim64 ← iconst64 hdh
   let four64    ← iconst64 4
   let cosOff64  ← iconst64 cosOff
-  let ropeTheta ← fconst32 "0x1.e84800p19"   -- 1000000.0
+  let ropeTheta ← fconst32 1000000.0   -- 1000000.0
   -- exponent factor = -2.0 / HEAD_DIM = -1/32 for HEAD_DIM=64
-  let expFactor ← fconst32 "-0x1.000000p-5"
+  let expFactor ← fconst32 (-0.03125)
 
   forLoop .i64 freqLim64 fun freq => do
     let freqF ← fcvtFromSint .f32 freq
@@ -679,7 +679,7 @@ def metaStageFrag (ptr dataPtr pos32 seqLen64 : Val) : IRBuilder Val := do
     `TAIL_SLOT`, `REM_SLOT` of the meta buffer, the four values
     `Qwen2NonVacuity.smMeta_of_seqLen` needs. -/
 def metaFragInsts (ptr dataPtr pos32 seqLen64 : Val) (n : Nat) : List Inst :=
-  [ .load ⟨n⟩ "load.i32" dataPtr                     -- token id
+  [ .load ⟨n⟩ { ty := .i32 } dataPtr                     -- token id
   , .ireduce32 ⟨n+1⟩ seqLen64                        -- seq   := (i32) seqLen
   , .iconst ⟨n+2⟩ .i64 5
   , .ushr ⟨n+3⟩ ⟨n+1⟩ ⟨n+2⟩                          -- chunks := seq >>> 5
@@ -1818,18 +1818,9 @@ theorem staged_are_real :
 -- The device-write sequence, as theorems
 -- ---------------------------------------------------------------------------
 
-/-- Every instruction in the entry function has a meaning in this model. -/
-theorem inferFn_modellable :
-    AlgorithmLib.Clif.blocksModellableB (inferFn.run {}).2.allBlocks = true := by
-  native_decide
-
 /-- **The entry function's device writes are exactly the declared ones.** -/
 theorem inferFn_writes :
     AlgorithmLib.Clif.launchesOf (inferFn.run {}).2 = expectedLaunches := by
-  native_decide
-
-theorem inferFinalFn_modellable :
-    AlgorithmLib.Clif.blocksModellableB (inferFinalFn.run {}).2.allBlocks = true := by
   native_decide
 
 /-- **The sampling tail's, likewise** — norm, vendor projection, argmax. -/

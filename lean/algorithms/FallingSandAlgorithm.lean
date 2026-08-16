@@ -545,11 +545,12 @@ def testConservation : IRBuilder Unit := do
   writeOutput ptr (← sextend64 (← icmp .eq count expected)) count expected
   ret
 
-def clifIrSource : String :=
-  noopFunction ++ "\n" ++
-  buildFunction 1 mainBody ++ "\n" ++
-  buildFunction 2 testGrainFalls ++ "\n" ++
-  buildFunction 3 testConservation
+def clifIrSource : IR.Program :=
+  program
+    [noopFunction,
+     buildFunction 1 mainBody,
+     buildFunction 2 testGrainFalls,
+     buildFunction 3 testConservation]
 
 def bindBytes (pairs : List (Nat × Nat)) : List UInt8 :=
   pairs.foldl (fun acc (b, ro) => acc ++ uint32ToBytes (UInt32.ofNat b) ++ uint32ToBytes (UInt32.ofNat ro)) []
@@ -572,7 +573,7 @@ def payloads : List UInt8 :=
   ]
 
 def gameSetup : Setup := {
-  cranelift_ir := clifIrSource,
+  clif := clifIrSource,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }

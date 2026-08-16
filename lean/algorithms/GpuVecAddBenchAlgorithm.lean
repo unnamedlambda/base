@@ -65,7 +65,7 @@ def mainFn : IRBuilder Unit := do
   callVoid fnCleanup [ctxSlotPtr]
   ret
 
-def clifIR : String := buildProgram mainFn
+def clifIR : Program := buildProgram mainFn
 
 def wgslBytes : List UInt8 :=
   wgslShader.toUTF8.toList ++ [0]
@@ -81,7 +81,7 @@ def buildInitialMemory : List UInt8 :=
 
 def artifacts : Array Json :=
   #[toJsonEntry "gpu_vecadd_algorithm" {
-    cranelift_ir := clifIR,
+    clif := clifIR,
     memory_size := MEM_SIZE,
     initial_memory := buildInitialMemory
   } {

@@ -188,7 +188,7 @@ mod tests {
     fn sample_artifact() -> Artifact {
         Artifact {
             setup: Setup {
-                cranelift_ir: "function u0:0() { return }".to_string(),
+                clif: Default::default(),
                 memory_size: 64,
                 io_offsets: IoOffsets {
                     data_ptr: 0x18,

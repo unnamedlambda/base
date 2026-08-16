@@ -1423,7 +1423,7 @@ def pixelsOff : Nat := bmpHeaderOff + 54
 def hdrPixelBytes (spec : BlackHoleSpec) : Nat := pixelCount spec * 16
 
 open AlgorithmLib.IR in
-def clifIrSource (spec : BlackHoleSpec) : String := buildProgram do
+def clifIrSource (spec : BlackHoleSpec) : Program := buildProgram do
   let fnWrite ← declareFileWrite
   let cuda ← declareCudaFFI
 
@@ -1479,7 +1479,7 @@ def payloads (spec : BlackHoleSpec) : List UInt8 :=
     filenameBytes ++ clifPad ++ bmpHeader spec
 
 def config (spec : BlackHoleSpec) : Setup := {
-  cranelift_ir := clifIrSource spec,
+  clif := clifIrSource spec,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
