@@ -38,21 +38,14 @@ def Shape.render : Shape → String
 /-- Phantom-typed tensor handle. `buf` is the slot holding a CUDA buffer id
     (i32 at runtime); `shape` is fully type-level.
 
-    The slot is a bare `Nat` rather than an `IR.Val` so a tensor belongs to no
-    particular surface: `IR.Val` is a one-field wrapper around the same number,
-    and `val`/`slot` below read it as whichever the caller needs. A handle that
-    named `IR.Val` could only be launched by the builder that produced it. -/
+    The slot is a bare `Nat`, so a tensor belongs to no particular surface: a
+    handle carrying a builder's own value type could only be launched by the
+    builder that produced it. -/
 structure _root_.AlgorithmLib.Tensor (s : Shape) where
   buf : Nat
 
-/-- The handle as an `IRBuilder` value. -/
-def _root_.AlgorithmLib.Tensor.val {s : Shape} (t : Tensor s) : Val := ⟨t.buf⟩
-
 /-- The handle as an `HProg` slot. -/
 def _root_.AlgorithmLib.Tensor.slot {s : Shape} (t : Tensor s) : Nat := t.buf
-
-/-- Build a handle from an `IRBuilder` value. -/
-def _root_.AlgorithmLib.Tensor.ofVal {s : Shape} (v : Val) : Tensor s := ⟨v.id⟩
 
 end Tensor
 
@@ -62,12 +55,11 @@ namespace Kernel
 
 /-- Launch geometry — six compile-time `Nat`s.
 
-    Grid dimensions are *data*, not a builder action. Every geometry in this
-    development is static, so carrying `IRBuilder Val` here bought nothing and
-    cost the structure its independence from one surface: a `Kernel` could then
-    only be launched by the monad its geometry was written in. A runtime-derived
-    grid, if one is ever needed, belongs in a constructor beside these rather
-    than in the field type. -/
+    Grid dimensions are *data*, not a builder action: every geometry in this
+    development is static, and a `Kernel` whose geometry named a monad could
+    only be launched by that monad. A runtime-derived grid, if one is ever
+    needed, belongs in a constructor beside these rather than in the field
+    type. -/
 structure Geom where
   gridX  : Nat
   gridY  : Nat := 1

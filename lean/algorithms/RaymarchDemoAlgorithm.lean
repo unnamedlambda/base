@@ -232,18 +232,10 @@ open AlgorithmLib.HProg.Sur
 /-- Three callee tables, because the six entry points do not all reach the FFI:
     the game loop needs the window and the GPU, the render test needs the GPU,
     and the four state tests need nothing. -/
-def declsMain : (GpuSetup × WindowSetup) × FnEnv := (Id.run (do
-  let gpu := IR.FFI.std.gpu
-  let win := IR.FFI.std.window
-  pure (gpu, win)), env% [.gpu, .window])
 
-def declsGpu : GpuSetup × FnEnv := (IR.FFI.std.gpu, env% [.gpu, .window])
 
-def envMain : FnEnv := declsMain.2
-def gpuM : GpuSetup := declsMain.1.1
-def winM : WindowSetup := declsMain.1.2
-def envGpu : FnEnv := declsGpu.2
-def gpuT : GpuSetup := declsGpu.1
+def envMain : FnEnv := env% [.gpu, .window]
+def envGpu : FnEnv := env% [.gpu, .window]
 def envNone : FnEnv := { sigs := [], fns := [] }
 
 def clearState (ptr : R) : Sur.M Unit := do
@@ -343,21 +335,21 @@ def assertEq (ptr actual : R) (expected : Int) : Sur.M Unit := do
   let exp ← iconst64 expected
   writeOutput ptr (← sextend64 (← icmp .eq actual exp)) actual exp
 
-def dispatchScene (gpu : GpuSetup) (ptr paramBuf pipeId : R) : Sur.M Unit := do
-  let _ ← gpuUpload gpu ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-  let _ ← gpuDispatch gpu ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+def dispatchScene (ptr paramBuf pipeId : R) : Sur.M Unit := do
+  let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
+  let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
   pure ()
 
 def mainBody : HProg.Code := clif% do
   let ptr := basePtr
-  windowInit winM ptr
-  gpuInit gpuM ptr
-  let pixelBuf ← gpuCreateBuffer gpuM ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer gpuM ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline gpuM ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+  windowInit ptr
+  gpuInit ptr
+  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
+  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
+  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
   let w64 ← iconst64 imageWidth
   let h64 ← iconst64 imageHeight
-  let _ ← windowOpen winM ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
+  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
                       (← fldOffset f.blitShader) (← iconst64 (blitShaderSource.length : Int))
   clearState ptr
   let _ ← wloop1 (← iconst64 0)
@@ -366,16 +358,16 @@ def mainBody : HProg.Code := clif% do
       let z ← iconst64 0
       return (contIf .eq q z, [c], ()))
     (body := fun frame _ => do
-      let n ← windowPoll winM ptr (← fldOffset f.events) (← iconst32 eventSlots)
+      let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
       fldStore ptr f.nEvents (← sextend64 n)
       processEvents ptr
       applyMovement ptr
       writeParams ptr frame
-      dispatchScene gpuM ptr paramBuf pipeId
-      let _ ← windowPresentGpuBuffer winM ptr pixelBuf
+      dispatchScene ptr paramBuf pipeId
+      let _ ← windowPresentGpuBuffer ptr pixelBuf
       return [← iaddImm frame 1])
-  windowCleanup winM ptr
-  gpuCleanup gpuM ptr
+  windowCleanup ptr
+  gpuCleanup ptr
 
 def testMoveForward : HProg.Code := clif% do
   let ptr := basePtr
@@ -411,15 +403,15 @@ def testQuitOnClose : HProg.Code := clif% do
 
 def testRenderScene : HProg.Code := clif% do
   let ptr := basePtr
-  gpuInit gpuT ptr
-  let pixelBuf ← gpuCreateBuffer gpuT ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer gpuT ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline gpuT ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+  gpuInit ptr
+  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
+  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
+  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
   clearState ptr
   writeParams ptr (← iconst64 0)
-  dispatchScene gpuT ptr paramBuf pipeId
-  let _ ← gpuDownload gpuT ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
-  gpuCleanup gpuT ptr
+  dispatchScene ptr paramBuf pipeId
+  let _ ← gpuDownload ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
+  gpuCleanup ptr
   let skyB ← uload8_64 (← absAddr ptr (f.pixels.offset + skyByteOff))
   let groundB ← uload8_64 (← absAddr ptr (f.pixels.offset + groundByteOff))
   let thresh ← iadd groundB (← iconst64 20)

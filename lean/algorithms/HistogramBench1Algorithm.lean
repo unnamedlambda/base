@@ -29,8 +29,8 @@ open AlgorithmLib.HProg.Sur
 /-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
 def env : FnEnv := env% [.fileIO]
 
-def fnRead : Nat := IR.FFI.std.fileRead.id
-def fnWrite : Nat := IR.FFI.std.fileWrite.id
+def fnRead : Nat := IR.Ffi.fileRead.id
+def fnWrite : Nat := IR.Ffi.fileWrite.id
 
 def code : HProg.Code := clif% do
   let ptr := basePtr

@@ -39,8 +39,8 @@ open HistogramBench1 (INPUT_PATH_OFF OUTPUT_PATH_OFF HIST_OFF HIST_BYTES DATA_OF
     against too. -/
 def env : FnEnv := env% [.cuda, .fileIO]
 
-def fnRead : Nat := IR.FFI.std.fileRead.id
-def fnWrite : Nat := IR.FFI.std.fileWrite.id
+def fnRead : Nat := IR.Ffi.fileRead.id
+def fnWrite : Nat := IR.Ffi.fileWrite.id
 
 open Sur in
 /-- `HistogramBench1.orchFn`, as a term. -/
@@ -205,9 +205,7 @@ open CudaRmsNormPersist (PTX_SOURCE_OFF BIND_DESC_OFF MEM_SIZE N_OFF BUF0_OFF BU
 
 /-- The same `declareCudaFFI` the original calls, so the signatures the checker
     holds these bodies to are the runtime's own. -/
-def cudaEnv : CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .fileIO])
-def cuda : CudaSetup := cudaEnv.1
-def env : FnEnv := cudaEnv.2
+def env : FnEnv := env% [.cuda, .fileIO]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Int := 0x10
@@ -217,20 +215,20 @@ open Sur in
     weights. -/
 def loadCode : Code := clif%(env, ptrParams) do
   let dataPtr ← load64 (← absAddr basePtr 0x18)
-  callVoid cuda.fnInit.id [← absAddr basePtr CTX_OFF]
+  callVoid IR.Ffi.cudaInit.id [← absAddr basePtr CTX_OFF]
   let ctxPtr ← load64 (← absAddr basePtr CTX_OFF)
   let n ← load64 dataPtr
   store n (← absAddr basePtr N_OFF)
   let nBytes ← ishl n (← iconst64 2)
   let buf0Sz ← iadd (← iadd nBytes nBytes) (← iconst64 8)
   let buf1Sz ← ishl n (← iconst64 2)
-  let buf0 ← call cuda.fnCreateBuffer.id [ctxPtr, buf0Sz]
-  let buf1 ← call cuda.fnCreateBuffer.id [ctxPtr, buf1Sz]
+  let buf0 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, buf0Sz]
+  let buf1 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, buf1Sz]
   store buf0 (← absAddr basePtr BUF0_OFF)
   store buf1 (← absAddr basePtr BUF1_OFF)
-  let _ ← call cuda.fnUploadOffset.id
+  let _ ← call IR.Ffi.cudaUploadOffset.id
     [ctxPtr, buf0, ← iconst64 0, ← absAddr basePtr N_OFF, ← iconst64 8]
-  let _ ← call cuda.fnUploadOffset.id
+  let _ ← call IR.Ffi.cudaUploadOffset.id
     [ctxPtr, buf0, ← iadd nBytes (← iconst64 8),
      ← iadd dataPtr (← iconst64 8), nBytes]
   return ()
@@ -242,7 +240,7 @@ def prepCode : Code := clif% do
   let n ← load64 (← absAddr basePtr N_OFF)
   let buf0 ← load32 (← absAddr basePtr BUF0_OFF)
   let ctxPtr ← load64 (← absAddr basePtr CTX_OFF)
-  let _ ← call cuda.fnUploadOffset.id
+  let _ ← call IR.Ffi.cudaUploadOffset.id
     [ctxPtr, buf0, ← iconst64 8, dataPtr, ← ishl n (← iconst64 2)]
   return ()
 
@@ -255,15 +253,15 @@ def inferCode : Code := clif% do
   let nBufs ← iconst32 2
   let one32 ← iconst32 1
   let blk256 ← iconst32 256
-  let _ ← call cuda.fnLaunch.id
+  let _ ← call IR.Ffi.cudaLaunch.id
     [ctxPtr, ← absAddr basePtr PTX_SOURCE_OFF, nBufs,
      ← absAddr basePtr BIND_DESC_OFF,
      one32, one32, one32, blk256, one32, one32]
-  let _ ← call cuda.fnSync.id [ctxPtr]
+  let _ ← call IR.Ffi.cudaSync.id [ctxPtr]
   let zeroI ← iconst64 0
   when .ne outLen zeroI do
     let buf1 ← load32 (← absAddr basePtr BUF1_OFF)
-    let _ ← call cuda.fnDownload.id [ctxPtr, buf1, outPtr, outLen]
+    let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, buf1, outPtr, outLen]
     return ()
 
 theorem load_wf : wf env ptrParams loadCode = true := by decide
@@ -273,12 +271,12 @@ theorem infer_wf : wf env ptrParams inferCode = true := by decide
 /-- Loading allocates both buffers before either upload. -/
 theorem load_calls :
     callsOf loadCode =
-      [cuda.fnInit.id, cuda.fnCreateBuffer.id, cuda.fnCreateBuffer.id,
-       cuda.fnUploadOffset.id, cuda.fnUploadOffset.id] := rfl
+      [IR.Ffi.cudaInit.id, IR.Ffi.cudaCreateBuffer.id, IR.Ffi.cudaCreateBuffer.id,
+       IR.Ffi.cudaUploadOffset.id, IR.Ffi.cudaUploadOffset.id] := rfl
 
 /-- Inference launches, synchronizes, and downloads at most once. -/
 theorem infer_calls :
-    callsOf inferCode = [cuda.fnLaunch.id, cuda.fnSync.id, cuda.fnDownload.id] := rfl
+    callsOf inferCode = [IR.Ffi.cudaLaunch.id, IR.Ffi.cudaSync.id, IR.Ffi.cudaDownload.id] := rfl
 
 def program : Program :=
   IR.program

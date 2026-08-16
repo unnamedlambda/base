@@ -501,61 +501,59 @@ open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
-def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
-def cuda : IR.CudaSetup := cudaEnv.1
-def env : FnEnv := cudaEnv.2
+def env : FnEnv := env% [.cuda, .cublas]
 
 def loadFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr
+  cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   let adjBytes ← iconst64 (N * 4)
   let wBytes ← iconst64 (N * N * 4)
   let dxBytes ← iconst64 (N * 4)
-  let adjId ← cudaCreateBuffer cuda ptr adjBytes
+  let adjId ← cudaCreateBuffer ptr adjBytes
   store adjId (← absAddr ptr ADJ_ID)
-  let wId ← cudaCreateBuffer cuda ptr wBytes
+  let wId ← cudaCreateBuffer ptr wBytes
   store wId (← absAddr ptr W_ID)
-  let dxId ← cudaCreateBuffer cuda ptr dxBytes
+  let dxId ← cudaCreateBuffer ptr dxBytes
   store dxId (← absAddr ptr DX_ID)
-  let xId ← cudaCreateBuffer cuda ptr dxBytes
+  let xId ← cudaCreateBuffer ptr dxBytes
   store xId (← absAddr ptr X_ID)
-  let dwId ← cudaCreateBuffer cuda ptr wBytes
+  let dwId ← cudaCreateBuffer ptr wBytes
   store dwId (← absAddr ptr DW_ID)
-  let zId ← cudaCreateBuffer cuda ptr dxBytes
+  let zId ← cudaCreateBuffer ptr dxBytes
   store zId (← absAddr ptr Z_ID)
-  let dyId ← cudaCreateBuffer cuda ptr dxBytes
+  let dyId ← cudaCreateBuffer ptr dxBytes
   store dyId (← absAddr ptr DY_ID)
-  let gamId ← cudaCreateBuffer cuda ptr dxBytes
+  let gamId ← cudaCreateBuffer ptr dxBytes
   store gamId (← absAddr ptr GAM_ID)
-  let tId ← cudaCreateBuffer cuda ptr dxBytes
+  let tId ← cudaCreateBuffer ptr dxBytes
   store tId (← absAddr ptr T_ID)
   let four ← iconst64 4
-  let qId ← cudaCreateBuffer cuda ptr four
+  let qId ← cudaCreateBuffer ptr four
   store qId (← absAddr ptr Q_ID)
-  let sId ← cudaCreateBuffer cuda ptr four
+  let sId ← cudaCreateBuffer ptr four
   store sId (← absAddr ptr S_ID)
-  let dxrId ← cudaCreateBuffer cuda ptr dxBytes
+  let dxrId ← cudaCreateBuffer ptr dxBytes
   store dxrId (← absAddr ptr DXR_ID)
-  let yId ← cudaCreateBuffer cuda ptr dxBytes
+  let yId ← cudaCreateBuffer ptr dxBytes
   store yId (← absAddr ptr Y_ID)
-  let ysId ← cudaCreateBuffer cuda ptr dxBytes
+  let ysId ← cudaCreateBuffer ptr dxBytes
   store ysId (← absAddr ptr YS_ID)
   -- host buffer holds `adj`, then `x`, then `W`, contiguously
-  let _ ← call cuda.fnUpload.id [ctxPtr, adjId, dataPtr, adjBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, adjId, dataPtr, adjBytes]
   let xSrc ← iaddImm dataPtr (hostOff 1)
-  let _ ← call cuda.fnUpload.id [ctxPtr, xId, xSrc, dxBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, xId, xSrc, dxBytes]
   let zSrc ← iaddImm dataPtr (hostOff 2)
-  let _ ← call cuda.fnUpload.id [ctxPtr, zId, zSrc, dxBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, zId, zSrc, dxBytes]
   let dySrc ← iaddImm dataPtr (hostOff 3)
-  let _ ← call cuda.fnUpload.id [ctxPtr, dyId, dySrc, dxBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, dyId, dySrc, dxBytes]
   let gamSrc ← iaddImm dataPtr (hostOff 4)
-  let _ ← call cuda.fnUpload.id [ctxPtr, gamId, gamSrc, dxBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, gamId, gamSrc, dxBytes]
   let ysSrc ← iaddImm dataPtr (hostOff 6)
-  let _ ← call cuda.fnUpload.id [ctxPtr, ysId, ysSrc, dxBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, ysId, ysSrc, dxBytes]
   let wSrc ← iaddImm dataPtr (hostOff 5)
-  let _ ← call cuda.fnUpload.id [ctxPtr, wId, wSrc, wBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, wId, wSrc, wBytes]
   store adjId (← absAddr ptr (bindOff 0))
   store wId (← absAddr ptr (bindOff 1))
   store dxId (← absAddr ptr (bindOff 2))
@@ -579,8 +577,8 @@ def runFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let one ← iconst32 1
   let warp ← iconst32 32
   let grid ← iconst32 GRID
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-  let _ ← cudaSync cuda ptr
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  let _ ← cudaSync ptr
 
 /-- The activation backward: one element per lane, `N/32` blocks. -/
 def runSiluBwdFn : HProg.Code := clif%(env, HProg.ptrParams) do
@@ -591,8 +589,8 @@ def runSiluBwdFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let one ← iconst32 1
   let warp ← iconst32 32
   let grid ← iconst32 EGRID
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-  let _ ← cudaSync cuda ptr
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  let _ ← cudaSync ptr
 
 /-- A launch of the kernel at `off` over `g` blocks of one warp. -/
 def launchAt (off g : Nat) : Sur.M Unit := do
@@ -603,8 +601,8 @@ def launchAt (off g : Nat) : Sur.M Unit := do
   let one ← iconst32 1
   let warp ← iconst32 32
   let grid ← iconst32 g
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-  let _ ← cudaSync cuda ptr
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  let _ ← cudaSync ptr
 
 def runTFn : HProg.Code := clif% (launchAt PTX_T_OFF EGRID)
 def runQFn : HProg.Code := clif% (launchAt PTX_Q_OFF 1)
@@ -625,7 +623,7 @@ def fetchYFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let outPtr ← load64 (← absAddr ptr 0x28)
   let yId ← load32 (← absAddr ptr Y_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call cuda.fnDownload.id [ctxPtr, yId, outPtr, dxBytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, yId, outPtr, dxBytes]
 
 /-- Fetch RMSNorm's `dx`. -/
 def fetchDxrFn : HProg.Code := clif%(env, HProg.ptrParams) do
@@ -634,7 +632,7 @@ def fetchDxrFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dxrId ← load32 (← absAddr ptr DXR_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call cuda.fnDownload.id [ctxPtr, dxrId, outPtr, dxBytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, dxrId, outPtr, dxBytes]
 
 /-- **Fill the launch argument array from the buffer table.**
 
@@ -666,8 +664,8 @@ def runBwdAllFn : HProg.Code := clif%(env, HProg.ptrParams) do
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-  let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync ptr
 
 /-- The weight gradient, same geometry: one warp per row. -/
 def runDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
@@ -678,8 +676,8 @@ def runDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let one ← iconst32 1
   let warp ← iconst32 32
   let grid ← iconst32 GRID
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-  let _ ← cudaSync cuda ptr
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  let _ ← cudaSync ptr
 
 def fetchFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
@@ -687,7 +685,7 @@ def fetchFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dxId ← load32 (← absAddr ptr DX_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call cuda.fnDownload.id [ctxPtr, dxId, outPtr, dxBytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, dxId, outPtr, dxBytes]
 
 /-- Fetch the weight gradient — `N·N` floats. -/
 def fetchDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
@@ -696,7 +694,7 @@ def fetchDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dwId ← load32 (← absAddr ptr DW_ID)
   let wBytes ← iconst64 (N * N * 4)
-  let _ ← call cuda.fnDownload.id [ctxPtr, dwId, outPtr, wBytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, dwId, outPtr, wBytes]
 
 def clifIR : Program :=
   program

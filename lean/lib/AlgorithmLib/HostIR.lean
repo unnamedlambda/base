@@ -27,7 +27,7 @@ import AlgorithmLib.Clif
   what makes the loop say something: without it, "the twenty-fourth layer
   launched RoPE" was a claim about a PTX slot and a grid, with the buffers left
   to a table of intentions. The emitted code
-  keeps its loop — the body appears once, as the current `IRBuilder` generator
+  keeps its loop — the body appears once, as the generator
   emits it — and it is the *trace* that unrolls, which is why the fuel is
   existential. Nothing about the emitted control flow is assumed: the counter,
   the guard, the increment and the back edge are all executed.
@@ -1352,7 +1352,7 @@ theorem emitBinds_recovers (ptr : Val) (bindOff : Nat) (as : List ExternArg)
     term rather than the effect of running one.
 
     `forN` emits a genuine loop: counter init, guard, body, increment, back
-    edge.  The body appears **once**, exactly as the current `IRBuilder`
+    edge.  The body appears **once**, exactly as the
     generator emits it.  Nothing is unrolled; the *trace* is what repeats. -/
 def flatHI (fnLaunch : FnRef) (ptr : Val) : Nat → Nat → HStmt → Nat × List HI
   | n, _, .skip     => (n, [])

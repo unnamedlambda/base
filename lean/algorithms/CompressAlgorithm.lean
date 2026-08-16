@@ -244,16 +244,10 @@ def compressionShader (bs : Nat) : String :=
 
 /-- The file and GPU entry points this program calls, named out of the
     standard table. -/
-def decls : (FnRef × FnRef × GpuSetup) × FnEnv := (Id.run (do
-  let fnRead := IR.FFI.std.fileRead
-  let fnWrite := IR.FFI.std.fileWrite
-  let gpu := IR.FFI.std.gpu
-  pure (fnRead, fnWrite, gpu)), env% [.gpu, .fileIO])
 
-def env : FnEnv := decls.2
-def fnRead : FnRef := decls.1.1
-def fnWrite : FnRef := decls.1.2.1
-def gpu : GpuSetup := decls.1.2.2
+def env : FnEnv := env% [.gpu, .fileIO]
+def fnRead : FnRef := IR.Ffi.fileRead.ref
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
 
 open HProg.Sur in
 /-- The body, for any block size.
@@ -288,14 +282,14 @@ def code (bs : Nat) : HProg.Code :=
     let numBlocks32 ← ireduce32 numBlocks
 
     -- Step 4: GPU init
-    gpuInit gpu ptr
+    gpuInit ptr
 
     -- Step 5: Create 3 buffers
-    let buf0      ← gpuCreateBuffer gpu ptr alignedSz
+    let buf0      ← gpuCreateBuffer ptr alignedSz
     let outBufSzV ← iconst64 obSz
-    let buf1      ← gpuCreateBuffer gpu ptr outBufSzV
+    let buf1      ← gpuCreateBuffer ptr outBufSzV
     let metaSzV   ← iconst64 mSz
-    let buf2      ← gpuCreateBuffer gpu ptr metaSzV
+    let buf2      ← gpuCreateBuffer ptr metaSzV
 
     -- Step 6: Write input size into metadata region
     let inputSz32 ← ireduce32 bytesRead
@@ -304,26 +298,26 @@ def code (bs : Nat) : HProg.Code :=
     storeUnaligned inputSz32 metaAddr
 
     -- Step 7: Upload input data and metadata
-    let _ ← gpuUpload gpu ptr buf0 inData alignedSz
-    let _ ← gpuUpload gpu ptr buf2 metaOffV metaSzV
+    let _ ← gpuUpload ptr buf0 inData alignedSz
+    let _ ← gpuUpload ptr buf2 metaOffV metaSzV
 
     -- Step 8: Create pipeline (3 bindings)
     let shOffV  ← iconst64 shader_off
     let bdOffV  ← iconst64 bindDesc_off
     let three32 ← iconst32 3
-    let pipeId  ← gpuCreatePipeline gpu ptr shOffV bdOffV three32
+    let pipeId  ← gpuCreatePipeline ptr shOffV bdOffV three32
 
     -- Step 9: Dispatch — numBlocks workgroups
     let one32 ← iconst32 1
-    let _ ← gpuDispatch gpu ptr pipeId numBlocks32 one32 one32
+    let _ ← gpuDispatch ptr pipeId numBlocks32 one32 one32
 
     -- Step 10: Download output and metadata
     let outDataV ← iconst64 outputData_off
-    let _ ← gpuDownload gpu ptr buf1 outDataV outBufSzV
-    let _ ← gpuDownload gpu ptr buf2 metaOffV metaSzV
+    let _ ← gpuDownload ptr buf1 outDataV outBufSzV
+    let _ ← gpuDownload ptr buf2 metaOffV metaSzV
 
     -- Step 11: GPU cleanup
-    gpuCleanup gpu ptr
+    gpuCleanup ptr
 
     -- Step 12: Write standard LZ4 frame format
     -- Reuse inputData_off area as scratch

@@ -178,18 +178,10 @@ open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: the live loop reaches the window and the GPU, the render
     test reaches the GPU, and the four state tests reach nothing. -/
-def declsMain : (GpuSetup × WindowSetup) × FnEnv := (Id.run (do
-  let gpu := IR.FFI.std.gpu
-  let win := IR.FFI.std.window
-  pure (gpu, win)), env% [.gpu, .window])
 
-def declsGpu : GpuSetup × FnEnv := (IR.FFI.std.gpu, env% [.gpu, .window])
 
-def envMain : FnEnv := declsMain.2
-def gpuM : GpuSetup := declsMain.1.1
-def winM : WindowSetup := declsMain.1.2
-def envGpu : FnEnv := declsGpu.2
-def gpuT : GpuSetup := declsGpu.1
+def envMain : FnEnv := env% [.gpu, .window]
+def envGpu : FnEnv := env% [.gpu, .window]
 def envNone : FnEnv := { sigs := [], fns := [] }
 
 /-- Put the player at (x, y) and clear held-keys / quit / frame. -/
@@ -295,14 +287,14 @@ def assertEq (ptr actual : R) (expected : Int) : Sur.M Unit := do
 -- Live entry (fn 1): open window, then loop poll → logic → render → present ----
 def mainBody : HProg.Code := clif% do
   let ptr := basePtr
-  windowInit winM ptr
-  gpuInit gpuM ptr
-  let pixelBuf ← gpuCreateBuffer gpuM ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer gpuM ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline gpuM ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+  windowInit ptr
+  gpuInit ptr
+  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
+  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
+  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
   let w64 ← iconst64 imageWidth
   let h64 ← iconst64 imageHeight
-  let _ ← windowOpen winM ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
+  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
                       (← fldOffset f.blitShader) (← iconst64 (blitShaderSource.length : Int))
   clearState ptr playerStartX playerStartY
   let _ ← wloop1 (← iconst64 0)
@@ -311,17 +303,17 @@ def mainBody : HProg.Code := clif% do
       let z ← iconst64 0
       return (contIf .eq q z, [c], ()))
     (body := fun frame _ => do
-      let n ← windowPoll winM ptr (← fldOffset f.events) (← iconst32 eventSlots)
+      let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
       fldStore ptr f.nEvents (← sextend64 n)
       processEvents ptr
       applyMovement ptr
       writeParams ptr frame
-      let _ ← gpuUpload gpuM ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-      let _ ← gpuDispatch gpuM ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
-      let _ ← windowPresentGpuBuffer winM ptr pixelBuf
+      let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
+      let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+      let _ ← windowPresentGpuBuffer ptr pixelBuf
       return [← iaddImm frame 1])
-  windowCleanup winM ptr
-  gpuCleanup gpuM ptr
+  windowCleanup ptr
+  gpuCleanup ptr
 
 -- Headless test scenarios (fn 2+): inject events, step, assert player state ----
 def testMoveRight : HProg.Code := clif% do
@@ -360,16 +352,16 @@ def testQuitOnClose : HProg.Code := clif% do
 -- into memory, and assert the player pixel is player-coloured. GPU, no window.
 def testRenderPixel : HProg.Code := clif% do
   let ptr := basePtr
-  gpuInit gpuT ptr
-  let pixelBuf ← gpuCreateBuffer gpuT ptr (← iconst64 pixelBytes)
-  let paramBuf ← gpuCreateBuffer gpuT ptr (← iconst64 paramsBytes)
-  let pipeId ← gpuCreatePipeline gpuT ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
+  gpuInit ptr
+  let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
+  let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
+  let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
   clearState ptr 100 100
   writeParams ptr (← iconst64 0)
-  let _ ← gpuUpload gpuT ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
-  let _ ← gpuDispatch gpuT ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
-  let _ ← gpuDownload gpuT ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
-  gpuCleanup gpuT ptr
+  let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
+  let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
+  let _ ← gpuDownload ptr pixelBuf (← fldOffset f.pixels) (← iconst64 pixelBytes)
+  gpuCleanup ptr
   -- red byte of pixel (100,100): (y*width + x)*4
   let red ← uload8_64 (← absAddr ptr (f.pixels.offset + (100 * imageWidth + 100) * 4))
   writeOutput ptr (← sextend64 (← icmp .uge red (← iconst64 250))) red (← iconst64 252)

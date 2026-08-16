@@ -41,12 +41,12 @@ open AlgorithmLib.HProg.Sur
 /-- The CUDA entry points, in the order the callee table numbers them. -/
 def env : FnEnv := env% [.cuda]
 
-def fnInit : Nat := IR.FFI.std.cuda.fnInit.id
-def fnCreateBuffer : Nat := IR.FFI.std.cuda.fnCreateBuffer.id
-def fnUploadPtr : Nat := IR.FFI.std.cuda.fnUpload.id
-def fnDownloadPtr : Nat := IR.FFI.std.cuda.fnDownload.id
-def fnLaunch : Nat := IR.FFI.std.cuda.fnLaunch.id
-def fnCleanup : Nat := IR.FFI.std.cuda.fnCleanup.id
+def fnInit : Nat := IR.Ffi.cudaInit.id
+def fnCreateBuffer : Nat := IR.Ffi.cudaCreateBuffer.id
+def fnUploadPtr : Nat := IR.Ffi.cudaUpload.id
+def fnDownloadPtr : Nat := IR.Ffi.cudaDownload.id
+def fnLaunch : Nat := IR.Ffi.cudaLaunch.id
+def fnCleanup : Nat := IR.Ffi.cudaCleanup.id
 
 def code : HProg.Code := clif% do
   let ptr := basePtr

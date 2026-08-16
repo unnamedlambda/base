@@ -433,33 +433,25 @@ open AlgorithmLib.HProg.Sur
 
 /-- The device callee table every function here shares, so their signatures are
     written once. -/
-def ffiEnv : (CudaSetup × CuBlasSetup) × FnEnv :=
-  (Id.run (do
-    let cuda := IR.FFI.std.cuda
-    let blas := IR.FFI.std.cublas
-    return (cuda, blas)), env% [.cuda, .cublas])
-
-def cuda : CudaSetup := ffiEnv.1.1
-def blas : CuBlasSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def env : FnEnv := env% [.cuda, .cublas]
 
 def loadCode : HProg.Code :=
   clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr
+  cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range NBUF).zip bufBytes do
     let sz ← iconst64 nb
-    let id ← cudaCreateBuffer cuda ptr sz
+    let id ← cudaCreateBuffer ptr sz
     storeI32 id (← absAddr ptr (bindOff i))
   let w1Id ← load32 (← absAddr ptr (bindOff w1B))
   let w1Bytes ← iconst64 (H * IN * 4)
-  let _ ← call cuda.fnUpload.id [ctxPtr, w1Id, dataPtr, w1Bytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, w1Id, dataPtr, w1Bytes]
   let w2Src ← iaddImm dataPtr (hostOff 1)
   let w2Id ← load32 (← absAddr ptr (bindOff w2B))
   let w2Bytes ← iconst64 (C * H * 4)
-  let _ ← call cuda.fnUpload.id [ctxPtr, w2Id, w2Src, w2Bytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, w2Id, w2Src, w2Bytes]
 
 /-- Upload `n` bytes from the caller's data pointer into buffer `b`. -/
 def uploadCode (b n : Nat) : HProg.Code :=
@@ -469,7 +461,7 @@ def uploadCode (b n : Nat) : HProg.Code :=
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (bindOff b))
   let bytes ← iconst64 n
-  let _ ← call cuda.fnUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
 
 /-- Download `n` bytes of buffer `b` into the caller's output pointer. -/
 def fetchCode (b n : Nat) : HProg.Code :=
@@ -479,7 +471,7 @@ def fetchCode (b n : Nat) : HProg.Code :=
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (bindOff b))
   let bytes ← iconst64 n
-  let _ ← call cuda.fnDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
 
 /-- **Fill the launch argument array from the buffer table.**
 
@@ -505,7 +497,7 @@ def bindLocal (ptr : R) (bs : List Buf) : M Unit := do
 /-- Enqueue the kernel in slot `i` over `g` blocks of one warp, without
     synchronising.  It binds the slot's own buffers, which is what its
     parameters were emitted against. -/
-def enqueueSlot (cuda : CudaSetup) (ptr : R) (i g : Nat) : M Unit := do
+def enqueueSlot (ptr : R) (i g : Nat) : M Unit := do
   let bs := slotBufs i
   bindLocal ptr bs
   let ptxOff ← iconst64 (slotOff i)
@@ -514,7 +506,7 @@ def enqueueSlot (cuda : CudaSetup) (ptr : R) (i g : Nat) : M Unit := do
   let one ← iconst32 1
   let warp ← iconst32 32
   let grid ← iconst32 g
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
   pure ()
 
 /-- **A run of launches with one synchronisation at the end.**
@@ -532,8 +524,8 @@ def runSeq (steps : List (Nat × Nat)) : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   for (i, g) in steps do
-    enqueueSlot cuda ptr i g
-  let _ ← cudaSync cuda ptr
+    enqueueSlot ptr i g
+  let _ ← cudaSync ptr
 
 /-- A single launch, for the per-kernel timing the demo reports. -/
 def launchSlot (i g : Nat) : HProg.Code := runSeq [(i, g)]
@@ -582,7 +574,7 @@ def F32_ONE : Nat := 0x3F800000
 def F32_ZERO : Nat := 0
 
 /-- `C ← op(A)·op(B)`, one GEMM, batch of one. -/
-def gemmStep (blas : CuBlasSetup) (ptr : R) (tA tB m n k aBuf bBuf cBuf : Nat) :
+def gemmStep (ptr : R) (tA tB m n k aBuf bBuf cBuf : Nat) :
     M Unit := do
   let ta ← iconst32 tA
   let tb ← iconst32 tB
@@ -596,7 +588,7 @@ def gemmStep (blas : CuBlasSetup) (ptr : R) (tA tB m n k aBuf bBuf cBuf : Nat) :
   let aId ← load32 (← absAddr ptr (bindOff aBuf))
   let bId ← load32 (← absAddr ptr (bindOff bBuf))
   let cId ← load32 (← absAddr ptr (bindOff cBuf))
-  let _ ← cublasSgemmStridedBatched blas ptr ta tb vm vn vk alpha aId zero64 bId zero64
+  let _ ← cublasSgemmStridedBatched ptr ta tb vm vn vk alpha aId zero64 bId zero64
             beta cId zero64 one32
   pure ()
 
@@ -619,9 +611,9 @@ def runMixed (steps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat ×
   let ptr := basePtr
   for st in steps do
     match st with
-    | .inl (i, g) => enqueueSlot cuda ptr i g
-    | .inr (tA, tB, m, n, k, a, b, c) => gemmStep blas ptr tA tB m n k a b c
-  let _ ← cudaSync cuda ptr
+    | .inl (i, g) => enqueueSlot ptr i g
+    | .inr (tA, tB, m, n, k, a, b, c) => gemmStep ptr tA tB m n k a b c
+  let _ ← cudaSync ptr
 
 /-- Forward with cuBLAS for both matmuls; `silu` and the softmax stay proven. -/
 def fwdBlasSteps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)) :=
@@ -2145,17 +2137,17 @@ def qLoadFn : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr
+  cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range QNBUF).zip qBufBytes do
     let sz ← iconst64 nb
-    let id ← cudaCreateBuffer cuda ptr sz
+    let id ← cudaCreateBuffer ptr sz
     storeI32 id (← absAddr ptr (qBindOff i))
   for i in List.range 13 do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt qHostIn i)
     let id ← load32 (← absAddr ptr (qBindOff i))
     let bytes ← iconst64 (qInBytes.getD i 0)
-    let _ ← call cuda.fnUpload.id [ctxPtr, id, src, bytes]
+    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
 
 def qUploadFn (b n : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
@@ -2164,7 +2156,7 @@ def qUploadFn (b n : Nat) : HProg.Code :=
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (qBindOff b))
   let bytes ← iconst64 n
-  let _ ← call cuda.fnUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
 
 def qFetchFn (b n : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
@@ -2173,7 +2165,7 @@ def qFetchFn (b n : Nat) : HProg.Code :=
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (qBindOff b))
   let bytes ← iconst64 n
-  let _ ← call cuda.fnDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
 
 /-- **Bind one kernel's own buffers.**
 
@@ -2201,8 +2193,8 @@ def qRunFn : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-  let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync ptr
 
 /-- The first `k` launches only — the forward half at `k = 28`, and a way to
     find which launch a fault comes from. -/
@@ -2217,8 +2209,8 @@ def qRunUpto (k : Nat) : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-  let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync ptr
 
 /-- Where the capture leaves the stream and the graph it built. -/
 def QSTREAM_OFF : Nat := 0x0090
@@ -2248,11 +2240,11 @@ def qCaptureFn : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-  let _ ← cudaSync cuda ptr
-  let sid ← call cuda.fnStreamCreate.id [ctxPtr]
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync ptr
+  let sid ← call IR.Ffi.cudaStreamCreate.id [ctxPtr]
   storeI32 sid (← absAddr ptr QSTREAM_OFF)
-  let _ ← call cuda.fnGraphBeginCapture.id [ctxPtr, sid]
+  let _ ← call IR.Ffi.cudaGraphBeginCapture.id [ctxPtr, sid]
   for (i, g, bs) in qLaunches 0 qwenTape do
     qBindLocal ptr bs
     let ptxOff ← iconst64 (qSlotOff i)
@@ -2261,12 +2253,12 @@ def qCaptureFn : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunchOnStream cuda ptr ptxOff nBufs bindBase
+    let _ ← cudaLaunchOnStream ptr ptxOff nBufs bindBase
               grid one one warp one one sid
-  let gid ← call cuda.fnGraphEndCapture.id [ctxPtr, sid]
+  let gid ← call IR.Ffi.cudaGraphEndCapture.id [ctxPtr, sid]
   storeI32 gid (← absAddr ptr QGRAPH_OFF)
-  let _ ← call cuda.fnGraphUpload.id [ctxPtr, gid, sid]
-  let _ ← call cuda.fnStreamSync.id [ctxPtr, sid]
+  let _ ← call IR.Ffi.cudaGraphUpload.id [ctxPtr, gid, sid]
+  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
 
 /-- The bind array a qwen launch fills: this operation's own buffers, as the
     layout slots the handles were loaded from. -/
@@ -2359,8 +2351,8 @@ def qReplayFn (k : Nat) : HProg.Code :=
   let sid ← load32 (← absAddr ptr QSTREAM_OFF)
   let gid ← load32 (← absAddr ptr QGRAPH_OFF)
   for _ in List.range k do
-    let _ ← call cuda.fnGraphLaunch.id [ctxPtr, gid, sid]
-  let _ ← call cuda.fnStreamSync.id [ctxPtr, sid]
+    let _ ← call IR.Ffi.cudaGraphLaunch.id [ctxPtr, gid, sid]
+  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
 
 
 /-! ### The replay, in the plan -/
@@ -2464,8 +2456,8 @@ def qRunSynced : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-    let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    let _ ← cudaSync ptr
 
 /-- The forward half only, so a host can re-evaluate the loss at a perturbed
     weight without also recomputing gradients. -/
@@ -2480,8 +2472,8 @@ def qRunFwd : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-  let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync ptr
 
 /-- The forward half under the fused schedule: the same stages, with the second
     norm's scale and gain in one kernel.  Its slots sit after the tape's, which
@@ -2497,8 +2489,8 @@ def qRunFused : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-  let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync ptr
 
 def qClifIR : Program :=
   program <|
@@ -2745,23 +2737,23 @@ def mLoadFn : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr
+  cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range MNBUF).zip mBufBytes do
     let sz ← iconst64 nb
-    let id ← cudaCreateBuffer cuda ptr sz
+    let id ← cudaCreateBuffer ptr sz
     storeI32 id (← absAddr ptr (mBindOff i))
   -- The three shared inputs, then the store, which starts at `MSTORE`.
   for i in List.range 3 do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn i)
     let id ← load32 (← absAddr ptr (mBindOff i))
     let bytes ← iconst64 (mBufBytes.getD i 0)
-    let _ ← call cuda.fnUpload.id [ctxPtr, id, src, bytes]
+    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
   for k in List.range (3 * NE) do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn (3 + k))
     let id ← load32 (← absAddr ptr (mBindOff (MSTORE + k)))
     let bytes ← iconst64 (MDFF * MD * 4)
-    let _ ← call cuda.fnUpload.id [ctxPtr, id, src, bytes]
+    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
 
 /-- **Choosing experts, as the host does it.**
 
@@ -2812,8 +2804,8 @@ def mRunRange (lo hi : Nat) : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 g
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindBase grid one one warp one one
-  let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+  let _ ← cudaSync ptr
 
 def mUploadFn (b n : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
@@ -2822,7 +2814,7 @@ def mUploadFn (b n : Nat) : HProg.Code :=
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (mBindOff b))
   let bytes ← iconst64 n
-  let _ ← call cuda.fnUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
 
 def mFetchFn (b n : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
@@ -2831,7 +2823,7 @@ def mFetchFn (b n : Nat) : HProg.Code :=
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (mBindOff b))
   let bytes ← iconst64 n
-  let _ ← call cuda.fnDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
 
 def mClifIR : Program :=
   program <|

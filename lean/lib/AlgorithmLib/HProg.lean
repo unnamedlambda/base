@@ -4,10 +4,9 @@ import AlgorithmLib.FFIStd
 /-!
 # `HProg` — a function body as a first-order term
 
-A generator written against `IR.IRBuilder` is a `StateM` action: it exists only
-while it runs, so nothing can be stated about it. `HProg` is the same programs
-as *data* — one inductive term per function body, which `compileFn` turns into
-the shipped `IR.FuncData`.
+A function body as *data* — one inductive term per body, which `compileFn`
+turns into the shipped `IR.FuncData`. A body that exists only while a builder
+runs is a `StateM` action, and nothing can be stated about one of those.
 
 Three things follow from the term being first-order:
 
@@ -254,7 +253,7 @@ def terminates (c : Code) : Bool := termsGo fuel c
 
 -- `FnEnv` and `envOf` are declared in `IR` so the standard table can be built
 -- before this module; both names remain reachable as `HProg.*`.
-export _root_.AlgorithmLib.IR (FnEnv envOf envAfter)
+export _root_.AlgorithmLib.IR (FnEnv)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -958,8 +957,8 @@ def compileFn (idx : Nat) (c : Code) (env : FnEnv := IR.FFI.stdEnv)
     Those extractors — `launchesOf`, `loopsOf`, `bindsOf`, `callsOf` — use only
     `sigs`, `fns` and `blocks`, and a `FuncData` has all three with the same
     types. So a claim about an emitted program keeps its exact statement when the
-    generator behind it moves from `IRBuilder` to a term: what changes is how the
-    program is *produced*, not what is being read. -/
+    generator behind it changes: what changes is how the program is *produced*,
+    not what is being read. -/
 def _root_.AlgorithmLib.IR.FuncData.asState (f : FuncData) : IRState :=
   { sigs := f.sigs, fns := f.fns, blocks := f.blocks }
 
@@ -1100,6 +1099,14 @@ def call (fn : Nat) (args : List R) : M R := fun s =>
 
 def callVoid (fn : Nat) (args : List R) : M Unit := bind0 (.callVoid fn args)
 
+/-- Call an entry point by name rather than by id. Which id it has is a fact
+    about `Ffi.all`, so a generator never writes one and cannot pass arguments
+    to a signature it did not mean. -/
+def ffi (f : IR.Ffi) (args : List R) : M R := call f.id args
+
+/-- The same for a signature with no result. -/
+def ffiVoid (f : IR.Ffi) (args : List R) : M Unit := callVoid f.id args
+
 /-- `min(a, b)` with the hardware's NaN behaviour rather than IEEE
     `minimumNumber`. Cranelift lowers exactly this shape — the wasm `pmin`
     pattern — to a single `minps`, where `fmin` costs a NaN-correct sequence. -/
@@ -1143,7 +1150,6 @@ def contIf (cc : ICmpCond) (a b : R) : Cond := ⟨cc, a, b, false⟩
 def exitIfEq (a b : R) : Cond := exitIf .eq a b
 def exitIfSGe (a b : R) : Cond := exitIf .sge a b
 def contIfULt (a b : R) : Cond := contIf .ult a b
-def contIfSLt (a b : R) : Cond := contIf .slt a b
 def exitIfSGt (a b : R) : Cond := exitIf .sgt a b
 def contIfULe (a b : R) : Cond := contIf .ule a b
 
@@ -1259,7 +1265,7 @@ def wloop2 (a b : R) (head : R → R → M (Cond × List R × α))
         (fun cs x => body (cs.headD 0) (cs.getD 1 0) x)
 
 /-- A counted loop over `[0, limit)`, carrying nothing else — the shape most
-    generators want, and the one `IR.forLoop` has.
+    generators want.
 
     Writing it here rather than at each call site also fixes the emission order
     once: the limit is a slot the caller already made, the counter's `iconst 0`
@@ -1270,13 +1276,13 @@ def forLoop (limit : R) (body : R → M Unit) : M Unit := do
     (head := fun i => return (contIfULt i limit, ([] : List R), ()))
     (body := fun i _ => do body i; return [← iaddImm i 1])
 
-/-- A counted loop from `start`, as `IR.forLoopFromTo` does. -/
+/-- A counted loop from `start`. -/
 def forLoopFromTo (start limit : R) (body : R → M Unit) : M Unit := do
   let _ ← wloop1 start
     (head := fun i => return (contIfULt i limit, ([] : List R), ()))
     (body := fun i _ => do body i; return [← iaddImm i 1])
 
-/-- A counted loop threading one accumulator, as `IR.forLoopAcc` does. The
+/-- A counted loop threading one accumulator. The
     accumulator's initial value is a slot the caller made, so it is emitted
     before the counter's. -/
 def forLoopAcc (limit acc0 : R) (body : R → R → M R) : M R := do
@@ -1287,7 +1293,7 @@ def forLoopAcc (limit acc0 : R) (body : R → R → M R) : M R := do
       return [← iaddImm i 1, nextAcc])
   return e.headD 0
 
-/-- A counted loop threading two accumulators, as `IR.forLoopAcc2` does. -/
+/-- A counted loop threading two accumulators. -/
 def forLoopAcc2 (limit ia ib : R) (body : R → R → R → M (R × R)) : M (R × R) := do
   let e ← wloop [← iconst64 0, ia, ib]
     (head := fun c => return (contIfULt (c.headD 0) limit, c.drop 1, ()))
@@ -1296,8 +1302,8 @@ def forLoopAcc2 (limit ia ib : R) (body : R → R → R → M (R × R)) : M (R �
       return [← iaddImm (c.headD 0) 1, nx, ny])
   return (e.headD 0, e.getD 1 0)
 
-/-- A while loop over two carries, as `IR.whileLoop2` does: the condition is
-    computed at the head and both carries leave. -/
+/-- A while loop over two carries: the condition is computed at the head and
+    both carries leave. -/
 def whileLoop2 (ia ib : R) (cond : R → R → M R) (body : R → R → M (R × R)) :
     M (R × R) := do
   let e ← wloop2 ia ib

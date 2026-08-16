@@ -184,9 +184,7 @@ open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
-def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
-def cuda : IR.CudaSetup := cudaEnv.1
-def env : FnEnv := cudaEnv.2
+def env : FnEnv := env% [.cuda]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
@@ -195,7 +193,7 @@ def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
-  cudaInit cuda ptr CTX_OFF
+  cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   let n         ← load64 dataPtr
@@ -208,11 +206,11 @@ def loadCode : HProg.Code := clif% do
   let eight        ← iconst64 8
 
   -- buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
-  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, xBytes]
-  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, xBytes]
-  let metaBuf ← call cuda.fnCreateBuffer.id [ctxPtr, eight]
-  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, partialsBytes]
-  let _ ← call cuda.fnCreateBuffer.id [ctxPtr, eight]
+  let _ ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, xBytes]
+  let _ ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, xBytes]
+  let metaBuf ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, eight]
+  let _ ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, partialsBytes]
+  let _ ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, eight]
 
   -- Pack [n:u32, num_blocks:u32] as i64 LE into staging slot at 0x48
   let n32   ← ireduce32 n
@@ -224,7 +222,7 @@ def loadCode : HProg.Code := clif% do
   store packed metaSlot
 
   -- Upload packed meta to buf2
-  let _ ← call cuda.fnUpload.id [ctxPtr, metaBuf, metaSlot, eight]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, metaBuf, metaSlot, eight]
 
 /-- Prep: upload x from data_ptr to buf0. -/
 def prepCode : HProg.Code := clif% do
@@ -233,7 +231,7 @@ def prepCode : HProg.Code := clif% do
   let dataLen ← load64 (← absAddr ptr 0x20)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let xBuf    ← iconst32 0
-  let _ ← call cuda.fnUpload.id [ctxPtr, xBuf, dataPtr, dataLen]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, xBuf, dataPtr, dataLen]
 
 /-- Core: one kernel for a short row, three for a long one.
 
@@ -252,19 +250,19 @@ def coreCode : HProg.Code := clif% do
   let _ ← ifte .ule n (← iconst64 2048)
     (thn := do
       -- Small path: single kernel
-      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
                  (← iconst64 NAME_SMALL_SOFTMAX)
                  three32 (← iconst64 BIND_SMALL_OFF) one32 one32 one32 blk256 one32 one32
       pure [])
     (els := do
       -- Large path: block_reduce → global_reduce → normalize
-      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
                  (← iconst64 NAME_BLOCK_REDUCE)
                  three32 (← iconst64 BIND_K1_OFF) nb32 one32 one32 blk256 one32 one32
-      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
                  (← iconst64 NAME_GLOBAL_REDUCE)
                  three32 (← iconst64 BIND_K2_OFF) one32 one32 one32 blk256 one32 one32
-      let _ ← cudaLaunchNamed cuda ptr (← iconst64 PTX_SOURCE_OFF)
+      let _ ← cudaLaunchNamed ptr (← iconst64 PTX_SOURCE_OFF)
                  (← iconst64 NAME_NORMALIZE)
                  four32 (← iconst64 BIND_K3_OFF) nb32 one32 one32 blk256 one32 one32
       pure [])
@@ -277,12 +275,12 @@ def finalizeCode : HProg.Code := clif% do
   let outLen ← load64 (← absAddr ptr 0x30)
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
-  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← cudaSync ptr CTX_OFF
   let _ ← ifte .eq outLen (← iconst64 0)
     (thn := pure [])
     (els := do
       let yBuf ← iconst32 1
-      let _ ← call cuda.fnDownload.id [ctxPtr, yBuf, outPtr, outLen]
+      let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, yBuf, outPtr, outLen]
       pure [])
   return ()
 

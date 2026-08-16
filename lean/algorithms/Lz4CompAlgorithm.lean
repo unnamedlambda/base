@@ -29,21 +29,14 @@ def compSchema (w : WP) : List Json :=
 -- at the call site is `WP.bindOff` — a value that can only be computed by
 -- serializing the whole PTX kernel.  Holding it as a PARAMETER makes that
 -- dependency explicit and was an attempt to let `Lz4Host`'s recovery theorems
--- reduce symbolically; measured, it does not (reducing the `IRBuilder` state
+-- reduce symbolically; measured, it does not (reducing the builder's state
 -- monad is itself the cost), so those theorems use `native_decide`.  Kept
 -- because the separation is worth stating.  `warpCode` instantiates it at
 -- `w.bindOff`, so the program that ships is byte-identical.
-open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur in
-/-- The CUDA entry points, declared through the same helper the `IRBuilder`
-    path used, so the callee table the term is checked against is the runtime's
-    own. -/
-def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
+open AlgorithmLib.IR AlgorithmLib.HProg in
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
-def cuda : IR.CudaSetup := cudaEnv.1
-
-open AlgorithmLib.IR AlgorithmLib.HProg in
-def hostEnv : FnEnv := cudaEnv.2
+def hostEnv : FnEnv := env% [.cuda]
 
 open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur in
 /-- The host program, as a term.
@@ -58,14 +51,14 @@ def warpCodeAt (w : WP) (bo : Nat) : HProg.Code :=
     let dataPtr ← load64 (← absAddr ptr 0x18)
     let dataLen ← load64 (← absAddr ptr 0x20)
     let outPtr ← load64 (← absAddr ptr 0x28)
-    cudaInit cuda ptr
+    cudaInit ptr
     -- ONE allocation: input at offset 0, output immediately after it.  Both
     -- kernel parameters are bound to this buffer and the kernel derives its
     -- output base as `in_ptr + totIn`, so the placement contract `LayoutOK`
     -- asks for holds by construction instead of relating two independent
     -- allocations.
-    let inBuf ← cudaCreateBuffer cuda ptr (← iconst64 (w.outOff + w.outAlloc))
-    let _ ← cudaUploadRawOffset cuda ptr inBuf (← iconst64 0) dataPtr dataLen
+    let inBuf ← cudaCreateBuffer ptr (← iconst64 (w.outOff + w.outAlloc))
+    let _ ← cudaUploadRawOffset ptr inBuf (← iconst64 0) dataPtr dataLen
     let g ← iconst32 w.gridX
     let bk ← iconst32 wBlockDim
     let one32 ← iconst32 1
@@ -73,11 +66,11 @@ def warpCodeAt (w : WP) (bo : Nat) : HProg.Code :=
     let ptxOff ← iconst64 rPTX_OFF
     let bindOff ← iconst64 bo
     let _ ← forLoopAcc (← iconst64 rLaunches) (← iconst64 0) (fun _ acc => do
-      let _ ← cudaLaunch cuda ptr ptxOff nbufs bindOff g one32 one32 bk one32 one32
+      let _ ← cudaLaunch ptr ptxOff nbufs bindOff g one32 one32 bk one32 one32
       pure acc)
-    let _ ← cudaDownloadRawOffset cuda ptr inBuf (← iconst64 w.outOff) outPtr
+    let _ ← cudaDownloadRawOffset ptr inBuf (← iconst64 w.outOff) outPtr
               (← iconst64 w.totOut)
-    cudaCleanup cuda ptr
+    cudaCleanup ptr
     storeAt ptr (bo + 0x40) (← iconst64 1)
     storeAt ptr (bo + 0x48) (← iconst64 1)
     storeAt ptr (bo + 0x50) (← iconst64 rLaunches)

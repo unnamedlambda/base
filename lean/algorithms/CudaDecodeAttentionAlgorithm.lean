@@ -120,17 +120,10 @@ open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: `load`/`prep`/`finalize` reach CUDA alone, `core` also
     reaches cuBLAS, and a function declares only what it calls. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
-  let cuda := IR.FFI.std.cuda
-  let blas := IR.FFI.std.cublas
-  pure (cuda, blas)), env% [.cuda, .cublas])
 
-def cudaOnly : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
 
-def cuda : IR.CudaSetup := ffiEnv.1.1
-def blas : IR.CuBlasSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
-def envCuda : FnEnv := cudaOnly.2
+def env : FnEnv := env% [.cuda, .cublas]
+def envCuda : FnEnv := env% [.cuda, .cublas]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
@@ -139,7 +132,7 @@ def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
-  cudaInit cuda ptr CTX_OFF
+  cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   let seqLen    ← load64 dataPtr
@@ -150,13 +143,13 @@ def loadCode : HProg.Code := clif% do
   let eight     ← iconst64 8
 
   -- buf order: 0=q, 1=K, 2=V, 3=scores, 4=probs, 5=out, 6=meta
-  let bufQ      ← call cuda.fnCreateBuffer.id [ctxPtr, dMBytes]
-  let bufK      ← call cuda.fnCreateBuffer.id [ctxPtr, kvBytes]
-  let bufV      ← call cuda.fnCreateBuffer.id [ctxPtr, kvBytes]
-  let bufScores ← call cuda.fnCreateBuffer.id [ctxPtr, scoreBytes]
-  let bufProbs  ← call cuda.fnCreateBuffer.id [ctxPtr, scoreBytes]
-  let bufOut    ← call cuda.fnCreateBuffer.id [ctxPtr, dMBytes]
-  let bufMeta   ← call cuda.fnCreateBuffer.id [ctxPtr, eight]
+  let bufQ      ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dMBytes]
+  let bufK      ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, kvBytes]
+  let bufV      ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, kvBytes]
+  let bufScores ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, scoreBytes]
+  let bufProbs  ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, scoreBytes]
+  let bufOut    ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dMBytes]
+  let bufMeta   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, eight]
 
   store bufQ      (← absAddr ptr BUF_Q_OFF)
   store bufK      (← absAddr ptr BUF_K_OFF)
@@ -171,13 +164,13 @@ def loadCode : HProg.Code := clif% do
   let seqLen64 ← uextend64 seqLen32
   let metaSlot ← absAddr ptr SEQ_LEN_OFF
   store seqLen64 metaSlot
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufMeta, metaSlot, eight]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufMeta, metaSlot, eight]
 
   -- Upload K and V from data (K at data+8, V at data+8+kvBytes)
   let kSrc ← iaddImm dataPtr 8
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufK, kSrc, kvBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufK, kSrc, kvBytes]
   let vSrc ← iadd kSrc kvBytes
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufV, vSrc, kvBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufV, vSrc, kvBytes]
 
 /-- Prep: upload q from data_ptr to buf0. -/
 def prepCode : HProg.Code := clif% do
@@ -186,7 +179,7 @@ def prepCode : HProg.Code := clif% do
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let bufQ    ← load32 (← absAddr ptr BUF_Q_OFF)
   let dMBytes ← iconst64 D_MODEL_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufQ, dataPtr, dMBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufQ, dataPtr, dMBytes]
 
 /-- Core: K@q scores, softmax, V^T@probs output. -/
 def coreCode : HProg.Code := clif% do
@@ -218,7 +211,7 @@ def coreCode : HProg.Code := clif% do
   let bufMeta   ← load32 (← absAddr ptr BUF_META_OFF)
 
   -- scores = 0.125 * K @ q, batched over N_HEADS heads
-  let _ ← call blas.fnSgemm.id
+  let _ ← call IR.Ffi.cublasSgemm.id
     [ctxPtr, one32, zero32, seqLen32, one32, headDim32, alpha0125,
      bufK, seqHead, bufQ, headDim64, zero32, bufScores, seqLen, nHeads32,
      zero64, zero64, zero64, zero32, zero32, zero32]
@@ -229,11 +222,11 @@ def coreCode : HProg.Code := clif% do
   store bufProbs  (← absAddr ptr (BIND_DESC_OFF + 8))
 
   -- Launch softmax kernel: gridDim=(N_HEADS,1,1), blockDim=(256,1,1), 3 bufs
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SOURCE_OFF) three32
+  let _ ← cudaLaunch ptr (← iconst64 PTX_SOURCE_OFF) three32
              (← iconst64 BIND_DESC_OFF) nHeads32 one32 one32 blk256 one32 one32
 
   -- out = V^T @ probs, batched over N_HEADS heads
-  let _ ← call blas.fnSgemm.id
+  let _ ← call IR.Ffi.cublasSgemm.id
     [ctxPtr, zero32, zero32, headDim32, one32, seqLen32, alpha1f,
      bufV, seqHead, bufProbs, seqLen, zero32, bufOut, headDim64, nHeads32,
      zero64, zero64, zero64, zero32, zero32, zero32]
@@ -246,11 +239,11 @@ def finalizeCode : HProg.Code := clif% do
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let bufOut ← load32 (← absAddr ptr BUF_OUT_OFF)
 
-  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← cudaSync ptr CTX_OFF
   let _ ← ifte .eq outLen (← iconst64 0)
     (thn := pure [])
     (els := do
-      let _ ← call cuda.fnDownload.id [ctxPtr, bufOut, outPtr, outLen]
+      let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bufOut, outPtr, outLen]
       pure [])
   return ()
 

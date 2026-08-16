@@ -24,25 +24,15 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
-def ffiEnv : (((FnRef × FnRef) × (FnRef × FnRef)) × ((FnRef × FnRef) × FnRef)) × FnEnv :=
-  (Id.run (do
-    let rd := IR.FFI.std.fileRead
-    let wr := IR.FFI.std.fileWrite
-    let init := IR.FFI.std.ht.fnInit
-    let cleanup := IR.FFI.std.ht.fnCleanup
-    let create := IR.FFI.std.ht.fnCreate
-    let insert := IR.FFI.std.ht.fnInsert
-    let lookup := IR.FFI.std.ht.fnLookup
-    return (((rd, wr), (init, cleanup)), ((create, insert), lookup))), env% [.ht, .fileIO])
 
-def fnFileRead : FnRef := ffiEnv.1.1.1.1
-def fnFileWrite : FnRef := ffiEnv.1.1.1.2
-def fnHtInit : FnRef := ffiEnv.1.1.2.1
-def fnHtCleanup : FnRef := ffiEnv.1.1.2.2
-def fnHtCreate : FnRef := ffiEnv.1.2.1.1
-def fnHtInsert : FnRef := ffiEnv.1.2.1.2
-def fnHtLookup : FnRef := ffiEnv.1.2.2
-def env : FnEnv := ffiEnv.2
+def fnFileRead : FnRef := IR.Ffi.fileRead.ref
+def fnFileWrite : FnRef := IR.Ffi.fileWrite.ref
+def fnHtInit : FnRef := IR.Ffi.htInit.ref
+def fnHtCleanup : FnRef := IR.Ffi.htCleanup.ref
+def fnHtCreate : FnRef := IR.Ffi.htCreate.ref
+def fnHtInsert : FnRef := IR.Ffi.htInsert.ref
+def fnHtLookup : FnRef := IR.Ffi.htLookup.ref
+def env : FnEnv := env% [.ht, .fileIO]
 
 /-- The constants and base addresses the evaluator reads, made once in the
     entry block. `ctx` is the binding table, created before the machine runs. -/

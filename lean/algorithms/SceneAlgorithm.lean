@@ -930,20 +930,15 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := (Id.run (do
-  let w := IR.FFI.std.fileWrite
-  let c := IR.FFI.std.cuda
-  pure (w, c)), env% [.cuda, .fileIO])
-def fnWrite : FnRef := ffiEnv.1.1
-def cuda : IR.CudaSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.cuda, .fileIO]
 
 def code (spec : SceneSpec) : HProg.Code :=
   HProg.Sur.build (env := env) do
     let ptr := basePtr
-    cudaInit cuda ptr
+    cudaInit ptr
     let dataSz ← iconst64 (pixelBytes spec)
-    let bufId ← cudaCreateBuffer cuda ptr dataSz
+    let bufId ← cudaCreateBuffer ptr dataSz
     let ptxOffV ← iconst64 ptxOff
     let nBufs ← iconst32 1
     let bindOffV ← iconst64 bindOff
@@ -952,10 +947,10 @@ def code (spec : SceneSpec) : HProg.Code :=
     let one32 ← iconst32 1
     let blk16 ← iconst32 16
     let _ := bufId
-    let _ ← cudaLaunch cuda ptr ptxOffV nBufs bindOffV gridX gridY one32 blk16 blk16 one32
+    let _ ← cudaLaunch ptr ptxOffV nBufs bindOffV gridX gridY one32 blk16 blk16 one32
     let pxOffV ← iconst64 pixelsOff
-    let _ ← cudaDownload cuda ptr bufId pxOffV dataSz
-    cudaCleanup cuda ptr
+    let _ ← cudaDownload ptr bufId pxOffV dataSz
+    cudaCleanup ptr
     let total ← iconst64 (54 + pixelBytes spec)
     let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
 

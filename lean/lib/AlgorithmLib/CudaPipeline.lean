@@ -113,27 +113,24 @@ private def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) 
 
 /-- The CUDA callee table all three stages share, so their signatures are
     written once. -/
-def ffiEnv : CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
-
-def cuda : CudaSetup := ffiEnv.1
-def env : FnEnv := ffiEnv.2
+def env : FnEnv := env% [.cuda]
 
 /-- Allocate the device buffers and publish the element count. -/
 def loadCode (inputs : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr
+  cudaInit ptr
   let n ← load64 dataPtr
   storeI64 n (← absAddr ptr 0x38)
   let nBytes ← ishlImm n 2
   let metaBytes ← iconst64 8
-  let metaBuf ← cudaCreateBuffer cuda ptr metaBytes
+  let metaBuf ← cudaCreateBuffer ptr metaBytes
   storeI32 metaBuf (← absAddr ptr 0x40)
   (List.range inputs).forM fun (i : Nat) => do
-    let buf ← cudaCreateBuffer cuda ptr nBytes
+    let buf ← cudaCreateBuffer ptr nBytes
     storeI32 buf (← absAddr ptr (0x44 + 4*i))
-  let _ ← cudaUpload cuda ptr metaBuf (← iconst64 0x38) metaBytes
+  let _ ← cudaUpload ptr metaBuf (← iconst64 0x38) metaBytes
 
 /-- Upload the inputs, which lie back to back from the caller's data pointer. -/
 def prepCode (inputs : Nat) : HProg.Code :=
@@ -145,7 +142,7 @@ def prepCode (inputs : Nat) : HProg.Code :=
   let ctxPtr ← cudaCtxPtr ptr
   let _ ← (List.range inputs).foldlM (init := dataPtr) fun (curSrc : R) (i : Nat) => do
     let bufId ← load32 (← absAddr ptr (0x44 + 4*i))
-    let _ ← call cuda.fnUpload.id [ctxPtr, bufId, curSrc, nBytes]
+    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufId, curSrc, nBytes]
     iadd curSrc nBytes
 
 /-- Launch, synchronise, and download the output — the last only when the
@@ -164,13 +161,13 @@ def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : HProg.Code :=
   let bindOff ← iconst64 bindDescOff
   let one32 ← iconst32 1
   let blkX ← iconst32 blockSize
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff wg one32 one32 blkX one32 one32
-  let _ ← cudaSync cuda ptr
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff wg one32 one32 blkX one32 one32
+  let _ ← cudaSync ptr
   let zero64 ← iconst64 0
   when .ne outLen zero64 do
     let ctxPtr ← cudaCtxPtr ptr
     let outBufId ← load32 (← absAddr ptr (0x44 + 4*output.val))
-    let _ ← call cuda.fnDownload.id [ctxPtr, outBufId, outPtr, outLen]
+    let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, outBufId, outPtr, outLen]
 
 -- ---------------------------------------------------------------------------
 -- Compile: assemble PTX + CLIF + initial memory into a CompileResult.

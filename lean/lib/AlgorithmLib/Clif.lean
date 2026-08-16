@@ -530,7 +530,7 @@ theorem scanBlockTR_go_eq (fns : List FnDecl) :
     it is now a statement about two lists rather than about an emission order
     nothing could name. -/
 def launchesOf (s : IRState) : List LaunchRec :=
-  (s.allBlocks.foldl (fun (acc : Env × List LaunchRec) b =>
+  (s.blocks.foldl (fun (acc : Env × List LaunchRec) b =>
       let r := scanBlock s.fns acc.1 b.insts
       (r.1, acc.2 ++ r.2)) (Env.empty, [])).2
 
@@ -604,7 +604,7 @@ def deviceWritesIn (fns : List FnDecl) : List Inst → List String
 
 /-- …over a whole function. -/
 def deviceWritesOf (s : IRState) : List String :=
-  s.allBlocks.flatMap (fun b => deviceWritesIn s.fns b.insts)
+  s.blocks.flatMap (fun b => deviceWritesIn s.fns b.insts)
 
 -- ---------------------------------------------------------------------------
 -- Counted loops, recovered
@@ -692,24 +692,24 @@ def loopBodyAccOkB (hdr : Nat) (b : BlockData) : Bool :=
     before it, which is exactly the environment `launchesOf` threads — so the
     bound is resolved the same way a launch's PTX slot is. -/
 def loopsOf (s : IRState) : List LoopRec :=
-  (s.allBlocks.foldl (fun (acc : Env × List LoopRec) b =>
+  (s.blocks.foldl (fun (acc : Env × List LoopRec) b =>
       let e := acc.1
       let acc2 :=
         match loopHdrOf? e b with
         | some (bdy, ex, k) =>
-            if s.allBlocks.any (fun c => c.ref.id == bdy && loopBodyOkB b.ref.id c)
+            if s.blocks.any (fun c => c.ref.id == bdy && loopBodyOkB b.ref.id c)
             then acc.2 ++ [⟨b.ref.id, bdy, ex, k⟩] else acc.2
         | none =>
             match loopHdrAccOf? e b with
             | some (bdy, ex, k) =>
-                if s.allBlocks.any (fun c => c.ref.id == bdy && loopBodyAccOkB b.ref.id c)
+                if s.blocks.any (fun c => c.ref.id == bdy && loopBodyAccOkB b.ref.id c)
                 then acc.2 ++ [⟨b.ref.id, bdy, ex, k⟩] else acc.2
             | none => acc.2
       (evalPure e b.insts, acc2)) (Env.empty, [])).2
 
 /-- The instructions of a named block, if the function has one. -/
 def blockInsts? (s : IRState) (n : Nat) : Option (List Inst) :=
-  (s.allBlocks.find? (fun b => b.ref.id == n)).map BlockData.insts
+  (s.blocks.find? (fun b => b.ref.id == n)).map BlockData.insts
 
 /-- The colocated calls a straight line performs, in order — what a loop body
     dispatches to. -/
@@ -720,7 +720,7 @@ def callsIn (fns : List FnDecl) (is : List Inst) : List String :=
 
 /-- …over a whole function. -/
 def callsOf (s : IRState) : List String :=
-  s.allBlocks.flatMap (fun b => callsIn s.fns b.insts)
+  s.blocks.flatMap (fun b => callsIn s.fns b.insts)
 
 /-- **A program whose every device write is a modelled launch.**
 
@@ -1133,7 +1133,7 @@ def bindScan (fns : List FnDecl) (root : Nat) : BEnv → List Inst → BEnv × L
 /-- The bind arrays and vendor arguments a built function's device writes use,
     in program order. -/
 def bindsOf (root : Nat) (s : IRState) : List OpBinds :=
-  (s.allBlocks.foldl (fun (acc : BEnv × List OpBinds) bd =>
+  (s.blocks.foldl (fun (acc : BEnv × List OpBinds) bd =>
       let r := bindScan s.fns root acc.1 bd.insts
       (r.1, acc.2 ++ r.2)) (BEnv.empty, [])).2
 
@@ -1236,8 +1236,8 @@ theorem bindScan_append (fns : List FnDecl) (root : Nat) :
     bind array, and no bind array is left without its record. -/
 theorem bindsOf_length (root : Nat) (s : IRState) :
     (bindsOf root s).length = (launchesOf s).length := by
-  show (List.foldl _ (BEnv.empty, ([] : List OpBinds)) s.allBlocks).2.length
-      = (List.foldl _ (Env.empty, ([] : List LaunchRec)) s.allBlocks).2.length
+  show (List.foldl _ (BEnv.empty, ([] : List OpBinds)) s.blocks).2.length
+      = (List.foldl _ (Env.empty, ([] : List LaunchRec)) s.blocks).2.length
   have key : ∀ (bs : List BlockData) (b : BEnv) (e : Env)
       (a₁ : List OpBinds) (a₂ : List LaunchRec),
       b.env = e → a₁.length = a₂.length →
@@ -1256,7 +1256,7 @@ theorem bindsOf_length (root : Nat) (s : IRState) :
         · rw [bindScan_env s.fns root bd.insts b, scanBlock_env s.fns bd.insts e, he]
         · rw [List.length_append, List.length_append, ha,
               bindScan_length s.fns root bd.insts b, scanBlock_length s.fns bd.insts e]
-  exact key s.allBlocks BEnv.empty Env.empty [] [] rfl rfl
+  exact key s.blocks BEnv.empty Env.empty [] [] rfl rfl
 
 /-- **Records and what they bound, as one list.**  What a table match consumes:
     a device write together with the buffers the host had put in place for it. -/

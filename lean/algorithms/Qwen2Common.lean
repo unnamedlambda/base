@@ -295,9 +295,6 @@ open AlgorithmLib.HProg.Sur
 /-- Every externally-callable thing any Qwen2 function uses, declared once so a
     slot index means the same thing in all of them. -/
 structure Q2Ffi where
-  cuda : IR.CudaSetup
-  blas : IR.CuBlasSetup
-  ht : IR.HtSetup
   fnHtInit : IR.FnRef
   fnFileRead : IR.FnRef
   fnFileWrite : IR.FnRef
@@ -318,42 +315,35 @@ structure Q2Ffi where
   fnKvLoad : IR.FnRef
   fnKvSave : IR.FnRef
 
-def ffiEnv : Q2Ffi × FnEnv := IR.envAfter (env% [.ht, .cuda, .cublas, .math, .fileIO]) (do
-  let cuda := IR.FFI.std.cuda
-  let blas := IR.FFI.std.cublas
-  let ht := IR.FFI.std.ht
-  let fnHtInit := IR.FFI.std.ht.fnInit
-  let fnFileRead := IR.FFI.std.fileReadToPtr
-  let fnFileWrite := IR.FFI.std.fileWriteFromPtr
-  let fnSinf := IR.FFI.std.math.fnSinf
-  let fnCosf := IR.FFI.std.math.fnCosf
-  let fnPowf := IR.FFI.std.math.fnPowf
-  let fnStdinRead := IR.FFI.std.stdinReadline
-  let fnStdoutWrite := IR.FFI.std.stdoutWrite
-  let fnInfer ← declareColocatedFFI "fn_27" [.i64] none
-  let fnLayerStep ← declareColocatedFFI "fn_28" [.i64] none
-  let fnAttn ← declareColocatedFFI "fn_29" [.i64] none
-  let fnFfn ← declareColocatedFFI "fn_30" [.i64] none
-  let fnFinalStep ← declareColocatedFFI "fn_31" [.i64] none
-  let fnTokInit ← declareColocatedFFI "fn_33" [.i64] none
-  let fnTokBpe ← declareColocatedFFI "fn_34" [.i64] none
-  let fnDetok ← declareColocatedFFI "fn_35" [.i64] none
-  let fnStream ← declareColocatedFFI "fn_38" [.i64] none
-  let fnKvLoad ← declareColocatedFFI "fn_39" [.i64] none
-  let fnKvSave ← declareColocatedFFI "fn_40" [.i64] none
-  pure { cuda, blas, ht, fnHtInit, fnFileRead, fnFileWrite, fnSinf, fnCosf, fnPowf, fnStdinRead,
-         fnStdoutWrite, fnInfer, fnLayerStep, fnAttn, fnFfn, fnFinalStep,
-         fnTokInit, fnTokBpe, fnDetok, fnStream, fnKvLoad, fnKvSave })
+/-- This program's own functions, which it calls by the name the JIT gives each
+    `u0:N`. Everything else it calls is an entry point, named through `Ffi`. -/
+def ownFns : List String :=
+  ["fn_27", "fn_28", "fn_29", "fn_30", "fn_31", "fn_33", "fn_34", "fn_35",
+   "fn_38", "fn_39", "fn_40"]
+
+def ffiEnv : Q2Ffi × FnEnv := Id.run do
+  let (own, env) := (env% [.ht, .cuda, .cublas, .math, .fileIO]).declareColocatedAll
+    ownFns [.i64] none
+  let at_ (i : Nat) : IR.FnRef := (own[i]?).getD ⟨0⟩
+  return ({ fnHtInit := IR.Ffi.htInit.ref
+            fnFileRead := IR.Ffi.fileReadToPtr.ref
+            fnFileWrite := IR.Ffi.fileWriteFromPtr.ref
+            fnSinf := IR.Ffi.sinf.ref
+            fnCosf := IR.Ffi.cosf.ref
+            fnPowf := IR.Ffi.powf.ref
+            fnStdinRead := IR.Ffi.stdinReadline.ref
+            fnStdoutWrite := IR.Ffi.stdoutWrite.ref
+            fnInfer := at_ 0, fnLayerStep := at_ 1, fnAttn := at_ 2, fnFfn := at_ 3
+            fnFinalStep := at_ 4, fnTokInit := at_ 5, fnTokBpe := at_ 6
+            fnDetok := at_ 7, fnStream := at_ 8, fnKvLoad := at_ 9
+            fnKvSave := at_ 10 }, env)
 
 def q : Q2Ffi := ffiEnv.1
-def cuda : IR.CudaSetup := q.cuda
-def blas : IR.CuBlasSetup := q.blas
-def ht : IR.HtSetup := q.ht
 def env : FnEnv := ffiEnv.2
 
 private def launchEmbed (ptr : R) (bindOff : Nat)
     (table : EmbedTbl) (metaT : VecMeta) (outT : VecD) : M Unit :=
-  launch3 embedKernel cuda ptr bindOff table metaT outT
+  launch3 embedKernel ptr bindOff table metaT outT
 
 -- RMSNorm: y = rms_norm(x, w)
 -- Bind: [x_buf, w_buf, y_buf]; Grid=(1,1,1), Block=(256,1,1), smem=36
@@ -379,7 +369,7 @@ def ptxRmsNorm : String := rmsNormKernel.ptxSource
     all `[D]` f32. The bind region is the only call-site-specific value. -/
 private def launchRms (ptr : R) (bindOff : Nat)
     (x w y : Tensor [.sta D]) : M Unit :=
-  launch3 rmsNormKernel cuda ptr bindOff x w y
+  launch3 rmsNormKernel ptr bindOff x w y
 
 def biasAddDKernel : Kernel := {
   name := "main"
@@ -407,11 +397,11 @@ def ptxBiasAddKV : String := biasAddKVKernel.ptxSource
 
 private def launchBiasD (ptr : R) (bindOff : Nat)
     (x b : VecD) : M Unit :=
-  launch2 biasAddDKernel cuda ptr bindOff x b
+  launch2 biasAddDKernel ptr bindOff x b
 
 private def launchBiasKV (ptr : R) (bindOff : Nat)
     (x b : VecKV) : M Unit :=
-  launch2 biasAddKVKernel cuda ptr bindOff x b
+  launch2 biasAddKVKernel ptr bindOff x b
 
 -- RoPE rotation body — identical for Q and K, parameterized by buffer-param name.
 -- Thread (headIdx=ctaX, freqIdx=tidX) handles vec[head, freq] and vec[head, freq+HEAD_DIM/2].
@@ -446,11 +436,11 @@ def ptxRoPEK : String := ropeKKernel.ptxSource
 
 private def launchRopeQ (ptr : R) (bindOff : Nat)
     (q : VecD) (mb : VecMeta) (rope : RopeTbl) : M Unit :=
-  launch3 ropeQKernel cuda ptr bindOff q mb rope
+  launch3 ropeQKernel ptr bindOff q mb rope
 
 private def launchRopeK (ptr : R) (bindOff : Nat)
     (k : VecKV) (mb : VecMeta) (rope : RopeTbl) : M Unit :=
-  launch3 ropeKKernel cuda ptr bindOff k mb rope
+  launch3 ropeKKernel ptr bindOff k mb rope
 
 -- Softmax over per-head scores.  **Migrated** to the proven stack: the trip
 -- counts come from the meta buffer (`forM`), so one kernel and one theorem
@@ -469,7 +459,7 @@ def ptxSoftmax : String := softmaxKernel.ptxSource
 
 private def launchSoftmax (ptr : R) (bindOff : Nat)
     (scores : VecScores) (mb : VecMeta) (probs : VecScores) : M Unit :=
-  launch3 softmaxKernel cuda ptr bindOff scores mb probs
+  launch3 softmaxKernel ptr bindOff scores mb probs
 
 -- SiLU-gate: out = silu(gate) * up.  Grid=ceil(D_FF/256), Block=256.
 def siluGateKernel : Kernel := {
@@ -486,7 +476,7 @@ def ptxSiluGate : String := siluGateKernel.ptxSource
 
 private def launchSiluGate (ptr : R) (bindOff : Nat)
     (gate up out_ : VecDff) : M Unit :=
-  launch3 siluGateKernel cuda ptr bindOff gate up out_
+  launch3 siluGateKernel ptr bindOff gate up out_
 
 -- Residual add: x[i] += a[i], n=D. Grid=ceil(D/256), Block=256.
 def residualAddKernel : Kernel := {
@@ -502,7 +492,7 @@ def ptxResidualAdd : String := residualAddKernel.ptxSource
 
 private def launchResidualAdd (ptr : R) (bindOff : Nat)
     (x add_ : VecD) : M Unit :=
-  launch2 residualAddKernel cuda ptr bindOff x add_
+  launch2 residualAddKernel ptr bindOff x add_
 
 -- KV store (GQA-proper). Writes k_cur[kvHead, elemIdx] → kCache[kvHead, pos, elemIdx].
 -- One thread per (kvHead, elemIdx). Grid=N_KV, Block=HEAD_DIM.
@@ -520,7 +510,7 @@ def ptxKVStore : String := kvStoreKernel.ptxSource
 
 private def launchKVStore (ptr : R) (bindOff : Nat)
     (kCur : VecKV) (kCache : KVCache) (mb : VecMeta) : M Unit :=
-  launch3 kvStoreKernel cuda ptr bindOff kCur kCache mb
+  launch3 kvStoreKernel ptr bindOff kCur kCache mb
 
 -- Argmax over VOCAB logits. Single-thread; writes result to meta_buf[0].
 def argmaxKernel : Kernel := {
@@ -536,7 +526,7 @@ def ptxArgmax : String := argmaxKernel.ptxSource
 
 private def launchArgmax (ptr : R) (bindOff : Nat)
     (logits : VecVocab) (mb : VecMeta) : M Unit :=
-  launch2 argmaxKernel cuda ptr bindOff logits mb
+  launch2 argmaxKernel ptr bindOff logits mb
 
 -- ── CLIF Load Functions ───────────────────────────────────────────────────────
 
@@ -578,7 +568,7 @@ def uploadFromFile {s : Shape}
     let size64    ← iconst64 thisSize
     let _ ← call q.fnFileRead.id [pathPtr, scratchPtr, fileOff64, size64]
     let bufOff64  ← iconst64 off
-    let _ ← call cuda.fnUploadOffset.id [ctxPtr, bufId, bufOff64, scratchPtr, size64]
+    let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, bufId, bufOff64, scratchPtr, size64]
 
 /-- Generate the RoPE sin/cos table into the pinned scratch buffer, then upload it.
     Loop: for each freq in 0..HEAD_DIM/2, inv_freq = rope_theta^(-2*freq/HEAD_DIM);
@@ -623,7 +613,7 @@ private def buildRopeTable
       return invF
     pure ()
 
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufRopeTable, scratchPtr, (← iconst64 tableBytes)]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufRopeTable, scratchPtr, (← iconst64 tableBytes)]
 
 /-- Shared body of `loadInitFn`: allocates pinned scratch, activation/embed/
     lm_head/rope buffers, streams the embed table, lm_head, and rms_final
@@ -634,13 +624,13 @@ def loadInitCommon (ptr : R) : M Unit := do
   let pathPtr ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
 
   -- Init CUDA context
-  cudaInit cuda ptr 0x10
+  cudaInit ptr 0x10
   let ctxPtr ← load64 (← absAddr ptr 0x10)
 
   -- Allocate pinned host scratch buffer for streaming weight uploads
   let chunkBytes64 ← iconst64 PINNED_CHUNK_BYTES
-  let pinnedId  ← call cuda.fnPinnedAlloc.id [ctxPtr, chunkBytes64]
-  let pinnedPtr ← call cuda.fnPinnedPtr.id   [ctxPtr, pinnedId]
+  let pinnedId  ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, chunkBytes64]
+  let pinnedPtr ← call IR.Ffi.cudaPinnedPtr.id   [ctxPtr, pinnedId]
   storeI32 pinnedId  (← absAddr ptr PINNED_ID_OFF)
   storeI64 pinnedPtr (← absAddr ptr PINNED_HOST_PTR_OFF)
 
@@ -649,15 +639,15 @@ def loadInitCommon (ptr : R) : M Unit := do
   let kvBytes  ← iconst64 KV_BYTES
   let dffBytes ← iconst64 (D_FF * 4)
 
-  let bufHidden  : VecD   ← tensorCreate cuda ptr dBytes
-  let bufHdNorm  : VecD   ← tensorCreate cuda ptr dBytes
-  let bufQ       : VecD   ← tensorCreate cuda ptr dBytes
-  let bufKCur    : VecKV  ← tensorCreate cuda ptr kvBytes
-  let bufVCur    : VecKV  ← tensorCreate cuda ptr kvBytes
-  let bufAttnOut : VecD   ← tensorCreate cuda ptr dBytes
-  let bufFfGate  : VecDff ← tensorCreate cuda ptr dffBytes
-  let bufFfUp    : VecDff ← tensorCreate cuda ptr dffBytes
-  let bufFfAct   : VecDff ← tensorCreate cuda ptr dffBytes
+  let bufHidden  : VecD   ← tensorCreate ptr dBytes
+  let bufHdNorm  : VecD   ← tensorCreate ptr dBytes
+  let bufQ       : VecD   ← tensorCreate ptr dBytes
+  let bufKCur    : VecKV  ← tensorCreate ptr kvBytes
+  let bufVCur    : VecKV  ← tensorCreate ptr kvBytes
+  let bufAttnOut : VecD   ← tensorCreate ptr dBytes
+  let bufFfGate  : VecDff ← tensorCreate ptr dffBytes
+  let bufFfUp    : VecDff ← tensorCreate ptr dffBytes
+  let bufFfAct   : VecDff ← tensorCreate ptr dffBytes
 
   slotStore slotHidden ptr bufHidden
   slotStore slotHdNorm ptr bufHdNorm
@@ -675,13 +665,13 @@ def loadInitCommon (ptr : R) : M Unit := do
   let scoreBytes  ← iconst64 (N_Q * MAX_SEQ * 4)
   let metaBytes   ← iconst64 24
 
-  let bufEmbed    : EmbedTbl  ← tensorCreate cuda ptr embedBytes
-  let bufLmHead   : EmbedTbl  ← tensorCreate cuda ptr embedBytes
-  let bufLogits   : VecVocab  ← tensorCreate cuda ptr vocabBytes
-  let bufRmsFinal : VecD      ← tensorCreate cuda ptr dBytes
-  let bufScores   : VecScores ← tensorCreate cuda ptr scoreBytes
-  let bufProbs    : VecScores ← tensorCreate cuda ptr scoreBytes
-  let bufMeta     : VecMeta   ← tensorCreate cuda ptr metaBytes
+  let bufEmbed    : EmbedTbl  ← tensorCreate ptr embedBytes
+  let bufLmHead   : EmbedTbl  ← tensorCreate ptr embedBytes
+  let bufLogits   : VecVocab  ← tensorCreate ptr vocabBytes
+  let bufRmsFinal : VecD      ← tensorCreate ptr dBytes
+  let bufScores   : VecScores ← tensorCreate ptr scoreBytes
+  let bufProbs    : VecScores ← tensorCreate ptr scoreBytes
+  let bufMeta     : VecMeta   ← tensorCreate ptr metaBytes
 
   slotStore slotEmbed ptr bufEmbed
   slotStore slotLmHead ptr bufLmHead
@@ -693,7 +683,7 @@ def loadInitCommon (ptr : R) : M Unit := do
 
   -- Create RoPE sin/cos table buffer (typed) and populate via libm-driven loop.
   let ropeTableBytes ← iconst64 (2 * MAX_SEQ * (HEAD_DIM / 2) * 4)  -- 524288
-  let bufRopeTable : RopeTbl ← tensorCreate cuda ptr ropeTableBytes
+  let bufRopeTable : RopeTbl ← tensorCreate ptr ropeTableBytes
   slotStore slotRopeTable ptr bufRopeTable
   buildRopeTable ctxPtr pinnedPtr bufRopeTable
 
@@ -931,7 +921,7 @@ def inferFn : HProg.Code :=
   let stage ← metaStageFrag ptr dataPtr pos32 seqLen64
   let metaT ← slotLoad slotMeta ptr
   let metaBytes24 ← iconst64 24
-  tensorUpload cuda ptr metaT stage metaBytes24
+  tensorUpload ptr metaT stage metaBytes24
 
   -- Embedding lookup: bind = [embed_table, meta_buf, hidden_out]
   let embedT  ← slotLoad slotEmbed ptr
@@ -1032,9 +1022,9 @@ private def attnProjPhase (ptr : R)
   launchRms ptr BIND_RMS1 b.bufHidden b.bufRmsAttn b.bufHdNorm
   -- Q/K/V projections: shape-typed.  Wq:[D,D]·hidden:[D] → q:[D];
   -- Wk:[KV_DIM,D]·hidden:[D] → kCur:[KV_DIM]; same for Wv.
-  cublasLinear blas ptr b.bufWq b.bufHdNorm b.bufQ
-  cublasLinear blas ptr b.bufWk b.bufHdNorm b.bufKCur
-  cublasLinear blas ptr b.bufWv b.bufHdNorm b.bufVCur
+  cublasLinear ptr b.bufWq b.bufHdNorm b.bufQ
+  cublasLinear ptr b.bufWk b.bufHdNorm b.bufKCur
+  cublasLinear ptr b.bufWv b.bufHdNorm b.bufVCur
   launchBiasD  ptr BIND_BIAS_Q b.bufQ    b.bufBq
   launchBiasKV ptr BIND_BIAS_K b.bufKCur b.bufBk
   launchBiasKV ptr BIND_BIAS_V b.bufVCur b.bufBv
@@ -1061,12 +1051,12 @@ private def attnMixPhase (ptr : R)
   let scoresGqa : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufScores.reshape
   let probsGqa  : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufProbs.reshape
   -- scores[kv, i, :seqLen] = attnAlpha * K[kv, :seqLen, :] @ Q[kv, i]
-  attnScoresQK blas ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qGqa scoresGqa
+  attnScoresQK ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qGqa scoresGqa
   launchSoftmax ptr BIND_SOFTMAX b.bufScores b.bufMeta b.bufProbs
   -- attnOut[kv, i] = V[kv, :seqLen, :]^T @ probs[kv, i, :seqLen]
-  attnMixV blas ptr c.alpha seqLen32 seqLen64 b.bufVCache probsGqa outGqa
+  attnMixV ptr c.alpha seqLen32 seqLen64 b.bufVCache probsGqa outGqa
   -- O projection: Wo:[D,D]·attnOut:[D] → hdNorm:[D]
-  cublasLinear blas ptr b.bufWo b.bufAttnOut b.bufHdNorm
+  cublasLinear ptr b.bufWo b.bufAttnOut b.bufHdNorm
   launchResidualAdd ptr BIND_ADD1 b.bufHidden b.bufHdNorm
 
 /-- Attention sub-layer body (RMSNorm → Q/K/V proj → biases → RoPE → KV store
@@ -1096,11 +1086,11 @@ def ffnBody
   let bufAttnOut ← slotLoad slotAttnOut ptr
   launchRms ptr BIND_RMS2 bufHidden bufRmsFfn bufHdNorm
   -- Wg/Wu projections: Wg:[D_FF,D]·hdNorm:[D] → ffGate:[D_FF]; same for Wu.
-  cublasLinear blas ptr bufWg bufHdNorm bufFfGate
-  cublasLinear blas ptr bufWu bufHdNorm bufFfUp
+  cublasLinear ptr bufWg bufHdNorm bufFfGate
+  cublasLinear ptr bufWu bufHdNorm bufFfUp
   launchSiluGate ptr BIND_SILU bufFfGate bufFfUp bufFfAct
   -- Wd down projection: Wd:[D,D_FF]·ffAct:[D_FF] → attnOut:[D] (reused as temp)
-  cublasLinear blas ptr bufWd bufFfAct bufAttnOut
+  cublasLinear ptr bufWd bufFfAct bufAttnOut
   launchResidualAdd ptr BIND_ADD2 bufHidden bufAttnOut
 
 /-- inferFinalFn (fn_31): final RMSNorm → lm_head → argmax → sync → download next_token. -/
@@ -1117,13 +1107,13 @@ def inferFinalFn : HProg.Code :=
   let meta64  ← iconst64 24
   launchRms ptr BIND_RMS2 bufHidden bufRmsFinal bufHdNorm
   -- LM head projection: lmHead:[VOCAB,D]·hdNorm:[D] → logits:[VOCAB]
-  cublasLinear blas ptr bufLmHead bufHdNorm bufLogits
+  cublasLinear ptr bufLmHead bufHdNorm bufLogits
   launchArgmax ptr BIND_ARGMAX bufLogits bufMeta
-  let _ ← cudaSync cuda ptr 0x10
+  let _ ← cudaSync ptr 0x10
   -- The meta buffer is six words now (the softmax loop bounds ride along), so
   -- it lands in the staging area and only [token_id, pos] goes to the caller.
   let stage ← absAddr ptr META_STAGE_OFF
-  tensorDownload cuda ptr bufMeta stage meta64
+  tensorDownload ptr bufMeta stage meta64
   -- The proven argmax writes the token id as an exactly-representable float;
   -- convert it in place before handing [token_id, pos] back to the caller.
   let tokF   ← loadF32 stage
@@ -1152,15 +1142,15 @@ def loadTokenizerFn : HProg.Code :=
   let dataPtr  ← load64 (← absAddr ptr TOKENIZER_PATH_PTR_OFF)
   -- Allocate a pinned host buffer and slurp the tokenizer file into it.
   let tokBytes64 ← iconst64 TOK_FILE_MAX_BYTES
-  let tokPinId   ← call cuda.fnPinnedAlloc.id [ctxPtr, tokBytes64]
-  let tokBufPtr  ← call cuda.fnPinnedPtr.id   [ctxPtr, tokPinId]
+  let tokPinId   ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, tokBytes64]
+  let tokBufPtr  ← call IR.Ffi.cudaPinnedPtr.id   [ctxPtr, tokPinId]
   let zero64     ← iconst64 0
   let _ ← call q.fnFileRead.id [dataPtr, tokBufPtr, zero64, tokBytes64]
   storeI64 tokBufPtr (← absAddr ptr TOK_BUF_PTR_OFF)
   -- Init HT context (writes context ptr to ptr[0x00])
   callVoid q.fnHtInit.id [ptr]
   let htCtx    ← load64At ptr 0x00
-  let _        ← call ht.fnCreate.id [htCtx]
+  let _        ← call IR.Ffi.htCreate.id [htCtx]
   -- Read n_merges from header
   let nMerges  ← uload32_64 (← iaddImm tokBufPtr 0)
   -- Merge base: offset 1040 in the binary (16 byte header + 256×4 byte_init)
@@ -1182,7 +1172,7 @@ def loadTokenizerFn : HProg.Code :=
     storeI32 tok_b   (← iaddImm keyAddr 4)
     storeI32 rank32  valAddr
     storeI32 result  (← iaddImm valAddr 4)
-    callVoid ht.fnInsert.id [htCtx, keyAddr, keyLen8, valAddr, valLen8]
+    callVoid IR.Ffi.htInsert.id [htCtx, keyAddr, keyLen8, valAddr, valLen8]
 
 /-- tokenizeInitFn (fn_33): convert each byte of text (TEXT_IN_OFF, TEXT_LEN_OFF) to its
     initial token id using the byte_init table; store results in TOKEN_BUF_OFF.
@@ -1238,7 +1228,7 @@ def tokenizeBpeFn : HProg.Code :=
           let tokB ← load32 (← iadd tokBuf (← iaddImm iOff 4))
           storeI32 tokA keyAddr
           storeI32 tokB (← iaddImm keyAddr 4)
-          let found ← call ht.fnLookup.id [htCtx, keyAddr, keyLen8, valAddr]
+          let found ← call IR.Ffi.htLookup.id [htCtx, keyAddr, keyLen8, valAddr]
           let nextI ← iaddImm i 1
           when .slt found zero32 (continueWith [nextI, r, p])
           let rank ← load32 valAddr
@@ -1252,7 +1242,7 @@ def tokenizeBpeFn : HProg.Code :=
       let dB ← load32 (← iadd tokBuf (← iaddImm dOff 4))
       storeI32 dA keyAddr
       storeI32 dB (← iaddImm keyAddr 4)
-      let _ ← call ht.fnLookup.id [htCtx, keyAddr, keyLen8, valAddr]
+      let _ ← call IR.Ffi.htLookup.id [htCtx, keyAddr, keyLen8, valAddr]
       let resT ← load32 (← iaddImm valAddr 4)
       storeI32 resT (← iadd tokBuf dOff)
       let _ ← wloop1 (← iaddImm bestPos 1)
@@ -1668,7 +1658,7 @@ def expectedFinalLaunches : List AlgorithmLib.Clif.LaunchRec :=
 
     **These are now elaboration-time theorems, not a generator-time check.**
     The fallback to an `IO` check existed because `native_decide` on a statement
-    about an `IRBuilder` run measured 43.5 s, and kernel `decide` did not finish
+    about a builder run measured 43.5 s, and kernel `decide` did not finish
     in 180 s. Both numbers were artefacts of a bug: `Clif.Env` was a chain of
     closures storing recipes rather than values, so every lookup re-derived the
     binding it landed on and the cost doubled with depth. With `Env` a strict

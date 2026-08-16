@@ -37,12 +37,12 @@ open AlgorithmLib.HProg.Sur
 /-- The thread and file entry points, in callee-table order. -/
 def env : FnEnv := env% [.thread, .fileIO]
 
-def fnThInit : Nat := IR.FFI.std.thread.fnInit.id
-def fnThSpawn : Nat := IR.FFI.std.thread.fnSpawn.id
-def fnThJoin : Nat := IR.FFI.std.thread.fnJoin.id
-def fnThCleanup : Nat := IR.FFI.std.thread.fnCleanup.id
-def fnRead : Nat := IR.FFI.std.fileRead.id
-def fnWrite : Nat := IR.FFI.std.fileWrite.id
+def fnThInit : Nat := IR.Ffi.threadInit.id
+def fnThSpawn : Nat := IR.Ffi.threadSpawn.id
+def fnThJoin : Nat := IR.Ffi.threadJoin.id
+def fnThCleanup : Nat := IR.Ffi.threadCleanup.id
+def fnRead : Nat := IR.Ffi.fileRead.id
+def fnWrite : Nat := IR.Ffi.fileWrite.id
 
 /-- The orchestrator: copy both paths, read, spawn `WORKERS`, join them, and
     merge their per-worker histograms bin by bin. -/

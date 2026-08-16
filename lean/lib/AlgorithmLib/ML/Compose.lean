@@ -12,7 +12,7 @@ import AlgorithmLib.ML.Transformer
   varying implementation could be checked *against*.
 
   The obstruction was representational.  A launch sequence existed only as the
-  order in which an `IRBuilder` happened to emit calls, and an emission order is
+  order in which a generator happened to emit calls, and an emission order is
   not a value: nothing can quantify over it, so no theorem could mention it.
 
   A `Pipeline` is that sequence as a list. `run` executes it; `denote` says what

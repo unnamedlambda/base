@@ -36,15 +36,10 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
-def ffiEnv : (FnRef × FnRef) × FnEnv :=
-  (Id.run (do
-    let rd := IR.FFI.std.fileRead
-    let wr := IR.FFI.std.fileWrite
-    return (rd, wr)), env% [.fileIO])
 
-def fnRead : FnRef := ffiEnv.1.1
-def fnWrite : FnRef := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnRead : FnRef := IR.Ffi.fileRead.ref
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.fileIO]
 
 /-- The constants and base addresses the whole body reads, made once in the
     entry block. -/

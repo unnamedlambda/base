@@ -124,15 +124,9 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The GPU entry points, then the two file ones, in callee-table order. -/
-def ffiEnv : (GpuSetup × FnRef × FnRef) × FnEnv := (Id.run (do
-  let g := IR.FFI.std.gpu
-  let r := IR.FFI.std.fileRead
-  let w := IR.FFI.std.fileWrite
-  pure (g, r, w)), env% [.gpu, .fileIO])
-def gpu : GpuSetup := ffiEnv.1.1
-def fnRead : FnRef := ffiEnv.1.2.1
-def fnWrite : FnRef := ffiEnv.1.2.2
-def env : FnEnv := ffiEnv.2
+def fnRead : FnRef := IR.Ffi.fileRead.ref
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.gpu, .fileIO]
 
 def code : HProg.Code := clif% do
   let ptr := basePtr
@@ -176,17 +170,17 @@ def code : HProg.Code := clif% do
     let dstAbs ← iadd ptr (← iadd bufAOff (← imul revIdx c8))
     storeUnaligned (← load32 srcAbs) dstAbs
     storeUnaligned (← load32 (← iadd srcAbs c4)) (← iadd dstAbs c4)
-  gpuInit gpu ptr
+  gpuInit ptr
 
   -- Align data size to multiple of 4: (N*8 + 3) & ~3
   let dataSz ← imul bigN c8
   let alignedSz ← alignUp4 dataSz
 
   -- Create 3 buffers
-  let buf0 ← gpuCreateBuffer gpu ptr alignedSz
-  let buf1 ← gpuCreateBuffer gpu ptr alignedSz
+  let buf0 ← gpuCreateBuffer ptr alignedSz
+  let buf1 ← gpuCreateBuffer ptr alignedSz
   let metaSzC ← iconst64 metaSize
-  let buf2 ← gpuCreateBuffer gpu ptr metaSzC
+  let buf2 ← gpuCreateBuffer ptr metaSzC
 
   -- Write N into meta region
   let metaOffC ← iconst64 meta_off
@@ -195,13 +189,13 @@ def code : HProg.Code := clif% do
   store nI32 metaAbs
 
   -- Upload buf_a
-  let _ ← gpuUpload gpu ptr buf0 bufAOff alignedSz
+  let _ ← gpuUpload ptr buf0 bufAOff alignedSz
 
   -- Create pipeline (3 bindings)
   let shOffC ← iconst64 shader_off
   let bdOffC ← iconst64 bindDesc_off
   let c3_i32 ← iconst32 3
-  let pipeId ← gpuCreatePipeline gpu ptr shOffC bdOffC c3_i32
+  let pipeId ← gpuCreatePipeline ptr shOffC bdOffC c3_i32
 
   -- Compute dispatch size: ceil(N/2 / 64)
   let halfN ← ushr bigN c1
@@ -221,10 +215,10 @@ def code : HProg.Code := clif% do
     let metaDir ← iadd metaStage c4
     storeUnaligned (← ireduce32 dir) metaDir
     -- Upload meta, dispatch, then sync via download-to-scratch
-    let _ ← gpuUpload gpu ptr buf2 metaOffC metaSzC
-    let _ ← gpuDispatch gpu ptr pipeId wgCount32 one32 one32
+    let _ ← gpuUpload ptr buf2 metaOffC metaSzC
+    let _ ← gpuDispatch ptr pipeId wgCount32 one32 one32
     let scratchOff ← iconst64 64
-    let _ ← gpuDownload gpu ptr buf2 scratchOff metaSzC
+    let _ ← gpuDownload ptr buf2 scratchOff metaSzC
     bxor dir c1   -- next direction
 
   -- Step 5: Download result.
@@ -238,8 +232,8 @@ def code : HProg.Code := clif% do
     (els := pure [bufBOffC, buf1])
   let dstOff2 := fin.headD 0
   let bufId := fin.getD 1 0
-  let _ ← gpuDownload gpu ptr bufId dstOff2 alignedSz
-  gpuCleanup gpu ptr
+  let _ ← gpuDownload ptr bufId dstOff2 alignedSz
+  gpuCleanup ptr
 
   -- Step 6: Write output file
   let outFnOff ← iconst64 outputFilename_off

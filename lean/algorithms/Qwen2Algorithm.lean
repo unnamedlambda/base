@@ -45,20 +45,20 @@ def loadLayerFn (l : Nat) : HProg.Code :=
   let kvCacheBytes ← iconst64 KV_CACHE_BYTES
 
   -- Create weight buffers — shape in the type, byte size in the runtime arg.
-  let bufRmsAttn : VecD     ← tensorCreate cuda ptr dBytes
-  let bufWq      : MatDD    ← tensorCreate cuda ptr wqBytes
-  let bufBq      : VecD     ← tensorCreate cuda ptr dBytes
-  let bufWk      : MatKVD   ← tensorCreate cuda ptr wkBytes
-  let bufBk      : VecKV    ← tensorCreate cuda ptr kvBytes
-  let bufWv      : MatKVD   ← tensorCreate cuda ptr wkBytes
-  let bufBv      : VecKV    ← tensorCreate cuda ptr kvBytes
-  let bufWo      : MatDD    ← tensorCreate cuda ptr wqBytes
-  let bufRmsFfn  : VecD     ← tensorCreate cuda ptr dBytes
-  let bufWg      : MatDffD  ← tensorCreate cuda ptr wgBytes
-  let bufWu      : MatDffD  ← tensorCreate cuda ptr wgBytes
-  let bufWd      : MatDDff  ← tensorCreate cuda ptr wgBytes
-  let bufKCache  : KVCache  ← tensorCreate cuda ptr kvCacheBytes
-  let bufVCache  : KVCache  ← tensorCreate cuda ptr kvCacheBytes
+  let bufRmsAttn : VecD     ← tensorCreate ptr dBytes
+  let bufWq      : MatDD    ← tensorCreate ptr wqBytes
+  let bufBq      : VecD     ← tensorCreate ptr dBytes
+  let bufWk      : MatKVD   ← tensorCreate ptr wkBytes
+  let bufBk      : VecKV    ← tensorCreate ptr kvBytes
+  let bufWv      : MatKVD   ← tensorCreate ptr wkBytes
+  let bufBv      : VecKV    ← tensorCreate ptr kvBytes
+  let bufWo      : MatDD    ← tensorCreate ptr wqBytes
+  let bufRmsFfn  : VecD     ← tensorCreate ptr dBytes
+  let bufWg      : MatDffD  ← tensorCreate ptr wgBytes
+  let bufWu      : MatDffD  ← tensorCreate ptr wgBytes
+  let bufWd      : MatDDff  ← tensorCreate ptr wgBytes
+  let bufKCache  : KVCache  ← tensorCreate ptr kvCacheBytes
+  let bufVCache  : KVCache  ← tensorCreate ptr kvCacheBytes
 
   -- Store buffer IDs into layer `l`'s slot (cell base = ptr + LAYER_BUFS_BASE + l*STRIDE).
   let cellBase ← absAddr ptr (LAYER_BUFS_BASE + l * LAYER_BUF_STRIDE)
@@ -99,8 +99,8 @@ def loadFinalizeFn : HProg.Code :=
   let ptr := basePtr
   let ctxPtr   ← load64 (← absAddr ptr 0x10)
   let pinnedId ← load32 (← absAddr ptr PINNED_ID_OFF)
-  let _ ← cudaSync cuda ptr 0x10
-  let _ ← call cuda.fnPinnedFree.id [ctxPtr, pinnedId]
+  let _ ← cudaSync ptr 0x10
+  let _ ← call IR.Ffi.cudaPinnedFree.id [ctxPtr, pinnedId]
 
 /-- inferLayerFn (fn_28): runs one transformer layer — calls attn then ffn. -/
 def inferLayerFn : HProg.Code :=

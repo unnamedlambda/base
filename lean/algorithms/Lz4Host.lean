@@ -27,7 +27,7 @@ import AlgorithmLib.Clif
     through unoptimised term rewriting.  It exhausted 15 GB of RAM.
   * `rfl` with the binding offset held opaque (`warpCodeAt` takes it as a
     parameter for exactly this reason) — still out of memory.  Reducing the
-    `IRBuilder` state monad itself is the cost, not the serializer.
+    builder's state monad itself is the cost, not the serializer.
 
   So this is the same trade the inference pipeline makes for
   `Qwen2Common.infer_loop_is_layers` and `final_no_loops`.  What it buys is a

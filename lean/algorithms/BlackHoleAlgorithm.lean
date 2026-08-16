@@ -1429,24 +1429,19 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := (Id.run (do
-  let w := IR.FFI.std.fileWrite
-  let c := IR.FFI.std.cuda
-  pure (w, c)), env% [.cuda, .fileIO])
-def fnWrite : FnRef := ffiEnv.1.1
-def cuda : IR.CudaSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.cuda, .fileIO]
 
 def code (spec : BlackHoleSpec) : HProg.Code :=
   HProg.Sur.build do
     let ptr := basePtr
-    cudaInit cuda ptr
+    cudaInit ptr
     -- Allocate device buffers: HDR scratch (RGB f32, padded to 16 B/pixel)
     -- and final BGRA u32 output.
     let hdrSz ← iconst64 (hdrPixelBytes spec)
     let bgraSz ← iconst64 (pixelBytes spec)
-    let hdrBuf ← cudaCreateBuffer cuda ptr hdrSz
-    let bgraBuf ← cudaCreateBuffer cuda ptr bgraSz
+    let hdrBuf ← cudaCreateBuffer ptr hdrSz
+    let bgraBuf ← cudaCreateBuffer ptr bgraSz
     -- Write the two binding descriptors into host memory at the
     -- pre-reserved offsets.  Each is just a packed list of i32
     -- buffer IDs; the FFI side reads N=`nBufs` of them.
@@ -1462,18 +1457,18 @@ def code (spec : BlackHoleSpec) : HProg.Code :=
     let gridY ← iconst32 ((imageHeight spec + 15) / 16)
     let one32 ← iconst32 1
     let blk16 ← iconst32 16
-    let _ ← cudaLaunchNamed cuda ptr ptxOffV nameAV nBufs1 bindAV gridX gridY one32 blk16 blk16 one32
-    let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunchNamed ptr ptxOffV nameAV nBufs1 bindAV gridX gridY one32 blk16 blk16 one32
+    let _ ← cudaSync ptr
     -- Launch kernel B: bloom composite (HDR + bloom → BGRA).
     let nameBV ← iconst64 nameOffComposite
     let nBufs2 ← iconst32 2
     let bindBV ← iconst64 bindOffB
-    let _ ← cudaLaunchNamed cuda ptr ptxOffV nameBV nBufs2 bindBV gridX gridY one32 blk16 blk16 one32
-    let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunchNamed ptr ptxOffV nameBV nBufs2 bindBV gridX gridY one32 blk16 blk16 one32
+    let _ ← cudaSync ptr
     -- Download final BGRA pixels and write the BMP file.
     let pxOffV ← iconst64 pixelsOff
-    let _ ← cudaDownload cuda ptr bgraBuf pxOffV bgraSz
-    cudaCleanup cuda ptr
+    let _ ← cudaDownload ptr bgraBuf pxOffV bgraSz
+    cudaCleanup ptr
     let total ← iconst64 (54 + pixelBytes spec)
     let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
 

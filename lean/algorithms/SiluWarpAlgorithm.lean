@@ -142,21 +142,19 @@ open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
-def cudaEnv : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
-def cuda : IR.CudaSetup := cudaEnv.1
-def env : FnEnv := cudaEnv.2
+def env : FnEnv := env% [.cuda]
 
 def loadFnCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr
+  cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   let nBytes ← iconst64 (N * 4)
-  let inId ← cudaCreateBuffer cuda ptr nBytes
+  let inId ← cudaCreateBuffer ptr nBytes
   store inId (← absAddr ptr IN_ID)
-  let outId ← cudaCreateBuffer cuda ptr nBytes
+  let outId ← cudaCreateBuffer ptr nBytes
   store outId (← absAddr ptr OUT_ID)
-  let _ ← call cuda.fnUpload.id [ctxPtr, inId, dataPtr, nBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, inId, dataPtr, nBytes]
   store inId (← absAddr ptr BIND_OFF)
   store outId (← absAddr ptr (BIND_OFF + 4))
 
@@ -168,8 +166,8 @@ def runFnCode : HProg.Code := clif% do
   let one ← iconst32 1
   let warp ← iconst32 32
   let grid ← iconst32 GRID
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-  let _ ← cudaSync cuda ptr
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  let _ ← cudaSync ptr
 
 /-- The same work, `E` elements per lane: `LGRID` blocks instead of `GRID`. -/
 def runLoopFnCode : HProg.Code := clif% do
@@ -180,8 +178,8 @@ def runLoopFnCode : HProg.Code := clif% do
   let one ← iconst32 1
   let warp ← iconst32 32
   let grid ← iconst32 LGRID
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-  let _ ← cudaSync cuda ptr
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  let _ ← cudaSync ptr
 
 def fetchFnCode : HProg.Code := clif% do
   let ptr := basePtr
@@ -189,7 +187,7 @@ def fetchFnCode : HProg.Code := clif% do
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outId ← load32 (← absAddr ptr OUT_ID)
   let nBytes ← iconst64 (N * 4)
-  let _ ← call cuda.fnDownload.id [ctxPtr, outId, outPtr, nBytes]
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, outId, outPtr, nBytes]
 
 theorem bodies_wf :
     HProg.wf env HProg.ptrParams loadFnCode = true &&

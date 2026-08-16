@@ -3,9 +3,9 @@ import AlgorithmLib.HProgSem
 /-!
 # What a call may write
 
-`HProgSem` gives four symbols an executable contract, because the corpus needs
-to run them. The other eighty-nine are device drivers, sockets, windows and
-database handles: nothing here will ever compute what they return. What can
+`HProgSem` gives the file, stdio, hash-table and libm families an executable
+contract, because the corpus runs them. The rest are device drivers, windows
+and database handles: nothing here will ever compute what they return. What can
 still be said about them — and what a proof about a program containing one
 actually needs — is *which memory they may disturb*.
 
@@ -49,119 +49,82 @@ inductive Frame where
     exactly that at the slot it is handed. -/
 private def ctxSlot : Frame := .fixed 0 8
 
-/-- The frame of every symbol the JIT resolves.
+/-- The memory each entry point may write, ordered by module to match
+    `base/src/ffi/`.
 
-    Ordered by module, matching `base/src/ffi/`. A symbol absent from this
-    table has no frame, and `frameOf` says so rather than guessing. -/
-def frames : List (String × Frame) :=
-  [ -- file.rs — the read family writes into shared memory, the write family
-    -- only touches the file system.
-    ("cl_file_read", .atOffRet 0 2),
-    ("cl_file_read_to_ptr", .at 1 3),
-    ("cl_file_write", .none),
-    ("cl_file_write_from_ptr", .none),
+    A total function of `Ffi`, so every entry point has a frame and none is
+    named that no declaration uses. Keyed by symbol name this was neither: the
+    six colocated hash-table symbols were spelled `cl_ht_*` while the JIT
+    resolves `ht_*`, so every program using the table silently had no frame for
+    it, and twenty-one names belonged to no declaration at all. -/
+def frame : IR.Ffi → Frame
+  -- file.rs — the read family writes into shared memory, the write family only
+  -- touches the file system.
+  | .fileRead => .atOffRet 0 2
+  | .fileReadToPtr => .at 1 3
+  | .fileWrite | .fileWriteFromPtr => .none
 
-    -- stdio.rs
-    ("cl_stdin_readline", .atOff 0 1 2),
-    ("cl_stdout_write", .none),
+  -- stdio.rs
+  | .stdinReadline => .atOff 0 1 2
+  | .stdoutWrite => .none
 
-    -- mod.rs — the libm shims are pure.
-    ("cl_sinf", .none), ("cl_cosf", .none), ("cl_powf", .none),
+  -- mod.rs — the libm shims are pure.
+  | .sinf | .cosf | .powf => .none
 
-    -- ht.rs — the table lives outside shared memory; only the lookups write
-    -- back into it, and for as many bytes as the stored value happens to be.
-    ("cl_ht_init", ctxSlot), ("cl_ht_cleanup", ctxSlot),
-    ("cl_ht_create", .none), ("cl_ht_count", .none),
-    ("cl_ht_insert", .none), ("cl_ht_increment", .none),
-    ("cl_ht_lookup", .dataDependent 3),
-    ("cl_ht_get_entry", .dataDependent2 2 3),
+  -- ht.rs — the table lives outside shared memory; only the reads write back
+  -- into it, and for as many bytes as the stored value happens to be.
+  | .htInit | .htCleanup => ctxSlot
+  | .htCreate | .htCount | .htInsert | .htIncrement => .none
+  | .htLookup => .dataDependent 3
+  | .htGetEntry => .dataDependent2 2 3
 
-    -- cuda.rs — uploads and launches move data the other way or stay on the
-    -- device; only the downloads write host memory.
-    ("cl_cuda_init", ctxSlot), ("cl_cuda_cleanup", ctxSlot),
-    ("cl_cuda_create_buffer", .none), ("cl_cuda_free_buffer", .none),
-    ("cl_cuda_upload", .none), ("cl_cuda_upload_ptr", .none),
-    ("cl_cuda_upload_ptr_async", .none),
-    ("cl_cuda_upload_ptr_offset", .none),
-    ("cl_cuda_upload_ptr_offset_async", .none),
-    ("cl_cuda_download", .at 2 3),
-    ("cl_cuda_download_ptr", .at 2 3),
-    ("cl_cuda_download_ptr_async", .at 2 3),
-    ("cl_cuda_download_ptr_offset", .at 3 4),
-    ("cl_cuda_launch", .none), ("cl_cuda_launch_named", .none),
-    ("cl_cuda_launch_on_stream", .none),
-    ("cl_cuda_launch_named_on_stream", .none),
-    ("cl_cuda_sync", .none),
-    ("cl_cuda_stream_create", .none), ("cl_cuda_stream_sync", .none),
-    ("cl_cuda_stream_destroy", .none), ("cl_cuda_stream_wait_event", .none),
-    ("cl_cuda_event_create", .none), ("cl_cuda_event_record", .none),
-    ("cl_cuda_event_elapsed_ms_bits", .none), ("cl_cuda_event_destroy", .none),
-    ("cl_cuda_graph_begin_capture", .none), ("cl_cuda_graph_end_capture", .none),
-    ("cl_cuda_graph_upload", .none), ("cl_cuda_graph_launch", .none),
-    ("cl_cuda_graph_destroy", .none),
-    ("cl_cuda_pinned_alloc", .none), ("cl_cuda_pinned_ptr", .none),
-    ("cl_cuda_pinned_free", .none),
+  -- cuda.rs — uploads and launches move data the other way or stay on the
+  -- device; only the downloads write host memory.
+  | .cudaInit | .cudaCleanup => ctxSlot
+  | .cudaDownload | .cudaDownloadAsync => .at 2 3
+  | .cudaDownloadOffset => .at 3 4
+  | .cudaCreateBuffer | .cudaFreeBuffer
+  | .cudaUpload | .cudaUploadAsync | .cudaUploadOffset | .cudaUploadOffsetAsync
+  | .cudaLaunch | .cudaLaunchNamed | .cudaLaunchOnStream | .cudaLaunchNamedOnStream
+  | .cudaSync
+  | .cudaStreamCreate | .cudaStreamSync | .cudaStreamDestroy | .cudaStreamWaitEvent
+  | .cudaEventCreate | .cudaEventRecord | .cudaEventElapsedMsBits | .cudaEventDestroy
+  | .cudaGraphBeginCapture | .cudaGraphEndCapture | .cudaGraphUpload
+  | .cudaGraphLaunch | .cudaGraphDestroy
+  | .cudaPinnedAlloc | .cudaPinnedPtr | .cudaPinnedFree => .none
 
-    -- cuda.rs, cuBLAS — the operands and the result are all device buffers.
-    ("cl_cublas_sgemm", .none), ("cl_cublas_sgemv", .none),
-    ("cl_cublas_sgemv_on_stream", .none),
-    ("cl_cublas_sgemm_strided_batched", .none),
-    ("cl_cublas_sgemm_strided_batched_on_stream", .none),
+  -- cuda.rs, cuBLAS — the operands and the result are all device buffers.
+  | .cublasSgemv | .cublasSgemvOnStream | .cublasSgemm | .cublasSgemmOnStream
+  | .cublasPtrArray | .cublasSgemmBatchedOnStream => .none
 
-    -- wgpu.rs
-    ("cl_gpu_init", ctxSlot), ("cl_gpu_cleanup", ctxSlot),
-    ("cl_gpu_create_buffer", .none), ("cl_gpu_create_pipeline", .none),
-    ("cl_gpu_dispatch", .none),
-    ("cl_gpu_upload", .none), ("cl_gpu_upload_ptr", .none),
-    ("cl_gpu_download", .at 2 3),
-    ("cl_gpu_download_ptr", .at 3 4),
+  -- wgpu.rs
+  | .gpuInit | .gpuCleanup => ctxSlot
+  | .gpuDownload => .at 2 3
+  | .gpuDownloadPtr => .at 3 4
+  | .gpuCreateBuffer | .gpuCreatePipeline | .gpuDispatch
+  | .gpuUpload | .gpuUploadPtr => .none
 
-    -- lmdb.rs — reads write their result where the caller asked, for as long
-    -- as the stored value is.
-    ("cl_lmdb_init", ctxSlot), ("cl_lmdb_cleanup", ctxSlot),
-    ("cl_lmdb_open", .none), ("cl_lmdb_sync", .none),
-    ("cl_lmdb_put", .none), ("cl_lmdb_delete", .none),
-    ("cl_lmdb_begin_write_txn", .none), ("cl_lmdb_commit_write_txn", .none),
-    ("cl_lmdb_get", .dataDependent 4),
-    ("cl_lmdb_cursor_scan", .dataDependent 5),
+  -- lmdb.rs — reads write their result where the caller asked, for as long as
+  -- the stored value is.
+  | .lmdbInit | .lmdbCleanup => ctxSlot
+  | .lmdbCursorScan => .dataDependent 5
+  | .lmdbOpen | .lmdbPut | .lmdbBeginWriteTxn | .lmdbCommitWriteTxn => .none
 
-    -- net.rs
-    ("cl_net_init", ctxSlot), ("cl_net_cleanup", ctxSlot),
-    ("cl_net_listen", .none), ("cl_net_accept", .none),
-    ("cl_net_connect", .none), ("cl_net_listener_port", .none),
-    ("cl_net_send", .none),
-    ("cl_net_recv", .at 2 3),
+  -- thread.rs — a spawned body runs against the arena it is handed, so what it
+  -- writes is the callee's frame, not this one's.
+  | .threadInit | .threadCleanup => ctxSlot
+  | .threadSpawn => .dataDependent 2
+  | .threadJoin => .none
 
-    -- thread.rs — a spawned body runs against the arena it is handed, so what
-    -- it writes is the callee's frame, not this one's.
-    ("cl_thread_init", ctxSlot), ("cl_thread_cleanup", ctxSlot),
-    ("cl_thread_spawn", .dataDependent 2),
-    ("cl_thread_call", .dataDependent 2),
-    ("cl_thread_join", .none),
+  -- window.rs
+  | .windowInit | .windowCleanup => ctxSlot
+  | .windowPoll => .dataDependent 1
+  | .windowOpen | .windowPresentGpuBuffer => .none
 
-    -- window.rs
-    ("cl_window_init", ctxSlot), ("cl_window_cleanup", ctxSlot),
-    ("cl_window_open", .none),
-    ("cl_window_poll", .dataDependent 1),
-    ("cl_window_present_gpu_buffer", .none) ]
-
-/-- The frame declared for `name`, or `none` when the table does not mention
-    it — which is the honest answer, and the one a proof has to handle. -/
-def frameOf (name : String) : Option Frame :=
-  (frames.find? (·.1 == name)).map (·.2)
-
-/-- Every symbol is named once, so `frameOf` cannot pick between two claims. -/
-theorem frames_nodup :
-    frames.all (fun e => (frames.filter (·.1 == e.1)).length == 1) = true := by
-  native_decide
-
-/-- The symbols `HProgSem.callFile` can actually run. Every other name in
-    `frames` has a frame and no definition. -/
-def executable : List String := ["cl_file_read", "cl_file_write"]
-
-/-- Nothing claims to be executable without a frame to go with it. -/
-theorem executable_have_frames :
-    executable.all (fun n => (frameOf n).isSome) = true := by native_decide
+/-- The frame declared for a symbol, or `none` when it is not an entry point —
+    which is the honest answer for a program's own colocated functions, and the
+    one a proof has to handle. -/
+def frameOf (name : String) : Option Frame := (IR.Ffi.ofCname name).map frame
 
 -- ---------------------------------------------------------------------------
 -- What one program assumes
@@ -176,12 +139,13 @@ def calleeName (env : FnEnv) (fn : Nat) : Option String := do
 
 /-- **The FFI a program actually assumes.**
 
-    Not the 93 in `frames` — only the symbols this body calls, which `callsOf`
-    already reads off the term. A program that computes and stores assumes
-    nothing at all; the histogram assumes two.
+    Not every entry point that exists — only the symbols this body calls, which
+    `callsOf` already reads off the term. A program that computes and stores
+    assumes nothing at all; the histogram assumes two.
 
     This is what makes the FFI part of the trusted base per-program and usually
-    near-empty, instead of a fixed 93-item liability every artifact carries. -/
+    near-empty, instead of a fixed eighty-item liability every artifact
+    carries. -/
 def footprint (env : FnEnv) (c : Code) : List (String × Option Frame) :=
   (callsOf c).foldl
     (fun acc fn =>

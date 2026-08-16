@@ -46,13 +46,13 @@ open AlgorithmLib.HProg.Sur
 /-- The GPU entry points, in the order the callee table numbers them. -/
 def env : FnEnv := env% [.gpu]
 
-def fnInit : Nat := IR.FFI.std.gpu.fnInit.id
-def fnCreateBuffer : Nat := IR.FFI.std.gpu.fnCreateBuffer.id
-def fnCreatePipeline : Nat := IR.FFI.std.gpu.fnCreatePipeline.id
-def fnUploadPtr : Nat := IR.FFI.std.gpu.fnUploadPtr.id
-def fnDispatch : Nat := IR.FFI.std.gpu.fnDispatch.id
-def fnDownloadPtr : Nat := IR.FFI.std.gpu.fnDownloadPtr.id
-def fnCleanup : Nat := IR.FFI.std.gpu.fnCleanup.id
+def fnInit : Nat := IR.Ffi.gpuInit.id
+def fnCreateBuffer : Nat := IR.Ffi.gpuCreateBuffer.id
+def fnCreatePipeline : Nat := IR.Ffi.gpuCreatePipeline.id
+def fnUploadPtr : Nat := IR.Ffi.gpuUploadPtr.id
+def fnDispatch : Nat := IR.Ffi.gpuDispatch.id
+def fnDownloadPtr : Nat := IR.Ffi.gpuDownloadPtr.id
+def fnCleanup : Nat := IR.Ffi.gpuCleanup.id
 
 def code : HProg.Code := clif% do
   let ptr := basePtr

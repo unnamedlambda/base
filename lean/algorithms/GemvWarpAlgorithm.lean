@@ -240,34 +240,27 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: only the cuBLAS baseline reaches cuBLAS. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
-  let c := IR.FFI.std.cuda
-  let bl := IR.FFI.std.cublas
-  pure (c, bl)), env% [.cuda, .cublas])
-def cudaOnly : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
-def cuda : IR.CudaSetup := ffiEnv.1.1
-def cublas : IR.CuBlasSetup := ffiEnv.1.2
-def envAll : FnEnv := ffiEnv.2
-def envCuda : FnEnv := cudaOnly.2
+def envAll : FnEnv := env% [.cuda, .cublas]
+def envCuda : FnEnv := env% [.cuda, .cublas]
 
 def loadCode (sh : Shape) : HProg.Code :=
   HProg.Sur.build do
     let ptr := basePtr
     let dataPtr ← load64 (← absAddr ptr 0x18)
-    cudaInit cuda ptr
+    cudaInit ptr
     let ctxPtr ← cudaCtxPtr ptr
     let aBytes ← iconst64 (sh.m * sh.n * 4)
     let xBytes ← iconst64 (sh.n * 4)
     let yBytes ← iconst64 (sh.m * 4)
-    let aId ← cudaCreateBuffer cuda ptr aBytes
+    let aId ← cudaCreateBuffer ptr aBytes
     store aId (← absAddr ptr A_ID)
-    let xId ← cudaCreateBuffer cuda ptr xBytes
+    let xId ← cudaCreateBuffer ptr xBytes
     store xId (← absAddr ptr X_ID)
-    let yId ← cudaCreateBuffer cuda ptr yBytes
+    let yId ← cudaCreateBuffer ptr yBytes
     store yId (← absAddr ptr Y_ID)
-    let _ ← call cuda.fnUpload.id [ctxPtr, aId, dataPtr, aBytes]
+    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, aId, dataPtr, aBytes]
     let xSrc ← iadd dataPtr aBytes
-    let _ ← call cuda.fnUpload.id [ctxPtr, xId, xSrc, xBytes]
+    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, xId, xSrc, xBytes]
     store aId (← absAddr ptr BIND_OFF)
     store xId (← absAddr ptr (BIND_OFF + 4))
     store yId (← absAddr ptr (BIND_OFF + 8))
@@ -284,8 +277,8 @@ def runCode (sh : Shape) (sq : Bool) (s : Sched) : HProg.Code :=
     let one ← iconst32 1
     let warp ← iconst32 32
     let grid ← iconst32 sh.m
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff grid one one warp one one
-    let _ ← cudaSync cuda ptr
+    let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+    let _ ← cudaSync ptr
 
 /-- The cuBLAS baseline on the same buffers: `y = A·x`, `A` is `m x n`. -/
 def blasCode (sh : Shape) : HProg.Code :=
@@ -301,8 +294,8 @@ def blasCode (sh : Shape) : HProg.Code :=
     let nn ← iconst32 sh.m
     let alpha ← iconst32 0x3F800000
     let beta ← iconst32 0
-    let _ ← call cublas.fnSgemv.id [ctxPtr, trans, mm, nn, alpha, aId, xId, beta, yId]
-    let _ ← cudaSync cuda ptr
+    let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, trans, mm, nn, alpha, aId, xId, beta, yId]
+    let _ ← cudaSync ptr
 
 def fetchCode (sh : Shape) : HProg.Code :=
   HProg.Sur.build do
@@ -311,7 +304,7 @@ def fetchCode (sh : Shape) : HProg.Code :=
     let outPtr ← load64 (← absAddr ptr 0x28)
     let yId ← load32 (← absAddr ptr Y_ID)
     let yBytes ← iconst64 (sh.m * 4)
-    let _ ← call cuda.fnDownload.id [ctxPtr, yId, outPtr, yBytes]
+    let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, yId, outPtr, yBytes]
 
 /-- Every body well-formed at every shipped shape and schedule.
 

@@ -77,19 +77,14 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points then `cl_file_write`, in callee-table order. -/
-def ffiEnv : (IR.CudaSetup × FnRef) × FnEnv := (Id.run (do
-  let c := IR.FFI.std.cuda
-  let w := IR.FFI.std.fileWrite
-  pure (c, w)), env% [.cuda, .fileIO])
-def cuda : IR.CudaSetup := ffiEnv.1.1
-def fnWr : FnRef := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnWr : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.cuda, .fileIO]
 
 def code : HProg.Code := clif% do
   let ptr := basePtr
 
   -- Init CUDA context
-  cudaInit cuda ptr
+  cudaInit ptr
 
   -- Load N (i32) from memory, compute buffer size = N * 4
   let nAddr ← absAddr ptr f.nElems.offset
@@ -99,14 +94,14 @@ def code : HProg.Code := clif% do
   let bufSz ← imul nVal64 four
 
   -- Create 2 device buffers
-  let xBuf ← cudaCreateBuffer cuda ptr bufSz
-  let yBuf ← cudaCreateBuffer cuda ptr bufSz
+  let xBuf ← cudaCreateBuffer ptr bufSz
+  let yBuf ← cudaCreateBuffer ptr bufSz
 
   -- Upload x from dataRegion, y from dataRegion + bufSz
   let dataOff ← iconst64 f.dataRegion.offset
-  let _  ← cudaUpload cuda ptr xBuf dataOff bufSz
+  let _  ← cudaUpload ptr xBuf dataOff bufSz
   let yOff ← iadd dataOff bufSz
-  let _  ← cudaUpload cuda ptr yBuf yOff bufSz
+  let _  ← cudaUpload ptr yBuf yOff bufSz
 
   -- Compute grid dimensions: ceil(N / 256)
   let n255  ← iconst32 255
@@ -119,12 +114,12 @@ def code : HProg.Code := clif% do
   let ptxOff  ← iconst64 f.ptxSrc.offset
   let two32   ← iconst32 2
   let bindOff ← iconst64 f.bindDesc.offset
-  let _ ← cudaLaunch cuda ptr ptxOff two32 bindOff
+  let _ ← cudaLaunch ptr ptxOff two32 bindOff
                                gridX one32 one32
                                c256 one32 one32
 
   -- Download y result
-  let _ ← cudaDownload cuda ptr yBuf yOff bufSz
+  let _ ← cudaDownload ptr yBuf yOff bufSz
 
   -- Write y to verify file
   let fnameOff ← iconst64 f.filename.offset
@@ -132,7 +127,7 @@ def code : HProg.Code := clif% do
   let _ ← call fnWr.id [ptr, fnameOff, yOff, zero64, bufSz]
 
   -- Cleanup
-  cudaCleanup cuda ptr
+  cudaCleanup ptr
 
 theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 

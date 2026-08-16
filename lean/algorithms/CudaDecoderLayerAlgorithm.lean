@@ -168,17 +168,10 @@ open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: only `infer` reaches cuBLAS, and a function declares
     what it calls. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
-  let cuda := IR.FFI.std.cuda
-  let blas := IR.FFI.std.cublas
-  pure (cuda, blas)), env% [.cuda, .cublas])
 
-def cudaOnly : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
 
-def cuda : IR.CudaSetup := ffiEnv.1.1
-def blas : IR.CuBlasSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
-def envCuda : FnEnv := cudaOnly.2
+def env : FnEnv := env% [.cuda, .cublas]
+def envCuda : FnEnv := env% [.cuda, .cublas]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
@@ -186,7 +179,7 @@ def CTX_OFF : Nat := 0x10
 def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
-  cudaInit cuda ptr CTX_OFF
+  cudaInit ptr CTX_OFF
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
 
   let dmBytes  ← iconst64 D_MODEL_BYTES
@@ -196,27 +189,27 @@ def loadCode : HProg.Code := clif% do
   let wdfBytes ← iconst64 W_DM_FF_BYTES
 
   -- activation buffers
-  let bufX   ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufXn1 ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufQ   ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufK   ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufV   ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufO   ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufXn2 ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufG   ← call cuda.fnCreateBuffer.id [ctxPtr, ffBytes]
-  let bufU   ← call cuda.fnCreateBuffer.id [ctxPtr, ffBytes]
-  let bufA   ← call cuda.fnCreateBuffer.id [ctxPtr, ffBytes]
-  let bufD   ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
+  let bufX   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufXn1 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufQ   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufK   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufV   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufO   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufXn2 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufG   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, ffBytes]
+  let bufU   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, ffBytes]
+  let bufA   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, ffBytes]
+  let bufD   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
   -- weight buffers
-  let bufRms1 ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufWq   ← call cuda.fnCreateBuffer.id [ctxPtr, wdmBytes]
-  let bufWk   ← call cuda.fnCreateBuffer.id [ctxPtr, wdmBytes]
-  let bufWv   ← call cuda.fnCreateBuffer.id [ctxPtr, wdmBytes]
-  let bufWo   ← call cuda.fnCreateBuffer.id [ctxPtr, wdmBytes]
-  let bufRms2 ← call cuda.fnCreateBuffer.id [ctxPtr, dmBytes]
-  let bufWg   ← call cuda.fnCreateBuffer.id [ctxPtr, wffBytes]
-  let bufWu   ← call cuda.fnCreateBuffer.id [ctxPtr, wffBytes]
-  let bufWd   ← call cuda.fnCreateBuffer.id [ctxPtr, wdfBytes]
+  let bufRms1 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufWq   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, wdmBytes]
+  let bufWk   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, wdmBytes]
+  let bufWv   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, wdmBytes]
+  let bufWo   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, wdmBytes]
+  let bufRms2 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dmBytes]
+  let bufWg   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, wffBytes]
+  let bufWu   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, wffBytes]
+  let bufWd   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, wdfBytes]
 
   store bufX   (← absAddr ptr BUF_X_OFF)
   store bufXn1 (← absAddr ptr BUF_XN1_OFF)
@@ -240,23 +233,23 @@ def loadCode : HProg.Code := clif% do
   store bufWd  (← absAddr ptr BUF_WD_OFF)
 
   -- upload weights (rms1, wq, wk, wv, wo, rms2, wg, wu, wd)
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufRms1, dataPtr, dmBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufRms1, dataPtr, dmBytes]
   let p1 ← iaddImm dataPtr D_MODEL_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufWq, p1, wdmBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufWq, p1, wdmBytes]
   let p2 ← iaddImm p1 W_DM_DM_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufWk, p2, wdmBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufWk, p2, wdmBytes]
   let p3 ← iaddImm p2 W_DM_DM_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufWv, p3, wdmBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufWv, p3, wdmBytes]
   let p4 ← iaddImm p3 W_DM_DM_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufWo, p4, wdmBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufWo, p4, wdmBytes]
   let p5 ← iaddImm p4 W_DM_DM_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufRms2, p5, dmBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufRms2, p5, dmBytes]
   let p6 ← iaddImm p5 D_MODEL_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufWg, p6, wffBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufWg, p6, wffBytes]
   let p7 ← iaddImm p6 W_FF_DM_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufWu, p7, wffBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufWu, p7, wffBytes]
   let p8 ← iaddImm p7 W_FF_DM_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufWd, p8, wdfBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufWd, p8, wdfBytes]
 
 def prepCode : HProg.Code := clif% do
   let ptr := basePtr
@@ -264,7 +257,7 @@ def prepCode : HProg.Code := clif% do
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let bufX    ← load32 (← absAddr ptr BUF_X_OFF)
   let dmBytes ← iconst64 D_MODEL_BYTES
-  let _ ← call cuda.fnUpload.id [ctxPtr, bufX, dataPtr, dmBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufX, dataPtr, dmBytes]
 
 def inferCode : HProg.Code := clif% do
   let ptr := basePtr
@@ -306,47 +299,47 @@ def inferCode : HProg.Code := clif% do
   store bufX   (← absAddr ptr BIND_RMS1_OFF)
   store bufRms1 (← absAddr ptr (BIND_RMS1_OFF + 4))
   store bufXn1 (← absAddr ptr (BIND_RMS1_OFF + 8))
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_RMS_OFF) three32
+  let _ ← cudaLaunch ptr (← iconst64 PTX_RMS_OFF) three32
              (← iconst64 BIND_RMS1_OFF) one32 one32 one32 blk256 one32 one32
 
   -- attention projections: q = WQ @ xn1, k = WK @ xn1, v = WV @ xn1, o = WO @ v
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWq, bufXn1, zero32, bufQ]
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWk, bufXn1, zero32, bufK]
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWv, bufXn1, zero32, bufV]
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWo, bufV,   zero32, bufO]
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWq, bufXn1, zero32, bufQ]
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWk, bufXn1, zero32, bufK]
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWv, bufXn1, zero32, bufV]
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWo, bufV,   zero32, bufO]
 
   -- residual add: x += o
   store bufX (← absAddr ptr BIND_ADDRMS_OFF)
   store bufO (← absAddr ptr (BIND_ADDRMS_OFF + 4))
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ADD_OFF) two32
+  let _ ← cudaLaunch ptr (← iconst64 PTX_ADD_OFF) two32
              (← iconst64 BIND_ADDRMS_OFF) four32 one32 one32 blk256 one32 one32
 
   -- rms2: normalize x with rms2 weights → xn2
   store bufX    (← absAddr ptr (BIND_ADDRMS_OFF + 16))
   store bufRms2 (← absAddr ptr (BIND_ADDRMS_OFF + 20))
   store bufXn2  (← absAddr ptr (BIND_ADDRMS_OFF + 24))
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_RMS_OFF) three32
+  let _ ← cudaLaunch ptr (← iconst64 PTX_RMS_OFF) three32
              (← iconst64 (BIND_ADDRMS_OFF + 16)) one32 one32 one32 blk256 one32 one32
 
   -- FFN: gate = WG @ xn2, up = WU @ xn2
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, dm32, ff32, alpha, bufWg, bufXn2, zero32, bufG]
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, dm32, ff32, alpha, bufWu, bufXn2, zero32, bufU]
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, ff32, alpha, bufWg, bufXn2, zero32, bufG]
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, ff32, alpha, bufWu, bufXn2, zero32, bufU]
 
   -- SiLU-gate: a = silu(g) * u
   store bufG (← absAddr ptr BIND_SILU_OFF)
   store bufU (← absAddr ptr (BIND_SILU_OFF + 4))
   store bufA (← absAddr ptr (BIND_SILU_OFF + 8))
   let nineteen32 ← iconst32 19
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SILU_OFF) three32
+  let _ ← cudaLaunch ptr (← iconst64 PTX_SILU_OFF) three32
              (← iconst64 BIND_SILU_OFF) nineteen32 one32 one32 blk256 one32 one32
 
   -- down projection: d = WD @ a
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, ff32, dm32, alpha, bufWd, bufA, zero32, bufD]
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, ff32, dm32, alpha, bufWd, bufA, zero32, bufD]
 
   -- residual add: x += d
   store bufX (← absAddr ptr BIND_ADD2_OFF)
   store bufD (← absAddr ptr (BIND_ADD2_OFF + 4))
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_ADD_OFF) two32
+  let _ ← cudaLaunch ptr (← iconst64 PTX_ADD_OFF) two32
              (← iconst64 BIND_ADD2_OFF) four32 one32 one32 blk256 one32 one32
 
 /-- Finalize: sync, then download only if the caller asked for output. -/
@@ -357,11 +350,11 @@ def finalizeCode : HProg.Code := clif% do
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let bufX   ← load32 (← absAddr ptr BUF_X_OFF)
 
-  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← cudaSync ptr CTX_OFF
   let _ ← ifte .eq outLen (← iconst64 0)
     (thn := pure [])
     (els := do
-      let _ ← call cuda.fnDownload.id [ctxPtr, bufX, outPtr, outLen]
+      let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bufX, outPtr, outLen]
       pure [])
   return ()
 

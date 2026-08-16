@@ -73,15 +73,9 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The externals every emitted function declares, in one order. -/
-def ffiEnv : ((FnRef × IR.LmdbSetup) × FnRef) × FnEnv := (Id.run (do
-  let rd := IR.FFI.std.fileRead
-  let lmdb := IR.FFI.std.lmdb
-  let wr := IR.FFI.std.fileWrite
-  pure ((rd, lmdb), wr)), env% [.lmdb, .fileIO])
-def fnFileRead : FnRef := ffiEnv.1.1.1
-def lmdb : IR.LmdbSetup := ffiEnv.1.1.2
-def fnFileWrite : FnRef := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnFileRead : FnRef := IR.Ffi.fileRead.ref
+def fnFileWrite : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.lmdb, .fileIO]
 
 /-- One CSV buffer's rows written to a database, one row per key. A row runs to
     the next newline, or to the end of the buffer. -/
@@ -107,7 +101,7 @@ def emitIngest (ptr lmdbCtx handle bufOff size keyScrOff : R) : M Unit := do
       let keyPtr ← iadd ptr keyScrOff
       store (← ireduce32 key) keyPtr
       let valPtr ← iadd ptr (← iadd bufOff pos)
-      let _ ← call lmdb.fnPut.id [lmdbCtx, handle, keyPtr, keyLen4, valPtr, rowLen32]
+      let _ ← call IR.Ffi.lmdbPut.id [lmdbCtx, handle, keyPtr, keyLen4, valPtr, rowLen32]
       return [rowEnd, ← iadd key one])
 
 /-- Every scanned value written to one file, back to back. -/
@@ -194,38 +188,38 @@ def mainCode (patternLen : Nat) : HProg.Code :=
   let deptBufOff ← iconst64 deptBuf_off
   let deptSize ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
   let lmdbSlot := ptr
-  callVoid lmdb.fnInit.id [lmdbSlot]
+  callVoid IR.Ffi.lmdbInit.id [lmdbSlot]
   let lmdbCtx ← load64 ptr
   let maxDbs ← iconst32 10
-  let empHandle ← call lmdb.fnOpen.id [lmdbCtx, ← iadd ptr (← iconst64 empDbPath_off), maxDbs]
-  let deptHandle ← call lmdb.fnOpen.id [lmdbCtx, ← iadd ptr (← iconst64 deptDbPath_off), maxDbs]
+  let empHandle ← call IR.Ffi.lmdbOpen.id [lmdbCtx, ← iadd ptr (← iconst64 empDbPath_off), maxDbs]
+  let deptHandle ← call IR.Ffi.lmdbOpen.id [lmdbCtx, ← iadd ptr (← iconst64 deptDbPath_off), maxDbs]
   let keyScrOff ← iconst64 keyScratch_off
 
-  let _ ← call lmdb.fnBeginWriteTxn.id [lmdbCtx, empHandle]
+  let _ ← call IR.Ffi.lmdbBeginWriteTxn.id [lmdbCtx, empHandle]
   emitIngest ptr lmdbCtx empHandle empBufOff empSize keyScrOff
-  let _ ← call lmdb.fnCommitWriteTxn.id [lmdbCtx, empHandle]
+  let _ ← call IR.Ffi.lmdbCommitWriteTxn.id [lmdbCtx, empHandle]
 
-  let _ ← call lmdb.fnBeginWriteTxn.id [lmdbCtx, deptHandle]
+  let _ ← call IR.Ffi.lmdbBeginWriteTxn.id [lmdbCtx, deptHandle]
   emitIngest ptr lmdbCtx deptHandle deptBufOff deptSize keyScrOff
-  let _ ← call lmdb.fnCommitWriteTxn.id [lmdbCtx, deptHandle]
+  let _ ← call IR.Ffi.lmdbCommitWriteTxn.id [lmdbCtx, deptHandle]
 
   let keyLen0 ← iconst32 0
   let maxEntries ← iconst32 100
   let scanResOff ← iconst64 scanResult_off
-  let scanCount ← call lmdb.fnCursorScan.id
+  let scanCount ← call IR.Ffi.lmdbCursorScan.id
     [lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
   emitWriteAll ptr lmdbCtx empHandle scanResOff scanCount (← iconst64 scanFname_off)
 
   let scanRes2Off ← iconst64 scanResult2_off
-  let filterCount ← call lmdb.fnCursorScan.id
+  let filterCount ← call IR.Ffi.lmdbCursorScan.id
     [lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanRes2Off]
   emitFilter ptr scanRes2Off filterCount (← iconst64 filterFname_off) patternLen
 
-  let joinCount ← call lmdb.fnCursorScan.id
+  let joinCount ← call IR.Ffi.lmdbCursorScan.id
     [lmdbCtx, deptHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
   emitWriteAll ptr lmdbCtx deptHandle scanResOff joinCount (← iconst64 joinFname_off)
 
-  callVoid lmdb.fnCleanup.id [lmdbSlot]
+  callVoid IR.Ffi.lmdbCleanup.id [lmdbSlot]
 
 /-- Well-formed at every pattern length the monomorphic builder can produce.
 

@@ -141,15 +141,9 @@ open AlgorithmLib.HProg.Sur
 
 /-- The externals every emitted function declares, in one order, so a slot
     index means the same thing in all of them. -/
-def ffiEnv : ((IR.FnRef × IR.FnRef) × IR.CudaSetup) × FnEnv := (Id.run (do
-  let rd := IR.FFI.std.stdinReadline
-  let wr := IR.FFI.std.stdoutWrite
-  let c := IR.FFI.std.cuda
-  pure ((rd, wr), c)), env% [.cuda, .fileIO])
-def fnRead : IR.FnRef := ffiEnv.1.1.1
-def fnWrite : IR.FnRef := ffiEnv.1.1.2
-def cuda : IR.CudaSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnRead : IR.FnRef := IR.Ffi.stdinReadline.ref
+def fnWrite : IR.FnRef := IR.Ffi.stdoutWrite.ref
+def env : FnEnv := env% [.cuda, .fileIO]
 
 def loadByteAt (ptr : R) (baseOff : Nat) (idx : R) : M R := do
   let base ← iconst64 baseOff
@@ -446,7 +440,7 @@ def emitCudaLaunchAdd (ptr lhsBuf rhsBuf outBuf : R) : M Unit := do
   fldStore32At ptr f.bindDesc 0 lhsBuf
   fldStore32At ptr f.bindDesc 4 rhsBuf
   fldStore32At ptr f.bindDesc 8 outBuf
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff one32 one32 one32 one32 one32 one32
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff one32 one32 one32 one32 one32 one32
   pure ()
 
 def emitCudaLaunchArrayScale (ptr inBuf paramBuf outBuf count : R) : M Unit := do
@@ -458,7 +452,7 @@ def emitCudaLaunchArrayScale (ptr inBuf paramBuf outBuf count : R) : M Unit := d
   fldStore32At ptr f.bindDesc 0 inBuf
   fldStore32At ptr f.bindDesc 4 paramBuf
   fldStore32At ptr f.bindDesc 8 outBuf
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
   pure ()
 
 def emitCudaLaunchArrayAdd (ptr lhsBuf rhsBuf paramBuf outBuf count : R) : M Unit := do
@@ -471,14 +465,14 @@ def emitCudaLaunchArrayAdd (ptr lhsBuf rhsBuf paramBuf outBuf count : R) : M Uni
   fldStore32At ptr f.bindDesc 4 rhsBuf
   fldStore32At ptr f.bindDesc 8 paramBuf
   fldStore32At ptr f.bindDesc 12 outBuf
-  let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
+  let _ ← cudaLaunch ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
   pure ()
 
 def emitUploadLiteralToBuf (ptr bufId value : R) : M Unit := do
   fldStore ptr f.firstVal value
   let size8 ← iconst64 8
   let valOff ← fldOffset f.firstVal
-  let _ ← cudaUpload cuda ptr bufId valOff size8
+  let _ ← cudaUpload ptr bufId valOff size8
   pure ()
 
 def emitAccFromLiteral (ptr value : R) : M Unit := do
@@ -566,7 +560,7 @@ def emitDownloadAccToResult (ptr : R) : M R := do
   let accBuf ← ireduce32 accBuf64
   let size8 ← iconst64 8
   let outOff ← fldOffset f.result
-  let _ ← cudaDownload cuda ptr accBuf outOff size8
+  let _ ← cudaDownload ptr accBuf outOff size8
   fldLoad ptr f.result
 
 def emitScalarTermValue (ptr start len : R) : M (R × R) := do
@@ -940,14 +934,14 @@ def emitUploadInputArrayToVarBuffer (ptr varIdx start len : R) : M Unit := do
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayLhsData
   let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
-  let _ ← cudaUpload cuda ptr varBuf dataOff bytes
+  let _ ← cudaUpload ptr varBuf dataOff bytes
   pure ()
 
 def emitUploadOutDataToVarBuffer (ptr varIdx : R) : M Unit := do
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayOutData
   let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
-  let _ ← cudaUpload cuda ptr varBuf dataOff bytes
+  let _ ← cudaUpload ptr varBuf dataOff bytes
   pure ()
 
 def emitScaleInputArrayToOutput (ptr arrStart len scalar : R) : M R := do
@@ -961,10 +955,10 @@ def emitScaleInputArrayToOutput (ptr arrStart len scalar : R) : M R := do
   let paramBuf ← ireduce32 (← fldLoad ptr f.tmpArrayParamBuf)
   let outBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufOut)
   let paramBytes ← iconst64 16
-  let _ ← cudaUpload cuda ptr lhsBuf lhsOff bytes
-  let _ ← cudaUpload cuda ptr paramBuf paramOff paramBytes
+  let _ ← cudaUpload ptr lhsBuf lhsOff bytes
+  let _ ← cudaUpload ptr paramBuf paramOff paramBytes
   emitCudaLaunchArrayScale ptr lhsBuf paramBuf outBuf count
-  let _ ← cudaDownload cuda ptr outBuf outOff bytes
+  let _ ← cudaDownload ptr outBuf outOff bytes
   emitFormatInputArrayShapeFromOutData ptr arrStart len count
 
 def emitAddInputArraysToOutput (ptr lhsStart rhsStart len : R) : M R := do
@@ -986,11 +980,11 @@ def emitAddInputArraysToOutput (ptr lhsStart rhsStart len : R) : M R := do
       let paramBuf ← ireduce32 (← fldLoad ptr f.tmpArrayParamBuf)
       let outBuf ← ireduce32 (← fldLoad ptr f.tmpArrayBufOut)
       let paramBytes ← iconst64 16
-      let _ ← cudaUpload cuda ptr lhsBuf lhsOff bytes
-      let _ ← cudaUpload cuda ptr rhsBuf rhsOff bytes
-      let _ ← cudaUpload cuda ptr paramBuf paramOff paramBytes
+      let _ ← cudaUpload ptr lhsBuf lhsOff bytes
+      let _ ← cudaUpload ptr rhsBuf rhsOff bytes
+      let _ ← cudaUpload ptr paramBuf paramOff paramBytes
       emitCudaLaunchArrayAdd ptr lhsBuf rhsBuf paramBuf outBuf lhsCount
-      let _ ← cudaDownload cuda ptr outBuf outOff bytes
+      let _ ← cudaDownload ptr outBuf outOff bytes
       let outLen ← emitFormatInputArrayShapeFromOutData ptr lhsStart len lhsCount
       pure [outLen])
       (pure [zero])
@@ -1316,15 +1310,15 @@ def clifCode : HProg.Code :=
   let zero ← iconst64 0
   let one ← iconst64 1
 
-  cudaInit cuda ptr
-  let zeroBuf ← cudaCreateBuffer cuda ptr size8
-  let litBuf ← cudaCreateBuffer cuda ptr size8
-  let accBuf ← cudaCreateBuffer cuda ptr size8
-  let outBuf ← cudaCreateBuffer cuda ptr size8
-  let tmpArrayBufA ← cudaCreateBuffer cuda ptr arrayBytes
-  let tmpArrayBufB ← cudaCreateBuffer cuda ptr arrayBytes
-  let tmpArrayBufOut ← cudaCreateBuffer cuda ptr arrayBytes
-  let tmpArrayParamBuf ← cudaCreateBuffer cuda ptr paramBytes
+  cudaInit ptr
+  let zeroBuf ← cudaCreateBuffer ptr size8
+  let litBuf ← cudaCreateBuffer ptr size8
+  let accBuf ← cudaCreateBuffer ptr size8
+  let outBuf ← cudaCreateBuffer ptr size8
+  let tmpArrayBufA ← cudaCreateBuffer ptr arrayBytes
+  let tmpArrayBufB ← cudaCreateBuffer ptr arrayBytes
+  let tmpArrayBufOut ← cudaCreateBuffer ptr arrayBytes
+  let tmpArrayParamBuf ← cudaCreateBuffer ptr paramBytes
   fldStore ptr f.zeroBuf (← sextend64 zeroBuf)
   fldStore ptr f.litBuf (← sextend64 litBuf)
   fldStore ptr f.accBuf (← sextend64 accBuf)
@@ -1339,7 +1333,7 @@ def clifCode : HProg.Code :=
   let _ ← wloop1 zero
     (head := fun vi => return (contIfULt vi twentySix, ([] : List R), ()))
     (body := fun vi _ => do
-      let vbuf ← cudaCreateBuffer cuda ptr arrayBytes
+      let vbuf ← cudaCreateBuffer ptr arrayBytes
       storeVarBufId ptr vi vbuf
       storeVarPresent ptr vi zero
       storeVarKind ptr vi zero
@@ -1377,7 +1371,7 @@ def clifCode : HProg.Code :=
           pure [])
       return [])
 
-  cudaCleanup cuda ptr
+  cudaCleanup ptr
 
 /-- The body is well formed against the two bundles it calls.
 

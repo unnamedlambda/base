@@ -27,26 +27,16 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- Every emitted function declares the same externals in the same order. -/
-def ffiEnv : ((((FnRef × FnRef) × (FnRef × FnRef)) × ((FnRef × FnRef) × (FnRef × FnRef)))) × FnEnv :=
-  (Id.run (do
-    let htInit := IR.FFI.std.ht.fnInit
-    let htClean := IR.FFI.std.ht.fnCleanup
-    let rd := IR.FFI.std.fileRead
-    let wr := IR.FFI.std.fileWrite
-    let create := IR.FFI.std.ht.fnCreate
-    let incr := IR.FFI.std.ht.fnIncrement
-    let count := IR.FFI.std.ht.fnCount
-    let getEntry := IR.FFI.std.ht.fnGetEntry
-    pure (((htInit, htClean), (rd, wr)), ((create, incr), (count, getEntry)))), env% [.ht, .fileIO])
-def fnHtInit : FnRef := ffiEnv.1.1.1.1
-def fnHtClean : FnRef := ffiEnv.1.1.1.2
-def fnRead : FnRef := ffiEnv.1.1.2.1
-def fnWrite : FnRef := ffiEnv.1.1.2.2
-def fnCreate : FnRef := ffiEnv.1.2.1.1
-def fnIncr : FnRef := ffiEnv.1.2.1.2
-def fnCount : FnRef := ffiEnv.1.2.2.1
-def fnGetEntry : FnRef := ffiEnv.1.2.2.2
-def env : FnEnv := ffiEnv.2
+def env : FnEnv := env% [.ht, .fileIO]
+
+def fnHtInit : FnRef := IR.Ffi.htInit.ref
+def fnHtClean : FnRef := IR.Ffi.htCleanup.ref
+def fnRead : FnRef := IR.Ffi.fileRead.ref
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+def fnCreate : FnRef := IR.Ffi.htCreate.ref
+def fnIncr : FnRef := IR.Ffi.htIncrement.ref
+def fnCount : FnRef := IR.Ffi.htCount.ref
+def fnGetEntry : FnRef := IR.Ffi.htGetEntry.ref
 
 /-- A NUL-terminated string copied from the payload into `dstOff`; the result is
     the source index just past the terminator. -/

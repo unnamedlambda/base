@@ -357,16 +357,10 @@ open AlgorithmLib.HProg.Sur
 
 /-- Two callee tables: the live loop reaches the window and the GPU, the two
     headless tests reach the GPU alone. -/
-def declsMain : (GpuSetup × WindowSetup) × FnEnv :=
-  ((IR.FFI.std.gpu, IR.FFI.std.window), env% [.gpu, .window])
 
-def declsGpu : GpuSetup × FnEnv := (IR.FFI.std.gpu, env% [.gpu])
 
-def envMain : FnEnv := declsMain.2
-def gpuM : GpuSetup := declsMain.1.1
-def winM : WindowSetup := declsMain.1.2
-def envGpu : FnEnv := declsGpu.2
-def gpuT : GpuSetup := declsGpu.1
+def envMain : FnEnv := env% [.gpu, .window]
+def envGpu : FnEnv := env% [.gpu]
 
 def processEvents (ptr : R) : Sur.M Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
@@ -402,8 +396,8 @@ def processEvents (ptr : R) : Sur.M Unit := do
     let bd1 ← iadd bd (← imul isMDown (← isub (← iconst64 1) bd))
     fldStore ptr f.brushDown (← isub bd1 (← imul isMUp bd1)))
 
-def pollAndProcess (win : WindowSetup) (ptr : R) : Sur.M Unit := do
-  let n ← windowPoll win ptr (← fldOffset f.events) (← iconst32 eventSlots)
+def pollAndProcess (ptr : R) : Sur.M Unit := do
+  let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
   fldStore ptr f.nEvents (← sextend64 n)
   processEvents ptr
 
@@ -440,28 +434,26 @@ def writeOutput (ptr : R) (passV actualV expectedV : R) : Sur.M Unit := do
   fldStore ptr f.outExpected expectedV
 
 -- Create the 4 buffers (gridA=0, gridB=1, pixels=2, params=3).
-def mkBuffers (ptr : R) (gpu : GpuSetup) : Sur.M (R × R × R × R) := do
-  gpuInit gpu ptr
-  let gridA ← gpuCreateBuffer gpu ptr (← iconst64 gridBytes)
-  let gridB ← gpuCreateBuffer gpu ptr (← iconst64 gridBytes)
-  let pixels ← gpuCreateBuffer gpu ptr (← iconst64 pixelBytes)
-  let params ← gpuCreateBuffer gpu ptr (← iconst64 32)
+def mkBuffers (ptr : R) : Sur.M (R × R × R × R) := do
+  gpuInit ptr
+  let gridA ← gpuCreateBuffer ptr (← iconst64 gridBytes)
+  let gridB ← gpuCreateBuffer ptr (← iconst64 gridBytes)
+  let pixels ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
+  let params ← gpuCreateBuffer ptr (← iconst64 32)
   pure (gridA, gridB, pixels, params)
 
 def mainBody : HProg.Code := clif% do
-  let gpu := gpuM
-  let win := winM
   let ptr := basePtr
-  windowInit win ptr
-  let (_gridA, _gridB, pixels, params) ← mkBuffers ptr gpu
-  let seedP ← gpuCreatePipeline gpu ptr (← fldOffset f.seedSh) (← fldOffset f.bindSeed) (← iconst32 1)
-  let paintA ← gpuCreatePipeline gpu ptr (← fldOffset f.paintSh) (← fldOffset f.bindPaintA) (← iconst32 2)
-  let stepAB ← gpuCreatePipeline gpu ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
-  let stepBA ← gpuCreatePipeline gpu ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepBA) (← iconst32 3)
-  let renderA ← gpuCreatePipeline gpu ptr (← fldOffset f.renderSh) (← fldOffset f.bindRenderA) (← iconst32 2)
+  windowInit ptr
+  let (_gridA, _gridB, pixels, params) ← mkBuffers ptr
+  let seedP ← gpuCreatePipeline ptr (← fldOffset f.seedSh) (← fldOffset f.bindSeed) (← iconst32 1)
+  let paintA ← gpuCreatePipeline ptr (← fldOffset f.paintSh) (← fldOffset f.bindPaintA) (← iconst32 2)
+  let stepAB ← gpuCreatePipeline ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
+  let stepBA ← gpuCreatePipeline ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepBA) (← iconst32 3)
+  let renderA ← gpuCreatePipeline ptr (← fldOffset f.renderSh) (← fldOffset f.bindRenderA) (← iconst32 2)
   let w64 ← iconst64 imageWidth
   let h64 ← iconst64 imageHeight
-  let _ ← windowOpen win ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
+  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
                       (← fldOffset f.blitSh) (← iconst64 (blitShaderSource.length : Int))
   let gwg ← iconst32 gridWgX
   let ghg ← iconst32 gridWgY
@@ -470,7 +462,7 @@ def mainBody : HProg.Code := clif% do
   let one32 ← iconst32 1
   let paramsOff ← fldOffset f.paramsMem
   let p32 ← iconst64 32
-  let _ ← gpuDispatch gpu ptr seedP gwg ghg one32
+  let _ ← gpuDispatch ptr seedP gwg ghg one32
   fldStore ptr f.quit (← iconst64 0)
   fldStore ptr f.frame (← iconst64 0)
   fldStore ptr f.brushDown (← iconst64 0)
@@ -479,54 +471,53 @@ def mainBody : HProg.Code := clif% do
     fldStore ptr f.frame (← iadd (← fldLoad ptr f.frame) (← iconst64 1))
   let subStep : R → R → Sur.M Unit := fun parity pipe => do
     writeParams ptr parity
-    let _ ← gpuUpload gpu ptr params paramsOff p32
-    let _ ← gpuDispatch gpu ptr pipe gwg ghg one32
+    let _ ← gpuUpload ptr params paramsOff p32
+    let _ ← gpuDispatch ptr pipe gwg ghg one32
     bumpFrame
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
   let _ ← wloop [] (head := fun _ => do
-      pollAndProcess win ptr
+      pollAndProcess ptr
       let q ← fldLoad ptr f.quit
       return (exitIf .ne q zero64, ([] : List R), ()))
     (body := fun _ _ => do
       -- stamp the brush into A once, then run 8 Margolus sub-steps (4 ping-pong
       -- pairs, parity alternating) so sand advances fast; render A and present once.
       writeParams ptr zero64
-      let _ ← gpuUpload gpu ptr params paramsOff p32
-      let _ ← gpuDispatch gpu ptr paintA gwg ghg one32
+      let _ ← gpuUpload ptr params paramsOff p32
+      let _ ← gpuDispatch ptr paintA gwg ghg one32
       for _ in List.range 4 do
         subStep zero64 stepAB
         subStep one64 stepBA
-      let _ ← gpuDispatch gpu ptr renderA rwx rwy one32
-      let _ ← windowPresentGpuBuffer win ptr pixels
+      let _ ← gpuDispatch ptr renderA rwx rwy one32
+      let _ ← windowPresentGpuBuffer ptr pixels
       return ([] : List R))
-  windowCleanup win ptr
-  gpuCleanup gpu ptr
+  windowCleanup ptr
+  gpuCleanup ptr
 
 -- Shared test setup: buffers + stepAB pipeline, params zeroed (parity 0, brush off).
-def testSetup (ptr : R) (gpu : GpuSetup) : Sur.M (R × R × R) := do
-  let (gridA, gridB, _pixels, params) ← mkBuffers ptr gpu
-  let stepAB ← gpuCreatePipeline gpu ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
+def testSetup (ptr : R) : Sur.M (R × R × R) := do
+  let (gridA, gridB, _pixels, params) ← mkBuffers ptr
+  let stepAB ← gpuCreatePipeline ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
   fldStore ptr f.frame (← iconst64 0)
   fldStore ptr f.mouseX (← iconst64 0)
   fldStore ptr f.mouseY (← iconst64 0)
   fldStore ptr f.brushDown (← iconst64 0)
   fldStore ptr f.brushMat (← iconst64 0)
   writeParams ptr (← iconst64 0)
-  let _ ← gpuUpload gpu ptr params (← fldOffset f.paramsMem) (← iconst64 32)
+  let _ ← gpuUpload ptr params (← fldOffset f.paramsMem) (← iconst64 32)
   pure (gridA, gridB, stepAB)
 
 -- A lone grain with empty below drops to the next row (straight or scattered).
 def testGrainFalls : HProg.Code := clif% do
-  let gpu := gpuT
   let ptr := basePtr
-  let (gridA, gridB, stepAB) ← testSetup ptr gpu
+  let (gridA, gridB, stepAB) ← testSetup ptr
   clearGrid ptr
   setCell ptr 10 10 SAND
-  let _ ← gpuUpload gpu ptr gridA (← fldOffset f.gridInit) (← iconst64 gridBytes)
-  let _ ← gpuDispatch gpu ptr stepAB (← iconst32 gridWgX) (← iconst32 gridWgY) (← iconst32 1)
-  let _ ← gpuDownload gpu ptr gridB (← fldOffset f.gridOut) (← iconst64 gridBytes)
-  gpuCleanup gpu ptr
+  let _ ← gpuUpload ptr gridA (← fldOffset f.gridInit) (← iconst64 gridBytes)
+  let _ ← gpuDispatch ptr stepAB (← iconst32 gridWgX) (← iconst32 gridWgY) (← iconst32 1)
+  let _ ← gpuDownload ptr gridB (← fldOffset f.gridOut) (← iconst64 gridBytes)
+  gpuCleanup ptr
   let bl ← readOut ptr 10 11
   let br ← readOut ptr 11 11
   let orig ← readOut ptr 10 10
@@ -537,17 +528,16 @@ def testGrainFalls : HProg.Code := clif% do
 
 -- Sand is conserved: a 4×4 blob keeps its 16 grains after one step.
 def testConservation : HProg.Code := clif% do
-  let gpu := gpuT
   let ptr := basePtr
-  let (gridA, gridB, stepAB) ← testSetup ptr gpu
+  let (gridA, gridB, stepAB) ← testSetup ptr
   clearGrid ptr
   for cy in [20, 21, 22, 23] do
     for cx in [40, 41, 42, 43] do
       setCell ptr cx cy SAND
-  let _ ← gpuUpload gpu ptr gridA (← fldOffset f.gridInit) (← iconst64 gridBytes)
-  let _ ← gpuDispatch gpu ptr stepAB (← iconst32 gridWgX) (← iconst32 gridWgY) (← iconst32 1)
-  let _ ← gpuDownload gpu ptr gridB (← fldOffset f.gridOut) (← iconst64 gridBytes)
-  gpuCleanup gpu ptr
+  let _ ← gpuUpload ptr gridA (← fldOffset f.gridInit) (← iconst64 gridBytes)
+  let _ ← gpuDispatch ptr stepAB (← iconst32 gridWgX) (← iconst32 gridWgY) (← iconst32 1)
+  let _ ← gpuDownload ptr gridB (← fldOffset f.gridOut) (← iconst64 gridBytes)
+  gpuCleanup ptr
   let gridOutBase ← iadd ptr (← fldOffset f.gridOut)
   let four ← iconst64 4
   let sandC ← iconst64 SAND

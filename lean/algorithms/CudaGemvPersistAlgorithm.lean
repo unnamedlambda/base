@@ -40,17 +40,10 @@ open AlgorithmLib.HProg.Sur
     Two callee tables, because a function declares only what it calls: `load`
     and `prep` reach CUDA alone, and carrying cuBLAS in their tables would put
     six signatures in the emitted function that nothing there uses. -/
-def ffiEnv : (IR.CudaSetup × IR.CuBlasSetup) × FnEnv := (Id.run (do
-  let cuda := IR.FFI.std.cuda
-  let blas := IR.FFI.std.cublas
-  pure (cuda, blas)), env% [.cuda, .cublas])
 
-def cudaEnvOnly : IR.CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda, .cublas])
 
-def cuda : IR.CudaSetup := ffiEnv.1.1
-def blas : IR.CuBlasSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
-def envCuda : FnEnv := cudaEnvOnly.2
+def env : FnEnv := env% [.cuda, .cublas]
+def envCuda : FnEnv := env% [.cuda, .cublas]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
@@ -59,7 +52,7 @@ def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
-  cudaInit cuda ptr CTX_OFF
+  cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   let m  ← load64 dataPtr
@@ -71,13 +64,13 @@ def loadCode : HProg.Code := clif% do
   let nBytes  ← ishlImm n 2
   let mBytes  ← ishlImm m 2
 
-  let buf0 ← call cuda.fnCreateBuffer.id [ctxPtr, mNBytes]  -- A (buf id 0)
-  let _    ← call cuda.fnCreateBuffer.id [ctxPtr, nBytes]   -- x (buf id 1)
-  let _    ← call cuda.fnCreateBuffer.id [ctxPtr, mBytes]   -- y (buf id 2)
+  let buf0 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, mNBytes]  -- A (buf id 0)
+  let _    ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, nBytes]   -- x (buf id 1)
+  let _    ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, mBytes]   -- y (buf id 2)
 
   -- Upload A from data[16..] (after m, n header)
   let aPtr ← iaddImm dataPtr 16
-  let _ ← call cuda.fnUpload.id [ctxPtr, buf0, aPtr, mNBytes]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, buf0, aPtr, mNBytes]
 
 def prepCode : HProg.Code := clif% do
   let ptr := basePtr
@@ -85,7 +78,7 @@ def prepCode : HProg.Code := clif% do
   let dataLen ← load64 (← absAddr ptr 0x20)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let xBuf    ← iconst32 1
-  let _ ← call cuda.fnUpload.id [ctxPtr, xBuf, dataPtr, dataLen]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, xBuf, dataPtr, dataLen]
 
 /-- The download branch joins rather than returning from each arm: `Code` has no
     early return, so both arms reach one `ret`. -/
@@ -104,12 +97,12 @@ def inferCode : HProg.Code := clif% do
   let one32  ← iconst32 1
   let two32  ← iconst32 2
   -- sgemv(ctx, trans=1, m=n, n=m, alpha=1.0, a_buf=0, x_buf=1, beta=0, y_buf=2)
-  let _ ← call blas.fnSgemv.id [ctxPtr, one32, n32, m32, alpha, zero32, one32, zero32, two32]
-  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, n32, m32, alpha, zero32, one32, zero32, two32]
+  let _ ← cudaSync ptr CTX_OFF
   let _ ← ifte .eq outLen (← iconst64 0)
     (thn := pure [])
     (els := do
-      let _ ← call cuda.fnDownload.id [ctxPtr, two32, outPtr, outLen]
+      let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, two32, outPtr, outLen]
       pure [])
   return ()
 

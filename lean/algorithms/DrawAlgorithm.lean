@@ -148,29 +148,24 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- The GPU entry points then `cl_file_write`, in callee-table order. -/
-def ffiEnv : (GpuSetup × FnRef) × FnEnv := (Id.run (do
-  let g := IR.FFI.std.gpu
-  let w := IR.FFI.std.fileWrite
-  pure (g, w)), env% [.gpu, .fileIO])
-def gpu : GpuSetup := ffiEnv.1.1
-def fnWr : FnRef := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnWr : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.gpu, .fileIO]
 
 def code : HProg.Code := clif% do
   let ptr := basePtr
-  gpuInit gpu ptr
+  gpuInit ptr
   let dataSz ← iconst64 pixelBytes
-  let bufId  ← gpuCreateBuffer gpu ptr dataSz
+  let bufId  ← gpuCreateBuffer ptr dataSz
   let shOff  ← fldOffset f.shader
   let bdOff  ← fldOffset f.bindDesc
   let one32  ← iconst32 1
-  let pipeId ← gpuCreatePipeline gpu ptr shOff bdOff one32
+  let pipeId ← gpuCreatePipeline ptr shOff bdOff one32
   let wgx    ← iconst32 wgX
   let wgy    ← iconst32 wgY
-  let _      ← gpuDispatch gpu ptr pipeId wgx wgy one32
+  let _      ← gpuDispatch ptr pipeId wgx wgy one32
   let pxOff  ← fldOffset f.pixels
-  let _      ← gpuDownload gpu ptr bufId pxOff dataSz
-  gpuCleanup gpu ptr
+  let _      ← gpuDownload ptr bufId pxOff dataSz
+  gpuCleanup ptr
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← fldWriteFile0 ptr fnWr f.filename f.bmpHeader total
 

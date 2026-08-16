@@ -200,13 +200,8 @@ open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def ffiEnv : (FnRef × IR.CudaSetup) × FnEnv := (Id.run (do
-  let w := IR.FFI.std.fileWrite
-  let c := IR.FFI.std.cuda
-  pure (w, c)), env% [.cuda, .fileIO])
-def fnWrite : FnRef := ffiEnv.1.1
-def cuda : IR.CudaSetup := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.cuda, .fileIO]
 
 def code (m k n : Nat) : HProg.Code :=
   let aBytes := m * k * 4
@@ -220,26 +215,26 @@ def code (m k n : Nat) : HProg.Code :=
     let c0 ← iconst64 0
 
     -- CUDA init
-    cudaInit cuda ptr
+    cudaInit ptr
 
     -- Create 4 buffers
     let aSz ← iconst64 aBytes
     let bSz ← iconst64 bBytes
     let cSz ← iconst64 cBytes
     let pSz ← iconst64 16
-    let bufA ← cudaCreateBuffer cuda ptr aSz
-    let bufB ← cudaCreateBuffer cuda ptr bSz
-    let bufC ← cudaCreateBuffer cuda ptr cSz
-    let bufP ← cudaCreateBuffer cuda ptr pSz
+    let bufA ← cudaCreateBuffer ptr aSz
+    let bufB ← cudaCreateBuffer ptr bSz
+    let bufC ← cudaCreateBuffer ptr cSz
+    let bufP ← cudaCreateBuffer ptr pSz
     let _ := bufA; let _ := bufB; let _ := bufC; let _ := bufP
 
     -- Upload A, B, params
     let aOffV ← iconst64 aOff
     let bOffV ← iconst64 bOff
     let pOffV ← iconst64 PARAMS_OFF
-    let _ ← cudaUpload cuda ptr bufA aOffV aSz
-    let _ ← cudaUpload cuda ptr bufB bOffV bSz
-    let _ ← cudaUpload cuda ptr bufP pOffV pSz
+    let _ ← cudaUpload ptr bufA aOffV aSz
+    let _ ← cudaUpload ptr bufB bOffV bSz
+    let _ ← cudaUpload ptr bufP pOffV pSz
 
     -- Launch: grid = (ceil(N/16), ceil(M/16), 1), block = (16, 16, 1)
     let gridX := (n + 15) / 16
@@ -251,13 +246,13 @@ def code (m k n : Nat) : HProg.Code :=
     let gy ← iconst32 gridY
     let one32 ← iconst32 1
     let blk16 ← iconst32 16
-    let _ ← cudaLaunch cuda ptr ptxOff nBufs bindOff gx gy one32 blk16 blk16 one32
+    let _ ← cudaLaunch ptr ptxOff nBufs bindOff gx gy one32 blk16 blk16 one32
 
     -- Download C
     let cOffV ← iconst64 cOff
-    let _ ← cudaDownload cuda ptr bufC cOffV cSz
+    let _ ← cudaDownload ptr bufC cOffV cSz
 
-    cudaCleanup cuda ptr
+    cudaCleanup ptr
 
     -- Write output file: bytes [cOff .. cOff + cBytes)
     let fnOffV ← iconst64 OUTPUT_FN_OFF

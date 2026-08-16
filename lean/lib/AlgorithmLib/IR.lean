@@ -6,63 +6,15 @@ namespace AlgorithmLib
 
 namespace IR
 
-/-- IR builder state -/
+/-- A compiled program as the extractors in `Clif.lean` read it: the callee
+    tables and the blocks, with nothing about how it was produced.
+
+    `FuncData.asState` is the one way to make one, so a claim about an emitted
+    program keeps its exact statement no matter what built the body. -/
 structure IRState where
-  nextVal : Nat := 0
-  nextBlock : Nat := 0
-  nextSig : Nat := 0
-  nextFn : Nat := 0
-  currentBlock : Option BlockRef := none
-  currentBlockParams : List (Val × ClifTy) := []
-  currentInsts : List Inst := []  -- reverse order for O(1) prepend
   sigs : List SigDecl := []
   fns : List FnDecl := []
   blocks : List BlockData := []
-
-/-- The IR builder monad -/
-abbrev IRBuilder := StateM IRState
-
-/-- **Every block, including the one still being emitted.**
-
-    A builder's last block sits in `currentInsts` and never reaches `blocks`, so
-    anything reading `IRState.blocks` directly sees a program with its final
-    block missing. Every analysis must go through this. -/
-def IRState.allBlocks (s : IRState) : List BlockData :=
-  match s.currentBlock with
-  | none      => s.blocks
-  | some bref => s.blocks ++ [{ ref := bref
-                                params := s.currentBlockParams
-                                insts := s.currentInsts.reverse }]
-
--- ---------------------------------------------------------------------------
--- FFI declarations
--- ---------------------------------------------------------------------------
-
-/-- Declare a CLIF signature -/
-def declareSig (params : List ClifTy) (result : Option ClifTy) : IRBuilder SigRef := do
-  let s ← get
-  let ref : SigRef := { id := s.nextSig }
-  let decl : SigDecl := { ref := ref, params := params, result := result }
-  set { s with
-    nextSig := s.nextSig + 1
-    sigs := s.sigs ++ [decl]
-  }
-  pure ref
-
-/-- Declare an FFI function with a new signature -/
-def declareFFI (name : String) (params : List ClifTy) (result : Option ClifTy) : IRBuilder FnRef := do
-  let sig ← declareSig params result
-  let s ← get
-  let ref : FnRef := { id := s.nextFn }
-  set { s with
-    nextFn := s.nextFn + 1
-    fns := s.fns ++ [{ ref := ref, callee := .import name, sig := sig : FnDecl }]
-  }
-  pure ref
-
--- ---------------------------------------------------------------------------
--- Top-level builders
--- ---------------------------------------------------------------------------
 
 /-- A function that does nothing, at a given index: one block taking the shared
     memory pointer and returning. -/
@@ -93,52 +45,44 @@ def FnEnv.sigOf (env : FnEnv) (fn : Nat) : Option SigDecl := do
   let d ← env.fns.find? (·.ref.id == fn)
   env.sigs.find? (·.ref.id == d.sig.id)
 
-/-- The callee table a declaration-only `IRBuilder` action produces, so a body
-    names its FFI through the same `declare*` helpers as every other generator
-    and cannot drift from their signatures. -/
-def envOf (decls : IRBuilder α) : α × FnEnv :=
-  let (a, st) := decls.run {}
-  (a, { sigs := st.sigs, fns := st.fns })
+/-- The table with one more declaration, and the reference naming it.
 
-/-- The table `base` extends with this program's own declarations. A program
-    that calls its own functions declares them after the shared entry points,
-    so the ids the shared table hands out do not move. -/
-def envAfter (base : FnEnv) (decls : IRBuilder α) : α × FnEnv :=
-  -- Past the largest id in use, not past the count: `base` may be a selection
-  -- from a larger table, in which case its ids are sparse and numbering from
-  -- the count would hand a new declaration an id an existing one already holds.
-  -- `sigOf` resolves by id and takes the first match, so the collision would not
-  -- be an error — the call would quietly land on the wrong signature.
-  let nextSig := base.sigs.foldl (fun m s => max m (s.ref.id + 1)) 0
-  let nextFn := base.fns.foldl (fun m d => max m (d.ref.id + 1)) 0
-  let (a, st) := decls.run { nextSig, nextFn }
-  (a, { sigs := base.sigs ++ st.sigs, fns := base.fns ++ st.fns })
+    Ids go past the largest in use, not past the count: a table is often a
+    selection from a larger one, in which case its ids are sparse and numbering
+    from the count would hand a new declaration an id an existing one already
+    holds. `sigOf` resolves by id and takes the first match, so that collision
+    would not be an error — the call would quietly land on the wrong
+    signature. -/
+def FnEnv.declare (e : FnEnv) (callee : Callee) (params : List ClifTy)
+    (result : Option ClifTy) (colocated : Bool := false) : FnRef × FnEnv :=
+  let sigId := e.sigs.foldl (fun m s => max m (s.ref.id + 1)) 0
+  let fnId := e.fns.foldl (fun m d => max m (d.ref.id + 1)) 0
+  (⟨fnId⟩,
+   { sigs := e.sigs ++ [{ ref := ⟨sigId⟩, params, result }],
+     fns := e.fns ++ [{ ref := ⟨fnId⟩, callee := callee, sig := ⟨sigId⟩, colocated }] })
+
+/-- Declare a call to another function of this same program, by `u0:N` index. -/
+def FnEnv.declareLocal (e : FnEnv) (index : Nat) (params : List ClifTy)
+    (result : Option ClifTy) : FnRef × FnEnv :=
+  e.declare (.local index) params result (colocated := true)
+
+/-- Declare a symbol the JIT resolves within this program's own module — what a
+    generator whose functions call each other by name needs, and the only kind
+    of declaration that is not already in `Ffi`. -/
+def FnEnv.declareColocated (e : FnEnv) (name : String) (params : List ClifTy)
+    (result : Option ClifTy) : FnRef × FnEnv :=
+  e.declare (.import name) params result (colocated := true)
+
+/-- Several colocated declarations of one shape, in order. -/
+def FnEnv.declareColocatedAll (e : FnEnv) (names : List String) (params : List ClifTy)
+    (result : Option ClifTy) : List FnRef × FnEnv :=
+  names.foldl (fun (refs, e) n =>
+    let (r, e) := e.declareColocated n params result
+    (refs ++ [r], e)) ([], e)
 
 /-- Assemble functions into a program. They must be in `u0:N` order: the
     runtime resolves call targets by treating the index as a `FuncId`. -/
 def program (fs : List FuncData) : Program := { functions := fs }
-
-/-- Declare a colocated FFI function (intra-module call, e.g. colocated %ht_create) -/
-def declareColocatedFFI (name : String) (params : List ClifTy) (result : Option ClifTy) : IRBuilder FnRef := do
-  let sig ← declareSig params result
-  let s ← get
-  let ref : FnRef := { id := s.nextFn }
-  set { s with
-    nextFn := s.nextFn + 1
-    fns := s.fns ++ [{ ref := ref, callee := .import name, sig := sig, colocated := true : FnDecl }]
-  }
-  pure ref
-
-/-- Declare a call to another function of this same program, by `u0:N` index. -/
-def declareLocal (index : Nat) (params : List ClifTy) (result : Option ClifTy) : IRBuilder FnRef := do
-  let sig ← declareSig params result
-  let s ← get
-  let ref : FnRef := { id := s.nextFn }
-  set { s with
-    nextFn := s.nextFn + 1
-    fns := s.fns ++ [{ ref := ref, callee := .local index, sig := sig, colocated := true : FnDecl }]
-  }
-  pure ref
 
 end IR
 

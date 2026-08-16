@@ -29,8 +29,10 @@ open AlgorithmLib.HProg
 
 namespace HProgCorpus
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
+/-- The libm shims and the hash table: the two families whose contracts in
+    `HProgSem.callFfi` are transcriptions of `base/src/ffi/` rather than of
+    Cranelift, and so want the same differential treatment the operations get. -/
+def env : FnEnv := env% [.math, .ht]
 
 /-- 16 bytes per case, so a vector result fits without overlapping the next. -/
 def STRIDE : Nat := 16
@@ -619,25 +621,113 @@ def casesDCont : List Case := Id.run do
     pure (e.headD 0))]
   return cs
 
+open Sur in
+/-- The libm shims.
+
+    `Float32.sin`/`cos`/`pow` are `@[extern "sinf"/"cosf"/"powf"]`, so the model
+    calls the same symbols the runtime does and agreement is expected rather
+    than lucky. What this catches is the part that is not by construction: that
+    an `f32` argument and result survive the call boundary the JIT builds, and
+    that `clif_decode` gives the signature the same shape both sides assume. -/
+private def casesMath : List Case := Id.run do
+  let mut cs : List Case := []
+  for (nm, bits) in f32Cases do
+    cs := cs ++ [(s!"sinf/{nm}", do call IR.Ffi.sinf.id [← fconst .f32 bits])]
+    cs := cs ++ [(s!"cosf/{nm}", do call IR.Ffi.cosf.id [← fconst .f32 bits])]
+  for (an, a) in f32Cases do
+    for (bn, b) in [("2", f32Bits 2.0), ("0.5", f32Bits 0.5), ("-1", f32Bits (-1.0)),
+                    ("0", f32Bits 0.0)] do
+      cs := cs ++ [(s!"powf/{an}^{bn}", do
+        call IR.Ffi.powf.id [← fconst .f32 a, ← fconst .f32 b])]
+  return cs
+
+/-- Scratch inside the corpus arena, past the `0x28` the output pointer uses. -/
+private def htCtxSlot : Nat := 0x80
+private def htKeyA : Nat := 0x90
+private def htKeyB : Nat := 0x98
+private def htVal : Nat := 0xA0
+private def htOut : Nat := 0xB0
+
+open Sur in
+/-- The hash table, run as one sequence: the cases share a world, so what each
+    stores is the state the ones before it left.
+
+    Every accessor in `ht.rs` reads table `0` regardless of the handle it is
+    given, and iterates a `HashMap`, so `ht_get_entry` is asked here only while
+    exactly one entry exists — an index into an unordered container is not
+    something the implementation promises and not something to pin. -/
+private def casesHt : List Case := Id.run do
+  let put : Nat → List Nat → Sur.M Unit := fun off bs => do
+    for (b, i) in bs.zipIdx do
+      istore8 (← iconst64 (Int.ofNat b)) (← absAddr basePtr (off + i))
+  let ctx : Sur.M R := do load64 (← absAddr basePtr htCtxSlot)
+  let mut cs : List Case := []
+  -- `init` writes the context where the slot says; the first `create` is the
+  -- one that matters, since `0` is the table every accessor reads.
+  cs := cs ++ [("ht/create", do
+    callVoid IR.Ffi.htInit.id [← absAddr basePtr htCtxSlot]
+    call IR.Ffi.htCreate.id [← ctx])]
+  -- key "ab" and an eight-byte value, then a lookup that reports its length
+  cs := cs ++ [("ht/lookupLen", do
+    put htKeyA [0x61, 0x62]
+    storeI64 (← iconst64 0x1122334455667788) (← absAddr basePtr htVal)
+    callVoid IR.Ffi.htInsert.id
+      [← ctx, ← absAddr basePtr htKeyA, ← iconst32 2, ← absAddr basePtr htVal, ← iconst32 8]
+    call IR.Ffi.htLookup.id [← ctx, ← absAddr basePtr htKeyA, ← iconst32 2, ← absAddr basePtr htOut])]
+  cs := cs ++ [("ht/lookupValue", do load64 (← absAddr basePtr htOut))]
+  -- exactly one entry, so this index is the only one there is
+  cs := cs ++ [("ht/getEntryKeyLen", do
+    call IR.Ffi.htGetEntry.id
+      [← ctx, ← iconst32 0, ← absAddr basePtr htOut, ← absAddr basePtr (htOut + 8)])]
+  cs := cs ++ [("ht/count1", do call IR.Ffi.htCount.id [← ctx])]
+  -- a key nothing inserted, which is the sentinel arm
+  cs := cs ++ [("ht/lookupMissing", do
+    put htKeyB [0x63, 0x64]
+    call IR.Ffi.htLookup.id [← ctx, ← absAddr basePtr htKeyB, ← iconst32 2, ← absAddr basePtr htOut])]
+  -- increment creates on the first call and accumulates after, including
+  -- downwards
+  cs := cs ++ [("ht/incrementNew", do
+    call IR.Ffi.htIncrement.id [← ctx, ← absAddr basePtr htKeyB, ← iconst32 2, ← iconst64 10])]
+  cs := cs ++ [("ht/incrementAgain", do
+    call IR.Ffi.htIncrement.id [← ctx, ← absAddr basePtr htKeyB, ← iconst32 2, ← iconst64 5])]
+  cs := cs ++ [("ht/incrementDown", do
+    call IR.Ffi.htIncrement.id [← ctx, ← absAddr basePtr htKeyB, ← iconst32 2, ← iconst64 (-7)])]
+  cs := cs ++ [("ht/count2", do call IR.Ffi.htCount.id [← ctx])]
+  -- and the counter reads back as the eight bytes increment stores
+  cs := cs ++ [("ht/incrementStored", do
+    let _ ← call IR.Ffi.htLookup.id
+      [← ctx, ← absAddr basePtr htKeyB, ← iconst32 2, ← absAddr basePtr htOut]
+    load64 (← absAddr basePtr htOut))]
+  return cs
+
 /-- Every case, named so a failure says which one. -/
 def cases : List Case :=
   casesInt ++ casesShift ++ casesUnary ++ casesCmp ++ casesFloat ++ casesConv
-    ++ casesVec ++ casesCfg ++ casesPminmax ++ casesBr ++ casesDLoop ++ casesCont ++ casesVecInt ++ casesDCont
+    ++ casesVec ++ casesCfg ++ casesPminmax ++ casesBr ++ casesDLoop ++ casesCont ++ casesVecInt
+    ++ casesDCont ++ casesMath ++ casesHt
 
 open Sur in
 /-- Every case, storing its result at its own stride in the output buffer. -/
-def code : Code := clif%(env, ptrParams) do
+def body : Sur.M Unit := do
   let outPtr ← load64 (← absAddr basePtr 0x28)
   for (c, k) in (cases.map (·.2)).zipIdx do
     let r ← c
     store r (← iadd outPtr (← iconst64 (STRIDE * k)))
 
--- No `wf` theorem here, deliberately. This term is a test fixture, and its
--- well-formedness is already checked the loud way: a malformed case makes
--- `compileFn` emit CLIF that Cranelift's verifier rejects, so the corpus test
--- fails outright rather than passing on a weaker claim. Proving it instead
--- would mean a `native_decide` over several thousand slots, which buys nothing
--- and costs trust surface.
+/-- Built rather than spliced: `clif%` embeds the finished literal, and a body
+    of this many cases nests deeper than reifying it can go. `main` runs
+    `buildChecked` instead, so the surface and `wf` are both still checked —
+    once, natively, rather than during elaboration. -/
+def code : Code := Sur.build body env ptrParams
+
+/-- What `clif%` would have reported, as a value `main` can refuse on. -/
+def checked : Except String Code := Sur.buildChecked body env ptrParams
+
+-- No `wf` *theorem* here, deliberately. This term is a test fixture, and its
+-- well-formedness is already checked twice the loud way: `checked` above, and
+-- Cranelift's verifier rejecting the emitted CLIF. Proving it instead would
+-- mean a `native_decide` over several thousand slots, which buys nothing and
+-- costs trust surface.
 
 def program : Program := IR.program [noopFunction, compileBody 1 code env]
 
@@ -711,6 +801,11 @@ end HProgCorpus
 open AlgorithmLib in
 def main (args : List String) : IO Unit := do
   let dir ← requireOutputDir args
+  -- What `clif%` checks while splicing, checked here instead: a case whose
+  -- operands do not typecheck fails the generator rather than reaching the JIT.
+  match HProgCorpus.checked with
+  | .error e => throw (IO.userError s!"the corpus body is not well-formed: {e}")
+  | .ok _ => pure ()
   match HProgCorpus.expected with
   | .error e => throw (IO.userError s!"interpreting the corpus: {e}")
   | .ok bytes =>

@@ -159,7 +159,7 @@ def runInsts (env : FnEnv) (s : BSt) : List Inst → Outcome (BSt × Next)
                   match decl.callee with
                   | .local i => .stuck s!"fn{fn.id} calls u0:{i}"
                   | .import name =>
-                      match callFile name vs (obsCall s.world fn.id vs) with
+                      match callImport name vs (obsCall s.world fn.id vs) with
                       | none => .stuck s!"{name} has no executable contract"
                       | some (res, w') =>
                           match d, res with
@@ -1326,7 +1326,7 @@ theorem runInsts_call (env : FnEnv) (s : Blocks.BSt) (d : Option Val) (fn : FnRe
                 match decl.callee with
                 | .local i => .stuck s!"fn{fn.id} calls u0:{i}"
                 | .import name =>
-                    match Sem.callFile name vs (Sem.obsCall s.world fn.id vs) with
+                    match Sem.callImport name vs (Sem.obsCall s.world fn.id vs) with
                     | none => .stuck s!"{name} has no executable contract"
                     | some (res, w') =>
                         match d, res with
@@ -1339,7 +1339,7 @@ theorem runInsts_call (env : FnEnv) (s : Blocks.BSt) (d : Option Val) (fn : FnRe
 
     The two sides resolve their arguments differently — slots through `Γ`,
     values through the array — and `mapM_args` is what makes those the same
-    vector. Everything after that is the *same* `callFile` on the *same*
+    vector. Everything after that is the *same* `callImport` on the *same*
     observation, so the FFI contract is consulted once and both interpreters see
     its answer; the result binds the next slot on one side and the next value on
     the other, which `agree_push` keeps in step.
@@ -1370,7 +1370,7 @@ theorem call_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (n : 
       | «import» name =>
         rw [hc] at hr
         dsimp only at hr
-        cases hcf : Sem.callFile name vs (Sem.obsCall w fn vs) with
+        cases hcf : Sem.callImport name vs (Sem.obsCall w fn vs) with
         | none => rw [hcf] at hr; simp at hr
         | some p =>
           obtain ⟨res, w'⟩ := p
@@ -1415,7 +1415,7 @@ theorem callVoid_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (
       | «import» name =>
         rw [hc] at hr
         dsimp only at hr
-        cases hcf : Sem.callFile name vs (Sem.obsCall w fn vs) with
+        cases hcf : Sem.callImport name vs (Sem.obsCall w fn vs) with
         | none => rw [hcf] at hr; simp at hr
         | some p =>
           obtain ⟨res, w'⟩ := p

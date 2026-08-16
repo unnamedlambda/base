@@ -2,302 +2,318 @@ import AlgorithmLib.Core
 import AlgorithmLib.Layout
 import AlgorithmLib.IR
 
-namespace AlgorithmLib
+/-!
+# The runtime surface, as data
 
-namespace IR
+Every entry point the runtime exports, one constructor each. What a callee is —
+its C symbol, its signature, how it resolves — are total functions of the
+constructor, so a signature is written in exactly one place and two files
+cannot describe the same symbol differently.
 
-/-- Declare cl_file_read: (ptr, fname_off, data_off, file_offset, size) -> bytes_read -/
-def declareFileRead : IRBuilder FnRef :=
-  declareFFI "cl_file_read" [.i64, .i64, .i64, .i64, .i64] (some .i64)
+`all` fixes the ids: a callee's id is its position in that list, and every
+artifact's call instructions carry these ids. Appending a new entry point is
+compatible with every shipped artifact; reordering renumbers every call.
 
-/-- Declare cl_file_write: (ptr, fname_off, src_off, file_offset, size) -> bytes_written -/
-def declareFileWrite : IRBuilder FnRef :=
-  declareFFI "cl_file_write" [.i64, .i64, .i64, .i64, .i64] (some .i64)
+The executable contracts — what a call *does*, transcribed from
+`base/src/ffi/` — are in `HProgSem`; which memory a call may write is in
+`HProgFrames`. This file is only who exists and how to call them.
+-/
 
-/-- Declare cl_file_read_to_ptr: (ptr, fname_off, dst_ptr, size) -> bytes_read -/
-def declareFileReadToPtr : IRBuilder FnRef :=
-  declareFFI "cl_file_read_to_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+namespace AlgorithmLib.IR
 
-/-- Declare cl_file_write_from_ptr: (ptr, fname_off, src_ptr, size) -> bytes_written -/
-def declareFileWriteFromPtr : IRBuilder FnRef :=
-  declareFFI "cl_file_write_from_ptr" [.i64, .i64, .i64, .i64] (some .i64)
+/-- One runtime entry point. -/
+inductive Ffi where
+  | fileRead | fileWrite | fileReadToPtr | fileWriteFromPtr
+  | stdinReadline | stdoutWrite
+  | gpuInit | gpuCreateBuffer | gpuCreatePipeline | gpuUpload | gpuDownload
+  | gpuDispatch | gpuCleanup | gpuUploadPtr | gpuDownloadPtr
+  | windowInit | windowOpen | windowPoll | windowPresentGpuBuffer | windowCleanup
+  | lmdbInit | lmdbOpen | lmdbBeginWriteTxn | lmdbPut | lmdbCommitWriteTxn
+  | lmdbCursorScan | lmdbCleanup
+  | htCreate | htLookup | htInsert | htIncrement | htCount | htGetEntry
+  | htCleanup | htInit
+  | sinf | cosf | powf
+  | threadInit | threadSpawn | threadJoin | threadCleanup
+  | cudaInit | cudaCreateBuffer | cudaUpload | cudaUploadOffset | cudaUploadAsync
+  | cudaUploadOffsetAsync | cudaDownload | cudaDownloadOffset | cudaDownloadAsync
+  | cudaFreeBuffer | cudaStreamCreate | cudaStreamSync | cudaStreamDestroy
+  | cudaEventCreate | cudaEventRecord | cudaStreamWaitEvent | cudaEventElapsedMsBits
+  | cudaEventDestroy | cudaGraphBeginCapture | cudaGraphEndCapture | cudaGraphUpload
+  | cudaGraphLaunch | cudaGraphDestroy | cudaPinnedAlloc | cudaPinnedPtr
+  | cudaPinnedFree | cudaLaunch | cudaLaunchNamed | cudaLaunchOnStream
+  | cudaLaunchNamedOnStream | cudaSync | cudaCleanup
+  | cublasSgemv | cublasSgemvOnStream | cublasSgemm | cublasSgemmOnStream
+  | cublasPtrArray | cublasSgemmBatchedOnStream
+  deriving Repr, BEq, DecidableEq, Inhabited
 
-/-- Declare cl_stdin_readline: (ptr, dst_off, max_len) -> bytes_read -/
-def declareStdinReadline : IRBuilder FnRef :=
-  declareFFI "cl_stdin_readline" [.i64, .i64, .i64] (some .i64)
+namespace Ffi
 
-/-- Declare cl_stdout_write: (ptr, src_off, size) -> bytes_written -/
-def declareStdoutWrite : IRBuilder FnRef :=
-  declareFFI "cl_stdout_write" [.i64, .i64, .i64] (some .i64)
+/-- The C symbol the JIT resolves. -/
+def cname : Ffi → String
+  | .fileRead => "cl_file_read"
+  | .fileWrite => "cl_file_write"
+  | .fileReadToPtr => "cl_file_read_to_ptr"
+  | .fileWriteFromPtr => "cl_file_write_from_ptr"
+  | .stdinReadline => "cl_stdin_readline"
+  | .stdoutWrite => "cl_stdout_write"
+  | .gpuInit => "cl_gpu_init"
+  | .gpuCreateBuffer => "cl_gpu_create_buffer"
+  | .gpuCreatePipeline => "cl_gpu_create_pipeline"
+  | .gpuUpload => "cl_gpu_upload"
+  | .gpuDownload => "cl_gpu_download"
+  | .gpuDispatch => "cl_gpu_dispatch"
+  | .gpuCleanup => "cl_gpu_cleanup"
+  | .gpuUploadPtr => "cl_gpu_upload_ptr"
+  | .gpuDownloadPtr => "cl_gpu_download_ptr"
+  | .windowInit => "cl_window_init"
+  | .windowOpen => "cl_window_open"
+  | .windowPoll => "cl_window_poll"
+  | .windowPresentGpuBuffer => "cl_window_present_gpu_buffer"
+  | .windowCleanup => "cl_window_cleanup"
+  | .lmdbInit => "cl_lmdb_init"
+  | .lmdbOpen => "cl_lmdb_open"
+  | .lmdbBeginWriteTxn => "cl_lmdb_begin_write_txn"
+  | .lmdbPut => "cl_lmdb_put"
+  | .lmdbCommitWriteTxn => "cl_lmdb_commit_write_txn"
+  | .lmdbCursorScan => "cl_lmdb_cursor_scan"
+  | .lmdbCleanup => "cl_lmdb_cleanup"
+  | .htCreate => "ht_create"
+  | .htLookup => "ht_lookup"
+  | .htInsert => "ht_insert"
+  | .htIncrement => "ht_increment"
+  | .htCount => "ht_count"
+  | .htGetEntry => "ht_get_entry"
+  | .htCleanup => "cl_ht_cleanup"
+  | .htInit => "cl_ht_init"
+  | .sinf => "cl_sinf"
+  | .cosf => "cl_cosf"
+  | .powf => "cl_powf"
+  | .threadInit => "cl_thread_init"
+  | .threadSpawn => "cl_thread_spawn"
+  | .threadJoin => "cl_thread_join"
+  | .threadCleanup => "cl_thread_cleanup"
+  | .cudaInit => "cl_cuda_init"
+  | .cudaCreateBuffer => "cl_cuda_create_buffer"
+  | .cudaUpload => "cl_cuda_upload_ptr"
+  | .cudaUploadOffset => "cl_cuda_upload_ptr_offset"
+  | .cudaUploadAsync => "cl_cuda_upload_ptr_async"
+  | .cudaUploadOffsetAsync => "cl_cuda_upload_ptr_offset_async"
+  | .cudaDownload => "cl_cuda_download_ptr"
+  | .cudaDownloadOffset => "cl_cuda_download_ptr_offset"
+  | .cudaDownloadAsync => "cl_cuda_download_ptr_async"
+  | .cudaFreeBuffer => "cl_cuda_free_buffer"
+  | .cudaStreamCreate => "cl_cuda_stream_create"
+  | .cudaStreamSync => "cl_cuda_stream_sync"
+  | .cudaStreamDestroy => "cl_cuda_stream_destroy"
+  | .cudaEventCreate => "cl_cuda_event_create"
+  | .cudaEventRecord => "cl_cuda_event_record"
+  | .cudaStreamWaitEvent => "cl_cuda_stream_wait_event"
+  | .cudaEventElapsedMsBits => "cl_cuda_event_elapsed_ms_bits"
+  | .cudaEventDestroy => "cl_cuda_event_destroy"
+  | .cudaGraphBeginCapture => "cl_cuda_graph_begin_capture"
+  | .cudaGraphEndCapture => "cl_cuda_graph_end_capture"
+  | .cudaGraphUpload => "cl_cuda_graph_upload"
+  | .cudaGraphLaunch => "cl_cuda_graph_launch"
+  | .cudaGraphDestroy => "cl_cuda_graph_destroy"
+  | .cudaPinnedAlloc => "cl_cuda_pinned_alloc"
+  | .cudaPinnedPtr => "cl_cuda_pinned_ptr"
+  | .cudaPinnedFree => "cl_cuda_pinned_free"
+  | .cudaLaunch => "cl_cuda_launch"
+  | .cudaLaunchNamed => "cl_cuda_launch_named"
+  | .cudaLaunchOnStream => "cl_cuda_launch_on_stream"
+  | .cudaLaunchNamedOnStream => "cl_cuda_launch_named_on_stream"
+  | .cudaSync => "cl_cuda_sync"
+  | .cudaCleanup => "cl_cuda_cleanup"
+  | .cublasSgemv => "cl_cublas_sgemv"
+  | .cublasSgemvOnStream => "cl_cublas_sgemv_on_stream"
+  | .cublasSgemm => "cl_cublas_sgemm_strided_batched"
+  | .cublasSgemmOnStream => "cl_cublas_sgemm_strided_batched_on_stream"
+  | .cublasPtrArray => "cl_cublas_ptr_array"
+  | .cublasSgemmBatchedOnStream => "cl_cublas_sgemm_batched_on_stream"
 
-/-- GPU FFI function bundle -/
-structure GpuSetup where
-  fnInit : FnRef
-  fnCreateBuffer : FnRef
-  fnUpload : FnRef
-  fnDownload : FnRef
-  fnCreatePipeline : FnRef
-  fnDispatch : FnRef
-  fnCleanup : FnRef
-  /-- `(ctx, buf, src_ptr, size)`: upload from a raw host pointer. -/
-  fnUploadPtr : FnRef
-  /-- `(ctx, buf, dst_ptr, size, buf_offset)`: download to a raw host pointer. -/
-  fnDownloadPtr : FnRef
-  deriving Inhabited, Lean.ToExpr
+/-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
+def sig : Ffi → List ClifTy × Option ClifTy
+  | .fileRead => ([.i64, .i64, .i64, .i64, .i64], some .i64)
+  | .fileWrite => ([.i64, .i64, .i64, .i64, .i64], some .i64)
+  | .fileReadToPtr => ([.i64, .i64, .i64, .i64], some .i64)
+  | .fileWriteFromPtr => ([.i64, .i64, .i64, .i64], some .i64)
+  | .stdinReadline => ([.i64, .i64, .i64], some .i64)
+  | .stdoutWrite => ([.i64, .i64, .i64], some .i64)
+  | .gpuInit => ([.i64], none)
+  | .gpuCreateBuffer => ([.i64, .i64], some .i32)
+  | .gpuCreatePipeline => ([.i64, .i64, .i64, .i32], some .i32)
+  | .gpuUpload => ([.i64, .i32, .i64, .i64], some .i32)
+  | .gpuDownload => ([.i64, .i32, .i64, .i64], some .i32)
+  | .gpuDispatch => ([.i64, .i32, .i32, .i32, .i32], some .i32)
+  | .gpuCleanup => ([.i64], none)
+  | .gpuUploadPtr => ([.i64, .i32, .i64, .i64], some .i32)
+  | .gpuDownloadPtr => ([.i64, .i32, .i64, .i64, .i64], some .i32)
+  | .windowInit => ([.i64], none)
+  | .windowOpen => ([.i64, .i64, .i64, .i64, .i64, .i64, .i64], some .i32)
+  | .windowPoll => ([.i64, .i64, .i32], some .i32)
+  | .windowPresentGpuBuffer => ([.i64, .i64, .i32], some .i32)
+  | .windowCleanup => ([.i64], none)
+  | .lmdbInit => ([.i64], none)
+  | .lmdbOpen => ([.i64, .i64, .i32], some .i32)
+  | .lmdbBeginWriteTxn => ([.i64, .i32], some .i32)
+  | .lmdbPut => ([.i64, .i32, .i64, .i32, .i64, .i32], some .i32)
+  | .lmdbCommitWriteTxn => ([.i64, .i32], some .i32)
+  | .lmdbCursorScan => ([.i64, .i32, .i64, .i32, .i32, .i64], some .i32)
+  | .lmdbCleanup => ([.i64], none)
+  | .htCreate => ([.i64], some .i32)
+  | .htLookup => ([.i64, .i64, .i32, .i64], some .i32)
+  | .htInsert => ([.i64, .i64, .i32, .i64, .i32], none)
+  | .htIncrement => ([.i64, .i64, .i32, .i64], some .i64)
+  | .htCount => ([.i64], some .i32)
+  | .htGetEntry => ([.i64, .i32, .i64, .i64], some .i32)
+  | .htCleanup => ([.i64], none)
+  | .htInit => ([.i64], none)
+  | .sinf => ([.f32], some .f32)
+  | .cosf => ([.f32], some .f32)
+  | .powf => ([.f32, .f32], some .f32)
+  | .threadInit => ([.i64], none)
+  | .threadSpawn => ([.i64, .i64, .i64], some .i64)
+  | .threadJoin => ([.i64, .i64], some .i64)
+  | .threadCleanup => ([.i64], none)
+  | .cudaInit => ([.i64], none)
+  | .cudaCreateBuffer => ([.i64, .i64], some .i32)
+  | .cudaUpload => ([.i64, .i32, .i64, .i64], some .i32)
+  | .cudaUploadOffset => ([.i64, .i32, .i64, .i64, .i64], some .i32)
+  | .cudaUploadAsync => ([.i64, .i32, .i64, .i64, .i32], some .i32)
+  | .cudaUploadOffsetAsync => ([.i64, .i32, .i64, .i64, .i64, .i32], some .i32)
+  | .cudaDownload => ([.i64, .i32, .i64, .i64], some .i32)
+  | .cudaDownloadOffset => ([.i64, .i32, .i64, .i64, .i64], some .i32)
+  | .cudaDownloadAsync => ([.i64, .i32, .i64, .i64, .i32], some .i32)
+  | .cudaFreeBuffer => ([.i64, .i32], some .i32)
+  | .cudaStreamCreate => ([.i64], some .i32)
+  | .cudaStreamSync => ([.i64, .i32], some .i32)
+  | .cudaStreamDestroy => ([.i64, .i32], some .i32)
+  | .cudaEventCreate => ([.i64], some .i32)
+  | .cudaEventRecord => ([.i64, .i32, .i32], some .i32)
+  | .cudaStreamWaitEvent => ([.i64, .i32, .i32], some .i32)
+  | .cudaEventElapsedMsBits => ([.i64, .i32, .i32], some .i32)
+  | .cudaEventDestroy => ([.i64, .i32], some .i32)
+  | .cudaGraphBeginCapture => ([.i64, .i32], some .i32)
+  | .cudaGraphEndCapture => ([.i64, .i32], some .i32)
+  | .cudaGraphUpload => ([.i64, .i32, .i32], some .i32)
+  | .cudaGraphLaunch => ([.i64, .i32, .i32], some .i32)
+  | .cudaGraphDestroy => ([.i64, .i32], some .i32)
+  | .cudaPinnedAlloc => ([.i64, .i64], some .i32)
+  | .cudaPinnedPtr => ([.i64, .i32], some .i64)
+  | .cudaPinnedFree => ([.i64, .i32], some .i32)
+  | .cudaLaunch => ([.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
+  | .cudaLaunchNamed =>
+      ([.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
+  | .cudaLaunchOnStream =>
+      ([.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
+  | .cudaLaunchNamedOnStream =>
+      ([.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
+  | .cudaSync => ([.i64], some .i32)
+  | .cudaCleanup => ([.i64], none)
+  | .cublasSgemv => ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
+  | .cublasSgemvOnStream =>
+      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32], some .i32)
+  -- The three `.i64`s after the batch count are element offsets into the A, B
+  -- and C operands; a zero trailing `ld_*` asks for the default leading
+  -- dimension. An offset moves the pointer and leaves the matrix the call
+  -- contracts alone, so one buffer can hold several operands without touching
+  -- what `Law.cublasIsMatvec` says a contraction computes.
+  | .cublasSgemm =>
+      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32,
+        .i32, .i64, .i32, .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
+  | .cublasSgemmOnStream =>
+      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32,
+        .i32, .i64, .i32, .i32, .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
+  | .cublasPtrArray => ([.i64, .i32, .i32, .i32, .i64], some .i32)
+  | .cublasSgemmBatchedOnStream =>
+      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32,
+        .i32], some .i32)
 
-/-- Declare every GPU entry point. -/
-def declareGpuFFI : IRBuilder GpuSetup := do
-  let fnInit ← declareFFI "cl_gpu_init" [.i64] none
-  let fnCreateBuffer ← declareFFI "cl_gpu_create_buffer" [.i64, .i64] (some .i32)
-  let fnCreatePipeline ← declareFFI "cl_gpu_create_pipeline" [.i64, .i64, .i64, .i32] (some .i32)
-  let fnUpload ← declareFFI "cl_gpu_upload" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnDownload ← declareFFI "cl_gpu_download" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnDispatch ← declareFFI "cl_gpu_dispatch" [.i64, .i32, .i32, .i32, .i32] (some .i32)
-  let fnCleanup ← declareFFI "cl_gpu_cleanup" [.i64] none
-  let fnUploadPtr ← declareFFI "cl_gpu_upload_ptr" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnDownloadPtr ← declareFFI "cl_gpu_download_ptr" [.i64, .i32, .i64, .i64, .i64] (some .i32)
-  pure { fnInit, fnCreateBuffer, fnUpload, fnDownload, fnCreatePipeline, fnDispatch, fnCleanup,
-         fnUploadPtr, fnDownloadPtr }
+def params (f : Ffi) : List ClifTy := f.sig.1
+def result (f : Ffi) : Option ClifTy := f.sig.2
 
+/-- Every entry point, in the order that fixes the ids. -/
+def all : List Ffi :=
+  [.fileRead, .fileWrite, .fileReadToPtr, .fileWriteFromPtr,
+   .stdinReadline, .stdoutWrite,
+   .gpuInit, .gpuCreateBuffer, .gpuCreatePipeline, .gpuUpload, .gpuDownload,
+   .gpuDispatch, .gpuCleanup, .gpuUploadPtr, .gpuDownloadPtr,
+   .windowInit, .windowOpen, .windowPoll, .windowPresentGpuBuffer, .windowCleanup,
+   .lmdbInit, .lmdbOpen, .lmdbBeginWriteTxn, .lmdbPut, .lmdbCommitWriteTxn,
+   .lmdbCursorScan, .lmdbCleanup,
+   .htCreate, .htLookup, .htInsert, .htIncrement, .htCount, .htGetEntry,
+   .htCleanup, .htInit,
+   .sinf, .cosf, .powf,
+   .threadInit, .threadSpawn, .threadJoin, .threadCleanup,
+   .cudaInit, .cudaCreateBuffer, .cudaUpload, .cudaUploadOffset, .cudaUploadAsync,
+   .cudaUploadOffsetAsync, .cudaDownload, .cudaDownloadOffset, .cudaDownloadAsync,
+   .cudaFreeBuffer, .cudaStreamCreate, .cudaStreamSync, .cudaStreamDestroy,
+   .cudaEventCreate, .cudaEventRecord, .cudaStreamWaitEvent, .cudaEventElapsedMsBits,
+   .cudaEventDestroy, .cudaGraphBeginCapture, .cudaGraphEndCapture, .cudaGraphUpload,
+   .cudaGraphLaunch, .cudaGraphDestroy, .cudaPinnedAlloc, .cudaPinnedPtr,
+   .cudaPinnedFree, .cudaLaunch, .cudaLaunchNamed, .cudaLaunchOnStream,
+   .cudaLaunchNamedOnStream, .cudaSync, .cudaCleanup,
+   .cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmOnStream,
+   .cublasPtrArray, .cublasSgemmBatchedOnStream]
 
-/-- Window / input / present FFI bundle. The window shares the wgpu device, so
-    `fnPresentGpuBuffer` blits a game framebuffer straight from a wgpu storage
-    buffer to the swapchain with no host round trip. -/
-structure WindowSetup where
-  fnInit : FnRef
-  fnOpen : FnRef
-  fnPoll : FnRef
-  fnPresentGpuBuffer : FnRef
-  fnCleanup : FnRef
-  deriving Inhabited, Lean.ToExpr
+/-- The callee id every artifact carries for `f`. -/
+def id (f : Ffi) : Nat := all.idxOf f
 
-/-- Declare the minimal window FFI (init/open/poll/present/cleanup). -/
-def declareWindowFFI : IRBuilder WindowSetup := do
-  let fnInit ← declareFFI "cl_window_init" [.i64] none
-  let fnOpen ← declareFFI "cl_window_open" [.i64, .i64, .i64, .i64, .i64, .i64, .i64] (some .i32)
-  let fnPoll ← declareFFI "cl_window_poll" [.i64, .i64, .i32] (some .i32)
-  let fnPresentGpuBuffer ← declareFFI "cl_window_present_gpu_buffer"
-    [.i64, .i64, .i32] (some .i32)
-  let fnCleanup ← declareFFI "cl_window_cleanup" [.i64] none
-  pure { fnInit, fnOpen, fnPoll, fnPresentGpuBuffer, fnCleanup }
+def ref (f : Ffi) : FnRef := ⟨f.id⟩
 
+/-- The entry point a name resolves to, if it is one. -/
+def ofCname (s : String) : Option Ffi := all.find? (·.cname == s)
 
-/-- LMDB FFI function bundle -/
-structure LmdbSetup where
-  fnInit : FnRef
-  fnOpen : FnRef
-  fnBeginWriteTxn : FnRef
-  fnPut : FnRef
-  fnCommitWriteTxn : FnRef
-  fnCursorScan : FnRef
-  fnCleanup : FnRef
-  deriving Inhabited, Lean.ToExpr
+def sigDecl (f : Ffi) : SigDecl :=
+  { ref := ⟨f.id⟩, params := f.params, result := f.result }
 
-/-- Declare all 7 LMDB FFI functions -/
-def declareLmdbFFI : IRBuilder LmdbSetup := do
-  let fnInit ← declareFFI "cl_lmdb_init" [.i64] none
-  let fnOpen ← declareFFI "cl_lmdb_open" [.i64, .i64, .i32] (some .i32)
-  let fnBeginWriteTxn ← declareFFI "cl_lmdb_begin_write_txn" [.i64, .i32] (some .i32)
-  let fnPut ← declareFFI "cl_lmdb_put" [.i64, .i32, .i64, .i32, .i64, .i32] (some .i32)
-  let fnCommitWriteTxn ← declareFFI "cl_lmdb_commit_write_txn" [.i64, .i32] (some .i32)
-  let fnCursorScan ← declareFFI "cl_lmdb_cursor_scan" [.i64, .i32, .i64, .i32, .i32, .i64] (some .i32)
-  let fnCleanup ← declareFFI "cl_lmdb_cleanup" [.i64] none
-  pure { fnInit, fnOpen, fnBeginWriteTxn, fnPut, fnCommitWriteTxn, fnCursorScan, fnCleanup }
+/-- Every entry point is a host symbol the JIT resolves by name, so none is
+    `colocated`: that flag makes Cranelift emit a near call, whose 32-bit
+    displacement cannot reach an address the loader chose. The six hash-table
+    symbols carried it and are registered by `builder.symbol` like all the
+    others; the first program to actually call one through the JIT died in the
+    relocation. -/
+def fnDecl (f : Ffi) : FnDecl :=
+  { ref := ⟨f.id⟩, callee := .import f.cname, sig := ⟨f.id⟩ }
 
--- ---------------------------------------------------------------------------
--- Hash-table FFI wrappers
--- ---------------------------------------------------------------------------
+end Ffi
 
-/-- Hash-table FFI bundle (colocated: resolved within the same JIT module) -/
-structure HtSetup where
-  fnCreate : FnRef
-  fnLookup : FnRef
-  fnInsert : FnRef
-  /-- `(ptr, ht, key_off, key_len, delta) -> new_count`, one call for the
-      read-modify-write a word counter would otherwise spell out. -/
-  fnIncrement : FnRef
-  /-- `(ptr, ht) -> entries` -/
-  fnCount : FnRef
-  /-- `(ptr, ht, index, out_off) -> found`: entry `index` in table order. -/
-  fnGetEntry : FnRef
-  /-- `(ptr)`: release every table this context allocated. -/
-  fnCleanup : FnRef
-  /-- `(ptr)`: allocate the table context. -/
-  fnInit : FnRef
-  deriving Inhabited, Lean.ToExpr
+/-- The table a list of entry points declares. Ids come from `Ffi.all`, so a
+    selection keeps the ids the full table hands out and `FnEnv.sigOf` cannot
+    land two names on one id. -/
+def envFromFfi (fs : List Ffi) : FnEnv :=
+  { sigs := fs.map Ffi.sigDecl, fns := fs.map Ffi.fnDecl }
 
-/-- Declare the hash table as colocated FFI (resolved within the JIT module). -/
-def declareHtFFI : IRBuilder HtSetup := do
-  let fnCreate ← declareColocatedFFI "ht_create" [.i64] (some .i32)
-  let fnLookup ← declareColocatedFFI "ht_lookup" [.i64, .i64, .i32, .i64] (some .i32)
-  let fnInsert ← declareColocatedFFI "ht_insert" [.i64, .i64, .i32, .i64, .i32] none
-  let fnIncrement ← declareColocatedFFI "ht_increment" [.i64, .i64, .i32, .i64] (some .i64)
-  let fnCount ← declareColocatedFFI "ht_count" [.i64] (some .i32)
-  let fnGetEntry ← declareColocatedFFI "ht_get_entry" [.i64, .i32, .i64, .i64] (some .i32)
-  let fnCleanup ← declareFFI "cl_ht_cleanup" [.i64] none
-  let fnInit ← declareFFI "cl_ht_init" [.i64] none
-  pure { fnCreate, fnLookup, fnInsert, fnIncrement, fnCount, fnGetEntry, fnCleanup, fnInit }
+namespace FFI
 
-/-- The libm entry points the runtime re-exports. -/
-structure MathSetup where
-  fnSinf : FnRef
-  fnCosf : FnRef
-  fnPowf : FnRef
-  deriving Inhabited, Lean.ToExpr
+/-- A named group of entry points, so a body can be checked against the part of
+    the table it uses. -/
+inductive Bundle where
+  | fileIO | gpu | window | lmdb | ht | math | thread | cuda | cublas
+  deriving Repr, BEq
 
-def declareMathFFI : IRBuilder MathSetup := do
-  let fnSinf ← declareFFI "cl_sinf" [.f32] (some .f32)
-  let fnCosf ← declareFFI "cl_cosf" [.f32] (some .f32)
-  let fnPowf ← declareFFI "cl_powf" [.f32, .f32] (some .f32)
-  pure { fnSinf, fnCosf, fnPowf }
+end FFI
 
-/-- Host threads: spawn runs one of this program's own functions. -/
-structure ThreadSetup where
-  fnInit : FnRef
-  /-- `(ptr, fn_idx, arg) -> handle` -/
-  fnSpawn : FnRef
-  /-- `(ptr, handle) -> status` -/
-  fnJoin : FnRef
-  fnCleanup : FnRef
-  deriving Inhabited, Lean.ToExpr
-
-def declareThreadFFI : IRBuilder ThreadSetup := do
-  let fnInit ← declareFFI "cl_thread_init" [.i64] none
-  let fnSpawn ← declareFFI "cl_thread_spawn" [.i64, .i64, .i64] (some .i64)
-  let fnJoin ← declareFFI "cl_thread_join" [.i64, .i64] (some .i64)
-  let fnCleanup ← declareFFI "cl_thread_cleanup" [.i64] none
-  pure { fnInit, fnSpawn, fnJoin, fnCleanup }
-
-
-/-- CUDA FFI function bundle -/
-structure CudaSetup where
-  fnInit : FnRef
-  fnCreateBuffer : FnRef
-  fnUpload : FnRef
-  fnUploadOffset : FnRef   -- cl_cuda_upload_ptr_offset: (ctx, buf_id, buf_offset, src_ptr, size) → i32
-  fnUploadAsync : FnRef
-  fnUploadOffsetAsync : FnRef
-  fnDownload : FnRef
-  fnDownloadOffset : FnRef -- cl_cuda_download_ptr_offset: (ctx, buf_id, buf_offset, dst_ptr, size) → i32
-  fnDownloadAsync : FnRef
-  fnFreeBuffer : FnRef
-  fnStreamCreate : FnRef
-  fnStreamSync : FnRef
-  fnStreamDestroy : FnRef
-  fnEventCreate : FnRef
-  fnEventRecord : FnRef
-  fnStreamWaitEvent : FnRef
-  fnEventElapsedMsBits : FnRef
-  fnEventDestroy : FnRef
-  fnGraphBeginCapture : FnRef
-  fnGraphEndCapture : FnRef
-  fnGraphUpload : FnRef
-  fnGraphLaunch : FnRef
-  fnGraphDestroy : FnRef
-  fnPinnedAlloc : FnRef
-  fnPinnedPtr : FnRef
-  fnPinnedFree : FnRef
-  fnLaunch : FnRef
-  fnLaunchNamed : FnRef    -- cl_cuda_launch_named: adds name_ptr arg between kernel and n_bufs
-  fnLaunchOnStream : FnRef
-  fnLaunchNamedOnStream : FnRef
-  fnSync : FnRef           -- cl_cuda_sync: (ctx) → i32
-  fnCleanup : FnRef
-  deriving Inhabited, Lean.ToExpr
-
-/-- Declare all CUDA FFI functions. -/
-def declareCudaFFI : IRBuilder CudaSetup := do
-  let fnInit         ← declareFFI "cl_cuda_init"              [.i64]                               none
-  let fnCreateBuffer ← declareFFI "cl_cuda_create_buffer"     [.i64, .i64]                         (some .i32)
-  let fnUpload       ← declareFFI "cl_cuda_upload_ptr"        [.i64, .i32, .i64, .i64]             (some .i32)
-  let fnUploadOffset ← declareFFI "cl_cuda_upload_ptr_offset" [.i64, .i32, .i64, .i64, .i64]      (some .i32)
-  let fnUploadAsync  ← declareFFI "cl_cuda_upload_ptr_async"  [.i64, .i32, .i64, .i64, .i32]       (some .i32)
-  let fnUploadOffsetAsync ← declareFFI "cl_cuda_upload_ptr_offset_async"
-    [.i64, .i32, .i64, .i64, .i64, .i32] (some .i32)
-  let fnDownload     ← declareFFI "cl_cuda_download_ptr"      [.i64, .i32, .i64, .i64]             (some .i32)
-  let fnDownloadOffset ← declareFFI "cl_cuda_download_ptr_offset" [.i64, .i32, .i64, .i64, .i64]   (some .i32)
-  let fnDownloadAsync ← declareFFI "cl_cuda_download_ptr_async" [.i64, .i32, .i64, .i64, .i32]     (some .i32)
-  let fnFreeBuffer   ← declareFFI "cl_cuda_free_buffer"       [.i64, .i32]                         (some .i32)
-  let fnStreamCreate ← declareFFI "cl_cuda_stream_create"     [.i64]                               (some .i32)
-  let fnStreamSync   ← declareFFI "cl_cuda_stream_sync"       [.i64, .i32]                         (some .i32)
-  let fnStreamDestroy ← declareFFI "cl_cuda_stream_destroy"   [.i64, .i32]                         (some .i32)
-  let fnEventCreate  ← declareFFI "cl_cuda_event_create"      [.i64]                               (some .i32)
-  let fnEventRecord  ← declareFFI "cl_cuda_event_record"      [.i64, .i32, .i32]                   (some .i32)
-  let fnStreamWaitEvent ← declareFFI "cl_cuda_stream_wait_event" [.i64, .i32, .i32]                (some .i32)
-  let fnEventElapsedMsBits ← declareFFI "cl_cuda_event_elapsed_ms_bits" [.i64, .i32, .i32]         (some .i32)
-  let fnEventDestroy ← declareFFI "cl_cuda_event_destroy"     [.i64, .i32]                         (some .i32)
-  let fnGraphBeginCapture ← declareFFI "cl_cuda_graph_begin_capture" [.i64, .i32]                  (some .i32)
-  let fnGraphEndCapture ← declareFFI "cl_cuda_graph_end_capture" [.i64, .i32]                      (some .i32)
-  let fnGraphUpload ← declareFFI "cl_cuda_graph_upload" [.i64, .i32, .i32]                         (some .i32)
-  let fnGraphLaunch ← declareFFI "cl_cuda_graph_launch" [.i64, .i32, .i32]                         (some .i32)
-  let fnGraphDestroy ← declareFFI "cl_cuda_graph_destroy" [.i64, .i32]                             (some .i32)
-  let fnPinnedAlloc  ← declareFFI "cl_cuda_pinned_alloc"      [.i64, .i64]                         (some .i32)
-  let fnPinnedPtr    ← declareFFI "cl_cuda_pinned_ptr"        [.i64, .i32]                         (some .i64)
-  let fnPinnedFree   ← declareFFI "cl_cuda_pinned_free"       [.i64, .i32]                         (some .i32)
-  let fnLaunch       ← declareFFI "cl_cuda_launch"
-    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnLaunchNamed  ← declareFFI "cl_cuda_launch_named"
-    [.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnLaunchOnStream ← declareFFI "cl_cuda_launch_on_stream"
-    [.i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnLaunchNamedOnStream ← declareFFI "cl_cuda_launch_named_on_stream"
-    [.i64, .i64, .i64, .i32, .i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnSync         ← declareFFI "cl_cuda_sync"              [.i64]                               (some .i32)
-  let fnCleanup      ← declareFFI "cl_cuda_cleanup"           [.i64]                               none
-  pure { fnInit, fnCreateBuffer, fnUpload, fnUploadOffset, fnUploadAsync, fnUploadOffsetAsync,
-         fnDownload, fnDownloadOffset, fnDownloadAsync, fnFreeBuffer, fnStreamCreate, fnStreamSync, fnStreamDestroy,
-         fnEventCreate, fnEventRecord, fnStreamWaitEvent, fnEventElapsedMsBits, fnEventDestroy,
-         fnGraphBeginCapture, fnGraphEndCapture, fnGraphUpload, fnGraphLaunch, fnGraphDestroy,
-         fnPinnedAlloc, fnPinnedPtr, fnPinnedFree, fnLaunch, fnLaunchNamed, fnLaunchOnStream,
-         fnLaunchNamedOnStream, fnSync, fnCleanup }
-
-/-- cuBLAS FFI function bundle -/
-structure CuBlasSetup where
-  fnSgemv : FnRef   -- (ctx, trans, m, n, alpha_bits, a_buf, x_buf, beta_bits, y_buf) → i32
-  fnSgemvOnStream : FnRef
-  /-- `(ctx, transa, transb, m, n, k, alpha_bits, a_buf, stride_a, b_buf,
-      stride_b, beta_bits, c_buf, stride_c, batch, off_a, off_b, off_c,
-      ld_a, ld_b, ld_c) → i32`. A zero `ld_*` asks for the default leading
-      dimension; `off_*` are element offsets into the operands. -/
-  fnSgemm : FnRef
-  fnSgemmOnStream : FnRef
-  /-- `(ctx, arr_buf, slot, src_buf, off) → i32`: store one buffer's device
-      pointer into an array of pointers. -/
-  fnPtrArray : FnRef
-  /-- `(ctx, transa, transb, m, n, k, alpha_bits, a_arr, b_arr, beta_bits,
-      c_arr, batch, stream) → i32`: a batch whose members are named by pointer
-      rather than by stride, so they need not share an allocation. -/
-  fnSgemmBatchedOnStream : FnRef
-  deriving Inhabited, Lean.ToExpr
-
-def declareCuBlasFFI : IRBuilder CuBlasSetup := do
-  let fnSgemv ← declareFFI "cl_cublas_sgemv"
-    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  let fnSgemvOnStream ← declareFFI "cl_cublas_sgemv_on_stream"
-    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  -- The three trailing `.i64`s are element offsets into the A, B and C
-  -- operands.  An offset moves the pointer and leaves the matrix the call
-  -- contracts alone, so it lets one buffer hold several operands without
-  -- touching what `Law.cublasIsMatvec` says a contraction computes.
-  let fnSgemm ← declareFFI "cl_cublas_sgemm_strided_batched"
-    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32,
-     .i64, .i64, .i64, .i32, .i32, .i32] (some .i32)
-  let fnSgemmOnStream ← declareFFI "cl_cublas_sgemm_strided_batched_on_stream"
-    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64, .i32, .i32, .i64, .i32, .i32,
-     .i64, .i64, .i64, .i32, .i32, .i32] (some .i32)
-  let fnPtrArray ← declareFFI "cl_cublas_ptr_array"
-    [.i64, .i32, .i32, .i32, .i64] (some .i32)
-  let fnSgemmBatchedOnStream ← declareFFI "cl_cublas_sgemm_batched_on_stream"
-    [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32] (some .i32)
-  pure { fnSgemv, fnSgemvOnStream, fnSgemm, fnSgemmOnStream, fnPtrArray,
-         fnSgemmBatchedOnStream }
-
+/-- The bundle an entry point belongs to. -/
+def Ffi.bundle : Ffi → FFI.Bundle
+  | .fileRead | .fileWrite | .fileReadToPtr | .fileWriteFromPtr
+  | .stdinReadline | .stdoutWrite => .fileIO
+  | .gpuInit | .gpuCreateBuffer | .gpuCreatePipeline | .gpuUpload | .gpuDownload
+  | .gpuDispatch | .gpuCleanup | .gpuUploadPtr | .gpuDownloadPtr => .gpu
+  | .windowInit | .windowOpen | .windowPoll | .windowPresentGpuBuffer
+  | .windowCleanup => .window
+  | .lmdbInit | .lmdbOpen | .lmdbBeginWriteTxn | .lmdbPut | .lmdbCommitWriteTxn
+  | .lmdbCursorScan | .lmdbCleanup => .lmdb
+  | .htCreate | .htLookup | .htInsert | .htIncrement | .htCount | .htGetEntry
+  | .htCleanup | .htInit => .ht
+  | .sinf | .cosf | .powf => .math
+  | .threadInit | .threadSpawn | .threadJoin | .threadCleanup => .thread
+  | .cublasSgemv | .cublasSgemvOnStream | .cublasSgemm | .cublasSgemmOnStream
+  | .cublasPtrArray | .cublasSgemmBatchedOnStream => .cublas
+  | _ => .cuda
 
 /-- The fn_idx of the main entry point that every application emits as `u0:1`
     (with `u0:0` reserved as a no-op stub). Use this in `Algorithm.fn_idx`. -/
 def mainFnIdx : UInt32 := u32 1
 
-
-end IR
-
-end AlgorithmLib
+end AlgorithmLib.IR

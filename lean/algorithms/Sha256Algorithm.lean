@@ -428,13 +428,9 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) : M Unit := do
 
 -- Main builder: compose the sub-builders
 /-- The externals every emitted function declares, in one order. -/
-def ffiEnv : (FnRef × FnRef) × FnEnv := (Id.run (do
-  let rd := IR.FFI.std.fileRead
-  let wr := IR.FFI.std.fileWrite
-  pure (rd, wr)), env% [.fileIO])
-def fnRead : FnRef := ffiEnv.1.1
-def fnWrite : FnRef := ffiEnv.1.2
-def env : FnEnv := ffiEnv.2
+def fnRead : FnRef := IR.Ffi.fileRead.ref
+def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+def env : FnEnv := env% [.fileIO]
 
 def mainCode : HProg.Code :=
   clif%(env, HProg.ptrParams) do

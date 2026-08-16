@@ -571,9 +571,42 @@ inductive Obs where
   | store (addr : UInt64) (width : Nat) (bits : UInt64)
   deriving Repr, BEq
 
+/-- The hash table `ht.rs` keeps, which lives outside addressable memory.
+
+    Faithful to the Rust in two respects that read as defects and are not
+    modelled away: every accessor hardcodes table `0`, so the handle `ht_create`
+    returns is decorative and only the *first* create makes the accessors work;
+    and entries are stored in a `HashMap`, so `ht_get_entry` iterates in an
+    order the implementation does not fix. Insertion order is what this models,
+    and a program whose answer depends on that order is relying on something the
+    real thing does not promise. -/
+structure Ht where
+  /-- Handles handed out by `ht_create`, so the table `0` the accessors read is
+      present exactly when one of them was `0`. -/
+  handles : List Nat := []
+  entries : List (ByteArray × ByteArray) := []
+  deriving Inhabited
+
+def Ht.hasTable (h : Ht) : Bool := h.handles.contains 0
+
+def Ht.get (h : Ht) (k : ByteArray) : Option ByteArray :=
+  (h.entries.find? (·.1.toList == k.toList)).map (·.2)
+
+/-- Overwrite in place, keeping the entry's position, or append. -/
+def Ht.set (h : Ht) (k v : ByteArray) : Ht :=
+  if (h.get k).isSome then
+    { h with entries := h.entries.map (fun e => if e.1.toList == k.toList then (e.1, v) else e) }
+  else { h with entries := h.entries ++ [(k, v)] }
+
 structure World where
   mem : Mem
   fs  : FS := {}
+  /-- Lines `cl_stdin_readline` will return, in order, each including its
+      newline as `read_line` leaves it. An empty list is end of input. -/
+  stdin : List ByteArray := []
+  /-- What `cl_stdout_write` has written so far. -/
+  stdout : ByteArray := ByteArray.empty
+  ht : Ht := {}
   /-- Reversed while running; `Sem.run` hands it back in order. -/
   obs : List Obs := []
   deriving Inhabited
@@ -616,40 +649,190 @@ private def copyOut (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray :=
       pure (acc.push b.toUInt8))
     ByteArray.empty
 
-/-- The file family, as a function of the world.
+/-- The hash-table context, which is a Rust allocation rather than anything in
+    the three regions. `decodeAddr` rejects it, so it can be stored and passed
+    but never loaded through. -/
+def htCtx : UInt64 := 0x5000000000
 
-    These four are the only symbols with an executable contract: they are what
-    the corpus uses, and their behavior is fully determined by the bytes.
-    Every other symbol has a `Frame` and no definition — see `HProgFrames`. -/
-def callFile (name : String) (args : List V) (w : World) : Option (Option V × World) := do
+/-- An `i64` as the eight bytes the implementation stores it in. -/
+private def le64 (x : UInt64) : ByteArray :=
+  ((List.range 8).map (fun i => ((x >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8)).toByteArray
+
+/-- The `i64` the first eight bytes of `b` encode. -/
+private def ofLe64 (b : ByteArray) : UInt64 :=
+  (List.range 8).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| (b.get! i).toUInt64) 0
+
+/-- The bytes from `a` up to the first zero. -/
+private def readCStrAt (m : Mem) (a : UInt64) : Option String := readCStr m a
+
+/-- `n` bytes at `a` as a `ByteArray`, or `none` if they are not all mapped. -/
+private def readBytes (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray := copyOut m a n
+
+/-- Writing `bytes` into a file at `at_`, as `write_all` after a seek leaves it:
+    a seek past the end leaves a hole that reads back as zeros, and a write
+    shorter than what is there does *not* truncate the rest. -/
+private def spliceAt (prev bytes : ByteArray) (at_ : Nat) : ByteArray :=
+  let pad := if at_ > prev.size then at_ - prev.size else 0
+  let head := ((List.range (min at_ prev.size)).map prev.get!).toByteArray
+  let tail :=
+    if at_ + bytes.size < prev.size then
+      ((List.range (prev.size - at_ - bytes.size)).map
+        (fun i => prev.get! (at_ + bytes.size + i))).toByteArray
+    else ByteArray.empty
+  head ++ ByteArray.mk (Array.replicate pad 0) ++ bytes ++ tail
+
+/-- The `i64` a `UInt64` denotes, for the arguments the Rust reads as signed. -/
+private def asI64 (x : UInt64) : Int := signed .i64 x
+
+/-- What each entry point does, as a function of the world.
+
+    The families here are the ones whose behavior is fully determined by the
+    bytes: files, standard streams, the hash table and the libm shims. Each is a
+    transcription of `base/src/ffi/`, and like `evalOp` a transcription is an
+    assumption — what makes it more than that is the corpus, which runs these
+    against the real symbols through the JIT and compares.
+
+    Everything else — devices, windows, database handles — has a `Frame` and no
+    definition, and calling one goes `stuck` rather than guessing. -/
+def callFfi (f : IR.Ffi) (args : List V) (w : World) : Option (Option V × World) := do
   let bits ← args.mapM asBits
-  match name, bits with
-  | "cl_file_read", [base, pathOff, dstOff, fileOff, size] => do
-      let path ← readCStr w.mem (base + pathOff)
+  match f, bits with
+  -- file.rs
+  | .fileRead, [base, pathOff, dstOff, fileOff, size] => do
+      let path ← readCStrAt w.mem (base + pathOff)
       match w.fs.get path with
       | none => some (some (ofInt .i64 (-1)), w)
       | some content =>
           let from_ := fileOff.toNat
-          let want := if size == 0 then content.size - min from_ content.size else size.toNat
-          let n := min want (content.size - min from_ content.size)
+          let avail := content.size - min from_ content.size
+          let want := if size == 0 then avail else size.toNat
+          let n := min want avail
           let slice := ((List.range n).map (fun i => content.get! (from_ + i))).toByteArray
           let m ← copyIn w.mem (base + dstOff) slice
           some (some (ofInt .i64 n), { w with mem := m })
-  | "cl_file_write", [base, pathOff, srcOff, fileOff, size] => do
-      let path ← readCStr w.mem (base + pathOff)
-      let bytes ← copyOut w.mem (base + srcOff) size.toNat
-      let prev := (w.fs.get path).getD ByteArray.empty
+  | .fileWrite, [base, pathOff, srcOff, fileOff, size] => do
+      let path ← readCStrAt w.mem (base + pathOff)
+      -- `size == 0` means "the bytes up to the first NUL", and writing at
+      -- offset 0 goes through `File::create`, which truncates.
+      let bytes ←
+        if size == 0 then (readCStrAt w.mem (base + srcOff)).map (·.toUTF8)
+        else readBytes w.mem (base + srcOff) size.toNat
       let at_ := fileOff.toNat
-      let pad := if at_ > prev.size then at_ - prev.size else 0
-      let head := ((List.range (min at_ prev.size)).map prev.get!).toByteArray
-      let tail :=
-        if at_ + bytes.size < prev.size then
-          ((List.range (prev.size - at_ - bytes.size)).map
-            (fun i => prev.get! (at_ + bytes.size + i))).toByteArray
-        else ByteArray.empty
-      let merged := head ++ ByteArray.mk (Array.replicate pad 0) ++ bytes ++ tail
-      some (some (ofInt .i64 bytes.size), { w with fs := w.fs.set path merged })
+      let prev := if at_ == 0 then ByteArray.empty else (w.fs.get path).getD ByteArray.empty
+      some (some (ofInt .i64 bytes.size), { w with fs := w.fs.set path (spliceAt prev bytes at_) })
+  -- These two take the path and the buffer as raw pointers, so neither is
+  -- relative to the shared arena.
+  | .fileReadToPtr, [pathPtr, dstPtr, fileOff, size] =>
+      if asI64 size ≤ 0 then some (some (ofInt .i64 (-1)), w)
+      else do
+        let path ← readCStrAt w.mem pathPtr
+        match w.fs.get path with
+        | none => some (some (ofInt .i64 (-1)), w)
+        | some content =>
+            let from_ := fileOff.toNat
+            let avail := content.size - min from_ content.size
+            let n := min size.toNat avail
+            let slice := ((List.range n).map (fun i => content.get! (from_ + i))).toByteArray
+            let m ← copyIn w.mem dstPtr slice
+            some (some (ofInt .i64 n), { w with mem := m })
+  | .fileWriteFromPtr, [pathPtr, srcPtr, fileOff, size] =>
+      if asI64 size ≤ 0 || asI64 fileOff < 0 then some (some (ofInt .i64 (-1)), w)
+      else do
+        let path ← readCStrAt w.mem pathPtr
+        let bytes ← readBytes w.mem srcPtr size.toNat
+        let prev := (w.fs.get path).getD ByteArray.empty
+        some (some (ofInt .i64 bytes.size),
+              { w with fs := w.fs.set path (spliceAt prev bytes fileOff.toNat) })
+
+  -- stdio.rs — a line comes back with its newline, capped at `max_len - 1` and
+  -- terminated; end of input is `0` and writes nothing.
+  | .stdinReadline, [base, dstOff, maxLen] =>
+      if asI64 maxLen ≤ 0 then some (some (ofInt .i64 0), w)
+      else match w.stdin with
+        | [] => some (some (ofInt .i64 0), w)
+        | line :: rest => do
+            let n := min line.size (maxLen.toNat - 1)
+            let m ← copyIn w.mem (base + dstOff) (((List.range n).map line.get!).toByteArray)
+            let m ← m.store (base + dstOff + UInt64.ofNat n) 1 0
+            some (some (ofInt .i64 n), { w with mem := m, stdin := rest })
+  | .stdoutWrite, [base, srcOff, size] =>
+      if asI64 size < 0 then some (some (ofInt .i64 (-1)), w)
+      else do
+        let bytes ← readBytes w.mem (base + srcOff) size.toNat
+        some (some (ofInt .i64 size.toNat), { w with stdout := w.stdout ++ bytes })
+
+  -- mod.rs — `Float32.sin`/`cos` are `@[extern "sinf"]`/`"cosf"`, the same libm
+  -- symbols these shims call, so on one host the two agree by construction.
+  -- Across hosts libm is free to differ in the last ulp, and then this is a
+  -- transcription like any other.
+  | .sinf, [x] => some (some (.sc .f32 (ofF32 (f32 x).sin)), w)
+  | .cosf, [x] => some (some (.sc .f32 (ofF32 (f32 x).cos)), w)
+  | .powf, [b, e] => some (some (.sc .f32 (ofF32 ((f32 b).pow (f32 e)))), w)
+
+  -- ht.rs — the context is not addressable memory, so `init` writes a sentinel
+  -- that no region decodes: a program that dereferences the handle or does
+  -- arithmetic on it goes stuck here rather than quietly agreeing with a run
+  -- that would have faulted.
+  | .htInit, [slot] => do
+      let m ← w.mem.store slot 8 htCtx
+      some (none, { w with mem := m, ht := {} })
+  | .htCleanup, [slot] => do
+      let m ← w.mem.store slot 8 0
+      some (none, { w with mem := m, ht := {} })
+  | .htCreate, [ctx] =>
+      if ctx != htCtx then some (some (ofInt .i32 0xFFFFFFFF), w)
+      else
+        let handle := w.ht.handles.length
+        some (some (ofInt .i32 handle),
+              { w with ht := { w.ht with handles := w.ht.handles ++ [handle] } })
+  | .htCount, [ctx] =>
+      if ctx != htCtx || !w.ht.hasTable then some (some (ofInt .i32 0), w)
+      else some (some (ofInt .i32 w.ht.entries.length), w)
+  | .htLookup, [ctx, keyPtr, keyLen, resultPtr] => do
+      let key ← readBytes w.mem keyPtr keyLen.toNat
+      if ctx != htCtx || !w.ht.hasTable then some (some (ofInt .i32 0xFFFFFFFF), w)
+      else match w.ht.get key with
+        | none => some (some (ofInt .i32 0xFFFFFFFF), w)
+        | some val => do
+            let m ← copyIn w.mem resultPtr val
+            some (some (ofInt .i32 val.size), { w with mem := m })
+  | .htInsert, [ctx, keyPtr, keyLen, valPtr, valLen] => do
+      let key ← readBytes w.mem keyPtr keyLen.toNat
+      let val ← readBytes w.mem valPtr valLen.toNat
+      if ctx != htCtx || !w.ht.hasTable then some (none, w)
+      else some (none, { w with ht := w.ht.set key val })
+  | .htIncrement, [ctx, keyPtr, keyLen, addend] => do
+      let key ← readBytes w.mem keyPtr keyLen.toNat
+      if ctx != htCtx || !w.ht.hasTable then some (some (.sc .i64 addend), w)
+      else match w.ht.get key with
+        | none =>
+            some (some (.sc .i64 addend), { w with ht := w.ht.set key (le64 addend) })
+        | some existing =>
+            -- The counter is the first eight bytes; anything the value carries
+            -- past them is left alone. A value shorter than eight bytes indexes
+            -- out of range in the Rust, so there is nothing here to transcribe.
+            if existing.size < 8 then none
+            else
+              let next := ofLe64 existing + addend
+              let updated := le64 next ++
+                ((List.range (existing.size - 8)).map (fun i => existing.get! (8 + i))).toByteArray
+              some (some (.sc .i64 next), { w with ht := w.ht.set key updated })
+  | .htGetEntry, [ctx, index, keyOut, valOut] =>
+      if ctx != htCtx || !w.ht.hasTable then some (some (ofInt .i32 (-1)), w)
+      else match w.ht.entries[index.toNat]? with
+        | none => some (some (ofInt .i32 (-1)), w)
+        | some (k, v) => do
+            let m ← copyIn w.mem keyOut k
+            let m ← copyIn m valOut v
+            some (some (ofInt .i32 k.size), { w with mem := m })
+
   | _, _ => none
+
+/-- The entry point a symbol names, and what it does. A name that is not an
+    entry point — a program's own colocated function — has no contract. -/
+def callImport (name : String) (args : List V) (w : World) : Option (Option V × World) := do
+  let f ← IR.Ffi.ofCname name
+  callFfi f args w
 
 -- ---------------------------------------------------------------------------
 -- Slot accounting
@@ -753,7 +936,7 @@ where
             match d.callee with
             | .local i => .stuck s!"fn{fn} calls u0:{i}; only imports have contracts"
             | .import name =>
-                match callFile name vs (obsCall w fn vs) with
+                match callImport name vs (obsCall w fn vs) with
                 | none => .stuck s!"{name} has no executable contract"
                 | some (res, w') =>
                     if binds then
@@ -985,7 +1168,7 @@ theorem runStmt_call (cfg : Cfg) (Γ : Env) (w : World) (fn : Nat) (args : List 
                 match d.callee with
                 | .local i => .stuck s!"fn{fn} calls u0:{i}; only imports have contracts"
                 | .import name =>
-                    match callFile name vs (obsCall w fn vs) with
+                    match callImport name vs (obsCall w fn vs) with
                     | none => .stuck s!"{name} has no executable contract"
                     | some (res, w') =>
                         match res with
@@ -1004,7 +1187,7 @@ theorem runStmt_callVoid (cfg : Cfg) (Γ : Env) (w : World) (fn : Nat) (args : L
                 match d.callee with
                 | .local i => .stuck s!"fn{fn} calls u0:{i}; only imports have contracts"
                 | .import name =>
-                    match callFile name vs (obsCall w fn vs) with
+                    match callImport name vs (obsCall w fn vs) with
                     | none => .stuck s!"{name} has no executable contract"
                     | some (_, w') => .ok Γ w' := rfl
 

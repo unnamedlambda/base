@@ -68,9 +68,7 @@ open AlgorithmLib.HProg.Sur
 
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
-def cudaEnv : CudaSetup × FnEnv := (IR.FFI.std.cuda, env% [.cuda])
-def cuda : CudaSetup := cudaEnv.1
-def env : FnEnv := cudaEnv.2
+def env : FnEnv := env% [.cuda]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
@@ -81,7 +79,7 @@ def loadCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
-  cudaInit cuda ptr CTX_OFF
+  cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   -- Read N from data[0], store at N_OFF
@@ -94,19 +92,19 @@ def loadCode : HProg.Code := clif% do
   -- buf1 size = N*4 (output)
   let buf1Sz ← ishlImm n 2
 
-  let buf0 ← call cuda.fnCreateBuffer.id [ctxPtr, buf0Sz]
-  let buf1 ← call cuda.fnCreateBuffer.id [ctxPtr, buf1Sz]
+  let buf0 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, buf0Sz]
+  let buf1 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, buf1Sz]
   store buf0 (← absAddr ptr BUF0_OFF)
   store buf1 (← absAddr ptr BUF1_OFF)
 
   -- Upload N (8 bytes) to buf0 at offset 0
   let nAddr  ← absAddr ptr N_OFF
-  let _ ← call cuda.fnUploadOffset.id [ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
+  let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
 
   -- Upload weights (data[1..N], N*4 bytes) to buf0 at offset 8 + N*4
   let wSrc ← iaddImm dataPtr 8
   let wOff ← iaddImm nBytes 8
-  let _ ← call cuda.fnUploadOffset.id [ctxPtr, buf0, wOff, wSrc, nBytes]
+  let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, buf0, wOff, wSrc, nBytes]
 
 /-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8. -/
 def prepCode : HProg.Code := clif% do
@@ -116,7 +114,7 @@ def prepCode : HProg.Code := clif% do
   let buf0    ← load32 (← absAddr ptr BUF0_OFF)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let nBytes  ← ishlImm n 2
-  let _ ← call cuda.fnUploadOffset.id [ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
+  let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
 
 /-- Infer: launch the kernel (1 block, 256 threads), sync, and download only if
     the caller asked for output.
@@ -133,14 +131,14 @@ def inferCode : HProg.Code := clif% do
   let one32  ← iconst32 1
   let blk256 ← iconst32 256
 
-  let _ ← cudaLaunch cuda ptr (← iconst64 PTX_SOURCE_OFF) nBufs
+  let _ ← cudaLaunch ptr (← iconst64 PTX_SOURCE_OFF) nBufs
              (← iconst64 BIND_DESC_OFF) one32 one32 one32 blk256 one32 one32
-  let _ ← cudaSync cuda ptr CTX_OFF
+  let _ ← cudaSync ptr CTX_OFF
   let _ ← ifte .eq outLen (← iconst64 0)
     (thn := pure [])
     (els := do
       let buf1 ← load32 (← absAddr ptr BUF1_OFF)
-      let _ ← call cuda.fnDownload.id [ctxPtr, buf1, outPtr, outLen]
+      let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, buf1, outPtr, outLen]
       pure [])
   return ()
 
