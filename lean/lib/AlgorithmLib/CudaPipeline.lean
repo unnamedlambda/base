@@ -52,6 +52,26 @@ structure CompileResult where
 private def ptxSourceOff : Nat := 0x0100
 private def bindDescOff  : Nat := 0x1400
 
+/-- The fixed part of that layout, as regions.
+
+    Every program this file builds shares these offsets, so a collision here is
+    a collision in all of them at once. The input buffer ids start at `0x44` and
+    run to `0x44 + 4n`, which is bounded by the PTX region below. -/
+def memMap (n : Nat) : Layout.RegionMap :=
+  [⟨"ctx_cuda",  ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"n",          0x38, 8⟩,
+   ⟨"meta_buf",   0x40, 4⟩,
+   ⟨"input_bufs", 0x44, 4 * n⟩,
+   ⟨"ptx",        ptxSourceOff, bindDescOff - ptxSourceOff⟩]
+
+/-- Disjoint for every arity these pipelines are built at. Stated over a range
+    rather than at one `n` because the input-id block is the only region whose
+    size depends on the program, and it is the one that could grow into the
+    PTX. -/
+theorem memMap_ok : (List.range 16).all (fun n => Layout.RegionMap.okB (memMap n)) = true := by
+  decide
+
 -- ---------------------------------------------------------------------------
 -- PTX emission via the typed builder in AlgorithmLib.PTX.
 -- ---------------------------------------------------------------------------
