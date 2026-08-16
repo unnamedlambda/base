@@ -202,7 +202,7 @@ mod tests {
                 fn_idx: 1,
                 output: vec![],
             },
-            extras: HashMap::new(),
+            extras: std::collections::BTreeMap::new(),
         }
     }
 

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 pub mod clif;
 
@@ -52,8 +52,11 @@ pub struct Algorithm {
 pub struct Artifact {
     pub setup: Setup,
     pub main: Algorithm,
+    /// Ordered, so that serializing the same artifact twice gives the same
+    /// bytes. A `HashMap` here makes the encoding depend on iteration order,
+    /// which leaves two builds of one artifact byte-different.
     #[serde(default)]
-    pub extras: HashMap<String, Algorithm>,
+    pub extras: BTreeMap<String, Algorithm>,
 }
 
 impl Artifact {

@@ -5,7 +5,7 @@ const ARTIFACT_BINARY: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/WindowDemoAlgorithm/window_demo.bin"));
 
 /// Run one test extra on the given Base and return (pass, actual, expected).
-fn run_scenario(base: &mut Base, extras: &std::collections::HashMap<String, base::Algorithm>, name: &str) -> (i64, i64, i64) {
+fn run_scenario(base: &mut Base, extras: &std::collections::BTreeMap<String, base::Algorithm>, name: &str) -> (i64, i64, i64) {
     let alg = extras.get(name).unwrap_or_else(|| panic!("missing extra {name}"));
     let batches = base.execute(alg, &[]).expect("execute failed");
     let batch = &batches[0];

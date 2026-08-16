@@ -274,7 +274,7 @@ fn main() {
 /// product, optimiser — agrees on what it is differentiating.
 fn train(
     base: &mut Base,
-    extras: &std::collections::HashMap<String, base_types::Algorithm>,
+    extras: &std::collections::BTreeMap<String, base_types::Algorithm>,
     xa: &[f32],
     ystar: &[f32],
 ) {

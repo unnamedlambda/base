@@ -6,7 +6,7 @@ const ARTIFACT_BINARY: &[u8] =
 
 fn run_scenario(
     base: &mut Base,
-    extras: &std::collections::HashMap<String, base::Algorithm>,
+    extras: &std::collections::BTreeMap<String, base::Algorithm>,
     name: &str,
 ) -> (i64, i64, i64) {
     let alg = extras.get(name).unwrap_or_else(|| panic!("missing extra {name}"));
