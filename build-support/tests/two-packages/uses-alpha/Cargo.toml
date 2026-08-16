@@ -1,0 +1,11 @@
+[package]
+name = "uses-alpha"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alpha-artifacts = { path = "../alpha-artifacts" }
+build-support = { path = "../../.." }
+
+[build-dependencies]
+build-support = { path = "../../.." }

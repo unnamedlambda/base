@@ -9,3 +9,7 @@ serde_json = "1"
 bincode = "1"
 # Advisory file locks, for the shared-package case described above.
 fs2 = "0.4"
+
+[dev-dependencies]
+# `two_workspaces` holds the lock itself, to check that a build waits for it.
+fs2 = "0.4"

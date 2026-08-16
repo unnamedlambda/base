@@ -27,3 +27,7 @@ cifar-10-batches-bin/
 # configuration, so it lives beside the crate that generates it. Removed by
 # `git clean -xfd`, not by `cargo clean`.
 /lean-artifacts/artifacts/
+build-support/tests/two-packages/target/
+build-support/tests/two-packages/*/artifacts/
+build-support/tests/two-workspaces/w*/target/
+build-support/tests/two-workspaces/w*/gen/artifacts/
