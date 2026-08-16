@@ -15,14 +15,8 @@ use rayon::prelude::*;
 const BINS: usize = 256;
 const MAX_DATA_BYTES: usize = 64 * 1024 * 1024; // 64MB max input file
 
-const HIST1_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/hist1_algorithm.bin"
-));
-const HIST4_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/hist4_algorithm.bin"
-));
+const HIST1_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/hist1_algorithm");
+const HIST4_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/hist4_algorithm");
 
 fn load_artifact(workers: usize) -> Artifact {
     let bytes = if workers == 1 {

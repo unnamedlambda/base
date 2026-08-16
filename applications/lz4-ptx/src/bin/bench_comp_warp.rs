@@ -14,9 +14,10 @@ use arrow_array::{Int64Array, RecordBatch};
 use base::{Artifact, Base};
 use std::time::Instant;
 
-const OUT_DIR: &str = env!("OUT_DIR");
+/// Read at runtime rather than embedded: this bench selects a kernel by name.
+const ARTIFACTS: &str = env!("LEAN_ARTIFACT_DIR");
 /// Set up by `baseline/setup.sh`; override with `LZ4_CORPUS`.
-const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/corpus/silesia_all.bin");
+const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lz4-ptx/corpus/silesia_all.bin");
 /// The prefix the shipped kernels bake in (`Lz4CompAlgorithm.corpusBytes`).
 const CORPUS_BYTES: usize = 209_715_200;
 
@@ -26,7 +27,7 @@ fn col(b: &RecordBatch, i: usize) -> i64 {
 
 fn run(name: &str, block: usize, original: &[u8]) {
     let data = original.to_vec();
-    let bin = std::fs::read(format!("{OUT_DIR}/Lz4CompAlgorithm/{name}.bin"))
+    let bin = std::fs::read(format!("{ARTIFACTS}/Lz4CompAlgorithm/{name}.bin"))
         .unwrap_or_else(|e| panic!("read {name}.bin: {e}"));
     let art = Artifact::from_bytes(&bin);
     let mut base = Base::new(art.setup).expect("compile");

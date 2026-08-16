@@ -5,10 +5,7 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const JSON_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/json_algorithm.bin"
-));
+const JSON_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/json_algorithm");
 
 fn generate_json(path: &str, n: usize) -> i64 {
     let dir = Path::new(path).parent().unwrap();

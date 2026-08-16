@@ -1,7 +1,7 @@
 use base::{init_tracing, run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/CsvAlgorithm/csv_app.bin"));
+    build_support::artifact!("CsvAlgorithm/csv_app");
 
 fn main() {
     init_tracing();

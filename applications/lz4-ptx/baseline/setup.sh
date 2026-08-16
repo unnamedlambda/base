@@ -6,7 +6,7 @@
 #   ./setup.sh --corpus-only   # skip the venv (our own bench needs only the corpus)
 #
 # Then:
-#   cargo run --release -p lz4-ptx --bin lz4-comp-warp        # ours
+#   cargo run --release --bin lz4-comp-warp                # ours
 #   ./baseline/.venv/bin/python baseline/bench_nvcomp_compress.py corpus/silesia_all.bin
 #
 # Both benchmarks print their own methodology and environment when run.

@@ -2,18 +2,12 @@ use std::fs;
 use std::process::Command;
 
 fn get_sat_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/sat", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_sat").to_string()
 }
 
 fn get_cnf_dir() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/cnf", manifest_dir)
+    format!("{}/sat/tests/cnf", manifest_dir)
 }
 
 /// Run our SAT solver on a CNF file, return (status_line, assignment_line_or_empty)

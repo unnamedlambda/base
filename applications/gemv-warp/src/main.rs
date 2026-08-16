@@ -26,13 +26,13 @@ use base::{Artifact, Base};
 use warp_check::{floats, gbs, roofline, time, Walk};
 
 const ART_QWEN: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/GemvWarpAlgorithm/gemv_warp.bin"));
+    build_support::artifact!("GemvWarpAlgorithm/gemv_warp");
 const ART_2048: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/GemvWarpAlgorithm/gemv_warp_2048.bin"));
+    build_support::artifact!("GemvWarpAlgorithm/gemv_warp_2048");
 const ART_8192: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/GemvWarpAlgorithm/gemv_warp_8192.bin"));
+    build_support::artifact!("GemvWarpAlgorithm/gemv_warp_8192");
 const ART_WIDE: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/GemvWarpAlgorithm/gemv_warp_wide.bin"));
+    build_support::artifact!("GemvWarpAlgorithm/gemv_warp_wide");
 
 /// One kernel family at one shape: time every schedule, check each against its
 /// own committed fold, and report how far apart the answers are.

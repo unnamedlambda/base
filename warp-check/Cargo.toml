@@ -3,5 +3,5 @@ name = "warp-check"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
-base = { path = "../../base" }
-base-types = { path = "../../base-types" }
+base = { path = "../base" }
+base-types = { path = "../base-types" }

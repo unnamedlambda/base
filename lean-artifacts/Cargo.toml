@@ -1,0 +1,17 @@
+[package]
+name = "lean-artifacts"
+version = "0.1.0"
+edition = "2021"
+# Declares sole ownership of this Lake package. Cargo rejects a second crate
+# claiming the same name, which is what keeps `lake` to a single caller. A
+# workspace generating from several packages has one of these per package,
+# each with its own `links`, and they invalidate independently.
+links = "leanalgorithms"
+
+[build-dependencies]
+build-support = { path = "../build-support" }
+
+[dev-dependencies]
+base-types = { path = "../base-types" }
+serde_json = "1"
+bincode = "1"

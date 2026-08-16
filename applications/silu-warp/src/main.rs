@@ -4,7 +4,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/SiluWarpAlgorithm/silu_warp.bin"));
+const ART: &[u8] = build_support::artifact!("SiluWarpAlgorithm/silu_warp");
 const GRID: usize = 2097152;
 const N: usize = GRID * 32;
 

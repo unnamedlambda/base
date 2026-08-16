@@ -37,68 +37,35 @@ use base::Artifact;
 // "Base beats Rust" result that has nothing to do with the backend.
 // ---------------------------------------------------------------------------
 
-const CLAMP_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/clamp_sum_algorithm.bin"
-));
+const CLAMP_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/clamp_sum_algorithm");
 
 /// The same loop with the two `fmin`/`fmax` removed and nothing else changed.
 /// CLIF's `fmin` is IEEE minimumNumber, which x86 `minps` does not implement,
 /// so Cranelift has to emit a NaN-correct sequence rather than one
 /// instruction.  The distance between these two artifacts prices that.
-const PLAIN_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/plain_sum_algorithm.bin"
-));
+const PLAIN_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/plain_sum_algorithm");
 
 
 /// The clamp again, emitted as `bitselect(bitcast(fcmp lt ..), ..)` -- the
 /// shape Cranelift has a rule to fold into one `minps`.  Same arithmetic as
 /// `clamp` for non-NaN input, so it must still agree bit for bit.
-const PMIN_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/pmin_sum_algorithm.bin"
-));
+const PMIN_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/pmin_sum_algorithm");
 
-const REGP_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/regpressure_sum_algorithm.bin"
-));
+const REGP_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/regpressure_sum_algorithm");
 
-const INT_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/intsum_algorithm.bin"
-));
+const INT_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/intsum_algorithm");
 
-const STORE_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/store_algorithm.bin"
-));
+const STORE_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/store_algorithm");
 
-const BRANCHY_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/branchy_algorithm.bin"
-));
+const BRANCHY_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/branchy_algorithm");
 
-const SELECT_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/select_algorithm.bin"
-));
+const SELECT_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/select_algorithm");
 
-const SELLEA_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/selectlea_algorithm.bin"
-));
+const SELLEA_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/selectlea_algorithm");
 
-const SELROT_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/selectrot_algorithm.bin"
-));
+const SELROT_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/selectrot_algorithm");
 
-const SELMASK_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/selectmask_algorithm.bin"
-));
+const SELMASK_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/selectmask_algorithm");
 
 const HI: f32 = 0.5;
 const LO: f32 = -0.5;

@@ -2,7 +2,7 @@ use base::{Artifact, Base};
 use warp_check::{dot_by, floats, gbs, roofline, Walk};
 
 const ART: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/BackwardWideAlgorithm/backward_wide.bin"));
+    build_support::artifact!("BackwardWideAlgorithm/backward_wide");
 
 /// Qwen2-0.5B's hidden size.
 const N: usize = 896;

@@ -5,10 +5,7 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const STRSEARCH_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/strsearch_algorithm.bin"
-));
+const STRSEARCH_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/strsearch_algorithm");
 
 const VOCABULARY: &[&str] = &[
     "the", "of", "and", "to", "in", "a", "is", "that", "for", "it", "was", "on", "are", "as",

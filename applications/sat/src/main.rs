@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/SatAlgorithm/sat_app.bin"));
+    build_support::artifact!("SatAlgorithm/sat_app");
 
 /// Payload offset where the input CNF filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: usize = 0x100;

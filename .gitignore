@@ -22,3 +22,8 @@ cifar-10-batches-bin/
 # unanchored `data/` would also swallow e.g. applications/csv/data/, which is a
 # tracked input.
 /data/
+
+# Written by lean-artifacts/build.rs: one copy rather than one per unit
+# configuration, so it lives beside the crate that generates it. Removed by
+# `git clean -xfd`, not by `cargo clean`.
+/lean-artifacts/artifacts/

@@ -1,0 +1,206 @@
+[package]
+name = "applications"
+version = "0.1.0"
+edition = "2021"
+# One crate for every example. Each keeps its own directory -- source, tests and
+# whatever data or Python belongs with it -- and is declared here as a target,
+# so adding an example is a directory and a few lines rather than a new crate.
+
+[dependencies]
+base = { path = "../base" }
+base-types = { path = "../base-types" }
+# Ordering only: cargo runs its build script, and so `lake`, before this crate
+# compiles and reads the artifacts with `include_bytes!`.
+lean-artifacts = { path = "../lean-artifacts" }
+# For `artifact!`; the build script below uses it to locate the generated tree.
+build-support = { path = "../build-support" }
+warp-check = { path = "../warp-check" }
+bincode = "1"
+lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
+arrow-array = { version = "54", default-features = false }
+
+[build-dependencies]
+build-support = { path = "../build-support" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "backward-wide"
+path = "backward-wide/src/main.rs"
+
+[[bin]]
+name = "blackhole"
+path = "blackhole/src/main.rs"
+
+[[bin]]
+name = "cli"
+path = "cli/src/main.rs"
+
+[[bin]]
+name = "compress"
+path = "compress/src/main.rs"
+
+[[bin]]
+name = "csv"
+path = "csv/src/main.rs"
+
+[[bin]]
+name = "draw"
+path = "draw/src/main.rs"
+
+[[bin]]
+name = "fft"
+path = "fft/src/main.rs"
+
+[[bin]]
+name = "gemv-warp"
+path = "gemv-warp/src/main.rs"
+
+[[bin]]
+name = "grad-warp"
+path = "grad-warp/src/main.rs"
+
+[[bin]]
+name = "lean4-eval"
+path = "lean4-evaluator/src/main.rs"
+
+[[bin]]
+name = "lz4-comp-warp"
+path = "lz4-ptx/src/bin/bench_comp_warp.rs"
+
+[[bin]]
+name = "matmul"
+path = "matmul/src/main.rs"
+
+[[bin]]
+name = "mlp-cifar"
+path = "mlp-cifar/src/main.rs"
+
+[[bin]]
+name = "mlp-warp"
+path = "mlp-warp/src/main.rs"
+
+[[bin]]
+name = "qwen2"
+path = "qwen2/src/main.rs"
+
+[[bin]]
+name = "qwen2_on_disk"
+path = "qwen2/src/bin/qwen2_on_disk.rs"
+
+[[bin]]
+name = "raymarch-demo"
+path = "raymarch-demo/src/main.rs"
+
+[[bin]]
+name = "raytrace"
+path = "raytrace/src/main.rs"
+
+[[bin]]
+name = "sand-demo"
+path = "sand-demo/src/main.rs"
+
+[[bin]]
+name = "sat"
+path = "sat/src/main.rs"
+
+[[bin]]
+name = "scene"
+path = "scene/src/main.rs"
+
+[[bin]]
+name = "sha256"
+path = "sha256/src/main.rs"
+
+[[bin]]
+name = "silu-warp"
+path = "silu-warp/src/main.rs"
+
+[[bin]]
+name = "warp-demo"
+path = "warp-demo/src/main.rs"
+
+[[bin]]
+name = "window-demo"
+path = "window-demo/src/main.rs"
+
+[[test]]
+name = "blackhole_smoke"
+path = "blackhole/tests/smoke.rs"
+
+[[test]]
+name = "cli_comparison"
+path = "cli/tests/comparison.rs"
+
+[[test]]
+name = "compress_roundtrip"
+path = "compress/tests/roundtrip.rs"
+
+[[test]]
+name = "csv_smoke"
+path = "csv/tests/smoke.rs"
+
+[[test]]
+name = "draw_smoke"
+path = "draw/tests/smoke.rs"
+
+[[test]]
+name = "fft_comparison"
+path = "fft/tests/comparison.rs"
+
+[[test]]
+name = "lean4_evaluator_comparison"
+path = "lean4-evaluator/tests/comparison.rs"
+
+[[test]]
+name = "lz4_ptx_compress_roundtrip"
+path = "lz4-ptx/tests/compress_roundtrip.rs"
+
+[[test]]
+name = "matmul_smoke"
+path = "matmul/tests/smoke.rs"
+
+[[test]]
+name = "qwen2_golden_cli"
+path = "qwen2/tests/golden_cli.rs"
+
+[[test]]
+name = "raymarch_demo"
+path = "raymarch-demo/tests/logic.rs"
+
+[[test]]
+name = "raymarch_demo_smoke"
+path = "raymarch-demo/tests/smoke.rs"
+
+[[test]]
+name = "raytrace_smoke"
+path = "raytrace/tests/smoke.rs"
+
+[[test]]
+name = "sand_demo"
+path = "sand-demo/tests/logic.rs"
+
+[[test]]
+name = "sand_demo_smoke"
+path = "sand-demo/tests/smoke.rs"
+
+[[test]]
+name = "sat_comparison"
+path = "sat/tests/comparison.rs"
+
+[[test]]
+name = "scene_smoke"
+path = "scene/tests/smoke.rs"
+
+[[test]]
+name = "sha256_comparison"
+path = "sha256/tests/comparison.rs"
+
+[[test]]
+name = "window_demo"
+path = "window-demo/tests/logic.rs"
+
+[[test]]
+name = "window_demo_smoke"
+path = "window-demo/tests/smoke.rs"

@@ -1,10 +1,7 @@
 use crate::harness::{self, format_count, BenchResult};
 use base::Artifact;
 
-const SORT_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/sort_algorithm.bin"
-));
+const SORT_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/sort_algorithm");
 
 fn generate_data(n: usize) -> Vec<i32> {
     let mut values = Vec::with_capacity(n);

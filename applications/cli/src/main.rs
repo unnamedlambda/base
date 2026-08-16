@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/CliAlgorithm/cli_app.bin"));
+    build_support::artifact!("CliAlgorithm/cli_app");
 
 fn main() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY);

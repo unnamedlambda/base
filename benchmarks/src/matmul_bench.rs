@@ -11,10 +11,7 @@ use base::Artifact;
 
 type B = burn::backend::NdArray<f32>;
 
-const MATMUL_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/matmul_algorithm.bin"
-));
+const MATMUL_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/matmul_algorithm");
 
 fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;

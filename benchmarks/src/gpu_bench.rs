@@ -2,18 +2,9 @@ use crate::harness::{self, BenchResult};
 use base::Artifact;
 type Gpu = burn::backend::wgpu::Wgpu;
 
-const GPU_VECADD_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/gpu_vecadd_algorithm.bin"
-));
-const GPU_MATMUL_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/gpu_matmul_algorithm.bin"
-));
-const GPU_REDUCTION_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/gpu_reduction_algorithm.bin"
-));
+const GPU_VECADD_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/gpu_vecadd_algorithm");
+const GPU_MATMUL_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/gpu_matmul_algorithm");
+const GPU_REDUCTION_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/gpu_reduction_algorithm");
 
 use harness::{build_f32_payload, f32_sum, format_count, gen_floats};
 

@@ -7,7 +7,7 @@
 
 use base::{init_tracing, Base, Artifact};
 
-const QWEN2_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/Qwen2Algorithm/qwen2.bin"));
+const QWEN2_BINARY: &[u8] = build_support::artifact!("Qwen2Algorithm/qwen2");
 
 fn main() {
     init_tracing();

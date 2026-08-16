@@ -2,13 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_draw_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/draw", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_draw").to_string()
 }
 
 fn assert_bmp_header(path: &std::path::Path, expected_width: i32, expected_height: i32) {

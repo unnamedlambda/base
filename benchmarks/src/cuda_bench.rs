@@ -3,10 +3,7 @@ use base::Artifact;
 
 type CudaBackend = burn::backend::CudaJit;
 
-const CUDA_SAXPY_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/cuda_saxpy_algorithm.bin"
-));
+const CUDA_SAXPY_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/cuda_saxpy_algorithm");
 
 use harness::{build_f32_payload, f32_from_bytes, format_count, gen_floats};
 

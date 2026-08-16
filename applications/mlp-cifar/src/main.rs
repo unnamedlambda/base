@@ -16,7 +16,7 @@
 use base::{Artifact, Base};
 use warp_check::{compare, dot, dot_by, floats, gbs, le, roofline, time, Lcg, Walk};
 
-const ART: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/MlpCifarAlgorithm/mlp_cifar.bin"));
+const ART: &[u8] = build_support::artifact!("MlpCifarAlgorithm/mlp_cifar");
 
 const IN: usize = 3072;
 const H: usize = 256;

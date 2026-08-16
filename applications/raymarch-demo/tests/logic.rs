@@ -2,7 +2,7 @@ use arrow_array::Int64Array;
 use base::{Artifact, Base};
 
 const ARTIFACT_BINARY: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/RaymarchDemoAlgorithm/raymarch_demo.bin"));
+    build_support::artifact!("RaymarchDemoAlgorithm/raymarch_demo");
 
 fn run_scenario(
     base: &mut Base,

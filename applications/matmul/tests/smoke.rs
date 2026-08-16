@@ -2,13 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_matmul_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/matmul", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_matmul").to_string()
 }
 
 #[test]

@@ -11,10 +11,7 @@ use base::Artifact;
 
 type B = burn::backend::NdArray<f32>;
 
-const VECOPS_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/vecops_algorithm.bin"
-));
+const VECOPS_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/vecops_algorithm");
 
 fn rust_vec_add(a: &[f32], b: &[f32]) -> f64 {
     let mut sum = 0.0f64;

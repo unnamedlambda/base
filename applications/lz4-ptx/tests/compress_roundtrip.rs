@@ -2,9 +2,9 @@ use arrow_array::Int64Array;
 use base::{Artifact, Base};
 
 const WARP_COMP: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/Lz4CompAlgorithm/lz4_comp_warpdsl.bin"));
+    build_support::artifact!("Lz4CompAlgorithm/lz4_comp_warpdsl");
 const WARP_COMP64: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/Lz4CompAlgorithm/lz4_comp_warpdsl64.bin"));
+    build_support::artifact!("Lz4CompAlgorithm/lz4_comp_warpdsl64");
 
 // Must match the shipped kernels' baked geometry (Lz4CompAlgorithm: blkLog 15/16,
 // corpusBytes 209_715_200 => 6400 blocks of 32 KiB, or 3200 of 64 KiB).

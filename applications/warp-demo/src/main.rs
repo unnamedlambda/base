@@ -6,7 +6,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/WarpSumSqAlgorithm/warp_sumsq.bin"));
+const ART: &[u8] = build_support::artifact!("WarpSumSqAlgorithm/warp_sumsq");
 
 const K: usize = 128;
 const CHUNK: usize = K * 4 * 32;      // 16384 floats per block

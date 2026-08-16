@@ -20,7 +20,6 @@
 //! generated elsewhere.
 
 use base_types::Artifact;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 struct Corpus {
@@ -60,44 +59,12 @@ impl Corpus {
     }
 }
 
-/// Generate the corpus from the model in the tree, reusing the last run when
-/// `HProgCorpus.lean` has not changed since it.
+/// Where the build wrote the corpus.
 ///
-/// Keyed by that file's contents rather than its timestamp: a checkout or a
-/// branch switch moves timestamps around without changing what the model says.
+/// `lean-artifacts` builds and runs every generator, so this test reads what
+/// that produced rather than driving `lake` a second time.
 fn generated_corpus() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let lean_dir = root.join("lean/algorithms");
-    let src = lean_dir.join("HProgCorpus.lean");
-    let text = std::fs::read(&src)
-        .unwrap_or_else(|e| panic!("read {}: {e}", src.display()));
-
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    text.hash(&mut h);
-    let out = root.join("target/hprog-corpus").join(format!("{:x}", h.finish()));
-
-    if out.join("hprog_corpus.json").exists() && out.join("hprog_corpus_expected.json").exists() {
-        return out;
-    }
-    std::fs::create_dir_all(&out).expect("create corpus dir");
-
-    // The generator is interpreted against built imports, so the library has to
-    // exist before it can run at all.
-    let built = std::process::Command::new("lake")
-        .args(["build", "+HProgCorpus:olean"])
-        .current_dir(&lean_dir)
-        .status()
-        .unwrap_or_else(|e| panic!("run lake — the corpus is generated from the model: {e}"));
-    assert!(built.success(), "building the corpus generator failed");
-
-    let st = std::process::Command::new("lake")
-        .args(["env", "lean", "--run", "HProgCorpus.lean"])
-        .arg(&out)
-        .current_dir(&lean_dir)
-        .status()
-        .unwrap_or_else(|e| panic!("run the corpus generator: {e}"));
-    assert!(st.success(), "the corpus generator failed: {st}");
-    out
+    PathBuf::from(lean_artifacts::DIR).join("HProgCorpus")
 }
 
 #[test]
@@ -107,7 +74,7 @@ fn interpreter_and_machine_agree() {
         Err(_) => generated_corpus(),
     };
 
-    let corpus = Corpus::read(&dir.join("hprog_corpus_expected.json"));
+    let corpus = Corpus::read(&dir.join("expected/hprog_corpus_expected.json"));
     let a: Artifact = serde_json::from_str(
         &std::fs::read_to_string(dir.join("hprog_corpus.json")).expect("read artifact"),
     )

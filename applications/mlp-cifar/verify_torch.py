@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-check the proven CIFAR MLP against PyTorch — numerics and throughput.
 
-`cargo run -p mlp-cifar --release` checks each kernel against a CPU reference
+`cargo run --bin mlp-cifar --release` checks each kernel against a CPU reference
 written from the Lean spec. That catches a kernel that disagrees with its
 theorem, but it shares an author with the thing it checks: if I misread the
 spec, the reference is wrong in the same direction and the check passes. An

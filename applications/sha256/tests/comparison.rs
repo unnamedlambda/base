@@ -2,13 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_sha256_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/sha256", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_sha256").to_string()
 }
 
 /// Run our SHA-256 binary on a file, return the hex digest (trimmed).

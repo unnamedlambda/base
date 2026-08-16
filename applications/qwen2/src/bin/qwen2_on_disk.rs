@@ -6,10 +6,7 @@
 
 use base::{init_tracing, Base, Artifact};
 
-const QWEN2_ON_DISK_BINARY: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/Qwen2OnDiskAlgorithm/qwen2_on_disk.bin"
-));
+const QWEN2_ON_DISK_BINARY: &[u8] = build_support::artifact!("Qwen2OnDiskAlgorithm/qwen2_on_disk");
 
 /// Path to the on-disk KV cache file.  Must match `KV_CACHE_PATH_OFF` in the
 /// Lean algorithm.  We delete it at startup so each session begins with a

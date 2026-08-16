@@ -735,7 +735,11 @@ def main (args : List String) : IO Unit := do
         ("names", Lean.toJson names),
         ("modes", Lean.toJson modes),
         ("expected", Lean.toJson (bytes.toList.map (·.toNat)))]
-      IO.FS.writeFile (System.FilePath.mk dir / "hprog_corpus_expected.json") j.compress
+      -- Not an artifact, so not beside them: a `.json` in the output directory
+      -- is one an application can embed, and this is what to compare against.
+      let sideDir := System.FilePath.mk dir / "expected"
+      IO.FS.createDirAll sideDir
+      IO.FS.writeFile (sideDir / "hprog_corpus_expected.json") j.compress
       IO.println s!"corpus: {names.length} cases, {bytes.size} expected bytes"
       -- `compile_sound`, executed rather than proved.
       match HProgCorpus.viaTerm, HProgCorpus.viaBlocks with

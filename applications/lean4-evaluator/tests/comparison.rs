@@ -5,13 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn get_lean4_eval_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/lean4-eval", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_lean4-eval").to_string()
 }
 
 fn get_temp_files() -> (String, String) {

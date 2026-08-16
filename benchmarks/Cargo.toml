@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+lean-artifacts = { path = "../lean-artifacts" }
+build-support = { path = "../build-support" }
 base = { path = "../base" }
 base-types = { path = "../base-types" }
 bincode = "1"
@@ -16,9 +18,9 @@ pollster = "0.4"
 wgpu = "23"
 tokio = { version = "1", features = ["fs", "rt", "rt-multi-thread", "sync", "net", "io-util"] }
 
-[build-dependencies]
-build-support = { path = "../build-support" }
-
 [[bin]]
 name = "benchmarks"
 path = "src/main.rs"
+
+[build-dependencies]
+build-support = { path = "../build-support" }

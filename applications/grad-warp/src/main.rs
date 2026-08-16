@@ -13,7 +13,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/GradWarpAlgorithm/grad_warp.bin"));
+const ART: &[u8] = build_support::artifact!("GradWarpAlgorithm/grad_warp");
 const G: usize = 4;
 const GRID: usize = 16384;
 const LANES: usize = GRID * 32;

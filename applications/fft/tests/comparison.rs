@@ -3,13 +3,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_fft_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/fft", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_fft").to_string()
 }
 
 /// Naive DFT reference implementation: O(N^2)

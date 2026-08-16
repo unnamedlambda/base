@@ -1,9 +1,6 @@
 use base::{run, Artifact};
 
-const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/CompressAlgorithm/compress_app.bin"
-));
+const ARTIFACT_BINARY: &[u8] = build_support::artifact!("CompressAlgorithm/compress_app");
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: usize = 0x4200;

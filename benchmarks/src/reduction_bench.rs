@@ -11,10 +11,7 @@ use base::Artifact;
 
 type B = burn::backend::NdArray<f32>;
 
-const REDUCTION_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/reduction_algorithm.bin"
-));
+const REDUCTION_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/reduction_algorithm");
 
 fn rust_sum(data: &[f32]) -> f64 {
     data.iter().map(|&x| x as f64).sum()

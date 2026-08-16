@@ -58,7 +58,7 @@ Before each `execute`, the system writes `data_ptr`, `data_len`, `out_ptr`, and 
 
 ## Example: CUDA Black Hole Renderer
 
-The [blackhole](applications/blackhole/) application renders a Schwarzschild black hole with an accretion disk by tracing geodesics through curved spacetime on the GPU. The entire program — PTX kernel source, Cranelift IR orchestration, BMP header, memory layout, and output filename — is defined in a single Lean file. Run with `cargo run -p blackhole --release`.
+The [blackhole](applications/blackhole/) application renders a Schwarzschild black hole with an accretion disk by tracing geodesics through curved spacetime on the GPU. The entire program — PTX kernel source, Cranelift IR orchestration, BMP header, memory layout, and output filename — is defined in a single Lean file. Run with `cargo run --bin blackhole --release`.
 
 ![CUDA black hole render by Base](blackhole.png)
 
@@ -208,6 +208,6 @@ cargo run --release -p benchmarks -- --bench sort --rounds 5
 cargo test -p base
 
 # Build an application
-cargo build --release -p scene
+cargo build --release --bin scene
 ./target/release/scene
 ```

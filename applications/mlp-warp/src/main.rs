@@ -4,7 +4,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/MlpWarpAlgorithm/mlp_warp.bin"));
+const ART: &[u8] = build_support::artifact!("MlpWarpAlgorithm/mlp_warp");
 const D: usize = 4;
 const L: usize = 3;
 const GRID: usize = 16384;

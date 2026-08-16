@@ -5,10 +5,7 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/csv_algorithm.bin"
-));
+const ARTIFACT_BINARY: &[u8] = build_support::artifact!("RustBenchmarks/csv_algorithm");
 
 /// Generate a deterministic CSV file with a salary column.
 /// Salaries are in range 1000–9999 to keep the i32 total within range.

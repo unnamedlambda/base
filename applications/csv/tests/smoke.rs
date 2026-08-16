@@ -2,13 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_csv_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/csv", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_csv").to_string()
 }
 
 fn copy_fixture_tree(root: &std::path::Path) {
@@ -16,7 +10,7 @@ fn copy_fixture_tree(root: &std::path::Path) {
     fs::create_dir_all(&data_dir).expect("failed to create csv data dir");
 
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src_dir = manifest_dir.join("data");
+    let src_dir = manifest_dir.join("csv/data");
     for name in ["employees.csv", "departments.csv"] {
         fs::copy(src_dir.join(name), data_dir.join(name))
             .unwrap_or_else(|e| panic!("failed to copy {}: {}", name, e));

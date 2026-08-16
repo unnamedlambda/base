@@ -13,10 +13,7 @@ use base::Artifact;
 
 type Gpu = burn::backend::wgpu::Wgpu;
 
-const GPU_ITER_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/gpu_iter_algorithm.bin"
-));
+const GPU_ITER_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/gpu_iter_algorithm");
 
 const WGSL_SCALE: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<f32>;

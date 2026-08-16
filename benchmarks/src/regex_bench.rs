@@ -5,10 +5,7 @@ use std::path::Path;
 
 use crate::harness::{self, format_count, BenchResult};
 
-const REGEX_ARTIFACT: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RustBenchmarks/regex_algorithm.bin"
-));
+const REGEX_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/regex_algorithm");
 
 const VOCABULARY: &[&str] = &[
     "the", "running", "of", "singing", "and", "to", "jumping", "in", "a", "is", "that", "finding",

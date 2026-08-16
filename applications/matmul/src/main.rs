@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/MatmulAlgorithm/matmul_app.bin"));
+    build_support::artifact!("MatmulAlgorithm/matmul_app");
 
 fn main() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY);

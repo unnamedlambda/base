@@ -1,9 +1,6 @@
 use base::{run, Artifact};
 
-const ARTIFACT_BINARY: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/RaytraceAlgorithm/raytrace_app.bin"
-));
+const ARTIFACT_BINARY: &[u8] = build_support::artifact!("RaytraceAlgorithm/raytrace_app");
 
 fn main() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY);

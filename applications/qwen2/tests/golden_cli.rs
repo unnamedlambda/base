@@ -18,7 +18,7 @@ const EXPECTED_HELLO: &str = "hello! how can i assist you today?\n";
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+        .join("..")
         .canonicalize()
         .unwrap()
 }

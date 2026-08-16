@@ -2,13 +2,7 @@ use std::fs;
 use std::process::Command;
 
 fn get_compress_binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-    format!("{}/../../target/{}/compress", manifest_dir, profile)
+    env!("CARGO_BIN_EXE_compress").to_string()
 }
 
 /// Compress a file using our binary, returns path to the .lz4 output
