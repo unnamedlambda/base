@@ -17,3 +17,8 @@ applications/lz4-ptx/baseline/.venv/
 
 # CIFAR-10, downloaded by applications/mlp-cifar/train.py
 cifar-10-batches-bin/
+
+# Root-level dataset directory only (data/flowers-102, data/vit, …) — an
+# unanchored `data/` would also swallow e.g. applications/csv/data/, which is a
+# tracked input.
+/data/
