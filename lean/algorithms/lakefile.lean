@@ -5,6 +5,9 @@ require algorithmLib from "../lib"
 
 package algorithms where
   srcDir := "."
+  -- Generator executables are build-time tools: their own runtime is
+  -- irrelevant, and -O0 keeps a large emitted body from costing minutes in gcc.
+  moreLeancArgs := #["-O0"]
 
 -- Benchmark algorithms
 lean_lib RustBenchmarks
@@ -152,3 +155,79 @@ lean_lib Lz4OpLe64
 lean_lib Lz4Stores64
 lean_lib Lz4Confine64
 lean_lib Lz4Whole
+
+-- Generator entry points, built as native executables so lake caches the run.
+lean_exe gencompressalgorithm where
+  root := `CompressAlgorithm
+lean_exe gencsvalgorithm where
+  root := `CsvAlgorithm
+lean_exe gengradwarpalgorithm where
+  root := `GradWarpAlgorithm
+lean_exe gengemvwarpalgorithm where
+  root := `GemvWarpAlgorithm
+lean_exe genbackwardwidealgorithm where
+  root := `BackwardWideAlgorithm
+lean_exe genfftalgorithm where
+  root := `FftAlgorithm
+lean_exe genfallingsandalgorithm where
+  root := `FallingSandAlgorithm
+lean_exe genclialgorithm where
+  root := `CliAlgorithm
+lean_exe genleanevalalgorithm where
+  root := `LeanEvalAlgorithm
+lean_exe gendrawalgorithm where
+  root := `DrawAlgorithm
+lean_exe genblackholealgorithm where
+  root := `BlackHoleAlgorithm
+lean_exe genhprogpilots where
+  root := `HProgPilots
+lean_exe genhprogcorpus where
+  root := `HProgCorpus
+lean_exe genlz4compalgorithm where
+  root := `Lz4CompAlgorithm
+lean_exe genvitship where
+  root := `VitShip
+lean_exe genqwen2algorithm where
+  root := `Qwen2Algorithm
+lean_exe genraytracealgorithm where
+  root := `RaytraceAlgorithm
+lean_exe genmatmulalgorithm where
+  root := `MatmulAlgorithm
+lean_exe genmlpwarpalgorithm where
+  root := `MlpWarpAlgorithm
+lean_exe gensiluwarpalgorithm where
+  root := `SiluWarpAlgorithm
+lean_exe genpythonbenchmarks where
+  root := `PythonBenchmarks
+lean_exe genraymarchdemoalgorithm where
+  root := `RaymarchDemoAlgorithm
+lean_exe genrustbenchmarks where
+  root := `RustBenchmarks
+lean_exe genqwen2ondiskalgorithm where
+  root := `Qwen2OnDiskAlgorithm
+lean_exe genwarpsumsqalgorithm where
+  root := `WarpSumSqAlgorithm
+lean_exe gensatalgorithm where
+  root := `SatAlgorithm
+lean_exe genscenealgorithm where
+  root := `SceneAlgorithm
+lean_exe gensha256algorithm where
+  root := `Sha256Algorithm
+lean_exe genmlpcifaralgorithm where
+  root := `MlpCifarAlgorithm
+lean_exe genwindowdemoalgorithm where
+  root := `WindowDemoAlgorithm
+
+/-- The generators, as `<exe> <module>` lines. Read by `lean-artifacts`'s build
+script so the declarations above stay the only place a generator is named. -/
+script generators do
+  for exe in (← getRootPackage).leanExes do
+    IO.println s!"{exe.name} {exe.config.root}"
+  return 0
+
+/-- Source directories of this package and every package it requires. Read by
+`build-support` so a caller names one lakefile and gets the rest. -/
+script srcdirs do
+  for pkg in (← getWorkspace).packages do
+    IO.println pkg.dir
+  return 0
