@@ -1,4 +1,6 @@
-import AlgorithmLib
+import AlgorithmLib.IR
+import AlgorithmLib.Layout
+import AlgorithmLib.PTX
 
 namespace AlgorithmLib
 

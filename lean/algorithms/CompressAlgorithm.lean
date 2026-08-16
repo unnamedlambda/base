@@ -1,4 +1,5 @@
-import AlgorithmLib
+import AlgorithmLib.Gen
+import AlgorithmLib.ML
 
 
 open Lean (Json)

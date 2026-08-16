@@ -1,6 +1,7 @@
 import Lean
 import Std
-import AlgorithmLib
+import AlgorithmLib.Gen
+import AlgorithmLib.ML
 import BackwardWideAlgorithm
 
 open AlgorithmLib AlgorithmLib.ML

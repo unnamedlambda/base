@@ -1,4 +1,5 @@
-import AlgorithmLib
+import AlgorithmLib.Gen
+import AlgorithmLib.ML
 open AlgorithmLib AlgorithmLib.ML
 
 -- The twelve-block lowering is one `rfl` over the whole tape, which nests

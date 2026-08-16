@@ -1,5 +1,6 @@
 import Lz4Kernel
-import AlgorithmLib
+import AlgorithmLib.Gen
+import AlgorithmLib.LZ4Suite
 import AlgorithmLib.LZ4SimtSerialize
 import AlgorithmLib.LZ4WarpKernel
 import AlgorithmLib.LZ4CompTop

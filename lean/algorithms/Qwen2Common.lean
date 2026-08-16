@@ -1,6 +1,7 @@
 import Lean
 import Std
-import AlgorithmLib
+import AlgorithmLib.Gen
+import AlgorithmLib.ML
 import AlgorithmLib.Cuda
 import AlgorithmLib.HProgCuda
 import Qwen2Proven

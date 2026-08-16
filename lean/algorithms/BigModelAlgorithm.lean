@@ -1,6 +1,7 @@
 import Lean
 import Std
-import AlgorithmLib
+import AlgorithmLib.Gen
+import AlgorithmLib.ML
 
 /-!
   # A model at Qwen2's width and deeper, elaborated
