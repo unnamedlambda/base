@@ -2183,8 +2183,9 @@ def blockOf (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : HStmt) : BlockData :=
 
 /-- …and the built function containing it. -/
 def stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val) (n : Nat)
-    (s : HStmt) : IRState :=
-  { fns := fns, blocks := [blockOf fnLaunch ptr n s] }
+    (s : HStmt) : FuncData :=
+  { index := 0, sigs := [], fns := fns,
+    blocks := [blockOf fnLaunch ptr n s] }
 
 /-- **What `Clif.launchesOf` reads out of the emitted function is the declared
     sequence.**

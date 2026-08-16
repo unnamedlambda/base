@@ -951,17 +951,6 @@ def compileFn (idx : Nat) (c : Code) (env : FnEnv := IR.FFI.stdEnv)
     (hwf : wf env params c = true := by decide) : FuncData :=
   compileBody idx c env params
 
-/-- A compiled function, viewed as the builder state `Clif.lean`'s extractors
-    read.
-
-    Those extractors — `launchesOf`, `loopsOf`, `bindsOf`, `callsOf` — use only
-    `sigs`, `fns` and `blocks`, and a `FuncData` has all three with the same
-    types. So a claim about an emitted program keeps its exact statement when the
-    generator behind it changes: what changes is how the program is *produced*,
-    not what is being read. -/
-def _root_.AlgorithmLib.IR.FuncData.asState (f : FuncData) : IRState :=
-  { sigs := f.sigs, fns := f.fns, blocks := f.blocks }
-
 -- ---------------------------------------------------------------------------
 -- `Sur` — a binder surface evaluated at elaboration time
 --

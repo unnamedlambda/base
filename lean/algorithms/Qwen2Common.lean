@@ -1591,11 +1591,11 @@ def memMap : RegionMap :=
     A view rather than a shipping path — it is applied to whatever body a claim
     is about — so it takes the compiler that does not demand `wf`. The bodies
     that reach an artifact are checked where `clifIR` assembles them. -/
-def stateOf (c : HProg.Code) : AlgorithmLib.IR.IRState :=
-  (HProg.compileBody 1 c env).asState
+def stateOf (c : HProg.Code) : AlgorithmLib.IR.FuncData :=
+  (HProg.compileBody 1 c env)
 
 /-- The layer-forward function, as a value. -/
-def inferState : AlgorithmLib.IR.IRState := (stateOf inferFn)
+def inferState : AlgorithmLib.IR.FuncData := (stateOf inferFn)
 
 /-- **Device writes the launch model does not see, in `inferFn` itself.**
 

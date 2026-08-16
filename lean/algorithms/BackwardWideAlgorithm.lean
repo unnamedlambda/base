@@ -1053,7 +1053,7 @@ def bwdAllTable : List KernelBinding :=
     Stated over `compileFn`'s output, so what the generator is written in does
     not enter the claim — only what was emitted. -/
 theorem bwdAll_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 runBwdAllFn).asState = bwdAllOps := by
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 runBwdAllFn) = bwdAllOps := by
   native_decide
 
 /-- …and those launches are the proven three-stage pipeline. -/
@@ -1065,7 +1065,7 @@ theorem bwdAll_realises :
     Unlike `bwd_host_computes` below, the launch sequence here is read out of a
     function that is actually built into the artifact. -/
 theorem bwdAll_host_computes (st : WSt) :
-    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 runBwdAllFn).asState)
+    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 runBwdAllFn))
         = some bwdPipelineFull
       ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
   ⟨by rw [bwdAll_ops_are]; exact bwdAll_realises,

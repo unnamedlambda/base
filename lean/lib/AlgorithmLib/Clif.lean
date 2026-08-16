@@ -7,9 +7,9 @@ import AlgorithmLib.IR
   launches — the thing that decides *which* proven kernel runs *when* — was
   outside every statement in the development.
 
-  It was never outside the *data*, though. `Inst` is an inductive and `IRState`
-  holds the blocks, so a built function is already a value; what was missing was
-  a semantics and a way to read the launch structure back out.
+  It was never outside the *data*, though. `Inst` is an inductive and `FuncData`
+  holds the blocks, so a compiled function is already a value; what was missing
+  was a semantics and a way to read the launch structure back out.
 
   This file supplies both, for the fragment the generators actually emit:
 
@@ -529,13 +529,13 @@ theorem scanBlockTR_go_eq (fns : List FnDecl) :
     actually launches. Relating the two is what a whole-model theorem needs, and
     it is now a statement about two lists rather than about an emission order
     nothing could name. -/
-def launchesOf (s : IRState) : List LaunchRec :=
+def launchesOf (s : FuncData) : List LaunchRec :=
   (s.blocks.foldl (fun (acc : Env × List LaunchRec) b =>
       let r := scanBlock s.fns acc.1 b.insts
       (r.1, acc.2 ++ r.2)) (Env.empty, [])).2
 
 /-- How many kernels the program launches. -/
-def launchCount (s : IRState) : Nat := (launchesOf s).length
+def launchCount (s : FuncData) : Nat := (launchesOf s).length
 
 
 -- ---------------------------------------------------------------------------
@@ -603,7 +603,7 @@ def deviceWritesIn (fns : List FnDecl) : List Inst → List String
        | _ => []) ++ deviceWritesIn fns is
 
 /-- …over a whole function. -/
-def deviceWritesOf (s : IRState) : List String :=
+def deviceWritesOf (s : FuncData) : List String :=
   s.blocks.flatMap (fun b => deviceWritesIn s.fns b.insts)
 
 -- ---------------------------------------------------------------------------
@@ -691,7 +691,7 @@ def loopBodyAccOkB (hdr : Nat) (b : BlockData) : Bool :=
     The environment each header is resolved in is `evalPure` over every block
     before it, which is exactly the environment `launchesOf` threads — so the
     bound is resolved the same way a launch's PTX slot is. -/
-def loopsOf (s : IRState) : List LoopRec :=
+def loopsOf (s : FuncData) : List LoopRec :=
   (s.blocks.foldl (fun (acc : Env × List LoopRec) b =>
       let e := acc.1
       let acc2 :=
@@ -708,7 +708,7 @@ def loopsOf (s : IRState) : List LoopRec :=
       (evalPure e b.insts, acc2)) (Env.empty, [])).2
 
 /-- The instructions of a named block, if the function has one. -/
-def blockInsts? (s : IRState) (n : Nat) : Option (List Inst) :=
+def blockInsts? (s : FuncData) (n : Nat) : Option (List Inst) :=
   (s.blocks.find? (fun b => b.ref.id == n)).map BlockData.insts
 
 /-- The colocated calls a straight line performs, in order — what a loop body
@@ -719,7 +719,7 @@ def callsIn (fns : List FnDecl) (is : List Inst) : List String :=
     | _            => none)
 
 /-- …over a whole function. -/
-def callsOf (s : IRState) : List String :=
+def callsOf (s : FuncData) : List String :=
   s.blocks.flatMap (fun b => callsIn s.fns b.insts)
 
 /-- **A program whose every device write is a modelled launch.**
@@ -728,7 +728,7 @@ def callsOf (s : IRState) : List String :=
     generator that satisfies this has nothing writing device memory behind
     `launchesOf`'s back; one that does not is exactly as far from a pipeline
     claim as this list is long. -/
-def launchesAreEverythingB (s : IRState) : Bool := (deviceWritesOf s).isEmpty
+def launchesAreEverythingB (s : FuncData) : Bool := (deviceWritesOf s).isEmpty
 
 
 /-- **A fragment that is what it claims to be**: it launches nothing, it writes
@@ -1132,7 +1132,7 @@ def bindScan (fns : List FnDecl) (root : Nat) : BEnv → List Inst → BEnv × L
 
 /-- The bind arrays and vendor arguments a built function's device writes use,
     in program order. -/
-def bindsOf (root : Nat) (s : IRState) : List OpBinds :=
+def bindsOf (root : Nat) (s : FuncData) : List OpBinds :=
   (s.blocks.foldl (fun (acc : BEnv × List OpBinds) bd =>
       let r := bindScan s.fns root acc.1 bd.insts
       (r.1, acc.2 ++ r.2)) (BEnv.empty, [])).2
@@ -1234,7 +1234,7 @@ theorem bindScan_append (fns : List FnDecl) (root : Nat) :
 
     The statement that makes `deviceOpsOf` total: no record is left without its
     bind array, and no bind array is left without its record. -/
-theorem bindsOf_length (root : Nat) (s : IRState) :
+theorem bindsOf_length (root : Nat) (s : FuncData) :
     (bindsOf root s).length = (launchesOf s).length := by
   show (List.foldl _ (BEnv.empty, ([] : List OpBinds)) s.blocks).2.length
       = (List.foldl _ (Env.empty, ([] : List LaunchRec)) s.blocks).2.length
@@ -1260,10 +1260,10 @@ theorem bindsOf_length (root : Nat) (s : IRState) :
 
 /-- **Records and what they bound, as one list.**  What a table match consumes:
     a device write together with the buffers the host had put in place for it. -/
-def deviceOpsOf (root : Nat) (s : IRState) : List (LaunchRec × OpBinds) :=
+def deviceOpsOf (root : Nat) (s : FuncData) : List (LaunchRec × OpBinds) :=
   (launchesOf s).zip (bindsOf root s)
 
-theorem deviceOpsOf_length (root : Nat) (s : IRState) :
+theorem deviceOpsOf_length (root : Nat) (s : FuncData) :
     (deviceOpsOf root s).length = (launchesOf s).length := by
   simp [deviceOpsOf, List.length_zip, bindsOf_length root s]
 

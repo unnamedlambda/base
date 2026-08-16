@@ -1002,10 +1002,10 @@ def mlpTable : List KernelBinding :=
     surface.  It buys a fixed nine-stage fact — the depth-carrying host code is
     a loop, and `Clif.loopsOf` recovers that instead of unrolling it. -/
 theorem fwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps) env).asState = mlpOps fwdSteps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps) env) = mlpOps fwdSteps := by native_decide
 
 theorem bwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps) env).asState = mlpOps bwdSteps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps) env) = mlpOps bwdSteps := by native_decide
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.** -/
@@ -1018,13 +1018,13 @@ theorem bwd_realises : pipelineOf? mlpTable none (mlpOps bwdSteps) = some bwdPip
     `mlpTable` into `fwdPipeline`, and that pipeline computes the composite of
     its stages — with no intermediate assumed anywhere along the way. -/
 theorem fwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps) env).asState) = some fwdPipeline
+    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps) env)) = some fwdPipeline
       ∧ (fwdPipeline.run st).mem = fwdPipeline.denote st.mem :=
   ⟨by rw [fwd_ops_are]; exact fwd_realises, fwdPipeline_runs st⟩
 
 /-- …and the backward half-step, optimiser included. -/
 theorem bwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps) env).asState) = some bwdPipeline
+    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps) env)) = some bwdPipeline
       ∧ (bwdPipeline.run st).mem = bwdPipeline.denote st.mem :=
   ⟨by rw [bwd_ops_are]; exact bwd_realises, bwdPipeline_runs st⟩
 
@@ -1209,11 +1209,11 @@ noncomputable def blasDeclared : List DeclaredBinding :=
 
 /-- **Seam guard: the emitted cuBLAS driver performs these device writes.** -/
 theorem fwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps) env).asState
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps) env)
       = mixedOps fwdBlasSteps := by native_decide
 
 theorem bwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps) env).asState
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps) env)
       = mixedOps bwdBlasSteps := by native_decide
 
 /-- …and they are the plan — five declared steps and four proven ones, in the
@@ -1232,10 +1232,10 @@ theorem bwd_blas_realises :
     being `Honours R`, which is `Law.cublasIsMatvec` at these five call sites. -/
 theorem blas_host_computes (R : Realisation) (hR : Honours R) (st : WSt) :
     planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps) env).asState)
+        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps) env))
           = some fwdBlasPlan
       ∧ planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps) env).asState)
+        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps) env))
           = some bwdBlasPlan
       ∧ (Plan.run R fwdBlasPlan st).mem = fwdPipeline.denote st.mem
       ∧ (Plan.run R bwdBlasPlan st).mem = bwdPipeline.denote st.mem :=
@@ -2302,7 +2302,7 @@ def qOps : List DeviceOp :=
 
 /-- **Seam guard: the emitted block driver performs these launches.** -/
 theorem qwen_run_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qRunFn env).asState = qOps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qRunFn env) = qOps := by native_decide
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.**
@@ -2331,7 +2331,7 @@ set_option maxRecDepth 100000 in
     what was proven. -/
 theorem qwen_capture_records_the_run :
     ∃ s : Nat,
-      AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qCaptureFn env).asState
+      AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qCaptureFn env)
           = qOps ++ qOps.map (onStream s)
         ∧ pipelineOf? qTable none qOps = some qwenPipeline
         ∧ pipelineOf? qTable (some s) (qOps.map (onStream s)) = some qwenPipeline :=
@@ -2386,11 +2386,11 @@ noncomputable def qReplayPlan (k : Nat) : Plan :=
 
 /-- **Seam guard: the replay entries perform exactly `k` graph launches.** -/
 theorem qwen_replay_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 1) env).asState
+    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 1) env)
         = List.replicate 1 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 2) env).asState
+      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 2) env)
         = List.replicate 2 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 4) env).asState
+      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 4) env)
         = List.replicate 4 (qGraphRec, { args := qGraphArgs }) := by native_decide
 
 /-- **…and those launches are `k` replays of the captured pipeline.**

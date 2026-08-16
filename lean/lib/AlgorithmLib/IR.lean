@@ -6,16 +6,6 @@ namespace AlgorithmLib
 
 namespace IR
 
-/-- A compiled program as the extractors in `Clif.lean` read it: the callee
-    tables and the blocks, with nothing about how it was produced.
-
-    `FuncData.asState` is the one way to make one, so a claim about an emitted
-    program keeps its exact statement no matter what built the body. -/
-structure IRState where
-  sigs : List SigDecl := []
-  fns : List FnDecl := []
-  blocks : List BlockData := []
-
 /-- A function that does nothing, at a given index: one block taking the shared
     memory pointer and returning. -/
 def noopAt (funcIdx : Nat) : FuncData :=

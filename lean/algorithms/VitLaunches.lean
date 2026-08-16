@@ -28,12 +28,12 @@ def vKeyOf (r : AlgorithmLib.Clif.LaunchRec) : VLaunchKey :=
 def vFwdLaunches : List AlgorithmLib.Clif.LaunchRec :=
   AlgorithmLib.Clif.launchesOf
     (AlgorithmLib.HProg.compileBody 1
-      (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF) env).asState
+      (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF) env)
 
 def vStepLaunches : List AlgorithmLib.Clif.LaunchRec :=
   AlgorithmLib.Clif.launchesOf
     (AlgorithmLib.HProg.compileBody 1
-      (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF) env).asState
+      (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF) env)
 
 /-- **Is this recovered call a contraction in the configuration a law covers?**
 
