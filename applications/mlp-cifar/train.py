@@ -6,12 +6,15 @@ at batch `BATCH`. Every kernel — both matvecs, the activation and its
 derivative, both outer products, both optimiser steps — is an instance of a
 schema proven in `lean/algorithms/MlpCifarAlgorithm.lean` and checked
 bit-for-bit against its committed fold order by
-`cargo run -p mlp-cifar --release`.
+`cargo run --bin mlp-cifar --release`.
 
 One thing happens on the host: the data loader, which keeps the dataset in RAM
 and uploads one batch. Softmax and the cross-entropy gradient run on the device
 (`MlpCifar.smKernel`, proven by `softmaxCE_stores`); the host sends one-hot
 labels instead of gradients.
+
+The kernels come from lake, invoked here — nothing needs to have been built
+with cargo first, and `lake` is the only tool this depends on beyond Python.
 
 Run:  py-base/.venv/bin/python applications/mlp-cifar/train.py
 """
@@ -20,6 +23,7 @@ import glob
 import json
 import os
 import struct
+import subprocess
 import sys
 import time
 
@@ -45,25 +49,49 @@ NEEDED = ["uploadX", "uploadOneHot", "uploadBias", "fetchLogits", "runFwd",
           "runBwd", "fetchH"]
 
 
+LEAN = os.path.join(ROOT, "lean", "algorithms")
+GENERATOR = "genmlpcifaralgorithm"
+MODULE = "MlpCifarAlgorithm"
+
+
 def find_artifact() -> str:
-    pat = os.path.join(
-        ROOT, "target", "*", "build", "mlp-cifar-*", "out",
-        "MlpCifarAlgorithm", "mlp_cifar.json",
-    )
-    hits = glob.glob(pat)
-    if not hits:
-        sys.exit("No artifact — run `cargo build -p mlp-cifar --release` first.")
-    # Select by *content*, not by mtime: several build directories persist, and
-    # one built before a kernel existed looks perfectly healthy until the
-    # missing key surfaces mid-run.
-    for h in sorted(hits, key=os.path.getmtime, reverse=True):
+    """Build the model with lake and run it, needing no Rust build at all.
+
+    Cargo's build writes this same artifact elsewhere, from its own copy of
+    exactly this sequence. Asking lake here rather than reading that copy is
+    what keeps a Python user off a build system they did not choose: `lake` is
+    already what compiles the Lean, and it is the whole dependency.
+
+    Lake decides what is stale by hashing contents, so this is a no-op when
+    nothing changed. Re-running the generator keys on the executable lake
+    produced, because that is a generator's only input.
+
+    The kernels are still checked afterwards, because an artifact generated
+    before one existed loads perfectly well and only fails on the missing key
+    partway through a run.
+    """
+    out = os.path.join(LEAN, ".lake", "artifacts", MODULE)
+    exe = os.path.join(LEAN, ".lake", "build", "bin", GENERATOR)
+    path = os.path.join(out, "mlp_cifar.json")
+    def lake(*args, cwd=LEAN):
+        """Quiet unless it fails: replaying the library prints a page of Lean
+        linter warnings that have nothing to do with this run."""
         try:
-            keys = set(py_base.load_artifact(h).extras.keys())
-        except Exception:
-            continue
-        if set(NEEDED) <= keys:
-            return h
-    sys.exit(f"No artifact has {NEEDED} — rebuild: cargo build -p mlp-cifar --release")
+            return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True)
+        except FileNotFoundError:
+            sys.exit("`lake` is not on PATH — install the Lean toolchain (see README.md)")
+        except subprocess.CalledProcessError as e:
+            sys.exit(f"{' '.join(args)} failed in {cwd}:\n{e.stdout}\n{e.stderr}")
+
+    lake("lake", "build", GENERATOR)
+    if not os.path.exists(path) or os.path.getmtime(path) <= os.path.getmtime(exe):
+        os.makedirs(out, exist_ok=True)
+        lake(exe, out, cwd=None)
+
+    missing = set(NEEDED) - set(py_base.load_artifact(path).extras.keys())
+    if missing:
+        sys.exit(f"{MODULE}.lean does not export {sorted(missing)}")
+    return path
 
 
 def load_cifar() -> tuple:

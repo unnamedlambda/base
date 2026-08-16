@@ -187,8 +187,28 @@ fn run(py: Python<'_>, setup: &PySetup, algorithm: &PyAlgorithm) -> PyResult<PyO
     batches_to_pyarrow(py, batches)
 }
 
+/// Whether this extension was compiled without optimisations.
+///
+/// `maturin develop` builds a debug extension unless told otherwise, and
+/// nothing about the result says so: it imports and runs, about fifteen times
+/// slower at everything. Measured on this machine, loading a 19 MB artifact
+/// took 812 ms debug against 68 ms release. So say it once, at import.
+fn warn_if_unoptimised(py: Python<'_>) -> PyResult<()> {
+    if !cfg!(debug_assertions) {
+        return Ok(());
+    }
+    let warnings = PyModule::import_bound(py, "warnings")?;
+    warnings.call_method1(
+        "warn",
+        ("py_base was built without optimisations and is roughly 15x slower \
+          than it should be; rebuild with `maturin develop --release`",),
+    )?;
+    Ok(())
+}
+
 #[pymodule]
 fn py_base(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    warn_if_unoptimised(m.py())?;
     m.add_class::<PySetup>()?;
     m.add_class::<PyAlgorithm>()?;
     m.add_class::<PyArtifact>()?;
