@@ -268,6 +268,45 @@ def clifIR : Program :=
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [3, 0, 0, 0, 6, 0, 0, 0, 4, 0, 0, 0]
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_ht",     ContextSlots.ht, 8⟩,
+   ⟨"ctx_wgpu",   ContextSlots.wgpu, 8⟩,
+   ⟨"ctx_cuda",   CTX_OFF, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"buf_q",      BUF_Q_OFF, 4⟩,
+   ⟨"buf_k",      BUF_K_OFF, 4⟩,
+   ⟨"buf_v",      BUF_V_OFF, 4⟩,
+   ⟨"buf_scores", BUF_SCORES_OFF, 4⟩,
+   ⟨"buf_probs",  BUF_PROBS_OFF, 4⟩,
+   ⟨"buf_out",    BUF_OUT_OFF, 4⟩,
+   ⟨"buf_meta",   BUF_META_OFF, 4⟩,
+   ⟨"seq_len",    SEQ_LEN_OFF, 8⟩,
+   ⟨"ptx",        PTX_SOURCE_OFF, BIND_DESC_OFF - PTX_SOURCE_OFF⟩,
+   -- Three buffers, which is the arity the launch declares.
+   ⟨"bind_desc",  BIND_DESC_OFF, 12⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+theorem memMap_within :
+    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
+
+/-- **The PTX and the bind descriptor fit the slots they are placed in.**
+
+    `buildInitialMemory` pads with `zeros (next - this - length)`, on `Nat`: a
+    text longer than its slot pads by zero rather than by a negative amount, so
+    the overrun is written over whatever follows and every offset after it
+    shifts. The failure shows up as a device launching garbage. -/
+theorem regions_fit :
+    ptxBytes.length ≤ BIND_DESC_OFF - PTX_SOURCE_OFF
+      ∧ bindDesc.length ≤ MEM_SIZE - BIND_DESC_OFF := by native_decide
+
 def buildInitialMemory : List UInt8 :=
   let reserved := zeros PTX_SOURCE_OFF
   let ptx := ptxBytes ++ zeros (BIND_DESC_OFF - PTX_SOURCE_OFF - ptxBytes.length)

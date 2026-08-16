@@ -319,6 +319,54 @@ def bindK2 : List UInt8 := i32LE 2 ++ i32LE 3 ++ i32LE 4  -- meta, partials, par
 def bindK3 : List UInt8 := i32LE 0 ++ i32LE 2 ++ i32LE 4 ++ i32LE 1  -- x, meta, params, y
 def bindSmall : List UInt8 := i32LE 0 ++ i32LE 2 ++ i32LE 1  -- x, meta, y
 
+/-- Every byte of shared memory this program names.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed and the second wins.
+    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
+    input and output descriptors, so naming those is what stops an offset being
+    placed where the runtime will overwrite it.
+
+    A bind table is as wide as the arity its launch declares, not as wide as the
+    gap to the next one. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_ht",            ContextSlots.ht, 8⟩,
+   ⟨"ctx_wgpu",          ContextSlots.wgpu, 8⟩,
+   ⟨"ctx_cuda",          CTX_OFF, 8⟩,
+   ⟨"io_offsets",        0x18, 0x20⟩,
+   ⟨"name_block_reduce",  NAME_BLOCK_REDUCE, NAME_GLOBAL_REDUCE - NAME_BLOCK_REDUCE⟩,
+   ⟨"name_global_reduce", NAME_GLOBAL_REDUCE, NAME_NORMALIZE - NAME_GLOBAL_REDUCE⟩,
+   ⟨"name_normalize",     NAME_NORMALIZE, NAME_SMALL_SOFTMAX - NAME_NORMALIZE⟩,
+   ⟨"name_small_softmax", NAME_SMALL_SOFTMAX, PTX_SOURCE_OFF - NAME_SMALL_SOFTMAX⟩,
+   ⟨"ptx",               PTX_SOURCE_OFF, BIND_K1_OFF - PTX_SOURCE_OFF⟩,
+   ⟨"bind_k1",           BIND_K1_OFF, 12⟩,
+   ⟨"bind_k2",           BIND_K2_OFF, 12⟩,
+   ⟨"bind_k3",           BIND_K3_OFF, 16⟩,
+   ⟨"bind_small",        BIND_SMALL_OFF, 12⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+theorem memMap_within :
+    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
+
+/-- **Every kernel name, the PTX, and each bind table fit their slots.**
+
+    `buildInitialMemory` pads with `zeros (next - this - length)`, on `Nat`: a
+    text longer than its slot pads by zero rather than by a negative amount, so
+    the overrun is written over whatever follows and every offset after it
+    shifts. A kernel name that spills is the sharp case here -- the launch then
+    asks the driver for a symbol that reads into the next name. -/
+theorem regions_fit :
+    nameBlockReduce.length ≤ NAME_GLOBAL_REDUCE - NAME_BLOCK_REDUCE
+      ∧ nameGlobalReduce.length ≤ NAME_NORMALIZE - NAME_GLOBAL_REDUCE
+      ∧ nameNormalize.length ≤ NAME_SMALL_SOFTMAX - NAME_NORMALIZE
+      ∧ nameSmallSoftmax.length ≤ PTX_SOURCE_OFF - NAME_SMALL_SOFTMAX
+      ∧ ptxBytes.length ≤ BIND_K1_OFF - PTX_SOURCE_OFF
+      ∧ bindK1.length ≤ BIND_K2_OFF - BIND_K1_OFF
+      ∧ bindK2.length ≤ BIND_K3_OFF - BIND_K2_OFF
+      ∧ bindK3.length ≤ BIND_SMALL_OFF - BIND_K3_OFF
+      ∧ bindSmall.length ≤ MEM_SIZE - BIND_SMALL_OFF := by native_decide
+
 def buildInitialMemory : List UInt8 :=
   let names :=
     zeros (NAME_BLOCK_REDUCE) ++

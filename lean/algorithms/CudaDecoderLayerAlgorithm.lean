@@ -384,6 +384,71 @@ def ptxSiluBytes : List UInt8 := ptxSiluGate.toUTF8.toList ++ [0]
 def ptxAddRmsBytes : List UInt8 := ptxAddRmsNorm.toUTF8.toList ++ [0]
 def ptxAddBytes : List UInt8 := ptxResidualAdd.toUTF8.toList ++ [0]
 
+/-- Every byte of shared memory this program names, and how much of it it uses.
+
+    The offsets are assigned by hand, and a collision between two of them is
+    invisible at every other layer: both stores succeed, the second one wins,
+    and the kernel reads whichever ran last. Sizes are what the code actually
+    writes -- one `i32` per buffer slot, and a bind table as wide as the launch
+    that reads it -- so a region that grows past its neighbour is a failed
+    proof rather than a corrupted field.
+
+    `0x00`-`0x18` are the context slots the runtime fills, and `0x18`-`0x38`
+    the input and output descriptors it writes; naming them is what stops a
+    future offset being placed where the runtime will overwrite it. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_ht",       ContextSlots.ht, 8⟩,
+   ⟨"ctx_wgpu",     ContextSlots.wgpu, 8⟩,
+   ⟨"ctx_cuda",     CTX_OFF, 8⟩,
+   ⟨"io_offsets",   0x18, 0x20⟩,
+   ⟨"buf_x",        BUF_X_OFF, 4⟩,
+   ⟨"buf_xn1",      BUF_XN1_OFF, 4⟩,
+   ⟨"buf_q",        BUF_Q_OFF, 4⟩,
+   ⟨"buf_k",        BUF_K_OFF, 4⟩,
+   ⟨"buf_v",        BUF_V_OFF, 4⟩,
+   ⟨"buf_o",        BUF_O_OFF, 4⟩,
+   ⟨"buf_xn2",      BUF_XN2_OFF, 4⟩,
+   ⟨"buf_g",        BUF_G_OFF, 4⟩,
+   ⟨"buf_u",        BUF_U_OFF, 4⟩,
+   ⟨"buf_a",        BUF_A_OFF, 4⟩,
+   ⟨"buf_d",        BUF_D_OFF, 4⟩,
+   ⟨"buf_rms1",     BUF_RMS1_OFF, 4⟩,
+   ⟨"buf_wq",       BUF_WQ_OFF, 4⟩,
+   ⟨"buf_wk",       BUF_WK_OFF, 4⟩,
+   ⟨"buf_wv",       BUF_WV_OFF, 4⟩,
+   ⟨"buf_wo",       BUF_WO_OFF, 4⟩,
+   ⟨"buf_rms2",     BUF_RMS2_OFF, 4⟩,
+   ⟨"buf_wg",       BUF_WG_OFF, 4⟩,
+   ⟨"buf_wu",       BUF_WU_OFF, 4⟩,
+   ⟨"buf_wd",       BUF_WD_OFF, 4⟩,
+   -- Each bind table is as wide as the furthest slot its launch stores into.
+   ⟨"bind_rms1",    BIND_RMS1_OFF, 12⟩,
+   ⟨"bind_addrms",  BIND_ADDRMS_OFF, 28⟩,
+   ⟨"bind_silu",    BIND_SILU_OFF, 12⟩,
+   ⟨"bind_add2",    BIND_ADD2_OFF, 8⟩,
+   ⟨"ptx_rms",      PTX_RMS_OFF, PTX_SILU_OFF - PTX_RMS_OFF⟩,
+   ⟨"ptx_silu",     PTX_SILU_OFF, PTX_ADDRMS_OFF - PTX_SILU_OFF⟩,
+   ⟨"ptx_addrms",   PTX_ADDRMS_OFF, PTX_ADD_OFF - PTX_ADDRMS_OFF⟩,
+   ⟨"ptx_add",      PTX_ADD_OFF, MEM_SIZE - PTX_ADD_OFF⟩]
+
+theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
+
+theorem memMap_within :
+    AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
+
+/-- **Each kernel's PTX fits the slot it is placed in.**
+
+    `buildInitialMemory` pads each slot with `zeros (next - this - length)`, and
+    that subtraction is on `Nat`: a PTX text longer than its slot gives a pad of
+    zero rather than a negative one, so the overrun is silently written over the
+    following kernel and every offset after it shifts. The failure is a device
+    that launches garbage, which is a long way from the edit that caused it. -/
+theorem ptx_fits :
+    ptxRmsBytes.length ≤ PTX_SILU_OFF - PTX_RMS_OFF
+      ∧ ptxSiluBytes.length ≤ PTX_ADDRMS_OFF - PTX_SILU_OFF
+      ∧ ptxAddRmsBytes.length ≤ PTX_ADD_OFF - PTX_ADDRMS_OFF
+      ∧ ptxAddBytes.length ≤ MEM_SIZE - PTX_ADD_OFF := by native_decide
+
 def buildInitialMemory : List UInt8 :=
   let pre := zeros PTX_RMS_OFF
   let rms := ptxRmsBytes ++ zeros (PTX_SILU_OFF - PTX_RMS_OFF - ptxRmsBytes.length)
