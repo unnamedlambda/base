@@ -251,13 +251,21 @@ def offsetIf (p : Val) (k : Int) : SymVal :=
 
 /-- **A literal this model will carry.**  `Op.check` constrains an `iconst`'s
     type but not its literal, so `iconst .i32 (2 ^ 32)` is well formed and the
-    machine stores `0`.  A literal is kept only when its own type represents it
-    exactly, and when it is small enough for the folds above to stay exact. -/
+    machine stores `0`.  A literal is kept only when it is small enough for the
+    folds above to stay exact.
+
+    **And only at `i32` or wider.**  `Inst.iadd` carries no type, so those
+    folds cannot see the width they run at and check the result against
+    `foldableRange` — the signed `i32` range — instead.  That is exact from
+    `i32` up and wrong below it: at `i8`, `0 - (-128)` is `128` in the range
+    but `-128` on the machine.  Refusing narrow literals makes the width the
+    folds assume the width they get, because no other instruction produces a
+    narrow constant: `ireduce32` yields `i32`, the extensions yield `i64`, and
+    everything else yields `unknown`. -/
 def litOk (t : ClifTy) (k : Int) : Bool :=
   inFold k && match t with
-              | .i8  => -128 ≤ k && k < 128
-              | .i16 => -32768 ≤ k && k < 32768
-              | _    => true
+              | .i32 | .i64 => true
+              | _           => false
 
 /-- The literal a constant instruction contributes: itself when the type
     represents it, nothing when it does not.  A definition rather than an
@@ -277,10 +285,14 @@ theorem constLit_ne {t : ClifTy} {v : Int} (h : litOk t v = false) :
 -- fragment, which is what makes the launch proofs diverge.
 attribute [irreducible] constLit
 
-/-- A shift this model will evaluate at all.  Bounded before `2 ^ y` is ever
-    formed: an unbounded amount is not merely unsound here, it does not
-    terminate in practice. -/
-def shiftOk (y : Int) : Bool := 0 ≤ y && y < 64
+/-- A shift this model will evaluate at all.
+
+    Bounded before `2 ^ y` is ever formed: an unbounded amount is not merely
+    unsound here, it does not terminate in practice.  Bounded by `32` and not
+    by `64` because the machine takes the amount modulo the *shifted operand's*
+    width, which this cannot see and which is at least `32` by `litOk` — at
+    `i32`, `ushr x 32` is `x`, not `0`. -/
+def shiftOk (y : Int) : Bool := 0 ≤ y && y < 32
 
 /-- `a + b`, symbolically: constants fold, a base absorbs a constant, anything
     else is unknown.  A value that is merely *unbound* still contributes its own
