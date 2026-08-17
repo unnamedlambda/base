@@ -758,17 +758,23 @@ def setup : Setup := {
   initial_memory := initialMemory
 }
 
+/-- The entry point, and the extras the runtime may call after it.  Named so
+    the artifact and the arity theorem below read the same list. -/
+def entryAlg : Algorithm := { fn_idx := u32 1 }
+
+def extraAlgs : List (String × Algorithm) :=
+  [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
+   ("runDw", { fn_idx := u32 4 }), ("fetchDw", { fn_idx := u32 5 }),
+   ("runSiluBwd", { fn_idx := u32 6 }), ("runT", { fn_idx := u32 7 }),
+   ("runQ", { fn_idx := u32 8 }), ("runS", { fn_idx := u32 9 }),
+   ("runDxr", { fn_idx := u32 10 }), ("fetchDxr", { fn_idx := u32 11 }),
+   ("runFwd", { fn_idx := u32 12 }), ("runY", { fn_idx := u32 13 }),
+   ("runDy", { fn_idx := u32 14 }), ("runSgd", { fn_idx := u32 15 }),
+   ("fetchY", { fn_idx := u32 16 }), ("runAdj", { fn_idx := u32 17 }),
+   ("runBwdAll", { fn_idx := u32 18 })]
+
 def artifacts : Array Json :=
-  #[ toJsonArtifact "backward_wide" setup { fn_idx := u32 1 }
-       [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
-        ("runDw", { fn_idx := u32 4 }), ("fetchDw", { fn_idx := u32 5 }),
-        ("runSiluBwd", { fn_idx := u32 6 }), ("runT", { fn_idx := u32 7 }),
-        ("runQ", { fn_idx := u32 8 }), ("runS", { fn_idx := u32 9 }),
-        ("runDxr", { fn_idx := u32 10 }), ("fetchDxr", { fn_idx := u32 11 }),
-        ("runFwd", { fn_idx := u32 12 }), ("runY", { fn_idx := u32 13 }),
-        ("runDy", { fn_idx := u32 14 }), ("runSgd", { fn_idx := u32 15 }),
-        ("fetchY", { fn_idx := u32 16 }), ("runAdj", { fn_idx := u32 17 }),
-         ("runBwdAll", { fn_idx := u32 18 })] ]
+  #[ toJsonArtifact "backward_wide" setup entryAlg extraAlgs ]
 
 end BackwardWide
 
@@ -1272,5 +1278,21 @@ theorem bwd_chain (st : WSt) (cta : Nat) (hlt : cta < GRID) :
     (by decide) (by decide) (by decide) (by decide) K EGRID GRID st cta hlt
     (fun i hi l => ⟨i, by simpa [K, geom, EGRID, egeom, MapGeom.simple] using hi, l, rfl⟩)
 
+
+/-- **Every launch fills the array whose length it declares.**
+
+    `nBufs` is written by hand here, so a launch could declare more buffers
+    than the program stores and the driver would read past the array.
+
+    Checked over the sequences the *artifact* exposes, not over
+    `Program.functions`: the entry point writes the bind table and each extra
+    is a later call that reads it, and the listing order is neither. The
+    indices come from `extraAlgs`, the list the artifact ships, so adding an
+    entry point without checking it is not possible — which matters most here,
+    where there are seventeen. -/
+theorem launch_arity_ok :
+    AlgorithmLib.Clif.artifactArityOkB clifIR entryAlg.fn_idx.toNat
+      (extraAlgs.map (fun e => e.2.fn_idx.toNat)) = true := by
+  native_decide
 
 end BackwardWide

@@ -210,13 +210,34 @@ def initialMemory : List UInt8 :=
   zeros PTX_OFF ++ p ++ zeros (PTX_L_OFF - PTX_OFF - p.length)
     ++ q ++ zeros (MEM_SIZE - PTX_L_OFF - q.length)
 
+/-- The entry point, and the extras the runtime may call after it.  Named so
+    the artifact and the arity theorem below read the same list. -/
+def entryAlg : Algorithm := { fn_idx := u32 1 }
+
+def extraAlgs : List (String × Algorithm) :=
+  [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
+   ("runLoop", { fn_idx := u32 4 })]
+
 def artifacts : Array Json :=
   #[ toJsonArtifact "silu_warp"
       { clif := clifIR, memory_size := MEM_SIZE, initial_memory := initialMemory }
-      { fn_idx := u32 1 }
-      [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
-       ("runLoop", { fn_idx := u32 4 })] ]
+      entryAlg extraAlgs ]
 
+
+/-- **Every launch fills the array whose length it declares.**
+
+    `nBufs` is written by hand here, so a launch could declare more buffers
+    than the program stores and the driver would read past the array.
+
+    Checked over the sequences the *artifact* exposes, not over
+    `Program.functions`: the entry point writes the bind table and each extra
+    is a later call that reads it, and the listing order is neither. The
+    indices come from `extraAlgs`, the list the artifact ships, so adding an
+    entry point without checking it is not possible. -/
+theorem launch_arity_ok :
+    AlgorithmLib.Clif.artifactArityOkB clifIR entryAlg.fn_idx.toNat
+      (extraAlgs.map (fun e => e.2.fn_idx.toNat)) = true := by
+  native_decide
 
 end SiluWarp
 

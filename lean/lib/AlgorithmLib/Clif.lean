@@ -1303,6 +1303,27 @@ def bindsAcross (root : Nat) (fs : List FuncData) : List OpBinds :=
 def launchesAcross (fs : List FuncData) : List LaunchRec :=
   fs.flatMap launchesOf
 
+/-- **The functions an artifact calls, in the order it calls them.**
+
+    `Program.functions` is a listing, not a schedule: the runtime picks entry
+    points by `Algorithm.fn_idx`, so which function runs after which is a fact
+    about the artifact and not about the program.  A scan that needs the memory
+    one function left for the next has to be told. -/
+def _root_.AlgorithmLib.IR.Program.callOrder (p : Program) (idxs : List Nat) : List FuncData :=
+  idxs.filterMap (fun i => p.functions[i]?)
+
+/-- **The call sequences an artifact exposes.**
+
+    Its entry point runs first — that is the call that allocates the buffers
+    and writes the bind table — and each extra is then a separate call from the
+    runtime, reading the memory the entry point left.  So the sequences are the
+    entry point alone, and the entry point followed by each extra.
+
+    Taken from the artifact's own `fn_idx` values rather than restated beside
+    them, so a generator that adds an entry point cannot forget to check it. -/
+def artifactOrders (mainIdx : Nat) (extraIdxs : List Nat) : List (List Nat) :=
+  [mainIdx] :: extraIdxs.map (fun k => [mainIdx, k])
+
 /-- **Every launch fills the array whose length it declares.**
 
     `nBufs` is written by hand at most launch sites — only the typed
@@ -1334,6 +1355,10 @@ def launchArityOkB (root : Nat) (fs : List FuncData) : Bool :=
           match p.2.bufs with
           | some arr => n == Int.ofNat arr.length
           | none     => false
+
+/-- The same, over every sequence an artifact can be driven through. -/
+def artifactArityOkB (p : Program) (mainIdx : Nat) (extraIdxs : List Nat) : Bool :=
+  (artifactOrders mainIdx extraIdxs).all fun o => launchArityOkB 0 (p.callOrder o)
 
 /-- **The two passes agree about the value model.**  `bindScan` threads exactly
     `evalPure`, so a bind array recovered here was resolved against the same
