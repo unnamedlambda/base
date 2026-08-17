@@ -1026,4 +1026,203 @@ theorem const_sound_iadd {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V
     obtain ⟨t1, w, hw, htt, hs, hf⟩ := hag v k hv
     exact ⟨t1, w, getV_setV_ne hvd hw, htt, hs, hf⟩
 
+/-- `mulSym` reports a constant only by folding two of them. -/
+theorem mulSym_const {e : Env} {a b : Val} {k : Int} (h : mulSym e a b = .const k) :
+    ∃ xa xb, e a = .const xa ∧ e b = .const xb ∧ constIf (xa * xb) = .const k := by
+  unfold mulSym at h
+  cases hea : e a <;> cases heb : e b <;> rw [hea, heb] at h <;>
+    first | exact ⟨_, _, rfl, rfl, h⟩ | (exfalso; revert h; simp)
+
+/-- The `isub` arm folds two constants; its other two arms name an expression
+    or a displacement, never a number. -/
+theorem stepPure_isub_const {e : Env} {d a b : Val} {k : Int}
+    (h : stepPure e (.isub d a b) d = .const k) :
+    ∃ xa xb, e a = .const xa ∧ e b = .const xb ∧ constIf (xa - xb) = .const k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  cases hea : e a <;> cases heb : e b <;> rw [hea, heb] at h <;>
+    first
+      | exact ⟨_, _, rfl, rfl, h⟩
+      | (exfalso; revert h; simp only [offsetIf, constIf]; split <;> simp)
+      | (exfalso; revert h; simp)
+
+theorem const_sound_isub {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.isub d a b) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.isub d a b)) := by
+  obtain ⟨t, wa, wb, hga, hgb, _, hdd, hx⟩ := evalInst_isub_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq] at hv
+    obtain ⟨xa, xb, hea, heb, hfold⟩ := stepPure_isub_const hv
+    obtain ⟨hsum, hin⟩ := constIf_const hfold
+    obtain ⟨ta, wa', hva, hta, hsa, _⟩ := hag a xa hea
+    obtain ⟨tb, wb', hvb, _, hsb, _⟩ := hag b xb heb
+    rw [hga] at hva; rw [hgb] at hvb
+    have hta' : TrackedTy t := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed t wa = xa := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    have hsb' : signed t wb = xb := by
+      injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
+    refine ⟨t, (wa - wb) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
+    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [signed_mask_of hta', signed_sub hta' hsa' hsb' hin, hsum]
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w, hw, htt, hs, hf⟩ := hag v k hv
+    exact ⟨t1, w, getV_setV_ne hvd hw, htt, hs, hf⟩
+
+theorem const_sound_imul {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.imul d a b) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.imul d a b)) := by
+  obtain ⟨t, wa, wb, hga, hgb, _, hdd, hx⟩ := evalInst_imul_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq, stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    obtain ⟨xa, xb, hea, heb, hfold⟩ := mulSym_const hv
+    obtain ⟨hsum, hin⟩ := constIf_const hfold
+    obtain ⟨ta, wa', hva, hta, hsa, _⟩ := hag a xa hea
+    obtain ⟨tb, wb', hvb, _, hsb, _⟩ := hag b xb heb
+    rw [hga] at hva; rw [hgb] at hvb
+    have hta' : TrackedTy t := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed t wa = xa := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    have hsb' : signed t wb = xb := by
+      injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
+    refine ⟨t, (wa * wb) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
+    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [signed_mask_of hta', signed_mul hta' hsa' hsb' hin, hsum]
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w, hw, htt, hs, hf⟩ := hag v k hv
+    exact ⟨t1, w, getV_setV_ne hvd hw, htt, hs, hf⟩
+
+/-- The `ineg` arm folds a constant; nothing else reports one. -/
+theorem stepPure_ineg_const {e : Env} {d a : Val} {k : Int}
+    (h : stepPure e (.ineg d a) d = .const k) :
+    ∃ xa, e a = .const xa ∧ constIf (-xa) = .const k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  cases hea : e a <;> rw [hea] at h <;>
+    first | exact ⟨_, rfl, h⟩ | (exfalso; revert h; simp)
+
+theorem const_sound_ineg {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.ineg d a) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.ineg d a)) := by
+  obtain ⟨t, w, hga, _, hdd, hx⟩ := evalInst_ineg_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq] at hv
+    obtain ⟨xa, hea, hfold⟩ := stepPure_ineg_const hv
+    obtain ⟨hsum, hin⟩ := constIf_const hfold
+    obtain ⟨ta, w', hva, hta, hsa, _⟩ := hag a xa hea
+    rw [hga] at hva
+    have hta' : TrackedTy t := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed t w = xa := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    refine ⟨t, (0 - w) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
+    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [signed_mask_of hta', signed_neg hta' hsa' hin, hsum]
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
+    exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
+/-- The retagging arms pass a constant through unchanged, except that
+    `uextend64` refuses a negative one. -/
+theorem stepPure_sextend64_const {e : Env} {d a : Val} {k : Int}
+    (h : stepPure e (.sextend64 d a) d = .const k) : e a = .const k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h; exact h
+
+theorem stepPure_ireduce32_const {e : Env} {d a : Val} {k : Int}
+    (h : stepPure e (.ireduce32 d a) d = .const k) : e a = .const k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h; exact h
+
+theorem stepPure_uextend64_const {e : Env} {d a : Val} {k : Int}
+    (h : stepPure e (.uextend64 d a) d = .const k) : e a = .const k ∧ 0 ≤ k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  cases hea : e a <;> rw [hea] at h <;> simp_all
+  split at h
+  · rename_i h0
+    injection h with hk
+    subst hk
+    exact ⟨rfl, h0⟩
+  · exact absurd h (by simp)
+
+theorem const_sound_sextend64 {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.sextend64 d a) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.sextend64 d a)) := by
+  obtain ⟨t, w, hga, _, _, hdd, hx⟩ := evalInst_sextend64_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq] at hv
+    have hea := stepPure_sextend64_const hv
+    obtain ⟨ta, w', hva, hta, hsa, hf⟩ := hag a k hea
+    rw [hga] at hva
+    have hsa' : signed t w = k := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    obtain ⟨w2, hof, hsg⟩ := signed_ofInt (t := ClifTy.i64) (Or.inr rfl) hf
+    refine ⟨ClifTy.i64, w2, ?_, Or.inr rfl, hsg, hf⟩
+    rw [hveq, hx, hsa', hof]; exact getV_setV_self vs dd _
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
+    exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
+theorem const_sound_ireduce32 {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.ireduce32 d a) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.ireduce32 d a)) := by
+  obtain ⟨t, w, hga, _, _, hdd, hx⟩ := evalInst_ireduce32_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq] at hv
+    have hea := stepPure_ireduce32_const hv
+    obtain ⟨ta, w', hva, hta, hsa, hf⟩ := hag a k hea
+    rw [hga] at hva
+    have hta' : TrackedTy t := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed t w = k := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    refine ⟨ClifTy.i32, w &&& widthMask ClifTy.i32, ?_, Or.inl rfl,
+            signed_reduce32 hta' hsa' hf, hf⟩
+    rw [hveq, hx]; exact getV_setV_self vs dd _
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
+    exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
+theorem const_sound_uextend64 {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.uextend64 d a) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.uextend64 d a)) := by
+  obtain ⟨t, w, hga, _, _, hdd, hx⟩ := evalInst_uextend64_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq] at hv
+    obtain ⟨hea, hk0⟩ := stepPure_uextend64_const hv
+    obtain ⟨ta, w', hva, hta, hsa, hf⟩ := hag a k hea
+    rw [hga] at hva
+    have hta' : TrackedTy t := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed t w = k := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    refine ⟨ClifTy.i64, w &&& widthMask t, ?_, Or.inr rfl,
+            signed_uextend64 hta' hsa' hk0 hf, hf⟩
+    rw [hveq, hx]; exact getV_setV_self vs dd _
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
+    exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
 end AlgorithmLib.Clif.Check
