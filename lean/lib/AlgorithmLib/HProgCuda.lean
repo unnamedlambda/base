@@ -22,17 +22,26 @@ namespace AlgorithmLib.HProg.Sur
 open AlgorithmLib.IR
 open AlgorithmLib.Tensor (Dim Shape)
 
-/-- Write the bind descriptor and issue the launch. Buffers are named by slot,
-    one `i32` per binding at `bindOff + 4i`, which is the table the kernel's
-    parameters were emitted against. -/
-def kernelLaunchAt
+/-- **Write the bind descriptor.**  Buffers are named by slot, one `i32` per
+    binding at `bindOff + 4i`, which is the table the kernel's parameters were
+    emitted against.  The obligation says the table is as long as the kernel
+    declares, discharged by `rfl` at the call site. -/
+def kernelBindAt
     (k : AlgorithmLib.Kernel) (ptr : R)
     (bindOff : Nat) (bufs : List R)
     (_harity : bufs.length = k.params.length := by rfl) : M Unit := do
-  let expected := k.params.length
   for (b, i) in bufs.zip (List.range bufs.length) do
     storeUnaligned b (← iaddImm ptr (bindOff + i * 4))
-  let arity32 ← iconst32 expected
+
+/-- **Issue the launch against a table already written.**
+
+    Generators bind once — where the buffers are made — and launch many times,
+    so the two halves sit in different functions and no scan within either can
+    relate them.  Taking the declared arity from `k.params.length` here, as
+    `kernelBindAt` takes the table's length from the same `k`, makes the launch
+    agree with its table across that boundary by construction. -/
+def kernelRelaunch (k : AlgorithmLib.Kernel) (ptr : R) (bindOff : Nat) : M Unit := do
+  let arity32 ← iconst32 k.params.length
   let ptxOff64  ← iconst64 k.ptxOff
   let bindOff64 ← iconst64 bindOff
   let gx ← iconst32 k.geom.gridX
@@ -43,6 +52,14 @@ def kernelLaunchAt
   let bz ← iconst32 k.geom.blockZ
   let _ ← cudaLaunch ptr ptxOff64 arity32 bindOff64 gx gy gz bx by_ bz
   pure ()
+
+/-- Bind and launch from one site. -/
+def kernelLaunchAt
+    (k : AlgorithmLib.Kernel) (ptr : R)
+    (bindOff : Nat) (bufs : List R)
+    (harity : bufs.length = k.params.length := by rfl) : M Unit := do
+  kernelBindAt k ptr bindOff bufs harity
+  kernelRelaunch k ptr bindOff
 
 /-- Bindings, shape checked against `k.params`. -/
 def launch2 {s1 s2 : Shape}
