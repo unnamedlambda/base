@@ -420,4 +420,15 @@ theorem constLit_sound (t : ClifTy) (v : Int) (h : litOk t v = true) :
       rw [show (widthMask .i64) = 18446744073709551615 from rfl, signed_i64_mask]
       exact signed_i64_of_toNat v _ hn hb.1 hb.2⟩
 
+/-- A tracked type is one of the two the model admits. -/
+def TrackedTy (t : ClifTy) : Prop := t = .i32 ∨ t = .i64
+
+/-- A tracked word determines its signed value modulo `2 ^ 32`. -/
+theorem congr32_of_signed {t : ClifTy} (ht : TrackedTy t) {b : UInt64} {y : Int}
+    (h : signed t b = y) : (b.toNat : Int) % 4294967296 = y % 4294967296 := by
+  have hlt : b.toNat < 2 ^ 64 := b.toNat_lt_size
+  rcases ht with rfl | rfl
+  · rw [signed_i32_eq] at h; split at h <;> omega
+  · rw [signed_i64_eq] at h; split at h <;> omega
+
 end AlgorithmLib.Clif.Check
