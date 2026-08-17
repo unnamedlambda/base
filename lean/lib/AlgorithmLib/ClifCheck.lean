@@ -310,4 +310,114 @@ theorem stepPure_slot_agrees : slotOk = true := by native_decide
 
 theorem slot_check_is_live : (slotLiveCount == 200) = true := by native_decide
 
+
+/-! ### From checked to proved: the constant arm, against the machine
+
+    Everything above *tests* the model against `evalInst` over a corpus.  This
+    proves one arm of it outright, and the reasoning it needs is ordinary: the
+    width mask is `Nat.and_two_pow_sub_one_eq_mod` from core, and once `signed`
+    is stated as arithmetic on `toNat`, `omega` closes the rest.  No Mathlib is
+    involved, and neither is `native_decide`. -/
+
+theorem mask32 (x : UInt64) : (x &&& 4294967295).toNat = x.toNat % 2 ^ 32 := by
+  rw [UInt64.toNat_and, show (4294967295 : UInt64).toNat = 2 ^ 32 - 1 from rfl,
+      Nat.and_two_pow_sub_one_eq_mod]
+
+theorem signed_i32_eq (x : UInt64) :
+    signed .i32 x
+      = if 2147483648 ≤ x.toNat % 2 ^ 32
+        then ((x.toNat % 2 ^ 32 : Nat) : Int) - 4294967296
+        else ((x.toNat % 2 ^ 32 : Nat) : Int) := by
+  simp only [signed, AlgorithmLib.IR.ClifTy.width, widthMask,
+             show (1 <<< UInt64.ofNat (32 - 1) : UInt64) = 2147483648 from by decide,
+             ge_iff_le, UInt64.le_iff_toNat_le, mask32,
+             show ((2147483648 : UInt64)).toNat = 2147483648 from rfl,
+             show ¬ (64 ≤ 32) from by decide, if_false,
+             show ((1 <<< 32 : Nat) : Int) = 4294967296 from rfl]
+
+theorem signed_i32_of_toNat (k : Int) (n : Nat)
+    (hn : (n : Int) = k.emod 18446744073709551616)
+    (h0 : -2147483648 ≤ k) (h1 : k < 2147483648) :
+    signed .i32 (UInt64.ofNat n) = k := by
+  rw [signed_i32_eq,
+      show (UInt64.ofNat n).toNat = n % 2 ^ 64 from by simp,
+      Nat.mod_mod_of_dvd _ (by decide : (2:Nat) ^ 32 ∣ 2 ^ 64)]
+  have d1 : 0 ≤ k.emod 18446744073709551616 := Int.emod_nonneg k (by decide)
+  have d2 : k.emod 18446744073709551616 < 18446744073709551616 :=
+    Int.emod_lt_of_pos k (by decide)
+  have d3 : 18446744073709551616 * (k / 18446744073709551616)
+              + k.emod 18446744073709551616 = k := Int.ediv_add_emod k _
+  split <;> omega
+
+theorem signed_i32_of_inFold (k : Int) (h0 : -2147483648 ≤ k) (h1 : k < 2147483648) :
+    signed .i32 (UInt64.ofNat (k.emod (1 <<< 64)).toNat) = k := by
+  refine signed_i32_of_toNat k _ ?_ h0 h1
+  have hlo : (0 : Int) ≤ k.emod 18446744073709551616 :=
+    Int.emod_nonneg k (by decide)
+  simpa only [Int.ofNat_eq_natCast] using Int.toNat_of_nonneg hlo
+
+theorem mask64 (x : UInt64) : (x &&& 18446744073709551615).toNat = x.toNat := by
+  rw [UInt64.toNat_and, show (18446744073709551615 : UInt64).toNat = 2 ^ 64 - 1 from rfl,
+      Nat.and_two_pow_sub_one_eq_mod]
+  exact Nat.mod_eq_of_lt x.toNat_lt_size
+
+theorem signed_i64_eq (x : UInt64) :
+    signed .i64 x
+      = if 9223372036854775808 ≤ x.toNat
+        then (x.toNat : Int) - 18446744073709551616
+        else (x.toNat : Int) := by
+  simp only [signed, AlgorithmLib.IR.ClifTy.width, widthMask,
+             ge_iff_le, UInt64.le_iff_toNat_le, mask64,
+             show ((9223372036854775808 : UInt64)).toNat = 9223372036854775808 from rfl,
+             show (64 ≤ 64) from by decide, if_true,
+             show ((1 <<< 64 : Nat) : Int) = 18446744073709551616 from rfl]
+
+theorem signed_i64_of_toNat (k : Int) (n : Nat)
+    (hn : (n : Int) = k.emod 18446744073709551616)
+    (h0 : -2147483648 ≤ k) (h1 : k < 2147483648) :
+    signed .i64 (UInt64.ofNat n) = k := by
+  rw [signed_i64_eq, show (UInt64.ofNat n).toNat = n % 2 ^ 64 from by simp]
+  have d1 : 0 ≤ k.emod 18446744073709551616 := Int.emod_nonneg k (by decide)
+  have d2 : k.emod 18446744073709551616 < 18446744073709551616 :=
+    Int.emod_lt_of_pos k (by decide)
+  have d3 : 18446744073709551616 * (k / 18446744073709551616)
+              + k.emod 18446744073709551616 = k := Int.ediv_add_emod k _
+  split <;> omega
+
+theorem signed_i32_mask (x : UInt64) :
+    signed .i32 (x &&& 4294967295) = signed .i32 x := by
+  rw [signed_i32_eq, signed_i32_eq, mask32,
+      Nat.mod_mod_of_dvd _ (Nat.dvd_refl (2 ^ 32))]
+
+theorem signed_i64_mask (x : UInt64) :
+    signed .i64 (x &&& 18446744073709551615) = signed .i64 x := by
+  rw [signed_i64_eq, signed_i64_eq, mask64]
+
+/-- **The constant arm of `stepPure` is sound against the machine.**
+
+    `constLit` reports `const v` only when `litOk` holds — the literal is
+    inside the foldable range and its type is one of the two the model tracks.
+    This says that when it does, the word `Sem.ofInt` builds for the same
+    literal reads back as exactly `v`, which is the claim `claimHolds` checks
+    over a corpus and this proves outright. -/
+theorem constLit_sound (t : ClifTy) (v : Int) (h : litOk t v = true) :
+    ∃ x, ofInt t v = .sc t x ∧ signed t x = v := by
+  have hf : inFold v = true := by
+    simp only [litOk, Bool.and_eq_true] at h; exact h.1
+  have hb : -2147483648 ≤ v ∧ v < 2147483648 := by
+    simp only [inFold, foldableRange, decide_eq_true_eq, Bool.and_eq_true] at hf
+    omega
+  have hn : ((v.emod (1 <<< 64)).toNat : Int) = v.emod 18446744073709551616 := by
+    have hlo : (0 : Int) ≤ v.emod 18446744073709551616 := Int.emod_nonneg v (by decide)
+    simpa only [Int.ofNat_eq_natCast] using Int.toNat_of_nonneg hlo
+  cases t <;> simp only [litOk, Bool.and_eq_true, and_false, Bool.false_eq_true] at h
+  case i32 =>
+    exact ⟨_, rfl, by
+      rw [show (widthMask .i32) = 4294967295 from rfl, signed_i32_mask]
+      exact signed_i32_of_toNat v _ hn hb.1 hb.2⟩
+  case i64 =>
+    exact ⟨_, rfl, by
+      rw [show (widthMask .i64) = 18446744073709551615 from rfl, signed_i64_mask]
+      exact signed_i64_of_toNat v _ hn hb.1 hb.2⟩
+
 end AlgorithmLib.Clif.Check
