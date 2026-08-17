@@ -480,4 +480,195 @@ theorem congr32_of_signed {t : ClifTy} (ht : TrackedTy t) {b : UInt64} {y : Int}
   · rw [signed_i32_eq] at h; split at h <;> omega
   · rw [signed_i64_eq] at h; split at h <;> omega
 
+
+/-! ### The word a tracked type carries, as a congruence
+
+    Every arm below is the same argument: the machine computes on `UInt64` and
+    wraps, the model computes on `Int` and does not, and they agree exactly
+    while the result stays inside `foldableRange`.  Stating "the word determines
+    the signed value" as a congruence modulo the type's own width turns each arm
+    into `Int.add_emod`/`Int.mul_emod` and one `omega`. -/
+
+/-- The modulus at which a tracked type's word determines its signed value. -/
+def modOf : ClifTy → Int
+  | .i32 => 4294967296
+  | _    => 18446744073709551616
+
+theorem congr_of_signed {t : ClifTy} (ht : TrackedTy t) {b : UInt64} {y : Int}
+    (h : signed t b = y) : (b.toNat : Int) % modOf t = y % modOf t := by
+  have hlt : b.toNat < 2 ^ 64 := b.toNat_lt_size
+  rcases ht with rfl | rfl
+  · rw [signed_i32_eq] at h; split at h <;> simp only [modOf] <;> omega
+  · rw [signed_i64_eq] at h; split at h <;> simp only [modOf] <;> omega
+
+/-- …and the converse, for a value the model reports: inside `foldableRange`
+    the congruence pins it. -/
+theorem signed_of_congr {t : ClifTy} (ht : TrackedTy t) {w : UInt64} {k : Int}
+    (hk : inFold k = true) (hc : (w.toNat : Int) % modOf t = k % modOf t) :
+    signed t w = k := by
+  have hb : -2147483648 ≤ k ∧ k < 2147483648 := by
+    simp only [inFold, foldableRange, decide_eq_true_eq, Bool.and_eq_true] at hk
+    omega
+  have hlt : w.toNat < 2 ^ 64 := w.toNat_lt_size
+  rcases ht with rfl | rfl
+  · rw [signed_i32_eq]; simp only [modOf] at hc; split <;> omega
+  · rw [signed_i64_eq]; simp only [modOf] at hc; split <;> omega
+
+/-- The type's modulus divides the word's, so a `UInt64` result may be reduced
+    at either. -/
+theorem modOf_dvd {t : ClifTy} (ht : TrackedTy t) :
+    modOf t ∣ (18446744073709551616 : Int) := by
+  rcases ht with rfl | rfl
+  · exact ⟨4294967296, by decide⟩
+  · exact ⟨1, by decide⟩
+
+theorem toNat_mod_pow {t : ClifTy} (ht : TrackedTy t) (w : UInt64) :
+    ((w.toNat % 2 ^ 64 : Nat) : Int) % modOf t = (w.toNat : Int) % modOf t := by
+  rw [Nat.mod_eq_of_lt w.toNat_lt_size]
+
+
+theorem signed_mask_of {t : ClifTy} (ht : TrackedTy t) (x : UInt64) :
+    signed t (x &&& widthMask t) = signed t x := by
+  rcases ht with rfl | rfl
+  · exact signed_i32_mask x
+  · exact signed_i64_mask x
+
+theorem signed_add {t : ClifTy} (ht : TrackedTy t) {a b : UInt64} {x y : Int}
+    (ha : signed t a = x) (hb : signed t b = y) (h : inFold (x + y) = true) :
+    signed t (a + b) = x + y := by
+  refine signed_of_congr ht h ?_
+  have hA := congr_of_signed ht ha
+  have hB := congr_of_signed ht hb
+  rw [UInt64.toNat_add]
+  show (((a.toNat + b.toNat : Nat) : Int) % ((2 ^ 64 : Nat) : Int)) % modOf t = _
+  rw [show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      Int.emod_emod_of_dvd _ (modOf_dvd ht), Int.natCast_add,
+      Int.add_emod (a.toNat : Int), hA, hB, ← Int.add_emod]
+
+theorem signed_mul {t : ClifTy} (ht : TrackedTy t) {a b : UInt64} {x y : Int}
+    (ha : signed t a = x) (hb : signed t b = y) (h : inFold (x * y) = true) :
+    signed t (a * b) = x * y := by
+  refine signed_of_congr ht h ?_
+  have hA := congr_of_signed ht ha
+  have hB := congr_of_signed ht hb
+  rw [UInt64.toNat_mul]
+  show (((a.toNat * b.toNat : Nat) : Int) % ((2 ^ 64 : Nat) : Int)) % modOf t = _
+  rw [show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      Int.emod_emod_of_dvd _ (modOf_dvd ht), Int.natCast_mul,
+      Int.mul_emod (a.toNat : Int), hA, hB, ← Int.mul_emod]
+
+theorem signed_sub {t : ClifTy} (ht : TrackedTy t) {a b : UInt64} {x y : Int}
+    (ha : signed t a = x) (hb : signed t b = y) (h : inFold (x - y) = true) :
+    signed t (a - b) = x - y := by
+  refine signed_of_congr ht h ?_
+  have hA := congr_of_signed ht ha
+  have hB := congr_of_signed ht hb
+  have hble : b.toNat ≤ 2 ^ 64 := Nat.le_of_lt b.toNat_lt_size
+  obtain ⟨q, hq⟩ := modOf_dvd ht
+  rw [UInt64.toNat_sub]
+  show ((((2 ^ 64 - b.toNat) + a.toNat : Nat) : Int) % ((2 ^ 64 : Nat) : Int)) % modOf t = _
+  rw [show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      Int.emod_emod_of_dvd _ (modOf_dvd ht), Int.natCast_add, Int.ofNat_sub hble,
+      show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      show (18446744073709551616 : Int) - (b.toNat : Int) + (a.toNat : Int)
+         = ((a.toNat : Int) - (b.toNat : Int)) + 18446744073709551616 from by omega,
+      hq, Int.add_mul_emod_self_left, Int.sub_emod, hA, hB, ← Int.sub_emod]
+
+theorem signed_zero {t : ClifTy} (ht : TrackedTy t) : signed t 0 = 0 := by
+  rcases ht with rfl | rfl
+  · rw [signed_i32_eq]; decide
+  · rw [signed_i64_eq]; decide
+
+theorem signed_neg {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {x : Int}
+    (ha : signed t a = x) (h : inFold (-x) = true) : signed t (0 - a) = -x := by
+  have hz : inFold (0 - x) = true := by rw [Int.zero_sub]; exact h
+  have := signed_sub ht (signed_zero ht) ha hz
+  rw [Int.zero_sub] at this; exact this
+
+/-- A shift by `s` is a multiplication by `2 ^ s`, modulo the word. -/
+theorem signed_shl {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {x : Int} {s : Nat}
+    (hs : s < 64) (ha : signed t a = x) (h : inFold (x * 2 ^ s) = true) :
+    signed t (a <<< UInt64.ofNat s) = x * 2 ^ s := by
+  refine signed_of_congr ht h ?_
+  have hA := congr_of_signed ht ha
+  have hsm : (UInt64.ofNat s).toNat % 64 = s := by
+    rw [show (UInt64.ofNat s).toNat = s % 2 ^ 64 from by simp,
+        Nat.mod_eq_of_lt (Nat.lt_trans hs (by decide)), Nat.mod_eq_of_lt hs]
+  rw [UInt64.toNat_shiftLeft, hsm, Nat.shiftLeft_eq]
+  show (((a.toNat * 2 ^ s : Nat) : Int) % ((2 ^ 64 : Nat) : Int)) % modOf t = _
+  rw [show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      Int.emod_emod_of_dvd _ (modOf_dvd ht), Int.natCast_mul,
+      show (((2 ^ s : Nat) : Int)) = (2 : Int) ^ s from by simp,
+      Int.mul_emod (a.toNat : Int), hA, ← Int.mul_emod]
+
+/-- A non-negative tracked value's masked word *is* that value. -/
+theorem masked_toNat {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {x : Int}
+    (ha : signed t a = x) (h0 : 0 ≤ x) (hf : inFold x = true) :
+    (a &&& widthMask t).toNat = x.toNat := by
+  have hb : x < 2147483648 := by
+    simp only [inFold, foldableRange, decide_eq_true_eq, Bool.and_eq_true] at hf; omega
+  have hx : ((x.toNat : Nat) : Int) = x := Int.toNat_of_nonneg h0
+  have hlt : a.toNat < 2 ^ 64 := a.toNat_lt_size
+  rcases ht with rfl | rfl
+  · have hm : (a &&& widthMask .i32).toNat = a.toNat % 2 ^ 32 := by
+      rw [show (widthMask .i32) = 4294967295 from rfl]; exact mask32 a
+    rw [signed_i32_eq] at ha
+    rw [hm]; split at ha <;> omega
+  · have hm : (a &&& widthMask .i64).toNat = a.toNat := by
+      rw [show (widthMask .i64) = 18446744073709551615 from rfl]; exact mask64 a
+    rw [signed_i64_eq] at ha
+    rw [hm]; split at ha <;> omega
+
+/-- A logical shift right is division, on a non-negative operand. -/
+theorem signed_ushr {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {x : Int} {s : Nat}
+    (hs : s < 64) (ha : signed t a = x) (h0 : 0 ≤ x) (hf : inFold x = true) :
+    signed t ((a &&& widthMask t) >>> UInt64.ofNat s) = x / 2 ^ s := by
+  have hb : x < 2147483648 := by
+    simp only [inFold, foldableRange, decide_eq_true_eq, Bool.and_eq_true] at hf; omega
+  have hpos : (0 : Int) < 2 ^ s := by
+    have hn : (0 : Nat) < 2 ^ s := Nat.two_pow_pos s
+    rw [show ((2 : Int) ^ s) = ((2 ^ s : Nat) : Int) from by simp]; omega
+  have hdiv0 : 0 ≤ x / 2 ^ s := Int.ediv_nonneg h0 (Int.le_of_lt hpos)
+  have hdivlt : x / 2 ^ s ≤ x := Int.ediv_le_self _ h0
+  have hres : inFold (x / 2 ^ s) = true := by
+    simp only [inFold, foldableRange, decide_eq_true_eq, Bool.and_eq_true]; omega
+  refine signed_of_congr ht hres ?_
+  have hsm : (UInt64.ofNat s).toNat % 64 = s := by
+    rw [show (UInt64.ofNat s).toNat = s % 2 ^ 64 from by simp,
+        Nat.mod_eq_of_lt (Nat.lt_trans hs (by decide)), Nat.mod_eq_of_lt hs]
+  rw [UInt64.toNat_shiftRight, hsm, masked_toNat ht ha h0 hf,
+      Nat.shiftRight_eq_div_pow]
+  show ((x.toNat : Int) / ((2 ^ s : Nat) : Int)) % modOf t = _
+  rw [Int.toNat_of_nonneg h0, show (((2 ^ s : Nat) : Int)) = (2 : Int) ^ s from by simp]
+
+/-- The word `ofInt` builds for a foldable literal reads back as that literal. -/
+theorem signed_ofInt {t : ClifTy} (ht : TrackedTy t) {k : Int} (h : inFold k = true) :
+    ∃ w, ofInt t k = .sc t w ∧ signed t w = k := by
+  refine constLit_sound t k ?_
+  rcases ht with rfl | rfl <;> simp only [litOk, h, Bool.true_and]
+
+/-- Narrowing to `i32` keeps a foldable value: the range is exact there. -/
+theorem signed_reduce32 {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {k : Int}
+    (ha : signed t a = k) (hf : inFold k = true) :
+    signed .i32 (a &&& widthMask .i32) = k := by
+  rw [show (widthMask .i32) = 4294967295 from rfl, signed_i32_mask]
+  refine signed_of_congr (Or.inl rfl) hf ?_
+  have hA := congr_of_signed ht ha
+  rcases ht with rfl | rfl
+  · exact hA
+  · simp only [modOf] at hA ⊢
+    rw [show (4294967296 : Int) = 4294967296 from rfl]
+    omega
+
+/-- Zero-extension keeps a *non-negative* value; a negative one it does not,
+    which is why `stepPure` refuses that case rather than passing it through. -/
+theorem signed_uextend64 {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {k : Int}
+    (ha : signed t a = k) (h0 : 0 ≤ k) (hf : inFold k = true) :
+    signed .i64 (a &&& widthMask t) = k := by
+  have hm := masked_toNat ht ha h0 hf
+  have hb : k < 2147483648 := by
+    simp only [inFold, foldableRange, decide_eq_true_eq, Bool.and_eq_true] at hf; omega
+  refine signed_of_congr (Or.inr rfl) hf ?_
+  rw [hm, Int.toNat_of_nonneg h0]
+
 end AlgorithmLib.Clif.Check
