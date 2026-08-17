@@ -1,6 +1,7 @@
 import Lean
 import Std
 import AlgorithmLib.Gen
+import AlgorithmLib.HProgCuda
 
 open Lean
 open AlgorithmLib
@@ -181,6 +182,20 @@ def prepCode : HProg.Code := clif% do
   let dMBytes ← iconst64 D_MODEL_BYTES
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufQ, dataPtr, dMBytes]
 
+/-- **The softmax kernel, as a record its launch site reads.**
+
+    Scores and probs are one row per head, as long as the sequence, which is
+    a runtime value; `meta` carries the two `u32`s that say how long.  The
+    bind table and the launch both take their length from `params`. -/
+def softmaxK : AlgorithmLib.Kernel := {
+  name   := "softmax"
+  params := [{ shape := [.sta N_HEADS, .dyn], ro := true,  name := "scores" },
+             { shape := [.sta 2],             ro := true,  name := "meta" },
+             { shape := [.sta N_HEADS, .dyn], ro := false, name := "probs" }]
+  geom   := AlgorithmLib.Kernel.Geom.static N_HEADS 1 1 256 1 1
+  ptxOff := PTX_SOURCE_OFF
+}
+
 /-- Core: K@q scores, softmax, V^T@probs output. -/
 def coreCode : HProg.Code := clif% do
   let ptr       := basePtr
@@ -199,8 +214,6 @@ def coreCode : HProg.Code := clif% do
   -- dimension. Six arguments the signature has carried since it gained
   -- `off_a/b/c` and `ld_a/b/c`; these call sites never grew them.
   let zero64    ← iconst64 0
-  let blk256    ← iconst32 256
-  let three32   ← iconst32 3
 
   let bufQ      ← load32 (← absAddr ptr BUF_Q_OFF)
   let bufK      ← load32 (← absAddr ptr BUF_K_OFF)
@@ -216,14 +229,7 @@ def coreCode : HProg.Code := clif% do
      bufK, seqHead, bufQ, headDim64, zero32, bufScores, seqLen, nHeads32,
      zero64, zero64, zero64, zero32, zero32, zero32]
 
-  -- Write bind descriptor for softmax: [bufScores, bufMeta, bufProbs]
-  store bufScores (← absAddr ptr BIND_DESC_OFF)
-  store bufMeta   (← absAddr ptr (BIND_DESC_OFF + 4))
-  store bufProbs  (← absAddr ptr (BIND_DESC_OFF + 8))
-
-  -- Launch softmax kernel: gridDim=(N_HEADS,1,1), blockDim=(256,1,1), 3 bufs
-  let _ ← cudaLaunch ptr (← iconst64 PTX_SOURCE_OFF) three32
-             (← iconst64 BIND_DESC_OFF) nHeads32 one32 one32 blk256 one32 one32
+  kernelLaunchAt softmaxK ptr BIND_DESC_OFF [bufScores, bufMeta, bufProbs]
 
   -- out = V^T @ probs, batched over N_HEADS heads
   let _ ← call IR.Ffi.cublasSgemm.id
@@ -332,15 +338,5 @@ def artifacts : Array Json :=
       ("stack", stackAlgorithm)
     ]
   ]
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read whatever lay past the
-    end.  Recovered across the artifact's functions rather than within one,
-    because the bind table is written where the buffers are made and read
-    where the kernel is launched. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.launchArityOkB 0 clifIR.functions = true := by native_decide
 
 end CudaDecodeAttention

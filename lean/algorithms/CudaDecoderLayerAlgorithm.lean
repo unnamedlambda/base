@@ -1,6 +1,7 @@
 import Lean
 import Std
 import AlgorithmLib.Gen
+import AlgorithmLib.HProgCuda
 
 open Lean
 open AlgorithmLib
@@ -259,6 +260,42 @@ def prepCode : HProg.Code := clif% do
   let dmBytes ← iconst64 D_MODEL_BYTES
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufX, dataPtr, dmBytes]
 
+/-! ### The kernels, as records the launch sites read
+
+    Each bind table and the launch that reads it now take their length from
+    the same `params`, so a table and the arity handed to the driver cannot
+    disagree.  `addK` appears at two sites over two tables — same kernel, same
+    declared shape, different scratch. -/
+
+/-- Normalize a `D_MODEL` row by its RMS: `x`, the weights, the output. -/
+def rmsK : AlgorithmLib.Kernel := {
+  name   := "rms"
+  params := [{ shape := [.sta D_MODEL], ro := true,  name := "x" },
+             { shape := [.sta D_MODEL], ro := true,  name := "w" },
+             { shape := [.sta D_MODEL], ro := false, name := "xn" }]
+  geom   := AlgorithmLib.Kernel.Geom.static 1 1 1 256 1 1
+  ptxOff := PTX_RMS_OFF
+}
+
+/-- Residual add, in place: `x += y`. -/
+def addK : AlgorithmLib.Kernel := {
+  name   := "add"
+  params := [{ shape := [.sta D_MODEL], ro := false, name := "x" },
+             { shape := [.sta D_MODEL], ro := true,  name := "y" }]
+  geom   := AlgorithmLib.Kernel.Geom.static 4 1 1 256 1 1
+  ptxOff := PTX_ADD_OFF
+}
+
+/-- SiLU gate: `a = silu(g) * u`, over the FFN width. -/
+def siluK : AlgorithmLib.Kernel := {
+  name   := "silu"
+  params := [{ shape := [.sta D_FF], ro := true,  name := "g" },
+             { shape := [.sta D_FF], ro := true,  name := "u" },
+             { shape := [.sta D_FF], ro := false, name := "a" }]
+  geom   := AlgorithmLib.Kernel.Geom.static 19 1 1 256 1 1
+  ptxOff := PTX_SILU_OFF
+}
+
 def inferCode : HProg.Code := clif% do
   let ptr := basePtr
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
@@ -286,21 +323,13 @@ def inferCode : HProg.Code := clif% do
   let bufWd   ← load32 (← absAddr ptr BUF_WD_OFF)
 
   let one32   ← iconst32 1
-  let three32 ← iconst32 3
-  let two32   ← iconst32 2
-  let four32  ← iconst32 4
-  let blk256  ← iconst32 256
   let dm32    ← iconst32 D_MODEL
   let ff32    ← iconst32 D_FF
   let alpha   ← iconst32 0x3f800000
   let zero32  ← iconst32 0
 
   -- rms1: normalize x with rms1 weights → xn1
-  store bufX   (← absAddr ptr BIND_RMS1_OFF)
-  store bufRms1 (← absAddr ptr (BIND_RMS1_OFF + 4))
-  store bufXn1 (← absAddr ptr (BIND_RMS1_OFF + 8))
-  let _ ← cudaLaunch ptr (← iconst64 PTX_RMS_OFF) three32
-             (← iconst64 BIND_RMS1_OFF) one32 one32 one32 blk256 one32 one32
+  kernelLaunchAt rmsK ptr BIND_RMS1_OFF [bufX, bufRms1, bufXn1]
 
   -- attention projections: q = WQ @ xn1, k = WK @ xn1, v = WV @ xn1, o = WO @ v
   let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWq, bufXn1, zero32, bufQ]
@@ -309,38 +338,23 @@ def inferCode : HProg.Code := clif% do
   let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, dm32, alpha, bufWo, bufV,   zero32, bufO]
 
   -- residual add: x += o
-  store bufX (← absAddr ptr BIND_ADDRMS_OFF)
-  store bufO (← absAddr ptr (BIND_ADDRMS_OFF + 4))
-  let _ ← cudaLaunch ptr (← iconst64 PTX_ADD_OFF) two32
-             (← iconst64 BIND_ADDRMS_OFF) four32 one32 one32 blk256 one32 one32
+  kernelLaunchAt addK ptr BIND_ADDRMS_OFF [bufX, bufO]
 
   -- rms2: normalize x with rms2 weights → xn2
-  store bufX    (← absAddr ptr (BIND_ADDRMS_OFF + 16))
-  store bufRms2 (← absAddr ptr (BIND_ADDRMS_OFF + 20))
-  store bufXn2  (← absAddr ptr (BIND_ADDRMS_OFF + 24))
-  let _ ← cudaLaunch ptr (← iconst64 PTX_RMS_OFF) three32
-             (← iconst64 (BIND_ADDRMS_OFF + 16)) one32 one32 one32 blk256 one32 one32
+  kernelLaunchAt rmsK ptr (BIND_ADDRMS_OFF + 16) [bufX, bufRms2, bufXn2]
 
   -- FFN: gate = WG @ xn2, up = WU @ xn2
   let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, ff32, alpha, bufWg, bufXn2, zero32, bufG]
   let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, dm32, ff32, alpha, bufWu, bufXn2, zero32, bufU]
 
   -- SiLU-gate: a = silu(g) * u
-  store bufG (← absAddr ptr BIND_SILU_OFF)
-  store bufU (← absAddr ptr (BIND_SILU_OFF + 4))
-  store bufA (← absAddr ptr (BIND_SILU_OFF + 8))
-  let nineteen32 ← iconst32 19
-  let _ ← cudaLaunch ptr (← iconst64 PTX_SILU_OFF) three32
-             (← iconst64 BIND_SILU_OFF) nineteen32 one32 one32 blk256 one32 one32
+  kernelLaunchAt siluK ptr BIND_SILU_OFF [bufG, bufU, bufA]
 
   -- down projection: d = WD @ a
   let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, one32, ff32, dm32, alpha, bufWd, bufA, zero32, bufD]
 
   -- residual add: x += d
-  store bufX (← absAddr ptr BIND_ADD2_OFF)
-  store bufD (← absAddr ptr (BIND_ADD2_OFF + 4))
-  let _ ← cudaLaunch ptr (← iconst64 PTX_ADD_OFF) two32
-             (← iconst64 BIND_ADD2_OFF) four32 one32 one32 blk256 one32 one32
+  kernelLaunchAt addK ptr BIND_ADD2_OFF [bufX, bufD]
 
 /-- Finalize: sync, then download only if the caller asked for output. -/
 def finalizeCode : HProg.Code := clif% do
@@ -358,6 +372,9 @@ def finalizeCode : HProg.Code := clif% do
       pure [])
   return ()
 
+
+-- The launch helpers add definitional layers the body checks reduce through.
+set_option maxRecDepth 4000
 
 theorem bodies_wf :
     HProg.wf envCuda HProg.ptrParams loadCode = true &&
@@ -478,15 +495,5 @@ def artifacts : Array Json :=
       ("stack32", stack32Algorithm)
     ]
   ]
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read whatever lay past the
-    end.  Recovered across the artifact's functions rather than within one,
-    because the bind table is written where the buffers are made and read
-    where the kernel is launched. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.launchArityOkB 0 clifIR.functions = true := by native_decide
 
 end CudaDecoderLayer
