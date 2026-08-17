@@ -413,7 +413,18 @@ def stepPure (e : Env) : Inst → Env
   | .uextend64 d a    => e.set d (match e a with
                                   | .const k => if 0 ≤ k then .const k else .unknown
                                   | _ => .unknown)
-  | .sextend64 d a    => e.set d (e a)
+  -- **Sign extension preserves a number, not a provenance.**  A constant and
+  -- an expression survive it: `litOk` and `DExp.Exact` both bound their value
+  -- to `foldableRange`, where the narrow word and its extension are the same
+  -- integer.  An `offset` does not, because its side condition `inTy` is
+  -- tested at the value's *own* width — widening re-tests it at `i64` and can
+  -- turn a claim that was vacuous into one that is false.  Neither does a
+  -- `slot`, whose destination now holds the extension rather than the word
+  -- that was loaded.
+  | .sextend64 d a    => e.set d (match e a with
+                                  | .const k   => .const k
+                                  | .derived x => .derived x
+                                  | _          => .unknown)
   -- everything that writes a destination we do not track
   | .udiv d _ _ | .band d _ _ | .bandNot d _ _ | .bor d _ _ | .bxor d _ _
   | .icmp d _ _ _ | .select d _ _ _ | .bitselect d _ _ _

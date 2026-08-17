@@ -325,6 +325,128 @@ theorem stepPure_slot_agrees : slotOk = true := by native_decide
 theorem slot_check_is_live : (slotLiveCount == 200) = true := by native_decide
 
 
+-- ---------------------------------------------------------------------------
+-- All four claims at once, over composed instructions
+-- ---------------------------------------------------------------------------
+
+/-- **Every claim the model makes about one value, decided against the
+    machine.**
+
+    The four checks above each build their own one-instruction program and look
+    at one arm, which is why each of them could only ever see a value the model
+    had *just* named.  `stepPure` propagates: `ireduce32` passes an expression
+    through, `iadd` absorbs a displacement, `load` turns an offset into a slot.
+    Every claim about a value two or more instructions old was unchecked, and
+    that is where `uextend64` was found carrying an expression through a
+    zero-extension.
+
+    A value the model does not name claims nothing and passes; so does one the
+    machine never computed. -/
+def valueClaimHolds (m : Mem) (vs : Vals) (e : Env) (v : Val) : Bool :=
+  match e v, getV vs v with
+  | .const k,    some (.sc t w) => signed t w == k
+  | .const _,    some _         => false
+  | .offset p d, some (.sc t w) =>
+      let b := rhoOf vs p.id
+      !inTy t (b + d) || signed t w == b + d
+  | .offset _ _, some _         => false
+  | .derived dx, some (.sc t w) =>
+      !DExp.Exact (rhoOf vs) dx || signed t w == DExp.eval (rhoOf vs) dx
+  | .derived _,  some _         => false
+  | .slot p d,   some (.sc _ loaded) =>
+      match getV vs p with
+      | some (.sc _ pw) => Mem.load m (pw + UInt64.ofNat d.toNat) 8 == some loaded
+      | _               => false
+  | _,           _              => true
+
+/-- Whether the model named the value at all, so a census can report how much
+    of its grid is carrying the result rather than passing by silence. -/
+def valueNamed (e : Env) (v : Val) : Bool :=
+  match e v with
+  | .unknown => false
+  | _        => true
+
+/-- The seeds every composed program starts from: a runtime value the model
+    cannot name, a literal it can, and a region base. -/
+def seedVals (ta tb : ClifTy) (x y : Int) : Vals :=
+  setV (setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)) ⟨2⟩
+    (.sc .i64 (addrOf .arena 0))
+
+/-- Boundaries only.  The composed grid is a product of two of these, so it
+    takes the values each width wraps at rather than the full spread. -/
+def compSample : List Int :=
+  [ 0, 1, 31, 32, 127, 128, 2147483647, 2147483648,
+    -1, -128, -2147483648, 4294967296 ]
+
+def compBin : List (Val → Val → Val → Inst) :=
+  [ (fun d a b => .iadd d a b), (fun d a b => .isub d a b)
+  , (fun d a b => .imul d a b), (fun d a b => .ishl d a b)
+  , (fun d a b => .ushr d a b) ]
+
+def compUn : List (Val → Val → Inst) :=
+  [ (fun d a => .ireduce32 d a), (fun d a => .uextend64 d a)
+  , (fun d a => .sextend64 d a), (fun d a => .ineg d a)
+  , (fun d a => .load d { ty := .i64 } a) ]
+
+/-- What a first instruction is given: the runtime value with the literal, and
+    the region base with the literal — the two shapes that produce a `derived`
+    and an `offset` respectively. -/
+def firstPairs : List (Val × Val) := [(⟨0⟩, ⟨1⟩), (⟨2⟩, ⟨1⟩)]
+
+/-- …and what a second is given, as a function of its destination alone: the
+    first result against the literal, against the runtime value, or on its own
+    through each unary arm — `load` included, so an `offset` composed by the
+    first instruction is checked as the `slot` it becomes. -/
+def compSecond : List (Val → Inst) :=
+  (compBin.flatMap fun g => [(fun d => g d ⟨3⟩ ⟨1⟩), (fun d => g d ⟨3⟩ ⟨0⟩)])
+    ++ compUn.map (fun g => fun d => g d ⟨3⟩)
+
+/-- Two instructions, and every claim the model makes about either result. -/
+def compCase (ta tb : ClifTy) (x y : Int)
+    (f : Val → Val → Val → Inst) (p : Val × Val) (g : Val → Inst) : Bool :=
+  let is := [f ⟨3⟩ p.1 p.2, g ⟨4⟩]
+  let e := is.foldl stepPure (stepPure Env.empty (.iconst ⟨1⟩ tb y))
+  match runInsts mem0 (seedVals ta tb x y) is with
+  | some vs => valueClaimHolds mem0 vs e ⟨3⟩ && valueClaimHolds mem0 vs e ⟨4⟩
+  | none    => true
+
+/-- Whether the composed result is one the model named. -/
+def compLive (ta tb : ClifTy) (x y : Int)
+    (f : Val → Val → Val → Inst) (p : Val × Val) (g : Val → Inst) : Bool :=
+  let is := [f ⟨3⟩ p.1 p.2, g ⟨4⟩]
+  let e := is.foldl stepPure (stepPure Env.empty (.iconst ⟨1⟩ tb y))
+  match runInsts mem0 (seedVals ta tb x y) is with
+  | some _ => valueNamed e ⟨4⟩
+  | none   => false
+
+def compOk : Bool :=
+  wideTypes.all fun ta => wideTypes.all fun tb =>
+    compSample.all fun x => compSample.all fun y =>
+      compBin.all fun f => firstPairs.all fun p =>
+        compSecond.all fun g => compCase ta tb x y f p g
+
+def compLiveCount : Nat :=
+  (wideTypes.flatMap fun ta => wideTypes.flatMap fun tb =>
+    compSample.flatMap fun x => compSample.flatMap fun y =>
+      compBin.flatMap fun f => firstPairs.flatMap fun p =>
+        compSecond.filter fun g => compLive ta tb x y f p g).length
+
+/-- **Every claim survives composition.**
+
+    The census the four single-instruction checks could not run: each of `iadd`,
+    `isub`, `imul`, `ishl`, `ushr` over a runtime value and over a region base,
+    followed by each of those again or by a retag or a load — and at both
+    results, whichever of the four claims the model happens to make.
+
+    This is the check that would have caught the `uextend64` arm, and it is the
+    one to extend when `stepPure` gains an arm, because a new arm's hazard is
+    almost never the instruction alone. -/
+theorem stepPure_composed_claims_agree : compOk = true := by native_decide
+
+/-- …and the grid is mostly cases the model does name.  A `compOk` that passed
+    by answering `unknown` everywhere would say nothing. -/
+theorem composed_check_is_live : (5000 < compLiveCount) = true := by native_decide
+
 /-! ### From checked to proved: the constant arm, against the machine
 
     Everything above *tests* the model against `evalInst` over a corpus.  This
@@ -1095,7 +1217,8 @@ theorem const_sound_ineg {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x : V}
     `uextend64` refuses a negative one. -/
 theorem stepPure_sextend64_const {e : Env} {d a : Val} {k : Int}
     (h : stepPure e (.sextend64 d a) d = .const k) : e a = .const k := by
-  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h; exact h
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  cases hea : e a <;> rw [hea] at h <;> first | exact h | exact absurd h (by simp)
 
 theorem stepPure_ireduce32_const {e : Env} {d a : Val} {k : Int}
     (h : stepPure e (.ireduce32 d a) d = .const k) : e a = .const k := by
