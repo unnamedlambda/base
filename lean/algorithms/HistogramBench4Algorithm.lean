@@ -207,6 +207,7 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"output_path", OUTPUT_PATH_OFF, THREAD_CTX_OFF - OUTPUT_PATH_OFF⟩,
    ⟨"thread_ctx",  THREAD_CTX_OFF, HIST_REGION_OFF - THREAD_CTX_OFF⟩,
    ⟨"hist",        HIST_REGION_OFF, WORKERS * HIST_STRIDE⟩,
+   ⟨"result",      RESULT_OFF, RESULT_SIZE⟩,
    ⟨"handles",     HANDLES_OFF, DESCS_OFF - HANDLES_OFF⟩,
    ⟨"descs",       DESCS_OFF, WORKERS * DESC_SIZE⟩,
    ⟨"data",        DATA_OFF, MAX_DATA_BYTES⟩]

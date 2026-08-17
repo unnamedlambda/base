@@ -129,11 +129,22 @@ theorem silu_loop_ptx_exact (cta : Nat) (m : MState) :
     (expandEW_idxFree lkernel (by decide))
     (expandEW_flat lkernel (by decide)) m
 
+/-- **The whole map, not the interesting part of it.**
+
+    The context slots and the buffer-id words are live offsets this file
+    writes; a map that omits them cannot see a collision involving them, and
+    the check reads as if it had. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"in_id",      IN_ID, 4⟩,
+   ⟨"out_id",     OUT_ID, 4⟩,
+   ⟨"ptx",        PTX_OFF, PTX_L_OFF - PTX_OFF⟩,
+   ⟨"ptxLoop",    PTX_L_OFF, BIND_OFF - PTX_L_OFF⟩,
+   ⟨"bind",       BIND_OFF, 8⟩]
+
 theorem siluMap_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      [⟨"ptx", PTX_OFF, PTX_L_OFF - PTX_OFF⟩,
-       ⟨"ptxLoop", PTX_L_OFF, BIND_OFF - PTX_L_OFF⟩,
-       ⟨"bind", BIND_OFF, 8⟩] = true := by decide
+    memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 
 theorem siluPtx_fits :
     (ptx.toUTF8.toList.length + 1 ≤ PTX_L_OFF - PTX_OFF)

@@ -169,12 +169,22 @@ def initialMemory : List UInt8 :=
   zeros PTX_OFF ++ ptxBytes ++ zeros (PTX_D_OFF - PTX_OFF - ptxBytes.length)
     ++ ptxDBytes ++ zeros (MEM_SIZE - PTX_D_OFF - ptxDBytes.length)
 
-/-- Both kernels fit their slots, and the slots do not overlap. -/
+/-- **The whole map, not the interesting part of it.**
+
+    The context slots and the buffer-id words are live offsets this file
+    writes; a map that omits them cannot see a collision involving them, and
+    the check reads as if it had. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"in_id",      IN_ID, 4⟩,
+   ⟨"out_id",     OUT_ID, 4⟩,
+   ⟨"ptx",        PTX_OFF, PTX_D_OFF - PTX_OFF⟩,
+   ⟨"ptxD",       PTX_D_OFF, BIND_OFF - PTX_D_OFF⟩,
+   ⟨"bind",       BIND_OFF, 8⟩]
+
 theorem gradMap_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      [⟨"ptx", PTX_OFF, PTX_D_OFF - PTX_OFF⟩,
-       ⟨"ptxD", PTX_D_OFF, BIND_OFF - PTX_D_OFF⟩,
-       ⟨"bind", BIND_OFF, 8⟩] = true := by decide
+    memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 
 theorem gradPtx_fits :
     (ptx.toUTF8.toList.length + 1 ≤ PTX_D_OFF - PTX_OFF)

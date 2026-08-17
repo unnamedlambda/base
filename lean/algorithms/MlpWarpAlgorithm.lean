@@ -139,10 +139,21 @@ def clifIR : Program :=
 theorem ptx_fits_slot : ptx.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_OFF := by
   native_decide
 
+/-- **The whole map, not the interesting part of it.**
+
+    The context slots and the buffer-id words are live offsets this file
+    writes; a map that omits them cannot see a collision involving them, and
+    the check reads as if it had. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"in_id",      IN_ID, 4⟩,
+   ⟨"out_id",     OUT_ID, 4⟩,
+   ⟨"ptx",        PTX_OFF, BIND_OFF - PTX_OFF⟩,
+   ⟨"bind",       BIND_OFF, 8⟩]
+
 theorem mem_map_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      [⟨"ptx", PTX_OFF, BIND_OFF - PTX_OFF⟩, ⟨"bind", BIND_OFF, 8⟩] = true := by
-  decide
+    memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 
 def initialMemory : List UInt8 :=
   let ptxBytes := AlgorithmLib.Kernel.ptxBytes mlpK

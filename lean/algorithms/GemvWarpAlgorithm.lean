@@ -346,12 +346,21 @@ def ptxFitsB : Bool :=
 
 theorem ptx_fits_slots : ptxFitsB = true := by native_decide
 
-theorem mem_map_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      ((Sched.all.flatMap (fun s => [⟨"dot", slotOf false s, SLOT⟩,
+/-- **Every byte this file names.**  The context slots and the three
+    buffer-id words are written here too, so leaving them out would let a slot
+    be placed on top of one without the check noticing. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"a_id",       A_ID, 4⟩,
+   ⟨"x_id",       X_ID, 4⟩,
+   ⟨"y_id",       Y_ID, 4⟩]
+    ++ (Sched.all.flatMap (fun s => [⟨"dot", slotOf false s, SLOT⟩,
                                      ⟨"sumsq", slotOf true s, SLOT⟩]))
-        ++ [⟨"bind", BIND_OFF, 12⟩]) = true := by
-  native_decide
+    ++ [⟨"bind", BIND_OFF, 12⟩]
+
+theorem mem_map_ok :
+    memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by native_decide
 
 /-- One slot's worth of bytes: the kernel source, NUL-terminated, zero-padded. -/
 def slotBytes (src : String) : List UInt8 :=

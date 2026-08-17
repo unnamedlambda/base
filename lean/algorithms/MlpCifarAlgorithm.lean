@@ -298,11 +298,17 @@ def MEM_SIZE : Nat := LOCAL_OFF + 4 * 8 + 0x100
     table and the place buffer handles live, so there is one numbering. -/
 def bindOff (i : Nat) : Nat := BIND_OFF + 4 * i
 
+/-- **Every byte this program names**, not only its PTX slots. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"host_len", HOST_LEN_OFF, 8⟩]
+    ++ (List.range NSLOT).map (fun i => ⟨s!"ptx{i}", slotOff i, SLOT⟩)
+    ++ [⟨"bind", BIND_OFF, 4 * NBUF⟩, ⟨"local", LOCAL_OFF, 4 * 8⟩]
+
 /-- **Seam guard: the slots tile the image without overlapping.** -/
 theorem mlpMap_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      ((List.range NSLOT).map (fun i => ⟨s!"ptx{i}", slotOff i, SLOT⟩)
-        ++ [⟨"bind", BIND_OFF, 4 * NBUF⟩, ⟨"local", LOCAL_OFF, 4 * 8⟩]) = true := by decide
+    memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 
 /-- **Seam guard: every kernel fits its slot.** -/
 theorem mlpPtx_fits :
@@ -2127,11 +2133,27 @@ def qBindOff (i : Nat) : Nat := QBIND_OFF + 4 * i
 def QLOCAL_OFF : Nat := QBIND_OFF + 4 * QNBUF
 def QMEM_SIZE : Nat := QLOCAL_OFF + 4 * 8 + 0x100
 
+/-- Where the capture leaves the stream and the graph it built. -/
+def QSTREAM_OFF : Nat := 0x0090
+def QGRAPH_OFF : Nat := 0x0094
+
+/-- **Every byte this program names.**
+
+    `QLOCAL_OFF` is the scratch each launch's bind table is written to, so
+    leaving it out left the one region the launches actually address
+    unchecked against the slots below it. -/
+def qMemMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩,
+   ⟨"host_len", QHOST_LEN_OFF, 8⟩,
+   ⟨"stream",   QSTREAM_OFF, 4⟩,
+   ⟨"graph",    QGRAPH_OFF, 4⟩]
+    ++ (List.range 117).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
+    ++ [⟨"bind", QBIND_OFF, 4 * QNBUF⟩, ⟨"local", QLOCAL_OFF, 4 * 8⟩]
+
 /-- **Seam guard: the slots tile the image without overlapping.** -/
 theorem qwenMap_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      ((List.range 117).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
-        ++ [⟨"bind", QBIND_OFF, 4 * QNBUF⟩]) = true := by decide
+    qMemMap.okB = true ∧ qMemMap.withinB QMEM_SIZE = true := by decide
 
 /-- Allocate every buffer, then upload the thirteen inputs. -/
 def qLoadFn : HProg.Code :=
@@ -2225,10 +2247,6 @@ def qRunUpto (k : Nat) : HProg.Code :=
   for (i, g, bs) in (qLaunches 0 qwenTape).take k do
     qEnqueue ptr i g bs
   let _ ← cudaSync ptr
-
-/-- Where the capture leaves the stream and the graph it built. -/
-def QSTREAM_OFF : Nat := 0x0090
-def QGRAPH_OFF : Nat := 0x0094
 
 /-- **The step, captured once as a graph.**
 
@@ -2704,11 +2722,16 @@ def mBindOff (i : Nat) : Nat := MBIND_OFF + 4 * i
 def MLOCAL_OFF : Nat := MBIND_OFF + 4 * MNBUF
 def MMEM_SIZE : Nat := MLOCAL_OFF + 4 * 8 + 0x100
 
+/-- **Every byte this program names**, the launch scratch included. -/
+def mMemMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets", 0x18, 0x20⟩]
+    ++ (List.range moeTape.length).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
+    ++ [⟨"bind", MBIND_OFF, 4 * MNBUF⟩, ⟨"local", MLOCAL_OFF, 4 * 8⟩]
+
 /-- **Seam guard: the slots tile the image without overlapping.** -/
 theorem moeMap_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      ((List.range moeTape.length).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
-        ++ [⟨"bind", MBIND_OFF, 4 * MNBUF⟩]) = true := by decide
+    mMemMap.okB = true ∧ mMemMap.withinB MMEM_SIZE = true := by decide
 
 /-- Allocate every buffer, then upload the weights that never move. -/
 def mLoadFn : HProg.Code :=

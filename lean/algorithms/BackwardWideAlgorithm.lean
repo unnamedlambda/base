@@ -295,10 +295,24 @@ def S_ID       : Nat := 0x0068
 def DXR_ID     : Nat := 0x006C
 def MEM_SIZE   : Nat := 0x10500
 
-/-- Both kernels fit their slots, and the slots do not overlap. -/
-theorem bwdMap_ok :
-    AlgorithmLib.Layout.RegionMap.okB
-      [⟨"ptx", PTX_OFF, PTX_DW_OFF - PTX_OFF⟩,
+/-- **Every byte this file names.**
+
+    The fourteen buffer-id words are written here and read at every launch, so
+    a map that lists only the PTX slots would call itself disjoint while two
+    of them shared a word.  They are named one by one rather than as one
+    block, because that is the collision worth catching. -/
+def memMap : AlgorithmLib.Layout.RegionMap :=
+      [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
+       ⟨"io_offsets", 0x18, 0x20⟩,
+       ⟨"adj_id", ADJ_ID, 4⟩, ⟨"w_id", W_ID, 4⟩,
+       ⟨"dx_id", DX_ID, 4⟩,   ⟨"x_id", X_ID, 4⟩,
+       ⟨"dw_id", DW_ID, 4⟩,   ⟨"z_id", Z_ID, 4⟩,
+       ⟨"dy_id", DY_ID, 4⟩,   ⟨"gam_id", GAM_ID, 4⟩,
+       ⟨"t_id", T_ID, 4⟩,     ⟨"q_id", Q_ID, 4⟩,
+       ⟨"s_id", S_ID, 4⟩,     ⟨"dxr_id", DXR_ID, 4⟩,
+       ⟨"y_id", Y_ID, 4⟩,     ⟨"ys_id", YS_ID, 4⟩,
+       ⟨"host_len", HOST_LEN_OFF, 8⟩,
+       ⟨"ptx", PTX_OFF, PTX_DW_OFF - PTX_OFF⟩,
        ⟨"ptxDw", PTX_DW_OFF, PTX_SB_OFF - PTX_DW_OFF⟩,
        ⟨"ptxSiluBwd", PTX_SB_OFF, PTX_T_OFF - PTX_SB_OFF⟩,
        ⟨"ptxT", PTX_T_OFF, PTX_Q_OFF - PTX_T_OFF⟩,
@@ -310,7 +324,10 @@ theorem bwdMap_ok :
        ⟨"ptxDy", PTX_DY_OFF, PTX_SGD_OFF - PTX_DY_OFF⟩,
        ⟨"ptxSgd", PTX_SGD_OFF, PTX_ADJ_OFF - PTX_SGD_OFF⟩,
        ⟨"ptxAdj", PTX_ADJ_OFF, BIND_OFF - PTX_ADJ_OFF⟩,
-       ⟨"bind", BIND_OFF, 4 * NBUF⟩] = true := by decide
+       ⟨"bind", BIND_OFF, 4 * NBUF⟩]
+
+theorem bwdMap_ok :
+    memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 
 /-- **Seam guard: every kernel's buffers are inside the binding table.**
 

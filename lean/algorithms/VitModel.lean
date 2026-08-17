@@ -2279,6 +2279,38 @@ def VMASK_OFF : Nat := VEVENT_OFF + 4 * VNEVENT
 def VGMAP_OFF : Nat := VMASK_OFF + 4 * SK
 def VMEM_SIZE : Nat := VGMAP_OFF + 4 * VBASE + 0x100
 
+/-- **Every byte of shared memory this model names.**
+
+    The offsets above are assigned by hand and derived from one another, and a
+    collision between two of them is invisible everywhere else: both writes
+    succeed and the later one wins.  That has already happened here once — a
+    graph handle placed at a fixed address that the stream pool grew into, and
+    since a graph id and a stream id are both small integers, the launches
+    still went somewhere.  Deriving the offset fixed that instance; stating the
+    map is what makes the next one a build error. -/
+def vMemMap : AlgorithmLib.Layout.RegionMap :=
+  [⟨"ctx_cuda",     AlgorithmLib.ContextSlots.cuda, 8⟩,
+   ⟨"io_offsets",   0x18, 0x20⟩,
+   ⟨"host_len",     VHOST_LEN_OFF, 8⟩,
+   ⟨"stream",       VSTREAM_OFF, 4⟩,
+   ⟨"graph",        VGRAPH_OFF, 4⟩,
+   ⟨"graph_step",   VGRAPH_STEP_OFF, 4⟩,
+   ⟨"pool",         VPOOL_OFF, 4 * VNSTRM⟩,
+   ⟨"graph_dfwd",   VGRAPH_DFWD_OFF, 4⟩,
+   ⟨"graph_dstep",  VGRAPH_DSTEP_OFF, 4⟩,
+   ⟨"graph_blas",   VGRAPH_BLAS_OFF, 4⟩,
+   ⟨"graph_row",    VGRAPH_ROW_OFF, 4⟩,
+   ⟨"ptx",          VPTX_OFF, VPTX_BYTES⟩,
+   ⟨"bind",         VBIND_OFF, 4 * VNBUF⟩,
+   ⟨"parr",         VPARR_OFF, 4 * VNPARR⟩,
+   ⟨"local",        VLOCAL_OFF, 4 * VLOCAL_SLOTS⟩,
+   ⟨"event",        VEVENT_OFF, 4 * VNEVENT⟩,
+   ⟨"mask",         VMASK_OFF, 4 * SK⟩,
+   ⟨"gmap",         VGMAP_OFF, 4 * VBASE⟩]
+
+theorem vMemMap_ok :
+    vMemMap.okB = true ∧ vMemMap.withinB VMEM_SIZE = true := by native_decide
+
 def vSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
   b ++ zeros (((b.length + 255) / 256 * 256) - b.length)
