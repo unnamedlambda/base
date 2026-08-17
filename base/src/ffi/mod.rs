@@ -35,15 +35,34 @@ pub(super) unsafe fn clear_ctx_slot<T>(slot_ptr: *mut *mut T) -> *mut T {
     raw
 }
 
+/// Longest string any caller has a use for — every one of them reads a
+/// filesystem path or a socket address.
+const CSTR_MAX: usize = 4096;
+
 pub(super) unsafe fn read_cstr(ptr: *mut u8, off: usize) -> String {
-    let start = ptr.add(off);
-    read_cstr_ptr(start)
+    if ptr.is_null() {
+        return String::new();
+    }
+    read_cstr_ptr(ptr.add(off))
 }
 
+/// The bytes up to the first NUL, or empty if there is no pointer or no NUL
+/// within `CSTR_MAX`.
+///
+/// Both guards matter: without them this walks arbitrary memory until it
+/// happens on a zero byte. Empty is the safe answer rather than a truncation,
+/// because every caller passes the result to something — `File::open`, a
+/// socket address parse — that rejects it.
 pub(super) unsafe fn read_cstr_ptr(start: *const u8) -> String {
+    if start.is_null() {
+        return String::new();
+    }
     let mut len = 0;
-    while *start.add(len) != 0 {
+    while len < CSTR_MAX && *start.add(len) != 0 {
         len += 1;
+    }
+    if len == CSTR_MAX {
+        return String::new();
     }
     String::from_utf8_lossy(std::slice::from_raw_parts(start, len)).into_owned()
 }
@@ -60,4 +79,26 @@ pub(crate) unsafe extern "C" fn cl_cosf(x: f32) -> f32 {
 
 pub(crate) unsafe extern "C" fn cl_powf(base: f32, exp: f32) -> f32 {
     base.powf(exp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_cstr_ptr_reads_up_to_the_nul() {
+        let s = b"hello\0trailing";
+        assert_eq!(unsafe { read_cstr_ptr(s.as_ptr()) }, "hello");
+    }
+
+    /// No pointer and no NUL both answer empty rather than walking memory.
+    /// Empty is what every caller rejects, so a truncation cannot be mistaken
+    /// for a path.
+    #[test]
+    fn read_cstr_ptr_refuses_null_and_unterminated() {
+        assert_eq!(unsafe { read_cstr_ptr(std::ptr::null()) }, "");
+        let unterminated = vec![b'a'; CSTR_MAX + 16];
+        assert_eq!(unsafe { read_cstr_ptr(unterminated.as_ptr()) }, "");
+        assert_eq!(unsafe { read_cstr(std::ptr::null_mut(), 8) }, "");
+    }
 }

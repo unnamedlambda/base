@@ -283,6 +283,56 @@ fn upload_offset_download_offset() {
     }
 }
 
+/// Every transfer entry point refuses a range that leaves the buffer.
+///
+/// The offset *upload* was checked and the offset *download* was not, so the
+/// asymmetry in the code was matched by an asymmetry here. The async pair
+/// reach `memcpy_htod_async`/`memcpy_dtoh_async` directly, which check
+/// nothing at all: past the end they wrote and read another allocation.
+#[test]
+fn transfers_out_of_range_return_neg1() {
+    unsafe {
+        let ctx = init_ctx();
+        let buf = cl_cuda_create_buffer(ctx, 32);
+        assert!(buf >= 0);
+        let src = vec![7u8; 64];
+        let mut dst = vec![0u8; 64];
+
+        // Offset past the end, both directions.
+        assert_eq!(cl_cuda_upload_ptr_offset(ctx, buf, 24, src.as_ptr(), 16), -1);
+        assert_eq!(
+            cl_cuda_download_ptr_offset(ctx, buf, 24, dst.as_mut_ptr(), 16),
+            -1
+        );
+        // Offset inside but length running past it.
+        assert_eq!(
+            cl_cuda_download_ptr_offset(ctx, buf, 0, dst.as_mut_ptr(), 64),
+            -1
+        );
+
+        // The async pair, with no offset at all — size alone leaves the buffer.
+        let s = cl_cuda_stream_create(ctx);
+        assert!(s >= 0);
+        assert_eq!(cl_cuda_upload_ptr_async(ctx, buf, src.as_ptr(), 64, s), -1);
+        assert_eq!(
+            cl_cuda_download_ptr_async(ctx, buf, dst.as_mut_ptr(), 64, s),
+            -1
+        );
+        assert_eq!(
+            cl_cuda_upload_ptr_offset_async(ctx, buf, 24, src.as_ptr(), 16, s),
+            -1
+        );
+
+        // …and the whole buffer still works, so this is a bound and not a ban.
+        assert_eq!(cl_cuda_upload_ptr_async(ctx, buf, src.as_ptr(), 32, s), 0);
+        assert_eq!(
+            cl_cuda_download_ptr_async(ctx, buf, dst.as_mut_ptr(), 32, s),
+            0
+        );
+        cleanup_ctx(ctx);
+    }
+}
+
 #[test]
 fn free_buffer_and_double_free_returns_neg1() {
     unsafe {

@@ -96,8 +96,6 @@ pub(crate) unsafe extern "C" fn cl_cuda_upload_ptr_offset(
     src_ptr: *const u8,
     size: i64,
 ) -> i32 {
-    use cudarc::driver::DevicePtr;
-
     if buf_id < 0 || buf_offset < 0 || size <= 0 || src_ptr.is_null() {
         return -1;
     }
@@ -105,28 +103,13 @@ pub(crate) unsafe extern "C" fn cl_cuda_upload_ptr_offset(
         let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
             return -1;
         };
-        let Ok(mut state) = lock_cuda_state(ctx) else {
+        let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
-        let bid = buf_id as usize;
-        if bid >= state.buffers.len() {
-            return -1;
-        }
         let data = std::slice::from_raw_parts(src_ptr, size as usize);
-        let Some(buf) = state.buffers[bid].as_mut() else {
+        let Some(dst) = (unsafe { cuda_buffer_range_ptr(&state, buf_id, buf_offset, size) }) else {
             return -1;
         };
-        let start = buf_offset as usize;
-        let byte_len = size as usize;
-        // Cuda buffers are allocated as CudaSlice<u8>, so len is in bytes.
-        let total_len = {
-            use cudarc::driver::DeviceSlice;
-            buf.len()
-        };
-        if start.saturating_add(byte_len) > total_len {
-            return -1;
-        }
-        let dst = (*buf.device_ptr()).saturating_add(buf_offset as u64);
         match unsafe { cudarc::driver::result::memcpy_htod_sync(dst, data) } {
             Ok(_) => 0,
             Err(_) => -1,
@@ -159,7 +142,7 @@ pub(crate) unsafe extern "C" fn cl_cuda_upload_ptr_async(
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
             return -1;
         };
-        let Some(dst) = (unsafe { cuda_buffer_device_ptr(&state, buf_id) }) else {
+        let Some(dst) = (unsafe { cuda_buffer_range_ptr(&state, buf_id, 0, size) }) else {
             return -1;
         };
         let data = std::slice::from_raw_parts(src_ptr, size as usize);
@@ -195,22 +178,9 @@ pub(crate) unsafe extern "C" fn cl_cuda_upload_ptr_offset_async(
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
             return -1;
         };
-        let Some(buf) = state.buffers.get(buf_id as usize).and_then(|b| b.as_ref()) else {
+        let Some(dst) = (unsafe { cuda_buffer_range_ptr(&state, buf_id, buf_offset, size) }) else {
             return -1;
         };
-        let total_len = {
-            use cudarc::driver::DeviceSlice;
-            buf.len()
-        };
-        let start = buf_offset as usize;
-        let byte_len = size as usize;
-        if start.saturating_add(byte_len) > total_len {
-            return -1;
-        }
-        let Some(base_dst) = (unsafe { cuda_buffer_device_ptr(&state, buf_id) }) else {
-            return -1;
-        };
-        let dst = base_dst.saturating_add(buf_offset as u64);
         let data = std::slice::from_raw_parts(src_ptr, size as usize);
         match unsafe { cudarc::driver::result::memcpy_htod_async(dst, data, stream) } {
             Ok(_) => 0,
@@ -243,7 +213,7 @@ pub(crate) unsafe extern "C" fn cl_cuda_download_ptr_async(
         let Some(stream) = resolve_cuda_stream(&ctx.device, &state, stream_id) else {
             return -1;
         };
-        let Some(src) = (unsafe { cuda_buffer_device_ptr(&state, buf_id) }) else {
+        let Some(src) = (unsafe { cuda_buffer_range_ptr(&state, buf_id, 0, size) }) else {
             return -1;
         };
         let dst = std::slice::from_raw_parts_mut(dst_ptr, size as usize);
@@ -295,7 +265,6 @@ pub(crate) unsafe extern "C" fn cl_cuda_download_ptr_offset(
     dst_ptr: *mut u8,
     size: i64,
 ) -> i32 {
-    use cudarc::driver::DevicePtr;
     if buf_id < 0 || buf_offset < 0 || size <= 0 || dst_ptr.is_null() {
         return -1;
     }
@@ -306,12 +275,9 @@ pub(crate) unsafe extern "C" fn cl_cuda_download_ptr_offset(
         let Ok(state) = lock_cuda_state(ctx) else {
             return -1;
         };
-        let bid = buf_id as usize;
-        let Some(buf) = state.buffers.get(bid).and_then(|b| b.as_ref()) else {
+        let Some(dev) = (unsafe { cuda_buffer_range_ptr(&state, buf_id, buf_offset, size) }) else {
             return -1;
         };
-        let base = *buf.device_ptr();
-        let dev = base + buf_offset as u64;
         let dst = std::slice::from_raw_parts_mut(dst_ptr, size as usize);
         match unsafe { cudarc::driver::result::memcpy_dtoh_sync(dst, dev) } {
             Ok(_) => 0,

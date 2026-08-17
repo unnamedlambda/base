@@ -406,7 +406,9 @@ pub(crate) unsafe extern "C" fn cl_lmdb_sync(
 
 pub(crate) unsafe extern "C" fn cl_lmdb_cleanup(ctx_slot_ptr: *mut *mut CraneliftLmdbContext) {
     let ctx_ptr = clear_ctx_slot::<CraneliftLmdbContext>(ctx_slot_ptr);
-    drop(Box::from_raw(ctx_ptr));
+    if !ctx_ptr.is_null() {
+        drop(Box::from_raw(ctx_ptr));
+    }
 }
 
 #[cfg(test)]
@@ -475,6 +477,21 @@ mod tests {
         assert!(!slot.is_null());
         unsafe { cleanup(&mut slot) };
         assert!(slot.is_null());
+    }
+
+    /// Cleanup twice, and on a slot that was never initialised — both give
+    /// `clear_ctx_slot` a null to return, which used to reach `Box::from_raw`.
+    #[test]
+    fn cleanup_twice_and_uninitialised_is_safe() {
+        let mut slot = init();
+        assert!(!slot.is_null());
+        unsafe {
+            cleanup(&mut slot);
+            assert!(slot.is_null());
+            cleanup(&mut slot);
+            let mut fresh: *mut CraneliftLmdbContext = std::ptr::null_mut();
+            cleanup(&mut fresh);
+        }
     }
 
     #[test]

@@ -75,9 +75,11 @@ pub(crate) unsafe extern "C" fn cl_thread_join(
 
 pub(crate) unsafe extern "C" fn cl_thread_cleanup(ctx_slot_ptr: *mut *mut CraneliftThreadContext) {
     let ctx_ptr = clear_ctx_slot::<CraneliftThreadContext>(ctx_slot_ptr);
-    let mut ctx = Box::from_raw(ctx_ptr);
-    for (_, join) in ctx.threads.drain() {
-        let _ = join.join();
+    if !ctx_ptr.is_null() {
+        let mut ctx = Box::from_raw(ctx_ptr);
+        for (_, join) in ctx.threads.drain() {
+            let _ = join.join();
+        }
     }
 }
 
@@ -120,6 +122,25 @@ mod tests {
         THREAD_COMPILED_FNS.with(|cell| {
             *cell.borrow_mut() = Some(Arc::new(fns));
         });
+    }
+
+    /// Cleanup twice, and on a slot that was never initialised.
+    ///
+    /// `clear_ctx_slot` answers null in both cases, and this used to hand that
+    /// null straight to `Box::from_raw`.
+    #[test]
+    fn cleanup_twice_and_uninitialised_is_safe() {
+        install_fns(vec![write_42]);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        unsafe {
+            cl_thread_init(&mut slot);
+            assert!(!slot.is_null());
+            cl_thread_cleanup(&mut slot);
+            assert!(slot.is_null());
+            cl_thread_cleanup(&mut slot);
+            let mut fresh: *mut CraneliftThreadContext = std::ptr::null_mut();
+            cl_thread_cleanup(&mut fresh);
+        }
     }
 
     #[test]

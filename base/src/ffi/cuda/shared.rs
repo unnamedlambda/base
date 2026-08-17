@@ -178,6 +178,33 @@ pub(super) unsafe fn cuda_buffer_device_ptr(
     Some(*buf.device_ptr())
 }
 
+/// A buffer's device address at `offset`, when `offset + len` lies inside it.
+///
+/// The bound is the point. `memcpy_htod_*` and `memcpy_dtoh_*` take a raw
+/// address and a length and check neither, so a range running past the
+/// allocation reads or writes whatever the allocator put next to it. Every
+/// entry point that reaches those calls with a caller-supplied offset or size
+/// goes through here.
+pub(super) unsafe fn cuda_buffer_range_ptr(
+    state: &CraneliftCudaState,
+    buf_id: i32,
+    offset: i64,
+    len: i64,
+) -> Option<cudarc::driver::sys::CUdeviceptr> {
+    use cudarc::driver::{DevicePtr, DeviceSlice};
+
+    if buf_id < 0 || offset < 0 || len < 0 {
+        return None;
+    }
+    let buf = state.buffers.get(buf_id as usize)?.as_ref()?;
+    // Buffers are allocated as `CudaSlice<u8>`, so `len` is already in bytes.
+    let end = (offset as usize).checked_add(len as usize)?;
+    if end > buf.len() {
+        return None;
+    }
+    (*buf.device_ptr()).checked_add(offset as u64)
+}
+
 pub(super) fn load_raw_cuda_main_kernel(
     ctx: &CraneliftCudaContext,
     state: &mut CraneliftCudaState,
