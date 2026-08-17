@@ -310,6 +310,19 @@ theorem shrLit_eq {d : DExp} {y : Int} (h : shiftOk y = true) :
 
 attribute [irreducible] shlLit shrLit
 
+/-- **Whether `t` represents `k` exactly**, signed.
+
+    The condition an `offset` claim owes.  `stepPure` records `base + k`
+    without knowing the width the machine wraps at, and the base is a runtime
+    value, so — unlike a literal — nothing here can guard it. -/
+def inTy (t : ClifTy) (k : Int) : Bool :=
+  match t with
+  | .i8  => -128 ≤ k && k < 128
+  | .i16 => -32768 ≤ k && k < 32768
+  | .i32 => -2147483648 ≤ k && k < 2147483648
+  | .i64 => -9223372036854775808 ≤ k && k < 9223372036854775808
+  | _    => false
+
 /-- **When `DExp.eval` is the machine's arithmetic and not merely `Int`'s.**
 
     `DExp.eval` is the seam where this development says what Cranelift's

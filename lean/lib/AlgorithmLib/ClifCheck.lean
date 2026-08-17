@@ -201,6 +201,13 @@ theorem derived_check_is_live : (2000 < derivLiveCount) = true := by native_deci
 -- The third claim: an `offset` is its base plus its displacement
 -- ---------------------------------------------------------------------------
 
+/-- Region bases as the runtime actually supplies them.  Checking this claim
+    only at small bases would miss the case it exists for: a launch argument's
+    `ptr` is an address like `0x1000000000`, far outside `foldableRange`, and
+    the claim about it is still true because `i64` is what it wraps at. -/
+def bases : List Int :=
+  sample ++ [68719476736, 137438953472, 206158430208, 68719476740]
+
 /-- One instruction with a runtime base — the model names the base and records
     a displacement rather than folding. -/
 def offCase (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
@@ -211,7 +218,7 @@ def offCase (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bo
   match (stepPure e i) ⟨2⟩, conc with
   | .offset p d, some (.sc t' w) =>
       let b := rhoOf vs p.id
-      !inFold b || !inFold (b + d) || signed t' w == b + d
+      !inTy t (b + d) || signed t' w == b + d
   | _, _ => true
 
 def offLive (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
@@ -219,31 +226,31 @@ def offLive (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bo
   let e := stepPure Env.empty (.iconst ⟨1⟩ t k)
   let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t base)) ⟨1⟩ (ofInt t k)
   match (stepPure e i) ⟨2⟩ with
-  | .offset p d => let b := rhoOf vs p.id; inFold b && inFold (b + d)
+  | .offset p d => inTy t (rhoOf vs p.id + d)
   | _           => false
 
 def offOps : List (Val → Val → Val → Inst) :=
   [ (fun d a b => .iadd d a b), (fun d a b => .isub d a b) ]
 
 def offOk : Bool :=
-  wideTypes.all fun t => sample.all fun b => sample.all fun k =>
+  wideTypes.all fun t => bases.all fun b => sample.all fun k =>
     offOps.all fun f => offCase t b k f
 
 def offLiveCount : Nat :=
-  (wideTypes.flatMap fun t => sample.flatMap fun b => sample.flatMap fun k =>
+  (wideTypes.flatMap fun t => bases.flatMap fun b => sample.flatMap fun k =>
     offOps.filter fun f => offLive t b k f).length
 
-/-- **An `offset` is its base plus its displacement**, wherever neither leaves
-    the range.
+/-- **An `offset` is its base plus its displacement**, wherever the sum is
+    representable at the width it is computed at.
 
     The workhorse claim: every launch argument naming a PTX slot or a bind
-    table is `ptr + k` for a runtime `ptr`, so this is what the whole launch
-    model rests on.  `offsetIf` bounds the *displacement*, which is all it can
-    see; whether `base + k` wraps depends on the base, so — like `DExp.Exact` —
-    it is a condition a consumer carries rather than a guard. -/
+    table is `ptr + k` for a runtime `ptr`, so this is what the launch model
+    rests on.  `offsetIf` bounds the *displacement*, which is all it can see;
+    whether the sum wraps depends on the base, so — like `DExp.Exact` — it is
+    a condition a consumer carries rather than a guard. -/
 theorem stepPure_offset_agrees : offOk = true := by native_decide
 
-theorem offset_check_is_live : (1000 < offLiveCount) = true := by native_decide
+theorem offset_check_is_live : (2000 < offLiveCount) = true := by native_decide
 
 -- ---------------------------------------------------------------------------
 -- The fourth claim: a `slot` came from the address it names
