@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
+import AlgorithmLib.HProgCuda
 
 
 
@@ -94,6 +95,25 @@ open AlgorithmLib.HProg.Sur
     signatures come from. -/
 def env : FnEnv := env% [.cuda]
 
+/-- **The two kernels, as records the launch sites read.**
+
+    Both consume the same pair of buffers over the same geometry and differ
+    only in which PTX they run — which is the point of the pair.  The bind
+    table is written in `load`; each launch takes the arity it declares from
+    `params` here rather than from a number written beside it. -/
+def gradK : AlgorithmLib.Kernel := {
+  name   := "main"
+  params := [{ shape := [.sta NIN],  ro := true,  name := "inBuf" },
+             { shape := [.sta NOUT], ro := false, name := "outBuf" }]
+  geom   := AlgorithmLib.Kernel.Geom.static GRID 1 1 32 1 1
+  ptxOff := PTX_OFF
+  ptxText := some ptx
+}
+
+/-- The same launch, from the narrowed kernel's PTX. -/
+def gradDK : AlgorithmLib.Kernel :=
+  { gradK with ptxOff := PTX_D_OFF, ptxText := some ptxD }
+
 def loadFnCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -106,18 +126,11 @@ def loadFnCode : HProg.Code := clif% do
   let outId ← cudaCreateBuffer ptr outBytes
   store outId (← absAddr ptr OUT_ID)
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, inId, dataPtr, inBytes]
-  store inId  (← absAddr ptr BIND_OFF)
-  store outId (← absAddr ptr (BIND_OFF + 4))
+  kernelBindAt gradK ptr BIND_OFF [inId, outId]
 
 def runFnCode : HProg.Code := clif% do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_OFF
-  let nBufs ← iconst32 2
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 GRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch gradK ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The same launch, from the narrowed kernel's PTX.  Everything else — the
@@ -125,13 +138,7 @@ def runFnCode : HProg.Code := clif% do
     only the *program* differs. -/
 def runDFnCode : HProg.Code := clif% do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_D_OFF
-  let nBufs ← iconst32 2
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 GRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch gradDK ptr BIND_OFF
   let _ ← cudaSync ptr
 
 def fetchFnCode : HProg.Code := clif% do
@@ -157,8 +164,8 @@ def clifIR : Program :=
      HProg.compileFn 4 runDFnCode]
 
 def initialMemory : List UInt8 :=
-  let ptxBytes := ptx.toUTF8.toList ++ [0]
-  let ptxDBytes := ptxD.toUTF8.toList ++ [0]
+  let ptxBytes := AlgorithmLib.Kernel.ptxBytes gradK
+  let ptxDBytes := AlgorithmLib.Kernel.ptxBytes gradDK
   zeros PTX_OFF ++ ptxBytes ++ zeros (PTX_D_OFF - PTX_OFF - ptxBytes.length)
     ++ ptxDBytes ++ zeros (MEM_SIZE - PTX_D_OFF - ptxDBytes.length)
 
@@ -381,20 +388,5 @@ theorem grad_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
   obtain ⟨k, m', hs, hw⟩ := grad_ptx_exact cta m
   exact ⟨k, m', hs, by rw [hw]; exact expandEW_run h kernel cta 0 m.toWSt⟩
 
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read past the array.
-
-    Checked over the sequences the *artifact* exposes, not over
-    `Program.functions`: the entry point writes the bind table and each extra
-    is a later call that reads it, and the listing order is neither. The
-    indices come from `extraAlgs`, the list the artifact ships, so adding an
-    entry point without checking it is not possible. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.artifactArityOkB clifIR entryAlg.fn_idx.toNat
-      (extraAlgs.map (fun e => e.2.fn_idx.toNat)) = true := by
-  native_decide
 
 end GradWarp

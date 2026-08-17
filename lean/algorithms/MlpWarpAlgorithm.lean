@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
+import AlgorithmLib.HProgCuda
 
 
 
@@ -82,6 +83,20 @@ open AlgorithmLib.HProg.Sur
     signatures come from. -/
 def env : FnEnv := env% [.cuda]
 
+/-- **The kernel, as a record the launch sites read.**
+
+    The bind table is written in `load` and the launch is issued from `run`,
+    so the arity the driver is told comes from `params` here rather than from
+    a number written beside the launch. -/
+def mlpK : AlgorithmLib.Kernel := {
+  name   := "main"
+  params := [{ shape := [.sta NIN],  ro := true,  name := "inBuf" },
+             { shape := [.sta NOUT], ro := false, name := "outBuf" }]
+  geom   := AlgorithmLib.Kernel.Geom.static GRID 1 1 32 1 1
+  ptxOff := PTX_OFF
+  ptxText := some ptx
+}
+
 def loadFnCode : HProg.Code := clif% do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -94,18 +109,11 @@ def loadFnCode : HProg.Code := clif% do
   let outId ← cudaCreateBuffer ptr outBytes
   store outId (← absAddr ptr OUT_ID)
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, inId, dataPtr, inBytes]
-  store inId  (← absAddr ptr BIND_OFF)
-  store outId (← absAddr ptr (BIND_OFF + 4))
+  kernelBindAt mlpK ptr BIND_OFF [inId, outId]
 
 def runFnCode : HProg.Code := clif% do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_OFF
-  let nBufs ← iconst32 2
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 GRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch mlpK ptr BIND_OFF
   let _ ← cudaSync ptr
 
 def fetchFnCode : HProg.Code := clif% do
@@ -137,7 +145,7 @@ theorem mem_map_ok :
   decide
 
 def initialMemory : List UInt8 :=
-  let ptxBytes := ptx.toUTF8.toList ++ [0]
+  let ptxBytes := AlgorithmLib.Kernel.ptxBytes mlpK
   zeros PTX_OFF ++ ptxBytes ++ zeros (MEM_SIZE - PTX_OFF - ptxBytes.length)
 
 def setup : Setup := {
@@ -186,15 +194,5 @@ theorem mlp_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
       ∧ m'.toWSt = (kernel.elabIn cta).run m.toWSt := by
   obtain ⟨k, m', hs, hw⟩ := mlp_ptx_exact cta m
   exact ⟨k, m', hs, by rw [hw]; exact expandEW_run h kernel cta 0 m.toWSt⟩
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read whatever lay past the
-    end.  Recovered across the artifact's functions rather than within one,
-    because the bind table is written where the buffers are made and read
-    where the kernel is launched. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.launchArityOkB 0 clifIR.functions = true := by native_decide
 
 end MlpWarp

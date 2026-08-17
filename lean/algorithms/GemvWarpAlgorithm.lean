@@ -350,7 +350,7 @@ theorem mem_map_ok :
     AlgorithmLib.Layout.RegionMap.okB
       ((Sched.all.flatMap (fun s => [⟨"dot", slotOf false s, SLOT⟩,
                                      ⟨"sumsq", slotOf true s, SLOT⟩]))
-        ++ [⟨"bind", BIND_OFF, 8⟩]) = true := by
+        ++ [⟨"bind", BIND_OFF, 12⟩]) = true := by
   native_decide
 
 /-- One slot's worth of bytes: the kernel source, NUL-terminated, zero-padded. -/

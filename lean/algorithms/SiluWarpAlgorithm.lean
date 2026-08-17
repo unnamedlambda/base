@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
+import AlgorithmLib.HProgCuda
 
 
 
@@ -141,6 +142,30 @@ theorem siluPtx_fits :
 open AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sur
 
+/-- **The two kernels, as records the launch sites read.**
+
+    Both consume the same pair of buffers and so share one bind table; they
+    differ in which PTX they run and over how many blocks.  The table is
+    written in `load` and the launches are issued from two other entry points,
+    so the arity each declares comes from `params` here rather than from a
+    number written beside each launch. -/
+def siluK : AlgorithmLib.Kernel := {
+  name   := "main"
+  params := [{ shape := [.sta N], ro := true,  name := "inBuf" },
+             { shape := [.sta N], ro := false, name := "outBuf" }]
+  geom   := AlgorithmLib.Kernel.Geom.static GRID 1 1 32 1 1
+  ptxOff := PTX_OFF
+  ptxText := some ptx
+}
+
+/-- The same buffers, `E` elements per lane. -/
+def siluLoopK : AlgorithmLib.Kernel := {
+  siluK with
+  geom   := AlgorithmLib.Kernel.Geom.static LGRID 1 1 32 1 1
+  ptxOff := PTX_L_OFF
+  ptxText := some ptxLoop
+}
+
 /-- The CUDA entry points, declared through the same helper the runtime's
     signatures come from. -/
 def env : FnEnv := env% [.cuda]
@@ -156,30 +181,17 @@ def loadFnCode : HProg.Code := clif% do
   let outId ← cudaCreateBuffer ptr nBytes
   store outId (← absAddr ptr OUT_ID)
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, inId, dataPtr, nBytes]
-  store inId (← absAddr ptr BIND_OFF)
-  store outId (← absAddr ptr (BIND_OFF + 4))
+  kernelBindAt siluK ptr BIND_OFF [inId, outId]
 
 def runFnCode : HProg.Code := clif% do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_OFF
-  let nBufs ← iconst32 2
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 GRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch siluK ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The same work, `E` elements per lane: `LGRID` blocks instead of `GRID`. -/
 def runLoopFnCode : HProg.Code := clif% do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_L_OFF
-  let nBufs ← iconst32 2
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 LGRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch siluLoopK ptr BIND_OFF
   let _ ← cudaSync ptr
 
 def fetchFnCode : HProg.Code := clif% do
@@ -205,8 +217,8 @@ def clifIR : Program :=
      HProg.compileFn 4 runLoopFnCode]
 
 def initialMemory : List UInt8 :=
-  let p := ptx.toUTF8.toList ++ [0]
-  let q := ptxLoop.toUTF8.toList ++ [0]
+  let p := AlgorithmLib.Kernel.ptxBytes siluK
+  let q := AlgorithmLib.Kernel.ptxBytes siluLoopK
   zeros PTX_OFF ++ p ++ zeros (PTX_L_OFF - PTX_OFF - p.length)
     ++ q ++ zeros (MEM_SIZE - PTX_L_OFF - q.length)
 
@@ -223,21 +235,6 @@ def artifacts : Array Json :=
       { clif := clifIR, memory_size := MEM_SIZE, initial_memory := initialMemory }
       entryAlg extraAlgs ]
 
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read past the array.
-
-    Checked over the sequences the *artifact* exposes, not over
-    `Program.functions`: the entry point writes the bind table and each extra
-    is a later call that reads it, and the listing order is neither. The
-    indices come from `extraAlgs`, the list the artifact ships, so adding an
-    entry point without checking it is not possible. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.artifactArityOkB clifIR entryAlg.fn_idx.toNat
-      (extraAlgs.map (fun e => e.2.fn_idx.toNat)) = true := by
-  native_decide
 
 end SiluWarp
 
