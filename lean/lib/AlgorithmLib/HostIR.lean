@@ -1209,7 +1209,7 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
               , Inst.iadd ⟨n + 4⟩ ptr ⟨n + 3⟩
               , Inst.store ⟨n + 2⟩ ⟨n + 4⟩ ]).mem = _
       simp [bevalPure, bstep, stepPure, stepMem, Inst.storeOf?, Env.set_apply,
-            addSym, he, hb3, ExternArg.toSym, hpz, hpk, hbn, hbz]
+            addSym, he, hb3, ExternArg.toSym, hpz, hpk, hbz]
   | addr k =>
       show (bevalPure ⟨e, m⟩
               [ Inst.iconst ⟨n⟩ .i64 (Int.ofNat k)
@@ -1781,7 +1781,7 @@ theorem flatHI_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
                               (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)]
                       else []) ++ []) = _
         simp only [isLaunchCallB, bindAt, hnm, if_neg hpl, if_pos hw, List.append_nil,
-                   decide_eq_true_eq, Bool.or_eq_true, if_pos, ExternStep.toBinds,
+                   decide_eq_true_eq, Bool.or_eq_true, ExternStep.toBinds,
                    bevalPure_env]
         rw [if_pos (Or.inr hw)]
         show btr ++ [{ args := (emitArgs ptr n es.argv).2.2.map

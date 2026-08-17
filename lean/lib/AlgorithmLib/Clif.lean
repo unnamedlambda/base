@@ -214,33 +214,45 @@ theorem dOf_of_toD? (e : Env) (v : Val) (d : DExp) (h : (e v).toD? = some d) :
     dOf e v = d := by
   cases hv : e v <;> rw [hv] at h <;> simp_all [dOf, SymVal.toD?]
 
-/-- **The constant folds below are unsound outside this range, and nothing
-    enforces it.**
+/-- **The range outside which a constant fold would be wrong.**
 
-    `SymVal.const` carries no width. The machine wraps at the operand's — `i32`
-    for a grid dimension, `i64` for an offset — and these folds are on `Int`,
-    which does not. Checked against `HProgSem.evalOp`, the semantics the corpus
+    `SymVal.const` carries no width.  The machine wraps at the operand's — `i32`
+    for a grid dimension, `i64` for an offset — and the folds below are on
+    `Int`, which does not.  Against `HProgSem.evalOp`, the semantics the corpus
     tests against a real machine:
 
-    * `imul 2^62 4` folds to `2^64`; the machine computes `0`.
-    * `ishl 1 64` folds to `2^64`; the machine computes `1`, because the shift
-      amount is taken modulo the operand's width.
-    * `ushr (-1) 1` folds to `-1`; the machine computes `2^63 - 1`, because it
-      shifts the bit pattern rather than dividing an integer.
+    * `imul 2^62 4` would fold to `2^64`; the machine computes `0`.
+    * `ishl 1 64` would fold to `2^64`; the machine computes `1`, because the
+      shift amount is taken modulo the operand's width.
+    * `ushr (-1) 1` would fold to `-1`; the machine computes `2^63 - 1`, because
+      it shifts the bit pattern rather than dividing an integer.
 
-    Inside `[0, 2^31)` none of those can happen at `i32` or wider: no wrap, no
-    modular shift amount, and a logical shift is division. Every constant this
-    model exists to recover — a PTX slot, a bind-table offset, a grid dimension,
-    a buffer count — is far inside it, which is why no shipped claim is known to
-    be wrong. That is an observation about the generators, not a theorem.
+    Inside the signed `i32` range none of those can happen at `i32` or wider:
+    no wrap, and a shift amount below the width.  `ushr` needs one condition
+    more — a logical shift is division only on a non-negative operand — and
+    carries it separately.
 
-    Making it one means refusing to fold outside the range. That is a small
-    change here and a large one downstream: `HostIR`'s launch-argument lemmas
-    are stated over an arbitrary displacement and prove the emitted code's
-    scanned value equals `ExternArg.toSym`, so they would each need the range as
-    a hypothesis — which is correct, since they currently rest on a fold that
-    can be wrong. -/
-def foldableRange : Int × Int := (0, 2147483648)
+    So every arithmetic fold is guarded on its *result* landing back in this
+    range, and refuses otherwise.  Refusing is what keeps the model sound: an
+    unfolded value reads as `unknown`, and `unknown` claims nothing. -/
+def foldableRange : Int × Int := (-2147483648, 2147483648)
+
+/-- Small enough to fold exactly, at every width this model sees. -/
+def inFold (k : Int) : Bool :=
+  foldableRange.1 ≤ k && k < foldableRange.2
+
+/-- The result of a fold: a constant when it is exact, nothing when it is not. -/
+def constIf (k : Int) : SymVal :=
+  if inFold k then .const k else .unknown
+
+/-- The same, for a displacement from a base. -/
+def offsetIf (p : Val) (k : Int) : SymVal :=
+  if inFold k then .offset p k else .unknown
+
+/-- A shift this model will evaluate at all.  Bounded before `2 ^ y` is ever
+    formed: an unbounded amount is not merely unsound here, it does not
+    terminate in practice. -/
+def shiftOk (y : Int) : Bool := 0 ≤ y && y < 64
 
 /-- `a + b`, symbolically: constants fold, a base absorbs a constant, anything
     else is unknown.  A value that is merely *unbound* still contributes its own
@@ -248,16 +260,16 @@ def foldableRange : Int × Int := (0, 2147483648)
     rather than `unknown`. -/
 def addSym (e : Env) (a b : Val) : SymVal :=
   match e a, e b with
-  | .const x,     .const y     => .const (x + y)
-  | .offset p k,  .const y     => .offset p (k + y)
-  | .const x,     .offset p k  => .offset p (x + k)
+  | .const x,     .const y     => constIf (x + y)
+  | .offset p k,  .const y     => offsetIf p (k + y)
+  | .const x,     .offset p k  => offsetIf p (x + k)
   | .unknown,     .const y     => .offset a y
   | .const x,     .unknown     => .offset b x
   | _, _                       => .unknown
 
 def mulSym (e : Env) (a b : Val) : SymVal :=
   match e a, e b with
-  | .const x, .const y => .const (x * y)
+  | .const x, .const y => constIf (x * y)
   | _, _               => .unknown
 
 /-- Step the environment across one instruction.
@@ -268,23 +280,27 @@ def mulSym (e : Env) (a b : Val) : SymVal :=
 def stepPure (e : Env) : Inst → Env
   | .iconst d _ v     => e.set d (.const v)
   | .iadd d a b       => e.set d (addSym e a b)
-  -- the three that carry the host's loop-bound idiom.  Constant folding first,
-  -- exactly as before; what is new is that a *runtime* operand now yields a
-  -- named expression instead of `unknown`.
+  -- the three that carry the host's loop-bound idiom: a constant operand folds
+  -- when the fold is exact, and a runtime one yields a named expression rather
+  -- than `unknown`.
   | .isub d a b       => e.set d (match e a, e b with
-                                  | .const x, .const y => .const (x - y)
-                                  | .offset p k, .const y => .offset p (k - y)
+                                  | .const x, .const y => constIf (x - y)
+                                  | .offset p k, .const y => offsetIf p (k - y)
                                   | _, _ => .derived (.sub (dOf e a) (dOf e b)))
   | .imul d a b       => e.set d (mulSym e a b)
   | .ineg d a         => e.set d (match e a with
-                                  | .const x => .const (-x)
+                                  | .const x => constIf (-x)
                                   | _ => .unknown)
   | .ishl d a b       => e.set d (match e a, e b with
-                                  | .const x, .const y => .const (x * 2 ^ y.toNat)
+                                  | .const x, .const y =>
+                                      if shiftOk y then constIf (x * 2 ^ y.toNat)
+                                      else .unknown
                                   | _, .const y => .derived (.shl (dOf e a) y.toNat)
                                   | _, _ => .unknown)
   | .ushr d a b       => e.set d (match e a, e b with
-                                  | .const x, .const y => .const (x / 2 ^ y.toNat)
+                                  | .const x, .const y =>
+                                      if shiftOk y && 0 ≤ x then constIf (x / 2 ^ y.toNat)
+                                      else .unknown
                                   | _, .const y => .derived (.shr (dOf e a) y.toNat)
                                   | _, _ => .unknown)
   -- **Load carries provenance.**  A value read from `ptr + k` is recorded as
