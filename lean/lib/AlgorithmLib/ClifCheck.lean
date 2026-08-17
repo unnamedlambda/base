@@ -671,4 +671,105 @@ theorem signed_uextend64 {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {k : Int}
   refine signed_of_congr (Or.inr rfl) hf ?_
   rw [hm, Int.toNat_of_nonneg h0]
 
+/-! ### The invariant, and that one step preserves it -/
+
+/-- **What a `const` claim owes the machine.**
+
+    `claimHolds` checks the middle clause alone — its `const` arm reads
+    `signed t x == k` with `t` unconstrained — so a narrow-typed constant would
+    have passed the corpus check.  It cannot arise, because `litOk` refuses
+    narrow literals and the retagging arms yield `i32` or `i64`, but that is a
+    fact about `stepPure` and belongs in the invariant rather than in a comment.
+    `inFold k` is here for the same reason: every fold guards on it, and every
+    arm below needs it of its operands. -/
+def Agree (vs : Vals) (e : Env) : Prop :=
+  ∀ v k, e v = .const k →
+    ∃ t w, getV vs v = some (.sc t w) ∧ TrackedTy t ∧ signed t w = k ∧ inFold k = true
+
+/-- Binding a value leaves every value already bound alone. Stated of a slot
+    that is already there, which is the only case the invariant reaches: a slot
+    past the end reads as `none`, and no `const` claim can be owed of it. -/
+theorem getV_setV_ne {vs : Vals} {d w : Val} {x u : V}
+    (hne : w.id ≠ d.id) (h : getV vs w = some u) : getV (setV vs d x) w = some u := by
+  simp only [getV] at h
+  have hlt : w.id < vs.size := (Array.getElem?_eq_some_iff.mp h).1
+  simp only [getV, setV, Array.set!, Array.getElem?_setIfInBounds,
+             if_neg (Ne.symm hne)]
+  rcases Nat.lt_or_ge d.id vs.size with hd | hd
+  · simp only [hd, if_pos]; exact h
+  · simp only [Nat.not_lt.mpr hd, if_false, Array.getElem?_append_left hlt]; exact h
+
+/-- Every instruction that computes a value writes the destination its own
+    syntax names. -/
+theorem evalInst_dest {m : Mem} {vs : Vals} {i : Inst} {d : Val} {x : V}
+    (h : evalInst m vs i = some (d, x)) : Inst.destOf? i = some d := by
+  cases i <;>
+    simp_all [evalInst, Inst.destOf?, evalInst.bin, evalInst.un,
+              Option.bind_eq_some_iff, Prod.mk.injEq, Option.some.injEq] <;>
+    grind
+
+/-- **One step preserves the invariant, outside the tracked arithmetic.**
+
+    Two halves, and both are about omission rather than arithmetic: an
+    instruction the model does not compute binds its destination `unknown`,
+    which claims nothing, and it leaves every slot it does not write alone.
+    `evalInst_dest` is what ties those to the machine — every instruction that
+    produces a value is one `destOf?` names. -/
+theorem const_sound_untracked {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (ht : Inst.TrackedB i = false) (hag : Agree vs e)
+    (hev : evalInst m vs i = some (d, x)) :
+    Agree (setV vs d x) (stepPure e i) := by
+  intro v k hv
+  have hd := evalInst_dest hev
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    rw [hveq, stepPure_untracked i d e hd ht] at hv
+    exact absurd hv (by simp)
+  · have hframe : stepPure e i v = e v :=
+      stepPure_frame i e v (fun d' hd' => by rw [hd] at hd'; cases hd'; exact hvd)
+    rw [hframe] at hv
+    obtain ⟨t0, w, hw, htt, hs, hf⟩ := hag v k hv
+    exact ⟨t0, w, getV_setV_ne hvd hw, htt, hs, hf⟩
+
+/-- **…and on the literal arm.**  `constLit` reports a constant only when
+    `litOk` holds, which is exactly the invariant's two side conditions: the
+    type is tracked and the value is foldable. -/
+theorem const_sound_iconst {m : Mem} {vs : Vals} {e : Env} {d dd : Val}
+    {t0 : ClifTy} {kk : Int} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.iconst d t0 kk) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.iconst d t0 kk)) := by
+  have hdd : dd = d ∧ x = ofInt t0 kk := by
+    simp [evalInst, AlgorithmLib.HProg.Blocks.viaOp, evalOp] at hev
+    exact ⟨hev.1.symm, hev.2.symm⟩
+  obtain ⟨h1, h2⟩ := hdd
+  subst h2
+  subst h1
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq, stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    by_cases hok : litOk t0 kk = true
+    · rw [constLit_eq hok] at hv
+      have hk : kk = k := by injection hv
+      subst hk
+      obtain ⟨w, hofI, hsg⟩ := constLit_sound t0 kk hok
+      have htt : TrackedTy t0 := by
+        cases t0 <;> simp only [litOk, Bool.and_eq_true, and_false, Bool.false_eq_true] at hok
+        · exact Or.inl rfl
+        · exact Or.inr rfl
+      have hf : inFold kk = true := by
+        simp only [litOk, Bool.and_eq_true] at hok; exact hok.1
+      refine ⟨t0, w, ?_, htt, hsg, hf⟩
+      rw [hveq, hofI]
+      simp only [getV, setV, Array.set!, Array.getElem?_setIfInBounds, if_pos rfl]
+      rcases Nat.lt_or_ge dd.id vs.size with hd | hd
+      · simp only [hd, if_pos]
+      · simp only [Nat.not_lt.mpr hd, if_false, Array.size_append, Array.size_replicate]
+        simp only [if_pos (show dd.id < vs.size + (dd.id + 1 - vs.size) by omega), if_true]
+    · rw [constLit_ne (by simpa using hok)] at hv; exact absurd hv (by simp)
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w, hw, htt, hs, hf⟩ := hag v k hv
+    exact ⟨t1, w, getV_setV_ne hvd hw, htt, hs, hf⟩
+
 end AlgorithmLib.Clif.Check

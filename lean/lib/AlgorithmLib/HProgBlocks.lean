@@ -38,7 +38,7 @@ def setV (vs : Vals) (v : Val) (x : V) : Vals :=
 /-- Evaluate through the term interpreter's own `evalOp`, on an environment
     holding just this instruction's operands. The `Op` names slots `0, 1`
     because that is where they were put. -/
-private def viaOp (m : Mem) (args : List V) (o : Op) : Option V :=
+def viaOp (m : Mem) (args : List V) (o : Op) : Option V :=
   evalOp m args.toArray o
 
 /-- One result-producing instruction: its destination and what it computes. -/

@@ -413,7 +413,7 @@ def stepPure (e : Env) : Inst → Env
   | .sextend64 d a    => e.set d (e a)
   -- everything that writes a destination we do not track
   | .udiv d _ _ | .band d _ _ | .bandNot d _ _ | .bor d _ _ | .bxor d _ _
-  | .icmp d _ _ _ | .select d _ _ _
+  | .icmp d _ _ _ | .select d _ _ _ | .bitselect d _ _ _
   | .fconst d _ _ | .fadd d _ _ | .fsub d _ _ | .fmul d _ _ | .fmax d _ _
   | .fmin d _ _ | .fpromote d _ | .splat d _ _ | .extractlane d _ _
   | .fneg d _ | .fcvtFromSint d _ _ | .fcvtToUint d _ _
@@ -437,7 +437,7 @@ def Inst.destOf? : Inst → Option Val
   | .fadd d _ _ | .fsub d _ _ | .fmul d _ _ | .fmax d _ _ | .fmin d _ _ => some d
   | .load d _ _ | .fconst d _ _ | .splat d _ _ | .extractlane d _ _
   | .fcvtFromSint d _ _ | .fcvtToUint d _ _ | .bitcast d _ _ => some d
-  | .icmp d _ _ _ | .select d _ _ _ | .fcmp d _ _ _ => some d
+  | .icmp d _ _ _ | .select d _ _ _ | .fcmp d _ _ _ | .bitselect d _ _ _ => some d
   | .call d _ _ => d
   | _ => none
 
