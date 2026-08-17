@@ -1483,10 +1483,20 @@ theorem size_le_setV (vs : Vals) (d : Val) (x : V) : vs.size ≤ (setV vs d x).s
     `.add (root p) (lit k)`, whose `DExp.Exact` needs `inFold (rho p + k)` —
     which the *result*'s exactness does not supply, since `k` and `y` can be
     large and opposite.  The claim is nonetheless true, by the same
-    congruence-modulo-width argument as `const_sound`; what it needs is an
-    unconditional congruence clause beside the conditional equality.  `.shr` is
-    what stops that being the whole invariant: division is not a congruence, so
-    a `shrLit` value's claim is conditional however it is phrased. -/
+    congruence-modulo-width argument as `const_sound`, so what it wants is an
+    unconditional congruence clause beside the conditional equality.
+
+    Two things stop that being the whole invariant, and both are about widths
+    rather than about the arithmetic:
+
+    * `.shr` is not a congruence.  Division needs the operand's *value*, so a
+      `shrLit` value's claim stays conditional however it is phrased.
+    * `sextend64` cannot carry a congruence across the widening.  A word
+      congruent to `k` modulo `2 ^ 32` sign-extends to something congruent to
+      `signed .i32 k` modulo `2 ^ 64`, which is a different number whenever `k`
+      was not already in range — `w = 0xFFFFFFFF`, `k = 2 ^ 32 - 1` is the
+      witness.  The *conditional* clause is fine there, because `DExp.Exact`
+      puts `k` in range and the two coincide. -/
 def Denotes (vs : Vals) (e : Env) : Prop :=
   ∀ v d, (e v).toD? = some d →
     ∃ t w, getV vs v = some (.sc t w) ∧ TrackedTy t
