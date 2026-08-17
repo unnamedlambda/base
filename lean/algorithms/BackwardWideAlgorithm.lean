@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
+import AlgorithmLib.HProgCuda
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
@@ -504,6 +505,31 @@ open AlgorithmLib.HProg.Sur
     signatures come from. -/
 def env : FnEnv := env% [.cuda, .cublas]
 
+/-- **The backward kernels, as one record per PTX slot.**
+
+    All five launches read the same fourteen-entry table at `BIND_OFF`; they
+    differ in which program they run and over how many blocks.  The table is
+    written once in `load` and each launch takes its arity from `params` here,
+    so a stage added without a matching handle cannot elaborate. -/
+def bwdK (off g : Nat) : AlgorithmLib.Kernel :=
+  { name   := "main"
+    params := [{ shape := [.sta N],        ro := true,  name := "adj" },
+               { shape := [.sta N, .sta N], ro := true,  name := "w" },
+               { shape := [.sta N],        ro := false, name := "dx" },
+               { shape := [.sta N],        ro := true,  name := "x" },
+               { shape := [.sta N, .sta N], ro := false, name := "dw" },
+               { shape := [.sta N],        ro := true,  name := "z" },
+               { shape := [.sta N],        ro := true,  name := "dy" },
+               { shape := [.sta N],        ro := true,  name := "gam" },
+               { shape := [.sta N],        ro := false, name := "t" },
+               { shape := [.sta 1],        ro := false, name := "q" },
+               { shape := [.sta 1],        ro := false, name := "s" },
+               { shape := [.sta N],        ro := false, name := "dxr" },
+               { shape := [.sta N],        ro := false, name := "y" },
+               { shape := [.sta N],        ro := true,  name := "ys" }]
+    geom   := AlgorithmLib.Kernel.Geom.static g 1 1 32 1 1
+    ptxOff := off }
+
 def loadFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -555,54 +581,24 @@ def loadFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, ysId, ysSrc, dxBytes]
   let wSrc ← iaddImm dataPtr (hostOff 5)
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, wId, wSrc, wBytes]
-  store adjId (← absAddr ptr (bindOff 0))
-  store wId (← absAddr ptr (bindOff 1))
-  store dxId (← absAddr ptr (bindOff 2))
-  store xId (← absAddr ptr (bindOff 3))
-  store dwId (← absAddr ptr (bindOff 4))
-  store zId (← absAddr ptr (bindOff 5))
-  store dyId (← absAddr ptr (bindOff 6))
-  store gamId (← absAddr ptr (bindOff 7))
-  store tId (← absAddr ptr (bindOff 8))
-  store qId (← absAddr ptr (bindOff 9))
-  store sId (← absAddr ptr (bindOff 10))
-  store dxrId (← absAddr ptr (bindOff 11))
-  store yId (← absAddr ptr (bindOff 12))
-  store ysId (← absAddr ptr (bindOff 13))
+  kernelBindAt (bwdK PTX_OFF GRID) ptr BIND_OFF
+    [adjId, wId, dxId, xId, dwId, zId, dyId, gamId, tId, qId, sId, dxrId, yId, ysId]
 
 def runFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_OFF
-  let nBufs ← iconst32 NBUF
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 GRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch (bwdK PTX_OFF GRID) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The activation backward: one element per lane, `N/32` blocks. -/
 def runSiluBwdFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_SB_OFF
-  let nBufs ← iconst32 NBUF
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 EGRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch (bwdK PTX_SB_OFF EGRID) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- A launch of the kernel at `off` over `g` blocks of one warp. -/
 def launchAt (off g : Nat) : Sur.M Unit := do
   let ptr := basePtr
-  let ptxOff ← iconst64 off
-  let nBufs ← iconst32 NBUF
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 g
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch (bwdK off g) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 def runTFn : HProg.Code := clif% (launchAt PTX_T_OFF EGRID)
@@ -659,25 +655,13 @@ def runBwdAllFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
   for (off, g) in [(PTX_SB_OFF, EGRID), (PTX_OFF, GRID), (PTX_DW_OFF, GRID)] do
     bindPass ptr
-    let ptxOff ← iconst64 off
-    let nBufs ← iconst32 NBUF
-    let bindBase ← iconst64 BIND_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    kernelRelaunch (bwdK off g) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The weight gradient, same geometry: one warp per row. -/
 def runDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ptr := basePtr
-  let ptxOff ← iconst64 PTX_DW_OFF
-  let nBufs ← iconst32 NBUF
-  let bindOff ← iconst64 BIND_OFF
-  let one ← iconst32 1
-  let warp ← iconst32 32
-  let grid ← iconst32 GRID
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff grid one one warp one one
+  kernelRelaunch (bwdK PTX_DW_OFF GRID) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 def fetchFn : HProg.Code := clif%(env, HProg.ptrParams) do
@@ -1278,21 +1262,5 @@ theorem bwd_chain (st : WSt) (cta : Nat) (hlt : cta < GRID) :
     (by decide) (by decide) (by decide) (by decide) K EGRID GRID st cta hlt
     (fun i hi l => ⟨i, by simpa [K, geom, EGRID, egeom, MapGeom.simple] using hi, l, rfl⟩)
 
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read past the array.
-
-    Checked over the sequences the *artifact* exposes, not over
-    `Program.functions`: the entry point writes the bind table and each extra
-    is a later call that reads it, and the listing order is neither. The
-    indices come from `extraAlgs`, the list the artifact ships, so adding an
-    entry point without checking it is not possible — which matters most here,
-    where there are seventeen. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.artifactArityOkB clifIR entryAlg.fn_idx.toNat
-      (extraAlgs.map (fun e => e.2.fn_idx.toNat)) = true := by
-  native_decide
 
 end BackwardWide

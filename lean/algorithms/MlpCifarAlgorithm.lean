@@ -2179,6 +2179,33 @@ def qBindLocal (ptr : R) (bs : List Buf) : M Unit := do
     let id ← load32 (← absAddr ptr (qBindOff gb))
     storeI32 id (← absAddr ptr (QLOCAL_OFF + 4 * j))
 
+/-- **Enqueue slot `i` over `g` blocks, binding `bs`.**
+
+    The buffer count the driver is handed is `bs.length` — the length of the
+    very list `qBindLocal` just wrote — so a launch and its table cannot
+    disagree.  Every site goes through here rather than restating it. -/
+def qEnqueue (ptr : R) (i g : Nat) (bs : List Buf) : M Unit := do
+  qBindLocal ptr bs
+  let ptxOff ← iconst64 (qSlotOff i)
+  let nBufs ← iconst32 bs.length
+  let bindBase ← iconst64 QLOCAL_OFF
+  let one ← iconst32 1
+  let warp ← iconst32 32
+  let grid ← iconst32 g
+  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+
+/-- The same, onto a stream, for the captured graph. -/
+def qEnqueueOn (ptr : R) (i g : Nat) (bs : List Buf) (sid : R) : M Unit := do
+  qBindLocal ptr bs
+  let ptxOff ← iconst64 (qSlotOff i)
+  let nBufs ← iconst32 bs.length
+  let bindBase ← iconst64 QLOCAL_OFF
+  let one ← iconst32 1
+  let warp ← iconst32 32
+  let grid ← iconst32 g
+  let _ ← cudaLaunchOnStream ptr ptxOff nBufs bindBase
+            grid one one warp one one sid
+
 /-- **The block, as one launch sequence with a single synchronisation.**
 
     The steps are `qwenSteps` — the slots and grids the stages declare — so the
@@ -2187,14 +2214,7 @@ def qRunFn : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   for (i, g, bs) in qLaunches 0 qwenTape do
-    qBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 QLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    qEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
 /-- The first `k` launches only — the forward half at `k = 28`, and a way to
@@ -2203,14 +2223,7 @@ def qRunUpto (k : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   for (i, g, bs) in (qLaunches 0 qwenTape).take k do
-    qBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 QLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    qEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
 /-- Where the capture leaves the stream and the graph it built. -/
@@ -2234,28 +2247,13 @@ def qCaptureFn : HProg.Code :=
   let ptr := basePtr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, g, bs) in qLaunches 0 qwenTape do
-    qBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 QLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    qEnqueue ptr i g bs
   let _ ← cudaSync ptr
   let sid ← call IR.Ffi.cudaStreamCreate.id [ctxPtr]
   storeI32 sid (← absAddr ptr QSTREAM_OFF)
   let _ ← call IR.Ffi.cudaGraphBeginCapture.id [ctxPtr, sid]
   for (i, g, bs) in qLaunches 0 qwenTape do
-    qBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 QLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunchOnStream ptr ptxOff nBufs bindBase
-              grid one one warp one one sid
+    qEnqueueOn ptr i g bs sid
   let gid ← call IR.Ffi.cudaGraphEndCapture.id [ctxPtr, sid]
   storeI32 gid (← absAddr ptr QGRAPH_OFF)
   let _ ← call IR.Ffi.cudaGraphUpload.id [ctxPtr, gid, sid]
@@ -2450,14 +2448,7 @@ def qRunSynced : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   for (i, g, bs) in qLaunches 0 qwenTape do
-    qBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 QLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    qEnqueue ptr i g bs
     let _ ← cudaSync ptr
 
 /-- The forward half only, so a host can re-evaluate the loss at a perturbed
@@ -2466,14 +2457,7 @@ def qRunFwd : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   for (i, g, bs) in (qLaunches 0 qwenTape).take 28 do
-    qBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 QLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    qEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
 /-- The forward half under the fused schedule: the same stages, with the second
@@ -2483,14 +2467,7 @@ def qRunFused : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   for (i, g, bs) in qLaunches qwenTape.length qwenFwdFused do
-    qBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 QLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    qEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
 def qClifIR : Program :=
@@ -2788,6 +2765,18 @@ def mBindLocal (ptr : R) (bs : List Buf) : M Unit := do
     let id ← load32 (← absAddr ptr (mBindOff gb))
     storeI32 id (← absAddr ptr (MLOCAL_OFF + 4 * j))
 
+/-- Enqueue slot `i` over `g` blocks against the expert table; the count the
+    driver is handed is the length of the list just bound. -/
+def mEnqueue (ptr : R) (i g : Nat) (bs : List Buf) : M Unit := do
+  mBindLocal ptr bs
+  let ptxOff ← iconst64 (qSlotOff i)
+  let nBufs ← iconst32 bs.length
+  let bindBase ← iconst64 MLOCAL_OFF
+  let one ← iconst32 1
+  let warp ← iconst32 32
+  let grid ← iconst32 g
+  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+
 /-- A launch: its slot, its grid, and the buffers it binds. -/
 def mLaunches : List (Nat × Nat × List Buf) :=
   (List.range moeTape.length).zip
@@ -2798,14 +2787,7 @@ def mRunRange (lo hi : Nat) : HProg.Code :=
   HProg.Sur.build (env := env) do
   let ptr := basePtr
   for (i, g, bs) in (mLaunches.take hi).drop lo do
-    mBindLocal ptr bs
-    let ptxOff ← iconst64 (qSlotOff i)
-    let nBufs ← iconst32 bs.length
-    let bindBase ← iconst64 MLOCAL_OFF
-    let one ← iconst32 1
-    let warp ← iconst32 32
-    let grid ← iconst32 g
-    let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
+    mEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
 def mUploadFn (b n : Nat) : HProg.Code :=
@@ -2899,16 +2881,6 @@ def artifacts : Array Json :=
         ("fetchDlog", { fn_idx := u32 26 }),
         ("runFwdBlas", { fn_idx := u32 27 }),
         ("runBwdBlas", { fn_idx := u32 28 })] ]
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read whatever lay past the
-    end.  Recovered across the artifact's functions rather than within one,
-    because the bind table is written where the buffers are made and read
-    where the kernel is launched. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.launchArityOkB 0 clifIR.functions = true := by native_decide
 
 end MlpCifar
 

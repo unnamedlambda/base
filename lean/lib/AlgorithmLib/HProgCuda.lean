@@ -53,6 +53,33 @@ def kernelRelaunch (k : AlgorithmLib.Kernel) (ptr : R) (bindOff : Nat) : M Unit 
   let _ ← cudaLaunch ptr ptxOff64 arity32 bindOff64 gx gy gz bx by_ bz
   pure ()
 
+/-- **Issue the launch with the block count supplied at run time.**
+
+    For a kernel over a length the generator does not know — declare its block
+    shape with `Geom.perLaunch`, and pass the count here.  Everything the
+    arity check rests on is unchanged: the buffer count still comes from
+    `k.params`, so only the grid is a register. -/
+def kernelRelaunchN (k : AlgorithmLib.Kernel) (ptr : R) (bindOff : Nat) (gridX : R) :
+    M Unit := do
+  let arity32 ← iconst32 k.params.length
+  let ptxOff64  ← iconst64 k.ptxOff
+  let bindOff64 ← iconst64 bindOff
+  let gy ← iconst32 k.geom.gridY
+  let gz ← iconst32 k.geom.gridZ
+  let bx ← iconst32 k.geom.blockX
+  let by_ ← iconst32 k.geom.blockY
+  let bz ← iconst32 k.geom.blockZ
+  let _ ← cudaLaunch ptr ptxOff64 arity32 bindOff64 gridX gy gz bx by_ bz
+  pure ()
+
+/-- Bind and launch over a run-time block count, from one site. -/
+def kernelLaunchAtN
+    (k : AlgorithmLib.Kernel) (ptr : R)
+    (bindOff : Nat) (bufs : List R) (gridX : R)
+    (harity : bufs.length = k.params.length := by rfl) : M Unit := do
+  kernelBindAt k ptr bindOff bufs harity
+  kernelRelaunchN k ptr bindOff gridX
+
 /-- Bind and launch from one site. -/
 def kernelLaunchAt
     (k : AlgorithmLib.Kernel) (ptr : R)

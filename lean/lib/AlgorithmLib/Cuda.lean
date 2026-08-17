@@ -93,6 +93,15 @@ def Geom.covering (n blocks lanes : Nat) (h : blocks * lanes = n := by decide) :
 def Geom.sweeping (n lanes trips : Nat) (h : lanes * trips = n := by decide) : Geom :=
   Geom.static 1 1 1 lanes 1 1
 
+/-- **The block shape, with the block count supplied at the launch site.**
+
+    Some kernels cover a length that is only known at run time, so the grid is
+    a register rather than a literal.  The block shape is still a property of
+    the kernel and is declared here; `gridX` is recorded as `0`, which no
+    launch reads and which nobody means as a static grid. -/
+def Geom.perLaunch (bx : Nat := 256) (by_ : Nat := 1) (bz : Nat := 1) : Geom :=
+  Geom.static 0 1 1 bx by_ bz
+
 /-- One kernel parameter — shape + role + the `ldParam` name. -/
 structure ParamSpec where
   shape : Shape

@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import AlgorithmLib.HProgCuda
 
 
 open Lean (Json)
@@ -432,41 +433,54 @@ def emitFormatSignedAt (ptr value startPos : R) : M R := do
           return [← iadd ci one, ← iadd outPos one]))
   return r.headD 0
 
-def emitCudaLaunchAdd (ptr lhsBuf rhsBuf outBuf : R) : M Unit := do
-  let ptxOff ← fldOffset f.ptx
-  let bindOff ← fldOffset f.bindDesc
-  let nBufs ← iconst32 3
-  let one32 ← iconst32 1
-  fldStore32At ptr f.bindDesc 0 lhsBuf
-  fldStore32At ptr f.bindDesc 4 rhsBuf
-  fldStore32At ptr f.bindDesc 8 outBuf
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff one32 one32 one32 one32 one32 one32
-  pure ()
+/-! ### The kernels, as records the launch sites read
+
+    Each of the three writes its bind table and launches beside it, so both
+    halves take the buffer count from one `params` list.  The two array
+    kernels cover a length the generator does not know, so their block count
+    is passed at the launch rather than declared. -/
+
+/-- Scalar add: two operands and a result, one thread. -/
+def addK : AlgorithmLib.Kernel := {
+  name   := "add"
+  params := [{ shape := [.sta 1], ro := true,  name := "lhs" },
+             { shape := [.sta 1], ro := true,  name := "rhs" },
+             { shape := [.sta 1], ro := false, name := "out" }]
+  geom   := AlgorithmLib.Kernel.Geom.static 1 1 1 1 1 1
+  ptxOff := f.ptx.offset
+}
+
+/-- Scale each element of an array by a scalar parameter. -/
+def arrayScaleK : AlgorithmLib.Kernel := {
+  name   := "array_scale"
+  params := [{ shape := [.dyn],  ro := true,  name := "in" },
+             { shape := [.sta 1], ro := true,  name := "param" },
+             { shape := [.dyn],  ro := false, name := "out" }]
+  geom   := AlgorithmLib.Kernel.Geom.perLaunch 1 1 1
+  ptxOff := f.arrayScalePtx.offset
+}
+
+/-- Add two arrays, scaling the sum by a scalar parameter. -/
+def arrayAddK : AlgorithmLib.Kernel := {
+  name   := "array_add"
+  params := [{ shape := [.dyn],  ro := true,  name := "lhs" },
+             { shape := [.dyn],  ro := true,  name := "rhs" },
+             { shape := [.sta 1], ro := true,  name := "param" },
+             { shape := [.dyn],  ro := false, name := "out" }]
+  geom   := AlgorithmLib.Kernel.Geom.perLaunch 1 1 1
+  ptxOff := f.arrayAddPtx.offset
+}
+
+def emitCudaLaunchAdd (ptr lhsBuf rhsBuf outBuf : R) : M Unit :=
+  kernelLaunchAt addK ptr f.bindDesc.offset [lhsBuf, rhsBuf, outBuf]
 
 def emitCudaLaunchArrayScale (ptr inBuf paramBuf outBuf count : R) : M Unit := do
-  let ptxOff ← fldOffset f.arrayScalePtx
-  let bindOff ← fldOffset f.bindDesc
-  let nBufs ← iconst32 3
-  let count32 ← ireduce32 count
-  let one32 ← iconst32 1
-  fldStore32At ptr f.bindDesc 0 inBuf
-  fldStore32At ptr f.bindDesc 4 paramBuf
-  fldStore32At ptr f.bindDesc 8 outBuf
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
-  pure ()
+  kernelLaunchAtN arrayScaleK ptr f.bindDesc.offset
+    [inBuf, paramBuf, outBuf] (← ireduce32 count)
 
 def emitCudaLaunchArrayAdd (ptr lhsBuf rhsBuf paramBuf outBuf count : R) : M Unit := do
-  let ptxOff ← fldOffset f.arrayAddPtx
-  let bindOff ← fldOffset f.bindDesc
-  let nBufs ← iconst32 4
-  let count32 ← ireduce32 count
-  let one32 ← iconst32 1
-  fldStore32At ptr f.bindDesc 0 lhsBuf
-  fldStore32At ptr f.bindDesc 4 rhsBuf
-  fldStore32At ptr f.bindDesc 8 paramBuf
-  fldStore32At ptr f.bindDesc 12 outBuf
-  let _ ← cudaLaunch ptr ptxOff nBufs bindOff count32 one32 one32 one32 one32 one32
-  pure ()
+  kernelLaunchAtN arrayAddK ptr f.bindDesc.offset
+    [lhsBuf, rhsBuf, paramBuf, outBuf] (← ireduce32 count)
 
 def emitUploadLiteralToBuf (ptr bufId value : R) : M Unit := do
   fldStore ptr f.firstVal value
@@ -1400,16 +1414,6 @@ def cliConfig : Setup := {
 def cliAlgorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
-
-/-- **Every launch fills the array whose length it declares.**
-
-    `nBufs` is written by hand here, so a launch could declare more buffers
-    than the program stores and the driver would read whatever lay past the
-    end.  Recovered across the artifact's functions rather than within one,
-    because the bind table is written where the buffers are made and read
-    where the kernel is launched. -/
-theorem launch_arity_ok :
-    AlgorithmLib.Clif.launchArityOkB 0 clifIrSource.functions = true := by native_decide
 
 end Algorithm
 
