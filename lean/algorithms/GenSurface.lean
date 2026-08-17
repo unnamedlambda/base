@@ -35,7 +35,7 @@ def genAllowedOpaque : List Name := [`Lean.opaqueId, `String.Internal.append]
 def genSurface : Surface := { allowedOpaque := genAllowedOpaque }
 
 /-- Their scan, at `genSurface`. -/
-def runGenScan (label : String) (roots : List Name) : CoreM Unit :=
-  runScanWith genSurface label roots
+def runGenScan (label : String) (roots : List Name) (nativeRoster : List Name) : CoreM Unit :=
+  runScanWith genSurface label roots nativeRoster
 
 end TrustScan

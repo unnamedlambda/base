@@ -28,7 +28,7 @@ def notYetStated : List String :=
 end WordCountScan
 
 open TrustScan WordCountScan in
-#eval runGenScan "wordcount" roots
+#eval runGenScan "wordcount" roots []
 
 #eval do
   IO.println s!"[wordcount] roots scanned: {WordCountScan.roots.length}"

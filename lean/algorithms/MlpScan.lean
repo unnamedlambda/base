@@ -213,12 +213,30 @@ def roots : List Name :=
 
 end MlpScan
 
+/-- Claims that rest on the compiler, via `native_decide`. -/
+def nativeRoster : List Name :=
+  [ `MlpCifar.fwd_ops_are
+   , `MlpCifar.bwd_ops_are
+   , `MlpCifar.fwd_host_computes
+   , `MlpCifar.bwd_host_computes
+   , `MlpCifar.fwd_blas_ops_are
+   , `MlpCifar.bwd_blas_ops_are
+   , `MlpCifar.blas_host_computes
+   , `MlpCifar.qwen_ro_policies_differ
+   , `MlpCifar.moe_ptx_fits
+   , `MlpCifar.qwen_ptx_fits
+   , `MlpCifar.mlpPtx_fits
+   , `MlpCifar.qwen_capture_records_the_run
+   , `MlpCifar.qwen_replay_ops_are
+   , `MlpCifar.qwen_run_ops_are ]
+
 open TrustScan MlpScan in
-#eval runScan "mlp-cifar" roots
+#eval runScan "mlp-cifar" roots nativeRoster
 
 /-! The laws each shipped schedule rests on, printed beside the scan: a
     schedule that reached for a primitive with a different contract changes
     this line. -/
+
 #eval do
   for (name, laws, lawless) in MlpCifar.scheduleBills do
     let bill :=

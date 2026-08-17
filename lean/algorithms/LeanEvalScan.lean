@@ -35,7 +35,7 @@ def notYetStated : List String :=
 end LeanEvalScan
 
 open TrustScan LeanEvalScan in
-#eval runGenScan "leaneval" roots
+#eval runGenScan "leaneval" roots []
 
 #eval do
   IO.println s!"[leaneval] roots scanned: {LeanEvalScan.roots.length}"

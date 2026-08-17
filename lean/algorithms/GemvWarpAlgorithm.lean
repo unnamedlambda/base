@@ -460,4 +460,4 @@ def schedRoots : List Name :=
 end GemvWarp
 
 open GemvWarp TrustScan in
-#eval runScan "schedules" schedRoots
+#eval runScan "schedules" schedRoots []

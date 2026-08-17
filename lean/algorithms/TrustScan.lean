@@ -114,6 +114,24 @@ def roots : List Name :=
   ]
 
 end TrustScan
+/-- Claims that rest on the compiler, via `native_decide`. -/
+def nativeRoster : List Name :=
+  [ `layer_program_realises_plan
+   , `layer_program_computes
+   , `shipped_layer_is_transformer
+   , `Qwen2Common.metaStageFrag_emits
+   , `Qwen2Common.entryDriver_is_built
+   , `Qwen2Common.finalDriver_is_built
+   , `attnDriver_is_built
+   , `ffnDriver_is_built
+   , `Qwen2Common.infer_loop_is_layers
+   , `Qwen2Common.infer_loop_body_calls
+   , `Qwen2Common.final_no_loops
+   , `layer_fn_calls
+   , `leaf_fns_no_loops ]
+
 
 open TrustScan in
-#eval runScan "inference" roots
+
+
+#eval runScan "inference" roots nativeRoster

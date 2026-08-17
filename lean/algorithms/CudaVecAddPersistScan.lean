@@ -38,8 +38,13 @@ def notYetStated : List String :=
 
 end CudaVecAddPersistScan
 
+/-- Claims that rest on the compiler, via `native_decide`. -/
+def nativeRoster : List Name :=
+  [ `CudaVecAddPersist.result
+   , `CudaVecAddPersist.artifacts ]
+
 open TrustScan CudaVecAddPersistScan in
-#eval runGenScan "vecadd" roots
+#eval runGenScan "vecadd" roots nativeRoster
 
 #eval do
   IO.println s!"[vecadd] roots scanned: {CudaVecAddPersistScan.roots.length} (two of them library claims)"

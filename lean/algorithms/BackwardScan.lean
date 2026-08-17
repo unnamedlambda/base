@@ -80,6 +80,17 @@ def roots : List Name :=
   ]
 
 end BackwardScan
+/-- Claims that rest on the compiler, via `native_decide`. -/
+def nativeRoster : List Name :=
+  [ `BackwardWide.bwdAll_ops_are
+   , `BackwardWide.bwdAll_host_computes
+   , `BackwardWide.trainPtx_fits
+   , `BackwardWide.bwd_targets_ok
+   , `BackwardWide.bwd_printable
+   , `BackwardWide.bwdPtx_fits ]
+
 
 open TrustScan BackwardScan in
-#eval runScan "backward" roots
+
+
+#eval runScan "backward" roots nativeRoster

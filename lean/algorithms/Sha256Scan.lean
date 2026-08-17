@@ -44,7 +44,7 @@ def notYetStated : List String :=
 end Sha256Scan
 
 open TrustScan Sha256Scan in
-#eval runGenScan "sha256" roots
+#eval runGenScan "sha256" roots []
 
 #eval do
   IO.println s!"[sha256] roots scanned: {Sha256Scan.roots.length} (the emitted program, not a theorem)"

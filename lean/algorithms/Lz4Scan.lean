@@ -337,6 +337,31 @@ end Lz4Scan
 -- proof, so the default 200k elaboration budget has nothing to say about it —
 -- but the growth is linear in the claim count, so the limit is kept close enough
 -- to the measured cost to still be a canary if that ever stops being true.
+/-- Claims that rest on the compiler, via `native_decide`. -/
+def nativeRoster : List Name :=
+  [ `Lz4Host.host_ops32
+   , `Lz4Host.host_ops64
+   , `Lz4Host.host_grid_is_numBlk32
+   , `Lz4Host.host_grid_is_numBlk64
+   , `Lz4Host.host_calls32
+   , `Lz4Host.host_calls64
+   , `Lz4Host.host_single_allocation
+   , `Lz4Host.host_loop_is_rLaunches32
+   , `Lz4Host.host_loop_is_rLaunches64
+   , `Lz4Host.host_launch_in_loop_body32
+   , `Lz4Host.host_launch_in_loop_body64
+   , `Lz4Host.hostShape32
+   , `Lz4Host.hostShape64
+   , `Lz4Whole.emittedLaunches32
+   , `Lz4Whole.emittedLaunches64
+   , `Lz4Whole.emittedGrid32
+   , `Lz4Whole.emittedGrid64
+   , `Lz4Whole.shipped32_run_at_emitted
+   , `Lz4Whole.shipped64_run_at_emitted
+   , `Lz4Assumptions.hostAnchors ]
+
 set_option maxHeartbeats 600000 in
 open Lz4Scan TrustScan in
-#eval runScanWith lz4Surface "lz4-compressor" roots
+
+
+#eval runScanWith lz4Surface "lz4-compressor" roots nativeRoster

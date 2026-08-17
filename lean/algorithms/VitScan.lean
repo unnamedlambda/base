@@ -158,8 +158,32 @@ def notYetStated : List String :=
 
 end VitScan
 
+/-- Claims that rest on the compiler, via `native_decide`. -/
+def nativeRoster : List Name :=
+  [ `Vit.vit_deps_ordered
+   , `Vit.vit_fusion_fired
+   , `Vit.vit_out_survives
+   , `Vit.vit_pad_tail_unwritten
+   , `Vit.vit_pad_exists
+   , `Vit.vit_regs_ok
+   , `Vit.vit_law_bill
+   , `Vit.vit_law_bill_nonempty
+   , `Vit.vit_capture_records_the_forward
+   , `Vit.vit_capture_records_the_step
+   , `Vit.vit_capture_nonempty
+   , `Vit.vit_groups_sound
+   , `Vit.vit_mask_bits
+   , `Vit.vit_mask_below_floor
+   , `Vit.vit_padded_key_is_weightless
+   , `Vit.vit_mask_law_applies
+   , `Vit.vit_stmts_flat_idxfree
+   , `Vit.vit_ptx_exact
+   , `Vit.vit_slot_holds_the_kernel
+   , `Vit.vit_fwd_contractions_are_plain_gemms
+   , `Vit.vit_step_contractions_are_plain_gemms ]
+
 open TrustScan VitScan in
-#eval runScan "vit" roots
+#eval runScan "vit" roots nativeRoster
 
 #eval do
   IO.println s!"[vit] roots scanned: {VitScan.roots.length}"

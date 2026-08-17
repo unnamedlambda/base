@@ -153,9 +153,18 @@ def isGenerated (env : Environment) (n : Name) : Bool :=
 
 /-- **The scan, as a driver.**  Takes the claim list so a pipeline's scanner is
     just its `roots` plus one call.  Throws — i.e. fails the build — on anything
-    outside the declared surface, on an unknown claim name, and on an
-    undeclared hypothesis. -/
-def runScanWith (surf : Surface) (label : String) (roots : List Name) : CoreM Unit := do
+    outside the declared surface, on an unknown claim name, on an undeclared
+    hypothesis, and on a claim that starts or stops resting on `native_decide`.
+
+    `nativeRoster` has **no default on purpose.**  `native_decide` puts
+    `Lean.ofReduceBool` and `Lean.trustCompiler` into a claim's base — the
+    compiler becomes part of what the claim rests on.  That is sometimes the
+    right trade, but it should be a decision on the record rather than a side
+    effect of typing a tactic, and a roster that could be omitted is one that
+    would be.  Adding a scan forces stating its native surface; a claim joining
+    or leaving the list is then a reviewable diff. -/
+def runScanWith (surf : Surface) (label : String) (roots : List Name)
+    (nativeRoster : List Name) : CoreM Unit := do
   let env ← getEnv
   let mut bad := 0
   let mut native : Array Name := #[]
@@ -173,6 +182,20 @@ def runScanWith (surf : Surface) (label : String) (roots : List Name) : CoreM Un
         if f.badOpaque.size != 0 then IO.println s!"   opaque: {f.badOpaque.toList}"
   IO.println s!"[{label}] scanned {roots.length} claims"
   IO.println s!"[{label}] native_decide reached by {native.size}: {native.toList}"
+  -- …and that set is pinned, in both directions: a claim that newly reaches the
+  -- compiler is a widened base, and one that no longer does is a roster saying
+  -- the base is bigger than it is.
+  let joined := native.filter (fun n => !(nativeRoster.contains n))
+  let left := (nativeRoster.filter (fun n => !(native.contains n))).toArray
+  if joined.size != 0 then
+    bad := bad + 1
+    IO.println s!"UNDECLARED native_decide ({joined.size}): {(joined.qsort Name.lt).toList}"
+  if left.size != 0 then
+    bad := bad + 1
+    IO.println s!"STALE native_decide roster ({left.size}) — declared but not reached: \
+{(left.qsort Name.lt).toList}"
+  if joined.size == 0 && left.size == 0 then
+    IO.println s!"[{label}] native_decide roster matches ({nativeRoster.length} declared)"
   -- hypotheses: reported per claim, so an assumption cannot be added silently
   let mut withHyps := 0
   let mut withDerived := 0

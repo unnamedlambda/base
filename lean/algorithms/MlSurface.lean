@@ -187,9 +187,11 @@ def mlSurface : Surface :=
     derivedObligations := derivedObligations
     openObligations    := openObligations }
 
-/-- The inference/training pipelines' scan, at `mlSurface`. -/
-def runScan (label : String) (roots : List Name) : CoreM Unit :=
-  runScanWith mlSurface label roots
+/-- The inference/training pipelines' scan, at `mlSurface`.  The native roster
+    is per-scan, not per-surface: five pipelines share this surface and each
+    rests on the compiler for a different set of claims. -/
+def runScan (label : String) (roots : List Name) (nativeRoster : List Name) : CoreM Unit :=
+  runScanWith mlSurface label roots nativeRoster
 
 
 end TrustScan

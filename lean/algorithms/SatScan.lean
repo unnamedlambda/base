@@ -45,7 +45,7 @@ def notYetStated : List String :=
 end SatScan
 
 open TrustScan SatScan in
-#eval runGenScan "sat" roots
+#eval runGenScan "sat" roots []
 
 #eval do
   IO.println s!"[sat] roots scanned: {SatScan.roots.length}"
