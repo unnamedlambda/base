@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import ShipScan
 set_option maxRecDepth 8192
 open Lean (Json toJson)
 open AlgorithmLib
@@ -1473,11 +1474,11 @@ def code (spec : BlackHoleSpec) : HProg.Code :=
     let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
 
 
--- `clifIrSource` is generic in the spec, so `compileFn` has no instance to
--- `decide` at; it takes `compileBody` and `code_wf` below stands in for the
--- check, at the spec that ships.
-def clifIrSource (spec : BlackHoleSpec) : Program :=
-  IR.program [noopFunction, HProg.compileBody 1 (code spec) env]
+-- Generic in the spec, so `compileFn` has no instance to `decide` at; the
+-- obligation is a parameter instead, discharged at the spec that ships.
+def clifIrSource (spec : BlackHoleSpec)
+    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 (code spec) env (hwf := hwf)]
 
 def payloads (spec : BlackHoleSpec) : List UInt8 :=
   let reserved := zeros ptxOff
@@ -1491,8 +1492,9 @@ def payloads (spec : BlackHoleSpec) : List UInt8 :=
   reserved ++ ptxBytes ++ nameA ++ nameB ++ bindAPad ++ bindBPad ++
     filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : BlackHoleSpec) : Setup := {
-  clif := clifIrSource spec,
+def config (spec : BlackHoleSpec)
+    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup := {
+  clif := clifIrSource spec hwf,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
@@ -1501,8 +1503,9 @@ def algorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
 
-def renderScene (spec : BlackHoleSpec) : Setup × Algorithm :=
-  (config spec, algorithm)
+def renderScene (spec : BlackHoleSpec)
+    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup × Algorithm :=
+  (config spec hwf, algorithm)
 
 /-- ============================================================
     Preset specs.  Each must pass every dependent check in
@@ -1568,7 +1571,9 @@ def edgeOnBlackHole : BlackHoleSpec :=
 end Algorithm
 
 def main (args : List String) : IO Unit := do
-  let (cfg, alg) := Algorithm.renderScene Algorithm.defaultBlackHole
+  let (cfg, alg) := Algorithm.renderScene Algorithm.defaultBlackHole Algorithm.code_wf
   let jsonEntry := toJsonEntry "blackhole_app" cfg alg
   let outputDir ← requireOutputDir args
   emitArtifacts outputDir #[jsonEntry]
+
+#eval ShipScan.check "BlackHoleAlgorithm"

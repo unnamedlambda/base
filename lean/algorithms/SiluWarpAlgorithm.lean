@@ -4,6 +4,7 @@ import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
 import LayoutScan
+import ShipScan
 
 
 
@@ -255,3 +256,5 @@ end SiluWarp
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir SiluWarp.artifacts
+
+#eval ShipScan.check "SiluWarpAlgorithm"

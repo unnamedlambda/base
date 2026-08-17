@@ -113,6 +113,8 @@ lean_lib ScanCore
 
 lean_lib LayoutScan
 
+lean_lib ShipScan
+
 lean_lib MlSurface
 
 lean_lib TrustScan

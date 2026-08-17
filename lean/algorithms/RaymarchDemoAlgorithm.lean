@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import ShipScan
 
 
 open Lean (Json)
@@ -482,3 +483,5 @@ def main (args : List String) : IO Unit := do
       ("test_quit_on_close", Algorithm.quitOnCloseAlg),
       ("test_render_scene",  Algorithm.renderSceneAlg)
     ]]
+
+#eval ShipScan.check "RaymarchDemoAlgorithm"

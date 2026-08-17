@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import ShipScan
 
 
 
@@ -202,3 +203,5 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "draw_app" Algorithm.drawConfig Algorithm.drawAlgorithm]
+
+#eval ShipScan.check "DrawAlgorithm"

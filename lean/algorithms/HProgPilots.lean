@@ -3,6 +3,7 @@ import AlgorithmLib.Gen
 import HistogramBench1Algorithm
 import ClampSumBenchAlgorithm
 import CudaRmsNormPersistAlgorithm
+import ShipScan
 
 /-!
 # Three generators written as `HProg` terms
@@ -502,3 +503,5 @@ def main (args : List String) : IO Unit := do
       IO.println s!"compile_sound (executed): histogram term and compiled form agree \
                    — {n} observations, {calls} of them FFI calls"
 
+
+#eval ShipScan.check "HProgPilots"

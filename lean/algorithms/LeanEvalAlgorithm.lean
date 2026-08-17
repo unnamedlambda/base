@@ -1,5 +1,6 @@
 import AlgorithmLib.Gen
 import LayoutScan
+import ShipScan
 
 open Lean (Json)
 open AlgorithmLib
@@ -615,3 +616,5 @@ end LeanEval
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "lean_eval_app" LeanEval.buildSetup LeanEval.buildAlgorithm]
+
+#eval ShipScan.check "LeanEvalAlgorithm"

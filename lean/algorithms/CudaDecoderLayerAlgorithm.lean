@@ -386,6 +386,21 @@ theorem bodies_wf :
 def STACK16_DEPTH : Nat := 16
 def STACK32_DEPTH : Nat := 32
 
+/-- The `wrapper5_wf` wrapper's body is well-formed. -/
+theorem wrapper5_wf :
+    HProg.wf (IR.sequenceWrapperEnv ([3, 4])) HProg.ptrParams
+      (IR.sequenceWrapperBody ([3, 4])) = true := by decide
+
+/-- The `wrapper6_wf` wrapper's body is well-formed. -/
+theorem wrapper6_wf :
+    HProg.wf (IR.sequenceWrapperEnv (List.replicate STACK16_DEPTH 3 ++ [4])) HProg.ptrParams
+      (IR.sequenceWrapperBody (List.replicate STACK16_DEPTH 3 ++ [4])) = true := by native_decide
+
+/-- The `wrapper7_wf` wrapper's body is well-formed. -/
+theorem wrapper7_wf :
+    HProg.wf (IR.sequenceWrapperEnv (List.replicate STACK32_DEPTH 3 ++ [4])) HProg.ptrParams
+      (IR.sequenceWrapperBody (List.replicate STACK32_DEPTH 3 ++ [4])) = true := by native_decide
+
 def clifIR : Program :=
   program
     [noopFunction,
@@ -393,9 +408,9 @@ def clifIR : Program :=
      HProg.compileFn 2 prepCode,
      HProg.compileFn 3 inferCode,
      HProg.compileFn 4 finalizeCode,
-     clifSequenceWrapper 5 [3, 4],
-     clifSequenceWrapper 6 (List.replicate STACK16_DEPTH 3 ++ [4]),
-     clifSequenceWrapper 7 (List.replicate STACK32_DEPTH 3 ++ [4])]
+     clifSequenceWrapper 5 [3, 4] wrapper5_wf,
+     clifSequenceWrapper 6 (List.replicate STACK16_DEPTH 3 ++ [4]) wrapper6_wf,
+     clifSequenceWrapper 7 (List.replicate STACK32_DEPTH 3 ++ [4]) wrapper7_wf]
 
 def ptxRmsBytes : List UInt8 := ptxRmsNorm.toUTF8.toList ++ [0]
 def ptxSiluBytes : List UInt8 := ptxSiluGate.toUTF8.toList ++ [0]

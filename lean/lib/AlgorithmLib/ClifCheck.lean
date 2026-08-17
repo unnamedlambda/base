@@ -60,11 +60,16 @@ def unCase (t : ClifTy) (x : Int) (mk : Val → Val → Inst) : Bool :=
   let vs : Vals := setV #[] ⟨0⟩ (ofInt t x)
   claimHolds ((stepPure e i) ⟨1⟩) ((evalInst default vs i).map (·.2))
 
-/-- One binary instruction over two literals. -/
-def binCase (t : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
+/-- One binary instruction over two literals, **at independent widths**.
+
+    `Inst` carries no type, so nothing in the term says the operands share one.
+    Running only the diagonal leaves the model's folds — which are on `Int` and
+    see no width at all — unchecked against an `iadd` whose operands disagree,
+    and that is where the two semantics were found to part. -/
+def binCase (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
   let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let e := stepPure (stepPure Env.empty (.iconst ⟨0⟩ t x)) (.iconst ⟨1⟩ t y)
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t x)) ⟨1⟩ (ofInt t y)
+  let e := stepPure (stepPure Env.empty (.iconst ⟨0⟩ ta x)) (.iconst ⟨1⟩ tb y)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
   claimHolds ((stepPure e i) ⟨2⟩) ((evalInst default vs i).map (·.2))
 
 /-- Every integer width the tracked fragment is emitted at. -/
@@ -100,8 +105,8 @@ def unOk : Bool :=
   types.all fun t => sample.all fun x => unOps.all fun f => unCase t x f
 
 def binOk : Bool :=
-  types.all fun t => sample.all fun x => sample.all fun y =>
-    binOps.all fun f => binCase t x y f
+  types.all fun ta => types.all fun tb => sample.all fun x => sample.all fun y =>
+    binOps.all fun f => binCase ta tb x y f
 
 /-- **The launch model never reports a constant the machine does not compute**,
     over every tracked instruction at every integer width on the sample above.
@@ -114,8 +119,8 @@ theorem stepPure_constants_agree :
 
 /-- Whether an arm reports a constant at all, so the check above can be shown
     to have something to check. -/
-def reportsConst (t : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
-  let e := stepPure (stepPure Env.empty (.iconst ⟨0⟩ t x)) (.iconst ⟨1⟩ t y)
+def reportsConst (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
+  let e := stepPure (stepPure Env.empty (.iconst ⟨0⟩ ta x)) (.iconst ⟨1⟩ tb y)
   match (stepPure e (mk ⟨2⟩ ⟨0⟩ ⟨1⟩)) ⟨2⟩ with
   | .const _ => true
   | _        => false
@@ -130,9 +135,30 @@ def reportsConst1 (t : ClifTy) (x : Int) (mk : Val → Val → Inst) : Bool :=
     least one case, so a model that answered `unknown` everywhere would pass
     `stepPure_constants_agree` and fail this. -/
 theorem check_is_live :
-    (binOps.all (fun f => reportsConst .i64 6 7 f)
+    (binOps.all (fun f => reportsConst .i64 .i64 6 7 f)
       && unOps.all (fun f => reportsConst1 .i32 6 f)
       && constCase .i32 6) = true := by native_decide
+
+/-- A case where the model claims a constant and the machine, asked for a
+    binary operation on two widths, declines to answer. -/
+def mixedRefused (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
+  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
+  reportsConst ta tb x y mk && (evalInst default vs i).isNone
+
+def mixedRefusedCount : Nat :=
+  (types.map fun ta => (types.map fun tb =>
+    if ta == tb then 0 else
+      (sample.map fun x => (sample.map fun y =>
+        (binOps.map fun f => if mixedRefused ta tb x y f then 1 else 0).sum).sum).sum).sum).sum
+
+/-- **What carries the mixed-width half of `binOk`.**  The model cannot see a
+    width, so it goes on claiming a constant when the operands disagree; the
+    cases pass because the machine refuses the instruction rather than because
+    the two computed the same number.  Recorded as a count so that a semantics
+    which quietly started answering there would fail here rather than pass
+    `stepPure_constants_agree` by arithmetic that does not hold. -/
+theorem mixed_width_is_refused : (2000 < mixedRefusedCount) = true := by native_decide
 
 -- ---------------------------------------------------------------------------
 -- The other claim: a `derived` value denotes the machine's number

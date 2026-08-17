@@ -1,5 +1,6 @@
 import Lean
 import AlgorithmLib.Gen
+import ShipScan
 
 /-!
 # The differential corpus
@@ -849,3 +850,6 @@ def main (args : List String) : IO Unit := do
             IO.println
               s!"compile_sound (executed): term and compiled form agree \
                  — {tObs.length} observations, {tOut.size} bytes"
+
+#eval ShipScan.check "HProgCorpus"
+  (gatedElsewhere := "main, which refuses on Sur.buildChecked before emitting")

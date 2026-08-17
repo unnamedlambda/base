@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import ShipScan
 set_option maxRecDepth 4096
 open Lean (Json toJson)
 open AlgorithmLib
@@ -259,21 +260,20 @@ def code (m k n : Nat) : HProg.Code :=
     let _ ← call fnWrite.id [ptr, fnOffV, cOffV, c0, cSz]
 
 
-/-- Well-formed at the dimensions that ship. -/
-theorem code_wf : HProg.wf env HProg.ptrParams (code 64 64 64) = true := by decide
-
-def clifIrSource (m k n : Nat) : Program :=
-  IR.program [noopFunction, HProg.compileBody 1 (code m k n) env]
+def clifIrSource (m k n : Nat)
+    (hwf : HProg.wf env HProg.ptrParams (code m k n) = true) : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 (code m k n) env (hwf := hwf)]
 
 -- ---------------------------------------------------------------------------
 -- Monomorphic builder: takes concrete dims, returns (Setup, Algorithm).
 -- ---------------------------------------------------------------------------
 
-def buildMatmulConfig (m k n : Nat) : Setup × Algorithm :=
+def buildMatmulConfig (m k n : Nat)
+    (hwf : HProg.wf env HProg.ptrParams (code m k n) = true) : Setup × Algorithm :=
   let payload := buildPayload m k n
   let memSize := payload.length
   let cfg : Setup := {
-    clif := clifIrSource m k n,
+    clif := clifIrSource m k n hwf,
     memory_size := memSize,
     initial_memory := payload
   }
@@ -287,8 +287,9 @@ def buildMatmulConfig (m k n : Nat) : Setup × Algorithm :=
 -- Passing incompatible shapes fails at Lean elaboration time.
 -- ---------------------------------------------------------------------------
 
-def matmul {m k n : Nat} (_A : Matrix m k) (_B : Matrix k n) : Setup × Algorithm :=
-  buildMatmulConfig m k n
+def matmul {m k n : Nat} (_A : Matrix m k) (_B : Matrix k n)
+    (hwf : HProg.wf env HProg.ptrParams (code m k n) = true) : Setup × Algorithm :=
+  buildMatmulConfig m k n hwf
 
 -- ---------------------------------------------------------------------------
 -- Demo: shapes fixed at Lean compile time.
@@ -302,7 +303,10 @@ def N : Nat := 256
 def A : Matrix M K := mkMatrix M K
 def B : Matrix K N := mkMatrix K N
 
-def result : Setup × Algorithm := matmul A B  -- : Matrix M N (erased)
+/-- Well-formed at the dimensions that ship. -/
+theorem code_wf : HProg.wf env HProg.ptrParams (code M K N) = true := by decide
+
+def result : Setup × Algorithm := matmul A B code_wf  -- : Matrix M N (erased)
 
 -- Uncomment to see the dependent-type check in action:
 --
@@ -317,3 +321,5 @@ def main (args : List String) : IO Unit := do
   let (cfg, alg) := Matmul.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "matmul_app" cfg alg]
+
+#eval ShipScan.check "MatmulAlgorithm"

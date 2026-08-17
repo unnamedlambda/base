@@ -4,6 +4,7 @@ import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
 import LayoutScan
+import ShipScan
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
@@ -1284,3 +1285,5 @@ theorem bwd_chain (st : WSt) (cta : Nat) (hlt : cta < GRID) :
 
 
 end BackwardWide
+
+#eval ShipScan.check "BackwardWideAlgorithm"

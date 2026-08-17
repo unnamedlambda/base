@@ -1,4 +1,5 @@
 import VitAlgorithm
+import ShipScan
 open AlgorithmLib AlgorithmLib.ML
 
 /-!
@@ -169,3 +170,5 @@ def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir Vit.artifacts
   report
+
+#eval ShipScan.check "VitShip"

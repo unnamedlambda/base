@@ -29,6 +29,7 @@ import SortBenchAlgorithm
 import StringSearchAlgorithm
 import VecOpsBenchAlgorithm
 import WordCountAlgorithm
+import ShipScan
 
 open Lean
 open AlgorithmLib
@@ -64,3 +65,5 @@ def main (args : List String) : IO Unit := do
     PminSumBench.artifacts ++
     RegPressureBench.artifacts ++
     IntSumBench.artifacts
+
+#eval ShipScan.check "RustBenchmarks"

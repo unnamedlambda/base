@@ -177,10 +177,17 @@ abbrev Env := Array V
 
 private def get (Γ : Env) (r : R) : Option V := Γ[r]?
 
+/-- An integer operation on two scalars of **one** type, which is what
+    `Op.check` requires of every operation reached through here and what
+    Cranelift's verifier requires of the instruction. Taking the left operand's
+    type and evaluating anyway would answer for a program that cannot be built:
+    `iadd (i64 0) (i32 (-1))` would wrap at 64 bits and give `2^32 - 1` where
+    the operand denotes `-1`. Refusing is what keeps the two semantics over
+    `Inst` — this one and `Clif.stepPure` — from disagreeing there. -/
 private def bin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Option V) : Option V := do
   let (.sc ta x) ← get Γ a | none
-  let (.sc _ y) ← get Γ b | none
-  f ta x y
+  let (.sc tb y) ← get Γ b | none
+  if ta != tb then none else f ta x y
 
 /-- Elementwise on a vector pair, or on two scalars — how the float operations
     apply to both `f32`/`f64` and `f32x4`. -/

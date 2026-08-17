@@ -1,5 +1,6 @@
 import AlgorithmLib.Gen
 import AlgorithmLib.HProgCuda
+import ShipScan
 
 
 open Lean (Json)
@@ -1420,3 +1421,5 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "cli_app" Algorithm.cliConfig Algorithm.cliAlgorithm]
+
+#eval ShipScan.check "CliAlgorithm"

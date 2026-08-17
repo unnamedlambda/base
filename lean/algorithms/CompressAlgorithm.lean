@@ -1,5 +1,6 @@
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
+import ShipScan
 
 
 open Lean (Json)
@@ -410,10 +411,11 @@ def buildPayload (bs : Nat) : List UInt8 :=
 
 theorem code_wf : HProg.wf env HProg.ptrParams (code 16384) = true := by decide
 
-def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
+def buildCompressor {bs : Nat} (_p : LZ4Params bs)
+    (hwf : HProg.wf env HProg.ptrParams (code bs) = true) : Setup × Algorithm :=
   let payload := buildPayload bs
   let cfg : Setup := {
-    clif := IR.program [noopFunction, HProg.compileBody 1 (code bs) env],
+    clif := IR.program [noopFunction, HProg.compileFn 1 (code bs) env (hwf := hwf)],
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }
@@ -429,7 +431,7 @@ def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Setup × Algorithm :=
 
 def defaultParams : LZ4Params 16384 := ⟨by omega, by omega⟩
 
-def result : Setup × Algorithm := buildCompressor defaultParams
+def result : Setup × Algorithm := buildCompressor defaultParams code_wf
 
 -- Uncomment to see the constraint in action:
 --
@@ -445,3 +447,5 @@ def main (args : List String) : IO Unit := do
   let (cfg, alg) := Algorithm.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "compress_app" cfg alg]
+
+#eval ShipScan.check "CompressAlgorithm"

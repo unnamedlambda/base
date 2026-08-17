@@ -4,6 +4,7 @@ import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
 import LayoutScan
+import ShipScan
 
 
 
@@ -403,3 +404,5 @@ theorem grad_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
 
 
 end GradWarp
+
+#eval ShipScan.check "GradWarpAlgorithm"

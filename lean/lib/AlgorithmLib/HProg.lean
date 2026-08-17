@@ -1329,12 +1329,25 @@ def when (cc : ICmpCond) (a b : R) (thn : M Unit) : M Unit := do
   let _ ← ifte cc a b (do thn; pure []) (pure [])
   pure ()
 
+/-- Run a builder to the term it denotes and the first thing the surface found
+    wrong while denoting it. `bindOp` runs `Op.check` on every operation as it
+    is built, so the diagnosis costs nothing beyond the build itself. -/
+def run (m : M Unit) (env : FnEnv := IR.FFI.stdEnv)
+    (params : List ClifTy := ptrParams) : Code × Option String :=
+  let (_, s) := (do m; flushAux)
+    { env, tys := TyEnv.ofList params, pieces := [], cur := [] }
+  (s.pieces.reverse, s.err)
+
+/-- What the surface found wrong, if anything: an operation whose operands do
+    not typecheck, a slot out of scope, a `brk` that does not match its loop. -/
+def buildErr (m : M Unit) (env : FnEnv := IR.FFI.stdEnv)
+    (params : List ClifTy := ptrParams) : Option String :=
+  (run m env params).2
+
 /-- Run a builder to the term it denotes. -/
 def build (m : M Unit) (env : FnEnv := IR.FFI.stdEnv)
     (params : List ClifTy := ptrParams) : Code :=
-  let (_, s) := (do m; flushAux)
-    { env, tys := TyEnv.ofList params, pieces := [], cur := [] }
-  s.pieces.reverse
+  (run m env params).1
 
 /-- Which top-level piece first makes the body ill-formed, found by checking
     growing prefixes. Only ever run on a body already known to be bad, so its
@@ -1351,10 +1364,8 @@ private def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat 
     catches what the surface hands out correctly but assembles wrongly. -/
 def buildChecked (m : M Unit) (env : FnEnv := IR.FFI.stdEnv)
     (params : List ClifTy := ptrParams) : Except String Code :=
-  let (_, s) := (do m; flushAux)
-    { env, tys := TyEnv.ofList params, pieces := [], cur := [] }
-  let c := s.pieces.reverse
-  match s.err with
+  let (c, err) := run m env params
+  match err with
   | some e => .error e
   | none =>
       if wf env params c then .ok c

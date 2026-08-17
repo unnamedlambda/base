@@ -4,6 +4,7 @@ import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import MlSurface
 import LayoutScan
+import ShipScan
 
 
 /-!
@@ -325,18 +326,45 @@ theorem bodies_wf :
         HProg.wf envCuda HProg.ptrParams (runCode sh true sc))) = true := by
   decide
 
-def clifIR (sh : Shape) : Program :=
+private theorem parts {sh : Shape} (hsh : sh ∈ shapes) :
+    HProg.wf envCuda HProg.ptrParams (loadCode sh) = true ∧
+    HProg.wf envCuda HProg.ptrParams (fetchCode sh) = true ∧
+    HProg.wf envAll HProg.ptrParams (blasCode sh) = true ∧
+    (Sched.all.all (fun sc =>
+      HProg.wf envCuda HProg.ptrParams (runCode sh false sc) &&
+      HProg.wf envCuda HProg.ptrParams (runCode sh true sc))) = true := by
+  have h := List.all_eq_true.mp bodies_wf sh hsh
+  simp only [Bool.and_eq_true] at h
+  exact ⟨h.1.1.1, h.1.1.2, h.1.2, h.2⟩
+
+theorem load_wf {sh : Shape} (hsh : sh ∈ shapes) :
+    HProg.wf envCuda HProg.ptrParams (loadCode sh) = true := (parts hsh).1
+theorem fetch_wf {sh : Shape} (hsh : sh ∈ shapes) :
+    HProg.wf envCuda HProg.ptrParams (fetchCode sh) = true := (parts hsh).2.1
+theorem blas_wf {sh : Shape} (hsh : sh ∈ shapes) :
+    HProg.wf envAll HProg.ptrParams (blasCode sh) = true := (parts hsh).2.2.1
+
+theorem run_wf {sh : Shape} (hsh : sh ∈ shapes) (t : Bool) (sc : Sched)
+    (hsc : sc ∈ Sched.all) :
+    HProg.wf envCuda HProg.ptrParams (runCode sh t sc) = true := by
+  have h := List.all_eq_true.mp (parts hsh).2.2.2 sc hsc
+  simp only [Bool.and_eq_true] at h
+  cases t
+  · exact h.1
+  · exact h.2
+
+def clifIR (sh : Shape) (hsh : sh ∈ shapes) : Program :=
   program
     [noopFunction,
-     HProg.compileBody 1 (loadCode sh),
-     HProg.compileBody 2 (runCode sh false .vec4),
-     HProg.compileBody 3 (fetchCode sh),
-     HProg.compileBody 4 (blasCode sh),
-     HProg.compileBody 5 (runCode sh false .strided),
-     HProg.compileBody 6 (runCode sh false .blocked),
-     HProg.compileBody 7 (runCode sh true .vec4),
-     HProg.compileBody 8 (runCode sh true .strided),
-     HProg.compileBody 9 (runCode sh true .blocked)]
+     HProg.compileFn 1 (loadCode sh) envCuda (hwf := load_wf hsh),
+     HProg.compileFn 2 (runCode sh false .vec4) envCuda (hwf := run_wf hsh false .vec4 (List.Mem.head _)),
+     HProg.compileFn 3 (fetchCode sh) envCuda (hwf := fetch_wf hsh),
+     HProg.compileFn 4 (blasCode sh) envAll (hwf := blas_wf hsh),
+     HProg.compileFn 5 (runCode sh false .strided) envCuda (hwf := run_wf hsh false .strided (List.Mem.tail _ (List.Mem.head _))),
+     HProg.compileFn 6 (runCode sh false .blocked) envCuda (hwf := run_wf hsh false .blocked (List.Mem.tail _ (List.Mem.tail _ (List.Mem.head _)))),
+     HProg.compileFn 7 (runCode sh true .vec4) envCuda (hwf := run_wf hsh true .vec4 (List.Mem.head _)),
+     HProg.compileFn 8 (runCode sh true .strided) envCuda (hwf := run_wf hsh true .strided (List.Mem.tail _ (List.Mem.head _))),
+     HProg.compileFn 9 (runCode sh true .blocked) envCuda (hwf := run_wf hsh true .blocked (List.Mem.tail _ (List.Mem.tail _ (List.Mem.head _))))]
 
 /-- Every emitted kernel fits the slot it is written into — all six kernels at
     all four shapes, checked rather than assumed. -/
@@ -376,9 +404,9 @@ def initialMemory (sh : Shape) : List UInt8 :=
     ++ (Sched.all.flatMap (fun s => slotBytes (ptxSqOf sh s)))
     ++ zeros (MEM_SIZE - BIND_OFF)
 
-def artifactOf (sh : Shape) : Json :=
+def artifactOf (sh : Shape) (hsh : sh ∈ shapes) : Json :=
   toJsonArtifact sh.tag
-    { clif := clifIR sh, memory_size := MEM_SIZE,
+    { clif := clifIR sh hsh, memory_size := MEM_SIZE,
       initial_memory := initialMemory sh }
     { fn_idx := u32 1 }
     [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
@@ -386,7 +414,7 @@ def artifactOf (sh : Shape) : Json :=
      ("run_blocked", { fn_idx := u32 6 }), ("sq", { fn_idx := u32 7 }),
      ("sq_strided", { fn_idx := u32 8 }), ("sq_blocked", { fn_idx := u32 9 })]
 
-def artifacts : Array Json := (shapes.map artifactOf).toArray
+def artifacts : Array Json := (shapes.attach.map (fun p => artifactOf p.1 p.2)).toArray
 
 end GemvWarp
 
@@ -464,3 +492,5 @@ end GemvWarp
 
 open GemvWarp TrustScan in
 #eval runScan "schedules" schedRoots []
+
+#eval ShipScan.check "GemvWarpAlgorithm"

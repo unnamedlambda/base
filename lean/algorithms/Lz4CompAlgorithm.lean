@@ -4,6 +4,7 @@ import AlgorithmLib.LZ4Suite
 import AlgorithmLib.LZ4SimtSerialize
 import AlgorithmLib.LZ4WarpKernel
 import AlgorithmLib.LZ4CompTop
+import ShipScan
 
 
 open Lean (Json)
@@ -101,7 +102,9 @@ def warpFn (w : WP) : FuncData :=
   HProg.compileBody 1 (warpCode w)
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
-def warpClif (w : WP) : Program := IR.program [noopFunction, warpFn w]
+def warpClif (w : WP)
+    (hwf : HProg.wf FFI.stdEnv HProg.ptrParams (warpCode w) = true) : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 (warpCode w) (hwf := hwf)]
 
 def warpPayloadDSL (w : WP) : List UInt8 :=
   zeros rPTX_OFF ++
@@ -121,10 +124,12 @@ theorem payload_length (w : WP) : (warpPayloadDSL w).length = w.bindOff + 8 := b
 theorem payload_fits (w : WP) : (warpPayloadDSL w).length ≤ w.memSize := by
   rw [payload_length]; simp only [WP.memSize, WP.rowOff]; omega
 
-def warpArtifactDSL (name : String) (blkLog : Nat) :=
+open AlgorithmLib.IR AlgorithmLib.HProg in
+def warpArtifactDSL (name : String) (blkLog : Nat)
+    (hwf : HProg.wf IR.FFI.stdEnv HProg.ptrParams (warpCode ⟨blkLog⟩) = true) :=
   let w : WP := ⟨blkLog⟩
   AlgorithmLib.toJsonArtifact name
-    { clif := warpClif w,
+    { clif := warpClif w hwf,
       memory_size := w.memSize,
       initial_memory := warpPayloadDSL w }
     { fn_idx := AlgorithmLib.IR.mainFnIdx, output := compSchema w }
@@ -134,5 +139,9 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
   AlgorithmLib.emitArtifacts outDir #[
-    Algorithm.warpArtifactDSL "lz4_comp_warpdsl" 15,     -- proven kernel, 32 KiB blocks
-    Algorithm.warpArtifactDSL "lz4_comp_warpdsl64" 16]   -- proven kernel, 64 KiB blocks
+    Algorithm.warpArtifactDSL "lz4_comp_warpdsl" 15
+      ((Bool.and_eq_true _ _).mp Algorithm.warp_wf).1,
+    Algorithm.warpArtifactDSL "lz4_comp_warpdsl64" 16
+      ((Bool.and_eq_true _ _).mp Algorithm.warp_wf).2]
+
+#eval ShipScan.check "Lz4CompAlgorithm"

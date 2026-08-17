@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import ShipScan
 open Lean (Json toJson)
 open AlgorithmLib
 open AlgorithmLib.IR
@@ -955,8 +956,9 @@ def code (spec : SceneSpec) : HProg.Code :=
     let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
 
 
-def clifIrSource (spec : SceneSpec) : Program :=
-  IR.program [noopFunction, HProg.compileBody 1 (code spec) env]
+def clifIrSource (spec : SceneSpec)
+    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Program :=
+  IR.program [noopFunction, HProg.compileFn 1 (code spec) env (hwf := hwf)]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
   let reserved := zeros ptxOff
@@ -967,8 +969,9 @@ def payloads (spec : SceneSpec) : List UInt8 :=
   let clifPad := zeros clifIrRegion
   reserved ++ ptxBytes ++ bindDesc ++ bindPad ++ filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : SceneSpec) : Setup := {
-  clif := clifIrSource spec,
+def config (spec : SceneSpec)
+    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup := {
+  clif := clifIrSource spec hwf,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
@@ -977,8 +980,9 @@ def algorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
 
-def renderScene (spec : SceneSpec) : Setup × Algorithm :=
-  (config spec, algorithm)
+def renderScene (spec : SceneSpec)
+    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup × Algorithm :=
+  (config spec hwf, algorithm)
 
 def defaultPalette : ScenePalette := {
   groundLight := checkedColor 189 191 204 (by decide) (by decide) (by decide)
@@ -1052,6 +1056,8 @@ def studioScene : SceneSpec :=
 end Algorithm
 
 def main (args : List String) : IO Unit := do
-  let (cfg, alg) := Algorithm.renderScene Algorithm.defaultScene
+  let (cfg, alg) := Algorithm.renderScene Algorithm.defaultScene Algorithm.code_wf
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "scene_app" cfg alg]
+
+#eval ShipScan.check "SceneAlgorithm"

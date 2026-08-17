@@ -3,6 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import LayoutScan
+import ShipScan
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
@@ -2489,9 +2490,24 @@ def qRunFused : HProg.Code :=
     qEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
+/-- The bodies the quantised artifact carries, in the order it numbers them. -/
+def qShippedBodies : List HProg.Code :=
+  [ qLoadFn, qRunFn, qFetchFn 39 (DM * 4), qRunFwd, qUploadFn 40 (DM * 4)
+  , qFetchFn 43 (DM * DFF * 4), qUploadFn 12 (DM * DFF * 4)
+  , qRunUpto 30, qRunUpto 45, qRunUpto 60, qRunUpto 75
+  , qRunSynced, qCaptureFn, qReplayFn 1, qReplayFn 2, qReplayFn 4
+  , qRunUpto 31, qRunUpto 34, qRunUpto 35, qRunUpto 37, qRunFused ]
+
+theorem qShipped_wf :
+    qShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
+  native_decide
+
 def qClifIR : Program :=
   program <|
-    [noopFunction, HProg.compileBody 1 qLoadFn env, HProg.compileBody 2 qRunFn env, HProg.compileBody 3 (qFetchFn 39 (DM * 4)) env, HProg.compileBody 4 qRunFwd env, HProg.compileBody 5 (qUploadFn 40 (DM * 4)) env, HProg.compileBody 6 (qFetchFn 43 (DM * DFF * 4)) env, HProg.compileBody 7 (qUploadFn 12 (DM * DFF * 4)) env, HProg.compileBody 8 (qRunUpto 30) env, HProg.compileBody 9 (qRunUpto 45) env, HProg.compileBody 10 (qRunUpto 60) env, HProg.compileBody 11 (qRunUpto 75) env, HProg.compileBody 12 qRunSynced env, HProg.compileBody 13 qCaptureFn env, HProg.compileBody 14 (qReplayFn 1) env, HProg.compileBody 15 (qReplayFn 2) env, HProg.compileBody 16 (qReplayFn 4) env, HProg.compileBody 17 (qRunUpto 31) env, HProg.compileBody 18 (qRunUpto 34) env, HProg.compileBody 19 (qRunUpto 35) env, HProg.compileBody 20 (qRunUpto 37) env, HProg.compileBody 21 qRunFused env]
+    noopFunction :: qShippedBodies.attach.zipIdx.map
+      (fun p =>
+        HProg.compileFn (p.2 + 1) p.1.1 env
+          (hwf := List.all_eq_true.mp qShipped_wf p.1.1 p.1.2))
 
 def qSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -2834,9 +2850,23 @@ def mFetchFn (b n : Nat) : HProg.Code :=
   let bytes ← iconst64 n
   let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
 
+/-- The bodies the mixture-of-experts artifact carries, in the order it numbers
+    them. -/
+def mShippedBodies : List HProg.Code :=
+  [ mLoadFn, mRunRange 0 mRouterTape.length, mFetchFn MGATE (NE * 4)
+  , mBindExperts, mUploadFn 3 128
+  , mRunRange mRouterTape.length moeTape.length, mFetchFn MOUT (MD * 4) ]
+
+theorem mShipped_wf :
+    mShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
+  native_decide
+
 def mClifIR : Program :=
   program <|
-    [noopFunction, HProg.compileBody 1 mLoadFn env, HProg.compileBody 2 (mRunRange 0 mRouterTape.length) env, HProg.compileBody 3 (mFetchFn MGATE (NE * 4)) env, HProg.compileBody 4 mBindExperts env, HProg.compileBody 5 (mUploadFn 3 128) env, HProg.compileBody 6 (mRunRange mRouterTape.length moeTape.length) env, HProg.compileBody 7 (mFetchFn MOUT (MD * 4)) env]
+    noopFunction :: mShippedBodies.attach.zipIdx.map
+      (fun p =>
+        HProg.compileFn (p.2 + 1) p.1.1 env
+          (hwf := List.all_eq_true.mp mShipped_wf p.1.1 p.1.2))
 
 def mInitialMemory : List UInt8 :=
   zeros QHOST_LEN_OFF ++ u32le MHOST_BYTES
@@ -2914,3 +2944,5 @@ def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir MlpCifar.artifacts
 
+
+#eval ShipScan.check "MlpCifarAlgorithm"

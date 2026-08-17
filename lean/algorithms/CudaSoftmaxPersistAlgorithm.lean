@@ -294,6 +294,16 @@ theorem bodies_wf :
 /-- Stack depth baked into the `stackAlgorithm` wrapper. -/
 def STACK_DEPTH : Nat := 64
 
+/-- The `wrapper5_wf` wrapper's body is well-formed. -/
+theorem wrapper5_wf :
+    HProg.wf (IR.sequenceWrapperEnv ([3, 4])) HProg.ptrParams
+      (IR.sequenceWrapperBody ([3, 4])) = true := by decide
+
+/-- The `wrapper6_wf` wrapper's body is well-formed. -/
+theorem wrapper6_wf :
+    HProg.wf (IR.sequenceWrapperEnv (List.replicate STACK_DEPTH 3 ++ [4])) HProg.ptrParams
+      (IR.sequenceWrapperBody (List.replicate STACK_DEPTH 3 ++ [4])) = true := by native_decide
+
 def clifIR : Program :=
   program
     [noopFunction,
@@ -301,8 +311,8 @@ def clifIR : Program :=
      HProg.compileFn 2 prepCode,
      HProg.compileFn 3 coreCode,
      HProg.compileFn 4 finalizeCode,
-     clifSequenceWrapper 5 [3, 4],
-     clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4])]
+     clifSequenceWrapper 5 [3, 4] wrapper5_wf,
+     clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4]) wrapper6_wf]
 
 -- initial_memory: names, PTX source, bind descriptors
 def nameBlockReduce  : List UInt8 := "block_reduce".toUTF8.toList ++ [0]

@@ -19,6 +19,7 @@ import RowDotBenchAlgorithm
 import StringSearchAlgorithm
 import VecOpsBenchAlgorithm
 import WordCountAlgorithm
+import ShipScan
 
 open Lean
 open AlgorithmLib
@@ -44,3 +45,5 @@ def main (args : List String) : IO Unit := do
     CudaSoftmaxPersist.artifacts ++
     CudaDecoderLayer.artifacts ++
     CudaDecodeAttention.artifacts
+
+#eval ShipScan.check "PythonBenchmarks"

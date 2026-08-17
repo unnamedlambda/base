@@ -4,6 +4,7 @@ import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
 import LayoutScan
+import ShipScan
 
 
 
@@ -227,3 +228,5 @@ theorem ptx_computes_spec (cta : Nat) (m : MState)
 end WarpSumSq
 
 #eval LayoutScan.check "warp_sumsq" [``WarpSumSq.memMap]
+
+#eval ShipScan.check "WarpSumSqAlgorithm"

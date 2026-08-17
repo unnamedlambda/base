@@ -409,18 +409,35 @@ namespace AlgorithmLib.IR
 
     The callee table is the wrapper's own — one declaration per distinct index
     — so it is built here rather than passed in. -/
-def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat) : FuncData :=
-  let unique : List Nat :=
-    callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
-  let (refs, env) :=
-    unique.foldl (fun (refs, e) c =>
-      let (r, e) := e.declareLocal c [ClifTy.i64] none
-      (refs ++ [r], e)) (([] : List FnRef), ({ sigs := [], fns := [] } : FnEnv))
-  HProg.compileBody wrapperIdx
-    (HProg.Sur.build (env := env) do
-      for c in callees do
-        let slot := (unique.idxOf? c).getD 0
-        HProg.Sur.callVoid (refs[slot]!).id [HProg.Sur.basePtr])
-    env
+private def wrapperUnique (callees : List Nat) : List Nat :=
+  callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
+
+private def wrapperDecls (callees : List Nat) : List FnRef × FnEnv :=
+  (wrapperUnique callees).foldl (fun (refs, e) c =>
+    let (r, e) := e.declareLocal c [ClifTy.i64] none
+    (refs ++ [r], e)) (([] : List FnRef), ({ sigs := [], fns := [] } : FnEnv))
+
+/-- The callee table the wrapper ships, one declaration per distinct index. -/
+def sequenceWrapperEnv (callees : List Nat) : FnEnv := (wrapperDecls callees).2
+
+/-- The wrapper's body: each callee, in the order given. -/
+def sequenceWrapperBody (callees : List Nat) : HProg.Code :=
+  let (refs, env) := wrapperDecls callees
+  let unique := wrapperUnique callees
+  HProg.Sur.build (env := env) do
+    for c in callees do
+      let slot := (unique.idxOf? c).getD 0
+      HProg.Sur.callVoid (refs[slot]!).id [HProg.Sur.basePtr]
+
+/-- The wrapper is generic in its callees, so the obligation is a parameter
+    rather than an auto-param: `decide` at a call site has to reduce the whole
+    builder, which exhausts 10 GB at the depths this ships at. A proof by
+    induction on `callees` would discharge every site at once and needs lemmas
+    about `FnEnv.declare` that do not exist yet. -/
+def clifSequenceWrapper (wrapperIdx : Nat) (callees : List Nat)
+    (hwf : HProg.wf (sequenceWrapperEnv callees) HProg.ptrParams
+             (sequenceWrapperBody callees) = true) : FuncData :=
+  HProg.compileFn wrapperIdx (sequenceWrapperBody callees)
+    (sequenceWrapperEnv callees) (hwf := hwf)
 
 end AlgorithmLib.IR

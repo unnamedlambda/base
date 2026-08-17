@@ -1,5 +1,6 @@
 import AlgorithmLib.Gen
 import LayoutScan
+import ShipScan
 
 open Lean (Json)
 open AlgorithmLib
@@ -264,8 +265,10 @@ theorem bodies_wf :
     (List.range 16).all (fun n => HProg.wf env HProg.ptrParams (mainCode n)) = true := by
   decide
 
-def clifIrSource (patternLen : Nat) : Program :=
-  IR.program [IR.noopFunction, HProg.compileBody 1 (mainCode patternLen) env]
+def clifIrSource (patternLen : Nat)
+    (hwf : HProg.wf env HProg.ptrParams (mainCode patternLen) = true := by decide) :
+    Program :=
+  IR.program [IR.noopFunction, HProg.compileFn 1 (mainCode patternLen) env (hwf := hwf)]
 
 -- ---------------------------------------------------------------------------
 -- Payload builder (parameterized by filter pattern bytes)
@@ -303,11 +306,13 @@ def buildPayload (patternBytes : List UInt8) : List UInt8 :=
 -- Monomorphic builder
 -- ---------------------------------------------------------------------------
 
-def buildQueryMonomorphic (patternStr : String) : Setup × Algorithm :=
+def buildQueryMonomorphic (patternStr : String)
+    (hwf : HProg.wf env HProg.ptrParams (mainCode patternStr.toUTF8.toList.length) = true
+      := by decide) : Setup × Algorithm :=
   let patternBytes := patternStr.toUTF8.toList  -- no null terminator
   let payload := buildPayload patternBytes
   let cfg : Setup := {
-    clif := clifIrSource patternBytes.length,
+    clif := clifIrSource patternBytes.length hwf,
     memory_size    := payload.length,
     initial_memory := payload
   }
@@ -338,8 +343,11 @@ def extractPattern : QueryPlan s → String
   | .join _ p1 _ _ _    => extractPattern p1
   | .select _ p _       => extractPattern p
 
-def compile {s : Schema} (p : QueryPlan s) : Setup × Algorithm :=
-  buildQueryMonomorphic ("," ++ extractPattern p ++ ",")
+def compile {s : Schema} (p : QueryPlan s)
+    (hwf : HProg.wf env HProg.ptrParams
+             (mainCode ("," ++ extractPattern p ++ ",").toUTF8.toList.length) = true
+      := by decide) : Setup × Algorithm :=
+  buildQueryMonomorphic ("," ++ extractPattern p ++ ",") hwf
 
 def source {s : Schema} (t : Table s) : QueryPlan s :=
   plan t
@@ -352,8 +360,11 @@ def QueryPlan.project {s : Schema} (p : QueryPlan s)
     (cols : List String) (h : ∀ c ∈ cols, c ∈ s := by decide) : QueryPlan cols :=
   select cols p h
 
-def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s) : Setup × Algorithm :=
-  compile p
+def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s)
+    (hwf : HProg.wf env HProg.ptrParams
+             (mainCode ("," ++ extractPattern p ++ ",").toUTF8.toList.length) = true
+      := by decide) : Setup × Algorithm :=
+  compile p hwf
 
 def QueryPlan.innerJoinOn {s1 : Schema} (lhs : QueryPlan s1)
     (key : String) {s2 : Schema} (rhs : QueryPlan s2)
@@ -413,3 +424,5 @@ def main (args : List String) : IO Unit := do
   let (cfg, alg) := CsvDemo.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "csv_app" cfg alg]
+
+#eval ShipScan.check "CsvAlgorithm"

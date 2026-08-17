@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import ShipScan
 
 
 
@@ -548,20 +549,17 @@ def testConservation : HProg.Code := clif% do
   writeOutput ptr (← sextend64 (← icmp .eq count expected)) count expected
 
 
-theorem bodies_wf :
-    HProg.wf envMain HProg.ptrParams mainBody = true &&
-    HProg.wf envGpu HProg.ptrParams testGrainFalls = true &&
+theorem main_wf : HProg.wf envMain HProg.ptrParams mainBody = true := by decide
+theorem grain_wf : HProg.wf envGpu HProg.ptrParams testGrainFalls = true := by decide
+theorem conservation_wf :
     HProg.wf envGpu HProg.ptrParams testConservation = true := by decide
 
--- The three bodies are checked once, by `bodies_wf`. `compileFn` would decide
--- the same three facts again at each call, so these take `compileBody` and rest
--- on the theorem above.
 def clifIrSource : IR.Program :=
   program
     [noopFunction,
-     HProg.compileBody 1 mainBody envMain,
-     HProg.compileBody 2 testGrainFalls envGpu,
-     HProg.compileBody 3 testConservation envGpu]
+     HProg.compileFn 1 mainBody envMain (hwf := main_wf),
+     HProg.compileFn 2 testGrainFalls envGpu (hwf := grain_wf),
+     HProg.compileFn 3 testConservation envGpu (hwf := conservation_wf)]
 
 def bindBytes (pairs : List (Nat × Nat)) : List UInt8 :=
   pairs.foldl (fun acc (b, ro) => acc ++ uint32ToBytes (UInt32.ofNat b) ++ uint32ToBytes (UInt32.ofNat ro)) []
@@ -609,3 +607,5 @@ def main (args : List String) : IO Unit := do
       ("test_grain_falls",  Algorithm.grainFallsAlg),
       ("test_conservation", Algorithm.conservationAlg)
     ]]
+
+#eval ShipScan.check "FallingSandAlgorithm"

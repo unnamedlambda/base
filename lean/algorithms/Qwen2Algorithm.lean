@@ -5,6 +5,7 @@ import AlgorithmLib.ML
 import AlgorithmLib.Cuda
 import AlgorithmLib.HProgCuda
 import Qwen2Common
+import ShipScan
 
 
 open Lean
@@ -155,15 +156,22 @@ theorem shipped_wf :
     shippedBodies.all (HProg.wf Qwen2Common.env HProg.ptrParams) = true := by
   native_decide
 
+/-- The `wrapper_wf` wrapper's body is well-formed. -/
+theorem wrapper_wf :
+    HProg.wf (IR.sequenceWrapperEnv (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])) HProg.ptrParams
+      (IR.sequenceWrapperBody (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])) = true := by native_decide
+
 def clifIR : Program :=
   program <|
-    (noopFunction :: shippedBodies.zipIdx.map
-      (fun p => HProg.compileBody (p.2 + 1) p.1 Qwen2Common.env))
+    (noopFunction :: shippedBodies.attach.zipIdx.map
+      (fun p =>
+        HProg.compileFn (p.2 + 1) p.1.1 Qwen2Common.env
+          (hwf := List.all_eq_true.mp shipped_wf p.1.1 p.1.2)))
     ++ [
      -- fn38: orchestrator wrapper — parse args (37), load weights (1..26),
      --       load tokenizer (32), server (36 — runs forever).
      clifSequenceWrapper 38
-       (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])]
+       (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36]) wrapper_wf]
 
 -- ── Initial memory ───────────────────────────────────────────────────────────
 
@@ -358,3 +366,5 @@ def main (args : List String) : IO Unit := do
   emitArtifacts outDir #[
     toJsonEntry "qwen2" Qwen2.buildSetup Qwen2.qwen2Algorithm
   ]
+
+#eval ShipScan.check "Qwen2Algorithm"

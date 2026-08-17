@@ -1,5 +1,6 @@
 import AlgorithmLib.Gen
 import LayoutScan
+import ShipScan
 open Lean (Json toJson)
 open AlgorithmLib
 
@@ -511,3 +512,5 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "sat_app" Algorithm.satConfig Algorithm.satAlgorithm]
+
+#eval ShipScan.check "SatAlgorithm"

@@ -1,5 +1,6 @@
 import AlgorithmLib.Gen
 import LayoutScan
+import ShipScan
 open Lean (Json toJson)
 open AlgorithmLib
 open AlgorithmLib.IR
@@ -404,3 +405,5 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "raytrace_app" Algorithm.raytraceConfig Algorithm.raytraceAlgorithm]
+
+#eval ShipScan.check "RaytraceAlgorithm"

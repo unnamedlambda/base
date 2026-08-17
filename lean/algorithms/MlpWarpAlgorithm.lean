@@ -4,6 +4,7 @@ import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
 import LayoutScan
+import ShipScan
 
 
 
@@ -210,3 +211,5 @@ theorem mlp_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
   exact ⟨k, m', hs, by rw [hw]; exact expandEW_run h kernel cta 0 m.toWSt⟩
 
 end MlpWarp
+
+#eval ShipScan.check "MlpWarpAlgorithm"
