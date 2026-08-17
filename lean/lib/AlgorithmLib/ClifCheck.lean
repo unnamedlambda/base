@@ -134,4 +134,67 @@ theorem check_is_live :
       && unOps.all (fun f => reportsConst1 .i32 6 f)
       && constCase .i32 6) = true := by native_decide
 
+-- ---------------------------------------------------------------------------
+-- The other claim: a `derived` value denotes the machine's number
+-- ---------------------------------------------------------------------------
+
+/-- The roots a `DExp` names are SSA values; their valuation is the machine's
+    own word for them, read signed — the same convention `claimHolds` uses. -/
+def rhoOf (vs : Vals) : Nat → Int := fun k =>
+  match getV vs ⟨k⟩ with
+  | some (.sc t w) => signed t w
+  | _              => 0
+
+/-- One instruction with a *runtime* left operand — the model cannot see `v0`,
+    so it names it and builds an expression instead of folding. -/
+def derivCase (t : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
+  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
+  let e := stepPure Env.empty (.iconst ⟨1⟩ t y)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t x)) ⟨1⟩ (ofInt t y)
+  let conc : Option V := (evalInst default vs i).map (·.2)
+  match (stepPure e i) ⟨2⟩, conc with
+  | .derived d, some (.sc t' w) =>
+      !DExp.Exact (rhoOf vs) d || signed t' w == DExp.eval (rhoOf vs) d
+  | _, _ => true
+
+/-- Whether a case is one the condition admits, so the count below can show
+    the check is not passing by refusing everything. -/
+def derivLive (t : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
+  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
+  let e := stepPure Env.empty (.iconst ⟨1⟩ t y)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t x)) ⟨1⟩ (ofInt t y)
+  match (stepPure e i) ⟨2⟩ with
+  | .derived d => DExp.Exact (rhoOf vs) d
+  | _          => false
+
+/-- The three instructions that build an expression rather than fold. -/
+def derivOps : List (Val → Val → Val → Inst) :=
+  [ (fun d a b => .isub d a b)
+  , (fun d a b => .ishl d a b)
+  , (fun d a b => .ushr d a b) ]
+
+def wideTypes : List ClifTy := [.i32, .i64]
+
+def derivOk : Bool :=
+  wideTypes.all fun t => sample.all fun x => sample.all fun y =>
+    derivOps.all fun f => derivCase t x y f
+
+def derivLiveCount : Nat :=
+  (wideTypes.flatMap fun t => sample.flatMap fun x => sample.flatMap fun y =>
+    derivOps.filter fun f => derivLive t x y f).length
+
+/-- **A `derived` value denotes what the machine computes, wherever
+    `DExp.Exact` holds.**
+
+    That condition is the whole content: `DExp.eval` is `Int` arithmetic, so
+    it is the machine's answer only while nothing overflows and every `shr`
+    shifts a non-negative value.  Both are conditions on runtime values, which
+    is why they cannot be a guard inside `stepPure` and are instead what a
+    theorem reading a launch bound out of a `derived` value has to carry. -/
+theorem stepPure_derived_agree : derivOk = true := by native_decide
+
+/-- **…on a condition that admits most of the sample rather than none.**  A
+    `DExp.Exact` that was always false would satisfy the theorem above. -/
+theorem derived_check_is_live : (2000 < derivLiveCount) = true := by native_decide
+
 end AlgorithmLib.Clif.Check

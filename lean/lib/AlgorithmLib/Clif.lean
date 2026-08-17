@@ -294,6 +294,48 @@ attribute [irreducible] constLit
     `i32`, `ushr x 32` is `x`, not `0`. -/
 def shiftOk (y : Int) : Bool := 0 ≤ y && y < 32
 
+/-- The two shift arms that name an expression rather than fold one, guarded
+    and sealed for the same reason as `constLit`. -/
+def shlLit (d : DExp) (y : Int) : SymVal :=
+  if shiftOk y then .derived (.shl d y.toNat) else .unknown
+
+def shrLit (d : DExp) (y : Int) : SymVal :=
+  if shiftOk y then .derived (.shr d y.toNat) else .unknown
+
+theorem shlLit_eq {d : DExp} {y : Int} (h : shiftOk y = true) :
+    shlLit d y = .derived (.shl d y.toNat) := by simp [shlLit, h]
+
+theorem shrLit_eq {d : DExp} {y : Int} (h : shiftOk y = true) :
+    shrLit d y = .derived (.shr d y.toNat) := by simp [shrLit, h]
+
+attribute [irreducible] shlLit shrLit
+
+/-- **When `DExp.eval` is the machine's arithmetic and not merely `Int`'s.**
+
+    `DExp.eval` is the seam where this development says what Cranelift's
+    `isub`/`ishl`/`ushr` compute, and it says it in `Int`, which neither wraps
+    nor shifts bit patterns.  Two things have to hold for that to be the same
+    answer, and neither is checkable from the expression alone — they are
+    conditions on the *runtime* values, which is why they are a predicate here
+    rather than a guard in `stepPure`:
+
+    * nothing overflows — every subexpression's value stays in `foldableRange`,
+      the range that is exact at `i32` and wider;
+    * every `shr` shifts a non-negative value, because a logical shift is
+      division only there.  `ushr` of `-1` is `2 ^ 63 - 1`, not `-1`.
+
+    A theorem that reads a launch bound out of a `derived` value owes this. -/
+def DExp.Exact (rho : Nat → Int) : DExp → Bool
+  | .root v  => inFold (rho v)
+  | .lit k   => inFold k
+  | .add a b => DExp.Exact rho a && DExp.Exact rho b
+                  && inFold (DExp.eval rho a + DExp.eval rho b)
+  | .sub a b => DExp.Exact rho a && DExp.Exact rho b
+                  && inFold (DExp.eval rho a - DExp.eval rho b)
+  | .shl a k => DExp.Exact rho a && inFold (DExp.eval rho a * 2 ^ k)
+  | .shr a k => DExp.Exact rho a && 0 ≤ DExp.eval rho a
+                  && inFold (DExp.eval rho a / 2 ^ k)
+
 /-- `a + b`, symbolically: constants fold, a base absorbs a constant, anything
     else is unknown.  A value that is merely *unbound* still contributes its own
     identity as a base, which is what turns `ptr + ptxOff` into `offset ptr k`
@@ -335,13 +377,13 @@ def stepPure (e : Env) : Inst → Env
                                   | .const x, .const y =>
                                       if shiftOk y then constIf (x * 2 ^ y.toNat)
                                       else .unknown
-                                  | _, .const y => .derived (.shl (dOf e a) y.toNat)
+                                  | _, .const y => shlLit (dOf e a) y
                                   | _, _ => .unknown)
   | .ushr d a b       => e.set d (match e a, e b with
                                   | .const x, .const y =>
                                       if shiftOk y && 0 ≤ x then constIf (x / 2 ^ y.toNat)
                                       else .unknown
-                                  | _, .const y => .derived (.shr (dOf e a) y.toNat)
+                                  | _, .const y => shrLit (dOf e a) y
                                   | _, _ => .unknown)
   -- **Load carries provenance.**  A value read from `ptr + k` is recorded as
   -- coming from slot `k`, which is what makes a buffer handle identifiable.

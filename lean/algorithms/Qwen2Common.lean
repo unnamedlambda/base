@@ -866,7 +866,8 @@ theorem metaFrag_mem (ptr dataPtr pos32 seqLen64 : Val)
      simp only [SymVal.toD?, Option.some.injEq] at hS
      subst hS
      simp only [metaFragInsts, bevalPure, bstep, stepPure, stepMem, Inst.storeOf?,
-       Env.set_apply, addSym, constLit, litOk, inFold, foldableRange, dOf, he, hv,
+       Env.set_apply, addSym, constLit, shlLit, shrLit, litOk, inFold, shiftOk,
+       foldableRange, dOf, he, hv,
        hpj, hdj, hoj, hsj, hp0, hd0, ho0, hs0, hnn, hn0, if_false, reduceIte]
      simp
      all_goals rfl)
