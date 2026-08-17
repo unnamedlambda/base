@@ -197,4 +197,110 @@ theorem stepPure_derived_agree : derivOk = true := by native_decide
     `DExp.Exact` that was always false would satisfy the theorem above. -/
 theorem derived_check_is_live : (2000 < derivLiveCount) = true := by native_decide
 
+-- ---------------------------------------------------------------------------
+-- The third claim: an `offset` is its base plus its displacement
+-- ---------------------------------------------------------------------------
+
+/-- One instruction with a runtime base — the model names the base and records
+    a displacement rather than folding. -/
+def offCase (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
+  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
+  let e := stepPure Env.empty (.iconst ⟨1⟩ t k)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t base)) ⟨1⟩ (ofInt t k)
+  let conc : Option V := (evalInst default vs i).map (·.2)
+  match (stepPure e i) ⟨2⟩, conc with
+  | .offset p d, some (.sc t' w) =>
+      let b := rhoOf vs p.id
+      !inFold b || !inFold (b + d) || signed t' w == b + d
+  | _, _ => true
+
+def offLive (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
+  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
+  let e := stepPure Env.empty (.iconst ⟨1⟩ t k)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t base)) ⟨1⟩ (ofInt t k)
+  match (stepPure e i) ⟨2⟩ with
+  | .offset p d => let b := rhoOf vs p.id; inFold b && inFold (b + d)
+  | _           => false
+
+def offOps : List (Val → Val → Val → Inst) :=
+  [ (fun d a b => .iadd d a b), (fun d a b => .isub d a b) ]
+
+def offOk : Bool :=
+  wideTypes.all fun t => sample.all fun b => sample.all fun k =>
+    offOps.all fun f => offCase t b k f
+
+def offLiveCount : Nat :=
+  (wideTypes.flatMap fun t => sample.flatMap fun b => sample.flatMap fun k =>
+    offOps.filter fun f => offLive t b k f).length
+
+/-- **An `offset` is its base plus its displacement**, wherever neither leaves
+    the range.
+
+    The workhorse claim: every launch argument naming a PTX slot or a bind
+    table is `ptr + k` for a runtime `ptr`, so this is what the whole launch
+    model rests on.  `offsetIf` bounds the *displacement*, which is all it can
+    see; whether `base + k` wraps depends on the base, so — like `DExp.Exact` —
+    it is a condition a consumer carries rather than a guard. -/
+theorem stepPure_offset_agrees : offOk = true := by native_decide
+
+theorem offset_check_is_live : (1000 < offLiveCount) = true := by native_decide
+
+-- ---------------------------------------------------------------------------
+-- The fourth claim: a `slot` came from the address it names
+-- ---------------------------------------------------------------------------
+
+/-- A region with distinguishable bytes, so a load from the wrong offset gives
+    a different answer rather than the same zero. -/
+def arenaBytes : ByteArray :=
+  ⟨((List.range 512).map (fun i => UInt8.ofNat ((i * 37 + 11) % 256))).toArray⟩
+
+def mem0 : Mem := { arena := arenaBytes, data := ByteArray.empty, out := ByteArray.empty }
+
+def runInsts (m : Mem) (vs : Vals) : List Inst → Option Vals
+  | []      => some vs
+  | i :: is => match evalInst m vs i with
+               | some (d, x) => runInsts m (setV vs d x) is
+               | none        => none
+
+/-- The fragment a generator writes as `slotWq.load ptr`: a runtime base in
+    `v0`, the displacement, the address, the load. -/
+def slotInsts (k : Nat) : List Inst :=
+  [ .iconst ⟨1⟩ .i64 (Int.ofNat k)
+  , .iadd ⟨2⟩ ⟨0⟩ ⟨1⟩
+  , .load ⟨3⟩ { ty := .i64 } ⟨2⟩ ]
+
+/-- **What `slot p d` asserts**: the value was loaded from `p + d`.  Checked by
+    reading that address again and comparing words — the model names an
+    address, and the machine's own memory says what is there. -/
+def slotCase (k : Nat) : Bool :=
+  let vs0 : Vals := setV #[] ⟨0⟩ (.sc .i64 (addrOf .arena 0))
+  match runInsts mem0 vs0 (slotInsts k), (slotInsts k).foldl stepPure Env.empty ⟨3⟩ with
+  | some vs, .slot p d =>
+      match getV vs ⟨3⟩, getV vs p with
+      | some (.sc _ loaded), some (.sc _ pw) =>
+          Mem.load mem0 (pw + UInt64.ofNat d.toNat) 8 == some loaded
+      | _, _ => false
+  | some _, _ => false
+  | none,   _ => true
+
+/-- Whether the model reported a `slot` at all, so the check above is known to
+    be testing the arm it names. -/
+def slotLive (k : Nat) : Bool :=
+  match (slotInsts k).foldl stepPure Env.empty ⟨3⟩ with
+  | .slot _ _ => true
+  | _         => false
+
+def slotOk : Bool := (List.range 200).all slotCase
+
+def slotLiveCount : Nat := ((List.range 200).filter slotLive).length
+
+/-- **A handle the model calls `slot p d` is the word at `p + d`.**
+
+    This is what makes a buffer handle identifiable — without it Qwen2's `Wq`,
+    `Wk` and `Wv` launches are the same record — so it is worth checking that
+    the address the model names is the address the load read. -/
+theorem stepPure_slot_agrees : slotOk = true := by native_decide
+
+theorem slot_check_is_live : (slotLiveCount == 200) = true := by native_decide
+
 end AlgorithmLib.Clif.Check
