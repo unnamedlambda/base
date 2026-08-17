@@ -802,7 +802,228 @@ theorem evalInst_iadd_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
         obtain ⟨ht, hb⟩ := hc
         have ht' : ta = tb := ty_eq_of_beq ht
         subst ht'
-        exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by rw [← h.2]; rfl⟩
+        exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
       · rw [if_neg hc] at h; simp at h
+
+/-- The same, for `isub`. -/
+theorem evalInst_isub_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
+    (h : evalInst m vs (.isub d a b) = some (dd, x)) :
+    ∃ t wa wb, getV vs a = some (.sc t wa) ∧ getV vs b = some (.sc t wb)
+      ∧ t.isInt = true ∧ dd = d ∧ x = .sc t ((wa - wb) &&& widthMask t) := by
+  rcases hga : getV vs a with _ | u <;> rcases hgb : getV vs b with _ | v <;>
+    simp [evalInst, evalInst.bin, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.bin, AlgorithmLib.HProg.Sem.get, hga, hgb] at h
+  cases u with
+  | vec => simp at h
+  | sc ta wa =>
+    cases v with
+    | vec => simp at h
+    | sc tb wb =>
+      simp only [] at h
+      by_cases hc : (ta == tb) = true ∧ ta.isInt = true
+      · rw [if_pos hc] at h
+        simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨ht, hb⟩ := hc
+        have ht' : ta = tb := ty_eq_of_beq ht
+        subst ht'
+        exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+      · rw [if_neg hc] at h; simp at h
+
+/-- The same, for `imul`. -/
+theorem evalInst_imul_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
+    (h : evalInst m vs (.imul d a b) = some (dd, x)) :
+    ∃ t wa wb, getV vs a = some (.sc t wa) ∧ getV vs b = some (.sc t wb)
+      ∧ t.isInt = true ∧ dd = d ∧ x = .sc t ((wa * wb) &&& widthMask t) := by
+  rcases hga : getV vs a with _ | u <;> rcases hgb : getV vs b with _ | v <;>
+    simp [evalInst, evalInst.bin, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.bin, AlgorithmLib.HProg.Sem.get, hga, hgb] at h
+  cases u with
+  | vec => simp at h
+  | sc ta wa =>
+    cases v with
+    | vec => simp at h
+    | sc tb wb =>
+      simp only [] at h
+      by_cases hc : (ta == tb) = true ∧ ta.isInt = true
+      · rw [if_pos hc] at h
+        simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨ht, hb⟩ := hc
+        have ht' : ta = tb := ty_eq_of_beq ht
+        subst ht'
+        exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+      · rw [if_neg hc] at h; simp at h
+
+/-- **What a `ishl` that computed a value tells us.**  The shift is the one
+    binary integer operation whose operands may differ in width: the amount is
+    taken at any integer type and reduced modulo the shifted operand's. -/
+theorem evalInst_ishl_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
+    (h : evalInst m vs (.ishl d a b) = some (dd, x)) :
+    ∃ ta tb wa wb, getV vs a = some (.sc ta wa) ∧ getV vs b = some (.sc tb wb)
+      ∧ ta.isInt = true ∧ tb.isInt = true ∧ dd = d
+      ∧ x = .sc ta (wa <<< (wb % UInt64.ofNat ta.width) &&& widthMask ta) := by
+  rcases hga : getV vs a with _ | u <;> rcases hgb : getV vs b with _ | v <;>
+    simp [evalInst, evalInst.bin, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.shiftBin, AlgorithmLib.HProg.Sem.get, hga, hgb] at h
+  cases u with
+  | vec => simp at h
+  | sc ta wa =>
+    cases v with
+    | vec => simp at h
+    | sc tb wb =>
+      simp only [] at h
+      by_cases hc : ta.isInt = true ∧ tb.isInt = true
+      · rw [if_pos hc] at h
+        simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+        exact ⟨ta, tb, wa, wb, rfl, rfl, hc.1, hc.2, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+      · rw [if_neg hc] at h; simp at h
+
+/-- **What a `ushr` that computed a value tells us.**  The shift is the one
+    binary integer operation whose operands may differ in width: the amount is
+    taken at any integer type and reduced modulo the shifted operand's. -/
+theorem evalInst_ushr_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
+    (h : evalInst m vs (.ushr d a b) = some (dd, x)) :
+    ∃ ta tb wa wb, getV vs a = some (.sc ta wa) ∧ getV vs b = some (.sc tb wb)
+      ∧ ta.isInt = true ∧ tb.isInt = true ∧ dd = d
+      ∧ x = .sc ta ((wa &&& widthMask ta) >>> (wb % UInt64.ofNat ta.width) &&& widthMask ta) := by
+  rcases hga : getV vs a with _ | u <;> rcases hgb : getV vs b with _ | v <;>
+    simp [evalInst, evalInst.bin, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.shiftBin, AlgorithmLib.HProg.Sem.get, hga, hgb] at h
+  cases u with
+  | vec => simp at h
+  | sc ta wa =>
+    cases v with
+    | vec => simp at h
+    | sc tb wb =>
+      simp only [] at h
+      by_cases hc : ta.isInt = true ∧ tb.isInt = true
+      · rw [if_pos hc] at h
+        simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+        exact ⟨ta, tb, wa, wb, rfl, rfl, hc.1, hc.2, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+      · rw [if_neg hc] at h; simp at h
+
+/-- The same, for `ineg`. -/
+theorem evalInst_ineg_inv {m : Mem} {vs : Vals} {d a dd : Val} {x : V}
+    (h : evalInst m vs (.ineg d a) = some (dd, x)) :
+    ∃ t w, getV vs a = some (.sc t w) ∧ t.isInt = true ∧ dd = d ∧ x = .sc t ((0 - w) &&& widthMask t) := by
+  rcases hga : getV vs a with _ | u <;>
+    simp [evalInst, evalInst.un, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.un, AlgorithmLib.HProg.Sem.get, hga] at h
+  cases u with
+  | vec => simp at h
+  | sc t w =>
+    simp only [] at h
+    by_cases hc : t.isInt = true
+    · rw [if_pos hc] at h
+      simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+      exact ⟨t, w, rfl, hc, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+    · rw [if_neg hc] at h; simp at h
+
+/-- The same, for `ireduce32`. -/
+theorem evalInst_ireduce32_inv {m : Mem} {vs : Vals} {d a dd : Val} {x : V}
+    (h : evalInst m vs (.ireduce32 d a) = some (dd, x)) :
+    ∃ t w, getV vs a = some (.sc t w) ∧ t.isInt = true ∧ t.width > 32 ∧ dd = d ∧ x = .sc ClifTy.i32 (w &&& widthMask ClifTy.i32) := by
+  rcases hga : getV vs a with _ | u <;>
+    simp [evalInst, evalInst.un, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.un, AlgorithmLib.HProg.Sem.get, hga] at h
+  cases u with
+  | vec => simp at h
+  | sc t w =>
+    simp only [] at h
+    by_cases hc : t.isInt = true ∧ t.width > 32
+    · rw [if_pos hc] at h
+      simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+      exact ⟨t, w, rfl, hc.1, hc.2, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+    · rw [if_neg hc] at h; simp at h
+
+/-- The same, for `uextend64`. -/
+theorem evalInst_uextend64_inv {m : Mem} {vs : Vals} {d a dd : Val} {x : V}
+    (h : evalInst m vs (.uextend64 d a) = some (dd, x)) :
+    ∃ t w, getV vs a = some (.sc t w) ∧ t.isInt = true ∧ t.width < 64 ∧ dd = d ∧ x = .sc ClifTy.i64 (w &&& widthMask t) := by
+  rcases hga : getV vs a with _ | u <;>
+    simp [evalInst, evalInst.un, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.un, AlgorithmLib.HProg.Sem.get, hga] at h
+  cases u with
+  | vec => simp at h
+  | sc t w =>
+    simp only [] at h
+    by_cases hc : t.isInt = true ∧ t.width < 64
+    · rw [if_pos hc] at h
+      simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+      exact ⟨t, w, rfl, hc.1, hc.2, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+    · rw [if_neg hc] at h; simp at h
+
+/-- The same, for `sextend64`. -/
+theorem evalInst_sextend64_inv {m : Mem} {vs : Vals} {d a dd : Val} {x : V}
+    (h : evalInst m vs (.sextend64 d a) = some (dd, x)) :
+    ∃ t w, getV vs a = some (.sc t w) ∧ t.isInt = true ∧ t.width < 64 ∧ dd = d ∧ x = ofInt ClifTy.i64 (signed t w) := by
+  rcases hga : getV vs a with _ | u <;>
+    simp [evalInst, evalInst.un, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.un, AlgorithmLib.HProg.Sem.get, hga] at h
+  cases u with
+  | vec => simp at h
+  | sc t w =>
+    simp only [] at h
+    by_cases hc : t.isInt = true ∧ t.width < 64
+    · rw [if_pos hc] at h
+      simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+      exact ⟨t, w, rfl, hc.1, hc.2, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
+    · rw [if_neg hc] at h; simp at h
+
+/-- The destination reads back as what was just written. -/
+theorem getV_setV_self (vs : Vals) (d : Val) (x : V) : getV (setV vs d x) d = some x := by
+  simp only [getV, setV, Array.set!, Array.getElem?_setIfInBounds, if_pos rfl]
+  rcases Nat.lt_or_ge d.id vs.size with hd | hd
+  · simp only [hd, if_pos]
+  · simp only [Nat.not_lt.mpr hd, if_false, Array.size_append, Array.size_replicate]
+    simp only [if_pos (show d.id < vs.size + (d.id + 1 - vs.size) by omega), if_true]
+
+/-- `addSym` reports a constant only by folding two of them. -/
+theorem addSym_const {e : Env} {a b : Val} {k : Int} (h : addSym e a b = .const k) :
+    ∃ xa xb, e a = .const xa ∧ e b = .const xb ∧ constIf (xa + xb) = .const k := by
+  unfold addSym at h
+  cases hea : e a <;> cases heb : e b <;> rw [hea, heb] at h <;>
+    first
+      | exact ⟨_, _, rfl, rfl, h⟩
+      | (exfalso; revert h; simp only [offsetIf, constIf]; split <;> simp)
+      | (exfalso; revert h; simp)
+
+/-- A `constIf` that reported a constant reported the value it was given, and
+    that value is foldable. -/
+theorem constIf_const {v k : Int} (h : constIf v = .const k) :
+    v = k ∧ inFold v = true := by
+  unfold constIf at h
+  split at h
+  · exact ⟨by injection h, by assumption⟩
+  · exact absurd h (by simp)
+
+/-- **The `iadd` arm.**  The two operands' types are not assumed to agree — the
+    machine refuses a mixed-width `iadd`, so `hev` is what supplies it. -/
+theorem const_sound_iadd {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.iadd d a b) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.iadd d a b)) := by
+  obtain ⟨t, wa, wb, hga, hgb, _, hdd, hx⟩ := evalInst_iadd_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq, stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    obtain ⟨xa, xb, hea, heb, hfold⟩ := addSym_const hv
+    obtain ⟨hsum, hin⟩ := constIf_const hfold
+    obtain ⟨ta, wa', hva, hta, hsa, _⟩ := hag a xa hea
+    obtain ⟨tb, wb', hvb, _, hsb, _⟩ := hag b xb heb
+    rw [hga] at hva; rw [hgb] at hvb
+    have hta' : TrackedTy t := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed t wa = xa := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    have hsb' : signed t wb = xb := by
+      injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
+    refine ⟨t, (wa + wb) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
+    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [signed_mask_of hta', signed_add hta' hsa' hsb' hin, hsum]
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w, hw, htt, hs, hf⟩ := hag v k hv
+    exact ⟨t1, w, getV_setV_ne hvd hw, htt, hs, hf⟩
 
 end AlgorithmLib.Clif.Check
