@@ -48,30 +48,6 @@ def claimHolds (sym : SymVal) (conc : Option V) : Bool :=
   | .const _, some _         => false
   | _,        _              => true
 
-/-- One nullary instruction: the literal itself. -/
-def constCase (t : ClifTy) (x : Int) : Bool :=
-  let i : Inst := .iconst ⟨0⟩ t x
-  claimHolds ((stepPure Env.empty i) ⟨0⟩) ((evalInst default #[] i).map (·.2))
-
-/-- One unary instruction over a literal. -/
-def unCase (t : ClifTy) (x : Int) (mk : Val → Val → Inst) : Bool :=
-  let i := mk ⟨1⟩ ⟨0⟩
-  let e := stepPure Env.empty (.iconst ⟨0⟩ t x)
-  let vs : Vals := setV #[] ⟨0⟩ (ofInt t x)
-  claimHolds ((stepPure e i) ⟨1⟩) ((evalInst default vs i).map (·.2))
-
-/-- One binary instruction over two literals, **at independent widths**.
-
-    `Inst` carries no type, so nothing in the term says the operands share one.
-    Running only the diagonal leaves the model's folds — which are on `Int` and
-    see no width at all — unchecked against an `iadd` whose operands disagree,
-    and that is where the two semantics were found to part. -/
-def binCase (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
-  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let e := stepPure (stepPure Env.empty (.iconst ⟨0⟩ ta x)) (.iconst ⟨1⟩ tb y)
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
-  claimHolds ((stepPure e i) ⟨2⟩) ((evalInst default vs i).map (·.2))
-
 /-- Every integer width the tracked fragment is emitted at. -/
 def types : List ClifTy := [.i8, .i16, .i32, .i64]
 
@@ -85,80 +61,6 @@ def sample : List Int :=
     1099511627776, 4611686018427387904, 9223372036854775807,
     -1, -2, -3, -8, -127, -128, -129, -32768, -32769,
     -2147483648, -2147483649, -4294967296, -9223372036854775808 ]
-
-def unOps : List (Val → Val → Inst) :=
-  [ (fun d a => .ineg d a)
-  , (fun d a => .ireduce32 d a)
-  , (fun d a => .uextend64 d a)
-  , (fun d a => .sextend64 d a) ]
-
-def binOps : List (Val → Val → Val → Inst) :=
-  [ (fun d a b => .iadd d a b)
-  , (fun d a b => .isub d a b)
-  , (fun d a b => .imul d a b)
-  , (fun d a b => .ishl d a b)
-  , (fun d a b => .ushr d a b) ]
-
-def constOk : Bool := types.all fun t => sample.all fun x => constCase t x
-
-def unOk : Bool :=
-  types.all fun t => sample.all fun x => unOps.all fun f => unCase t x f
-
-def binOk : Bool :=
-  types.all fun ta => types.all fun tb => sample.all fun x => sample.all fun y =>
-    binOps.all fun f => binCase ta tb x y f
-
-/-- **The launch model never reports a constant the machine does not compute**,
-    over every tracked instruction at every integer width on the sample above.
-
-    `native_decide`, so this is checked by running compiled code — the footing
-    `HProgCorpus` stands on, which is what makes the concrete side worth
-    comparing against. -/
-theorem stepPure_constants_agree :
-    (constOk && unOk && binOk) = true := by native_decide
-
-/-- Whether an arm reports a constant at all, so the check above can be shown
-    to have something to check. -/
-def reportsConst (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
-  let e := stepPure (stepPure Env.empty (.iconst ⟨0⟩ ta x)) (.iconst ⟨1⟩ tb y)
-  match (stepPure e (mk ⟨2⟩ ⟨0⟩ ⟨1⟩)) ⟨2⟩ with
-  | .const _ => true
-  | _        => false
-
-def reportsConst1 (t : ClifTy) (x : Int) (mk : Val → Val → Inst) : Bool :=
-  let e := stepPure Env.empty (.iconst ⟨0⟩ t x)
-  match (stepPure e (mk ⟨1⟩ ⟨0⟩)) ⟨1⟩ with
-  | .const _ => true
-  | _        => false
-
-/-- **…and the check is not vacuous.**  Every arm reports a constant on at
-    least one case, so a model that answered `unknown` everywhere would pass
-    `stepPure_constants_agree` and fail this. -/
-theorem check_is_live :
-    (binOps.all (fun f => reportsConst .i64 .i64 6 7 f)
-      && unOps.all (fun f => reportsConst1 .i32 6 f)
-      && constCase .i32 6) = true := by native_decide
-
-/-- A case where the model claims a constant and the machine, asked for a
-    binary operation on two widths, declines to answer. -/
-def mixedRefused (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
-  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
-  reportsConst ta tb x y mk && (evalInst default vs i).isNone
-
-def mixedRefusedCount : Nat :=
-  (types.map fun ta => (types.map fun tb =>
-    if ta == tb then 0 else
-      (sample.map fun x => (sample.map fun y =>
-        (binOps.map fun f => if mixedRefused ta tb x y f then 1 else 0).sum).sum).sum).sum).sum
-
-/-- **What carries the mixed-width half of `binOk`.**  The model cannot see a
-    width, so it goes on claiming a constant when the operands disagree; the
-    cases pass because the machine refuses the instruction rather than because
-    the two computed the same number.  Recorded as a count so that a semantics
-    which quietly started answering there would fail here rather than pass
-    `stepPure_constants_agree` by arithmetic that does not hold. -/
-theorem mixed_width_is_refused : (2000 < mixedRefusedCount) = true := by native_decide
 
 -- ---------------------------------------------------------------------------
 -- The other claim: a `derived` value denotes the machine's number
@@ -1224,5 +1126,182 @@ theorem const_sound_uextend64 {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x 
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
     obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
     exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
+/-- **The shift amount the machine uses is the one the model folded with.**
+
+    The machine reduces it modulo the *shifted* operand's width, which the model
+    cannot see; the two agree because that width always divides the amount's own
+    modulus, and `shiftOk` keeps the amount below both. -/
+theorem shift_amount {tb : ClifTy} (htb : TrackedTy tb) {wb : UInt64} {y : Int}
+    (hs : signed tb wb = y) (h0 : 0 ≤ y) (hlt : y < 32)
+    {t : ClifTy} (ht : TrackedTy t) :
+    wb % UInt64.ofNat t.width = UInt64.ofNat y.toNat := by
+  have hc := congr_of_signed htb hs
+  have hy : ((y.toNat : Nat) : Int) = y := Int.toNat_of_nonneg h0
+  have hb : wb.toNat < 2 ^ 64 := wb.toNat_lt_size
+  refine UInt64.toNat_inj.mp ?_
+  rw [UInt64.toNat_mod]
+  rcases ht with rfl | rfl <;> rcases htb with rfl | rfl <;>
+    simp only [modOf, AlgorithmLib.IR.ClifTy.width] at hc ⊢ <;>
+    simp only [show (UInt64.ofNat 32).toNat = 32 from rfl,
+               show (UInt64.ofNat 64).toNat = 64 from rfl,
+               show (UInt64.ofNat y.toNat).toNat = y.toNat % 2 ^ 64 from by simp] <;>
+    omega
+
+theorem shlLit_ne_const {d : DExp} {y k : Int} : shlLit d y ≠ .const k := by
+  unfold shlLit; split <;> simp
+
+theorem shrLit_ne_const {d : DExp} {y k : Int} : shrLit d y ≠ .const k := by
+  unfold shrLit; split <;> simp
+
+theorem stepPure_ishl_const {e : Env} {d a b : Val} {k : Int}
+    (h : stepPure e (.ishl d a b) d = .const k) :
+    ∃ xa xb, e a = .const xa ∧ e b = .const xb ∧ shiftOk xb = true
+      ∧ constIf (xa * 2 ^ xb.toNat) = .const k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  cases hea : e a <;> cases heb : e b <;> rw [hea, heb] at h <;> simp only [] at h <;>
+    first
+      | (exact absurd h shlLit_ne_const)
+      | (exact absurd h (by simp))
+      | (split at h
+         · exact ⟨_, _, rfl, rfl, by assumption, h⟩
+         · exact absurd h (by simp))
+
+theorem stepPure_ushr_const {e : Env} {d a b : Val} {k : Int}
+    (h : stepPure e (.ushr d a b) d = .const k) :
+    ∃ xa xb, e a = .const xa ∧ e b = .const xb ∧ shiftOk xb = true ∧ 0 ≤ xa
+      ∧ constIf (xa / 2 ^ xb.toNat) = .const k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  cases hea : e a <;> cases heb : e b <;> rw [hea, heb] at h <;> simp only [] at h <;>
+    first
+      | (exact absurd h shrLit_ne_const)
+      | (split at h
+         · rename_i hcond
+           simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+           exact ⟨_, _, rfl, rfl, hcond.1, hcond.2, h⟩
+         · exact absurd h (by simp))
+      | (exact absurd h (by simp))
+
+theorem const_sound_ishl {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.ishl d a b) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.ishl d a b)) := by
+  obtain ⟨ta, tb, wa, wb, hga, hgb, _, _, hdd, hx⟩ := evalInst_ishl_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq] at hv
+    obtain ⟨xa, xb, hea, heb, hok, hfold⟩ := stepPure_ishl_const hv
+    obtain ⟨hsum, hin⟩ := constIf_const hfold
+    obtain ⟨ta', wa', hva, hta, hsa, _⟩ := hag a xa hea
+    obtain ⟨tb', wb', hvb, htb, hsb, _⟩ := hag b xb heb
+    rw [hga] at hva; rw [hgb] at hvb
+    have hta' : TrackedTy ta := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed ta wa = xa := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    have htb' : TrackedTy tb := by
+      injection hvb with h1; injection h1 with h2 _; rw [h2]; exact htb
+    have hsb' : signed tb wb = xb := by
+      injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
+    obtain ⟨hlo, hhi⟩ : 0 ≤ xb ∧ xb < 32 := by
+      simp only [shiftOk, Bool.and_eq_true, decide_eq_true_eq] at hok; omega
+    have hamt := shift_amount htb' hsb' hlo hhi hta'
+    have hs64 : xb.toNat < 64 := by omega
+    refine ⟨ta, (wa <<< UInt64.ofNat xb.toNat) &&& widthMask ta, ?_, hta', ?_, hsum ▸ hin⟩
+    · rw [hveq, hx, hamt]; exact getV_setV_self vs dd _
+    · rw [signed_mask_of hta', signed_shl hta' hs64 hsa' hin, hsum]
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
+    exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
+theorem const_sound_ushr {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.ushr d a b) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.ushr d a b)) := by
+  obtain ⟨ta, tb, wa, wb, hga, hgb, _, _, hdd, hx⟩ := evalInst_ushr_inv hev
+  subst hdd
+  intro v k hv
+  by_cases hvd : v.id = dd.id
+  · have hveq : v = dd := by cases v; cases dd; simp_all
+    rw [hveq] at hv
+    obtain ⟨xa, xb, hea, heb, hok, hnn, hfold⟩ := stepPure_ushr_const hv
+    obtain ⟨hsum, hin⟩ := constIf_const hfold
+    obtain ⟨ta', wa', hva, hta, hsa, hfa⟩ := hag a xa hea
+    obtain ⟨tb', wb', hvb, htb, hsb, _⟩ := hag b xb heb
+    rw [hga] at hva; rw [hgb] at hvb
+    have hta' : TrackedTy ta := by
+      injection hva with h1; injection h1 with h2 _; rw [h2]; exact hta
+    have hsa' : signed ta wa = xa := by
+      injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
+    have htb' : TrackedTy tb := by
+      injection hvb with h1; injection h1 with h2 _; rw [h2]; exact htb
+    have hsb' : signed tb wb = xb := by
+      injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
+    obtain ⟨hlo, hhi⟩ : 0 ≤ xb ∧ xb < 32 := by
+      simp only [shiftOk, Bool.and_eq_true, decide_eq_true_eq] at hok; omega
+    have hamt := shift_amount htb' hsb' hlo hhi hta'
+    have hs64 : xb.toNat < 64 := by omega
+    refine ⟨ta, ((wa &&& widthMask ta) >>> UInt64.ofNat xb.toNat) &&& widthMask ta,
+            ?_, hta', ?_, hsum ▸ hin⟩
+    · rw [hveq, hx, hamt]; exact getV_setV_self vs dd _
+    · rw [signed_mask_of hta', signed_ushr hta' hs64 hsa' hnn hfa, hsum]
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
+    exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
+/-- `load` is tracked, but what it reports is a *slot* — provenance, not a
+    number — so it owes the invariant nothing at its destination. -/
+theorem const_sound_load {m : Mem} {vs : Vals} {e : Env} {d dd a : Val}
+    {op : LoadOp} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs (.load d op a) = some (dd, x)) :
+    Agree (setV vs dd x) (stepPure e (.load d op a)) := by
+  have hd : d = dd := by
+    have := evalInst_dest hev; simp only [Inst.destOf?, Option.some.injEq] at this; exact this
+  subst hd
+  intro v k hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    rw [hveq, stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    cases hea : e a <;> rw [hea] at hv <;> exact absurd hv (by simp)
+  · rw [stepPure_frame _ e v (fun d' hd' => by
+        simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
+    obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
+    exact ⟨t1, w1, getV_setV_ne hvd hw1, htt1, hs1, hf1⟩
+
+/-- **The launch model never reports a constant the machine does not compute.**
+
+    One step of the abstract interpretation preserves the promise: if every
+    constant the model already claims is the machine's word read signed, then it
+    still is after the step. Proved rather than sampled, which is what retired
+    the corpus check this file used to carry for the same claim.
+
+    Nothing is claimed about `offset`, `slot` or `derived`: those describe
+    provenance rather than a number, and each carries its own side condition —
+    `inTy` for a displacement, `DExp.Exact` and `i32`-or-wider roots for an
+    expression. -/
+theorem const_sound {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (hag : Agree vs e) (hev : evalInst m vs i = some (d, x)) :
+    Agree (setV vs d x) (stepPure e i) := by
+  cases i with
+  | iconst _ _ _ => exact const_sound_iconst hag hev
+  | iadd _ _ _ => exact const_sound_iadd hag hev
+  | isub _ _ _ => exact const_sound_isub hag hev
+  | imul _ _ _ => exact const_sound_imul hag hev
+  | ineg _ _ => exact const_sound_ineg hag hev
+  | ishl _ _ _ => exact const_sound_ishl hag hev
+  | ushr _ _ _ => exact const_sound_ushr hag hev
+  | ireduce32 _ _ => exact const_sound_ireduce32 hag hev
+  | uextend64 _ _ => exact const_sound_uextend64 hag hev
+  | sextend64 _ _ => exact const_sound_sextend64 hag hev
+  | load _ _ _ => exact const_sound_load hag hev
+  | _ => exact const_sound_untracked rfl hag hev
+
+/-- The invariant holds of a run that has bound nothing. -/
+theorem agree_empty (vs : Vals) : Agree vs Env.empty := by
+  intro v k hv
+  simp only [Env.empty, Env.get] at hv
+  exact absurd hv (by simp)
 
 end AlgorithmLib.Clif.Check
