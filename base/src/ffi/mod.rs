@@ -35,9 +35,13 @@ pub(super) unsafe fn clear_ctx_slot<T>(slot_ptr: *mut *mut T) -> *mut T {
     raw
 }
 
-/// Longest string any caller has a use for — every one of them reads a
-/// filesystem path or a socket address.
-const CSTR_MAX: usize = 4096;
+/// Longest filesystem path, socket address or kernel name a caller reads.
+pub(super) const CSTR_NAME_MAX: usize = 4096;
+
+/// Longest PTX source a kernel-loading call reads. Generated PTX runs to
+/// hundreds of kilobytes, so this is a backstop against an unterminated region
+/// rather than a size the emitter is expected to approach.
+pub(super) const CSTR_PTX_MAX: usize = 64 << 20;
 
 pub(super) unsafe fn read_cstr(ptr: *mut u8, off: usize) -> String {
     if ptr.is_null() {
@@ -46,22 +50,30 @@ pub(super) unsafe fn read_cstr(ptr: *mut u8, off: usize) -> String {
     read_cstr_ptr(ptr.add(off))
 }
 
+/// The bytes up to the first NUL, for a name-sized string.
+pub(super) unsafe fn read_cstr_ptr(start: *const u8) -> String {
+    read_cstr_bounded(start, CSTR_NAME_MAX)
+}
+
 /// The bytes up to the first NUL, or empty if there is no pointer or no NUL
-/// within `CSTR_MAX`.
+/// within `max`.
 ///
 /// Both guards matter: without them this walks arbitrary memory until it
 /// happens on a zero byte. Empty is the safe answer rather than a truncation,
 /// because every caller passes the result to something — `File::open`, a
-/// socket address parse — that rejects it.
-pub(super) unsafe fn read_cstr_ptr(start: *const u8) -> String {
+/// socket address parse, `module::load_data` — that rejects it.
+///
+/// The bound is a parameter because the two classes of caller differ by four
+/// orders of magnitude: a path is at most `CSTR_NAME_MAX`, a PTX body is not.
+pub(super) unsafe fn read_cstr_bounded(start: *const u8, max: usize) -> String {
     if start.is_null() {
         return String::new();
     }
     let mut len = 0;
-    while len < CSTR_MAX && *start.add(len) != 0 {
+    while len < max && *start.add(len) != 0 {
         len += 1;
     }
-    if len == CSTR_MAX {
+    if len == max {
         return String::new();
     }
     String::from_utf8_lossy(std::slice::from_raw_parts(start, len)).into_owned()
@@ -97,7 +109,7 @@ mod tests {
     #[test]
     fn read_cstr_ptr_refuses_null_and_unterminated() {
         assert_eq!(unsafe { read_cstr_ptr(std::ptr::null()) }, "");
-        let unterminated = vec![b'a'; CSTR_MAX + 16];
+        let unterminated = vec![b'a'; CSTR_NAME_MAX + 16];
         assert_eq!(unsafe { read_cstr_ptr(unterminated.as_ptr()) }, "");
         assert_eq!(unsafe { read_cstr(std::ptr::null_mut(), 8) }, "");
     }

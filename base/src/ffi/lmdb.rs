@@ -213,6 +213,9 @@ pub(crate) unsafe extern "C" fn cl_lmdb_put(
     val_ptr: *const u8,
     val_len: i32,
 ) -> i32 {
+    if key_len < 0 || val_len < 0 || key_ptr.is_null() || val_ptr.is_null() {
+        return -1;
+    }
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return -1;
     };
@@ -251,6 +254,9 @@ pub(crate) unsafe extern "C" fn cl_lmdb_get(
     key_len: i32,
     result_ptr: *mut u8,
 ) -> i32 {
+    if key_len < 0 || key_ptr.is_null() {
+        return -1;
+    }
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return -1;
     };
@@ -288,6 +294,9 @@ pub(crate) unsafe extern "C" fn cl_lmdb_delete(
     key_ptr: *const u8,
     key_len: i32,
 ) -> i32 {
+    if key_len < 0 || key_ptr.is_null() {
+        return -1;
+    }
     let Some(ctx) = read_ctx_mut::<CraneliftLmdbContext>(ctx_ptr) else {
         return -1;
     };
@@ -470,6 +479,28 @@ mod tests {
     }
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
+
+    /// A negative length turns into an enormous `usize`, and
+    /// `slice::from_raw_parts` with it is undefined however the slice is then
+    /// used. Every entry point taking a signed length refuses one.
+    #[test]
+    fn negative_lengths_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut slot = init();
+        let h = open_db(slot, dir.path());
+        let k = b"k";
+        let v = b"v";
+        let mut out = vec![0u8; 64];
+        unsafe {
+            assert_eq!(cl_lmdb_put(slot, h, k.as_ptr(), -1, v.as_ptr(), 1), -1);
+            assert_eq!(cl_lmdb_put(slot, h, k.as_ptr(), 1, v.as_ptr(), -1), -1);
+            assert_eq!(cl_lmdb_get(slot, h, k.as_ptr(), -1, out.as_mut_ptr()), -1);
+            assert_eq!(cl_lmdb_delete(slot, h, k.as_ptr(), -1), -1);
+            // …and the same calls with a real length still work.
+            assert_eq!(cl_lmdb_put(slot, h, k.as_ptr(), 1, v.as_ptr(), 1), 0);
+            cleanup(&mut slot);
+        }
+    }
 
     #[test]
     fn init_then_cleanup_lifecycle() {

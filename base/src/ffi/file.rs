@@ -3,6 +3,10 @@ use std::io::{Read as IoRead, Seek, Write as IoWrite};
 
 use super::{read_cstr, read_cstr_ptr};
 
+/// Longest NUL-terminated payload `cl_file_write` will scan for out of the
+/// program's own memory, so an unterminated region cannot walk past it.
+const NUL_SCAN_MAX: usize = 1 << 24;
+
 pub(crate) unsafe extern "C" fn cl_file_read(
     ptr: *mut u8,
     path_off: i64,
@@ -10,6 +14,9 @@ pub(crate) unsafe extern "C" fn cl_file_read(
     file_offset: i64,
     size: i64,
 ) -> i64 {
+    if ptr.is_null() || path_off < 0 || dst_off < 0 || size < 0 {
+        return -1;
+    }
     let filename = read_cstr(ptr, path_off as usize);
     let mut file = match fs::File::open(&filename) {
         Ok(f) => f,
@@ -113,6 +120,9 @@ pub(crate) unsafe extern "C" fn cl_file_write(
     file_offset: i64,
     size: i64,
 ) -> i64 {
+    if ptr.is_null() || path_off < 0 || src_off < 0 || size < 0 {
+        return -1;
+    }
     let filename = read_cstr(ptr, path_off as usize);
     let mut file = if file_offset == 0 {
         match fs::File::create(&filename) {
@@ -135,10 +145,10 @@ pub(crate) unsafe extern "C" fn cl_file_write(
     let written = if size == 0 {
         let base = ptr.add(src_off as usize);
         let mut len = 0;
-        while *base.add(len) != 0 {
+        while len < NUL_SCAN_MAX && *base.add(len) != 0 {
             len += 1;
         }
-        if len > 0 {
+        if len > 0 && len < NUL_SCAN_MAX {
             let data = std::slice::from_raw_parts(base, len);
             match file.write_all(data) {
                 Ok(_) => len as i64,

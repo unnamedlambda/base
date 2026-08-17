@@ -1,7 +1,7 @@
 //! Context, owned handles, and the kernel cache every entry point goes through.
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
-use crate::ffi::{clear_ctx_slot, read_cstr_ptr, read_ctx_ref, write_ctx_slot};
+use crate::ffi::{clear_ctx_slot, read_cstr_bounded, read_cstr_ptr, read_ctx_ref, write_ctx_slot, CSTR_PTX_MAX};
 
 pub(crate) struct CraneliftCudaContext {
     pub(super) device: std::sync::Arc<cudarc::driver::CudaDevice>,
@@ -216,7 +216,7 @@ pub(super) fn load_raw_cuda_main_kernel(
     if !bind_cuda_ctx_if_needed(ctx) {
         return Err(());
     }
-    let ptx_src = unsafe { read_cstr_ptr(kernel_ptr) };
+    let ptx_src = unsafe { read_cstr_bounded(kernel_ptr, CSTR_PTX_MAX) };
     let ptx_len = ptx_src.len();
     let ptx_cstr = std::ffi::CString::new(ptx_src).map_err(|_| ())?;
     let load = || unsafe {
@@ -297,7 +297,7 @@ pub(super) fn load_raw_cuda_named_kernel(
     if !bind_cuda_ctx_if_needed(ctx) {
         return Err(());
     }
-    let ptx_src = unsafe { read_cstr_ptr(kernel_ptr) };
+    let ptx_src = unsafe { read_cstr_bounded(kernel_ptr, CSTR_PTX_MAX) };
     let func_name = unsafe { read_cstr_ptr(name_ptr) };
     let ptx_cstr = std::ffi::CString::new(ptx_src).map_err(|_| ())?;
     let func_cstr = std::ffi::CString::new(func_name).map_err(|_| ())?;

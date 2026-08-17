@@ -97,6 +97,9 @@ pub(crate) unsafe extern "C" fn cl_net_send(
     src_ptr: *const u8,
     size: i64,
 ) -> i64 {
+    if size < 0 || src_ptr.is_null() {
+        return -1;
+    }
     let Some(ctx) = read_ctx_mut::<CraneliftNetContext>(ctx_ptr) else {
         return -1;
     };
@@ -116,6 +119,9 @@ pub(crate) unsafe extern "C" fn cl_net_recv(
     dst_ptr: *mut u8,
     size: i64,
 ) -> i64 {
+    if size < 0 || dst_ptr.is_null() {
+        return -1;
+    }
     let Some(ctx) = read_ctx_mut::<CraneliftNetContext>(ctx_ptr) else {
         return -1;
     };
@@ -147,6 +153,22 @@ mod tests {
     use std::ffi::CString;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+
+    /// A negative size would become an enormous `usize` and reach
+    /// `slice::from_raw_parts`, which is undefined regardless of what reads it.
+    #[test]
+    fn negative_sizes_are_refused() {
+        let mut slot: *mut CraneliftNetContext = std::ptr::null_mut();
+        let mut buf = [0u8; 8];
+        unsafe {
+            cl_net_init(&mut slot);
+            assert_eq!(cl_net_send(slot, 1, buf.as_ptr(), -1), -1);
+            assert_eq!(cl_net_recv(slot, 1, buf.as_mut_ptr(), -1), -1);
+            assert_eq!(cl_net_send(slot, 1, std::ptr::null(), 8), -1);
+            assert_eq!(cl_net_recv(slot, 1, std::ptr::null_mut(), 8), -1);
+            cl_net_cleanup(&mut slot);
+        }
+    }
 
     #[test]
     fn init_then_cleanup_lifecycle() {
