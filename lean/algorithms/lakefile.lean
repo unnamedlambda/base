@@ -115,6 +115,18 @@ lean_lib MlSurface
 
 lean_lib TrustScan
 
+-- …and the same scan over each generator that ships an artifact with no
+-- algorithmic theorem.  Separate modules for the usual reason — each generator
+-- defines its own `main` — and, for Sat and Sha256, because they share
+-- `namespace Algorithm` and cannot be imported together at all.
+lean_lib GenSurface
+lean_lib SatScan
+lean_lib Sha256Scan
+lean_lib LeanEvalScan
+lean_lib WordCountScan
+lean_lib CudaSaxpyPersistScan
+lean_lib CudaVecAddPersistScan
+
 -- …and the same scan over each training pipeline.  Separate modules because
 -- each generator defines its own `main`.
 lean_lib BackwardScan

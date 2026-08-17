@@ -76,7 +76,10 @@ theorem memMap_ok : (List.range 16).all (fun n => Layout.RegionMap.okB (memMap n
 -- PTX emission via the typed builder in AlgorithmLib.PTX.
 -- ---------------------------------------------------------------------------
 
-private partial def emitExprPTX {n : Nat}
+/-- Structural on `e`, so it has equation lemmas: a `partial` here would make
+    the PTX lowering an opaque constant that nothing can unfold, which is a
+    stronger obstacle than merely having no theorem about it. -/
+private def emitExprPTX {n : Nat}
     (e : Expr n) (inPtrs : Array (Reg .u64)) (off : Reg .u64) : PTX (Reg .f32) := do
   match e with
   | .input idx =>
