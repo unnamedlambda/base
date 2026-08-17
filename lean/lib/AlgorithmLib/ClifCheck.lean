@@ -173,10 +173,10 @@ def rhoOf (vs : Vals) : Nat → Int := fun k =>
 
 /-- One instruction with a *runtime* left operand — the model cannot see `v0`,
     so it names it and builds an expression instead of folding. -/
-def derivCase (t : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
+def derivCase (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
   let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let e := stepPure Env.empty (.iconst ⟨1⟩ t y)
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t x)) ⟨1⟩ (ofInt t y)
+  let e := stepPure Env.empty (.iconst ⟨1⟩ tb y)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
   let conc : Option V := (evalInst default vs i).map (·.2)
   match (stepPure e i) ⟨2⟩, conc with
   | .derived d, some (.sc t' w) =>
@@ -185,10 +185,10 @@ def derivCase (t : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Boo
 
 /-- Whether a case is one the condition admits, so the count below can show
     the check is not passing by refusing everything. -/
-def derivLive (t : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
+def derivLive (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
   let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let e := stepPure Env.empty (.iconst ⟨1⟩ t y)
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t x)) ⟨1⟩ (ofInt t y)
+  let e := stepPure Env.empty (.iconst ⟨1⟩ tb y)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
   match (stepPure e i) ⟨2⟩ with
   | .derived d => DExp.Exact (rhoOf vs) d
   | _          => false
@@ -202,26 +202,48 @@ def derivOps : List (Val → Val → Val → Inst) :=
 def wideTypes : List ClifTy := [.i32, .i64]
 
 def derivOk : Bool :=
-  wideTypes.all fun t => sample.all fun x => sample.all fun y =>
-    derivOps.all fun f => derivCase t x y f
+  wideTypes.all fun ta => wideTypes.all fun tb => sample.all fun x => sample.all fun y =>
+    derivOps.all fun f => derivCase ta tb x y f
 
 def derivLiveCount : Nat :=
-  (wideTypes.flatMap fun t => sample.flatMap fun x => sample.flatMap fun y =>
-    derivOps.filter fun f => derivLive t x y f).length
+  (wideTypes.flatMap fun ta => wideTypes.flatMap fun tb => sample.flatMap fun x =>
+    sample.flatMap fun y => derivOps.filter fun f => derivLive ta tb x y f).length
 
 /-- **A `derived` value denotes what the machine computes, wherever
-    `DExp.Exact` holds.**
+    `DExp.Exact` holds and the operands are `i32` or wider.**
 
-    That condition is the whole content: `DExp.eval` is `Int` arithmetic, so
-    it is the machine's answer only while nothing overflows and every `shr`
-    shifts a non-negative value.  Both are conditions on runtime values, which
-    is why they cannot be a guard inside `stepPure` and are instead what a
-    theorem reading a launch bound out of a `derived` value has to carry. -/
+    `DExp.Exact` is most of the content: `DExp.eval` is `Int` arithmetic, so it
+    is the machine's answer only while nothing overflows and every `shr` shifts
+    a non-negative value.  Both are conditions on runtime values, which is why
+    they cannot be a guard inside `stepPure` and are instead what a theorem
+    reading a launch bound out of a `derived` value has to carry.
+
+    The width is the rest of it, and it is a restriction rather than a choice of
+    sample.  `foldableRange` is exact at `i32` and wider; `litOk` refuses narrow
+    literals, which is what lets the *constant* arms assume that width.  A
+    `derived` value names a **runtime** operand instead, whose width the model
+    never sees, so nothing carries the assumption across — see
+    `narrowShiftDisagrees`. -/
 theorem stepPure_derived_agree : derivOk = true := by native_decide
 
 /-- **…on a condition that admits most of the sample rather than none.**  A
     `DExp.Exact` that was always false would satisfy the theorem above. -/
 theorem derived_check_is_live : (2000 < derivLiveCount) = true := by native_decide
+
+/-- Cases the theorem above excludes: a shift whose *shifted* operand is
+    narrower than `i32`. -/
+def narrowDerivFails : Nat :=
+  ([ClifTy.i8, .i16].flatMap fun ta => wideTypes.flatMap fun tb =>
+    sample.flatMap fun x => sample.flatMap fun y =>
+      derivOps.filter fun f => !(derivCase ta tb x y f)).length
+
+/-- **The width restriction is real**, so `stepPure_derived_agree` is not quietly
+    stronger than it reads.  `ishl` of `i8` `1` by `7` is `128` in the expression
+    algebra and `-128` on the machine: the result wraps at the operand's width,
+    which `DExp.Exact` measures against the signed `i32` range instead.  A
+    consumer reading a bound out of a `derived` value owes that its roots are
+    `i32` or wider. -/
+theorem narrowShiftDisagrees : (800 < narrowDerivFails) = true := by native_decide
 
 -- ---------------------------------------------------------------------------
 -- The third claim: an `offset` is its base plus its displacement
@@ -236,35 +258,36 @@ def bases : List Int :=
 
 /-- One instruction with a runtime base — the model names the base and records
     a displacement rather than folding. -/
-def offCase (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
+def offCase (ta tb : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
   let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let e := stepPure Env.empty (.iconst ⟨1⟩ t k)
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t base)) ⟨1⟩ (ofInt t k)
+  let e := stepPure Env.empty (.iconst ⟨1⟩ tb k)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta base)) ⟨1⟩ (ofInt tb k)
   let conc : Option V := (evalInst default vs i).map (·.2)
   match (stepPure e i) ⟨2⟩, conc with
   | .offset p d, some (.sc t' w) =>
       let b := rhoOf vs p.id
-      !inTy t (b + d) || signed t' w == b + d
+      !inTy t' (b + d) || signed t' w == b + d
   | _, _ => true
 
-def offLive (t : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
+def offLive (ta tb : ClifTy) (base k : Int) (mk : Val → Val → Val → Inst) : Bool :=
   let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let e := stepPure Env.empty (.iconst ⟨1⟩ t k)
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt t base)) ⟨1⟩ (ofInt t k)
-  match (stepPure e i) ⟨2⟩ with
-  | .offset p d => inTy t (rhoOf vs p.id + d)
-  | _           => false
+  let e := stepPure Env.empty (.iconst ⟨1⟩ tb k)
+  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta base)) ⟨1⟩ (ofInt tb k)
+  let conc : Option V := (evalInst default vs i).map (·.2)
+  match (stepPure e i) ⟨2⟩, conc with
+  | .offset p d, some (.sc t' _) => inTy t' (rhoOf vs p.id + d)
+  | _, _                         => false
 
 def offOps : List (Val → Val → Val → Inst) :=
   [ (fun d a b => .iadd d a b), (fun d a b => .isub d a b) ]
 
 def offOk : Bool :=
-  wideTypes.all fun t => bases.all fun b => sample.all fun k =>
-    offOps.all fun f => offCase t b k f
+  types.all fun ta => wideTypes.all fun tb => bases.all fun b => sample.all fun k =>
+    offOps.all fun f => offCase ta tb b k f
 
 def offLiveCount : Nat :=
-  (wideTypes.flatMap fun t => bases.flatMap fun b => sample.flatMap fun k =>
-    offOps.filter fun f => offLive t b k f).length
+  (types.flatMap fun ta => wideTypes.flatMap fun tb => bases.flatMap fun b =>
+    sample.flatMap fun k => offOps.filter fun f => offLive ta tb b k f).length
 
 /-- **An `offset` is its base plus its displacement**, wherever the sum is
     representable at the width it is computed at.
