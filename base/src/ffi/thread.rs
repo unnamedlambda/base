@@ -10,12 +10,15 @@ pub(crate) struct CraneliftThreadContext {
     compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
 }
 
+/// Leaves the slot null when the JIT has not installed the function table,
+/// rather than panicking out of an `extern "C"` frame — which the compiler's
+/// abort shim turns into a dead process. Every other entry point already
+/// answers `-1` on a null context, so the slot itself carries the failure.
 pub(crate) unsafe extern "C" fn cl_thread_init(ctx_slot_ptr: *mut *mut CraneliftThreadContext) {
-    let compiled_fns = THREAD_COMPILED_FNS.with(|cell| {
-        cell.borrow()
-            .clone()
-            .expect("cl_thread_init: no compiled functions available")
-    });
+    let Some(compiled_fns) = THREAD_COMPILED_FNS.with(|cell| cell.borrow().clone()) else {
+        let _ = write_ctx_slot(ctx_slot_ptr, std::ptr::null_mut());
+        return;
+    };
     let ctx = Box::new(CraneliftThreadContext {
         threads: HashMap::new(),
         next_handle: 1,
@@ -140,6 +143,21 @@ mod tests {
             cl_thread_cleanup(&mut slot);
             let mut fresh: *mut CraneliftThreadContext = std::ptr::null_mut();
             cl_thread_cleanup(&mut fresh);
+        }
+    }
+
+    /// Init with no function table installed leaves the slot null and does not
+    /// abort. Every entry point then answers `-1`.
+    #[test]
+    fn init_without_compiled_fns_leaves_slot_null() {
+        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = None);
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        unsafe {
+            cl_thread_init(&mut slot);
+            assert!(slot.is_null());
+            assert_eq!(cl_thread_call(slot, 0, std::ptr::null_mut()), -1);
+            assert_eq!(cl_thread_spawn(slot, 0, std::ptr::null_mut()), -1);
+            cl_thread_cleanup(&mut slot);
         }
     }
 
