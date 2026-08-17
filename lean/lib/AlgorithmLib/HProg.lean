@@ -406,6 +406,12 @@ def _root_.AlgorithmLib.IR.ClifTy.isVec : ClifTy → Bool
   | .f32x4 | .i8x16 => true
   | _ => false
 
+/-- A vector whose lanes are floats. The float operations apply to `f32x4` and
+    not to `i8x16`, which `isVec` alone does not separate. -/
+def _root_.AlgorithmLib.IR.ClifTy.isFloatVec : ClifTy → Bool
+  | .f32x4 => true
+  | _ => false
+
 /-- The lane type of a vector, and how many lanes it has. -/
 def _root_.AlgorithmLib.IR.ClifTy.lanes : ClifTy → Option (ClifTy × Nat)
   | .f32x4 => some (.f32, 4)
@@ -459,9 +465,9 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       need (tc == ta && ta == tb) ta
   | .fadd a b | .fsub a b | .fmul a b | .fmax a b | .fmin a b => do
       let ta ← Γ.get a; let tb ← Γ.get b
-      need (ta == tb && (ta.isFloat || ta.isVec)) ta
+      need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta
   | .fneg a => do
-      let ta ← Γ.get a; need (ta.isFloat || ta.isVec) ta
+      let ta ← Γ.get a; need (ta.isFloat || ta.isFloatVec) ta
   | .fpromote a => do
       let ta ← Γ.get a; need (ta == .f32) .f64
   -- On vectors the result is a per-lane mask at the lane's own width, which is
@@ -471,7 +477,7 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
   -- type and `bitcast` — which compares widths — accepts it either way.
   | .fcmp _ a b => do
       let ta ← Γ.get a; let tb ← Γ.get b
-      if ta.isVec then need (ta == tb) ta
+      if ta.isFloatVec then need (ta == tb) ta
       else need (ta == tb && ta.isFloat) .i8
   | .fcvtFromSint ty a => do
       let ta ← Γ.get a; need (ta.isInt && ty.isFloat) ty

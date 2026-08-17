@@ -65,6 +65,12 @@ inductive V where
   | vec (ty : ClifTy) (lanes : Array UInt64)
   deriving Repr, BEq, Inhabited
 
+/-- The type a value carries, which is the type `Op.check` predicts for the
+    operation that produced it. -/
+def V.ty : V → ClifTy
+  | .sc t _  => t
+  | .vec t _ => t
+
 /-- The mask that keeps a value inside its type's width. -/
 def widthMask : ClifTy → UInt64
   | .i8 => 0xff
@@ -177,8 +183,8 @@ abbrev Env := Array V
 
 private def get (Γ : Env) (r : R) : Option V := Γ[r]?
 
-/-- An integer operation on two scalars of **one** type, which is what
-    `Op.check` requires of every operation reached through here and what
+/-- An arithmetic operation on two integer scalars of **one** type, which is
+    what `Op.check` requires of the operations reached through here and what
     Cranelift's verifier requires of the instruction. Taking the left operand's
     type and evaluating anyway would answer for a program that cannot be built:
     `iadd (i64 0) (i32 (-1))` would wrap at 64 bits and give `2^32 - 1` where
@@ -187,7 +193,23 @@ private def get (Γ : Env) (r : R) : Option V := Γ[r]?
 private def bin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Option V) : Option V := do
   let (.sc ta x) ← get Γ a | none
   let (.sc tb y) ← get Γ b | none
-  if ta != tb then none else f ta x y
+  if ta == tb && ta.isInt then f ta x y else none
+
+/-- The shift rule, which is the one binary integer operation whose operands
+    may differ: Cranelift takes the amount at any integer width and the result
+    at the shifted operand's. -/
+private def shiftBin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Option V) :
+    Option V := do
+  let (.sc ta x) ← get Γ a | none
+  let (.sc tb y) ← get Γ b | none
+  if ta.isInt && tb.isInt then f ta x y else none
+
+/-- A unary operation on one scalar whose type `ok` admits — the condition
+    `Op.check`'s arm for it states. -/
+private def un (Γ : Env) (a : R) (ok : ClifTy → Bool) (f : ClifTy → UInt64 → Option V) :
+    Option V := do
+  let (.sc t x) ← get Γ a | none
+  if ok t then f t x else none
 
 /-- Elementwise on a vector pair, or on two scalars — how the float operations
     apply to both `f32`/`f64` and `f32x4`. -/
@@ -204,17 +226,28 @@ private def zipF (u v : V) (f32op : Float32 → Float32 → Float32)
 
 /-- Elementwise on the raw bits, for the operations that have to see a sign or
     a NaN payload that `Float` arithmetic would not preserve. -/
-private def zipBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) : Option V :=
+private def zipBitsIf (ok : ClifTy → Bool) (u v : V)
+    (f : ClifTy → UInt64 → UInt64 → UInt64) : Option V :=
   match u, v with
-  | .sc t x, .sc t' y => if t == t' && t.isFloat then some (.sc t (f t x y)) else none
+  | .sc t x, .sc t' y => if t == t' && ok t then some (.sc t (f t x y)) else none
   | .vec t xs, .vec t' ys =>
       match t.lanes with
       | some (lane, _) =>
-          if t == t' && xs.size == ys.size then
+          if t == t' && ok lane && xs.size == ys.size then
             some (.vec t (xs.zipWith (f lane) ys))
           else none
       | none => none
   | _, _ => none
+
+/-- The float-shaped uses: `fmax`, `fmin` and `bitselect`'s mask arithmetic. -/
+private def zipBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → Option V :=
+  zipBitsIf (·.isFloat)
+
+/-- Bit-for-bit on two values of one type, whatever that type is. `bitselect`'s
+    check constrains only that its three operands agree, so an integer mask is
+    as well formed as a float one. -/
+private def zipAnyBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → Option V :=
+  zipBitsIf (fun _ => true)
 
 /-- A bitwise operation applied to two integers or lane-wise to two vectors.
 
@@ -224,7 +257,8 @@ private def zipBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) : Op
     to as well or a term can pass the checker and get stuck here. -/
 private def zipIntBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) : Option V :=
   match u, v with
-  | .sc t x, .sc t' y => if t == t' then some (norm t (f t x y)) else none
+  | .sc t x, .sc t' y =>
+      if t == t' && (t.isInt || t.isVec) then some (norm t (f t x y)) else none
   | .vec t xs, .vec t' ys =>
       match t.lanes with
       | some (lane, _) =>
@@ -296,7 +330,8 @@ private def boolV (b : Bool) : V := .sc .i8 (if b then 1 else 0)
     `bitselect` read. -/
 private def zipIntCmp (c : ICmpCond) (u v : V) : Option V :=
   match u, v with
-  | .sc t x, .sc t' y => if t == t' then some (boolV (cmpInt c t x y)) else none
+  | .sc t x, .sc t' y =>
+      if t == t' && t.isInt then some (boolV (cmpInt c t x y)) else none
   | .vec t xs, .vec t' ys =>
       match t.lanes with
       | some (lane, _) =>
@@ -326,36 +361,35 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
   | .imul a b => bin Γ a b fun t x y => some (norm t (x * y))
   | .udiv a b => bin Γ a b fun t x y => if y == 0 then none else some (norm t (x / y))
   -- The shift amount is taken modulo the *shifted operand's* width, not 64.
-  | .ishl a b => bin Γ a b fun t x y => some (norm t (x <<< (y % UInt64.ofNat t.width)))
-  | .ushr a b => bin Γ a b fun t x y => some (norm t ((x &&& widthMask t) >>> (y % UInt64.ofNat t.width)))
+  | .ishl a b => shiftBin Γ a b fun t x y => some (norm t (x <<< (y % UInt64.ofNat t.width)))
+  | .ushr a b => shiftBin Γ a b fun t x y =>
+      some (norm t ((x &&& widthMask t) >>> (y % UInt64.ofNat t.width)))
   | .band a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x &&& y)
   | .bandNot a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x &&& ~~~y)
   | .bor a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x ||| y)
   | .bxor a b => do zipIntBits (← get Γ a) (← get Γ b) (fun _ x y => x ^^^ y)
-  | .ineg a => do
-      let (.sc t x) ← get Γ a | none
-      some (norm t (0 - x))
-  | .ctz a => do
-      let (.sc t x) ← get Γ a | none
+  | .ineg a => un Γ a (·.isInt) fun t x => some (norm t (0 - x))
+  | .ctz a => un Γ a (·.isInt) fun t x =>
       some (norm t (UInt64.ofNat (((List.range t.width).find? (fun i =>
         (x >>> UInt64.ofNat i) &&& 1 == 1)).getD t.width)))
-  | .popcnt a => do
-      let (.sc t x) ← get Γ a | none
+  | .popcnt a => un Γ a (·.isInt) fun t x =>
       some (norm t (UInt64.ofNat (((List.range t.width).filter (fun i =>
         (x >>> UInt64.ofNat i) &&& 1 == 1)).length)))
-  | .ireduce32 a => do
-      let (.sc _ x) ← get Γ a | none
-      some (norm .i32 x)
-  | .uextend64 a => do
-      let (.sc t x) ← get Γ a | none
+  | .ireduce32 a => un Γ a (fun t => t.isInt && t.width > 32) fun _ x => some (norm .i32 x)
+  | .uextend64 a => un Γ a (fun t => t.isInt && t.width < 64) fun t x =>
       some (.sc .i64 (x &&& widthMask t))
-  | .sextend64 a => do
-      let (.sc t x) ← get Γ a | none
+  | .sextend64 a => un Γ a (fun t => t.isInt && t.width < 64) fun t x =>
       some (ofInt .i64 (signed t x))
   | .icmp c a b => do zipIntCmp c (← get Γ a) (← get Γ b)
   | .select c a b => do
       let cv ← get Γ c
-      if isTrue cv then get Γ a else get Γ b
+      let av ← get Γ a
+      let bv ← get Γ b
+      -- `Op.check` requires an integer condition and one type on the arms; a
+      -- select that returned whichever operand it was handed would answer for
+      -- a program Cranelift refuses to build.
+      let (.sc tc _) := cv | none
+      if tc.isInt && av.ty == bv.ty then (if isTrue cv then some av else some bv) else none
   -- Bit-for-bit, per lane: the mask decides each bit, not each lane as a whole.
   -- That is what `bitselect` means and why a comparison result has to be
   -- bitcast to the operand width before it can be used here.
@@ -363,9 +397,9 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
       let cv ← get Γ c
       let av ← get Γ a
       let bv ← get Γ b
-      let masked ← zipBits cv av (fun _ m x => m &&& x)
-      let other ← zipBits cv bv (fun _ m y => (~~~m) &&& y)
-      zipBits masked other (fun _ x y => x ||| y)
+      let masked ← zipAnyBits cv av (fun _ m x => m &&& x)
+      let other ← zipAnyBits cv bv (fun _ m y => (~~~m) &&& y)
+      zipAnyBits masked other (fun _ x y => x ||| y)
   | .fadd a b => do zipF (← get Γ a) (← get Γ b) (· + ·) (· + ·)
   | .fsub a b => do zipF (← get Γ a) (← get Γ b) (· - ·) (· - ·)
   | .fmul a b => do zipF (← get Γ a) (← get Γ b) (· * ·) (· * ·)
@@ -400,6 +434,7 @@ def evalOp (m : Mem) (Γ : Env) : Op → Option V
       | _, _ => none
   | .fcvtFromSint ty a => do
       let (.sc t x) ← get Γ a | none
+      if !t.isInt then none else
       let f : Float := Float.ofInt (signed t x)
       match ty with
       | .f32 => some (.sc .f32 (ofF32 f.toFloat32))
@@ -495,9 +530,9 @@ theorem reloc2_imul : Reloc2 .imul := by
 theorem reloc2_udiv : Reloc2 .udiv := by
   intro m Γ a b x y ha hb; simp [evalOp, bin, get, ha, hb]
 theorem reloc2_ishl : Reloc2 .ishl := by
-  intro m Γ a b x y ha hb; simp [evalOp, bin, get, ha, hb]
+  intro m Γ a b x y ha hb; simp [evalOp, shiftBin, get, ha, hb]
 theorem reloc2_ushr : Reloc2 .ushr := by
-  intro m Γ a b x y ha hb; simp [evalOp, bin, get, ha, hb]
+  intro m Γ a b x y ha hb; simp [evalOp, shiftBin, get, ha, hb]
 theorem reloc2_band : Reloc2 .band := by
   intro m Γ a b x y ha hb; simp [evalOp, bin, get, ha, hb]
 theorem reloc2_bandNot : Reloc2 .bandNot := by
@@ -523,17 +558,17 @@ theorem reloc2_fcmp (c : FloatCC) : Reloc2 (Op.fcmp c) := by
   intro m Γ a b x y ha hb; simp [evalOp, get, ha, hb]
 
 theorem reloc1_ineg : Reloc1 .ineg := by
-  intro m Γ a x ha; simp [evalOp, get, ha]
+  intro m Γ a x ha; simp [evalOp, un, get, ha]
 theorem reloc1_ctz : Reloc1 .ctz := by
-  intro m Γ a x ha; simp [evalOp, get, ha]
+  intro m Γ a x ha; simp [evalOp, un, get, ha]
 theorem reloc1_popcnt : Reloc1 .popcnt := by
-  intro m Γ a x ha; simp [evalOp, get, ha]
+  intro m Γ a x ha; simp [evalOp, un, get, ha]
 theorem reloc1_ireduce32 : Reloc1 .ireduce32 := by
-  intro m Γ a x ha; simp [evalOp, get, ha]
+  intro m Γ a x ha; simp [evalOp, un, get, ha]
 theorem reloc1_uextend64 : Reloc1 .uextend64 := by
-  intro m Γ a x ha; simp [evalOp, get, ha]
+  intro m Γ a x ha; simp [evalOp, un, get, ha]
 theorem reloc1_sextend64 : Reloc1 .sextend64 := by
-  intro m Γ a x ha; simp [evalOp, get, ha]
+  intro m Γ a x ha; simp [evalOp, un, get, ha]
 theorem reloc1_fneg : Reloc1 .fneg := by
   intro m Γ a x ha; simp [evalOp, get, ha]
 theorem reloc1_fpromote : Reloc1 .fpromote := by
