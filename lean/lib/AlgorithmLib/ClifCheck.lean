@@ -147,6 +147,69 @@ def narrowDerivFails : Nat :=
     `i32` or wider. -/
 theorem narrowShiftDisagrees : (800 < narrowDerivFails) = true := by native_decide
 
+/-- The three instructions that retag a value rather than compute one. -/
+def retagOps : List (Val → Val → Inst) :=
+  [ (fun d a => .ireduce32 d a)
+  , (fun d a => .uextend64 d a)
+  , (fun d a => .sextend64 d a) ]
+
+/-- **An expression with a retag on top of it.**
+
+    `derivCase` builds one instruction, so it can only ever check an expression
+    the model has just named.  Every claim `stepPure` makes about a *composed*
+    value went unchecked, and that is where the model's `uextend64` arm was
+    wrong: it passed an `offset` or a `derived` through unchanged, and zero
+    extension does not preserve a negative value.  `v0 - 1` at `i32` with `v0`
+    zero is `-1` in the expression algebra and `4294967295` after the extend. -/
+def derivRetagCase (ta tb : ClifTy) (x y : Int)
+    (f : Val → Val → Val → Inst) (g : Val → Val → Inst) : Bool :=
+  let is := [f ⟨2⟩ ⟨0⟩ ⟨1⟩, g ⟨3⟩ ⟨2⟩]
+  let e := evalPure (stepPure Env.empty (.iconst ⟨1⟩ tb y)) is
+  let vs0 : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
+  let vs := is.foldl (fun s i =>
+    match evalInst default s i with | some (d, v) => setV s d v | none => s) vs0
+  match e ⟨3⟩, getV vs ⟨3⟩ with
+  | .derived d, some (.sc t' w) =>
+      !DExp.Exact (rhoOf vs) d || signed t' w == DExp.eval (rhoOf vs) d
+  | .offset p k, some (.sc t' w) =>
+      let d := DExp.add (.root p.id) (.lit k)
+      !DExp.Exact (rhoOf vs) d || signed t' w == DExp.eval (rhoOf vs) d
+  | _, _ => true
+
+/-- The same, counting cases the condition admits. -/
+def derivRetagLive (ta tb : ClifTy) (x y : Int)
+    (f : Val → Val → Val → Inst) (g : Val → Val → Inst) : Bool :=
+  let is := [f ⟨2⟩ ⟨0⟩ ⟨1⟩, g ⟨3⟩ ⟨2⟩]
+  let e := evalPure (stepPure Env.empty (.iconst ⟨1⟩ tb y)) is
+  let vs0 : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
+  let vs := is.foldl (fun s i =>
+    match evalInst default s i with | some (d, v) => setV s d v | none => s) vs0
+  match e ⟨3⟩ with
+  | .derived d => DExp.Exact (rhoOf vs) d
+  | .offset p k => DExp.Exact (rhoOf vs) (.add (.root p.id) (.lit k))
+  | _          => false
+
+def derivRetagOk : Bool :=
+  wideTypes.all fun ta => wideTypes.all fun tb => sample.all fun x => sample.all fun y =>
+    derivOps.all fun f => retagOps.all fun g => derivRetagCase ta tb x y f g
+
+def derivRetagLiveCount : Nat :=
+  (wideTypes.flatMap fun ta => wideTypes.flatMap fun tb => sample.flatMap fun x =>
+    sample.flatMap fun y => derivOps.flatMap fun f =>
+      retagOps.filter fun g => derivRetagLive ta tb x y f g).length
+
+/-- **A retag over an expression denotes what the machine computes too.**
+
+    The composition the single-instruction check could not reach.  It is what
+    holds `stepPure`'s two passthrough arms to the same standard as the arms
+    that build an expression: `ireduce32` truncates and `sextend64` preserves
+    the signed value, both exact inside `foldableRange`; `uextend64` does not,
+    and now says so. -/
+theorem stepPure_derived_retag_agree : derivRetagOk = true := by native_decide
+
+/-- …and the composed check admits cases rather than refusing all of them. -/
+theorem derived_retag_is_live : (1000 < derivRetagLiveCount) = true := by native_decide
+
 -- ---------------------------------------------------------------------------
 -- The third claim: an `offset` is its base plus its displacement
 -- ---------------------------------------------------------------------------
@@ -1295,5 +1358,229 @@ theorem agree_empty (vs : Vals) : Agree vs Env.empty := by
   intro v k hv
   simp only [Env.empty, Env.get] at hv
   exact absurd hv (by simp)
+
+/-! ## The expression claim
+
+    `stepPure` reports `.derived d` for the four operations the host's
+    loop-bound and meta-publishing idiom uses, and `DExp.eval` says what `d`
+    means — in `Int`, which neither wraps nor truncates.  Three things stand
+    between that and the machine's word, and all three are conditions on the
+    *run* rather than on the expression, which is why they appear here as
+    hypotheses rather than as guards inside `stepPure`:
+
+    * **the roots are valued by the machine.**  A value the model cannot resolve
+      becomes `.root v.id`, and nothing in the model says what that root is
+      worth.  `rhoOf` is the valuation the machine itself supplies.
+    * **every value is tracked.**  `stepPure` never sees a type, so it names an
+      expression for an `i8` subtraction just as readily as for an `i64` one,
+      where the claim is false — that is what `narrowShiftDisagrees` records.
+    * **`DExp.Exact`.**  Already defined, and now actually used. -/
+
+/-- The roots an expression names, all below `n`. -/
+def DExp.rootsLt (n : Nat) : DExp → Bool
+  | .root v  => decide (v < n)
+  | .lit _   => true
+  | .add a b => DExp.rootsLt n a && DExp.rootsLt n b
+  | .sub a b => DExp.rootsLt n a && DExp.rootsLt n b
+  | .shr a _ => DExp.rootsLt n a
+  | .shl a _ => DExp.rootsLt n a
+
+theorem rootsLt_mono {n m : Nat} (h : n ≤ m) : ∀ {d : DExp},
+    DExp.rootsLt n d = true → DExp.rootsLt m d = true
+  | .root _, hd => by simp only [DExp.rootsLt, decide_eq_true_eq] at hd ⊢; omega
+  | .lit _, _ => rfl
+  | .add a b, hd => by
+      simp only [DExp.rootsLt, Bool.and_eq_true] at hd ⊢
+      exact ⟨rootsLt_mono h hd.1, rootsLt_mono h hd.2⟩
+  | .sub a b, hd => by
+      simp only [DExp.rootsLt, Bool.and_eq_true] at hd ⊢
+      exact ⟨rootsLt_mono h hd.1, rootsLt_mono h hd.2⟩
+  | .shr a _, hd => rootsLt_mono h (d := a) hd
+  | .shl a _, hd => rootsLt_mono h (d := a) hd
+
+/-- Evaluation looks only at the roots the expression names. -/
+theorem eval_congr {rho rho' : Nat → Int} {n : Nat}
+    (h : ∀ k, k < n → rho k = rho' k) : ∀ {d : DExp},
+    DExp.rootsLt n d = true → DExp.eval rho d = DExp.eval rho' d
+  | .root v, hd => by
+      simp only [DExp.rootsLt, decide_eq_true_eq] at hd; exact h v hd
+  | .lit _, _ => rfl
+  | .add a b, hd => by
+      simp only [DExp.rootsLt, Bool.and_eq_true] at hd
+      simp only [DExp.eval, eval_congr h hd.1, eval_congr h hd.2]
+  | .sub a b, hd => by
+      simp only [DExp.rootsLt, Bool.and_eq_true] at hd
+      simp only [DExp.eval, eval_congr h hd.1, eval_congr h hd.2]
+  | .shr a _, hd => by simp only [DExp.eval, eval_congr h (d := a) hd]
+  | .shl a _, hd => by simp only [DExp.eval, eval_congr h (d := a) hd]
+
+/-- …and so does exactness. -/
+theorem exact_congr {rho rho' : Nat → Int} {n : Nat}
+    (h : ∀ k, k < n → rho k = rho' k) : ∀ {d : DExp},
+    DExp.rootsLt n d = true → DExp.Exact rho d = DExp.Exact rho' d
+  | .root v, hd => by
+      simp only [DExp.rootsLt, decide_eq_true_eq] at hd
+      simp only [DExp.Exact, h v hd]
+  | .lit _, _ => rfl
+  | .add a b, hd => by
+      simp only [DExp.rootsLt, Bool.and_eq_true] at hd
+      simp only [DExp.Exact, exact_congr h hd.1, exact_congr h hd.2,
+                 eval_congr h hd.1, eval_congr h hd.2]
+  | .sub a b, hd => by
+      simp only [DExp.rootsLt, Bool.and_eq_true] at hd
+      simp only [DExp.Exact, exact_congr h hd.1, exact_congr h hd.2,
+                 eval_congr h hd.1, eval_congr h hd.2]
+  | .shr a _, hd => by
+      simp only [DExp.Exact, exact_congr h (d := a) hd, eval_congr h (d := a) hd]
+  | .shl a _, hd => by
+      simp only [DExp.Exact, exact_congr h (d := a) hd, eval_congr h (d := a) hd]
+
+/-- **Every value the run has computed carries a tracked type.**
+
+    The hypothesis `stepPure` cannot check for itself.  It is a property of the
+    program's types, decidable from the emitted function, and it is exactly what
+    rules out the narrow-width disagreements `narrowDerivFails` counts. -/
+def TrackedVals (vs : Vals) : Prop :=
+  ∀ (v : Val) (t : ClifTy) (w : UInt64), getV vs v = some (.sc t w) → TrackedTy t
+
+/-- A destination past the end of the value map — what an SSA program's fresh
+    numbering gives, and what makes a binding an extension rather than an
+    overwrite. -/
+def Fresh (vs : Vals) (d : Val) : Prop := vs.size ≤ d.id
+
+theorem rhoOf_setV {vs : Vals} {d : Val} {x : V} (hf : Fresh vs d) :
+    ∀ k, k < vs.size → rhoOf (setV vs d x) k = rhoOf vs k := by
+  intro k hk
+  simp only [Fresh] at hf
+  have hne : (⟨k⟩ : Val).id ≠ d.id := by simp only []; omega
+  simp only [rhoOf]
+  rcases hg : getV vs ⟨k⟩ with _ | u
+  · simp only [getV, Array.getElem?_eq_none_iff] at hg; omega
+  · rw [getV_setV_ne hne hg]
+
+theorem size_le_setV (vs : Vals) (d : Val) (x : V) : vs.size ≤ (setV vs d x).size := by
+  simp only [setV, Array.set!, Array.size_setIfInBounds]
+  split <;> simp <;> omega
+
+/-- **What the model claims of a value it can name, and what it owes.**
+
+    One invariant for all three claims at once.  `SymVal.toD?` is the model's
+    own statement of when it can name a value without inventing a root, and it
+    answers for `const`, `offset` and `derived` alike — so this is not three
+    invariants stapled together but the single property those three cases were
+    always instances of.  It is also, verbatim, the value half of
+    `Qwen2NonVacuity.MetaFaithful`.
+
+    Read the conclusion as an implication: the model does not assert that the
+    machine's word equals `d.eval rho`, it asserts that it does *whenever the
+    expression is exact*.  The roots are bounded so that extending the value map
+    cannot change what the expression denotes.
+
+    **Stated, with its pieces proved, and not yet preserved by a step.**  The
+    frame, the operands, the constant arm and the retags all go through; the
+    additive arms do not, and the reason is worth recording.  `iadd` of an
+    `offset p k` by a constant `y` has to reach the operand's claim at
+    `.add (root p) (lit k)`, whose `DExp.Exact` needs `inFold (rho p + k)` —
+    which the *result*'s exactness does not supply, since `k` and `y` can be
+    large and opposite.  The claim is nonetheless true, by the same
+    congruence-modulo-width argument as `const_sound`; what it needs is an
+    unconditional congruence clause beside the conditional equality.  `.shr` is
+    what stops that being the whole invariant: division is not a congruence, so
+    a `shrLit` value's claim is conditional however it is phrased. -/
+def Denotes (vs : Vals) (e : Env) : Prop :=
+  ∀ v d, (e v).toD? = some d →
+    ∃ t w, getV vs v = some (.sc t w) ∧ TrackedTy t
+      ∧ DExp.rootsLt vs.size d = true
+      ∧ (DExp.Exact (rhoOf vs) d = true → signed t w = DExp.eval (rhoOf vs) d)
+
+/-- The claim holds of a run that has bound nothing. -/
+theorem denotes_empty (vs : Vals) : Denotes vs Env.empty := by
+  intro v d hv
+  simp only [Env.empty, Env.get] at hv
+  exact absurd hv (by simp [SymVal.toD?])
+
+/-- Binding a fresh destination leaves what the model already claimed intact:
+    the word is still there, the roots are still in range, and the valuation
+    did not move on any root the expression names. -/
+theorem denotes_lift {vs : Vals} {d v : Val} {x : V} {t : ClifTy} {w : UInt64} {dd : DExp}
+    (hf : Fresh vs d) (hne : v.id ≠ d.id)
+    (hw : getV vs v = some (.sc t w)) (htt : TrackedTy t)
+    (hr : DExp.rootsLt vs.size dd = true)
+    (hc : DExp.Exact (rhoOf vs) dd = true → signed t w = DExp.eval (rhoOf vs) dd) :
+    ∃ t' w', getV (setV vs d x) v = some (.sc t' w') ∧ TrackedTy t'
+      ∧ DExp.rootsLt (setV vs d x).size dd = true
+      ∧ (DExp.Exact (rhoOf (setV vs d x)) dd = true →
+          signed t' w' = DExp.eval (rhoOf (setV vs d x)) dd) := by
+  refine ⟨t, w, getV_setV_ne hne hw, htt, rootsLt_mono (size_le_setV vs d x) hr, ?_⟩
+  intro hex
+  rw [eval_congr (rhoOf_setV hf) hr]
+  exact hc (by rw [← exact_congr (rhoOf_setV hf) hr]; exact hex)
+
+/-- **What an operand denotes.**
+
+    The one step that turns the invariant into arithmetic.  Either the model can
+    name the operand, and the invariant says what its word is worth, or it
+    cannot, and `dOf` makes it a root — whose valuation is *defined* to be that
+    word.  The second case is why the claim needs no hypothesis about values the
+    model does not track. -/
+theorem operand_denotes {vs : Vals} {e : Env} {a : Val} {t : ClifTy} {w : UInt64}
+    (hden : Denotes vs e) (hga : getV vs a = some (.sc t w)) :
+    DExp.rootsLt vs.size (dOf e a) = true
+      ∧ (DExp.Exact (rhoOf vs) (dOf e a) = true →
+          signed t w = DExp.eval (rhoOf vs) (dOf e a)) := by
+  rcases hd : (e a).toD? with _ | dd
+  · have hroot : dOf e a = .root a.id := by
+      cases hea : e a <;> rw [hea] at hd <;> simp_all [dOf, SymVal.toD?]
+    have hsz : a.id < vs.size := by
+      simp only [getV, Array.getElem?_eq_some_iff] at hga; exact hga.1
+    refine ⟨by rw [hroot]; simp only [DExp.rootsLt, decide_eq_true_eq]; exact hsz, ?_⟩
+    intro _
+    rw [hroot]
+    simp only [DExp.eval, rhoOf]
+    rw [show (⟨a.id⟩ : Val) = a from by cases a; rfl, hga]
+  · obtain ⟨t', w', hw', htt', hr', hc'⟩ := hden a dd hd
+    rw [dOf_of_toD? e a dd hd]
+    rw [hga] at hw'
+    injection hw' with h1
+    injection h1 with ht hww
+    subst ht; subst hww
+    exact ⟨hr', hc'⟩
+
+/-- An exact expression's value is foldable — every constructor's last
+    conjunct says so.  This is what lets a retag reuse the constant arms'
+    arithmetic without a separate bound. -/
+theorem inFold_of_exact {rho : Nat → Int} : ∀ {d : DExp},
+    DExp.Exact rho d = true → inFold (DExp.eval rho d) = true
+  | .root _, h => h
+  | .lit _, h => h
+  | .add _ _, h => by simp only [DExp.Exact, Bool.and_eq_true] at h; exact h.2
+  | .sub _ _, h => by simp only [DExp.Exact, Bool.and_eq_true] at h; exact h.2
+  | .shl _ _, h => by simp only [DExp.Exact, Bool.and_eq_true] at h; exact h.2
+  | .shr _ _, h => by simp only [DExp.Exact, Bool.and_eq_true] at h; exact h.2
+
+/-- A value the step leaves alone still denotes what it did. -/
+theorem denotes_frame {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d v : Val} {x : V}
+    {dd : DExp} (hden : Denotes vs e) (hf : Fresh vs d)
+    (hev : evalInst m vs i = some (d, x)) (hvd : v.id ≠ d.id)
+    (hv : (stepPure e i v).toD? = some dd) :
+    ∃ t w, getV (setV vs d x) v = some (.sc t w) ∧ TrackedTy t
+      ∧ DExp.rootsLt (setV vs d x).size dd = true
+      ∧ (DExp.Exact (rhoOf (setV vs d x)) dd = true →
+          signed t w = DExp.eval (rhoOf (setV vs d x)) dd) := by
+  rw [stepPure_frame _ e v (fun d' hd' => by
+        rw [evalInst_dest hev] at hd'; injection hd' with hq; exact hq ▸ hvd)] at hv
+  obtain ⟨t, w, hw, htt, hr, hc⟩ := hden v dd hv
+  exact denotes_lift hf hvd hw htt hr hc
+
+/-- A value the model reports as a constant denotes the literal, and
+    `const_sound` has already proved the machine agrees. -/
+theorem denotes_of_const {vs : Vals} {e : Env} {v : Val} {k : Int}
+    (hag : Agree vs e) (hv : e v = .const k) :
+    ∃ t w, getV vs v = some (.sc t w) ∧ TrackedTy t
+      ∧ DExp.rootsLt vs.size (.lit k) = true
+      ∧ (DExp.Exact (rhoOf vs) (.lit k) = true →
+          signed t w = DExp.eval (rhoOf vs) (.lit k)) := by
+  obtain ⟨t, w, hw, htt, hs, _⟩ := hag v k hv
+  exact ⟨t, w, hw, htt, rfl, fun _ => hs⟩
 
 end AlgorithmLib.Clif.Check

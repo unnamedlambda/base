@@ -404,12 +404,15 @@ def stepPure (e : Env) : Inst → Env
                                   | .offset p k => .slot p k
                                   | _ => .unknown)
   | .ireduce32 d a    => e.set d (e a)
-  -- **Zero-extension does not preserve a negative constant.**  `uextend64` of
-  -- `-1 : i32` is `4294967295`, not `-1`, so the constant cannot travel through
-  -- unchanged the way it does for the sign-preserving two either side of this.
+  -- **Zero-extension does not preserve a negative value.**  `uextend64` of
+  -- `-1 : i32` is `4294967295`, not `-1`, so nothing that carries a number can
+  -- travel through unchanged the way it does for the sign-preserving two either
+  -- side of this.  A constant is admitted when it is known non-negative; an
+  -- offset, an expression and a slot are not, because their sign is a fact
+  -- about a runtime value this model cannot see.
   | .uextend64 d a    => e.set d (match e a with
                                   | .const k => if 0 ≤ k then .const k else .unknown
-                                  | x => x)
+                                  | _ => .unknown)
   | .sextend64 d a    => e.set d (e a)
   -- everything that writes a destination we do not track
   | .udiv d _ _ | .band d _ _ | .bandNot d _ _ | .bor d _ _ | .bxor d _ _
