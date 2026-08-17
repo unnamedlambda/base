@@ -871,14 +871,6 @@ theorem evalInst_sextend64_inv {m : Mem} {vs : Vals} {d a dd : Val} {x : V}
       exact ⟨t, w, rfl, hc.1, hc.2, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
     · rw [if_neg hc] at h; simp at h
 
-/-- The destination reads back as what was just written. -/
-theorem getV_setV_self (vs : Vals) (d : Val) (x : V) : getV (setV vs d x) d = some x := by
-  simp only [getV, setV, Array.set!, Array.getElem?_setIfInBounds, if_pos rfl]
-  rcases Nat.lt_or_ge d.id vs.size with hd | hd
-  · simp only [hd, if_pos]
-  · simp only [Nat.not_lt.mpr hd, if_false, Array.size_append, Array.size_replicate]
-    simp only [if_pos (show d.id < vs.size + (d.id + 1 - vs.size) by omega), if_true]
-
 /-- `addSym` reports a constant only by folding two of them. -/
 theorem addSym_const {e : Env} {a b : Val} {k : Int} (h : addSym e a b = .const k) :
     ∃ xa xb, e a = .const xa ∧ e b = .const xb ∧ constIf (xa + xb) = .const k := by
@@ -921,7 +913,7 @@ theorem const_sound_iadd {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V
     have hsb' : signed t wb = xb := by
       injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
     refine ⟨t, (wa + wb) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
-    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [hveq, hx]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
     · rw [signed_mask_of hta', signed_add hta' hsa' hsb' hin, hsum]
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
@@ -968,7 +960,7 @@ theorem const_sound_isub {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V
     have hsb' : signed t wb = xb := by
       injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
     refine ⟨t, (wa - wb) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
-    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [hveq, hx]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
     · rw [signed_mask_of hta', signed_sub hta' hsa' hsb' hin, hsum]
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
@@ -996,7 +988,7 @@ theorem const_sound_imul {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V
     have hsb' : signed t wb = xb := by
       injection hvb with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsb
     refine ⟨t, (wa * wb) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
-    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [hveq, hx]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
     · rw [signed_mask_of hta', signed_mul hta' hsa' hsb' hin, hsum]
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
@@ -1029,7 +1021,7 @@ theorem const_sound_ineg {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x : V}
     have hsa' : signed t w = xa := by
       injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
     refine ⟨t, (0 - w) &&& widthMask t, ?_, hta', ?_, hsum ▸ hin⟩
-    · rw [hveq, hx]; exact getV_setV_self vs dd _
+    · rw [hveq, hx]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
     · rw [signed_mask_of hta', signed_neg hta' hsa' hin, hsum]
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
@@ -1073,7 +1065,7 @@ theorem const_sound_sextend64 {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x 
       injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
     obtain ⟨w2, hof, hsg⟩ := signed_ofInt (t := ClifTy.i64) (Or.inr rfl) hf
     refine ⟨ClifTy.i64, w2, ?_, Or.inr rfl, hsg, hf⟩
-    rw [hveq, hx, hsa', hof]; exact getV_setV_self vs dd _
+    rw [hveq, hx, hsa', hof]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
     obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
@@ -1097,7 +1089,7 @@ theorem const_sound_ireduce32 {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x 
       injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
     refine ⟨ClifTy.i32, w &&& widthMask ClifTy.i32, ?_, Or.inl rfl,
             signed_reduce32 hta' hsa' hf, hf⟩
-    rw [hveq, hx]; exact getV_setV_self vs dd _
+    rw [hveq, hx]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
     obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
@@ -1121,7 +1113,7 @@ theorem const_sound_uextend64 {m : Mem} {vs : Vals} {e : Env} {d a dd : Val} {x 
       injection hva with h1; injection h1 with h2 h3; rw [h2, h3]; exact hsa
     refine ⟨ClifTy.i64, w &&& widthMask t, ?_, Or.inr rfl,
             signed_uextend64 hta' hsa' hk0 hf, hf⟩
-    rw [hveq, hx]; exact getV_setV_self vs dd _
+    rw [hveq, hx]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
     obtain ⟨t1, w1, hw1, htt1, hs1, hf1⟩ := hag v k hv
@@ -1209,7 +1201,7 @@ theorem const_sound_ishl {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V
     have hamt := shift_amount htb' hsb' hlo hhi hta'
     have hs64 : xb.toNat < 64 := by omega
     refine ⟨ta, (wa <<< UInt64.ofNat xb.toNat) &&& widthMask ta, ?_, hta', ?_, hsum ▸ hin⟩
-    · rw [hveq, hx, hamt]; exact getV_setV_self vs dd _
+    · rw [hveq, hx, hamt]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
     · rw [signed_mask_of hta', signed_shl hta' hs64 hsa' hin, hsum]
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv
@@ -1244,7 +1236,7 @@ theorem const_sound_ushr {m : Mem} {vs : Vals} {e : Env} {d a b dd : Val} {x : V
     have hs64 : xb.toNat < 64 := by omega
     refine ⟨ta, ((wa &&& widthMask ta) >>> UInt64.ofNat xb.toNat) &&& widthMask ta,
             ?_, hta', ?_, hsum ▸ hin⟩
-    · rw [hveq, hx, hamt]; exact getV_setV_self vs dd _
+    · rw [hveq, hx, hamt]; exact AlgorithmLib.HProg.getV_setV_self vs dd _
     · rw [signed_mask_of hta', signed_ushr hta' hs64 hsa' hnn hfa, hsum]
   · rw [stepPure_frame _ e v (fun d' hd' => by
         simp only [Inst.destOf?, Option.some.injEq] at hd'; exact hd' ▸ hvd)] at hv

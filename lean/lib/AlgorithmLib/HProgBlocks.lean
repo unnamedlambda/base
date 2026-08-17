@@ -267,6 +267,84 @@ theorem single_iconst_sound (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
         Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.evalInst, Blocks.viaOp,
         emitStmt, hEmit, Sem.evalOp]
 
+/-! ### The branch
+
+    `Piece` has six constructors and the straight-line induction covers one of
+    them. These are the first results about control flow, and they are about the
+    place `CompileSound`'s own statement names as where the two forms have
+    disagreed twice: the join parameters. -/
+
+/-- The destination reads back as what was just written. -/
+theorem getV_setV_self (vs : Blocks.Vals) (d : Val) (x : Sem.V) :
+    Blocks.getV (Blocks.setV vs d x) d = some x := by
+  simp only [Blocks.getV, Blocks.setV, Array.set!, Array.getElem?_setIfInBounds]
+  rcases Nat.lt_or_ge d.id vs.size with hd | hd
+  · simp only [hd, if_pos]
+  · simp only [Nat.not_lt.mpr hd, if_false, Array.size_append, Array.size_replicate]
+    simp only [if_pos (show d.id < vs.size + (d.id + 1 - vs.size) by omega), if_true]
+
+/-- `ClifTy` derives `BEq` and not `DecidableEq`, so reflexivity is a lemma. -/
+theorem ClifTy_beq_self (t : ClifTy) : (t == t) = true := by cases t <;> rfl
+
+/-- A comparison's result reads as the condition it decided. -/
+theorem isTrue_boolV (b : Bool) : Sem.isTrue (Sem.boolV b) = b := by cases b <;> rfl
+
+/-- **The branch prologue goes where the term's comparison says.**
+
+    `emitIte` opens with an `icmp` into a fresh flag and a `brif` on it; this is
+    that pair, and it is the step every `ite` case needs before either arm is
+    reached. -/
+theorem brif_step (env : FnEnv) (s : Blocks.BSt) (flag a b : Val) (cc : ICmpCond)
+    (thnId elsId : Nat) (rest : List Inst) (t : ClifTy) (x y : UInt64)
+    (ha : Blocks.getV s.vals a = some (.sc t x))
+    (hb : Blocks.getV s.vals b = some (.sc t y)) (hint : t.isInt = true) :
+    Blocks.runInsts env s (.icmp flag cc a b :: .brif flag ⟨thnId⟩ [] ⟨elsId⟩ [] :: rest)
+      = .ok ({ s with vals := Blocks.setV s.vals flag (Sem.boolV (Sem.cmpInt cc t x y)) },
+             .goto (if Sem.cmpInt cc t x y then thnId else elsId) []) s.world := by
+  simp [Blocks.runInsts, Blocks.evalInst, Blocks.evalInst.bin, Blocks.viaOp, Sem.evalOp,
+        Sem.get, ha, hb, Sem.zipIntCmp, hint, getV_setV_self, isTrue_boolV, ClifTy_beq_self]
+  cases hcmp : Sem.cmpInt cc t x y <;> simp
+
+/-- **A branch compiles correctly**, on the smallest body that has a join: two
+    empty arms and no exported values. Three blocks are emitted where the term
+    has one piece, and the run still ends in the same place having observed
+    nothing. -/
+theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x : UInt64) (w : World) (fuel : Nat) :
+    CompileSound idx env ptrParams [.ite ⟨.eq, 0, 0, []⟩ [] [] [] []]
+      [.sc .i64 x] w (fuel + 4) := by
+  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, compileBody,
+        ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
+        emitCode, emitPiece, emitIte, termsGo, HProg.fuel,
+        Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.getV,
+        Sem.get, Sem.bindAt, Sem.slotsOf, Sem.slotsGo, Sem.cmpInt, Sem.boolV, Sem.isTrue,
+        Trie.set, Trie.setGo, Trie.get, List.mergeSort, List.find?,
+        Blocks.evalInst, Blocks.evalInst.bin, Blocks.viaOp, Sem.evalOp, Sem.zipIntCmp,
+        show ((ClifTy.i64 == ClifTy.i64) = true) from rfl,
+        show (ClifTy.i64.isInt = true) from rfl]
+
+/-- **…and it gets the join parameters right.**
+
+    Both arms bind a constant and export it. The numbering is the content: the
+    else arm's slot is `2`, not `1`, because `emitIte` numbers it as if the then
+    arm had run — only one of them executes, so without the padding the else
+    arm's own slots would land on the then arm's. That is the correspondence
+    this development has got wrong twice. -/
+theorem ite_exports_sound (idx : Nat) (env : FnEnv) (k1 k2 : Int) (x : UInt64)
+    (w : World) (fuel : Nat) :
+    CompileSound idx env ptrParams
+      [.ite ⟨.eq, 0, 0, [.i64]⟩
+        [.straight [.op (.iconst .i64 k1)]] [.straight [.op (.iconst .i64 k2)]] [1] [2]]
+      [.sc .i64 x] w (fuel + 6) := by
+  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
+        Sem.runStmt, compileBody, ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
+        emitCode, emitPiece, emitIte, emitStmt, emitStmts, termsGo, HProg.fuel,
+        Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.getV,
+        Sem.get, Sem.bindAt, Sem.slotsOf, Sem.slotsGo, Sem.cmpInt, Sem.boolV, Sem.isTrue,
+        Trie.set, Trie.setGo, Trie.get, List.mergeSort, List.find?,
+        Blocks.evalInst, Blocks.evalInst.bin, Blocks.viaOp, Sem.evalOp, Sem.zipIntCmp,
+        show ((ClifTy.i64 == ClifTy.i64) = true) from rfl,
+        show (ClifTy.i64.isInt = true) from rfl]
+
 /-- For straight-line code the emitter's slot-to-value map is the **identity**:
     `emitStmt` advances `nextVal` and `slots` together, so slot `i` is always
     `Val i`.

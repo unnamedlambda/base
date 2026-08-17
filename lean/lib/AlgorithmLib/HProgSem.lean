@@ -301,7 +301,7 @@ private def pickExtreme (wantMax : Bool) (t : ClifTy) (x y : UInt64) : UInt64 :=
   else if ltBits t x y then (if wantMax then y else x)
   else (if wantMax then x else y)
 
-private def cmpInt : ICmpCond → ClifTy → UInt64 → UInt64 → Bool
+def cmpInt : ICmpCond → ClifTy → UInt64 → UInt64 → Bool
   | .eq, _, x, y => x == y
   | .ne, _, x, y => x != y
   | .ult, _, x, y => x < y
@@ -323,12 +323,12 @@ private def cmpF64 : FloatCC → Float → Float → Bool
   | .lt, x, y => x < y  | .le, x, y => x ≤ y
   | .gt, x, y => y < x  | .ge, x, y => y ≤ x
 
-private def boolV (b : Bool) : V := .sc .i8 (if b then 1 else 0)
+def boolV (b : Bool) : V := .sc .i8 (if b then 1 else 0)
 
 /-- A comparison applied to two integers, or lane-wise to two vectors, where a
     true lane is all ones at the lane's own width — the mask `vhighBits` and
     `bitselect` read. -/
-private def zipIntCmp (c : ICmpCond) (u v : V) : Option V :=
+def zipIntCmp (c : ICmpCond) (u v : V) : Option V :=
   match u, v with
   | .sc t x, .sc t' y =>
       if t == t' && t.isInt then some (boolV (cmpInt c t x y)) else none
@@ -915,7 +915,7 @@ def slotsOf (n : Nat) (c : Code) : Nat := slotsGo fuel n c
 
 /-- Grow `Γ` to `n` slots so a binder lands at the index the compiled block
     parameter has, then append `vs`. -/
-private def bindAt (Γ : Env) (n : Nat) (vs : List V) : Env :=
+def bindAt (Γ : Env) (n : Nat) (vs : List V) : Env :=
   (Γ.take n ++ Array.replicate (n - Γ.size) default) ++ vs.toArray
 
 def obsCall (w : World) (fn : Nat) (args : List V) : World :=
