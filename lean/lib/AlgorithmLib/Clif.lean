@@ -249,6 +249,34 @@ def constIf (k : Int) : SymVal :=
 def offsetIf (p : Val) (k : Int) : SymVal :=
   if inFold k then .offset p k else .unknown
 
+/-- **A literal this model will carry.**  `Op.check` constrains an `iconst`'s
+    type but not its literal, so `iconst .i32 (2 ^ 32)` is well formed and the
+    machine stores `0`.  A literal is kept only when its own type represents it
+    exactly, and when it is small enough for the folds above to stay exact. -/
+def litOk (t : ClifTy) (k : Int) : Bool :=
+  inFold k && match t with
+              | .i8  => -128 ≤ k && k < 128
+              | .i16 => -32768 ≤ k && k < 32768
+              | _    => true
+
+/-- The literal a constant instruction contributes: itself when the type
+    represents it, nothing when it does not.  A definition rather than an
+    inline `if` so that a proof can discharge the guard once, by
+    `constLit_eq`, instead of carrying the branch through every rewrite. -/
+def constLit (t : ClifTy) (v : Int) : SymVal :=
+  if litOk t v then .const v else .unknown
+
+theorem constLit_eq {t : ClifTy} {v : Int} (h : litOk t v = true) :
+    constLit t v = .const v := by simp [constLit, h]
+
+theorem constLit_ne {t : ClifTy} {v : Int} (h : litOk t v = false) :
+    constLit t v = .unknown := by simp [constLit, h]
+
+-- Sealed: the guard is consumed through the two lemmas above.  Left open, a
+-- rewrite that unfolds it re-derives the range test at every constant in a
+-- fragment, which is what makes the launch proofs diverge.
+attribute [irreducible] constLit
+
 /-- A shift this model will evaluate at all.  Bounded before `2 ^ y` is ever
     formed: an unbounded amount is not merely unsound here, it does not
     terminate in practice. -/
@@ -278,7 +306,7 @@ def mulSym (e : Env) (a b : Val) : SymVal :=
     destination to `unknown`, so a value this model reports as a constant really
     is one. -/
 def stepPure (e : Env) : Inst → Env
-  | .iconst d _ v     => e.set d (.const v)
+  | .iconst d t v     => e.set d (constLit t v)
   | .iadd d a b       => e.set d (addSym e a b)
   -- the three that carry the host's loop-bound idiom: a constant operand folds
   -- when the fold is exact, and a runtime one yields a named expression rather
@@ -309,7 +337,12 @@ def stepPure (e : Env) : Inst → Env
                                   | .offset p k => .slot p k
                                   | _ => .unknown)
   | .ireduce32 d a    => e.set d (e a)
-  | .uextend64 d a    => e.set d (e a)
+  -- **Zero-extension does not preserve a negative constant.**  `uextend64` of
+  -- `-1 : i32` is `4294967295`, not `-1`, so the constant cannot travel through
+  -- unchanged the way it does for the sign-preserving two either side of this.
+  | .uextend64 d a    => e.set d (match e a with
+                                  | .const k => if 0 ≤ k then .const k else .unknown
+                                  | x => x)
   | .sextend64 d a    => e.set d (e a)
   -- everything that writes a destination we do not track
   | .udiv d _ _ | .band d _ _ | .bandNot d _ _ | .bor d _ _ | .bxor d _ _

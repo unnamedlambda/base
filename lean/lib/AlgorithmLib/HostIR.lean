@@ -186,6 +186,26 @@ theorem ExternArg.mem_deps_of_baseOf? {x : ExternArg} {b : Nat}
     (h : x.baseOf? = some b) : b ∈ x.deps := by
   cases x <;> simp_all [ExternArg.baseOf?, ExternArg.deps]
 
+/-- The range check as a pair of ordinary inequalities, which is the form the
+    offsets this file builds arrive in. -/
+theorem litOk64_of {x : Int} (h0 : 0 ≤ x) (h1 : x < 2147483648) :
+    litOk .i64 x = true := by
+  simp [litOk, inFold, foldableRange]
+  omega
+
+/-- **Every literal this argument emits is one the model can carry.**
+
+    `emitArg` puts each displacement into an `iconst`, and `Clif.litOk` is the
+    range in which the model's constant is the machine's — outside it the
+    literal wraps and the scanned value is not the one written here.  A `held`
+    argument emits no instruction, so it has nothing to bound. -/
+def ExternArg.LitOkB : ExternArg → Bool
+  | .const c  => litOk .i64 c
+  | .slot k   => litOk .i64 (Int.ofNat k)
+  | .far _ k  => litOk .i64 k
+  | .addr k   => litOk .i64 (Int.ofNat k)
+  | .held _ _ => true
+
 /-- Neither a `far` handle nor one already in scope — the case with no side
     condition at all, and decidable. -/
 def ExternArg.PlainB : ExternArg → Bool
@@ -323,11 +343,61 @@ def LaunchStep.toRec (s : LaunchStep) : LaunchRec :=
 def LaunchStep.toBinds (s : LaunchStep) : OpBinds :=
   { bufs := some (s.binds.map ExternArg.toBuf) }
 
-/-- **The arity a launch declares must be the array it fills.**  Decided, not
-    assumed: a `LaunchStep` whose `nBufs` disagrees with `binds.length` makes
-    `bindsAt?` read past the end of what the fragment wrote, and recovery
-    returns `none`.  `HStmt.TameB` rejects such a step instead. -/
-def LaunchStep.WellFormedB (s : LaunchStep) : Bool := s.nBufs == s.binds.length
+/-- **The arity a launch declares must be the array it fills, and every number
+    it emits must survive the width it is emitted at.**
+
+    Decided, not assumed. A `LaunchStep` whose `nBufs` disagrees with
+    `binds.length` makes `bindsAt?` read past the end of what the fragment
+    wrote, and recovery returns `none`.  A grid dimension of `2 ^ 31` or more
+    is worse: it goes into an `i32`, so the machine stores a different number
+    than the one declared here, and the launch really is the one the model
+    cannot describe.  `HStmt.TameB` rejects both instead. -/
+def LaunchStep.WellFormedB (s : LaunchStep) : Bool :=
+  s.nBufs == s.binds.length
+    && litOk .i64 (Int.ofNat s.ptxOff)
+    && litOk .i32 (Int.ofNat s.nBufs)
+    && litOk .i64 (Int.ofNat (s.bindOff + 4 * s.binds.length))
+    && litOk .i32 (Int.ofNat s.gridX)
+    && litOk .i32 (Int.ofNat s.blockX)
+    && s.binds.all ExternArg.LitOkB
+
+private theorem wfParts {s : LaunchStep} (h : s.WellFormedB = true) :
+    ((((((s.nBufs = s.binds.length
+      ∧ litOk .i64 (Int.ofNat s.ptxOff) = true)
+      ∧ litOk .i32 (Int.ofNat s.nBufs) = true)
+      ∧ litOk .i64 (Int.ofNat (s.bindOff + 4 * s.binds.length)) = true)
+      ∧ litOk .i32 (Int.ofNat s.gridX) = true)
+      ∧ litOk .i32 (Int.ofNat s.blockX) = true)
+      ∧ s.binds.all ExternArg.LitOkB = true) := by
+  simpa only [LaunchStep.WellFormedB, Bool.and_eq_true, beq_iff_eq] using h
+
+theorem LaunchStep.wf_arity {s : LaunchStep} (h : s.WellFormedB = true) :
+    s.nBufs = s.binds.length := (wfParts h).1.1.1.1.1.1
+theorem LaunchStep.wf_ptxOff {s : LaunchStep} (h : s.WellFormedB = true) :
+    litOk .i64 (Int.ofNat s.ptxOff) = true := (wfParts h).1.1.1.1.1.2
+theorem LaunchStep.wf_nBufs {s : LaunchStep} (h : s.WellFormedB = true) :
+    litOk .i32 (Int.ofNat s.nBufs) = true := (wfParts h).1.1.1.1.2
+/-- The *end* of the bind array, which is what the emit loop walks to. -/
+theorem LaunchStep.wf_bindEnd {s : LaunchStep} (h : s.WellFormedB = true) :
+    litOk .i64 (Int.ofNat (s.bindOff + 4 * s.binds.length)) = true := (wfParts h).1.1.1.2
+
+theorem LaunchStep.wf_bindSum {s : LaunchStep} (h : s.WellFormedB = true) :
+    s.bindOff + 4 * s.binds.length < 2147483648 := by
+  have h1 := s.wf_bindEnd h
+  simp only [litOk, inFold, foldableRange, Int.ofNat_eq_natCast, Bool.and_eq_true,
+             decide_eq_true_eq] at h1
+  omega
+
+theorem LaunchStep.wf_bindOff {s : LaunchStep} (h : s.WellFormedB = true) :
+    litOk .i64 (Int.ofNat s.bindOff) = true := by
+  have := s.wf_bindSum h
+  refine litOk64_of ?_ ?_ <;> simp only [Int.ofNat_eq_natCast] <;> omega
+theorem LaunchStep.wf_gridX {s : LaunchStep} (h : s.WellFormedB = true) :
+    litOk .i32 (Int.ofNat s.gridX) = true := (wfParts h).1.1.2
+theorem LaunchStep.wf_blockX {s : LaunchStep} (h : s.WellFormedB = true) :
+    litOk .i32 (Int.ofNat s.blockX) = true := (wfParts h).1.2
+theorem LaunchStep.wf_binds {s : LaunchStep} (h : s.WellFormedB = true) :
+    s.binds.all ExternArg.LitOkB = true := (wfParts h).2
 
 /-- **A declared device write.**  Names the primitive, the call that performs it,
     and what its arguments are; what it *computes* is a `DeclaredStep` on the
@@ -532,6 +602,7 @@ def HStmt.TameB (fns : List FnDecl) (ptr : Val) : HStmt → Bool
   | .extern es => (fnNameOf fns es.fn == some es.name)
                     && decide (es.name ∈ deviceWriterNames)
                     && !decide (es.name ∈ launchNames)
+                    && es.argv.all ExternArg.LitOkB
   | .seq a b  => HStmt.TameB fns ptr a && HStmt.TameB fns ptr b
   | .forN _ b => HStmt.TameB fns ptr b
   | .call b   => HStmt.TameB fns ptr b
@@ -979,14 +1050,17 @@ theorem emitArgs_frame (ptr : Val) (as : List ExternArg) (n : Nat) (e : Env)
     because the two consumers want different views of the same fact: the
     record pass forgets the base, the bind pass keeps it. -/
 theorem emitArgs_sym (ptr : Val) : ∀ (as : List ExternArg) (n : Nat) (e : Env),
-    FarOk e ptr n as → ptr.id < n → e ptr = SymVal.unknown →
+    FarOk e ptr n as → as.all ExternArg.LitOkB = true →
+    ptr.id < n → e ptr = SymVal.unknown →
     ((emitArgs ptr n as).2.2.map (fun v => evalPure e (emitArgs ptr n as).2.1 v))
       = as.map (ExternArg.toSym ptr) := by
   intro as
   induction as with
-  | nil => intro _ _ _ _ _; rfl
+  | nil => intro _ _ _ _ _ _; rfl
   | cons a as ih =>
-      intro n e hff hptr he
+      intro n e hff hlit hptr he
+      have hla : a.LitOkB = true := by simp at hlit; exact hlit.1
+      have hlas : as.all ExternArg.LitOkB = true := by simp at hlit ⊢; exact hlit.2
       have h1 := emitArg_le ptr n a
       have hv2 := emitArg_valLt ptr n a hff.headOk
       have hfr : evalPure e (emitArg ptr n a).2.1 ptr = e ptr :=
@@ -1005,26 +1079,31 @@ theorem emitArgs_sym (ptr : Val) : ∀ (as : List ExternArg) (n : Nat) (e : Env)
                   = a.toSym ptr := by
         cases a with
         | held v k => exact hff.headOk.2
-        | const c => simp [emitArg, evalPure, stepPure, Env.set_apply, ExternArg.toSym]
+        | const c =>
+            simp only [ExternArg.LitOkB] at hla
+            simp [emitArg, evalPure, stepPure, Env.set_apply, ExternArg.toSym, constLit_eq hla]
         | slot k =>
+            simp only [ExternArg.LitOkB, Int.ofNat_eq_natCast] at hla
             have hp0 : ¬ (ptr.id = n) := by omega
             simp [emitArg, evalPure, stepPure, Env.set_apply, addSym,
-                  ExternArg.toSym, he, hp0]
+                  ExternArg.toSym, he, hp0, constLit_eq hla]
         | far b k =>
+            simp only [ExternArg.LitOkB] at hla
             obtain ⟨hb1, hb2, hb3⟩ := hff.head b rfl
             have hbn : ¬ ((⟨b⟩ : Val).id = n) := by simp; omega
             simp [emitArg, evalPure, stepPure, Env.set_apply, addSym,
-                  ExternArg.toSym, hb3, hbn]
+                  ExternArg.toSym, hb3, hbn, constLit_eq hla]
         | addr k =>
+            simp only [ExternArg.LitOkB, Int.ofNat_eq_natCast] at hla
             have hp0 : ¬ (ptr.id = n) := by omega
             simp [emitArg, evalPure, stepPure, Env.set_apply, addSym,
-                  ExternArg.toSym, he, hp0]
+                  ExternArg.toSym, he, hp0, constLit_eq hla]
       -- the tail, under the environment the head leaves behind
       have htail := ih (emitArg ptr n a).1 (evalPure e (emitArg ptr n a).2.1)
                       (hff.tail.mono h1 (fun w hw =>
                         evalPure_frame _ e w (fun i hi d hd => by
                           have := emitArg_dests ptr n a i hi d hd; omega)))
-                      (by omega) (by rw [hfr]; exact he)
+                      hlas (by omega) (by rw [hfr]; exact he)
       rw [show (emitArgs ptr n (a :: as)).2.1
                  = (emitArg ptr n a).2.1 ++ (emitArgs ptr (emitArg ptr n a).1 as).2.1
                from rfl,
@@ -1041,7 +1120,7 @@ theorem emitArgs_sym (ptr : Val) : ∀ (as : List ExternArg) (n : Nat) (e : Env)
 
 /-- The record pass's view: what `LaunchRec.args` records. -/
 theorem emitArgs_desc (ptr : Val) (as : List ExternArg) (n : Nat) (e : Env)
-    (hff : FarOk e ptr n as)
+    (hff : FarOk e ptr n as) (hlit : as.all ExternArg.LitOkB = true)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown) :
     ((emitArgs ptr n as).2.2.map
         (fun v => descOf (evalPure e (emitArgs ptr n as).2.1 v)))
@@ -1052,13 +1131,13 @@ theorem emitArgs_desc (ptr : Val) (as : List ExternArg) (n : Nat) (e : Env)
           (fun v => evalPure e (emitArgs ptr n as).2.1 v)).map descOf := by
         rw [List.map_map]; rfl
     _ = (as.map (ExternArg.toSym ptr)).map descOf := by
-        rw [emitArgs_sym ptr as n e hff hptr he]
+        rw [emitArgs_sym ptr as n e hff hlit hptr he]
     _ = as.map ExternArg.toDesc := by
         rw [List.map_map]; exact List.map_congr_left (fun a _ => by cases a <;> rfl)
 
 /-- The bind pass's view: what `Clif.bindsOf` recovers, base included. -/
 theorem emitArgs_buf (ptr : Val) (as : List ExternArg) (n : Nat) (e : Env)
-    (hff : FarOk e ptr n as)
+    (hff : FarOk e ptr n as) (hlit : as.all ExternArg.LitOkB = true)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown) :
     ((emitArgs ptr n as).2.2.map
         (fun v => bufDescOf ptr.id (evalPure e (emitArgs ptr n as).2.1 v)))
@@ -1069,7 +1148,7 @@ theorem emitArgs_buf (ptr : Val) (as : List ExternArg) (n : Nat) (e : Env)
           (fun v => evalPure e (emitArgs ptr n as).2.1 v)).map (bufDescOf ptr.id) := by
         rw [List.map_map]; rfl
     _ = (as.map (ExternArg.toSym ptr)).map (bufDescOf ptr.id) := by
-        rw [emitArgs_sym ptr as n e hff hptr he]
+        rw [emitArgs_sym ptr as n e hff hlit hptr he]
     _ = as.map ExternArg.toBuf := by
         rw [List.map_map]
         exact List.map_congr_left (fun a ha =>
@@ -1167,12 +1246,14 @@ def bindMap (ptr : Val) (bindOff : Nat) : Nat → List ExternArg → StoreMap
 
 theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
     (e : Env) (m : StoreMap) (hff : FarOk e ptr n [a])
+    (hla : a.LitOkB = true) (hoff : litOk .i64 off = true)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown) :
     (bevalPure ⟨e, m⟩ (emitBind ptr off n a).2).mem
       = ((ptr.id, off), a.toSym ptr) :: m := by
   have hpk : ∀ k : Nat, ((ptr.id = n + k) = False) := by
     intro k; simp only [eq_iff_iff, iff_false]; omega
   have hpz : (ptr.id = n) = False := by simp only [eq_iff_iff, iff_false]; omega
+  simp only [ExternArg.LitOkB, Int.ofNat_eq_natCast] at hla
   cases a with
   | held v k =>
       obtain ⟨hv1, hv2⟩ := hff.headOk
@@ -1185,7 +1266,7 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
               , Inst.iadd ⟨n + 1⟩ ptr ⟨n⟩
               , Inst.store ⟨v⟩ ⟨n + 1⟩ ]).mem = _
       simp [bevalPure, bstep, stepPure, stepMem, Inst.storeOf?, Env.set_apply,
-            addSym, he, hv2, ExternArg.toSym, hpz, hvn, hvz]
+            addSym, he, hv2, ExternArg.toSym, hpz, hvn, hvz, constLit_eq hoff]
   | const c =>
       show (bevalPure ⟨e, m⟩
               [ Inst.iconst ⟨n⟩ .i64 c
@@ -1193,7 +1274,7 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
               , Inst.iadd ⟨n + 2⟩ ptr ⟨n + 1⟩
               , Inst.store ⟨n⟩ ⟨n + 2⟩ ]).mem = _
       simp [bevalPure, bstep, stepPure, stepMem, Inst.storeOf?, Env.set_apply,
-            addSym, he, ExternArg.toSym, hpz, hpk]
+            addSym, he, ExternArg.toSym, hpz, hpk, constLit_eq hoff, constLit_eq hla]
   | far b k =>
       obtain ⟨hb1, hb2, hb3⟩ := hff.head b rfl
       have hbn : ∀ j : Nat, ((⟨b⟩ : Val).id = n + j) = False := by
@@ -1209,7 +1290,7 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
               , Inst.iadd ⟨n + 4⟩ ptr ⟨n + 3⟩
               , Inst.store ⟨n + 2⟩ ⟨n + 4⟩ ]).mem = _
       simp [bevalPure, bstep, stepPure, stepMem, Inst.storeOf?, Env.set_apply,
-            addSym, he, hb3, ExternArg.toSym, hpz, hpk, hbz]
+            addSym, he, hb3, ExternArg.toSym, hpz, hpk, hbz, constLit_eq hoff, constLit_eq hla]
   | addr k =>
       show (bevalPure ⟨e, m⟩
               [ Inst.iconst ⟨n⟩ .i64 (Int.ofNat k)
@@ -1218,7 +1299,7 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
               , Inst.iadd ⟨n + 3⟩ ptr ⟨n + 2⟩
               , Inst.store ⟨n + 1⟩ ⟨n + 3⟩ ]).mem = _
       simp [bevalPure, bstep, stepPure, stepMem, Inst.storeOf?, Env.set_apply,
-            addSym, he, ExternArg.toSym, hpz, hpk]
+            addSym, he, ExternArg.toSym, hpz, hpk, constLit_eq hoff, constLit_eq hla]
   | slot k =>
       show (bevalPure ⟨e, m⟩
               [ Inst.iconst ⟨n⟩ .i64 (Int.ofNat k)
@@ -1228,18 +1309,27 @@ theorem emitBind_mem (ptr : Val) (off : Int) (n : Nat) (a : ExternArg)
               , Inst.iadd ⟨n + 4⟩ ptr ⟨n + 3⟩
               , Inst.store ⟨n + 2⟩ ⟨n + 4⟩ ]).mem = _
       simp [bevalPure, bstep, stepPure, stepMem, Inst.storeOf?, Env.set_apply,
-            addSym, he, ExternArg.toSym, hpz, hpk]
+            addSym, he, ExternArg.toSym, hpz, hpk, constLit_eq hoff, constLit_eq hla]
 
 theorem emitBinds_mem (ptr : Val) (bindOff : Nat) :
     ∀ (as : List ExternArg) (n i : Nat) (e : Env) (m : StoreMap),
-      FarOk e ptr n as → ptr.id < n → e ptr = SymVal.unknown →
+      FarOk e ptr n as → as.all ExternArg.LitOkB = true →
+      bindOff + 4 * (i + as.length) < 2147483648 →
+      ptr.id < n → e ptr = SymVal.unknown →
       (bevalPure ⟨e, m⟩ (emitBinds ptr bindOff n i as).2).mem
         = bindMap ptr bindOff i as ++ m := by
   intro as
   induction as with
-  | nil => intro n i e m _ _ _; rfl
+  | nil => intro n i e m _ _ _ _ _; rfl
   | cons a as ih =>
-      intro n i e m hff hptr he
+      intro n i e m hff hlit hbnd hptr he
+      have hla : a.LitOkB = true := by simp at hlit; exact hlit.1
+      have hlas : as.all ExternArg.LitOkB = true := by simp at hlit ⊢; exact hlit.2
+      have hbnd' : bindOff + 4 * (i + as.length) + 4 < 2147483648 := by
+        simp only [List.length_cons] at hbnd; omega
+      have hoff : litOk .i64 (Int.ofNat bindOff + 4 * (i : Int)) = true := by
+        refine litOk64_of ?_ ?_ <;>
+          simp only [Int.ofNat_eq_natCast] <;> omega
       have h1 := (emitBind_props ptr (Int.ofNat bindOff + 4 * (i : Int)) n a).1
       have hfft : FarOk (bevalPure ⟨e, m⟩
             (emitBind ptr (Int.ofNat bindOff + 4 * (i : Int)) n a).2).env ptr
@@ -1264,11 +1354,12 @@ theorem emitBinds_mem (ptr : Val) (bindOff : Nat) :
           ih (emitBind ptr (Int.ofNat bindOff + 4 * (i : Int)) n a).1 (i + 1)
              (bevalPure ⟨e, m⟩ (emitBind ptr (Int.ofNat bindOff + 4 * (i : Int)) n a).2).env
              (bevalPure ⟨e, m⟩ (emitBind ptr (Int.ofNat bindOff + 4 * (i : Int)) n a).2).mem
-             hfft (by omega) (by rw [bevalPure_env]; exact hframe),
+             hfft hlas (by omega) (by omega)
+             (by rw [bevalPure_env]; exact hframe),
           emitBind_mem ptr (Int.ofNat bindOff + 4 * (i : Int)) n a e m
             (fun x hx => by
               simp only [List.mem_cons, List.not_mem_nil, or_false] at hx
-              subst hx; exact hff _ (List.mem_cons_self ..)) hptr he]
+              subst hx; exact hff _ (List.mem_cons_self ..)) hla hoff hptr he]
       show bindMap ptr bindOff (i + 1) as
               ++ (((ptr.id, Int.ofNat bindOff + 4 * (i : Int)), a.toSym ptr) :: m)
           = (bindMap ptr bindOff (i + 1) as
@@ -1336,6 +1427,8 @@ theorem bindsFrom_bindMap (ptr : Val) (bindOff : Nat) :
 
 theorem emitBinds_recovers (ptr : Val) (bindOff : Nat) (as : List ExternArg)
     (n : Nat) (e : Env) (m : StoreMap) (hff : FarOk e ptr n as)
+    (hlit : as.all ExternArg.LitOkB = true)
+    (hbnd : bindOff + 4 * as.length < 2147483648)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown) :
     bindsAt? (bevalPure ⟨e, m⟩ (emitBinds ptr bindOff n 0 as).2).mem ptr.id
         (Int.ofNat bindOff) as.length
@@ -1344,7 +1437,7 @@ theorem emitBinds_recovers (ptr : Val) (bindOff : Nat) (as : List ExternArg)
             (Int.ofNat bindOff) as.length
           = bindsFrom (bevalPure ⟨e, m⟩ (emitBinds ptr bindOff n 0 as).2).mem ptr.id
               (Int.ofNat bindOff) as.length 0 from rfl,
-      emitBinds_mem ptr bindOff as n 0 e m hff hptr he]
+      emitBinds_mem ptr bindOff as n 0 e m hff hlit (by omega) hptr he]
   exact bindsFrom_bindMap ptr bindOff as 0 m (fun x hx b hb => (hff.base x hx b hb).2.1)
 
 /-- **Compile to a flat program.**  Pure — the SSA counter is threaded
@@ -1493,8 +1586,19 @@ theorem emitLaunchCall_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : Launc
     input — and `ptr.id < n`, so the fragment's temporaries cannot shadow it. -/
 theorem emitLaunchCall_scan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
-    (n : Nat) (s : LaunchStep) (e : Env) (hptr : ptr.id < n) (he : e ptr = .unknown) :
+    (n : Nat) (s : LaunchStep) (e : Env) (hwf : s.WellFormedB = true)
+    (hptr : ptr.id < n) (he : e ptr = .unknown) :
     (scanBlock fns e (emitLaunchCall fnLaunch ptr n s).2).2 = [s.toRec] := by
+  have hkO : litOk .i64 (s.ptxOff : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_ptxOff hwf
+  have hnB : litOk .i32 (s.nBufs : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_nBufs hwf
+  have hbO : litOk .i64 (s.bindOff : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_bindOff hwf
+  have hgX : litOk .i32 (s.gridX : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_gridX hwf
+  have hbX : litOk .i32 (s.blockX : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_blockX hwf
   have hz  : ∀ a : Nat, 0 < a → ((n + a = n) = False) := by
     intro a ha; simp only [eq_iff_iff, iff_false]; omega
   have hz' : ∀ a : Nat, 0 < a → ((n = n + a) = False) := by
@@ -1506,7 +1610,9 @@ theorem emitLaunchCall_scan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     intro a; simp only [eq_iff_iff, iff_false]; omega
   show (scanBlock fns e [_, _, _, _, _, _, _, _, _, _, _, _]).2 = _
   simp [scanBlock, launchAt, stepPure, Env.set_apply, addSym, hfn, LaunchStep.toRec,
-        SymVal.offsetOf?, hpz, hpk, he, launchNames]
+        SymVal.offsetOf?, hpz, hpk, he, launchNames, Int.ofNat_eq_natCast,
+        constLit_eq hkO, constLit_eq hnB, constLit_eq hbO,
+        constLit_eq hgX, constLit_eq hbX]
 
 -- ── The whole launch: array plus call ──────────────────────────────────────
 
@@ -1533,7 +1639,8 @@ theorem emitLaunch_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchSte
     are not calls — so this is the same fact it always was. -/
 theorem emitLaunch_scan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
-    (n : Nat) (s : LaunchStep) (e : Env) (hptr : ptr.id < n) (he : e ptr = .unknown) :
+    (n : Nat) (s : LaunchStep) (e : Env) (hwf : s.WellFormedB = true)
+    (hptr : ptr.id < n) (he : e ptr = .unknown) :
     (scanBlock fns e (emitLaunch fnLaunch ptr n s).2).2 = [s.toRec] := by
   have hb := (emitBinds_props ptr s.bindOff s.binds n 0).1
   show (scanBlock fns e ((emitBinds ptr s.bindOff n 0 s.binds).2
@@ -1541,9 +1648,10 @@ theorem emitLaunch_scan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
   rw [scanBlock_append,
       scanBlock_noCalls fns _ e (fun i hi => (emitBinds_props ptr s.bindOff s.binds n 0).2.2 i hi),
       List.nil_append,
-      emitLaunchCall_scan fns fnLaunch ptr hfn _ s _ (by omega)
+      emitLaunchCall_scan fns fnLaunch ptr hfn _ s _ hwf (by omega)
         (by rw [emitBinds_frame ptr s.bindOff s.binds n 0 e ptr hptr]; exact he)]
 
+set_option maxRecDepth 12000 in
 /-- **…and its bind array reads back as the array that was declared.**
 
     This is the seam that was open.  `Clif.bindsOf` recovers a launch's pointer
@@ -1558,9 +1666,10 @@ theorem emitLaunch_bindScan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     (hwf : s.WellFormedB = true) (hfar : FarOk e ptr n s.binds) :
     (bindScan fns ptr.id ⟨e, m⟩ (emitLaunch fnLaunch ptr n s).2).2 = [s.toBinds] := by
   have hb := (emitBinds_props ptr s.bindOff s.binds n 0).1
-  have hnb : s.nBufs = s.binds.length := by simpa [LaunchStep.WellFormedB] using hwf
+  have hnb : s.nBufs = s.binds.length := s.wf_arity hwf
+  have hbo : s.bindOff + 4 * s.binds.length < 2147483648 := s.wf_bindSum hwf
   -- what the fragment left in memory, and that the pointer survived it
-  have hrec := emitBinds_recovers ptr s.bindOff s.binds n e m hfar hptr he
+  have hrec := emitBinds_recovers ptr s.bindOff s.binds n e m hfar (s.wf_binds hwf) hbo hptr he
   have henv : (bevalPure ⟨e, m⟩ (emitBinds ptr s.bindOff n 0 s.binds).2).env ptr
                 = SymVal.unknown := by
     rw [bevalPure_env, emitBinds_frame ptr s.bindOff s.binds n 0 e ptr hptr]; exact he
@@ -1577,9 +1686,23 @@ theorem emitLaunch_bindScan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     intro a; simp only [eq_iff_iff, iff_false]; omega
   show (bindScan fns ptr.id (bevalPure ⟨e, m⟩ (emitBinds ptr s.bindOff n 0 s.binds).2)
           [_, _, _, _, _, _, _, _, _, _, _, _]).2 = _
+  have hkO : litOk .i64 (s.ptxOff : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_ptxOff hwf
+  have hnB : litOk .i32 (s.binds.length : Int) = true := by
+    have hx := s.wf_nBufs hwf
+    rw [hnb] at hx
+    simpa only [Int.ofNat_eq_natCast] using hx
+  have hbO : litOk .i64 (s.bindOff : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_bindOff hwf
+  have hgX : litOk .i32 (s.gridX : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_gridX hwf
+  have hbX : litOk .i32 (s.blockX : Int) = true := by
+    simpa only [Int.ofNat_eq_natCast] using s.wf_blockX hwf
   simp [bindScan, bindAt, bstep, stepPure, stepMem, Inst.storeOf?, Env.set_apply,
         addSym, isLaunchCallB, hfn, launchNames, positionalLaunchNames,
-        SymVal.offsetOf?, hpz, hpk, henv, LaunchStep.toBinds, hnb]
+        SymVal.offsetOf?, hpz, hpk, henv, LaunchStep.toBinds, hnb,
+        constLit_eq hkO, constLit_eq hnB, constLit_eq hbO,
+        constLit_eq hgX, constLit_eq hbX]
   exact hrec
 
 -- ---------------------------------------------------------------------------
@@ -1724,7 +1847,7 @@ theorem flatHI_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
             = p + ((emitLaunch fnLaunch ptr n st).2.map HI.inst).length
         rw [List.length_map]
       · show tr ++ (scanBlock fns e (emitLaunch fnLaunch ptr n st).2).2 = tr ++ [st.toRec]
-        rw [emitLaunch_scan fns fnLaunch ptr hfn n st e hptr he]
+        rw [emitLaunch_scan fns fnLaunch ptr hfn n st e hwf hptr he]
       · show btr ++ (bindScan fns ptr.id ⟨e, sm⟩ (emitLaunch fnLaunch ptr n st).2).2
             = btr ++ [st.toBinds]
         rw [emitLaunch_bindScan fns fnLaunch ptr hfn n st e sm hptr he hwf hfar]
@@ -1734,15 +1857,17 @@ theorem flatHI_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
         rw [emitLaunch_frame fnLaunch ptr n st e ptr hptr]; exact he
   | extern es =>
       intro n p e sm ct tr btr hptr he htame hfar _ hfit
-      have h3 : ((fnNameOf fns es.fn == some es.name) = true
+      have h3 : (((fnNameOf fns es.fn == some es.name) = true
                 ∧ decide (es.name ∈ deviceWriterNames) = true)
-                ∧ (!decide (es.name ∈ launchNames)) = true := by
+                ∧ (!decide (es.name ∈ launchNames)) = true)
+                ∧ es.argv.all ExternArg.LitOkB = true := by
         simp only [HStmt.TameB, Bool.and_eq_true] at htame
-        exact ⟨⟨htame.1.1, htame.1.2⟩, htame.2⟩
-      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1
-      have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.2
-      have hl  : es.name ∉ launchNames := by simpa using h3.2
+        exact ⟨⟨⟨htame.1.1.1, htame.1.1.2⟩, htame.1.2⟩, htame.2⟩
+      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1.1
+      have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.1.2
+      have hl  : es.name ∉ launchNames := by simpa using h3.1.2
       have hff : FarOk e ptr n es.argv := hfar
+      have hlit : es.argv.all ExternArg.LitOkB = true := h3.2
       have hpl : es.name ∉ positionalLaunchNames := by
         intro hc
         exact hl (by
@@ -1765,7 +1890,7 @@ theorem flatHI_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
                       (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)).toList ++ []) = _
         simp only [launchAt, hnm, if_neg hl, if_pos hw, Option.toList,
                    List.append_nil, ExternStep.toRec]
-        rw [emitArgs_desc ptr es.argv n e hff hptr he]
+        rw [emitArgs_desc ptr es.argv n e hff hlit hptr he]
       · -- **…and so are its buffers**, base-aware, which is the new half
         show btr ++ (bindScan fns ptr.id ⟨e, sm⟩ ((emitArgs ptr n es.argv).2.1
                       ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2])).2
@@ -1787,7 +1912,7 @@ theorem flatHI_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
         show btr ++ [{ args := (emitArgs ptr n es.argv).2.2.map
                         (fun v => bufDescOf ptr.id (evalPure e (emitArgs ptr n es.argv).2.1 v)) }]
             = _
-        rw [emitArgs_buf ptr es.argv n e hff hptr he]
+        rw [emitArgs_buf ptr es.argv n e hff hlit hptr he]
       · intro w hw _
         show evalPure e ((emitArgs ptr n es.argv).2.1
                  ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2]) w = e w
@@ -2114,22 +2239,25 @@ theorem instsOf_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
               (fun i hi d hd => tame_noWrite fns ptr i (hall i hi) d hd)]
         exact he
   | launch st =>
-      intro n e _ _ _ _ hptr he
-      refine ⟨emitLaunch_le fnLaunch ptr n st, emitLaunch_scan fns fnLaunch ptr hfn n st e hptr he,
-              ?_⟩
+      intro n e _ htame _ _ hptr he
+      have hwf : st.WellFormedB = true := htame
+      refine ⟨emitLaunch_le fnLaunch ptr n st,
+              emitLaunch_scan fns fnLaunch ptr hfn n st e hwf hptr he, ?_⟩
       show evalPure e (emitLaunch fnLaunch ptr n st).2 ptr = SymVal.unknown
       rw [emitLaunch_frame fnLaunch ptr n st e ptr hptr]; exact he
   | extern es =>
       intro n e _ htame hfar _ hptr he
-      have h3 : ((fnNameOf fns es.fn == some es.name) = true
+      have h3 : (((fnNameOf fns es.fn == some es.name) = true
                 ∧ decide (es.name ∈ deviceWriterNames) = true)
-                ∧ (!decide (es.name ∈ launchNames)) = true := by
+                ∧ (!decide (es.name ∈ launchNames)) = true)
+                ∧ es.argv.all ExternArg.LitOkB = true := by
         simp only [HStmt.TameB, Bool.and_eq_true] at htame
-        exact ⟨⟨htame.1.1, htame.1.2⟩, htame.2⟩
-      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1
-      have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.2
-      have hl  : es.name ∉ launchNames := by simpa using h3.2
+        exact ⟨⟨⟨htame.1.1.1, htame.1.1.2⟩, htame.1.2⟩, htame.2⟩
+      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1.1
+      have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.1.2
+      have hl  : es.name ∉ launchNames := by simpa using h3.1.2
       have hff : FarOk e ptr n es.argv := hfar
+      have hlit : es.argv.all ExternArg.LitOkB = true := h3.2
       refine ⟨(emitArgs_props ptr es.argv n).1, ?_, ?_⟩
       · show (scanBlock fns e ((emitArgs ptr n es.argv).2.1
                 ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2])).2 = [es.toRec]
@@ -2140,7 +2268,7 @@ theorem instsOf_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
                 (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)).toList ++ []) = _
         simp only [launchAt, hnm, if_neg hl, if_pos hw, Option.toList,
                    List.append_nil, ExternStep.toRec]
-        rw [emitArgs_desc ptr es.argv n e hff hptr he]
+        rw [emitArgs_desc ptr es.argv n e hff hlit hptr he]
       · show evalPure e ((emitArgs ptr n es.argv).2.1
                 ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2]) ptr = SymVal.unknown
         rw [evalPure_append]
@@ -2243,15 +2371,17 @@ theorem instsOf_binds (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
         (by simpa [HStmt.TameB] using htame) hfar
   | extern es =>
       intro n e m _ htame hfar _ hptr he
-      have h3 : ((fnNameOf fns es.fn == some es.name) = true
+      have h3 : (((fnNameOf fns es.fn == some es.name) = true
                 ∧ decide (es.name ∈ deviceWriterNames) = true)
-                ∧ (!decide (es.name ∈ launchNames)) = true := by
+                ∧ (!decide (es.name ∈ launchNames)) = true)
+                ∧ es.argv.all ExternArg.LitOkB = true := by
         simp only [HStmt.TameB, Bool.and_eq_true] at htame
-        exact ⟨⟨htame.1.1, htame.1.2⟩, htame.2⟩
-      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1
-      have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.2
-      have hl  : es.name ∉ launchNames := by simpa using h3.2
+        exact ⟨⟨⟨htame.1.1.1, htame.1.1.2⟩, htame.1.2⟩, htame.2⟩
+      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1.1
+      have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.1.2
+      have hl  : es.name ∉ launchNames := by simpa using h3.1.2
       have hff : FarOk e ptr n es.argv := hfar
+      have hlit : es.argv.all ExternArg.LitOkB = true := h3.2
       have hlp : es.name ∉ positionalLaunchNames := by
         intro hc
         apply hl
@@ -2265,7 +2395,7 @@ theorem instsOf_binds (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
                     ((bevalPure ⟨e, m⟩ (emitArgs ptr n es.argv).2.1).env v))
                 = (fun v => bufDescOf ptr.id (evalPure e (emitArgs ptr n es.argv).2.1 v)) from by
               funext v; rw [bevalPure_env]]
-        exact emitArgs_buf ptr es.argv n e hff hptr he
+        exact emitArgs_buf ptr es.argv n e hff hlit hptr he
       have hcall : isLaunchCallB fns (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
                     = true := by simp [isLaunchCallB, hnm, hw]
       have hbind : bindAt fns ptr.id (bevalPure ⟨e, m⟩ (emitArgs ptr n es.argv).2.1)
