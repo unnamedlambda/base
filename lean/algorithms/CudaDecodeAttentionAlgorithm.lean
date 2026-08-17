@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.HProgCuda
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -298,6 +299,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    -- Three buffers, which is the arity the launch declares.
    ⟨"bind_desc",  BIND_DESC_OFF, 12⟩]
 
+
+#eval LayoutScan.check "CudaDecodeAttentionAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

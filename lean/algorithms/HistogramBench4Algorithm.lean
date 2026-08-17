@@ -1,5 +1,6 @@
 import Lean
 import AlgorithmLib.Gen
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -212,6 +213,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"descs",       DESCS_OFF, WORKERS * DESC_SIZE⟩,
    ⟨"data",        DATA_OFF, MAX_DATA_BYTES⟩]
 
+
+#eval LayoutScan.check "HistogramBench4Algorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

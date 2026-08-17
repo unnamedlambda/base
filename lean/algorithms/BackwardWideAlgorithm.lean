@@ -3,6 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
+import LayoutScan
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
@@ -326,6 +327,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
        ⟨"ptxAdj", PTX_ADJ_OFF, BIND_OFF - PTX_ADJ_OFF⟩,
        ⟨"bind", BIND_OFF, 4 * NBUF⟩]
 
+
+#eval LayoutScan.check "BackwardWideAlgorithm" [``memMap]
 theorem bwdMap_ok :
     memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 

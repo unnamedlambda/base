@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import LayoutScan
 open Lean (Json toJson)
 open AlgorithmLib
 
@@ -59,6 +60,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"dec_stack",   decStack_off, maxVars * 8⟩,
    ⟨"scratch",     solver_scratch_off, 0x10000⟩]
 
+
+#eval LayoutScan.check "SatAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

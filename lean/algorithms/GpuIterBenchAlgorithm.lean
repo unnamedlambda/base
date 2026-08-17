@@ -1,5 +1,6 @@
 import Lean
 import AlgorithmLib.Gen
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -167,6 +168,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"scale_bind",    SCALE_BIND_OFF, REDUCE_BIND_OFF - SCALE_BIND_OFF⟩,
    ⟨"reduce_bind",   REDUCE_BIND_OFF, MEM_SIZE - REDUCE_BIND_OFF⟩]
 
+
+#eval LayoutScan.check "GpuIterBenchAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

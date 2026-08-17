@@ -1,5 +1,6 @@
 import Lean
 import AlgorithmLib.Gen
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -176,6 +177,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"output_buf",  OUTPUT_BUF, INPUT_DATA - OUTPUT_BUF⟩,
    ⟨"input_data",  INPUT_DATA, MAX_TEXT_BYTES⟩]
 
+
+#eval LayoutScan.check "WordCountAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

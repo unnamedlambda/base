@@ -1,6 +1,7 @@
 import Lean
 import Std
 import AlgorithmLib.Gen
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -344,6 +345,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"bind_k3",           BIND_K3_OFF, 16⟩,
    ⟨"bind_small",        BIND_SMALL_OFF, 12⟩]
 
+
+#eval LayoutScan.check "CudaSoftmaxPersistAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

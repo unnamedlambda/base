@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import LayoutScan
 open Lean (Json toJson)
 open AlgorithmLib
 open AlgorithmLib.IR
@@ -328,6 +329,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"bmp_header", bmpHeader_off, pixels_off - bmpHeader_off⟩,
    ⟨"pixels",     pixels_off, pixelBytes⟩]
 
+
+#eval LayoutScan.check "RaytraceAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 open AlgorithmLib.IR in

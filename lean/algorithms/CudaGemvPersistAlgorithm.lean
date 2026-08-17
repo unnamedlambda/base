@@ -1,6 +1,7 @@
 import Lean
 import Std
 import AlgorithmLib.Gen
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -132,6 +133,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"m",          M_OFF, 8⟩,
    ⟨"n",          N_OFF, 8⟩]
 
+
+#eval LayoutScan.check "CudaGemvPersistAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

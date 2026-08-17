@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
+import LayoutScan
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
@@ -2729,6 +2730,8 @@ def mMemMap : AlgorithmLib.Layout.RegionMap :=
     ++ (List.range moeTape.length).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
     ++ [⟨"bind", MBIND_OFF, 4 * MNBUF⟩, ⟨"local", MLOCAL_OFF, 4 * 8⟩]
 
+
+#eval LayoutScan.check "MlpCifarAlgorithm" [``memMap, ``qMemMap, ``mMemMap]
 /-- **Seam guard: the slots tile the image without overlapping.** -/
 theorem moeMap_ok :
     mMemMap.okB = true ∧ mMemMap.withinB MMEM_SIZE = true := by decide

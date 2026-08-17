@@ -4,6 +4,7 @@ import AlgorithmLib.Gen
 import AlgorithmLib.Cuda
 import AlgorithmLib.HProgCuda
 import Qwen2Common
+import LayoutScan
 
 
 open Lean
@@ -287,6 +288,8 @@ def memMapOnDisk : AlgorithmLib.Layout.RegionMap :=
     [ ⟨"working_set",   WORKING_SET_BASE, LAYER_BUF_STRIDE⟩,
       ⟨"kv_cache_path", KV_CACHE_PATH_OFF, kvCachePathBytes.length⟩ ]
 
+
+#eval LayoutScan.check "Qwen2OnDiskAlgorithm" [``memMapOnDisk]
 theorem memMapOnDisk_ok : memMapOnDisk.okB = true := by native_decide
 
 theorem memMapOnDisk_within :

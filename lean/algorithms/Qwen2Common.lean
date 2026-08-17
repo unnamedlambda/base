@@ -5,6 +5,7 @@ import AlgorithmLib.ML
 import AlgorithmLib.Cuda
 import AlgorithmLib.HProgCuda
 import Qwen2Proven
+import LayoutScan
 
 set_option maxRecDepth 4096
 
@@ -1586,6 +1587,10 @@ def memMap : RegionMap :=
 -- The host program, against the kernels it launches
 -- ---------------------------------------------------------------------------
 
+
+-- The three exceptions index the weights file on disk, not this memory.
+#eval LayoutScan.check "Qwen2Common" [``memMap]
+  [``FILE_EMBED_OFF, ``FILE_RMS_FINAL_OFF, ``FILE_LM_HEAD_OFF]
 /-- The compiled form of a generated function, as the `Clif` extractors read
     it. The function index is immaterial to what they look at.
 

@@ -3,6 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
+import LayoutScan
 
 
 
@@ -143,6 +144,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"ptxLoop",    PTX_L_OFF, BIND_OFF - PTX_L_OFF⟩,
    ⟨"bind",       BIND_OFF, 8⟩]
 
+
+#eval LayoutScan.check "SiluWarpAlgorithm" [``memMap]
 theorem siluMap_ok :
     memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 

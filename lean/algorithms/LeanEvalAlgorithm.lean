@@ -1,4 +1,5 @@
 import AlgorithmLib.Gen
+import LayoutScan
 
 open Lean (Json)
 open AlgorithmLib
@@ -592,6 +593,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"output_buf",  OUTPUT_BUF, OUTPUT_BUF_SZ⟩,
    ⟨"stack",       STACK_BASE, STACK_SZ⟩]
 
+
+#eval LayoutScan.check "LeanEvalAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 -- The memory this ships is sized from the payload it builds, so there is no

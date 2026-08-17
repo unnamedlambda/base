@@ -3,6 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
+import LayoutScan
 
 
 
@@ -224,3 +225,5 @@ theorem ptx_computes_spec (cta : Nat) (m : MState)
   exact warpSumSqV4Store_implements _ inBuf outBuf cta K m.toWSt env be hb
 
 end WarpSumSq
+
+#eval LayoutScan.check "warp_sumsq" [``WarpSumSq.memMap]

@@ -2,6 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.HProgCuda
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -448,6 +449,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"ptx_addrms",   PTX_ADDRMS_OFF, PTX_ADD_OFF - PTX_ADDRMS_OFF⟩,
    ⟨"ptx_add",      PTX_ADD_OFF, MEM_SIZE - PTX_ADD_OFF⟩]
 
+
+#eval LayoutScan.check "CudaDecoderLayerAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

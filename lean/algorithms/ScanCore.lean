@@ -156,13 +156,8 @@ def isGenerated (env : Environment) (n : Name) : Bool :=
     outside the declared surface, on an unknown claim name, on an undeclared
     hypothesis, and on a claim that starts or stops resting on `native_decide`.
 
-    `nativeRoster` has **no default on purpose.**  `native_decide` puts
-    `Lean.ofReduceBool` and `Lean.trustCompiler` into a claim's base — the
-    compiler becomes part of what the claim rests on.  That is sometimes the
-    right trade, but it should be a decision on the record rather than a side
-    effect of typing a tactic, and a roster that could be omitted is one that
-    would be.  Adding a scan forces stating its native surface; a claim joining
-    or leaving the list is then a reviewable diff. -/
+    `nativeRoster` lists the claims allowed to reach `Lean.ofReduceBool` and
+    `Lean.trustCompiler`.  It has no default, so every scan states its own. -/
 def runScanWith (surf : Surface) (label : String) (roots : List Name)
     (nativeRoster : List Name) : CoreM Unit := do
   let env ← getEnv
@@ -182,9 +177,8 @@ def runScanWith (surf : Surface) (label : String) (roots : List Name)
         if f.badOpaque.size != 0 then IO.println s!"   opaque: {f.badOpaque.toList}"
   IO.println s!"[{label}] scanned {roots.length} claims"
   IO.println s!"[{label}] native_decide reached by {native.size}: {native.toList}"
-  -- …and that set is pinned, in both directions: a claim that newly reaches the
-  -- compiler is a widened base, and one that no longer does is a roster saying
-  -- the base is bigger than it is.
+  -- pinned in both directions: an undeclared claim widens the base, a declared
+  -- one that is not reached overstates it
   let joined := native.filter (fun n => !(nativeRoster.contains n))
   let left := (nativeRoster.filter (fun n => !(native.contains n))).toArray
   if joined.size != 0 then

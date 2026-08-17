@@ -1,5 +1,6 @@
 import Lean
 import AlgorithmLib.Gen
+import LayoutScan
 
 open Lean
 open AlgorithmLib
@@ -198,6 +199,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"left_val",    LEFT_VAL, CSV_DATA - LEFT_VAL⟩,
    ⟨"csv_data",    CSV_DATA, MAX_CSV_BYTES⟩]
 
+
+#eval LayoutScan.check "CsvBenchAlgorithm" [``memMap]
 theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 theorem memMap_within :

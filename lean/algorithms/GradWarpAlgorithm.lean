@@ -3,6 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.HProgCuda
+import LayoutScan
 
 
 
@@ -183,6 +184,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"ptxD",       PTX_D_OFF, BIND_OFF - PTX_D_OFF⟩,
    ⟨"bind",       BIND_OFF, 8⟩]
 
+
+#eval LayoutScan.check "GradWarpAlgorithm" [``memMap]
 theorem gradMap_ok :
     memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by decide
 

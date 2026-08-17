@@ -12,6 +12,7 @@ import AlgorithmLib.ML.Schedule
 import AlgorithmLib.ML.LocalBind
 import AlgorithmLib.ML.BufsOf
 import AlgorithmLib.IR
+import LayoutScan
 open AlgorithmLib AlgorithmLib.ML
 
 /-! DeiT-Tiny's twelve blocks as one `Ten` term, at the padded geometry. -/
@@ -2308,6 +2309,8 @@ def vMemMap : AlgorithmLib.Layout.RegionMap :=
    ⟨"mask",         VMASK_OFF, 4 * SK⟩,
    ⟨"gmap",         VGMAP_OFF, 4 * VBASE⟩]
 
+
+#eval LayoutScan.check "VitModel" [``vHostIn, ``vMemMap]
 theorem vMemMap_ok :
     vMemMap.okB = true ∧ vMemMap.withinB VMEM_SIZE = true := by native_decide
 

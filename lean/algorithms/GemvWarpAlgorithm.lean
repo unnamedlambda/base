@@ -3,6 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import MlSurface
+import LayoutScan
 
 
 /-!
@@ -359,6 +360,8 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
                                      ⟨"sumsq", slotOf true s, SLOT⟩]))
     ++ [⟨"bind", BIND_OFF, 12⟩]
 
+
+#eval LayoutScan.check "GemvWarpAlgorithm" [``memMap]
 theorem mem_map_ok :
     memMap.okB = true ∧ memMap.withinB MEM_SIZE = true := by native_decide
 
