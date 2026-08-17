@@ -181,7 +181,7 @@ def tyBytes (t : ClifTy) : Nat := t.width / 8
 
 abbrev Env := Array V
 
-private def get (Γ : Env) (r : R) : Option V := Γ[r]?
+def get (Γ : Env) (r : R) : Option V := Γ[r]?
 
 /-- An arithmetic operation on two integer scalars of **one** type, which is
     what `Op.check` requires of the operations reached through here and what
@@ -190,7 +190,7 @@ private def get (Γ : Env) (r : R) : Option V := Γ[r]?
     `iadd (i64 0) (i32 (-1))` would wrap at 64 bits and give `2^32 - 1` where
     the operand denotes `-1`. Refusing is what keeps the two semantics over
     `Inst` — this one and `Clif.stepPure` — from disagreeing there. -/
-private def bin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Option V) : Option V := do
+def bin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Option V) : Option V := do
   let (.sc ta x) ← get Γ a | none
   let (.sc tb y) ← get Γ b | none
   if ta == tb && ta.isInt then f ta x y else none
@@ -198,7 +198,7 @@ private def bin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Optio
 /-- The shift rule, which is the one binary integer operation whose operands
     may differ: Cranelift takes the amount at any integer width and the result
     at the shifted operand's. -/
-private def shiftBin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Option V) :
+def shiftBin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → Option V) :
     Option V := do
   let (.sc ta x) ← get Γ a | none
   let (.sc tb y) ← get Γ b | none
@@ -206,7 +206,7 @@ private def shiftBin (Γ : Env) (a b : R) (f : ClifTy → UInt64 → UInt64 → 
 
 /-- A unary operation on one scalar whose type `ok` admits — the condition
     `Op.check`'s arm for it states. -/
-private def un (Γ : Env) (a : R) (ok : ClifTy → Bool) (f : ClifTy → UInt64 → Option V) :
+def un (Γ : Env) (a : R) (ok : ClifTy → Bool) (f : ClifTy → UInt64 → Option V) :
     Option V := do
   let (.sc t x) ← get Γ a | none
   if ok t then f t x else none

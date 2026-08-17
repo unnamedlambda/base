@@ -772,4 +772,37 @@ theorem const_sound_iconst {m : Mem} {vs : Vals} {e : Env} {d dd : Val}
     obtain ⟨t1, w, hw, htt, hs, hf⟩ := hag v k hv
     exact ⟨t1, w, getV_setV_ne hvd hw, htt, hs, hf⟩
 
+/-- Two tracked types that compare equal are equal. `ClifTy` derives `BEq`
+    but not `DecidableEq`, so the guard `Op.check` and `Sem.bin` share has to be
+    turned into an equation by hand. -/
+theorem ty_eq_of_beq {ta tb : ClifTy} (h : (ta == tb) = true) : ta = tb := by
+  cases ta <;> cases tb <;> first | rfl | exact absurd h (by decide)
+
+/-- **What an `iadd` that computed a value tells us**: both operands were
+    scalars of one integer type, and the result is their sum at that width.
+    The type agreement is not an assumption here — `Sem.bin` refuses without
+    it, so the machine having answered is what supplies it. -/
+theorem evalInst_iadd_inv {m : Mem} {vs : Vals} {d a b dd : Val} {x : V}
+    (h : evalInst m vs (.iadd d a b) = some (dd, x)) :
+    ∃ t wa wb, getV vs a = some (.sc t wa) ∧ getV vs b = some (.sc t wb)
+      ∧ t.isInt = true ∧ dd = d ∧ x = .sc t ((wa + wb) &&& widthMask t) := by
+  rcases hga : getV vs a with _ | u <;> rcases hgb : getV vs b with _ | v <;>
+    simp [evalInst, evalInst.bin, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.bin, AlgorithmLib.HProg.Sem.get, hga, hgb] at h
+  cases u with
+  | vec => simp at h
+  | sc ta wa =>
+    cases v with
+    | vec => simp at h
+    | sc tb wb =>
+      simp only [] at h
+      by_cases hc : (ta == tb) = true ∧ ta.isInt = true
+      · rw [if_pos hc] at h
+        simp only [Option.bind_some, Option.some.injEq, Prod.mk.injEq] at h
+        obtain ⟨ht, hb⟩ := hc
+        have ht' : ta = tb := ty_eq_of_beq ht
+        subst ht'
+        exact ⟨ta, wa, wb, rfl, rfl, hb, h.1.symm, by rw [← h.2]; rfl⟩
+      · rw [if_neg hc] at h; simp at h
+
 end AlgorithmLib.Clif.Check
