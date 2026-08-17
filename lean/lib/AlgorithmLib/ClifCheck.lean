@@ -447,6 +447,80 @@ theorem stepPure_composed_claims_agree : compOk = true := by native_decide
     by answering `unknown` everywhere would say nothing. -/
 theorem composed_check_is_live : (5000 < compLiveCount) = true := by native_decide
 
+/-- **A `slot`, and then something else done to it.**
+
+    `compCase` only ever loads *last*, so it never asks what happens to a slot
+    that is carried further — and `stepPure` does carry it, because a retag
+    passes its operand's binding through.  This builds the slot first: a region
+    base, a displacement, the load, and then each second-stage arm on top. -/
+def compSlotCase (k : Nat) (g : Val → Inst) : Bool :=
+  let is : List Inst :=
+    [ .iadd ⟨3⟩ ⟨2⟩ ⟨1⟩, .load ⟨4⟩ { ty := .i64 } ⟨3⟩, g ⟨5⟩ ]
+  let e := is.foldl stepPure (stepPure Env.empty (.iconst ⟨1⟩ .i64 (Int.ofNat k)))
+  match runInsts mem0 (seedVals .i64 .i64 0 (Int.ofNat k)) is with
+  | some vs => valueClaimHolds mem0 vs e ⟨4⟩ && valueClaimHolds mem0 vs e ⟨5⟩
+  | none    => true
+
+def compSlotLive (k : Nat) (g : Val → Inst) : Bool :=
+  let is : List Inst :=
+    [ .iadd ⟨3⟩ ⟨2⟩ ⟨1⟩, .load ⟨4⟩ { ty := .i64 } ⟨3⟩, g ⟨5⟩ ]
+  let e := is.foldl stepPure (stepPure Env.empty (.iconst ⟨1⟩ .i64 (Int.ofNat k)))
+  match runInsts mem0 (seedVals .i64 .i64 0 (Int.ofNat k)) is with
+  | some _ => valueNamed e ⟨5⟩
+  | none   => false
+
+/-- Displacements inside the arena, at the width a load is emitted for. -/
+def slotOffsets : List Nat := (List.range 48).map (8 * ·)
+
+/-- The second-stage arms, rebased on the loaded value rather than on `v3`.
+
+    `ireduce32` is excluded, and `slotTruncFails` records what excluding it
+    costs rather than leaving the gap silent. -/
+def compSlotSecond : List (Val → Inst) :=
+  (compBin.flatMap fun g => [(fun d => g d ⟨4⟩ ⟨1⟩), (fun d => g d ⟨4⟩ ⟨0⟩)])
+    ++ [ (fun d => .uextend64 d ⟨4⟩), (fun d => .sextend64 d ⟨4⟩)
+       , (fun d => .ineg d ⟨4⟩), (fun d => .load d { ty := .i64 } ⟨4⟩) ]
+
+def compSlotOk : Bool :=
+  slotOffsets.all fun k => compSlotSecond.all fun g => compSlotCase k g
+
+def compSlotLiveCount : Nat :=
+  (slotOffsets.flatMap fun k => compSlotSecond.filter fun g => compSlotLive k g).length
+
+
+
+/-- **A claim about a loaded value survives being carried further** — except
+    through `ireduce32`, which is excluded above and measured below. -/
+theorem stepPure_composed_slot_agrees : compSlotOk = true := by native_decide
+
+theorem composed_slot_is_live : (100 < compSlotLiveCount) = true := by native_decide
+
+/-- What the exclusion costs: every displacement, truncated. -/
+def slotTruncFails : Nat :=
+  (slotOffsets.filter fun k =>
+    !(compSlotCase k (fun d => .ireduce32 d ⟨4⟩))).length
+
+/-- **`slot` is checked as a value and used as a provenance, and `ireduce32` is
+    where those come apart.**
+
+    `slotCase` decides the claim by re-reading eight bytes at the address the
+    model names.  What consumers do with a `slot` is narrower: `bufDescOf` turns
+    it into `near`/`far`, and two handles are the same buffer exactly when those
+    agree — "`near 72` is the hidden state and nothing else can be" is an
+    identity, not a number.
+
+    `stepPure` passes a `slot` through `ireduce32`, and the truncation is a
+    different word, so the value-level check fails at every displacement.  The
+    identity is intact; the claim as written is not.  Qwen2's cuBLAS argument at
+    `ROOT + 152` resolves through exactly this path, which is why the arm is
+    still there.
+
+    Closing this means the model saying which of the two it means — a `slot`
+    that carries its width, or a separate provenance claim beside the value one.
+    Until then this number is the size of the gap. -/
+theorem slot_survives_truncation_unchecked : (40 < slotTruncFails) = true := by
+  native_decide
+
 /-! ### From checked to proved: the constant arm, against the machine
 
     Everything above *tests* the model against `evalInst` over a corpus.  This
@@ -1222,7 +1296,8 @@ theorem stepPure_sextend64_const {e : Env} {d a : Val} {k : Int}
 
 theorem stepPure_ireduce32_const {e : Env} {d a : Val} {k : Int}
     (h : stepPure e (.ireduce32 d a) d = .const k) : e a = .const k := by
-  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h; exact h
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  cases hea : e a <;> rw [hea] at h <;> first | exact h | exact absurd h (by simp)
 
 theorem stepPure_uextend64_const {e : Env} {d a : Val} {k : Int}
     (h : stepPure e (.uextend64 d a) d = .const k) : e a = .const k ∧ 0 ≤ k := by

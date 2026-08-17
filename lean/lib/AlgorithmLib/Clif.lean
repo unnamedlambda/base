@@ -403,6 +403,11 @@ def stepPure (e : Env) : Inst → Env
   | .load d _ a       => e.set d (match e a with
                                   | .offset p k => .slot p k
                                   | _ => .unknown)
+  -- **Truncation keeps a number, not the word a load returned.**  A constant,
+  -- an offset and an expression all survive it: each is bounded to something
+  -- `i32` represents, by `litOk`, by `inTy` at the narrower width, and by
+  -- `DExp.Exact` respectively.  A `slot` does not — its claim is that the
+  -- value *is* the word at an address, and the truncation is a different word.
   | .ireduce32 d a    => e.set d (e a)
   -- **Zero-extension does not preserve a negative value.**  `uextend64` of
   -- `-1 : i32` is `4294967295`, not `-1`, so nothing that carries a number can
