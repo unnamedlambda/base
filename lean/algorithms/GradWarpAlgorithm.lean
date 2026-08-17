@@ -375,4 +375,5 @@ theorem grad_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
   obtain ⟨k, m', hs, hw⟩ := grad_ptx_exact cta m
   exact ⟨k, m', hs, by rw [hw]; exact expandEW_run h kernel cta 0 m.toWSt⟩
 
+
 end GradWarp

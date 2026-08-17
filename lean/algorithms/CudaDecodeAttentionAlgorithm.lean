@@ -333,4 +333,14 @@ def artifacts : Array Json :=
     ]
   ]
 
+/-- **Every launch fills the array whose length it declares.**
+
+    `nBufs` is written by hand here, so a launch could declare more buffers
+    than the program stores and the driver would read whatever lay past the
+    end.  Recovered across the artifact's functions rather than within one,
+    because the bind table is written where the buffers are made and read
+    where the kernel is launched. -/
+theorem launch_arity_ok :
+    AlgorithmLib.Clif.launchArityOkB 0 clifIR.functions = true := by native_decide
+
 end CudaDecodeAttention

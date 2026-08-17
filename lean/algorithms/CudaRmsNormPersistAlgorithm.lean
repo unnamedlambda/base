@@ -202,4 +202,5 @@ def artifacts : Array Json :=
     ]
   ]
 
+
 end CudaRmsNormPersist

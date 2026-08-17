@@ -1272,4 +1272,5 @@ theorem bwd_chain (st : WSt) (cta : Nat) (hlt : cta < GRID) :
     (by decide) (by decide) (by decide) (by decide) K EGRID GRID st cta hlt
     (fun i hi l => ⟨i, by simpa [K, geom, EGRID, egeom, MapGeom.simple] using hi, l, rfl⟩)
 
+
 end BackwardWide

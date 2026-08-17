@@ -1281,6 +1281,60 @@ def bindsOf (root : Nat) (s : FuncData) : List OpBinds :=
       let r := bindScan s.fns root acc.1 bd.insts
       (r.1, acc.2 ++ r.2)) (BEnv.empty, [])).2
 
+/-- **The bind arrays of a whole artifact**, rather than of one function.
+
+    A generator splits setup from launch: `load` allocates the buffers and
+    writes the bind table, `run` launches against it.  `bindsOf` sees one
+    function at a time, so at `run` the table was written by nobody and
+    recovery fails on a program that is perfectly correct.
+
+    Across functions the *memory* persists and the SSA values do not — each is
+    a separate call from the runtime, so nothing carries a register across —
+    and that is the whole of the difference: the fold keeps `mem` and resets
+    `env`. -/
+def bindsAcross (root : Nat) (fs : List FuncData) : List OpBinds :=
+  (fs.foldl (fun (acc : BEnv × List OpBinds) f =>
+      let r := f.blocks.foldl (fun (a : BEnv × List OpBinds) bd =>
+          let x := bindScan f.fns root a.1 bd.insts
+          (x.1, a.2 ++ x.2)) ((⟨Env.empty, acc.1.mem⟩ : BEnv), [])
+      (r.1, acc.2 ++ r.2)) (BEnv.empty, [])).2
+
+/-- The launch records of a whole artifact, in the same order. -/
+def launchesAcross (fs : List FuncData) : List LaunchRec :=
+  fs.flatMap launchesOf
+
+/-- **Every launch fills the array whose length it declares.**
+
+    `nBufs` is written by hand at most launch sites — only the typed
+    `kernelLaunchAt` ties it to a kernel's parameter list — so a launch can
+    declare four buffers and store three, and the fourth pointer the driver
+    reads is whatever was at that address.  Nothing else in the stack catches
+    that: the program is well formed, it compiles, and it runs.
+
+    A vendor call declares no `nBufs` and is skipped; a PTX launch whose array
+    cannot be recovered at all fails, because that is the same defect seen from
+    the other side.
+
+    **`fs` must be in call order, and `Program.functions` is not guaranteed to
+    be.**  The runtime decides that order — `Algorithm.fn_idx` and its extras —
+    and it is not recoverable from the program.  Where the listing happens to
+    match, this is checkable and checked; where it does not, a launch is scanned
+    against a store map the runtime would have filled by then and the array
+    reads as unrecoverable.  Two other shapes are outside it too: a bind table
+    baked into `initial_memory` is never stored at all, and a table written
+    through a base this model does not resolve is `far`. -/
+def launchArityOkB (root : Nat) (fs : List FuncData) : Bool :=
+  let ls := launchesAcross fs
+  let bs := bindsAcross root fs
+  ls.length == bs.length &&
+    (ls.zip bs).all fun p =>
+      match p.1.nBufs with
+      | none   => true
+      | some n =>
+          match p.2.bufs with
+          | some arr => n == Int.ofNat arr.length
+          | none     => false
+
 /-- **The two passes agree about the value model.**  `bindScan` threads exactly
     `evalPure`, so a bind array recovered here was resolved against the same
     environment the launch record was. -/

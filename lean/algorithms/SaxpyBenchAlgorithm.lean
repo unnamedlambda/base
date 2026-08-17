@@ -157,4 +157,5 @@ def saxpyAlgorithm : Algorithm := {
 def artifacts : Array Json :=
   #[toJsonEntry "saxpy_algorithm" saxpyConfig saxpyAlgorithm]
 
+
 end Algorithm
