@@ -214,6 +214,34 @@ theorem dOf_of_toD? (e : Env) (v : Val) (d : DExp) (h : (e v).toD? = some d) :
     dOf e v = d := by
   cases hv : e v <;> rw [hv] at h <;> simp_all [dOf, SymVal.toD?]
 
+/-- **The constant folds below are unsound outside this range, and nothing
+    enforces it.**
+
+    `SymVal.const` carries no width. The machine wraps at the operand's — `i32`
+    for a grid dimension, `i64` for an offset — and these folds are on `Int`,
+    which does not. Checked against `HProgSem.evalOp`, the semantics the corpus
+    tests against a real machine:
+
+    * `imul 2^62 4` folds to `2^64`; the machine computes `0`.
+    * `ishl 1 64` folds to `2^64`; the machine computes `1`, because the shift
+      amount is taken modulo the operand's width.
+    * `ushr (-1) 1` folds to `-1`; the machine computes `2^63 - 1`, because it
+      shifts the bit pattern rather than dividing an integer.
+
+    Inside `[0, 2^31)` none of those can happen at `i32` or wider: no wrap, no
+    modular shift amount, and a logical shift is division. Every constant this
+    model exists to recover — a PTX slot, a bind-table offset, a grid dimension,
+    a buffer count — is far inside it, which is why no shipped claim is known to
+    be wrong. That is an observation about the generators, not a theorem.
+
+    Making it one means refusing to fold outside the range. That is a small
+    change here and a large one downstream: `HostIR`'s launch-argument lemmas
+    are stated over an arbitrary displacement and prove the emitted code's
+    scanned value equals `ExternArg.toSym`, so they would each need the range as
+    a hypothesis — which is correct, since they currently rest on a fold that
+    can be wrong. -/
+def foldableRange : Int × Int := (0, 2147483648)
+
 /-- `a + b`, symbolically: constants fold, a base absorbs a constant, anything
     else is unknown.  A value that is merely *unbound* still contributes its own
     identity as a base, which is what turns `ptr + ptxOff` into `offset ptr k`
