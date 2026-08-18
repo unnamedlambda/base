@@ -66,7 +66,15 @@ def allowedOpaque : List Name :=
     `AlgorithmLib.ML.cublasBatchedResult, `AlgorithmLib.ML.cublasSgemmResult,
     `Qwen2Proven.Stage.uploadedValue,
     `Lean.opaqueId, `String.Internal.append, `System.Platform.getNumBits,
-    `mixHash, `String.hash, `Float32.toString ]
+    `mixHash, `String.hash, `Float32.toString,
+    -- Reached only by the launch model's soundness on a shipped body, whose
+    -- statement quantifies over machine states: `Blocks.runInsts` interprets
+    -- every `Inst`, so its closure carries every arm of `Sem.evalOp` — the
+    -- double-precision ones included, which no emitted kernel uses.
+    `floatSpec, `Float.add, `Float.sub, `Float.mul, `Float.neg, `Float.beq,
+    `Float.decLe, `Float.decLt, `Float.ofBits, `Float.toBits,
+    `Float.ofScientific, `Float.toFloat32, `Float.toUInt64,
+    `Float32.cos, `Float32.sin, `Float32.toFloat ]
 
 /-- **Hypotheses a claim may carry without comment.**
 
@@ -131,7 +139,11 @@ def allowedHyp : List Name :=
       program and the kernel's assumption: the four expressions are read off
       the instruction stream rather than off the source. -/
 def derivedObligations : List (Name × Name) :=
-  [ (`Qwen2Proven.Stage.SmMeta, `Qwen2NonVacuity.smMeta_of_frag) ]
+  [ (`Qwen2Proven.Stage.SmMeta, `Qwen2NonVacuity.smMeta_of_frag)
+    -- the launch model's soundness on a shipped body asks that the machine
+    -- entered with the parameter the compiled form declares.  Not assumed:
+    -- exhibited at a concrete state.
+  , (`AlgorithmLib.Clif.Check.TypesAgree, `Vit.vFwd_entry_arg) ]
 
 /-- **Open obligations: assumptions that are NOT on the agreed trust surface
     and are NOT derived from it.**

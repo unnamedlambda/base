@@ -1,4 +1,5 @@
 import Lz4CompAlgorithm
+import AlgorithmLib.ClifCheck
 
 /-!
   # The compressor's claims, at the two geometries that ship
@@ -163,5 +164,56 @@ theorem layoutOK_of_alloc_witness :
     LayoutOK 15 0 209715232 (zeroMem 434522144) :=
   layoutOK_of_alloc 15 0 209715232 _ (by decide) (by decide) (by decide)
     (by rw [zeroMem_size]; decide)
+
+/-! ## The launch model, on the block this function's launches are read from
+
+    Every host theorem in this file reads its launch sequence out of `warpFn`
+    through `Clif.stepPure`, and `sound_entry` says that reading is sound —
+    under conditions on the block's text.  A theorem whose conditions no
+    shipped function satisfies would say nothing, so they are discharged here,
+    on the function that ships. -/
+
+section LaunchModel
+
+open AlgorithmLib.IR AlgorithmLib.Clif AlgorithmLib.Clif.Check
+
+theorem warp32_blocks_ty_ok :
+    TyBlocksOk TyEnv.empty (warpFn (WP.mk 15)).blocks = true := by native_decide
+
+theorem warp64_blocks_ty_ok :
+    TyBlocksOk TyEnv.empty (warpFn (WP.mk 16)).blocks = true := by native_decide
+
+theorem warp32_entry_ok : EntryOk (warpFn (WP.mk 15)) = true := by native_decide
+
+theorem warp64_entry_ok : EntryOk (warpFn (WP.mk 16)) = true := by native_decide
+
+/-- **The model's claims about the compressor's entry block are sound**, at the
+    geometry the artifact ships. -/
+theorem warp32_entry_sound {env : AlgorithmLib.HProg.FnEnv}
+    {s : AlgorithmLib.HProg.Blocks.BSt}
+    {r : AlgorithmLib.HProg.Blocks.BSt × AlgorithmLib.HProg.Blocks.Next}
+    {w : AlgorithmLib.HProg.Sem.World}
+    (hsz : s.vals.size = (entryParams (warpFn (WP.mk 15))).length)
+    (hpar : TypesAgree (entryTys (warpFn (WP.mk 15))) s.vals)
+    (hr : AlgorithmLib.HProg.Blocks.runInsts env s
+            (entryInsts (warpFn (WP.mk 15))) = .ok r w) :
+    Sound (tyRun (entryTys (warpFn (WP.mk 15))) (entryInsts (warpFn (WP.mk 15))))
+      r.1.vals (evalPure Env.empty (entryInsts (warpFn (WP.mk 15)))) :=
+  sound_entry warp32_entry_ok hsz hpar hr
+
+/-- **The typing hypothesis is satisfied by a concrete entry state**, so the
+    theorem above is not true for want of a caller.  The function takes one
+    pointer, and `ptrParams` declares it `i64`. -/
+theorem warp32_entry_arg :
+    TypesAgree (entryTys (warpFn (WP.mk 15)))
+      #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
+  typesAgree_of_check (by native_decide)
+
+/-- …and that state has the arity the entry block declares. -/
+theorem warp32_entry_size :
+    (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size
+      = (entryParams (warpFn (WP.mk 15))).length := by native_decide
+
+end LaunchModel
 
 end Lz4NonVacuity

@@ -76,7 +76,16 @@ namespace VitScan
     arguments (`vit_fwd_contractions_are_plain_gemms`,
     `vit_step_contractions_are_plain_gemms`). -/
 def roots : List Name :=
-  [ `Vit.vit_deps_ordered
+  [ -- the model the two launch streams are recovered through, sound on the
+    -- bodies that ship
+    `Vit.vFwd_entry_sound
+  , `Vit.vFwd_entry_arg
+  , `Vit.vFwd_entry_size
+  , `Vit.vFwd_entry_ok
+  , `Vit.vStep_entry_ok
+  , `Vit.vFwd_blocks_ty_ok
+  , `Vit.vStep_blocks_ty_ok
+  , `Vit.vit_deps_ordered
   , `Vit.vit_fusion_sound
   , `Vit.vit_fusion_fired
   , `Vit.vit_out_survives
@@ -160,7 +169,14 @@ end VitScan
 
 /-- Claims that rest on the compiler, via `native_decide`. -/
 def nativeRoster : List Name :=
-  [ `Vit.vit_deps_ordered
+  [ `Vit.vFwd_entry_sound
+   , `Vit.vFwd_entry_arg
+   , `Vit.vFwd_entry_size
+   , `Vit.vFwd_entry_ok
+   , `Vit.vStep_entry_ok
+   , `Vit.vFwd_blocks_ty_ok
+   , `Vit.vStep_blocks_ty_ok
+   , `Vit.vit_deps_ordered
    , `Vit.vit_fusion_fired
    , `Vit.vit_out_survives
    , `Vit.vit_pad_tail_unwritten

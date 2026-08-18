@@ -92,11 +92,13 @@ inductive SymVal where
       `ArgDesc` and every vendor-call record are unchanged.
 
       **What it asserts about the value**, since consumers read it as an
-      identity and a checker has to decide something: the value is the word at
-      `p + k`, *truncated to the value's own type*.  Not the whole word —
-      `ireduce32` of a handle keeps the slot and narrows the value, and a claim
-      about the whole word would be false there.  Truncation still pins the
-      address, which is the point: a different address gives different bytes. -/
+      identity and a checker has to decide something: the value is what the
+      load that produced it reads at `p + k`.  The address is the whole claim,
+      and it is what pins the identity — a different address gives different
+      bytes.  The *width* is not part of it: this arm does not look at the load
+      kind, so a `uload8_64` reaching it returns one byte, not the word.  Only
+      at a plain 64-bit load is the value the eight-byte word truncated to its
+      own type, which is what `ClifCheck.slotWordCase` decides separately. -/
   | slot    : Val → Int → SymVal
   /-- **A value the model can name but not evaluate.**
 

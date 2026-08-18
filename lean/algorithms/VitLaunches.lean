@@ -1,6 +1,7 @@
 import VitUnits
 import VitAlgorithm
 import AlgorithmLib.Clif
+import AlgorithmLib.ClifCheck
 
 /-!
 # The launches the emitted code makes
@@ -63,6 +64,67 @@ def vPlainGemm (r : AlgorithmLib.Clif.LaunchRec) : Bool :=
 def vGemmCount (rs : List AlgorithmLib.Clif.LaunchRec) : Nat :=
   (rs.filter (fun r => r.fnName == "cl_cublas_sgemm_strided_batched_on_stream"
                     || r.fnName == "cl_cublas_sgemm_strided_batched")).length
+
+/-! ## The model the two launch streams are recovered through
+
+    `vFwdLaunches` and `vStepLaunches` are `launchesOf` — a fold of
+    `Clif.stepPure` over the compiled body — so every claim about them rests on
+    that model agreeing with the machine.  `Check.sound_entry` says it does,
+    under conditions on the body's text; here they are discharged on the bodies
+    that ship.
+
+    The forward body is one block of 23582 instructions, which is where the
+    width condition would be expected to fail if it were going to: this host
+    computes with `f32` throughout.  It does not, because the condition ranges
+    only over the operands the model turns into a base — and those are
+    addresses. -/
+
+open AlgorithmLib.IR AlgorithmLib.Clif.Check in
+def vFwdBody : AlgorithmLib.IR.FuncData :=
+  AlgorithmLib.HProg.compileBody 1 (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF) env
+
+open AlgorithmLib.IR AlgorithmLib.Clif.Check in
+def vStepBody : AlgorithmLib.IR.FuncData :=
+  AlgorithmLib.HProg.compileBody 1 (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF) env
+
+open AlgorithmLib.Clif.Check in
+theorem vFwd_blocks_ty_ok : TyBlocksOk TyEnv.empty vFwdBody.blocks = true := by
+  native_decide
+
+open AlgorithmLib.Clif.Check in
+theorem vStep_blocks_ty_ok : TyBlocksOk TyEnv.empty vStepBody.blocks = true := by
+  native_decide
+
+open AlgorithmLib.Clif.Check in
+theorem vFwd_entry_ok : EntryOk vFwdBody = true := by native_decide
+
+open AlgorithmLib.Clif.Check in
+theorem vStep_entry_ok : EntryOk vStepBody = true := by native_decide
+
+open AlgorithmLib.IR AlgorithmLib.Clif AlgorithmLib.Clif.Check in
+/-- **The model's claims about the forward capture body are sound.** -/
+theorem vFwd_entry_sound {env' : AlgorithmLib.HProg.FnEnv}
+    {s : AlgorithmLib.HProg.Blocks.BSt}
+    {r : AlgorithmLib.HProg.Blocks.BSt × AlgorithmLib.HProg.Blocks.Next}
+    {w : AlgorithmLib.HProg.Sem.World}
+    (hsz : s.vals.size = (entryParams vFwdBody).length)
+    (hpar : TypesAgree (entryTys vFwdBody) s.vals)
+    (hr : AlgorithmLib.HProg.Blocks.runInsts env' s (entryInsts vFwdBody) = .ok r w) :
+    Sound (tyRun (entryTys vFwdBody) (entryInsts vFwdBody)) r.1.vals
+      (evalPure Env.empty (entryInsts vFwdBody)) :=
+  sound_entry vFwd_entry_ok hsz hpar hr
+
+open AlgorithmLib.IR AlgorithmLib.Clif.Check in
+/-- …not for want of a caller: one pointer parameter, declared `i64`. -/
+theorem vFwd_entry_arg :
+    TypesAgree (entryTys vFwdBody) #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
+  typesAgree_of_check (by native_decide)
+
+open AlgorithmLib.IR AlgorithmLib.Clif.Check in
+/-- …and that state has the arity the entry block declares. -/
+theorem vFwd_entry_size :
+    (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size
+      = (entryParams vFwdBody).length := by native_decide
 
 end Vit
 

@@ -85,16 +85,6 @@ def derivCase (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) :
       !DExp.Exact (rhoOf vs) d || signed t' w == DExp.eval (rhoOf vs) d
   | _, _ => true
 
-/-- Whether a case is one the condition admits, so the count below can show
-    the check is not passing by refusing everything. -/
-def derivLive (ta tb : ClifTy) (x y : Int) (mk : Val → Val → Val → Inst) : Bool :=
-  let i := mk ⟨2⟩ ⟨0⟩ ⟨1⟩
-  let e := stepPure Env.empty (.iconst ⟨1⟩ tb y)
-  let vs : Vals := setV (setV #[] ⟨0⟩ (ofInt ta x)) ⟨1⟩ (ofInt tb y)
-  match (stepPure e i) ⟨2⟩ with
-  | .derived d => DExp.Exact (rhoOf vs) d
-  | _          => false
-
 /-- The three instructions that build an expression rather than fold. -/
 def derivOps : List (Val → Val → Val → Inst) :=
   [ (fun d a b => .isub d a b)
@@ -102,35 +92,6 @@ def derivOps : List (Val → Val → Val → Inst) :=
   , (fun d a b => .ushr d a b) ]
 
 def wideTypes : List ClifTy := [.i32, .i64]
-
-def derivOk : Bool :=
-  wideTypes.all fun ta => wideTypes.all fun tb => sample.all fun x => sample.all fun y =>
-    derivOps.all fun f => derivCase ta tb x y f
-
-def derivLiveCount : Nat :=
-  (wideTypes.flatMap fun ta => wideTypes.flatMap fun tb => sample.flatMap fun x =>
-    sample.flatMap fun y => derivOps.filter fun f => derivLive ta tb x y f).length
-
-/-- **A `derived` value denotes what the machine computes, wherever
-    `DExp.Exact` holds and the operands are `i32` or wider.**
-
-    `DExp.Exact` is most of the content: `DExp.eval` is `Int` arithmetic, so it
-    is the machine's answer only while nothing overflows and every `shr` shifts
-    a non-negative value.  Both are conditions on runtime values, which is why
-    they cannot be a guard inside `stepPure` and are instead what a theorem
-    reading a launch bound out of a `derived` value has to carry.
-
-    The width is the rest of it, and it is a restriction rather than a choice of
-    sample.  `foldableRange` is exact at `i32` and wider; `litOk` refuses narrow
-    literals, which is what lets the *constant* arms assume that width.  A
-    `derived` value names a **runtime** operand instead, whose width the model
-    never sees, so nothing carries the assumption across — see
-    `narrowShiftDisagrees`. -/
-theorem stepPure_derived_agree : derivOk = true := by native_decide
-
-/-- **…on a condition that admits most of the sample rather than none.**  A
-    `DExp.Exact` that was always false would satisfy the theorem above. -/
-theorem derived_check_is_live : (2000 < derivLiveCount) = true := by native_decide
 
 /-- Cases the theorem above excludes: a shift whose *shifted* operand is
     narrower than `i32`. -/
@@ -254,14 +215,12 @@ def offLiveCount : Nat :=
   (types.flatMap fun ta => wideTypes.flatMap fun tb => bases.flatMap fun b =>
     sample.flatMap fun k => offOps.filter fun f => offLive ta tb b k f).length
 
-/-- **An `offset` is its base plus its displacement**, wherever the sum is
-    representable at the width it is computed at.
+/-- **The `offset` claim at widths the proof does not reach.**
 
-    The workhorse claim: every launch argument naming a PTX slot or a bind
-    table is `ptr + k` for a runtime `ptr`, so this is what the launch model
-    rests on.  `offsetIf` bounds the *displacement*, which is all it can see;
-    whether the sum wraps depends on the base, so — like `DExp.Exact` — it is
-    a condition a consumer carries rather than a guard. -/
+    `denotes_offset` proves this claim, and only at `i32` and `i64`: `Congr` is
+    stated modulo `modOf`, which is defined at those two.  `offOk` ranges over
+    all four widths, so what it still covers is `i8` and `i16` — where the same
+    claim is true and unproved.  Kept for that reason, not for redundancy. -/
 theorem stepPure_offset_agrees : offOk = true := by native_decide
 
 theorem offset_check_is_live : (2000 < offLiveCount) = true := by native_decide
@@ -285,17 +244,49 @@ def runInsts (m : Mem) (vs : Vals) : List Inst → Option Vals
 
 /-- The fragment a generator writes as `slotWq.load ptr`: a runtime base in
     `v0`, the displacement, the address, the load. -/
-def slotInsts (k : Nat) : List Inst :=
+def slotInsts (k : Nat) (op : LoadOp) : List Inst :=
   [ .iconst ⟨1⟩ .i64 (Int.ofNat k)
   , .iadd ⟨2⟩ ⟨0⟩ ⟨1⟩
-  , .load ⟨3⟩ { ty := .i64 } ⟨2⟩ ]
+  , .load ⟨3⟩ op ⟨2⟩ ]
 
-/-- **What `slot p d` asserts**: the value was loaded from `p + d`.  Checked by
-    reading that address again and comparing words — the model names an
-    address, and the machine's own memory says what is there. -/
-def slotCase (k : Nat) : Bool :=
+/-- Every load `HProgFFI` emits, not only the one a bind table is read with.
+
+    `uload8_64` is `scalarLoad`'s lowering, so a narrow load reaching a `slot`
+    is not hypothetical. -/
+def loadKinds : List LoadOp :=
+  [ { ty := .i64 }, { ty := .i32 }
+  , { kind := .uload8,  ty := .i64 }, { kind := .uload8,  ty := .i32 }
+  , { kind := .uload32, ty := .i64 }, { kind := .sload8,  ty := .i64 } ]
+
+/-- **What `slot p d` asserts**: the value came from the address `p + d`.
+
+    Checked by re-reading that address with the *same* load, which is the claim
+    at every kind.  Reading the whole eight-byte word instead is a different
+    claim, true only of a plain 64-bit load — see `slotWordCase`. -/
+def slotCase (k : Nat) (op : LoadOp) : Bool :=
   let vs0 : Vals := setV #[] ⟨0⟩ (.sc .i64 (addrOf .arena 0))
-  match runInsts mem0 vs0 (slotInsts k), (slotInsts k).foldl stepPure Env.empty ⟨3⟩ with
+  match runInsts mem0 vs0 (slotInsts k op),
+        (slotInsts k op).foldl stepPure Env.empty ⟨3⟩ with
+  | some vs, .slot p d =>
+      match getV vs ⟨3⟩, getV vs p with
+      | some loaded, some (.sc _ pw) =>
+          AlgorithmLib.HProg.Blocks.viaOp mem0
+            [.sc ClifTy.i64 (pw + UInt64.ofNat d.toNat)] (.load op 0) == some loaded
+      | _, _ => false
+  | some _, _ => false
+  | none,   _ => true
+
+/-- **…and for a plain 64-bit load, the value is the word itself.**
+
+    The stronger reading, and the one `valueClaimHolds` decides.  It is stated
+    here at the kind that has it rather than left to stand for all of them: a
+    `uload8` returns one byte and a `sload8` sign-extends it, so neither is the
+    eight-byte word nor its truncation. -/
+def slotWordCase (k : Nat) : Bool :=
+  let op : LoadOp := { ty := .i64 }
+  let vs0 : Vals := setV #[] ⟨0⟩ (.sc .i64 (addrOf .arena 0))
+  match runInsts mem0 vs0 (slotInsts k op),
+        (slotInsts k op).foldl stepPure Env.empty ⟨3⟩ with
   | some vs, .slot p d =>
       match getV vs ⟨3⟩, getV vs p with
       | some (.sc t loaded), some (.sc _ pw) =>
@@ -305,25 +296,61 @@ def slotCase (k : Nat) : Bool :=
   | some _, _ => false
   | none,   _ => true
 
+/-- Cases the word reading gets wrong, so `slotWordCase` is known to be stated
+    at the kind that has it rather than at the kind that was sampled. -/
+def slotWordFailsNarrow : Nat :=
+  ((List.range 32).flatMap fun k =>
+    ([{ kind := .uload8, ty := .i64 }, { kind := .uload32, ty := .i64 },
+      { kind := .sload8, ty := .i64 }] : List LoadOp).filter fun op =>
+        !(slotCaseWord k op)).length
+where
+  slotCaseWord (k : Nat) (op : LoadOp) : Bool :=
+    let vs0 : Vals := setV #[] ⟨0⟩ (.sc .i64 (addrOf .arena 0))
+    match runInsts mem0 vs0 (slotInsts k op),
+          (slotInsts k op).foldl stepPure Env.empty ⟨3⟩ with
+    | some vs, .slot p d =>
+        match getV vs ⟨3⟩, getV vs p with
+        | some (.sc t loaded), some (.sc _ pw) =>
+            (Mem.load mem0 (pw + UInt64.ofNat d.toNat) 8).map (· &&& widthMask t)
+              == some loaded
+        | _, _ => false
+    | some _, _ => false
+    | none,   _ => true
+
 /-- Whether the model reported a `slot` at all, so the check above is known to
     be testing the arm it names. -/
-def slotLive (k : Nat) : Bool :=
-  match (slotInsts k).foldl stepPure Env.empty ⟨3⟩ with
+def slotLive (k : Nat) (op : LoadOp) : Bool :=
+  match (slotInsts k op).foldl stepPure Env.empty ⟨3⟩ with
   | .slot _ _ => true
   | _         => false
 
-def slotOk : Bool := (List.range 200).all slotCase
+def slotOk : Bool :=
+  (List.range 200).all fun k => loadKinds.all (slotCase k)
 
-def slotLiveCount : Nat := ((List.range 200).filter slotLive).length
+def slotWordOk : Bool := (List.range 200).all slotWordCase
 
-/-- **A handle the model calls `slot p d` is the word at `p + d`.**
+def slotLiveCount : Nat :=
+  ((List.range 200).flatMap fun k => loadKinds.filter (slotLive k)).length
+
+/-- **A handle the model calls `slot p d` came from the address `p + d`.**
 
     This is what makes a buffer handle identifiable — without it Qwen2's `Wq`,
     `Wk` and `Wv` launches are the same record — so it is worth checking that
-    the address the model names is the address the load read. -/
+    the address the model names is the address the load read.  At every load
+    kind: the model's `.load` arm does not look at one. -/
 theorem stepPure_slot_agrees : slotOk = true := by native_decide
 
-theorem slot_check_is_live : (slotLiveCount == 200) = true := by native_decide
+/-- …and at a plain 64-bit load the value is the whole word. -/
+theorem stepPure_slot_is_the_word : slotWordOk = true := by native_decide
+
+/-- **The word reading is not the general claim.**  A narrow or sign-extending
+    load reaches the same `.slot` binding and returns neither the eight-byte
+    word nor its truncation, so `stepPure_slot_is_the_word` is stated at the
+    kind that has it rather than assumed of all of them. -/
+theorem slotWordFailsAtNarrowLoads : (90 < slotWordFailsNarrow) = true := by
+  native_decide
+
+theorem slot_check_is_live : (slotLiveCount == 1200) = true := by native_decide
 
 
 -- ---------------------------------------------------------------------------
@@ -738,6 +765,20 @@ theorem congr_of_signed' {t : ClifTy} (ht : TrackedTy t) {w : UInt64} {k : Int}
 theorem signed_of_congr' {t : ClifTy} (ht : TrackedTy t) {w : UInt64} {k : Int}
     (hk : inFold k = true) (hc : Congr t w k) : signed t w = k :=
   signed_of_congr ht hk hc
+
+/-- …and the same at the type's own width rather than `foldableRange`.  This is
+    the bound an `offset` claim carries: the model bounds the *displacement*,
+    but whether the sum wraps depends on a runtime base, so what a consumer
+    supplies is `inTy` at the width the sum is computed at. -/
+theorem signed_of_congr_inTy {t : ClifTy} (ht : TrackedTy t) {w : UInt64} {k : Int}
+    (hk : inTy t k = true) (hc : Congr t w k) : signed t w = k := by
+  have hlt : w.toNat < 2 ^ 64 := w.toNat_lt_size
+  simp only [Congr] at hc
+  rcases ht with rfl | rfl
+  · simp only [inTy, decide_eq_true_eq, Bool.and_eq_true] at hk
+    rw [signed_i32_eq]; simp only [modOf] at hc; split <;> omega
+  · simp only [inTy, decide_eq_true_eq, Bool.and_eq_true] at hk
+    rw [signed_i64_eq]; simp only [modOf] at hc; split <;> omega
 
 theorem signed_add {t : ClifTy} (ht : TrackedTy t) {a b : UInt64} {x y : Int}
     (ha : signed t a = x) (hb : signed t b = y) (h : inFold (x + y) = true) :
@@ -2777,6 +2818,52 @@ theorem operandsTracked_of_ty {Θ : TyEnv} {vs : Vals} {e : Env} {i : Inst}
   exact trackedTy_of_tyTracked hta (by
     simp only [TyOperandsOk, List.all_eq_true] at h; exact h a (by simpa using ha)) hga
 
+/-- The static typing, checked against a value map — one entry point a
+    theorem instantiated at a shipped function can discharge by evaluation. -/
+def tyCheckUpto (Θ : TyEnv) (vs : Vals) : Nat → Bool
+  | 0     => true
+  | k + 1 =>
+      (match Θ ⟨k⟩ with
+       | none   => true
+       | some t => match getV vs ⟨k⟩ with
+                   | some (.sc t' _) => t == t'
+                   | _               => false)
+      && tyCheckUpto Θ vs k
+
+def TyEnv.checkAgainst (Θ : TyEnv) (vs : Vals) : Bool :=
+  tyCheckUpto Θ vs Θ.tys.size
+
+theorem tyCheckUpto_at {Θ : TyEnv} {vs : Vals} {t : ClifTy} :
+    ∀ {k j : Nat}, tyCheckUpto Θ vs k = true → j < k → Θ ⟨j⟩ = some t →
+      ∃ w, getV vs ⟨j⟩ = some (.sc t w) := by
+  intro k
+  induction k with
+  | zero => intro j _ hj; omega
+  | succ k ih =>
+      intro j h hj hq
+      simp only [tyCheckUpto, Bool.and_eq_true] at h
+      rcases Nat.lt_or_ge j k with hlt | hge
+      · exact ih h.2 hlt hq
+      · have hjk : j = k := by omega
+        subst hjk
+        have h1 := h.1
+        rw [hq] at h1
+        simp only [] at h1
+        split at h1
+        · rename_i t' w' hg
+          exact ⟨w', by rw [hg, ty_eq_of_beq h1]⟩
+        · exact absurd h1 (by simp)
+
+theorem typesAgree_of_check {Θ : TyEnv} {vs : Vals}
+    (h : Θ.checkAgainst vs = true) : TypesAgree Θ vs := by
+  intro v t hv
+  have hlt : v.id < Θ.tys.size := by
+    rcases Nat.lt_or_ge v.id Θ.tys.size with h1 | h1
+    · exact h1
+    · simp only [TyEnv.get, dif_neg (Nat.not_lt.mpr h1)] at hv
+      exact absurd hv (by simp)
+  exact tyCheckUpto_at h hlt hv
+
 /-! ### The block
 
     A compiled block is a straight line ending in one terminator, and that is
@@ -3025,5 +3112,103 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
             (termLast_tail hterm)
             (by rw [show (setV s.vals d xv).size = d.id + 1 from size_setV_fresh hf]
                 exact hrest) hr
+
+/-! ### The two claims, in the form the corpus used to sample
+
+    `Denotes` states all three named claims at once, in terms of `DExp`.  What
+    a consumer asks is narrower and phrased in the model's own vocabulary, so
+    each is restated here — and each is now a theorem rather than a check over
+    a grid. -/
+
+/-- **A `derived` value denotes what the machine computes**, wherever
+    `DExp.Exact` holds.  This is what `stepPure_derived_agree` sampled. -/
+theorem denotes_derived {vs : Vals} {e : Env} {v : Val} {dx : DExp}
+    {t : ClifTy} {w : UInt64} (hden : Denotes vs e) (hv : e v = .derived dx)
+    (hg : getV vs v = some (.sc t w)) (hex : DExp.Exact (rhoOf vs) dx = true) :
+    signed t w = DExp.eval (rhoOf vs) dx := by
+  obtain ⟨t', w', hg', _, _, _, hc⟩ := hden v dx (by rw [hv]; rfl)
+  rw [hg] at hg'
+  injection hg' with h1; injection h1 with h2 h3
+  subst h2; subst h3
+  exact hc hex
+
+/-- **An `offset` is its base plus its displacement**, wherever the sum is
+    representable at the width it is computed at.
+
+    The workhorse claim: every launch argument naming a PTX slot or a bind
+    table is `ptr + k` for a runtime `ptr`.  `offsetIf` bounds the
+    *displacement*, which is all the model can see; whether the sum wraps
+    depends on a runtime base, so `inTy` is a condition the consumer carries.
+    It is the congruence clause of `Denotes` that reaches this, not the
+    equality clause — a pointer is far outside `foldableRange`, so `DExp.Exact`
+    is false of it and says nothing. -/
+theorem denotes_offset {vs : Vals} {e : Env} {v p : Val} {k : Int}
+    {t : ClifTy} {w : UInt64} (hden : Denotes vs e) (hv : e v = .offset p k)
+    (hg : getV vs v = some (.sc t w))
+    (hin : inTy t (rhoOf vs p.id + k) = true) :
+    signed t w = rhoOf vs p.id + k := by
+  obtain ⟨t', w', hg', htt, _, hcg, _⟩ :=
+    hden v (.add (.root p.id) (.lit k)) (by rw [hv]; rfl)
+  rw [hg] at hg'
+  injection hg' with h1; injection h1 with h2 h3
+  subst h2; subst h3
+  exact signed_of_congr_inTy htt hin (hcg rfl)
+
+/-! ### Instantiating a run at a compiled function
+
+    A theorem whose side conditions no shipped function satisfies says nothing,
+    so the way to apply this one is fixed here rather than rebuilt per caller:
+    the entry block, the typing its parameters give, and both conditions decided
+    from the function's own text. -/
+
+/-- Block parameters, as the static typing knows them: the compiled form
+    carries their types, and they are the only values a block enters with. -/
+def seedTys (Θ : TyEnv) (ps : List (Val × ClifTy)) : TyEnv :=
+  ps.foldl (fun Θ p => Θ.set p.1 (some p.2)) Θ
+
+/-- The width condition alone, threaded through a block. -/
+def TyRunOk (Θ : TyEnv) : List Inst → Bool
+  | []      => true
+  | i :: is => TyOperandsOk Θ i && TyRunOk (tyStep Θ i) is
+
+/-- The width condition through every block in order, each entered with its own
+    parameters bound.  This is the half that could be false of shipped code:
+    the model assumes a width wherever it turns an operand it cannot name into
+    a base, and at `i8` that assumption is wrong. -/
+def TyBlocksOk (Θ : TyEnv) : List BlockData → Bool
+  | []      => true
+  | b :: bs =>
+      let Θ' := seedTys Θ b.params
+      TyRunOk Θ' b.insts && TyBlocksOk (tyRun Θ' b.insts) bs
+
+def entryInsts (f : FuncData) : List Inst := (f.blocks.map (·.insts)).headD []
+
+def entryParams (f : FuncData) : List (Val × ClifTy) :=
+  (f.blocks.map (·.params)).headD []
+
+def entryTys (f : FuncData) : TyEnv := seedTys TyEnv.empty (entryParams f)
+
+/-- Both side conditions at the entry block, as one decidable check. -/
+def EntryOk (f : FuncData) : Bool :=
+  TermLast (entryInsts f)
+    && RunOk (entryTys f) (entryParams f).length (entryInsts f)
+
+/-- **The launch model is sound on a compiled function's entry block.**
+
+    The entry block is where `launchesOf` starts from `Env.empty`, so it is the
+    environment every later block inherits.  `EntryOk` is decided from the
+    function's text; what is left is a statement about the caller — the machine
+    entered with the parameters the compiled form declares. -/
+theorem sound_entry {f : FuncData} {env : FnEnv} {s : BSt}
+    {r : BSt × Next} {w : World}
+    (hok : EntryOk f = true) (hsz : s.vals.size = (entryParams f).length)
+    (hpar : TypesAgree (entryTys f) s.vals)
+    (hr : AlgorithmLib.HProg.Blocks.runInsts env s (entryInsts f) = .ok r w) :
+    Sound (tyRun (entryTys f) (entryInsts f)) r.1.vals
+      (evalPure Env.empty (entryInsts f)) := by
+  simp only [EntryOk, Bool.and_eq_true] at hok
+  exact sound_runInsts (entryInsts f) env s (entryTys f) Env.empty r w
+    ⟨agree_empty _, denotes_empty _, noBaseDerived_empty, hpar⟩
+    hok.1 (by rw [hsz]; exact hok.2) hr
 
 end AlgorithmLib.Clif.Check

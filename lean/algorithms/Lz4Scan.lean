@@ -54,7 +54,19 @@ def lz4Surface : Surface :=
         -- Reached because the host body is built by `Sur`, whose diagnostics
         -- assemble a message string. `Op.name` keeps that to plain literals so
         -- the rendering machinery behind `repr` stays out of the closure.
-      , `String.Internal.length, `String.Internal.pushn ]
+      , `String.Internal.length, `String.Internal.pushn
+        -- Reached only by `warp32_entry_sound`, whose statement quantifies over
+        -- machine states: `Blocks.runInsts` interprets every `Inst`, so its
+        -- closure carries the float arms of `Sem.evalOp`.  The compressor
+        -- performs no float operation — nothing else in this surface reaches
+        -- these, and the emitted body has no float instruction.
+      , `floatSpec, `float32Spec
+      , `Float.add, `Float.sub, `Float.mul, `Float.neg, `Float.beq
+      , `Float.decLe, `Float.decLt, `Float.ofBits, `Float.toBits
+      , `Float.ofScientific, `Float.toFloat32, `Float.toUInt64
+      , `Float32.add, `Float32.sub, `Float32.mul, `Float32.beq
+      , `Float32.decLe, `Float32.decLt, `Float32.ofBits, `Float32.toBits
+      , `Float32.cos, `Float32.sin, `Float32.pow, `Float32.toFloat ]
     allowedHyp :=
       [ `LT.lt, `LE.le, `Eq, `Ne, `Nat.lt, `Nat.le, `Not
         -- structural, not assumptions about the world: `Sim` is the interleaving
@@ -119,7 +131,11 @@ def lz4Surface : Surface :=
       , (`Lz4Sites.RegConfined, `Lz4Sites.regConfined_shipped)
         -- the cursor bound the ten `sbAddr` stores need, for the whole run of
         -- every warp
-      , (`Lz4Sites.CursorAtSites, `Lz4Sites.cursorAtSites_shipped) ]
+      , (`Lz4Sites.CursorAtSites, `Lz4Sites.cursorAtSites_shipped)
+        -- the launch model's soundness on the entry block asks that the machine
+        -- entered with the parameter the compiled form declares.  Not assumed:
+        -- exhibited at a concrete state.
+      , (`AlgorithmLib.Clif.Check.TypesAgree, `Lz4NonVacuity.warp32_entry_arg) ]
     openObligations :=
       [ `Algorithm.LayoutOK
         -- a hypothesis of the GENERIC lemmas (`launches_correct` and friends,
@@ -194,6 +210,15 @@ def roots : List Name :=
   , `Lz4Interleave.halt_after_272
   , `Lz4Interleave.pc272_unique
   , `Lz4Interleave.launchAgrees_of_confined
+    -- …and the model those host facts are read through: sound on the block
+    -- `launchesOf` starts from, at both shipped geometries
+  , `Lz4NonVacuity.warp32_entry_sound
+  , `Lz4NonVacuity.warp32_entry_arg
+  , `Lz4NonVacuity.warp32_entry_size
+  , `Lz4NonVacuity.warp32_entry_ok
+  , `Lz4NonVacuity.warp64_entry_ok
+  , `Lz4NonVacuity.warp32_blocks_ty_ok
+  , `Lz4NonVacuity.warp64_blocks_ty_ok
     -- the emitted HOST program: what device operations it performs, and that the
     -- launch geometry is the one the kernel proof assumes
   , `Lz4Host.host_ops32
@@ -358,7 +383,14 @@ def nativeRoster : List Name :=
    , `Lz4Whole.emittedGrid64
    , `Lz4Whole.shipped32_run_at_emitted
    , `Lz4Whole.shipped64_run_at_emitted
-   , `Lz4Assumptions.hostAnchors ]
+   , `Lz4Assumptions.hostAnchors
+   , `Lz4NonVacuity.warp32_entry_sound
+   , `Lz4NonVacuity.warp32_entry_arg
+   , `Lz4NonVacuity.warp32_entry_size
+   , `Lz4NonVacuity.warp32_entry_ok
+   , `Lz4NonVacuity.warp64_entry_ok
+   , `Lz4NonVacuity.warp32_blocks_ty_ok
+   , `Lz4NonVacuity.warp64_blocks_ty_ok ]
 
 set_option maxHeartbeats 600000 in
 open Lz4Scan TrustScan in
