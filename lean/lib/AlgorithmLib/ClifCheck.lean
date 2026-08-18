@@ -1890,6 +1890,13 @@ theorem operand_root {vs : Vals} {a : Val} {t : ClifTy} {w : UInt64}
   simp only [rhoOf]
   rw [show (⟨a.id⟩ : Val) = a from by cases a; rfl, hga]
 
+/-- A value the model reports as a constant denotes the literal, and
+    `const_sound` has already proved the machine agrees. -/
+theorem denotes_of_const {vs : Vals} {e : Env} {v : Val} {k : Int}
+    (hag : Agree vs e) (hv : e v = .const k) : DenotesAt vs v (.lit k) := by
+  obtain ⟨t, w, hw, htt, hs, _⟩ := hag v k hv
+  exact ⟨t, w, hw, htt, rfl, fun _ => congr_of_signed htt hs, fun _ => hs⟩
+
 /-- **The additive arm, which the congruence clause is for.**
 
     `iadd` names an `offset` in four ways and folds a constant in the fifth.
@@ -2041,11 +2048,151 @@ theorem denotes_isub {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
   · rw [← hdd]
     exact denotes_frame hden (by rw [hdd]; exact hf) hev (by rw [hdd]; exact hvd) hv
 
-/-- A value the model reports as a constant denotes the literal, and
-    `const_sound` has already proved the machine agrees. -/
-theorem denotes_of_const {vs : Vals} {e : Env} {v : Val} {k : Int}
-    (hag : Agree vs e) (hv : e v = .const k) : DenotesAt vs v (.lit k) := by
-  obtain ⟨t, w, hw, htt, hs, _⟩ := hag v k hv
-  exact ⟨t, w, hw, htt, rfl, fun _ => congr_of_signed htt hs, fun _ => hs⟩
+/-- The expression arm, shared by `ishl` and `ushr`: the model named
+    `f (dOf e a)`, which is no base, so only the conditional equality is owed
+    and `DExp.Exact` supplies the operand's. -/
+theorem denotesAt_expr {vs : Vals} {d : Val} {x : V} {t : ClifTy}
+    {w : UInt64} {dx : DExp} (hf : Fresh vs d) (hx : x = .sc t w) (htt : TrackedTy t)
+    (hshape : DExp.isBase dx = false)
+    (hroots : DExp.rootsLt vs.size dx = true)
+    (heq : DExp.Exact (rhoOf vs) dx = true → signed t w = DExp.eval (rhoOf vs) dx) :
+    DenotesAt (setV vs d x) d dx := by
+  refine ⟨t, w, by rw [← hx]; exact AlgorithmLib.HProg.getV_setV_self vs d x, htt,
+    rootsLt_mono (size_le_setV vs d x) hroots,
+    fun hb => absurd (hb.symm.trans hshape) (by simp), ?_⟩
+  intro hex
+  rw [eval_congr (rhoOf_setV hf) hroots]
+  exact heq (by rw [← exact_congr (rhoOf_setV hf) hroots]; exact hex)
+
+theorem denotes_ishl {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hf : Fresh vs d0) (hev : evalInst m vs (.ishl d a b) = some (d0, x)) :
+    Denotes (setV vs d0 x) (stepPure e (.ishl d a b)) := by
+  obtain ⟨ta, tb, wa, wb, hga, hgb, _, _, hdd, hx⟩ := evalInst_ishl_inv hev
+  rw [hdd] at hf hev ⊢
+  have hta : TrackedTy ta := htv a ta wa hga
+  have htb : TrackedTy tb := htv b tb wb hgb
+  have oa := operand_denotes hta hden hga
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    rw [stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    split at hv
+    · -- both constant: a fold, so `const_sound` answers
+      rename_i x0 y0 hea heb
+      split at hv
+      · unfold constIf at hv; split at hv
+        · injection hv with hq; subst hq
+          refine denotes_of_const (const_sound hag hev) ?_
+          rw [stepPure, Env.set_eq _ _ _ _ rfl, hea, heb]
+          simp_all [constIf]
+        · exact absurd hv (by simp [SymVal.toD?])
+      · exact absurd hv (by simp [SymVal.toD?])
+    · -- runtime operand, constant amount: the model names a shift
+      rename_i y0 heb hnc
+      unfold shlLit at hv; split at hv
+      · rename_i hok
+        injection hv with hq; subst hq
+        obtain ⟨tb', wb', hwb, _, hsb, _⟩ := hag b y0 heb
+        rw [hgb] at hwb; injection hwb with q1; injection q1 with q2 q3
+        subst q2; subst q3
+        obtain ⟨hlo, hhi⟩ : 0 ≤ y0 ∧ y0 < 32 := by
+          simp only [shiftOk, Bool.and_eq_true, decide_eq_true_eq] at hok; omega
+        obtain ⟨t', w', hwa, _, hra, _, hca⟩ := oa
+        rw [hga] at hwa; injection hwa with q1; injection q1 with q2 q3
+        subst q2; subst q3
+        rw [hx, shift_amount htb hsb hlo hhi hta]
+        refine denotesAt_expr hf rfl hta rfl hra ?_
+        intro hex
+        simp only [DExp.Exact, Bool.and_eq_true] at hex
+        rw [signed_mask_of hta, DExp.eval]
+        exact signed_shl hta (by omega) (hca hex.1) hex.2
+      · exact absurd hv (by simp [SymVal.toD?])
+    · exact absurd hv (by simp [SymVal.toD?])
+  · exact denotes_frame hden hf hev hvd hv
+
+theorem denotes_ushr {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hf : Fresh vs d0) (hev : evalInst m vs (.ushr d a b) = some (d0, x)) :
+    Denotes (setV vs d0 x) (stepPure e (.ushr d a b)) := by
+  obtain ⟨ta, tb, wa, wb, hga, hgb, _, _, hdd, hx⟩ := evalInst_ushr_inv hev
+  rw [hdd] at hf hev ⊢
+  have hta : TrackedTy ta := htv a ta wa hga
+  have htb : TrackedTy tb := htv b tb wb hgb
+  have oa := operand_denotes hta hden hga
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    rw [stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    split at hv
+    · rename_i x0 y0 hea heb
+      split at hv
+      · unfold constIf at hv; split at hv
+        · injection hv with hq; subst hq
+          refine denotes_of_const (const_sound hag hev) ?_
+          rw [stepPure, Env.set_eq _ _ _ _ rfl, hea, heb]
+          simp_all [constIf]
+        · exact absurd hv (by simp [SymVal.toD?])
+      · exact absurd hv (by simp [SymVal.toD?])
+    · rename_i y0 heb hnc
+      unfold shrLit at hv; split at hv
+      · rename_i hok
+        injection hv with hq; subst hq
+        obtain ⟨tb', wb', hwb, _, hsb, _⟩ := hag b y0 heb
+        rw [hgb] at hwb; injection hwb with q1; injection q1 with q2 q3
+        subst q2; subst q3
+        obtain ⟨hlo, hhi⟩ : 0 ≤ y0 ∧ y0 < 32 := by
+          simp only [shiftOk, Bool.and_eq_true, decide_eq_true_eq] at hok; omega
+        obtain ⟨t', w', hwa, _, hra, _, hca⟩ := oa
+        rw [hga] at hwa; injection hwa with q1; injection q1 with q2 q3
+        subst q2; subst q3
+        rw [hx, shift_amount htb hsb hlo hhi hta]
+        refine denotesAt_expr hf rfl hta rfl hra ?_
+        intro hex
+        simp only [DExp.Exact, Bool.and_eq_true, decide_eq_true_eq] at hex
+        rw [signed_mask_of hta, DExp.eval]
+        exact signed_ushr hta (by omega) (hca hex.1.1) hex.1.2
+          (inFold_of_exact hex.1.1)
+      · exact absurd hv (by simp [SymVal.toD?])
+    · exact absurd hv (by simp [SymVal.toD?])
+  · exact denotes_frame hden hf hev hvd hv
+
+/-- **The arms that name nothing but a constant.**
+
+    Most instructions bind their destination a constant, a slot or nothing.
+    `SymVal.toD?` is `none` on the last two, so the invariant is owed nothing
+    there, and on the first `const_sound` has already proved the machine agrees
+    — which is why these arms need no arithmetic of their own. -/
+theorem denotes_const_dest {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (hf : Fresh vs d)
+    (hev : evalInst m vs i = some (d, x))
+    (hdst : ∀ dd, (stepPure e i d).toD? = some dd →
+              ∃ k, dd = .lit k ∧ stepPure e i d = .const k) :
+    Denotes (setV vs d x) (stepPure e i) := by
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    obtain ⟨k, hk, hc⟩ := hdst dd hv
+    subst hk
+    exact denotes_of_const (const_sound hag hev) hc
+  · exact denotes_frame hden hf hev hvd hv
+
+/-! ### What the retags still need
+
+    `ireduce32` and `sextend64` pass their operand's binding through, so their
+    arms need one fact this file does not yet state: that `stepPure` never
+    names a **base** shape as a `derived` value.  It does not — the only
+    expressions it builds are `sub`, `shl` and `shr` at the top, and the two
+    passthrough arms preserve that — but until it is an invariant, a
+    `derived (lit k)` cannot be ruled out, and sign extension of one is the
+    same widening hazard that `offset` had: `Congr t w k` at `i32` does not
+    give `Congr .i64` of the extension.
+
+    So the missing piece is `NoBaseDerived e := ∀ v dx, e v = .derived dx →
+    DExp.isBase dx = false`, preserved by an induction whose every case is
+    structural.  With it, both retags reduce to `denotesAt_expr`. -/
 
 end AlgorithmLib.Clif.Check
