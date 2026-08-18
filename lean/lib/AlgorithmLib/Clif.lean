@@ -89,7 +89,14 @@ inductive SymVal where
       offset `72` of the descriptor pointer.  Recording only the offset makes
       those two the same descriptor, which would let a bind-array check pass
       against entirely different buffers.  `descOf` still discards the base, so
-      `ArgDesc` and every vendor-call record are unchanged. -/
+      `ArgDesc` and every vendor-call record are unchanged.
+
+      **What it asserts about the value**, since consumers read it as an
+      identity and a checker has to decide something: the value is the word at
+      `p + k`, *truncated to the value's own type*.  Not the whole word —
+      `ireduce32` of a handle keeps the slot and narrows the value, and a claim
+      about the whole word would be false there.  Truncation still pins the
+      address, which is the point: a different address gives different bytes. -/
   | slot    : Val → Int → SymVal
   /-- **A value the model can name but not evaluate.**
 

@@ -298,8 +298,9 @@ def slotCase (k : Nat) : Bool :=
   match runInsts mem0 vs0 (slotInsts k), (slotInsts k).foldl stepPure Env.empty ⟨3⟩ with
   | some vs, .slot p d =>
       match getV vs ⟨3⟩, getV vs p with
-      | some (.sc _ loaded), some (.sc _ pw) =>
-          Mem.load mem0 (pw + UInt64.ofNat d.toNat) 8 == some loaded
+      | some (.sc t loaded), some (.sc _ pw) =>
+          (Mem.load mem0 (pw + UInt64.ofNat d.toNat) 8).map (· &&& widthMask t)
+            == some loaded
       | _, _ => false
   | some _, _ => false
   | none,   _ => true
@@ -353,9 +354,11 @@ def valueClaimHolds (m : Mem) (vs : Vals) (e : Env) (v : Val) : Bool :=
   | .derived dx, some (.sc t w) =>
       !DExp.Exact (rhoOf vs) dx || signed t w == DExp.eval (rhoOf vs) dx
   | .derived _,  some _         => false
-  | .slot p d,   some (.sc _ loaded) =>
+  | .slot p d,   some (.sc t loaded) =>
       match getV vs p with
-      | some (.sc _ pw) => Mem.load m (pw + UInt64.ofNat d.toNat) 8 == some loaded
+      | some (.sc _ pw) =>
+          (Mem.load m (pw + UInt64.ofNat d.toNat) 8).map (· &&& widthMask t)
+            == some loaded
       | _               => false
   | _,           _              => true
 
@@ -474,12 +477,13 @@ def slotOffsets : List Nat := (List.range 48).map (8 * ·)
 
 /-- The second-stage arms, rebased on the loaded value rather than on `v3`.
 
-    `ireduce32` is excluded, and `slotTruncFails` records what excluding it
-    costs rather than leaving the gap silent. -/
+    `ireduce32` is here: a truncated handle is the case the whole-word reading
+    of a `slot` got wrong. -/
 def compSlotSecond : List (Val → Inst) :=
   (compBin.flatMap fun g => [(fun d => g d ⟨4⟩ ⟨1⟩), (fun d => g d ⟨4⟩ ⟨0⟩)])
-    ++ [ (fun d => .uextend64 d ⟨4⟩), (fun d => .sextend64 d ⟨4⟩)
-       , (fun d => .ineg d ⟨4⟩), (fun d => .load d { ty := .i64 } ⟨4⟩) ]
+    ++ [ (fun d => .ireduce32 d ⟨4⟩), (fun d => .uextend64 d ⟨4⟩)
+       , (fun d => .sextend64 d ⟨4⟩), (fun d => .ineg d ⟨4⟩)
+       , (fun d => .load d { ty := .i64 } ⟨4⟩) ]
 
 def compSlotOk : Bool :=
   slotOffsets.all fun k => compSlotSecond.all fun g => compSlotCase k g
@@ -489,37 +493,12 @@ def compSlotLiveCount : Nat :=
 
 
 
-/-- **A claim about a loaded value survives being carried further** — except
-    through `ireduce32`, which is excluded above and measured below. -/
+/-- **A claim about a loaded value survives being carried further.** -/
 theorem stepPure_composed_slot_agrees : compSlotOk = true := by native_decide
 
 theorem composed_slot_is_live : (100 < compSlotLiveCount) = true := by native_decide
 
-/-- What the exclusion costs: every displacement, truncated. -/
-def slotTruncFails : Nat :=
-  (slotOffsets.filter fun k =>
-    !(compSlotCase k (fun d => .ireduce32 d ⟨4⟩))).length
 
-/-- **`slot` is checked as a value and used as a provenance, and `ireduce32` is
-    where those come apart.**
-
-    `slotCase` decides the claim by re-reading eight bytes at the address the
-    model names.  What consumers do with a `slot` is narrower: `bufDescOf` turns
-    it into `near`/`far`, and two handles are the same buffer exactly when those
-    agree — "`near 72` is the hidden state and nothing else can be" is an
-    identity, not a number.
-
-    `stepPure` passes a `slot` through `ireduce32`, and the truncation is a
-    different word, so the value-level check fails at every displacement.  The
-    identity is intact; the claim as written is not.  Qwen2's cuBLAS argument at
-    `ROOT + 152` resolves through exactly this path, which is why the arm is
-    still there.
-
-    Closing this means the model saying which of the two it means — a `slot`
-    that carries its width, or a separate provenance claim beside the value one.
-    Until then this number is the size of the gap. -/
-theorem slot_survives_truncation_unchecked : (40 < slotTruncFails) = true := by
-  native_decide
 
 /-! ### From checked to proved: the constant arm, against the machine
 
