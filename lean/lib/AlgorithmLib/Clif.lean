@@ -700,7 +700,17 @@ theorem scanBlockTR_go_eq (fns : List FnDecl) :
     which stages run in which order; this says which stages the *host program*
     actually launches. Relating the two is what a whole-model theorem needs, and
     it is now a statement about two lists rather than about an emission order
-    nothing could name. -/
+    nothing could name.
+
+    **This is a scan of the text, not a run.** The `Env` is threaded across the
+    blocks in *list* order, once each, while the machine follows control flow
+    and may run a block many times or not at all. `ClifCheck.sound_runInsts`
+    proves the model sound over one pass through one block, and
+    `ClifCheck.sound_entry` applies it where the two orders provably coincide:
+    the entry block, which is the one this fold starts at from `Env.empty`.
+    Past a back-edge they need not coincide, and the freshness `Fresh` asks for
+    is what fails first — a re-entered block rebinds ids the value count is
+    already past. Consumers recover repetition separately, through `loopsOf`. -/
 def launchesOf (s : FuncData) : List LaunchRec :=
   (s.blocks.foldl (fun (acc : Env × List LaunchRec) b =>
       let r := scanBlock s.fns acc.1 b.insts
