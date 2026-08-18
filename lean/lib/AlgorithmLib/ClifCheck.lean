@@ -673,6 +673,72 @@ theorem signed_mask_of {t : ClifTy} (ht : TrackedTy t) (x : UInt64) :
   · exact signed_i32_mask x
   · exact signed_i64_mask x
 
+/-! ### Congruence on its own
+
+    `signed_of_congr` needs `inFold` to turn a congruence into an equality, and
+    every `signed_*` lemma below spends that bound.  The congruences themselves
+    do not: wrapping is exactly what they survive.  Naming them separately is
+    what lets an invariant carry a claim about a value whose *number* is out of
+    range — which is the case the additive arms have to reach through. -/
+
+/-- The machine's word represents `k` modulo the type's own width. -/
+def Congr (t : ClifTy) (w : UInt64) (k : Int) : Prop :=
+  (w.toNat : Int) % modOf t = k % modOf t
+
+theorem congr_add' {t : ClifTy} (ht : TrackedTy t) {a b : UInt64} {x y : Int}
+    (ha : Congr t a x) (hb : Congr t b y) : Congr t (a + b) (x + y) := by
+  simp only [Congr] at ha hb ⊢
+  rw [UInt64.toNat_add]
+  show (((a.toNat + b.toNat : Nat) : Int) % ((2 ^ 64 : Nat) : Int)) % modOf t = _
+  rw [show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      Int.emod_emod_of_dvd _ (modOf_dvd ht), Int.natCast_add,
+      Int.add_emod (a.toNat : Int), ha, hb, ← Int.add_emod]
+
+theorem congr_sub' {t : ClifTy} (ht : TrackedTy t) {a b : UInt64} {x y : Int}
+    (ha : Congr t a x) (hb : Congr t b y) : Congr t (a - b) (x - y) := by
+  simp only [Congr] at ha hb ⊢
+  have hble : b.toNat ≤ 2 ^ 64 := Nat.le_of_lt b.toNat_lt_size
+  obtain ⟨q, hq⟩ := modOf_dvd ht
+  rw [UInt64.toNat_sub]
+  show ((((2 ^ 64 - b.toNat) + a.toNat : Nat) : Int) % ((2 ^ 64 : Nat) : Int)) % modOf t = _
+  rw [show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      Int.emod_emod_of_dvd _ (modOf_dvd ht), Int.natCast_add, Int.ofNat_sub hble,
+      show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+      show (18446744073709551616 : Int) - (b.toNat : Int) + (a.toNat : Int)
+         = ((a.toNat : Int) - (b.toNat : Int)) + 18446744073709551616 from by omega,
+      hq, Int.add_mul_emod_self_left, Int.sub_emod, ha, hb, ← Int.sub_emod]
+
+/-- Masking to the type's own width changes nothing modulo that width. -/
+theorem congr_mask {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {k : Int}
+    (ha : Congr t a k) : Congr t (a &&& widthMask t) k := by
+  simp only [Congr] at ha ⊢
+  rcases ht with rfl | rfl
+  · rw [show (widthMask .i32) = 4294967295 from rfl, mask32]
+    simp only [modOf] at ha ⊢
+    show ((a.toNat % 2 ^ 32 : Nat) : Int) % 4294967296 = _
+    rw [show ((2 ^ 32 : Nat)) = 4294967296 from rfl] at *
+    omega
+  · rw [show (widthMask .i64) = 18446744073709551615 from rfl, mask64]; exact ha
+
+/-- Truncation weakens the modulus, which a congruence survives. -/
+theorem congr_reduce32 {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {k : Int}
+    (ha : Congr t a k) : Congr .i32 (a &&& widthMask .i32) k := by
+  have h32 : Congr .i32 a k := by
+    simp only [Congr, modOf] at ha ⊢
+    rcases ht with rfl | rfl
+    · exact ha
+    · simp only [modOf] at ha; omega
+  exact congr_mask (Or.inl rfl) h32
+
+/-- The two directions between a congruence and the signed value it pins down.
+    One is free; the other spends `inFold`. -/
+theorem congr_of_signed' {t : ClifTy} (ht : TrackedTy t) {w : UInt64} {k : Int}
+    (h : signed t w = k) : Congr t w k := congr_of_signed ht h
+
+theorem signed_of_congr' {t : ClifTy} (ht : TrackedTy t) {w : UInt64} {k : Int}
+    (hk : inFold k = true) (hc : Congr t w k) : signed t w = k :=
+  signed_of_congr ht hk hc
+
 theorem signed_add {t : ClifTy} (ht : TrackedTy t) {a b : UInt64} {x y : Int}
     (ha : signed t a = x) (hb : signed t b = y) (h : inFold (x + y) = true) :
     signed t (a + b) = x + y := by
@@ -1639,100 +1705,6 @@ theorem size_le_setV (vs : Vals) (d : Val) (x : V) : vs.size ≤ (setV vs d x).s
   simp only [setV, Array.set!, Array.size_setIfInBounds]
   split <;> simp <;> omega
 
-/-- **What the model claims of a value it can name, and what it owes.**
-
-    One invariant for all three claims at once.  `SymVal.toD?` is the model's
-    own statement of when it can name a value without inventing a root, and it
-    answers for `const`, `offset` and `derived` alike — so this is not three
-    invariants stapled together but the single property those three cases were
-    always instances of.  It is also, verbatim, the value half of
-    `Qwen2NonVacuity.MetaFaithful`.
-
-    Read the conclusion as an implication: the model does not assert that the
-    machine's word equals `d.eval rho`, it asserts that it does *whenever the
-    expression is exact*.  The roots are bounded so that extending the value map
-    cannot change what the expression denotes.
-
-    **Stated, with its pieces proved, and not yet preserved by a step.**  The
-    frame, the operands, the constant arm and the retags all go through; the
-    additive arms do not, and the reason is worth recording.  `iadd` of an
-    `offset p k` by a constant `y` has to reach the operand's claim at
-    `.add (root p) (lit k)`, whose `DExp.Exact` needs `inFold (rho p + k)` —
-    which the *result*'s exactness does not supply, since `k` and `y` can be
-    large and opposite.  The claim is nonetheless true, by the same
-    congruence-modulo-width argument as `const_sound`, so what it wants is an
-    unconditional congruence clause beside the conditional equality.
-
-    Two things stop that being the whole invariant, and both are about widths
-    rather than about the arithmetic:
-
-    * `.shr` is not a congruence.  Division needs the operand's *value*, so a
-      `shrLit` value's claim stays conditional however it is phrased.
-    * `sextend64` cannot carry a congruence across the widening.  A word
-      congruent to `k` modulo `2 ^ 32` sign-extends to something congruent to
-      `signed .i32 k` modulo `2 ^ 64`, which is a different number whenever `k`
-      was not already in range — `w = 0xFFFFFFFF`, `k = 2 ^ 32 - 1` is the
-      witness.  The *conditional* clause is fine there, because `DExp.Exact`
-      puts `k` in range and the two coincide. -/
-def Denotes (vs : Vals) (e : Env) : Prop :=
-  ∀ v d, (e v).toD? = some d →
-    ∃ t w, getV vs v = some (.sc t w) ∧ TrackedTy t
-      ∧ DExp.rootsLt vs.size d = true
-      ∧ (DExp.Exact (rhoOf vs) d = true → signed t w = DExp.eval (rhoOf vs) d)
-
-/-- The claim holds of a run that has bound nothing. -/
-theorem denotes_empty (vs : Vals) : Denotes vs Env.empty := by
-  intro v d hv
-  simp only [Env.empty, Env.get] at hv
-  exact absurd hv (by simp [SymVal.toD?])
-
-/-- Binding a fresh destination leaves what the model already claimed intact:
-    the word is still there, the roots are still in range, and the valuation
-    did not move on any root the expression names. -/
-theorem denotes_lift {vs : Vals} {d v : Val} {x : V} {t : ClifTy} {w : UInt64} {dd : DExp}
-    (hf : Fresh vs d) (hne : v.id ≠ d.id)
-    (hw : getV vs v = some (.sc t w)) (htt : TrackedTy t)
-    (hr : DExp.rootsLt vs.size dd = true)
-    (hc : DExp.Exact (rhoOf vs) dd = true → signed t w = DExp.eval (rhoOf vs) dd) :
-    ∃ t' w', getV (setV vs d x) v = some (.sc t' w') ∧ TrackedTy t'
-      ∧ DExp.rootsLt (setV vs d x).size dd = true
-      ∧ (DExp.Exact (rhoOf (setV vs d x)) dd = true →
-          signed t' w' = DExp.eval (rhoOf (setV vs d x)) dd) := by
-  refine ⟨t, w, getV_setV_ne hne hw, htt, rootsLt_mono (size_le_setV vs d x) hr, ?_⟩
-  intro hex
-  rw [eval_congr (rhoOf_setV hf) hr]
-  exact hc (by rw [← exact_congr (rhoOf_setV hf) hr]; exact hex)
-
-/-- **What an operand denotes.**
-
-    The one step that turns the invariant into arithmetic.  Either the model can
-    name the operand, and the invariant says what its word is worth, or it
-    cannot, and `dOf` makes it a root — whose valuation is *defined* to be that
-    word.  The second case is why the claim needs no hypothesis about values the
-    model does not track. -/
-theorem operand_denotes {vs : Vals} {e : Env} {a : Val} {t : ClifTy} {w : UInt64}
-    (hden : Denotes vs e) (hga : getV vs a = some (.sc t w)) :
-    DExp.rootsLt vs.size (dOf e a) = true
-      ∧ (DExp.Exact (rhoOf vs) (dOf e a) = true →
-          signed t w = DExp.eval (rhoOf vs) (dOf e a)) := by
-  rcases hd : (e a).toD? with _ | dd
-  · have hroot : dOf e a = .root a.id := by
-      cases hea : e a <;> rw [hea] at hd <;> simp_all [dOf, SymVal.toD?]
-    have hsz : a.id < vs.size := by
-      simp only [getV, Array.getElem?_eq_some_iff] at hga; exact hga.1
-    refine ⟨by rw [hroot]; simp only [DExp.rootsLt, decide_eq_true_eq]; exact hsz, ?_⟩
-    intro _
-    rw [hroot]
-    simp only [DExp.eval, rhoOf]
-    rw [show (⟨a.id⟩ : Val) = a from by cases a; rfl, hga]
-  · obtain ⟨t', w', hw', htt', hr', hc'⟩ := hden a dd hd
-    rw [dOf_of_toD? e a dd hd]
-    rw [hga] at hw'
-    injection hw' with h1
-    injection h1 with ht hww
-    subst ht; subst hww
-    exact ⟨hr', hc'⟩
-
 /-- An exact expression's value is foldable — every constructor's last
     conjunct says so.  This is what lets a retag reuse the constant arms'
     arithmetic without a separate bound. -/
@@ -1745,29 +1717,335 @@ theorem inFold_of_exact {rho : Nat → Int} : ∀ {d : DExp},
   | .shl _ _, h => by simp only [DExp.Exact, Bool.and_eq_true] at h; exact h.2
   | .shr _ _, h => by simp only [DExp.Exact, Bool.and_eq_true] at h; exact h.2
 
+/-- The shapes a `const` and an `offset` denote: a literal, or a root plus a
+    literal.
+
+    These are exactly the expressions the additive arms both produce and
+    consume — `addSym` and the `isub` displacement arm read `offset`, `const`
+    and `unknown` operands and never a `derived` one — so no `shr` can reach
+    them, which is what makes an unconditional congruence available here and
+    nowhere else. -/
+def DExp.isBase : DExp → Bool
+  | .lit _                  => true
+  | .add (.root _) (.lit _) => true
+  | _                       => false
+
+/-- **What the model promises about one value it can name.**
+
+    Two clauses, because the model makes two strengths of claim and conflating
+    them is what left the additive arms unreachable:
+
+    * a **congruence**, unconditionally, for the base shapes.  Wrapping
+      preserves it, so it holds even where the number is out of range and the
+      equality below says nothing — and that is precisely the case `iadd` of an
+      `offset` has to reach through, since the result's `DExp.Exact` does not
+      bound the operand's own sum.
+    * an **equality**, whenever `DExp.Exact` holds.  This is the claim a
+      consumer reads a launch bound out of, and the only one available for an
+      expression containing a `shr`, division being no congruence.
+
+    The roots are bounded so that extending the value map cannot change what
+    the expression denotes. -/
+def DenotesAt (vs : Vals) (v : Val) (d : DExp) : Prop :=
+  ∃ t w, getV vs v = some (.sc t w) ∧ TrackedTy t
+    ∧ DExp.rootsLt vs.size d = true
+    ∧ (DExp.isBase d = true → Congr t w (DExp.eval (rhoOf vs) d))
+    ∧ (DExp.Exact (rhoOf vs) d = true → signed t w = DExp.eval (rhoOf vs) d)
+
+/-- **What the model claims of every value it can name.**
+
+    One invariant for all three claims at once.  `SymVal.toD?` is the model's
+    own statement of when it can name a value without inventing a root, and it
+    answers for `const`, `offset` and `derived` alike — so this is not three
+    invariants stapled together but the single property those three cases were
+    always instances of.  It is also, verbatim, the value half of
+    `Qwen2NonVacuity.MetaFaithful`. -/
+def Denotes (vs : Vals) (e : Env) : Prop :=
+  ∀ v d, (e v).toD? = some d → DenotesAt vs v d
+
+/-- The claim holds of a run that has bound nothing. -/
+theorem denotes_empty (vs : Vals) : Denotes vs Env.empty := by
+  intro v d hv
+  simp only [Env.empty, Env.get] at hv
+  exact absurd hv (by simp [SymVal.toD?])
+
+/-- An exact expression is in range, so its equality follows from its
+    congruence.  This is what keeps the two clauses from drifting apart. -/
+theorem denotesAt_of_congr {vs : Vals} {v : Val} {d : DExp} {t : ClifTy} {w : UInt64}
+    (hw : getV vs v = some (.sc t w)) (htt : TrackedTy t)
+    (hr : DExp.rootsLt vs.size d = true)
+    (hc : Congr t w (DExp.eval (rhoOf vs) d)) : DenotesAt vs v d :=
+  ⟨t, w, hw, htt, hr, fun _ => hc,
+   fun hex => signed_of_congr htt (inFold_of_exact hex) hc⟩
+
+/-- Binding a fresh destination leaves what the model already claimed intact:
+    the word is still there, the roots are still in range, and the valuation
+    did not move on any root the expression names. -/
+theorem denotes_lift {vs : Vals} {d v : Val} {x : V} {dd : DExp}
+    (hf : Fresh vs d) (hne : v.id ≠ d.id) (h : DenotesAt vs v dd) :
+    DenotesAt (setV vs d x) v dd := by
+  obtain ⟨t, w, hw, htt, hr, hcg, hc⟩ := h
+  refine ⟨t, w, getV_setV_ne hne hw, htt, rootsLt_mono (size_le_setV vs d x) hr, ?_, ?_⟩
+  · intro hb
+    rw [eval_congr (rhoOf_setV hf) hr]
+    exact hcg hb
+  · intro hex
+    rw [eval_congr (rhoOf_setV hf) hr]
+    exact hc (by rw [← exact_congr (rhoOf_setV hf) hr]; exact hex)
+
+/-- **What an operand denotes.**
+
+    The one step that turns the invariant into arithmetic.  Either the model can
+    name the operand, and the invariant says what its word is worth, or it
+    cannot, and `dOf` makes it a root — whose valuation is *defined* to be that
+    word, so the congruence is free and the shape is a base.  That second case
+    is why the claim needs no hypothesis about values the model does not
+    track. -/
+theorem operand_denotes {vs : Vals} {e : Env} {a : Val} {t : ClifTy} {w : UInt64}
+    (htt : TrackedTy t) (hden : Denotes vs e) (hga : getV vs a = some (.sc t w)) :
+    DenotesAt vs a (dOf e a) := by
+  rcases hd : (e a).toD? with _ | dd
+  · have hroot : dOf e a = .root a.id := by
+      cases hea : e a <;> rw [hea] at hd <;> simp_all [dOf, SymVal.toD?]
+    have hsz : a.id < vs.size := by
+      simp only [getV, Array.getElem?_eq_some_iff] at hga; exact hga.1
+    have hval : DExp.eval (rhoOf vs) (dOf e a) = signed t w := by
+      rw [hroot]
+      simp only [DExp.eval, rhoOf]
+      rw [show (⟨a.id⟩ : Val) = a from by cases a; rfl, hga]
+    refine ⟨t, w, hga, htt,
+      by rw [hroot]; simp only [DExp.rootsLt, decide_eq_true_eq]; exact hsz,
+      fun _ => by rw [hval]; exact congr_of_signed htt rfl,
+      fun _ => hval.symm⟩
+  · obtain ⟨t', w', hw', htt', hr', hcg', hc'⟩ := hden a dd hd
+    rw [dOf_of_toD? e a dd hd]
+    rw [hga] at hw'
+    injection hw' with h1
+    injection h1 with ht hww
+    subst ht; subst hww
+    exact ⟨t, w, hga, htt', hr', hcg', hc'⟩
+
 /-- A value the step leaves alone still denotes what it did. -/
 theorem denotes_frame {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d v : Val} {x : V}
     {dd : DExp} (hden : Denotes vs e) (hf : Fresh vs d)
     (hev : evalInst m vs i = some (d, x)) (hvd : v.id ≠ d.id)
     (hv : (stepPure e i v).toD? = some dd) :
-    ∃ t w, getV (setV vs d x) v = some (.sc t w) ∧ TrackedTy t
-      ∧ DExp.rootsLt (setV vs d x).size dd = true
-      ∧ (DExp.Exact (rhoOf (setV vs d x)) dd = true →
-          signed t w = DExp.eval (rhoOf (setV vs d x)) dd) := by
+    DenotesAt (setV vs d x) v dd := by
   rw [stepPure_frame _ e v (fun d' hd' => by
         rw [evalInst_dest hev] at hd'; injection hd' with hq; exact hq ▸ hvd)] at hv
-  obtain ⟨t, w, hw, htt, hr, hc⟩ := hden v dd hv
-  exact denotes_lift hf hvd hw htt hr hc
+  exact denotes_lift hf hvd (hden v dd hv)
+
+/-- The invariant at a freshly bound destination, from a congruence alone.
+    Both clauses follow: the equality spends `inFold`, which `DExp.Exact`
+    supplies whenever it is the clause being asked for. -/
+theorem denotesAt_dest {vs : Vals} {d : Val} {x : V} {t : ClifTy} {w : UInt64}
+    {dd : DExp} (hf : Fresh vs d) (hx : x = .sc t w) (htt : TrackedTy t)
+    (hr : DExp.rootsLt vs.size dd = true)
+    (hc : Congr t w (DExp.eval (rhoOf vs) dd)) : DenotesAt (setV vs d x) d dd := by
+  have hgd : getV (setV vs d x) d = some (.sc t w) := by
+    rw [← hx]; exact AlgorithmLib.HProg.getV_setV_self vs d x
+  refine ⟨t, w, hgd, htt, rootsLt_mono (size_le_setV vs d x) hr, ?_, ?_⟩
+  · intro _; rw [eval_congr (rhoOf_setV hf) hr]; exact hc
+  · intro hex
+    rw [eval_congr (rhoOf_setV hf) hr]
+    refine signed_of_congr htt ?_ hc
+    have := inFold_of_exact hex
+    rwa [eval_congr (rhoOf_setV hf) hr] at this
+
+/-- What `Agree` says at a value the machine has computed. -/
+theorem agree_at {vs : Vals} {e : Env} {a : Val} {t : ClifTy} {w : UInt64} {k : Int}
+    (hag : Agree vs e) (hga : getV vs a = some (.sc t w)) (hea : e a = .const k) :
+    signed t w = k ∧ inFold k = true := by
+  obtain ⟨t', w', hw', _, hs, hfk⟩ := hag a k hea
+  rw [hga] at hw'
+  injection hw' with h1
+  injection h1 with h2 h3
+  subst h2; subst h3
+  exact ⟨hs, hfk⟩
+
+/-- An operand the model named as an offset: its congruence, at the base shape
+    the invariant carries unconditionally. -/
+theorem operand_offset {vs : Vals} {e : Env} {a p : Val} {t : ClifTy} {w : UInt64}
+    {k : Int} (htt : TrackedTy t) (hden : Denotes vs e)
+    (hga : getV vs a = some (.sc t w)) (hea : e a = .offset p k) :
+    Congr t w (rhoOf vs p.id + k) ∧ p.id < vs.size := by
+  have hd : (e a).toD? = some (.add (.root p.id) (.lit k)) := by rw [hea]; rfl
+  obtain ⟨t', w', hw', _, hr', hcg', _⟩ := hden a _ hd
+  rw [hga] at hw'
+  injection hw' with h1
+  injection h1 with h2 h3
+  subst h2; subst h3
+  refine ⟨hcg' rfl, ?_⟩
+  simp only [DExp.rootsLt, Bool.and_eq_true, decide_eq_true_eq] at hr'
+  exact hr'.1
+
+/-- An operand the model could not name at all is a root, and a root's
+    valuation is the machine's own word for it. -/
+theorem operand_root {vs : Vals} {a : Val} {t : ClifTy} {w : UInt64}
+    (hga : getV vs a = some (.sc t w)) :
+    rhoOf vs a.id = signed t w ∧ a.id < vs.size := by
+  have hsz : a.id < vs.size := by
+    simp only [getV, Array.getElem?_eq_some_iff] at hga; exact hga.1
+  refine ⟨?_, hsz⟩
+  simp only [rhoOf]
+  rw [show (⟨a.id⟩ : Val) = a from by cases a; rfl, hga]
+
+/-- **The additive arm, which the congruence clause is for.**
+
+    `iadd` names an `offset` in four ways and folds a constant in the fifth.
+    Every one is the same argument — both operands' congruences, added, masked
+    — and none needs either operand's number to be in range, which is exactly
+    what the equality clause could not have supplied. -/
+theorem denotes_iadd {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hf : Fresh vs d0) (hev : evalInst m vs (.iadd d a b) = some (d0, x)) :
+    Denotes (setV vs d0 x) (stepPure e (.iadd d a b)) := by
+  obtain ⟨t, wa, wb, hga, hgb, _, hdd, hx⟩ := evalInst_iadd_inv hev
+  rw [hdd] at hf ⊢
+  have htt : TrackedTy t := htv a t wa hga
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    -- the one shape every naming case reduces to
+    have mk : ∀ (P : Val) (K x0 y0 : Int), P.id < vs.size →
+        Congr t wa x0 → Congr t wb y0 → x0 + y0 = rhoOf vs P.id + K →
+        DenotesAt (setV vs v x) v (.add (.root P.id) (.lit K)) := by
+      intro P K x0 y0 hsz ca cb hsum
+      refine denotesAt_dest hf hx htt (by simp [DExp.rootsLt, hsz]) ?_
+      have := congr_mask htt (congr_add' htt ca cb)
+      rwa [hsum] at this
+    have mkLit : ∀ (K x0 y0 : Int), Congr t wa x0 → Congr t wb y0 → x0 + y0 = K →
+        DenotesAt (setV vs v x) v (.lit K) := by
+      intro K x0 y0 ca cb hsum
+      refine denotesAt_dest hf hx htt rfl ?_
+      have := congr_mask htt (congr_add' htt ca cb)
+      rwa [hsum] at this
+    rw [stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    unfold addSym at hv
+    split at hv
+    · -- const + const
+      rename_i x0 y0 hea heb
+      obtain ⟨hsa, _⟩ := agree_at hag hga hea
+      obtain ⟨hsb, _⟩ := agree_at hag hgb heb
+      unfold constIf at hv; split at hv
+      · injection hv with hq; subst hq
+        exact mkLit _ x0 y0 (congr_of_signed htt hsa) (congr_of_signed htt hsb) rfl
+      · exact absurd hv (by simp [SymVal.toD?])
+    · -- offset + const
+      rename_i p k y0 hea heb
+      obtain ⟨ca, hsz⟩ := operand_offset htt hden hga hea
+      obtain ⟨hsb, _⟩ := agree_at hag hgb heb
+      unfold offsetIf at hv; split at hv
+      · injection hv with hq; subst hq
+        exact mk p _ _ y0 hsz ca (congr_of_signed htt hsb) (by omega)
+      · exact absurd hv (by simp [SymVal.toD?])
+    · -- const + offset
+      rename_i x0 p k hea heb
+      obtain ⟨hsa, _⟩ := agree_at hag hga hea
+      obtain ⟨cb, hsz⟩ := operand_offset htt hden hgb heb
+      unfold offsetIf at hv; split at hv
+      · injection hv with hq; subst hq
+        exact mk p _ x0 _ hsz (congr_of_signed htt hsa) cb (by omega)
+      · exact absurd hv (by simp [SymVal.toD?])
+    · -- unresolved + const: the destination is an offset of the operand itself
+      rename_i y0 hea heb
+      obtain ⟨hra, hsz⟩ := operand_root hga
+      obtain ⟨hsb, _⟩ := agree_at hag hgb heb
+      injection hv with hq; subst hq
+      exact mk a y0 _ y0 hsz (congr_of_signed htt rfl) (congr_of_signed htt hsb)
+        (by rw [hra])
+    · -- const + unresolved
+      rename_i x0 hea heb
+      obtain ⟨hsa, _⟩ := agree_at hag hga hea
+      obtain ⟨hrb, hsz⟩ := operand_root hgb
+      injection hv with hq; subst hq
+      exact mk b x0 x0 _ hsz (congr_of_signed htt hsa) (congr_of_signed htt rfl)
+        (by rw [hrb]; omega)
+    · exact absurd hv (by simp [SymVal.toD?])
+  · rw [← hdd]
+    exact denotes_frame hden (by rw [hdd]; exact hf) hev (by rw [hdd]; exact hvd) hv
+
+/-- **`isub`, which names both shapes.**
+
+    Its displacement arm is a base and goes by congruence like `iadd`; its
+    fallback names an expression, which is not a base, so only the conditional
+    equality is owed there — and `DExp.Exact` of a `sub` hands over exactly the
+    two operand exactnesses and the bound that `signed_sub` needs. -/
+theorem denotes_isub {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hf : Fresh vs d0) (hev : evalInst m vs (.isub d a b) = some (d0, x)) :
+    Denotes (setV vs d0 x) (stepPure e (.isub d a b)) := by
+  obtain ⟨t, wa, wb, hga, hgb, _, hdd, hx⟩ := evalInst_isub_inv hev
+  rw [hdd] at hf ⊢
+  have htt : TrackedTy t := htv a t wa hga
+  have oa := operand_denotes htt hden hga
+  have ob := operand_denotes htt hden hgb
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    have mk : ∀ (P : Val) (K x0 y0 : Int), P.id < vs.size →
+        Congr t wa x0 → Congr t wb y0 → x0 - y0 = rhoOf vs P.id + K →
+        DenotesAt (setV vs v x) v (.add (.root P.id) (.lit K)) := by
+      intro P K x0 y0 hsz ca cb hsum
+      refine denotesAt_dest hf hx htt (by simp [DExp.rootsLt, hsz]) ?_
+      have := congr_mask htt (congr_sub' htt ca cb)
+      rwa [hsum] at this
+    rw [stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    split at hv
+    · -- const − const
+      rename_i x0 y0 hea heb
+      obtain ⟨hsa, _⟩ := agree_at hag hga hea
+      obtain ⟨hsb, _⟩ := agree_at hag hgb heb
+      unfold constIf at hv; split at hv
+      · injection hv with hq; subst hq
+        refine denotesAt_dest hf hx htt rfl ?_
+        have := congr_mask htt
+          (congr_sub' htt (congr_of_signed htt hsa) (congr_of_signed htt hsb))
+        exact this
+      · exact absurd hv (by simp [SymVal.toD?])
+    · -- offset − const
+      rename_i p k y0 hea heb
+      obtain ⟨ca, hsz⟩ := operand_offset htt hden hga hea
+      obtain ⟨hsb, _⟩ := agree_at hag hgb heb
+      unfold offsetIf at hv; split at hv
+      · injection hv with hq; subst hq
+        exact mk p _ _ y0 hsz ca (congr_of_signed htt hsb) (by omega)
+      · exact absurd hv (by simp [SymVal.toD?])
+    · -- anything else names the expression
+      injection hv with hq
+      subst hq
+      obtain ⟨ta, wa', hwa, _, hra, _, hca⟩ := oa
+      obtain ⟨tb, wb', hwb, _, hrb, _, hcb⟩ := ob
+      rw [hga] at hwa; injection hwa with q1; injection q1 with q2 q3
+      subst q2; subst q3
+      rw [hgb] at hwb; injection hwb with q1; injection q1 with q2 q3
+      subst q2; subst q3
+      refine ⟨t, (wa - wb) &&& widthMask t,
+        by rw [← hx]; exact AlgorithmLib.HProg.getV_setV_self vs v x, htt,
+        by simp only [DExp.rootsLt, Bool.and_eq_true]
+           exact ⟨rootsLt_mono (size_le_setV vs v x) hra,
+                  rootsLt_mono (size_le_setV vs v x) hrb⟩,
+        fun hb => absurd hb (by simp [DExp.isBase]), ?_⟩
+      intro hex
+      have hrsub : DExp.rootsLt vs.size (.sub (dOf e a) (dOf e b)) = true := by
+        simp only [DExp.rootsLt, Bool.and_eq_true]; exact ⟨hra, hrb⟩
+      rw [eval_congr (rhoOf_setV hf) hrsub]
+      have hex' : DExp.Exact (rhoOf vs) (.sub (dOf e a) (dOf e b)) = true := by
+        rw [← exact_congr (rhoOf_setV hf) hrsub]; exact hex
+      simp only [DExp.Exact, Bool.and_eq_true] at hex'
+      obtain ⟨⟨ea, eb⟩, ebound⟩ := hex'
+      rw [signed_mask_of htt, DExp.eval]
+      exact signed_sub htt (hca ea) (hcb eb) ebound
+  · rw [← hdd]
+    exact denotes_frame hden (by rw [hdd]; exact hf) hev (by rw [hdd]; exact hvd) hv
 
 /-- A value the model reports as a constant denotes the literal, and
     `const_sound` has already proved the machine agrees. -/
 theorem denotes_of_const {vs : Vals} {e : Env} {v : Val} {k : Int}
-    (hag : Agree vs e) (hv : e v = .const k) :
-    ∃ t w, getV vs v = some (.sc t w) ∧ TrackedTy t
-      ∧ DExp.rootsLt vs.size (.lit k) = true
-      ∧ (DExp.Exact (rhoOf vs) (.lit k) = true →
-          signed t w = DExp.eval (rhoOf vs) (.lit k)) := by
+    (hag : Agree vs e) (hv : e v = .const k) : DenotesAt vs v (.lit k) := by
   obtain ⟨t, w, hw, htt, hs, _⟩ := hag v k hv
-  exact ⟨t, w, hw, htt, rfl, fun _ => hs⟩
+  exact ⟨t, w, hw, htt, rfl, fun _ => congr_of_signed htt hs, fun _ => hs⟩
 
 end AlgorithmLib.Clif.Check
