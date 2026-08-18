@@ -1678,14 +1678,6 @@ theorem exact_congr {rho rho' : Nat → Int} {n : Nat}
   | .shl a _, hd => by
       simp only [DExp.Exact, exact_congr h (d := a) hd, eval_congr h (d := a) hd]
 
-/-- **Every value the run has computed carries a tracked type.**
-
-    The hypothesis `stepPure` cannot check for itself.  It is a property of the
-    program's types, decidable from the emitted function, and it is exactly what
-    rules out the narrow-width disagreements `narrowDerivFails` counts. -/
-def TrackedVals (vs : Vals) : Prop :=
-  ∀ (v : Val) (t : ClifTy) (w : UInt64), getV vs v = some (.sc t w) → TrackedTy t
-
 /-- A destination past the end of the value map — what an SSA program's fresh
     numbering gives, and what makes a binding an extension rather than an
     overwrite. -/
@@ -1768,6 +1760,40 @@ theorem denotes_empty (vs : Vals) : Denotes vs Env.empty := by
   intro v d hv
   simp only [Env.empty, Env.get] at hv
   exact absurd hv (by simp [SymVal.toD?])
+
+/-- **The one thing the model cannot check for itself, stated where it is
+    spent.**
+
+    `stepPure` never sees a type.  When it turns an operand it could *not* name
+    into a root — `addSym`'s `.unknown, .const y => .offset a y`, and the `dOf`
+    in the subtract and shift arms — it is making a claim about a width it never
+    looked at, and at `i8` or `i16` that claim is false.  This is the exclusion
+    `narrowShiftDisagrees` measures, carried as a hypothesis rather than assumed
+    away.
+
+    Deliberately **not** a condition on the whole value map.  A value the model
+    has named already carries its own tracked type inside `Denotes`, and a
+    program is free to hold floats and bytes in values the model says nothing
+    about — which shipped programs do: `Qwen2Common` builds `.f32` values and
+    `CliAlgorithm` uses `.i8`.  A condition over every value would be false of
+    both, and a theorem resting on it would say nothing about either. -/
+def UnnamedTracked (vs : Vals) (e : Env) (a : Val) : Prop :=
+  ∀ t w, getV vs a = some (.sc t w) → (e a).toD? = none → TrackedTy t
+
+/-- An operand's type is tracked either because the model named it — `Denotes`
+    carries that — or because `UnnamedTracked` says so.  Every arm draws its
+    `TrackedTy` from here, so the hypothesis is spent only where it must be. -/
+theorem operand_tracked {vs : Vals} {e : Env} {a : Val} {t : ClifTy} {w : UInt64}
+    (hden : Denotes vs e) (hut : UnnamedTracked vs e a)
+    (hga : getV vs a = some (.sc t w)) : TrackedTy t := by
+  rcases hd : (e a).toD? with _ | dd
+  · exact hut t w hga hd
+  · obtain ⟨t', w', hw', htt', _⟩ := hden a dd hd
+    rw [hga] at hw'
+    injection hw' with h1
+    injection h1 with h2 _
+    subst h2
+    exact htt'
 
 /-- An exact expression is in range, so its equality follows from its
     congruence.  This is what keeps the two clauses from drifting apart. -/
@@ -1904,12 +1930,12 @@ theorem denotes_of_const {vs : Vals} {e : Env} {v : Val} {k : Int}
     — and none needs either operand's number to be in range, which is exactly
     what the equality clause could not have supplied. -/
 theorem denotes_iadd {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
-    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hag : Agree vs e) (hden : Denotes vs e) (hua : UnnamedTracked vs e a)
     (hf : Fresh vs d0) (hev : evalInst m vs (.iadd d a b) = some (d0, x)) :
     Denotes (setV vs d0 x) (stepPure e (.iadd d a b)) := by
   obtain ⟨t, wa, wb, hga, hgb, _, hdd, hx⟩ := evalInst_iadd_inv hev
   rw [hdd] at hf ⊢
-  have htt : TrackedTy t := htv a t wa hga
+  have htt : TrackedTy t := operand_tracked hden hua hga
   intro v dd hv
   by_cases hvd : v.id = d.id
   · have hveq : v = d := by cases v; cases d; simp_all
@@ -1980,12 +2006,12 @@ theorem denotes_iadd {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
     equality is owed there — and `DExp.Exact` of a `sub` hands over exactly the
     two operand exactnesses and the bound that `signed_sub` needs. -/
 theorem denotes_isub {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
-    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hag : Agree vs e) (hden : Denotes vs e) (hua : UnnamedTracked vs e a)
     (hf : Fresh vs d0) (hev : evalInst m vs (.isub d a b) = some (d0, x)) :
     Denotes (setV vs d0 x) (stepPure e (.isub d a b)) := by
   obtain ⟨t, wa, wb, hga, hgb, _, hdd, hx⟩ := evalInst_isub_inv hev
   rw [hdd] at hf ⊢
-  have htt : TrackedTy t := htv a t wa hga
+  have htt : TrackedTy t := operand_tracked hden hua hga
   have oa := operand_denotes htt hden hga
   have ob := operand_denotes htt hden hgb
   intro v dd hv
@@ -2065,13 +2091,14 @@ theorem denotesAt_expr {vs : Vals} {d : Val} {x : V} {t : ClifTy}
   exact heq (by rw [← exact_congr (rhoOf_setV hf) hroots]; exact hex)
 
 theorem denotes_ishl {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
-    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hag : Agree vs e) (hden : Denotes vs e) (hua : UnnamedTracked vs e a)
+    (hub : UnnamedTracked vs e b)
     (hf : Fresh vs d0) (hev : evalInst m vs (.ishl d a b) = some (d0, x)) :
     Denotes (setV vs d0 x) (stepPure e (.ishl d a b)) := by
   obtain ⟨ta, tb, wa, wb, hga, hgb, _, _, hdd, hx⟩ := evalInst_ishl_inv hev
   rw [hdd] at hf hev ⊢
-  have hta : TrackedTy ta := htv a ta wa hga
-  have htb : TrackedTy tb := htv b tb wb hgb
+  have hta : TrackedTy ta := operand_tracked hden hua hga
+  have htb : TrackedTy tb := operand_tracked hden hub hgb
   have oa := operand_denotes hta hden hga
   intro v dd hv
   by_cases hvd : v.id = d.id
@@ -2113,13 +2140,14 @@ theorem denotes_ishl {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
   · exact denotes_frame hden hf hev hvd hv
 
 theorem denotes_ushr {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
-    (hag : Agree vs e) (hden : Denotes vs e) (htv : TrackedVals vs)
+    (hag : Agree vs e) (hden : Denotes vs e) (hua : UnnamedTracked vs e a)
+    (hub : UnnamedTracked vs e b)
     (hf : Fresh vs d0) (hev : evalInst m vs (.ushr d a b) = some (d0, x)) :
     Denotes (setV vs d0 x) (stepPure e (.ushr d a b)) := by
   obtain ⟨ta, tb, wa, wb, hga, hgb, _, _, hdd, hx⟩ := evalInst_ushr_inv hev
   rw [hdd] at hf hev ⊢
-  have hta : TrackedTy ta := htv a ta wa hga
-  have htb : TrackedTy tb := htv b tb wb hgb
+  have hta : TrackedTy ta := operand_tracked hden hua hga
+  have htb : TrackedTy tb := operand_tracked hden hub hgb
   have oa := operand_denotes hta hden hga
   intro v dd hv
   by_cases hvd : v.id = d.id
@@ -2179,6 +2207,99 @@ theorem denotes_const_dest {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} 
     subst hk
     exact denotes_of_const (const_sound hag hev) hc
   · exact denotes_frame hden hf hev hvd hv
+
+/-- **`stepPure` never names a base shape as a `derived` value.**
+
+    The expressions it builds have `sub`, `shl` or `shr` at the top, and the two
+    passthrough arms carry whatever their operand had.  A `derived (lit k)`
+    therefore cannot arise — which matters because sign-extending one would be
+    the same widening hazard an `offset` had, and no guard would catch it. -/
+def NoBaseDerived (e : Env) : Prop :=
+  ∀ v dx, e v = .derived dx → DExp.isBase dx = false
+
+theorem noBaseDerived_empty : NoBaseDerived Env.empty := by
+  intro v dx hv
+  simp only [Env.empty, Env.get] at hv
+  exact absurd hv (by simp)
+
+theorem noBaseDerived_dest {e : Env} {i : Inst} {d : Val} {dx : DExp}
+    (h : NoBaseDerived e) (hd : Inst.destOf? i = some d)
+    (hv : stepPure e i d = .derived dx) : DExp.isBase dx = false := by
+  cases i <;> simp [Inst.destOf?] at hd <;> subst hd <;>
+    rw [stepPure, Env.set_eq _ _ _ _ rfl] at hv
+  case iconst =>
+    simp only [constLit] at hv; split at hv <;> exact absurd hv (by simp)
+  case iadd =>
+    simp only [addSym] at hv; split at hv <;>
+      (try simp only [constIf, offsetIf] at hv) <;>
+      first
+        | exact absurd hv (by simp)
+        | (split at hv <;> exact absurd hv (by simp))
+  case imul =>
+    simp only [mulSym] at hv; split at hv <;>
+      (try simp only [constIf] at hv) <;>
+      first
+        | exact absurd hv (by simp)
+        | (split at hv <;> exact absurd hv (by simp))
+  case ineg =>
+    split at hv <;> (try simp only [constIf] at hv) <;>
+      first
+        | exact absurd hv (by simp)
+        | (split at hv <;> exact absurd hv (by simp))
+  case isub =>
+    split at hv
+    · simp only [constIf] at hv; split at hv <;> exact absurd hv (by simp)
+    · simp only [offsetIf] at hv; split at hv <;> exact absurd hv (by simp)
+    · injection hv with hq2; subst hq2; rfl
+  case ishl =>
+    split at hv
+    · split at hv
+      · simp only [constIf] at hv; split at hv <;> exact absurd hv (by simp)
+      · exact absurd hv (by simp)
+    · simp only [shlLit] at hv; split at hv
+      · injection hv with hq2; subst hq2; rfl
+      · exact absurd hv (by simp)
+    · exact absurd hv (by simp)
+  case ushr =>
+    split at hv
+    · split at hv
+      · simp only [constIf] at hv; split at hv <;> exact absurd hv (by simp)
+      · exact absurd hv (by simp)
+    · simp only [shrLit] at hv; split at hv
+      · injection hv with hq2; subst hq2; rfl
+      · exact absurd hv (by simp)
+    · exact absurd hv (by simp)
+  case load => split at hv <;> exact absurd hv (by simp)
+  case uextend64 =>
+    split at hv
+    · split at hv <;> exact absurd hv (by simp)
+    · exact absurd hv (by simp)
+  case ireduce32 =>
+    -- the arm passes its operand's binding through unchanged
+    rename_i a
+    exact h a dx hv
+  case sextend64 =>
+    rename_i a
+    split at hv
+    · exact absurd hv (by simp)
+    · rename_i xd hea
+      injection hv with hq2; subst hq2; exact h a xd hea
+    · exact absurd hv (by simp)
+  all_goals exact absurd hv (by simp)
+
+
+theorem noBaseDerived_step {e : Env} {i : Inst} (h : NoBaseDerived e) :
+    NoBaseDerived (stepPure e i) := by
+  intro v dx hv
+  by_cases hvd : ∃ d, Inst.destOf? i = some d ∧ v.id = d.id
+  · obtain ⟨d, hd, hq⟩ := hvd
+    have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    exact noBaseDerived_dest h hd hv
+  · have hfr : ∀ d, Inst.destOf? i = some d → v.id ≠ d.id :=
+      fun d hd hq => hvd ⟨d, hd, hq⟩
+    rw [stepPure_frame _ e v hfr] at hv
+    exact h v dx hv
 
 /-! ### What the retags still need
 
