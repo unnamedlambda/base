@@ -2399,13 +2399,24 @@ theorem denotes_sextend64 {m : Mem} {vs : Vals} {e : Env} {d a d0 : Val} {x : V}
     · exact absurd hv (by simp [SymVal.toD?])
   · exact denotes_frame hden hf hev hvd hv
 
+/-- **The operands whose width the model has to assume something about.**
+
+    Exactly the arms that turn an operand into a root or a base: the additive
+    pair, the two shifts, and the two retags.  Every other instruction reads
+    nothing this condition covers, so it asks nothing of it. -/
+def Inst.readsOf : Inst → List Val
+  | .iadd _ a b | .isub _ a b | .imul _ a b | .ishl _ a b | .ushr _ a b => [a, b]
+  | .ireduce32 _ a | .sextend64 _ a => [a]
+  | _ => []
+
 /-- **Every operand of the instruction is one the width hypothesis covers.**
 
     Stated over the whole instruction so the step below carries one hypothesis
-    rather than one per arm.  It is only ever consulted at an operand the model
-    could not name — see `UnnamedTracked`. -/
+    rather than one per arm, and over `readsOf` rather than over every value:
+    a program is free to hold floats and bytes in values this says nothing
+    about, and shipped ones do.  See `UnnamedTracked`. -/
 def OperandsTracked (vs : Vals) (e : Env) (i : Inst) : Prop :=
-  ∀ a, UnnamedTracked vs e a
+  ∀ a ∈ Inst.readsOf i, UnnamedTracked vs e a
 
 /-- **One step of the launch model is sound.**
 
@@ -2426,12 +2437,16 @@ theorem denotes_step {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V
     (hev : evalInst m vs i = some (d, x)) :
     Denotes (setV vs d x) (stepPure e i) := by
   cases i with
-  | iadd d' a b => exact denotes_iadd hag hden (hot a) hf hev
-  | isub d' a b => exact denotes_isub hag hden (hot a) hf hev
-  | ishl d' a b => exact denotes_ishl hag hden (hot a) (hot b) hf hev
-  | ushr d' a b => exact denotes_ushr hag hden (hot a) (hot b) hf hev
-  | ireduce32 d' a => exact denotes_ireduce32 hag hden (hot a) hf hev
-  | sextend64 d' a => exact denotes_sextend64 hag hden (hot a) hnb hf hev
+  | iadd d' a b => exact denotes_iadd hag hden (hot a (by simp [Inst.readsOf])) hf hev
+  | isub d' a b => exact denotes_isub hag hden (hot a (by simp [Inst.readsOf])) hf hev
+  | ishl d' a b =>
+      exact denotes_ishl hag hden (hot a (by simp [Inst.readsOf]))
+        (hot b (by simp [Inst.readsOf])) hf hev
+  | ushr d' a b =>
+      exact denotes_ushr hag hden (hot a (by simp [Inst.readsOf]))
+        (hot b (by simp [Inst.readsOf])) hf hev
+  | ireduce32 d' a => exact denotes_ireduce32 hag hden (hot a (by simp [Inst.readsOf])) hf hev
+  | sextend64 d' a => exact denotes_sextend64 hag hden (hot a (by simp [Inst.readsOf])) hnb hf hev
   | iconst d' t k =>
       refine denotes_const_dest hag hden hf hev ?_
       have hq : d' = d := by
@@ -2493,5 +2508,522 @@ theorem denotes_step {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V
   | _ =>
       refine denotes_const_dest hag hden hf hev ?_
       exact Or.inr (by rw [stepPure_untracked _ _ _ (evalInst_dest hev) rfl]; rfl)
+
+/-! ## The run
+
+    One step is not what the host proofs read.  They fold the model over a whole
+    block, so the invariant has to survive every instruction the machine
+    actually executes — including the ones `denotes_step` says nothing about: a
+    store, which writes memory and binds no value, and a call, whose result the
+    model cannot see into. -/
+
+/-- An instruction that binds nothing changes nothing. -/
+theorem stepPure_nodest {e : Env} {i : Inst} {w : Val} (hd : Inst.destOf? i = none) :
+    stepPure e i w = e w :=
+  stepPure_frame i e w (fun _ hd' => by rw [hd] at hd'; exact absurd hd' (by simp))
+
+theorem agree_nodest {vs : Vals} {e : Env} {i : Inst}
+    (hag : Agree vs e) (hd : Inst.destOf? i = none) : Agree vs (stepPure e i) := by
+  intro v k hv; rw [stepPure_nodest hd] at hv; exact hag v k hv
+
+theorem denotes_nodest {vs : Vals} {e : Env} {i : Inst}
+    (hden : Denotes vs e) (hd : Inst.destOf? i = none) : Denotes vs (stepPure e i) := by
+  intro v dd hv; rw [stepPure_nodest hd] at hv; exact hden v dd hv
+
+/-- **A destination the model refuses to name**, whatever the machine put there.
+
+    This is the shape of a call: the import's result is a value `stepPure`
+    cannot see into, and `stepPure_untracked` is what forces it to say so. -/
+theorem agree_opaque_dest {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (hag : Agree vs e) (hd : Inst.destOf? i = some d)
+    (hun : stepPure e i d = SymVal.unknown) : Agree (setV vs d x) (stepPure e i) := by
+  intro v k hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    rw [hveq, hun] at hv; exact absurd hv (by simp)
+  · rw [stepPure_frame i e v (fun d' hd' => by rw [hd] at hd'; cases hd'; exact hvd)] at hv
+    obtain ⟨t0, w, hw, htt, hs, hf⟩ := hag v k hv
+    exact ⟨t0, w, getV_setV_ne hvd hw, htt, hs, hf⟩
+
+theorem denotes_opaque_dest {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (hden : Denotes vs e) (hf : Fresh vs d) (hd : Inst.destOf? i = some d)
+    (hun : stepPure e i d = SymVal.unknown) :
+    Denotes (setV vs d x) (stepPure e i) := by
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    rw [hveq, hun] at hv; exact absurd hv (by simp [SymVal.toD?])
+  · rw [stepPure_frame i e v (fun d' hd' => by rw [hd] at hd'; cases hd'; exact hvd)] at hv
+    exact denotes_lift hf hvd (hden v dd hv)
+
+/-! ### Freshness, as a property of the instruction list
+
+    `Fresh` is what an SSA numbering gives, and it is a fact about the *text* of
+    a block: destinations run upward from the value count the block entered
+    with.  `DestsFrom` says exactly that, decidably, so a run instantiated at a
+    shipped function discharges it by `decide` rather than by hypothesis. -/
+
+/-- Binding a value grows the map to hold it and no further. -/
+theorem size_setV (vs : Vals) (d : Val) (x : V) :
+    (setV vs d x).size = max vs.size (d.id + 1) := by
+  simp only [setV, Array.set!, Array.size_setIfInBounds]
+  rcases Nat.lt_or_ge d.id vs.size with h | h
+  · rw [if_pos h]; omega
+  · rw [if_neg (Nat.not_lt.mpr h)]
+    simp only [Array.size_append, Array.size_replicate]
+    omega
+
+def DestsFrom (n : Nat) : List Inst → Bool
+  | []      => true
+  | i :: is => match Inst.destOf? i with
+               | some d => n ≤ d.id && DestsFrom (d.id + 1) is
+               | none   => DestsFrom n is
+
+/-! ### A partial static typing
+
+    `stepPure` never sees a type, and `UnnamedTracked` is where that costs
+    something.  Discharging it per program needs types the *text* determines,
+    and only for the values it determines them for: a program is free to hold
+    floats and bytes in values nothing here claims a type for. -/
+
+/-- Where this names a type the machine holds a scalar of exactly that type.
+    `none` claims nothing, which is what keeps it true of a program that also
+    computes with `f32` and `i8`.
+
+    Array-backed for the same reason `Clif.Env` is: a run instantiated at a
+    shipped function looks a type up once per operand, and a closure chain
+    makes that quadratic. -/
+structure TyEnv where
+  tys : Array (Option ClifTy)
+
+def TyEnv.get (Θ : TyEnv) (v : Val) : Option ClifTy :=
+  if h : v.id < Θ.tys.size then Θ.tys[v.id] else none
+
+instance : CoeFun TyEnv (fun _ => Val → Option ClifTy) := ⟨TyEnv.get⟩
+
+def TyEnv.empty : TyEnv := ⟨#[]⟩
+
+def TyEnv.set (Θ : TyEnv) (v : Val) (t : Option ClifTy) : TyEnv :=
+  if h : v.id < Θ.tys.size then ⟨Θ.tys.set v.id t h⟩
+  else ⟨(Θ.tys ++ Array.replicate (v.id - Θ.tys.size) none).push t⟩
+
+theorem TyEnv.set_apply (Θ : TyEnv) (v w : Val) (t : Option ClifTy) :
+    (Θ.set v t) w = if w.id = v.id then t else Θ w := by
+  by_cases h : v.id < Θ.tys.size
+  · simp only [TyEnv.set, TyEnv.get, dif_pos h, Array.size_set]
+    by_cases hw : w.id = v.id
+    · rw [dif_pos (hw ▸ h), if_pos hw, Array.getElem_set, if_pos hw.symm]
+    · by_cases hb : w.id < Θ.tys.size
+      · rw [dif_pos hb, if_neg hw, dif_pos hb, Array.getElem_set,
+            if_neg (fun hc => hw hc.symm)]
+      · rw [dif_neg hb, if_neg hw, dif_neg hb]
+  · have hs : Θ.tys.size ≤ v.id := Nat.le_of_not_lt h
+    simp only [TyEnv.set, TyEnv.get, dif_neg h, Array.size_push, Array.size_append,
+               Array.size_replicate]
+    have hsz : Θ.tys.size + (v.id - Θ.tys.size) = v.id := Nat.add_sub_cancel' hs
+    by_cases hw : w.id = v.id
+    · rw [dif_pos (by omega), if_pos hw, Array.getElem_push, dif_neg (by simp; omega)]
+    · by_cases hb : w.id < v.id + 1
+      · rw [dif_pos (by omega), if_neg hw, Array.getElem_push, dif_pos (by simp; omega)]
+        by_cases hb2 : w.id < Θ.tys.size
+        · rw [Array.getElem_append_left hb2, dif_pos hb2]
+        · rw [Array.getElem_append_right (by omega), dif_neg hb2,
+              Array.getElem_replicate]
+      · rw [dif_neg (by omega), if_neg hw, dif_neg (by omega)]
+
+theorem TyEnv.set_eq (Θ : TyEnv) (v w : Val) (t : Option ClifTy) (h : w.id = v.id) :
+    (Θ.set v t) w = t := by rw [TyEnv.set_apply, if_pos h]
+
+theorem TyEnv.set_ne (Θ : TyEnv) (v w : Val) (t : Option ClifTy) (h : ¬ (w.id = v.id)) :
+    (Θ.set v t) w = Θ w := by rw [TyEnv.set_apply, if_neg h]
+
+/-- **What the static typing owes the machine.**  One direction only: where it
+    names a type the value is a scalar of it.  A value it says nothing about is
+    unconstrained, which is what a `none` is for. -/
+def TypesAgree (Θ : TyEnv) (vs : Vals) : Prop :=
+  ∀ v t, Θ v = some t → ∃ w, getV vs v = some (.sc t w)
+
+theorem typesAgree_empty (vs : Vals) : TypesAgree TyEnv.empty vs := by
+  intro v t hv
+  simp only [TyEnv.empty, TyEnv.get] at hv
+  exact absurd hv (by simp)
+
+/-- The static typing, stepped alongside the model.  Only the arms whose result
+    type the instruction itself determines say anything; every other
+    destination is cleared, because a stale type is the same hazard as a stale
+    binding. -/
+def tyStep (Θ : TyEnv) : Inst → TyEnv
+  | .iconst d t _   => Θ.set d (some t)
+  | .iadd d a _ | .isub d a _ | .imul d a _ | .ishl d a _ | .ushr d a _
+  | .ineg d a       => Θ.set d (Θ a)
+  | .ireduce32 d _  => Θ.set d (some .i32)
+  | .uextend64 d _ | .sextend64 d _ => Θ.set d (some .i64)
+  | i => match Inst.destOf? i with
+         | some d => Θ.set d none
+         | none   => Θ
+
+/-- Clearing a destination is sound whatever the machine put there. -/
+theorem typesAgree_clear {Θ : TyEnv} {vs : Vals} {d : Val} {x : V}
+    (hta : TypesAgree Θ vs) : TypesAgree (Θ.set d none) (setV vs d x) := by
+  intro v t hv
+  by_cases hvd : v.id = d.id
+  · rw [TyEnv.set_eq _ _ _ _ hvd] at hv; exact absurd hv (by simp)
+  · rw [TyEnv.set_ne _ _ _ _ hvd] at hv
+    obtain ⟨w, hw⟩ := hta v t hv
+    exact ⟨w, getV_setV_ne hvd hw⟩
+
+/-- Naming a destination's type is sound when the machine's word has it. -/
+theorem typesAgree_dest {Θ : TyEnv} {vs : Vals} {d : Val} {x : V} {t : ClifTy}
+    {w : UInt64} (hta : TypesAgree Θ vs) (hx : x = .sc t w) :
+    TypesAgree (Θ.set d (some t)) (setV vs d x) := by
+  intro v t' hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    rw [TyEnv.set_eq _ _ _ _ hvd] at hv
+    injection hv with ht
+    exact ⟨w, by rw [hveq, ← ht, ← hx]; exact AlgorithmLib.HProg.getV_setV_self vs d x⟩
+  · rw [TyEnv.set_ne _ _ _ _ hvd] at hv
+    obtain ⟨w', hw'⟩ := hta v t' hv
+    exact ⟨w', getV_setV_ne hvd hw'⟩
+
+/-- An arm whose result carries an operand's type. -/
+theorem typesAgree_copy {Θ : TyEnv} {vs : Vals} {a d : Val} {x : V} {t : ClifTy}
+    {wa w : UInt64} (hta : TypesAgree Θ vs) (hga : getV vs a = some (.sc t wa))
+    (hx : x = .sc t w) : TypesAgree (Θ.set d (Θ a)) (setV vs d x) := by
+  rcases hqa : Θ a with _ | t'
+  · exact typesAgree_clear hta
+  · have hteq : t' = t := by
+      obtain ⟨w', hw'⟩ := hta a t' hqa
+      rw [hga] at hw'; injection hw' with h1; injection h1 with h2 _; exact h2.symm
+    rw [hteq]; exact typesAgree_dest hta hx
+
+/-- **The static typing is sound, over every instruction that computes.** -/
+theorem tyStep_sound {m : Mem} {Θ : TyEnv} {vs : Vals} {i : Inst} {d : Val} {x : V}
+    (hta : TypesAgree Θ vs) (hev : evalInst m vs i = some (d, x)) :
+    TypesAgree (tyStep Θ i) (setV vs d x) := by
+  cases i with
+  | iconst d' t k =>
+      have hq : d' = d ∧ x = ofInt t k := by
+        simp [evalInst, AlgorithmLib.HProg.Blocks.viaOp, evalOp] at hev
+        exact ⟨hev.1, hev.2.symm⟩
+      rw [tyStep, hq.1]
+      exact typesAgree_dest hta (by rw [hq.2]; exact ofInt_sc t k)
+  | iadd d' a b =>
+      obtain ⟨t, wa, wb, hga, _, _, hdd, hx⟩ := evalInst_iadd_inv hev
+      rw [tyStep, hdd]; exact typesAgree_copy hta hga hx
+  | isub d' a b =>
+      obtain ⟨t, wa, wb, hga, _, _, hdd, hx⟩ := evalInst_isub_inv hev
+      rw [tyStep, hdd]; exact typesAgree_copy hta hga hx
+  | imul d' a b =>
+      obtain ⟨t, wa, wb, hga, _, _, hdd, hx⟩ := evalInst_imul_inv hev
+      rw [tyStep, hdd]; exact typesAgree_copy hta hga hx
+  | ishl d' a b =>
+      obtain ⟨ta, tb, wa, wb, hga, _, _, _, hdd, hx⟩ := evalInst_ishl_inv hev
+      rw [tyStep, hdd]; exact typesAgree_copy hta hga hx
+  | ushr d' a b =>
+      obtain ⟨ta, tb, wa, wb, hga, _, _, _, hdd, hx⟩ := evalInst_ushr_inv hev
+      rw [tyStep, hdd]; exact typesAgree_copy hta hga hx
+  | ineg d' a =>
+      obtain ⟨t, w, hga, _, hdd, hx⟩ := evalInst_ineg_inv hev
+      rw [tyStep, hdd]; exact typesAgree_copy hta hga hx
+  | ireduce32 d' a =>
+      obtain ⟨t, w, _, _, _, hdd, hx⟩ := evalInst_ireduce32_inv hev
+      rw [tyStep, hdd]; exact typesAgree_dest hta hx
+  | uextend64 d' a =>
+      obtain ⟨t, w, _, _, _, hdd, hx⟩ := evalInst_uextend64_inv hev
+      rw [tyStep, hdd]; exact typesAgree_dest hta hx
+  | sextend64 d' a =>
+      obtain ⟨t, w, _, _, _, hdd, hx⟩ := evalInst_sextend64_inv hev
+      rw [tyStep, hdd]
+      exact typesAgree_dest hta (by rw [hx]; exact ofInt_sc _ _)
+  | _ =>
+      have hd := evalInst_dest hev
+      simp only [Inst.destOf?, Option.some.injEq] at hd
+      first
+        | exact absurd hd (by simp)
+        | (subst hd; exact typesAgree_clear hta)
+
+/-- What the typing asks of an operand, decidably. -/
+def TyTracked (Θ : TyEnv) (a : Val) : Bool :=
+  match Θ a with
+  | some .i32 | some .i64 => true
+  | _                     => false
+
+theorem trackedTy_of_tyTracked {Θ : TyEnv} {vs : Vals} {a : Val} {t : ClifTy} {w : UInt64}
+    (hta : TypesAgree Θ vs) (h : TyTracked Θ a = true)
+    (hga : getV vs a = some (.sc t w)) : TrackedTy t := by
+  simp only [TyTracked] at h
+  split at h
+  · rename_i heq
+    obtain ⟨w', hw'⟩ := hta a _ heq
+    rw [hga] at hw'; injection hw' with h1; injection h1 with h2 _
+    exact Or.inl h2
+  · rename_i heq
+    obtain ⟨w', hw'⟩ := hta a _ heq
+    rw [hga] at hw'; injection hw' with h1; injection h1 with h2 _
+    exact Or.inr h2
+  · exact absurd h (by simp)
+
+/-- The width exclusion, decided from the text.  Only the arms that turn an
+    operand into a root or a base are asked, which is where `UnnamedTracked` is
+    spent — see `narrowShiftDisagrees`. -/
+def TyOperandsOk (Θ : TyEnv) (i : Inst) : Bool :=
+  (Inst.readsOf i).all (TyTracked Θ)
+
+theorem operandsTracked_of_ty {Θ : TyEnv} {vs : Vals} {e : Env} {i : Inst}
+    (hta : TypesAgree Θ vs) (h : TyOperandsOk Θ i = true) :
+    OperandsTracked vs e i := by
+  intro a ha t w hga _
+  exact trackedTy_of_tyTracked hta (by
+    simp only [TyOperandsOk, List.all_eq_true] at h; exact h a (by simpa using ha)) hga
+
+/-! ### The block
+
+    A compiled block is a straight line ending in one terminator, and that is
+    the shape stated here rather than assumed: `TermLast` is decidable, and it
+    is what makes the model's fold and the machine's run consume the same
+    instructions.  Everything else the machine does on the way — writing memory,
+    calling an import — the invariants are indifferent to, because none of them
+    mentions memory and the model refuses to name a call's result. -/
+
+def Inst.isTerm : Inst → Bool
+  | .ret | .jump _ _ | .brif _ _ _ _ _ => true
+  | _ => false
+
+/-- Only the last instruction is a terminator. -/
+def TermLast : List Inst → Bool
+  | []           => true
+  | [_]          => true
+  | i :: j :: is => !Inst.isTerm i && TermLast (j :: is)
+
+/-- The static typing, folded over a block alongside the model. -/
+def tyRun (Θ : TyEnv) : List Inst → TyEnv
+  | []      => Θ
+  | i :: is => tyRun (tyStep Θ i) is
+
+/-- **The whole side condition, decided from the block's text.**
+
+    Two things at once, because they are checked at the same place: every
+    destination is numbered past the values already bound — what an SSA
+    numbering gives, and what `Fresh` needs — and every operand whose width the
+    model has to assume something about has a type that makes the assumption
+    true. -/
+def RunOk (Θ : TyEnv) (n : Nat) : List Inst → Bool
+  | []      => true
+  | i :: is => TyOperandsOk Θ i
+      && (match Inst.destOf? i with
+          | some d => (n ≤ d.id) && RunOk (tyStep Θ i) (d.id + 1) is
+          | none   => RunOk (tyStep Θ i) n is)
+
+/-- **What the model and the machine agree on at a point in the run.** -/
+structure Sound (Θ : TyEnv) (vs : Vals) (e : Env) : Prop where
+  agree   : Agree vs e
+  denotes : Denotes vs e
+  noBase  : NoBaseDerived e
+  types   : TypesAgree Θ vs
+
+theorem sound_empty : Sound TyEnv.empty #[] Env.empty :=
+  ⟨agree_empty _, denotes_empty _, noBaseDerived_empty, typesAgree_empty _⟩
+
+/-- One step, all four facts at once. -/
+theorem sound_step {m : Mem} {Θ : TyEnv} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (hs : Sound Θ vs e) (hty : TyOperandsOk Θ i = true) (hf : Fresh vs d)
+    (hev : evalInst m vs i = some (d, x)) :
+    Sound (tyStep Θ i) (setV vs d x) (stepPure e i) :=
+  ⟨const_sound hs.agree hev,
+   denotes_step hs.agree hs.denotes hs.noBase
+     (operandsTracked_of_ty hs.types hty) hf hev,
+   noBaseDerived_step hs.noBase,
+   tyStep_sound hs.types hev⟩
+
+/-- A destination the model refuses to name — a call's result. -/
+theorem sound_opaque {Θ : TyEnv} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (hs : Sound Θ vs e) (hf : Fresh vs d) (hd : Inst.destOf? i = some d)
+    (hun : stepPure e i d = SymVal.unknown) (hcl : tyStep Θ i = Θ.set d none) :
+    Sound (tyStep Θ i) (setV vs d x) (stepPure e i) :=
+  ⟨agree_opaque_dest hs.agree hd hun,
+   denotes_opaque_dest hs.denotes hf hd hun,
+   noBaseDerived_step hs.noBase,
+   by rw [hcl]; exact typesAgree_clear hs.types⟩
+
+/-- An instruction that binds no value: a store, or a terminator. -/
+theorem sound_nodest {Θ : TyEnv} {vs : Vals} {e : Env} {i : Inst}
+    (hs : Sound Θ vs e) (hd : Inst.destOf? i = none) :
+    Sound (tyStep Θ i) vs (stepPure e i) := by
+  have hcl : tyStep Θ i = Θ := by
+    cases i <;> simp_all [tyStep, Inst.destOf?]
+  exact ⟨agree_nodest hs.agree hd, denotes_nodest hs.denotes hd,
+         noBaseDerived_step hs.noBase, by rw [hcl]; exact hs.types⟩
+
+/-- A store writes memory, and no value. -/
+theorem doStore_vals {s s' : BSt} {v a : Val} {as : Option ClifTy}
+    (h : doStore s v a as = .ok s') : s'.vals = s.vals := by
+  simp only [doStore] at h
+  split at h
+  · split at h
+    · split at h
+      · injection h with h; rw [← h]
+      · exact absurd h (by simp)
+    · split at h
+      · injection h with h; rw [← h]
+      · exact absurd h (by simp)
+  · exact absurd h (by simp)
+
+/-- Binding a value past the end grows the map to exactly hold it. -/
+theorem size_setV_fresh {vs : Vals} {d : Val} {x : V} (hf : Fresh vs d) :
+    (setV vs d x).size = d.id + 1 := by
+  simp only [Fresh] at hf
+  rw [size_setV]; omega
+
+theorem termLast_tail {i : Inst} {rest : List Inst} (h : TermLast (i :: rest) = true) :
+    TermLast rest = true := by
+  cases rest with
+  | nil => rfl
+  | cons j r => simp only [TermLast, Bool.and_eq_true] at h; exact h.2
+
+theorem runOk_head {Θ : TyEnv} {n : Nat} {i : Inst} {rest : List Inst}
+    (h : RunOk Θ n (i :: rest) = true) : TyOperandsOk Θ i = true := by
+  simp only [RunOk, Bool.and_eq_true] at h; exact h.1
+
+theorem runOk_tail_dest {Θ : TyEnv} {n : Nat} {i : Inst} {rest : List Inst} {d : Val}
+    (h : RunOk Θ n (i :: rest) = true) (hd : Inst.destOf? i = some d) :
+    n ≤ d.id ∧ RunOk (tyStep Θ i) (d.id + 1) rest = true := by
+  simp only [RunOk, Bool.and_eq_true, hd, decide_eq_true_eq] at h
+  exact ⟨h.2.1, h.2.2⟩
+
+theorem runOk_tail_nodest {Θ : TyEnv} {n : Nat} {i : Inst} {rest : List Inst}
+    (h : RunOk Θ n (i :: rest) = true) (hd : Inst.destOf? i = none) :
+    RunOk (tyStep Θ i) n rest = true := by
+  simp only [RunOk, Bool.and_eq_true, hd] at h; exact h.2
+
+/-- **The launch model is sound over a whole block.**
+
+    Everything above was one instruction; this is what the host proofs actually
+    fold.  The machine runs `runInsts` — stores, calls and all — and the model
+    runs `evalPure` over the same list, and at the terminator the two still
+    agree about every value the model names.
+
+    `RunOk` and `TermLast` are the only side conditions, and both are decided
+    from the block's own text. -/
+theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEnv)
+    (e : Env) (r : BSt × Next) (w : World),
+    Sound Θ s.vals e → TermLast is = true → RunOk Θ s.vals.size is = true →
+    AlgorithmLib.HProg.Blocks.runInsts env s is = .ok r w →
+    Sound (tyRun Θ is) r.1.vals (evalPure e is) := by
+  intro is
+  induction is with
+  | nil => intro _ _ _ _ _ _ _ _ _ hr; exact absurd hr (by simp [AlgorithmLib.HProg.Blocks.runInsts])
+  | cons i rest ih =>
+    intro env s Θ e r w hs hterm hok hr
+    -- the terminator arms: the machine stops, and `TermLast` says nothing follows
+    have hlast : ∀ (_ : Inst.isTerm i = true), rest = [] := by
+      intro hit
+      cases rest with
+      | nil => rfl
+      | cons j rest' => simp [TermLast, hit] at hterm
+    cases i with
+    | ret =>
+        rw [hlast rfl]
+        simp only [AlgorithmLib.HProg.Blocks.runInsts, Outcome.ok.injEq] at hr
+        rw [← hr.1]
+        simp only [tyRun, evalPure]
+        exact sound_nodest hs (by simp [Inst.destOf?])
+    | jump t args =>
+        rw [hlast rfl]
+        simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+        split at hr
+        · exact absurd hr (by simp)
+        · simp only [Outcome.ok.injEq] at hr
+          rw [← hr.1]
+          simp only [tyRun, evalPure]
+          exact sound_nodest hs (by simp [Inst.destOf?])
+    | brif c tb ta eb ea =>
+        rw [hlast rfl]
+        simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+        split at hr
+        · exact absurd hr (by simp)
+        · split at hr
+          · exact absurd hr (by simp)
+          · simp only [Outcome.ok.injEq] at hr
+            rw [← hr.1]
+            simp only [tyRun, evalPure]
+            exact sound_nodest hs (by simp [Inst.destOf?])
+    | store v a =>
+        have hnd : Inst.destOf? (Inst.store v a) = none := by simp [Inst.destOf?]
+        simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+        simp only [tyRun, evalPure]
+        split at hr
+        · exact absurd hr (by simp)
+        · rename_i s' hds
+          have hv : s'.vals = s.vals := doStore_vals hds
+          exact ih env s' _ _ r w (by rw [hv]; exact sound_nodest hs hnd)
+            (termLast_tail hterm) (by rw [hv]; exact runOk_tail_nodest hok hnd) hr
+    | storeTyped t v a =>
+        have hnd : Inst.destOf? (Inst.storeTyped t v a) = none := by simp [Inst.destOf?]
+        simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+        simp only [tyRun, evalPure]
+        split at hr
+        · exact absurd hr (by simp)
+        · rename_i s' hds
+          have hv : s'.vals = s.vals := doStore_vals hds
+          exact ih env s' _ _ r w (by rw [hv]; exact sound_nodest hs hnd)
+            (termLast_tail hterm) (by rw [hv]; exact runOk_tail_nodest hok hnd) hr
+    | istore8 v a =>
+        have hnd : Inst.destOf? (Inst.istore8 v a) = none := by simp [Inst.destOf?]
+        simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+        simp only [tyRun, evalPure]
+        split at hr
+        · split at hr
+          · exact ih env _ _ _ r w (by exact sound_nodest hs hnd)
+              (termLast_tail hterm) (by exact runOk_tail_nodest hok hnd) hr
+          · exact absurd hr (by simp)
+        · exact absurd hr (by simp)
+    | call dopt fn args =>
+        simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+        simp only [tyRun, evalPure]
+        split at hr
+        · exact absurd hr (by simp)
+        rename_i avs hargs
+        split at hr
+        · exact absurd hr (by simp)
+        rename_i decl hfind
+        split at hr
+        · exact absurd hr (by simp)
+        rename_i nm hcallee
+        split at hr
+        · exact absurd hr (by simp)
+        rename_i res w' hcall
+        cases dopt with
+        | none =>
+            have hd : Inst.destOf? (Inst.call none fn args) = none := rfl
+            exact ih env _ _ _ r w (by exact sound_nodest hs hd)
+              (termLast_tail hterm) (by exact runOk_tail_nodest hok hd) hr
+        | some dv =>
+            cases res with
+            | none => exact absurd hr (by simp)
+            | some rv =>
+                have hd : Inst.destOf? (Inst.call (some dv) fn args) = some dv := rfl
+                obtain ⟨hle, hrest⟩ := runOk_tail_dest hok hd
+                have hf : Fresh s.vals dv := hle
+                have hun : stepPure e (Inst.call (some dv) fn args) dv = SymVal.unknown :=
+                  stepPure_untracked _ _ _ hd (by simp [Inst.TrackedB])
+                have hcl : tyStep Θ (Inst.call (some dv) fn args) = Θ.set dv none := rfl
+                exact ih env _ _ _ r w (by exact sound_opaque hs hf hd hun hcl)
+                  (termLast_tail hterm)
+                  (by rw [show (setV s.vals dv rv).size = dv.id + 1 from size_setV_fresh hf]
+                      exact hrest) hr
+    | _ =>
+        simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+        simp only [tyRun, evalPure]
+        split at hr
+        · exact absurd hr (by simp)
+        · rename_i d xv hev
+          have hd := evalInst_dest hev
+          obtain ⟨hle, hrest⟩ := runOk_tail_dest hok hd
+          have hf : Fresh s.vals d := hle
+          exact ih env _ _ _ r w (by exact sound_step hs (runOk_head hok) hf hev)
+            (termLast_tail hterm)
+            (by rw [show (setV s.vals d xv).size = d.id + 1 from size_setV_fresh hf]
+                exact hrest) hr
 
 end AlgorithmLib.Clif.Check
