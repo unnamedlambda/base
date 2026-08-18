@@ -1,4 +1,6 @@
 import Qwen2Common
+import AlgorithmLib.ClifCheck
+import Qwen2Algorithm
 
 /-!
   # The inference claims, at concrete values
@@ -247,5 +249,62 @@ theorem attn_o_at_last (hl : CuBlasIsMatvec) (h : AllHold [Law.combinerComm])
               (attnMem gimW h smMetaW 14 m B_AO j.val)))
           (NumOps.ofNat 0) :=
   attn_o_is_matvec gimW hl h smMetaW m (D - 1) (by decide)
+
+/-! ## The launch model, on the bodies the inference claims are read through
+
+    `attn_ops_are`, `ffn_ops_are` and the driver claims recover their device
+    operations from these bodies with `Clif.stepPure`.  `Check.sound_entry` says
+    that recovery is sound, under conditions on the body's text; here they are
+    discharged on the bodies that ship.
+
+    These are the bodies that found the gap.  Until `tyStep` gave a load its
+    result type, all three failed — a pointer read from the descriptor and then
+    offset is the shape, and the model has to assume a width for it.  Not
+    unsoundness: the values are `i64`, and the static typing could not see it. -/
+
+section LaunchModel
+
+open AlgorithmLib.IR AlgorithmLib.Clif AlgorithmLib.Clif.Check Qwen2Common Qwen2
+
+theorem attn_blocks_ty_ok :
+    TyBlocksOk TyEnv.empty (stateOf inferLayerAttnFn).blocks = true := by native_decide
+
+theorem ffn_blocks_ty_ok :
+    TyBlocksOk TyEnv.empty (stateOf inferLayerFfnFn).blocks = true := by native_decide
+
+theorem infer_blocks_ty_ok :
+    TyBlocksOk TyEnv.empty (stateOf inferFn).blocks = true := by native_decide
+
+theorem attn_entry_ok : EntryOk (stateOf inferLayerAttnFn) = true := by native_decide
+
+theorem ffn_entry_ok : EntryOk (stateOf inferLayerFfnFn) = true := by native_decide
+
+theorem infer_entry_ok : EntryOk (stateOf inferFn) = true := by native_decide
+
+/-- **The model's claims about the attention body's entry block are sound.** -/
+theorem attn_entry_sound {env' : AlgorithmLib.HProg.FnEnv}
+    {s : AlgorithmLib.HProg.Blocks.BSt}
+    {r : AlgorithmLib.HProg.Blocks.BSt × AlgorithmLib.HProg.Blocks.Next}
+    {w : AlgorithmLib.HProg.Sem.World}
+    (hsz : s.vals.size = (entryParams (stateOf inferLayerAttnFn)).length)
+    (hpar : TypesAgree (entryTys (stateOf inferLayerAttnFn)) s.vals)
+    (hr : AlgorithmLib.HProg.Blocks.runInsts env' s
+            (entryInsts (stateOf inferLayerAttnFn)) = .ok r w) :
+    Sound (tyRun (entryTys (stateOf inferLayerAttnFn))
+            (entryInsts (stateOf inferLayerAttnFn)))
+      r.1.vals (evalPure Env.empty (entryInsts (stateOf inferLayerAttnFn))) :=
+  sound_entry attn_entry_ok hsz hpar hr
+
+/-- …not for want of a caller: one pointer parameter, declared `i64`. -/
+theorem attn_entry_arg :
+    TypesAgree (entryTys (stateOf inferLayerAttnFn))
+      #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
+  typesAgree_of_check (by native_decide)
+
+theorem attn_entry_size :
+    (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size
+      = (entryParams (stateOf inferLayerAttnFn)).length := by native_decide
+
+end LaunchModel
 
 end Qwen2NonVacuity

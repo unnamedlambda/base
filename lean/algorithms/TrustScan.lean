@@ -111,6 +111,17 @@ def roots : List Name :=
   , `Qwen2Common.final_no_loops
   , `layer_fn_calls
   , `leaf_fns_no_loops
+  -- …and the model those recoveries are read through, sound on the bodies that
+  -- ship
+  , `Qwen2NonVacuity.attn_entry_sound
+  , `Qwen2NonVacuity.attn_entry_arg
+  , `Qwen2NonVacuity.attn_entry_size
+  , `Qwen2NonVacuity.attn_entry_ok
+  , `Qwen2NonVacuity.ffn_entry_ok
+  , `Qwen2NonVacuity.infer_entry_ok
+  , `Qwen2NonVacuity.attn_blocks_ty_ok
+  , `Qwen2NonVacuity.ffn_blocks_ty_ok
+  , `Qwen2NonVacuity.infer_blocks_ty_ok
   ]
 
 end TrustScan
@@ -128,7 +139,16 @@ def nativeRoster : List Name :=
    , `Qwen2Common.infer_loop_body_calls
    , `Qwen2Common.final_no_loops
    , `layer_fn_calls
-   , `leaf_fns_no_loops ]
+   , `leaf_fns_no_loops
+   , `Qwen2NonVacuity.attn_entry_sound
+   , `Qwen2NonVacuity.attn_entry_arg
+   , `Qwen2NonVacuity.attn_entry_size
+   , `Qwen2NonVacuity.attn_entry_ok
+   , `Qwen2NonVacuity.ffn_entry_ok
+   , `Qwen2NonVacuity.infer_entry_ok
+   , `Qwen2NonVacuity.attn_blocks_ty_ok
+   , `Qwen2NonVacuity.ffn_blocks_ty_ok
+   , `Qwen2NonVacuity.infer_blocks_ty_ok ]
 
 
 open TrustScan in

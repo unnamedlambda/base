@@ -1216,6 +1216,35 @@ theorem evalInst_sextend64_inv {m : Mem} {vs : Vals} {d a dd : Val} {x : V}
       exact ⟨t, w, rfl, hc.1, hc.2, h.1.symm, by first | (rw [← h.2]; rfl) | rw [← h.2]⟩
     · rw [if_neg hc] at h; simp at h
 
+/-- **What a `load` that produced a value tells us.**  Every kind returns a
+    scalar of the type the access names; only a vector type gives something
+    else. -/
+theorem evalInst_load_inv {m : Mem} {vs : Vals} {d a dd : Val} {op : LoadOp} {x : V}
+    (h : evalInst m vs (.load d op a) = some (dd, x)) (hl : op.ty.lanes = none) :
+    dd = d ∧ ∃ w, x = .sc op.ty w := by
+  rcases hga : getV vs a with _ | u <;>
+    simp [evalInst, evalInst.un, AlgorithmLib.HProg.Blocks.viaOp, evalOp,
+          AlgorithmLib.HProg.Sem.get, hga] at h
+  cases u with
+  | vec => simp at h
+  | sc t w =>
+    simp only [] at h
+    cases hk : op.kind <;> rw [hk] at h <;> simp only [] at h
+    case plain =>
+      rw [hl] at h
+      simp only [] at h
+      rcases hb : Mem.load m w (tyBytes op.ty) with _ | b <;> rw [hb] at h <;> simp at h
+      exact ⟨h.1.symm, _, h.2.symm⟩
+    case uload8 =>
+      rcases hb : Mem.load m w 1 with _ | b <;> rw [hb] at h <;> simp at h
+      exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
+    case uload32 =>
+      rcases hb : Mem.load m w 4 with _ | b <;> rw [hb] at h <;> simp at h
+      exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
+    case sload8 =>
+      rcases hb : Mem.load m w 1 with _ | b <;> rw [hb] at h <;> simp at h
+      exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
+
 /-- `addSym` reports a constant only by folding two of them. -/
 theorem addSym_const {e : Env} {a b : Val} {k : Int} (h : addSym e a b = .const k) :
     ∃ xa xb, e a = .const xa ∧ e b = .const xb ∧ constIf (xa + xb) = .const k := by
@@ -2699,6 +2728,11 @@ def tyStep (Θ : TyEnv) : Inst → TyEnv
   | .ineg d a       => Θ.set d (Θ a)
   | .ireduce32 d _  => Θ.set d (some .i32)
   | .uextend64 d _ | .sextend64 d _ => Θ.set d (some .i64)
+  -- a load's result type is the one the access names, at every kind; only a
+  -- vector type gives a value this cannot describe
+  | .load d op _    => Θ.set d (match op.ty.lanes with
+                                | none   => some op.ty
+                                | some _ => none)
   | i => match Inst.destOf? i with
          | some d => Θ.set d none
          | none   => Θ
@@ -2777,6 +2811,16 @@ theorem tyStep_sound {m : Mem} {Θ : TyEnv} {vs : Vals} {i : Inst} {d : Val} {x 
       obtain ⟨t, w, _, _, _, hdd, hx⟩ := evalInst_sextend64_inv hev
       rw [tyStep, hdd]
       exact typesAgree_dest hta (by rw [hx]; exact ofInt_sc _ _)
+  | load d' op a =>
+      rw [tyStep]
+      rcases hl : op.ty.lanes with _ | ln
+      · obtain ⟨hdd, w, hx⟩ := evalInst_load_inv hev hl
+        rw [hdd]; exact typesAgree_dest hta hx
+      · have hdd : d' = d := by
+          have := evalInst_dest hev
+          simp only [Inst.destOf?, Option.some.injEq] at this
+          exact this
+        rw [hdd]; exact typesAgree_clear hta
   | _ =>
       have hd := evalInst_dest hev
       simp only [Inst.destOf?, Option.some.injEq] at hd
