@@ -2187,6 +2187,11 @@ theorem denotes_ushr {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
     · exact absurd hv (by simp [SymVal.toD?])
   · exact denotes_frame hden hf hev hvd hv
 
+/-- A binding the invariant is answered for by `const_sound`, or one it is
+    owed nothing about. -/
+def ConstOrOpaque (sv : SymVal) : Prop :=
+  (∃ k, sv = .const k) ∨ sv.toD? = none
+
 /-- **The arms that name nothing but a constant.**
 
     Most instructions bind their destination a constant, a slot or nothing.
@@ -2196,16 +2201,18 @@ theorem denotes_ushr {m : Mem} {vs : Vals} {e : Env} {d a b d0 : Val} {x : V}
 theorem denotes_const_dest {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
     (hag : Agree vs e) (hden : Denotes vs e) (hf : Fresh vs d)
     (hev : evalInst m vs i = some (d, x))
-    (hdst : ∀ dd, (stepPure e i d).toD? = some dd →
-              ∃ k, dd = .lit k ∧ stepPure e i d = .const k) :
+    (hdst : ConstOrOpaque (stepPure e i d)) :
     Denotes (setV vs d x) (stepPure e i) := by
   intro v dd hv
   by_cases hvd : v.id = d.id
   · have hveq : v = d := by cases v; cases d; simp_all
     subst hveq
-    obtain ⟨k, hk, hc⟩ := hdst dd hv
-    subst hk
-    exact denotes_of_const (const_sound hag hev) hc
+    rcases hdst with ⟨k, hc⟩ | hn
+    · rw [hc] at hv
+      simp only [SymVal.toD?, Option.some.injEq] at hv
+      subst hv
+      exact denotes_of_const (const_sound hag hev) hc
+    · rw [hn] at hv; exact absurd hv (by simp)
   · exact denotes_frame hden hf hev hvd hv
 
 /-- **`stepPure` never names a base shape as a `derived` value.**
@@ -2301,19 +2308,190 @@ theorem noBaseDerived_step {e : Env} {i : Inst} (h : NoBaseDerived e) :
     rw [stepPure_frame _ e v hfr] at hv
     exact h v dx hv
 
-/-! ### What the retags still need
+/-- `ofInt` is a scalar of the type it names, whatever the value. -/
+theorem ofInt_sc (t : ClifTy) (k : Int) :
+    ofInt t k = .sc t (UInt64.ofNat (k.emod (1 <<< 64)).toNat &&& widthMask t) := rfl
 
-    `ireduce32` and `sextend64` pass their operand's binding through, so their
-    arms need one fact this file does not yet state: that `stepPure` never
-    names a **base** shape as a `derived` value.  It does not — the only
-    expressions it builds are `sub`, `shl` and `shr` at the top, and the two
-    passthrough arms preserve that — but until it is an invariant, a
-    `derived (lit k)` cannot be ruled out, and sign extension of one is the
-    same widening hazard that `offset` had: `Congr t w k` at `i32` does not
-    give `Congr .i64` of the extension.
+/-- **Truncation.**  `ireduce32` passes its operand's binding through, and the
+    narrower type is where both clauses survive: a congruence only weakens with
+    the modulus, and the equality holds because `DExp.Exact` puts the value
+    inside `foldableRange`, which `i32` represents exactly. -/
+theorem denotes_ireduce32 {m : Mem} {vs : Vals} {e : Env} {d a d0 : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (hua : UnnamedTracked vs e a)
+    (hf : Fresh vs d0) (hev : evalInst m vs (.ireduce32 d a) = some (d0, x)) :
+    Denotes (setV vs d0 x) (stepPure e (.ireduce32 d a)) := by
+  obtain ⟨t, w, hga, _, _, hdd, hx⟩ := evalInst_ireduce32_inv hev
+  rw [hdd] at hf hev ⊢
+  have htt : TrackedTy t := operand_tracked hden hua hga
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    rw [stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    have hdxa : dOf e a = dd := dOf_of_toD? e a dd hv
+    obtain ⟨t', w', hwa, _, hra, hcga, hca⟩ := operand_denotes htt hden hga
+    rw [hga] at hwa; injection hwa with q1; injection q1 with q2 q3
+    subst q2; subst q3
+    rw [hdxa] at hra hcga hca
+    refine ⟨ClifTy.i32, w &&& widthMask ClifTy.i32,
+      by rw [← hx]; exact AlgorithmLib.HProg.getV_setV_self vs v x, Or.inl rfl,
+      rootsLt_mono (size_le_setV vs v x) hra, ?_, ?_⟩
+    · intro hb
+      rw [eval_congr (rhoOf_setV hf) hra]
+      exact congr_reduce32 htt (hcga hb)
+    · intro hex
+      rw [eval_congr (rhoOf_setV hf) hra]
+      have hex' : DExp.Exact (rhoOf vs) dd = true := by
+        rw [← exact_congr (rhoOf_setV hf) hra]; exact hex
+      exact signed_reduce32 htt (hca hex') (inFold_of_exact hex')
+  · exact denotes_frame hden hf hev hvd hv
 
-    So the missing piece is `NoBaseDerived e := ∀ v dx, e v = .derived dx →
-    DExp.isBase dx = false`, preserved by an induction whose every case is
-    structural.  With it, both retags reduce to `denotesAt_expr`. -/
+/-- **Sign extension**, which keeps only what its own guard bounds.
+
+    A constant survives because `litOk` puts it inside `foldableRange`, where
+    the narrow word and its extension are the same integer, and `const_sound`
+    already decides it.  An expression survives for the same reason, by way of
+    `DExp.Exact` — and `NoBaseDerived` is what says the expression cannot be a
+    base, which is the case where the two would come apart. -/
+theorem denotes_sextend64 {m : Mem} {vs : Vals} {e : Env} {d a d0 : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (hua : UnnamedTracked vs e a)
+    (hnb : NoBaseDerived e)
+    (hf : Fresh vs d0) (hev : evalInst m vs (.sextend64 d a) = some (d0, x)) :
+    Denotes (setV vs d0 x) (stepPure e (.sextend64 d a)) := by
+  obtain ⟨t, w, hga, _, _, hdd, hx⟩ := evalInst_sextend64_inv hev
+  rw [hdd] at hf hev ⊢
+  have htt : TrackedTy t := operand_tracked hden hua hga
+  intro v dd hv
+  by_cases hvd : v.id = d.id
+  · have hveq : v = d := by cases v; cases d; simp_all
+    subst hveq
+    rw [stepPure, Env.set_eq _ _ _ _ rfl] at hv
+    split at hv
+    · -- a constant travels through
+      rename_i k hea
+      injection hv with hq; subst hq
+      refine denotes_of_const (const_sound hag hev) ?_
+      rw [stepPure, Env.set_eq _ _ _ _ rfl, hea]
+    · -- so does an expression, which `NoBaseDerived` says is not a base
+      rename_i dx hea
+      injection hv with hq; subst hq
+      have hnbx : DExp.isBase dx = false := hnb a dx hea
+      have hdxa : dOf e a = dx := dOf_of_toD? e a dx (by rw [hea]; rfl)
+      obtain ⟨t', w', hwa, _, hra, _, hca⟩ := operand_denotes htt hden hga
+      rw [hga] at hwa; injection hwa with q1; injection q1 with q2 q3
+      subst q2; subst q3
+      rw [hdxa] at hra hca
+      refine ⟨ClifTy.i64,
+        UInt64.ofNat ((signed t w).emod (1 <<< 64)).toNat &&& widthMask ClifTy.i64,
+        by rw [← ofInt_sc, ← hx]; exact AlgorithmLib.HProg.getV_setV_self vs v x,
+        Or.inr rfl, rootsLt_mono (size_le_setV vs v x) hra,
+        fun hb => absurd (hb.symm.trans hnbx) (by simp), ?_⟩
+      intro hex
+      rw [eval_congr (rhoOf_setV hf) hra]
+      have hex' : DExp.Exact (rhoOf vs) dx = true := by
+        rw [← exact_congr (rhoOf_setV hf) hra]; exact hex
+      obtain ⟨w2, hof, hsg⟩ :=
+        signed_ofInt (t := ClifTy.i64) (Or.inr rfl) (inFold_of_exact hex')
+      rw [ofInt_sc] at hof
+      injection hof with q1 q2
+      rw [hca hex', q2]
+      exact hsg
+    · exact absurd hv (by simp [SymVal.toD?])
+  · exact denotes_frame hden hf hev hvd hv
+
+/-- **Every operand of the instruction is one the width hypothesis covers.**
+
+    Stated over the whole instruction so the step below carries one hypothesis
+    rather than one per arm.  It is only ever consulted at an operand the model
+    could not name — see `UnnamedTracked`. -/
+def OperandsTracked (vs : Vals) (e : Env) (i : Inst) : Prop :=
+  ∀ a, UnnamedTracked vs e a
+
+/-- **One step of the launch model is sound.**
+
+    If every claim the model already makes about a named value is one the
+    machine agrees with, then it still is after the step — over every `Inst`
+    constructor, not a sampled grid.
+
+    Three hypotheses, and each is there for a reason the model cannot remove:
+    `Agree` and `NoBaseDerived` are invariants carried alongside, `Fresh` is
+    what an SSA numbering gives, and `OperandsTracked` is the narrow-width
+    exclusion `narrowShiftDisagrees` measures.
+
+    `slot` is not covered here: `SymVal.toD?` is `none` on one, so this says
+    nothing about it, and it has its own claim. -/
+theorem denotes_step {m : Mem} {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
+    (hag : Agree vs e) (hden : Denotes vs e) (hnb : NoBaseDerived e)
+    (hot : OperandsTracked vs e i) (hf : Fresh vs d)
+    (hev : evalInst m vs i = some (d, x)) :
+    Denotes (setV vs d x) (stepPure e i) := by
+  cases i with
+  | iadd d' a b => exact denotes_iadd hag hden (hot a) hf hev
+  | isub d' a b => exact denotes_isub hag hden (hot a) hf hev
+  | ishl d' a b => exact denotes_ishl hag hden (hot a) (hot b) hf hev
+  | ushr d' a b => exact denotes_ushr hag hden (hot a) (hot b) hf hev
+  | ireduce32 d' a => exact denotes_ireduce32 hag hden (hot a) hf hev
+  | sextend64 d' a => exact denotes_sextend64 hag hden (hot a) hnb hf hev
+  | iconst d' t k =>
+      refine denotes_const_dest hag hden hf hev ?_
+      have hq : d' = d := by
+        have hde := evalInst_dest hev
+        simp only [Inst.destOf?, Option.some.injEq] at hde
+        exact hde
+      rw [hq, stepPure, Env.set_eq _ _ _ _ rfl]
+      simp only [constLit]
+      split
+      · exact Or.inl ⟨_, rfl⟩
+      · exact Or.inr rfl
+  | imul d' a b =>
+      refine denotes_const_dest hag hden hf hev ?_
+      have hq : d' = d := by
+        have hde := evalInst_dest hev
+        simp only [Inst.destOf?, Option.some.injEq] at hde
+        exact hde
+      rw [hq, stepPure, Env.set_eq _ _ _ _ rfl]
+      simp only [mulSym]
+      split <;> (try simp only [constIf]) <;>
+        first
+          | exact Or.inr rfl
+          | (split
+             · exact Or.inl ⟨_, rfl⟩
+             · exact Or.inr rfl)
+  | ineg d' a =>
+      refine denotes_const_dest hag hden hf hev ?_
+      have hq : d' = d := by
+        have hde := evalInst_dest hev
+        simp only [Inst.destOf?, Option.some.injEq] at hde
+        exact hde
+      rw [hq, stepPure, Env.set_eq _ _ _ _ rfl]
+      split <;> (try simp only [constIf]) <;>
+        first
+          | exact Or.inr rfl
+          | (split
+             · exact Or.inl ⟨_, rfl⟩
+             · exact Or.inr rfl)
+  | uextend64 d' a =>
+      refine denotes_const_dest hag hden hf hev ?_
+      have hq : d' = d := by
+        have hde := evalInst_dest hev
+        simp only [Inst.destOf?, Option.some.injEq] at hde
+        exact hde
+      rw [hq, stepPure, Env.set_eq _ _ _ _ rfl]
+      split
+      · split
+        · exact Or.inl ⟨_, rfl⟩
+        · exact Or.inr rfl
+      · exact Or.inr rfl
+  | load d' op a =>
+      refine denotes_const_dest hag hden hf hev ?_
+      have hq : d' = d := by
+        have hde := evalInst_dest hev
+        simp only [Inst.destOf?, Option.some.injEq] at hde
+        exact hde
+      rw [hq, stepPure, Env.set_eq _ _ _ _ rfl]
+      split <;> exact Or.inr rfl
+  | _ =>
+      refine denotes_const_dest hag hden hf hev ?_
+      exact Or.inr (by rw [stepPure_untracked _ _ _ (evalInst_dest hev) rfl]; rfl)
 
 end AlgorithmLib.Clif.Check
