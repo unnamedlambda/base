@@ -3154,6 +3154,69 @@ theorem denotes_offset {vs : Vals} {e : Env} {v p : Val} {k : Int}
   subst h2; subst h3
   exact signed_of_congr_inTy htt hin (hcg rfl)
 
+/-- The `.load` arm binds a slot only from an offset, so a consumer holding the
+    model's answer holds the offset claim `slot_address` spends. -/
+theorem stepPure_load_slot {e : Env} {d a p : Val} {k : Int} {op : LoadOp}
+    (h : stepPure e (.load d op a) d = .slot p k) : e a = .offset p k := by
+  rw [stepPure, Env.set_eq _ _ _ _ rfl] at h
+  split at h
+  · rename_i p' k' hea
+    injection h with h1 h2
+    rw [hea, h1, h2]
+  · exact absurd h (by simp)
+
+/-- **A `slot` names the address the load read.**
+
+    The fourth claim's address half, and the half every consumer uses:
+    `bufDescOf`'s near/far identity is about *which* address a handle came
+    from, not about the word there.  It follows from the offset claim, so it
+    needs no account of memory — which is what keeps it clear of the value
+    half, where a byte-level reading of `Mem.load` and a condition on the
+    block's stores both enter.
+
+    `inTy` is the offset claim's own side condition; a pointer plus a
+    displacement not representable at `i64` is not an address. -/
+theorem slot_address {vs : Vals} {e : Env} {a p : Val} {k : Int} {wa pw : UInt64}
+    (hden : Denotes vs e) (hea : e a = .offset p k)
+    (hga : getV vs a = some (.sc .i64 wa)) (hgp : getV vs p = some (.sc .i64 pw))
+    (hk : 0 ≤ k)
+    (hin : inTy ClifTy.i64 (signed ClifTy.i64 pw + k) = true) :
+    wa = pw + UInt64.ofNat k.toNat := by
+  have htt : TrackedTy ClifTy.i64 := Or.inr rfl
+  have hrho : rhoOf vs p.id = signed ClifTy.i64 pw := by
+    simp only [rhoOf, hgp]
+  have hsg : signed ClifTy.i64 wa = signed ClifTy.i64 pw + k := by
+    have := denotes_offset hden hea hga (by rwa [hrho])
+    rwa [hrho] at this
+  have hca : Congr ClifTy.i64 wa (signed ClifTy.i64 pw + k) :=
+    congr_of_signed' htt hsg
+  have hcp : Congr ClifTy.i64 pw (signed ClifTy.i64 pw) := congr_of_signed' htt rfl
+  have hck : Congr ClifTy.i64 (UInt64.ofNat k.toNat) k := by
+    simp only [Congr, modOf]
+    have h1 : (UInt64.ofNat k.toNat).toNat = k.toNat % 2 ^ 64 := rfl
+    rw [h1]
+    have h2 : ((k.toNat % 2 ^ 64 : Nat) : Int) = (k.toNat : Int) % ((2 ^ 64 : Nat) : Int) := rfl
+    rw [h2, show (((2 ^ 64 : Nat) : Int)) = 18446744073709551616 from rfl,
+        Int.toNat_of_nonneg hk]
+    omega
+  have hsum : Congr ClifTy.i64 (pw + UInt64.ofNat k.toNat) (signed ClifTy.i64 pw + k) :=
+    congr_add' htt hcp hck
+  have hwn : wa.toNat < 2 ^ 64 := wa.toNat_lt_size
+  have hpn : (pw + UInt64.ofNat k.toNat).toNat < 2 ^ 64 :=
+    (pw + UInt64.ofNat k.toNat).toNat_lt_size
+  have hw : (wa.toNat : Int) < 18446744073709551616 := by omega
+  have hp : ((pw + UInt64.ofNat k.toNat).toNat : Int) < 18446744073709551616 := by omega
+  have e1 : (wa.toNat : Int) % 18446744073709551616 = (wa.toNat : Int) :=
+    Int.emod_eq_of_lt (Int.natCast_nonneg _) hw
+  have e2 : ((pw + UInt64.ofNat k.toNat).toNat : Int) % 18446744073709551616
+      = ((pw + UInt64.ofNat k.toNat).toNat : Int) :=
+    Int.emod_eq_of_lt (Int.natCast_nonneg _) hp
+  simp only [Congr, modOf] at hca hsum
+  have hq : (wa.toNat : Int) = ((pw + UInt64.ofNat k.toNat).toNat : Int) := by
+    rw [← e1, ← e2, hca, hsum]
+  have : wa.toNat = (pw + UInt64.ofNat k.toNat).toNat := by omega
+  exact UInt64.toNat.inj this
+
 /-! ### Instantiating a run at a compiled function
 
     A theorem whose side conditions no shipped function satisfies says nothing,
