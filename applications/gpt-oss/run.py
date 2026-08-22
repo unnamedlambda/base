@@ -31,7 +31,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank  # noqa: E402
-from layout import (D_IN_BYTES, D_OUT_TRACE, D_OUT_BYTES, check_layout)  # noqa: E402
+from layout import (D_IN_BYTES, D_OUT_TRACE, D_OUT_BYTES, check_layout, acquire_engine_lock)  # noqa: E402
 
 
 def main():
@@ -50,6 +50,9 @@ def main():
                     help="write the prompt-end logits (f32) here for check.py")
     ap.add_argument("--tokens", default=None, help="comma-separated ids, skips the tokenizer")
     args = ap.parse_args()
+
+    # before anything allocates: two of these pin 9.48 GiB each
+    acquire_engine_lock('run.py')
 
     import py_base
 

@@ -17,6 +17,12 @@ the text.
 Then type. `/reasoning high`, `/temp 0.7`, `/new`, `/quit` change things
 mid-conversation; anything else is a message.
 
+Sampling is on by default at temperature 1.0, which is what this checkpoint is
+meant to be run at. Greedy decoding loops on anything open-ended -- ask a
+reasoning model for a poem at temperature zero and it will repeat one sentence
+until the budget runs out. `/temp 0` is there when a reproducible run matters
+more than a good one.
+
 Run it alone: the pin cannot be swapped or reclaimed, so a second large
 allocation in this process takes the machine down rather than failing.
 """
@@ -29,10 +35,10 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_STOP, D_MAXNEW,
+from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_NPRE, D_PRE, D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT,
                     D_OUT_NGEN, D_OUT_GEN, D_OUT_NTEXT, D_OUT_TEXTTOK,
-                    D_OUT_BYTES, check_layout)
+                    D_OUT_BYTES, check_layout, ln_min_p, acquire_engine_lock)
 
 # Harmony's control tokens. Constants of the chat format, and the only ids this
 # program names: everything else it handles is bytes in or ids out.
@@ -53,12 +59,23 @@ def main():
     ap.add_argument("--bank", required=True)
     ap.add_argument("--reasoning", choices=("low", "medium", "high"),
                     default="medium")
-    ap.add_argument("--temp", type=float, default=0.0)
+    # 1.0, not 0. Greedy decoding of a reasoning model walks into a loop on
+    # anything open-ended -- ask it for a poem at temperature zero and the
+    # analysis channel repeats one sentence until the budget runs out. The
+    # checkpoint is meant to be sampled from; `/temp 0` is still there for a
+    # reproducible run.
+    ap.add_argument("--temp", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("-n", "--max-new", type=int, default=1024)
+    ap.add_argument("--min-p", type=float, default=0.02,
+                    help="drop tokens below this fraction of the most "
+                         "likely one's probability; 0 keeps the whole tail")
+    ap.add_argument("-n", "--max-new", type=int, default=2048)
     ap.add_argument("--show-analysis", action="store_true",
                     help="print the model's reasoning as well as its answer")
     args = ap.parse_args()
+
+    # before anything allocates: two of these pin 9.48 GiB each
+    acquire_engine_lock('cli.py')
 
     import py_base
 
@@ -74,7 +91,8 @@ def main():
         assert len(p) < 256, name
         paths[off] = p
 
-    state = {"reasoning": args.reasoning, "temp": args.temp, "seed": args.seed}
+    state = {"reasoning": args.reasoning, "temp": args.temp, "seed": args.seed,
+             "min_p": args.min_p}
     history = []          # the conversation, as ids
 
     def turn(text, pre, post, max_new=None):
@@ -82,8 +100,8 @@ def main():
         if len(raw) >= TEXT_MAX:
             return None, None, f"message too long: {len(raw)} bytes"
         if max(len(pre), len(post)) > TMPL_MAX:
-            return None, None, (f"conversation too long for the buffers: "
-                                f"{len(pre)} ids; /new to start over")
+            return None, None, (f"conversation is {len(pre)} tokens and the "
+                                f"key cache holds {TMPL_MAX}; /new to start over")
         buf = bytearray(D_IN_BYTES)
         struct.pack_into("<III", buf, 0, 0, 0, 1)
         struct.pack_into("<I", buf, 12, len(raw))
@@ -92,6 +110,7 @@ def main():
         inv_t = 0.0 if state["temp"] <= 0 else 1.0 / state["temp"]
         struct.pack_into("<f", buf, D_INVT, inv_t)
         struct.pack_into("<I", buf, D_SEED, state["seed"] & 0xFFFFFFFF)
+        struct.pack_into("<f", buf, D_LNMINP, ln_min_p(state["min_p"]))
         struct.pack_into("<II", buf, D_STOP, RETURN,
                          args.max_new if max_new is None else max_new)
         struct.pack_into("<II", buf, D_NPRE, len(pre), len(post))
@@ -204,8 +223,23 @@ def main():
                 think = reply.split(am, 1)[1].split("<|end|>", 1)[0]
                 print(f"\n  [thinking] {think.strip()}")
         if answer is None:
-            print(f"\ngpt> (no final channel in {len(gen_ids)} tokens; "
-                  f"raise -n or lower /reasoning)")
+            # The turn spent its budget thinking, or ended the analysis and
+            # stopped without answering. Showing the tail of the reasoning is
+            # more use than showing nothing, and says which of the two it was.
+            am = "<|channel|>analysis<|message|>"
+            think = reply.split(am, 1)[1] if am in reply else reply
+            think = think.split("<|end|>", 1)[0].strip()
+            tail = think[-300:] if len(think) > 300 else think
+            ran_out = len(gen_ids) >= args.max_new
+            why = (f"used all {args.max_new} tokens thinking"
+                   if ran_out else
+                   f"stopped after {len(gen_ids)} tokens without answering")
+            print(f"\ngpt> (no answer: {why})")
+            if tail:
+                print(f"     ...{tail}")
+            print(f"     try /seed {state['seed'] + 1}"
+                  + (f", or -n above {args.max_new}" if ran_out else "")
+                  + (", or /reasoning low" if state["reasoning"] != "low" else ""))
         else:
             print(f"\ngpt> {answer.strip()}")
         print(f"     [{len(gen_ids)} tokens, {dt:.1f}s, "

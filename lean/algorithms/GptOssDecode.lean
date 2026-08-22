@@ -208,7 +208,7 @@ def B_TOKEN := B_X + 21
     size and free at that moment: the two hold different things and a reader
     should not have to know the order of the step to see that. -/
 def B_EMB := B_X + 22
-/-- `[vocab, seed, 1/T as bits]` for the sampling kernel. -/
+/-- `[vocab, seed, 1/T as bits, ln(min_p) as bits]` for the sampling kernel. -/
 def B_SAMP := B_X + 23
 def B_Y := B_X + 24                     -- four
 def B_HID := B_Y + TOPK                 -- four
@@ -230,7 +230,7 @@ def dBufBytes : List Nat :=
        , (64 * 64) * 4, (64 * 64) * 2, HH * 4
        , 2 * ROPE_N * HALF * 4, 64 * 4, 4, 4
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
-       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 12 ]
+       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 16 ]
     ++ List.replicate TOPK (HH * 4)
     ++ List.replicate TOPK (II * 4)
     ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dKindBytes.getD k 0))
@@ -375,13 +375,22 @@ def D_NPOST : Nat := 1052
     of the middle of a filename. -/
 def D_INVT : Nat := 1056
 def D_SEED : Nat := 1060
+/-- `ln(min_p)` as `Float32` bits: a token is out of the draw when its
+    probability is below `min_p` times the most likely token's. Negative
+    infinity keeps everything, which is what a caller that does not want the
+    filter sends. -/
+def D_LNMINP : Nat := 1064
 /-- Room for a chat template on each side of the text.
 
     Sized for a conversation rather than a turn: a command-line client replays
     the whole transcript as `pre` each time, because the cache is rebuilt from
-    position zero and the model has to see what was said before. -/
-def TMPL_MAX : Nat := 2048
-def D_PRE : Nat := 1064
+    position zero and the model has to see what was said before.
+
+    `CAP_FULL` is the real ceiling — a conversation cannot outrun the key cache
+    — so this matches it rather than sitting below it and failing first with a
+    message about buffers, which tells a user nothing about what went wrong. -/
+def TMPL_MAX : Nat := 8192
+def D_PRE : Nat := 1072
 def D_POST : Nat := D_PRE + 4 * TMPL_MAX
 def D_TEXT : Nat := D_POST + 4 * TMPL_MAX
 def D_IN_BYTES : Nat := D_TEXT + TEXT_MAX
@@ -872,8 +881,10 @@ def dStepM (tok pos : R) : M R := do
   storeI32 (← iadd seed0 (← imul pos (← iconst32 0x9E3779B1)))
     (← absAddr ptr (DMETA_OFF + 4 * 35))
   storeI32 invT (← absAddr ptr (DMETA_OFF + 4 * 36))
+  storeI32 (← load32 (← iaddImm dataPtr D_LNMINP))
+    (← absAddr ptr (DMETA_OFF + 4 * 37))
   let bSamp ← load32 (← absAddr ptr (dBindOff B_SAMP))
-  let n12 ← iconst64 12
+  let n12 ← iconst64 16
   let _ ← call IR.Ffi.cudaUpload.id
     [ctxPtr, bSamp, (← absAddr ptr (DMETA_OFF + 4 * 34)), n12]
   let sampling ← ifte .ne invT zz (pure [oo]) (pure [zz])

@@ -55,6 +55,8 @@ import AlgorithmLib.ML.QuantMX
   mantissa is zero, so the scale is `s << 23` read as a float.
 -/
 
+set_option maxRecDepth 8000
+
 namespace GptOssKernels
 
 open AlgorithmLib.PTX
@@ -894,7 +896,7 @@ def argmaxLogits : KernelSpec where
     kernel a pure function of its inputs, which is what lets a caller reproduce
     a sample by passing the same seed.
 
-    `meta` is `[n, seed, 1/T as bits]`. A zero `1/T` would be a division by
+    `meta` is `[n, seed, 1/T as bits, ln(min_p) as bits]`. A zero `1/T` would be a division by
     zero at temperature infinity; the caller sends greedy to the argmax kernel
     instead, which is the same thing at `T = 0` and cheaper to reason about. -/
 def sampleLogits : KernelSpec where
@@ -907,12 +909,55 @@ def sampleLogits : KernelSpec where
     let n ← freshR; ldGlobalU n metaP
     let seed ← freshR; ldGlobalUO seed metaP 4
     let invT ← freshF; ldGlobalFO invT metaP 8
+    let lnMinP ← freshF; ldGlobalFO lnMinP metaP 12
     let tid ← freshR; movR tid tidX
     let sm ← smemBase
+    let ln2 := FImm.bits 0x3F317218          -- ln 2
+    -- **Pass one: the largest tempered logit.**
+    --
+    -- min-p keeps a token when its probability is at least `min_p` times the
+    -- most likely one's, and in tempered space that is a flat threshold:
+    -- `v >= vmax + ln(min_p)`. So the filter costs one extra sweep and no sort,
+    -- and it is what keeps temperature 1.0 from occasionally drawing a token
+    -- out of the two-hundred-thousand-long tail.
+    let vmax ← freshF; movFI vmax (.bits 0xFF800000)
+    let mi ← freshR; movR mi tid
+    let mloop := "SM_MAX"
+    let mdone := "SM_MAXDONE"
+    label mloop
+    do
+      let p ← freshP; setpGe p mi n; braIf p mdone
+      let off ← freshRd; mulWideRI off mi 4
+      let a ← freshRd; addRd a logits off
+      let v ← freshF; ldGlobalF v a
+      mulF v v invT
+      maxF vmax vmax v
+      addRI mi mi 32
+      bra mloop
+    label mdone
+    do
+      let va ← freshR; shlR va tid 2; addR va va sm
+      stSharedFD va vmax
+      barSync
+      let k ← freshR; movRC k 0
+      let rl := "SM_MAXRED"
+      let rlEnd := "SM_MAXRED_END"
+      movFI vmax (.bits 0xFF800000)
+      label rl
+      do
+        let p ← freshP; setpGeI p k 32; braIf p rlEnd
+        let ka ← freshR; shlR ka k 2; addR ka ka sm
+        let v ← freshF; ldSharedFD v ka
+        maxF vmax vmax v
+        addRI k k 1
+        bra rl
+      label rlEnd
+      barSync
+    -- everything at least `ln(min_p)` below the best is out of the draw
+    let thresh ← freshF; addF thresh vmax lnMinP
     let best ← freshF; movFI best (.bits 0xFF800000)
     let bi ← freshR; movRC bi 0
     let i ← freshR; movR i tid
-    let ln2 := FImm.bits 0x3F317218          -- ln 2
     let loop := "SM_LOOP"
     let ldone := "SM_DONE"
     label loop
@@ -922,6 +967,9 @@ def sampleLogits : KernelSpec where
       let a ← freshRd; addRd a logits off
       let v ← freshF; ldGlobalF v a
       mulF v v invT
+      let keep ← freshP; setpGeF keep v thresh
+      let nx := "SM_SKIP"
+      braIfNot keep nx
       -- a hash of the index, mixed with the seed
       let h ← freshR; xorRR h i seed
       mulLoRI h h 0x9E3779B1
@@ -945,9 +993,11 @@ def sampleLogits : KernelSpec where
       maxF best best v
       let ni ← freshR; selpR ni i bi gt
       movR bi ni
+      label nx
       addRI i i 32
       bra loop
     label ldone
+    barSync
     let va ← freshR; shlR va tid 2; addR va va sm
     stSharedFD va best
     let ia ← freshR; addRI ia va 128

@@ -25,10 +25,10 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_STOP, D_MAXNEW,
+from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_NPRE, D_PRE,
                     D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT, D_OUT_NGEN,
-                    D_OUT_GEN, D_OUT_BYTES, check_layout)
+                    D_OUT_GEN, D_OUT_BYTES, check_layout, ln_min_p, acquire_engine_lock)
 
 # Harmony's system turn, in the shape the checkpoint documents.  The channel
 # list is not decoration: without it the model opens with a channel name it
@@ -62,11 +62,17 @@ def main():
                     help="0 is greedy; anything else draws from the tempered "
                          "softmax by the Gumbel-max trick, on the device")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--min-p", type=float, default=0.02,
+                    help="drop tokens below this fraction of the most "
+                         "likely one's probability; 0 keeps the whole tail")
     ap.add_argument("--raw", action="store_true",
                     help="no template: send the prompt text alone")
     args = ap.parse_args()
 
     import time
+    # before anything allocates: two of these pin 9.48 GiB each
+    acquire_engine_lock('chat.py')
+
     import py_base
     from tokenizers import Tokenizer
     from huggingface_hub import hf_hub_download
@@ -115,6 +121,7 @@ def main():
     inv_t = 0.0 if args.temp <= 0 else 1.0 / args.temp
     struct.pack_into("<f", buf, D_INVT, inv_t)
     struct.pack_into("<I", buf, D_SEED, args.seed & 0xFFFFFFFF)
+    struct.pack_into("<f", buf, D_LNMINP, ln_min_p(args.min_p))
     struct.pack_into("<II", buf, D_STOP, stop, args.max_new)
     struct.pack_into("<II", buf, D_NPRE, len(pre), len(post))
     if pre:

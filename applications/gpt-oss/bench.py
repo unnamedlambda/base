@@ -27,7 +27,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from layout import (D_IN_BYTES, D_OUT_BYTES, check_layout)
+from layout import (D_IN_BYTES, D_OUT_BYTES, check_layout, acquire_engine_lock)
 
 ROW_BYTES = 13253760          # one expert, all six pieces
 NL, TOPK = 24, 4
@@ -41,6 +41,9 @@ def main():
     ap.add_argument("--gen", type=int, default=128)
     ap.add_argument("--seed", type=int, default=11)
     args = ap.parse_args()
+
+    # before anything allocates: two of these pin 9.48 GiB each
+    acquire_engine_lock('bench.py')
 
     import py_base
 
