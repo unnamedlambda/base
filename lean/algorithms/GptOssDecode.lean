@@ -359,7 +359,10 @@ def D_MAXNEW : Nat := 1044
     chat format inside a program that is otherwise about the model. -/
 def D_NPRE : Nat := 1048
 def D_NPOST : Nat := 1052
-def TMPL_MAX : Nat := 64
+/-- Room for a chat template on each side of the text. Harmony's system turn
+    alone is sixty-odd tokens once a developer turn joins it, so this is not a
+    generous bound but a working one. -/
+def TMPL_MAX : Nat := 256
 def D_PRE : Nat := 1056
 def D_POST : Nat := D_PRE + 4 * TMPL_MAX
 def D_TEXT : Nat := D_POST + 4 * TMPL_MAX

@@ -28,19 +28,10 @@ import time
 
 import numpy as np
 
-# the artifact's own layout, mirrored here rather than guessed
-TEXT_MAX = 8192
-TMPL_MAX = 64
-D_PRE = 1056
-D_POST = D_PRE + 4 * TMPL_MAX
-D_TEXT = D_POST + 4 * TMPL_MAX
-D_IN_BYTES = D_TEXT + TEXT_MAX
-D_OUT_TRACE = 8 + 201088 * 4
-D_OUT_TEXT = D_OUT_TRACE + 2 * 24 * 2880 * 4
-D_OUT_BYTES = D_OUT_TEXT + TEXT_MAX
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank  # noqa: E402
+from layout import (D_IN_BYTES, D_OUT_TRACE, D_OUT_BYTES, check_layout)  # noqa: E402
 
 
 def main():
@@ -64,6 +55,7 @@ def main():
 
     bank = Bank(args.bank)
     H, NL = bank.H, bank.L
+    check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
     assert not art.extras, f"expected one entry and no extras; got {sorted(art.extras)}"
     base = py_base.Base(art.setup)

@@ -24,19 +24,10 @@ import os
 import struct
 import sys
 
-TEXT_MAX = 8192
-TMPL_MAX = 64
-D_STOP, D_MAXNEW = 1040, 1044
-D_NPRE, D_NPOST = 1048, 1052
-D_PRE = 1056
-D_POST = D_PRE + 4 * TMPL_MAX
-D_TEXT = D_POST + 4 * TMPL_MAX
-D_IN_BYTES = D_TEXT + TEXT_MAX
-D_OUT_TRACE = 8 + 201088 * 4
-D_OUT_TEXT = D_OUT_TRACE + 2 * 24 * 2880 * 4
-D_OUT_NGEN = D_OUT_TEXT + TEXT_MAX
-D_OUT_GEN = D_OUT_NGEN + 8
-D_OUT_BYTES = D_OUT_GEN + 4 * TEXT_MAX
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from layout import (TEXT_MAX, TMPL_MAX, D_STOP, D_MAXNEW, D_NPRE, D_PRE,
+                    D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT, D_OUT_NGEN,
+                    D_OUT_GEN, D_OUT_BYTES, check_layout)
 
 # Harmony's system turn, in the shape the checkpoint documents.  The channel
 # list is not decoration: without it the model opens with a channel name it
@@ -55,6 +46,8 @@ def main():
     ap.add_argument("--bank", required=True)
     ap.add_argument("--prompt", default="What is the capital of France?")
     ap.add_argument("--system", default=SYSTEM)
+    ap.add_argument("--developer",
+                    default="Answer the user directly and briefly.")
     ap.add_argument("-n", "--max-new", type=int, default=64)
     ap.add_argument("--raw", action="store_true",
                     help="no template: send the prompt text alone")
@@ -76,6 +69,8 @@ def main():
         pre, post, stop = [], [], 199999
     else:
         pre = ids("<|start|>system<|message|>" + args.system
+                  + "<|end|><|start|>developer<|message|># Instructions\n\n"
+                  + args.developer
                   + "<|end|><|start|>user<|message|>")
         post = ids("<|end|><|start|>assistant")
         stop = ref.token_to_id("<|return|>")
@@ -83,6 +78,8 @@ def main():
             stop = 199999
     assert len(pre) <= TMPL_MAX and len(post) <= TMPL_MAX, "template too long"
 
+    import json
+    check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
     assert not art.extras, f"expected one entry and no extras; got {sorted(art.extras)}"
     base = py_base.Base(art.setup)
