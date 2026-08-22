@@ -123,7 +123,8 @@ def dPtx : List String :=
   , GptOssKernels.moduleFor GptOssKernels.downGemvBias
   , GptOssKernels.moduleFor GptOssKernels.moeCombine4
   , GptOssKernels.moduleFor GptOssKernels.routerTop4
-  , GptOssKernels.moduleFor GptOssKernels.argmaxLogits ]
+  , GptOssKernels.moduleFor GptOssKernels.argmaxLogits
+  , GptOssKernels.moduleFor GptOssKernels.widenBf16 ]
 
 def S_RMS := 0
 def S_ADD := 1
@@ -139,6 +140,7 @@ def S_DOWN := 11
 def S_COMBINE := 12
 def S_TOP4 := 13
 def S_ARGMAX := 14
+def S_WIDEN := 15
 
 /-! ## Buffers
 
@@ -186,7 +188,12 @@ def B_FNORM := B_X + 20
     bytes out of sixteen is not a short read but a failure — and one that
     arrives as a panic from inside the driver rather than as a wrong answer. -/
 def B_TOKEN := B_X + 21
-def B_Y := B_X + 22                     -- four
+/-- The embedding row as the table stores it: bf16, 5.7 KiB, widened on the
+    device.  Its own buffer rather than a borrow of `B_XNB`, which is the same
+    size and free at that moment: the two hold different things and a reader
+    should not have to know the order of the step to see that. -/
+def B_EMB := B_X + 22
+def B_Y := B_X + 23                     -- four
 def B_HID := B_Y + TOPK                 -- four
 def DSTORE := B_HID + TOPK              -- 9 x NL dense weights
 def KVSTORE := DSTORE + 9 * NL          -- 2 x NL caches
@@ -206,7 +213,7 @@ def dBufBytes : List Nat :=
        , (64 * 64) * 4, (64 * 64) * 2, HH * 4
        , 2 * ROPE_N * HALF * 4, 64 * 4, 4, 4
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
-       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4 ]
+       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2 ]
     ++ List.replicate TOPK (HH * 4)
     ++ List.replicate TOPK (II * 4)
     ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dKindBytes.getD k 0))
@@ -264,13 +271,17 @@ theorem gptossDecodeMap_ok :
 
 def env : FnEnv := env% [.cuda, .cublas, .fileIO]
 
-/-- What the caller passes: a token, its position, and where the bank is. The
-    paths are read once; the two integers are read every call. -/
+/-- What the caller passes: a token, its position, and where the bank is.
+
+    Three paths and two integers, and nothing else — no weights, no embedding
+    row, no numbers the model is made of. The paths are read once; the two
+    integers are read every call. -/
 def D_TOK : Nat := 0
 def D_POS : Nat := 4
 def D_PEXP : Nat := 16
 def D_PDEN : Nat := 272
-def D_IN_BYTES : Nat := 528
+def D_PEMB : Nat := 528
+def D_IN_BYTES : Nat := 784
 
 def NBLK : Nat := 32 * warpsPerCta
 
@@ -654,19 +665,24 @@ def dMainFn : HProg.Code :=
     storeI32 (← iconst32 1) (← absAddr ptr DINIT_OFF))
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let ctxPtr ← cudaCtxPtr ptr
-  let _tok ← load32 dataPtr
+  let tok ← load32 dataPtr
   let pos ← load32 (← iaddImm dataPtr D_POS)
-  -- The embedding row arrives widened, behind the caller's two integers.
+  -- **The embedding row, gathered here.**
   --
-  -- It is the one gather this program does not do, and it is on the ledger as
-  -- `EmbedHostGather` and has been since before there was an artifact. The
-  -- reason is narrow: the table is bf16, the first RMSNorm reads f32, and this
-  -- kernel set narrows but does not widen. A widening kernel closes it and
-  -- costs one more PTX slot; keeping the whole table on the device closes it
-  -- too and costs a gigabyte, which is a hundred and eighty expert slots.
+  -- The table is bf16 and the first RMSNorm reads f32, so the row is read out
+  -- of the file at `token * HH * 2`, staged, uploaded as the 5.7 KiB it is,
+  -- and widened on the device. The alternative that needs no kernel is to hold
+  -- all 201088 rows in device memory, which costs 1.08 GiB — a hundred and
+  -- eighty expert slots — to save a read of under six kilobytes.
+  let bEmb ← load32 (← absAddr ptr (dBindOff B_EMB))
   let bX ← load32 (← absAddr ptr (dBindOff B_X))
-  let hb ← iconst64 (HH * 4)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bX, (← iaddImm dataPtr D_IN_BYTES), hb]
+  let stagePtrT ← load64 (← absAddr ptr DSTAGE_OFF)
+  let rowB ← iconst64 (HH * 2)
+  let rowOff ← imul (← uextend64 tok) rowB
+  let pEmb ← iaddImm dataPtr D_PEMB
+  let _ ← call IR.Ffi.fileReadToPtr.id [pEmb, stagePtrT, rowOff, rowB]
+  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bEmb, stagePtrT, rowB]
+  dEnqueue ptr S_WIDEN ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_EMB, B_X, B_NMH]
   -- the meta both cache depths need
   let one32 ← iconst32 1
   let len ← iadd pos one32
@@ -758,7 +774,7 @@ def dSlotBytes (t : String) : List UInt8 :=
   b ++ zeros (DSLOT - b.length)
 
 def dInitialMemory : List UInt8 :=
-  zeros DHOST_LEN_OFF ++ u32le (D_IN_BYTES + HH * 4)
+  zeros DHOST_LEN_OFF ++ u32le D_IN_BYTES
     ++ zeros (DPTX_OFF - DHOST_LEN_OFF - 4)
     ++ dPtx.flatMap dSlotBytes
     ++ zeros (DMEM_SIZE - DBIND_OFF)

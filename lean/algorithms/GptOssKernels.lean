@@ -664,6 +664,43 @@ def narrowBf16 : KernelSpec where
     ptxRet
 
 
+/-- **bf16 to f32, the other direction.**
+
+    The embedding table is bf16 and the first RMSNorm reads f32, so without
+    this the caller has to widen a row and hand it in — the one gather the
+    engine could not do for itself. One thread per packed pair, the same shape
+    `narrow_bf16` has, and the widening is exact: bf16 is f32 with the low
+    sixteen mantissa bits cleared, so shifting them back is lossless and no
+    rounding decision arises. -/
+def widenBf16 : KernelSpec where
+  name := "widen_bf16"
+  params := ["p_in", "p_out", "p_meta"]
+  body := do
+    let inp ← freshRd; ldParam64 inp "p_in"
+    let out ← freshRd; ldParam64 out "p_out"
+    let metaP ← freshRd; ldParam64 metaP "p_meta"
+    let nPairs ← freshR; ldGlobalU nPairs metaP
+    let tid ← freshR; movR tid tidX
+    let cta ← freshR; movR cta ctaX
+    let i ← freshR; mulLoRI i cta (32 * warpsPerCta); addR i i tid
+    let inRange ← freshP; setpLt inRange i nPairs
+    let skip := "WIDEN_SKIP"
+    braIfNot inRange skip
+    let off ← freshRd; mulWideRI off i 4
+    let a ← freshRd; addRd a inp off
+    let packed ← freshR; ldGlobalU packed a
+    let lo ← freshR; shlR lo packed 16
+    let hi ← freshR; andR hi packed 0xFFFF0000
+    let f0 ← freshF; bitsToF f0 lo
+    let f1 ← freshF; bitsToF f1 hi
+    let oOff ← freshRd; mulWideRI oOff i 8
+    let oa ← freshRd; addRd oa out oOff
+    stGlobalF oa f0
+    stGlobalFO oa 4 f1
+    label skip
+    ptxRet
+
+
 /-- **The router's decision, taken on the device.**
 
     Four experts out of thirty-two, and the gates that weight them. Small

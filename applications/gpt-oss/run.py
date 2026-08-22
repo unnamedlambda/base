@@ -29,7 +29,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from reference import Bank, bf16_to_f32  # noqa: E402
+from reference import Bank  # noqa: E402
 
 
 def main():
@@ -59,7 +59,8 @@ def main():
 
     exp = os.path.abspath(os.path.join(args.bank, "experts.bin")).encode() + b"\0"
     den = os.path.abspath(os.path.join(args.bank, "dense.bin")).encode() + b"\0"
-    assert len(exp) < 256 and len(den) < 256
+    emb = os.path.abspath(os.path.join(args.bank, "embed.bin")).encode() + b"\0"
+    assert len(exp) < 256 and len(den) < 256 and len(emb) < 256
 
     if args.tokens:
         ids = [int(t) for t in args.tokens.split(",")]
@@ -71,12 +72,13 @@ def main():
         print(f"prompt: {args.prompt!r}  ({len(ids)} tokens)")
 
     def step(tok_id, pos):
-        buf = bytearray(528 + H * 4)
+        # A token, a position, and three paths.  Nothing the model is made of:
+        # the embedding row is gathered and widened inside the artifact.
+        buf = bytearray(784)
         struct.pack_into("<II", buf, 0, tok_id, pos)
         buf[16:16 + len(exp)] = exp
         buf[272:272 + len(den)] = den
-        row = bf16_to_f32(np.asarray(bank.embed[tok_id])).astype(np.float32)
-        buf[528:] = row.tobytes()
+        buf[528:528 + len(emb)] = emb
         out = bytearray(8 + 201088 * 4 + 2 * NL * H * 4)
         base.execute_into(art.main, bytes(buf), out)
         b = bytes(out)

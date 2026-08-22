@@ -168,9 +168,12 @@ def openObligations : List String :=
      these are not stages yet, so the composition theorem is unavailable rather \
      than false — the same standing the shipped sparse-dispatch demo has. \
      Closes with the first two entries.",
-    "EmbedHostGather: the embedding row is read on the host, widened, and \
-     uploaded, so what lands is `uploadedValue` on the declared trust surface \
-     rather than a gather this development proves.",
+    "EmbedHostGather: in *these* artifacts the embedding row is read on the \
+     host, widened, and uploaded, so what lands is `uploadedValue` on the \
+     declared trust surface rather than a gather this development proves. It \
+     is a property of the per-piece programs and not of the model: the \
+     whole-model artifact reads the row itself and widens it on the device \
+     (`GptOssDecodeScan.WidenIsLossless`), bit-identically to this.",
     "ConverterFidelity: the weight bank is the published checkpoint under the \
      transforms the converter declares — de-interleaving, transposition, the \
      packed byte order, and the assertion that no block scale is the reserved \

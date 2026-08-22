@@ -94,8 +94,12 @@ def decodeOpenObligations : List String :=
      the tensor exactly, with no gap and no overlap, is arithmetic in the \
      generator and is not stated. It was wrong once, and the symptom was every \
      logit zero rather than a wrong answer."
-  , "EmbedHostGather — the caller still hands in the embedding row as f32. \
-     Closing it needs either a widening kernel or the table on the device." ]
+  , "WidenIsLossless — nothing numeric reaches this program from its caller: \
+     the embedding row is read from the file at token * HH * 2, uploaded as the \
+     bf16 it is, and widened by GptOssKernels.widenBf16. bf16 is f32 with the \
+     low sixteen mantissa bits cleared, so the widening is exact and no \
+     rounding decision arises. Evidence: bit-identical logits and layer trace \
+     against the host-side gather it replaced. Not stated." ]
 
 /-- **Facts about the emitted program that are measured, not proven.**
 
