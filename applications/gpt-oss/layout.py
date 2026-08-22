@@ -23,6 +23,11 @@ NL, HH, VOCAB = 24, 2880, 201088
 # turn which cannot fit gets refused here rather than served a stalled reply.
 CAP_FULL = 8192
 
+# PTX slots, in `GptOssDecode.dPtx` order. Each kernel is its own module with a
+# single entry called `main`, so a slot index is the only way to name one, and
+# these are the two a decode step spends most of its time in.
+S_GATEUP, S_DOWN = 10, 11
+
 D_TOK, D_POS, D_MODE, D_TLEN = 0, 4, 8, 12
 D_PEXP, D_PDEN, D_PEMB, D_PTOK = 16, 272, 528, 784
 D_STOP, D_MAXNEW = 1040, 1044
@@ -46,6 +51,23 @@ D_OUT_BYTES = D_OUT_TEXTTOK + 4 * TEXT_MAX
 
 # where the artifact records how many input bytes it expects
 HOST_LEN_OFF = 0x80
+
+
+def ptx_modules(artifact_json):
+    """Every PTX module the artifact carries, in slot order.
+
+    They are laid out in the initial memory image at a fixed stride, each a
+    NUL-terminated string. Pulling them out is how a kernel gets benchmarked or
+    disassembled without running the model: the emitted text is the artifact's,
+    not a copy that could drift from it.
+    """
+    import re
+    mem = bytes(artifact_json["setup"]["initial_memory"])
+    out = []
+    for m in re.finditer(rb"\.version", mem):
+        seg = mem[m.start():]
+        out.append(seg[:seg.find(b"\x00")].decode())
+    return out
 
 
 def check_layout(artifact_json):

@@ -34,8 +34,11 @@ import numpy as np
 
 # ── the specification, transcribed from ML/QuantMX.lean ──────────────────────
 
-# Warps per block; the GEMV kernels give each warp one output row.
+# Warps per block; gate/up gives each warp one output row (and its `up` twin),
+# and the down projection gives each warp `ROWS_DOWN` consecutive ones.
 WARPS = 8
+ROWS_DOWN = 4
+ROWS_GU = 2
 
 FP4_MAG = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=np.float32)
 
@@ -224,7 +227,7 @@ def check_gate_up(cu, rng):
     out = np.zeros(I, dtype=np.float32)
 
     d = [cu.upload(a) for a in (blocks, scales, bias, x, out)]
-    cu.launch(fn, I // WARPS, 32 * WARPS, d)
+    cu.launch(fn, I // (WARPS * ROWS_GU), 32 * WARPS, d)
     got = cu.download(d[4], out)
 
     idx = [0, 1, 17, 1000, I - 1]
@@ -257,7 +260,7 @@ def check_swiglu_edges(cu, rng):
         x[0] = np.float32(1.0)                    # select element 0 only
         out = np.zeros(I, dtype=np.float32)
         d = [cu.upload(a) for a in (blocks, scales, bias, x, out)]
-        cu.launch(fn, I // WARPS, 32 * WARPS, d)
+        cu.launch(fn, I // (WARPS * ROWS_GU), 32 * WARPS, d)
         got = cu.download(d[4], out)[0]
         v = np.float32(6.0) * np.float32(2.0) ** (sbyte - 127)
         want = swiglu(np.float32(v), np.float32(v))
@@ -275,7 +278,7 @@ def check_down(cu, rng):
     h = (rng.standard_normal(I) * 0.1).astype(np.float32)
     out = np.zeros(H, dtype=np.float32)
     d = [cu.upload(a) for a in (blocks, scales, bias, h, out)]
-    cu.launch(fn, H // WARPS, 32 * WARPS, d)
+    cu.launch(fn, H // (WARPS * ROWS_DOWN), 32 * WARPS, d)
     got = cu.download(d[4], out)
     idx = [0, 3, 500, H - 1]
     want = np.array([dot_ref(blocks[r], scales[r], h, n_blocks) + bias[r] for r in idx],
@@ -302,7 +305,7 @@ def check_adversarial(cu):
         h = np.ones(I, dtype=np.float32)
         out = np.zeros(H, dtype=np.float32)
         d = [cu.upload(a) for a in (blocks, scales, bias, h, out)]
-        cu.launch(fn, H // WARPS, 32 * WARPS, d)
+        cu.launch(fn, H // (WARPS * ROWS_DOWN), 32 * WARPS, d)
         got = cu.download(d[4], out)[0]
         want = dot_ref(blocks[0], scales[0], h, n_blocks)
         report(f"adversarial: {label}", bool(got == want), f"got {got} want {float(want)}")

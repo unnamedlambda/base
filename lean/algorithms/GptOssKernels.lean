@@ -89,6 +89,27 @@ def rowScalesI : Nat := I / G
     warps still fit the shared-memory budget at full warp occupancy. -/
 def warpsPerCta : Nat := 8
 
+/-- Output rows a warp of the down projection takes.
+
+    The gate/up kernel gets two for free -- gate and up are two rows over one
+    activation -- and that is most of why it runs closer to bandwidth. Down has
+    one row per output and has to be told to take several.
+
+    What it buys is the staged activation: every CTA stages `I` floats, so at
+    one row per warp the staging traffic equals the weight traffic and the
+    kernel reads twice what it came for. `rowsPerWarpDown` divides that, and
+    divides the shared reads per `fma` with it. Four rather than more because
+    the hoisted loads are `rowsPerWarpDown * nChunks` registers live at once,
+    and past four that costs occupancy faster than it saves traffic. -/
+def rowsPerWarpDown : Nat := 4
+
+/-- Output rows a warp of the gate/up kernel takes.
+
+    Each is two contractions -- gate and up -- so this warp runs
+    `2 * rowsPerWarpGateUp` of them over one staged activation. -/
+def rowsPerWarpGateUp : Nat := 2
+
+
 /-- gpt-oss's clamped SwiGLU: the gate is clamped above, the linear branch on
     both sides, and the linear branch is offset by one.
 
@@ -292,88 +313,104 @@ def stageActivation (tid : Reg .u32) (src : Reg .u64) (dst : Reg .u32)
     shape used elsewhere in this development. At this model's widths there are
     ninety blocks: eleven chunks and two left over.
 
-    `acc` is accumulated across iterations; the caller reduces across lanes.
-    `tag` distinguishes this expansion's labels from another's — PTX labels are
-    per-module, and the gate/up kernel expands this twice. -/
-def dotRowMx (acc : Reg .f32) (wBase sBase : Reg .u64)
-    (xSmem tabBase laneOff lane : Reg .u32) (nBlocks : Nat) (tag : String) : PTX Unit := do
+    **Straight-line, not a loop.** `nBlocks` is a generation-time constant, so
+    the trip count is known here and the loop was only ever costing something.
+    Emitting the chunks flat matters for one reason that dominates the branches
+    it also removes: every chunk's two loads are then independent of every other
+    chunk's, and issuing them together is the only way this kernel gets more
+    than one memory request per warp in flight. Rolled, each iteration's `fma`
+    chain waits on that iteration's load and nothing covers the latency but
+    other warps.
+
+    So the loads are hoisted deliberately -- all `nChunks` weight words, then
+    all `nChunks` scale bytes, then the arithmetic -- rather than left adjacent
+    to their use for `ptxas` to sink. The cost is `2 * nChunks` live registers,
+    which at these widths is twenty-two.
+
+    `acc` is accumulated across chunks in index order; the caller reduces across
+    lanes. `tag` distinguishes this expansion's labels from another's -- PTX
+    labels are per-module, and the gate/up kernel expands this twice. -/
+def dotRowsMx (accs : List (Reg .f32)) (rows : List (Reg .u64 × Reg .u64))
+    (xSmem tabBase laneOff lane : Reg .u32) (nBlocks : Nat) : PTX Unit := do
   let nChunks := nBlocks / 8
   let tailStart := nChunks * 8
   -- ── whole chunks: eight blocks a warp, four bytes a lane ──
   if nChunks > 0 then do
+    -- The three bases a chunk indexes from, computed once.  Everything after
+    -- this is a load at an immediate offset, which is what makes the loads
+    -- independent of each other.
     let wLaneOff ← freshR; mulLoRI wLaneOff lane 4          -- byte within the chunk
+    let wLaneOff64 ← freshRd; cvtU64 wLaneOff64 wLaneOff
     let sLane ← freshR; shrR sLane lane 2                   -- which of the 8 blocks
+    let sLane64 ← freshRd; cvtU64 sLane64 sLane
+    let rowBases ← rows.mapM fun (wBase, sBase) => do
+      let wb ← freshRd; addRd wb wBase wLaneOff64
+      let sb ← freshRd; addRd sb sBase sLane64
+      pure (wb, sb)
     -- this lane's first element within a chunk, in PADDED shared floats:
     -- 8L for the element, L/4 for the pads crossed on the way there.
     let xLaneOff ← freshR; mulLoRI xLaneOff lane 8; addR xLaneOff xLaneOff sLane
-    let chunk ← freshR; movRC chunk 0
-    let cLoop := "MXDOT_CHUNK_" ++ tag
-    let cDone := "MXDOT_CHUNKDONE_" ++ tag
-    label cLoop
-    do
-      let p ← freshP; setpGeI p chunk nChunks; braIf p cDone
-      -- 128 packed bytes a chunk; this lane's four of them
-      let wOff ← freshR; mulLoRI wOff chunk 128; addR wOff wOff wLaneOff
-      let wOff64 ← freshRd; cvtU64 wOff64 wOff
-      let wAddr ← freshRd; addRd wAddr wBase wOff64
-      let packed ← freshR; ldGlobalU packed wAddr
-      -- the one scale this lane's eight elements share
-      let sOff ← freshR; mulLoRI sOff chunk 8; addR sOff sOff sLane
-      let sOff64 ← freshRd; cvtU64 sOff64 sOff
-      let sAddr ← freshRd; addRd sAddr sBase sOff64
-      let sByte ← freshRd; ldGlobalU8 sByte sAddr
-      let sByte32 ← freshR; cvtU32of64 sByte32 sByte
-      let sc ← freshF; decodeE8M0 sc sByte32
-      -- this lane's eight activations, from the staged copy.  A chunk spans
-      -- 256 elements and therefore 264 padded floats; the eight are contiguous
-      -- because eight divides thirty-two, so no pad falls between them.
-      let xIdx ← freshR; mulLoRI xIdx chunk 264; addR xIdx xIdx xLaneOff
-      let xOff ← freshR; shlR xOff xIdx 2
-      let xAddr ← freshR; addR xAddr xSmem xOff
+    let xByteOff ← freshR; shlR xByteOff xLaneOff 2
+    let xBase0 ← freshR; addR xBase0 xSmem xByteOff
+    -- every load first: none of them depends on another, so they go in flight
+    -- together.  128 packed bytes a chunk, and the one scale a lane's eight
+    -- elements share.
+    let packed ← (List.range nChunks).mapM fun c =>
+      rowBases.mapM fun (wb, _) => do
+        let r ← freshR; ldGlobalUO r wb (c * 128); pure r
+    let scaleB ← (List.range nChunks).mapM fun c =>
+      rowBases.mapM fun (_, sb) => do
+        let r ← freshR; ldGlobalU8RO r sb (c * 8); pure r
+    -- …then the arithmetic, in chunk order, which is the fold order the
+    -- reference reproduces.  A chunk spans 256 elements and therefore 264
+    -- padded floats; a lane's eight are contiguous because eight divides
+    -- thirty-two, so no pad falls between them.
+    --
+    -- The activation is loaded once per element and used by every row: that is
+    -- the whole reason a warp takes more than one row.  One row per warp reads
+    -- the staged copy once per *weight*, and at that ratio the kernel is bound
+    -- by shared-memory throughput rather than by the bytes it came for.
+    for (pws, c) in packed.zipIdx do
+      let scs ← (scaleB.getD c []).mapM fun sb => do
+        let f ← freshF; decodeE8M0 f sb; pure f
       for j in [0, 1, 2, 3, 4, 5, 6, 7] do
-        let nib ← freshR; shrR nib packed (4 * j); andR nib nib 0xF
-        let w ← freshF; lookupFp4 w nib tabBase laneOff
-        mulF w w sc
-        let xv ← freshF; ldSharedF xv xAddr (4 * j)
-        fmaRn acc w xv acc
-      addRI chunk chunk 1
-      bra cLoop
-    label cDone
+        let xv ← freshF; ldSharedF xv xBase0 (c * 264 * 4 + 4 * j)
+        for ((pw, acc), r) in (pws.zip accs).zipIdx do
+          let nib ← freshR; shrR nib pw (4 * j); andR nib nib 0xF
+          let w ← freshF; lookupFp4 w nib tabBase laneOff
+          mulF w w (scs.getD r xv)
+          fmaRn acc w xv acc
   -- ── the tail: whole blocks that did not fill a chunk, one at a time ──
   if tailStart < nBlocks then do
     let halfLane ← freshR; shrR halfLane lane 1
     let oddLane ← freshR; andR oddLane lane 1
     let isOdd ← freshP; setpEqI isOdd oddLane 1
-    let blk ← freshR; movRC blk tailStart
-    let loop := "MXDOT_TAIL_" ++ tag
-    let done := "MXDOT_TAILDONE_" ++ tag
-    label loop
-    do
-      let p ← freshP; setpGeI p blk nBlocks; braIf p done
-      let bOff ← freshR; mulLoRI bOff blk 16; addR bOff bOff halfLane
-      let bOff64 ← freshRd; cvtU64 bOff64 bOff
-      let wAddr ← freshRd; addRd wAddr wBase bOff64
-      let byte ← freshRd; ldGlobalU8 byte wAddr
-      let byte32 ← freshR; cvtU32of64 byte32 byte
-      let hi ← freshR; shrR hi byte32 4
-      let lo ← freshR; andR lo byte32 0xF
-      let nib ← freshR; selpR nib hi lo isOdd
-      let w ← freshF; lookupFp4 w nib tabBase laneOff
-      let sOff64 ← freshRd; cvtU64 sOff64 blk
-      let sAddr ← freshRd; addRd sAddr sBase sOff64
-      let sByte ← freshRd; ldGlobalU8 sByte sAddr
-      let sByte32 ← freshR; cvtU32of64 sByte32 sByte
-      let sc ← freshF; decodeE8M0 sc sByte32
-      mulF w w sc
+    let halfLane64 ← freshRd; cvtU64 halfLane64 halfLane
+    let rowBasesT ← rows.mapM fun (wBase, sBase) => do
+      let wb ← freshRd; addRd wb wBase halfLane64
+      pure (wb, sBase)
+    let xByteT ← freshR; shlR xByteT lane 2
+    let xBaseT ← freshR; addR xBaseT xSmem xByteT
+    let tail := List.range (nBlocks - tailStart) |>.map (· + tailStart)
+    let bytes ← tail.mapM fun blk =>
+      rowBasesT.mapM fun (wb, _) => do
+        let r ← freshR; ldGlobalU8RO r wb (blk * 16); pure r
+    let scaleT ← tail.mapM fun blk =>
+      rowBasesT.mapM fun (_, sb) => do
+        -- every lane of the warp reads the same scale: one block, one byte
+        let r ← freshR; ldGlobalU8RO r sb blk; pure r
+    for (bs, k) in bytes.zipIdx do
+      let blk := tailStart + k
       -- padded index: blk*32 + lane, plus the blk pads crossed = blk*33 + lane
-      let xIdx ← freshR; mulLoRI xIdx blk 33; addR xIdx xIdx lane
-      let xOff ← freshR; shlR xOff xIdx 2
-      let xAddr ← freshR; addR xAddr xSmem xOff
-      let xv ← freshF; ldSharedFD xv xAddr
-      fmaRn acc w xv acc
-      addRI blk blk 1
-      bra loop
-    label done
+      let xv ← freshF; ldSharedF xv xBaseT (blk * 33 * 4)
+      for ((byte32, acc), r) in (bs.zip accs).zipIdx do
+        let hi ← freshR; shrR hi byte32 4
+        let lo ← freshR; andR lo byte32 0xF
+        let nib ← freshR; selpR nib hi lo isOdd
+        let w ← freshF; lookupFp4 w nib tabBase laneOff
+        let sc ← freshF; decodeE8M0 sc ((scaleT.getD k []).getD r byte32)
+        mulF w w sc
+        fmaRn acc w xv acc
 
 /-- Sum a value across the thirty-two lanes of a warp, leaving the total in
     every lane. The butterfly order is the one the rest of this development
@@ -414,60 +451,67 @@ def gateUpSwigluGemv : KernelSpec where
     stageActivation tid x xSmem H "GU"
     -- %ctaid.x is a special register and cannot be an ALU operand; move first.
     let cta ← freshR; movR cta ctaX
-    let row ← freshR; mulLoRI row cta warpsPerCta; addR row row wid
-    -- gate: row `row`
-    let gwOff ← freshRd; mulWideRI gwOff row rowBytesH
-    let gwBase ← freshRd; addRd gwBase blocks gwOff
-    let gsOff ← freshRd; mulWideRI gsOff row rowScalesH
-    let gsBase ← freshRd; addRd gsBase scales gsOff
-    let gAcc ← freshF; movFI gAcc (.bits 0)
-    dotRowMx gAcc gwBase gsBase xSmem tabBase laneOff lane (H / G) "GATE"
-    warpSum gAcc
-    -- up: row `I + row`
-    let upRow ← freshR; addRI upRow row I
-    let uwOff ← freshRd; mulWideRI uwOff upRow rowBytesH
-    let uwBase ← freshRd; addRd uwBase blocks uwOff
-    let usOff ← freshRd; mulWideRI usOff upRow rowScalesH
-    let usBase ← freshRd; addRd usBase scales usOff
-    let uAcc ← freshF; movFI uAcc (.bits 0)
-    dotRowMx uAcc uwBase usBase xSmem tabBase laneOff lane (H / G) "UP"
-    warpSum uAcc
+    let warp ← freshR; mulLoRI warp cta warpsPerCta; addR warp warp wid
+    let row0 ← freshR; mulLoRI row0 warp rowsPerWarpGateUp
+    -- gate is row `r`, up is row `I + r`, and they contract over the same
+    -- activation -- so they are one traversal, not two.  Contracted separately
+    -- the staged copy is read twice for the same eight elements; contracted
+    -- together each element is read once and used by all of them.
+    let outRows ← (List.range rowsPerWarpGateUp).mapM fun k => do
+      let g ← freshR; addRI g row0 k
+      let u ← freshR; addRI u g I
+      pure (g, u)
+    let rows ← (outRows.flatMap fun (g, u) => [g, u]).mapM fun r => do
+      let wOff ← freshRd; mulWideRI wOff r rowBytesH
+      let wBase ← freshRd; addRd wBase blocks wOff
+      let sOff ← freshRd; mulWideRI sOff r rowScalesH
+      let sBase ← freshRd; addRd sBase scales sOff
+      pure (wBase, sBase)
+    let accs ← rows.mapM fun _ => do
+      let a ← freshF; movFI a (.bits 0); pure a
+    dotRowsMx accs rows xSmem tabBase laneOff lane (H / G)
+    for acc in accs do
+      warpSum acc
     -- lane 0 adds the biases, applies the activation, and stores
     let isLane0 ← freshP; setpEqI isLane0 lane 0
     let skip := "GU_SKIP"
     braIfNot isLane0 skip
-    let gbOff ← freshRd; mulWideRI gbOff row 4
-    let gbAddr ← freshRd; addRd gbAddr bias gbOff
-    let gb ← freshF; ldGlobalF gb gbAddr
-    addF gAcc gAcc gb
-    let ubOff ← freshRd; mulWideRI ubOff upRow 4
-    let ubAddr ← freshRd; addRd ubAddr bias ubOff
-    let ub ← freshF; ldGlobalF ub ubAddr
-    addF uAcc uAcc ub
-    -- clamped SwiGLU: gate clamped above, linear clamped both sides and offset
-    minFI gAcc gAcc (.bits swigluLimitBits)
-    minFI uAcc uAcc (.bits swigluLimitBits)
-    maxFI uAcc uAcc (.bits negLimitBits)
-    -- sigmoid(alpha*g) = 1 / (1 + exp2(-alpha*g*log2 e))
-    let t ← freshF; mulFI t gAcc (.bits swigluAlphaBits)
-    mulFI t t (.bits f32_log2e)
-    let negT ← freshF; movFI negT (.bits 0); subF negT negT t
-    let e ← freshF; ex2 e negT
-    addFI e e (.bits oneBits)
-    let sig ← freshF; rcp sig e
-    mulF gAcc gAcc sig
-    addFI uAcc uAcc (.bits oneBits)
-    mulF gAcc gAcc uAcc
-    let oOff ← freshRd; mulWideRI oOff row 4
-    let oAddr ← freshRd; addRd oAddr out oOff
-    stGlobalF oAddr gAcc
+    for ((gRow, uRow), k) in outRows.zipIdx do
+      let gAcc := accs.getD (2 * k) accs[0]!
+      let uAcc := accs.getD (2 * k + 1) accs[0]!
+      let gbOff ← freshRd; mulWideRI gbOff gRow 4
+      let gbAddr ← freshRd; addRd gbAddr bias gbOff
+      let gb ← freshF; ldGlobalF gb gbAddr
+      addF gAcc gAcc gb
+      let ubOff ← freshRd; mulWideRI ubOff uRow 4
+      let ubAddr ← freshRd; addRd ubAddr bias ubOff
+      let ub ← freshF; ldGlobalF ub ubAddr
+      addF uAcc uAcc ub
+      -- clamped SwiGLU: gate clamped above, linear clamped both sides and offset
+      minFI gAcc gAcc (.bits swigluLimitBits)
+      minFI uAcc uAcc (.bits swigluLimitBits)
+      maxFI uAcc uAcc (.bits negLimitBits)
+      -- sigmoid(alpha*g) = 1 / (1 + exp2(-alpha*g*log2 e))
+      let t ← freshF; mulFI t gAcc (.bits swigluAlphaBits)
+      mulFI t t (.bits f32_log2e)
+      let negT ← freshF; movFI negT (.bits 0); subF negT negT t
+      let e ← freshF; ex2 e negT
+      addFI e e (.bits oneBits)
+      let sig ← freshF; rcp sig e
+      mulF gAcc gAcc sig
+      addFI uAcc uAcc (.bits oneBits)
+      mulF gAcc gAcc uAcc
+      let oOff ← freshRd; mulWideRI oOff gRow 4
+      let oAddr ← freshRd; addRd oAddr out oOff
+      stGlobalF oAddr gAcc
     label skip
     ptxRet
 
 /-- **The down projection, plus its bias.**
 
-    One CTA of one warp per output row `r < H`, contracting over `I`. Same
-    shape as the gate/up kernel with a plainer epilogue. -/
+    One CTA of `warpsPerCta` warps, each taking `rowsPerWarpDown` consecutive
+    output rows `r < H` and contracting over `I`. Same shape as the gate/up
+    kernel with a plainer epilogue. -/
 def downGemvBias : KernelSpec where
   name := "mxfp4_down_gemv_bias"
   params := ["p_blocks", "p_scales", "p_bias", "p_h", "p_out"]
@@ -484,24 +528,34 @@ def downGemvBias : KernelSpec where
     let xSmem ← freshR; addRI xSmem tabBase xSmemOff
     stageActivation tid hv xSmem I "DN"
     let cta ← freshR; movR cta ctaX
-    let row ← freshR; mulLoRI row cta warpsPerCta; addR row row wid
-    let wOff ← freshRd; mulWideRI wOff row rowBytesI
-    let wBase ← freshRd; addRd wBase blocks wOff
-    let sOff ← freshRd; mulWideRI sOff row rowScalesI
-    let sBase ← freshRd; addRd sBase scales sOff
-    let acc ← freshF; movFI acc (.bits 0)
-    dotRowMx acc wBase sBase xSmem tabBase laneOff lane (I / G) "DOWN"
-    warpSum acc
+    let warp ← freshR; mulLoRI warp cta warpsPerCta; addR warp warp wid
+    -- this warp's first row; the rest are the `rowsPerWarpDown - 1` after it
+    let row0 ← freshR; mulLoRI row0 warp rowsPerWarpDown
+    let rowIx ← (List.range rowsPerWarpDown).mapM fun k => do
+      let r ← freshR; addRI r row0 k; pure r
+    let rows ← rowIx.mapM fun r => do
+      let wOff ← freshRd; mulWideRI wOff r rowBytesI
+      let wBase ← freshRd; addRd wBase blocks wOff
+      let sOff ← freshRd; mulWideRI sOff r rowScalesI
+      let sBase ← freshRd; addRd sBase scales sOff
+      pure (wBase, sBase)
+    let accs ← rowIx.mapM fun _ => do
+      let a ← freshF; movFI a (.bits 0); pure a
+    dotRowsMx accs rows xSmem tabBase laneOff lane (I / G)
+    for acc in accs do
+      warpSum acc
     let isLane0 ← freshP; setpEqI isLane0 lane 0
     let skip := "DN_SKIP"
     braIfNot isLane0 skip
-    let bOff ← freshRd; mulWideRI bOff row 4
-    let bAddr ← freshRd; addRd bAddr bias bOff
-    let bv ← freshF; ldGlobalF bv bAddr
-    addF acc acc bv
-    let oOff ← freshRd; mulWideRI oOff row 4
-    let oAddr ← freshRd; addRd oAddr out oOff
-    stGlobalF oAddr acc
+    for (acc, k) in accs.zipIdx do
+      let r := rowIx.getD k row0
+      let bOff ← freshRd; mulWideRI bOff r 4
+      let bAddr ← freshRd; addRd bAddr bias bOff
+      let bv ← freshF; ldGlobalF bv bAddr
+      addF acc acc bv
+      let oOff ← freshRd; mulWideRI oOff r 4
+      let oAddr ← freshRd; addRd oAddr out oOff
+      stGlobalF oAddr acc
     label skip
     ptxRet
 

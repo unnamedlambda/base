@@ -151,6 +151,27 @@ rust_test_fast() {
   cargo test --workspace --exclude benchmarks --exclude bench-scaling --exclude qwen2
 }
 
+# The MXFP4 expert kernels are outside the machine this project proves kernels
+# in -- they unpack nibbles, and that machine holds Float32 and addresses buffers
+# by element. So they ship checked rather than proven, and this is the check:
+# every one of the 256 byte values against `QuantMX.fp4Val`, the contractions
+# against a Float32 fold in the kernel's own order, and the activation at its
+# clamp edges. It needs a device, so it runs in the full pass and not `--fast`.
+#
+# The module is dumped rather than taken from an artifact because the harness
+# wants all four kernels under their own names, and an artifact carries one
+# kernel per slot called `main`.
+gptoss_kernels() {
+  local ptx
+  ptx=$(mktemp --suffix=.ptx)
+  cd "$ROOT/lean/algorithms"
+  lake env lean --run "$ROOT/tools/dump_gptoss_kernels.lean" > "$ptx"
+  "$ROOT/py-base/.venv/bin/python" "$ROOT/applications/gpt-oss/kernel_test.py" "$ptx"
+  local rc=$?
+  rm -f "$ptx"
+  return $rc
+}
+
 # --- run ---------------------------------------------------------------------
 
 step "lean build"          lean_build
@@ -161,6 +182,7 @@ if [ "$FAST" = 1 ]; then
   step "rust test (fast)"  rust_test_fast
 else
   step "rust test"         rust_test
+  step "gpt-oss kernels"   gptoss_kernels
 fi
 
 printf '\n'

@@ -97,7 +97,15 @@ theorem gptoss_alloc_covers :
 /-! ## Memory map -/
 
 def GPTX_OFF : Nat := 0x0100
-def GSLOT : Nat := 0x8000
+/-- Bytes a PTX slot gets, matching `GptOssDecode.DSLOT`.
+
+    The expert kernels are emitted straight-line over a generation-time trip
+    count, so their text grows with the rows a warp takes: `down` at four rows
+    is some eighty kilobytes of it. The slot is sized for the kernel rather
+    than the kernel trimmed to the slot -- four slots at this stride cost under
+    half a megabyte of artifact, which is nothing beside what the shape is
+    worth on the one path a token is spent in. -/
+def GSLOT : Nat := 0x20000
 def gSlotOff (i : Nat) : Nat := GPTX_OFF + i * GSLOT
 def GBIND_OFF : Nat := gSlotOff gptossPtx.length
 def gBindOff (i : Nat) : Nat := GBIND_OFF + 4 * i
@@ -618,7 +626,7 @@ end Attn
 namespace Layer
 
 open GptOssAttention hiding H
-open GptOssKernels (warpsPerCta)
+open GptOssKernels (warpsPerCta rowsPerWarpDown)
 
 def CAP : Nat := CAP_SWA
 
@@ -893,9 +901,9 @@ def lBindM : M Unit := do
 /-- **The mixture, and the second residual.** -/
 def lExpertBinds : List (Nat × Nat × List Nat) :=
   (List.range TOPK).flatMap (fun j =>
-    [ (S_GATEUP, I / warpsPerCta,
+    [ (S_GATEUP, I / (warpsPerCta * rowsPerWarpGateUp),
        [lSlotBuf j 0, lSlotBuf j 1, lSlotBuf j 2, L_XM, L_HID + j])
-    , (S_DOWN, H / warpsPerCta,
+    , (S_DOWN, H / (warpsPerCta * rowsPerWarpDown),
        [lSlotBuf j 3, lSlotBuf j 4, lSlotBuf j 5, L_HID + j, L_Y + j]) ])
   ++ [ (S_COMBINE, (H + NBLK - 1) / NBLK,
         [L_Y, L_Y + 1, L_Y + 2, L_Y + 3, L_GATES, L_MOUT]) ]

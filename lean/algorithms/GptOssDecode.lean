@@ -65,7 +65,7 @@ open GptOssAttention hiding H
 
 namespace GptOssDecode
 
-open GptOssKernels (warpsPerCta smemBytes)
+open GptOssKernels (warpsPerCta rowsPerWarpDown rowsPerWarpGateUp smemBytes)
 
 /-! ## Geometry, all of it derived -/
 
@@ -780,10 +780,10 @@ def dLayerM (layer : R) : M Unit := do
   for j in List.range TOPK do
     dEnsureM j
   for j in List.range TOPK do
-    dEnqueue ptr S_GATEUP (II / warpsPerCta) NBLK
+    dEnqueue ptr S_GATEUP (II / (warpsPerCta * rowsPerWarpGateUp)) NBLK
       [C_SLOT0 + PIECES * j, C_SLOT0 + PIECES * j + 1, C_SLOT0 + PIECES * j + 2,
        B_XM, B_HID + j]
-    dEnqueue ptr S_DOWN (HH / warpsPerCta) NBLK
+    dEnqueue ptr S_DOWN (HH / (warpsPerCta * rowsPerWarpDown)) NBLK
       [C_SLOT0 + PIECES * j + 3, C_SLOT0 + PIECES * j + 4, C_SLOT0 + PIECES * j + 5,
        B_HID + j, B_Y + j]
   dEnqueue ptr S_COMBINE ((HH + NBLK - 1) / NBLK) NBLK
