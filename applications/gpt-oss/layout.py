@@ -17,6 +17,12 @@ TEXT_MAX = 32768
 TMPL_MAX = 8192
 NL, HH, VOCAB = 24, 2880, 201088
 
+# `GptOssAttention.CAP_FULL`: how many positions the full-attention layers keep
+# keys for, and so how long a conversation can be. The sliding layers ring at
+# 128 by design and do not bound anything; this does. A caller that asks for a
+# turn which cannot fit gets refused here rather than served a stalled reply.
+CAP_FULL = 8192
+
 D_TOK, D_POS, D_MODE, D_TLEN = 0, 4, 8, 12
 D_PEXP, D_PDEN, D_PEMB, D_PTOK = 16, 272, 528, 784
 D_STOP, D_MAXNEW = 1040, 1044

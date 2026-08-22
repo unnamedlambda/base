@@ -25,7 +25,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
+from layout import (TEXT_MAX, TMPL_MAX, CAP_FULL, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_NPRE, D_PRE,
                     D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT, D_OUT_NGEN,
                     D_OUT_GEN, D_OUT_BYTES, check_layout, ln_min_p, acquire_engine_lock)
@@ -97,6 +97,11 @@ def main():
         if stop is None:
             stop = 199999
     assert len(pre) <= TMPL_MAX and len(post) <= TMPL_MAX, "template too long"
+    # The prompt has to leave room for the reply: the full-attention layers keep
+    # `CAP_FULL` positions, and the engine stops there whatever was asked for.
+    assert len(pre) + len(post) + args.max_new <= CAP_FULL, (
+        f"template ({len(pre) + len(post)}) plus -n {args.max_new} exceeds the "
+        f"{CAP_FULL}-position key cache")
 
     import json
     check_layout(json.load(open(args.artifact)))

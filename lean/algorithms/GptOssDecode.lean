@@ -389,9 +389,9 @@ def D_LNMINP : Nat := 1064
 def D_STARTPOS : Nat := 1068
 /-- Room for a chat template on each side of the text.
 
-    Sized for a conversation rather than a turn: a command-line client replays
-    the whole transcript as `pre` each time, because the cache is rebuilt from
-    position zero and the model has to see what was said before.
+    A client that continues the cache sends only what the turn adds, so this is
+    far more than a turn needs; it is sized for one that rebuilds from position
+    zero and has to replay the transcript.
 
     `CAP_FULL` is the real ceiling — a conversation cannot outrun the key cache
     — so this matches it rather than sitting below it and failing first with a
@@ -791,6 +791,7 @@ def dLayerM (layer : R) : M Unit := do
   dEnqueue ptr S_ADD (HH / 32) 32 [B_X, B_MOUT]
   dTraceM layer 1
 
+set_option maxRecDepth 8000 in
 /-- **One token, from a token and a position.**
 
     Everything a decode step is: the embedding row, the meta this position
@@ -800,10 +801,24 @@ def dLayerM (layer : R) : M Unit := do
 
     A builder rather than an entry point, because a chat turn is this in a
     loop and the loop belongs on the same side of the boundary as the model. -/
-def dStepM (tok pos : R) : M R := do
+def dStepM (tok posIn : R) : M R := do
   let ptr := basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let ctxPtr ← cudaCtxPtr ptr
+  -- **No step ever runs past the cache, whatever the caller asked for.**
+  --
+  -- Two things here are indexed by the raw position rather than by a slot: the
+  -- rotation tables, which hold `ROPE_N` rows, and nothing else — the ring
+  -- slot is a modulus and cannot leave its buffer. So a position at or above
+  -- `CAP_FULL` reads sine one row past its table, which is the first row of
+  -- cosine, and cosine one row past the *buffer*, which is off the end of a
+  -- device allocation. Clamping is not the answer to a conversation that has
+  -- run out of room — the caller is expected to refuse the turn, and the
+  -- generation loop below stops on its own — but it is what makes the failure
+  -- a stalled reply instead of an out-of-bounds read.
+  let capF ← iconst32 (CAP_FULL - 1)
+  let posL ← ifte .ugt posIn capF (pure [capF]) (pure [posIn])
+  let pos := posL.headD posIn
   -- **The embedding row, gathered here.**
   --
   -- The table is bf16 and the first RMSNorm reads f32, so the row is read out
@@ -1002,6 +1017,10 @@ def dMainFn : HProg.Code :=
             storeI32 cur32 (← iadd genTok (← ishlImm g 2))
             let g1 ← iaddImm g 1
             when .eq cur32 stop (brk [g1])
+            -- and stop at the cache, which is the other end of the budget: a
+            -- turn is bounded by `maxNew` tokens *and* by the room left in the
+            -- key cache, and only one of those is the caller's to set
+            when .uge pos (← iconst64 CAP_FULL) (brk [g1])
             let nxt ← dStepM cur32 (← ireduce32 pos)
             return [g1, ← iaddImm pos 1, ← uextend64 nxt])
         let nGen := gEx.headD (← iconst64 0)

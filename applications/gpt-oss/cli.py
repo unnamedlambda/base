@@ -35,7 +35,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
+from layout import (TEXT_MAX, CAP_FULL, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_NPRE, D_PRE, D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT,
                     D_OUT_NGEN, D_OUT_GEN, D_OUT_NTEXT, D_OUT_TEXTTOK,
                     D_OUT_BYTES, D_STARTPOS, check_layout, ln_min_p,
@@ -101,9 +101,22 @@ def main():
         raw = text.encode("utf-8")
         if len(raw) >= TEXT_MAX:
             return None, None, f"message too long: {len(raw)} bytes"
-        if start + len(pre) + len(post) >= TMPL_MAX:
-            return None, None, (f"conversation is {start} tokens and the key "
-                                f"cache holds {TMPL_MAX}; /new to start over")
+        # **Room for the answer, not just for the question.**
+        #
+        # Checking only the prompt admits a turn whose reply then walks off the
+        # end of the key cache -- the engine stops it there, so what the user
+        # sees is a truncated answer with no explanation. The budget a turn
+        # needs is what it sends plus what it may generate, and a conversation
+        # that cannot hold one more exchange should say so before spending
+        # thirty seconds proving it.
+        want = start + len(pre) + len(post) + (args.max_new if max_new is None
+                                               else max_new)
+        if want > CAP_FULL:
+            return None, None, (
+                f"conversation is {start} tokens and the key cache holds "
+                f"{CAP_FULL}; this turn wants up to {want}. /new to start over"
+                + ("" if max_new is not None else
+                   f", or -n below {max(CAP_FULL - start - len(pre) - len(post), 0)}"))
         buf = bytearray(D_IN_BYTES)
         struct.pack_into("<III", buf, 0, 0, 0, 1)
         struct.pack_into("<I", buf, 12, len(raw))
