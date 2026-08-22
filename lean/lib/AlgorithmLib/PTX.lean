@@ -298,6 +298,15 @@ def popcR  (d a : Reg .u32)           : PTX Unit := emit s!"popc.b32 {d.raw}, {a
 def selpR  (d a b : Reg .u32) (p : Reg .pred) : PTX Unit := emit s!"selp.b32 {d.raw}, {a.raw}, {b.raw}, {p.raw}"
 def movRR  (d s : Reg .u32)           : PTX Unit := emit s!"mov.u32 {d.raw}, {s.raw}"
 
+/-- Reinterpret a `u32` register's bits as `f32`, and back.  No conversion: the
+    32 bits are unchanged and only their reading changes, which is how a float
+    is *assembled* rather than computed — an exponent shifted into place, a
+    mantissa or-ed in.  That is what a four-bit code and a power-of-two scale
+    decode to, so this is the operation a microscaled format needs and the one
+    the element-addressed machine in `ML/` does not have. -/
+def bitsToF (d : Reg .f32) (s : Reg .u32) : PTX Unit := emit s!"mov.b32 {d.raw}, {s.raw}"
+def fToBits (d : Reg .u32) (s : Reg .f32) : PTX Unit := emit s!"mov.b32 {d.raw}, {s.raw}"
+
 -- setp u32 extras
 def setpLe  (p : Reg .pred) (a b : Reg .u32) : PTX Unit := emit s!"setp.le.u32 {p.raw}, {a.raw}, {b.raw}"
 def setpEq  (p : Reg .pred) (a b : Reg .u32) : PTX Unit := emit s!"setp.eq.u32 {p.raw}, {a.raw}, {b.raw}"

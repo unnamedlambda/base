@@ -597,6 +597,8 @@ def deviceWriterNames : List String :=
   [ -- vendor BLAS: writes `y`, no kernel we compiled, no fold order specified
     "cl_cublas_sgemv", "cl_cublas_sgemv_on_stream",
     "cl_cublas_sgemm_strided_batched", "cl_cublas_sgemm_strided_batched_on_stream",
+    -- same, with bf16 operands: narrower reads, identical standing
+    "cl_cublas_gemm_ex_bf16",
     -- replays a captured graph: arbitrarily many kernels, none of them recorded
     "cl_cuda_graph_launch",
     -- host→device writes

@@ -357,6 +357,21 @@ pub(crate) unsafe extern "C" fn cl_cuda_pinned_alloc(ctx_ptr: *mut CraneliftCuda
         let result =
             unsafe { cudarc::driver::sys::lib().cuMemAllocHost_v2(&mut ptr, size as usize) };
         if result.result().is_err() || ptr.is_null() {
+            // Say how big the request was and what the device had. A bare -1 here
+            // is indistinguishable from a bad id at every call site downstream, and
+            // a multi-GiB pin is exactly the request that fails for a reason the
+            // caller can act on (host RAM, not device memory).
+            let (free, total) = unsafe { cuda_mem_info_pair() };
+            eprintln!(
+                "cl_cuda_pinned_alloc: cuMemAllocHost_v2({} bytes = {:.2} GiB) failed: {:?} \
+                 (device free {:.2} GiB of {:.2} GiB; pinned host memory is not swappable, \
+                 so this is usually host RAM pressure)",
+                size,
+                size as f64 / (1u64 << 30) as f64,
+                result,
+                free as f64 / (1u64 << 30) as f64,
+                total as f64 / (1u64 << 30) as f64,
+            );
             return -1;
         }
         let Ok(mut state) = lock_cuda_state(ctx) else {
@@ -366,7 +381,7 @@ pub(crate) unsafe extern "C" fn cl_cuda_pinned_alloc(ctx_ptr: *mut CraneliftCuda
         let pid = state.pinned_buffers.len() as i32;
         state.pinned_buffers.push(Some(CudaPinnedHostBuffer {
             ptr,
-            _size: size as usize,
+            size: size as usize,
         }));
         pid
     }))
@@ -389,6 +404,103 @@ pub(crate) unsafe extern "C" fn cl_cuda_pinned_ptr(ctx_ptr: *mut CraneliftCudaCo
             return -1;
         };
         buf.ptr as i64
+    }))
+    .unwrap_or(-1)
+}
+
+/// A pinned buffer's host address at `off`, when `off + len` lies inside it.
+///
+/// The bound is the point, and it is the host-side counterpart of
+/// `cuda_buffer_range_ptr`. `cl_cuda_upload_ptr_offset_async` checks the *device*
+/// range it writes but takes the source as a bare address: a wrong offset into a
+/// multi-GiB pool reads whatever the process has there and uploads it as weights,
+/// silently. Callers that compute a source offset go through here instead of
+/// adding it to `cl_cuda_pinned_ptr`.
+pub(crate) unsafe extern "C" fn cl_cuda_pinned_ptr_at(
+    ctx_ptr: *mut CraneliftCudaContext,
+    pinned_id: i32,
+    off: i64,
+    len: i64,
+) -> i64 {
+    if pinned_id < 0 || off < 0 || len < 0 {
+        return -1;
+    }
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_ref::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        let Ok(state) = lock_cuda_state(ctx) else {
+            return -1;
+        };
+        let Some(buf) = state
+            .pinned_buffers
+            .get(pinned_id as usize)
+            .and_then(|b| b.as_ref())
+        else {
+            return -1;
+        };
+        let Some(end) = (off as usize).checked_add(len as usize) else {
+            return -1;
+        };
+        if end > buf.size {
+            return -1;
+        }
+        (buf.ptr as i64).saturating_add(off)
+    }))
+    .unwrap_or(-1)
+}
+
+/// Free and total device memory, in bytes. Returns `(0, 0)` if the driver call
+/// fails — a diagnostic must not itself be a failure path.
+pub(super) unsafe fn cuda_mem_info_pair() -> (u64, u64) {
+    let mut free: usize = 0;
+    let mut total: usize = 0;
+    let rc = unsafe { cudarc::driver::sys::lib().cuMemGetInfo_v2(&mut free, &mut total) };
+    if rc.result().is_err() {
+        return (0, 0);
+    }
+    (free as u64, total as u64)
+}
+
+/// Free device memory in bytes, or -1. The MoE expert cache sizes itself from
+/// this at load time rather than from a constant: how much a 12 GiB card has
+/// left after weights, KV pool and the driver's own reservations is not a number
+/// that can be written down ahead of the machine it runs on.
+pub(crate) unsafe extern "C" fn cl_cuda_mem_info_free(
+    ctx_ptr: *mut CraneliftCudaContext,
+) -> i64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        if !bind_cuda_ctx_if_needed(ctx) {
+            return -1;
+        }
+        let (free, total) = unsafe { cuda_mem_info_pair() };
+        if total == 0 {
+            return -1;
+        }
+        free as i64
+    }))
+    .unwrap_or(-1)
+}
+
+/// Total device memory in bytes, or -1.
+pub(crate) unsafe extern "C" fn cl_cuda_mem_info_total(
+    ctx_ptr: *mut CraneliftCudaContext,
+) -> i64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        if !bind_cuda_ctx_if_needed(ctx) {
+            return -1;
+        }
+        let (_, total) = unsafe { cuda_mem_info_pair() };
+        if total == 0 {
+            return -1;
+        }
+        total as i64
     }))
     .unwrap_or(-1)
 }

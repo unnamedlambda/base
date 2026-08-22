@@ -81,6 +81,11 @@ lean_lib VitRegs
 lean_lib VitSlot
 lean_lib VitScan
 lean_lib VitTerm
+-- gpt-oss-20b: the ledger ships before the artifact does, on purpose.
+lean_lib GptOssAttention
+lean_lib GptOssKernels
+lean_lib GptOssAlgorithm
+lean_lib GptOssScan
 @[default_target]
 lean_lib BigModelAlgorithm
 @[default_target]
@@ -236,6 +241,9 @@ lean_exe genwindowdemoalgorithm where
 
 /-- The generators, as `<exe> <module>` lines. Read by `lean-artifacts`'s build
 script so the declarations above stay the only place a generator is named. -/
+lean_exe gengptossalgorithm where
+  root := `GptOssAlgorithm
+
 script generators do
   for exe in (← getRootPackage).leanExes do
     IO.println s!"{exe.name} {exe.config.root}"

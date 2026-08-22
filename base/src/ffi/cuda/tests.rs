@@ -1067,3 +1067,195 @@ fn cleanup_on_null_slot_is_noop() {
     unsafe { cl_cuda_cleanup(&mut null_slot) };
     assert!(null_slot.is_null());
 }
+
+// ── Pinned-pool bounds, device memory info, bf16 GEMM ────────────────────
+
+/// A bf16 bit pattern for an f32, round-to-nearest-even — the same rounding the
+/// weight converter applies offline, so the test's expectation and the GPU's
+/// operand come from one definition.
+fn f32_to_bf16_bits(x: f32) -> u16 {
+    let bits = x.to_bits();
+    let lsb = (bits >> 16) & 1;
+    let rounded = bits + 0x7fff + lsb;
+    (rounded >> 16) as u16
+}
+
+fn f32_from_bf16_bits(b: u16) -> f32 {
+    f32::from_bits((b as u32) << 16)
+}
+
+fn bf16s_to_bytes(xs: &[f32]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(xs.len() * 2);
+    for &x in xs {
+        v.extend_from_slice(&f32_to_bf16_bits(x).to_le_bytes());
+    }
+    v
+}
+
+#[test]
+fn pinned_ptr_at_bounds() {
+    unsafe {
+        let ctx = init_ctx();
+        let p = cl_cuda_pinned_alloc(ctx, 1024);
+        assert!(p >= 0);
+        let base = cl_cuda_pinned_ptr(ctx, p);
+        assert!(base > 0);
+
+        // Inside: the address is the base plus the offset, and the last legal
+        // range is the one ending exactly at the end.
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 0, 1024), base);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 256, 768), base + 256);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 1024, 0), base + 1024);
+
+        // Past the end by one byte, and by way of a huge length: refused. This
+        // is the case that would otherwise upload unrelated process memory.
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 256, 769), -1);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 1025, 0), -1);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 512, i64::MAX), -1);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, -1, 16), -1);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 0, -1), -1);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, 999, 0, 16), -1);
+
+        // A freed id is not an address.
+        assert_eq!(cl_cuda_pinned_free(ctx, p), 0);
+        assert_eq!(cl_cuda_pinned_ptr_at(ctx, p, 0, 16), -1);
+        cleanup_ctx(ctx);
+    }
+}
+
+#[test]
+fn mem_info_reports_device_memory() {
+    unsafe {
+        let ctx = init_ctx();
+        let free = cl_cuda_mem_info_free(ctx);
+        let total = cl_cuda_mem_info_total(ctx);
+        assert!(free > 0, "free = {free}");
+        assert!(total >= free, "total {total} < free {free}");
+
+        // An allocation the cache-sizing path would make must move the number it
+        // sizes itself from; otherwise the reading is stale and the slot count
+        // built on it is fiction.
+        let buf = cl_cuda_create_buffer(ctx, 256 << 20);
+        assert!(buf >= 0);
+        let after = cl_cuda_mem_info_free(ctx);
+        assert!(after < free, "free did not fall after a 256 MiB alloc: {free} -> {after}");
+        assert_eq!(cl_cuda_free_buffer(ctx, buf), 0);
+        cleanup_ctx(ctx);
+    }
+}
+
+#[test]
+fn gemm_ex_bf16_matches_bf16_rounded_reference() {
+    unsafe {
+        let ctx = init_ctx();
+        // Column-major, no transpose: A is m×k, B is k×n, C is m×n.
+        let (m, k, n) = (4usize, 3usize, 2usize);
+        let a: Vec<f32> = (0..m * k).map(|i| (i as f32) * 0.25 - 1.5).collect();
+        let b: Vec<f32> = (0..k * n).map(|i| 1.0 - (i as f32) * 0.5).collect();
+
+        let a_bytes = bf16s_to_bytes(&a);
+        let a_buf = cl_cuda_create_buffer(ctx, a_bytes.len() as i64);
+        assert!(a_buf >= 0);
+        assert_eq!(cl_cuda_upload(ctx, a_buf, a_bytes.as_ptr(), a_bytes.len() as i64), 0);
+        // Both operands are bf16 — cuBLAS refuses a mixed pair (see the entry
+        // point's own note), so the activation is narrowed here as the pipeline
+        // narrows it in earnest.
+        let b_bytes = bf16s_to_bytes(&b);
+        let b_buf = cl_cuda_create_buffer(ctx, b_bytes.len() as i64);
+        assert!(b_buf >= 0);
+        assert_eq!(cl_cuda_upload(ctx, b_buf, b_bytes.as_ptr(), b_bytes.len() as i64), 0);
+        let c_buf = make_buf_with(ctx, &vec![0.0f32; m * n]);
+
+        let rc = cl_cublas_gemm_ex_bf16(
+            ctx, 0, 0, m as i32, n as i32, k as i32,
+            1.0f32.to_bits() as i32, a_buf, b_buf, 0.0f32.to_bits() as i32, c_buf,
+            0, 0, 0, 0, 0, 0,
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(cl_cuda_sync(ctx), 0);
+        let got = download_f32(ctx, c_buf, m * n);
+
+        // The reference rounds both operands exactly as the device sees them, so
+        // any difference left is the fold order, not the dtype.
+        let mut want = vec![0.0f32; m * n];
+        for j in 0..n {
+            for i in 0..m {
+                let mut acc = 0.0f32;
+                for p in 0..k {
+                    let aw = f32_from_bf16_bits(f32_to_bf16_bits(a[p * m + i]));
+                    let bw = f32_from_bf16_bits(f32_to_bf16_bits(b[j * k + p]));
+                    acc += aw * bw;
+                }
+                want[j * m + i] = acc;
+            }
+        }
+        assert!(approx_eq(&got, &want), "got {got:?}, want {want:?}");
+
+        // n == 1 is the matvec decode runs; cuBLAS has no gemvEx, so it comes
+        // through the same entry point and must agree with the same reference.
+        let c1 = make_buf_with(ctx, &vec![0.0f32; m]);
+        let rc = cl_cublas_gemm_ex_bf16(
+            ctx, 0, 0, m as i32, 1, k as i32,
+            1.0f32.to_bits() as i32, a_buf, b_buf, 0.0f32.to_bits() as i32, c1,
+            0, 0, 0, 0, 0, 0,
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(cl_cuda_sync(ctx), 0);
+        let got1 = download_f32(ctx, c1, m);
+        assert!(approx_eq(&got1, &want[..m]), "matvec {got1:?} vs {:?}", &want[..m]);
+
+        // Degenerate shapes and unknown buffers are refused, not launched.
+        assert_eq!(cl_cublas_gemm_ex_bf16(ctx, 0, 0, 0, 1, 1, 0, a_buf, b_buf, 0, c_buf, 0, 0, 0, 0, 0, 0), -1);
+        assert_eq!(cl_cublas_gemm_ex_bf16(ctx, 0, 0, 1, 1, 1, 0, 999, b_buf, 0, c_buf, 0, 0, 0, 0, 0, 0), -1);
+        assert_eq!(cl_cublas_gemm_ex_bf16(ctx, 0, 0, 1, 1, 1, 0, a_buf, b_buf, 0, c_buf, -1, 0, 0, 0, 0, 0), -1);
+        cleanup_ctx(ctx);
+    }
+}
+
+#[test]
+fn gemm_ex_bf16_offsets_slice_operands() {
+    unsafe {
+        let ctx = init_ctx();
+        // One row of a wider weight matrix: the offset moves the pointer and the
+        // leading dimension keeps the stride, so the rows contracted are the
+        // same ones — the property the expert cache relies on to address a slot.
+        let (m, k) = (2usize, 3usize);
+        let wide: Vec<f32> = (0..(m + 2) * k).map(|i| (i as f32) * 0.125).collect();
+        let a_bytes = bf16s_to_bytes(&wide);
+        let a_buf = cl_cuda_create_buffer(ctx, a_bytes.len() as i64);
+        assert!(a_buf >= 0);
+        assert_eq!(cl_cuda_upload(ctx, a_buf, a_bytes.as_ptr(), a_bytes.len() as i64), 0);
+
+        let x: Vec<f32> = vec![1.0, -2.0, 0.5];
+        let x_bytes = bf16s_to_bytes(&x);
+        let x_buf = cl_cuda_create_buffer(ctx, x_bytes.len() as i64);
+        assert!(x_buf >= 0);
+        assert_eq!(cl_cuda_upload(ctx, x_buf, x_bytes.as_ptr(), x_bytes.len() as i64), 0);
+        let y_buf = make_buf_with(ctx, &vec![0.0f32; m + 1]);
+
+        // A starts one row down (off_a = 1) in a matrix of leading dimension m+2,
+        // and the result lands one element into y (off_c = 1).
+        let rc = cl_cublas_gemm_ex_bf16(
+            ctx, 0, 0, m as i32, 1, k as i32,
+            1.0f32.to_bits() as i32, a_buf, x_buf, 0.0f32.to_bits() as i32, y_buf,
+            1, 0, 1, (m + 2) as i32, 0, m as i32,
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(cl_cuda_sync(ctx), 0);
+        let got = download_f32(ctx, y_buf, m + 1);
+
+        let mut want = vec![0.0f32; m];
+        for i in 0..m {
+            let mut acc = 0.0f32;
+            for p in 0..k {
+                let aw = f32_from_bf16_bits(f32_to_bf16_bits(wide[p * (m + 2) + 1 + i]));
+                let xw = f32_from_bf16_bits(f32_to_bf16_bits(x[p]));
+                acc += aw * xw;
+            }
+            want[i] = acc;
+        }
+        assert_eq!(got[0], 0.0, "wrote before its offset");
+        assert!(approx_eq(&got[1..], &want), "got {:?}, want {want:?}", &got[1..]);
+        cleanup_ctx(ctx);
+    }
+}

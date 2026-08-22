@@ -92,10 +92,14 @@ def frame : IR.Ffi → Frame
   | .cudaGraphBeginCapture | .cudaGraphEndCapture | .cudaGraphUpload
   | .cudaGraphLaunch | .cudaGraphDestroy
   | .cudaPinnedAlloc | .cudaPinnedPtr | .cudaPinnedFree => .none
+  -- Both return a number about memory rather than writing any: the pinned
+  -- pool's checked address, and what the device has free.
+  | .cudaPinnedPtrAt | .cudaMemInfoFree | .cudaMemInfoTotal => .none
 
   -- cuda.rs, cuBLAS — the operands and the result are all device buffers.
   | .cublasSgemv | .cublasSgemvOnStream | .cublasSgemm | .cublasSgemmOnStream
-  | .cublasPtrArray | .cublasSgemmBatchedOnStream => .none
+  | .cublasPtrArray | .cublasSgemmBatchedOnStream
+  | .cublasGemmExBf16 => .none
 
   -- wgpu.rs
   | .gpuInit | .gpuCleanup => ctxSlot

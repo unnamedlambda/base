@@ -746,3 +746,142 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_batched_on_stream(
     }))
     .unwrap_or(-1)
 }
+
+/// cuBLAS GEMM over bf16 operands: C = alpha * op(A) * op(B) + beta * C, where
+/// A and B are bf16, C is f32, and the accumulation is f32
+/// (`CUBLAS_COMPUTE_32F`).
+///
+/// Halving what a matvec reads from device memory is the point: decode is bound
+/// by that read, and bf16 weights halve it.  The accumulator and the result stay
+/// f32 — a bf16 accumulator would lose the sum — so `alpha`, `beta` and every
+/// element of C are f32 as before.
+///
+/// **Both operands are bf16, and that is cuBLAS's rule, not a choice here.**
+/// `cublasGemmEx` rejects a mixed (bf16, f32) pair with
+/// `CUBLAS_STATUS_NOT_SUPPORTED` — measured on this card, not read off a table.
+/// So an f32 activation must be narrowed to bf16 before it reaches this call,
+/// which is what a bf16 pipeline does anyway; the rounding it costs is the same
+/// rounding the weights already carry.
+///
+/// Argument shape follows `cl_cublas_sgemm_strided_batched`: offsets name a
+/// slice of a buffer and leading dimensions may say the operand is a column
+/// slice of something wider, neither of which changes the rows contracted.
+/// `off_a` and `off_b` count **bf16 elements** (2 bytes), `off_c` counts f32
+/// elements (4 bytes) — each offset is in the units of its own operand.
+///
+/// - `transa`, `transb`: 0 = NoTrans, 1 = Trans
+/// - `m`, `n`, `k`: op(A) is m×k, op(B) is k×n, C is m×n.  `n == 1` is the
+///   matvec decode uses; cuBLAS has no `gemvEx`, so it goes through here.
+/// - `alpha_bits`, `beta_bits`: f32 scalars reinterpreted as i32 bits
+/// - `ld_a`, `ld_b`, `ld_c`: 0 means "the one this shape implies"
+pub(crate) unsafe extern "C" fn cl_cublas_gemm_ex_bf16(
+    ctx_ptr: *mut CraneliftCudaContext,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha_bits: i32,
+    a_buf: i32,
+    b_buf: i32,
+    beta_bits: i32,
+    c_buf: i32,
+    off_a: i64,
+    off_b: i64,
+    off_c: i64,
+    ld_a: i32,
+    ld_b: i32,
+    ld_c: i32,
+) -> i32 {
+    use cudarc::cublas::sys::{
+        cublasComputeType_t, cublasGemmAlgo_t, cublasOperation_t, cublasStatus_t, cudaDataType,
+    };
+
+    if m <= 0 || n <= 0 || k <= 0 || off_a < 0 || off_b < 0 || off_c < 0
+        || ld_a < 0 || ld_b < 0 || ld_c < 0
+    {
+        return -1;
+    }
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        let Ok(mut state) = lock_cuda_state(ctx) else {
+            return -1;
+        };
+
+        let alpha = f32::from_bits(alpha_bits as u32);
+        let beta = f32::from_bits(beta_bits as u32);
+        let op_a = if transa != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let op_b = if transb != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let lda = if ld_a != 0 { ld_a } else if transa != 0 { k } else { m };
+        let ldb = if ld_b != 0 { ld_b } else if transb != 0 { n } else { k };
+        let ldc = if ld_c != 0 { ld_c } else { m };
+
+        // Element sizes differ per operand, so the offsets scale differently:
+        // two bytes for each bf16 input, four for the f32 result.
+        let a_dev = match unsafe { cuda_buffer_device_ptr(&state, a_buf) } {
+            Some(p) => p + (off_a as u64) * 2,
+            None => return -1,
+        };
+        let b_dev = match unsafe { cuda_buffer_device_ptr(&state, b_buf) } {
+            Some(p) => p + (off_b as u64) * 2,
+            None => return -1,
+        };
+        let c_dev = match unsafe { cuda_buffer_device_ptr(&state, c_buf) } {
+            Some(p) => p + (off_c as u64) * 4,
+            None => return -1,
+        };
+        let blas = match ensure_default_cuda_blas(ctx, &mut state) {
+            Ok(blas) => blas,
+            Err(rc) => return rc,
+        };
+
+        let st = unsafe {
+            cudarc::cublas::sys::lib().cublasGemmEx(
+                *blas.handle(),
+                op_a,
+                op_b,
+                m,
+                n,
+                k,
+                &alpha as *const f32 as *const std::ffi::c_void,
+                a_dev as *const std::ffi::c_void,
+                cudaDataType::CUDA_R_16BF,
+                lda,
+                b_dev as *const std::ffi::c_void,
+                cudaDataType::CUDA_R_16BF,
+                ldb,
+                &beta as *const f32 as *const std::ffi::c_void,
+                c_dev as *mut std::ffi::c_void,
+                cudaDataType::CUDA_R_32F,
+                ldc,
+                cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT,
+            )
+        };
+        if st != cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+            // Name the shape as well as the status: mixed-dtype GEMM rejects
+            // some (dtype, compute, algo) combinations outright, and the status
+            // alone does not say whether the fault is that or the arguments.
+            eprintln!(
+                "cl_cublas_gemm_ex_bf16: cublasGemmEx failed: {:?} \
+                 (transa={} transb={} m={} n={} k={} lda={} ldb={} ldc={} \
+                 bufs a={} b={} c={})",
+                st, transa, transb, m, n, k, lda, ldb, ldc, a_buf, b_buf, c_buf
+            );
+            return -1;
+        }
+        0
+    }))
+    .unwrap_or(-1)
+}

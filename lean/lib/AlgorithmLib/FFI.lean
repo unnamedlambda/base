@@ -44,6 +44,9 @@ inductive Ffi where
   | cudaLaunchNamedOnStream | cudaSync | cudaCleanup
   | cublasSgemv | cublasSgemvOnStream | cublasSgemm | cublasSgemmOnStream
   | cublasPtrArray | cublasSgemmBatchedOnStream
+  -- Appended, and appending is the rule: a callee's id is its position in
+  -- `all`, so inserting one renumbers every shipped artifact's calls.
+  | cudaPinnedPtrAt | cudaMemInfoFree | cudaMemInfoTotal | cublasGemmExBf16
   deriving Repr, BEq, DecidableEq, Inhabited
 
 namespace Ffi
@@ -130,6 +133,10 @@ def cname : Ffi → String
   | .cublasSgemmOnStream => "cl_cublas_sgemm_strided_batched_on_stream"
   | .cublasPtrArray => "cl_cublas_ptr_array"
   | .cublasSgemmBatchedOnStream => "cl_cublas_sgemm_batched_on_stream"
+  | .cudaPinnedPtrAt => "cl_cuda_pinned_ptr_at"
+  | .cudaMemInfoFree => "cl_cuda_mem_info_free"
+  | .cudaMemInfoTotal => "cl_cuda_mem_info_total"
+  | .cublasGemmExBf16 => "cl_cublas_gemm_ex_bf16"
 
 /-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
 def sig : Ffi → List ClifTy × Option ClifTy
@@ -228,6 +235,26 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .cublasSgemmBatchedOnStream =>
       ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32,
         .i32], some .i32)
+  -- `(ctx, pinned_id, off, len)`: the pinned pool's host address at `off`, or
+  -- `-1` when `off + len` runs past the allocation. The bound is the point --
+  -- `cudaUploadOffsetAsync` checks the device range it writes but takes its
+  -- source as a bare address, so an unchecked offset into a multi-gigabyte pool
+  -- uploads whatever the process has there and calls it a weight.
+  | .cudaPinnedPtrAt => ([.i64, .i32, .i64, .i64], some .i64)
+  -- Free and total device memory. What a card has left after weights, caches
+  -- and the driver's own reservations is not a number that can be written down
+  -- ahead of the machine, so the sizes that depend on it are read here.
+  | .cudaMemInfoFree => ([.i64], some .i64)
+  | .cudaMemInfoTotal => ([.i64], some .i64)
+  -- `cublasGemmEx` over bf16 operands with an f32 accumulator and result.
+  -- Same argument shape as `.cublasSgemm` minus the batching: transposes, the
+  -- three dimensions, alpha/A/B, beta/C, then the three element offsets and the
+  -- three leading dimensions. BOTH inputs are bf16 -- cuBLAS rejects a mixed
+  -- (bf16, f32) pair -- so `off_a` and `off_b` count 2-byte elements while
+  -- `off_c` counts 4-byte ones.
+  | .cublasGemmExBf16 =>
+      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32,
+        .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
 
 def params (f : Ffi) : List ClifTy := f.sig.1
 def result (f : Ffi) : Option ClifTy := f.sig.2
@@ -254,7 +281,8 @@ def all : List Ffi :=
    .cudaPinnedFree, .cudaLaunch, .cudaLaunchNamed, .cudaLaunchOnStream,
    .cudaLaunchNamedOnStream, .cudaSync, .cudaCleanup,
    .cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmOnStream,
-   .cublasPtrArray, .cublasSgemmBatchedOnStream]
+   .cublasPtrArray, .cublasSgemmBatchedOnStream,
+   .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16]
 
 /-- The callee id every artifact carries for `f`. -/
 def id (f : Ffi) : Nat := all.idxOf f

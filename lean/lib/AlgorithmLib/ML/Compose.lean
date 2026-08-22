@@ -197,6 +197,17 @@ inductive VendorKernel where
   | cublasSgemmBatchedOnStream
   /-- Store one buffer's device pointer into an entry of such an array. -/
   | cublasPtrArray
+  /-- **A contraction whose operands are bf16**, accumulated and returned at
+      `Float32`.  Decode is bound by what a matvec reads from device memory, and
+      a bf16 weight halves it.
+
+      A constructor of its own because the dtype is exactly what is withheld:
+      the products are formed at the operands' precision, not at `Float32`, so
+      even the weak "sums its own products in some association" reading is false
+      of the `Float32` values the model holds.  Both operands are narrowed --
+      cuBLAS refuses a mixed pair -- so an activation reaching this call has been
+      rounded too. -/
+  | cublasGemmExBf16
   /-- The host→device copy.  Not a contraction and not cuBLAS, but declared for
       the same reason: its source is host memory, which this model does not
       describe, so what it lands is assumed while where it can land is proven. -/
@@ -223,6 +234,7 @@ def VendorKernel.symbol : VendorKernel → String
       "cl_cublas_sgemm_strided_batched_on_stream"
   | .cublasSgemmBatchedOnStream        => "cl_cublas_sgemm_batched_on_stream"
   | .cublasPtrArray                    => "cl_cublas_ptr_array"
+  | .cublasGemmExBf16                  => "cl_cublas_gemm_ex_bf16"
   | .uploadPtr                        => "cl_cuda_upload_ptr"
   | .cudaGraphLaunch                  => "cl_cuda_graph_launch"
 
@@ -264,6 +276,11 @@ def VendorKernel.assumes : VendorKernel → List Law
   -- these stores and is proven of the emitting program, the same standing a
   -- bind array has.
   | .cublasPtrArray                    => []
+  -- The operands are bf16, so the products are not the products of the
+  -- `Float32` values this model holds: an equation over them would be false
+  -- before any question of fold order arose.  Nothing is stated, and `lawless`
+  -- records that it is the strong kind of nothing.
+  | .cublasGemmExBf16                  => []
   -- What the copy lands is `uploadedValue`, an opaque on the declared trust
   -- surface, rather than an equation this development states.
   | .uploadPtr                         => []
@@ -280,7 +297,8 @@ def VendorKernel.assumes : VendorKernel → List Law
 def VendorKernel.all : List VendorKernel :=
   [.cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmStridedBatched,
    .cublasSgemmStridedBatchedOnStream, .cublasSgemmAt1, .cublasSgemmAt1OnStream,
-   .cublasSgemmBatchedOnStream, .cublasPtrArray, .uploadPtr, .cudaGraphLaunch]
+   .cublasSgemmBatchedOnStream, .cublasPtrArray, .cublasGemmExBf16, .uploadPtr,
+   .cudaGraphLaunch]
 
 theorem VendorKernel.all_covers : ∀ k : VendorKernel, k ∈ VendorKernel.all := by
   intro k; cases k <;> decide
@@ -294,6 +312,7 @@ theorem VendorKernel.all_covers : ∀ k : VendorKernel, k ∈ VendorKernel.all :
 def VendorKernel.lawless : VendorKernel → Bool
   | .cublasSgemmStridedBatched         => true
   | .cublasSgemmStridedBatchedOnStream => true
+  | .cublasGemmExBf16                  => true
   | .cudaGraphLaunch                   => true
   | _                                  => false
 
@@ -330,6 +349,17 @@ def VendorKernel.withholds : VendorKernel → String
       "and accumulating at another width. And the law is about the row-major " ++
       "reading of the operands; which of them plays which role at a " ++
       "column-major call is the lowering's business, not the law's."
+  | .cublasGemmExBf16 =>
+      "the operands are bf16, so the products are not the products of the " ++
+      "Float32 values this model holds: eight mantissa bits, and an activation " ++
+      "reaching the call has been rounded too, because cuBLAS refuses a mixed " ++
+      "pair. Even the weak `some association` reading is therefore false here, " ++
+      "and none is claimed -- what lands in the output is assumed outright, " ++
+      "and only where it can land is proven. What the rounding buys is the " ++
+      "read: half the bytes per weight, on the path that is bound by exactly " ++
+      "that. A model whose published weights are bf16 is being served at the " ++
+      "precision it was released in, but that is a fact about the checkpoint, " ++
+      "not a theorem this development proves."
   | .cublasSgemmStridedBatched | .cublasSgemmStridedBatchedOnStream =>
       "batched strided mode selects operand slices by stride and batch-count " ++
       "arguments this model does not interpret, and may contract multiply-add " ++

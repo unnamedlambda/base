@@ -297,6 +297,30 @@ def cudaDownloadAsync (ptr bufId dstOff size streamId : R)
   let dstPtr ← iadd ptr dstOff
   call IR.Ffi.cudaDownloadAsync.id [c, bufId, dstPtr, size, streamId]
 
+/-- The pinned pool's host address at `off`, or `-1` when `off + len` runs past
+    the allocation.
+
+    Use this wherever a source offset is computed rather than fixed: the async
+    upload checks the device range it writes but takes its source as a bare
+    address, so an unchecked offset into a large pool uploads whatever the
+    process happens to hold there. -/
+def cudaPinnedPtrAt (ptr pinnedId off len : R)
+    (slotOffset : Nat := ContextSlots.cuda) : M R := do
+  let c ← cudaCtxPtr ptr slotOffset
+  call IR.Ffi.cudaPinnedPtrAt.id [c, pinnedId, off, len]
+
+/-- Free device memory in bytes. What a card has left after weights, caches and
+    the driver's own reservations is not a number that can be written down ahead
+    of the machine, so sizes that depend on it are read here. -/
+def cudaMemInfoFree (ptr : R) (slotOffset : Nat := ContextSlots.cuda) : M R := do
+  let c ← cudaCtxPtr ptr slotOffset
+  call IR.Ffi.cudaMemInfoFree.id [c]
+
+/-- Total device memory in bytes. -/
+def cudaMemInfoTotal (ptr : R) (slotOffset : Nat := ContextSlots.cuda) : M R := do
+  let c ← cudaCtxPtr ptr slotOffset
+  call IR.Ffi.cudaMemInfoTotal.id [c]
+
 def cudaSync (ptr : R) (slotOffset : Nat := ContextSlots.cuda) : M R := do
   call IR.Ffi.cudaSync.id [← cudaCtxPtr ptr slotOffset]
 
@@ -371,6 +395,55 @@ def cublasSgemmStridedBatchedOnStream (ptr transA transB m n k alphaBits aBuf st
   call IR.Ffi.cublasSgemmOnStream.id
     [c, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB,
      betaBits, cBuf, strideC, batchCount, streamId, oa, ob, oc, la, lb, lc]
+
+/-- The same contraction with **bf16 operands** and an f32 accumulator and
+    result: `C ← alpha·op(A)·op(B) + beta·C`, unbatched.
+
+    Both inputs are bf16 because cuBLAS refuses a mixed pair, so `offA` and
+    `offB` count 2-byte elements while `offC` counts 4-byte ones. Offsets and
+    leading dimensions default to zero, read as "no offset, default leading
+    dimension", as in the strided form. -/
+def cublasGemmExBf16 (ptr transA transB m n k alphaBits aBuf bBuf betaBits cBuf : R)
+    (slotOffset : Nat := ContextSlots.cuda)
+    (offA offB offC : Nat := 0) (ldA ldB ldC : Nat := 0) : M R := do
+  let c ← cudaCtxPtr ptr slotOffset
+  let oa ← iconst64 offA
+  let ob ← iconst64 offB
+  let oc ← iconst64 offC
+  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
+  call IR.Ffi.cublasGemmExBf16.id
+    [c, transA, transB, m, n, k, alphaBits, aBuf, bBuf, betaBits, cBuf,
+     oa, ob, oc, la, lb, lc]
+
+/-- The same, with the operand offsets held in **registers** rather than fixed
+    at emission.
+
+    A sliding window moves with the position, so the offset that names its first
+    key is not a number the generator knows. Nothing else changes: an offset
+    still moves a pointer and leaves the matrix contracted alone, which is why
+    this costs no law the constant form does not already cost. -/
+def cublasGemmExBf16At (ptr transA transB m n k alphaBits aBuf bBuf betaBits cBuf
+     offA offB offC : R)
+    (slotOffset : Nat := ContextSlots.cuda) (ldA ldB ldC : Nat := 0) : M R := do
+  let c ← cudaCtxPtr ptr slotOffset
+  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
+  call IR.Ffi.cublasGemmExBf16.id
+    [c, transA, transB, m, n, k, alphaBits, aBuf, bBuf, betaBits, cBuf,
+     offA, offB, offC, la, lb, lc]
+
+/-- The strided-batched contraction with its operand offsets in registers.
+
+    Attention over a sliding window is the reason: the window's first key is a
+    function of the position, so `offA`/`offB` are computed at run time. The
+    constant-offset form above is the same call with the offsets frozen. -/
+def cublasSgemmStridedBatchedOnStreamAt (ptr transA transB m n k alphaBits aBuf strideA
+     bBuf strideB betaBits cBuf strideC batchCount streamId offA offB offC : R)
+    (slotOffset : Nat := ContextSlots.cuda) (ldA ldB ldC : Nat := 0) : M R := do
+  let c ← cudaCtxPtr ptr slotOffset
+  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
+  call IR.Ffi.cublasSgemmOnStream.id
+    [c, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB,
+     betaBits, cBuf, strideC, batchCount, streamId, offA, offB, offC, la, lb, lc]
 
 /-- Store `srcBuf`'s device pointer, advanced by `off` f32 elements, into entry
     `slot` of the pointer array held in `arrBuf`. -/

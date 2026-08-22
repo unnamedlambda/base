@@ -39,7 +39,9 @@ pub(super) struct CudaOwnedGraphExec {
 
 pub(super) struct CudaPinnedHostBuffer {
     pub(super) ptr: *mut std::ffi::c_void,
-    pub(super) _size: usize,
+    /// Read by `cl_cuda_pinned_ptr_at`, which is what makes an offset into a
+    /// multi-GiB pool a checked address rather than pointer arithmetic.
+    pub(super) size: usize,
 }
 
 unsafe impl Send for CudaPinnedHostBuffer {}

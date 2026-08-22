@@ -72,7 +72,10 @@ fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("cl_cuda_graph_destroy", cuda::cl_cuda_graph_destroy as *const u8);
     builder.symbol("cl_cuda_pinned_alloc", cuda::cl_cuda_pinned_alloc as *const u8);
     builder.symbol("cl_cuda_pinned_ptr", cuda::cl_cuda_pinned_ptr as *const u8);
+    builder.symbol("cl_cuda_pinned_ptr_at", cuda::cl_cuda_pinned_ptr_at as *const u8);
     builder.symbol("cl_cuda_pinned_free", cuda::cl_cuda_pinned_free as *const u8);
+    builder.symbol("cl_cuda_mem_info_free", cuda::cl_cuda_mem_info_free as *const u8);
+    builder.symbol("cl_cuda_mem_info_total", cuda::cl_cuda_mem_info_total as *const u8);
     builder.symbol("cl_cuda_launch", cuda::cl_cuda_launch as *const u8);
     builder.symbol("cl_cuda_launch_named", cuda::cl_cuda_launch_named as *const u8);
     builder.symbol("cl_cuda_launch_on_stream", cuda::cl_cuda_launch_on_stream as *const u8);
@@ -88,6 +91,7 @@ fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("cl_cublas_sgemm_strided_batched_on_stream", cuda::cl_cublas_sgemm_strided_batched_on_stream as *const u8);
     builder.symbol("cl_cublas_ptr_array", cuda::cl_cublas_ptr_array as *const u8);
     builder.symbol("cl_cublas_sgemm_batched_on_stream", cuda::cl_cublas_sgemm_batched_on_stream as *const u8);
+    builder.symbol("cl_cublas_gemm_ex_bf16", cuda::cl_cublas_gemm_ex_bf16 as *const u8);
 
     // File + math + stdio
     builder.symbol("cl_file_read", file::cl_file_read as *const u8);
