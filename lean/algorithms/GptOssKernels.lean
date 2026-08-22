@@ -772,6 +772,78 @@ def routerTop4 : KernelSpec where
     label done
     ptxRet
 
+
+/-- **The greedy token: the largest logit's index.**
+
+    Two hundred thousand logits, one block. Each lane strides the row keeping
+    its own best, writes the pair to shared memory, and lane 0 picks among
+    thirty-two — which is the whole reduction, because thirty-two is small and
+    a tree would cost more in code than in cycles.
+
+    The index is what is wanted, so the value is only ever a means; ties go to
+    the lower index, which is what `>` rather than `>=` in the scan gives and
+    what every reference implementation does. -/
+def argmaxLogits : KernelSpec where
+  name := "argmax_logits"
+  params := ["p_logits", "p_out", "p_meta"]
+  body := do
+    let logits ← freshRd; ldParam64 logits "p_logits"
+    let out ← freshRd; ldParam64 out "p_out"
+    let metaP ← freshRd; ldParam64 metaP "p_meta"
+    let n ← freshR; ldGlobalU n metaP
+    let tid ← freshR; movR tid tidX
+    let sm ← smemBase
+    let best ← freshF; movFI best (.bits 0xFF800000)
+    let bi ← freshR; movRC bi 0
+    let i ← freshR; movR i tid
+    let loop := "AM_LOOP"
+    let ldone := "AM_DONE"
+    label loop
+    do
+      let p ← freshP; setpGe p i n; braIf p ldone
+      let off ← freshRd; mulWideRI off i 4
+      let a ← freshRd; addRd a logits off
+      let v ← freshF; ldGlobalF v a
+      let gt ← freshP; setpGtF gt v best
+      maxF best best v
+      let ni ← freshR; selpR ni i bi gt
+      movR bi ni
+      addRI i i 32
+      bra loop
+    label ldone
+    -- lane `tid` parks its pair: value at `tid`, index at `32 + tid`
+    let va ← freshR; shlR va tid 2; addR va va sm
+    stSharedFD va best
+    let ia ← freshR; addRI ia va 128
+    stSharedU32D ia bi
+    barSync
+    let isLane0 ← freshP; setpEqI isLane0 tid 0
+    let fin := "AM_FIN"
+    braIfNot isLane0 fin
+    do
+      let bv ← freshF; ldSharedFD bv sm
+      let bx ← freshR; ldSharedU32D bx (← do let t ← freshR; addRI t sm 128; pure t)
+      let k ← freshR; movRC k 1
+      let sl := "AM_SEL"
+      let slEnd := "AM_SEL_END"
+      label sl
+      do
+        let p ← freshP; setpGeI p k 32; braIf p slEnd
+        let ka ← freshR; shlR ka k 2; addR ka ka sm
+        let v ← freshF; ldSharedFD v ka
+        let ja ← freshR; addRI ja ka 128
+        let jx ← freshR; ldSharedU32D jx ja
+        let gt ← freshP; setpGtF gt v bv
+        maxF bv bv v
+        let nx ← freshR; selpR nx jx bx gt
+        movR bx nx
+        addRI k k 1
+        bra sl
+      label slEnd
+      stGlobalU32 out bx
+    label fin
+    ptxRet
+
 /-- One kernel as its own module, entry named `main`.
 
     The launch primitive loads a module and runs the entry called `main`, so a
