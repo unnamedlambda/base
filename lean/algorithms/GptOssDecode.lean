@@ -4,6 +4,8 @@ import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import GptOssKernels
 import GptOssAttention
+import TokenizerCommon
+import PretokCommon
 import LayoutScan
 import ShipScan
 
@@ -50,8 +52,15 @@ open GptOssAttention hiding H
 
   ## What the caller sees
 
-  One entry, no extras. In: a token, a position, and the path to the bank. Out:
-  the next token. Everything between is here.
+  One entry, no extras, and two modes. A single step, for a caller that wants
+  to drive positions itself and check logits against the model; or a whole
+  chat turn — text in, the reply's text out, with the tokenizer, the split,
+  the prefill, the generation loop and the detokenizer all on this side of the
+  boundary.
+
+  The second is the point. A caller that has to tokenize for itself is a caller
+  that has to agree with the model about what a token is, and that agreement is
+  exactly what a separate tokenizer cannot be held to.
 -/
 
 namespace GptOssDecode
@@ -245,7 +254,47 @@ def DPOOL_OFF : Nat := DNSLOT_OFF + 4
 def DSTAGE_OFF : Nat := DPOOL_OFF + 8
 def DMISS_OFF : Nat := DSTAGE_OFF + 8
 def DINIT_OFF : Nat := DMISS_OFF + 4
-def DMEM_SIZE : Nat := DINIT_OFF + 4 + 0x100
+/-! ### The tokenizer's corner
+
+    A chat turn is text in and text out, so this program owns a tokenizer as
+    well as a model. The bodies come from `TokenizerCommon` and `PretokCommon`;
+    what is local is where their working arrays sit. -/
+
+/-- The longest prompt or reply this program handles, in bytes. -/
+def TEXT_MAX : Nat := 8192
+
+def DTOK_BASE : Nat := DINIT_OFF + 8
+def DT_PATHPTR : Nat := DTOK_BASE
+def DT_BUFPTR : Nat := DTOK_BASE + 8
+def DT_TOKCOUNT : Nat := DTOK_BASE + 16
+def DT_TEXTLEN : Nat := DTOK_BASE + 24
+def DT_HTKEY : Nat := DTOK_BASE + 32
+def DT_HTVAL : Nat := DTOK_BASE + 40
+def DT_CPCOUNT : Nat := DTOK_BASE + 48
+def DT_OUTCOUNT : Nat := DTOK_BASE + 56
+/-- Where a step leaves the token it produced. -/
+def DT_NEXT : Nat := DTOK_BASE + 64
+def DT_GENCOUNT : Nat := DTOK_BASE + 72
+def DT_TEXTIN : Nat := DTOK_BASE + 128
+def DT_TEXTOUT : Nat := DT_TEXTIN + TEXT_MAX
+def DT_TOKBUF : Nat := DT_TEXTOUT + TEXT_MAX
+def DT_CPBUF : Nat := DT_TOKBUF + 4 * TEXT_MAX
+def DT_CPBYTE : Nat := DT_CPBUF + 4 * TEXT_MAX
+def DT_OUTTOK : Nat := DT_CPBYTE + 4 * (TEXT_MAX + 1)
+def DT_GENTOK : Nat := DT_OUTTOK + 4 * TEXT_MAX
+def DMEM_SIZE : Nat := DT_GENTOK + 4 * TEXT_MAX + 0x100
+
+def dTokMem : TokenizerCommon.TokMem :=
+  { htCtx := ContextSlots.ht, cudaCtx := ContextSlots.cuda
+    pathPtr := DT_PATHPTR, bufPtr := DT_BUFPTR
+    tokenBuf := DT_TOKBUF, tokenCount := DT_TOKCOUNT
+    textIn := DT_TEXTIN, textOut := DT_TEXTOUT, textLen := DT_TEXTLEN
+    htKey := DT_HTKEY, htVal := DT_HTVAL
+    fileMaxBytes := 32 * 1024 * 1024 }
+
+def dPretokMem : PretokCommon.PretokMem :=
+  { cpBuf := DT_CPBUF, cpByte := DT_CPBYTE, cpCount := DT_CPCOUNT
+    outTok := DT_OUTTOK, outCount := DT_OUTCOUNT }
 def DHOST_LEN_OFF : Nat := 0x0080
 
 theorem gptoss_decode_ptx_fits :
@@ -261,7 +310,18 @@ def dMemMap : AlgorithmLib.Layout.RegionMap :=
         ⟨"resident", DRESIDENT_OFF, 4 * NSLOT_MAX⟩,
         ⟨"clock", DCLOCK_OFF, 4⟩, ⟨"nslot", DNSLOT_OFF, 4⟩,
         ⟨"pool", DPOOL_OFF, 8⟩, ⟨"stage", DSTAGE_OFF, 8⟩,
-        ⟨"miss", DMISS_OFF, 4⟩, ⟨"init", DINIT_OFF, 4⟩]
+        ⟨"miss", DMISS_OFF, 4⟩, ⟨"init", DINIT_OFF, 4⟩,
+        ⟨"tokPathPtr", DT_PATHPTR, 8⟩, ⟨"tokBufPtr", DT_BUFPTR, 8⟩,
+        ⟨"tokCount", DT_TOKCOUNT, 8⟩, ⟨"tokTextLen", DT_TEXTLEN, 8⟩,
+        ⟨"htKey", DT_HTKEY, 8⟩, ⟨"htVal", DT_HTVAL, 8⟩,
+        ⟨"cpCount", DT_CPCOUNT, 8⟩, ⟨"outCount", DT_OUTCOUNT, 8⟩,
+        ⟨"next", DT_NEXT, 4⟩, ⟨"genCount", DT_GENCOUNT, 8⟩,
+        ⟨"textIn", DT_TEXTIN, TEXT_MAX⟩, ⟨"textOut", DT_TEXTOUT, TEXT_MAX⟩,
+        ⟨"tokBuf", DT_TOKBUF, 4 * TEXT_MAX⟩,
+        ⟨"cpBuf", DT_CPBUF, 4 * TEXT_MAX⟩,
+        ⟨"cpByte", DT_CPBYTE, 4 * (TEXT_MAX + 1)⟩,
+        ⟨"outTok", DT_OUTTOK, 4 * TEXT_MAX⟩,
+        ⟨"genTok", DT_GENTOK, 4 * TEXT_MAX⟩]
 
 theorem gptossDecodeMap_ok :
     dMemMap.okB = true ∧ dMemMap.withinB DMEM_SIZE = true := by native_decide
@@ -269,7 +329,7 @@ theorem gptossDecodeMap_ok :
 
 /-! ## The host program -/
 
-def env : FnEnv := env% [.cuda, .cublas, .fileIO]
+def env : FnEnv := env% [.ht, .cuda, .cublas, .fileIO]
 
 /-- What the caller passes: a token, its position, and where the bank is.
 
@@ -278,10 +338,47 @@ def env : FnEnv := env% [.cuda, .cublas, .fileIO]
     integers are read every call. -/
 def D_TOK : Nat := 0
 def D_POS : Nat := 4
+/-- Zero for a single step, one for a whole turn. -/
+def D_MODE : Nat := 8
+def D_TLEN : Nat := 12
 def D_PEXP : Nat := 16
 def D_PDEN : Nat := 272
 def D_PEMB : Nat := 528
-def D_IN_BYTES : Nat := 784
+def D_PTOK : Nat := 784
+/-- The id a turn stops on, and how many tokens it may generate. Both are the
+    caller's, because which token ends a turn is a fact about the chat template
+    and not about the model. -/
+def D_STOP : Nat := 1040
+def D_MAXNEW : Nat := 1044
+/-- **The chat template, as tokens rather than as code.**
+
+    A turn is `pre ++ tokenize(text) ++ post`, and the caller supplies the two
+    id lists. Harmony's control tokens are not text — BPE over the literal
+    `<|start|>` yields its pieces, not the special id — so they cannot come
+    through the tokenizer, and hard-coding them here would put one checkpoint's
+    chat format inside a program that is otherwise about the model. -/
+def D_NPRE : Nat := 1048
+def D_NPOST : Nat := 1052
+def TMPL_MAX : Nat := 64
+def D_PRE : Nat := 1056
+def D_POST : Nat := D_PRE + 4 * TMPL_MAX
+def D_TEXT : Nat := D_POST + 4 * TMPL_MAX
+def D_IN_BYTES : Nat := D_TEXT + TEXT_MAX
+
+/-! ## What comes back
+
+    `[n : u32][misses : i32]` then the logits, then the layer trace, then the
+    turn's text. Every region has a fixed home so that one entry can serve both
+    modes without the caller having to know which one it asked for. -/
+def D_OUT_LOGITS : Nat := 8
+def D_OUT_TRACE : Nat := D_OUT_LOGITS + VOCAB * 4
+def D_OUT_TEXT : Nat := D_OUT_TRACE + 2 * NL * HH * 4
+/-- The ids behind that text. A turn that returns only bytes is a turn whose
+    detokenizer nobody can check: text and ids together let a caller confirm
+    the two agree without running the model twice. -/
+def D_OUT_NGEN : Nat := D_OUT_TEXT + TEXT_MAX
+def D_OUT_GEN : Nat := D_OUT_NGEN + 8
+def D_OUT_BYTES : Nat := D_OUT_GEN + 4 * TEXT_MAX
 
 def NBLK : Nat := 32 * warpsPerCta
 
@@ -649,24 +746,19 @@ def dLayerM (layer : R) : M Unit := do
   dEnqueue ptr S_ADD (HH / 32) 32 [B_X, B_MOUT]
   dTraceM layer 1
 
-/-- **One token.**
+/-- **One token, from a token and a position.**
 
-    Load if this is the first call, then: the embedding row off disk, the
-    meta this position implies, twenty-four layers, the final norm, `lm_head`,
-    and the largest logit's index — which is the answer, and the only thing
-    that leaves. -/
-def dMainFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
+    Everything a decode step is: the embedding row, the meta this position
+    implies, twenty-four layers, the final norm, `lm_head`, and the largest
+    logit's index. Returns that index, and leaves the logits and the layer
+    trace in the caller's buffer where a checker can read them.
+
+    A builder rather than an entry point, because a chat turn is this in a
+    loop and the loop belongs on the same side of the boundary as the model. -/
+def dStepM (tok pos : R) : M R := do
   let ptr := basePtr
-  let flag ← load32 (← absAddr ptr DINIT_OFF)
-  let zero32 ← iconst32 0
-  when .eq flag zero32 (do
-    dInitM
-    storeI32 (← iconst32 1) (← absAddr ptr DINIT_OFF))
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let ctxPtr ← cudaCtxPtr ptr
-  let tok ← load32 dataPtr
-  let pos ← load32 (← iaddImm dataPtr D_POS)
   -- **The embedding row, gathered here.**
   --
   -- The table is bf16 and the first RMSNorm reads f32, so the row is read out
@@ -675,7 +767,6 @@ def dMainFn : HProg.Code :=
   -- all 201088 rows in device memory, which costs 1.08 GiB — a hundred and
   -- eighty expert slots — to save a read of under six kilobytes.
   let bEmb ← load32 (← absAddr ptr (dBindOff B_EMB))
-  let bX ← load32 (← absAddr ptr (dBindOff B_X))
   let stagePtrT ← load64 (← absAddr ptr DSTAGE_OFF)
   let rowB ← iconst64 (HH * 2)
   let rowOff ← imul (← uextend64 tok) rowB
@@ -740,17 +831,127 @@ def dMainFn : HProg.Code :=
   storeI32 (← iconst32 ((64 * 64) / 2)) (← absAddr ptr (DMETA_OFF + 4 * 33))
   let _ ← call IR.Ffi.cudaUpload.id
     [ctxPtr, bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  -- the token this step produced, into memory this program owns
   let bTok ← load32 (← absAddr ptr (dBindOff B_TOKEN))
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bTok, outPtr, n4]
-  let miss ← load32 (← absAddr ptr DMISS_OFF)
-  storeI32 miss (← iaddImm outPtr 4)
-  -- …and the whole logit row after it.  Eight hundred kilobytes is real
-  -- traffic and it buys the only check that can localise a fault in the head:
-  -- a caller can compare against the model's own logits instead of guessing
-  -- from a token id.  A partial copy is not an option -- the runtime asserts a
-  -- transfer is the whole buffer -- so it is all of them or none.
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bTok, (← absAddr ptr DT_NEXT), n4]
+  -- …and the whole logit row, to a fixed place in the caller's buffer.  Eight
+  -- hundred kilobytes is real traffic and it buys the only check that can
+  -- localise a fault in the head: a caller can compare against the model's own
+  -- logits instead of guessing from a token id.  A partial copy is not an
+  -- option -- the runtime asserts a transfer is the whole buffer -- so it is
+  -- all of them or none.
+  let outPtr ← load64 (← absAddr ptr 0x28)
   let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bLog, (← iaddImm outPtr 8), (← iconst64 (VOCAB * 4))]
+  load32 (← absAddr ptr DT_NEXT)
+
+
+/-- **A whole chat turn, or one step of one.**
+
+    `D_MODE` chooses. Zero is a single step at a caller-supplied token and
+    position, which is what the reference comparison drives; one is a turn —
+    prompt text in, generated text out, with the tokenizer, the prefill, the
+    generation loop and the detokenizer all on this side of the boundary.
+
+    There is one entry and no extras either way. That is the property the whole
+    application was arranged around: a caller that has to tokenize for itself
+    is a caller that has to agree with the model about what a token is. -/
+def dMainFn : HProg.Code :=
+  HProg.Sur.build (env := env) do
+  let ptr := basePtr
+  let flag ← load32 (← absAddr ptr DINIT_OFF)
+  let zero32 ← iconst32 0
+  when .eq flag zero32 (do
+    dInitM
+    let dp ← load64 (← absAddr ptr 0x18)
+    storeI64 (← iaddImm dp D_PTOK) (← absAddr ptr DT_PATHPTR)
+    TokenizerCommon.loadTokenizerM dTokMem
+    storeI32 (← iconst32 1) (← absAddr ptr DINIT_OFF))
+  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let outPtr ← load64 (← absAddr ptr 0x28)
+  let mode ← load32 (← iaddImm dataPtr D_MODE)
+  let _ ← ifte .eq mode zero32
+    (do -- one step, at what the caller asked for
+        let tok ← load32 dataPtr
+        let pos ← load32 (← iaddImm dataPtr D_POS)
+        let nxt ← dStepM tok pos
+        storeI32 nxt outPtr
+        let miss ← load32 (← absAddr ptr DMISS_OFF)
+        storeI32 miss (← iaddImm outPtr 4)
+        pure ([] : List R))
+    (do -- a turn: text in, text out
+        let tlen ← uload32_64 (← iaddImm dataPtr D_TLEN)
+        let stop ← load32 (← iaddImm dataPtr D_STOP)
+        let maxNew ← uload32_64 (← iaddImm dataPtr D_MAXNEW)
+        let textIn ← iaddImm ptr DT_TEXTIN
+        let src ← iaddImm dataPtr D_TEXT
+        forLoop tlen fun i => do
+          istore8 (← uload8_64 (← iadd src i)) (← iadd textIn i)
+        storeI64 tlen (← absAddr ptr DT_TEXTLEN)
+        PretokCommon.tokenizeTextM dTokMem dPretokMem
+        -- the prompt, one position at a time.  There is no prefill kernel yet,
+        -- so this is the decode path run over the prompt: correct, and bound by
+        -- launches rather than by arithmetic.
+        let nText ← load { ty := .i64, notrapAligned := true }
+                      (← absAddr ptr DT_OUTCOUNT)
+        let nPre ← uload32_64 (← iaddImm dataPtr D_NPRE)
+        let nPost ← uload32_64 (← iaddImm dataPtr D_NPOST)
+        let preP ← iaddImm dataPtr D_PRE
+        let postP ← iaddImm dataPtr D_POST
+        let outTok ← iaddImm ptr DT_OUTTOK
+        forLoop nPre fun i => do
+          let t ← load32 (← iadd preP (← ishlImm i 2))
+          let _ ← dStepM t (← ireduce32 i)
+          pure ()
+        forLoop nText fun i => do
+          let t ← load32 (← iadd outTok (← ishlImm i 2))
+          let _ ← dStepM t (← ireduce32 (← iadd nPre i))
+          pure ()
+        let afterText ← iadd nPre nText
+        forLoop nPost fun i => do
+          let t ← load32 (← iadd postP (← ishlImm i 2))
+          let _ ← dStepM t (← ireduce32 (← iadd afterText i))
+          pure ()
+        let nPrompt ← iadd afterText nPost
+        -- …and then the model's own output, until it stops or runs out of room
+        let genTok ← iaddImm ptr DT_GENTOK
+        let first ← load32 (← absAddr ptr DT_NEXT)
+        let gEx ← wloop [(← iconst64 0), nPrompt, (← uextend64 first)]
+          (head := fun st => return (contIf .ult (st.headD 0) maxNew, [st.headD 0], ()))
+          (body := fun st _ => do
+            let g := st.headD 0
+            let pos := st.getD 1 0
+            let cur := st.getD 2 0
+            let cur32 ← ireduce32 cur
+            storeI32 cur32 (← iadd genTok (← ishlImm g 2))
+            let g1 ← iaddImm g 1
+            when .eq cur32 stop (brk [g1])
+            let nxt ← dStepM cur32 (← ireduce32 pos)
+            return [g1, ← iaddImm pos 1, ← uextend64 nxt])
+        let nGen := gEx.headD (← iconst64 0)
+        storeI64 nGen (← absAddr ptr DT_GENCOUNT)
+        -- back to bytes
+        let tokBuf ← iaddImm ptr DT_TOKBUF
+        forLoop nGen fun i => do
+          storeI32 (← load32 (← iadd genTok (← ishlImm i 2)))
+                   (← iadd tokBuf (← ishlImm i 2))
+        storeI64 nGen (← absAddr ptr DT_TOKCOUNT)
+        TokenizerCommon.detokenizeM dTokMem
+        let nBytes ← load { ty := .i64, notrapAligned := true }
+                       (← absAddr ptr DT_TEXTLEN)
+        storeI32 (← ireduce32 nBytes) outPtr
+        let miss ← load32 (← absAddr ptr DMISS_OFF)
+        storeI32 miss (← iaddImm outPtr 4)
+        let textOut ← iaddImm ptr DT_TEXTOUT
+        let dst ← iaddImm outPtr D_OUT_TEXT
+        forLoop nBytes fun i => do
+          istore8 (← uload8_64 (← iadd textOut i)) (← iadd dst i)
+        storeI32 (← ireduce32 nGen) (← iaddImm outPtr D_OUT_NGEN)
+        let gdst ← iaddImm outPtr D_OUT_GEN
+        forLoop nGen fun i => do
+          storeI32 (← load32 (← iadd genTok (← ishlImm i 2)))
+                   (← iadd gdst (← ishlImm i 2))
+        pure ([] : List R))
+  pure ()
 
 def dShippedBodies : List HProg.Code := [ dMainFn ]
 

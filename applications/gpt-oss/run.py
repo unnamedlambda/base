@@ -28,6 +28,17 @@ import time
 
 import numpy as np
 
+# the artifact's own layout, mirrored here rather than guessed
+TEXT_MAX = 8192
+TMPL_MAX = 64
+D_PRE = 1056
+D_POST = D_PRE + 4 * TMPL_MAX
+D_TEXT = D_POST + 4 * TMPL_MAX
+D_IN_BYTES = D_TEXT + TEXT_MAX
+D_OUT_TRACE = 8 + 201088 * 4
+D_OUT_TEXT = D_OUT_TRACE + 2 * 24 * 2880 * 4
+D_OUT_BYTES = D_OUT_TEXT + TEXT_MAX
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank  # noqa: E402
 
@@ -60,7 +71,8 @@ def main():
     exp = os.path.abspath(os.path.join(args.bank, "experts.bin")).encode() + b"\0"
     den = os.path.abspath(os.path.join(args.bank, "dense.bin")).encode() + b"\0"
     emb = os.path.abspath(os.path.join(args.bank, "embed.bin")).encode() + b"\0"
-    assert len(exp) < 256 and len(den) < 256 and len(emb) < 256
+    tkz = os.path.abspath(os.path.join(args.bank, "tokenizer.bin")).encode() + b"\0"
+    assert max(len(exp), len(den), len(emb), len(tkz)) < 256
 
     if args.tokens:
         ids = [int(t) for t in args.tokens.split(",")]
@@ -74,12 +86,13 @@ def main():
     def step(tok_id, pos):
         # A token, a position, and three paths.  Nothing the model is made of:
         # the embedding row is gathered and widened inside the artifact.
-        buf = bytearray(784)
-        struct.pack_into("<II", buf, 0, tok_id, pos)
+        buf = bytearray(D_IN_BYTES)
+        struct.pack_into("<II", buf, 0, tok_id, pos)          # mode 0: one step
         buf[16:16 + len(exp)] = exp
         buf[272:272 + len(den)] = den
         buf[528:528 + len(emb)] = emb
-        out = bytearray(8 + 201088 * 4 + 2 * NL * H * 4)
+        buf[784:784 + len(tkz)] = tkz
+        out = bytearray(D_OUT_BYTES)
         base.execute_into(art.main, bytes(buf), out)
         b = bytes(out)
         tok_id_out, miss = struct.unpack_from("<Ii", b, 0)
@@ -87,7 +100,7 @@ def main():
         # the residual stream after each layer, in the order they ran
         # two rows per layer: after attention, then after the mixture
         tr = np.frombuffer(b, np.float32, count=2 * NL * H,
-                           offset=8 + 201088 * 4).reshape(NL, 2, H)
+                           offset=D_OUT_TRACE).reshape(NL, 2, H)
         return tok_id_out, miss, lg, tr
 
     print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")

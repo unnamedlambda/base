@@ -6,8 +6,10 @@ import GptOssDecode
 
   `GptOssScan` scans the pieces: the attention kernels, the mixture, one layer.
   This scans the thing those pieces were for — `gptoss_decode`, a single CLIF
-  function that turns a token into the next one, twenty-four layers and an
-  expert cache included, with no second entry point and no host in the loop.
+  function that takes a chat turn's text and returns the model's reply. The
+  tokenizer, the split, the prefill, twenty-four layers a token, the expert
+  cache, the head and the detokenizer are all inside it; there is no second
+  entry point and no host in the loop.
 
   The distinction that matters here is between a claim and an arrangement.
   Everything below is a claim about *shape*: that the buffers the program names
@@ -94,6 +96,27 @@ def decodeOpenObligations : List String :=
      the tensor exactly, with no gap and no overlap, is arithmetic in the \
      generator and is not stated. It was wrong once, and the symptom was every \
      logit zero rather than a wrong answer."
+  , "TurnIsTheStepRepeated — a chat turn is `dStepM` over the template, the \
+     tokenised text, and then its own output, and the claim is that driving it \
+     from inside the artifact computes what driving it from outside does. \
+     Evidence: the same harmony prompt through both paths produces the same 40 \
+     token ids, and the prompt-end logits match the bf16 reference to 7.6e-3 \
+     with the argmax agreeing. Not stated."
+  , "StopAndBoundTerminate — a turn ends on the caller's stop id or after \
+     `D_MAXNEW` tokens, and the generation loop carries both. That it cannot \
+     run past the buffers it writes into rests on `TEXT_MAX` bounding both, \
+     which is arithmetic in the generator rather than a theorem."
+  , "TemplateIsData — harmony's control tokens arrive as ids the caller \
+     supplies, spliced around the tokenised text, because BPE over the literal \
+     `<|start|>` yields its pieces rather than the special id. Which ids make a \
+     turn is a fact about the chat format and is not checked here at all."
+  , "DetokBoundsItself — an id outside the decode table contributes nothing \
+     rather than reading past it. This is *not* a nicety: harmony's control \
+     tokens are `added_tokens` above the BPE vocabulary, and a table that \
+     stopped at the vocabulary made the length driving the copy garbage, which \
+     is a buffer overrun and arrives as a core dump. The converter now covers \
+     every id the model can emit; the guard is there for the converter that \
+     does not."
   , "WidenIsLossless — nothing numeric reaches this program from its caller: \
      the embedding row is read from the file at token * HH * 2, uploaded as the \
      bf16 it is, and widened by GptOssKernels.widenBf16. bf16 is f32 with the \
@@ -111,7 +134,9 @@ def measured : List String :=
   , s!"ptx slots: {GptOssDecode.dPtx.length}"
   , s!"host memory: {GptOssDecode.DMEM_SIZE} bytes"
   , s!"trace rows returned per token: {2 * GptOssDecode.NL} \
-(residual stream after each half of each layer)" ]
+(residual stream after each half of each layer)"
+  , s!"text buffers: {GptOssDecode.TEXT_MAX} bytes in and out"
+  , "a turn: tokenise, prefill through the decode path, generate, detokenise" ]
 
 end GptOssDecodeScan
 

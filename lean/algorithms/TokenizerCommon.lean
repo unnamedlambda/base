@@ -230,9 +230,23 @@ def detokenizeM (c : TokMem) : M Unit := do
   let zero64 ← iconst64 0
   let finalTp ← forLoopAcc nToks zero64 fun ti tp => do
     let tokId ← uload32_64 (← iadd tokBuf (← ishlImm ti 2))
-    let decOff ← uload32_64 (← iadd decOffPtr (← ishlImm tokId 2))
-    let decLen ← uload32_64 (← iadd decLenPtr (← ishlImm tokId 2))
-    let srcPtr ← iadd bytePool decOff
+    -- **An id outside the table contributes nothing.**
+    --
+    -- Reading `dec_off` at an id the table does not have is not a wrong answer
+    -- but an out-of-bounds load, and the length it returns then drives the copy
+    -- below — so the failure is a buffer overrun and it arrives as a core dump.
+    -- The converter's job is to make this unreachable by covering every id the
+    -- model can emit, added tokens included; this is here so that a converter
+    -- that fails at it cannot corrupt memory.
+    let inRange ← ifte .ult tokId vocabSize (pure [← iconst64 1]) (pure [zero64])
+    let lenL ← ifte .ne (inRange.headD zero64) zero64
+      (pure [← uload32_64 (← iadd decLenPtr (← ishlImm tokId 2))])
+      (pure [zero64])
+    let decLen := lenL.headD zero64
+    let offL ← ifte .ne (inRange.headD zero64) zero64
+      (pure [← uload32_64 (← iadd decOffPtr (← ishlImm tokId 2))])
+      (pure [zero64])
+    let srcPtr ← iadd bytePool (offL.headD zero64)
     forLoop decLen fun i => do
       let byt ← uload8_64 (← iadd srcPtr i)
       istore8 byt (← iadd textOut (← iadd tp i))

@@ -70,20 +70,30 @@ def convert(tok_path, out_path, class_tab=None):
         if a in vocab and b in vocab and ab in vocab:
             merges.append((vocab[a], vocab[b], vocab[ab]))
 
+    # Added tokens sit *outside* model["vocab"] and at higher ids -- harmony's
+    # control tokens are all of them.  The decode tables have to cover them or
+    # detokenising anything the model emits reads past the end of the table,
+    # which is a buffer overrun rather than a wrong answer.  Their bytes are
+    # their literal text, not gpt2-encoded, because nothing encoded them.
+    added = {int(a["id"]): a["content"] for a in tok.get("added_tokens", [])}
+    table_size = max([vocab_size] + [i + 1 for i in added])
     pool = bytearray()
-    off = np.zeros(vocab_size, dtype=np.uint32)
-    ln = np.zeros(vocab_size, dtype=np.uint32)
-    for i in range(vocab_size):
-        b = token_str_to_bytes(id_to_str.get(i, ""), dec)
+    off = np.zeros(table_size, dtype=np.uint32)
+    ln = np.zeros(table_size, dtype=np.uint32)
+    for i in range(table_size):
+        if i in added:
+            b = added[i].encode("utf-8")
+        else:
+            b = token_str_to_bytes(id_to_str.get(i, ""), dec)
         off[i], ln[i] = len(pool), len(b)
         pool.extend(b)
 
     alts, _, norm = pretok.pattern_for(tok)
     tables = pretok.emit_tables(alts, class_tab)
 
-    pretok_off = 16 + 1024 + len(merges) * 12 + vocab_size * 8 + len(pool)
+    pretok_off = 16 + 1024 + len(merges) * 12 + table_size * 8 + len(pool)
     with open(out_path, "wb") as f:
-        f.write(struct.pack("<IIII", len(merges), vocab_size, len(pool), pretok_off))
+        f.write(struct.pack("<IIII", len(merges), table_size, len(pool), pretok_off))
         f.write(byte_init.tobytes())
         for a, b, r in merges:
             f.write(struct.pack("<III", a, b, r))
@@ -93,12 +103,13 @@ def convert(tok_path, out_path, class_tab=None):
         f.write(tables)
 
     mb = os.path.getsize(out_path) / 2 ** 20
-    print(f"  tokenizer: {len(merges)} merges, {vocab_size} vocab, "
+    print(f"  tokenizer: {len(merges)} merges, {table_size} decodable "
+          f"({vocab_size} bpe + {len(added)} added), "
           f"normalizer {norm or 'none'} -> {out_path} ({mb:.1f} MiB)")
     if norm:
         print(f"  NOTE: this checkpoint specifies {norm}; the CLIF path does not "
               f"normalise yet, so inputs holding decomposed characters will differ")
-    return {"n_merges": len(merges), "vocab": vocab_size,
+    return {"n_merges": len(merges), "vocab": table_size,
             "pretok_off": pretok_off, "normalizer": norm}
 
 
