@@ -97,7 +97,7 @@ def main():
             continue
         path = hits[0]
         d = json.load(open(path))
-        alts, o2, norm = pretok.pattern_for(path)
+        alts, _o2, norm = pretok.pattern_for(path)
         rx = re.compile([e for e in (d["pre_tokenizer"].get("pretokenizers")
                                      or [d["pre_tokenizer"]])
                          if e.get("type") == "Split"][0]["pattern"]["Regex"])
@@ -110,9 +110,9 @@ def main():
         split_ok = enc_ok = 0
         for s in docs:
             t = unicodedata.normalize(norm, s) if norm else s
-            if rx.findall(t) == pretok.split(tab, alts, t, o2):
+            if rx.findall(t) == pretok.split(tab, alts, t):
                 split_ok += 1
-            got = [vocab.get(sy, -1) for c in pretok.split(tab, alts, t, o2)
+            got = [vocab.get(sy, -1) for c in pretok.split(tab, alts, t)
                    for sy in bpe("".join(b2u[b] for b in c.encode()), rank)]
             if got == tok.encode(s, add_special_tokens=False).ids:
                 enc_ok += 1

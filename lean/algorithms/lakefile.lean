@@ -87,6 +87,9 @@ lean_lib GptOssAttention
 lean_lib GptOssKernels
 lean_lib GptOssAlgorithm
 lean_lib TokenizerCommon
+lean_lib PretokCommon
+lean_lib TokenizerTest
+lean_lib TokenizerScan
 lean_lib GptOssSurface
 lean_lib GptOssScan
 lean_lib GptOssDecodeScan
@@ -245,6 +248,9 @@ lean_exe genwindowdemoalgorithm where
 
 /-- The generators, as `<exe> <module>` lines. Read by `lean-artifacts`'s build
 script so the declarations above stay the only place a generator is named. -/
+lean_exe gentokenizertest where
+  root := `TokenizerTest
+
 lean_exe gengptossdecode where
   root := `GptOssDecode
 

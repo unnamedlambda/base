@@ -74,21 +74,30 @@ def class_table():
 #   op 3  CHAR    one specific code point, `lo..hi` times
 #   op 4  RUNTO   a whitespace run truncated to end at its last newline
 #   op 5  STARPLUS  `A* B+` where A and B overlap -- see below
+#
+# Every item carries a sixth field, `extra`: one code point the class accepts
+# in addition to whatever `mask` says, or 0 for none.  It exists because
+# o200k's fourth alternative ends `[\r\n/]*`, which is a class plus one
+# literal.  Carrying it here rather than as an argument to the scanner is what
+# keeps the table self-describing -- a reader of the binary needs to know
+# nothing about which checkpoint wrote it.
 CLASS, CONTR, RUNBUT, CHAR, RUNTO, STARPLUS = 0, 1, 2, 3, 4, 5
 INF = 0xFFFF
 
 CONTRACTIONS = ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"]
 
 
-def cls(mask=0, neg=0, lo=1, hi=1):
-    return (CLASS, mask, neg, lo, hi)
+def cls(mask=0, neg=0, lo=1, hi=1, extra=0):
+    return (CLASS, mask, neg, lo, hi, extra)
 
 
 def ch(cp, lo=1, hi=1):
-    return (CHAR, cp, 0, lo, hi)
+    return (CHAR, cp, 0, lo, hi, 0)
 
 
 SPACE = ord(" ")
+# o200k's fourth alternative ends `[\r\n/]*` -- a class plus one literal.
+SLASH = ord("/")
 
 # `\s+(?!\S)` is the one place a real regex backtracks, and the one place the
 # first draft of this file was wrong.  Greedily it takes the whole whitespace
@@ -97,7 +106,7 @@ SPACE = ord(" ")
 # not including the last character of the run", or the whole run when the input
 # ends there.  Written that way it needs no backtracking at all, which is what
 # lets the CLIF be a single forward scan.
-RUNBUT_SPACE = (RUNBUT, C_S, 0, 1, INF)
+RUNBUT_SPACE = (RUNBUT, C_S, 0, 1, INF, 0)
 
 # `\s*[\r\n]+` backtracks for the same reason and resolves the same way.  The
 # engine wants the longest match ending in a newline, and inside a run of
@@ -105,7 +114,7 @@ RUNBUT_SPACE = (RUNBUT, C_S, 0, 1, INF)
 # `"\n    return"` yields `"\n"` and not `"\n    "`, and `"   \n\n"` yields all
 # of itself.  It fails when the run holds no newline at all, which is what
 # hands plain indentation to the alternative below.
-RUNTO_NL = (RUNTO, C_S, C_NL, 1, INF)
+RUNTO_NL = (RUNTO, C_S, C_NL, 1, INF, 0)
 
 # o200k's first alternative is `[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}
 # \p{Lo}\p{M}]+`, and those two classes **overlap**: Lm, Lo and M are in both.
@@ -117,18 +126,18 @@ RUNTO_NL = (RUNTO, C_S, C_NL, 1, INF)
 # The longest match is `max over p of (p + the B-run starting at p)`, for `p`
 # anywhere in the A-run, and one backward pass computes every B-run at once.
 # Linear, no backtracking, and expressible as a scan.
-STARPLUS_LETTER = (STARPLUS, C_UP, C_LO, 0, 0)
+STARPLUS_LETTER = (STARPLUS, C_UP, C_LO, 0, 0, 0)
 
 
 # `[^\r\n\p{L}\p{N}]?` -- the optional leading punctuation both patterns open with
 LEAD = cls(neg=C_NL | C_L | C_N, lo=0, hi=1)
 
 O200K = [
-    [LEAD, STARPLUS_LETTER, (CONTR, 0, 0, 0, 1)],
-    [LEAD, cls(C_UP, lo=1, hi=INF), cls(C_LO, lo=0, hi=INF), (CONTR, 0, 0, 0, 1)],
+    [LEAD, STARPLUS_LETTER, (CONTR, 0, 0, 0, 1, 0)],
+    [LEAD, cls(C_UP, lo=1, hi=INF), cls(C_LO, lo=0, hi=INF), (CONTR, 0, 0, 0, 1, 0)],
     [cls(C_N, lo=1, hi=3)],
     [ch(SPACE, lo=0, hi=1), cls(neg=C_S | C_L | C_N, lo=1, hi=INF),
-     cls(C_NL, lo=0, hi=INF)],
+     cls(C_NL, lo=0, hi=INF, extra=SLASH)],
     [RUNTO_NL],
     [RUNBUT_SPACE],
     [cls(C_S, lo=1, hi=INF)],
@@ -138,7 +147,7 @@ O200K = [
 # cl100k's: the difference that matters is `\p{N}` here against `\p{N}{1,3}`
 # there -- Qwen2 emits digits one at a time.
 QWEN2 = [
-    [(CONTR, 0, 0, 1, 1)],
+    [(CONTR, 0, 0, 1, 1, 0)],
     [LEAD, cls(C_L, lo=1, hi=INF)],
     [cls(C_N, lo=1, hi=1)],
     [ch(SPACE, lo=0, hi=1), cls(neg=C_S | C_L | C_N, lo=1, hi=INF),
@@ -148,18 +157,16 @@ QWEN2 = [
     [cls(C_S, lo=1, hi=INF)],
 ]
 
-# The o200k alternative-4 tail is `[\r\n/]*`, which is `[\r\n]*` plus a slash.
-SLASH = ord("/")
 
 
-def _run(tab, cps, i, mask, neg, lo, hi, allow_slash=False):
+def _run(tab, cps, i, mask, neg, lo, hi, extra=0):
     """Greedy run of a class, capped at `hi`, failing below `lo`."""
     n = 0
     while n < hi and i + n < len(cps):
         c = cps[i + n]
         b = tab[c]
         ok = (b & mask) == mask and (b & neg) == 0
-        if allow_slash and c == SLASH:
+        if extra and c == extra:
             ok = True
         if not ok:
             break
@@ -177,7 +184,7 @@ def _contr(cps, i, required):
     return -1 if required else 0
 
 
-def match_alt(tab, cps, i, alt, o200k_tail):
+def match_alt(tab, cps, i, alt):
     r"""One alternative against `cps[i:]`.  Returns its length, or -1.
 
     Both patterns open their letter alternatives with `[^\r\n\p{L}\p{N}]?`,
@@ -190,15 +197,15 @@ def match_alt(tab, cps, i, alt, o200k_tail):
     because a regex returns the first success in backtracking order and not
     the longest.
     """
-    n = _scan(tab, cps, i, alt, o200k_tail, skip_lead=False)
+    n = _scan(tab, cps, i, alt, skip_lead=False)
     if n < 0 and alt and alt[0][0] in (CLASS, CHAR) and alt[0][3] == 0:
-        n = _scan(tab, cps, i, alt, o200k_tail, skip_lead=True)
+        n = _scan(tab, cps, i, alt, skip_lead=True)
     return n
 
 
-def _scan(tab, cps, i, alt, o200k_tail, skip_lead):
+def _scan(tab, cps, i, alt, skip_lead):
     p = i
-    for k, (op, mask, neg, lo, hi) in enumerate(alt):
+    for k, (op, mask, neg, lo, hi, extra) in enumerate(alt):
         if k == 0 and skip_lead:
             continue
         if op == CONTR:
@@ -248,21 +255,20 @@ def _scan(tab, cps, i, alt, o200k_tail, skip_lead):
                 return -1
             p += n
         else:
-            slash = o200k_tail and k == 2 and mask == C_NL
-            n = _run(tab, cps, p, mask, neg, lo, hi, slash)
+            n = _run(tab, cps, p, mask, neg, lo, hi, extra)
             if n < 0:
                 return -1
             p += n
     return p - i if p > i else -1
 
 
-def split(tab, alts, text, o200k=False):
+def split(tab, alts, text):
     """The whole scan: at each position take the first alternative that matches."""
     cps = [ord(c) for c in text]
     out, i = [], 0
     while i < len(cps):
         for a in alts:
-            n = match_alt(tab, cps, i, a, o200k)
+            n = match_alt(tab, cps, i, a)
             if n > 0:
                 out.append("".join(chr(c) for c in cps[i:i + n]))
                 i += n
@@ -277,7 +283,7 @@ def split(tab, alts, text, o200k=False):
 #
 #   [n_alts:u32][n_items:u32][n_contr:u32][class_bytes:u32]
 #   alts   : n_alts  × [item_start:u32][item_count:u32]
-#   items  : n_items × [op:u32][mask:u32][neg:u32][lo:u32][hi:u32]
+#   items  : n_items × [op:u32][mask:u32][neg:u32][lo:u32][hi:u32][extra:u32]
 #   contr  : n_contr × [len:u32][cp:u32 × 8]        -- padded, so fixed stride
 #   classes: 0x110000 bytes, one membership byte per code point
 #
@@ -299,8 +305,9 @@ def emit_tables(alts, tab=None):
     out += struct.pack("<IIII", len(alts), len(items), len(CONTRACTIONS), len(tab))
     for st, ct in index:
         out += struct.pack("<II", st, ct)
-    for op, mask, neg, lo, hi in items:
-        out += struct.pack("<IIIII", op, mask, neg, lo, hi if hi != INF else 0xFFFFFFFF)
+    for op, mask, neg, lo, hi, extra in items:
+        out += struct.pack("<IIIIII", op, mask, neg, lo, hi if hi != INF else 0xFFFFFFFF,
+                           extra)
     for c in CONTRACTIONS:
         cps = [ord(x) for x in c]
         out += struct.pack("<I", len(cps))
