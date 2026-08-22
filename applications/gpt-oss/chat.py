@@ -32,12 +32,16 @@ from layout import (TEXT_MAX, TMPL_MAX, D_STOP, D_MAXNEW, D_NPRE, D_PRE,
 # Harmony's system turn, in the shape the checkpoint documents.  The channel
 # list is not decoration: without it the model opens with a channel name it
 # then has to invent, and greedy decoding walks straight into a loop.
-SYSTEM = ("You are ChatGPT, a large language model trained by OpenAI.\n"
-          "Knowledge cutoff: 2024-06\n"
-          "Current date: 2025-06-28\n\n"
-          "Reasoning: medium\n\n"
-          "# Valid channels: analysis, commentary, final. "
-          "Channel must be included for every message.")
+# `Reasoning:` is not a knob this engine implements -- it is a line the model
+# was trained to condition on, so how long it thinks is set by a string in the
+# system turn and by nothing else.  There is no separate reasoning loop to add.
+def system_text(effort):
+    return ("You are ChatGPT, a large language model trained by OpenAI.\n"
+            "Knowledge cutoff: 2024-06\n"
+            "Current date: 2025-06-28\n\n"
+            f"Reasoning: {effort}\n\n"
+            "# Valid channels: analysis, commentary, final. "
+            "Channel must be included for every message.")
 
 
 def main():
@@ -45,7 +49,11 @@ def main():
     ap.add_argument("artifact")
     ap.add_argument("--bank", required=True)
     ap.add_argument("--prompt", default="What is the capital of France?")
-    ap.add_argument("--system", default=SYSTEM)
+    ap.add_argument("--reasoning", choices=("low", "medium", "high"),
+                    default="medium",
+                    help="how long the analysis channel runs; a line in the "
+                         "system turn, which is the only place it lives")
+    ap.add_argument("--system", default=None)
     ap.add_argument("--developer",
                     default="Answer the user directly and briefly.")
     ap.add_argument("-n", "--max-new", type=int, default=64)
@@ -68,7 +76,8 @@ def main():
     if args.raw:
         pre, post, stop = [], [], 199999
     else:
-        pre = ids("<|start|>system<|message|>" + args.system
+        system = args.system or system_text(args.reasoning)
+        pre = ids("<|start|>system<|message|>" + system
                   + "<|end|><|start|>developer<|message|># Instructions\n\n"
                   + args.developer
                   + "<|end|><|start|>user<|message|>")
@@ -106,7 +115,7 @@ def main():
         struct.pack_into(f"<{len(post)}I", buf, D_POST, *post)
     buf[D_TEXT:D_TEXT + len(raw)] = raw
 
-    print(f"  prompt: {args.prompt!r}")
+    print(f"  prompt: {args.prompt!r}   reasoning: {args.reasoning}")
     print(f"  template: {len(pre)} + text + {len(post)} tokens, stop {stop}")
     print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
     out = bytearray(D_OUT_BYTES)
@@ -129,8 +138,14 @@ def main():
     print(text)
     # harmony puts the user-facing answer in the `final` channel; the rest is
     # the model's own reasoning and is not the reply
+    # how much of the turn was thinking, which is what `--reasoning` moves
+    amark = "<|channel|>analysis<|message|>"
+    if amark in text:
+        analysis = text.split(amark, 1)[1].split("<|end|>", 1)[0]
+        print(f"  analysis: {len(analysis)} chars before the first <|end|>")
     mark = "<|channel|>final<|message|>"
-    if mark in text:
+    got_final = mark in text
+    if got_final:
         final = text.split(mark, 1)[1]
         for end in ("<|return|>", "<|end|>"):
             final = final.split(end, 1)[0]
@@ -143,6 +158,13 @@ def main():
     if not agree:
         print("RESULT : DETOK MISMATCH")
         print(f"  reference: {want!r}")
+        return 1
+    # A turn that ran out of budget inside the analysis channel has produced
+    # the model's thinking and no answer.  Saying so is the difference between
+    # a test and a log -- `--reasoning high` will do this at a small `-n`.
+    if not got_final:
+        print(f"RESULT : TRUNCATED  (no final channel in {ngen} tokens; "
+              f"raise -n or lower --reasoning)")
         return 1
     print("RESULT : OK")
     return 0
