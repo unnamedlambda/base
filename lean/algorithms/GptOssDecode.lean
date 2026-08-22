@@ -96,6 +96,20 @@ def denseOff (layer k : Nat) : Nat := LAYER_STRIDE * layer + dKindOff k
 def fileFinalNorm : Nat := LAYER_STRIDE * NL
 def fileLmHead : Nat := fileFinalNorm + HH * 4
 def fileRope : Nat := fileLmHead + VOCAB * HH * 2
+/-- **Rows in the file's rotation tables, which is not `ROPE_N`.**
+
+    The converter writes the whole published table — one row per position the
+    checkpoint declares, all 131072 of them — cosines first and then sines.
+    This program serves `ROPE_N` positions, so the two slices it wants are the
+    first `ROPE_N` rows of each, and they sit `ROPE_FILE_ROWS * HALF * 4` apart
+    rather than adjacent.
+
+    Both halves of that matter, and neither is visible from a size check: take
+    the tables as one contiguous run and what lands is cosines twice over, at
+    which point the rotation at position 0 is not the identity and every query
+    and key in the model is turned. -/
+def ROPE_FILE_ROWS : Nat := 131072
+def fileRopeSin : Nat := fileRope + ROPE_FILE_ROWS * HALF * 4
 
 /-! ## PTX slots -/
 
@@ -294,8 +308,11 @@ def dInitM : M Unit := do
   let poolBytes ← iconst64 (NL * NE * ROW_BYTES)
   let poolId ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, poolBytes]
   let poolPtr ← call IR.Ffi.cudaPinnedPtr.id [ctxPtr, poolId]
+  -- The id, and only the id.  An eight-byte pointer written at `DPOOL_OFF + 4`
+  -- runs four bytes into `stage`, and nothing reads it back: every use goes
+  -- through `cudaPinnedPtrAt`, which takes the id and bounds-checks the offset.
+  -- It survived only because `stage` is written immediately afterwards.
   storeI32 poolId (← absAddr ptr DPOOL_OFF)
-  storeI64 poolPtr (← absAddr ptr (DPOOL_OFF + 4))
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
   let _ ← call IR.Ffi.fileReadToPtr.id [pExp, poolPtr, zero64, poolBytes]
@@ -345,8 +362,7 @@ def dInitM : M Unit := do
   -- a pinned allocation -- not a wrong answer but a corrupted heap, and the
   -- expert pool is what sits next to it.
   for (off, n, b) in [(fileFinalNorm, HH * 4, B_FNORM),
-                      (fileLmHead, VOCAB * HH * 2, B_LMHEAD),
-                      (fileRope, 2 * ROPE_N * HALF * 4, B_ROPE)] do
+                      (fileLmHead, VOCAB * HH * 2, B_LMHEAD)] do
     let id ← load32 (← absAddr ptr (dBindOff b))
     let chunks := (n + STAGE_BYTES - 1) / STAGE_BYTES
     for c in List.range chunks do
@@ -356,6 +372,20 @@ def dInitM : M Unit := do
       let _ ← call IR.Ffi.fileReadToPtr.id [pDen, stagePtr, fo, nb]
       let bo ← iconst64 (c * STAGE_BYTES)
       let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, id, bo, stagePtr, nb]
+  -- **The rotation tables: two slices, and sines first.**
+  --
+  -- The kernel indexes sine at zero and cosine at `ROPE_N * HALF`
+  -- (`GptOssAttention.ropeCosIx`); the file has the opposite order and the
+  -- full published height. So this is two reads, not one, and the order is
+  -- the kernel's rather than the file's. See `ROPE_FILE_ROWS`.
+  let ropeSlice := ROPE_N * HALF * 4
+  let bRope ← load32 (← absAddr ptr (dBindOff B_ROPE))
+  for (fo, bo) in [(fileRopeSin, 0), (fileRope, ropeSlice)] do
+    let f ← iconst64 fo
+    let nb ← iconst64 ropeSlice
+    let _ ← call IR.Ffi.fileReadToPtr.id [pDen, stagePtr, f, nb]
+    let b ← iconst64 bo
+    let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, bRope, b, stagePtr, nb]
   -- the narrow kernel's two counts
   for (b, v) in [(B_NMH, HH / 2), (B_NMQ, (64 * 64) / 2)] do
     storeI32 (← iconst32 v) (← absAddr ptr DMETA_OFF)
@@ -463,13 +493,39 @@ def dEnsureM (j : Nat) : M Unit := do
     let id ← load32 (← iadd (← absAddr ptr DBIND_OFF) (← imul ix four))
     storeI32 id (← absAddr ptr (dBindOff (C_SLOT0 + PIECES * j + t)))
 
+/-- **The residual stream, mid-layer and end-of-layer, to the caller.**
+
+    Forty-eight rows of eleven kilobytes, which is a fifteenth of the logits
+    this program already returns. What it buys is the difference between
+    knowing the answer is wrong and knowing *where*: a caller diffs every half
+    of every layer against the model in a single run.
+
+    It is here because the per-layer artifacts are separate programs. They can
+    agree with the model exactly while this one does not, so passing them is
+    not evidence about this, and a composition fault has nowhere else to show
+    itself — the token and the logits are downstream of all twenty-four layers
+    and report only that something, somewhere, was wrong.
+
+    `half` is 0 after attention and 1 after the mixture. -/
+def dTraceM (layer : R) (half : Nat) : M Unit := do
+  let ptr := basePtr
+  let ctxPtr ← cudaCtxPtr ptr
+  let outPtr ← load64 (← absAddr ptr 0x28)
+  let bX ← load32 (← absAddr ptr (dBindOff B_X))
+  let row ← iadd (← imul (← uextend64 layer) (← iconst64 2)) (← iconst64 half)
+  let dst ← iadd outPtr
+    (← iadd (← iconst64 (8 + VOCAB * 4)) (← imul row (← iconst64 (HH * 4))))
+  let _ ← cudaSync ptr
+  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bX, dst, (← iconst64 (HH * 4))]
+
 set_option maxRecDepth 8000 in
 /-- **One layer, whichever layer it is.** -/
 def dLayerM (layer : R) : M Unit := do
   let ptr := basePtr
   dBindLayerM layer
   storeI32 layer (← absAddr ptr (DMETA_OFF + 4 * DLAYER_SLOT))
-  let seqLen ← load32 (← absAddr ptr (DMETA_OFF + 4 * M_SEQ))
+  -- the pristine copies, not `M_SEQ`, which this body is about to overwrite
+  let seqLen ← load32 (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 16)))
   let seqLenF ← load32 (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 8)))
   let zero32 ← iconst32 0
   let one32 ← iconst32 1
@@ -554,6 +610,7 @@ def dLayerM (layer : R) : M Unit := do
   let _ ← cublasGemmExBf16 ptr one32 zero32 mH one32 kQO oneF bOW bATTB zero32 bTMP
   dEnqueue ptr S_ADD (HH / 32) 32 [B_TMP, W_OB]
   dEnqueue ptr S_ADD (HH / 32) 32 [B_X, B_TMP]
+  dTraceM layer 0
   -- route
   dEnqueue ptr S_RMS 1 32 [B_X, W_MNORM, B_XM]
   let ne32 ← iconst32 NE
@@ -579,6 +636,7 @@ def dLayerM (layer : R) : M Unit := do
   dEnqueue ptr S_COMBINE ((HH + NBLK - 1) / NBLK) NBLK
     [B_Y, B_Y + 1, B_Y + 2, B_Y + 3, B_GATES, B_MOUT]
   dEnqueue ptr S_ADD (HH / 32) 32 [B_X, B_MOUT]
+  dTraceM layer 1
 
 /-- **One token.**
 
@@ -629,6 +687,13 @@ def dMainFn : HProg.Code :=
   let slotSwa ← isub pos (← imul (← udiv pos c128) c128)
   storeI32 slotSwa (← absAddr ptr (DMETA_OFF + 4 * M_SLOT))
   storeI32 fL (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 8)))
+  -- Both lengths again, in slots no layer writes.  `M_SEQ` is what the softmax
+  -- reads, so each layer publishes its own length there; that makes the slot
+  -- unusable as the *source* of either length, because a full layer would
+  -- otherwise hand its length to the next sliding one.  Below the window the
+  -- two are equal and the fault is invisible, which is exactly why it needs
+  -- somewhere pristine to be read from.
+  storeI32 sL (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 16)))
   let bMeta ← load32 (← absAddr ptr (dBindOff B_META))
   let mb ← iconst64 (64 * 4)
   let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bMeta, (← absAddr ptr DMETA_OFF), mb]

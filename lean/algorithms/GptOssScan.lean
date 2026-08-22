@@ -1,4 +1,4 @@
-import MlSurface
+import GptOssSurface
 import AlgorithmLib.ML.Compose
 import GptOssAttention
 import GptOssAlgorithm
@@ -228,22 +228,6 @@ def gptOssNativeRoster : List Name :=
   , ``GptOssAlgorithm.Layer.gptossLayerHostIn_packed
   , ``GptOssAlgorithm.Layer.gptossLayerMap_ok
   , ``GptOssAlgorithm.Layer.gptossLayerShipped_wf ]
-
-/-- **This application's surface: the model stack's, plus one rendering.**
-
-    A guard that measures a PTX text has the text in its closure, and a text
-    with a float literal in it was rendered by `Float.toString`. The model
-    stack's surface already admits `Float32.toString` for exactly this reason;
-    the MXFP4 kernels' immediates go through the double-precision one, so it is
-    named here rather than added to `mlSurface`, where it would silently widen
-    the surface of five pipelines that do not need it.
-
-    What it is trusted for is narrow: the guards say a *rendered* text fits its
-    slot. Whether the digits are the right digits is not a claim any of them
-    makes, and the emitted kernels are checked bit-exact elsewhere. -/
-def gptOssSurface : TrustScan.Surface :=
-  { TrustScan.mlSurface with
-    allowedOpaque := `Float.toString :: TrustScan.mlSurface.allowedOpaque }
 
 open TrustScan GptOssScan in
 #eval runScanWith gptOssSurface "gpt-oss" roots gptOssNativeRoster

@@ -53,6 +53,17 @@ def mx_dequant(blocks: np.ndarray, scales: np.ndarray, k: int) -> np.ndarray:
     return FP4[codes] * np.repeat(sc, 32, axis=1)
 
 
+def to_bf16(x):
+    """Round f32 to bf16 precision, nearest-even, staying in f32 storage.
+
+    The same rounding GptOssKernels.rneBf16 does on the device.  Used to model
+    the engine's precision, never to define the model: see `acts` in forward.
+    """
+    u = np.ascontiguousarray(x, np.float32).view(np.uint32)
+    r = ((u >> 16) & 1).astype(np.uint32) + np.uint32(0x7FFF)
+    return ((u + r) & np.uint32(0xFFFF0000)).view(np.float32)
+
+
 def rms_norm(x, w, eps):
     return (x / np.sqrt((x * x).mean(-1, keepdims=True) + eps) * w).astype(np.float32)
 
@@ -64,9 +75,15 @@ def softmax(x, axis=-1):
 
 
 def swiglu(gate, up, alpha, limit):
+    # gate is clamped above only, up on both sides -- that asymmetry is the
+    # model's, not a typo.  A very negative gate would overflow exp(-alpha*g),
+    # so the sigmoid is written in the branch that keeps the exponent negative.
     g = np.minimum(gate, limit)
     u = np.clip(up, -limit, limit)
-    return (g / (1.0 + np.exp(-alpha * g))) * (u + 1.0)
+    z = alpha * g
+    ez = np.exp(-np.abs(z))
+    sig = np.where(z >= 0, 1.0 / (1.0 + ez), ez / (1.0 + ez))
+    return (g * sig) * (u + 1.0)
 
 
 class Bank:
@@ -110,11 +127,17 @@ class Bank:
         return (mx_dequant(gu_b, gu_s, H), gu_bias, mx_dequant(dn_b, dn_s, I), dn_bias)
 
 
-def forward(bank, tokens, trace=None):
+def forward(bank, tokens, trace=None, acts="f32"):
     """Logits for the last token of `tokens`, computing the whole sequence.
 
     No KV cache: this is the reference, and recomputing is what makes it one.
+
+    `acts` selects the activation precision at the three matmuls the engine
+    feeds from bf16 buffers (qkv, o-proj, lm_head).  "f32" is the idealisation;
+    "bf16" is what the released model and our engine both actually compute in.
+    Comparing against both is how a precision gap is told from a defect.
     """
+    narrow = to_bf16 if acts == "bf16" else (lambda t: t)
     m = bank.meta
     H, HD, NQ, NKV, K = bank.H, bank.HD, bank.NQ, bank.NKV, bank.K
     T = len(tokens)
@@ -127,7 +150,7 @@ def forward(bank, tokens, trace=None):
         # ---- attention ----
         h = rms_norm(x, bank.f32(ent["attn_norm"], (H,)), m["rms_eps"])
         qkv_w = bank.bf16(ent["qkv_w"], (NQ * HD + 2 * NKV * HD, H))
-        qkv = h @ qkv_w.T + bank.f32(ent["qkv_b"], (NQ * HD + 2 * NKV * HD,))
+        qkv = narrow(h) @ qkv_w.T + bank.f32(ent["qkv_b"], (NQ * HD + 2 * NKV * HD,))
         q = qkv[:, :NQ * HD].reshape(T, NQ, HD)
         k = qkv[:, NQ * HD:NQ * HD + NKV * HD].reshape(T, NKV, HD)
         v = qkv[:, NQ * HD + NKV * HD:].reshape(T, NKV, HD)
@@ -157,8 +180,10 @@ def forward(bank, tokens, trace=None):
         denom = e.sum(-1) + np.exp(sinks[:, None] - mx)
         p = e / denom[..., None]
         o = np.einsum("hqk,khd->qhd", p, vx).reshape(T, NQ * HD)
-        x = x + (o @ bank.bf16(ent["o_w"], (H, NQ * HD)).T
+        x = x + (narrow(o) @ bank.bf16(ent["o_w"], (H, NQ * HD)).T
                  + bank.f32(ent["o_b"], (H,)))
+        if trace is not None:
+            trace.setdefault("attn_out", {})[l] = x[-1].copy()
 
         # ---- routed experts ----
         h = rms_norm(x, bank.f32(ent["mlp_norm"], (H,)), m["rms_eps"])
@@ -183,7 +208,16 @@ def forward(bank, tokens, trace=None):
         print(f"    layer {l+1}/{bank.L}", end="\r", flush=True)
 
     x = rms_norm(x, bank.f32(m["dense"]["final_norm"], (H,)), m["rms_eps"])
-    return x[-1] @ bank.bf16(m["dense"]["lm_head"], (m["vocab"], H)).T
+    # lm_head is vocab x H bf16 -- 1.08 GiB on disk, 2.3 GiB widened.  Widening it
+    # whole is what makes this box swap, so it goes a slice at a time.
+    xf = narrow(x[-1])
+    out = np.empty(m["vocab"], np.float32)
+    step = 8192
+    for i in range(0, m["vocab"], step):
+        n = min(step, m["vocab"] - i)
+        w = bank.bf16(m["dense"]["lm_head"] + i * H * 2, (n, H))
+        out[i:i + n] = w @ xf
+    return out
 
 
 def main():

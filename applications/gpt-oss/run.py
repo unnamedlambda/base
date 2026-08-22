@@ -13,6 +13,10 @@ slow in a way none of the others are: it reads twelve gigabytes off disk.
       --prompt "The capital of France is" -n 8
 
 Do not run this beside tools/check.sh; they both want most of the machine.
+Nothing memory-hungry may share this process either: the 9.48 GiB is *pinned*,
+so the kernel can neither swap nor reclaim it, and a second large allocation
+here freezes the box rather than failing.  That is why scoring against the
+reference lives in check.py, downstream of --dump-logits.
 """
 
 import argparse
@@ -34,14 +38,21 @@ def main():
     ap.add_argument("--bank", required=True)
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("-n", type=int, default=8)
-    ap.add_argument("--check", action="store_true", help="compare logits to reference.py")
+    # No --check here on purpose.  This process pins 9.5 GiB, and pinned pages
+    # cannot be swapped or reclaimed; running the NumPy reference beside them on
+    # a 16 GiB box thrashes the whole machine.  Dump the logits instead and let
+    # check.py score them once this process has exited.
+    ap.add_argument("--twice", action="store_true",
+                    help="decode the first token twice; a warm cache must not change it")
+    ap.add_argument("--dump-logits", default=None,
+                    help="write the prompt-end logits (f32) here for check.py")
     ap.add_argument("--tokens", default=None, help="comma-separated ids, skips the tokenizer")
     args = ap.parse_args()
 
     import py_base
 
     bank = Bank(args.bank)
-    H = bank.H
+    H, NL = bank.H, bank.L
     art = py_base.load_artifact(args.artifact)
     assert not art.extras, f"expected one entry and no extras; got {sorted(art.extras)}"
     base = py_base.Base(art.setup)
@@ -66,22 +77,46 @@ def main():
         buf[272:272 + len(den)] = den
         row = bf16_to_f32(np.asarray(bank.embed[tok_id])).astype(np.float32)
         buf[528:] = row.tobytes()
-        out = bytearray(8 + 201088 * 4)
+        out = bytearray(8 + 201088 * 4 + 2 * NL * H * 4)
         base.execute_into(art.main, bytes(buf), out)
-        tok_id_out, miss = struct.unpack_from("<Ii", bytes(out), 0)
-        return tok_id_out, miss, np.frombuffer(bytes(out[8:]), np.float32)
+        b = bytes(out)
+        tok_id_out, miss = struct.unpack_from("<Ii", b, 0)
+        lg = np.frombuffer(b, np.float32, count=201088, offset=8)
+        # the residual stream after each layer, in the order they ran
+        # two rows per layer: after attention, then after the mixture
+        tr = np.frombuffer(b, np.float32, count=2 * NL * H,
+                           offset=8 + 201088 * 4).reshape(NL, 2, H)
+        return tok_id_out, miss, lg, tr
 
     print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
     t0 = time.time()
-    nxt, miss, lg0 = step(ids[0], 0)
+    nxt, miss, lg0, tr0 = step(ids[0], 0)
     print(f"  start-up + first token: {time.time()-t0:.1f}s   (misses {miss})")
+
+    if args.twice:
+        # The same token at the same position, once cold and once warm.  The
+        # cache is the only thing that differs between the two calls, so a
+        # difference here is the cache serving the wrong expert -- and this
+        # catches it without a reference model to disagree with.
+        nxt2, miss2, lg0b, _ = step(ids[0], 0)
+        same = np.array_equal(lg0, lg0b)
+        d = float(np.abs(lg0.astype(np.float64) - lg0b.astype(np.float64)).max())
+        print(f"  repeat of the same token: misses {miss2-miss}   "
+              f"identical {same}   max|delta| {d:.4e}   ids {nxt} vs {nxt2}")
+        if not same:
+            print("RESULT : NONDETERMINISTIC  (a warm cache changed the answer)")
+            return 1
 
     out_ids = []
     prev_miss = miss
+    lg, tr = lg0, tr0
     t0 = time.time()
     for pos in range(1, len(ids)):
-        nxt, miss, lg = step(ids[pos], pos)
+        nxt, miss, lg, tr = step(ids[pos], pos)
     pre = time.time() - t0
+    # The reference scores the prompt, so the comparison has to be against the
+    # logits at the prompt's last position -- generation overwrites `lg`.
+    lg_prompt, tr_prompt = lg, tr
     if len(ids) > 1:
         print(f"  prompt, {len(ids)-1} more tokens: {pre:.2f}s"
               f"   {(len(ids)-1)/max(pre,1e-9):.1f} tok/s   misses {miss-prev_miss}")
@@ -90,7 +125,7 @@ def main():
     t0, m0 = time.time(), miss
     for _ in range(args.n):
         out_ids.append(nxt)
-        nxt, miss, lg = step(nxt, pos)
+        nxt, miss, lg, _ = step(nxt, pos)
         pos += 1
     dt = time.time() - t0
     print(f"  generated {args.n} tokens in {dt:.2f}s   {args.n/max(dt,1e-9):.2f} tok/s"
@@ -98,20 +133,22 @@ def main():
     print(f"  ids: {out_ids}")
     print(f"  last logits: min {lg.min():.3f}  max {lg.max():.3f}  "
           f"argmax {int(lg.argmax())}  nonzero {int((lg != 0).sum())}/{lg.size}")
-    if args.check:
-        from reference import forward
-        ref = forward(bank, ids[:len(ids)])
-        k = min(len(ref), lg.size)
-        print(f"  reference argmax {int(np.argmax(ref))}  ours {int(lg.argmax())}")
-        d = np.abs(ref[:k] - lg[:k]).max() / max(np.abs(ref[:k]).max(), 1e-6)
-        print(f"  logit max-rel vs reference: {d:.3e}")
+    if args.dump_logits:
+        with open(args.dump_logits, "wb") as f:
+            f.write(struct.pack("<I", len(ids)))
+            f.write(np.asarray(ids, np.uint32).tobytes())
+            f.write(lg_prompt.astype(np.float32).tobytes())
+            f.write(tr_prompt.astype(np.float32).tobytes())
+        print(f"  prompt-end logits + {NL}x2 half-layer trace -> {args.dump_logits}"
+              f"   (score with check.py)")
     if not args.tokens:
         print(f"  continuation: {tok.decode(out_ids)!r}")
     print()
     # A run that produced the same id every step, or id 0 every step, has not
     # decoded anything -- it has failed in a way that still returns.  Saying so
     # here is the difference between a test and a log.
-    degenerate = len(set(out_ids)) <= 1 or all(i == 0 for i in out_ids)
+    degenerate = all(i == 0 for i in out_ids) or (
+        len(out_ids) > 1 and len(set(out_ids)) == 1)
     if degenerate:
         print("RESULT : DEGENERATE  (every step produced the same id; not a decode)")
         return 1

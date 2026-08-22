@@ -44,6 +44,11 @@ def main():
     ap.add_argument("artifact")
     ap.add_argument("--bank", required=True)
     ap.add_argument("--positions", default="0,5,130")
+    # The artifact reads its weights out of the caller's buffer, so it is not
+    # tied to layer 0 -- any sliding layer's weights can be handed to the same
+    # program.  That makes this a bisect: run every one of them and see which,
+    # if any, disagrees.
+    ap.add_argument("--layer", type=int, default=0)
     args = ap.parse_args()
 
     import py_base
@@ -54,8 +59,11 @@ def main():
     E, K = bank.E, bank.K
     GQA, QO = NQ // NKV, NQ * HD
     QKV = QO + 2 * NKV * HD
-    ent = m["dense"]["layers"][0]
-    assert "sliding" in ent["type"]
+    ent = m["dense"]["layers"][args.layer]
+    assert "sliding" in ent["type"], (
+        f"layer {args.layer} is {ent['type']!r}; this artifact is built for the "
+        f"128-entry ring, so only the sliding layers can be driven through it")
+    print(f"  layer {args.layer}  ({ent['type']})")
 
     positions = [int(p) for p in args.positions.split(",")]
     T = max(positions) + 1
