@@ -117,6 +117,16 @@ def decodeOpenObligations : List String :=
      is a buffer overrun and arrives as a core dump. The converter now covers \
      every id the model can emit; the guard is there for the converter that \
      does not."
+  , "GumbelIsASample — with a non-zero 1/T the head launches `sample_logits`, \
+     which adds independent standard Gumbel noise to each tempered logit and \
+     takes the argmax. That this draws from `softmax(logit/T)` is the \
+     Gumbel-max identity, and it is the reason sampling costs one pass instead \
+     of a normalising constant and a prefix scan over 201088 logits. The \
+     identity is not stated here, the noise is `-ln(-ln u)` for `u` a hash of \
+     the index and the seed, and `lg2.approx` is the hardware's approximate \
+     logarithm rather than an exact one. Evidence: a seed reproduces its \
+     output exactly and different seeds differ. Greedy is a separate kernel, \
+     not this one at T=0, because the reciprocal would not exist."
   , "WidenIsLossless — nothing numeric reaches this program from its caller: \
      the embedding row is read from the file at token * HH * 2, uploaded as the \
      bf16 it is, and widened by GptOssKernels.widenBf16. bf16 is f32 with the \

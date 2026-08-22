@@ -25,7 +25,8 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (TEXT_MAX, TMPL_MAX, D_STOP, D_MAXNEW, D_NPRE, D_PRE,
+from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_STOP, D_MAXNEW,
+                    D_NPRE, D_PRE,
                     D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT, D_OUT_NGEN,
                     D_OUT_GEN, D_OUT_BYTES, check_layout)
 
@@ -57,6 +58,10 @@ def main():
     ap.add_argument("--developer",
                     default="Answer the user directly and briefly.")
     ap.add_argument("-n", "--max-new", type=int, default=64)
+    ap.add_argument("--temp", type=float, default=0.0,
+                    help="0 is greedy; anything else draws from the tempered "
+                         "softmax by the Gumbel-max trick, on the device")
+    ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--raw", action="store_true",
                     help="no template: send the prompt text alone")
     args = ap.parse_args()
@@ -107,6 +112,9 @@ def main():
     struct.pack_into("<I", buf, 12, len(raw))
     for off, p in paths.items():
         buf[off:off + len(p)] = p
+    inv_t = 0.0 if args.temp <= 0 else 1.0 / args.temp
+    struct.pack_into("<f", buf, D_INVT, inv_t)
+    struct.pack_into("<I", buf, D_SEED, args.seed & 0xFFFFFFFF)
     struct.pack_into("<II", buf, D_STOP, stop, args.max_new)
     struct.pack_into("<II", buf, D_NPRE, len(pre), len(post))
     if pre:
@@ -115,7 +123,8 @@ def main():
         struct.pack_into(f"<{len(post)}I", buf, D_POST, *post)
     buf[D_TEXT:D_TEXT + len(raw)] = raw
 
-    print(f"  prompt: {args.prompt!r}   reasoning: {args.reasoning}")
+    print(f"  prompt: {args.prompt!r}   reasoning: {args.reasoning}"
+          f"   temp: {args.temp}{'' if args.temp <= 0 else f' seed {args.seed}'}")
     print(f"  template: {len(pre)} + text + {len(post)} tokens, stop {stop}")
     print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
     out = bytearray(D_OUT_BYTES)
@@ -131,7 +140,12 @@ def main():
     # The ids come back beside the text so the detokenizer can be checked
     # without running the model again.
     want = ref.decode(gen, skip_special_tokens=False)
-    agree = want.encode("utf-8") == b[D_OUT_TEXT:D_OUT_TEXT + n]
+    # Compare decoded strings, not bytes against a string.  A token boundary
+    # can split a multi-byte character, and the reference replaces the invalid
+    # bytes with U+FFFD while this returns the true bytes -- so a byte
+    # comparison fails on output that is in fact identical, and would keep
+    # failing however correct the detokenizer got.
+    agree = want == text
     print(f"  detokenised text matches the reference for those ids: {agree}")
     print(f"  ids: {gen}")
     print()

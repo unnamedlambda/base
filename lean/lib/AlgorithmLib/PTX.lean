@@ -209,6 +209,7 @@ def fmaFIR (d a : Reg .f32) (b : FImm) (c : Reg .f32) : PTX Unit :=
   emit s!"fma.rn.f32 {d.raw}, {a.raw}, {b.render}, {c.raw}"
 def divRn (d a b : Reg .f32)             : PTX Unit := emit s!"div.rn.f32 {d.raw}, {a.raw}, {b.raw}"
 def ex2   (d a : Reg .f32)               : PTX Unit := emit s!"ex2.approx.f32 {d.raw}, {a.raw}"
+def lg2   (d a : Reg .f32)               : PTX Unit := emit s!"lg2.approx.f32 {d.raw}, {a.raw}"
 def rcp   (d a : Reg .f32)               : PTX Unit := emit s!"rcp.approx.f32 {d.raw}, {a.raw}"
 def rsqrt (d a : Reg .f32)               : PTX Unit := emit s!"rsqrt.approx.f32 {d.raw}, {a.raw}"
 def sqrtApprox (d a : Reg .f32)          : PTX Unit := emit s!"sqrt.approx.f32 {d.raw}, {a.raw}"

@@ -881,6 +881,105 @@ def argmaxLogits : KernelSpec where
     label fin
     ptxRet
 
+
+/-- **A sample from the tempered softmax, in one pass.**
+
+    `argmax_i (logit_i / T + g_i)` with `g_i` independent standard Gumbel is
+    exactly a draw from `softmax(logit / T)` — the Gumbel-max trick — so
+    sampling costs what the argmax costs and needs no normalising constant, no
+    prefix scan and no sort over two hundred thousand logits.
+
+    The noise is generated from the index rather than stored: a hash of
+    `(i, seed)` gives a uniform, and `g = -ln(-ln u)` follows. That keeps the
+    kernel a pure function of its inputs, which is what lets a caller reproduce
+    a sample by passing the same seed.
+
+    `meta` is `[n, seed, 1/T as bits]`. A zero `1/T` would be a division by
+    zero at temperature infinity; the caller sends greedy to the argmax kernel
+    instead, which is the same thing at `T = 0` and cheaper to reason about. -/
+def sampleLogits : KernelSpec where
+  name := "sample_logits"
+  params := ["p_logits", "p_out", "p_meta"]
+  body := do
+    let logits ← freshRd; ldParam64 logits "p_logits"
+    let out ← freshRd; ldParam64 out "p_out"
+    let metaP ← freshRd; ldParam64 metaP "p_meta"
+    let n ← freshR; ldGlobalU n metaP
+    let seed ← freshR; ldGlobalUO seed metaP 4
+    let invT ← freshF; ldGlobalFO invT metaP 8
+    let tid ← freshR; movR tid tidX
+    let sm ← smemBase
+    let best ← freshF; movFI best (.bits 0xFF800000)
+    let bi ← freshR; movRC bi 0
+    let i ← freshR; movR i tid
+    let ln2 := FImm.bits 0x3F317218          -- ln 2
+    let loop := "SM_LOOP"
+    let ldone := "SM_DONE"
+    label loop
+    do
+      let p ← freshP; setpGe p i n; braIf p ldone
+      let off ← freshRd; mulWideRI off i 4
+      let a ← freshRd; addRd a logits off
+      let v ← freshF; ldGlobalF v a
+      mulF v v invT
+      -- a hash of the index, mixed with the seed
+      let h ← freshR; xorRR h i seed
+      mulLoRI h h 0x9E3779B1
+      let t ← freshR; shrR t h 15; xorRR h h t
+      mulLoRI h h 0x85EBCA6B
+      shrR t h 13; xorRR h h t
+      -- u in (0, 1): 24 bits, offset half an ulp so it is never zero
+      shrR h h 8
+      let uf ← freshF; cvtF32 uf h
+      addFI uf uf (.bits 0x3F000000)         -- + 0.5
+      mulFI uf uf (.bits 0x33800000)         -- * 2^-24
+      -- g = -ln(-ln u) = -ln2 * lg2( -ln2 * lg2 u )
+      let g ← freshF; lg2 g uf
+      mulFI g g ln2
+      negF g g
+      lg2 g g
+      mulFI g g ln2
+      negF g g
+      addF v v g
+      let gt ← freshP; setpGtF gt v best
+      maxF best best v
+      let ni ← freshR; selpR ni i bi gt
+      movR bi ni
+      addRI i i 32
+      bra loop
+    label ldone
+    let va ← freshR; shlR va tid 2; addR va va sm
+    stSharedFD va best
+    let ia ← freshR; addRI ia va 128
+    stSharedU32D ia bi
+    barSync
+    let isLane0 ← freshP; setpEqI isLane0 tid 0
+    let fin := "SM_FIN"
+    braIfNot isLane0 fin
+    do
+      let bv ← freshF; ldSharedFD bv sm
+      let bx ← freshR; ldSharedU32D bx (← do let t ← freshR; addRI t sm 128; pure t)
+      let k ← freshR; movRC k 1
+      let sl := "SM_SEL"
+      let slEnd := "SM_SEL_END"
+      label sl
+      do
+        let p ← freshP; setpGeI p k 32; braIf p slEnd
+        let ka ← freshR; shlR ka k 2; addR ka ka sm
+        let v ← freshF; ldSharedFD v ka
+        let ja ← freshR; addRI ja ka 128
+        let jx ← freshR; ldSharedU32D jx ja
+        let gt ← freshP; setpGtF gt v bv
+        maxF bv bv v
+        let nx ← freshR; selpR nx jx bx gt
+        movR bx nx
+        addRI k k 1
+        bra sl
+      label slEnd
+      stGlobalU32 out bx
+    label fin
+    ptxRet
+
 /-- One kernel as its own module, entry named `main`.
 
     The launch primitive loads a module and runs the entry called `main`, so a

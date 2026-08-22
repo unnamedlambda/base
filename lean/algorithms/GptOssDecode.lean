@@ -133,7 +133,8 @@ def dPtx : List String :=
   , GptOssKernels.moduleFor GptOssKernels.moeCombine4
   , GptOssKernels.moduleFor GptOssKernels.routerTop4
   , GptOssKernels.moduleFor GptOssKernels.argmaxLogits
-  , GptOssKernels.moduleFor GptOssKernels.widenBf16 ]
+  , GptOssKernels.moduleFor GptOssKernels.widenBf16
+  , GptOssKernels.moduleFor GptOssKernels.sampleLogits ]
 
 def S_RMS := 0
 def S_ADD := 1
@@ -150,6 +151,11 @@ def S_COMBINE := 12
 def S_TOP4 := 13
 def S_ARGMAX := 14
 def S_WIDEN := 15
+/-- A step picks between greedy and sampling by arithmetic on the slot, because
+    `ptxOff` is a register and a branch here would be a branch around a launch.
+    The distance is `S_SAMPLE - S_ARGMAX` and is computed, not assumed to be
+    one: `S_WIDEN` sits between them. -/
+def S_SAMPLE := 16
 
 /-! ## Buffers
 
@@ -202,7 +208,9 @@ def B_TOKEN := B_X + 21
     size and free at that moment: the two hold different things and a reader
     should not have to know the order of the step to see that. -/
 def B_EMB := B_X + 22
-def B_Y := B_X + 23                     -- four
+/-- `[vocab, seed, 1/T as bits]` for the sampling kernel. -/
+def B_SAMP := B_X + 23
+def B_Y := B_X + 24                     -- four
 def B_HID := B_Y + TOPK                 -- four
 def DSTORE := B_HID + TOPK              -- 9 x NL dense weights
 def KVSTORE := DSTORE + 9 * NL          -- 2 x NL caches
@@ -222,7 +230,7 @@ def dBufBytes : List Nat :=
        , (64 * 64) * 4, (64 * 64) * 2, HH * 4
        , 2 * ROPE_N * HALF * 4, 64 * 4, 4, 4
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
-       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2 ]
+       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 12 ]
     ++ List.replicate TOPK (HH * 4)
     ++ List.replicate TOPK (II * 4)
     ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dKindBytes.getD k 0))
@@ -350,6 +358,7 @@ def D_PTOK : Nat := 784
     and not about the model. -/
 def D_STOP : Nat := 1040
 def D_MAXNEW : Nat := 1044
+
 /-- **The chat template, as tokens rather than as code.**
 
     A turn is `pre ++ tokenize(text) ++ post`, and the caller supplies the two
@@ -359,11 +368,18 @@ def D_MAXNEW : Nat := 1044
     chat format inside a program that is otherwise about the model. -/
 def D_NPRE : Nat := 1048
 def D_NPOST : Nat := 1052
+/-- `1/T` as `Float32` bits, and the seed. Zero `1/T` is greedy.
+
+    After the two counts rather than before them, because everything below 1040
+    is a path: `D_PTOK` runs to 1039, and anything tucked in there is read out
+    of the middle of a filename. -/
+def D_INVT : Nat := 1056
+def D_SEED : Nat := 1060
 /-- Room for a chat template on each side of the text. Harmony's system turn
     alone is sixty-odd tokens once a developer turn joins it, so this is not a
     generous bound but a working one. -/
 def TMPL_MAX : Nat := 256
-def D_PRE : Nat := 1056
+def D_PRE : Nat := 1064
 def D_POST : Nat := D_PRE + 4 * TMPL_MAX
 def D_TEXT : Nat := D_POST + 4 * TMPL_MAX
 def D_IN_BYTES : Nat := D_TEXT + TEXT_MAX
@@ -828,7 +844,33 @@ def dStepM (tok pos : R) : M R := do
   let n4 ← iconst64 4
   let _ ← call IR.Ffi.cudaUpload.id
     [ctxPtr, bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
-  dEnqueue ptr S_ARGMAX 1 32 [B_LOGITS, B_TOKEN, B_NMQ]
+  -- **Greedy, or a draw from the tempered softmax.**
+  --
+  -- `1/T` of zero means the caller wants the largest logit, and that goes to
+  -- the argmax kernel rather than to the sampler at an infinite temperature.
+  -- Everything else goes to `sample_logits`, which adds Gumbel noise and takes
+  -- the argmax of that — the same draw, in the same one pass.
+  --
+  -- The choice is arithmetic on the slot, not a branch around the launch:
+  -- `ptxOff` is a register, so `S_ARGMAX + (sampling ? 1 : 0)` picks the
+  -- kernel and the launch itself is the same instruction either way.
+  let invT ← load32 (← iaddImm dataPtr D_INVT)
+  storeI32 (← iconst32 VOCAB) (← absAddr ptr (DMETA_OFF + 4 * 34))
+  -- the seed advances with the position, so a turn is reproducible from one
+  -- number and no two steps draw the same noise
+  let seed0 ← load32 (← iaddImm dataPtr D_SEED)
+  storeI32 (← iadd seed0 (← imul pos (← iconst32 0x9E3779B1)))
+    (← absAddr ptr (DMETA_OFF + 4 * 35))
+  storeI32 invT (← absAddr ptr (DMETA_OFF + 4 * 36))
+  let bSamp ← load32 (← absAddr ptr (dBindOff B_SAMP))
+  let n12 ← iconst64 12
+  let _ ← call IR.Ffi.cudaUpload.id
+    [ctxPtr, bSamp, (← absAddr ptr (DMETA_OFF + 4 * 34)), n12]
+  let sampling ← ifte .ne invT zz (pure [oo]) (pure [zz])
+  let headSlot ← iadd (← iconst64 (dSlotOff S_ARGMAX))
+                      (← imul (← uextend64 (sampling.headD zz))
+                              (← iconst64 ((S_SAMPLE - S_ARGMAX) * DSLOT)))
+  dEnqueueAt ptr headSlot 1 32 [B_LOGITS, B_TOKEN, B_SAMP]
   let _ ← cudaSync ptr
   -- back to the narrow count, so the next token's projection is right again
   storeI32 (← iconst32 ((64 * 64) / 2)) (← absAddr ptr (DMETA_OFF + 4 * 33))
