@@ -5,6 +5,7 @@ import AlgorithmLib.ML
 import AlgorithmLib.Cuda
 import AlgorithmLib.HProgCuda
 import Qwen2Proven
+import TokenizerCommon
 import LayoutScan
 
 set_option maxRecDepth 4096
@@ -1126,171 +1127,38 @@ def inferFinalFn : HProg.Code :=
 
 -- ── Tokenizer functions ───────────────────────────────────────────────────────
 
-/-- loadTokenizerFn (fn_32): slurp tokenizer binary into a pinned host buffer, init HT,
-    populate merge table.
-    Tokenizer binary layout:
-      [0]  n_merges: u32
-      [4]  vocab_size: u32
-      [8]  byte_pool_size: u32
-      [12] padding: u32
-      [16] byte_init[256]: u32  (byte_value → initial token id)
-      [1040] merges[n_merges]: (tok_a:u32, tok_b:u32, result:u32) × n_merges
-      [1040+n_merges*12] decode_offsets[vocab_size]: u32
-      [1040+n_merges*12+vocab_size*4] decode_lens[vocab_size]: u32
-      [1040+n_merges*12+vocab_size*8] byte_pool -/
+/-- **This program's corner of the tokenizer's memory.**
+
+    The bodies live in `TokenizerCommon`, which serves every model that ships a
+    BPE tokenizer; what is local is only where the working buffers sit. -/
+def tokMem : TokenizerCommon.TokMem :=
+  { htCtx := 0x00, cudaCtx := 0x10
+    pathPtr := TOKENIZER_PATH_PTR_OFF, bufPtr := TOK_BUF_PTR_OFF
+    tokenBuf := TOKEN_BUF_OFF, tokenCount := TOKEN_COUNT_OFF
+    textIn := TEXT_IN_OFF, textOut := TEXT_OUT_OFF, textLen := TEXT_LEN_OFF
+    htKey := HT_KEY_OFF, htVal := HT_VAL_OFF
+    fileMaxBytes := TOK_FILE_MAX_BYTES }
+
+/-- loadTokenizerFn (fn_32): slurp the tokenizer binary into a pinned host
+    buffer, init the hash table, populate the merge table. -/
 def loadTokenizerFn : HProg.Code :=
   clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
-  let ctxPtr   ← load64 (← absAddr ptr 0x10)
-  let dataPtr  ← load64 (← absAddr ptr TOKENIZER_PATH_PTR_OFF)
-  -- Allocate a pinned host buffer and slurp the tokenizer file into it.
-  let tokBytes64 ← iconst64 TOK_FILE_MAX_BYTES
-  let tokPinId   ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, tokBytes64]
-  let tokBufPtr  ← call IR.Ffi.cudaPinnedPtr.id   [ctxPtr, tokPinId]
-  let zero64     ← iconst64 0
-  let _ ← call q.fnFileRead.id [dataPtr, tokBufPtr, zero64, tokBytes64]
-  storeI64 tokBufPtr (← absAddr ptr TOK_BUF_PTR_OFF)
-  -- Init HT context (writes context ptr to ptr[0x00])
-  callVoid q.fnHtInit.id [ptr]
-  let htCtx    ← load64At ptr 0x00
-  let _        ← call IR.Ffi.htCreate.id [htCtx]
-  -- Read n_merges from header
-  let nMerges  ← uload32_64 (← iaddImm tokBufPtr 0)
-  -- Merge base: offset 1040 in the binary (16 byte header + 256×4 byte_init)
-  let mergeBase ← iaddImm tokBufPtr 1040
-  let keyAddr  ← iaddImm ptr HT_KEY_OFF
-  let valAddr  ← iaddImm ptr HT_VAL_OFF
-  let keyLen8  ← iconst32 8
-  let valLen8  ← iconst32 8
-  let twelve64 ← iconst64 12
-  -- For i in 0..n_merges, insert (tok_a, tok_b) → (rank, result) into HT
-  forLoop nMerges fun i => do
-    let mergeOff ← imul i twelve64
-    let mergePtr ← iadd mergeBase mergeOff
-    let tok_a    ← load32 (← iaddImm mergePtr 0)
-    let tok_b    ← load32 (← iaddImm mergePtr 4)
-    let result   ← load32 (← iaddImm mergePtr 8)
-    let rank32   ← ireduce32 i
-    storeI32 tok_a   keyAddr
-    storeI32 tok_b   (← iaddImm keyAddr 4)
-    storeI32 rank32  valAddr
-    storeI32 result  (← iaddImm valAddr 4)
-    callVoid IR.Ffi.htInsert.id [htCtx, keyAddr, keyLen8, valAddr, valLen8]
+  TokenizerCommon.loadTokenizerM tokMem
 
-/-- tokenizeInitFn (fn_33): convert each byte of text (TEXT_IN_OFF, TEXT_LEN_OFF) to its
-    initial token id using the byte_init table; store results in TOKEN_BUF_OFF.
-    Sets TOKEN_COUNT_OFF = text length (before BPE). -/
+/-- tokenizeInitFn (fn_33): every byte of the input text to its initial token. -/
 def tokenizeInitFn : HProg.Code :=
   clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
-  let tokMmap   ← load64At ptr TOK_BUF_PTR_OFF
-  let textLen   ← load64At ptr TEXT_LEN_OFF
-  let byteInit  ← iaddImm tokMmap 16
-  let textBase  ← iaddImm ptr TEXT_IN_OFF
-  let tokBuf    ← iaddImm ptr TOKEN_BUF_OFF
-  forLoop textLen fun i => do
-    let byt     ← uload8_64 (← iadd textBase i)
-    let byteOff ← ishlImm byt 2
-    let initTok ← load32 (← iadd byteInit byteOff)
-    let tokOff  ← ishlImm i 2
-    storeI32 initTok (← iadd tokBuf tokOff)
-  storeI64 textLen (← absAddr ptr TOKEN_COUNT_OFF)
+  TokenizerCommon.tokenizeInitM tokMem
 
-/-- tokenizeBpeFn (fn_34): run BPE merge passes over TOKEN_BUF_OFF until no more merges apply.
-    Uses the HT (populated by loadTokenizerFn) for O(1) pair lookups.
-    Updates TOKEN_COUNT_OFF to the final token count. -/
+/-- tokenizeBpeFn (fn_34): merge passes over the token buffer until none applies. -/
 def tokenizeBpeFn : HProg.Code :=
   clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
-  let htCtx      ← load64At ptr 0x00
-  let tokBuf     ← iaddImm ptr TOKEN_BUF_OFF
-  let keyAddr    ← iaddImm ptr HT_KEY_OFF
-  let valAddr    ← iaddImm ptr HT_VAL_OFF
-  let keyLen8    ← iconst32 8
-  let tokCount   ← load64At ptr TOKEN_COUNT_OFF
-  let zero64     ← iconst64 0
-  let one64      ← iconst64 1
-  let maxRank    ← iconst32 (-1)  -- 0xFFFFFFFF: "no best found yet"
-  let negOne64   ← iconst64 (-1)  -- sentinel "no best pos"
-  let zero32     ← iconst32 0
-  -- Merge passes: each pass finds the lowest-rank adjacent pair, merges it,
-  -- and shifts the tail down. A pass that finds none is the last.
-  let e ← wloop1 tokCount
-    (head := fun n => return (contIf .ugt n one64, [n], ()))
-    (body := fun n _ => do
-      let n1 ← iaddImm n (-1)
-      let sc ← wloop [zero64, maxRank, negOne64]
-        (head := fun c =>
-          return (contIf .ult (c.headD 0) n1, [c.getD 1 0, c.getD 2 0], ()))
-        (body := fun c _ => do
-          let i := c.headD 0
-          let r := c.getD 1 0
-          let p := c.getD 2 0
-          let iOff ← ishlImm i 2
-          let tokA ← load32 (← iadd tokBuf iOff)
-          let tokB ← load32 (← iadd tokBuf (← iaddImm iOff 4))
-          storeI32 tokA keyAddr
-          storeI32 tokB (← iaddImm keyAddr 4)
-          let found ← call IR.Ffi.htLookup.id [htCtx, keyAddr, keyLen8, valAddr]
-          let nextI ← iaddImm i 1
-          when .slt found zero32 (continueWith [nextI, r, p])
-          let rank ← load32 valAddr
-          let rp ← ifte .ult rank r (pure [rank, i]) (pure [r, p])
-          return [nextI, rp.headD 0, rp.getD 1 0])
-      let bestPos := sc.getD 1 0
-      when .eq bestPos negOne64 (brk [n])
-      -- the merge itself: re-look-up to get the result token, then close the gap
-      let dOff ← ishlImm bestPos 2
-      let dA ← load32 (← iadd tokBuf dOff)
-      let dB ← load32 (← iadd tokBuf (← iaddImm dOff 4))
-      storeI32 dA keyAddr
-      storeI32 dB (← iaddImm keyAddr 4)
-      let _ ← call IR.Ffi.htLookup.id [htCtx, keyAddr, keyLen8, valAddr]
-      let resT ← load32 (← iaddImm valAddr 4)
-      storeI32 resT (← iadd tokBuf dOff)
-      let _ ← wloop1 (← iaddImm bestPos 1)
-        (head := fun j => return (contIf .ult j n1, ([] : List R), ()))
-        (body := fun j _ => do
-          let sbOff ← ishlImm j 2
-          let nextT ← load32 (← iadd tokBuf (← iaddImm sbOff 4))
-          storeI32 nextT (← iadd tokBuf sbOff)
-          return [← iaddImm j 1])
-      return [n1])
-  storeI64 (e.headD 0) (← absAddr ptr TOKEN_COUNT_OFF)
+  TokenizerCommon.tokenizeBpeM tokMem
 
-/-- detokenizeFn (fn_35): convert token IDs in TOKEN_BUF_OFF (count = TOKEN_COUNT_OFF) to bytes
-    in TEXT_OUT_OFF; stores output byte count in TEXT_LEN_OFF. -/
+/-- detokenizeFn (fn_35): token ids back to bytes in TEXT_OUT_OFF. -/
 def detokenizeFn : HProg.Code :=
   clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
-  let tokMmap   ← load64At ptr TOK_BUF_PTR_OFF
-  -- Compute table pointers from binary header
-  let nMerges   ← uload32_64 (← iaddImm tokMmap 0)
-  let vocabSize ← uload32_64 (← iaddImm tokMmap 4)
-  let twelve64  ← iconst64 12
-  let four64    ← iconst64 4
-  let mergeBytes ← imul nMerges twelve64
-  let decOffBase ← iaddImm tokMmap 1040
-  let decOffPtr  ← iadd decOffBase mergeBytes
-  let vocBytes   ← imul vocabSize four64
-  let decLenPtr  ← iadd decOffPtr vocBytes
-  let bytePool   ← iadd decLenPtr vocBytes
-  let tokBuf    ← iaddImm ptr TOKEN_BUF_OFF
-  let n_toks    ← load64At ptr TOKEN_COUNT_OFF
-  let textOut   ← iaddImm ptr TEXT_OUT_OFF
-  let zero64    ← iconst64 0
-  -- Outer: counter `ti` over tokens; accumulator `tp` = output byte offset.
-  -- Inner: copy `decLen` bytes from srcPtr[..] to textOut[tp..].
-  let finalTp ← forLoopAcc n_toks zero64 fun ti tp => do
-    let tok_id ← uload32_64 (← iadd tokBuf (← ishlImm ti 2))
-    let decOff ← uload32_64 (← iadd decOffPtr (← ishlImm tok_id 2))
-    let decLen ← uload32_64 (← iadd decLenPtr (← ishlImm tok_id 2))
-    let srcPtr ← iadd bytePool decOff
-    forLoop decLen fun i => do
-      let byt ← uload8_64 (← iadd srcPtr i)
-      istore8 byt (← iadd textOut (← iadd tp i))
-    iadd tp decLen
-  storeI64 finalTp (← absAddr ptr TEXT_LEN_OFF)
+  TokenizerCommon.detokenizeM tokMem
 
 /-- cliFn (fn_36): stdin/stdout chat loop.
     Per line: read stdin → tokenize → prefill+decode via fn_27 → detokenize → write stdout.

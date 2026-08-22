@@ -86,6 +86,7 @@ lean_lib GptOssDecode
 lean_lib GptOssAttention
 lean_lib GptOssKernels
 lean_lib GptOssAlgorithm
+lean_lib TokenizerCommon
 lean_lib GptOssSurface
 lean_lib GptOssScan
 lean_lib GptOssDecodeScan
