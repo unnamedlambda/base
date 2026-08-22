@@ -13,7 +13,7 @@ catch a drift.
 import struct
 
 TEXT_MAX = 8192
-TMPL_MAX = 256
+TMPL_MAX = 2048
 NL, HH, VOCAB = 24, 2880, 201088
 
 D_TOK, D_POS, D_MODE, D_TLEN = 0, 4, 8, 12
@@ -31,7 +31,9 @@ D_OUT_TRACE = D_OUT_LOGITS + VOCAB * 4
 D_OUT_TEXT = D_OUT_TRACE + 2 * NL * HH * 4
 D_OUT_NGEN = D_OUT_TEXT + TEXT_MAX
 D_OUT_GEN = D_OUT_NGEN + 8
-D_OUT_BYTES = D_OUT_GEN + 4 * TEXT_MAX
+D_OUT_NTEXT = D_OUT_GEN + 4 * TEXT_MAX
+D_OUT_TEXTTOK = D_OUT_NTEXT + 8
+D_OUT_BYTES = D_OUT_TEXTTOK + 4 * TEXT_MAX
 
 # where the artifact records how many input bytes it expects
 HOST_LEN_OFF = 0x80

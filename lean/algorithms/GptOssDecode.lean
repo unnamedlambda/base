@@ -375,10 +375,12 @@ def D_NPOST : Nat := 1052
     of the middle of a filename. -/
 def D_INVT : Nat := 1056
 def D_SEED : Nat := 1060
-/-- Room for a chat template on each side of the text. Harmony's system turn
-    alone is sixty-odd tokens once a developer turn joins it, so this is not a
-    generous bound but a working one. -/
-def TMPL_MAX : Nat := 256
+/-- Room for a chat template on each side of the text.
+
+    Sized for a conversation rather than a turn: a command-line client replays
+    the whole transcript as `pre` each time, because the cache is rebuilt from
+    position zero and the model has to see what was said before. -/
+def TMPL_MAX : Nat := 2048
 def D_PRE : Nat := 1064
 def D_POST : Nat := D_PRE + 4 * TMPL_MAX
 def D_TEXT : Nat := D_POST + 4 * TMPL_MAX
@@ -397,7 +399,15 @@ def D_OUT_TEXT : Nat := D_OUT_TRACE + 2 * NL * HH * 4
     the two agree without running the model twice. -/
 def D_OUT_NGEN : Nat := D_OUT_TEXT + TEXT_MAX
 def D_OUT_GEN : Nat := D_OUT_NGEN + 8
-def D_OUT_BYTES : Nat := D_OUT_GEN + 4 * TEXT_MAX
+/-- The ids the tokenizer made of the caller's text.
+
+    A client holding a conversation needs them: the next turn's `pre` is
+    everything said so far, and a client that had to tokenize its own history
+    would be a client that has to agree with the model about what a token is —
+    which is the thing this application exists to avoid. -/
+def D_OUT_NTEXT : Nat := D_OUT_GEN + 4 * TEXT_MAX
+def D_OUT_TEXTTOK : Nat := D_OUT_NTEXT + 8
+def D_OUT_BYTES : Nat := D_OUT_TEXTTOK + 4 * TEXT_MAX
 
 def NBLK : Nat := 32 * warpsPerCta
 
@@ -990,6 +1000,11 @@ def dMainFn : HProg.Code :=
         let dst ← iaddImm outPtr D_OUT_TEXT
         forLoop nBytes fun i => do
           istore8 (← uload8_64 (← iadd textOut i)) (← iadd dst i)
+        storeI32 (← ireduce32 nText) (← iaddImm outPtr D_OUT_NTEXT)
+        let tdst ← iaddImm outPtr D_OUT_TEXTTOK
+        forLoop nText fun i => do
+          storeI32 (← load32 (← iadd outTok (← ishlImm i 2)))
+                   (← iadd tdst (← ishlImm i 2))
         storeI32 (← ireduce32 nGen) (← iaddImm outPtr D_OUT_NGEN)
         let gdst ← iaddImm outPtr D_OUT_GEN
         forLoop nGen fun i => do
