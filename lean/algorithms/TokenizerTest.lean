@@ -62,7 +62,7 @@ def tokMem : TokenizerCommon.TokMem :=
     tokenBuf := T_TOKEN_BUF, tokenCount := T_TOKEN_COUNT
     textIn := T_TEXT_IN, textOut := T_TEXT_OUT, textLen := T_TEXT_LEN
     htKey := T_HT_KEY, htVal := T_HT_VAL
-    fileMaxBytes := 32 * 1024 * 1024 }
+    fileMaxBytes := 32 * 1024 * 1024, textMaxBytes := TEXT_MAX }
 
 def pretokMem : PretokCommon.PretokMem :=
   { cpBuf := T_CP_BUF, cpByte := T_CP_BYTE, cpCount := T_CP_COUNT

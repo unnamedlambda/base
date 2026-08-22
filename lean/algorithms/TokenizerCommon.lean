@@ -69,6 +69,13 @@ structure TokMem where
   htVal : Nat
   /-- How much to reserve for the file. It is read whole. -/
   fileMaxBytes : Nat
+  /-- Bytes `textOut` can hold.
+
+      Not decoration: the detokenizer's output is as long as the tokens make
+      it, and a caller that asks for more tokens than the buffer can spell runs
+      off the end of it into whatever is next. Truncating is a wrong answer;
+      not truncating is a corrupted heap. -/
+  textMaxBytes : Nat
 
 /-- The two address forms are not interchangeable: `iaddImm` folds the offset
     into one instruction and `absAddr` materialises it as a constant first, so
@@ -228,6 +235,7 @@ def detokenizeM (c : TokMem) : M Unit := do
   let nToks ← load64At ptr c.tokenCount
   let textOut ← iaddImm ptr c.textOut
   let zero64 ← iconst64 0
+  let cap ← iconst64 c.textMaxBytes
   let finalTp ← forLoopAcc nToks zero64 fun ti tp => do
     let tokId ← uload32_64 (← iadd tokBuf (← ishlImm ti 2))
     -- **An id outside the table contributes nothing.**
@@ -247,10 +255,21 @@ def detokenizeM (c : TokMem) : M Unit := do
       (pure [← uload32_64 (← iadd decOffPtr (← ishlImm tokId 2))])
       (pure [zero64])
     let srcPtr ← iadd bytePool (offL.headD zero64)
-    forLoop decLen fun i => do
+    -- **What fits, and not a byte more.**
+    --
+    -- `textOut` holds `textMaxBytes`, and how many bytes a token spells is a
+    -- property of the vocabulary rather than of anything the caller controls.
+    -- So the copy is clamped: once the buffer is full `take` is zero and the
+    -- remaining tokens contribute nothing, which loses the tail of a reply
+    -- rather than the contents of the buffer after it.
+    let roomL ← ifte .ult tp cap (pure [← isub cap tp]) (pure [zero64])
+    let room := roomL.headD zero64
+    let takeL ← ifte .ult decLen room (pure [decLen]) (pure [room])
+    let take := takeL.headD zero64
+    forLoop take fun i => do
       let byt ← uload8_64 (← iadd srcPtr i)
       istore8 byt (← iadd textOut (← iadd tp i))
-    iadd tp decLen
+    iadd tp take
   storeI64 finalTp (← absAddr ptr c.textLen)
 
 end TokenizerCommon

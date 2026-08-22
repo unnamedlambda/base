@@ -269,7 +269,7 @@ def DINIT_OFF : Nat := DMISS_OFF + 4
     what is local is where their working arrays sit. -/
 
 /-- The longest prompt or reply this program handles, in bytes. -/
-def TEXT_MAX : Nat := 8192
+def TEXT_MAX : Nat := 32768
 
 def DTOK_BASE : Nat := DINIT_OFF + 8
 def DT_PATHPTR : Nat := DTOK_BASE
@@ -298,7 +298,7 @@ def dTokMem : TokenizerCommon.TokMem :=
     tokenBuf := DT_TOKBUF, tokenCount := DT_TOKCOUNT
     textIn := DT_TEXTIN, textOut := DT_TEXTOUT, textLen := DT_TEXTLEN
     htKey := DT_HTKEY, htVal := DT_HTVAL
-    fileMaxBytes := 32 * 1024 * 1024 }
+    fileMaxBytes := 32 * 1024 * 1024, textMaxBytes := TEXT_MAX }
 
 def dPretokMem : PretokCommon.PretokMem :=
   { cpBuf := DT_CPBUF, cpByte := DT_CPBYTE, cpCount := DT_CPCOUNT
@@ -380,6 +380,13 @@ def D_SEED : Nat := 1060
     infinity keeps everything, which is what a caller that does not want the
     filter sends. -/
 def D_LNMINP : Nat := 1064
+/-- **Where in the conversation this turn begins.**
+
+    Zero starts one. Anything else continues the cache that is already there,
+    so a turn costs the tokens it actually adds rather than the whole
+    transcript again -- which is the difference between a reply that takes a
+    second and one that takes longer every time you speak. -/
+def D_STARTPOS : Nat := 1068
 /-- Room for a chat template on each side of the text.
 
     Sized for a conversation rather than a turn: a command-line client replays
@@ -964,15 +971,19 @@ def dMainFn : HProg.Code :=
         let preP ← iaddImm dataPtr D_PRE
         let postP ← iaddImm dataPtr D_POST
         let outTok ← iaddImm ptr DT_OUTTOK
+        -- The turn begins where the last one stopped, so what it prefills is
+        -- what it adds. The cache still holds everything before `start`.
+        let start ← uload32_64 (← iaddImm dataPtr D_STARTPOS)
         forLoop nPre fun i => do
           let t ← load32 (← iadd preP (← ishlImm i 2))
-          let _ ← dStepM t (← ireduce32 i)
+          let _ ← dStepM t (← ireduce32 (← iadd start i))
           pure ()
+        let afterPre ← iadd start nPre
         forLoop nText fun i => do
           let t ← load32 (← iadd outTok (← ishlImm i 2))
-          let _ ← dStepM t (← ireduce32 (← iadd nPre i))
+          let _ ← dStepM t (← ireduce32 (← iadd afterPre i))
           pure ()
-        let afterText ← iadd nPre nText
+        let afterText ← iadd afterPre nText
         forLoop nPost fun i => do
           let t ← load32 (← iadd postP (← ishlImm i 2))
           let _ ← dStepM t (← ireduce32 (← iadd afterText i))

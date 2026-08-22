@@ -26,6 +26,24 @@ if command -v systemd-run >/dev/null 2>&1; then
   GUARD=(systemd-run --user --scope -q -p MemoryMax=10G -p MemorySwapMax=0 --)
 fi
 
+# The GPU is not shareable, and the driver that holds it does not fail politely.
+#
+# `applications/gpt-oss/*` pin 9.48 GiB of host memory and most of the card, and
+# they take an exclusive lock on this file for exactly that reason. This script
+# needs a CUDA device for the Qwen2 golden tests, so it takes the same lock
+# rather than starting and failing on CUDA_ERROR_OUT_OF_MEMORY several minutes
+# in -- which is what happened, and what the message below is for.
+ENGINE_LOCK=/tmp/gpt-oss-engine.lock
+if command -v flock >/dev/null 2>&1; then
+  exec 9>>"$ENGINE_LOCK" || true
+  if ! flock -n 9; then
+    held=$(awk '{print $1, $2}' "$ENGINE_LOCK" 2>/dev/null || echo "?")
+    echo "a gpt-oss driver is running ($held) and holds the GPU."
+    echo "check.sh needs a device for the golden tests. Wait for it, or stop it."
+    exit 1
+  fi
+fi
+
 FAILED=()
 # Each step returns its own verdict explicitly. `set -e` is suspended inside a
 # function called from a condition, so a step that let a failing command run on

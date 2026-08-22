@@ -38,11 +38,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from layout import (TEXT_MAX, TMPL_MAX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_NPRE, D_PRE, D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT,
                     D_OUT_NGEN, D_OUT_GEN, D_OUT_NTEXT, D_OUT_TEXTTOK,
-                    D_OUT_BYTES, check_layout, ln_min_p, acquire_engine_lock)
+                    D_OUT_BYTES, D_STARTPOS, check_layout, ln_min_p,
+                    acquire_engine_lock)
 
 # Harmony's control tokens. Constants of the chat format, and the only ids this
 # program names: everything else it handles is bytes in or ids out.
 START, END, MESSAGE, CHANNEL, RETURN = 200006, 200007, 200008, 200005, 200002
+# the channel a user-facing answer goes in; the others are the model thinking
+FINAL = 17196
 ROLE = {"system": 17360, "developer": 173781, "user": 1428, "assistant": 173781}
 
 SYSTEM_TEXT = ("You are ChatGPT, a large language model trained by OpenAI.\n"
@@ -92,16 +95,15 @@ def main():
         paths[off] = p
 
     state = {"reasoning": args.reasoning, "temp": args.temp, "seed": args.seed,
-             "min_p": args.min_p}
-    history = []          # the conversation, as ids
+             "min_p": args.min_p, "pos": 0}
 
-    def turn(text, pre, post, max_new=None):
+    def turn(text, pre, post, max_new=None, start=0):
         raw = text.encode("utf-8")
         if len(raw) >= TEXT_MAX:
             return None, None, f"message too long: {len(raw)} bytes"
-        if max(len(pre), len(post)) > TMPL_MAX:
-            return None, None, (f"conversation is {len(pre)} tokens and the "
-                                f"key cache holds {TMPL_MAX}; /new to start over")
+        if start + len(pre) + len(post) >= TMPL_MAX:
+            return None, None, (f"conversation is {start} tokens and the key "
+                                f"cache holds {TMPL_MAX}; /new to start over")
         buf = bytearray(D_IN_BYTES)
         struct.pack_into("<III", buf, 0, 0, 0, 1)
         struct.pack_into("<I", buf, 12, len(raw))
@@ -111,6 +113,7 @@ def main():
         struct.pack_into("<f", buf, D_INVT, inv_t)
         struct.pack_into("<I", buf, D_SEED, state["seed"] & 0xFFFFFFFF)
         struct.pack_into("<f", buf, D_LNMINP, ln_min_p(state["min_p"]))
+        struct.pack_into("<I", buf, D_STARTPOS, start)
         struct.pack_into("<II", buf, D_STOP, RETURN,
                          args.max_new if max_new is None else max_new)
         struct.pack_into("<II", buf, D_NPRE, len(pre), len(post))
@@ -139,15 +142,19 @@ def main():
         price, and it is paid once per conversation.
         """
         _r, ids_, err = turn(text, [START, ROLE[role], MESSAGE], [END],
-                             max_new=1)
+                             max_new=1, start=0)
         return (None, err) if err else (ids_[0], None)
 
     def open_conversation():
+        """Put the system turn at position zero and remember how long it is.
+
+        Only the length is kept. The cache holds the conversation itself, and
+        the point of `start` is that it never has to be sent again."""
         body, err = tokenize_only(
             SYSTEM_TEXT.format(effort=state["reasoning"]), "system")
         if err:
             return err
-        history[:] = [START, ROLE["system"], MESSAGE] + body + [END]
+        state["pos"] = 3 + len(body) + 1
         return None
 
     print(f"  gpt-oss-20b   reasoning {state['reasoning']}   "
@@ -200,16 +207,16 @@ def main():
                       "/analysis  /quit\n")
             continue
 
-        pre = history + [START, ROLE["user"], MESSAGE]
+        pre = [START, ROLE["user"], MESSAGE]
         post = [END, START, ROLE["assistant"]]
         t0 = time.time()
-        reply, ids_, err = turn(line, pre, post)
+        reply, ids_, err = turn(line, pre, post, start=state["pos"])
         dt = time.time() - t0
         if err:
             print(f"  {err}\n")
             continue
         txt_ids, gen_ids = ids_
-        history[:] = pre + txt_ids + post + gen_ids
+        state["pos"] += len(pre) + len(txt_ids) + len(post) + len(gen_ids)
 
         mark = "<|channel|>final<|message|>"
         answer = None
@@ -223,28 +230,43 @@ def main():
                 think = reply.split(am, 1)[1].split("<|end|>", 1)[0]
                 print(f"\n  [thinking] {think.strip()}")
         if answer is None:
-            # The turn spent its budget thinking, or ended the analysis and
-            # stopped without answering. Showing the tail of the reasoning is
-            # more use than showing nothing, and says which of the two it was.
+            # **The thinking ran over. Ask for the answer anyway.**
+            #
+            # Harmony puts the reply in the `final` channel, and a turn that
+            # spends its whole budget in `analysis` never opens one -- so the
+            # user gets the model's reasoning and no reply, which is the one
+            # outcome nobody wanted. Opening the channel for it costs a
+            # continuation from where it stopped, which is cheap now that a
+            # turn does not replay the transcript, and the model has already
+            # done the work the answer is made of.
+            forced = [END, START, ROLE["assistant"], CHANNEL, FINAL, MESSAGE]
+            reply2, ids2, err2 = turn("", forced, [], max_new=256,
+                                      start=state["pos"])
+            if err2 is None:
+                _t2, gen2 = ids2
+                state["pos"] += len(forced) + len(gen2)
+                answer = reply2
+                for e in ("<|return|>", "<|end|>"):
+                    answer = answer.split(e, 1)[0]
+                print(f"\ngpt> {answer.strip()}")
+                print(f"     [thought for {len(gen_ids)} tokens without "
+                      f"answering; the reply above was asked for directly]")
+                dt += 0.0
+                print(f"     [{len(gen_ids) + len(gen2)} tokens, {dt:.1f}s, "
+                      f"{state['pos']} in context]\n")
+                continue
             am = "<|channel|>analysis<|message|>"
             think = reply.split(am, 1)[1] if am in reply else reply
             think = think.split("<|end|>", 1)[0].strip()
             tail = think[-300:] if len(think) > 300 else think
-            ran_out = len(gen_ids) >= args.max_new
-            why = (f"used all {args.max_new} tokens thinking"
-                   if ran_out else
-                   f"stopped after {len(gen_ids)} tokens without answering")
-            print(f"\ngpt> (no answer: {why})")
+            print(f"\ngpt> (no answer, and asking directly failed: {err2})")
             if tail:
                 print(f"     ...{tail}")
-            print(f"     try /seed {state['seed'] + 1}"
-                  + (f", or -n above {args.max_new}" if ran_out else "")
-                  + (", or /reasoning low" if state["reasoning"] != "low" else ""))
         else:
             print(f"\ngpt> {answer.strip()}")
         print(f"     [{len(gen_ids)} tokens, {dt:.1f}s, "
               f"{len(gen_ids)/max(dt,1e-9):.0f} tok/s, "
-              f"{len(history)} in context]\n")
+              f"{state['pos']} in context]\n")
 
     return 0
 

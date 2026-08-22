@@ -1137,7 +1137,7 @@ def tokMem : TokenizerCommon.TokMem :=
     tokenBuf := TOKEN_BUF_OFF, tokenCount := TOKEN_COUNT_OFF
     textIn := TEXT_IN_OFF, textOut := TEXT_OUT_OFF, textLen := TEXT_LEN_OFF
     htKey := HT_KEY_OFF, htVal := HT_VAL_OFF
-    fileMaxBytes := TOK_FILE_MAX_BYTES }
+    fileMaxBytes := TOK_FILE_MAX_BYTES, textMaxBytes := TEXT_OUT_BYTES }
 
 /-- loadTokenizerFn (fn_32): slurp the tokenizer binary into a pinned host
     buffer, init the hash table, populate the merge table. -/
