@@ -223,13 +223,50 @@ def main():
     def corr_dim(rot):
         return d * np.log(orig / (rot * 2 * np.pi)) / (2 * np.log(theta))
 
-    lo, hi = np.floor(corr_dim(bfast)), np.ceil(corr_dim(bslow))
+    # The ramp goes from extrapolation to interpolation, in that order.
+    #
+    # Low dimensions rotate fast and have seen their whole period inside the
+    # original context, so they are left alone; high dimensions rotate slowly,
+    # have not, and are the ones scaled by 1/factor.  Blending them the other
+    # way round is not a subtle error: dimension zero comes out thirty-two
+    # times too slow, every position in the model is mis-encoded, and the model
+    # emits locally plausible text that does not track its own prompt.
+    #
+    # `truncate` is false for this checkpoint, so the correction range is not
+    # rounded to integers -- it is clamped to the dimension instead.
+    lo = max(corr_dim(bfast), 0.0)
+    hi = min(corr_dim(bslow), float(d - 1))
     ramp = np.clip((np.arange(d // 2, dtype=np.float64) - lo) / max(hi - lo, 1e-3), 0, 1)
-    inv_scaled = inv / factor * (1 - ramp) + inv * ramp
+    inv_scaled = (inv / factor) * ramp + inv * (1 - ramp)
+    attn_factor = 0.1 * np.log(factor) + 1.0
+    # **Cross-check against the library's own YaRN, not against ourselves.**
+    #
+    # This is the one place a converter error cannot be caught downstream:
+    # `reference.py` reads these tables too, so an engine that matches the
+    # reference matches it on identical wrong numbers.  Inverting this blend
+    # made dimension zero rotate thirty-two times too slowly, and the model
+    # produced locally plausible text that did not track its own prompt --
+    # through a verification that compared the engine to the reference and
+    # agreed to seven parts in a thousand.
+    try:
+        from transformers import AutoConfig
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+        hc = AutoConfig.from_pretrained(args.model)
+        want, want_af = ROPE_INIT_FUNCTIONS["yarn"](hc, device="cpu")
+        ref = np.asarray(want, np.float64)
+        rel = float(np.abs(np.asarray(inv_scaled, np.float64) / ref - 1.0).max())
+        # their inv_freq is float32, so the floor here is rounding, not method
+        assert rel < 1e-5, (
+            f"rope tables disagree with transformers' yarn by {rel:.3e}: "
+            f"ours[0]={inv_scaled[0]:.6g} theirs[0]={ref[0]:.6g}")
+        assert abs(attn_factor / float(want_af) - 1.0) < 1e-9
+        print(f"  rope: matches transformers' yarn to {rel:.1e}")
+    except ImportError:
+        print("  rope: transformers not importable; tables NOT cross-checked")
+
     maxpos = cfg["max_position_embeddings"]
     pos = np.arange(maxpos, dtype=np.float64)[:, None]
     ang = pos * inv_scaled[None, :]
-    attn_factor = 0.1 * np.log(factor) + 1.0
     dense["rope_cos"] = dw.write((np.cos(ang) * attn_factor).astype(np.float32))
     dense["rope_sin"] = dw.write((np.sin(ang) * attn_factor).astype(np.float32))
     dense_bytes = dw.close()
