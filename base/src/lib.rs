@@ -9,6 +9,7 @@ use std::{
 use tracing::{debug, info, info_span};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+pub mod capi;
 mod clif_decode;
 mod ffi;
 mod jit;
@@ -88,6 +89,29 @@ impl Base {
             _module: module,
             io_offsets,
         })
+    }
+
+    /// The shared memory a program reads and writes.
+    ///
+    /// An output schema names offsets into this, so a caller that does not want
+    /// the Arrow view — `capi`'s hosts — reads the same bytes directly.
+    pub fn memory_bytes(&self) -> &[u8] {
+        &self.memory
+    }
+
+    /// Install this instance's compiled functions on the calling thread.
+    ///
+    /// `from_parts` does this for the thread that built the instance. The
+    /// functions live in a thread-local as well as in the instance because the
+    /// FFI entry points a program calls reach them with no `Base` in hand, so a
+    /// caller executing from a thread that did not build it must do this first
+    /// or those calls find nothing.
+    pub fn bind_current_thread(&self) {
+        if let Some(ref fns) = self.clif_fns {
+            THREAD_COMPILED_FNS.with(|cell| {
+                *cell.borrow_mut() = Some(fns.clone());
+            });
+        }
     }
 
     pub fn execute(

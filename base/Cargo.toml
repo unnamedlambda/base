@@ -19,6 +19,9 @@ cranelift-module = "0.123"
 cranelift-native = "0.123"
 arrow-array = { version = "54", default-features = false }
 arrow-schema = { version = "54", default-features = false }
+# The C ABI takes a setup as the JSON a Lean generator already prints, so a
+# host that is not Rust needs no encoder of its own.
+serde_json = "1"
 
 [dev-dependencies]
 # For the corpus test only: it reads what the build generated.
@@ -31,3 +34,9 @@ arrow-schema = { version = "54", default-features = false }
 [lib]
 name = "base"
 path = "src/lib.rs"
+# `rlib` for the Rust dependents; `cdylib` for the hosts that reach the same
+# `Base` through `src/capi.rs`. A shared object rather than a static library
+# because it resolves cudarc, wgpu, winit and lmdb itself: a non-Rust host
+# linking a `staticlib` would have to name every transitive system library on
+# its own link line.
+crate-type = ["rlib", "cdylib"]
