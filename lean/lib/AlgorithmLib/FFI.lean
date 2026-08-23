@@ -47,6 +47,7 @@ inductive Ffi where
   -- Appended, and appending is the rule: a callee's id is its position in
   -- `all`, so inserting one renumbers every shipped artifact's calls.
   | cudaPinnedPtrAt | cudaMemInfoFree | cudaMemInfoTotal | cublasGemmExBf16
+  | cublasGemmStridedBatchedExBf16
   deriving Repr, BEq, DecidableEq, Inhabited
 
 namespace Ffi
@@ -137,6 +138,7 @@ def cname : Ffi → String
   | .cudaMemInfoFree => "cl_cuda_mem_info_free"
   | .cudaMemInfoTotal => "cl_cuda_mem_info_total"
   | .cublasGemmExBf16 => "cl_cublas_gemm_ex_bf16"
+  | .cublasGemmStridedBatchedExBf16 => "cl_cublas_gemm_strided_batched_ex_bf16"
 
 /-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
 def sig : Ffi → List ClifTy × Option ClifTy
@@ -255,6 +257,14 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .cublasGemmExBf16 =>
       ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i32,
         .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
+  -- `.cublasSgemmBatchedOnStream`'s shape with `.cublasGemmExBf16`'s element
+  -- types: transposes, dimensions, then (alpha, A, strideA), (B, strideB),
+  -- (beta, C, strideC), the batch count, and the offsets and leading
+  -- dimensions. Strides and offsets count elements, and an element is two
+  -- bytes on both inputs and four on the result.
+  | .cublasGemmStridedBatchedExBf16 =>
+      ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64,
+        .i32, .i32, .i64, .i32, .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
 
 def params (f : Ffi) : List ClifTy := f.sig.1
 def result (f : Ffi) : Option ClifTy := f.sig.2
@@ -282,7 +292,8 @@ def all : List Ffi :=
    .cudaLaunchNamedOnStream, .cudaSync, .cudaCleanup,
    .cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmOnStream,
    .cublasPtrArray, .cublasSgemmBatchedOnStream,
-   .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16]
+   .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16,
+   .cublasGemmStridedBatchedExBf16]
 
 /-- The callee id every artifact carries for `f`. -/
 def id (f : Ffi) : Nat := all.idxOf f

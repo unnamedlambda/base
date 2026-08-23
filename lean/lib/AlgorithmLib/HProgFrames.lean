@@ -100,6 +100,7 @@ def frame : IR.Ffi → Frame
   | .cublasSgemv | .cublasSgemvOnStream | .cublasSgemm | .cublasSgemmOnStream
   | .cublasPtrArray | .cublasSgemmBatchedOnStream
   | .cublasGemmExBf16 => .none
+  | .cublasGemmStridedBatchedExBf16 => .none
 
   -- wgpu.rs
   | .gpuInit | .gpuCleanup => ctxSlot

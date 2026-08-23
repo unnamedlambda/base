@@ -415,6 +415,28 @@ def cublasGemmExBf16 (ptr transA transB m n k alphaBits aBuf bBuf betaBits cBuf 
     [c, transA, transB, m, n, k, alphaBits, aBuf, bBuf, betaBits, cBuf,
      oa, ob, oc, la, lb, lc]
 
+/-- **The bf16 contraction, once per batch member at a fixed stride.**
+
+    Attention with a bf16 key cache: one member per key head, the query narrowed
+    to match because cuBLAS refuses a mixed pair. Strides and offsets count
+    elements, and an element is two bytes on both inputs and four on the result
+    -- so a stride that is right for the `Float32` form is twice what this one
+    wants for its inputs and exactly right for its output.
+
+    -/
+def cublasGemmStridedBatchedExBf16 (ptr transA transB m n k alphaBits aBuf strideA
+     bBuf strideB betaBits cBuf strideC batchCount : R)
+    (slotOffset : Nat := ContextSlots.cuda)
+    (offA offB offC : Nat := 0) (ldA ldB ldC : Nat := 0) : M R := do
+  let c ← cudaCtxPtr ptr slotOffset
+  let oa ← iconst64 offA
+  let ob ← iconst64 offB
+  let oc ← iconst64 offC
+  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
+  call IR.Ffi.cublasGemmStridedBatchedExBf16.id
+    [c, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB,
+     betaBits, cBuf, strideC, batchCount, oa, ob, oc, la, lb, lc]
+
 /-- The same, with the operand offsets held in **registers** rather than fixed
     at emission.
 

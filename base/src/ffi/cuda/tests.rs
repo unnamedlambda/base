@@ -1145,6 +1145,79 @@ fn mem_info_reports_device_memory() {
 }
 
 #[test]
+fn gemm_strided_batched_ex_bf16_matches_per_member_reference() {
+    unsafe {
+        let ctx = init_ctx();
+        // Two members, each a small column-major gemm, laid out back to back at
+        // exactly the stride the batched call is told about. Attention's shape:
+        // one member per key head.
+        let (m, k, n, batch) = (4usize, 3usize, 2usize, 2usize);
+        let (sa, sb, sc) = (m * k, k * n, m * n);
+        let a: Vec<f32> = (0..sa * batch).map(|i| (i as f32) * 0.25 - 1.5).collect();
+        let b: Vec<f32> = (0..sb * batch).map(|i| 1.0 - (i as f32) * 0.125).collect();
+
+        let a_bytes = bf16s_to_bytes(&a);
+        let a_buf = cl_cuda_create_buffer(ctx, a_bytes.len() as i64);
+        assert!(a_buf >= 0);
+        assert_eq!(cl_cuda_upload(ctx, a_buf, a_bytes.as_ptr(), a_bytes.len() as i64), 0);
+        let b_bytes = bf16s_to_bytes(&b);
+        let b_buf = cl_cuda_create_buffer(ctx, b_bytes.len() as i64);
+        assert!(b_buf >= 0);
+        assert_eq!(cl_cuda_upload(ctx, b_buf, b_bytes.as_ptr(), b_bytes.len() as i64), 0);
+        let c_buf = make_buf_with(ctx, &vec![0.0f32; sc * batch]);
+
+        let rc = cl_cublas_gemm_strided_batched_ex_bf16(
+            ctx, 0, 0, m as i32, n as i32, k as i32,
+            1.0f32.to_bits() as i32, a_buf, sa as i64, b_buf, sb as i64,
+            0.0f32.to_bits() as i32, c_buf, sc as i64, batch as i32,
+            0, 0, 0, 0, 0, 0,
+        );
+        assert_eq!(rc, 0);
+        assert_eq!(cl_cuda_sync(ctx), 0);
+        let got = download_f32(ctx, c_buf, sc * batch);
+
+        // Each member scored on its own, against operands rounded as the device
+        // sees them: what is left after this comparison is fold order, and that
+        // the strides picked out the members the caller meant.
+        let mut want = vec![0.0f32; sc * batch];
+        for e in 0..batch {
+            for j in 0..n {
+                for i in 0..m {
+                    let mut acc = 0.0f32;
+                    for p in 0..k {
+                        let aw = f32_from_bf16_bits(f32_to_bf16_bits(a[e * sa + p * m + i]));
+                        let bw = f32_from_bf16_bits(f32_to_bf16_bits(b[e * sb + j * k + p]));
+                        acc += aw * bw;
+                    }
+                    want[e * sc + j * m + i] = acc;
+                }
+            }
+        }
+        assert!(approx_eq(&got, &want), "got {got:?}, want {want:?}");
+
+        // The second member must differ from the first, or a stride of zero
+        // would pass the comparison above by accident.
+        assert!(
+            want[..sc] != want[sc..],
+            "the two members are identical; the test cannot see a bad stride"
+        );
+
+        // Degenerate shapes, a zero batch, and unknown buffers are refused.
+        let bad = |m: i32, n: i32, k: i32, batch: i32, a: i32, off: i64| {
+            cl_cublas_gemm_strided_batched_ex_bf16(
+                ctx, 0, 0, m, n, k, 0, a, sa as i64, b_buf, sb as i64, 0, c_buf,
+                sc as i64, batch, off, 0, 0, 0, 0, 0,
+            )
+        };
+        assert_eq!(bad(0, 1, 1, 1, a_buf, 0), -1);
+        assert_eq!(bad(1, 1, 1, 0, a_buf, 0), -1);
+        assert_eq!(bad(1, 1, 1, 1, 999, 0), -1);
+        assert_eq!(bad(1, 1, 1, 1, a_buf, -1), -1);
+        cleanup_ctx(ctx);
+    }
+}
+
+#[test]
 fn gemm_ex_bf16_matches_bf16_rounded_reference() {
     unsafe {
         let ctx = init_ctx();

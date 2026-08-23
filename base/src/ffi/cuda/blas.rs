@@ -747,6 +747,144 @@ pub(crate) unsafe extern "C" fn cl_cublas_sgemm_batched_on_stream(
     .unwrap_or(-1)
 }
 
+/// Batched `cublasGemmEx` with bf16 inputs and an f32 result.
+///
+/// The strided-batched sgemm's shape with the element types of `gemm_ex_bf16`.
+/// Attention wants exactly this: a key cache held in bf16, one batch per KV
+/// head, contracted against a query that has been narrowed to match -- cuBLAS
+/// rejects a mixed (bf16, f32) operand pair, so both inputs are bf16 and only
+/// the accumulator is f32.
+///
+/// As in `gemm_ex_bf16`, the offsets and strides count *elements*, and an
+/// element is two bytes on the inputs and four on the output.
+#[unsafe(no_mangle)]
+pub(crate) unsafe extern "C" fn cl_cublas_gemm_strided_batched_ex_bf16(
+    ctx_ptr: *mut CraneliftCudaContext,
+    transa: i32,
+    transb: i32,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha_bits: i32,
+    a_buf: i32,
+    stride_a: i64,
+    b_buf: i32,
+    stride_b: i64,
+    beta_bits: i32,
+    c_buf: i32,
+    stride_c: i64,
+    batch_count: i32,
+    off_a: i64,
+    off_b: i64,
+    off_c: i64,
+    ld_a: i32,
+    ld_b: i32,
+    ld_c: i32,
+) -> i32 {
+    use cudarc::cublas::sys::{
+        cublasComputeType_t, cublasGemmAlgo_t, cublasOperation_t, cublasStatus_t, cudaDataType,
+    };
+
+    if m <= 0
+        || n <= 0
+        || k <= 0
+        || batch_count <= 0
+        || off_a < 0
+        || off_b < 0
+        || off_c < 0
+        || stride_a < 0
+        || stride_b < 0
+        || stride_c < 0
+        || ld_a < 0
+        || ld_b < 0
+        || ld_c < 0
+    {
+        return -1;
+    }
+
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let Some(ctx) = read_ctx_mut::<CraneliftCudaContext>(ctx_ptr) else {
+            return -1;
+        };
+        let Ok(mut state) = lock_cuda_state(ctx) else {
+            return -1;
+        };
+
+        let alpha = f32::from_bits(alpha_bits as u32);
+        let beta = f32::from_bits(beta_bits as u32);
+        let op_a = if transa != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let op_b = if transb != 0 {
+            cublasOperation_t::CUBLAS_OP_T
+        } else {
+            cublasOperation_t::CUBLAS_OP_N
+        };
+        let lda = if ld_a != 0 { ld_a } else if transa != 0 { k } else { m };
+        let ldb = if ld_b != 0 { ld_b } else if transb != 0 { n } else { k };
+        let ldc = if ld_c != 0 { ld_c } else { m };
+
+        let a_dev = match unsafe { cuda_buffer_device_ptr(&state, a_buf) } {
+            Some(p) => p + (off_a as u64) * 2,
+            None => return -1,
+        };
+        let b_dev = match unsafe { cuda_buffer_device_ptr(&state, b_buf) } {
+            Some(p) => p + (off_b as u64) * 2,
+            None => return -1,
+        };
+        let c_dev = match unsafe { cuda_buffer_device_ptr(&state, c_buf) } {
+            Some(p) => p + (off_c as u64) * 4,
+            None => return -1,
+        };
+        let blas = match ensure_default_cuda_blas(ctx, &mut state) {
+            Ok(blas) => blas,
+            Err(rc) => return rc,
+        };
+
+        let st = unsafe {
+            cudarc::cublas::sys::lib().cublasGemmStridedBatchedEx(
+                *blas.handle(),
+                op_a,
+                op_b,
+                m,
+                n,
+                k,
+                &alpha as *const f32 as *const std::ffi::c_void,
+                a_dev as *const std::ffi::c_void,
+                cudaDataType::CUDA_R_16BF,
+                lda,
+                stride_a,
+                b_dev as *const std::ffi::c_void,
+                cudaDataType::CUDA_R_16BF,
+                ldb,
+                stride_b,
+                &beta as *const f32 as *const std::ffi::c_void,
+                c_dev as *mut std::ffi::c_void,
+                cudaDataType::CUDA_R_32F,
+                ldc,
+                stride_c,
+                batch_count,
+                cublasComputeType_t::CUBLAS_COMPUTE_32F,
+                cublasGemmAlgo_t::CUBLAS_GEMM_DEFAULT,
+            )
+        };
+        if st != cublasStatus_t::CUBLAS_STATUS_SUCCESS {
+            eprintln!(
+                "cl_cublas_gemm_strided_batched_ex_bf16: failed: {:?} \
+                 (transa={} transb={} m={} n={} k={} lda={} ldb={} ldc={} \
+                 sa={} sb={} sc={} batch={} bufs a={} b={} c={})",
+                st, transa, transb, m, n, k, lda, ldb, ldc, stride_a, stride_b,
+                stride_c, batch_count, a_buf, b_buf, c_buf
+            );
+            return -1;
+        }
+        0
+    }))
+    .unwrap_or(-1)
+}
+
 /// cuBLAS GEMM over bf16 operands: C = alpha * op(A) * op(B) + beta * C, where
 /// A and B are bf16, C is f32, and the accumulation is f32
 /// (`CUBLAS_COMPUTE_32F`).

@@ -208,6 +208,12 @@ inductive VendorKernel where
       cuBLAS refuses a mixed pair -- so an activation reaching this call has been
       rounded too. -/
   | cublasGemmExBf16
+  /-- The same contraction, once per batch member at a fixed stride.
+
+      What attention wants when the key cache is bf16: one member per KV head,
+      the query narrowed to match because cuBLAS refuses a mixed pair. Withholds
+      what `cublasGemmExBf16` withholds, for the same reason. -/
+  | cublasGemmStridedBatchedExBf16
   /-- The host→device copy.  Not a contraction and not cuBLAS, but declared for
       the same reason: its source is host memory, which this model does not
       describe, so what it lands is assumed while where it can land is proven. -/
@@ -235,6 +241,7 @@ def VendorKernel.symbol : VendorKernel → String
   | .cublasSgemmBatchedOnStream        => "cl_cublas_sgemm_batched_on_stream"
   | .cublasPtrArray                    => "cl_cublas_ptr_array"
   | .cublasGemmExBf16                  => "cl_cublas_gemm_ex_bf16"
+  | .cublasGemmStridedBatchedExBf16    => "cl_cublas_gemm_strided_batched_ex_bf16"
   | .uploadPtr                        => "cl_cuda_upload_ptr"
   | .cudaGraphLaunch                  => "cl_cuda_graph_launch"
 
@@ -281,6 +288,7 @@ def VendorKernel.assumes : VendorKernel → List Law
   -- before any question of fold order arose.  Nothing is stated, and `lawless`
   -- records that it is the strong kind of nothing.
   | .cublasGemmExBf16                  => []
+  | .cublasGemmStridedBatchedExBf16    => []
   -- What the copy lands is `uploadedValue`, an opaque on the declared trust
   -- surface, rather than an equation this development states.
   | .uploadPtr                         => []
@@ -297,8 +305,8 @@ def VendorKernel.assumes : VendorKernel → List Law
 def VendorKernel.all : List VendorKernel :=
   [.cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmStridedBatched,
    .cublasSgemmStridedBatchedOnStream, .cublasSgemmAt1, .cublasSgemmAt1OnStream,
-   .cublasSgemmBatchedOnStream, .cublasPtrArray, .cublasGemmExBf16, .uploadPtr,
-   .cudaGraphLaunch]
+   .cublasSgemmBatchedOnStream, .cublasPtrArray, .cublasGemmExBf16,
+   .cublasGemmStridedBatchedExBf16, .uploadPtr, .cudaGraphLaunch]
 
 theorem VendorKernel.all_covers : ∀ k : VendorKernel, k ∈ VendorKernel.all := by
   intro k; cases k <;> decide
@@ -313,6 +321,7 @@ def VendorKernel.lawless : VendorKernel → Bool
   | .cublasSgemmStridedBatched         => true
   | .cublasSgemmStridedBatchedOnStream => true
   | .cublasGemmExBf16                  => true
+  | .cublasGemmStridedBatchedExBf16    => true
   | .cudaGraphLaunch                   => true
   | _                                  => false
 
@@ -360,6 +369,12 @@ def VendorKernel.withholds : VendorKernel → String
       "that. A model whose published weights are bf16 is being served at the " ++
       "precision it was released in, but that is a fact about the checkpoint, " ++
       "not a theorem this development proves."
+  | .cublasGemmStridedBatchedExBf16 =>
+      "everything `cublasGemmExBf16` withholds, and the batching on top of it: " ++
+      "the members are laid out by a stride rather than by an allocation each, " ++
+      "so nothing here says the strides carve out regions that do not overlap. " ++
+      "For attention they do -- one member per key head -- and that is " ++
+      "arithmetic in the caller rather than a theorem."
   | .cublasSgemmStridedBatched | .cublasSgemmStridedBatchedOnStream =>
       "batched strided mode selects operand slices by stride and batch-count " ++
       "arguments this model does not interpret, and may contract multiply-add " ++

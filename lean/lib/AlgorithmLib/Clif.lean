@@ -599,6 +599,7 @@ def deviceWriterNames : List String :=
     "cl_cublas_sgemm_strided_batched", "cl_cublas_sgemm_strided_batched_on_stream",
     -- same, with bf16 operands: narrower reads, identical standing
     "cl_cublas_gemm_ex_bf16",
+    "cl_cublas_gemm_strided_batched_ex_bf16",
     -- replays a captured graph: arbitrarily many kernels, none of them recorded
     "cl_cuda_graph_launch",
     -- host→device writes
