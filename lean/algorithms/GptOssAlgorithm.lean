@@ -347,8 +347,8 @@ namespace Attn
 open GptOssAttention hiding H
 
 /-- Layer 0 slides, so this slice runs at the window depth. A full-attention
-    layer is the same program with `CAP_FULL` and a different emitted
-    `kvStore`; M4 ships both. -/
+    layer is the same program and now the same emitted `kvStore` too -- the
+    depth is `M_KVSTRIDE` in the meta the caller publishes, not a literal. -/
 def CAP : Nat := CAP_SWA
 
 /-! ## PTX slots -/
@@ -356,7 +356,7 @@ def CAP : Nat := CAP_SWA
 def aPtx : List String :=
   [ ptxRmsNorm, ptxAdd, emitProvenKernelN "main" 3 0 ropeQEW
   , emitProvenKernelN "main" 3 0 ropeKEW
-  , ptxKVStore QO CAP, ptxKVStore KO CAP
+  , ptxKVStore QO, ptxKVStore KO
   , ptxSinkSoftmax, GptOssKernels.moduleFor GptOssKernels.narrowBf16 ]
 
 def S_RMS : Nat := 0

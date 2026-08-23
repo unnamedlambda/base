@@ -35,7 +35,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (TEXT_MAX, CAP_FULL, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
+from layout import (TEXT_MAX, CAP_DEFAULT, CAP_MAX, D_CTX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_NPRE, D_PRE, D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT,
                     D_OUT_NGEN, D_OUT_GEN, D_OUT_NTEXT, D_OUT_TEXTTOK,
                     D_OUT_BYTES, D_STARTPOS, check_layout, ln_min_p,
@@ -73,6 +73,11 @@ def main():
                     help="drop tokens below this fraction of the most "
                          "likely one's probability; 0 keeps the whole tail")
     ap.add_argument("-n", "--max-new", type=int, default=2048)
+    ap.add_argument("--context", type=int, default=CAP_DEFAULT,
+                    help=f"positions the full-attention layers keep keys for "
+                         f"(max {CAP_MAX}). Every position is an expert slot "
+                         f"not held resident, so a long context is paid for on "
+                         f"every token, not only on long ones")
     ap.add_argument("--show-analysis", action="store_true",
                     help="print the model's reasoning as well as its answer")
     args = ap.parse_args()
@@ -111,12 +116,13 @@ def main():
         # thirty seconds proving it.
         want = start + len(pre) + len(post) + (args.max_new if max_new is None
                                                else max_new)
-        if want > CAP_FULL:
+        if want > args.context:
             return None, None, (
                 f"conversation is {start} tokens and the key cache holds "
-                f"{CAP_FULL}; this turn wants up to {want}. /new to start over"
-                + ("" if max_new is not None else
-                   f", or -n below {max(CAP_FULL - start - len(pre) - len(post), 0)}"))
+                f"{args.context}; this turn wants up to {want}. /new to start "
+                f"over" + ("" if max_new is not None else
+                           f", or -n below "
+                           f"{max(args.context - start - len(pre) - len(post), 0)}"))
         buf = bytearray(D_IN_BYTES)
         struct.pack_into("<III", buf, 0, 0, 0, 1)
         struct.pack_into("<I", buf, 12, len(raw))
@@ -127,6 +133,8 @@ def main():
         struct.pack_into("<I", buf, D_SEED, state["seed"] & 0xFFFFFFFF)
         struct.pack_into("<f", buf, D_LNMINP, ln_min_p(state["min_p"]))
         struct.pack_into("<I", buf, D_STARTPOS, start)
+        # read once, on the first call: the caches are allocated to it
+        struct.pack_into("<I", buf, D_CTX, args.context)
         struct.pack_into("<II", buf, D_STOP, RETURN,
                          args.max_new if max_new is None else max_new)
         struct.pack_into("<II", buf, D_NPRE, len(pre), len(post))
@@ -170,8 +178,12 @@ def main():
         state["pos"] = 3 + len(body) + 1
         return None
 
+    if not 0 < args.context <= CAP_MAX:
+        print(f"  --context must be between 1 and {CAP_MAX}")
+        return 1
     print(f"  gpt-oss-20b   reasoning {state['reasoning']}   "
-          f"temp {state['temp']}   max {args.max_new}")
+          f"temp {state['temp']}   max {args.max_new}   "
+          f"context {args.context}")
     print("  loading: 12.9 GiB off disk, 9.48 GiB pinned; this takes ~30 s")
     t0 = time.time()
     err = open_conversation()

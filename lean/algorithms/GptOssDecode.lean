@@ -82,6 +82,11 @@ def II : Nat := 2880
     room for, which it asks at run time. -/
 def NSLOT_MAX : Nat := 640
 
+/-- What a caller who names no context gets: the depth this engine shipped with
+    before the cache became a choice, so a driver that says nothing behaves as
+    it always did. -/
+def CAP_DEFAULT : Nat := 8192
+
 /-- Bytes of each piece of an expert, in the order the converter writes them. -/
 def pieceBytes : List Nat :=
   [ 2 * II * (HH / 2), 2 * II * (HH / 32), 2 * II * 4
@@ -125,8 +130,7 @@ def fileRopeSin : Nat := fileRope + ROPE_FILE_ROWS * HALF * 4
 def dPtx : List String :=
   [ ptxRmsNorm, ptxAdd, emitProvenKernelN "main" 3 0 ropeQEW
   , emitProvenKernelN "main" 3 0 ropeKEW
-  , ptxKVStore QO CAP_SWA, ptxKVStore KO CAP_SWA
-  , ptxKVStore QO CAP_FULL, ptxKVStore KO CAP_FULL
+  , ptxKVStore QO, ptxKVStore KO
   , ptxSinkSoftmax, GptOssKernels.moduleFor GptOssKernels.narrowBf16
   , GptOssKernels.moduleFor GptOssKernels.gateUpSwigluGemv
   , GptOssKernels.moduleFor GptOssKernels.downGemvBias
@@ -140,22 +144,23 @@ def S_RMS := 0
 def S_ADD := 1
 def S_ROPEQ := 2
 def S_ROPEK := 3
-/-- The sliding pair first, then the full pair: a layer's own index selects
-    between them, `S_KV + (layer % 2) * 2`. -/
+/-- Keys then values.  One pair, not two: the cache depth left the kernel and
+    became `M_KVSTRIDE`, so a sliding layer and a full one launch the same
+    program. -/
 def S_KV := 4
-def S_SOFTMAX := 8
-def S_NARROW := 9
-def S_GATEUP := 10
-def S_DOWN := 11
-def S_COMBINE := 12
-def S_TOP4 := 13
-def S_ARGMAX := 14
-def S_WIDEN := 15
+def S_SOFTMAX := 6
+def S_NARROW := 7
+def S_GATEUP := 8
+def S_DOWN := 9
+def S_COMBINE := 10
+def S_TOP4 := 11
+def S_ARGMAX := 12
+def S_WIDEN := 13
 /-- A step picks between greedy and sampling by arithmetic on the slot, because
     `ptxOff` is a register and a branch here would be a branch around a launch.
     The distance is `S_SAMPLE - S_ARGMAX` and is computed, not assumed to be
     one: `S_WIDEN` sits between them. -/
-def S_SAMPLE := 16
+def S_SAMPLE := 14
 
 /-! ## Buffers
 
@@ -219,14 +224,21 @@ def DNBUF := SLOTSTORE + PIECES * NSLOT_MAX
 
 def dStoreBuf (layer k : Nat) : Nat := DSTORE + 9 * layer + k
 def kvStoreBuf (layer j : Nat) : Nat := KVSTORE + 2 * layer + j
-def capOf (layer : Nat) : Nat := if layer % 2 == 0 then CAP_SWA else CAP_FULL
+/-- The depth a layer's cache is *allowed*, which is what `dBufBytes` is about.
+
+    What it is actually given is chosen at start-up and allocated then; this
+    list fixes the number of buffers and says each is non-empty, and neither of
+    those depends on the depth. Sizing it at the ceiling keeps the two claims
+    the theorem below makes true without pretending the artifact knows how big
+    the cache will be. -/
+def capOf (layer : Nat) : Nat := if layer % 2 == 0 then CAP_SWA else CAP_MAX
 
 def dBufBytes : List Nat :=
   (List.range 9).map (fun k => dKindBytes.getD k 0)        -- current layer: placeholders
     ++ [128, 128]
     ++ List.replicate (PIECES * TOPK) 128
     ++ [ HH * 4, HH * 4, HH * 2, dQkvOut * 4
-       , 64 * CAP_FULL * 4, 64 * CAP_FULL * 4
+       , 64 * CAP_MAX * 4, 64 * CAP_MAX * 4
        , (64 * 64) * 4, (64 * 64) * 2, HH * 4
        , 2 * ROPE_N * HALF * 4, 64 * 4, 4, 4
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
@@ -262,6 +274,13 @@ def DPOOL_OFF : Nat := DNSLOT_OFF + 4
 def DSTAGE_OFF : Nat := DPOOL_OFF + 8
 def DMISS_OFF : Nat := DSTAGE_OFF + 8
 def DINIT_OFF : Nat := DMISS_OFF + 4
+/-- Positions the full-attention layers were given room for, and `HD` times it.
+
+    Read from the caller's `D_CTX` on the first call, clamped, and kept: the
+    buffers were allocated to it, so it cannot change afterwards and every
+    later step reads it from here rather than being told again. -/
+def DCTX_OFF : Nat := DINIT_OFF + 4
+def DCTXSTRIDE_OFF : Nat := DCTX_OFF + 4
 /-! ### The tokenizer's corner
 
     A chat turn is text in and text out, so this program owns a tokenizer as
@@ -271,7 +290,7 @@ def DINIT_OFF : Nat := DMISS_OFF + 4
 /-- The longest prompt or reply this program handles, in bytes. -/
 def TEXT_MAX : Nat := 32768
 
-def DTOK_BASE : Nat := DINIT_OFF + 8
+def DTOK_BASE : Nat := DCTXSTRIDE_OFF + 8
 def DT_PATHPTR : Nat := DTOK_BASE
 def DT_BUFPTR : Nat := DTOK_BASE + 8
 def DT_TOKCOUNT : Nat := DTOK_BASE + 16
@@ -319,6 +338,7 @@ def dMemMap : AlgorithmLib.Layout.RegionMap :=
         ⟨"clock", DCLOCK_OFF, 4⟩, ⟨"nslot", DNSLOT_OFF, 4⟩,
         ⟨"pool", DPOOL_OFF, 8⟩, ⟨"stage", DSTAGE_OFF, 8⟩,
         ⟨"miss", DMISS_OFF, 4⟩, ⟨"init", DINIT_OFF, 4⟩,
+        ⟨"ctx", DCTX_OFF, 4⟩, ⟨"ctxStride", DCTXSTRIDE_OFF, 8⟩,
         ⟨"tokPathPtr", DT_PATHPTR, 8⟩, ⟨"tokBufPtr", DT_BUFPTR, 8⟩,
         ⟨"tokCount", DT_TOKCOUNT, 8⟩, ⟨"tokTextLen", DT_TEXTLEN, 8⟩,
         ⟨"htKey", DT_HTKEY, 8⟩, ⟨"htVal", DT_HTVAL, 8⟩,
@@ -387,6 +407,14 @@ def D_LNMINP : Nat := 1064
     transcript again -- which is the difference between a reply that takes a
     second and one that takes longer every time you speak. -/
 def D_STARTPOS : Nat := 1068
+/-- Positions to give the full-attention layers, read once on the first call.
+
+    The key cache is the largest thing on this card after the experts, and how
+    much of it to buy is a decision only the caller can make: every position of
+    it is an expert slot not held resident, so a long context is paid for in
+    misses on every token whether or not the conversation ever gets long. Zero
+    asks for the default. -/
+def D_CTX : Nat := 1072
 /-- Room for a chat template on each side of the text.
 
     A client that continues the cache sends only what the turn adds, so this is
@@ -397,7 +425,7 @@ def D_STARTPOS : Nat := 1068
     — so this matches it rather than sitting below it and failing first with a
     message about buffers, which tells a user nothing about what went wrong. -/
 def TMPL_MAX : Nat := 8192
-def D_PRE : Nat := 1072
+def D_PRE : Nat := 1076
 def D_POST : Nat := D_PRE + 4 * TMPL_MAX
 def D_TEXT : Nat := D_POST + 4 * TMPL_MAX
 def D_IN_BYTES : Nat := D_TEXT + TEXT_MAX
@@ -474,9 +502,33 @@ def dInitM : M Unit := do
   let stageId ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, stageBytes]
   let stagePtr ← call IR.Ffi.cudaPinnedPtr.id [ctxPtr, stageId]
   storeI64 stagePtr (← absAddr ptr DSTAGE_OFF)
-  -- every buffer that is not an expert slot
+  -- **The context, chosen here and fixed from here on.**
+  --
+  -- Zero means the default.  Anything else is clamped to the published
+  -- rotation tables, which is the hard ceiling: past `CAP_MAX` there is no row
+  -- to encode a position with.  The buffers below are allocated to whatever
+  -- comes out, so this is the last moment it can be decided.
+  let ctxAsk ← uload32_64 (← iaddImm dataPtr D_CTX)
+  let ctxD ← ifte .eq ctxAsk zero64 (pure [← iconst64 CAP_DEFAULT]) (pure [ctxAsk])
+  let ctxMax ← iconst64 CAP_MAX
+  let ctxC ← ifte .ugt (ctxD.headD ctxMax) ctxMax (pure [ctxMax]) (pure [ctxD.headD ctxMax])
+  let ctx := ctxC.headD ctxMax
+  storeI32 (← ireduce32 ctx) (← absAddr ptr DCTX_OFF)
+  let ctxStride ← imul ctx (← iconst64 HD)
+  storeI64 ctxStride (← absAddr ptr DCTXSTRIDE_OFF)
+  -- every buffer that is not an expert slot.  The caches are the exception:
+  -- their size is the context, and a full layer's is what was just chosen.
+  let swaBytes ← iconst64 (8 * CAP_SWA * HD * 4)
+  let fullBytes ← imul ctxStride (← iconst64 (8 * 4))
+  -- one row of scores per query head per key, and the same again for the
+  -- probabilities the softmax writes
+  let scoreBytes ← imul ctx (← iconst64 (64 * 4))
   for (i, nb) in (List.range SLOTSTORE).zip dBufBytes do
-    let sz ← iconst64 nb
+    let sz ←
+      if KVSTORE ≤ i && i < SLOTSTORE then
+        pure (if (i - KVSTORE) / 2 % 2 == 0 then swaBytes else fullBytes)
+      else if i == B_SC || i == B_PR then pure scoreBytes
+      else iconst64 nb
     let id ← cudaCreateBuffer ptr sz
     storeI32 id (← absAddr ptr (dBindOff i))
   -- …and as many slots as the card turns out to have room for.  Asked, not
@@ -684,18 +736,17 @@ def dLayerM (layer : R) : M Unit := do
   let one32 ← iconst32 1
   let oneF ← iconst32 0x3F800000
   let scaleF ← iconst32 0x3E000000
-  -- a sliding layer is an even one, and its kernels sit two slots earlier
+  -- a sliding layer is an even one; what differs is its depth, not its kernels
   let par ← isub layer (← imul (← udiv layer (← iconst32 2)) (← iconst32 2))
-  let kvSlot ← iadd (← iconst64 (dSlotOff S_KV))
-                    (← imul (← uextend64 par) (← iconst64 (2 * DSLOT)))
-  let kvSlotV ← iaddImm kvSlot DSLOT
   -- the effective length and the cache depth both follow from the layer type
   let lenSel ← ifte .eq par zero32 (pure [seqLen]) (pure [seqLenF])
   let sLen := lenSel.headD seqLen
   let sLen64 ← uextend64 sLen
+  let ctxStrideL ← load { ty := .i64, notrapAligned := true }
+                     (← absAddr ptr DCTXSTRIDE_OFF)
   let capSel ← ifte .eq par zero32
-    (pure [← iconst64 (CAP_SWA * HD)]) (pure [← iconst64 (CAP_FULL * HD)])
-  let strideKV := capSel.headD (← iconst64 (CAP_SWA * HD))
+    (pure [← iconst64 (CAP_SWA * HD)]) (pure [ctxStrideL])
+  let strideKV := capSel.headD ctxStrideL
   -- **The meta is per layer, not per token.**
   --
   -- The softmax reads its trip counts and its row stride out of the meta
@@ -709,7 +760,8 @@ def dLayerM (layer : R) : M Unit := do
   let posNow ← load32 (← absAddr ptr (DMETA_OFF + 4 * M_POS))
   let ch ← udiv sLen c32
   let tl ← imul ch c32
-  let capSlot ← ifte .eq par zero32 (pure [← iconst32 CAP_SWA]) (pure [← iconst32 CAP_FULL])
+  let ctxNow ← load32 (← absAddr ptr DCTX_OFF)
+  let capSlot ← ifte .eq par zero32 (pure [← iconst32 CAP_SWA]) (pure [ctxNow])
   let capV := capSlot.headD c32
   let slotNow ← isub posNow (← imul (← udiv posNow capV) capV)
   storeI32 sLen (← absAddr ptr (DMETA_OFF + 4 * M_SEQ))
@@ -717,6 +769,9 @@ def dLayerM (layer : R) : M Unit := do
   storeI32 tl (← absAddr ptr (DMETA_OFF + 4 * M_TAIL))
   storeI32 (← isub sLen tl) (← absAddr ptr (DMETA_OFF + 4 * M_REM))
   storeI32 slotNow (← absAddr ptr (DMETA_OFF + 4 * M_SLOT))
+  -- the depth this layer's cache was allocated at, which is what the store
+  -- kernel strides a head by
+  storeI32 (← imul capV (← iconst32 HD)) (← absAddr ptr (DMETA_OFF + 4 * M_KVSTRIDE))
   let ctxM ← cudaCtxPtr ptr
   let bMetaL ← load32 (← absAddr ptr (dBindOff B_META))
   let _ ← call IR.Ffi.cudaUpload.id
@@ -743,8 +798,10 @@ def dLayerM (layer : R) : M Unit := do
   dEnqueue ptr S_ADD (dQkvOut / 32) 32 [B_QKV, W_QKVB]
   dEnqueue ptr S_ROPEQ NQ 32 [B_QKV, B_META, B_ROPE]
   dEnqueue ptr S_ROPEK NKV 32 [B_QKV, B_META, B_ROPE]
-  dEnqueueAt ptr kvSlot NKV 32 [B_QKV, C_KC, B_META]
-  dEnqueueAt ptr kvSlotV NKV 32 [B_QKV, C_VC, B_META]
+  -- One store kernel per operand, whatever kind of layer this is: the depth it
+  -- writes at is `M_KVSTRIDE`, published just above.
+  dEnqueue ptr S_KV NKV 32 [B_QKV, C_KC, B_META]
+  dEnqueue ptr (S_KV + 1) NKV 32 [B_QKV, C_VC, B_META]
   let hd32 ← iconst32 HD
   let gqa32 ← iconst32 GQA
   let nkv32 ← iconst32 NKV
@@ -807,16 +864,14 @@ def dStepM (tok posIn : R) : M R := do
   let ctxPtr ← cudaCtxPtr ptr
   -- **No step ever runs past the cache, whatever the caller asked for.**
   --
-  -- Two things here are indexed by the raw position rather than by a slot: the
-  -- rotation tables, which hold `ROPE_N` rows, and nothing else — the ring
-  -- slot is a modulus and cannot leave its buffer. So a position at or above
-  -- `CAP_FULL` reads sine one row past its table, which is the first row of
-  -- cosine, and cosine one row past the *buffer*, which is off the end of a
-  -- device allocation. Clamping is not the answer to a conversation that has
-  -- run out of room — the caller is expected to refuse the turn, and the
-  -- generation loop below stops on its own — but it is what makes the failure
-  -- a stalled reply instead of an out-of-bounds read.
-  let capF ← iconst32 (CAP_FULL - 1)
+  -- The cache is a ring and a modulus cannot leave its buffer, so what bounds
+  -- a position is the *allocation*: the full layers were given room for
+  -- `DCTX_OFF` of them, and a step past that would write a slot the layer does
+  -- not own. Clamping is not the answer to a conversation that has run out of
+  -- room — the caller is expected to refuse the turn, and the generation loop
+  -- below stops on its own — but it is what makes the failure a stalled reply
+  -- rather than a write into whatever was allocated next.
+  let capF ← isub (← load32 (← absAddr ptr DCTX_OFF)) (← iconst32 1)
   let posL ← ifte .ugt posIn capF (pure [capF]) (pure [posIn])
   let pos := posL.headD posIn
   -- **The embedding row, gathered here.**
@@ -838,7 +893,7 @@ def dStepM (tok posIn : R) : M R := do
   let one32 ← iconst32 1
   let len ← iadd pos one32
   let c128 ← iconst32 CAP_SWA
-  let cFull ← iconst32 CAP_FULL
+  let cFull ← load32 (← absAddr ptr DCTX_OFF)
   let swaL ← ifte .ugt len c128 (pure [c128]) (pure [len])
   let fullL ← ifte .ugt len cFull (pure [cFull]) (pure [len])
   let sL := swaL.headD len
@@ -1020,7 +1075,7 @@ def dMainFn : HProg.Code :=
             -- and stop at the cache, which is the other end of the budget: a
             -- turn is bounded by `maxNew` tokens *and* by the room left in the
             -- key cache, and only one of those is the caller's to set
-            when .uge pos (← iconst64 CAP_FULL) (brk [g1])
+            when .uge pos (← uload32_64 (← absAddr ptr DCTX_OFF)) (brk [g1])
             let nxt ← dStepM cur32 (← ireduce32 pos)
             return [g1, ← iaddImm pos 1, ← uextend64 nxt])
         let nGen := gEx.headD (← iconst64 0)

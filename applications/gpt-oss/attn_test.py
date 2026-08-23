@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank, bf16_to_f32, rms_norm  # noqa: E402
 
 CAP = 128           # the sliding window, and so the ring cache's depth
-ROPE_N = 8192       # rotation table rows the artifact allocates
+ROPE_N = 131072     # `GptOssAttention.ROPE_N`: the published height, all of it
 
 
 def to_bf16(x):
@@ -163,6 +163,8 @@ def main():
             meta[4] = 32 * (L // 32)
             meta[5] = L % 32
             meta[6] = pos % CAP
+            # M_KVSTRIDE: the cache depth, published rather than emitted
+            meta[7] = CAP * HD
             step = rows[pos].tobytes() + meta.tobytes()
             base.execute_into(ex["uploadStep"], step, bytearray(0))
             base.execute_into(ex["step"], step, bytearray(0))

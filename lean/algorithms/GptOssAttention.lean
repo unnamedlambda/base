@@ -61,13 +61,23 @@ def QO : Nat := NQ * HD
 def KO : Nat := QO + NKV * HD
 def QKV : Nat := QO + 2 * NKV * HD
 
-/-- Cache depth: the full-attention layers hold the whole context, the sliding
-    layers hold one window. -/
-def CAP_FULL : Nat := 8192
+/-- Cache depth of a sliding layer: one window, and a property of the
+    checkpoint rather than of a run. -/
 def CAP_SWA : Nat := 128
 
-/-- Positions the rotation table covers. -/
-def ROPE_N : Nat := CAP_FULL
+/-- The most positions a full-attention layer can be asked to hold.
+
+    Not the depth it *is* given -- that is chosen when the engine starts and
+    carried in the meta buffer, because the key cache is the largest thing on
+    the card after the experts and how much of it to buy is the caller's
+    decision. This is the ceiling: the published rotation tables have exactly
+    this many rows, so no position beyond it can be encoded at all. -/
+def CAP_MAX : Nat := 131072
+
+/-- Positions the rotation table covers.  The whole published height: the table
+    is 33.5 MiB at that size, which is nothing beside a key cache, and holding
+    all of it means the rotation kernel's cosine base stays a constant. -/
+def ROPE_N : Nat := CAP_MAX
 
 /-! ## The meta buffer
 
@@ -84,6 +94,13 @@ def M_TAIL : Nat := 4
 def M_REM : Nat := 5
 /-- The cache entry this token owns: `pos mod cap`. -/
 def M_SLOT : Nat := 6
+/-- One key head's stride in the cache, `cap * HD`.
+
+    In the meta rather than emitted as a literal because the two kinds of layer
+    have different depths and the full one's is chosen at start-up. The slot
+    beside it is already a memory read, so this costs the cache store one more
+    load and buys a cache whose size is not a property of the artifact. -/
+def M_KVSTRIDE : Nat := 7
 
 /-! ## RMSNorm -/
 
@@ -220,25 +237,24 @@ theorem ropeK_ptx_exact (cta : Nat) (m : MState) :
 def kvElem : IdxE := .add (.mul .loopI (.lit 32)) .laneId
 def kvSrcIx (base : Nat) : IdxE :=
   .add (.lit base) (.add (.mul .ctaId (.lit HD)) kvElem)
-def kvDstIx (cap : Nat) : IdxE :=
-  .add (.add (.mul .ctaId (.lit (cap * HD)))
+def kvDstIx : IdxE :=
+  .add (.add (.mul .ctaId (.ldIdx 2 (.lit M_KVSTRIDE)))
              (.mul (.ldIdx 2 (.lit M_SLOT)) (.lit HD)))
        kvElem
 
-def kvStoreEW (base cap : Nat) : EWStmt :=
-  .forN (HD / 32) (.seq (.loadIdx 0 0 (kvSrcIx base)) (.storeLane 1 (kvDstIx cap) 0))
+def kvStoreEW (base : Nat) : EWStmt :=
+  .forN (HD / 32) (.seq (.loadIdx 0 0 (kvSrcIx base)) (.storeLane 1 kvDstIx 0))
 
-def ptxKVStore (base cap : Nat) : String :=
-  emitProvenKernelN "main" 3 0 (kvStoreEW base cap)
+def ptxKVStore (base : Nat) : String :=
+  emitProvenKernelN "main" 3 0 (kvStoreEW base)
 
-/-- The four instances that ship: keys and values, at each cache depth. -/
-def kvShipped : List EWStmt :=
-  [ kvStoreEW QO CAP_SWA, kvStoreEW KO CAP_SWA
-  , kvStoreEW QO CAP_FULL, kvStoreEW KO CAP_FULL ]
+/-- The two instances that ship: keys and values.  Two rather than four,
+    because the depth is no longer part of the kernel. -/
+def kvShipped : List EWStmt := [kvStoreEW QO, kvStoreEW KO]
 
 /-- **Every emitted cache store runs its statement, from raw launch.** Both the
     strided source and the slot-dependent destination are covered, at each of
-    the four bases and depths a decode step launches. -/
+    the two bases a decode step launches. -/
 theorem kvStore_ptx_exact :
     ∀ s ∈ kvShipped, ∀ (cta : Nat) (m : MState),
       ∃ k m', steps cta (flatKernel (expandEW s)) k (0, m)
@@ -247,29 +263,28 @@ theorem kvStore_ptx_exact :
           = ((expandEW s).elabAt cta 0
               (SI.stepL cta emitPrologue m).ir m.imem).run m.toWSt := by
   intro s hs cta m
-  have h4 : s = kvStoreEW QO CAP_SWA ∨ s = kvStoreEW KO CAP_SWA
-          ∨ s = kvStoreEW QO CAP_FULL ∨ s = kvStoreEW KO CAP_FULL := by
+  have h2 : s = kvStoreEW QO ∨ s = kvStoreEW KO := by
     simpa [kvShipped] using hs
-  rcases h4 with h | h | h | h <;> subst h <;>
+  rcases h2 with h | h <;> subst h <;>
     exact flatKernel_sound cta (expandEW _) (expandEW_expFree _)
       (expandEW_idxBelow 3 _ (by decide)) (expandEW_flat _ (by decide)) m
 
 /-- The destination, in closed form: head, slot, element. -/
-theorem kvDst_eval (cap cta j : Nat) (l : Lane) (ir : Nat → Lane → Nat)
+theorem kvDst_eval (cta j : Nat) (l : Lane) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) :
-    (kvDstIx cap).eval cta j l ir im
-      = cta * (cap * HD) + im 2 M_SLOT * HD + (j * 32 + l.val) := rfl
+    kvDstIx.eval cta j l ir im
+      = cta * im 2 M_KVSTRIDE + im 2 M_SLOT * HD + (j * 32 + l.val) := rfl
 
 /-- **The cache store lands the right element at the right address**, for every
     `(loop, lane)` the kernel visits — not merely "some lane wrote it". -/
-theorem kvStore_writes (base cap : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
+theorem kvStore_writes (base : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) (st : WSt) (i0 : Nat) (l0 : Lane) (hi0 : i0 < HD / 32) :
-    (((kvStoreEW base cap).elabAt cta 0 ir im).run st).mem 1
-        ((kvDstIx cap).eval cta i0 l0 ir im)
+    (((kvStoreEW base).elabAt cta 0 ir im).run st).mem 1
+        (kvDstIx.eval cta i0 l0 ir im)
       = st.mem 0 ((kvSrcIx base).eval cta i0 l0 ir im) := by
-  refine storeLoop_at 1 0 (kvDstIx cap) (.loadIdx 0 0 (kvSrcIx base)) cta ir im st
+  refine storeLoop_at 1 0 kvDstIx (.loadIdx 0 0 (kvSrcIx base)) cta ir im st
     (fun j l => st.mem 0 ((kvSrcIx base).eval cta j l ir im))
-    ((kvDstIx cap).eval cta i0 l0 ir im)
+    (kvDstIx.eval cta i0 l0 ir im)
     (st.mem 0 ((kvSrcIx base).eval cta i0 l0 ir im)) []
     (fun _ _ => rfl) (fun _ _ r' h => absurd h (by simp))
     (fun j s hinv _ l => by

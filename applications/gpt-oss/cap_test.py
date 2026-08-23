@@ -1,11 +1,10 @@
-"""What the engine does when a conversation runs out of key cache.
+"""Where the key cache ends, and that it ends where it was asked to.
 
-`CAP_FULL` positions is the ceiling, and two things used to be indexed by the
-raw position rather than by a slot: the rotation tables, which hold exactly
-`ROPE_N = CAP_FULL` rows.  A step at position `CAP_FULL` read sine one row past
-its table -- which is the first row of cosine -- and cosine one row past the
-buffer, off the end of a device allocation.  The ring slots were never the
-problem; a modulus cannot leave its buffer.
+The full-attention layers are allocated `--context` positions at start-up, and
+that allocation is the bound: a step past it would write a slot the layer does
+not own.  (It used to be the rotation tables that bounded things, because they
+held exactly `CAP_FULL` rows; they now hold the published height, all 131072,
+so what runs out first is the cache the caller paid for.)
 
 `dStepM` now clamps.  That is a backstop rather than a policy: the caller is
 expected to refuse a turn that cannot fit, and the generation loop stops at the
@@ -20,7 +19,11 @@ that fires too early fails the second.
 
   python applications/gpt-oss/cap_test.py \\
       lean-artifacts/artifacts/GptOssDecode/gptoss_decode.json \\
-      --bank data/gptoss-bank
+      --bank data/gptoss-bank --context 32768
+
+Run it at more than one `--context`: that the clamp moves with the request is
+the only evidence that asking for a deeper cache got one, short of generating
+tens of thousands of tokens.
 """
 
 import argparse
@@ -32,8 +35,9 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (CAP_FULL, D_IN_BYTES, D_OUT_BYTES, D_OUT_LOGITS, VOCAB,
-                    check_layout, acquire_engine_lock)  # noqa: E402
+from layout import (CAP_DEFAULT, CAP_MAX, D_CTX, D_IN_BYTES, D_OUT_BYTES,
+                    D_OUT_LOGITS, VOCAB, check_layout,
+                    acquire_engine_lock)  # noqa: E402
 
 
 def main():
@@ -41,6 +45,9 @@ def main():
     ap.add_argument("artifact")
     ap.add_argument("--bank", required=True)
     ap.add_argument("--token", type=int, default=1428)
+    ap.add_argument("--context", type=int, default=CAP_DEFAULT,
+                    help=f"positions to give the full-attention layers "
+                         f"(max {CAP_MAX})")
     args = ap.parse_args()
 
     acquire_engine_lock('cap_test.py')
@@ -61,6 +68,7 @@ def main():
     def step(tok, pos):
         buf = bytearray(D_IN_BYTES)
         struct.pack_into("<III", buf, 0, tok, pos, 0)     # mode 0: one step
+        struct.pack_into("<I", buf, D_CTX, args.context)
         for off, p in paths.items():
             buf[off:off + len(p)] = p
         out = bytearray(D_OUT_BYTES)
@@ -72,9 +80,10 @@ def main():
     print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
     # The cache holds whatever these steps put there, so the logits mean
     # nothing on their own.  What is being compared is one run against another.
-    below = CAP_FULL - 2
-    at = CAP_FULL
-    far = CAP_FULL + 808
+    cap = args.context
+    below = cap - 2
+    at = cap
+    far = min(cap + 808, CAP_MAX + 4096)
 
     # Warm first, so the comparisons below are not also comparing a cold cache
     # against a warm one.
@@ -86,9 +95,10 @@ def main():
 
     clamped_agree = np.array_equal(lg_a, lg_f)
     below_differs = not np.array_equal(lg_b, lg_a)
-    print(f"  position {below:5d} (under the cap): id {id_b}")
-    print(f"  position {at:5d} (at the cap)     : id {id_a}")
-    print(f"  position {far:5d} (well past it)  : id {id_f}")
+    print(f"  context asked for: {cap}")
+    print(f"  position {below:6d} (under the cap): id {id_b}")
+    print(f"  position {at:6d} (at the cap)     : id {id_a}")
+    print(f"  position {far:6d} (well past it)  : id {id_f}")
     print(f"  the two over the cap are bit-identical : {clamped_agree}")
     print(f"  the one under it differs               : {below_differs}")
 

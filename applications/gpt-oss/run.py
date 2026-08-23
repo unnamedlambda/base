@@ -31,7 +31,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank  # noqa: E402
-from layout import (D_IN_BYTES, D_OUT_TRACE, D_OUT_BYTES, check_layout, acquire_engine_lock)  # noqa: E402
+from layout import (CAP_DEFAULT, CAP_MAX, D_CTX, D_IN_BYTES, D_OUT_TRACE,
+                    D_OUT_BYTES, check_layout, acquire_engine_lock)  # noqa: E402
 
 
 def main():
@@ -49,6 +50,10 @@ def main():
     ap.add_argument("--dump-logits", default=None,
                     help="write the prompt-end logits (f32) here for check.py")
     ap.add_argument("--tokens", default=None, help="comma-separated ids, skips the tokenizer")
+    ap.add_argument("--context", type=int, default=CAP_DEFAULT,
+                    help=f"positions the full-attention layers keep keys "
+                         f"for (max {CAP_MAX}); every one of them is an "
+                         f"expert slot not held resident")
     args = ap.parse_args()
 
     # before anything allocates: two of these pin 9.48 GiB each
@@ -83,6 +88,7 @@ def main():
         # the embedding row is gathered and widened inside the artifact.
         buf = bytearray(D_IN_BYTES)
         struct.pack_into("<II", buf, 0, tok_id, pos)          # mode 0: one step
+        struct.pack_into("<I", buf, D_CTX, args.context)
         buf[16:16 + len(exp)] = exp
         buf[272:272 + len(den)] = den
         buf[528:528 + len(emb)] = emb

@@ -17,16 +17,20 @@ TEXT_MAX = 32768
 TMPL_MAX = 8192
 NL, HH, VOCAB = 24, 2880, 201088
 
-# `GptOssAttention.CAP_FULL`: how many positions the full-attention layers keep
-# keys for, and so how long a conversation can be. The sliding layers ring at
-# 128 by design and do not bound anything; this does. A caller that asks for a
-# turn which cannot fit gets refused here rather than served a stalled reply.
-CAP_FULL = 8192
+# How many positions the full-attention layers keep keys for, and so how long a
+# conversation can be. The sliding layers ring at 128 by design and do not bound
+# anything; this does. No longer a property of the artifact -- the caller picks
+# it at start-up and the caches are allocated to it -- so a driver that offers
+# the choice must pass the same value to `check_turn_fits`.
+CAP_DEFAULT = 8192
+# `GptOssAttention.CAP_MAX`: the published rotation tables have this many rows,
+# so no position beyond it can be encoded at all.
+CAP_MAX = 131072
 
 # PTX slots, in `GptOssDecode.dPtx` order. Each kernel is its own module with a
 # single entry called `main`, so a slot index is the only way to name one, and
 # these are the two a decode step spends most of its time in.
-S_GATEUP, S_DOWN = 10, 11
+S_GATEUP, S_DOWN = 8, 9
 
 D_TOK, D_POS, D_MODE, D_TLEN = 0, 4, 8, 12
 D_PEXP, D_PDEN, D_PEMB, D_PTOK = 16, 272, 528, 784
@@ -35,7 +39,10 @@ D_NPRE, D_NPOST = 1048, 1052
 D_INVT, D_SEED = 1056, 1060
 D_LNMINP = 1064
 D_STARTPOS = 1068
-D_PRE = 1072
+# Positions to give the full-attention layers. Read once, on the first call:
+# the caches are allocated to it. 0 asks for CAP_DEFAULT.
+D_CTX = 1072
+D_PRE = 1076
 D_POST = D_PRE + 4 * TMPL_MAX
 D_TEXT = D_POST + 4 * TMPL_MAX
 D_IN_BYTES = D_TEXT + TEXT_MAX

@@ -166,6 +166,10 @@ def main():
             meta[1], meta[2] = pos, L
             meta[3], meta[4], meta[5] = L // 32, 32 * (L // 32), L % 32
             meta[6] = pos % CAP
+            # M_KVSTRIDE: one key head's stride in the cache, which is the
+            # depth the caller allocated it at rather than anything the
+            # kernel knows
+            meta[7] = CAP * HD
             # The first call carries the weights; every later one carries only
             # the token's row and its position, because the program remembers
             # it has loaded.  That is the difference between an entry point and

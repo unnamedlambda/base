@@ -56,10 +56,14 @@ def decodeOpenObligations : List String :=
      computes for layer l is the buffer holding layer l's weights is checked by \
      construction and tested end to end; it is not stated. An off-by-one here \
      is a model that runs at full speed and means nothing."
-  , "KernelVariantByParity — a sliding layer and a full layer differ only in \
-     which PTX slot the launch names, chosen arithmetically from l % 2 because \
-     ptxOff is a register. That the parity picks the variant whose capacity \
-     matches the cache the layer was allocated is not stated."
+  , "CacheDepthIsWhatWasAllocated — a sliding layer and a full layer launch the \
+     same store kernel and differ only in the depth published in M_KVSTRIDE, \
+     which the layer computes from its own parity and the context the engine \
+     was started with. That the depth it publishes is the depth that layer's \
+     cache was actually allocated at is arithmetic in two places — the \
+     allocation loop in dInitM and the meta write in dLayerM — and is not \
+     stated. Getting it wrong writes one head's keys over another's rather \
+     than out of bounds, so it would read as a quality problem."
   , "RingIsTheWindow — instantiated for the decode's geometry in \
      GptOssScan.SwaRingIsTheWindow, but the decode's own use of it (position p \
      lands in slot p % 128, and every resident slot is in the window) is not."

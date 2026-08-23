@@ -25,7 +25,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from layout import (TEXT_MAX, TMPL_MAX, CAP_FULL, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
+from layout import (TEXT_MAX, TMPL_MAX, CAP_DEFAULT, CAP_MAX, D_CTX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_NPRE, D_PRE,
                     D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT, D_OUT_NGEN,
                     D_OUT_GEN, D_OUT_BYTES, check_layout, ln_min_p, acquire_engine_lock)
@@ -65,6 +65,9 @@ def main():
     ap.add_argument("--min-p", type=float, default=0.02,
                     help="drop tokens below this fraction of the most "
                          "likely one's probability; 0 keeps the whole tail")
+    ap.add_argument("--context", type=int, default=CAP_DEFAULT,
+                    help=f"positions the full-attention layers keep keys for "
+                         f"(max {CAP_MAX})")
     ap.add_argument("--raw", action="store_true",
                     help="no template: send the prompt text alone")
     args = ap.parse_args()
@@ -99,9 +102,10 @@ def main():
     assert len(pre) <= TMPL_MAX and len(post) <= TMPL_MAX, "template too long"
     # The prompt has to leave room for the reply: the full-attention layers keep
     # `CAP_FULL` positions, and the engine stops there whatever was asked for.
-    assert len(pre) + len(post) + args.max_new <= CAP_FULL, (
+    assert 0 < args.context <= CAP_MAX, f"--context must be 1..{CAP_MAX}"
+    assert len(pre) + len(post) + args.max_new <= args.context, (
         f"template ({len(pre) + len(post)}) plus -n {args.max_new} exceeds the "
-        f"{CAP_FULL}-position key cache")
+        f"{args.context}-position key cache")
 
     import json
     check_layout(json.load(open(args.artifact)))
@@ -128,6 +132,7 @@ def main():
     struct.pack_into("<I", buf, D_SEED, args.seed & 0xFFFFFFFF)
     struct.pack_into("<f", buf, D_LNMINP, ln_min_p(args.min_p))
     struct.pack_into("<II", buf, D_STOP, stop, args.max_new)
+    struct.pack_into("<I", buf, D_CTX, args.context)
     struct.pack_into("<II", buf, D_NPRE, len(pre), len(post))
     if pre:
         struct.pack_into(f"<{len(pre)}I", buf, D_PRE, *pre)

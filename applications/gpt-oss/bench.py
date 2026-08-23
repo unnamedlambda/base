@@ -27,7 +27,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from layout import (D_IN_BYTES, D_OUT_BYTES, check_layout, acquire_engine_lock)
+from layout import (CAP_DEFAULT, CAP_MAX, D_CTX, D_IN_BYTES, D_OUT_BYTES,
+                    check_layout, acquire_engine_lock)
 
 ROW_BYTES = 13253760          # one expert, all six pieces
 NL, TOPK = 24, 4
@@ -40,6 +41,10 @@ def main():
     ap.add_argument("--prompt-len", type=int, default=256)
     ap.add_argument("--gen", type=int, default=128)
     ap.add_argument("--seed", type=int, default=11)
+    ap.add_argument("--context", type=int, default=CAP_DEFAULT,
+                    help=f"positions the full-attention layers keep keys "
+                         f"for (max {CAP_MAX}); every one of them is an "
+                         f"expert slot not held resident")
     args = ap.parse_args()
 
     # before anything allocates: two of these pin 9.48 GiB each
@@ -65,6 +70,7 @@ def main():
     def step(tok, pos):
         buf = bytearray(D_IN_BYTES)
         struct.pack_into("<III", buf, 0, tok, pos, 0)     # mode 0
+        struct.pack_into("<I", buf, D_CTX, args.context)
         for off, p in paths.items():
             buf[off:off + len(p)] = p
         base.execute_into(art.main, bytes(buf), out)
