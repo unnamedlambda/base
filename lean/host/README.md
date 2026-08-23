@@ -8,7 +8,8 @@ lake exe upcasehost
 ```
 
 ```
-runtime memory: 1049152 bytes
+runtime memory: 1049160 bytes
+artifact transformed 38 bytes
 in memory: A LEAN HOST, RUNNING ITS OWN ARTIFACT
 artifact wrote output.txt: A LEAN HOST, RUNNING ITS OWN ARTIFACT
 ```
@@ -46,7 +47,7 @@ state something about.
 
 That has limits, and they are the interesting part:
 
-* **The menu is closed.** `AlgorithmLib.IR.Ffi` has 80 constructors. What is not
+* **The menu is closed.** `AlgorithmLib.IR.Ffi` has 85 constructors. What is not
   in it cannot be done, and adding one is Rust work plus a table entry, not a
   Lean import.
 * **Top-level `IO` does not vanish.** Something has to open the runtime. It
@@ -64,7 +65,14 @@ That has limits, and they are the interesting part:
 | `c/shim.c` | that, in Lean's `IO` convention |
 | `BaseHost.lean` | `Runtime`, `execute`, `readMemory`, `withRuntime` |
 | `Upcase.lean` | the demo artifact — a value, and buildable without any of the above |
-| `UpcaseHost.lean` | 15 lines that run it |
+| `UpcaseHost.lean` | the ~15 lines that run it |
+
+Two of the layers it rests on are in `lean/lib`, shared with every generator:
+
+| | |
+|---|---|
+| `AlgorithmLib/FFIRaw.lean` | one arity-checked wrapper per entry point, all 85 |
+| `AlgorithmLib/FFIRawScan.lean` | fails the build if that file and `Ffi.sig` disagree |
 
 The dependency arrow points Lean → base and never back. `base` links nothing of
 Lean's, so an embedder shipping a Rust or Python binary with a bincode artifact
@@ -73,9 +81,17 @@ in it is unaffected by any of this.
 ## What a host reads back
 
 The Rust and Python surfaces answer Arrow `RecordBatch`es. That is a second ABI
-and this one does not carry it, so results come back as the out buffer
-`execute` answers, or through `readMemory` at the offsets an output schema
-names. An artifact whose effects are files, sockets or the GPU needs neither.
+and this one does not carry it. Results come back three ways instead:
+
+* `readField`, given the same `Fld` the artifact was built from — the offset
+  and the width both come from the layout, so the host never writes either
+  down. `Upcase` stores the byte count it read to a `size` field and
+  `UpcaseHost` reads it back; neither end knows the number ahead of time.
+* the out buffer `execute` answers, for a program that writes through its
+  `out_ptr`/`out_len` offsets.
+* `readMemory`, for an address no field describes.
+
+An artifact whose effects are files, sockets or the GPU needs none of them.
 
 ## Known gaps
 
@@ -88,7 +104,16 @@ names. An artifact whose effects are files, sockets or the GPU needs neither.
 * **Two workspaces over one package.** `lake` here and `build-support`'s
   `lake` in `lean/algorithms` build the same package directory. `build-support`
   takes a lock; this does not. Do not run both at once.
-* **Coverage.** `HProgFFI` wraps 33 of the 80 `Ffi` constructors in
-  `HProg.Sur`. The other 47 are used, but inline in whichever generator needed
-  them. Lifting them into one uniform layer is what would make this an API
-  rather than a working host.
+* **Conventions, not coverage.** `FFIRaw` now names all 85 entry points with
+  their real arities, and `FFIRawScan` fails the build if it and `Ffi.sig` ever
+  disagree. What is still uneven is the layer *above* it: `HProgFFI` gives
+  wgpu, cuda, files, the window and the hash table a wrapper that reads the
+  context pointer out of its slot for you; lmdb and threads have no such
+  convention, because no two generators agree on one and `ContextSlots` has no
+  entry for either. Inventing one here would mean shipping a convention no
+  artifact uses, so they stay at `Raw` until a real one exists to lift.
+* **The existing call sites have not moved.** Generators that predate `FFIRaw`
+  still call through `call IR.Ffi.X.id [...]`, the positional form `Raw`
+  replaces. Migrating them is mechanical — `ffi f args` unfolds to exactly
+  `call f.id args` — but it touches proven generators, so it wants its own
+  change with the corpus and differential tests as the check.

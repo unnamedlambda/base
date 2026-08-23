@@ -31,16 +31,23 @@ structure Fields where
   /-- The context-pointer slots and the `IoOffsets` region, which every program
   reserves whether or not it uses them. -/
   reserved       : Fld (.bytes 64)
+  /-- How many bytes the program read, and therefore transformed and wrote.
+
+  The program knows this the moment `fileRead` returns, and a host cannot
+  know it at all -- the file is read inside the artifact. Storing it is what
+  lets `UpcaseHost` read the result back without being told its length. -/
+  size           : Fld .i64
   inputFilename  : Fld (.bytes 256)
   outputFilename : Fld (.bytes 256)
   fileData       : Fld (.bytes maxFileSize)
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
   let reserved       ← field (.bytes 64)
+  let size           ← field .i64
   let inputFilename  ← field (.bytes 256)
   let outputFilename ← field (.bytes 256)
   let fileData       ← field (.bytes maxFileSize)
-  pure { reserved, inputFilename, outputFilename, fileData }
+  pure { reserved, size, inputFilename, outputFilename, fileData }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
@@ -50,7 +57,7 @@ def fnWrite : FnRef := IR.Ffi.fileWrite.ref
 def env : FnEnv := env% [.fileIO]
 
 /-- Read `inputFilename`, upper-case its ASCII letters in place, write
-`outputFilename`.
+`outputFilename`, and record how many bytes that was.
 
 The transform is branch-free on purpose: `b - 'a'` compared *unsigned* against
 26 is both bounds at once, because a byte below `'a'` wraps to something far
@@ -61,6 +68,7 @@ def mainCode : HProg.Code :=
   let ptr := basePtr
 
   let size ← fldReadFile ptr fnRead f.inputFilename f.fileData
+  fldStore ptr f.size size
   let dataAddr ← fldAddr ptr f.fileData
 
   let lowerA ← iconst64 97
