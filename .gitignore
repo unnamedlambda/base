@@ -31,3 +31,8 @@ build-support/tests/two-packages/target/
 build-support/tests/two-packages/*/artifacts/
 build-support/tests/two-workspaces/w*/target/
 build-support/tests/two-workspaces/w*/gen/artifacts/
+
+# Read and written by lean/host's demo, in whatever directory it is run from.
+# Anchored, because `input.txt` unanchored is a plausible tracked input.
+/lean/host/input.txt
+/lean/host/output.txt
