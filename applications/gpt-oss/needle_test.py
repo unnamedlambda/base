@@ -13,6 +13,10 @@ depth every earlier build was fixed at. Getting it right means the keys written
 at position ~100 were still there, still at the right address, and still
 rotated for the position they were written at.
 
+Progress is flushed as it goes: this run takes tens of minutes and redirecting
+it to a file would otherwise buffer every line until it exited, which makes a
+slow run and a hung one look identical.
+
   python applications/gpt-oss/needle_test.py \\
       lean-artifacts/artifacts/GptOssDecode/gptoss_decode.json \\
       --bank data/gptoss-bank --context 16384
@@ -125,14 +129,14 @@ def main():
         return " ".join(f"({tag}.{i}) {SENTENCES[i % len(SENTENCES)]}"
                         for i in range(n_sentences))
 
-    print(f"  context {args.context}; filler turns {args.filler_turns}")
-    print("  first call reads 12.9 GiB off disk and pins 9.5 GiB")
+    print(f"  context {args.context}; filler turns {args.filler_turns}", flush=True)
+    print("  first call reads 12.9 GiB off disk and pins 9.5 GiB", flush=True)
     t0 = time.time()
     pos = 0
 
     _r, nt, ng = turn(SYSTEM_TEXT, [START, ROLE["system"], MESSAGE], [END], 1, 0)
     pos = 3 + nt + 1
-    print(f"  system turn: {pos} in context ({time.time()-t0:.0f} s)")
+    print(f"  system turn: {pos} in context ({time.time()-t0:.0f} s)", flush=True)
 
     user_pre = [START, ROLE["user"], MESSAGE]
     user_post = [END, START, ROLE["assistant"]]
@@ -142,14 +146,14 @@ def main():
              + filler(90, "a"))
     _r, nt, ng = turn(plant, user_pre, user_post, 24, pos)
     pos += len(user_pre) + nt + len(user_post) + ng
-    print(f"  planted the code: {pos} in context")
+    print(f"  planted the code: {pos} in context", flush=True)
 
     for k in range(args.filler_turns):
         msg = ("Here is more background; no reply needed beyond 'ok'.\n\n"
                + filler(220, f"b{k}"))
         _r, nt, ng = turn(msg, user_pre, user_post, 16, pos)
         pos += len(user_pre) + nt + len(user_post) + ng
-        print(f"  filler turn {k + 1}: {pos} in context")
+        print(f"  filler turn {k + 1}: {pos} in context", flush=True)
 
     ask = "What was the access code I gave you at the start? Answer with just the number."
     reply, nt, ng = turn(ask, user_pre, user_post, 200, pos)
