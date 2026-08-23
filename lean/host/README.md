@@ -62,6 +62,27 @@ That has limits, and they are the interesting part:
   The escape is to compile the decision into the artifact, which is what
   `forLoop` and `callVoid` are for — but it is real work each time.
 
+## Using it from another Lake package
+
+```lean
+require base from git "https://github.com/<you>/base.git" @ "main" / "lean" / "host"
+```
+
+or, for a checkout beside yours, `require base from "../base/lean/host"`. Then
+`import BaseHost`, build a `Setup` and run it — this was checked from a package
+outside the repository, which builds, links and executes an artifact with no
+`cargo` step of its own.
+
+Your `lean-toolchain` must match this one exactly. Lake has no version ranges,
+so a mismatch is a hard error rather than a negotiation.
+
+The external library is built *shared* on purpose. Lake gives an executable
+only its own package's `moreLinkArgs` (`Lake/Config/LeanExe.lean`), so a
+dependent's binary never sees the `-lbase` written here — with a static shim it
+fails at link with `undefined symbol: base_new`, and `precompileModules` does
+not change that. A shared shim carries the runtime as its own `DT_NEEDED` and
+resolves transitively, which is what makes `require` work at all.
+
 ## The layers
 
 | | |

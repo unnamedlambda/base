@@ -172,12 +172,36 @@ gptoss_kernels() {
   return $rc
 }
 
+# --- the Lean host -----------------------------------------------------------
+# The third way to run an artifact, beside `build.rs` and `py-base`: a Lean
+# program that builds one and runs it in the same process. It is a separate Lake
+# package, so the build above does not reach it.
+#
+# `lake` builds `libbase.so` itself here -- the package's `libbase` target runs
+# cargo -- so this needs no ordering against the Rust steps. Running the demo is
+# the point: it links against the runtime through the C ABI, and a link that
+# succeeds proves nothing about whether the two agree on the ABI.
+
+lean_host() {
+  cd "$ROOT/lean/host"
+  "${GUARD[@]}" lake build upcasehost || return 1
+  # From a scratch directory: the demo reads and writes in its working
+  # directory, and `lean/host` is a tree we do not want it writing into.
+  local work
+  work=$(mktemp -d)
+  ( cd "$work" && "$ROOT/lean/host/.lake/build/bin/upcasehost" )
+  local rc=$?
+  rm -rf "$work"
+  return $rc
+}
+
 # --- run ---------------------------------------------------------------------
 
 step "lean build"          lean_build
 step "no sorry"            no_sorry
 step "artifacts reproduce" artifacts_reproduce
 step "rust check"          rust_check
+step "lean host"           lean_host
 if [ "$FAST" = 1 ]; then
   step "rust test (fast)"  rust_test_fast
 else

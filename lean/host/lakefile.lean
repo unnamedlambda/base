@@ -45,7 +45,7 @@ def baseLibDir : String := run_io do
     return dir
   return (repoRoot / "target" / baseProfile).toString
 
-package host where
+package base where
   srcDir := "."
   moreLinkArgs := #[
     "-L" ++ baseLibDir,
@@ -100,7 +100,10 @@ by `moreLinkArgs`, not archived into it. -/
 extern_lib baseshim pkg := do
   let base ← libbase.fetch
   base.bindM fun _ => do
-    buildStaticLib (pkg.staticLibDir / nameToStaticLib "baseshim") #[← shimObj.fetch]
+    let so := pkg.sharedLibDir / nameToSharedLib "baseshim"
+    let dyn ← buildSharedLib "baseshim" so #[← shimObj.fetch] #[]
+      #["-L" ++ baseLibDir, "-lbase", "-Wl,-rpath," ++ baseLibDir] #[] "cc"
+    dyn.mapM fun d => return d.path
 
 @[default_target]
 lean_lib BaseHost
