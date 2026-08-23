@@ -1,4 +1,5 @@
 import AlgorithmLib.FFI
+import AlgorithmLib.FFIRaw
 import AlgorithmLib.HProg
 
 /-!
@@ -80,6 +81,60 @@ def gpuDispatch (ptr pipelineId wgX wgY wgZ : R)
 
 def gpuCleanup (ptr : R) (slotOffset : Nat := ContextSlots.wgpu) : M Unit :=
   initAt IR.Ffi.gpuCleanup ptr slotOffset
+
+-- ---------------------------------------------------------------------------
+-- Hash table
+--
+-- The same shape as wgpu: `init` and `cleanup` take the *slot*, everything
+-- else the context pointer read out of it. The offset is a parameter because
+-- generators do not agree on one -- `WordCountAlgorithm` keeps it at 0 and
+-- `HProgCorpus` at 0x80 -- and `ContextSlots.ht` is only the default.
+-- ---------------------------------------------------------------------------
+
+def htCtxSlotPtr (ptr : R) (slotOffset : Nat := ContextSlots.ht) : M R :=
+  ctxSlotPtr ptr slotOffset
+
+def htCtxPtr (ptr : R) (slotOffset : Nat := ContextSlots.ht) : M R :=
+  ctxPtr ptr slotOffset
+
+def htInit (ptr : R) (slotOffset : Nat := ContextSlots.ht) : M Unit :=
+  initAt IR.Ffi.htInit ptr slotOffset
+
+def htCleanup (ptr : R) (slotOffset : Nat := ContextSlots.ht) : M Unit :=
+  initAt IR.Ffi.htCleanup ptr slotOffset
+
+/-- Allocate the table itself. The context must already hold one. -/
+def htCreate (ptr : R) (slotOffset : Nat := ContextSlots.ht) : M R := do
+  Raw.htCreate (← htCtxPtr ptr slotOffset)
+
+/-- Look `key` up and write the value to `resultOff`; the result says whether
+    it was found. Both offsets are relative to the base pointer. -/
+def htLookup (ptr keyOff keyLen resultOff : R)
+    (slotOffset : Nat := ContextSlots.ht) : M R := do
+  let c ← htCtxPtr ptr slotOffset
+  Raw.htLookup c (← iadd ptr keyOff) keyLen (← iadd ptr resultOff)
+
+def htInsert (ptr keyOff keyLen valOff valLen : R)
+    (slotOffset : Nat := ContextSlots.ht) : M Unit := do
+  let c ← htCtxPtr ptr slotOffset
+  Raw.htInsert c (← iadd ptr keyOff) keyLen (← iadd ptr valOff) valLen
+
+/-- Add `addend` to `key`'s value, inserting it if absent; the result is the
+    value after the addition. -/
+def htIncrement (ptr keyOff keyLen addend : R)
+    (slotOffset : Nat := ContextSlots.ht) : M R := do
+  let c ← htCtxPtr ptr slotOffset
+  Raw.htIncrement c (← iadd ptr keyOff) keyLen addend
+
+def htCount (ptr : R) (slotOffset : Nat := ContextSlots.ht) : M R := do
+  Raw.htCount (← htCtxPtr ptr slotOffset)
+
+/-- The `index`th entry, written to `keyOutOff` and `valOutOff`. Iterating to
+    `htCount` is how a program reads the table back out. -/
+def htGetEntry (ptr index keyOutOff valOutOff : R)
+    (slotOffset : Nat := ContextSlots.ht) : M R := do
+  let c ← htCtxPtr ptr slotOffset
+  Raw.htGetEntry c index (← iadd ptr keyOutOff) (← iadd ptr valOutOff)
 
 -- ---------------------------------------------------------------------------
 -- Files
