@@ -455,10 +455,19 @@ def warpSum (acc : Reg .f32) : PTX Unit := do
     combine, once, because it belongs to the head and not to a tile.
 -/
 
-/-- Keys a warp takes in one pass.  Small enough that a long context still has
-    tiles to spread across the card, large enough that the combine pass stays
-    negligible: at 98304 keys this is 192 tiles a head. -/
-def ATT_TILE : Nat := 128
+/-- The fewest keys a tile is ever given.
+
+    Below this the tiles stop buying parallelism -- a warp still walks them one
+    key at a time -- and start costing merge. -/
+def ATT_TILE_MIN : Nat := 32
+
+/-- The most tiles a layer is ever split into, and so the height of the
+    partials buffer whatever the context.
+
+    Measured: at 98304 keys, 768 tiles beat 192, which beat 24. More tiles keep
+    winning until the merge, which reads every tile, becomes the cost -- so the
+    tile size is chosen at run time to land here and the merge is bounded. -/
+def ATT_TILES_MAX : Nat := 768
 
 /-- Head width of the model these kernels are generated for. -/
 def HD_K : Nat := 64
@@ -509,11 +518,12 @@ def fusedAttnTile : KernelSpec where
     -- keys this step attends to, and one key head's stride through the cache,
     -- both in the units the cache is actually held in
     let seqLen ← freshR; ldGlobalUO seqLen mp (4 * GptOssAttention.M_SEQ)
+    let tileSz ← freshR; ldGlobalUO tileSz mp (4 * GptOssAttention.M_TILESZ)
     let kvStride ← freshR; ldGlobalUO kvStride mp (4 * GptOssAttention.M_KVSTRIDE)
     let cta ← freshR; movR cta ctaX
     -- this warp's slice: tile `cta`, key head `wid`
-    let s0 ← freshR; mulLoRI s0 cta ATT_TILE
-    let sCap ← freshR; addRI sCap s0 ATT_TILE
+    let s0 ← freshR; mulLoRR s0 cta tileSz
+    let sCap ← freshR; addR sCap s0 tileSz
     let fits ← freshP; setpLtR fits sCap seqLen
     let sEnd ← freshR; selpR sEnd sCap seqLen fits
     -- the eight queries this key head serves, two elements to a lane

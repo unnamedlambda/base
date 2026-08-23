@@ -108,6 +108,13 @@ def M_KVSTRIDE : Nat := 7
     four-byte copies a token cost more than the fusion saved at short
     context. -/
 def M_NTILES : Nat := 8
+/-- Keys in one of those tiles.
+
+    A run-time value because the right answer moves with the length: a tile
+    that keeps the card busy at a hundred thousand keys leaves it two thirds
+    idle at one thousand, and a tile small enough for one thousand makes the
+    merge, which is linear in tiles, the cost at a hundred thousand. -/
+def M_TILESZ : Nat := 9
 
 /-! ## RMSNorm -/
 

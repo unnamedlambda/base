@@ -32,10 +32,12 @@ import numpy as np
 
 HD, GQA, NKV = 64, 8, 8
 NQ = GQA * NKV
-ATT_TILE = 128
+# `GptOssKernels`: the tile size is chosen per layer at run time, so the
+# harness picks it the same way the engine does.
+ATT_TILE_MIN, ATT_TILES_MAX = 32, 768
 PARTIAL = 2 + HD
 # `GptOssAttention`: the meta words this kernel reads.
-M_SEQ, M_KVSTRIDE, M_NTILES = 2, 7, 8
+M_SEQ, M_KVSTRIDE, M_NTILES, M_TILESZ = 2, 7, 8, 9
 
 FAILURES = []
 
@@ -131,15 +133,18 @@ def run_case(cu, tile, comb, L, cap, scale, label, rng):
     d_k = cu.upload(pack_bf16(k.reshape(-1)))
     d_v = cu.upload(pack_bf16(v.reshape(-1)))
     d_s = cu.upload(sinks)
-    n_tiles = (L + ATT_TILE - 1) // ATT_TILE
+    tile_sz = max(ATT_TILE_MIN, (L + ATT_TILES_MAX - 1) // ATT_TILES_MAX)
+    n_tiles = (L + tile_sz - 1) // tile_sz
+    assert n_tiles <= ATT_TILES_MAX, (n_tiles, tile_sz)
     meta = np.zeros(64, np.int32)
     meta[M_SEQ] = L
     meta[M_KVSTRIDE] = (cap + 1) * HD // 2    # words a key head strides by
     # The combine reads the tile count from the meta too, because the layer
     # uploads the meta anyway and a buffer of its own cost an upload a layer.
     meta[M_NTILES] = n_tiles
+    meta[M_TILESZ] = tile_sz
     d_m = cu.upload(meta)
-    part = np.zeros(n_tiles * NKV * GQA * PARTIAL, np.float32)
+    part = np.zeros(ATT_TILES_MAX * NKV * GQA * PARTIAL, np.float32)
     d_p = cu.upload(part)
     d_o = cu.upload(np.zeros(NQ * HD, np.float32))
 
@@ -167,14 +172,17 @@ def main():
 
     run_case(cu, tile, comb, 1, 2048, 1.0, "one key", rng)
     run_case(cu, tile, comb, 37, 2048, 1.0, "under one tile", rng)
-    run_case(cu, tile, comb, ATT_TILE, 2048, 1.0, "exactly one tile", rng)
-    run_case(cu, tile, comb, ATT_TILE + 1, 2048, 1.0, "one key past a tile", rng)
-    run_case(cu, tile, comb, 3 * ATT_TILE, 4096, 1.0, "three whole tiles", rng)
+    run_case(cu, tile, comb, ATT_TILE_MIN, 2048, 1.0, "exactly one tile", rng)
+    run_case(cu, tile, comb, ATT_TILE_MIN + 1, 2048, 1.0, "one key past a tile", rng)
+    run_case(cu, tile, comb, 3 * ATT_TILE_MIN, 4096, 1.0, "three whole tiles", rng)
     run_case(cu, tile, comb, 2000, 4096, 1.0, "ragged, four tiles", rng)
     # A running maximum that is dropped survives small scores and dies here:
     # exp of the raw score overflows f32 outright.
     run_case(cu, tile, comb, 1500, 4096, 40.0, "scores that overflow exp", rng)
-    run_case(cu, tile, comb, 8192, 8192, 1.0, "sixteen tiles", rng)
+    run_case(cu, tile, comb, 8192, 8192, 1.0, "at the tile floor", rng)
+    # past 24576 the floor stops binding and the tile size grows instead, which
+    # is the branch the short cases never reach
+    run_case(cu, tile, comb, 32768, 32768, 1.0, "past the floor, tile grows", rng)
 
     print()
     if FAILURES:

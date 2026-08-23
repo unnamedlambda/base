@@ -274,8 +274,7 @@ def dBufBytes : List Nat :=
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
        , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 16
        , dQkvOut * 2, 64 * CAP_MAX * 2, 4, 4
-       , GptOssKernels.attPartialFloats * 4 * 64
-           * ((CAP_MAX + GptOssKernels.ATT_TILE - 1) / GptOssKernels.ATT_TILE)
+       , GptOssKernels.attPartialFloats * 4 * 64 * GptOssKernels.ATT_TILES_MAX
        , 4 ]
     ++ List.replicate TOPK (HH * 4)
     ++ List.replicate TOPK (II * 4)
@@ -588,11 +587,11 @@ def dInitM : M Unit := do
   -- where the precision is worth keeping
   let scoreBytes ← imul ctx (← iconst64 (64 * 4))
   let probBf16Bytes ← imul ctx (← iconst64 (64 * 2))
-  -- one `(m, l, acc)` a query head a tile, and the tiles follow the context
-  let tilesMax ← udiv (← iadd ctx (← iconst64 (GptOssKernels.ATT_TILE - 1)))
-                      (← iconst64 GptOssKernels.ATT_TILE)
-  let partBytes ← imul tilesMax
-    (← iconst64 (GptOssKernels.attPartialFloats * 4 * NQ))
+  -- one `(m, l, acc)` a query head a tile.  A fixed size, because the tile
+  -- size is chosen at run time so that the tile *count* never exceeds
+  -- `ATT_TILES_MAX` however long the context is.
+  let partBytes ← iconst64
+    (GptOssKernels.attPartialFloats * 4 * NQ * GptOssKernels.ATT_TILES_MAX)
   for (i, nb) in (List.range SLOTSTORE).zip dBufBytes do
     let sz ←
       if KVSTORE ≤ i && i < SLOTSTORE then
@@ -842,10 +841,21 @@ def dLayerM (layer : R) : M Unit := do
   storeI32 tl (← absAddr ptr (DMETA_OFF + 4 * M_TAIL))
   storeI32 (← isub sLen tl) (← absAddr ptr (DMETA_OFF + 4 * M_REM))
   storeI32 slotNow (← absAddr ptr (DMETA_OFF + 4 * M_SLOT))
-  -- tiles the fused attention splits this layer's keys into, published with
-  -- the rest rather than uploaded on its own
-  let nTiles ← udiv (← iadd sLen (← iconst32 (GptOssKernels.ATT_TILE - 1)))
-                    (← iconst32 GptOssKernels.ATT_TILE)
+  -- **How this layer's keys are split, chosen for the length it actually has.**
+  --
+  -- Aim for `ATT_TILES_MAX` tiles, which is what measured best at depth, but
+  -- never cut below `ATT_TILE_MIN` keys: at a thousand keys the first rule
+  -- alone would make tiles of one, and a tile is walked serially by a warp
+  -- whatever its size. So short layers get the floor and get more tiles than
+  -- the target -- which is what they were short of -- and long ones get the
+  -- target, which bounds the merge and the partials buffer at once.
+  let tMax ← iconst32 GptOssKernels.ATT_TILES_MAX
+  let even ← udiv (← iadd sLen (← isub tMax (← iconst32 1))) tMax
+  let tooSmall ← ifte .ult even (← iconst32 GptOssKernels.ATT_TILE_MIN)
+    (pure [← iconst32 GptOssKernels.ATT_TILE_MIN]) (pure [even])
+  let tileSz := tooSmall.headD even
+  let nTiles ← udiv (← iadd sLen (← isub tileSz (← iconst32 1))) tileSz
+  storeI32 tileSz (← absAddr ptr (DMETA_OFF + 4 * M_TILESZ))
   storeI32 nTiles (← absAddr ptr (DMETA_OFF + 4 * M_NTILES))
   -- The depth this layer's cache was allocated at, in the *words* the store
   -- kernel moves: `HDW` of them a head, because the cache is bf16 and two ride
