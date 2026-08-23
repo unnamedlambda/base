@@ -35,7 +35,7 @@ NQ = GQA * NKV
 ATT_TILE = 128
 PARTIAL = 2 + HD
 # `GptOssAttention`: the meta words this kernel reads.
-M_SEQ, M_KVSTRIDE = 2, 7
+M_SEQ, M_KVSTRIDE, M_NTILES = 2, 7, 8
 
 FAILURES = []
 
@@ -118,27 +118,33 @@ def reference(q, k, v, sinks, L):
 
 def run_case(cu, tile, comb, L, cap, scale, label, rng):
     q = (rng.standard_normal((NQ, HD)) * scale).astype(np.float32)
-    k = (rng.standard_normal((NKV, cap, HD))).astype(np.float32)
-    v = (rng.standard_normal((NKV, cap, HD))).astype(np.float32)
+    # One row of slack past `cap`, which is part of the kernel's contract: it
+    # loads the next key while working on the current one, so the last
+    # iteration reads one row past the keys that exist. `dInitM` allocates the
+    # caches the same way. Without it this harness gets an illegal access --
+    # which is how the contract was discovered, and why it is written down.
+    k = (rng.standard_normal((NKV, cap + 1, HD))).astype(np.float32)
+    v = (rng.standard_normal((NKV, cap + 1, HD))).astype(np.float32)
     sinks = rng.standard_normal(NQ).astype(np.float32)
 
     d_q = cu.upload(pack_bf16(q.reshape(-1)))
     d_k = cu.upload(pack_bf16(k.reshape(-1)))
     d_v = cu.upload(pack_bf16(v.reshape(-1)))
     d_s = cu.upload(sinks)
+    n_tiles = (L + ATT_TILE - 1) // ATT_TILE
     meta = np.zeros(64, np.int32)
     meta[M_SEQ] = L
-    meta[M_KVSTRIDE] = cap * HD // 2          # words a key head strides by
+    meta[M_KVSTRIDE] = (cap + 1) * HD // 2    # words a key head strides by
+    # The combine reads the tile count from the meta too, because the layer
+    # uploads the meta anyway and a buffer of its own cost an upload a layer.
+    meta[M_NTILES] = n_tiles
     d_m = cu.upload(meta)
-
-    n_tiles = (L + ATT_TILE - 1) // ATT_TILE
     part = np.zeros(n_tiles * NKV * GQA * PARTIAL, np.float32)
     d_p = cu.upload(part)
     d_o = cu.upload(np.zeros(NQ * HD, np.float32))
-    d_nt = cu.upload(np.array([n_tiles], np.int32))
 
     cu.launch(tile, n_tiles, 32 * NKV, [d_k, d_v, d_q, d_p, d_m])
-    cu.launch(comb, NQ, 32, [d_p, d_s, d_o, d_nt])
+    cu.launch(comb, NQ, 32, [d_p, d_s, d_o, d_m])
     got = cu.download(d_o, np.zeros(NQ * HD, np.float32)).reshape(NQ, HD)
 
     want = reference(q, k, v, sinks, L)

@@ -101,6 +101,13 @@ def M_SLOT : Nat := 6
     beside it is already a memory read, so this costs the cache store one more
     load and buys a cache whose size is not a property of the artifact. -/
 def M_KVSTRIDE : Nat := 7
+/-- Tiles the fused attention splits this layer's keys into.
+
+    In the meta because the meta is already uploaded once a layer: given its own
+    buffer it needed an upload of its own, and twenty-four synchronous
+    four-byte copies a token cost more than the fusion saved at short
+    context. -/
+def M_NTILES : Nat := 8
 
 /-! ## RMSNorm -/
 

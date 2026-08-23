@@ -138,7 +138,9 @@ def dPtx : List String :=
   , GptOssKernels.moduleFor GptOssKernels.routerTop4
   , GptOssKernels.moduleFor GptOssKernels.argmaxLogits
   , GptOssKernels.moduleFor GptOssKernels.widenBf16
-  , GptOssKernels.moduleFor GptOssKernels.sampleLogits ]
+  , GptOssKernels.moduleFor GptOssKernels.sampleLogits
+  , GptOssKernels.moduleFor GptOssKernels.fusedAttnTile
+  , GptOssKernels.moduleFor GptOssKernels.fusedAttnCombine ]
 
 def S_RMS := 0
 def S_ADD := 1
@@ -161,6 +163,13 @@ def S_WIDEN := 13
     The distance is `S_SAMPLE - S_ARGMAX` and is computed, not assumed to be
     one: `S_WIDEN` sits between them. -/
 def S_SAMPLE := 14
+/-- Fused attention: one tile of the sequence a warp, then the merge.
+
+    Appended rather than placed beside `S_SOFTMAX`, whose four-kernel path they
+    replace, because a slot index is a position in `dPtx` and inserting one
+    renumbers every launch. -/
+def S_ATTTILE := 15
+def S_ATTCOMB := 16
 
 /-! ## Buffers
 
@@ -231,7 +240,12 @@ def B_NMP := B_X + 26
 /-- How many words the first narrow covers, which is a constant: q, k and v
     together are `dQkvOut` floats however long the conversation is. -/
 def B_NMQKV := B_X + 27
-def B_Y := B_X + 28                     -- four
+/-- Where a tile leaves its `(m, l, acc)` for the merge, and how many tiles
+    there are -- which follows the position, so the kernel is told rather than
+    generated for it. -/
+def B_PART := B_X + 28
+def B_NT := B_X + 29
+def B_Y := B_X + 30                     -- four
 def B_HID := B_Y + TOPK                 -- four
 def DSTORE := B_HID + TOPK              -- 9 x NL dense weights
 def KVSTORE := DSTORE + 9 * NL          -- 2 x NL caches
@@ -259,7 +273,10 @@ def dBufBytes : List Nat :=
        , 2 * ROPE_N * HALF * 4, 64 * 4, 4, 4
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
        , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 16
-       , dQkvOut * 2, 64 * CAP_MAX * 2, 4, 4 ]
+       , dQkvOut * 2, 64 * CAP_MAX * 2, 4, 4
+       , GptOssKernels.attPartialFloats * 4 * 64
+           * ((CAP_MAX + GptOssKernels.ATT_TILE - 1) / GptOssKernels.ATT_TILE)
+       , 4 ]
     ++ List.replicate TOPK (HH * 4)
     ++ List.replicate TOPK (II * 4)
     ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dKindBytes.getD k 0))
@@ -560,19 +577,29 @@ def dInitM : M Unit := do
   -- their size is the context, and a full layer's is what was just chosen.
   -- The caches hold bf16: two bytes an element, which is the whole point of
   -- narrowing before the store.
-  let swaBytes ← iconst64 (8 * CAP_SWA * HD * 2)
-  let fullBytes ← imul ctxStride (← iconst64 (8 * 2))
+  -- one key row of slack on each cache: the fused attention loads the next key
+  -- while it works on the current one, so the last iteration reads one row past
+  -- the keys that exist. Cheaper than a guard inside the loop.
+  let slack ← iconst64 (8 * HD * 2)
+  let swaBytes ← iadd (← iconst64 (8 * CAP_SWA * HD * 2)) slack
+  let fullBytes ← iadd (← imul ctxStride (← iconst64 (8 * 2))) slack
   -- one row of scores per query head per key, and the same again for the
   -- probabilities the softmax writes -- those stay f32, because the softmax is
   -- where the precision is worth keeping
   let scoreBytes ← imul ctx (← iconst64 (64 * 4))
   let probBf16Bytes ← imul ctx (← iconst64 (64 * 2))
+  -- one `(m, l, acc)` a query head a tile, and the tiles follow the context
+  let tilesMax ← udiv (← iadd ctx (← iconst64 (GptOssKernels.ATT_TILE - 1)))
+                      (← iconst64 GptOssKernels.ATT_TILE)
+  let partBytes ← imul tilesMax
+    (← iconst64 (GptOssKernels.attPartialFloats * 4 * NQ))
   for (i, nb) in (List.range SLOTSTORE).zip dBufBytes do
     let sz ←
       if KVSTORE ≤ i && i < SLOTSTORE then
         pure (if (i - KVSTORE) / 2 % 2 == 0 then swaBytes else fullBytes)
       else if i == B_SC || i == B_PR then pure scoreBytes
       else if i == B_PRB then pure probBf16Bytes
+      else if i == B_PART then pure partBytes
       else iconst64 nb
     let id ← cudaCreateBuffer ptr sz
     storeI32 id (← absAddr ptr (dBindOff i))
@@ -815,6 +842,11 @@ def dLayerM (layer : R) : M Unit := do
   storeI32 tl (← absAddr ptr (DMETA_OFF + 4 * M_TAIL))
   storeI32 (← isub sLen tl) (← absAddr ptr (DMETA_OFF + 4 * M_REM))
   storeI32 slotNow (← absAddr ptr (DMETA_OFF + 4 * M_SLOT))
+  -- tiles the fused attention splits this layer's keys into, published with
+  -- the rest rather than uploaded on its own
+  let nTiles ← udiv (← iadd sLen (← iconst32 (GptOssKernels.ATT_TILE - 1)))
+                    (← iconst32 GptOssKernels.ATT_TILE)
+  storeI32 nTiles (← absAddr ptr (DMETA_OFF + 4 * M_NTILES))
   -- The depth this layer's cache was allocated at, in the *words* the store
   -- kernel moves: `HDW` of them a head, because the cache is bf16 and two ride
   -- in one word.  The contractions below stride by `HD` elements over the same
@@ -865,26 +897,18 @@ def dLayerM (layer : R) : M Unit := do
   let strideQ ← iconst64 (GQA * HD)
   let gqa64 ← iconst64 GQA
   let strideS ← imul gqa64 sLen64
-  let bQKVB ← load32 (← absAddr ptr (dBindOff B_QKVB))
-  let bPRB ← load32 (← absAddr ptr (dBindOff B_PRB))
-  -- `strideKV` counts elements and an element is two bytes on both operands
-  -- here, so it is the same number the `Float32` cache used -- what halved is
-  -- the bytes behind it, not the count.
-  let _ ← cublasGemmStridedBatchedExBf16 ptr one32 zero32 sLen gqa32 hd32 scaleF
-    bKC strideKV bQKVB strideQ zero32 bSC strideS nkv32
-  dEnqueue ptr S_SOFTMAX NQ 32 [B_SC, B_META, B_PR, W_SINKS]
-  -- The probabilities are formed at `Float32` -- the softmax is where the
-  -- precision earns its keep -- and narrowed only to meet the value cache.
-  let nWordsP ← udiv (← imul sLen (← iconst32 NQ)) (← iconst32 2)
-  storeI32 nWordsP (← absAddr ptr DNARROWN_OFF)
-  let bNMP ← load32 (← absAddr ptr (dBindOff B_NMP))
-  let _ ← call IR.Ffi.cudaUpload.id
-    [ctxM, bNMP, (← absAddr ptr DNARROWN_OFF), (← iconst64 4)]
-  let narrowP ← udiv (← iadd nWordsP (← iconst32 (NBLK - 1))) (← iconst32 NBLK)
-  dEnqueueG ptr (← iconst64 (dSlotOff S_NARROW)) narrowP NBLK [B_PR, B_PRB, B_NMP]
-  let strideA ← iconst64 (GQA * HD)
-  let _ ← cublasGemmStridedBatchedExBf16 ptr zero32 zero32 hd32 gqa32 sLen oneF
-    bVC strideKV bPRB strideS zero32 bATT strideA nkv32
+  -- **Attention, in two launches rather than four.**
+  --
+  -- The scores are formed, softmaxed and mixed inside one kernel and never
+  -- reach memory: a warp takes one key head and one tile of the sequence, and
+  -- carries a running maximum and sum through it. What the four-kernel path
+  -- spent most of its time on at depth was a scores buffer of `NQ * seqLen`
+  -- floats that existed only because the stages were separate kernels.
+  dEnqueueG ptr (← iconst64 (dSlotOff S_ATTTILE)) nTiles NBLK
+    [C_KC, C_VC, B_QKVB, B_PART, B_META]
+  -- the merge is one warp a query head, and the sink joins here: it belongs to
+  -- the head, and a tile that applied it would have it counted once per tile
+  dEnqueue ptr S_ATTCOMB NQ 32 [B_PART, W_SINKS, B_ATT, B_META]
   dEnqueue ptr S_NARROW (((64 * 64) / 2 + NBLK - 1) / NBLK) NBLK [B_ATT, B_ATTB, B_NMQ]
   let mH ← iconst32 HH
   let kQO ← iconst32 (64 * 64)

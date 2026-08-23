@@ -541,14 +541,29 @@ def fusedAttnTile : KernelSpec where
     let kAddr ← freshRd; addRd kAddr kp kOff
     let vAddr ← freshRd; addRd vAddr vp kOff
     let sIx ← freshR; movR sIx s0
+    -- **The next key is loaded before this one is used.**
+    --
+    -- A tile is a serial walk, and at short context there are few enough warps
+    -- that nothing else covers a load's latency: measured, the loop stalled for
+    -- most of its life and the fused path came out slower than the four kernels
+    -- it replaces below about eight thousand keys. Carrying one iteration's
+    -- loads ahead of its arithmetic puts two rows in flight instead of one.
+    --
+    -- The read one past the last key is deliberate and harmless: the caches
+    -- carry a row of slack for exactly this, so the prefetch needs no guard on
+    -- the path where every iteration would pay for it.
+    let kw ← freshR; ldGlobalU kw kAddr
+    let vw ← freshR; ldGlobalU vw vAddr
     let loop := "ATT_S"; let done := "ATT_SDONE"
     label loop
     do
       let past ← freshP; setpGeR past sIx sEnd; braIf past done
-      let kw ← freshR; ldGlobalU kw kAddr
       let k0 ← freshF; let k1 ← freshF; unpackBf16 k0 k1 kw
-      let vw ← freshR; ldGlobalU vw vAddr
       let v0 ← freshF; let v1 ← freshF; unpackBf16 v0 v1 vw
+      addRdI kAddr kAddr (HD_K / 2 * 4)
+      addRdI vAddr vAddr (HD_K / 2 * 4)
+      ldGlobalU kw kAddr
+      ldGlobalU vw vAddr
       -- one partial dot a query, then one butterfly for all of them
       let dots ← (qLo.zipIdx).mapM fun ((q0, q1), _) => do
         let d ← freshF; mulF d q0 k0; fmaRn d q1 k1 d; pure d
@@ -570,8 +585,6 @@ def fusedAttnTile : KernelSpec where
         mulF a1 a1 corr; fmaRn a1 pr v1 a1
         movFF m mNew
       addRI sIx sIx 1
-      addRdI kAddr kAddr (HD_K / 2 * 4)
-      addRdI vAddr vAddr (HD_K / 2 * 4)
       bra loop
     label done
     -- this warp's partials: one block of `attPartialFloats` a query
@@ -601,18 +614,19 @@ def fusedAttnTile : KernelSpec where
     nowhere else -- it absorbs probability mass and contributes no value, and
     it belongs to the head, so a tile that applied it would apply it again.
 
-    `p_nt` carries the tile count, which follows the position and so is not
-    something the generator can know. -/
+    The tile count comes from the meta buffer, which the layer uploads anyway:
+    it follows the position and so is not something the generator can know, and
+    a buffer of its own would cost an upload a layer. -/
 def fusedAttnCombine : KernelSpec where
   name := "gptoss_attn_combine"
-  params := ["p_part", "p_sinks", "p_out", "p_nt"]
+  params := ["p_part", "p_sinks", "p_out", "p_meta"]
   body := do
     let pp ← freshRd; ldParam64 pp "p_part"
     let sp ← freshRd; ldParam64 sp "p_sinks"
     let op ← freshRd; ldParam64 op "p_out"
-    let np ← freshRd; ldParam64 np "p_nt"
+    let np ← freshRd; ldParam64 np "p_meta"
     let (_tid, _wid, lane) ← getWarpIds
-    let nTiles ← freshR; ldGlobalU nTiles np
+    let nTiles ← freshR; ldGlobalUO nTiles np (4 * GptOssAttention.M_NTILES)
     let head ← freshR; movR head ctaX             -- query head, `b * GQA + g`
     -- where this head's partials sit within a tile's block: the tile stride is
     -- every head's partials, so the head index carries straight over

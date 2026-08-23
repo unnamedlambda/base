@@ -64,6 +64,29 @@ def decodeOpenObligations : List String :=
      allocation loop in dInitM and the meta write in dLayerM — and is not \
      stated. Getting it wrong writes one head's keys over another's rather \
      than out of bounds, so it would read as a quality problem."
+  , "FusedAttentionValue — scores, softmax and the value mix are one kernel \
+     (GptOssKernels.fusedAttnTile) plus a merge, and the scores never reach \
+     memory. What it replaced was four launches of which the softmax was a \
+     *proven* EW kernel with a soundness theorem from raw launch; that theorem \
+     still holds and nothing launches the kernel it is about. So this is a \
+     proof surrendered, not merely one not yet written, and it is the price of \
+     a token at 98304 keys going from 80.4 ms to 40.4. What is claimed instead \
+     is checked: the online softmax is an exact refactoring of the same sum, \
+     compared against a reference that materialises the scores at eight \
+     lengths on and off tile boundaries, including one whose scores overflow \
+     exp outright (applications/gpt-oss/attn_fused_test.py, worst case \
+     4.0e-06), and end to end against the bf16 reference at 2.5e-03. Closes \
+     by: the machine growing an online-softmax form, or a proof of the merge \
+     identity (two (m,l,acc) triples combine by rescaling) applied to the \
+     emitted body."
+  , "AttnCacheSlack — the tile kernel loads the next key while working on the \
+     current one, so its last iteration reads one key row past the keys that \
+     exist. dInitM allocates a row of slack on every cache for exactly this. \
+     That the slack is always there, for both cache depths and at every \
+     context, is arithmetic in the allocation loop rather than a theorem — and \
+     a guard inside the loop was rejected on cost, so nothing checks it at run \
+     time. The standalone harness models the same contract, which is how it \
+     was found."
   , "RingIsTheWindow — instantiated for the decode's geometry in \
      GptOssScan.SwaRingIsTheWindow, but the decode's own use of it (position p \
      lands in slot p % 128, and every resident slot is in the window) is not."
