@@ -132,10 +132,13 @@ def forward(bank, tokens, trace=None, acts="f32"):
 
     No KV cache: this is the reference, and recomputing is what makes it one.
 
-    `acts` selects the activation precision at the three matmuls the engine
-    feeds from bf16 buffers (qkv, o-proj, lm_head).  "f32" is the idealisation;
-    "bf16" is what the released model and our engine both actually compute in.
-    Comparing against both is how a precision gap is told from a defect.
+    `acts` selects the activation precision at the matmuls the engine feeds from
+    bf16 buffers -- qkv, o-proj, lm_head, and both halves of attention, whose
+    operands are the key cache and a query narrowed to meet it.  "f32" is the
+    idealisation; "bf16" is what the released model and our engine both actually
+    compute in.  Comparing against both is how a precision gap is told from a
+    defect, and the engine holding its cache at the precision the checkpoint was
+    released in is a design decision rather than a loss.
     """
     narrow = to_bf16 if acts == "bf16" else (lambda t: t)
     m = bank.meta
@@ -162,6 +165,10 @@ def forward(bank, tokens, trace=None, acts="f32"):
             return np.concatenate([a * c - b * s, b * c + a * s], -1).astype(np.float32)
 
         q, k = rope(q), rope(k)
+        # The cache is bf16 and cuBLAS refuses a mixed operand pair, so the
+        # query is narrowed to meet it. Rounding here rather than leaving it out
+        # is what keeps this a reference for the engine that exists.
+        q, k, v = narrow(q), narrow(k), narrow(v)
         # GQA: each key head serves NQ/NKV query heads
         kx = np.repeat(k, NQ // NKV, axis=1)
         vx = np.repeat(v, NQ // NKV, axis=1)
@@ -179,7 +186,10 @@ def forward(bank, tokens, trace=None, acts="f32"):
         e = np.exp(att - mx[..., None])
         denom = e.sum(-1) + np.exp(sinks[:, None] - mx)
         p = e / denom[..., None]
-        o = np.einsum("hqk,khd->qhd", p, vx).reshape(T, NQ * HD)
+        # …and the probabilities likewise, for the contraction against a bf16
+        # value cache.  The softmax itself stays f32: that is where the
+        # precision is worth keeping, and where the engine keeps it too.
+        o = np.einsum("hqk,khd->qhd", narrow(p), vx).reshape(T, NQ * HD)
         x = x + (narrow(o) @ bank.bf16(ent["o_w"], (H, NQ * HD)).T
                  + bank.f32(ent["o_b"], (H,)))
         if trace is not None:

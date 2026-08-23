@@ -234,27 +234,44 @@ theorem ropeK_ptx_exact (cta : Nat) (m : MState) :
     a linear cache and the position modulo the window for a ring — the kernel
     cannot tell the difference, and that is what makes one kernel serve both. -/
 
+/-- Elements a head occupies in the cache.
+
+    `HD` when the cache holds `Float32`, and `HD / 2` when it holds bf16 -- the
+    store moves 32-bit words and two bf16 sit in one, so a bf16 cache is the
+    same kernel over half as many of them. The move does not read what it
+    carries, so the pair travelling in one word is not something it has to know
+    about; only how many words a head is. -/
+def HDW : Nat := HD / 2
+
 def kvElem : IdxE := .add (.mul .loopI (.lit 32)) .laneId
-def kvSrcIx (base : Nat) : IdxE :=
-  .add (.lit base) (.add (.mul .ctaId (.lit HD)) kvElem)
-def kvDstIx : IdxE :=
+def kvSrcIx (base hd : Nat) : IdxE :=
+  .add (.lit base) (.add (.mul .ctaId (.lit hd)) kvElem)
+def kvDstIx (hd : Nat) : IdxE :=
   .add (.add (.mul .ctaId (.ldIdx 2 (.lit M_KVSTRIDE)))
-             (.mul (.ldIdx 2 (.lit M_SLOT)) (.lit HD)))
+             (.mul (.ldIdx 2 (.lit M_SLOT)) (.lit hd)))
        kvElem
 
-def kvStoreEW (base : Nat) : EWStmt :=
-  .forN (HD / 32) (.seq (.loadIdx 0 0 (kvSrcIx base)) (.storeLane 1 kvDstIx 0))
+def kvStoreEW (base hd : Nat) : EWStmt :=
+  .forN (hd / 32) (.seq (.loadIdx 0 0 (kvSrcIx base hd)) (.storeLane 1 (kvDstIx hd) 0))
 
-def ptxKVStore (base : Nat) : String :=
-  emitProvenKernelN "main" 3 0 (kvStoreEW base)
+def ptxKVStore (base hd : Nat) : String :=
+  emitProvenKernelN "main" 3 0 (kvStoreEW base hd)
 
-/-- The two instances that ship: keys and values.  Two rather than four,
-    because the depth is no longer part of the kernel. -/
-def kvShipped : List EWStmt := [kvStoreEW QO, kvStoreEW KO]
+/-- What ships: keys and values, over a bf16 cache and over a `Float32` one.
+
+    The depth is no longer part of any of them -- that is `M_KVSTRIDE` -- so
+    what is left to vary is the width of a head, and only two artifacts make
+    different choices about it. The decode holds bf16 and moves `HDW` words a
+    head, two values to a word; the per-piece slices hold `Float32` and move
+    `HD`. The move does not read what it carries, which is why one kernel
+    serves both. -/
+def kvShipped : List EWStmt :=
+  [ kvStoreEW (QO / 2) HDW, kvStoreEW (KO / 2) HDW
+  , kvStoreEW QO HD, kvStoreEW KO HD ]
 
 /-- **Every emitted cache store runs its statement, from raw launch.** Both the
     strided source and the slot-dependent destination are covered, at each of
-    the two bases a decode step launches. -/
+    the two bases a decode step launches, at each width that ships. -/
 theorem kvStore_ptx_exact :
     ∀ s ∈ kvShipped, ∀ (cta : Nat) (m : MState),
       ∃ k m', steps cta (flatKernel (expandEW s)) k (0, m)
@@ -263,34 +280,35 @@ theorem kvStore_ptx_exact :
           = ((expandEW s).elabAt cta 0
               (SI.stepL cta emitPrologue m).ir m.imem).run m.toWSt := by
   intro s hs cta m
-  have h2 : s = kvStoreEW QO ∨ s = kvStoreEW KO := by
+  have h4 : s = kvStoreEW (QO / 2) HDW ∨ s = kvStoreEW (KO / 2) HDW
+          ∨ s = kvStoreEW QO HD ∨ s = kvStoreEW KO HD := by
     simpa [kvShipped] using hs
-  rcases h2 with h | h <;> subst h <;>
+  rcases h4 with h | h | h | h <;> subst h <;>
     exact flatKernel_sound cta (expandEW _) (expandEW_expFree _)
       (expandEW_idxBelow 3 _ (by decide)) (expandEW_flat _ (by decide)) m
 
 /-- The destination, in closed form: head, slot, element. -/
-theorem kvDst_eval (cta j : Nat) (l : Lane) (ir : Nat → Lane → Nat)
+theorem kvDst_eval (hd cta j : Nat) (l : Lane) (ir : Nat → Lane → Nat)
     (im : Buf → Nat → Nat) :
-    kvDstIx.eval cta j l ir im
-      = cta * im 2 M_KVSTRIDE + im 2 M_SLOT * HD + (j * 32 + l.val) := rfl
+    (kvDstIx hd).eval cta j l ir im
+      = cta * im 2 M_KVSTRIDE + im 2 M_SLOT * hd + (j * 32 + l.val) := rfl
 
 /-- **The cache store lands the right element at the right address**, for every
     `(loop, lane)` the kernel visits — not merely "some lane wrote it". -/
-theorem kvStore_writes (base : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
-    (im : Buf → Nat → Nat) (st : WSt) (i0 : Nat) (l0 : Lane) (hi0 : i0 < HD / 32) :
-    (((kvStoreEW base).elabAt cta 0 ir im).run st).mem 1
-        (kvDstIx.eval cta i0 l0 ir im)
-      = st.mem 0 ((kvSrcIx base).eval cta i0 l0 ir im) := by
-  refine storeLoop_at 1 0 kvDstIx (.loadIdx 0 0 (kvSrcIx base)) cta ir im st
-    (fun j l => st.mem 0 ((kvSrcIx base).eval cta j l ir im))
-    (kvDstIx.eval cta i0 l0 ir im)
-    (st.mem 0 ((kvSrcIx base).eval cta i0 l0 ir im)) []
+theorem kvStore_writes (base hd : Nat) (cta : Nat) (ir : Nat → Lane → Nat)
+    (im : Buf → Nat → Nat) (st : WSt) (i0 : Nat) (l0 : Lane) (hi0 : i0 < hd / 32) :
+    (((kvStoreEW base hd).elabAt cta 0 ir im).run st).mem 1
+        ((kvDstIx hd).eval cta i0 l0 ir im)
+      = st.mem 0 ((kvSrcIx base hd).eval cta i0 l0 ir im) := by
+  refine storeLoop_at 1 0 (kvDstIx hd) (.loadIdx 0 0 (kvSrcIx base hd)) cta ir im st
+    (fun j l => st.mem 0 ((kvSrcIx base hd).eval cta j l ir im))
+    ((kvDstIx hd).eval cta i0 l0 ir im)
+    (st.mem 0 ((kvSrcIx base hd).eval cta i0 l0 ir im)) []
     (fun _ _ => rfl) (fun _ _ r' h => absurd h (by simp))
     (fun j s hinv _ l => by
-      show s.mem 0 ((kvSrcIx base).eval cta j l ir im) = _
+      show s.mem 0 ((kvSrcIx base hd).eval cta j l ir im) = _
       rw [hinv 0 (by decide)])
-    (List.range (HD / 32)) st (fun _ _ => rfl)
+    (List.range (hd / 32)) st (fun _ _ => rfl)
     (fun r' h => absurd h (by simp)) ?_ ?_
   · intro j hj l hl
     rw [kvDst_eval, kvDst_eval] at hl

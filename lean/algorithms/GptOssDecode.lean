@@ -130,7 +130,7 @@ def fileRopeSin : Nat := fileRope + ROPE_FILE_ROWS * HALF * 4
 def dPtx : List String :=
   [ ptxRmsNorm, ptxAdd, emitProvenKernelN "main" 3 0 ropeQEW
   , emitProvenKernelN "main" 3 0 ropeKEW
-  , ptxKVStore QO, ptxKVStore KO
+  , ptxKVStore (QO / 2) HDW, ptxKVStore (KO / 2) HDW
   , ptxSinkSoftmax, GptOssKernels.moduleFor GptOssKernels.narrowBf16
   , GptOssKernels.moduleFor GptOssKernels.gateUpSwigluGemv
   , GptOssKernels.moduleFor GptOssKernels.downGemvBias
@@ -215,7 +215,23 @@ def B_TOKEN := B_X + 21
 def B_EMB := B_X + 22
 /-- `[vocab, seed, 1/T as bits, ln(min_p) as bits]` for the sampling kernel. -/
 def B_SAMP := B_X + 23
-def B_Y := B_X + 24                     -- four
+/-- The rotated q, k and v, narrowed to bf16 and packed two to a word.
+
+    The cache holds bf16, so k and v arrive already narrowed; and q has to be
+    narrowed with them because cuBLAS refuses a mixed operand pair, so the
+    contraction against a bf16 cache takes a bf16 query. One pass over all
+    three, immediately after the rotation. -/
+def B_QKVB := B_X + 24
+/-- The attention probabilities, likewise, for the contraction against a bf16
+    value cache. -/
+def B_PRB := B_X + 25
+/-- How many words that second narrow covers: `NQ * seqLen / 2`, and so a
+    number that follows the position rather than the geometry. -/
+def B_NMP := B_X + 26
+/-- How many words the first narrow covers, which is a constant: q, k and v
+    together are `dQkvOut` floats however long the conversation is. -/
+def B_NMQKV := B_X + 27
+def B_Y := B_X + 28                     -- four
 def B_HID := B_Y + TOPK                 -- four
 def DSTORE := B_HID + TOPK              -- 9 x NL dense weights
 def KVSTORE := DSTORE + 9 * NL          -- 2 x NL caches
@@ -242,11 +258,12 @@ def dBufBytes : List Nat :=
        , (64 * 64) * 4, (64 * 64) * 2, HH * 4
        , 2 * ROPE_N * HALF * 4, 64 * 4, 4, 4
        , NE * 4, HH * 4, 32 * 4, HH * 4, TOPK * 4
-       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 16 ]
+       , VOCAB * 4, VOCAB * HH * 2, HH * 4, 4, HH * 2, 16
+       , dQkvOut * 2, 64 * CAP_MAX * 2, 4, 4 ]
     ++ List.replicate TOPK (HH * 4)
     ++ List.replicate TOPK (II * 4)
     ++ (List.range NL).flatMap (fun _ => (List.range 9).map (fun k => dKindBytes.getD k 0))
-    ++ (List.range NL).flatMap (fun l => [8 * capOf l * 64 * 4, 8 * capOf l * 64 * 4])
+    ++ (List.range NL).flatMap (fun l => [8 * capOf l * 64 * 2, 8 * capOf l * 64 * 2])
     ++ (List.range NSLOT_MAX).flatMap (fun _ => pieceBytes)
 
 theorem gptoss_decode_alloc_covers :
@@ -281,6 +298,13 @@ def DINIT_OFF : Nat := DMISS_OFF + 4
     later step reads it from here rather than being told again. -/
 def DCTX_OFF : Nat := DINIT_OFF + 4
 def DCTXSTRIDE_OFF : Nat := DCTX_OFF + 4
+/-- A word to stage the narrow count in before it is uploaded.
+
+    Its own slot rather than `DLOCAL_OFF`, which the very next call overwrites
+    with buffer ids: the upload happens first and the copy is synchronous, so
+    sharing it would work and would be a trap for whoever reorders these two
+    lines. -/
+def DNARROWN_OFF : Nat := DCTXSTRIDE_OFF + 8
 /-! ### The tokenizer's corner
 
     A chat turn is text in and text out, so this program owns a tokenizer as
@@ -290,7 +314,7 @@ def DCTXSTRIDE_OFF : Nat := DCTX_OFF + 4
 /-- The longest prompt or reply this program handles, in bytes. -/
 def TEXT_MAX : Nat := 32768
 
-def DTOK_BASE : Nat := DCTXSTRIDE_OFF + 8
+def DTOK_BASE : Nat := DNARROWN_OFF + 8
 def DT_PATHPTR : Nat := DTOK_BASE
 def DT_BUFPTR : Nat := DTOK_BASE + 8
 def DT_TOKCOUNT : Nat := DTOK_BASE + 16
@@ -339,6 +363,7 @@ def dMemMap : AlgorithmLib.Layout.RegionMap :=
         ⟨"pool", DPOOL_OFF, 8⟩, ⟨"stage", DSTAGE_OFF, 8⟩,
         ⟨"miss", DMISS_OFF, 4⟩, ⟨"init", DINIT_OFF, 4⟩,
         ⟨"ctx", DCTX_OFF, 4⟩, ⟨"ctxStride", DCTXSTRIDE_OFF, 8⟩,
+        ⟨"narrowN", DNARROWN_OFF, 4⟩,
         ⟨"tokPathPtr", DT_PATHPTR, 8⟩, ⟨"tokBufPtr", DT_BUFPTR, 8⟩,
         ⟨"tokCount", DT_TOKCOUNT, 8⟩, ⟨"tokTextLen", DT_TEXTLEN, 8⟩,
         ⟨"htKey", DT_HTKEY, 8⟩, ⟨"htVal", DT_HTVAL, 8⟩,
@@ -475,6 +500,21 @@ def dEnqueueAt (ptr : R) (ptxOff : R) (g blk : Nat) (bs : List Nat) : M Unit := 
   let grid ← iconst32 g
   let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one block one one
 
+/-- The same, with the **grid** in a register too.
+
+    One launch needs it: narrowing the attention probabilities covers
+    `NQ * seqLen` of them, which is a function of the position. Launching the
+    largest grid that could ever be needed and having the threads past the count
+    return would be sixteen thousand blocks doing nothing at the context this
+    now supports. -/
+def dEnqueueG (ptr : R) (ptxOff : R) (grid : R) (blk : Nat) (bs : List Nat) : M Unit := do
+  dBindLocal ptr bs
+  let nBufs ← iconst32 bs.length
+  let bindBase ← iconst64 DLOCAL_OFF
+  let one ← iconst32 1
+  let block ← iconst32 blk
+  let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one block one one
+
 def dEnqueue (ptr : R) (i g blk : Nat) (bs : List Nat) : M Unit := do
   dEnqueueAt ptr (← iconst64 (dSlotOff i)) g blk bs
 
@@ -518,16 +558,21 @@ def dInitM : M Unit := do
   storeI64 ctxStride (← absAddr ptr DCTXSTRIDE_OFF)
   -- every buffer that is not an expert slot.  The caches are the exception:
   -- their size is the context, and a full layer's is what was just chosen.
-  let swaBytes ← iconst64 (8 * CAP_SWA * HD * 4)
-  let fullBytes ← imul ctxStride (← iconst64 (8 * 4))
+  -- The caches hold bf16: two bytes an element, which is the whole point of
+  -- narrowing before the store.
+  let swaBytes ← iconst64 (8 * CAP_SWA * HD * 2)
+  let fullBytes ← imul ctxStride (← iconst64 (8 * 2))
   -- one row of scores per query head per key, and the same again for the
-  -- probabilities the softmax writes
+  -- probabilities the softmax writes -- those stay f32, because the softmax is
+  -- where the precision is worth keeping
   let scoreBytes ← imul ctx (← iconst64 (64 * 4))
+  let probBf16Bytes ← imul ctx (← iconst64 (64 * 2))
   for (i, nb) in (List.range SLOTSTORE).zip dBufBytes do
     let sz ←
       if KVSTORE ≤ i && i < SLOTSTORE then
         pure (if (i - KVSTORE) / 2 % 2 == 0 then swaBytes else fullBytes)
       else if i == B_SC || i == B_PR then pure scoreBytes
+      else if i == B_PRB then pure probBf16Bytes
       else iconst64 nb
     let id ← cudaCreateBuffer ptr sz
     storeI32 id (← absAddr ptr (dBindOff i))
@@ -592,7 +637,8 @@ def dInitM : M Unit := do
     let b ← iconst64 bo
     let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, bRope, b, stagePtr, nb]
   -- the narrow kernel's two counts
-  for (b, v) in [(B_NMH, HH / 2), (B_NMQ, (64 * 64) / 2)] do
+  for (b, v) in [(B_NMH, HH / 2), (B_NMQ, (64 * 64) / 2),
+                 (B_NMQKV, dQkvOut / 2)] do
     storeI32 (← iconst32 v) (← absAddr ptr DMETA_OFF)
     let id ← load32 (← absAddr ptr (dBindOff b))
     let n4 ← iconst64 4
@@ -769,9 +815,11 @@ def dLayerM (layer : R) : M Unit := do
   storeI32 tl (← absAddr ptr (DMETA_OFF + 4 * M_TAIL))
   storeI32 (← isub sLen tl) (← absAddr ptr (DMETA_OFF + 4 * M_REM))
   storeI32 slotNow (← absAddr ptr (DMETA_OFF + 4 * M_SLOT))
-  -- the depth this layer's cache was allocated at, which is what the store
-  -- kernel strides a head by
-  storeI32 (← imul capV (← iconst32 HD)) (← absAddr ptr (DMETA_OFF + 4 * M_KVSTRIDE))
+  -- The depth this layer's cache was allocated at, in the *words* the store
+  -- kernel moves: `HDW` of them a head, because the cache is bf16 and two ride
+  -- in one word.  The contractions below stride by `HD` elements over the same
+  -- bytes, which is the same distance counted the other way.
+  storeI32 (← imul capV (← iconst32 HDW)) (← absAddr ptr (DMETA_OFF + 4 * M_KVSTRIDE))
   let ctxM ← cudaCtxPtr ptr
   let bMetaL ← load32 (← absAddr ptr (dBindOff B_META))
   let _ ← call IR.Ffi.cudaUpload.id
@@ -798,22 +846,45 @@ def dLayerM (layer : R) : M Unit := do
   dEnqueue ptr S_ADD (dQkvOut / 32) 32 [B_QKV, W_QKVB]
   dEnqueue ptr S_ROPEQ NQ 32 [B_QKV, B_META, B_ROPE]
   dEnqueue ptr S_ROPEK NKV 32 [B_QKV, B_META, B_ROPE]
+  -- **Narrow once, and everything downstream is bf16.**
+  --
+  -- The cache holds bf16, so k and v have to be narrowed before they are
+  -- stored; and q has to be narrowed with them, because cuBLAS refuses a mixed
+  -- operand pair and the contraction is against that cache. One pass over all
+  -- three rather than two passes and an exception.
+  dEnqueue ptr S_NARROW ((dQkvOut / 2 + NBLK - 1) / NBLK) NBLK
+    [B_QKV, B_QKVB, B_NMQKV]
   -- One store kernel per operand, whatever kind of layer this is: the depth it
-  -- writes at is `M_KVSTRIDE`, published just above.
-  dEnqueue ptr S_KV NKV 32 [B_QKV, C_KC, B_META]
-  dEnqueue ptr (S_KV + 1) NKV 32 [B_QKV, C_VC, B_META]
+  -- writes at is `M_KVSTRIDE`, published just above, and what it moves is a
+  -- word holding two bf16 rather than one `Float32`.
+  dEnqueue ptr S_KV NKV 32 [B_QKVB, C_KC, B_META]
+  dEnqueue ptr (S_KV + 1) NKV 32 [B_QKVB, C_VC, B_META]
   let hd32 ← iconst32 HD
   let gqa32 ← iconst32 GQA
   let nkv32 ← iconst32 NKV
   let strideQ ← iconst64 (GQA * HD)
   let gqa64 ← iconst64 GQA
   let strideS ← imul gqa64 sLen64
-  let _ ← cublasSgemmStridedBatched ptr one32 zero32 sLen gqa32 hd32 scaleF
-    bKC strideKV bQKV strideQ zero32 bSC strideS nkv32
+  let bQKVB ← load32 (← absAddr ptr (dBindOff B_QKVB))
+  let bPRB ← load32 (← absAddr ptr (dBindOff B_PRB))
+  -- `strideKV` counts elements and an element is two bytes on both operands
+  -- here, so it is the same number the `Float32` cache used -- what halved is
+  -- the bytes behind it, not the count.
+  let _ ← cublasGemmStridedBatchedExBf16 ptr one32 zero32 sLen gqa32 hd32 scaleF
+    bKC strideKV bQKVB strideQ zero32 bSC strideS nkv32
   dEnqueue ptr S_SOFTMAX NQ 32 [B_SC, B_META, B_PR, W_SINKS]
+  -- The probabilities are formed at `Float32` -- the softmax is where the
+  -- precision earns its keep -- and narrowed only to meet the value cache.
+  let nWordsP ← udiv (← imul sLen (← iconst32 NQ)) (← iconst32 2)
+  storeI32 nWordsP (← absAddr ptr DNARROWN_OFF)
+  let bNMP ← load32 (← absAddr ptr (dBindOff B_NMP))
+  let _ ← call IR.Ffi.cudaUpload.id
+    [ctxM, bNMP, (← absAddr ptr DNARROWN_OFF), (← iconst64 4)]
+  let narrowP ← udiv (← iadd nWordsP (← iconst32 (NBLK - 1))) (← iconst32 NBLK)
+  dEnqueueG ptr (← iconst64 (dSlotOff S_NARROW)) narrowP NBLK [B_PR, B_PRB, B_NMP]
   let strideA ← iconst64 (GQA * HD)
-  let _ ← cublasSgemmStridedBatched ptr zero32 zero32 hd32 gqa32 sLen oneF
-    bVC strideKV bPR strideS zero32 bATT strideA nkv32
+  let _ ← cublasGemmStridedBatchedExBf16 ptr zero32 zero32 hd32 gqa32 sLen oneF
+    bVC strideKV bPRB strideS zero32 bATT strideA nkv32
   dEnqueue ptr S_NARROW (((64 * 64) / 2 + NBLK - 1) / NBLK) NBLK [B_ATT, B_ATTB, B_NMQ]
   let mH ← iconst32 HH
   let kQO ← iconst32 (64 * 64)

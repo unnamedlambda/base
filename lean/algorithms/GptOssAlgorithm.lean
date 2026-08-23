@@ -356,7 +356,7 @@ def CAP : Nat := CAP_SWA
 def aPtx : List String :=
   [ ptxRmsNorm, ptxAdd, emitProvenKernelN "main" 3 0 ropeQEW
   , emitProvenKernelN "main" 3 0 ropeKEW
-  , ptxKVStore QO, ptxKVStore KO
+  , ptxKVStore QO HD, ptxKVStore KO HD
   , ptxSinkSoftmax, GptOssKernels.moduleFor GptOssKernels.narrowBf16 ]
 
 def S_RMS : Nat := 0
