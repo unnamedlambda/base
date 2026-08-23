@@ -19,17 +19,22 @@ Nothing in `UpcaseHost.lean` did any of it.
 
 ## Build
 
-`libbase.so` must exist first:
-
 ```
-cargo build -p base            # or --release
 cd lean/host && lake exe upcasehost
 ```
 
-The lakefile prefers `target/release` when it holds a `libbase.so` and falls
-back to `target/debug`; `BASE_LIB_DIR` overrides both. It is read when lake
-loads the configuration, so a first `cargo build --release` afterwards wants a
-`lake clean` to be picked up.
+That is the whole of it. Lake builds `libbase.so` itself — the `libbase` target
+runs `cargo build -p base` — which is the mirror of `build-support` running
+lake from a cargo build script. Each ecosystem's tool drives the other, so a
+Lean caller never types `cargo` and a Rust caller never types `lake`.
+
+`BASE_PROFILE=release` builds and links the release runtime. `BASE_LIB_DIR`
+says the library is yours to manage: lake links what is there and runs no
+cargo.
+
+Both are read when lake *elaborates* this configuration, and lake caches that
+by content — so changing either afterwards does nothing until `lake clean`.
+Touching the lakefile is not enough.
 
 ## What this is for
 
