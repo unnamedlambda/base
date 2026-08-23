@@ -196,6 +196,8 @@ def subFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"sub.f32 {d.raw}, {
 def subFIR (d : Reg .f32) (imm : FImm) (b : Reg .f32) : PTX Unit := emit s!"sub.f32 {d.raw}, {imm.render}, {b.raw}"
 def mulF  (d a b : Reg .f32)             : PTX Unit := emit s!"mul.f32 {d.raw}, {a.raw}, {b.raw}"
 def mulFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"mul.f32 {d.raw}, {a.raw}, {imm.render}"
+/-- Copy one float register into another. -/
+def movFF (d a : Reg .f32) : PTX Unit := emit s!"mov.f32 {d.raw}, {a.raw}"
 def maxF  (d a b : Reg .f32)             : PTX Unit := emit s!"max.f32 {d.raw}, {a.raw}, {b.raw}"
 def maxFI (d a : Reg .f32) (imm : FImm) : PTX Unit := emit s!"max.f32 {d.raw}, {a.raw}, {imm.render}"
 def minF  (d a b : Reg .f32)             : PTX Unit := emit s!"min.f32 {d.raw}, {a.raw}, {b.raw}"
@@ -297,6 +299,16 @@ def brevR  (d a : Reg .u32)           : PTX Unit := emit s!"brev.b32 {d.raw}, {a
 def clzR   (d a : Reg .u32)           : PTX Unit := emit s!"clz.b32 {d.raw}, {a.raw}"
 def popcR  (d a : Reg .u32)           : PTX Unit := emit s!"popc.b32 {d.raw}, {a.raw}"
 def selpR  (d a b : Reg .u32) (p : Reg .pred) : PTX Unit := emit s!"selp.b32 {d.raw}, {a.raw}, {b.raw}, {p.raw}"
+/-- Comparisons against another register rather than an immediate, and a
+    register-by-register multiply.  A loop whose bound is a run-time value needs
+    them; a loop whose bound the generator knows does not, which is why they
+    arrive only now. -/
+def setpGeR (p : Reg .pred) (a b : Reg .u32) : PTX Unit :=
+  emit s!"setp.ge.u32 {p.raw}, {a.raw}, {b.raw}"
+def setpLtR (p : Reg .pred) (a b : Reg .u32) : PTX Unit :=
+  emit s!"setp.lt.u32 {p.raw}, {a.raw}, {b.raw}"
+def mulLoRR (d a b : Reg .u32) : PTX Unit :=
+  emit s!"mul.lo.u32 {d.raw}, {a.raw}, {b.raw}"
 def movRR  (d s : Reg .u32)           : PTX Unit := emit s!"mov.u32 {d.raw}, {s.raw}"
 
 /-- Reinterpret a `u32` register's bits as `f32`, and back.  No conversion: the
