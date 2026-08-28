@@ -101,8 +101,11 @@ extern_lib baseshim pkg := do
   let base ← libbase.fetch
   base.bindM fun _ => do
     let so := pkg.sharedLibDir / nameToSharedLib "baseshim"
+    -- The link arguments are *trace* arguments: `weakArgs` are excluded from
+    -- the trace by design, and putting them there left a shim built against
+    -- one profile's runtime silently linked into the other's build.
     let dyn ← buildSharedLib "baseshim" so #[← shimObj.fetch] #[]
-      #["-L" ++ baseLibDir, "-lbase", "-Wl,-rpath," ++ baseLibDir] #[] "cc"
+      #[] #["-L" ++ baseLibDir, "-lbase", "-Wl,-rpath," ++ baseLibDir] "cc"
     dyn.mapM fun d => return d.path
 
 @[default_target]
