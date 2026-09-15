@@ -1,3 +1,10 @@
+// The platform contract. Artifacts address the arena with 64-bit integers and
+// write multi-byte values little-endian, and the FFI passes pointers and
+// lengths as `i64`. Elsewhere those bytes would be misread rather than
+// rejected, so the build refuses instead.
+#[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
+compile_error!("base runs only on 64-bit little-endian targets");
+
 pub use arrow_array::RecordBatch;
 use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
