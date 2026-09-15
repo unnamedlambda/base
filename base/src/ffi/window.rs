@@ -87,9 +87,33 @@ pub(crate) struct CraneliftWindowContext {
     pending: VecDeque<EventRecord>,
 }
 
+/// The event loop, created on whichever thread runs the program.
+///
+/// winit refuses by default to create one off the main thread. Linux (X11 and
+/// Wayland) and Windows lift that when asked, so a host may execute from any
+/// thread there. macOS cannot: AppKit requires the main thread, so a window
+/// program must be executed from it — a contract on the host, not something
+/// the runtime can arrange.
+fn new_event_loop() -> EventLoop<()> {
+    let mut builder = EventLoop::builder();
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
+    {
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+        EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+        builder.with_any_thread(true);
+    }
+    builder.build().expect("failed to create winit event loop")
+}
+
 pub(crate) unsafe extern "C" fn cl_window_init(ctx_slot_ptr: *mut *mut CraneliftWindowContext) {
     let raw = std::panic::catch_unwind(|| {
-        let event_loop = EventLoop::new().expect("failed to create winit event loop");
+        let event_loop = new_event_loop();
         let ctx = Box::new(CraneliftWindowContext {
             event_loop,
             gpu: cached_gpu_handles(),
