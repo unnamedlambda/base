@@ -1,5 +1,7 @@
 import AlgorithmLib.ML.Num
 import AlgorithmLib.ML.Expr
+import AlgorithmLib.ML.Reindex
+import AlgorithmLib.ML.Weave
 import AlgorithmLib.ML.Grad
 import AlgorithmLib.ML.MultiLayer
 import AlgorithmLib.ML.Tape
@@ -42,6 +44,10 @@ import AlgorithmLib.ML.BufsOf
 import AlgorithmLib.ML.EmitFacts
 import AlgorithmLib.ML.RegBound
 import AlgorithmLib.ML.Schedule
+import AlgorithmLib.ML.WeaveBCast
+import AlgorithmLib.ML.WeaveTOp
+import AlgorithmLib.ML.WeaveLower
+import AlgorithmLib.ML.WeaveBuild
 
 /-!
 # The ML development

@@ -69,6 +69,11 @@ lean_lib GemvWarpAlgorithm
 lean_lib BackwardWideAlgorithm
 @[default_target]
 lean_lib MlpCifarAlgorithm
+@[default_target]
+lean_lib WeaveCifar
+@[default_target]
+lean_lib WeaveVit
+lean_lib WeaveScan
 lean_lib VitModel
 lean_lib VitAlgorithm
 lean_lib VitShip
