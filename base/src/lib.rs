@@ -83,13 +83,6 @@ impl Base {
             (Some(module), Some(fns))
         };
 
-        // Set thread-local compiled fns so FFI functions (cl_thread_init etc.) work on interpreter thread
-        if let Some(ref fns) = clif_fns {
-            THREAD_COMPILED_FNS.with(|cell| {
-                *cell.borrow_mut() = Some(fns.clone());
-            });
-        }
-
         info!("Base instance created");
         Ok(Base {
             memory,
@@ -103,21 +96,6 @@ impl Base {
     /// this `Base` is not executing.
     pub fn memory_bytes(&self) -> &[u8] {
         &self.memory
-    }
-
-    /// Install this instance's compiled functions on the calling thread.
-    ///
-    /// `from_parts` does this for the thread that built the instance. The
-    /// functions live in a thread-local as well as in the instance because the
-    /// FFI entry points a program calls reach them with no `Base` in hand, so a
-    /// caller executing from a thread that did not build it must do this first
-    /// or those calls find nothing.
-    pub fn bind_current_thread(&self) {
-        if let Some(ref fns) = self.clif_fns {
-            THREAD_COMPILED_FNS.with(|cell| {
-                *cell.borrow_mut() = Some(fns.clone());
-            });
-        }
     }
 
     /// Call the entry point at `fn_idx`, with nothing to answer through.
@@ -147,6 +125,12 @@ impl Base {
                     fns.len()
                 )));
             }
+            // The FFI entry points a program calls — `cl_thread_init` and what
+            // it spawns — reach the compiled functions through a thread-local,
+            // with no `Base` in hand. Installing them here rather than at
+            // construction is what lets a host execute from any thread, and
+            // makes two instances on one thread each find their own.
+            THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(fns.clone()));
             debug!(fn_idx, "clif_call");
             // The caller's buffers are arguments, not a place in the arena the
             // program is told to look at. The arity is the one the function's

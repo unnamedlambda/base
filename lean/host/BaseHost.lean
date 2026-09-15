@@ -31,10 +31,11 @@ has already done its work by the time `execute` returns.
 
 ## Threads
 
-A runtime is bound to the thread that created it, because the FFI entry points a
-program calls find their compiled functions in a thread-local. `run` and
-`withRuntime` stay on one thread, so this only matters to a caller that moves a
-`Runtime` into a `Task`; `bindThread` is what makes it callable there.
+`execute` may be called from any thread: it installs the runtime's compiled
+functions on the calling thread first, which is how the FFI entry points a
+program calls find them. Two runtimes used from one thread are fine for the
+same reason. A window program is the exception — on macOS its event loop must
+be on the main thread.
 -/
 
 namespace Base
@@ -54,9 +55,6 @@ private opaque newRaw (setupJson : @& ByteArray) : IO USize
 
 @[extern "lean_base_free"]
 private opaque freeRaw (handle : USize) : IO Unit
-
-@[extern "lean_base_bind_thread"]
-private opaque bindThreadRaw (handle : USize) : IO Unit
 
 @[extern "lean_base_execute"]
 private opaque executeRaw (handle : USize) (fnIdx : UInt32)
@@ -81,15 +79,6 @@ namespace Runtime
 not what a caller should reach for first. -/
 def close (rt : Runtime) : IO Unit :=
   freeRaw rt.raw
-
-/-- Make `rt` callable from the current thread.
-
-Only needed by a caller executing from a thread other than the one that opened
-it: the compiled functions live in a thread-local as well as in the runtime,
-because the FFI entry points a program calls reach them with no runtime in
-hand. -/
-def bindThread (rt : Runtime) : IO Unit :=
-  bindThreadRaw rt.raw
 
 /-- Call one entry point, answering the bytes it wrote to its out buffer.
 

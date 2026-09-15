@@ -17,7 +17,6 @@
 /* Declared rather than included: the runtime is a Rust cdylib and has no
  * header. These must match `base/src/capi.rs`. */
 void *base_new(const uint8_t *artifact_json, size_t len);
-int32_t base_bind_thread(void *handle);
 int32_t base_execute(void *handle, uint32_t fn_idx, const uint8_t *data,
                      size_t data_len, uint8_t *out, size_t out_len);
 size_t base_read_memory(const void *handle, size_t offset, uint8_t *dst, size_t len);
@@ -54,14 +53,6 @@ LEAN_EXPORT lean_obj_res lean_base_new(b_lean_obj_arg artifact_json, lean_obj_ar
         return base_io_error("base_new failed");
     }
     return lean_io_result_mk_ok(lean_box_usize((size_t)handle));
-}
-
-LEAN_EXPORT lean_obj_res lean_base_bind_thread(size_t handle, lean_obj_arg w) {
-    (void)w;
-    if (base_bind_thread((void *)handle) != 0) {
-        return base_io_error("base_bind_thread failed");
-    }
-    return lean_io_result_mk_ok(lean_box(0));
 }
 
 /* The out buffer is allocated here rather than taken from the caller: a

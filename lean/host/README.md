@@ -116,10 +116,10 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
 
 ## Known gaps
 
-* **One thread.** A `Runtime` is bound to the thread that opened it, because the
-  FFI entry points a program calls find their compiled functions in a
-  thread-local. `Runtime.bindThread` is what makes it callable from another, and
-  nothing yet stops a caller from forgetting.
+* **Window programs and the main thread.** `execute` installs the runtime's
+  compiled functions on whichever thread calls it, so a `Runtime` is usable
+  from any of them. A program that opens a window is the exception: on macOS
+  its event loop has to be created on the main thread.
 * **Two workspaces over one package.** `lake` here and `build-support`'s
   `lake` in `lean/algorithms` build the same package directory. `build-support`
   takes a lock; this does not. Do not run both at once.

@@ -132,32 +132,6 @@ pub unsafe extern "C" fn base_new(artifact_json: *const u8, len: usize) -> *mut 
     })
 }
 
-/// Make this `Base` callable from the calling thread. `0` on success, `-1` if
-/// there is no handle.
-///
-/// The compiled functions are also held in a thread-local, because the FFI
-/// entry points a program calls — `cl_thread_init` and what it spawns — reach
-/// them without a `Base` to hand. `base_new` installs it on the thread that
-/// called it, so a host whose scheduler moves work between threads must call
-/// this on any other thread it executes from. Calling it more than once, or on
-/// the creating thread, does nothing.
-///
-/// # Safety
-///
-/// `handle` must be a live pointer from [`base_new`], or null.
-#[no_mangle]
-pub unsafe extern "C" fn base_bind_thread(handle: *mut Base) -> i32 {
-    guard(-1, || {
-        clear_error();
-        let Some(base) = handle.as_ref() else {
-            set_error("handle is null");
-            return -1;
-        };
-        base.bind_current_thread();
-        0
-    })
-}
-
 /// Call one entry point of this `Base`. `0` on success, `-1` on failure.
 ///
 /// `fn_idx` is the entry point's function index. `data` is the input the
@@ -206,8 +180,9 @@ pub unsafe extern "C" fn base_execute(
     })
 }
 
-/// Copy `len` bytes of this `Base`'s shared memory from `offset` into `dst`,
-/// answering how many were copied.
+/// Copy `len` bytes of this `Base`'s memory from `offset` into `dst`, answering
+/// how many were copied. With `dst` null and `len` zero it answers nothing and
+/// writes nothing; [`base_memory_size`] is how a caller learns the length.
 ///
 /// This is how a host reads what a program left in its own memory, at an
 /// address the program's generator says it wrote. A range reaching
@@ -327,7 +302,6 @@ mod tests {
         let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
         assert!(!handle.is_null(), "{}", last_error());
         assert_eq!(unsafe { base_memory_size(handle) }, 64);
-        assert_eq!(unsafe { base_bind_thread(handle) }, 0);
         unsafe { base_free(handle) };
     }
 
@@ -365,8 +339,6 @@ mod tests {
     /// dereferencing it, and says so.
     #[test]
     fn a_null_handle_is_refused_everywhere() {
-        assert_eq!(unsafe { base_bind_thread(std::ptr::null_mut()) }, -1);
-        assert!(last_error().contains("null"));
         assert_eq!(
             unsafe {
                 base_execute(std::ptr::null_mut(), 0, std::ptr::null(), 0, std::ptr::null_mut(), 0)
