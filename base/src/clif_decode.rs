@@ -94,6 +94,29 @@ fn block_args(vs: &[ir::Value]) -> Vec<ir::BlockArg> {
     vs.iter().map(|v| ir::BlockArg::Value(*v)).collect()
 }
 
+/// A function's signature, read off its entry block.
+///
+/// The entry block is `blocks[0]` and its parameters are exactly the values a
+/// caller supplies, so the signature is not a second fact that has to be kept
+/// in agreement with the body. No generated function returns a value.
+///
+/// Declaring a function and defining it are separate calls into Cranelift and
+/// both need this. Reading it from the same place twice is what makes them
+/// agree.
+pub fn signature_of(f: &clif::Function) -> Result<Signature, String> {
+    let entry = f.blocks.first().ok_or_else(|| {
+        format!(
+            "u0:{} defines no blocks, so there is no entry to take its signature from",
+            f.index
+        )
+    })?;
+    let mut sig = Signature::new(CallConv::SystemV);
+    for (_, t) in &entry.params {
+        sig.params.push(AbiParam::new(ty(*t)));
+    }
+    Ok(sig)
+}
+
 /// Builds one function.
 ///
 /// `declare_callee` is called once per callee in the prologue and must return
@@ -103,11 +126,7 @@ pub fn decode_function(
     f: &clif::Function,
     declare_callee: &mut dyn FnMut(&clif::Callee, &Signature) -> Result<u32, String>,
 ) -> Result<ir::Function, String> {
-    // Every generated function takes the memory base pointer and returns
-    // nothing, which is what makes them all callable through one fn pointer
-    // type.
-    let mut sig = Signature::new(CallConv::SystemV);
-    sig.params.push(AbiParam::new(ir::types::I64));
+    let sig = signature_of(f)?;
 
     let mut func = ir::Function::with_name_signature(UserFuncName::user(0, f.index), sig);
 

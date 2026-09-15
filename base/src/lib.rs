@@ -29,7 +29,7 @@ pub enum Error {
 pub struct Base {
     memory: Pin<Box<[u8]>>,
     mem_ptr: *mut u8,
-    clif_fns: Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>,
+    clif_fns: Option<Arc<Vec<jit::Compiled>>>,
     _module: Option<cranelift_jit::JITModule>,
     io_offsets: IoOffsets,
 }
@@ -161,7 +161,21 @@ impl Base {
                 )));
             }
             debug!(fn_idx, "clif_call");
-            unsafe { fns[fn_idx](self.mem_ptr) };
+            // The arity is the one the function's own entry block declared.
+            // An entry point takes the arena base alone; anything else is not
+            // shaped like one, and calling it would read registers of whatever
+            // happened to be in them.
+            let f = fns[fn_idx];
+            if f.arity != 1 {
+                return Err(Error::Execution(format!(
+                    "fn_idx {fn_idx} takes {} parameters; an entry point takes the memory base alone",
+                    f.arity
+                )));
+            }
+            unsafe {
+                let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(f.addr);
+                entry(self.mem_ptr);
+            }
         }
 
         let batches = build_record_batches(&self.memory, &algorithm.output);

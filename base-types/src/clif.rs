@@ -215,8 +215,11 @@ pub struct FnDecl {
     pub colocated: bool,
 }
 
-/// One function. Its signature is `(i64) system_v` — every generated function
-/// takes the memory base pointer and returns nothing.
+/// One function. Its signature is its entry block's parameter list, under
+/// `system_v`, returning nothing — so the signature is not a separate field
+/// that could disagree with the body. An entry point takes the memory base
+/// pointer; a function reached through `cl_thread_spawn` takes its spawn
+/// argument.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Function {
     /// The `u0:N` index. Must equal the function's position in

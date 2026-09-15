@@ -8,8 +8,26 @@ use crate::ffi::{
     cl_cosf, cl_powf, cl_sinf, cuda, file, ht, lmdb, net, stdio, thread, wgpu as gpu, window,
 };
 
+/// One compiled function: where it starts, and how many arguments it takes.
+///
+/// Deliberately not an `fn` pointer: the arity is the one the function's own
+/// entry block declared (see `clif_decode::signature_of`), so it travels with
+/// the address and a caller checks it before transmuting rather than assuming.
+///
+/// A raw pointer is neither `Send` nor `Sync`, and the table crosses into
+/// spawned threads. It is code, mapped for the life of the module and never
+/// written, so sharing the address is sound; that is what these assert.
+#[derive(Copy, Clone)]
+pub(crate) struct Compiled {
+    pub(crate) addr: *const u8,
+    pub(crate) arity: usize,
+}
+
+unsafe impl Send for Compiled {}
+unsafe impl Sync for Compiled {}
+
 thread_local! {
-    pub(crate) static THREAD_COMPILED_FNS: std::cell::RefCell<Option<Arc<Vec<unsafe extern "C" fn(*mut u8)>>>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static THREAD_COMPILED_FNS: std::cell::RefCell<Option<Arc<Vec<Compiled>>>> = const { std::cell::RefCell::new(None) };
 }
 
 fn register_symbols(builder: &mut JITBuilder) {
@@ -160,19 +178,15 @@ fn new_module() -> cranelift_jit::JITModule {
 fn finalize(
     mut module: cranelift_jit::JITModule,
     func_ids: Vec<cranelift_module::FuncId>,
-) -> Result<
-    (
-        cranelift_jit::JITModule,
-        Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
-    ),
-    String,
-> {
+    arities: Vec<usize>,
+) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
     module.finalize_definitions().map_err(|e| format!("{e}"))?;
-    let compiled_fns: Vec<unsafe extern "C" fn(*mut u8)> = func_ids
+    let compiled_fns: Vec<Compiled> = func_ids
         .iter()
-        .map(|&id| {
-            let code_ptr = module.get_finalized_function(id);
-            unsafe { std::mem::transmute(code_ptr) }
+        .zip(arities)
+        .map(|(&id, arity)| Compiled {
+            addr: module.get_finalized_function(id),
+            arity,
         })
         .collect();
     info!(count = compiled_fns.len(), "CLIF compiled successfully");
@@ -186,18 +200,13 @@ fn finalize(
 /// happening to match the indices a parser recovered.
 pub(crate) fn compile_program(
     prog: &base_types::clif::Program,
-) -> Result<
-    (
-        cranelift_jit::JITModule,
-        Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
-    ),
-    String,
-> {
+) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
     info!(functions = prog.functions.len(), "compiling CLIF program");
     let mut module = new_module();
 
     // Declared before any body is built, so `u0:N` resolves to FuncId(N).
     let mut func_ids = Vec::with_capacity(prog.functions.len());
+    let mut arities = Vec::with_capacity(prog.functions.len());
     for (i, f) in prog.functions.iter().enumerate() {
         if f.index as usize != i {
             return Err(format!(
@@ -205,12 +214,8 @@ pub(crate) fn compile_program(
                 f.index
             ));
         }
-        let mut sig = cranelift_codegen::ir::Signature::new(
-            cranelift_codegen::isa::CallConv::SystemV,
-        );
-        sig.params.push(cranelift_codegen::ir::AbiParam::new(
-            cranelift_codegen::ir::types::I64,
-        ));
+        let sig = crate::clif_decode::signature_of(f)?;
+        arities.push(sig.params.len());
         func_ids.push(
             module
                 .declare_function(&format!("fn_{i}"), cranelift_module::Linkage::Local, &sig)
@@ -261,6 +266,6 @@ pub(crate) fn compile_program(
         }
     }
 
-    finalize(module, func_ids)
+    finalize(module, func_ids, arities)
 }
 

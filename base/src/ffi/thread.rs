@@ -2,12 +2,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::{clear_ctx_slot, read_ctx_mut, read_ctx_ref, write_ctx_slot};
-use crate::jit::THREAD_COMPILED_FNS;
+use crate::jit::{Compiled, THREAD_COMPILED_FNS};
+
+/// A spawned or directly called worker takes the one pointer the call site
+/// supplies and nothing else. That pointer is whatever the program passed to
+/// `cl_thread_spawn`, so a worker is a function in the table whose entry block
+/// declares a single parameter.
+type Worker = unsafe extern "C" fn(*mut u8);
 
 pub(crate) struct CraneliftThreadContext {
     threads: HashMap<u32, std::thread::JoinHandle<()>>,
     next_handle: u32,
-    compiled_fns: Arc<Vec<unsafe extern "C" fn(*mut u8)>>,
+    compiled_fns: Arc<Vec<Compiled>>,
 }
 
 /// Leaves the slot null when the JIT has not installed the function table,
@@ -42,7 +48,7 @@ pub(crate) unsafe extern "C" fn cl_thread_spawn(
     if idx >= ctx.compiled_fns.len() {
         return -1;
     }
-    let func = ctx.compiled_fns[idx];
+    let func: Worker = std::mem::transmute(ctx.compiled_fns[idx].addr);
     let thread_arg = thread_ptr as usize;
     let handle_id = ctx.next_handle;
     ctx.next_handle += 1;
@@ -98,7 +104,7 @@ pub(crate) unsafe extern "C" fn cl_thread_call(
     if idx >= ctx.compiled_fns.len() {
         return -1;
     }
-    let func = ctx.compiled_fns[idx];
+    let func: Worker = std::mem::transmute(ctx.compiled_fns[idx].addr);
     func(arg_ptr);
     0
 }
@@ -121,9 +127,16 @@ mod tests {
         *(p as *mut u64) = 77;
     }
 
-    fn install_fns(fns: Vec<unsafe extern "C" fn(*mut u8)>) {
+    fn install_fns(fns: Vec<Worker>) {
+        let table: Vec<Compiled> = fns
+            .into_iter()
+            .map(|f| Compiled {
+                addr: f as *const u8,
+                arity: 1,
+            })
+            .collect();
         THREAD_COMPILED_FNS.with(|cell| {
-            *cell.borrow_mut() = Some(Arc::new(fns));
+            *cell.borrow_mut() = Some(Arc::new(table));
         });
     }
 
