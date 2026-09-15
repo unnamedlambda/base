@@ -1,21 +1,43 @@
+//! Python over base's C ABI.
+//!
+//! Nothing here reaches into the runtime's Rust types: every call goes through
+//! `base::capi`, the same six functions a C or Lean host calls. That is what
+//! keeps the three hosts on one core rather than three surfaces that drift —
+//! the way `execute` answering Arrow on one side and bytes on another once did.
+//!
+//! What this adds is Python's conventions: an exception instead of a failure
+//! value and the message the runtime left, the buffer protocol for the caller's
+//! input and output, and the GIL released while a program runs.
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use base_types::Artifact;
+use base::capi;
 
+/// The message the failed call left on this thread, as a Python exception.
+fn last_error(what: &str) -> PyErr {
+    let len = unsafe { capi::base_last_error(std::ptr::null_mut(), 0) };
+    let mut buf = vec![0u8; len];
+    unsafe { capi::base_last_error(buf.as_mut_ptr(), buf.len()) };
+    match String::from_utf8(buf) {
+        Ok(message) if !message.is_empty() => PyValueError::new_err(format!("{what}: {message}")),
+        _ => PyValueError::new_err(format!("{what} failed")),
+    }
+}
+
+/// What a generator emits, held as the JSON it was written as: the runtime is
+/// what parses it, so there is no second reader here to disagree with it.
 #[pyclass(name = "Artifact")]
 #[derive(Clone)]
 struct PyArtifact {
-    inner: Artifact,
+    json: Vec<u8>,
 }
 
 #[pymethods]
 impl PyArtifact {
     #[new]
     fn new(json: &str) -> PyResult<Self> {
-        let inner: Artifact = serde_json::from_str(json)
-            .map_err(|e| PyValueError::new_err(format!("Invalid Artifact JSON: {}", e)))?;
-        Ok(Self { inner })
+        Ok(Self { json: json.as_bytes().to_vec() })
     }
 }
 
@@ -40,65 +62,107 @@ where
     py.allow_threads(move || wrapped.call())
 }
 
-/// Base execution engine. JIT compiles once, executes many times.
-/// Releases the GIL during execution so other Python threads can run.
-#[pyclass(name = "Base")]
+/// A compiled artifact and the memory it runs in. Compiling is the expensive
+/// step, so build one and call it as often as you like.
+#[pyclass(name = "Base", unsendable)]
 struct PyBase {
-    inner: base::Base,
+    handle: *mut base::Base,
+}
+
+impl Drop for PyBase {
+    fn drop(&mut self) {
+        unsafe { capi::base_free(self.handle) };
+    }
 }
 
 #[pymethods]
 impl PyBase {
     #[new]
     fn new(artifact: &PyArtifact) -> PyResult<Self> {
-        let inner = base::Base::new(artifact.inner.clone())
-            .map_err(|e| PyValueError::new_err(format!("Base::new failed: {:?}", e)))?;
-        Ok(Self { inner })
+        let handle = unsafe { capi::base_new(artifact.json.as_ptr(), artifact.json.len()) };
+        if handle.is_null() {
+            return Err(last_error("Base"));
+        }
+        Ok(Self { handle })
     }
 
     /// Call the entry point at `fn_idx`. Which index is which stage is the
     /// artifact generator's knowledge, so a caller names them itself.
     #[pyo3(signature = (fn_idx, data=None))]
-    fn execute(
-        &mut self,
-        py: Python<'_>,
-        fn_idx: u32,
-        data: Option<&[u8]>,
-    ) -> PyResult<()> {
-        let data = data.unwrap_or(&[]);
-        allow_threads_unsafe(py, || self.inner.execute(fn_idx, data))
-            .map_err(|e| PyValueError::new_err(format!("execute failed: {:?}", e)))
+    fn execute(&mut self, py: Python<'_>, fn_idx: u32, data: Option<&[u8]>) -> PyResult<()> {
+        self.execute_into(py, fn_idx, data.unwrap_or(&[]), None)
     }
 
+    /// Call the entry point at `fn_idx`, which answers in `out`.
+    ///
+    /// Both buffers are the caller's own memory, handed to the program as
+    /// pointers: nothing is copied in or out.
+    #[pyo3(signature = (fn_idx, data, out=None))]
     fn execute_into(
         &mut self,
         py: Python<'_>,
         fn_idx: u32,
         data: &[u8],
-        out: &Bound<'_, pyo3::types::PyByteArray>,
+        out: Option<&Bound<'_, pyo3::types::PyByteArray>>,
     ) -> PyResult<()> {
-        let out_slice = unsafe { std::slice::from_raw_parts_mut(out.data() as *mut u8, out.len()) };
-        allow_threads_unsafe(py, || self.inner.execute_into(fn_idx, data, out_slice))
-        .map_err(|e| PyValueError::new_err(format!("execute_into failed: {:?}", e)))
+        let (out_ptr, out_len) = match out {
+            Some(out) => (out.data() as *mut u8, out.len()),
+            None => (std::ptr::null_mut(), 0),
+        };
+        let handle = self.handle;
+        let rc = allow_threads_unsafe(py, || unsafe {
+            capi::base_execute(handle, fn_idx, data.as_ptr(), data.len(), out_ptr, out_len)
+        });
+        if rc != 0 {
+            return Err(last_error("execute"));
+        }
+        Ok(())
+    }
+
+    /// `length` bytes of the program's memory from `offset`, copied.
+    ///
+    /// This is how a host reads what a program left behind, at an address its
+    /// generator says it wrote. A range past the end is an error rather than a
+    /// short answer, so a truncated read cannot be mistaken for a result.
+    fn read_memory(&self, offset: usize, length: usize) -> PyResult<Vec<u8>> {
+        let mut have = 0usize;
+        let memory = unsafe { capi::base_memory(self.handle, &mut have) };
+        if memory.is_null() || offset > have || length > have - offset {
+            return Err(PyValueError::new_err(format!(
+                "{offset}..{} is outside the {have} bytes of memory",
+                offset + length
+            )));
+        }
+        Ok(unsafe { std::slice::from_raw_parts(memory.add(offset), length) }.to_vec())
+    }
+
+    /// How many bytes of memory this program runs in.
+    fn memory_size(&self) -> usize {
+        let mut len = 0usize;
+        unsafe { capi::base_memory(self.handle, &mut len) };
+        len
     }
 }
 
-/// Read and deserialize an Artifact from a JSON file.
+/// Read an artifact from the JSON a generator wrote.
 #[pyfunction]
 fn load_artifact(path: &str) -> PyResult<PyArtifact> {
-    let text = std::fs::read_to_string(path)
+    let json = std::fs::read(path)
         .map_err(|e| PyValueError::new_err(format!("Cannot read {}: {}", path, e)))?;
-    let inner: Artifact = serde_json::from_str(&text)
-        .map_err(|e| PyValueError::new_err(format!("Invalid artifact JSON in {}: {}", path, e)))?;
-    Ok(PyArtifact { inner })
+    Ok(PyArtifact { json })
 }
 
-/// One-shot execution: JIT compile and execute in a single call.
+/// Compile an artifact and call one of its entry points, once.
 #[pyfunction]
-fn run(py: Python<'_>, artifact: &PyArtifact, fn_idx: u32) -> PyResult<()> {
-    let artifact = artifact.inner.clone();
-    allow_threads_unsafe(py, || base::run(artifact, fn_idx))
-        .map_err(|e| PyValueError::new_err(format!("run failed: {:?}", e)))
+#[pyo3(signature = (artifact, fn_idx, data=None))]
+fn run(
+    py: Python<'_>,
+    artifact: &PyArtifact,
+    fn_idx: u32,
+    data: Option<&[u8]>,
+) -> PyResult<()> {
+    let mut base = PyBase::new(artifact)?;
+    base.execute(py, fn_idx, data)
 }
 
 /// Whether this extension was compiled without optimisations.

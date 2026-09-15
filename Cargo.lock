@@ -3175,9 +3175,7 @@ name = "py-base"
 version = "0.1.0"
 dependencies = [
  "base",
- "base-types",
  "pyo3",
- "serde_json",
 ]
 
 [[package]]

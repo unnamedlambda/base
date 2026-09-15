@@ -108,12 +108,13 @@ class TestArtifact:
         assert Artifact(make_double_artifact()) is not None
 
     def test_invalid_json(self):
-        with pytest.raises(ValueError, match="Invalid Artifact JSON"):
-            Artifact("not json")
+        """The runtime parses the artifact, so that is where bad JSON is caught."""
+        with pytest.raises(ValueError, match="not an Artifact"):
+            Base(Artifact("not json"))
 
     def test_missing_fields(self):
-        with pytest.raises(ValueError):
-            Artifact('{"functions": []}')
+        with pytest.raises(ValueError, match="not an Artifact"):
+            Base(Artifact('{"functions": []}'))
 
 
 class TestBase:
@@ -128,7 +129,7 @@ class TestBase:
             "memory_size": 256,
             "data": [],
         })
-        with pytest.raises(ValueError, match="Base::new failed"):
+        with pytest.raises(ValueError, match="v9 used before it is defined"):
             Base(Artifact(artifact_json))
 
     def test_execute_no_data(self):

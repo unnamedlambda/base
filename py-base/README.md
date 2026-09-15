@@ -1,7 +1,8 @@
 # py-base
 
-Python bindings for [Base](../README.md) via PyO3. Zero-copy data passing
-between Python and the Base execution engine.
+Python bindings for [Base](../README.md) via PyO3, over base's C ABI — the same
+six functions a C or Lean host calls. Zero-copy data passing between Python and
+the Base execution engine.
 
 ## Setup
 
@@ -64,8 +65,9 @@ say; `base` gives them no format.
 ## API
 
 ### `Artifact(json: str)`
-What a generator emits: the CLIF functions, the memory size and any initial
-memory. Constructed once.
+What a generator emits: the CLIF functions, the memory size and the data
+segments memory starts with. The runtime is what parses it, so malformed JSON
+is reported when a `Base` is built from it.
 
 ### `load_artifact(path: str) -> Artifact`
 Read an artifact from the JSON a generator wrote.
@@ -78,10 +80,17 @@ it once.
 Execute. `data` accepts anything implementing the buffer protocol (`bytes`,
 `bytearray`, `numpy` array) — zero copy.
 
-### `base.execute_into(fn_idx, data, out) -> None`
+### `base.execute_into(fn_idx, data, out=None) -> None`
 Execute, writing through `out` (a `bytearray`). Both buffers are zero-copy.
 
-### `run(artifact, fn_idx) -> None`
+### `base.read_memory(offset, length) -> bytes`
+What the program left in its own memory, at an address its generator says it
+writes. A range past the end is an error, not a short answer.
+
+### `base.memory_size() -> int`
+How many bytes of memory the program runs in.
+
+### `run(artifact, fn_idx, data=None) -> None`
 One-shot: compile and execute in a single call. For a program run once; use
 `Base` for anything run twice.
 
