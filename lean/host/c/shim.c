@@ -13,14 +13,14 @@
 #include <lean/lean.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Declared rather than included: the runtime is a Rust cdylib and has no
  * header. These must match `base/src/capi.rs`. */
 void *base_new(const uint8_t *artifact_json, size_t len);
 int32_t base_execute(void *handle, uint32_t fn_idx, const uint8_t *data,
                      size_t data_len, uint8_t *out, size_t out_len);
-size_t base_read_memory(const void *handle, size_t offset, uint8_t *dst, size_t len);
-size_t base_memory_size(const void *handle);
+const uint8_t *base_memory(const void *handle, size_t *len);
 size_t base_last_error(uint8_t *buf, size_t cap);
 void base_free(void *handle);
 
@@ -74,23 +74,27 @@ LEAN_EXPORT lean_obj_res lean_base_execute(size_t handle, uint32_t fn_idx,
     return lean_io_result_mk_ok(out);
 }
 
-/* A short read is a refused range, not a short answer -- `base_read_memory`
- * copies all of it or none of it -- so anything other than `len` is an error
- * rather than a truncated `ByteArray`. */
+/* A copy, because the runtime's memory is borrowed only until the next call
+ * and a `ByteArray` is not. A range reaching past the end is an error rather
+ * than a short answer, so a truncated read cannot be mistaken for a result. */
 LEAN_EXPORT lean_obj_res lean_base_read_memory(size_t handle, size_t offset, size_t len,
                                                lean_obj_arg w) {
     (void)w;
-    lean_object *dst = lean_alloc_sarray(1, len, len);
-    if (base_read_memory((const void *)handle, offset, lean_sarray_cptr(dst), len) != len) {
-        lean_dec_ref(dst);
-        return base_io_error("base_read_memory refused the range");
+    size_t have = 0;
+    const uint8_t *memory = base_memory((const void *)handle, &have);
+    if (memory == NULL || offset > have || len > have - offset) {
+        return base_io_error("that range is outside the runtime's memory");
     }
+    lean_object *dst = lean_alloc_sarray(1, len, len);
+    memcpy(lean_sarray_cptr(dst), memory + offset, len);
     return lean_io_result_mk_ok(dst);
 }
 
 LEAN_EXPORT lean_obj_res lean_base_memory_size(size_t handle, lean_obj_arg w) {
     (void)w;
-    return lean_io_result_mk_ok(lean_box_usize(base_memory_size((const void *)handle)));
+    size_t len = 0;
+    base_memory((const void *)handle, &len);
+    return lean_io_result_mk_ok(lean_box_usize(len));
 }
 
 LEAN_EXPORT lean_obj_res lean_base_free(size_t handle, lean_obj_arg w) {

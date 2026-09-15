@@ -12,7 +12,7 @@
 //! # Results
 //!
 //! A program answers through the out buffer its caller passes, and whatever it
-//! leaves in its own memory stays readable through [`base_read_memory`]. Base
+//! leaves in its own memory stays readable through [`base_memory`]. Base
 //! gives neither a format: the generator that built the program is what knows
 //! what the bytes mean.
 //!
@@ -180,64 +180,34 @@ pub unsafe extern "C" fn base_execute(
     })
 }
 
-/// Copy `len` bytes of this `Base`'s memory from `offset` into `dst`, answering
-/// how many were copied. With `dst` null and `len` zero it answers nothing and
-/// writes nothing; [`base_memory_size`] is how a caller learns the length.
+/// This `Base`'s memory, and how many bytes of it, for as long as the caller
+/// does not call [`base_execute`] or [`base_free`] on it.
 ///
-/// This is how a host reads what a program left in its own memory, at an
-/// address the program's generator says it wrote. A range reaching
-/// past the end of memory copies nothing and answers `0` rather than a
-/// truncation, so a short read cannot be mistaken for a short result.
+/// A program's results are in here, at the addresses its generator says it
+/// writes; base gives the bytes no format. Null with `*len` zero means there is
+/// no handle.
 ///
-/// # Safety
-///
-/// `handle` must be a live pointer from [`base_new`], and `dst` must point to
-/// `len` writable bytes, or be null with `len` zero.
-#[no_mangle]
-pub unsafe extern "C" fn base_read_memory(
-    handle: *const Base,
-    offset: usize,
-    dst: *mut u8,
-    len: usize,
-) -> usize {
-    guard(0, || {
-        clear_error();
-        let Some(base) = handle.as_ref() else {
-            set_error("handle is null");
-            return 0;
-        };
-        let Some(dst) = slice_out(dst, len) else {
-            set_error("dst is null with a non-zero length");
-            return 0;
-        };
-        let Some(end) = offset.checked_add(len) else {
-            set_error("offset + len overflows");
-            return 0;
-        };
-        let memory = base.memory_bytes();
-        if end > memory.len() {
-            set_error(format!(
-                "range {offset}..{end} is outside the {} bytes of memory",
-                memory.len()
-            ));
-            return 0;
-        }
-        dst.copy_from_slice(&memory[offset..end]);
-        len
-    })
-}
-
-/// How many bytes of shared memory this `Base` holds, which bounds
-/// [`base_read_memory`].
+/// The pointer is the memory itself, not a copy: reading it after the next
+/// execute reads whatever that call left, and reading it after [`base_free`] is
+/// undefined. A host that needs the bytes to outlive either copies them.
 ///
 /// # Safety
 ///
-/// `handle` must be a live pointer from [`base_new`], or null.
+/// `handle` must be a live pointer from [`base_new`], or null. `len` must be
+/// writable, or null when the caller does not want the length.
 #[no_mangle]
-pub unsafe extern "C" fn base_memory_size(handle: *const Base) -> usize {
-    match handle.as_ref() {
-        Some(base) => base.memory_bytes().len(),
-        None => 0,
+pub unsafe extern "C" fn base_memory(handle: *const Base, len: *mut usize) -> *const u8 {
+    let memory = match handle.as_ref() {
+        Some(base) => base.memory_bytes(),
+        None => &[],
+    };
+    if let Some(len) = len.as_mut() {
+        *len = memory.len();
+    }
+    if memory.is_empty() {
+        std::ptr::null()
+    } else {
+        memory.as_ptr()
     }
 }
 
@@ -301,37 +271,23 @@ mod tests {
     fn an_artifact_round_trips_from_json_and_frees() {
         let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
         assert!(!handle.is_null(), "{}", last_error());
-        assert_eq!(unsafe { base_memory_size(handle) }, 64);
+        let mut len = 0usize;
+        assert!(!unsafe { base_memory(handle, &mut len) }.is_null());
+        assert_eq!(len, 64);
         unsafe { base_free(handle) };
     }
 
-    /// `initial_memory` is what the program starts from, so reading it back is
-    /// how a host confirms it got the setup it sent.
+    /// The data segments are what the program starts from, so reading them back
+    /// is how a host confirms it got the artifact it sent.
     #[test]
-    fn read_memory_answers_the_initial_bytes() {
+    fn memory_answers_the_bytes_the_artifact_starts_with() {
         let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
         assert!(!handle.is_null(), "{}", last_error());
-        let mut got = [0u8; 4];
-        assert_eq!(unsafe { base_read_memory(handle, 0, got.as_mut_ptr(), 4) }, 4);
-        assert_eq!(got, [1, 2, 3, 4]);
-        unsafe { base_free(handle) };
-    }
-
-    /// A range past the end copies nothing rather than a prefix: a host reading
-    /// a result must not mistake a short read for a short answer.
-    #[test]
-    fn read_memory_refuses_a_range_past_the_end() {
-        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
-        let mut got = [0xAAu8; 8];
-        assert_eq!(unsafe { base_read_memory(handle, 60, got.as_mut_ptr(), 8) }, 0);
-        assert_eq!(got, [0xAA; 8], "nothing was written");
-        assert!(last_error().contains("outside"));
-        // …and an overflowing offset is rejected before it is compared.
-        assert_eq!(
-            unsafe { base_read_memory(handle, usize::MAX, got.as_mut_ptr(), 8) },
-            0
-        );
-        assert!(last_error().contains("overflows"));
+        let mut len = 0usize;
+        let memory = unsafe { base_memory(handle, &mut len) };
+        assert_eq!(len, 64);
+        assert_eq!(unsafe { std::slice::from_raw_parts(memory, 4) }, [1, 2, 3, 4]);
+        assert_eq!(unsafe { std::slice::from_raw_parts(memory, len) }[4..], [0u8; 60]);
         unsafe { base_free(handle) };
     }
 
@@ -346,11 +302,9 @@ mod tests {
             -1
         );
         assert!(last_error().contains("null"));
-        assert_eq!(
-            unsafe { base_read_memory(std::ptr::null(), 0, std::ptr::null_mut(), 0) },
-            0
-        );
-        assert_eq!(unsafe { base_memory_size(std::ptr::null()) }, 0);
+        let mut len = 7usize;
+        assert!(unsafe { base_memory(std::ptr::null(), &mut len) }.is_null());
+        assert_eq!(len, 0);
         // Freeing null is a no-op, not a double free.
         unsafe { base_free(std::ptr::null_mut()) };
     }
