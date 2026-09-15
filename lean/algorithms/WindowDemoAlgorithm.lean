@@ -362,7 +362,7 @@ def testRenderPixel : Prog V L Unit := do
 
 
 -- Program assembly -----------------------------------------------------------
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 mainBody,
@@ -388,18 +388,18 @@ def payloads : List UInt8 :=
       uint32ToBytes (UInt32.ofNat (imageHeight / 2)))
   ]
 
-def gameSetup (clif : Program) : Setup := {
-  clif,
+def gameSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def mainAlgorithm : Algorithm := { fn_idx := IR.mainFnIdx }
-def moveRightAlg  : Algorithm := { fn_idx := u32 2 }
-def moveLeftAlg   : Algorithm := { fn_idx := u32 3 }
-def moveUpClampAlg : Algorithm := { fn_idx := u32 4 }
-def quitOnCloseAlg : Algorithm := { fn_idx := u32 5 }
-def renderPixelAlg : Algorithm := { fn_idx := u32 6 }
+def mainAlgorithm : UInt32 := IR.mainFnIdx
+def moveRightAlg  : UInt32 := 2
+def moveLeftAlg   : UInt32 := 3
+def moveUpClampAlg : UInt32 := 4
+def quitOnCloseAlg : UInt32 := 5
+def renderPixelAlg : UInt32 := 6
 
 end Algorithm
 
@@ -407,12 +407,6 @@ def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
   let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.toJsonArtifact "window_demo" (Algorithm.gameSetup clif) Algorithm.mainAlgorithm [
-      ("test_move_right",   Algorithm.moveRightAlg),
-      ("test_move_left",    Algorithm.moveLeftAlg),
-      ("test_move_up_clamp", Algorithm.moveUpClampAlg),
-      ("test_quit_on_close", Algorithm.quitOnCloseAlg),
-      ("test_render_pixel", Algorithm.renderPixelAlg)
-    ]]
+    AlgorithmLib.toJsonArtifact "window_demo" (Algorithm.gameSetup clif)]
 
 #eval ShipScan.check "WindowDemoAlgorithm"

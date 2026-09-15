@@ -541,7 +541,7 @@ def testConservation : Prog V L Unit := do
   writeOutput (← sextend64 (← icmp .eq count expected)) count expected
 
 
-def clifIrSource : Except String IR.Program :=
+def clifIrSource : Except String (List IR.FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 mainBody,
@@ -568,15 +568,15 @@ def payloads : List UInt8 :=
     f.bindRenderB.init (bindBytes [(1, 1), (2, 0)])
   ]
 
-def gameSetup (clif : IR.Program) : Setup := {
-  clif,
+def gameSetup (clif : List IR.FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def mainAlgorithm   : Algorithm := { fn_idx := IR.mainFnIdx }
-def grainFallsAlg   : Algorithm := { fn_idx := u32 2 }
-def conservationAlg : Algorithm := { fn_idx := u32 3 }
+def mainAlgorithm   : UInt32 := IR.mainFnIdx
+def grainFallsAlg   : UInt32 := 2
+def conservationAlg : UInt32 := 3
 
 end Algorithm
 
@@ -584,9 +584,6 @@ def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
   let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.toJsonArtifact "falling_sand" (Algorithm.gameSetup clif) Algorithm.mainAlgorithm [
-      ("test_grain_falls",  Algorithm.grainFallsAlg),
-      ("test_conservation", Algorithm.conservationAlg)
-    ]]
+    AlgorithmLib.toJsonArtifact "falling_sand" (Algorithm.gameSetup clif)]
 
 #eval ShipScan.check "FallingSandAlgorithm"

@@ -21,36 +21,41 @@ import when it was built that way.
 
 ## Usage
 
-An artifact is what a Lean generator emits: one `setup`, the entry point to
-call first as `main`, and any further stages by name in `extras`.
+An artifact is what a Lean generator emits: the CLIF functions, the size of the
+memory they run in, and that memory's initial contents. An entry point is a
+function index, and which index is which stage is the generator's knowledge —
+so a script names those numbers itself, as `entries.py` does beside the
+applications in this repository.
 
 ```python
 from py_base import load_artifact, Base
 
+ENTRY = 1   # the index this artifact's generator gave its entry point
+
 artifact = load_artifact("../lean-artifacts/artifacts/Sha256Algorithm/sha256_app.json")
 
-base = Base(artifact.setup)          # JIT compiles — do this once
-base.execute(artifact.main)          # …then execute as often as you like
+base = Base(artifact)                # JIT compiles — do this once
+base.execute(ENTRY)                  # …then execute as often as you like
 ```
 
-Building the two values directly from JSON works the same way, which is what
-the tests do:
+Building the artifact directly from JSON works the same way, which is what the
+tests do:
 
 ```python
-from py_base import Setup, Algorithm, Base, run
+from py_base import Artifact, Base, run
 import json
 
-setup = Setup(json.dumps({
-    "clif": {"functions": [...]},    # the program, as data
+artifact = Artifact(json.dumps({
+    "functions": [...],              # the program, as data
     "memory_size": 256,
 }))
-alg = Algorithm(json.dumps({"fn_idx": 1}))
+ENTRY = 1
 
 data = b"\x01\x00\x00\x00\x02\x00\x00\x00"
 out = bytearray(8)
 
-base = Base(setup)
-base.execute_into(alg, data, out)     # both buffers zero-copy
+base = Base(artifact)
+base.execute_into(ENTRY, data, out)   # both buffers zero-copy
 ```
 
 A program answers through `out`. What the bytes mean is the generator's to
@@ -58,31 +63,25 @@ say; `base` gives them no format.
 
 ## API
 
-### `Setup(json: str)`
-A setup: the CLIF program, the memory size and any initial memory. Constructed once.
-
-### `Algorithm(json: str)`
-Which function to call (`fn_idx`). Constructed once and reused across executions with no overhead.
-
-### `Artifact`
-What a generator emits, with `.setup`, `.main` and `.extras` — the last a dict
-of named stages.
+### `Artifact(json: str)`
+What a generator emits: the CLIF functions, the memory size and any initial
+memory. Constructed once.
 
 ### `load_artifact(path: str) -> Artifact`
 Read an artifact from the JSON a generator wrote.
 
-### `Base(setup: Setup)`
+### `Base(artifact: Artifact)`
 An execution engine. JIT compiles the program. This is the expensive step — do
 it once.
 
-### `base.execute(algorithm, data=None) -> None`
+### `base.execute(fn_idx, data=None) -> None`
 Execute. `data` accepts anything implementing the buffer protocol (`bytes`,
 `bytearray`, `numpy` array) — zero copy.
 
-### `base.execute_into(algorithm, data, out) -> None`
+### `base.execute_into(fn_idx, data, out) -> None`
 Execute, writing through `out` (a `bytearray`). Both buffers are zero-copy.
 
-### `run(setup, algorithm) -> None`
+### `run(artifact, fn_idx) -> None`
 One-shot: compile and execute in a single call. For a program run once; use
 `Base` for anything run twice.
 

@@ -81,7 +81,7 @@ def mainCode : Prog V L Unit := do
 
   let _ ← fldWriteFile0 ptr f.outputFilename f.fileData size
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 /-- The filenames the program reads from memory, laid into the region the
@@ -92,16 +92,16 @@ def payloads : List UInt8 :=
     f.outputFilename.init (stringToBytes "output.txt")
   ]
 
-def setup (clif : Program) : Setup := {
-  clif,
+def setup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def algorithm : Algorithm := { fn_idx := IR.mainFnIdx }
+def algorithm : UInt32 := IR.mainFnIdx
 
-/-- What a host runs: the setup, once the body it carries has been checked. -/
-def shipped : Except String Setup := do return setup (← clifIrSource)
+/-- What a host runs: the artifact, once the body it carries has been checked. -/
+def shipped : Except String Artifact := do return setup (← clifIrSource)
 
 end Upcase
 

@@ -8,6 +8,9 @@ use base::{init_tracing, Base, Artifact};
 
 const QWEN2_ON_DISK_BINARY: &[u8] = build_support::artifact!("Qwen2OnDiskAlgorithm/qwen2_on_disk");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 41;
+
 /// Path to the on-disk KV cache file.  Must match `KV_CACHE_PATH_OFF` in the
 /// Lean algorithm.  We delete it at startup so each session begins with a
 /// fresh, empty cache (otherwise stale K/V from a previous run would leak in).
@@ -39,9 +42,9 @@ fn main() {
     }
 
     let artifact = Artifact::from_bytes(QWEN2_ON_DISK_BINARY);
-    let mut base = Base::new(artifact.setup).expect("Base::new");
+    let mut base = Base::new(artifact).expect("Base::new");
 
     eprintln!("Starting qwen2_on_disk (weights={weights_path}, tokenizer={tokenizer_path})");
-    base.execute_into(&artifact.main, &data, &mut [])
+    base.execute_into(MAIN, &data, &mut [])
         .expect("qwen2_on_disk run");
 }

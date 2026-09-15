@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
+import entries
 
 
 SIZES = [10_000, 50_000, 100_000, 500_000, 1_000_000]
@@ -45,8 +46,9 @@ def build_payload(text_path: str, output_path: str) -> bytes:
 
 def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    engine = py_base.Base(artifact.setup)
-    alg = artifact.main
+    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    alg = artifact_entries["main"]
     results = []
 
     for n in SIZES:

@@ -3,6 +3,9 @@ use base::Artifact;
 
 const SORT_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/sort_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 fn generate_data(n: usize) -> Vec<i32> {
     let mut values = Vec::with_capacity(n);
     for i in 0..n {
@@ -61,7 +64,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let mut results = Vec::new();
 
     let artifact = Artifact::from_bytes(SORT_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &n in &sizes {
         let label = format!("Sort ({})", format_count(n));
@@ -79,12 +82,12 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         });
 
         // Warmup Base
-        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
 
         // Base
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

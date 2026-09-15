@@ -67,6 +67,9 @@ const SELROT_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/selectro
 
 const SELMASK_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/selectmask_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 const HI: f32 = 0.5;
 const LO: f32 = -0.5;
 
@@ -312,7 +315,7 @@ fn sweep(
     const TOTAL: usize = 256 << 20;
 
     let artifact = Artifact::from_bytes(art_bytes);
-    let mut inst = base::Base::new(artifact.setup).expect("Base::new failed");
+    let mut inst = base::Base::new(artifact).expect("Base::new failed");
     let mut out = [0u8; 8];
 
     for &(n, label) in sizes {
@@ -337,11 +340,11 @@ fn sweep(
             t.elapsed().as_secs_f64() * 1000.0
         });
 
-        let _ = inst.execute_into(&artifact.main, bytes, &mut out);
+        let _ = inst.execute_into(MAIN, bytes, &mut out);
         let base_ms = harness::median_of(iterations, || {
             let t = std::time::Instant::now();
             for _ in 0..reps {
-                let _ = inst.execute_into(&artifact.main, bytes, &mut out);
+                let _ = inst.execute_into(MAIN, bytes, &mut out);
             }
             t.elapsed().as_secs_f64() * 1000.0
         });
@@ -402,7 +405,7 @@ fn sweep_store(iterations: usize, rows: &mut Vec<BenchResult>) {
     ];
     const TOTAL: usize = 256 << 20;
     let artifact = Artifact::from_bytes(STORE_ARTIFACT);
-    let mut inst = base::Base::new(artifact.setup).expect("Base::new failed");
+    let mut inst = base::Base::new(artifact).expect("Base::new failed");
 
     for &(n, label) in sizes {
         let data = gen_floats(n, 42);
@@ -429,11 +432,11 @@ fn sweep_store(iterations: usize, rows: &mut Vec<BenchResult>) {
         });
 
         let mut d_base = vec![0u8; n * 4];
-        let _ = inst.execute_into(&artifact.main, bytes, &mut d_base);
+        let _ = inst.execute_into(MAIN, bytes, &mut d_base);
         let base_ms = harness::median_of(iterations, || {
             let t = std::time::Instant::now();
             for _ in 0..reps {
-                let _ = inst.execute_into(&artifact.main, bytes, &mut d_base);
+                let _ = inst.execute_into(MAIN, bytes, &mut d_base);
             }
             t.elapsed().as_secs_f64() * 1000.0
         });
@@ -495,15 +498,15 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     // how much of it is dispatch rather than arithmetic
     {
         let artifact = Artifact::from_bytes(CLAMP_ARTIFACT);
-        let mut inst = base::Base::new(artifact.setup).expect("Base::new failed");
+        let mut inst = base::Base::new(artifact).expect("Base::new failed");
         let mut out = [0u8; 8];
         let tiny = gen_floats(16, 7);
         let bytes = as_bytes(&tiny);
-        let _ = inst.execute_into(&artifact.main, bytes, &mut out);
+        let _ = inst.execute_into(MAIN, bytes, &mut out);
         let reps = 100_000;
         let t = std::time::Instant::now();
         for _ in 0..reps {
-            let _ = inst.execute_into(&artifact.main, bytes, &mut out);
+            let _ = inst.execute_into(MAIN, bytes, &mut out);
         }
         println!(
             "  Base dispatch overhead: {:.0} ns/call (16-element input)",
@@ -540,7 +543,7 @@ fn width_ceiling(iterations: usize) {
             return;
         }
         let artifact = Artifact::from_bytes(PLAIN_ARTIFACT);
-        let mut inst = base::Base::new(artifact.setup).expect("Base::new failed");
+        let mut inst = base::Base::new(artifact).expect("Base::new failed");
         let mut out = [0u8; 8];
         const TOTAL: usize = 256 << 20;
         println!();
@@ -567,11 +570,11 @@ fn width_ceiling(iterations: usize) {
                 }
                 t.elapsed().as_secs_f64() * 1000.0
             });
-            let _ = inst.execute_into(&artifact.main, bytes, &mut out);
+            let _ = inst.execute_into(MAIN, bytes, &mut out);
             let base_ms = harness::median_of(iterations, || {
                 let t = std::time::Instant::now();
                 for _ in 0..reps {
-                    let _ = inst.execute_into(&artifact.main, bytes, &mut out);
+                    let _ = inst.execute_into(MAIN, bytes, &mut out);
                 }
                 t.elapsed().as_secs_f64() * 1000.0
             });

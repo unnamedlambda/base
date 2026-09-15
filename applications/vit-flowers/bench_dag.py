@@ -9,7 +9,9 @@ tape's read/write dependences allow.
 Same launches means same numbers: the logits and the updated parameters are
 compared bit for bit rather than to a tolerance.
 """
+import os
 import sys, time, numpy as np, py_base
+import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 SQ, NC, N = 200, 128, 50
@@ -17,9 +19,10 @@ SQ, NC, N = 200, 128, 50
 blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy").astype("<f4").tobytes()
 art = py_base.load_artifact(ART)
-base = py_base.Base(art.setup)
-ex = art.extras
-base.execute_into(art.main, blob, bytearray(0))
+art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
+base = py_base.Base(art)
+ex = art_entries
+base.execute_into(art_entries["main"], blob, bytearray(0))
 
 for c in ["captureChain", "captureStepChain", "capture", "captureStep"]:
     base.execute_into(ex[c], b"", bytearray(0))

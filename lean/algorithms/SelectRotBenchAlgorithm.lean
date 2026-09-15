@@ -56,12 +56,12 @@ def code : Prog V L Unit := do
   store (← fcvtFromSint .f64 (fin.head)) outPtr
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "selectrot_algorithm" {
-    clif, memory_size := MEM_SIZE
-  } { fn_idx := u32 1 }]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "selectrot_algorithm" {
+    functions := clif, memory_size := MEM_SIZE
+  }]
 
 end SelectRotBench

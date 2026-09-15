@@ -8,7 +8,9 @@ numpy + py_base only — torch must not share the process.
 sequence, so the outputs are compared bit for bit rather than to a tolerance:
 a replay that differs at all is a replay of something else.
 """
+import os
 import sys, time, numpy as np, py_base
+import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 SQ, NC = 200, 128
@@ -16,9 +18,10 @@ TORCH_MS = 1.42          # batch 1, torch.compile(max-autotune), bench_torch_ste
 
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
-base = py_base.Base(art.setup)
-base.execute_into(art.main, blob, bytearray(0))
-run, replay, fetch = art.extras["run"], art.extras["replay"], art.extras["fetch"]
+art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
+base = py_base.Base(art)
+base.execute_into(art_entries["main"], blob, bytearray(0))
+run, replay, fetch = art_entries["run"], art_entries["replay"], art_entries["fetch"]
 
 
 def timed(fn, n=50, warm=10):
@@ -34,7 +37,7 @@ def timed(fn, n=50, warm=10):
 
 
 ms_run, out_run = timed(run)
-base.execute_into(art.extras["capture"], b"", bytearray(0))
+base.execute_into(art_entries["capture"], b"", bytearray(0))
 ms_rep, out_rep = timed(replay)
 
 same = bool((out_run == out_rep).all())

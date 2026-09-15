@@ -14,11 +14,13 @@ bound the wrong weights shows up as a wrong answer rather than a slower one.
 Run:  py-base/.venv/bin/python applications/ten-qwen/moe.py <artifact.json>
 """
 
+import os
 import sys
 import time
 
 import numpy as np
 import py_base
+import entries
 
 MD, MDFF, NE, MUSED = 128, 256, 32, 2
 
@@ -48,11 +50,12 @@ def main():
     ws = [(u(MDFF, MD), u(MDFF, MD), u(MD, MDFF)) for _ in range(NE)]
 
     art = py_base.load_artifact(sys.argv[1])
-    ex = art.extras
+    art_entries = entries.entries(os.path.basename(sys.argv[1]).removesuffix(".json"))
+    ex = art_entries
     blob = (np.ones(NE, dtype=np.float32).tobytes() + wr.tobytes() + x.tobytes()
             + b"".join(m.astype("<f4").ravel().tobytes() for w in ws for m in w))
-    base = py_base.Base(art.setup)
-    base.execute_into(art.main, blob, bytearray(0))
+    base = py_base.Base(art)
+    base.execute_into(art_entries["main"], blob, bytearray(0))
 
     # 1. Route.
     base.execute_into(ex["runRouter"], b"", bytearray(0))

@@ -696,7 +696,7 @@ def fetchDwFn : Prog V L Unit := do
   let wBytes ← iconst64 (N * N * 4)
   let _ ← ffi .cudaDownload %[ctxPtr, dwId, outPtr, wBytes]
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 loadFn,
@@ -751,29 +751,30 @@ def initialMemory : List UInt8 :=
     ++ k ++ zeros (PTX_ADJ_OFF - PTX_SGD_OFF - k.length)
     ++ a ++ zeros (MEM_SIZE - PTX_ADJ_OFF - a.length)
 
-def setup (clif : Program) : Setup := {
-  clif,
+def setup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
 
-/-- The entry point, and the extras the runtime may call after it.  Named so
-    the artifact and the arity theorem below read the same list. -/
-def entryAlg : Algorithm := { fn_idx := u32 1 }
+/-- The entry points this artifact has, by the name a host knows them by. The
+    artifact carries only their indices; this list is what a host is written
+    against, and what the arity theorem below reads. -/
+def entryAlg : UInt32 := 1
 
-def extraAlgs : List (String × Algorithm) :=
-  [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
-   ("runDw", { fn_idx := u32 4 }), ("fetchDw", { fn_idx := u32 5 }),
-   ("runSiluBwd", { fn_idx := u32 6 }), ("runT", { fn_idx := u32 7 }),
-   ("runQ", { fn_idx := u32 8 }), ("runS", { fn_idx := u32 9 }),
-   ("runDxr", { fn_idx := u32 10 }), ("fetchDxr", { fn_idx := u32 11 }),
-   ("runFwd", { fn_idx := u32 12 }), ("runY", { fn_idx := u32 13 }),
-   ("runDy", { fn_idx := u32 14 }), ("runSgd", { fn_idx := u32 15 }),
-   ("fetchY", { fn_idx := u32 16 }), ("runAdj", { fn_idx := u32 17 }),
-   ("runBwdAll", { fn_idx := u32 18 })]
+def entryPoints : List (String × UInt32) :=
+  [("run", 2), ("fetch", 3),
+   ("runDw", 4), ("fetchDw", 5),
+   ("runSiluBwd", 6), ("runT", 7),
+   ("runQ", 8), ("runS", 9),
+   ("runDxr", 10), ("fetchDxr", 11),
+   ("runFwd", 12), ("runY", 13),
+   ("runDy", 14), ("runSgd", 15),
+   ("fetchY", 16), ("runAdj", 17),
+   ("runBwdAll", 18)]
 
-def artifacts (clif : Program) : Array Json :=
-  #[ toJsonArtifact "backward_wide" (setup clif) entryAlg extraAlgs ]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[ toJsonArtifact "backward_wide" (setup clif) ]
 
 end BackwardWide
 

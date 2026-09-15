@@ -76,7 +76,7 @@ def warpCode (w : WP) : Prog V L Unit := warpCodeAt w w.bindOff
 def warpFn (w : WP) : FuncData :=
   Prog.stateOf 1 (warpCode w)
 
-def warpClif (w : WP) : Except String Program :=
+def warpClif (w : WP) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 (warpCode w)]
 
 def warpPayloadDSL (w : WP) : List UInt8 :=
@@ -100,11 +100,9 @@ theorem payload_fits (w : WP) : (warpPayloadDSL w).length ≤ w.memSize := by
 open AlgorithmLib.IR AlgorithmLib.HProg in
 def warpArtifactDSL (name : String) (blkLog : Nat) : Except String Lean.Json := do
   let w : WP := ⟨blkLog⟩
+  let functions ← warpClif w
   return AlgorithmLib.toJsonArtifact name
-    { clif := ← warpClif w,
-      memory_size := w.memSize,
-      initial_memory := warpPayloadDSL w }
-    { fn_idx := AlgorithmLib.IR.mainFnIdx }
+    { functions, memory_size := w.memSize, initial_memory := warpPayloadDSL w }
 
 end Algorithm
 

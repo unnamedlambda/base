@@ -123,7 +123,7 @@ def tMainFn : Prog V L Unit :=
 
 def tShippedBodies : List Prog.Body := [ tMainFn ]
 
-def tClifIR : Except String Program :=
+def tClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: tShippedBodies.zipIdx.map
       (fun (b, i) => Prog.compileProg (i + 1) b)
@@ -142,16 +142,16 @@ def tInitialMemory : List UInt8 :=
   zeros T_HOST_LEN ++ u32le (D_TEXT + TEXT_MAX)
     ++ zeros (T_MEM_SIZE - T_HOST_LEN - 4)
 
-def tSetup (clif : Program) : Setup := {
-  clif
+def tSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := T_MEM_SIZE
   initial_memory := tInitialMemory
 }
 
 #eval LayoutScan.check "TokenizerTest" [``tMemMap]
 
-def artifacts (clif : Program) : Array Json :=
-  #[ toJsonArtifact "tokenizer_test" (tSetup clif) { fn_idx := u32 1 } [] ]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[ toJsonArtifact "tokenizer_test" (tSetup clif) ]
 
 end TokenizerTest
 

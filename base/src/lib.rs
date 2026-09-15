@@ -5,7 +5,7 @@
 #[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
 compile_error!("base runs only on 64-bit little-endian targets");
 
-pub use base_types::{Algorithm, Artifact, Setup};
+pub use base_types::Artifact;
 use std::{
     pin::Pin,
     sync::{Arc, Once},
@@ -56,18 +56,18 @@ impl Drop for Base {
 }
 
 impl Base {
-    pub fn new(setup: Setup) -> Result<Self, Error> {
+    pub fn new(artifact: Artifact) -> Result<Self, Error> {
         // The arena holds what the program asked for and the image it ships
         // with, and nothing else: the caller's buffers are arguments, so there
         // is no header the engine has to make room for.
-        let needed = setup.memory_size.max(setup.initial_memory.len());
-        let mut memory = setup.initial_memory;
+        let needed = artifact.memory_size.max(artifact.initial_memory.len());
+        let mut memory = artifact.initial_memory;
         memory.resize(needed, 0);
-        Self::from_parts(setup.clif, memory.into_boxed_slice())
+        Self::from_parts(artifact.functions, memory.into_boxed_slice())
     }
 
     fn from_parts(
-        clif: base_types::clif::Program,
+        functions: Vec<base_types::clif::Function>,
         memory: Box<[u8]>,
     ) -> Result<Self, Error> {
         let _span = info_span!("base_new", memory_size = memory.len()).entered();
@@ -76,10 +76,10 @@ impl Base {
         let mut memory = Pin::new(memory);
         let mem_ptr = memory.as_mut().as_mut_ptr();
 
-        let (module, clif_fns) = if clif.is_empty() {
+        let (module, clif_fns) = if functions.is_empty() {
             (None, None)
         } else {
-            let (module, fns) = jit::compile_program(&clif).map_err(Error::Clif)?;
+            let (module, fns) = jit::compile(&functions).map_err(Error::Clif)?;
             (Some(module), Some(fns))
         };
 
@@ -120,25 +120,27 @@ impl Base {
         }
     }
 
-    pub fn execute(
-        &mut self,
-        algorithm: &Algorithm,
-        data: &[u8],
-    ) -> Result<(), Error> {
-        self.execute_into(algorithm, data, &mut [])
+    /// Call the entry point at `fn_idx`, with nothing to answer through.
+    pub fn execute(&mut self, fn_idx: u32, data: &[u8]) -> Result<(), Error> {
+        self.execute_into(fn_idx, data, &mut [])
     }
 
+    /// Call the entry point at `fn_idx`, which answers in `out`.
+    ///
+    /// Which index does what is the artifact generator's knowledge: base
+    /// checks only that the index exists and that the function it names is
+    /// shaped like an entry point.
     pub fn execute_into(
         &mut self,
-        algorithm: &Algorithm,
+        fn_idx: u32,
         data: &[u8],
         out: &mut [u8],
     ) -> Result<(), Error> {
-        let _span = info_span!("execute", fn_idx = algorithm.fn_idx).entered();
+        let _span = info_span!("execute", fn_idx).entered();
         info!("starting execution");
 
         if let Some(ref fns) = self.clif_fns {
-            let fn_idx = algorithm.fn_idx as usize;
+            let fn_idx = fn_idx as usize;
             if fn_idx >= fns.len() {
                 return Err(Error::Execution(format!(
                     "fn_idx {fn_idx} out of range (have {} fns)",
@@ -178,9 +180,10 @@ impl Base {
     }
 }
 
-pub fn run(setup: Setup, algorithm: Algorithm) -> Result<(), Error> {
-    let mut base = Base::new(setup)?;
-    base.execute(&algorithm, &[])
+/// Compile an artifact and call one of its entry points, once.
+pub fn run(artifact: Artifact, fn_idx: u32) -> Result<(), Error> {
+    let mut base = Base::new(artifact)?;
+    base.execute(fn_idx, &[])
 }
 
 pub fn init_tracing() {
@@ -204,12 +207,12 @@ pub fn init_tracing() {
 /// The program as CLIF text — what was built, rather than what the caller
 /// believes was built. For eyeballing a test or a generated artifact; nothing
 /// in the pipeline reads it.
-pub fn clif_text(prog: &base_types::clif::Program) -> Result<String, String> {
+pub fn clif_text(functions: &[base_types::clif::Function]) -> Result<String, String> {
     use base_types::clif::Callee;
     let mut out = String::new();
     let isa = cranelift_native::builder().map_err(|e| e.to_string())?;
     let cc = cranelift_codegen::isa::CallConv::triple_default(isa.triple());
-    for f in &prog.functions {
+    for f in functions {
         // Cranelift prints a callee as the `FuncId` it was declared with, so
         // the stub resolver records what each id stood for and the names are
         // put back afterward.

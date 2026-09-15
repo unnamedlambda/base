@@ -125,7 +125,7 @@ def code : Prog V L Unit := do
   cudaCleanup ptr
 
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 -- ---------------------------------------------------------------------------
@@ -138,18 +138,16 @@ def payloads : List UInt8 :=
     f.bindDesc.init (uint32ToBytes 0 ++ uint32ToBytes 1)
   ]
 
-def saxpyConfig (clif : Program) : Setup := {
-  clif,
+def saxpyConfig (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def saxpyAlgorithm : Algorithm := {
-  fn_idx := IR.mainFnIdx
-}
+def saxpyAlgorithm : UInt32 := IR.mainFnIdx
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "saxpy_algorithm" (saxpyConfig clif) saxpyAlgorithm]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "saxpy_algorithm" (saxpyConfig clif)]
 
 
 end Algorithm

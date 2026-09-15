@@ -119,22 +119,20 @@ def code : Prog V L Unit := do
   radixPass tempPtr outPtr n shift3 true
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 def buildInitialMemory : List UInt8 := zeros MEM_SIZE
 
-def buildSetup (clif : Program) : Setup := {
-  clif,
+def buildSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
 
-def buildAlgorithm : Algorithm := {
-  fn_idx := u32 1
-}
+def buildAlgorithm : UInt32 := 1
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "sort_algorithm" (buildSetup clif) buildAlgorithm]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "sort_algorithm" (buildSetup clif)]
 
 end SortBench

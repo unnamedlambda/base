@@ -4,10 +4,11 @@ import AlgorithmLib.Layout
 /-!
 # Running an artifact from Lean
 
-`AlgorithmLib` builds a `Setup` and an `Algorithm`. Those are values, and until
-now the only way to run one was to write it out and let a Rust or Python host
-pick it up. This module hands the same values straight to the runtime, so the
-program that *builds* an artifact can be the program that runs it.
+`AlgorithmLib` builds an `Artifact`, and its entry points are function indices
+this generator chose. Those are values, and until now the only way to run one
+was to write it out and let a Rust or Python host pick it up. This module hands
+the same values straight to the runtime, so the program that *builds* an
+artifact can be the program that runs it.
 
 What that buys is not speed -- the runtime does exactly what it did before --
 but that the effectful part of a Lean program becomes a value. A `main` that
@@ -58,7 +59,7 @@ private opaque freeRaw (handle : USize) : IO Unit
 private opaque bindThreadRaw (handle : USize) : IO Unit
 
 @[extern "lean_base_execute"]
-private opaque executeRaw (handle : USize) (algorithmJson : @& ByteArray)
+private opaque executeRaw (handle : USize) (fnIdx : UInt32)
     (data : @& ByteArray) (outLen : USize) : IO ByteArray
 
 @[extern "lean_base_read_memory"]
@@ -69,10 +70,10 @@ private opaque memorySizeRaw (handle : USize) : IO USize
 
 private def jsonBytes (j : Json) : ByteArray := j.compress.toUTF8
 
-/-- Compile a setup and take its memory. Release it with `Runtime.close`, or let
-`withRuntime` do it. -/
-def open_ (setup : Setup) : IO Runtime :=
-  return ⟨← newRaw (jsonBytes (toJson setup))⟩
+/-- Compile an artifact and take its memory. Release it with `Runtime.close`,
+or let `withRuntime` do it. -/
+def open_ (artifact : Artifact) : IO Runtime :=
+  return ⟨← newRaw (jsonBytes (toJson artifact))⟩
 
 namespace Runtime
 
@@ -90,13 +91,15 @@ hand. -/
 def bindThread (rt : Runtime) : IO Unit :=
   bindThreadRaw rt.raw
 
-/-- Run one algorithm, answering the bytes it wrote to its out buffer.
+/-- Call one entry point, answering the bytes it wrote to its out buffer.
 
-`data` is what the program is handed as its input buffer and `outLen` how much
-room it is given to answer; a program that uses neither passes the defaults. -/
-def execute (rt : Runtime) (algorithm : Algorithm)
+`fnIdx` is the entry point's function index, which the generator that built the
+artifact chose. `data` is what the program is handed as its input buffer and
+`outLen` how much room it is given to answer; a program that uses neither
+passes the defaults. -/
+def execute (rt : Runtime) (fnIdx : UInt32)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray :=
-  executeRaw rt.raw (jsonBytes (toJson algorithm)) data (USize.ofNat outLen)
+  executeRaw rt.raw fnIdx data (USize.ofNat outLen)
 
 /-- `len` bytes of the runtime's shared memory from `offset`.
 
@@ -159,58 +162,18 @@ def Runtime.readField (rt : Runtime) (f : Fld t) [inst : IsHostField t α] :
     IO α :=
   return inst.decode (← rt.readMemory f.offset t.size)
 
-/-- Open a runtime for `setup`, hand it to `f`, and close it however `f`
+/-- Open a runtime for `artifact`, hand it to `f`, and close it however `f`
 ends. -/
-def withRuntime (setup : Setup) (f : Runtime → IO α) : IO α := do
-  let rt ← open_ setup
+def withRuntime (artifact : Artifact) (f : Runtime → IO α) : IO α := do
+  let rt ← open_ artifact
   try f rt finally rt.close
 
-/-- Build an artifact and run its entry point, in one process.
+/-- Build an artifact and call one of its entry points, in one process.
 
-The whole of what a simple host does. Anything reading a result, running an
-extra stage out of `extras`, or looping wants `withRuntime` instead. -/
-def run (setup : Setup) (algorithm : Algorithm)
+The whole of what a simple host does. Anything reading a result, calling a
+further entry point, or looping wants `withRuntime` instead. -/
+def run (artifact : Artifact) (fnIdx : UInt32)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray :=
-  withRuntime setup fun rt => rt.execute algorithm data outLen
-
--- ---------------------------------------------------------------------------
--- Artifacts with more than one entry point
--- ---------------------------------------------------------------------------
-
-/-- What a generator emits: one setup, the entry point to call first, and any
-further stages by name.
-
-The same three fields the Rust and Python hosts deserialize, so a host that
-builds its artifact in-process and one that reads it off disk are looking at
-the same thing. A pipeline whose stages must run in order -- load, then infer
--- is the case this exists for: `main` is the one you call first and the rest
-are in `extras`. -/
-structure App where
-  setup : Setup
-  main : Algorithm
-  extras : List (String × Algorithm) := []
-
-/-- Run a named stage out of `extras`.
-
-An unknown name is an error rather than a silent no-op: a mistyped stage that
-did nothing would look exactly like a stage that ran and had nothing to do. -/
-def Runtime.executeNamed (rt : Runtime) (app : App) (name : String)
-    (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray := do
-  match app.extras.lookup name with
-  | some alg => rt.execute alg data outLen
-  | none =>
-      let known := ", ".intercalate (app.extras.map (·.1))
-      throw <| IO.userError
-        s!"no stage named '{name}'; this artifact has: {known}"
-
-/-- Open a runtime for `app`'s setup, hand it to `f`, and close it however `f`
-ends. -/
-def withApp (app : App) (f : Runtime → IO α) : IO α :=
-  withRuntime app.setup f
-
-/-- Run `app`'s entry point and nothing else. -/
-def App.run (app : App) (data : ByteArray := .empty) (outLen : Nat := 0) :
-    IO ByteArray :=
-  Base.run app.setup app.main data outLen
+  withRuntime artifact fun rt => rt.execute fnIdx data outLen
 
 end Base

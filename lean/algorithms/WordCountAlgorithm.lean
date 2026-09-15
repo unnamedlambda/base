@@ -155,7 +155,7 @@ def mainCode : Prog V L Unit := do
   let _ ← writeFile ptr OUTPUT_PATH_OFF OUTPUT_BUF zero zero
   ffiVoid fnHtClean %[← absAddr ptr 0]
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 /-- Every byte of shared memory this program names.
@@ -181,12 +181,10 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "wc_algorithm" {
-    clif,
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "wc_algorithm" {
+    functions := clif,
     memory_size := MEM_SIZE
-  } {
-    fn_idx := u32 1
   }]
 
 end WordCountBench

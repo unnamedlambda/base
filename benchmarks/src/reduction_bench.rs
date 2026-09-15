@@ -13,6 +13,9 @@ type B = burn::backend::NdArray<f32>;
 
 const REDUCTION_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/reduction_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 fn rust_sum(data: &[f32]) -> f64 {
     data.iter().map(|&x| x as f64).sum()
 }
@@ -49,7 +52,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // JIT compile once
     let artifact = Artifact::from_bytes(REDUCTION_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &n in sizes {
         let data = gen_floats(n, 42);
@@ -78,11 +81,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let mut out_buf = [0u8; 8];
 
         // Warmup
-        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

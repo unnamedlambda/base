@@ -9,8 +9,8 @@
 //! Takes generated artifact JSON files. Prints one
 //! `file<TAB>bytes<TAB>seconds` line per input.
 
-use base::{Base, Setup};
-use base_types::Artifact;
+use base::{Artifact, Base};
+
 
 fn main() {
     for path in std::env::args().skip(1) {
@@ -29,14 +29,14 @@ fn main() {
                 continue;
             }
         };
-        let setup = Setup {
-            clif: artifact.setup.clif,
+        let artifact = Artifact {
+            functions: artifact.functions,
             memory_size: 1 << 20,
             initial_memory: Vec::new(),
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         let t = std::time::Instant::now();
-        match Base::new(setup) {
+        match Base::new(artifact) {
             Ok(b) => {
                 let el = t.elapsed();
                 println!("{}\t{}\t{:.3}", name, bytes, el.as_secs_f64());

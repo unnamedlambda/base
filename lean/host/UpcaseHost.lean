@@ -25,8 +25,8 @@ demo's setup and not the demo.
 def main : IO Unit := do
   IO.FS.writeFile "input.txt" "a lean host, running its own artifact\n"
 
-  let setup ← AlgorithmLib.Prog.orDie Upcase.shipped
-  Base.withRuntime setup fun rt => do
+  let artifact ← AlgorithmLib.Prog.orDie Upcase.shipped
+  Base.withRuntime artifact fun rt => do
     IO.println s!"runtime memory: {← rt.memorySize} bytes"
     let _ ← rt.execute Upcase.algorithm
 

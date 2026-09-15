@@ -238,7 +238,7 @@ def code : Prog V L Unit := do
   let outFnOff ← iconst64 outputFilename_off
   let _ ← ffi fnWrite %[ptr, outFnOff, dstOff2, c0, dataSz]
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 -- ---------------------------------------------------------------------------
@@ -269,21 +269,19 @@ def payloads : List UInt8 :=
 -- Configuration
 -- ---------------------------------------------------------------------------
 
-def fftConfig (clif : Program) : Setup := {
-  clif,
+def fftConfig (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := payloads.length + totalAdditionalMemory,
   initial_memory := payloads
 }
 
-def fftAlgorithm : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+def fftAlgorithm : UInt32 := IR.mainFnIdx
 
 end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonEntry "fft_app" (Algorithm.fftConfig clif) Algorithm.fftAlgorithm]
+  emitArtifacts outDir #[toJsonArtifact "fft_app" (Algorithm.fftConfig clif)]
 
 #eval ShipScan.check "FftAlgorithm"

@@ -45,15 +45,13 @@ def code : Prog V L Unit := do
       return %[← iaddImm bi 64])
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "store_algorithm" {
-    clif,
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "store_algorithm" {
+    functions := clif,
     memory_size := MEM_SIZE
-  } {
-    fn_idx := u32 1
   }]
 
 end StoreBench

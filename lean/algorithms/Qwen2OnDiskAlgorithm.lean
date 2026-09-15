@@ -234,7 +234,7 @@ def shippedBodies : List Prog.Body :=
 def wrapperCallees : List Nat :=
   37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36]
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program <|
     (.ok noopFunction :: shippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1))
@@ -249,14 +249,14 @@ def buildInitialMemory : List UInt8 :=
 
 -- ── Algorithm definition ─────────────────────────────────────────────────────
 
-def buildSetup (clif : Program) : Setup := {
-  clif,
+def buildSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
 
 /-- Orchestrator at `fn41` runs the full pipeline (see `clifIR`). -/
-def qwen2OnDiskAlgorithm : Algorithm := { fn_idx := u32 41 }
+def qwen2OnDiskAlgorithm : UInt32 := 41
 
 -- ── The memory map, as data ──────────────────────────────────────────────────
 
@@ -284,7 +284,7 @@ def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Qwen2OnDisk.clifIR
   emitArtifacts outDir #[
-    toJsonEntry "qwen2_on_disk" (Qwen2OnDisk.buildSetup clif) Qwen2OnDisk.qwen2OnDiskAlgorithm
+    toJsonArtifact "qwen2_on_disk" (Qwen2OnDisk.buildSetup clif)
   ]
 
 #eval ShipScan.check "Qwen2OnDiskAlgorithm"

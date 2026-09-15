@@ -18,6 +18,9 @@ const MAX_DATA_BYTES: usize = 64 * 1024 * 1024; // 64MB max input file
 const HIST1_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/hist1_algorithm");
 const HIST4_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/hist4_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 2;
+
 fn load_artifact(workers: usize) -> Artifact {
     let bytes = if workers == 1 {
         HIST1_ARTIFACT
@@ -203,7 +206,7 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
 
             // Load Lean-built algorithm and JIT compile once
             let artifact = load_artifact(w);
-            let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+            let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
             let rayon_out = format!("/tmp/hist_bench_rayon_{}_{}.bin", n, w);
 
@@ -213,7 +216,7 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             // Warmup all three
             rust_histogram(&mut file_buf, input_path, &rust_out, w);
             rayon_histogram(&mut file_buf, input_path, &rayon_out, w);
-            let _ = base_instance.execute(&artifact.main, &base_payload);
+            let _ = base_instance.execute(MAIN, &base_payload);
 
             let rust_ms = harness::median_of(rounds, || {
                 let start = std::time::Instant::now();
@@ -230,7 +233,7 @@ pub fn run(rounds: usize) -> Vec<BenchResult> {
             let mut base_ok = true;
             let base_ms = harness::median_of(rounds, || {
                 let start = std::time::Instant::now();
-                if base_instance.execute(&artifact.main, &base_payload).is_err() {
+                if base_instance.execute(MAIN, &base_payload).is_err() {
                     base_ok = false;
                 }
                 start.elapsed().as_secs_f64() * 1000.0

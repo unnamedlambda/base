@@ -550,7 +550,7 @@ def mainCode : Prog V L Unit := do
 -- and long enough that the kernel does not finish inside the default heartbeats.
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 2000000 in
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 -- ---------------------------------------------------------------------------
@@ -598,21 +598,19 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 -- The memory this ships is sized from the payload it builds, so there is no
 -- constant to bound the regions against; `okB` is the whole check here.
 
-def buildSetup (clif : Program) : Setup := {
-  clif,
+def buildSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := buildPayload.length,
   initial_memory := buildPayload
 }
 
-def buildAlgorithm : Algorithm := {
-  fn_idx := IR.mainFnIdx
-}
+def buildAlgorithm : UInt32 := IR.mainFnIdx
 
 end LeanEval
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie LeanEval.clifIrSource
-  emitArtifacts outDir #[toJsonEntry "lean_eval_app" (LeanEval.buildSetup clif) LeanEval.buildAlgorithm]
+  emitArtifacts outDir #[toJsonArtifact "lean_eval_app" (LeanEval.buildSetup clif)]
 
 #eval ShipScan.check "LeanEvalAlgorithm"

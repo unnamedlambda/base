@@ -15,7 +15,7 @@ namespace Matmul
 -- The Matrix type carries its shape at the type level. Incompatible shapes
 -- are rejected at Lean elaboration time, before any PTX or CLIF is generated.
 --
---   matmul {m k n} (A : Matrix m k) (B : Matrix k n) : Setup × Algorithm
+--   matmul {m k n} (A : Matrix m k) (B : Matrix k n) : Artifact × UInt32
 -- ===========================================================================
 
 structure Matrix (m n : Nat) : Type where
@@ -258,24 +258,22 @@ def code (m k n : Nat) : Prog V L Unit :=
     let _ ← ffi fnWrite %[ptr, fnOffV, cOffV, c0, cSz]
 
 
-def clifIrSource (m k n : Nat) : Except String Program :=
+def clifIrSource (m k n : Nat) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 (code m k n)]
 
 -- ---------------------------------------------------------------------------
--- Monomorphic builder: takes concrete dims, returns (Setup, Algorithm).
+-- Monomorphic builder: takes concrete dims, returns (Artifact, Algorithm).
 -- ---------------------------------------------------------------------------
 
-def buildMatmulConfig (m k n : Nat) (clif : Program) : Setup × Algorithm :=
+def buildMatmulConfig (m k n : Nat) (clif : List FuncData) : Artifact × UInt32 :=
   let payload := buildPayload m k n
   let memSize := payload.length
-  let cfg : Setup := {
-    clif,
+  let cfg : Artifact := {
+    functions := clif,
     memory_size := memSize,
     initial_memory := payload
   }
-  let alg : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+  let alg : UInt32 := IR.mainFnIdx
   (cfg, alg)
 
 -- ---------------------------------------------------------------------------
@@ -284,7 +282,7 @@ def buildMatmulConfig (m k n : Nat) (clif : Program) : Setup × Algorithm :=
 -- ---------------------------------------------------------------------------
 
 def matmul {m k n : Nat} (_A : Matrix m k) (_B : Matrix k n)
-    (clif : Program) : Setup × Algorithm :=
+    (clif : List FuncData) : Artifact × UInt32 :=
   buildMatmulConfig m k n clif
 
 -- ---------------------------------------------------------------------------
@@ -300,12 +298,12 @@ def A : Matrix M K := mkMatrix M K
 def B : Matrix K N := mkMatrix K N
 
 /-- What ships, at the dimensions the types above fix. -/
-def result : Except String (Setup × Algorithm) := do
+def result : Except String (Artifact × UInt32) := do
   return matmul A B (← clifIrSource M K N)   -- : Matrix M N (erased)
 
 -- Uncomment to see the dependent-type check in action:
 --
---   def bad : Setup × Algorithm := matmul A (mkMatrix 128 128)
+--   def bad : Artifact × UInt32 := matmul A (mkMatrix 128 128)
 --   -- error: type mismatch
 --   --   mkMatrix 128 128 has type Matrix 128 128
 --   --   but is expected to have type Matrix K ?n
@@ -315,6 +313,6 @@ end Matmul
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie Matmul.result
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "matmul_app" cfg alg]
+  emitArtifacts outDir #[toJsonArtifact "matmul_app" cfg]
 
 #eval ShipScan.check "MatmulAlgorithm"

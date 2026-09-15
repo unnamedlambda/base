@@ -1,6 +1,9 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] = build_support::artifact!("LeanEvalAlgorithm/lean_eval_app");
+
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
 const INPUT_PATH_OFFSET: usize = 0x0078;
 const INPUT_PATH_MAX_LEN: usize = 256;
 const OUTPUT_PATH_OFFSET: usize = 0x0038;
@@ -18,20 +21,20 @@ fn main() {
     // Patch input file path
     let input_path = &args[1];
     let input_len = input_path.len().min(INPUT_PATH_MAX_LEN - 1);
-    artifact.setup.initial_memory[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + INPUT_PATH_MAX_LEN].fill(0);
-    artifact.setup.initial_memory[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + input_len]
+    artifact.initial_memory[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + INPUT_PATH_MAX_LEN].fill(0);
+    artifact.initial_memory[INPUT_PATH_OFFSET..INPUT_PATH_OFFSET + input_len]
         .copy_from_slice(&input_path.as_bytes()[..input_len]);
 
     // Patch output file path if provided
     if args.len() > 2 {
         let output_path = &args[2];
         let output_len = output_path.len().min(OUTPUT_PATH_MAX_LEN - 1);
-        artifact.setup.initial_memory[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + OUTPUT_PATH_MAX_LEN].fill(0);
-        artifact.setup.initial_memory[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + output_len]
+        artifact.initial_memory[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + OUTPUT_PATH_MAX_LEN].fill(0);
+        artifact.initial_memory[OUTPUT_PATH_OFFSET..OUTPUT_PATH_OFFSET + output_len]
             .copy_from_slice(&output_path.as_bytes()[..output_len]);
     }
 
-    match run(artifact.setup, artifact.main) {
+    match run(artifact, MAIN) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("Execution failed: {:?}", e);

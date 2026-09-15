@@ -5,6 +5,12 @@
 use base::{Artifact, Base};
 
 const ART: &[u8] = build_support::artifact!("SiluWarpAlgorithm/silu_warp");
+
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+const FETCH: u32 = 3;
+const RUN: u32 = 2;
+const RUN_LOOP: u32 = 4;
 const GRID: usize = 2097152;
 const N: usize = GRID * 32;
 
@@ -13,12 +19,12 @@ fn main() {
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
     let artifact = Artifact::from_bytes(ART);
-    let mut base = Base::new(artifact.setup).expect("Base::new");
-    let run = &artifact.extras["run"];
-    let fetch = &artifact.extras["fetch"];
+    let mut base = Base::new(artifact).expect("Base::new");
+    let run = RUN;
+    let fetch = FETCH;
 
     let mut out = vec![0u8; N * 4];
-    base.execute_into(&artifact.main, &bytes, &mut []).expect("load");
+    base.execute_into(MAIN, &bytes, &mut []).expect("load");
     base.execute_into(run, b"", &mut []).expect("run");
     let reps = 50;
     let t0 = std::time::Instant::now();
@@ -42,7 +48,7 @@ fn main() {
     println!("elements    : {N}");
     println!("kernel time : {:.3} ms", dt * 1e3);
     // The same spec, 8 elements per lane: 8x fewer blocks.
-    let run_loop = &artifact.extras["runLoop"];
+    let run_loop = RUN_LOOP;
     base.execute_into(run_loop, b"", &mut []).expect("runLoop");
     let t1 = std::time::Instant::now();
     for _ in 0..reps { base.execute_into(run_loop, b"", &mut []).expect("runLoop"); }

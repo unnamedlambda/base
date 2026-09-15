@@ -42,7 +42,7 @@ The point is not speed. The runtime does exactly what it did before — the same
 cranelift JIT over the same CLIF — and building an artifact is a one-off either
 way. The point is that the effectful part of a Lean program becomes a *value*.
 
-`Upcase.setup` is a `Setup`. It reads a file, transforms every byte and writes a
+`Upcase.setup` is an `Artifact`. It reads a file, transforms every byte and writes a
 file, and it is data: a `main` that uses it does its work through the artifact,
 and its own `IO` is three lines of open/run/close. Lean's `IO` is opaque and
 nothing can be proved about it; a CLIF program has a semantics — `HProgSem`
@@ -69,7 +69,7 @@ require base from git "https://github.com/<you>/base.git" @ "main" / "lean" / "h
 ```
 
 or, for a checkout beside yours, `require base from "../base/lean/host"`. Then
-`import BaseHost`, build a `Setup` and run it — this was checked from a package
+`import BaseHost`, build an `Artifact` and run it — this was checked from a package
 outside the repository, which builds, links and executes an artifact with no
 `cargo` step of its own.
 

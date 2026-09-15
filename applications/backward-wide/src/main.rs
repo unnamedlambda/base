@@ -4,6 +4,26 @@ use warp_check::{dot_by, floats, gbs, roofline, Walk};
 const ART: &[u8] =
     build_support::artifact!("BackwardWideAlgorithm/backward_wide");
 
+/// The entry points of this artifact, as its generator numbers them.
+const FETCH: u32 = 3;
+const FETCH_DW: u32 = 5;
+const FETCH_DXR: u32 = 11;
+const FETCH_Y: u32 = 16;
+const RUN: u32 = 2;
+const RUN_BWD_ALL: u32 = 18;
+const RUN_DW: u32 = 4;
+const RUN_DXR: u32 = 10;
+const RUN_FWD: u32 = 12;
+const RUN_Q: u32 = 8;
+const RUN_S: u32 = 9;
+const RUN_SILU_BWD: u32 = 6;
+const RUN_T: u32 = 7;
+const RUN_Y: u32 = 13;
+const RUN_ADJ: u32 = 17;
+const RUN_SGD: u32 = 15;
+const MAIN: u32 = 1;
+
+
 /// Qwen2-0.5B's hidden size.
 const N: usize = 896;
 
@@ -52,7 +72,7 @@ fn main() {
     // drift — the layout is defined once, in Lean, and checked here.
     const HOST_LEN_OFF: usize = 0x0080;
     let want = u32::from_le_bytes(
-        artifact.setup.initial_memory[HOST_LEN_OFF..HOST_LEN_OFF + 4]
+        artifact.initial_memory[HOST_LEN_OFF..HOST_LEN_OFF + 4]
             .try_into()
             .unwrap(),
     ) as usize;
@@ -61,11 +81,11 @@ fn main() {
         want,
         "host input packing disagrees with the Lean `hostIn` layout"
     );
-    let mut base = Base::new(artifact.setup).expect("Base::new");
-    let run = &artifact.extras["run"];
-    let fetch = &artifact.extras["fetch"];
+    let mut base = Base::new(artifact).expect("Base::new");
+    let run = RUN;
+    let fetch = FETCH;
 
-    base.execute_into(&artifact.main, &bytes, &mut []).expect("load");
+    base.execute_into(MAIN, &bytes, &mut []).expect("load");
     base.execute_into(run, b"", &mut []).expect("run");
 
     let reps = 50;
@@ -112,8 +132,8 @@ fn main() {
     assert_eq!(exact, N, "kernel must match its proven fold order bit-for-bit");
 
     // ── the weight gradient: dW[i][j] = adj[i] * x[j] ────────────────────────
-    let run_dw = &artifact.extras["runDw"];
-    let fetch_dw = &artifact.extras["fetchDw"];
+    let run_dw = RUN_DW;
+    let fetch_dw = FETCH_DW;
     base.execute_into(run_dw, b"", &mut []).expect("runDw");
     let t1 = std::time::Instant::now();
     for _ in 0..reps {
@@ -140,7 +160,7 @@ fn main() {
     assert_eq!(dw_exact, N * N, "outer product must be bit-exact");
 
     // ── the activation backward: ds = dy * silu'(z), derivative from sderiv ──
-    let run_sb = &artifact.extras["runSiluBwd"];
+    let run_sb = RUN_SILU_BWD;
     base.execute_into(run_sb, b"", &mut []).expect("runSiluBwd");
     let t2 = std::time::Instant::now();
     for _ in 0..reps {
@@ -169,20 +189,20 @@ fn main() {
     assert!(chain_worst < 1e-4, "chained backward must match the spec");
 
     // ── RMSNorm backward: t = dy⊙γ, Q = Σx², S = Σtx, then the epilogue ─────
-    for k in ["runT", "runQ", "runS", "runDxr"] {
-        base.execute_into(&artifact.extras[k], b"", &mut [])
-            .unwrap_or_else(|e| panic!("{k}: {e:?}"));
+    for (name, fn_idx) in [("runT", RUN_T), ("runQ", RUN_Q), ("runS", RUN_S), ("runDxr", RUN_DXR)] {
+        base.execute_into(fn_idx, b"", &mut [])
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     }
     let t3 = std::time::Instant::now();
     for _ in 0..reps {
-        for k in ["runT", "runQ", "runS", "runDxr"] {
-            base.execute_into(&artifact.extras[k], b"", &mut []).unwrap();
+        for (_, fn_idx) in [("runT", RUN_T), ("runQ", RUN_Q), ("runS", RUN_S), ("runDxr", RUN_DXR)] {
+            base.execute_into(fn_idx, b"", &mut []).unwrap();
         }
     }
     let dt_rms = t3.elapsed().as_secs_f64() / reps as f64;
 
     let mut dxrbytes = vec![0u8; N * 4];
-    base.execute_into(&artifact.extras["fetchDxr"], b"", &mut dxrbytes)
+    base.execute_into(FETCH_DXR, b"", &mut dxrbytes)
         .expect("fetchDxr");
     let dxr: Vec<f32> = floats(&dxrbytes);
 
@@ -241,7 +261,7 @@ fn main() {
     // own instructions and matches it against `bwdPipelineFull`. Three
     // separate host calls never exhibited that order inside any one program,
     // so the theorem would have been about a program nothing ran. This runs it.
-    base.execute_into(&artifact.extras["runBwdAll"], b"", &mut []).expect("runBwdAll");
+    base.execute_into(RUN_BWD_ALL, b"", &mut []).expect("runBwdAll");
     let mut fused_out = vec![0u8; N * 4];
     base.execute_into(fetch, b"", &mut fused_out).expect("fetch");
     let dx_fused: Vec<f32> = floats(&fused_out);
@@ -259,7 +279,7 @@ fn main() {
     println!("\nOK — dense+silu and RMSNorm backward, both at width 896:");
     println!("   7 kernels, every one a schema instance, PTX size independent of N.");
 
-    train(&mut base, &artifact.extras, &xa, &ystar);
+    train(&mut base, &xa, &ystar);
 }
 
 /// **Training.** Everything above checks a gradient against a spec. This runs
@@ -274,14 +294,13 @@ fn main() {
 /// product, optimiser — agrees on what it is differentiating.
 fn train(
     base: &mut Base,
-    extras: &std::collections::BTreeMap<String, base_types::Algorithm>,
     xa: &[f32],
     ystar: &[f32],
 ) {
     // The fused step: the three elementwise passes (y, dy, siluBwd) are one
     // kernel, because at 3.5 KB each a launch costs more than the work.
-    let step = ["runFwd", "runAdj", "runDw", "runSgd"];
-    let fetch_y = &extras["fetchY"];
+    let step = [("runFwd", RUN_FWD), ("runAdj", RUN_ADJ), ("runDw", RUN_DW), ("runSgd", RUN_SGD)];
+    let fetch_y = FETCH_Y;
 
     let loss = |base: &mut Base| -> f32 {
         let mut out = vec![0u8; N * 4];
@@ -291,8 +310,8 @@ fn train(
     };
 
     // One forward to establish the starting loss.
-    for k in ["runFwd", "runY"] {
-        base.execute_into(&extras[k], b"", &mut []).unwrap();
+    for (_, fn_idx) in [("runFwd", RUN_FWD), ("runY", RUN_Y)] {
+        base.execute_into(fn_idx, b"", &mut []).unwrap();
     }
     let l0 = loss(base);
 
@@ -305,14 +324,14 @@ fn train(
     let iters = 200;
     let t0 = std::time::Instant::now();
     for it in 1..=iters {
-        for k in step {
-            base.execute_into(&extras[k], b"", &mut []).unwrap();
+        for (_, fn_idx) in step {
+            base.execute_into(fn_idx, b"", &mut []).unwrap();
         }
         if it % 25 == 0 || it == 1 {
             // The step's forward ran *before* its update, so y is one step
             // stale; refresh it so the row is the loss at the current W.
-            for k in ["runFwd", "runY"] {
-                base.execute_into(&extras[k], b"", &mut []).unwrap();
+            for (_, fn_idx) in [("runFwd", RUN_FWD), ("runY", RUN_Y)] {
+                base.execute_into(fn_idx, b"", &mut []).unwrap();
             }
             let l = loss(base);
             losses.push(l);
@@ -331,7 +350,7 @@ fn train(
     // parallel to `x`. That is a property of the *shape* of the gradient, not
     // a restatement of how it was computed.
     let mut dwbytes = vec![0u8; N * N * 4];
-    base.execute_into(&extras["fetchDw"], b"", &mut dwbytes).unwrap();
+    base.execute_into(FETCH_DW, b"", &mut dwbytes).unwrap();
     let dw: Vec<f32> = floats(&dwbytes);
     let xnorm: f32 = xa.iter().map(|v| v * v).sum();
     let mut rank1_worst = 0f32;
@@ -353,11 +372,11 @@ fn train(
     // real update, so timing before training would apply 200 stale gradients.
     println!("\nper-kernel cost of one training step:");
     let mut total = 0f64;
-    for k in step {
-        base.execute_into(&extras[k], b"", &mut []).unwrap();
+    for (k, fn_idx) in step {
+        base.execute_into(fn_idx, b"", &mut []).unwrap();
         let t = std::time::Instant::now();
         for _ in 0..200 {
-            base.execute_into(&extras[k], b"", &mut []).unwrap();
+            base.execute_into(fn_idx, b"", &mut []).unwrap();
         }
         let dt = t.elapsed().as_secs_f64() / 200.0;
         total += dt;

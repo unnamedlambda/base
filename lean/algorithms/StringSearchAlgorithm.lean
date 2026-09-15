@@ -122,7 +122,7 @@ def code : Prog V L Unit := do
                         zero, zero]
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 /-- Every byte of shared memory this program names.
@@ -145,16 +145,14 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def buildSetup (clif : Program) : Setup := {
-  clif,
+def buildSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE
 }
 
-def buildAlgorithm : Algorithm := {
-  fn_idx := u32 1
-}
+def buildAlgorithm : UInt32 := 1
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "strsearch_algorithm" (buildSetup clif) buildAlgorithm]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "strsearch_algorithm" (buildSetup clif)]
 
 end StringSearchBench

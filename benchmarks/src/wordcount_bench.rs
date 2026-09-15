@@ -9,6 +9,9 @@ use crate::harness::{self, format_count, BenchResult};
 const WC_ARTIFACT: &[u8] =
     build_support::artifact!("RustBenchmarks/wc_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 /// `INPUT_DATA` (0x14000) plus room for the largest input, which is under 4 MB.
 /// The generator reserves 512 MiB; a fresh instance a round makes that
 /// reservation, not the counting, the thing being measured.
@@ -129,26 +132,26 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let _ = fs::remove_file(&output_path);
         {
             let mut artifact = Artifact::from_bytes(WC_ARTIFACT);
-            artifact.setup.memory_size = WC_ARENA_BYTES;
-            let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
-            let _ = base_instance.execute(&artifact.main, &payload);
+            artifact.memory_size = WC_ARENA_BYTES;
+            let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
+            let _ = base_instance.execute(MAIN, &payload);
         }
 
         let base_ms = harness::median_of(iterations, || {
             let mut artifact = Artifact::from_bytes(WC_ARTIFACT);
-            artifact.setup.memory_size = WC_ARENA_BYTES;
-            let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+            artifact.memory_size = WC_ARENA_BYTES;
+            let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
             let start = std::time::Instant::now();
-            let _ = base_instance.execute(&artifact.main, &payload);
+            let _ = base_instance.execute(MAIN, &payload);
             start.elapsed().as_secs_f64() * 1000.0
         });
 
         // Run one more time with fresh instance for verification
         let _ = fs::remove_file(&output_path);
         let mut artifact = Artifact::from_bytes(WC_ARTIFACT);
-        artifact.setup.memory_size = WC_ARENA_BYTES;
-        let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
-        let _ = base_instance.execute(&artifact.main, &payload);
+        artifact.memory_size = WC_ARENA_BYTES;
+        let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
+        let _ = base_instance.execute(MAIN, &payload);
 
         let verified = if let Ok(content) = fs::read_to_string(&output_path) {
             let got = parse_output(content.trim());

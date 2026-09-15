@@ -261,7 +261,7 @@ def mainCode (patternLen : Nat) : Prog V L Unit :=
 /-- Generic in the pattern length, and nothing about that costs it anything
     now: `compileProg` checks the body it emits, at whatever length the
     monomorphic builder below asked for. -/
-def clifIrSource (patternLen : Nat) : Except String Program :=
+def clifIrSource (patternLen : Nat) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 (mainCode patternLen)]
 
 -- ---------------------------------------------------------------------------
@@ -300,17 +300,15 @@ def buildPayload (patternBytes : List UInt8) : List UInt8 :=
 -- Monomorphic builder
 -- ---------------------------------------------------------------------------
 
-def buildQueryMonomorphic (patternStr : String) : Except String (Setup × Algorithm) := do
+def buildQueryMonomorphic (patternStr : String) : Except String (Artifact × UInt32) := do
   let patternBytes := patternStr.toUTF8.toList  -- no null terminator
   let payload := buildPayload patternBytes
-  let cfg : Setup := {
-    clif := ← clifIrSource patternBytes.length,
+  let cfg : Artifact := {
+    functions := ← clifIrSource patternBytes.length,
     memory_size    := payload.length,
     initial_memory := payload
   }
-  let alg : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+  let alg : UInt32 := IR.mainFnIdx
   return (cfg, alg)
 
 -- ---------------------------------------------------------------------------
@@ -335,7 +333,7 @@ def extractPattern : QueryPlan s → String
   | .join _ p1 _ _ _    => extractPattern p1
   | .select _ p _       => extractPattern p
 
-def compile {s : Schema} (p : QueryPlan s) : Except String (Setup × Algorithm) :=
+def compile {s : Schema} (p : QueryPlan s) : Except String (Artifact × UInt32) :=
   buildQueryMonomorphic ("," ++ extractPattern p ++ ",")
 
 def source {s : Schema} (t : Table s) : QueryPlan s :=
@@ -350,7 +348,7 @@ def QueryPlan.project {s : Schema} (p : QueryPlan s)
   select cols p h
 
 def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s) :
-    Except String (Setup × Algorithm) := compile p
+    Except String (Artifact × UInt32) := compile p
 
 def QueryPlan.innerJoinOn {s1 : Schema} (lhs : QueryPlan s1)
     (key : String) {s2 : Schema} (rhs : QueryPlan s2)
@@ -384,7 +382,7 @@ def locations   : Table locationSchema   := Table.mk
 --     |> innerJoinOn "dept_id" (departments.query.whereEq "dept_name" "Engineering")
 --     |> project ["name", "city", "region", "dept_name", "floor"]
 --     |> compileQuery
-def result : Except String (Setup × Algorithm) :=
+def result : Except String (Artifact × UInt32) :=
   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
   let departmentsInEngineering := departments.query.whereEq "dept_name" "Engineering"
   let employeesWithLocations := employeesInSeattle.innerJoinOn "city" locations.query
@@ -394,12 +392,12 @@ def result : Except String (Setup × Algorithm) :=
 -- Uncomment either def to see elaboration-time rejection at the combinator call
 -- that introduces the bad column/key:
 --
--- def badJoinKey : Except String (Setup × Algorithm) :=
+-- def badJoinKey : Except String (Artifact × UInt32) :=
 --   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
 --   let brokenJoin := employeesInSeattle.innerJoinOn "nonexistent_key" departments.query
 --   (brokenJoin.project ["name", "dept_name"]).compileQuery
 --
--- def badSelectCol : Setup × Algorithm :=
+-- def badSelectCol : Artifact × UInt32 :=
 --   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
 --   let joined := employeesInSeattle.innerJoinOn "dept_id" departments.query
 --   (joined.project ["name", "salary_band"]).compileQuery
@@ -409,6 +407,6 @@ end CsvDemo
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie CsvDemo.result
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "csv_app" cfg alg]
+  emitArtifacts outDir #[toJsonArtifact "csv_app" cfg]
 
 #eval ShipScan.check "CsvAlgorithm"

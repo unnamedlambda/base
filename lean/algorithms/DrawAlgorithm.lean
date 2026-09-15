@@ -166,7 +166,7 @@ def code : Prog V L Unit := do
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← fldWriteFile0 ptr f.filename f.bmpHeader total
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 -- ---------------------------------------------------------------------------
@@ -181,21 +181,19 @@ def payloads : List UInt8 :=
     f.bmpHeader.init bmpHeader
   ]
 
-def drawConfig (clif : Program) : Setup := {
-  clif,
+def drawConfig (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def drawAlgorithm : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+def drawAlgorithm : UInt32 := IR.mainFnIdx
 
 end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonEntry "draw_app" (Algorithm.drawConfig clif) Algorithm.drawAlgorithm]
+  emitArtifacts outDir #[toJsonArtifact "draw_app" (Algorithm.drawConfig clif)]
 
 #eval ShipScan.check "DrawAlgorithm"

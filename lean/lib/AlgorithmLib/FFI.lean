@@ -349,8 +349,8 @@ def Ffi.bundle : Ffi → FFI.Bundle
   | .cublasPtrArray | .cublasSgemmBatchedOnStream => .cublas
   | _ => .cuda
 
-/-- The fn_idx of the main entry point that every application emits as `u0:1`
-    (with `u0:0` reserved as a no-op stub). Use this in `Algorithm.fn_idx`. -/
+/-- The index of the entry point every application emits as `u0:1`, with `u0:0`
+    reserved as a no-op stub. This is the number a host calls. -/
 def mainFnIdx : UInt32 := u32 1
 
 end AlgorithmLib.IR

@@ -300,7 +300,7 @@ def wideLoop (k : Nat) : Prog V L Unit := do
       return Vals.ofFn (n := k) (fun i => stepped[i.val]?.getD z))
   store (← iconst64 (Int.ofNat k)) (← absAddr ptr 0x28)
 
-/-- Setup, hand the caller a handle, teardown — at whatever result type the
+/-- Artifact, hand the caller a handle, teardown — at whatever result type the
     caller's fragment has. -/
 def withBase {α : Type} (k : V .i64 → Prog V L α) : Prog V L α := do
   let ptr ← basePtr

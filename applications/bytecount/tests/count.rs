@@ -16,18 +16,21 @@
 //! checks is the output buffer's, not the input's --- the input's length is not
 //! a generation-time fact.
 
-use base::{Algorithm, Artifact, Base};
+use base::{Artifact, Base};
 
 const ARTIFACT: &[u8] = build_support::artifact!("ByteCountAlgorithm/byte_count");
+
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
 
 /// The run `ByteCount.code` ships: `ByteCount.VECTORS` vectors of sixteen bytes.
 const WINDOW: usize = 4096;
 /// Must match `ByteCount.needles`, in order.
 const NEEDLES: [u8; 3] = [b',', b'\n', b' '];
 
-fn counts(base: &mut Base, alg: &Algorithm, data: &[u8]) -> [u64; NEEDLES.len()] {
+fn counts(base: &mut Base, fn_idx: u32, data: &[u8]) -> [u64; NEEDLES.len()] {
     let mut out = [0u8; 8 * NEEDLES.len()];
-    base.execute_into(alg, data, &mut out)
+    base.execute_into(fn_idx, data, &mut out)
         .expect("execute failed");
     let mut got = [0u64; NEEDLES.len()];
     for (i, slot) in got.iter_mut().enumerate() {
@@ -39,7 +42,7 @@ fn counts(base: &mut Base, alg: &Algorithm, data: &[u8]) -> [u64; NEEDLES.len()]
 #[test]
 fn counts_every_needle() {
     let artifact = Artifact::from_bytes(ARTIFACT);
-    let mut base = Base::new(artifact.setup).expect("Base::new");
+    let mut base = Base::new(artifact).expect("Base::new");
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("none", vec![b'x'; WINDOW]),
@@ -85,7 +88,7 @@ fn counts_every_needle() {
     ];
 
     for (label, data) in &cases {
-        let got = counts(&mut base, &artifact.main, data);
+        let got = counts(&mut base, MAIN, data);
         for (i, needle) in NEEDLES.iter().enumerate() {
             let expected = data.iter().filter(|&b| b == needle).count() as u64;
             assert_eq!(got[i], expected, "{label}: needle {:?}", *needle as char);

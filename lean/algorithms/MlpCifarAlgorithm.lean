@@ -645,7 +645,7 @@ def shippedBodies : List Prog.Body :=
   , runMixed fwdBlasSteps, runMixed bwdBlasSteps ]
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: shippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1)
@@ -666,8 +666,8 @@ def initialMemory : List UInt8 :=
     ++ ptxAll.flatMap slotBytes
     ++ zeros (MEM_SIZE - BIND_OFF)
 
-def setup (clif : Program) : Setup := {
-  clif,
+def setup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
@@ -2482,7 +2482,7 @@ def qShippedBodies : List Prog.Body :=
   , qRunUpto 31, qRunUpto 34, qRunUpto 35, qRunUpto 37, qRunFused ]
 
 
-def qClifIR : Except String Program :=
+def qClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: qShippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1)
@@ -2497,8 +2497,8 @@ def qInitialMemory : List UInt8 :=
     ++ qwenPtx.flatMap qSlotBytes
     ++ zeros (QMEM_SIZE - QBIND_OFF)
 
-def qSetup (clif : Program) : Setup := {
-  clif
+def qSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := QMEM_SIZE
   initial_memory := qInitialMemory
 }
@@ -2835,7 +2835,7 @@ def mShippedBodies : List Prog.Body :=
   , mRunRange mRouterTape.length moeTape.length, mFetchFn MOUT (MD * 4) ]
 
 
-def mClifIR : Except String Program :=
+def mClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: mShippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1)
@@ -2846,69 +2846,16 @@ def mInitialMemory : List UInt8 :=
     ++ moePtx.flatMap qSlotBytes
     ++ zeros (MMEM_SIZE - MBIND_OFF)
 
-def mSetup (clif : Program) : Setup := {
-  clif
+def mSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := MMEM_SIZE
   initial_memory := mInitialMemory
 }
 
-def artifacts (clif qClif mClif : Program) : Array Json :=
-  #[ toJsonArtifact "ten_qwen_block" (qSetup qClif) { fn_idx := u32 1 }
-       [("runBlock", { fn_idx := u32 2 }),
-        ("fetchOut", { fn_idx := u32 3 }),
-        ("runFwd", { fn_idx := u32 4 }),
-        ("uploadDOut", { fn_idx := u32 5 }),
-        ("fetchDW2", { fn_idx := u32 6 }),
-        ("uploadW2", { fn_idx := u32 7 }),
-        ("runTo30", { fn_idx := u32 8 }),
-        ("runTo45", { fn_idx := u32 9 }),
-        ("runTo60", { fn_idx := u32 10 }),
-        ("runTo75", { fn_idx := u32 11 }),
-        ("runSynced", { fn_idx := u32 12 }),
-        ("capture", { fn_idx := u32 13 }),
-        ("replay", { fn_idx := u32 14 }),
-        ("replay2", { fn_idx := u32 15 }),
-        ("replay4", { fn_idx := u32 16 }),
-        ("runTo31", { fn_idx := u32 17 }),
-        ("runTo34", { fn_idx := u32 18 }),
-        ("runTo35", { fn_idx := u32 19 }),
-        ("runTo37", { fn_idx := u32 20 }),
-        ("runFwdFused", { fn_idx := u32 21 })],
-     toJsonArtifact "ten_moe_dispatch" (mSetup mClif) { fn_idx := u32 1 }
-       [("runRouter", { fn_idx := u32 2 }),
-        ("fetchGate", { fn_idx := u32 3 }),
-        ("bindExperts", { fn_idx := u32 4 }),
-        ("uploadGates", { fn_idx := u32 5 }),
-        ("runExperts", { fn_idx := u32 6 }),
-        ("fetchOut", { fn_idx := u32 7 })],
-     toJsonArtifact "mlp_cifar" (setup clif) { fn_idx := u32 1 }
-       [("uploadX",  { fn_idx := u32 2 }),
-        ("uploadOneHot", { fn_idx := u32 3 }),
-        ("fetchLogits", { fn_idx := u32 4 }),
-        ("runFwd1", { fn_idx := u32 5 }),
-        ("runAct",  { fn_idx := u32 6 }),
-        ("runFwd2", { fn_idx := u32 7 }),
-        ("runDw2",  { fn_idx := u32 8 }),
-        ("runDh",   { fn_idx := u32 9 }),
-        ("runAdj",  { fn_idx := u32 10 }),
-        ("runDw1",  { fn_idx := u32 11 }),
-        ("runSgd1", { fn_idx := u32 12 }),
-        ("runSgd2", { fn_idx := u32 13 }),
-        ("fetchH",  { fn_idx := u32 14 }),
-        ("fetchZ1", { fn_idx := u32 15 }),
-        ("fetchDh", { fn_idx := u32 16 }),
-        ("fetchAdj", { fn_idx := u32 17 }),
-        ("fetchDw1", { fn_idx := u32 18 }),
-        ("fetchDw2", { fn_idx := u32 19 }),
-        ("fetchW1", { fn_idx := u32 20 }),
-        ("fetchW2", { fn_idx := u32 21 }),
-        ("runFwd",  { fn_idx := u32 22 }),
-        ("runBwd",  { fn_idx := u32 23 }),
-        ("runSoftmax", { fn_idx := u32 24 }),
-        ("uploadBias", { fn_idx := u32 25 }),
-        ("fetchDlog", { fn_idx := u32 26 }),
-        ("runFwdBlas", { fn_idx := u32 27 }),
-        ("runBwdBlas", { fn_idx := u32 28 })] ]
+def artifacts (clif qClif mClif : List FuncData) : Array Json :=
+  #[ toJsonArtifact "ten_qwen_block" (qSetup qClif),
+     toJsonArtifact "ten_moe_dispatch" (mSetup mClif),
+     toJsonArtifact "mlp_cifar" (setup clif) ]
 
 end MlpCifar
 

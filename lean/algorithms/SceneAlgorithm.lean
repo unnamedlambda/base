@@ -954,7 +954,7 @@ def code (spec : SceneSpec) : Prog V L Unit :=
     let _ ← writeFile0 ptr filenameOff bmpHeaderOff total
 
 
-def clifIrSource (spec : SceneSpec) : Except String Program :=
+def clifIrSource (spec : SceneSpec) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 (code spec)]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
@@ -966,17 +966,15 @@ def payloads (spec : SceneSpec) : List UInt8 :=
   let clifPad := zeros clifIrRegion
   reserved ++ ptxBytes ++ bindDesc ++ bindPad ++ filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : SceneSpec) (clif : Program) : Setup := {
-  clif,
+def config (spec : SceneSpec) (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
 
-def algorithm : Algorithm := {
-  fn_idx := IR.mainFnIdx
-}
+def algorithm : UInt32 := IR.mainFnIdx
 
-def renderScene (spec : SceneSpec) : Except String (Setup × Algorithm) := do
+def renderScene (spec : SceneSpec) : Except String (Artifact × UInt32) := do
   return (config spec (← clifIrSource spec), algorithm)
 
 def defaultPalette : ScenePalette := {
@@ -1052,6 +1050,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultScene)
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "scene_app" cfg alg]
+  emitArtifacts outDir #[toJsonArtifact "scene_app" cfg]
 
 #eval ShipScan.check "SceneAlgorithm"

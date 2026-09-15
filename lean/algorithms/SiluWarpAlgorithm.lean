@@ -211,7 +211,7 @@ def fetchFnCode : Prog V L Unit := do
   let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, nBytes]
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 loadFnCode,
@@ -225,18 +225,17 @@ def initialMemory : List UInt8 :=
   zeros PTX_OFF ++ p ++ zeros (PTX_L_OFF - PTX_OFF - p.length)
     ++ q ++ zeros (MEM_SIZE - PTX_L_OFF - q.length)
 
-/-- The entry point, and the extras the runtime may call after it.  Named so
-    the artifact and the arity theorem below read the same list. -/
-def entryAlg : Algorithm := { fn_idx := u32 1 }
+/-- The entry points this artifact has, by the name a host knows them by. The
+    artifact carries only their indices; this list is what a host is written
+    against, and what the arity theorem below reads. -/
+def entryAlg : UInt32 := 1
 
-def extraAlgs : List (String × Algorithm) :=
-  [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
-   ("runLoop", { fn_idx := u32 4 })]
+def entryPoints : List (String × UInt32) :=
+  [("run", 2), ("fetch", 3),
+   ("runLoop", 4)]
 
-def artifacts (clif : Program) : Array Json :=
-  #[ toJsonArtifact "silu_warp"
-      { clif, memory_size := MEM_SIZE, initial_memory := initialMemory }
-      entryAlg extraAlgs ]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[ toJsonArtifact "silu_warp" { functions := clif, memory_size := MEM_SIZE, initial_memory := initialMemory } ]
 
 
 end SiluWarp

@@ -219,17 +219,16 @@ fn finalize(
     Ok((module, Arc::new(compiled_fns)))
 }
 
-/// Compiles the program an artifact carries.
+/// Compiles the functions an artifact carries.
 ///
 /// Unlike the text path, callees are declared while the function is built, so
 /// there is no name to rewrite afterward and no dependence on declaration order
 /// happening to match the indices a parser recovered.
-pub(crate) fn compile_program(
-    prog: &base_types::clif::Program,
+pub(crate) fn compile(
+    functions: &[base_types::clif::Function],
 ) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
-    info!(functions = prog.functions.len(), "compiling CLIF program");
-    let insts = prog
-        .functions
+    info!(functions = functions.len(), "compiling CLIF functions");
+    let insts = functions
         .iter()
         .flat_map(|f| &f.blocks)
         .map(|b| b.insts.len())
@@ -238,9 +237,9 @@ pub(crate) fn compile_program(
     let cc = module.isa().default_call_conv();
 
     // Declared before any body is built, so `u0:N` resolves to FuncId(N).
-    let mut func_ids = Vec::with_capacity(prog.functions.len());
-    let mut arities = Vec::with_capacity(prog.functions.len());
-    for (i, f) in prog.functions.iter().enumerate() {
+    let mut func_ids = Vec::with_capacity(functions.len());
+    let mut arities = Vec::with_capacity(functions.len());
+    for (i, f) in functions.iter().enumerate() {
         if f.index as usize != i {
             return Err(format!(
                 "function at position {i} declares index u0:{} — they must agree",
@@ -256,8 +255,8 @@ pub(crate) fn compile_program(
         );
     }
 
-    let mut decoded = Vec::with_capacity(prog.functions.len());
-    for f in &prog.functions {
+    let mut decoded = Vec::with_capacity(functions.len());
+    for f in functions {
         let mut declare = |callee: &base_types::clif::Callee,
                            sig: &cranelift_codegen::ir::Signature| {
             match callee {

@@ -1079,9 +1079,11 @@ theorem stateOf_fns_index {i j : Nat} {p : Body} {params : List ClifTy} :
 theorem stateOf_sigs_index {i j : Nat} {p : Body} {params : List ClifTy} :
     (stateOf i p params).sigs = (stateOf j p params).sigs := rfl
 
-/-- Assemble compiled functions into a program, or the first failure. -/
-def program (fs : List (Except String FuncData)) : Except String Program := do
-  return IR.program (← fs.mapM id)
+/-- The functions of an artifact, in `u0:N` order, or the first failure. They
+    must be in that order: the runtime resolves a call target by treating the
+    index as a position. -/
+def program (fs : List (Except String FuncData)) : Except String (List FuncData) :=
+  fs.mapM id
 
 /-- Unwrap in a generator's `main`: an ill-formed body is a build failure with
     a message, not an artifact. -/

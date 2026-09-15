@@ -7,6 +7,9 @@ use crate::harness::{self, format_count, BenchResult};
 
 const REGEX_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/regex_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 const VOCABULARY: &[&str] = &[
     "the", "running", "of", "singing", "and", "to", "jumping", "in", "a", "is", "that", "finding",
     "for", "it", "was", "making", "on", "are", "as", "with", "building", "they", "at", "be",
@@ -70,7 +73,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // JIT compile once
     let artifact = Artifact::from_bytes(REGEX_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &n in &sizes {
         let text_path = format!("/tmp/bench-data/regex_{}.txt", n);
@@ -105,11 +108,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // per iteration instead charges Base for an inode allocation and a
         // directory insert a round that the baseline never pays.
         let _ = fs::remove_file(&output_path);
-        let _ = base_instance.execute(&artifact.main, &payload);
+        let _ = base_instance.execute(MAIN, &payload);
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute(&artifact.main, &payload);
+            let _ = base_instance.execute(MAIN, &payload);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

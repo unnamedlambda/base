@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Where a training step's time goes. numpy + py_base only."""
+import os
 import sys, time, numpy as np, py_base
+import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 SQ, NC, N = 200, 128, 30
 
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
-base = py_base.Base(art.setup)
-ex = art.extras
-base.execute_into(art.main, blob, bytearray(0))
+art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
+base = py_base.Base(art)
+ex = art_entries
+base.execute_into(art_entries["main"], blob, bytearray(0))
 base.execute_into(ex["capture"], b"", bytearray(0))
 base.execute_into(ex["captureStep"], b"", bytearray(0))
 base.execute_into(ex["reload"], blob, bytearray(0))

@@ -47,6 +47,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
+import entries
 
 try:
     import torch
@@ -70,10 +71,11 @@ ATTN_INNER_ITERS = 64
 
 def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.setup)
-    load_alg = artifact.main
-    prep_alg = artifact.extras["prep"]
-    infer_alg = artifact.extras["infer"]
+    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    load_alg = artifact_entries["main"]
+    prep_alg = artifact_entries["prep"]
+    infer_alg = artifact_entries["infer"]
 
     results = []
     rng = np.random.default_rng(42)
@@ -128,10 +130,11 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.setup)
-    load_alg = artifact.main
-    prep_alg = artifact.extras["prep"]
-    infer_alg = artifact.extras["infer"]
+    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    load_alg = artifact_entries["main"]
+    prep_alg = artifact_entries["prep"]
+    infer_alg = artifact_entries["infer"]
     results = []
     rng = np.random.default_rng(7)
 
@@ -187,10 +190,11 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.setup)
-    load_alg = artifact.main
-    prep_alg = artifact.extras["prep"]
-    infer_alg = artifact.extras["infer"]
+    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    load_alg = artifact_entries["main"]
+    prep_alg = artifact_entries["prep"]
+    infer_alg = artifact_entries["infer"]
     results = []
     rng = np.random.default_rng(13)
 
@@ -257,12 +261,13 @@ def _rms_torch(x, w):
 
 def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.setup)
-    load_alg = artifact.main
-    prep_alg = artifact.extras["prep"]
-    infer_alg = artifact.extras["infer"]
-    stack16_alg = artifact.extras["stack16"]
-    stack32_alg = artifact.extras["stack32"]
+    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    load_alg = artifact_entries["main"]
+    prep_alg = artifact_entries["prep"]
+    infer_alg = artifact_entries["infer"]
+    stack16_alg = artifact_entries["stack16"]
+    stack32_alg = artifact_entries["stack32"]
 
     rng = np.random.default_rng(23)
 
@@ -415,10 +420,11 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
 
 def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.setup)
-    load_alg = artifact.main
-    prep_alg = artifact.extras["prep"]
-    infer_alg = artifact.extras["infer"]
+    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    load_alg = artifact_entries["main"]
+    prep_alg = artifact_entries["prep"]
+    infer_alg = artifact_entries["infer"]
     results = []
     rng = np.random.default_rng(29)
 

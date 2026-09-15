@@ -13,9 +13,11 @@ nine per-head slices and `proj` into three, because a head is the unit the model
 is written in; PyTorch keeps them fused, so the check stacks ours back up rather
 than comparing a shape neither side has.
 """
+import os
 import sys, json, struct
 import numpy as np
 import py_base
+import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 NL, SQ, SK, DM, NH, HD, DFF, NC = 12, 200, 224, 192, 3, 64, 768, 128
@@ -36,13 +38,14 @@ seed = np.load(D + "/seed.npy")
 ref = np.load(D + "/grads.npz")
 
 art = py_base.load_artifact(ART)
-base = py_base.Base(art.setup)
-base.execute_into(art.main, blob, bytearray(0))
-base.execute_into(art.extras["run"], b"", bytearray(0))
-base.execute_into(art.extras["seed"], seed.astype("<f4").tobytes(), bytearray(0))
-base.execute_into(art.extras["bwd"], b"", bytearray(0))
+art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
+base = py_base.Base(art)
+base.execute_into(art_entries["main"], blob, bytearray(0))
+base.execute_into(art_entries["run"], b"", bytearray(0))
+base.execute_into(art_entries["seed"], seed.astype("<f4").tobytes(), bytearray(0))
+base.execute_into(art_entries["bwd"], b"", bytearray(0))
 
-fetch = art.extras["fetchAny"]
+fetch = art_entries["fetchAny"]
 
 
 def grad(inp, n):

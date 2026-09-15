@@ -408,16 +408,14 @@ def buildPayload (bs : Nat) : List UInt8 :=
 -- ---------------------------------------------------------------------------
 
 
-def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Except String (Setup × Algorithm) := do
+def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Except String (Artifact × UInt32) := do
   let payload := buildPayload bs
-  let cfg : Setup := {
-    clif := ← Prog.program [.ok noopFunction, Prog.compileProg 1 (code bs)],
+  let cfg : Artifact := {
+    functions := ← Prog.program [.ok noopFunction, Prog.compileProg 1 (code bs)],
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }
-  let alg : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+  let alg : UInt32 := IR.mainFnIdx
   return (cfg, alg)
 
 -- ---------------------------------------------------------------------------
@@ -427,7 +425,7 @@ def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Except String (Setup × Alg
 
 def defaultParams : LZ4Params 16384 := ⟨by omega, by omega⟩
 
-def result : Except String (Setup × Algorithm) := buildCompressor defaultParams
+def result : Except String (Artifact × UInt32) := buildCompressor defaultParams
 
 -- Uncomment to see the constraint in action:
 --
@@ -442,6 +440,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie Algorithm.result
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "compress_app" cfg alg]
+  emitArtifacts outDir #[toJsonArtifact "compress_app" cfg]
 
 #eval ShipScan.check "CompressAlgorithm"

@@ -15,6 +15,11 @@
 //! each pair, which `lake env lean --run HProgPilots.lean <dir>` writes.
 
 use base_types::Artifact;
+
+/// Entry points of the pilot artifacts, as their generators number them.
+const MAIN: u32 = 1;
+const PREP: u32 = 2;
+const INFER: u32 = 3;
 use std::path::{Path, PathBuf};
 
 fn artifact(dir: &Path, name: &str) -> Artifact {
@@ -32,10 +37,10 @@ fn dir() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 
 fn run_histogram(a: &Artifact, input: &Path, output: &Path) -> Vec<u8> {
-    let mut b = base::Base::new(a.setup.clone()).expect("compile");
+    let mut b = base::Base::new(a.clone()).expect("compile");
     let _ = std::fs::remove_file(output);
     let data = format!("{}\0{}\0", input.to_str().unwrap(), output.to_str().unwrap());
-    b.execute(&a.main, data.as_bytes()).expect("execute");
+    b.execute(MAIN, data.as_bytes()).expect("execute");
     std::fs::read(output).expect("histogram written")
 }
 
@@ -78,10 +83,10 @@ fn histogram_matches_generator() {
 // ---------------------------------------------------------------------------
 
 fn run_clamp_sum(a: &Artifact, input: &[f32]) -> f64 {
-    let mut b = base::Base::new(a.setup.clone()).expect("compile");
+    let mut b = base::Base::new(a.clone()).expect("compile");
     let data: Vec<u8> = input.iter().flat_map(|v| v.to_le_bytes()).collect();
     let mut out = [0u8; 8];
-    b.execute_into(&a.main, &data, &mut out).expect("execute");
+    b.execute_into(MAIN, &data, &mut out).expect("execute");
     f64::from_le_bytes(out)
 }
 
@@ -122,13 +127,13 @@ fn clamp_sum_matches_generator() {
 fn nested_loops_and_branch_compute() {
     let Some(dir) = dir() else { return };
     let a = artifact(&dir, "nested_hprog");
-    let mut b = base::Base::new(a.setup).expect("compile");
+    let mut b = base::Base::new(a.clone()).expect("compile");
 
     let tmp = tempfile::TempDir::new().unwrap();
     let out = tmp.path().join("nested.bin");
     // The copy loop reads until NUL, so the terminator has to be in the buffer.
     let data = format!("{}\0", out.to_str().unwrap());
-    b.execute(&a.main, data.as_bytes()).expect("execute");
+    b.execute(MAIN, data.as_bytes()).expect("execute");
 
     let bytes = std::fs::read(&out).expect("output written");
     let sum = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
@@ -147,15 +152,13 @@ fn run_rmsnorm(a: &Artifact, weights: &[f32], x: &[f32]) -> Option<Vec<f32>> {
     let mut data = Vec::new();
     data.extend_from_slice(&(n as u64).to_le_bytes());
     data.extend(weights.iter().flat_map(|v| v.to_le_bytes()));
-    let mut b = base::Base::new(a.setup.clone()).ok()?;
-    b.execute(&a.main, &data).ok()?;
+    let mut b = base::Base::new(a.clone()).ok()?;
+    b.execute(MAIN, &data).ok()?;
 
     let xs: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let prep = a.extras.get("prep")?;
-    let infer = a.extras.get("infer")?;
-    b.execute(prep, &xs).ok()?;
+    b.execute(PREP, &xs).ok()?;
     let mut out = vec![0u8; n * 4];
-    b.execute_into(infer, &xs, &mut out).ok()?;
+    b.execute_into(INFER, &xs, &mut out).ok()?;
     Some(
         out.chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))

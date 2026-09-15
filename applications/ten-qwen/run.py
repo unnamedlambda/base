@@ -20,6 +20,7 @@ import sys
 
 import numpy as np
 import py_base
+import entries
 
 DM, NH, HD, SQ, DFF = 512, 8, 64, 128, 1408
 EPS = np.float32(0.000001)
@@ -85,6 +86,7 @@ def main():
     if not path or not os.path.exists(path):
         sys.exit("usage: run.py <ten_qwen_block.json>")
     art = py_base.load_artifact(path)
+    art_entries = entries.entries(os.path.basename(path).removesuffix(".json"))
     w = make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)   # spans the widest reduction
 
@@ -98,9 +100,9 @@ def main():
     assert len(blob) == want, f"host packing {len(blob)} vs Lean layout {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's qHostIn ({want})")
 
-    base = py_base.Base(art.setup)
-    ex = art.extras
-    base.execute_into(art.main, blob, bytearray(0))
+    base = py_base.Base(art)
+    ex = art_entries
+    base.execute_into(art_entries["main"], blob, bytearray(0))
     base.execute_into(ex["runFwd"], b"", bytearray(0))
 
     out = bytearray(DM * 4)

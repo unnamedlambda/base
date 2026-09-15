@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from layout import (CAP_DEFAULT, CAP_MAX, D_CTX, D_IN_BYTES, D_OUT_BYTES,
                     check_layout, acquire_engine_lock)
+import entries
 
 ROW_BYTES = 13253760          # one expert, all six pieces
 NL, TOPK = 24, 4
@@ -55,8 +56,9 @@ def main():
     import json
     check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
-    assert not art.extras
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    assert not art_entries
+    base = py_base.Base(art)
 
     paths = {}
     for off, name in ((16, "experts.bin"), (272, "dense.bin"),
@@ -73,7 +75,7 @@ def main():
         struct.pack_into("<I", buf, D_CTX, args.context)
         for off, p in paths.items():
             buf[off:off + len(p)] = p
-        base.execute_into(art.main, bytes(buf), out)
+        base.execute_into(art_entries["main"], bytes(buf), out)
         return struct.unpack_from("<Ii", bytes(out), 0)
 
     rng = np.random.default_rng(args.seed)

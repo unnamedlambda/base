@@ -219,23 +219,11 @@ pub struct FnDecl {
 /// argument.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Function {
-    /// The `u0:N` index. Must equal the function's position in
-    /// [`Program::functions`]; the runtime resolves call targets by treating it
-    /// as a `FuncId`.
+    /// The `u0:N` index. Must equal the function's position in the artifact's
+    /// function list; the runtime resolves call targets by treating it as a
+    /// `FuncId`.
     pub index: u32,
     pub sigs: Vec<SigDecl>,
     pub fns: Vec<FnDecl>,
     pub blocks: Vec<Block>,
-}
-
-/// Every function in one artifact, compiled as a unit.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Program {
-    pub functions: Vec<Function>,
-}
-
-impl Program {
-    pub fn is_empty(&self) -> bool {
-        self.functions.is_empty()
-    }
 }

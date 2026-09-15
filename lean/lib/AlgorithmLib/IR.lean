@@ -70,10 +70,6 @@ def FnEnv.declareColocatedAll (e : FnEnv) (names : List String) (params : List C
     let (r, e) := e.declareColocated n params result
     (refs ++ [r], e)) ([], e)
 
-/-- Assemble functions into a program. They must be in `u0:N` order: the
-    runtime resolves call targets by treating the index as a `FuncId`. -/
-def program (fs : List FuncData) : Program := { functions := fs }
-
 end IR
 
 end AlgorithmLib

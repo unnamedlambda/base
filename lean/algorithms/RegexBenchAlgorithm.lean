@@ -122,7 +122,7 @@ def code : Prog V L Unit := do
   let bufOff ← iconst64 OUTPUT_BUF
   let _ ← ffi .fileWrite %[ptr, outOff, bufOff, zero, zero]
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 /-- Every byte of shared memory this program names.
@@ -145,12 +145,10 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "regex_algorithm" {
-    clif,
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "regex_algorithm" {
+    functions := clif,
     memory_size := MEM_SIZE
-  } {
-    fn_idx := u32 1
   }]
 
 end RegexBench

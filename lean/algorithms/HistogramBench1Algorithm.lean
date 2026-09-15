@@ -108,7 +108,7 @@ def code : Prog V L Unit := do
                         zero, ← iconst64 HIST_BYTES]
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      .ok (noopAt 1),
@@ -134,12 +134,10 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "hist1_algorithm" {
-    clif,
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "hist1_algorithm" {
+    functions := clif,
     memory_size := MEM_SIZE
-  } {
-    fn_idx := u32 2
   }]
 
 end HistogramBench1

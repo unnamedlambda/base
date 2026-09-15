@@ -125,13 +125,13 @@ impl Func {
 }
 
 /// One function, the common case.
-pub fn program(f: Func) -> Program {
-    Program { functions: vec![f.inner] }
+pub fn program(f: Func) -> Vec<Function> {
+    vec![f.inner]
 }
 
 /// Several functions, in `u0:N` order.
-pub fn programs(fs: Vec<Func>) -> Program {
-    Program { functions: fs.into_iter().map(|f| f.inner).collect() }
+pub fn programs(fs: Vec<Func>) -> Vec<Function> {
+    fs.into_iter().map(|f| f.inner).collect()
 }
 
 /// `u0:0` doing nothing — the slot generated artifacts reserve so that the
@@ -254,12 +254,12 @@ pub fn f64const(d: Val, x: f64) -> Inst {
 /// Nothing asserts on this text: it exists so a test can be read as the CLIF it
 /// actually compiles. Because there is no expected value, a change in how
 /// Cranelift renders IR changes what is printed and breaks nothing.
-pub fn dump(prog: &Program) {
-    if std::env::var_os("BASE_DUMP_CLIF").is_none() || prog.is_empty() {
+pub fn dump(functions: &[Function]) {
+    if std::env::var_os("BASE_DUMP_CLIF").is_none() || functions.is_empty() {
         return;
     }
     let test = std::thread::current().name().unwrap_or("?").to_string();
-    match base::clif_text(prog) {
+    match base::clif_text(functions) {
         Ok(text) => println!("=== {test} ===\n{text}"),
         Err(e) => println!("=== {test} === does not decode: {e}"),
     }

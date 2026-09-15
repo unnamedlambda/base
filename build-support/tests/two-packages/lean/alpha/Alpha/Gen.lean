@@ -6,8 +6,7 @@ two packages' output apart. -/
 def size : Nat := 111 + Common.bump
 
 def artifact : String :=
-  "{\"setup\":{\"clif\":{\"functions\":[]},\"memory_size\":" ++ toString size ++
-  ",\"initial_memory\":[]},\"main\":{\"fn_idx\":0},\"extras\":{}}"
+  "{\"functions\":[],\"memory_size\":" ++ toString size ++ ",\"initial_memory\":[]}"
 
 def main (args : List String) : IO Unit := do
   let dir := args.head!

@@ -46,7 +46,7 @@ def vBodies : List (Nat × Prog.Body) :=
        , (VFN + 16,   vCaptureClassAt false VGRAPH_ROW_OFF)
        , (VFN + 17,   vReplayAt VGRAPH_ROW_OFF 1) ]
 
-def vClifIR : Except String Program := Prog.program (.ok noopFunction ::
+def vClifIR : Except String (List FuncData) := Prog.program (.ok noopFunction ::
   vBodies.map (fun p => Prog.compileProg p.1 p.2))
 
 /-- Where each input's gradient landed, one `u32` per input, `0` for the
@@ -64,36 +64,30 @@ def vInitialMemory : List UInt8 :=
     ++ vGradMapBytes
     ++ zeros (VMEM_SIZE - VGMAP_OFF - 4 * VBASE)
 
-def vSetup (clif : Program) : Setup := {
-  clif
+def vSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := VMEM_SIZE
   initial_memory := vInitialMemory
 }
 
-def artifacts (clif : Program) : Array Lean.Json :=
-  #[ toJsonArtifact "vit_block" (vSetup clif) { fn_idx := u32 1 }
-       ([("run",       { fn_idx := u32 2 }),
-         ("fetch",     { fn_idx := u32 3 }),
-         ("captureChain",     { fn_idx := u32 VFN }),
-         ("replayChain",      { fn_idx := u32 (VFN + 1) }),
-         ("step",      { fn_idx := u32 (VFN + 2) }),
-         ("captureStepChain", { fn_idx := u32 (VFN + 3) }),
-         ("replayStepChain",  { fn_idx := u32 (VFN + 4) }),
-         ("seed",      { fn_idx := u32 (VFN + 5) }),
-         ("fetchAny",  { fn_idx := u32 (VFN + 6) }),
-         ("bwd",       { fn_idx := u32 (VFN + 7) }),
-         ("sgd",       { fn_idx := u32 (VFN + 8) }),
-         ("reload",    { fn_idx := u32 (VFN + 9) }),
-         ("capture",     { fn_idx := u32 (VFN + 10) }),
-         ("replay",      { fn_idx := u32 (VFN + 11) }),
-         ("captureStep", { fn_idx := u32 (VFN + 12) }),
-         ("replayStep",  { fn_idx := u32 (VFN + 13) }),
-         ("captureBlas",  { fn_idx := u32 (VFN + 14) }),
-         ("replayBlas",   { fn_idx := u32 (VFN + 15) }),
-         ("captureRow",   { fn_idx := u32 (VFN + 16) }),
-         ("replayRow",    { fn_idx := u32 (VFN + 17) })]
-        ++ (List.range VDBG).map
-             (fun b => (s!"buf{b}", { fn_idx := u32 (4 + b) }))) ]
+/-- The entry points this artifact has, by the name a host knows them by. The
+    artifact carries only their indices; this list is what a host is written
+    against. -/
+def entryPoints : List (String × UInt32) :=
+  let v : Nat → UInt32 := fun i => UInt32.ofNat (VFN + i)
+  [("run", 2), ("fetch", 3),
+   ("captureChain", v 0), ("replayChain", v 1), ("step", v 2),
+   ("captureStepChain", v 3), ("replayStepChain", v 4),
+   ("seed", v 5), ("fetchAny", v 6), ("bwd", v 7),
+   ("sgd", v 8), ("reload", v 9),
+   ("capture", v 10), ("replay", v 11),
+   ("captureStep", v 12), ("replayStep", v 13),
+   ("captureBlas", v 14), ("replayBlas", v 15),
+   ("captureRow", v 16), ("replayRow", v 17)]
+  ++ (List.range VDBG).map (fun b => (s!"buf{b}", UInt32.ofNat (4 + b)))
+
+def artifacts (clif : List FuncData) : Array Lean.Json :=
+  #[ toJsonArtifact "vit_block" (vSetup clif) ]
 
 end Vit
 

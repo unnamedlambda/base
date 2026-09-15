@@ -95,15 +95,13 @@ def code : Prog V L Unit := do
   store (d.head) outPtr
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "vecops_algorithm" {
-    clif,
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "vecops_algorithm" {
+    functions := clif,
     memory_size := 40
-  } {
-    fn_idx := u32 1
   }]
 
 end VecOpsBench

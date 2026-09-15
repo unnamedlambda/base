@@ -5,9 +5,9 @@
 //! host — a Lean program that builds its own artifact and runs it in-process —
 //! needs no Rust of its own.
 //!
-//! A setup arrives as the JSON a generator already prints. Nothing here decides
-//! anything about a program: it is `Base::new` and `Base::execute_into` with
-//! pointers instead of types.
+//! An artifact arrives as the JSON a generator already prints, and an entry
+//! point as its index. Nothing here decides anything about a program: it is
+//! `Base::new` and `Base::execute_into` with pointers instead of types.
 //!
 //! # Results
 //!
@@ -31,7 +31,7 @@
 use std::cell::RefCell;
 
 use crate::{Base, Error};
-use base_types::{Algorithm, Setup};
+use base_types::Artifact;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -98,31 +98,31 @@ unsafe fn slice_out<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
     }
 }
 
-/// Compile a setup and take its memory. The result is owned by the caller and
-/// released with [`base_free`]; null means the call failed.
+/// Compile an artifact and take its memory. The result is owned by the caller
+/// and released with [`base_free`]; null means the call failed.
 ///
-/// `setup_json` is a serialized [`Setup`] — the `"setup"` field of the JSON a
-/// generator writes.
+/// `artifact_json` is a serialized [`Artifact`] — the JSON a generator writes.
 ///
 /// # Safety
 ///
-/// `setup_json` must point to `len` readable bytes, or be null with `len` zero.
+/// `artifact_json` must point to `len` readable bytes, or be null with `len`
+/// zero.
 #[no_mangle]
-pub unsafe extern "C" fn base_new(setup_json: *const u8, len: usize) -> *mut Base {
+pub unsafe extern "C" fn base_new(artifact_json: *const u8, len: usize) -> *mut Base {
     guard(std::ptr::null_mut(), || {
         clear_error();
-        let Some(bytes) = slice_in(setup_json, len) else {
-            set_error("setup_json is null with a non-zero length");
+        let Some(bytes) = slice_in(artifact_json, len) else {
+            set_error("artifact_json is null with a non-zero length");
             return std::ptr::null_mut();
         };
-        let setup: Setup = match serde_json::from_slice(bytes) {
-            Ok(s) => s,
+        let artifact: Artifact = match serde_json::from_slice(bytes) {
+            Ok(a) => a,
             Err(e) => {
-                set_error(format!("setup is not a Setup: {e}"));
+                set_error(format!("artifact is not an Artifact: {e}"));
                 return std::ptr::null_mut();
             }
         };
-        match Base::new(setup) {
+        match Base::new(artifact) {
             Ok(base) => Box::into_raw(Box::new(base)),
             Err(e) => {
                 set_error(String::from(e));
@@ -158,12 +158,11 @@ pub unsafe extern "C" fn base_bind_thread(handle: *mut Base) -> i32 {
     })
 }
 
-/// Run one algorithm against this `Base`. `0` on success, `-1` on failure.
+/// Call one entry point of this `Base`. `0` on success, `-1` on failure.
 ///
-/// `algorithm_json` is a serialized [`Algorithm`] — the `"main"` field, or one
-/// value of `"extras"`. `data` is the input the program reads through its
-/// `data_ptr`/`data_len` offsets and `out` the buffer it writes through
-/// `out_ptr`/`out_len`; either may be `(null, 0)` when a program uses neither.
+/// `fn_idx` is the entry point's function index. `data` is the input the
+/// program is handed and `out` the buffer it answers in; either may be
+/// `(null, 0)` when a program uses neither.
 ///
 /// Both buffers are borrowed only for the duration of the call: the program
 /// sees the caller's memory directly, and nothing retains the pointers
@@ -177,8 +176,7 @@ pub unsafe extern "C" fn base_bind_thread(handle: *mut Base) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn base_execute(
     handle: *mut Base,
-    algorithm_json: *const u8,
-    alg_len: usize,
+    fn_idx: u32,
     data: *const u8,
     data_len: usize,
     out: *mut u8,
@@ -190,10 +188,6 @@ pub unsafe extern "C" fn base_execute(
             set_error("handle is null");
             return -1;
         };
-        let Some(alg_bytes) = slice_in(algorithm_json, alg_len) else {
-            set_error("algorithm_json is null with a non-zero length");
-            return -1;
-        };
         let Some(data) = slice_in(data, data_len) else {
             set_error("data is null with a non-zero length");
             return -1;
@@ -202,14 +196,7 @@ pub unsafe extern "C" fn base_execute(
             set_error("out is null with a non-zero length");
             return -1;
         };
-        let algorithm: Algorithm = match serde_json::from_slice(alg_bytes) {
-            Ok(a) => a,
-            Err(e) => {
-                set_error(format!("algorithm is not an Algorithm: {e}"));
-                return -1;
-            }
-        };
-        match base.execute_into(&algorithm, data, out) {
+        match base.execute_into(fn_idx, data, out) {
             Ok(()) => 0,
             Err(e) => {
                 set_error(String::from(e));
@@ -321,9 +308,9 @@ pub unsafe extern "C" fn base_free(handle: *mut Base) {
 mod tests {
     use super::*;
 
-    /// A setup with no program: enough to exercise the ABI without a JIT.
-    const EMPTY_SETUP: &str = r#"{
-        "clif": {"functions": []},
+    /// An artifact with no functions: enough to exercise the ABI without a JIT.
+    const EMPTY_ARTIFACT: &str = r#"{
+        "functions": [],
         "memory_size": 64,
         "initial_memory": [1, 2, 3, 4]
     }"#;
@@ -336,8 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn a_setup_round_trips_from_json_and_frees() {
-        let handle = unsafe { base_new(EMPTY_SETUP.as_ptr(), EMPTY_SETUP.len()) };
+    fn an_artifact_round_trips_from_json_and_frees() {
+        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
         assert!(!handle.is_null(), "{}", last_error());
         assert_eq!(unsafe { base_memory_size(handle) }, 64);
         assert_eq!(unsafe { base_bind_thread(handle) }, 0);
@@ -348,7 +335,7 @@ mod tests {
     /// how a host confirms it got the setup it sent.
     #[test]
     fn read_memory_answers_the_initial_bytes() {
-        let handle = unsafe { base_new(EMPTY_SETUP.as_ptr(), EMPTY_SETUP.len()) };
+        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
         assert!(!handle.is_null(), "{}", last_error());
         let mut got = [0u8; 4];
         assert_eq!(unsafe { base_read_memory(handle, 0, got.as_mut_ptr(), 4) }, 4);
@@ -360,7 +347,7 @@ mod tests {
     /// a result must not mistake a short read for a short answer.
     #[test]
     fn read_memory_refuses_a_range_past_the_end() {
-        let handle = unsafe { base_new(EMPTY_SETUP.as_ptr(), EMPTY_SETUP.len()) };
+        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
         let mut got = [0xAAu8; 8];
         assert_eq!(unsafe { base_read_memory(handle, 60, got.as_mut_ptr(), 8) }, 0);
         assert_eq!(got, [0xAA; 8], "nothing was written");
@@ -382,15 +369,7 @@ mod tests {
         assert!(last_error().contains("null"));
         assert_eq!(
             unsafe {
-                base_execute(
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null_mut(),
-                    0,
-                )
+                base_execute(std::ptr::null_mut(), 0, std::ptr::null(), 0, std::ptr::null_mut(), 0)
             },
             -1
         );
@@ -414,9 +393,9 @@ mod tests {
 
     #[test]
     fn malformed_json_is_an_error_and_not_a_panic() {
-        let bad = b"{\"clif\":";
+        let bad = b"{\"functions\":";
         assert!(unsafe { base_new(bad.as_ptr(), bad.len()) }.is_null());
-        assert!(last_error().contains("not a Setup"), "{}", last_error());
+        assert!(last_error().contains("not an Artifact"), "{}", last_error());
     }
 
     /// The message is a prefix when it does not fit, and the answer is always

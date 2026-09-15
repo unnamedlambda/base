@@ -26,6 +26,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
+import entries
 
 try:
     import pandas as pd
@@ -108,11 +109,13 @@ def run(revagg_path: str, filter_path: str, rounds: int) -> list[harness.BenchRe
         return []
 
     art_rev = py_base.load_artifact(revagg_path)
-    eng_rev = py_base.Base(art_rev.setup)
-    alg_rev = art_rev.main
+    art_rev_entries = entries.entries(os.path.basename(revagg_path).removesuffix(".json"))
+    eng_rev = py_base.Base(art_rev)
+    alg_rev = art_rev_entries["main"]
     art_filter = py_base.load_artifact(filter_path)
-    eng_filter = py_base.Base(art_filter.setup)
-    alg_filter = art_filter.main
+    art_filter_entries = entries.entries(os.path.basename(filter_path).removesuffix(".json"))
+    eng_filter = py_base.Base(art_filter)
+    alg_filter = art_filter_entries["main"]
     results = []
     rng = np.random.default_rng(42)
 

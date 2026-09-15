@@ -1474,7 +1474,7 @@ def code (spec : BlackHoleSpec) : Prog V L Unit :=
 
 -- Generic in the spec, so there is no instance to `decide` at; the
 -- obligation is a parameter instead, discharged at the spec that ships.
-def clifIrSource (spec : BlackHoleSpec) : Except String Program :=
+def clifIrSource (spec : BlackHoleSpec) : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 (code spec)]
 
 def payloads (spec : BlackHoleSpec) : List UInt8 :=
@@ -1489,17 +1489,15 @@ def payloads (spec : BlackHoleSpec) : List UInt8 :=
   reserved ++ ptxBytes ++ nameA ++ nameB ++ bindAPad ++ bindBPad ++
     filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : BlackHoleSpec) (clif : Program) : Setup := {
-  clif,
+def config (spec : BlackHoleSpec) (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
 
-def algorithm : Algorithm := {
-  fn_idx := IR.mainFnIdx
-}
+def algorithm : UInt32 := IR.mainFnIdx
 
-def renderScene (spec : BlackHoleSpec) : Except String (Setup × Algorithm) := do
+def renderScene (spec : BlackHoleSpec) : Except String (Artifact × UInt32) := do
   return (config spec (← clifIrSource spec), algorithm)
 
 /-- ============================================================
@@ -1566,7 +1564,7 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultBlackHole)
-  let jsonEntry := toJsonEntry "blackhole_app" cfg alg
+  let jsonEntry := toJsonArtifact "blackhole_app" cfg
   let outputDir ← requireOutputDir args
   emitArtifacts outputDir #[jsonEntry]
 

@@ -135,7 +135,7 @@ def fetchFnCode : Prog V L Unit := do
   let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, outBytes]
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 loadFnCode,
@@ -166,15 +166,14 @@ def initialMemory : List UInt8 :=
     ++ ptxBytes
     ++ zeros (MEM_SIZE - PTX_OFF - ptxBytes.length)
 
-def setup (clif : Program) : Setup := {
-  clif
+def setup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
 
-def artifacts (clif : Program) : Array Json :=
-  #[ toJsonArtifact "warp_sumsq" (setup clif) { fn_idx := u32 1 }
-       [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 })] ]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[ toJsonArtifact "warp_sumsq" (setup clif) ]
 
 end WarpSumSq
 

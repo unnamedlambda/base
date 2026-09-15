@@ -312,7 +312,7 @@ def fetchCode (sh : Shape) : Prog V L Unit :=
     Generic in the shape --- which used to mean there was no instance to
     `decide` at, and a theorem over all four shapes stood in for the check.
     `compileProg` checks the body it emits, so the genericity costs nothing. -/
-def clifIR (sh : Shape) : Except String Program :=
+def clifIR (sh : Shape) : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 (loadCode sh),
@@ -354,14 +354,9 @@ def initialMemory (sh : Shape) : List UInt8 :=
     ++ zeros (MEM_SIZE - BIND_OFF)
 
 def artifactOf (sh : Shape) : Except String Json := do
+  let functions ← clifIR sh
   return toJsonArtifact sh.tag
-    { clif := ← clifIR sh, memory_size := MEM_SIZE,
-      initial_memory := initialMemory sh }
-    { fn_idx := u32 1 }
-    [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
-     ("blas", { fn_idx := u32 4 }), ("run_strided", { fn_idx := u32 5 }),
-     ("run_blocked", { fn_idx := u32 6 }), ("sq", { fn_idx := u32 7 }),
-     ("sq_strided", { fn_idx := u32 8 }), ("sq_blocked", { fn_idx := u32 9 })]
+    { functions, memory_size := MEM_SIZE, initial_memory := initialMemory sh }
 
 def artifacts : Except String (Array Json) := do
   return (← shapes.mapM artifactOf).toArray

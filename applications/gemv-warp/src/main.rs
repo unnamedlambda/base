@@ -34,6 +34,17 @@ const ART_8192: &[u8] =
 const ART_WIDE: &[u8] =
     build_support::artifact!("GemvWarpAlgorithm/gemv_warp_wide");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+const BLAS: u32 = 4;
+const FETCH: u32 = 3;
+const RUN: u32 = 2;
+const RUN_BLOCKED: u32 = 6;
+const RUN_STRIDED: u32 = 5;
+const SQ: u32 = 7;
+const SQ_BLOCKED: u32 = 9;
+const SQ_STRIDED: u32 = 8;
+
 /// One kernel family at one shape: time every schedule, check each against its
 /// own committed fold, and report how far apart the answers are.
 struct Row {
@@ -58,38 +69,38 @@ fn bench(
     bytes.extend(x.iter().flat_map(|f| f.to_le_bytes()));
 
     let artifact = Artifact::from_bytes(art_bytes);
-    let mut base = Base::new(artifact.setup).expect("Base::new");
-    let fetch = artifact.extras["fetch"].clone();
+    let mut base = Base::new(artifact).expect("Base::new");
+    let fetch = FETCH;
     let dot = fam_label == "dot";
     let runs = if dot {
         [
-            ("vec4", artifact.extras["run"].clone()),
-            ("strided", artifact.extras["run_strided"].clone()),
-            ("blocked", artifact.extras["run_blocked"].clone()),
+            ("vec4", RUN),
+            ("strided", RUN_STRIDED),
+            ("blocked", RUN_BLOCKED),
         ]
     } else {
         [
-            ("vec4", artifact.extras["sq"].clone()),
-            ("strided", artifact.extras["sq_strided"].clone()),
-            ("blocked", artifact.extras["sq_blocked"].clone()),
+            ("vec4", SQ),
+            ("strided", SQ_STRIDED),
+            ("blocked", SQ_BLOCKED),
         ]
     };
 
-    base.execute_into(&artifact.main, &bytes, &mut []).expect("load");
+    base.execute_into(MAIN, &bytes, &mut []).expect("load");
 
     let mut times = Vec::new();
     let mut outs: Vec<Vec<f32>> = Vec::new();
     for (_, alg) in &runs {
-        times.push(time(&mut base, alg, reps));
+        times.push(time(&mut base, *alg, reps));
         let mut buf = vec![0u8; m * 4];
-        base.execute_into(&fetch, b"", &mut buf).expect("fetch");
+        base.execute_into(fetch, b"", &mut buf).expect("fetch");
         outs.push(floats(&buf));
     }
     // cuBLAS is a baseline for the dot only; there is no sgemv for x·x.
     let t_blas = if dot {
-        let t = time(&mut base, &artifact.extras["blas"].clone(), reps);
+        let t = time(&mut base, BLAS, reps);
         let mut buf = vec![0u8; m * 4];
-        base.execute_into(&fetch, b"", &mut buf).expect("fetch");
+        base.execute_into(fetch, b"", &mut buf).expect("fetch");
         Some((t, floats(&buf)))
     } else {
         None

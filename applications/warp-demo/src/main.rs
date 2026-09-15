@@ -8,6 +8,11 @@ use base::{Artifact, Base};
 
 const ART: &[u8] = build_support::artifact!("WarpSumSqAlgorithm/warp_sumsq");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+const FETCH: u32 = 3;
+const RUN: u32 = 2;
+
 const K: usize = 128;
 const CHUNK: usize = K * 4 * 32;      // 16384 floats per block
 const GRID: usize = 4096;             // blocks, one warp each
@@ -18,14 +23,14 @@ fn main() {
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
     let artifact = Artifact::from_bytes(ART);
-    let mut base = Base::new(artifact.setup).expect("Base::new");
+    let mut base = Base::new(artifact).expect("Base::new");
 
     let mut out = vec![0u8; GRID * 4];
-    let run = &artifact.extras["run"];
-    let fetch = &artifact.extras["fetch"];
+    let run = RUN;
+    let fetch = FETCH;
 
     // upload once
-    base.execute_into(&artifact.main, &bytes, &mut []).expect("load");
+    base.execute_into(MAIN, &bytes, &mut []).expect("load");
     // warm up, then time the LAUNCH ONLY
     base.execute_into(run, b"", &mut []).expect("run");
     let reps = 20;

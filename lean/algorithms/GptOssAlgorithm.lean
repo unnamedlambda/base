@@ -281,7 +281,7 @@ def gShippedBodies : List Prog.Body :=
   , gRunExperts, gFetchFn B_OUT (H * 4) ]
 
 
-def gClifIR : Except String Program :=
+def gClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: gShippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1)
@@ -301,8 +301,8 @@ def gInitialMemory : List UInt8 :=
     ++ gptossPtx.flatMap gSlotBytes
     ++ zeros (GMEM_SIZE - GBIND_OFF)
 
-def gSetup (clif : Program) : Setup := {
-  clif
+def gSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := GMEM_SIZE
   initial_memory := gInitialMemory
 }
@@ -572,7 +572,7 @@ def aShippedBodies : List Prog.Body :=
   , aFetchFn A_QKV (QKV * 4), aFetchFn A_ATT (QO * 4) ]
 
 
-def aClifIR : Except String Program :=
+def aClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: aShippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1)
@@ -587,8 +587,8 @@ def aInitialMemory : List UInt8 :=
     ++ aPtx.flatMap aSlotBytes
     ++ zeros (AMEM_SIZE - ABIND_OFF)
 
-def aSetup (clif : Program) : Setup := {
-  clif
+def aSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := AMEM_SIZE
   initial_memory := aInitialMemory
 }
@@ -968,7 +968,7 @@ def lMainFn : Prog V L Unit :=
 def lShippedBodies : List Prog.Body := [ lMainFn ]
 
 
-def lClifIR : Except String Program :=
+def lClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: lShippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1)
@@ -983,8 +983,8 @@ def lInitialMemory : List UInt8 :=
     ++ lPtx.flatMap lSlotBytes
     ++ zeros (LMEM_SIZE - LBIND_OFF)
 
-def lSetup (clif : Program) : Setup := {
-  clif
+def lSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := LMEM_SIZE
   initial_memory := lInitialMemory
 }
@@ -993,20 +993,10 @@ end Layer
 
 #eval LayoutScan.check "GptOssAlgorithm" [``gMemMap, ``Attn.aMemMap, ``Layer.lMemMap]
 
-def artifacts (gClif aClif lClif : Program) : Array Json :=
-  #[ toJsonArtifact "gptoss_moe" (gSetup gClif) { fn_idx := u32 1 }
-       [("bindExperts", { fn_idx := u32 2 }),
-        ("uploadX", { fn_idx := u32 3 }),
-        ("uploadGates", { fn_idx := u32 4 }),
-        ("runExperts", { fn_idx := u32 5 }),
-        ("fetchOut", { fn_idx := u32 6 })]
-   , toJsonArtifact "gptoss_attn" (Attn.aSetup aClif) { fn_idx := u32 1 }
-       [("uploadStep", { fn_idx := u32 2 }),
-        ("step", { fn_idx := u32 3 }),
-        ("fetchX", { fn_idx := u32 4 }),
-        ("fetchQkv", { fn_idx := u32 5 }),
-        ("fetchAtt", { fn_idx := u32 6 })]
-   , toJsonArtifact "gptoss_layer" (Layer.lSetup lClif) { fn_idx := u32 1 } [] ]
+def artifacts (gClif aClif lClif : List FuncData) : Array Json :=
+  #[ toJsonArtifact "gptoss_moe" (gSetup gClif)
+   , toJsonArtifact "gptoss_attn" (Attn.aSetup aClif)
+   , toJsonArtifact "gptoss_layer" (Layer.lSetup lClif) ]
 
 end GptOssAlgorithm
 

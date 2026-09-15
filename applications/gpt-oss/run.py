@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank  # noqa: E402
 from layout import (CAP_DEFAULT, CAP_MAX, D_CTX, D_IN_BYTES, D_OUT_TRACE,
                     D_OUT_BYTES, check_layout, acquire_engine_lock)  # noqa: E402
+import entries
 
 
 def main():
@@ -65,8 +66,9 @@ def main():
     H, NL = bank.H, bank.L
     check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
-    assert not art.extras, f"expected one entry and no extras; got {sorted(art.extras)}"
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    assert not art_entries, f"expected one entry and no extras; got {sorted(art_entries)}"
+    base = py_base.Base(art)
 
     exp = os.path.abspath(os.path.join(args.bank, "experts.bin")).encode() + b"\0"
     den = os.path.abspath(os.path.join(args.bank, "dense.bin")).encode() + b"\0"
@@ -94,7 +96,7 @@ def main():
         buf[528:528 + len(emb)] = emb
         buf[784:784 + len(tkz)] = tkz
         out = bytearray(D_OUT_BYTES)
-        base.execute_into(art.main, bytes(buf), out)
+        base.execute_into(art_entries["main"], bytes(buf), out)
         b = bytes(out)
         tok_id_out, miss = struct.unpack_from("<Ii", b, 0)
         lg = np.frombuffer(b, np.float32, count=201088, offset=8)

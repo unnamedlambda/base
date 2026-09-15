@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from train import (  # noqa: E402
     BATCH, C, CLASSES, H, IN, LR, find_artifact, load_cifar,
 )
+import entries
 
 import py_base  # noqa: E402
 
@@ -74,7 +75,8 @@ def main() -> None:
 
     path = find_artifact()
     art = py_base.load_artifact(path)
-    ex = art.extras
+    art_entries = entries.entries(os.path.basename(path).removesuffix(".json"))
+    ex = art_entries
     xtr, ytr, xte, yte = load_cifar()
 
     rng = np.random.default_rng(0)
@@ -88,8 +90,8 @@ def main() -> None:
         mem = bytes(json.load(fh)["setup"]["initial_memory"])
     assert len(blob) == struct.unpack_from("<I", mem, HOST_LEN_OFF)[0]
 
-    base = py_base.Base(art.setup)
-    base.execute_into(art.main, blob, bytearray(0))
+    base = py_base.Base(art)
+    base.execute_into(art_entries["main"], blob, bytearray(0))
     nil = bytearray(0)
 
     # The identical network in PyTorch: no biases, silu, and the *padded* output

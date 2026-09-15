@@ -108,7 +108,7 @@ def code : Prog V L Unit := do
     across the FFI. -/
 theorem code_calls : callsOf (Prog.emit code) = [fnRead, fnWrite].map Ffi.id := rfl
 
-def program : Except String Program :=
+def program : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction, .ok (noopAt 1), Prog.compileProg 2 code]
 
@@ -181,7 +181,7 @@ def code : Prog V L Unit := do
 /-- The computation crosses no FFI boundary at all. -/
 theorem code_calls : callsOf (Prog.emit code) = [] := rfl
 
-def program : Except String Program :=
+def program : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction, Prog.compileProg 1 code]
 
@@ -260,7 +260,7 @@ theorem infer_calls :
     callsOf (Prog.emit inferCode) =
       [IR.Ffi.cudaLaunch.id, IR.Ffi.cudaSync.id, IR.Ffi.cudaDownload.id] := rfl
 
-def program : Except String Program :=
+def program : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 loadCode,
@@ -316,7 +316,7 @@ def code : Prog V L Unit := do
 
 theorem code_calls : callsOf (Prog.emit code) = [Hist.fnWrite].map Ffi.id := rfl
 
-def program : Except String Program :=
+def program : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction, .ok (noopAt 1), Prog.compileProg 2 code]
 
@@ -366,7 +366,7 @@ def code : Prog V L Unit := do
   return ()
 
 
-def program : Except String Program :=
+def program : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 end Early
@@ -455,26 +455,23 @@ def main (args : List String) : IO Unit := do
     HistogramBench1.artifacts hist1Clif ++
     ClampSumBench.artifacts clampClif ++
     CudaRmsNormPersist.artifacts rmsClif ++
-    #[toJsonEntry "hist1_hprog" {
-        clif := histProg,
+    #[toJsonArtifact "hist1_hprog" {
+        functions := histProg,
         memory_size := HistogramBench1.MEM_SIZE
-      } { fn_idx := u32 2 },
-      toJsonEntry "clamp_sum_hprog" {
-        clif := clampProg,
+      },
+      toJsonArtifact "clamp_sum_hprog" {
+        functions := clampProg,
         memory_size := ClampSumBench.MEM_SIZE
-      } { fn_idx := u32 1 },
+      },
       toJsonArtifact "cuda_rmsnorm_hprog" {
-        clif := rmsProg,
+        functions := rmsProg,
         memory_size := CudaRmsNormPersist.MEM_SIZE,
         initial_memory := CudaRmsNormPersist.buildInitialMemory
-      } { fn_idx := u32 1 } [
-        ("prep", { fn_idx := u32 2 }),
-        ("infer", { fn_idx := u32 3 })
-      ],
-      toJsonEntry "nested_hprog" {
-        clif := nestedProg,
+      },
+      toJsonArtifact "nested_hprog" {
+        functions := nestedProg,
         memory_size := 0x100000
-      } { fn_idx := u32 2 }]
+      }]
   -- Each pilot reports the FFI it actually assumes, derived from its own term.
   for (nm, p) in [("hist1", HProgPilots.Hist.code),
                   ("clamp_sum", HProgPilots.ClampSum.code),

@@ -7,7 +7,9 @@ path.  This runs both and reports them separately: agreement with timm says the
 numbers are right, and bit-equality with the eager pass says the two ways of
 issuing the same tape landed the same values.
 """
+import os
 import sys, numpy as np, py_base
+import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 SQ, NC = 200, 128
@@ -15,9 +17,10 @@ blob = np.load(D + "/blob.npy").tobytes()
 ref = np.load(D + "/ref.npy")
 
 art = py_base.load_artifact(ART)
-base = py_base.Base(art.setup)
-ex = art.extras
-base.execute_into(art.main, blob, bytearray(0))
+art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
+base = py_base.Base(art)
+ex = art_entries
+base.execute_into(art_entries["main"], blob, bytearray(0))
 
 
 def logits():

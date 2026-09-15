@@ -3,6 +3,9 @@ use base::{run, Artifact};
 const ARTIFACT_BINARY: &[u8] =
     build_support::artifact!("SatAlgorithm/sat_app");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 /// Payload offset where the input CNF filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: usize = 0x100;
 
@@ -22,12 +25,12 @@ fn main() {
         path_bytes.len() < 255,
         "Input path too long (max 254 chars)"
     );
-    artifact.setup.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
+    artifact.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
         .copy_from_slice(path_bytes);
-    artifact.setup.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
+    artifact.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
 
     let start = std::time::Instant::now();
-    match run(artifact.setup, artifact.main) {
+    match run(artifact, MAIN) {
         Ok(_) => {
             let elapsed = start.elapsed();
             // Read the output file produced by the solver

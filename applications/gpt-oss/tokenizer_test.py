@@ -25,6 +25,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "tools"))
 import pretok  # noqa: E402
+import entries
 
 TEXT_MAX = 4096
 D_PATH, D_TEXT = 16, 272
@@ -53,8 +54,9 @@ def main():
     tab = pretok.class_table()
 
     art = py_base.load_artifact(args.artifact)
-    assert not art.extras, f"expected no extras; got {sorted(art.extras)}"
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    assert not art_entries, f"expected no extras; got {sorted(art_entries)}"
+    base = py_base.Base(art)
     path = os.path.abspath(args.tokenizer).encode() + b"\0"
     assert len(path) < 256
 
@@ -66,7 +68,7 @@ def main():
         buf[D_PATH:D_PATH + len(path)] = path
         buf[D_TEXT:D_TEXT + len(raw)] = raw
         out = bytearray(4 + TEXT_MAX * 4)
-        base.execute_into(art.main, bytes(buf), out)
+        base.execute_into(art_entries["main"], bytes(buf), out)
         (n,) = struct.unpack_from("<I", bytes(out), 0)
         return list(struct.unpack_from(f"<{n}I", bytes(out), 4))
 

@@ -28,6 +28,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank, mx_dequant, swiglu, softmax  # noqa: E402
+import entries
 
 
 def main():
@@ -45,8 +46,9 @@ def main():
     L = args.layer
 
     art = py_base.load_artifact(args.artifact)
-    ex = art.extras
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    ex = art_entries
+    base = py_base.Base(art)
 
     # The host region Lean declared, read back rather than restated: if the
     # packing here and the layout there disagreed, this is where it shows.
@@ -75,7 +77,7 @@ def main():
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
 
-    base.execute_into(art.main, blob, bytearray(0))
+    base.execute_into(art_entries["main"], blob, bytearray(0))
     base.execute_into(ex["bindExperts"], chosen.tobytes(), bytearray(0))
     base.execute_into(ex["uploadX"], x.tobytes(), bytearray(0))
     base.execute_into(ex["uploadGates"], gates.tobytes(), bytearray(0))

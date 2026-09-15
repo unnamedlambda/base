@@ -413,7 +413,7 @@ def testRenderScene : Prog V L Unit := do
   writeOutput (← sextend64 (← icmp .ugt skyB thresh)) groundB skyB
 
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 mainBody,
@@ -438,18 +438,18 @@ def payloads : List UInt8 :=
       uint32ToBytes 0)
   ]
 
-def gameSetup (clif : Program) : Setup := {
-  clif,
+def gameSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def mainAlgorithm  : Algorithm := { fn_idx := IR.mainFnIdx }
-def moveFwdAlg     : Algorithm := { fn_idx := u32 2 }
-def strafeAlg      : Algorithm := { fn_idx := u32 3 }
-def riseClampAlg   : Algorithm := { fn_idx := u32 4 }
-def quitOnCloseAlg : Algorithm := { fn_idx := u32 5 }
-def renderSceneAlg : Algorithm := { fn_idx := u32 6 }
+def mainAlgorithm  : UInt32 := IR.mainFnIdx
+def moveFwdAlg     : UInt32 := 2
+def strafeAlg      : UInt32 := 3
+def riseClampAlg   : UInt32 := 4
+def quitOnCloseAlg : UInt32 := 5
+def renderSceneAlg : UInt32 := 6
 
 end Algorithm
 
@@ -457,12 +457,6 @@ def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
   let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.toJsonArtifact "raymarch_demo" (Algorithm.gameSetup clif) Algorithm.mainAlgorithm [
-      ("test_move_forward",  Algorithm.moveFwdAlg),
-      ("test_strafe_right",  Algorithm.strafeAlg),
-      ("test_rise_clamp",    Algorithm.riseClampAlg),
-      ("test_quit_on_close", Algorithm.quitOnCloseAlg),
-      ("test_render_scene",  Algorithm.renderSceneAlg)
-    ]]
+    AlgorithmLib.toJsonArtifact "raymarch_demo" (Algorithm.gameSetup clif)]
 
 #eval ShipScan.check "RaymarchDemoAlgorithm"

@@ -1,7 +1,7 @@
 import json
 import struct
 import pytest
-from py_base import Setup, Algorithm, Base, run
+from py_base import Artifact, Base, run
 
 # --- constructing CLIF programs -------------------------------------------
 #
@@ -82,16 +82,17 @@ DOUBLE_I32_PROG = program([
     ]),
 ])
 
-def make_double_config():
+def make_double_artifact():
     return json.dumps({
-        "clif": DOUBLE_I32_PROG,
+        "functions": DOUBLE_I32_PROG["functions"],
         "memory_size": 256,
         "initial_memory": [0] * 256,
     })
 
 
-def make_algorithm():
-    return json.dumps({"fn_idx": 1})
+# The entry point this program puts at u0:1, the way a generator would tell a
+# host which index to call.
+DOUBLE = 1
 
 
 def pack_i32s(values):
@@ -102,129 +103,95 @@ def unpack_i32s(data, count):
     return list(struct.unpack(f"<{count}i", data[:count * 4]))
 
 
-class TestSetup:
+class TestArtifact:
     def test_valid_json(self):
-        config = Setup(make_double_config())
-        assert config is not None
+        assert Artifact(make_double_artifact()) is not None
 
     def test_invalid_json(self):
-        with pytest.raises(ValueError, match="Invalid Setup JSON"):
-            Setup("not json")
+        with pytest.raises(ValueError, match="Invalid Artifact JSON"):
+            Artifact("not json")
 
     def test_missing_fields(self):
         with pytest.raises(ValueError):
-            Setup('{"clif": {"functions": []}}')
-
-
-class TestAlgorithm:
-    def test_valid_json(self):
-        alg = Algorithm(make_algorithm())
-        assert alg is not None
-
-    def test_invalid_json(self):
-        with pytest.raises(ValueError, match="Invalid Algorithm JSON"):
-            Algorithm("{bad")
-
-    def test_reuse(self):
-        alg = Algorithm(make_algorithm())
-        ref1 = alg
-        ref2 = alg
-        assert ref1 is ref2
+            Artifact('{"functions": []}')
 
 
 class TestBase:
     def test_new(self):
-        config = Setup(make_double_config())
-        base = Base(config)
+        base = Base(Artifact(make_double_artifact()))
         assert base is not None
 
     def test_malformed_program(self):
         """v9 is never defined, so the program cannot be built."""
-        config_json = json.dumps({
-            "clif": program([function(0, [block(0, [0], [store(9, 0), ret()])])]),
+        artifact_json = json.dumps({
+            "functions": program([function(0, [block(0, [0], [store(9, 0), ret()])])])["functions"],
             "memory_size": 256,
             "initial_memory": [0] * 256,
         })
         with pytest.raises(ValueError, match="Base::new failed"):
-            Base(Setup(config_json))
+            Base(Artifact(artifact_json))
 
     def test_execute_no_data(self):
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        base = Base(config)
-        assert base.execute(alg) is None
+        base = Base(Artifact(make_double_artifact()))
+        assert base.execute(DOUBLE) is None
 
     def test_execute_into_doubles(self):
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        base = Base(config)
+        base = Base(Artifact(make_double_artifact()))
 
         values = [1, 2, 3, 4, 5, 10, 100, -7]
         data = pack_i32s(values)
         out = bytearray(len(data))
-        base.execute_into(alg, data, out)
+        base.execute_into(DOUBLE, data, out)
 
         result = unpack_i32s(out, len(values))
         assert result == [v * 2 for v in values]
 
     def test_execute_into_reuse(self):
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        base = Base(config)
+        base = Base(Artifact(make_double_artifact()))
 
         for seed in range(5):
             values = list(range(seed * 10, seed * 10 + 20))
             data = pack_i32s(values)
             out = bytearray(len(data))
-            base.execute_into(alg, data, out)
+            base.execute_into(DOUBLE, data, out)
             result = unpack_i32s(out, len(values))
             assert result == [v * 2 for v in values]
 
     def test_execute_into_large(self):
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        base = Base(config)
+        base = Base(Artifact(make_double_artifact()))
 
         n = 100_000
         values = list(range(n))
         data = pack_i32s(values)
         out = bytearray(len(data))
-        base.execute_into(alg, data, out)
+        base.execute_into(DOUBLE, data, out)
 
         result = unpack_i32s(out, n)
         for i in range(n):
             assert result[i] == values[i] * 2, f"Mismatch at index {i}"
 
     def test_execute_into_empty(self):
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        base = Base(config)
+        base = Base(Artifact(make_double_artifact()))
         out = bytearray(0)
-        base.execute_into(alg, b"", out)
+        base.execute_into(DOUBLE, b"", out)
 
     def test_bytes_input(self):
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        base = Base(config)
+        base = Base(Artifact(make_double_artifact()))
 
         data = bytes(pack_i32s([42, -1, 0]))
         out = bytearray(len(data))
-        base.execute_into(alg, data, out)
+        base.execute_into(DOUBLE, data, out)
         assert unpack_i32s(out, 3) == [84, -2, 0]
 
     def test_execute_into_answers_through_out(self):
         """The result is what the program wrote to `out`; the call returns nothing."""
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        base = Base(config)
+        base = Base(Artifact(make_double_artifact()))
 
         out = bytearray(16)
-        assert base.execute_into(alg, pack_i32s([1, 2, 3, 4]), out) is None
+        assert base.execute_into(DOUBLE, pack_i32s([1, 2, 3, 4]), out) is None
         assert unpack_i32s(out, 4) == [2, 4, 6, 8]
 
 
 class TestRun:
     def test_oneshot(self):
-        config = Setup(make_double_config())
-        alg = Algorithm(make_algorithm())
-        assert run(config, alg) is None
+                assert run(Artifact(make_double_artifact()), DOUBLE) is None

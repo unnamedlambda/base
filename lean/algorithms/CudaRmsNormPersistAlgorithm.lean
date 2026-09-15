@@ -140,7 +140,7 @@ def inferCode : Prog V L Unit := do
   return ()
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 loadCode,
@@ -178,22 +178,19 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def buildSetup (clif : Program) : Setup := {
-  clif,
+def buildSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
 
-def loadAlgorithm : Algorithm := { fn_idx := u32 1 }
-def prepAlgorithm : Algorithm := { fn_idx := u32 2 }
-def inferAlgorithm : Algorithm := { fn_idx := u32 3 }
+def loadAlgorithm : UInt32 := 1
+def prepAlgorithm : UInt32 := 2
+def inferAlgorithm : UInt32 := 3
 
-def artifacts (clif : Program) : Array Json :=
+def artifacts (clif : List FuncData) : Array Json :=
   #[
-    toJsonArtifact "cuda_rmsnorm" (buildSetup clif) loadAlgorithm [
-      ("prep",  prepAlgorithm),
-      ("infer", inferAlgorithm)
-    ]
+    toJsonArtifact "cuda_rmsnorm" (buildSetup clif)
   ]
 
 

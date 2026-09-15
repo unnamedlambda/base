@@ -16,11 +16,10 @@
 
 /* Declared rather than included: the runtime is a Rust cdylib and has no
  * header. These must match `base/src/capi.rs`. */
-void *base_new(const uint8_t *setup_json, size_t len);
+void *base_new(const uint8_t *artifact_json, size_t len);
 int32_t base_bind_thread(void *handle);
-int32_t base_execute(void *handle, const uint8_t *algorithm_json, size_t alg_len,
-                     const uint8_t *data, size_t data_len, uint8_t *out,
-                     size_t out_len);
+int32_t base_execute(void *handle, uint32_t fn_idx, const uint8_t *data,
+                     size_t data_len, uint8_t *out, size_t out_len);
 size_t base_read_memory(const void *handle, size_t offset, uint8_t *dst, size_t len);
 size_t base_memory_size(const void *handle);
 size_t base_last_error(uint8_t *buf, size_t cap);
@@ -48,9 +47,9 @@ static lean_obj_res base_io_error(const char *fallback) {
     return lean_io_result_mk_error(lean_mk_io_user_error(message));
 }
 
-LEAN_EXPORT lean_obj_res lean_base_new(b_lean_obj_arg setup_json, lean_obj_arg w) {
+LEAN_EXPORT lean_obj_res lean_base_new(b_lean_obj_arg artifact_json, lean_obj_arg w) {
     (void)w;
-    void *handle = base_new(lean_sarray_cptr(setup_json), lean_sarray_size(setup_json));
+    void *handle = base_new(lean_sarray_cptr(artifact_json), lean_sarray_size(artifact_json));
     if (handle == NULL) {
         return base_io_error("base_new failed");
     }
@@ -69,14 +68,12 @@ LEAN_EXPORT lean_obj_res lean_base_bind_thread(size_t handle, lean_obj_arg w) {
  * `ByteArray` Lean already holds may be shared, and writing through it would
  * mutate a value another reference can observe. A fresh one is unshared by
  * construction, and returning it is how the caller reads what ran. */
-LEAN_EXPORT lean_obj_res lean_base_execute(size_t handle, b_lean_obj_arg algorithm_json,
+LEAN_EXPORT lean_obj_res lean_base_execute(size_t handle, uint32_t fn_idx,
                                            b_lean_obj_arg data, size_t out_len,
                                            lean_obj_arg w) {
     (void)w;
     lean_object *out = lean_alloc_sarray(1, out_len, out_len);
-    int32_t rc = base_execute((void *)handle,
-                              lean_sarray_cptr(algorithm_json),
-                              lean_sarray_size(algorithm_json),
+    int32_t rc = base_execute((void *)handle, fn_idx,
                               lean_sarray_cptr(data), lean_sarray_size(data),
                               lean_sarray_cptr(out), out_len);
     if (rc != 0) {

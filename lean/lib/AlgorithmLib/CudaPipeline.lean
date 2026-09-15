@@ -22,7 +22,7 @@ private instance : Inhabited (Reg k) := ⟨⟨""⟩⟩
 -- ---------------------------------------------------------------------------
 -- Expression DSL: small staged language for elementwise GPU kernels.
 -- One Expr describes the per-element computation; `compileTo` produces a
--- Setup + load/prep/infer algorithms that wire up the persistent kernel
+-- Artifact + load/prep/infer algorithms that wire up the persistent kernel
 -- pattern (alloc → upload → launch → download).
 -- ---------------------------------------------------------------------------
 
@@ -40,11 +40,14 @@ def Expr.input1 : Expr (n + 2) := .input ⟨1, by simp⟩
 def Expr.scalarBits (bits : String) : Expr n := .const bits
 def Expr.saxpy (a x y : Expr n) : Expr n := a * x + y
 
+/-- What one compiled pipeline is: the artifact, and the index of each of its
+    three entry points. The indices are the generator's to know; they travel to
+    a host in the library written beside it, not in the artifact. -/
 structure CompileResult where
-  setup : Setup
-  loadAlgorithm : Algorithm
-  prepAlgorithm : Algorithm
-  inferAlgorithm : Algorithm
+  artifact : Artifact
+  loadEntry : UInt32
+  prepEntry : UInt32
+  inferEntry : UInt32
 
 -- Shared-memory layout produced by these functions:
 --   0x10 ctx slot, 0x18 caller data_ptr, 0x28 caller out_ptr, 0x30 caller out_len,
@@ -212,27 +215,19 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
      Prog.compileProg 1 (loadCode n),
      Prog.compileProg 2 (prepCode n),
      Prog.compileProg 3 (inferCode output blockSize)]
-  let mkAlg (src : UInt32) : Algorithm :=
-    { fn_idx := src }
   return {
-    setup := {
-      clif := clifProg
+    artifact := {
+      functions := clifProg
       memory_size := memSize
       initial_memory := initialMemory
     }
-    loadAlgorithm  := mkAlg 1
-    prepAlgorithm  := mkAlg 2
-    inferAlgorithm := mkAlg 3
+    loadEntry  := 1
+    prepEntry  := 2
+    inferEntry := 3
   }
 
 def CompileResult.toArtifacts (r : CompileResult) (name : String) : Array Json :=
-  #[
-    -- `load` is the entry point (called first); prep/infer go to extras.
-    toJsonArtifact name r.setup r.loadAlgorithm [
-      ("prep",  r.prepAlgorithm),
-      ("infer", r.inferAlgorithm)
-    ]
-  ]
+  #[toJsonArtifact name r.artifact]
 
 end CudaPipeline
 

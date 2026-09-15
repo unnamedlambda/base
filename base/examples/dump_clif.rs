@@ -5,5 +5,5 @@ fn main() {
     let path = std::env::args().nth(1).expect("usage: dump_clif <artifact.json>");
     let text = std::fs::read_to_string(&path).expect("reading artifact");
     let artifact: base::Artifact = serde_json::from_str(&text).expect("parsing artifact");
-    base::Base::new(artifact.setup).expect("Base::new failed");
+    base::Base::new(artifact).expect("Base::new failed");
 }

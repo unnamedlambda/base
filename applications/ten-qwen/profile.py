@@ -17,6 +17,7 @@ first — it must be bit-identical, not close.
 Run:  py-base/.venv/bin/python applications/ten-qwen/profile.py <artifact.json>
 """
 
+import os
 import sys
 import time
 
@@ -25,6 +26,7 @@ import py_base
 
 sys.path.insert(0, "applications/ten-qwen")
 import run as R
+import entries
 
 DM, DFF = R.DM, R.DFF
 ORDER = ["cos", "sin", "ones", "kc", "vc", "x", "g1", "g2",
@@ -47,11 +49,12 @@ def timed(base, fn, reps=100):
 
 def main():
     art = py_base.load_artifact(sys.argv[1])
-    ex = art.extras
+    art_entries = entries.entries(os.path.basename(sys.argv[1]).removesuffix(".json"))
+    ex = art_entries
     w = R.make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)
-    base = py_base.Base(art.setup)
-    base.execute_into(art.main,
+    base = py_base.Base(art)
+    base.execute_into(art_entries["main"],
                       b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER),
                       bytearray(0))
     base.execute_into(ex["uploadDOut"], np.ones(DM, dtype=np.float32).tobytes(),

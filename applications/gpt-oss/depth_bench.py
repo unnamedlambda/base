@@ -39,6 +39,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from layout import (CAP_DEFAULT, CAP_MAX, D_CTX, D_IN_BYTES, D_OUT_BYTES,
                     check_layout, acquire_engine_lock)  # noqa: E402
+import entries
 
 # The twelve full-attention layers each read a key cache and a value cache of
 # `pos` entries, eight heads of sixty-four, two bytes an element.
@@ -66,8 +67,9 @@ def main():
 
     check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
-    assert not art.extras, f"expected one entry and no extras; got {sorted(art.extras)}"
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    assert not art_entries, f"expected one entry and no extras; got {sorted(art_entries)}"
+    base = py_base.Base(art)
 
     paths = {}
     for off, name in ((16, "experts.bin"), (272, "dense.bin"),
@@ -84,7 +86,7 @@ def main():
         struct.pack_into("<I", buf, D_CTX, args.context)
         for off, p in paths.items():
             buf[off:off + len(p)] = p
-        base.execute_into(art.main, bytes(buf), out)
+        base.execute_into(art_entries["main"], bytes(buf), out)
 
     print(f"  context {args.context}; {args.reps} steps timed at each position",
           flush=True)

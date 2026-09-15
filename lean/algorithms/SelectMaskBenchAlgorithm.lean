@@ -56,12 +56,12 @@ def code : Prog V L Unit := do
   store (← fcvtFromSint .f64 (← band (fin.head) keep)) outPtr
 
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts (clif : Program) : Array Json :=
-  #[toJsonEntry "selectmask_algorithm" {
-    clif, memory_size := MEM_SIZE
-  } { fn_idx := u32 1 }]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[toJsonArtifact "selectmask_algorithm" {
+    functions := clif, memory_size := MEM_SIZE
+  }]
 
 end SelectMaskBench

@@ -484,7 +484,7 @@ def mainCode : Prog V L Unit := do
 
   emitHexFormat k
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 -- ---------------------------------------------------------------------------
@@ -504,21 +504,19 @@ def payloads : List UInt8 :=
 -- Configuration
 -- ---------------------------------------------------------------------------
 
-def sha256Config (clif : Program) : Setup := {
-  clif,
+def sha256Config (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def sha256Algorithm : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+def sha256Algorithm : UInt32 := IR.mainFnIdx
 
 end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonEntry "sha256_app" (Algorithm.sha256Config clif) Algorithm.sha256Algorithm]
+  emitArtifacts outDir #[toJsonArtifact "sha256_app" (Algorithm.sha256Config clif)]
 
 #eval ShipScan.check "Sha256Algorithm"

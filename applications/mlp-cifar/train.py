@@ -29,6 +29,7 @@ import time
 
 import numpy as np
 import py_base
+import entries
 
 IN = 3072
 H = 256
@@ -128,7 +129,8 @@ def load_cifar() -> tuple:
 def main() -> None:
     path = find_artifact()
     art = py_base.load_artifact(path)
-    ex = art.extras
+    art_entries = entries.entries(os.path.basename(path).removesuffix(".json"))
+    ex = art_entries
     print(f"artifact : {os.path.relpath(path, ROOT)}")
 
     xtr, ytr, xte, yte = load_cifar()
@@ -151,8 +153,8 @@ def main() -> None:
     assert len(blob) == want, f"host packing {len(blob)} vs Lean's hostIn {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's hostIn")
 
-    base = py_base.Base(art.setup)
-    base.execute_into(art.main, blob, bytearray(0))
+    base = py_base.Base(art)
+    base.execute_into(art_entries["main"], blob, bytearray(0))
 
     nil = bytearray(0)
     logit_buf = bytearray(BATCH * C * 4)

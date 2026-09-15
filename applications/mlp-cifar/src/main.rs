@@ -18,6 +18,37 @@ use warp_check::{compare, dot, dot_by, floats, gbs, le, roofline, time, Lcg, Wal
 
 const ART: &[u8] = build_support::artifact!("MlpCifarAlgorithm/mlp_cifar");
 
+/// The entry points of this artifact, as its generator numbers them.
+const FETCH_ADJ: u32 = 17;
+const FETCH_DH: u32 = 16;
+const FETCH_DLOG: u32 = 26;
+const FETCH_DW1: u32 = 18;
+const FETCH_DW2: u32 = 19;
+const FETCH_H: u32 = 14;
+const FETCH_LOGITS: u32 = 4;
+const FETCH_W1: u32 = 20;
+const FETCH_W2: u32 = 21;
+const FETCH_Z1: u32 = 15;
+const RUN_ACT: u32 = 6;
+const RUN_ADJ: u32 = 10;
+const RUN_BWD_BLAS: u32 = 28;
+const RUN_DH: u32 = 9;
+const RUN_DW1: u32 = 11;
+const RUN_DW2: u32 = 8;
+const RUN_FWD1: u32 = 5;
+const RUN_FWD2: u32 = 7;
+const RUN_FWD_BLAS: u32 = 27;
+const RUN_SGD1: u32 = 12;
+const RUN_SGD2: u32 = 13;
+const RUN_SOFTMAX: u32 = 24;
+const UPLOAD_BIAS: u32 = 25;
+const UPLOAD_ONE_HOT: u32 = 3;
+const UPLOAD_X: u32 = 2;
+
+const RUN_FWD: u32 = 22;
+const RUN_BWD: u32 = 23;
+const MAIN: u32 = 1;
+
 const IN: usize = 3072;
 const H: usize = 256;
 const C: usize = 32;
@@ -68,44 +99,43 @@ fn main() {
     // the packing here and the uploader there cannot drift apart silently.
     const HOST_LEN_OFF: usize = 0x0080;
     let want = u32::from_le_bytes(
-        artifact.setup.initial_memory[HOST_LEN_OFF..HOST_LEN_OFF + 4]
+        artifact.initial_memory[HOST_LEN_OFF..HOST_LEN_OFF + 4]
             .try_into()
             .unwrap(),
     ) as usize;
     assert_eq!(blob.len(), want, "host packing disagrees with Lean's `hostIn`");
 
-    let mut base = Base::new(artifact.setup).expect("Base::new");
-    let ex = &artifact.extras;
-    let go = |b: &mut Base, k: &str, data: &[u8], out: &mut [u8]| {
-        b.execute_into(&ex[k], data, out).unwrap_or_else(|e| panic!("{k}: {e:?}"));
+    let mut base = Base::new(artifact).expect("Base::new");
+    let go = |b: &mut Base, (name, fn_idx): (&str, u32), data: &[u8], out: &mut [u8]| {
+        b.execute_into(fn_idx, data, out).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     };
 
-    base.execute_into(&artifact.main, &blob, &mut []).expect("load");
+    base.execute_into(MAIN, &blob, &mut []).expect("load");
     println!("MLP {IN} → {H} → {CLASSES} (padded to {C}), batch {B}, lr = 1/{}", (1.0 / LR) as u32);
     println!("host packing: {} bytes, matches Lean's hostIn\n", blob.len());
 
     // ── forward ─────────────────────────────────────────────────────────────
-    go(&mut base, "uploadX", &le(&x), &mut []);
-    go(&mut base, "runFwd1", b"", &mut []);
+    go(&mut base, ("uploadX", UPLOAD_X), &le(&x), &mut []);
+    go(&mut base, ("runFwd1", RUN_FWD1), b"", &mut []);
 
     let mut buf_bh = vec![0u8; B * H * 4];
-    go(&mut base, "fetchZ1", b"", &mut buf_bh);
+    go(&mut base, ("fetchZ1", FETCH_Z1), b"", &mut buf_bh);
     let z1 = floats(&buf_bh);
     // Output `k` is sample `k/H`, hidden unit `k%H`.
     let d = compare(&z1, |k| dot(Walk::Strided, &w1, &x, (k % H) * IN, (k / H) * IN, IN));
     println!("fwd1  z1 = W1·x        {d}");
     assert!(d.is_exact(), "fwd1 must match its proven fold order bit-for-bit");
 
-    go(&mut base, "runAct", b"", &mut []);
-    go(&mut base, "fetchH", b"", &mut buf_bh);
+    go(&mut base, ("runAct", RUN_ACT), b"", &mut []);
+    go(&mut base, ("fetchH", FETCH_H), b"", &mut buf_bh);
     let hv = floats(&buf_bh);
     let d = compare(&hv, |k| silu(z1[k]));
     println!("act   h  = silu(z1)    worst rel {:.2e}   (ex2.approx, the declared approximation)", d.worst);
     assert!(d.worst < 1e-5, "silu must match the spec to within the declared approximation");
 
-    go(&mut base, "runFwd2", b"", &mut []);
+    go(&mut base, ("runFwd2", RUN_FWD2), b"", &mut []);
     let mut buf_bc = vec![0u8; B * C * 4];
-    go(&mut base, "fetchLogits", b"", &mut buf_bc);
+    go(&mut base, ("fetchLogits", FETCH_LOGITS), b"", &mut buf_bc);
     let logits = floats(&buf_bc);
     // Referenced against the *fetched* `h`, so this isolates fwd2 from `act`.
     let d = compare(&logits, |k| dot(Walk::Strided, &w2, &hv, (k % C) * H, (k / C) * H, H));
@@ -122,11 +152,11 @@ fn main() {
     for s in 0..B {
         onehot[s * C + labels[s]] = 1.0;
     }
-    go(&mut base, "uploadBias", &le(&bias), &mut []);
-    go(&mut base, "uploadOneHot", &le(&onehot), &mut []);
-    go(&mut base, "runSoftmax", b"", &mut []);
+    go(&mut base, ("uploadBias", UPLOAD_BIAS), &le(&bias), &mut []);
+    go(&mut base, ("uploadOneHot", UPLOAD_ONE_HOT), &le(&onehot), &mut []);
+    go(&mut base, ("runSoftmax", RUN_SOFTMAX), b"", &mut []);
     let mut buf_dl = vec![0u8; B * C * 4];
-    go(&mut base, "fetchDlog", b"", &mut buf_dl);
+    go(&mut base, ("fetchDlog", FETCH_DLOG), b"", &mut buf_dl);
     let dlog = floats(&buf_dl);
 
     // Reference in the committed order: the max and the sum are the same
@@ -161,16 +191,16 @@ fn main() {
     assert!(d.worst_abs < 1e-6, "softmaxCE must match its proven spec");
 
     // ── backward ────────────────────────────────────────────────────────────
-    go(&mut base, "runDw2", b"", &mut []);
+    go(&mut base, ("runDw2", RUN_DW2), b"", &mut []);
     let mut buf_w2 = vec![0u8; C * H * 4];
-    go(&mut base, "fetchDw2", b"", &mut buf_w2);
+    go(&mut base, ("fetchDw2", FETCH_DW2), b"", &mut buf_w2);
     let dw2 = floats(&buf_w2);
     let d = compare(&dw2, |k| batch_sum(|s| dlog[s * C + k / H] * hv[s * H + k % H]));
     println!("dw2   dW2 = Σₛ dlog⊗h  {d}");
     assert!(d.is_exact(), "the batched outer product must be bit-exact");
 
-    go(&mut base, "runDh", b"", &mut []);
-    go(&mut base, "fetchDh", b"", &mut buf_bh);
+    go(&mut base, ("runDh", RUN_DH), b"", &mut []);
+    go(&mut base, ("fetchDh", FETCH_DH), b"", &mut buf_bh);
     let dh = floats(&buf_bh);
     // The transposed walk: successive classes are `H` floats apart, which is
     // why no `Walk` describes it and `dot_by` takes the index functions.
@@ -181,8 +211,8 @@ fn main() {
     println!("dh    dh = W2ᵀ·dlog    {d}");
     assert!(d.is_exact(), "the transposed matvec must match its proven fold order");
 
-    go(&mut base, "runAdj", b"", &mut []);
-    go(&mut base, "fetchAdj", b"", &mut buf_bh);
+    go(&mut base, ("runAdj", RUN_ADJ), b"", &mut []);
+    go(&mut base, ("fetchAdj", FETCH_ADJ), b"", &mut buf_bh);
     let adj = floats(&buf_bh);
     let d = compare(&adj, |k| dh[k] * silu_prime(z1[k]));
     println!("adj   adj = dh·silu'   worst rel {:.2e} (ref {:.2e} at {}), worst abs {:.2e}",
@@ -191,23 +221,23 @@ fn main() {
     // is what says the kernel agrees with the spec's derivative.
     assert!(d.worst_abs < 1e-5, "the activation backward must match the spec's derivative");
 
-    go(&mut base, "runDw1", b"", &mut []);
+    go(&mut base, ("runDw1", RUN_DW1), b"", &mut []);
     let mut buf_w1 = vec![0u8; H * IN * 4];
-    go(&mut base, "fetchDw1", b"", &mut buf_w1);
+    go(&mut base, ("fetchDw1", FETCH_DW1), b"", &mut buf_w1);
     let dw1 = floats(&buf_w1);
     let d = compare(&dw1, |k| batch_sum(|s| adj[s * H + k / IN] * x[s * IN + k % IN]));
     println!("dw1   dW1 = Σₛ adj⊗x   {d}");
     assert!(d.is_exact(), "the batched outer product must be bit-exact");
 
     // ── the optimiser ───────────────────────────────────────────────────────
-    go(&mut base, "runSgd1", b"", &mut []);
-    go(&mut base, "runSgd2", b"", &mut []);
-    go(&mut base, "fetchW1", b"", &mut buf_w1);
+    go(&mut base, ("runSgd1", RUN_SGD1), b"", &mut []);
+    go(&mut base, ("runSgd2", RUN_SGD2), b"", &mut []);
+    go(&mut base, ("fetchW1", FETCH_W1), b"", &mut buf_w1);
     let d = compare(&floats(&buf_w1), |k| w1[k] - LR * dw1[k]);
     println!("sgd1  W1 ← W1 − lr·dW1 {d}");
     assert!(d.is_exact(), "the optimiser step must be bit-exact");
 
-    go(&mut base, "fetchW2", b"", &mut buf_w2);
+    go(&mut base, ("fetchW2", FETCH_W2), b"", &mut buf_w2);
     let d = compare(&floats(&buf_w2), |k| w2[k] - LR * dw2[k]);
     println!("sgd2  W2 ← W2 − lr·dW2 {d}");
     assert!(d.is_exact(), "the optimiser step must be bit-exact");
@@ -221,12 +251,12 @@ fn main() {
     // The optimiser above has already stepped W1/W2, so reset to the weights
     // the references were computed with before comparing.
     let mut blas_ok = true;
-    base.execute_into(&artifact.main, &blob, &mut []).expect("reload");
-    go(&mut base, "uploadBias", &le(&bias), &mut []);
-    go(&mut base, "uploadOneHot", &le(&onehot), &mut []);
-    go(&mut base, "uploadX", &le(&x), &mut []);
-    go(&mut base, "runFwdBlas", b"", &mut []);
-    go(&mut base, "fetchZ1", b"", &mut buf_bh);
+    base.execute_into(MAIN, &blob, &mut []).expect("reload");
+    go(&mut base, ("uploadBias", UPLOAD_BIAS), &le(&bias), &mut []);
+    go(&mut base, ("uploadOneHot", UPLOAD_ONE_HOT), &le(&onehot), &mut []);
+    go(&mut base, ("uploadX", UPLOAD_X), &le(&x), &mut []);
+    go(&mut base, ("runFwdBlas", RUN_FWD_BLAS), b"", &mut []);
+    go(&mut base, ("fetchZ1", FETCH_Z1), b"", &mut buf_bh);
     let chk = |name: &str, got: &[f32], want: &[f32], ok: &mut bool| {
         // Relative error is meaningless at an element that cancels to ~0, so
         // measure the worst absolute deviation against the tensor's own scale.
@@ -236,15 +266,15 @@ fn main() {
         *ok &= worst / scale < 1e-5;
     };
     chk("z1", &floats(&buf_bh), &z1, &mut blas_ok);
-    go(&mut base, "fetchLogits", b"", &mut buf_bc);
+    go(&mut base, ("fetchLogits", FETCH_LOGITS), b"", &mut buf_bc);
     chk("logits", &floats(&buf_bc), &logits, &mut blas_ok);
 
-    go(&mut base, "runBwdBlas", b"", &mut []);
-    go(&mut base, "fetchDh", b"", &mut buf_bh);
+    go(&mut base, ("runBwdBlas", RUN_BWD_BLAS), b"", &mut []);
+    go(&mut base, ("fetchDh", FETCH_DH), b"", &mut buf_bh);
     chk("dh", &floats(&buf_bh), &dh, &mut blas_ok);
-    go(&mut base, "fetchDw2", b"", &mut buf_w2);
+    go(&mut base, ("fetchDw2", FETCH_DW2), b"", &mut buf_w2);
     chk("dW2", &floats(&buf_w2), &dw2, &mut blas_ok);
-    go(&mut base, "fetchDw1", b"", &mut buf_w1);
+    go(&mut base, ("fetchDw1", FETCH_DW1), b"", &mut buf_w1);
     chk("dW1", &floats(&buf_w1), &dw1, &mut blas_ok);
     assert!(blas_ok, "cuBLAS must agree with the proven kernels");
 
@@ -252,24 +282,24 @@ fn main() {
     let reps = 200;
     // Bytes each kernel must move at minimum. The weight terms are what
     // batching amortises: they are the same at every `B`, over `B` samples.
-    let traffic: &[(&str, usize)] = &[
-        ("runFwd1", (H * IN + B * IN + B * H) * 4),
-        ("runAct", 2 * B * H * 4),
-        ("runFwd2", (C * H + B * H + B * C) * 4),
-        ("runDw2", (C * H + B * C + B * H) * 4),
-        ("runDh", (C * H + B * C + B * H) * 4),
-        ("runAdj", 3 * B * H * 4),
-        ("runDw1", (H * IN + B * H + B * IN) * 4),
-        ("runSgd1", 3 * H * IN * 4),
-        ("runSgd2", 3 * C * H * 4),
-        ("runSoftmax", 3 * B * C * 4),
+    let traffic: &[(&str, u32, usize)] = &[
+        ("runFwd1", RUN_FWD1, (H * IN + B * IN + B * H) * 4),
+        ("runAct", RUN_ACT, 2 * B * H * 4),
+        ("runFwd2", RUN_FWD2, (C * H + B * H + B * C) * 4),
+        ("runDw2", RUN_DW2, (C * H + B * C + B * H) * 4),
+        ("runDh", RUN_DH, (C * H + B * C + B * H) * 4),
+        ("runAdj", RUN_ADJ, 3 * B * H * 4),
+        ("runDw1", RUN_DW1, (H * IN + B * H + B * IN) * 4),
+        ("runSgd1", RUN_SGD1, 3 * H * IN * 4),
+        ("runSgd2", RUN_SGD2, 3 * C * H * 4),
+        ("runSoftmax", RUN_SOFTMAX, 3 * B * C * 4),
     ];
     println!("\n{:<9} {:>9} {:>11} {:>9}", "kernel", "time", "bandwidth", "roofline");
     let mut total = 0f64;
-    for (k, bytes) in traffic {
-        let dt = time(&mut base, &ex[*k], reps);
+    for (name, fn_idx, bytes) in traffic {
+        let dt = time(&mut base, *fn_idx, reps);
         total += dt;
-        println!("{:<9} {:>7.1} us {:>8.1} GB/s {:>8.0}%", k, dt * 1e6,
+        println!("{:<9} {:>7.1} us {:>8.1} GB/s {:>8.0}%", name, dt * 1e6,
                  gbs(*bytes, dt), roofline(*bytes, dt) * 100.0);
     }
     println!("{:<9} {:>7.1} us   (10 separate launch-and-sync calls)", "sum", total * 1e6);
@@ -280,11 +310,11 @@ fn main() {
     let xb = le(&x);
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute_into(&ex["uploadX"], &xb, &mut []).unwrap();
-        base.execute_into(&ex["runFwd"], b"", &mut []).unwrap();
-        base.execute_into(&ex["fetchLogits"], b"", &mut buf_bc).unwrap();
-        base.execute_into(&ex["uploadOneHot"], &oh, &mut []).unwrap();
-        base.execute_into(&ex["runBwd"], b"", &mut []).unwrap();
+        base.execute_into(UPLOAD_X, &xb, &mut []).unwrap();
+        base.execute_into(RUN_FWD, b"", &mut []).unwrap();
+        base.execute_into(FETCH_LOGITS, b"", &mut buf_bc).unwrap();
+        base.execute_into(UPLOAD_ONE_HOT, &oh, &mut []).unwrap();
+        base.execute_into(RUN_BWD, b"", &mut []).unwrap();
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (fused: 2 runs, 2 uploads, 1 download)", "step", dt * 1e6);
@@ -292,11 +322,11 @@ fn main() {
 
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute_into(&ex["uploadX"], &xb, &mut []).unwrap();
-        base.execute_into(&ex["runFwdBlas"], b"", &mut []).unwrap();
-        base.execute_into(&ex["fetchLogits"], b"", &mut buf_bc).unwrap();
-        base.execute_into(&ex["uploadOneHot"], &oh, &mut []).unwrap();
-        base.execute_into(&ex["runBwdBlas"], b"", &mut []).unwrap();
+        base.execute_into(UPLOAD_X, &xb, &mut []).unwrap();
+        base.execute_into(RUN_FWD_BLAS, b"", &mut []).unwrap();
+        base.execute_into(FETCH_LOGITS, b"", &mut buf_bc).unwrap();
+        base.execute_into(UPLOAD_ONE_HOT, &oh, &mut []).unwrap();
+        base.execute_into(RUN_BWD_BLAS, b"", &mut []).unwrap();
     }
     let dtb = t0.elapsed().as_secs_f64() / reps as f64;
     println!("{:<9} {:>7.1} us   (cuBLAS for the 5 GEMMs)", "step/blas", dtb * 1e6);

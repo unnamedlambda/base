@@ -13,6 +13,9 @@ type B = burn::backend::NdArray<f32>;
 
 const MATMUL_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/matmul_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 fn gen_floats(n: usize, seed: u64) -> Vec<f32> {
     let mut state = seed;
     let mut out = Vec::with_capacity(n);
@@ -79,7 +82,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // JIT compile once
     let artifact = Artifact::from_bytes(MATMUL_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &n in sizes {
         let total = n * n * 2;
@@ -114,11 +117,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let mut out_buf = [0u8; 8];
 
         // Warmup
-        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

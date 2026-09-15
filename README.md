@@ -2,7 +2,7 @@
 
 Base is an execution system that delivers performance comparable to idiomatic Rust while allowing control logic to be specified in a language with a strong type system — without introducing type checking or interpreter overhead at runtime.
 
-Programs are defined by an `Artifact`: a `Setup` (Cranelift IR + memory layout + static initial memory) plus a `main` algorithm and any additional named `extras`. This artifact is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
+Programs are defined by an `Artifact`: Cranelift IR functions, the size of the memory they run in, and that memory's initial contents. An entry point is a function index. This artifact is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
 
 The system is completely portable — all dependencies build from `cargo` with no manual system library installation, and only portable Rust features are used. Cranelift provides a JIT compiler similar to LLVM but without the system dependency — it is pure Rust, built from Cargo. Backend code quality is comparable to LLVM, which means optimization lives in Lean: emit good IR, and the generated code is fast. CPU, GPU, file, network, and database primitives are exposed through a shared memory space and directly callable from the JIT-compiled IR.
 
@@ -13,14 +13,14 @@ GPU compute uses [wgpu](https://wgpu.rs/), a portable abstraction over Vulkan, M
 An `Artifact` contains:
 
 ```
-Artifact { setup, main, extras }
-  Setup     { cranelift_ir, memory_size, initial_memory }
-  Algorithm { fn_idx }           // main and each entry of extras
+Artifact { functions, memory_size, initial_memory }
 ```
 
-**Setup** defines the compiled code (Cranelift IR text), the memory region it operates on, and static initial memory contents generated at build time (shader sources, binding descriptors, PTX kernels, etc.).
+**functions** are the compiled code, one Cranelift IR function each, called by their position in the list.
 
-**Algorithm** is an entry point into the compiled code — a function index inside `cranelift_ir`. A program answers through the out buffer its caller passes. Single-algorithm artifacts use `main`; multi-stage flows (e.g., GPU load → prep → infer pipelines) put the entry-point stage in `main` and name the rest in `extras` so they all share one CLIF compilation.
+**memory_size** is the memory they run in, and **initial_memory** what it starts with: contents generated at build time (shader sources, binding descriptors, PTX kernels, etc.), zero-filled past them.
+
+An **entry point** is a function index. A program answers through the out buffer its caller passes. Multi-stage flows (e.g., GPU load → prep → infer pipelines) are several entry points over one compilation and one memory; which index is which stage is the generator's knowledge, and a host names those numbers in a library of its own rather than reading them from the artifact.
 
 At build time, Lean 4 generates this artifact as JSON. The Rust build script deserializes it into typed structs and emits a binary artifact encoding alongside the JSON. At runtime, Cranelift JIT-compiles the IR once and executes algorithms against shared memory — no interpreter, no GC, no serialization layer in the hot path.
 
@@ -29,8 +29,10 @@ At build time, Lean 4 generates this artifact as JSON. The Rust build script des
 ### One-shot execution
 
 ```rust
+const MAIN: u32 = 1;   // the index this artifact's generator gave its entry point
+
 let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
-base::run(artifact.setup, artifact.main)?;
+base::run(artifact, MAIN)?;
 ```
 
 ### Compile-once, execute-many with payloads
@@ -38,20 +40,23 @@ base::run(artifact.setup, artifact.main)?;
 For workloads that benefit from persistent state and dynamic data, the `Base` struct provides JIT-once semantics with zero-copy data passing:
 
 ```rust
+// The entry points of this artifact, as its generator numbered them
+const MAIN: u32 = 1;
+const PREP: u32 = 2;
+const INFER: u32 = 3;
+
 let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
-let mut base = Base::new(artifact.setup)?;      // JIT compile once
+let mut base = Base::new(artifact)?;            // JIT compile once
 
 // Pass dynamic data via pointer — no copying into shared memory
-let results = base.execute(&artifact.main, &data)?;
+base.execute(MAIN, &data)?;
 
 // Or with an output buffer for zero-copy results
-base.execute_into(&artifact.main, &payload, &mut output)?;
+base.execute_into(MAIN, &payload, &mut output)?;
 
-// Multi-stage flows dispatch by name from extras
-let prep_alg = &artifact.extras["prep"];
-let infer_alg = &artifact.extras["infer"];
-base.execute(prep_alg, &input)?;
-base.execute_into(infer_alg, b"", &mut output)?;
+// Multi-stage flows are further entry points over the same memory
+base.execute(PREP, &input)?;
+base.execute_into(INFER, b"", &mut output)?;
 ```
 
 An entry point is called with five arguments: the base of shared memory, then the caller's input pointer and length and the caller's output pointer and length. CLIF code uses those pointers to reach the caller's buffers directly, so nothing is copied in or out and there is no arena slot the runtime and the program have to agree about. GPU uploads/downloads use `cl_gpu_upload_ptr` / `cl_gpu_download_ptr` to transfer between caller pointers and GPU memory with no intermediate copy through shared memory.

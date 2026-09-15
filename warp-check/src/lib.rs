@@ -14,7 +14,6 @@
 //! [`Walk::Strided`], and `Sched.idx` is [`Walk::idx`].
 
 use base::Base;
-use base_types::Algorithm;
 
 // ---------------------------------------------------------------------------
 // The committed fold order
@@ -208,11 +207,11 @@ pub fn compare(got: &[f32], want: impl Fn(usize) -> f32) -> Diff {
 pub const ROOFLINE_GBS: f64 = 360.0;
 
 /// Seconds per launch, after one warm-up.
-pub fn time(base: &mut Base, alg: &Algorithm, reps: usize) -> f64 {
-    base.execute_into(alg, b"", &mut []).expect("warm-up launch");
+pub fn time(base: &mut Base, fn_idx: u32, reps: usize) -> f64 {
+    base.execute_into(fn_idx, b"", &mut []).expect("warm-up launch");
     let t = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute_into(alg, b"", &mut []).expect("timed launch");
+        base.execute_into(fn_idx, b"", &mut []).expect("timed launch");
     }
     t.elapsed().as_secs_f64() / reps as f64
 }

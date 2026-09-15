@@ -1,22 +1,17 @@
-use base::{run, Base};
-use base_types::{Algorithm, Setup};
+use base::{run, Artifact, Base};
 use std::fs;
 
 mod common;
 use common::*;
 use tempfile::TempDir;
 
-fn cranelift_config(memory: Vec<u8>, clif: Program) -> Setup {
-    dump(&clif);
-    Setup {
-        clif,
+fn cranelift_config(memory: Vec<u8>, functions: Vec<Function>) -> Artifact {
+    dump(&functions);
+    Artifact {
+        functions,
         memory_size: memory.len(),
         initial_memory: memory,
     }
-}
-
-fn cranelift_algorithm(fn_idx: u32) -> Algorithm {
-    Algorithm { fn_idx }
 }
 
 /// The i64 a program left at `offset` of its memory.
@@ -27,9 +22,9 @@ fn read_i64(base: &Base, offset: usize) -> i64 {
 fn create_cranelift_algorithm(
     fn_idx: u32,
     memory: Vec<u8>,
-    clif: Program,
-) -> (Setup, Algorithm) {
-    (cranelift_config(memory, clif), cranelift_algorithm(fn_idx))
+    functions: Vec<Function>,
+) -> (Artifact, u32) {
+    (cranelift_config(memory, functions), fn_idx)
 }
 
 #[test]
@@ -692,8 +687,8 @@ fn test_clif_call_multiple_functions() {
     // Demonstrates JIT-once, run-many: one Base, two execute() calls picking different
     // fn_idx into the same compiled module.
     let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(&cranelift_algorithm(0), &[]).unwrap();
-    base.execute(&cranelift_algorithm(1), &[]).unwrap();
+    base.execute(0, &[]).unwrap();
+    base.execute(1, &[]).unwrap();
 
     assert!(test_file_a.exists());
     let contents_a = fs::read(&test_file_a).unwrap();
@@ -793,9 +788,9 @@ fn test_clif_call_sequential_mutations() {
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(&cranelift_algorithm(0), &[]).unwrap();
-    base.execute(&cranelift_algorithm(1), &[]).unwrap();
-    base.execute(&cranelift_algorithm(2), &[]).unwrap();
+    base.execute(0, &[]).unwrap();
+    base.execute(1, &[]).unwrap();
+    base.execute(2, &[]).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -899,8 +894,8 @@ fn test_clif_call_file_read_write() {
 
     // Two execute() calls on one Base: fn0 reads input file, fn1 writes output file.
     let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(&cranelift_algorithm(0), &[]).unwrap();
-    base.execute(&cranelift_algorithm(1), &[]).unwrap();
+    base.execute(0, &[]).unwrap();
+    base.execute(1, &[]).unwrap();
 
     assert!(output_file.exists());
     let output_data = fs::read(&output_file).unwrap();
@@ -927,8 +922,8 @@ fn test_base_multi_execute_different_data() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -937,7 +932,7 @@ fn test_base_multi_execute_different_data() {
     // First execute: input = 10, expect 30
     let data1 = 10i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &data1,
         )
         .unwrap();
@@ -946,7 +941,7 @@ fn test_base_multi_execute_different_data() {
     // Second execute: input = 100, expect 300
     let data2 = 100i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &data2,
         )
         .unwrap();
@@ -981,21 +976,21 @@ fn test_base_multi_execute_different_actions() {
             ]),
     ]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
     // First execute: call fn0 only
-    let alg1 = Algorithm { fn_idx: 0 };
-    base.execute(&alg1, &vec![0u8; 4096]).unwrap();
+    let alg1: u32 = 0;
+    base.execute(alg1, &vec![0u8; 4096]).unwrap();
     assert_eq!(read_i64(&base, 200), 42);
 
     // Second execute: call fn1 only
-    let alg2 = Algorithm { fn_idx: 1 };
-    base.execute(&alg2, &vec![0u8; 4096]).unwrap();
+    let alg2: u32 = 1;
+    base.execute(alg2, &vec![0u8; 4096]).unwrap();
     assert_eq!(read_i64(&base, 200), 99);
 }
 
@@ -1019,8 +1014,8 @@ fn test_base_multi_execute_accumulates_in_memory() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1029,7 +1024,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
     // Execute 1: add 10 → total = 10
     let d1 = 10i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &d1,
         )
         .unwrap();
@@ -1038,7 +1033,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
     // Execute 2: add 25 → total = 35
     let d2 = 25i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &d2,
         )
         .unwrap();
@@ -1047,7 +1042,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
     // Execute 3: add 5 → total = 40
     let d3 = 5i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &d3,
         )
         .unwrap();
@@ -1081,14 +1076,14 @@ fn test_base_multi_execute_with_file_io() {
     let mut mem1 = vec![0u8; 4096];
     mem1[256..256 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
     mem1[512..520].copy_from_slice(&42u64.to_le_bytes());
-    let config1 = Setup {
-        clif: clif_prog.clone(),
+    let config1 = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: mem1,
     };
     let mut base = Base::new(config1).unwrap();
     base.execute(
-        &Algorithm { fn_idx: 0 },
+        0,
         &[],
     )
     .unwrap();
@@ -1100,15 +1095,15 @@ fn test_base_multi_execute_with_file_io() {
     let mut mem2 = vec![0u8; 4096];
     mem2[256..256 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
     mem2[512..520].copy_from_slice(&99u64.to_le_bytes());
-    let config2 = Setup {
-        clif: clif_prog.clone(),
+    let config2 = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: mem2,
     };
     let mut base2 = Base::new(config2).unwrap();
     base2
         .execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &[],
         )
         .unwrap();
@@ -1132,8 +1127,8 @@ fn test_base_multi_execute_varying_cranelift_units() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1141,21 +1136,21 @@ fn test_base_multi_execute_varying_cranelift_units() {
 
     // Execute with 0 units
     base.execute(
-        &Algorithm { fn_idx: 0 },
+        0,
         &vec![0u8; 4096],
     )
     .unwrap();
 
     // Execute with 2 units
     base.execute(
-        &Algorithm { fn_idx: 0 },
+        0,
         &vec![0u8; 4096],
     )
     .unwrap();
 
     // Execute with 4 units
     base.execute(
-        &Algorithm { fn_idx: 0 },
+        0,
         &vec![0u8; 4096],
     )
     .unwrap();
@@ -1182,8 +1177,8 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     let mut mem = vec![0u8; 4096];
     mem[100..108].copy_from_slice(&11i64.to_le_bytes());
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: mem,
     };
@@ -1191,7 +1186,7 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
 
     let data = 99i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &data,
         )
         .unwrap();
@@ -1224,8 +1219,8 @@ fn test_base_persistent_memory_survives_across_executes() {
             ]),
     ]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1233,7 +1228,7 @@ fn test_base_persistent_memory_survives_across_executes() {
 
     // Execute 1: seed 77 at offset 200
     base.execute(
-        &Algorithm { fn_idx: 0 },
+        0,
         &[],
     )
     .unwrap();
@@ -1241,7 +1236,7 @@ fn test_base_persistent_memory_survives_across_executes() {
     // Execute 2: input=5 via pointer, read persistent 77 from offset 200
     let data = 5i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 1 },
+            1,
             &data,
         )
         .unwrap();
@@ -1267,8 +1262,8 @@ fn test_base_empty_data_leaves_memory_intact() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1277,7 +1272,7 @@ fn test_base_empty_data_leaves_memory_intact() {
     // Three executes with empty memory — counter should increment each time
     for expected in 1..=3 {
         base.execute(
-                &Algorithm { fn_idx: 0 },
+                0,
                 &[],
             )
             .unwrap();
@@ -1303,8 +1298,8 @@ fn test_base_data_pointer_updates_each_execute() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1315,7 +1310,7 @@ fn test_base_data_pointer_updates_each_execute() {
     d1[0..8].copy_from_slice(&10i64.to_le_bytes());
     d1[8..16].copy_from_slice(&20i64.to_le_bytes());
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &d1,
         )
         .unwrap();
@@ -1326,7 +1321,7 @@ fn test_base_data_pointer_updates_each_execute() {
     d2[0..8].copy_from_slice(&100i64.to_le_bytes());
     d2[8..16].copy_from_slice(&200i64.to_le_bytes());
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &d2,
         )
         .unwrap();
@@ -1358,8 +1353,8 @@ fn test_base_output_in_persistent_region() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1369,7 +1364,7 @@ fn test_base_output_in_persistent_region() {
     for &val in &[100i64, 200, 300] {
         let d = val.to_le_bytes();
         base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &d,
         )
         .unwrap();
@@ -1379,7 +1374,7 @@ fn test_base_output_in_persistent_region() {
     // One more execute to read output — pass a dummy input
     let d = 999i64.to_le_bytes();
     base.execute(
-            &Algorithm { fn_idx: 0 },
+            0,
             &d,
         )
         .unwrap();
@@ -1415,7 +1410,7 @@ fn clif_error_branch_to_undeclared_block() {
         vec![0u8; 256],
         program(function(0).entry(vec![jump(7, &[])])),
     );
-    let Err(err) = run(config, cranelift_algorithm(0)) else {
+    let Err(err) = run(config, 0) else {
         panic!("expected an error for a branch to an undeclared block");
     };
     assert!(matches!(err, base::Error::Clif(_)));
@@ -1450,8 +1445,8 @@ fn clif_error_function_index_disagrees_with_position() {
 #[test]
 fn clif_parse_error_empty_ir_no_error() {
     // Empty string should NOT error — it skips compilation entirely
-    let config = Setup {
-        clif: Default::default(),
+    let config = Artifact {
+        functions: Default::default(),
         memory_size: 256,
         initial_memory: vec![],
     };
@@ -1610,13 +1605,13 @@ fn test_cublas_sgemv_on_stream_reuse() {
             ]),
     ]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
     let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x1: [f32; 3] = [1.0, 1.0, 1.0];
@@ -1629,7 +1624,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+    base.execute_into(alg, &payload1, &mut out1).unwrap();
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         assert!((actual - expected).abs() < 0.01);
@@ -1646,7 +1641,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+    base.execute_into(alg, &payload2, &mut out2).unwrap();
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!((actual - expected).abs() < 0.01);
@@ -1725,14 +1720,14 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
             ]),
     ]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
     let a1: [f32; 12] = [
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
@@ -1748,7 +1743,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+    base.execute_into(alg, &payload1, &mut out1).unwrap();
 
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
@@ -1775,7 +1770,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+    base.execute_into(alg, &payload2, &mut out2).unwrap();
 
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
@@ -1815,8 +1810,8 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1826,9 +1821,9 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     data[0..8].copy_from_slice(&100i64.to_le_bytes());
     data[8..16].copy_from_slice(&200i64.to_le_bytes());
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
-    base.execute(&alg, &data).unwrap();
+    base.execute(alg, &data).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         300,
@@ -1855,16 +1850,16 @@ fn test_data_ptr_written_even_when_data_empty() {
     let mut initial = vec![0u8; 4096];
     initial[16..24].copy_from_slice(&0xCAFEBABEu64.to_le_bytes());
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: initial,
     };
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     let mut base = Base::new(config).unwrap();
-    base.execute(&alg, &[]).unwrap();
+    base.execute(alg, &[]).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         0,
@@ -1890,16 +1885,16 @@ fn test_out_ptr_written_even_when_out_empty() {
     let mut initial = vec![0u8; 4096];
     initial[32..40].copy_from_slice(&0x22222222u64.to_le_bytes());
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: initial,
     };
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     let mut base = Base::new(config).unwrap();
-    base.execute(&alg, &[]).unwrap();
+    base.execute(alg, &[]).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         0,
@@ -1927,8 +1922,8 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
@@ -1939,9 +1934,9 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
 
     let mut out = vec![0u8; 8];
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
-    base.execute_into(&alg, &data, &mut out).unwrap();
+    base.execute_into(alg, &data, &mut out).unwrap();
     let result = i64::from_le_bytes(out[0..8].try_into().unwrap());
     assert_eq!(
         result, 42,
@@ -1964,25 +1959,25 @@ fn test_execute_into_multiple_calls_different_data() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     // Call 1: data=111
     let data1 = 111i64.to_le_bytes().to_vec();
     let mut out1 = vec![0u8; 8];
-    base.execute_into(&alg, &data1, &mut out1).unwrap();
+    base.execute_into(alg, &data1, &mut out1).unwrap();
     assert_eq!(i64::from_le_bytes(out1[0..8].try_into().unwrap()), 111);
 
     // Call 2: data=222, different buffers
     let data2 = 222i64.to_le_bytes().to_vec();
     let mut out2 = vec![0u8; 8];
-    base.execute_into(&alg, &data2, &mut out2).unwrap();
+    base.execute_into(alg, &data2, &mut out2).unwrap();
     assert_eq!(i64::from_le_bytes(out2[0..8].try_into().unwrap()), 222);
 
     // out1 should be unchanged from call 2
@@ -2012,8 +2007,8 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 256,
         initial_memory: vec![],
     };
@@ -2024,9 +2019,9 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     // Write sentinel at the very end
     data[1016..1024].copy_from_slice(&999i64.to_le_bytes());
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
-    base.execute(&alg, &data).unwrap();
+    base.execute(alg, &data).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         999,
@@ -2061,18 +2056,18 @@ fn test_initial_memory_and_data_coexist() {
     // Static multiplier = 13
     initial[100..108].copy_from_slice(&13i64.to_le_bytes());
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: initial,
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     // Dynamic input = 7
     let data = 7i64.to_le_bytes().to_vec();
-    base.execute(&alg, &data).unwrap();
+    base.execute(alg, &data).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         91,
@@ -2102,19 +2097,19 @@ fn test_execute_into_out_buffer_larger_than_memory() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 64,
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     // Tiny shared memory (64 bytes) but large out buffer
     let data = vec![0u8; 8]; // need non-empty data so pointers at 8-16 get written, but we need out ptrs
     let mut out = vec![0u8; 32];
-    base.execute_into(&alg, &data, &mut out).unwrap();
+    base.execute_into(alg, &data, &mut out).unwrap();
 
     let v0 = i64::from_le_bytes(out[0..8].try_into().unwrap());
     let v1 = i64::from_le_bytes(out[8..16].try_into().unwrap());
@@ -2142,17 +2137,17 @@ fn test_run_with_data_argument() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     let data = 777i64.to_le_bytes().to_vec();
     let mut base = Base::new(config).unwrap();
-    base.execute(&alg, &data).unwrap();
+    base.execute(alg, &data).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         777,
@@ -2175,17 +2170,17 @@ fn test_data_single_byte_still_writes_pointer() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     let data = vec![42u8]; // single byte
     let mut base = Base::new(config).unwrap();
-    base.execute(&alg, &data).unwrap();
+    base.execute(alg, &data).unwrap();
     assert_eq!(read_i64(&base, 200), 1, "data_len should be 1 for single-byte data");
 }
 
@@ -2207,25 +2202,25 @@ fn test_data_ptr_survives_across_multi_execute() {
             ]),
     );
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: 4096,
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 0 };
+    let alg: u32 = 0;
 
     // Call 1: 8-byte buffer
     let data1 = 11i64.to_le_bytes().to_vec();
-    base.execute(&alg, &data1).unwrap();
+    base.execute(alg, &data1).unwrap();
     assert_eq!(read_i64(&base, 200), 11);
     assert_eq!(read_i64(&base, 208), 8);
 
     // Call 2: 16-byte buffer (different size!)
     let mut data2 = vec![0u8; 16];
     data2[0..8].copy_from_slice(&22i64.to_le_bytes());
-    base.execute(&alg, &data2).unwrap();
+    base.execute(alg, &data2).unwrap();
     assert_eq!(read_i64(&base, 200), 22);
     assert_eq!(read_i64(&base, 208), 16, "data_len should reflect new buffer size");
 }
@@ -2305,8 +2300,8 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     // bind desc: buf_id=0, read_only=0
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: memory,
     };
@@ -2322,9 +2317,9 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
-    base.execute_into(&alg, &payload, &mut out).unwrap();
+    base.execute_into(alg, &payload, &mut out).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2396,8 +2391,8 @@ fn test_gpu_download_ptr_with_offset() {
     memory[shader_off + shader_bytes.len()] = 0;
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: memory,
     };
@@ -2413,9 +2408,9 @@ fn test_gpu_download_ptr_with_offset() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
-    base.execute_into(&alg, &payload, &mut out).unwrap();
+    base.execute_into(alg, &payload, &mut out).unwrap();
 
     // out should contain the B values (101.0..164.0), not A values
     for i in 0..n {
@@ -2538,8 +2533,8 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
     memory[bind_off + 8..bind_off + 12].copy_from_slice(&2i32.to_le_bytes());
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: memory,
     };
@@ -2555,9 +2550,9 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
-    base.execute_into(&alg, &payload, &mut out).unwrap();
+    base.execute_into(alg, &payload, &mut out).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2671,14 +2666,14 @@ fn test_cuda_download_ptr_different_data() {
     memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
     memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
     // First execute: A=[1..64], B=[100..100]
     let mut payload1 = vec![0u8; n * 4 * 2];
@@ -2689,7 +2684,7 @@ fn test_cuda_download_ptr_different_data() {
         payload1[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
     }
     let mut out1 = vec![0u8; n * 4];
-    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+    base.execute_into(alg, &payload1, &mut out1).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2712,7 +2707,7 @@ fn test_cuda_download_ptr_different_data() {
         payload2[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
     }
     let mut out2 = vec![0u8; n * 4];
-    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+    base.execute_into(alg, &payload2, &mut out2).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2810,14 +2805,14 @@ fn test_cublas_sgemm_strided_batched_reuse() {
             ]),
     ]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
     let a1: [f32; 12] = [
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
@@ -2833,7 +2828,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+    base.execute_into(alg, &payload1, &mut out1).unwrap();
 
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2860,7 +2855,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+    base.execute_into(alg, &payload2, &mut out2).unwrap();
 
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2918,14 +2913,14 @@ fn test_cuda_upload_ptr_offset_reuse() {
             ]),
     ]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
     let payload1: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
     let mut bytes1 = Vec::with_capacity(total_bytes);
@@ -2933,7 +2928,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
         bytes1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; total_bytes];
-    base.execute_into(&alg, &bytes1, &mut out1).unwrap();
+    base.execute_into(alg, &bytes1, &mut out1).unwrap();
     for (i, expected) in [1.0f32, 2.0, 3.0, 4.0].iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -2951,7 +2946,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
         bytes2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; total_bytes];
-    base.execute_into(&alg, &bytes2, &mut out2).unwrap();
+    base.execute_into(alg, &bytes2, &mut out2).unwrap();
     for (i, expected) in [10.0f32, 20.0, 30.0, 40.0].iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -3043,14 +3038,14 @@ fn test_cuda_launch_named_reuses_named_kernel() {
     memory[name_off..name_off + 8].copy_from_slice(b"add_one\0");
     memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
     let payload1: Vec<f32> = (1..=n).map(|x| x as f32).collect();
     let mut bytes1 = Vec::with_capacity(data_bytes);
@@ -3058,7 +3053,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
         bytes1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; data_bytes];
-    base.execute_into(&alg, &bytes1, &mut out1).unwrap();
+    base.execute_into(alg, &bytes1, &mut out1).unwrap();
     for (i, input) in payload1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         let expected = *input + 2.0;
@@ -3077,7 +3072,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
         bytes2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; data_bytes];
-    base.execute_into(&alg, &bytes2, &mut out2).unwrap();
+    base.execute_into(alg, &bytes2, &mut out2).unwrap();
     for i in 0..n {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -3149,14 +3144,14 @@ fn test_cublas_sgemv_reuse() {
             ]),
     ]);
 
-    let config = Setup {
-        clif: clif_prog.clone(),
+    let config = Artifact {
+        functions: clif_prog.clone(),
         memory_size: mem_size,
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm { fn_idx: 1 };
+    let alg: u32 = 1;
 
     let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x1: [f32; 3] = [1.0, 1.0, 1.0];
@@ -3169,7 +3164,7 @@ fn test_cublas_sgemv_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload1, &mut out1).unwrap();
+    base.execute_into(alg, &payload1, &mut out1).unwrap();
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -3192,7 +3187,7 @@ fn test_cublas_sgemv_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(&alg, &payload2, &mut out2).unwrap();
+    base.execute_into(alg, &payload2, &mut out2).unwrap();
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(

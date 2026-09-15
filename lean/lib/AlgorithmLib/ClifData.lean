@@ -158,10 +158,6 @@ structure FuncData where
   fns : List FnDecl
   blocks : List BlockData
 
-/-- Every function in one artifact, compiled as a unit. -/
-structure Program where
-  functions : List FuncData
-
 -- ---------------------------------------------------------------------------
 -- Serialization
 --
@@ -300,10 +296,6 @@ instance : Lean.ToJson FuncData where
      ("sigs", Lean.Json.arr ((f.sigs.map Lean.toJson).toArray)),
      ("fns", Lean.Json.arr ((f.fns.map Lean.toJson).toArray)),
      ("blocks", Lean.Json.arr ((f.blocks.map Lean.toJson).toArray))]
-
-instance : Lean.ToJson Program where
-  toJson p := Lean.Json.mkObj
-    [("functions", Lean.Json.arr ((p.functions.map Lean.toJson).toArray))]
 
 end IR
 

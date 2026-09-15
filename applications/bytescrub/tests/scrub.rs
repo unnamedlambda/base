@@ -10,9 +10,12 @@
 //! only` and `final vector` catch one that stops early, `all` catches one that
 //! runs long, and `alternating` catches a blend that takes the wrong side.
 
-use base::{Algorithm, Artifact, Base};
+use base::{Artifact, Base};
 
 const ARTIFACT: &[u8] = build_support::artifact!("ByteScrubAlgorithm/byte_scrub");
+
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
 
 /// The run `ByteScrub.code` ships: 256 vectors of sixteen bytes.
 const BYTES: usize = 4096;
@@ -20,9 +23,9 @@ const BYTES: usize = 4096;
 const OLD: u8 = 0;
 const NEW: u8 = b' ';
 
-fn scrub(base: &mut Base, alg: &Algorithm, data: &[u8]) -> Vec<u8> {
+fn scrub(base: &mut Base, fn_idx: u32, data: &[u8]) -> Vec<u8> {
     let mut out = vec![0xAAu8; BYTES];
-    base.execute_into(alg, data, &mut out)
+    base.execute_into(fn_idx, data, &mut out)
         .expect("execute failed");
     out
 }
@@ -30,7 +33,7 @@ fn scrub(base: &mut Base, alg: &Algorithm, data: &[u8]) -> Vec<u8> {
 #[test]
 fn scrubs_every_vector() {
     let artifact = Artifact::from_bytes(ARTIFACT);
-    let mut base = Base::new(artifact.setup).expect("Base::new");
+    let mut base = Base::new(artifact).expect("Base::new");
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("none", vec![b'x'; BYTES]),
@@ -65,7 +68,7 @@ fn scrubs_every_vector() {
     ];
 
     for (label, data) in &cases {
-        let got = scrub(&mut base, &artifact.main, data);
+        let got = scrub(&mut base, MAIN, data);
         let want: Vec<u8> = data
             .iter()
             .map(|&b| if b == OLD { NEW } else { b })

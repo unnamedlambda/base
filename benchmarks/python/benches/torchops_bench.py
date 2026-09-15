@@ -21,6 +21,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
+import entries
 
 try:
     import torch
@@ -39,10 +40,11 @@ def _run_binary(
     torch_ref,
 ) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact.setup)
-    load_alg = artifact.main
-    prep_alg = artifact.extras["prep"]
-    infer_alg = artifact.extras["infer"]
+    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    load_alg = artifact_entries["main"]
+    prep_alg = artifact_entries["prep"]
+    infer_alg = artifact_entries["infer"]
     results = []
     rng = np.random.default_rng(2026)
 

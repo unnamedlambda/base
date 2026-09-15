@@ -10,7 +10,7 @@ import AlgorithmLib.Gen
   runs of an arbitrary body, so the compiler it names cannot demand one.
 
   This asks which door each shipped body went through, walking from the
-  generator's `main`. A module that emits artifacts without reaching a `Setup`
+  generator's `main`. A module that emits artifacts without reaching a `Artifact`
   fails too: a scan that found nothing to look at has not looked.
 -/
 
@@ -70,15 +70,15 @@ where
     | some p => p.reverse.toArray
     | none   => go step.1 step.2.1
 
-/-- A declaration producing a `Setup`, whatever it takes first --- and through
-    an `Except`, because a body checked while it is emitted yields one only if
-    it passed. -/
-private partial def yieldsSetup : Expr → Bool
-  | .forallE _ _ b _ => yieldsSetup b
+/-- A declaration producing an `Artifact`, whatever it takes first --- and
+    through an `Except`, because a body checked while it is emitted yields one
+    only if it passed. -/
+private partial def yieldsArtifact : Expr → Bool
+  | .forallE _ _ b _ => yieldsArtifact b
   | e                =>
-      if e.isConstOf ``AlgorithmLib.Setup then true
+      if e.isConstOf ``AlgorithmLib.Artifact then true
       else match e.getAppFn, e.getAppArgs with
-           | .const ``Except _, #[_, a] => yieldsSetup a
+           | .const ``Except _, #[_, a] => yieldsArtifact a
            | _, _ => false
 
 /-- Fails the build on an artifact holding a body that was not compiled through
@@ -89,12 +89,12 @@ def check (label : String) (root : Name := `main) (gatedElsewhere : Option Strin
   if (env.find? root).isNone then
     throwError s!"SHIP SCAN [{label}]: no such entry point `{root}`"
   let reached := closureOf env {} root
-  let setups := reached.toList.filter fun n =>
+  let artifacts := reached.toList.filter fun n =>
     match env.find? n with
-    | some ci => yieldsSetup ci.type
+    | some ci => yieldsArtifact ci.type
     | none    => false
-  if setups.isEmpty then
-    throwError s!"SHIP SCAN [{label}] FAILED: `{root}` reaches no Setup, so nothing was checked"
+  if artifacts.isEmpty then
+    throwError s!"SHIP SCAN [{label}] FAILED: `{root}` reaches no Artifact, so nothing was checked"
   if reached.contains UNCHECKED then
     match gatedElsewhere with
     | some why =>
@@ -105,6 +105,6 @@ def check (label : String) (root : Name := `main) (gatedElsewhere : Option Strin
     for n in pathTo env root UNCHECKED do IO.println s!"    {n}"
     throwError s!"SHIP SCAN [{label}] FAILED: a body it ships was compiled by \
       {UNCHECKED} rather than one of {CHECKED}"
-  IO.println s!"[{label}] every body its {setups.length} artifact(s) carry was compiled through compileProg"
+  IO.println s!"[{label}] every body its {artifacts.length} artifact(s) carry was compiled through compileProg"
 
 end ShipScan

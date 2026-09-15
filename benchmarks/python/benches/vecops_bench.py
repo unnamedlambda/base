@@ -32,6 +32,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
+import entries
 
 SIZES = [1_000_000, 10_000_000, 50_000_000]
 ROW_SHAPES = [(2048, 256), (4096, 256), (4096, 512)]
@@ -42,8 +43,9 @@ CLAMP_HI =  0.5
 
 def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    engine = py_base.Base(artifact.setup)
-    alg = artifact.main
+    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    alg = artifact_entries["main"]
     out = bytearray(8)
     results = []
     rng = np.random.default_rng(42)
@@ -83,8 +85,9 @@ def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    engine = py_base.Base(artifact.setup)
-    alg = artifact.main
+    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    alg = artifact_entries["main"]
     out = bytearray(8)
     results = []
     rng = np.random.default_rng(99)
@@ -120,8 +123,9 @@ def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_rowdot(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    engine = py_base.Base(artifact.setup)
-    alg = artifact.main
+    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    alg = artifact_entries["main"]
     results = []
     rng = np.random.default_rng(123)
 
@@ -158,8 +162,9 @@ def _run_rowdot(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_row_affine_reduce(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    engine = py_base.Base(artifact.setup)
-    alg = artifact.main
+    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
+    engine = py_base.Base(artifact)
+    alg = artifact_entries["main"]
     results = []
     rng = np.random.default_rng(321)
 

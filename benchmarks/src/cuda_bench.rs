@@ -5,6 +5,9 @@ type CudaBackend = burn::backend::CudaJit;
 
 const CUDA_SAXPY_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/cuda_saxpy_algorithm");
 
+/// Entry points of this artifact, as its generator numbers them.
+const MAIN: u32 = 1;
+
 use harness::{build_f32_payload, f32_from_bytes, format_count, gen_floats};
 
 fn cuda_device() -> burn::backend::cuda_jit::CudaDevice {
@@ -76,7 +79,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     eprintln!("  Both: upload + compute + full readback via execute_into\n");
 
     let artifact = Artifact::from_bytes(CUDA_SAXPY_ARTIFACT);
-    let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+    let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &n in &[262_144usize, 524_288, 1_048_576] {
         eprintln!("  SAXPY {} ...", format_count(n));
@@ -91,7 +94,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Warmup both
         std::hint::black_box(burn_saxpy_cuda(2.0, &x, &y));
-        let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+        let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
 
         let burn_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -101,7 +104,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(&artifact.main, &payload, &mut out_buf);
+            let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

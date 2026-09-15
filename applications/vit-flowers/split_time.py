@@ -10,14 +10,17 @@ shapes, streams and dependence edges are the ones the full step uses.
 The two do not sum to the whole: run together they overlap across the sixteen
 streams. That gap is the point of the third number.
 """
+import os
 import sys, time, numpy as np, py_base
+import entries
 
 ART, D, N = sys.argv[1], sys.argv[2], 50
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
-base = py_base.Base(art.setup)
-ex = art.extras
-base.execute_into(art.main, blob, bytearray(0))
+art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
+base = py_base.Base(art)
+ex = art_entries
+base.execute_into(art_entries["main"], blob, bytearray(0))
 for c in ["capture", "captureStep", "captureBlas", "captureRow"]:
     base.execute_into(ex[c], b"", bytearray(0))
 base.execute_into(ex["reload"], blob, bytearray(0))

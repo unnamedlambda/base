@@ -487,7 +487,7 @@ def mainCode : Prog V L Unit := do
   emitOutput k
 
 -- Deciding `wf` walks the whole body, which is deeper than the default budget.
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 -- ---------------------------------------------------------------------------
@@ -500,21 +500,19 @@ def payloads : List UInt8 :=
   let outputFname := padTo (stringToBytes "sat_output.txt") (cnf_off - outputFilename_off)
   reserved ++ inputFname ++ outputFname
 
-def satConfig (clif : Program) : Setup := {
-  clif,
+def satConfig (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := totalMemory,
   initial_memory := payloads
 }
 
-def satAlgorithm : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+def satAlgorithm : UInt32 := IR.mainFnIdx
 
 end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonEntry "sat_app" (Algorithm.satConfig clif) Algorithm.satAlgorithm]
+  emitArtifacts outDir #[toJsonArtifact "sat_app" (Algorithm.satConfig clif)]
 
 #eval ShipScan.check "SatAlgorithm"

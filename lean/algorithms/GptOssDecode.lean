@@ -1216,7 +1216,7 @@ def dMainFn : Prog V L Unit :=
 def dShippedBodies : List Prog.Body := [ dMainFn ]
 
 
-def dClifIR : Except String Program :=
+def dClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: dShippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1)
@@ -1235,16 +1235,16 @@ def dInitialMemory : List UInt8 :=
     ++ dPtx.flatMap dSlotBytes
     ++ zeros (DMEM_SIZE - DBIND_OFF)
 
-def dSetup (clif : Program) : Setup := {
-  clif
+def dSetup (clif : List FuncData) : Artifact := {
+  functions := clif
   memory_size := DMEM_SIZE
   initial_memory := dInitialMemory
 }
 
 #eval LayoutScan.check "GptOssDecode" [``dMemMap]
 
-def artifacts (clif : Program) : Array Json :=
-  #[ toJsonArtifact "gptoss_decode" (dSetup clif) { fn_idx := u32 1 } [] ]
+def artifacts (clif : List FuncData) : Array Json :=
+  #[ toJsonArtifact "gptoss_decode" (dSetup clif) ]
 
 end GptOssDecode
 

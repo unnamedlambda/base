@@ -725,7 +725,7 @@ def checked : Except String Code := Prog.emitChecked body
 -- mean a `native_decide` over several thousand slots, which buys nothing and
 -- costs trust surface.
 
-def program : Except String Program :=
+def program : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 body]
 
 def outBytes : Nat := caseNames.length * STRIDE
@@ -814,9 +814,9 @@ def main (args : List String) : IO Unit := do
   | .error e => throw (IO.userError s!"interpreting the corpus: {e}")
   | .ok bytes =>
       let clif ← AlgorithmLib.Prog.orDie HProgCorpus.program
-      emitArtifacts dir #[toJsonEntry "hprog_corpus" {
-        clif, memory_size := 0x100
-      } { fn_idx := u32 1 }]
+      emitArtifacts dir #[toJsonArtifact "hprog_corpus" {
+        functions := clif, memory_size := 0x100
+      }]
       let names := HProgCorpus.caseNames
       -- A case is compared as a NaN when its own stored bytes are one, at the
       -- width its name says. Everything else is compared byte for byte.

@@ -375,7 +375,7 @@ set_option maxRecDepth 4000
 def STACK16_DEPTH : Nat := 16
 def STACK32_DEPTH : Nat := 32
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 loadCode,
@@ -465,26 +465,21 @@ def buildInitialMemory : List UInt8 :=
   let add := ptxAddBytes ++ zeros (MEM_SIZE - PTX_ADD_OFF - ptxAddBytes.length)
   pre ++ rms ++ silu ++ addrms ++ add
 
-def buildSetup (clif : Program) : Setup := {
-  clif,
+def buildSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
 
-def loadAlgorithm   : Algorithm := { fn_idx := u32 1 }
-def prepAlgorithm   : Algorithm := { fn_idx := u32 2 }
-def inferAlgorithm  : Algorithm := { fn_idx := u32 5 }
-def stack16Algorithm : Algorithm := { fn_idx := u32 6 }
-def stack32Algorithm : Algorithm := { fn_idx := u32 7 }
+def loadAlgorithm   : UInt32 := 1
+def prepAlgorithm   : UInt32 := 2
+def inferAlgorithm  : UInt32 := 5
+def stack16Algorithm : UInt32 := 6
+def stack32Algorithm : UInt32 := 7
 
-def artifacts (clif : Program) : Array Json :=
+def artifacts (clif : List FuncData) : Array Json :=
   #[
-    toJsonArtifact "cuda_decoder" (buildSetup clif) loadAlgorithm [
-      ("prep",    prepAlgorithm),
-      ("infer",   inferAlgorithm),
-      ("stack16", stack16Algorithm),
-      ("stack32", stack32Algorithm)
-    ]
+    toJsonArtifact "cuda_decoder" (buildSetup clif)
   ]
 
 end CudaDecoderLayer

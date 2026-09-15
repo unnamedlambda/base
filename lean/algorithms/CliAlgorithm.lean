@@ -1390,7 +1390,7 @@ def clifCode : Prog V L Unit :=
 
   cudaCleanup ptr
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 clifCode]
 
 def payloads : List UInt8 :=
@@ -1400,21 +1400,19 @@ def payloads : List UInt8 :=
     f.arrayAddPtx.init (stringToBytes arrayAddPtxSource)
   ]
 
-def cliConfig (clif : Program) : Setup := {
-  clif,
+def cliConfig (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
-def cliAlgorithm : Algorithm := {
-  fn_idx := IR.mainFnIdx
-}
+def cliAlgorithm : UInt32 := IR.mainFnIdx
 
 end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonEntry "cli_app" (Algorithm.cliConfig clif) Algorithm.cliAlgorithm]
+  emitArtifacts outDir #[toJsonArtifact "cli_app" (Algorithm.cliConfig clif)]
 
 #eval ShipScan.check "CliAlgorithm"

@@ -39,6 +39,7 @@ from layout import (CAP_MAX, D_CTX, D_INVT, D_SEED, D_LNMINP, D_STOP, D_MAXNEW,
                     D_OUT_TEXT, D_OUT_NGEN, D_OUT_GEN, D_OUT_NTEXT,
                     D_OUT_TEXTTOK, D_OUT_BYTES, D_STARTPOS, TEXT_MAX,
                     check_layout, ln_min_p, acquire_engine_lock)  # noqa: E402
+import entries
 
 START, END, MESSAGE, RETURN = 200006, 200007, 200008, 200002
 ROLE = {"system": 17360, "user": 1428, "assistant": 173781}
@@ -86,8 +87,9 @@ def main():
 
     check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
-    assert not art.extras, f"expected one entry and no extras; got {sorted(art.extras)}"
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    assert not art_entries, f"expected one entry and no extras; got {sorted(art_entries)}"
+    base = py_base.Base(art)
 
     paths = {}
     for off, name in ((16, "experts.bin"), (272, "dense.bin"),
@@ -117,7 +119,7 @@ def main():
             struct.pack_into(f"<{len(post)}I", buf, D_POST, *post)
         buf[D_TEXT:D_TEXT + len(raw)] = raw
         out = bytearray(D_OUT_BYTES)
-        base.execute_into(art.main, bytes(buf), out)
+        base.execute_into(art_entries["main"], bytes(buf), out)
         b = bytes(out)
         n, _ = struct.unpack_from("<Ii", b, 0)
         reply = b[D_OUT_TEXT:D_OUT_TEXT + n].decode("utf-8", "replace")

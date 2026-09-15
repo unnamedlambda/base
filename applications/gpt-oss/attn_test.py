@@ -40,6 +40,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank, bf16_to_f32, rms_norm  # noqa: E402
+import entries
 
 CAP = 128           # the sliding window, and so the ring cache's depth
 ROPE_N = 131072     # `GptOssAttention.ROPE_N`: the published height, all of it
@@ -79,8 +80,9 @@ def main():
     T = max(positions) + 1
 
     art = py_base.load_artifact(args.artifact)
-    ex = art.extras
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    ex = art_entries
+    base = py_base.Base(art)
     mem = bytes(json.load(open(args.artifact))["setup"]["initial_memory"])
     want = struct.unpack_from("<I", mem, 0x80)[0]
 
@@ -109,7 +111,7 @@ def main():
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
 
-    base.execute_into(art.main, blob, bytearray(0))
+    base.execute_into(art_entries["main"], blob, bytearray(0))
 
     # ---- the reference, written the way the model defines it ----
     def project(row, narrow):

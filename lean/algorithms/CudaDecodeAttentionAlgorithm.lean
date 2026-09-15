@@ -251,7 +251,7 @@ def finalizeCode : Prog V L Unit := do
 
 def STACK_DEPTH : Nat := 64
 
-def clifIR : Except String Program :=
+def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      Prog.compileProg 1 loadCode,
@@ -310,24 +310,20 @@ def buildInitialMemory : List UInt8 :=
   let bind := bindDesc ++ zeros (MEM_SIZE - BIND_DESC_OFF - bindDesc.length)
   reserved ++ ptx ++ bind
 
-def buildSetup (clif : Program) : Setup := {
-  clif,
+def buildSetup (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
 
-def loadAlgorithm : Algorithm := { fn_idx := u32 1 }
-def prepAlgorithm : Algorithm := { fn_idx := u32 2 }
-def inferAlgorithm : Algorithm := { fn_idx := u32 5 }
-def stackAlgorithm : Algorithm := { fn_idx := u32 6 }
+def loadAlgorithm : UInt32 := 1
+def prepAlgorithm : UInt32 := 2
+def inferAlgorithm : UInt32 := 5
+def stackAlgorithm : UInt32 := 6
 
-def artifacts (clif : Program) : Array Json :=
+def artifacts (clif : List FuncData) : Array Json :=
   #[
-    toJsonArtifact "cuda_decode_attn" (buildSetup clif) loadAlgorithm [
-      ("prep",  prepAlgorithm),
-      ("infer", inferAlgorithm),
-      ("stack", stackAlgorithm)
-    ]
+    toJsonArtifact "cuda_decode_attn" (buildSetup clif)
   ]
 
 end CudaDecodeAttention

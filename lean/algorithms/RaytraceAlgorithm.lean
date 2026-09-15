@@ -357,7 +357,7 @@ def code : Prog V L Unit := do
   let total  ← iconst64 (54 + pixelBytes)
   let _      ← writeFile0 ptr filename_off bmpHeader_off total
 
-def clifIrSource : Except String Program :=
+def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 -- ---------------------------------------------------------------------------
@@ -384,21 +384,19 @@ def payloads : List UInt8 :=
 -- Algorithm definition
 -- ---------------------------------------------------------------------------
 
-def raytraceConfig (clif : Program) : Setup := {
-  clif,
+def raytraceConfig (clif : List FuncData) : Artifact := {
+  functions := clif,
   memory_size := payloads.length + pixelBytes,
   initial_memory := payloads
 }
 
-def raytraceAlgorithm : Algorithm := {
-    fn_idx := IR.mainFnIdx
-  }
+def raytraceAlgorithm : UInt32 := IR.mainFnIdx
 
 end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonEntry "raytrace_app" (Algorithm.raytraceConfig clif) Algorithm.raytraceAlgorithm]
+  emitArtifacts outDir #[toJsonArtifact "raytrace_app" (Algorithm.raytraceConfig clif)]
 
 #eval ShipScan.check "RaytraceAlgorithm"

@@ -15,9 +15,11 @@ the class token — arithmetic on one row, where the label lives.  That is a
 stated part of the step, not an omission: `seed` uploads the result and the
 backward is derived from it.
 """
+import os
 import sys, json, struct, time
 import numpy as np
 import py_base
+import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 STEPS = int(sys.argv[3]) if len(sys.argv) > 3 else 20
@@ -28,9 +30,10 @@ blob = np.load(D + "/blob.npy").tobytes()
 ref = np.load(D + "/losses.npy")
 
 art = py_base.load_artifact(ART)
-base = py_base.Base(art.setup)
-ex = art.extras
-base.execute_into(art.main, blob, bytearray(0))
+art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
+base = py_base.Base(art)
+ex = art_entries
+base.execute_into(art_entries["main"], blob, bytearray(0))
 
 # Capture both graphs first.  Capturing runs its sequence once eagerly to make
 # every module resident, so the step graph's capture applies two updates; the

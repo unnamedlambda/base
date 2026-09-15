@@ -37,6 +37,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank, bf16_to_f32, rms_norm, softmax, swiglu  # noqa: E402
 from attn_test import to_bf16, nb, CAP, ROPE_N  # noqa: E402
+import entries
 
 
 def main():
@@ -69,8 +70,9 @@ def main():
     T = max(positions) + 1
 
     art = py_base.load_artifact(args.artifact)
-    ex = art.extras
-    base = py_base.Base(art.setup)
+    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
+    ex = art_entries
+    base = py_base.Base(art)
     want = struct.unpack_from(
         "<I", bytes(json.load(open(args.artifact))["setup"]["initial_memory"]), 0x80)[0]
 
@@ -183,7 +185,7 @@ def main():
                 step[H * 4:H * 4 + 256] = meta.tobytes()
                 step = bytes(step)
             out = bytearray(H * 4 + E * 4)
-            base.execute_into(art.main, step, out)
+            base.execute_into(art_entries["main"], step, out)
             if pos in readback:
                 kept[pos] = (np.frombuffer(bytes(out[:H * 4]), np.float32).copy(),
                              np.frombuffer(bytes(out[H * 4:]), np.float32).copy())
