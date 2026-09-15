@@ -215,10 +215,11 @@ pub struct FnDecl {
     pub colocated: bool,
 }
 
-/// One function. Its signature is its entry block's parameter list, under
-/// `system_v`, returning nothing — so the signature is not a separate field
-/// that could disagree with the body. An entry point takes the memory base
-/// pointer; a function reached through `cl_thread_spawn` takes its spawn
+/// One function. Its signature is its entry block's parameter list, under the
+/// host's C calling convention, returning nothing — so the signature is not a
+/// separate field that could disagree with the body. An entry point takes the
+/// memory base, the input buffer and its length, and the output buffer and its
+/// length; a function reached through `cl_thread_spawn` takes its spawn
 /// argument.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Function {

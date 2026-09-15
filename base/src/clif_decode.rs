@@ -103,14 +103,19 @@ fn block_args(vs: &[ir::Value]) -> Vec<ir::BlockArg> {
 /// Declaring a function and defining it are separate calls into Cranelift and
 /// both need this. Reading it from the same place twice is what makes them
 /// agree.
-pub fn signature_of(f: &clif::Function) -> Result<Signature, String> {
+///
+/// `cc` is the host's C convention, never a fixed one: the artifact names no
+/// convention, and the other side of every boundary — the host calling an
+/// entry point, a program calling the FFI — is Rust `extern "C"` compiled for
+/// the machine running it.
+pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, String> {
     let entry = f.blocks.first().ok_or_else(|| {
         format!(
             "u0:{} defines no blocks, so there is no entry to take its signature from",
             f.index
         )
     })?;
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(cc);
     for (_, t) in &entry.params {
         sig.params.push(AbiParam::new(ty(*t)));
     }
@@ -124,16 +129,17 @@ pub fn signature_of(f: &clif::Function) -> Result<Signature, String> {
 /// when it is created rather than patched afterward.
 pub fn decode_function(
     f: &clif::Function,
+    cc: CallConv,
     declare_callee: &mut dyn FnMut(&clif::Callee, &Signature) -> Result<u32, String>,
 ) -> Result<ir::Function, String> {
-    let sig = signature_of(f)?;
+    let sig = signature_of(f, cc)?;
 
     let mut func = ir::Function::with_name_signature(UserFuncName::user(0, f.index), sig);
 
     // Prologue: signatures, then callees that reference them.
     let mut sig_refs: HashMap<u32, ir::SigRef> = HashMap::new();
     for s in &f.sigs {
-        let mut csig = Signature::new(CallConv::SystemV);
+        let mut csig = Signature::new(cc);
         for p in &s.params {
             csig.params.push(AbiParam::new(ty(*p)));
         }

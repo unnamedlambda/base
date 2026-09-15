@@ -278,6 +278,8 @@ fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<Rec
 pub fn clif_text(prog: &base_types::clif::Program) -> Result<String, String> {
     use base_types::clif::Callee;
     let mut out = String::new();
+    let isa = cranelift_native::builder().map_err(|e| e.to_string())?;
+    let cc = cranelift_codegen::isa::CallConv::triple_default(isa.triple());
     for f in &prog.functions {
         // Cranelift prints a callee as the `FuncId` it was declared with, so
         // the stub resolver records what each id stood for and the names are
@@ -290,7 +292,7 @@ pub fn clif_text(prog: &base_types::clif::Program) -> Result<String, String> {
             });
             Ok(names.len() as u32 - 1)
         };
-        let text = format!("{}", clif_decode::decode_function(f, &mut declare)?);
+        let text = format!("{}", clif_decode::decode_function(f, cc, &mut declare)?);
         let mut text = text;
         for (i, name) in names.iter().enumerate().rev() {
             text = text.replace(&format!("= u0:{i} sig"), &format!("= {name} sig"));

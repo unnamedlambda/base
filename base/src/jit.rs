@@ -203,6 +203,7 @@ pub(crate) fn compile_program(
 ) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
     info!(functions = prog.functions.len(), "compiling CLIF program");
     let mut module = new_module();
+    let cc = module.isa().default_call_conv();
 
     // Declared before any body is built, so `u0:N` resolves to FuncId(N).
     let mut func_ids = Vec::with_capacity(prog.functions.len());
@@ -214,7 +215,7 @@ pub(crate) fn compile_program(
                 f.index
             ));
         }
-        let sig = crate::clif_decode::signature_of(f)?;
+        let sig = crate::clif_decode::signature_of(f, cc)?;
         arities.push(sig.params.len());
         func_ids.push(
             module
@@ -238,7 +239,7 @@ pub(crate) fn compile_program(
                     .ok_or_else(|| format!("call to u0:{n}, which the program does not define")),
             }
         };
-        decoded.push(crate::clif_decode::decode_function(f, &mut declare)?);
+        decoded.push(crate::clif_decode::decode_function(f, cc, &mut declare)?);
     }
 
     let dump = std::env::var("BASE_DISASM").is_ok();
