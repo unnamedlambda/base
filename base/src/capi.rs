@@ -9,14 +9,12 @@
 //! anything about a program: it is `Base::new` and `Base::execute_into` with
 //! pointers instead of types.
 //!
-//! # What this deliberately does not expose
+//! # Results
 //!
-//! `execute_into` builds Arrow `RecordBatch`es from the output schema. Arrow's
-//! C data interface is a second ABI, and a host without an Arrow reader cannot
-//! use it, so the batches are dropped here. What an artifact computed is read
-//! back through [`base_read_memory`] instead — the offsets an output schema
-//! names are the same offsets that takes. A host wanting Arrow should use the
-//! Rust or Python surface, which already export it.
+//! A program answers through the out buffer its caller passes, and whatever it
+//! leaves in its own memory stays readable through [`base_read_memory`]. Base
+//! gives neither a format: the generator that built the program is what knows
+//! what the bytes mean.
 //!
 //! # Errors
 //!
@@ -211,11 +209,8 @@ pub unsafe extern "C" fn base_execute(
                 return -1;
             }
         };
-        // The batches are the Arrow view of the same shared memory `base_read_memory`
-        // reads, and this ABI does not carry Arrow. Dropping them costs only the
-        // schemas an artifact declares, which is nothing when it declares none.
         match base.execute_into(&algorithm, data, out) {
-            Ok(_) => 0,
+            Ok(()) => 0,
             Err(e) => {
                 set_error(String::from(e));
                 -1
@@ -227,8 +222,8 @@ pub unsafe extern "C" fn base_execute(
 /// Copy `len` bytes of this `Base`'s shared memory from `offset` into `dst`,
 /// answering how many were copied.
 ///
-/// This is how a host without Arrow reads a result: the `data_offset` of an
-/// output column, or any address a program was built to write. A range reaching
+/// This is how a host reads what a program left in its own memory, at an
+/// address the program's generator says it wrote. A range reaching
 /// past the end of memory copies nothing and answers `0` rather than a
 /// truncation, so a short read cannot be mistaken for a short result.
 ///

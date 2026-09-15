@@ -64,17 +64,9 @@ def warpKernelDSLStr (w : WP) : String :=
     emits this same list, so offsets and image cannot disagree. -/
 def WP.ptxBytes  (w : WP) : List UInt8 := (warpKernelDSLStr w).toUTF8.toList ++ [0]
 def WP.ptxLen    (w : WP) : Nat := w.ptxBytes.length
-/-- 16-byte-align the binding table so the i64 output columns stay aligned. -/
+/-- The binding table, 16-byte aligned. -/
 def WP.bindOff   (w : WP) : Nat := (rPTX_OFF + w.ptxLen + 15) / 16 * 16
-def WP.rowOff    (w : WP) : Nat := w.bindOff + 0x40
-def WP.passOff   (w : WP) : Nat := w.rowOff + 0x08
-def WP.launOff   (w : WP) : Nat := w.rowOff + 0x10
-def WP.bytesOff  (w : WP) : Nat := w.rowOff + 0x18
-def WP.instrOff  (w : WP) : Nat := w.rowOff + 0x20
-def WP.outstrOff (w : WP) : Nat := w.rowOff + 0x28
-def WP.lenoffOff (w : WP) : Nat := w.rowOff + 0x30
-def WP.numblkOff (w : WP) : Nat := w.rowOff + 0x38
-def WP.memSize   (w : WP) : Nat := w.rowOff + 0x40
+def WP.memSize   (w : WP) : Nat := w.bindOff + 0x80
 
 -- ── The shipped claim ─────────────────────────────────────────────────────────
 -- `ShippedCorrect b` is the correctness statement for the artifact

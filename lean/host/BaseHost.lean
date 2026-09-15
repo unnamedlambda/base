@@ -16,8 +16,7 @@ lines below: open a runtime, run, close it.
 
 ## What a host reads back
 
-The Rust and Python surfaces answer Arrow `RecordBatch`es. That is a second ABI,
-and this one does not carry it. Results come back three ways instead:
+Results come back three ways:
 
 * `readField`, at the `Fld` the artifact was *built* from -- the offset and the
   width both come from the layout, so a host reads a result by naming the same

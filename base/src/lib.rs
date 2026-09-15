@@ -5,10 +5,7 @@
 #[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
 compile_error!("base runs only on 64-bit little-endian targets");
 
-pub use arrow_array::RecordBatch;
-use arrow_array::{ArrayRef, Float64Array, Int64Array, StringArray};
-use arrow_schema::{DataType, Field, Schema};
-pub use base_types::{Algorithm, Artifact, OutputBatchSchema, OutputColumn, OutputType, Setup};
+pub use base_types::{Algorithm, Artifact, Setup};
 use std::{
     pin::Pin,
     sync::{Arc, Once},
@@ -102,10 +99,8 @@ impl Base {
         })
     }
 
-    /// The shared memory a program reads and writes.
-    ///
-    /// An output schema names offsets into this, so a caller that does not want
-    /// the Arrow view — `capi`'s hosts — reads the same bytes directly.
+    /// The shared memory a program reads and writes, borrowed for as long as
+    /// this `Base` is not executing.
     pub fn memory_bytes(&self) -> &[u8] {
         &self.memory
     }
@@ -129,7 +124,7 @@ impl Base {
         &mut self,
         algorithm: &Algorithm,
         data: &[u8],
-    ) -> Result<Vec<RecordBatch>, Error> {
+    ) -> Result<(), Error> {
         self.execute_into(algorithm, data, &mut [])
     }
 
@@ -138,7 +133,7 @@ impl Base {
         algorithm: &Algorithm,
         data: &[u8],
         out: &mut [u8],
-    ) -> Result<Vec<RecordBatch>, Error> {
+    ) -> Result<(), Error> {
         let _span = info_span!("execute", fn_idx = algorithm.fn_idx).entered();
         info!("starting execution");
 
@@ -178,13 +173,12 @@ impl Base {
             }
         }
 
-        let batches = build_record_batches(&self.memory, &algorithm.output);
         info!("execution complete");
-        Ok(batches)
+        Ok(())
     }
 }
 
-pub fn run(setup: Setup, algorithm: Algorithm) -> Result<Vec<RecordBatch>, Error> {
+pub fn run(setup: Setup, algorithm: Algorithm) -> Result<(), Error> {
     let mut base = Base::new(setup)?;
     base.execute(&algorithm, &[])
 }
@@ -205,94 +199,6 @@ pub fn init_tracing() {
             )
             .init();
     });
-}
-
-fn build_record_batches(memory: &[u8], schemas: &[OutputBatchSchema]) -> Vec<RecordBatch> {
-    let mut batches = Vec::with_capacity(schemas.len());
-    for schema in schemas {
-        let row_count = if schema.row_count_offset + 8 <= memory.len() {
-            let bytes: [u8; 8] = memory[schema.row_count_offset..schema.row_count_offset + 8]
-                .try_into()
-                .unwrap();
-            u64::from_le_bytes(bytes) as usize
-        } else {
-            0
-        };
-        if row_count == 0 {
-            continue;
-        }
-
-        let mut fields = Vec::with_capacity(schema.columns.len());
-        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(schema.columns.len());
-
-        for col in &schema.columns {
-            match col.dtype {
-                OutputType::I64 => {
-                    fields.push(Field::new(&col.name, DataType::Int64, false));
-                    let mut values = Vec::with_capacity(row_count);
-                    for i in 0..row_count {
-                        let off = col.data_offset + i * 8;
-                        if off + 8 <= memory.len() {
-                            let bytes: [u8; 8] = memory[off..off + 8].try_into().unwrap();
-                            values.push(i64::from_le_bytes(bytes));
-                        } else {
-                            values.push(0);
-                        }
-                    }
-                    arrays.push(Arc::new(Int64Array::from(values)) as ArrayRef);
-                }
-                OutputType::F64 => {
-                    fields.push(Field::new(&col.name, DataType::Float64, false));
-                    let mut values = Vec::with_capacity(row_count);
-                    for i in 0..row_count {
-                        let off = col.data_offset + i * 8;
-                        if off + 8 <= memory.len() {
-                            let bytes: [u8; 8] = memory[off..off + 8].try_into().unwrap();
-                            values.push(f64::from_le_bytes(bytes));
-                        } else {
-                            values.push(0.0);
-                        }
-                    }
-                    arrays.push(Arc::new(Float64Array::from(values)) as ArrayRef);
-                }
-                OutputType::Utf8 => {
-                    fields.push(Field::new(&col.name, DataType::Utf8, false));
-                    let mut strings = Vec::with_capacity(row_count);
-                    let total_byte_len = if col.len_offset + 8 <= memory.len() {
-                        let bytes: [u8; 8] = memory[col.len_offset..col.len_offset + 8]
-                            .try_into()
-                            .unwrap();
-                        u64::from_le_bytes(bytes) as usize
-                    } else {
-                        0
-                    };
-                    if row_count == 1 {
-                        let end = (col.data_offset + total_byte_len).min(memory.len());
-                        let slice = &memory[col.data_offset..end];
-                        let s = std::str::from_utf8(slice).unwrap_or("");
-                        strings.push(s.to_string());
-                    } else {
-                        let mut pos = col.data_offset;
-                        for _ in 0..row_count {
-                            let start = pos;
-                            while pos < memory.len() && memory[pos] != 0 {
-                                pos += 1;
-                            }
-                            let s = std::str::from_utf8(&memory[start..pos]).unwrap_or("");
-                            strings.push(s.to_string());
-                            pos += 1;
-                        }
-                    }
-                    arrays.push(Arc::new(StringArray::from(strings)) as ArrayRef);
-                }
-            }
-        }
-
-        if let Ok(batch) = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays) {
-            batches.push(batch);
-        }
-    }
-    batches
 }
 
 /// The program as CLIF text — what was built, rather than what the caller

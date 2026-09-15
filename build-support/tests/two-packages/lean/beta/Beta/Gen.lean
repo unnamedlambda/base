@@ -7,7 +7,7 @@ def size : Nat := 222 + Common.bump
 
 def artifact : String :=
   "{\"setup\":{\"clif\":{\"functions\":[]},\"memory_size\":" ++ toString size ++
-  ",\"initial_memory\":[]},\"main\":{\"fn_idx\":0,\"output\":[]},\"extras\":{}}"
+  ",\"initial_memory\":[]},\"main\":{\"fn_idx\":0},\"extras\":{}}"
 
 def main (args : List String) : IO Unit := do
   let dir := args.head!

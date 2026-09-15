@@ -10,7 +10,6 @@
 //
 // Corpus: `baseline/setup.sh --corpus-only` (override with LZ4_CORPUS).
 // Baseline: `baseline/bench_nvcomp_compress.py`, which prints its own methodology.
-use arrow_array::{Int64Array, RecordBatch};
 use base::{Artifact, Base};
 use std::time::Instant;
 
@@ -21,10 +20,6 @@ const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lz4-ptx/corpus/silesi
 /// The prefix the shipped kernels bake in (`Lz4CompAlgorithm.corpusBytes`).
 const CORPUS_BYTES: usize = 209_715_200;
 
-fn col(b: &RecordBatch, i: usize) -> i64 {
-    b.column(i).as_any().downcast_ref::<Int64Array>().unwrap().value(0)
-}
-
 fn run(name: &str, block: usize, original: &[u8]) {
     let data = original.to_vec();
     let bin = std::fs::read(format!("{ARTIFACTS}/Lz4CompAlgorithm/{name}.bin"))
@@ -32,19 +27,23 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let art = Artifact::from_bytes(&bin);
     let mut base = Base::new(art.setup).expect("compile");
 
-    // Layout mirrors Algorithm.WP in Lz4CompAlgorithm.lean; asserted vs columns.
+    // Layout mirrors Algorithm.WP in Lz4CompAlgorithm.lean; asserted against the
+    // geometry the program writes after the blocks.
     let num_blk = CORPUS_BYTES / block;
     let len_off = block + block / 16 + 256;
     let out_stride = len_off + 8;
-    let mut out = vec![0u8; num_blk * out_stride];
+    let blocks = num_blk * out_stride;
+    let mut out = vec![0u8; blocks + 48];
 
-    let batches = base.execute_into(&art.main, &data, &mut out).expect("run");
-    let b = &batches[0];
-    let (launches, bytes_per_launch) = (col(b, 1) as u64, col(b, 2) as u64);
-    assert_eq!(col(b, 3) as usize, block, "in_stride mismatch");
-    assert_eq!(col(b, 4) as usize, out_stride, "out_stride mismatch");
-    assert_eq!(col(b, 5) as usize, len_off, "len_off mismatch");
-    assert_eq!(col(b, 6) as usize, num_blk, "num_blk mismatch");
+    base.execute_into(&art.main, &data, &mut out).expect("run");
+    let geom = |i: usize| {
+        i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as u64
+    };
+    let (launches, bytes_per_launch) = (geom(0), geom(1));
+    assert_eq!(geom(2) as usize, block, "in_stride mismatch");
+    assert_eq!(geom(3) as usize, out_stride, "out_stride mismatch");
+    assert_eq!(geom(4) as usize, len_off, "len_off mismatch");
+    assert_eq!(geom(5) as usize, num_blk, "num_blk mismatch");
 
     // Byte-exact verification via a standard LZ4 decoder.
     let verify = |out: &[u8], tag: &str| -> usize {

@@ -192,10 +192,6 @@ structure Fields where
   camY        : Fld .i64
   camZ        : Fld .i64
   nEvents     : Fld .i64
-  rowCount    : Fld .i64
-  outPass     : Fld .i64
-  outActual   : Fld .i64
-  outExpected : Fld .i64
   pixels      : Fld (.bytes pixelBytes)
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
@@ -212,14 +208,9 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let camY        ← field .i64
   let camZ        ← field .i64
   let nEvents     ← field .i64
-  let rowCount    ← field .i64
-  let outPass     ← field .i64
-  let outActual   ← field .i64
-  let outExpected ← field .i64
   let pixels      ← field (.bytes pixelBytes)
   pure { reserved, bindDesc, shader, blitShader, title, events, params, keyMask,
-         quit, camX, camY, camZ, nEvents, rowCount, outPass, outActual,
-         outExpected, pixels }
+         quit, camX, camY, camZ, nEvents, pixels }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
@@ -315,11 +306,16 @@ def writeEvent (ptr : V .i64) (slot : Nat) (kind keyCode : Int) : Prog V L Unit 
   storeUnaligned (← iconst64 kind) base
   storeUnaligned (← iconst64 keyCode) (← iaddImm base 8)
 
-def writeOutput (ptr : V .i64) (passV actualV expectedV : V .i64) : Prog V L Unit := do
-  fldStore ptr f.rowCount (← iconst64 1)
-  fldStore ptr f.outPass passV
-  fldStore ptr f.outActual actualV
-  fldStore ptr f.outExpected expectedV
+/-- Answer one result row in the caller's out buffer: pass (1/0), actual and
+    expected, eight bytes each. A buffer too short for the row is left alone,
+    so a host that passes none learns nothing rather than having memory past
+    its buffer written. -/
+def writeOutput (passV actualV expectedV : V .i64) : Prog V L Unit := do
+  let out ← outPtr
+  when .uge (← outLen) (← iconst64 24) do
+    storeAt out 0 passV
+    storeAt out 8 actualV
+    storeAt out 16 expectedV
 
 def stepN (ptr : V .i64) (steps : Int) : Prog V L Unit := do
   let limit ← iconst64 steps
@@ -332,7 +328,7 @@ def stepN (ptr : V .i64) (steps : Int) : Prog V L Unit := do
 
 def assertEq (ptr actual : V .i64) (expected : Int) : Prog V L Unit := do
   let exp ← iconst64 expected
-  writeOutput ptr (← sextend64 (← icmp .eq actual exp)) actual exp
+  writeOutput (← sextend64 (← icmp .eq actual exp)) actual exp
 
 def dispatchScene (ptr : V .i64) (paramBuf pipeId : V .i32) : Prog V L Unit := do
   let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
@@ -414,7 +410,7 @@ def testRenderScene : Prog V L Unit := do
   let skyB ← uload8_64 (← absAddr ptr (f.pixels.offset + skyByteOff))
   let groundB ← uload8_64 (← absAddr ptr (f.pixels.offset + groundByteOff))
   let thresh ← iadd groundB (← iconst64 20)
-  writeOutput ptr (← sextend64 (← icmp .ugt skyB thresh)) groundB skyB
+  writeOutput (← sextend64 (← icmp .ugt skyB thresh)) groundB skyB
 
 
 def clifIrSource : Except String Program :=
@@ -448,19 +444,12 @@ def gameSetup (clif : Program) : Setup := {
   initial_memory := payloads
 }
 
-def testSchema : List Json :=
-  [Output.schema
-    [ Output.column "pass" .i64 f.outPass.offset,
-      Output.column "actual" .i64 f.outActual.offset,
-      Output.column "expected" .i64 f.outExpected.offset ]
-    f.rowCount.offset]
-
 def mainAlgorithm  : Algorithm := { fn_idx := IR.mainFnIdx }
-def moveFwdAlg     : Algorithm := { fn_idx := u32 2, output := testSchema }
-def strafeAlg      : Algorithm := { fn_idx := u32 3, output := testSchema }
-def riseClampAlg   : Algorithm := { fn_idx := u32 4, output := testSchema }
-def quitOnCloseAlg : Algorithm := { fn_idx := u32 5, output := testSchema }
-def renderSceneAlg : Algorithm := { fn_idx := u32 6, output := testSchema }
+def moveFwdAlg     : Algorithm := { fn_idx := u32 2 }
+def strafeAlg      : Algorithm := { fn_idx := u32 3 }
+def riseClampAlg   : Algorithm := { fn_idx := u32 4 }
+def quitOnCloseAlg : Algorithm := { fn_idx := u32 5 }
+def renderSceneAlg : Algorithm := { fn_idx := u32 6 }
 
 end Algorithm
 

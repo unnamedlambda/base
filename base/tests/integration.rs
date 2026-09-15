@@ -1,11 +1,6 @@
-use arrow_array::{Float64Array, Int64Array, StringArray};
-use arrow_schema::{DataType, Field, Schema};
-use base::{run, Base, RecordBatch};
-use base_types::{
-    Algorithm, Setup, OutputBatchSchema, OutputColumn, OutputType,
-};
+use base::{run, Base};
+use base_types::{Algorithm, Setup};
 use std::fs;
-use std::sync::Arc;
 
 mod common;
 use common::*;
@@ -21,10 +16,12 @@ fn cranelift_config(memory: Vec<u8>, clif: Program) -> Setup {
 }
 
 fn cranelift_algorithm(fn_idx: u32) -> Algorithm {
-    Algorithm {
-        fn_idx,
-        output: vec![],
-    }
+    Algorithm { fn_idx }
+}
+
+/// The i64 a program left at `offset` of its memory.
+fn read_i64(base: &Base, offset: usize) -> i64 {
+    i64::from_le_bytes(base.memory_bytes()[offset..offset + 8].try_into().unwrap())
 }
 
 fn create_cranelift_algorithm(
@@ -910,716 +907,6 @@ fn test_clif_call_file_read_write() {
     assert_eq!(output_data, input_data, "output should match input");
 }
 
-fn create_output_algorithm(
-    clif: Program,
-    memory: Vec<u8>,
-    output: Vec<OutputBatchSchema>,
-) -> (Setup, Algorithm) {
-    dump(&clif);
-    let p = memory;
-
-    let config = Setup {
-        clif,
-        memory_size: p.len(),
-        initial_memory: p,
-    };
-    let algorithm = Algorithm {
-        fn_idx: 0,
-        output,
-    };
-    (config, algorithm)
-}
-
-#[test]
-fn test_output_no_schema_returns_empty() {
-    // A simple CLIF that writes a value but has no output schema —
-    // execute should return an empty Vec<RecordBatch>.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                iconst64(v(1), 42),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, vec![]);
-    let batches = run(cfg, alg).unwrap();
-    assert!(batches.is_empty());
-}
-
-#[test]
-fn test_output_single_i64_column() {
-    // CLIF writes i64 value 99 at offset 2000 and row_count=1 at offset 2008.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                iconst64(v(1), 99),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                iconst64(v(4), 1),
-                iconst64(v(5), 2008),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![OutputBatchSchema {
-        row_count_offset: 2008,
-        columns: vec![OutputColumn {
-            name: "value".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 2000,
-            len_offset: 0,
-        }],
-    }];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(batches.len(), 1);
-
-    let expected = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "value",
-            DataType::Int64,
-            false,
-        )])),
-        vec![Arc::new(Int64Array::from(vec![99i64]))],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected);
-}
-
-#[test]
-fn test_output_i64_and_f64_columns() {
-    // CLIF writes an i64 at 2000, an f64 at 2008, and row_count=1 at 2016.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                iconst64(v(1), 42),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                f64const(v(4), 3.141592653589793f64),
-                iconst64(v(5), 2008),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                iconst64(v(7), 1),
-                iconst64(v(8), 2016),
-                iadd(v(9), v(0), v(8)),
-                store(v(7), v(9), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![OutputBatchSchema {
-        row_count_offset: 2016,
-        columns: vec![
-            OutputColumn {
-                name: "count".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 2000,
-                len_offset: 0,
-            },
-            OutputColumn {
-                name: "pi".to_string(),
-                dtype: OutputType::F64,
-                data_offset: 2008,
-                len_offset: 0,
-            },
-        ],
-    }];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(batches.len(), 1);
-
-    let expected = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new("count", DataType::Int64, false),
-            Field::new("pi", DataType::Float64, false),
-        ])),
-        vec![
-            Arc::new(Int64Array::from(vec![42i64])),
-            Arc::new(Float64Array::from(vec![std::f64::consts::PI])),
-        ],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected);
-}
-
-#[test]
-fn test_output_utf8_single_row() {
-    // CLIF writes "hello" (5 bytes) at offset 2000, string length 5 at offset 2008,
-    // and row_count=1 at offset 2016.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                iconst64(v(1), 0x6f6c6c6568),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                iconst64(v(4), 5),
-                iconst64(v(5), 2008),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                iconst64(v(7), 1),
-                iconst64(v(8), 2016),
-                iadd(v(9), v(0), v(8)),
-                store(v(7), v(9), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![OutputBatchSchema {
-        row_count_offset: 2016,
-        columns: vec![OutputColumn {
-            name: "greeting".to_string(),
-            dtype: OutputType::Utf8,
-            data_offset: 2000,
-            len_offset: 2008,
-        }],
-    }];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(batches.len(), 1);
-
-    let expected = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "greeting",
-            DataType::Utf8,
-            false,
-        )])),
-        vec![Arc::new(StringArray::from(vec!["hello"]))],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected);
-}
-
-#[test]
-fn test_output_multi_row_i64() {
-    // CLIF writes 3 i64 values at offsets 2000, 2008, 2016, and row_count=3 at 2024.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                iconst64(v(1), 10),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                iconst64(v(4), 20),
-                iconst64(v(5), 2008),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                iconst64(v(7), 30),
-                iconst64(v(8), 2016),
-                iadd(v(9), v(0), v(8)),
-                store(v(7), v(9), 0),
-                iconst64(v(10), 3),
-                iconst64(v(11), 2024),
-                iadd(v(12), v(0), v(11)),
-                store(v(10), v(12), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![OutputBatchSchema {
-        row_count_offset: 2024,
-        columns: vec![OutputColumn {
-            name: "values".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 2000,
-            len_offset: 0,
-        }],
-    }];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(batches.len(), 1);
-
-    let expected = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "values",
-            DataType::Int64,
-            false,
-        )])),
-        vec![Arc::new(Int64Array::from(vec![10i64, 20, 30]))],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected);
-}
-
-#[test]
-fn test_output_zero_row_count_skips_batch() {
-    // CLIF writes nothing — row_count stays 0 in zeroed memory.
-    // The batch should be skipped entirely.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![OutputBatchSchema {
-        row_count_offset: 2000,
-        columns: vec![OutputColumn {
-            name: "x".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 2008,
-            len_offset: 0,
-        }],
-    }];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert!(batches.is_empty());
-}
-
-#[test]
-fn test_output_multiple_batches() {
-    // Two output schemas — each becomes a separate RecordBatch.
-    // Batch 1: single i64 at 2000, row_count at 2008.
-    // Batch 2: single f64 at 2016, row_count at 2024.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                iconst64(v(1), 7),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                iconst64(v(4), 1),
-                iconst64(v(5), 2008),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                f64const(v(7), 7.0f64),
-                iconst64(v(8), 2016),
-                iadd(v(9), v(0), v(8)),
-                store(v(7), v(9), 0),
-                iconst64(v(10), 1),
-                iconst64(v(11), 2024),
-                iadd(v(12), v(0), v(11)),
-                store(v(10), v(12), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![
-        OutputBatchSchema {
-            row_count_offset: 2008,
-            columns: vec![OutputColumn {
-                name: "integer_val".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 2000,
-                len_offset: 0,
-            }],
-        },
-        OutputBatchSchema {
-            row_count_offset: 2024,
-            columns: vec![OutputColumn {
-                name: "float_val".to_string(),
-                dtype: OutputType::F64,
-                data_offset: 2016,
-                len_offset: 0,
-            }],
-        },
-    ];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(batches.len(), 2);
-
-    let expected_0 = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "integer_val",
-            DataType::Int64,
-            false,
-        )])),
-        vec![Arc::new(Int64Array::from(vec![7i64]))],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected_0);
-
-    let expected_1 = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "float_val",
-            DataType::Float64,
-            false,
-        )])),
-        vec![Arc::new(Float64Array::from(vec![7.0f64]))],
-    )
-    .unwrap();
-    assert_eq!(batches[1], expected_1);
-}
-
-#[test]
-fn test_output_utf8_multi_row() {
-    // CLIF writes two null-terminated strings at offset 2000: "abc\0def\0"
-    // len_offset at 2100 holds total byte length (not used for multi-row; strings are null-terminated).
-    // row_count=2 at 2108.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                iconst64(v(1), 0x66656400636261),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                iconst64(v(4), 7),
-                iconst64(v(5), 2100),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                iconst64(v(7), 2),
-                iconst64(v(8), 2108),
-                iadd(v(9), v(0), v(8)),
-                store(v(7), v(9), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![OutputBatchSchema {
-        row_count_offset: 2108,
-        columns: vec![OutputColumn {
-            name: "words".to_string(),
-            dtype: OutputType::Utf8,
-            data_offset: 2000,
-            len_offset: 2100,
-        }],
-    }];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(batches.len(), 1);
-
-    let expected = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "words",
-            DataType::Utf8,
-            false,
-        )])),
-        vec![Arc::new(StringArray::from(vec!["abc", "def"]))],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected);
-}
-
-#[test]
-fn test_output_multiple_batches_multi_row_mixed() {
-    // Batch 0: summary — 1 row with I64 "total" and F64 "average"
-    // Batch 1: detail — 3 rows with I64 "id" and Utf8 "name"
-    //
-    // Layout (all in additional_shared_memory region starting at offset 2000):
-    //   2000: batch0 row_count (8 bytes) = 1
-    //   2008: batch0 col0 "total" i64 = 300
-    //   2016: batch0 col1 "average" f64 = 100.0
-    //   2024: batch1 row_count (8 bytes) = 3
-    //   2032: batch1 col0 "id" i64[3] = [1, 2, 3] (24 bytes)
-    //   2056: batch1 col1 "name" strings = "alice\0bob\0charlie\0" (19 bytes)
-    //   2080: batch1 col1 len_offset (8 bytes) = 19
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                // batch0 row_count = 1
-                iconst64(v(1), 1),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                // batch0 total = 300
-                iconst64(v(4), 300),
-                iconst64(v(5), 2008),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                // batch0 average = 100.0
-                f64const(v(7), 100.0f64),
-                iconst64(v(8), 2016),
-                iadd(v(9), v(0), v(8)),
-                store(v(7), v(9), 0),
-                // batch1 row_count = 3
-                iconst64(v(10), 3),
-                iconst64(v(11), 2024),
-                iadd(v(12), v(0), v(11)),
-                store(v(10), v(12), 0),
-                // batch1 id[0] = 1
-                iconst64(v(13), 1),
-                iconst64(v(14), 2032),
-                iadd(v(15), v(0), v(14)),
-                store(v(13), v(15), 0),
-                // batch1 id[1] = 2
-                iconst64(v(16), 2),
-                iconst64(v(17), 2040),
-                iadd(v(18), v(0), v(17)),
-                store(v(16), v(18), 0),
-                // batch1 id[2] = 3
-                iconst64(v(19), 3),
-                iconst64(v(20), 2048),
-                iadd(v(21), v(0), v(20)),
-                store(v(19), v(21), 0),
-                // batch1 names: "alice\0bob\0charlie\0" packed at 2056
-                // "alice\0bo" = 0x6f62_0065_6369_6c61
-                iconst64(v(22), 0x6f62006563696c61),
-                iconst64(v(23), 2056),
-                iadd(v(24), v(0), v(23)),
-                store(v(22), v(24), 0),
-                // "b\0charli" = 0x696c_7261_6863_0062
-                iconst64(v(25), 0x696c726168630062),
-                iconst64(v(26), 2064),
-                iadd(v(27), v(0), v(26)),
-                store(v(25), v(27), 0),
-                // "e\0" + padding = 0x0065
-                iconst64(v(28), 0x65),
-                iconst64(v(29), 2072),
-                iadd(v(30), v(0), v(29)),
-                store(v(28), v(30), 0),
-                // batch1 name len_offset = 19
-                iconst64(v(31), 19),
-                iconst64(v(32), 2080),
-                iadd(v(33), v(0), v(32)),
-                store(v(31), v(33), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![
-        OutputBatchSchema {
-            row_count_offset: 2000,
-            columns: vec![
-                OutputColumn {
-                    name: "total".to_string(),
-                    dtype: OutputType::I64,
-                    data_offset: 2008,
-                    len_offset: 0,
-                },
-                OutputColumn {
-                    name: "average".to_string(),
-                    dtype: OutputType::F64,
-                    data_offset: 2016,
-                    len_offset: 0,
-                },
-            ],
-        },
-        OutputBatchSchema {
-            row_count_offset: 2024,
-            columns: vec![
-                OutputColumn {
-                    name: "id".to_string(),
-                    dtype: OutputType::I64,
-                    data_offset: 2032,
-                    len_offset: 0,
-                },
-                OutputColumn {
-                    name: "name".to_string(),
-                    dtype: OutputType::Utf8,
-                    data_offset: 2056,
-                    len_offset: 2080,
-                },
-            ],
-        },
-    ];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(batches.len(), 2);
-
-    // Batch 0: summary
-    let expected_0 = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new("total", DataType::Int64, false),
-            Field::new("average", DataType::Float64, false),
-        ])),
-        vec![
-            Arc::new(Int64Array::from(vec![300i64])),
-            Arc::new(Float64Array::from(vec![100.0f64])),
-        ],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected_0);
-
-    // Batch 1: detail
-    let expected_1 = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, false),
-        ])),
-        vec![
-            Arc::new(Int64Array::from(vec![1i64, 2, 3])),
-            Arc::new(StringArray::from(vec!["alice", "bob", "charlie"])),
-        ],
-    )
-    .unwrap();
-    assert_eq!(batches[1], expected_1);
-}
-
-#[test]
-fn test_output_multiple_batches_partial_skip() {
-    // Three schemas declared, but only batch 0 and batch 2 have row_count > 0.
-    // Batch 1 should be skipped, resulting in 2 returned batches.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                // batch0: row_count=1, value=42
-                iconst64(v(1), 1),
-                iconst64(v(2), 2000),
-                iadd(v(3), v(0), v(2)),
-                store(v(1), v(3), 0),
-                iconst64(v(4), 42),
-                iconst64(v(5), 2008),
-                iadd(v(6), v(0), v(5)),
-                store(v(4), v(6), 0),
-                // batch1: row_count stays 0 (skipped)
-                // batch2: row_count=2, values=[10, 20]
-                iconst64(v(7), 2),
-                iconst64(v(8), 2032),
-                iadd(v(9), v(0), v(8)),
-                store(v(7), v(9), 0),
-                iconst64(v(10), 10),
-                iconst64(v(11), 2040),
-                iadd(v(12), v(0), v(11)),
-                store(v(10), v(12), 0),
-                iconst64(v(13), 20),
-                iconst64(v(14), 2048),
-                iadd(v(15), v(0), v(14)),
-                store(v(13), v(15), 0),
-                ret(),
-            ]),
-    );
-
-    let memory = vec![0u8; 4096];
-    let output = vec![
-        OutputBatchSchema {
-            row_count_offset: 2000,
-            columns: vec![OutputColumn {
-                name: "a".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 2008,
-                len_offset: 0,
-            }],
-        },
-        OutputBatchSchema {
-            row_count_offset: 2016, // stays 0 — skipped
-            columns: vec![OutputColumn {
-                name: "b".to_string(),
-                dtype: OutputType::F64,
-                data_offset: 2024,
-                len_offset: 0,
-            }],
-        },
-        OutputBatchSchema {
-            row_count_offset: 2032,
-            columns: vec![OutputColumn {
-                name: "c".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 2040,
-                len_offset: 0,
-            }],
-        },
-    ];
-
-    let (cfg, alg) = create_output_algorithm(clif_prog, memory, output);
-    let batches = run(cfg, alg).unwrap();
-    assert_eq!(
-        batches.len(),
-        2,
-        "middle batch with row_count=0 should be skipped"
-    );
-
-    let expected_0 = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)])),
-        vec![Arc::new(Int64Array::from(vec![42i64]))],
-    )
-    .unwrap();
-    assert_eq!(batches[0], expected_0);
-
-    let expected_1 = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new("c", DataType::Int64, false)])),
-        vec![Arc::new(Int64Array::from(vec![10i64, 20]))],
-    )
-    .unwrap();
-    assert_eq!(batches[1], expected_1);
-}
-
-#[test]
-fn test_base_single_execute_matches_standalone() {
-    // Base::new + execute should produce the same result as standalone run.
-    // CLIF: load i64 from offset 100, multiply by 7, store at 200, row_count=1 at 208.
-    let clif_prog = program(
-        function(0)
-            .entry(vec![
-                load64(v(1), v(0), 100),
-                iconst64(v(2), 7),
-                imul(v(3), v(1), v(2)),
-                store(v(3), v(0), 200),
-                iconst64(v(4), 1),
-                store(v(4), v(0), 208),
-                ret(),
-            ]),
-    );
-
-    let mut memory = vec![0u8; 4096];
-    memory[100..108].copy_from_slice(&6i64.to_le_bytes());
-
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "result".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-
-    // Standalone
-    let config1 = Setup {
-        clif: clif_prog.clone(),
-        memory_size: memory.len(),
-        initial_memory: memory.clone(),
-    };
-    let alg1 = Algorithm {
-        fn_idx: 0,
-        output: output_schema.clone(),
-    };
-    let batches1 = run(config1, alg1).unwrap();
-
-    // Base struct
-    let config2 = Setup {
-        clif: clif_prog.clone(),
-        memory_size: memory.len(),
-        initial_memory: memory,
-    };
-    let alg2 = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
-    let mut base = Base::new(config2).unwrap();
-    let batches2 = base.execute(&alg2, &[]).unwrap();
-
-    // Both should produce 6 * 7 = 42
-    assert_eq!(batches1.len(), 1);
-    assert_eq!(batches2.len(), 1);
-    let col1 = batches1[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let col2 = batches2[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col1.value(0), 42);
-    assert_eq!(col2.value(0), 42);
-}
-
 #[test]
 fn test_base_multi_execute_different_data() {
     // Compile once, execute twice with different input data via pointer.
@@ -1647,53 +934,23 @@ fn test_base_multi_execute_different_data() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "result".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-
     // First execute: input = 10, expect 30
     let data1 = 10i64.to_le_bytes();
-    let batches1 = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema.clone(),
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &data1,
         )
         .unwrap();
-    assert_eq!(batches1.len(), 1);
-    let col1 = batches1[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col1.value(0), 30);
+    assert_eq!(read_i64(&base, 200), 30);
 
     // Second execute: input = 100, expect 300
     let data2 = 100i64.to_le_bytes();
-    let batches2 = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema,
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &data2,
         )
         .unwrap();
-    assert_eq!(batches2.len(), 1);
-    let col2 = batches2[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col2.value(0), 300);
+    assert_eq!(read_i64(&base, 200), 300);
 }
 
 #[test]
@@ -1731,41 +988,15 @@ fn test_base_multi_execute_different_actions() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "val".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-
     // First execute: call fn0 only
-    let alg1 = Algorithm {
-        fn_idx: 0,
-        output: output_schema.clone(),
-    };
-    let batches1 = base.execute(&alg1, &vec![0u8; 4096]).unwrap();
-    let col1 = batches1[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col1.value(0), 42);
+    let alg1 = Algorithm { fn_idx: 0 };
+    base.execute(&alg1, &vec![0u8; 4096]).unwrap();
+    assert_eq!(read_i64(&base, 200), 42);
 
     // Second execute: call fn1 only
-    let alg2 = Algorithm {
-        fn_idx: 1,
-        output: output_schema,
-    };
-    let batches2 = base.execute(&alg2, &vec![0u8; 4096]).unwrap();
-    let col2 = batches2[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col2.value(0), 99);
+    let alg2 = Algorithm { fn_idx: 1 };
+    base.execute(&alg2, &vec![0u8; 4096]).unwrap();
+    assert_eq!(read_i64(&base, 200), 99);
 }
 
 #[test]
@@ -1795,69 +1026,32 @@ fn test_base_multi_execute_accumulates_in_memory() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "total".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-
     // Execute 1: add 10 → total = 10
     let d1 = 10i64.to_le_bytes();
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema.clone(),
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &d1,
         )
         .unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.value(0), 10);
+    assert_eq!(read_i64(&base, 200), 10);
 
     // Execute 2: add 25 → total = 35
     let d2 = 25i64.to_le_bytes();
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema.clone(),
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &d2,
         )
         .unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.value(0), 35);
+    assert_eq!(read_i64(&base, 200), 35);
 
     // Execute 3: add 5 → total = 40
     let d3 = 5i64.to_le_bytes();
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema,
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &d3,
         )
         .unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.value(0), 40);
+    assert_eq!(read_i64(&base, 200), 40);
 }
 
 #[test]
@@ -1894,10 +1088,7 @@ fn test_base_multi_execute_with_file_io() {
     };
     let mut base = Base::new(config1).unwrap();
     base.execute(
-        &Algorithm {
-            fn_idx: 0,
-            output: vec![],
-        },
+        &Algorithm { fn_idx: 0 },
         &[],
     )
     .unwrap();
@@ -1917,10 +1108,7 @@ fn test_base_multi_execute_with_file_io() {
     let mut base2 = Base::new(config2).unwrap();
     base2
         .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: vec![],
-            },
+            &Algorithm { fn_idx: 0 },
             &[],
         )
         .unwrap();
@@ -1953,30 +1141,21 @@ fn test_base_multi_execute_varying_cranelift_units() {
 
     // Execute with 0 units
     base.execute(
-        &Algorithm {
-            fn_idx: 0,
-            output: vec![],
-        },
+        &Algorithm { fn_idx: 0 },
         &vec![0u8; 4096],
     )
     .unwrap();
 
     // Execute with 2 units
     base.execute(
-        &Algorithm {
-            fn_idx: 0,
-            output: vec![],
-        },
+        &Algorithm { fn_idx: 0 },
         &vec![0u8; 4096],
     )
     .unwrap();
 
     // Execute with 4 units
     base.execute(
-        &Algorithm {
-            fn_idx: 0,
-            output: vec![],
-        },
+        &Algorithm { fn_idx: 0 },
         &vec![0u8; 4096],
     )
     .unwrap();
@@ -2010,33 +1189,14 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 308,
-        columns: vec![OutputColumn {
-            name: "sum".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 300,
-            len_offset: 0,
-        }],
-    }];
-
     let data = 99i64.to_le_bytes();
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema,
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &data,
         )
         .unwrap();
 
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.value(0), 110); // 11 + 99
+    assert_eq!(read_i64(&base, 300), 110); // 11 + 99
 }
 
 #[test]
@@ -2073,43 +1233,21 @@ fn test_base_persistent_memory_survives_across_executes() {
 
     // Execute 1: seed 77 at offset 200
     base.execute(
-        &Algorithm {
-            fn_idx: 0,
-            output: vec![],
-        },
+        &Algorithm { fn_idx: 0 },
         &[],
     )
     .unwrap();
 
     // Execute 2: input=5 via pointer, read persistent 77 from offset 200
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 308,
-        columns: vec![OutputColumn {
-            name: "sum".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 300,
-            len_offset: 0,
-        }],
-    }];
-
     let data = 5i64.to_le_bytes();
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 1,
-                output: output_schema,
-            },
+    base.execute(
+            &Algorithm { fn_idx: 1 },
             &data,
         )
         .unwrap();
 
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
     // 5 (data pointer) + 77 (persistent) = 82
-    assert_eq!(col.value(0), 82);
+    assert_eq!(read_i64(&base, 300), 82);
 }
 
 #[test]
@@ -2136,32 +1274,14 @@ fn test_base_empty_data_leaves_memory_intact() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "counter".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
     // Three executes with empty memory — counter should increment each time
     for expected in 1..=3 {
-        let batches = base
-            .execute(
-                &Algorithm {
-                    fn_idx: 0,
-                    output: output_schema.clone(),
-                },
+        base.execute(
+                &Algorithm { fn_idx: 0 },
                 &[],
             )
             .unwrap();
-        let col = batches[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap();
-        assert_eq!(col.value(0), expected);
+        assert_eq!(read_i64(&base, 200), expected);
     }
 }
 
@@ -2190,54 +1310,27 @@ fn test_base_data_pointer_updates_each_execute() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "result".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
     // Execute 1: 10 + 20 = 30
     let mut d1 = vec![0u8; 16];
     d1[0..8].copy_from_slice(&10i64.to_le_bytes());
     d1[8..16].copy_from_slice(&20i64.to_le_bytes());
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema.clone(),
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &d1,
         )
         .unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.value(0), 30);
+    assert_eq!(read_i64(&base, 200), 30);
 
     // Execute 2: 100 + 200 = 300 — pointer should update to new buffer
     let mut d2 = vec![0u8; 16];
     d2[0..8].copy_from_slice(&100i64.to_le_bytes());
     d2[8..16].copy_from_slice(&200i64.to_le_bytes());
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema,
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &d2,
         )
         .unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.value(0), 300);
+    assert_eq!(read_i64(&base, 200), 300);
 }
 
 #[test]
@@ -2276,50 +1369,27 @@ fn test_base_output_in_persistent_region() {
     for &val in &[100i64, 200, 300] {
         let d = val.to_le_bytes();
         base.execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: vec![],
-            },
+            &Algorithm { fn_idx: 0 },
             &d,
         )
         .unwrap();
     }
 
     // Final read: count at 400 should be 3, values at 500/508/516 should be 100/200/300
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 408,
-        columns: vec![OutputColumn {
-            name: "values".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 500,
-            len_offset: 0,
-        }],
-    }];
-
     // One more execute to read output — pass a dummy input
     let d = 999i64.to_le_bytes();
-    let batches = base
-        .execute(
-            &Algorithm {
-                fn_idx: 0,
-                output: output_schema,
-            },
+    base.execute(
+            &Algorithm { fn_idx: 0 },
             &d,
         )
         .unwrap();
 
     // count is now 4 (we did 4 executes), values: 100, 200, 300, 999
-    assert_eq!(batches.len(), 1);
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.len(), 4);
-    assert_eq!(col.value(0), 100);
-    assert_eq!(col.value(1), 200);
-    assert_eq!(col.value(2), 300);
-    assert_eq!(col.value(3), 999);
+    assert_eq!(read_i64(&base, 408) as usize, 4);
+    assert_eq!(read_i64(&base, 500), 100);
+    assert_eq!(read_i64(&base, 508), 200);
+    assert_eq!(read_i64(&base, 516), 300);
+    assert_eq!(read_i64(&base, 524), 999);
 }
 
 #[test]
@@ -2546,10 +1616,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x1: [f32; 3] = [1.0, 1.0, 1.0];
@@ -2665,10 +1732,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     let a1: [f32; 12] = [
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
@@ -2762,45 +1826,15 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     data[0..8].copy_from_slice(&100i64.to_le_bytes());
     data[8..16].copy_from_slice(&200i64.to_le_bytes());
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 216,
-        columns: vec![
-            OutputColumn {
-                name: "sum".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 200,
-                len_offset: 0,
-            },
-            OutputColumn {
-                name: "len".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 208,
-                len_offset: 0,
-            },
-        ],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
-    let batches = base.execute(&alg, &data).unwrap();
-    let sum = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let len = batches[0]
-        .column(1)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
+    base.execute(&alg, &data).unwrap();
     assert_eq!(
-        sum.value(0),
+        read_i64(&base, 200),
         300,
         "should read 100+200 from caller buffer via pointer"
     );
-    assert_eq!(len.value(0), 16, "data_len should be 16");
+    assert_eq!(read_i64(&base, 208), 16, "data_len should be 16");
 }
 
 #[test]
@@ -2827,28 +1861,12 @@ fn test_data_ptr_written_even_when_data_empty() {
         initial_memory: initial,
     };
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "len".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
-    let batches = run(config, alg).unwrap();
-    let len = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
+    let mut base = Base::new(config).unwrap();
+    base.execute(&alg, &[]).unwrap();
     assert_eq!(
-        len.value(0),
+        read_i64(&base, 200),
         0,
         "data_len should be 0 for empty data, sentinel overwritten"
     );
@@ -2878,28 +1896,12 @@ fn test_out_ptr_written_even_when_out_empty() {
         initial_memory: initial,
     };
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "len".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
-    let batches = run(config, alg).unwrap();
-    let len = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
+    let mut base = Base::new(config).unwrap();
+    base.execute(&alg, &[]).unwrap();
     assert_eq!(
-        len.value(0),
+        read_i64(&base, 200),
         0,
         "out_len should be 0 for empty out, sentinel overwritten"
     );
@@ -2937,10 +1939,7 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
 
     let mut out = vec![0u8; 8];
 
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
     base.execute_into(&alg, &data, &mut out).unwrap();
     let result = i64::from_le_bytes(out[0..8].try_into().unwrap());
@@ -2972,10 +1971,7 @@ fn test_execute_into_multiple_calls_different_data() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
     // Call 1: data=111
     let data1 = 111i64.to_le_bytes().to_vec();
@@ -3028,45 +2024,15 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     // Write sentinel at the very end
     data[1016..1024].copy_from_slice(&999i64.to_le_bytes());
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 216,
-        columns: vec![
-            OutputColumn {
-                name: "last_val".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 200,
-                len_offset: 0,
-            },
-            OutputColumn {
-                name: "len".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 208,
-                len_offset: 0,
-            },
-        ],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
-    let batches = base.execute(&alg, &data).unwrap();
-    let last_val = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let len = batches[0]
-        .column(1)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
+    base.execute(&alg, &data).unwrap();
     assert_eq!(
-        last_val.value(0),
+        read_i64(&base, 200),
         999,
         "CLIF should read last value from caller buffer via pointer"
     );
-    assert_eq!(len.value(0), 1024, "data_len should be full buffer size");
+    assert_eq!(read_i64(&base, 208), 1024, "data_len should be full buffer size");
 }
 
 #[test]
@@ -3102,30 +2068,13 @@ fn test_initial_memory_and_data_coexist() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "product".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
     // Dynamic input = 7
     let data = 7i64.to_le_bytes().to_vec();
-    let batches = base.execute(&alg, &data).unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
+    base.execute(&alg, &data).unwrap();
     assert_eq!(
-        col.value(0),
+        read_i64(&base, 200),
         91,
         "13 * 7 = 91: static config from initial_memory, dynamic input via pointer"
     );
@@ -3160,10 +2109,7 @@ fn test_execute_into_out_buffer_larger_than_memory() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
     // Tiny shared memory (64 bytes) but large out buffer
     let data = vec![0u8; 8]; // need non-empty data so pointers at 8-16 get written, but we need out ptrs
@@ -3202,30 +2148,13 @@ fn test_run_with_data_argument() {
         initial_memory: vec![],
     };
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "val".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
     let data = 777i64.to_le_bytes().to_vec();
     let mut base = Base::new(config).unwrap();
-    let batches = base.execute(&alg, &data).unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
+    base.execute(&alg, &data).unwrap();
     assert_eq!(
-        col.value(0),
+        read_i64(&base, 200),
         777,
         "execute() should pass data pointer through to CLIF"
     );
@@ -3252,29 +2181,12 @@ fn test_data_single_byte_still_writes_pointer() {
         initial_memory: vec![],
     };
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 208,
-        columns: vec![OutputColumn {
-            name: "len".to_string(),
-            dtype: OutputType::I64,
-            data_offset: 200,
-            len_offset: 0,
-        }],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
     let data = vec![42u8]; // single byte
     let mut base = Base::new(config).unwrap();
-    let batches = base.execute(&alg, &data).unwrap();
-    let col = batches[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(col.value(0), 1, "data_len should be 1 for single-byte data");
+    base.execute(&alg, &data).unwrap();
+    assert_eq!(read_i64(&base, 200), 1, "data_len should be 1 for single-byte data");
 }
 
 #[test]
@@ -3302,60 +2214,20 @@ fn test_data_ptr_survives_across_multi_execute() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let output_schema = vec![OutputBatchSchema {
-        row_count_offset: 216,
-        columns: vec![
-            OutputColumn {
-                name: "val".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 200,
-                len_offset: 0,
-            },
-            OutputColumn {
-                name: "len".to_string(),
-                dtype: OutputType::I64,
-                data_offset: 208,
-                len_offset: 0,
-            },
-        ],
-    }];
-    let alg = Algorithm {
-        fn_idx: 0,
-        output: output_schema,
-    };
+    let alg = Algorithm { fn_idx: 0 };
 
     // Call 1: 8-byte buffer
     let data1 = 11i64.to_le_bytes().to_vec();
-    let b1 = base.execute(&alg, &data1).unwrap();
-    let v1 = b1[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let l1 = b1[0]
-        .column(1)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(v1.value(0), 11);
-    assert_eq!(l1.value(0), 8);
+    base.execute(&alg, &data1).unwrap();
+    assert_eq!(read_i64(&base, 200), 11);
+    assert_eq!(read_i64(&base, 208), 8);
 
     // Call 2: 16-byte buffer (different size!)
     let mut data2 = vec![0u8; 16];
     data2[0..8].copy_from_slice(&22i64.to_le_bytes());
-    let b2 = base.execute(&alg, &data2).unwrap();
-    let v2 = b2[0]
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    let l2 = b2[0]
-        .column(1)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(v2.value(0), 22);
-    assert_eq!(l2.value(0), 16, "data_len should reflect new buffer size");
+    base.execute(&alg, &data2).unwrap();
+    assert_eq!(read_i64(&base, 200), 22);
+    assert_eq!(read_i64(&base, 208), 16, "data_len should reflect new buffer size");
 }
 
 #[test]
@@ -3450,10 +2322,7 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
@@ -3544,10 +2413,7 @@ fn test_gpu_download_ptr_with_offset() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
@@ -3689,10 +2555,7 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     base.execute_into(&alg, &payload, &mut out).unwrap();
 
@@ -3815,10 +2678,7 @@ fn test_cuda_download_ptr_different_data() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     // First execute: A=[1..64], B=[100..100]
     let mut payload1 = vec![0u8; n * 4 * 2];
@@ -3957,10 +2817,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     let a1: [f32; 12] = [
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
@@ -4068,10 +2925,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     let payload1: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
     let mut bytes1 = Vec::with_capacity(total_bytes);
@@ -4196,10 +3050,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     let payload1: Vec<f32> = (1..=n).map(|x| x as f32).collect();
     let mut bytes1 = Vec::with_capacity(data_bytes);
@@ -4305,10 +3156,7 @@ fn test_cublas_sgemv_reuse() {
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg = Algorithm {
-        fn_idx: 1,
-        output: vec![],
-    };
+    let alg = Algorithm { fn_idx: 1 };
 
     let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x1: [f32; 3] = [1.0, 1.0, 1.0];

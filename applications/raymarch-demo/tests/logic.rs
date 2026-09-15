@@ -1,4 +1,3 @@
-use arrow_array::Int64Array;
 use base::{Artifact, Base};
 
 const ARTIFACT_BINARY: &[u8] =
@@ -10,16 +9,10 @@ fn run_scenario(
     name: &str,
 ) -> (i64, i64, i64) {
     let alg = extras.get(name).unwrap_or_else(|| panic!("missing extra {name}"));
-    let batches = base.execute(alg, &[]).expect("execute failed");
-    let batch = &batches[0];
-    let col = |i: usize| {
-        batch
-            .column(i)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .expect("i64 column")
-            .value(0)
-    };
+    // The scenario answers pass, actual and expected in its out buffer.
+    let mut out = [0u8; 24];
+    base.execute_into(alg, &[], &mut out).expect("execute failed");
+    let col = |i: usize| i64::from_le_bytes(out[i * 8..i * 8 + 8].try_into().unwrap());
     (col(0), col(1), col(2))
 }
 

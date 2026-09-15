@@ -3,27 +3,6 @@ use std::collections::BTreeMap;
 
 pub mod clif;
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum OutputType {
-    I64,
-    F64,
-    Utf8,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct OutputColumn {
-    pub name: String,
-    pub dtype: OutputType,
-    pub data_offset: usize,
-    pub len_offset: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct OutputBatchSchema {
-    pub columns: Vec<OutputColumn>,
-    pub row_count_offset: usize,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Setup {
     /// The program the runtime compiles.
@@ -36,7 +15,6 @@ pub struct Setup {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Algorithm {
     pub fn_idx: u32,
-    pub output: Vec<OutputBatchSchema>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

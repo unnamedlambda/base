@@ -17,7 +17,6 @@ build-support = { path = "../build-support" }
 warp-check = { path = "../warp-check" }
 bincode = "1"
 lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
-arrow-array = { version = "54", default-features = false }
 
 [build-dependencies]
 build-support = { path = "../build-support" }

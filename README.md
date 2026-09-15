@@ -15,12 +15,12 @@ An `Artifact` contains:
 ```
 Artifact { setup, main, extras }
   Setup     { cranelift_ir, memory_size, initial_memory }
-  Algorithm { fn_idx, output }   // main and each entry of extras
+  Algorithm { fn_idx }           // main and each entry of extras
 ```
 
 **Setup** defines the compiled code (Cranelift IR text), the memory region it operates on, and static initial memory contents generated at build time (shader sources, binding descriptors, PTX kernels, etc.).
 
-**Algorithm** is an entry point into the compiled code — a function index inside `cranelift_ir` plus an optional output schema for returning Arrow RecordBatches. Single-algorithm artifacts use `main`; multi-stage flows (e.g., GPU load → prep → infer pipelines) put the entry-point stage in `main` and name the rest in `extras` so they all share one CLIF compilation.
+**Algorithm** is an entry point into the compiled code — a function index inside `cranelift_ir`. A program answers through the out buffer its caller passes. Single-algorithm artifacts use `main`; multi-stage flows (e.g., GPU load → prep → infer pipelines) put the entry-point stage in `main` and name the rest in `extras` so they all share one CLIF compilation.
 
 At build time, Lean 4 generates this artifact as JSON. The Rust build script deserializes it into typed structs and emits a binary artifact encoding alongside the JSON. At runtime, Cranelift JIT-compiles the IR once and executes algorithms against shared memory — no interpreter, no GC, no serialization layer in the hot path.
 

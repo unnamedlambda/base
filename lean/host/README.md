@@ -102,8 +102,7 @@ in it is unaffected by any of this.
 
 ## What a host reads back
 
-The Rust and Python surfaces answer Arrow `RecordBatch`es. That is a second ABI
-and this one does not carry it. Results come back three ways instead:
+Results come back three ways:
 
 * `readField`, given the same `Fld` the artifact was built from — the offset
   and the width both come from the layout, so the host never writes either
@@ -117,8 +116,6 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
 
 ## Known gaps
 
-* **Arrow.** As above — a host wanting `RecordBatch`es should use the Rust or
-  Python surface.
 * **One thread.** A `Runtime` is bound to the thread that opened it, because the
   FFI entry points a program calls find their compiled functions in a
   thread-local. `Runtime.bindThread` is what makes it callable from another, and

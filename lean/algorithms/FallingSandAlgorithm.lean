@@ -301,10 +301,6 @@ structure Fields where
   brushMat    : Fld .i64
   gridInit    : Fld (.bytes gridBytes)
   gridOut     : Fld (.bytes gridBytes)
-  rowCount    : Fld .i64
-  outPass     : Fld .i64
-  outActual   : Fld .i64
-  outExpected : Fld .i64
   pixels      : Fld (.bytes pixelBytes)
 
 def mkLayout : Fields × LayoutMeta := Layout.build do
@@ -333,16 +329,11 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
   let brushMat    ← field .i64
   let gridInit    ← field (.bytes gridBytes)
   let gridOut     ← field (.bytes gridBytes)
-  let rowCount    ← field .i64
-  let outPass     ← field .i64
-  let outActual   ← field .i64
-  let outExpected ← field .i64
   let pixels      ← field (.bytes pixelBytes)
   pure { reserved, stepSh, paintSh, renderSh, seedSh, blitSh, title, events,
          paramsMem, bindSeed, bindPaintA, bindPaintB, bindStepAB, bindStepBA,
          bindRenderA, bindRenderB, quit, nEvents, frame, mouseX, mouseY,
-         brushDown, brushMat, gridInit, gridOut, rowCount, outPass, outActual,
-         outExpected, pixels }
+         brushDown, brushMat, gridInit, gridOut, pixels }
 
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
@@ -424,11 +415,16 @@ def setCell (ptr : V .i64) (cx cy val : Nat) : Prog V L Unit := do
 def readOut (ptr : V .i64) (cx cy : Nat) : Prog V L (V .i64) := do
   uload32_64 (← absAddr ptr (f.gridOut.offset + (cy * gw + cx) * 4))
 
-def writeOutput (ptr : V .i64) (passV actualV expectedV : V .i64) : Prog V L Unit := do
-  fldStore ptr f.rowCount (← iconst64 1)
-  fldStore ptr f.outPass passV
-  fldStore ptr f.outActual actualV
-  fldStore ptr f.outExpected expectedV
+/-- Answer one result row in the caller's out buffer: pass (1/0), actual and
+    expected, eight bytes each. A buffer too short for the row is left alone,
+    so a host that passes none learns nothing rather than having memory past
+    its buffer written. -/
+def writeOutput (passV actualV expectedV : V .i64) : Prog V L Unit := do
+  let out ← outPtr
+  when .uge (← outLen) (← iconst64 24) do
+    storeAt out 0 passV
+    storeAt out 8 actualV
+    storeAt out 16 expectedV
 
 -- Create the 4 buffers (gridA=0, gridB=1, pixels=2, params=3).
 def mkBuffers (ptr : V .i64) : Prog V L (V .i32 × V .i32 × V .i32 × V .i32) := do
@@ -521,7 +517,7 @@ def testGrainFalls : Prog V L Unit := do
   let landed ← bor (← sextend64 (← icmp .eq bl (← iconst64 SAND)))
                    (← sextend64 (← icmp .eq br (← iconst64 SAND)))
   let vacated ← sextend64 (← icmp .eq orig (← iconst64 EMPTY))
-  writeOutput ptr (← band landed vacated) (← iadd bl br) (← iconst64 SAND)
+  writeOutput (← band landed vacated) (← iadd bl br) (← iconst64 SAND)
 
 -- Sand is conserved: a 4×4 blob keeps its 16 grains after one step.
 def testConservation : Prog V L Unit := do
@@ -542,7 +538,7 @@ def testConservation : Prog V L Unit := do
     let cell ← uload32_64 (← iadd gridOutBase (← imul i four))
     iadd acc (← sextend64 (← icmp .eq cell sandC)))
   let expected ← iconst64 16
-  writeOutput ptr (← sextend64 (← icmp .eq count expected)) count expected
+  writeOutput (← sextend64 (← icmp .eq count expected)) count expected
 
 
 def clifIrSource : Except String IR.Program :=
@@ -578,16 +574,9 @@ def gameSetup (clif : IR.Program) : Setup := {
   initial_memory := payloads
 }
 
-def testSchema : List Json :=
-  [Output.schema
-    [ Output.column "pass" .i64 f.outPass.offset,
-      Output.column "actual" .i64 f.outActual.offset,
-      Output.column "expected" .i64 f.outExpected.offset ]
-    f.rowCount.offset]
-
 def mainAlgorithm   : Algorithm := { fn_idx := IR.mainFnIdx }
-def grainFallsAlg   : Algorithm := { fn_idx := u32 2, output := testSchema }
-def conservationAlg : Algorithm := { fn_idx := u32 3, output := testSchema }
+def grainFallsAlg   : Algorithm := { fn_idx := u32 2 }
+def conservationAlg : Algorithm := { fn_idx := u32 3 }
 
 end Algorithm
 

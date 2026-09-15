@@ -1,4 +1,3 @@
-use arrow_array::Int64Array;
 use base::{Artifact, Base};
 
 const WARP_COMP: &[u8] =
@@ -61,16 +60,18 @@ fn check_artifact(artifact: &[u8], block: usize, num_blk: usize) {
 
     let art = Artifact::from_bytes(artifact);
     let mut base = Base::new(art.setup).expect("compile");
-    let col = |b: &arrow_array::RecordBatch, i: usize| {
-        b.column(i).as_any().downcast_ref::<Int64Array>().unwrap().value(0)
-    };
 
     let len_off = block + block / 16 + 256;
     let out_stride = len_off + 8;
-    let mut out = vec![0u8; num_blk * out_stride];
-    let batches = base.execute_into(&art.main, &original, &mut out).expect("run");
-    assert_eq!(col(&batches[0], 5) as usize, len_off, "len_off mismatch");
-    assert_eq!(col(&batches[0], 6) as usize, num_blk, "num_blk mismatch");
+    // The blocks, then the geometry the program was built for, six i64s.
+    let blocks = num_blk * out_stride;
+    let mut out = vec![0u8; blocks + 48];
+    base.execute_into(&art.main, &original, &mut out).expect("run");
+    let geom = |i: usize| {
+        i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as usize
+    };
+    assert_eq!(geom(4), len_off, "len_off mismatch");
+    assert_eq!(geom(5), num_blk, "num_blk mismatch");
 
     // Negative control (self-check): with LZ4_NEG_CONTROL set, corrupt block 0's
     // expected bytes so a genuine byte-exact check MUST fail — proves this test

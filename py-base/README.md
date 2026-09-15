@@ -9,7 +9,7 @@ between Python and the Base execution engine.
 cd py-base
 python3 -m venv .venv
 source .venv/bin/activate
-pip install maturin pytest pyarrow
+pip install maturin pytest
 maturin develop --release
 ```
 
@@ -44,7 +44,7 @@ setup = Setup(json.dumps({
     "clif": {"functions": [...]},    # the program, as data
     "memory_size": 256,
 }))
-alg = Algorithm(json.dumps({"fn_idx": 1, "output": []}))
+alg = Algorithm(json.dumps({"fn_idx": 1}))
 
 data = b"\x01\x00\x00\x00\x02\x00\x00\x00"
 out = bytearray(8)
@@ -53,23 +53,16 @@ base = Base(setup)
 base.execute_into(alg, data, out)     # both buffers zero-copy
 ```
 
-Results come back either through `out`, or as Arrow `RecordBatch`es when the
-algorithm declares an output schema:
-
-```python
-for batch in base.execute(alg):
-    print(batch.to_pandas())
-```
+A program answers through `out`. What the bytes mean is the generator's to
+say; `base` gives them no format.
 
 ## API
 
 ### `Setup(json: str)`
-A setup: the CLIF program, the memory size, the I/O offsets and any initial
-memory. Constructed once.
+A setup: the CLIF program, the memory size and any initial memory. Constructed once.
 
 ### `Algorithm(json: str)`
-Which function to call (`fn_idx`) and the output schema to read back
-(`output`). Constructed once and reused across executions with no overhead.
+Which function to call (`fn_idx`). Constructed once and reused across executions with no overhead.
 
 ### `Artifact`
 What a generator emits, with `.setup`, `.main` and `.extras` — the last a dict
@@ -82,16 +75,14 @@ Read an artifact from the JSON a generator wrote.
 An execution engine. JIT compiles the program. This is the expensive step — do
 it once.
 
-### `base.execute(algorithm, data=None) -> list[pa.RecordBatch]`
+### `base.execute(algorithm, data=None) -> None`
 Execute. `data` accepts anything implementing the buffer protocol (`bytes`,
-`bytearray`, `numpy` array, `pyarrow` buffer) — zero copy. Returns Arrow
-RecordBatches through the C Data Interface if the algorithm declares an output
-schema, and an empty list otherwise.
+`bytearray`, `numpy` array) — zero copy.
 
-### `base.execute_into(algorithm, data, out) -> list[pa.RecordBatch]`
+### `base.execute_into(algorithm, data, out) -> None`
 Execute, writing through `out` (a `bytearray`). Both buffers are zero-copy.
 
-### `run(setup, algorithm) -> list[pa.RecordBatch]`
+### `run(setup, algorithm) -> None`
 One-shot: compile and execute in a single call. For a program run once; use
 `Base` for anything run twice.
 

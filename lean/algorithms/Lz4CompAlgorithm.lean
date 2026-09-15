@@ -13,22 +13,11 @@ open AlgorithmLib.PTX
 
 namespace Algorithm
 
-def compSchema (w : WP) : List Json :=
-  [Output.schema
-    [ Output.column "pass" .i64 w.passOff,
-      Output.column "launches" .i64 w.launOff,
-      Output.column "bytes_per_launch" .i64 w.bytesOff,
-      Output.column "in_stride" .i64 w.instrOff,
-      Output.column "out_stride" .i64 w.outstrOff,
-      Output.column "len_off" .i64 w.lenoffOff,
-      Output.column "num_blk" .i64 w.numblkOff ]
-    w.rowOff]
-
 -- The host program as a *builder*, so `Clif`'s scanners can read the blocks it
 -- emits.  `warpClif` is this printed; the two cannot drift because there is only
 -- one of them.
--- Every store offset below is derived from `bo`, the binding-table offset, which
--- at the call site is `WP.bindOff` — a value that can only be computed by
+-- The launch names `bo`, the binding-table offset, which at the call site is
+-- `WP.bindOff` — a value that can only be computed by
 -- serializing the whole PTX kernel.  Holding it as a PARAMETER makes that
 -- dependency explicit and was an attempt to let `Lz4Host`'s recovery theorems
 -- reduce symbolically; measured, it does not (reducing the builder's state
@@ -49,6 +38,7 @@ def warpCodeAt (w : WP) (bo : Nat) : Prog V L Unit :=
     let dataPtr ← dataPtr
     let dataLen ← dataLen
     let outPtr ← outPtr
+    let outLen ← outLen
     cudaInit ptr
     -- ONE allocation: input at offset 0, output immediately after it.  Both
     -- kernel parameters are bound to this buffer and the kernel derives its
@@ -69,14 +59,16 @@ def warpCodeAt (w : WP) (bo : Nat) : Prog V L Unit :=
     let _ ← cudaDownloadRawOffset ptr inBuf (← iconst64 w.outOff) outPtr
               (← iconst64 w.totOut)
     cudaCleanup ptr
-    storeAt ptr (bo + 0x40) (← iconst64 1)
-    storeAt ptr (bo + 0x48) (← iconst64 1)
-    storeAt ptr (bo + 0x50) (← iconst64 rLaunches)
-    storeAt ptr (bo + 0x58) (← iconst64 w.totIn)
-    storeAt ptr (bo + 0x60) (← iconst64 w.inStride)
-    storeAt ptr (bo + 0x68) (← iconst64 w.outStride)
-    storeAt ptr (bo + 0x70) (← iconst64 w.lenOff)
-    storeAt ptr (bo + 0x78) (← iconst64 w.numBlk)
+    -- The geometry this program was built for, after the blocks: a host checks
+    -- its own against it, and prices a run by launches x bytes per launch. A
+    -- buffer with no room past the blocks is not written past them.
+    when .uge outLen (← iconst64 (w.totOut + 48)) do
+      storeAt outPtr w.totOut (← iconst64 rLaunches)
+      storeAt outPtr (w.totOut + 8) (← iconst64 w.totIn)
+      storeAt outPtr (w.totOut + 16) (← iconst64 w.inStride)
+      storeAt outPtr (w.totOut + 24) (← iconst64 w.outStride)
+      storeAt outPtr (w.totOut + 32) (← iconst64 w.lenOff)
+      storeAt outPtr (w.totOut + 40) (← iconst64 w.numBlk)
 
 def warpCode (w : WP) : Prog V L Unit := warpCodeAt w w.bindOff
 
@@ -103,7 +95,7 @@ theorem payload_length (w : WP) : (warpPayloadDSL w).length = w.bindOff + 8 := b
   omega
 
 theorem payload_fits (w : WP) : (warpPayloadDSL w).length ≤ w.memSize := by
-  rw [payload_length]; simp only [WP.memSize, WP.rowOff]; omega
+  rw [payload_length]; simp only [WP.memSize]; omega
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
 def warpArtifactDSL (name : String) (blkLog : Nat) : Except String Lean.Json := do
@@ -112,7 +104,7 @@ def warpArtifactDSL (name : String) (blkLog : Nat) : Except String Lean.Json := 
     { clif := ← warpClif w,
       memory_size := w.memSize,
       initial_memory := warpPayloadDSL w }
-    { fn_idx := AlgorithmLib.IR.mainFnIdx, output := compSchema w }
+    { fn_idx := AlgorithmLib.IR.mainFnIdx }
 
 end Algorithm
 

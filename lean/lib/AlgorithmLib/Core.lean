@@ -43,46 +43,9 @@ instance : ToJson Setup where
 
 structure Algorithm where
   fn_idx : UInt32
-  output : List Json := []
 
 instance : ToJson Algorithm where
-  toJson alg := Json.mkObj [
-    ("fn_idx", toJson alg.fn_idx),
-    ("output", Json.arr alg.output.toArray)
-  ]
-
-/- Output-schema JSON builders. `Algorithm.output` is a list of these schema
-   objects; each becomes one Arrow RecordBatch. The CLIF code must store the
-   row count at `row_count_offset` and the column data at each column's
-   `data_offset` (little-endian, 8 bytes/row for I64/F64). This is what lets a
-   Rust test read a generated algorithm's result back as typed columns. -/
-namespace Output
-
-inductive Ty where
-  | i64 | f64 | utf8
-
-def Ty.name : Ty → String
-  | .i64 => "I64"
-  | .f64 => "F64"
-  | .utf8 => "Utf8"
-
-/-- One output column. `lenOffset` is only used for Utf8 (total byte length). -/
-def column (name : String) (ty : Ty) (dataOffset : Nat) (lenOffset : Nat := 0) : Json :=
-  Json.mkObj [
-    ("name", .str name),
-    ("dtype", .str ty.name),
-    ("data_offset", toJson dataOffset),
-    ("len_offset", toJson lenOffset)
-  ]
-
-/-- One output batch schema (a set of columns + where the row count is stored). -/
-def schema (columns : List Json) (rowCountOffset : Nat) : Json :=
-  Json.mkObj [
-    ("columns", Json.arr columns.toArray),
-    ("row_count_offset", toJson rowCountOffset)
-  ]
-
-end Output
+  toJson alg := Json.mkObj [("fn_idx", toJson alg.fn_idx)]
 
 /-- Serialize an artifact: ["fileName", { setup, main, extras }]. `main` is
     the primary entry point algorithm; `extras` is a JSON object mapping any
