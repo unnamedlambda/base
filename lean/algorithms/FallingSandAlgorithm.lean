@@ -1,8 +1,6 @@
 import AlgorithmLib.Gen
 import ShipScan
 
-
-
 set_option maxRecDepth 8192
 
 open Lean (Json)
@@ -353,17 +351,15 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 
 -- Scan events: set quit on close/escape, track mouse position + brush state.
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- Two callee tables: the live loop reaches the window and the GPU, the two
     headless tests reach the GPU alone. -/
 
 
-def envMain : FnEnv := env% [.gpu, .window]
-def envGpu : FnEnv := env% [.gpu]
 
-def processEvents (ptr : R) : Sur.M Unit := do
+def processEvents (ptr : V .i64) : Prog V L Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
   let n ← fldLoad ptr f.nEvents
   let recSz ← iconst64 32
@@ -397,16 +393,16 @@ def processEvents (ptr : R) : Sur.M Unit := do
     let bd1 ← iadd bd (← imul isMDown (← isub (← iconst64 1) bd))
     fldStore ptr f.brushDown (← isub bd1 (← imul isMUp bd1)))
 
-def pollAndProcess (ptr : R) : Sur.M Unit := do
+def pollAndProcess (ptr : V .i64) : Prog V L Unit := do
   let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
   fldStore ptr f.nEvents (← sextend64 n)
   processEvents ptr
 
-def putParam (ptr : R) (idx : Nat) (v : R) : Sur.M Unit := do
+def putParam (ptr : V .i64) (idx : Nat) (v : V .i64) : Prog V L Unit := do
   storeUnaligned (← ireduce32 v) (← absAddr ptr (f.paramsMem.offset + idx * 4))
 
 -- Fill the params staging region for a given parity, then it's uploaded.
-def writeParams (ptr parity : R) : Sur.M Unit := do
+def writeParams (ptr parity : V .i64) : Prog V L Unit := do
   putParam ptr pPARITY parity
   putParam ptr pFRAME (← fldLoad ptr f.frame)
   putParam ptr pMOUSEX (← fldLoad ptr f.mouseX)
@@ -415,27 +411,27 @@ def writeParams (ptr parity : R) : Sur.M Unit := do
   putParam ptr pBMAT (← fldLoad ptr f.brushMat)
   putParam ptr pBR (← iconst64 brushR)
 
-def clearGrid (ptr : R) : Sur.M Unit := do
+def clearGrid (ptr : V .i64) : Prog V L Unit := do
   let base ← iadd ptr (← fldOffset f.gridInit)
   let z ← iconst32 0
   let four ← iconst64 4
   forLoop (← iconst64 gridCells) (fun i => do
     store z (← iadd base (← imul i four)))
 
-def setCell (ptr : R) (cx cy val : Nat) : Sur.M Unit := do
+def setCell (ptr : V .i64) (cx cy val : Nat) : Prog V L Unit := do
   storeUnaligned (← iconst32 val) (← absAddr ptr (f.gridInit.offset + (cy * gw + cx) * 4))
 
-def readOut (ptr : R) (cx cy : Nat) : Sur.M R := do
+def readOut (ptr : V .i64) (cx cy : Nat) : Prog V L (V .i64) := do
   uload32_64 (← absAddr ptr (f.gridOut.offset + (cy * gw + cx) * 4))
 
-def writeOutput (ptr : R) (passV actualV expectedV : R) : Sur.M Unit := do
+def writeOutput (ptr : V .i64) (passV actualV expectedV : V .i64) : Prog V L Unit := do
   fldStore ptr f.rowCount (← iconst64 1)
   fldStore ptr f.outPass passV
   fldStore ptr f.outActual actualV
   fldStore ptr f.outExpected expectedV
 
 -- Create the 4 buffers (gridA=0, gridB=1, pixels=2, params=3).
-def mkBuffers (ptr : R) : Sur.M (R × R × R × R) := do
+def mkBuffers (ptr : V .i64) : Prog V L (V .i32 × V .i32 × V .i32 × V .i32) := do
   gpuInit ptr
   let gridA ← gpuCreateBuffer ptr (← iconst64 gridBytes)
   let gridB ← gpuCreateBuffer ptr (← iconst64 gridBytes)
@@ -443,8 +439,8 @@ def mkBuffers (ptr : R) : Sur.M (R × R × R × R) := do
   let params ← gpuCreateBuffer ptr (← iconst64 32)
   pure (gridA, gridB, pixels, params)
 
-def mainBody : HProg.Code := clif% do
-  let ptr := basePtr
+def mainBody : Prog V L Unit := do
+  let ptr ← basePtr
   windowInit ptr
   let (_gridA, _gridB, pixels, params) ← mkBuffers ptr
   let seedP ← gpuCreatePipeline ptr (← fldOffset f.seedSh) (← fldOffset f.bindSeed) (← iconst32 1)
@@ -468,19 +464,19 @@ def mainBody : HProg.Code := clif% do
   fldStore ptr f.frame (← iconst64 0)
   fldStore ptr f.brushDown (← iconst64 0)
   fldStore ptr f.brushMat (← iconst64 SAND)
-  let bumpFrame : Sur.M Unit := do
+  let bumpFrame : Prog V L Unit := do
     fldStore ptr f.frame (← iadd (← fldLoad ptr f.frame) (← iconst64 1))
-  let subStep : R → R → Sur.M Unit := fun parity pipe => do
+  let subStep : V .i64 → V .i32 → Prog V L Unit := fun parity pipe => do
     writeParams ptr parity
     let _ ← gpuUpload ptr params paramsOff p32
     let _ ← gpuDispatch ptr pipe gwg ghg one32
     bumpFrame
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
-  let _ ← wloop [] (head := fun _ => do
+  let _ ← wloop %[] (head := fun _ => do
       pollAndProcess ptr
       let q ← fldLoad ptr f.quit
-      return (exitIf .ne q zero64, ([] : List R), ()))
+      return (exitIf .ne q zero64, %[], ()))
     (body := fun _ _ => do
       -- stamp the brush into A once, then run 8 Margolus sub-steps (4 ping-pong
       -- pairs, parity alternating) so sand advances fast; render A and present once.
@@ -492,12 +488,12 @@ def mainBody : HProg.Code := clif% do
         subStep one64 stepBA
       let _ ← gpuDispatch ptr renderA rwx rwy one32
       let _ ← windowPresentGpuBuffer ptr pixels
-      return ([] : List R))
+      return %[])
   windowCleanup ptr
   gpuCleanup ptr
 
 -- Shared test setup: buffers + stepAB pipeline, params zeroed (parity 0, brush off).
-def testSetup (ptr : R) : Sur.M (R × R × R) := do
+def testSetup (ptr : V .i64) : Prog V L (V .i32 × V .i32 × V .i32) := do
   let (gridA, gridB, _pixels, params) ← mkBuffers ptr
   let stepAB ← gpuCreatePipeline ptr (← fldOffset f.stepSh) (← fldOffset f.bindStepAB) (← iconst32 3)
   fldStore ptr f.frame (← iconst64 0)
@@ -510,8 +506,8 @@ def testSetup (ptr : R) : Sur.M (R × R × R) := do
   pure (gridA, gridB, stepAB)
 
 -- A lone grain with empty below drops to the next row (straight or scattered).
-def testGrainFalls : HProg.Code := clif% do
-  let ptr := basePtr
+def testGrainFalls : Prog V L Unit := do
+  let ptr ← basePtr
   let (gridA, gridB, stepAB) ← testSetup ptr
   clearGrid ptr
   setCell ptr 10 10 SAND
@@ -528,8 +524,8 @@ def testGrainFalls : HProg.Code := clif% do
   writeOutput ptr (← band landed vacated) (← iadd bl br) (← iconst64 SAND)
 
 -- Sand is conserved: a 4×4 blob keeps its 16 grains after one step.
-def testConservation : HProg.Code := clif% do
-  let ptr := basePtr
+def testConservation : Prog V L Unit := do
+  let ptr ← basePtr
   let (gridA, gridB, stepAB) ← testSetup ptr
   clearGrid ptr
   for cy in [20, 21, 22, 23] do
@@ -549,17 +545,12 @@ def testConservation : HProg.Code := clif% do
   writeOutput ptr (← sextend64 (← icmp .eq count expected)) count expected
 
 
-theorem main_wf : HProg.wf envMain HProg.ptrParams mainBody = true := by decide
-theorem grain_wf : HProg.wf envGpu HProg.ptrParams testGrainFalls = true := by decide
-theorem conservation_wf :
-    HProg.wf envGpu HProg.ptrParams testConservation = true := by decide
-
-def clifIrSource : IR.Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 mainBody envMain (hwf := main_wf),
-     HProg.compileFn 2 testGrainFalls envGpu (hwf := grain_wf),
-     HProg.compileFn 3 testConservation envGpu (hwf := conservation_wf)]
+def clifIrSource : Except String IR.Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 mainBody,
+     Prog.compileProg 2 testGrainFalls,
+     Prog.compileProg 3 testConservation]
 
 def bindBytes (pairs : List (Nat × Nat)) : List UInt8 :=
   pairs.foldl (fun acc (b, ro) => acc ++ uint32ToBytes (UInt32.ofNat b) ++ uint32ToBytes (UInt32.ofNat ro)) []
@@ -581,8 +572,8 @@ def payloads : List UInt8 :=
     f.bindRenderB.init (bindBytes [(1, 1), (2, 0)])
   ]
 
-def gameSetup : Setup := {
-  clif := clifIrSource,
+def gameSetup (clif : IR.Program) : Setup := {
+  clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
@@ -602,8 +593,9 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
+  let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.toJsonArtifact "falling_sand" Algorithm.gameSetup Algorithm.mainAlgorithm [
+    AlgorithmLib.toJsonArtifact "falling_sand" (Algorithm.gameSetup clif) Algorithm.mainAlgorithm [
       ("test_grain_falls",  Algorithm.grainFallsAlg),
       ("test_conservation", Algorithm.conservationAlg)
     ]]

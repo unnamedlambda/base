@@ -24,16 +24,13 @@ namespace RegPressureBench
 def MEM_SIZE : Nat := 40
 def ACCS : Nat := 16
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
   let n       ← ushrImm dataLen 2            -- element count
   -- floor(n/64) trips of 64 elements = 256 bytes each
   let mainEnd ← ishlImm (← ushrImm n 6) 8
@@ -41,35 +38,36 @@ def code : HProg.Code := clif% do
   let acc0    ← splat .f32x4 zero
   let i0      ← iconst64 0
 
-  let fin ← wloop (i0 :: List.replicate ACCS acc0)
-    (head := fun c => return (exitIfSGe (c.headD 0) mainEnd, c, ()))
+  -- The accumulators are a *run* of one type whose width this file chose, so
+  -- they are carried as one and rebuilt position by position.
+  let fin ← wloop (Vals.cons i0 (Vals.ofFn (n := ACCS) (fun _ => acc0)))
+    (head := fun c => return (exitIfSGe c.head mainEnd, c, ()))
     (body := fun c _ => do
-      let bi := c.headD 0
+      let bi := c.head
       let off ← iadd dataPtr bi
-      let mut accs' : List R := []
-      for k in [0:ACCS] do
+      let accs' ← c.tail.uniformMapIdxM fun k a => do
         let v ← loadF32x4 (← iaddImm off (16 * k))
-        accs' := accs' ++ [← fadd (c.getD (k + 1) 0) v]
-      return (← iaddImm bi 256) :: accs')
+        fadd a v
+      return Vals.cons (← iaddImm bi 256) accs')
 
   -- left fold, so the Rust mirror can reproduce the order exactly
-  let mut acc := fin.getD 1 0
-  for k in [1:ACCS] do
-    acc ← fadd acc (fin.getD (k + 1) 0)
+  let accs := fin.tail.uniformToList
+  let acc ← match accs with
+    | [] => splat .f32x4 (← fconst32 f32Zero)
+    | a :: rest => rest.foldlM (fun x y => fadd x y) a
   let sum64 ← fadd (← fadd (← fpromote (← extractlane acc 0))
                             (← fpromote (← extractlane acc 1)))
                    (← fadd (← fpromote (← extractlane acc 2))
                             (← fpromote (← extractlane acc 3)))
   store sum64 outPtr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "regpressure_sum_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

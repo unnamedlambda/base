@@ -1,5 +1,5 @@
 import VitModel
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 
 /-!
 # The functions the ViT artifact ships
@@ -13,15 +13,10 @@ namespace Vit
 open AlgorithmLib AlgorithmLib.ML AlgorithmLib.IR
 
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Every emitted function declares the same externals in the same order, so a
-    slot index means the same thing in all of them. -/
-def env : FnEnv := env% [.cuda, .cublas]
-
-def vGemmStep (ptr : R) (tA tB m n k a b c : Nat) :
-    M Unit := do
+def vGemmStep (ptr : V .i64) (tA tB m n k a b c : Nat) :
+    Prog V L Unit := do
   let ta ← iconst32 tA
   let tb ← iconst32 tB
   let vm ← iconst32 m
@@ -41,8 +36,8 @@ def vGemmStep (ptr : R) (tA tB m n k a b c : Nat) :
 /-- The same contraction, issued on a created stream so a capture records it.
     cuBLAS is stream-bound through its handle, so the FFI keeps one handle per
     stream rather than retargeting the default. -/
-def vGemmStepOn (ptr : R) (tA tB m n k a b c : Nat) (sid : R) :
-    M Unit := do
+def vGemmStepOn (ptr : V .i64) (tA tB m n k a b c : Nat) (sid : V .i32) :
+    Prog V L Unit := do
   let ta ← iconst32 tA
   let tb ← iconst32 tB
   let vm ← iconst32 m
@@ -66,8 +61,8 @@ def vGemmStepOn (ptr : R) (tA tB m n k a b c : Nat) (sid : R) :
     `Law.cublasBatchedIsSomeReassoc` — that member `p` sums `p`'s own products
     in some association — and `VendorKernel.assumes` bills it there.  Not the
     closed form: a batch is measurably not bit-equal to the calls it replaces. -/
-def vGemmBatchOn (ptr : R) (tA tB m n k : Nat) (pi cnt : Nat)
-    (sid : R) : M Unit := do
+def vGemmBatchOn (ptr : V .i64) (tA tB m n k : Nat) (pi cnt : Nat)
+    (sid : V .i32) : Prog V L Unit := do
   let ta ← iconst32 tA
   let tb ← iconst32 tB
   let vm ← iconst32 m
@@ -84,8 +79,8 @@ def vGemmBatchOn (ptr : R) (tA tB m n k : Nat) (pi cnt : Nat)
   pure ()
 
 /-- One launch's contraction work: a single call, or a batch of them. -/
-def vGemmUnitOn (ptr : R) (k : Nat) (sid : R) :
-    M Unit := do
+def vGemmUnitOn (ptr : V .i64) (k : Nat) (sid : V .i32) :
+    Prog V L Unit := do
   let ops := vUnitOps (vUnitArr.getD k [])
   match ops.head? >>= vGemmOf with
   | none => pure ()
@@ -96,9 +91,9 @@ def vGemmUnitOn (ptr : R) (k : Nat) (sid : R) :
       vGemmStepOn ptr tA tB m n kk a b c sid
 
 
-def vLoadFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def vLoadFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -113,7 +108,7 @@ def vLoadFn : HProg.Code :=
               else iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt vHostIn i)
     let id ← load32 (← absAddr ptr (vBindOff i))
     let bytes ← iconst64 (vInBytes.getD i 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
   -- Force the cuBLAS handle to exist here, before any kernel launch.  Creating
   -- it lazily mid-sequence is what fails.
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
@@ -142,15 +137,15 @@ def vLoadFn : HProg.Code :=
   -- The stream pool, created once.  Each also gets its cuBLAS handle here:
   -- cuBLAS binds a handle to a stream, and allocating one mid-capture loads.
   for s in List.range VNSTRM do
-    let sid ← call IR.Ffi.cudaStreamCreate.id [ctxPtr]
+    let sid ← ffi .cudaStreamCreate %[ctxPtr]
     store sid (← absAddr ptr (vPoolOff s))
     vGemmStepOn ptr 0 0 1 1 1 0 0 VBASE sid
-    let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
+    let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
   for e in List.range VNEVENT do
-    let ev ← call IR.Ffi.cudaEventCreate.id [ctxPtr]
+    let ev ← ffi .cudaEventCreate %[ctxPtr]
     store ev (← absAddr ptr (vEventOff e))
 
-def vBindLocal (ptr : R) (bs : List Buf) : M Unit := do
+def vBindLocal (ptr : V .i64) (bs : List Buf) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (vBindOff gb))
     store id (← absAddr ptr (VLOCAL_OFF + 4 * j))
@@ -160,8 +155,8 @@ def vBindLocal (ptr : R) (bs : List Buf) : M Unit := do
     `sid` selects the stream: `none` is the default stream, `some s` the created
     one a capture records from.  Capture and run differ only in that argument,
     so what is captured is the sequence that runs. -/
-def vIssue (ptr : R) (sid : Option R)
-    (lo hi : Nat) : M Unit := do
+def vIssue (ptr : V .i64) (sid : Option (V .i32))
+    (lo hi : Nat) : Prog V L Unit := do
   for (k, u) in (List.range VNUNIT).zip vUnits do
     if lo ≤ vUnitLo u && vUnitHi u < hi then
       match (vUnitOps u).head? >>= vGemmOf with
@@ -194,27 +189,27 @@ def vIssue (ptr : R) (sid : Option R)
                     pure ()
 
 /-- The pooled streams, and the events a fork and a join use. -/
-def vPool (ptr : R) : M (List R) :=
+def vPool (ptr : V .i64) : Prog V L (List (V .i32)) :=
   (List.range VNSTRM).mapM (fun s => do load32 (← absAddr ptr (vPoolOff s)))
 
 /-- **Every pooled stream made to follow `src`.**  One event, recorded once and
     waited on by each, so the pool starts from what `src` has already done. -/
-def vFork (ptr src : R) (sids : List R) : M Unit := do
+def vFork (ptr : V .i64) (src : V .i32) (sids : List (V .i32)) : Prog V L Unit := do
   let ctxPtr ← cudaCtxPtr ptr
   let ev ← load32 (← absAddr ptr (vEventOff 0))
-  let _ ← call IR.Ffi.cudaEventRecord.id [ctxPtr, ev, src]
+  let _ ← ffi .cudaEventRecord %[ctxPtr, ev, src]
   for sid in sids do
-    let _ ← call IR.Ffi.cudaStreamWaitEvent.id [ctxPtr, sid, ev]
+    let _ ← ffi .cudaStreamWaitEvent %[ctxPtr, sid, ev]
   pure ()
 
 /-- **`src` made to follow every pooled stream.**  One event each, so the range
     is finished on `src` exactly when the last of the pool is. -/
-def vJoin (ptr src : R) (sids : List R) : M Unit := do
+def vJoin (ptr : V .i64) (src : V .i32) (sids : List (V .i32)) : Prog V L Unit := do
   let ctxPtr ← cudaCtxPtr ptr
   for (k, sid) in (List.range sids.length).zip sids do
     let ev ← load32 (← absAddr ptr (vEventOff (VNSTRM + k)))
-    let _ ← call IR.Ffi.cudaEventRecord.id [ctxPtr, ev, sid]
-    let _ ← call IR.Ffi.cudaStreamWaitEvent.id [ctxPtr, src, ev]
+    let _ ← ffi .cudaEventRecord %[ctxPtr, ev, sid]
+    let _ ← ffi .cudaStreamWaitEvent %[ctxPtr, src, ev]
   pure ()
 
 /-- **The tape issued on the streams `vDag` assigned it, with that schedule's
@@ -227,8 +222,8 @@ def vJoin (ptr src : R) (sids : List R) : M Unit := do
 
     The launches themselves are the same launches, from the same slots, with the
     same bindings, as the one-stream issue — only the stream differs. -/
-def vIssueDag (ptr : R) (sids : List R)
-    (lo hi : Nat) (only : Option Bool := none) : M Unit := do
+def vIssueDag (ptr : V .i64) (sids : List (V .i32))
+    (lo hi : Nat) (only : Option Bool := none) : Prog V L Unit := do
   let ctxPtr ← cudaCtxPtr ptr
   for (k, u) in (List.range VNUNIT).zip vUnits do
     let isBlas := ((vUnitOps u).head? >>= vGemmOf).isSome
@@ -245,7 +240,7 @@ def vIssueDag (ptr : R) (sids : List R)
                    lo ≤ vUnitLo ow
                      && only.all (fun c => c == ((vUnitOps ow).head? >>= vGemmOf).isSome)) do
           let ev ← load32 (← absAddr ptr (vEventOff (vDagEvent e)))
-          let _ ← call IR.Ffi.cudaStreamWaitEvent.id [ctxPtr, sv, ev]
+          let _ ← ffi .cudaStreamWaitEvent %[ctxPtr, sv, ev]
           pure ()
         match (vUnitOps u).head? >>= vGemmOf with
         | some _ => vGemmUnitOn ptr k sv
@@ -265,7 +260,7 @@ def vIssueDag (ptr : R) (sids : List R)
         | none => pure ()
         | some e =>
           let ev ← load32 (← absAddr ptr (vEventOff (vDagEvent e)))
-          let _ ← call IR.Ffi.cudaEventRecord.id [ctxPtr, ev, sv]
+          let _ ← ffi .cudaEventRecord %[ctxPtr, ev, sv]
           pure ()
 
 
@@ -276,26 +271,24 @@ def vIssueDag (ptr : R) (sids : List R)
 
     The eager pass first, as every capture here does: a module load is not
     something a stream capture may perform. -/
-def vCaptureDagAt (lo hi gOff : Nat) : HProg.Code :=
-  HProg.Sur.build do
-  let ptr := basePtr
+def vCaptureDagAt (lo hi gOff : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
   vIssue ptr none lo hi
   let _ ← cudaSync ptr
   let sid ← load32 (← absAddr ptr VSTREAM_OFF)
   let sids ← vPool ptr
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
-  let _ ← call IR.Ffi.cudaGraphBeginCapture.id [ctxPtr, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
+  let _ ← ffi .cudaGraphBeginCapture %[ctxPtr, sid]
   vFork ptr sid sids
   vIssueDag ptr sids lo hi
   vJoin ptr sid sids
-  let gid ← call IR.Ffi.cudaGraphEndCapture.id [ctxPtr, sid]
+  let gid ← ffi .cudaGraphEndCapture %[ctxPtr, sid]
   store gid (← absAddr ptr gOff)
-  let _ ← call IR.Ffi.cudaGraphUpload.id [ctxPtr, gid, sid]
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
-
-
+  let _ ← ffi .cudaGraphUpload %[ctxPtr, gid, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
 
 /-- **One class of launch, captured on its own.**
 
@@ -308,38 +301,36 @@ def vCaptureDagAt (lo hi gOff : Nat) : HProg.Code :=
     permissions this user does not have, and `nsys`'s importer is absent — and
     the split between vendor and proven time is the one number that decides
     where the remaining gap is. -/
-def vCaptureClassAt (isBlas : Bool) (gOff : Nat) : HProg.Code :=
-  HProg.Sur.build do
-  let ptr := basePtr
+def vCaptureClassAt (isBlas : Bool) (gOff : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
   vIssue ptr none 0 VSTEP_N
   let _ ← cudaSync ptr
   let sid ← load32 (← absAddr ptr VSTREAM_OFF)
   let sids ← vPool ptr
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
-  let _ ← call IR.Ffi.cudaGraphBeginCapture.id [ctxPtr, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
+  let _ ← ffi .cudaGraphBeginCapture %[ctxPtr, sid]
   vFork ptr sid sids
   vIssueDag ptr sids 0 VSTEP_N (some isBlas)
   vJoin ptr sid sids
-  let gid ← call IR.Ffi.cudaGraphEndCapture.id [ctxPtr, sid]
+  let gid ← ffi .cudaGraphEndCapture %[ctxPtr, sid]
   store gid (← absAddr ptr gOff)
-  let _ ← call IR.Ffi.cudaGraphUpload.id [ctxPtr, gid, sid]
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
+  let _ ← ffi .cudaGraphUpload %[ctxPtr, gid, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
 
-def vRunFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def vRunFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
   vIssue ptr none 0 VFWD_N
   let _ ← cudaSync ptr
 
-
-
 /-- A range of the tape, issued from the host and synced. -/
-def vRangeFn (lo hi : Nat) : HProg.Code :=
-  HProg.Sur.build do
-  let ptr := basePtr
+def vRangeFn (lo hi : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
   vIssue ptr none lo hi
   let _ ← cudaSync ptr
@@ -358,39 +349,39 @@ def vRangeFn (lo hi : Nat) : HProg.Code :=
 
     The stream is created once and reused, so the forward capture and the step
     capture replay on the same stream and never interleave. -/
-def vCaptureAt (lo hi gOff : Nat) : HProg.Code :=
-  HProg.Sur.build do
-  let ptr := basePtr
+def vCaptureAt (lo hi gOff : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   vGemmStep ptr 0 0 1 1 1 0 0 VBASE
   vIssue ptr none lo hi
   let _ ← cudaSync ptr
-  let sid ← call IR.Ffi.cudaStreamCreate.id [ctxPtr]
+  let sid ← ffi .cudaStreamCreate %[ctxPtr]
   store sid (← absAddr ptr VSTREAM_OFF)
   -- The stream's own cuBLAS handle, created before capture opens: allocating
   -- one mid-capture is a load, and would fail the same way a cold module does.
   vGemmStepOn ptr 0 0 1 1 1 0 0 VBASE sid
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
-  let _ ← call IR.Ffi.cudaGraphBeginCapture.id [ctxPtr, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
+  let _ ← ffi .cudaGraphBeginCapture %[ctxPtr, sid]
   vIssue ptr (some sid) lo hi
-  let gid ← call IR.Ffi.cudaGraphEndCapture.id [ctxPtr, sid]
+  let gid ← ffi .cudaGraphEndCapture %[ctxPtr, sid]
   store gid (← absAddr ptr gOff)
-  let _ ← call IR.Ffi.cudaGraphUpload.id [ctxPtr, gid, sid]
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
+  let _ ← ffi .cudaGraphUpload %[ctxPtr, gid, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
 
 /-- **A captured sequence, replayed `k` times.**  One driver call per pass
     instead of hundreds.  The bind array is untouched: a graph holds the
     parameters it was captured with, which is why the training step can replay
     at all — every buffer it touches is the same one every step. -/
-def vReplayAt (gOff k : Nat) : HProg.Code :=
-  HProg.Sur.build do
-  let ptr := basePtr
+def vReplayAt (gOff k : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let sid ← load32 (← absAddr ptr VSTREAM_OFF)
   let gid ← load32 (← absAddr ptr gOff)
   for _ in List.range k do
-    let _ ← call IR.Ffi.cudaGraphLaunch.id [ctxPtr, gid, sid]
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
+    let _ ← ffi .cudaGraphLaunch %[ctxPtr, gid, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
 
 /-- Re-upload the parameters into the buffers that already hold them.
 
@@ -398,9 +389,9 @@ def vReplayAt (gOff k : Nat) : HProg.Code :=
     this puts them back without recreating a buffer.  Recreating is not an
     option once a graph has been captured — a capture holds the addresses it
     recorded, and new buffers would not be them. -/
-def vReloadFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def vReloadFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   for i in List.range VBASE do
@@ -410,24 +401,24 @@ def vReloadFn : HProg.Code :=
               else iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt vHostIn i)
     let id ← load32 (← absAddr ptr (vBindOff i))
     let bytes ← iconst64 (vInBytes.getD i 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
 /-- Upload `dL/dlogits` into the buffer the backward is seeded from. -/
-def vSeedFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def vSeedFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (vBindOff VSEED))
   let bytes ← iconst64 (SQ * NC * 4)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
 
 /-- Download any buffer, named at run time: the input carries the buffer index
     and the byte count.  A gradient check reads a few hundred buffers, and one
     emitted function per buffer would be a CLIF function per parameter. -/
-def vFetchAnyFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def vFetchAnyFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let outPtr ← load64 (← absAddr ptr 0x28)
@@ -436,16 +427,16 @@ def vFetchAnyFn : HProg.Code :=
   let base ← absAddr ptr VBIND_OFF
   let off ← ishlImm (← uextend64 idx) 2
   let id ← load32 (← iadd base off)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, (← uextend64 nb)]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, (← uextend64 nb)]
 
-def vFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build do
-  let ptr := basePtr
+def vFetchFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (vBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
 /-- Per-buffer fetches, for bisecting a mismatch.  Only at the geometries small
     enough that one function per buffer is worth emitting. -/

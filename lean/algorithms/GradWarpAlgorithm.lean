@@ -2,11 +2,9 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import LayoutScan
 import ShipScan
-
-
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 
@@ -90,12 +88,8 @@ def IN_ID     : Nat := 0x0040
 def OUT_ID    : Nat := 0x0044
 def MEM_SIZE  : Nat := 0x30100
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The CUDA entry points, declared through the same helper the runtime's
-    signatures come from. -/
-def env : FnEnv := env% [.cuda]
 
 /-- **The two kernels, as records the launch sites read.**
 
@@ -116,8 +110,8 @@ def gradK : AlgorithmLib.Kernel := {
 def gradDK : AlgorithmLib.Kernel :=
   { gradK with ptxOff := PTX_D_OFF, ptxText := some ptxD }
 
-def loadFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def loadFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -127,43 +121,38 @@ def loadFnCode : HProg.Code := clif% do
   let outBytes ← iconst64 (NOUT * 4)
   let outId ← cudaCreateBuffer ptr outBytes
   store outId (← absAddr ptr OUT_ID)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, inId, dataPtr, inBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, inId, dataPtr, inBytes]
   kernelBindAt gradK ptr BIND_OFF [inId, outId]
 
-def runFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def runFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch gradK ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The same launch, from the narrowed kernel's PTX.  Everything else — the
     buffers, the binding table, the geometry — is identical, which is the point:
     only the *program* differs. -/
-def runDFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def runDFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch gradDK ptr BIND_OFF
   let _ ← cudaSync ptr
 
-def fetchFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def fetchFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outId ← load32 (← absAddr ptr OUT_ID)
   let outBytes ← iconst64 (NOUT * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, outId, outPtr, outBytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, outBytes]
 
-theorem bodies_wf :
-    HProg.wf env HProg.ptrParams loadFnCode = true &&
-    HProg.wf env HProg.ptrParams runFnCode = true &&
-    HProg.wf env HProg.ptrParams runDFnCode = true &&
-    HProg.wf env HProg.ptrParams fetchFnCode = true := by decide
 
-def clifIR : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 loadFnCode,
-     HProg.compileFn 2 runFnCode,
-     HProg.compileFn 3 fetchFnCode,
-     HProg.compileFn 4 runDFnCode]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 loadFnCode,
+     Prog.compileProg 2 runFnCode,
+     Prog.compileProg 3 fetchFnCode,
+     Prog.compileProg 4 runDFnCode]
 
 def initialMemory : List UInt8 :=
   let ptxBytes := AlgorithmLib.Kernel.ptxBytes gradK
@@ -194,8 +183,8 @@ theorem gradPtx_fits :
     (ptx.toUTF8.toList.length + 1 ≤ PTX_D_OFF - PTX_OFF)
       ∧ (ptxD.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_D_OFF) := by native_decide
 
-def setup : Setup := {
-  clif := clifIR
+def setup (clif : Program) : Setup := {
+  clif
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
@@ -208,14 +197,15 @@ def extraAlgs : List (String × Algorithm) :=
   [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
    ("runD", { fn_idx := u32 4 })]
 
-def artifacts : Array Json :=
-  #[ toJsonArtifact "grad_warp" setup entryAlg extraAlgs ]
+def artifacts (clif : Program) : Array Json :=
+  #[ toJsonArtifact "grad_warp" (setup clif) entryAlg extraAlgs ]
 
 end GradWarp
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir GradWarp.artifacts
+  let clif ← Prog.orDie GradWarp.clifIR
+  emitArtifacts outDir (GradWarp.artifacts clif)
 
 namespace GradWarp
 

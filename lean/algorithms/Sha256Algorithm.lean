@@ -97,28 +97,28 @@ def hInitial : List UInt32 := [
 open AlgorithmLib.IR
 
 -- Bundle of commonly-used constants from block0
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-structure Consts where
-  ptr : R
-  zero : R
-  c1 : R
-  c3 : R
-  c4 : R
-  c7 : R
-  c8 : R
-  c10 : R
-  c13 : R
-  c16 : R
-  c24 : R
-  c32 : R
-  c64 : R
-  mask32 : R
-  dataOff : R
+
+structure Consts (V : ClifTy → Type) where
+  ptr : V .i64
+  zero : V .i64
+  c1 : V .i64
+  c3 : V .i64
+  c4 : V .i64
+  c7 : V .i64
+  c8 : V .i64
+  c10 : V .i64
+  c13 : V .i64
+  c16 : V .i64
+  c24 : V .i64
+  c32 : V .i64
+  c64 : V .i64
+  mask32 : V .i64
+  dataOff : V .i64
 
 -- Step 2: SHA-256 padding — returns (paddedLen, numBlocks)
-def emitPadding (k : Consts) (fileSize : R) : M (R × R) := do
+def emitPadding (k : Consts V) (fileSize : V .i64) : Prog V L (V .i64 × V .i64) := do
   -- Append 0x80 byte at file_data[file_size]
   let relOff ← iadd k.dataOff fileSize
   let absOff ← iadd k.ptr relOff
@@ -189,7 +189,7 @@ def emitPadding (k : Consts) (fileSize : R) : M (R × R) := do
   pure (paddedLen, numBlocks)
 
 -- Step 3: Copy H_initial → H_working
-def emitCopyH (k : Consts) : M Unit := do
+def emitCopyH (k : Consts V) : Prog V L Unit := do
   let hInitBase ← fldOffset f.H_init
   let hWorkBase ← fldOffset f.H_work
   forLoop k.c8 fun ci => do
@@ -199,7 +199,7 @@ def emitCopyH (k : Consts) : M Unit := do
     store (← load32 srcAbs) dstAbs
 
 -- Load W[0..15] big-endian from message block
-def emitLoadW (k : Consts) (blkBase : R) : M Unit := do
+def emitLoadW (k : Consts V) (blkBase : V .i64) : Prog V L Unit := do
   let wOffC ← fldOffset f.W
   forLoop k.c16 fun wi => do
     let wi4 ← imul wi k.c4
@@ -219,9 +219,9 @@ def emitLoadW (k : Consts) (blkBase : R) : M Unit := do
     store w32 wAbs
 
 -- Expand W[16..63]
-def emitExpandW (k : Consts) : M Unit := do
+def emitExpandW (k : Consts V) : Prog V L Unit := do
   let wOff' ← fldOffset f.W
-  let loadWAt (idxRel : R) : M R := do
+  let loadWAt (idxRel : V .i64) : Prog V L (V .i64) := do
     uload32_64 (← iadd k.ptr (← iadd wOff' (← imul idxRel k.c4)))
   -- For ei in [16, 64): W[ei] = (sigma1(W[ei-2]) + W[ei-7] + sigma0(W[ei-15]) + W[ei-16]) & mask32
   forLoopFromTo k.c16 k.c64 fun ei => do
@@ -243,15 +243,15 @@ def emitExpandW (k : Consts) : M Unit := do
 
 /-- The 64 rounds over the eight working words. The result is `a..h` after the
     last round. -/
-def emitCompressionRound (k : Consts)
-    (va vb vc vd ve vf vg vh : R) : M (List R) := do
-  wloop [k.zero, va, vb, vc, vd, ve, vf, vg, vh]
-    (head := fun c => return (contIf .ult (c.headD 0) k.c64, c.drop 1, ()))
+def emitCompressionRound (k : Consts V) (va vb vc vd ve vf vg vh : V .i64) :
+    Prog V L (Vals V (List.replicate 8 .i64)) := do
+  wloop %[k.zero, va, vb, vc, vd, ve, vf, vg, vh]
+    (head := fun c => return (contIf .ult (c.head) k.c64, Vals.drop 1 c, ()))
     (body := fun c _ => do
-      let ri := c.headD 0
-      let ra := c.getD 1 0; let rb := c.getD 2 0; let rc := c.getD 3 0
-      let rd := c.getD 4 0; let re := c.getD 5 0; let rf := c.getD 6 0
-      let rg := c.getD 7 0; let rh := c.getD 8 0
+      let ri := c.head
+      let ra := c.snd; let rb := c.thd; let rc := c.fth
+      let rd := c.fif; let re := c.get 5; let rf := c.get 6
+      let rg := c.get 7; let rh := c.get 8
       -- Sigma1(e) = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25)
       let c6 ← iconst64 6
       let re6a ← ushr re c6
@@ -343,10 +343,10 @@ def emitCompressionRound (k : Consts)
 
       let riNext ← iadd ri k.c1
 
-      return [riNext, newA, ra, rb, rc, newE, re, rf, rg])
+      return %[riNext, newA, ra, rb, rc, newE, re, rf, rg])
 /-- The round result added back into the working hash. -/
-def emitAddBack (k : Consts)
-    (abA abB abC abD abE abF abG abH : R) : M Unit := do
+def emitAddBack (k : Consts V)
+    (abA abB abC abD abE abF abG abH : V .i64) : Prog V L Unit := do
 
   let oldH0 ← fldLoad32At k.ptr f.H_work 0
   let newH0 ← iadd oldH0 abA
@@ -398,7 +398,7 @@ def emitAddBack (k : Consts)
 
 
 -- Step 6: Hex formatting and file output
-def emitHexFormat (k : Consts) (fnWrite : FnRef) : M Unit := do
+def emitHexFormat (k : Consts V) : Prog V L Unit := do
   let hWorkC ← fldOffset f.H_work
   let hexOutC ← fldOffset f.hexOutput
   let hexTblC ← fldOffset f.hexTable
@@ -425,19 +425,17 @@ def emitHexFormat (k : Consts) (fnWrite : FnRef) : M Unit := do
   let outLen ← iadd totalChars k.c1
   let outFname ← fldOffset f.outputFilename
   let outData ← fldOffset f.hexOutput
-  let _ ← call fnWrite.id [k.ptr, outFname, outData, k.zero, outLen]
+  let _ ← ffi .fileWrite %[k.ptr, outFname, outData, k.zero, outLen]
 
 -- Main builder: compose the sub-builders
 /-- The externals every emitted function declares, in one order. -/
-def fnRead : FnRef := IR.Ffi.fileRead.ref
-def fnWrite : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.fileIO]
+abbrev fnRead : Ffi := .fileRead
+abbrev fnWrite : Ffi := .fileWrite
 
-def mainCode : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def mainCode : Prog V L Unit := do
+  let ptr ← basePtr
 
-  let fileSize ← fldReadFile ptr fnRead f.inputFilename f.fileData
+  let fileSize ← fldReadFile ptr f.inputFilename f.fileData
   let dataOff ← fldOffset f.fileData
   let zero ← iconst64 0
   fldStore ptr f.fileSize fileSize
@@ -455,7 +453,7 @@ def mainCode : HProg.Code :=
   let c13 ← iconst64 13
   let c24 ← iconst64 24
 
-  let k : Consts :=
+  let k : Consts V :=
     { ptr := ptr, zero := zero, c1 := c1, c3 := c3, c4 := c4, c7 := c7,
       c8 := c8, c10 := c10, c13 := c13, c16 := c16, c24 := c24, c32 := c32,
       c64 := c64, mask32 := mask32, dataOff := dataOff }
@@ -466,7 +464,7 @@ def mainCode : HProg.Code :=
   -- Each 64-byte block expanded to its message schedule, compressed, and added
   -- back into the working hash.
   let _ ← wloop1 zero
-    (head := fun blkIdx => return (contIf .ult blkIdx numBlocks, ([] : List R), ()))
+    (head := fun blkIdx => return (contIf .ult blkIdx numBlocks, %[], ()))
     (body := fun blkIdx _ => do
       let blkBase ← iadd dataOff (← imul blkIdx c64)
       emitLoadW k blkBase
@@ -480,14 +478,14 @@ def mainCode : HProg.Code :=
       let vg ← fldLoad32At ptr f.H_work 24
       let vh ← fldLoad32At ptr f.H_work 28
       let r ← emitCompressionRound k va vb vc vd ve vf vg vh
-      emitAddBack k (r.headD 0) (r.getD 1 0) (r.getD 2 0) (r.getD 3 0)
-        (r.getD 4 0) (r.getD 5 0) (r.getD 6 0) (r.getD 7 0)
-      return [← iadd blkIdx c1])
+      emitAddBack k (r.head) (r.snd) (r.thd) (r.fth)
+        (r.fif) (r.get 5) (r.get 6) (r.get 7)
+      return %[← iadd blkIdx c1])
 
-  emitHexFormat k fnWrite
+  emitHexFormat k
 
-def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
+def clifIrSource : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction (generated from layout)
@@ -506,8 +504,8 @@ def payloads : List UInt8 :=
 -- Configuration
 -- ---------------------------------------------------------------------------
 
-def sha256Config : Setup := {
-  clif := clifIrSource,
+def sha256Config (clif : Program) : Setup := {
+  clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
@@ -520,6 +518,7 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "sha256_app" Algorithm.sha256Config Algorithm.sha256Algorithm]
+  let clif ← Prog.orDie Algorithm.clifIrSource
+  emitArtifacts outDir #[toJsonEntry "sha256_app" (Algorithm.sha256Config clif) Algorithm.sha256Algorithm]
 
 #eval ShipScan.check "Sha256Algorithm"

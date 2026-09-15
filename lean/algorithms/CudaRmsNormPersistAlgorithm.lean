@@ -64,20 +64,16 @@ def ptxSource : String := buildModule 36 [{ name := "main", params := ["buf0", "
   upload N + weights into buf0.
   Shared memory app fields: N_OFF (i64), BUF0_OFF (i32), BUF1_OFF (i32)
 -/
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The CUDA entry points, declared through the same helper the runtime's
-    signatures come from. -/
-def env : FnEnv := env% [.cuda]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
 
 /-- Load: init CUDA, read N and weights from data, alloc 2 GPU bufs, upload
     N + weights into buf0. -/
-def loadCode : HProg.Code := clif% do
-  let ptr := basePtr
+def loadCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
   cudaInit ptr CTX_OFF
@@ -93,29 +89,29 @@ def loadCode : HProg.Code := clif% do
   -- buf1 size = N*4 (output)
   let buf1Sz ← ishlImm n 2
 
-  let buf0 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, buf0Sz]
-  let buf1 ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, buf1Sz]
+  let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, buf0Sz]
+  let buf1 ← ffi .cudaCreateBuffer %[ctxPtr, buf1Sz]
   store buf0 (← absAddr ptr BUF0_OFF)
   store buf1 (← absAddr ptr BUF1_OFF)
 
   -- Upload N (8 bytes) to buf0 at offset 0
   let nAddr  ← absAddr ptr N_OFF
-  let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
+  let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
 
   -- Upload weights (data[1..N], N*4 bytes) to buf0 at offset 8 + N*4
   let wSrc ← iaddImm dataPtr 8
   let wOff ← iaddImm nBytes 8
-  let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, buf0, wOff, wSrc, nBytes]
+  let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, wOff, wSrc, nBytes]
 
 /-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8. -/
-def prepCode : HProg.Code := clif% do
-  let ptr := basePtr
+def prepCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let n       ← load64 (← absAddr ptr N_OFF)
   let buf0    ← load32 (← absAddr ptr BUF0_OFF)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let nBytes  ← ishlImm n 2
-  let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
+  let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
 
 /-- Infer: launch the kernel (1 block, 256 threads), sync, and download only if
     the caller asked for output.
@@ -123,8 +119,8 @@ def prepCode : HProg.Code := clif% do
     The download branch joins rather than returning from each arm: `Code` has no
     early return, so both arms reach one `ret`. The join block holds nothing but
     that `ret`, which costs nothing once the backend threads the jump. -/
-def inferCode : HProg.Code := clif% do
-  let ptr := basePtr
+def inferCode : Prog V L Unit := do
+  let ptr ← basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
@@ -136,24 +132,20 @@ def inferCode : HProg.Code := clif% do
              (← iconst64 BIND_DESC_OFF) one32 one32 one32 blk256 one32 one32
   let _ ← cudaSync ptr CTX_OFF
   let _ ← ifte .eq outLen (← iconst64 0)
-    (thn := pure [])
+    (thn := pure %[])
     (els := do
       let buf1 ← load32 (← absAddr ptr BUF1_OFF)
-      let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, buf1, outPtr, outLen]
-      pure [])
+      let _ ← ffi .cudaDownload %[ctxPtr, buf1, outPtr, outLen]
+      pure %[])
   return ()
 
-theorem bodies_wf :
-    HProg.wf env HProg.ptrParams loadCode = true &&
-    HProg.wf env HProg.ptrParams prepCode = true &&
-    HProg.wf env HProg.ptrParams inferCode = true := by decide
 
-def clifIR : Program :=
-  IR.program
-    [noopFunction,
-     HProg.compileFn 1 loadCode,
-     HProg.compileFn 2 prepCode,
-     HProg.compileFn 3 inferCode]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 loadCode,
+     Prog.compileProg 2 prepCode,
+     Prog.compileProg 3 inferCode]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]
@@ -187,8 +179,8 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def buildSetup : Setup := {
-  clif := clifIR,
+def buildSetup (clif : Program) : Setup := {
+  clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
@@ -197,9 +189,9 @@ def loadAlgorithm : Algorithm := { fn_idx := u32 1 }
 def prepAlgorithm : Algorithm := { fn_idx := u32 2 }
 def inferAlgorithm : Algorithm := { fn_idx := u32 3 }
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[
-    toJsonArtifact "cuda_rmsnorm" buildSetup loadAlgorithm [
+    toJsonArtifact "cuda_rmsnorm" (buildSetup clif) loadAlgorithm [
       ("prep",  prepAlgorithm),
       ("infer", inferAlgorithm)
     ]

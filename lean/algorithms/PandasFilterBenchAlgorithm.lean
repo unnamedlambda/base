@@ -17,36 +17,33 @@ def ACC_OFF  : Nat := 0x28
 def N_CATS   : Nat := 16
 def MEM_SIZE : Nat := ACC_OFF + N_CATS * 8
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
-  let accBase ← absAddr basePtr ACC_OFF
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
+  let accBase ← absAddr (← basePtr) ACC_OFF
   let dataEnd ← iadd dataPtr dataLen
   let zero    ← iconst64 0
   let accEnd  ← iaddImm accBase 128    -- 16 * 8
   let thresh  ← fconst32 50.0   -- 50.0f
 
   -- Zero 16 f64 accumulators
-  let _ ← dwloop [accBase] .ult accEnd (contOnTrue := true) []
+  let _ ← dwloop %[accBase] .ult accEnd (contOnTrue := true) []
     (body := fun c => do
-      let z := c.headD 0
+      let z := c.head
       storeUnaligned zero z
       let z' ← iaddImm z 8
-      return (z', [z']))
+      return (z', %[z']))
     (guardIdx := none)
 
   -- Row loop: branchless filter via integer bit-mask. The guard is the empty
   -- check, so a zero-row input never enters.
-  let _ ← dwloop [dataPtr] .uge dataEnd (contOnTrue := false) []
+  let _ ← dwloop %[dataPtr] .uge dataEnd (contOnTrue := false) []
     (body := fun c => do
-      let row := c.headD 0
+      let row := c.head
       let cat  ← uload32_64 row
       let acc  ← iadd accBase (← ishlImm cat 3)
       let price ← loadF32 (← iaddImm row 4)
@@ -61,7 +58,7 @@ def code : HProg.Code := clif% do
       let old   ← loadF64 acc
       store (← fadd old frev) acc
       let row' ← iaddImm row 12
-      return (row', [row']))
+      return (row', %[row']))
     (guardIdx := some 0)
 
   -- Pairwise fmax reduction: 16 → 1
@@ -90,14 +87,13 @@ def code : HProg.Code := clif% do
   let top ← fmax (← fmax m0123 m4567) (← fmax m891011 m12131415)
   store top outPtr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "pandas_filter_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

@@ -32,13 +32,12 @@ namespace GptOssDecodeScan
 
 /-- **The claims the whole-model artifact makes.**
 
-    All four are guards on emitted data. They are the strongest statements that
-    can be made about this artifact today, and they are all structural. -/
+    All three are guards on emitted data. They are the strongest statements
+    that can be made about this artifact today, and they are all structural. -/
 def roots : List Name :=
   [ ``GptOssDecode.gptoss_decode_alloc_covers
   , ``GptOssDecode.gptoss_decode_ptx_fits
-  , ``GptOssDecode.gptossDecodeMap_ok
-  , ``GptOssDecode.gptossDecodeShipped_wf ]
+  , ``GptOssDecode.gptossDecodeMap_ok ]
 
 /-- **What running the whole model rests on that running one layer did not.**
 

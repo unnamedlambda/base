@@ -3,16 +3,17 @@ import AlgorithmLib.Bytes
 import AlgorithmLib.Layout
 import AlgorithmLib.IR
 import AlgorithmLib.FFI
-import AlgorithmLib.HProgFFI
+import AlgorithmLib.ProgFFI
+import AlgorithmLib.ProgFFI
 import AlgorithmLib.PTX
 
 open Lean
 open AlgorithmLib.IR
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 open AlgorithmLib.PTX
 
 namespace AlgorithmLib
+
 
 namespace CudaPipeline
 
@@ -134,14 +135,9 @@ private def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) 
 -- CLIF emission: each stage is a term, compiled against one callee table.
 -- ---------------------------------------------------------------------------
 
-/-- The CUDA callee table all three stages share, so their signatures are
-    written once. -/
-def env : FnEnv := env% [.cuda]
-
 /-- Allocate the device buffers and publish the element count. -/
-def loadCode (inputs : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def loadCode (inputs : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let n ← load64 dataPtr
@@ -156,23 +152,21 @@ def loadCode (inputs : Nat) : HProg.Code :=
   let _ ← cudaUpload ptr metaBuf (← iconst64 0x38) metaBytes
 
 /-- Upload the inputs, which lie back to back from the caller's data pointer. -/
-def prepCode (inputs : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def prepCode (inputs : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let n ← load64 (← absAddr ptr 0x38)
   let nBytes ← ishlImm n 2
   let ctxPtr ← cudaCtxPtr ptr
-  let _ ← (List.range inputs).foldlM (init := dataPtr) fun (curSrc : R) (i : Nat) => do
+  let _ ← (List.range inputs).foldlM (init := dataPtr) fun curSrc (i : Nat) => do
     let bufId ← load32 (← absAddr ptr (0x44 + 4*i))
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufId, curSrc, nBytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, bufId, curSrc, nBytes]
     iadd curSrc nBytes
 
 /-- Launch, synchronise, and download the output — the last only when the
     caller asked for one. -/
-def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
   let nElems ← load64 (← absAddr ptr 0x38)
@@ -187,32 +181,24 @@ def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : HProg.Code :=
   let _ ← cudaLaunch ptr ptxOff nBufs bindOff wg one32 one32 blkX one32 one32
   let _ ← cudaSync ptr
   let zero64 ← iconst64 0
-  when .ne outLen zero64 do
+  Prog.when .ne outLen zero64 do
     let ctxPtr ← cudaCtxPtr ptr
     let outBufId ← load32 (← absAddr ptr (0x44 + 4*output.val))
-    let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, outBufId, outPtr, outLen]
+    let _ ← ffi .cudaDownload %[ctxPtr, outBufId, outPtr, outLen]
 
 -- ---------------------------------------------------------------------------
 -- Compile: assemble PTX + CLIF + initial memory into a CompileResult.
 -- ---------------------------------------------------------------------------
 
-/-- The three stages are terms only once `n`, `out` and `blockSize` are given,
-    so the well-formedness each owes `compileFn` travels out to here and is
-    discharged where a caller names the arity — which every caller does.
+/-- The three stages are terms only once `n`, `out` and `blockSize` are given.
 
-    By `native_decide`, not `decide`: `loadCode` and `prepCode` build their
-    buffer list by iterating, and the kernel will not reduce meta-level
-    iteration inside a builder — only straight-line bodies reduce. This is the
-    same footing as `clif%`, which checks the bodies it splices by running
-    compiled code at elaboration; these two cannot use it because they are
-    parameterised by the arity. -/
+    That used to be a problem: the compiler wanted a `wf` proof about each of
+    them, `decide` will not reduce a builder that iterates over an arity, and
+    so three `native_decide` obligations travelled out to every caller. They
+    are gone. The stages are typed terms, and `compileProg` checks the body it
+    emitted while the generator runs. -/
 def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
-    (blockSize : Nat := 256)
-    (hLoad : HProg.wf env HProg.ptrParams (loadCode n) = true := by native_decide)
-    (hPrep : HProg.wf env HProg.ptrParams (prepCode n) = true := by native_decide)
-    (hInfer : HProg.wf env HProg.ptrParams (inferCode ⟨out, h⟩ blockSize) = true
-      := by native_decide) :
-    CompileResult :=
+    (blockSize : Nat := 256) : Except String CompileResult := do
   let output : Fin n := ⟨out, h⟩
   let ptxBytes := (ptxSource e output blockSize).toUTF8.toList ++ [0]
   let bindDesc := (List.range (n + 1)).foldr
@@ -222,14 +208,14 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     zeros ptxSourceOff
     ++ ptxBytes ++ zeros (bindDescOff - ptxSourceOff - ptxBytes.length)
     ++ bindDesc ++ zeros (memSize - bindDescOff - bindDesc.length)
-  let clifProg := program
-    [noopFunction,
-     HProg.compileFn 1 (loadCode n) env (hwf := hLoad),
-     HProg.compileFn 2 (prepCode n) env (hwf := hPrep),
-     HProg.compileFn 3 (inferCode output blockSize) env (hwf := hInfer)]
+  let clifProg ← Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 (loadCode n),
+     Prog.compileProg 2 (prepCode n),
+     Prog.compileProg 3 (inferCode output blockSize)]
   let mkAlg (src : UInt32) : Algorithm :=
     { fn_idx := src }
-  {
+  return {
     setup := {
       clif := clifProg
       memory_size := memSize

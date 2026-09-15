@@ -26,16 +26,13 @@ namespace BranchyBench
 
 def MEM_SIZE : Nat := 40
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
   let n       ← ushrImm dataLen 2
   let mainEnd ← ishlImm n 2
   let i0      ← iconst64 0
@@ -46,29 +43,25 @@ def code : HProg.Code := clif% do
 
   -- Each arm takes the back edge itself, so there is no join between the
   -- branch and the loop header — which is the shape being measured.
-  let fin ← wloop2 i0 h0
-    (head := fun i h => return (exitIfSGe i mainEnd, [h], ()))
-    (body := fun bi bh _ => do
+  let fin ← wloopL %[i0, h0]
+    (head := fun _ c => return (exitIfSGe c.head mainEnd, %[c.snd], ()))
+    (body := fun lbl c _ => do
+      let bi := c.head; let bh := c.snd
       let x ← uload32_64 (← iadd dataPtr bi)
-      let _ ← ifte .eq (← band x one) (← iconst64 0)
-        (thn := do
-          continueWith [← iaddImm bi 4, ← band (← iadd bh x) keep]
-          pure [])
-        (els := do
-          continueWith [← iaddImm bi 4, ← band (← imul bh three) keep]
-          pure [])
-      return [bi, bh])
+      let _ ← ifte (jTys := []) .eq (← band x one) (← iconst64 0)
+        (thn := do continueWith lbl %[← iaddImm bi 4, ← band (← iadd bh x) keep])
+        (els := do continueWith lbl %[← iaddImm bi 4, ← band (← imul bh three) keep])
+      return %[bi, bh])
 
-  store (← fcvtFromSint .f64 (fin.headD 0)) outPtr
+  store (← fcvtFromSint .f64 (fin.head)) outPtr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "branchy_algorithm" {
-    clif := clifIR, memory_size := MEM_SIZE
+    clif, memory_size := MEM_SIZE
   } { fn_idx := u32 1 }]
 
 end BranchyBench

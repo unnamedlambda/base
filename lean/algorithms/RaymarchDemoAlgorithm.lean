@@ -228,18 +228,16 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 -- Every body below is a term, so the builder names can be opened once for the
 -- whole section rather than per declaration.
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
 /-- Three callee tables, because the six entry points do not all reach the FFI:
     the game loop needs the window and the GPU, the render test needs the GPU,
     and the four state tests need nothing. -/
 
 
-def envMain : FnEnv := env% [.gpu, .window]
-def envGpu : FnEnv := env% [.gpu, .window]
 def envNone : FnEnv := { sigs := [], fns := [] }
 
-def clearState (ptr : R) : Sur.M Unit := do
+def clearState (ptr : V .i64) : Prog V L Unit := do
   let z ← iconst64 0
   fldStore ptr f.keyMask z
   fldStore ptr f.quit z
@@ -247,12 +245,12 @@ def clearState (ptr : R) : Sur.M Unit := do
   fldStore ptr f.camY (← iconst64 camStartY)
   fldStore ptr f.camZ (← iconst64 camStartZ)
 
-def processEvents (ptr : R) : Sur.M Unit := do
+def processEvents (ptr : V .i64) : Prog V L Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
   let n ← fldLoad ptr f.nEvents
   let recSz ← iconst64 32
   let _ ← wloop1 (← iconst64 0)
-    (head := fun i => return (contIfULt i n, ([] : List R), ()))
+    (head := fun i => return (contIfULt i n, %[], ()))
     (body := fun i _ => do
       let base ← iadd evBase (← imul i recSz)
       let kind ← load64 base
@@ -278,9 +276,9 @@ def processEvents (ptr : R) : Sur.M Unit := do
       let q0 ← fldLoad ptr f.quit
       let q1 ← bor q0 (← bor isClose (← imul isDown isEsc))
       fldStore ptr f.quit q1
-      return [← iaddImm i 1])
+      return %[← iaddImm i 1])
 
-def clampField (ptr : R) (fld : Fld .i64) (lo hi : Int) : Sur.M Unit := do
+def clampField (ptr : V .i64) (fld : Fld .i64) (lo hi : Int) : Prog V L Unit := do
   let x ← fldLoad ptr fld
   let over ← sextend64 (← icmp .sgt x (← iconst64 hi))
   let x1 ← iadd x (← imul over (← isub (← iconst64 hi) x))
@@ -288,12 +286,12 @@ def clampField (ptr : R) (fld : Fld .i64) (lo hi : Int) : Sur.M Unit := do
   let x2 ← iadd x1 (← imul under (← isub (← iconst64 lo) x1))
   fldStore ptr fld x2
 
-def heldAxis (mask : R) (posBit negBit : Int) : Sur.M R := do
+def heldAxis (mask : V .i64) (posBit negBit : Int) : Prog V L (V .i64) := do
   let pos ← sextend64 (← icmp .ne (← band mask (← iconst64 posBit)) (← iconst64 0))
   let neg ← sextend64 (← icmp .ne (← band mask (← iconst64 negBit)) (← iconst64 0))
   isub pos neg
 
-def applyMovement (ptr : R) : Sur.M Unit := do
+def applyMovement (ptr : V .i64) : Prog V L Unit := do
   let mask ← fldLoad ptr f.keyMask
   let speed ← iconst64 moveSpeed
   let dx ← imul (← heldAxis mask bitRight bitLeft) speed
@@ -306,43 +304,43 @@ def applyMovement (ptr : R) : Sur.M Unit := do
   clampField ptr f.camZ minXZ maxXZ
   clampField ptr f.camY minY maxY
 
-def writeParams (ptr : R) (frame : R) : Sur.M Unit := do
+def writeParams (ptr : V .i64) (frame : V .i64) : Prog V L Unit := do
   fldStore32At ptr f.params 0 (← ireduce32 frame) (by decide)
   fldStore32At ptr f.params 12 (← ireduce32 (← fldLoad ptr f.camX)) (by decide)
   fldStore32At ptr f.params 16 (← ireduce32 (← fldLoad ptr f.camY)) (by decide)
   fldStore32At ptr f.params 20 (← ireduce32 (← fldLoad ptr f.camZ)) (by decide)
 
-def writeEvent (ptr : R) (slot : Nat) (kind keyCode : Int) : Sur.M Unit := do
+def writeEvent (ptr : V .i64) (slot : Nat) (kind keyCode : Int) : Prog V L Unit := do
   let base ← absAddr ptr (f.events.offset + slot * 32)
   storeUnaligned (← iconst64 kind) base
   storeUnaligned (← iconst64 keyCode) (← iaddImm base 8)
 
-def writeOutput (ptr : R) (passV actualV expectedV : R) : Sur.M Unit := do
+def writeOutput (ptr : V .i64) (passV actualV expectedV : V .i64) : Prog V L Unit := do
   fldStore ptr f.rowCount (← iconst64 1)
   fldStore ptr f.outPass passV
   fldStore ptr f.outActual actualV
   fldStore ptr f.outExpected expectedV
 
-def stepN (ptr : R) (steps : Int) : Sur.M Unit := do
+def stepN (ptr : V .i64) (steps : Int) : Prog V L Unit := do
   let limit ← iconst64 steps
   let _ ← wloop1 (← iconst64 0)
-    (head := fun i => return (contIfULt i limit, ([] : List R), ()))
+    (head := fun i => return (contIfULt i limit, %[], ()))
     (body := fun i _ => do
       processEvents ptr
       applyMovement ptr
-      return [← iaddImm i 1])
+      return %[← iaddImm i 1])
 
-def assertEq (ptr actual : R) (expected : Int) : Sur.M Unit := do
+def assertEq (ptr actual : V .i64) (expected : Int) : Prog V L Unit := do
   let exp ← iconst64 expected
   writeOutput ptr (← sextend64 (← icmp .eq actual exp)) actual exp
 
-def dispatchScene (ptr paramBuf pipeId : R) : Sur.M Unit := do
+def dispatchScene (ptr : V .i64) (paramBuf pipeId : V .i32) : Prog V L Unit := do
   let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
   let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
   pure ()
 
-def mainBody : HProg.Code := clif% do
-  let ptr := basePtr
+def mainBody : Prog V L Unit := do
+  let ptr ← basePtr
   windowInit ptr
   gpuInit ptr
   let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
@@ -357,7 +355,7 @@ def mainBody : HProg.Code := clif% do
     (head := fun c => do
       let q ← fldLoad ptr f.quit
       let z ← iconst64 0
-      return (contIf .eq q z, [c], ()))
+      return (contIf .eq q z, %[c], ()))
     (body := fun frame _ => do
       let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
       fldStore ptr f.nEvents (← sextend64 n)
@@ -366,44 +364,44 @@ def mainBody : HProg.Code := clif% do
       writeParams ptr frame
       dispatchScene ptr paramBuf pipeId
       let _ ← windowPresentGpuBuffer ptr pixelBuf
-      return [← iaddImm frame 1])
+      return %[← iaddImm frame 1])
   windowCleanup ptr
   gpuCleanup ptr
 
-def testMoveForward : HProg.Code := clif% do
-  let ptr := basePtr
+def testMoveForward : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr
   writeEvent ptr 0 evKeyDown keyFwd
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.camZ) (camStartZ - 10 * moveSpeed)
 
-def testStrafeRight : HProg.Code := clif% do
-  let ptr := basePtr
+def testStrafeRight : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr
   writeEvent ptr 0 evKeyDown keyRight
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.camX) (camStartX + 10 * moveSpeed)
 
-def testRiseClamp : HProg.Code := clif% do
-  let ptr := basePtr
+def testRiseClamp : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr
   writeEvent ptr 0 evKeyDown keyUpK
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 200
   assertEq ptr (← fldLoad ptr f.camY) maxY
 
-def testQuitOnClose : HProg.Code := clif% do
-  let ptr := basePtr
+def testQuitOnClose : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr
   writeEvent ptr 0 evClose 0
   fldStore ptr f.nEvents (← iconst64 1)
   processEvents ptr
   assertEq ptr (← fldLoad ptr f.quit) 1
 
-def testRenderScene : HProg.Code := clif% do
-  let ptr := basePtr
+def testRenderScene : Prog V L Unit := do
+  let ptr ← basePtr
   gpuInit ptr
   let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
   let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
@@ -418,23 +416,16 @@ def testRenderScene : HProg.Code := clif% do
   let thresh ← iadd groundB (← iconst64 20)
   writeOutput ptr (← sextend64 (← icmp .ugt skyB thresh)) groundB skyB
 
-theorem bodies_wf :
-    HProg.wf envMain HProg.ptrParams mainBody = true &&
-    HProg.wf envNone HProg.ptrParams testMoveForward = true &&
-    HProg.wf envNone HProg.ptrParams testStrafeRight = true &&
-    HProg.wf envNone HProg.ptrParams testRiseClamp = true &&
-    HProg.wf envNone HProg.ptrParams testQuitOnClose = true &&
-    HProg.wf envGpu HProg.ptrParams testRenderScene = true := by decide
 
-def clifIrSource : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 mainBody,
-     HProg.compileFn 2 testMoveForward,
-     HProg.compileFn 3 testStrafeRight,
-     HProg.compileFn 4 testRiseClamp,
-     HProg.compileFn 5 testQuitOnClose,
-     HProg.compileFn 6 testRenderScene]
+def clifIrSource : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 mainBody,
+     Prog.compileProg 2 testMoveForward,
+     Prog.compileProg 3 testStrafeRight,
+     Prog.compileProg 4 testRiseClamp,
+     Prog.compileProg 5 testQuitOnClose,
+     Prog.compileProg 6 testRenderScene]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
@@ -451,8 +442,8 @@ def payloads : List UInt8 :=
       uint32ToBytes 0)
   ]
 
-def gameSetup : Setup := {
-  clif := clifIrSource,
+def gameSetup (clif : Program) : Setup := {
+  clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
@@ -475,8 +466,9 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
+  let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.toJsonArtifact "raymarch_demo" Algorithm.gameSetup Algorithm.mainAlgorithm [
+    AlgorithmLib.toJsonArtifact "raymarch_demo" (Algorithm.gameSetup clif) Algorithm.mainAlgorithm [
       ("test_move_forward",  Algorithm.moveFwdAlg),
       ("test_strafe_right",  Algorithm.strafeAlg),
       ("test_rise_clamp",    Algorithm.riseClampAlg),

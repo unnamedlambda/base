@@ -120,17 +120,15 @@ def fftShader : String :=
 -- 8. Write output file
 -- ---------------------------------------------------------------------------
 
-open AlgorithmLib.IR in
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- The GPU entry points, then the two file ones, in callee-table order. -/
-def fnRead : FnRef := IR.Ffi.fileRead.ref
-def fnWrite : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.gpu, .fileIO]
+abbrev fnRead : Ffi := .fileRead
+abbrev fnWrite : Ffi := .fileWrite
 
-def code : HProg.Code := clif% do
-  let ptr := basePtr
+def code : Prog V L Unit := do
+  let ptr ← basePtr
   -- FFI declarations
 
   let c0  ← iconst64 0
@@ -140,7 +138,7 @@ def code : HProg.Code := clif% do
 
   -- Step 1: Read input file
   let inDatOff ← iconst64 inputData_off
-  let bytesRead ← readFile ptr fnRead inputFilename_off inputData_off
+  let bytesRead ← readFile ptr inputFilename_off inputData_off
 
   -- Compute N = bytes_read / 8
   let c3 ← iconst64 3
@@ -229,22 +227,19 @@ def code : HProg.Code := clif% do
   let bufBOffC ← iconst64 bufB_off
   -- Both arms reach one join carrying (dst_offset, gpu_buf_id)
   let fin ← ifte .eq finalDir c0
-    (thn := pure [bufAOffC, buf0])
-    (els := pure [bufBOffC, buf1])
-  let dstOff2 := fin.headD 0
-  let bufId := fin.getD 1 0
+    (thn := pure %[bufAOffC, buf0])
+    (els := pure %[bufBOffC, buf1])
+  let dstOff2 := fin.head
+  let bufId := fin.snd
   let _ ← gpuDownload ptr bufId dstOff2 alignedSz
   gpuCleanup ptr
 
   -- Step 6: Write output file
   let outFnOff ← iconst64 outputFilename_off
-  let _ ← call fnWrite.id [ptr, outFnOff, dstOff2, c0, dataSz]
+  let _ ← ffi fnWrite %[ptr, outFnOff, dstOff2, c0, dataSz]
 
-
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
-
-def clifIrSource : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIrSource : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction
@@ -274,8 +269,8 @@ def payloads : List UInt8 :=
 -- Configuration
 -- ---------------------------------------------------------------------------
 
-def fftConfig : Setup := {
-  clif := clifIrSource,
+def fftConfig (clif : Program) : Setup := {
+  clif,
   memory_size := payloads.length + totalAdditionalMemory,
   initial_memory := payloads
 }
@@ -288,6 +283,7 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "fft_app" Algorithm.fftConfig Algorithm.fftAlgorithm]
+  let clif ← Prog.orDie Algorithm.clifIrSource
+  emitArtifacts outDir #[toJsonEntry "fft_app" (Algorithm.fftConfig clif) Algorithm.fftAlgorithm]
 
 #eval ShipScan.check "FftAlgorithm"

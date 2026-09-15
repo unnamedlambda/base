@@ -17,15 +17,12 @@ namespace MatmulBench
 -/
 
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
   -- Parse M, K, N
   let mVal32  ← load32 dataPtr
   let kVal32  ← load32 (← iaddImm dataPtr 4)
@@ -45,10 +42,10 @@ def code : HProg.Code := clif% do
   -- Only what actually changes is carried: `i` is in scope inside the p-loop
   -- and `aVec`/`bRow` inside the j-loop, so they need not be block parameters.
   let outer ← wloop2 zero64 zero
-    (head := fun i total => return (exitIfSGe i mVal, [total], ()))
+    (head := fun i total => return (exitIfSGe i mVal, %[total], ()))
     (body := fun i total _ => do
       let inner ← wloop2 zero64 total
-        (head := fun p tot => return (exitIfSGe p kVal, [tot], ()))
+        (head := fun p tot => return (exitIfSGe p kVal, %[tot], ()))
         (body := fun p tot _ => do
           -- Load A[i,p]: aPtr + (i*K+p)*4
           let ikp  ← iadd (← imul i kVal) p
@@ -57,34 +54,33 @@ def code : HProg.Code := clif% do
           let aVec ← splat .f32x4 aVal
           -- B row: bPtr + p*N*4
           let bRow ← iadd bPtr (← ishlImm (← imul p nVal) 2)
-          let js ← wloop [zero64, zeroV, zeroV, zeroV, zeroV]
-            (head := fun c => return (exitIfSGe (c.headD 0) nBytes, c.drop 1, ()))
+          let js ← wloop %[zero64, zeroV, zeroV, zeroV, zeroV]
+            (head := fun c => return (exitIfSGe (c.head) nBytes, c.tail, ()))
             (body := fun c _ => do
-              let bBase ← iadd bRow (c.headD 0)
-              let c0' ← fadd (c.getD 1 0) (← fmul aVec (← loadF32x4 bBase))
-              let c1' ← fadd (c.getD 2 0) (← fmul aVec (← loadF32x4 (← iaddImm bBase 16)))
-              let c2' ← fadd (c.getD 3 0) (← fmul aVec (← loadF32x4 (← iaddImm bBase 32)))
-              let c3' ← fadd (c.getD 4 0) (← fmul aVec (← loadF32x4 (← iaddImm bBase 48)))
-              return [← iaddImm (c.headD 0) 64, c0', c1', c2', c3'])
-          let vAcc ← fadd (← fadd (js.headD 0) (js.getD 1 0))
-                          (← fadd (js.getD 2 0) (js.getD 3 0))
+              let bBase ← iadd bRow (c.head)
+              let c0' ← fadd (c.snd) (← fmul aVec (← loadF32x4 bBase))
+              let c1' ← fadd (c.thd) (← fmul aVec (← loadF32x4 (← iaddImm bBase 16)))
+              let c2' ← fadd (c.fth) (← fmul aVec (← loadF32x4 (← iaddImm bBase 32)))
+              let c3' ← fadd (c.fif) (← fmul aVec (← loadF32x4 (← iaddImm bBase 48)))
+              return %[← iaddImm (c.head) 64, c0', c1', c2', c3'])
+          let vAcc ← fadd (← fadd (js.head) (js.snd))
+                          (← fadd (js.thd) (js.fth))
           let rowSum ← fadd (← fadd (← fpromote (← extractlane vAcc 0))
                                      (← fpromote (← extractlane vAcc 1)))
                             (← fadd (← fpromote (← extractlane vAcc 2))
                                      (← fpromote (← extractlane vAcc 3)))
-          return [← iaddImm p 1, ← fadd tot rowSum])
-      return [← iaddImm i 1, inner.headD 0])
+          return %[← iaddImm p 1, ← fadd tot rowSum])
+      return %[← iaddImm i 1, inner.head])
 
-  store (outer.headD 0) outPtr
+  store (outer.head) outPtr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "matmul_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := 40
   } {
     fn_idx := u32 1

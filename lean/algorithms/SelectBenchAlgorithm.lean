@@ -27,16 +27,13 @@ namespace SelectBench
 
 def MEM_SIZE : Nat := 40
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
   let n       ← ushrImm dataLen 2
   let mainEnd ← ishlImm n 2
   let i0      ← iconst64 0
@@ -46,24 +43,23 @@ def code : HProg.Code := clif% do
   let keep    ← iconst64 0xFFFFFF
 
   let fin ← wloop2 i0 h0
-    (head := fun i h => return (exitIfSGe i mainEnd, [h], ()))
+    (head := fun i h => return (exitIfSGe i mainEnd, %[h], ()))
     (body := fun bi bh _ => do
       let x  ← uload32_64 (← iadd dataPtr bi)
       let hE ← band (← iadd bh x) keep
       let hO ← band (← imul bh three) keep
       let c  ← icmp .eq (← band x one) (← iconst64 0)
-      return [← iaddImm bi 4, ← select c hE hO])
+      return %[← iaddImm bi 4, ← select c hE hO])
 
-  store (← fcvtFromSint .f64 (fin.headD 0)) outPtr
+  store (← fcvtFromSint .f64 (fin.head)) outPtr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "select_algorithm" {
-    clif := clifIR, memory_size := MEM_SIZE
+    clif, memory_size := MEM_SIZE
   } { fn_idx := u32 1 }]
 
 end SelectBench

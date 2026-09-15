@@ -249,7 +249,7 @@ def slotInsts (k : Nat) (op : LoadOp) : List Inst :=
   , .iadd ⟨2⟩ ⟨0⟩ ⟨1⟩
   , .load ⟨3⟩ op ⟨2⟩ ]
 
-/-- Every load `HProgFFI` emits, not only the one a bind table is read with.
+/-- Every load `ProgFFI` emits, not only the one a bind table is read with.
 
     `uload8_64` is `scalarLoad`'s lowering, so a narrow load reaching a `slot`
     is not hypothetical. -/

@@ -28,13 +28,11 @@ def vKeyOf (r : AlgorithmLib.Clif.LaunchRec) : VLaunchKey :=
     carries, these two among them. -/
 def vFwdLaunches : List AlgorithmLib.Clif.LaunchRec :=
   AlgorithmLib.Clif.launchesOf
-    (AlgorithmLib.HProg.compileBody 1
-      (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF) env)
+    (AlgorithmLib.Prog.stateOf 1 (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF))
 
 def vStepLaunches : List AlgorithmLib.Clif.LaunchRec :=
   AlgorithmLib.Clif.launchesOf
-    (AlgorithmLib.HProg.compileBody 1
-      (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF) env)
+    (AlgorithmLib.Prog.stateOf 1 (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF))
 
 /-- **Is this recovered call a contraction in the configuration a law covers?**
 
@@ -81,11 +79,11 @@ def vGemmCount (rs : List AlgorithmLib.Clif.LaunchRec) : Nat :=
 
 open AlgorithmLib.IR AlgorithmLib.Clif.Check in
 def vFwdBody : AlgorithmLib.IR.FuncData :=
-  AlgorithmLib.HProg.compileBody 1 (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF) env
+  AlgorithmLib.Prog.stateOf 1 (vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)
 
 open AlgorithmLib.IR AlgorithmLib.Clif.Check in
 def vStepBody : AlgorithmLib.IR.FuncData :=
-  AlgorithmLib.HProg.compileBody 1 (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF) env
+  AlgorithmLib.Prog.stateOf 1 (vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)
 
 open AlgorithmLib.Clif.Check in
 theorem vFwd_blocks_ty_ok : TyBlocksOk TyEnv.empty vFwdBody.blocks = true := by

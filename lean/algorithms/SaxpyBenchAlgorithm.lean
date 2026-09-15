@@ -72,16 +72,11 @@ def layoutMeta : LayoutMeta := mkLayout.2
 -- init → create 2 buffers → upload x,y → launch PTX → download y → file write
 -- ---------------------------------------------------------------------------
 
-open AlgorithmLib.IR in
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The CUDA entry points then `cl_file_write`, in callee-table order. -/
-def fnWr : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.cuda, .fileIO]
 
-def code : HProg.Code := clif% do
-  let ptr := basePtr
+def code : Prog V L Unit := do
+  let ptr ← basePtr
 
   -- Init CUDA context
   cudaInit ptr
@@ -124,15 +119,14 @@ def code : HProg.Code := clif% do
   -- Write y to verify file
   let fnameOff ← iconst64 f.filename.offset
   let zero64   ← iconst64 0
-  let _ ← call fnWr.id [ptr, fnameOff, yOff, zero64, bufSz]
+  let _ ← ffi .fileWrite %[ptr, fnameOff, yOff, zero64, bufSz]
 
   -- Cleanup
   cudaCleanup ptr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIrSource : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIrSource : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 -- ---------------------------------------------------------------------------
 -- Payloads
@@ -144,8 +138,8 @@ def payloads : List UInt8 :=
     f.bindDesc.init (uint32ToBytes 0 ++ uint32ToBytes 1)
   ]
 
-def saxpyConfig : Setup := {
-  clif := clifIrSource,
+def saxpyConfig (clif : Program) : Setup := {
+  clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
@@ -154,8 +148,8 @@ def saxpyAlgorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
 
-def artifacts : Array Json :=
-  #[toJsonEntry "saxpy_algorithm" saxpyConfig saxpyAlgorithm]
+def artifacts (clif : Program) : Array Json :=
+  #[toJsonEntry "saxpy_algorithm" (saxpyConfig clif) saxpyAlgorithm]
 
 
 end Algorithm

@@ -2,11 +2,9 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import LayoutScan
 import ShipScan
-
-
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 
@@ -78,12 +76,8 @@ def IN_ID    : Nat := 0x0040
 def OUT_ID   : Nat := 0x0044
 def MEM_SIZE : Nat := 0x30100
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The CUDA entry points, declared through the same helper the runtime's
-    signatures come from. -/
-def env : FnEnv := env% [.cuda]
 
 /-- **The kernel, as a record the launch sites read.**
 
@@ -99,8 +93,8 @@ def mlpK : AlgorithmLib.Kernel := {
   ptxText := some ptx
 }
 
-def loadFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def loadFnCode : Prog V Lbl Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -110,33 +104,29 @@ def loadFnCode : HProg.Code := clif% do
   let outBytes ← iconst64 (NOUT * 4)
   let outId ← cudaCreateBuffer ptr outBytes
   store outId (← absAddr ptr OUT_ID)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, inId, dataPtr, inBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, inId, dataPtr, inBytes]
   kernelBindAt mlpK ptr BIND_OFF [inId, outId]
 
-def runFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def runFnCode : Prog V Lbl Unit := do
+  let ptr ← basePtr
   kernelRelaunch mlpK ptr BIND_OFF
   let _ ← cudaSync ptr
 
-def fetchFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def fetchFnCode : Prog V Lbl Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outId ← load32 (← absAddr ptr OUT_ID)
   let outBytes ← iconst64 (NOUT * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, outId, outPtr, outBytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, outBytes]
 
-theorem bodies_wf :
-    HProg.wf env HProg.ptrParams loadFnCode = true &&
-    HProg.wf env HProg.ptrParams runFnCode = true &&
-    HProg.wf env HProg.ptrParams fetchFnCode = true := by decide
 
-def clifIR : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 loadFnCode,
-     HProg.compileFn 2 runFnCode,
-     HProg.compileFn 3 fetchFnCode]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 loadFnCode,
+     Prog.compileProg 2 runFnCode,
+     Prog.compileProg 3 fetchFnCode]
 
 theorem ptx_fits_slot : ptx.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_OFF := by
   native_decide
@@ -163,21 +153,22 @@ def initialMemory : List UInt8 :=
   let ptxBytes := AlgorithmLib.Kernel.ptxBytes mlpK
   zeros PTX_OFF ++ ptxBytes ++ zeros (MEM_SIZE - PTX_OFF - ptxBytes.length)
 
-def setup : Setup := {
-  clif := clifIR
+def setup (clif : Program) : Setup := {
+  clif
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
 
-def artifacts : Array Json :=
-  #[ toJsonArtifact "mlp_warp" setup { fn_idx := u32 1 }
+def artifacts (clif : Program) : Array Json :=
+  #[ toJsonArtifact "mlp_warp" (setup clif) { fn_idx := u32 1 }
        [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 })] ]
 
 end MlpWarp
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir MlpWarp.artifacts
+  let clif ← Prog.orDie MlpWarp.clifIR
+  emitArtifacts outDir (MlpWarp.artifacts clif)
 
 namespace MlpWarp
 

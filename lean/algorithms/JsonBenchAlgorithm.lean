@@ -22,39 +22,36 @@ def INPUT_DATA      : Nat := 0x4000
 def MAX_JSON_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_JSON_BYTES
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
-def env : FnEnv := env% [.fileIO]
 
-def fnRead : Nat := IR.Ffi.fileRead.id
-def fnWrite : Nat := IR.Ffi.fileWrite.id
+abbrev fnRead : Ffi := .fileRead
+abbrev fnWrite : Ffi := .fileWrite
 
-def code : HProg.Code := clif% do
-  let ptr := basePtr
+def code : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero    ← iconst64 0
 
-  let inEnd ← dwloop [zero] .eq zero (contOnTrue := false) [0]
+  let inEnd ← dwloop %[zero] .eq zero (contOnTrue := false) [0]
     (body := fun c => do
-      let si := c.headD 0
+      let si := c.head
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr INPUT_PATH_OFF) si)
       let si' ← iaddImm si 1
-      return (ch, [si']))
+      return (ch, %[si']))
 
-  let _ ← dwloop [inEnd.headD 0, zero] .eq zero (contOnTrue := false) []
+  let _ ← dwloop %[inEnd.head, zero] .eq zero (contOnTrue := false) []
     (body := fun c => do
-      let si := c.headD 0; let di := c.getD 1 0
+      let si := c.head; let di := c.snd
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di)
       let si' ← iaddImm si 1
       let di' ← iaddImm di 1
-      return (ch, [si', di']))
+      return (ch, %[si', di']))
 
-  let fileSize ← call fnRead
-    [ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 INPUT_DATA, zero, zero]
+  let fileSize ← ffi fnRead
+    %[ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 INPUT_DATA, zero, zero]
   let dataBase ← absAddr ptr INPUT_DATA
   let nine     ← iconst64 9
   let endPos   ← isub fileSize nine      -- scan until pos > fileSize-9
@@ -67,9 +64,10 @@ def code : HProg.Code := clif% do
   -- 16 bytes a trip. A chunk with no candidate advances; a chunk with
   -- candidates runs the mask loop, which either finds a match, runs out of
   -- bits (back to the next chunk), or walks off the end (out of both loops).
-  let scanned ← wloop2 zero zero
-    (head := fun pos tot => return (exitIfSGt pos endPos, [tot], ()))
-    (body := fun pos tot _ => do
+  let scanned ← wloopL %[zero, zero]
+    (head := fun _ c => return (exitIfSGt c.head endPos, %[c.snd], ()))
+    (body := fun outer c _ => do
+      let pos := c.head; let tot := c.snd
       let p2   ← iadd dataBase pos
       let row0 ← loadI8x16 p2
       let row1 ← loadI8x16 (← iaddImm p2 1)
@@ -78,7 +76,7 @@ def code : HProg.Code := clif% do
       let both ← band eq0 eq1
       let mask ← vhighBits both
       let zero32 ← iconst32 0
-      let _ ← ifte .ne mask zero32
+      let _ ← ifte (jTys := []) .ne mask zero32
         (thn := do
           let found ← wloop1 mask
             (head := fun msk => do
@@ -86,72 +84,67 @@ def code : HProg.Code := clif% do
               let off  ← uextend64 off32
               let abs  ← iadd pos off
               -- past the end: leave the position scan as well
-              let _ ← ifte .sgt abs endPos
-                (thn := do brkTo 1 [tot]; pure [])
-                (els := pure [])
+              let _ ← ifte (jTys := []) .sgt abs endPos
+                (thn := brk outer %[tot]) (els := pure %[])
               let bytes8 ← load64 (← iaddImm (← iadd dataBase abs) 1)
               let isNeedle ← icmp .eq bytes8 needle
               let z8 ← iconst .i8 0
-              return (exitIf .ne isNeedle z8, [abs], ()))
+              return (exitIf .ne isNeedle z8, %[abs], ()))
             (body := fun msk _ => do
               let m1 ← iconst32 (-1)
               let newMask ← band msk (← iadd msk m1)
               let z32 ← iconst32 0
               -- no candidates left in this chunk: take the outer back edge
-              let _ ← ifte .eq newMask z32
-                (thn := do contTo 1 [← iaddImm pos 16, tot]; pure [])
-                (els := pure [])
-              return [newMask])
+              let _ ← ifte (jTys := []) .eq newMask z32
+                (thn := do continueWith outer %[← iaddImm pos 16, tot])
+                (els := pure %[])
+              return %[newMask])
           -- a match: skip the needle and accumulate the digits that follow
-          let ap := found.headD 0
+          let ap := found.head
           let d ← wloop2 (← iaddImm ap 9) zero
             (head := fun dp acc => do
               let byte ← uload8_64 (← iadd dataBase dp)
               let dg   ← isub byte (← iconst64 48)
               let nine2 ← iconst64 9
-              return (exitIf .ugt dg nine2, [dp, acc], ()))
+              return (exitIf .ugt dg nine2, %[dp, acc], ()))
             (body := fun dp acc _ => do
               let byte ← uload8_64 (← iadd dataBase dp)
               let dg   ← isub byte (← iconst64 48)
-              return [← iaddImm dp 1, ← iadd (← imul acc (← iconst64 10)) dg])
-          continueWith [d.headD 0, ← iadd tot (d.getD 1 0)]
-          pure [])
-        (els := do
-          continueWith [← iaddImm pos 16, tot]
-          pure [])
-      return [pos, tot])
-  let total := scanned.headD 0
+              return %[← iaddImm dp 1, ← iadd (← imul acc (← iconst64 10)) dg])
+          continueWith outer %[d.head, ← iadd tot d.snd])
+        (els := do continueWith outer %[← iaddImm pos 16, tot])
+      return %[pos, tot])
+  let total := scanned.head
 
   -- itoa + write
   let ten ← iconst64 10
   let scaled ← wloop1 (← iconst64 1)
     (head := fun div => do
       let d10 ← imul div ten
-      return (contIfULe d10 total, [div], ()))
-    (body := fun div _ => return [← imul div ten])
+      return (contIfULe d10 total, %[div], ()))
+    (body := fun div _ => return %[← imul div ten])
 
-  let written ← dwloop [total, scaled.headD 0, ← iconst64 OUTPUT_BUF]
+  let written ← dwloop %[total, scaled.head, ← iconst64 OUTPUT_BUF]
       .eq zero (contOnTrue := false) [2]
     (body := fun c => do
-      let valW := c.headD 0; let divW := c.getD 1 0; let wposW := c.getD 2 0
+      let valW := c.head; let divW := c.snd; let wposW := c.thd
       let dig  ← udiv valW divW
       let digB ← iadd dig (← iconst64 48)
       istore8 digB (← iadd ptr wposW)
       let rem  ← isub valW (← imul dig divW)
       let divW'← udiv divW ten
       let wpos'← iaddImm wposW 1
-      return (divW', [rem, divW', wpos']))
+      return (divW', %[rem, divW', wpos']))
 
-  let wp := written.headD 0
+  let wp := written.head
   istore8 (← iconst64 10) (← iadd ptr wp)
   istore8 (← iconst32 0) (← iadd ptr (← iaddImm wp 1))
-  let _ ← call fnWrite [ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 OUTPUT_BUF,
+  let _ ← ffi fnWrite %[ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 OUTPUT_BUF,
                         zero, zero]
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 /-- Every byte of shared memory this program names.
 
@@ -174,9 +167,9 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "json_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

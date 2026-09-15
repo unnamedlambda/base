@@ -437,16 +437,10 @@ theorem buf_count : bufBytes.length = NBUF := by decide
 -- The host program
 -- ---------------------------------------------------------------------------
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The device callee table every function here shares, so their signatures are
-    written once. -/
-def env : FnEnv := env% [.cuda, .cublas]
-
-def loadCode : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def loadCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -456,31 +450,31 @@ def loadCode : HProg.Code :=
     storeI32 id (← absAddr ptr (bindOff i))
   let w1Id ← load32 (← absAddr ptr (bindOff w1B))
   let w1Bytes ← iconst64 (H * IN * 4)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, w1Id, dataPtr, w1Bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, w1Id, dataPtr, w1Bytes]
   let w2Src ← iaddImm dataPtr (hostOff 1)
   let w2Id ← load32 (← absAddr ptr (bindOff w2B))
   let w2Bytes ← iconst64 (C * H * 4)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, w2Id, w2Src, w2Bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, w2Id, w2Src, w2Bytes]
 
 /-- Upload `n` bytes from the caller's data pointer into buffer `b`. -/
-def uploadCode (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def uploadCode (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (bindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
 
 /-- Download `n` bytes of buffer `b` into the caller's output pointer. -/
-def fetchCode (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def fetchCode (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (bindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
 /-- **Fill the launch argument array from the buffer table.**
 
@@ -498,7 +492,7 @@ def fetchCode (b n : Nat) : HProg.Code :=
     It is also the shape a training loop needs once buffers stop being fixed —
     double buffering, gradient accumulation and checkpointing all rebind between
     steps — so the array belongs to the launch rather than to allocation. -/
-def bindLocal (ptr : R) (bs : List Buf) : M Unit := do
+def bindLocal (ptr : V .i64) (bs : List Buf) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (bindOff gb))
     storeI32 id (← absAddr ptr (LOCAL_OFF + 4 * j))
@@ -506,7 +500,7 @@ def bindLocal (ptr : R) (bs : List Buf) : M Unit := do
 /-- Enqueue the kernel in slot `i` over `g` blocks of one warp, without
     synchronising.  It binds the slot's own buffers, which is what its
     parameters were emitted against. -/
-def enqueueSlot (ptr : R) (i g : Nat) : M Unit := do
+def enqueueSlot (ptr : V .i64) (i g : Nat) : Prog V L Unit := do
   let bs := slotBufs i
   bindLocal ptr bs
   let ptxOff ← iconst64 (slotOff i)
@@ -529,15 +523,15 @@ def enqueueSlot (ptr : R) (i g : Nat) : M Unit := do
 
     The one place a sync is genuinely required is before a download, and
     `fetchFn` is what follows a run. -/
-def runSeq (steps : List (Nat × Nat)) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def runSeq (steps : List (Nat × Nat)) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g) in steps do
     enqueueSlot ptr i g
   let _ ← cudaSync ptr
 
 /-- A single launch, for the per-kernel timing the demo reports. -/
-def launchSlot (i g : Nat) : HProg.Code := runSeq [(i, g)]
+def launchSlot (i g : Nat) : Prog V L Unit := runSeq [(i, g)]
 
 /-- The forward pass: two matvecs and an activation. -/
 def fwdSteps : List (Nat × Nat) := [(0, GRID1), (1, GRIDH), (2, GRID2), (3, B)]
@@ -583,8 +577,8 @@ def F32_ONE : Nat := 0x3F800000
 def F32_ZERO : Nat := 0
 
 /-- `C ← op(A)·op(B)`, one GEMM, batch of one. -/
-def gemmStep (ptr : R) (tA tB m n k aBuf bBuf cBuf : Nat) :
-    M Unit := do
+def gemmStep (ptr : V .i64) (tA tB m n k aBuf bBuf cBuf : Nat) :
+    Prog V L Unit := do
   let ta ← iconst32 tA
   let tb ← iconst32 tB
   let vm ← iconst32 m
@@ -615,9 +609,8 @@ def gemmBwd : List (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat) :=
 /-- A run of GEMMs and kernel launches, in the given order, one sync at the end.
     `.inl` is a PTX slot with its grid; `.inr` is a cuBLAS call. -/
 def runMixed (steps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Nat × Nat × Nat)))
-    : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+    : Prog V L Unit := do
+  let ptr ← basePtr
   for st in steps do
     match st with
     | .inl (i, g) => enqueueSlot ptr i g
@@ -637,7 +630,7 @@ def bwdBlasSteps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Na
 /-- The bodies this artifact ships, in the order their function indices run.
     `clifIR` numbers them from this list, so an index cannot drift from the body
     it names. -/
-def shippedBodies : List HProg.Code :=
+def shippedBodies : List Prog.Body :=
   [ loadCode
   , uploadCode xB (B * IN * 4), uploadCode ohB (B * C * 4)
   , fetchCode logB (B * C * 4)
@@ -652,19 +645,11 @@ def shippedBodies : List HProg.Code :=
   , launchSlot 3 B, uploadCode biasB (C * 4), fetchCode dlogB (B * C * 4)
   , runMixed fwdBlasSteps, runMixed bwdBlasSteps ]
 
-/-- Every shipped body is well-formed. Most are built under a binder — a buffer
-    and a byte count, or a list of launches — so there is no instance for
-    `compileFn` to `decide` on; the check is made once over the whole list. -/
-theorem shipped_wf :
-    shippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
 
-def clifIR : Program :=
-  program <|
-    noopFunction :: shippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp shipped_wf p.1.1 p.1.2))
+def clifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: shippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1)
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -682,8 +667,8 @@ def initialMemory : List UInt8 :=
     ++ ptxAll.flatMap slotBytes
     ++ zeros (MEM_SIZE - BIND_OFF)
 
-def setup : Setup := {
-  clif := clifIR
+def setup (clif : Program) : Setup := {
+  clif,
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
@@ -1010,10 +995,10 @@ def mlpTable : List KernelBinding :=
     surface.  It buys a fixed nine-stage fact — the depth-carrying host code is
     a loop, and `Clif.loopsOf` recovers that instead of unrolling it. -/
 theorem fwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps) env) = mlpOps fwdSteps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq fwdSteps)) = mlpOps fwdSteps := by native_decide
 
 theorem bwd_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps) env) = mlpOps bwdSteps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq bwdSteps)) = mlpOps bwdSteps := by native_decide
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.** -/
@@ -1026,13 +1011,13 @@ theorem bwd_realises : pipelineOf? mlpTable none (mlpOps bwdSteps) = some bwdPip
     `mlpTable` into `fwdPipeline`, and that pipeline computes the composite of
     its stages — with no intermediate assumed anywhere along the way. -/
 theorem fwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq fwdSteps) env)) = some fwdPipeline
+    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq fwdSteps))) = some fwdPipeline
       ∧ (fwdPipeline.run st).mem = fwdPipeline.denote st.mem :=
   ⟨by rw [fwd_ops_are]; exact fwd_realises, fwdPipeline_runs st⟩
 
 /-- …and the backward half-step, optimiser included. -/
 theorem bwd_host_computes (st : WSt) :
-    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runSeq bwdSteps) env)) = some bwdPipeline
+    pipelineOf? mlpTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runSeq bwdSteps))) = some bwdPipeline
       ∧ (bwdPipeline.run st).mem = bwdPipeline.denote st.mem :=
   ⟨by rw [bwd_ops_are]; exact bwd_realises, bwdPipeline_runs st⟩
 
@@ -1217,11 +1202,11 @@ noncomputable def blasDeclared : List DeclaredBinding :=
 
 /-- **Seam guard: the emitted cuBLAS driver performs these device writes.** -/
 theorem fwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps) env)
+    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed fwdBlasSteps))
       = mixedOps fwdBlasSteps := by native_decide
 
 theorem bwd_blas_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps) env)
+    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed bwdBlasSteps))
       = mixedOps bwdBlasSteps := by native_decide
 
 /-- …and they are the plan — five declared steps and four proven ones, in the
@@ -1240,10 +1225,10 @@ theorem bwd_blas_realises :
     being `Honours R`, which is `Law.cublasIsMatvec` at these five call sites. -/
 theorem blas_host_computes (R : Realisation) (hR : Honours R) (st : WSt) :
     planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed fwdBlasSteps) env))
+        (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed fwdBlasSteps)))
           = some fwdBlasPlan
       ∧ planOf? mlpTable blasDeclared none
-        (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (runMixed bwdBlasSteps) env))
+        (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (runMixed bwdBlasSteps)))
           = some bwdBlasPlan
       ∧ (Plan.run R fwdBlasPlan st).mem = fwdPipeline.denote st.mem
       ∧ (Plan.run R bwdBlasPlan st).mem = bwdPipeline.denote st.mem :=
@@ -2158,9 +2143,9 @@ theorem qwenMap_ok :
     qMemMap.okB = true ∧ qMemMap.withinB QMEM_SIZE = true := by decide
 
 /-- Allocate every buffer, then upload the thirteen inputs. -/
-def qLoadFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qLoadFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -2172,25 +2157,25 @@ def qLoadFn : HProg.Code :=
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt qHostIn i)
     let id ← load32 (← absAddr ptr (qBindOff i))
     let bytes ← iconst64 (qInBytes.getD i 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
-def qUploadFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qUploadFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (qBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
 
-def qFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qFetchFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (qBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
 /-- **Bind one kernel's own buffers.**
 
@@ -2198,7 +2183,7 @@ def qFetchFn (b n : Nat) : HProg.Code :=
     kernel names into the compact table its parameters were emitted against.
     Slot `j` of the kernel is global buffer `bs[j]`, which is exactly the
     compaction `localStmt` renamed by. -/
-def qBindLocal (ptr : R) (bs : List Buf) : M Unit := do
+def qBindLocal (ptr : V .i64) (bs : List Buf) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (qBindOff gb))
     storeI32 id (← absAddr ptr (QLOCAL_OFF + 4 * j))
@@ -2208,7 +2193,7 @@ def qBindLocal (ptr : R) (bs : List Buf) : M Unit := do
     The buffer count the driver is handed is `bs.length` — the length of the
     very list `qBindLocal` just wrote — so a launch and its table cannot
     disagree.  Every site goes through here rather than restating it. -/
-def qEnqueue (ptr : R) (i g : Nat) (bs : List Buf) : M Unit := do
+def qEnqueue (ptr : V .i64) (i g : Nat) (bs : List Buf) : Prog V L Unit := do
   qBindLocal ptr bs
   let ptxOff ← iconst64 (qSlotOff i)
   let nBufs ← iconst32 bs.length
@@ -2219,7 +2204,7 @@ def qEnqueue (ptr : R) (i g : Nat) (bs : List Buf) : M Unit := do
   let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one warp one one
 
 /-- The same, onto a stream, for the captured graph. -/
-def qEnqueueOn (ptr : R) (i g : Nat) (bs : List Buf) (sid : R) : M Unit := do
+def qEnqueueOn (ptr : V .i64) (i g : Nat) (bs : List Buf) (sid : V .i32) : Prog V L Unit := do
   qBindLocal ptr bs
   let ptxOff ← iconst64 (qSlotOff i)
   let nBufs ← iconst32 bs.length
@@ -2234,18 +2219,18 @@ def qEnqueueOn (ptr : R) (i g : Nat) (bs : List Buf) (sid : R) : M Unit := do
 
     The steps are `qwenSteps` — the slots and grids the stages declare — so the
     driver names no geometry of its own. -/
-def qRunFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qRunFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g, bs) in qLaunches 0 qwenTape do
     qEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
 /-- The first `k` launches only — the forward half at `k = 28`, and a way to
     find which launch a fault comes from. -/
-def qRunUpto (k : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qRunUpto (k : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g, bs) in (qLaunches 0 qwenTape).take k do
     qEnqueue ptr i g bs
   let _ ← cudaSync ptr
@@ -2262,22 +2247,22 @@ def qRunUpto (k : Nat) : HProg.Code :=
     What replay then performs is a *declared* fact about the driver — the
     launches are not re-derived from the graph — and it is named in the ledger
     beside the other things the hardware is trusted to do. -/
-def qCaptureFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qCaptureFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, g, bs) in qLaunches 0 qwenTape do
     qEnqueue ptr i g bs
   let _ ← cudaSync ptr
-  let sid ← call IR.Ffi.cudaStreamCreate.id [ctxPtr]
+  let sid ← ffi .cudaStreamCreate %[ctxPtr]
   storeI32 sid (← absAddr ptr QSTREAM_OFF)
-  let _ ← call IR.Ffi.cudaGraphBeginCapture.id [ctxPtr, sid]
+  let _ ← ffi .cudaGraphBeginCapture %[ctxPtr, sid]
   for (i, g, bs) in qLaunches 0 qwenTape do
     qEnqueueOn ptr i g bs sid
-  let gid ← call IR.Ffi.cudaGraphEndCapture.id [ctxPtr, sid]
+  let gid ← ffi .cudaGraphEndCapture %[ctxPtr, sid]
   storeI32 gid (← absAddr ptr QGRAPH_OFF)
-  let _ ← call IR.Ffi.cudaGraphUpload.id [ctxPtr, gid, sid]
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
+  let _ ← ffi .cudaGraphUpload %[ctxPtr, gid, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
 
 /-- The bind array a qwen launch fills: this operation's own buffers, as the
     layout slots the handles were loaded from. -/
@@ -2320,7 +2305,7 @@ def qOps : List DeviceOp :=
 
 /-- **Seam guard: the emitted block driver performs these launches.** -/
 theorem qwen_run_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qRunFn env) = qOps := by native_decide
+    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 qRunFn) = qOps := by native_decide
 
 set_option maxRecDepth 100000 in
 /-- **…and those launches are the proven pipeline.**
@@ -2349,7 +2334,7 @@ set_option maxRecDepth 100000 in
     what was proven. -/
 theorem qwen_capture_records_the_run :
     ∃ s : Nat,
-      AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 qCaptureFn env)
+      AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 qCaptureFn)
           = qOps ++ qOps.map (onStream s)
         ∧ pipelineOf? qTable none qOps = some qwenPipeline
         ∧ pipelineOf? qTable (some s) (qOps.map (onStream s)) = some qwenPipeline :=
@@ -2363,15 +2348,15 @@ theorem qwen_capture_records_the_run :
     One driver call per step instead of ninety.  The bind array is not touched:
     a graph holds the parameters it was captured with, which is exactly why
     this entry exists for the training step and not for the dispatch one. -/
-def qReplayFn (k : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qReplayFn (k : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let sid ← load32 (← absAddr ptr QSTREAM_OFF)
   let gid ← load32 (← absAddr ptr QGRAPH_OFF)
   for _ in List.range k do
-    let _ ← call IR.Ffi.cudaGraphLaunch.id [ctxPtr, gid, sid]
-  let _ ← call IR.Ffi.cudaStreamSync.id [ctxPtr, sid]
+    let _ ← ffi .cudaGraphLaunch %[ctxPtr, gid, sid]
+  let _ ← ffi .cudaStreamSync %[ctxPtr, sid]
 
 
 /-! ### The replay, in the plan -/
@@ -2404,11 +2389,11 @@ noncomputable def qReplayPlan (k : Nat) : Plan :=
 
 /-- **Seam guard: the replay entries perform exactly `k` graph launches.** -/
 theorem qwen_replay_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 1) env)
+    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (qReplayFn 1))
         = List.replicate 1 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 2) env)
+      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (qReplayFn 2))
         = List.replicate 2 (qGraphRec, { args := qGraphArgs })
-      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 1 (qReplayFn 4) env)
+      ∧ AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 1 (qReplayFn 4))
         = List.replicate 4 (qGraphRec, { args := qGraphArgs }) := by native_decide
 
 /-- **…and those launches are `k` replays of the captured pipeline.**
@@ -2464,18 +2449,18 @@ theorem qwen_replay_denote : ∀ (k : Nat) (m : Buf → Nat → Float32),
 
 /-- One synchronisation per launch, so a fault is attributed to the launch
     that caused it rather than to whatever call next waits on the device. -/
-def qRunSynced : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qRunSynced : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g, bs) in qLaunches 0 qwenTape do
     qEnqueue ptr i g bs
     let _ ← cudaSync ptr
 
 /-- The forward half only, so a host can re-evaluate the loss at a perturbed
     weight without also recomputing gradients. -/
-def qRunFwd : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qRunFwd : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g, bs) in (qLaunches 0 qwenTape).take 28 do
     qEnqueue ptr i g bs
   let _ ← cudaSync ptr
@@ -2483,31 +2468,26 @@ def qRunFwd : HProg.Code :=
 /-- The forward half under the fused schedule: the same stages, with the second
     norm's scale and gain in one kernel.  Its slots sit after the tape's, which
     is why the launch base is `qwenTape.length`. -/
-def qRunFused : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def qRunFused : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g, bs) in qLaunches qwenTape.length qwenFwdFused do
     qEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
 /-- The bodies the quantised artifact carries, in the order it numbers them. -/
-def qShippedBodies : List HProg.Code :=
+def qShippedBodies : List Prog.Body :=
   [ qLoadFn, qRunFn, qFetchFn 39 (DM * 4), qRunFwd, qUploadFn 40 (DM * 4)
   , qFetchFn 43 (DM * DFF * 4), qUploadFn 12 (DM * DFF * 4)
   , qRunUpto 30, qRunUpto 45, qRunUpto 60, qRunUpto 75
   , qRunSynced, qCaptureFn, qReplayFn 1, qReplayFn 2, qReplayFn 4
   , qRunUpto 31, qRunUpto 34, qRunUpto 35, qRunUpto 37, qRunFused ]
 
-theorem qShipped_wf :
-    qShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
 
-def qClifIR : Program :=
-  program <|
-    noopFunction :: qShippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp qShipped_wf p.1.1 p.1.2))
+def qClifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: qShippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1)
 
 def qSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -2519,8 +2499,8 @@ def qInitialMemory : List UInt8 :=
     ++ qwenPtx.flatMap qSlotBytes
     ++ zeros (QMEM_SIZE - QBIND_OFF)
 
-def qSetup : Setup := {
-  clif := qClifIR
+def qSetup (clif : Program) : Setup := {
+  clif
   memory_size := QMEM_SIZE
   initial_memory := qInitialMemory
 }
@@ -2753,9 +2733,9 @@ theorem moeMap_ok :
     mMemMap.okB = true ∧ mMemMap.withinB MMEM_SIZE = true := by decide
 
 /-- Allocate every buffer, then upload the weights that never move. -/
-def mLoadFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def mLoadFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -2768,12 +2748,12 @@ def mLoadFn : HProg.Code :=
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn i)
     let id ← load32 (← absAddr ptr (mBindOff i))
     let bytes ← iconst64 (mBufBytes.getD i 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
   for k in List.range (3 * NE) do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt mHostIn (3 + k))
     let id ← load32 (← absAddr ptr (mBindOff (MSTORE + k)))
     let bytes ← iconst64 (MDFF * MD * 4)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
 /-- **Choosing experts, as the host does it.**
 
@@ -2783,9 +2763,9 @@ def mLoadFn : HProg.Code :=
     and no weight copied.  The expert index is loaded, so the address is
     computed at run time; nothing about which expert is chosen is baked into
     the image. -/
-def mBindExperts : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def mBindExperts : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let four ← iconst64 4
   let three ← iconst64 3
@@ -2802,14 +2782,14 @@ def mBindExperts : HProg.Code :=
 
 /-- Copy the buffer ids one launch names into its own table, so the store that
     `mBindExperts` rewrote is what the kernel reads. -/
-def mBindLocal (ptr : R) (bs : List Buf) : M Unit := do
+def mBindLocal (ptr : V .i64) (bs : List Buf) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (mBindOff gb))
     storeI32 id (← absAddr ptr (MLOCAL_OFF + 4 * j))
 
 /-- Enqueue slot `i` over `g` blocks against the expert table; the count the
     driver is handed is the length of the list just bound. -/
-def mEnqueue (ptr : R) (i g : Nat) (bs : List Buf) : M Unit := do
+def mEnqueue (ptr : V .i64) (i g : Nat) (bs : List Buf) : Prog V L Unit := do
   mBindLocal ptr bs
   let ptxOff ← iconst64 (qSlotOff i)
   let nBufs ← iconst32 bs.length
@@ -2825,48 +2805,43 @@ def mLaunches : List (Nat × Nat × List Buf) :=
     (moeTape.map (fun o => (TOp.gridOf o, TOp.bufs 1 o)))
 
 /-- Launches `[lo, hi)` of the dispatch tape. -/
-def mRunRange (lo hi : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def mRunRange (lo hi : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g, bs) in (mLaunches.take hi).drop lo do
     mEnqueue ptr i g bs
   let _ ← cudaSync ptr
 
-def mUploadFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def mUploadFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (mBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
 
-def mFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def mFetchFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (mBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
 /-- The bodies the mixture-of-experts artifact carries, in the order it numbers
     them. -/
-def mShippedBodies : List HProg.Code :=
+def mShippedBodies : List Prog.Body :=
   [ mLoadFn, mRunRange 0 mRouterTape.length, mFetchFn MGATE (NE * 4)
   , mBindExperts, mUploadFn 3 128
   , mRunRange mRouterTape.length moeTape.length, mFetchFn MOUT (MD * 4) ]
 
-theorem mShipped_wf :
-    mShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
 
-def mClifIR : Program :=
-  program <|
-    noopFunction :: mShippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp mShipped_wf p.1.1 p.1.2))
+def mClifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: mShippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1)
 
 def mInitialMemory : List UInt8 :=
   zeros QHOST_LEN_OFF ++ u32le MHOST_BYTES
@@ -2874,14 +2849,14 @@ def mInitialMemory : List UInt8 :=
     ++ moePtx.flatMap qSlotBytes
     ++ zeros (MMEM_SIZE - MBIND_OFF)
 
-def mSetup : Setup := {
-  clif := mClifIR
+def mSetup (clif : Program) : Setup := {
+  clif
   memory_size := MMEM_SIZE
   initial_memory := mInitialMemory
 }
 
-def artifacts : Array Json :=
-  #[ toJsonArtifact "ten_qwen_block" qSetup { fn_idx := u32 1 }
+def artifacts (clif qClif mClif : Program) : Array Json :=
+  #[ toJsonArtifact "ten_qwen_block" (qSetup qClif) { fn_idx := u32 1 }
        [("runBlock", { fn_idx := u32 2 }),
         ("fetchOut", { fn_idx := u32 3 }),
         ("runFwd", { fn_idx := u32 4 }),
@@ -2902,14 +2877,14 @@ def artifacts : Array Json :=
         ("runTo35", { fn_idx := u32 19 }),
         ("runTo37", { fn_idx := u32 20 }),
         ("runFwdFused", { fn_idx := u32 21 })],
-     toJsonArtifact "ten_moe_dispatch" mSetup { fn_idx := u32 1 }
+     toJsonArtifact "ten_moe_dispatch" (mSetup mClif) { fn_idx := u32 1 }
        [("runRouter", { fn_idx := u32 2 }),
         ("fetchGate", { fn_idx := u32 3 }),
         ("bindExperts", { fn_idx := u32 4 }),
         ("uploadGates", { fn_idx := u32 5 }),
         ("runExperts", { fn_idx := u32 6 }),
         ("fetchOut", { fn_idx := u32 7 })],
-     toJsonArtifact "mlp_cifar" setup { fn_idx := u32 1 }
+     toJsonArtifact "mlp_cifar" (setup clif) { fn_idx := u32 1 }
        [("uploadX",  { fn_idx := u32 2 }),
         ("uploadOneHot", { fn_idx := u32 3 }),
         ("fetchLogits", { fn_idx := u32 4 }),
@@ -2942,7 +2917,10 @@ end MlpCifar
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir MlpCifar.artifacts
+  let clif ← Prog.orDie MlpCifar.clifIR
+  let qClif ← Prog.orDie MlpCifar.qClifIR
+  let mClif ← Prog.orDie MlpCifar.mClifIR
+  emitArtifacts outDir (MlpCifar.artifacts clif qClif mClif)
 
 
 #eval ShipScan.check "MlpCifarAlgorithm"

@@ -196,23 +196,21 @@ def buildPayload (m k n : Nat) : List UInt8 :=
 -- cleanup, write output file. No timestep loop — one kernel, one result.
 -- ---------------------------------------------------------------------------
 
-open AlgorithmLib.IR in
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def fnWrite : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.cuda, .fileIO]
+abbrev fnWrite : Ffi := .fileWrite
 
-def code (m k n : Nat) : HProg.Code :=
+def code (m k n : Nat) : Prog V L Unit :=
   let aBytes := m * k * 4
   let bBytes := k * n * 4
   let cBytes := m * n * 4
   let aOff := DATA_OFF
   let bOff := aOff + aBytes
   let cOff := bOff + bBytes
-  HProg.Sur.build (env := env) do
-    let ptr := basePtr
+  do
+    let ptr ← basePtr
     let c0 ← iconst64 0
 
     -- CUDA init
@@ -257,23 +255,21 @@ def code (m k n : Nat) : HProg.Code :=
 
     -- Write output file: bytes [cOff .. cOff + cBytes)
     let fnOffV ← iconst64 OUTPUT_FN_OFF
-    let _ ← call fnWrite.id [ptr, fnOffV, cOffV, c0, cSz]
+    let _ ← ffi fnWrite %[ptr, fnOffV, cOffV, c0, cSz]
 
 
-def clifIrSource (m k n : Nat)
-    (hwf : HProg.wf env HProg.ptrParams (code m k n) = true) : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 (code m k n) env (hwf := hwf)]
+def clifIrSource (m k n : Nat) : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 (code m k n)]
 
 -- ---------------------------------------------------------------------------
 -- Monomorphic builder: takes concrete dims, returns (Setup, Algorithm).
 -- ---------------------------------------------------------------------------
 
-def buildMatmulConfig (m k n : Nat)
-    (hwf : HProg.wf env HProg.ptrParams (code m k n) = true) : Setup × Algorithm :=
+def buildMatmulConfig (m k n : Nat) (clif : Program) : Setup × Algorithm :=
   let payload := buildPayload m k n
   let memSize := payload.length
   let cfg : Setup := {
-    clif := clifIrSource m k n hwf,
+    clif,
     memory_size := memSize,
     initial_memory := payload
   }
@@ -288,8 +284,8 @@ def buildMatmulConfig (m k n : Nat)
 -- ---------------------------------------------------------------------------
 
 def matmul {m k n : Nat} (_A : Matrix m k) (_B : Matrix k n)
-    (hwf : HProg.wf env HProg.ptrParams (code m k n) = true) : Setup × Algorithm :=
-  buildMatmulConfig m k n hwf
+    (clif : Program) : Setup × Algorithm :=
+  buildMatmulConfig m k n clif
 
 -- ---------------------------------------------------------------------------
 -- Demo: shapes fixed at Lean compile time.
@@ -303,10 +299,9 @@ def N : Nat := 256
 def A : Matrix M K := mkMatrix M K
 def B : Matrix K N := mkMatrix K N
 
-/-- Well-formed at the dimensions that ship. -/
-theorem code_wf : HProg.wf env HProg.ptrParams (code M K N) = true := by decide
-
-def result : Setup × Algorithm := matmul A B code_wf  -- : Matrix M N (erased)
+/-- What ships, at the dimensions the types above fix. -/
+def result : Except String (Setup × Algorithm) := do
+  return matmul A B (← clifIrSource M K N)   -- : Matrix M N (erased)
 
 -- Uncomment to see the dependent-type check in action:
 --
@@ -318,7 +313,7 @@ def result : Setup × Algorithm := matmul A B code_wf  -- : Matrix M N (erased)
 end Matmul
 
 def main (args : List String) : IO Unit := do
-  let (cfg, alg) := Matmul.result
+  let (cfg, alg) ← Prog.orDie Matmul.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "matmul_app" cfg alg]
 

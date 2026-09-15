@@ -18,12 +18,11 @@ namespace TokenizerScan
 
 /-- **The claims the standalone tokenizer artifact makes.**
 
-    Both structural, like every guard in this application: the regions of its
-    memory do not overlap and stay inside it, and its one body is well-formed
-    in its environment. -/
-def roots : List Name :=
-  [ ``TokenizerTest.tokenizerTestMap_ok
-  , ``TokenizerTest.tokenizerTestShipped_wf ]
+    Structural, like every guard in this application: the regions of its
+    memory do not overlap and stay inside it. That its one body is well-formed
+    is no longer a theorem to name --- `compileProg` decides it when the
+    generator runs, and refuses to write the artifact otherwise. -/
+def roots : List Name := [ ``TokenizerTest.tokenizerTestMap_ok ]
 
 /-- **What the tokenizer is relied on to do, and is not proven to.** -/
 def openObligations : List String :=

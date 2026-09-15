@@ -11,6 +11,7 @@ open AlgorithmLib.WGSL
 
 namespace GpuIterBench
 
+
 /-
   GPU Iterative: apply scale kernel (*1.001) N times, then reduce.
   Payload: [passes: i64][f32 values: M], Output: [f32 partial sums: M/64]
@@ -55,78 +56,74 @@ def reduceShader : String :=
       ifB (lidX .== litU 0) do
         assign (arrIdx sums widX) (arrIdxN partialArr (litU 0))
 
-/-- The GPU entry points, declared through the same helpers every generator
-    uses, so the term's callee table cannot drift from their signatures. -/
-def env : FnEnv := env% [.gpu]
+abbrev fnInit : Ffi := .gpuInit
+abbrev fnCreateBuffer : Ffi := .gpuCreateBuffer
+abbrev fnCreatePipeline : Ffi := .gpuCreatePipeline
+abbrev fnUploadPtr : Ffi := .gpuUploadPtr
+abbrev fnDispatch : Ffi := .gpuDispatch
+abbrev fnDownloadPtr : Ffi := .gpuDownloadPtr
+abbrev fnCleanup : Ffi := .gpuCleanup
 
-def fnInit : Nat := IR.Ffi.gpuInit.id
-def fnCreateBuffer : Nat := IR.Ffi.gpuCreateBuffer.id
-def fnCreatePipeline : Nat := IR.Ffi.gpuCreatePipeline.id
-def fnUploadPtr : Nat := IR.Ffi.gpuUploadPtr.id
-def fnDispatch : Nat := IR.Ffi.gpuDispatch.id
-def fnDownloadPtr : Nat := IR.Ffi.gpuDownloadPtr.id
-def fnCleanup : Nat := IR.Ffi.gpuCleanup.id
-
-open HProg.Sur in
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+open AlgorithmLib.Prog in
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
 
   -- Read passes from payload start
   let passes    ← load64 dataPtr
   let floatBytes← iaddImm dataLen (-8)
   let floatPtr  ← iaddImm dataPtr 8
 
-  let ctxSlotPtr ← absAddr basePtr 8
-  callVoid fnInit [ctxSlotPtr]
+  let ctxSlotPtr ← absAddr (← basePtr) 8
+  ffiVoid fnInit %[ctxSlotPtr]
   let ctxPtr ← load64 ctxSlotPtr
 
-  let dataBufId ← call fnCreateBuffer [ctxPtr, floatBytes]
+  let dataBufId ← ffi fnCreateBuffer %[ctxPtr, floatBytes]
   let sumsBufSize← ushrImm floatBytes 6   -- floatBytes / 64
-  let sumsBufId  ← call fnCreateBuffer [ctxPtr, sumsBufSize]
-  let _ ← call fnUploadPtr [ctxPtr, dataBufId, floatPtr, floatBytes]
+  let sumsBufId  ← ffi fnCreateBuffer %[ctxPtr, sumsBufSize]
+  let _ ← ffi fnUploadPtr %[ctxPtr, dataBufId, floatPtr, floatBytes]
 
   -- Scale pipeline (1 binding)
-  let scaleShaderAddr ← absAddr basePtr SCALE_SHADER_OFF
-  let scaleBindAddr   ← absAddr basePtr SCALE_BIND_OFF
+  let scaleShaderAddr ← absAddr (← basePtr) SCALE_SHADER_OFF
+  let scaleBindAddr   ← absAddr (← basePtr) SCALE_BIND_OFF
   let one ← iconst32 1
-  let scalePipeId ← call fnCreatePipeline [ctxPtr, scaleShaderAddr, scaleBindAddr, one]
+  let scalePipeId ← ffi fnCreatePipeline %[ctxPtr, scaleShaderAddr, scaleBindAddr, one]
 
   -- Reduce pipeline (2 bindings)
-  let reduceShaderAddr ← absAddr basePtr REDUCE_SHADER_OFF
-  let reduceBindAddr   ← absAddr basePtr REDUCE_BIND_OFF
+  let reduceShaderAddr ← absAddr (← basePtr) REDUCE_SHADER_OFF
+  let reduceBindAddr   ← absAddr (← basePtr) REDUCE_BIND_OFF
   let two ← iconst32 2
-  let reducePipeId ← call fnCreatePipeline [ctxPtr, reduceShaderAddr, reduceBindAddr, two]
+  let reducePipeId ← ffi fnCreatePipeline %[ctxPtr, reduceShaderAddr, reduceBindAddr, two]
 
   -- workgroups = (floatBytes/4 + 63) / 64 = (floatBytes + 252) / 256
   let wg ← ireduce32 (← ushrImm (← iaddImm floatBytes 252) 8)
 
   -- Dispatch scale `passes` times, then a final reduce
   let _ ← wloop1 (← iconst64 0)
-    (head := fun i => return (contIfULt i passes, ([] : List R), ()))
+    (head := fun i => return (contIfULt i passes, %[], ()))
     (body := fun i _ => do
-      let _ ← call fnDispatch [ctxPtr, scalePipeId, wg, one, one]
-      return [← iaddImm i 1])
-  let _ ← call fnDispatch [ctxPtr, reducePipeId, wg, one, one]
+      let _ ← ffi fnDispatch %[ctxPtr, scalePipeId, wg, one, one]
+      return %[← iaddImm i 1])
+  let _ ← ffi fnDispatch %[ctxPtr, reducePipeId, wg, one, one]
   let bufOff ← iconst64 0
-  let _ ← call fnDownloadPtr [ctxPtr, sumsBufId, bufOff, outPtr, sumsBufSize]
+  let _ ← ffi fnDownloadPtr %[ctxPtr, sumsBufId, bufOff, outPtr, sumsBufSize]
 
-  callVoid fnCleanup [ctxSlotPtr]
+  ffiVoid fnCleanup %[ctxSlotPtr]
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 /-- The FFI calls the *emitted* function performs, in order.
 
     Stated through `Clif.callsOf` — the same extractor the LZ4 and ML host
-    proofs use — over `compileFn`'s output rather than a builder's state. This
+    proofs use — over the compiled body rather than the term it was written
+    as. This
     is the shape those proofs take after their generators move to terms: the
     claim is unchanged, only what produced the program is. -/
 theorem emitted_calls :
-    Clif.callsOf (HProg.compileBody 1 code)
+    Clif.callsOf (Prog.stateOf 1 code)
       = ["cl_gpu_init", "cl_gpu_create_buffer", "cl_gpu_create_buffer",
          "cl_gpu_upload_ptr", "cl_gpu_create_pipeline", "cl_gpu_create_pipeline",
          "cl_gpu_dispatch", "cl_gpu_dispatch", "cl_gpu_download_ptr",
@@ -137,7 +134,7 @@ theorem emitted_calls :
     Recorded because it is the limit that makes recovery-from-a-CFG the weaker
     route: the term says `Piece.loop` whatever the bound is. -/
 theorem emitted_loops_not_static :
-    Clif.loopsOf (HProg.compileBody 1 code) = [] := by
+    Clif.loopsOf (Prog.stateOf 1 code) = [] := by
   native_decide
 
 def scaleShaderBytes  : List UInt8 := scaleShader.toUTF8.toList ++ [0]
@@ -175,9 +172,9 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "gpu_iter_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE,
     initial_memory := buildInitialMemory
   } {

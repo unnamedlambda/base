@@ -32,58 +32,55 @@ def DATA_OFF        : Nat := 19712
 def MAX_DATA_BYTES  : Nat := 64 * 1024 * 1024
 def MEM_SIZE        : Nat := DATA_OFF + MAX_DATA_BYTES
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The thread and file entry points, in callee-table order. -/
-def env : FnEnv := env% [.thread, .fileIO]
 
-def fnThInit : Nat := IR.Ffi.threadInit.id
-def fnThSpawn : Nat := IR.Ffi.threadSpawn.id
-def fnThJoin : Nat := IR.Ffi.threadJoin.id
-def fnThCleanup : Nat := IR.Ffi.threadCleanup.id
-def fnRead : Nat := IR.Ffi.fileRead.id
-def fnWrite : Nat := IR.Ffi.fileWrite.id
+abbrev fnThInit : Ffi := .threadInit
+abbrev fnThSpawn : Ffi := .threadSpawn
+abbrev fnThJoin : Ffi := .threadJoin
+abbrev fnThCleanup : Ffi := .threadCleanup
+abbrev fnRead : Ffi := .fileRead
+abbrev fnWrite : Ffi := .fileWrite
 
 /-- The orchestrator: copy both paths, read, spawn `WORKERS`, join them, and
     merge their per-worker histograms bin by bin. -/
-def orchCode : HProg.Code := clif% do
-  let ptr := basePtr
+def orchCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero    ← iconst64 0
 
-  let inEnd ← dwloop [zero] .eq zero (contOnTrue := false) [0]
+  let inEnd ← dwloop %[zero] .eq zero (contOnTrue := false) [0]
     (body := fun c => do
-      let si := c.headD 0
+      let si := c.head
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr INPUT_PATH_OFF) si)
       let si' ← iaddImm si 1
-      return (ch, [si']))
+      return (ch, %[si']))
 
-  let _ ← dwloop [inEnd.headD 0, zero] .eq zero (contOnTrue := false) []
+  let _ ← dwloop %[inEnd.head, zero] .eq zero (contOnTrue := false) []
     (body := fun c => do
-      let si := c.headD 0; let di := c.getD 1 0
+      let si := c.head; let di := c.snd
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di)
       let si' ← iaddImm si 1
       let di' ← iaddImm di 1
-      return (ch, [si', di']))
+      return (ch, %[si', di']))
 
-  let fileSize ← call fnRead
-    [ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 DATA_OFF, zero, zero]
+  let fileSize ← ffi fnRead
+    %[ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 DATA_OFF, zero, zero]
   let n        ← ushrImm fileSize 2          -- n = bytes / 4
   let nPlus    ← iaddImm n 3
   let workers4 ← iconst64 WORKERS
   let chunk    ← udiv nPlus workers4
   let ctxSlot  ← absAddr ptr THREAD_CTX_OFF
-  callVoid fnThInit [ctxSlot]
+  ffiVoid fnThInit %[ctxSlot]
   let ctxPtr   ← load64 ctxSlot
   let fnIdx    ← iconst64 3   -- worker function index
 
   -- Spawn. `n` and `chunk` do not change, so they stay in scope.
-  let _ ← dwloop [zero] .ult workers4 (contOnTrue := true) []
+  let _ ← dwloop %[zero] .ult workers4 (contOnTrue := true) []
     (body := fun c => do
-      let wk := c.headD 0
+      let wk := c.head
       let descOff  ← iadd (← absAddr ptr DESCS_OFF) (← imul wk (← iconst64 DESC_SIZE))
       store ptr descOff
       store (← iconst64 DATA_OFF) (← iaddImm descOff 8)
@@ -95,47 +92,47 @@ def orchCode : HProg.Code := clif% do
       let histOff ← iaddImm (← imul wk (← iconst64 HIST_STRIDE)) HIST_REGION_OFF
       store histOff (← iaddImm descOff 32)
       store (← iconst64 BINS) (← iaddImm descOff 40)
-      let handle ← call fnThSpawn [ctxPtr, fnIdx, descOff]
+      let handle ← ffi fnThSpawn %[ctxPtr, fnIdx, descOff]
       let hAddr  ← iadd (← absAddr ptr HANDLES_OFF) (← ishlImm wk 3)
       store handle hAddr
       let wk' ← iaddImm wk 1
-      return (wk', [wk']))
+      return (wk', %[wk']))
 
   -- Join
-  let _ ← dwloop [zero] .ult workers4 (contOnTrue := true) []
+  let _ ← dwloop %[zero] .ult workers4 (contOnTrue := true) []
     (body := fun c => do
-      let wk := c.headD 0
+      let wk := c.head
       let hAddr ← iadd (← absAddr ptr HANDLES_OFF) (← ishlImm wk 3)
       let handle ← load64 hAddr
-      let _ ← call fnThJoin [ctxPtr, handle]
+      let _ ← ffi fnThJoin %[ctxPtr, handle]
       let wk' ← iaddImm wk 1
-      return (wk', [wk']))
+      return (wk', %[wk']))
 
   -- Merge: one bin a trip on the outside, one worker a trip within
-  let _ ← dwloop [zero] .ult (← iconst64 BINS) (contOnTrue := true) []
+  let _ ← dwloop %[zero] .ult (← iconst64 BINS) (contOnTrue := true) []
     (body := fun cb => do
-      let mbin := cb.headD 0
-      let acc ← dwloop [zero, zero] .ult workers4 (contOnTrue := true) [1]
+      let mbin := cb.head
+      let acc ← dwloop %[zero, zero] .ult workers4 (contOnTrue := true) [1]
         (body := fun c => do
-          let mwk := c.headD 0; let msum := c.getD 1 0
+          let mwk := c.head; let msum := c.snd
           let histBase ← iaddImm (← imul mwk (← iconst64 HIST_STRIDE)) HIST_REGION_OFF
           let binAddr  ← iadd ptr (← iadd histBase (← ishlImm mbin 3))
           let cnt2     ← load64 binAddr
           let msum'    ← iadd msum cnt2
           let mwk'     ← iaddImm mwk 1
-          return (mwk', [mwk', msum']))
+          return (mwk', %[mwk', msum']))
       let resAddr ← iadd ptr (← iaddImm (← ishlImm mbin 3) RESULT_OFF)
-      store (acc.headD 0) resAddr
+      store (acc.head) resAddr
       let mbin' ← iaddImm mbin 1
-      return (mbin', [mbin']))
+      return (mbin', %[mbin']))
 
-  let _ ← call fnWrite [ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 RESULT_OFF,
+  let _ ← ffi fnWrite %[ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 RESULT_OFF,
                         zero, ← iconst64 RESULT_SIZE]
-  callVoid fnThCleanup [← absAddr ptr THREAD_CTX_OFF]
+  ffiVoid fnThCleanup %[← absAddr ptr THREAD_CTX_OFF]
 
 /-- One worker: zero its own histogram, then count its slice. -/
-def workerCode : HProg.Code := clif% do
-  let desc := basePtr
+def workerCode : Prog V L Unit := do
+  let desc := (← basePtr)
   let zero ← iconst64 0
 
   let base      ← load64 desc
@@ -153,47 +150,43 @@ def workerCode : HProg.Code := clif% do
   let cnt4      ← band dataCnt (← iconst64 (-4))
   let dataEnd4  ← iadd dataPtr2 (← ishlImm cnt4 2)
 
-  let _ ← dwloop [histPtr] .ult histEnd (contOnTrue := true) []
+  let _ ← dwloop %[histPtr] .ult histEnd (contOnTrue := true) []
     (body := fun c => do
-      let hp := c.headD 0
+      let hp := c.head
       store zero hp
       for k in [1:8] do store zero (← iaddImm hp (8 * k))
       let hp' ← iaddImm hp 64
-      return (hp', [hp']))
+      return (hp', %[hp']))
 
   let mid ← ifte .ult dataPtr2 dataEnd4
     (thn := do
       let _ ← wloop1 dataPtr2
-        (head := fun dp => return (contIfULt dp dataEnd4, ([] : List R), ()))
+        (head := fun dp => return (contIfULt dp dataEnd4, %[], ()))
         (body := fun dp _ => do
           for k in [0:4] do
             let v ← uload32_64 (← iaddImm dp (4 * k))
             let a ← iadd histPtr (← ishlImm v 3)
             let c ← load64 a
             store (← iaddImm c 1) a
-          return [← iaddImm dp 16])
-      pure [dataEnd4])
-    (els := pure [dataPtr2])
+          return %[← iaddImm dp 16])
+      pure %[dataEnd4])
+    (els := pure %[dataPtr2])
 
-  let _ ← wloop1 (mid.headD 0)
-    (head := fun dp => return (contIfULt dp dataEnd, ([] : List R), ()))
+  let _ ← wloop1 (mid.head)
+    (head := fun dp => return (contIfULt dp dataEnd, %[], ()))
     (body := fun dp _ => do
       let v ← uload32_64 dp
       let a ← iadd histPtr (← ishlImm v 3)
       let c ← load64 a
       store (← iaddImm c 1) a
-      return [← iaddImm dp 4])
+      return %[← iaddImm dp 4])
 
-theorem bodies_wf :
-    HProg.wf env HProg.ptrParams orchCode = true &&
-    HProg.wf env HProg.ptrParams workerCode = true := by decide
-
-def clifIR : Program :=
-  program
-    [noopFunction,
-     noopAt 1,
-     HProg.compileFn 2 orchCode,
-     HProg.compileFn 3 workerCode]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     .ok (noopAt 1),
+     Prog.compileProg 2 orchCode,
+     Prog.compileProg 3 workerCode]
 
 /-- Every byte of shared memory this program names.
 
@@ -220,9 +213,9 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "hist4_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 2

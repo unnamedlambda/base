@@ -18,8 +18,7 @@ work.
 open AlgorithmLib
 open AlgorithmLib.Layout
 open AlgorithmLib.IR
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
 namespace Upcase
 
@@ -52,9 +51,8 @@ def mkLayout : Fields × LayoutMeta := Layout.build do
 def f : Fields := mkLayout.1
 def layoutMeta : LayoutMeta := mkLayout.2
 
-def fnRead : FnRef := IR.Ffi.fileRead.ref
-def fnWrite : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.fileIO]
+abbrev fnRead : Ffi := .fileRead
+abbrev fnWrite : Ffi := .fileWrite
 
 /-- Read `inputFilename`, upper-case its ASCII letters in place, write
 `outputFilename`, and record how many bytes that was.
@@ -63,11 +61,10 @@ The transform is branch-free on purpose: `b - 'a'` compared *unsigned* against
 26 is both bounds at once, because a byte below `'a'` wraps to something far
 above 26. So the loop body is a load, three integer operations, a select and a
 store, with no control flow of its own. -/
-def mainCode : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def mainCode : Prog V L Unit := do
+  let ptr ← basePtr
 
-  let size ← fldReadFile ptr fnRead f.inputFilename f.fileData
+  let size ← fldReadFile ptr f.inputFilename f.fileData
   fldStore ptr f.size size
   let dataAddr ← fldAddr ptr f.fileData
 
@@ -82,10 +79,10 @@ def mainCode : HProg.Code :=
     let upper ← select isLower (← isub b toUpper) b
     istore8 upper addr
 
-  let _ ← fldWriteFile0 ptr fnWrite f.outputFilename f.fileData size
+  let _ ← fldWriteFile0 ptr f.outputFilename f.fileData size
 
-def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
+def clifIrSource : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 /-- The filenames the program reads from memory, laid into the region the
 layout reserved for them. -/
@@ -95,17 +92,20 @@ def payloads : List UInt8 :=
     f.outputFilename.init (stringToBytes "output.txt")
   ]
 
-def setup : Setup := {
-  clif := clifIrSource,
+def setup (clif : Program) : Setup := {
+  clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
 
 def algorithm : Algorithm := { fn_idx := IR.mainFnIdx }
 
+/-- What a host runs: the setup, once the body it carries has been checked. -/
+def shipped : Except String Setup := do return setup (← clifIrSource)
+
 end Upcase
 
 -- The same check every shipped artifact in this repository is held to: walk
--- from `setup` and fail the build if any body it carries reached the runtime
--- through a door other than `HProg.compileFn`.
-#eval ShipScan.check "Upcase" (root := `Upcase.setup)
+-- from the program and fail the build if any body it carries reached the
+-- runtime through a door other than the checked one.
+#eval ShipScan.check "Upcase" (root := `Upcase.shipped)

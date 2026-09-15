@@ -247,30 +247,28 @@ def compressionShader (bs : Nat) : String :=
 /-- The file and GPU entry points this program calls, named out of the
     standard table. -/
 
-def env : FnEnv := env% [.gpu, .fileIO]
-def fnRead : FnRef := IR.Ffi.fileRead.ref
-def fnWrite : FnRef := IR.Ffi.fileWrite.ref
+abbrev fnRead : Ffi := .fileRead
+abbrev fnWrite : Ffi := .fileWrite
 
-open HProg.Sur in
+open AlgorithmLib.Prog in
 /-- The body, for any block size.
 
-    `clif%` is the checked surface, but it evaluates while the file elaborates
-    and so needs every parameter concrete. This generator stays a function of
-    `bs` — that is what makes an invalid block size a type error — so it runs
-    the builder the ordinary way and `code_wf` below checks the size that
+    A function of `bs` --- which is what makes an invalid block size a type
+    error --- and nothing about that costs it anything now: the term is
+    ordinary Lean, and `compileProg` checks the body it emits at the size that
     ships. -/
-def code (bs : Nat) : HProg.Code :=
+def code (bs : Nat) : Prog V L Unit :=
   let obSz  := outputBufSize bs
   let mSz   := metaSize bs
   let mOff  := blockMeta_off bs
   let mcbSz := maxCompressedBlockSize bs
-  HProg.Sur.build (env := env) do
-    let ptr := basePtr
+  do
+    let ptr ← basePtr
 
     -- Step 1: Read input file
     let inData    ← iconst64 inputData_off
     let zero      ← iconst64 0
-    let bytesRead ← readFile ptr fnRead inputFilename_off inputData_off
+    let bytesRead ← readFile ptr inputFilename_off inputData_off
 
     -- Step 2: Align up to multiple of 4 (wgpu COPY_BUFFER_ALIGNMENT)
     let alignedSz ← alignUp4 bytesRead
@@ -344,7 +342,7 @@ def code (bs : Nat) : HProg.Code :=
     -- Write 7-byte frame header to file
     let outFname ← iconst64 outputFilename_off
     let c7 ← iconst64 7
-    let _ ← call fnWrite.id [ptr, outFname, inData, zero, c7]
+    let _ ← ffi fnWrite %[ptr, outFname, inData, zero, c7]
 
     -- Loop over blocks: write [block_size:4][block_data:N] for each
     let c8        ← iconst64 8
@@ -353,7 +351,7 @@ def code (bs : Nat) : HProg.Code :=
     -- For block_i in 0..numBlocks: write block size (4 bytes) + block data;
     -- carry the running output-file offset.  Starts at 7 (frame header bytes).
     let blkExit ← wloop2 (← iconst64 0) c7
-      (head := fun bi foff => return (contIfULt bi numBlocks, [foff], ()))
+      (head := fun bi foff => return (contIfULt bi numBlocks, %[foff], ()))
       (body := fun bi foff _ => do
         -- Read compressed size from block_meta[1 + block_i*2] = metaOff + 4 + block_i*8
         let bi8      ← imul bi c8
@@ -363,21 +361,21 @@ def code (bs : Nat) : HProg.Code :=
         let compSz32 ← load32 metaAbsI
         -- Write block_size (u32 LE) into scratch, then to file
         storeUnaligned compSz32 scratchAddr
-        let _ ← call fnWrite.id [ptr, outFname, inData, foff, c4]
+        let _ ← ffi fnWrite %[ptr, outFname, inData, foff, c4]
         -- Write block data
         let biTimesMax ← imul bi maxCompBlkV
         let blkDataRel ← iadd outDataV biTimesMax
         let compSz64   ← uextend64 compSz32
         let foffP4     ← iadd foff c4
-        let _ ← call fnWrite.id [ptr, outFname, blkDataRel, foffP4, compSz64]
+        let _ ← ffi fnWrite %[ptr, outFname, blkDataRel, foffP4, compSz64]
         let nextFoff ← iadd foffP4 compSz64
-        return [← iaddImm bi 1, nextFoff])
-    let finalFoff := blkExit.headD 0
+        return %[← iaddImm bi 1, nextFoff])
+    let finalFoff := blkExit.head
 
     -- Write 4-byte end mark (0x00000000) at the final offset
     let endMark ← iconst32 0
     storeUnaligned endMark scratchAddr
-    let _ ← call fnWrite.id [ptr, outFname, inData, finalFoff, c4]
+    let _ ← ffi fnWrite %[ptr, outFname, inData, finalFoff, c4]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction (parameterized by blockSize)
@@ -409,20 +407,18 @@ def buildPayload (bs : Nat) : List UInt8 :=
 -- The block size is fixed per instance; all layout is derived from it.
 -- ---------------------------------------------------------------------------
 
-theorem code_wf : HProg.wf env HProg.ptrParams (code 16384) = true := by decide
 
-def buildCompressor {bs : Nat} (_p : LZ4Params bs)
-    (hwf : HProg.wf env HProg.ptrParams (code bs) = true) : Setup × Algorithm :=
+def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Except String (Setup × Algorithm) := do
   let payload := buildPayload bs
   let cfg : Setup := {
-    clif := IR.program [noopFunction, HProg.compileFn 1 (code bs) env (hwf := hwf)],
+    clif := ← Prog.program [.ok noopFunction, Prog.compileProg 1 (code bs)],
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }
   let alg : Algorithm := {
     fn_idx := IR.mainFnIdx
   }
-  (cfg, alg)
+  return (cfg, alg)
 
 -- ---------------------------------------------------------------------------
 -- Demo: 16KB blocks. Both proofs close by omega.
@@ -431,7 +427,7 @@ def buildCompressor {bs : Nat} (_p : LZ4Params bs)
 
 def defaultParams : LZ4Params 16384 := ⟨by omega, by omega⟩
 
-def result : Setup × Algorithm := buildCompressor defaultParams code_wf
+def result : Except String (Setup × Algorithm) := buildCompressor defaultParams
 
 -- Uncomment to see the constraint in action:
 --
@@ -444,7 +440,7 @@ def result : Setup × Algorithm := buildCompressor defaultParams code_wf
 end Algorithm
 
 def main (args : List String) : IO Unit := do
-  let (cfg, alg) := Algorithm.result
+  let (cfg, alg) ← Prog.orDie Algorithm.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "compress_app" cfg alg]
 

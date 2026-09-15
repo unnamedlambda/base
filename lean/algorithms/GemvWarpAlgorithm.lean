@@ -239,16 +239,14 @@ def X_ID : Nat := 0x0044
 def Y_ID : Nat := 0x0048
 def MEM_SIZE : Nat := BIND_OFF + 0x100
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- Two callee tables: only the cuBLAS baseline reaches cuBLAS. -/
-def envAll : FnEnv := env% [.cuda, .cublas]
-def envCuda : FnEnv := env% [.cuda, .cublas]
 
-def loadCode (sh : Shape) : HProg.Code :=
-  HProg.Sur.build do
-    let ptr := basePtr
+def loadCode (sh : Shape) : Prog V L Unit :=
+  do
+    let ptr ← basePtr
     let dataPtr ← load64 (← absAddr ptr 0x18)
     cudaInit ptr
     let ctxPtr ← cudaCtxPtr ptr
@@ -261,9 +259,9 @@ def loadCode (sh : Shape) : HProg.Code :=
     store xId (← absAddr ptr X_ID)
     let yId ← cudaCreateBuffer ptr yBytes
     store yId (← absAddr ptr Y_ID)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, aId, dataPtr, aBytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, aId, dataPtr, aBytes]
     let xSrc ← iadd dataPtr aBytes
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, xId, xSrc, xBytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, xId, xSrc, xBytes]
     store aId (← absAddr ptr BIND_OFF)
     store xId (← absAddr ptr (BIND_OFF + 4))
     store yId (← absAddr ptr (BIND_OFF + 8))
@@ -271,9 +269,9 @@ def loadCode (sh : Shape) : HProg.Code :=
 /-- One launch per schedule: same grid, same buffers, same output, differing
     only in which PTX slot it reads.  That is what makes the timings
     comparable. -/
-def runCode (sh : Shape) (sq : Bool) (s : Sched) : HProg.Code :=
-  HProg.Sur.build do
-    let ptr := basePtr
+def runCode (sh : Shape) (sq : Bool) (s : Sched) : Prog V L Unit :=
+  do
+    let ptr ← basePtr
     let ptxOff ← iconst64 (slotOf sq s)
     let nBufs ← iconst32 3
     let bindOff ← iconst64 BIND_OFF
@@ -284,9 +282,9 @@ def runCode (sh : Shape) (sq : Bool) (s : Sched) : HProg.Code :=
     let _ ← cudaSync ptr
 
 /-- The cuBLAS baseline on the same buffers: `y = A·x`, `A` is `m x n`. -/
-def blasCode (sh : Shape) : HProg.Code :=
-  HProg.Sur.build do
-    let ptr := basePtr
+def blasCode (sh : Shape) : Prog V L Unit :=
+  do
+    let ptr ← basePtr
     let ctxPtr ← cudaCtxPtr ptr
     let aId ← load32 (← absAddr ptr A_ID)
     let xId ← load32 (← absAddr ptr X_ID)
@@ -297,83 +295,35 @@ def blasCode (sh : Shape) : HProg.Code :=
     let nn ← iconst32 sh.m
     let alpha ← iconst32 0x3F800000
     let beta ← iconst32 0
-    let _ ← call IR.Ffi.cublasSgemv.id [ctxPtr, trans, mm, nn, alpha, aId, xId, beta, yId]
+    let _ ← ffi .cublasSgemv %[ctxPtr, trans, mm, nn, alpha, aId, xId, beta, yId]
     let _ ← cudaSync ptr
 
-def fetchCode (sh : Shape) : HProg.Code :=
-  HProg.Sur.build do
-    let ptr := basePtr
+def fetchCode (sh : Shape) : Prog V L Unit :=
+  do
+    let ptr ← basePtr
     let ctxPtr ← cudaCtxPtr ptr
     let outPtr ← load64 (← absAddr ptr 0x28)
     let yId ← load32 (← absAddr ptr Y_ID)
     let yBytes ← iconst64 (sh.m * 4)
-    let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, yId, outPtr, yBytes]
+    let _ ← ffi .cudaDownload %[ctxPtr, yId, outPtr, yBytes]
 
-/-- Every body well-formed at every shipped shape and schedule.
+/-- The nine bodies this file ships, at one shape.
 
-    `clifIR` is generic in the shape and so are `artifactOf` and the map that
-    builds `artifacts`, so there is no point at which `compileFn` could discharge
-    its obligation by `decide`; those sites take `compileBody` and this theorem
-    is what stands in for the check. It covers exactly the nine bodies `clifIR`
-    ships, at all four shapes. -/
-theorem bodies_wf :
-    shapes.all (fun sh =>
-      HProg.wf envCuda HProg.ptrParams (loadCode sh) &&
-      HProg.wf envCuda HProg.ptrParams (fetchCode sh) &&
-      HProg.wf envAll HProg.ptrParams (blasCode sh) &&
-      Sched.all.all (fun sc =>
-        HProg.wf envCuda HProg.ptrParams (runCode sh false sc) &&
-        HProg.wf envCuda HProg.ptrParams (runCode sh true sc))) = true := by
-  decide
-
-private theorem parts {sh : Shape} (hsh : sh ∈ shapes) :
-    HProg.wf envCuda HProg.ptrParams (loadCode sh) = true ∧
-    HProg.wf envCuda HProg.ptrParams (fetchCode sh) = true ∧
-    HProg.wf envAll HProg.ptrParams (blasCode sh) = true ∧
-    (Sched.all.all (fun sc =>
-      HProg.wf envCuda HProg.ptrParams (runCode sh false sc) &&
-      HProg.wf envCuda HProg.ptrParams (runCode sh true sc))) = true := by
-  have h := List.all_eq_true.mp bodies_wf sh hsh
-  simp only [Bool.and_eq_true] at h
-  exact ⟨h.1.1.1, h.1.1.2, h.1.2, h.2⟩
-
-theorem load_wf {sh : Shape} (hsh : sh ∈ shapes) :
-    HProg.wf envCuda HProg.ptrParams (loadCode sh) = true := (parts hsh).1
-theorem fetch_wf {sh : Shape} (hsh : sh ∈ shapes) :
-    HProg.wf envCuda HProg.ptrParams (fetchCode sh) = true := (parts hsh).2.1
-theorem blas_wf {sh : Shape} (hsh : sh ∈ shapes) :
-    HProg.wf envAll HProg.ptrParams (blasCode sh) = true := (parts hsh).2.2.1
-
-theorem run_wf {sh : Shape} (hsh : sh ∈ shapes) (t : Bool) (sc : Sched)
-    (hsc : sc ∈ Sched.all) :
-    HProg.wf envCuda HProg.ptrParams (runCode sh t sc) = true := by
-  have h := List.all_eq_true.mp (parts hsh).2.2.2 sc hsc
-  simp only [Bool.and_eq_true] at h
-  cases t
-  · exact h.1
-  · exact h.2
-
-def clifIR (sh : Shape) (hsh : sh ∈ shapes) : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 (loadCode sh) envCuda (hwf := load_wf hsh),
-     HProg.compileFn 2 (runCode sh false .vec4) envCuda (hwf := run_wf hsh false .vec4 (List.Mem.head _)),
-     HProg.compileFn 3 (fetchCode sh) envCuda (hwf := fetch_wf hsh),
-     HProg.compileFn 4 (blasCode sh) envAll (hwf := blas_wf hsh),
-     HProg.compileFn 5 (runCode sh false .strided) envCuda (hwf := run_wf hsh false .strided (List.Mem.tail _ (List.Mem.head _))),
-     HProg.compileFn 6 (runCode sh false .blocked) envCuda (hwf := run_wf hsh false .blocked (List.Mem.tail _ (List.Mem.tail _ (List.Mem.head _)))),
-     HProg.compileFn 7 (runCode sh true .vec4) envCuda (hwf := run_wf hsh true .vec4 (List.Mem.head _)),
-     HProg.compileFn 8 (runCode sh true .strided) envCuda (hwf := run_wf hsh true .strided (List.Mem.tail _ (List.Mem.head _))),
-     HProg.compileFn 9 (runCode sh true .blocked) envCuda (hwf := run_wf hsh true .blocked (List.Mem.tail _ (List.Mem.tail _ (List.Mem.head _))))]
-
-/-- Every emitted kernel fits the slot it is written into — all six kernels at
-    all four shapes, checked rather than assumed. -/
-def ptxFitsB : Bool :=
-  shapes.all (fun sh => Sched.all.all (fun s =>
-    decide ((ptxOf sh s).toUTF8.toList.length + 1 ≤ SLOT)
-      && decide ((ptxSqOf sh s).toUTF8.toList.length + 1 ≤ SLOT)))
-
-theorem ptx_fits_slots : ptxFitsB = true := by native_decide
+    Generic in the shape --- which used to mean there was no instance to
+    `decide` at, and a theorem over all four shapes stood in for the check.
+    `compileProg` checks the body it emits, so the genericity costs nothing. -/
+def clifIR (sh : Shape) : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 (loadCode sh),
+     Prog.compileProg 2 (runCode sh false .vec4),
+     Prog.compileProg 3 (fetchCode sh),
+     Prog.compileProg 4 (blasCode sh),
+     Prog.compileProg 5 (runCode sh false .strided),
+     Prog.compileProg 6 (runCode sh false .blocked),
+     Prog.compileProg 7 (runCode sh true .vec4),
+     Prog.compileProg 8 (runCode sh true .strided),
+     Prog.compileProg 9 (runCode sh true .blocked)]
 
 /-- **Every byte this file names.**  The context slots and the three
     buffer-id words are written here too, so leaving them out would let a slot
@@ -404,9 +354,9 @@ def initialMemory (sh : Shape) : List UInt8 :=
     ++ (Sched.all.flatMap (fun s => slotBytes (ptxSqOf sh s)))
     ++ zeros (MEM_SIZE - BIND_OFF)
 
-def artifactOf (sh : Shape) (hsh : sh ∈ shapes) : Json :=
-  toJsonArtifact sh.tag
-    { clif := clifIR sh hsh, memory_size := MEM_SIZE,
+def artifactOf (sh : Shape) : Except String Json := do
+  return toJsonArtifact sh.tag
+    { clif := ← clifIR sh, memory_size := MEM_SIZE,
       initial_memory := initialMemory sh }
     { fn_idx := u32 1 }
     [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
@@ -414,13 +364,14 @@ def artifactOf (sh : Shape) (hsh : sh ∈ shapes) : Json :=
      ("run_blocked", { fn_idx := u32 6 }), ("sq", { fn_idx := u32 7 }),
      ("sq_strided", { fn_idx := u32 8 }), ("sq_blocked", { fn_idx := u32 9 })]
 
-def artifacts : Array Json := (shapes.attach.map (fun p => artifactOf p.1 p.2)).toArray
+def artifacts : Except String (Array Json) := do
+  return (← shapes.mapM artifactOf).toArray
 
 end GemvWarp
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir GemvWarp.artifacts
+  emitArtifacts outDir (← Prog.orDie GemvWarp.artifacts)
 
 namespace GemvWarp
 

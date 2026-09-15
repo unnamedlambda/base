@@ -45,7 +45,7 @@ import TokenizerCommon
   it converts a checkpoint that asks for one.
 -/
 
-open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur
+open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog
 
 namespace PretokCommon
 
@@ -81,15 +81,15 @@ structure PretokMem where
   /-- i64: how many tokens `outTok` holds. -/
   outCount : Nat
 
-private def load64At (base : R) (off : Nat) : M R :=
+private def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
   load64 =<< iaddImm base off
 
 /-- The membership byte of one code point. -/
-private def classOf (tabPtr cp : R) : M R := do
+private def classOf (tabPtr cp : V .i64) : Prog V L (V .i64) := do
   uload8_64 (← iadd tabPtr cp)
 
 /-- The code point at index `k`. -/
-private def cpAt (cpsPtr k : R) : M R := do
+private def cpAt (cpsPtr k : V .i64) : Prog V L (V .i64) := do
   uload32_64 (← iadd cpsPtr (← ishlImm k 2))
 
 /-- **UTF-8 in, code points out.**
@@ -101,18 +101,18 @@ private def cpAt (cpsPtr k : R) : M R := do
 
     A trailing truncated sequence is likewise consumed as its bytes rather than
     held back, so this always makes progress and always terminates. -/
-def utf8DecodeM (c : TokenizerCommon.TokMem) (p : PretokMem) : M Unit := do
-  let ptr := basePtr
+def utf8DecodeM (c : TokenizerCommon.TokMem) (p : PretokMem) : Prog V L Unit := do
+  let ptr ← basePtr
   let textBase ← iaddImm ptr c.textIn
   let cpsPtr ← iaddImm ptr p.cpBuf
   let bytePtr ← iaddImm ptr p.cpByte
   let n ← load64At ptr c.textLen
   let zero64 ← iconst64 0
-  let ex ← wloop [zero64, zero64]                     -- byte index, char index
-    (head := fun s => return (contIf .ult (s.headD 0) n, [s.getD 1 0], ()))
+  let ex ← wloop %[zero64, zero64]                     -- byte index, char index
+    (head := fun s => return (contIf .ult (s.head) n, %[s.snd], ()))
     (body := fun s _ => do
-      let i := s.headD 0
-      let k := s.getD 1 0
+      let i := s.head
+      let k := s.snd
       let b0 ← uload8_64 (← iadd textBase i)
       -- how many bytes this leader claims, and what it contributes
       let c0 ← iconst64 0xC0
@@ -125,187 +125,192 @@ def utf8DecodeM (c : TokenizerCommon.TokMem) (p : PretokMem) : M Unit := do
       let four64 ← iconst64 4
       -- `len` is 1 unless the leader says otherwise *and* the bytes are there
       let lenA ← ifte .uge b0 c2
-        (do let ok ← ifte .uge rem four64 (pure [four64]) (pure [← iconst64 1])
-            pure [ok.headD four64])
+        (do let ok ← ifte .uge rem four64 (pure %[four64]) (pure %[← iconst64 1])
+            pure %[ok.head])
         (do let l3 ← ifte .uge b0 c1
-              (do let ok ← ifte .uge rem three64 (pure [three64]) (pure [← iconst64 1])
-                  pure [ok.headD three64])
+              (do let ok ← ifte .uge rem three64 (pure %[three64]) (pure %[← iconst64 1])
+                  pure %[ok.head])
               (do let l2 ← ifte .uge b0 c0
-                    (do let ok ← ifte .uge rem two64 (pure [two64]) (pure [← iconst64 1])
-                        pure [ok.headD two64])
-                    (pure [← iconst64 1])
-                  pure [l2.headD (← iconst64 1)])
-            pure [l3.headD (← iconst64 1)])
-      let len := lenA.headD (← iconst64 1)
+                    (do let ok ← ifte .uge rem two64 (pure %[two64]) (pure %[← iconst64 1])
+                        pure %[ok.head])
+                    (pure %[← iconst64 1])
+                  let _ ← iconst64 1
+                  pure %[l2.head])
+            let _ ← iconst64 1
+            pure %[l3.head])
+      let _ ← iconst64 1
+      let len := lenA.head
       -- a four-byte leader above the range is still four bytes; guard it
-      let tooBig ← ifte .uge b0 c3 (pure [← iconst64 1]) (pure [zero64])
-      let len2L ← ifte .ne (tooBig.headD zero64) zero64 (pure [← iconst64 1]) (pure [len])
-      let len2 := len2L.headD len
+      let tooBig ← ifte .uge b0 c3 (pure %[← iconst64 1]) (pure %[zero64])
+      let len2L ← ifte .ne (tooBig.head) zero64 (pure %[← iconst64 1]) (pure %[len])
+      let len2 := len2L.head
       -- the payload: leader bits, then six per continuation byte
       let cpL ← ifte .eq len2 (← iconst64 1)
-        (pure [b0])
+        (pure %[b0])
         (do let maskA ← ifte .eq len2 two64
-              (pure [← iconst64 0x1F])
+              (pure %[← iconst64 0x1F])
               (do let m ← ifte .eq len2 three64
-                    (pure [← iconst64 0x0F]) (pure [← iconst64 0x07])
-                  pure [m.headD (← iconst64 0x07)])
-            let acc0 ← band b0 (maskA.headD (← iconst64 0x07))
+                    (pure %[← iconst64 0x0F]) (pure %[← iconst64 0x07])
+                  let _ ← iconst64 0x07
+                  pure %[m.head])
+            let _ ← iconst64 0x07
+            let acc0 ← band b0 maskA.head
             let one64 ← iconst64 1
-            let accE ← wloop [one64, acc0]
-              (head := fun s2 => return (contIf .ult (s2.headD 0) len2, [s2.getD 1 0], ()))
+            let accE ← wloop %[one64, acc0]
+              (head := fun s2 => return (contIf .ult (s2.head) len2, %[s2.snd], ()))
               (body := fun s2 _ => do
-                let j := s2.headD 0
-                let acc := s2.getD 1 0
+                let j := s2.head
+                let acc := s2.snd
                 let bj ← uload8_64 (← iadd textBase (← iadd i j))
                 let lo ← band bj (← iconst64 0x3F)
                 let sh ← ishlImm acc 6
-                return [← iaddImm j 1, ← bor sh lo])
-            pure [accE.headD acc0])
-      let cp := cpL.headD b0
+                return %[← iaddImm j 1, ← bor sh lo])
+            pure %[accE.head])
+      let cp := cpL.head
       storeI32 (← ireduce32 cp) (← iadd cpsPtr (← ishlImm k 2))
       storeI32 (← ireduce32 i) (← iadd bytePtr (← ishlImm k 2))
-      return [← iadd i len2, ← iaddImm k 1])
+      return %[← iadd i len2, ← iaddImm k 1])
   -- one past the end, so a chunk's byte range is always cpByte[j] .. cpByte[j+n]
-  let kEnd := ex.headD zero64
+  let kEnd := ex.head
   storeI32 (← ireduce32 n) (← iadd bytePtr (← ishlImm kEnd 2))
   storeI64 kEnd (← absAddr ptr p.cpCount)
 
 /-- ASCII lowering, which is all the contraction table needs. -/
-private def lowerAscii (cp : R) : M R := do
+private def lowerAscii (cp : V .i64) : Prog V L (V .i64) := do
   let bigA ← iconst64 65
   let bigZ ← iconst64 90
-  let r ← ifte .ugt cp bigZ (pure [cp])
-    (do let s ← ifte .ult cp bigA (pure [cp]) (pure [← iaddImm cp 32])
-        pure [s.headD cp])
-  return r.headD cp
+  let r ← ifte .ugt cp bigZ (pure %[cp])
+    (do let s ← ifte .ult cp bigA (pure %[cp]) (pure %[← iaddImm cp 32])
+        pure %[s.head])
+  return r.head
 
 /-- **The contraction suffix.**
 
     Returns its length, or -1 when one was required and none matched. Compared
     case-insensitively because the pattern is, and the literals are ASCII. -/
-private def contrM (cpsPtr nCp contrPtr nContr pos required : R) : M R := do
+private def contrM (cpsPtr nCp contrPtr nContr pos required : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let negOne ← iconst64 (-1)
   let stride ← iconst64 CONTR_BYTES
-  let ex ← wloop [zero64, negOne]
-    (head := fun s => return (contIf .ult (s.headD 0) nContr, [s.getD 1 0], ()))
-    (body := fun s _ => do
-      let ci := s.headD 0
+  let ex ← wloopL %[zero64, negOne]
+    (head := fun _ s => return (contIf .ult (s.head) nContr, %[s.snd], ()))
+    (body := fun lbl s _ => do
+      let ci := s.head
       let rec0 ← iadd contrPtr (← imul ci stride)
       let clen ← uload32_64 rec0
       let next ← iaddImm ci 1
       -- does it fit in what is left?
       let room ← iadd pos clen
-      when .ugt room nCp (continueWith [next, s.getD 1 0])
+      when .ugt room nCp (continueWith lbl %[next, s.snd])
       let one64 ← iconst64 1
-      let mE ← wloop [zero64, one64]
-        (head := fun t => return (contIf .ult (t.headD 0) clen, [t.getD 1 0], ()))
-        (body := fun t _ => do
-          let j := t.headD 0
+      let mE ← wloopL %[zero64, one64]
+        (head := fun _ t => return (contIf .ult (t.head) clen, %[t.snd], ()))
+        (body := fun lbl t _ => do
+          let j := t.head
           let want ← uload32_64 (← iadd rec0 (← iaddImm (← ishlImm j 2) 4))
           let got ← lowerAscii (← cpAt cpsPtr (← iadd pos j))
-          when .ne got want (brk [zero64])
-          return [← iaddImm j 1, t.getD 1 0])
-      let matched := mE.headD zero64
-      when .ne matched zero64 (brk [clen])
-      return [next, s.getD 1 0])
-  let found := ex.headD negOne
+          when .ne got want (brk lbl %[zero64])
+          return %[← iaddImm j 1, t.snd])
+      let matched := mE.head
+      when .ne matched zero64 (brk lbl %[clen])
+      return %[next, s.snd])
+  let found := ex.head
   -- no match: length zero when the suffix was optional, failure when not
-  let r ← ifte .sge found zero64 (pure [found])
-    (do let s ← ifte .ne required zero64 (pure [negOne]) (pure [zero64])
-        pure [s.headD zero64])
-  return r.headD zero64
+  let r ← ifte .sge found zero64 (pure %[found])
+    (do let s ← ifte .ne required zero64 (pure %[negOne]) (pure %[zero64])
+        pure %[s.head])
+  return r.head
 
 /-- A greedy run of a class, capped at `hi`, failing below `lo`.
 
     `extra` is one code point the class accepts in addition to whatever `mask`
     says, or zero for none — o200k's `[\r\n/]*` is a class plus one literal. -/
-private def runM (cpsPtr nCp tabPtr pos mask neg lo hi extra : R) : M R := do
+private def runM (cpsPtr nCp tabPtr pos mask neg lo hi extra : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
-  let ex ← wloop1 zero64
-    (head := fun nn => return (contIf .ult nn hi, [nn], ()))
-    (body := fun nn _ => do
+  let ex ← wloop1L zero64
+    (head := fun _ nn => return (contIf .ult nn hi, %[nn], ()))
+    (body := fun lbl nn _ => do
       let idx ← iadd pos nn
-      when .uge idx nCp (brk [nn])
+      when .uge idx nCp (brk lbl %[nn])
       let cp ← cpAt cpsPtr idx
       let b ← classOf tabPtr cp
       let hasAll ← band b mask
       let hasNone ← band b neg
       -- `(b & mask) == mask && (b & neg) == 0`, or the one literal
       let okL ← ifte .eq hasAll mask
-        (do let s ← ifte .eq hasNone zero64 (pure [← iconst64 1]) (pure [zero64])
-            pure [s.headD zero64])
-        (pure [zero64])
-      let ok0 := okL.headD zero64
-      let okE ← ifte .ne ok0 zero64 (pure [ok0])
+        (do let s ← ifte .eq hasNone zero64 (pure %[← iconst64 1]) (pure %[zero64])
+            pure %[s.head])
+        (pure %[zero64])
+      let ok0 := okL.head
+      let okE ← ifte .ne ok0 zero64 (pure %[ok0])
         (do let s ← ifte .ne extra zero64
-              (do let t ← ifte .eq cp extra (pure [← iconst64 1]) (pure [zero64])
-                  pure [t.headD zero64])
-              (pure [zero64])
-            pure [s.headD zero64])
-      when .eq (okE.headD zero64) zero64 (brk [nn])
-      return [← iaddImm nn 1])
-  let n := ex.headD zero64
-  let r ← ifte .ult n lo (pure [← iconst64 (-1)]) (pure [n])
-  return r.headD n
+              (do let t ← ifte .eq cp extra (pure %[← iconst64 1]) (pure %[zero64])
+                  pure %[t.head])
+              (pure %[zero64])
+            pure %[s.head])
+      when .eq (okE.head) zero64 (brk lbl %[nn])
+      return %[← iaddImm nn 1])
+  let n := ex.head
+  let r ← ifte .ult n lo (pure %[← iconst64 (-1)]) (pure %[n])
+  return r.head
 
 
 /-- `\s+(?!\S)`: the whitespace run, less its last character unless the input
     ends there. Written forward, which is the whole point — the lookahead is
     what a regex backtracks for. -/
-private def runButM (cpsPtr nCp tabPtr pos mask : R) : M R := do
+private def runButM (cpsPtr nCp tabPtr pos mask : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
-  let ex ← wloop1 zero64
-    (head := fun nn => return (contIf .ult zero64 (← iconst64 1), [nn], ()))
-    (body := fun nn _ => do
+  let ex ← wloop1L zero64
+    (head := fun _ nn => return (contIf .ult zero64 (← iconst64 1), %[nn], ()))
+    (body := fun lbl nn _ => do
       let idx ← iadd pos nn
-      when .uge idx nCp (brk [nn])
+      when .uge idx nCp (brk lbl %[nn])
       let b ← classOf tabPtr (← cpAt cpsPtr idx)
-      when .eq (← band b mask) zero64 (brk [nn])
-      return [← iaddImm nn 1])
-  let n := ex.headD zero64
+      when .eq (← band b mask) zero64 (brk lbl %[nn])
+      return %[← iaddImm nn 1])
+  let n := ex.head
   -- one back, unless the run reached the end of the input
   let endAt ← iadd pos n
-  let nL ← ifte .ult endAt nCp (pure [← iaddImm n (-1)]) (pure [n])
-  let n2 := nL.headD n
-  let r ← ifte .ult n2 (← iconst64 1) (pure [← iconst64 (-1)]) (pure [n2])
-  return r.headD n2
+  let nL ← ifte .ult endAt nCp (pure %[← iaddImm n (-1)]) (pure %[n])
+  let n2 := nL.head
+  let r ← ifte .ult n2 (← iconst64 1) (pure %[← iconst64 (-1)]) (pure %[n2])
+  return r.head
 
 /-- `\s*[\r\n]+`: the run truncated at its last newline, and a failure when it
     holds none. -/
-private def runToM (cpsPtr nCp tabPtr pos mask neg : R) : M R := do
+private def runToM (cpsPtr nCp tabPtr pos mask neg : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
-  let ex ← wloop [zero64, zero64]                        -- n, last
-    (head := fun s => return (contIf .ult zero64 (← iconst64 1),
-                              [s.headD 0, s.getD 1 0], ()))
-    (body := fun s _ => do
-      let nn := s.headD 0
-      let last := s.getD 1 0
+  let ex ← wloopL %[zero64, zero64]                        -- n, last
+    (head := fun _ s => return (contIf .ult zero64 (← iconst64 1),
+                              %[s.head, s.snd], ()))
+    (body := fun lbl s _ => do
+      let nn := s.head
+      let last := s.snd
       let idx ← iadd pos nn
-      when .uge idx nCp (brk [nn, last])
+      when .uge idx nCp (brk lbl %[nn, last])
       let b ← classOf tabPtr (← cpAt cpsPtr idx)
-      when .eq (← band b mask) zero64 (brk [nn, last])
+      when .eq (← band b mask) zero64 (brk lbl %[nn, last])
       let n1 ← iaddImm nn 1
       let isNl ← band b neg
-      let l2 ← ifte .ne isNl zero64 (pure [n1]) (pure [last])
-      return [n1, l2.headD last])
-  let last := ex.getD 1 zero64
-  let r ← ifte .ult last (← iconst64 1) (pure [← iconst64 (-1)]) (pure [last])
-  return r.headD last
+      let l2 ← ifte .ne isNl zero64 (pure %[n1]) (pure %[last])
+      return %[n1, l2.head])
+  let last := ex.snd
+  let r ← ifte .ult last (← iconst64 1) (pure %[← iconst64 (-1)]) (pure %[last])
+  return r.head
 
 /-- One specific code point, `lo` to `hi` times. -/
-private def charRunM (cpsPtr nCp pos want lo hi : R) : M R := do
+private def charRunM (cpsPtr nCp pos want lo hi : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
-  let ex ← wloop1 zero64
-    (head := fun nn => return (contIf .ult nn hi, [nn], ()))
-    (body := fun nn _ => do
+  let ex ← wloop1L zero64
+    (head := fun _ nn => return (contIf .ult nn hi, %[nn], ()))
+    (body := fun lbl nn _ => do
       let idx ← iadd pos nn
-      when .uge idx nCp (brk [nn])
-      when .ne (← cpAt cpsPtr idx) want (brk [nn])
-      return [← iaddImm nn 1])
-  let n := ex.headD zero64
-  let r ← ifte .ult n lo (pure [← iconst64 (-1)]) (pure [n])
-  return r.headD n
+      when .uge idx nCp (brk lbl %[nn])
+      when .ne (← cpAt cpsPtr idx) want (brk lbl %[nn])
+      return %[← iaddImm nn 1])
+  let n := ex.head
+  let r ← ifte .ult n lo (pure %[← iconst64 (-1)]) (pure %[n])
+  return r.head
 
 /-- **`A* B+` where `A` and `B` overlap.**
 
@@ -316,77 +321,77 @@ private def charRunM (cpsPtr nCp pos want lo hi : R) : M R := do
     when `q` is in `B`, and zero when it is not.
 
     Returns the matched length, or -1 when no `B` run exists at all. -/
-private def starPlusM (cpsPtr nCp tabPtr pos maskA maskB : R) : M R := do
+private def starPlusM (cpsPtr nCp tabPtr pos maskA maskB : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
   let negOne ← iconst64 (-1)
   -- the A-run
-  let aE ← wloop1 zero64
-    (head := fun nn => return (contIf .ult zero64 one64, [nn], ()))
-    (body := fun nn _ => do
+  let aE ← wloop1L zero64
+    (head := fun _ nn => return (contIf .ult zero64 one64, %[nn], ()))
+    (body := fun lbl nn _ => do
       let idx ← iadd pos nn
-      when .uge idx nCp (brk [nn])
+      when .uge idx nCp (brk lbl %[nn])
       let b ← classOf tabPtr (← cpAt cpsPtr idx)
-      when .eq (← band b maskA) zero64 (brk [nn])
-      return [← iaddImm nn 1])
-  let a := aE.headD zero64
+      when .eq (← band b maskA) zero64 (brk lbl %[nn])
+      return %[← iaddImm nn 1])
+  let a := aE.head
   -- the B-run that starts where the A-run stopped
   let tail ← iadd pos a
-  let rE ← wloop1 zero64
-    (head := fun nn => return (contIf .ult zero64 one64, [nn], ()))
-    (body := fun nn _ => do
+  let rE ← wloop1L zero64
+    (head := fun _ nn => return (contIf .ult zero64 one64, %[nn], ()))
+    (body := fun lbl nn _ => do
       let idx ← iadd tail nn
-      when .uge idx nCp (brk [nn])
+      when .uge idx nCp (brk lbl %[nn])
       let b ← classOf tabPtr (← cpAt cpsPtr idx)
-      when .eq (← band b maskB) zero64 (brk [nn])
-      return [← iaddImm nn 1])
-  let run0 := rE.headD zero64
-  let bestL ← ifte .ugt run0 zero64 (pure [← iadd tail run0]) (pure [negOne])
+      when .eq (← band b maskB) zero64 (brk lbl %[nn])
+      return %[← iaddImm nn 1])
+  let run0 := rE.head
+  let bestL ← ifte .ugt run0 zero64 (pure %[← iadd tail run0]) (pure %[negOne])
   -- right to left across the A-run, carrying the B-run length at each step
-  let sw ← wloop [zero64, run0, bestL.headD negOne]      -- t, run, best
-    (head := fun s => return (contIf .ult (s.headD 0) a, [s.getD 1 0, s.getD 2 0], ()))
-    (body := fun s _ => do
-      let t := s.headD 0
-      let run := s.getD 1 0
-      let best := s.getD 2 0
+  let sw ← wloopL %[zero64, run0, bestL.head]      -- t, run, best
+    (head := fun _ s => return (contIf .ult (s.head) a, %[s.snd, s.thd], ()))
+    (body := fun lbl s _ => do
+      let t := s.head
+      let run := s.snd
+      let best := s.thd
       let q ← isub (← iaddImm tail (-1)) t
       let b ← classOf tabPtr (← cpAt cpsPtr q)
       let inB ← band b maskB
-      let rL ← ifte .ne inB zero64 (pure [← iaddImm run 1]) (pure [zero64])
-      let run2 := rL.headD zero64
+      let rL ← ifte .ne inB zero64 (pure %[← iaddImm run 1]) (pure %[zero64])
+      let run2 := rL.head
       let cand ← iadd q run2
       let bL ← ifte .ugt run2 zero64
-        (do let s2 ← ifte .sgt cand best (pure [cand]) (pure [best])
-            pure [s2.headD best])
-        (pure [best])
-      return [← iaddImm t 1, run2, bL.headD best])
-  let best := sw.getD 1 negOne
-  let r ← ifte .slt best zero64 (pure [negOne]) (pure [← isub best pos])
-  return r.headD negOne
+        (do let s2 ← ifte .sgt cand best (pure %[cand]) (pure %[best])
+            pure %[s2.head])
+        (pure %[best])
+      return %[← iaddImm t 1, run2, bL.head])
+  let best := sw.snd
+  let r ← ifte .slt best zero64 (pure %[negOne]) (pure %[← isub best pos])
+  return r.head
 
 /-- **One alternative against the text at `i`**, as a matched length or -1.
 
     `skipLead` forces the leading optional item empty, which is the one retry
     these patterns need. -/
 private def scanM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
-                   altStart altCount skipLead i : R) : M R := do
+                   altStart altCount skipLead i : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
   let negOne ← iconst64 (-1)
   let stride ← iconst64 ITEM_BYTES
-  let ex ← wloop [zero64, i, zero64]                     -- k, p, failed
-    (head := fun s => return (contIf .ult (s.headD 0) altCount,
-                              [s.getD 1 0, s.getD 2 0], ()))
-    (body := fun s _ => do
-      let k := s.headD 0
-      let p := s.getD 1 0
+  let ex ← wloopL %[zero64, i, zero64]                     -- k, p, failed
+    (head := fun _ s => return (contIf .ult (s.head) altCount,
+                              %[s.snd, s.thd], ()))
+    (body := fun lbl s _ => do
+      let k := s.head
+      let p := s.snd
       let k1 ← iaddImm k 1
       -- the forced-empty retry skips item zero outright
       let skipL ← ifte .eq k zero64
-        (do let t ← ifte .ne skipLead zero64 (pure [one64]) (pure [zero64])
-            pure [t.headD zero64])
-        (pure [zero64])
-      when .ne (skipL.headD zero64) zero64 (continueWith [k1, p, zero64])
+        (do let t ← ifte .ne skipLead zero64 (pure %[one64]) (pure %[zero64])
+            pure %[t.head])
+        (pure %[zero64])
+      when .ne (skipL.head) zero64 (continueWith lbl %[k1, p, zero64])
       let rec0 ← iadd itemsPtr (← imul (← iadd altStart k) stride)
       let op ← uload32_64 rec0
       let mask ← uload32_64 (← iaddImm rec0 4)
@@ -396,57 +401,57 @@ private def scanM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
       let extra ← uload32_64 (← iaddImm rec0 20)
       -- each arm yields a length, or -1
       let nL ← ifte .eq op (← iconst64 OP_CONTR)
-        (do let req ← ifte .eq lo one64 (pure [one64]) (pure [zero64])
-            pure [← contrM cpsPtr nCp contrPtr nContr p (req.headD zero64)])
+        (do let req ← ifte .eq lo one64 (pure %[one64]) (pure %[zero64])
+            pure %[← contrM cpsPtr nCp contrPtr nContr p (req.head)])
         (do let a2 ← ifte .eq op (← iconst64 OP_RUNBUT)
-              (pure [← runButM cpsPtr nCp tabPtr p mask])
+              (pure %[← runButM cpsPtr nCp tabPtr p mask])
               (do let a3 ← ifte .eq op (← iconst64 OP_RUNTO)
-                    (pure [← runToM cpsPtr nCp tabPtr p mask neg])
+                    (pure %[← runToM cpsPtr nCp tabPtr p mask neg])
                     (do let a4 ← ifte .eq op (← iconst64 OP_CHAR)
-                          (pure [← charRunM cpsPtr nCp p mask lo hi])
+                          (pure %[← charRunM cpsPtr nCp p mask lo hi])
                           (do let a5 ← ifte .eq op (← iconst64 OP_STARPLUS)
-                                (pure [← starPlusM cpsPtr nCp tabPtr p mask neg])
-                                (pure [← runM cpsPtr nCp tabPtr p mask neg lo hi extra])
-                              pure [a5.headD negOne])
-                        pure [a4.headD negOne])
-                  pure [a3.headD negOne])
-            pure [a2.headD negOne])
-      let n := nL.headD negOne
-      when .slt n zero64 (brk [p, one64])
-      return [k1, ← iadd p n, zero64])
-  let pEnd := ex.headD i
-  let failed := ex.getD 1 zero64
+                                (pure %[← starPlusM cpsPtr nCp tabPtr p mask neg])
+                                (pure %[← runM cpsPtr nCp tabPtr p mask neg lo hi extra])
+                              pure %[a5.head])
+                        pure %[a4.head])
+                  pure %[a3.head])
+            pure %[a2.head])
+      let n := nL.head
+      when .slt n zero64 (brk lbl %[p, one64])
+      return %[k1, ← iadd p n, zero64])
+  let pEnd := ex.head
+  let failed := ex.snd
   -- an alternative that matched nothing has not matched
-  let r ← ifte .ne failed zero64 (pure [negOne])
-    (do let s ← ifte .ugt pEnd i (pure [← isub pEnd i]) (pure [negOne])
-        pure [s.headD negOne])
-  return r.headD negOne
+  let r ← ifte .ne failed zero64 (pure %[negOne])
+    (do let s ← ifte .ugt pEnd i (pure %[← isub pEnd i]) (pure %[negOne])
+        pure %[s.head])
+  return r.head
 
 /-- Greedy, then once with the leading optional forced empty — in that order,
     because a regex returns the first success in backtracking order and not the
     longest match. -/
 private def matchAltM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
-                       altStart altCount i : R) : M R := do
+                       altStart altCount i : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
   let n0 ← scanM cpsPtr nCp tabPtr itemsPtr contrPtr nContr altStart altCount zero64 i
-  let r ← ifte .sge n0 zero64 (pure [n0])
+  let r ← ifte .sge n0 zero64 (pure %[n0])
     (do let rec0 ← iadd itemsPtr (← imul altStart (← iconst64 ITEM_BYTES))
         let op ← uload32_64 rec0
         let lo ← uload32_64 (← iaddImm rec0 12)
         -- only an optional leading class or literal can be forced empty
         let elig ← ifte .eq lo zero64
-          (do let a ← ifte .eq op (← iconst64 OP_CLASS) (pure [one64])
-                (do let b ← ifte .eq op (← iconst64 OP_CHAR) (pure [one64]) (pure [zero64])
-                    pure [b.headD zero64])
-              pure [a.headD zero64])
-          (pure [zero64])
-        let s ← ifte .ne (elig.headD zero64) zero64
-          (pure [← scanM cpsPtr nCp tabPtr itemsPtr contrPtr nContr
+          (do let a ← ifte .eq op (← iconst64 OP_CLASS) (pure %[one64])
+                (do let b ← ifte .eq op (← iconst64 OP_CHAR) (pure %[one64]) (pure %[zero64])
+                    pure %[b.head])
+              pure %[a.head])
+          (pure %[zero64])
+        let s ← ifte .ne (elig.head) zero64
+          (pure %[← scanM cpsPtr nCp tabPtr itemsPtr contrPtr nContr
                     altStart altCount one64 i])
-          (pure [n0])
-        pure [s.headD n0])
-  return r.headD n0
+          (pure %[n0])
+        pure %[s.head])
+  return r.head
 
 
 /-- **Byte range to initial tokens.**
@@ -454,8 +459,8 @@ private def matchAltM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
     `TokenizerCommon.tokenizeInitM` does this for the whole of `textIn`; a
     chunk needs it for a slice, and copying the slice to the front of the
     buffer instead would destroy the text the later chunks still need. -/
-private def initRangeM (c : TokenizerCommon.TokMem) (b0 b1 : R) : M Unit := do
-  let ptr := basePtr
+private def initRangeM (c : TokenizerCommon.TokMem) (b0 b1 : V .i64) : Prog V L Unit := do
+  let ptr ← basePtr
   let bufP ← load64At ptr c.bufPtr
   let byteInit ← iaddImm bufP TokenizerCommon.BYTE_INIT_OFF
   let textBase ← iaddImm ptr c.textIn
@@ -476,8 +481,8 @@ private def initRangeM (c : TokenizerCommon.TokMem) (b0 b1 : R) : M Unit := do
 
     Every table it needs is found by walking forward from the tokenizer file's
     header, so nothing here knows which checkpoint wrote the file. -/
-def tokenizeTextM (c : TokenizerCommon.TokMem) (p : PretokMem) : M Unit := do
-  let ptr := basePtr
+def tokenizeTextM (c : TokenizerCommon.TokMem) (p : PretokMem) : Prog V L Unit := do
+  let ptr ← basePtr
   utf8DecodeM c p
   let bufP ← load64At ptr c.bufPtr
   let pretok ← uload32_64 (← iaddImm bufP TokenizerCommon.HDR_PRETOK)
@@ -498,26 +503,26 @@ def tokenizeTextM (c : TokenizerCommon.TokMem) (p : PretokMem) : M Unit := do
   let one64 ← iconst64 1
   let negOne ← iconst64 (-1)
   let stride8 ← iconst64 ALT_BYTES
-  let ex ← wloop [zero64, zero64]                       -- character index, token count
-    (head := fun s => return (contIf .ult (s.headD 0) nCp, [s.getD 1 0], ()))
-    (body := fun s _ => do
-      let i := s.headD 0
-      let nOut := s.getD 1 0
+  let ex ← wloopL %[zero64, zero64]                       -- character index, token count
+    (head := fun _ s => return (contIf .ult (s.head) nCp, %[s.snd], ()))
+    (body := fun lbl s _ => do
+      let i := s.head
+      let nOut := s.snd
       -- the first alternative that matches something
-      let pick ← wloop [zero64, negOne]
-        (head := fun t => return (contIf .ult (t.headD 0) nAlts, [t.getD 1 0], ()))
-        (body := fun t _ => do
-          let ai := t.headD 0
+      let pick ← wloopL %[zero64, negOne]
+        (head := fun _ t => return (contIf .ult (t.head) nAlts, %[t.snd], ()))
+        (body := fun lbl t _ => do
+          let ai := t.head
           let arec ← iadd altsPtr (← imul ai stride8)
           let aStart ← uload32_64 arec
           let aCount ← uload32_64 (← iaddImm arec 4)
           let n ← matchAltM cpsPtr nCp tabPtr itemsPtr contrPtr nContr aStart aCount i
-          when .sgt n zero64 (brk [n])
-          return [← iaddImm ai 1, t.getD 1 0])
-      let matched := pick.headD negOne
+          when .sgt n zero64 (brk lbl %[n])
+          return %[← iaddImm ai 1, t.snd])
+      let matched := pick.head
       -- no alternative matched: one character, so the scan always advances
-      let nL ← ifte .sgt matched zero64 (pure [matched]) (pure [one64])
-      let n := nL.headD one64
+      let nL ← ifte .sgt matched zero64 (pure %[matched]) (pure %[one64])
+      let n := nL.head
       -- the chunk in bytes, and its own BPE
       let b0 ← uload32_64 (← iadd bytePtr (← ishlImm i 2))
       let b1 ← uload32_64 (← iadd bytePtr (← ishlImm (← iadd i n) 2))
@@ -527,7 +532,7 @@ def tokenizeTextM (c : TokenizerCommon.TokMem) (p : PretokMem) : M Unit := do
       forLoop got fun j => do
         let tk ← load32 (← iadd tokBuf (← ishlImm j 2))
         storeI32 tk (← iadd outPtr (← ishlImm (← iadd nOut j) 2))
-      return [← iadd i n, ← iadd nOut got])
-  storeI64 (ex.headD zero64) (← absAddr ptr p.outCount)
+      return %[← iadd i n, ← iadd nOut got])
+  storeI64 (ex.head) (← absAddr ptr p.outCount)
 
 end PretokCommon

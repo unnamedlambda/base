@@ -26,16 +26,13 @@ namespace IntSumBench
 
 def MEM_SIZE : Nat := 40
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
   let n       ← ushrImm dataLen 2
   -- floor(n/4) trips of 4 elements = 16 bytes each
   let mainEnd ← ishlImm (← ushrImm n 2) 4
@@ -46,32 +43,31 @@ def code : HProg.Code := clif% do
   let keep    ← iconst64 0xFFFFFF
 
   -- One counter and four independent hash chains, carried together.
-  let fin ← wloop [i0, h0, h0, h0, h0]
-    (head := fun c => return (exitIfSGe (c.headD 0) mainEnd, c, ()))
+  let fin ← wloop (Vals.cons i0 (Vals.ofFn (n := 4) (fun _ => h0)))
+    (head := fun c => return (exitIfSGe c.head mainEnd, c, ()))
     (body := fun c _ => do
-      let bi := c.headD 0
+      let bi := c.head
       let off ← iadd dataPtr bi
-      let mut hs : List R := []
-      for k in [0:4] do
+      let hs ← c.tail.uniformMapIdxM fun k h => do
         let w ← uload32_64 (← iaddImm off (4 * k))
         let x ← band w mask
-        hs := hs ++ [← band (← iadd (← imul (c.getD (k + 1) 0) k31) x) keep]
-      return (← iaddImm bi 16) :: hs)
+        band (← iadd (← imul h k31) x) keep
+      return Vals.cons (← iaddImm bi 16) hs)
 
   -- left fold, matching the Rust mirror
-  let mut tot := fin.getD 1 0
-  for k in [1:4] do
-    tot ← iadd tot (fin.getD (k + 1) 0)
+  let hs := fin.tail.uniformToList
+  let tot ← match hs with
+    | [] => iconst64 0
+    | h :: rest => rest.foldlM (fun x y => iadd x y) h
   store (← fcvtFromSint .f64 tot) outPtr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "intsum_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

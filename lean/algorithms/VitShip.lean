@@ -16,11 +16,9 @@ open AlgorithmLib.IR
 
 /-- Every emitted body with the CLIF function index it ships as.
 
-    The bodies are named here rather than at the `compileFn` calls so that one
-    well-formedness fact covers all of them, including the debug fetches, which
-    are built under a binder and so have no expected type of their own to check
-    against. -/
-def vBodies : List (Nat × HProg.Code) :=
+    The bodies are named here rather than at the `compileProg` calls so that
+    the list is the one place a function index is chosen. -/
+def vBodies : List (Nat × Prog.Body) :=
   [ (1, vLoadFn)
   , (2, vRunFn)
   , (3, vFetchFn VOUT (SQ * NC * 4)) ]
@@ -48,19 +46,8 @@ def vBodies : List (Nat × HProg.Code) :=
        , (VFN + 16,   vCaptureClassAt false VGRAPH_ROW_OFF)
        , (VFN + 17,   vReplayAt VGRAPH_ROW_OFF 1) ]
 
-/-- Every shipped body is well formed against the CUDA and cuBLAS entry points.
-
-    The bodies are `Sur.build` runs rather than `clif%` splices — a spliced
-    literal of this size nests deeper than the elaborator's stack — so the
-    kernel would have to reduce the builder before it could look at a
-    statement. The compiler evaluates the same check directly. -/
-theorem vBodies_wf :
-    vBodies.all (fun p => HProg.wf env HProg.ptrParams p.2) = true := by
-  native_decide
-
-def vClifIR : Program := IR.program (noopFunction ::
-  vBodies.attach.map (fun ⟨p, hp⟩ =>
-    HProg.compileFn p.1 p.2 env (hwf := List.all_eq_true.mp vBodies_wf p hp)))
+def vClifIR : Except String Program := Prog.program (.ok noopFunction ::
+  vBodies.map (fun p => Prog.compileProg p.1 p.2))
 
 /-- Where each input's gradient landed, one `u32` per input, `0` for the
     constants and the patch embedding that are not trained.  A host reads this
@@ -77,14 +64,14 @@ def vInitialMemory : List UInt8 :=
     ++ vGradMapBytes
     ++ zeros (VMEM_SIZE - VGMAP_OFF - 4 * VBASE)
 
-def vSetup : Setup := {
-  clif := vClifIR
+def vSetup (clif : Program) : Setup := {
+  clif
   memory_size := VMEM_SIZE
   initial_memory := vInitialMemory
 }
 
-def artifacts : Array Lean.Json :=
-  #[ toJsonArtifact "vit_block" vSetup { fn_idx := u32 1 }
+def artifacts (clif : Program) : Array Lean.Json :=
+  #[ toJsonArtifact "vit_block" (vSetup clif) { fn_idx := u32 1 }
        ([("run",       { fn_idx := u32 2 }),
          ("fetch",     { fn_idx := u32 3 }),
          ("captureChain",     { fn_idx := u32 VFN }),
@@ -168,7 +155,8 @@ def report : IO Unit := do
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir Vit.artifacts
+  let clif ← Prog.orDie Vit.vClifIR
+  emitArtifacts outDir (Vit.artifacts clif)
   report
 
 #eval ShipScan.check "VitShip"

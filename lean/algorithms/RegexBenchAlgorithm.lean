@@ -5,7 +5,7 @@ import LayoutScan
 open Lean
 open AlgorithmLib
 open AlgorithmLib.IR
-open AlgorithmLib.HProg
+open AlgorithmLib.Prog
 
 namespace RegexBench
 
@@ -22,69 +22,63 @@ def INPUT_DATA      : Nat := 0x4000
 def MAX_TEXT_BYTES  : Nat := 512 * 1024 * 1024
 def MEM_SIZE        : Nat := INPUT_DATA + MAX_TEXT_BYTES
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
 
-/-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
-def env : FnEnv := env% [.fileIO]
-
-def fnRead : Nat := IR.Ffi.fileRead.id
-def fnWrite : Nat := IR.Ffi.fileWrite.id
-
-def code : HProg.Code := clif% do
-  let ptr := basePtr
-  let dataPtr← load64 (← absAddr ptr 0x18)
+def code : Prog V L Unit := do
+  let ptr ← basePtr
+  let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero   ← iconst64 0
 
-  let inEnd ← dwloop [zero] .eq zero (contOnTrue := false) [0]
+  let inEnd ← dwloop %[zero] .eq zero (contOnTrue := false) [0]
     (body := fun c => do
-      let si := c.headD 0
+      let si := c.head
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr INPUT_PATH_OFF) si)
       let si' ← iaddImm si 1
-      return (ch, [si']))
+      return (ch, %[si']))
 
-  let _ ← dwloop [inEnd.headD 0, zero] .eq zero (contOnTrue := false) []
+  let _ ← dwloop %[inEnd.head, zero] .eq zero (contOnTrue := false) []
     (body := fun c => do
-      let si := c.headD 0; let di := c.getD 1 0
+      let si := c.head; let di := c.snd
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di)
       let si' ← iaddImm si 1
       let di' ← iaddImm di 1
-      return (ch, [si', di']))
+      return (ch, %[si', di']))
 
   -- Read the file once; `fileSize` and `dataBase` are in scope for every scan
-  let fileSize ← call fnRead
-    [ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 INPUT_DATA, zero, zero]
+  let fileSize ← ffi .fileRead
+    %[ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 INPUT_DATA, zero, zero]
   let dataBase ← absAddr ptr INPUT_DATA
 
   -- One position a trip. Whitespace advances; a word runs the inner scan, and
   -- both arms take the back edge themselves.
-  let scanned ← wloop2 zero zero
-    (head := fun pos cnt => return (exitIfSGe pos fileSize, [cnt], ()))
-    (body := fun pos cnt _ => do
+  let scanned ← wloopL %[zero, zero]
+    (head := fun _ c => return (exitIfSGe c.head fileSize, %[c.snd], ()))
+    (body := fun outer c _ => do
+      let pos := c.head; let cnt := c.snd
       let byte2 ← uload8_64 (← iadd dataBase pos)
       let space ← iconst64 32
       let one64 ← iconst64 1
-      let _ ← ifte .ule byte2 space
+      let _ ← ifte (jTys := []) .ule byte2 space
         (thn := do
-          continueWith [← iaddImm pos 1, cnt]
-          pure [])
+          continueWith outer %[← iaddImm pos 1, cnt])
         (els := do
           -- scan to the end of the word, tracking whether it is all lowercase
+          -- The head already loaded the byte to test for whitespace; it hands
+          -- it to the body rather than the body loading the same address a
+          -- second time.
           let w ← wloop2 pos one64
             (head := fun p allL => do
               let b ← uload8_64 (← iadd dataBase p)
               let sp ← iconst64 32
-              return (exitIf .ule b sp, [p, allL], ()))
-            (body := fun p allL _ => do
+              return (exitIf .ule b sp, %[p, allL], b))
+            (body := fun p allL b => do
               let aLow  ← iconst64 97
               let r25   ← iconst64 25
-              let bt ← uload8_64 (← iadd dataBase p)
-              let shifted ← isub bt aLow
+              let shifted ← isub b aLow
               let isLow   ← uextend64 (← icmp .ule shifted r25)
-              return [← iaddImm p 1, ← band allL isLow])
-          let pos5 := w.headD 0; let allL3 := w.getD 1 0
+              return %[← iaddImm p 1, ← band allL isLow])
+          let pos5 := w.head; let allL3 := w.snd
           let minLen ← iconst64 4
           let mask24 ← iconst64 16777215
           let ingLE  ← iconst64 6778473
@@ -96,10 +90,9 @@ def code : HProg.Code := clif% do
           let last3  ← band raw4 mask24
           let isIng  ← uextend64 (← icmp .eq last3 ingLE)
           let match1 ← band both isIng
-          continueWith [← iaddImm pos5 1, ← iadd cnt match1]
-          pure [])
-      return [pos, cnt])
-  let total := scanned.headD 0
+          continueWith outer %[← iaddImm pos5 1, ← iadd cnt match1])
+      return %[pos, cnt])
+  let total := scanned.head
 
   -- itoa: scale the divisor up, then write one digit a trip
   let ten   ← iconst64 10
@@ -107,32 +100,30 @@ def code : HProg.Code := clif% do
   let scaled ← wloop1 one64
     (head := fun div => do
       let d10 ← imul div ten
-      return (exitIf .ugt d10 total, [div], ()))
-    (body := fun div _ => return [← imul div ten])
+      return (exitIf .ugt d10 total, %[div], ()))
+    (body := fun div _ => return %[← imul div ten])
 
-  let written ← dwloop [total, scaled.headD 0, ← iconst64 OUTPUT_BUF]
+  let written ← dwloop %[total, scaled.head, ← iconst64 OUTPUT_BUF]
       .eq zero (contOnTrue := false) [2]
     (body := fun c => do
-      let valW := c.headD 0; let divW := c.getD 1 0; let wposW := c.getD 2 0
+      let valW := c.head; let divW := c.snd; let wposW := c.thd
       let dig  ← udiv valW divW
       let digB ← iadd dig (← iconst64 48)
       istore8 digB (← iadd ptr wposW)
       let rem  ← isub valW (← imul dig divW)
       let divW'← udiv divW ten
       let wpos'← iaddImm wposW 1
-      return (divW', [rem, divW', wpos']))
+      return (divW', %[rem, divW', wpos']))
 
-  let wp := written.headD 0
+  let wp := written.head
   istore8 (← iconst64 10) (← iadd ptr wp)
   istore8 (← iconst32 0) (← iadd ptr (← iaddImm wp 1))
   let outOff ← iconst64 OUTPUT_PATH_OFF
   let bufOff ← iconst64 OUTPUT_BUF
-  let _ ← call fnWrite [ptr, outOff, bufOff, zero, zero]
+  let _ ← ffi .fileWrite %[ptr, outOff, bufOff, zero, zero]
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
-
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 /-- Every byte of shared memory this program names.
 
@@ -155,9 +146,9 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "regex_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

@@ -5,8 +5,8 @@ import AlgorithmLib.HProgSem
 
   `evalOp`'s own docstring states this — "`none` exactly when `Op.check` would
   reject it or an address is unmapped" — and nothing tested it. The differential
-  corpus cannot: `HProgCorpus` builds through `Sur.M`, which type-checks every
-  operation as it goes, so by construction it only ever produces well-typed
+  corpus cannot: `HProgCorpus` writes its cases as `Prog`s, whose types admit
+  no ill-typed operation, so by construction it only ever produces well-typed
   terms. The one claim it structurally cannot reach is this one.
 
   Both directions are checked, and both had failures. An evaluator more defined

@@ -2,11 +2,9 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import LayoutScan
 import ShipScan
-
-
 
 /-!
   # A user's spec, compiled to the GPU
@@ -154,8 +152,8 @@ theorem siluPtx_fits :
     (ptx.toUTF8.toList.length + 1 ≤ PTX_L_OFF - PTX_OFF)
       ∧ (ptxLoop.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_L_OFF) := by native_decide
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- **The two kernels, as records the launch sites read.**
 
@@ -181,12 +179,8 @@ def siluLoopK : AlgorithmLib.Kernel := {
   ptxText := some ptxLoop
 }
 
-/-- The CUDA entry points, declared through the same helper the runtime's
-    signatures come from. -/
-def env : FnEnv := env% [.cuda]
-
-def loadFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def loadFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -195,41 +189,36 @@ def loadFnCode : HProg.Code := clif% do
   store inId (← absAddr ptr IN_ID)
   let outId ← cudaCreateBuffer ptr nBytes
   store outId (← absAddr ptr OUT_ID)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, inId, dataPtr, nBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, inId, dataPtr, nBytes]
   kernelBindAt siluK ptr BIND_OFF [inId, outId]
 
-def runFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def runFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch siluK ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The same work, `E` elements per lane: `LGRID` blocks instead of `GRID`. -/
-def runLoopFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def runLoopFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch siluLoopK ptr BIND_OFF
   let _ ← cudaSync ptr
 
-def fetchFnCode : HProg.Code := clif% do
-  let ptr := basePtr
+def fetchFnCode : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outId ← load32 (← absAddr ptr OUT_ID)
   let nBytes ← iconst64 (N * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, outId, outPtr, nBytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, nBytes]
 
-theorem bodies_wf :
-    HProg.wf env HProg.ptrParams loadFnCode = true &&
-    HProg.wf env HProg.ptrParams runFnCode = true &&
-    HProg.wf env HProg.ptrParams runLoopFnCode = true &&
-    HProg.wf env HProg.ptrParams fetchFnCode = true := by decide
 
-def clifIR : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 loadFnCode,
-     HProg.compileFn 2 runFnCode,
-     HProg.compileFn 3 fetchFnCode,
-     HProg.compileFn 4 runLoopFnCode]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 loadFnCode,
+     Prog.compileProg 2 runFnCode,
+     Prog.compileProg 3 fetchFnCode,
+     Prog.compileProg 4 runLoopFnCode]
 
 def initialMemory : List UInt8 :=
   let p := AlgorithmLib.Kernel.ptxBytes siluK
@@ -245,9 +234,9 @@ def extraAlgs : List (String × Algorithm) :=
   [("run", { fn_idx := u32 2 }), ("fetch", { fn_idx := u32 3 }),
    ("runLoop", { fn_idx := u32 4 })]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[ toJsonArtifact "silu_warp"
-      { clif := clifIR, memory_size := MEM_SIZE, initial_memory := initialMemory }
+      { clif, memory_size := MEM_SIZE, initial_memory := initialMemory }
       entryAlg extraAlgs ]
 
 
@@ -255,6 +244,7 @@ end SiluWarp
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir SiluWarp.artifacts
+  let clif ← Prog.orDie SiluWarp.clifIR
+  emitArtifacts outDir (SiluWarp.artifacts clif)
 
 #eval ShipScan.check "SiluWarpAlgorithm"

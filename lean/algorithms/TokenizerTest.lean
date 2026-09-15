@@ -1,12 +1,12 @@
 import AlgorithmLib.Gen
 import AlgorithmLib.HProg
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import TokenizerCommon
 import PretokCommon
 import LayoutScan
 import ShipScan
 
-open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur
+open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog
 
 /-!
   # The tokenizer on its own, so it can be disagreed with
@@ -32,7 +32,6 @@ namespace TokenizerTest
     truncate. -/
 def TEXT_MAX : Nat := 4096
 
-def env : FnEnv := env% [.ht, .cuda, .fileIO]
 
 /-! ## Memory
 
@@ -92,9 +91,9 @@ def D_LEN : Nat := 0
 def D_PATH : Nat := 16
 def D_TEXT : Nat := 272
 
-def tMainFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def tMainFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let outPtr ← load64 (← absAddr ptr 0x28)
   -- the file is read once, however many strings arrive afterwards
@@ -122,18 +121,12 @@ def tMainFn : HProg.Code :=
     let tk ← load32 (← iadd outTok (← ishlImm i 2))
     storeI32 tk (← iadd outPtr (← iaddImm (← ishlImm i 2) 4))
 
-def tShippedBodies : List HProg.Code := [ tMainFn ]
+def tShippedBodies : List Prog.Body := [ tMainFn ]
 
-theorem tokenizerTestShipped_wf :
-    tShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
-
-def tClifIR : Program :=
-  program <|
-    noopFunction :: tShippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp tokenizerTestShipped_wf p.1.1 p.1.2))
+def tClifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: tShippedBodies.zipIdx.map
+      (fun (b, i) => Prog.compileProg (i + 1) b)
 
 def zeros (n : Nat) : List UInt8 := List.replicate n 0
 
@@ -149,20 +142,21 @@ def tInitialMemory : List UInt8 :=
   zeros T_HOST_LEN ++ u32le (D_TEXT + TEXT_MAX)
     ++ zeros (T_MEM_SIZE - T_HOST_LEN - 4)
 
-def tSetup : Setup := {
-  clif := tClifIR
+def tSetup (clif : Program) : Setup := {
+  clif
   memory_size := T_MEM_SIZE
   initial_memory := tInitialMemory
 }
 
 #eval LayoutScan.check "TokenizerTest" [``tMemMap]
 
-def artifacts : Array Json :=
-  #[ toJsonArtifact "tokenizer_test" tSetup { fn_idx := u32 1 } [] ]
+def artifacts (clif : Program) : Array Json :=
+  #[ toJsonArtifact "tokenizer_test" (tSetup clif) { fn_idx := u32 1 } [] ]
 
 end TokenizerTest
 
 def main (args : List String) : IO Unit := do
-  emitArtifacts (← requireOutputDir args) TokenizerTest.artifacts
+  let clif ← Prog.orDie TokenizerTest.tClifIR
+  emitArtifacts (← requireOutputDir args) (TokenizerTest.artifacts clif)
 
 #eval ShipScan.check "TokenizerTest"

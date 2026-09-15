@@ -132,6 +132,13 @@ lean_lib LayoutScan
 
 lean_lib ShipScan
 
+-- Build-enforced: the frontend idioms a library is written with — type classes,
+-- recursion over a user's syntax, higher-order and continuation combinators,
+-- label passing, computed loop widths, obligation towers, monad transformers.
+-- Each definition is its own check; a change to `Prog` that breaks one fails
+-- here rather than in whoever's library meets it next.
+lean_lib ProgIdioms
+
 lean_lib MlSurface
 
 lean_lib TrustScan

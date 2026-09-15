@@ -3,7 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.Cuda
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import Qwen2Proven
 import TokenizerCommon
 import LayoutScan
@@ -93,7 +93,7 @@ def PINNED_CHUNK_BYTES : Nat := 64 * 1024 * 1024
 def TOK_FILE_MAX_BYTES : Nat := 32 * 1024 * 1024
 -- Per-call buffer slots in shared memory at 0x0048–0x0087 (16 × i32 ids).
 -- Each `BufferSlot s` makes the *shape* of the underlying tensor part of the
--- type: `slotLoad slotHidden ptr : VecD`, no per-call cast.  The fixed hex
+-- type: `slotLoad slotHidden ptr : VecD V`, no per-call cast.  The fixed hex
 -- offsets are the single source of truth — no `BUF_*_OFF` constants.
 def slotHidden   : BufferSlot [.sta D]              := slotOfAt 0x0048
 def slotHdNorm   : BufferSlot [.sta D]              := slotOfAt 0x004C
@@ -263,19 +263,19 @@ def MEM_SIZE        : Nat := TEXT_OUT_OFF  + TEXT_OUT_BYTES
 def D_AS_BITS : UInt32 := 0x44600000  -- 896.0f
 
 -- ── Tensor shape abbreviations for Qwen2 ────────────────────────────────────
-abbrev VecD     := Tensor [.sta D]              -- hidden state, rmsnorm weights, residual
-abbrev VecKV    := Tensor [.sta KV_DIM]         -- current K/V vector for one position
-abbrev VecDff   := Tensor [.sta D_FF]           -- FFN intermediate
-abbrev VecVocab := Tensor [.sta VOCAB]          -- logits, embed table row
-abbrev VecMeta  := Tensor [.sta 6]              -- [token_id, pos, seqLen, chunks, tail, rem]
-abbrev EmbedTbl := Tensor [.sta VOCAB, .sta D]  -- full embed/lm_head table
-abbrev KVCache  := Tensor [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM]  -- GQA-proper (one copy per KV head)
-abbrev RopeTbl  := Tensor [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)]
-abbrev VecScores := Tensor [.sta N_Q, .dyn]     -- attention scores [head, seq_len]
-abbrev MatDD     := Tensor [.sta D, .sta D]              -- Wq, Wo
-abbrev MatKVD    := Tensor [.sta KV_DIM, .sta D]         -- Wk, Wv
-abbrev MatDffD   := Tensor [.sta D_FF, .sta D]           -- Wg, Wu
-abbrev MatDDff   := Tensor [.sta D, .sta D_FF]           -- Wd
+abbrev VecD (V : ClifTy → Type)     := Prog.Tsr V [.sta D]              -- hidden state, rmsnorm weights, residual
+abbrev VecKV (V : ClifTy → Type)    := Prog.Tsr V [.sta KV_DIM]         -- current K/V vector for one position
+abbrev VecDff (V : ClifTy → Type)   := Prog.Tsr V [.sta D_FF]           -- FFN intermediate
+abbrev VecVocab (V : ClifTy → Type) := Prog.Tsr V [.sta VOCAB]          -- logits, embed table row
+abbrev VecMeta (V : ClifTy → Type)  := Prog.Tsr V [.sta 6]              -- [token_id, pos, seqLen, chunks, tail, rem]
+abbrev EmbedTbl (V : ClifTy → Type) := Prog.Tsr V [.sta VOCAB, .sta D]  -- full embed/lm_head table
+abbrev KVCache (V : ClifTy → Type)  := Prog.Tsr V [.sta N_KV, .sta MAX_SEQ, .sta HEAD_DIM]  -- GQA-proper (one copy per KV head)
+abbrev RopeTbl (V : ClifTy → Type)  := Prog.Tsr V [.sta 2, .sta MAX_SEQ, .sta (HEAD_DIM/2)]
+abbrev VecScores (V : ClifTy → Type) := Prog.Tsr V [.sta N_Q, .dyn]     -- attention scores [head, seq_len]
+abbrev MatDD (V : ClifTy → Type)     := Prog.Tsr V [.sta D, .sta D]              -- Wq, Wo
+abbrev MatKVD (V : ClifTy → Type)    := Prog.Tsr V [.sta KV_DIM, .sta D]         -- Wk, Wv
+abbrev MatDffD (V : ClifTy → Type)   := Prog.Tsr V [.sta D_FF, .sta D]           -- Wg, Wu
+abbrev MatDDff (V : ClifTy → Type)   := Prog.Tsr V [.sta D, .sta D_FF]           -- Wd
 
 -- Embedding row copy: out = embed[token_id]
 -- Bind: [embed, meta, hidden]; Grid=(1,1,1), Block=(256,1,1)
@@ -292,31 +292,7 @@ def embedKernel : Kernel := {
 }
 def ptxEmbedLookup : String := embedKernel.ptxSource
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
-
-/-- Every externally-callable thing any Qwen2 function uses, declared once so a
-    slot index means the same thing in all of them. -/
-structure Q2Ffi where
-  fnHtInit : IR.FnRef
-  fnFileRead : IR.FnRef
-  fnFileWrite : IR.FnRef
-  fnSinf : IR.FnRef
-  fnCosf : IR.FnRef
-  fnPowf : IR.FnRef
-  fnStdinRead : IR.FnRef
-  fnStdoutWrite : IR.FnRef
-  fnInfer : IR.FnRef
-  fnLayerStep : IR.FnRef
-  fnAttn : IR.FnRef
-  fnFfn : IR.FnRef
-  fnFinalStep : IR.FnRef
-  fnTokInit : IR.FnRef
-  fnTokBpe : IR.FnRef
-  fnDetok : IR.FnRef
-  fnStream : IR.FnRef
-  fnKvLoad : IR.FnRef
-  fnKvSave : IR.FnRef
+open AlgorithmLib.Prog
 
 /-- This program's own functions, which it calls by the name the JIT gives each
     `u0:N`. Everything else it calls is an entry point, named through `Ffi`. -/
@@ -324,28 +300,49 @@ def ownFns : List String :=
   ["fn_27", "fn_28", "fn_29", "fn_30", "fn_31", "fn_33", "fn_34", "fn_35",
    "fn_38", "fn_39", "fn_40"]
 
-def ffiEnv : Q2Ffi × FnEnv := Id.run do
-  let (own, env) := (env% [.ht, .cuda, .cublas, .math, .fileIO]).declareColocatedAll
-    ownFns [.i64] none
-  let at_ (i : Nat) : IR.FnRef := (own[i]?).getD ⟨0⟩
-  return ({ fnHtInit := IR.Ffi.htInit.ref
-            fnFileRead := IR.Ffi.fileReadToPtr.ref
-            fnFileWrite := IR.Ffi.fileWriteFromPtr.ref
-            fnSinf := IR.Ffi.sinf.ref
-            fnCosf := IR.Ffi.cosf.ref
-            fnPowf := IR.Ffi.powf.ref
-            fnStdinRead := IR.Ffi.stdinReadline.ref
-            fnStdoutWrite := IR.Ffi.stdoutWrite.ref
-            fnInfer := at_ 0, fnLayerStep := at_ 1, fnAttn := at_ 2, fnFfn := at_ 3
-            fnFinalStep := at_ 4, fnTokInit := at_ 5, fnTokBpe := at_ 6
-            fnDetok := at_ 7, fnStream := at_ 8, fnKvLoad := at_ 9
-            fnKvSave := at_ 10 }, env)
+/-- The bundles whose entry points this program may call. Nothing declares
+    them --- `Prog` reads an entry point's id off `Ffi` --- but the ids the
+    program's *own* functions get are the ones past the largest of these, so
+    the numbering still starts here. -/
+def ownBundles : List IR.FFI.Bundle := [.ht, .cuda, .cublas, .math, .fileIO]
 
-def q : Q2Ffi := ffiEnv.1
-def env : FnEnv := ffiEnv.2
+/-- The first id free for a colocated declaration: past every entry point in
+    `ownBundles`, exactly as `FnEnv.declare` allocates. -/
+def ownFirstId : Nat :=
+  (IR.Ffi.all.filter (fun f => ownBundles.contains f.bundle)).foldl
+    (fun m f => max m (f.id + 1)) 0
 
-private def launchEmbed (ptr : R) (bindOff : Nat)
-    (table : EmbedTbl) (metaT : VecMeta) (outT : VecD) : M Unit :=
+/-- One reference per own function, in `ownFns` order. Each takes the
+    descriptor pointer and returns nothing; the declaration travels with the
+    reference, so a body that calls one declares it and a body that does not
+    never mentions it. -/
+def ownRef (i : Nat) : Prog.LocalRef [ClifTy.i64] none :=
+  { id := ownFirstId + i, callee := .import ((ownFns[i]?).getD ""), colocated := true }
+
+/-- Every function of this program any other one calls, by name. -/
+abbrev OwnRef := Prog.LocalRef [ClifTy.i64] none
+
+structure Q2Own where
+  fnInfer : OwnRef
+  fnLayerStep : OwnRef
+  fnAttn : OwnRef
+  fnFfn : OwnRef
+  fnFinalStep : OwnRef
+  fnTokInit : OwnRef
+  fnTokBpe : OwnRef
+  fnDetok : OwnRef
+  fnStream : OwnRef
+  fnKvLoad : OwnRef
+  fnKvSave : OwnRef
+
+def q : Q2Own :=
+  { fnInfer := ownRef 0, fnLayerStep := ownRef 1, fnAttn := ownRef 2
+    fnFfn := ownRef 3, fnFinalStep := ownRef 4, fnTokInit := ownRef 5
+    fnTokBpe := ownRef 6, fnDetok := ownRef 7, fnStream := ownRef 8
+    fnKvLoad := ownRef 9, fnKvSave := ownRef 10 }
+
+private def launchEmbed (ptr : V .i64) (bindOff : Nat)
+    (table : EmbedTbl V) (metaT : VecMeta V) (outT : VecD V) : Prog V L Unit :=
   launch3 embedKernel ptr bindOff table metaT outT
 
 -- RMSNorm: y = rms_norm(x, w)
@@ -370,8 +367,8 @@ def ptxRmsNorm : String := rmsNormKernel.ptxSource
 
 /-- Typed RMSNorm launcher.  `x` is the input, `w` the weights, `y` the output —
     all `[D]` f32. The bind region is the only call-site-specific value. -/
-private def launchRms (ptr : R) (bindOff : Nat)
-    (x w y : Tensor [.sta D]) : M Unit :=
+private def launchRms (ptr : V .i64) (bindOff : Nat)
+    (x w y : Prog.Tsr V [.sta D]) : Prog V L Unit :=
   launch3 rmsNormKernel ptr bindOff x w y
 
 def biasAddDKernel : Kernel := {
@@ -398,12 +395,12 @@ def biasAddKVKernel : Kernel := {
 def ptxBiasAddD  : String := biasAddDKernel.ptxSource
 def ptxBiasAddKV : String := biasAddKVKernel.ptxSource
 
-private def launchBiasD (ptr : R) (bindOff : Nat)
-    (x b : VecD) : M Unit :=
+private def launchBiasD (ptr : V .i64) (bindOff : Nat)
+    (x b : VecD V) : Prog V L Unit :=
   launch2 biasAddDKernel ptr bindOff x b
 
-private def launchBiasKV (ptr : R) (bindOff : Nat)
-    (x b : VecKV) : M Unit :=
+private def launchBiasKV (ptr : V .i64) (bindOff : Nat)
+    (x b : VecKV V) : Prog V L Unit :=
   launch2 biasAddKVKernel ptr bindOff x b
 
 -- RoPE rotation body — identical for Q and K, parameterized by buffer-param name.
@@ -437,12 +434,12 @@ def ropeKKernel : Kernel := {
 def ptxRoPEQ : String := ropeQKernel.ptxSource
 def ptxRoPEK : String := ropeKKernel.ptxSource
 
-private def launchRopeQ (ptr : R) (bindOff : Nat)
-    (q : VecD) (mb : VecMeta) (rope : RopeTbl) : M Unit :=
+private def launchRopeQ (ptr : V .i64) (bindOff : Nat)
+    (q : VecD V) (mb : VecMeta V) (rope : RopeTbl V) : Prog V L Unit :=
   launch3 ropeQKernel ptr bindOff q mb rope
 
-private def launchRopeK (ptr : R) (bindOff : Nat)
-    (k : VecKV) (mb : VecMeta) (rope : RopeTbl) : M Unit :=
+private def launchRopeK (ptr : V .i64) (bindOff : Nat)
+    (k : VecKV V) (mb : VecMeta V) (rope : RopeTbl V) : Prog V L Unit :=
   launch3 ropeKKernel ptr bindOff k mb rope
 
 -- Softmax over per-head scores.  **Migrated** to the proven stack: the trip
@@ -460,8 +457,8 @@ def softmaxKernel : Kernel := {
 
 def ptxSoftmax : String := softmaxKernel.ptxSource
 
-private def launchSoftmax (ptr : R) (bindOff : Nat)
-    (scores : VecScores) (mb : VecMeta) (probs : VecScores) : M Unit :=
+private def launchSoftmax (ptr : V .i64) (bindOff : Nat)
+    (scores : VecScores V) (mb : VecMeta V) (probs : VecScores V) : Prog V L Unit :=
   launch3 softmaxKernel ptr bindOff scores mb probs
 
 -- SiLU-gate: out = silu(gate) * up.  Grid=ceil(D_FF/256), Block=256.
@@ -477,8 +474,8 @@ def siluGateKernel : Kernel := {
 
 def ptxSiluGate : String := siluGateKernel.ptxSource
 
-private def launchSiluGate (ptr : R) (bindOff : Nat)
-    (gate up out_ : VecDff) : M Unit :=
+private def launchSiluGate (ptr : V .i64) (bindOff : Nat)
+    (gate up out_ : VecDff V) : Prog V L Unit :=
   launch3 siluGateKernel ptr bindOff gate up out_
 
 -- Residual add: x[i] += a[i], n=D. Grid=ceil(D/256), Block=256.
@@ -493,8 +490,8 @@ def residualAddKernel : Kernel := {
 
 def ptxResidualAdd : String := residualAddKernel.ptxSource
 
-private def launchResidualAdd (ptr : R) (bindOff : Nat)
-    (x add_ : VecD) : M Unit :=
+private def launchResidualAdd (ptr : V .i64) (bindOff : Nat)
+    (x add_ : VecD V) : Prog V L Unit :=
   launch2 residualAddKernel ptr bindOff x add_
 
 -- KV store (GQA-proper). Writes k_cur[kvHead, elemIdx] → kCache[kvHead, pos, elemIdx].
@@ -511,8 +508,8 @@ def kvStoreKernel : Kernel := {
 
 def ptxKVStore : String := kvStoreKernel.ptxSource
 
-private def launchKVStore (ptr : R) (bindOff : Nat)
-    (kCur : VecKV) (kCache : KVCache) (mb : VecMeta) : M Unit :=
+private def launchKVStore (ptr : V .i64) (bindOff : Nat)
+    (kCur : VecKV V) (kCache : KVCache V) (mb : VecMeta V) : Prog V L Unit :=
   launch3 kvStoreKernel ptr bindOff kCur kCache mb
 
 -- Argmax over VOCAB logits. Single-thread; writes result to meta_buf[0].
@@ -527,29 +524,28 @@ def argmaxKernel : Kernel := {
 
 def ptxArgmax : String := argmaxKernel.ptxSource
 
-private def launchArgmax (ptr : R) (bindOff : Nat)
-    (logits : VecVocab) (mb : VecMeta) : M Unit :=
+private def launchArgmax (ptr : V .i64) (bindOff : Nat)
+    (logits : VecVocab V) (mb : VecMeta V) : Prog V L Unit :=
   launch2 argmaxKernel ptr bindOff logits mb
 
 -- ── CLIF Load Functions ───────────────────────────────────────────────────────
 
 /-- Advance past the next null byte in a host buffer and return the pointer
     immediately after it. Used to split a concatenated `a\0b\0c\0` arg payload. -/
-private def walkPastNull (start : R) : M R := do
+private def walkPastNull (start : V .i64) : Prog V L (V .i64) := do
   let e ← wloop1 start
     (head := fun p => do
       let b ← uload8_64 p
       let z ← iconst64 0
-      return (contIf .ne b z, [p], ()))
-    (body := fun p _ => return [← iaddImm p 1])
-  iaddImm (e.headD 0) 1
+      return (contIf .ne b z, %[p], ()))
+    (body := fun p _ => return %[← iaddImm p 1])
+  iaddImm (e.head) 1
 
 /-- parseArgsFn (fn_37): split the caller's data buffer (two null-terminated
     strings: `weights_path\0tokenizer_path\0`) into two pointers and store them
     in shared memory so later actions can locate their argument. -/
-def parseArgsFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def parseArgsFn : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   storeI64 dataPtr (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
   let tokenizerPtr ← walkPastNull dataPtr
@@ -560,18 +556,18 @@ def parseArgsFn : HProg.Code :=
     The scratch buffer is reused for every chunk (host→GPU is synchronous), and
     each chunk goes to a distinct offset within the destination GPU buffer. -/
 def uploadFromFile {s : Shape}
-    (ctxPtr pathPtr scratchPtr : R) (t : Tensor s)
-    (fileOff totalSize : Nat) : M Unit := do
-  let bufId := t.slot
+    (ctxPtr pathPtr scratchPtr : V .i64) (t : Prog.Tsr V s)
+    (fileOff totalSize : Nat) : Prog V L Unit := do
+  let bufId := t.buf
   let numChunks := (totalSize + PINNED_CHUNK_BYTES - 1) / PINNED_CHUNK_BYTES
   (List.range numChunks).forM fun i => do
     let off      := i * PINNED_CHUNK_BYTES
     let thisSize := min PINNED_CHUNK_BYTES (totalSize - off)
     let fileOff64 ← iconst64 (fileOff + off)
     let size64    ← iconst64 thisSize
-    let _ ← call q.fnFileRead.id [pathPtr, scratchPtr, fileOff64, size64]
+    let _ ← ffi .fileReadToPtr %[pathPtr, scratchPtr, fileOff64, size64]
     let bufOff64  ← iconst64 off
-    let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, bufId, bufOff64, scratchPtr, size64]
+    let _ ← ffi .cudaUploadOffset %[ctxPtr, bufId, bufOff64, scratchPtr, size64]
 
 /-- Generate the RoPE sin/cos table into the pinned scratch buffer, then upload it.
     Loop: for each freq in 0..HEAD_DIM/2, inv_freq = rope_theta^(-2*freq/HEAD_DIM);
@@ -579,8 +575,8 @@ def uploadFromFile {s : Shape}
     Table layout: [sin: MAX_SEQ × HEAD_DIM/2 f32][cos: MAX_SEQ × HEAD_DIM/2 f32].
     All trig goes through libm via FFI (cl_sinf/cl_cosf/cl_powf). -/
 private def buildRopeTable
-    (ctxPtr scratchPtr : R) (ropeTable : RopeTbl) : M Unit := do
-  let bufRopeTable := ropeTable.slot
+    (ctxPtr scratchPtr : V .i64) (ropeTable : RopeTbl V) : Prog V L Unit := do
+  let bufRopeTable := ropeTable.buf
   let hdh   : Nat := HEAD_DIM / 2
   let tableBytes := 2 * MAX_SEQ * hdh * 4
   let cosOff     := MAX_SEQ * hdh * 4
@@ -597,14 +593,14 @@ private def buildRopeTable
   forLoop freqLim64 fun freq => do
     let freqF ← fcvtFromSint .f32 freq
     let exponent ← fmul freqF expFactor
-    let invFreq ← call q.fnPowf.id [ropeTheta, exponent]
+    let invFreq ← ffi .powf %[ropeTheta, exponent]
     -- Inner loop carries invFreq through (loop-invariant; could also rely on
     -- dominance, but threading is more conservative across the back-edge).
     let _ ← forLoopAcc posLim64 invFreq fun pos invF => do
       let posF ← fcvtFromSint .f32 pos
       let theta ← fmul posF invF
-      let sinV ← call q.fnSinf.id [theta]
-      let cosV ← call q.fnCosf.id [theta]
+      let sinV ← ffi .sinf %[theta]
+      let cosV ← ffi .cosf %[theta]
       let row     ← imul pos hdh64
       let idx     ← iadd row freq
       let byteOff ← imul idx four64
@@ -616,13 +612,13 @@ private def buildRopeTable
       return invF
     pure ()
 
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufRopeTable, scratchPtr, (← iconst64 tableBytes)]
+  let _ ← ffi .cudaUpload %[ctxPtr, bufRopeTable, scratchPtr, (← iconst64 tableBytes)]
 
 /-- Shared body of `loadInitFn`: allocates pinned scratch, activation/embed/
     lm_head/rope buffers, streams the embed table, lm_head, and rms_final
     weights from disk.  Does NOT emit `entryBlock` or `ret` — caller wraps it.
     The caller passes in already-declared FFI handles to avoid duplicate decls. -/
-def loadInitCommon (ptr : R) : M Unit := do
+def loadInitCommon (ptr : V .i64) : Prog V L Unit := do
   -- Weights file path was parsed into a shared-memory slot by fn_37.
   let pathPtr ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
 
@@ -632,8 +628,8 @@ def loadInitCommon (ptr : R) : M Unit := do
 
   -- Allocate pinned host scratch buffer for streaming weight uploads
   let chunkBytes64 ← iconst64 PINNED_CHUNK_BYTES
-  let pinnedId  ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, chunkBytes64]
-  let pinnedPtr ← call IR.Ffi.cudaPinnedPtr.id   [ctxPtr, pinnedId]
+  let pinnedId  ← ffi .cudaPinnedAlloc %[ctxPtr, chunkBytes64]
+  let pinnedPtr ← ffi .cudaPinnedPtr   %[ctxPtr, pinnedId]
   storeI32 pinnedId  (← absAddr ptr PINNED_ID_OFF)
   storeI64 pinnedPtr (← absAddr ptr PINNED_HOST_PTR_OFF)
 
@@ -642,15 +638,15 @@ def loadInitCommon (ptr : R) : M Unit := do
   let kvBytes  ← iconst64 KV_BYTES
   let dffBytes ← iconst64 (D_FF * 4)
 
-  let bufHidden  : VecD   ← tensorCreate ptr dBytes
-  let bufHdNorm  : VecD   ← tensorCreate ptr dBytes
-  let bufQ       : VecD   ← tensorCreate ptr dBytes
-  let bufKCur    : VecKV  ← tensorCreate ptr kvBytes
-  let bufVCur    : VecKV  ← tensorCreate ptr kvBytes
-  let bufAttnOut : VecD   ← tensorCreate ptr dBytes
-  let bufFfGate  : VecDff ← tensorCreate ptr dffBytes
-  let bufFfUp    : VecDff ← tensorCreate ptr dffBytes
-  let bufFfAct   : VecDff ← tensorCreate ptr dffBytes
+  let bufHidden  : VecD V   ← tensorCreate ptr dBytes
+  let bufHdNorm  : VecD V   ← tensorCreate ptr dBytes
+  let bufQ       : VecD V   ← tensorCreate ptr dBytes
+  let bufKCur    : VecKV V  ← tensorCreate ptr kvBytes
+  let bufVCur    : VecKV V  ← tensorCreate ptr kvBytes
+  let bufAttnOut : VecD V   ← tensorCreate ptr dBytes
+  let bufFfGate  : VecDff V ← tensorCreate ptr dffBytes
+  let bufFfUp    : VecDff V ← tensorCreate ptr dffBytes
+  let bufFfAct   : VecDff V ← tensorCreate ptr dffBytes
 
   slotStore slotHidden ptr bufHidden
   slotStore slotHdNorm ptr bufHdNorm
@@ -668,13 +664,13 @@ def loadInitCommon (ptr : R) : M Unit := do
   let scoreBytes  ← iconst64 (N_Q * MAX_SEQ * 4)
   let metaBytes   ← iconst64 24
 
-  let bufEmbed    : EmbedTbl  ← tensorCreate ptr embedBytes
-  let bufLmHead   : EmbedTbl  ← tensorCreate ptr embedBytes
-  let bufLogits   : VecVocab  ← tensorCreate ptr vocabBytes
-  let bufRmsFinal : VecD      ← tensorCreate ptr dBytes
-  let bufScores   : VecScores ← tensorCreate ptr scoreBytes
-  let bufProbs    : VecScores ← tensorCreate ptr scoreBytes
-  let bufMeta     : VecMeta   ← tensorCreate ptr metaBytes
+  let bufEmbed    : EmbedTbl V  ← tensorCreate ptr embedBytes
+  let bufLmHead   : EmbedTbl V  ← tensorCreate ptr embedBytes
+  let bufLogits   : VecVocab V  ← tensorCreate ptr vocabBytes
+  let bufRmsFinal : VecD V      ← tensorCreate ptr dBytes
+  let bufScores   : VecScores V ← tensorCreate ptr scoreBytes
+  let bufProbs    : VecScores V ← tensorCreate ptr scoreBytes
+  let bufMeta     : VecMeta V   ← tensorCreate ptr metaBytes
 
   slotStore slotEmbed ptr bufEmbed
   slotStore slotLmHead ptr bufLmHead
@@ -686,7 +682,7 @@ def loadInitCommon (ptr : R) : M Unit := do
 
   -- Create RoPE sin/cos table buffer (typed) and populate via libm-driven loop.
   let ropeTableBytes ← iconst64 (2 * MAX_SEQ * (HEAD_DIM / 2) * 4)  -- 524288
-  let bufRopeTable : RopeTbl ← tensorCreate ptr ropeTableBytes
+  let bufRopeTable : RopeTbl V ← tensorCreate ptr ropeTableBytes
   slotStore slotRopeTable ptr bufRopeTable
   buildRopeTable ctxPtr pinnedPtr bufRopeTable
 
@@ -694,8 +690,6 @@ def loadInitCommon (ptr : R) : M Unit := do
   uploadFromFile ctxPtr pathPtr pinnedPtr bufEmbed    FILE_EMBED_OFF     EMBED_BYTES
   uploadFromFile ctxPtr pathPtr pinnedPtr bufRmsFinal FILE_RMS_FINAL_OFF D_BYTES
   uploadFromFile ctxPtr pathPtr pinnedPtr bufLmHead   FILE_LM_HEAD_OFF   EMBED_BYTES
-
-
 
 -- ── CLIF Infer Functions ──────────────────────────────────────────────────────
 
@@ -713,7 +707,7 @@ def loadInitCommon (ptr : R) : M Unit := do
     `seq/32`, `(seq/32)*32`, `seq%32`" from something a reader checks by eye
     into a theorem.  The emitted instructions are unchanged — `do`-notation is
     associative and the artifact md5 is the same. -/
-def metaStageFrag (ptr dataPtr pos32 seqLen64 : R) : M R := do
+def metaStageFrag (ptr dataPtr : V .i64) (pos32 : V .i32) (seqLen64 : V .i64) : Prog V L (V .i64) := do
   let tokId32   ← load32 dataPtr
   let seqLen32b ← ireduce32 seqLen64
   let chunks32  ← ushrImm seqLen32b 5
@@ -768,27 +762,26 @@ def metaFragInsts (ptr dataPtr pos32 seqLen64 : Val) (n : Nat) : List Inst :=
     hands them: descriptor, data pointer, `pos`, `seqLen`. -/
 def metaFragParams : List ClifTy := [.i64, .i64, .i32, .i64]
 
-/-- The fragment calls nothing, so its code does not depend on the callee
-    table; building it against the empty one keeps this reducible. -/
-def metaFragEnv : HProg.FnEnv := { sigs := [], fns := [] }
-
-def metaFragCode : HProg.Code :=
-  clif%(metaFragEnv, metaFragParams)
-    (do let _ ← metaStageFrag 0 1 2 3; pure ())
+def metaFragBody : Prog V L Unit :=
+  .params metaFragParams (fun vs => do
+    let _ ← metaStageFrag vs.head vs.snd vs.thd vs.fth
+    pure ())
 
 def metaFragEmitted : List Inst :=
-  match (HProg.compileFn 1 metaFragCode metaFragEnv metaFragParams).blocks with
-  | b :: _ => b.insts
-  | []     => []
+  match Prog.compileProg 1 metaFragBody metaFragParams with
+  | .ok fd => match fd.blocks with
+              | b :: _ => b.insts
+              | []     => []
+  | .error _ => []
 
 /-- **The fragment emits exactly that.**
 
-    Stated of the *compiled* instruction stream rather than of a builder state:
-    `Sur.St` carries a type environment, so the `∀ s` form does not reduce,
-    while the emitted code is first-order and this closes by `rfl`. The trailing
-    `.ret` is the block's terminator — everything before it is the fragment.
-    Stated through `BEq`: `Inst` carries a `Float`, so it has no `DecidableEq`,
-    and `compileFn` does not reduce definitionally at this size. -/
+    Stated of the *compiled* instruction stream: the emitted code is
+    first-order, so the claim is about a list of instructions rather than about
+    the term that produced them. The trailing `.ret` is the block's terminator
+    — everything before it is the fragment. Stated through `BEq`: `Inst`
+    carries a `Float`, so it has no `DecidableEq`, and the compiler does not
+    reduce definitionally at this size. -/
 theorem metaStageFrag_emits :
     (metaFragEmitted == metaFragInsts ⟨0⟩ ⟨1⟩ ⟨2⟩ ⟨3⟩ 4 ++ [.ret]) = true := by
   native_decide
@@ -906,9 +899,8 @@ theorem metaFrag_slots :
     Reads [token_id:u32][pos:u32] from data_ptr.
     Uploads meta to GPU, launches embed lookup, runs 24-layer loop (calls fn_28),
     then calls fn_31 for final rms+lm_head+argmax. -/
-def inferFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def inferFn : Prog V L Unit := do
+  let ptr ← basePtr
   -- Declare colocated callees
 
   let dataPtr ← load64 (← absAddr ptr 0x18)
@@ -936,57 +928,57 @@ def inferFn : HProg.Code :=
   let nLayers ← iconst64 N_LAYERS
   forLoop nLayers fun layerIdx => do
     storeI64 layerIdx (← absAddr ptr LAYER_IDX_OFF)
-    callVoid q.fnLayerStep.id [ptr]
-  callVoid q.fnFinalStep.id [ptr]
+    callLocalVoid q.fnLayerStep %[ptr]
+  callLocalVoid q.fnFinalStep %[ptr]
 
 
 -- ── Attention helper types and sub-builders ───────────────────────────────────
 
-private structure AttnBufs where
-  bufRmsAttn : VecD
-  bufWq      : MatDD
-  bufBq      : VecD
-  bufWk      : MatKVD
-  bufBk      : VecKV
-  bufWv      : MatKVD
-  bufBv      : VecKV
-  bufWo      : MatDD
-  bufKCache  : KVCache
-  bufVCache  : KVCache
-  bufHidden  : VecD
-  bufHdNorm  : VecD
-  bufQ       : VecD
-  bufKCur    : VecKV
-  bufVCur    : VecKV
-  bufAttnOut : VecD
-  bufScores  : VecScores
-  bufProbs   : VecScores
-  bufMeta    : VecMeta
+private structure AttnBufs (V : ClifTy → Type) where
+  bufRmsAttn : VecD V
+  bufWq      : MatDD V
+  bufBq      : VecD V
+  bufWk      : MatKVD V
+  bufBk      : VecKV V
+  bufWv      : MatKVD V
+  bufBv      : VecKV V
+  bufWo      : MatDD V
+  bufKCache  : KVCache V
+  bufVCache  : KVCache V
+  bufHidden  : VecD V
+  bufHdNorm  : VecD V
+  bufQ       : VecD V
+  bufKCur    : VecKV V
+  bufVCur    : VecKV V
+  bufAttnOut : VecD V
+  bufScores  : VecScores V
+  bufProbs   : VecScores V
+  bufMeta    : VecMeta V
 
-private structure AttnConsts where
-  one32     : R
-  two32     : R
-  three32   : R
-  blk256    : R
-  nq32      : R
-  nkv32     : R
-  dm32      : R
-  kv32      : R
-  hdim32    : R
-  blk32_2   : R
-  hdim64    : R
-  maxSeq64  : R
-  alpha     : R
-  attnAlpha : R
-  zero32    : R
+private structure AttnConsts (V : ClifTy → Type) where
+  one32     : V .i32
+  two32     : V .i32
+  three32   : V .i32
+  blk256    : V .i32
+  nq32      : V .i32
+  nkv32     : V .i32
+  dm32      : V .i32
+  kv32      : V .i32
+  hdim32    : V .i32
+  blk32_2   : V .i32
+  hdim64    : V .i64
+  maxSeq64  : V .i64
+  alpha     : V .i32
+  attnAlpha : V .i32
+  zero32    : V .i32
 
-private def load32At (base : R) (off : Nat) : M R :=
+private def load32At (base : V .i64) (off : Nat) : Prog V L (V .i32) :=
   load32 =<< iaddImm base off
 
-private def load64At (base : R) (off : Nat) : M R :=
+private def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
   load64 =<< iaddImm base off
 
-private def attnLoadBufs (ptr slotBaseA : R) : M AttnBufs := do
+private def attnLoadBufs (ptr slotBaseA : V .i64) : Prog V L (AttnBufs V) := do
   let bufRmsAttn ← slotLoad LayerSlot.rmsAttn slotBaseA
   let bufWq      ← slotLoad LayerSlot.wq      slotBaseA
   let bufBq      ← slotLoad LayerSlot.bq      slotBaseA
@@ -1010,7 +1002,7 @@ private def attnLoadBufs (ptr slotBaseA : R) : M AttnBufs := do
            bufKCache, bufVCache, bufHidden, bufHdNorm, bufQ, bufKCur, bufVCur,
            bufAttnOut, bufScores, bufProbs, bufMeta }
 
-private def mkAttnConsts : M AttnConsts := do
+private def mkAttnConsts : Prog V L (AttnConsts V) := do
   let one32 ← iconst32 1;    let two32 ← iconst32 2;    let three32 ← iconst32 3
   let blk256 ← iconst32 256; let nq32 ← iconst32 N_Q;   let nkv32 ← iconst32 N_KV
   let dm32 ← iconst32 D;     let kv32 ← iconst32 KV_DIM; let hdim32 ← iconst32 HEAD_DIM
@@ -1021,8 +1013,8 @@ private def mkAttnConsts : M AttnConsts := do
   return { one32 := one32, two32 := two32, three32 := three32, blk256 := blk256, nq32 := nq32, nkv32 := nkv32, dm32 := dm32, kv32 := kv32, hdim32 := hdim32, blk32_2 := blk32_2, hdim64 := hdim64, maxSeq64 := maxSeq64, alpha := alpha, attnAlpha := attnAlpha, zero32 := zero32 }
 
 -- RMSNorm → QKV projections → bias adds
-private def attnProjPhase (ptr : R) 
-    (b : AttnBufs) : M Unit := do
+private def attnProjPhase (ptr : V .i64)
+    (b : AttnBufs V) : Prog V L Unit := do
   launchRms ptr BIND_RMS1 b.bufHidden b.bufRmsAttn b.bufHdNorm
   -- Q/K/V projections: shape-typed.  Wq:[D,D]·hidden:[D] → q:[D];
   -- Wk:[KV_DIM,D]·hidden:[D] → kCur:[KV_DIM]; same for Wv.
@@ -1034,8 +1026,8 @@ private def attnProjPhase (ptr : R)
   launchBiasKV ptr BIND_BIAS_V b.bufVCur b.bufBv
 
 -- RoPE → KV store
-private def attnRopePhase (ptr : R) (b : AttnBufs)
-    (_c : AttnConsts) : M Unit := do
+private def attnRopePhase (ptr : V .i64) (b : AttnBufs V)
+    (_c : AttnConsts V) : Prog V L Unit := do
   let bufRopeTable ← slotLoad slotRopeTable ptr
   launchRopeQ  ptr BIND_ROPE_Q b.bufQ    b.bufMeta bufRopeTable
   launchRopeK  ptr BIND_ROPE_K b.bufKCur b.bufMeta bufRopeTable
@@ -1043,17 +1035,17 @@ private def attnRopePhase (ptr : R) (b : AttnBufs)
   launchKVStore ptr BIND_KV_V  b.bufVCur b.bufVCache b.bufMeta
 
 -- Attention scores → softmax → V-mix → Wo → residual
-private def attnMixPhase (ptr : R) 
-    (b : AttnBufs) (c : AttnConsts) : M Unit := do
+private def attnMixPhase (ptr : V .i64)
+    (b : AttnBufs V) (c : AttnConsts V) : Prog V L Unit := do
   let seqLen64 ← load64At ptr SEQ_LEN_SLOT_OFF
   let seqLen32 ← ireduce32 seqLen64
   -- Q, AttnOut, scores, probs are flat memory; view them as GQA-grouped
   -- [N_KV, GQA_RATIO, ...] for the batched-by-KV-head GEMMs.  K/V cache is
   -- now stored once per KV head and broadcast across the gqaRatio Q heads.
-  let qGqa      : Tensor [.sta N_KV, .sta GQA_RATIO, .sta HEAD_DIM] := b.bufQ.reshape
-  let outGqa    : Tensor [.sta N_KV, .sta GQA_RATIO, .sta HEAD_DIM] := b.bufAttnOut.reshape
-  let scoresGqa : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufScores.reshape
-  let probsGqa  : Tensor [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufProbs.reshape
+  let qGqa      : Prog.Tsr V [.sta N_KV, .sta GQA_RATIO, .sta HEAD_DIM] := b.bufQ.reshape
+  let outGqa    : Prog.Tsr V [.sta N_KV, .sta GQA_RATIO, .sta HEAD_DIM] := b.bufAttnOut.reshape
+  let scoresGqa : Prog.Tsr V [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufScores.reshape
+  let probsGqa  : Prog.Tsr V [.sta N_KV, .sta GQA_RATIO, .dyn]          := b.bufProbs.reshape
   -- scores[kv, i, :seqLen] = attnAlpha * K[kv, :seqLen, :] @ Q[kv, i]
   attnScoresQK ptr c.attnAlpha seqLen32 seqLen64 b.bufKCache qGqa scoresGqa
   launchSoftmax ptr BIND_SOFTMAX b.bufScores b.bufMeta b.bufProbs
@@ -1066,8 +1058,8 @@ private def attnMixPhase (ptr : R)
 /-- Attention sub-layer body (RMSNorm → Q/K/V proj → biases → RoPE → KV store
     → GQA attention → Wo → residual).  Caller computes `slotBaseA` (the per-
     layer slot containing weight + K/V cache buffer IDs).  Emits `ret`. -/
-def attnBody 
-    (ptr slotBaseA : R) : M Unit := do
+def attnBody
+    (ptr slotBaseA : V .i64) : Prog V L Unit := do
   let b ← attnLoadBufs ptr slotBaseA
   let c ← mkAttnConsts
   attnProjPhase ptr b
@@ -1076,8 +1068,8 @@ def attnBody
 
 /-- FFN sub-layer body (RMSNorm → Wg/Wu → SiLU-gate → Wd → residual).  Caller
     computes `slotBaseA`.  Emits `ret`. -/
-def ffnBody 
-    (ptr slotBaseA : R) : M Unit := do
+def ffnBody
+    (ptr slotBaseA : V .i64) : Prog V L Unit := do
   let bufRmsFfn  ← slotLoad LayerSlot.rmsFfn slotBaseA
   let bufWg      ← slotLoad LayerSlot.wg     slotBaseA
   let bufWu      ← slotLoad LayerSlot.wu     slotBaseA
@@ -1098,9 +1090,8 @@ def ffnBody
   launchResidualAdd ptr BIND_ADD2 bufHidden bufAttnOut
 
 /-- inferFinalFn (fn_31): final RMSNorm → lm_head → argmax → sync → download next_token. -/
-def inferFinalFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def inferFinalFn : Prog V L Unit := do
+  let ptr ← basePtr
   let outPtr  ← load64At ptr 0x28
   let bufHidden   ← slotLoad slotHidden   ptr
   let bufHdNorm   ← slotLoad slotHdNorm   ptr
@@ -1141,31 +1132,26 @@ def tokMem : TokenizerCommon.TokMem :=
 
 /-- loadTokenizerFn (fn_32): slurp the tokenizer binary into a pinned host
     buffer, init the hash table, populate the merge table. -/
-def loadTokenizerFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
+def loadTokenizerFn : Prog V L Unit := do
   TokenizerCommon.loadTokenizerM tokMem
 
 /-- tokenizeInitFn (fn_33): every byte of the input text to its initial token. -/
-def tokenizeInitFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
+def tokenizeInitFn : Prog V L Unit := do
   TokenizerCommon.tokenizeInitM tokMem
 
 /-- tokenizeBpeFn (fn_34): merge passes over the token buffer until none applies. -/
-def tokenizeBpeFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
+def tokenizeBpeFn : Prog V L Unit := do
   TokenizerCommon.tokenizeBpeM tokMem
 
 /-- detokenizeFn (fn_35): token ids back to bytes in TEXT_OUT_OFF. -/
-def detokenizeFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
+def detokenizeFn : Prog V L Unit := do
   TokenizerCommon.detokenizeM tokMem
 
 /-- cliFn (fn_36): stdin/stdout chat loop.
     Per line: read stdin → tokenize → prefill+decode via fn_27 → detokenize → write stdout.
     Exits when stdin closes (EOF). -/
-def cliFn : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def cliFn : Prog V L Unit := do
+  let ptr ← basePtr
   -- Colocated callees
   -- Stdin/stdout FFI
   -- Redirect inferFn's data_ptr and out_ptr to our step buffers
@@ -1209,25 +1195,25 @@ def cliFn : HProg.Code :=
   let _ ← wloop1 zero64
     (head := fun i => do
       let lim ← iconst64 SYSTEM_TOKEN_COUNT
-      return (contIf .ult i lim, ([] : List R), ()))
+      return (contIf .ult i lim, %[], ()))
     (body := fun i _ => do
       let off ← ishlImm i 2
       let tok ← load32 (← iadd (← iaddImm ptr SYSTEM_TOKENS_OFF) off)
       storeI32 tok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 i) (← absAddr ptr (INFER_IN_OFF + 4))
-      callVoid q.fnInfer.id [ptr]
-      return [← iaddImm i 1])
+      callLocalVoid q.fnInfer %[ptr]
+      return %[← iaddImm i 1])
 
   -- One turn per iteration; an empty read ends the session.
-  let _ ← wloop []
+  let _ ← wloop %[]
     (head := fun _ => do
       -- The running position is reset here, so each turn starts decoding from
       -- the end of the system prompt rather than from the end of the previous
       -- turn.
       storeI64 (← iconst64 SYSTEM_TOKEN_COUNT) (← absAddr ptr RUNNING_POS_OFF)
       let runningPos ← load64 (← absAddr ptr RUNNING_POS_OFF)
-      let nRecv ← call q.fnStdinRead.id [ptr, textInOff64, maxRecv]
-      return (contIf .ugt nRecv zero64, ([] : List R), (runningPos, nRecv)))
+      let nRecv ← ffi .stdinReadline %[ptr, textInOff64, maxRecv]
+      return (contIf .ugt nRecv zero64, %[], (runningPos, nRecv)))
     (body := fun _ rp => do
       let runningPos := rp.1
       let nRecv := rp.2
@@ -1236,29 +1222,29 @@ def cliFn : HProg.Code :=
       let cr ← iconst64 13
       let l1 ← do
         let last ← uload8_64 (← iadd textInPtr (← iaddImm nRecv (-1)))
-        ifte .eq last lf (pure [← iaddImm nRecv (-1)]) (pure [nRecv])
-      let len1 := l1.headD 0
+        ifte .eq last lf (pure %[← iaddImm nRecv (-1)]) (pure %[nRecv])
+      let len1 := l1.head
       let l2 ← ifte .ugt len1 zero64
         (do
           let last ← uload8_64 (← iadd textInPtr (← iaddImm len1 (-1)))
-          ifte .eq last cr (pure [← iaddImm len1 (-1)]) (pure [len1]))
-        (pure [len1])
-      let tsLen := l2.headD 0
+          ifte .eq last cr (pure %[← iaddImm len1 (-1)]) (pure %[len1]))
+        (pure %[len1])
+      let tsLen := l2.head
       storeI64 tsLen (← absAddr ptr TEXT_LEN_OFF)
-      callVoid q.fnTokInit.id [ptr]
-      callVoid q.fnTokBpe.id  [ptr]
+      callLocalVoid q.fnTokInit %[ptr]
+      callLocalVoid q.fnTokBpe  %[ptr]
       let rawPromptN ← load64At ptr TOKEN_COUNT_OFF
 
       -- room for the chat prefix: shift the prompt up, highest index first
       let _ ← wloop1 rawPromptN
-        (head := fun i => return (contIf .ne i zero64, ([] : List R), ()))
+        (head := fun i => return (contIf .ne i zero64, %[], ()))
         (body := fun i _ => do
           let srcIdx ← iaddImm i (-1)
           let srcOff ← ishlImm srcIdx 2
           let tok ← load32 (← iadd tokBuf srcOff)
           let dstOff ← ishlImm (← iadd srcIdx prefixLen) 2
           storeI32 tok (← iadd tokBuf dstOff)
-          return [srcIdx])
+          return %[srcIdx])
 
       -- Prefix: <|im_start|>user\n
       storeI32 imStartTok (← iadd tokBuf (← iconst64 0))
@@ -1288,56 +1274,56 @@ def cliFn : HProg.Code :=
 
       -- prefill: every prompt token through `inferFn`
       let _ ← wloop1 zero64
-        (head := fun i => return (contIf .ult i nPrompt, ([] : List R), ()))
+        (head := fun i => return (contIf .ult i nPrompt, %[], ()))
         (body := fun i _ => do
           let tok ← load32 (← iadd tokBuf (← ishlImm i 2))
           let absPos ← iadd runningPos i
           storeI32 tok (← absAddr ptr INFER_IN_OFF)
           storeI32 (← ireduce32 absPos) (← absAddr ptr (INFER_IN_OFF + 4))
-          callVoid q.fnInfer.id [ptr]
-          return [← iaddImm i 1])
+          callLocalVoid q.fnInfer %[ptr]
+          return %[← iaddImm i 1])
 
       -- decode until an end-of-turn token or the budget
       let diTok ← load32 (← absAddr ptr INFER_OUT_OFF)
       let diStartPos ← iadd runningPos nPrompt
-      let dec ← wloop [diStartPos, diTok, zero64]
+      let dec ← wloop %[diStartPos, diTok, zero64]
         (head := fun c => do
-          let tok := c.getD 1 0
-          let nOut := c.getD 2 0
+          let tok := c.snd
+          let nOut := c.thd
           let isEos ← icmp .eq tok eosTok
           let isImEnd ← icmp .eq tok imEndTok
           let stopTok ← bor isEos isImEnd
           let isFull ← icmp .uge nOut maxDecode
           let stop ← bor stopTok isFull
-          return (contIf .eq stop z8, [nOut], ()))
+          return (contIf .eq stop z8, %[nOut], ()))
         (body := fun c _ => do
-          let pos := c.headD 0
-          let tok := c.getD 1 0
-          let nOut := c.getD 2 0
+          let pos := c.head
+          let tok := c.snd
+          let nOut := c.thd
           storeI32 tok (← iadd tokBuf (← ishlImm nOut 2))
           storeI32 tok (← absAddr ptr INFER_IN_OFF)
           storeI32 (← ireduce32 pos) (← absAddr ptr (INFER_IN_OFF + 4))
-          callVoid q.fnInfer.id [ptr]
+          callLocalVoid q.fnInfer %[ptr]
           let nextTok ← load32 (← absAddr ptr INFER_OUT_OFF)
-          return [← iaddImm pos 1, nextTok, ← iaddImm nOut 1])
-      let wrNOut := dec.headD 0
+          return %[← iaddImm pos 1, nextTok, ← iaddImm nOut 1])
+      let wrNOut := dec.head
 
       -- detokenize, print, then close the assistant turn in the cache
       storeI64 wrNOut (← absAddr ptr TOKEN_COUNT_OFF)
-      callVoid q.fnDetok.id [ptr]
+      callLocalVoid q.fnDetok %[ptr]
       let outLen ← load64At ptr TEXT_LEN_OFF
       istore8 (← iconst32 10) (← iadd textOutPtr outLen)
-      let _ ← call q.fnStdoutWrite.id [ptr, textOutOff64, (← iaddImm outLen 1)]
+      let _ ← ffi .stdoutWrite %[ptr, textOutOff64, (← iaddImm outLen 1)]
       let endImPos ← iadd runningPos (← iadd nPrompt wrNOut)
       storeI32 imEndTok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 endImPos) (← absAddr ptr (INFER_IN_OFF + 4))
-      callVoid q.fnInfer.id [ptr]
+      callLocalVoid q.fnInfer %[ptr]
       let endNlPos ← iaddImm endImPos 1
       storeI32 nlTok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 endNlPos) (← absAddr ptr (INFER_IN_OFF + 4))
-      callVoid q.fnInfer.id [ptr]
+      callLocalVoid q.fnInfer %[ptr]
       storeI64 (← iaddImm endNlPos 1) (← absAddr ptr RUNNING_POS_OFF)
-      return [])
+      return %[])
 
 
 -- ── Initial memory: PTX kernel byte tail (shared by both algorithms) ─────────
@@ -1465,8 +1451,7 @@ def memMap : RegionMap :=
     A view rather than a shipping path — it is applied to whatever body a claim
     is about — so it takes the compiler that does not demand `wf`. The bodies
     that reach an artifact are checked where `clifIR` assembles them. -/
-def stateOf (c : HProg.Code) : AlgorithmLib.IR.FuncData :=
-  (HProg.compileBody 1 c env)
+def stateOf (p : Prog.Body) : AlgorithmLib.IR.FuncData := Prog.stateOf 1 p
 
 /-- The layer-forward function, as a value. -/
 def inferState : AlgorithmLib.IR.FuncData := (stateOf inferFn)

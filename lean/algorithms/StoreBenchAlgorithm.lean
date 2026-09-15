@@ -21,16 +21,13 @@ namespace StoreBench
 
 def MEM_SIZE : Nat := 40
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
   let n       ← ushrImm dataLen 2
   -- floor(n/16) trips of 16 elements = 64 bytes each
   let mainEnd ← ishlImm (← ushrImm n 4) 6
@@ -38,23 +35,22 @@ def code : HProg.Code := clif% do
   let twoV    ← splat .f32x4 two
 
   let _ ← wloop1 (← iconst64 0)
-    (head := fun i => return (exitIfSGe i mainEnd, ([] : List R), ()))
+    (head := fun i => return (exitIfSGe i mainEnd, %[], ()))
     (body := fun bi _ => do
       let src ← iadd dataPtr bi
       let dst ← iadd outPtr bi
       for k in [0:4] do
         let v ← loadF32x4 (← iaddImm src (16 * k))
         storeUnaligned (← fmul v twoV) (← iaddImm dst (16 * k))
-      return [← iaddImm bi 64])
+      return %[← iaddImm bi 64])
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "store_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 1

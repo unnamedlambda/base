@@ -1425,17 +1425,15 @@ def pixelsOff : Nat := bmpHeaderOff + 54
 
 def hdrPixelBytes (spec : BlackHoleSpec) : Nat := pixelCount spec * 16
 
-open AlgorithmLib.IR in
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def fnWrite : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.cuda, .fileIO]
+abbrev fnWrite : Ffi := .fileWrite
 
-def code (spec : BlackHoleSpec) : HProg.Code :=
-  HProg.Sur.build do
-    let ptr := basePtr
+def code (spec : BlackHoleSpec) : Prog V L Unit :=
+  do
+    let ptr ← basePtr
     cudaInit ptr
     -- Allocate device buffers: HDR scratch (RGB f32, padded to 16 B/pixel)
     -- and final BGRA u32 output.
@@ -1471,14 +1469,13 @@ def code (spec : BlackHoleSpec) : HProg.Code :=
     let _ ← cudaDownload ptr bgraBuf pxOffV bgraSz
     cudaCleanup ptr
     let total ← iconst64 (54 + pixelBytes spec)
-    let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
+    let _ ← writeFile0 ptr filenameOff bmpHeaderOff total
 
 
--- Generic in the spec, so `compileFn` has no instance to `decide` at; the
+-- Generic in the spec, so there is no instance to `decide` at; the
 -- obligation is a parameter instead, discharged at the spec that ships.
-def clifIrSource (spec : BlackHoleSpec)
-    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 (code spec) env (hwf := hwf)]
+def clifIrSource (spec : BlackHoleSpec) : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 (code spec)]
 
 def payloads (spec : BlackHoleSpec) : List UInt8 :=
   let reserved := zeros ptxOff
@@ -1492,9 +1489,8 @@ def payloads (spec : BlackHoleSpec) : List UInt8 :=
   reserved ++ ptxBytes ++ nameA ++ nameB ++ bindAPad ++ bindBPad ++
     filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : BlackHoleSpec)
-    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup := {
-  clif := clifIrSource spec hwf,
+def config (spec : BlackHoleSpec) (clif : Program) : Setup := {
+  clif,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
@@ -1503,9 +1499,8 @@ def algorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
 
-def renderScene (spec : BlackHoleSpec)
-    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup × Algorithm :=
-  (config spec hwf, algorithm)
+def renderScene (spec : BlackHoleSpec) : Except String (Setup × Algorithm) := do
+  return (config spec (← clifIrSource spec), algorithm)
 
 /-- ============================================================
     Preset specs.  Each must pass every dependent check in
@@ -1534,7 +1529,6 @@ def defaultBlackHole : BlackHoleSpec :=
     (by native_decide) (by native_decide) (by native_decide)
 
 /-- Well-formed at the spec that ships. -/
-theorem code_wf : HProg.wf env HProg.ptrParams (code defaultBlackHole) = true := by decide
 
 def previewBlackHole : BlackHoleSpec :=
   checkedBlackHole
@@ -1571,7 +1565,7 @@ def edgeOnBlackHole : BlackHoleSpec :=
 end Algorithm
 
 def main (args : List String) : IO Unit := do
-  let (cfg, alg) := Algorithm.renderScene Algorithm.defaultBlackHole Algorithm.code_wf
+  let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultBlackHole)
   let jsonEntry := toJsonEntry "blackhole_app" cfg alg
   let outputDir ← requireOutputDir args
   emitArtifacts outputDir #[jsonEntry]

@@ -24,16 +24,13 @@ namespace SelectRotBench
 
 def MEM_SIZE : Nat := 40
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Nothing here crosses the FFI. -/
-def env : FnEnv := { sigs := [], fns := [] }
 
-def code : HProg.Code := clif% do
-  let dataPtr ← load64 (← absAddr basePtr 0x18)
-  let dataLen ← load64 (← absAddr basePtr 0x20)
-  let outPtr  ← load64 (← absAddr basePtr 0x28)
+def code : Prog V L Unit := do
+  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
+  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
   let n       ← ushrImm dataLen 2
   let mainEnd ← ishlImm n 2
   let i0      ← iconst64 0
@@ -43,29 +40,28 @@ def code : HProg.Code := clif% do
 
   -- Bottom-tested: the guard runs once, so an empty input never enters and the
   -- body block branches to itself rather than through a header.
-  let fin ← dwloop [i0, h0] .slt mainEnd (contOnTrue := true) [1]
+  let fin ← dwloop %[i0, h0] .slt mainEnd (contOnTrue := true) [1]
     (body := fun c => do
-      let bi := c.headD 0
-      let bh := c.getD 1 0
+      let bi := c.head
+      let bh := c.snd
       let x  ← uload32_64 (← iadd dataPtr bi)
       let hE ← band (← iadd bh x) keep
       let hO ← band (← iadd (← ishlImm bh 1) bh) keep
       let cnd ← icmp .eq (← band x one) (← iconst64 0)
       let h' ← select cnd hE hO
       let i' ← iaddImm bi 4
-      return (i', [i', h']))
+      return (i', %[i', h']))
     (guardIdx := some 0)
 
-  store (← fcvtFromSint .f64 (fin.headD 0)) outPtr
+  store (← fcvtFromSint .f64 (fin.head)) outPtr
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "selectrot_algorithm" {
-    clif := clifIR, memory_size := MEM_SIZE
+    clif, memory_size := MEM_SIZE
   } { fn_idx := u32 1 }]
 
 end SelectRotBench

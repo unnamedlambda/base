@@ -102,65 +102,67 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 open AlgorithmLib.IR
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- The externals every emitted function declares, in one order. -/
-def fnFileRead : FnRef := IR.Ffi.fileRead.ref
-def fnFileWrite : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.lmdb, .fileIO]
+abbrev fnFileRead : Ffi := .fileRead
+abbrev fnFileWrite : Ffi := .fileWrite
 
 /-- One CSV buffer's rows written to a database, one row per key. A row runs to
     the next newline, or to the end of the buffer. -/
-def emitIngest (ptr lmdbCtx handle bufOff size keyScrOff : R) : M Unit := do
+def emitIngest (ptr lmdbCtx : V .i64) (handle : V .i32)
+    (bufOff size keyScrOff : V .i64) : Prog V L Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let newline ← iconst64 10
   let keyLen4 ← iconst32 4
   let _ ← wloop2 zero zero
-    (head := fun pos _ => return (contIf .ult pos size, ([] : List R), ()))
+    (head := fun pos _ => return (contIf .ult pos size, %[], ()))
     (body := fun pos key _ => do
       -- the row's last byte: a newline, or the buffer's end
-      let sc ← wloop1 pos
-        (head := fun sPos => return (contIf .eq zero zero, [sPos], ()))
-        (body := fun sPos _ => do
+      let sc ← wloopL %[pos]
+        (head := fun _ c => return (contIf .eq zero zero, %[c.head], ()))
+        (body := fun rowScan c _ => do
+          let sPos := c.head
           let byte ← uextend64 (← load_i8 (← iadd ptr (← iadd bufOff sPos)))
-          when .eq byte newline (brk [sPos])
+          when .eq byte newline (brk rowScan %[sPos])
           let nextPos ← iadd sPos one
-          when .uge nextPos size (brk [sPos])
-          return [nextPos])
-      let rowEnd ← iadd (sc.headD 0) one
+          when .uge nextPos size (brk rowScan %[sPos])
+          return %[nextPos])
+      let rowEnd ← iadd (sc.head) one
       let rowLen32 ← ireduce32 (← isub rowEnd pos)
       let keyPtr ← iadd ptr keyScrOff
       store (← ireduce32 key) keyPtr
       let valPtr ← iadd ptr (← iadd bufOff pos)
-      let _ ← call IR.Ffi.lmdbPut.id [lmdbCtx, handle, keyPtr, keyLen4, valPtr, rowLen32]
-      return [rowEnd, ← iadd key one])
+      let _ ← ffi .lmdbPut %[lmdbCtx, handle, keyPtr, keyLen4, valPtr, rowLen32]
+      return %[rowEnd, ← iadd key one])
 
 /-- Every scanned value written to one file, back to back. -/
-def emitWriteAll (ptr lmdbCtx handle resOff count fnameOff : R) : M Unit := do
+def emitWriteAll (ptr lmdbCtx : V .i64) (handle : V .i32) (resOff : V .i64)
+    (count : V .i32) (fnameOff : V .i64) : Prog V L Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let two ← iconst64 2
   let four ← iconst64 4
   let count64 ← sextend64 count
-  let _ ← wloop [zero, four, zero]
-    (head := fun c => return (contIf .slt (c.headD 0) count64, ([] : List R), ()))
+  let _ ← wloop %[zero, four, zero]
+    (head := fun c => return (contIf .slt (c.head) count64, %[], ()))
     (body := fun c _ => do
-      let i := c.headD 0
-      let byteOff := c.getD 1 0
-      let fileOff := c.getD 2 0
+      let i := c.head
+      let byteOff := c.snd
+      let fileOff := c.thd
       let entryAddr ← iadd ptr (← iadd resOff byteOff)
       let klen ← uextend64 (← load_i16 entryAddr)
       let vlen ← uextend64 (← load_i16 (← iadd entryAddr two))
       let dataOff ← iadd (← iadd byteOff four) klen
       let valOff ← iadd resOff dataOff
       let vlenSigned ← sextend64 (← ireduce32 vlen)
-      let _ ← call fnFileWrite.id [ptr, fnameOff, valOff, fileOff, vlenSigned]
-      return [← iadd i one, ← iadd dataOff vlen, ← iadd fileOff vlen])
+      let _ ← ffi fnFileWrite %[ptr, fnameOff, valOff, fileOff, vlenSigned]
+      return %[← iadd i one, ← iadd dataOff vlen, ← iadd fileOff vlen])
 
 /-- The scanned rows whose value contains the pattern, plus the header row. -/
-def emitFilter (ptr resOff count fnameOff : R) (patternLen : Nat) : M Unit := do
+def emitFilter (ptr resOff : V .i64) (count : V .i32) (fnameOff : V .i64) (patternLen : Nat) : Prog V L Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let two ← iconst64 2
@@ -169,12 +171,12 @@ def emitFilter (ptr resOff count fnameOff : R) (patternLen : Nat) : M Unit := do
   let seaLen ← iconst64 patternLen
   let patOff ← iconst64 patternStr_off
   let count64 ← sextend64 count
-  let _ ← wloop [zero, four, zero]
-    (head := fun c => return (contIf .slt (c.headD 0) count64, ([] : List R), ()))
+  let _ ← wloop %[zero, four, zero]
+    (head := fun c => return (contIf .slt (c.head) count64, %[], ()))
     (body := fun c _ => do
-      let i := c.headD 0
-      let byteOff := c.getD 1 0
-      let fileOff := c.getD 2 0
+      let i := c.head
+      let byteOff := c.snd
+      let fileOff := c.thd
       let entryAddr ← iadd ptr (← iadd resOff byteOff)
       let klen ← uextend64 (← load_i16 entryAddr)
       let vlen ← uextend64 (← load_i16 (← iadd entryAddr two))
@@ -184,91 +186,83 @@ def emitFilter (ptr resOff count fnameOff : R) (patternLen : Nat) : M Unit := do
       let keyVal ← load32 (← iadd ptr (← iadd resOff dataOff))
       let isHeader ← icmp .eq keyVal zero32
       -- the header row is kept whatever the pattern says
-      let hit ← ifte .ne isHeader (← iconst .i8 0) (pure [one])
+      let hit ← ifte .ne isHeader (← iconst .i8 0) (pure %[one])
         (do
           -- the pattern searched for at every position it still fits in
-          let sc ← wloop1 zero
-            (head := fun scanPos => do
-              let scanEnd ← iadd scanPos seaLen
-              return (contIf .ule scanEnd vlen, [zero], ()))
-            (body := fun scanPos _ => do
-              let m ← wloop1 zero
-                (head := fun mi => return (contIf .ult mi seaLen, [one], ()))
-                (body := fun mi _ => do
+          let sc ← wloopL %[zero]
+            (head := fun _ c => do
+              let scanEnd ← iadd c.head seaLen
+              return (contIf .ule scanEnd vlen, %[zero], ()))
+            (body := fun scan c _ => do
+              let scanPos := c.head
+              let m ← wloopL %[zero]
+                (head := fun _ mc => return (contIf .ult mc.head seaLen, %[one], ()))
+                (body := fun cmpLoop mc _ => do
+                  let mi := mc.head
                   let valByte ← load_i8 (← iadd ptr (← iadd valOff (← iadd scanPos mi)))
                   let patByte ← load_i8 (← iadd ptr (← iadd patOff mi))
-                  when .ne valByte patByte (brk [zero])
-                  return [← iadd mi one])
-              when .ne (m.headD 0) zero (brk [one])
-              return [← iadd scanPos one])
-          pure [sc.headD 0])
-      let _ ← ifte .ne (hit.headD 0) zero
+                  when .ne valByte patByte (brk cmpLoop %[zero])
+                  return %[← iadd mi one])
+              when .ne m.head zero (brk scan %[one])
+              return %[← iadd scanPos one])
+          pure %[sc.head])
+      let _ ← ifte .ne (hit.head) zero
         (do
           let vlenSigned ← sextend64 (← ireduce32 vlen)
-          let _ ← call fnFileWrite.id [ptr, fnameOff, valOff, fileOff, vlenSigned]
-          pure [])
-        (pure [])
-      let nextFile ← ifte .ne (hit.headD 0) zero
-        (pure [← iadd fileOff vlen]) (pure [fileOff])
-      return [← iadd i one, ← iadd dataOff2 vlen, nextFile.headD 0])
+          let _ ← ffi fnFileWrite %[ptr, fnameOff, valOff, fileOff, vlenSigned]
+          pure %[])
+        (pure %[])
+      let nextFile ← ifte .ne (hit.head) zero
+        (pure %[← iadd fileOff vlen]) (pure %[fileOff])
+      return %[← iadd i one, ← iadd dataOff2 vlen, nextFile.head])
 
-def mainCode (patternLen : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def mainCode (patternLen : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let empBufOff ← iconst64 empBuf_off
   let zero ← iconst64 0
-  let empSize ← readFile ptr fnFileRead empCsvPath_off empBuf_off
+  let empSize ← readFile ptr empCsvPath_off empBuf_off
   let deptBufOff ← iconst64 deptBuf_off
-  let deptSize ← readFile ptr fnFileRead deptCsvPath_off deptBuf_off
+  let deptSize ← readFile ptr deptCsvPath_off deptBuf_off
   let lmdbSlot := ptr
-  callVoid IR.Ffi.lmdbInit.id [lmdbSlot]
+  ffiVoid .lmdbInit %[lmdbSlot]
   let lmdbCtx ← load64 ptr
   let maxDbs ← iconst32 10
-  let empHandle ← call IR.Ffi.lmdbOpen.id [lmdbCtx, ← iadd ptr (← iconst64 empDbPath_off), maxDbs]
-  let deptHandle ← call IR.Ffi.lmdbOpen.id [lmdbCtx, ← iadd ptr (← iconst64 deptDbPath_off), maxDbs]
+  let empHandle ← ffi .lmdbOpen %[lmdbCtx, ← iadd ptr (← iconst64 empDbPath_off), maxDbs]
+  let deptHandle ← ffi .lmdbOpen %[lmdbCtx, ← iadd ptr (← iconst64 deptDbPath_off), maxDbs]
   let keyScrOff ← iconst64 keyScratch_off
 
-  let _ ← call IR.Ffi.lmdbBeginWriteTxn.id [lmdbCtx, empHandle]
+  let _ ← ffi .lmdbBeginWriteTxn %[lmdbCtx, empHandle]
   emitIngest ptr lmdbCtx empHandle empBufOff empSize keyScrOff
-  let _ ← call IR.Ffi.lmdbCommitWriteTxn.id [lmdbCtx, empHandle]
+  let _ ← ffi .lmdbCommitWriteTxn %[lmdbCtx, empHandle]
 
-  let _ ← call IR.Ffi.lmdbBeginWriteTxn.id [lmdbCtx, deptHandle]
+  let _ ← ffi .lmdbBeginWriteTxn %[lmdbCtx, deptHandle]
   emitIngest ptr lmdbCtx deptHandle deptBufOff deptSize keyScrOff
-  let _ ← call IR.Ffi.lmdbCommitWriteTxn.id [lmdbCtx, deptHandle]
+  let _ ← ffi .lmdbCommitWriteTxn %[lmdbCtx, deptHandle]
 
   let keyLen0 ← iconst32 0
   let maxEntries ← iconst32 100
   let scanResOff ← iconst64 scanResult_off
-  let scanCount ← call IR.Ffi.lmdbCursorScan.id
-    [lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
+  let scanCount ← ffi .lmdbCursorScan
+    %[lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
   emitWriteAll ptr lmdbCtx empHandle scanResOff scanCount (← iconst64 scanFname_off)
 
   let scanRes2Off ← iconst64 scanResult2_off
-  let filterCount ← call IR.Ffi.lmdbCursorScan.id
-    [lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanRes2Off]
+  let filterCount ← ffi .lmdbCursorScan
+    %[lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanRes2Off]
   emitFilter ptr scanRes2Off filterCount (← iconst64 filterFname_off) patternLen
 
-  let joinCount ← call IR.Ffi.lmdbCursorScan.id
-    [lmdbCtx, deptHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
+  let joinCount ← ffi .lmdbCursorScan
+    %[lmdbCtx, deptHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
   emitWriteAll ptr lmdbCtx deptHandle scanResOff joinCount (← iconst64 joinFname_off)
 
-  callVoid IR.Ffi.lmdbCleanup.id [lmdbSlot]
+  ffiVoid .lmdbCleanup %[lmdbSlot]
 
-/-- Well-formed at every pattern length the monomorphic builder can produce.
-
-    `clifIrSource` is generic in the length, so `compileFn` has no instance to
-    `decide` at; it takes `compileBody` and this theorem stands in for the
-    check. The bound covers a filter pattern of up to fourteen bytes; the
-    longest this file builds is `"Engineering"`, which the comma delimiters
-    take to thirteen. -/
-theorem bodies_wf :
-    (List.range 16).all (fun n => HProg.wf env HProg.ptrParams (mainCode n)) = true := by
-  decide
-
-def clifIrSource (patternLen : Nat)
-    (hwf : HProg.wf env HProg.ptrParams (mainCode patternLen) = true := by decide) :
-    Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 (mainCode patternLen) env (hwf := hwf)]
+/-- Generic in the pattern length, and nothing about that costs it anything
+    now: `compileProg` checks the body it emits, at whatever length the
+    monomorphic builder below asked for. -/
+def clifIrSource (patternLen : Nat) : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 (mainCode patternLen)]
 
 -- ---------------------------------------------------------------------------
 -- Payload builder (parameterized by filter pattern bytes)
@@ -306,20 +300,18 @@ def buildPayload (patternBytes : List UInt8) : List UInt8 :=
 -- Monomorphic builder
 -- ---------------------------------------------------------------------------
 
-def buildQueryMonomorphic (patternStr : String)
-    (hwf : HProg.wf env HProg.ptrParams (mainCode patternStr.toUTF8.toList.length) = true
-      := by decide) : Setup × Algorithm :=
+def buildQueryMonomorphic (patternStr : String) : Except String (Setup × Algorithm) := do
   let patternBytes := patternStr.toUTF8.toList  -- no null terminator
   let payload := buildPayload patternBytes
   let cfg : Setup := {
-    clif := clifIrSource patternBytes.length hwf,
+    clif := ← clifIrSource patternBytes.length,
     memory_size    := payload.length,
     initial_memory := payload
   }
   let alg : Algorithm := {
     fn_idx := IR.mainFnIdx
   }
-  (cfg, alg)
+  return (cfg, alg)
 
 -- ---------------------------------------------------------------------------
 -- Pipeline API
@@ -343,11 +335,8 @@ def extractPattern : QueryPlan s → String
   | .join _ p1 _ _ _    => extractPattern p1
   | .select _ p _       => extractPattern p
 
-def compile {s : Schema} (p : QueryPlan s)
-    (hwf : HProg.wf env HProg.ptrParams
-             (mainCode ("," ++ extractPattern p ++ ",").toUTF8.toList.length) = true
-      := by decide) : Setup × Algorithm :=
-  buildQueryMonomorphic ("," ++ extractPattern p ++ ",") hwf
+def compile {s : Schema} (p : QueryPlan s) : Except String (Setup × Algorithm) :=
+  buildQueryMonomorphic ("," ++ extractPattern p ++ ",")
 
 def source {s : Schema} (t : Table s) : QueryPlan s :=
   plan t
@@ -360,11 +349,8 @@ def QueryPlan.project {s : Schema} (p : QueryPlan s)
     (cols : List String) (h : ∀ c ∈ cols, c ∈ s := by decide) : QueryPlan cols :=
   select cols p h
 
-def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s)
-    (hwf : HProg.wf env HProg.ptrParams
-             (mainCode ("," ++ extractPattern p ++ ",").toUTF8.toList.length) = true
-      := by decide) : Setup × Algorithm :=
-  compile p hwf
+def QueryPlan.compileQuery {s : Schema} (p : QueryPlan s) :
+    Except String (Setup × Algorithm) := compile p
 
 def QueryPlan.innerJoinOn {s1 : Schema} (lhs : QueryPlan s1)
     (key : String) {s2 : Schema} (rhs : QueryPlan s2)
@@ -398,7 +384,7 @@ def locations   : Table locationSchema   := Table.mk
 --     |> innerJoinOn "dept_id" (departments.query.whereEq "dept_name" "Engineering")
 --     |> project ["name", "city", "region", "dept_name", "floor"]
 --     |> compileQuery
-def result : Setup × Algorithm :=
+def result : Except String (Setup × Algorithm) :=
   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
   let departmentsInEngineering := departments.query.whereEq "dept_name" "Engineering"
   let employeesWithLocations := employeesInSeattle.innerJoinOn "city" locations.query
@@ -408,7 +394,7 @@ def result : Setup × Algorithm :=
 -- Uncomment either def to see elaboration-time rejection at the combinator call
 -- that introduces the bad column/key:
 --
--- def badJoinKey : Setup × Algorithm :=
+-- def badJoinKey : Except String (Setup × Algorithm) :=
 --   let employeesInSeattle := employees.query.whereEq "city" "Seattle"
 --   let brokenJoin := employeesInSeattle.innerJoinOn "nonexistent_key" departments.query
 --   (brokenJoin.project ["name", "dept_name"]).compileQuery
@@ -421,7 +407,7 @@ def result : Setup × Algorithm :=
 end CsvDemo
 
 def main (args : List String) : IO Unit := do
-  let (cfg, alg) := CsvDemo.result
+  let (cfg, alg) ← Prog.orDie CsvDemo.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "csv_app" cfg alg]
 

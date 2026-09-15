@@ -23,46 +23,43 @@ def STACK_BASE     : Nat := 0x1210
 def STACK_SZ       : Nat := 512
 
 open AlgorithmLib.IR
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-
-def fnFileRead : FnRef := IR.Ffi.fileRead.ref
-def fnFileWrite : FnRef := IR.Ffi.fileWrite.ref
-def fnHtInit : FnRef := IR.Ffi.htInit.ref
-def fnHtCleanup : FnRef := IR.Ffi.htCleanup.ref
-def fnHtCreate : FnRef := IR.Ffi.htCreate.ref
-def fnHtInsert : FnRef := IR.Ffi.htInsert.ref
-def fnHtLookup : FnRef := IR.Ffi.htLookup.ref
-def env : FnEnv := env% [.ht, .fileIO]
+abbrev fnFileRead : Ffi := .fileRead
+abbrev fnFileWrite : Ffi := .fileWrite
+abbrev fnHtInit : Ffi := .htInit
+abbrev fnHtCleanup : Ffi := .htCleanup
+abbrev fnHtCreate : Ffi := .htCreate
+abbrev fnHtInsert : Ffi := .htInsert
+abbrev fnHtLookup : Ffi := .htLookup
 
 /-- The constants and base addresses the evaluator reads, made once in the
     entry block. `ctx` is the binding table, created before the machine runs. -/
-structure K where
-  ptr : R
-  z8 : R
-  zero : R
-  one : R
-  c2 : R
-  c3 : R
-  c4 : R
-  c5 : R
-  c6 : R
-  c7 : R
-  c8 : R
-  c9 : R
-  c10 : R
-  ten : R
-  frameSize : R
-  space : R
-  newline : R
-  doneTag : R
-  srcAddr : R
-  identAddr : R
-  htValAddr : R
-  outBufAddr : R
-  stackAddr : R
-  ctx : R
+structure K (V : ClifTy → Type) where
+  ptr : V .i64
+  z8 : V .i8
+  zero : V .i64
+  one : V .i64
+  c2 : V .i64
+  c3 : V .i64
+  c4 : V .i64
+  c5 : V .i64
+  c6 : V .i64
+  c7 : V .i64
+  c8 : V .i64
+  c9 : V .i64
+  c10 : V .i64
+  ten : V .i64
+  frameSize : V .i64
+  space : V .i64
+  newline : V .i64
+  doneTag : V .i64
+  srcAddr : V .i64
+  identAddr : V .i64
+  htValAddr : V .i64
+  outBufAddr : V .i64
+  stackAddr : V .i64
+  ctx : V .i64
 
 -- ---------------------------------------------------------------------------
 -- The machine
@@ -83,14 +80,14 @@ structure K where
 -- ---------------------------------------------------------------------------
 
 /-- The source byte at `pos`. -/
-def srcByte (k : K) (pos : R) : M R := do uload8_64 (← iadd k.srcAddr pos)
+def srcByte (k : K V) (pos : V .i64) : Prog V L (V .i64) := do uload8_64 (← iadd k.srcAddr pos)
 
 /-- The source byte `d` bytes past `pos`. -/
-def srcByteAt (k : K) (pos : R) (d : Int) : M R := do
+def srcByteAt (k : K V) (pos : V .i64) (d : Int) : Prog V L (V .i64) := do
   uload8_64 (← iadd k.srcAddr (← iaddImm pos d))
 
 /-- Push a frame — tag, saved value, extra — and yield the new stack pointer. -/
-def pushFrame (k : K) (sp tag val extra : R) : M R := do
+def pushFrame (k : K V) (sp tag val extra : V .i64) : Prog V L (V .i64) := do
   let a ← iadd k.stackAddr sp
   store tag a
   store val (← iaddImm a 8)
@@ -98,25 +95,37 @@ def pushFrame (k : K) (sp tag val extra : R) : M R := do
   iadd sp k.frameSize
 
 /-- Advance past spaces and newlines. -/
-def skipWs (k : K) (pos : R) : M R := do
+def skipWs (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
   let e ← wloop1 pos
     (head := fun p => do
       let ch ← srcByte k p
       let isWs ← bor (← icmp .eq ch k.space) (← icmp .eq ch k.newline)
-      return (contIf .ne isWs k.z8, [p], ()))
-    (body := fun p _ => return [← iaddImm p 1])
-  return e.headD 0
+      return (contIf .ne isWs k.z8, %[p], ()))
+    (body := fun p _ => return %[← iaddImm p 1])
+  return e.head
 
 /-- Advance one byte when the next is a space. -/
-def skipOptSpace (k : K) (pos : R) : M R := do
+def skipOptSpace (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
   select (← icmp .eq (← srcByte k pos) k.space) (← iaddImm pos 1) pos
 
+/-- The evaluator's two loops, as labels.
+
+    `Eval` is the outer one --- it carries the level, the position and the
+    stack pointer, and going round it is how the machine descends. `Ret` is the
+    inner one, which pops frames. The helpers below leave or re-enter one of
+    them, and now say so in their types: under the old surface that was a
+    `contTo 1` whose depth no reader could check. -/
+abbrev EvalLbl (L : List ClifTy → List ClifTy → Type) :=
+  L [ClifTy.i64, ClifTy.i64] [ClifTy.i64, ClifTy.i64, ClifTy.i64]
+abbrev RetLbl (L : List ClifTy → List ClifTy → Type) :=
+  L [ClifTy.i64, ClifTy.i64] [ClifTy.i64, ClifTy.i64, ClifTy.i64, ClifTy.i64]
+
 /-- Nonzero when `ch` is a decimal digit. -/
-def isDigitCh (k : K) (ch : R) : M R := do
+def isDigitCh (k : K V) (ch : V .i64) : Prog V L (V .i8) := do
   band (← icmp .uge ch (← iconst64 48)) (← icmp .ule ch (← iconst64 57))
 
 /-- Nonzero when `ch` may appear in an identifier. -/
-def isIdentCh (k : K) (ch : R) : M R := do
+def isIdentCh (k : K V) (ch : V .i64) : Prog V L (V .i8) := do
   let lower ← band (← icmp .uge ch (← iconst64 97)) (← icmp .ule ch (← iconst64 122))
   let upper ← band (← icmp .uge ch (← iconst64 65)) (← icmp .ule ch (← iconst64 90))
   let digit ← isDigitCh k ch
@@ -124,65 +133,65 @@ def isIdentCh (k : K) (ch : R) : M R := do
   bor (← bor (← bor lower upper) digit) under
 
 /-- A decimal literal; the result is the position after it and its value. -/
-def parseNumber (k : K) (start : R) : M (R × R) := do
+def parseNumber (k : K V) (start : V .i64) : Prog V L (V .i64 × V .i64) := do
   let e ← wloop2 start k.zero
     (head := fun p a => do
       let ch ← srcByte k p
-      return (contIf .ne (← isDigitCh k ch) k.z8, [p, a], ch))
+      return (contIf .ne (← isDigitCh k ch) k.z8, %[p, a], ch))
     (body := fun p a ch => do
       let a' ← iadd (← imul a k.ten) (← isub ch (← iconst64 48))
-      return [← iaddImm p 1, a'])
-  return (e.headD 0, e.getD 1 0)
+      return %[← iaddImm p 1, a'])
+  return (e.head, e.snd)
 
 /-- Copy a name into the identifier buffer, stopping at the first space; the
     result is the position of that space and the length written. -/
-def readName (k : K) (start : R) : M (R × R) := do
+def readName (k : K V) (start : V .i64) : Prog V L (V .i64 × V .i64) := do
   let e ← wloop2 start k.zero
     (head := fun p n => do
       let ch ← srcByte k p
-      return (exitIf .eq ch k.space, [p, n], ch))
+      return (exitIf .eq ch k.space, %[p, n], ch))
     (body := fun p n ch => do
       istore8 ch (← iadd k.identAddr n)
-      return [← iaddImm p 1, ← iaddImm n 1])
-  return (e.headD 0, e.getD 1 0)
+      return %[← iaddImm p 1, ← iaddImm n 1])
+  return (e.head, e.snd)
 
 /-- An identifier, looked up in the binding table. -/
-def readVar (k : K) (start : R) : M (R × R) := do
+def readVar (k : K V) (start : V .i64) : Prog V L (V .i64 × V .i64) := do
   let e ← wloop2 start k.zero
     (head := fun p n => do
       let ch ← srcByte k p
-      return (contIf .ne (← isIdentCh k ch) k.z8, [p, n], ch))
+      return (contIf .ne (← isIdentCh k ch) k.z8, %[p, n], ch))
     (body := fun p n ch => do
       istore8 ch (← iadd k.identAddr n)
-      return [← iaddImm p 1, ← iaddImm n 1])
-  let _ ← call fnHtLookup.id
-    [k.ctx, k.identAddr, ← ireduce32 (e.getD 1 0), k.htValAddr]
-  return (e.headD 0, ← load64 k.htValAddr)
+      return %[← iaddImm p 1, ← iaddImm n 1])
+  let _ ← ffi fnHtLookup
+    %[k.ctx, k.identAddr, ← ireduce32 (e.snd), k.htValAddr]
+  return (e.head, ← load64 k.htValAddr)
 
 /-- Bind the identifier buffer's first `len` bytes to `value`. -/
-def bindName (k : K) (len value : R) : M Unit := do
+def bindName (k : K V) (len value : V .i64) : Prog V L Unit := do
   store value k.htValAddr
-  callVoid fnHtInsert.id
-    [k.ctx, k.identAddr, ← ireduce32 len, k.htValAddr, ← iconst32 8]
+  ffiVoid fnHtInsert
+    %[k.ctx, k.identAddr, ← ireduce32 len, k.htValAddr, ← iconst32 8]
 
 /-- Scan a lambda body to its matching `)`, and yield the position after it. -/
-def scanToClose (k : K) (start : R) : M R := do
-  let e ← wloop2 start k.zero
-    (head := fun p _ => return (exitIf .ne k.zero k.zero, [p], ()))
-    (body := fun p depth _ => do
+def scanToClose (k : K V) (start : V .i64) : Prog V L (V .i64) := do
+  let e ← wloop2L start k.zero
+    (head := fun _ p _ => return (exitIf .ne k.zero k.zero, %[p], ()))
+    (body := fun lbl p depth _ => do
       let ch ← srcByte k p
       let next ← iaddImm p 1
       let _ ← ifte .eq ch (← iconst64 41)
         (do
-          let _ ← ifte .eq depth k.zero (do brk [next]; pure []) (pure [])
-          continueWith [next, ← isub depth k.one]
-          pure [])
+          let _ ← ifte .eq depth k.zero (do brk lbl %[next]; pure %[]) (pure %[])
+          continueWith lbl %[next, ← isub depth k.one]
+          pure %[])
         (do
           let deeper ← select (← icmp .eq ch (← iconst64 40)) (← iadd depth k.one) depth
-          continueWith [next, deeper]
-          pure [])
-      return [p, depth])
-  return e.headD 0
+          continueWith lbl %[next, deeper]
+          pure %[])
+      return %[p, depth])
+  return e.head
 
 -- ---------------------------------------------------------------------------
 -- Descend: classify the atom, then handle it exactly once
@@ -195,25 +204,25 @@ def scanToClose (k : K) (start : R) : M R := do
     preceding one matched, as a hand-written chain of branches would. Naming
     the answer keeps the handlers below from being duplicated into every leaf
     that falls back to an identifier. -/
-def classifyAtom (k : K) (pos : R) : M R := do
+def classifyAtom (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
   let ch ← srcByte k pos
-  let cls ← ifte .ne (← isDigitCh k ch) k.z8 (return [k.zero])
+  let cls ← ifte .ne (← isDigitCh k ch) k.z8 (return %[k.zero])
     (ifte .eq ch (← iconst64 40)
       (do
         let ch1 ← srcByteAt k pos 1
-        ifte .eq ch1 (← iconst64 102) (return [k.c3]) (return [k.c2]))
+        ifte .eq ch1 (← iconst64 102) (return %[k.c3]) (return %[k.c2]))
       (ifte .eq ch (← iconst64 108)
         (do
           let ok ← band
             (← band (← icmp .eq (← srcByteAt k pos 1) (← iconst64 101))
                     (← icmp .eq (← srcByteAt k pos 2) (← iconst64 116)))
             (← icmp .eq (← srcByteAt k pos 3) k.space)
-          ifte .ne ok k.z8 (return [k.c4]) (return [k.one]))
+          ifte .ne ok k.z8 (return %[k.c4]) (return %[k.one]))
         (ifte .eq ch (← iconst64 105)
           (do
             let ok ← band (← icmp .eq (← srcByteAt k pos 1) (← iconst64 102))
                           (← icmp .eq (← srcByteAt k pos 2) k.space)
-            ifte .ne ok k.z8 (return [k.c5]) (return [k.one]))
+            ifte .ne ok k.z8 (return %[k.c5]) (return %[k.one]))
           (ifte .eq ch (← iconst64 116)
             (do
               let rue ← band
@@ -221,7 +230,7 @@ def classifyAtom (k : K) (pos : R) : M R := do
                         (← icmp .eq (← srcByteAt k pos 2) (← iconst64 117)))
                 (← icmp .eq (← srcByteAt k pos 3) (← iconst64 101))
               let ok ← band rue (← icmp .ult (← srcByteAt k pos 4) (← iconst64 97))
-              ifte .ne ok k.z8 (return [k.c6]) (return [k.one]))
+              ifte .ne ok k.z8 (return %[k.c6]) (return %[k.one]))
             (ifte .eq ch (← iconst64 102)
               (do
                 let alse ← band
@@ -230,42 +239,42 @@ def classifyAtom (k : K) (pos : R) : M R := do
                   (← band (← icmp .eq (← srcByteAt k pos 3) (← iconst64 115))
                           (← icmp .eq (← srcByteAt k pos 4) (← iconst64 101)))
                 let ok ← band alse (← icmp .ult (← srcByteAt k pos 5) (← iconst64 97))
-                ifte .ne ok k.z8 (return [k.c7]) (return [k.one]))
-              (return [k.one]))))))
-  return cls.headD 0
+                ifte .ne ok k.z8 (return %[k.c7]) (return %[k.one]))
+              (return %[k.one]))))))
+  return cls.head
 
 /-- One descent, from `level`, with `sp` as the live frame stack.
 
     An atom that opens a subexpression pushes its frame and re-enters the outer
     loop; the exports are the position, the live stack pointer, the value and
     whether it is a boolean, for the atoms that are values already. -/
-def descend (k : K) (level pos sp : R) : M (List R) := do
+def descend (k : K V) (evalLbl : EvalLbl L) (level pos sp : V .i64) :
+    Prog V L (Vals V [ClifTy.i64, ClifTy.i64, ClifTy.i64, ClifTy.i64]) := do
   -- level 0 enters at the expression, level 1 at the term, level 2 at the atom
   let atExpr ← ifte .eq level k.zero
     (do
       let p ← skipWs k pos
-      return [p, ← pushFrame k sp k.zero k.zero k.zero])
-    (return [pos, sp])
-  let pos1 := atExpr.headD 0
+      return %[p, ← pushFrame k sp k.zero k.zero k.zero])
+    (return %[pos, sp])
+  let pos1 := atExpr.head
   let atTerm ← ifte .ule level k.one
-    (do return [← pushFrame k (atExpr.getD 1 0) k.one k.zero k.zero])
-    (return [atExpr.getD 1 0])
-  let sp1 := atTerm.headD 0
+    (do return %[← pushFrame k (atExpr.snd) k.one k.zero k.zero])
+    (return %[atExpr.snd])
+  let sp1 := atTerm.head
   let pos2 ← skipWs k pos1
   let cls ← classifyAtom k pos2
   ifte .eq cls k.zero
     (do
       let (p, v) ← parseNumber k pos2
-      return [p, sp1, v, k.zero])
+      return %[p, sp1, v, k.zero])
     (ifte .eq cls k.one
       (do
         let (p, v) ← readVar k pos2
-        return [p, sp1, v, k.zero])
+        return %[p, sp1, v, k.zero])
       (ifte .eq cls k.c2
         (do
           let sp2 ← pushFrame k sp1 k.c7 k.zero k.zero
-          continueWith [k.zero, ← iaddImm pos2 1, sp2]
-          pure [])
+          continueWith evalLbl %[k.zero, ← iaddImm pos2 1, sp2])
         (ifte .eq cls k.c3
           (do
             -- (fun <name> => <body>) <arg>
@@ -274,22 +283,19 @@ def descend (k : K) (level pos sp : R) : M (List R) := do
             let sp2 ← pushFrame k sp1 k.c8 pBody len
             let pArg ← skipOptSpace k (← scanToClose k pBody)
             let sp3 ← pushFrame k sp2 k.c9 k.zero k.zero
-            continueWith [k.one, pArg, sp3]
-            pure [])
+            continueWith evalLbl %[k.one, pArg, sp3])
           (ifte .eq cls k.c4
             (do
               let (pName, len) ← readName k (← iaddImm pos2 4)
               let sp2 ← pushFrame k sp1 k.c2 len k.zero
-              continueWith [k.zero, ← iaddImm pName 4, sp2]
-              pure [])
+              continueWith evalLbl %[k.zero, ← iaddImm pName 4, sp2])
             (ifte .eq cls k.c5
               (do
                 let sp2 ← pushFrame k sp1 k.c4 k.zero k.zero
-                continueWith [k.zero, ← iaddImm pos2 3, sp2]
-                pure [])
+                continueWith evalLbl %[k.zero, ← iaddImm pos2 3, sp2])
               (ifte .eq cls k.c6
-                (return [← iaddImm pos2 4, sp1, k.one, k.one])
-                (return [← iaddImm pos2 5, sp1, k.zero, k.one])))))))
+                (return %[← iaddImm pos2 4, sp1, k.one, k.one])
+                (return %[← iaddImm pos2 5, sp1, k.zero, k.one])))))))
 
 -- ---------------------------------------------------------------------------
 -- Return: pop a frame and act on its tag
@@ -298,62 +304,59 @@ def descend (k : K) (level pos sp : R) : M (List R) := do
 /-- After a term: look for `+`, `-`, `<` or `>`. Finding one pushes the frame
     that will combine it and descends into the right-hand side; finding none
     means this expression is finished, so the return loop pops again. -/
-def exprOperator (k : K) (pos sp value isBool : R) : M Unit := do
+def exprOperator (k : K V) (evalLbl : EvalLbl L) (retLbl : RetLbl L)
+    (pos sp value isBool : V .i64) : Prog V L Unit := do
   let p ← skipWs k pos
   let ch ← srcByte k p
   let _ ← ifte .eq ch (← iconst64 43)
     (do
       let sp' ← pushFrame k sp k.zero value k.one
-      contTo 1 [k.one, ← skipOptSpace k (← iaddImm p 1), sp']
-      pure [])
+      continueWith evalLbl %[k.one, ← skipOptSpace k (← iaddImm p 1), sp'])
     (ifte .eq ch (← iconst64 45)
       (do
         let sp' ← pushFrame k sp k.zero value k.c2
-        contTo 1 [k.one, ← skipOptSpace k (← iaddImm p 1), sp']
-        pure [])
+        continueWith evalLbl %[k.one, ← skipOptSpace k (← iaddImm p 1), sp'])
       (ifte .eq ch (← iconst64 60)
         (do
           let after ← iaddImm p 1
           let isEq ← icmp .eq (← srcByte k after) (← iconst64 61)
           let p1 ← select isEq (← iaddImm after 1) after
           let sp' ← pushFrame k sp k.c10 value (← select isEq k.one k.zero)
-          contTo 1 [k.one, ← skipOptSpace k p1, sp']
-          pure [])
+          continueWith evalLbl %[k.one, ← skipOptSpace k p1, sp'])
         (ifte .eq ch (← iconst64 62)
           (do
             let after ← iaddImm p 1
             let isEq ← icmp .eq (← srcByte k after) (← iconst64 61)
             let p1 ← select isEq (← iaddImm after 1) after
             let sp' ← pushFrame k sp k.c10 value (← select isEq k.c3 k.c2)
-            contTo 1 [k.one, ← skipOptSpace k p1, sp']
-            pure [])
-          (do continueWith [p, sp, value, isBool]; pure []))))
+            continueWith evalLbl %[k.one, ← skipOptSpace k p1, sp'])
+          (do continueWith retLbl %[p, sp, value, isBool]; pure %[]))))
 
 /-- After an atom: look for `*`, and otherwise pop again. -/
-def termOperator (k : K) (pos sp value isBool : R) : M Unit := do
+def termOperator (k : K V) (evalLbl : EvalLbl L) (retLbl : RetLbl L)
+    (pos sp value isBool : V .i64) : Prog V L Unit := do
   let p ← skipWs k pos
   let _ ← ifte .eq (← srcByte k p) (← iconst64 42)
     (do
       let sp' ← pushFrame k sp k.one value k.one
-      contTo 1 [k.c2, ← skipOptSpace k (← iaddImm p 1), sp']
-      pure [])
-    (do continueWith [p, sp, value, isBool]; pure [])
+      continueWith evalLbl %[k.c2, ← skipOptSpace k (← iaddImm p 1), sp'])
+    (do continueWith retLbl %[p, sp, value, isBool]; pure %[])
 
 /-- The comparison a `cmp_rhs` frame was pushed for: 0 `<`, 1 `<=`, 2 `>`,
     3 `>=`. -/
-def compareBy (k : K) (op left right : R) : M R := do
-  let r ← ifte .eq op k.zero (do return [← uextend64 (← icmp .slt left right)])
-    (ifte .eq op k.one (do return [← uextend64 (← icmp .sle left right)])
-      (ifte .eq op k.c2 (do return [← uextend64 (← icmp .sgt left right)])
-        (do return [← uextend64 (← icmp .sge left right)])))
-  return r.headD 0
+def compareBy (k : K V) (op left right : V .i64) : Prog V L (V .i64) := do
+  let r ← ifte .eq op k.zero (do return %[← uextend64 (← icmp .slt left right)])
+    (ifte .eq op k.one (do return %[← uextend64 (← icmp .sle left right)])
+      (ifte .eq op k.c2 (do return %[← uextend64 (← icmp .sgt left right)])
+        (do return %[← uextend64 (← icmp .sge left right)])))
+  return r.head
 
 -- ---------------------------------------------------------------------------
 -- Output
 -- ---------------------------------------------------------------------------
 
 /-- A literal string and its terminator, at the start of the output buffer. -/
-def writeCStr (k : K) (s : String) : M Unit := do
+def writeCStr (k : K V) (s : String) : Prog V L Unit := do
   let mut i : Int := 0
   for b in s.toList.map (·.toNat) do
     istore8 (← iconst64 b) (← iaddImm k.outBufAddr i)
@@ -361,26 +364,26 @@ def writeCStr (k : K) (s : String) : M Unit := do
   istore8 k.zero (← iaddImm k.outBufAddr i)
 
 /-- The decimal form of `value`, most significant digit first. -/
-def writeDecimal (k : K) (value : R) : M Unit := do
+def writeDecimal (k : K V) (value : V .i64) : Prog V L Unit := do
   let top ← wloop1 k.one
     (head := fun d => do
       let next ← imul d k.ten
-      return (exitIf .ugt next value, [d], next))
-    (body := fun _ next => return [next])
-  let e ← wloop [value, k.zero, top.headD 0]
-    (head := fun cs => return (exitIf .ne k.zero k.zero, [cs.getD 1 0], ()))
-    (body := fun cs _ => do
-      let rem := cs.headD 0
-      let outPos := cs.getD 1 0
-      let div := cs.getD 2 0
+      return (exitIf .ugt next value, %[d], next))
+    (body := fun _ next => return %[next])
+  let e ← wloopL %[value, k.zero, top.head]
+    (head := fun _ cs => return (exitIf .ne k.zero k.zero, %[cs.snd], ()))
+    (body := fun lbl cs _ => do
+      let rem := cs.head
+      let outPos := cs.snd
+      let div := cs.thd
       let digit ← udiv rem div
       istore8 (← iadd digit (← iconst64 48)) (← iadd k.outBufAddr outPos)
       let rem' ← isub rem (← imul digit div)
       let div' ← udiv div k.ten
       let outPos' ← iaddImm outPos 1
-      let _ ← ifte .eq div' k.zero (do brk [outPos']; pure []) (pure [])
-      return [rem', outPos', div'])
-  let outPos := e.headD 0
+      let _ ← ifte .eq div' k.zero (do brk lbl %[outPos']; pure %[]) (pure %[])
+      return %[rem', outPos', div'])
+  let outPos := e.head
   istore8 k.newline (← iadd k.outBufAddr outPos)
   istore8 k.zero (← iadd k.outBufAddr (← iaddImm outPos 1))
 
@@ -389,9 +392,8 @@ def writeDecimal (k : K) (value : R) : M Unit := do
 -- ---------------------------------------------------------------------------
 
 set_option maxRecDepth 8192 in
-def mainCode : HProg.Code :=
-  clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def mainCode : Prog V L Unit := do
+  let ptr ← basePtr
   let z8 ← iconst .i8 0
   let zero ← iconst64 0
   let one ← iconst64 1
@@ -415,18 +417,18 @@ def mainCode : HProg.Code :=
   let outBufAddr ← absAddr ptr OUTPUT_BUF
   let stackAddr ← absAddr ptr STACK_BASE
 
-  let _ ← readFile ptr fnFileRead INPUT_PATH SOURCE_BUF
+  let _ ← readFile ptr INPUT_PATH SOURCE_BUF
   let htSlotPtr ← absAddr ptr AlgorithmLib.ContextSlots.ht
-  callVoid fnHtInit.id [htSlotPtr]
+  ffiVoid fnHtInit %[htSlotPtr]
   let ctx ← load64 htSlotPtr
-  let _ ← call fnHtCreate.id [ctx]
+  let _ ← ffi fnHtCreate %[ctx]
 
   -- The bottom frame: reaching it means the whole expression is evaluated.
   store doneTag stackAddr
   store zero (← iaddImm stackAddr 8)
   store zero (← iaddImm stackAddr 16)
 
-  let k : K := {
+  let k : K V := {
     ptr := ptr, z8 := z8, zero := zero, one := one,
     c2 := c2, c3 := c3, c4 := c4, c5 := c5, c6 := c6, c7 := c7,
     c8 := c8, c9 := c9, c10 := c10, ten := ten,
@@ -436,41 +438,41 @@ def mainCode : HProg.Code :=
     ctx := ctx }
 
   -- `#eval ` is six bytes; one frame is already pushed.
-  let answer ← wloop [zero, ← iconst64 6, frameSize]
-    (head := fun _ => return (exitIf .ne zero zero, [zero, zero], ()))
-    (body := fun cs _ => do
-      let atom ← descend k (cs.headD 0) (cs.getD 1 0) (cs.getD 2 0)
-      let done ← wloop [atom.headD 0, atom.getD 1 0, atom.getD 2 0, atom.getD 3 0]
-        (head := fun rs => do
-          let sp ← isub (rs.getD 1 0) k.frameSize
+  let answer ← wloopL %[zero, ← iconst64 6, frameSize]
+    (head := fun _ _ => return (exitIf .ne zero zero, %[zero, zero], ()))
+    (body := fun evalLbl cs _ => do
+      let atom ← descend k evalLbl cs.head cs.snd cs.thd
+      let done ← wloopL %[atom.head, atom.snd, atom.thd, atom.fth]
+        (head := fun _ rs => do
+          let sp ← isub (rs.snd) k.frameSize
           let fa ← iadd k.stackAddr sp
           let tag ← load64 fa
           let savedVal ← load64 (← iaddImm fa 8)
           let savedExtra ← load64 (← iaddImm fa 16)
-          return (exitIf .eq tag k.doneTag, [rs.getD 2 0, rs.getD 3 0],
+          return (exitIf .eq tag k.doneTag, %[rs.thd, rs.fth],
                   (sp, tag, savedVal, savedExtra)))
-        (body := fun rs x => do
-          let pos := rs.headD 0
-          let value := rs.getD 2 0
-          let isBool := rs.getD 3 0
+        (body := fun retLbl rs x => do
+          let pos := rs.head
+          let value := rs.thd
+          let isBool := rs.fth
           let (sp, tag, savedVal, savedExtra) := x
           let _ ← ifte .eq tag k.zero
             (do
               -- expression frame: extra 0 is the first term, 1 add, 2 subtract
-              let j ← ifte .eq savedExtra k.zero (return [value, isBool])
+              let j ← ifte .eq savedExtra k.zero (return %[value, isBool])
                 (do
                   let sum ← iadd savedVal value
                   let diff ← isub savedVal value
-                  return [← select (← icmp .eq savedExtra k.one) sum diff, k.zero])
-              exprOperator k pos sp (j.headD 0) (j.getD 1 0)
-              pure [])
+                  return %[← select (← icmp .eq savedExtra k.one) sum diff, k.zero])
+              exprOperator k evalLbl retLbl pos sp j.head j.snd
+              pure %[])
             (ifte .eq tag k.one
               (do
                 -- term frame: extra 0 is the first atom, 1 multiply
-                let j ← ifte .eq savedExtra k.zero (return [value, isBool])
-                  (do return [← imul savedVal value, k.zero])
-                termOperator k pos sp (j.headD 0) (j.getD 1 0)
-                pure [])
+                let j ← ifte .eq savedExtra k.zero (return %[value, isBool])
+                  (do return %[← imul savedVal value, k.zero])
+                termOperator k evalLbl retLbl pos sp j.head j.snd
+                pure %[])
               (ifte .eq tag k.c2
                 (do
                   -- let: bind the name, then evaluate the body
@@ -478,82 +480,78 @@ def mainCode : HProg.Code :=
                   let semi ← icmp .eq (← srcByte k pos) (← iconst64 59)
                   let p ← select semi (← iaddImm pos 1) pos
                   let sp' ← pushFrame k sp k.c3 k.zero k.zero
-                  contTo 1 [k.zero, p, sp']
-                  pure [])
+                  continueWith evalLbl %[k.zero, p, sp'])
                 (ifte .eq tag k.c3
-                  (do continueWith [pos, sp, value, isBool]; pure [])
+                  (do continueWith retLbl %[pos, sp, value, isBool]; pure %[])
                   (ifte .eq tag k.c4
                     (do
                       -- if: the condition is in hand, evaluate the then-branch
                       let p ← iaddImm (← skipOptSpace k pos) 5
                       let sp' ← pushFrame k sp k.c5 value k.zero
-                      contTo 1 [k.zero, p, sp']
-                      pure [])
+                      continueWith evalLbl %[k.zero, p, sp'])
                     (ifte .eq tag k.c5
                       (do
                         let p ← iaddImm (← skipOptSpace k pos) 5
                         let sp' ← pushFrame k sp k.c6 savedVal value
-                        contTo 1 [k.zero, p, sp']
-                        pure [])
+                        continueWith evalLbl %[k.zero, p, sp'])
                       (ifte .eq tag k.c6
                         (do
                           let taken ← select (← icmp .ne savedVal k.zero) savedExtra value
-                          continueWith [pos, sp, taken, k.zero]
-                          pure [])
+                          continueWith retLbl %[pos, sp, taken, k.zero]
+                          pure %[])
                         (ifte .eq tag k.c7
                           (do
                             let close ← icmp .eq (← srcByte k pos) (← iconst64 41)
                             let p ← select close (← iaddImm pos 1) pos
-                            continueWith [p, sp, value, isBool]
-                            pure [])
+                            continueWith retLbl %[p, sp, value, isBool]
+                            pure %[])
                           (ifte .eq tag k.c8
                             (do
                               -- the lambda's argument is evaluated: bind it and
                               -- run the body the frame remembered
                               bindName k savedExtra value
                               let sp' ← pushFrame k sp k.c3 k.zero k.zero
-                              contTo 1 [k.zero, savedVal, sp']
-                              pure [])
+                              continueWith evalLbl %[k.zero, savedVal, sp'])
                             (ifte .eq tag k.c9
-                              (do continueWith [pos, sp, value, isBool]; pure [])
+                              (do continueWith retLbl %[pos, sp, value, isBool]; pure %[])
                               (ifte .eq tag k.c10
                                 (do
                                   let r ← compareBy k savedExtra savedVal value
-                                  continueWith [pos, sp, r, k.one]
-                                  pure [])
+                                  continueWith retLbl %[pos, sp, r, k.one]
+                                  pure %[])
                                 (do
-                                  continueWith [pos, sp, value, isBool]
-                                  pure [])))))))))))
+                                  continueWith retLbl %[pos, sp, value, isBool]
+                                  pure %[])))))))))))
           return rs)
-      brk [done.headD 0, done.getD 1 0]
+      brk evalLbl %[done.head, done.snd]
       return cs)
 
-  let value := answer.headD 0
-  let isBool := answer.getD 1 0
+  let value := answer.head
+  let isBool := answer.snd
   let _ ← ifte .ne isBool zero
     (do
       let _ ← ifte .ne value zero
         (do
           writeCStr k "true\n"
-          let _ ← writeFile0 ptr fnFileWrite OUTPUT_PATH OUTPUT_BUF zero
-          pure [])
+          let _ ← writeFile0 ptr OUTPUT_PATH OUTPUT_BUF zero
+          pure %[])
         (do
           writeCStr k "false\n"
-          let _ ← writeFile0 ptr fnFileWrite OUTPUT_PATH OUTPUT_BUF zero
-          pure [])
-      pure [])
+          let _ ← writeFile0 ptr OUTPUT_PATH OUTPUT_BUF zero
+          pure %[])
+      pure %[])
     (do
       writeDecimal k value
-      let _ ← writeFile0 ptr fnFileWrite OUTPUT_PATH OUTPUT_BUF zero
-      callVoid fnHtCleanup.id [htSlotPtr]
-      pure [])
+      let _ ← writeFile0 ptr OUTPUT_PATH OUTPUT_BUF zero
+      ffiVoid fnHtCleanup %[htSlotPtr]
+      pure %[])
 
 -- Deciding `wf` walks the whole body: deeper than the default recursion budget,
 -- and long enough that the kernel does not finish inside the default heartbeats.
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 2000000 in
-def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 mainCode env]
+def clifIrSource : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction
@@ -601,8 +599,8 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 -- The memory this ships is sized from the payload it builds, so there is no
 -- constant to bound the regions against; `okB` is the whole check here.
 
-def buildSetup : Setup := {
-  clif := clifIrSource,
+def buildSetup (clif : Program) : Setup := {
+  clif,
   memory_size := buildPayload.length,
   initial_memory := buildPayload
 }
@@ -615,6 +613,7 @@ end LeanEval
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "lean_eval_app" LeanEval.buildSetup LeanEval.buildAlgorithm]
+  let clif ← Prog.orDie LeanEval.clifIrSource
+  emitArtifacts outDir #[toJsonEntry "lean_eval_app" (LeanEval.buildSetup clif) LeanEval.buildAlgorithm]
 
 #eval ShipScan.check "LeanEvalAlgorithm"

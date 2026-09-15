@@ -93,12 +93,8 @@ resolves transitively, which is what makes `require` work at all.
 | `Upcase.lean` | the demo artifact — a value, and buildable without any of the above |
 | `UpcaseHost.lean` | the ~15 lines that run it |
 
-Two of the layers it rests on are in `lean/lib`, shared with every generator:
-
-| | |
-|---|---|
-| `AlgorithmLib/FFIRaw.lean` | one arity-checked wrapper per entry point, all 85 |
-| `AlgorithmLib/FFIRawScan.lean` | fails the build if that file and `Ffi.sig` disagree |
+The layer it rests on is in `lean/lib`, shared with every generator:
+`AlgorithmLib/ProgFFI.lean`, the call side of all 85 entry points.
 
 The dependency arrow points Lean → base and never back. `base` links nothing of
 Lean's, so an embedder shipping a Rust or Python binary with a bincode artifact
@@ -130,14 +126,15 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
 * **Two workspaces over one package.** `lake` here and `build-support`'s
   `lake` in `lean/algorithms` build the same package directory. `build-support`
   takes a lock; this does not. Do not run both at once.
-* **Conventions, not coverage.** `FFIRaw` now names all 85 entry points with
-  their real arities, and `FFIRawScan` fails the build if it and `Ffi.sig` ever
-  disagree. What is still uneven is the layer *above* it: `HProgFFI` gives
-  wgpu, cuda, files, the window and the hash table a wrapper that reads the
-  context pointer out of its slot for you; lmdb and threads have no such
-  convention, because no two generators agree on one and `ContextSlots` has no
-  entry for either. Inventing one here would mean shipping a convention no
-  artifact uses, so they stay at `Raw` until a real one exists to lift.
+* **Conventions, not coverage.** Every entry point is callable: `ffi f args`
+  takes `Vals V f.params` and returns `ResV V f.result`, both read off `Ffi`,
+  so arity and types are the call's type and there is nothing to keep in step.
+  What is still uneven is the layer *above* that: `ProgFFI` gives wgpu, cuda,
+  files, the window and the hash table a wrapper that reads the context pointer
+  out of its slot for you; lmdb and threads have no such convention, because no
+  two generators agree on one and `ContextSlots` has no entry for either.
+  Inventing one here would mean shipping a convention no artifact uses, so they
+  stay at the bare `ffi` call until a real one exists to lift.
 * **`fileWrite` fsyncs, and its contract does not say so.** `cl_file_write`
   calls `sync_all()` after every write — a durability decision worth ~0.8 ms
   per call on an SSD, constant in the write's size. Lean's `IO.FS.writeBinFile`
@@ -147,8 +144,3 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
   The fact is invisible in `HProgSem`'s `fileWrite` contract, which is exactly
   where it belongs — whether to keep the fsync, drop it, or split the entry
   point is a semantics decision, not a performance tweak.
-* **The existing call sites have not moved.** Generators that predate `FFIRaw`
-  still call through `call IR.Ffi.X.id [...]`, the positional form `Raw`
-  replaces. Migrating them is mechanical — `ffi f args` unfolds to exactly
-  `call f.id args` — but it touches proven generators, so it wants its own
-  change with the corpus and differential tests as the check.

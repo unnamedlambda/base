@@ -3,8 +3,9 @@ import AlgorithmLib.Gen
 /-!
   # Every body an artifact carries was compiled through the checked door
 
-  `HProg.compileFn` takes `wf env params c = true` as an auto-param, so a body
-  compiled through it is well-formed or the call site is an error.
+  `Prog.compileProg` runs `wf` on the body it emitted and returns an error
+  rather than a function when it fails, so a body compiled through it is
+  well-formed or the generator refuses to write the artifact.
   `HProg.compileBody` takes no such obligation — `CompileSound` relates the two
   runs of an arbitrary body, so the compiler it names cannot demand one.
 
@@ -17,15 +18,18 @@ open Lean
 
 namespace ShipScan
 
-/-- The unchecked compiler, and the wrapper that carries the obligation. -/
+/-- The unchecked compiler. -/
 def UNCHECKED : Name := `AlgorithmLib.HProg.compileBody
-def CHECKED : Name := `AlgorithmLib.HProg.compileFn
+/-- The door that carries the obligation: it runs `wf` on the body it emitted
+    and refuses one that fails. -/
+def CHECKED : List Name := [`AlgorithmLib.Prog.compileProg]
 
-/-- Constants reachable from a declaration's value, not expanding `compileFn`:
-    its body names `compileBody`, and that is the one use under an obligation. -/
+/-- Constants reachable from a declaration's value, not expanding
+    `compileProg`: its body names `compileBody`, and that is the one use under
+    an obligation. -/
 partial def closureOf (env : Environment) (seen : Std.HashSet Name) (n : Name) :
     Std.HashSet Name :=
-  if seen.contains n || n == CHECKED then seen.insert n
+  if seen.contains n || CHECKED.contains n then seen.insert n
   else
     let seen := seen.insert n
     match env.find? n with
@@ -37,12 +41,12 @@ partial def closureOf (env : Environment) (seen : Std.HashSet Name) (n : Name) :
 
 /-- The declarations leading from `root` to `target`, nearest first, or `#[]`
     when the walk does not reach it. Breadth-first, so the path is a shortest
-    one and names the declaration that should have used `compileFn`. -/
+    one and names the declaration that should have used `compileProg`. -/
 partial def pathTo (env : Environment) (root target : Name) : Array Name :=
   go (Std.HashSet.emptyWithCapacity.insert root) #[[root]]
 where
   uses (n : Name) : Array Name :=
-    if n == CHECKED then #[]
+    if CHECKED.contains n then #[]
     else match env.find? n with
          | some ci => (match ci.value? with
                        | some v => v.getUsedConstants
@@ -66,13 +70,19 @@ where
     | some p => p.reverse.toArray
     | none   => go step.1 step.2.1
 
-/-- A declaration producing a `Setup`, whatever it takes first. -/
-private def yieldsSetup : Expr → Bool
+/-- A declaration producing a `Setup`, whatever it takes first --- and through
+    an `Except`, because a body checked while it is emitted yields one only if
+    it passed. -/
+private partial def yieldsSetup : Expr → Bool
   | .forallE _ _ b _ => yieldsSetup b
-  | e                => e.isConstOf ``AlgorithmLib.Setup
+  | e                =>
+      if e.isConstOf ``AlgorithmLib.Setup then true
+      else match e.getAppFn, e.getAppArgs with
+           | .const ``Except _, #[_, a] => yieldsSetup a
+           | _, _ => false
 
 /-- Fails the build on an artifact holding a body that was not compiled through
-    `compileFn`. -/
+    `compileProg`. -/
 def check (label : String) (root : Name := `main) (gatedElsewhere : Option String := none) :
     CoreM Unit := do
   let env ← getEnv
@@ -94,7 +104,7 @@ def check (label : String) (root : Name := `main) (gatedElsewhere : Option Strin
     IO.println s!"UNCHECKED BODY — {label} reaches {UNCHECKED} by:"
     for n in pathTo env root UNCHECKED do IO.println s!"    {n}"
     throwError s!"SHIP SCAN [{label}] FAILED: a body it ships was compiled by \
-      {UNCHECKED} rather than {CHECKED}"
-  IO.println s!"[{label}] every body its {setups.length} artifact(s) carry was compiled through compileFn"
+      {UNCHECKED} rather than one of {CHECKED}"
+  IO.println s!"[{label}] every body its {setups.length} artifact(s) carry was compiled through compileProg"
 
 end ShipScan

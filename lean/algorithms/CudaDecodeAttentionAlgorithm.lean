@@ -1,7 +1,8 @@
 import Lean
 import Std
 import AlgorithmLib.Gen
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
+import AlgorithmLib.ProgCuda
 import LayoutScan
 
 open Lean
@@ -117,21 +118,14 @@ def ptxSource : String := buildModule 64 [{ name := "main", params := ["scores_b
   ptxRet }]
 
 -- Load: init CUDA, alloc 7 bufs, upload K/V/meta, store buf IDs and seq_len
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- Two callee tables: `load`/`prep`/`finalize` reach CUDA alone, `core` also
-    reaches cuBLAS, and a function declares only what it calls. -/
-
-
-def env : FnEnv := env% [.cuda, .cublas]
-def envCuda : FnEnv := env% [.cuda, .cublas]
 
 /-- The CUDA context pointer lives at a fixed slot in shared memory. -/
 def CTX_OFF : Nat := 0x10
 
-def loadCode : HProg.Code := clif% do
-  let ptr := basePtr
+def loadCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
 
   cudaInit ptr CTX_OFF
@@ -145,13 +139,13 @@ def loadCode : HProg.Code := clif% do
   let eight     ← iconst64 8
 
   -- buf order: 0=q, 1=K, 2=V, 3=scores, 4=probs, 5=out, 6=meta
-  let bufQ      ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dMBytes]
-  let bufK      ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, kvBytes]
-  let bufV      ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, kvBytes]
-  let bufScores ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, scoreBytes]
-  let bufProbs  ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, scoreBytes]
-  let bufOut    ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, dMBytes]
-  let bufMeta   ← call IR.Ffi.cudaCreateBuffer.id [ctxPtr, eight]
+  let bufQ      ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
+  let bufK      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
+  let bufV      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
+  let bufScores ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
+  let bufProbs  ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
+  let bufOut    ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
+  let bufMeta   ← ffi .cudaCreateBuffer %[ctxPtr, eight]
 
   store bufQ      (← absAddr ptr BUF_Q_OFF)
   store bufK      (← absAddr ptr BUF_K_OFF)
@@ -166,22 +160,22 @@ def loadCode : HProg.Code := clif% do
   let seqLen64 ← uextend64 seqLen32
   let metaSlot ← absAddr ptr SEQ_LEN_OFF
   store seqLen64 metaSlot
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufMeta, metaSlot, eight]
+  let _ ← ffi .cudaUpload %[ctxPtr, bufMeta, metaSlot, eight]
 
   -- Upload K and V from data (K at data+8, V at data+8+kvBytes)
   let kSrc ← iaddImm dataPtr 8
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufK, kSrc, kvBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, bufK, kSrc, kvBytes]
   let vSrc ← iadd kSrc kvBytes
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufV, vSrc, kvBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, bufV, vSrc, kvBytes]
 
 /-- Prep: upload q from data_ptr to buf0. -/
-def prepCode : HProg.Code := clif% do
-  let ptr := basePtr
+def prepCode : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let bufQ    ← load32 (← absAddr ptr BUF_Q_OFF)
   let dMBytes ← iconst64 D_MODEL_BYTES
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bufQ, dataPtr, dMBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, bufQ, dataPtr, dMBytes]
 
 /-- **The softmax kernel, as a record its launch site reads.**
 
@@ -198,8 +192,8 @@ def softmaxK : AlgorithmLib.Kernel := {
 }
 
 /-- Core: K@q scores, softmax, V^T@probs output. -/
-def coreCode : HProg.Code := clif% do
-  let ptr       := basePtr
+def coreCode : Prog V L Unit := do
+  let ptr       := (← basePtr)
   let ctxPtr    ← load64 (← absAddr ptr CTX_OFF)
   let seqLen    ← load64 (← absAddr ptr SEQ_LEN_OFF)
   let seqLen32  ← ireduce32 seqLen
@@ -225,22 +219,22 @@ def coreCode : HProg.Code := clif% do
   let bufMeta   ← load32 (← absAddr ptr BUF_META_OFF)
 
   -- scores = 0.125 * K @ q, batched over N_HEADS heads
-  let _ ← call IR.Ffi.cublasSgemm.id
-    [ctxPtr, one32, zero32, seqLen32, one32, headDim32, alpha0125,
+  let _ ← ffi .cublasSgemm
+    %[ctxPtr, one32, zero32, seqLen32, one32, headDim32, alpha0125,
      bufK, seqHead, bufQ, headDim64, zero32, bufScores, seqLen, nHeads32,
      zero64, zero64, zero64, zero32, zero32, zero32]
 
   kernelLaunchAt softmaxK ptr BIND_DESC_OFF [bufScores, bufMeta, bufProbs]
 
   -- out = V^T @ probs, batched over N_HEADS heads
-  let _ ← call IR.Ffi.cublasSgemm.id
-    [ctxPtr, zero32, zero32, headDim32, one32, seqLen32, alpha1f,
+  let _ ← ffi .cublasSgemm
+    %[ctxPtr, zero32, zero32, headDim32, one32, seqLen32, alpha1f,
      bufV, seqHead, bufProbs, seqLen, zero32, bufOut, headDim64, nHeads32,
      zero64, zero64, zero64, zero32, zero32, zero32]
 
 /-- Finalize: sync, then download only if the caller asked for output. -/
-def finalizeCode : HProg.Code := clif% do
-  let ptr    := basePtr
+def finalizeCode : Prog V L Unit := do
+  let ptr    := (← basePtr)
   let outPtr ← load64 (← absAddr ptr 0x28)
   let outLen ← load64 (← absAddr ptr 0x30)
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
@@ -248,39 +242,24 @@ def finalizeCode : HProg.Code := clif% do
 
   let _ ← cudaSync ptr CTX_OFF
   let _ ← ifte .eq outLen (← iconst64 0)
-    (thn := pure [])
+    (thn := pure %[])
     (els := do
-      let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bufOut, outPtr, outLen]
-      pure [])
+      let _ ← ffi .cudaDownload %[ctxPtr, bufOut, outPtr, outLen]
+      pure %[])
   return ()
 
-theorem bodies_wf :
-    HProg.wf envCuda HProg.ptrParams loadCode = true &&
-    HProg.wf envCuda HProg.ptrParams prepCode = true &&
-    HProg.wf env HProg.ptrParams coreCode = true &&
-    HProg.wf envCuda HProg.ptrParams finalizeCode = true := by decide
 
 def STACK_DEPTH : Nat := 64
 
-/-- The `wrapper5_wf` wrapper's body is well-formed. -/
-theorem wrapper5_wf :
-    HProg.wf (IR.sequenceWrapperEnv ([3, 4])) HProg.ptrParams
-      (IR.sequenceWrapperBody ([3, 4])) = true := by decide
-
-/-- The `wrapper6_wf` wrapper's body is well-formed. -/
-theorem wrapper6_wf :
-    HProg.wf (IR.sequenceWrapperEnv (List.replicate STACK_DEPTH 3 ++ [4])) HProg.ptrParams
-      (IR.sequenceWrapperBody (List.replicate STACK_DEPTH 3 ++ [4])) = true := by native_decide
-
-def clifIR : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 loadCode,
-     HProg.compileFn 2 prepCode,
-     HProg.compileFn 3 coreCode,
-     HProg.compileFn 4 finalizeCode,
-     clifSequenceWrapper 5 [3, 4] wrapper5_wf,
-     clifSequenceWrapper 6 (List.replicate STACK_DEPTH 3 ++ [4]) wrapper6_wf]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 loadCode,
+     Prog.compileProg 2 prepCode,
+     Prog.compileProg 3 coreCode,
+     Prog.compileProg 4 finalizeCode,
+     Prog.compileProg 5 (Prog.sequenceWrapper [3, 4]),
+     Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4]))]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [3, 0, 0, 0, 6, 0, 0, 0, 4, 0, 0, 0]
@@ -332,8 +311,8 @@ def buildInitialMemory : List UInt8 :=
   let bind := bindDesc ++ zeros (MEM_SIZE - BIND_DESC_OFF - bindDesc.length)
   reserved ++ ptx ++ bind
 
-def buildSetup : Setup := {
-  clif := clifIR,
+def buildSetup (clif : Program) : Setup := {
+  clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
@@ -343,9 +322,9 @@ def prepAlgorithm : Algorithm := { fn_idx := u32 2 }
 def inferAlgorithm : Algorithm := { fn_idx := u32 5 }
 def stackAlgorithm : Algorithm := { fn_idx := u32 6 }
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[
-    toJsonArtifact "cuda_decode_attn" buildSetup loadAlgorithm [
+    toJsonArtifact "cuda_decode_attn" (buildSetup clif) loadAlgorithm [
       ("prep",  prepAlgorithm),
       ("infer", inferAlgorithm),
       ("stack", stackAlgorithm)

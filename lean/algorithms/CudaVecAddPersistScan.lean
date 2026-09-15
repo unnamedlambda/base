@@ -21,11 +21,10 @@ namespace CudaVecAddPersistScan
     region whose size depends on the program, so stating it at a single arity
     would say nothing about this one.
 
-    `result` is what the generator actually builds.  Scanning it covers the
-    three `wf` obligations `compileTo` demands, which are discharged at
-    elaboration by `native_decide` — so the scan reports this artifact as
-    reaching the compiler, which it does, rather than quietly not mentioning
-    it. -/
+    `result` is what the generator actually builds.  It used to carry three
+    `wf` obligations discharged by `native_decide`; the surface it is written
+    in now checks those in its own types and at generation time, so the scan
+    finds no claim here resting on the compiler. -/
 def roots : List Name :=
   [ `AlgorithmLib.CudaPipeline.memMap_ok
   , `CudaVecAddPersist.result
@@ -38,10 +37,10 @@ def notYetStated : List String :=
 
 end CudaVecAddPersistScan
 
-/-- Claims that rest on the compiler, via `native_decide`. -/
-def nativeRoster : List Name :=
-  [ `CudaVecAddPersist.result
-   , `CudaVecAddPersist.artifacts ]
+/-- Nothing here rests on the compiler. The three `wf` obligations `compileTo`
+    used to discharge by `native_decide` are gone: the stages are typed terms,
+    and `compileProg` checks the body it emitted. -/
+def nativeRoster : List Name := []
 
 open TrustScan CudaVecAddPersistScan in
 #eval runGenScan "vecadd" roots nativeRoster

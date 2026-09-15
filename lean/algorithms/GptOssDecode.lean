@@ -10,8 +10,7 @@ import LayoutScan
 import ShipScan
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 open GptOssAttention hiding H
 
 /-!
@@ -398,7 +397,6 @@ theorem gptossDecodeMap_ok :
 
 /-! ## The host program -/
 
-def env : FnEnv := env% [.ht, .cuda, .cublas, .fileIO]
 
 /-- What the caller passes: a token, its position, and where the bank is.
 
@@ -500,14 +498,14 @@ def NBLK : Nat := 32 * warpsPerCta
     load that exceeds it is chunked rather than trusted to fit. -/
 def STAGE_BYTES : Nat := dQkvOut * HH * 2
 
-def dBindLocal (ptr : R) (bs : List Nat) : M Unit := do
+def dBindLocal (ptr : V .i64) (bs : List Nat) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (dBindOff gb))
     storeI32 id (← absAddr ptr (DLOCAL_OFF + 4 * j))
 
 /-- Enqueue at a PTX slot named by a *register*, which is what lets a layer
     choose its own kernel from its own index. -/
-def dEnqueueAt (ptr : R) (ptxOff : R) (g blk : Nat) (bs : List Nat) : M Unit := do
+def dEnqueueAt (ptr : V .i64) (ptxOff : V .i64) (g blk : Nat) (bs : List Nat) : Prog V L Unit := do
   dBindLocal ptr bs
   let nBufs ← iconst32 bs.length
   let bindBase ← iconst64 DLOCAL_OFF
@@ -523,7 +521,7 @@ def dEnqueueAt (ptr : R) (ptxOff : R) (g blk : Nat) (bs : List Nat) : M Unit := 
     largest grid that could ever be needed and having the threads past the count
     return would be sixteen thousand blocks doing nothing at the context this
     now supports. -/
-def dEnqueueG (ptr : R) (ptxOff : R) (grid : R) (blk : Nat) (bs : List Nat) : M Unit := do
+def dEnqueueG (ptr : V .i64) (ptxOff : V .i64) (grid : V .i32) (blk : Nat) (bs : List Nat) : Prog V L Unit := do
   dBindLocal ptr bs
   let nBufs ← iconst32 bs.length
   let bindBase ← iconst64 DLOCAL_OFF
@@ -531,20 +529,20 @@ def dEnqueueG (ptr : R) (ptxOff : R) (grid : R) (blk : Nat) (bs : List Nat) : M 
   let block ← iconst32 blk
   let _ ← cudaLaunch ptr ptxOff nBufs bindBase grid one one block one one
 
-def dEnqueue (ptr : R) (i g blk : Nat) (bs : List Nat) : M Unit := do
+def dEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
   dEnqueueAt ptr (← iconst64 (dSlotOff i)) g blk bs
 
 /-- **Start-up.** Pin the expert file, take whatever device memory is going,
     and put the dense weights where they will stay. -/
-def dInitM : M Unit := do
-  let ptr := basePtr
+def dInitM : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   -- the expert pool: pinned once, and never moved again
   let poolBytes ← iconst64 (NL * NE * ROW_BYTES)
-  let poolId ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, poolBytes]
-  let poolPtr ← call IR.Ffi.cudaPinnedPtr.id [ctxPtr, poolId]
+  let poolId ← ffi .cudaPinnedAlloc %[ctxPtr, poolBytes]
+  let poolPtr ← ffi .cudaPinnedPtr %[ctxPtr, poolId]
   -- The id, and only the id.  An eight-byte pointer written at `DPOOL_OFF + 4`
   -- runs four bytes into `stage`, and nothing reads it back: every use goes
   -- through `cudaPinnedPtrAt`, which takes the id and bounds-checks the offset.
@@ -552,11 +550,11 @@ def dInitM : M Unit := do
   storeI32 poolId (← absAddr ptr DPOOL_OFF)
   let zero64 ← iconst64 0
   let pExp ← iaddImm dataPtr D_PEXP
-  let _ ← call IR.Ffi.fileReadToPtr.id [pExp, poolPtr, zero64, poolBytes]
+  let _ ← ffi .fileReadToPtr %[pExp, poolPtr, zero64, poolBytes]
   -- a staging buffer, big enough for the widest dense tensor
   let stageBytes ← iconst64 STAGE_BYTES
-  let stageId ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, stageBytes]
-  let stagePtr ← call IR.Ffi.cudaPinnedPtr.id [ctxPtr, stageId]
+  let stageId ← ffi .cudaPinnedAlloc %[ctxPtr, stageBytes]
+  let stagePtr ← ffi .cudaPinnedPtr %[ctxPtr, stageId]
   storeI64 stagePtr (← absAddr ptr DSTAGE_OFF)
   -- **The context, chosen here and fixed from here on.**
   --
@@ -565,10 +563,10 @@ def dInitM : M Unit := do
   -- to encode a position with.  The buffers below are allocated to whatever
   -- comes out, so this is the last moment it can be decided.
   let ctxAsk ← uload32_64 (← iaddImm dataPtr D_CTX)
-  let ctxD ← ifte .eq ctxAsk zero64 (pure [← iconst64 CAP_DEFAULT]) (pure [ctxAsk])
+  let ctxD ← ifte .eq ctxAsk zero64 (pure %[← iconst64 CAP_DEFAULT]) (pure %[ctxAsk])
   let ctxMax ← iconst64 CAP_MAX
-  let ctxC ← ifte .ugt (ctxD.headD ctxMax) ctxMax (pure [ctxMax]) (pure [ctxD.headD ctxMax])
-  let ctx := ctxC.headD ctxMax
+  let ctxC ← ifte .ugt (ctxD.head) ctxMax (pure %[ctxMax]) (pure %[ctxD.head])
+  let ctx := ctxC.head
   storeI32 (← ireduce32 ctx) (← absAddr ptr DCTX_OFF)
   let ctxStride ← imul ctx (← iconst64 HD)
   storeI64 ctxStride (← absAddr ptr DCTXSTRIDE_OFF)
@@ -604,14 +602,14 @@ def dInitM : M Unit := do
     storeI32 id (← absAddr ptr (dBindOff i))
   -- …and as many slots as the card turns out to have room for.  Asked, not
   -- assumed: a hardcoded count is a count that is wrong on the next card.
-  let freeB ← call IR.Ffi.cudaMemInfoFree.id [ctxPtr]
+  let freeB ← ffi .cudaMemInfoFree %[ctxPtr]
   let margin ← iconst64 (256 * 1024 * 1024)
   let usable ← isub freeB margin
   let rowB ← iconst64 ROW_BYTES
   let want ← udiv usable rowB
   let cap ← iconst64 NSLOT_MAX
-  let nslotL ← ifte .ugt want cap (pure [cap]) (pure [want])
-  let nslot := nslotL.headD want
+  let nslotL ← ifte .ugt want cap (pure %[cap]) (pure %[want])
+  let nslot := nslotL.head
   storeI32 (← ireduce32 nslot) (← absAddr ptr DNSLOT_OFF)
   let six ← iconst64 PIECES
   let four ← iconst64 4
@@ -630,9 +628,9 @@ def dInitM : M Unit := do
       let n := dKindBytes.getD k 0
       let fo ← iconst64 (denseOff l k)
       let nb ← iconst64 n
-      let _ ← call IR.Ffi.fileReadToPtr.id [pDen, stagePtr, fo, nb]
+      let _ ← ffi .fileReadToPtr %[pDen, stagePtr, fo, nb]
       let id ← load32 (← absAddr ptr (dBindOff (dStoreBuf l k)))
-      let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, stagePtr, nb]
+      let _ ← ffi .cudaUpload %[ctxPtr, id, stagePtr, nb]
   -- `lm_head` is 1.08 GiB and the staging buffer is 29.5 MiB, so it goes over
   -- in pieces.  Reading it in one call would write a gigabyte past the end of
   -- a pinned allocation -- not a wrong answer but a corrupted heap, and the
@@ -645,9 +643,9 @@ def dInitM : M Unit := do
       let take := min STAGE_BYTES (n - c * STAGE_BYTES)
       let fo ← iconst64 (off + c * STAGE_BYTES)
       let nb ← iconst64 take
-      let _ ← call IR.Ffi.fileReadToPtr.id [pDen, stagePtr, fo, nb]
+      let _ ← ffi .fileReadToPtr %[pDen, stagePtr, fo, nb]
       let bo ← iconst64 (c * STAGE_BYTES)
-      let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, id, bo, stagePtr, nb]
+      let _ ← ffi .cudaUploadOffset %[ctxPtr, id, bo, stagePtr, nb]
   -- **The rotation tables: two slices, and sines first.**
   --
   -- The kernel indexes sine at zero and cosine at `ROPE_N * HALF`
@@ -659,16 +657,16 @@ def dInitM : M Unit := do
   for (fo, bo) in [(fileRopeSin, 0), (fileRope, ropeSlice)] do
     let f ← iconst64 fo
     let nb ← iconst64 ropeSlice
-    let _ ← call IR.Ffi.fileReadToPtr.id [pDen, stagePtr, f, nb]
+    let _ ← ffi .fileReadToPtr %[pDen, stagePtr, f, nb]
     let b ← iconst64 bo
-    let _ ← call IR.Ffi.cudaUploadOffset.id [ctxPtr, bRope, b, stagePtr, nb]
+    let _ ← ffi .cudaUploadOffset %[ctxPtr, bRope, b, stagePtr, nb]
   -- the narrow kernel's two counts
   for (b, v) in [(B_NMH, HH / 2), (B_NMQ, (64 * 64) / 2),
                  (B_NMQKV, dQkvOut / 2)] do
     storeI32 (← iconst32 v) (← absAddr ptr DMETA_OFF)
     let id ← load32 (← absAddr ptr (dBindOff b))
     let n4 ← iconst64 4
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, (← absAddr ptr DMETA_OFF), n4]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, (← absAddr ptr DMETA_OFF), n4]
   -- an empty cache: nothing is anywhere
   let minus1 ← iconst32 (-1)
   let nCache ← iconst64 (NL * NE)
@@ -691,8 +689,8 @@ def DLAYER_SLOT : Nat := 32
     The same six-integer-move idea the experts use, at a different table: nine
     dense tensors and the two halves of the cache. Nothing is copied and no
     kernel is re-emitted; a layer is a rebinding. -/
-def dBindLayerM (layer : R) : M Unit := do
-  let ptr := basePtr
+def dBindLayerM (layer : V .i32) : Prog V L Unit := do
+  let ptr ← basePtr
   let four ← iconst64 4
   let nine ← iconst64 9
   let two ← iconst64 2
@@ -718,8 +716,8 @@ def dBindLayerM (layer : R) : M Unit := do
     corrected, and the miss is counted so the caller can see the rate.
 
     The transfer is the only thing in a decode step that touches the bus. -/
-def dEnsureM (j : Nat) : M Unit := do
-  let ptr := basePtr
+def dEnsureM (j : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   let four ← iconst64 4
   let six ← iconst64 PIECES
   let minus1 ← iconst32 (-1)
@@ -735,8 +733,8 @@ def dEnsureM (j : Nat) : M Unit := do
       let clock ← load32 (← absAddr ptr DCLOCK_OFF)
       let nslot ← load32 (← absAddr ptr DNSLOT_OFF)
       let nxt ← iadd clock (← iconst32 1)
-      let wrapped ← ifte .uge nxt nslot (pure [← iconst32 0]) (pure [nxt])
-      storeI32 (wrapped.headD nxt) (← absAddr ptr DCLOCK_OFF)
+      let wrapped ← ifte .uge nxt nslot (pure %[← iconst32 0]) (pure %[nxt])
+      storeI32 (wrapped.head) (← absAddr ptr DCLOCK_OFF)
       let v64 ← uextend64 clock
       -- whoever was there is no longer anywhere
       let resAddr ← iadd (← absAddr ptr DRESIDENT_OFF) (← imul v64 four)
@@ -752,18 +750,18 @@ def dEnsureM (j : Nat) : M Unit := do
       for t in List.range PIECES do
         let len ← iconst64 (pieceBytes.getD t 0)
         let srcOff ← iaddImm rowBase (pieceOff t)
-        let src ← call IR.Ffi.cudaPinnedPtrAt.id [ctxPtr, poolId, srcOff, len]
+        let src ← ffi .cudaPinnedPtrAt %[ctxPtr, poolId, srcOff, len]
         let ix ← iaddImm base6 (SLOTSTORE + t)
         let id ← load32 (← iadd (← absAddr ptr DBIND_OFF) (← imul ix four))
-        let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, len]
+        let _ ← ffi .cudaUpload %[ctxPtr, id, src, len]
       storeI32 clock slotAddr
       storeI32 (← ireduce32 key) resAddr
       let m ← load32 (← absAddr ptr DMISS_OFF)
       storeI32 (← iadd m (← iconst32 1)) (← absAddr ptr DMISS_OFF)
-      pure [clock])
-    (pure [slot0])
+      pure %[clock])
+    (pure %[slot0])
   -- whichever it is, the four slots the kernels read now name its pieces
-  let slot ← uextend64 (res.headD slot0)
+  let slot ← uextend64 (res.head)
   let sBase ← imul slot six
   for t in List.range PIECES do
     let ix ← iaddImm sBase (SLOTSTORE + t)
@@ -784,8 +782,8 @@ def dEnsureM (j : Nat) : M Unit := do
     and report only that something, somewhere, was wrong.
 
     `half` is 0 after attention and 1 after the mixture. -/
-def dTraceM (layer : R) (half : Nat) : M Unit := do
-  let ptr := basePtr
+def dTraceM (layer : V .i32) (half : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let bX ← load32 (← absAddr ptr (dBindOff B_X))
@@ -793,12 +791,12 @@ def dTraceM (layer : R) (half : Nat) : M Unit := do
   let dst ← iadd outPtr
     (← iadd (← iconst64 (8 + VOCAB * 4)) (← imul row (← iconst64 (HH * 4))))
   let _ ← cudaSync ptr
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bX, dst, (← iconst64 (HH * 4))]
+  let _ ← ffi .cudaDownload %[ctxPtr, bX, dst, (← iconst64 (HH * 4))]
 
 set_option maxRecDepth 8000 in
 /-- **One layer, whichever layer it is.** -/
-def dLayerM (layer : R) : M Unit := do
-  let ptr := basePtr
+def dLayerM (layer : V .i32) : Prog V L Unit := do
+  let ptr ← basePtr
   dBindLayerM layer
   storeI32 layer (← absAddr ptr (DMETA_OFF + 4 * DLAYER_SLOT))
   -- the pristine copies, not `M_SEQ`, which this body is about to overwrite
@@ -811,14 +809,14 @@ def dLayerM (layer : R) : M Unit := do
   -- a sliding layer is an even one; what differs is its depth, not its kernels
   let par ← isub layer (← imul (← udiv layer (← iconst32 2)) (← iconst32 2))
   -- the effective length and the cache depth both follow from the layer type
-  let lenSel ← ifte .eq par zero32 (pure [seqLen]) (pure [seqLenF])
-  let sLen := lenSel.headD seqLen
+  let lenSel ← ifte .eq par zero32 (pure %[seqLen]) (pure %[seqLenF])
+  let sLen := lenSel.head
   let sLen64 ← uextend64 sLen
   let ctxStrideL ← load { ty := .i64, notrapAligned := true }
                      (← absAddr ptr DCTXSTRIDE_OFF)
   let capSel ← ifte .eq par zero32
-    (pure [← iconst64 (CAP_SWA * HD)]) (pure [ctxStrideL])
-  let strideKV := capSel.headD ctxStrideL
+    (pure %[← iconst64 (CAP_SWA * HD)]) (pure %[ctxStrideL])
+  let strideKV := capSel.head
   -- **The meta is per layer, not per token.**
   --
   -- The softmax reads its trip counts and its row stride out of the meta
@@ -833,8 +831,8 @@ def dLayerM (layer : R) : M Unit := do
   let ch ← udiv sLen c32
   let tl ← imul ch c32
   let ctxNow ← load32 (← absAddr ptr DCTX_OFF)
-  let capSlot ← ifte .eq par zero32 (pure [← iconst32 CAP_SWA]) (pure [ctxNow])
-  let capV := capSlot.headD c32
+  let capSlot ← ifte .eq par zero32 (pure %[← iconst32 CAP_SWA]) (pure %[ctxNow])
+  let capV := capSlot.head
   let slotNow ← isub posNow (← imul (← udiv posNow capV) capV)
   storeI32 sLen (← absAddr ptr (DMETA_OFF + 4 * M_SEQ))
   storeI32 ch (← absAddr ptr (DMETA_OFF + 4 * M_CHUNKS))
@@ -852,8 +850,8 @@ def dLayerM (layer : R) : M Unit := do
   let tMax ← iconst32 GptOssKernels.ATT_TILES_MAX
   let even ← udiv (← iadd sLen (← isub tMax (← iconst32 1))) tMax
   let tooSmall ← ifte .ult even (← iconst32 GptOssKernels.ATT_TILE_MIN)
-    (pure [← iconst32 GptOssKernels.ATT_TILE_MIN]) (pure [even])
-  let tileSz := tooSmall.headD even
+    (pure %[← iconst32 GptOssKernels.ATT_TILE_MIN]) (pure %[even])
+  let tileSz := tooSmall.head
   let nTiles ← udiv (← iadd sLen (← isub tileSz (← iconst32 1))) tileSz
   storeI32 tileSz (← absAddr ptr (DMETA_OFF + 4 * M_TILESZ))
   storeI32 nTiles (← absAddr ptr (DMETA_OFF + 4 * M_NTILES))
@@ -864,8 +862,8 @@ def dLayerM (layer : R) : M Unit := do
   storeI32 (← imul capV (← iconst32 HDW)) (← absAddr ptr (DMETA_OFF + 4 * M_KVSTRIDE))
   let ctxM ← cudaCtxPtr ptr
   let bMetaL ← load32 (← absAddr ptr (dBindOff B_META))
-  let _ ← call IR.Ffi.cudaUpload.id
-    [ctxM, bMetaL, (← absAddr ptr DMETA_OFF), (← iconst64 (64 * 4))]
+  let _ ← ffi .cudaUpload
+    %[ctxM, bMetaL, (← absAddr ptr DMETA_OFF), (← iconst64 (64 * 4))]
   let bKC ← load32 (← absAddr ptr (dBindOff C_KC))
   let bVC ← load32 (← absAddr ptr (dBindOff C_VC))
   let bQKV ← load32 (← absAddr ptr (dBindOff B_QKV))
@@ -936,8 +934,8 @@ def dLayerM (layer : R) : M Unit := do
   let ctxPtr ← cudaCtxPtr ptr
   let bCh ← load32 (← absAddr ptr (dBindOff B_CHOSEN))
   let n16 ← iconst64 (TOPK * 4)
-  let _ ← call IR.Ffi.cudaDownload.id
-    [ctxPtr, bCh, (← absAddr ptr DCHOSEN_OFF), n16]
+  let _ ← ffi .cudaDownload
+    %[ctxPtr, bCh, (← absAddr ptr DCHOSEN_OFF), n16]
   -- the cache, four times, and then the mixture
   for j in List.range TOPK do
     dEnsureM j
@@ -963,8 +961,8 @@ set_option maxRecDepth 8000 in
 
     A builder rather than an entry point, because a chat turn is this in a
     loop and the loop belongs on the same side of the boundary as the model. -/
-def dStepM (tok posIn : R) : M R := do
-  let ptr := basePtr
+def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let ctxPtr ← cudaCtxPtr ptr
   -- **No step ever runs past the cache, whatever the caller asked for.**
@@ -977,8 +975,8 @@ def dStepM (tok posIn : R) : M R := do
   -- below stops on its own — but it is what makes the failure a stalled reply
   -- rather than a write into whatever was allocated next.
   let capF ← isub (← load32 (← absAddr ptr DCTX_OFF)) (← iconst32 1)
-  let posL ← ifte .ugt posIn capF (pure [capF]) (pure [posIn])
-  let pos := posL.headD posIn
+  let posL ← ifte .ugt posIn capF (pure %[capF]) (pure %[posIn])
+  let pos := posL.head
   -- **The embedding row, gathered here.**
   --
   -- The table is bf16 and the first RMSNorm reads f32, so the row is read out
@@ -991,18 +989,18 @@ def dStepM (tok posIn : R) : M R := do
   let rowB ← iconst64 (HH * 2)
   let rowOff ← imul (← uextend64 tok) rowB
   let pEmb ← iaddImm dataPtr D_PEMB
-  let _ ← call IR.Ffi.fileReadToPtr.id [pEmb, stagePtrT, rowOff, rowB]
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bEmb, stagePtrT, rowB]
+  let _ ← ffi .fileReadToPtr %[pEmb, stagePtrT, rowOff, rowB]
+  let _ ← ffi .cudaUpload %[ctxPtr, bEmb, stagePtrT, rowB]
   dEnqueue ptr S_WIDEN ((HH / 2 + NBLK - 1) / NBLK) NBLK [B_EMB, B_X, B_NMH]
   -- the meta both cache depths need
   let one32 ← iconst32 1
   let len ← iadd pos one32
   let c128 ← iconst32 CAP_SWA
   let cFull ← load32 (← absAddr ptr DCTX_OFF)
-  let swaL ← ifte .ugt len c128 (pure [c128]) (pure [len])
-  let fullL ← ifte .ugt len cFull (pure [cFull]) (pure [len])
-  let sL := swaL.headD len
-  let fL := fullL.headD len
+  let swaL ← ifte .ugt len c128 (pure %[c128]) (pure %[len])
+  let fullL ← ifte .ugt len cFull (pure %[cFull]) (pure %[len])
+  let sL := swaL.head
+  let fL := fullL.head
   storeI32 pos (← absAddr ptr (DMETA_OFF + 4 * M_POS))
   storeI32 sL (← absAddr ptr (DMETA_OFF + 4 * M_SEQ))
   let c32 ← iconst32 32
@@ -1023,7 +1021,7 @@ def dStepM (tok posIn : R) : M R := do
   storeI32 sL (← absAddr ptr (DMETA_OFF + 4 * (M_SEQ + 16)))
   let bMeta ← load32 (← absAddr ptr (dBindOff B_META))
   let mb ← iconst64 (64 * 4)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, bMeta, (← absAddr ptr DMETA_OFF), mb]
+  let _ ← ffi .cudaUpload %[ctxPtr, bMeta, (← absAddr ptr DMETA_OFF), mb]
   -- twenty-four layers, one body
   let nl ← iconst64 NL
   forLoop nl fun l => do
@@ -1043,8 +1041,8 @@ def dStepM (tok posIn : R) : M R := do
   storeI32 (← iconst32 VOCAB) (← absAddr ptr (DMETA_OFF + 4 * 33))
   let bNM ← load32 (← absAddr ptr (dBindOff B_NMQ))
   let n4 ← iconst64 4
-  let _ ← call IR.Ffi.cudaUpload.id
-    [ctxPtr, bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
+  let _ ← ffi .cudaUpload
+    %[ctxPtr, bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
   -- **Greedy, or a draw from the tempered softmax.**
   --
   -- `1/T` of zero means the caller wants the largest logit, and that goes to
@@ -1067,21 +1065,21 @@ def dStepM (tok posIn : R) : M R := do
     (← absAddr ptr (DMETA_OFF + 4 * 37))
   let bSamp ← load32 (← absAddr ptr (dBindOff B_SAMP))
   let n12 ← iconst64 16
-  let _ ← call IR.Ffi.cudaUpload.id
-    [ctxPtr, bSamp, (← absAddr ptr (DMETA_OFF + 4 * 34)), n12]
-  let sampling ← ifte .ne invT zz (pure [oo]) (pure [zz])
+  let _ ← ffi .cudaUpload
+    %[ctxPtr, bSamp, (← absAddr ptr (DMETA_OFF + 4 * 34)), n12]
+  let sampling ← ifte .ne invT zz (pure %[oo]) (pure %[zz])
   let headSlot ← iadd (← iconst64 (dSlotOff S_ARGMAX))
-                      (← imul (← uextend64 (sampling.headD zz))
+                      (← imul (← uextend64 (sampling.head))
                               (← iconst64 ((S_SAMPLE - S_ARGMAX) * DSLOT)))
   dEnqueueAt ptr headSlot 1 32 [B_LOGITS, B_TOKEN, B_SAMP]
   let _ ← cudaSync ptr
   -- back to the narrow count, so the next token's projection is right again
   storeI32 (← iconst32 ((64 * 64) / 2)) (← absAddr ptr (DMETA_OFF + 4 * 33))
-  let _ ← call IR.Ffi.cudaUpload.id
-    [ctxPtr, bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
+  let _ ← ffi .cudaUpload
+    %[ctxPtr, bNM, (← absAddr ptr (DMETA_OFF + 4 * 33)), n4]
   -- the token this step produced, into memory this program owns
   let bTok ← load32 (← absAddr ptr (dBindOff B_TOKEN))
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bTok, (← absAddr ptr DT_NEXT), n4]
+  let _ ← ffi .cudaDownload %[ctxPtr, bTok, (← absAddr ptr DT_NEXT), n4]
   -- …and the whole logit row, to a fixed place in the caller's buffer.  Eight
   -- hundred kilobytes is real traffic and it buys the only check that can
   -- localise a fault in the head: a caller can compare against the model's own
@@ -1089,7 +1087,7 @@ def dStepM (tok posIn : R) : M R := do
   -- option -- the runtime asserts a transfer is the whole buffer -- so it is
   -- all of them or none.
   let outPtr ← load64 (← absAddr ptr 0x28)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bLog, (← iaddImm outPtr 8), (← iconst64 (VOCAB * 4))]
+  let _ ← ffi .cudaDownload %[ctxPtr, bLog, (← iaddImm outPtr 8), (← iconst64 (VOCAB * 4))]
   load32 (← absAddr ptr DT_NEXT)
 
 
@@ -1103,9 +1101,9 @@ def dStepM (tok posIn : R) : M R := do
     There is one entry and no extras either way. That is the property the whole
     application was arranged around: a caller that has to tokenize for itself
     is a caller that has to agree with the model about what a token is. -/
-def dMainFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def dMainFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let flag ← load32 (← absAddr ptr DINIT_OFF)
   let zero32 ← iconst32 0
   when .eq flag zero32 (do
@@ -1125,7 +1123,7 @@ def dMainFn : HProg.Code :=
         storeI32 nxt outPtr
         let miss ← load32 (← absAddr ptr DMISS_OFF)
         storeI32 miss (← iaddImm outPtr 4)
-        pure ([] : List R))
+        pure %[])
     (do -- a turn: text in, text out
         let tlen ← uload32_64 (← iaddImm dataPtr D_TLEN)
         let stop ← load32 (← iaddImm dataPtr D_STOP)
@@ -1167,23 +1165,24 @@ def dMainFn : HProg.Code :=
         -- …and then the model's own output, until it stops or runs out of room
         let genTok ← iaddImm ptr DT_GENTOK
         let first ← load32 (← absAddr ptr DT_NEXT)
-        let gEx ← wloop [(← iconst64 0), nPrompt, (← uextend64 first)]
-          (head := fun st => return (contIf .ult (st.headD 0) maxNew, [st.headD 0], ()))
-          (body := fun st _ => do
-            let g := st.headD 0
-            let pos := st.getD 1 0
-            let cur := st.getD 2 0
+        let gEx ← wloopL %[(← iconst64 0), nPrompt, (← uextend64 first)]
+          (head := fun _ st => return (contIf .ult (st.head) maxNew, %[st.head], ()))
+          (body := fun lbl st _ => do
+            let g := st.head
+            let pos := st.snd
+            let cur := st.thd
             let cur32 ← ireduce32 cur
             storeI32 cur32 (← iadd genTok (← ishlImm g 2))
             let g1 ← iaddImm g 1
-            when .eq cur32 stop (brk [g1])
+            when .eq cur32 stop (brk lbl %[g1])
             -- and stop at the cache, which is the other end of the budget: a
             -- turn is bounded by `maxNew` tokens *and* by the room left in the
             -- key cache, and only one of those is the caller's to set
-            when .uge pos (← uload32_64 (← absAddr ptr DCTX_OFF)) (brk [g1])
+            when .uge pos (← uload32_64 (← absAddr ptr DCTX_OFF)) (brk lbl %[g1])
             let nxt ← dStepM cur32 (← ireduce32 pos)
-            return [g1, ← iaddImm pos 1, ← uextend64 nxt])
-        let nGen := gEx.headD (← iconst64 0)
+            return %[g1, ← iaddImm pos 1, ← uextend64 nxt])
+        let _ ← iconst64 0
+        let nGen := gEx.head
         storeI64 nGen (← absAddr ptr DT_GENCOUNT)
         -- back to bytes
         let tokBuf ← iaddImm ptr DT_TOKBUF
@@ -1211,21 +1210,16 @@ def dMainFn : HProg.Code :=
         forLoop nGen fun i => do
           storeI32 (← load32 (← iadd genTok (← ishlImm i 2)))
                    (← iadd gdst (← ishlImm i 2))
-        pure ([] : List R))
+        pure %[])
   pure ()
 
-def dShippedBodies : List HProg.Code := [ dMainFn ]
+def dShippedBodies : List Prog.Body := [ dMainFn ]
 
-theorem gptossDecodeShipped_wf :
-    dShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
 
-def dClifIR : Program :=
-  program <|
-    noopFunction :: dShippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp gptossDecodeShipped_wf p.1.1 p.1.2))
+def dClifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: dShippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1)
 
 def u32le (v : Nat) : List UInt8 :=
   [ UInt8.ofNat (v % 256), UInt8.ofNat (v / 256 % 256)
@@ -1241,21 +1235,22 @@ def dInitialMemory : List UInt8 :=
     ++ dPtx.flatMap dSlotBytes
     ++ zeros (DMEM_SIZE - DBIND_OFF)
 
-def dSetup : Setup := {
-  clif := dClifIR
+def dSetup (clif : Program) : Setup := {
+  clif
   memory_size := DMEM_SIZE
   initial_memory := dInitialMemory
 }
 
 #eval LayoutScan.check "GptOssDecode" [``dMemMap]
 
-def artifacts : Array Json :=
-  #[ toJsonArtifact "gptoss_decode" dSetup { fn_idx := u32 1 } [] ]
+def artifacts (clif : Program) : Array Json :=
+  #[ toJsonArtifact "gptoss_decode" (dSetup clif) { fn_idx := u32 1 } [] ]
 
 end GptOssDecode
 
 def main (args : List String) : IO Unit := do
-  emitArtifacts (← requireOutputDir args) GptOssDecode.artifacts
+  let clif ← Prog.orDie GptOssDecode.dClifIR
+  emitArtifacts (← requireOutputDir args) (GptOssDecode.artifacts clif)
 
 #eval ShipScan.check "GptOssDecode"
 

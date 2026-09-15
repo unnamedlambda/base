@@ -13,7 +13,7 @@ import AlgorithmLib.Clif
   `Clif.launchesOf` reads the device operations back out of the blocks the
   generator emitted, so these theorems are about the program that ships rather
   than about the source that produced it.  What the generator is written in does
-  not enter the statement: `warpFn` is `compileFn` applied to a first-order
+  not enter the statement: `warpFn` is the compiler applied to a first-order
   term, and `FuncData` is the view the extractors read.
 
   ## Why `native_decide`

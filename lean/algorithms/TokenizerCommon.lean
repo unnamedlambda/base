@@ -35,7 +35,7 @@ import AlgorithmLib.HProg
   predates them.
 -/
 
-open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur
+open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog
 
 namespace TokenizerCommon
 
@@ -82,7 +82,7 @@ structure TokMem where
     they emit different CLIF. Each site below uses the one it has always used,
     which is what lets a program that already ships be rewired onto this
     module without its artifact changing by a byte. -/
-private def load64At (base : R) (off : Nat) : M R :=
+private def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
   load64 =<< iaddImm base off
 
 /-- Header fields, by name rather than by a number at each use. -/
@@ -102,19 +102,19 @@ def MERGE_OFF : Nat := 1040
     The merges arrive in rank order, so the loop index *is* the rank, and both
     it and the resulting token go into the value: a merge lookup then answers
     "should this pair merge, and how strongly" in one probe. -/
-def loadTokenizerM (c : TokMem) : M Unit := do
-  let ptr := basePtr
+def loadTokenizerM (c : TokMem) : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← load64 (← absAddr ptr c.cudaCtx)
   let pathP ← load64 (← absAddr ptr c.pathPtr)
   let bytes64 ← iconst64 c.fileMaxBytes
-  let pinId ← call IR.Ffi.cudaPinnedAlloc.id [ctxPtr, bytes64]
-  let bufP ← call IR.Ffi.cudaPinnedPtr.id [ctxPtr, pinId]
+  let pinId ← ffi .cudaPinnedAlloc %[ctxPtr, bytes64]
+  let bufP ← ffi .cudaPinnedPtr %[ctxPtr, pinId]
   let zero64 ← iconst64 0
-  let _ ← call IR.Ffi.fileReadToPtr.id [pathP, bufP, zero64, bytes64]
+  let _ ← ffi .fileReadToPtr %[pathP, bufP, zero64, bytes64]
   storeI64 bufP (← absAddr ptr c.bufPtr)
-  callVoid IR.Ffi.htInit.id [ptr]
+  ffiVoid .htInit %[ptr]
   let htCtx ← load64At ptr c.htCtx
-  let _ ← call IR.Ffi.htCreate.id [htCtx]
+  let _ ← ffi .htCreate %[htCtx]
   let nMerges ← uload32_64 (← iaddImm bufP HDR_MERGES)
   let mergeBase ← iaddImm bufP MERGE_OFF
   let keyAddr ← iaddImm ptr c.htKey
@@ -132,14 +132,14 @@ def loadTokenizerM (c : TokMem) : M Unit := do
     storeI32 tokB (← iaddImm keyAddr 4)
     storeI32 rank32 valAddr
     storeI32 result (← iaddImm valAddr 4)
-    callVoid IR.Ffi.htInsert.id [htCtx, keyAddr, keyLen8, valAddr, valLen8]
+    ffiVoid .htInsert %[htCtx, keyAddr, keyLen8, valAddr, valLen8]
 
 /-- **Every byte its own token, before any merging.**
 
     One `u32` per input byte, which is why the token buffer has to be four
     times the text buffer and not merely as large. -/
-def tokenizeInitM (c : TokMem) : M Unit := do
-  let ptr := basePtr
+def tokenizeInitM (c : TokMem) : Prog V L Unit := do
+  let ptr ← basePtr
   let bufP ← load64At ptr c.bufPtr
   let textLen ← load64At ptr c.textLen
   let byteInit ← iaddImm bufP BYTE_INIT_OFF
@@ -160,8 +160,8 @@ def tokenizeInitM (c : TokMem) : M Unit := do
     written with a priority queue — but a chunk is a handful of tokens once the
     pre-tokenizer has split the text, and a queue in CLIF would be more
     machinery than the thing it accelerates. -/
-def tokenizeBpeM (c : TokMem) : M Unit := do
-  let ptr := basePtr
+def tokenizeBpeM (c : TokMem) : Prog V L Unit := do
+  let ptr ← basePtr
   let htCtx ← load64At ptr c.htCtx
   let tokBuf ← iaddImm ptr c.tokenBuf
   let keyAddr ← iaddImm ptr c.htKey
@@ -173,54 +173,54 @@ def tokenizeBpeM (c : TokMem) : M Unit := do
   let maxRank ← iconst32 (-1)
   let negOne64 ← iconst64 (-1)
   let zero32 ← iconst32 0
-  let e ← wloop1 tokCount
-    (head := fun n => return (contIf .ugt n one64, [n], ()))
-    (body := fun n _ => do
+  let e ← wloop1L tokCount
+    (head := fun _ n => return (contIf .ugt n one64, %[n], ()))
+    (body := fun merge n _ => do
       let n1 ← iaddImm n (-1)
-      let sc ← wloop [zero64, maxRank, negOne64]
-        (head := fun cc =>
-          return (contIf .ult (cc.headD 0) n1, [cc.getD 1 0, cc.getD 2 0], ()))
-        (body := fun cc _ => do
-          let i := cc.headD 0
-          let r := cc.getD 1 0
-          let p := cc.getD 2 0
+      let sc ← wloopL %[zero64, maxRank, negOne64]
+        (head := fun _ cc =>
+          return (contIf .ult cc.head n1, %[cc.snd, cc.thd], ()))
+        (body := fun scan cc _ => do
+          let i := cc.head
+          let r := cc.snd
+          let p := cc.thd
           let iOff ← ishlImm i 2
           let tokA ← load32 (← iadd tokBuf iOff)
           let tokB ← load32 (← iadd tokBuf (← iaddImm iOff 4))
           storeI32 tokA keyAddr
           storeI32 tokB (← iaddImm keyAddr 4)
-          let found ← call IR.Ffi.htLookup.id [htCtx, keyAddr, keyLen8, valAddr]
+          let found ← ffi .htLookup %[htCtx, keyAddr, keyLen8, valAddr]
           let nextI ← iaddImm i 1
-          when .slt found zero32 (continueWith [nextI, r, p])
+          when .slt found zero32 (continueWith scan %[nextI, r, p])
           let rank ← load32 valAddr
-          let rp ← ifte .ult rank r (pure [rank, i]) (pure [r, p])
-          return [nextI, rp.headD 0, rp.getD 1 0])
-      let bestPos := sc.getD 1 0
-      when .eq bestPos negOne64 (brk [n])
+          let rp ← ifte .ult rank r (pure %[rank, i]) (pure %[r, p])
+          return %[nextI, rp.head, rp.snd])
+      let bestPos := sc.snd
+      when .eq bestPos negOne64 (brk merge %[n])
       let dOff ← ishlImm bestPos 2
       let dA ← load32 (← iadd tokBuf dOff)
       let dB ← load32 (← iadd tokBuf (← iaddImm dOff 4))
       storeI32 dA keyAddr
       storeI32 dB (← iaddImm keyAddr 4)
-      let _ ← call IR.Ffi.htLookup.id [htCtx, keyAddr, keyLen8, valAddr]
+      let _ ← ffi .htLookup %[htCtx, keyAddr, keyLen8, valAddr]
       let resT ← load32 (← iaddImm valAddr 4)
       storeI32 resT (← iadd tokBuf dOff)
       let _ ← wloop1 (← iaddImm bestPos 1)
-        (head := fun j => return (contIf .ult j n1, ([] : List R), ()))
+        (head := fun j => return (contIf .ult j n1, %[], ()))
         (body := fun j _ => do
           let sbOff ← ishlImm j 2
           let nextT ← load32 (← iadd tokBuf (← iaddImm sbOff 4))
           storeI32 nextT (← iadd tokBuf sbOff)
-          return [← iaddImm j 1])
-      return [n1])
-  storeI64 (e.headD 0) (← absAddr ptr c.tokenCount)
+          return %[← iaddImm j 1])
+      return %[n1])
+  storeI64 (e.head) (← absAddr ptr c.tokenCount)
 
 /-- **Token ids back to bytes**, by concatenating what each one stands for.
 
     The three tables the pool needs are all found by walking forward from the
     header, so nothing here knows a vocabulary size. -/
-def detokenizeM (c : TokMem) : M Unit := do
-  let ptr := basePtr
+def detokenizeM (c : TokMem) : Prog V L Unit := do
+  let ptr ← basePtr
   let bufP ← load64At ptr c.bufPtr
   let nMerges ← uload32_64 (← iaddImm bufP HDR_MERGES)
   let vocabSize ← uload32_64 (← iaddImm bufP HDR_VOCAB)
@@ -246,15 +246,15 @@ def detokenizeM (c : TokMem) : M Unit := do
     -- The converter's job is to make this unreachable by covering every id the
     -- model can emit, added tokens included; this is here so that a converter
     -- that fails at it cannot corrupt memory.
-    let inRange ← ifte .ult tokId vocabSize (pure [← iconst64 1]) (pure [zero64])
-    let lenL ← ifte .ne (inRange.headD zero64) zero64
-      (pure [← uload32_64 (← iadd decLenPtr (← ishlImm tokId 2))])
-      (pure [zero64])
-    let decLen := lenL.headD zero64
-    let offL ← ifte .ne (inRange.headD zero64) zero64
-      (pure [← uload32_64 (← iadd decOffPtr (← ishlImm tokId 2))])
-      (pure [zero64])
-    let srcPtr ← iadd bytePool (offL.headD zero64)
+    let inRange ← ifte .ult tokId vocabSize (pure %[← iconst64 1]) (pure %[zero64])
+    let lenL ← ifte .ne (inRange.head) zero64
+      (pure %[← uload32_64 (← iadd decLenPtr (← ishlImm tokId 2))])
+      (pure %[zero64])
+    let decLen := lenL.head
+    let offL ← ifte .ne (inRange.head) zero64
+      (pure %[← uload32_64 (← iadd decOffPtr (← ishlImm tokId 2))])
+      (pure %[zero64])
+    let srcPtr ← iadd bytePool (offL.head)
     -- **What fits, and not a byte more.**
     --
     -- `textOut` holds `textMaxBytes`, and how many bytes a token spells is a
@@ -262,10 +262,10 @@ def detokenizeM (c : TokMem) : M Unit := do
     -- So the copy is clamped: once the buffer is full `take` is zero and the
     -- remaining tokens contribute nothing, which loses the tail of a reply
     -- rather than the contents of the buffer after it.
-    let roomL ← ifte .ult tp cap (pure [← isub cap tp]) (pure [zero64])
-    let room := roomL.headD zero64
-    let takeL ← ifte .ult decLen room (pure [decLen]) (pure [room])
-    let take := takeL.headD zero64
+    let roomL ← ifte .ult tp cap (pure %[← isub cap tp]) (pure %[zero64])
+    let room := roomL.head
+    let takeL ← ifte .ult decLen room (pure %[decLen]) (pure %[room])
+    let take := takeL.head
     forLoop take fun i => do
       let byt ← uload8_64 (← iadd srcPtr i)
       istore8 byt (← iadd textOut (← iadd tp i))

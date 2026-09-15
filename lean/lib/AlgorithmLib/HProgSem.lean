@@ -226,7 +226,7 @@ private def zipF (u v : V) (f32op : Float32 → Float32 → Float32)
 
 /-- Elementwise on the raw bits, for the operations that have to see a sign or
     a NaN payload that `Float` arithmetic would not preserve. -/
-private def zipBitsIf (ok : ClifTy → Bool) (u v : V)
+def zipBitsIf (ok : ClifTy → Bool) (u v : V)
     (f : ClifTy → UInt64 → UInt64 → UInt64) : Option V :=
   match u, v with
   | .sc t x, .sc t' y => if t == t' && ok t then some (.sc t (f t x y)) else none
@@ -246,7 +246,7 @@ private def zipBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → 
 /-- Bit-for-bit on two values of one type, whatever that type is. `bitselect`'s
     check constrains only that its three operands agree, so an integer mask is
     as well formed as a float one. -/
-private def zipAnyBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → Option V :=
+def zipAnyBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → Option V :=
   zipBitsIf (fun _ => true)
 
 /-- A bitwise operation applied to two integers or lane-wise to two vectors.
@@ -881,7 +881,7 @@ def callImport (name : String) (args : List V) (w : World) : Option (Option V ×
 --
 -- A loop's exit block and a branch's join block bind their parameters after
 -- every slot the regions before them defined, whether or not those regions
--- ran. So the interpreter needs the *static* count, exactly as `compileFn`
+-- ran. So the interpreter needs the *static* count, exactly as the compiler
 -- and `wf` compute it.
 -- ---------------------------------------------------------------------------
 

@@ -8,8 +8,7 @@ import LayoutScan
 import ShipScan
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
 /-!
   # gpt-oss-20b: one layer's mixture, dispatched by rebinding
@@ -138,12 +137,11 @@ theorem gptossMap_ok :
 
 /-! ## The host program -/
 
-def env : FnEnv := env% [.cuda, .cublas]
 
 /-- Allocate every buffer and upload the shared inputs and the whole store. -/
-def gLoadFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def gLoadFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -155,12 +153,12 @@ def gLoadFn : HProg.Code :=
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt gHostIn i)
     let id ← load32 (← absAddr ptr (gBindOff i))
     let bytes ← iconst64 (gBufBytes.getD i 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
   for k in List.range (PIECES * NE) do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt gHostIn (2 + k))
     let id ← load32 (← absAddr ptr (gBindOff (GSTORE + k)))
     let bytes ← iconst64 (pieceBytes.getD (k % PIECES) 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
 /-- **Choosing experts, as the host does it.**
 
@@ -170,9 +168,9 @@ def gLoadFn : HProg.Code :=
     computed at run time and nothing about which expert is chosen is baked into
     the image — which is what makes this a cache lookup rather than a
     recompilation. -/
-def gBindExperts : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def gBindExperts : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let four ← iconst64 4
   let six ← iconst64 PIECES
@@ -189,13 +187,13 @@ def gBindExperts : HProg.Code :=
 
 /-- Copy the ids one launch names into its own table, so the entries
     `gBindExperts` rewrote are what the kernel reads. -/
-def gBindLocal (ptr : R) (bs : List Nat) : M Unit := do
+def gBindLocal (ptr : V .i64) (bs : List Nat) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (gBindOff gb))
     storeI32 id (← absAddr ptr (GLOCAL_OFF + 4 * j))
 
 /-- Enqueue the kernel in slot `i` over `g` blocks of `blk` threads. -/
-def gEnqueue (ptr : R) (i g blk : Nat) (bs : List Nat) : M Unit := do
+def gEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
   gBindLocal ptr bs
   let ptxOff ← iconst64 (gSlotOff i)
   let nBufs ← iconst32 bs.length
@@ -228,9 +226,9 @@ def gExpertBinds : List (Nat × Nat × List Nat) :=
     , (1, GRID_H, [slotBuf j 3, slotBuf j 4, slotBuf j 5, B_HID + j, B_Y + j]) ])
   ++ [ (2, GRID_COMB, [B_Y, B_Y + 1, B_Y + 2, B_Y + 3, B_GATES, B_OUT]) ]
 
-def gRunExperts : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def gRunExperts : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   for (i, g, bs) in gExpertBinds do
     gEnqueue ptr i g BLK bs
   let _ ← cudaSync ptr
@@ -260,38 +258,33 @@ theorem gptoss_binds_allocated :
     (gExpertBinds.flatMap (fun t => t.2.2)).all (fun b => decide (b < GNBUF))
       = true := by native_decide
 
-def gUploadFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def gUploadFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (gBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
 
-def gFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def gFetchFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (gBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
-def gShippedBodies : List HProg.Code :=
+def gShippedBodies : List Prog.Body :=
   [ gLoadFn, gBindExperts, gUploadFn B_X (H * 4), gUploadFn B_GATES (32 * 4)
   , gRunExperts, gFetchFn B_OUT (H * 4) ]
 
-theorem gptossShipped_wf :
-    gShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
 
-def gClifIR : Program :=
-  program <|
-    noopFunction :: gShippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp gptossShipped_wf p.1.1 p.1.2))
+def gClifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: gShippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1)
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -308,8 +301,8 @@ def gInitialMemory : List UInt8 :=
     ++ gptossPtx.flatMap gSlotBytes
     ++ zeros (GMEM_SIZE - GBIND_OFF)
 
-def gSetup : Setup := {
-  clif := gClifIR
+def gSetup (clif : Program) : Setup := {
+  clif
   memory_size := GMEM_SIZE
   initial_memory := gInitialMemory
 }
@@ -451,9 +444,9 @@ theorem gptossAttnMap_ok :
 def aResident : List Nat :=
   [A_ANORM, A_QKVW, A_QKVB, A_SINKS, A_OW, A_OB, A_ROPE, A_NMH, A_NMQ]
 
-def aLoadFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def aLoadFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -465,27 +458,27 @@ def aLoadFn : HProg.Code :=
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt aHostIn (2 + k))
     let id ← load32 (← absAddr ptr (aBindOff b))
     let bytes ← iconst64 (aHostSizes.getD (2 + k) 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
 /-- The two per-step uploads: this token's row of the residual stream, and the
     integers that say where it sits. -/
-def aUploadStep : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def aUploadStep : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   for (i, b) in [(0, A_X), (1, A_META)] do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt aHostIn i)
     let id ← load32 (← absAddr ptr (aBindOff b))
     let bytes ← iconst64 (aHostSizes.getD i 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
-def aBindLocal (ptr : R) (bs : List Nat) : M Unit := do
+def aBindLocal (ptr : V .i64) (bs : List Nat) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (aBindOff gb))
     storeI32 id (← absAddr ptr (ALOCAL_OFF + 4 * j))
 
-def aEnqueue (ptr : R) (i g blk : Nat) (bs : List Nat) : M Unit := do
+def aEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
   aBindLocal ptr bs
   let ptxOff ← iconst64 (aSlotOff i)
   let nBufs ← iconst32 bs.length
@@ -502,9 +495,9 @@ def NBLK : Nat := 32 * GptOssKernels.warpsPerCta
     Thirteen kernels and two contractions. The shapes that move with the
     position are the two contractions' — `seqLen` is read from the input region
     — and nothing else in the sequence changes from token to token. -/
-def aStepFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def aStepFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   -- The per-step integers, read here for the contraction shapes and uploaded
   -- unchanged for the kernels: one publication, two readers, no way to
@@ -565,29 +558,24 @@ def aStepFn : HProg.Code :=
   aEnqueue ptr S_ADD (H / 32) 32 [A_X, A_TMP]
   let _ ← cudaSync ptr
 
-def aFetchFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def aFetchFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let id ← load32 (← absAddr ptr (aBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, outPtr, bytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
-def aShippedBodies : List HProg.Code :=
+def aShippedBodies : List Prog.Body :=
   [ aLoadFn, aUploadStep, aStepFn, aFetchFn A_X (H * 4)
   , aFetchFn A_QKV (QKV * 4), aFetchFn A_ATT (QO * 4) ]
 
-theorem gptossAttnShipped_wf :
-    aShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
 
-def aClifIR : Program :=
-  program <|
-    noopFunction :: aShippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp gptossAttnShipped_wf p.1.1 p.1.2))
+def aClifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: aShippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1)
 
 def aSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -599,8 +587,8 @@ def aInitialMemory : List UInt8 :=
     ++ aPtx.flatMap aSlotBytes
     ++ zeros (AMEM_SIZE - ABIND_OFF)
 
-def aSetup : Setup := {
-  clif := aClifIR
+def aSetup (clif : Program) : Setup := {
+  clif
   memory_size := AMEM_SIZE
   initial_memory := aInitialMemory
 }
@@ -758,8 +746,8 @@ def lResident : List Nat :=
   [L_ANORM, L_QKVW, L_QKVB, L_SINKS, L_OW, L_OB, L_ROPE, L_NMH, L_NMQ,
    L_MNORM, L_RW, L_RB]
 
-def lLoadM : M Unit := do
-  let ptr := basePtr
+def lLoadM : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -771,30 +759,30 @@ def lLoadM : M Unit := do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt lHostIn (2 + k))
     let id ← load32 (← absAddr ptr (lBindOff b))
     let bytes ← iconst64 (lHostSizes.getD (2 + k) 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
   for k in List.range (PIECES * NE) do
     let src ← iaddImm dataPtr
       (AlgorithmLib.Layout.RegionMap.offAt lHostIn (2 + lResident.length + k))
     let id ← load32 (← absAddr ptr (lBindOff (LSTORE + k)))
     let bytes ← iconst64 (pieceBytes.getD (k % PIECES) 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
-def lUploadStepM : M Unit := do
-  let ptr := basePtr
+def lUploadStepM : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   for (i, b) in [(0, L_X), (1, L_META)] do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt lHostIn i)
     let id ← load32 (← absAddr ptr (lBindOff b))
     let bytes ← iconst64 (lHostSizes.getD i 0)
-    let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, src, bytes]
+    let _ ← ffi .cudaUpload %[ctxPtr, id, src, bytes]
 
-def lBindLocal (ptr : R) (bs : List Nat) : M Unit := do
+def lBindLocal (ptr : V .i64) (bs : List Nat) : Prog V L Unit := do
   for (j, gb) in (List.range bs.length).zip bs do
     let id ← load32 (← absAddr ptr (lBindOff gb))
     storeI32 id (← absAddr ptr (LLOCAL_OFF + 4 * j))
 
-def lEnqueue (ptr : R) (i g blk : Nat) (bs : List Nat) : M Unit := do
+def lEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := do
   lBindLocal ptr bs
   let ptxOff ← iconst64 (lSlotOff i)
   let nBufs ← iconst32 bs.length
@@ -807,8 +795,8 @@ def lEnqueue (ptr : R) (i g blk : Nat) (bs : List Nat) : M Unit := do
 def NBLK : Nat := 32 * warpsPerCta
 
 /-- **Attention, then the router.** Ends where the host has to decide. -/
-def lAttnM : M Unit := do
-  let ptr := basePtr
+def lAttnM : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let seqLen ← load32 (← iaddImm dataPtr
     (AlgorithmLib.Layout.RegionMap.offAt lHostIn 1 + 4 * M_SEQ))
@@ -875,7 +863,7 @@ def lAttnM : M Unit := do
   let bCh ← load32 (← absAddr ptr (lBindOff L_CHOSEN))
   let dst ← absAddr ptr LCHOSEN_OFF
   let n16 ← iconst64 (TOPK * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, bCh, dst, n16]
+  let _ ← ffi .cudaDownload %[ctxPtr, bCh, dst, n16]
 
 /-- **Binding the four slots, from ids the device chose.**
 
@@ -883,8 +871,8 @@ def lAttnM : M Unit := do
     buffer, which is the difference between a layer that is one call and a
     layer that is two.  The six moves per slot are unchanged: what changed is
     where the expert index came from. -/
-def lBindM : M Unit := do
-  let ptr := basePtr
+def lBindM : Prog V L Unit := do
+  let ptr ← basePtr
   let four ← iconst64 4
   let six ← iconst64 PIECES
   for j in List.range TOPK do
@@ -908,8 +896,8 @@ def lExpertBinds : List (Nat × Nat × List Nat) :=
   ++ [ (S_COMBINE, (H + NBLK - 1) / NBLK,
         [L_Y, L_Y + 1, L_Y + 2, L_Y + 3, L_GATES, L_MOUT]) ]
 
-def lMoeM : M Unit := do
-  let ptr := basePtr
+def lMoeM : Prog V L Unit := do
+  let ptr ← basePtr
   for (i, g, bs) in lExpertBinds do
     lEnqueue ptr i g NBLK bs
   lEnqueue ptr S_ADD (H / 32) 32 [L_X, L_MOUT]
@@ -927,24 +915,24 @@ theorem gptoss_layer_binds_allocated :
     (lExpertBinds.flatMap (fun t => t.2.2)).all (fun b => decide (b < LNBUF))
       = true := by native_decide
 
-def lUploadFn (b n : Nat) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def lUploadFn (b n : Nat) : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let id ← load32 (← absAddr ptr (lBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, id, dataPtr, bytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
 
 /-- Copy buffer `b` to the caller's output, `at` bytes in. -/
-def lFetchM (b n at_ : Nat) : M Unit := do
-  let ptr := basePtr
+def lFetchM (b n at_ : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dst ← iaddImm outPtr at_
   let id ← load32 (← absAddr ptr (lBindOff b))
   let bytes ← iconst64 n
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, id, dst, bytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, id, dst, bytes]
 
 /-- **One token through one layer, and nothing outside it.**
 
@@ -961,9 +949,9 @@ def lFetchM (b n at_ : Nat) : M Unit := do
 
     What the caller passes is a token's row and its position; what it gets back
     is the layer's output and, after it, the router's row. -/
-def lMainFn : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def lMainFn : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let flag ← load32 (← absAddr ptr LINIT_OFF)
   let zero32 ← iconst32 0
   when .eq flag zero32 (do
@@ -977,18 +965,13 @@ def lMainFn : HProg.Code :=
   lFetchM L_X (H * 4) 0
   lFetchM L_RLOG (NE * 4) (H * 4)
 
-def lShippedBodies : List HProg.Code := [ lMainFn ]
+def lShippedBodies : List Prog.Body := [ lMainFn ]
 
-theorem gptossLayerShipped_wf :
-    lShippedBodies.all (HProg.wf env HProg.ptrParams) = true := by
-  native_decide
 
-def lClifIR : Program :=
-  program <|
-    noopFunction :: lShippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 env
-          (hwf := List.all_eq_true.mp gptossLayerShipped_wf p.1.1 p.1.2))
+def lClifIR : Except String Program :=
+  Prog.program <|
+    .ok noopFunction :: lShippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1)
 
 def lSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -1000,8 +983,8 @@ def lInitialMemory : List UInt8 :=
     ++ lPtx.flatMap lSlotBytes
     ++ zeros (LMEM_SIZE - LBIND_OFF)
 
-def lSetup : Setup := {
-  clif := lClifIR
+def lSetup (clif : Program) : Setup := {
+  clif
   memory_size := LMEM_SIZE
   initial_memory := lInitialMemory
 }
@@ -1010,24 +993,27 @@ end Layer
 
 #eval LayoutScan.check "GptOssAlgorithm" [``gMemMap, ``Attn.aMemMap, ``Layer.lMemMap]
 
-def artifacts : Array Json :=
-  #[ toJsonArtifact "gptoss_moe" gSetup { fn_idx := u32 1 }
+def artifacts (gClif aClif lClif : Program) : Array Json :=
+  #[ toJsonArtifact "gptoss_moe" (gSetup gClif) { fn_idx := u32 1 }
        [("bindExperts", { fn_idx := u32 2 }),
         ("uploadX", { fn_idx := u32 3 }),
         ("uploadGates", { fn_idx := u32 4 }),
         ("runExperts", { fn_idx := u32 5 }),
         ("fetchOut", { fn_idx := u32 6 })]
-   , toJsonArtifact "gptoss_attn" Attn.aSetup { fn_idx := u32 1 }
+   , toJsonArtifact "gptoss_attn" (Attn.aSetup aClif) { fn_idx := u32 1 }
        [("uploadStep", { fn_idx := u32 2 }),
         ("step", { fn_idx := u32 3 }),
         ("fetchX", { fn_idx := u32 4 }),
         ("fetchQkv", { fn_idx := u32 5 }),
         ("fetchAtt", { fn_idx := u32 6 })]
-   , toJsonArtifact "gptoss_layer" Layer.lSetup { fn_idx := u32 1 } [] ]
+   , toJsonArtifact "gptoss_layer" (Layer.lSetup lClif) { fn_idx := u32 1 } [] ]
 
 end GptOssAlgorithm
 
 def main (args : List String) : IO Unit := do
-  emitArtifacts (← requireOutputDir args) GptOssAlgorithm.artifacts
+  let gClif ← Prog.orDie GptOssAlgorithm.gClifIR
+  let aClif ← Prog.orDie GptOssAlgorithm.Attn.aClifIR
+  let lClif ← Prog.orDie GptOssAlgorithm.Layer.lClifIR
+  emitArtifacts (← requireOutputDir args) (GptOssAlgorithm.artifacts gClif aClif lClif)
 
 #eval ShipScan.check "GptOssAlgorithm"

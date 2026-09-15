@@ -36,29 +36,26 @@ def wgslShader : String :=
         assign sum (sum + arrIdx data (ci * bigN + k) * arrIdx data (nn + k * bigN + cj))
       assign (arrIdx data (litU 2 * nn + idx)) sum
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The GPU entry points, in the order the callee table numbers them. -/
-def env : FnEnv := env% [.gpu]
 
-def fnInit : Nat := IR.Ffi.gpuInit.id
-def fnCreateBuffer : Nat := IR.Ffi.gpuCreateBuffer.id
-def fnCreatePipeline : Nat := IR.Ffi.gpuCreatePipeline.id
-def fnUploadPtr : Nat := IR.Ffi.gpuUploadPtr.id
-def fnDispatch : Nat := IR.Ffi.gpuDispatch.id
-def fnDownloadPtr : Nat := IR.Ffi.gpuDownloadPtr.id
-def fnCleanup : Nat := IR.Ffi.gpuCleanup.id
+abbrev fnInit : Ffi := .gpuInit
+abbrev fnCreateBuffer : Ffi := .gpuCreateBuffer
+abbrev fnCreatePipeline : Ffi := .gpuCreatePipeline
+abbrev fnUploadPtr : Ffi := .gpuUploadPtr
+abbrev fnDispatch : Ffi := .gpuDispatch
+abbrev fnDownloadPtr : Ffi := .gpuDownloadPtr
+abbrev fnCleanup : Ffi := .gpuCleanup
 
-def code : HProg.Code := clif% do
-  let ptr := basePtr
+def code : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
   let outPtr  ← load64 (← absAddr ptr 0x28)
 
 
   let ctxSlotPtr ← absAddr ptr 8
-  callVoid fnInit [ctxSlotPtr]
+  ffiVoid fnInit %[ctxSlotPtr]
   let ctxPtr ← load64 ctxSlotPtr
 
   -- nn = data_len / 8, buffer_size = nn * 12 (holds A+B+C), workgroups
@@ -68,26 +65,23 @@ def code : HProg.Code := clif% do
   let wg  ← ireduce32 (← ushrImm (← iaddImm nn 63) 6)
   let one ← iconst32 1
 
-  let bufId ← call fnCreateBuffer [ctxPtr, bufSize]
-  let _ ← call fnUploadPtr [ctxPtr, bufId, dataPtr, dataLen]
+  let bufId ← ffi fnCreateBuffer %[ctxPtr, bufSize]
+  let _ ← ffi fnUploadPtr %[ctxPtr, bufId, dataPtr, dataLen]
 
   let shaderAddr ← absAddr ptr WGSL_SHADER_OFF
   let bindAddr   ← absAddr ptr BIND_DESC_OFF
-  let pipeId ← call fnCreatePipeline [ctxPtr, shaderAddr, bindAddr, one]
-  let _ ← call fnDispatch [ctxPtr, pipeId, wg, one, one]
+  let pipeId ← ffi fnCreatePipeline %[ctxPtr, shaderAddr, bindAddr, one]
+  let _ ← ffi fnDispatch %[ctxPtr, pipeId, wg, one, one]
 
   -- Download C: nn*4 bytes from GPU buf offset 2*nn*4
   let nnBytes ← ishlImm nn 2      -- nn * 4 (download size)
   let bufOff  ← ishlImm nn 3      -- 2*nn*4 (buf offset)
-  let _ ← call fnDownloadPtr [ctxPtr, bufId, bufOff, outPtr, nnBytes]
+  let _ ← ffi fnDownloadPtr %[ctxPtr, bufId, bufOff, outPtr, nnBytes]
 
-  callVoid fnCleanup [ctxSlotPtr]
+  ffiVoid fnCleanup %[ctxSlotPtr]
 
-
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
-
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 def wgslBytes : List UInt8 :=
   wgslShader.toUTF8.toList ++ [0]
@@ -121,9 +115,9 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "gpu_matmul_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE,
     initial_memory := buildInitialMemory
   } {

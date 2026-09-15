@@ -74,19 +74,16 @@ def roots : List Name :=
   , ``GptOssAlgorithm.gptoss_ptx_fits
   , ``GptOssAlgorithm.gptossHostIn_packed
   , ``GptOssAlgorithm.gptossMap_ok
-  , ``GptOssAlgorithm.gptossShipped_wf
   , ``GptOssAlgorithm.Attn.gptoss_attn_alloc_covers
   , ``GptOssAlgorithm.Attn.gptoss_attn_ptx_fits
   , ``GptOssAlgorithm.Attn.gptossAttnHostIn_packed
   , ``GptOssAlgorithm.Attn.gptossAttnMap_ok
-  , ``GptOssAlgorithm.Attn.gptossAttnShipped_wf
   , ``GptOssAlgorithm.Layer.gptoss_layer_slots_are_bound
   , ``GptOssAlgorithm.Layer.gptoss_layer_binds_allocated
   , ``GptOssAlgorithm.Layer.gptoss_layer_alloc_covers
   , ``GptOssAlgorithm.Layer.gptoss_layer_ptx_fits
   , ``GptOssAlgorithm.Layer.gptossLayerHostIn_packed
-  , ``GptOssAlgorithm.Layer.gptossLayerMap_ok
-  , ``GptOssAlgorithm.Layer.gptossLayerShipped_wf ]
+  , ``GptOssAlgorithm.Layer.gptossLayerMap_ok ]
 
 /-- **Every claim the running program rests on that is not yet a theorem.**
 
@@ -218,19 +215,16 @@ def gptOssNativeRoster : List Name :=
   , ``GptOssAlgorithm.gptoss_ptx_fits
   , ``GptOssAlgorithm.gptossHostIn_packed
   , ``GptOssAlgorithm.gptossMap_ok
-  , ``GptOssAlgorithm.gptossShipped_wf
   , ``GptOssAlgorithm.Attn.gptoss_attn_alloc_covers
   , ``GptOssAlgorithm.Attn.gptoss_attn_ptx_fits
   , ``GptOssAlgorithm.Attn.gptossAttnHostIn_packed
   , ``GptOssAlgorithm.Attn.gptossAttnMap_ok
-  , ``GptOssAlgorithm.Attn.gptossAttnShipped_wf
   , ``GptOssAlgorithm.Layer.gptoss_layer_slots_are_bound
   , ``GptOssAlgorithm.Layer.gptoss_layer_binds_allocated
   , ``GptOssAlgorithm.Layer.gptoss_layer_alloc_covers
   , ``GptOssAlgorithm.Layer.gptoss_layer_ptx_fits
   , ``GptOssAlgorithm.Layer.gptossLayerHostIn_packed
-  , ``GptOssAlgorithm.Layer.gptossLayerMap_ok
-  , ``GptOssAlgorithm.Layer.gptossLayerShipped_wf ]
+  , ``GptOssAlgorithm.Layer.gptossLayerMap_ok ]
 
 open TrustScan GptOssScan in
 #eval runScanWith gptOssSurface "gpt-oss" roots gptOssNativeRoster

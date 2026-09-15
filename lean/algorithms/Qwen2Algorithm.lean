@@ -3,7 +3,7 @@ import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
 import AlgorithmLib.Cuda
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import Qwen2Common
 import ShipScan
 
@@ -13,8 +13,7 @@ open AlgorithmLib
 open AlgorithmLib.IR
 open AlgorithmLib.PTX
 open AlgorithmLib.Tensor
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 open Qwen2Common
 
 namespace Qwen2
@@ -22,16 +21,14 @@ namespace Qwen2
 /-- loadInitFn (fn_1): in-memory init.  Shared prefix allocates pinned scratch
     + activation/embed/lm_head/rope buffers and streams those weights from disk.
     No per-layer alloc here — that's done by `loadLayerFn`. -/
-def loadInitFn : HProg.Code :=
-  clif%(Qwen2Common.env, HProg.ptrParams) do
-  let ptr := basePtr
+def loadInitFn : Prog V L Unit := do
+  let ptr ← basePtr
   loadInitCommon ptr
 
 /-- loadLayerFn (fn_2+l): create per-layer GPU buffers and stream-upload weights
     via the pinned scratch buffer.  Stores 14 buffer IDs in layer slot. -/
-def loadLayerFn (l : Nat) : HProg.Code :=
-  HProg.Sur.build (env := Qwen2Common.env) do
-  let ptr := basePtr
+def loadLayerFn (l : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr    ← load64 (← absAddr ptr 0x10)
   let pathPtr   ← load64 (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
   let pinnedPtr ← load64 (← absAddr ptr PINNED_HOST_PTR_OFF)
@@ -47,20 +44,20 @@ def loadLayerFn (l : Nat) : HProg.Code :=
   let kvCacheBytes ← iconst64 KV_CACHE_BYTES
 
   -- Create weight buffers — shape in the type, byte size in the runtime arg.
-  let bufRmsAttn : VecD     ← tensorCreate ptr dBytes
-  let bufWq      : MatDD    ← tensorCreate ptr wqBytes
-  let bufBq      : VecD     ← tensorCreate ptr dBytes
-  let bufWk      : MatKVD   ← tensorCreate ptr wkBytes
-  let bufBk      : VecKV    ← tensorCreate ptr kvBytes
-  let bufWv      : MatKVD   ← tensorCreate ptr wkBytes
-  let bufBv      : VecKV    ← tensorCreate ptr kvBytes
-  let bufWo      : MatDD    ← tensorCreate ptr wqBytes
-  let bufRmsFfn  : VecD     ← tensorCreate ptr dBytes
-  let bufWg      : MatDffD  ← tensorCreate ptr wgBytes
-  let bufWu      : MatDffD  ← tensorCreate ptr wgBytes
-  let bufWd      : MatDDff  ← tensorCreate ptr wgBytes
-  let bufKCache  : KVCache  ← tensorCreate ptr kvCacheBytes
-  let bufVCache  : KVCache  ← tensorCreate ptr kvCacheBytes
+  let bufRmsAttn : VecD V     ← tensorCreate ptr dBytes
+  let bufWq      : MatDD V    ← tensorCreate ptr wqBytes
+  let bufBq      : VecD V     ← tensorCreate ptr dBytes
+  let bufWk      : MatKVD V   ← tensorCreate ptr wkBytes
+  let bufBk      : VecKV V    ← tensorCreate ptr kvBytes
+  let bufWv      : MatKVD V   ← tensorCreate ptr wkBytes
+  let bufBv      : VecKV V    ← tensorCreate ptr kvBytes
+  let bufWo      : MatDD V    ← tensorCreate ptr wqBytes
+  let bufRmsFfn  : VecD V     ← tensorCreate ptr dBytes
+  let bufWg      : MatDffD V  ← tensorCreate ptr wgBytes
+  let bufWu      : MatDffD V  ← tensorCreate ptr wgBytes
+  let bufWd      : MatDDff V  ← tensorCreate ptr wgBytes
+  let bufKCache  : KVCache V  ← tensorCreate ptr kvCacheBytes
+  let bufVCache  : KVCache V  ← tensorCreate ptr kvCacheBytes
 
   -- Store buffer IDs into layer `l`'s slot (cell base = ptr + LAYER_BUFS_BASE + l*STRIDE).
   let cellBase ← absAddr ptr (LAYER_BUFS_BASE + l * LAYER_BUF_STRIDE)
@@ -80,7 +77,7 @@ def loadLayerFn (l : Nat) : HProg.Code :=
   slotStore LayerSlot.vCache  cellBase bufVCache
 
   -- Stream-upload weight tensors through pinned scratch
-  let up {s : Shape} (t : Tensor s) (fileOff size : Nat) : M Unit :=
+  let up {s : Shape} (t : Prog.Tsr V s) (fileOff size : Nat) : Prog V L Unit :=
     uploadFromFile ctxPtr pathPtr pinnedPtr t (layerOff + fileOff) size
   up bufRmsAttn LF_RMS_ATTN D_BYTES
   up bufWq      LF_WQ       WQ_BYTES
@@ -96,23 +93,21 @@ def loadLayerFn (l : Nat) : HProg.Code :=
   up bufWd      LF_WD       WG_BYTES
 
 /-- loadFinalizeFn (fn_26): sync GPU then free the pinned scratch buffer. -/
-def loadFinalizeFn : HProg.Code :=
-  clif%(Qwen2Common.env, HProg.ptrParams) do
-  let ptr := basePtr
+def loadFinalizeFn : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr   ← load64 (← absAddr ptr 0x10)
   let pinnedId ← load32 (← absAddr ptr PINNED_ID_OFF)
   let _ ← cudaSync ptr 0x10
-  let _ ← call IR.Ffi.cudaPinnedFree.id [ctxPtr, pinnedId]
+  let _ ← ffi .cudaPinnedFree %[ctxPtr, pinnedId]
 
 /-- inferLayerFn (fn_28): runs one transformer layer — calls attn then ffn. -/
-def inferLayerFn : HProg.Code :=
-  clif%(Qwen2Common.env, HProg.ptrParams) do
-  let ptr := basePtr
-  callVoid Qwen2Common.q.fnAttn.id [ptr]
-  callVoid Qwen2Common.q.fnFfn.id  [ptr]
+def inferLayerFn : Prog V L Unit := do
+  let ptr ← basePtr
+  callLocalVoid Qwen2Common.q.fnAttn %[ptr]
+  callLocalVoid Qwen2Common.q.fnFfn  %[ptr]
 
 /-- Compute the per-layer slot base address for the current `LAYER_IDX_OFF`. -/
-private def currentLayerSlot (ptr : R) : M R := do
+private def currentLayerSlot (ptr : V .i64) : Prog V L (V .i64) := do
   let layerIdx ← load64 (← absAddr ptr LAYER_IDX_OFF)
   let stride64 ← iconst64 LAYER_BUF_STRIDE
   let base64   ← iconst64 LAYER_BUFS_BASE
@@ -122,16 +117,14 @@ private def currentLayerSlot (ptr : R) : M R := do
 
 /-- inferLayerAttnFn (fn_29): attention sub-layer.  Reads per-layer slot from
     `LAYER_BUFS_BASE + layerIdx * STRIDE`. -/
-def inferLayerAttnFn : HProg.Code :=
-  clif%(Qwen2Common.env, HProg.ptrParams) do
-  let ptr := basePtr
+def inferLayerAttnFn : Prog V L Unit := do
+  let ptr ← basePtr
   let slotBaseA ← currentLayerSlot ptr
   attnBody ptr slotBaseA
 
 /-- inferLayerFfnFn (fn_30): FFN sub-layer.  Same slot lookup as attn. -/
-def inferLayerFfnFn : HProg.Code :=
-  clif%(Qwen2Common.env, HProg.ptrParams) do
-  let ptr := basePtr
+def inferLayerFfnFn : Prog V L Unit := do
+  let ptr ← basePtr
   let slotBaseA ← currentLayerSlot ptr
   ffnBody ptr slotBaseA
 
@@ -140,38 +133,23 @@ def inferLayerFfnFn : HProg.Code :=
 /-- The bodies this artifact ships, in the order their function indices run.
     `clifIR` numbers them from this list, so an index cannot drift from the body
     it names. -/
-def shippedBodies : List HProg.Code :=
+def shippedBodies : List Prog.Body :=
   [loadInitFn]
   ++ (List.range N_LAYERS).map loadLayerFn
   ++ [loadFinalizeFn, inferFn, inferLayerFn, inferLayerAttnFn, inferLayerFfnFn,
       inferFinalFn, loadTokenizerFn, tokenizeInitFn, tokenizeBpeFn, detokenizeFn,
       cliFn, parseArgsFn]
 
-/-- Every shipped body is well-formed.
+/-- The orchestrator's callees: parse args (37), load the weights (1..26),
+    load the tokenizer (32), then serve (36 --- which runs forever). -/
+def wrapperCallees : List Nat :=
+  37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36]
 
-    The per-layer loaders are built under a binder and several of the rest are
-    large enough that a kernel `decide` at each `compileFn` does not finish, so
-    the check is made once over the whole list. -/
-theorem shipped_wf :
-    shippedBodies.all (HProg.wf Qwen2Common.env HProg.ptrParams) = true := by
-  native_decide
-
-/-- The `wrapper_wf` wrapper's body is well-formed. -/
-theorem wrapper_wf :
-    HProg.wf (IR.sequenceWrapperEnv (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])) HProg.ptrParams
-      (IR.sequenceWrapperBody (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36])) = true := by native_decide
-
-def clifIR : Program :=
-  program <|
-    (noopFunction :: shippedBodies.attach.zipIdx.map
-      (fun p =>
-        HProg.compileFn (p.2 + 1) p.1.1 Qwen2Common.env
-          (hwf := List.all_eq_true.mp shipped_wf p.1.1 p.1.2)))
-    ++ [
-     -- fn38: orchestrator wrapper — parse args (37), load weights (1..26),
-     --       load tokenizer (32), server (36 — runs forever).
-     clifSequenceWrapper 38
-       (37 :: (List.range 26).map (fun i => i + 1) ++ [32, 36]) wrapper_wf]
+def clifIR : Except String Program :=
+  Prog.program <|
+    (.ok noopFunction :: shippedBodies.zipIdx.map
+      (fun p => Prog.compileProg (p.2 + 1) p.1))
+    ++ [Prog.compileProg 38 (Prog.sequenceWrapper wrapperCallees)]
 
 -- ── Initial memory ───────────────────────────────────────────────────────────
 
@@ -181,8 +159,8 @@ def buildInitialMemory : List UInt8 :=
 
 -- ── Algorithm definition ─────────────────────────────────────────────────────
 
-def buildSetup : Setup := {
-  clif := clifIR,
+def buildSetup (clif : Program) : Setup := {
+  clif,
   memory_size := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
@@ -363,8 +341,9 @@ theorem layer_program_computes (gim : Buf → Nat → Nat)
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
+  let clif ← Prog.orDie Qwen2.clifIR
   emitArtifacts outDir #[
-    toJsonEntry "qwen2" Qwen2.buildSetup Qwen2.qwen2Algorithm
+    toJsonEntry "qwen2" (Qwen2.buildSetup clif) Qwen2.qwen2Algorithm
   ]
 
 #eval ShipScan.check "Qwen2Algorithm"

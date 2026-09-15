@@ -1,5 +1,5 @@
 import AlgorithmLib.Gen
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import ShipScan
 
 
@@ -138,80 +138,79 @@ def arrayAddPtxSource : String := buildModuleWith { version := "7.0", target := 
   stGlobalS64 addrO y
   ptxRet }]
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- The externals every emitted function declares, in one order, so a slot
     index means the same thing in all of them. -/
-def fnRead : IR.FnRef := IR.Ffi.stdinReadline.ref
-def fnWrite : IR.FnRef := IR.Ffi.stdoutWrite.ref
-def env : FnEnv := env% [.cuda, .fileIO]
+abbrev fnRead : Ffi := .stdinReadline
+abbrev fnWrite : Ffi := .stdoutWrite
 
-def loadByteAt (ptr : R) (baseOff : Nat) (idx : R) : M R := do
+def loadByteAt (ptr : V .i64) (baseOff : Nat) (idx : V .i64) : Prog V L (V .i64) := do
   let base ← iconst64 baseOff
   let rel ← iadd base idx
   let addr ← iadd ptr rel
   uload8_64 addr
 
-def storeByteAt (ptr : R) (baseOff : Nat) (idx : R) (value : R) : M Unit := do
+def storeByteAt (ptr : V .i64) (baseOff : Nat) (idx : V .i64) (value : V .i64) : Prog V L Unit := do
   let base ← iconst64 baseOff
   let rel ← iadd base idx
   let addr ← iadd ptr rel
   istore8 value addr
 
-def loadInputByte (ptr idx : R) : M R :=
+def loadInputByte (ptr idx : V .i64) : Prog V L (V .i64) :=
   loadByteAt ptr f.input.offset idx
 
-def loadScratchByte (ptr idx : R) : M R :=
+def loadScratchByte (ptr idx : V .i64) : Prog V L (V .i64) :=
   loadByteAt ptr f.scratch.offset idx
 
-def storeScratchByte (ptr idx value : R) : M Unit :=
+def storeScratchByte (ptr idx value : V .i64) : Prog V L Unit :=
   storeByteAt ptr f.scratch.offset idx value
 
-def scratchAddr (ptr idx : R) : M R := do
+def scratchAddr (ptr idx : V .i64) : Prog V L (V .i64) := do
   let base ← iconst64 f.scratch.offset
   let rel ← iadd base idx
   iadd ptr rel
 
-def scratchI64Addr (ptr baseIdx depth : R) : M R := do
+def scratchI64Addr (ptr baseIdx depth : V .i64) : Prog V L (V .i64) := do
   let eight ← iconst64 8
   let byteOff ← imul depth eight
   let idx ← iadd baseIdx byteOff
   scratchAddr ptr idx
 
-def loadScratchI64 (ptr baseIdx depth : R) : M R := do
+def loadScratchI64 (ptr baseIdx depth : V .i64) : Prog V L (V .i64) := do
   let addr ← scratchI64Addr ptr baseIdx depth
   load64 addr
 
-def storeScratchI64 (ptr baseIdx depth value : R) : M Unit := do
+def storeScratchI64 (ptr baseIdx depth value : V .i64) : Prog V L Unit := do
   let addr ← scratchI64Addr ptr baseIdx depth
   store value addr
 
-def loadScratchByteDyn (ptr baseIdx depth : R) : M R := do
+def loadScratchByteDyn (ptr baseIdx depth : V .i64) : Prog V L (V .i64) := do
   let idx ← iadd baseIdx depth
   loadScratchByte ptr idx
 
-def storeScratchByteDyn (ptr baseIdx depth value : R) : M Unit := do
+def storeScratchByteDyn (ptr baseIdx depth value : V .i64) : Prog V L Unit := do
   let idx ← iadd baseIdx depth
   storeScratchByte ptr idx value
 
-def storeOutputByte (ptr idx value : R) : M Unit :=
+def storeOutputByte (ptr idx value : V .i64) : Prog V L Unit :=
   storeByteAt ptr f.output.offset idx value
 
-def storeOutputByteFrom (ptr base idx value : R) : M Unit := do
+def storeOutputByteFrom (ptr base idx value : V .i64) : Prog V L Unit := do
   let outIdx ← iadd base idx
   storeOutputByte ptr outIdx value
 
-def loadOutputByte (ptr idx : R) : M R :=
+def loadOutputByte (ptr idx : V .i64) : Prog V L (V .i64) :=
   loadByteAt ptr f.output.offset idx
 
-def loadVarKind (ptr idx : R) : M R :=
+def loadVarKind (ptr idx : V .i64) : Prog V L (V .i64) :=
   loadByteAt ptr f.varKind.offset idx
 
-def storeVarKind (ptr idx value : R) : M Unit :=
+def storeVarKind (ptr idx value : V .i64) : Prog V L Unit :=
   storeByteAt ptr f.varKind.offset idx value
 
-def varTextAddr (ptr varIdx textIdx : R) : M R := do
+def varTextAddr (ptr varIdx textIdx : V .i64) : Prog V L (V .i64) := do
   let stride ← iconst64 256
   let base ← iconst64 f.varTexts.offset
   let varOff ← imul varIdx stride
@@ -219,62 +218,62 @@ def varTextAddr (ptr varIdx textIdx : R) : M R := do
   let rel ← iadd rel0 textIdx
   iadd ptr rel
 
-def loadVarTextByte (ptr varIdx textIdx : R) : M R := do
+def loadVarTextByte (ptr varIdx textIdx : V .i64) : Prog V L (V .i64) := do
   let addr ← varTextAddr ptr varIdx textIdx
   uload8_64 addr
 
-def storeVarTextByte (ptr varIdx textIdx value : R) : M Unit := do
+def storeVarTextByte (ptr varIdx textIdx value : V .i64) : Prog V L Unit := do
   let addr ← varTextAddr ptr varIdx textIdx
   istore8 value addr
 
-def varTextLenAddr (ptr varIdx : R) : M R := do
+def varTextLenAddr (ptr varIdx : V .i64) : Prog V L (V .i64) := do
   let eight ← iconst64 8
   let base ← iconst64 f.varTextLens.offset
   let byteOff ← imul varIdx eight
   let rel ← iadd base byteOff
   iadd ptr rel
 
-def loadVarTextLen (ptr varIdx : R) : M R := do
+def loadVarTextLen (ptr varIdx : V .i64) : Prog V L (V .i64) := do
   let addr ← varTextLenAddr ptr varIdx
   load64 addr
 
-def storeVarTextLen (ptr varIdx value : R) : M Unit := do
+def storeVarTextLen (ptr varIdx value : V .i64) : Prog V L Unit := do
   let addr ← varTextLenAddr ptr varIdx
   store value addr
 
-def dataI64Addr (ptr : R) (baseOff : Nat) (idx : R) : M R := do
+def dataI64Addr (ptr : V .i64) (baseOff : Nat) (idx : V .i64) : Prog V L (V .i64) := do
   let eight ← iconst64 8
   let base ← iconst64 baseOff
   let byteOff ← imul idx eight
   let rel ← iadd base byteOff
   iadd ptr rel
 
-def storeDataI64 (ptr : R) (baseOff : Nat) (idx value : R) : M Unit := do
+def storeDataI64 (ptr : V .i64) (baseOff : Nat) (idx value : V .i64) : Prog V L Unit := do
   let addr ← dataI64Addr ptr baseOff idx
   store value addr
 
-def loadDataI64 (ptr : R) (baseOff : Nat) (idx : R) : M R := do
+def loadDataI64 (ptr : V .i64) (baseOff : Nat) (idx : V .i64) : Prog V L (V .i64) := do
   let addr ← dataI64Addr ptr baseOff idx
   load64 addr
 
-def emitArrayParam (ptr scalar count : R) : M Unit := do
+def emitArrayParam (ptr scalar count : V .i64) : Prog V L Unit := do
   storeDataI64 ptr f.arrayParamData.offset (← iconst64 0) scalar
   storeDataI64 ptr f.arrayParamData.offset (← iconst64 1) count
 
-def emitIsVarChar (ch : R) : M R := do
+def emitIsVarChar (ch : V .i64) : Prog V L (V .i8) := do
   let a ← iconst64 asciiA
   let z ← iconst64 asciiZ
   let geA ← icmp .uge ch a
   let leZ ← icmp .ule ch z
   band geA leZ
 
-def loadVarPresent (ptr idx : R) : M R :=
+def loadVarPresent (ptr idx : V .i64) : Prog V L (V .i64) :=
   loadByteAt ptr f.varPresent.offset idx
 
-def storeVarPresent (ptr idx value : R) : M Unit :=
+def storeVarPresent (ptr idx value : V .i64) : Prog V L Unit :=
   storeByteAt ptr f.varPresent.offset idx value
 
-def loadVarBufId (ptr idx : R) : M R := do
+def loadVarBufId (ptr idx : V .i64) : Prog V L (V .i64) := do
   let four ← iconst64 4
   let base ← iconst64 f.varBufIds.offset
   let byteOff ← imul idx four
@@ -282,7 +281,7 @@ def loadVarBufId (ptr idx : R) : M R := do
   let addr ← iadd ptr rel
   uload32_64 addr
 
-def storeVarBufId (ptr idx bufId32 : R) : M Unit := do
+def storeVarBufId (ptr idx : V .i64) (bufId32 : V .i32) : Prog V L Unit := do
   let four ← iconst64 4
   let base ← iconst64 f.varBufIds.offset
   let byteOff ← imul idx four
@@ -290,20 +289,20 @@ def storeVarBufId (ptr idx bufId32 : R) : M Unit := do
   let addr ← iadd ptr rel
   store bufId32 addr
 
-def emitSkipWs (ptr pos len : R) : M R := do
+def emitSkipWs (ptr pos len : V .i64) : Prog V L (V .i64) := do
   let one ← iconst64 1
   let sp ← iconst64 asciiSpace
   let nl ← iconst64 asciiNewline
 
-  let e ← wloop1 pos
-    (head := fun i => return (contIfULt i len, [i], ()))
-    (body := fun i _ => do
+  let e ← wloop1L pos
+    (head := fun _ i => return (contIfULt i len, %[i], ()))
+    (body := fun lbl i _ => do
       let ch ← loadInputByte ptr i
-      when .ne ch sp (when .ne ch nl (brk [i]))
-      return [← iadd i one])
-  return e.headD 0
+      when .ne ch sp (when .ne ch nl (brk lbl %[i]))
+      return %[← iadd i one])
+  return e.head
 
-def emitParseInt (ptr start len : R) : M (R × R) := do
+def emitParseInt (ptr start len : V .i64) : Prog V L (V .i64 × V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let ten ← iconst64 10
@@ -316,33 +315,33 @@ def emitParseInt (ptr start len : R) : M (R × R) := do
 
   -- The sign, then the digits from wherever the sign left off. An input that
   -- ends before either is a zero at the position it ended.
-  let r ← ifte .uge pos0 len (pure [zero, pos0, zero]) do
+  let r ← ifte .uge pos0 len (pure %[zero, pos0, zero]) do
     let ch ← loadInputByte ptr pos0
     let posNext ← iadd pos0 one
-    let sd ← ifte .eq ch minus (pure [posNext, one])
-      (ifte .eq ch plus (pure [posNext, zero]) (pure [pos0, zero]))
-    let digitStart := sd.headD 0
-    let negFlag := sd.getD 1 0
-    wloop [digitStart, zero, negFlag]
-      (head := fun c => return (contIfULt (c.headD 0) len, [c.getD 1 0, c.headD 0, c.getD 2 0], ()))
-      (body := fun c _ => do
-        let i := c.headD 0; let acc := c.getD 1 0; let neg := c.getD 2 0
+    let sd ← ifte .eq ch minus (pure %[posNext, one])
+      (ifte .eq ch plus (pure %[posNext, zero]) (pure %[pos0, zero]))
+    let digitStart := sd.head
+    let negFlag := sd.snd
+    wloopL %[digitStart, zero, negFlag]
+      (head := fun _ c => return (contIfULt (c.head) len, %[c.snd, c.head, c.thd], ()))
+      (body := fun lbl c _ => do
+        let i := c.head; let acc := c.snd; let neg := c.thd
         let ch ← loadInputByte ptr i
-        when .ult ch zeroCh (brk [acc, i, neg])
-        when .ugt ch nineCh (brk [acc, i, neg])
+        when .ult ch zeroCh (brk lbl %[acc, i, neg])
+        when .ugt ch nineCh (brk lbl %[acc, i, neg])
         let digit ← isub ch zeroCh
         let acc10 ← imul acc ten
-        return [← iadd i one, ← iadd acc10 digit, neg])
+        return %[← iadd i one, ← iadd acc10 digit, neg])
 
-  let magnitude := r.headD 0
-  let endPos := r.getD 1 0
-  let negResult := r.getD 2 0
+  let magnitude := r.head
+  let endPos := r.snd
+  let negResult := r.thd
   let negated ← ineg magnitude
   let isNeg ← icmp .eq negResult one
   let finalVal ← select isNeg negated magnitude
   pure (finalVal, endPos)
 
-def emitFormatSigned (ptr value : R) : M R := do
+def emitFormatSigned (ptr value : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let two ← iconst64 2
@@ -365,33 +364,33 @@ def emitFormatSigned (ptr value : R) : M R := do
     (do
       storeOutputByte ptr zero zeroCh
       storeOutputByte ptr one nlCh
-      pure [two])
+      pure %[two])
     (do
       let dv ← wloop2 absVal scratchLast
-        (head := fun cur idx => return (contIf .ne cur zero, [idx], ()))
+        (head := fun cur idx => return (contIf .ne cur zero, %[idx], ()))
         (body := fun cur idx _ => do
           let q ← udiv cur ten
           let q10 ← imul q ten
           let rem ← isub cur q10
           let digitCh ← iadd zeroCh rem
           storeScratchByte ptr idx digitCh
-          return [q, ← isub idx one])
-      let firstDigitIdx ← iadd (dv.headD 0) one
+          return %[q, ← isub idx one])
+      let firstDigitIdx ← iadd (dv.head) one
       let op ← ifte .ne isNeg z8
-        (do storeOutputByte ptr zero minusCh; pure [one])
-        (pure [zero])
-      let cp ← wloop2 firstDigitIdx (op.headD 0)
-        (head := fun ci outPos => return (contIfULe ci scratchLast, [outPos], ()))
+        (do storeOutputByte ptr zero minusCh; pure %[one])
+        (pure %[zero])
+      let cp ← wloop2 firstDigitIdx (op.head)
+        (head := fun ci outPos => return (contIfULe ci scratchLast, %[outPos], ()))
         (body := fun ci outPos _ => do
           let ch ← loadScratchByte ptr ci
           storeOutputByte ptr outPos ch
-          return [← iadd ci one, ← iadd outPos one])
-      let newlinePos := cp.headD 0
+          return %[← iadd ci one, ← iadd outPos one])
+      let newlinePos := cp.head
       storeOutputByte ptr newlinePos nlCh
-      pure [← iadd newlinePos one])
-  return r.headD 0
+      pure %[← iadd newlinePos one])
+  return r.head
 
-def emitFormatSignedAt (ptr value startPos : R) : M R := do
+def emitFormatSignedAt (ptr value startPos : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let ten ← iconst64 10
@@ -409,30 +408,30 @@ def emitFormatSignedAt (ptr value startPos : R) : M R := do
   let r ← ifte .ne isZero z8
     (do
       storeOutputByte ptr startPos zeroCh
-      pure [← iadd startPos one])
+      pure %[← iadd startPos one])
     (do
       let dv ← wloop2 absVal scratchLast
-        (head := fun cur idx => return (contIf .ne cur zero, [idx], ()))
+        (head := fun cur idx => return (contIf .ne cur zero, %[idx], ()))
         (body := fun cur idx _ => do
           let q ← udiv cur ten
           let q10 ← imul q ten
           let rem ← isub cur q10
           let digitCh ← iadd zeroCh rem
           storeScratchByte ptr idx digitCh
-          return [q, ← isub idx one])
-      let firstDigitIdx ← iadd (dv.headD 0) one
+          return %[q, ← isub idx one])
+      let firstDigitIdx ← iadd (dv.head) one
       let op ← ifte .ne isNeg z8
         (do
           storeOutputByte ptr startPos minusCh
-          pure [← iadd startPos one])
-        (pure [startPos])
-      wloop2 firstDigitIdx (op.headD 0)
-        (head := fun ci outPos => return (contIfULe ci scratchLast, [outPos], ()))
+          pure %[← iadd startPos one])
+        (pure %[startPos])
+      wloop2 firstDigitIdx (op.head)
+        (head := fun ci outPos => return (contIfULe ci scratchLast, %[outPos], ()))
         (body := fun ci outPos _ => do
           let ch ← loadScratchByte ptr ci
           storeOutputByte ptr outPos ch
-          return [← iadd ci one, ← iadd outPos one]))
-  return r.headD 0
+          return %[← iadd ci one, ← iadd outPos one]))
+  return r.head
 
 /-! ### The kernels, as records the launch sites read
 
@@ -472,48 +471,51 @@ def arrayAddK : AlgorithmLib.Kernel := {
   ptxOff := f.arrayAddPtx.offset
 }
 
-def emitCudaLaunchAdd (ptr lhsBuf rhsBuf outBuf : R) : M Unit :=
+def emitCudaLaunchAdd (ptr : V .i64) (lhsBuf rhsBuf outBuf : V .i32) : Prog V L Unit :=
   kernelLaunchAt addK ptr f.bindDesc.offset [lhsBuf, rhsBuf, outBuf]
 
-def emitCudaLaunchArrayScale (ptr inBuf paramBuf outBuf count : R) : M Unit := do
+def emitCudaLaunchArrayScale (ptr : V .i64) (inBuf paramBuf outBuf : V .i32)
+    (count : V .i64) : Prog V L Unit := do
   kernelLaunchAtN arrayScaleK ptr f.bindDesc.offset
     [inBuf, paramBuf, outBuf] (← ireduce32 count)
 
-def emitCudaLaunchArrayAdd (ptr lhsBuf rhsBuf paramBuf outBuf count : R) : M Unit := do
+def emitCudaLaunchArrayAdd (ptr : V .i64) (lhsBuf rhsBuf paramBuf outBuf : V .i32)
+    (count : V .i64) : Prog V L Unit := do
   kernelLaunchAtN arrayAddK ptr f.bindDesc.offset
     [lhsBuf, rhsBuf, paramBuf, outBuf] (← ireduce32 count)
 
-def emitUploadLiteralToBuf (ptr bufId value : R) : M Unit := do
+def emitUploadLiteralToBuf (ptr : V .i64) (bufId : V .i32) (value : V .i64) :
+    Prog V L Unit := do
   fldStore ptr f.firstVal value
   let size8 ← iconst64 8
   let valOff ← fldOffset f.firstVal
   let _ ← cudaUpload ptr bufId valOff size8
   pure ()
 
-def emitAccFromLiteral (ptr value : R) : M Unit := do
+def emitAccFromLiteral (ptr value : V .i64) : Prog V L Unit := do
   let bufAcc64 ← fldLoad ptr f.accBuf
   let bufAcc ← ireduce32 bufAcc64
   emitUploadLiteralToBuf ptr bufAcc value
 
-def emitAccFromVar (ptr varIdx : R) : M Unit := do
+def emitAccFromVar (ptr varIdx : V .i64) : Prog V L Unit := do
   let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
   let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
   let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
   emitCudaLaunchAdd ptr zeroBuf varBuf accBuf
 
-def emitTermToLiteralBuf (ptr value : R) : M R := do
+def emitTermToLiteralBuf (ptr value : V .i64) : Prog V L (V .i32) := do
   let litBuf64 ← fldLoad ptr f.litBuf
   let litBuf ← ireduce32 litBuf64
   emitUploadLiteralToBuf ptr litBuf value
   pure litBuf
 
 /-- A term: `(isVar, value-or-variable-index, position after it)`. -/
-def emitTermParse (ptr start len : R) : M (R × R × R) := do
+def emitTermParse (ptr start len : V .i64) : Prog V L (V .i64 × V .i64 × V .i64) := do
   let zero ← iconst64 0
   let z8 ← iconst .i8 0
   let pos0 ← emitSkipWs ptr start len
 
-  let r ← ifte .uge pos0 len (pure [zero, zero, pos0]) do
+  let r ← ifte .uge pos0 len (pure %[zero, zero, pos0]) do
     let ch ← loadInputByte ptr pos0
     let isVar ← emitIsVarChar ch
     let a ← iconst64 asciiA
@@ -521,13 +523,13 @@ def emitTermParse (ptr start len : R) : M (R × R × R) := do
     ifte .ne isVar z8
       (do
         let one ← iconst64 1
-        return [one, idx, ← iadd pos0 one])
+        return %[one, idx, ← iadd pos0 one])
       (do
         let (v, p) ← emitParseInt ptr pos0 len
-        return [zero, v, p])
-  return (r.headD 0, r.getD 1 0, r.getD 2 0)
+        return %[zero, v, p])
+  return (r.head, r.snd, r.thd)
 
-def emitParseAddChain (ptr start len : R) : M Unit := do
+def emitParseAddChain (ptr start len : V .i64) : Prog V L Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let plus ← iconst64 asciiPlus
@@ -536,19 +538,19 @@ def emitParseAddChain (ptr start len : R) : M Unit := do
 
   let (firstIsVar, firstPayload, pos1) ← emitTermParse ptr start len
   let _ ← ifte .ne firstIsVar zero
-    (do emitAccFromVar ptr firstPayload; pure [])
-    (do emitAccFromLiteral ptr firstPayload; pure [])
+    (do emitAccFromVar ptr firstPayload; pure %[])
+    (do emitAccFromLiteral ptr firstPayload; pure %[])
 
   -- Separators are skipped one at a time; a `+` takes the next term into the
   -- accumulator, and anything else ends the chain.
-  let _ ← wloop2 one pos1
-    (head := fun _ pos => return (contIfULt pos len, ([] : List R), ()))
-    (body := fun haveAcc pos _ => do
+  let _ ← wloop2L one pos1
+    (head := fun _ _ pos => return (contIfULt pos len, %[], ()))
+    (body := fun lbl haveAcc pos _ => do
       let ch ← loadInputByte ptr pos
       let nextPos ← iadd pos one
-      when .eq ch sp (continueWith [haveAcc, nextPos])
-      when .eq ch nl (continueWith [haveAcc, nextPos])
-      when .ne ch plus (brk [])
+      when .eq ch sp (continueWith lbl %[haveAcc, nextPos])
+      when .eq ch nl (continueWith lbl %[haveAcc, nextPos])
+      when .ne ch plus (brk lbl %[])
       let (termIsVar, termPayload, termEnd) ← emitTermParse ptr nextPos len
       let _ ← ifte .ne termIsVar zero
         (do
@@ -558,7 +560,7 @@ def emitParseAddChain (ptr start len : R) : M Unit := do
           emitCudaLaunchAdd ptr accBuf rhsBuf outBuf
           let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
           emitCudaLaunchAdd ptr zeroBuf outBuf accBuf
-          pure [])
+          pure %[])
         (do
           let litBuf ← emitTermToLiteralBuf ptr termPayload
           let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
@@ -566,11 +568,11 @@ def emitParseAddChain (ptr start len : R) : M Unit := do
           emitCudaLaunchAdd ptr accBuf litBuf outBuf
           let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
           emitCudaLaunchAdd ptr zeroBuf outBuf accBuf
-          pure [])
-      return [haveAcc, termEnd])
+          pure %[])
+      return %[haveAcc, termEnd])
   pure ()
 
-def emitDownloadAccToResult (ptr : R) : M R := do
+def emitDownloadAccToResult (ptr : V .i64) : Prog V L (V .i64) := do
   let accBuf64 ← fldLoad ptr f.accBuf
   let accBuf ← ireduce32 accBuf64
   let size8 ← iconst64 8
@@ -578,13 +580,13 @@ def emitDownloadAccToResult (ptr : R) : M R := do
   let _ ← cudaDownload ptr accBuf outOff size8
   fldLoad ptr f.result
 
-def emitScalarTermValue (ptr start len : R) : M (R × R) := do
+def emitScalarTermValue (ptr start len : V .i64) : Prog V L (V .i64 × V .i64) := do
   let zero ← iconst64 0
   let pos0 ← emitSkipWs ptr start len
 
   let z8 ← iconst .i8 0
 
-  let r ← ifte .uge pos0 len (pure [zero, pos0]) do
+  let r ← ifte .uge pos0 len (pure %[zero, pos0]) do
     let ch ← loadInputByte ptr pos0
     let isVar ← emitIsVarChar ch
     let a ← iconst64 asciiA
@@ -594,33 +596,33 @@ def emitScalarTermValue (ptr start len : R) : M (R × R) := do
         emitAccFromVar ptr idx
         let value ← emitDownloadAccToResult ptr
         let one ← iconst64 1
-        return [value, ← iadd pos0 one])
+        return %[value, ← iadd pos0 one])
       (do
         let (v, p) ← emitParseInt ptr pos0 len
-        return [v, p])
-  return (r.headD 0, r.getD 1 0)
+        return %[v, p])
+  return (r.head, r.snd)
 
 /-- A chain of `*` from `acc0` at `pos0`: the product, and where it stopped. -/
-def emitMulChain (ptr acc0 pos0 len : R) : M (R × R) := do
+def emitMulChain (ptr acc0 pos0 len : V .i64) : Prog V L (V .i64 × V .i64) := do
   let one ← iconst64 1
   let star ← iconst64 asciiStar
   let sp ← iconst64 asciiSpace
   let nl ← iconst64 asciiNewline
-  let e ← wloop2 acc0 pos0
-    (head := fun acc p => do
+  let e ← wloop2L acc0 pos0
+    (head := fun _ acc p => do
       let q ← emitSkipWs ptr p len
-      return (exitIf .uge q len, [acc, q], q))
-    (body := fun acc _ q => do
+      return (exitIf .uge q len, %[acc, q], q))
+    (body := fun lbl acc _ q => do
       let ch ← loadInputByte ptr q
       let nextPos ← iadd q one
-      when .eq ch sp (continueWith [acc, nextPos])
-      when .eq ch nl (brk [acc, nextPos])
-      when .ne ch star (brk [acc, q])
+      when .eq ch sp (continueWith lbl %[acc, nextPos])
+      when .eq ch nl (brk lbl %[acc, nextPos])
+      when .ne ch star (brk lbl %[acc, q])
       let (rhs, rhsEnd) ← emitScalarTermValue ptr nextPos len
-      return [← imul acc rhs, rhsEnd])
-  return (e.headD 0, e.getD 1 0)
+      return %[← imul acc rhs, rhsEnd])
+  return (e.head, e.snd)
 
-def emitParseScalarExpr (ptr start len : R) : M R := do
+def emitParseScalarExpr (ptr start len : V .i64) : Prog V L (V .i64) := do
   let one ← iconst64 1
   let plus ← iconst64 asciiPlus
   let sp ← iconst64 asciiSpace
@@ -630,22 +632,22 @@ def emitParseScalarExpr (ptr start len : R) : M R := do
   let (mulVal, mulEnd) ← emitMulChain ptr firstVal firstEnd len
 
   -- The sum, each of whose terms is itself a product chain.
-  let e ← wloop2 mulVal mulEnd
-    (head := fun acc p => do
+  let e ← wloop2L mulVal mulEnd
+    (head := fun _ acc p => do
       let q ← emitSkipWs ptr p len
-      return (exitIf .uge q len, [acc], q))
-    (body := fun acc _ q => do
+      return (exitIf .uge q len, %[acc], q))
+    (body := fun lbl acc _ q => do
       let ch ← loadInputByte ptr q
       let nextPos ← iadd q one
-      when .eq ch sp (continueWith [acc, nextPos])
-      when .eq ch nl (brk [acc])
-      when .ne ch plus (brk [acc])
+      when .eq ch sp (continueWith lbl %[acc, nextPos])
+      when .eq ch nl (brk lbl %[acc])
+      when .ne ch plus (brk lbl %[acc])
       let (rhsVal, rhsEnd) ← emitScalarTermValue ptr nextPos len
       let (rhsMul, rhsMulEnd) ← emitMulChain ptr rhsVal rhsEnd len
-      return [← iadd acc rhsMul, rhsMulEnd])
-  return e.headD 0
+      return %[← iadd acc rhsMul, rhsMulEnd])
+  return e.head
 
-def emitCopyInputToVarText (ptr varIdx start len : R) : M Unit := do
+def emitCopyInputToVarText (ptr varIdx start len : V .i64) : Prog V L Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let maxText ← iconst64 255
@@ -653,95 +655,95 @@ def emitCopyInputToVarText (ptr varIdx start len : R) : M Unit := do
   let pos0 ← emitSkipWs ptr start len
 
   let z8 ← iconst .i8 0
-  let e ← wloop2 pos0 zero
-    (head := fun inPos outPos => do
+  let e ← wloop2L pos0 zero
+    (head := fun _ inPos outPos => do
       let atEnd ← icmp .uge inPos len
       let full ← icmp .uge outPos maxText
       let stop ← bor atEnd full
-      return (contIf .eq stop z8, [outPos], ()))
-    (body := fun inPos outPos _ => do
+      return (contIf .eq stop z8, %[outPos], ()))
+    (body := fun lbl inPos outPos _ => do
       let c ← loadInputByte ptr inPos
-      when .eq c nl (brk [outPos])
+      when .eq c nl (brk lbl %[outPos])
       storeVarTextByte ptr varIdx outPos c
-      return [← iadd inPos one, ← iadd outPos one])
-  storeVarTextLen ptr varIdx (e.headD 0)
+      return %[← iadd inPos one, ← iadd outPos one])
+  storeVarTextLen ptr varIdx (e.head)
 
-def emitCopyInputToOutput (ptr start len : R) : M R := do
+def emitCopyInputToOutput (ptr start len : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let nl ← iconst64 asciiNewline
   let pos0 ← emitSkipWs ptr start len
 
-  let e ← wloop2 pos0 zero
-    (head := fun inPos outPos => return (contIfULt inPos len, [outPos], ()))
-    (body := fun inPos outPos _ => do
+  let e ← wloop2L pos0 zero
+    (head := fun _ inPos outPos => return (contIfULt inPos len, %[outPos], ()))
+    (body := fun lbl inPos outPos _ => do
       let c ← loadInputByte ptr inPos
-      when .eq c nl (brk [outPos])
+      when .eq c nl (brk lbl %[outPos])
       storeOutputByte ptr outPos c
-      return [← iadd inPos one, ← iadd outPos one])
-  let outLen := e.headD 0
+      return %[← iadd inPos one, ← iadd outPos one])
+  let outLen := e.head
   storeOutputByte ptr outLen nl
   iadd outLen one
 
-def emitCopyVarTextToOutput (ptr varIdx : R) : M R := do
+def emitCopyVarTextToOutput (ptr varIdx : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let nl ← iconst64 asciiNewline
   let textLen ← loadVarTextLen ptr varIdx
 
   let _ ← wloop1 zero
-    (head := fun i => return (contIfULt i textLen, ([] : List R), ()))
+    (head := fun i => return (contIfULt i textLen, %[], ()))
     (body := fun i _ => do
       let ch ← loadVarTextByte ptr varIdx i
       storeOutputByte ptr i ch
-      return [← iadd i one])
+      return %[← iadd i one])
   storeOutputByte ptr textLen nl
   iadd textLen one
 
-def emitCopyOutputToVarText (ptr varIdx outLen : R) : M Unit := do
+def emitCopyOutputToVarText (ptr varIdx outLen : V .i64) : Prog V L Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let nl ← iconst64 asciiNewline
   let maxText ← iconst64 255
 
   let z8 ← iconst .i8 0
-  let e ← wloop1 zero
-    (head := fun i => do
+  let e ← wloop1L zero
+    (head := fun _ i => do
       let atEnd ← icmp .uge i outLen
       let full ← icmp .uge i maxText
       let stop ← bor atEnd full
-      return (contIf .eq stop z8, [i], ()))
-    (body := fun i _ => do
+      return (contIf .eq stop z8, %[i], ()))
+    (body := fun lbl i _ => do
       let ch ← loadOutputByte ptr i
-      when .eq ch nl (brk [i])
+      when .eq ch nl (brk lbl %[i])
       storeVarTextByte ptr varIdx i ch
-      return [← iadd i one])
-  storeVarTextLen ptr varIdx (e.headD 0)
+      return %[← iadd i one])
+  storeVarTextLen ptr varIdx (e.head)
 
-def emitFindInputChar (ptr start len target : R) : M R := do
+def emitFindInputChar (ptr start len target : V .i64) : Prog V L (V .i64) := do
   let one ← iconst64 1
-  let e ← wloop1 start
-    (head := fun pos => return (contIfULt pos len, [len], ()))
-    (body := fun pos _ => do
+  let e ← wloop1L start
+    (head := fun _ pos => return (contIfULt pos len, %[len], ()))
+    (body := fun lbl pos _ => do
       let ch ← loadInputByte ptr pos
-      when .eq ch target (brk [pos])
-      return [← iadd pos one])
-  return e.headD 0
+      when .eq ch target (brk lbl %[pos])
+      return %[← iadd pos one])
+  return e.head
 
-def emitCopyVarTextToInput (ptr varIdx : R) : M R := do
+def emitCopyVarTextToInput (ptr varIdx : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let textLen ← loadVarTextLen ptr varIdx
 
   let _ ← wloop1 zero
-    (head := fun i => return (contIfULt i textLen, ([] : List R), ()))
+    (head := fun i => return (contIfULt i textLen, %[], ()))
     (body := fun i _ => do
       let ch ← loadVarTextByte ptr varIdx i
       storeByteAt ptr f.input.offset i ch
-      return [← iadd i one])
+      return %[← iadd i one])
   pure textLen
 
-def emitClearArrayValidationScratch (ptr : R) : M Unit := do
+def emitClearArrayValidationScratch (ptr : V .i64) : Prog V L Unit := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let maxDepth ← iconst64 32
@@ -751,15 +753,15 @@ def emitClearArrayValidationScratch (ptr : R) : M Unit := do
   let expectedSetBase ← iconst64 288
 
   let _ ← wloop1 zero
-    (head := fun depth => return (contIfULt depth maxDepth, ([] : List R), ()))
+    (head := fun depth => return (contIfULt depth maxDepth, %[], ()))
     (body := fun depth _ => do
       storeScratchI64 ptr countsBase depth zero
       storeScratchI64 ptr expectedBase depth zero
       storeScratchByteDyn ptr kindBase depth zero
       storeScratchByteDyn ptr expectedSetBase depth zero
-      return [← iadd depth one])
+      return %[← iadd depth one])
 
-def emitValidateInputArray (ptr start len : R) : M R := do
+def emitValidateInputArray (ptr start len : V .i64) : Prog V L (V .i64) := do
   emitClearArrayValidationScratch ptr
 
   let zero ← iconst64 0
@@ -785,94 +787,94 @@ def emitValidateInputArray (ptr start len : R) : M R := do
 
   -- One scan over the text. The loop leaves with `0` for a malformed array, or
   -- with `1` and the position just past the outermost `]`.
-  let e ← wloop2 start zero
-    (head := fun pos _ => return (contIfULt pos len, [zero, pos], ()))
-    (body := fun pos depth _ => do
+  let e ← wloop2L start zero
+    (head := fun _ pos _ => return (contIfULt pos len, %[zero, pos], ()))
+    (body := fun lbl pos depth _ => do
       let ch ← loadInputByte ptr pos
       let nextPos ← iadd pos one
-      when .eq ch sp (continueWith [nextPos, depth])
-      when .eq ch comma (continueWith [nextPos, depth])
+      when .eq ch sp (continueWith lbl %[nextPos, depth])
+      when .eq ch comma (continueWith lbl %[nextPos, depth])
       when .eq ch lb (do
         -- A nested array counts as one element of its parent, whose kind must
         -- then be the array kind.
-        when .uge depth maxDepth (brk [zero, pos])
+        when .uge depth maxDepth (brk lbl %[zero, pos])
         when .ne depth zero (do
           let k ← loadScratchByteDyn ptr kindBase depth
           let _ ← ifte .eq k zero
-            (do storeScratchByteDyn ptr kindBase depth two; pure [])
-            (do when .ne k two (brk [zero, pos]); pure [])
+            (do storeScratchByteDyn ptr kindBase depth two; pure %[])
+            (do when .ne k two (brk lbl %[zero, pos]); pure %[])
           let c ← loadScratchI64 ptr countsBase depth
           storeScratchI64 ptr countsBase depth (← iadd c one))
         let nextDepth ← iadd depth one
         storeScratchI64 ptr countsBase nextDepth zero
         storeScratchByteDyn ptr kindBase nextDepth zero
-        continueWith [nextPos, nextDepth])
+        continueWith lbl %[nextPos, nextDepth])
       when .eq ch rb (do
         -- The first sibling at this depth fixes the length every later one
         -- must have.
-        when .eq depth zero (brk [zero, pos])
+        when .eq depth zero (brk lbl %[zero, pos])
         let count ← loadScratchI64 ptr countsBase depth
         let expectedSet ← loadScratchByteDyn ptr expectedSetBase depth
         let _ ← ifte .eq expectedSet one
           (do
             let expected ← loadScratchI64 ptr expectedBase depth
-            when .ne count expected (brk [zero, pos])
-            pure [])
+            when .ne count expected (brk lbl %[zero, pos])
+            pure %[])
           (do
             storeScratchI64 ptr expectedBase depth count
             storeScratchByteDyn ptr expectedSetBase depth one
-            pure [])
+            pure %[])
         let newDepth ← isub depth one
-        when .eq newDepth zero (brk [one, nextPos])
-        continueWith [nextPos, newDepth])
+        when .eq newDepth zero (brk lbl %[one, nextPos])
+        continueWith lbl %[nextPos, newDepth])
       when .ne ch minus (do
-        when .ult ch zeroCh (brk [zero, pos])
-        when .ugt ch nineCh (brk [zero, pos]))
-      when .eq depth zero (brk [zero, pos])
+        when .ult ch zeroCh (brk lbl %[zero, pos])
+        when .ugt ch nineCh (brk lbl %[zero, pos]))
+      when .eq depth zero (brk lbl %[zero, pos])
       let k ← loadScratchByteDyn ptr kindBase depth
       let _ ← ifte .eq k zero
-        (do storeScratchByteDyn ptr kindBase depth one; pure [])
-        (do when .ne k one (brk [zero, pos]); pure [])
+        (do storeScratchByteDyn ptr kindBase depth one; pure %[])
+        (do when .ne k one (brk lbl %[zero, pos]); pure %[])
       let c ← loadScratchI64 ptr countsBase depth
       storeScratchI64 ptr countsBase depth (← iadd c one)
       let (_, numEnd) ← emitParseInt ptr pos len
-      return [numEnd, depth])
+      return %[numEnd, depth])
 
   -- What follows the array may only be blank, or an operator that takes one.
-  let r ← ifte .eq (e.headD 0) zero (pure [zero]) do
-    wloop1 (e.getD 1 0)
-      (head := fun p => return (contIfULt p len, [one], ()))
-      (body := fun p _ => do
+  let r ← ifte .eq (e.head) zero (pure %[zero]) do
+    wloop1L (e.snd)
+      (head := fun _ p => return (contIfULt p len, %[one], ()))
+      (body := fun lbl p _ => do
         let ch ← loadInputByte ptr p
         let nextPos ← iadd p one
         when .ne ch sp (do
-          when .eq ch nl (brk [one])
+          when .eq ch nl (brk lbl %[one])
           let isStar ← icmp .eq ch star
           let isPlus ← icmp .eq ch plus
           let isArrayOp ← bor isStar isPlus
-          when .eq isArrayOp z8 (brk [zero])
-          brk [one])
-        return [nextPos])
-  return r.headD 0
+          when .eq isArrayOp z8 (brk lbl %[zero])
+          brk lbl %[one])
+        return %[nextPos])
+  return r.head
 
-def emitFinishOutputLineTrimSpaces (ptr outPos : R) : M R := do
+def emitFinishOutputLineTrimSpaces (ptr outPos : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let sp ← iconst64 asciiSpace
   let nl ← iconst64 asciiNewline
 
-  let e ← wloop1 outPos
-    (head := fun pos => return (contIf .ne pos zero, [pos], ()))
-    (body := fun pos _ => do
+  let e ← wloop1L outPos
+    (head := fun _ pos => return (contIf .ne pos zero, %[pos], ()))
+    (body := fun lbl pos _ => do
       let prevPos ← isub pos one
       let ch ← loadOutputByte ptr prevPos
-      when .ne ch sp (brk [pos])
-      return [prevPos])
-  let end_ := e.headD 0
+      when .ne ch sp (brk lbl %[pos])
+      return %[prevPos])
+  let end_ := e.head
   storeOutputByte ptr end_ nl
   iadd end_ one
 
-def emitParseInputArrayNumbersToData (ptr start len : R) (baseOff : Nat) : M R := do
+def emitParseInputArrayNumbersToData (ptr start len : V .i64) (baseOff : Nat) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let nl ← iconst64 asciiNewline
@@ -884,27 +886,27 @@ def emitParseInputArrayNumbersToData (ptr start len : R) (baseOff : Nat) : M R :
 
   let z8 ← iconst .i8 0
   -- Brackets and separators are skipped; every number goes to the next slot.
-  let e ← wloop2 start zero
-    (head := fun pos count => return (contIfULt pos len, [count], ()))
-    (body := fun pos count _ => do
+  let e ← wloop2L start zero
+    (head := fun _ pos count => return (contIfULt pos len, %[count], ()))
+    (body := fun lbl pos count _ => do
       let ch ← loadInputByte ptr pos
       let isNl ← icmp .eq ch nl
       let isPlus ← icmp .eq ch plus
       let isStar ← icmp .eq ch star
       let stop0 ← bor isNl isPlus
       let stop ← bor stop0 isStar
-      when .ne stop z8 (brk [count])
+      when .ne stop z8 (brk lbl %[count])
       when .ne ch minus (do
         let belowZero ← icmp .ult ch zeroCh
         let aboveNine ← icmp .ugt ch nineCh
         let notDigit ← bor belowZero aboveNine
-        when .ne notDigit z8 (continueWith [← iadd pos one, count]))
+        when .ne notDigit z8 (continueWith lbl %[← iadd pos one, count]))
       let (value, nextPos) ← emitParseInt ptr pos len
       storeDataI64 ptr baseOff count value
-      return [nextPos, ← iadd count one])
-  return e.headD 0
+      return %[nextPos, ← iadd count one])
+  return e.head
 
-def emitFormatInputArrayShapeFromOutData (ptr start len count : R) : M R := do
+def emitFormatInputArrayShapeFromOutData (ptr start len count : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let nl ← iconst64 asciiNewline
@@ -917,34 +919,34 @@ def emitFormatInputArrayShapeFromOutData (ptr start len count : R) : M R := do
   let z8 ← iconst .i8 0
   -- The input's own punctuation is copied through, and each number it holds is
   -- replaced by the result at the matching index.
-  let e ← wloop [start, zero, zero]
-    (head := fun c => return (contIfULt (c.headD 0) len, [c.getD 1 0], ()))
-    (body := fun c _ => do
-      let inPos := c.headD 0
-      let outPos := c.getD 1 0
-      let dataIdx := c.getD 2 0
+  let e ← wloopL %[start, zero, zero]
+    (head := fun _ c => return (contIfULt (c.head) len, %[c.snd], ()))
+    (body := fun lbl c _ => do
+      let inPos := c.head
+      let outPos := c.snd
+      let dataIdx := c.thd
       let ch ← loadInputByte ptr inPos
       let isNl ← icmp .eq ch nl
       let isPlus ← icmp .eq ch plus
       let isStar ← icmp .eq ch star
       let stop0 ← bor isNl isPlus
       let stop ← bor stop0 isStar
-      when .ne stop z8 (brk [outPos])
+      when .ne stop z8 (brk lbl %[outPos])
       when .ne ch minus (do
         let belowZero ← icmp .ult ch zeroCh
         let aboveNine ← icmp .ugt ch nineCh
         let notDigit ← bor belowZero aboveNine
         when .ne notDigit z8 (do
           storeOutputByte ptr outPos ch
-          continueWith [← iadd inPos one, ← iadd outPos one, dataIdx]))
-      when .uge dataIdx count (brk [zero])
+          continueWith lbl %[← iadd inPos one, ← iadd outPos one, dataIdx]))
+      when .uge dataIdx count (brk lbl %[zero])
       let value ← loadDataI64 ptr f.arrayOutData.offset dataIdx
       let nextOut ← emitFormatSignedAt ptr value outPos
       let (_, nextIn) ← emitParseInt ptr inPos len
-      return [nextIn, nextOut, ← iadd dataIdx one])
-  emitFinishOutputLineTrimSpaces ptr (e.headD 0)
+      return %[nextIn, nextOut, ← iadd dataIdx one])
+  emitFinishOutputLineTrimSpaces ptr (e.head)
 
-def emitUploadInputArrayToVarBuffer (ptr varIdx start len : R) : M Unit := do
+def emitUploadInputArrayToVarBuffer (ptr varIdx start len : V .i64) : Prog V L Unit := do
   let _count ← emitParseInputArrayNumbersToData ptr start len f.arrayLhsData.offset
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayLhsData
@@ -952,14 +954,14 @@ def emitUploadInputArrayToVarBuffer (ptr varIdx start len : R) : M Unit := do
   let _ ← cudaUpload ptr varBuf dataOff bytes
   pure ()
 
-def emitUploadOutDataToVarBuffer (ptr varIdx : R) : M Unit := do
+def emitUploadOutDataToVarBuffer (ptr varIdx : V .i64) : Prog V L Unit := do
   let bytes ← iconst64 2048
   let dataOff ← fldOffset f.arrayOutData
   let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
   let _ ← cudaUpload ptr varBuf dataOff bytes
   pure ()
 
-def emitScaleInputArrayToOutput (ptr arrStart len scalar : R) : M R := do
+def emitScaleInputArrayToOutput (ptr arrStart len scalar : V .i64) : Prog V L (V .i64) := do
   let count ← emitParseInputArrayNumbersToData ptr arrStart len f.arrayLhsData.offset
   emitArrayParam ptr scalar count
   let bytes ← iconst64 2048
@@ -976,7 +978,7 @@ def emitScaleInputArrayToOutput (ptr arrStart len scalar : R) : M R := do
   let _ ← cudaDownload ptr outBuf outOff bytes
   emitFormatInputArrayShapeFromOutData ptr arrStart len count
 
-def emitAddInputArraysToOutput (ptr lhsStart rhsStart len : R) : M R := do
+def emitAddInputArraysToOutput (ptr lhsStart rhsStart len : V .i64) : Prog V L (V .i64) := do
   let zero ← iconst64 0
   let lhsCount ← emitParseInputArrayNumbersToData ptr lhsStart len f.arrayLhsData.offset
   let rhsCount ← emitParseInputArrayNumbersToData ptr rhsStart len f.arrayRhsData.offset
@@ -1001,19 +1003,19 @@ def emitAddInputArraysToOutput (ptr lhsStart rhsStart len : R) : M R := do
       emitCudaLaunchArrayAdd ptr lhsBuf rhsBuf paramBuf outBuf lhsCount
       let _ ← cudaDownload ptr outBuf outOff bytes
       let outLen ← emitFormatInputArrayShapeFromOutData ptr lhsStart len lhsCount
-      pure [outLen])
-      (pure [zero])
-  return r.headD 0
+      pure %[outLen])
+      (pure %[zero])
+  return r.head
 
 /-- A scalar expression evaluated for its value; the caller prints it. -/
-def emitScalarLine (ptr start len : R) : M (R × R) := do
+def emitScalarLine (ptr start len : V .i64) : Prog V L (V .i64 × V .i64) := do
   let one ← iconst64 1
   let value ← emitParseScalarExpr ptr start len
   return (value, one)
 
 /-- `scalar * <array>` on the right of a `*`: `[status, value, mode]`, with
     `status = 0` meaning it was not that, so the caller evaluates a scalar. -/
-def emitScaleByRhs (ptr rhsStart len lhsValue : R) : M (List R) := do
+def emitScaleByRhs (ptr rhsStart len lhsValue : V .i64) : Prog V L (Vals V [ClifTy.i64, ClifTy.i64, ClifTy.i64, ClifTy.i64]) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let two ← iconst64 2
@@ -1027,8 +1029,8 @@ def emitScaleByRhs (ptr rhsStart len lhsValue : R) : M (List R) := do
       ifte .eq ok one
         (do
           let outLen ← emitScaleInputArrayToOutput ptr rhsStart len lhsValue
-          return [one, zero, two, outLen])
-        (pure [one, zero, zero, zero]))
+          return %[one, zero, two, outLen])
+        (pure %[one, zero, zero, zero]))
     (do
       let rhsVarIdx ← isub rhsCh a
       let rhsIsVar ← emitIsVarChar rhsCh
@@ -1040,29 +1042,29 @@ def emitScaleByRhs (ptr rhsStart len lhsValue : R) : M (List R) := do
           let varLen ← emitCopyVarTextToInput ptr rhsVarIdx
           let inputStart ← iconst64 0
           let outLen ← emitScaleInputArrayToOutput ptr inputStart varLen lhsValue
-          return [one, zero, two, outLen])
-        (pure [zero, zero, zero, zero]))
+          return %[one, zero, two, outLen])
+        (pure %[zero, zero, zero, zero]))
 
 /-- A scalar term followed by `* <array>`, or not: `[status, value, mode,
     outLen]`. `status = 0` leaves the line to a plain scalar evaluation. -/
-def emitScalarStarChain (ptr p len : R) : M (List R) := do
+def emitScalarStarChain (ptr p len : V .i64) : Prog V L (Vals V [ClifTy.i64, ClifTy.i64, ClifTy.i64, ClifTy.i64]) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let star ← iconst64 asciiStar
   let (lhsValue, lhsEnd) ← emitScalarTermValue ptr p len
   let lhsNext ← emitSkipWs ptr lhsEnd len
-  ifte .uge lhsNext len (pure [zero, zero, zero, zero])
+  ifte .uge lhsNext len (pure %[zero, zero, zero, zero])
     (do
       let ch ← loadInputByte ptr lhsNext
-      ifte .ne ch star (pure [zero, zero, zero, zero])
+      ifte .ne ch star (pure %[zero, zero, zero, zero])
         (do
           let rhsStart ← emitSkipWs ptr (← iadd lhsNext one) len
-          ifte .uge rhsStart len (pure [zero, zero, zero, zero])
+          ifte .uge rhsStart len (pure %[zero, zero, zero, zero])
             (emitScaleByRhs ptr rhsStart len lhsValue)))
 
 /-- An array literal or array variable used on its own: `[status, mode,
     outLen]`, `status = 0` when the text is neither. -/
-def emitArrayExpr (ptr p len : R) : M (List R) := do
+def emitArrayExpr (ptr p len : V .i64) : Prog V L (Vals V [ClifTy.i64, ClifTy.i64, ClifTy.i64]) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let two ← iconst64 2
@@ -1086,17 +1088,17 @@ def emitArrayExpr (ptr p len : R) : M (List R) := do
               ifte .eq rhsOk one
                 (do
                   let outLen ← emitAddInputArraysToOutput ptr p rhsStart len
-                  return [one, two, outLen])
-                (pure [one, zero, zero]))
+                  return %[one, two, outLen])
+                (pure %[one, zero, zero]))
             (ifte .ult starPos len
               (do
                 let (scalar, _) ← emitParseInt ptr (← iadd starPos one) len
                 let outLen ← emitScaleInputArrayToOutput ptr p len scalar
-                return [one, two, outLen])
+                return %[one, two, outLen])
               (do
                 let outLen ← emitCopyInputToOutput ptr p len
-                return [one, two, outLen])))
-        (pure [one, zero, zero]))
+                return %[one, two, outLen])))
+        (pure %[one, zero, zero]))
     (do
       let varIdx ← isub firstCh a
       let isVar ← emitIsVarChar firstCh
@@ -1112,39 +1114,39 @@ def emitArrayExpr (ptr p len : R) : M (List R) := do
               let varLen ← emitCopyVarTextToInput ptr varIdx
               let inputStart ← iconst64 0
               let outLen ← emitScaleInputArrayToOutput ptr inputStart varLen scalar
-              return [one, two, outLen])
+              return %[one, two, outLen])
             (do
               let outLen ← emitCopyVarTextToOutput ptr varIdx
-              return [one, two, outLen]))
-        (pure [zero, zero, zero]))
+              return %[one, two, outLen]))
+        (pure %[zero, zero, zero]))
 
 /-- The right-hand side of a line with no assignment. The pair is the value and
     how the caller should print it -- `1` a number, `2` the output buffer,
     `0` nothing. -/
-def emitExprLine (ptr exprStart len : R) : M (R × R) := do
+def emitExprLine (ptr exprStart len : V .i64) : Prog V L (V .i64 × V .i64) := do
   let zero ← iconst64 0
   let p ← emitSkipWs ptr exprStart len
   let arr ← emitArrayExpr ptr p len
-  let r ← ifte .ne (arr.headD 0) zero
+  let r ← ifte .ne (arr.head) zero
     (do
-      fldStore ptr f.outputLen (arr.getD 2 0)
-      return [zero, arr.getD 1 0])
+      fldStore ptr f.outputLen (arr.thd)
+      return %[zero, arr.snd])
     (do
       -- Each way of not being an array scaling lands on the same evaluation,
       -- which is why the decision is carried out rather than duplicated.
       let st ← emitScalarStarChain ptr p len
-      ifte .ne (st.headD 0) zero
+      ifte .ne (st.head) zero
         (do
-          fldStore ptr f.outputLen (st.getD 3 0)
-          return [st.getD 1 0, st.getD 2 0])
+          fldStore ptr f.outputLen (st.fth)
+          return %[st.snd, st.thd])
         (do
           let (v, m) ← emitScalarLine ptr p len
-          return [v, m]))
-  return (r.headD 0, r.getD 1 0)
+          return %[v, m]))
+  return (r.head, r.snd)
 
 /-- An array result in the output buffer copied into a variable's text and its
     device buffer. -/
-def emitStoreArrayToVar (ptr varIdx outLen : R) : M Unit := do
+def emitStoreArrayToVar (ptr varIdx outLen : V .i64) : Prog V L Unit := do
   let one ← iconst64 1
   emitCopyOutputToVarText ptr varIdx outLen
   emitUploadOutDataToVarBuffer ptr varIdx
@@ -1153,7 +1155,7 @@ def emitStoreArrayToVar (ptr varIdx outLen : R) : M Unit := do
 
 /-- `x = [ ... ]`, possibly with `+` or `*`. A malformed array leaves the
     variable alone. -/
-def emitAssignArrayLiteral (ptr varIdx p len : R) : M Unit := do
+def emitAssignArrayLiteral (ptr varIdx p len : V .i64) : Prog V L Unit := do
   let one ← iconst64 1
   let star ← iconst64 asciiStar
   let plus ← iconst64 asciiPlus
@@ -1170,26 +1172,26 @@ def emitAssignArrayLiteral (ptr varIdx p len : R) : M Unit := do
             (do
               let outLen ← emitAddInputArraysToOutput ptr p rhsStart len
               emitStoreArrayToVar ptr varIdx outLen
-              pure [])
-            (pure []))
+              pure %[])
+            (pure %[]))
         (ifte .ult starPos len
           (do
             let (scalar, _) ← emitParseInt ptr (← iadd starPos one) len
             let outLen ← emitScaleInputArrayToOutput ptr p len scalar
             emitStoreArrayToVar ptr varIdx outLen
-            pure [])
+            pure %[])
           (do
             emitCopyInputToVarText ptr varIdx p len
             emitUploadInputArrayToVarBuffer ptr varIdx p len
             storeVarKind ptr varIdx one
             storeVarPresent ptr varIdx one
-            pure [])))
-    (pure [])
+            pure %[])))
+    (pure %[])
   pure ()
 
 /-- `x = y` or `x = y * n`, where `y` holds an array. The plain copy shares the
     other's text without re-uploading, since the buffer already holds it. -/
-def emitAssignFromArrayVar (ptr varIdx rhsStart rhsVarIdx len : R) : M Unit := do
+def emitAssignFromArrayVar (ptr varIdx rhsStart rhsVarIdx len : V .i64) : Prog V L Unit := do
   let one ← iconst64 1
   let star ← iconst64 asciiStar
   let starPos ← emitFindInputChar ptr rhsStart len star
@@ -1200,19 +1202,19 @@ def emitAssignFromArrayVar (ptr varIdx rhsStart rhsVarIdx len : R) : M Unit := d
       let inputStart ← iconst64 0
       let outLen ← emitScaleInputArrayToOutput ptr inputStart varLen scalar
       emitStoreArrayToVar ptr varIdx outLen
-      pure [])
+      pure %[])
     (do
       let outLen ← emitCopyVarTextToOutput ptr rhsVarIdx
       emitCopyOutputToVarText ptr varIdx outLen
       storeVarKind ptr varIdx one
       storeVarPresent ptr varIdx one
-      pure [])
+      pure %[])
   pure ()
 
 /-- `x = ...`: the right-hand side evaluated and stored in variable `varIdx`.
     `status = 0` from the tree below asks for the scalar store, which every arm
     that declines an array shares. -/
-def emitAssignLine (ptr varIdx eqPos len : R) : M (R × R) := do
+def emitAssignLine (ptr varIdx eqPos len : V .i64) : Prog V L (V .i64 × V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let two ← iconst64 2
@@ -1222,16 +1224,16 @@ def emitAssignLine (ptr varIdx eqPos len : R) : M (R × R) := do
 
   let exprPos0 ← emitSkipWs ptr (← iadd eqPos one) len
 
-  let r ← ifte .uge exprPos0 len (pure [zero])
+  let r ← ifte .uge exprPos0 len (pure %[zero])
     (do
       let firstCh ← loadInputByte ptr exprPos0
       ifte .eq firstCh lb
         (do
           emitAssignArrayLiteral ptr varIdx exprPos0 len
-          pure [one])
+          pure %[one])
         (do
           let rhsStart ← emitSkipWs ptr exprPos0 len
-          ifte .uge rhsStart len (pure [zero])
+          ifte .uge rhsStart len (pure %[zero])
             (do
               let rhsCh ← loadInputByte ptr rhsStart
               let rhsVarIdx ← isub rhsCh a
@@ -1242,18 +1244,18 @@ def emitAssignLine (ptr varIdx eqPos len : R) : M (R × R) := do
               ifte .ne useRhsArray z8
                 (do
                   emitAssignFromArrayVar ptr varIdx rhsStart rhsVarIdx len
-                  pure [one])
+                  pure %[one])
                 (do
                   let st ← emitScalarStarChain ptr rhsStart len
-                  ifte .ne (st.headD 0) zero
+                  ifte .ne (st.head) zero
                     (do
-                      let _ ← ifte .eq (st.getD 2 0) two
-                        (do emitStoreArrayToVar ptr varIdx (st.getD 3 0); pure [])
-                        (pure [])
-                      pure [one])
-                    (pure [zero])))))
+                      let _ ← ifte .eq (st.thd) two
+                        (do emitStoreArrayToVar ptr varIdx (st.fth); pure %[])
+                        (pure %[])
+                      pure %[one])
+                    (pure %[zero])))))
 
-  let out ← ifte .ne (r.headD 0) zero (pure [zero, zero])
+  let out ← ifte .ne (r.head) zero (pure %[zero, zero])
     (do
       let scalarValue ← emitParseScalarExpr ptr exprPos0 len
       let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
@@ -1263,11 +1265,11 @@ def emitAssignLine (ptr varIdx eqPos len : R) : M (R × R) := do
       emitCudaLaunchAdd ptr zeroBuf accBuf varBuf
       storeVarKind ptr varIdx zero
       storeVarPresent ptr varIdx one
-      return [scalarValue, zero])
-  return (out.headD 0, out.getD 1 0)
+      return %[scalarValue, zero])
+  return (out.head, out.snd)
 
 /-- One line of input: its value, and how the caller should print it. -/
-def emitEvalLine (ptr len : R) : M (R × R) := do
+def emitEvalLine (ptr len : V .i64) : Prog V L (V .i64 × V .i64) := do
   let zero ← iconst64 0
   let one ← iconst64 1
   let two ← iconst64 2
@@ -1277,7 +1279,7 @@ def emitEvalLine (ptr len : R) : M (R × R) := do
 
   let pos0 ← emitSkipWs ptr zero len
 
-  let r ← ifte .uge pos0 len (pure [zero, zero])
+  let r ← ifte .uge pos0 len (pure %[zero, zero])
     (do
       let ch ← loadInputByte ptr pos0
       let isVar ← emitIsVarChar ch
@@ -1294,28 +1296,28 @@ def emitEvalLine (ptr len : R) : M (R × R) := do
                 (do
                   let outLen ← emitCopyVarTextToOutput ptr idx
                   fldStore ptr f.outputLen outLen
-                  return [zero, two])
+                  return %[zero, two])
                 (do
                   emitAccFromVar ptr idx
                   let value ← emitDownloadAccToResult ptr
-                  return [value, one]))
+                  return %[value, one]))
             (do
               let ch2 ← loadInputByte ptr eqPos
               ifte .eq ch2 eqCh
                 (do
                   let (v, m) ← emitAssignLine ptr idx eqPos len
-                  return [v, m])
+                  return %[v, m])
                 (do
                   let (v, m) ← emitExprLine ptr pos0 len
-                  return [v, m])))
+                  return %[v, m])))
         (do
           let (v, m) ← emitExprLine ptr pos0 len
-          return [v, m]))
-  return (r.headD 0, r.getD 1 0)
+          return %[v, m]))
+  return (r.head, r.snd)
 
-def clifCode : HProg.Code :=
-  HProg.Sur.build (env := env) do
-  let ptr := basePtr
+def clifCode : Prog V L Unit :=
+  do
+  let ptr ← basePtr
   let inputOff ← fldOffset f.input
   let inputMax ← iconst64 256
   let outOff ← fldOffset f.output
@@ -1346,25 +1348,25 @@ def clifCode : HProg.Code :=
   -- One device buffer per variable, made once.
   let twentySix ← iconst64 26
   let _ ← wloop1 zero
-    (head := fun vi => return (contIfULt vi twentySix, ([] : List R), ()))
+    (head := fun vi => return (contIfULt vi twentySix, %[], ()))
     (body := fun vi _ => do
       let vbuf ← cudaCreateBuffer ptr arrayBytes
       storeVarBufId ptr vi vbuf
       storeVarPresent ptr vi zero
       storeVarKind ptr vi zero
       storeVarTextLen ptr vi zero
-      return [← iadd vi one])
+      return %[← iadd vi one])
 
   -- The prompt and the read are the loop's condition: an empty read is the end
   -- of input.
-  let _ ← wloop []
+  let _ ← wloop %[]
     (head := fun _ => do
       storeOutputByte ptr zero (← iconst64 asciiGreater)
       storeOutputByte ptr one (← iconst64 asciiSpace)
       let two ← iconst64 2
-      let _ ← call fnWrite.id [ptr, outOff, two]
-      let readLen ← call fnRead.id [ptr, inputOff, inputMax]
-      return (contIf .ne readLen zero, ([] : List R), readLen))
+      let _ ← ffi fnWrite %[ptr, outOff, two]
+      let readLen ← ffi fnRead %[ptr, inputOff, inputMax]
+      return (contIf .ne readLen zero, %[], readLen))
     (body := fun _ readLen => do
       fldStore ptr f.inputLen readLen
       let (lineResult, shouldPrint) ← emitEvalLine ptr readLen
@@ -1373,31 +1375,23 @@ def clifCode : HProg.Code :=
         (do
           let outLen ← emitFormatSigned ptr lineResult
           fldStore ptr f.outputLen outLen
-          let _ ← call fnWrite.id [ptr, outOff, outLen]
-          pure [])
+          let _ ← ffi fnWrite %[ptr, outOff, outLen]
+          pure %[])
         (do
           let two ← iconst64 2
           let _ ← ifte .eq shouldPrint two
             (do
               let rawLen ← fldLoad ptr f.outputLen
-              let _ ← call fnWrite.id [ptr, outOff, rawLen]
-              pure [])
-            (pure [])
-          pure [])
-      return [])
+              let _ ← ffi fnWrite %[ptr, outOff, rawLen]
+              pure %[])
+            (pure %[])
+          pure %[])
+      return %[])
 
   cudaCleanup ptr
 
-/-- The body is well formed against the two bundles it calls.
-
-    `clifCode` is a `Sur.build` rather than a `clif%` splice, so the builder run
-    is still part of the term and the kernel would have to reduce it before it
-    could look at a single statement. The compiler evaluates the same check
-    directly. -/
-theorem clif_wf : HProg.wf env HProg.ptrParams clifCode = true := by native_decide
-
-def clifIrSource : Program :=
-  IR.program [IR.noopFunction, HProg.compileFn 1 clifCode env (hwf := clif_wf)]
+def clifIrSource : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 clifCode]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
@@ -1406,8 +1400,8 @@ def payloads : List UInt8 :=
     f.arrayAddPtx.init (stringToBytes arrayAddPtxSource)
   ]
 
-def cliConfig : Setup := {
-  clif := clifIrSource,
+def cliConfig (clif : Program) : Setup := {
+  clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
@@ -1420,6 +1414,7 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonEntry "cli_app" Algorithm.cliConfig Algorithm.cliAlgorithm]
+  let clif ← Prog.orDie Algorithm.clifIrSource
+  emitArtifacts outDir #[toJsonEntry "cli_app" (Algorithm.cliConfig clif) Algorithm.cliAlgorithm]
 
 #eval ShipScan.check "CliAlgorithm"

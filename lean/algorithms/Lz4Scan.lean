@@ -51,9 +51,9 @@ open TrustScan
 def lz4Surface : Surface :=
   { allowedOpaque :=
       [ `Lean.opaqueId, `String.Internal.append
-        -- Reached because the host body is built by `Sur`, whose diagnostics
-        -- assemble a message string. `Op.name` keeps that to plain literals so
-        -- the rendering machinery behind `repr` stays out of the closure.
+        -- Reached because `emit`'s diagnostics assemble a message string.
+        -- `Op.name` keeps that to plain literals so the rendering machinery
+        -- behind `repr` stays out of the closure.
       , `String.Internal.length, `String.Internal.pushn
         -- Reached only by `warp32_entry_sound`, whose statement quantifies over
         -- machine states: `Blocks.runInsts` interprets every `Inst`, so its

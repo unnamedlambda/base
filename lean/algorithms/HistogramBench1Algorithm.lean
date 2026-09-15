@@ -9,6 +9,7 @@ open AlgorithmLib.HProg
 
 namespace HistogramBench1
 
+
 /-
   Single-threaded histogram: 256-bin u32 histogram, written to file.
   Payload: "input_path\0output_path\0"
@@ -24,57 +25,54 @@ def DATA_OFF        : Nat := HIST_OFF + HIST_BYTES
 def MAX_DATA_BYTES  : Nat := 64 * 1024 * 1024
 def MEM_SIZE        : Nat := DATA_OFF + MAX_DATA_BYTES
 
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
 
-/-- `cl_file_read` as fn0, `cl_file_write` as fn1. -/
-def env : FnEnv := env% [.fileIO]
+abbrev fnRead : Ffi := .fileRead
+abbrev fnWrite : Ffi := .fileWrite
 
-def fnRead : Nat := IR.Ffi.fileRead.id
-def fnWrite : Nat := IR.Ffi.fileWrite.id
-
-def code : HProg.Code := clif% do
-  let ptr := basePtr
+def code : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let zero    ← iconst64 0
 
   -- Copy the input path until NUL. Entered unconditionally, and the test reads
   -- the byte the body just loaded, so there is no guard to read it at.
-  let inEnd ← dwloop [zero] .eq zero (contOnTrue := false) [0]
+  let inEnd ← dwloop %[zero] .eq zero (contOnTrue := false) [0]
     (body := fun c => do
-      let si := c.headD 0
+      let si := c.head
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr INPUT_PATH_OFF) si)
       let si' ← iaddImm si 1
-      return (ch, [si']))
+      return (ch, %[si']))
     (guardIdx := none)
 
   -- And the output path, from where that stopped.
-  let _ ← dwloop [inEnd.headD 0, zero] .eq zero (contOnTrue := false) []
+  let _ ← dwloop %[inEnd.head, zero] .eq zero (contOnTrue := false) []
     (body := fun c => do
-      let si := c.headD 0; let di := c.getD 1 0
+      let si := c.head; let di := c.snd
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr ptr OUTPUT_PATH_OFF) di)
       let si' ← iaddImm si 1
       let di' ← iaddImm di 1
-      return (ch, [si', di']))
+      return (ch, %[si', di']))
     (guardIdx := none)
 
-  let fileSize ← call fnRead
-    [ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 DATA_OFF, zero, zero]
+  let fileSize ← ffi fnRead
+    %[ptr, ← iconst64 INPUT_PATH_OFF, ← iconst64 DATA_OFF, zero, zero]
   let n        ← ushrImm fileSize 2    -- n = bytes / 4
   let histPtr  ← absAddr ptr HIST_OFF
   let histEnd  ← iadd histPtr (← iconst64 HIST_BYTES)
 
   -- Zero the histogram, eight words a trip. The region is a fixed size, so the
   -- loop always runs and needs no guard.
-  let _ ← dwloop [histPtr] .ult histEnd (contOnTrue := true) []
+  let _ ← dwloop %[histPtr] .ult histEnd (contOnTrue := true) []
     (body := fun c => do
-      let hp := c.headD 0
+      let hp := c.head
       store zero hp
       for k in [1:8] do store zero (← iaddImm hp (8 * k))
       let hp' ← iaddImm hp 64
-      return (hp', [hp']))
+      return (hp', %[hp']))
     (guardIdx := none)
 
   let dataPtr2 ← absAddr ptr DATA_OFF
@@ -86,36 +84,35 @@ def code : HProg.Code := clif% do
   let mid ← ifte .ult dataPtr2 dataEnd4
     (thn := do
       let _ ← wloop1 dataPtr2
-        (head := fun dp => return (contIfULt dp dataEnd4, ([] : List R), ()))
+        (head := fun dp => return (contIfULt dp dataEnd4, %[], ()))
         (body := fun dp _ => do
           for k in [0:4] do
             let v ← uload32_64 (← iaddImm dp (4 * k))
             let a ← iadd histPtr (← ishlImm v 3)
             let c ← load64 a
             store (← iaddImm c 1) a
-          return [← iaddImm dp 16])
-      pure [dataEnd4])
-    (els := pure [dataPtr2])
+          return %[← iaddImm dp 16])
+      pure %[dataEnd4])
+    (els := pure %[dataPtr2])
 
-  let _ ← wloop1 (mid.headD 0)
-    (head := fun dp => return (contIfULt dp dataEnd, ([] : List R), ()))
+  let _ ← wloop1 (mid.head)
+    (head := fun dp => return (contIfULt dp dataEnd, %[], ()))
     (body := fun dp _ => do
       let v ← uload32_64 dp
       let a ← iadd histPtr (← ishlImm v 3)
       let c ← load64 a
       store (← iaddImm c 1) a
-      return [← iaddImm dp 4])
+      return %[← iaddImm dp 4])
 
-  let _ ← call fnWrite [ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 HIST_OFF,
+  let _ ← ffi fnWrite %[ptr, ← iconst64 OUTPUT_PATH_OFF, ← iconst64 HIST_OFF,
                         zero, ← iconst64 HIST_BYTES]
 
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
 
-def clifIR : Program :=
-  program
-    [noopFunction,
-     noopAt 1,
-     HProg.compileFn 2 code]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     .ok (noopAt 1),
+     Prog.compileProg 2 code]
 
 /-- Every byte of shared memory this program names.
 
@@ -138,9 +135,9 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "hist1_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE
   } {
     fn_idx := u32 2

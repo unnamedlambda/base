@@ -36,39 +36,36 @@ def ptxSource : String := buildModuleWith { version := "7.0", target := "sm_50" 
   stGlobalF ya fy
   ptxRet }]
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
 
-/-- The CUDA entry points, in the order the callee table numbers them. -/
-def env : FnEnv := env% [.cuda]
 
-def fnInit : Nat := IR.Ffi.cudaInit.id
-def fnCreateBuffer : Nat := IR.Ffi.cudaCreateBuffer.id
-def fnUploadPtr : Nat := IR.Ffi.cudaUpload.id
-def fnDownloadPtr : Nat := IR.Ffi.cudaDownload.id
-def fnLaunch : Nat := IR.Ffi.cudaLaunch.id
-def fnCleanup : Nat := IR.Ffi.cudaCleanup.id
+abbrev fnInit : Ffi := .cudaInit
+abbrev fnCreateBuffer : Ffi := .cudaCreateBuffer
+abbrev fnUploadPtr : Ffi := .cudaUpload
+abbrev fnDownloadPtr : Ffi := .cudaDownload
+abbrev fnLaunch : Ffi := .cudaLaunch
+abbrev fnCleanup : Ffi := .cudaCleanup
 
-def code : HProg.Code := clif% do
-  let ptr := basePtr
+def code : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   let dataLen ← load64 (← absAddr ptr 0x20)
   let outPtr  ← load64 (← absAddr ptr 0x28)
 
 
   let ctxSlotPtr ← absAddr ptr 0x10   -- ContextSlots.cuda
-  callVoid fnInit [ctxSlotPtr]
+  ffiVoid fnInit %[ctxSlotPtr]
   let ctxPtr ← load64 ctxSlotPtr
 
   -- buf_size = data_len / 2 (each of x and y is half)
   let bufSize ← ushrImm dataLen 1
-  let xBufId  ← call fnCreateBuffer [ctxPtr, bufSize]
-  let yBufId  ← call fnCreateBuffer [ctxPtr, bufSize]
+  let xBufId  ← ffi fnCreateBuffer %[ctxPtr, bufSize]
+  let yBufId  ← ffi fnCreateBuffer %[ctxPtr, bufSize]
 
   -- Upload x from data_ptr, y from data_ptr + buf_size
-  let _ ← call fnUploadPtr [ctxPtr, xBufId, dataPtr, bufSize]
+  let _ ← ffi fnUploadPtr %[ctxPtr, xBufId, dataPtr, bufSize]
   let yDataPtr ← iadd dataPtr bufSize
-  let _ ← call fnUploadPtr [ctxPtr, yBufId, yDataPtr, bufSize]
+  let _ ← ffi fnUploadPtr %[ctxPtr, yBufId, yDataPtr, bufSize]
 
   -- Grid: ceil(N / 256) where N = buf_size / 4
   let bigN  ← ireduce32 (← ushrImm bufSize 2)
@@ -81,18 +78,15 @@ def code : HProg.Code := clif% do
   let ptxAddr  ← absAddr ptr PTX_SOURCE_OFF
   let two      ← iconst32 2
   let bindAddr ← absAddr ptr BIND_DESC_OFF
-  let _ ← call fnLaunch [ctxPtr, ptxAddr, two, bindAddr,
+  let _ ← ffi fnLaunch %[ctxPtr, ptxAddr, two, bindAddr,
                           gridX, one, one, c256, one, one]
 
-  let _ ← call fnDownloadPtr [ctxPtr, yBufId, outPtr, bufSize]
+  let _ ← ffi fnDownloadPtr %[ctxPtr, yBufId, outPtr, bufSize]
 
-  callVoid fnCleanup [ctxSlotPtr]
+  ffiVoid fnCleanup %[ctxSlotPtr]
 
-
-theorem code_wf : HProg.wf env HProg.ptrParams code = true := by decide
-
-def clifIR : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 code]
+def clifIR : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [0, 0, 0, 0, 1, 0, 0, 0]
@@ -123,9 +117,9 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts : Array Json :=
+def artifacts (clif : Program) : Array Json :=
   #[toJsonEntry "cuda_saxpy_algorithm" {
-    clif := clifIR,
+    clif,
     memory_size := MEM_SIZE,
     initial_memory := buildInitialMemory
   } {

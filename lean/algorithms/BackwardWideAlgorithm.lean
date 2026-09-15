@@ -2,7 +2,7 @@ import Lean
 import Std
 import AlgorithmLib.Gen
 import AlgorithmLib.ML
-import AlgorithmLib.HProgCuda
+import AlgorithmLib.ProgCuda
 import LayoutScan
 import ShipScan
 
@@ -10,7 +10,7 @@ open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 namespace BackwardWide
 
--- `wf` is decided at every `compileFn` call in this file; the launch-sequence
+-- `wf` is run on every body this file ships; the launch-sequence
 -- bodies are long enough that the default recursion budget does not reach the
 -- end of one.
 set_option maxRecDepth 100000
@@ -519,12 +519,7 @@ theorem bind_count : bindSlots.length = NBUF := by decide
 /-- Byte offset of binding slot `i`. -/
 def bindOff (i : Nat) : Nat := BIND_OFF + 4 * i
 
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
-
-/-- The CUDA entry points, declared through the same helper the runtime's
-    signatures come from. -/
-def env : FnEnv := env% [.cuda, .cublas]
+open AlgorithmLib.Prog
 
 /-- **The backward kernels, as one record per PTX slot.**
 
@@ -551,8 +546,8 @@ def bwdK (off g : Nat) : AlgorithmLib.Kernel :=
     geom   := AlgorithmLib.Kernel.Geom.static g 1 1 32 1 1
     ptxOff := off }
 
-def loadFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def loadFn : Prog V L Unit := do
+  let ptr ← basePtr
   let dataPtr ← load64 (← absAddr ptr 0x18)
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
@@ -589,68 +584,68 @@ def loadFn : HProg.Code := clif%(env, HProg.ptrParams) do
   let ysId ← cudaCreateBuffer ptr dxBytes
   store ysId (← absAddr ptr YS_ID)
   -- host buffer holds `adj`, then `x`, then `W`, contiguously
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, adjId, dataPtr, adjBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, adjId, dataPtr, adjBytes]
   let xSrc ← iaddImm dataPtr (hostOff 1)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, xId, xSrc, dxBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, xId, xSrc, dxBytes]
   let zSrc ← iaddImm dataPtr (hostOff 2)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, zId, zSrc, dxBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, zId, zSrc, dxBytes]
   let dySrc ← iaddImm dataPtr (hostOff 3)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, dyId, dySrc, dxBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, dyId, dySrc, dxBytes]
   let gamSrc ← iaddImm dataPtr (hostOff 4)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, gamId, gamSrc, dxBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, gamId, gamSrc, dxBytes]
   let ysSrc ← iaddImm dataPtr (hostOff 6)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, ysId, ysSrc, dxBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, ysId, ysSrc, dxBytes]
   let wSrc ← iaddImm dataPtr (hostOff 5)
-  let _ ← call IR.Ffi.cudaUpload.id [ctxPtr, wId, wSrc, wBytes]
+  let _ ← ffi .cudaUpload %[ctxPtr, wId, wSrc, wBytes]
   kernelBindAt (bwdK PTX_OFF GRID) ptr BIND_OFF
     [adjId, wId, dxId, xId, dwId, zId, dyId, gamId, tId, qId, sId, dxrId, yId, ysId]
 
-def runFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def runFn : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch (bwdK PTX_OFF GRID) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The activation backward: one element per lane, `N/32` blocks. -/
-def runSiluBwdFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def runSiluBwdFn : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch (bwdK PTX_SB_OFF EGRID) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- A launch of the kernel at `off` over `g` blocks of one warp. -/
-def launchAt (off g : Nat) : Sur.M Unit := do
-  let ptr := basePtr
+def launchAt (off g : Nat) : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch (bwdK off g) ptr BIND_OFF
   let _ ← cudaSync ptr
 
-def runTFn : HProg.Code := clif% (launchAt PTX_T_OFF EGRID)
-def runQFn : HProg.Code := clif% (launchAt PTX_Q_OFF 1)
-def runSFn : HProg.Code := clif% (launchAt PTX_S_OFF 1)
-def runDxrFn : HProg.Code := clif% (launchAt PTX_DXR_OFF EGRID)
+def runTFn : Prog V L Unit := launchAt PTX_T_OFF EGRID
+def runQFn : Prog V L Unit := launchAt PTX_Q_OFF 1
+def runSFn : Prog V L Unit := launchAt PTX_S_OFF 1
+def runDxrFn : Prog V L Unit := launchAt PTX_DXR_OFF EGRID
 
 /-- The training step's four launches.  `runSgd` covers all `N²` weights. -/
-def runFwdFn : HProg.Code := clif% (launchAt PTX_FWD_OFF GRID)
-def runYFn : HProg.Code := clif% (launchAt PTX_Y_OFF EGRID)
-def runDyFn : HProg.Code := clif% (launchAt PTX_DY_OFF EGRID)
-def runSgdFn : HProg.Code := clif% (launchAt PTX_SGD_OFF WGRID)
-def runAdjFn : HProg.Code := clif% (launchAt PTX_ADJ_OFF EGRID)
+def runFwdFn : Prog V L Unit := launchAt PTX_FWD_OFF GRID
+def runYFn : Prog V L Unit := launchAt PTX_Y_OFF EGRID
+def runDyFn : Prog V L Unit := launchAt PTX_DY_OFF EGRID
+def runSgdFn : Prog V L Unit := launchAt PTX_SGD_OFF WGRID
+def runAdjFn : Prog V L Unit := launchAt PTX_ADJ_OFF EGRID
 
 /-- Fetch the forward activations, so the host can compute the loss. -/
-def fetchYFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def fetchYFn : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let yId ← load32 (← absAddr ptr Y_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, yId, outPtr, dxBytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, yId, outPtr, dxBytes]
 
 /-- Fetch RMSNorm's `dx`. -/
-def fetchDxrFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def fetchDxrFn : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dxrId ← load32 (← absAddr ptr DXR_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, dxrId, outPtr, dxBytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, dxrId, outPtr, dxBytes]
 
 /-- **Fill the launch argument array from the buffer table.**
 
@@ -662,7 +657,7 @@ def fetchDxrFn : HProg.Code := clif%(env, HProg.ptrParams) do
 
     Before **every** launch, not once: `Clif.stepMem` maps a call to the empty
     store map, because a call could write anything. -/
-def bindPass (ptr : R) : Sur.M Unit := do
+def bindPass (ptr : V .i64) : Prog V L Unit := do
   for i in List.range NBUF do
     let id ← load32 (← absAddr ptr (bindOff i))
     store id (← absAddr ptr (bindOff i))
@@ -672,57 +667,57 @@ def bindPass (ptr : R) : Sur.M Unit := do
 
     The three stages otherwise run as three separate host calls, and a pipeline
     is a claim about an order — an order no single program exhibited. -/
-def runBwdAllFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def runBwdAllFn : Prog V L Unit := do
+  let ptr ← basePtr
   for (off, g) in [(PTX_SB_OFF, EGRID), (PTX_OFF, GRID), (PTX_DW_OFF, GRID)] do
     bindPass ptr
     kernelRelaunch (bwdK off g) ptr BIND_OFF
   let _ ← cudaSync ptr
 
 /-- The weight gradient, same geometry: one warp per row. -/
-def runDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def runDwFn : Prog V L Unit := do
+  let ptr ← basePtr
   kernelRelaunch (bwdK PTX_DW_OFF GRID) ptr BIND_OFF
   let _ ← cudaSync ptr
 
-def fetchFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def fetchFn : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dxId ← load32 (← absAddr ptr DX_ID)
   let dxBytes ← iconst64 (N * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, dxId, outPtr, dxBytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, dxId, outPtr, dxBytes]
 
 /-- Fetch the weight gradient — `N·N` floats. -/
-def fetchDwFn : HProg.Code := clif%(env, HProg.ptrParams) do
-  let ptr := basePtr
+def fetchDwFn : Prog V L Unit := do
+  let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let outPtr ← load64 (← absAddr ptr 0x28)
   let dwId ← load32 (← absAddr ptr DW_ID)
   let wBytes ← iconst64 (N * N * 4)
-  let _ ← call IR.Ffi.cudaDownload.id [ctxPtr, dwId, outPtr, wBytes]
+  let _ ← ffi .cudaDownload %[ctxPtr, dwId, outPtr, wBytes]
 
-def clifIR : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 loadFn env,
-     HProg.compileFn 2 runFn env,
-     HProg.compileFn 3 fetchFn env,
-     HProg.compileFn 4 runDwFn env,
-     HProg.compileFn 5 fetchDwFn env,
-     HProg.compileFn 6 runSiluBwdFn env,
-     HProg.compileFn 7 runTFn env,
-     HProg.compileFn 8 runQFn env,
-     HProg.compileFn 9 runSFn env,
-     HProg.compileFn 10 runDxrFn env,
-     HProg.compileFn 11 fetchDxrFn env,
-     HProg.compileFn 12 runFwdFn env,
-     HProg.compileFn 13 runYFn env,
-     HProg.compileFn 14 runDyFn env,
-     HProg.compileFn 15 runSgdFn env,
-     HProg.compileFn 16 fetchYFn env,
-     HProg.compileFn 17 runAdjFn env,
-     HProg.compileFn 18 runBwdAllFn env]
+def clifIR : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 loadFn,
+     Prog.compileProg 2 runFn,
+     Prog.compileProg 3 fetchFn,
+     Prog.compileProg 4 runDwFn,
+     Prog.compileProg 5 fetchDwFn,
+     Prog.compileProg 6 runSiluBwdFn,
+     Prog.compileProg 7 runTFn,
+     Prog.compileProg 8 runQFn,
+     Prog.compileProg 9 runSFn,
+     Prog.compileProg 10 runDxrFn,
+     Prog.compileProg 11 fetchDxrFn,
+     Prog.compileProg 12 runFwdFn,
+     Prog.compileProg 13 runYFn,
+     Prog.compileProg 14 runDyFn,
+     Prog.compileProg 15 runSgdFn,
+     Prog.compileProg 16 fetchYFn,
+     Prog.compileProg 17 runAdjFn,
+     Prog.compileProg 18 runBwdAllFn]
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -757,8 +752,8 @@ def initialMemory : List UInt8 :=
     ++ k ++ zeros (PTX_ADJ_OFF - PTX_SGD_OFF - k.length)
     ++ a ++ zeros (MEM_SIZE - PTX_ADJ_OFF - a.length)
 
-def setup : Setup := {
-  clif := clifIR
+def setup (clif : Program) : Setup := {
+  clif,
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
@@ -778,14 +773,15 @@ def extraAlgs : List (String × Algorithm) :=
    ("fetchY", { fn_idx := u32 16 }), ("runAdj", { fn_idx := u32 17 }),
    ("runBwdAll", { fn_idx := u32 18 })]
 
-def artifacts : Array Json :=
-  #[ toJsonArtifact "backward_wide" setup entryAlg extraAlgs ]
+def artifacts (clif : Program) : Array Json :=
+  #[ toJsonArtifact "backward_wide" (setup clif) entryAlg extraAlgs ]
 
 end BackwardWide
 
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  emitArtifacts outDir BackwardWide.artifacts
+  let clif ← Prog.orDie BackwardWide.clifIR
+  emitArtifacts outDir (BackwardWide.artifacts clif)
 
 namespace BackwardWide
 
@@ -1061,10 +1057,11 @@ def bwdAllTable : List KernelBinding :=
 /-- **Seam guard: the emitted CLIF performs these launches**, in this order,
     over these buffers, at these grids.
 
-    Stated over `compileFn`'s output, so what the generator is written in does
-    not enter the claim — only what was emitted. -/
+    Stated over the compiled body rather than the term it was written as, so
+    what the generator is written in does not enter the claim --- only what
+    was emitted. -/
 theorem bwdAll_ops_are :
-    AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 runBwdAllFn) = bwdAllOps := by
+    AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 18 runBwdAllFn) = bwdAllOps := by
   native_decide
 
 /-- …and those launches are the proven three-stage pipeline. -/
@@ -1076,7 +1073,7 @@ theorem bwdAll_realises :
     Unlike `bwd_host_computes` below, the launch sequence here is read out of a
     function that is actually built into the artifact. -/
 theorem bwdAll_host_computes (st : WSt) :
-    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (HProg.compileBody 18 runBwdAllFn))
+    pipelineOf? bwdAllTable none (AlgorithmLib.Clif.deviceOpsOf ROOT (Prog.stateOf 18 runBwdAllFn))
         = some bwdPipelineFull
       ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
   ⟨by rw [bwdAll_ops_are]; exact bwdAll_realises,

@@ -35,21 +35,17 @@ def compSchema (w : WP) : List Json :=
 -- monad is itself the cost), so those theorems use `native_decide`.  Kept
 -- because the separation is worth stating.  `warpCode` instantiates it at
 -- `w.bindOff`, so the program that ships is byte-identical.
-open AlgorithmLib.IR AlgorithmLib.HProg in
+open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog
 
-open AlgorithmLib.IR AlgorithmLib.HProg in
-def hostEnv : FnEnv := env% [.cuda]
-
-open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sur in
 /-- The host program, as a term.
 
     `bo` is the binding-table offset, which can only be computed by serializing
     the whole PTX kernel; holding it as a parameter keeps that dependency
-    explicit. Because it is open, this runs the builder the ordinary way rather
-    than through `clif%` — the shipped instance is what `warpCode` checks. -/
-def warpCodeAt (w : WP) (bo : Nat) : HProg.Code :=
-  HProg.Sur.build do
-    let ptr := basePtr
+    explicit. `warpCode` instantiates it at `w.bindOff`, and that instance is
+    what ships. -/
+def warpCodeAt (w : WP) (bo : Nat) : Prog V L Unit :=
+  do
+    let ptr ← basePtr
     let dataPtr ← load64 (← absAddr ptr 0x18)
     let dataLen ← load64 (← absAddr ptr 0x20)
     let outPtr ← load64 (← absAddr ptr 0x28)
@@ -82,29 +78,14 @@ def warpCodeAt (w : WP) (bo : Nat) : HProg.Code :=
     storeAt ptr (bo + 0x70) (← iconst64 w.lenOff)
     storeAt ptr (bo + 0x78) (← iconst64 w.numBlk)
 
-open AlgorithmLib.HProg in
-def warpCode (w : WP) : HProg.Code := warpCodeAt w w.bindOff
+def warpCode (w : WP) : Prog V L Unit := warpCodeAt w w.bindOff
 
-open AlgorithmLib.IR AlgorithmLib.HProg in
-/-- Well-formed at both shipped geometries.
-
-    `warpFn` is generic in the block size, so `compileFn` has no instance to
-    `decide` at; it takes `compileBody` and this theorem stands in for the
-    check. The two arguments are the `blkLog`s `artifacts` ships: 32 KiB and
-    64 KiB blocks. -/
-theorem warp_wf :
-    (HProg.wf FFI.stdEnv HProg.ptrParams (warpCode ⟨15⟩)
-      && HProg.wf FFI.stdEnv HProg.ptrParams (warpCode ⟨16⟩)) = true := by decide
-
-open AlgorithmLib.IR AlgorithmLib.HProg in
 /-- The emitted function, which every host theorem is now stated over. -/
 def warpFn (w : WP) : FuncData :=
-  HProg.compileBody 1 (warpCode w)
+  Prog.stateOf 1 (warpCode w)
 
-open AlgorithmLib.IR AlgorithmLib.HProg in
-def warpClif (w : WP)
-    (hwf : HProg.wf FFI.stdEnv HProg.ptrParams (warpCode w) = true) : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 (warpCode w) (hwf := hwf)]
+def warpClif (w : WP) : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 (warpCode w)]
 
 def warpPayloadDSL (w : WP) : List UInt8 :=
   zeros rPTX_OFF ++
@@ -125,11 +106,10 @@ theorem payload_fits (w : WP) : (warpPayloadDSL w).length ≤ w.memSize := by
   rw [payload_length]; simp only [WP.memSize, WP.rowOff]; omega
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
-def warpArtifactDSL (name : String) (blkLog : Nat)
-    (hwf : HProg.wf IR.FFI.stdEnv HProg.ptrParams (warpCode ⟨blkLog⟩) = true) :=
+def warpArtifactDSL (name : String) (blkLog : Nat) : Except String Lean.Json := do
   let w : WP := ⟨blkLog⟩
-  AlgorithmLib.toJsonArtifact name
-    { clif := warpClif w hwf,
+  return AlgorithmLib.toJsonArtifact name
+    { clif := ← warpClif w,
       memory_size := w.memSize,
       initial_memory := warpPayloadDSL w }
     { fn_idx := AlgorithmLib.IR.mainFnIdx, output := compSchema w }
@@ -139,9 +119,7 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
   AlgorithmLib.emitArtifacts outDir #[
-    Algorithm.warpArtifactDSL "lz4_comp_warpdsl" 15
-      ((Bool.and_eq_true _ _).mp Algorithm.warp_wf).1,
-    Algorithm.warpArtifactDSL "lz4_comp_warpdsl64" 16
-      ((Bool.and_eq_true _ _).mp Algorithm.warp_wf).2]
+    ← AlgorithmLib.Prog.orDie (Algorithm.warpArtifactDSL "lz4_comp_warpdsl" 15),
+    ← AlgorithmLib.Prog.orDie (Algorithm.warpArtifactDSL "lz4_comp_warpdsl64" 16)]
 
 #eval ShipScan.check "Lz4CompAlgorithm"

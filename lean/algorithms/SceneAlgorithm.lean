@@ -926,17 +926,15 @@ def clifIrRegion : Nat := 4096
 def bmpHeaderOff : Nat := clifIrOff + clifIrRegion
 def pixelsOff : Nat := bmpHeaderOff + 54
 
-open AlgorithmLib.IR in
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-def fnWrite : FnRef := IR.Ffi.fileWrite.ref
-def env : FnEnv := env% [.cuda, .fileIO]
+abbrev fnWrite : Ffi := .fileWrite
 
-def code (spec : SceneSpec) : HProg.Code :=
-  HProg.Sur.build (env := env) do
-    let ptr := basePtr
+def code (spec : SceneSpec) : Prog V L Unit :=
+  do
+    let ptr ← basePtr
     cudaInit ptr
     let dataSz ← iconst64 (pixelBytes spec)
     let bufId ← cudaCreateBuffer ptr dataSz
@@ -953,12 +951,11 @@ def code (spec : SceneSpec) : HProg.Code :=
     let _ ← cudaDownload ptr bufId pxOffV dataSz
     cudaCleanup ptr
     let total ← iconst64 (54 + pixelBytes spec)
-    let _ ← writeFile0 ptr fnWrite filenameOff bmpHeaderOff total
+    let _ ← writeFile0 ptr filenameOff bmpHeaderOff total
 
 
-def clifIrSource (spec : SceneSpec)
-    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Program :=
-  IR.program [noopFunction, HProg.compileFn 1 (code spec) env (hwf := hwf)]
+def clifIrSource (spec : SceneSpec) : Except String Program :=
+  Prog.program [.ok noopFunction, Prog.compileProg 1 (code spec)]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
   let reserved := zeros ptxOff
@@ -969,9 +966,8 @@ def payloads (spec : SceneSpec) : List UInt8 :=
   let clifPad := zeros clifIrRegion
   reserved ++ ptxBytes ++ bindDesc ++ bindPad ++ filenameBytes ++ clifPad ++ bmpHeader spec
 
-def config (spec : SceneSpec)
-    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup := {
-  clif := clifIrSource spec hwf,
+def config (spec : SceneSpec) (clif : Program) : Setup := {
+  clif,
   memory_size := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
@@ -980,9 +976,8 @@ def algorithm : Algorithm := {
   fn_idx := IR.mainFnIdx
 }
 
-def renderScene (spec : SceneSpec)
-    (hwf : HProg.wf env HProg.ptrParams (code spec) = true) : Setup × Algorithm :=
-  (config spec hwf, algorithm)
+def renderScene (spec : SceneSpec) : Except String (Setup × Algorithm) := do
+  return (config spec (← clifIrSource spec), algorithm)
 
 def defaultPalette : ScenePalette := {
   groundLight := checkedColor 189 191 204 (by decide) (by decide) (by decide)
@@ -1014,10 +1009,9 @@ def defaultScene : SceneSpec :=
 
 /-- Well-formed at the scene that ships.
 
-    `clifIrSource` is generic in the spec, so `compileFn` has no instance to
+    `clifIrSource` is generic in the spec, so there is no instance to
     `decide` at; it takes `compileBody` and this theorem stands in for the
     check. -/
-theorem code_wf : HProg.wf env HProg.ptrParams (code defaultScene) = true := by decide
 
 def previewScene : SceneSpec :=
   checkedScene 640 360 16 3 sunsetPalette "scene.bmp"
@@ -1056,7 +1050,7 @@ def studioScene : SceneSpec :=
 end Algorithm
 
 def main (args : List String) : IO Unit := do
-  let (cfg, alg) := Algorithm.renderScene Algorithm.defaultScene Algorithm.code_wf
+  let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultScene)
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[toJsonEntry "scene_app" cfg alg]
 

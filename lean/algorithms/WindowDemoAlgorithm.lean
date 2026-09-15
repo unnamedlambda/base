@@ -174,19 +174,17 @@ open AlgorithmLib.IR
 
 -- Every body below is a term, so the builder names can be opened once for the
 -- whole section rather than per declaration.
-open AlgorithmLib.HProg
-open AlgorithmLib.HProg.Sur
+open AlgorithmLib.Prog
+
 
 /-- Two callee tables: the live loop reaches the window and the GPU, the render
     test reaches the GPU, and the four state tests reach nothing. -/
 
 
-def envMain : FnEnv := env% [.gpu, .window]
-def envGpu : FnEnv := env% [.gpu, .window]
 def envNone : FnEnv := { sigs := [], fns := [] }
 
 /-- Put the player at (x, y) and clear held-keys / quit / frame. -/
-def clearState (ptr : R) (x y : Int) : Sur.M Unit := do
+def clearState (ptr : V .i64) (x y : Int) : Prog V L Unit := do
   let z ← iconst64 0
   fldStore ptr f.keyMask z
   fldStore ptr f.quit z
@@ -196,12 +194,12 @@ def clearState (ptr : R) (x y : Int) : Sur.M Unit := do
 /-- Scan events [0, nEvents): update the held-key bitmask + quit flag. Branchless
     (no per-event blocks): each key contributes a bit that is OR'd in on key-down
     and cleared on key-up, so holding a key persists across frames. -/
-def processEvents (ptr : R) : Sur.M Unit := do
+def processEvents (ptr : V .i64) : Prog V L Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
   let n ← fldLoad ptr f.nEvents
   let recSz ← iconst64 32
   let _ ← wloop1 (← iconst64 0)
-    (head := fun i => return (contIfULt i n, ([] : List R), ()))
+    (head := fun i => return (contIfULt i n, %[], ()))
     (body := fun i _ => do
       let base ← iadd evBase (← imul i recSz)
       let kind ← load64 base
@@ -223,10 +221,10 @@ def processEvents (ptr : R) : Sur.M Unit := do
       let q0 ← fldLoad ptr f.quit
       let q1 ← bor q0 (← bor isClose (← imul isDown isEsc))
       fldStore ptr f.quit q1
-      return [← iaddImm i 1])
+      return %[← iaddImm i 1])
 
 /-- Clamp field `fld` into [lo, hi] in place. Branchless. -/
-def clampField (ptr : R) (fld : Fld .i64) (lo hi : Int) : Sur.M Unit := do
+def clampField (ptr : V .i64) (fld : Fld .i64) (lo hi : Int) : Prog V L Unit := do
   let x ← fldLoad ptr fld
   let over ← sextend64 (← icmp .sgt x (← iconst64 hi))
   let x1 ← iadd x (← imul over (← isub (← iconst64 hi) x))
@@ -235,7 +233,7 @@ def clampField (ptr : R) (fld : Fld .i64) (lo hi : Int) : Sur.M Unit := do
   fldStore ptr fld x2
 
 /-- Move the player one step from the held-key mask, then clamp to the screen. -/
-def applyMovement (ptr : R) : Sur.M Unit := do
+def applyMovement (ptr : V .i64) : Prog V L Unit := do
   let mask ← fldLoad ptr f.keyMask
   let speed ← iconst64 playerSpeed
   let leftOn  ← sextend64 (← icmp .ne (← band mask (← iconst64 bitLeft)) (← iconst64 0))
@@ -251,19 +249,19 @@ def applyMovement (ptr : R) : Sur.M Unit := do
 
 /-- Write the per-frame uniform (frame, player x/y) into the packed-u32 region.
     Width/height stay from the initial payload. -/
-def writeParams (ptr : R) (frame : R) : Sur.M Unit := do
+def writeParams (ptr : V .i64) (frame : V .i64) : Prog V L Unit := do
   fldStore32At ptr f.params 0 (← ireduce32 frame) (by decide)
   fldStore32At ptr f.params 12 (← ireduce32 (← fldLoad ptr f.playerX)) (by decide)
   fldStore32At ptr f.params 16 (← ireduce32 (← fldLoad ptr f.playerY)) (by decide)
 
 /-- Write a synthetic input event into event `slot` (for tests). -/
-def writeEvent (ptr : R) (slot : Nat) (kind keyCode : Int) : Sur.M Unit := do
+def writeEvent (ptr : V .i64) (slot : Nat) (kind keyCode : Int) : Prog V L Unit := do
   let base ← absAddr ptr (f.events.offset + slot * 32)
   storeUnaligned (← iconst64 kind) base
   storeUnaligned (← iconst64 keyCode) (← iaddImm base 8)
 
 /-- Emit one output row: pass (1/0), actual, expected. -/
-def writeOutput (ptr : R) (passV actualV expectedV : R) : Sur.M Unit := do
+def writeOutput (ptr : V .i64) (passV actualV expectedV : V .i64) : Prog V L Unit := do
   fldStore ptr f.rowCount (← iconst64 1)
   fldStore ptr f.outPass passV
   fldStore ptr f.outActual actualV
@@ -271,23 +269,23 @@ def writeOutput (ptr : R) (passV actualV expectedV : R) : Sur.M Unit := do
 
 /-- Run the shared logic `steps` times (each step re-scans events, so a held key
     keeps moving — exactly what the live loop does with real poll results). -/
-def stepN (ptr : R) (steps : Int) : Sur.M Unit := do
+def stepN (ptr : V .i64) (steps : Int) : Prog V L Unit := do
   let limit ← iconst64 steps
   let _ ← wloop1 (← iconst64 0)
-    (head := fun i => return (contIfULt i limit, ([] : List R), ()))
+    (head := fun i => return (contIfULt i limit, %[], ()))
     (body := fun i _ => do
       processEvents ptr
       applyMovement ptr
-      return [← iaddImm i 1])
+      return %[← iaddImm i 1])
 
 /-- Assert `actual == expected`; store pass/actual/expected as the output row. -/
-def assertEq (ptr actual : R) (expected : Int) : Sur.M Unit := do
+def assertEq (ptr actual : V .i64) (expected : Int) : Prog V L Unit := do
   let exp ← iconst64 expected
   writeOutput ptr (← sextend64 (← icmp .eq actual exp)) actual exp
 
 -- Live entry (fn 1): open window, then loop poll → logic → render → present ----
-def mainBody : HProg.Code := clif% do
-  let ptr := basePtr
+def mainBody : Prog V L Unit := do
+  let ptr ← basePtr
   windowInit ptr
   gpuInit ptr
   let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
@@ -302,7 +300,7 @@ def mainBody : HProg.Code := clif% do
     (head := fun c => do
       let q ← fldLoad ptr f.quit
       let z ← iconst64 0
-      return (contIf .eq q z, [c], ()))
+      return (contIf .eq q z, %[c], ()))
     (body := fun frame _ => do
       let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
       fldStore ptr f.nEvents (← sextend64 n)
@@ -312,37 +310,37 @@ def mainBody : HProg.Code := clif% do
       let _ ← gpuUpload ptr paramBuf (← fldOffset f.params) (← iconst64 paramsBytes)
       let _ ← gpuDispatch ptr pipeId (← iconst32 wgX) (← iconst32 wgY) (← iconst32 1)
       let _ ← windowPresentGpuBuffer ptr pixelBuf
-      return [← iaddImm frame 1])
+      return %[← iaddImm frame 1])
   windowCleanup ptr
   gpuCleanup ptr
 
 -- Headless test scenarios (fn 2+): inject events, step, assert player state ----
-def testMoveRight : HProg.Code := clif% do
-  let ptr := basePtr
+def testMoveRight : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyRight
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.playerX) (playerStartX + 10 * playerSpeed)
 
-def testMoveLeft : HProg.Code := clif% do
-  let ptr := basePtr
+def testMoveLeft : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyLeft
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 10
   assertEq ptr (← fldLoad ptr f.playerX) (playerStartX - 10 * playerSpeed)
 
-def testMoveUpClamp : HProg.Code := clif% do
-  let ptr := basePtr
+def testMoveUpClamp : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evKeyDown keyUp
   fldStore ptr f.nEvents (← iconst64 1)
   stepN ptr 100   -- 100*speed = 400 > startY 180 ⇒ clamps at the top edge (0)
   assertEq ptr (← fldLoad ptr f.playerY) minY
 
-def testQuitOnClose : HProg.Code := clif% do
-  let ptr := basePtr
+def testQuitOnClose : Prog V L Unit := do
+  let ptr ← basePtr
   clearState ptr playerStartX playerStartY
   writeEvent ptr 0 evClose 0
   fldStore ptr f.nEvents (← iconst64 1)
@@ -351,8 +349,8 @@ def testQuitOnClose : HProg.Code := clif% do
 
 -- Headless render test (fn 6): dispatch the real WGSL kernel, download the frame
 -- into memory, and assert the player pixel is player-coloured. GPU, no window.
-def testRenderPixel : HProg.Code := clif% do
-  let ptr := basePtr
+def testRenderPixel : Prog V L Unit := do
+  let ptr ← basePtr
   gpuInit ptr
   let pixelBuf ← gpuCreateBuffer ptr (← iconst64 pixelBytes)
   let paramBuf ← gpuCreateBuffer ptr (← iconst64 paramsBytes)
@@ -367,24 +365,17 @@ def testRenderPixel : HProg.Code := clif% do
   let red ← uload8_64 (← absAddr ptr (f.pixels.offset + (100 * imageWidth + 100) * 4))
   writeOutput ptr (← sextend64 (← icmp .uge red (← iconst64 250))) red (← iconst64 252)
 
-theorem bodies_wf :
-    HProg.wf envMain HProg.ptrParams mainBody = true &&
-    HProg.wf envNone HProg.ptrParams testMoveRight = true &&
-    HProg.wf envNone HProg.ptrParams testMoveLeft = true &&
-    HProg.wf envNone HProg.ptrParams testMoveUpClamp = true &&
-    HProg.wf envNone HProg.ptrParams testQuitOnClose = true &&
-    HProg.wf envGpu HProg.ptrParams testRenderPixel = true := by decide
 
 -- Program assembly -----------------------------------------------------------
-def clifIrSource : Program :=
-  program
-    [noopFunction,
-     HProg.compileFn 1 mainBody,
-     HProg.compileFn 2 testMoveRight,
-     HProg.compileFn 3 testMoveLeft,
-     HProg.compileFn 4 testMoveUpClamp,
-     HProg.compileFn 5 testQuitOnClose,
-     HProg.compileFn 6 testRenderPixel]
+def clifIrSource : Except String Program :=
+  Prog.program
+    [.ok noopFunction,
+     Prog.compileProg 1 mainBody,
+     Prog.compileProg 2 testMoveRight,
+     Prog.compileProg 3 testMoveLeft,
+     Prog.compileProg 4 testMoveUpClamp,
+     Prog.compileProg 5 testQuitOnClose,
+     Prog.compileProg 6 testRenderPixel]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [
@@ -402,8 +393,8 @@ def payloads : List UInt8 :=
       uint32ToBytes (UInt32.ofNat (imageHeight / 2)))
   ]
 
-def gameSetup : Setup := {
-  clif := clifIrSource,
+def gameSetup (clif : Program) : Setup := {
+  clif,
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
@@ -427,8 +418,9 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
+  let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.toJsonArtifact "window_demo" Algorithm.gameSetup Algorithm.mainAlgorithm [
+    AlgorithmLib.toJsonArtifact "window_demo" (Algorithm.gameSetup clif) Algorithm.mainAlgorithm [
       ("test_move_right",   Algorithm.moveRightAlg),
       ("test_move_left",    Algorithm.moveLeftAlg),
       ("test_move_up_clamp", Algorithm.moveUpClampAlg),
