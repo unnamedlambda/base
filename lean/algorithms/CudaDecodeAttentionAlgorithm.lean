@@ -59,7 +59,7 @@ def PTX_SOURCE_OFF : Nat := 0x0200
 def BIND_DESC_OFF  : Nat := 0x5000
 def MEM_SIZE       : Nat := 0x5100
 
--- App fields: stored starting at 0x38 (beyond the 56-byte IoOffsets)
+-- App fields: stored starting at 0x38 (past the 56-byte reserved header)
 def BUF_Q_OFF      : Nat := 0x38
 def BUF_K_OFF      : Nat := 0x3C
 def BUF_V_OFF      : Nat := 0x40
@@ -126,7 +126,7 @@ def CTX_OFF : Nat := 0x10
 
 def loadCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
 
   cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
@@ -171,7 +171,7 @@ def loadCode : Prog V L Unit := do
 /-- Prep: upload q from data_ptr to buf0. -/
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let bufQ    ← load32 (← absAddr ptr BUF_Q_OFF)
   let dMBytes ← iconst64 D_MODEL_BYTES
@@ -235,8 +235,8 @@ def coreCode : Prog V L Unit := do
 /-- Finalize: sync, then download only if the caller asked for output. -/
 def finalizeCode : Prog V L Unit := do
   let ptr    := (← basePtr)
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  let outLen ← load64 (← absAddr ptr 0x30)
+  let outPtr ← outPtr
+  let outLen ← outLen
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let bufOut ← load32 (← absAddr ptr BUF_OUT_OFF)
 
@@ -275,7 +275,6 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_ht",     ContextSlots.ht, 8⟩,
    ⟨"ctx_wgpu",   ContextSlots.wgpu, 8⟩,
    ⟨"ctx_cuda",   CTX_OFF, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"buf_q",      BUF_Q_OFF, 4⟩,
    ⟨"buf_k",      BUF_K_OFF, 4⟩,
    ⟨"buf_v",      BUF_V_OFF, 4⟩,

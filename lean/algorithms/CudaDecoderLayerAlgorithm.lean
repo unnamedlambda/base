@@ -56,7 +56,7 @@ def PTX_ADD_OFF : Nat := 0x3800
 def MEM_SIZE : Nat := 0x4800
 
 -- App fields: buf IDs stored as i32 (4 bytes each), starting at 0x38
--- (beyond the 56-byte IoOffsets at 0x00-0x37)
+-- (past the 56-byte reserved header at 0x00-0x37)
 def BUF_X_OFF      : Nat := 0x38
 def BUF_XN1_OFF    : Nat := 0x3C
 def BUF_Q_OFF      : Nat := 0x40
@@ -174,7 +174,7 @@ def CTX_OFF : Nat := 0x10
 
 def loadCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr CTX_OFF
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
 
@@ -249,7 +249,7 @@ def loadCode : Prog V L Unit := do
 
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let bufX    ← load32 (← absAddr ptr BUF_X_OFF)
   let dmBytes ← iconst64 D_MODEL_BYTES
@@ -354,8 +354,8 @@ def inferCode : Prog V L Unit := do
 /-- Finalize: sync, then download only if the caller asked for output. -/
 def finalizeCode : Prog V L Unit := do
   let ptr    := (← basePtr)
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  let outLen ← load64 (← absAddr ptr 0x30)
+  let outPtr ← outPtr
+  let outLen ← outLen
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let bufX   ← load32 (← absAddr ptr BUF_X_OFF)
 
@@ -407,7 +407,6 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_ht",       ContextSlots.ht, 8⟩,
    ⟨"ctx_wgpu",     ContextSlots.wgpu, 8⟩,
    ⟨"ctx_cuda",     CTX_OFF, 8⟩,
-   ⟨"io_offsets",   0x18, 0x20⟩,
    ⟨"buf_x",        BUF_X_OFF, 4⟩,
    ⟨"buf_xn1",      BUF_XN1_OFF, 4⟩,
    ⟨"buf_q",        BUF_Q_OFF, 4⟩,

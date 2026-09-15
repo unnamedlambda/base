@@ -94,8 +94,8 @@ def D_TEXT : Nat := 272
 def tMainFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let dataPtr ← dataPtr
+  let outPtr ← outPtr
   -- the file is read once, however many strings arrive afterwards
   let flag ← load32 (← absAddr ptr T_INIT)
   let zero32 ← iconst32 0

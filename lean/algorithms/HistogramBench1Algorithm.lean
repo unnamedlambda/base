@@ -33,7 +33,7 @@ abbrev fnWrite : Ffi := .fileWrite
 
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let zero    ← iconst64 0
 
   -- Copy the input path until NUL. Entered unconditionally, and the test reads
@@ -122,8 +122,7 @@ def clifIR : Except String Program :=
     input and output descriptors, so naming those is what stops an offset being
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"io_offsets",  0x18, 0x20⟩,
-   ⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
+  [⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
    ⟨"output_path", OUTPUT_PATH_OFF, HIST_OFF - OUTPUT_PATH_OFF⟩,
    ⟨"hist",        HIST_OFF, HIST_BYTES⟩,
    ⟨"data",        DATA_OFF, MAX_DATA_BYTES⟩]

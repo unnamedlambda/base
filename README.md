@@ -14,11 +14,11 @@ An `Artifact` contains:
 
 ```
 Artifact { setup, main, extras }
-  Setup     { cranelift_ir, memory_size, io_offsets, initial_memory }
+  Setup     { cranelift_ir, memory_size, initial_memory }
   Algorithm { fn_idx, output }   // main and each entry of extras
 ```
 
-**Setup** defines the compiled code (Cranelift IR text), the memory region it operates on, the offsets at which the runtime writes the caller's input/output pointers, and static initial memory contents generated at build time (shader sources, binding descriptors, PTX kernels, etc.).
+**Setup** defines the compiled code (Cranelift IR text), the memory region it operates on, and static initial memory contents generated at build time (shader sources, binding descriptors, PTX kernels, etc.).
 
 **Algorithm** is an entry point into the compiled code — a function index inside `cranelift_ir` plus an optional output schema for returning Arrow RecordBatches. Single-algorithm artifacts use `main`; multi-stage flows (e.g., GPU load → prep → infer pipelines) put the entry-point stage in `main` and name the rest in `extras` so they all share one CLIF compilation.
 
@@ -54,7 +54,7 @@ base.execute(prep_alg, &input)?;
 base.execute_into(infer_alg, b"", &mut output)?;
 ```
 
-Before each `execute`, the system writes `data_ptr`, `data_len`, `out_ptr`, and `out_len` into the slots specified by `Setup.io_offsets` (default layout: 0x18, 0x20, 0x28, 0x30). CLIF code reads from those offsets to access the caller's buffers directly. GPU uploads/downloads use `cl_gpu_upload_ptr` / `cl_gpu_download_ptr` to transfer between caller pointers and GPU memory with no intermediate copy through shared memory.
+An entry point is called with five arguments: the base of shared memory, then the caller's input pointer and length and the caller's output pointer and length. CLIF code uses those pointers to reach the caller's buffers directly, so nothing is copied in or out and there is no arena slot the runtime and the program have to agree about. GPU uploads/downloads use `cl_gpu_upload_ptr` / `cl_gpu_download_ptr` to transfer between caller pointers and GPU memory with no intermediate copy through shared memory.
 
 ## Example: CUDA Black Hole Renderer
 

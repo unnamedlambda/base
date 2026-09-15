@@ -2,7 +2,7 @@ use arrow_array::{Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use base::{run, Base, RecordBatch};
 use base_types::{
-    Algorithm, Setup, OutputBatchSchema, OutputColumn, OutputType, IoOffsets,
+    Algorithm, Setup, OutputBatchSchema, OutputColumn, OutputType,
 };
 use std::fs;
 use std::sync::Arc;
@@ -11,21 +11,11 @@ mod common;
 use common::*;
 use tempfile::TempDir;
 
-fn compact_io_offsets() -> IoOffsets {
-    IoOffsets {
-        data_ptr: 8,
-        data_len: 16,
-        out_ptr: 24,
-        out_len: 32,
-    }
-}
-
 fn cranelift_config(memory: Vec<u8>, clif: Program) -> Setup {
     dump(&clif);
     Setup {
         clif,
         memory_size: memory.len(),
-        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     }
 }
@@ -605,13 +595,13 @@ fn test_clif_ffi_thread_smoke() {
                 ret(),
             ]),
         function(1)
-            .entry(vec![
+            .entry_spawned(vec![
                 iconst64(v(1), 42),
                 store(v(1), v(0), 0),
                 ret(),
             ]),
         function(2)
-            .entry(vec![
+            .entry_spawned(vec![
                 iconst64(v(1), 99),
                 store(v(1), v(0), 0),
                 ret(),
@@ -931,7 +921,6 @@ fn create_output_algorithm(
     let config = Setup {
         clif,
         memory_size: p.len(),
-        io_offsets: compact_io_offsets(),
         initial_memory: p,
     };
     let algorithm = Algorithm {
@@ -1593,7 +1582,6 @@ fn test_base_single_execute_matches_standalone() {
     let config1 = Setup {
         clif: clif_prog.clone(),
         memory_size: memory.len(),
-        io_offsets: compact_io_offsets(),
         initial_memory: memory.clone(),
     };
     let alg1 = Algorithm {
@@ -1606,7 +1594,6 @@ fn test_base_single_execute_matches_standalone() {
     let config2 = Setup {
         clif: clif_prog.clone(),
         memory_size: memory.len(),
-        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let alg2 = Algorithm {
@@ -1640,7 +1627,7 @@ fn test_base_multi_execute_different_data() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
                 iconst64(v(3), 3),
                 imul(v(4), v(2), v(3)),
@@ -1656,7 +1643,6 @@ fn test_base_multi_execute_different_data() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -1741,7 +1727,6 @@ fn test_base_multi_execute_different_actions() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -1791,7 +1776,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
         function(0)
             .entry(vec![
                 load64(v(1), v(0), 200),
-                load64(v(2), v(0), 8),
+                iadd_imm(v(2), data_ptr(), 0),
                 load64(v(3), v(2), 0),
                 iadd(v(4), v(1), v(3)),
                 store(v(4), v(0), 200),
@@ -1806,7 +1791,6 @@ fn test_base_multi_execute_accumulates_in_memory() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -1906,7 +1890,6 @@ fn test_base_multi_execute_with_file_io() {
     let config1 = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: mem1,
     };
     let mut base = Base::new(config1).unwrap();
@@ -1929,7 +1912,6 @@ fn test_base_multi_execute_with_file_io() {
     let config2 = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: mem2,
     };
     let mut base2 = Base::new(config2).unwrap();
@@ -1965,7 +1947,6 @@ fn test_base_multi_execute_varying_cranelift_units() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2009,7 +1990,7 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
         function(0)
             .entry(vec![
                 load64(v(1), v(0), 100),
-                load64(v(2), v(0), 8),
+                iadd_imm(v(2), data_ptr(), 0),
                 load64(v(3), v(2), 0),
                 iadd(v(4), v(1), v(3)),
                 store(v(4), v(0), 300),
@@ -2025,7 +2006,6 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: mem,
     };
     let mut base = Base::new(config).unwrap();
@@ -2073,7 +2053,7 @@ fn test_base_persistent_memory_survives_across_executes() {
             ]),
         function(1)
             .entry(vec![
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
                 load64(v(3), v(0), 200),
                 iadd(v(4), v(2), v(3)),
@@ -2087,7 +2067,6 @@ fn test_base_persistent_memory_survives_across_executes() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2153,7 +2132,6 @@ fn test_base_empty_data_leaves_memory_intact() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2194,7 +2172,7 @@ fn test_base_data_pointer_updates_each_execute() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
                 load64(v(3), v(1), 8),
                 iadd(v(4), v(2), v(3)),
@@ -2208,7 +2186,6 @@ fn test_base_data_pointer_updates_each_execute() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2271,7 +2248,7 @@ fn test_base_output_in_persistent_region() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
                 load64(v(3), v(0), 400),
                 iconst64(v(4), 8),
@@ -2291,7 +2268,6 @@ fn test_base_output_in_persistent_region() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2407,7 +2383,6 @@ fn clif_parse_error_empty_ir_no_error() {
     let config = Setup {
         clif: Default::default(),
         memory_size: 256,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let base = Base::new(config);
@@ -2537,8 +2512,8 @@ fn test_cublas_sgemv_on_stream_reuse() {
             .import(6, "cl_cuda_stream_sync", 5)
             .import(7, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -2568,7 +2543,6 @@ fn test_cublas_sgemv_on_stream_reuse() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -2647,8 +2621,8 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
             .import(6, "cl_cuda_stream_sync", 5)
             .import(7, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -2687,7 +2661,6 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -2761,9 +2734,9 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
         function(0)
             .entry(vec![
                 // load data_ptr from offset 8
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 // load data_len from offset 16
-                load64(v(2), v(0), 16),
+                iadd_imm(v(2), data_len(), 0),
                 // read first i64 from caller's buffer
                 load64(v(3), v(1), 0),
                 // read second i64 from caller's buffer (offset 8)
@@ -2781,7 +2754,6 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2838,7 +2810,7 @@ fn test_data_ptr_written_even_when_data_empty() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 16),
+                iadd_imm(v(1), data_len(), 0),
                 store(v(1), v(0), 200),
                 iconst64(v(3), 1),
                 store(v(3), v(0), 208),
@@ -2852,7 +2824,6 @@ fn test_data_ptr_written_even_when_data_empty() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: initial,
     };
 
@@ -2890,7 +2861,7 @@ fn test_out_ptr_written_even_when_out_empty() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 32),
+                iadd_imm(v(1), out_len(), 0),
                 store(v(1), v(0), 200),
                 iconst64(v(3), 1),
                 store(v(3), v(0), 208),
@@ -2904,7 +2875,6 @@ fn test_out_ptr_written_even_when_out_empty() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: initial,
     };
 
@@ -2943,13 +2913,13 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
         function(0)
             .entry(vec![
                 // read data_ptr, load input from caller's data buffer
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
                 // compute: input * 7
                 iconst64(v(3), 7),
                 imul(v(4), v(2), v(3)),
                 // read out_ptr, write result into caller's out buffer
-                load64(v(5), v(0), 24),
+                iadd_imm(v(5), out_ptr(), 0),
                 store(v(4), v(5), 0),
                 ret(),
             ]),
@@ -2958,7 +2928,6 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -2988,9 +2957,9 @@ fn test_execute_into_multiple_calls_different_data() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
-                load64(v(3), v(0), 24),
+                iadd_imm(v(3), out_ptr(), 0),
                 store(v(2), v(3), 0),
                 ret(),
             ]),
@@ -2999,7 +2968,6 @@ fn test_execute_into_multiple_calls_different_data() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3033,8 +3001,8 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
         function(0)
             .entry(vec![
                 // read data_ptr and data_len
-                load64(v(1), v(0), 8),
-                load64(v(2), v(0), 16),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), data_len(), 0),
                 // read last i64 from caller buffer: data_ptr + data_len - 8
                 iconst64(v(3), 8),
                 isub(v(4), v(2), v(3)),
@@ -3051,7 +3019,6 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 256,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3113,7 +3080,7 @@ fn test_initial_memory_and_data_coexist() {
                 // read static multiplier from shared memory (set by initial_memory)
                 load64(v(1), v(0), 100),
                 // read dynamic input from data pointer
-                load64(v(2), v(0), 8),
+                iadd_imm(v(2), data_ptr(), 0),
                 load64(v(3), v(2), 0),
                 // multiply
                 imul(v(4), v(1), v(3)),
@@ -3131,7 +3098,6 @@ fn test_initial_memory_and_data_coexist() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: initial,
     };
     let mut base = Base::new(config).unwrap();
@@ -3172,8 +3138,8 @@ fn test_execute_into_out_buffer_larger_than_memory() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 24),
-                load64(v(2), v(0), 32),
+                iadd_imm(v(1), out_ptr(), 0),
+                iadd_imm(v(2), out_len(), 0),
                 // write values at out[0], out[8], out[16]
                 iconst64(v(3), 100),
                 store(v(3), v(1), 0),
@@ -3190,7 +3156,6 @@ fn test_execute_into_out_buffer_larger_than_memory() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 64,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3222,7 +3187,7 @@ fn test_run_with_data_argument() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
                 store(v(2), v(0), 200),
                 iconst64(v(3), 1),
@@ -3234,7 +3199,6 @@ fn test_run_with_data_argument() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
 
@@ -3274,7 +3238,7 @@ fn test_data_single_byte_still_writes_pointer() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 16),
+                iadd_imm(v(1), data_len(), 0),
                 store(v(1), v(0), 200),
                 iconst64(v(2), 1),
                 store(v(2), v(0), 208),
@@ -3285,7 +3249,6 @@ fn test_data_single_byte_still_writes_pointer() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
 
@@ -3321,9 +3284,9 @@ fn test_data_ptr_survives_across_multi_execute() {
     let clif_prog = program(
         function(0)
             .entry(vec![
-                load64(v(1), v(0), 8),
+                iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
-                load64(v(3), v(0), 16),
+                iadd_imm(v(3), data_len(), 0),
                 store(v(2), v(0), 200),
                 store(v(3), v(0), 208),
                 iconst64(v(4), 1),
@@ -3335,7 +3298,6 @@ fn test_data_ptr_survives_across_multi_execute() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: 4096,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![],
     };
     let mut base = Base::new(config).unwrap();
@@ -3440,9 +3402,9 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
             .import(5, "cl_gpu_download_ptr", 5)
             .import(6, "cl_gpu_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x10),
-                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), data_len(), 0),
+                iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -3474,7 +3436,6 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -3542,9 +3503,9 @@ fn test_gpu_download_ptr_with_offset() {
             .import(3, "cl_gpu_download_ptr", 3)
             .import(4, "cl_gpu_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x10),
-                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), data_len(), 0),
+                iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -3569,7 +3530,6 @@ fn test_gpu_download_ptr_with_offset() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -3674,9 +3634,9 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
             .import(4, "cl_cuda_launch", 3)
             .import(5, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x10),
-                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), data_len(), 0),
+                iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -3715,7 +3675,6 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -3813,9 +3772,9 @@ fn test_cuda_download_ptr_different_data() {
             .import(4, "cl_cuda_launch", 3)
             .import(5, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x10),
-                load_trusted(v(3), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), data_len(), 0),
+                iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -3852,7 +3811,6 @@ fn test_cuda_download_ptr_different_data() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -3950,8 +3908,8 @@ fn test_cublas_sgemm_strided_batched_reuse() {
             .import(5, "cl_cuda_sync", 4)
             .import(6, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -3995,7 +3953,6 @@ fn test_cublas_sgemm_strided_batched_reuse() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -4083,8 +4040,8 @@ fn test_cuda_upload_ptr_offset_reuse() {
             .import(3, "cl_cuda_download_ptr", 3)
             .import(4, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -4107,7 +4064,6 @@ fn test_cuda_upload_ptr_offset_reuse() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();
@@ -4205,8 +4161,8 @@ fn test_cuda_launch_named_reuses_named_kernel() {
             .import(4, "cl_cuda_launch_named", 3)
             .import(5, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -4236,7 +4192,6 @@ fn test_cuda_launch_named_reuses_named_kernel() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: memory,
     };
     let mut base = Base::new(config).unwrap();
@@ -4315,8 +4270,8 @@ fn test_cublas_sgemv_reuse() {
             .import(5, "cl_cuda_sync", 4)
             .import(6, "cl_cuda_cleanup", 0)
             .entry(vec![
-                load_trusted(v(1), I64, v(0), 0x8),
-                load_trusted(v(2), I64, v(0), 0x18),
+                iadd_imm(v(1), data_ptr(), 0),
+                iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -4346,7 +4301,6 @@ fn test_cublas_sgemv_reuse() {
     let config = Setup {
         clif: clif_prog.clone(),
         memory_size: mem_size,
-        io_offsets: compact_io_offsets(),
         initial_memory: vec![0u8; mem_size],
     };
     let mut base = Base::new(config).unwrap();

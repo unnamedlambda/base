@@ -15,7 +15,6 @@ mod ffi;
 mod jit;
 
 use crate::jit::THREAD_COMPILED_FNS;
-use base_types::IoOffsets;
 
 #[derive(Debug)]
 pub enum Error {
@@ -31,7 +30,6 @@ pub struct Base {
     mem_ptr: *mut u8,
     clif_fns: Option<Arc<Vec<jit::Compiled>>>,
     _module: Option<cranelift_jit::JITModule>,
-    io_offsets: IoOffsets,
 }
 
 unsafe impl Send for Base {}
@@ -39,26 +37,17 @@ unsafe impl Sync for Base {}
 
 impl Base {
     pub fn new(setup: Setup) -> Result<Self, Error> {
-        let header_end = setup
-            .io_offsets
-            .out_len
-            .saturating_add(std::mem::size_of::<usize>());
-        let needed = setup
-            .memory_size
-            .max(setup.initial_memory.len())
-            .max(header_end);
+        // The arena holds what the program asked for and the image it ships
+        // with, and nothing else: the caller's buffers are arguments, so there
+        // is no header the engine has to make room for.
+        let needed = setup.memory_size.max(setup.initial_memory.len());
         let mut memory = setup.initial_memory;
         memory.resize(needed, 0);
-        Self::from_parts(
-            setup.clif,
-            setup.io_offsets,
-            memory.into_boxed_slice(),
-        )
+        Self::from_parts(setup.clif, memory.into_boxed_slice())
     }
 
     fn from_parts(
         clif: base_types::clif::Program,
-        io_offsets: IoOffsets,
         memory: Box<[u8]>,
     ) -> Result<Self, Error> {
         let _span = info_span!("base_new", memory_size = memory.len()).entered();
@@ -87,7 +76,6 @@ impl Base {
             mem_ptr,
             clif_fns,
             _module: module,
-            io_offsets,
         })
     }
 
@@ -131,27 +119,6 @@ impl Base {
         let _span = info_span!("execute", fn_idx = algorithm.fn_idx).entered();
         info!("starting execution");
 
-        // Write data/out pointer + length into reserved region so CLIF code can access
-        // the caller's buffer directly via pointer (zero-copy).
-        unsafe {
-            std::ptr::write_unaligned(
-                self.memory[self.io_offsets.data_ptr..].as_mut_ptr() as *mut *const u8,
-                data.as_ptr(),
-            );
-            std::ptr::write_unaligned(
-                self.memory[self.io_offsets.data_len..].as_mut_ptr() as *mut usize,
-                data.len(),
-            );
-            std::ptr::write_unaligned(
-                self.memory[self.io_offsets.out_ptr..].as_mut_ptr() as *mut *mut u8,
-                out.as_mut_ptr(),
-            );
-            std::ptr::write_unaligned(
-                self.memory[self.io_offsets.out_len..].as_mut_ptr() as *mut usize,
-                out.len(),
-            );
-        }
-
         if let Some(ref fns) = self.clif_fns {
             let fn_idx = algorithm.fn_idx as usize;
             if fn_idx >= fns.len() {
@@ -161,20 +128,30 @@ impl Base {
                 )));
             }
             debug!(fn_idx, "clif_call");
-            // The arity is the one the function's own entry block declared.
-            // An entry point takes the arena base alone; anything else is not
-            // shaped like one, and calling it would read registers of whatever
-            // happened to be in them.
+            // The caller's buffers are arguments, not a place in the arena the
+            // program is told to look at. The arity is the one the function's
+            // own entry block declared: an entry point takes the arena base
+            // and both buffers, a program with no use for them may take the
+            // base alone, and anything else is not shaped like an entry point
+            // and would read registers of whatever happened to be in them.
             let f = fns[fn_idx];
-            if f.arity != 1 {
-                return Err(Error::Execution(format!(
-                    "fn_idx {fn_idx} takes {} parameters; an entry point takes the memory base alone",
-                    f.arity
-                )));
-            }
             unsafe {
-                let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(f.addr);
-                entry(self.mem_ptr);
+                match f.arity {
+                    5 => {
+                        let entry: unsafe extern "C" fn(*mut u8, *const u8, usize, *mut u8, usize) =
+                            std::mem::transmute(f.addr);
+                        entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len());
+                    }
+                    1 => {
+                        let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(f.addr);
+                        entry(self.mem_ptr);
+                    }
+                    n => {
+                        return Err(Error::Execution(format!(
+                            "fn_idx {fn_idx} takes {n} parameters; an entry point takes the memory base, optionally followed by the input and output buffers"
+                        )));
+                    }
+                }
             }
         }
 

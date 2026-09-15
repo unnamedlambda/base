@@ -25,9 +25,9 @@ open AlgorithmLib.Prog
 
 
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
-  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
-  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
+  let outPtr  ← outPtr
   let n       ← ushrImm dataLen 2
   -- floor(n/16) trips of 16 elements = 64 bytes each
   let mainEnd ← ishlImm (← ushrImm n 4) 6

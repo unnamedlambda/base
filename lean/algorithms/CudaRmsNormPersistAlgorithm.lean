@@ -74,7 +74,7 @@ def CTX_OFF : Nat := 0x10
     N + weights into buf0. -/
 def loadCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
 
   cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
@@ -106,7 +106,7 @@ def loadCode : Prog V L Unit := do
 /-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8. -/
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let n       ← load64 (← absAddr ptr N_OFF)
   let buf0    ← load32 (← absAddr ptr BUF0_OFF)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
@@ -121,8 +121,8 @@ def prepCode : Prog V L Unit := do
     that `ret`, which costs nothing once the backend threads the jump. -/
 def inferCode : Prog V L Unit := do
   let ptr ← basePtr
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  let outLen ← load64 (← absAddr ptr 0x30)
+  let outPtr ← outPtr
+  let outLen ← outLen
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let nBufs  ← iconst32 2
   let one32  ← iconst32 1
@@ -165,7 +165,6 @@ def buildInitialMemory : List UInt8 :=
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda",   CTX_OFF, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"n",          N_OFF, 8⟩,
    ⟨"buf0",       BUF0_OFF, 4⟩,
    ⟨"buf1",       BUF1_OFF, 4⟩,

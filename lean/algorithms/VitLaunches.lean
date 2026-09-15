@@ -113,15 +113,24 @@ theorem vFwd_entry_sound {env' : AlgorithmLib.HProg.FnEnv}
   sound_entry vFwd_entry_ok hsz hpar hr
 
 open AlgorithmLib.IR AlgorithmLib.Clif.Check in
-/-- …not for want of a caller: one pointer parameter, declared `i64`. -/
+/-- …not for want of a caller: the entry parameters --- the arena base and the
+    caller's two buffers with their lengths --- all declared `i64`. -/
 theorem vFwd_entry_arg :
-    TypesAgree (entryTys vFwdBody) #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
+    TypesAgree (entryTys vFwdBody) #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
   typesAgree_of_check (by native_decide)
 
 open AlgorithmLib.IR AlgorithmLib.Clif.Check in
 /-- …and that state has the arity the entry block declares. -/
 theorem vFwd_entry_size :
-    (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size
+    (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size
       = (entryParams vFwdBody).length := by native_decide
 
 end Vit

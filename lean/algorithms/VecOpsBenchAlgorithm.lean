@@ -33,9 +33,9 @@ open AlgorithmLib.Prog
 
 def code : Prog V L Unit := do
   -- Load data_ptr, data_len, out_ptr from reserved region
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
-  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
-  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
+  let outPtr  ← outPtr
   -- n = data_len / 8 (two f32 arrays)
   let n       ← ushrImm dataLen 3
   -- A_ptr = dataPtr, B_ptr = dataPtr + n*4

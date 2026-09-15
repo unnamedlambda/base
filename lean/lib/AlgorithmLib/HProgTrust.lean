@@ -4,7 +4,7 @@ import AlgorithmLib.HProgFrames
 /-!
 # The trusted base, named
 
-Everything a program proved here relies on that is *not* a theorem. Six items,
+Everything a program proved here relies on that is *not* a theorem. Five items,
 and the point of writing them down is that the list does not grow when you write
 another program — which is the whole reason the property-test bridge sits at the
 artifact rather than anywhere else.
@@ -17,10 +17,9 @@ conditions.
 |---|---|---|---|
 | A1 | `Sem.evalOp` is Cranelift's instruction semantics | us | `HProgCorpus`, 365 cases |
 | A2 | `Blocks` is Cranelift's block behavior | us | `HProgCorpus`, 12 CFG shapes |
-| A3 | the entry contract | us | derived — see below |
-| A4 | regions are disjoint, stores are ordered | the runtime | declared |
-| A5 | Cranelift is compositional over A1/A2 | Cranelift | declared |
-| A6 | the frames of the symbols a program calls | us | `HProgFrames.footprint` |
+| A3 | regions are disjoint, stores are ordered | the runtime | declared |
+| A4 | Cranelift is compositional over A1/A2 | Cranelift | declared |
+| A5 | the frames of the symbols a program calls | us | `HProgFrames.footprint` |
 
 A1 and A2 are checked by *executing* small programs through the real Rust path
 and comparing bytes — the artifact is deserialized, decoded, compiled by
@@ -28,11 +27,13 @@ Cranelift and run, so every layer is in the loop on every case. They are checks
 of a finite, program-independent vocabulary: 45 instructions and a handful of
 control-flow constructs. Adding a user program adds no cases.
 
-A3 is not an assumption at all if the emitter derives its accessors from the
-same `IoOffsets` it puts in the artifact, because `Base::execute_into` reads the
-offsets from there rather than from a constant. One source, no gap.
+There is no entry contract to assume. The caller's input and output buffers
+reach a program as entry-block parameters, so there is no offset for the runtime
+and the emitter to agree about, and the arity a function is called with is the
+one its own entry block declares — checked by Cranelift when the function is
+compiled, not asserted here.
 
-A5 is the only item that finite testing cannot reach: it quantifies over
+A4 is the only item that finite testing cannot reach: it quantifies over
 programs, and no number of sampled points settles it. The known way to close it
 is per-artifact translation validation — a formal semantics of the target ISA, a
 decoder for what Cranelift emitted, and a refinement check, as seL4 does for
@@ -45,7 +46,7 @@ namespace AlgorithmLib.HProg.Trust
 open AlgorithmLib.IR
 open AlgorithmLib.HProg
 
-/-- **A4 — the runtime's memory model.**
+/-- **A3 — the runtime's memory model.**
 
     The arena, the caller's input buffer and the caller's output buffer do not
     overlap, and a store is visible to a later load of the same address. The
@@ -57,7 +58,7 @@ open AlgorithmLib.HProg
     would already be relying on it. -/
 axiom regions_disjoint_and_stores_ordered : True
 
-/-- **A5 — Cranelift is compositional over A1 and A2.**
+/-- **A4 — Cranelift is compositional over A1 and A2.**
 
     Every instruction and every control-flow construct behaving as `Sem.evalOp`
     and `Blocks` say does not by itself make an arbitrary *combination* of them
@@ -79,10 +80,10 @@ axiom cranelift_compositional : True
     may write, and no proof about it can be. -/
 def assumes (env : FnEnv) (c : Code) : List (String × Option Frame) := footprint env c
 
-/-- The trusted base of a program, rendered. A1–A5 are fixed; only A6 varies,
+/-- The trusted base of a program, rendered. A1–A4 are fixed; only A5 varies,
     and for most programs it is short or empty. -/
 def report (env : FnEnv) (c : Code) : String :=
-  "A1 instruction semantics, A2 block semantics, A3 entry contract, " ++
-  "A4 memory model, A5 compiler compositionality; A6: " ++ footprintReport env c
+  "A1 instruction semantics, A2 block semantics, A3 memory model, " ++
+  "A4 compiler compositionality; A5: " ++ footprintReport env c
 
 end AlgorithmLib.HProg.Trust

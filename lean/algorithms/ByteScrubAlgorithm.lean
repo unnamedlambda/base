@@ -42,8 +42,7 @@ def scrub (vectors : Nat) (src dst : V .i64) : Prog V L Unit := do
 /-- **What ships.** 256 vectors, so 4096 bytes, from the caller's input to its
     output buffer. -/
 def code : Prog V L Unit := do
-  let p ← basePtr
-  scrub 256 (← load64 (← absAddr p 0x18)) (← load64 (← absAddr p 0x28))
+  scrub 256 (← dataPtr) (← outPtr)
 
 -- ---------------------------------------------------------------------------
 

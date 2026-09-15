@@ -247,7 +247,7 @@ open AlgorithmLib.Prog
 def loadCode (sh : Shape) : Prog V L Unit :=
   do
     let ptr ← basePtr
-    let dataPtr ← load64 (← absAddr ptr 0x18)
+    let dataPtr ← dataPtr
     cudaInit ptr
     let ctxPtr ← cudaCtxPtr ptr
     let aBytes ← iconst64 (sh.m * sh.n * 4)
@@ -302,7 +302,7 @@ def fetchCode (sh : Shape) : Prog V L Unit :=
   do
     let ptr ← basePtr
     let ctxPtr ← cudaCtxPtr ptr
-    let outPtr ← load64 (← absAddr ptr 0x28)
+    let outPtr ← outPtr
     let yId ← load32 (← absAddr ptr Y_ID)
     let yBytes ← iconst64 (sh.m * 4)
     let _ ← ffi .cudaDownload %[ctxPtr, yId, outPtr, yBytes]
@@ -330,7 +330,6 @@ def clifIR (sh : Shape) : Except String Program :=
     be placed on top of one without the check noticing. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"a_id",       A_ID, 4⟩,
    ⟨"x_id",       X_ID, 4⟩,
    ⟨"y_id",       Y_ID, 4⟩]

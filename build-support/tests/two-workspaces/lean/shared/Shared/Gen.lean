@@ -4,7 +4,6 @@ once. -/
 
 def artifact : String :=
   "{\"setup\":{\"clif\":{\"functions\":[]},\"memory_size\":777," ++
-  "\"io_offsets\":{\"data_ptr\":0,\"data_len\":0,\"out_ptr\":0,\"out_len\":0}," ++
   "\"initial_memory\":[]},\"main\":{\"fn_idx\":0,\"output\":[]},\"extras\":{}}"
 
 def main (args : List String) : IO Unit := do

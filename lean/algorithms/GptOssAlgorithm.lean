@@ -142,7 +142,7 @@ theorem gptossMap_ok :
 def gLoadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range GNBUF).zip gBufBytes do
@@ -171,7 +171,7 @@ def gLoadFn : Prog V L Unit :=
 def gBindExperts : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let four ← iconst64 4
   let six ← iconst64 PIECES
   for j in List.range TOPK do
@@ -262,7 +262,7 @@ def gUploadFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let id ← load32 (← absAddr ptr (gBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
@@ -271,7 +271,7 @@ def gFetchFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let id ← load32 (← absAddr ptr (gBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
@@ -447,7 +447,7 @@ def aResident : List Nat :=
 def aLoadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range ANBUF).zip aBufBytes do
@@ -466,7 +466,7 @@ def aUploadStep : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   for (i, b) in [(0, A_X), (1, A_META)] do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt aHostIn i)
     let id ← load32 (← absAddr ptr (aBindOff b))
@@ -498,7 +498,7 @@ def NBLK : Nat := 32 * GptOssKernels.warpsPerCta
 def aStepFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   -- The per-step integers, read here for the contraction shapes and uploaded
   -- unchanged for the kernels: one publication, two readers, no way to
   -- disagree about how long the row is.  Named through the region map rather
@@ -562,7 +562,7 @@ def aFetchFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let id ← load32 (← absAddr ptr (aBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
@@ -748,7 +748,7 @@ def lResident : List Nat :=
 
 def lLoadM : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range LNBUF).zip lBufBytes do
@@ -770,7 +770,7 @@ def lLoadM : Prog V L Unit := do
 def lUploadStepM : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   for (i, b) in [(0, L_X), (1, L_META)] do
     let src ← iaddImm dataPtr (AlgorithmLib.Layout.RegionMap.offAt lHostIn i)
     let id ← load32 (← absAddr ptr (lBindOff b))
@@ -797,7 +797,7 @@ def NBLK : Nat := 32 * warpsPerCta
 /-- **Attention, then the router.** Ends where the host has to decide. -/
 def lAttnM : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let seqLen ← load32 (← iaddImm dataPtr
     (AlgorithmLib.Layout.RegionMap.offAt lHostIn 1 + 4 * M_SEQ))
   let seqLen64 ← uextend64 seqLen
@@ -919,7 +919,7 @@ def lUploadFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let id ← load32 (← absAddr ptr (lBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
@@ -928,7 +928,7 @@ def lUploadFn (b n : Nat) : Prog V L Unit :=
 def lFetchM (b n at_ : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let dst ← iaddImm outPtr at_
   let id ← load32 (← absAddr ptr (lBindOff b))
   let bytes ← iconst64 n

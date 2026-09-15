@@ -83,9 +83,8 @@ def VECTORS : Nat := 256
 
 /-- **What ships.** -/
 def code : Prog V L Unit := do
-  let p ← basePtr
-  let data ← load64 (← absAddr p 0x18)
-  let out : Counters _ SLOTS := ⟨← load64 (← absAddr p 0x28)⟩
+  let data ← dataPtr
+  let out : Counters _ SLOTS := ⟨← outPtr⟩
   countEach needles VECTORS data out
 
 -- ---------------------------------------------------------------------------

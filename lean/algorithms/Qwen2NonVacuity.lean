@@ -295,14 +295,23 @@ theorem attn_entry_sound {env' : AlgorithmLib.HProg.FnEnv}
       r.1.vals (evalPure Env.empty (entryInsts (stateOf inferLayerAttnFn))) :=
   sound_entry attn_entry_ok hsz hpar hr
 
-/-- …not for want of a caller: one pointer parameter, declared `i64`. -/
+/-- …not for want of a caller: the entry parameters — the arena base and the
+    caller's two buffers with their lengths — all declared `i64`. -/
 theorem attn_entry_arg :
     TypesAgree (entryTys (stateOf inferLayerAttnFn))
-      #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
+      #[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+        AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] :=
   typesAgree_of_check (by native_decide)
 
 theorem attn_entry_size :
-    (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size
+    (#[AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+       AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+       AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+       AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0,
+       AlgorithmLib.HProg.Sem.V.sc ClifTy.i64 0] : Array _).size
       = (entryParams (stateOf inferLayerAttnFn)).length := by native_decide
 
 end LaunchModel

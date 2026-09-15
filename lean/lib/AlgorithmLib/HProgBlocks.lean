@@ -240,8 +240,9 @@ def CompileSound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     on: it fixes the entry correspondence — that the term's parameters and the
     compiled entry block's parameters are the same values, in the same order,
     at the same indices. Everything else is built on top of that. -/
-theorem empty_sound (idx : Nat) (env : FnEnv) (a : V) (w : World) (fuel : Nat) :
-    CompileSound idx env ptrParams [] [a] w (fuel + 1) := by
+theorem empty_sound (idx : Nat) (env : FnEnv) (base data dlen out olen : V)
+    (w : World) (fuel : Nat) :
+    CompileSound idx env ptrParams [] [base, data, dlen, out, olen] w (fuel + 1) := by
   have hEmit : ∀ s : CS, emitCode HProg.fuel s [] = s := by
     intro s; simp [emitCode, HProg.fuel]
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, compileBody, ptrParams,
@@ -256,8 +257,9 @@ theorem empty_sound (idx : Nat) (env : FnEnv) (a : V) (w : World) (fuel : Nat) :
     numbering is the identity: slot `i` is `Val i`. That correspondence is what
     the straight-line induction generalises. -/
 theorem single_iconst_sound (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
-    (a : V) (w : World) (fuel : Nat) :
-    CompileSound idx env ptrParams [.straight [.op (.iconst t k)]] [a] w (fuel + 2) := by
+    (base data dlen out olen : V) (w : World) (fuel : Nat) :
+    CompileSound idx env ptrParams [.straight [.op (.iconst t k)]]
+      [base, data, dlen, out, olen] w (fuel + 2) := by
   have hEmit : ∀ s : CS,
       emitCode HProg.fuel s [Piece.straight [Stmt.op (Op.iconst t k)]]
         = emitStmt s (Stmt.op (Op.iconst t k)) := by
@@ -309,9 +311,11 @@ theorem brif_step (env : FnEnv) (s : Blocks.BSt) (flag a b : Val) (cc : ICmpCond
     empty arms and no exported values. Three blocks are emitted where the term
     has one piece, and the run still ends in the same place having observed
     nothing. -/
-theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x : UInt64) (w : World) (fuel : Nat) :
+theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x d dl o ol : UInt64)
+    (w : World) (fuel : Nat) :
     CompileSound idx env ptrParams [.ite ⟨.eq, 0, 0, []⟩ [] [] [] []]
-      [.sc .i64 x] w (fuel + 4) := by
+      [.sc .i64 x, .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol]
+      w (fuel + 4) := by
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, compileBody,
         ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
         emitCode, emitPiece, emitIte, termsGo, HProg.fuel,
@@ -325,16 +329,18 @@ theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x : UInt64) (w : World) (fuel
 /-- **…and it gets the join parameters right.**
 
     Both arms bind a constant and export it. The numbering is the content: the
-    else arm's slot is `2`, not `1`, because `emitIte` numbers it as if the then
-    arm had run — only one of them executes, so without the padding the else
-    arm's own slots would land on the then arm's. That is the correspondence
-    this development has got wrong twice. -/
-theorem ite_exports_sound (idx : Nat) (env : FnEnv) (k1 k2 : Int) (x : UInt64)
+    arms' slots start past the entry parameters, and the else arm's is one
+    higher than the then arm's because `emitIte` numbers it as if the then arm
+    had run — only one of them executes, so without the padding the else arm's
+    own slots would land on the then arm's. That is the correspondence this
+    development has got wrong twice. -/
+theorem ite_exports_sound (idx : Nat) (env : FnEnv) (k1 k2 : Int) (x d dl o ol : UInt64)
     (w : World) (fuel : Nat) :
     CompileSound idx env ptrParams
       [.ite ⟨.eq, 0, 0, [.i64]⟩
-        [.straight [.op (.iconst .i64 k1)]] [.straight [.op (.iconst .i64 k2)]] [1] [2]]
-      [.sc .i64 x] w (fuel + 6) := by
+        [.straight [.op (.iconst .i64 k1)]] [.straight [.op (.iconst .i64 k2)]] [5] [6]]
+      [.sc .i64 x, .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol]
+      w (fuel + 6) := by
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
         Sem.runStmt, compileBody, ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
         emitCode, emitPiece, emitIte, emitStmt, emitStmts, termsGo, HProg.fuel,
@@ -1905,13 +1911,16 @@ theorem compileSound_toE (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : C
     CompileSoundE idx env params c args w fuel := ⟨fuel, h⟩
 
 /-- The base cases at the budget-separated statement. -/
-theorem empty_soundE (idx : Nat) (env : FnEnv) (a : V) (w : World) (fuel : Nat) :
-    CompileSoundE idx env ptrParams [] [a] w (fuel + 1) :=
-  compileSound_toE _ _ _ _ _ _ _ (empty_sound idx env a w fuel)
+theorem empty_soundE (idx : Nat) (env : FnEnv) (base data dlen out olen : V)
+    (w : World) (fuel : Nat) :
+    CompileSoundE idx env ptrParams [] [base, data, dlen, out, olen] w (fuel + 1) :=
+  compileSound_toE _ _ _ _ _ _ _ (empty_sound idx env base data dlen out olen w fuel)
 
 theorem single_iconst_soundE (idx : Nat) (env : FnEnv) (t : ClifTy) (k : Int)
-    (a : V) (w : World) (fuel : Nat) :
-    CompileSoundE idx env ptrParams [.straight [.op (.iconst t k)]] [a] w (fuel + 2) :=
-  compileSound_toE _ _ _ _ _ _ _ (single_iconst_sound idx env t k a w fuel)
+    (base data dlen out olen : V) (w : World) (fuel : Nat) :
+    CompileSoundE idx env ptrParams [.straight [.op (.iconst t k)]]
+      [base, data, dlen, out, olen] w (fuel + 2) :=
+  compileSound_toE _ _ _ _ _ _ _
+    (single_iconst_sound idx env t k base data dlen out olen w fuel)
 
 end AlgorithmLib.HProg

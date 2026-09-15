@@ -1525,23 +1525,23 @@ def bufTable : List (AlgorithmLib.Clif.BufDesc × Buf) :=
   , (.near 132, 15)    -- meta [token, pos, seqLen, chunks, tail, rem]
   , (.near 1592, 16)   -- RoPE sin/cos table
   -- per-layer weights, reached through the layer base
-  , (.far 8 0,  17)    -- attention norm weight
-  , (.far 8 8,  18)    -- q bias
-  , (.far 8 16, 19)    -- k bias
-  , (.far 8 24, 20)    -- v bias
-  , (.far 8 32, 21)    -- feed-forward norm weight
-  , (.far 8 48, 22)    -- key cache
-  , (.far 8 52, 23)    -- value cache
+  , (.far 12 0,  17)    -- attention norm weight
+  , (.far 12 8,  18)    -- q bias
+  , (.far 12 16, 19)    -- k bias
+  , (.far 12 24, 20)    -- v bias
+  , (.far 12 32, 21)    -- feed-forward norm weight
+  , (.far 12 48, 22)    -- key cache
+  , (.far 12 52, 23)    -- value cache
   -- the projection matrices.  These never appear in a bind array — every one
   -- is a vendor GEMV's `A` argument — but they are buffers a `DeclaredStep`
   -- names, so they are numbered by the same function rather than by hand.
-  , (.far 8 4,  24)    -- Wq
-  , (.far 8 12, 25)    -- Wk
-  , (.far 8 20, 26)    -- Wv
-  , (.far 8 28, 27)    -- Wo
-  , (.far 8 36, 28)    -- W_gate
-  , (.far 8 40, 29)    -- W_up
-  , (.far 8 44, 30)    -- W_down
+  , (.far 12 4,  24)    -- Wq
+  , (.far 12 12, 25)    -- Wk
+  , (.far 12 20, 26)    -- Wv
+  , (.far 12 28, 27)    -- Wo
+  , (.far 12 36, 28)    -- W_gate
+  , (.far 12 40, 29)    -- W_up
+  , (.far 12 44, 30)    -- W_down
   , (.near 112, 31) ]  -- the LM head
 
 /-- A handle not in the table — in practice a slot the kernel does not use.
@@ -1580,20 +1580,20 @@ def B_SC   : Buf := bufOf (.near 124)
 def B_PR   : Buf := bufOf (.near 128)
 def B_META : Buf := bufOf (.near 132)
 def B_TBL  : Buf := bufOf (.near 1592)
-def B_ANW  : Buf := bufOf (.far 8 0)
-def B_BQ   : Buf := bufOf (.far 8 8)
-def B_BK   : Buf := bufOf (.far 8 16)
-def B_BV   : Buf := bufOf (.far 8 24)
-def B_NW   : Buf := bufOf (.far 8 32)    -- feed-forward norm weight
-def B_KC   : Buf := bufOf (.far 8 48)
-def B_VC   : Buf := bufOf (.far 8 52)
-def B_WQ   : Buf := bufOf (.far 8 4)
-def B_WK   : Buf := bufOf (.far 8 12)
-def B_WV   : Buf := bufOf (.far 8 20)
-def B_WO   : Buf := bufOf (.far 8 28)
-def B_WG   : Buf := bufOf (.far 8 36)
-def B_WU   : Buf := bufOf (.far 8 40)
-def B_WD   : Buf := bufOf (.far 8 44)
+def B_ANW  : Buf := bufOf (.far 12 0)
+def B_BQ   : Buf := bufOf (.far 12 8)
+def B_BK   : Buf := bufOf (.far 12 16)
+def B_BV   : Buf := bufOf (.far 12 24)
+def B_NW   : Buf := bufOf (.far 12 32)    -- feed-forward norm weight
+def B_KC   : Buf := bufOf (.far 12 48)
+def B_VC   : Buf := bufOf (.far 12 52)
+def B_WQ   : Buf := bufOf (.far 12 4)
+def B_WK   : Buf := bufOf (.far 12 12)
+def B_WV   : Buf := bufOf (.far 12 20)
+def B_WO   : Buf := bufOf (.far 12 28)
+def B_WG   : Buf := bufOf (.far 12 36)
+def B_WU   : Buf := bufOf (.far 12 40)
+def B_WD   : Buf := bufOf (.far 12 44)
 def B_LMH  : Buf := bufOf (.near 112)
 
 /-- Every buffer the plans below name. -/
@@ -1615,7 +1615,7 @@ theorem bufOf_spare_unused :
 -- ── The feed-forward half's binds, from its recovered arrays ───────────────
 
 /-- The three arrays `Clif.bindsOf` reads out of `inferLayerFfnFn`, in order. -/
-def BS_FFN_NORM : List AlgorithmLib.Clif.BufDesc := [.near 72, .far 8 32, .near 76]
+def BS_FFN_NORM : List AlgorithmLib.Clif.BufDesc := [.near 72, .far 12 32, .near 76]
 def BS_FFN_SILU : List AlgorithmLib.Clif.BufDesc := [.near 96, .near 100, .near 104]
 def BS_FFN_ADD  : List AlgorithmLib.Clif.BufDesc := [.near 72, .near 92]
 
@@ -2262,14 +2262,14 @@ theorem ropeStage_exclusive (im : Buf → Nat → Nat) (grid : Nat) :
 /-- The ten arrays `Clif.bindsOf` reads out of `inferLayerAttnFn`, in order.
     Every one of them is a value the scan recovered from the emitted stores;
     the binds below are computed from them. -/
-def BS_A_NORM  : List AlgorithmLib.Clif.BufDesc := [.near 72, .far 8 0, .near 76]
-def BS_A_BIASQ : List AlgorithmLib.Clif.BufDesc := [.near 80, .far 8 8]
-def BS_A_BIASK : List AlgorithmLib.Clif.BufDesc := [.near 84, .far 8 16]
-def BS_A_BIASV : List AlgorithmLib.Clif.BufDesc := [.near 88, .far 8 24]
+def BS_A_NORM  : List AlgorithmLib.Clif.BufDesc := [.near 72, .far 12 0, .near 76]
+def BS_A_BIASQ : List AlgorithmLib.Clif.BufDesc := [.near 80, .far 12 8]
+def BS_A_BIASK : List AlgorithmLib.Clif.BufDesc := [.near 84, .far 12 16]
+def BS_A_BIASV : List AlgorithmLib.Clif.BufDesc := [.near 88, .far 12 24]
 def BS_A_ROPEQ : List AlgorithmLib.Clif.BufDesc := [.near 80, .near 132, .near 1592]
 def BS_A_ROPEK : List AlgorithmLib.Clif.BufDesc := [.near 84, .near 132, .near 1592]
-def BS_A_KVK   : List AlgorithmLib.Clif.BufDesc := [.near 84, .far 8 48, .near 132]
-def BS_A_KVV   : List AlgorithmLib.Clif.BufDesc := [.near 88, .far 8 52, .near 132]
+def BS_A_KVK   : List AlgorithmLib.Clif.BufDesc := [.near 84, .far 12 48, .near 132]
+def BS_A_KVV   : List AlgorithmLib.Clif.BufDesc := [.near 88, .far 12 52, .near 132]
 def BS_A_SOFT  : List AlgorithmLib.Clif.BufDesc := [.near 124, .near 132, .near 128]
 def BS_A_ADD   : List AlgorithmLib.Clif.BufDesc := [.near 72, .near 76]
 

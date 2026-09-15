@@ -48,9 +48,9 @@ abbrev fnCleanup : Ffi := .cudaCleanup
 
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
+  let outPtr  ← outPtr
 
 
   let ctxSlotPtr ← absAddr ptr 0x10   -- ContextSlots.cuda
@@ -106,7 +106,6 @@ def buildInitialMemory : List UInt8 :=
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda",   ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"ptx",        PTX_SOURCE_OFF, BIND_DESC_OFF - PTX_SOURCE_OFF⟩,
    ⟨"bind",       BIND_DESC_OFF, MEM_SIZE - BIND_DESC_OFF⟩]
 

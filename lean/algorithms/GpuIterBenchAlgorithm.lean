@@ -66,9 +66,9 @@ abbrev fnCleanup : Ffi := .gpuCleanup
 
 open AlgorithmLib.Prog in
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
-  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
-  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
+  let outPtr  ← outPtr
 
   -- Read passes from payload start
   let passes    ← load64 dataPtr
@@ -159,7 +159,6 @@ def buildInitialMemory : List UInt8 :=
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_wgpu",      ContextSlots.wgpu, 8⟩,
-   ⟨"io_offsets",    0x18, 0x20⟩,
    ⟨"scale_shader",  SCALE_SHADER_OFF, REDUCE_SHADER_OFF - SCALE_SHADER_OFF⟩,
    ⟨"reduce_shader", REDUCE_SHADER_OFF, SCALE_BIND_OFF - REDUCE_SHADER_OFF⟩,
    ⟨"scale_bind",    SCALE_BIND_OFF, REDUCE_BIND_OFF - SCALE_BIND_OFF⟩,

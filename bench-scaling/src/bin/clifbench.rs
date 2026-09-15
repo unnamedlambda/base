@@ -10,7 +10,7 @@
 //! `file<TAB>bytes<TAB>seconds` line per input.
 
 use base::{Base, Setup};
-use base_types::{Artifact, IoOffsets};
+use base_types::Artifact;
 
 fn main() {
     for path in std::env::args().skip(1) {
@@ -32,7 +32,6 @@ fn main() {
         let setup = Setup {
             clif: artifact.setup.clif,
             memory_size: 1 << 20,
-            io_offsets: IoOffsets { data_ptr: 8, data_len: 16, out_ptr: 24, out_len: 32 },
             initial_memory: Vec::new(),
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();

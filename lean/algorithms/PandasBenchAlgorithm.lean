@@ -27,9 +27,9 @@ open AlgorithmLib.Prog
 
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
-  let outPtr  ← load64 (← absAddr ptr 0x28)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
+  let outPtr  ← outPtr
   let accBase ← absAddr ptr ACC_OFF
   let dataEnd ← iadd dataPtr dataLen
   let zero    ← iconst64 0

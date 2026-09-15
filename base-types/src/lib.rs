@@ -24,20 +24,11 @@ pub struct OutputBatchSchema {
     pub row_count_offset: usize,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IoOffsets {
-    pub data_ptr: usize,
-    pub data_len: usize,
-    pub out_ptr: usize,
-    pub out_len: usize,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Setup {
     /// The program the runtime compiles.
     pub clif: clif::Program,
     pub memory_size: usize,
-    pub io_offsets: IoOffsets,
     #[serde(default)]
     pub initial_memory: Vec<u8>,
 }

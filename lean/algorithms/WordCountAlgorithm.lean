@@ -137,7 +137,7 @@ def emitFormatPhase (ptr ctxPtr : V .i64) : Prog V L (V .i64) := do
 
 def mainCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let zero ← iconst64 0
 
   let afterIn ← emitCopyPath ptr dataPtr zero INPUT_PATH_OFF
@@ -166,8 +166,7 @@ def clifIR : Except String Program :=
     input and output descriptors, so naming those is what stops an offset being
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"io_offsets",  0x18, 0x20⟩,
-   ⟨"current_key", CURRENT_KEY, 8⟩,
+  [⟨"current_key", CURRENT_KEY, 8⟩,
    ⟨"new_value",   NEW_VALUE, 8⟩,
    ⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
    ⟨"output_path", OUTPUT_PATH_OFF, RESULT_SLOT - OUTPUT_PATH_OFF⟩,

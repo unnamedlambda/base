@@ -303,7 +303,6 @@ def bindOff (i : Nat) : Nat := BIND_OFF + 4 * i
 /-- **Every byte this program names**, not only its PTX slots. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"host_len", HOST_LEN_OFF, 8⟩]
     ++ (List.range NSLOT).map (fun i => ⟨s!"ptx{i}", slotOff i, SLOT⟩)
     ++ [⟨"bind", BIND_OFF, 4 * NBUF⟩, ⟨"local", LOCAL_OFF, 4 * 8⟩]
@@ -441,7 +440,7 @@ open AlgorithmLib.Prog
 
 def loadCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range NBUF).zip bufBytes do
@@ -461,7 +460,7 @@ def uploadCode (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let id ← load32 (← absAddr ptr (bindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
@@ -471,7 +470,7 @@ def fetchCode (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let id ← load32 (← absAddr ptr (bindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
@@ -2131,7 +2130,6 @@ def QGRAPH_OFF : Nat := 0x0094
     unchecked against the slots below it. -/
 def qMemMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"host_len", QHOST_LEN_OFF, 8⟩,
    ⟨"stream",   QSTREAM_OFF, 4⟩,
    ⟨"graph",    QGRAPH_OFF, 4⟩]
@@ -2146,7 +2144,7 @@ theorem qwenMap_ok :
 def qLoadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range QNBUF).zip qBufBytes do
@@ -2163,7 +2161,7 @@ def qUploadFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let id ← load32 (← absAddr ptr (qBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
@@ -2172,7 +2170,7 @@ def qFetchFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let id ← load32 (← absAddr ptr (qBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
@@ -2341,7 +2339,7 @@ theorem qwen_capture_records_the_run :
   -- The witness is the stream value's SSA id.  It appears only here: the
   -- statement quantifies over it, so an edit that shifts the numbering breaks
   -- this proof rather than changing what is claimed.
-  ⟨2548, by native_decide, rfl, rfl⟩
+  ⟨2552, by native_decide, rfl, rfl⟩
 
 /-- **The captured step, replayed `k` times.**
 
@@ -2721,8 +2719,7 @@ def MMEM_SIZE : Nat := MLOCAL_OFF + 4 * 8 + 0x100
 
 /-- **Every byte this program names**, the launch scratch included. -/
 def mMemMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩]
+  [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩]
     ++ (List.range moeTape.length).map (fun i => ⟨s!"ptx{i}", qSlotOff i, QSLOT⟩)
     ++ [⟨"bind", MBIND_OFF, 4 * MNBUF⟩, ⟨"local", MLOCAL_OFF, 4 * 8⟩]
 
@@ -2736,7 +2733,7 @@ theorem moeMap_ok :
 def mLoadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range MNBUF).zip mBufBytes do
@@ -2766,7 +2763,7 @@ def mLoadFn : Prog V L Unit :=
 def mBindExperts : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let four ← iconst64 4
   let three ← iconst64 3
   for j in List.range MUSED do
@@ -2816,7 +2813,7 @@ def mUploadFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let id ← load32 (← absAddr ptr (mBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
@@ -2825,7 +2822,7 @@ def mFetchFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let id ← load32 (← absAddr ptr (mBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]

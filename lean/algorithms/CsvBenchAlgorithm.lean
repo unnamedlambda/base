@@ -31,7 +31,7 @@ abbrev fnWrite : Ffi := .fileWrite
 
 def code : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let zero    ← iconst64 0
   let zero32  ← iconst32 0
 
@@ -189,8 +189,7 @@ def clifIR : Except String Program :=
     input and output descriptors, so naming those is what stops an offset being
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"io_offsets",  0x18, 0x20⟩,
-   ⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
+  [⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
    ⟨"output_path", OUTPUT_PATH_OFF, LEFT_VAL - OUTPUT_PATH_OFF⟩,
    ⟨"left_val",    LEFT_VAL, CSV_DATA - LEFT_VAL⟩,
    ⟨"csv_data",    CSV_DATA, MAX_CSV_BYTES⟩]

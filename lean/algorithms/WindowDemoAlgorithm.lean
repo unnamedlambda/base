@@ -121,8 +121,8 @@ def blitShaderSource : String :=
   "}\n"
 
 -- Memory layout --------------------------------------------------------------
--- `reserved` covers 0x00..0x40 (ht/wgpu/cuda ctx slots, the IoOffsets region,
--- and the window ctx slot at 0x38). All game state is i64 for clean 8-byte
+-- `reserved` covers 0x00..0x40 (ht/wgpu/cuda ctx slots, an unused gap, and
+-- the window ctx slot at 0x38). All game state is i64 for clean 8-byte
 -- load/store; only `params` (the GPU uniform) is packed u32.
 structure Fields where
   reserved    : Fld (.bytes 64)

@@ -18,36 +18,9 @@ instance : ToJson UInt32 where
 instance : ToJson UInt64 where
   toJson n := toJson n.toNat
 
-/-- Offsets in shared memory where the Rust host writes the caller's input and
-    output buffer pointers + lengths before each `execute`. CLIF code reads from
-    these slots to access the caller's buffers. -/
-structure IoOffsets where
-  dataPtr : Nat := 0x18
-  dataLen : Nat := 0x20
-  outPtr  : Nat := 0x28
-  outLen  : Nat := 0x30
-  deriving Repr
-
-instance : ToJson IoOffsets where
-  toJson h := Json.mkObj [
-    ("data_ptr", toJson h.dataPtr),
-    ("data_len", toJson h.dataLen),
-    ("out_ptr",  toJson h.outPtr),
-    ("out_len",  toJson h.outLen)
-  ]
-
-namespace IoOffsets
-
-def default : IoOffsets := {}
-
-def byteSize : Nat := 56
-
-end IoOffsets
-
 structure Setup where
   clif : IR.Program
   memory_size : Nat
-  io_offsets : IoOffsets := {}
   initial_memory : List UInt8 := []
 
 namespace ContextSlots
@@ -55,8 +28,8 @@ namespace ContextSlots
 def ht : Nat := 0x00
 def wgpu : Nat := 0x08
 def cuda : Nat := 0x10
--- 0x18..0x38 is the IoOffsets region (data/out ptr+len); the window context
--- pointer goes in the first free 8-byte slot after it.
+-- 0x18..0x38 is unused; the window context pointer sits past it, where it
+-- has always been, so no generator's layout moves.
 def window : Nat := 0x38
 
 end ContextSlots
@@ -65,7 +38,6 @@ instance : ToJson Setup where
   toJson c := Json.mkObj [
     ("clif", toJson c.clif),
     ("memory_size", toJson c.memory_size),
-    ("io_offsets", toJson c.io_offsets),
     ("initial_memory", toJson c.initial_memory)
   ]
 

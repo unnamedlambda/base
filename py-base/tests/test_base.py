@@ -41,7 +41,9 @@ def load32(d, addr, off=0): return _load(d, "Plain", "I32", addr, off)
 
 
 
-# CLIF reads data_ptr (offset 0x08), data_len (offset 0x10), out_ptr (offset 0x18).
+# The entry block is called with the arena base, then the caller's input buffer
+# and its length and the caller's output buffer and its length. Naming them 3, 6
+# and 9 lets the body below refer to them the way it always has.
 # Copies each i32 from data to out, multiplied by 2.
 
 DOUBLE_I32_PROG = program([
@@ -51,16 +53,7 @@ DOUBLE_I32_PROG = program([
         ]),
     ]),
     function(1, [
-        block(0, [0], [
-            iconst64(1, 8),
-            iadd(2, 0, 1),
-            load64(3, 2),
-            iconst64(4, 16),
-            iadd(5, 0, 4),
-            load64(6, 5),
-            iconst64(7, 24),
-            iadd(8, 0, 7),
-            load64(9, 8),
+        block(0, [0, 3, 6, 9, 99], [
             iconst64(10, 2),
             ushr(11, 6, 10),
             iconst64(20, 0),
@@ -167,19 +160,12 @@ ARROW_PROG = program([
 ])
 
 
-COMPACT_IO_OFFSETS = {
-    "data_ptr": 8,
-    "data_len": 16,
-    "out_ptr": 24,
-    "out_len": 32,
-}
 
 
 def make_double_config():
     return json.dumps({
         "clif": DOUBLE_I32_PROG,
         "memory_size": 256,
-        "io_offsets": COMPACT_IO_OFFSETS,
         "initial_memory": [0] * 256,
     })
 
@@ -192,7 +178,6 @@ def make_arrow_config():
     return json.dumps({
         "clif": ARROW_PROG,
         "memory_size": 1024,
-        "io_offsets": COMPACT_IO_OFFSETS,
         "initial_memory": [0] * 1024,
     })
 
@@ -310,7 +295,6 @@ class TestBase:
         config_json = json.dumps({
             "clif": program([function(0, [block(0, [0], [store(9, 0), ret()])])]),
             "memory_size": 256,
-            "io_offsets": COMPACT_IO_OFFSETS,
             "initial_memory": [0] * 256,
         })
         with pytest.raises(ValueError, match="Base::new failed"):
@@ -565,7 +549,6 @@ class TestArrowEmpty:
         config = Setup(json.dumps({
             "clif": noop,
             "memory_size": 256,
-            "io_offsets": COMPACT_IO_OFFSETS,
             "initial_memory": [0] * 256,
         }))
         alg = Algorithm(json.dumps({

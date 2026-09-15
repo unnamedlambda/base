@@ -79,7 +79,7 @@ def FILE_LM_HEAD_OFF   : Nat := FILE_RMS_FINAL_OFF + D_BYTES
 
 -- ── Shared memory layout ─────────────────────────────────────────────────────
 
--- 0x0000-0x0037: IoOffsets (56 bytes, written by runtime)
+-- 0x0000-0x0037: reserved header (56 bytes: context slots, then unused)
 def PINNED_HOST_PTR_OFF : Nat := 0x0038  -- i64: host ptr of pinned scratch buffer (cl_cuda_pinned_ptr)
 def PINNED_ID_OFF       : Nat := 0x0040  -- i32: pinned buffer id (for free at finalize)
 
@@ -312,15 +312,15 @@ def ownFirstId : Nat :=
   (IR.Ffi.all.filter (fun f => ownBundles.contains f.bundle)).foldl
     (fun m f => max m (f.id + 1)) 0
 
-/-- One reference per own function, in `ownFns` order. Each takes the
-    descriptor pointer and returns nothing; the declaration travels with the
-    reference, so a body that calls one declares it and a body that does not
-    never mentions it. -/
-def ownRef (i : Nat) : Prog.LocalRef [ClifTy.i64] none :=
+/-- One reference per own function, in `ownFns` order. Each is an entry point
+    in its own right as well as a callee, so it takes what an entry point takes
+    and returns nothing; the declaration travels with the reference, so a body
+    that calls one declares it and a body that does not never mentions it. -/
+def ownRef (i : Nat) : Prog.LocalRef HProg.ptrParams none :=
   { id := ownFirstId + i, callee := .import ((ownFns[i]?).getD ""), colocated := true }
 
 /-- Every function of this program any other one calls, by name. -/
-abbrev OwnRef := Prog.LocalRef [ClifTy.i64] none
+abbrev OwnRef := Prog.LocalRef HProg.ptrParams none
 
 structure Q2Own where
   fnInfer : OwnRef
@@ -546,7 +546,7 @@ private def walkPastNull (start : V .i64) : Prog V L (V .i64) := do
     in shared memory so later actions can locate their argument. -/
 def parseArgsFn : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   storeI64 dataPtr (← absAddr ptr WEIGHTS_PATH_PTR_OFF)
   let tokenizerPtr ← walkPastNull dataPtr
   storeI64 tokenizerPtr (← absAddr ptr TOKENIZER_PATH_PTR_OFF)
@@ -903,7 +903,7 @@ def inferFn : Prog V L Unit := do
   let ptr ← basePtr
   -- Declare colocated callees
 
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
 
   -- Read token_id and pos from host data
   let pos32   ← load32 (← iaddImm dataPtr 4)
@@ -928,8 +928,8 @@ def inferFn : Prog V L Unit := do
   let nLayers ← iconst64 N_LAYERS
   forLoop nLayers fun layerIdx => do
     storeI64 layerIdx (← absAddr ptr LAYER_IDX_OFF)
-    callLocalVoid q.fnLayerStep %[ptr]
-  callLocalVoid q.fnFinalStep %[ptr]
+    callLocalVoid q.fnLayerStep (← entryArgs)
+  callLocalVoid q.fnFinalStep (← entryArgs)
 
 
 -- ── Attention helper types and sub-builders ───────────────────────────────────
@@ -1092,7 +1092,7 @@ def ffnBody
 /-- inferFinalFn (fn_31): final RMSNorm → lm_head → argmax → sync → download next_token. -/
 def inferFinalFn : Prog V L Unit := do
   let ptr ← basePtr
-  let outPtr  ← load64At ptr 0x28
+  let outPtr  ← outPtr
   let bufHidden   ← slotLoad slotHidden   ptr
   let bufHdNorm   ← slotLoad slotHdNorm   ptr
   let bufRmsFinal ← slotLoad slotRmsFinal ptr
@@ -1152,13 +1152,13 @@ def detokenizeFn : Prog V L Unit := do
     Exits when stdin closes (EOF). -/
 def cliFn : Prog V L Unit := do
   let ptr ← basePtr
-  -- Colocated callees
-  -- Stdin/stdout FFI
-  -- Redirect inferFn's data_ptr and out_ptr to our step buffers
+  -- `inferFn` reads [token_id, pos] from its input buffer and writes
+  -- [token_id, pos] to its output buffer. Here both are this function's own
+  -- step buffers rather than the caller's, which every call below says by
+  -- passing them.
   let inferInAddr ← absAddr ptr INFER_IN_OFF
   let inferOutAddr ← absAddr ptr INFER_OUT_OFF
-  storeI64 inferInAddr  (← absAddr ptr 0x18)
-  storeI64 inferOutAddr (← absAddr ptr 0x28)
+  let stepLen ← iconst64 8
   -- Constants
   let zero64    ← iconst64 0
   let maxRecv   ← iconst64 MAX_RECV
@@ -1201,7 +1201,7 @@ def cliFn : Prog V L Unit := do
       let tok ← load32 (← iadd (← iaddImm ptr SYSTEM_TOKENS_OFF) off)
       storeI32 tok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 i) (← absAddr ptr (INFER_IN_OFF + 4))
-      callLocalVoid q.fnInfer %[ptr]
+      callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
       return %[← iaddImm i 1])
 
   -- One turn per iteration; an empty read ends the session.
@@ -1231,8 +1231,8 @@ def cliFn : Prog V L Unit := do
         (pure %[len1])
       let tsLen := l2.head
       storeI64 tsLen (← absAddr ptr TEXT_LEN_OFF)
-      callLocalVoid q.fnTokInit %[ptr]
-      callLocalVoid q.fnTokBpe  %[ptr]
+      callLocalVoid q.fnTokInit (← entryArgs)
+      callLocalVoid q.fnTokBpe  (← entryArgs)
       let rawPromptN ← load64At ptr TOKEN_COUNT_OFF
 
       -- room for the chat prefix: shift the prompt up, highest index first
@@ -1280,7 +1280,7 @@ def cliFn : Prog V L Unit := do
           let absPos ← iadd runningPos i
           storeI32 tok (← absAddr ptr INFER_IN_OFF)
           storeI32 (← ireduce32 absPos) (← absAddr ptr (INFER_IN_OFF + 4))
-          callLocalVoid q.fnInfer %[ptr]
+          callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
           return %[← iaddImm i 1])
 
       -- decode until an end-of-turn token or the budget
@@ -1303,25 +1303,25 @@ def cliFn : Prog V L Unit := do
           storeI32 tok (← iadd tokBuf (← ishlImm nOut 2))
           storeI32 tok (← absAddr ptr INFER_IN_OFF)
           storeI32 (← ireduce32 pos) (← absAddr ptr (INFER_IN_OFF + 4))
-          callLocalVoid q.fnInfer %[ptr]
+          callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
           let nextTok ← load32 (← absAddr ptr INFER_OUT_OFF)
           return %[← iaddImm pos 1, nextTok, ← iaddImm nOut 1])
       let wrNOut := dec.head
 
       -- detokenize, print, then close the assistant turn in the cache
       storeI64 wrNOut (← absAddr ptr TOKEN_COUNT_OFF)
-      callLocalVoid q.fnDetok %[ptr]
+      callLocalVoid q.fnDetok (← entryArgs)
       let outLen ← load64At ptr TEXT_LEN_OFF
       istore8 (← iconst32 10) (← iadd textOutPtr outLen)
       let _ ← ffi .stdoutWrite %[ptr, textOutOff64, (← iaddImm outLen 1)]
       let endImPos ← iadd runningPos (← iadd nPrompt wrNOut)
       storeI32 imEndTok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 endImPos) (← absAddr ptr (INFER_IN_OFF + 4))
-      callLocalVoid q.fnInfer %[ptr]
+      callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
       let endNlPos ← iaddImm endImPos 1
       storeI32 nlTok (← absAddr ptr INFER_IN_OFF)
       storeI32 (← ireduce32 endNlPos) (← absAddr ptr (INFER_IN_OFF + 4))
-      callLocalVoid q.fnInfer %[ptr]
+      callLocalVoid q.fnInfer %[ptr, inferInAddr, stepLen, inferOutAddr, stepLen]
       storeI64 (← iaddImm endNlPos 1) (← absAddr ptr RUNNING_POS_OFF)
       return %[])
 
@@ -1394,8 +1394,7 @@ def buildInitialMemoryTail : List UInt8 :=
 -- ── The memory map, as data ──────────────────────────────────────────────────
 
 def memMap : RegionMap :=
-  [ ⟨"io_offsets",         0x0000, 0x38⟩,
-    ⟨"pinned_host_ptr",    PINNED_HOST_PTR_OFF, 8⟩,
+  [ ⟨"pinned_host_ptr",    PINNED_HOST_PTR_OFF, 8⟩,
     ⟨"pinned_id",          PINNED_ID_OFF, 4⟩,
     -- 16 typed buffer-id slots, 0x0048..0x0088
     ⟨"buffer_slots",       0x0048, 16 * 4⟩,
@@ -1783,11 +1782,11 @@ private def FR : BufDesc := .const 1040187392   -- 1/8, the 1/√head_dim scale
 def attnOps : List DeviceOp :=
   [ klOp PTX_RMS_OFF     3 BIND_RMS1   1   BS_A_NORM
   , vlOp "cl_cublas_sgemv"
-      [.near 16, .const 1, .const 896, .const 896, F1, .far 8 4,  .near 76, .const 0, .near 80]
+      [.near 16, .const 1, .const 896, .const 896, F1, .far 12 4,  .near 76, .const 0, .near 80]
   , vlOp "cl_cublas_sgemv"
-      [.near 16, .const 1, .const 896, .const 128, F1, .far 8 12, .near 76, .const 0, .near 84]
+      [.near 16, .const 1, .const 896, .const 128, F1, .far 12 12, .near 76, .const 0, .near 84]
   , vlOp "cl_cublas_sgemv"
-      [.near 16, .const 1, .const 896, .const 128, F1, .far 8 20, .near 76, .const 0, .near 88]
+      [.near 16, .const 1, .const 896, .const 128, F1, .far 12 20, .near 76, .const 0, .near 88]
   , klOp PTX_BIAS_D_OFF  2 BIND_BIAS_Q 28  BS_A_BIASQ
   , klOp PTX_BIAS_KV_OFF 2 BIND_BIAS_K 4   BS_A_BIASK
   , klOp PTX_BIAS_KV_OFF 2 BIND_BIAS_V 4   BS_A_BIASV
@@ -1797,27 +1796,27 @@ def attnOps : List DeviceOp :=
   , klOp PTX_KVSTORE_OFF 3 BIND_KV_V   2   BS_A_KVV
   , vlOp "cl_cublas_sgemm_strided_batched"
       [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
-       .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
+       .far 12 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
        .opaque, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
   , klOp PTX_SOFTMAX_OFF 3 BIND_SOFTMAX 14 BS_A_SOFT
   , vlOp "cl_cublas_sgemm_strided_batched"
       [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
-       .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
+       .far 12 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
        .const 448, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0]
   , vlOp "cl_cublas_sgemv"
-      [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76]
+      [.near 16, .const 1, .const 896, .const 896, F1, .far 12 28, .near 92, .const 0, .near 76]
   , klOp PTX_ADD_OFF     2 BIND_ADD1   28  BS_A_ADD ]
 
 /-- **…and the feed-forward half's.** -/
 def ffnOps : List DeviceOp :=
   [ klOp PTX_RMS_OFF  3 BIND_RMS2 1   BS_FFN_NORM
   , vlOp "cl_cublas_sgemv"
-      [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 36, .near 76, .const 0, .near 96]
+      [.near 16, .const 1, .const 896, .const 4864, F1, .far 12 36, .near 76, .const 0, .near 96]
   , vlOp "cl_cublas_sgemv"
-      [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 40, .near 76, .const 0, .near 100]
+      [.near 16, .const 1, .const 896, .const 4864, F1, .far 12 40, .near 76, .const 0, .near 100]
   , klOp PTX_SILU_OFF 3 BIND_SILU 152 BS_FFN_SILU
   , vlOp "cl_cublas_sgemv"
-      [.near 16, .const 1, .const 4864, .const 896, F1, .far 8 44, .near 104, .const 0, .near 92]
+      [.near 16, .const 1, .const 4864, .const 896, F1, .far 12 44, .near 104, .const 0, .near 92]
   , klOp PTX_ADD_OFF  2 BIND_ADD2 28  BS_FFN_ADD ]
 
 
@@ -1842,11 +1841,11 @@ def attnDriver (fnOf : String → FnRef) : HStmt :=
   HStmt.seqs
     [ .launch (kStep PTX_RMS_OFF     3 BIND_RMS1   1   BS_A_NORM)
     , .extern (vStep fnOf "cl_cublas_sgemv"
-        [.near 16, .const 1, .const 896, .const 896, F1, .far 8 4,  .near 76, .const 0, .near 80])
+        [.near 16, .const 1, .const 896, .const 896, F1, .far 12 4,  .near 76, .const 0, .near 80])
     , .extern (vStep fnOf "cl_cublas_sgemv"
-        [.near 16, .const 1, .const 896, .const 128, F1, .far 8 12, .near 76, .const 0, .near 84])
+        [.near 16, .const 1, .const 896, .const 128, F1, .far 12 12, .near 76, .const 0, .near 84])
     , .extern (vStep fnOf "cl_cublas_sgemv"
-        [.near 16, .const 1, .const 896, .const 128, F1, .far 8 20, .near 76, .const 0, .near 88])
+        [.near 16, .const 1, .const 896, .const 128, F1, .far 12 20, .near 76, .const 0, .near 88])
     , .launch (kStep PTX_BIAS_D_OFF  2 BIND_BIAS_Q 28  BS_A_BIASQ)
     , .launch (kStep PTX_BIAS_KV_OFF 2 BIND_BIAS_K 4   BS_A_BIASK)
     , .launch (kStep PTX_BIAS_KV_OFF 2 BIND_BIAS_V 4   BS_A_BIASV)
@@ -1856,15 +1855,15 @@ def attnDriver (fnOf : String → FnRef) : HStmt :=
     , .launch (kStep PTX_KVSTORE_OFF 3 BIND_KV_V   2   BS_A_KVV)
     , .extern (vStep fnOf "cl_cublas_sgemm_strided_batched"
         [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
-         .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
+         .far 12 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
          .opaque, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0])
     , .launch (kStep PTX_SOFTMAX_OFF 3 BIND_SOFTMAX 14 BS_A_SOFT)
     , .extern (vStep fnOf "cl_cublas_sgemm_strided_batched"
         [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
-         .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
+         .far 12 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
          .const 448, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0])
     , .extern (vStep fnOf "cl_cublas_sgemv"
-        [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76])
+        [.near 16, .const 1, .const 896, .const 896, F1, .far 12 28, .near 92, .const 0, .near 76])
     , .launch (kStep PTX_ADD_OFF     2 BIND_ADD1   28  BS_A_ADD) ]
 
 open AlgorithmLib.Host in
@@ -1873,12 +1872,12 @@ def ffnDriver (fnOf : String → FnRef) : HStmt :=
   HStmt.seqs
     [ .launch (kStep PTX_RMS_OFF  3 BIND_RMS2 1   BS_FFN_NORM)
     , .extern (vStep fnOf "cl_cublas_sgemv"
-        [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 36, .near 76, .const 0, .near 96])
+        [.near 16, .const 1, .const 896, .const 4864, F1, .far 12 36, .near 76, .const 0, .near 96])
     , .extern (vStep fnOf "cl_cublas_sgemv"
-        [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 40, .near 76, .const 0, .near 100])
+        [.near 16, .const 1, .const 896, .const 4864, F1, .far 12 40, .near 76, .const 0, .near 100])
     , .launch (kStep PTX_SILU_OFF 3 BIND_SILU 152 BS_FFN_SILU)
     , .extern (vStep fnOf "cl_cublas_sgemv"
-        [.near 16, .const 1, .const 4864, .const 896, F1, .far 8 44, .near 104, .const 0, .near 92])
+        [.near 16, .const 1, .const 4864, .const 896, F1, .far 12 44, .near 104, .const 0, .near 92])
     , .launch (kStep PTX_ADD_OFF  2 BIND_ADD2 28  BS_FFN_ADD) ]
 
 open AlgorithmLib.Host in
@@ -1919,40 +1918,40 @@ noncomputable def layerKernels (h : AllHold [Law.combinerComm])
 
     Keyed on the recovered argument descriptors, because a vendor call has no
     PTX slot: three of a layer's seven `sgemv`s are the same 896×896 shape and
-    only the matrix handle tells them apart.  Base-aware, so `far 8 4` (Wq, at
+    only the matrix handle tells them apart.  Base-aware, so `far 12 4` (Wq, at
     offset 4 of the per-layer base) is not the same descriptor as a fixed slot
     4 would be. -/
 noncomputable def layerDeclared : List DeclaredBinding :=
   [ ⟨"cl_cublas_sgemv",
-     [.near 16, .const 1, .const 896, .const 896, F1, .far 8 4, .near 76, .const 0, .near 80],
+     [.near 16, .const 1, .const 896, .const 896, F1, .far 12 4, .near 76, .const 0, .near 80],
      cublasStep B_WQ B_XN B_Q D D⟩
   , ⟨"cl_cublas_sgemv",
-     [.near 16, .const 1, .const 896, .const 128, F1, .far 8 12, .near 76, .const 0, .near 84],
+     [.near 16, .const 1, .const 896, .const 128, F1, .far 12 12, .near 76, .const 0, .near 84],
      cublasStep B_WK B_XN B_K KV_DIM D⟩
   , ⟨"cl_cublas_sgemv",
-     [.near 16, .const 1, .const 896, .const 128, F1, .far 8 20, .near 76, .const 0, .near 88],
+     [.near 16, .const 1, .const 896, .const 128, F1, .far 12 20, .near 76, .const 0, .near 88],
      cublasStep B_WV B_XN B_V KV_DIM D⟩
   , ⟨"cl_cublas_sgemm_strided_batched",
      [.near 16, .const 1, .const 0, .near 152, .const 7, .const 64, FR,
-      .far 8 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
+      .far 12 48, .const 131072, .near 80, .const 448, .const 0, .near 124,
       .opaque, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0],
      sgemmBatchedStep B_KC B_Q B_SC MAX_SEQ HEAD_DIM⟩
   , ⟨"cl_cublas_sgemm_strided_batched",
      [.near 16, .const 0, .const 0, .const 64, .const 7, .near 152, F1,
-      .far 8 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
+      .far 12 52, .const 131072, .near 128, .opaque, .const 0, .near 92,
       .const 448, .const 2, .const 0, .const 0, .const 0, .const 0, .const 0, .const 0],
      sgemmBatchedStep B_VC B_PR B_AO D MAX_SEQ⟩
   , ⟨"cl_cublas_sgemv",
-     [.near 16, .const 1, .const 896, .const 896, F1, .far 8 28, .near 92, .const 0, .near 76],
+     [.near 16, .const 1, .const 896, .const 896, F1, .far 12 28, .near 92, .const 0, .near 76],
      cublasStep B_WO B_AO B_XN D D⟩
   , ⟨"cl_cublas_sgemv",
-     [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 36, .near 76, .const 0, .near 96],
+     [.near 16, .const 1, .const 896, .const 4864, F1, .far 12 36, .near 76, .const 0, .near 96],
      cublasStep B_WG B_XN B_GATE D_FF D⟩
   , ⟨"cl_cublas_sgemv",
-     [.near 16, .const 1, .const 896, .const 4864, F1, .far 8 40, .near 76, .const 0, .near 100],
+     [.near 16, .const 1, .const 896, .const 4864, F1, .far 12 40, .near 76, .const 0, .near 100],
      cublasStep B_WU B_XN B_UP D_FF D⟩
   , ⟨"cl_cublas_sgemv",
-     [.near 16, .const 1, .const 4864, .const 896, F1, .far 8 44, .near 104, .const 0, .near 92],
+     [.near 16, .const 1, .const 4864, .const 896, F1, .far 12 44, .near 104, .const 0, .near 92],
      cublasStep B_WD B_ACT B_AO D D_FF⟩ ]
 
 /-- **The attention half's sixteen device writes resolve to `attnPlan`.**

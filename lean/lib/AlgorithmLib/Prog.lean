@@ -601,6 +601,26 @@ variable {α : Type}
 /-- The entry block's base pointer. Reading it is not a statement. -/
 def basePtr : Prog V L (V .i64) := .params ptrParams (fun vs => .ret vs.head)
 
+/-- Every argument of the entry block, in order, for a call that hands a callee
+    exactly what this function was handed. -/
+def entryArgs : Prog V L (Vals V ptrParams) := .params ptrParams .ret
+
+/-- The caller's input buffer. -/
+def dataPtr : Prog V L (V .i64) :=
+  .params ptrParams (fun vs => .ret vs.snd)
+
+/-- How many bytes of input the caller supplied. -/
+def dataLen : Prog V L (V .i64) :=
+  .params ptrParams (fun vs => .ret vs.thd)
+
+/-- The caller's output buffer. -/
+def outPtr : Prog V L (V .i64) :=
+  .params ptrParams (fun vs => .ret vs.fth)
+
+/-- How much room the caller left for the answer. -/
+def outLen : Prog V L (V .i64) :=
+  .params ptrParams (fun vs => .ret vs.fif)
+
 /-- Read the entry block's parameters, for a body whose signature is not the
     usual single descriptor pointer. -/
 def entryParams (tys : List ClifTy) : Prog V L (Vals V tys) :=

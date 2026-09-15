@@ -2289,7 +2289,6 @@ def VMEM_SIZE : Nat := VGMAP_OFF + 4 * VBASE + 0x100
     map is what makes the next one a build error. -/
 def vMemMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda",     AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets",   0x18, 0x20⟩,
    ⟨"host_len",     VHOST_LEN_OFF, 8⟩,
    ⟨"stream",       VSTREAM_OFF, 4⟩,
    ⟨"graph",        VGRAPH_OFF, 4⟩,

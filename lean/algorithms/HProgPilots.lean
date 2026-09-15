@@ -42,7 +42,7 @@ abbrev fnWrite : Ffi := .fileWrite
 
 /-- `HistogramBench1.orchFn`, as a term. -/
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataPtr ← dataPtr
   let zeroI ← iconst64 0
   -- copy the input path until NUL
   let inExit ← wloop1 zeroI
@@ -126,9 +126,9 @@ open ClampSumBench (MEM_SIZE)
     `f64` tail accumulator are ordinary binders; their types reach the emitted
     block parameters because the surface tracked them. -/
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
-  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
-  let outPtr ← load64 (← absAddr (← basePtr) 0x28)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
+  let outPtr ← outPtr
   let two ← iconst64 2
   let n ← ushr dataLen two
   let mainEnd ← ishl (← ushr n (← iconst64 4)) (← iconst64 6)
@@ -201,7 +201,7 @@ def CTX_OFF : Int := 0x10
 /-- Initialize CUDA, allocate the two device buffers, upload `N` and the
     weights. -/
 def loadCode : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataPtr ← dataPtr
   ffiVoid .cudaInit %[← absAddr (← basePtr) CTX_OFF]
   let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
   let n ← load64 dataPtr
@@ -222,7 +222,7 @@ def loadCode : Prog V L Unit := do
 
 /-- Upload the input vector ahead of a launch. -/
 def prepCode : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataPtr ← dataPtr
   let n ← load64 (← absAddr (← basePtr) N_OFF)
   let buf0 ← load32 (← absAddr (← basePtr) BUF0_OFF)
   let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
@@ -232,8 +232,8 @@ def prepCode : Prog V L Unit := do
 
 /-- Launch, synchronize, and download only when the caller asked for output. -/
 def inferCode : Prog V L Unit := do
-  let outPtr ← load64 (← absAddr (← basePtr) 0x28)
-  let outLen ← load64 (← absAddr (← basePtr) 0x30)
+  let outPtr ← outPtr
+  let outLen ← outLen
   let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
   let nBufs ← iconst32 2
   let one32 ← iconst32 1
@@ -281,7 +281,7 @@ namespace Nested
     carry and the prologue's constants, which is the cross-scope dataflow
     nesting has to carry. -/
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataPtr ← dataPtr
   let zeroI ← iconst64 0
   let _ ← wloop1 zeroI
     (head := fun si => do
@@ -338,7 +338,7 @@ namespace Early
     names an outer loop. `wf` below is what says so in the kernel — the corpus
     says the same thing by running it. -/
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
+  let dataPtr ← dataPtr
   let one ← iconst64 1
   let zero ← iconst64 0
   -- stop at the first zero byte, or at 64, whichever comes first
@@ -393,8 +393,8 @@ def openFrag (k : Int) : Code :=
     `with_unfolding_all`. `emit` carries no type map --- the types are the
     term's --- so there is nothing to unfold. -/
 theorem openFrag_eq (k : Int) :
-    openFrag k = [.straight [.op (.iconst .i64 k), .op (.iadd 0 1),
-                             .op (.load { ty := .i64 } 2), .store .i64 3 2]] := by
+    openFrag k = [.straight [.op (.iconst .i64 k), .op (.iadd 0 5),
+                             .op (.load { ty := .i64 } 6), .store .i64 7 6]] := by
   rfl
 
 /-- `compile_sound` for the histogram, executed rather than proved: the term
@@ -416,17 +416,18 @@ def histCompileSound : Except String (Nat × Nat) :=
   match (List.range payload.size).foldlM
       (fun (mm : Sem.Mem) i => mm.store (Sem.addrOf .data i) 1 (payload.get! i).toUInt64) m0 with
   | none => .error "could not place the payload"
-  | some m1 =>
-    match m1.store (Sem.addrOf .arena 0x18) 8 (Sem.regionBase .data) with
-    | none => .error "could not place the data pointer"
-    | some m =>
+  | some m =>
       let w : Sem.World := { mem := m, fs := { files := [("in.bin", input)] } }
-      let ptr : Sem.V := .sc .i64 (Sem.regionBase .arena)
+      -- The five an entry point is called with: the arena, then the caller's
+      -- input and output buffers with their lengths.
+      let args : List Sem.V :=
+        [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+         .sc .i64 64, .sc .i64 (Sem.regionBase .out), .sc .i64 8]
       let (c, cenv, _) := Prog.run Hist.code
       match Prog.compileProg 2 Hist.code with
       | .error e => .error e
       | .ok fd =>
-      match Sem.run { env := cenv } [ptr] w c, Blocks.run cenv fd [ptr] w with
+      match Sem.run { env := cenv } args w c, Blocks.run cenv fd args w with
       | .stuck e, _ => .error s!"term: {e}"
       | _, .stuck e => .error s!"blocks: {e}"
       | .ok tObs tw, .ok bObs bw =>

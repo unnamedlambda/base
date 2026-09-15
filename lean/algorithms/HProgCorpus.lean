@@ -637,7 +637,7 @@ private def casesMath : List (Case V L) := Id.run do
         ffi .powf %[← fconst .f32 a, ← fconst .f32 b]⟩]
   return cs
 
-/-- Scratch inside the corpus arena, past the `0x28` the output pointer uses. -/
+/-- Scratch inside the corpus arena, clear of the context slots. -/
 private def htCtxSlot : Nat := 0x80
 private def htKeyA : Nat := 0x90
 private def htKeyB : Nat := 0x98
@@ -703,7 +703,7 @@ def cases : List (Case V L) :=
 
 /-- Every case, storing its result at its own stride in the output buffer. -/
 def body : Prog V L Unit := do
-  let outPtr ← load64 (← absAddr (← basePtr) 0x28)
+  let outPtr ← outPtr
   for (c, k) in cases.zipIdx do
     let r ← c.run
     store r (← iadd outPtr (← iconst64 (STRIDE * k)))
@@ -755,16 +755,19 @@ def compareOf (v : Sem.V) : Compare :=
                      (b &&& 0x000fffffffffffff) != 0 then .nanOf 8 else .bits
   | _ => .bits
 
-/-- The world every run of the corpus starts from: an arena with the output
-    pointer already placed, the way `execute_into` places it. -/
+/-- The five values an entry point is called with, for a corpus run: the arena,
+    then the input and output buffers with their lengths. -/
+def entryArgVals : List Sem.V :=
+  [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+   .sc .i64 8, .sc .i64 (Sem.regionBase .out), .sc .i64 outBytes.toUInt64]
+
+/-- The world every run of the corpus starts from. Nothing has to be placed in
+    the arena first: a body reaches the caller's buffers through the arguments
+    `entryArgVals` supplies, the way `execute_into` supplies them. -/
 def startWorld : Except String Sem.Mem :=
-  let m0 : Sem.Mem :=
-    { arena := ByteArray.mk (Array.replicate 0x100 0),
-      data := ByteArray.mk (Array.replicate 8 0),
-      out := ByteArray.mk (Array.replicate outBytes 0) }
-  match m0.store (Sem.addrOf .arena 0x28) 8 (Sem.regionBase .out) with
-  | none => .error "could not place the output pointer"
-  | some m => .ok m
+  .ok { arena := ByteArray.mk (Array.replicate 0x100 0),
+        data := ByteArray.mk (Array.replicate 8 0),
+        out := ByteArray.mk (Array.replicate outBytes 0) }
 
 /-- The corpus run through the *compiled* form, so the trace and the bytes can
     be compared against the term's.
@@ -776,7 +779,7 @@ def startWorld : Except String Sem.Mem :=
 def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
   let f ← Prog.compileProg 1 body
-  match Blocks.run env f [.sc .i64 (Sem.regionBase .arena)] { mem := m } with
+  match Blocks.run env f entryArgVals { mem := m } with
   | .stuck why => .error why
   | .ok obs w => .ok (obs, w.mem.out)
 
@@ -784,7 +787,7 @@ def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
     against. -/
 def expected : Except String ByteArray := do
   let m ← startWorld
-  match Sem.run { env } [.sc .i64 (Sem.regionBase .arena)] { mem := m } code with
+  match Sem.run { env } entryArgVals { mem := m } code with
   | .stuck why => .error why
   | .ok _ w => .ok w.mem.out
 
@@ -792,7 +795,7 @@ def expected : Except String ByteArray := do
     memory they leave behind. -/
 def viaTerm : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
-  match Sem.run { env } [.sc .i64 (Sem.regionBase .arena)] { mem := m } code with
+  match Sem.run { env } entryArgVals { mem := m } code with
   | .stuck why => .error why
   | .ok obs w => .ok (obs, w.mem.out)
 

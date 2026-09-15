@@ -112,7 +112,7 @@ def gradDK : AlgorithmLib.Kernel :=
 
 def loadFnCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   let inBytes ← iconst64 (NIN * 4)
@@ -140,7 +140,7 @@ def runDFnCode : Prog V L Unit := do
 def fetchFnCode : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let outId ← load32 (← absAddr ptr OUT_ID)
   let outBytes ← iconst64 (NOUT * 4)
   let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, outBytes]
@@ -167,7 +167,6 @@ def initialMemory : List UInt8 :=
     the check reads as if it had. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"in_id",      IN_ID, 4⟩,
    ⟨"out_id",     OUT_ID, 4⟩,
    ⟨"ptx",        PTX_OFF, PTX_D_OFF - PTX_OFF⟩,

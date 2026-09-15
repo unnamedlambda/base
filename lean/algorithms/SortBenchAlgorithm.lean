@@ -88,9 +88,9 @@ def radixPass (src dst n shift : V .i64) (isSignedPass : Bool) : Prog V L Unit :
       return %[← iaddImm si 1])
 
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
-  let dataLen ← load64 (← absAddr (← basePtr) 0x20)
-  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
+  let outPtr  ← outPtr
   -- out_len at 0x20 — caller provides 2*data_len, second half is temp
   let n ← ushr dataLen (← iconst64 2)
   let tempPtr ← iadd outPtr dataLen  -- second half of out buffer

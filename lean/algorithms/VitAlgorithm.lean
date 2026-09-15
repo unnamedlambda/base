@@ -94,7 +94,7 @@ def vGemmUnitOn (ptr : V .i64) (k : Nat) (sid : V .i32) :
 def vLoadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   for (i, nb) in (List.range VNBUF).zip vBufBytes do
@@ -393,7 +393,7 @@ def vReloadFn : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   for i in List.range VBASE do
     -- The mask is the artifact's, so its source is this program's own memory
     -- rather than the host blob.
@@ -408,7 +408,7 @@ def vSeedFn : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let id ← load32 (← absAddr ptr (vBindOff VSEED))
   let bytes ← iconst64 (SQ * NC * 4)
   let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
@@ -420,8 +420,8 @@ def vFetchAnyFn : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let dataPtr ← dataPtr
+  let outPtr ← outPtr
   let idx ← load32 dataPtr
   let nb ← load32 (← iaddImm dataPtr 4)
   let base ← absAddr ptr VBIND_OFF
@@ -433,7 +433,7 @@ def vFetchFn (b n : Nat) : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let id ← load32 (← absAddr ptr (vBindOff b))
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]

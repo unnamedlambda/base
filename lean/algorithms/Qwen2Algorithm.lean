@@ -102,9 +102,8 @@ def loadFinalizeFn : Prog V L Unit := do
 
 /-- inferLayerFn (fn_28): runs one transformer layer — calls attn then ffn. -/
 def inferLayerFn : Prog V L Unit := do
-  let ptr ← basePtr
-  callLocalVoid Qwen2Common.q.fnAttn %[ptr]
-  callLocalVoid Qwen2Common.q.fnFfn  %[ptr]
+  callLocalVoid Qwen2Common.q.fnAttn (← entryArgs)
+  callLocalVoid Qwen2Common.q.fnFfn  (← entryArgs)
 
 /-- Compute the per-layer slot base address for the current `LAYER_IDX_OFF`. -/
 private def currentLayerSlot (ptr : V .i64) : Prog V L (V .i64) := do

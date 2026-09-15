@@ -27,8 +27,8 @@ still a rounding error. -/
 def maxFileSize : Nat := 1 <<< 20
 
 structure Fields where
-  /-- The context-pointer slots and the `IoOffsets` region, which every program
-  reserves whether or not it uses them. -/
+  /-- The context-pointer slots and the unused gap after them, which every
+  program reserves whether or not it uses them. -/
   reserved       : Fld (.bytes 64)
   /-- How many bytes the program read, and therefore transformed and wrote.
 

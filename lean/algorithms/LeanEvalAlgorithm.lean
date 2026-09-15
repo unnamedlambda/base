@@ -7,7 +7,7 @@ open AlgorithmLib
 
 namespace LeanEval
 
--- Payload layout (app fields start at 0x0038 = 56 to clear the new 56-byte IoOffsets)
+-- Payload layout (app fields start at 0x0038 = 56, past the reserved header)
 def OUTPUT_PATH    : Nat := 0x0038
 def INPUT_PATH     : Nat := 0x0078
 def SOURCE_BUF     : Nat := 0x0178
@@ -558,7 +558,7 @@ def clifIrSource : Except String Program :=
 -- ---------------------------------------------------------------------------
 
 def buildPayload : List UInt8 :=
-  let reserved    := zeros 56                              -- 0x0000-0x0037: runtime reserved (56-byte IoOffsets)
+  let reserved    := zeros 56                              -- 0x0000-0x0037: reserved header (context slots, then unused)
   let outputPath  := padTo (stringToBytes "output.txt") 64 -- 0x0038
   let inputPath   := zeros 256                             -- 0x0078
   let sourceBuf   := zeros SOURCE_BUF_SZ                   -- 0x0178
@@ -581,8 +581,7 @@ def buildPayload : List UInt8 :=
     input and output descriptors, so naming those is what stops an offset being
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"io_offsets",  0x18, 0x20⟩,
-   ⟨"output_path", OUTPUT_PATH, INPUT_PATH - OUTPUT_PATH⟩,
+  [⟨"output_path", OUTPUT_PATH, INPUT_PATH - OUTPUT_PATH⟩,
    ⟨"input_path",  INPUT_PATH, SOURCE_BUF - INPUT_PATH⟩,
    ⟨"source_buf",  SOURCE_BUF, SOURCE_BUF_SZ⟩,
    ⟨"true_str",    TRUE_STR, FALSE_STR - TRUE_STR⟩,

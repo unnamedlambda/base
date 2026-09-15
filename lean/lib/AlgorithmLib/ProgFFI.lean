@@ -588,19 +588,20 @@ def wrapperUnique (callees : List Nat) : List Nat :=
 /-- One `LocalRef` per distinct callee, numbered as `FnEnv.declare` numbers
     them from an empty table --- which is where a wrapper's table starts, so
     the ids are the positions. -/
-def wrapperRefs (callees : List Nat) : List (LocalRef [ClifTy.i64] none) :=
+def wrapperRefs (callees : List Nat) : List (LocalRef HProg.ptrParams none) :=
   (wrapperUnique callees).zipIdx.map (fun (c, i) => { id := i, callee := .local c })
 
 /-- A function that calls each of `callees` in order.
 
     Composes stages without the caller having to build the call sequence
     itself; the callees are named by index, so nothing here resolves a symbol.
-    The table travels with the references, so `compileProg` finds it. -/
+    The table travels with the references, so `compileProg` finds it. Each
+    stage is an entry point, so each is handed exactly what the wrapper was. -/
 def sequenceWrapper (callees : List Nat) : Prog V L Unit := do
-  let base ← basePtr
+  let args ← entryArgs
   let refs := wrapperRefs callees
   let uniq := wrapperUnique callees
   for c in callees do
-    callLocalVoid (refs[(uniq.idxOf? c).getD 0]!) %[base]
+    callLocalVoid (refs[(uniq.idxOf? c).getD 0]!) args
 
 end AlgorithmLib.Prog

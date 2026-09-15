@@ -21,8 +21,8 @@ open AlgorithmLib.Prog
 
 
 def code : Prog V L Unit := do
-  let dataPtr ← load64 (← absAddr (← basePtr) 0x18)
-  let outPtr  ← load64 (← absAddr (← basePtr) 0x28)
+  let dataPtr ← dataPtr
+  let outPtr  ← outPtr
   -- Parse M, K, N
   let mVal32  ← load32 dataPtr
   let kVal32  ← load32 (← iaddImm dataPtr 4)

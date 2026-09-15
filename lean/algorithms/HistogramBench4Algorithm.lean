@@ -46,7 +46,7 @@ abbrev fnWrite : Ffi := .fileWrite
     merge their per-worker histograms bin by bin. -/
 def orchCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let zero    ← iconst64 0
 
   let inEnd ← dwloop %[zero] .eq zero (contOnTrue := false) [0]
@@ -132,7 +132,9 @@ def orchCode : Prog V L Unit := do
 
 /-- One worker: zero its own histogram, then count its slice. -/
 def workerCode : Prog V L Unit := do
-  let desc := (← basePtr)
+  -- A worker is handed the one pointer `cl_thread_spawn` was given: its
+  -- descriptor, not the arena base.
+  let desc := (← entryParams [.i64]).head
   let zero ← iconst64 0
 
   let base      ← load64 desc
@@ -186,7 +188,7 @@ def clifIR : Except String Program :=
     [.ok noopFunction,
      .ok (noopAt 1),
      Prog.compileProg 2 orchCode,
-     Prog.compileProg 3 workerCode]
+     Prog.compileProg 3 workerCode [.i64]]
 
 /-- Every byte of shared memory this program names.
 
@@ -196,8 +198,7 @@ def clifIR : Except String Program :=
     input and output descriptors, so naming those is what stops an offset being
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"io_offsets",  0x18, 0x20⟩,
-   ⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
+  [⟨"input_path",  INPUT_PATH_OFF, OUTPUT_PATH_OFF - INPUT_PATH_OFF⟩,
    ⟨"output_path", OUTPUT_PATH_OFF, THREAD_CTX_OFF - OUTPUT_PATH_OFF⟩,
    ⟨"thread_ctx",  THREAD_CTX_OFF, HIST_REGION_OFF - THREAD_CTX_OFF⟩,
    ⟨"hist",        HIST_REGION_OFF, WORKERS * HIST_STRIDE⟩,

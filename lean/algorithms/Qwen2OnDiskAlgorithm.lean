@@ -105,12 +105,11 @@ def loadFinalizeFn : Prog V L Unit := do
     4) FFN,
     5) save new K/V slot back to disk for next-token retrieval. -/
 def inferLayerFn : Prog V L Unit := do
-  let ptr ← basePtr
-  callLocalVoid Qwen2Common.q.fnStream %[ptr]
-  callLocalVoid Qwen2Common.q.fnKvLoad %[ptr]
-  callLocalVoid Qwen2Common.q.fnAttn   %[ptr]
-  callLocalVoid Qwen2Common.q.fnFfn    %[ptr]
-  callLocalVoid Qwen2Common.q.fnKvSave %[ptr]
+  callLocalVoid Qwen2Common.q.fnStream (← entryArgs)
+  callLocalVoid Qwen2Common.q.fnKvLoad (← entryArgs)
+  callLocalVoid Qwen2Common.q.fnAttn   (← entryArgs)
+  callLocalVoid Qwen2Common.q.fnFfn    (← entryArgs)
+  callLocalVoid Qwen2Common.q.fnKvSave (← entryArgs)
 
 /-- inferLayerAttnFn (fn_29): attention sub-layer.  Slot base = working set. -/
 def inferLayerAttnFn : Prog V L Unit := do

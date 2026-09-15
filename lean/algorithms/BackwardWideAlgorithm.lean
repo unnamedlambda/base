@@ -305,7 +305,6 @@ def MEM_SIZE   : Nat := 0x10500
     block, because that is the collision worth catching. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
       [⟨"ctx_cuda", AlgorithmLib.ContextSlots.cuda, 8⟩,
-       ⟨"io_offsets", 0x18, 0x20⟩,
        ⟨"adj_id", ADJ_ID, 4⟩, ⟨"w_id", W_ID, 4⟩,
        ⟨"dx_id", DX_ID, 4⟩,   ⟨"x_id", X_ID, 4⟩,
        ⟨"dw_id", DW_ID, 4⟩,   ⟨"z_id", Z_ID, 4⟩,
@@ -548,7 +547,7 @@ def bwdK (off g : Nat) : AlgorithmLib.Kernel :=
 
 def loadFn : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   let adjBytes ← iconst64 (N * 4)
@@ -633,7 +632,7 @@ def runAdjFn : Prog V L Unit := launchAt PTX_ADJ_OFF EGRID
 def fetchYFn : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let yId ← load32 (← absAddr ptr Y_ID)
   let dxBytes ← iconst64 (N * 4)
   let _ ← ffi .cudaDownload %[ctxPtr, yId, outPtr, dxBytes]
@@ -642,7 +641,7 @@ def fetchYFn : Prog V L Unit := do
 def fetchDxrFn : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let dxrId ← load32 (← absAddr ptr DXR_ID)
   let dxBytes ← iconst64 (N * 4)
   let _ ← ffi .cudaDownload %[ctxPtr, dxrId, outPtr, dxBytes]
@@ -683,7 +682,7 @@ def runDwFn : Prog V L Unit := do
 def fetchFn : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let dxId ← load32 (← absAddr ptr DX_ID)
   let dxBytes ← iconst64 (N * 4)
   let _ ← ffi .cudaDownload %[ctxPtr, dxId, outPtr, dxBytes]
@@ -692,7 +691,7 @@ def fetchFn : Prog V L Unit := do
 def fetchDwFn : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let dwId ← load32 (← absAddr ptr DW_ID)
   let wBytes ← iconst64 (N * N * 4)
   let _ ← ffi .cudaDownload %[ctxPtr, dwId, outPtr, wBytes]

@@ -40,7 +40,7 @@ def CTX_OFF : Nat := 0x10
 
 def loadCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
 
   cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
@@ -64,8 +64,8 @@ def loadCode : Prog V L Unit := do
 
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let xBuf    ← iconst32 1
   let _ ← ffi .cudaUpload %[ctxPtr, xBuf, dataPtr, dataLen]
@@ -74,8 +74,8 @@ def prepCode : Prog V L Unit := do
     early return, so both arms reach one `ret`. -/
 def inferCode : Prog V L Unit := do
   let ptr ← basePtr
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  let outLen ← load64 (← absAddr ptr 0x30)
+  let outPtr ← outPtr
+  let outLen ← outLen
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
   let m      ← load64 (← absAddr ptr M_OFF)
   let n      ← load64 (← absAddr ptr N_OFF)
@@ -114,7 +114,6 @@ def clifIR : Except String Program :=
     placed where the runtime will overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda",   CTX_OFF, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"m",          M_OFF, 8⟩,
    ⟨"n",          N_OFF, 8⟩]
 

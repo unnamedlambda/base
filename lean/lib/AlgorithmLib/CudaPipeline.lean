@@ -60,7 +60,6 @@ private def bindDescOff  : Nat := 0x1400
     run to `0x44 + 4n`, which is bounded by the PTX region below. -/
 def memMap (n : Nat) : Layout.RegionMap :=
   [⟨"ctx_cuda",  ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"n",          0x38, 8⟩,
    ⟨"meta_buf",   0x40, 4⟩,
    ⟨"input_bufs", 0x44, 4 * n⟩,
@@ -138,7 +137,7 @@ private def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) 
 /-- Allocate the device buffers and publish the element count. -/
 def loadCode (inputs : Nat) : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let n ← load64 dataPtr
   storeI64 n (← absAddr ptr 0x38)
@@ -154,7 +153,7 @@ def loadCode (inputs : Nat) : Prog V L Unit := do
 /-- Upload the inputs, which lie back to back from the caller's data pointer. -/
 def prepCode (inputs : Nat) : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let n ← load64 (← absAddr ptr 0x38)
   let nBytes ← ishlImm n 2
   let ctxPtr ← cudaCtxPtr ptr
@@ -167,8 +166,8 @@ def prepCode (inputs : Nat) : Prog V L Unit := do
     caller asked for one. -/
 def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : Prog V L Unit := do
   let ptr ← basePtr
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  let outLen ← load64 (← absAddr ptr 0x30)
+  let outPtr ← outPtr
+  let outLen ← outLen
   let nElems ← load64 (← absAddr ptr 0x38)
   let blkM1 ← iaddImm nElems (blockSize - 1)
   let wg64 ← ushrImm blkM1 (Nat.log2 blockSize)

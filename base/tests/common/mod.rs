@@ -23,6 +23,26 @@ pub fn v(n: u32) -> Val {
     Val(n)
 }
 
+/// The caller's input buffer, as the entry block receives it.
+pub fn data_ptr() -> Val {
+    v(9500)
+}
+
+/// How many bytes of input the caller supplied.
+pub fn data_len() -> Val {
+    v(9501)
+}
+
+/// The caller's output buffer.
+pub fn out_ptr() -> Val {
+    v(9502)
+}
+
+/// How much room the caller left for the answer.
+pub fn out_len() -> Val {
+    v(9503)
+}
+
 /// `blockN`
 pub fn b(n: u32) -> BlockRef {
     BlockRef(n)
@@ -74,9 +94,25 @@ impl Func {
         self
     }
 
-    /// `block0(v0: i64):` — the memory base pointer, which every generated
-    /// function takes.
+    /// `block0(v0, v9500, v9501, v9502, v9503: i64):` — the memory base
+    /// pointer, then the caller's input buffer and its length and the caller's
+    /// output buffer and its length, which is what an entry point is called
+    /// with.
+    ///
+    /// The four are numbered clear of everything a test body uses, so a body
+    /// that wants one names it with [`data_ptr`] and the rest keep low ids.
     pub fn entry(self, insts: Vec<Inst>) -> Self {
+        self.block(
+            0,
+            &[(v(0), I64), (data_ptr(), I64), (data_len(), I64), (out_ptr(), I64), (out_len(), I64)],
+            insts,
+        )
+    }
+
+    /// `block0(v0: i64):` — one pointer, and not the arena base: what
+    /// `cl_thread_spawn` hands a worker is whatever the spawning program chose.
+    /// A function reached that way is not an entry point and says so here.
+    pub fn entry_spawned(self, insts: Vec<Inst>) -> Self {
         self.block(0, &[(v(0), I64)], insts)
     }
 

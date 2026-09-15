@@ -93,9 +93,8 @@ def bindThread (rt : Runtime) : IO Unit :=
 
 /-- Run one algorithm, answering the bytes it wrote to its out buffer.
 
-`data` is what the program reads through its `data_ptr`/`data_len` offsets and
-`outLen` how much room it is given to answer; a program that uses neither passes
-the defaults. -/
+`data` is what the program is handed as its input buffer and `outLen` how much
+room it is given to answer; a program that uses neither passes the defaults. -/
 def execute (rt : Runtime) (algorithm : Algorithm)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray :=
   executeRaw rt.raw (jsonBytes (toJson algorithm)) data (USize.ofNat outLen)

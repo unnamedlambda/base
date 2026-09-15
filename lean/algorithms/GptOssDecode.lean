@@ -536,7 +536,7 @@ def dEnqueue (ptr : V .i64) (i g blk : Nat) (bs : List Nat) : Prog V L Unit := d
     and put the dense weights where they will stay. -/
 def dInitM : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   -- the expert pool: pinned once, and never moved again
@@ -785,7 +785,7 @@ def dEnsureM (j : Nat) : Prog V L Unit := do
 def dTraceM (layer : V .i32) (half : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let bX ← load32 (← absAddr ptr (dBindOff B_X))
   let row ← iadd (← imul (← uextend64 layer) (← iconst64 2)) (← iconst64 half)
   let dst ← iadd outPtr
@@ -963,7 +963,7 @@ set_option maxRecDepth 8000 in
     loop and the loop belongs on the same side of the boundary as the model. -/
 def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   let ctxPtr ← cudaCtxPtr ptr
   -- **No step ever runs past the cache, whatever the caller asked for.**
   --
@@ -1086,7 +1086,7 @@ def dStepM (tok posIn : V .i32) : Prog V L (V .i32) := do
   -- logits instead of guessing from a token id.  A partial copy is not an
   -- option -- the runtime asserts a transfer is the whole buffer -- so it is
   -- all of them or none.
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let _ ← ffi .cudaDownload %[ctxPtr, bLog, (← iaddImm outPtr 8), (← iconst64 (VOCAB * 4))]
   load32 (← absAddr ptr DT_NEXT)
 
@@ -1108,12 +1108,12 @@ def dMainFn : Prog V L Unit :=
   let zero32 ← iconst32 0
   when .eq flag zero32 (do
     dInitM
-    let dp ← load64 (← absAddr ptr 0x18)
+    let dp ← dataPtr
     storeI64 (← iaddImm dp D_PTOK) (← absAddr ptr DT_PATHPTR)
     TokenizerCommon.loadTokenizerM dTokMem
     storeI32 (← iconst32 1) (← absAddr ptr DINIT_OFF))
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let dataPtr ← dataPtr
+  let outPtr ← outPtr
   let mode ← load32 (← iaddImm dataPtr D_MODE)
   let _ ← ifte .eq mode zero32
     (do -- one step, at what the caller asked for

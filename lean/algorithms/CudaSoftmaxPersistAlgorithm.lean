@@ -27,7 +27,7 @@ namespace CudaSoftmaxPersist
     u0:4  finalize  — cl_cuda_sync, optional download y
 
   Shared memory layout:
-    0x00-0x37  reserved (56-byte IoOffsets)
+    0x00-0x37  reserved header (context slots, then unused)
     0x38-0x3F  n (i64)
     0x40-0x47  num_blocks (i64)
     0x48-0x4F  packed meta [n:u32][num_blocks:u32] staging area
@@ -188,7 +188,7 @@ def CTX_OFF : Nat := 0x10
 
 def loadCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
 
   cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
@@ -224,8 +224,8 @@ def loadCode : Prog V L Unit := do
 /-- Prep: upload x from data_ptr to buf0. -/
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
-  let dataLen ← load64 (← absAddr ptr 0x20)
+  let dataPtr ← dataPtr
+  let dataLen ← dataLen
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let xBuf    ← iconst32 0
   let _ ← ffi .cudaUpload %[ctxPtr, xBuf, dataPtr, dataLen]
@@ -268,8 +268,8 @@ def coreCode : Prog V L Unit := do
 /-- Finalize: sync, then download `y` only if the caller asked for output. -/
 def finalizeCode : Prog V L Unit := do
   let ptr    := (← basePtr)
-  let outPtr ← load64 (← absAddr ptr 0x28)
-  let outLen ← load64 (← absAddr ptr 0x30)
+  let outPtr ← outPtr
+  let outLen ← outLen
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   let _ ← cudaSync ptr CTX_OFF
@@ -325,7 +325,6 @@ def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_ht",            ContextSlots.ht, 8⟩,
    ⟨"ctx_wgpu",          ContextSlots.wgpu, 8⟩,
    ⟨"ctx_cuda",          CTX_OFF, 8⟩,
-   ⟨"io_offsets",        0x18, 0x20⟩,
    ⟨"name_block_reduce",  NAME_BLOCK_REDUCE, NAME_GLOBAL_REDUCE - NAME_BLOCK_REDUCE⟩,
    ⟨"name_global_reduce", NAME_GLOBAL_REDUCE, NAME_NORMALIZE - NAME_GLOBAL_REDUCE⟩,
    ⟨"name_normalize",     NAME_NORMALIZE, NAME_SMALL_SOFTMAX - NAME_NORMALIZE⟩,

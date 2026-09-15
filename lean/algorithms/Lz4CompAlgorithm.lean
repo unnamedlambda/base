@@ -46,9 +46,9 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.Prog
 def warpCodeAt (w : WP) (bo : Nat) : Prog V L Unit :=
   do
     let ptr ← basePtr
-    let dataPtr ← load64 (← absAddr ptr 0x18)
-    let dataLen ← load64 (← absAddr ptr 0x20)
-    let outPtr ← load64 (← absAddr ptr 0x28)
+    let dataPtr ← dataPtr
+    let dataLen ← dataLen
+    let outPtr ← outPtr
     cudaInit ptr
     -- ONE allocation: input at offset 0, output immediately after it.  Both
     -- kernel parameters are bound to this buffer and the kernel derives its

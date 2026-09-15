@@ -908,8 +908,11 @@ def emitCode : Nat → CS → List Piece → CS
   | fuel + 1, s, p :: ps => emitCode fuel (emitPiece fuel s p) ps
 end
 
-/-- The base pointer every generator's entry block takes. -/
-def ptrParams : List ClifTy := [.i64]
+/-- What an entry point's entry block takes: the memory base pointer, then the
+caller's input buffer and its length, then the caller's output buffer and its
+length. The runtime passes the caller's buffers as these arguments, so there is
+no place in memory the runtime and a program have to agree on. -/
+def ptrParams : List ClifTy := [.i64, .i64, .i64, .i64, .i64]
 
 /-- Compile a body, well-formed or not.
 

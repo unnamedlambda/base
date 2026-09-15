@@ -43,7 +43,6 @@ import json
 setup = Setup(json.dumps({
     "clif": {"functions": [...]},    # the program, as data
     "memory_size": 256,
-    "io_offsets": {"data_ptr": 8, "data_len": 16, "out_ptr": 24, "out_len": 32},
 }))
 alg = Algorithm(json.dumps({"fn_idx": 1, "output": []}))
 

@@ -136,7 +136,6 @@ theorem silu_loop_ptx_exact (cta : Nat) (m : MState) :
     the check reads as if it had. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_cuda",   AlgorithmLib.ContextSlots.cuda, 8⟩,
-   ⟨"io_offsets", 0x18, 0x20⟩,
    ⟨"in_id",      IN_ID, 4⟩,
    ⟨"out_id",     OUT_ID, 4⟩,
    ⟨"ptx",        PTX_OFF, PTX_L_OFF - PTX_OFF⟩,
@@ -181,7 +180,7 @@ def siluLoopK : AlgorithmLib.Kernel := {
 
 def loadFnCode : Prog V L Unit := do
   let ptr ← basePtr
-  let dataPtr ← load64 (← absAddr ptr 0x18)
+  let dataPtr ← dataPtr
   cudaInit ptr
   let ctxPtr ← cudaCtxPtr ptr
   let nBytes ← iconst64 (N * 4)
@@ -206,7 +205,7 @@ def runLoopFnCode : Prog V L Unit := do
 def fetchFnCode : Prog V L Unit := do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
-  let outPtr ← load64 (← absAddr ptr 0x28)
+  let outPtr ← outPtr
   let outId ← load32 (← absAddr ptr OUT_ID)
   let nBytes ← iconst64 (N * 4)
   let _ ← ffi .cudaDownload %[ctxPtr, outId, outPtr, nBytes]

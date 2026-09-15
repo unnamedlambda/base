@@ -320,8 +320,7 @@ def wgY : Nat := imageHeight / 16   -- 256
     buffer, so there is no constant to bound the regions against; `okB` is the
     whole check here. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
-  [⟨"io_offsets", 0x18, 0x20⟩,
-   ⟨"hdr",        hdrBase, bindDesc_off - hdrBase⟩,
+  [⟨"hdr",        hdrBase, bindDesc_off - hdrBase⟩,
    ⟨"bind",       bindDesc_off, shader_off - bindDesc_off⟩,
    ⟨"shader",     shader_off, shaderRegionSize⟩,
    ⟨"filename",   filename_off, filenameRegionSize⟩,

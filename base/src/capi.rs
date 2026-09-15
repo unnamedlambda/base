@@ -292,7 +292,6 @@ mod tests {
     const EMPTY_SETUP: &str = r#"{
         "clif": {"functions": []},
         "memory_size": 64,
-        "io_offsets": {"data_ptr": 0, "data_len": 8, "out_ptr": 16, "out_len": 24},
         "initial_memory": [1, 2, 3, 4]
     }"#;
 
