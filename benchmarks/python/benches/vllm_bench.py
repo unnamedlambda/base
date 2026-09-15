@@ -15,11 +15,27 @@ Decoder layer: persistent single-token decoder layer with fixed Qwen-like dims.
                Uses 7 cuBLAS GEMVs plus PTX RMSNorm / SiLU-gate / residual-add.
                Attention is simplified to the seq_len=1 case, so attn(v)=v.
 
+               NOT a valid comparison as it stands. Because attn(v)=v, the q
+               and k projections feed nothing, and torch.compile deletes both:
+               the compiled reference runs five GEMVs where this side runs
+               seven (0.254ms against 0.267ms with them forced live). Either
+               drop q/k from both sides or give the layer a real seq_len=1
+               attention before quoting this row. The stack rows inherit the
+               same defect, and separately lose to compiled PyTorch because
+               Inductor fuses the elementwise glue between GEMVs and the
+               generator has no equivalent pass.
+
 Decode attention: persistent batch-1 decode attention over a resident KV cache.
                   Uses batched cuBLAS GEMMs for QK / PV and PTX softmax over
                   attention scores. No RoPE or GQA yet.
 
-PyTorch times are CUDA-synchronized and use resident GPU tensors.
+PyTorch times are CUDA-synchronized and use resident GPU tensors. Each
+reference is timed eagerly and under torch.compile and the faster is reported,
+decided per benchmark: fusion wins on the elementwise chains and loses on the
+ops that are already launch-bound.
+
+Both sides multiply in plain float32. Inductor suggests TF32 for the GEMVs,
+which is declined because the cuBLAS calls on the other side do not use it.
 """
 
 import os
@@ -52,16 +68,6 @@ SOFTMAX_INNER_ITERS = 64
 ATTN_INNER_ITERS = 64
 
 
-def _time_torch(fn):
-    torch.cuda.synchronize()
-
-    def synced():
-        fn()
-        torch.cuda.synchronize()
-
-    return harness.time_ms(synced)
-
-
 def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
     engine = py_base.Base(artifact.setup)
@@ -84,11 +90,7 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
         if _TORCH_OK:
             a_t = torch.from_numpy(a_np).cuda()
             x_t = torch.from_numpy(x_np).cuda()
-            torch.mv(a_t, x_t)
-            torch_ms = harness.median_of(
-                rounds,
-                lambda: _time_torch(lambda: torch.mv(a_t, x_t)),
-            )
+            torch_ms = harness.torch_median(lambda: torch.mv(a_t, x_t), rounds, label=f"GEMV ({m}x{n})")
         else:
             torch_ms = None
 
@@ -108,7 +110,7 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
             ref = torch.mv(a_t, x_t).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
-            verified = bool(np.max(np.abs(got - ref)) / mag < 1e-2)
+            verified = bool(np.max(np.abs(got - ref)) / mag < 1e-5)
         else:
             verified = None
 
@@ -148,11 +150,7 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
             def rms(x, w):
                 return x * w * torch.rsqrt(x.pow(2).mean() + 1e-5)
 
-            rms(x_t, w_t)
-            torch_ms = harness.median_of(
-                rounds,
-                lambda: _time_torch(lambda: rms(x_t, w_t)),
-            )
+            torch_ms = harness.torch_median(lambda: rms(x_t, w_t), rounds, label=f"RMSNorm ({n})")
         else:
             torch_ms = None
 
@@ -172,7 +170,7 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
             ref = rms(x_t, w_t).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
-            verified = bool(np.max(np.abs(got - ref)) / mag < 1e-2)
+            verified = bool(np.max(np.abs(got - ref)) / mag < 1e-5)
         else:
             verified = None
 
@@ -192,8 +190,7 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
-    _infer_alg = artifact.extras["infer"]
-    stack_alg = artifact.extras["stack"]
+    infer_alg = artifact.extras["infer"]
     results = []
     rng = np.random.default_rng(13)
 
@@ -206,32 +203,40 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
         if _TORCH_OK:
             x_t = torch.from_numpy(x_np).cuda()
-            torch.softmax(x_t, dim=0)
-
-            def softmax_many():
-                for _ in range(SOFTMAX_INNER_ITERS):
-                    torch.softmax(x_t, dim=0)
-
-            torch_ms = harness.median_of(rounds, lambda: _time_torch(softmax_many)) / SOFTMAX_INNER_ITERS
+            torch_ms = harness.torch_median(
+                lambda: torch.softmax(x_t, dim=0),
+                rounds,
+                inner=SOFTMAX_INNER_ITERS,
+                label=f"Softmax ({n})",
+                sync_each=True,
+            )
         else:
             torch_ms = None
 
+        # Both sides now pay SOFTMAX_INNER_ITERS dispatches and the same number
+        # of device round trips. The batched `stack` entry, which performed all
+        # of them inside one `execute`, made this row an upper bound rather than
+        # a measurement.
+        def _infer_many() -> None:
+            for _ in range(SOFTMAX_INNER_ITERS):
+                engine.execute(infer_alg)
+
         engine.execute(prep_alg, x_bytes)
-        engine.execute(stack_alg)
+        _infer_many()
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
                 engine.execute(prep_alg, x_bytes),
-                harness.time_ms(lambda: engine.execute(stack_alg)),
+                harness.time_ms(_infer_many),
             )[1],
         ) / SOFTMAX_INNER_ITERS
 
         if _TORCH_OK:
             engine.execute(prep_alg, x_bytes)
-            engine.execute_into(stack_alg, b"", out)
+            engine.execute_into(infer_alg, b"", out)
             ref = torch.softmax(x_t, dim=0).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
-            verified = bool(np.max(np.abs(got - ref)) < 1e-3)
+            verified = bool(np.max(np.abs(got - ref)) < 1e-5)
         else:
             verified = None
 
@@ -316,8 +321,7 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
             d = torch.mv(wd_t, a)
             return h + d
 
-        layer()
-        torch_ms = harness.median_of(rounds, lambda: _time_torch(layer))
+        torch_ms = harness.torch_median(layer, rounds, label="Decoder layer")
     else:
         torch_ms = None
 
@@ -337,7 +341,7 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
         ref = layer().cpu().numpy()
         got = np.frombuffer(bytes(out), dtype=np.float32)
         mag = max(float(np.abs(ref).max()), 1e-6)
-        verified = bool(np.max(np.abs(got - ref)) / mag < 2e-2)
+        verified = bool(np.max(np.abs(got - ref)) / mag < 1e-5)
     else:
         verified = None
 
@@ -373,8 +377,7 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
         stack_alg = stack16_alg if depth == 16 else stack32_alg
 
         if _TORCH_OK:
-            stack(depth)
-            torch_stack_ms = harness.median_of(rounds, lambda: _time_torch(lambda: stack(depth)))
+            torch_stack_ms = harness.torch_median(lambda: stack(depth), rounds, label=f"Stack{depth}")
         else:
             torch_stack_ms = None
 
@@ -394,7 +397,7 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
             ref = stack(depth).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
-            stack_ok = bool(np.max(np.abs(got - ref)) / mag < 2e-2)
+            stack_ok = bool(np.max(np.abs(got - ref)) / mag < 1e-5)
         else:
             stack_ok = None
 
@@ -415,8 +418,7 @@ def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.Bench
     engine = py_base.Base(artifact.setup)
     load_alg = artifact.main
     prep_alg = artifact.extras["prep"]
-    _infer_alg = artifact.extras["infer"]
-    stack_alg = artifact.extras["stack"]
+    infer_alg = artifact.extras["infer"]
     results = []
     rng = np.random.default_rng(29)
 
@@ -442,33 +444,40 @@ def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.Bench
                 probs = torch.softmax(scores, dim=1)
                 return torch.bmm(probs.unsqueeze(1), v_t).squeeze(1).reshape(-1)
 
-            decode_attn()
-
-            def decode_attn_many():
-                for _ in range(ATTN_INNER_ITERS):
-                    decode_attn()
-
-            torch_ms = harness.median_of(rounds, lambda: _time_torch(decode_attn_many)) / ATTN_INNER_ITERS
+            torch_ms = harness.torch_median(
+                decode_attn,
+                rounds,
+                inner=ATTN_INNER_ITERS,
+                label=f"Decode attn ({seq_len})",
+                sync_each=True,
+            )
         else:
             torch_ms = None
 
+        # As in the softmax row: ATTN_INNER_ITERS dispatches and the same number
+        # of device round trips on both sides, rather than one batched `execute`
+        # against that many separate torch calls.
+        def _infer_many() -> None:
+            for _ in range(ATTN_INNER_ITERS):
+                engine.execute(infer_alg)
+
         engine.execute(prep_alg, q_bytes)
-        engine.execute(stack_alg)
+        _infer_many()
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
                 engine.execute(prep_alg, q_bytes),
-                harness.time_ms(lambda: engine.execute(stack_alg)),
+                harness.time_ms(_infer_many),
             )[1],
         ) / ATTN_INNER_ITERS
 
         if _TORCH_OK:
             engine.execute(prep_alg, q_bytes)
-            engine.execute_into(stack_alg, b"", out)
+            engine.execute_into(infer_alg, b"", out)
             ref = decode_attn().cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
-            verified = bool(np.max(np.abs(got - ref)) / mag < 2e-2)
+            verified = bool(np.max(np.abs(got - ref)) / mag < 1e-5)
         else:
             verified = None
 

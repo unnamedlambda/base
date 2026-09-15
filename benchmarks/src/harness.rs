@@ -145,3 +145,30 @@ pub fn f32_sum(data: &[u8]) -> f64 {
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
         .sum()
 }
+
+/// Read a whole file into a caller-owned buffer.
+///
+/// The Base side reads into an arena it allocated once, so a comparison that
+/// let the Rust side allocate a fresh file-sized `Vec` every iteration would be
+/// charging one side for an allocation and first-touch the other never pays.
+/// At the largest CSV input that is 282 MB a round.
+pub fn read_into(path: &str, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    use std::io::Read;
+    buf.clear();
+    std::fs::File::open(path)?.read_to_end(buf)?;
+    Ok(())
+}
+
+/// Write a decimal result the way `cl_file_write` does, fsync included.
+///
+/// The generated programs finish by rendering their answer and writing it
+/// durably. `cl_file_write` calls `sync_all`, which costs about 0.7 ms on ext4,
+/// so a Rust comparison that only returned the value would be doing strictly
+/// less work.
+pub fn write_result_sync(path: &str, value: i64) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    write!(f, "{}\n", value)?;
+    f.sync_all()?;
+    Ok(())
+}

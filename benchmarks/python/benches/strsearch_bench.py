@@ -40,7 +40,7 @@ def generate_text(path: str, n: int) -> int:
     return count
 
 
-def python_strsearch(path: str) -> int:
+def python_strsearch(path: str, output_path: str) -> int:
     with open(path) as f:
         text = f.read()
     count = 0
@@ -51,6 +51,7 @@ def python_strsearch(path: str) -> int:
             break
         count += 1
         start = pos + 1
+    harness.write_result_sync(output_path, count)
     return count
 
 
@@ -71,8 +72,10 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
         expected = generate_text(text_path, n)
 
+        py_out = output_path + ".py"
+
         python_ms = harness.median_of(rounds, lambda: harness.time_ms(
-            lambda: python_strsearch(text_path)
+            lambda: python_strsearch(text_path, py_out)
         ))
 
         # Warmup
@@ -80,9 +83,10 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
             os.remove(output_path)
         engine.execute(alg, payload)
 
+        # The warmup created the output file, so each timed run overwrites a
+        # path that exists — the same filesystem work the baseline does. A
+        # remove here would charge Base for an inode creation a round instead.
         def run_pybase():
-            if os.path.exists(output_path):
-                os.remove(output_path)
             return harness.time_ms(lambda: engine.execute(alg, payload))
 
         pybase_ms = harness.median_of(rounds, run_pybase)

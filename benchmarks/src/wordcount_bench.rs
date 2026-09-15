@@ -9,13 +9,18 @@ use crate::harness::{self, format_count, BenchResult};
 const WC_ARTIFACT: &[u8] =
     build_support::artifact!("RustBenchmarks/wc_algorithm");
 
+/// `INPUT_DATA` (0x14000) plus room for the largest input, which is under 4 MB.
+/// The generator reserves 512 MiB; a fresh instance a round makes that
+/// reservation, not the counting, the thing being measured.
+const WC_ARENA_BYTES: usize = 0x14000 + 16 * 1024 * 1024;
+
 const VOCABULARY: &[&str] = &[
     "the", "of", "and", "to", "in", "a", "is", "that", "for", "it", "was", "on", "are", "as",
     "with", "his", "they", "at", "be", "this", "from", "or", "had", "by", "not", "but", "some",
     "what", "we", "can", "out", "all", "your", "when", "up", "use", "how", "said", "an", "each",
 ];
 
-fn generate_text(path: &str, num_words: usize) -> HashMap<String, u64> {
+fn generate_text(path: &str, num_words: usize) -> HashMap<Vec<u8>, u64> {
     let dir = Path::new(path).parent().unwrap();
     fs::create_dir_all(dir).ok();
 
@@ -25,7 +30,7 @@ fn generate_text(path: &str, num_words: usize) -> HashMap<String, u64> {
     for i in 0..num_words {
         let idx = ((i * 7 + 13) * 31) % VOCABULARY.len();
         let word = VOCABULARY[idx];
-        *expected.entry(word.to_string()).or_insert(0u64) += 1;
+        *expected.entry(word.as_bytes().to_vec()).or_insert(0u64) += 1;
         if i > 0 {
             write!(f, " ").unwrap();
         }
@@ -45,21 +50,43 @@ fn build_payload(text_path: &str, output_path: &str) -> Vec<u8> {
     payload
 }
 
-fn rust_wordcount(path: &str) -> HashMap<String, u64> {
-    let data = fs::read_to_string(path).unwrap();
-    let mut counts = HashMap::new();
-    for word in data.split_whitespace() {
-        *counts.entry(word.to_string()).or_insert(0u64) += 1;
+fn rust_wordcount(path: &str, output_path: &str, buf: &mut Vec<u8>) -> HashMap<Vec<u8>, u64> {
+    // Bytes rather than `read_to_string`, into a buffer that outlives the call:
+    // the generated program neither validates UTF-8 nor reallocates its arena.
+    harness::read_into(path, buf).unwrap();
+    let mut counts: HashMap<Vec<u8>, u64> = HashMap::new();
+    for word in buf.split(|b| b.is_ascii_whitespace()) {
+        if word.is_empty() {
+            continue;
+        }
+        // `cl_ht_increment` allocates only when the key is new; `entry(to_string())`
+        // would allocate once per occurrence, which is a different amount of work.
+        if let Some(c) = counts.get_mut(word) {
+            *c += 1;
+        } else {
+            counts.insert(word.to_vec(), 1);
+        }
     }
+    // The artifact renders the whole table and writes it durably. Do the same.
+    let mut out = Vec::with_capacity(counts.len() * 16);
+    for (w, c) in counts.iter() {
+        out.extend_from_slice(w);
+        out.push(b'\t');
+        out.extend_from_slice(c.to_string().as_bytes());
+        out.push(b'\n');
+    }
+    let mut f = fs::File::create(output_path).unwrap();
+    f.write_all(&out).unwrap();
+    f.sync_all().unwrap();
     counts
 }
 
-fn parse_output(content: &str) -> HashMap<String, u64> {
+fn parse_output(content: &str) -> HashMap<Vec<u8>, u64> {
     let mut result = HashMap::new();
     for line in content.lines() {
         if let Some((word, count_str)) = line.split_once('\t') {
             if let Ok(count) = count_str.parse::<u64>() {
-                result.insert(word.to_string(), count);
+                result.insert(word.as_bytes().to_vec(), count);
             }
         }
     }
@@ -78,9 +105,13 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let payload = build_payload(&text_path, &output_path);
 
         // Pure Rust
+        let rust_out = format!("/tmp/bench-data/rust_result_wc_{}.txt", n);
+        let mut rust_buf: Vec<u8> = Vec::new();
+        let _ = rust_wordcount(&text_path, &rust_out, &mut rust_buf);
+
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let got = rust_wordcount(&text_path);
+            let got = rust_wordcount(&text_path, &rust_out, &mut rust_buf);
             let ms = start.elapsed().as_secs_f64() * 1000.0;
             if got != expected {
                 eprintln!("WARNING: Rust counts mismatch (n={})", n);
@@ -90,9 +121,22 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Base (Cranelift JIT) — fresh instance per execution because HT state
         // accumulates across execute() calls (ht_increment on handle 0 persists).
+        //
+        // The warmup removes the output file and writes it back, so every timed
+        // iteration overwrites a path that exists — the filesystem work the
+        // baseline does. Removing it per iteration would charge Base for an
+        // inode allocation a round that the baseline never pays.
+        let _ = fs::remove_file(&output_path);
+        {
+            let mut artifact = Artifact::from_bytes(WC_ARTIFACT);
+            artifact.setup.memory_size = WC_ARENA_BYTES;
+            let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
+            let _ = base_instance.execute(&artifact.main, &payload);
+        }
+
         let base_ms = harness::median_of(iterations, || {
-            let _ = fs::remove_file(&output_path);
-            let artifact = Artifact::from_bytes(WC_ARTIFACT);
+            let mut artifact = Artifact::from_bytes(WC_ARTIFACT);
+            artifact.setup.memory_size = WC_ARENA_BYTES;
             let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
             let start = std::time::Instant::now();
             let _ = base_instance.execute(&artifact.main, &payload);
@@ -101,7 +145,8 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Run one more time with fresh instance for verification
         let _ = fs::remove_file(&output_path);
-        let artifact = Artifact::from_bytes(WC_ARTIFACT);
+        let mut artifact = Artifact::from_bytes(WC_ARTIFACT);
+        artifact.setup.memory_size = WC_ARENA_BYTES;
         let mut base_instance = base::Base::new(artifact.setup).expect("Base::new failed");
         let _ = base_instance.execute(&artifact.main, &payload);
 

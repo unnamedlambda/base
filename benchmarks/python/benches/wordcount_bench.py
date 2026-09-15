@@ -75,14 +75,15 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
         # Fresh engine per execute: HT state accumulates across execute() calls.
         def run_pybase():
-            if os.path.exists(output_path):
-                os.remove(output_path)
             art = py_base.load_artifact(algo_path)
             eng = py_base.Base(art.setup)
             a = art.main
             return harness.time_ms(lambda: eng.execute(a, payload))
 
-        # Warmup
+        # Warmup. It creates the output file, so the timed runs overwrite a path
+        # that exists rather than allocating an inode a round.
+        if os.path.exists(output_path):
+            os.remove(output_path)
         run_pybase()
 
         pybase_ms = harness.median_of(rounds, run_pybase)

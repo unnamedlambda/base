@@ -24,10 +24,12 @@ def generate_json(path: str, n: int) -> int:
     return total
 
 
-def python_json_sum(path: str) -> int:
+def python_json_sum(path: str, output_path: str) -> int:
     with open(path) as f:
         data = json.load(f)
-    return sum(item["value"] for item in data)
+    total = sum(item["value"] for item in data)
+    harness.write_result_sync(output_path, total)
+    return total
 
 
 def build_payload(json_path: str, output_path: str) -> bytes:
@@ -47,8 +49,10 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
         expected = generate_json(json_path, n)
 
+        py_out = output_path + ".py"
+
         python_ms = harness.median_of(rounds, lambda: harness.time_ms(
-            lambda: python_json_sum(json_path)
+            lambda: python_json_sum(json_path, py_out)
         ))
 
         # Warmup
@@ -56,9 +60,10 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
             os.remove(output_path)
         engine.execute(alg, payload)
 
+        # The warmup created the output file, so each timed run overwrites a
+        # path that exists — the same filesystem work the baseline does. A
+        # remove here would charge Base for an inode creation a round instead.
         def run_pybase():
-            if os.path.exists(output_path):
-                os.remove(output_path)
             return harness.time_ms(lambda: engine.execute(alg, payload))
 
         pybase_ms = harness.median_of(rounds, run_pybase)

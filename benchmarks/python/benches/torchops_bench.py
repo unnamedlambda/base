@@ -7,6 +7,9 @@ SAXPY:  y = 2*x + y
 Both sides keep tensors resident on GPU and time compute only. py_base uses a
 load / prep / infer split so the timed path matches the resident-tensor PyTorch
 reference instead of including host-device transfers.
+
+Each PyTorch reference is timed eagerly and under torch.compile and the faster
+is reported, decided per benchmark rather than per run.
 """
 
 import os
@@ -27,16 +30,6 @@ except ImportError:
 
 
 SIZES = [1_000_000, 10_000_000, 50_000_000]
-
-
-def _time_torch(fn):
-    torch.cuda.synchronize()
-
-    def synced():
-        fn()
-        torch.cuda.synchronize()
-
-    return harness.time_ms(synced)
 
 
 def _run_binary(
@@ -64,10 +57,8 @@ def _run_binary(
         if _TORCH_OK:
             x_t = torch.from_numpy(x_np).cuda()
             y_t = torch.from_numpy(y_np).cuda()
-            torch_ref(x_t, y_t)
-            torch_ms = harness.median_of(
-                rounds,
-                lambda: _time_torch(lambda: torch_ref(x_t, y_t)),
+            torch_ms = harness.torch_median(
+                lambda: torch_ref(x_t, y_t), rounds, label=f"{label} ({n})"
             )
         else:
             torch_ms = None

@@ -44,8 +44,9 @@ fn build_payload(json_path: &str, output_path: &str) -> Vec<u8> {
 
 /// Streaming JSON parser: extracts "value" fields without building a tree.
 /// Scans for the pattern `"value": <digits>` and sums the numbers.
-fn rust_json_sum(path: &str) -> i64 {
-    let data = fs::read(path).unwrap();
+fn rust_json_sum(path: &str, output_path: &str, buf: &mut Vec<u8>) -> i64 {
+    harness::read_into(path, buf).unwrap();
+    let data = &buf[..];
     let needle = b"\"value\": ";
     let mut total: i64 = 0;
     let mut pos = 0;
@@ -63,6 +64,7 @@ fn rust_json_sum(path: &str) -> i64 {
             pos += 1;
         }
     }
+    harness::write_result_sync(output_path, total).unwrap();
     total
 }
 
@@ -82,9 +84,13 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let payload = build_payload(&json_path, &output_path);
 
         // Pure Rust (streaming parser, no serde)
+        let rust_out = format!("/tmp/bench-data/rust_result_json_{}.txt", n);
+        let mut rust_buf: Vec<u8> = Vec::new();
+        let _ = rust_json_sum(&json_path, &rust_out, &mut rust_buf);
+
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let sum = rust_json_sum(&json_path);
+            let sum = rust_json_sum(&json_path, &rust_out, &mut rust_buf);
             let ms = start.elapsed().as_secs_f64() * 1000.0;
             if sum != expected {
                 eprintln!(
@@ -95,13 +101,17 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             ms
         });
 
-        // Base (Cranelift JIT) — execute with payload, verify output file
-        // Warmup
+        // Base (Cranelift JIT) — execute with payload, verify output file.
+        //
+        // The output file is removed once, here, so this warmup creates it and
+        // every timed iteration overwrites a path that already exists. That is
+        // the filesystem work the baseline's `File::create` does. Removing it
+        // per iteration instead charges Base for an inode allocation and a
+        // directory insert a round that the baseline never pays.
         let _ = fs::remove_file(&output_path);
         let _ = base_instance.execute(&artifact.main, &payload);
 
         let base_ms = harness::median_of(iterations, || {
-            let _ = fs::remove_file(&output_path);
             let start = std::time::Instant::now();
             let _ = base_instance.execute(&artifact.main, &payload);
             start.elapsed().as_secs_f64() * 1000.0

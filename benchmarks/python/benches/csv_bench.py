@@ -22,7 +22,7 @@ def generate_csv(path: str, n: int) -> int:
     return total
 
 
-def python_csv_sum(path: str) -> int:
+def python_csv_sum(path: str, output_path: str) -> int:
     total = 0
     with open(path, "r") as f:
         reader = csv.reader(f)
@@ -30,6 +30,7 @@ def python_csv_sum(path: str) -> int:
         idx = header.index("salary")
         for row in reader:
             total += int(row[idx])
+    harness.write_result_sync(output_path, total)
     return total
 
 
@@ -50,8 +51,10 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
         expected = generate_csv(csv_path, n)
 
+        py_out = output_path + ".py"
+
         python_ms = harness.median_of(rounds, lambda: harness.time_ms(
-            lambda: python_csv_sum(csv_path)
+            lambda: python_csv_sum(csv_path, py_out)
         ))
 
         # Warmup
@@ -59,9 +62,10 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
             os.remove(output_path)
         engine.execute(alg, payload)
 
+        # The warmup created the output file, so each timed run overwrites a
+        # path that exists — the same filesystem work the baseline does. A
+        # remove here would charge Base for an inode creation a round instead.
         def run_pybase():
-            if os.path.exists(output_path):
-                os.remove(output_path)
             return harness.time_ms(lambda: engine.execute(alg, payload))
 
         pybase_ms = harness.median_of(rounds, run_pybase)

@@ -52,10 +52,11 @@ fn build_payload(text_path: &str, output_path: &str) -> Vec<u8> {
     payload
 }
 
-fn rust_string_search(path: &str) -> usize {
-    let data = fs::read_to_string(path).unwrap();
+fn rust_string_search(path: &str, output_path: &str, buf: &mut Vec<u8>) -> usize {
+    // Bytes, not `read_to_string`: the generated program does not validate UTF-8.
+    harness::read_into(path, buf).unwrap();
     let pattern = PATTERN.as_bytes();
-    let data = data.as_bytes();
+    let data = &buf[..];
     let mut count = 0;
     let mut pos = 0;
 
@@ -65,6 +66,7 @@ fn rust_string_search(path: &str) -> usize {
         }
         pos += 1;
     }
+    harness::write_result_sync(output_path, count as i64).unwrap();
     count
 }
 
@@ -84,9 +86,13 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let payload = build_payload(&text_path, &output_path);
 
         // Pure Rust
+        let rust_out = format!("/tmp/bench-data/rust_result_ss_{}.txt", n);
+        let mut rust_buf: Vec<u8> = Vec::new();
+        let _ = rust_string_search(&text_path, &rust_out, &mut rust_buf);
+
         let rust_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let count = rust_string_search(&text_path);
+            let count = rust_string_search(&text_path, &rust_out, &mut rust_buf);
             let ms = start.elapsed().as_secs_f64() * 1000.0;
             if count != expected {
                 eprintln!(
@@ -97,13 +103,17 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
             ms
         });
 
-        // Base (Cranelift JIT) — execute with payload, verify output file
-        // Warmup
+        // Base (Cranelift JIT) — execute with payload, verify output file.
+        //
+        // The output file is removed once, here, so this warmup creates it and
+        // every timed iteration overwrites a path that already exists. That is
+        // the filesystem work the baseline's `File::create` does. Removing it
+        // per iteration instead charges Base for an inode allocation and a
+        // directory insert a round that the baseline never pays.
         let _ = fs::remove_file(&output_path);
         let _ = base_instance.execute(&artifact.main, &payload);
 
         let base_ms = harness::median_of(iterations, || {
-            let _ = fs::remove_file(&output_path);
             let start = std::time::Instant::now();
             let _ = base_instance.execute(&artifact.main, &payload);
             start.elapsed().as_secs_f64() * 1000.0
