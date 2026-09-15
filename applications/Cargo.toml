@@ -130,6 +130,14 @@ name = "blackhole_smoke"
 path = "blackhole/tests/smoke.rs"
 
 [[test]]
+name = "bytecount_count"
+path = "bytecount/tests/count.rs"
+
+[[test]]
+name = "bytescrub_scrub"
+path = "bytescrub/tests/scrub.rs"
+
+[[test]]
 name = "cli_comparison"
 path = "cli/tests/comparison.rs"
 

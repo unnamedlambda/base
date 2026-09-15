@@ -115,6 +115,8 @@ lean_lib RaytraceAlgorithm
 lean_lib SatAlgorithm
 lean_lib SceneAlgorithm
 lean_lib BlackHoleAlgorithm
+lean_lib ByteCountAlgorithm
+lean_lib ByteScrubAlgorithm
 lean_lib Sha256Algorithm
 @[default_target]
 lean_lib Qwen2Common
@@ -138,6 +140,14 @@ lean_lib ShipScan
 -- Each definition is its own check; a change to `Prog` that breaks one fails
 -- here rather than in whoever's library meets it next.
 lean_lib ProgIdioms
+
+-- Build-enforced: what one vector's trip of the byte scanner computes, for
+-- every input, over the semantics the artifact is checked against.
+lean_lib ByteCountProof
+
+-- Build-enforced: what one vector's trip of the byte scrubber computes, for
+-- every input, over the semantics the artifact is checked against.
+lean_lib ByteScrubProof
 
 lean_lib MlSurface
 
@@ -213,6 +223,10 @@ lean_exe genfallingsandalgorithm where
   root := `FallingSandAlgorithm
 lean_exe genclialgorithm where
   root := `CliAlgorithm
+lean_exe genbytecountalgorithm where
+  root := `ByteCountAlgorithm
+lean_exe genbytescrubalgorithm where
+  root := `ByteScrubAlgorithm
 lean_exe genleanevalalgorithm where
   root := `LeanEvalAlgorithm
 lean_exe gendrawalgorithm where
