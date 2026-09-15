@@ -23,6 +23,12 @@
 //! A call that fails answers null or `-1` and leaves a message on the calling
 //! thread, which [`base_last_error`] copies out. The message is per-thread and
 //! not allocated for the caller, so there is nothing to free.
+//!
+//! A panic inside a call is one of those failures. A panic cannot unwind out
+//! of an `extern "C"` function — Rust aborts the process instead — so every
+//! entry point runs its body under [`guard`], and the host sees `-1` and the
+//! panic's message rather than losing its own process. A trap in generated
+//! code is a signal, not a panic, and still ends the process.
 
 use std::cell::RefCell;
 
@@ -46,6 +52,28 @@ impl From<Error> for String {
         match e {
             Error::Clif(m) => format!("clif: {m}"),
             Error::Execution(m) => format!("execution: {m}"),
+        }
+    }
+}
+
+/// Run `body`, turning a panic into `failed` and a message for
+/// [`base_last_error`].
+///
+/// `AssertUnwindSafe` is sound here because a panic ends the call: nothing
+/// observes the state `body` was midway through except through the handle,
+/// and a host that keeps using a handle after a failed call gets whatever
+/// that handle's program left in its memory, as it would after any failure.
+fn guard<T>(failed: T, body: impl FnOnce() -> T) -> T {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(v) => v,
+        Err(payload) => {
+            let what = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "a panic with no message".to_string());
+            set_error(format!("panic: {what}"));
+            failed
         }
     }
 }
@@ -83,25 +111,27 @@ unsafe fn slice_out<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
 /// `setup_json` must point to `len` readable bytes, or be null with `len` zero.
 #[no_mangle]
 pub unsafe extern "C" fn base_new(setup_json: *const u8, len: usize) -> *mut Base {
-    clear_error();
-    let Some(bytes) = slice_in(setup_json, len) else {
-        set_error("setup_json is null with a non-zero length");
-        return std::ptr::null_mut();
-    };
-    let setup: Setup = match serde_json::from_slice(bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            set_error(format!("setup is not a Setup: {e}"));
+    guard(std::ptr::null_mut(), || {
+        clear_error();
+        let Some(bytes) = slice_in(setup_json, len) else {
+            set_error("setup_json is null with a non-zero length");
             return std::ptr::null_mut();
+        };
+        let setup: Setup = match serde_json::from_slice(bytes) {
+            Ok(s) => s,
+            Err(e) => {
+                set_error(format!("setup is not a Setup: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        match Base::new(setup) {
+            Ok(base) => Box::into_raw(Box::new(base)),
+            Err(e) => {
+                set_error(String::from(e));
+                std::ptr::null_mut()
+            }
         }
-    };
-    match Base::new(setup) {
-        Ok(base) => Box::into_raw(Box::new(base)),
-        Err(e) => {
-            set_error(String::from(e));
-            std::ptr::null_mut()
-        }
-    }
+    })
 }
 
 /// Make this `Base` callable from the calling thread. `0` on success, `-1` if
@@ -119,13 +149,15 @@ pub unsafe extern "C" fn base_new(setup_json: *const u8, len: usize) -> *mut Bas
 /// `handle` must be a live pointer from [`base_new`], or null.
 #[no_mangle]
 pub unsafe extern "C" fn base_bind_thread(handle: *mut Base) -> i32 {
-    clear_error();
-    let Some(base) = handle.as_ref() else {
-        set_error("handle is null");
-        return -1;
-    };
-    base.bind_current_thread();
-    0
+    guard(-1, || {
+        clear_error();
+        let Some(base) = handle.as_ref() else {
+            set_error("handle is null");
+            return -1;
+        };
+        base.bind_current_thread();
+        0
+    })
 }
 
 /// Run one algorithm against this `Base`. `0` on success, `-1` on failure.
@@ -154,40 +186,42 @@ pub unsafe extern "C" fn base_execute(
     out: *mut u8,
     out_len: usize,
 ) -> i32 {
-    clear_error();
-    let Some(base) = handle.as_mut() else {
-        set_error("handle is null");
-        return -1;
-    };
-    let Some(alg_bytes) = slice_in(algorithm_json, alg_len) else {
-        set_error("algorithm_json is null with a non-zero length");
-        return -1;
-    };
-    let Some(data) = slice_in(data, data_len) else {
-        set_error("data is null with a non-zero length");
-        return -1;
-    };
-    let Some(out) = slice_out(out, out_len) else {
-        set_error("out is null with a non-zero length");
-        return -1;
-    };
-    let algorithm: Algorithm = match serde_json::from_slice(alg_bytes) {
-        Ok(a) => a,
-        Err(e) => {
-            set_error(format!("algorithm is not an Algorithm: {e}"));
+    guard(-1, || {
+        clear_error();
+        let Some(base) = handle.as_mut() else {
+            set_error("handle is null");
             return -1;
+        };
+        let Some(alg_bytes) = slice_in(algorithm_json, alg_len) else {
+            set_error("algorithm_json is null with a non-zero length");
+            return -1;
+        };
+        let Some(data) = slice_in(data, data_len) else {
+            set_error("data is null with a non-zero length");
+            return -1;
+        };
+        let Some(out) = slice_out(out, out_len) else {
+            set_error("out is null with a non-zero length");
+            return -1;
+        };
+        let algorithm: Algorithm = match serde_json::from_slice(alg_bytes) {
+            Ok(a) => a,
+            Err(e) => {
+                set_error(format!("algorithm is not an Algorithm: {e}"));
+                return -1;
+            }
+        };
+        // The batches are the Arrow view of the same shared memory `base_read_memory`
+        // reads, and this ABI does not carry Arrow. Dropping them costs only the
+        // schemas an artifact declares, which is nothing when it declares none.
+        match base.execute_into(&algorithm, data, out) {
+            Ok(_) => 0,
+            Err(e) => {
+                set_error(String::from(e));
+                -1
+            }
         }
-    };
-    // The batches are the Arrow view of the same shared memory `base_read_memory`
-    // reads, and this ABI does not carry Arrow. Dropping them costs only the
-    // schemas an artifact declares, which is nothing when it declares none.
-    match base.execute_into(&algorithm, data, out) {
-        Ok(_) => 0,
-        Err(e) => {
-            set_error(String::from(e));
-            -1
-        }
-    }
+    })
 }
 
 /// Copy `len` bytes of this `Base`'s shared memory from `offset` into `dst`,
@@ -209,29 +243,31 @@ pub unsafe extern "C" fn base_read_memory(
     dst: *mut u8,
     len: usize,
 ) -> usize {
-    clear_error();
-    let Some(base) = handle.as_ref() else {
-        set_error("handle is null");
-        return 0;
-    };
-    let Some(dst) = slice_out(dst, len) else {
-        set_error("dst is null with a non-zero length");
-        return 0;
-    };
-    let Some(end) = offset.checked_add(len) else {
-        set_error("offset + len overflows");
-        return 0;
-    };
-    let memory = base.memory_bytes();
-    if end > memory.len() {
-        set_error(format!(
-            "range {offset}..{end} is outside the {} bytes of memory",
-            memory.len()
-        ));
-        return 0;
-    }
-    dst.copy_from_slice(&memory[offset..end]);
-    len
+    guard(0, || {
+        clear_error();
+        let Some(base) = handle.as_ref() else {
+            set_error("handle is null");
+            return 0;
+        };
+        let Some(dst) = slice_out(dst, len) else {
+            set_error("dst is null with a non-zero length");
+            return 0;
+        };
+        let Some(end) = offset.checked_add(len) else {
+            set_error("offset + len overflows");
+            return 0;
+        };
+        let memory = base.memory_bytes();
+        if end > memory.len() {
+            set_error(format!(
+                "range {offset}..{end} is outside the {} bytes of memory",
+                memory.len()
+            ));
+            return 0;
+        }
+        dst.copy_from_slice(&memory[offset..end]);
+        len
+    })
 }
 
 /// How many bytes of shared memory this `Base` holds, which bounds
@@ -279,9 +315,11 @@ pub unsafe extern "C" fn base_last_error(buf: *mut u8, cap: usize) -> usize {
 /// Freeing the same handle twice is undefined behaviour.
 #[no_mangle]
 pub unsafe extern "C" fn base_free(handle: *mut Base) {
-    if !handle.is_null() {
-        drop(Box::from_raw(handle));
-    }
+    guard((), || {
+        if !handle.is_null() {
+            drop(Box::from_raw(handle));
+        }
+    })
 }
 
 #[cfg(test)]
@@ -388,6 +426,12 @@ mod tests {
 
     /// The message is a prefix when it does not fit, and the answer is always
     /// the full length so a caller can size a second call.
+    #[test]
+    fn a_panic_is_an_error_and_not_an_abort() {
+        assert_eq!(guard(-1, || -> i32 { panic!("boom") }), -1);
+        assert_eq!(last_error(), "panic: boom");
+    }
+
     #[test]
     fn last_error_reports_the_full_length() {
         set_error("abcdef");
