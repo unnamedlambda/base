@@ -89,7 +89,4 @@ theorem shipped_loop_ckpt64 (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : L
 
 -- ── The tail: from the loop exit to the LSIC loop head ───────────────────────
 
-
-
-
 end Lz4Sites

@@ -22,10 +22,6 @@ open AlgorithmLib.LZ4SimtBits
 
 -- ── The window clamps, at 64 KiB ──────────────────────────────────────────
 
-
-
-
-
 -- ── `RegConfined`'s load half ───────────────────────────────────────────────
 
 theorem loads_confined64 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)

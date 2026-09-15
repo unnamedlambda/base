@@ -1070,8 +1070,6 @@ theorem rc_clampedG64 (p : Array SInstr) (S : Nat) (hS : S < 2 ^ 64) (h : winSha
 
 -- ── The shipped 32 KiB instance ─────────────────────────────────────────────
 
-
-
 theorem rp_clamped64 (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     ∀ k : Nat, 46 ≤ (siter K16 k (initSt w inPtr outPtr gm smemB)).pc →
       (siter K16 k (initSt w inPtr outPtr gm smemB)).pc ≤ 92 →

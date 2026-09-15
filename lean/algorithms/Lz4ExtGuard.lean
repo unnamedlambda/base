@@ -10,8 +10,6 @@ open AlgorithmLib.LZ4SimtBits
 variable {p : Array SInstr} [Shape p] {S : Nat} [Geo p S]
 -- ── Two facts the prologue establishes for the whole run ─────────────────────
 
-
-
 /-- **`lane` holds the lane index from pc 9 on, at every step of every trace.**
 
     `8 and lane, tid, 31` computes it and nothing writes it again; `tid` comes
@@ -100,8 +98,6 @@ theorem lane_val (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) 
   exact (key k).2.2 hk l
 
 -- ── The loop guard, recovered for every lane ────────────────────────────────
-
-
 
 /-- `x < ofNat c` is `x.toNat < c`, for a `c` that fits. -/
 theorem lt_ofNat_iff (x : UInt64) (c : Nat) (hc : c < 2 ^ 64) :
@@ -236,8 +232,6 @@ theorem loopS_entry : ∀ q, q ∉ loopS →
     rw [List.mem_singleton] at hq'
     exact absurd (hq' ▸ hin) hq
 
-
-
 /-- **The literal anchor never passes the cursor, and the cursor stays inside the
     block.**  `litAnchor` is only ever set to `p0 + ml` at 200, and 201 moves the
     cursor to exactly that — so the two travel together, and the only point where
@@ -246,8 +240,6 @@ def LoopInv (S : Nat) (st : SState) : Prop :=
   (st.pc ≠ 201 → ∀ l : Lane,
       (st.regs "litAnchor" l).toNat ≤ (st.regs "searchPos" l).toNat)
   ∧ (GuardLive st.pc → ∀ l : Lane, (st.regs "searchPos" l).toNat < (S - 12))
-
-
 
 /-- **`LoopInv` holds at every state of the body.** -/
 theorem loop_inv (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
@@ -440,9 +432,6 @@ theorem loop_inv (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) 
 
 
 -- ── What the select hands the extend loop ───────────────────────────────────
-
-
-
 
 /-- `ballotOf` reads only the one register it names. -/
 theorem ballotOf_congr (g g' : String → Lane → UInt64) (r : String) (h : g r = g' r) :
@@ -674,8 +663,6 @@ theorem extend_entry_gen (init : SState) (hinit : init.pc = 0)
       rw [hp0, UInt64.toNat_add, Nat.mod_eq_of_lt
         (by have := Geo.sBound (p := p) (S := S); omega)]
     omega
-
-
 
 /-- `extend_entry_gen` at the launch state. -/
 theorem extend_entry (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)

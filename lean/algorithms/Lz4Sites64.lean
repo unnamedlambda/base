@@ -30,15 +30,9 @@ theorem numBlk3264 : (WP.mk 16).numBlk = 3200 := by decide
 
 theorem kSize16 : K16.size = 274 := by decide
 
-
-
-
-
 theorem load_regs3264 :
     ∀ s ∈ loadSites K16, s.2.1 ∈ loadRegs ∧ s.2.2 ≤ 3 := by
   rw [shipped64_load_sites]; decide
-
-
 
 theorem sbAddr_is_outBase_add_op64 (w inPtr outPtr : Nat) (gm : Array UInt8)
     (smemB : List UInt8) (k q : Nat) (hq : q ∈ sbAddrSites)
@@ -236,12 +230,6 @@ theorem sbAddr_confined_of_cursor64 (inPtr outPtr : Nat) (gm : Array UInt8)
   have hos : (WP.mk 16).outStride = 69896 := by decide
   exact ⟨by omega, by omega⟩
 
-
-
-
-
-
-
 theorem lsicFS_closed64 : PcClosed K16 lsicFS [234] :=
   lsicFS_iv ▸ ivClosed_at K16 222 13 [234] kSize16 (by omega) (by decide)
 
@@ -305,9 +293,6 @@ theorem kernelConfined_of_regConfined3264 (inPtr outPtr : Nat) (gm : Array UInt8
     obtain ⟨hge, _⟩ := hreg
     have : outPtr ≤ outPtr + w'.val * (WP.mk 16).outStride := Nat.le_add_right _ _
     omega
-
-
-
 
 theorem lsic_frame64 (l : Lane) (B : Nat) (st : SState) (q' : Nat)
     (hpc' : (sstep K16 st).pc = q')
@@ -562,43 +547,6 @@ theorem lsic_op_lt64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
   lsicInv_op_le l B _
     (inv_on K16 (LsicInv l B) lsicFS [234] lsicFS_closed64
       (fun s hsm hexs hh => lsicFS_hstep64 l B hB s hsm hexs hh) st (by rw [h0]; decide) h k hne) hq
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 theorem tokS_closed64 : PcClosed K16 tokS [197, 198] :=
   tokS_iv ▸ ivClosed_at K16 129 70 [197, 198] kSize16 (by omega) (by decide)
@@ -2013,8 +1961,6 @@ theorem tok_op_lt64 (l : Lane) (B : Nat) (hB : B < 2 ^ 64) (st : SState)
   tokInv_op_lt l B _
     (inv_on K16 (TokInv l B) tokS [197, 198] tokS_closed64
       (fun s hsm hexs hh => tokS_hstep64 l B hB s hsm hexs hh) st (by rw [h0]; decide) h k hne) hq
-
-
 
 theorem mb_top64 : ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K16 124, 124 < q' := by decide
 

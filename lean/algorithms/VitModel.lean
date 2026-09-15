@@ -1535,8 +1535,6 @@ def vHorizGroups : List (List Nat) :=
     point of a schedule menu. -/
 def VBATCHMIN : Nat := 0
 
-
-
 /-- **Contractions one batched call performs.**
 
     `vHKey` already keys a contraction on its dependence level and its gemm

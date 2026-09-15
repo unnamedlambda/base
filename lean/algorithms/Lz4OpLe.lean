@@ -120,9 +120,5 @@ theorem cursorAtSites_shipped (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : L
   · exact HTAIL (Or.inr (Or.inl h))
   · exact HTAIL (Or.inr (Or.inr h))
 
-
-
-
-
 end Lz4Sites
 

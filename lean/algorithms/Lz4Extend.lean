@@ -13,8 +13,6 @@ variable {p : Array SInstr} [Shape p] [Loads p] {S : Nat} [geo : Geo p S]
 
 -- ── The cooperative copy's source address ───────────────────────────────────
 
-
-
 /-- **`cpCont` says exactly what the copy loop's guard means.**  Same shape as
     `loopC_iff`: the head at 156 is a label with two predecessors — the setup's
     `setp` at 155 and the back edge at 168 — so this is a second place the proof
@@ -242,9 +240,6 @@ theorem cpSo_off (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
 
 -- ── The budget survives to the tail ─────────────────────────────────────────
 
-
-
-
 theorem tailS_entry : ∀ q, q ∉ tailS →
     ∀ q', q' ∈ succsOf p q → q' ∈ tailS → q' = 121 := by
   have h := Shape.tailShape (p := p)
@@ -323,9 +318,6 @@ theorem ml_tail (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     exact ml_inv (S := S) w inPtr outPtr gm smemB (j - 1) (by
       rw [h99]; simp only [extS, List.mem_map, List.mem_range]; exact ⟨5, by omega, by omega⟩)
       (by rw [h99]; omega) (by rw [h99]; omega) x
-
-
-
 
 theorem laS_entry : ∀ q, q ∉ laS →
     ∀ q', q' ∈ succsOf p q → q' ∈ laS → q' = 38 := by
@@ -432,9 +424,6 @@ theorem litAnchor_le (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UIn
 
 -- ── The tail copy ───────────────────────────────────────────────────────────
 
-
-
-
 include geo in
 theorem ftS_entry : ∀ q, q ∉ ftS →
     ∀ q', q' ∈ succsOf p q → q' ∈ ftS → q' = 211 := by
@@ -513,8 +502,6 @@ theorem fLen_fit (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) 
     rw [UInt64.toNat_sub_of_le _ _ hle, hfl,
       AlgorithmLib.LZ4Ptx.toNat_ofNat_lt S (by have := Geo.sBound (p := p) (S := S); omega)]
     omega
-
-
 
 /-- The tail copy loop with its setup: pcs 240–254. -/
 def copyR2 : List Nat := (List.range 15).map (· + 240)
@@ -718,8 +705,6 @@ theorem cpSo2_off (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
   rw [UInt64.add_assoc, UInt64.add_assoc, UInt64.add_assoc]
 
 -- ── The warp's input base ───────────────────────────────────────────────────
-
-
 
 /-- **The warp's input base, at the instruction that computes it.**
 
@@ -1059,7 +1044,5 @@ theorem kernelConfined_shipped (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : 
     Lz4Interleave.KernelConfined 15 inPtr outPtr gm smemB :=
   kernelConfined_of_regConfined32 inPtr outPtr gm smemB
     (regConfined_shipped inPtr outPtr gm smemB hderive hib40 htop32 hbuf hdisj)
-
-
 
 end Lz4Sites

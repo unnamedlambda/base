@@ -627,8 +627,6 @@ theorem win_eqG (p : Array SInstr) (hp : p.size = 274) (b k : Nat) (f : SInstr â
       = winAll p b k f :=
   range_win_eq p b k (by rw [hp]; exact hsz) f
 
-
-
 variable {p : Array SInstr} [Shape p]
 
 theorem uni_init (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :

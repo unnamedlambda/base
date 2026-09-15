@@ -36,8 +36,6 @@ def ExtInv (S : Nat) (st : SState) : Prop :=
   ∧ (∀ l : Lane, (st.regs "p0" l).toNat < (S - 12))
   ∧ (∀ l : Lane, (st.regs "cand0" l).toNat < (st.regs "p0" l).toNat)
 
-
-
 /-- **The extend region's carried facts, at every state inside it.** -/
 theorem ext_inv (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     ∀ k : Nat, (siter p k (initSt w inPtr outPtr gm smemB)).pc ∈ extS →
@@ -100,8 +98,6 @@ theorem ext_inv (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
 
 -- ── `peD`: clamped by the kernel, like the two search pointers ──────────────
 
-
-
 /-- **`peD ≤ inStride - 6` at the load site.**  `103 peC := min pe ec1` with
     `ec1 = (S - 6)`, and `106` just copies it — so like `rp` and `rc`, the bound is
     by construction; all the region invariant has to supply is the constant. -/
@@ -154,8 +150,6 @@ theorem peD_le (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)
   exact Nat.le_refl _
 
 -- ── Why the extend loop cannot run away ─────────────────────────────────────
-
-
 
 /-- **A full round of the extend loop means every lane was still inside the
     window** — so the loop's own continue-condition bounds `ml`.
@@ -362,8 +356,6 @@ def MlInv (S : Nat) (st : SState) : Prop :=
   97 ≤ st.pc → st.pc ≤ 120 → ∀ l : Lane,
     (st.regs "p0" l).toNat + (st.regs "ml" l).toNat ≤ (S - 5)
 
-
-
 /-- **The `ml` budget holds throughout the extend region.** -/
 theorem ml_inv (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     ∀ k : Nat, (siter p k (initSt w inPtr outPtr gm smemB)).pc ∈ extS →
@@ -509,8 +501,6 @@ theorem ml_inv (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8) :
     omega
 
 -- ── `caD`: bounded by the select's guarantee, not by a clamp ────────────────
-
-
 
 /-- **`caD ≤ inStride - 6` at the candidate load.**
 
@@ -680,8 +670,6 @@ def MatchInv (S : Nat) (st : SState) : Prop :=
   ∀ l : Lane, (st.regs "p0" l).toNat ≤ (S - 13)
     ∧ (st.regs "searchPos" l).toNat ≤ (st.regs "p0" l).toNat
 
-
-
 /-- **The match position, carried across the whole token emit.**  `extend_entry`
     establishes it where the select hands over; neither register is written again
     until `200 litAnchor := p0 + ml`. -/
@@ -725,8 +713,6 @@ theorem litS_entry : ∀ q, q ∉ litS →
       simp only [succsOf, Array.getElem?_eq_none_iff.mpr (by rw [Shape.size (p := p)]; omega)]] at hq'
     rw [List.mem_singleton] at hq'
     exact absurd (hq' ▸ hin) hq
-
-
 
 include geo in
 /-- **The literal run ends inside the block.**

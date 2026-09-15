@@ -32,10 +32,6 @@ theorem bodyRegion_exit64 : ∀ q ∈ bodyRegion,
     ∀ q' ∈ AlgorithmLib.LZ4Simt.succsOf K16 q, q' ∈ bodyRegion ∨ 272 ≤ q' :=
   ivExit_at K16 40 232 272 kSize16 (by omega) (by decide)
 
-
-
-
-
 theorem cursorUp_true64 : cursorUpB K16 = true := by decide
 
 
@@ -162,9 +158,6 @@ theorem tail_pc_stg64 (st : SState) (q : Nat) (d a : String) (hq : st.pc = q)
     (hi : K16[q]? = some (.stg d a)) : (sstep K16 st).pc = q + 1 := by
   rw [sstep, show K16[st.pc]? = some (.stg d a) from by rw [hq]; exact hi]
   show st.pc + 1 = q + 1; rw [hq]
-
-
-
 
 theorem tail_frame64 (st : SState) (q : Nat) (i : SInstr) (r : String) (hq : st.pc = q)
     (hi : K16[q]? = some i) (hne : AlgorithmLib.LZ4WarpDSL.wtgt i ≠ some r) :
@@ -310,8 +303,6 @@ theorem stays_from_23564 (ss : SState) (a : Nat) (h : 235 ≤ (siter K16 a ss).p
             simp only [succsOf, Array.getElem?_eq_none_iff.mpr (by rw [kSize16]; omega)],
             List.mem_singleton] at hs
           omega
-
-
 
 theorem tail_run64 (E : SState) (h209 : E.pc = 209)
     (hlaN : (E.regs "litAnchor" 0).toNat ≤ 65536)
@@ -919,8 +910,6 @@ theorem tokInv_at_entry64 (l : Lane) (LO : Nat) (st : SState) (he : st.pc = 124)
         hR "lsicC" (Or.inr (Or.inr (Or.inr (Or.inr rfl)))) 0]
   all_goals (rw [hpc]; intro hq; first | omega | (exfalso; omega) | (rcases hq with e | e | e <;> omega))
 
-
-
 theorem tok_exits64 : AlgorithmLib.LZ4Simt.succsOf K16 197 = [199]
     ∧ AlgorithmLib.LZ4Simt.succsOf K16 198 = [199] := by decide
 
@@ -990,8 +979,6 @@ theorem tok_sites_bounded64 (LO : Nat) (hLO : LO < 2 ^ 64) (ss : SState)
   have hfin := tok_op_lt64 l LO hLO (siter K16 (j + 5) ss) hpc129 hTok (k - (j + 5)) hne hsite
   rw [← siter_add K16 (j + 5) (k - (j + 5)) ss, show j + 5 + (k - (j + 5)) = k from by omega] at hfin
   exact Nat.le_of_lt hfin
-
-
 
 -- p1
 
