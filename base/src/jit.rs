@@ -237,7 +237,14 @@ pub(crate) fn compile_program(
     }
 
     let dump = std::env::var("BASE_DISASM").is_ok();
+    // The decoded function in Cranelift's own textual form. The artifact
+    // carries instruction records, not text, so this is the only way to read
+    // what was handed to the backend rather than what came out of it.
+    let dump_clif = std::env::var("BASE_DUMP_CLIF").is_ok();
     for (i, func) in decoded.into_iter().enumerate() {
+        if dump_clif {
+            eprintln!("=== clif fn {i} ===\n{}", func.display());
+        }
         let mut ctx = cranelift_codegen::Context::for_function(func);
         if dump {
             ctx.set_disasm(true);
