@@ -209,10 +209,6 @@ pub struct FnDecl {
     pub reference: FnRef,
     pub callee: Callee,
     pub sig: SigRef,
-    /// Intra-module call. Imports resolved through the JIT's symbol table are
-    /// not colocated.
-    #[serde(default)]
-    pub colocated: bool,
 }
 
 /// One function. Its signature is its entry block's parameter list, under the

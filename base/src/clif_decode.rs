@@ -122,6 +122,18 @@ pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, Strin
     Ok(sig)
 }
 
+/// Where a callee resolved: the `FuncId` it is declared under, and whether it
+/// is defined in the same module as its caller.
+///
+/// The second is the runtime's to know, not the program's. A call to code in
+/// the module may be PC-relative, because the module's code is placed in one
+/// region; a call to a host symbol may not, because the loader put it wherever
+/// it put it. The program cannot tell which it has.
+pub struct Resolved {
+    pub id: u32,
+    pub colocated: bool,
+}
+
 /// Builds one function.
 ///
 /// `declare_callee` is called once per callee in the prologue and must return
@@ -130,7 +142,7 @@ pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, Strin
 pub fn decode_function(
     f: &clif::Function,
     cc: CallConv,
-    declare_callee: &mut dyn FnMut(&clif::Callee, &Signature) -> Result<u32, String>,
+    declare_callee: &mut dyn FnMut(&clif::Callee, &Signature) -> Result<Resolved, String>,
 ) -> Result<ir::Function, String> {
     let sig = signature_of(f, cc)?;
 
@@ -154,15 +166,15 @@ pub fn decode_function(
         let sr = *sig_refs
             .get(&d.sig.0)
             .ok_or_else(|| format!("fn{} names undeclared sig{}", d.reference.0, d.sig.0))?;
-        let func_id = declare_callee(&d.callee, &func.dfg.signatures[sr].clone())?;
+        let resolved = declare_callee(&d.callee, &func.dfg.signatures[sr].clone())?;
         let user_ref = func.declare_imported_user_function(UserExternalName {
             namespace: 0,
-            index: func_id,
+            index: resolved.id,
         });
         let fr = func.import_function(ExtFuncData {
             name: ExternalName::user(user_ref),
             signature: sr,
-            colocated: d.colocated,
+            colocated: resolved.colocated,
         });
         fn_refs.insert(d.reference.0, fr);
     }

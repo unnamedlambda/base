@@ -11,7 +11,7 @@ namespace WordCountBench
 /-
   Word frequency counting: parse words, ht_increment, format word\tcount\n output.
   Payload: "input_path\0output_path\0"
-  HT context at offset 0x00, colocated ht_create/ht_increment/ht_count/ht_get_entry.
+  HT context at offset 0x00, ht_create/ht_increment/ht_count/ht_get_entry.
 -/
 
 def CURRENT_KEY     : Nat := 0x0038

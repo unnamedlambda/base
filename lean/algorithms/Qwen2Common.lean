@@ -317,7 +317,7 @@ def ownFirstId : Nat :=
     and returns nothing; the declaration travels with the reference, so a body
     that calls one declares it and a body that does not never mentions it. -/
 def ownRef (i : Nat) : Prog.LocalRef HProg.ptrParams none :=
-  { id := ownFirstId + i, callee := .import ((ownFns[i]?).getD ""), colocated := true }
+  { id := ownFirstId + i, callee := .import ((ownFns[i]?).getD "") }
 
 /-- Every function of this program any other one calls, by name. -/
 abbrev OwnRef := Prog.LocalRef HProg.ptrParams none

@@ -42,6 +42,22 @@ pub struct Base {
 unsafe impl Send for Base {}
 unsafe impl Sync for Base {}
 
+impl Drop for Base {
+    /// Release the program's code. A JIT module otherwise keeps its code
+    /// mapped for the life of the process, and the region it was placed in is
+    /// reserved up front, so every dropped `Base` would leak that reservation.
+    fn drop(&mut self) {
+        // The functions stay reachable through this thread's installed table,
+        // but nothing calls them without a `Base` to execute: a program's
+        // workers are joined by `cl_thread_cleanup` before the program that
+        // spawned them returns.
+        self.clif_fns = None;
+        if let Some(module) = self._module.take() {
+            unsafe { module.free_memory() };
+        }
+    }
+}
+
 impl Base {
     pub fn new(setup: Setup) -> Result<Self, Error> {
         // The arena holds what the program asked for and the image it ships
@@ -297,7 +313,7 @@ pub fn clif_text(prog: &base_types::clif::Program) -> Result<String, String> {
                 Callee::Import(n) => format!("%{n}"),
                 Callee::Local(i) => format!("u0:{i}"),
             });
-            Ok(names.len() as u32 - 1)
+            Ok(clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false })
         };
         let text = format!("{}", clif_decode::decode_function(f, cc, &mut declare)?);
         let mut text = text;

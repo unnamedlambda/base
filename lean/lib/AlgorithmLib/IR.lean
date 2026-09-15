@@ -44,24 +44,24 @@ def FnEnv.sigOf (env : FnEnv) (fn : Nat) : Option SigDecl := do
     would not be an error — the call would quietly land on the wrong
     signature. -/
 def FnEnv.declare (e : FnEnv) (callee : Callee) (params : List ClifTy)
-    (result : Option ClifTy) (colocated : Bool := false) : FnRef × FnEnv :=
+    (result : Option ClifTy) : FnRef × FnEnv :=
   let sigId := e.sigs.foldl (fun m s => max m (s.ref.id + 1)) 0
   let fnId := e.fns.foldl (fun m d => max m (d.ref.id + 1)) 0
   (⟨fnId⟩,
    { sigs := e.sigs ++ [{ ref := ⟨sigId⟩, params, result }],
-     fns := e.fns ++ [{ ref := ⟨fnId⟩, callee := callee, sig := ⟨sigId⟩, colocated }] })
+     fns := e.fns ++ [{ ref := ⟨fnId⟩, callee := callee, sig := ⟨sigId⟩ }] })
 
 /-- Declare a call to another function of this same program, by `u0:N` index. -/
 def FnEnv.declareLocal (e : FnEnv) (index : Nat) (params : List ClifTy)
     (result : Option ClifTy) : FnRef × FnEnv :=
-  e.declare (.local index) params result (colocated := true)
+  e.declare (.local index) params result
 
 /-- Declare a symbol the JIT resolves within this program's own module — what a
     generator whose functions call each other by name needs, and the only kind
     of declaration that is not already in `Ffi`. -/
 def FnEnv.declareColocated (e : FnEnv) (name : String) (params : List ClifTy)
     (result : Option ClifTy) : FnRef × FnEnv :=
-  e.declare (.import name) params result (colocated := true)
+  e.declare (.import name) params result
 
 /-- Several colocated declarations of one shape, in order. -/
 def FnEnv.declareColocatedAll (e : FnEnv) (names : List String) (params : List ClifTy)

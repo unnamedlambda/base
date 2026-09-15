@@ -1,6 +1,8 @@
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::JITBuilder;
 use cranelift_module::Module;
+
+use crate::clif_decode::Resolved;
 use std::sync::Arc;
 use tracing::info;
 
@@ -159,9 +161,27 @@ fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("cl_thread_call", thread::cl_thread_call as *const u8);
 }
 
+/// Address space reserved for a program's code, however little it compiles to.
+const CODE_RESERVE_MIN: usize = 16 << 20;
+
+/// Reserved per instruction on top of that. The densest shipped program
+/// (`vit_block`) compiles to about 4 bytes per instruction, so this leaves
+/// room for constants, alignment and a far worse ratio.
+const CODE_RESERVE_PER_INST: usize = 64;
+
+/// The most that is ever reserved: AArch64's direct call reaches ±128 MiB, so a
+/// region no larger than that keeps every call within the module in range.
+const CODE_RESERVE_MAX: usize = 128 << 20;
+
 /// The JIT module every compilation starts from: host ISA, speed, all FFI
-/// symbols registered.
-fn new_module() -> cranelift_jit::JITModule {
+/// symbols registered, and code placed in one contiguous region.
+///
+/// The region is what makes a call between a program's own functions safe to
+/// emit PC-relative. Allocated separately, two functions can land further
+/// apart than a direct call reaches — ±128 MiB on AArch64, ±2 GiB on x86-64
+/// and RISC-V — with the program's data, or a pinned host buffer, mapped in
+/// between.
+fn new_module(insts: usize) -> Result<cranelift_jit::JITModule, String> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
@@ -170,7 +190,13 @@ fn new_module() -> cranelift_jit::JITModule {
         .unwrap();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     register_symbols(&mut builder);
-    cranelift_jit::JITModule::new(builder)
+    let reserve = CODE_RESERVE_MIN
+        .saturating_add(insts.saturating_mul(CODE_RESERVE_PER_INST))
+        .min(CODE_RESERVE_MAX);
+    let region = cranelift_jit::ArenaMemoryProvider::new_with_size(reserve)
+        .map_err(|e| format!("reserving {reserve} bytes for code: {e}"))?;
+    builder.memory_provider(Box::new(region));
+    Ok(cranelift_jit::JITModule::new(builder))
 }
 
 /// Finalizes a module whose functions have all been defined, and hands back
@@ -202,7 +228,13 @@ pub(crate) fn compile_program(
     prog: &base_types::clif::Program,
 ) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
     info!(functions = prog.functions.len(), "compiling CLIF program");
-    let mut module = new_module();
+    let insts = prog
+        .functions
+        .iter()
+        .flat_map(|f| &f.blocks)
+        .map(|b| b.insts.len())
+        .sum();
+    let mut module = new_module(insts)?;
     let cc = module.isa().default_call_conv();
 
     // Declared before any body is built, so `u0:N` resolves to FuncId(N).
@@ -229,13 +261,20 @@ pub(crate) fn compile_program(
         let mut declare = |callee: &base_types::clif::Callee,
                            sig: &cranelift_codegen::ir::Signature| {
             match callee {
-                base_types::clif::Callee::Import(name) => module
-                    .declare_function(name, cranelift_module::Linkage::Import, sig)
-                    .map(|id| id.as_u32())
-                    .map_err(|e| format!("declaring import {name}: {e}")),
+                // A name either resolves to a host symbol or — when a program
+                // names one of its own functions — to a declaration already
+                // in the module, which the import merges into.
+                base_types::clif::Callee::Import(name) => {
+                    let id = module
+                        .declare_function(name, cranelift_module::Linkage::Import, sig)
+                        .map_err(|e| format!("declaring import {name}: {e}"))?;
+                    let colocated = module.declarations().get_function_decl(id).linkage
+                        == cranelift_module::Linkage::Local;
+                    Ok(Resolved { id: id.as_u32(), colocated })
+                }
                 base_types::clif::Callee::Local(n) => func_ids
                     .get(*n as usize)
-                    .map(|id| id.as_u32())
+                    .map(|id| Resolved { id: id.as_u32(), colocated: true })
                     .ok_or_else(|| format!("call to u0:{n}, which the program does not define")),
             }
         };

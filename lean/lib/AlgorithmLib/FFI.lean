@@ -306,12 +306,10 @@ def ofCname (s : String) : Option Ffi := all.find? (·.cname == s)
 def sigDecl (f : Ffi) : SigDecl :=
   { ref := ⟨f.id⟩, params := f.params, result := f.result }
 
-/-- Every entry point is a host symbol the JIT resolves by name, so none is
-    `colocated`: that flag makes Cranelift emit a near call, whose 32-bit
-    displacement cannot reach an address the loader chose. The six hash-table
-    symbols carried it and are registered by `builder.symbol` like all the
-    others; the first program to actually call one through the JIT died in the
-    relocation. -/
+/-- Every entry point is a host symbol the JIT resolves by name. Whether a
+    call may be PC-relative is the runtime's decision, not the declaration's:
+    it knows where it placed the program's code and where the loader put the
+    host's. -/
 def fnDecl (f : Ffi) : FnDecl :=
   { ref := ⟨f.id⟩, callee := .import f.cname, sig := ⟨f.id⟩ }
 

@@ -78,7 +78,6 @@ impl Func {
             reference: FnRef(n),
             callee: Callee::Import(name.to_string()),
             sig: SigRef(sig),
-            colocated: false,
         });
         self
     }
@@ -89,7 +88,6 @@ impl Func {
             reference: FnRef(n),
             callee: Callee::Local(index),
             sig: SigRef(sig),
-            colocated: true,
         });
         self
     }

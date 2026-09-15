@@ -145,7 +145,6 @@ structure FnDecl where
   ref : FnRef
   callee : Callee
   sig : SigRef
-  colocated : Bool := false
   deriving Lean.ToExpr
 
 -- ---------------------------------------------------------------------------
@@ -293,8 +292,7 @@ instance : Lean.ToJson FnDecl where
   toJson f := Lean.Json.mkObj
     [("reference", Lean.toJson f.ref),
      ("callee", Lean.toJson f.callee),
-     ("sig", Lean.toJson f.sig),
-     ("colocated", Lean.Json.bool f.colocated)]
+     ("sig", Lean.toJson f.sig)]
 
 instance : Lean.ToJson FuncData where
   toJson f := Lean.Json.mkObj

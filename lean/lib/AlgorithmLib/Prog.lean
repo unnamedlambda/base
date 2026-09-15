@@ -288,7 +288,6 @@ structure Cond (V : ClifTy → Type) where
 structure LocalRef (params : List ClifTy) (result : Option ClifTy) where
   id : Nat
   callee : Callee
-  colocated : Bool := true
 
 /-- A function body.
 
@@ -418,19 +417,19 @@ def St.useFfi (s : St) (id : Nat) : St :=
 
 /-- Record a local declaration, keeping the first with a given id. -/
 def St.declare (s : St) (id : Nat) (params : List ClifTy) (result : Option ClifTy)
-    (callee : Callee) (colocated : Bool) : St :=
+    (callee : Callee) : St :=
   match s.fns.find? (·.ref.id == id), s.sigs.find? (·.ref.id == id) with
   | some d, some sg =>
       -- The same reference named twice is the common case and costs nothing.
       -- Two *different* declarations under one id is a mistake, and a silent
       -- one: `FnEnv.sigOf` resolves by id and takes the first match, so the
       -- second reference's calls would go out under the first's signature.
-      if d.callee == callee && d.colocated == colocated
+      if d.callee == callee
           && sg.params == params && sg.result == result then s
       else s.note s!"callee id {id} is declared twice, with different signatures"
   | _, _ => { s with
       sigs := s.sigs ++ [{ ref := ⟨id⟩, params, result }],
-      fns := s.fns ++ [{ ref := ⟨id⟩, callee, sig := ⟨id⟩, colocated }] }
+      fns := s.fns ++ [{ ref := ⟨id⟩, callee, sig := ⟨id⟩ }] }
 
 /-- The value a call hands its continuation: the slot it bound, or nothing. -/
 def resSlot : (res : Option ClifTy) → R → ResV Slot res
@@ -479,7 +478,7 @@ def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
       else
         emitGo fuel (k (resSlot f.result 0)) (s.stmt (.callVoid f.id as))
   | fuel + 1, _, .callLocal (ps := ps) (res := res) r args k, s =>
-      let s := s.declare r.id ps res r.callee r.colocated
+      let s := s.declare r.id ps res r.callee
       let as := args.slots
       if res.isSome then
         let (v, s) := s.bind1 (.call r.id as)
