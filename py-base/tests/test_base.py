@@ -86,7 +86,7 @@ def make_double_artifact():
     return json.dumps({
         "functions": DOUBLE_I32_PROG["functions"],
         "memory_size": 256,
-        "initial_memory": [0] * 256,
+        "data": [],
     })
 
 
@@ -126,7 +126,7 @@ class TestBase:
         artifact_json = json.dumps({
             "functions": program([function(0, [block(0, [0], [store(9, 0), ret()])])])["functions"],
             "memory_size": 256,
-            "initial_memory": [0] * 256,
+            "data": [],
         })
         with pytest.raises(ValueError, match="Base::new failed"):
             Base(Artifact(artifact_json))

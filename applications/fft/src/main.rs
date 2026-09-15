@@ -19,15 +19,13 @@ fn main() {
 
     let mut artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 
-    // Write input filename into initial_memory (null-terminated)
+    // Write the input filename into the memory the program starts from
     let path_bytes = input_path.as_bytes();
     assert!(
         path_bytes.len() < 255,
         "Input path too long (max 254 chars)"
     );
-    artifact.initial_memory[INPUT_FILENAME_OFF..INPUT_FILENAME_OFF + path_bytes.len()]
-        .copy_from_slice(path_bytes);
-    artifact.initial_memory[INPUT_FILENAME_OFF + path_bytes.len()] = 0;
+    artifact.write(INPUT_FILENAME_OFF, &[path_bytes, &[0]].concat());
 
     let start = std::time::Instant::now();
     match run(artifact, MAIN) {

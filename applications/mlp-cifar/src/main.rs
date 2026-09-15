@@ -98,11 +98,7 @@ fn main() {
     // Seam check: Lean publishes the byte count its `hostIn` layout expects, so
     // the packing here and the uploader there cannot drift apart silently.
     const HOST_LEN_OFF: usize = 0x0080;
-    let want = u32::from_le_bytes(
-        artifact.initial_memory[HOST_LEN_OFF..HOST_LEN_OFF + 4]
-            .try_into()
-            .unwrap(),
-    ) as usize;
+    let want = u32::from_le_bytes(artifact.read(HOST_LEN_OFF, 4).try_into().unwrap()) as usize;
     assert_eq!(blob.len(), want, "host packing disagrees with Lean's `hostIn`");
 
     let mut base = Base::new(artifact).expect("Base::new");

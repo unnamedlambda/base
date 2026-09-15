@@ -2,7 +2,7 @@
 
 Base is an execution system that delivers performance comparable to idiomatic Rust while allowing control logic to be specified in a language with a strong type system — without introducing type checking or interpreter overhead at runtime.
 
-Programs are defined by an `Artifact`: Cranelift IR functions, the size of the memory they run in, and that memory's initial contents. An entry point is a function index. This artifact is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
+Programs are defined by an `Artifact`: Cranelift IR functions, the size of the memory they run in, and the data segments that memory starts with. An entry point is a function index. This artifact is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
 
 The system is completely portable — all dependencies build from `cargo` with no manual system library installation, and only portable Rust features are used. Cranelift provides a JIT compiler similar to LLVM but without the system dependency — it is pure Rust, built from Cargo. Backend code quality is comparable to LLVM, which means optimization lives in Lean: emit good IR, and the generated code is fast. CPU, GPU, file, network, and database primitives are exposed through a shared memory space and directly callable from the JIT-compiled IR.
 
@@ -13,12 +13,12 @@ GPU compute uses [wgpu](https://wgpu.rs/), a portable abstraction over Vulkan, M
 An `Artifact` contains:
 
 ```
-Artifact { functions, memory_size, initial_memory }
+Artifact { functions, memory_size, data }
 ```
 
 **functions** are the compiled code, one Cranelift IR function each, called by their position in the list.
 
-**memory_size** is the memory they run in, and **initial_memory** what it starts with: contents generated at build time (shader sources, binding descriptors, PTX kernels, etc.), zero-filled past them.
+**memory_size** is the memory they run in, and **data** what it starts with: segments of bytes generated at build time (shader sources, binding descriptors, PTX kernels, etc.) at the addresses they belong at. Memory is zero everywhere a segment does not cover, so an artifact ships what it sets rather than an image of the whole.
 
 An **entry point** is a function index. A program answers through the out buffer its caller passes. Multi-stage flows (e.g., GPU load → prep → infer pipelines) are several entry points over one compilation and one memory; which index is which stage is the generator's knowledge, and a host names those numbers in a library of its own rather than reading them from the artifact.
 

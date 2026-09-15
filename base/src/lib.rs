@@ -60,9 +60,18 @@ impl Base {
         // The arena holds what the program asked for and the image it ships
         // with, and nothing else: the caller's buffers are arguments, so there
         // is no header the engine has to make room for.
-        let needed = artifact.memory_size.max(artifact.initial_memory.len());
-        let mut memory = artifact.initial_memory;
-        memory.resize(needed, 0);
+        let past_last = artifact
+            .data
+            .iter()
+            .map(|s| s.offset + s.bytes.len())
+            .max()
+            .unwrap_or(0);
+        let mut memory = vec![0u8; artifact.memory_size.max(past_last)];
+        // Zeros everywhere a segment does not reach, which is what an artifact
+        // leaves out rather than shipping.
+        for s in &artifact.data {
+            memory[s.offset..s.offset + s.bytes.len()].copy_from_slice(&s.bytes);
+        }
         Self::from_parts(artifact.functions, memory.into_boxed_slice())
     }
 

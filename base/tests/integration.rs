@@ -10,8 +10,17 @@ fn cranelift_config(memory: Vec<u8>, functions: Vec<Function>) -> Artifact {
     Artifact {
         functions,
         memory_size: memory.len(),
-        initial_memory: memory,
+        data: image(memory),
     }
+}
+
+/// One segment holding the whole of `bytes`, for a test that writes an image
+/// out as a flat vector.
+fn image(bytes: Vec<u8>) -> Vec<base_types::Segment> {
+    if bytes.is_empty() {
+        return vec![];
+    }
+    vec![base_types::Segment { offset: 0, bytes }]
 }
 
 /// The i64 a program left at `offset` of its memory.
@@ -925,7 +934,7 @@ fn test_base_multi_execute_different_data() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -979,7 +988,7 @@ fn test_base_multi_execute_different_actions() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1017,7 +1026,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1079,7 +1088,7 @@ fn test_base_multi_execute_with_file_io() {
     let config1 = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: mem1,
+        data: image(mem1),
     };
     let mut base = Base::new(config1).unwrap();
     base.execute(
@@ -1098,7 +1107,7 @@ fn test_base_multi_execute_with_file_io() {
     let config2 = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: mem2,
+        data: image(mem2),
     };
     let mut base2 = Base::new(config2).unwrap();
     base2
@@ -1130,7 +1139,7 @@ fn test_base_multi_execute_varying_cranelift_units() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1180,7 +1189,7 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: mem,
+        data: image(mem),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1222,7 +1231,7 @@ fn test_base_persistent_memory_survives_across_executes() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1265,7 +1274,7 @@ fn test_base_empty_data_leaves_memory_intact() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1301,7 +1310,7 @@ fn test_base_data_pointer_updates_each_execute() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1356,7 +1365,7 @@ fn test_base_output_in_persistent_region() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1448,7 +1457,7 @@ fn clif_parse_error_empty_ir_no_error() {
     let config = Artifact {
         functions: Default::default(),
         memory_size: 256,
-        initial_memory: vec![],
+        data: vec![],
     };
     let base = Base::new(config);
     assert!(base.is_ok());
@@ -1608,7 +1617,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: vec![0u8; mem_size],
+        data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
     let alg: u32 = 1;
@@ -1723,7 +1732,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: vec![0u8; mem_size],
+        data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1813,7 +1822,7 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1853,7 +1862,7 @@ fn test_data_ptr_written_even_when_data_empty() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: initial,
+        data: image(initial),
     };
 
     let alg: u32 = 0;
@@ -1888,7 +1897,7 @@ fn test_out_ptr_written_even_when_out_empty() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: initial,
+        data: image(initial),
     };
 
     let alg: u32 = 0;
@@ -1925,7 +1934,7 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -1962,7 +1971,7 @@ fn test_execute_into_multiple_calls_different_data() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2010,7 +2019,7 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 256,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2059,7 +2068,7 @@ fn test_initial_memory_and_data_coexist() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: initial,
+        data: image(initial),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2100,7 +2109,7 @@ fn test_execute_into_out_buffer_larger_than_memory() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 64,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2140,7 +2149,7 @@ fn test_run_with_data_argument() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
 
     let alg: u32 = 0;
@@ -2173,7 +2182,7 @@ fn test_data_single_byte_still_writes_pointer() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
 
     let alg: u32 = 0;
@@ -2205,7 +2214,7 @@ fn test_data_ptr_survives_across_multi_execute() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: 4096,
-        initial_memory: vec![],
+        data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2303,7 +2312,7 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: memory,
+        data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2394,7 +2403,7 @@ fn test_gpu_download_ptr_with_offset() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: memory,
+        data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2536,7 +2545,7 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: memory,
+        data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2669,7 +2678,7 @@ fn test_cuda_download_ptr_different_data() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: memory,
+        data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2808,7 +2817,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: vec![0u8; mem_size],
+        data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -2916,7 +2925,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: vec![0u8; mem_size],
+        data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -3041,7 +3050,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: memory,
+        data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
 
@@ -3147,7 +3156,7 @@ fn test_cublas_sgemv_reuse() {
     let config = Artifact {
         functions: clif_prog.clone(),
         memory_size: mem_size,
-        initial_memory: vec![0u8; mem_size],
+        data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 

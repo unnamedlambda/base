@@ -287,7 +287,7 @@ mod tests {
     const EMPTY_ARTIFACT: &str = r#"{
         "functions": [],
         "memory_size": 64,
-        "initial_memory": [1, 2, 3, 4]
+        "data": [{"offset": 0, "bytes": [1, 2, 3, 4]}]
     }"#;
 
     fn last_error() -> String {
