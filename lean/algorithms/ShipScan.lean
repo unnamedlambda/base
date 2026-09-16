@@ -22,7 +22,8 @@ namespace ShipScan
 def UNCHECKED : Name := `AlgorithmLib.HProg.compileBody
 /-- The door that carries the obligation: it runs `wf` on the body it emitted
     and refuses one that fails. -/
-def CHECKED : List Name := [`AlgorithmLib.Prog.compileProg]
+def CHECKED : List Name :=
+  [`AlgorithmLib.Prog.compileProg, `AlgorithmLib.Prog.compileProgStatus]
 
 /-- Constants reachable from a declaration's value, not expanding
     `compileProg`: its body names `compileBody`, and that is the one use under

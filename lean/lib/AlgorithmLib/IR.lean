@@ -12,7 +12,7 @@ def noopAt (funcIdx : Nat) : FuncData :=
   { index := funcIdx, sigs := [], fns := [],
     blocks := [{ ref := { id := 0 },
                  params := [({ id := 0 }, ClifTy.i64)],
-                 insts := [Inst.ret] }] }
+                 insts := [Inst.ret none] }] }
 
 /-- The standard noop function u0:0 -/
 def noopFunction : FuncData := noopAt 0

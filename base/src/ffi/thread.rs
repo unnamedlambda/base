@@ -133,6 +133,7 @@ mod tests {
             .map(|f| Compiled {
                 addr: f as *const u8,
                 arity: 1,
+                answers: false,
             })
             .collect();
         THREAD_COMPILED_FNS.with(|cell| {

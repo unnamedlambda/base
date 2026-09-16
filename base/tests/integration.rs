@@ -1397,6 +1397,32 @@ fn test_base_output_in_persistent_region() {
 }
 
 #[test]
+fn a_program_answers_the_status_it_returns() {
+    // `return 7` — the signature says the function answers because its `Ret`
+    // carries a value, so nothing else has to declare it.
+    let (cfg, alg) = create_cranelift_algorithm(
+        0,
+        vec![0u8; 256],
+        program(function(0).entry(vec![iconst64(v(1), 7), ret_status(v(1))])),
+    );
+    let mut base = Base::new(cfg).unwrap();
+    assert_eq!(base.execute(alg, &[]).unwrap(), 7);
+}
+
+/// A program that returns nothing has status 0, so a host reading a status
+/// never has to ask which kind of program it called.
+#[test]
+fn a_program_that_returns_nothing_has_status_zero() {
+    let (cfg, alg) = create_cranelift_algorithm(
+        0,
+        vec![0u8; 256],
+        program(function(0).entry(vec![ret()])),
+    );
+    let mut base = Base::new(cfg).unwrap();
+    assert_eq!(base.execute(alg, &[]).unwrap(), 0);
+}
+
+#[test]
 fn clif_error_value_used_before_defined() {
     // v9 is never defined. The text path reported this as a parse error; the
     // decoder reports it against the program, which is where the defect is.

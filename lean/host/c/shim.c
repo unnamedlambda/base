@@ -19,7 +19,8 @@
  * header. These must match `base/src/capi.rs`. */
 void *base_new(const uint8_t *artifact_json, size_t len);
 int32_t base_execute(void *handle, uint32_t fn_idx, const uint8_t *data,
-                     size_t data_len, uint8_t *out, size_t out_len);
+                     size_t data_len, uint8_t *out, size_t out_len,
+                     int64_t *status);
 const uint8_t *base_memory(const void *handle, size_t *len);
 size_t base_last_error(uint8_t *buf, size_t cap);
 void base_free(void *handle);
@@ -58,20 +59,27 @@ LEAN_EXPORT lean_obj_res lean_base_new(b_lean_obj_arg artifact_json, lean_obj_ar
 /* The out buffer is allocated here rather than taken from the caller: a
  * `ByteArray` Lean already holds may be shared, and writing through it would
  * mutate a value another reference can observe. A fresh one is unshared by
- * construction, and returning it is how the caller reads what ran. */
+ * construction, and returning it is how the caller reads what ran.
+ *
+ * The pair is the buffer and the status the program returned, which is the one
+ * value it answers with without agreeing on a place in memory to leave it. */
 LEAN_EXPORT lean_obj_res lean_base_execute(size_t handle, uint32_t fn_idx,
                                            b_lean_obj_arg data, size_t out_len,
                                            lean_obj_arg w) {
     (void)w;
     lean_object *out = lean_alloc_sarray(1, out_len, out_len);
+    int64_t status = 0;
     int32_t rc = base_execute((void *)handle, fn_idx,
                               lean_sarray_cptr(data), lean_sarray_size(data),
-                              lean_sarray_cptr(out), out_len);
+                              lean_sarray_cptr(out), out_len, &status);
     if (rc != 0) {
         lean_dec_ref(out);
         return base_io_error("base_execute failed");
     }
-    return lean_io_result_mk_ok(out);
+    lean_object *pair = lean_alloc_ctor(0, 2, 0);
+    lean_ctor_set(pair, 0, out);
+    lean_ctor_set(pair, 1, lean_box_uint64((uint64_t)status));
+    return lean_io_result_mk_ok(pair);
 }
 
 /* A copy, because the runtime's memory is borrowed only until the next call

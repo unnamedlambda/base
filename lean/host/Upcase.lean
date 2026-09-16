@@ -34,7 +34,11 @@ structure Fields where
 
   The program knows this the moment `fileRead` returns, and a host cannot
   know it at all -- the file is read inside the artifact. Storing it is what
-  lets `UpcaseHost` read the result back without being told its length. -/
+  lets `UpcaseHost` read the result back without being told its length.
+
+  The entry also *answers* this number, as its status. Two routes to one
+  count, on purpose: a scalar a host wants immediately needs no address, and
+  anything wider than a scalar still does. -/
   size           : Fld .i64
   inputFilename  : Fld (.bytes 256)
   outputFilename : Fld (.bytes 256)
@@ -61,7 +65,7 @@ The transform is branch-free on purpose: `b - 'a'` compared *unsigned* against
 26 is both bounds at once, because a byte below `'a'` wraps to something far
 above 26. So the loop body is a load, three integer operations, a select and a
 store, with no control flow of its own. -/
-def mainCode : Prog V L Unit := do
+def mainCode : Prog V L (V .i64) := do
   let ptr ← basePtr
 
   let size ← fldReadFile ptr f.inputFilename f.fileData
@@ -80,9 +84,10 @@ def mainCode : Prog V L Unit := do
     istore8 upper addr
 
   let _ ← fldWriteFile0 ptr f.outputFilename f.fileData size
+  pure size
 
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
+  Prog.program [.ok noopFunction, Prog.compileProgStatus 1 mainCode]
 
 /-- The filenames the program reads from memory, laid into the region the
 layout reserved for them. -/

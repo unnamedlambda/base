@@ -94,11 +94,12 @@ fn block_args(vs: &[ir::Value]) -> Vec<ir::BlockArg> {
     vs.iter().map(|v| ir::BlockArg::Value(*v)).collect()
 }
 
-/// A function's signature, read off its entry block.
+/// A function's signature, read off its body.
 ///
 /// The entry block is `blocks[0]` and its parameters are exactly the values a
-/// caller supplies, so the signature is not a second fact that has to be kept
-/// in agreement with the body. No generated function returns a value.
+/// caller supplies; a `Ret` carrying a value is a function that answers an
+/// `i64`. So the signature is not a second fact that has to be kept in
+/// agreement with the body.
 ///
 /// Declaring a function and defining it are separate calls into Cranelift and
 /// both need this. Reading it from the same place twice is what makes them
@@ -118,6 +119,14 @@ pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, Strin
     let mut sig = Signature::new(cc);
     for (_, t) in &entry.params {
         sig.params.push(AbiParam::new(ty(*t)));
+    }
+    let answers = f
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .any(|i| matches!(i, clif::Inst::Ret(Some(_))));
+    if answers {
+        sig.returns.push(AbiParam::new(ir::types::I64));
     }
     Ok(sig)
 }
@@ -313,8 +322,12 @@ fn emit(
             let ea = block_args(&vals.get_all(ea)?);
             cur.ins().brif(c, block_of(*tb)?, &ta, block_of(*eb)?, &ea);
         }
-        I::Ret => {
-            cur.ins().return_(&[]);
+        I::Ret(v) => {
+            let vs = match v {
+                Some(v) => vec![vals.get(*v)?],
+                None => vec![],
+            };
+            cur.ins().return_(&vs);
         }
 
         I::Fconst(d, t, bits) => {

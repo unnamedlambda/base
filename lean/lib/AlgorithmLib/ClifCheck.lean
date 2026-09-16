@@ -2918,7 +2918,7 @@ theorem typesAgree_of_check {Θ : TyEnv} {vs : Vals}
     mentions memory and the model refuses to name a call's result. -/
 
 def Inst.isTerm : Inst → Bool
-  | .ret | .jump _ _ | .brif _ _ _ _ _ => true
+  | .ret _ | .jump _ _ | .brif _ _ _ _ _ => true
   | _ => false
 
 /-- Only the last instruction is a terminator. -/

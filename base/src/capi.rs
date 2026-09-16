@@ -138,6 +138,11 @@ pub unsafe extern "C" fn base_new(artifact_json: *const u8, len: usize) -> *mut 
 /// program is handed and `out` the buffer it answers in; either may be
 /// `(null, 0)` when a program uses neither.
 ///
+/// `status` takes the value the program returned, or `0` from one that returns
+/// nothing, and may be null when the caller does not want it. Base passes it
+/// through without reading it: what it means is between the program and the
+/// host. Its own failures are the `-1` and [`base_last_error`].
+///
 /// Both buffers are borrowed only for the duration of the call: the program
 /// sees the caller's memory directly, and nothing retains the pointers
 /// afterwards.
@@ -155,6 +160,7 @@ pub unsafe extern "C" fn base_execute(
     data_len: usize,
     out: *mut u8,
     out_len: usize,
+    status: *mut i64,
 ) -> i32 {
     guard(-1, || {
         clear_error();
@@ -171,7 +177,12 @@ pub unsafe extern "C" fn base_execute(
             return -1;
         };
         match base.execute_into(fn_idx, data, out) {
-            Ok(()) => 0,
+            Ok(answered) => {
+                if let Some(status) = status.as_mut() {
+                    *status = answered;
+                }
+                0
+            }
             Err(e) => {
                 set_error(String::from(e));
                 -1
@@ -297,7 +308,15 @@ mod tests {
     fn a_null_handle_is_refused_everywhere() {
         assert_eq!(
             unsafe {
-                base_execute(std::ptr::null_mut(), 0, std::ptr::null(), 0, std::ptr::null_mut(), 0)
+                base_execute(
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut(),
+                )
             },
             -1
         );

@@ -89,7 +89,10 @@ inductive Inst where
   | jump (target : BlockRef) (args : List Val)
   | brif (cond : Val) (thenBlk : BlockRef) (thenArgs : List Val)
          (elseBlk : BlockRef) (elseArgs : List Val)
-  | ret
+  /-- `return v`, or `return` when a function answers nothing. A body whose
+      `ret` carries a value is a body whose signature returns an `i64`: the
+      runtime reads the signature off the body rather than being told. -/
+  | ret (value : Option Val)
   -- Float / SIMD
   | fconst (dst : Val) (ty : ClifTy) (bits : UInt64)
   | fadd (dst a b : Val)
@@ -240,7 +243,10 @@ def Inst.json : Inst → Lean.Json
   | .brif c tb ta eb ea =>
     tagged "Brif" [toJson c, toJson tb, Lean.Json.arr ((ta.map toJson).toArray),
                    toJson eb, Lean.Json.arr ((ea.map toJson).toArray)]
-  | .ret => Lean.Json.str "Ret"
+  -- A newtype variant, so the payload sits directly under the tag rather than
+  -- in an array the way the tuple variants above do.
+  | .ret v => Lean.Json.mkObj
+      [("Ret", match v with | some x => toJson x | none => Lean.Json.null)]
   | .fconst d t bits => tagged "Fconst" [toJson d, toJson t, jNat bits.toNat]
   | .fadd d a b => tagged "Fadd" [toJson d, toJson a, toJson b]
   | .fsub d a b => tagged "Fsub" [toJson d, toJson a, toJson b]

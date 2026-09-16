@@ -108,21 +108,24 @@ impl Base {
     }
 
     /// Call the entry point at `fn_idx`, with nothing to answer through.
-    pub fn execute(&mut self, fn_idx: u32, data: &[u8]) -> Result<(), Error> {
+    pub fn execute(&mut self, fn_idx: u32, data: &[u8]) -> Result<i64, Error> {
         self.execute_into(fn_idx, data, &mut [])
     }
 
-    /// Call the entry point at `fn_idx`, which answers in `out`.
+    /// Call the entry point at `fn_idx`, which answers in `out`, and answer
+    /// its status.
     ///
     /// Which index does what is the artifact generator's knowledge: base
     /// checks only that the index exists and that the function it names is
-    /// shaped like an entry point.
+    /// shaped like an entry point. The status is the value the program
+    /// returned, passed through without being read; a program that returns
+    /// nothing has status `0`.
     pub fn execute_into(
         &mut self,
         fn_idx: u32,
         data: &[u8],
         out: &mut [u8],
-    ) -> Result<(), Error> {
+    ) -> Result<i64, Error> {
         let _span = info_span!("execute", fn_idx).entered();
         info!("starting execution");
 
@@ -148,33 +151,52 @@ impl Base {
             // base alone, and anything else is not shaped like an entry point
             // and would read registers of whatever happened to be in them.
             let f = fns[fn_idx];
-            unsafe {
-                match f.arity {
-                    5 => {
+            let status = unsafe {
+                match (f.arity, f.answers) {
+                    (5, true) => {
+                        let entry: unsafe extern "C" fn(
+                            *mut u8,
+                            *const u8,
+                            usize,
+                            *mut u8,
+                            usize,
+                        ) -> i64 = std::mem::transmute(f.addr);
+                        entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len())
+                    }
+                    (5, false) => {
                         let entry: unsafe extern "C" fn(*mut u8, *const u8, usize, *mut u8, usize) =
                             std::mem::transmute(f.addr);
                         entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len());
+                        0
                     }
-                    1 => {
+                    (1, true) => {
+                        let entry: unsafe extern "C" fn(*mut u8) -> i64 =
+                            std::mem::transmute(f.addr);
+                        entry(self.mem_ptr)
+                    }
+                    (1, false) => {
                         let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(f.addr);
                         entry(self.mem_ptr);
+                        0
                     }
-                    n => {
+                    (n, _) => {
                         return Err(Error::Execution(format!(
                             "fn_idx {fn_idx} takes {n} parameters; an entry point takes the memory base, optionally followed by the input and output buffers"
                         )));
                     }
                 }
-            }
+            };
+            info!(status, "execution complete");
+            return Ok(status);
         }
 
         info!("execution complete");
-        Ok(())
+        Ok(0)
     }
 }
 
 /// Compile an artifact and call one of its entry points, once.
-pub fn run(artifact: Artifact, fn_idx: u32) -> Result<(), Error> {
+pub fn run(artifact: Artifact, fn_idx: u32) -> Result<i64, Error> {
     let mut base = Base::new(artifact)?;
     base.execute(fn_idx, &[])
 }

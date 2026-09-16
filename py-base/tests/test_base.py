@@ -30,7 +30,7 @@ def icmp(d, cc, a, b): return {"Icmp": [d, cc, a, b]}
 def store(v, addr, off=0): return {"Store": [v, addr, off]}
 def jump(t, args):    return {"Jump": [t, args]}
 def brif(c, t, ta, e, ea): return {"Brif": [c, t, ta, e, ea]}
-def ret():            return "Ret"
+def ret(v=None):      return {"Ret": v}
 
 def _load(d, kind, ty, addr, off, trusted=False):
     return {"Load": [d, {"kind": kind, "ty": ty, "notrap_aligned": trusted}, addr, off]}
@@ -134,7 +134,23 @@ class TestBase:
 
     def test_execute_no_data(self):
         base = Base(Artifact(make_double_artifact()))
-        assert base.execute(DOUBLE) is None
+        # A program whose body ends in a bare `return` answers 0.
+        assert base.execute(DOUBLE) == 0
+
+    def test_execute_answers_a_status(self):
+        """A `return` carrying a value is what a program answers with.
+
+        Nothing declares it: the runtime reads the signature off the body, so
+        a program that answers and one that does not are written the same way
+        apart from the terminator."""
+        artifact_json = json.dumps({
+            "functions": program([function(0, [block(0, [0], [
+                iconst64(1, 42), ret(1)])])])["functions"],
+            "memory_size": 256,
+            "data": [],
+        })
+        base = Base(Artifact(artifact_json))
+        assert base.execute(0) == 42
 
     def test_execute_into_doubles(self):
         base = Base(Artifact(make_double_artifact()))
@@ -189,10 +205,10 @@ class TestBase:
         base = Base(Artifact(make_double_artifact()))
 
         out = bytearray(16)
-        assert base.execute_into(DOUBLE, pack_i32s([1, 2, 3, 4]), out) is None
+        assert base.execute_into(DOUBLE, pack_i32s([1, 2, 3, 4]), out) == 0
         assert unpack_i32s(out, 4) == [2, 4, 6, 8]
 
 
 class TestRun:
     def test_oneshot(self):
-                assert run(Artifact(make_double_artifact()), DOUBLE) is None
+                assert run(Artifact(make_double_artifact()), DOUBLE) == 0

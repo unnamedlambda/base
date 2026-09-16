@@ -89,7 +89,7 @@ resolves transitively, which is what makes `require` work at all.
 |---|---|
 | `base/src/capi.rs` | the runtime behind a C calling convention |
 | `c/shim.c` | that, in Lean's `IO` convention |
-| `BaseHost.lean` | `Runtime`, `execute`, `readMemory`, `withRuntime` |
+| `BaseHost.lean` | `Runtime`, `execute`, `executeStatus`, `readMemory`, `withRuntime` |
 | `Upcase.lean` | the demo artifact — a value, and buildable without any of the above |
 | `UpcaseHost.lean` | the ~15 lines that run it |
 
@@ -102,7 +102,11 @@ in it is unaffected by any of this.
 
 ## What a host reads back
 
-Results come back three ways:
+Results come back four ways:
+
+* the status `executeStatus` answers — one `i64`, needing no address at all,
+  and `0` for a program whose body ends in a bare `return`. `Upcase` answers
+  the byte count it read this way as well as storing it.
 
 * `readField`, given the same `Fld` the artifact was built from — the offset
   and the width both come from the layout, so the host never writes either

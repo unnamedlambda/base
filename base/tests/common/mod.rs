@@ -137,7 +137,7 @@ pub fn programs(fs: Vec<Func>) -> Vec<Function> {
 /// `u0:0` doing nothing — the slot generated artifacts reserve so that the
 /// interesting function is `u0:1`.
 pub fn noop(index: u32) -> Func {
-    function(index).entry(vec![Inst::Ret])
+    function(index).entry(vec![Inst::Ret(None)])
 }
 
 // --- instructions -----------------------------------------------------------
@@ -185,7 +185,10 @@ pub fn jump(t: u32, args: &[Val]) -> Inst { Inst::Jump(BlockRef(t), args.to_vec(
 pub fn brif(c: Val, t: u32, ta: &[Val], e: u32, ea: &[Val]) -> Inst {
     Inst::Brif(c, BlockRef(t), ta.to_vec(), BlockRef(e), ea.to_vec())
 }
-pub fn ret() -> Inst { Inst::Ret }
+pub fn ret() -> Inst { Inst::Ret(None) }
+
+/// `return v` — the status the caller reads.
+pub fn ret_status(v: Val) -> Inst { Inst::Ret(Some(v)) }
 
 pub fn fadd(d: Val, a: Val, b: Val) -> Inst { Inst::Fadd(d, a, b) }
 pub fn fsub(d: Val, a: Val, b: Val) -> Inst { Inst::Fsub(d, a, b) }

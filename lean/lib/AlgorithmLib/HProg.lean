@@ -922,15 +922,20 @@ def ptrParams : List ClifTy := [.i64, .i64, .i64, .i64, .i64]
     `Prog.compileProg`, which runs `wf` first and refuses a body that fails.
 
     `params` types the entry block, whose parameters are slots `0..`; every
-    generator here takes the shared-memory base pointer alone. -/
+    generator here takes the shared-memory base pointer alone.
+
+    `status` is the slot the function answers with, when it answers: its
+    presence is what gives the compiled function an `i64` return, because the
+    runtime reads a signature off the body. -/
 def compileBody (idx : Nat) (c : Code) (env : FnEnv)
-    (params : List ClifTy := ptrParams) : FuncData :=
+    (params : List ClifTy := ptrParams) (status : Option R := none) :
+    FuncData :=
   Id.run do
     let s0 : CS := { nextVal := 0, nextBlk := 1, slots := 0, env := .nil,
                      curRef := 0, curPars := [], cur := [], done := [] }
     let s := { s0.open' 0 params 0 with slots := params.length }
     let s := emitCode fuel s c
-    let s := s.close .ret
+    let s := s.close (.ret (status.map s.get))
     -- Declare what this body calls, not the whole table it was checked against.
     -- The ids a call names are the table's, and the decoder resolves by id, so
     -- dropping the rest renames nothing.

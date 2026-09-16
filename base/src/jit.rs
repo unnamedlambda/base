@@ -10,11 +10,12 @@ use crate::ffi::{
     cl_cosf, cl_powf, cl_sinf, cuda, file, ht, lmdb, net, stdio, thread, wgpu as gpu, window,
 };
 
-/// One compiled function: where it starts, and how many arguments it takes.
+/// One compiled function: where it starts, how many arguments it takes, and
+/// whether it answers a status.
 ///
-/// Deliberately not an `fn` pointer: the arity is the one the function's own
-/// entry block declared (see `clif_decode::signature_of`), so it travels with
-/// the address and a caller checks it before transmuting rather than assuming.
+/// Deliberately not an `fn` pointer: the shape is the one the function's own
+/// body declared (see `clif_decode::signature_of`), so it travels with the
+/// address and a caller checks it before transmuting rather than assuming.
 ///
 /// A raw pointer is neither `Send` nor `Sync`, and the table crosses into
 /// spawned threads. It is code, mapped for the life of the module and never
@@ -23,6 +24,7 @@ use crate::ffi::{
 pub(crate) struct Compiled {
     pub(crate) addr: *const u8,
     pub(crate) arity: usize,
+    pub(crate) answers: bool,
 }
 
 unsafe impl Send for Compiled {}
@@ -204,15 +206,16 @@ fn new_module(insts: usize) -> Result<cranelift_jit::JITModule, String> {
 fn finalize(
     mut module: cranelift_jit::JITModule,
     func_ids: Vec<cranelift_module::FuncId>,
-    arities: Vec<usize>,
+    shapes: Vec<(usize, bool)>,
 ) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {
     module.finalize_definitions().map_err(|e| format!("{e}"))?;
     let compiled_fns: Vec<Compiled> = func_ids
         .iter()
-        .zip(arities)
-        .map(|(&id, arity)| Compiled {
+        .zip(shapes)
+        .map(|(&id, (arity, answers))| Compiled {
             addr: module.get_finalized_function(id),
             arity,
+            answers,
         })
         .collect();
     info!(count = compiled_fns.len(), "CLIF compiled successfully");
@@ -238,7 +241,7 @@ pub(crate) fn compile(
 
     // Declared before any body is built, so `u0:N` resolves to FuncId(N).
     let mut func_ids = Vec::with_capacity(functions.len());
-    let mut arities = Vec::with_capacity(functions.len());
+    let mut shapes = Vec::with_capacity(functions.len());
     for (i, f) in functions.iter().enumerate() {
         if f.index as usize != i {
             return Err(format!(
@@ -247,7 +250,7 @@ pub(crate) fn compile(
             ));
         }
         let sig = crate::clif_decode::signature_of(f, cc)?;
-        arities.push(sig.params.len());
+        shapes.push((sig.params.len(), !sig.returns.is_empty()));
         func_ids.push(
             module
                 .declare_function(&format!("fn_{i}"), cranelift_module::Linkage::Local, &sig)
@@ -305,6 +308,6 @@ pub(crate) fn compile(
         }
     }
 
-    finalize(module, func_ids, arities)
+    finalize(module, func_ids, shapes)
 }
 

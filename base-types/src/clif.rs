@@ -145,7 +145,10 @@ pub enum Inst {
     Jump(BlockRef, Vec<Val>),
     /// `brif cond, then(args), else(args)`
     Brif(Val, BlockRef, Vec<Val>, BlockRef, Vec<Val>),
-    Ret,
+    /// `return v`, or `return` when a function answers nothing. A function
+    /// that answers returns an `i64` — the status its caller reads — and what
+    /// it means is between that caller and whoever built the program.
+    Ret(Option<Val>),
     /// `dst = f32const/f64const`, carrying the **bit pattern** rather than a
     /// literal spelling. A malformed float is unrepresentable rather than a
     /// parse error discovered at JIT time.
@@ -211,9 +214,10 @@ pub struct FnDecl {
     pub sig: SigRef,
 }
 
-/// One function. Its signature is its entry block's parameter list, under the
-/// host's C calling convention, returning nothing — so the signature is not a
-/// separate field that could disagree with the body. An entry point takes the
+/// One function. Its signature is read off the body: the entry block's
+/// parameters are what it takes, and whether its `Ret` carries a value is
+/// whether it answers an `i64`. Under the host's C calling convention. So the
+/// signature is not a separate field that could disagree with the body. An entry point takes the
 /// memory base, the input buffer and its length, and the output buffer and its
 /// length; a function reached through `cl_thread_spawn` takes its spawn
 /// argument.

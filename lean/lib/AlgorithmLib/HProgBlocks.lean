@@ -120,7 +120,7 @@ def runInsts (env : FnEnv) (s : BSt) : List Inst → Outcome (BSt × Next)
   | [] => .stuck "block has no terminator"
   | i :: rest =>
       match i with
-      | .ret => .ok (s, .done) s.world
+      | .ret _ => .ok (s, .done) s.world
       | .jump t args =>
           match args.mapM (getV s.vals) with
           | none => .stuck "jump argument is not defined"

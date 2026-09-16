@@ -783,7 +783,7 @@ def metaFragEmitted : List Inst :=
     carries a `Float`, so it has no `DecidableEq`, and the compiler does not
     reduce definitionally at this size. -/
 theorem metaStageFrag_emits :
-    (metaFragEmitted == metaFragInsts ⟨0⟩ ⟨1⟩ ⟨2⟩ ⟨3⟩ 4 ++ [.ret]) = true := by
+    (metaFragEmitted == metaFragInsts ⟨0⟩ ⟨1⟩ ⟨2⟩ ⟨3⟩ 4 ++ [.ret none]) = true := by
   native_decide
 
 open AlgorithmLib.Clif in

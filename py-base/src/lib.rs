@@ -86,17 +86,21 @@ impl PyBase {
         Ok(Self { handle })
     }
 
-    /// Call the entry point at `fn_idx`. Which index is which stage is the
-    /// artifact generator's knowledge, so a caller names them itself.
+    /// Call the entry point at `fn_idx`, returning the status it answered.
+    ///
+    /// Which index is which stage is the artifact generator's knowledge, so a
+    /// caller names them itself. The status is `0` unless the entry's body
+    /// ends in a `return` carrying a value.
     #[pyo3(signature = (fn_idx, data=None))]
-    fn execute(&mut self, py: Python<'_>, fn_idx: u32, data: Option<&[u8]>) -> PyResult<()> {
+    fn execute(&mut self, py: Python<'_>, fn_idx: u32, data: Option<&[u8]>) -> PyResult<i64> {
         self.execute_into(py, fn_idx, data.unwrap_or(&[]), None)
     }
 
     /// Call the entry point at `fn_idx`, which answers in `out`.
     ///
     /// Both buffers are the caller's own memory, handed to the program as
-    /// pointers: nothing is copied in or out.
+    /// pointers: nothing is copied in or out. Returns the status, as
+    /// `execute` does.
     #[pyo3(signature = (fn_idx, data, out=None))]
     fn execute_into(
         &mut self,
@@ -104,19 +108,22 @@ impl PyBase {
         fn_idx: u32,
         data: &[u8],
         out: Option<&Bound<'_, pyo3::types::PyByteArray>>,
-    ) -> PyResult<()> {
+    ) -> PyResult<i64> {
         let (out_ptr, out_len) = match out {
             Some(out) => (out.data() as *mut u8, out.len()),
             None => (std::ptr::null_mut(), 0),
         };
         let handle = self.handle;
+        let mut status = 0i64;
         let rc = allow_threads_unsafe(py, || unsafe {
-            capi::base_execute(handle, fn_idx, data.as_ptr(), data.len(), out_ptr, out_len)
+            capi::base_execute(
+                handle, fn_idx, data.as_ptr(), data.len(), out_ptr, out_len, &mut status,
+            )
         });
         if rc != 0 {
             return Err(last_error("execute"));
         }
-        Ok(())
+        Ok(status)
     }
 
     /// `length` bytes of the program's memory from `offset`, copied.
@@ -160,7 +167,7 @@ fn run(
     artifact: &PyArtifact,
     fn_idx: u32,
     data: Option<&[u8]>,
-) -> PyResult<()> {
+) -> PyResult<i64> {
     let mut base = PyBase::new(artifact)?;
     base.execute(py, fn_idx, data)
 }

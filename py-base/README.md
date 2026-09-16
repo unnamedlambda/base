@@ -76,12 +76,14 @@ Read an artifact from the JSON a generator wrote.
 An execution engine. JIT compiles the program. This is the expensive step — do
 it once.
 
-### `base.execute(fn_idx, data=None) -> None`
+### `base.execute(fn_idx, data=None) -> int`
 Execute. `data` accepts anything implementing the buffer protocol (`bytes`,
-`bytearray`, `numpy` array) — zero copy.
+`bytearray`, `numpy` array) — zero copy. The `int` is the status the entry
+point answered: a program whose body ends in a bare `return` answers `0`.
 
-### `base.execute_into(fn_idx, data, out=None) -> None`
+### `base.execute_into(fn_idx, data, out=None) -> int`
 Execute, writing through `out` (a `bytearray`). Both buffers are zero-copy.
+Returns the status, as `execute` does.
 
 ### `base.read_memory(offset, length) -> bytes`
 What the program left in its own memory, at an address its generator says it
@@ -90,7 +92,7 @@ writes. A range past the end is an error, not a short answer.
 ### `base.memory_size() -> int`
 How many bytes of memory the program runs in.
 
-### `run(artifact, fn_idx, data=None) -> None`
+### `run(artifact, fn_idx, data=None) -> int`
 One-shot: compile and execute in a single call. For a program run once; use
 `Base` for anything run twice.
 

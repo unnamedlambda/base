@@ -49,7 +49,7 @@ let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 let mut base = Base::new(artifact)?;            // JIT compile once
 
 // Pass dynamic data via pointer — no copying into shared memory
-base.execute(MAIN, &data)?;
+let status = base.execute(MAIN, &data)?;
 
 // Or with an output buffer for zero-copy results
 base.execute_into(MAIN, &payload, &mut output)?;
@@ -58,6 +58,8 @@ base.execute_into(MAIN, &payload, &mut output)?;
 base.execute(PREP, &input)?;
 base.execute_into(INFER, b"", &mut output)?;
 ```
+
+An entry point returns an `i64` status — the one value a program answers without a host and a program agreeing on a place in memory to leave it. Nothing declares it: a body whose `return` carries a value answers with it, a body whose `return` carries nothing answers `0`, and the runtime reads that off the body.
 
 An entry point is called with five arguments: the base of shared memory, then the caller's input pointer and length and the caller's output pointer and length. CLIF code uses those pointers to reach the caller's buffers directly, so nothing is copied in or out and there is no arena slot the runtime and the program have to agree about. GPU uploads/downloads use `cl_gpu_upload_ptr` / `cl_gpu_download_ptr` to transfer between caller pointers and GPU memory with no intermediate copy through shared memory.
 

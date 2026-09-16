@@ -958,11 +958,14 @@ private def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat 
       (fun k => !(HProg.wfGo env fuel [] (HProg.TyEnv.ofList params) (c.take (k + 1))).1)
     |>.getD c.length
 
-/-- Everything one fold of a body yields: its term, the table it needs, and
-    what went wrong, if anything. -/
-def run (p : Body) (params : List ClifTy := ptrParams) :
-    Code × FnEnv × Option String :=
-  let (_, s) := emitGo emitFuel p { n := params.length, depth := 0 }
+/-- Everything one fold of a body yields: its answer, its term, the table it
+    needs, and what went wrong, if anything.
+
+    Generic in the answer because a body that names a status is the same fold
+    as one that names nothing --- only the terminator differs. -/
+def runAns {α} (p : Prog Slot Lvl α) (params : List ClifTy := ptrParams) :
+    Option α × Code × FnEnv × Option String :=
+  let (a, s) := emitGo emitFuel p { n := params.length, depth := 0 }
   let s := s.flush
   -- By id, not by first call: an id is allocated once, in declaration order,
   -- so this is the order the declarations were made in whichever function of
@@ -982,8 +985,13 @@ def run (p : Body) (params : List ClifTy := ptrParams) :
     | none, d :: _ =>
         some s!"callee id {d.ref.id} is both a local declaration and an entry \
           point this body calls"
-  (s.pieces.reverse,
+  (a, s.pieces.reverse,
    envOf s.ffis (byId (·.ref.id) s.sigs) (byId (·.ref.id) s.fns), err)
+
+/-- Everything one fold of a body yields, for a body that answers nothing. -/
+def run (p : Body) (params : List ClifTy := ptrParams) :
+    Code × FnEnv × Option String :=
+  (runAns p params).2
 
 /-- The term a body denotes, or why it is not one.
 
@@ -1039,6 +1047,37 @@ def stateOf (idx : Nat) (p : Body) (params : List ClifTy := ptrParams) : FuncDat
 def compileProg (idx : Nat) (p : Body) (params : List ClifTy := ptrParams) :
     Except String FuncData :=
   let r := compile idx p params
+  match r.2 with
+  | none   => .ok r.1
+  | some e => .error e
+
+/-- A body that answers.
+
+    The `i64` it names is the status `execute` hands back to a host --- the one
+    value a program returns without agreeing on a place in memory to leave it.
+    Bodies that answer nothing stay `Body`, which is why adopting this costs a
+    generator nothing until it wants to. -/
+abbrev StatusBody : Type 1 := Prog Slot Lvl (Slot .i64)
+
+/-- `compile`, for a body that answers: the slot its fold ends on becomes the
+    function's `return`, and with it the `i64` in its signature. -/
+def compileStatus (idx : Nat) (p : StatusBody) (params : List ClifTy := ptrParams) :
+    FuncData × Option String :=
+  let (a, c, env, err) := runAns p params
+  (HProg.compileBody idx c env params a,
+   match err with
+   | some e => some s!"function {idx}: {e}"
+   | none =>
+       if a.isNone then some s!"function {idx} never reaches its status"
+       else if wf env params c then none
+       else some s!"function {idx} is not well-formed, from piece \
+         {firstBadPiece env params c} on")
+
+/-- Compile a body that answers to the function an artifact ships. The checked
+    door for `StatusBody`, beside `compileProg`. -/
+def compileProgStatus (idx : Nat) (p : StatusBody)
+    (params : List ClifTy := ptrParams) : Except String FuncData :=
+  let r := compileStatus idx p params
   match r.2 with
   | none   => .ok r.1
   | some e => .error e

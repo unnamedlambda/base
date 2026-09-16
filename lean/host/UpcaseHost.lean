@@ -14,9 +14,10 @@ is opening the runtime, running it, and printing; every effect that is the
 this program could equally have written to disk for a Rust or Python host.
 
 Nothing here knows how long the file was. The artifact read it, so the artifact
-is what knows, and it stored the count to `Upcase.f.size`; `readField` takes
-that same field handle and reads it back. That is the shape to copy — a host
-that hardcodes a length has written the layout down twice.
+is what knows, and it says so twice: as the status `execute` answers with, and
+in memory at `Upcase.f.size`, which `readField` reads back from the same field
+handle the artifact was built from. That is the shape to copy — a host that
+hardcodes a length has written the layout down twice.
 
 The input file is written here rather than by the artifact because it is the
 demo's setup and not the demo.
@@ -28,7 +29,8 @@ def main : IO Unit := do
   let artifact ← AlgorithmLib.Prog.orDie Upcase.shipped
   Base.withRuntime artifact fun rt => do
     IO.println s!"runtime memory: {← rt.memorySize} bytes"
-    let _ ← rt.execute Upcase.algorithm
+    let (_, status) ← rt.executeStatus Upcase.algorithm
+    IO.println s!"artifact answered {status}"
 
     -- Both of these name a field rather than an offset, and the second's
     -- length came from the first.

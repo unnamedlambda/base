@@ -58,7 +58,7 @@ private opaque freeRaw (handle : USize) : IO Unit
 
 @[extern "lean_base_execute"]
 private opaque executeRaw (handle : USize) (fnIdx : UInt32)
-    (data : @& ByteArray) (outLen : USize) : IO ByteArray
+    (data : @& ByteArray) (outLen : USize) : IO (ByteArray × Int64)
 
 @[extern "lean_base_read_memory"]
 private opaque readMemoryRaw (handle : USize) (offset len : USize) : IO ByteArray
@@ -88,6 +88,15 @@ artifact chose. `data` is what the program is handed as its input buffer and
 passes the defaults. -/
 def execute (rt : Runtime) (fnIdx : UInt32)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray :=
+  return (← executeRaw rt.raw fnIdx data (USize.ofNat outLen)).1
+
+/-- The same call, with the status the entry point returned.
+
+The status is what an entry point answers without a host and a program having
+agreed on a place in memory to leave it: an entry whose body ends in a `return`
+carrying a value answers with it, one that does not answers `0`. -/
+def executeStatus (rt : Runtime) (fnIdx : UInt32)
+    (data : ByteArray := .empty) (outLen : Nat := 0) : IO (ByteArray × Int64) :=
   executeRaw rt.raw fnIdx data (USize.ofNat outLen)
 
 /-- `len` bytes of the runtime's shared memory from `offset`.
