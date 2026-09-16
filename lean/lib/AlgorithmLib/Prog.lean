@@ -620,8 +620,8 @@ def outPtr : Prog V L (V .i64) :=
 def outLen : Prog V L (V .i64) :=
   .params ptrParams (fun vs => .ret vs.fif)
 
-/-- Read the entry block's parameters, for a body whose signature is not the
-    usual single descriptor pointer. -/
+/-- Read the entry block's parameters, for a body whose signature is not an
+    entry point's `ptrParams` — a thread worker's spawn argument, say. -/
 def entryParams (tys : List ClifTy) : Prog V L (Vals V tys) :=
   .params tys .ret
 

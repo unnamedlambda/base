@@ -921,8 +921,8 @@ def ptrParams : List ClifTy := [.i64, .i64, .i64, .i64, .i64]
     passes `wf`. Anything headed for an artifact goes through
     `Prog.compileProg`, which runs `wf` first and refuses a body that fails.
 
-    `params` types the entry block, whose parameters are slots `0..`; every
-    generator here takes the shared-memory base pointer alone.
+    `params` types the entry block, whose parameters are slots `0..`; an entry
+    point takes `ptrParams`, a thread worker its one spawn argument.
 
     `status` is the slot the function answers with, when it answers: its
     presence is what gives the compiled function an `i64` return, because the
