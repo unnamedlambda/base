@@ -268,9 +268,9 @@ def bindDesc : List UInt8 := [3, 0, 0, 0, 6, 0, 0, 0, 4, 0, 0, 0]
 
     The offsets are assigned by hand, and a collision between two of them is
     invisible at every other layer: both stores succeed and the second wins.
-    `0x00`-`0x18` are the context slots the runtime fills and `0x18`-`0x38` the
-    input and output descriptors, so naming those is what stops an offset being
-    placed where the runtime will overwrite it. -/
+    `0x00`-`0x18` are the context slots the FFI's init calls fill, so naming
+    those is what stops an offset being placed where one of those calls will
+    overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_ht",     ContextSlots.ht, 8⟩,
    ⟨"ctx_wgpu",   ContextSlots.wgpu, 8⟩,

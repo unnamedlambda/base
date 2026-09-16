@@ -313,8 +313,6 @@ def wgY : Nat := imageHeight / 16   -- 256
 
     The offsets are assigned by hand, and a collision between two of them is
     invisible at every other layer: both stores succeed and the second wins.
-    `0x18`-`0x38` are the input and output descriptors the runtime writes, so
-    naming them is what stops an offset being placed where it is overwritten.
 
     The memory this ships is sized from the payload it builds plus the frame
     buffer, so there is no constant to bound the regions against; `okB` is the

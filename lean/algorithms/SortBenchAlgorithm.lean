@@ -91,7 +91,7 @@ def code : Prog V L Unit := do
   let dataPtr ← dataPtr
   let dataLen ← dataLen
   let outPtr  ← outPtr
-  -- out_len at 0x20 — caller provides 2*data_len, second half is temp
+  -- The caller provides 2*data_len of out; the second half is scratch.
   let n ← ushr dataLen (← iconst64 2)
   let tempPtr ← iadd outPtr dataLen  -- second half of out buffer
 

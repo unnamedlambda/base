@@ -400,9 +400,9 @@ def ptxAddBytes : List UInt8 := ptxResidualAdd.toUTF8.toList ++ [0]
     that reads it -- so a region that grows past its neighbour is a failed
     proof rather than a corrupted field.
 
-    `0x00`-`0x18` are the context slots the runtime fills, and `0x18`-`0x38`
-    the input and output descriptors it writes; naming them is what stops a
-    future offset being placed where the runtime will overwrite it. -/
+    `0x00`-`0x18` are the context slots the FFI's init calls fill; naming them
+    is what stops a future offset being placed where one of those calls will
+    overwrite it. -/
 def memMap : AlgorithmLib.Layout.RegionMap :=
   [⟨"ctx_ht",       ContextSlots.ht, 8⟩,
    ⟨"ctx_wgpu",     ContextSlots.wgpu, 8⟩,

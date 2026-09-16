@@ -5,10 +5,9 @@ import AlgorithmLib.Layout
 # Running an artifact from Lean
 
 `AlgorithmLib` builds an `Artifact`, and its entry points are function indices
-this generator chose. Those are values, and until now the only way to run one
-was to write it out and let a Rust or Python host pick it up. This module hands
-the same values straight to the runtime, so the program that *builds* an
-artifact can be the program that runs it.
+the generator chose. Those are values, and this module hands them straight to
+the runtime, so the program that *builds* an artifact can be the program that
+runs it — no file in between, and no Rust or Python host.
 
 What that buys is not speed -- the runtime does exactly what it did before --
 but that the effectful part of a Lean program becomes a value. A `main` that
@@ -17,13 +16,14 @@ lines below: open a runtime, run, close it.
 
 ## What a host reads back
 
-Results come back three ways:
+Results come back four ways:
 
+* the status `executeStatus` answers -- one `i64`, needing no address;
 * `readField`, at the `Fld` the artifact was *built* from -- the offset and the
   width both come from the layout, so a host reads a result by naming the same
   thing the program stored it to;
-* the out buffer `execute` answers, which is what a program writes through its
-  `out_ptr`/`out_len` offsets, and
+* the out buffer `execute` answers, which the program is handed as its fourth
+  and fifth arguments and writes through, and
 * `readMemory`, for an address no field describes.
 
 An artifact whose effects are files, sockets or the GPU needs none of them: it
@@ -51,7 +51,7 @@ structure Runtime where
   private raw : USize
 
 @[extern "lean_base_new"]
-private opaque newRaw (setupJson : @& ByteArray) : IO USize
+private opaque newRaw (artifactJson : @& ByteArray) : IO USize
 
 @[extern "lean_base_free"]
 private opaque freeRaw (handle : USize) : IO Unit
@@ -102,9 +102,9 @@ def execute (rt : Runtime) (fnIdx : UInt32)
 
 /-- `len` bytes of the runtime's shared memory from `offset`.
 
-This is the offset an output column names. A range reaching past the end is an
-error rather than a short answer, so a truncated read cannot be mistaken for a
-result. -/
+This is how a host reads what a program left in its own memory, at an address
+the generator says it writes. A range reaching past the end is an error rather
+than a short answer, so a truncated read cannot be mistaken for a result. -/
 def readMemory (rt : Runtime) (offset len : Nat) : IO ByteArray :=
   readMemoryRaw rt.raw (USize.ofNat offset) (USize.ofNat len)
 

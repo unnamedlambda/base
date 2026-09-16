@@ -111,9 +111,9 @@ private def ofF64 (x : Float) : UInt64 := x.toBits
 -- Memory
 -- ---------------------------------------------------------------------------
 
-/-- The three regions CLIF code can address: the shared arena it is handed a
-    pointer to, and the caller's input and output buffers, which it reaches
-    through pointers the runtime writes into the arena. -/
+/-- The three regions CLIF code can address: the shared arena and the caller's
+    input and output buffers, each reached through a pointer an entry point is
+    called with. -/
 inductive Region where
   | arena | data | out
   deriving Repr, BEq, DecidableEq, Inhabited

@@ -38,8 +38,9 @@ namespace ContextSlots
 def ht : Nat := 0x00
 def wgpu : Nat := 0x08
 def cuda : Nat := 0x10
--- 0x18..0x38 is unused; the window context pointer sits past it, where it
--- has always been, so no generator's layout moves.
+-- 0x18..0x38 is written by nothing. It held the caller's buffer descriptors
+-- before those became entry arguments, and the window slot stayed where it
+-- was so that no generator's layout moved with them.
 def window : Nat := 0x38
 
 end ContextSlots

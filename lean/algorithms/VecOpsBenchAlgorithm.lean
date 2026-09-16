@@ -18,7 +18,7 @@ namespace VecOpsBench
     [0..8)  result (f64) — sum of all (A[i] + B[i])
 
   Memory layout (shared memory):
-    0x0000..0x0027  reserved (runtime writes ctx_ptr, data_ptr, data_len, out_ptr, out_len)
+    0x0000..0x0027  reserved (no context slot is used; the buffers arrive as entry arguments)
 
   The CLIF code reads arrays directly from the data pointer (zero copy)
   and writes the result to the out pointer (zero copy).
