@@ -44,8 +44,11 @@ LR = 1.0 / (256 * BATCH)
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 DATA = os.path.join(ROOT, "cifar-10-batches-bin")
 
-# Everything the driver calls, so a stale artifact is caught before the run
-# rather than as a `KeyError` partway through it.
+# Everything the driver calls, checked against `entries.py` before the run
+# rather than as a `KeyError` partway through it. The artifact carries only
+# function indices, so `entries.py` is what names them and what this checks --
+# keeping it in step with the generator is a thing a reader does, not a thing
+# the artifact can be asked.
 NEEDED = ["uploadX", "uploadOneHot", "uploadBias", "fetchLogits", "runFwd",
           "runBwd", "fetchH"]
 
@@ -89,9 +92,10 @@ def find_artifact() -> str:
         os.makedirs(out, exist_ok=True)
         lake(exe, out, cwd=None)
 
-    missing = set(NEEDED) - set(py_base.load_artifact(path).extras.keys())
+    missing = set(NEEDED) - set(entries.entries(
+        os.path.basename(path).removesuffix(".json")))
     if missing:
-        sys.exit(f"{MODULE}.lean does not export {sorted(missing)}")
+        sys.exit(f"entries.py does not name {sorted(missing)} for {MODULE}")
     return path
 
 
