@@ -32,7 +32,7 @@ fn main() {
         let artifact = Artifact {
             functions: artifact.functions,
             memory_size: 1 << 20,
-            initial_memory: Vec::new(),
+            data: Vec::new(),
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         let t = std::time::Instant::now();

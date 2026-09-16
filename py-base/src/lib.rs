@@ -110,7 +110,7 @@ impl PyBase {
         out: Option<&Bound<'_, pyo3::types::PyByteArray>>,
     ) -> PyResult<i64> {
         let (out_ptr, out_len) = match out {
-            Some(out) => (out.data() as *mut u8, out.len()),
+            Some(out) => (out.data(), out.len()),
             None => (std::ptr::null_mut(), 0),
         };
         let handle = self.handle;
