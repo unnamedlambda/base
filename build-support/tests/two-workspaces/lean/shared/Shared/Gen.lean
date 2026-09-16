@@ -3,7 +3,7 @@ from this same package, which is what puts two `lake` invocations on it at
 once. -/
 
 def artifact : String :=
-  "{\"functions\":[],\"memory_size\":777,\"initial_memory\":[]}"
+  "{\"functions\":[],\"memory_size\":777,\"data\":[]}"
 
 def main (args : List String) : IO Unit := do
   let dir := args.head!

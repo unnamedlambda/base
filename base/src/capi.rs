@@ -278,6 +278,27 @@ mod tests {
         String::from_utf8(buf).unwrap()
     }
 
+    /// The field `data` replaced. `data` has a default, so without the wire
+    /// format refusing what it does not know, a writer left behind by that
+    /// change would hand over an artifact that builds and starts from zeros —
+    /// a program reading the wrong memory, not a failure anyone would trace
+    /// back to the artifact.
+    #[test]
+    fn an_artifact_naming_a_field_that_is_gone_is_refused() {
+        const STALE: &str = r#"{
+            "functions": [],
+            "memory_size": 64,
+            "initial_memory": [1, 2, 3, 4]
+        }"#;
+        let handle = unsafe { base_new(STALE.as_ptr(), STALE.len()) };
+        assert!(handle.is_null(), "a stale artifact should not build");
+        assert!(
+            last_error().contains("initial_memory"),
+            "the message should name the field: {}",
+            last_error()
+        );
+    }
+
     #[test]
     fn an_artifact_round_trips_from_json_and_frees() {
         let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };

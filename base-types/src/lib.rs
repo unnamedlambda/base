@@ -8,6 +8,7 @@ pub mod clif;
 /// an artifact from shipping the zeros: across the artifacts in this
 /// repository the images are 29.7 MB, of which 4.9 MB is not zero.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Segment {
     pub offset: usize,
     pub bytes: Vec<u8>,
@@ -25,7 +26,13 @@ impl Segment {
 /// This is the whole of the wire format. An entry point is a function index —
 /// which function does what is the generator's knowledge, and stays with
 /// whoever built the artifact.
+///
+/// Unknown fields are refused rather than skipped. `data` defaults to empty, so
+/// a writer left behind by a change to this struct would otherwise produce an
+/// artifact that parses and starts from memory it believes it filled — which is
+/// a program reading zeros, not a failure anyone would trace back to here.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Artifact {
     /// Compiled as a unit. A function's `u0:N` index is its position here.
     pub functions: Vec<clif::Function>,

@@ -97,6 +97,7 @@ pub enum LoadKind {
 /// nothing, and means the decoder cannot silently accept a spelling that has no
 /// meaning.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LoadOp {
     pub kind: LoadKind,
     pub ty: ClifTy,
@@ -181,6 +182,7 @@ pub enum Inst {
 
 /// A basic block: its parameters, then its instructions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Block {
     pub reference: BlockRef,
     pub params: Vec<(Val, ClifTy)>,
@@ -189,6 +191,7 @@ pub struct Block {
 
 /// A signature in the function prologue.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SigDecl {
     pub reference: SigRef,
     pub params: Vec<ClifTy>,
@@ -208,6 +211,7 @@ pub enum Callee {
 
 /// A callee in the function prologue.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FnDecl {
     pub reference: FnRef,
     pub callee: Callee,
@@ -222,6 +226,7 @@ pub struct FnDecl {
 /// length; a function reached through `cl_thread_spawn` takes its spawn
 /// argument.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Function {
     /// The `u0:N` index. Must equal the function's position in the artifact's
     /// function list; the runtime resolves call targets by treating it as a

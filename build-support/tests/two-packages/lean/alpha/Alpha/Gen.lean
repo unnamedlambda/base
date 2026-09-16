@@ -6,7 +6,7 @@ two packages' output apart. -/
 def size : Nat := 111 + Common.bump
 
 def artifact : String :=
-  "{\"functions\":[],\"memory_size\":" ++ toString size ++ ",\"initial_memory\":[]}"
+  "{\"functions\":[],\"memory_size\":" ++ toString size ++ ",\"data\":[]}"
 
 def main (args : List String) : IO Unit := do
   let dir := args.head!
