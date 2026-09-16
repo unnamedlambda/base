@@ -1422,6 +1422,25 @@ fn a_program_that_returns_nothing_has_status_zero() {
     assert_eq!(base.execute(alg, &[]).unwrap(), 0);
 }
 
+/// Whether a function answers is one fact about it, so returns that disagree
+/// are a malformed body rather than a signature base has to guess at.
+#[test]
+fn clif_error_returns_disagree() {
+    let config = cranelift_config(
+        vec![0u8; 256],
+        program(
+            function(0)
+                .entry(vec![iconst64(v(1), 1), brif(v(1), 1, &[], 2, &[])])
+                .block(1, &[], vec![ret_status(v(1))])
+                .block(2, &[], vec![ret()]),
+        ),
+    );
+    let Err(base::Error::Clif(msg)) = Base::new(config) else {
+        panic!("expected a function whose returns disagree to be refused");
+    };
+    assert!(msg.contains("some paths"), "message should say what is wrong: {msg}");
+}
+
 #[test]
 fn clif_error_value_used_before_defined() {
     // v9 is never defined. The text path reported this as a parse error; the

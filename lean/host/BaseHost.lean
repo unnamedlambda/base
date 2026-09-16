@@ -80,24 +80,25 @@ not what a caller should reach for first. -/
 def close (rt : Runtime) : IO Unit :=
   freeRaw rt.raw
 
+/-- Run entry point `fnIdx`, answering both the out buffer and the status.
+
+The status is what an entry point answers without a host and a program having
+agreed on a place in memory to leave it: an entry whose `return` carries a
+value answers with it, one whose `return` carries nothing answers `0`. -/
+def executeStatus (rt : Runtime) (fnIdx : UInt32)
+    (data : ByteArray := .empty) (outLen : Nat := 0) : IO (ByteArray × Int64) :=
+  executeRaw rt.raw fnIdx data (USize.ofNat outLen)
+
 /-- Call one entry point, answering the bytes it wrote to its out buffer.
 
 `fnIdx` is the entry point's function index, which the generator that built the
 artifact chose. `data` is what the program is handed as its input buffer and
 `outLen` how much room it is given to answer; a program that uses neither
-passes the defaults. -/
+passes the defaults. The status is dropped — `executeStatus` is the same call
+keeping it. -/
 def execute (rt : Runtime) (fnIdx : UInt32)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray :=
-  return (← executeRaw rt.raw fnIdx data (USize.ofNat outLen)).1
-
-/-- The same call, with the status the entry point returned.
-
-The status is what an entry point answers without a host and a program having
-agreed on a place in memory to leave it: an entry whose body ends in a `return`
-carrying a value answers with it, one that does not answers `0`. -/
-def executeStatus (rt : Runtime) (fnIdx : UInt32)
-    (data : ByteArray := .empty) (outLen : Nat := 0) : IO (ByteArray × Int64) :=
-  executeRaw rt.raw fnIdx data (USize.ofNat outLen)
+  return (← executeStatus rt fnIdx data outLen).1
 
 /-- `len` bytes of the runtime's shared memory from `offset`.
 

@@ -120,11 +120,31 @@ pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, Strin
     for (_, t) in &entry.params {
         sig.params.push(AbiParam::new(ty(*t)));
     }
-    let answers = f
+    // Whether the function answers is one fact about it, so its returns have
+    // to agree with each other. They are refused here rather than left to the
+    // verifier, which reports the mismatch against a signature this derived
+    // from them and so cannot say which half is wrong.
+    let mut rets = f
         .blocks
         .iter()
         .flat_map(|b| &b.insts)
-        .any(|i| matches!(i, clif::Inst::Ret(Some(_))));
+        .filter_map(|i| match i {
+            clif::Inst::Ret(v) => Some(v.is_some()),
+            _ => None,
+        });
+    let answers = match rets.next() {
+        None => false,
+        Some(first) => {
+            if rets.any(|a| a != first) {
+                return Err(format!(
+                    "u0:{} returns a value on some paths and nothing on others, so \
+                     there is no one signature to give it",
+                    f.index
+                ));
+            }
+            first
+        }
+    };
     if answers {
         sig.returns.push(AbiParam::new(ir::types::I64));
     }

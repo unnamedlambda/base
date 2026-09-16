@@ -971,7 +971,7 @@ def runAns {α} (p : Prog Slot Lvl α) (params : List ClifTy := ptrParams) :
   -- so this is the order the declarations were made in whichever function of
   -- the program first made them --- and a table's order is what the compiled
   -- function's `sigs` and `fns` arrays are.
-  let byId {α} (f : α → Nat) (xs : List α) := xs.mergeSort (fun a b => f a ≤ f b)
+  let byId {β} (f : β → Nat) (xs : List β) := xs.mergeSort (fun a b => f a ≤ f b)
   -- A local callee whose id is also that of an entry point the body calls
   -- would put two declarations under one id in the table, and `sigOf` takes
   -- the first: the call would go to the entry point instead. Ids for locals
@@ -1068,7 +1068,8 @@ def compileStatus (idx : Nat) (p : StatusBody) (params : List ClifTy := ptrParam
    match err with
    | some e => some s!"function {idx}: {e}"
    | none =>
-       if a.isNone then some s!"function {idx} never reaches its status"
+       if a.isNone then some s!"function {idx} leaves its own body --- by a \
+         `br` or a `cont` --- rather than reaching a status"
        else if wf env params c then none
        else some s!"function {idx} is not well-formed, from piece \
          {firstBadPiece env params c} on")

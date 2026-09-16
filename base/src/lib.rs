@@ -129,69 +129,68 @@ impl Base {
         let _span = info_span!("execute", fn_idx).entered();
         info!("starting execution");
 
-        if let Some(ref fns) = self.clif_fns {
-            let fn_idx = fn_idx as usize;
-            if fn_idx >= fns.len() {
-                return Err(Error::Execution(format!(
-                    "fn_idx {fn_idx} out of range (have {} fns)",
-                    fns.len()
-                )));
-            }
-            // The FFI entry points a program calls — `cl_thread_init` and what
-            // it spawns — reach the compiled functions through a thread-local,
-            // with no `Base` in hand. Installing them here rather than at
-            // construction is what lets a host execute from any thread, and
-            // makes two instances on one thread each find their own.
-            THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(fns.clone()));
-            debug!(fn_idx, "clif_call");
-            // The caller's buffers are arguments, not a place in the arena the
-            // program is told to look at. The arity is the one the function's
-            // own entry block declared: an entry point takes the arena base
-            // and both buffers, a program with no use for them may take the
-            // base alone, and anything else is not shaped like an entry point
-            // and would read registers of whatever happened to be in them.
-            let f = fns[fn_idx];
-            let status = unsafe {
-                match (f.arity, f.answers) {
-                    (5, true) => {
-                        let entry: unsafe extern "C" fn(
-                            *mut u8,
-                            *const u8,
-                            usize,
-                            *mut u8,
-                            usize,
-                        ) -> i64 = std::mem::transmute(f.addr);
-                        entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len())
-                    }
-                    (5, false) => {
-                        let entry: unsafe extern "C" fn(*mut u8, *const u8, usize, *mut u8, usize) =
-                            std::mem::transmute(f.addr);
-                        entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len());
-                        0
-                    }
-                    (1, true) => {
-                        let entry: unsafe extern "C" fn(*mut u8) -> i64 =
-                            std::mem::transmute(f.addr);
-                        entry(self.mem_ptr)
-                    }
-                    (1, false) => {
-                        let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(f.addr);
-                        entry(self.mem_ptr);
-                        0
-                    }
-                    (n, _) => {
-                        return Err(Error::Execution(format!(
-                            "fn_idx {fn_idx} takes {n} parameters; an entry point takes the memory base, optionally followed by the input and output buffers"
-                        )));
-                    }
-                }
-            };
-            info!(status, "execution complete");
-            return Ok(status);
+        // An artifact with no functions has an empty table rather than none, so
+        // calling into one is the same out-of-range refusal as any other index
+        // that names nothing — not a call that quietly does nothing.
+        let fns = self.clif_fns.clone().unwrap_or_default();
+        let fn_idx = fn_idx as usize;
+        if fn_idx >= fns.len() {
+            return Err(Error::Execution(format!(
+                "fn_idx {fn_idx} out of range (have {} fns)",
+                fns.len()
+            )));
         }
-
-        info!("execution complete");
-        Ok(0)
+        // The FFI entry points a program calls — `cl_thread_init` and what
+        // it spawns — reach the compiled functions through a thread-local,
+        // with no `Base` in hand. Installing them here rather than at
+        // construction is what lets a host execute from any thread, and
+        // makes two instances on one thread each find their own.
+        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(fns.clone()));
+        debug!(fn_idx, "clif_call");
+        // The caller's buffers are arguments, not a place in the arena the
+        // program is told to look at. The arity is the one the function's
+        // own entry block declared: an entry point takes the arena base
+        // and both buffers, a program with no use for them may take the
+        // base alone, and anything else is not shaped like an entry point
+        // and would read registers of whatever happened to be in them.
+        let f = fns[fn_idx];
+        let status = unsafe {
+            match (f.arity, f.answers) {
+                (5, true) => {
+                    let entry: unsafe extern "C" fn(
+                        *mut u8,
+                        *const u8,
+                        usize,
+                        *mut u8,
+                        usize,
+                    ) -> i64 = std::mem::transmute(f.addr);
+                    entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len())
+                }
+                (5, false) => {
+                    let entry: unsafe extern "C" fn(*mut u8, *const u8, usize, *mut u8, usize) =
+                        std::mem::transmute(f.addr);
+                    entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len());
+                    0
+                }
+                (1, true) => {
+                    let entry: unsafe extern "C" fn(*mut u8) -> i64 =
+                        std::mem::transmute(f.addr);
+                    entry(self.mem_ptr)
+                }
+                (1, false) => {
+                    let entry: unsafe extern "C" fn(*mut u8) = std::mem::transmute(f.addr);
+                    entry(self.mem_ptr);
+                    0
+                }
+                (n, _) => {
+                    return Err(Error::Execution(format!(
+                        "fn_idx {fn_idx} takes {n} parameters; an entry point takes the memory base, optionally followed by the input and output buffers"
+                    )));
+                }
+            }
+        };
+        info!(status, "execution complete");
+        Ok(status)
     }
 }
 

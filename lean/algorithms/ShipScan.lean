@@ -1,10 +1,11 @@
 import AlgorithmLib.Gen
 
 /-!
-  # Every body an artifact carries was compiled through the checked door
+  # Every body an artifact carries was compiled through a checked door
 
-  `Prog.compileProg` runs `wf` on the body it emitted and returns an error
-  rather than a function when it fails, so a body compiled through it is
+  `Prog.compileProg` --- and `Prog.compileProgStatus`, for a body that answers
+  a status --- runs `wf` on the body it emitted and returns an error rather
+  than a function when it fails, so a body compiled through either is
   well-formed or the generator refuses to write the artifact.
   `HProg.compileBody` takes no such obligation — `CompileSound` relates the two
   runs of an arbitrary body, so the compiler it names cannot demand one.
@@ -20,8 +21,9 @@ namespace ShipScan
 
 /-- The unchecked compiler. -/
 def UNCHECKED : Name := `AlgorithmLib.HProg.compileBody
-/-- The door that carries the obligation: it runs `wf` on the body it emitted
-    and refuses one that fails. -/
+/-- The doors that carry the obligation: each runs `wf` on the body it emitted
+    and refuses one that fails. Two of them because a body that answers a
+    status is compiled by its own entry point, under the same obligation. -/
 def CHECKED : List Name :=
   [`AlgorithmLib.Prog.compileProg, `AlgorithmLib.Prog.compileProgStatus]
 
@@ -42,7 +44,7 @@ partial def closureOf (env : Environment) (seen : Std.HashSet Name) (n : Name) :
 
 /-- The declarations leading from `root` to `target`, nearest first, or `#[]`
     when the walk does not reach it. Breadth-first, so the path is a shortest
-    one and names the declaration that should have used `compileProg`. -/
+    one and names the declaration that should have used a checked door. -/
 partial def pathTo (env : Environment) (root target : Name) : Array Name :=
   go (Std.HashSet.emptyWithCapacity.insert root) #[[root]]
 where
@@ -83,7 +85,7 @@ private partial def yieldsArtifact : Expr → Bool
            | _, _ => false
 
 /-- Fails the build on an artifact holding a body that was not compiled through
-    `compileProg`. -/
+    one of the `CHECKED` doors. -/
 def check (label : String) (root : Name := `main) (gatedElsewhere : Option String := none) :
     CoreM Unit := do
   let env ← getEnv
@@ -106,6 +108,6 @@ def check (label : String) (root : Name := `main) (gatedElsewhere : Option Strin
     for n in pathTo env root UNCHECKED do IO.println s!"    {n}"
     throwError s!"SHIP SCAN [{label}] FAILED: a body it ships was compiled by \
       {UNCHECKED} rather than one of {CHECKED}"
-  IO.println s!"[{label}] every body its {artifacts.length} artifact(s) carry was compiled through compileProg"
+  IO.println s!"[{label}] every body its {artifacts.length} artifact(s) carry was compiled through a checked door"
 
 end ShipScan
