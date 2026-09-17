@@ -400,25 +400,28 @@ fn regenerate(module: &str, exe: &Path, out: &Path) -> Vec<String> {
     run(exe, &staging);
 
     let mut artifacts = Vec::new();
+    let mut staged = Vec::new();
     let mut subdirs = Vec::new();
     for path in entries(&staging) {
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         if path.is_dir() {
             subdirs.push(name);
         } else if path.extension().and_then(|e| e.to_str()) == Some(EXTENSION) {
-            if let Err(e) = verify(&path) {
+            let bytes = fs::read(&path)
+                .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+            if let Err(e) = verify(&bytes) {
                 panic!("{module}/{name}: {e}");
             }
             artifacts.push(path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+            staged.push(bytes);
         } else {
             panic!("{module}/{name} is not an artifact; other output belongs in a subdirectory");
         }
     }
     assert!(!artifacts.is_empty(), "{module} wrote no artifacts");
 
-    for name in &artifacts {
-        let bytes = fs::read(artifact_path(&staging, name)).expect("staged artifact");
-        write_if_changed(&artifact_path(out, name), &bytes);
+    for (name, bytes) in artifacts.iter().zip(&staged) {
+        write_if_changed(&artifact_path(out, name), bytes);
     }
     // What is at the top level and not just written belongs to an artifact the
     // generator no longer has, or to an encoding that is gone. Left in place it
@@ -443,14 +446,13 @@ fn regenerate(module: &str, exe: &Path, out: &Path) -> Vec<String> {
     artifacts
 }
 
-/// That the file at `path` is an artifact, written in the one encoding
+/// That `bytes` are an artifact, written in the one encoding
 /// [`Artifact::to_bytes`] produces. A Lean writer that disagrees with serde on
 /// any detail of the profile fails here rather than being read some other way.
-fn verify(path: &Path) -> Result<(), String> {
-    let bytes = fs::read(path).map_err(|e| format!("unreadable: {e}"))?;
-    let artifact = Artifact::from_bytes(&bytes)?;
+fn verify(bytes: &[u8]) -> Result<(), String> {
+    let artifact = Artifact::from_bytes(bytes)?;
     let again = artifact.to_bytes();
-    if again != bytes {
+    if again.as_slice() != bytes {
         let at = bytes.iter().zip(&again).position(|(a, b)| a != b).unwrap_or(bytes.len().min(again.len()));
         return Err(format!(
             "decodes, but is not in the artifact encoding: it re-encodes differently from byte {at} \
@@ -466,7 +468,8 @@ fn verify(path: &Path) -> Result<(), String> {
 fn verify_all(out: &Path) -> Result<(), String> {
     let list = fs::read_to_string(out.join(MANIFEST)).map_err(|e| e.to_string())?;
     for name in list.lines().filter(|l| !l.is_empty()) {
-        verify(&artifact_path(out, name))?;
+        let bytes = fs::read(artifact_path(out, name)).map_err(|e| e.to_string())?;
+        verify(&bytes)?;
     }
     Ok(())
 }
@@ -624,25 +627,18 @@ mod tests {
     /// refused, because it is a writer disagreeing with the profile.
     #[test]
     fn an_artifact_in_another_encoding_is_refused() {
-        let dir = std::env::temp_dir().join(format!("bs-verify-{}", std::process::id()));
-        fs::create_dir_all(&dir).expect("temp dir");
         let good = Artifact { functions: vec![], memory_size: 8, data: vec![] }.to_bytes();
-        let path = dir.join("a.cbor");
-        fs::write(&path, &good).expect("write");
-        assert_eq!(verify(&path), Ok(()));
+        assert_eq!(verify(&good), Ok(()));
 
         // `memory_size: 8` as a one-byte head (0x08) spelled with two (0x18 0x08).
-        let at = good.windows(2).rposition(|w| w == [0x08, 0x64]).expect("memory_size value") ;
+        let at = good.windows(2).rposition(|w| w == [0x08, 0x64]).expect("memory_size value");
         let mut wide = good.clone();
         wide.splice(at..at + 1, [0x18, 0x08]);
         assert_eq!(Artifact::from_bytes(&wide).map(|a| a.memory_size), Ok(8));
-        fs::write(&path, &wide).expect("write");
-        let err = verify(&path).expect_err("a wide head is not the encoding");
+        let err = verify(&wide).expect_err("a wide head is not the encoding");
         assert!(err.contains("re-encodes differently"), "{err}");
 
-        fs::write(&path, b"{}").expect("write");
-        assert!(verify(&path).expect_err("JSON").starts_with("not an artifact"));
-        fs::remove_dir_all(&dir).ok();
+        assert!(verify(b"{}").expect_err("JSON").starts_with("not an artifact"));
     }
 
     /// Directories with nothing in common are not made to wait for each other.

@@ -27,7 +27,6 @@ only kept the most recent window.
 """
 
 import argparse
-import json
 import os
 import struct
 import sys

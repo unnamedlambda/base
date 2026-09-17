@@ -17,18 +17,18 @@ ART, D, N = sys.argv[1], sys.argv[2], 50
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
 base = py_base.Base(art)
-base.execute("main", blob, bytearray(0))
+base.execute("main", blob)
 for c in ["capture", "captureStep", "captureBlas", "captureRow"]:
-    base.execute(c, b"", bytearray(0))
-base.execute("reload", blob, bytearray(0))
+    base.execute(c)
+base.execute("reload", blob)
 
 
 def t(fn):
     for _ in range(5):
-        base.execute(fn, b"", bytearray(0))
+        base.execute(fn)
     s = time.perf_counter()
     for _ in range(N):
-        base.execute(fn, b"", bytearray(0))
+        base.execute(fn)
     return (time.perf_counter() - s) / N * 1e3
 
 

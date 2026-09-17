@@ -16,7 +16,7 @@ stated part of the step, not an omission: `seed` uploads the result and the
 backward is derived from it.
 """
 import os
-import sys, json, struct, time
+import sys, struct, time
 import numpy as np
 import py_base
 
@@ -30,21 +30,21 @@ ref = np.load(D + "/losses.npy")
 
 art = py_base.load_artifact(ART)
 base = py_base.Base(art)
-base.execute("main", blob, bytearray(0))
+base.execute("main", blob)
 
 # Capture both graphs first.  Capturing runs its sequence once eagerly to make
 # every module resident, so the step graph's capture applies two updates; the
 # reload puts the parameters back before the run that is being compared.
-base.execute("capture", b"", bytearray(0))
-base.execute("captureStep", b"", bytearray(0))
-base.execute("reload", blob, bytearray(0))
+base.execute("capture")
+base.execute("captureStep")
+base.execute("reload", blob)
 
 logit_buf = bytearray(SQ * NC * 4)
 seed = np.zeros((SQ, NC), np.float32)
 
 
 def forward_logits():
-    base.execute("replay", b"", bytearray(0))
+    base.execute("replay")
     base.execute("fetch", b"", logit_buf)
     return np.frombuffer(bytes(logit_buf), "<f4")[:NC].astype(np.float64)
 
@@ -57,8 +57,8 @@ for _ in range(STEPS):
     losses.append(float(-np.log(max(p[LABEL], 1e-30))))
     seed[0] = p
     seed[0, LABEL] -= 1.0
-    base.execute("seed", seed.tobytes(), bytearray(0))
-    base.execute("replayStep", b"", bytearray(0))
+    base.execute("seed", seed.tobytes())
+    base.execute("replayStep")
 ms = (time.perf_counter() - t0) / STEPS * 1e3
 
 n = min(len(losses), len(ref))

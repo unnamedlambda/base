@@ -304,15 +304,19 @@ mod tests {
     /// back to the artifact.
     #[test]
     fn an_artifact_naming_a_field_that_is_gone_is_refused() {
-        use ciborium::Value;
-        let stale = Value::Map(vec![
-            (Value::Text("functions".into()), Value::Array(vec![])),
-            (Value::Text("memory_size".into()), Value::Integer(64.into())),
-            (Value::Text("initial_memory".into()), Value::Bytes(vec![1, 2, 3, 4])),
-        ]);
-        let mut bytes = Vec::new();
-        ciborium::into_writer(&stale, &mut bytes).unwrap();
-        let handle = new_base(&bytes);
+        // `{"functions": [], "memory_size": 64, "initial_memory": h'01020304'}`
+        let text = |s: &str| [&[0x60 + s.len() as u8][..], s.as_bytes()].concat();
+        let stale = [
+            &[0xa3][..],
+            &text("functions"),
+            &[0x80],
+            &text("memory_size"),
+            &[0x18, 64],
+            &text("initial_memory"),
+            &[0x44, 1, 2, 3, 4],
+        ]
+        .concat();
+        let handle = new_base(&stale);
         assert!(handle.is_null(), "a stale artifact should not build");
         assert!(
             last_error().contains("initial_memory"),
@@ -421,8 +425,7 @@ mod tests {
         assert!(last_error().contains("non-zero length"));
     }
 
-    /// A cut-off file, and the JSON artifacts used to be, are errors with a
-    /// message rather than panics.
+    /// A cut-off file and a JSON file are errors with a message, not panics.
     #[test]
     fn a_malformed_artifact_is_an_error_and_not_a_panic() {
         let whole = empty_artifact();

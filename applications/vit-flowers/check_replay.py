@@ -17,7 +17,7 @@ ref = np.load(D + "/ref.npy")
 
 art = py_base.load_artifact(ART)
 base = py_base.Base(art)
-base.execute("main", blob, bytearray(0))
+base.execute("main", blob)
 
 
 def logits():
@@ -26,22 +26,22 @@ def logits():
     return bytes(out)
 
 
-base.execute("run", b"", bytearray(0))
+base.execute("run")
 eager = logits()
 
-base.execute("capture", b"", bytearray(0))
-base.execute("reload", blob, bytearray(0))
-base.execute("replay", b"", bytearray(0))
+base.execute("capture")
+base.execute("reload", blob)
+base.execute("replay")
 replayed = logits()
 
 # One training step, then a forward: the logits then reflect the updates, so a
 # digest of them covers the backward and the optimiser as well as the forward.
-base.execute("captureStep", b"", bytearray(0))
-base.execute("reload", blob, bytearray(0))
-base.execute("replay", b"", bytearray(0))
-base.execute("seed", np.zeros((SQ, NC), np.float32).tobytes(), bytearray(0))
-base.execute("replayStep", b"", bytearray(0))
-base.execute("replay", b"", bytearray(0))
+base.execute("captureStep")
+base.execute("reload", blob)
+base.execute("replay")
+base.execute("seed", np.zeros((SQ, NC), np.float32).tobytes())
+base.execute("replayStep")
+base.execute("replay")
 stepped = logits()
 
 got = np.frombuffer(replayed, "<f4").reshape(SQ, NC)[0]

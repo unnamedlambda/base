@@ -27,7 +27,6 @@ top-4 changes the answer.
 """
 
 import argparse
-import json
 import os
 import struct
 import sys

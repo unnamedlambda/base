@@ -40,11 +40,6 @@ def Expr.input1 : Expr (n + 2) := .input ⟨1, by simp⟩
 def Expr.scalarBits (bits : String) : Expr n := .const bits
 def Expr.saxpy (a x y : Expr n) : Expr n := a * x + y
 
-/-- What one compiled pipeline is: an artifact exporting its three stages as
-    `main`, `prep` and `infer`. -/
-structure CompileResult where
-  artifact : Artifact
-
 -- Shared-memory layout produced by these functions:
 --   0x10 ctx slot,
 --   0x38 N (i64),  0x40 meta buffer id (i32),
@@ -185,7 +180,8 @@ def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : Prog V L Unit := do
     let _ ← ffi .cudaDownload %[ctxPtr, outBufId, outPtr, outLen]
 
 -- ---------------------------------------------------------------------------
--- Compile: assemble PTX + CLIF + initial memory into a CompileResult.
+-- Compile: assemble PTX + CLIF + initial memory into an artifact exporting
+-- the three stages as `main`, `prep` and `infer`.
 -- ---------------------------------------------------------------------------
 
 /-- The three stages are terms only once `n`, `out` and `blockSize` are given.
@@ -196,7 +192,7 @@ def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : Prog V L Unit := do
     are gone. The stages are typed terms, and `compileProg` checks the body it
     emitted while the generator runs. -/
 def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
-    (blockSize : Nat := 256) : Except String CompileResult := do
+    (blockSize : Nat := 256) : Except String Artifact := do
   let output : Fin n := ⟨out, h⟩
   let ptxBytes := (ptxSource e output blockSize).toUTF8.toList ++ [0]
   let bindDesc := (List.range (n + 1)).foldr
@@ -212,15 +208,10 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
      Prog.entry "prep" (Prog.compileProg 2 (prepCode n)),
      Prog.entry "infer" (Prog.compileProg 3 (inferCode output blockSize))]
   return {
-    artifact := {
-      functions := clifProg
-      memory_size := memSize
-      initial_memory := initialMemory
-    }
+    functions := clifProg
+    memory_size := memSize
+    initial_memory := initialMemory
   }
-
-def CompileResult.toArtifacts (r : CompileResult) (name : String) : Array ArtifactEntry :=
-  #[artifactEntry name r.artifact]
 
 end CudaPipeline
 

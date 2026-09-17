@@ -5,7 +5,7 @@ reference forward.
 Runs in its own process because it imports torch: a PyTorch CUDA context in
 the same process makes every cuBLAS call from our runtime fail.
 """
-import sys, json, struct, numpy as np, torch, timm
+import sys, struct, numpy as np, torch, timm
 
 ART, D = sys.argv[1], sys.argv[2]
 NL, SQ, SK, DM, NH, HD, DFF, NC, TOK = 12, 200, 224, 192, 3, 64, 768, 128, 197

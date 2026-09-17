@@ -34,23 +34,21 @@ def main():
 
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER)
     base = py_base.Base(art)
-    base.execute("main", blob, bytearray(0))
+    base.execute("main", blob)
 
     dout = np.ones(DM, dtype=np.float32)
-    base.execute("uploadDOut", dout.tobytes(), bytearray(0))
+    base.execute("uploadDOut", dout.tobytes())
 
     def loss(w2: np.ndarray) -> float:
-        base.execute("uploadW2", w2.astype("<f4").ravel().tobytes(),
-                          bytearray(0))
-        base.execute("runFwd", b"", bytearray(0))
+        base.execute("uploadW2", w2.astype("<f4").ravel().tobytes())
+        base.execute("runFwd")
         o = bytearray(DM * 4)
         base.execute("fetchOut", b"", o)
         return float(np.sum(np.frombuffer(bytes(o), dtype="<f4"), dtype=np.float64))
 
     # The derived gradient, from the run that also does the forward pass.
-    base.execute("uploadW2", w["w2"].astype("<f4").ravel().tobytes(),
-                      bytearray(0))
-    base.execute("runBlock", b"", bytearray(0))
+    base.execute("uploadW2", w["w2"].astype("<f4").ravel().tobytes())
+    base.execute("runBlock")
     g = bytearray(DM * DFF * 4)
     base.execute("fetchDW2", b"", g)
     dW2 = np.frombuffer(bytes(g), dtype="<f4").reshape(DM, DFF)

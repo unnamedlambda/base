@@ -14,7 +14,7 @@ is written in; PyTorch keeps them fused, so the check stacks ours back up rather
 than comparing a shape neither side has.
 """
 import os
-import sys, json, struct
+import sys, struct
 import numpy as np
 import py_base
 
@@ -37,10 +37,10 @@ blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy")
 ref = np.load(D + "/grads.npz")
 
-base.execute("main", blob, bytearray(0))
-base.execute("run", b"", bytearray(0))
-base.execute("seed", seed.astype("<f4").tobytes(), bytearray(0))
-base.execute("bwd", b"", bytearray(0))
+base.execute("main", blob)
+base.execute("run")
+base.execute("seed", seed.astype("<f4").tobytes())
+base.execute("bwd")
 
 fetch = "fetchAny"
 

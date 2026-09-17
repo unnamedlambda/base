@@ -30,7 +30,6 @@ Run it alone: the pool is 9.48 GiB of pinned host memory.
 """
 
 import argparse
-import json
 import os
 import struct
 import sys

@@ -28,7 +28,6 @@ allocation in this process takes the machine down rather than failing.
 """
 
 import argparse
-import json
 import os
 import struct
 import sys

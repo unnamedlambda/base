@@ -13,7 +13,6 @@ This is the other end: the same block in NumPy, so the numbers can be compared.
 Run:  py-base/.venv/bin/python applications/ten-qwen/run.py <artifact.cbor>
 """
 
-import json
 import os
 import struct
 import sys
@@ -98,8 +97,8 @@ def main():
     assert len(blob) == want, f"host packing {len(blob)} vs Lean layout {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's qHostIn ({want})")
 
-    base.execute("main", blob, bytearray(0))
-    base.execute("runFwd", b"", bytearray(0))
+    base.execute("main", blob)
+    base.execute("runFwd")
 
     out = bytearray(DM * 4)
     base.execute("fetchOut", b"", out)
@@ -119,7 +118,7 @@ def main():
     # buffer but 33, the temporary fusion removes — so this is bit equality,
     # not a tolerance. Without it, `runFwdFused` would be an emitted function
     # nothing runs, and the theorem would be about a program nothing runs.
-    base.execute("runFwdFused", b"", bytearray(0))
+    base.execute("runFwdFused")
     fused_out = bytearray(DM * 4)
     base.execute("fetchOut", b"", fused_out)
     fused = np.frombuffer(bytes(fused_out), dtype="<f4")

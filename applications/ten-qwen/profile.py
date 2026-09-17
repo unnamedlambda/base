@@ -39,10 +39,10 @@ LADDER = [("runFwd", 28), ("runTo30", 30), ("runTo31", 31), ("runTo34", 34),
 
 def timed(base, fn, reps=100):
     for _ in range(5):
-        base.execute(fn, b"", bytearray(0))
+        base.execute(fn)
     t0 = time.perf_counter()
     for _ in range(reps):
-        base.execute(fn, b"", bytearray(0))
+        base.execute(fn)
     return (time.perf_counter() - t0) / reps * 1e6
 
 
@@ -52,20 +52,18 @@ def main():
     w["ones"] = np.ones(DM, dtype=np.float32)
     base = py_base.Base(art)
     base.execute("main",
-                      b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER),
-                      bytearray(0))
-    base.execute("uploadDOut", np.ones(DM, dtype=np.float32).tobytes(),
-                      bytearray(0))
+                      b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER))
+    base.execute("uploadDOut", np.ones(DM, dtype=np.float32).tobytes())
 
     def gradient():
         g = bytearray(DM * DFF * 4)
         base.execute("fetchDW2", b"", g)
         return np.frombuffer(bytes(g), dtype="<f4").copy()
 
-    base.execute("runBlock", b"", bytearray(0))
+    base.execute("runBlock")
     ref = gradient()
-    base.execute("capture", b"", bytearray(0))
-    base.execute("replay", b"", bytearray(0))
+    base.execute("capture")
+    base.execute("replay")
     delta = float(np.abs(gradient() - ref).max())
     print(f"replay vs launches: max |Δ| {delta:.3e}"
           f"   {'identical' if delta == 0.0 else 'DIFFERS'}\n")

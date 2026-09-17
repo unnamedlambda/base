@@ -74,18 +74,15 @@ impl Base {
                 .ok_or_else(|| too_big(format!("a segment at {} ends past the address space", s.offset)))?;
             size = size.max(end);
         }
-        let mut memory = Vec::new();
-        memory
-            .try_reserve_exact(size)
-            .map_err(|_| too_big(format!("the program's memory is {size} bytes")))?;
-        memory.resize(size, 0u8);
+        let mut memory =
+            zeroed(size).ok_or_else(|| too_big(format!("the program's memory is {size} bytes")))?;
         // Zeros everywhere a segment does not reach, which is what an artifact
         // leaves out rather than shipping.
         for s in &artifact.data {
             let at = s.offset as usize;
             memory[at..at + s.bytes.len()].copy_from_slice(&s.bytes);
         }
-        Self::from_parts(artifact.functions, memory.into_boxed_slice())
+        Self::from_parts(artifact.functions, memory)
     }
 
     fn from_parts(
@@ -149,13 +146,8 @@ impl Base {
         debug!(fn_idx, "clif_call");
         // The caller's buffers are arguments, not a place in the arena the
         // program is told to look at. The arity is the one the function's
-        // own entry block declared: an entry point takes the arena base
-        // and both buffers, a program with no use for them may take the
-        // base alone, and anything else is not shaped like an entry point
-        // and would read registers of whatever happened to be in them.
+        // own entry block declared, and `exports_of` admitted only these two.
         let f = fns[fn_idx];
-        // `exports_of` admitted only these shapes, so the last arm is a second
-        // line rather than the check.
         let status = unsafe {
             match (f.arity, f.answers) {
                 (5, true) => {
@@ -184,16 +176,28 @@ impl Base {
                     entry(self.mem_ptr);
                     0
                 }
-                (n, _) => {
-                    return Err(Error::Execution(format!(
-                        "{name:?} takes {n} parameters; an entry point takes the memory base, \
-                         optionally followed by the input and output buffers"
-                    )));
-                }
+                (n, _) => unreachable!("{name:?} is exported but takes {n} parameters"),
             }
         };
         info!(status, "execution complete");
         Ok(status)
+    }
+}
+
+/// `size` zeroed bytes, or `None` if the allocator cannot provide them.
+///
+/// Zeroed by the allocator rather than written: memories run to hundreds of
+/// megabytes, and pages a program never touches then never cost anything.
+fn zeroed(size: usize) -> Option<Box<[u8]>> {
+    if size == 0 {
+        return Some(Box::default());
+    }
+    let layout = std::alloc::Layout::array::<u8>(size).ok()?;
+    // SAFETY: `layout` is non-zero-sized, and a non-null result is `size`
+    // initialized bytes allocated with the layout `Box<[u8]>` frees with.
+    unsafe {
+        let ptr = std::alloc::alloc_zeroed(layout);
+        (!ptr.is_null()).then(|| Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, size)))
     }
 }
 

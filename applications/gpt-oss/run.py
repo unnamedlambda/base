@@ -20,7 +20,6 @@ reference lives in check.py, downstream of --dump-logits.
 """
 
 import argparse
-import json
 import os
 import struct
 import sys

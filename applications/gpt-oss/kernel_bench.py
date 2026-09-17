@@ -18,7 +18,6 @@ loop for a kernel should be seconds.
 
 import argparse
 import ctypes
-import json
 import os
 import sys
 import tempfile

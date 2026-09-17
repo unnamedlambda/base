@@ -19,7 +19,6 @@ Two checks, because one of them alone would pass for the wrong reason:
 """
 
 import argparse
-import json
 import os
 import struct
 import sys
@@ -73,11 +72,11 @@ def main():
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
 
-    base.execute("main", blob, bytearray(0))
-    base.execute("bindExperts", chosen.tobytes(), bytearray(0))
-    base.execute("uploadX", x.tobytes(), bytearray(0))
-    base.execute("uploadGates", gates.tobytes(), bytearray(0))
-    base.execute("runExperts", b"", bytearray(0))
+    base.execute("main", blob)
+    base.execute("bindExperts", chosen.tobytes())
+    base.execute("uploadX", x.tobytes())
+    base.execute("uploadGates", gates.tobytes())
+    base.execute("runExperts")
     out = bytearray(H * 4)
     base.execute("fetchOut", b"", out)
     got = np.frombuffer(bytes(out), np.float32)
@@ -99,8 +98,8 @@ def main():
 
     # ---- the binding is load-bearing: a different choice must differ ----
     other = np.array([11, 24, 2, 30], dtype=np.uint32)
-    base.execute("bindExperts", other.tobytes(), bytearray(0))
-    base.execute("runExperts", b"", bytearray(0))
+    base.execute("bindExperts", other.tobytes())
+    base.execute("runExperts")
     out2 = bytearray(H * 4)
     base.execute("fetchOut", b"", out2)
     got2 = np.frombuffer(bytes(out2), np.float32)

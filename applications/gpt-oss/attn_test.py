@@ -31,7 +31,6 @@ tolerance.
 """
 
 import argparse
-import json
 import os
 import struct
 import sys
@@ -107,7 +106,7 @@ def main():
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
 
-    base.execute("main", blob, bytearray(0))
+    base.execute("main", blob)
 
     # ---- the reference, written the way the model defines it ----
     def project(row, narrow):
@@ -164,8 +163,8 @@ def main():
             # M_KVSTRIDE: the cache depth, published rather than emitted
             meta[7] = CAP * HD
             step = rows[pos].tobytes() + meta.tobytes()
-            base.execute("uploadStep", step, bytearray(0))
-            base.execute("step", step, bytearray(0))
+            base.execute("uploadStep", step)
+            base.execute("step", step)
             if pos in readback:
                 out = bytearray(H * 4)
                 base.execute("fetchX", b"", out)

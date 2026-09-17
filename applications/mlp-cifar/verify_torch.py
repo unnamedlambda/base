@@ -25,7 +25,6 @@ claims.
 Run:  py-base/.venv/bin/python applications/mlp-cifar/verify_torch.py
 """
 
-import json
 import os
 import struct
 import sys
@@ -86,8 +85,7 @@ def main() -> None:
     base = py_base.Base(art)
     assert len(blob) == struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
 
-    base.execute("main", blob, bytearray(0))
-    nil = bytearray(0)
+    base.execute("main", blob)
 
     # The identical network in PyTorch: no biases, silu, and the *padded* output
     # width, so the two models have the same parameter count and the padding
@@ -135,11 +133,11 @@ def main() -> None:
     # first, so -inf there is what makes it a 10-class distribution.  Forgetting
     # it trains a 32-class model that still looks plausible.
     bias = np.where(np.arange(C) < CLASSES, 0.0, -1.0e30).astype(np.float32)
-    base.execute("uploadBias", bias.tobytes(), nil)
+    base.execute("uploadBias", bias.tobytes())
 
-    base.execute("uploadX", xb.tobytes(), nil)
-    base.execute("uploadOneHot", onehot(yb).tobytes(), nil)
-    base.execute("runFwd", b"", nil)
+    base.execute("uploadX", xb.tobytes())
+    base.execute("uploadOneHot", onehot(yb).tobytes())
+    base.execute("runFwd")
     lbuf = bytearray(BATCH * C * 4)
     base.execute("fetchLogits", b"", lbuf)
     got = np.frombuffer(bytes(lbuf), dtype="<f4").reshape(BATCH, C)
@@ -164,7 +162,7 @@ def main() -> None:
     base.execute("fetchDlog", b"", dlbuf)
     agree("dlog", np.frombuffer(bytes(dlbuf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES],
           dlog[:, :CLASSES])
-    base.execute("runBwd", b"", nil)
+    base.execute("runBwd")
 
     dw1_buf = bytearray(H * IN * 4)
     dw2_buf = bytearray(C * H * 4)
@@ -194,8 +192,8 @@ def main() -> None:
         n -= n % BATCH
         loss, right = 0.0, 0
         for i in range(0, n, BATCH):
-            base.execute("uploadX", np.ascontiguousarray(xte[i:i + BATCH]).tobytes(), nil)
-            base.execute("runFwd", b"", nil)
+            base.execute("uploadX", np.ascontiguousarray(xte[i:i + BATCH]).tobytes())
+            base.execute("runFwd")
             base.execute("fetchLogits", b"", lbuf)
             lg = np.frombuffer(bytes(lbuf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES]
             q = np.exp(lg - lg.max(axis=1, keepdims=True))
@@ -219,10 +217,10 @@ def main() -> None:
     print(f"\ntraining both for {STEPS * BATCH} samples on the same data order")
     t0 = time.perf_counter()
     for step in order:
-        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes(), nil)
-        base.execute("uploadOneHot", onehot(ytr[step]).tobytes(), nil)
-        base.execute("runFwd", b"", nil)
-        base.execute("runBwd", b"", nil)
+        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes())
+        base.execute("uploadOneHot", onehot(ytr[step]).tobytes())
+        base.execute("runFwd")
+        base.execute("runBwd")
     t_base = (time.perf_counter() - t0) / (STEPS * BATCH)
 
     # The same model lowered to cuBLAS for its five GEMMs — identical vendor
@@ -249,10 +247,10 @@ def main() -> None:
     # run by mistake, only the undisplayed digits would say so.
     t0 = time.perf_counter()
     for step in order[:BLAS_STEPS]:
-        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes(), nil)
-        base.execute("uploadOneHot", onehot(ytr[step]).tobytes(), nil)
-        base.execute("runFwdBlas", b"", nil)
-        base.execute("runBwdBlas", b"", nil)
+        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes())
+        base.execute("uploadOneHot", onehot(ytr[step]).tobytes())
+        base.execute("runFwdBlas")
+        base.execute("runBwdBlas")
     t_blas = (time.perf_counter() - t0) / (BLAS_STEPS * BATCH)
 
     print(f"\nbase, cuBLAS lowering: {t_blas * 1e6:.1f} us/sample "

@@ -10,6 +10,3 @@ links = "leanalgorithms"
 
 [build-dependencies]
 build-support = { path = "../build-support" }
-
-[dev-dependencies]
-base-types = { path = "../base-types" }

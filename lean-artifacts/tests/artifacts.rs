@@ -1,11 +1,11 @@
 //! Checks the generated tree rather than the code that generates it: every
-//! artifact the Lean side emitted is one base-types can represent, in the one
-//! encoding it writes, and nothing else sits beside them.
+//! generator produced artifacts, and nothing but them sits beside the list it
+//! wrote. That each one decodes, in the one encoding, the build itself refuses
+//! to finish without.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use base_types::Artifact;
 
 fn modules() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = fs::read_dir(lean_artifacts::DIR)
@@ -48,23 +48,6 @@ fn every_generator_produced_something() {
             dir.display()
         );
     }
-}
-
-/// Decoding and encoding again gives the file back, which is what makes the
-/// file the artifact rather than one of several spellings of it.
-#[test]
-fn each_artifact_is_in_the_one_encoding() {
-    let mut checked = 0;
-    for dir in modules() {
-        for path in files(&dir).into_iter().filter(|p| is_artifact(p)) {
-            let bytes = fs::read(&path).expect("readable artifact");
-            let artifact = Artifact::from_bytes(&bytes)
-                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            assert!(artifact.to_bytes() == bytes, "{} re-encodes differently", path.display());
-            checked += 1;
-        }
-    }
-    assert!(checked >= 60, "expected many artifacts, checked {checked}");
 }
 
 /// The generator's list is the authority on what exists, and a file it does not

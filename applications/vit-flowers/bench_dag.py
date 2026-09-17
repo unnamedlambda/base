@@ -19,11 +19,11 @@ blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy").astype("<f4").tobytes()
 art = py_base.load_artifact(ART)
 base = py_base.Base(art)
-base.execute("main", blob, bytearray(0))
+base.execute("main", blob)
 
 for c in ["captureChain", "captureStepChain", "capture", "captureStep"]:
-    base.execute(c, b"", bytearray(0))
-base.execute("reload", blob, bytearray(0))
+    base.execute(c)
+base.execute("reload", blob)
 
 
 def logits():
@@ -33,37 +33,37 @@ def logits():
 
 
 def fwd_out(fn):
-    base.execute("reload", blob, bytearray(0))
-    base.execute(fn, b"", bytearray(0))
+    base.execute("reload", blob)
+    base.execute(fn)
     return logits()
 
 
 def step_out(fn):
     """One training step, then a forward, so the result reflects the updates."""
-    base.execute("reload", blob, bytearray(0))
-    base.execute("replay", b"", bytearray(0))
-    base.execute("seed", seed, bytearray(0))
-    base.execute(fn, b"", bytearray(0))
-    base.execute("replay", b"", bytearray(0))
+    base.execute("reload", blob)
+    base.execute("replay")
+    base.execute("seed", seed)
+    base.execute(fn)
+    base.execute("replay")
     return logits()
 
 
 def t(fn, pre=None):
     for _ in range(5):
         if pre: pre()
-        base.execute(fn, b"", bytearray(0))
+        base.execute(fn)
     s = time.perf_counter()
     for _ in range(N):
-        base.execute(fn, b"", bytearray(0))
+        base.execute(fn)
     return (time.perf_counter() - s) / N * 1e3
 
 
 f1, f2 = fwd_out("replayChain"), fwd_out("replay")
 s1, s2 = step_out("replayStepChain"), step_out("replayStep")
 
-base.execute("reload", blob, bytearray(0))
-base.execute("replay", b"", bytearray(0))
-base.execute("seed", seed, bytearray(0))
+base.execute("reload", blob)
+base.execute("replay")
+base.execute("seed", seed)
 
 mf1, mf2 = t("replayChain"), t("replay")
 ms1, ms2 = t("replayStepChain"), t("replayStep")

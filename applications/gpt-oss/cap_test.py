@@ -27,7 +27,6 @@ tens of thousands of tokens.
 """
 
 import argparse
-import json
 import os
 import struct
 import sys
