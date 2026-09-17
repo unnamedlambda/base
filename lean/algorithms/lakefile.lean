@@ -116,6 +116,7 @@ lean_lib SatAlgorithm
 lean_lib SceneAlgorithm
 lean_lib BlackHoleAlgorithm
 lean_lib ByteCountAlgorithm
+lean_lib SelfDescribingAlgorithm
 lean_lib ByteScrubAlgorithm
 lean_lib Sha256Algorithm
 @[default_target]
@@ -225,6 +226,8 @@ lean_exe genclialgorithm where
   root := `CliAlgorithm
 lean_exe genbytecountalgorithm where
   root := `ByteCountAlgorithm
+lean_exe genselfdescribingalgorithm where
+  root := `SelfDescribingAlgorithm
 lean_exe genbytescrubalgorithm where
   root := `ByteScrubAlgorithm
 lean_exe genleanevalalgorithm where

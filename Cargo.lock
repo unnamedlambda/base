@@ -149,6 +149,7 @@ dependencies = [
  "base",
  "base-types",
  "build-support",
+ "ciborium",
  "lean-artifacts",
  "lz4_flex",
  "tempfile",

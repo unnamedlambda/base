@@ -3620,6 +3620,56 @@ fn clif_error_exported_function_not_shaped_like_an_entry() {
     assert!(msg.contains("pair") && msg.contains("2 parameters"), "{msg}");
 }
 
+/// The functions in a new order, each local call renumbered to follow its
+/// callee: what a generator is free to do, say to put hot code together.
+/// `order[k]` is the old position of the function placed at `k`.
+fn reordered(functions: &[Function], order: &[u32]) -> Vec<Function> {
+    let new_index = |old: u32| order.iter().position(|&o| o == old).unwrap() as u32;
+    order
+        .iter()
+        .map(|&old| {
+            let mut f = functions[old as usize].clone();
+            for decl in &mut f.fns {
+                if let Callee::Local(i) = decl.callee {
+                    decl.callee = Callee::Local(new_index(i));
+                }
+            }
+            f
+        })
+        .collect()
+}
+
+/// A host calls by name, so the generator can move functions without a host
+/// noticing, even when those functions call each other. The positions do
+/// move: a host holding one would now call something else.
+#[test]
+fn names_survive_a_reordering() {
+    // `tens` calls the unexported `times_ten` with 4.
+    let times_ten = function().block(
+        0,
+        &[(v(0), I64)],
+        vec![iconst64(v(1), 10), imul(v(2), v(0), v(1)), ret_status(v(2))],
+    );
+    let tens = function()
+        .export("tens")
+        .sig(0, &[I64], Some(I64))
+        .local(0, 1, 0)
+        .entry(vec![iconst64(v(1), 4), call(Some(v(2)), 0, &[v(1)]), ret_status(v(2))]);
+    let before = programs(vec![noop(), times_ten, tens, answering(7).export("seven")]);
+    let after = reordered(&before, &[3, 2, 0, 1]);
+
+    let Callee::Local(callee) = after[1].fns[0].callee else { panic!("a local call") };
+    assert_eq!(callee, 3, "the call follows its callee");
+    assert_eq!(before[3].export_name.as_deref(), Some("seven"));
+    assert_eq!(after[3].export_name, None, "position 3 is now the unexported helper");
+
+    for functions in [before, after] {
+        let mut base = Base::new(named(functions)).unwrap();
+        assert_eq!(base.execute("tens", &[], &mut []).unwrap(), 40);
+        assert_eq!(base.execute("seven", &[], &mut []).unwrap(), 7);
+    }
+}
+
 #[test]
 fn clif_error_callee_names_undeclared_sig() {
     let config = cranelift_config(
