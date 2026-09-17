@@ -110,7 +110,7 @@ theorem code_calls : callsOf (Prog.emit code) = [fnRead, fnWrite].map Ffi.id := 
 
 def program : Except String (List FuncData) :=
   Prog.program
-    [.ok noopFunction, .ok (noopAt 1), Prog.compileProg 2 code]
+    [.ok noopFunction, .ok (noopAt 1), Prog.entry "main" (Prog.compileProg 2 code)]
 
 end Hist
 
@@ -183,7 +183,7 @@ theorem code_calls : callsOf (Prog.emit code) = [] := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
-    [.ok noopFunction, Prog.compileProg 1 code]
+    [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
 
 end ClampSum
 
@@ -263,9 +263,9 @@ theorem infer_calls :
 def program : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadCode,
-     Prog.compileProg 2 prepCode,
-     Prog.compileProg 3 inferCode]
+     Prog.entry "main" (Prog.compileProg 1 loadCode),
+     Prog.entry "prep" (Prog.compileProg 2 prepCode),
+     Prog.entry "infer" (Prog.compileProg 3 inferCode)]
 
 end RmsNorm
 
@@ -318,7 +318,7 @@ theorem code_calls : callsOf (Prog.emit code) = [Hist.fnWrite].map Ffi.id := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
-    [.ok noopFunction, .ok (noopAt 1), Prog.compileProg 2 code]
+    [.ok noopFunction, .ok (noopAt 1), Prog.entry "main" (Prog.compileProg 2 code)]
 
 end Nested
 

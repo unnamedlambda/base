@@ -544,9 +544,9 @@ def testConservation : Prog V L Unit := do
 def clifIrSource : Except String (List IR.FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 mainBody,
-     Prog.compileProg 2 testGrainFalls,
-     Prog.compileProg 3 testConservation]
+     Prog.entry "main" (Prog.compileProg 1 mainBody),
+     Prog.entry "test_grain_falls" (Prog.compileProg 2 testGrainFalls),
+     Prog.entry "test_conservation" (Prog.compileProg 3 testConservation)]
 
 def bindBytes (pairs : List (Nat × Nat)) : List UInt8 :=
   pairs.foldl (fun acc (b, ro) => acc ++ uint32ToBytes (UInt32.ofNat b) ++ uint32ToBytes (UInt32.ofNat ro)) []

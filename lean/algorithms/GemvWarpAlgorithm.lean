@@ -315,15 +315,15 @@ def fetchCode (sh : Shape) : Prog V L Unit :=
 def clifIR (sh : Shape) : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 (loadCode sh),
-     Prog.compileProg 2 (runCode sh false .vec4),
-     Prog.compileProg 3 (fetchCode sh),
-     Prog.compileProg 4 (blasCode sh),
-     Prog.compileProg 5 (runCode sh false .strided),
-     Prog.compileProg 6 (runCode sh false .blocked),
-     Prog.compileProg 7 (runCode sh true .vec4),
-     Prog.compileProg 8 (runCode sh true .strided),
-     Prog.compileProg 9 (runCode sh true .blocked)]
+     Prog.entry "main" (Prog.compileProg 1 (loadCode sh)),
+     Prog.entry "run" (Prog.compileProg 2 (runCode sh false .vec4)),
+     Prog.entry "fetch" (Prog.compileProg 3 (fetchCode sh)),
+     Prog.entry "blas" (Prog.compileProg 4 (blasCode sh)),
+     Prog.entry "run_strided" (Prog.compileProg 5 (runCode sh false .strided)),
+     Prog.entry "run_blocked" (Prog.compileProg 6 (runCode sh false .blocked)),
+     Prog.entry "sq" (Prog.compileProg 7 (runCode sh true .vec4)),
+     Prog.entry "sq_strided" (Prog.compileProg 8 (runCode sh true .strided)),
+     Prog.entry "sq_blocked" (Prog.compileProg 9 (runCode sh true .blocked))]
 
 /-- **Every byte this file names.**  The context slots and the three
     buffer-id words are written here too, so leaving them out would let a slot

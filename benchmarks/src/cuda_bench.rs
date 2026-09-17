@@ -5,8 +5,6 @@ type CudaBackend = burn::backend::CudaJit;
 
 const CUDA_SAXPY_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/cuda_saxpy_algorithm");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 use harness::{build_f32_payload, f32_from_bytes, format_count, gen_floats};
 
@@ -94,7 +92,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         // Warmup both
         std::hint::black_box(burn_saxpy_cuda(2.0, &x, &y));
-        let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
+        let _ = base_instance.execute("main", &payload, &mut out_buf);
 
         let burn_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
@@ -104,7 +102,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
+            let _ = base_instance.execute("main", &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

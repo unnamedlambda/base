@@ -26,7 +26,6 @@ import py_base
 
 sys.path.insert(0, "applications/ten-qwen")
 import run as R
-import entries
 
 DM, DFF = R.DM, R.DFF
 ORDER = ["cos", "sin", "ones", "kc", "vc", "x", "g1", "g2",
@@ -40,35 +39,33 @@ LADDER = [("runFwd", 28), ("runTo30", 30), ("runTo31", 31), ("runTo34", 34),
 
 def timed(base, fn, reps=100):
     for _ in range(5):
-        base.execute_into(fn, b"", bytearray(0))
+        base.execute(fn, b"", bytearray(0))
     t0 = time.perf_counter()
     for _ in range(reps):
-        base.execute_into(fn, b"", bytearray(0))
+        base.execute(fn, b"", bytearray(0))
     return (time.perf_counter() - t0) / reps * 1e6
 
 
 def main():
     art = py_base.load_artifact(sys.argv[1])
-    art_entries = entries.entries(os.path.basename(sys.argv[1]).removesuffix(".json"))
-    ex = art_entries
     w = R.make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)
     base = py_base.Base(art)
-    base.execute_into(art_entries["main"],
+    base.execute("main",
                       b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER),
                       bytearray(0))
-    base.execute_into(ex["uploadDOut"], np.ones(DM, dtype=np.float32).tobytes(),
+    base.execute("uploadDOut", np.ones(DM, dtype=np.float32).tobytes(),
                       bytearray(0))
 
     def gradient():
         g = bytearray(DM * DFF * 4)
-        base.execute_into(ex["fetchDW2"], b"", g)
+        base.execute("fetchDW2", b"", g)
         return np.frombuffer(bytes(g), dtype="<f4").copy()
 
-    base.execute_into(ex["runBlock"], b"", bytearray(0))
+    base.execute("runBlock", b"", bytearray(0))
     ref = gradient()
-    base.execute_into(ex["capture"], b"", bytearray(0))
-    base.execute_into(ex["replay"], b"", bytearray(0))
+    base.execute("capture", b"", bytearray(0))
+    base.execute("replay", b"", bytearray(0))
     delta = float(np.abs(gradient() - ref).max())
     print(f"replay vs launches: max |Δ| {delta:.3e}"
           f"   {'identical' if delta == 0.0 else 'DIFFERS'}\n")
@@ -78,13 +75,13 @@ def main():
     for name, k in LADDER:
         if name not in ex:
             continue
-        t = timed(base, ex[name])
+        t = timed(base, name)
         dk, dt = k - prev_k, t - prev_t
         print(f"{prev_k:5d}..{k:<6d} {t:9.1f} {dt:10.1f} {dt / dk:10.2f}")
         prev_k, prev_t = k, t
 
-    one, two, four = (timed(base, ex["replay"]), timed(base, ex["replay2"]),
-                      timed(base, ex["replay4"]))
+    one, two, four = (timed(base, "replay"), timed(base, "replay2"),
+                      timed(base, "replay4"))
     marginal = (four - two) / 2.0
     print(f"\nlaunched step  : {prev_t:8.1f} us  ({prev_t / prev_k:.2f} us/launch)")
     print(f"replayed step  : {one:8.1f} us")

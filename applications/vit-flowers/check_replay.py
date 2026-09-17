@@ -9,7 +9,6 @@ issuing the same tape landed the same values.
 """
 import os
 import sys, numpy as np, py_base
-import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 SQ, NC = 200, 128
@@ -17,34 +16,32 @@ blob = np.load(D + "/blob.npy").tobytes()
 ref = np.load(D + "/ref.npy")
 
 art = py_base.load_artifact(ART)
-art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
 base = py_base.Base(art)
-ex = art_entries
-base.execute_into(art_entries["main"], blob, bytearray(0))
+base.execute("main", blob, bytearray(0))
 
 
 def logits():
     out = bytearray(SQ * NC * 4)
-    base.execute_into(ex["fetch"], b"", out)
+    base.execute("fetch", b"", out)
     return bytes(out)
 
 
-base.execute_into(ex["run"], b"", bytearray(0))
+base.execute("run", b"", bytearray(0))
 eager = logits()
 
-base.execute_into(ex["capture"], b"", bytearray(0))
-base.execute_into(ex["reload"], blob, bytearray(0))
-base.execute_into(ex["replay"], b"", bytearray(0))
+base.execute("capture", b"", bytearray(0))
+base.execute("reload", blob, bytearray(0))
+base.execute("replay", b"", bytearray(0))
 replayed = logits()
 
 # One training step, then a forward: the logits then reflect the updates, so a
 # digest of them covers the backward and the optimiser as well as the forward.
-base.execute_into(ex["captureStep"], b"", bytearray(0))
-base.execute_into(ex["reload"], blob, bytearray(0))
-base.execute_into(ex["replay"], b"", bytearray(0))
-base.execute_into(ex["seed"], np.zeros((SQ, NC), np.float32).tobytes(), bytearray(0))
-base.execute_into(ex["replayStep"], b"", bytearray(0))
-base.execute_into(ex["replay"], b"", bytearray(0))
+base.execute("captureStep", b"", bytearray(0))
+base.execute("reload", blob, bytearray(0))
+base.execute("replay", b"", bytearray(0))
+base.execute("seed", np.zeros((SQ, NC), np.float32).tobytes(), bytearray(0))
+base.execute("replayStep", b"", bytearray(0))
+base.execute("replay", b"", bytearray(0))
 stepped = logits()
 
 got = np.frombuffer(replayed, "<f4").reshape(SQ, NC)[0]

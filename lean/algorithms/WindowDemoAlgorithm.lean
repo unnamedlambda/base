@@ -365,12 +365,12 @@ def testRenderPixel : Prog V L Unit := do
 def clifIrSource : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 mainBody,
-     Prog.compileProg 2 testMoveRight,
-     Prog.compileProg 3 testMoveLeft,
-     Prog.compileProg 4 testMoveUpClamp,
-     Prog.compileProg 5 testQuitOnClose,
-     Prog.compileProg 6 testRenderPixel]
+     Prog.entry "main" (Prog.compileProg 1 mainBody),
+     Prog.entry "test_move_right" (Prog.compileProg 2 testMoveRight),
+     Prog.entry "test_move_left" (Prog.compileProg 3 testMoveLeft),
+     Prog.entry "test_move_up_clamp" (Prog.compileProg 4 testMoveUpClamp),
+     Prog.entry "test_quit_on_close" (Prog.compileProg 5 testQuitOnClose),
+     Prog.entry "test_render_pixel" (Prog.compileProg 6 testRenderPixel)]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [

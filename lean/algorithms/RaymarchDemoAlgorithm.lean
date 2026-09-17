@@ -416,12 +416,12 @@ def testRenderScene : Prog V L Unit := do
 def clifIrSource : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 mainBody,
-     Prog.compileProg 2 testMoveForward,
-     Prog.compileProg 3 testStrafeRight,
-     Prog.compileProg 4 testRiseClamp,
-     Prog.compileProg 5 testQuitOnClose,
-     Prog.compileProg 6 testRenderScene]
+     Prog.entry "main" (Prog.compileProg 1 mainBody),
+     Prog.entry "test_move_forward" (Prog.compileProg 2 testMoveForward),
+     Prog.entry "test_strafe_right" (Prog.compileProg 3 testStrafeRight),
+     Prog.entry "test_rise_clamp" (Prog.compileProg 4 testRiseClamp),
+     Prog.entry "test_quit_on_close" (Prog.compileProg 5 testQuitOnClose),
+     Prog.entry "test_render_scene" (Prog.compileProg 6 testRenderScene)]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [

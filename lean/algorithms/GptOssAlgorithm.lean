@@ -276,15 +276,19 @@ def gFetchFn (b n : Nat) : Prog V L Unit :=
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
-def gShippedBodies : List Prog.Body :=
-  [ gLoadFn, gBindExperts, gUploadFn B_X (H * 4), gUploadFn B_GATES (32 * 4)
-  , gRunExperts, gFetchFn B_OUT (H * 4) ]
+def gShippedBodies : List (String × Prog.Body) :=
+  [ ("main", gLoadFn)
+  , ("bindExperts", gBindExperts)
+  , ("uploadX", gUploadFn B_X (H * 4))
+  , ("uploadGates", gUploadFn B_GATES (32 * 4))
+  , ("runExperts", gRunExperts)
+  , ("fetchOut", gFetchFn B_OUT (H * 4)) ]
 
 
 def gClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: gShippedBodies.zipIdx.map
-      (fun p => Prog.compileProg (p.2 + 1) p.1)
+      (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -567,15 +571,19 @@ def aFetchFn (b n : Nat) : Prog V L Unit :=
   let bytes ← iconst64 n
   let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, bytes]
 
-def aShippedBodies : List Prog.Body :=
-  [ aLoadFn, aUploadStep, aStepFn, aFetchFn A_X (H * 4)
-  , aFetchFn A_QKV (QKV * 4), aFetchFn A_ATT (QO * 4) ]
+def aShippedBodies : List (String × Prog.Body) :=
+  [ ("main", aLoadFn)
+  , ("uploadStep", aUploadStep)
+  , ("step", aStepFn)
+  , ("fetchX", aFetchFn A_X (H * 4))
+  , ("fetchQkv", aFetchFn A_QKV (QKV * 4))
+  , ("fetchAtt", aFetchFn A_ATT (QO * 4)) ]
 
 
 def aClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: aShippedBodies.zipIdx.map
-      (fun p => Prog.compileProg (p.2 + 1) p.1)
+      (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
 def aSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -965,13 +973,13 @@ def lMainFn : Prog V L Unit :=
   lFetchM L_X (H * 4) 0
   lFetchM L_RLOG (NE * 4) (H * 4)
 
-def lShippedBodies : List Prog.Body := [ lMainFn ]
+def lShippedBodies : List (String × Prog.Body) := [ ("main", lMainFn) ]
 
 
 def lClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: lShippedBodies.zipIdx.map
-      (fun p => Prog.compileProg (p.2 + 1) p.1)
+      (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
 def lSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]

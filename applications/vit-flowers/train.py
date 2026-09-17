@@ -19,7 +19,6 @@ import os
 import sys, json, struct, time
 import numpy as np
 import py_base
-import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 STEPS = int(sys.argv[3]) if len(sys.argv) > 3 else 20
@@ -30,25 +29,23 @@ blob = np.load(D + "/blob.npy").tobytes()
 ref = np.load(D + "/losses.npy")
 
 art = py_base.load_artifact(ART)
-art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
 base = py_base.Base(art)
-ex = art_entries
-base.execute_into(art_entries["main"], blob, bytearray(0))
+base.execute("main", blob, bytearray(0))
 
 # Capture both graphs first.  Capturing runs its sequence once eagerly to make
 # every module resident, so the step graph's capture applies two updates; the
 # reload puts the parameters back before the run that is being compared.
-base.execute_into(ex["capture"], b"", bytearray(0))
-base.execute_into(ex["captureStep"], b"", bytearray(0))
-base.execute_into(ex["reload"], blob, bytearray(0))
+base.execute("capture", b"", bytearray(0))
+base.execute("captureStep", b"", bytearray(0))
+base.execute("reload", blob, bytearray(0))
 
 logit_buf = bytearray(SQ * NC * 4)
 seed = np.zeros((SQ, NC), np.float32)
 
 
 def forward_logits():
-    base.execute_into(ex["replay"], b"", bytearray(0))
-    base.execute_into(ex["fetch"], b"", logit_buf)
+    base.execute("replay", b"", bytearray(0))
+    base.execute("fetch", b"", logit_buf)
     return np.frombuffer(bytes(logit_buf), "<f4")[:NC].astype(np.float64)
 
 
@@ -60,8 +57,8 @@ for _ in range(STEPS):
     losses.append(float(-np.log(max(p[LABEL], 1e-30))))
     seed[0] = p
     seed[0, LABEL] -= 1.0
-    base.execute_into(ex["seed"], seed.tobytes(), bytearray(0))
-    base.execute_into(ex["replayStep"], b"", bytearray(0))
+    base.execute("seed", seed.tobytes(), bytearray(0))
+    base.execute("replayStep", b"", bytearray(0))
 ms = (time.perf_counter() - t0) / STEPS * 1e3
 
 n = min(len(losses), len(ref))

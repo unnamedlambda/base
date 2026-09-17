@@ -24,19 +24,15 @@ import when it was built that way.
 
 An artifact is what a Lean generator emits: the CLIF functions, the size of the
 memory they run in, and that memory's initial contents. An entry point is a
-function index, and which index is which stage is the generator's knowledge —
-so a script names those numbers itself, as `entries.py` does beside the
-applications in this repository.
+function the artifact exports, and a script calls it by that name.
 
 ```python
 from py_base import load_artifact, Base
 
-ENTRY = 1   # the index this artifact's generator gave its entry point
-
 artifact = load_artifact("../lean-artifacts/artifacts/Sha256Algorithm/sha256_app.json")
 
 base = Base(artifact)                # JIT compiles — do this once
-base.execute(ENTRY)                  # …then execute as often as you like
+base.execute("main")                 # …then execute as often as you like
 ```
 
 Building the artifact directly from JSON works the same way, which is what the
@@ -47,16 +43,15 @@ from py_base import Artifact, Base, run
 import json
 
 artifact = Artifact(json.dumps({
-    "functions": [...],              # the program, as data
+    "functions": [...],              # the program, one exported as "double"
     "memory_size": 256,
 }))
-ENTRY = 1
 
 data = b"\x01\x00\x00\x00\x02\x00\x00\x00"
 out = bytearray(8)
 
 base = Base(artifact)
-base.execute_into(ENTRY, data, out)   # both buffers zero-copy
+base.execute("double", data, out)    # both buffers zero-copy
 ```
 
 A program answers through `out`. What the bytes mean is the generator's to
@@ -76,14 +71,13 @@ Read an artifact from the JSON a generator wrote.
 An execution engine. JIT compiles the program. This is the expensive step — do
 it once.
 
-### `base.execute(fn_idx, data=None) -> int`
-Execute. `data` accepts anything implementing the buffer protocol (`bytes`,
-`bytearray`, `numpy` array) — zero copy. The `int` is the status the entry
-point answered: a program whose body ends in a bare `return` answers `0`.
-
-### `base.execute_into(fn_idx, data, out=None) -> int`
-Execute, writing through `out` (a `bytearray`). Both buffers are zero-copy.
-Returns the status, as `execute` does.
+### `base.execute(name, data=None, out=None) -> int`
+Call the entry point the artifact exports as `name`. `data` accepts anything
+implementing the buffer protocol (`bytes`, `bytearray`, `numpy` array), and the
+program answers by writing through `out` (a `bytearray`); both are zero-copy.
+The `int` is the status the entry point answered: a program whose body ends in
+a bare `return` answers `0`. A name the artifact does not export is a
+`ValueError` naming it.
 
 ### `base.read_memory(offset, length) -> bytes`
 What the program left in its own memory, at an address its generator says it
@@ -92,7 +86,7 @@ writes. A range past the end is an error, not a short answer.
 ### `base.memory_size() -> int`
 How many bytes of memory the program runs in.
 
-### `run(artifact, fn_idx, data=None) -> int`
+### `run(artifact, name, data=None) -> int`
 One-shot: compile and execute in a single call. For a program run once; use
 `Base` for anything run twice.
 

@@ -32,7 +32,6 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
-import entries
 
 SIZES = [1_000_000, 10_000_000, 50_000_000]
 ROW_SHAPES = [(2048, 256), (4096, 256), (4096, 512)]
@@ -43,9 +42,8 @@ CLAMP_HI =  0.5
 
 def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    alg = artifact_entries["main"]
+    alg = "main"
     out = bytearray(8)
     results = []
     rng = np.random.default_rng(42)
@@ -63,9 +61,9 @@ def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
             lambda: (a + b).sum()
         ))
 
-        engine.execute_into(alg, data, out)  # warmup
+        engine.execute(alg, data, out)  # warmup
         pybase_ms = harness.median_of(rounds, lambda: harness.time_ms(
-            lambda: engine.execute_into(alg, data, out)
+            lambda: engine.execute(alg, data, out)
         ))
 
         expected = float((a + b).sum())
@@ -85,9 +83,8 @@ def _run_vecadd(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    alg = artifact_entries["main"]
+    alg = "main"
     out = bytearray(8)
     results = []
     rng = np.random.default_rng(99)
@@ -101,9 +98,9 @@ def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
             lambda: np.clip(a, CLAMP_LO, CLAMP_HI).sum()
         ))
 
-        engine.execute_into(alg, data, out)  # warmup
+        engine.execute(alg, data, out)  # warmup
         pybase_ms = harness.median_of(rounds, lambda: harness.time_ms(
-            lambda: engine.execute_into(alg, data, out)
+            lambda: engine.execute(alg, data, out)
         ))
 
         expected = float(np.clip(a, CLAMP_LO, CLAMP_HI).sum())
@@ -123,9 +120,8 @@ def _run_clampsum(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_rowdot(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    alg = artifact_entries["main"]
+    alg = "main"
     results = []
     rng = np.random.default_rng(123)
 
@@ -138,9 +134,9 @@ def _run_rowdot(algo_path: str, rounds: int) -> list[harness.BenchResult]:
         (x @ w)
         numpy_ms = harness.median_of(rounds, lambda: harness.time_ms(lambda: x @ w))
 
-        engine.execute_into(alg, data, out)
+        engine.execute(alg, data, out)
         pybase_ms = harness.median_of(
-            rounds, lambda: harness.time_ms(lambda: engine.execute_into(alg, data, out))
+            rounds, lambda: harness.time_ms(lambda: engine.execute(alg, data, out))
         )
 
         expected = x @ w
@@ -162,9 +158,8 @@ def _run_rowdot(algo_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_row_affine_reduce(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    alg = artifact_entries["main"]
+    alg = "main"
     results = []
     rng = np.random.default_rng(321)
 
@@ -185,9 +180,9 @@ def _run_row_affine_reduce(algo_path: str, rounds: int) -> list[harness.BenchRes
             rounds, lambda: harness.time_ms(lambda: (x * scale + bias).sum(axis=1))
         )
 
-        engine.execute_into(alg, data, out)
+        engine.execute(alg, data, out)
         pybase_ms = harness.median_of(
-            rounds, lambda: harness.time_ms(lambda: engine.execute_into(alg, data, out))
+            rounds, lambda: harness.time_ms(lambda: engine.execute(alg, data, out))
         )
 
         expected = (x * scale + bias).sum(axis=1)

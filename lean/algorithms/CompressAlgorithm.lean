@@ -411,7 +411,7 @@ def buildPayload (bs : Nat) : List UInt8 :=
 def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Except String (Artifact × UInt32) := do
   let payload := buildPayload bs
   let cfg : Artifact := {
-    functions := ← Prog.program [.ok noopFunction, Prog.compileProg 1 (code bs)],
+    functions := ← Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code bs))],
     memory_size   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }

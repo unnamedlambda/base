@@ -77,7 +77,7 @@ def warpFn (w : WP) : FuncData :=
   Prog.stateOf 1 (warpCode w)
 
 def warpClif (w : WP) : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 (warpCode w)]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (warpCode w))]
 
 def warpPayloadDSL (w : WP) : List UInt8 :=
   zeros rPTX_OFF ++

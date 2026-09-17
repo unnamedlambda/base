@@ -17,7 +17,6 @@ import os
 import sys, json, struct
 import numpy as np
 import py_base
-import entries
 
 ART, D = sys.argv[1], sys.argv[2]
 NL, SQ, SK, DM, NH, HD, DFF, NC = 12, 200, 224, 192, 3, 64, 768, 128
@@ -38,13 +37,12 @@ blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy")
 ref = np.load(D + "/grads.npz")
 
-art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
-base.execute_into(art_entries["main"], blob, bytearray(0))
-base.execute_into(art_entries["run"], b"", bytearray(0))
-base.execute_into(art_entries["seed"], seed.astype("<f4").tobytes(), bytearray(0))
-base.execute_into(art_entries["bwd"], b"", bytearray(0))
+base.execute("main", blob, bytearray(0))
+base.execute("run", b"", bytearray(0))
+base.execute("seed", seed.astype("<f4").tobytes(), bytearray(0))
+base.execute("bwd", b"", bytearray(0))
 
-fetch = art_entries["fetchAny"]
+fetch = "fetchAny"
 
 
 def grad(inp, n):
@@ -52,7 +50,7 @@ def grad(inp, n):
     g = int(gmap[inp])
     assert g != 0, f"input {inp} has no gradient buffer"
     out = bytearray(n * 4)
-    base.execute_into(fetch, struct.pack("<II", g, n * 4), out)
+    base.execute(fetch, struct.pack("<II", g, n * 4), out)
     return np.frombuffer(bytes(out), "<f4").copy()
 
 

@@ -7,8 +7,6 @@ use crate::harness::{self, format_count, BenchResult};
 
 const ARTIFACT_BINARY: &[u8] = build_support::artifact!("RustBenchmarks/csv_algorithm");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 /// Generate a deterministic CSV file with a salary column.
 /// Salaries are in range 1000–9999 to keep the i32 total within range.
@@ -128,11 +126,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // per iteration instead charges Base for an inode allocation and a
         // directory insert a round that the baseline never pays.
         let _ = fs::remove_file(&output_path);
-        let _ = base_instance.execute(MAIN, &payload);
+        let _ = base_instance.execute("main", &payload, &mut []);
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute(MAIN, &payload);
+            let _ = base_instance.execute("main", &payload, &mut []);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

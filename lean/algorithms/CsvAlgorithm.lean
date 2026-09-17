@@ -262,7 +262,7 @@ def mainCode (patternLen : Nat) : Prog V L Unit :=
     now: `compileProg` checks the body it emits, at whatever length the
     monomorphic builder below asked for. -/
 def clifIrSource (patternLen : Nat) : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 (mainCode patternLen)]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (mainCode patternLen))]
 
 -- ---------------------------------------------------------------------------
 -- Payload builder (parameterized by filter pattern bytes)

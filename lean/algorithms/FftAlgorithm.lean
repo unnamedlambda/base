@@ -239,7 +239,7 @@ def code : Prog V L Unit := do
   let _ ← ffi fnWrite %[ptr, outFnOff, dstOff2, c0, dataSz]
 
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction

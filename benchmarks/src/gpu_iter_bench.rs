@@ -15,8 +15,6 @@ type Gpu = burn::backend::wgpu::Wgpu;
 
 const GPU_ITER_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/gpu_iter_algorithm");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 const WGSL_SCALE: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<f32>;
@@ -401,7 +399,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Warmup all three
         std::hint::black_box(wgpu_iterative(&data, passes));
         std::hint::black_box(burn_iterative(&data, passes));
-        let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
+        let _ = base_instance.execute("main", &payload, &mut out_buf);
 
         // Raw wgpu (GPU-resident)
         let wgpu_ms = harness::median_of(iterations, || {
@@ -420,7 +418,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Base+GPU (GPU-resident via CLIF loop)
         let clif_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute_into(MAIN, &payload, &mut out_buf);
+            let _ = base_instance.execute("main", &payload, &mut out_buf);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

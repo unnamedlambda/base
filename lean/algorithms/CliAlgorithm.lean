@@ -1391,7 +1391,7 @@ def clifCode : Prog V L Unit :=
   cudaCleanup ptr
 
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 clifCode]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 clifCode)]
 
 def payloads : List UInt8 :=
   mkPayload layoutMeta.totalSize [

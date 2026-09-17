@@ -551,7 +551,7 @@ def mainCode : Prog V L Unit := do
 set_option maxRecDepth 100000 in
 set_option maxHeartbeats 2000000 in
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 mainCode)]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction

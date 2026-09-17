@@ -109,11 +109,10 @@ fn block_args(vs: &[ir::Value]) -> Vec<ir::BlockArg> {
 /// convention, and the other side of every boundary — the host calling an
 /// entry point, a program calling the FFI — is Rust `extern "C"` compiled for
 /// the machine running it.
-pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, String> {
+pub fn signature_of(f: &clif::Function, index: usize, cc: CallConv) -> Result<Signature, String> {
     let entry = f.blocks.first().ok_or_else(|| {
         format!(
-            "u0:{} defines no blocks, so there is no entry to take its signature from",
-            f.index
+            "u0:{index} defines no blocks, so there is no entry to take its signature from"
         )
     })?;
     let mut sig = Signature::new(cc);
@@ -137,9 +136,8 @@ pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, Strin
         Some(first) => {
             if rets.any(|a| a != first) {
                 return Err(format!(
-                    "u0:{} returns a value on some paths and nothing on others, so \
-                     there is no one signature to give it",
-                    f.index
+                    "u0:{index} returns a value on some paths and nothing on others, so \
+                     there is no one signature to give it"
                 ));
             }
             first
@@ -178,12 +176,13 @@ pub struct Resolved {
 /// when it is created rather than patched afterward.
 pub fn decode_function(
     f: &clif::Function,
+    index: usize,
     cc: CallConv,
     declare_callee: &mut dyn FnMut(&clif::Callee, &Signature) -> Result<Resolved, String>,
 ) -> Result<ir::Function, String> {
-    let sig = signature_of(f, cc)?;
+    let sig = signature_of(f, index, cc)?;
 
-    let mut func = ir::Function::with_name_signature(UserFuncName::user(0, f.index), sig);
+    let mut func = ir::Function::with_name_signature(UserFuncName::user(0, index as u32), sig);
 
     // Prologue: signatures, then callees that reference them.
     let mut sig_refs: HashMap<u32, ir::SigRef> = HashMap::new();

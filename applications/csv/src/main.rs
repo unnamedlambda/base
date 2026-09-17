@@ -3,8 +3,6 @@ use base::{init_tracing, run, Artifact};
 const ARTIFACT_BINARY: &[u8] =
     build_support::artifact!("CsvAlgorithm/csv_app");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 fn main() {
     init_tracing();
@@ -12,7 +10,7 @@ fn main() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 
     let start = std::time::Instant::now();
-    match run(artifact, MAIN) {
+    match run(artifact, "main") {
         Ok(_) => {
             let elapsed = start.elapsed();
             eprintln!(

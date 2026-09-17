@@ -1119,11 +1119,25 @@ theorem stateOf_fns_index {i j : Nat} {p : Body} {params : List ClifTy} :
 theorem stateOf_sigs_index {i j : Nat} {p : Body} {params : List ClifTy} :
     (stateOf i p params).sigs = (stateOf j p params).sigs := rfl
 
-/-- The functions of an artifact, in `u0:N` order, or the first failure. They
-    must be in that order: the runtime resolves a call target by treating the
-    index as a position. -/
-def program (fs : List (Except String FuncData)) : Except String (List FuncData) :=
-  fs.mapM id
+/-- The functions of an artifact, in `u0:N` order, or the first failure.
+
+    Refused: a function whose position is not the index it was compiled at ---
+    the artifact carries only the position, and a call names a callee by it ---
+    and a name exported twice. -/
+def program (fs : List (Except String FuncData)) : Except String (List FuncData) := do
+  let fs ← fs.mapM id
+  for (f, i) in fs.zipIdx do
+    if f.index != i then
+      throw s!"the function at position {i} was compiled as u0:{f.index}"
+  let names := fs.filterMap (·.exportName)
+  match names.find? (fun n => names.count n > 1) with
+  | some n => throw s!"more than one function is exported as {n}"
+  | none => pure fs
+
+/-- `f`, exported as `name`: the name a host calls it by, which stays put
+    wherever the function is placed. -/
+def entry (name : String) (f : Except String FuncData) : Except String FuncData :=
+  f.map fun d => { d with exportName := some name }
 
 /-- Unwrap in a generator's `main`: an ill-formed body is a build failure with
     a message, not an artifact. -/

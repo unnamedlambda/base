@@ -14,40 +14,41 @@ open AlgorithmLib AlgorithmLib.ML
 namespace Vit
 open AlgorithmLib.IR
 
-/-- Every emitted body with the CLIF function index it ships as.
+/-- Every emitted body, with the CLIF function index it ships as and the name a
+    host calls it by.
 
     The bodies are named here rather than at the `compileProg` calls so that
     the list is the one place a function index is chosen. -/
-def vBodies : List (Nat × Prog.Body) :=
-  [ (1, vLoadFn)
-  , (2, vRunFn)
-  , (3, vFetchFn VOUT (SQ * NC * 4)) ]
-    ++ (List.range VDBG).map (fun b => (4 + b, vFetchFn b (vBufBytes.getD b 0)))
-    ++ [ (VFN,        vCaptureAt 0 VFWD_N VGRAPH_OFF)
-       , (VFN + 1,    vReplayAt VGRAPH_OFF 1)
-       , (VFN + 2,    vRangeFn 0 VSTEP_N)
+def vBodies : List (Nat × String × Prog.Body) :=
+  [ (1, "main", vLoadFn)
+  , (2, "run", vRunFn)
+  , (3, "fetch", vFetchFn VOUT (SQ * NC * 4)) ]
+    ++ (List.range VDBG).map (fun b => (4 + b, s!"buf{b}", vFetchFn b (vBufBytes.getD b 0)))
+    ++ [ (VFN,        "captureChain",     vCaptureAt 0 VFWD_N VGRAPH_OFF)
+       , (VFN + 1,    "replayChain",      vReplayAt VGRAPH_OFF 1)
+       , (VFN + 2,    "step",             vRangeFn 0 VSTEP_N)
        -- The backward and the updates, from where the seed was uploaded. Not
        -- the whole step: `dL/dlogits` is written between the forward and the
        -- backward, so a graph spanning both would replay against the seed it
        -- captured.
-       , (VFN + 3,    vCaptureAt VFWD_N VSTEP_N VGRAPH_STEP_OFF)
-       , (VFN + 4,    vReplayAt VGRAPH_STEP_OFF 1)
-       , (VFN + 5,    vSeedFn)
-       , (VFN + 6,    vFetchAnyFn)
-       , (VFN + 7,    vRangeFn VFWD_N VBWD_N)
-       , (VFN + 8,    vRangeFn VBWD_N VSTEP_N)
-       , (VFN + 9,    vReloadFn)
-       , (VFN + 10,   vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)
-       , (VFN + 11,   vReplayAt VGRAPH_DFWD_OFF 1)
-       , (VFN + 12,   vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)
-       , (VFN + 13,   vReplayAt VGRAPH_DSTEP_OFF 1)
-       , (VFN + 14,   vCaptureClassAt true VGRAPH_BLAS_OFF)
-       , (VFN + 15,   vReplayAt VGRAPH_BLAS_OFF 1)
-       , (VFN + 16,   vCaptureClassAt false VGRAPH_ROW_OFF)
-       , (VFN + 17,   vReplayAt VGRAPH_ROW_OFF 1) ]
+       , (VFN + 3,    "captureStepChain", vCaptureAt VFWD_N VSTEP_N VGRAPH_STEP_OFF)
+       , (VFN + 4,    "replayStepChain",  vReplayAt VGRAPH_STEP_OFF 1)
+       , (VFN + 5,    "seed",             vSeedFn)
+       , (VFN + 6,    "fetchAny",         vFetchAnyFn)
+       , (VFN + 7,    "bwd",              vRangeFn VFWD_N VBWD_N)
+       , (VFN + 8,    "sgd",              vRangeFn VBWD_N VSTEP_N)
+       , (VFN + 9,    "reload",           vReloadFn)
+       , (VFN + 10,   "capture",          vCaptureDagAt 0 VFWD_N VGRAPH_DFWD_OFF)
+       , (VFN + 11,   "replay",           vReplayAt VGRAPH_DFWD_OFF 1)
+       , (VFN + 12,   "captureStep",      vCaptureDagAt VFWD_N VSTEP_N VGRAPH_DSTEP_OFF)
+       , (VFN + 13,   "replayStep",       vReplayAt VGRAPH_DSTEP_OFF 1)
+       , (VFN + 14,   "captureBlas",      vCaptureClassAt true VGRAPH_BLAS_OFF)
+       , (VFN + 15,   "replayBlas",       vReplayAt VGRAPH_BLAS_OFF 1)
+       , (VFN + 16,   "captureRow",       vCaptureClassAt false VGRAPH_ROW_OFF)
+       , (VFN + 17,   "replayRow",        vReplayAt VGRAPH_ROW_OFF 1) ]
 
 def vClifIR : Except String (List FuncData) := Prog.program (.ok noopFunction ::
-  vBodies.map (fun p => Prog.compileProg p.1 p.2))
+  vBodies.map (fun (i, name, body) => Prog.entry name (Prog.compileProg i body)))
 
 /-- Where each input's gradient landed, one `u32` per input, `0` for the
     constants and the patch embedding that are not trained.  A host reads this
@@ -69,22 +70,6 @@ def vSetup (clif : List FuncData) : Artifact := {
   memory_size := VMEM_SIZE
   initial_memory := vInitialMemory
 }
-
-/-- The entry points this artifact has, by the name a host knows them by. The
-    artifact carries only their indices; this list is what a host is written
-    against. -/
-def entryPoints : List (String × UInt32) :=
-  let v : Nat → UInt32 := fun i => UInt32.ofNat (VFN + i)
-  [("run", 2), ("fetch", 3),
-   ("captureChain", v 0), ("replayChain", v 1), ("step", v 2),
-   ("captureStepChain", v 3), ("replayStepChain", v 4),
-   ("seed", v 5), ("fetchAny", v 6), ("bwd", v 7),
-   ("sgd", v 8), ("reload", v 9),
-   ("capture", v 10), ("replay", v 11),
-   ("captureStep", v 12), ("replayStep", v 13),
-   ("captureBlas", v 14), ("replayBlas", v 15),
-   ("captureRow", v 16), ("replayRow", v 17)]
-  ++ (List.range VDBG).map (fun b => (s!"buf{b}", UInt32.ofNat (4 + b)))
 
 def artifacts (clif : List FuncData) : Array Lean.Json :=
   #[ toJsonArtifact "vit_block" (vSetup clif) ]

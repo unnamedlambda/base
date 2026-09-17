@@ -378,13 +378,13 @@ def STACK32_DEPTH : Nat := 32
 def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadCode,
-     Prog.compileProg 2 prepCode,
+     Prog.entry "main" (Prog.compileProg 1 loadCode),
+     Prog.entry "prep" (Prog.compileProg 2 prepCode),
      Prog.compileProg 3 inferCode,
      Prog.compileProg 4 finalizeCode,
-     Prog.compileProg 5 (Prog.sequenceWrapper [3, 4]),
-     Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK16_DEPTH 3 ++ [4])),
-     Prog.compileProg 7 (Prog.sequenceWrapper (List.replicate STACK32_DEPTH 3 ++ [4]))]
+     Prog.entry "infer" (Prog.compileProg 5 (Prog.sequenceWrapper [3, 4])),
+     Prog.entry "stack16" (Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK16_DEPTH 3 ++ [4]))),
+     Prog.entry "stack32" (Prog.compileProg 7 (Prog.sequenceWrapper (List.replicate STACK32_DEPTH 3 ++ [4])))]
 
 def ptxRmsBytes : List UInt8 := ptxRmsNorm.toUTF8.toList ++ [0]
 def ptxSiluBytes : List UInt8 := ptxSiluGate.toUTF8.toList ++ [0]

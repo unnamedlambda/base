@@ -485,7 +485,7 @@ def mainCode : Prog V L Unit := do
   emitHexFormat k
 
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 mainCode)]
 
 -- ---------------------------------------------------------------------------
 -- Payload construction (generated from layout)

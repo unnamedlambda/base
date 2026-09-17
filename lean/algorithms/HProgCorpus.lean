@@ -726,7 +726,7 @@ def checked : Except String Code := Prog.emitChecked body
 -- costs trust surface.
 
 def program : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 body]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 body)]
 
 def outBytes : Nat := caseNames.length * STRIDE
 

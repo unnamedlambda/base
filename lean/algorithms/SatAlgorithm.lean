@@ -488,7 +488,7 @@ def mainCode : Prog V L Unit := do
 
 -- Deciding `wf` walks the whole body, which is deeper than the default budget.
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 mainCode)]
 
 -- ---------------------------------------------------------------------------
 -- Payload / Config / Algorithm

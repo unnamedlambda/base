@@ -21,8 +21,6 @@
 
 use base_types::Artifact;
 
-/// The corpus generator puts its entry point at `u0:1`.
-const MAIN: u32 = 1;
 use std::path::PathBuf;
 
 struct Corpus {
@@ -91,7 +89,7 @@ fn interpreter_and_machine_agree() {
 
     let mut b = base::Base::new(a).expect("compile");
     let mut out = vec![0u8; corpus.expected.len()];
-    b.execute_into(MAIN, &[], &mut out).expect("execute");
+    b.execute("main", &[], &mut out).expect("execute");
 
     /// A NaN of `w` bytes, read little-endian from the front of `b`.
     fn is_nan(b: &[u8], w: usize) -> bool {

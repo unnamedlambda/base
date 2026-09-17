@@ -288,12 +288,12 @@ def STACK_DEPTH : Nat := 64
 def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadCode,
-     Prog.compileProg 2 prepCode,
+     Prog.entry "main" (Prog.compileProg 1 loadCode),
+     Prog.entry "prep" (Prog.compileProg 2 prepCode),
      Prog.compileProg 3 coreCode,
      Prog.compileProg 4 finalizeCode,
-     Prog.compileProg 5 (Prog.sequenceWrapper [3, 4]),
-     Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4]))]
+     Prog.entry "infer" (Prog.compileProg 5 (Prog.sequenceWrapper [3, 4])),
+     Prog.entry "stack" (Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4])))]
 
 -- initial_memory: names, PTX source, bind descriptors
 def nameBlockReduce  : List UInt8 := "block_reduce".toUTF8.toList ++ [0]

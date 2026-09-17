@@ -187,7 +187,7 @@ def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
      .ok (noopAt 1),
-     Prog.compileProg 2 orchCode,
+     Prog.entry "main" (Prog.compileProg 2 orchCode),
      Prog.compileProg 3 workerCode [.i64]]
 
 /-- Every byte of shared memory this program names.

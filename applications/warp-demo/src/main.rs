@@ -8,10 +8,6 @@ use base::{Artifact, Base};
 
 const ART: &[u8] = build_support::artifact!("WarpSumSqAlgorithm/warp_sumsq");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
-const FETCH: u32 = 3;
-const RUN: u32 = 2;
 
 const K: usize = 128;
 const CHUNK: usize = K * 4 * 32;      // 16384 floats per block
@@ -26,20 +22,20 @@ fn main() {
     let mut base = Base::new(artifact).expect("Base::new");
 
     let mut out = vec![0u8; GRID * 4];
-    let run = RUN;
-    let fetch = FETCH;
+    let run = "run";
+    let fetch = "fetch";
 
     // upload once
-    base.execute_into(MAIN, &bytes, &mut []).expect("load");
+    base.execute("main", &bytes, &mut []).expect("load");
     // warm up, then time the LAUNCH ONLY
-    base.execute_into(run, b"", &mut []).expect("run");
+    base.execute(run, b"", &mut []).expect("run");
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute_into(run, b"", &mut []).expect("run");
+        base.execute(run, b"", &mut []).expect("run");
     }
     let elapsed = t0.elapsed().as_secs_f64() / reps as f64;
-    base.execute_into(fetch, b"", &mut out).expect("fetch");
+    base.execute(fetch, b"", &mut out).expect("fetch");
 
     let bytes_read = (N * 4) as f64;
     println!("working set : {:.0} MiB", bytes_read / 1048576.0);

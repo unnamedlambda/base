@@ -1,7 +1,7 @@
 //! Python over base's C ABI.
 //!
 //! Nothing here reaches into the runtime's Rust types: every call goes through
-//! `base::capi`, the same six functions a C or Lean host calls. That is what
+//! `base::capi`, the same functions a C or Lean host calls. That is what
 //! keeps the three hosts on one core rather than three surfaces that drift —
 //! the way `execute` answering Arrow on one side and bytes on another once did.
 //!
@@ -86,29 +86,22 @@ impl PyBase {
         Ok(Self { handle })
     }
 
-    /// Call the entry point at `fn_idx`, returning the status it answered.
+    /// Call the entry point the artifact exports as `name`, returning the
+    /// status it answered: `0` unless the entry's body ends in a `return`
+    /// carrying a value.
     ///
-    /// Which index is which stage is the artifact generator's knowledge, so a
-    /// caller names them itself. The status is `0` unless the entry's body
-    /// ends in a `return` carrying a value.
-    #[pyo3(signature = (fn_idx, data=None))]
-    fn execute(&mut self, py: Python<'_>, fn_idx: u32, data: Option<&[u8]>) -> PyResult<i64> {
-        self.execute_into(py, fn_idx, data.unwrap_or(&[]), None)
-    }
-
-    /// Call the entry point at `fn_idx`, which answers in `out`.
-    ///
-    /// Both buffers are the caller's own memory, handed to the program as
-    /// pointers: nothing is copied in or out. Returns the status, as
-    /// `execute` does.
-    #[pyo3(signature = (fn_idx, data, out=None))]
-    fn execute_into(
+    /// `data` is the program's input and `out` the buffer it answers in. Both
+    /// are the caller's own memory, handed to the program as pointers: nothing
+    /// is copied in or out.
+    #[pyo3(signature = (name, data=None, out=None))]
+    fn execute(
         &mut self,
         py: Python<'_>,
-        fn_idx: u32,
-        data: &[u8],
+        name: &str,
+        data: Option<&[u8]>,
         out: Option<&Bound<'_, pyo3::types::PyByteArray>>,
     ) -> PyResult<i64> {
+        let data = data.unwrap_or(&[]);
         let (out_ptr, out_len) = match out {
             Some(out) => (out.data(), out.len()),
             None => (std::ptr::null_mut(), 0),
@@ -117,7 +110,14 @@ impl PyBase {
         let mut status = 0i64;
         let rc = allow_threads_unsafe(py, || unsafe {
             capi::base_execute(
-                handle, fn_idx, data.as_ptr(), data.len(), out_ptr, out_len, &mut status,
+                handle,
+                name.as_ptr(),
+                name.len(),
+                data.as_ptr(),
+                data.len(),
+                out_ptr,
+                out_len,
+                &mut status,
             )
         });
         if rc != 0 {
@@ -166,17 +166,17 @@ fn load_artifact(path: &str) -> PyResult<PyArtifact> {
     Ok(PyArtifact { json })
 }
 
-/// Compile an artifact and call one of its entry points, once.
+/// Compile an artifact and call the entry point it exports as `name`, once.
 #[pyfunction]
-#[pyo3(signature = (artifact, fn_idx, data=None))]
+#[pyo3(signature = (artifact, name, data=None))]
 fn run(
     py: Python<'_>,
     artifact: &PyArtifact,
-    fn_idx: u32,
+    name: &str,
     data: Option<&[u8]>,
 ) -> PyResult<i64> {
     let mut base = PyBase::new(artifact)?;
-    base.execute(py, fn_idx, data)
+    base.execute(py, name, data, None)
 }
 
 /// Whether this extension was compiled without optimisations.

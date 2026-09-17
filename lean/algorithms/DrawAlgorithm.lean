@@ -167,7 +167,7 @@ def code : Prog V L Unit := do
   let _      ← fldWriteFile0 ptr f.filename f.bmpHeader total
 
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 code]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
 
 -- ---------------------------------------------------------------------------
 -- Payload & config

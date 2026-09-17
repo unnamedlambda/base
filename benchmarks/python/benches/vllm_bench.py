@@ -47,7 +47,6 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
-import entries
 
 try:
     import torch
@@ -71,11 +70,10 @@ ATTN_INNER_ITERS = 64
 
 def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    load_alg = artifact_entries["main"]
-    prep_alg = artifact_entries["prep"]
-    infer_alg = artifact_entries["infer"]
+    load_alg = "main"
+    prep_alg = "prep"
+    infer_alg = "infer"
 
     results = []
     rng = np.random.default_rng(42)
@@ -97,7 +95,7 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
             torch_ms = None
 
         engine.execute(prep_alg, x_bytes)
-        engine.execute_into(infer_alg, b"", out)
+        engine.execute(infer_alg, b"", out)
         pybase_ms = harness.median_of(
             rounds,
             lambda: (
@@ -108,7 +106,7 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
         if _TORCH_OK:
             engine.execute(prep_alg, x_bytes)
-            engine.execute_into(infer_alg, b"", out)
+            engine.execute(infer_alg, b"", out)
             ref = torch.mv(a_t, x_t).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
@@ -130,11 +128,10 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    load_alg = artifact_entries["main"]
-    prep_alg = artifact_entries["prep"]
-    infer_alg = artifact_entries["infer"]
+    load_alg = "main"
+    prep_alg = "prep"
+    infer_alg = "infer"
     results = []
     rng = np.random.default_rng(7)
 
@@ -169,7 +166,7 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
         if _TORCH_OK:
             engine.execute(prep_alg, x_bytes)
-            engine.execute_into(infer_alg, b"", out)
+            engine.execute(infer_alg, b"", out)
             ref = rms(x_t, w_t).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
@@ -190,11 +187,10 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    load_alg = artifact_entries["main"]
-    prep_alg = artifact_entries["prep"]
-    infer_alg = artifact_entries["infer"]
+    load_alg = "main"
+    prep_alg = "prep"
+    infer_alg = "infer"
     results = []
     rng = np.random.default_rng(13)
 
@@ -237,7 +233,7 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
         if _TORCH_OK:
             engine.execute(prep_alg, x_bytes)
-            engine.execute_into(infer_alg, b"", out)
+            engine.execute(infer_alg, b"", out)
             ref = torch.softmax(x_t, dim=0).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             verified = bool(np.max(np.abs(got - ref)) < 1e-5)
@@ -261,13 +257,12 @@ def _rms_torch(x, w):
 
 def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    load_alg = artifact_entries["main"]
-    prep_alg = artifact_entries["prep"]
-    infer_alg = artifact_entries["infer"]
-    stack16_alg = artifact_entries["stack16"]
-    stack32_alg = artifact_entries["stack32"]
+    load_alg = "main"
+    prep_alg = "prep"
+    infer_alg = "infer"
+    stack16_alg = "stack16"
+    stack32_alg = "stack32"
 
     rng = np.random.default_rng(23)
 
@@ -342,7 +337,7 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
 
     if _TORCH_OK:
         engine.execute(prep_alg, x_bytes)
-        engine.execute_into(infer_alg, b"", out)
+        engine.execute(infer_alg, b"", out)
         ref = layer().cpu().numpy()
         got = np.frombuffer(bytes(out), dtype=np.float32)
         mag = max(float(np.abs(ref).max()), 1e-6)
@@ -398,7 +393,7 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
 
         if _TORCH_OK:
             engine.execute(prep_alg, x_bytes)
-            engine.execute_into(stack_alg, b"", out)
+            engine.execute(stack_alg, b"", out)
             ref = stack(depth).cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)
@@ -420,11 +415,10 @@ def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchRes
 
 def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    artifact_entries = entries.entries(os.path.basename(artifact_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    load_alg = artifact_entries["main"]
-    prep_alg = artifact_entries["prep"]
-    infer_alg = artifact_entries["infer"]
+    load_alg = "main"
+    prep_alg = "prep"
+    infer_alg = "infer"
     results = []
     rng = np.random.default_rng(29)
 
@@ -479,7 +473,7 @@ def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.Bench
 
         if _TORCH_OK:
             engine.execute(prep_alg, q_bytes)
-            engine.execute_into(infer_alg, b"", out)
+            engine.execute(infer_alg, b"", out)
             ref = decode_attn().cpu().numpy()
             got = np.frombuffer(bytes(out), dtype=np.float32)
             mag = max(float(np.abs(ref).max()), 1e-6)

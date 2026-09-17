@@ -154,12 +154,18 @@ structure FnDecl where
 -- The emitted program
 -- ---------------------------------------------------------------------------
 
-/-- One function of the emitted program. -/
+/-- One function of the emitted program.
+
+    `index` is the `u0:N` it was compiled at, which is its position in the
+    artifact and is not written out: `Prog.program` checks the two agree.
+    `exportName` is the name a host calls it by, and a function without one is
+    the program's own. -/
 structure FuncData where
   index : Nat
   sigs : List SigDecl
   fns : List FnDecl
   blocks : List BlockData
+  exportName : Option String := none
 
 -- ---------------------------------------------------------------------------
 -- Serialization
@@ -298,7 +304,9 @@ instance : Lean.ToJson FnDecl where
 
 instance : Lean.ToJson FuncData where
   toJson f := Lean.Json.mkObj
-    [("index", jNat f.index),
+    [("export_name", match f.exportName with
+        | some n => Lean.Json.str n
+        | none => Lean.Json.null),
      ("sigs", Lean.Json.arr ((f.sigs.map Lean.toJson).toArray)),
      ("fns", Lean.Json.arr ((f.fns.map Lean.toJson).toArray)),
      ("blocks", Lean.Json.arr ((f.blocks.map Lean.toJson).toArray))]

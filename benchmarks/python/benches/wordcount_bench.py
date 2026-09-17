@@ -4,7 +4,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
-import entries
 
 
 SIZES = [1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000]
@@ -59,9 +58,8 @@ def parse_output(content: str) -> dict[str, int]:
 
 def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(algo_path)
-    artifact_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
     engine = py_base.Base(artifact)
-    alg = artifact_entries["main"]
+    alg = "main"
     results = []
 
     for n in SIZES:
@@ -78,9 +76,8 @@ def run(algo_path: str, rounds: int) -> list[harness.BenchResult]:
         # Fresh engine per execute: HT state accumulates across execute() calls.
         def run_pybase():
             art = py_base.load_artifact(algo_path)
-            art_entries = entries.entries(os.path.basename(algo_path).removesuffix(".json"))
             eng = py_base.Base(art)
-            a = art_entries["main"]
+            a = "main"
             return harness.time_ms(lambda: eng.execute(a, payload))
 
         # Warmup. It creates the output file, so the timed runs overwrite a path

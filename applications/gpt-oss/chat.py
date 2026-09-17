@@ -29,7 +29,6 @@ from layout import (TEXT_MAX, TMPL_MAX, CAP_DEFAULT, CAP_MAX, D_CTX, D_INVT, D_S
                     D_NPRE, D_PRE,
                     D_POST, D_TEXT, D_IN_BYTES, D_OUT_TEXT, D_OUT_NGEN,
                     D_OUT_GEN, D_OUT_BYTES, check_layout, ln_min_p, acquire_engine_lock)
-import entries
 
 # Harmony's system turn, in the shape the checkpoint documents.  The channel
 # list is not decoration: without it the model opens with a channel name it
@@ -110,8 +109,6 @@ def main():
 
     import json
     art = py_base.load_artifact(args.artifact)
-    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
-    assert not art_entries, f"expected one entry and no extras; got {sorted(art_entries)}"
     base = py_base.Base(art)
     check_layout(base)
 
@@ -148,7 +145,7 @@ def main():
     print("  first call reads 12.9 GiB off disk and pins 9.5 GiB; this takes a while")
     out = bytearray(D_OUT_BYTES)
     t0 = time.time()
-    base.execute_into(art_entries["main"], bytes(buf), out)
+    base.execute("main", bytes(buf), out)
     dt = time.time() - t0
     b = bytes(out)
     n, miss = struct.unpack_from("<Ii", b, 0)

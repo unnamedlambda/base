@@ -955,7 +955,7 @@ def code (spec : SceneSpec) : Prog V L Unit :=
 
 
 def clifIrSource (spec : SceneSpec) : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 (code spec)]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code spec))]
 
 def payloads (spec : SceneSpec) : List UInt8 :=
   let reserved := zeros ptxOff

@@ -6,11 +6,6 @@ use base::{Artifact, Base};
 
 const ART: &[u8] = build_support::artifact!("SiluWarpAlgorithm/silu_warp");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
-const FETCH: u32 = 3;
-const RUN: u32 = 2;
-const RUN_LOOP: u32 = 4;
 const GRID: usize = 2097152;
 const N: usize = GRID * 32;
 
@@ -20,17 +15,17 @@ fn main() {
 
     let artifact = Artifact::from_bytes(ART);
     let mut base = Base::new(artifact).expect("Base::new");
-    let run = RUN;
-    let fetch = FETCH;
+    let run = "run";
+    let fetch = "fetch";
 
     let mut out = vec![0u8; N * 4];
-    base.execute_into(MAIN, &bytes, &mut []).expect("load");
-    base.execute_into(run, b"", &mut []).expect("run");
+    base.execute("main", &bytes, &mut []).expect("load");
+    base.execute(run, b"", &mut []).expect("run");
     let reps = 50;
     let t0 = std::time::Instant::now();
-    for _ in 0..reps { base.execute_into(run, b"", &mut []).expect("run"); }
+    for _ in 0..reps { base.execute(run, b"", &mut []).expect("run"); }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    base.execute_into(fetch, b"", &mut out).expect("fetch");
+    base.execute(fetch, b"", &mut out).expect("fetch");
 
     let gpu: Vec<f32> = out.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
@@ -48,14 +43,14 @@ fn main() {
     println!("elements    : {N}");
     println!("kernel time : {:.3} ms", dt * 1e3);
     // The same spec, 8 elements per lane: 8x fewer blocks.
-    let run_loop = RUN_LOOP;
-    base.execute_into(run_loop, b"", &mut []).expect("runLoop");
+    let run_loop = "runLoop";
+    base.execute(run_loop, b"", &mut []).expect("runLoop");
     let t1 = std::time::Instant::now();
-    for _ in 0..reps { base.execute_into(run_loop, b"", &mut []).expect("runLoop"); }
+    for _ in 0..reps { base.execute(run_loop, b"", &mut []).expect("runLoop"); }
     let dt_loop = t1.elapsed().as_secs_f64() / reps as f64;
     // The looped kernel wrote the same buffer — check *its* output too.
     let mut out2 = vec![0u8; N * 4];
-    base.execute_into(fetch, b"", &mut out2).expect("fetch");
+    base.execute(fetch, b"", &mut out2).expect("fetch");
     let gpu2: Vec<f32> = out2.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
     let mut same = 0usize;

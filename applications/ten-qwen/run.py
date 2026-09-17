@@ -20,7 +20,6 @@ import sys
 
 import numpy as np
 import py_base
-import entries
 
 DM, NH, HD, SQ, DFF = 512, 8, 64, 128, 1408
 EPS = np.float32(0.000001)
@@ -86,7 +85,6 @@ def main():
     if not path or not os.path.exists(path):
         sys.exit("usage: run.py <ten_qwen_block.json>")
     art = py_base.load_artifact(path)
-    art_entries = entries.entries(os.path.basename(path).removesuffix(".json"))
     w = make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)   # spans the widest reduction
 
@@ -100,12 +98,11 @@ def main():
     assert len(blob) == want, f"host packing {len(blob)} vs Lean layout {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's qHostIn ({want})")
 
-    ex = art_entries
-    base.execute_into(art_entries["main"], blob, bytearray(0))
-    base.execute_into(ex["runFwd"], b"", bytearray(0))
+    base.execute("main", blob, bytearray(0))
+    base.execute("runFwd", b"", bytearray(0))
 
     out = bytearray(DM * 4)
-    base.execute_into(ex["fetchOut"], b"", out)
+    base.execute("fetchOut", b"", out)
     got = np.frombuffer(bytes(out), dtype="<f4")
 
     ref = block(w, w["x"])
@@ -122,9 +119,9 @@ def main():
     # buffer but 33, the temporary fusion removes — so this is bit equality,
     # not a tolerance. Without it, `runFwdFused` would be an emitted function
     # nothing runs, and the theorem would be about a program nothing runs.
-    base.execute_into(ex["runFwdFused"], b"", bytearray(0))
+    base.execute("runFwdFused", b"", bytearray(0))
     fused_out = bytearray(DM * 4)
-    base.execute_into(ex["fetchOut"], b"", fused_out)
+    base.execute("fetchOut", b"", fused_out)
     fused = np.frombuffer(bytes(fused_out), dtype="<f4")
     fused_ok = bool((fused == got).all())
     print(f"fused    : 27 kernels, second norm's scale and gain in one")

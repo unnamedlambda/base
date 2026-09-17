@@ -124,9 +124,9 @@ def fetchFnCode : Prog V Lbl Unit := do
 def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadFnCode,
-     Prog.compileProg 2 runFnCode,
-     Prog.compileProg 3 fetchFnCode]
+     Prog.entry "main" (Prog.compileProg 1 loadFnCode),
+     Prog.entry "run" (Prog.compileProg 2 runFnCode),
+     Prog.entry "fetch" (Prog.compileProg 3 fetchFnCode)]
 
 theorem ptx_fits_slot : ptx.toUTF8.toList.length + 1 ≤ BIND_OFF - PTX_OFF := by
   native_decide

@@ -1475,7 +1475,7 @@ def code (spec : BlackHoleSpec) : Prog V L Unit :=
 -- Generic in the spec, so there is no instance to `decide` at; the
 -- obligation is a parameter instead, discharged at the spec that ships.
 def clifIrSource (spec : BlackHoleSpec) : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 (code spec)]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code spec))]
 
 def payloads (spec : BlackHoleSpec) : List UInt8 :=
   let reserved := zeros ptxOff

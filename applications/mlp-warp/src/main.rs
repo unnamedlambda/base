@@ -6,10 +6,6 @@ use base::{Artifact, Base};
 
 const ART: &[u8] = build_support::artifact!("MlpWarpAlgorithm/mlp_warp");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
-const FETCH: u32 = 3;
-const RUN: u32 = 2;
 const D: usize = 4;
 const L: usize = 3;
 const GRID: usize = 16384;
@@ -45,19 +41,19 @@ fn main() {
 
     let artifact = Artifact::from_bytes(ART);
     let mut base = Base::new(artifact).expect("Base::new");
-    let run = RUN;
-    let fetch = FETCH;
+    let run = "run";
+    let fetch = "fetch";
 
     let mut out = vec![0u8; LANES * 4];
-    base.execute_into(MAIN, &bytes, &mut []).expect("load");
-    base.execute_into(run, b"", &mut []).expect("run");
+    base.execute("main", &bytes, &mut []).expect("load");
+    base.execute(run, b"", &mut []).expect("run");
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute_into(run, b"", &mut []).expect("run");
+        base.execute(run, b"", &mut []).expect("run");
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    base.execute_into(fetch, b"", &mut out).expect("fetch");
+    base.execute(fetch, b"", &mut out).expect("fetch");
 
     let gpu: Vec<f32> = out
         .chunks_exact(4)

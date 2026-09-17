@@ -259,7 +259,7 @@ def code (m k n : Nat) : Prog V L Unit :=
 
 
 def clifIrSource (m k n : Nat) : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 (code m k n)]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code m k n))]
 
 -- ---------------------------------------------------------------------------
 -- Monomorphic builder: takes concrete dims, returns (Artifact, Algorithm).

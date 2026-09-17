@@ -156,7 +156,7 @@ def mainCode : Prog V L Unit := do
   ffiVoid fnHtClean %[← absAddr ptr 0]
 
 def clifIR : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProg 1 mainCode]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 mainCode)]
 
 /-- Every byte of shared memory this program names.
 

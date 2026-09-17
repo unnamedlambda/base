@@ -15,11 +15,6 @@ use base::{Artifact, Base};
 
 const ART: &[u8] = build_support::artifact!("GradWarpAlgorithm/grad_warp");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
-const FETCH: u32 = 3;
-const RUN: u32 = 2;
-const RUN_D: u32 = 4;
 const G: usize = 4;
 const GRID: usize = 16384;
 const LANES: usize = GRID * 32;
@@ -43,20 +38,20 @@ fn main() {
 
     let artifact = Artifact::from_bytes(ART);
     let mut base = Base::new(artifact).expect("Base::new");
-    let run = RUN;
-    let run_d = RUN_D;
-    let fetch = FETCH;
+    let run = "run";
+    let run_d = "runD";
+    let fetch = "fetch";
 
     let mut out = vec![0u8; NIN * 4];
-    base.execute_into(MAIN, &bytes, &mut []).expect("load");
-    base.execute_into(run, b"", &mut []).expect("run");
+    base.execute("main", &bytes, &mut []).expect("load");
+    base.execute(run, b"", &mut []).expect("run");
     let reps = 20;
     let t0 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute_into(run, b"", &mut []).expect("run");
+        base.execute(run, b"", &mut []).expect("run");
     }
     let dt = t0.elapsed().as_secs_f64() / reps as f64;
-    base.execute_into(fetch, b"", &mut out).expect("fetch");
+    base.execute(fetch, b"", &mut out).expect("fetch");
 
     let gpu: Vec<f32> = out
         .chunks_exact(4)
@@ -98,13 +93,13 @@ fn main() {
     // (`ZeroTermFree`, `ZeroLaws`) rather than being applied silently — see
     // `gradD_outputs_are_derivatives`.  This is the check that it *runs*.
     let mut out_d = vec![0u8; NIN * 4];
-    base.execute_into(run_d, b"", &mut []).expect("runD");
+    base.execute(run_d, b"", &mut []).expect("runD");
     let t1 = std::time::Instant::now();
     for _ in 0..reps {
-        base.execute_into(run_d, b"", &mut []).expect("runD");
+        base.execute(run_d, b"", &mut []).expect("runD");
     }
     let dt_d = t1.elapsed().as_secs_f64() / reps as f64;
-    base.execute_into(fetch, b"", &mut out_d).expect("fetch");
+    base.execute(fetch, b"", &mut out_d).expect("fetch");
 
     let gpu_d: Vec<f32> = out_d
         .chunks_exact(4)

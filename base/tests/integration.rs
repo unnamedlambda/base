@@ -1,11 +1,16 @@
-use base::{run, Artifact, Base};
+use base::{Artifact, Base};
 use std::fs;
 
 mod common;
 use common::*;
 use tempfile::TempDir;
 
+/// The artifact running `functions` in `memory`.
+///
+/// A function the test did not name is exported as its `u0:N`, so a test can
+/// call any of them by index; the ones about naming name their own.
 fn cranelift_config(memory: Vec<u8>, functions: Vec<Function>) -> Artifact {
+    let functions = exported(functions);
     dump(&functions);
     Artifact {
         functions,
@@ -25,15 +30,36 @@ fn image(bytes: Vec<u8>) -> Vec<base_types::Segment> {
 
 /// The i64 a program left at `offset` of its memory.
 fn read_i64(base: &Base, offset: usize) -> i64 {
-    i64::from_le_bytes(base.memory_bytes()[offset..offset + 8].try_into().unwrap())
+    i64::from_le_bytes(base.memory()[offset..offset + 8].try_into().unwrap())
 }
 
+/// The artifact, and the name its function at `fn_idx` is called by.
 fn create_cranelift_algorithm(
     fn_idx: u32,
     memory: Vec<u8>,
     functions: Vec<Function>,
-) -> (Artifact, u32) {
-    (cranelift_config(memory, functions), fn_idx)
+) -> (Artifact, String) {
+    let config = cranelift_config(memory, functions);
+    let name = config.functions[fn_idx as usize].export_name.clone().unwrap();
+    (config, name)
+}
+
+/// Compile `artifact` and call `name` once.
+fn run(artifact: Artifact, name: impl AsRef<str>) -> Result<i64, base::Error> {
+    base::run(artifact, name.as_ref())
+}
+
+/// `functions`, each one the test did not name exported as its `u0:N`.
+fn exported(mut functions: Vec<Function>) -> Vec<Function> {
+    for (i, f) in functions.iter_mut().enumerate() {
+        f.export_name.get_or_insert_with(|| at(i as u32));
+    }
+    functions
+}
+
+/// The name `exported` gives an unnamed function at `i`.
+fn at(i: u32) -> String {
+    format!("u0:{i}")
 }
 
 #[test]
@@ -44,7 +70,7 @@ fn test_cranelift_basic_compilation() {
 
     // Single CLIF function that writes 8 bytes at offset 2000 to the file at offset 3000.
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -78,7 +104,7 @@ fn test_cranelift_arithmetic_add() {
 
     // Add operands at 2000/2008, store at 2016, write 2016 to file.
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -115,7 +141,7 @@ fn test_cranelift_arithmetic_multiply() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -152,7 +178,7 @@ fn test_cranelift_memory_operations() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -192,7 +218,7 @@ fn test_cranelift_conditional_logic() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -247,7 +273,7 @@ fn test_clif_ffi_file_smoke() {
     let path_b_str = format!("{}\0", path_b.to_str().unwrap());
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .sig(1, &[I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
@@ -304,7 +330,7 @@ fn test_clif_ffi_gpu_smoke() {
     let data_bytes = n * 4;
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -380,7 +406,7 @@ fn test_clif_ffi_net_smoke() {
     });
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I64))
             .sig(2, &[I64, I64, I64, I64], Some(I64))
@@ -439,7 +465,7 @@ fn test_clif_ffi_lmdb_smoke() {
     //   3200:  get result buffer (4-byte len + value)
     //   3500:  cursor scan result buffer
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64, I32], Some(I32))
             .sig(2, &[I64, I32, I64, I32, I64, I32], Some(I32))
@@ -500,7 +526,7 @@ fn test_clif_ffi_thread_smoke() {
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64, I64], Some(I64))
             .sig(2, &[I64, I64], Some(I64))
@@ -532,13 +558,13 @@ fn test_clif_ffi_thread_smoke() {
                 call(Some(v(24)), 5, &[v(0), v(20), v(21), v(22), v(23)]),
                 ret(),
             ]),
-        function(1)
+        function()
             .entry_spawned(vec![
                 iconst64(v(1), 42),
                 store(v(1), v(0), 0),
                 ret(),
             ]),
-        function(2)
+        function()
             .entry_spawned(vec![
                 iconst64(v(1), 99),
                 store(v(1), v(0), 0),
@@ -562,7 +588,7 @@ fn test_clif_call_basic() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -600,7 +626,7 @@ fn test_clif_call_multiple_functions() {
     let file_b_str = format!("{}\0", test_file_b.to_str().unwrap());
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -611,7 +637,7 @@ fn test_clif_call_multiple_functions() {
                 call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -633,8 +659,8 @@ fn test_clif_call_multiple_functions() {
     // Demonstrates JIT-once, run-many: one Base, two execute() calls picking different
     // fn_idx into the same compiled module.
     let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(0, &[]).unwrap();
-    base.execute(1, &[]).unwrap();
+    base.execute(&at(0), &[], &mut []).unwrap();
+    base.execute(&at(1), &[], &mut []).unwrap();
 
     assert!(test_file_a.exists());
     let contents_a = fs::read(&test_file_a).unwrap();
@@ -659,7 +685,7 @@ fn test_clif_call_arithmetic() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -703,13 +729,13 @@ fn test_clif_call_sequential_mutations() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 iconst64(v(1), 10),
                 store(v(1), v(0), 2000),
                 ret(),
             ]),
-        function(1)
+        function()
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 iconst64(v(2), 5),
@@ -717,7 +743,7 @@ fn test_clif_call_sequential_mutations() {
                 store(v(3), v(0), 2008),
                 ret(),
             ]),
-        function(2)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -734,9 +760,9 @@ fn test_clif_call_sequential_mutations() {
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
     let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(0, &[]).unwrap();
-    base.execute(1, &[]).unwrap();
-    base.execute(2, &[]).unwrap();
+    base.execute(&at(0), &[], &mut []).unwrap();
+    base.execute(&at(1), &[], &mut []).unwrap();
+    base.execute(&at(2), &[], &mut []).unwrap();
 
     let contents = fs::read(&test_file).unwrap();
     let result = u64::from_le_bytes(contents[0..8].try_into().unwrap());
@@ -746,7 +772,7 @@ fn test_clif_call_sequential_mutations() {
 #[test]
 fn test_clif_call_no_workers_needed() {
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iconst64(v(1), 77),
                 store(v(1), v(0), 2000),
@@ -766,7 +792,7 @@ fn test_clif_call_no_workers_needed() {
     let file_str = format!("{}\0", test_file.to_str().unwrap());
 
     let clif_prog2 = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -810,7 +836,7 @@ fn test_clif_call_file_read_write() {
     let output_str = format!("{}\0", output_file.to_str().unwrap());
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_read", 0)
             .entry(vec![
@@ -821,7 +847,7 @@ fn test_clif_call_file_read_write() {
                 call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -840,8 +866,8 @@ fn test_clif_call_file_read_write() {
 
     // Two execute() calls on one Base: fn0 reads input file, fn1 writes output file.
     let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
-    base.execute(0, &[]).unwrap();
-    base.execute(1, &[]).unwrap();
+    base.execute(&at(0), &[], &mut []).unwrap();
+    base.execute(&at(1), &[], &mut []).unwrap();
 
     assert!(output_file.exists());
     let output_data = fs::read(&output_file).unwrap();
@@ -853,7 +879,7 @@ fn test_base_multi_execute_different_data() {
     // Compile once, execute twice with different input data via pointer.
     // CLIF reads i64 from data pointer, multiplies by 3, stores result at 200, row_count=1 at 208.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
@@ -869,7 +895,7 @@ fn test_base_multi_execute_different_data() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
@@ -877,19 +903,13 @@ fn test_base_multi_execute_different_data() {
 
     // First execute: input = 10, expect 30
     let data1 = 10i64.to_le_bytes();
-    base.execute(
-            0,
-            &data1,
-        )
+    base.execute(&at(0), &data1, &mut [])
         .unwrap();
     assert_eq!(read_i64(&base, 200), 30);
 
     // Second execute: input = 100, expect 300
     let data2 = 100i64.to_le_bytes();
-    base.execute(
-            0,
-            &data2,
-        )
+    base.execute(&at(0), &data2, &mut [])
         .unwrap();
     assert_eq!(read_i64(&base, 200), 300);
 }
@@ -900,7 +920,7 @@ fn test_base_multi_execute_different_actions() {
     // fn0: stores 42 at offset 200, row_count=1 at 208
     // fn1: stores 99 at offset 200, row_count=1 at 208
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 iconst64(v(1), 42),
                 store(v(1), v(0), 200),
@@ -910,7 +930,7 @@ fn test_base_multi_execute_different_actions() {
                 store(v(2), v(4), 0),
                 ret(),
             ]),
-        function(1)
+        function()
             .entry(vec![
                 iconst64(v(1), 99),
                 store(v(1), v(0), 200),
@@ -923,20 +943,20 @@ fn test_base_multi_execute_different_actions() {
     ]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
     // First execute: call fn0 only
-    let alg1: u32 = 0;
-    base.execute(alg1, &vec![0u8; 4096]).unwrap();
+    let alg1 = at(0);
+    base.execute(&alg1, &vec![0u8; 4096], &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 42);
 
     // Second execute: call fn1 only
-    let alg2: u32 = 1;
-    base.execute(alg2, &vec![0u8; 4096]).unwrap();
+    let alg2 = at(1);
+    base.execute(&alg2, &vec![0u8; 4096], &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 99);
 }
 
@@ -945,7 +965,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
     // Accumulator in shared memory persists across executes.
     // CLIF: load accumulator from v0+200, add input from data pointer, store back.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 load64(v(1), v(0), 200),
                 iadd_imm(v(2), data_ptr(), 0),
@@ -961,7 +981,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
@@ -969,28 +989,19 @@ fn test_base_multi_execute_accumulates_in_memory() {
 
     // Execute 1: add 10 → total = 10
     let d1 = 10i64.to_le_bytes();
-    base.execute(
-            0,
-            &d1,
-        )
+    base.execute(&at(0), &d1, &mut [])
         .unwrap();
     assert_eq!(read_i64(&base, 200), 10);
 
     // Execute 2: add 25 → total = 35
     let d2 = 25i64.to_le_bytes();
-    base.execute(
-            0,
-            &d2,
-        )
+    base.execute(&at(0), &d2, &mut [])
         .unwrap();
     assert_eq!(read_i64(&base, 200), 35);
 
     // Execute 3: add 5 → total = 40
     let d3 = 5i64.to_le_bytes();
-    base.execute(
-            0,
-            &d3,
-        )
+    base.execute(&at(0), &d3, &mut [])
         .unwrap();
     assert_eq!(read_i64(&base, 200), 40);
 }
@@ -1005,7 +1016,7 @@ fn test_base_multi_execute_with_file_io() {
     let file2_str = format!("{}\0", file2.to_str().unwrap());
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(vec![
@@ -1023,15 +1034,12 @@ fn test_base_multi_execute_with_file_io() {
     mem1[256..256 + file1_str.len()].copy_from_slice(file1_str.as_bytes());
     mem1[512..520].copy_from_slice(&42u64.to_le_bytes());
     let config1 = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: image(mem1),
     };
     let mut base = Base::new(config1).unwrap();
-    base.execute(
-        0,
-        &[],
-    )
+    base.execute(&at(0), &[], &mut [])
     .unwrap();
     assert!(file1.exists());
     let data1 = fs::read(&file1).unwrap();
@@ -1042,16 +1050,13 @@ fn test_base_multi_execute_with_file_io() {
     mem2[256..256 + file2_str.len()].copy_from_slice(file2_str.as_bytes());
     mem2[512..520].copy_from_slice(&99u64.to_le_bytes());
     let config2 = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: image(mem2),
     };
     let mut base2 = Base::new(config2).unwrap();
     base2
-        .execute(
-            0,
-            &[],
-        )
+        .execute(&at(0), &[], &mut [])
         .unwrap();
     assert!(file2.exists());
     let data2 = fs::read(&file2).unwrap();
@@ -1065,7 +1070,7 @@ fn test_base_multi_execute_varying_cranelift_units() {
     // Workers also call fn0, each adding to the same location (but with sync ClifCall
     // only the interpreter calls it, so this just verifies units can vary).
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iconst64(v(1), 1),
                 store(v(1), v(0), 200),
@@ -1074,31 +1079,22 @@ fn test_base_multi_execute_varying_cranelift_units() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
     // Execute with 0 units
-    base.execute(
-        0,
-        &vec![0u8; 4096],
-    )
+    base.execute(&at(0), &vec![0u8; 4096], &mut [])
     .unwrap();
 
     // Execute with 2 units
-    base.execute(
-        0,
-        &vec![0u8; 4096],
-    )
+    base.execute(&at(0), &vec![0u8; 4096], &mut [])
     .unwrap();
 
     // Execute with 4 units
-    base.execute(
-        0,
-        &vec![0u8; 4096],
-    )
+    base.execute(&at(0), &vec![0u8; 4096], &mut [])
     .unwrap();
 }
 
@@ -1107,7 +1103,7 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     // initial_memory provides static config at v0+100, data pointer provides dynamic input.
     // CLIF reads both and adds them.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 load64(v(1), v(0), 100),
                 iadd_imm(v(2), data_ptr(), 0),
@@ -1124,17 +1120,14 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
     mem[100..108].copy_from_slice(&11i64.to_le_bytes());
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: image(mem),
     };
     let mut base = Base::new(config).unwrap();
 
     let data = 99i64.to_le_bytes();
-    base.execute(
-            0,
-            &data,
-        )
+    base.execute(&at(0), &data, &mut [])
         .unwrap();
 
     assert_eq!(read_i64(&base, 300), 110); // 11 + 99
@@ -1146,13 +1139,13 @@ fn test_base_persistent_memory_survives_across_executes() {
     // CLIF fn0: stores 77 at offset 200
     // CLIF fn1: reads data pointer input + offset 200 → stores at 300
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 iconst64(v(1), 77),
                 store(v(1), v(0), 200),
                 ret(),
             ]),
-        function(1)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
@@ -1166,25 +1159,19 @@ fn test_base_persistent_memory_survives_across_executes() {
     ]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
     // Execute 1: seed 77 at offset 200
-    base.execute(
-        0,
-        &[],
-    )
+    base.execute(&at(0), &[], &mut [])
     .unwrap();
 
     // Execute 2: input=5 via pointer, read persistent 77 from offset 200
     let data = 5i64.to_le_bytes();
-    base.execute(
-            1,
-            &data,
-        )
+    base.execute(&at(1), &data, &mut [])
         .unwrap();
 
     // 5 (data pointer) + 77 (persistent) = 82
@@ -1196,7 +1183,7 @@ fn test_base_empty_data_leaves_memory_intact() {
     // Empty memory don't touch memory at all — persistent state survives.
     // CLIF: accumulate into offset 200 (read, add 1, store back). row_count at 208.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 load64(v(1), v(0), 200),
                 iconst64(v(2), 1),
@@ -1209,7 +1196,7 @@ fn test_base_empty_data_leaves_memory_intact() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
@@ -1217,10 +1204,7 @@ fn test_base_empty_data_leaves_memory_intact() {
 
     // Three executes with empty memory — counter should increment each time
     for expected in 1..=3 {
-        base.execute(
-                0,
-                &[],
-            )
+        base.execute(&at(0), &[], &mut [])
             .unwrap();
         assert_eq!(read_i64(&base, 200), expected);
     }
@@ -1231,7 +1215,7 @@ fn test_base_data_pointer_updates_each_execute() {
     // Data pointer is updated each execute call with fresh caller buffer.
     // CLIF reads two i64s from data pointer and adds them.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
@@ -1245,7 +1229,7 @@ fn test_base_data_pointer_updates_each_execute() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
@@ -1255,10 +1239,7 @@ fn test_base_data_pointer_updates_each_execute() {
     let mut d1 = vec![0u8; 16];
     d1[0..8].copy_from_slice(&10i64.to_le_bytes());
     d1[8..16].copy_from_slice(&20i64.to_le_bytes());
-    base.execute(
-            0,
-            &d1,
-        )
+    base.execute(&at(0), &d1, &mut [])
         .unwrap();
     assert_eq!(read_i64(&base, 200), 30);
 
@@ -1266,10 +1247,7 @@ fn test_base_data_pointer_updates_each_execute() {
     let mut d2 = vec![0u8; 16];
     d2[0..8].copy_from_slice(&100i64.to_le_bytes());
     d2[8..16].copy_from_slice(&200i64.to_le_bytes());
-    base.execute(
-            0,
-            &d2,
-        )
+    base.execute(&at(0), &d2, &mut [])
         .unwrap();
     assert_eq!(read_i64(&base, 200), 300);
 }
@@ -1280,7 +1258,7 @@ fn test_base_output_in_persistent_region() {
     // into a growing buffer at offset 500+.
     // fn0: reads input from data_ptr, reads count from offset 400, stores at 500+8*count, increments count.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
@@ -1300,7 +1278,7 @@ fn test_base_output_in_persistent_region() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
@@ -1309,20 +1287,14 @@ fn test_base_output_in_persistent_region() {
     // Execute 3 times with values 100, 200, 300
     for &val in &[100i64, 200, 300] {
         let d = val.to_le_bytes();
-        base.execute(
-            0,
-            &d,
-        )
+        base.execute(&at(0), &d, &mut [])
         .unwrap();
     }
 
     // Final read: count at 400 should be 3, values at 500/508/516 should be 100/200/300
     // One more execute to read output — pass a dummy input
     let d = 999i64.to_le_bytes();
-    base.execute(
-            0,
-            &d,
-        )
+    base.execute(&at(0), &d, &mut [])
         .unwrap();
 
     // count is now 4 (we did 4 executes), values: 100, 200, 300, 999
@@ -1340,10 +1312,10 @@ fn a_program_answers_the_status_it_returns() {
     let (cfg, alg) = create_cranelift_algorithm(
         0,
         vec![0u8; 256],
-        program(function(0).entry(vec![iconst64(v(1), 7), ret_status(v(1))])),
+        program(function().entry(vec![iconst64(v(1), 7), ret_status(v(1))])),
     );
     let mut base = Base::new(cfg).unwrap();
-    assert_eq!(base.execute(alg, &[]).unwrap(), 7);
+    assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 7);
 }
 
 /// A program that returns nothing has status 0, so a host reading a status
@@ -1353,10 +1325,10 @@ fn a_program_that_returns_nothing_has_status_zero() {
     let (cfg, alg) = create_cranelift_algorithm(
         0,
         vec![0u8; 256],
-        program(function(0).entry(vec![ret()])),
+        program(function().entry(vec![ret()])),
     );
     let mut base = Base::new(cfg).unwrap();
-    assert_eq!(base.execute(alg, &[]).unwrap(), 0);
+    assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 0);
 }
 
 /// Whether a function answers is one fact about it, so returns that disagree
@@ -1366,7 +1338,7 @@ fn clif_error_returns_disagree() {
     let config = cranelift_config(
         vec![0u8; 256],
         program(
-            function(0)
+            function()
                 .entry(vec![iconst64(v(1), 1), brif(v(1), 1, &[], 2, &[])])
                 .block(1, &[], vec![ret_status(v(1))])
                 .block(2, &[], vec![ret()]),
@@ -1384,7 +1356,7 @@ fn clif_error_value_used_before_defined() {
     // decoder reports it against the program, which is where the defect is.
     let config = cranelift_config(
         vec![0u8; 256],
-        program(function(0).entry(vec![store(v(9), v(0), 0), ret()])),
+        program(function().entry(vec![store(v(9), v(0), 0), ret()])),
     );
     let Err(err) = Base::new(config) else {
         panic!("expected an error for a value used before it is defined");
@@ -1399,9 +1371,9 @@ fn clif_error_value_used_before_defined() {
 fn clif_error_branch_to_undeclared_block() {
     let config = cranelift_config(
         vec![0u8; 256],
-        program(function(0).entry(vec![jump(7, &[])])),
+        program(function().entry(vec![jump(7, &[])])),
     );
-    let Err(err) = run(config, 0) else {
+    let Err(err) = run(config, at(0)) else {
         panic!("expected an error for a branch to an undeclared block");
     };
     assert!(matches!(err, base::Error::Clif(_)));
@@ -1411,26 +1383,12 @@ fn clif_error_branch_to_undeclared_block() {
 fn clif_error_call_to_undeclared_fn() {
     let config = cranelift_config(
         vec![0u8; 256],
-        program(function(0).entry(vec![call(None, 3, &[v(0)]), ret()])),
+        program(function().entry(vec![call(None, 3, &[v(0)]), ret()])),
     );
     let Err(err) = Base::new(config) else {
         panic!("expected an error for a call to an undeclared callee");
     };
     assert!(matches!(err, base::Error::Clif(_)));
-}
-
-#[test]
-fn clif_error_function_index_disagrees_with_position() {
-    // `u0:N` is resolved as a FuncId, so a program whose indices do not match
-    // their positions would silently call the wrong function.
-    let config = cranelift_config(vec![0u8; 256], program(noop(4)));
-    let Err(err) = Base::new(config) else {
-        panic!("expected an error for a function index that disagrees");
-    };
-    let base::Error::Clif(msg) = err else {
-        panic!("expected Error::Clif");
-    };
-    assert!(msg.contains("u0:4"), "message should name the index: {msg}");
 }
 
 #[test]
@@ -1485,7 +1443,7 @@ fn test_clif_ffi_cuda_smoke() {
     let data_bytes = n * 4;
 
     let clif_prog = program(
-        function(0)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -1548,11 +1506,11 @@ fn test_cublas_sgemv_on_stream_reuse() {
     let mem_size: usize = 0x0400;
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -1597,12 +1555,12 @@ fn test_cublas_sgemv_on_stream_reuse() {
     ]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
-    let alg: u32 = 1;
+    let alg = at(1);
 
     let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x1: [f32; 3] = [1.0, 1.0, 1.0];
@@ -1615,7 +1573,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload1, &mut out1).unwrap();
+    base.execute(&alg, &payload1, &mut out1).unwrap();
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         assert!((actual - expected).abs() < 0.01);
@@ -1632,7 +1590,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload2, &mut out2).unwrap();
+    base.execute(&alg, &payload2, &mut out2).unwrap();
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!((actual - expected).abs() < 0.01);
@@ -1653,11 +1611,11 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
     let mem_size: usize = 0x0800;
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -1712,13 +1670,13 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
     ]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 1;
+    let alg = at(1);
 
     let a1: [f32; 12] = [
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
@@ -1734,7 +1692,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload1, &mut out1).unwrap();
+    base.execute(&alg, &payload1, &mut out1).unwrap();
 
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
@@ -1761,7 +1719,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload2, &mut out2).unwrap();
+    base.execute(&alg, &payload2, &mut out2).unwrap();
 
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
@@ -1781,7 +1739,7 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     // then loads a value from the caller's buffer via the pointer.
     // This is the zero-copy path — no shared memory copy needed.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 // load data_ptr from offset 8
                 iadd_imm(v(1), data_ptr(), 0),
@@ -1802,7 +1760,7 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
@@ -1812,9 +1770,9 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
     data[0..8].copy_from_slice(&100i64.to_le_bytes());
     data[8..16].copy_from_slice(&200i64.to_le_bytes());
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
-    base.execute(alg, &data).unwrap();
+    base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         300,
@@ -1828,7 +1786,7 @@ fn test_data_ptr_written_even_when_data_empty() {
     // Offsets 8-16 are always written — even with empty data.
     // Seed those offsets with sentinels to verify they get overwritten.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_len(), 0),
                 store(v(1), v(0), 200),
@@ -1842,15 +1800,15 @@ fn test_data_ptr_written_even_when_data_empty() {
     initial[16..24].copy_from_slice(&0xCAFEBABEu64.to_le_bytes());
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: image(initial),
     };
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     let mut base = Base::new(config).unwrap();
-    base.execute(alg, &[]).unwrap();
+    base.execute(&alg, &[], &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         0,
@@ -1863,7 +1821,7 @@ fn test_out_ptr_written_even_when_out_empty() {
     // Offsets 24-32 are always written — even with empty out.
     // Seed those offsets with sentinels to verify they get overwritten.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), out_len(), 0),
                 store(v(1), v(0), 200),
@@ -1877,15 +1835,15 @@ fn test_out_ptr_written_even_when_out_empty() {
     initial[32..40].copy_from_slice(&0x22222222u64.to_le_bytes());
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: image(initial),
     };
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     let mut base = Base::new(config).unwrap();
-    base.execute(alg, &[]).unwrap();
+    base.execute(&alg, &[], &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         0,
@@ -1898,7 +1856,7 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
     // CLIF reads out_ptr from offset 24, writes a computed value into caller's out buffer.
     // This tests the full zero-copy output path.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 // read data_ptr, load input from caller's data buffer
                 iadd_imm(v(1), data_ptr(), 0),
@@ -1914,7 +1872,7 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
@@ -1925,9 +1883,9 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
 
     let mut out = vec![0u8; 8];
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
-    base.execute_into(alg, &data, &mut out).unwrap();
+    base.execute(&alg, &data, &mut out).unwrap();
     let result = i64::from_le_bytes(out[0..8].try_into().unwrap());
     assert_eq!(
         result, 42,
@@ -1940,7 +1898,7 @@ fn test_execute_into_multiple_calls_different_data() {
     // execute_into called twice with different data and out buffers.
     // Verifies pointers are updated each call.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
@@ -1951,24 +1909,24 @@ fn test_execute_into_multiple_calls_different_data() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     // Call 1: data=111
     let data1 = 111i64.to_le_bytes().to_vec();
     let mut out1 = vec![0u8; 8];
-    base.execute_into(alg, &data1, &mut out1).unwrap();
+    base.execute(&alg, &data1, &mut out1).unwrap();
     assert_eq!(i64::from_le_bytes(out1[0..8].try_into().unwrap()), 111);
 
     // Call 2: data=222, different buffers
     let data2 = 222i64.to_le_bytes().to_vec();
     let mut out2 = vec![0u8; 8];
-    base.execute_into(alg, &data2, &mut out2).unwrap();
+    base.execute(&alg, &data2, &mut out2).unwrap();
     assert_eq!(i64::from_le_bytes(out2[0..8].try_into().unwrap()), 222);
 
     // out1 should be unchanged from call 2
@@ -1980,7 +1938,7 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     // Data buffer is larger than memory_size. The data pointer gives CLIF
     // access to the full buffer without copying it into shared memory.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 // read data_ptr and data_len
                 iadd_imm(v(1), data_ptr(), 0),
@@ -1999,7 +1957,7 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 256,
         data: vec![],
     };
@@ -2010,9 +1968,9 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
     // Write sentinel at the very end
     data[1016..1024].copy_from_slice(&999i64.to_le_bytes());
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
-    base.execute(alg, &data).unwrap();
+    base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         999,
@@ -2027,7 +1985,7 @@ fn test_initial_memory_and_data_coexist() {
     // data provides dynamic input via pointer.
     // CLIF reads multiplier from shared memory AND input from data pointer.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 // read static multiplier from shared memory (set by initial_memory)
                 load64(v(1), v(0), 100),
@@ -2048,17 +2006,17 @@ fn test_initial_memory_and_data_coexist() {
     initial[100..108].copy_from_slice(&13i64.to_le_bytes());
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: image(initial),
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     // Dynamic input = 7
     let data = 7i64.to_le_bytes().to_vec();
-    base.execute(alg, &data).unwrap();
+    base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         91,
@@ -2071,7 +2029,7 @@ fn test_execute_into_out_buffer_larger_than_memory() {
     // Out buffer can be any size — it's caller-owned, not bounded by memory_size.
     // CLIF writes multiple values into a large out buffer.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), out_ptr(), 0),
                 iadd_imm(v(2), out_len(), 0),
@@ -2089,18 +2047,18 @@ fn test_execute_into_out_buffer_larger_than_memory() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 64,
         data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     // Tiny shared memory (64 bytes) but large out buffer
     let data = vec![0u8; 8]; // need non-empty data so pointers at 8-16 get written, but we need out ptrs
     let mut out = vec![0u8; 32];
-    base.execute_into(alg, &data, &mut out).unwrap();
+    base.execute(&alg, &data, &mut out).unwrap();
 
     let v0 = i64::from_le_bytes(out[0..8].try_into().unwrap());
     let v1 = i64::from_le_bytes(out[8..16].try_into().unwrap());
@@ -2117,7 +2075,7 @@ fn test_run_with_data_argument() {
     // The standalone run() function also accepts data.
     // Verify the pointer path works through the simple API.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
@@ -2129,16 +2087,16 @@ fn test_run_with_data_argument() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     let data = 777i64.to_le_bytes().to_vec();
     let mut base = Base::new(config).unwrap();
-    base.execute(alg, &data).unwrap();
+    base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
         777,
@@ -2151,7 +2109,7 @@ fn test_data_single_byte_still_writes_pointer() {
     // Even a 1-byte data buffer should write the pointer.
     // Edge case: smallest possible non-empty data.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_len(), 0),
                 store(v(1), v(0), 200),
@@ -2162,16 +2120,16 @@ fn test_data_single_byte_still_writes_pointer() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     let data = vec![42u8]; // single byte
     let mut base = Base::new(config).unwrap();
-    base.execute(alg, &data).unwrap();
+    base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 1, "data_len should be 1 for single-byte data");
 }
 
@@ -2180,7 +2138,7 @@ fn test_data_ptr_survives_across_multi_execute() {
     // Multiple execute calls with data — each call gets fresh pointers.
     // Verify that stale pointers from previous calls don't leak.
     let clif_prog = program(
-        function(0)
+        function()
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 load64(v(2), v(1), 0),
@@ -2194,24 +2152,24 @@ fn test_data_ptr_survives_across_multi_execute() {
     );
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: 4096,
         data: vec![],
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 0;
+    let alg = at(0);
 
     // Call 1: 8-byte buffer
     let data1 = 11i64.to_le_bytes().to_vec();
-    base.execute(alg, &data1).unwrap();
+    base.execute(&alg, &data1, &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 11);
     assert_eq!(read_i64(&base, 208), 8);
 
     // Call 2: 16-byte buffer (different size!)
     let mut data2 = vec![0u8; 16];
     data2[0..8].copy_from_slice(&22i64.to_le_bytes());
-    base.execute(alg, &data2).unwrap();
+    base.execute(&alg, &data2, &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 22);
     assert_eq!(read_i64(&base, 208), 16, "data_len should reflect new buffer size");
 }
@@ -2241,11 +2199,11 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     let mem_size: usize = 0x1200;
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I64, I64, I32], Some(I32))
@@ -2292,7 +2250,7 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(memory),
     };
@@ -2308,9 +2266,9 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg: u32 = 1;
+    let alg = at(1);
 
-    base.execute_into(alg, &payload, &mut out).unwrap();
+    base.execute(&alg, &payload, &mut out).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2343,11 +2301,11 @@ fn test_gpu_download_ptr_with_offset() {
     let mem_size: usize = 0x1200;
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -2383,7 +2341,7 @@ fn test_gpu_download_ptr_with_offset() {
     memory[bind_off..bind_off + 8].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(memory),
     };
@@ -2399,9 +2357,9 @@ fn test_gpu_download_ptr_with_offset() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg: u32 = 1;
+    let alg = at(1);
 
-    base.execute_into(alg, &payload, &mut out).unwrap();
+    base.execute(&alg, &payload, &mut out).unwrap();
 
     // out should contain the B values (101.0..164.0), not A values
     for i in 0..n {
@@ -2470,11 +2428,11 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     // CLIF: uses cl_cuda_upload_ptr / cl_cuda_download_ptr with payload pointers
     // sig for upload_ptr/download_ptr: (ptr: i64, buf_id: i32, abs_ptr: i64, size: i64) -> i32
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -2525,7 +2483,7 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     memory[bind_off + 8..bind_off + 12].copy_from_slice(&2i32.to_le_bytes());
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(memory),
     };
@@ -2541,9 +2499,9 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
     }
 
     let mut out = vec![0u8; n * 4];
-    let alg: u32 = 1;
+    let alg = at(1);
 
-    base.execute_into(alg, &payload, &mut out).unwrap();
+    base.execute(&alg, &payload, &mut out).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2605,11 +2563,11 @@ fn test_cuda_download_ptr_different_data() {
 
     // CLIF: upload A to buf 0, B to buf 1, launch, download buf 1 to out_ptr
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -2658,13 +2616,13 @@ fn test_cuda_download_ptr_different_data() {
     memory[bind_off + 4..bind_off + 8].copy_from_slice(&1i32.to_le_bytes());
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 1;
+    let alg = at(1);
 
     // First execute: A=[1..64], B=[100..100]
     let mut payload1 = vec![0u8; n * 4 * 2];
@@ -2675,7 +2633,7 @@ fn test_cuda_download_ptr_different_data() {
         payload1[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
     }
     let mut out1 = vec![0u8; n * 4];
-    base.execute_into(alg, &payload1, &mut out1).unwrap();
+    base.execute(&alg, &payload1, &mut out1).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2698,7 +2656,7 @@ fn test_cuda_download_ptr_different_data() {
         payload2[n * 4 + i * 4..n * 4 + i * 4 + 4].copy_from_slice(&b_val.to_le_bytes());
     }
     let mut out2 = vec![0u8; n * 4];
-    base.execute_into(alg, &payload2, &mut out2).unwrap();
+    base.execute(&alg, &payload2, &mut out2).unwrap();
 
     for i in 0..n {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2735,11 +2693,11 @@ fn test_cublas_sgemm_strided_batched_reuse() {
     let mem_size: usize = 0x0800;
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -2797,13 +2755,13 @@ fn test_cublas_sgemm_strided_batched_reuse() {
     ]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 1;
+    let alg = at(1);
 
     let a1: [f32; 12] = [
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
@@ -2819,7 +2777,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload1, &mut out1).unwrap();
+    base.execute(&alg, &payload1, &mut out1).unwrap();
 
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2846,7 +2804,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload2, &mut out2).unwrap();
+    base.execute(&alg, &payload2, &mut out2).unwrap();
 
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
@@ -2868,11 +2826,11 @@ fn test_cuda_upload_ptr_offset_reuse() {
     let mem_size: usize = 0x0400;
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64, I64], Some(I32))
@@ -2905,13 +2863,13 @@ fn test_cuda_upload_ptr_offset_reuse() {
     ]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 1;
+    let alg = at(1);
 
     let payload1: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
     let mut bytes1 = Vec::with_capacity(total_bytes);
@@ -2919,7 +2877,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
         bytes1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; total_bytes];
-    base.execute_into(alg, &bytes1, &mut out1).unwrap();
+    base.execute(&alg, &bytes1, &mut out1).unwrap();
     for (i, expected) in [1.0f32, 2.0, 3.0, 4.0].iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -2937,7 +2895,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
         bytes2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; total_bytes];
-    base.execute_into(alg, &bytes2, &mut out2).unwrap();
+    base.execute(&alg, &bytes2, &mut out2).unwrap();
     for (i, expected) in [10.0f32, 20.0, 30.0, 40.0].iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -2985,11 +2943,11 @@ fn test_cuda_launch_named_reuses_named_kernel() {
                }\n\0";
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -3030,13 +2988,13 @@ fn test_cuda_launch_named_reuses_named_kernel() {
     memory[bind_off..bind_off + 4].copy_from_slice(&0i32.to_le_bytes());
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 1;
+    let alg = at(1);
 
     let payload1: Vec<f32> = (1..=n).map(|x| x as f32).collect();
     let mut bytes1 = Vec::with_capacity(data_bytes);
@@ -3044,7 +3002,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
         bytes1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; data_bytes];
-    base.execute_into(alg, &bytes1, &mut out1).unwrap();
+    base.execute(&alg, &bytes1, &mut out1).unwrap();
     for (i, input) in payload1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         let expected = *input + 2.0;
@@ -3063,7 +3021,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
         bytes2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; data_bytes];
-    base.execute_into(alg, &bytes2, &mut out2).unwrap();
+    base.execute(&alg, &bytes2, &mut out2).unwrap();
     for i in 0..n {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -3089,11 +3047,11 @@ fn test_cublas_sgemv_reuse() {
     let mem_size: usize = 0x0400;
 
     let clif_prog = programs(vec![
-        function(0)
+        function()
             .entry(vec![
                 ret(),
             ]),
-        function(1)
+        function()
             .sig(0, &[I64], None)
             .sig(1, &[I64, I64], Some(I32))
             .sig(2, &[I64, I32, I64, I64], Some(I32))
@@ -3136,13 +3094,13 @@ fn test_cublas_sgemv_reuse() {
     ]);
 
     let config = Artifact {
-        functions: clif_prog.clone(),
+        functions: exported(clif_prog.clone()),
         memory_size: mem_size,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
 
-    let alg: u32 = 1;
+    let alg = at(1);
 
     let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
     let x1: [f32; 3] = [1.0, 1.0, 1.0];
@@ -3155,7 +3113,7 @@ fn test_cublas_sgemv_reuse() {
         payload1.extend_from_slice(&v.to_le_bytes());
     }
     let mut out1 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload1, &mut out1).unwrap();
+    base.execute(&alg, &payload1, &mut out1).unwrap();
     for (i, expected) in expected1.iter().enumerate() {
         let actual = f32::from_le_bytes(out1[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -3178,7 +3136,7 @@ fn test_cublas_sgemv_reuse() {
         payload2.extend_from_slice(&v.to_le_bytes());
     }
     let mut out2 = vec![0u8; y_bytes];
-    base.execute_into(alg, &payload2, &mut out2).unwrap();
+    base.execute(&alg, &payload2, &mut out2).unwrap();
     for (i, expected) in expected2.iter().enumerate() {
         let actual = f32::from_le_bytes(out2[i * 4..i * 4 + 4].try_into().unwrap());
         assert!(
@@ -3217,7 +3175,7 @@ fn compute(insts: Vec<Inst>, n: i64) -> Vec<u8> {
         ret(),
     ]);
     let prog = program(
-        function(0)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
             .import(0, "cl_file_write", 0)
             .entry(body),
@@ -3466,19 +3424,19 @@ fn local_calls_dispatch_to_other_functions() {
 
     let clif_prog = programs(vec![
         // u0:0 writes 11 at 2000
-        function(0).entry(vec![
+        function().entry(vec![
             iconst64(v(1), 11),
             store(v(1), v(0), 2000),
             ret(),
         ]),
         // u0:1 writes 22 at 2008
-        function(1).entry(vec![
+        function().entry(vec![
             iconst64(v(1), 22),
             store(v(1), v(0), 2008),
             ret(),
         ]),
         // u0:2 calls both, then writes the pair out
-        function(2)
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], None)
             .sig(1, &[I64, I64, I64, I64, I64], Some(I64))
             .local(0, 0, 0)
@@ -3520,7 +3478,7 @@ fn clif_error_local_call_to_missing_function() {
     let config = cranelift_config(
         vec![0u8; 256],
         program(
-            function(0)
+            function()
                 .sig(0, &[I64], None)
                 .local(0, 3, 0)
                 .entry(vec![call(None, 0, &[v(0)]), ret()]),
@@ -3549,7 +3507,7 @@ fn refusal(functions: Vec<Function>) -> String {
 #[test]
 fn clif_error_import_base_does_not_provide() {
     let msg = refusal(program(
-        function(0)
+        function()
             .sig(0, &[], None)
             .import(0, "abort", 0)
             .entry(vec![call(None, 0, &[]), ret()]),
@@ -3562,7 +3520,7 @@ fn clif_error_import_base_does_not_provide() {
 #[test]
 fn clif_error_import_at_the_wrong_signature() {
     let msg = refusal(program(
-        function(0)
+        function()
             .sig(0, &[I64], Some(F32))
             .import(0, "cl_sinf", 0)
             .entry(vec![call(None, 0, &[v(0)]), ret()]),
@@ -3575,8 +3533,8 @@ fn clif_error_import_at_the_wrong_signature() {
 #[test]
 fn clif_error_import_naming_an_own_function() {
     let msg = refusal(programs(vec![
-        noop(0),
-        function(1)
+        noop(),
+        function()
             .sig(0, &[I64, I64, I64, I64, I64], None)
             .import(0, "fn_0", 0)
             .entry(vec![call(None, 0, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]), ret()]),
@@ -3589,8 +3547,8 @@ fn clif_error_import_naming_an_own_function() {
 #[test]
 fn clif_error_local_call_at_the_wrong_signature() {
     let msg = refusal(programs(vec![
-        noop(0),
-        function(1)
+        noop(),
+        function()
             .sig(0, &[I64], None)
             .local(0, 0, 0)
             .entry(vec![call(None, 0, &[v(0)]), ret()]),
@@ -3598,12 +3556,76 @@ fn clif_error_local_call_at_the_wrong_signature() {
     assert!(msg.contains("u0:0") && msg.contains("takes"), "{msg}");
 }
 
+// --- export names ------------------------------------------------------------
+
+/// An artifact whose functions are exactly `functions`, named as they say.
+fn named(functions: Vec<Function>) -> Artifact {
+    Artifact { functions, memory_size: 256, data: vec![] }
+}
+
+/// Answers `k` as its status.
+fn answering(k: i64) -> Func {
+    function().entry(vec![iconst64(v(1), k), ret_status(v(1))])
+}
+
+#[test]
+fn an_entry_point_is_called_by_its_name() {
+    let mut base = Base::new(named(programs(vec![
+        noop(),
+        answering(7).export("seven"),
+        answering(9).export("nine"),
+    ])))
+    .unwrap();
+    assert_eq!(base.execute("nine", &[], &mut []).unwrap(), 9);
+    assert_eq!(base.execute("seven", &[], &mut []).unwrap(), 7);
+    assert_eq!(base::run(named(programs(vec![answering(3).export("main")])), "main").unwrap(), 3);
+}
+
+/// A function nobody named is the program's own, and no name reaches it: not
+/// even the `u0:N` a host might guess from the artifact.
+#[test]
+fn an_unexported_function_is_not_callable() {
+    let mut base = Base::new(named(programs(vec![answering(1), answering(2).export("two")])))
+        .unwrap();
+    for name in ["u0:0", "one", ""] {
+        let Err(base::Error::Execution(msg)) = base.execute(name, &[], &mut []) else {
+            panic!("{name:?} is not exported and should not be callable");
+        };
+        assert!(msg.contains(&format!("{name:?}")), "{msg}");
+    }
+    assert_eq!(base.execute("two", &[], &mut []).unwrap(), 2);
+}
+
+#[test]
+fn clif_error_two_functions_exported_under_one_name() {
+    let Err(base::Error::Clif(msg)) =
+        Base::new(named(programs(vec![answering(1).export("x"), answering(2).export("x")])))
+    else {
+        panic!("a name exported twice should be refused");
+    };
+    assert!(msg.contains("u0:0") && msg.contains("u0:1") && msg.contains("\"x\""), "{msg}");
+}
+
+/// A worker takes the one pointer `cl_thread_spawn` hands it; the two-argument
+/// function here is shaped like neither that nor an entry point, so a name for
+/// it would promise a call base cannot make.
+#[test]
+fn clif_error_exported_function_not_shaped_like_an_entry() {
+    let two = function()
+        .export("pair")
+        .block(0, &[(v(0), I64), (v(1), I64)], vec![ret()]);
+    let Err(base::Error::Clif(msg)) = Base::new(named(programs(vec![two]))) else {
+        panic!("a two-parameter function should not be exportable");
+    };
+    assert!(msg.contains("pair") && msg.contains("2 parameters"), "{msg}");
+}
+
 #[test]
 fn clif_error_callee_names_undeclared_sig() {
     let config = cranelift_config(
         vec![0u8; 256],
         program(
-            function(0)
+            function()
                 .import(0, "cl_file_write", 7)
                 .entry(vec![ret()]),
         ),
@@ -3622,7 +3644,7 @@ fn clif_error_binding_the_result_of_a_void_callee() {
     let config = cranelift_config(
         vec![0u8; 256],
         program(
-            function(0)
+            function()
                 .sig(0, &[I64], None)
                 .import(0, "cl_gpu_init", 0)
                 .entry(vec![call(Some(v(1)), 0, &[v(0)]), ret()]),
@@ -3638,7 +3660,7 @@ fn clif_error_binding_the_result_of_a_void_callee() {
 fn clif_error_float_constant_of_integer_type() {
     let config = cranelift_config(
         vec![0u8; 256],
-        program(function(0).entry(vec![
+        program(function().entry(vec![
             base_types::clif::Inst::Fconst(v(1), I64, 0),
             ret(),
         ])),

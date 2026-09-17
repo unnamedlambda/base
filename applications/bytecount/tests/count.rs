@@ -20,17 +20,15 @@ use base::{Artifact, Base};
 
 const ARTIFACT: &[u8] = build_support::artifact!("ByteCountAlgorithm/byte_count");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 /// The run `ByteCount.code` ships: `ByteCount.VECTORS` vectors of sixteen bytes.
 const WINDOW: usize = 4096;
 /// Must match `ByteCount.needles`, in order.
 const NEEDLES: [u8; 3] = [b',', b'\n', b' '];
 
-fn counts(base: &mut Base, fn_idx: u32, data: &[u8]) -> [u64; NEEDLES.len()] {
+fn counts(base: &mut Base, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
     let mut out = [0u8; 8 * NEEDLES.len()];
-    base.execute_into(fn_idx, data, &mut out)
+    base.execute(entry, data, &mut out)
         .expect("execute failed");
     let mut got = [0u64; NEEDLES.len()];
     for (i, slot) in got.iter_mut().enumerate() {
@@ -88,7 +86,7 @@ fn counts_every_needle() {
     ];
 
     for (label, data) in &cases {
-        let got = counts(&mut base, MAIN, data);
+        let got = counts(&mut base, "main", data);
         for (i, needle) in NEEDLES.iter().enumerate() {
             let expected = data.iter().filter(|&b| b == needle).count() as u64;
             assert_eq!(got[i], expected, "{label}: needle {:?}", *needle as char);

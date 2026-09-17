@@ -13,8 +13,8 @@ from py_base import Artifact, Base, run
 def program(functions):
     return {"functions": functions}
 
-def function(index, blocks, sigs=None, fns=None):
-    return {"index": index, "sigs": sigs or [], "fns": fns or [], "blocks": blocks}
+def function(blocks, sigs=None, fns=None, export=None):
+    return {"export_name": export, "sigs": sigs or [], "fns": fns or [], "blocks": blocks}
 
 def block(n, params, insts):
     return {"reference": n, "params": [[p, "I64"] for p in params], "insts": insts}
@@ -41,18 +41,21 @@ def load32(d, addr, off=0): return _load(d, "Plain", "I32", addr, off)
 
 
 
+# The name the program below exports its entry point as.
+DOUBLE = "double"
+
 # The entry block is called with the arena base, then the caller's input buffer
 # and its length and the caller's output buffer and its length. Naming them 3, 6
 # and 9 lets the body below refer to them the way it always has.
 # Copies each i32 from data to out, multiplied by 2.
 
 DOUBLE_I32_PROG = program([
-    function(0, [
+    function([
         block(0, [0], [
             ret(),
         ]),
     ]),
-    function(1, [
+    function(export=DOUBLE, blocks=[
         block(0, [0, 3, 6, 9, 99], [
             iconst64(10, 2),
             ushr(11, 6, 10),
@@ -90,11 +93,6 @@ def make_double_artifact():
     })
 
 
-# The entry point this program puts at u0:1, the way a generator would tell a
-# host which index to call.
-DOUBLE = 1
-
-
 def pack_i32s(values):
     return struct.pack(f"<{len(values)}i", *values)
 
@@ -125,7 +123,7 @@ class TestBase:
     def test_malformed_program(self):
         """v9 is never defined, so the program cannot be built."""
         artifact_json = json.dumps({
-            "functions": program([function(0, [block(0, [0], [store(9, 0), ret()])])])["functions"],
+            "functions": program([function([block(0, [0], [store(9, 0), ret()])])])["functions"],
             "memory_size": 256,
             "data": [],
         })
@@ -144,13 +142,13 @@ class TestBase:
         a program that answers and one that does not are written the same way
         apart from the terminator."""
         artifact_json = json.dumps({
-            "functions": program([function(0, [block(0, [0], [
-                iconst64(1, 42), ret(1)])])])["functions"],
+            "functions": program([function([block(0, [0], [
+                iconst64(1, 42), ret(1)])], export="answer")])["functions"],
             "memory_size": 256,
             "data": [],
         })
         base = Base(Artifact(artifact_json))
-        assert base.execute(0) == 42
+        assert base.execute("answer") == 42
 
     def test_execute_into_doubles(self):
         base = Base(Artifact(make_double_artifact()))
@@ -158,7 +156,7 @@ class TestBase:
         values = [1, 2, 3, 4, 5, 10, 100, -7]
         data = pack_i32s(values)
         out = bytearray(len(data))
-        base.execute_into(DOUBLE, data, out)
+        base.execute(DOUBLE, data, out)
 
         result = unpack_i32s(out, len(values))
         assert result == [v * 2 for v in values]
@@ -170,7 +168,7 @@ class TestBase:
             values = list(range(seed * 10, seed * 10 + 20))
             data = pack_i32s(values)
             out = bytearray(len(data))
-            base.execute_into(DOUBLE, data, out)
+            base.execute(DOUBLE, data, out)
             result = unpack_i32s(out, len(values))
             assert result == [v * 2 for v in values]
 
@@ -181,7 +179,7 @@ class TestBase:
         values = list(range(n))
         data = pack_i32s(values)
         out = bytearray(len(data))
-        base.execute_into(DOUBLE, data, out)
+        base.execute(DOUBLE, data, out)
 
         result = unpack_i32s(out, n)
         for i in range(n):
@@ -190,23 +188,28 @@ class TestBase:
     def test_execute_into_empty(self):
         base = Base(Artifact(make_double_artifact()))
         out = bytearray(0)
-        base.execute_into(DOUBLE, b"", out)
+        base.execute(DOUBLE, b"", out)
 
     def test_bytes_input(self):
         base = Base(Artifact(make_double_artifact()))
 
         data = bytes(pack_i32s([42, -1, 0]))
         out = bytearray(len(data))
-        base.execute_into(DOUBLE, data, out)
+        base.execute(DOUBLE, data, out)
         assert unpack_i32s(out, 3) == [84, -2, 0]
 
     def test_execute_into_answers_through_out(self):
-        """The result is what the program wrote to `out`; the call returns nothing."""
+        """The result is what the program wrote to `out`; the status is 0."""
         base = Base(Artifact(make_double_artifact()))
 
         out = bytearray(16)
-        assert base.execute_into(DOUBLE, pack_i32s([1, 2, 3, 4]), out) == 0
+        assert base.execute(DOUBLE, pack_i32s([1, 2, 3, 4]), out) == 0
         assert unpack_i32s(out, 4) == [2, 4, 6, 8]
+
+    def test_a_name_nothing_exports_is_refused(self):
+        base = Base(Artifact(make_double_artifact()))
+        with pytest.raises(ValueError, match='"triple"'):
+            base.execute("triple")
 
     def test_read_memory_answers_bytes(self):
         """What the artifact starts from, as `bytes` a host can unpack."""

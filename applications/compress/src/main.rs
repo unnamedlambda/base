@@ -2,8 +2,6 @@ use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] = build_support::artifact!("CompressAlgorithm/compress_app");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: usize = 0x4200;
@@ -34,7 +32,7 @@ fn main() {
     artifact.write(INPUT_FILENAME_OFF, &[path_bytes, &[0]].concat());
 
     let start = std::time::Instant::now();
-    match run(artifact, MAIN) {
+    match run(artifact, "main") {
         Ok(_) => {
             let elapsed = start.elapsed();
             // Parse standard LZ4 frame to compute actual compressed data size

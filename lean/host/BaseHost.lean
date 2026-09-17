@@ -4,10 +4,10 @@ import AlgorithmLib.Layout
 /-!
 # Running an artifact from Lean
 
-`AlgorithmLib` builds an `Artifact`, and its entry points are function indices
-the generator chose. Those are values, and this module hands them straight to
-the runtime, so the program that *builds* an artifact can be the program that
-runs it — no file in between, and no Rust or Python host.
+`AlgorithmLib` builds an `Artifact`, whose entry points are the names the
+generator exported them as. The artifact is a value, and this module hands it
+straight to the runtime, so the program that *builds* an artifact can be the
+program that runs it — no file in between, and no Rust or Python host.
 
 What that buys is not speed -- the runtime does exactly what it did before --
 but that the effectful part of a Lean program becomes a value. A `main` that
@@ -57,7 +57,7 @@ private opaque newRaw (artifactJson : @& ByteArray) : IO USize
 private opaque freeRaw (handle : USize) : IO Unit
 
 @[extern "lean_base_execute"]
-private opaque executeRaw (handle : USize) (fnIdx : UInt32)
+private opaque executeRaw (handle : USize) (name : @& String)
     (data : @& ByteArray) (outLen : USize) : IO (ByteArray × Int64)
 
 @[extern "lean_base_read_memory"]
@@ -80,25 +80,25 @@ not what a caller should reach for first. -/
 def close (rt : Runtime) : IO Unit :=
   freeRaw rt.raw
 
-/-- Run entry point `fnIdx`, answering both the out buffer and the status.
+/-- Run the entry point exported as `name`, answering both the out buffer and
+the status.
 
 The status is what an entry point answers without a host and a program having
 agreed on a place in memory to leave it: an entry whose `return` carries a
 value answers with it, one whose `return` carries nothing answers `0`. -/
-def executeStatus (rt : Runtime) (fnIdx : UInt32)
+def executeStatus (rt : Runtime) (name : String)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO (ByteArray × Int64) :=
-  executeRaw rt.raw fnIdx data (USize.ofNat outLen)
+  executeRaw rt.raw name data (USize.ofNat outLen)
 
 /-- Call one entry point, answering the bytes it wrote to its out buffer.
 
-`fnIdx` is the entry point's function index, which the generator that built the
-artifact chose. `data` is what the program is handed as its input buffer and
-`outLen` how much room it is given to answer; a program that uses neither
-passes the defaults. The status is dropped — `executeStatus` is the same call
+`name` is the name the artifact exports the entry point as. `data` is what the
+program is handed as its input buffer and `outLen` how much room it is given to
+answer; a program that uses neither passes the defaults. The status is dropped — `executeStatus` is the same call
 keeping it. -/
-def execute (rt : Runtime) (fnIdx : UInt32)
+def execute (rt : Runtime) (name : String)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray :=
-  return (← executeStatus rt fnIdx data outLen).1
+  return (← executeStatus rt name data outLen).1
 
 /-- `len` bytes of the runtime's shared memory from `offset`.
 
@@ -167,12 +167,13 @@ def withRuntime (artifact : Artifact) (f : Runtime → IO α) : IO α := do
   let rt ← open_ artifact
   try f rt finally rt.close
 
-/-- Build an artifact and call one of its entry points, in one process.
+/-- Build an artifact and call the entry point it exports as `name`, in one
+process.
 
 The whole of what a simple host does. Anything reading a result, calling a
 further entry point, or looping wants `withRuntime` instead. -/
-def run (artifact : Artifact) (fnIdx : UInt32)
+def run (artifact : Artifact) (name : String)
     (data : ByteArray := .empty) (outLen : Nat := 0) : IO ByteArray :=
-  withRuntime artifact fun rt => rt.execute fnIdx data outLen
+  withRuntime artifact fun rt => rt.execute name data outLen
 
 end Base

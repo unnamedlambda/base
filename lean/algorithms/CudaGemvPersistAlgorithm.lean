@@ -100,9 +100,9 @@ def inferCode : Prog V L Unit := do
 def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadCode,
-     Prog.compileProg 2 prepCode,
-     Prog.compileProg 3 inferCode]
+     Prog.entry "main" (Prog.compileProg 1 loadCode),
+     Prog.entry "prep" (Prog.compileProg 2 prepCode),
+     Prog.entry "infer" (Prog.compileProg 3 inferCode)]
 
 
 /-- Every byte of shared memory this program names.

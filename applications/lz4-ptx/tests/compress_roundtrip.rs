@@ -5,8 +5,6 @@ const WARP_COMP: &[u8] =
 const WARP_COMP64: &[u8] =
     build_support::artifact!("Lz4CompAlgorithm/lz4_comp_warpdsl64");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 // Must match the shipped kernels' baked geometry (Lz4CompAlgorithm: blkLog 15/16,
 // corpusBytes 209_715_200 => 6400 blocks of 32 KiB, or 3200 of 64 KiB).
@@ -69,7 +67,7 @@ fn check_artifact(artifact: &[u8], block: usize, num_blk: usize) {
     // The blocks, then the geometry the program was built for, six i64s.
     let blocks = num_blk * out_stride;
     let mut out = vec![0u8; blocks + 48];
-    base.execute_into(MAIN, &original, &mut out).expect("run");
+    base.execute("main", &original, &mut out).expect("run");
     let geom = |i: usize| {
         i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as usize
     };

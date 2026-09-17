@@ -48,20 +48,24 @@ pub fn b(n: u32) -> BlockRef {
     BlockRef(n)
 }
 
-/// Accumulates one function. `index` is its `u0:N`, and must match its position
-/// in the program — the runtime resolves call targets by treating it as a
-/// `FuncId`.
+/// Accumulates one function. Its `u0:N` is its position in the program.
 pub struct Func {
     inner: Function,
 }
 
-pub fn function(index: u32) -> Func {
+pub fn function() -> Func {
     Func {
-        inner: Function { index, sigs: vec![], fns: vec![], blocks: vec![] },
+        inner: Function { export_name: None, sigs: vec![], fns: vec![], blocks: vec![] },
     }
 }
 
 impl Func {
+    /// Exported as `name`, so a host can call it.
+    pub fn export(mut self, name: &str) -> Self {
+        self.inner.export_name = Some(name.to_string());
+        self
+    }
+
     /// `sigN = (params) -> result system_v`
     pub fn sig(mut self, n: u32, params: &[ClifTy], result: Option<ClifTy>) -> Self {
         self.inner.sigs.push(SigDecl {
@@ -134,10 +138,10 @@ pub fn programs(fs: Vec<Func>) -> Vec<Function> {
     fs.into_iter().map(|f| f.inner).collect()
 }
 
-/// `u0:0` doing nothing — the slot generated artifacts reserve so that the
-/// interesting function is `u0:1`.
-pub fn noop(index: u32) -> Func {
-    function(index).entry(vec![Inst::Ret(None)])
+/// A function doing nothing — the slot generated artifacts reserve at `u0:0`
+/// so that the interesting function is `u0:1`.
+pub fn noop() -> Func {
+    function().entry(vec![Inst::Ret(None)])
 }
 
 // --- instructions -----------------------------------------------------------

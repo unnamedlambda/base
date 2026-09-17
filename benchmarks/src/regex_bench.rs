@@ -7,8 +7,6 @@ use crate::harness::{self, format_count, BenchResult};
 
 const REGEX_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/regex_algorithm");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 const VOCABULARY: &[&str] = &[
     "the", "running", "of", "singing", "and", "to", "jumping", "in", "a", "is", "that", "finding",
@@ -108,11 +106,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // per iteration instead charges Base for an inode allocation and a
         // directory insert a round that the baseline never pays.
         let _ = fs::remove_file(&output_path);
-        let _ = base_instance.execute(MAIN, &payload);
+        let _ = base_instance.execute("main", &payload, &mut []);
 
         let base_ms = harness::median_of(iterations, || {
             let start = std::time::Instant::now();
-            let _ = base_instance.execute(MAIN, &payload);
+            let _ = base_instance.execute("main", &payload, &mut []);
             start.elapsed().as_secs_f64() * 1000.0
         });
 

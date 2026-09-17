@@ -67,8 +67,6 @@ const SELROT_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/selectro
 
 const SELMASK_ARTIFACT: &[u8] = build_support::artifact!("RustBenchmarks/selectmask_algorithm");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 const HI: f32 = 0.5;
 const LO: f32 = -0.5;
@@ -340,11 +338,11 @@ fn sweep(
             t.elapsed().as_secs_f64() * 1000.0
         });
 
-        let _ = inst.execute_into(MAIN, bytes, &mut out);
+        let _ = inst.execute("main", bytes, &mut out);
         let base_ms = harness::median_of(iterations, || {
             let t = std::time::Instant::now();
             for _ in 0..reps {
-                let _ = inst.execute_into(MAIN, bytes, &mut out);
+                let _ = inst.execute("main", bytes, &mut out);
             }
             t.elapsed().as_secs_f64() * 1000.0
         });
@@ -432,11 +430,11 @@ fn sweep_store(iterations: usize, rows: &mut Vec<BenchResult>) {
         });
 
         let mut d_base = vec![0u8; n * 4];
-        let _ = inst.execute_into(MAIN, bytes, &mut d_base);
+        let _ = inst.execute("main", bytes, &mut d_base);
         let base_ms = harness::median_of(iterations, || {
             let t = std::time::Instant::now();
             for _ in 0..reps {
-                let _ = inst.execute_into(MAIN, bytes, &mut d_base);
+                let _ = inst.execute("main", bytes, &mut d_base);
             }
             t.elapsed().as_secs_f64() * 1000.0
         });
@@ -502,11 +500,11 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let mut out = [0u8; 8];
         let tiny = gen_floats(16, 7);
         let bytes = as_bytes(&tiny);
-        let _ = inst.execute_into(MAIN, bytes, &mut out);
+        let _ = inst.execute("main", bytes, &mut out);
         let reps = 100_000;
         let t = std::time::Instant::now();
         for _ in 0..reps {
-            let _ = inst.execute_into(MAIN, bytes, &mut out);
+            let _ = inst.execute("main", bytes, &mut out);
         }
         println!(
             "  Base dispatch overhead: {:.0} ns/call (16-element input)",
@@ -570,11 +568,11 @@ fn width_ceiling(iterations: usize) {
                 }
                 t.elapsed().as_secs_f64() * 1000.0
             });
-            let _ = inst.execute_into(MAIN, bytes, &mut out);
+            let _ = inst.execute("main", bytes, &mut out);
             let base_ms = harness::median_of(iterations, || {
                 let t = std::time::Instant::now();
                 for _ in 0..reps {
-                    let _ = inst.execute_into(MAIN, bytes, &mut out);
+                    let _ = inst.execute("main", bytes, &mut out);
                 }
                 t.elapsed().as_secs_f64() * 1000.0
             });

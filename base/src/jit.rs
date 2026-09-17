@@ -117,15 +117,7 @@ pub(crate) fn compile(
     let sigs = functions
         .iter()
         .enumerate()
-        .map(|(i, f)| {
-            if f.index as usize != i {
-                return Err(format!(
-                    "function at position {i} declares index u0:{} — they must agree",
-                    f.index
-                ));
-            }
-            crate::clif_decode::signature_of(f, cc)
-        })
+        .map(|(i, f)| crate::clif_decode::signature_of(f, i, cc))
         .collect::<Result<Vec<_>, String>>()?;
     let mut func_ids = Vec::with_capacity(functions.len());
     for (i, sig) in sigs.iter().enumerate() {
@@ -138,7 +130,7 @@ pub(crate) fn compile(
     let shapes = sigs.iter().map(|s| (s.params.len(), !s.returns.is_empty())).collect();
 
     let mut decoded = Vec::with_capacity(functions.len());
-    for f in functions {
+    for (i, f) in functions.iter().enumerate() {
         let mut declare = |callee: &base_types::clif::Callee,
                            sig: &cranelift_codegen::ir::Signature| {
             match callee {
@@ -149,13 +141,12 @@ pub(crate) fn compile(
                 // registers.
                 base_types::clif::Callee::Import(name) => {
                     let import = crate::imports::lookup(name).ok_or_else(|| {
-                        format!("u0:{} imports {name}, which base does not provide", f.index)
+                        format!("u0:{i} imports {name}, which base does not provide")
                     })?;
                     let want = crate::clif_decode::signature(&import.params, import.result, cc);
                     if *sig != want {
                         return Err(format!(
-                            "u0:{} declares {name} as {sig}, but base provides it as {want}",
-                            f.index
+                            "u0:{i} declares {name} as {sig}, but base provides it as {want}"
                         ));
                     }
                     let id = module
@@ -175,15 +166,14 @@ pub(crate) fn compile(
                         })?;
                     if sig != want {
                         return Err(format!(
-                            "u0:{} declares its call to u0:{n} as {sig}, but u0:{n} takes {want}",
-                            f.index
+                            "u0:{i} declares its call to u0:{n} as {sig}, but u0:{n} takes {want}"
                         ));
                     }
                     Ok(Resolved { id: id.as_u32(), colocated: true })
                 }
             }
         };
-        decoded.push(crate::clif_decode::decode_function(f, cc, &mut declare)?);
+        decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut declare)?);
     }
 
     let dump = std::env::var("BASE_DISASM").is_ok();

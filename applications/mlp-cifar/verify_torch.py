@@ -39,7 +39,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from train import (  # noqa: E402
     BATCH, C, CLASSES, H, IN, LR, find_artifact, load_cifar,
 )
-import entries
 
 import py_base  # noqa: E402
 
@@ -75,8 +74,6 @@ def main() -> None:
 
     path = find_artifact()
     art = py_base.load_artifact(path)
-    art_entries = entries.entries(os.path.basename(path).removesuffix(".json"))
-    ex = art_entries
     xtr, ytr, xte, yte = load_cifar()
 
     rng = np.random.default_rng(0)
@@ -89,7 +86,7 @@ def main() -> None:
     base = py_base.Base(art)
     assert len(blob) == struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
 
-    base.execute_into(art_entries["main"], blob, bytearray(0))
+    base.execute("main", blob, bytearray(0))
     nil = bytearray(0)
 
     # The identical network in PyTorch: no biases, silu, and the *padded* output
@@ -138,13 +135,13 @@ def main() -> None:
     # first, so -inf there is what makes it a 10-class distribution.  Forgetting
     # it trains a 32-class model that still looks plausible.
     bias = np.where(np.arange(C) < CLASSES, 0.0, -1.0e30).astype(np.float32)
-    base.execute_into(ex["uploadBias"], bias.tobytes(), nil)
+    base.execute("uploadBias", bias.tobytes(), nil)
 
-    base.execute_into(ex["uploadX"], xb.tobytes(), nil)
-    base.execute_into(ex["uploadOneHot"], onehot(yb).tobytes(), nil)
-    base.execute_into(ex["runFwd"], b"", nil)
+    base.execute("uploadX", xb.tobytes(), nil)
+    base.execute("uploadOneHot", onehot(yb).tobytes(), nil)
+    base.execute("runFwd", b"", nil)
     lbuf = bytearray(BATCH * C * 4)
-    base.execute_into(ex["fetchLogits"], b"", lbuf)
+    base.execute("fetchLogits", b"", lbuf)
     got = np.frombuffer(bytes(lbuf), dtype="<f4").reshape(BATCH, C)
 
     xt = torch.from_numpy(xb).to(dev)
@@ -164,16 +161,16 @@ def main() -> None:
     dlog[:, :CLASSES] = p
     dlog[np.arange(BATCH), yb] -= 1.0
     dlbuf = bytearray(BATCH * C * 4)
-    base.execute_into(ex["fetchDlog"], b"", dlbuf)
+    base.execute("fetchDlog", b"", dlbuf)
     agree("dlog", np.frombuffer(bytes(dlbuf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES],
           dlog[:, :CLASSES])
-    base.execute_into(ex["runBwd"], b"", nil)
+    base.execute("runBwd", b"", nil)
 
     dw1_buf = bytearray(H * IN * 4)
     dw2_buf = bytearray(C * H * 4)
     # `runBwd` ends with the optimiser, so the gradients are still resident.
-    base.execute_into(ex["fetchDw1"], b"", dw1_buf)
-    base.execute_into(ex["fetchDw2"], b"", dw2_buf)
+    base.execute("fetchDw1", b"", dw1_buf)
+    base.execute("fetchDw2", b"", dw2_buf)
     dw1 = np.frombuffer(bytes(dw1_buf), dtype="<f4").reshape(H, IN)
     dw2 = np.frombuffer(bytes(dw2_buf), dtype="<f4").reshape(C, H)
 
@@ -197,9 +194,9 @@ def main() -> None:
         n -= n % BATCH
         loss, right = 0.0, 0
         for i in range(0, n, BATCH):
-            base.execute_into(ex["uploadX"], np.ascontiguousarray(xte[i:i + BATCH]).tobytes(), nil)
-            base.execute_into(ex["runFwd"], b"", nil)
-            base.execute_into(ex["fetchLogits"], b"", lbuf)
+            base.execute("uploadX", np.ascontiguousarray(xte[i:i + BATCH]).tobytes(), nil)
+            base.execute("runFwd", b"", nil)
+            base.execute("fetchLogits", b"", lbuf)
             lg = np.frombuffer(bytes(lbuf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES]
             q = np.exp(lg - lg.max(axis=1, keepdims=True))
             q /= q.sum(axis=1, keepdims=True)
@@ -222,10 +219,10 @@ def main() -> None:
     print(f"\ntraining both for {STEPS * BATCH} samples on the same data order")
     t0 = time.perf_counter()
     for step in order:
-        base.execute_into(ex["uploadX"], np.ascontiguousarray(xtr[step]).tobytes(), nil)
-        base.execute_into(ex["uploadOneHot"], onehot(ytr[step]).tobytes(), nil)
-        base.execute_into(ex["runFwd"], b"", nil)
-        base.execute_into(ex["runBwd"], b"", nil)
+        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes(), nil)
+        base.execute("uploadOneHot", onehot(ytr[step]).tobytes(), nil)
+        base.execute("runFwd", b"", nil)
+        base.execute("runBwd", b"", nil)
     t_base = (time.perf_counter() - t0) / (STEPS * BATCH)
 
     # The same model lowered to cuBLAS for its five GEMMs — identical vendor
@@ -252,10 +249,10 @@ def main() -> None:
     # run by mistake, only the undisplayed digits would say so.
     t0 = time.perf_counter()
     for step in order[:BLAS_STEPS]:
-        base.execute_into(ex["uploadX"], np.ascontiguousarray(xtr[step]).tobytes(), nil)
-        base.execute_into(ex["uploadOneHot"], onehot(ytr[step]).tobytes(), nil)
-        base.execute_into(ex["runFwdBlas"], b"", nil)
-        base.execute_into(ex["runBwdBlas"], b"", nil)
+        base.execute("uploadX", np.ascontiguousarray(xtr[step]).tobytes(), nil)
+        base.execute("uploadOneHot", onehot(ytr[step]).tobytes(), nil)
+        base.execute("runFwdBlas", b"", nil)
+        base.execute("runBwdBlas", b"", nil)
     t_blas = (time.perf_counter() - t0) / (BLAS_STEPS * BATCH)
 
     print(f"\nbase, cuBLAS lowering: {t_blas * 1e6:.1f} us/sample "

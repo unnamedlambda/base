@@ -9,8 +9,6 @@ use base::{init_tracing, Base, Artifact};
 
 const QWEN2_BINARY: &[u8] = build_support::artifact!("Qwen2Algorithm/qwen2");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 38;
 
 fn main() {
     init_tracing();
@@ -33,6 +31,6 @@ fn main() {
     let mut base = Base::new(artifact).expect("Base::new");
 
     eprintln!("Starting qwen2 (weights={weights_path}, tokenizer={tokenizer_path})");
-    base.execute_into(MAIN, &data, &mut [])
+    base.execute("main", &data, &mut [])
         .expect("qwen2 run");
 }

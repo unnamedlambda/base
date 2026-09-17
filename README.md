@@ -2,7 +2,7 @@
 
 Base is an execution system that delivers performance comparable to idiomatic Rust while allowing control logic to be specified in a language with a strong type system — without introducing type checking or interpreter overhead at runtime.
 
-Programs are defined by an `Artifact`: Cranelift IR functions, the size of the memory they run in, and the data segments that memory starts with. An entry point is a function index. This artifact is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
+Programs are defined by an `Artifact`: Cranelift IR functions, the size of the memory they run in, and the data segments that memory starts with. An entry point is a function the artifact exports by name. This artifact is data — serializable as JSON, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
 
 The system is completely portable — all dependencies build from `cargo` with no manual system library installation, and only portable Rust features are used. Cranelift provides a JIT compiler similar to LLVM but without the system dependency — it is pure Rust, built from Cargo. Backend code quality is comparable to LLVM, which means optimization lives in Lean: emit good IR, and the generated code is fast. CPU, GPU, file, network, and database primitives are exposed through a shared memory space and directly callable from the JIT-compiled IR.
 
@@ -14,13 +14,14 @@ An `Artifact` contains:
 
 ```
 Artifact { functions, memory_size, data }
+Function { export_name, sigs, fns, blocks }
 ```
 
-**functions** are the compiled code, one Cranelift IR function each, called by their position in the list.
+**functions** are the compiled code, one Cranelift IR function each. A function calls another by its position in the list; a host calls one by its **export_name**, and a function without one is the program's own.
 
 **memory_size** is the memory they run in, and **data** what it starts with: segments of bytes generated at build time (shader sources, binding descriptors, PTX kernels, etc.) at the addresses they belong at. Memory is zero everywhere a segment does not cover, so an artifact ships what it sets rather than an image of the whole.
 
-An **entry point** is a function index. A program answers through the out buffer its caller passes. Multi-stage flows (e.g., GPU load → prep → infer pipelines) are several entry points over one compilation and one memory; which index is which stage is the generator's knowledge, and a host names those numbers in a library of its own rather than reading them from the artifact.
+An **entry point** is an exported function, called by its name. A program answers through the out buffer its caller passes. Multi-stage flows (e.g., GPU load → prep → infer pipelines) are several entry points over one compilation and one memory. Names are unique within an artifact, and the generator is free to reorder functions: positions never leave the artifact, so a host is never written against one.
 
 At build time, Lean 4 generates this artifact as JSON. The Rust build script deserializes it into typed structs and emits a binary artifact encoding alongside the JSON. At runtime, Cranelift JIT-compiles the IR once and executes algorithms against shared memory — no interpreter, no GC, no serialization layer in the hot path.
 
@@ -29,10 +30,8 @@ At build time, Lean 4 generates this artifact as JSON. The Rust build script des
 ### One-shot execution
 
 ```rust
-const MAIN: u32 = 1;   // the index this artifact's generator gave its entry point
-
 let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
-base::run(artifact, MAIN)?;
+base::run(artifact, "main")?;
 ```
 
 ### Compile-once, execute-many with payloads
@@ -40,23 +39,19 @@ base::run(artifact, MAIN)?;
 For workloads that benefit from persistent state and dynamic data, the `Base` struct provides JIT-once semantics with zero-copy data passing:
 
 ```rust
-// The entry points of this artifact, as its generator numbered them
-const MAIN: u32 = 1;
-const PREP: u32 = 2;
-const INFER: u32 = 3;
-
 let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
 let mut base = Base::new(artifact)?;            // JIT compile once
 
-// Pass dynamic data via pointer — no copying into shared memory
-let status = base.execute(MAIN, &data)?;
-
-// Or with an output buffer for zero-copy results
-base.execute_into(MAIN, &payload, &mut output)?;
+// Input and output are the caller's buffers, passed by pointer: no copying
+let status = base.execute("main", &data, &mut [])?;
+base.execute("main", &payload, &mut output)?;
 
 // Multi-stage flows are further entry points over the same memory
-base.execute(PREP, &input)?;
-base.execute_into(INFER, b"", &mut output)?;
+base.execute("prep", &input, &mut [])?;
+base.execute("infer", b"", &mut output)?;
+
+// What a program left in its own memory
+let bytes = &base.memory()[offset..offset + len];
 ```
 
 An entry point returns an `i64` status — the one value a program answers without a host and a program agreeing on a place in memory to leave it. Nothing declares it: a body whose `return` carries a value answers with it, a body whose `return` carries nothing answers `0`, and the runtime reads that off the body.
@@ -195,7 +190,7 @@ Cranelift IR can call these directly via `%cl_*` function references:
 | **Threading** | `cl_thread_init`, `cl_thread_spawn`, `cl_thread_join`, `cl_thread_call`, `cl_thread_cleanup` |
 | **Hash table** | `ht_create`, `ht_insert`, `ht_lookup`, `ht_count`, `ht_get_entry`, `ht_increment` |
 
-The `_ptr` variants (`cl_gpu_upload_ptr`, `cl_gpu_download_ptr`, `cl_cuda_upload_ptr`, `cl_cuda_download_ptr`) transfer data directly between caller-provided pointers and GPU/CUDA buffers, enabling zero-copy integration with the `execute_into` payload pattern.
+The `_ptr` variants (`cl_gpu_upload_ptr`, `cl_gpu_download_ptr`, `cl_cuda_upload_ptr`, `cl_cuda_download_ptr`) transfer data directly between caller-provided pointers and GPU/CUDA buffers, enabling zero-copy integration with the caller's input and output buffers.
 
 ## Building
 

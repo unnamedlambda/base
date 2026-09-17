@@ -26,7 +26,6 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import harness
 import py_base
-import entries
 
 try:
     import pandas as pd
@@ -59,9 +58,9 @@ def _run_revagg(engine, alg, df, data: bytes, rounds: int, n: int) -> harness.Be
     ))
     expected = float((df["price"] * df["quantity"]).groupby(df["category"]).sum().max())
 
-    engine.execute_into(alg, data, out)  # warmup
+    engine.execute(alg, data, out)  # warmup
     pybase_ms = harness.median_of(rounds, lambda: harness.time_ms(
-        lambda: engine.execute_into(alg, data, out)
+        lambda: engine.execute(alg, data, out)
     ))
 
     pybase_result = struct.unpack("<d", bytes(out))[0]
@@ -87,9 +86,9 @@ def _run_filter_revagg(engine, alg, df, data: bytes, rounds: int, n: int) -> har
     pandas_ms = harness.median_of(rounds, lambda: harness.time_ms(pandas_filter))
     expected = pandas_filter()
 
-    engine.execute_into(alg, data, out)  # warmup
+    engine.execute(alg, data, out)  # warmup
     pybase_ms = harness.median_of(rounds, lambda: harness.time_ms(
-        lambda: engine.execute_into(alg, data, out)
+        lambda: engine.execute(alg, data, out)
     ))
 
     pybase_result = struct.unpack("<d", bytes(out))[0]
@@ -109,13 +108,11 @@ def run(revagg_path: str, filter_path: str, rounds: int) -> list[harness.BenchRe
         return []
 
     art_rev = py_base.load_artifact(revagg_path)
-    art_rev_entries = entries.entries(os.path.basename(revagg_path).removesuffix(".json"))
     eng_rev = py_base.Base(art_rev)
-    alg_rev = art_rev_entries["main"]
+    alg_rev = "main"
     art_filter = py_base.load_artifact(filter_path)
-    art_filter_entries = entries.entries(os.path.basename(filter_path).removesuffix(".json"))
     eng_filter = py_base.Base(art_filter)
-    alg_filter = art_filter_entries["main"]
+    alg_filter = "main"
     results = []
     rng = np.random.default_rng(42)
 

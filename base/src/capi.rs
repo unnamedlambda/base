@@ -6,8 +6,9 @@
 //! needs no Rust of its own.
 //!
 //! An artifact arrives as the JSON a generator already prints, and an entry
-//! point as its index. Nothing here decides anything about a program: it is
-//! `Base::new` and `Base::execute_into` with pointers instead of types.
+//! point is called by the name the artifact exports it as. Nothing here decides
+//! anything about a program: it is `Base::new`, `Base::execute` and
+//! `Base::memory` with pointers instead of types.
 //!
 //! # Results
 //!
@@ -132,11 +133,12 @@ pub unsafe extern "C" fn base_new(artifact_json: *const u8, len: usize) -> *mut 
     })
 }
 
-/// Call one entry point of this `Base`. `0` on success, `-1` on failure.
+/// Call the entry point this `Base` exports as `name`. `0` on success, `-1` on
+/// failure — including a name the artifact does not export.
 ///
-/// `fn_idx` is the entry point's function index. `data` is the input the
-/// program is handed and `out` the buffer it answers in; either may be
-/// `(null, 0)` when a program uses neither.
+/// `name` is UTF-8 and not NUL-terminated. `data` is the input the program is
+/// handed and `out` the buffer it answers in; either may be `(null, 0)` when a
+/// program uses neither.
 ///
 /// `status` takes the value the program returned, or `0` from one that returns
 /// nothing, and may be null when the caller does not want it. Base passes it
@@ -149,13 +151,14 @@ pub unsafe extern "C" fn base_new(artifact_json: *const u8, len: usize) -> *mut 
 ///
 /// # Safety
 ///
-/// `handle` must be a live pointer from [`base_new`]. Each buffer must point to
-/// as many bytes as its length claims, or be null with length zero. `out` must
-/// not alias `data`.
+/// `handle` must be a live pointer from [`base_new`]. `name` and each buffer
+/// must point to as many bytes as their lengths claim, or be null with length
+/// zero. `out` must not alias `data`.
 #[no_mangle]
 pub unsafe extern "C" fn base_execute(
     handle: *mut Base,
-    fn_idx: u32,
+    name: *const u8,
+    name_len: usize,
     data: *const u8,
     data_len: usize,
     out: *mut u8,
@@ -168,6 +171,14 @@ pub unsafe extern "C" fn base_execute(
             set_error("handle is null");
             return -1;
         };
+        let Some(name) = slice_in(name, name_len) else {
+            set_error("name is null with a non-zero length");
+            return -1;
+        };
+        let Ok(name) = std::str::from_utf8(name) else {
+            set_error("name is not UTF-8");
+            return -1;
+        };
         let Some(data) = slice_in(data, data_len) else {
             set_error("data is null with a non-zero length");
             return -1;
@@ -176,7 +187,7 @@ pub unsafe extern "C" fn base_execute(
             set_error("out is null with a non-zero length");
             return -1;
         };
-        match base.execute_into(fn_idx, data, out) {
+        match base.execute(name, data, out) {
             Ok(answered) => {
                 if let Some(status) = status.as_mut() {
                     *status = answered;
@@ -209,7 +220,7 @@ pub unsafe extern "C" fn base_execute(
 #[no_mangle]
 pub unsafe extern "C" fn base_memory(handle: *const Base, len: *mut usize) -> *const u8 {
     let memory = match handle.as_ref() {
-        Some(base) => base.memory_bytes(),
+        Some(base) => base.memory(),
         None => &[],
     };
     if let Some(len) = len.as_mut() {
@@ -331,6 +342,7 @@ mod tests {
             unsafe {
                 base_execute(
                     std::ptr::null_mut(),
+                    std::ptr::null(),
                     0,
                     std::ptr::null(),
                     0,
@@ -347,6 +359,29 @@ mod tests {
         assert_eq!(len, 0);
         // Freeing null is a no-op, not a double free.
         unsafe { base_free(std::ptr::null_mut()) };
+    }
+
+    /// A name the artifact does not export is a failure that says which name.
+    #[test]
+    fn executing_a_name_nothing_exports_is_refused() {
+        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
+        assert!(!handle.is_null(), "{}", last_error());
+        let name = "infer";
+        let rc = unsafe {
+            base_execute(
+                handle,
+                name.as_ptr(),
+                name.len(),
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, -1);
+        assert!(last_error().contains("\"infer\""), "{}", last_error());
+        unsafe { base_free(handle) };
     }
 
     /// A null pointer carrying a length is a caller bug, and is refused before

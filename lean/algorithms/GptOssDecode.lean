@@ -1219,7 +1219,7 @@ def dShippedBodies : List Prog.Body := [ dMainFn ]
 def dClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: dShippedBodies.zipIdx.map
-      (fun p => Prog.compileProg (p.2 + 1) p.1)
+      (fun p => Prog.entry "main" (Prog.compileProg (p.2 + 1) p.1))
 
 def u32le (v : Nat) : List UInt8 :=
   [ UInt8.ofNat (v % 256), UInt8.ofNat (v / 256 % 256)

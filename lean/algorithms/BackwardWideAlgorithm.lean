@@ -699,24 +699,24 @@ def fetchDwFn : Prog V L Unit := do
 def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadFn,
-     Prog.compileProg 2 runFn,
-     Prog.compileProg 3 fetchFn,
-     Prog.compileProg 4 runDwFn,
-     Prog.compileProg 5 fetchDwFn,
-     Prog.compileProg 6 runSiluBwdFn,
-     Prog.compileProg 7 runTFn,
-     Prog.compileProg 8 runQFn,
-     Prog.compileProg 9 runSFn,
-     Prog.compileProg 10 runDxrFn,
-     Prog.compileProg 11 fetchDxrFn,
-     Prog.compileProg 12 runFwdFn,
-     Prog.compileProg 13 runYFn,
-     Prog.compileProg 14 runDyFn,
-     Prog.compileProg 15 runSgdFn,
-     Prog.compileProg 16 fetchYFn,
-     Prog.compileProg 17 runAdjFn,
-     Prog.compileProg 18 runBwdAllFn]
+     Prog.entry "main" (Prog.compileProg 1 loadFn),
+     Prog.entry "run" (Prog.compileProg 2 runFn),
+     Prog.entry "fetch" (Prog.compileProg 3 fetchFn),
+     Prog.entry "runDw" (Prog.compileProg 4 runDwFn),
+     Prog.entry "fetchDw" (Prog.compileProg 5 fetchDwFn),
+     Prog.entry "runSiluBwd" (Prog.compileProg 6 runSiluBwdFn),
+     Prog.entry "runT" (Prog.compileProg 7 runTFn),
+     Prog.entry "runQ" (Prog.compileProg 8 runQFn),
+     Prog.entry "runS" (Prog.compileProg 9 runSFn),
+     Prog.entry "runDxr" (Prog.compileProg 10 runDxrFn),
+     Prog.entry "fetchDxr" (Prog.compileProg 11 fetchDxrFn),
+     Prog.entry "runFwd" (Prog.compileProg 12 runFwdFn),
+     Prog.entry "runY" (Prog.compileProg 13 runYFn),
+     Prog.entry "runDy" (Prog.compileProg 14 runDyFn),
+     Prog.entry "runSgd" (Prog.compileProg 15 runSgdFn),
+     Prog.entry "fetchY" (Prog.compileProg 16 fetchYFn),
+     Prog.entry "runAdj" (Prog.compileProg 17 runAdjFn),
+     Prog.entry "runBwdAll" (Prog.compileProg 18 runBwdAllFn)]
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -756,22 +756,6 @@ def setup (clif : List FuncData) : Artifact := {
   memory_size := MEM_SIZE
   initial_memory := initialMemory
 }
-
-/-- The entry points this artifact has, by the name a host knows them by. The
-    artifact carries only their indices; this list is what a host is written
-    against, and what the arity theorem below reads. -/
-def entryAlg : UInt32 := 1
-
-def entryPoints : List (String × UInt32) :=
-  [("run", 2), ("fetch", 3),
-   ("runDw", 4), ("fetchDw", 5),
-   ("runSiluBwd", 6), ("runT", 7),
-   ("runQ", 8), ("runS", 9),
-   ("runDxr", 10), ("fetchDxr", 11),
-   ("runFwd", 12), ("runY", 13),
-   ("runDy", 14), ("runSgd", 15),
-   ("fetchY", 16), ("runAdj", 17),
-   ("runBwdAll", 18)]
 
 def artifacts (clif : List FuncData) : Array Json :=
   #[ toJsonArtifact "backward_wide" (setup clif) ]

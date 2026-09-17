@@ -20,7 +20,6 @@ import time
 
 import numpy as np
 import py_base
-import entries
 
 MD, MDFF, NE, MUSED = 128, 256, 32, 2
 
@@ -50,17 +49,15 @@ def main():
     ws = [(u(MDFF, MD), u(MDFF, MD), u(MD, MDFF)) for _ in range(NE)]
 
     art = py_base.load_artifact(sys.argv[1])
-    art_entries = entries.entries(os.path.basename(sys.argv[1]).removesuffix(".json"))
-    ex = art_entries
     blob = (np.ones(NE, dtype=np.float32).tobytes() + wr.tobytes() + x.tobytes()
             + b"".join(m.astype("<f4").ravel().tobytes() for w in ws for m in w))
     base = py_base.Base(art)
-    base.execute_into(art_entries["main"], blob, bytearray(0))
+    base.execute("main", blob, bytearray(0))
 
     # 1. Route.
-    base.execute_into(ex["runRouter"], b"", bytearray(0))
+    base.execute("runRouter", b"", bytearray(0))
     g = bytearray(NE * 4)
-    base.execute_into(ex["fetchGate"], b"", g)
+    base.execute("fetchGate", b"", g)
     gate = np.frombuffer(bytes(g), dtype="<f4")
 
     ref_gate = softmax((wr @ x).astype(np.float32))
@@ -69,15 +66,15 @@ def main():
     # 2. Rank, and tell the device which weights the slots are.
     chosen = np.argsort(-gate)[:MUSED].astype("<u4")
     print(f"chosen   : experts {list(chosen)}  gates {gate[chosen]}")
-    base.execute_into(ex["bindExperts"], chosen.tobytes(), bytearray(0))
+    base.execute("bindExperts", chosen.tobytes(), bytearray(0))
     packed = np.zeros(32, dtype=np.float32)      # the buffer is a warp wide
     packed[:MUSED] = gate[chosen]
-    base.execute_into(ex["uploadGates"], packed.tobytes(), bytearray(0))
+    base.execute("uploadGates", packed.tobytes(), bytearray(0))
 
     # 3. Run the two slots.
-    base.execute_into(ex["runExperts"], b"", bytearray(0))
+    base.execute("runExperts", b"", bytearray(0))
     o = bytearray(MD * 4)
-    base.execute_into(ex["fetchOut"], b"", o)
+    base.execute("fetchOut", b"", o)
     got = np.frombuffer(bytes(o), dtype="<f4")
 
     ref = np.zeros(MD, dtype=np.float32)
@@ -102,15 +99,15 @@ def main():
     # sequence that ran and the dense reading is an extrapolation, not a guess.
     def t(fn, reps=200):
         for _ in range(5):
-            base.execute_into(fn, b"", bytearray(0))
+            base.execute(fn, b"", bytearray(0))
         t0 = time.perf_counter()
         for _ in range(reps):
-            base.execute_into(fn, b"", bytearray(0))
+            base.execute(fn, b"", bytearray(0))
         return (time.perf_counter() - t0) / reps * 1e6
 
-    t_route = t(ex["runRouter"])
-    t_bind = t(ex["bindExperts"])
-    t_exp = t(ex["runExperts"])
+    t_route = t("runRouter")
+    t_bind = t("bindExperts")
+    t_exp = t("runExperts")
     per_expert = t_exp / MUSED
     print()
     print(f"router   : {t_route:7.1f} us   ({len(chosen)} of {NE} scored)")

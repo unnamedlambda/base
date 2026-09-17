@@ -238,7 +238,7 @@ def clifIR : Except String (List FuncData) :=
   Prog.program <|
     (.ok noopFunction :: shippedBodies.zipIdx.map
       (fun p => Prog.compileProg (p.2 + 1) p.1))
-    ++ [Prog.compileProg 41 (Prog.sequenceWrapper wrapperCallees)]
+    ++ [Prog.entry "main" (Prog.compileProg 41 (Prog.sequenceWrapper wrapperCallees))]
 
 -- ── Initial memory ───────────────────────────────────────────────────────────
 

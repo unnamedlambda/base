@@ -629,26 +629,41 @@ def bwdBlasSteps : List (Sum (Nat × Nat) (Nat × Nat × Nat × Nat × Nat × Na
 /-- The bodies this artifact ships, in the order their function indices run.
     `clifIR` numbers them from this list, so an index cannot drift from the body
     it names. -/
-def shippedBodies : List Prog.Body :=
-  [ loadCode
-  , uploadCode xB (B * IN * 4), uploadCode ohB (B * C * 4)
-  , fetchCode logB (B * C * 4)
-  , launchSlot 0 GRID1, launchSlot 1 GRIDH, launchSlot 2 GRID2
-  , launchSlot 4 GRID2, launchSlot 5 GRIDDH, launchSlot 6 GRIDH
-  , launchSlot 7 GRID1, launchSlot 8 GRIDW1, launchSlot 9 GRIDW2
-  , fetchCode hB (B * H * 4), fetchCode z1B (B * H * 4)
-  , fetchCode dhB (B * H * 4), fetchCode adjB (B * H * 4)
-  , fetchCode dw1B (H * IN * 4), fetchCode dw2B (C * H * 4)
-  , fetchCode w1B (H * IN * 4), fetchCode w2B (C * H * 4)
-  , runSeq fwdSteps, runSeq bwdSteps
-  , launchSlot 3 B, uploadCode biasB (C * 4), fetchCode dlogB (B * C * 4)
-  , runMixed fwdBlasSteps, runMixed bwdBlasSteps ]
+def shippedBodies : List (String × Prog.Body) :=
+  [ ("main", loadCode)
+  , ("uploadX", uploadCode xB (B * IN * 4))
+  , ("uploadOneHot", uploadCode ohB (B * C * 4))
+  , ("fetchLogits", fetchCode logB (B * C * 4))
+  , ("runFwd1", launchSlot 0 GRID1)
+  , ("runAct", launchSlot 1 GRIDH)
+  , ("runFwd2", launchSlot 2 GRID2)
+  , ("runDw2", launchSlot 4 GRID2)
+  , ("runDh", launchSlot 5 GRIDDH)
+  , ("runAdj", launchSlot 6 GRIDH)
+  , ("runDw1", launchSlot 7 GRID1)
+  , ("runSgd1", launchSlot 8 GRIDW1)
+  , ("runSgd2", launchSlot 9 GRIDW2)
+  , ("fetchH", fetchCode hB (B * H * 4))
+  , ("fetchZ1", fetchCode z1B (B * H * 4))
+  , ("fetchDh", fetchCode dhB (B * H * 4))
+  , ("fetchAdj", fetchCode adjB (B * H * 4))
+  , ("fetchDw1", fetchCode dw1B (H * IN * 4))
+  , ("fetchDw2", fetchCode dw2B (C * H * 4))
+  , ("fetchW1", fetchCode w1B (H * IN * 4))
+  , ("fetchW2", fetchCode w2B (C * H * 4))
+  , ("runFwd", runSeq fwdSteps)
+  , ("runBwd", runSeq bwdSteps)
+  , ("runSoftmax", launchSlot 3 B)
+  , ("uploadBias", uploadCode biasB (C * 4))
+  , ("fetchDlog", fetchCode dlogB (B * C * 4))
+  , ("runFwdBlas", runMixed fwdBlasSteps)
+  , ("runBwdBlas", runMixed bwdBlasSteps) ]
 
 
 def clifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: shippedBodies.zipIdx.map
-      (fun p => Prog.compileProg (p.2 + 1) p.1)
+      (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
 /-- A `Nat` as four little-endian bytes. -/
 def u32le (v : Nat) : List UInt8 :=
@@ -2474,18 +2489,34 @@ def qRunFused : Prog V L Unit :=
   let _ ← cudaSync ptr
 
 /-- The bodies the quantised artifact carries, in the order it numbers them. -/
-def qShippedBodies : List Prog.Body :=
-  [ qLoadFn, qRunFn, qFetchFn 39 (DM * 4), qRunFwd, qUploadFn 40 (DM * 4)
-  , qFetchFn 43 (DM * DFF * 4), qUploadFn 12 (DM * DFF * 4)
-  , qRunUpto 30, qRunUpto 45, qRunUpto 60, qRunUpto 75
-  , qRunSynced, qCaptureFn, qReplayFn 1, qReplayFn 2, qReplayFn 4
-  , qRunUpto 31, qRunUpto 34, qRunUpto 35, qRunUpto 37, qRunFused ]
+def qShippedBodies : List (String × Prog.Body) :=
+  [ ("main", qLoadFn)
+  , ("runBlock", qRunFn)
+  , ("fetchOut", qFetchFn 39 (DM * 4))
+  , ("runFwd", qRunFwd)
+  , ("uploadDOut", qUploadFn 40 (DM * 4))
+  , ("fetchDW2", qFetchFn 43 (DM * DFF * 4))
+  , ("uploadW2", qUploadFn 12 (DM * DFF * 4))
+  , ("runTo30", qRunUpto 30)
+  , ("runTo45", qRunUpto 45)
+  , ("runTo60", qRunUpto 60)
+  , ("runTo75", qRunUpto 75)
+  , ("runSynced", qRunSynced)
+  , ("capture", qCaptureFn)
+  , ("replay", qReplayFn 1)
+  , ("replay2", qReplayFn 2)
+  , ("replay4", qReplayFn 4)
+  , ("runTo31", qRunUpto 31)
+  , ("runTo34", qRunUpto 34)
+  , ("runTo35", qRunUpto 35)
+  , ("runTo37", qRunUpto 37)
+  , ("runFwdFused", qRunFused) ]
 
 
 def qClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: qShippedBodies.zipIdx.map
-      (fun p => Prog.compileProg (p.2 + 1) p.1)
+      (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
 def qSlotBytes (t : String) : List UInt8 :=
   let b := t.toUTF8.toList ++ [0]
@@ -2829,16 +2860,20 @@ def mFetchFn (b n : Nat) : Prog V L Unit :=
 
 /-- The bodies the mixture-of-experts artifact carries, in the order it numbers
     them. -/
-def mShippedBodies : List Prog.Body :=
-  [ mLoadFn, mRunRange 0 mRouterTape.length, mFetchFn MGATE (NE * 4)
-  , mBindExperts, mUploadFn 3 128
-  , mRunRange mRouterTape.length moeTape.length, mFetchFn MOUT (MD * 4) ]
+def mShippedBodies : List (String × Prog.Body) :=
+  [ ("main", mLoadFn)
+  , ("runRouter", mRunRange 0 mRouterTape.length)
+  , ("fetchGate", mFetchFn MGATE (NE * 4))
+  , ("bindExperts", mBindExperts)
+  , ("uploadGates", mUploadFn 3 128)
+  , ("runExperts", mRunRange mRouterTape.length moeTape.length)
+  , ("fetchOut", mFetchFn MOUT (MD * 4)) ]
 
 
 def mClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: mShippedBodies.zipIdx.map
-      (fun p => Prog.compileProg (p.2 + 1) p.1)
+      (fun ((name, body), i) => Prog.entry name (Prog.compileProg (i + 1) body))
 
 def mInitialMemory : List UInt8 :=
   zeros QHOST_LEN_OFF ++ u32le MHOST_BYTES

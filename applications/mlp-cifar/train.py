@@ -29,7 +29,6 @@ import time
 
 import numpy as np
 import py_base
-import entries
 
 IN = 3072
 H = 256
@@ -43,15 +42,6 @@ LR = 1.0 / (256 * BATCH)
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 DATA = os.path.join(ROOT, "cifar-10-batches-bin")
-
-# Everything the driver calls, checked against `entries.py` before the run
-# rather than as a `KeyError` partway through it. The artifact carries only
-# function indices, so `entries.py` is what names them and what this checks --
-# keeping it in step with the generator is a thing a reader does, not a thing
-# the artifact can be asked.
-NEEDED = ["uploadX", "uploadOneHot", "uploadBias", "fetchLogits", "runFwd",
-          "runBwd", "fetchH"]
-
 
 LEAN = os.path.join(ROOT, "lean", "algorithms")
 GENERATOR = "genmlpcifaralgorithm"
@@ -69,10 +59,6 @@ def find_artifact() -> str:
     Lake decides what is stale by hashing contents, so this is a no-op when
     nothing changed. Re-running the generator keys on the executable lake
     produced, because that is a generator's only input.
-
-    The kernels are still checked afterwards, because an artifact generated
-    before one existed loads perfectly well and only fails on the missing key
-    partway through a run.
     """
     out = os.path.join(LEAN, ".lake", "artifacts", MODULE)
     exe = os.path.join(LEAN, ".lake", "build", "bin", GENERATOR)
@@ -91,11 +77,6 @@ def find_artifact() -> str:
     if not os.path.exists(path) or os.path.getmtime(path) <= os.path.getmtime(exe):
         os.makedirs(out, exist_ok=True)
         lake(exe, out, cwd=None)
-
-    missing = set(NEEDED) - set(entries.entries(
-        os.path.basename(path).removesuffix(".json")))
-    if missing:
-        sys.exit(f"entries.py does not name {sorted(missing)} for {MODULE}")
     return path
 
 
@@ -133,8 +114,6 @@ def load_cifar() -> tuple:
 def main() -> None:
     path = find_artifact()
     art = py_base.load_artifact(path)
-    art_entries = entries.entries(os.path.basename(path).removesuffix(".json"))
-    ex = art_entries
     print(f"artifact : {os.path.relpath(path, ROOT)}")
 
     xtr, ytr, xte, yte = load_cifar()
@@ -155,7 +134,7 @@ def main() -> None:
     assert len(blob) == want, f"host packing {len(blob)} vs Lean's hostIn {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's hostIn")
 
-    base.execute_into(art_entries["main"], blob, bytearray(0))
+    base.execute("main", blob, bytearray(0))
 
     nil = bytearray(0)
     logit_buf = bytearray(BATCH * C * 4)
@@ -163,13 +142,13 @@ def main() -> None:
     # Padding classes are masked here, once: `exp` underflows them to zero, so
     # they never enter the sum and their gradient is zero.
     bias = np.where(np.arange(C) < CLASSES, 0.0, -1.0e30).astype(np.float32)
-    base.execute_into(ex["uploadBias"], bias.tobytes(), nil)
+    base.execute("uploadBias", bias.tobytes(), nil)
 
     def forward(xb: np.ndarray) -> np.ndarray:
         """`xb` is (BATCH, IN); returns (BATCH, CLASSES) logits."""
-        base.execute_into(ex["uploadX"], xb.tobytes(), nil)
-        base.execute_into(ex["runFwd"], b"", nil)
-        base.execute_into(ex["fetchLogits"], b"", logit_buf)
+        base.execute("uploadX", xb.tobytes(), nil)
+        base.execute("runFwd", b"", nil)
+        base.execute("fetchLogits", b"", logit_buf)
         return np.frombuffer(bytes(logit_buf), dtype="<f4").reshape(BATCH, C)[:, :CLASSES]
 
     def softmax(lg: np.ndarray) -> np.ndarray:
@@ -213,9 +192,9 @@ def main() -> None:
             # gradient the forward pass already computed on the device.
             onehot[:] = 0.0
             onehot[np.arange(BATCH), ytr[idx]] = 1.0
-            base.execute_into(ex["uploadOneHot"], onehot.tobytes(), nil)
+            base.execute("uploadOneHot", onehot.tobytes(), nil)
             forward(xb)
-            base.execute_into(ex["runBwd"], b"", nil)
+            base.execute("runBwd", b"", nil)
         dt = time.perf_counter() - t0
         seen += CHUNK
         t_train += dt

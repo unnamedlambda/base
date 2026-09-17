@@ -214,25 +214,16 @@ def fetchFnCode : Prog V L Unit := do
 def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadFnCode,
-     Prog.compileProg 2 runFnCode,
-     Prog.compileProg 3 fetchFnCode,
-     Prog.compileProg 4 runLoopFnCode]
+     Prog.entry "main" (Prog.compileProg 1 loadFnCode),
+     Prog.entry "run" (Prog.compileProg 2 runFnCode),
+     Prog.entry "fetch" (Prog.compileProg 3 fetchFnCode),
+     Prog.entry "runLoop" (Prog.compileProg 4 runLoopFnCode)]
 
 def initialMemory : List UInt8 :=
   let p := AlgorithmLib.Kernel.ptxBytes siluK
   let q := AlgorithmLib.Kernel.ptxBytes siluLoopK
   zeros PTX_OFF ++ p ++ zeros (PTX_L_OFF - PTX_OFF - p.length)
     ++ q ++ zeros (MEM_SIZE - PTX_L_OFF - q.length)
-
-/-- The entry points this artifact has, by the name a host knows them by. The
-    artifact carries only their indices; this list is what a host is written
-    against, and what the arity theorem below reads. -/
-def entryAlg : UInt32 := 1
-
-def entryPoints : List (String × UInt32) :=
-  [("run", 2), ("fetch", 3),
-   ("runLoop", 4)]
 
 def artifacts (clif : List FuncData) : Array Json :=
   #[ toJsonArtifact "silu_warp" { functions := clif, memory_size := MEM_SIZE, initial_memory := initialMemory } ]

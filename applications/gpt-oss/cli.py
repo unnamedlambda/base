@@ -40,7 +40,6 @@ from layout import (TEXT_MAX, CAP_DEFAULT, CAP_MAX, D_CTX, D_INVT, D_SEED, D_LNM
                     D_OUT_NGEN, D_OUT_GEN, D_OUT_NTEXT, D_OUT_TEXTTOK,
                     D_OUT_BYTES, D_STARTPOS, check_layout, ln_min_p,
                     acquire_engine_lock)
-import entries
 
 # Harmony's control tokens. Constants of the chat format, and the only ids this
 # program names: everything else it handles is bytes in or ids out.
@@ -89,8 +88,6 @@ def main():
     import py_base
 
     art = py_base.load_artifact(args.artifact)
-    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
-    assert not art_entries, f"expected one entry and no extras; got {sorted(art_entries)}"
     base = py_base.Base(art)
     check_layout(base)
 
@@ -147,7 +144,7 @@ def main():
         buf[D_TEXT:D_TEXT + len(raw)] = raw
 
         out = bytearray(D_OUT_BYTES)
-        base.execute_into(art_entries["main"], bytes(buf), out)
+        base.execute("main", bytes(buf), out)
         b = bytes(out)
         n, _miss = struct.unpack_from("<Ii", b, 0)
         reply = b[D_OUT_TEXT:D_OUT_TEXT + n].decode("utf-8", "replace")

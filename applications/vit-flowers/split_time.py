@@ -12,26 +12,23 @@ streams. That gap is the point of the third number.
 """
 import os
 import sys, time, numpy as np, py_base
-import entries
 
 ART, D, N = sys.argv[1], sys.argv[2], 50
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
-art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
 base = py_base.Base(art)
-ex = art_entries
-base.execute_into(art_entries["main"], blob, bytearray(0))
+base.execute("main", blob, bytearray(0))
 for c in ["capture", "captureStep", "captureBlas", "captureRow"]:
-    base.execute_into(ex[c], b"", bytearray(0))
-base.execute_into(ex["reload"], blob, bytearray(0))
+    base.execute(c, b"", bytearray(0))
+base.execute("reload", blob, bytearray(0))
 
 
 def t(fn):
     for _ in range(5):
-        base.execute_into(ex[fn], b"", bytearray(0))
+        base.execute(fn, b"", bytearray(0))
     s = time.perf_counter()
     for _ in range(N):
-        base.execute_into(ex[fn], b"", bytearray(0))
+        base.execute(fn, b"", bytearray(0))
     return (time.perf_counter() - s) / N * 1e3
 
 

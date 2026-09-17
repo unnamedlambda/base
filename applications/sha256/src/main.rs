@@ -3,8 +3,6 @@ use base::{run, Artifact};
 const ARTIFACT_BINARY: &[u8] =
     build_support::artifact!("Sha256Algorithm/sha256_app");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
 const INPUT_FILENAME_OFF: usize = 0x100;
@@ -27,7 +25,7 @@ fn main() {
     );
     artifact.write(INPUT_FILENAME_OFF, &[path_bytes, &[0]].concat());
 
-    match run(artifact, MAIN) {
+    match run(artifact, "main") {
         Ok(_) => match std::fs::read_to_string("sha256_output.txt") {
             Ok(result) => print!("{}", result),
             Err(e) => eprintln!("Failed to read output: {}", e),

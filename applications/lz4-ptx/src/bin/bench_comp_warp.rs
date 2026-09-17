@@ -19,8 +19,6 @@ const ARTIFACTS: &str = env!("LEAN_ARTIFACT_DIR");
 const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lz4-ptx/corpus/silesia_all.bin");
 /// The prefix the shipped kernels bake in (`Lz4CompAlgorithm.corpusBytes`).
 const CORPUS_BYTES: usize = 209_715_200;
-/// The entry point, as Lz4CompAlgorithm numbers it.
-const MAIN: u32 = 1;
 
 fn run(name: &str, block: usize, original: &[u8]) {
     let data = original.to_vec();
@@ -37,7 +35,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let blocks = num_blk * out_stride;
     let mut out = vec![0u8; blocks + 48];
 
-    base.execute_into(MAIN, &data, &mut out).expect("run");
+    base.execute("main", &data, &mut out).expect("run");
     let geom = |i: usize| {
         i64::from_le_bytes(out[blocks + i * 8..blocks + i * 8 + 8].try_into().unwrap()) as u64
     };
@@ -90,12 +88,12 @@ fn run(name: &str, block: usize, original: &[u8]) {
         for &b in &out[bo..bo + clen] { ck ^= b as u64; ck = ck.wrapping_mul(0x100000001b3); }
     }
 
-    for _ in 0..2 { base.execute_into(MAIN, &data, &mut out).unwrap(); }
+    for _ in 0..2 { base.execute("main", &data, &mut out).unwrap(); }
     let runs = 5u64;
     let mut times = Vec::new();
     for _ in 0..runs {
         let t = Instant::now();
-        base.execute_into(MAIN, &data, &mut out).unwrap();
+        base.execute("main", &data, &mut out).unwrap();
         times.push(t.elapsed().as_secs_f64());
     }
     let dt: f64 = times.iter().sum();
@@ -104,7 +102,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     // Steady-state re-verification: zero the host buffer, execute once more, and
     // re-check every block byte-exact — proves the timed executes still do the work.
     out.iter_mut().for_each(|b| *b = 0);
-    base.execute_into(MAIN, &data, &mut out).unwrap();
+    base.execute("main", &data, &mut out).unwrap();
     let recheck = verify(&out, "steady-state");
     assert_eq!(recheck, total_comp, "steady-state compressed size drifted");
 

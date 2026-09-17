@@ -126,7 +126,7 @@ def tShippedBodies : List Prog.Body := [ tMainFn ]
 def tClifIR : Except String (List FuncData) :=
   Prog.program <|
     .ok noopFunction :: tShippedBodies.zipIdx.map
-      (fun (b, i) => Prog.compileProg (i + 1) b)
+      (fun (b, i) => Prog.entry "main" (Prog.compileProg (i + 1) b))
 
 def zeros (n : Nat) : List UInt8 := List.replicate n 0
 

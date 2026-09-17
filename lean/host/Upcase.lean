@@ -5,9 +5,9 @@ import ShipScan
 # An artifact that reads a file, changes it, and writes it
 
 Three effects and a loop, and all four of them are in the artifact: the read,
-the byte-by-byte transform, the write. Nothing here runs. `setup` and
-`algorithm` are values, and what performs them is whichever host is handed
-them — in-process from Lean by `UpcaseHost`, a Rust `build.rs`, or Python.
+the byte-by-byte transform, the write. Nothing here runs. `setup` is a value,
+exporting the program as `main`, and what performs it is whichever host is
+handed it — in-process from Lean by `UpcaseHost`, a Rust `build.rs`, or Python.
 
 This is the smallest program that makes the point, which is why it is a
 transform and not a copy: the loop over the file's bytes is compiled into the
@@ -87,7 +87,7 @@ def mainCode : Prog V L (V .i64) := do
   pure size
 
 def clifIrSource : Except String (List FuncData) :=
-  Prog.program [.ok noopFunction, Prog.compileProgStatus 1 mainCode]
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProgStatus 1 mainCode)]
 
 /-- The filenames the program reads from memory, laid into the region the
 layout reserved for them. -/
@@ -102,8 +102,6 @@ def setup (clif : List FuncData) : Artifact := {
   memory_size := layoutMeta.totalSize,
   initial_memory := payloads
 }
-
-def algorithm : UInt32 := IR.mainFnIdx
 
 /-- What a host runs: the artifact, once the body it carries has been checked. -/
 def shipped : Except String Artifact := do return setup (← clifIrSource)

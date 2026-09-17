@@ -18,9 +18,9 @@
 /* Declared rather than included: the runtime is a Rust cdylib and has no
  * header. These must match `base/src/capi.rs`. */
 void *base_new(const uint8_t *artifact_json, size_t len);
-int32_t base_execute(void *handle, uint32_t fn_idx, const uint8_t *data,
-                     size_t data_len, uint8_t *out, size_t out_len,
-                     int64_t *status);
+int32_t base_execute(void *handle, const uint8_t *name, size_t name_len,
+                     const uint8_t *data, size_t data_len, uint8_t *out,
+                     size_t out_len, int64_t *status);
 const uint8_t *base_memory(const void *handle, size_t *len);
 size_t base_last_error(uint8_t *buf, size_t cap);
 void base_free(void *handle);
@@ -63,13 +63,15 @@ LEAN_EXPORT lean_obj_res lean_base_new(b_lean_obj_arg artifact_json, lean_obj_ar
  *
  * The pair is the buffer and the status the program returned, which is the one
  * value it answers with without agreeing on a place in memory to leave it. */
-LEAN_EXPORT lean_obj_res lean_base_execute(size_t handle, uint32_t fn_idx,
+LEAN_EXPORT lean_obj_res lean_base_execute(size_t handle, b_lean_obj_arg name,
                                            b_lean_obj_arg data, size_t out_len,
                                            lean_obj_arg w) {
     (void)w;
     lean_object *out = lean_alloc_sarray(1, out_len, out_len);
     int64_t status = 0;
-    int32_t rc = base_execute((void *)handle, fn_idx,
+    int32_t rc = base_execute((void *)handle,
+                              (const uint8_t *)lean_string_cstr(name),
+                              lean_string_size(name) - 1,
                               lean_sarray_cptr(data), lean_sarray_size(data),
                               lean_sarray_cptr(out), out_len, &status);
     if (rc != 0) {

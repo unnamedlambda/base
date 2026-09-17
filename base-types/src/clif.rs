@@ -228,10 +228,14 @@ pub struct FnDecl {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Function {
-    /// The `u0:N` index. Must equal the function's position in the artifact's
-    /// function list; the runtime resolves call targets by treating it as a
-    /// `FuncId`.
-    pub index: u32,
+    /// The name a host calls this function by, if it is an entry point.
+    ///
+    /// A function's `u0:N` is its position in the artifact, which is the
+    /// generator's to choose and free to change; a name is what stays put. A
+    /// function without one is the program's own, reached only by its other
+    /// functions. Names are unique within an artifact, and a named function
+    /// has to be shaped like an entry point.
+    pub export_name: Option<String>,
     pub sigs: Vec<SigDecl>,
     pub fns: Vec<FnDecl>,
     pub blocks: Vec<Block>,

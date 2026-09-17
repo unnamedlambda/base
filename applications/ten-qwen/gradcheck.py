@@ -20,7 +20,6 @@ import py_base
 
 sys.path.insert(0, "applications/ten-qwen")
 import run as R
-import entries
 
 DM, NH, HD, SQ, DFF = R.DM, R.NH, R.HD, R.SQ, R.DFF
 ORDER = ["cos", "sin", "ones", "kc", "vc", "x", "g1", "g2",
@@ -30,32 +29,30 @@ ORDER = ["cos", "sin", "ones", "kc", "vc", "x", "g1", "g2",
 def main():
     path = sys.argv[1]
     art = py_base.load_artifact(path)
-    art_entries = entries.entries(os.path.basename(path).removesuffix(".json"))
-    ex = art_entries
     w = R.make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)      # spans the widest reduction
 
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER)
     base = py_base.Base(art)
-    base.execute_into(art_entries["main"], blob, bytearray(0))
+    base.execute("main", blob, bytearray(0))
 
     dout = np.ones(DM, dtype=np.float32)
-    base.execute_into(ex["uploadDOut"], dout.tobytes(), bytearray(0))
+    base.execute("uploadDOut", dout.tobytes(), bytearray(0))
 
     def loss(w2: np.ndarray) -> float:
-        base.execute_into(ex["uploadW2"], w2.astype("<f4").ravel().tobytes(),
+        base.execute("uploadW2", w2.astype("<f4").ravel().tobytes(),
                           bytearray(0))
-        base.execute_into(ex["runFwd"], b"", bytearray(0))
+        base.execute("runFwd", b"", bytearray(0))
         o = bytearray(DM * 4)
-        base.execute_into(ex["fetchOut"], b"", o)
+        base.execute("fetchOut", b"", o)
         return float(np.sum(np.frombuffer(bytes(o), dtype="<f4"), dtype=np.float64))
 
     # The derived gradient, from the run that also does the forward pass.
-    base.execute_into(ex["uploadW2"], w["w2"].astype("<f4").ravel().tobytes(),
+    base.execute("uploadW2", w["w2"].astype("<f4").ravel().tobytes(),
                       bytearray(0))
-    base.execute_into(ex["runBlock"], b"", bytearray(0))
+    base.execute("runBlock", b"", bytearray(0))
     g = bytearray(DM * DFF * 4)
-    base.execute_into(ex["fetchDW2"], b"", g)
+    base.execute("fetchDW2", b"", g)
     dW2 = np.frombuffer(bytes(g), dtype="<f4").reshape(DM, DFF)
 
     rng = np.random.default_rng(3)

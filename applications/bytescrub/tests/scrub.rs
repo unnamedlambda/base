@@ -14,8 +14,6 @@ use base::{Artifact, Base};
 
 const ARTIFACT: &[u8] = build_support::artifact!("ByteScrubAlgorithm/byte_scrub");
 
-/// Entry points of this artifact, as its generator numbers them.
-const MAIN: u32 = 1;
 
 /// The run `ByteScrub.code` ships: 256 vectors of sixteen bytes.
 const BYTES: usize = 4096;
@@ -23,9 +21,9 @@ const BYTES: usize = 4096;
 const OLD: u8 = 0;
 const NEW: u8 = b' ';
 
-fn scrub(base: &mut Base, fn_idx: u32, data: &[u8]) -> Vec<u8> {
+fn scrub(base: &mut Base, entry: &str, data: &[u8]) -> Vec<u8> {
     let mut out = vec![0xAAu8; BYTES];
-    base.execute_into(fn_idx, data, &mut out)
+    base.execute(entry, data, &mut out)
         .expect("execute failed");
     out
 }
@@ -68,7 +66,7 @@ fn scrubs_every_vector() {
     ];
 
     for (label, data) in &cases {
-        let got = scrub(&mut base, MAIN, data);
+        let got = scrub(&mut base, "main", data);
         let want: Vec<u8> = data
             .iter()
             .map(|&b| if b == OLD { NEW } else { b })

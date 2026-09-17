@@ -254,12 +254,12 @@ def STACK_DEPTH : Nat := 64
 def clifIR : Except String (List FuncData) :=
   Prog.program
     [.ok noopFunction,
-     Prog.compileProg 1 loadCode,
-     Prog.compileProg 2 prepCode,
+     Prog.entry "main" (Prog.compileProg 1 loadCode),
+     Prog.entry "prep" (Prog.compileProg 2 prepCode),
      Prog.compileProg 3 coreCode,
      Prog.compileProg 4 finalizeCode,
-     Prog.compileProg 5 (Prog.sequenceWrapper [3, 4]),
-     Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4]))]
+     Prog.entry "infer" (Prog.compileProg 5 (Prog.sequenceWrapper [3, 4])),
+     Prog.entry "stack" (Prog.compileProg 6 (Prog.sequenceWrapper (List.replicate STACK_DEPTH 3 ++ [4])))]
 
 def ptxBytes : List UInt8 := ptxSource.toUTF8.toList ++ [0]
 def bindDesc : List UInt8 := [3, 0, 0, 0, 6, 0, 0, 0, 4, 0, 0, 0]

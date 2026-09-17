@@ -7,6 +7,7 @@ compile_error!("base runs only on 64-bit little-endian targets");
 
 pub use base_types::Artifact;
 use std::{
+    collections::HashMap,
     pin::Pin,
     sync::{Arc, Once},
 };
@@ -34,6 +35,8 @@ pub struct Base {
     memory: Pin<Box<[u8]>>,
     mem_ptr: *mut u8,
     clif_fns: Option<Arc<Vec<jit::Compiled>>>,
+    /// Each exported function's index, by its name.
+    exports: HashMap<String, u32>,
     _module: Option<cranelift_jit::JITModule>,
 }
 
@@ -92,55 +95,42 @@ impl Base {
             let (module, fns) = jit::compile(&functions).map_err(Error::Clif)?;
             (Some(module), Some(fns))
         };
+        let exports = exports_of(&functions, clif_fns.as_deref().map_or(&[], |f| f))?;
 
         info!("Base instance created");
         Ok(Base {
             memory,
             mem_ptr,
             clif_fns,
+            exports,
             _module: module,
         })
     }
 
     /// The shared memory a program reads and writes, borrowed for as long as
     /// this `Base` is not executing.
-    pub fn memory_bytes(&self) -> &[u8] {
+    pub fn memory(&self) -> &[u8] {
         &self.memory
     }
 
-    /// Call the entry point at `fn_idx`, with nothing to answer through.
-    pub fn execute(&mut self, fn_idx: u32, data: &[u8]) -> Result<i64, Error> {
-        self.execute_into(fn_idx, data, &mut [])
-    }
-
-    /// Call the entry point at `fn_idx`, which answers in `out`, and answer
-    /// its status.
+    /// Call the entry point exported as `name` with `data` as its input, and
+    /// answer the status it returned. The entry answers in `out`, which it
+    /// sees directly: nothing is copied either way. The status is the value
+    /// the program returned, passed through without being read; a program
+    /// that returns nothing has status `0`.
     ///
-    /// Which index does what is the artifact generator's knowledge: base
-    /// checks only that the index exists and that the function it names is
-    /// shaped like an entry point. The status is the value the program
-    /// returned, passed through without being read; a program that returns
-    /// nothing has status `0`.
-    pub fn execute_into(
-        &mut self,
-        fn_idx: u32,
-        data: &[u8],
-        out: &mut [u8],
-    ) -> Result<i64, Error> {
-        let _span = info_span!("execute", fn_idx).entered();
+    /// A name is the only way a host reaches a function. A function's position
+    /// is the generator's to choose and free to change, so it never leaves the
+    /// artifact.
+    pub fn execute(&mut self, name: &str, data: &[u8], out: &mut [u8]) -> Result<i64, Error> {
+        let _span = info_span!("execute", name).entered();
         info!("starting execution");
 
-        // An artifact with no functions has an empty table rather than none, so
-        // calling into one is the same out-of-range refusal as any other index
-        // that names nothing — not a call that quietly does nothing.
-        let fns = self.clif_fns.clone().unwrap_or_default();
-        let fn_idx = fn_idx as usize;
-        if fn_idx >= fns.len() {
-            return Err(Error::Execution(format!(
-                "fn_idx {fn_idx} out of range (have {} fns)",
-                fns.len()
-            )));
-        }
+        let fn_idx = *self.exports.get(name).ok_or_else(|| {
+            Error::Execution(format!("the artifact exports no entry point named {name:?}"))
+        })? as usize;
+        // Only a program with functions can export a name.
+        let fns = self.clif_fns.clone().expect("an exported name implies compiled functions");
         // The FFI entry points a program calls — `cl_thread_init` and what
         // it spawns — reach the compiled functions through a thread-local,
         // with no `Base` in hand. Installing them here rather than at
@@ -155,6 +145,8 @@ impl Base {
         // base alone, and anything else is not shaped like an entry point
         // and would read registers of whatever happened to be in them.
         let f = fns[fn_idx];
+        // `exports_of` admitted only these shapes, so the last arm is a second
+        // line rather than the check.
         let status = unsafe {
             match (f.arity, f.answers) {
                 (5, true) => {
@@ -185,7 +177,8 @@ impl Base {
                 }
                 (n, _) => {
                     return Err(Error::Execution(format!(
-                        "fn_idx {fn_idx} takes {n} parameters; an entry point takes the memory base, optionally followed by the input and output buffers"
+                        "{name:?} takes {n} parameters; an entry point takes the memory base, \
+                         optionally followed by the input and output buffers"
                     )));
                 }
             }
@@ -195,10 +188,39 @@ impl Base {
     }
 }
 
-/// Compile an artifact and call one of its entry points, once.
-pub fn run(artifact: Artifact, fn_idx: u32) -> Result<i64, Error> {
+/// The exported names of `functions`, compiled as `compiled`.
+///
+/// A name is refused twice over: a second function under it would make which
+/// one a host reaches depend on the order a map was filled, and a named
+/// function that is not shaped like an entry point would be called with
+/// arguments it does not take.
+fn exports_of(
+    functions: &[base_types::clif::Function],
+    compiled: &[jit::Compiled],
+) -> Result<HashMap<String, u32>, Error> {
+    let mut exports = HashMap::new();
+    for (i, (f, c)) in functions.iter().zip(compiled).enumerate() {
+        let Some(name) = &f.export_name else { continue };
+        if c.arity != 5 && c.arity != 1 {
+            return Err(Error::Clif(format!(
+                "u0:{i} is exported as {name:?} but takes {} parameters; an entry point \
+                 takes the memory base, optionally followed by the input and output buffers",
+                c.arity
+            )));
+        }
+        if let Some(prev) = exports.insert(name.clone(), i as u32) {
+            return Err(Error::Clif(format!(
+                "u0:{prev} and u0:{i} are both exported as {name:?}"
+            )));
+        }
+    }
+    Ok(exports)
+}
+
+/// Compile an artifact and call the entry point it exports as `name`, once.
+pub fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
     let mut base = Base::new(artifact)?;
-    base.execute(fn_idx, &[])
+    base.execute(name, &[], &mut [])
 }
 
 pub fn init_tracing() {
@@ -227,7 +249,7 @@ pub fn clif_text(functions: &[base_types::clif::Function]) -> Result<String, Str
     let mut out = String::new();
     let isa = cranelift_native::builder().map_err(|e| e.to_string())?;
     let cc = cranelift_codegen::isa::CallConv::triple_default(isa.triple());
-    for f in functions {
+    for (i, f) in functions.iter().enumerate() {
         // Cranelift prints a callee as the `FuncId` it was declared with, so
         // the stub resolver records what each id stood for and the names are
         // put back afterward.
@@ -239,7 +261,7 @@ pub fn clif_text(functions: &[base_types::clif::Function]) -> Result<String, Str
             });
             Ok(clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false })
         };
-        let text = format!("{}", clif_decode::decode_function(f, cc, &mut declare)?);
+        let text = format!("{}", clif_decode::decode_function(f, i, cc, &mut declare)?);
         let mut text = text;
         for (i, name) in names.iter().enumerate().rev() {
             text = text.replace(&format!("= u0:{i} sig"), &format!("= {name} sig"));

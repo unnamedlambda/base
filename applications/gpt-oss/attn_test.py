@@ -40,7 +40,6 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from reference import Bank, bf16_to_f32, rms_norm  # noqa: E402
-import entries
 
 CAP = 128           # the sliding window, and so the ring cache's depth
 ROPE_N = 131072     # `GptOssAttention.ROPE_N`: the published height, all of it
@@ -80,8 +79,6 @@ def main():
     T = max(positions) + 1
 
     art = py_base.load_artifact(args.artifact)
-    art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
-    ex = art_entries
     base = py_base.Base(art)
     want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
 
@@ -110,7 +107,7 @@ def main():
     assert len(blob) == want, f"host layout disagrees: packed {len(blob)}, Lean says {want}"
     print(f"  host region {len(blob)/2**20:.1f} MiB matches the layout Lean declared")
 
-    base.execute_into(art_entries["main"], blob, bytearray(0))
+    base.execute("main", blob, bytearray(0))
 
     # ---- the reference, written the way the model defines it ----
     def project(row, narrow):
@@ -167,11 +164,11 @@ def main():
             # M_KVSTRIDE: the cache depth, published rather than emitted
             meta[7] = CAP * HD
             step = rows[pos].tobytes() + meta.tobytes()
-            base.execute_into(ex["uploadStep"], step, bytearray(0))
-            base.execute_into(ex["step"], step, bytearray(0))
+            base.execute("uploadStep", step, bytearray(0))
+            base.execute("step", step, bytearray(0))
             if pos in readback:
                 out = bytearray(H * 4)
-                base.execute_into(ex["fetchX"], b"", out)
+                base.execute("fetchX", b"", out)
                 kept[pos] = np.frombuffer(bytes(out), np.float32).copy()
             if pos % 100 == 0:
                 print(f"    position {pos}/{len(rows)-1}", end="\r", flush=True)
@@ -199,7 +196,7 @@ def main():
 
     # ---- the rotation and the packing, read straight out of the row ----
     qkv_out = bytearray(QKV * 4)
-    base.execute_into(ex["fetchQkv"], b"", qkv_out)
+    base.execute("fetchQkv", b"", qkv_out)
     gq = np.frombuffer(bytes(qkv_out), np.float32)
     rq, rk, rv = kv[T - 1]
     parts = [("Q, rotated", gq[:QO], rq.reshape(QO)),
