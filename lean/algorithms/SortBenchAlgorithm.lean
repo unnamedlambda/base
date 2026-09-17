@@ -132,7 +132,7 @@ def buildSetup (clif : List FuncData) : Artifact := {
 
 def buildAlgorithm : UInt32 := 1
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[toJsonArtifact "sort_algorithm" (buildSetup clif)]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[artifactEntry "sort_algorithm" (buildSetup clif)]
 
 end SortBench

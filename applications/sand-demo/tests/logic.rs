@@ -14,7 +14,7 @@ fn run_scenario(base: &mut Base, entry: &str) -> (i64, i64, i64) {
 
 #[test]
 fn sand_simulation() {
-    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
     for name in [
         "test_grain_falls",

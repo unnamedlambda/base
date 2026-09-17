@@ -5,7 +5,7 @@
 //! host — a Lean program that builds its own artifact and runs it in-process —
 //! needs no Rust of its own.
 //!
-//! An artifact arrives as the JSON a generator already prints, and an entry
+//! An artifact arrives as the CBOR a generator writes, and an entry
 //! point is called by the name the artifact exports it as. Nothing here decides
 //! anything about a program: it is `Base::new`, `Base::execute` and
 //! `Base::memory` with pointers instead of types.
@@ -102,24 +102,23 @@ unsafe fn slice_out<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
 /// Compile an artifact and take its memory. The result is owned by the caller
 /// and released with [`base_free`]; null means the call failed.
 ///
-/// `artifact_json` is a serialized [`Artifact`] — the JSON a generator writes.
+/// `artifact` is an encoded [`Artifact`] — the `.cbor` file a generator writes.
 ///
 /// # Safety
 ///
-/// `artifact_json` must point to `len` readable bytes, or be null with `len`
-/// zero.
+/// `artifact` must point to `len` readable bytes, or be null with `len` zero.
 #[no_mangle]
-pub unsafe extern "C" fn base_new(artifact_json: *const u8, len: usize) -> *mut Base {
+pub unsafe extern "C" fn base_new(artifact: *const u8, len: usize) -> *mut Base {
     guard(std::ptr::null_mut(), || {
         clear_error();
-        let Some(bytes) = slice_in(artifact_json, len) else {
-            set_error("artifact_json is null with a non-zero length");
+        let Some(bytes) = slice_in(artifact, len) else {
+            set_error("artifact is null with a non-zero length");
             return std::ptr::null_mut();
         };
-        let artifact: Artifact = match serde_json::from_slice(bytes) {
+        let artifact = match Artifact::from_bytes(bytes) {
             Ok(a) => a,
             Err(e) => {
-                set_error(format!("artifact is not an Artifact: {e}"));
+                set_error(e);
                 return std::ptr::null_mut();
             }
         };
@@ -275,12 +274,21 @@ pub unsafe extern "C" fn base_free(handle: *mut Base) {
 mod tests {
     use super::*;
 
+    use base_types::Segment;
+
     /// An artifact with no functions: enough to exercise the ABI without a JIT.
-    const EMPTY_ARTIFACT: &str = r#"{
-        "functions": [],
-        "memory_size": 64,
-        "data": [{"offset": 0, "bytes": [1, 2, 3, 4]}]
-    }"#;
+    fn empty_artifact() -> Vec<u8> {
+        Artifact {
+            functions: vec![],
+            memory_size: 64,
+            data: vec![Segment { offset: 0, bytes: vec![1, 2, 3, 4] }],
+        }
+        .to_bytes()
+    }
+
+    fn new_base(bytes: &[u8]) -> *mut Base {
+        unsafe { base_new(bytes.as_ptr(), bytes.len()) }
+    }
 
     fn last_error() -> String {
         let len = unsafe { base_last_error(std::ptr::null_mut(), 0) };
@@ -296,12 +304,15 @@ mod tests {
     /// back to the artifact.
     #[test]
     fn an_artifact_naming_a_field_that_is_gone_is_refused() {
-        const STALE: &str = r#"{
-            "functions": [],
-            "memory_size": 64,
-            "initial_memory": [1, 2, 3, 4]
-        }"#;
-        let handle = unsafe { base_new(STALE.as_ptr(), STALE.len()) };
+        use ciborium::Value;
+        let stale = Value::Map(vec![
+            (Value::Text("functions".into()), Value::Array(vec![])),
+            (Value::Text("memory_size".into()), Value::Integer(64.into())),
+            (Value::Text("initial_memory".into()), Value::Bytes(vec![1, 2, 3, 4])),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&stale, &mut bytes).unwrap();
+        let handle = new_base(&bytes);
         assert!(handle.is_null(), "a stale artifact should not build");
         assert!(
             last_error().contains("initial_memory"),
@@ -311,8 +322,8 @@ mod tests {
     }
 
     #[test]
-    fn an_artifact_round_trips_from_json_and_frees() {
-        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
+    fn an_artifact_builds_and_frees() {
+        let handle = new_base(&empty_artifact());
         assert!(!handle.is_null(), "{}", last_error());
         let mut len = 0usize;
         assert!(!unsafe { base_memory(handle, &mut len) }.is_null());
@@ -324,7 +335,7 @@ mod tests {
     /// is how a host confirms it got the artifact it sent.
     #[test]
     fn memory_answers_the_bytes_the_artifact_starts_with() {
-        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
+        let handle = new_base(&empty_artifact());
         assert!(!handle.is_null(), "{}", last_error());
         let mut len = 0usize;
         let memory = unsafe { base_memory(handle, &mut len) };
@@ -366,14 +377,15 @@ mod tests {
     #[test]
     fn a_memory_too_large_to_hold_is_refused() {
         for artifact in [
-            format!(r#"{{"functions": [], "memory_size": {}, "data": []}}"#, u64::MAX),
-            format!(
-                r#"{{"functions": [], "memory_size": 8, "data": [{{"offset": {}, "bytes": [1]}}]}}"#,
-                u64::MAX
-            ),
+            Artifact { functions: vec![], memory_size: u64::MAX, data: vec![] },
+            Artifact {
+                functions: vec![],
+                memory_size: 8,
+                data: vec![Segment { offset: u64::MAX, bytes: vec![1] }],
+            },
         ] {
-            let handle = unsafe { base_new(artifact.as_ptr(), artifact.len()) };
-            assert!(handle.is_null(), "{artifact} should not build");
+            let handle = new_base(&artifact.to_bytes());
+            assert!(handle.is_null(), "{artifact:?} should not build");
             assert!(last_error().contains("more than this host can hold"), "{}", last_error());
         }
     }
@@ -381,7 +393,7 @@ mod tests {
     /// A name the artifact does not export is a failure that says which name.
     #[test]
     fn executing_a_name_nothing_exports_is_refused() {
-        let handle = unsafe { base_new(EMPTY_ARTIFACT.as_ptr(), EMPTY_ARTIFACT.len()) };
+        let handle = new_base(&empty_artifact());
         assert!(!handle.is_null(), "{}", last_error());
         let name = "infer";
         let rc = unsafe {
@@ -409,11 +421,15 @@ mod tests {
         assert!(last_error().contains("non-zero length"));
     }
 
+    /// A cut-off file, and the JSON artifacts used to be, are errors with a
+    /// message rather than panics.
     #[test]
-    fn malformed_json_is_an_error_and_not_a_panic() {
-        let bad = b"{\"functions\":";
-        assert!(unsafe { base_new(bad.as_ptr(), bad.len()) }.is_null());
-        assert!(last_error().contains("not an Artifact"), "{}", last_error());
+    fn a_malformed_artifact_is_an_error_and_not_a_panic() {
+        let whole = empty_artifact();
+        for bad in [&whole[..whole.len() - 1], b"{\"functions\": []}".as_slice()] {
+            assert!(new_base(bad).is_null());
+            assert!(last_error().starts_with("not an artifact"), "{}", last_error());
+        }
     }
 
     /// The message is a prefix when it does not fit, and the answer is always

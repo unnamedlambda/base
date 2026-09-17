@@ -1,10 +1,11 @@
 import Lean
+import AlgorithmLib.Cbor
 
 /-!
 # The CLIF program an artifact carries
 
-The instruction set the generators emit, as data, together with the JSON shape
-`base_types::clif` deserializes. Separate from `IR.lean` because `Core.Setup`
+The instruction set the generators emit, as data, together with the CBOR
+`base_types::clif` reads. Separate from `IR.lean` because `Core.Setup`
 carries a `Program` and `IR` builds one — both need these types and neither
 should import the other.
 -/
@@ -170,146 +171,136 @@ structure FuncData where
 -- ---------------------------------------------------------------------------
 -- Serialization
 --
--- The shape serde reads on the Rust side: externally-tagged enums, tuple
--- variants whose fields are in constructor order, newtypes as bare numbers.
--- Field names are the Rust ones, so a rename there is a build failure here
--- rather than a silent mismatch.
+-- The CBOR `base_types::clif` reads (see `Cbor`): externally tagged enums,
+-- tuple variants whose fields are in constructor order, newtypes as their
+-- number. Field names and their order are the Rust ones; a disagreement is a
+-- build failure, because the build re-encodes every artifact it decodes.
 -- ---------------------------------------------------------------------------
 
-private def tagged (tag : String) (args : List Lean.Json) : Lean.Json :=
-  Lean.Json.mkObj [(tag, Lean.Json.arr args.toArray)]
+open Cbor
 
-private def jNat (n : Nat) : Lean.Json := Lean.Json.num (n : Int)
-private def jInt (n : Int) : Lean.Json := Lean.Json.num n
+instance : ToCbor Val where
+  cbor v := nat v.id
+instance : ToCbor BlockRef where
+  cbor b := nat b.id
+instance : ToCbor SigRef where
+  cbor s := nat s.id
+instance : ToCbor FnRef where
+  cbor f := nat f.id
 
-instance : Lean.ToJson Val where
-  toJson v := jNat v.id
-instance : Lean.ToJson BlockRef where
-  toJson b := jNat b.id
-instance : Lean.ToJson SigRef where
-  toJson s := jNat s.id
-instance : Lean.ToJson FnRef where
-  toJson f := jNat f.id
-
-instance : Lean.ToJson ClifTy where
-  toJson
+instance : ToCbor ClifTy where
+  cbor t := text <| match t with
     | .i8 => "I8" | .i16 => "I16" | .i32 => "I32" | .i64 => "I64"
     | .f32 => "F32" | .f64 => "F64" | .f32x4 => "F32x4" | .i8x16 => "I8x16"
 
-instance : Lean.ToJson ICmpCond where
-  toJson
+instance : ToCbor ICmpCond where
+  cbor c := text <| match c with
     | .eq => "Eq" | .ne => "Ne" | .uge => "Uge" | .ugt => "Ugt" | .ule => "Ule"
     | .ult => "Ult" | .slt => "Slt" | .sle => "Sle" | .sgt => "Sgt" | .sge => "Sge"
 
-instance : Lean.ToJson FloatCC where
-  toJson
+instance : ToCbor FloatCC where
+  cbor c := text <| match c with
     | .eq => "Eq" | .ne => "Ne" | .lt => "Lt" | .le => "Le" | .gt => "Gt" | .ge => "Ge"
 
-instance : Lean.ToJson LoadKind where
-  toJson
+instance : ToCbor LoadKind where
+  cbor k := text <| match k with
     | .plain => "Plain" | .uload8 => "Uload8"
     | .uload32 => "Uload32" | .sload8 => "Sload8"
 
-instance : Lean.ToJson LoadOp where
-  toJson op := Lean.Json.mkObj
-    [("kind", Lean.toJson op.kind),
-     ("ty", Lean.toJson op.ty),
-     ("notrap_aligned", Lean.Json.bool op.notrapAligned)]
+instance : ToCbor LoadOp where
+  cbor op := struct
+    [("kind", cbor op.kind),
+     ("ty", cbor op.ty),
+     ("notrap_aligned", bool op.notrapAligned)]
 
-open Lean (toJson) in
-/-- One instruction, in the shape `base_types::clif::Inst` deserializes.
+/-- One instruction, in the shape `base_types::clif::Inst` reads.
 
     Stores and loads carry a byte offset on the Rust side that no builder here
     emits yet, so it is written as zero. -/
-def Inst.json : Inst → Lean.Json
-  | .iconst d t v => tagged "Iconst" [toJson d, toJson t, jInt v]
-  | .iadd d a b => tagged "Iadd" [toJson d, toJson a, toJson b]
-  | .isub d a b => tagged "Isub" [toJson d, toJson a, toJson b]
-  | .imul d a b => tagged "Imul" [toJson d, toJson a, toJson b]
-  | .udiv d a b => tagged "Udiv" [toJson d, toJson a, toJson b]
-  | .ineg d a => tagged "Ineg" [toJson d, toJson a]
-  | .ishl d a b => tagged "Ishl" [toJson d, toJson a, toJson b]
-  | .ushr d a b => tagged "Ushr" [toJson d, toJson a, toJson b]
-  | .band d a b => tagged "Band" [toJson d, toJson a, toJson b]
-  | .bandNot d a b => tagged "BandNot" [toJson d, toJson a, toJson b]
-  | .bor d a b => tagged "Bor" [toJson d, toJson a, toJson b]
-  | .bxor d a b => tagged "Bxor" [toJson d, toJson a, toJson b]
-  | .ireduce32 d a => tagged "Ireduce32" [toJson d, toJson a]
-  | .uextend64 d a => tagged "Uextend64" [toJson d, toJson a]
-  | .sextend64 d a => tagged "Sextend64" [toJson d, toJson a]
-  | .store v a => tagged "Store" [toJson v, toJson a, jNat 0]
-  | .istore8 v a => tagged "Istore8" [toJson v, toJson a, jNat 0]
-  | .load d op a => tagged "Load" [toJson d, toJson op, toJson a, jNat 0]
-  | .icmp d c a b => tagged "Icmp" [toJson d, toJson c, toJson a, toJson b]
-  | .select d c a b => tagged "Select" [toJson d, toJson c, toJson a, toJson b]
+def Inst.toCbor : Inst → W Unit
+  | .iconst d t v => variant "Iconst" [cbor d, cbor t, int v]
+  | .iadd d a b => variant "Iadd" [cbor d, cbor a, cbor b]
+  | .isub d a b => variant "Isub" [cbor d, cbor a, cbor b]
+  | .imul d a b => variant "Imul" [cbor d, cbor a, cbor b]
+  | .udiv d a b => variant "Udiv" [cbor d, cbor a, cbor b]
+  | .ineg d a => variant "Ineg" [cbor d, cbor a]
+  | .ishl d a b => variant "Ishl" [cbor d, cbor a, cbor b]
+  | .ushr d a b => variant "Ushr" [cbor d, cbor a, cbor b]
+  | .band d a b => variant "Band" [cbor d, cbor a, cbor b]
+  | .bandNot d a b => variant "BandNot" [cbor d, cbor a, cbor b]
+  | .bor d a b => variant "Bor" [cbor d, cbor a, cbor b]
+  | .bxor d a b => variant "Bxor" [cbor d, cbor a, cbor b]
+  | .ireduce32 d a => variant "Ireduce32" [cbor d, cbor a]
+  | .uextend64 d a => variant "Uextend64" [cbor d, cbor a]
+  | .sextend64 d a => variant "Sextend64" [cbor d, cbor a]
+  | .store v a => variant "Store" [cbor v, cbor a, nat 0]
+  | .istore8 v a => variant "Istore8" [cbor v, cbor a, nat 0]
+  | .load d op a => variant "Load" [cbor d, cbor op, cbor a, nat 0]
+  | .icmp d c a b => variant "Icmp" [cbor d, cbor c, cbor a, cbor b]
+  | .select d c a b => variant "Select" [cbor d, cbor c, cbor a, cbor b]
   | .call d f args =>
-    tagged "Call" [match d with | some v => toJson v | none => Lean.Json.null,
-                   toJson f, Lean.Json.arr ((args.map toJson).toArray)]
-  | .jump t args => tagged "Jump" [toJson t, Lean.Json.arr ((args.map toJson).toArray)]
+    variant "Call" [option cbor d,
+                   cbor f, array args cbor]
+  | .jump t args => variant "Jump" [cbor t, array args cbor]
   | .brif c tb ta eb ea =>
-    tagged "Brif" [toJson c, toJson tb, Lean.Json.arr ((ta.map toJson).toArray),
-                   toJson eb, Lean.Json.arr ((ea.map toJson).toArray)]
+    variant "Brif" [cbor c, cbor tb, array ta cbor,
+                   cbor eb, array ea cbor]
   -- A newtype variant, so the payload sits directly under the tag rather than
   -- in an array the way the tuple variants above do.
-  | .ret v => Lean.Json.mkObj
-      [("Ret", match v with | some x => toJson x | none => Lean.Json.null)]
-  | .fconst d t bits => tagged "Fconst" [toJson d, toJson t, jNat bits.toNat]
-  | .fadd d a b => tagged "Fadd" [toJson d, toJson a, toJson b]
-  | .fsub d a b => tagged "Fsub" [toJson d, toJson a, toJson b]
-  | .fmul d a b => tagged "Fmul" [toJson d, toJson a, toJson b]
-  | .fmax d a b => tagged "Fmax" [toJson d, toJson a, toJson b]
-  | .fmin d a b => tagged "Fmin" [toJson d, toJson a, toJson b]
-  | .fpromote d a => tagged "Fpromote" [toJson d, toJson a]
-  | .splat d t s => tagged "Splat" [toJson d, toJson t, toJson s]
-  | .extractlane d s lane => tagged "Extractlane" [toJson d, toJson s, jNat lane]
-  | .storeTyped t v a => tagged "StoreTyped" [toJson t, toJson v, toJson a, jNat 0]
-  | .fneg d a => tagged "Fneg" [toJson d, toJson a]
-  | .fcvtFromSint d t s => tagged "FcvtFromSint" [toJson d, toJson t, toJson s]
-  | .fcvtToUint d t s => tagged "FcvtToUint" [toJson d, toJson t, toJson s]
-  | .fcmp d c a b => tagged "Fcmp" [toJson d, toJson c, toJson a, toJson b]
-  | .bitcast d t s => tagged "Bitcast" [toJson d, toJson t, toJson s]
-  | .bitselect d c a b => tagged "Bitselect" [toJson d, toJson c, toJson a, toJson b]
-  | .ctz d a => tagged "Ctz" [toJson d, toJson a]
-  | .popcnt d a => tagged "Popcnt" [toJson d, toJson a]
-  | .vhighBits d a => tagged "VhighBits" [toJson d, toJson a]
+  | .ret v => newtypeVariant "Ret" (option cbor v)
+  | .fconst d t bits => variant "Fconst" [cbor d, cbor t, nat bits.toNat]
+  | .fadd d a b => variant "Fadd" [cbor d, cbor a, cbor b]
+  | .fsub d a b => variant "Fsub" [cbor d, cbor a, cbor b]
+  | .fmul d a b => variant "Fmul" [cbor d, cbor a, cbor b]
+  | .fmax d a b => variant "Fmax" [cbor d, cbor a, cbor b]
+  | .fmin d a b => variant "Fmin" [cbor d, cbor a, cbor b]
+  | .fpromote d a => variant "Fpromote" [cbor d, cbor a]
+  | .splat d t s => variant "Splat" [cbor d, cbor t, cbor s]
+  | .extractlane d s lane => variant "Extractlane" [cbor d, cbor s, nat lane]
+  | .storeTyped t v a => variant "StoreTyped" [cbor t, cbor v, cbor a, nat 0]
+  | .fneg d a => variant "Fneg" [cbor d, cbor a]
+  | .fcvtFromSint d t s => variant "FcvtFromSint" [cbor d, cbor t, cbor s]
+  | .fcvtToUint d t s => variant "FcvtToUint" [cbor d, cbor t, cbor s]
+  | .fcmp d c a b => variant "Fcmp" [cbor d, cbor c, cbor a, cbor b]
+  | .bitcast d t s => variant "Bitcast" [cbor d, cbor t, cbor s]
+  | .bitselect d c a b => variant "Bitselect" [cbor d, cbor c, cbor a, cbor b]
+  | .ctz d a => variant "Ctz" [cbor d, cbor a]
+  | .popcnt d a => variant "Popcnt" [cbor d, cbor a]
+  | .vhighBits d a => variant "VhighBits" [cbor d, cbor a]
 
-instance : Lean.ToJson Inst where
-  toJson := Inst.json
 
-instance : Lean.ToJson BlockData where
-  toJson b := Lean.Json.mkObj
-    [("reference", Lean.toJson b.ref),
-     ("params", Lean.Json.arr ((b.params.map fun (v, t) =>
-        Lean.Json.arr #[Lean.toJson v, Lean.toJson t]).toArray)),
-     ("insts", Lean.Json.arr ((b.insts.map Lean.toJson).toArray))]
+instance : ToCbor Inst where
+  cbor := Inst.toCbor
 
-instance : Lean.ToJson SigDecl where
-  toJson s := Lean.Json.mkObj
-    [("reference", Lean.toJson s.ref),
-     ("params", Lean.Json.arr ((s.params.map Lean.toJson).toArray)),
-     ("result", match s.result with
-        | some t => Lean.toJson t
-        | none => Lean.Json.null)]
+instance : ToCbor BlockData where
+  cbor b := struct
+    [("reference", cbor b.ref),
+     ("params", array b.params fun (v, t) => do head 4 2; cbor v; cbor t),
+     ("insts", array b.insts cbor)]
 
-instance : Lean.ToJson Callee where
-  toJson
-    | .import n => Lean.Json.mkObj [("Import", Lean.Json.str n)]
-    | .local i => Lean.Json.mkObj [("Local", jNat i)]
+instance : ToCbor SigDecl where
+  cbor s := struct
+    [("reference", cbor s.ref),
+     ("params", array s.params cbor),
+     ("result", option cbor s.result)]
 
-instance : Lean.ToJson FnDecl where
-  toJson f := Lean.Json.mkObj
-    [("reference", Lean.toJson f.ref),
-     ("callee", Lean.toJson f.callee),
-     ("sig", Lean.toJson f.sig)]
+instance : ToCbor Callee where
+  cbor
+    | .import n => newtypeVariant "Import" (text n)
+    | .local i => newtypeVariant "Local" (nat i)
 
-instance : Lean.ToJson FuncData where
-  toJson f := Lean.Json.mkObj
-    [("export_name", match f.exportName with
-        | some n => Lean.Json.str n
-        | none => Lean.Json.null),
-     ("sigs", Lean.Json.arr ((f.sigs.map Lean.toJson).toArray)),
-     ("fns", Lean.Json.arr ((f.fns.map Lean.toJson).toArray)),
-     ("blocks", Lean.Json.arr ((f.blocks.map Lean.toJson).toArray))]
+instance : ToCbor FnDecl where
+  cbor f := struct
+    [("reference", cbor f.ref),
+     ("callee", cbor f.callee),
+     ("sig", cbor f.sig)]
+
+instance : ToCbor FuncData where
+  cbor f := struct
+    [("export_name", option text f.exportName),
+     ("sigs", array f.sigs cbor),
+     ("fns", array f.fns cbor),
+     ("blocks", array f.blocks cbor)]
 
 end IR
 

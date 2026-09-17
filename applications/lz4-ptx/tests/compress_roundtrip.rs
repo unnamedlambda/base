@@ -59,7 +59,7 @@ fn gen_corpus(total: usize) -> Vec<u8> {
 fn check_artifact(artifact: &[u8], block: usize, num_blk: usize) {
     let original = gen_corpus(num_blk * block);
 
-    let art = Artifact::from_bytes(artifact);
+    let art = Artifact::from_bytes(artifact).expect("the build checked this artifact");
     let mut base = Base::new(art).expect("compile");
 
     let len_off = block + block / 16 + 256;

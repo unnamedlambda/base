@@ -282,6 +282,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonArtifact "fft_app" (Algorithm.fftConfig clif)]
+  emitArtifacts outDir #[artifactEntry "fft_app" (Algorithm.fftConfig clif)]
 
 #eval ShipScan.check "FftAlgorithm"

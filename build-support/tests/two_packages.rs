@@ -81,12 +81,14 @@ fn splitting_the_lean_bounds_what_an_edit_costs() {
     settle();
 
     // Each owner crate publishes its own package's artifacts.
-    let alpha = fixture().join("alpha-artifacts/artifacts/Alpha.Gen/alpha.json");
-    let beta = fixture().join("beta-artifacts/artifacts/Beta.Gen/beta.json");
-    let read =
-        |p: &Path| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-    assert!(read(&alpha).contains("\"memory_size\":111"), "alpha's own artifact");
-    assert!(read(&beta).contains("\"memory_size\":222"), "beta's own artifact");
+    let alpha = fixture().join("alpha-artifacts/artifacts/Alpha.Gen/alpha.cbor");
+    let beta = fixture().join("beta-artifacts/artifacts/Beta.Gen/beta.cbor");
+    let size = |p: &Path| {
+        let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        base_types::Artifact::from_bytes(&bytes).expect("an artifact").memory_size
+    };
+    assert_eq!(size(&alpha), 111, "alpha's own artifact");
+    assert_eq!(size(&beta), 222, "beta's own artifact");
 
     // `uses-both` depends on both owner crates, so cargo hands its build script
     // two `DEP_*_DIR` values; it calls `consume_from("beta")` because `consume`
@@ -135,6 +137,6 @@ fn splitting_the_lean_bounds_what_an_edit_costs() {
     for c in ["alpha-artifacts", "beta-artifacts", "uses-alpha", "uses-both"] {
         assert!(built.contains(&c.to_string()), "{c} depends on the shared package: {built:?}");
     }
-    assert!(read(&alpha).contains("\"memory_size\":112"), "alpha picked up the shared edit");
-    assert!(read(&beta).contains("\"memory_size\":223"), "beta picked up the shared edit");
+    assert_eq!(size(&alpha), 112, "alpha picked up the shared edit");
+    assert_eq!(size(&beta), 223, "beta picked up the shared edit");
 }

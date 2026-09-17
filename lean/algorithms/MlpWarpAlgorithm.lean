@@ -158,8 +158,8 @@ def setup (clif : List FuncData) : Artifact := {
   initial_memory := initialMemory
 }
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "mlp_warp" (setup clif) ]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "mlp_warp" (setup clif) ]
 
 end MlpWarp
 

@@ -407,6 +407,6 @@ end CsvDemo
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie CsvDemo.result
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonArtifact "csv_app" cfg]
+  emitArtifacts outDir #[artifactEntry "csv_app" cfg]
 
 #eval ShipScan.check "CsvAlgorithm"

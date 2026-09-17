@@ -54,9 +54,12 @@ fn invalidate() {
     fs::write(&src, &text).expect("rewrite");
 }
 
-fn artifact(workspace: &str) -> String {
-    let p = fixture().join(workspace).join("gen/artifacts/Shared.Gen/shared.json");
-    fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+/// The `memory_size` of the artifact `workspace` generated, which the fixture
+/// sets to 777.
+fn artifact(workspace: &str) -> u64 {
+    let p = fixture().join(workspace).join("gen/artifacts/Shared.Gen/shared.cbor");
+    let bytes = fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    base_types::Artifact::from_bytes(&bytes).expect("an artifact").memory_size
 }
 
 /// A child killed however the test ends, so a failure cannot leave a cargo
@@ -101,7 +104,7 @@ fn generating_from_a_shared_package_serialises() {
     FileExt::unlock(&held).expect("release the lock");
     let status = child.0.wait().expect("wait");
     assert!(status.success(), "the build should finish once the lock is free");
-    assert!(artifact("w1").contains("\"memory_size\":777"), "and produce its artifact");
+    assert_eq!(artifact("w1"), 777, "and produce its artifact");
 
     // Both at once, end to end. Weak on its own -- see the module docs -- but
     // it is what would catch a deadlock, or two lakes leaving one of them with
@@ -116,6 +119,6 @@ fn generating_from_a_shared_package_serialises() {
         assert!(status.success(), "{w} failed under concurrency");
     }
     for w in ["w1", "w2"] {
-        assert!(artifact(w).contains("\"memory_size\":777"), "{w} produced its artifact");
+        assert_eq!(artifact(w), 777, "{w} produced its artifact");
     }
 }

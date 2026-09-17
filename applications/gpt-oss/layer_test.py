@@ -23,7 +23,7 @@ checks it: a layer whose router output were ignored would still agree with a
 reference that ignored it too, so the run asks whether a deliberately wrong
 top-4 changes the answer.
 
-  python applications/gpt-oss/layer_test.py <artifact.json> --bank data/gptoss-bank
+  python applications/gpt-oss/layer_test.py <artifact.cbor> --bank data/gptoss-bank
 """
 
 import argparse

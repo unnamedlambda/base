@@ -15,7 +15,7 @@ fn main() {
     }
     let input_path = &args[1];
 
-    let mut artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+    let mut artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
 
     // Write the input filename into the memory the program starts from
     let path_bytes = input_path.as_bytes();

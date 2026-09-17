@@ -757,8 +757,8 @@ def setup (clif : List FuncData) : Artifact := {
   initial_memory := initialMemory
 }
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "backward_wide" (setup clif) ]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "backward_wide" (setup clif) ]
 
 end BackwardWide
 

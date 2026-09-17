@@ -14,7 +14,7 @@ fn run_scenario(base: &mut Base, entry: &str) -> (i64, i64, i64) {
 
 #[test]
 fn camera_scenarios() {
-    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
 
     for name in [
@@ -30,7 +30,7 @@ fn camera_scenarios() {
 
 #[test]
 fn render_scene_scenario() {
-    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
 
     let (pass, actual, expected) = run_scenario(&mut base, "test_render_scene");

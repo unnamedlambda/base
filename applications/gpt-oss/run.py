@@ -9,7 +9,7 @@ The expert file is pinned once at start-up, 9.48 GiB of it, and the device
 holds as many slots as it turns out to have room for.  So the first call is
 slow in a way none of the others are: it reads twelve gigabytes off disk.
 
-  python applications/gpt-oss/run.py <artifact.json> --bank data/gptoss-bank \
+  python applications/gpt-oss/run.py <artifact.cbor> --bank data/gptoss-bank \
       --prompt "The capital of France is" -n 8
 
 Do not run this beside tools/check.sh; they both want most of the machine.

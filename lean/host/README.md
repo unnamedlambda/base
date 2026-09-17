@@ -97,7 +97,7 @@ The layer it rests on is in `lean/lib`, shared with every generator:
 `AlgorithmLib/ProgFFI.lean`, the call side of all 85 entry points.
 
 The dependency arrow points Lean → base and never back. `base` links nothing of
-Lean's, so an embedder shipping a Rust or Python binary with a bincode artifact
+Lean's, so an embedder shipping a Rust or Python binary with an artifact
 in it is unaffected by any of this.
 
 ## What a host reads back

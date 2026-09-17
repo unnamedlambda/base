@@ -321,9 +321,9 @@ def prepAlgorithm : UInt32 := 2
 def inferAlgorithm : UInt32 := 5
 def stackAlgorithm : UInt32 := 6
 
-def artifacts (clif : List FuncData) : Array Json :=
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[
-    toJsonArtifact "cuda_decode_attn" (buildSetup clif)
+    artifactEntry "cuda_decode_attn" (buildSetup clif)
   ]
 
 end CudaDecodeAttention

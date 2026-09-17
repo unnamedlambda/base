@@ -312,7 +312,7 @@ fn sweep(
     // total work fixed, so ns/element is comparable across sizes
     const TOTAL: usize = 256 << 20;
 
-    let artifact = Artifact::from_bytes(art_bytes);
+    let artifact = Artifact::from_bytes(art_bytes).expect("the build checked this artifact");
     let mut inst = base::Base::new(artifact).expect("Base::new failed");
     let mut out = [0u8; 8];
 
@@ -402,7 +402,7 @@ fn sweep_store(iterations: usize, rows: &mut Vec<BenchResult>) {
         (33_554_432, "128MB RAM"),
     ];
     const TOTAL: usize = 256 << 20;
-    let artifact = Artifact::from_bytes(STORE_ARTIFACT);
+    let artifact = Artifact::from_bytes(STORE_ARTIFACT).expect("the build checked this artifact");
     let mut inst = base::Base::new(artifact).expect("Base::new failed");
 
     for &(n, label) in sizes {
@@ -495,7 +495,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     // what entering Base costs at all, so a small-size row can be read knowing
     // how much of it is dispatch rather than arithmetic
     {
-        let artifact = Artifact::from_bytes(CLAMP_ARTIFACT);
+        let artifact = Artifact::from_bytes(CLAMP_ARTIFACT).expect("the build checked this artifact");
         let mut inst = base::Base::new(artifact).expect("Base::new failed");
         let mut out = [0u8; 8];
         let tiny = gen_floats(16, 7);
@@ -540,7 +540,7 @@ fn width_ceiling(iterations: usize) {
             println!("  (no AVX on this host; width ceiling not measured)");
             return;
         }
-        let artifact = Artifact::from_bytes(PLAIN_ARTIFACT);
+        let artifact = Artifact::from_bytes(PLAIN_ARTIFACT).expect("the build checked this artifact");
         let mut inst = base::Base::new(artifact).expect("Base::new failed");
         let mut out = [0u8; 8];
         const TOTAL: usize = 256 << 20;

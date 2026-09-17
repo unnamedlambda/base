@@ -517,6 +517,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonArtifact "sha256_app" (Algorithm.sha256Config clif)]
+  emitArtifacts outDir #[artifactEntry "sha256_app" (Algorithm.sha256Config clif)]
 
 #eval ShipScan.check "Sha256Algorithm"

@@ -146,8 +146,8 @@ def saxpyConfig (clif : List FuncData) : Artifact := {
 
 def saxpyAlgorithm : UInt32 := IR.mainFnIdx
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[toJsonArtifact "saxpy_algorithm" (saxpyConfig clif)]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[artifactEntry "saxpy_algorithm" (saxpyConfig clif)]
 
 
 end Algorithm

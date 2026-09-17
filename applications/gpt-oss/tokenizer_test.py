@@ -12,7 +12,7 @@ A tokenizer that is only ever exercised inside a chat loop is a tokenizer
 nobody can disagree with, so this runs the artifact directly: text in, ids out.
 
   python applications/gpt-oss/tokenizer_test.py \\
-      lean-artifacts/artifacts/TokenizerTest/tokenizer_test.json \\
+      lean-artifacts/artifacts/TokenizerTest/tokenizer_test.cbor \\
       --tokenizer data/gptoss-bank/tokenizer.bin \\
       --json <path to the checkpoint's tokenizer.json>
 """

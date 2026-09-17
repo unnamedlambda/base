@@ -284,7 +284,7 @@ def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Qwen2OnDisk.clifIR
   emitArtifacts outDir #[
-    toJsonArtifact "qwen2_on_disk" (Qwen2OnDisk.buildSetup clif)
+    artifactEntry "qwen2_on_disk" (Qwen2OnDisk.buildSetup clif)
   ]
 
 #eval ShipScan.check "Qwen2OnDiskAlgorithm"

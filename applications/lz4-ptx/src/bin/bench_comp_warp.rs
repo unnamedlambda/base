@@ -22,9 +22,9 @@ const CORPUS_BYTES: usize = 209_715_200;
 
 fn run(name: &str, block: usize, original: &[u8]) {
     let data = original.to_vec();
-    let bin = std::fs::read(format!("{ARTIFACTS}/Lz4CompAlgorithm/{name}.bin"))
-        .unwrap_or_else(|e| panic!("read {name}.bin: {e}"));
-    let art = Artifact::from_bytes(&bin);
+    let bytes = std::fs::read(format!("{ARTIFACTS}/Lz4CompAlgorithm/{name}.cbor"))
+        .unwrap_or_else(|e| panic!("read {name}.cbor: {e}"));
+    let art = Artifact::from_bytes(&bytes).unwrap_or_else(|e| panic!("{name}.cbor: {e}"));
     let mut base = Base::new(art).expect("compile");
 
     // Layout mirrors Algorithm.WP in Lz4CompAlgorithm.lean; asserted against the

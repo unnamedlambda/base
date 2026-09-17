@@ -2887,10 +2887,10 @@ def mSetup (clif : List FuncData) : Artifact := {
   initial_memory := mInitialMemory
 }
 
-def artifacts (clif qClif mClif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "ten_qwen_block" (qSetup qClif),
-     toJsonArtifact "ten_moe_dispatch" (mSetup mClif),
-     toJsonArtifact "mlp_cifar" (setup clif) ]
+def artifacts (clif qClif mClif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "ten_qwen_block" (qSetup qClif),
+     artifactEntry "ten_moe_dispatch" (mSetup mClif),
+     artifactEntry "mlp_cifar" (setup clif) ]
 
 end MlpCifar
 

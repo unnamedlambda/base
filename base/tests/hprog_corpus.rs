@@ -76,10 +76,8 @@ fn interpreter_and_machine_agree() {
     };
 
     let corpus = Corpus::read(&dir.join("expected/hprog_corpus_expected.json"));
-    let a: Artifact = serde_json::from_str(
-        &std::fs::read_to_string(dir.join("hprog_corpus.json")).expect("read artifact"),
-    )
-    .expect("artifact shape");
+    let a = Artifact::from_bytes(&std::fs::read(dir.join("hprog_corpus.cbor")).expect("read artifact"))
+        .expect("artifact shape");
 
     assert_eq!(
         corpus.expected.len(),

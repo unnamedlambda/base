@@ -225,8 +225,8 @@ def initialMemory : List UInt8 :=
   zeros PTX_OFF ++ p ++ zeros (PTX_L_OFF - PTX_OFF - p.length)
     ++ q ++ zeros (MEM_SIZE - PTX_L_OFF - q.length)
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "silu_warp" { functions := clif, memory_size := MEM_SIZE, initial_memory := initialMemory } ]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "silu_warp" { functions := clif, memory_size := MEM_SIZE, initial_memory := initialMemory } ]
 
 
 end SiluWarp

@@ -41,7 +41,6 @@ be on the main thread.
 namespace Base
 
 open AlgorithmLib
-open Lean (Json toJson)
 
 /-- A live runtime: a compiled program and the memory it runs in.
 
@@ -51,7 +50,7 @@ structure Runtime where
   private raw : USize
 
 @[extern "lean_base_new"]
-private opaque newRaw (artifactJson : @& ByteArray) : IO USize
+private opaque newRaw (artifact : @& ByteArray) : IO USize
 
 @[extern "lean_base_free"]
 private opaque freeRaw (handle : USize) : IO Unit
@@ -66,12 +65,12 @@ private opaque readMemoryRaw (handle : USize) (offset len : USize) : IO ByteArra
 @[extern "lean_base_memory_size"]
 private opaque memorySizeRaw (handle : USize) : IO USize
 
-private def jsonBytes (j : Json) : ByteArray := j.compress.toUTF8
-
 /-- Compile an artifact and take its memory. Release it with `Runtime.close`,
 or let `withRuntime` do it. -/
-def open_ (artifact : Artifact) : IO Runtime :=
-  return ⟨← newRaw (jsonBytes (toJson artifact))⟩
+def open_ (artifact : Artifact) : IO Runtime := do
+  match Cbor.encode artifact with
+  | .ok bytes => return ⟨← newRaw bytes⟩
+  | .error e => throw <| IO.userError e
 
 namespace Runtime
 

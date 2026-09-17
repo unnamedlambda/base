@@ -57,8 +57,8 @@ def MEM_SIZE : Nat := 0
 def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[toJsonArtifact "byte_scrub" {
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[artifactEntry "byte_scrub" {
     functions := clif,
     memory_size := MEM_SIZE
   }]

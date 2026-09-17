@@ -158,7 +158,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- VecAdd ----
     {
-        let artifact = Artifact::from_bytes(GPU_VECADD_ARTIFACT);
+        let artifact = Artifact::from_bytes(GPU_VECADD_ARTIFACT).expect("the build checked this artifact");
         let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
         for &n in &[256_000usize, 500_000] {
@@ -207,7 +207,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- MatMul ----
     {
-        let artifact = Artifact::from_bytes(GPU_MATMUL_ARTIFACT);
+        let artifact = Artifact::from_bytes(GPU_MATMUL_ARTIFACT).expect("the build checked this artifact");
         let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
         for &n in &[256usize, 512] {
@@ -252,7 +252,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
 
     // ---- Reduction (partial sums, groups of 64) ----
     {
-        let artifact = Artifact::from_bytes(GPU_REDUCTION_ARTIFACT);
+        let artifact = Artifact::from_bytes(GPU_REDUCTION_ARTIFACT).expect("the build checked this artifact");
         let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
         for &n in &[256_000usize, 512_000, 896_000] {

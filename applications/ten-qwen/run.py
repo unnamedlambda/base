@@ -10,7 +10,7 @@ statements.
 
 This is the other end: the same block in NumPy, so the numbers can be compared.
 
-Run:  py-base/.venv/bin/python applications/ten-qwen/run.py <artifact.json>
+Run:  py-base/.venv/bin/python applications/ten-qwen/run.py <artifact.cbor>
 """
 
 import json
@@ -83,7 +83,7 @@ def make_weights(seed=7):
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else None
     if not path or not os.path.exists(path):
-        sys.exit("usage: run.py <ten_qwen_block.json>")
+        sys.exit("usage: run.py <ten_qwen_block.cbor>")
     art = py_base.load_artifact(path)
     w = make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)   # spans the widest reduction

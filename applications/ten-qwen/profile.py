@@ -14,7 +14,7 @@ CUDA graph and `replay` issues it as one driver call.  What survives replay is
 device-side per-kernel cost.  Replay is checked against the launched path
 first — it must be bit-identical, not close.
 
-Run:  py-base/.venv/bin/python applications/ten-qwen/profile.py <artifact.json>
+Run:  py-base/.venv/bin/python applications/ten-qwen/profile.py <artifact.cbor>
 """
 
 import os

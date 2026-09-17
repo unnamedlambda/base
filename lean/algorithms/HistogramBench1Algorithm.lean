@@ -134,8 +134,8 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 theorem memMap_within :
     AlgorithmLib.Layout.RegionMap.withinB MEM_SIZE memMap = true := by decide
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[toJsonArtifact "hist1_algorithm" {
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[artifactEntry "hist1_algorithm" {
     functions := clif,
     memory_size := MEM_SIZE
   }]

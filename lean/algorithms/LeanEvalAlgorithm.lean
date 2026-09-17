@@ -611,6 +611,6 @@ end LeanEval
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie LeanEval.clifIrSource
-  emitArtifacts outDir #[toJsonArtifact "lean_eval_app" (LeanEval.buildSetup clif)]
+  emitArtifacts outDir #[artifactEntry "lean_eval_app" (LeanEval.buildSetup clif)]
 
 #eval ShipScan.check "LeanEvalAlgorithm"

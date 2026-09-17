@@ -133,9 +133,9 @@ def loadAlgorithm : UInt32 := 1
 def prepAlgorithm : UInt32 := 2
 def inferAlgorithm : UInt32 := 3
 
-def artifacts (clif : List FuncData) : Array Json :=
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[
-    toJsonArtifact "cuda_gemv" (buildSetup clif)
+    artifactEntry "cuda_gemv" (buildSetup clif)
   ]
 
 end CudaGemvPersist

@@ -384,7 +384,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let num_groups = (n + 63) / 64;
     let out_size = num_groups * 4;
 
-    let artifact = Artifact::from_bytes(GPU_ITER_ARTIFACT);
+    let artifact = Artifact::from_bytes(GPU_ITER_ARTIFACT).expect("the build checked this artifact");
     let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &passes in &[1, 10, 100, 500, 1000] {

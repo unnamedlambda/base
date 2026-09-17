@@ -455,20 +455,20 @@ def main (args : List String) : IO Unit := do
     HistogramBench1.artifacts hist1Clif ++
     ClampSumBench.artifacts clampClif ++
     CudaRmsNormPersist.artifacts rmsClif ++
-    #[toJsonArtifact "hist1_hprog" {
+    #[artifactEntry "hist1_hprog" {
         functions := histProg,
         memory_size := HistogramBench1.MEM_SIZE
       },
-      toJsonArtifact "clamp_sum_hprog" {
+      artifactEntry "clamp_sum_hprog" {
         functions := clampProg,
         memory_size := ClampSumBench.MEM_SIZE
       },
-      toJsonArtifact "cuda_rmsnorm_hprog" {
+      artifactEntry "cuda_rmsnorm_hprog" {
         functions := rmsProg,
         memory_size := CudaRmsNormPersist.MEM_SIZE,
         initial_memory := CudaRmsNormPersist.buildInitialMemory
       },
-      toJsonArtifact "nested_hprog" {
+      artifactEntry "nested_hprog" {
         functions := nestedProg,
         memory_size := 0x100000
       }]

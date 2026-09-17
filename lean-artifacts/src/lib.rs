@@ -10,5 +10,5 @@
 //! rather than a constant every application would link.
 
 /// Absolute path of the generated artifact tree, laid out as
-/// `<module>/<artifact>.json` and `<module>/<artifact>.bin`.
+/// `<module>/<artifact>.cbor`.
 pub const DIR: &str = env!("LEAN_ARTIFACT_DIR");

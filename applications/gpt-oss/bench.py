@@ -14,7 +14,7 @@ Run it alone. The pool is 9.48 GiB of pinned host memory, which cannot be
 swapped or reclaimed, so anything else large in this process takes the machine
 down rather than failing.
 
-  python applications/gpt-oss/bench.py <artifact.json> --bank data/gptoss-bank
+  python applications/gpt-oss/bench.py <artifact.cbor> --bank data/gptoss-bank
 """
 
 import argparse

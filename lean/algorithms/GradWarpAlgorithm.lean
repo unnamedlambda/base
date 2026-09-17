@@ -188,8 +188,8 @@ def setup (clif : List FuncData) : Artifact := {
   initial_memory := initialMemory
 }
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "grad_warp" (setup clif) ]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "grad_warp" (setup clif) ]
 
 end GradWarp
 

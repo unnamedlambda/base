@@ -25,7 +25,7 @@ fn load_artifact(workers: usize) -> Artifact {
     } else {
         HIST4_ARTIFACT
     };
-    Artifact::from_bytes(bytes)
+    Artifact::from_bytes(bytes).expect("the build checked this artifact")
 }
 
 fn gen_data(n: usize, seed: u64) -> Vec<u32> {

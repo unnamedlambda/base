@@ -150,8 +150,8 @@ def tSetup (clif : List FuncData) : Artifact := {
 
 #eval LayoutScan.check "TokenizerTest" [``tMemMap]
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "tokenizer_test" (tSetup clif) ]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "tokenizer_test" (tSetup clif) ]
 
 end TokenizerTest
 

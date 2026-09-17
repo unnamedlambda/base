@@ -22,6 +22,6 @@ def result : Except String CompileResult := (x + y).compileTo 1
 --   (x + (Expr.input (n := 3) ⟨2, by decide⟩ : Expr 3)).compileTo 1
 -- -- type error: Expr 2 and Expr 3 cannot be combined
 
-def artifacts (r : CompileResult) : Array Json := r.toArtifacts "cuda_vecadd_persist"
+def artifacts (r : CompileResult) : Array ArtifactEntry := r.toArtifacts "cuda_vecadd_persist"
 
 end CudaVecAddPersist

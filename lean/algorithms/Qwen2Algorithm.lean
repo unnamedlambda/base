@@ -342,7 +342,7 @@ def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Qwen2.clifIR
   emitArtifacts outDir #[
-    toJsonArtifact "qwen2" (Qwen2.buildSetup clif)
+    artifactEntry "qwen2" (Qwen2.buildSetup clif)
   ]
 
 #eval ShipScan.check "Qwen2Algorithm"

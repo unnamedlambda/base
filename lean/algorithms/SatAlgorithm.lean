@@ -513,6 +513,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonArtifact "sat_app" (Algorithm.satConfig clif)]
+  emitArtifacts outDir #[artifactEntry "sat_app" (Algorithm.satConfig clif)]
 
 #eval ShipScan.check "SatAlgorithm"

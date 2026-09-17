@@ -76,7 +76,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     eprintln!("  SAXPY: y[i] = 2.0 * x[i] + y[i]");
     eprintln!("  Both: upload + compute + full readback via execute_into\n");
 
-    let artifact = Artifact::from_bytes(CUDA_SAXPY_ARTIFACT);
+    let artifact = Artifact::from_bytes(CUDA_SAXPY_ARTIFACT).expect("the build checked this artifact");
     let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &n in &[262_144usize, 524_288, 1_048_576] {

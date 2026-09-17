@@ -395,6 +395,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[toJsonArtifact "raytrace_app" (Algorithm.raytraceConfig clif)]
+  emitArtifacts outDir #[artifactEntry "raytrace_app" (Algorithm.raytraceConfig clif)]
 
 #eval ShipScan.check "RaytraceAlgorithm"

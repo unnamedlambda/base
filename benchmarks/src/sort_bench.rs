@@ -61,7 +61,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
     let sizes = [10_000, 100_000, 500_000, 1_000_000, 5_000_000];
     let mut results = Vec::new();
 
-    let artifact = Artifact::from_bytes(SORT_ARTIFACT);
+    let artifact = Artifact::from_bytes(SORT_ARTIFACT).expect("the build checked this artifact");
     let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
 
     for &n in &sizes {

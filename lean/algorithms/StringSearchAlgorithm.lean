@@ -152,7 +152,7 @@ def buildSetup (clif : List FuncData) : Artifact := {
 
 def buildAlgorithm : UInt32 := 1
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[toJsonArtifact "strsearch_algorithm" (buildSetup clif)]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[artifactEntry "strsearch_algorithm" (buildSetup clif)]
 
 end StringSearchBench

@@ -219,8 +219,8 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     }
   }
 
-def CompileResult.toArtifacts (r : CompileResult) (name : String) : Array Json :=
-  #[toJsonArtifact name r.artifact]
+def CompileResult.toArtifacts (r : CompileResult) (name : String) : Array ArtifactEntry :=
+  #[artifactEntry name r.artifact]
 
 end CudaPipeline
 

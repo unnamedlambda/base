@@ -98,10 +98,10 @@ theorem payload_fits (w : WP) : (warpPayloadDSL w).length ≤ w.memSize := by
   rw [payload_length]; simp only [WP.memSize]; omega
 
 open AlgorithmLib.IR AlgorithmLib.HProg in
-def warpArtifactDSL (name : String) (blkLog : Nat) : Except String Lean.Json := do
+def warpArtifactDSL (name : String) (blkLog : Nat) : Except String ArtifactEntry := do
   let w : WP := ⟨blkLog⟩
   let functions ← warpClif w
-  return AlgorithmLib.toJsonArtifact name
+  return AlgorithmLib.artifactEntry name
     { functions, memory_size := w.memSize, initial_memory := warpPayloadDSL w }
 
 end Algorithm

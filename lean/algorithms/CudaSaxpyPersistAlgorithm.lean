@@ -23,6 +23,6 @@ def result : Except String CompileResult := (Expr.saxpy alpha x y).compileTo 1
 --   (alpha * x + (Expr.input0 : Expr 1)).compileTo 1
 -- -- type error: Expr 2 and Expr 1 cannot be combined
 
-def artifacts (r : CompileResult) : Array Json := r.toArtifacts "cuda_saxpy_persist"
+def artifacts (r : CompileResult) : Array ArtifactEntry := r.toArtifacts "cuda_saxpy_persist"
 
 end CudaSaxpyPersist

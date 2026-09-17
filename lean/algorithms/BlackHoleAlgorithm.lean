@@ -1564,7 +1564,7 @@ end Algorithm
 
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultBlackHole)
-  let jsonEntry := toJsonArtifact "blackhole_app" cfg
+  let jsonEntry := artifactEntry "blackhole_app" cfg
   let outputDir ← requireOutputDir args
   emitArtifacts outputDir #[jsonEntry]
 

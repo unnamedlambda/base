@@ -36,7 +36,7 @@ fn main() {
     let input: Vec<f32> = (0..NIN).map(|i| ((i % 617) as f32 - 308.0) * 0.004).collect();
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-    let artifact = Artifact::from_bytes(ART);
+    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
     let run = "run";
     let run_d = "runD";

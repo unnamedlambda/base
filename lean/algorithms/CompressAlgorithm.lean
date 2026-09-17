@@ -440,6 +440,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie Algorithm.result
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonArtifact "compress_app" cfg]
+  emitArtifacts outDir #[artifactEntry "compress_app" cfg]
 
 #eval ShipScan.check "CompressAlgorithm"

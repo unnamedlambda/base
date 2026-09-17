@@ -7,7 +7,7 @@ const ARTIFACT_BINARY: &[u8] =
 fn main() {
     init_tracing();
 
-    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
 
     let start = std::time::Instant::now();
     match run(artifact, "main") {

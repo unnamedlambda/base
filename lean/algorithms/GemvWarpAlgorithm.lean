@@ -353,12 +353,12 @@ def initialMemory (sh : Shape) : List UInt8 :=
     ++ (Sched.all.flatMap (fun s => slotBytes (ptxSqOf sh s)))
     ++ zeros (MEM_SIZE - BIND_OFF)
 
-def artifactOf (sh : Shape) : Except String Json := do
+def artifactOf (sh : Shape) : Except String ArtifactEntry := do
   let functions ← clifIR sh
-  return toJsonArtifact sh.tag
+  return artifactEntry sh.tag
     { functions, memory_size := MEM_SIZE, initial_memory := initialMemory sh }
 
-def artifacts : Except String (Array Json) := do
+def artifacts : Except String (Array ArtifactEntry) := do
   return (← shapes.mapM artifactOf).toArray
 
 end GemvWarp

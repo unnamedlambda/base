@@ -119,13 +119,12 @@ artifacts_reproduce() {
     mkdir -p "$out/$module"
     ./.lake/build/bin/"$exe" "$out/$module" || rc=1
   done < <(lake run generators)
-  # A generator emits JSON and nothing else. The bincode beside it and the
-  # manifest naming what was emitted both belong to the build script, so they
-  # are not evidence about the generator and are excluded here.
-  diff -rq --exclude='*.bin' --exclude='generated.list' \
+  # The manifest naming what was emitted belongs to the build script, so it is
+  # not evidence about the generator and is excluded here.
+  diff -rq --exclude='generated.list' \
        "$ROOT/lean-artifacts/artifacts" "$out" || rc=1
   [ $rc -eq 0 ] &&
-    echo "$(find "$out" -name '*.json' | wc -l) artifacts reproduce byte-for-byte"
+    echo "$(find "$out" -name '*.cbor' | wc -l) artifacts reproduce byte-for-byte"
   rm -rf "$out"
   return $rc
 }

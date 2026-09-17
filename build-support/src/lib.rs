@@ -49,9 +49,10 @@ use base_types::Artifact;
 /// Build and run the generators of the Lake package at `lake_dir`, which is
 /// taken relative to the crate whose build script is calling.
 ///
-/// Artifacts are written to `artifacts/<module>/` beside that crate, as JSON
-/// and as the bincode an application embeds. The path is published as
-/// `LEAN_ARTIFACT_DIR`, so the crate can expose it as a constant.
+/// Artifacts are written to `artifacts/<module>/<name>.cbor` beside that crate,
+/// and the path is published as `LEAN_ARTIFACT_DIR`, so the crate can expose it
+/// as a constant. Every one of them decodes as an [`Artifact`] and re-encodes to
+/// the same bytes; a generator that writes anything else fails the build.
 pub fn generate(lake_dir: impl AsRef<Path>) {
     // The build script runs for the *calling* crate, so this is its directory
     // and not this library's.
@@ -102,16 +103,13 @@ pub fn generate(lake_dir: impl AsRef<Path>) {
         let out = artifact_dir.join(module);
         fs::create_dir_all(&out)
             .unwrap_or_else(|e| panic!("Failed to create {}: {e}", out.display()));
-        if !current(&exe, &out) {
-            clear_json(&out);
-            run(&exe, &out);
+        // A skipped generator's output is checked all the same: what reads it
+        // is base-types', and a change there leaves files that are no longer
+        // artifacts beside a generator that has not changed.
+        if !current(&exe, &out) || verify_all(&out).is_err() {
+            let written = regenerate(module, &exe, &out);
+            write_if_changed(&out.join(MANIFEST), written.join("\n").as_bytes());
         }
-        // Always re-encode, even when the generator was skipped: the binary
-        // encoding is base-types', so it goes stale on a change there while the
-        // JSON beside it stays valid. `write_if_changed` keeps this free.
-        let written = write_binaries(module, &out);
-        drop_stale(&out, &written);
-        write_if_changed(&out.join(MANIFEST), written.join("\n").as_bytes());
     }
     let modules: Vec<String> = generators.iter().map(|(_, m)| m.clone()).collect();
     drop_stale_modules(&artifact_dir, &modules);
@@ -212,7 +210,7 @@ macro_rules! artifact {
             ),
             "/",
             $path,
-            ".bin"
+            ".cbor"
         ))
     };
 }
@@ -283,7 +281,7 @@ fn canonical(path: &Path) -> PathBuf {
 const MANIFEST: &str = "generated.list";
 
 /// Whether a generator's output can be left alone: every artifact it last
-/// emitted is present, in both encodings, and newer than the generator.
+/// emitted is present and newer than the generator.
 ///
 /// Lake leaves an executable untouched when it replays it, so an output newer
 /// than the binary that produced it is current. This compares the two rather
@@ -297,11 +295,9 @@ fn current(exe: &Path, out: &Path) -> bool {
     let mut any = false;
     for name in list.lines().filter(|l| !l.is_empty()) {
         any = true;
-        for ext in ["json", "bin"] {
-            match stamp(&out.join(name).with_extension(ext)) {
-                Some(t) if t > built => {}
-                _ => return false,
-            }
+        match stamp(&artifact_path(out, name)) {
+            Some(t) if t > built => {}
+            _ => return false,
         }
     }
     any
@@ -372,58 +368,122 @@ fn check(output: &std::process::Output, what: &str) {
     panic!("{what} failed");
 }
 
-/// Encode each generated `Artifact` as bincode beside its JSON, returning the
-/// names now present in both encodings.
+/// The file an artifact is written to.
+fn artifact_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.{EXTENSION}"))
+}
+
+const EXTENSION: &str = "cbor";
+
+/// Where a generator runs, inside its own output directory so the results can
+/// be moved into place rather than copied across filesystems.
+const STAGING: &str = ".staging";
+
+/// Run a generator into a fresh staging directory, check what it wrote, and
+/// put it in place, returning the artifact names in order.
 ///
-/// A `.json` at the top of a generator's output directory is an artifact; other
-/// output belongs in a subdirectory, which this does not descend into. One that
-/// does not parse is therefore malformed: it is reported and gets no `.bin`, so
-/// an application expecting it fails on the missing `include_bytes!` path.
-fn write_binaries(module: &str, dir: &Path) -> Vec<String> {
+/// A `.cbor` at the top of the staging directory is an artifact; a generator's
+/// other output goes in a subdirectory, which is moved over whole. Anything
+/// else at the top level is an error rather than something to skip, so a
+/// generator cannot emit a file no application will ever find.
+///
+/// Staging is what keeps a failed run from half-replacing the output: nothing
+/// moves until every artifact has been checked.
+fn regenerate(module: &str, exe: &Path, out: &Path) -> Vec<String> {
+    let staging = out.join(STAGING);
+    if staging.exists() {
+        fs::remove_dir_all(&staging)
+            .unwrap_or_else(|e| panic!("Failed to remove {}: {e}", staging.display()));
+    }
+    fs::create_dir_all(&staging)
+        .unwrap_or_else(|e| panic!("Failed to create {}: {e}", staging.display()));
+    run(exe, &staging);
+
+    let mut artifacts = Vec::new();
+    let mut subdirs = Vec::new();
+    for path in entries(&staging) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if path.is_dir() {
+            subdirs.push(name);
+        } else if path.extension().and_then(|e| e.to_str()) == Some(EXTENSION) {
+            if let Err(e) = verify(&path) {
+                panic!("{module}/{name}: {e}");
+            }
+            artifacts.push(path.file_stem().unwrap_or_default().to_string_lossy().to_string());
+        } else {
+            panic!("{module}/{name} is not an artifact; other output belongs in a subdirectory");
+        }
+    }
+    assert!(!artifacts.is_empty(), "{module} wrote no artifacts");
+
+    for name in &artifacts {
+        let bytes = fs::read(artifact_path(&staging, name)).expect("staged artifact");
+        write_if_changed(&artifact_path(out, name), &bytes);
+    }
+    // What is at the top level and not just written belongs to an artifact the
+    // generator no longer has, or to an encoding that is gone. Left in place it
+    // would still satisfy an `include_bytes!`.
+    for path in entries(out) {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+        let keep = name == MANIFEST
+            || name == STAGING
+            || (path.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some(EXTENSION)
+                && artifacts.contains(&stem));
+        if !keep {
+            remove(&path);
+        }
+    }
+    for name in subdirs {
+        fs::rename(staging.join(&name), out.join(&name))
+            .unwrap_or_else(|e| panic!("Failed to move {module}/{name} into place: {e}"));
+    }
+    remove(&staging);
+    artifacts
+}
+
+/// That the file at `path` is an artifact, written in the one encoding
+/// [`Artifact::to_bytes`] produces. A Lean writer that disagrees with serde on
+/// any detail of the profile fails here rather than being read some other way.
+fn verify(path: &Path) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|e| format!("unreadable: {e}"))?;
+    let artifact = Artifact::from_bytes(&bytes)?;
+    let again = artifact.to_bytes();
+    if again != bytes {
+        let at = bytes.iter().zip(&again).position(|(a, b)| a != b).unwrap_or(bytes.len().min(again.len()));
+        return Err(format!(
+            "decodes, but is not in the artifact encoding: it re-encodes differently from byte {at} \
+             ({} bytes written, {} re-encoded)",
+            bytes.len(),
+            again.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Every artifact a generator last emitted, checked as [`verify`] does.
+fn verify_all(out: &Path) -> Result<(), String> {
+    let list = fs::read_to_string(out.join(MANIFEST)).map_err(|e| e.to_string())?;
+    for name in list.lines().filter(|l| !l.is_empty()) {
+        verify(&artifact_path(out, name))?;
+    }
+    Ok(())
+}
+
+/// The entries directly in `dir`, sorted.
+fn entries(dir: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", dir.display()))
         .map(|e| e.expect("Failed to read directory entry").path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
         .collect();
     paths.sort();
-
-    let mut written = Vec::new();
-    let mut keep = |path: &Path| {
-        written.push(path.file_stem().unwrap_or_default().to_string_lossy().to_string())
-    };
-    for path in paths {
-        let bin = path.with_extension("bin");
-        if fresh(&bin, &path) {
-            keep(&path);
-            continue;
-        }
-        let text = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
-        let artifact: Artifact = match serde_json::from_str(&text) {
-            Ok(artifact) => artifact,
-            Err(e) => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                println!("cargo:warning={module}/{name} is not an Artifact, left as JSON: {e}");
-                continue;
-            }
-        };
-        let bytes = bincode::serialize(&artifact).expect("Failed to serialize bincode");
-        write_if_changed(&bin, &bytes);
-        keep(&path);
-    }
-    written
+    paths
 }
 
-/// Whether a binary can be left alone: newer than the JSON it encodes, and
-/// newer than the build script, whose own rebuild is what a change to
-/// base-types looks like from here.
-fn fresh(bin: &Path, json: &Path) -> bool {
-    let stamp = |p: &Path| p.metadata().and_then(|m| m.modified()).ok();
-    let (Some(b), Some(j)) = (stamp(bin), stamp(json)) else {
-        return false;
-    };
-    let script = std::env::current_exe().ok().and_then(|p| stamp(&p));
-    b > j && script.map(|s| b > s).unwrap_or(false)
+fn remove(path: &Path) {
+    let result = if path.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
+    result.unwrap_or_else(|e| panic!("Failed to remove {}: {e}", path.display()));
 }
 
 /// Leave an unchanged artifact untouched. Applications reach these files with
@@ -436,25 +496,7 @@ fn write_if_changed(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap_or_else(|e| panic!("Failed to write {}: {e}", path.display()));
 }
 
-/// The generator is the authority on which artifacts exist, so its JSON goes
-/// before it runs. The binaries stay, so `write_if_changed` can still see them.
-fn clear_json(dir: &Path) {
-    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            fs::remove_file(&path)
-                .unwrap_or_else(|e| panic!("Failed to remove {}: {e}", path.display()));
-        }
-    }
-}
-
-/// A binary not among what the generator just emitted belongs to an artifact it
-/// no longer has. Left in place it would still satisfy an `include_bytes!`.
-///
-/// Keyed on that list, not on whether the JSON still exists: a hand-deleted
-/// JSON is a missing intermediate, and reading it as "this artifact is gone"
-/// would delete the binary instead of rebuilding both.
-/// The same, one level up: a generator removed from the lakefile leaves a whole
+/// A generator removed from the lakefile leaves a whole
 /// directory of artifacts that still satisfy an `include_bytes!`, so an
 /// application would keep compiling against a program nothing emits any more.
 ///
@@ -466,17 +508,6 @@ fn drop_stale_modules(dir: &Path, modules: &[String]) {
         let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() && !modules.contains(&name) {
             fs::remove_dir_all(&path)
-                .unwrap_or_else(|e| panic!("Failed to remove {}: {e}", path.display()));
-        }
-    }
-}
-
-fn drop_stale(dir: &Path, written: &[String]) {
-    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        if path.extension().and_then(|e| e.to_str()) == Some("bin") && !written.contains(&stem) {
-            fs::remove_file(&path)
                 .unwrap_or_else(|e| panic!("Failed to remove {}: {e}", path.display()));
         }
     }
@@ -558,9 +589,7 @@ mod tests {
     ///
     /// The case that matters is a module with several artifacts: asking whether
     /// the directory holds something newer than the generator answers yes on
-    /// the strength of its *other* artifacts, so the gap goes unseen -- and
-    /// then `drop_stale` removes the binary whose JSON is missing, which is the
-    /// output being deleted rather than rebuilt.
+    /// the strength of its *other* artifacts, so the gap goes unseen.
     #[test]
     fn a_deleted_output_is_not_current() {
         let dir = std::env::temp_dir().join(format!("bs-current-{}", std::process::id()));
@@ -571,13 +600,12 @@ mod tests {
         // them; the check is `newer than the generator`.
         std::thread::sleep(Duration::from_millis(10));
         for name in ["one", "two"] {
-            fs::write(dir.join(name).with_extension("json"), b"{}").expect("json");
-            fs::write(dir.join(name).with_extension("bin"), b"\0").expect("bin");
+            fs::write(artifact_path(&dir, name), b"\0").expect("artifact");
         }
         fs::write(dir.join(MANIFEST), "one\ntwo").expect("manifest");
         assert!(current(&exe, &dir), "a complete output is current");
 
-        for gone in ["one.json", "one.bin", MANIFEST] {
+        for gone in ["one.cbor", MANIFEST] {
             let path = dir.join(gone);
             let saved = fs::read(&path).expect("read back");
             fs::remove_file(&path).expect("remove");
@@ -588,6 +616,32 @@ mod tests {
         // A generator lake rebuilt is newer than everything beside it.
         fs::write(&exe, b"rebuilt").expect("rebuild");
         assert!(!current(&exe, &dir), "output older than the generator is stale");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An artifact is checked for its encoding, not only for decoding: a head
+    /// wider than it needs to be reads as the same artifact, and is still
+    /// refused, because it is a writer disagreeing with the profile.
+    #[test]
+    fn an_artifact_in_another_encoding_is_refused() {
+        let dir = std::env::temp_dir().join(format!("bs-verify-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let good = Artifact { functions: vec![], memory_size: 8, data: vec![] }.to_bytes();
+        let path = dir.join("a.cbor");
+        fs::write(&path, &good).expect("write");
+        assert_eq!(verify(&path), Ok(()));
+
+        // `memory_size: 8` as a one-byte head (0x08) spelled with two (0x18 0x08).
+        let at = good.windows(2).rposition(|w| w == [0x08, 0x64]).expect("memory_size value") ;
+        let mut wide = good.clone();
+        wide.splice(at..at + 1, [0x18, 0x08]);
+        assert_eq!(Artifact::from_bytes(&wide).map(|a| a.memory_size), Ok(8));
+        fs::write(&path, &wide).expect("write");
+        let err = verify(&path).expect_err("a wide head is not the encoding");
+        assert!(err.contains("re-encodes differently"), "{err}");
+
+        fs::write(&path, b"{}").expect("write");
+        assert!(verify(&path).expect_err("JSON").starts_with("not an artifact"));
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -11,7 +11,7 @@ over the literal `<|start|>` yields its pieces rather than the special id, so
 they cannot arrive through the tokenizer, and putting one checkpoint's chat
 format inside the model program would be the wrong place for it.
 
-  python applications/gpt-oss/chat.py <artifact.json> --bank data/gptoss-bank \\
+  python applications/gpt-oss/chat.py <artifact.cbor> --bank data/gptoss-bank \\
       --prompt "What is the capital of France?"
 
 The first call reads 12.9 GiB off disk and pins 9.5 GiB. Do not run this beside

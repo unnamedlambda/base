@@ -1001,10 +1001,10 @@ end Layer
 
 #eval LayoutScan.check "GptOssAlgorithm" [``gMemMap, ``Attn.aMemMap, ``Layer.lMemMap]
 
-def artifacts (gClif aClif lClif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "gptoss_moe" (gSetup gClif)
-   , toJsonArtifact "gptoss_attn" (Attn.aSetup aClif)
-   , toJsonArtifact "gptoss_layer" (Layer.lSetup lClif) ]
+def artifacts (gClif aClif lClif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "gptoss_moe" (gSetup gClif)
+   , artifactEntry "gptoss_attn" (Attn.aSetup aClif)
+   , artifactEntry "gptoss_layer" (Layer.lSetup lClif) ]
 
 end GptOssAlgorithm
 

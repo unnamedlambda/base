@@ -1,13 +1,14 @@
-import json
 import struct
 import pytest
-from py_base import Artifact, Base, run
+from py_base import Artifact, Base, load_artifact, run
+
+import cbor
 
 # --- constructing CLIF programs -------------------------------------------
 #
-# `Setup.clif` is the program as data, so these build the shape
-# `base_types::clif` deserializes: externally-tagged variants whose fields are
-# in constructor order. Values, blocks and callees are bare integers. Same
+# An artifact's functions are the program as data, so these build the shape
+# `base_types::clif` reads: externally-tagged variants whose fields are in
+# constructor order. Values, blocks and callees are bare integers. Same
 # vocabulary as `base/tests/common/mod.rs` on the Rust side.
 
 def program(functions):
@@ -86,7 +87,7 @@ DOUBLE_I32_PROG = program([
 ])
 
 def make_double_artifact():
-    return json.dumps({
+    return cbor.encode({
         "functions": DOUBLE_I32_PROG["functions"],
         "memory_size": 256,
         "data": [],
@@ -102,17 +103,22 @@ def unpack_i32s(data, count):
 
 
 class TestArtifact:
-    def test_valid_json(self):
+    def test_valid(self):
         assert Artifact(make_double_artifact()) is not None
 
-    def test_invalid_json(self):
-        """The runtime parses the artifact, so that is where bad JSON is caught."""
-        with pytest.raises(ValueError, match="not an Artifact"):
-            Base(Artifact("not json"))
+    def test_json_is_not_an_artifact(self):
+        """The runtime decodes the artifact, so that is where bad input is caught."""
+        with pytest.raises(ValueError, match="not an artifact"):
+            Base(Artifact(b'{"functions": [], "memory_size": 8, "data": []}'))
 
     def test_missing_fields(self):
-        with pytest.raises(ValueError, match="not an Artifact"):
-            Base(Artifact('{"functions": []}'))
+        with pytest.raises(ValueError, match="memory_size"):
+            Base(Artifact(cbor.encode({"functions": []})))
+
+    def test_from_file(self, tmp_path):
+        path = tmp_path / "double.cbor"
+        path.write_bytes(make_double_artifact())
+        assert Base(load_artifact(str(path))).execute(DOUBLE) == 0
 
 
 class TestBase:
@@ -122,13 +128,13 @@ class TestBase:
 
     def test_malformed_program(self):
         """v9 is never defined, so the program cannot be built."""
-        artifact_json = json.dumps({
+        artifact = cbor.encode({
             "functions": program([function([block(0, [0], [store(9, 0), ret()])])])["functions"],
             "memory_size": 256,
             "data": [],
         })
         with pytest.raises(ValueError, match="v9 used before it is defined"):
-            Base(Artifact(artifact_json))
+            Base(Artifact(artifact))
 
     def test_execute_no_data(self):
         base = Base(Artifact(make_double_artifact()))
@@ -141,13 +147,13 @@ class TestBase:
         Nothing declares it: the runtime reads the signature off the body, so
         a program that answers and one that does not are written the same way
         apart from the terminator."""
-        artifact_json = json.dumps({
+        artifact = cbor.encode({
             "functions": program([function([block(0, [0], [
                 iconst64(1, 42), ret(1)])], export="answer")])["functions"],
             "memory_size": 256,
             "data": [],
         })
-        base = Base(Artifact(artifact_json))
+        base = Base(Artifact(artifact))
         assert base.execute("answer") == 42
 
     def test_execute_into_doubles(self):
@@ -213,12 +219,12 @@ class TestBase:
 
     def test_read_memory_answers_bytes(self):
         """What the artifact starts from, as `bytes` a host can unpack."""
-        artifact_json = json.dumps({
+        artifact = cbor.encode({
             "functions": DOUBLE_I32_PROG["functions"],
             "memory_size": 256,
-            "data": [{"offset": 8, "bytes": [7, 0, 0, 0]}],
+            "data": [{"offset": 8, "bytes": bytes([7, 0, 0, 0])}],
         })
-        base = Base(Artifact(artifact_json))
+        base = Base(Artifact(artifact))
         got = base.read_memory(8, 4)
         assert isinstance(got, bytes)
         assert struct.unpack("<I", got)[0] == 7

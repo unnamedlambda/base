@@ -62,7 +62,7 @@ def find_artifact() -> str:
     """
     out = os.path.join(LEAN, ".lake", "artifacts", MODULE)
     exe = os.path.join(LEAN, ".lake", "build", "bin", GENERATOR)
-    path = os.path.join(out, "mlp_cifar.json")
+    path = os.path.join(out, "mlp_cifar.cbor")
     def lake(*args, cwd=LEAN):
         """Quiet unless it fails: replaying the library prints a page of Lean
         linter warnings that have nothing to do with this run."""

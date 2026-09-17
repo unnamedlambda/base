@@ -6,7 +6,7 @@
 //!
 //!   cargo build --release -p bench-scaling --bin clifbench
 //!
-//! Takes generated artifact JSON files. Prints one
+//! Takes generated `.cbor` artifact files. Prints one
 //! `file<TAB>bytes<TAB>seconds` line per input.
 
 use base::{Artifact, Base};
@@ -14,15 +14,15 @@ use base::{Artifact, Base};
 
 fn main() {
     for path in std::env::args().skip(1) {
-        let text = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
+        let file = match std::fs::read(&path) {
+            Ok(b) => b,
             Err(e) => {
                 println!("{path}\t0\tERR {e}");
                 continue;
             }
         };
-        let bytes = text.len();
-        let artifact: Artifact = match serde_json::from_str(&text) {
+        let bytes = file.len();
+        let artifact = match Artifact::from_bytes(&file) {
             Ok(a) => a,
             Err(e) => {
                 println!("{path}\t{bytes}\tERR {e}");

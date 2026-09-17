@@ -17,7 +17,7 @@
 
 /* Declared rather than included: the runtime is a Rust cdylib and has no
  * header. These must match `base/src/capi.rs`. */
-void *base_new(const uint8_t *artifact_json, size_t len);
+void *base_new(const uint8_t *artifact, size_t len);
 int32_t base_execute(void *handle, const uint8_t *name, size_t name_len,
                      const uint8_t *data, size_t data_len, uint8_t *out,
                      size_t out_len, int64_t *status);
@@ -47,9 +47,9 @@ static lean_obj_res base_io_error(const char *fallback) {
     return lean_io_result_mk_error(lean_mk_io_user_error(message));
 }
 
-LEAN_EXPORT lean_obj_res lean_base_new(b_lean_obj_arg artifact_json, lean_obj_arg w) {
+LEAN_EXPORT lean_obj_res lean_base_new(b_lean_obj_arg artifact, lean_obj_arg w) {
     (void)w;
-    void *handle = base_new(lean_sarray_cptr(artifact_json), lean_sarray_size(artifact_json));
+    void *handle = base_new(lean_sarray_cptr(artifact), lean_sarray_size(artifact));
     if (handle == NULL) {
         return base_io_error("base_new failed");
     }

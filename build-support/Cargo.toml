@@ -5,8 +5,6 @@ edition = "2021"
 
 [dependencies]
 base-types = { path = "../base-types" }
-serde_json = "1"
-bincode = "1"
 # Advisory file locks, for the shared-package case described above.
 fs2 = "0.4"
 

@@ -18,7 +18,7 @@ it to a file would otherwise buffer every line until it exited, which makes a
 slow run and a hung one look identical.
 
   python applications/gpt-oss/needle_test.py \\
-      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.json \\
+      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.cbor \\
       --bank data/gptoss-bank --context 16384
 
 The filler is prose rather than repetition on purpose: a repeated sentence is

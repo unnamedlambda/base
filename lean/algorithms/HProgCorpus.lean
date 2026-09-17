@@ -814,7 +814,7 @@ def main (args : List String) : IO Unit := do
   | .error e => throw (IO.userError s!"interpreting the corpus: {e}")
   | .ok bytes =>
       let clif ← AlgorithmLib.Prog.orDie HProgCorpus.program
-      emitArtifacts dir #[toJsonArtifact "hprog_corpus" {
+      emitArtifacts dir #[artifactEntry "hprog_corpus" {
         functions := clif, memory_size := 0x100
       }]
       let names := HProgCorpus.caseNames
@@ -835,8 +835,8 @@ def main (args : List String) : IO Unit := do
         ("names", Lean.toJson names),
         ("modes", Lean.toJson modes),
         ("expected", Lean.toJson (bytes.toList.map (·.toNat)))]
-      -- Not an artifact, so not beside them: a `.json` in the output directory
-      -- is one an application can embed, and this is what to compare against.
+      -- Not an artifact, so not beside them: the top of the output directory
+      -- holds artifacts only, and this is what to compare against.
       let sideDir := System.FilePath.mk dir / "expected"
       IO.FS.createDirAll sideDir
       IO.FS.writeFile (sideDir / "hprog_corpus_expected.json") j.compress

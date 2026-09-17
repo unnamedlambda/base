@@ -25,19 +25,19 @@ fn last_error(what: &str) -> PyErr {
     }
 }
 
-/// What a generator emits, held as the JSON it was written as: the runtime is
-/// what parses it, so there is no second reader here to disagree with it.
+/// What a generator emits, held as the bytes it was written as: the runtime is
+/// what decodes them, so there is no second reader here to disagree with it.
 #[pyclass(name = "Artifact")]
 #[derive(Clone)]
 struct PyArtifact {
-    json: Vec<u8>,
+    bytes: Vec<u8>,
 }
 
 #[pymethods]
 impl PyArtifact {
     #[new]
-    fn new(json: &str) -> PyResult<Self> {
-        Ok(Self { json: json.as_bytes().to_vec() })
+    fn new(bytes: &[u8]) -> PyResult<Self> {
+        Ok(Self { bytes: bytes.to_vec() })
     }
 }
 
@@ -79,7 +79,7 @@ impl Drop for PyBase {
 impl PyBase {
     #[new]
     fn new(artifact: &PyArtifact) -> PyResult<Self> {
-        let handle = unsafe { capi::base_new(artifact.json.as_ptr(), artifact.json.len()) };
+        let handle = unsafe { capi::base_new(artifact.bytes.as_ptr(), artifact.bytes.len()) };
         if handle.is_null() {
             return Err(last_error("Base"));
         }
@@ -158,12 +158,12 @@ impl PyBase {
     }
 }
 
-/// Read an artifact from the JSON a generator wrote.
+/// Read an artifact from the `.cbor` file a generator wrote.
 #[pyfunction]
 fn load_artifact(path: &str) -> PyResult<PyArtifact> {
-    let json = std::fs::read(path)
+    let bytes = std::fs::read(path)
         .map_err(|e| PyValueError::new_err(format!("Cannot read {}: {}", path, e)))?;
-    Ok(PyArtifact { json })
+    Ok(PyArtifact { bytes })
 }
 
 /// Compile an artifact and call the entry point it exports as `name`, once.

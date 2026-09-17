@@ -78,8 +78,8 @@ def code : Prog V L Unit := do
 def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[toJsonArtifact "matmul_algorithm" {
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[artifactEntry "matmul_algorithm" {
     functions := clif,
     memory_size := 40
   }]

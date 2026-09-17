@@ -58,7 +58,7 @@ fn bench(
     let mut bytes: Vec<u8> = a.iter().flat_map(|f| f.to_le_bytes()).collect();
     bytes.extend(x.iter().flat_map(|f| f.to_le_bytes()));
 
-    let artifact = Artifact::from_bytes(art_bytes);
+    let artifact = Artifact::from_bytes(art_bytes).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
     let fetch = "fetch";
     let dot = fam_label == "dot";

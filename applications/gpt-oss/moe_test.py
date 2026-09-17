@@ -15,7 +15,7 @@ Two checks, because one of them alone would pass for the wrong reason:
     reference that made the same mistake, so the second check asks whether
     choosing differently computes differently.
 
-  python applications/gpt-oss/moe_test.py <artifact.json> --bank data/gptoss-bank
+  python applications/gpt-oss/moe_test.py <artifact.cbor> --bank data/gptoss-bank
 """
 
 import argparse

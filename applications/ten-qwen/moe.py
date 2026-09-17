@@ -11,7 +11,7 @@ the store.
 The check is against NumPy at the experts the host picked, so a dispatch that
 bound the wrong weights shows up as a wrong answer rather than a slower one.
 
-Run:  py-base/.venv/bin/python applications/ten-qwen/moe.py <artifact.json>
+Run:  py-base/.venv/bin/python applications/ten-qwen/moe.py <artifact.cbor>
 """
 
 import os

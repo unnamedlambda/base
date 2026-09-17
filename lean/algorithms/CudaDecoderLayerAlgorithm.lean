@@ -477,9 +477,9 @@ def inferAlgorithm  : UInt32 := 5
 def stack16Algorithm : UInt32 := 6
 def stack32Algorithm : UInt32 := 7
 
-def artifacts (clif : List FuncData) : Array Json :=
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[
-    toJsonArtifact "cuda_decoder" (buildSetup clif)
+    artifactEntry "cuda_decoder" (buildSetup clif)
   ]
 
 end CudaDecoderLayer

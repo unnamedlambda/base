@@ -23,14 +23,14 @@ Function { export_name, sigs, fns, blocks }
 
 An **entry point** is an exported function, called by its name. A program answers through the out buffer its caller passes. Multi-stage flows (e.g., GPU load → prep → infer pipelines) are several entry points over one compilation and one memory. Names are unique within an artifact, and the generator is free to reorder functions: positions never leave the artifact, so a host is never written against one.
 
-At build time, Lean 4 generates this artifact as JSON. The Rust build script deserializes it into typed structs and emits a binary artifact encoding alongside the JSON. At runtime, Cranelift JIT-compiles the IR once and executes algorithms against shared memory — no interpreter, no GC, no serialization layer in the hot path.
+At build time, Lean 4 writes this artifact as CBOR, one file that every host reads. The Rust build script decodes each one into typed structs and refuses any that does not re-encode to the same bytes. At runtime, Cranelift JIT-compiles the IR once and executes algorithms against shared memory — no interpreter, no GC, no serialization layer in the hot path.
 
 ## Execution patterns
 
 ### One-shot execution
 
 ```rust
-let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+let artifact = Artifact::from_bytes(ARTIFACT_BINARY)?;
 base::run(artifact, "main")?;
 ```
 
@@ -39,7 +39,7 @@ base::run(artifact, "main")?;
 For workloads that benefit from persistent state and dynamic data, the `Base` struct provides JIT-once semantics with zero-copy data passing:
 
 ```rust
-let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+let artifact = Artifact::from_bytes(ARTIFACT_BINARY)?;
 let mut base = Base::new(artifact)?;            // JIT compile once
 
 // Input and output are the caller's buffers, passed by pointer: no copying

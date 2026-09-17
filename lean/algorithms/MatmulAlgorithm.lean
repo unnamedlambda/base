@@ -313,6 +313,6 @@ end Matmul
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie Matmul.result
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonArtifact "matmul_app" cfg]
+  emitArtifacts outDir #[artifactEntry "matmul_app" cfg]
 
 #eval ShipScan.check "MatmulAlgorithm"

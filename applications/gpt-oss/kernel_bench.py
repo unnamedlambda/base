@@ -11,7 +11,7 @@ buffers -- no artifact, no bank, no 12.9 GiB.  That is the point: the edit-test
 loop for a kernel should be seconds.
 
   python applications/gpt-oss/kernel_bench.py \\
-      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.json
+      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.cbor
 
 `--csv` prints one line per kernel for recording a before and an after.
 """

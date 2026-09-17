@@ -29,22 +29,24 @@ function the artifact exports, and a script calls it by that name.
 ```python
 from py_base import load_artifact, Base
 
-artifact = load_artifact("../lean-artifacts/artifacts/Sha256Algorithm/sha256_app.json")
+artifact = load_artifact("../lean-artifacts/artifacts/Sha256Algorithm/sha256_app.cbor")
 
 base = Base(artifact)                # JIT compiles — do this once
 base.execute("main")                 # …then execute as often as you like
 ```
 
-Building the artifact directly from JSON works the same way, which is what the
-tests do:
+An artifact is CBOR, so one can also be built in Python from nested dicts,
+which is what the tests do with the standard-library encoder in
+`tests/cbor.py`:
 
 ```python
-from py_base import Artifact, Base, run
-import json
+from py_base import Artifact, Base
+import cbor
 
-artifact = Artifact(json.dumps({
+artifact = Artifact(cbor.encode({
     "functions": [...],              # the program, one exported as "double"
     "memory_size": 256,
+    "data": [],
 }))
 
 data = b"\x01\x00\x00\x00\x02\x00\x00\x00"
@@ -59,13 +61,13 @@ say; `base` gives them no format.
 
 ## API
 
-### `Artifact(json: str)`
+### `Artifact(bytes)`
 What a generator emits: the CLIF functions, the memory size and the data
-segments memory starts with. The runtime is what parses it, so malformed JSON
-is reported when a `Base` is built from it.
+segments memory starts with, encoded as CBOR. The runtime is what decodes it,
+so a malformed artifact is reported when a `Base` is built from it.
 
 ### `load_artifact(path: str) -> Artifact`
-Read an artifact from the JSON a generator wrote.
+Read an artifact from the `.cbor` file a generator wrote.
 
 ### `Base(artifact: Artifact)`
 An execution engine. JIT compiles the program. This is the expensive step — do

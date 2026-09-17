@@ -11,7 +11,7 @@ harmony's control tokens, which are constants of the chat format rather than of
 the text.
 
   python applications/gpt-oss/cli.py \\
-      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.json \\
+      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.cbor \\
       --bank data/gptoss-bank
 
 Then type. `/reasoning high`, `/temp 0.7`, `/new`, `/quit` change things

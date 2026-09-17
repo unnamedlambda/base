@@ -5,7 +5,7 @@ const ARTIFACT_BINARY: &[u8] =
 
 
 fn main() {
-    let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
+    let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
 
     match run(artifact, "main") {
         Ok(_) => {}

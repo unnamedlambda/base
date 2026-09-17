@@ -1243,8 +1243,8 @@ def dSetup (clif : List FuncData) : Artifact := {
 
 #eval LayoutScan.check "GptOssDecode" [``dMemMap]
 
-def artifacts (clif : List FuncData) : Array Json :=
-  #[ toJsonArtifact "gptoss_decode" (dSetup clif) ]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "gptoss_decode" (dSetup clif) ]
 
 end GptOssDecode
 

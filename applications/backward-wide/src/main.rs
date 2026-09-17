@@ -47,7 +47,7 @@ fn main() {
     bytes.extend(w.iter().flat_map(|f| f.to_le_bytes()));
     bytes.extend(ystar.iter().flat_map(|f| f.to_le_bytes()));
 
-    let artifact = Artifact::from_bytes(ART);
+    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
 
     // Seam check: Lean publishes the byte count its `hostIn` layout expects.
     // Asserting against it means the host packing and the uploader cannot

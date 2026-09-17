@@ -18,7 +18,7 @@ or a warm one -- the numbers here are timings, and the answers that come with
 them are meaningless on purpose.
 
   python applications/gpt-oss/depth_bench.py \\
-      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.json \\
+      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.cbor \\
       --bank data/gptoss-bank --context 131072
 
 Measured on an RTX 3060, August 2026: 17.8 ms a token at position zero, 84.1 ms

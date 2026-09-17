@@ -39,7 +39,7 @@ fn counts(base: &mut Base, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
 
 #[test]
 fn counts_every_needle() {
-    let artifact = Artifact::from_bytes(ARTIFACT);
+    let artifact = Artifact::from_bytes(ARTIFACT).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
 
     let cases: Vec<(&str, Vec<u8>)> = vec![

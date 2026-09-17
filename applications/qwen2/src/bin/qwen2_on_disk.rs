@@ -39,7 +39,7 @@ fn main() {
         data.push(0);
     }
 
-    let artifact = Artifact::from_bytes(QWEN2_ON_DISK_BINARY);
+    let artifact = Artifact::from_bytes(QWEN2_ON_DISK_BINARY).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
 
     eprintln!("Starting qwen2_on_disk (weights={weights_path}, tokenizer={tokenizer_path})");

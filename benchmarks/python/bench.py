@@ -37,7 +37,7 @@ def main():
     generator = "PythonBenchmarks"
 
     def artifact_path(name: str) -> str:
-        path = os.path.join(data_dir, generator, f"{name}.json")
+        path = os.path.join(data_dir, generator, f"{name}.cbor")
         if not os.path.exists(path):
             print(
                 f"ERROR: {path} not found. Run ./run.sh first.",

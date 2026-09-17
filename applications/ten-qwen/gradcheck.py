@@ -9,7 +9,7 @@ pass itself, evaluated at perturbed weights.
 
 Loss is `L = Σᵢ out[i]`, so the incoming gradient is a vector of ones.
 
-Run:  py-base/.venv/bin/python applications/ten-qwen/gradcheck.py <artifact.json>
+Run:  py-base/.venv/bin/python applications/ten-qwen/gradcheck.py <artifact.cbor>
 """
 
 import os

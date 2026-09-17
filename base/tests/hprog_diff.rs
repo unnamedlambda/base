@@ -19,9 +19,9 @@ use base_types::Artifact;
 use std::path::{Path, PathBuf};
 
 fn artifact(dir: &Path, name: &str) -> Artifact {
-    let p = dir.join(format!("{name}.json"));
-    let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", p.display()))
+    let p = dir.join(format!("{name}.cbor"));
+    let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    Artifact::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", p.display()))
 }
 
 fn dir() -> Option<PathBuf> {

@@ -71,8 +71,8 @@ def vSetup (clif : List FuncData) : Artifact := {
   initial_memory := vInitialMemory
 }
 
-def artifacts (clif : List FuncData) : Array Lean.Json :=
-  #[ toJsonArtifact "vit_block" (vSetup clif) ]
+def artifacts (clif : List FuncData) : Array ArtifactEntry :=
+  #[ artifactEntry "vit_block" (vSetup clif) ]
 
 end Vit
 

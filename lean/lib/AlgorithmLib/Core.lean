@@ -5,27 +5,11 @@ open Lean
 
 namespace AlgorithmLib
 
-
-instance : ToJson UInt8 where
-  toJson n := toJson n.toNat
-
-instance : ToJson (List UInt8) where
-  toJson lst := toJson (lst.map (·.toNat))
-
-instance : ToJson UInt32 where
-  toJson n := toJson n.toNat
-
-instance : ToJson UInt64 where
-  toJson n := toJson n.toNat
-
 /-- The board's control, as data: the functions a host compiles, the memory
     they run in, and the bytes that memory starts with. This is the whole of
-    the wire format.
+    the wire format, written as the CBOR `base_types::Artifact` reads.
 
-    An entry point is a function index. Which index does what is this
-    generator's knowledge, and stays here rather than travelling with the
-    artifact; a host that did not build it gets those numbers from a library
-    written beside the generator. -/
+    A host calls a function by its `exportName`. -/
 structure Artifact where
   functions : List IR.FuncData
   memory_size : Nat
@@ -77,17 +61,19 @@ def segmentsOf (image : List UInt8) (gap : Nat := 32) : List (Nat × List UInt8)
           | some (off, run) => go (i + 1) rest (some (off, b :: run)) 0 acc
   go 0 image none 0 []
 
-instance : ToJson Artifact where
-  toJson a := Json.mkObj [
-    ("functions", Json.arr ((a.functions.map toJson).toArray)),
-    ("memory_size", toJson a.memory_size),
-    ("data", Json.arr ((segmentsOf a.initial_memory).map (fun (off, bs) =>
-      Json.mkObj [("offset", toJson off), ("bytes", toJson bs)])).toArray)
-  ]
+open Cbor in
+instance : ToCbor Artifact where
+  cbor a := struct
+    [("functions", array a.functions cbor),
+     ("memory_size", nat a.memory_size),
+     ("data", array (segmentsOf a.initial_memory) fun (off, bs) =>
+        struct [("offset", nat off), ("bytes", bytes ⟨bs.toArray⟩)])]
 
-/-- Serialize an artifact: ["fileName", artifact]. -/
-def toJsonArtifact (name : String) (artifact : Artifact) : Json :=
-  .arr #[.str name, toJson artifact]
+/-- An artifact and the file name it is written under. -/
+abbrev ArtifactEntry := String × Artifact
+
+def artifactEntry (name : String) (artifact : Artifact) : ArtifactEntry :=
+  (name, artifact)
 
 /-- Parse the sole CLI argument as an output directory. -/
 def requireOutputDir (args : List String) : IO String :=
@@ -95,20 +81,66 @@ def requireOutputDir (args : List String) : IO String :=
   | [dir] => pure dir
   | _ => throw <| IO.userError "expected exactly one argument: output directory"
 
-/-- Emit artifacts to a directory as one `{name}.json` file per entry. -/
-def emitArtifacts (dir : String) (entries : Array Json) : IO Unit := do
+/-- Write each artifact to `{dir}/{name}.cbor`. -/
+def emitArtifacts (dir : String) (entries : Array ArtifactEntry) : IO Unit := do
   IO.FS.createDirAll dir
   let mut seen : List String := []
-  for entry in entries do
-    match entry with
-    | .arr #[.str name, body] =>
-        if seen.contains name then
-          throw <| IO.userError s!"duplicate artifact name: {name}"
-        seen := name :: seen
-        IO.FS.writeFile s!"{dir}/{name}.json" (Json.compress body)
-    | _ =>
-        throw <| IO.userError s!"invalid artifact entry: {Json.compress entry}"
+  for (name, artifact) in entries do
+    if seen.contains name then
+      throw <| IO.userError s!"duplicate artifact name: {name}"
+    seen := name :: seen
+    match Cbor.encode artifact with
+    | .ok bytes => IO.FS.writeBinFile s!"{dir}/{name}.cbor" bytes
+    | .error e => throw <| IO.userError s!"{name}: {e}"
 
 def u32 (n : Nat) : UInt32 := UInt32.ofNat n
+
+namespace Cbor.Check
+open IR
+
+/-- The artifact `base_types`' `an_artifact_encodes_in_the_profile` encodes,
+    and the bytes it expects: the Lean writer and serde agree on each shape the
+    profile spells, byte for byte. -/
+private def sample : Artifact where
+  functions := [{
+    index := 0
+    exportName := some "main"
+    sigs := [{ ref := ⟨0⟩, params := [.i64], result := none }]
+    fns := [{ ref := ⟨0⟩, callee := .import "cl_x", sig := ⟨0⟩ },
+            { ref := ⟨1⟩, callee := .local 1, sig := ⟨0⟩ }]
+    blocks := [{
+      ref := ⟨0⟩
+      params := [(⟨0⟩, .i64)]
+      insts := [
+        .iconst ⟨1⟩ .i64 (-2 ^ 63),
+        .iconst ⟨2⟩ .i64 (2 ^ 63 - 1),
+        .fconst ⟨3⟩ .f64 0xFFFFFFFFFFFFFFFF,
+        .load ⟨4⟩ { kind := .uload8, ty := .i32 } ⟨0⟩,
+        .call none ⟨0⟩ [⟨0⟩],
+        .ret none] }] }]
+  memory_size := 2 ^ 40
+  initial_memory := [0, 0, 0, 0xff, 0, 1]
+
+private def expected : String :=
+  "a36966756e6374696f6e7381a46b6578706f72745f6e616d65646d61696e647369677381" ++
+  "a3697265666572656e63650066706172616d73816349363466726573756c74f663666e73" ++
+  "82a3697265666572656e6365006663616c6c6565a166496d706f727464636c5f78637369" ++
+  "6700a3697265666572656e6365016663616c6c6565a1654c6f63616c0163736967006662" ++
+  "6c6f636b7381a3697265666572656e63650066706172616d738182006349363465696e73" ++
+  "747386a16649636f6e73748301634936343b7fffffffffffffffa16649636f6e73748302" ++
+  "634936341b7fffffffffffffffa16646636f6e73748303634636341bffffffffffffffff" ++
+  "a1644c6f61648404a3646b696e6466556c6f616438627479634933326e6e6f747261705f" ++
+  "616c69676e6564f40000a16443616c6c83f6008100a163526574f66b6d656d6f72795f73" ++
+  "697a651b0000010000000000646461746181a2666f66667365740365627974657343ff00" ++
+  "01"
+
+private def hexOf (b : ByteArray) : String :=
+  b.foldl (init := "") fun s x =>
+    let d := Nat.toDigits 16 x.toNat
+    s ++ String.ofList (if d.length < 2 then '0' :: d else d)
+
+#guard (encode sample).toOption.map hexOf == some expected
+
+end Cbor.Check
 
 end AlgorithmLib

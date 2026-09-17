@@ -27,7 +27,7 @@ an implementation -- and the distance to the *unnarrowed* reference is printed
 beside it, so what that decision costs is visible rather than absorbed into a
 tolerance.
 
-  python applications/gpt-oss/attn_test.py <artifact.json> --bank data/gptoss-bank
+  python applications/gpt-oss/attn_test.py <artifact.cbor> --bank data/gptoss-bank
 """
 
 import argparse

@@ -51,7 +51,7 @@ fn batch_sum(f: impl Fn(usize) -> f32) -> f32 {
 }
 
 fn main() {
-    let artifact = Artifact::from_bytes(ART);
+    let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
 
     let mut rng = Lcg::new(0x5eed_1234);
     let a1 = (6.0f32 / IN as f32).sqrt();

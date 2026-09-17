@@ -27,7 +27,7 @@ fn main() {
         data.push(0);
     }
 
-    let artifact = Artifact::from_bytes(QWEN2_BINARY);
+    let artifact = Artifact::from_bytes(QWEN2_BINARY).expect("the build checked this artifact");
     let mut base = Base::new(artifact).expect("Base::new");
 
     eprintln!("Starting qwen2 (weights={weights_path}, tokenizer={tokenizer_path})");

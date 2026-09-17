@@ -457,6 +457,6 @@ def main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
   let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.toJsonArtifact "raymarch_demo" (Algorithm.gameSetup clif)]
+    AlgorithmLib.artifactEntry "raymarch_demo" (Algorithm.gameSetup clif)]
 
 #eval ShipScan.check "RaymarchDemoAlgorithm"

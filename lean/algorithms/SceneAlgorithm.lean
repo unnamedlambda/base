@@ -1050,6 +1050,6 @@ end Algorithm
 def main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultScene)
   let outDir ← requireOutputDir args
-  emitArtifacts outDir #[toJsonArtifact "scene_app" cfg]
+  emitArtifacts outDir #[artifactEntry "scene_app" cfg]
 
 #eval ShipScan.check "SceneAlgorithm"
