@@ -73,8 +73,7 @@ def main():
     art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
     ex = art_entries
     base = py_base.Base(art)
-    want = struct.unpack_from(
-        "<I", bytes(json.load(open(args.artifact))["setup"]["initial_memory"]), 0x80)[0]
+    want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
 
     anorm = bank.f32(ent["attn_norm"], (H,))
     qkv_w_raw = bank.dense[ent["qkv_w"]:ent["qkv_b"]]

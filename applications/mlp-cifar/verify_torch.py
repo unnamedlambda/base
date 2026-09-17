@@ -86,11 +86,9 @@ def main() -> None:
 
     blob = w1.tobytes() + w2.tobytes()
     HOST_LEN_OFF = 0x0080
-    with open(path) as fh:
-        mem = bytes(json.load(fh)["setup"]["initial_memory"])
-    assert len(blob) == struct.unpack_from("<I", mem, HOST_LEN_OFF)[0]
-
     base = py_base.Base(art)
+    assert len(blob) == struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
+
     base.execute_into(art_entries["main"], blob, bytearray(0))
     nil = bytearray(0)
 

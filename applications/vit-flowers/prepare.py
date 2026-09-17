@@ -40,8 +40,11 @@ for i in range(NL):
              sd[p+"mlp.fc2.weight"], sd[p+"mlp.fc2.bias"]]
 
 blob = b"".join(np.ascontiguousarray(b, np.float32).tobytes() for b in bufs)
-mem = bytes(json.load(open(ART))["setup"]["initial_memory"])
-want = struct.unpack_from("<I", mem, 0x80)[0]
+# Loading an artifact compiles it and touches no GPU, so this is safe beside
+# torch: only running it would be.
+import py_base
+want = struct.unpack_from(
+    "<I", py_base.Base(py_base.load_artifact(ART)).read_memory(0x80, 4))[0]
 assert len(blob) == want, f"packed {len(blob)} vs Lean layout {want}"
 print(f"layout   : {len(blob)} bytes, matches Lean vHostIn")
 

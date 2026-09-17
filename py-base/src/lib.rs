@@ -131,7 +131,12 @@ impl PyBase {
     /// This is how a host reads what a program left behind, at an address its
     /// generator says it wrote. A range past the end is an error rather than a
     /// short answer, so a truncated read cannot be mistaken for a result.
-    fn read_memory(&self, offset: usize, length: usize) -> PyResult<Vec<u8>> {
+    fn read_memory<'py>(
+        &self,
+        py: Python<'py>,
+        offset: usize,
+        length: usize,
+    ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let mut have = 0usize;
         let memory = unsafe { capi::base_memory(self.handle, &mut have) };
         if memory.is_null() || offset > have || length > have - offset {
@@ -140,7 +145,9 @@ impl PyBase {
                 offset + length
             )));
         }
-        Ok(unsafe { std::slice::from_raw_parts(memory.add(offset), length) }.to_vec())
+        // `bytes`, not the list of ints a `Vec<u8>` would convert to.
+        let bytes = unsafe { std::slice::from_raw_parts(memory.add(offset), length) };
+        Ok(pyo3::types::PyBytes::new_bound(py, bytes))
     }
 
     /// How many bytes of memory this program runs in.

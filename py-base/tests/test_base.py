@@ -208,6 +208,21 @@ class TestBase:
         assert base.execute_into(DOUBLE, pack_i32s([1, 2, 3, 4]), out) == 0
         assert unpack_i32s(out, 4) == [2, 4, 6, 8]
 
+    def test_read_memory_answers_bytes(self):
+        """What the artifact starts from, as `bytes` a host can unpack."""
+        artifact_json = json.dumps({
+            "functions": DOUBLE_I32_PROG["functions"],
+            "memory_size": 256,
+            "data": [{"offset": 8, "bytes": [7, 0, 0, 0]}],
+        })
+        base = Base(Artifact(artifact_json))
+        got = base.read_memory(8, 4)
+        assert isinstance(got, bytes)
+        assert struct.unpack("<I", got)[0] == 7
+        assert base.memory_size() == 256
+        with pytest.raises(ValueError, match="outside"):
+            base.read_memory(254, 4)
+
 
 class TestRun:
     def test_oneshot(self):

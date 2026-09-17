@@ -95,12 +95,11 @@ def main():
              "wq", "wo", "w1", "w3", "w2"]
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in order)
 
-    mem = bytes(json.load(open(path))["setup"]["initial_memory"])
-    want = struct.unpack_from("<I", mem, QHOST_LEN_OFF)[0]
+    base = py_base.Base(art)
+    want = struct.unpack_from("<I", base.read_memory(QHOST_LEN_OFF, 4))[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean layout {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's qHostIn ({want})")
 
-    base = py_base.Base(art)
     ex = art_entries
     base.execute_into(art_entries["main"], blob, bytearray(0))
     base.execute_into(ex["runFwd"], b"", bytearray(0))

@@ -83,8 +83,7 @@ def main():
     art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
     ex = art_entries
     base = py_base.Base(art)
-    mem = bytes(json.load(open(args.artifact))["setup"]["initial_memory"])
-    want = struct.unpack_from("<I", mem, 0x80)[0]
+    want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
 
     # ---- the weights, exactly as the buffers want them ----
     anorm = bank.f32(ent["attn_norm"], (H,))

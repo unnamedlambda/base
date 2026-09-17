@@ -88,11 +88,11 @@ def main():
 
     import py_base
 
-    check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
     art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
     assert not art_entries, f"expected one entry and no extras; got {sorted(art_entries)}"
     base = py_base.Base(art)
+    check_layout(base)
 
     paths = {}
     for off, name in ((16, "experts.bin"), (272, "dense.bin"),

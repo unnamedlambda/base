@@ -28,18 +28,17 @@ def pbase(i):
     return 9 + 22 * i
 
 
-mem = bytes(json.load(open(ART))["setup"]["initial_memory"])
+art = py_base.load_artifact(ART)
+base = py_base.Base(art)
 # The map is the last region Lean writes: VMEM_SIZE = VGMAP_OFF + 4*VBASE + 0x100.
-GMAP = len(mem) - 0x100 - 4 * VBASE
-gmap = np.frombuffer(mem, "<u4", count=VBASE, offset=GMAP)
+GMAP = base.memory_size() - 0x100 - 4 * VBASE
+gmap = np.frombuffer(base.read_memory(GMAP, 4 * VBASE), "<u4")
 
 blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy")
 ref = np.load(D + "/grads.npz")
 
-art = py_base.load_artifact(ART)
 art_entries = entries.entries(os.path.basename(ART).removesuffix(".json"))
-base = py_base.Base(art)
 base.execute_into(art_entries["main"], blob, bytearray(0))
 base.execute_into(art_entries["run"], b"", bytearray(0))
 base.execute_into(art_entries["seed"], seed.astype("<f4").tobytes(), bytearray(0))

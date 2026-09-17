@@ -148,16 +148,13 @@ def main() -> None:
     w2[:CLASSES] = rng.uniform(-1, 1, (CLASSES, H)) * np.sqrt(6 / H)
 
     blob = w1.tobytes() + w2.tobytes()
-    # `PySetup` exposes no getters, so read the published layout out of the
-    # artifact JSON. A `hasattr` guard would silently skip and read as a pass.
+    # The published layout, read from the image the artifact starts from.
     HOST_LEN_OFF = 0x0080
-    with open(path) as fh:
-        mem = bytes(json.load(fh)["setup"]["initial_memory"])
-    want = struct.unpack_from("<I", mem, HOST_LEN_OFF)[0]
+    base = py_base.Base(art)
+    want = struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean's hostIn {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's hostIn")
 
-    base = py_base.Base(art)
     base.execute_into(art_entries["main"], blob, bytearray(0))
 
     nil = bytearray(0)

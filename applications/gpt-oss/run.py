@@ -64,11 +64,11 @@ def main():
 
     bank = Bank(args.bank)
     H, NL = bank.H, bank.L
-    check_layout(json.load(open(args.artifact)))
     art = py_base.load_artifact(args.artifact)
     art_entries = entries.entries(os.path.basename(args.artifact).removesuffix(".json"))
     assert not art_entries, f"expected one entry and no extras; got {sorted(art_entries)}"
     base = py_base.Base(art)
+    check_layout(base)
 
     exp = os.path.abspath(os.path.join(args.bank, "experts.bin")).encode() + b"\0"
     den = os.path.abspath(os.path.join(args.bank, "dense.bin")).encode() + b"\0"

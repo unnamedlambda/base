@@ -60,7 +60,7 @@ D_OUT_BYTES = D_OUT_TEXTTOK + 4 * TEXT_MAX
 HOST_LEN_OFF = 0x80
 
 
-def ptx_modules(artifact_json):
+def ptx_modules(base):
     """Every PTX module the artifact carries, in slot order.
 
     They are laid out in the initial memory image at a fixed stride, each a
@@ -69,7 +69,7 @@ def ptx_modules(artifact_json):
     not a copy that could drift from it.
     """
     import re
-    mem = bytes(artifact_json["setup"]["initial_memory"])
+    mem = base.read_memory(0, base.memory_size())
     out = []
     for m in re.finditer(rb"\.version", mem):
         seg = mem[m.start():]
@@ -77,10 +77,12 @@ def ptx_modules(artifact_json):
     return out
 
 
-def check_layout(artifact_json):
-    """Fail loudly if these offsets have drifted from the artifact's own."""
-    want = struct.unpack_from(
-        "<I", bytes(artifact_json["setup"]["initial_memory"]), HOST_LEN_OFF)[0]
+def check_layout(base):
+    """Fail loudly if these offsets have drifted from the artifact's own.
+
+    `base` is the runtime the artifact was loaded into, before its first call:
+    what it holds then is the image the artifact starts from."""
+    want = struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
     assert want == D_IN_BYTES, (
         f"layout drift: the artifact expects {want} input bytes, "
         f"applications/gpt-oss/layout.py says {D_IN_BYTES}")

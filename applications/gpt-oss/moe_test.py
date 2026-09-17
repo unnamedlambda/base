@@ -52,8 +52,7 @@ def main():
 
     # The host region Lean declared, read back rather than restated: if the
     # packing here and the layout there disagreed, this is where it shows.
-    mem = bytes(json.load(open(args.artifact))["setup"]["initial_memory"])
-    want = struct.unpack_from("<I", mem, 0x80)[0]
+    want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
 
     # ---- pack: the activation, the gates, then all thirty-two experts ----
     rng = np.random.default_rng(7)
