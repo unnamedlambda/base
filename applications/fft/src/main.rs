@@ -5,7 +5,7 @@ const ARTIFACT_BINARY: &[u8] =
 
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).
-const INPUT_FILENAME_OFF: usize = 0x2200;
+const INPUT_FILENAME_OFF: u64 = 0x2200;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

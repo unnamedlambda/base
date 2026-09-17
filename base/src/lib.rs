@@ -64,17 +64,26 @@ impl Base {
         // The arena holds what the program asked for and the image it ships
         // with, and nothing else: the caller's buffers are arguments, so there
         // is no header the engine has to make room for.
-        let past_last = artifact
-            .data
-            .iter()
-            .map(|s| s.offset + s.bytes.len())
-            .max()
-            .unwrap_or(0);
-        let mut memory = vec![0u8; artifact.memory_size.max(past_last)];
+        let too_big = |what: String| Error::Execution(format!("{what}, more than this host can hold"));
+        let mut size = usize::try_from(artifact.memory_size)
+            .map_err(|_| too_big(format!("memory_size is {}", artifact.memory_size)))?;
+        for s in &artifact.data {
+            let end = usize::try_from(s.offset)
+                .ok()
+                .and_then(|o| o.checked_add(s.bytes.len()))
+                .ok_or_else(|| too_big(format!("a segment at {} ends past the address space", s.offset)))?;
+            size = size.max(end);
+        }
+        let mut memory = Vec::new();
+        memory
+            .try_reserve_exact(size)
+            .map_err(|_| too_big(format!("the program's memory is {size} bytes")))?;
+        memory.resize(size, 0u8);
         // Zeros everywhere a segment does not reach, which is what an artifact
         // leaves out rather than shipping.
         for s in &artifact.data {
-            memory[s.offset..s.offset + s.bytes.len()].copy_from_slice(&s.bytes);
+            let at = s.offset as usize;
+            memory[at..at + s.bytes.len()].copy_from_slice(&s.bytes);
         }
         Self::from_parts(artifact.functions, memory.into_boxed_slice())
     }

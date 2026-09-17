@@ -14,7 +14,7 @@ fn cranelift_config(memory: Vec<u8>, functions: Vec<Function>) -> Artifact {
     dump(&functions);
     Artifact {
         functions,
-        memory_size: memory.len(),
+        memory_size: memory.len() as u64,
         data: image(memory),
     }
 }
@@ -1556,7 +1556,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
@@ -1671,7 +1671,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
@@ -2251,7 +2251,7 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
@@ -2342,7 +2342,7 @@ fn test_gpu_download_ptr_with_offset() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
@@ -2484,7 +2484,7 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
@@ -2617,7 +2617,7 @@ fn test_cuda_download_ptr_different_data() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
@@ -2756,7 +2756,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
@@ -2864,7 +2864,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();
@@ -2989,7 +2989,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(memory),
     };
     let mut base = Base::new(config).unwrap();
@@ -3095,7 +3095,7 @@ fn test_cublas_sgemv_reuse() {
 
     let config = Artifact {
         functions: exported(clif_prog.clone()),
-        memory_size: mem_size,
+        memory_size: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
     let mut base = Base::new(config).unwrap();

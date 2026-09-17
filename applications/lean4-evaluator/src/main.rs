@@ -2,9 +2,9 @@ use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] = build_support::artifact!("LeanEvalAlgorithm/lean_eval_app");
 
-const INPUT_PATH_OFFSET: usize = 0x0078;
+const INPUT_PATH_OFFSET: u64 = 0x0078;
 const INPUT_PATH_MAX_LEN: usize = 256;
-const OUTPUT_PATH_OFFSET: usize = 0x0038;
+const OUTPUT_PATH_OFFSET: u64 = 0x0038;
 const OUTPUT_PATH_MAX_LEN: usize = 64;
 
 fn main() {

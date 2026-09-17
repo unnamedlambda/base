@@ -361,6 +361,23 @@ mod tests {
         unsafe { base_free(std::ptr::null_mut()) };
     }
 
+    /// A memory no host could hold is a failure with a message, not an abort
+    /// inside the allocator: sizes are 64-bit on the wire whatever the host.
+    #[test]
+    fn a_memory_too_large_to_hold_is_refused() {
+        for artifact in [
+            format!(r#"{{"functions": [], "memory_size": {}, "data": []}}"#, u64::MAX),
+            format!(
+                r#"{{"functions": [], "memory_size": 8, "data": [{{"offset": {}, "bytes": [1]}}]}}"#,
+                u64::MAX
+            ),
+        ] {
+            let handle = unsafe { base_new(artifact.as_ptr(), artifact.len()) };
+            assert!(handle.is_null(), "{artifact} should not build");
+            assert!(last_error().contains("more than this host can hold"), "{}", last_error());
+        }
+    }
+
     /// A name the artifact does not export is a failure that says which name.
     #[test]
     fn executing_a_name_nothing_exports_is_refused() {

@@ -10,13 +10,15 @@ pub mod clif;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Segment {
-    pub offset: usize,
+    pub offset: u64,
     pub bytes: Vec<u8>,
 }
 
 impl Segment {
-    fn end(&self) -> usize {
-        self.offset + self.bytes.len()
+    /// The first address past the segment. Saturating, so a segment no memory
+    /// could hold compares past every address rather than wrapping around.
+    fn end(&self) -> u64 {
+        self.offset.saturating_add(self.bytes.len() as u64)
     }
 }
 
@@ -36,7 +38,10 @@ impl Segment {
 pub struct Artifact {
     /// Compiled as a unit. A function's `u0:N` index is its position here.
     pub functions: Vec<clif::Function>,
-    pub memory_size: usize,
+    /// Sizes and addresses are 64-bit whatever the host: the artifact is the
+    /// same file everywhere, and a host that cannot hold it says so when it
+    /// loads it.
+    pub memory_size: u64,
     /// In ascending order of address and non-overlapping, which is what lets
     /// the runtime lay them over zeroed memory in one pass.
     #[serde(default)]
@@ -50,13 +55,16 @@ impl Artifact {
 
     /// The `len` bytes the memory starts with at `offset`, zero-filled where no
     /// segment covers them.
-    pub fn read(&self, offset: usize, len: usize) -> Vec<u8> {
+    pub fn read(&self, offset: u64, len: usize) -> Vec<u8> {
         let mut out = vec![0u8; len];
+        let end = offset.saturating_add(len as u64);
         for s in &self.data {
             let from = s.offset.max(offset);
-            let to = s.end().min(offset + len);
+            let to = s.end().min(end);
             if from < to {
-                out[from - offset..to - offset].copy_from_slice(&s.bytes[from - s.offset..to - s.offset]);
+                let (a, b) = ((from - offset) as usize, (to - offset) as usize);
+                let (c, d) = ((from - s.offset) as usize, (to - s.offset) as usize);
+                out[a..b].copy_from_slice(&s.bytes[c..d]);
             }
         }
         out
@@ -67,8 +75,8 @@ impl Artifact {
     ///
     /// Segments the write touches or abuts are merged with it, so the result is
     /// still ordered and non-overlapping.
-    pub fn write(&mut self, offset: usize, bytes: &[u8]) {
-        let (mut lo, mut hi) = (offset, offset + bytes.len());
+    pub fn write(&mut self, offset: u64, bytes: &[u8]) {
+        let (mut lo, mut hi) = (offset, offset.saturating_add(bytes.len() as u64));
         let mut touched: Vec<Segment> = Vec::new();
         self.data.retain(|s| {
             let overlaps = s.offset <= hi && lo <= s.end();
@@ -79,11 +87,13 @@ impl Artifact {
             }
             !overlaps
         });
-        let mut merged = vec![0u8; hi - lo];
+        let mut merged = vec![0u8; (hi - lo) as usize];
         for s in touched {
-            merged[s.offset - lo..s.end() - lo].copy_from_slice(&s.bytes);
+            let at = (s.offset - lo) as usize;
+            merged[at..at + s.bytes.len()].copy_from_slice(&s.bytes);
         }
-        merged[offset - lo..offset - lo + bytes.len()].copy_from_slice(bytes);
+        let at = (offset - lo) as usize;
+        merged[at..at + bytes.len()].copy_from_slice(bytes);
         self.data.push(Segment { offset: lo, bytes: merged });
         self.data.sort_by_key(|s| s.offset);
     }

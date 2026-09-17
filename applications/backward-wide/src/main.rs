@@ -52,7 +52,7 @@ fn main() {
     // Seam check: Lean publishes the byte count its `hostIn` layout expects.
     // Asserting against it means the host packing and the uploader cannot
     // drift — the layout is defined once, in Lean, and checked here.
-    const HOST_LEN_OFF: usize = 0x0080;
+    const HOST_LEN_OFF: u64 = 0x0080;
     let want = u32::from_le_bytes(artifact.read(HOST_LEN_OFF, 4).try_into().unwrap()) as usize;
     assert_eq!(
         bytes.len(),

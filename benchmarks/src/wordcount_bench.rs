@@ -13,7 +13,7 @@ const WC_ARTIFACT: &[u8] =
 /// `INPUT_DATA` (0x14000) plus room for the largest input, which is under 4 MB.
 /// The generator reserves 512 MiB; a fresh instance a round makes that
 /// reservation, not the counting, the thing being measured.
-const WC_ARENA_BYTES: usize = 0x14000 + 16 * 1024 * 1024;
+const WC_ARENA_BYTES: u64 = 0x14000 + 16 * 1024 * 1024;
 
 const VOCABULARY: &[&str] = &[
     "the", "of", "and", "to", "in", "a", "is", "that", "for", "it", "was", "on", "are", "as",
