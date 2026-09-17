@@ -69,19 +69,18 @@ pub struct Artifact {
 impl Artifact {
     /// Decode an artifact, refusing trailing bytes after it.
     pub fn from_bytes(bytes: &[u8]) -> Result<Artifact, String> {
-        let mut rest = bytes;
-        let artifact = ciborium::from_reader(&mut rest).map_err(|e| format!("not an artifact: {e}"))?;
-        if !rest.is_empty() {
-            return Err(format!("not an artifact: {} bytes follow it", rest.len()));
+        let mut de = minicbor_serde::Deserializer::new(bytes);
+        let artifact = Artifact::deserialize(&mut de).map_err(|e| format!("not an artifact: {e}"))?;
+        let rest = bytes.len() - de.decoder().position();
+        if rest != 0 {
+            return Err(format!("not an artifact: {rest} bytes follow it"));
         }
         Ok(artifact)
     }
 
     /// Encode an artifact in the profile described above.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        ciborium::into_writer(self, &mut out).expect("writing to a Vec cannot fail");
-        out
+        minicbor_serde::to_vec(self).expect("an artifact has nothing serde cannot write")
     }
 
     /// The `len` bytes the memory starts with at `offset`, zero-filled where no
@@ -181,7 +180,7 @@ mod tests {
     }
 
     /// The profile, byte for byte. The expected bytes come from an encoder
-    /// written separately from ciborium, and `AlgorithmLib.Core` checks that
+    /// written separately from minicbor, and `AlgorithmLib.Core` checks that
     /// the Lean writer produces the same bytes for the same value.
     #[test]
     fn an_artifact_encodes_in_the_profile() {
