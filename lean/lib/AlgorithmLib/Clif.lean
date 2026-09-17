@@ -896,11 +896,15 @@ def loopsOf (s : FuncData) : List LoopRec :=
 def blockInsts? (s : FuncData) (n : Nat) : Option (List Inst) :=
   (s.blocks.find? (fun b => b.ref.id == n)).map BlockData.insts
 
-/-- The colocated calls a straight line performs, in order — what a loop body
-    dispatches to. -/
+/-- The calls a straight line performs, in order — what a loop body dispatches
+    to. An import is its symbol name and a call to another function of the
+    program is its `u0:N`, the name that function has in CLIF. -/
 def callsIn (fns : List FnDecl) (is : List Inst) : List String :=
   is.filterMap (fun i => match i with
-    | .call _ fr _ => fnNameOf fns fr
+    | .call _ fr _ => (fns.find? (fun d => d.ref.id = fr.id)).map fun d =>
+        match d.callee with
+        | .import n => n
+        | .local k  => s!"u0:{k}"
     | _            => none)
 
 /-- …over a whole function. -/

@@ -151,6 +151,14 @@ pub fn signature_of(f: &clif::Function, cc: CallConv) -> Result<Signature, Strin
     Ok(sig)
 }
 
+/// The Cranelift signature of a callee taking `params` and answering `result`.
+pub(crate) fn signature(params: &[clif::ClifTy], result: Option<clif::ClifTy>, cc: CallConv) -> Signature {
+    let mut sig = Signature::new(cc);
+    sig.params.extend(params.iter().map(|p| AbiParam::new(ty(*p))));
+    sig.returns.extend(result.map(|r| AbiParam::new(ty(r))));
+    sig
+}
+
 /// Where a callee resolved: the `FuncId` it is declared under, and whether it
 /// is defined in the same module as its caller.
 ///
@@ -180,14 +188,7 @@ pub fn decode_function(
     // Prologue: signatures, then callees that reference them.
     let mut sig_refs: HashMap<u32, ir::SigRef> = HashMap::new();
     for s in &f.sigs {
-        let mut csig = Signature::new(cc);
-        for p in &s.params {
-            csig.params.push(AbiParam::new(ty(*p)));
-        }
-        if let Some(r) = s.result {
-            csig.returns.push(AbiParam::new(ty(r)));
-        }
-        sig_refs.insert(s.reference.0, func.import_signature(csig));
+        sig_refs.insert(s.reference.0, func.import_signature(signature(&s.params, s.result, cc)));
     }
 
     let mut fn_refs: HashMap<u32, ir::FuncRef> = HashMap::new();

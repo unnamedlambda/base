@@ -36,6 +36,14 @@ pub(crate) unsafe extern "C" fn cl_thread_init(ctx_slot_ptr: *mut *mut Cranelift
     }
 }
 
+/// The function at `fn_index`, if it is shaped like a worker: one argument and
+/// no answer. Anything else would be called with registers it reads but was
+/// never given.
+unsafe fn worker(fns: &[Compiled], fn_index: i64) -> Option<Worker> {
+    let f = fns.get(usize::try_from(fn_index).ok()?)?;
+    (f.arity == 1 && !f.answers).then(|| std::mem::transmute::<*const u8, Worker>(f.addr))
+}
+
 pub(crate) unsafe extern "C" fn cl_thread_spawn(
     ctx_ptr: *mut CraneliftThreadContext,
     fn_index: i64,
@@ -44,11 +52,9 @@ pub(crate) unsafe extern "C" fn cl_thread_spawn(
     let Some(ctx) = read_ctx_mut::<CraneliftThreadContext>(ctx_ptr) else {
         return -1;
     };
-    let idx = fn_index as usize;
-    if idx >= ctx.compiled_fns.len() {
+    let Some(func) = worker(&ctx.compiled_fns, fn_index) else {
         return -1;
-    }
-    let func: Worker = std::mem::transmute(ctx.compiled_fns[idx].addr);
+    };
     let thread_arg = thread_ptr as usize;
     let handle_id = ctx.next_handle;
     ctx.next_handle += 1;
@@ -100,11 +106,9 @@ pub(crate) unsafe extern "C" fn cl_thread_call(
     let Some(ctx) = read_ctx_ref::<CraneliftThreadContext>(ctx_ptr) else {
         return -1;
     };
-    let idx = fn_index as usize;
-    if idx >= ctx.compiled_fns.len() {
+    let Some(func) = worker(&ctx.compiled_fns, fn_index) else {
         return -1;
-    }
-    let func: Worker = std::mem::transmute(ctx.compiled_fns[idx].addr);
+    };
     func(arg_ptr);
     0
 }
@@ -173,6 +177,29 @@ mod tests {
             assert_eq!(cl_thread_spawn(slot, 0, std::ptr::null_mut()), -1);
             cl_thread_cleanup(&mut slot);
         }
+    }
+
+    /// An entry point takes five arguments; spawned as a worker it would read
+    /// four registers nobody set. Neither spawn nor call runs it.
+    #[test]
+    fn a_function_not_shaped_like_a_worker_is_refused() {
+        let table = vec![
+            Compiled { addr: write_42 as *const u8, arity: 5, answers: false },
+            Compiled { addr: write_42 as *const u8, arity: 1, answers: true },
+        ];
+        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(Arc::new(table)));
+        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+        let mut val: u64 = 0;
+        unsafe {
+            cl_thread_init(&mut slot);
+            for idx in [0, 1, -1] {
+                let arg = &mut val as *mut u64 as *mut u8;
+                assert_eq!(cl_thread_spawn(slot, idx, arg), -1);
+                assert_eq!(cl_thread_call(slot, idx, arg), -1);
+            }
+            cl_thread_cleanup(&mut slot);
+        }
+        assert_eq!(val, 0);
     }
 
     #[test]

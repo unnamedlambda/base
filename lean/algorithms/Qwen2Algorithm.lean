@@ -239,7 +239,7 @@ open AlgorithmLib.Clif in
 /-- **The layer function dispatches to the two halves and to nothing else** —
     which, with `layer_writes_nothing`, is the whole of what it does. -/
 theorem layer_fn_calls :
-    callsOf (Qwen2Common.stateOf Qwen2.inferLayerFn) = ["fn_29", "fn_30"] := by native_decide
+    callsOf (Qwen2Common.stateOf Qwen2.inferLayerFn) = ["u0:29", "u0:30"] := by native_decide
 
 open AlgorithmLib.Clif in
 /-- **…and none of the three leaf functions loops**, so each one's static scan

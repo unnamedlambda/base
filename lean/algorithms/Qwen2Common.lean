@@ -294,11 +294,10 @@ def ptxEmbedLookup : String := embedKernel.ptxSource
 
 open AlgorithmLib.Prog
 
-/-- This program's own functions, which it calls by the name the JIT gives each
-    `u0:N`. Everything else it calls is an entry point, named through `Ffi`. -/
-def ownFns : List String :=
-  ["fn_27", "fn_28", "fn_29", "fn_30", "fn_31", "fn_33", "fn_34", "fn_35",
-   "fn_38", "fn_39", "fn_40"]
+/-- This program's own functions, by the `u0:N` index each is called at.
+    Everything else it calls is an entry point, named through `Ffi`. -/
+def ownFns : List Nat :=
+  [27, 28, 29, 30, 31, 33, 34, 35, 38, 39, 40]
 
 /-- The bundles whose entry points this program may call. Nothing declares
     them --- `Prog` reads an entry point's id off `Ffi` --- but the ids the
@@ -317,9 +316,9 @@ def ownFirstId : Nat :=
     and returns nothing; the declaration travels with the reference, so a body
     that calls one declares it and a body that does not never mentions it. -/
 def ownRef (i : Nat) : Prog.LocalRef HProg.ptrParams none :=
-  { id := ownFirstId + i, callee := .import ((ownFns[i]?).getD "") }
+  { id := ownFirstId + i, callee := .local ((ownFns[i]?).getD 0) }
 
-/-- Every function of this program any other one calls, by name. -/
+/-- A function of this program that another one calls. -/
 abbrev OwnRef := Prog.LocalRef HProg.ptrParams none
 
 structure Q2Own where
@@ -2260,7 +2259,7 @@ open AlgorithmLib.Clif in
 /-- **…and its body dispatches to the layer function and nothing else.** -/
 theorem infer_loop_body_calls :
     (blockInsts? (stateOf inferFn) 2).map (callsIn (stateOf inferFn).fns)
-      = some ["fn_28"] := by native_decide
+      = some ["u0:28"] := by native_decide
 
 open AlgorithmLib.Clif in
 /-- **The sampling tail has no loop**, so its static scan is its whole

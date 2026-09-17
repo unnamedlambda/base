@@ -16,6 +16,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 pub mod capi;
 mod clif_decode;
 mod ffi;
+mod imports;
 mod jit;
 
 use crate::jit::THREAD_COMPILED_FNS;

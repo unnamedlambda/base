@@ -237,69 +237,6 @@ fn test_cranelift_conditional_logic() {
 }
 
 #[test]
-fn test_clif_ffi_all_symbols_linkable() {
-    // Authoritative check that every FFI symbol registered in jit.rs is
-    // resolvable from CLIF. Generates a function that takes each symbol's
-    // address (via func_addr) and stores it; if any symbol were missing,
-    // Base::new would fail to link the module.
-    //
-    // Per-FFI smoke tests below exercise the runtime call path; this one
-    // exists so that adding a new FFI symbol without wiring it into jit.rs
-    // is caught by a dedicated, fast-failing test.
-    let symbols: &[&str] = &[
-        "cl_ht_init", "cl_ht_cleanup", "ht_create", "ht_lookup", "ht_insert",
-        "ht_count", "ht_get_entry", "ht_increment",
-        "cl_gpu_init", "cl_gpu_create_buffer", "cl_gpu_create_pipeline",
-        "cl_gpu_upload", "cl_gpu_upload_ptr", "cl_gpu_dispatch", "cl_gpu_download",
-        "cl_gpu_download_ptr", "cl_gpu_cleanup",
-        "cl_cuda_init", "cl_cuda_create_buffer", "cl_cuda_upload",
-        "cl_cuda_upload_ptr", "cl_cuda_upload_ptr_offset", "cl_cuda_upload_ptr_async",
-        "cl_cuda_upload_ptr_offset_async", "cl_cuda_download", "cl_cuda_download_ptr",
-        "cl_cuda_download_ptr_offset", "cl_cuda_download_ptr_async", "cl_cuda_free_buffer",
-        "cl_cuda_stream_create", "cl_cuda_stream_sync", "cl_cuda_stream_destroy",
-        "cl_cuda_event_create", "cl_cuda_event_record", "cl_cuda_stream_wait_event",
-        "cl_cuda_event_elapsed_ms_bits", "cl_cuda_event_destroy",
-        "cl_cuda_graph_begin_capture", "cl_cuda_graph_end_capture",
-        "cl_cuda_graph_upload", "cl_cuda_graph_launch", "cl_cuda_graph_destroy",
-        "cl_cuda_pinned_alloc", "cl_cuda_pinned_ptr", "cl_cuda_pinned_ptr_at",
-        "cl_cuda_pinned_free", "cl_cuda_mem_info_free", "cl_cuda_mem_info_total",
-        "cl_cuda_launch", "cl_cuda_launch_named", "cl_cuda_launch_on_stream",
-        "cl_cuda_launch_named_on_stream", "cl_cuda_sync", "cl_cuda_cleanup",
-        "cl_cublas_sgemm", "cl_cublas_sgemv", "cl_cublas_sgemv_on_stream",
-        "cl_cublas_sgemm_strided_batched", "cl_cublas_sgemm_strided_batched_on_stream",
-        "cl_cublas_ptr_array", "cl_cublas_sgemm_batched_on_stream",
-        "cl_cublas_gemm_ex_bf16",
-        "cl_file_read", "cl_file_read_to_ptr", "cl_file_write", "cl_file_write_from_ptr",
-        "cl_sinf", "cl_cosf", "cl_powf",
-        "cl_stdin_readline", "cl_stdout_write",
-        "cl_net_init", "cl_net_listen", "cl_net_listener_port", "cl_net_connect",
-        "cl_net_accept", "cl_net_send", "cl_net_recv", "cl_net_cleanup",
-        "cl_lmdb_init", "cl_lmdb_open", "cl_lmdb_put", "cl_lmdb_get", "cl_lmdb_delete",
-        "cl_lmdb_begin_write_txn", "cl_lmdb_commit_write_txn", "cl_lmdb_cursor_scan",
-        "cl_lmdb_sync", "cl_lmdb_cleanup",
-        "cl_thread_init", "cl_thread_spawn", "cl_thread_join", "cl_thread_cleanup",
-        "cl_thread_call",
-    ];
-
-    let mut f = function(0).sig(0, &[I64], Some(I32));
-    let mut insts = Vec::new();
-    for (i, sym) in symbols.iter().enumerate() {
-        let i = i as u32;
-        f = f.import(i, sym, 0);
-        // Taking the address is what forces the linker to resolve the symbol.
-        insts.push(func_addr(v(100 + i), i));
-        insts.push(store(v(100 + i), v(0), 0));
-    }
-    insts.push(ret());
-    let clif_prog = program(f.entry(insts));
-
-    let memory = vec![0u8; 4096];
-    let (config, algorithm) =
-        create_cranelift_algorithm(0, memory, clif_prog);
-    run(config, algorithm).expect("all FFI symbols must be linkable from CLIF");
-}
-
-#[test]
 fn test_clif_ffi_file_smoke() {
     // Runtime smoke: exercises cl_file_read, cl_file_write, cl_file_read_to_ptr,
     // cl_file_write_from_ptr via a real round-trip.
@@ -3542,14 +3479,14 @@ fn local_calls_dispatch_to_other_functions() {
         ]),
         // u0:2 calls both, then writes the pair out
         function(2)
-            .sig(0, &[I64], None)
+            .sig(0, &[I64, I64, I64, I64, I64], None)
             .sig(1, &[I64, I64, I64, I64, I64], Some(I64))
             .local(0, 0, 0)
             .local(1, 1, 0)
             .import(2, "cl_file_write", 1)
             .entry(vec![
-                call(None, 0, &[v(0)]),
-                call(None, 1, &[v(0)]),
+                call(None, 0, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
+                call(None, 1, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
@@ -3596,6 +3533,69 @@ fn clif_error_local_call_to_missing_function() {
         panic!("expected Error::Clif");
     };
     assert!(msg.contains("u0:3"), "message should name the callee: {msg}");
+}
+
+/// The error `Base::new` answers for `functions`, which must be refused.
+fn refusal(functions: Vec<Function>) -> String {
+    match Base::new(cranelift_config(vec![0u8; 256], functions)) {
+        Err(base::Error::Clif(msg)) => msg,
+        Err(e) => panic!("expected a build error, got {e:?}"),
+        Ok(_) => panic!("expected the program to be refused"),
+    }
+}
+
+/// A name base does not provide is refused, even one the process has loaded:
+/// `abort` is in libc, and the JIT would otherwise have found it there.
+#[test]
+fn clif_error_import_base_does_not_provide() {
+    let msg = refusal(program(
+        function(0)
+            .sig(0, &[], None)
+            .import(0, "abort", 0)
+            .entry(vec![call(None, 0, &[]), ret()]),
+    ));
+    assert!(msg.contains("abort") && msg.contains("does not provide"), "{msg}");
+}
+
+/// A program calling `cl_sinf` with an integer would pass it in a register
+/// the function never reads. The signature it declares has to be base's.
+#[test]
+fn clif_error_import_at_the_wrong_signature() {
+    let msg = refusal(program(
+        function(0)
+            .sig(0, &[I64], Some(F32))
+            .import(0, "cl_sinf", 0)
+            .entry(vec![call(None, 0, &[v(0)]), ret()]),
+    ));
+    assert!(msg.contains("cl_sinf") && msg.contains("provides it as"), "{msg}");
+}
+
+/// A program's own functions are reached by index, never by the name the JIT
+/// happens to give them: that name is a numbering, and would move with it.
+#[test]
+fn clif_error_import_naming_an_own_function() {
+    let msg = refusal(programs(vec![
+        noop(0),
+        function(1)
+            .sig(0, &[I64, I64, I64, I64, I64], None)
+            .import(0, "fn_0", 0)
+            .entry(vec![call(None, 0, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]), ret()]),
+    ]));
+    assert!(msg.contains("fn_0") && msg.contains("does not provide"), "{msg}");
+}
+
+/// A call site declaring fewer arguments than its callee takes would leave the
+/// rest to whatever the registers held.
+#[test]
+fn clif_error_local_call_at_the_wrong_signature() {
+    let msg = refusal(programs(vec![
+        noop(0),
+        function(1)
+            .sig(0, &[I64], None)
+            .local(0, 0, 0)
+            .entry(vec![call(None, 0, &[v(0)]), ret()]),
+    ]));
+    assert!(msg.contains("u0:0") && msg.contains("takes"), "{msg}");
 }
 
 #[test]
