@@ -135,11 +135,9 @@ def frameOf (name : String) : Option Frame := (IR.Ffi.ofCname name).map frame
 -- What one program assumes
 -- ---------------------------------------------------------------------------
 
-/-- The symbol a callee index resolves to, when it is an import. -/
-def calleeName (env : FnEnv) (fn : Nat) : Option String := do
-  let d ← env.at? fn
-  match d.callee with
-  | .import n => some n
+/-- The symbol a callee names, when it is an import. -/
+def calleeName : IR.Callee → Option String
+  | .ffi f   => some f.cname
   | .local _ => none
 
 /-- **The FFI a program actually assumes.**
@@ -151,10 +149,10 @@ def calleeName (env : FnEnv) (fn : Nat) : Option String := do
     This is what makes the FFI part of the trusted base per-program and usually
     near-empty, instead of a fixed eighty-item liability every artifact
     carries. -/
-def footprint (env : FnEnv) (c : Code) : List (String × Option Frame) :=
+def footprint (c : Code) : List (String × Option Frame) :=
   (callsOf c).foldl
     (fun acc fn =>
-      match calleeName env fn with
+      match calleeName fn with
       | none => acc
       | some n => if acc.any (·.1 == n) then acc else acc ++ [(n, frameOf n)])
     []
@@ -162,12 +160,12 @@ def footprint (env : FnEnv) (c : Code) : List (String × Option Frame) :=
 /-- A program whose every callee has a declared frame — otherwise something it
     calls has no statement about what it may write, and no proof about that
     program can be complete. -/
-def footprintComplete (env : FnEnv) (c : Code) : Bool :=
-  (footprint env c).all (·.2.isSome)
+def footprintComplete (c : Code) : Bool :=
+  (footprint c).all (·.2.isSome)
 
 /-- Rendered for the build log, so each artifact reports its own assumptions. -/
-def footprintReport (env : FnEnv) (c : Code) : String :=
-  match footprint env c with
+def footprintReport (c : Code) : String :=
+  match footprint c with
   | [] => "assumes no FFI"
   | fs => s!"assumes {fs.length} FFI frame(s): " ++
           String.intercalate ", " (fs.map fun (n, f) =>

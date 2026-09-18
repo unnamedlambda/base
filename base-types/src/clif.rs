@@ -1,27 +1,31 @@
 //! The CLIF program an artifact carries, as data rather than text.
 //!
-//! Lean builds this shape directly and serializes it; [`crate::Setup`] carries
-//! it; the runtime decodes it into `cranelift_codegen::ir::Function`. Nothing
-//! in that path formats or parses CLIF source.
+//! Lean builds this shape directly and serializes it; [`crate::Artifact`]
+//! carries it; the runtime decodes it into `cranelift_codegen::ir::Function`.
+//! Nothing in that path formats or parses CLIF source.
 //!
 //! # Wire format
 //!
 //! Serde's default enum representation, with tuple variants whose fields are in
-//! the same order as the corresponding Lean constructor:
+//! the same order as the corresponding Lean constructor. The file is CBOR;
+//! written as JSON, which has the same shapes and is legible here, two
+//! instructions read:
 //!
 //! ```json
 //! {"Iadd": [12, 10, 11]}
 //! {"Call": [null, 3, [4, 5]]}
 //! ```
 //!
-//! `Val`, `BlockRef` and `FnRef` are newtypes, so they appear as bare numbers.
+//! `Val` and `BlockRef` are newtypes, so they appear as bare numbers.
 //! Keeping the field order aligned with Lean's constructors is what lets the
 //! emitter be a one-line-per-variant mapping rather than a schema.
 //!
-//! A `FnRef` is a position in the function's `callees`. A `BlockRef` is an id,
-//! not a position: a compiler allocates blocks it goes on to drop, so what
-//! ships is a list whose numbering has gaps. Either kind naming nothing is
-//! refused at load.
+//! A call carries its callee rather than a number standing for one: an import
+//! by the symbol the engine resolves, a function of this artifact by its
+//! position. Neither is a name this format invented, so there is no table to
+//! agree with. A `BlockRef` is an id, not a position: a compiler allocates
+//! blocks it goes on to drop, so what ships is a list whose numbering has
+//! gaps, and one naming nothing is refused at load.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,10 +36,6 @@ pub struct Val(pub u32);
 /// A basic block.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockRef(pub u32);
-
-/// A callee: its position in the function's `callees`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FnRef(pub u32);
 
 /// The value types the DSL can name.
 ///
@@ -142,8 +142,9 @@ pub enum Inst {
     Icmp(Val, IntCC, Val, Val),
     Select(Val, Val, Val, Val),
     Bitselect(Val, Val, Val, Val),
-    /// `dst = call fnN(args)`, or no destination when the callee returns void.
-    Call(Option<Val>, FnRef, Vec<Val>),
+    /// `dst = call callee(args)`, or no destination when the callee returns
+    /// void.
+    Call(Option<Val>, Callee, Vec<Val>),
     Jump(BlockRef, Vec<Val>),
     /// `brif cond, then(args), else(args)`
     Brif(Val, BlockRef, Vec<Val>, BlockRef, Vec<Val>),
@@ -173,9 +174,9 @@ pub enum Inst {
     FcvtToUint(Val, ClifTy, Val),
     Fcmp(Val, FloatCC, Val, Val),
     Bitcast(Val, ClifTy, Val),
-    /// `dst = func_addr.i64 fnN` — materializes a callee's address without
+    /// `dst = func_addr.i64 callee` — materializes a callee's address without
     /// calling it, which is what forces the JIT to resolve the symbol.
-    FuncAddr(Val, FnRef),
+    FuncAddr(Val, Callee),
     Ctz(Val, Val),
     Popcnt(Val, Val),
     VhighBits(Val, Val),
@@ -194,14 +195,21 @@ pub struct Block {
     pub insts: Vec<Inst>,
 }
 
-/// What a `fn` declaration names.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What a call names.
+///
+/// Each arm is the identity its owner gives: the engine owns an import's
+/// symbol, and the artifact — which is closed — owns its own functions'
+/// positions. Kept distinct because the two resolve by different means, and
+/// spelling a local call as a symbol name is how the text form lost that.
+///
+/// A symbol is a string rather than anything enumerated here, so a runtime that
+/// links more can be called without the format changing. Whether a symbol is
+/// one this engine provides is answered by its table at load.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Callee {
     /// A symbol resolved through the JIT's symbol table.
     Import(String),
-    /// Another function of this same program, by its `u0:N` index. Kept
-    /// distinct from `Import` because the two resolve by different means, and
-    /// spelling a local call as a symbol name is how the text form lost that.
+    /// Another function of this same program, by its `u0:N` index.
     Local(u32),
 }
 
@@ -226,11 +234,5 @@ pub struct Function {
     /// functions. Names are unique within an artifact, and a named function
     /// has to be shaped like an entry point.
     pub entry_name: Option<String>,
-    /// What the body may call. A `Call` names one by its position here, so the
-    /// order is the numbering and there is nothing to disagree with it.
-    ///
-    /// No signature travels with a callee: an import's is the one base's table
-    /// provides, and a local's is read off that function's own entry block.
-    pub callees: Vec<Callee>,
     pub blocks: Vec<Block>,
 }

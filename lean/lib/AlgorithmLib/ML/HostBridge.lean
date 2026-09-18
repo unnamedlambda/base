@@ -561,20 +561,20 @@ def declaredCountOf (T : List KernelBinding) (D : List DeclaredBinding)
     *is* `Clif.bindsOf` of it, and `Clif.bindsOf_length` says the zip drops
     nothing. -/
 theorem host_realises_pipeline
-    (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
+    (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") (P : List HI)
     (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
-    (htame : HStmt.TameB fns ptr s = true)
+    (htame : HStmt.TameB ptr s = true)
     (hfar : FarOk e ptr n s.farArgs)
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hfit : Fits P p (code fnLaunch ptr n p s))
     (T : List KernelBinding) (Pl : Pipeline)
     (str : Option Nat) (hpl : pipelineOf? T str s.deviceOps = some Pl) :
-    ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
+    ∃ k c', hsteps ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
       ∧ pipelineOf? T str (c'.trace.zip c'.btrace) = some Pl := by
   obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
-    flatHI_sound fns fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
+    flatHI_sound fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
   exact ⟨k, c', hr, by
     rw [htr, hbt, List.nil_append, List.nil_append]; exact hpl⟩
 
@@ -591,22 +591,22 @@ theorem host_realises_pipeline
     is exactly the table: that the PTX at slot `off` is the compiled `S.ew`.  It
     is a hypothesis with a name rather than a step nothing mentions. -/
 theorem host_computes_denote
-    (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
+    (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") (P : List HI)
     (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
-    (htame : HStmt.TameB fns ptr s = true)
+    (htame : HStmt.TameB ptr s = true)
     (hfar : FarOk e ptr n s.farArgs)
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hfit : Fits P p (code fnLaunch ptr n p s))
     (T : List KernelBinding) (Pl : Pipeline)
     (str : Option Nat) (hpl : pipelineOf? T str s.deviceOps = some Pl)
     (hex : Pl.Exclusive) (st : WSt) :
-    ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
+    ∃ k c', hsteps ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
       ∧ pipelineOf? T str (c'.trace.zip c'.btrace) = some Pl
       ∧ (Pl.run st).mem = Pl.denote st.mem := by
   obtain ⟨k, c', hr, hp⟩ :=
-    host_realises_pipeline fns fnLaunch ptr hfn P s n p e sm ct hptr he htame hfar hfd hfit
+    host_realises_pipeline fnLaunch ptr hfn P s n p e sm ct hptr he htame hfar hfd hfit
       T Pl str hpl
   exact ⟨k, c', hr, hp, Pipeline.run_denote Pl hex st⟩
 
@@ -629,22 +629,22 @@ theorem host_computes_denote
     outside the theorem.  The machine executes the bind stores, so the arrays
     in the conclusion are the ones the program wrote. -/
 theorem host_computes_plan
-    (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
+    (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") (P : List HI)
     (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
-    (htame : HStmt.TameB fns ptr s = true)
+    (htame : HStmt.TameB ptr s = true)
     (hfar : FarOk e ptr n s.farArgs)
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hfit : Fits P p (code fnLaunch ptr n p s))
     (T : List KernelBinding) (D : List DeclaredBinding) (Pl : Plan)
     (str : Option Nat) (hpl : planOf? T D str s.deviceOps = some Pl)
     (R : Realisation) (hR : Honours R) (hex : Pl.Exclusive) (st : WSt) :
-    ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
+    ∃ k c', hsteps ptr.id P k ⟨p, e, sm, ct, [], []⟩ = some c'
       ∧ planOf? T D str (c'.trace.zip c'.btrace) = some Pl
       ∧ (Pl.run R st).mem = Pl.denote st.mem := by
   obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
-    flatHI_sound fns fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
+    flatHI_sound fnLaunch ptr hfn P s n p e sm ct [] [] hptr he htame hfar hfd hfit
   exact ⟨k, c', hr,
          by rw [htr, hbt, List.nil_append, List.nil_append]; exact hpl,
          Plan.run_denote R hR Pl hex st⟩

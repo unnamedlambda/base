@@ -609,7 +609,7 @@ def FS.set (fs : FS) (p : String) (b : ByteArray) : FS :=
 
 /-- One entry of the observation trace. -/
 inductive Obs where
-  | call  (fn : Nat) (args : List V)
+  | call  (callee : Callee) (args : List V)
   | store (addr : UInt64) (width : Nat) (bits : UInt64)
   deriving Repr, BEq
 
@@ -918,8 +918,8 @@ def slotsOf (n : Nat) (c : Code) : Nat := slotsGo fuel n c
 def bindAt (Γ : Env) (n : Nat) (vs : List V) : Env :=
   (Γ.take n ++ Array.replicate (n - Γ.size) default) ++ vs.toArray
 
-def obsCall (w : World) (fn : Nat) (args : List V) : World :=
-  { w with obs := .call fn args :: w.obs }
+def obsCall (w : World) (c : Callee) (args : List V) : World :=
+  { w with obs := .call c args :: w.obs }
 
 def obsStore (w : World) (a : UInt64) (n : Nat) (v : UInt64) : World :=
   { w with obs := .store a n v :: w.obs }
@@ -964,28 +964,25 @@ def runStmt (cfg : Cfg) (Γ : Env) (w : World) : Stmt → Outcome Env
           | some m => .ok Γ { obsStore w addr 1 (b &&& 0xff) with mem := m }
           | none => .stuck s!"istore8 to unmapped address {addr}"
       | _, _ => .stuck "istore8 operand is not in scope"
-  | .call fn args => runCall cfg Γ w fn args true
-  | .callVoid fn args => runCall cfg Γ w fn args false
+  | .call c args => runCall Γ w c args true
+  | .callVoid c args => runCall Γ w c args false
 where
-  runCall (cfg : Cfg) (Γ : Env) (w : World) (fn : Nat) (args : List R) (binds : Bool) :
+  runCall (Γ : Env) (w : World) (c : Callee) (args : List R) (binds : Bool) :
       Outcome Env :=
     match args.mapM (get Γ) with
-    | none => .stuck s!"call argument to fn{fn} is not in scope"
+    | none => .stuck "a call argument is not in scope"
     | some vs =>
-        match cfg.env.at? fn with
-        | none => .stuck s!"fn{fn} is not declared"
-        | some d =>
-            match d.callee with
-            | .local i => .stuck s!"fn{fn} calls u0:{i}; only imports have contracts"
-            | .import name =>
-                match callImport name vs (obsCall w fn vs) with
-                | none => .stuck s!"{name} has no executable contract"
-                | some (res, w') =>
-                    if binds then
-                      match res with
-                      | some v => .ok (Γ.push v) w'
-                      | none => .stuck s!"{name} returned nothing to bind"
-                    else .ok Γ w'
+        match c with
+        | .local i => .stuck s!"calls u0:{i}; only imports have contracts"
+        | .ffi f =>
+            match callImport f.cname vs (obsCall w c vs) with
+            | none => .stuck s!"{f.cname} has no executable contract"
+            | some (res, w') =>
+                if binds then
+                  match res with
+                  | some v => .ok (Γ.push v) w'
+                  | none => .stuck s!"{f.cname} returned nothing to bind"
+                else .ok Γ w'
 
 def runStmts (cfg : Cfg) : Env → World → List Stmt → Outcome Env
   | Γ, w, [] => .ok Γ w
@@ -1199,38 +1196,32 @@ theorem runStmt_store (cfg : Cfg) (Γ : Env) (w : World) (ty : ClifTy) (v a : R)
         | _, _ => .stuck "store operand is not in scope" := rfl
 
 /-- `runStmt`'s `call` arm, phrased without the private `get`. -/
-theorem runStmt_call (cfg : Cfg) (Γ : Env) (w : World) (fn : Nat) (args : List R) :
-    runStmt cfg Γ w (.call fn args)
+theorem runStmt_call (cfg : Cfg) (Γ : Env) (w : World) (c : Callee) (args : List R) :
+    runStmt cfg Γ w (.call c args)
       = match args.mapM (fun r => Γ[r]?) with
-        | none => .stuck s!"call argument to fn{fn} is not in scope"
+        | none => .stuck "a call argument is not in scope"
         | some vs =>
-            match cfg.env.at? fn with
-            | none => .stuck s!"fn{fn} is not declared"
-            | some d =>
-                match d.callee with
-                | .local i => .stuck s!"fn{fn} calls u0:{i}; only imports have contracts"
-                | .import name =>
-                    match callImport name vs (obsCall w fn vs) with
-                    | none => .stuck s!"{name} has no executable contract"
-                    | some (res, w') =>
-                        match res with
-                        | some v => .ok (Γ.push v) w'
-                        | none => .stuck s!"{name} returned nothing to bind" := rfl
+            match c with
+            | .local i => .stuck s!"calls u0:{i}; only imports have contracts"
+            | .ffi f =>
+                match callImport f.cname vs (obsCall w c vs) with
+                | none => .stuck s!"{f.cname} has no executable contract"
+                | some (res, w') =>
+                    match res with
+                    | some v => .ok (Γ.push v) w'
+                    | none => .stuck s!"{f.cname} returned nothing to bind" := rfl
 
 /-- `runStmt`'s `callVoid` arm, phrased without the private `get`. -/
-theorem runStmt_callVoid (cfg : Cfg) (Γ : Env) (w : World) (fn : Nat) (args : List R) :
-    runStmt cfg Γ w (.callVoid fn args)
+theorem runStmt_callVoid (cfg : Cfg) (Γ : Env) (w : World) (c : Callee) (args : List R) :
+    runStmt cfg Γ w (.callVoid c args)
       = match args.mapM (fun r => Γ[r]?) with
-        | none => .stuck s!"call argument to fn{fn} is not in scope"
+        | none => .stuck "a call argument is not in scope"
         | some vs =>
-            match cfg.env.at? fn with
-            | none => .stuck s!"fn{fn} is not declared"
-            | some d =>
-                match d.callee with
-                | .local i => .stuck s!"fn{fn} calls u0:{i}; only imports have contracts"
-                | .import name =>
-                    match callImport name vs (obsCall w fn vs) with
-                    | none => .stuck s!"{name} has no executable contract"
-                    | some (_, w') => .ok Γ w' := rfl
+            match c with
+            | .local i => .stuck s!"calls u0:{i}; only imports have contracts"
+            | .ffi f =>
+                match callImport f.cname vs (obsCall w c vs) with
+                | none => .stuck s!"{f.cname} has no executable contract"
+                | some (_, w') => .ok Γ w' := rfl
 
 end AlgorithmLib.HProg.Sem

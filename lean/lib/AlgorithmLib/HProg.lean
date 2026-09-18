@@ -26,7 +26,7 @@ the one.
 
 Four constructs: `loop` (top-tested), `dloop` (bottom-tested, so the body block
 branches to itself and there is no header), `ite`, and `br`, which leaves the
-`depth`-th enclosing loop. Measured over every emitted artifact, all 300
+`depth`-th enclosing loop. Measured over every emitted artifact, all 455
 functions have reducible control flow, and these cover the shapes the generators
 emit. A loop's condition prefix is a whole `Code`, so a test that follows an
 inner loop is expressible too.
@@ -148,9 +148,9 @@ inductive Stmt where
   | storeUnaligned (v a : R)
   | istore8  (v a : R)
   /-- A call whose result binds the next slot. -/
-  | call     (fn : Nat) (args : List R)
-  /-- A call to a signature with no result. -/
-  | callVoid (fn : Nat) (args : List R)
+  | call     (callee : Callee) (args : List R)
+  /-- A call that answers nothing. -/
+  | callVoid (callee : Callee) (args : List R)
   deriving Repr
 
 /-- One top-tested loop.
@@ -499,7 +499,7 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       let ta ← Γ.get a; need (ta == .i64) op.ty
 
 /-- Every argument in scope and typed as the signature declares. -/
-private def argsOk (Γ : TyEnv) (d : CalleeDecl) (args : List R) : Bool :=
+private def argsOk (Γ : TyEnv) (d : CalleeSig) (args : List R) : Bool :=
   args.length == d.params.length &&
     (List.zip args d.params).all fun (r, t) => Γ.get r == some t
 
@@ -517,12 +517,12 @@ def Stmt.check (env : FnEnv) (Γ : TyEnv) : Stmt → Bool × Option ClifTy
   -- which is what Cranelift does and what `runStmt` already accepted.
   | .istore8 v a =>
       (((Γ.get v).map (·.isInt)).getD false && Γ.get a == some .i64, none)
-  | .call fn args => match env.at? fn with
+  | .call c args => match env.sigOf c with
       | some d => match d.result with
           | some t => (argsOk Γ d args, some t)
           | none => (false, none)
       | none => (false, none)
-  | .callVoid fn args => match env.at? fn with
+  | .callVoid c args => match env.sigOf c with
       | some d => (argsOk Γ d args && d.result.isNone, none)
       | none => (false, none)
 
@@ -634,13 +634,13 @@ def wfGo (env : FnEnv) : Nat → List (List ClifTy × Option (List ClifTy)) → 
         (carryOf lbl depth).isSome && tysAre Γ args ((carryOf lbl depth).getD []),
        Γ)
 
-private def callsIn (ss : List Stmt) : List Nat :=
+private def callsIn (ss : List Stmt) : List Callee :=
   ss.filterMap fun
-    | .call f _ => some f
-    | .callVoid f _ => some f
+    | .call c _ => some c
+    | .callVoid c _ => some c
     | _ => none
 
-def callsGo : Nat → List Piece → List Nat
+def callsGo : Nat → List Piece → List Callee
   | 0, _ => []
   | _ + 1, [] => []
   | fuel + 1, .straight ss :: ps => callsIn ss ++ callsGo fuel ps
@@ -653,7 +653,7 @@ def callsGo : Nat → List Piece → List Nat
 
 /-- The FFI calls a body performs, in program order — one iteration of each
     loop, both arms of each branch. -/
-def callsOf (c : Code) : List Nat := callsGo fuel c
+def callsOf (c : Code) : List Callee := callsGo fuel c
 
 /-- Every reference names a slot that exists, with the type the use demands,
     and every annotation matches what its operands compute.
@@ -768,12 +768,12 @@ def emitStmt (s : CS) : Stmt → CS
   | .store ty v a => { s with cur := .storeTyped ty (s.get v) (s.get a) :: s.cur }
   | .storeUnaligned v a => { s with cur := .store (s.get v) (s.get a) :: s.cur }
   | .istore8 v a => { s with cur := .istore8 (s.get v) (s.get a) :: s.cur }
-  | .call fn args =>
+  | .call c args =>
       let (v, s) := s.fresh
-      { s with cur := .call (some v) ⟨fn⟩ (args.map s.get) :: s.cur,
+      { s with cur := .call (some v) c (args.map s.get) :: s.cur,
                env := s.env.set s.slots v, slots := s.slots + 1 }
-  | .callVoid fn args =>
-      { s with cur := .call none ⟨fn⟩ (args.map s.get) :: s.cur }
+  | .callVoid c args =>
+      { s with cur := .call none c (args.map s.get) :: s.cur }
 
 def emitStmts (s : CS) (ss : List Stmt) : CS := ss.foldl emitStmt s
 
@@ -941,7 +941,6 @@ def compileBody (idx : Nat) (c : Code) (env : FnEnv)
     -- table the body was checked against, with the signatures dropped.
     return {
       index := idx
-      callees := env.callees
       blocks := s.done.mergeSort (fun a b => a.ref.id ≤ b.ref.id)
     }
 

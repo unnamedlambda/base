@@ -9,7 +9,7 @@ namespace IR
 /-- A function that does nothing, at a given index: one block taking the shared
     memory pointer and returning. -/
 def noopAt (funcIdx : Nat) : FuncData :=
-  { index := funcIdx, callees := [],
+  { index := funcIdx,
     blocks := [{ ref := { id := 0 },
                  params := [({ id := 0 }, ClifTy.i64)],
                  insts := [Inst.ret none] }] }
@@ -23,47 +23,42 @@ def noopFunction : FuncData := noopAt 0
 def f32Zero : Float := 0.0
 def f64Zero : Float := 0.0
 
-/-- One callee, as the compiler needs it: what to call, and what it takes.
+/-- What a callee takes and answers.
 
-    Only `callee` is written out. The signature is here because the checker
-    reads a call's arity and types from it before anything is emitted; an
-    artifact carries none, since base's table gives an import's and a local
-    callee's own entry block gives its. -/
-structure CalleeDecl where
-  callee : Callee
+    An `Ffi`'s is a total function of the constructor, so it needs no table.
+    This exists for the other arm: a `local` call names a function of the same
+    program, whose signature is its entry block's, and a body is compiled
+    before the function it calls necessarily exists as a term. So the builder
+    states it at the call, and the checker reads it from here.
+
+    Never written out. The engine derives an import's from its own table and a
+    local's from that function's entry block --- it has both, so shipping
+    either would be a second source for one fact. -/
+structure CalleeSig where
   params : List ClifTy
   result : Option ClifTy
   deriving BEq, Lean.ToExpr
 
-/-- The callee table a body is checked and compiled against.
+/-- The signatures of this program's own functions, by `u0:N`.
 
-    **Position is the reference.** A call names `callees[i]`, so the order is
-    the numbering: there are no ids to allocate, none to collide, and no way to
-    name a callee the table does not hold. What ships is this list with the
-    signatures dropped. -/
-abbrev FnEnv := List CalleeDecl
+    Build-time only, and it holds nothing about imports: a call names its
+    callee, so there is no table of callees any more and nothing to intern,
+    allocate or renumber. -/
+abbrev FnEnv := List (Nat × CalleeSig)
 
-/-- What `fn` calls and what it takes, or `none` when the table is shorter. -/
-def FnEnv.at? (env : FnEnv) (fn : Nat) : Option CalleeDecl := env[fn]?
+/-- What a callee takes and answers: from the constructor for an import, from
+    this table for one of the program's own. -/
+def FnEnv.sigOf (e : FnEnv) : Callee → Option CalleeSig
+  | .ffi f   => some { params := f.params, result := f.result }
+  | .local k => (e.find? (·.1 == k)).map (·.2)
 
-/-- The table with one more callee, and the reference naming it: its position.
-
-    A callee already in the table at the same signature keeps its place, so a
-    body that calls one twice declares it once. -/
-def FnEnv.use (e : FnEnv) (callee : Callee) (params : List ClifTy)
-    (result : Option ClifTy) : FnRef × FnEnv :=
-  let d : CalleeDecl := { callee, params, result }
-  match e.idxOf? d with
-  | some i => (⟨i⟩, e)
-  | none   => (⟨e.length⟩, e ++ [d])
-
-/-- Call another function of this same program, by its `u0:N` index. -/
-def FnEnv.useLocal (e : FnEnv) (index : Nat) (params : List ClifTy)
-    (result : Option ClifTy) : FnRef × FnEnv :=
-  e.use (.local index) params result
-
-/-- What the emitted function carries: the callees, without the signatures. -/
-def FnEnv.callees (e : FnEnv) : List Callee := e.map (·.callee)
+/-- The table with one local function's signature recorded. A repeat at the
+    same signature changes nothing; a repeat at a different one is what
+    `sigOf` will then disagree with, and the checker refuses the call. -/
+def FnEnv.withLocal (e : FnEnv) (index : Nat) (params : List ClifTy)
+    (result : Option ClifTy) : FnEnv :=
+  let d : Nat × CalleeSig := (index, { params, result })
+  if e.contains d then e else e ++ [d]
 
 end IR
 

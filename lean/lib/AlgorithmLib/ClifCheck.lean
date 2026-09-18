@@ -3117,10 +3117,7 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
         rename_i avs hargs
         split at hr
         · exact absurd hr (by simp)
-        rename_i decl hfind
-        split at hr
-        · exact absurd hr (by simp)
-        rename_i nm hcallee
+        rename_i fn hcallee
         split at hr
         · exact absurd hr (by simp)
         rename_i res w' hcall

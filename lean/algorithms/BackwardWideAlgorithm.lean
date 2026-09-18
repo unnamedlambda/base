@@ -1085,10 +1085,8 @@ def bwdDriver : HStmt :=
     (.seq (.launch ⟨8, 3, 108, GRID, 32, dxBinds⟩)
           (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))
 
-def bwdFns : List Callee := [.import "cl_cuda_launch"]
-
 /-- The emitted host code — a real instruction list, compiled by `flatHI`. -/
-def bwdCode : List HI := code ⟨0⟩ ⟨0⟩ 1 0 bwdDriver
+def bwdCode : List HI := code (.ffi .cudaLaunch) ⟨0⟩ 1 0 bwdDriver
 
 /-- **The driver's launch sequence is the backward pipeline.**  Decided, not
     assumed: a drifted slot or a grid disagreeing with the stage's own `grid`
@@ -1107,11 +1105,11 @@ theorem bwdDriver_realises :
     is `sbStage.ew` compiled, and so on.  `sb_ptx_exact`, `dx_ptx_exact` and
     `dW_ptx_exact` above are what make each of those three claims checkable. -/
 theorem bwd_host_computes (st : WSt) :
-    ∃ k c', hsteps bwdFns 0 bwdCode k
+    ∃ k c', hsteps 0 bwdCode k
               ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
       ∧ pipelineOf? bwdTable none (c'.trace.zip c'.btrace) = some bwdPipelineFull
       ∧ (bwdPipelineFull.run st).mem = bwdPipelineFull.denote st.mem :=
-  host_computes_denote bwdFns ⟨0⟩ ⟨0⟩ rfl bwdCode bwdDriver 1 0
+  host_computes_denote (.ffi .cudaLaunch) ⟨0⟩ rfl bwdCode bwdDriver 1 0
     AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
     (AlgorithmLib.Host.FarOk.of_noBases (by decide))
     (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)
@@ -1131,10 +1129,7 @@ theorem bwd_host_computes (st : WSt) :
   write and the number of assumed steps is a value.
 -/
 
-def bwdBlasRef : FnRef := ⟨1⟩
-
-def bwdFnsBlas : List Callee :=
-  [.import "cl_cuda_launch", .import "cl_cublas_sgemv"]
+def bwdBlasRef : Callee := .ffi .cublasSgemv
 
 /-- Buffer-handle slots, as a generator would lay them out. -/
 def SLOT_W : Nat := 0x100
@@ -1173,7 +1168,7 @@ def bwdDriverBlas : HStmt :=
         (.seq (.launch ⟨8, 3, 108, GRID, 32, dxBinds⟩)
               (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))))
 
-def bwdCodeBlas : List HI := code ⟨0⟩ ⟨0⟩ 1 0 bwdDriverBlas
+def bwdCodeBlas : List HI := code (.ffi .cudaLaunch) ⟨0⟩ 1 0 bwdDriverBlas
 
 /-- **The plan: three proven steps and two declared ones, in host order.**
 
@@ -1214,11 +1209,11 @@ theorem bwdPlan_exclusive : bwdPlan.Exclusive := by
     declared steps, which `bwdPlan_declaredNames` identifies.  Everything else
     in the chain is proven. -/
 theorem bwd_host_computes_plan (R : Realisation) (hR : Honours R) (st : WSt) :
-    ∃ k c', hsteps bwdFnsBlas 0 bwdCodeBlas k
+    ∃ k c', hsteps 0 bwdCodeBlas k
               ⟨0, AlgorithmLib.Clif.Env.empty, [], fun _ => 0, [], []⟩ = some c'
       ∧ planOf? bwdTable bwdDeclared none (c'.trace.zip c'.btrace) = some bwdPlan
       ∧ (bwdPlan.run R st).mem = bwdPlan.denote st.mem :=
-  host_computes_plan bwdFnsBlas ⟨0⟩ ⟨0⟩ rfl bwdCodeBlas bwdDriverBlas 1 0
+  host_computes_plan (.ffi .cudaLaunch) ⟨0⟩ rfl bwdCodeBlas bwdDriverBlas 1 0
     AlgorithmLib.Clif.Env.empty [] (fun _ => 0) (by decide) rfl (by decide)
     (AlgorithmLib.Host.FarOk.of_noBases (by decide))
     (fun x hx b hb => AlgorithmLib.Host.noBases_primDests (by decide) x hx b hb)

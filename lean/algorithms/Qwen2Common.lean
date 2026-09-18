@@ -1824,7 +1824,7 @@ def ffnOps : List DeviceOp :=
 
 open AlgorithmLib.Host in
 /-- The attention half, declared. -/
-def attnDriver (fnOf : String → FnRef) : HStmt :=
+def attnDriver (fnOf : String → Callee) : HStmt :=
   HStmt.seqs
     [ .launch (kStep PTX_RMS_OFF     3 BIND_RMS1   1   BS_A_NORM)
     , .extern (vStep fnOf "cl_cublas_sgemv"
@@ -1855,7 +1855,7 @@ def attnDriver (fnOf : String → FnRef) : HStmt :=
 
 open AlgorithmLib.Host in
 /-- …and the feed-forward half. -/
-def ffnDriver (fnOf : String → FnRef) : HStmt :=
+def ffnDriver (fnOf : String → Callee) : HStmt :=
   HStmt.seqs
     [ .launch (kStep PTX_RMS_OFF  3 BIND_RMS2 1   BS_FFN_NORM)
     , .extern (vStep fnOf "cl_cublas_sgemv"
@@ -1869,12 +1869,12 @@ def ffnDriver (fnOf : String → FnRef) : HStmt :=
 
 open AlgorithmLib.Host in
 /-- **The declared attention half performs `attnOps`.** -/
-theorem attnDriver_deviceOps (fnOf : String → FnRef) :
+theorem attnDriver_deviceOps (fnOf : String → Callee) :
     (attnDriver fnOf).deviceOps = attnOps := rfl
 
 open AlgorithmLib.Host in
 /-- **…and the declared feed-forward half performs `ffnOps`.** -/
-theorem ffnDriver_deviceOps (fnOf : String → FnRef) :
+theorem ffnDriver_deviceOps (fnOf : String → Callee) :
     (ffnDriver fnOf).deviceOps = ffnOps := rfl
 
 variable (gim : Buf → Nat → Nat)
@@ -2142,14 +2142,14 @@ theorem replicate_ops_steps (h : AllHold [Law.combinerComm])
 
 open AlgorithmLib.Host in
 /-- `inferFn`'s two device writes. -/
-def entryDriver (fnOf : String → FnRef) : HStmt :=
+def entryDriver (fnOf : String → Callee) : HStmt :=
   HStmt.seqs
     [ .extern (vStep fnOf "cl_cuda_upload_ptr" [.near 16, .near 132, .opaque, .const 24])
     , .launch (kStep PTX_EMBED_OFF 3 BIND_EMBED 28 BS_EMBED) ]
 
 open AlgorithmLib.Host in
 /-- …and `inferFinalFn`'s three. -/
-def finalDriver (fnOf : String → FnRef) : HStmt :=
+def finalDriver (fnOf : String → Callee) : HStmt :=
   HStmt.seqs
     [ .launch (kStep PTX_RMS_OFF 3 BIND_RMS2 1 BS_F_NORM)
     , .extern (vStep fnOf "cl_cublas_sgemv"
@@ -2160,28 +2160,28 @@ def finalDriver (fnOf : String → FnRef) : HStmt :=
 open AlgorithmLib.Host in
 /-- **One layer**: the two halves, each reached by a call — which is what the
     generator does (`inferLayerFn` dispatches to `fn_29` and `fn_30`). -/
-def layerDriver (fnOf : String → FnRef) : HStmt :=
+def layerDriver (fnOf : String → Callee) : HStmt :=
   .call (.seq (.call (attnDriver fnOf)) (.call (ffnDriver fnOf)))
 
 open AlgorithmLib.Host in
 /-- **One decode step**: the prologue, the twenty-four-layer loop, the sampling
     tail.  The loop is a `forN` node, not twenty-four copies. -/
-def tokenDriver (fnOf : String → FnRef) : HStmt :=
+def tokenDriver (fnOf : String → Callee) : HStmt :=
   .seq (entryDriver fnOf)
     (.seq (.forN N_LAYERS (layerDriver fnOf)) (finalDriver fnOf))
 
 open AlgorithmLib.Host in
-theorem entryDriver_deviceOps (fnOf : String → FnRef) :
+theorem entryDriver_deviceOps (fnOf : String → Callee) :
     (entryDriver fnOf).deviceOps = entryOps := rfl
 
 open AlgorithmLib.Host in
-theorem finalDriver_deviceOps (fnOf : String → FnRef) :
+theorem finalDriver_deviceOps (fnOf : String → Callee) :
     (finalDriver fnOf).deviceOps = finalOps := rfl
 
 open AlgorithmLib.Host in
 /-- **A layer performs `layerOps`** — the two halves concatenated, through two
     calls, which `HStmt.deviceOps_call`/`_seq` see through. -/
-theorem layerDriver_deviceOps (fnOf : String → FnRef) :
+theorem layerDriver_deviceOps (fnOf : String → Callee) :
     (layerDriver fnOf).deviceOps = layerOps := by
   show (HStmt.call (.seq (.call (attnDriver fnOf)) (.call (ffnDriver fnOf)))).deviceOps = _
   rw [HStmt.deviceOps_call, HStmt.deviceOps_seq, HStmt.deviceOps_call,
@@ -2195,7 +2195,7 @@ open AlgorithmLib.Host in
     from `HStmt.deviceOps_forN` — a structural recursion over the `forN` node —
     so the twenty-four is the program's, not a numeral someone typed into a
     list. -/
-theorem loopDriver_deviceOps (fnOf : String → FnRef) :
+theorem loopDriver_deviceOps (fnOf : String → Callee) :
     (HStmt.forN N_LAYERS (layerDriver fnOf)).deviceOps
       = (List.replicate N_LAYERS layerOps).flatten := by
   rw [HStmt.deviceOps_forN, layerDriver_deviceOps]
@@ -2207,7 +2207,7 @@ open AlgorithmLib.Host in
     `tokenOps` is still the list the plan machinery consumes; what changed is
     that it is now *equal to* the device-write sequence of a host program whose
     loop is a node, rather than a list whose length nobody checked. -/
-theorem tokenDriver_deviceOps (fnOf : String → FnRef) :
+theorem tokenDriver_deviceOps (fnOf : String → Callee) :
     (tokenDriver fnOf).deviceOps = tokenOps := by
   show (HStmt.seq (entryDriver fnOf)
           (.seq (.forN N_LAYERS (layerDriver fnOf)) (finalDriver fnOf))).deviceOps = _
@@ -2217,7 +2217,7 @@ theorem tokenDriver_deviceOps (fnOf : String → FnRef) :
 
 open AlgorithmLib.Host in
 /-- …and it is five hundred and thirty-three of them. -/
-theorem tokenDriver_count (fnOf : String → FnRef) :
+theorem tokenDriver_count (fnOf : String → Callee) :
     (tokenDriver fnOf).deviceOps.length = 533 := by
   rw [tokenDriver_deviceOps]
   rfl
@@ -2246,7 +2246,7 @@ theorem infer_loop_is_layers :
 open AlgorithmLib.Clif in
 /-- **…and its body dispatches to the layer function and nothing else.** -/
 theorem infer_loop_body_calls :
-    (blockInsts? (stateOf inferFn) 2).map (callsIn (stateOf inferFn).callees)
+    (blockInsts? (stateOf inferFn) 2).map callsIn
       = some ["u0:28"] := by native_decide
 
 open AlgorithmLib.Clif in
@@ -2261,13 +2261,13 @@ open AlgorithmLib.Host in
     theorems recurse through, the right is a scan of the CLIF the generator
     actually produced.  Chaining them is what turns `tokenDriver` from a
     description into a claim about this program. -/
-theorem entryDriver_is_built (fnOf : String → FnRef) :
+theorem entryDriver_is_built (fnOf : String → Callee) :
     (entryDriver fnOf).deviceOps = deviceOpsOf ROOT (stateOf inferFn) := by
   rw [entry_ops_are, entryDriver_deviceOps]
 
 open AlgorithmLib.Host in
 /-- **…and the sampling tail's.** -/
-theorem finalDriver_is_built (fnOf : String → FnRef) :
+theorem finalDriver_is_built (fnOf : String → Callee) :
     (finalDriver fnOf).deviceOps = deviceOpsOf ROOT (stateOf inferFinalFn) := by
   rw [final_ops_are, finalDriver_deviceOps]
 

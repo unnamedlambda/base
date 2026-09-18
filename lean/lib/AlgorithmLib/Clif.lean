@@ -566,13 +566,11 @@ structure LaunchRec where
   stream   : Option Nat := none
   deriving Repr, DecidableEq, BEq
 
-/-- The declared name of a function reference. A call to another function of
-    the same program has no symbol name, and is not what any caller of this is
-    looking for. -/
-def fnNameOf (fns : List Callee) (r : FnRef) : Option String :=
-  match fns[r.id]? with
-  | some (.import n) => some n
-  | _                => none
+/-- The symbol a callee names. A call to another function of the same program
+    has none, and is not what any caller of this is looking for. -/
+def fnNameOf : Callee → Option String
+  | .ffi f   => some f.cname
+  | .local _ => none
 
 /-- **Primitives that write device memory without being a modelled launch.**
 
@@ -620,9 +618,9 @@ def launchNames : List String :=
     declared, is it a launch — lives in exactly one place. The recursion in
     `scanBlock` is then structurally trivial, which is what makes the
     correctness theorems below inductions rather than case explosions. -/
-def launchAt (fns : List Callee) (e : Env) : Inst → Option LaunchRec
+def launchAt (e : Env) : Inst → Option LaunchRec
   | .call _ fr args =>
-      match fnNameOf fns fr with
+      match fnNameOf fr with
       | some nm =>
           if nm ∈ launchNames then
             let arg (k : Nat) : Option Int :=
@@ -651,11 +649,11 @@ def Inst.isCallB : Inst → Bool
   | _           => false
 
 /-- Walk one block, threading the environment, collecting launches in order. -/
-def scanBlock (fns : List Callee) : Env → List Inst → Env × List LaunchRec
+def scanBlock : Env → List Inst → Env × List LaunchRec
   | e, []      => (e, [])
   | e, i :: is =>
-      let rest := scanBlock fns (stepPure e i) is
-      (rest.1, (launchAt fns e i).toList ++ rest.2)
+      let rest := scanBlock (stepPure e i) is
+      (rest.1, (launchAt e i).toList ++ rest.2)
 
 /-- **The same walk as a loop.**
 
@@ -666,33 +664,33 @@ def scanBlock (fns : List Callee) : Env → List Inst → Env × List LaunchRec
     finishes, so the reference definition is kept and the compiler is given an
     accumulator loop instead, with `scanBlock_eq_TR` as the proof that they are
     the same function. -/
-def scanBlockTR.go (fns : List Callee) :
+def scanBlockTR.go :
     Env → List Inst → Array LaunchRec → Env × List LaunchRec
   | e, [],      acc => (e, acc.toList)
   | e, i :: is, acc =>
-      scanBlockTR.go fns (stepPure e i) is
-        (match launchAt fns e i with | some r => acc.push r | none => acc)
+      scanBlockTR.go (stepPure e i) is
+        (match launchAt e i with | some r => acc.push r | none => acc)
 
-def scanBlockTR (fns : List Callee) (e : Env) (is : List Inst) : Env × List LaunchRec :=
-  scanBlockTR.go fns e is #[]
+def scanBlockTR (e : Env) (is : List Inst) : Env × List LaunchRec :=
+  scanBlockTR.go e is #[]
 
-theorem scanBlockTR_go_eq (fns : List Callee) :
+theorem scanBlockTR_go_eq :
     ∀ (is : List Inst) (e : Env) (acc : Array LaunchRec),
-      scanBlockTR.go fns e is acc
-        = ((scanBlock fns e is).1, acc.toList ++ (scanBlock fns e is).2) := by
+      scanBlockTR.go e is acc
+        = ((scanBlock e is).1, acc.toList ++ (scanBlock e is).2) := by
   intro is
   induction is with
   | nil => intro e acc; simp [scanBlockTR.go, scanBlock]
   | cons i is ih =>
       intro e acc
       rw [scanBlockTR.go, ih]
-      cases h : launchAt fns e i <;>
+      cases h : launchAt e i <;>
         simp [scanBlock, h, List.append_assoc]
 
 /-- **…and it is the same function**, so every theorem about `scanBlock` holds
     of what actually runs. -/
 @[csimp] theorem scanBlock_eq_TR : @scanBlock = @scanBlockTR := by
-  funext fns e is
+  funext e is
   rw [scanBlockTR, scanBlockTR_go_eq]
   simp
 
@@ -715,7 +713,7 @@ theorem scanBlockTR_go_eq (fns : List Callee) :
     already past. Consumers recover repetition separately, through `loopsOf`. -/
 def launchesOf (s : FuncData) : List LaunchRec :=
   (s.blocks.foldl (fun (acc : Env × List LaunchRec) b =>
-      let r := scanBlock s.callees acc.1 b.insts
+      let r := scanBlock acc.1 b.insts
       (r.1, acc.2 ++ r.2)) (Env.empty, [])).2
 
 /-- How many kernels the program launches. -/
@@ -729,9 +727,9 @@ def launchCount (s : FuncData) : Nat := (launchesOf s).length
 /-- **Is this instruction a launch?**  The predicate `scanBlock` branches on,
     named so the extraction can be stated against a specification rather than
     against itself. -/
-def isLaunchCallB (fns : List Callee) : Inst → Bool
+def isLaunchCallB : Inst → Bool
   | .call _ fr _ =>
-      match fnNameOf fns fr with
+      match fnNameOf fr with
       | some nm => decide (nm ∈ launchNames) || decide (nm ∈ deviceWriterNames)
       | none    => false
   | _ => false
@@ -742,12 +740,12 @@ def deviceOpNames : List String := launchNames ++ deviceWriterNames
 
 /-- The decision is environment-independent: the record's *contents* depend on
     the environment, the some/none choice does not. -/
-theorem launchAt_isSome (fns : List Callee) (e : Env) (i : Inst) :
-    (launchAt fns e i).isSome = isLaunchCallB fns i := by
+theorem launchAt_isSome (e : Env) (i : Inst) :
+    (launchAt e i).isSome = isLaunchCallB i := by
   cases i with
   | call d fr args =>
       simp only [launchAt, isLaunchCallB]
-      cases fnNameOf fns fr with
+      cases fnNameOf fr with
       | none => rfl
       | some nm =>
           by_cases hm : nm ∈ launchNames
@@ -758,14 +756,14 @@ theorem launchAt_isSome (fns : List Callee) (e : Env) (i : Inst) :
 /-- How many launches a straight-line block *should* yield — independent of the
     environment, which is what lets the correspondence be proven without
     evaluating any addresses. -/
-def launchCallCount (fns : List Callee) : List Inst → Nat
+def launchCallCount : List Inst → Nat
   | []      => 0
-  | i :: is => (if isLaunchCallB fns i then 1 else 0) + launchCallCount fns is
+  | i :: is => (if isLaunchCallB i then 1 else 0) + launchCallCount is
 
 /-- Does this instruction call one of them? -/
-def isDeviceWriterB (fns : List Callee) : Inst → Bool
+def isDeviceWriterB : Inst → Bool
   | .call _ fr _ =>
-      match fnNameOf fns fr with
+      match fnNameOf fr with
       | some nm => decide (nm ∈ deviceWriterNames)
       | none    => false
   | _ => false
@@ -776,19 +774,19 @@ def isDeviceWriterB (fns : List Callee) : Inst → Bool
     answers "which kernels run"; this answers "what else wrote device memory
     while they did".  Reported as names so a generator's check can say *which*
     primitive is unaccounted for rather than only that something is. -/
-def deviceWritesIn (fns : List Callee) : List Inst → List String
+def deviceWritesIn : List Inst → List String
   | []      => []
   | i :: is =>
       (match i with
        | .call _ fr _ =>
-           match fnNameOf fns fr with
+           match fnNameOf fr with
            | some nm => if nm ∈ deviceWriterNames then [nm] else []
            | none    => []
-       | _ => []) ++ deviceWritesIn fns is
+       | _ => []) ++ deviceWritesIn is
 
 /-- …over a whole function. -/
 def deviceWritesOf (s : FuncData) : List String :=
-  s.blocks.flatMap (fun b => deviceWritesIn s.callees b.insts)
+  s.blocks.flatMap (fun b => deviceWritesIn b.insts)
 
 -- ---------------------------------------------------------------------------
 -- Counted loops, recovered
@@ -898,16 +896,15 @@ def blockInsts? (s : FuncData) (n : Nat) : Option (List Inst) :=
 /-- The calls a straight line performs, in order — what a loop body dispatches
     to. An import is its symbol name and a call to another function of the
     program is its `u0:N`, the name that function has in CLIF. -/
-def callsIn (fns : List Callee) (is : List Inst) : List String :=
+def callsIn (is : List Inst) : List String :=
   is.filterMap (fun i => match i with
-    | .call _ fr _ => (fns[fr.id]?).map fun
-        | .import n => n
-        | .local k  => s!"u0:{k}"
-    | _            => none)
+    | .call _ (.ffi f)   _ => some f.cname
+    | .call _ (.local k) _ => some s!"u0:{k}"
+    | _                    => none)
 
 /-- …over a whole function. -/
 def callsOf (s : FuncData) : List String :=
-  s.blocks.flatMap (fun b => callsIn s.callees b.insts)
+  s.blocks.flatMap (fun b => callsIn b.insts)
 
 /-- **A program whose every device write is a modelled launch.**
 
@@ -927,26 +924,26 @@ def launchesAreEverythingB (s : FuncData) : Bool := (deviceWritesOf s).isEmpty
     perform a cuBLAS matvec the pipeline knows nothing about; drop the third and
     it could clobber the base pointer, making every later launch argument
     unreadable. -/
-def Inst.TameB (fns : List Callee) (ptr : Val) (i : Inst) : Bool :=
-  !isLaunchCallB fns i && !isDeviceWriterB fns i &&
+def Inst.TameB (ptr : Val) (i : Inst) : Bool :=
+  !isLaunchCallB i && !isDeviceWriterB i &&
     (match Inst.destOf? i with
      | some d => !(d.id == ptr.id)
      | none   => true)
 
-theorem tame_noLaunch (fns : List Callee) (ptr : Val) (i : Inst)
-    (h : Inst.TameB fns ptr i = true) : isLaunchCallB fns i = false := by
+theorem tame_noLaunch (ptr : Val) (i : Inst)
+    (h : Inst.TameB ptr i = true) : isLaunchCallB i = false := by
   simp [Inst.TameB] at h; exact h.1.1
 
-theorem tame_noWrite (fns : List Callee) (ptr : Val) (i : Inst)
-    (h : Inst.TameB fns ptr i = true) : ∀ d, Inst.destOf? i = some d → ptr.id ≠ d.id := by
+theorem tame_noWrite (ptr : Val) (i : Inst)
+    (h : Inst.TameB ptr i = true) : ∀ d, Inst.destOf? i = some d → ptr.id ≠ d.id := by
   intro d hd hEq
   rw [Inst.TameB, hd] at h
   simp [hEq] at h
 
 /-- **The environment `scanBlock` threads is exactly `evalPure`'s.**  Extraction
     does not perturb the value model. -/
-theorem scanBlock_env (fns : List Callee) :
-    ∀ (is : List Inst) (e : Env), (scanBlock fns e is).1 = evalPure e is := by
+theorem scanBlock_env :
+    ∀ (is : List Inst) (e : Env), (scanBlock e is).1 = evalPure e is := by
   intro is
   induction is with
   | nil => intro _; rfl
@@ -961,19 +958,19 @@ theorem scanBlock_env (fns : List Callee) :
 
     This is the property `native_decide` on a single closed function cannot
     give: that result holds for `inferFn` and says nothing about any other. -/
-theorem scanBlock_length (fns : List Callee) :
+theorem scanBlock_length :
     ∀ (is : List Inst) (e : Env),
-      (scanBlock fns e is).2.length = launchCallCount fns is := by
+      (scanBlock e is).2.length = launchCallCount is := by
   intro is
   induction is with
   | nil => intro _; rfl
   | cons i is ih =>
       intro e
-      show ((launchAt fns e i).toList ++ (scanBlock fns (stepPure e i) is).2).length
-          = (if isLaunchCallB fns i then 1 else 0) + launchCallCount fns is
+      show ((launchAt e i).toList ++ (scanBlock (stepPure e i) is).2).length
+          = (if isLaunchCallB i then 1 else 0) + launchCallCount is
       rw [List.length_append, ih (stepPure e i)]
-      have h := launchAt_isSome fns e i
-      cases hopt : launchAt fns e i with
+      have h := launchAt_isSome e i
+      cases hopt : launchAt e i with
       | none   => rw [hopt] at h; simp at h; simp [← h]
       | some r => rw [hopt] at h; simp at h; simp [← h]
 
@@ -982,17 +979,17 @@ theorem scanBlock_length (fns : List Callee) :
     The extractor cannot report a record for an ordinary call — only for a
     modelled launch or for one of the named primitives that writes device memory
     without being one. -/
-theorem scanBlock_fnName (fns : List Callee) :
+theorem scanBlock_fnName :
     ∀ (is : List Inst) (e : Env) (r : LaunchRec),
-      r ∈ (scanBlock fns e is).2 → r.fnName ∈ deviceOpNames := by
+      r ∈ (scanBlock e is).2 → r.fnName ∈ deviceOpNames := by
   intro is
   induction is with
   | nil => intro _ _ h; exact absurd h (by simp [scanBlock])
   | cons i is ih =>
       intro e r hr
-      have hr' : r ∈ (launchAt fns e i).toList ++ (scanBlock fns (stepPure e i) is).2 := hr
+      have hr' : r ∈ (launchAt e i).toList ++ (scanBlock (stepPure e i) is).2 := hr
       rcases List.mem_append.mp hr' with h | h
-      · cases hopt : launchAt fns e i with
+      · cases hopt : launchAt e i with
         | none => rw [hopt] at h; exact absurd h (by simp)
         | some q =>
             rw [hopt] at h
@@ -1002,7 +999,7 @@ theorem scanBlock_fnName (fns : List Callee) :
             cases i with
             | call d fr args =>
                 simp only [launchAt]
-                cases fnNameOf fns fr with
+                cases fnNameOf fr with
                 | none => intro hopt; exact absurd hopt (by simp)
                 | some nm =>
                     by_cases hm : nm ∈ launchNames
@@ -1029,18 +1026,18 @@ theorem scanBlock_fnName (fns : List Callee) :
     statement compiles to an instruction *list*, sequencing compiles to `++`,
     and this is what lets the launch-sequence theorem be an induction over the
     statement rather than over the emitted instructions. -/
-theorem scanBlock_append (fns : List Callee) :
+theorem scanBlock_append :
     ∀ (i₁ i₂ : List Inst) (e : Env),
-      (scanBlock fns e (i₁ ++ i₂)).2
-        = (scanBlock fns e i₁).2 ++ (scanBlock fns (evalPure e i₁) i₂).2 := by
+      (scanBlock e (i₁ ++ i₂)).2
+        = (scanBlock e i₁).2 ++ (scanBlock (evalPure e i₁) i₂).2 := by
   intro i₁
   induction i₁ with
   | nil => intro _ _; rfl
   | cons i is ih =>
       intro i₂ e
-      show ((launchAt fns e i).toList ++ (scanBlock fns (stepPure e i) (is ++ i₂)).2)
-          = ((launchAt fns e i).toList ++ (scanBlock fns (stepPure e i) is).2)
-            ++ (scanBlock fns (evalPure (stepPure e i) is) i₂).2
+      show ((launchAt e i).toList ++ (scanBlock (stepPure e i) (is ++ i₂)).2)
+          = ((launchAt e i).toList ++ (scanBlock (stepPure e i) is).2)
+            ++ (scanBlock (evalPure (stepPure e i) is) i₂).2
       rw [ih i₂ (stepPure e i), List.append_assoc]
 
 /-- The environment after a concatenation is the environment after each in turn. -/
@@ -1053,15 +1050,15 @@ theorem evalPure_append : ∀ (i₁ i₂ : List Inst) (e : Env),
 
 /-- **A block of non-calls records nothing.**  The workhorse for a fragment that
     only materialises arguments. -/
-theorem scanBlock_noCalls (fns : List Callee) : ∀ (is : List Inst) (e : Env),
-    (∀ i ∈ is, Inst.isCallB i = false) → (scanBlock fns e is).2 = [] := by
+theorem scanBlock_noCalls : ∀ (is : List Inst) (e : Env),
+    (∀ i ∈ is, Inst.isCallB i = false) → (scanBlock e is).2 = [] := by
   intro is
   induction is with
   | nil => intro _ _; rfl
   | cons i is ih =>
       intro e h
-      show (launchAt fns e i).toList ++ (scanBlock fns (stepPure e i) is).2 = []
-      have h0 : launchAt fns e i = none := by
+      show (launchAt e i).toList ++ (scanBlock (stepPure e i) is).2 = []
+      have h0 : launchAt e i = none := by
         have hc := h i (List.mem_cons_self ..)
         cases i <;> simp_all [Inst.isCallB, launchAt]
       rw [h0, ih (stepPure e i) (fun j hj => h j (List.mem_cons_of_mem i hj))]
@@ -1069,9 +1066,9 @@ theorem scanBlock_noCalls (fns : List Callee) : ∀ (is : List Inst) (e : Env),
 
 /-- A block with no launch calls contributes nothing — the degenerate case of
     `scanBlock_length`, kept because it is the one a reader checks first. -/
-theorem scanBlock_noLaunch (fns : List Callee) (is : List Inst) (e : Env)
-    (h : launchCallCount fns is = 0) : (scanBlock fns e is).2 = [] :=
-  List.eq_nil_of_length_eq_zero (by rw [scanBlock_length fns is e, h])
+theorem scanBlock_noLaunch (is : List Inst) (e : Env)
+    (h : launchCallCount is = 0) : (scanBlock e is).2 = [] :=
+  List.eq_nil_of_length_eq_zero (by rw [scanBlock_length is e, h])
 
 -- ---------------------------------------------------------------------------
 -- What the host wrote *into* the bind arrays
@@ -1290,9 +1287,9 @@ structure OpBinds where
     measured from.  Passing the wrong one is not a silent error: a launch whose
     bind array does not sit at `root` yields `none`, so no stage resolves and
     no plan claim is available. -/
-def bindAt (fns : List Callee) (root : Nat) (b : BEnv) : Inst → OpBinds
+def bindAt (root : Nat) (b : BEnv) : Inst → OpBinds
   | .call _ fr args =>
-      match fnNameOf fns fr with
+      match fnNameOf fr with
       | some nm =>
           if nm ∈ positionalLaunchNames then
             { bufs :=
@@ -1311,24 +1308,24 @@ def bindAt (fns : List Callee) (root : Nat) (b : BEnv) : Inst → OpBinds
 
 /-- Walk a block, emitting **one entry per record `scanBlock` emits**, in the
     same order.  The alignment is the theorem below, not a convention. -/
-def bindScan (fns : List Callee) (root : Nat) : BEnv → List Inst → BEnv × List OpBinds
+def bindScan (root : Nat) : BEnv → List Inst → BEnv × List OpBinds
   | b, []      => (b, [])
   | b, i :: is =>
-      let rest := bindScan fns root (bstep b i) is
-      (rest.1, (if isLaunchCallB fns i then [bindAt fns root b i] else []) ++ rest.2)
+      let rest := bindScan root (bstep b i) is
+      (rest.1, (if isLaunchCallB i then [bindAt root b i] else []) ++ rest.2)
 
 /-- The bind arrays and vendor arguments a built function's device writes use,
     in program order. -/
 def bindsOf (root : Nat) (s : FuncData) : List OpBinds :=
   (s.blocks.foldl (fun (acc : BEnv × List OpBinds) bd =>
-      let r := bindScan s.callees root acc.1 bd.insts
+      let r := bindScan root acc.1 bd.insts
       (r.1, acc.2 ++ r.2)) (BEnv.empty, [])).2
 
 /-- **The two passes agree about the value model.**  `bindScan` threads exactly
     `evalPure`, so a bind array recovered here was resolved against the same
     environment the launch record was. -/
-theorem bindScan_env (fns : List Callee) (root : Nat) :
-    ∀ (is : List Inst) (b : BEnv), (bindScan fns root b is).1.env = evalPure b.env is := by
+theorem bindScan_env (root : Nat) :
+    ∀ (is : List Inst) (b : BEnv), (bindScan root b is).1.env = evalPure b.env is := by
   intro is
   induction is with
   | nil => intro _; rfl
@@ -1336,8 +1333,8 @@ theorem bindScan_env (fns : List Callee) (root : Nat) :
 
 /-- **…and about memory too.**  `bindScan` threads `bevalPure`, so a fragment's
     store map can be specified once and reused wherever it appears. -/
-theorem bindScan_state (fns : List Callee) (root : Nat) :
-    ∀ (is : List Inst) (b : BEnv), (bindScan fns root b is).1 = bevalPure b is := by
+theorem bindScan_state (root : Nat) :
+    ∀ (is : List Inst) (b : BEnv), (bindScan root b is).1 = bevalPure b is := by
   intro is
   induction is with
   | nil => intro _; rfl
@@ -1346,17 +1343,17 @@ theorem bindScan_state (fns : List Callee) (root : Nat) :
 /-- A block of non-calls binds nothing — the counterpart of
     `scanBlock_noCalls`, and what lets a bind fragment's own address
     arithmetic be stepped over. -/
-theorem bindScan_noCalls (fns : List Callee) (root : Nat) :
+theorem bindScan_noCalls (root : Nat) :
     ∀ (is : List Inst) (b : BEnv),
-      (∀ i ∈ is, Inst.isCallB i = false) → (bindScan fns root b is).2 = [] := by
+      (∀ i ∈ is, Inst.isCallB i = false) → (bindScan root b is).2 = [] := by
   intro is
   induction is with
   | nil => intro _ _; rfl
   | cons i is ih =>
       intro b h
-      show (if isLaunchCallB fns i then [bindAt fns root b i] else [])
-              ++ (bindScan fns root (bstep b i) is).2 = []
-      have h0 : isLaunchCallB fns i = false := by
+      show (if isLaunchCallB i then [bindAt root b i] else [])
+              ++ (bindScan root (bstep b i) is).2 = []
+      have h0 : isLaunchCallB i = false := by
         have hc := h i (List.mem_cons_self ..)
         cases i <;> simp_all [Inst.isCallB, isLaunchCallB]
       rw [h0, ih (bstep b i) (fun j hj => h j (List.mem_cons_of_mem i hj))]
@@ -1380,41 +1377,41 @@ theorem StoreMap.get?_append_left (l r : StoreMap) (b : Nat) (k : Int)
 /-- **…and about how many device writes there are.**  One bind entry per
     recovered record, quantified over every instruction list — so zipping the
     two lists loses nothing and invents nothing. -/
-theorem bindScan_length (fns : List Callee) (root : Nat) :
+theorem bindScan_length (root : Nat) :
     ∀ (is : List Inst) (b : BEnv),
-      (bindScan fns root b is).2.length = launchCallCount fns is := by
+      (bindScan root b is).2.length = launchCallCount is := by
   intro is
   induction is with
   | nil => intro _; rfl
   | cons i is ih =>
       intro b
-      show ((if isLaunchCallB fns i then [bindAt fns root b i] else [])
-              ++ (bindScan fns root (bstep b i) is).2).length
-          = (if isLaunchCallB fns i then 1 else 0) + launchCallCount fns is
+      show ((if isLaunchCallB i then [bindAt root b i] else [])
+              ++ (bindScan root (bstep b i) is).2).length
+          = (if isLaunchCallB i then 1 else 0) + launchCallCount is
       rw [List.length_append, ih (bstep b i)]
-      cases isLaunchCallB fns i <;> simp
+      cases isLaunchCallB i <;> simp
 
 /-- A block with no *launch* call binds nothing, even if it calls something
     else — the `prim` case, where a tokenizer's `cl_stdin_readline` is fine. -/
-theorem bindScan_noLaunch (fns : List Callee) (root : Nat) (is : List Inst) (b : BEnv)
-    (h : launchCallCount fns is = 0) : (bindScan fns root b is).2 = [] :=
-  List.eq_nil_of_length_eq_zero (by rw [bindScan_length fns root is b, h])
+theorem bindScan_noLaunch (root : Nat) (is : List Inst) (b : BEnv)
+    (h : launchCallCount is = 0) : (bindScan root b is).2 = [] :=
+  List.eq_nil_of_length_eq_zero (by rw [bindScan_length root is b, h])
 
-theorem bindScan_append (fns : List Callee) (root : Nat) :
+theorem bindScan_append (root : Nat) :
     ∀ (i₁ i₂ : List Inst) (b : BEnv),
-      (bindScan fns root b (i₁ ++ i₂)).2
-        = (bindScan fns root b i₁).2
-          ++ (bindScan fns root (bindScan fns root b i₁).1 i₂).2 := by
+      (bindScan root b (i₁ ++ i₂)).2
+        = (bindScan root b i₁).2
+          ++ (bindScan root (bindScan root b i₁).1 i₂).2 := by
   intro i₁
   induction i₁ with
   | nil => intro _ _; rfl
   | cons i is ih =>
       intro i₂ b
-      show (if isLaunchCallB fns i then [bindAt fns root b i] else [])
-              ++ (bindScan fns root (bstep b i) (is ++ i₂)).2
-          = ((if isLaunchCallB fns i then [bindAt fns root b i] else [])
-              ++ (bindScan fns root (bstep b i) is).2)
-            ++ (bindScan fns root (bindScan fns root (bstep b i) is).1 i₂).2
+      show (if isLaunchCallB i then [bindAt root b i] else [])
+              ++ (bindScan root (bstep b i) (is ++ i₂)).2
+          = ((if isLaunchCallB i then [bindAt root b i] else [])
+              ++ (bindScan root (bstep b i) is).2)
+            ++ (bindScan root (bindScan root (bstep b i) is).1 i₂).2
       rw [ih i₂ (bstep b i), List.append_assoc]
 
 /-- **One bind entry per launch record, over the whole function.**
@@ -1429,20 +1426,20 @@ theorem bindsOf_length (root : Nat) (s : FuncData) :
       (a₁ : List OpBinds) (a₂ : List LaunchRec),
       b.env = e → a₁.length = a₂.length →
       (bs.foldl (fun (acc : BEnv × List OpBinds) bd =>
-          let r := bindScan s.callees root acc.1 bd.insts
+          let r := bindScan root acc.1 bd.insts
           (r.1, acc.2 ++ r.2)) (b, a₁)).2.length
         = (bs.foldl (fun (acc : Env × List LaunchRec) bd =>
-            let r := scanBlock s.callees acc.1 bd.insts
+            let r := scanBlock acc.1 bd.insts
             (r.1, acc.2 ++ r.2)) (e, a₂)).2.length := by
     intro bs
     induction bs with
     | nil => intro _ _ _ _ _ h; exact h
     | cons bd bs ih =>
         intro b e a₁ a₂ he ha
-        refine ih (bindScan s.callees root b bd.insts).1 (scanBlock s.callees e bd.insts).1 _ _ ?_ ?_
-        · rw [bindScan_env s.callees root bd.insts b, scanBlock_env s.callees bd.insts e, he]
+        refine ih (bindScan root b bd.insts).1 (scanBlock e bd.insts).1 _ _ ?_ ?_
+        · rw [bindScan_env root bd.insts b, scanBlock_env bd.insts e, he]
         · rw [List.length_append, List.length_append, ha,
-              bindScan_length s.callees root bd.insts b, scanBlock_length s.callees bd.insts e]
+              bindScan_length root bd.insts b, scanBlock_length bd.insts e]
   exact key s.blocks BEnv.empty Env.empty [] [] rfl rfl
 
 /-- **Records and what they bound, as one list.**  What a table match consumes:

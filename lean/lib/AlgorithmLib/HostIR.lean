@@ -404,7 +404,7 @@ theorem LaunchStep.wf_binds {s : LaunchStep} (h : s.WellFormedB = true) :
     pipeline side, carrying its assumption in the open. -/
 structure ExternStep where
   name : String
-  fn   : FnRef
+  fn   : Callee
   argv : List ExternArg
 
 def ExternStep.toRec (s : ExternStep) : LaunchRec :=
@@ -552,8 +552,8 @@ def kStep (ptx nb bo grid : Nat) (bs : List BufDesc) : LaunchStep :=
     binds := bs.map argOf }
 
 /-- A declared vendor call, from its recovered arguments.  `fnOf` supplies the
-    `FnRef`; `deviceOps` does not look at it — only compiling would. -/
-def vStep (fnOf : String → FnRef) (nm : String) (as : List BufDesc) : ExternStep :=
+    `Callee`; `deviceOps` does not look at it — only compiling would. -/
+def vStep (fnOf : String → Callee) (nm : String) (as : List BufDesc) : ExternStep :=
   { name := nm, fn := fnOf nm, argv := as.map argOf }
 
 /-- Total launches, as a count. -/
@@ -591,31 +591,31 @@ def HStmt.primDests : HStmt → List Nat
     driver is assembled — the alternative would be to *assume* that filler code
     is filler, which is exactly the kind of unstated hypothesis that makes a
     theorem true and useless. -/
-def HStmt.TameB (fns : List Callee) (ptr : Val) : HStmt → Bool
+def HStmt.TameB (ptr : Val) : HStmt → Bool
   | .skip     => true
-  | .prim is  => is.all (Inst.TameB fns ptr)
+  | .prim is  => is.all (Inst.TameB ptr)
   -- a launch must fill exactly the array it declares the arity of
   | .launch s => s.WellFormedB
   -- an extern node must name the primitive its call really resolves to, and
   -- that primitive must be one this model has agreed to declare rather than
   -- interpret; otherwise the record would not match what runs
-  | .extern es => (fnNameOf fns es.fn == some es.name)
+  | .extern es => (fnNameOf es.fn == some es.name)
                     && decide (es.name ∈ deviceWriterNames)
                     && !decide (es.name ∈ launchNames)
                     && es.argv.all ExternArg.LitOkB
-  | .seq a b  => HStmt.TameB fns ptr a && HStmt.TameB fns ptr b
-  | .forN _ b => HStmt.TameB fns ptr b
-  | .call b   => HStmt.TameB fns ptr b
+  | .seq a b  => HStmt.TameB ptr a && HStmt.TameB ptr b
+  | .forN _ b => HStmt.TameB ptr b
+  | .call b   => HStmt.TameB ptr b
 
 /-- A launch-free instruction list contributes nothing to the count. -/
-theorem launchCallCount_zero (fns : List Callee) : ∀ (is : List Inst),
-    (∀ i ∈ is, isLaunchCallB fns i = false) → launchCallCount fns is = 0 := by
+theorem launchCallCount_zero : ∀ (is : List Inst),
+    (∀ i ∈ is, isLaunchCallB i = false) → launchCallCount is = 0 := by
   intro is
   induction is with
   | nil => intro _; rfl
   | cons i is ih =>
       intro h
-      show (if isLaunchCallB fns i then 1 else 0) + launchCallCount fns is = 0
+      show (if isLaunchCallB i then 1 else 0) + launchCallCount is = 0
       rw [h i (List.mem_cons_self ..), ih (fun j hj => h j (List.mem_cons_of_mem i hj))]
       rfl
 
@@ -803,43 +803,43 @@ def HCfg.setCtr (c : HCfg) (v : Val) (k : Nat) : HCfg :=
     `root` is the descriptor pointer every fixed layout slot is measured from,
     exactly as in `Clif.bindAt`: a bind array that does not sit at `root`
     resolves to `none` rather than to some other base's array. -/
-def hstep (fns : List Callee) (root : Nat) (P : List HI) (c : HCfg) : Option HCfg :=
+def hstep (root : Nat) (P : List HI) (c : HCfg) : Option HCfg :=
   match P[c.pc]? with
   | none => none
   | some (.inst i) =>
       some { c with pc := c.pc + 1
                     env := stepPure c.env i
                     mem := stepMem c.env c.mem i
-                    trace := c.trace ++ (launchAt fns c.env i).toList
+                    trace := c.trace ++ (launchAt c.env i).toList
                     btrace := c.btrace ++
-                      (if isLaunchCallB fns i then [bindAt fns root ⟨c.env, c.mem⟩ i] else []) }
+                      (if isLaunchCallB i then [bindAt root ⟨c.env, c.mem⟩ i] else []) }
   | some (.jmp t) => some { c with pc := t }
   | some (.setC v k) => some { (c.setCtr v k) with pc := c.pc + 1 }
   | some (.incC v) => some { (c.setCtr v (c.ctr v.id + 1)) with pc := c.pc + 1 }
   | some (.jmpLt v bound t f) =>
       some { c with pc := if c.ctr v.id < bound then t else f }
 
-def hsteps (fns : List Callee) (root : Nat) (P : List HI) : Nat → HCfg → Option HCfg
+def hsteps (root : Nat) (P : List HI) : Nat → HCfg → Option HCfg
   | 0,     c => some c
-  | k + 1, c => match hstep fns root P c with
+  | k + 1, c => match hstep root P c with
                 | none    => none
-                | some c' => hsteps fns root P k c'
+                | some c' => hsteps root P k c'
 
 /-- Fuel composes, so a program's trace is its parts' traces in order.  The
     host analogue of `steps_add`. -/
-theorem hsteps_add (fns : List Callee) (root : Nat) (P : List HI) :
+theorem hsteps_add (root : Nat) (P : List HI) :
     ∀ (a b : Nat) (c : HCfg),
-      hsteps fns root P (a + b) c
-        = match hsteps fns root P a c with
+      hsteps root P (a + b) c
+        = match hsteps root P a c with
           | none => none
-          | some c' => hsteps fns root P b c' := by
+          | some c' => hsteps root P b c' := by
   intro a
   induction a with
   | zero => intro b c; simp [hsteps]
   | succ a ih =>
       intro b c
       rw [Nat.succ_add]
-      cases h : hstep fns root P c with
+      cases h : hstep root P c with
       | none => simp [hsteps, h]
       | some c' => simp [hsteps, h, ih b c']
 
@@ -851,7 +851,7 @@ theorem hsteps_add (fns : List Callee) (root : Nat) (P : List HI) :
     pointers are `ptr + offset`, the rest constants.  The array those eleven
     instructions point at is filled by `emitBinds`, which runs first;
     `emitLaunch` is the two together. -/
-def emitLaunchCall (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchStep) :
+def emitLaunchCall (fnLaunch : Callee) (ptr : Val) (n : Nat) (s : LaunchStep) :
     Nat × List Inst :=
   let kOff : Val := ⟨n⟩;   let kPtr : Val := ⟨n+1⟩
   let nB   : Val := ⟨n+2⟩; let bOff : Val := ⟨n+3⟩; let bPtr : Val := ⟨n+4⟩
@@ -933,7 +933,7 @@ def emitBinds (ptr : Val) (bindOff : Nat) : Nat → Nat → List ExternArg → N
     `Clif.scanBlock` turns into the record, and `emitBinds`'s stores are what
     `Clif.bindsAt?` turns into the contents, and the two passes must see the
     same fragment for the pair to mean anything. -/
-def emitLaunch (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchStep) :
+def emitLaunch (fnLaunch : Callee) (ptr : Val) (n : Nat) (s : LaunchStep) :
     Nat × List Inst :=
   let b := emitBinds ptr s.bindOff n 0 s.binds
   let c := emitLaunchCall fnLaunch ptr b.1 s
@@ -1447,7 +1447,7 @@ theorem emitBinds_recovers (ptr : Val) (bindOff : Nat) (as : List ExternArg)
     `forN` emits a genuine loop: counter init, guard, body, increment, back
     edge.  The body appears **once**, exactly as the
     generator emits it.  Nothing is unrolled; the *trace* is what repeats. -/
-def flatHI (fnLaunch : FnRef) (ptr : Val) : Nat → Nat → HStmt → Nat × List HI
+def flatHI (fnLaunch : Callee) (ptr : Val) : Nat → Nat → HStmt → Nat × List HI
   | n, _, .skip     => (n, [])
   | n, _, .prim is  => (n, is.map HI.inst)
   | n, _, .extern es =>
@@ -1469,10 +1469,10 @@ def flatHI (fnLaunch : FnRef) (ptr : Val) : Nat → Nat → HStmt → Nat × Lis
         ++ [ HI.incC c, HI.jmp (p + 1) ] )
 
 /-- Shorthands, so statements name the fragment rather than a projection. -/
-def code (fnLaunch : FnRef) (ptr : Val) (n p : Nat) (s : HStmt) : List HI :=
+def code (fnLaunch : Callee) (ptr : Val) (n p : Nat) (s : HStmt) : List HI :=
   (flatHI fnLaunch ptr n p s).2
 
-def nextId (fnLaunch : FnRef) (ptr : Val) (n p : Nat) (s : HStmt) : Nat :=
+def nextId (fnLaunch : Callee) (ptr : Val) (n p : Nat) (s : HStmt) : Nat :=
   (flatHI fnLaunch ptr n p s).1
 
 /-- The compiled fragment really sits at `p` inside the whole program `P`.
@@ -1508,14 +1508,14 @@ theorem Fits.right {P : List HI} {p : Nat} {L₁ L₂ : List HI}
     *machine* accumulates over a launch-free-or-not straight line is the list
     the *static scan* of that same straight line produces.  Control flow is what
     makes the two diverge, and control flow is handled separately below. -/
-theorem hsteps_insts (fns : List Callee) (root : Nat) (P : List HI) :
+theorem hsteps_insts (root : Nat) (P : List HI) :
     ∀ (is : List Inst) (p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
       (tr : List LaunchRec) (btr : List OpBinds),
       Fits P p (is.map HI.inst) →
-      hsteps fns root P is.length ⟨p, e, sm, ct, tr, btr⟩
+      hsteps root P is.length ⟨p, e, sm, ct, tr, btr⟩
         = some ⟨p + is.length, evalPure e is, (bevalPure ⟨e, sm⟩ is).mem, ct,
-                tr ++ (scanBlock fns e is).2,
-                btr ++ (bindScan fns root ⟨e, sm⟩ is).2⟩ := by
+                tr ++ (scanBlock e is).2,
+                btr ++ (bindScan root ⟨e, sm⟩ is).2⟩ := by
   intro is
   induction is with
   | nil =>
@@ -1526,10 +1526,10 @@ theorem hsteps_insts (fns : List Callee) (root : Nat) (P : List HI) :
       have h0 : P[p]? = some (HI.inst i) := by
         have := h 0 (by simp)
         simpa using this
-      have hf : hstep fns root P ⟨p, e, sm, ct, tr, btr⟩
+      have hf : hstep root P ⟨p, e, sm, ct, tr, btr⟩
           = some ⟨p + 1, stepPure e i, stepMem e sm i, ct,
-                  tr ++ (launchAt fns e i).toList,
-                  btr ++ (if isLaunchCallB fns i then [bindAt fns root ⟨e, sm⟩ i] else [])⟩ := by
+                  tr ++ (launchAt e i).toList,
+                  btr ++ (if isLaunchCallB i then [bindAt root ⟨e, sm⟩ i] else [])⟩ := by
         show (match P[p]? with
               | none => none
               | some (.inst i) => _
@@ -1543,15 +1543,15 @@ theorem hsteps_insts (fns : List Callee) (root : Nat) (P : List HI) :
         have := h (j + 1) (by simpa using Nat.succ_lt_succ hj)
         rw [show p + (j + 1) = p + 1 + j by omega] at this
         simpa using this
-      show (match hstep fns root P ⟨p, e, sm, ct, tr, btr⟩ with
+      show (match hstep root P ⟨p, e, sm, ct, tr, btr⟩ with
             | none => none
-            | some c' => hsteps fns root P is.length c') = _
+            | some c' => hsteps root P is.length c') = _
       rw [hf]
-      show hsteps fns root P is.length
-            ⟨p + 1, stepPure e i, stepMem e sm i, ct, tr ++ (launchAt fns e i).toList,
-             btr ++ (if isLaunchCallB fns i then [bindAt fns root ⟨e, sm⟩ i] else [])⟩ = _
-      rw [ih (p + 1) (stepPure e i) (stepMem e sm i) ct (tr ++ (launchAt fns e i).toList)
-            (btr ++ (if isLaunchCallB fns i then [bindAt fns root ⟨e, sm⟩ i] else [])) h']
+      show hsteps root P is.length
+            ⟨p + 1, stepPure e i, stepMem e sm i, ct, tr ++ (launchAt e i).toList,
+             btr ++ (if isLaunchCallB i then [bindAt root ⟨e, sm⟩ i] else [])⟩ = _
+      rw [ih (p + 1) (stepPure e i) (stepMem e sm i) ct (tr ++ (launchAt e i).toList)
+            (btr ++ (if isLaunchCallB i then [bindAt root ⟨e, sm⟩ i] else [])) h']
       show some (HCfg.mk (p + 1 + is.length) _ _ _ ((tr ++ _) ++ _) ((btr ++ _) ++ _)) = _
       rw [show p + 1 + is.length = p + (is.length + 1) from by omega,
           List.append_assoc, List.append_assoc]
@@ -1569,7 +1569,7 @@ theorem env_set_eq (e : Env) (v w : Val) (x : SymVal) (h : w.id = v.id) :
 
 /-- The base pointer survives a launch fragment untouched — it is allocated
     below the fragment's watermark, which is exactly what `ptr.id < n` says. -/
-theorem emitLaunchCall_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchStep)
+theorem emitLaunchCall_frame (fnLaunch : Callee) (ptr : Val) (n : Nat) (s : LaunchStep)
     (e : Env) (w : Val) (hw : w.id < n) :
     evalPure e (emitLaunchCall fnLaunch ptr n s).2 w = e w := by
   have hw0 : (w.id = n) = False := by simp only [eq_iff_iff, iff_false]; omega
@@ -1584,11 +1584,11 @@ theorem emitLaunchCall_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : Launc
     twelve CLIF instructions, and the record `Clif.launchesOf` reads back out of
     them all agree.  It needs `e ptr = unknown` — the base pointer is a runtime
     input — and `ptr.id < n`, so the fragment's temporaries cannot shadow it. -/
-theorem emitLaunchCall_scan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
+theorem emitLaunchCall_scan (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch")
     (n : Nat) (s : LaunchStep) (e : Env) (hwf : s.WellFormedB = true)
     (hptr : ptr.id < n) (he : e ptr = .unknown) :
-    (scanBlock fns e (emitLaunchCall fnLaunch ptr n s).2).2 = [s.toRec] := by
+    (scanBlock e (emitLaunchCall fnLaunch ptr n s).2).2 = [s.toRec] := by
   have hkO : litOk .i64 (s.ptxOff : Int) = true := by
     simpa only [Int.ofNat_eq_natCast] using s.wf_ptxOff hwf
   have hnB : litOk .i32 (s.nBufs : Int) = true := by
@@ -1608,7 +1608,7 @@ theorem emitLaunchCall_scan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
   have hpz : (ptr.id = n) = False := by simp only [eq_iff_iff, iff_false]; omega
   have hpk : ∀ a : Nat, ((ptr.id = n + a) = False) := by
     intro a; simp only [eq_iff_iff, iff_false]; omega
-  show (scanBlock fns e [_, _, _, _, _, _, _, _, _, _, _, _]).2 = _
+  show (scanBlock e [_, _, _, _, _, _, _, _, _, _, _, _]).2 = _
   simp [scanBlock, launchAt, stepPure, Env.set_apply, addSym, hfn, LaunchStep.toRec,
         SymVal.offsetOf?, hpz, hpk, he, launchNames, Int.ofNat_eq_natCast,
         constLit_eq hkO, constLit_eq hnB, constLit_eq hbO,
@@ -1616,15 +1616,15 @@ theorem emitLaunchCall_scan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
 
 -- ── The whole launch: array plus call ──────────────────────────────────────
 
-theorem emitLaunch_next (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchStep) :
+theorem emitLaunch_next (fnLaunch : Callee) (ptr : Val) (n : Nat) (s : LaunchStep) :
     (emitLaunch fnLaunch ptr n s).1 = (emitBinds ptr s.bindOff n 0 s.binds).1 + 11 := rfl
 
-theorem emitLaunch_le (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchStep) :
+theorem emitLaunch_le (fnLaunch : Callee) (ptr : Val) (n : Nat) (s : LaunchStep) :
     n ≤ (emitLaunch fnLaunch ptr n s).1 := by
   have := (emitBinds_props ptr s.bindOff s.binds n 0).1
   rw [emitLaunch_next]; omega
 
-theorem emitLaunch_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchStep)
+theorem emitLaunch_frame (fnLaunch : Callee) (ptr : Val) (n : Nat) (s : LaunchStep)
     (e : Env) (w : Val) (hw : w.id < n) :
     evalPure e (emitLaunch fnLaunch ptr n s).2 w = e w := by
   have hb := (emitBinds_props ptr s.bindOff s.binds n 0).1
@@ -1637,18 +1637,18 @@ theorem emitLaunch_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchSte
 /-- **A launch fragment scans to exactly the record it was emitted from.**  The
     bind stores in front of the call contribute nothing to `scanBlock` — they
     are not calls — so this is the same fact it always was. -/
-theorem emitLaunch_scan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
+theorem emitLaunch_scan (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch")
     (n : Nat) (s : LaunchStep) (e : Env) (hwf : s.WellFormedB = true)
     (hptr : ptr.id < n) (he : e ptr = .unknown) :
-    (scanBlock fns e (emitLaunch fnLaunch ptr n s).2).2 = [s.toRec] := by
+    (scanBlock e (emitLaunch fnLaunch ptr n s).2).2 = [s.toRec] := by
   have hb := (emitBinds_props ptr s.bindOff s.binds n 0).1
-  show (scanBlock fns e ((emitBinds ptr s.bindOff n 0 s.binds).2
+  show (scanBlock e ((emitBinds ptr s.bindOff n 0 s.binds).2
           ++ (emitLaunchCall fnLaunch ptr (emitBinds ptr s.bindOff n 0 s.binds).1 s).2)).2 = _
   rw [scanBlock_append,
-      scanBlock_noCalls fns _ e (fun i hi => (emitBinds_props ptr s.bindOff s.binds n 0).2.2 i hi),
+      scanBlock_noCalls _ e (fun i hi => (emitBinds_props ptr s.bindOff s.binds n 0).2.2 i hi),
       List.nil_append,
-      emitLaunchCall_scan fns fnLaunch ptr hfn _ s _ hwf (by omega)
+      emitLaunchCall_scan fnLaunch ptr hfn _ s _ hwf (by omega)
         (by rw [emitBinds_frame ptr s.bindOff s.binds n 0 e ptr hptr]; exact he)]
 
 set_option maxRecDepth 12000 in
@@ -1659,12 +1659,12 @@ set_option maxRecDepth 12000 in
     the composition theorem had to be handed the recovered list.  Now the
     fragment writes them and this reads them back — the same fragment, two
     passes, one answer. -/
-theorem emitLaunch_bindScan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
+theorem emitLaunch_bindScan (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch")
     (n : Nat) (s : LaunchStep) (e : Env) (m : StoreMap)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
     (hwf : s.WellFormedB = true) (hfar : FarOk e ptr n s.binds) :
-    (bindScan fns ptr.id ⟨e, m⟩ (emitLaunch fnLaunch ptr n s).2).2 = [s.toBinds] := by
+    (bindScan ptr.id ⟨e, m⟩ (emitLaunch fnLaunch ptr n s).2).2 = [s.toBinds] := by
   have hb := (emitBinds_props ptr s.bindOff s.binds n 0).1
   have hnb : s.nBufs = s.binds.length := s.wf_arity hwf
   have hbo : s.bindOff + 4 * s.binds.length < 2147483648 := s.wf_bindSum hwf
@@ -1673,10 +1673,10 @@ theorem emitLaunch_bindScan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
   have henv : (bevalPure ⟨e, m⟩ (emitBinds ptr s.bindOff n 0 s.binds).2).env ptr
                 = SymVal.unknown := by
     rw [bevalPure_env, emitBinds_frame ptr s.bindOff s.binds n 0 e ptr hptr]; exact he
-  show (bindScan fns ptr.id ⟨e, m⟩ ((emitBinds ptr s.bindOff n 0 s.binds).2
+  show (bindScan ptr.id ⟨e, m⟩ ((emitBinds ptr s.bindOff n 0 s.binds).2
           ++ (emitLaunchCall fnLaunch ptr (emitBinds ptr s.bindOff n 0 s.binds).1 s).2)).2 = _
   rw [bindScan_append,
-      bindScan_noCalls fns ptr.id _ _
+      bindScan_noCalls ptr.id _ _
         (fun i hi => (emitBinds_props ptr s.bindOff s.binds n 0).2.2 i hi),
       List.nil_append, bindScan_state]
   -- the call's own eleven instructions are pure address arithmetic
@@ -1684,7 +1684,7 @@ theorem emitLaunch_bindScan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     simp only [eq_iff_iff, iff_false]; omega
   have hpk : ∀ a : Nat, ((ptr.id = (emitBinds ptr s.bindOff n 0 s.binds).1 + a) = False) := by
     intro a; simp only [eq_iff_iff, iff_false]; omega
-  show (bindScan fns ptr.id (bevalPure ⟨e, m⟩ (emitBinds ptr s.bindOff n 0 s.binds).2)
+  show (bindScan ptr.id (bevalPure ⟨e, m⟩ (emitBinds ptr s.bindOff n 0 s.binds).2)
           [_, _, _, _, _, _, _, _, _, _, _, _]).2 = _
   have hkO : litOk .i64 (s.ptxOff : Int) = true := by
     simpa only [Int.ofNat_eq_natCast] using s.wf_ptxOff hwf
@@ -1709,43 +1709,43 @@ theorem emitLaunch_bindScan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
 -- Single control-flow transitions
 -- ---------------------------------------------------------------------------
 
-theorem hsteps_one (fns : List Callee) (root : Nat) (P : List HI) (c : HCfg) :
-    hsteps fns root P 1 c = hstep fns root P c := by
-  cases h : hstep fns root P c <;> simp [hsteps, h]
+theorem hsteps_one (root : Nat) (P : List HI) (c : HCfg) :
+    hsteps root P 1 c = hstep root P c := by
+  cases h : hstep root P c <;> simp [hsteps, h]
 
 /-- Chaining: `a` steps then `b` steps.  The form the compositional cases are
     written in, so a program's run is assembled from its fragments' runs. -/
-theorem hsteps_trans (fns : List Callee) (root : Nat) (P : List HI) (a b : Nat) (c c' c'' : HCfg)
-    (h1 : hsteps fns root P a c = some c') (h2 : hsteps fns root P b c' = some c'') :
-    hsteps fns root P (a + b) c = some c'' := by
+theorem hsteps_trans (root : Nat) (P : List HI) (a b : Nat) (c c' c'' : HCfg)
+    (h1 : hsteps root P a c = some c') (h2 : hsteps root P b c' = some c'') :
+    hsteps root P (a + b) c = some c'' := by
   rw [hsteps_add, h1]; exact h2
 
-theorem hstep_setC (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_setC (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds)
     (v : Val) (m : Nat)
     (h : P[q]? = some (HI.setC v m)) :
-    hstep fns root P ⟨q, e, sm, ct, tr, btr⟩
+    hstep root P ⟨q, e, sm, ct, tr, btr⟩
       = some ⟨q + 1, e, sm, fun w => if w = v.id then m else ct w, tr, btr⟩ := by
   simp only [hstep, h, HCfg.setCtr]
 
-theorem hstep_incC (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_incC (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds) (v : Val)
     (h : P[q]? = some (HI.incC v)) :
-    hstep fns root P ⟨q, e, sm, ct, tr, btr⟩
+    hstep root P ⟨q, e, sm, ct, tr, btr⟩
       = some ⟨q + 1, e, sm, fun w => if w = v.id then ct v.id + 1 else ct w, tr, btr⟩ := by
   simp only [hstep, h, HCfg.setCtr]
 
-theorem hstep_jmp (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_jmp (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds) (t : Nat)
     (h : P[q]? = some (HI.jmp t)) :
-    hstep fns root P ⟨q, e, sm, ct, tr, btr⟩ = some ⟨t, e, sm, ct, tr, btr⟩ := by
+    hstep root P ⟨q, e, sm, ct, tr, btr⟩ = some ⟨t, e, sm, ct, tr, btr⟩ := by
   simp only [hstep, h]
 
-theorem hstep_jmpLt (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_jmpLt (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds)
     (v : Val) (bd t f : Nat)
     (h : P[q]? = some (HI.jmpLt v bd t f)) :
-    hstep fns root P ⟨q, e, sm, ct, tr, btr⟩
+    hstep root P ⟨q, e, sm, ct, tr, btr⟩
       = some ⟨if ct v.id < bd then t else f, e, sm, ct, tr, btr⟩ := by
   simp only [hstep, h]
 
@@ -1756,7 +1756,7 @@ theorem hstep_jmpLt (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e 
 /-- The SSA watermark never moves down, so a statement's temporaries always sit
     above everything compiled before it — which is what keeps `ptr.id < n` true
     all the way through a sequence. -/
-theorem flatHI_mono (fnLaunch : FnRef) (ptr : Val) :
+theorem flatHI_mono (fnLaunch : Callee) (ptr : Val) :
     ∀ (s : HStmt) (n p : Nat), n ≤ nextId fnLaunch ptr n p s := by
   intro s
   induction s with
@@ -1794,15 +1794,15 @@ theorem flatHI_mono (fnLaunch : FnRef) (ptr : Val) :
     Preconditions are the two the compiler's own convention supplies: the base
     pointer is a runtime input (`e ptr = unknown`) allocated below the
     fragment's watermark (`ptr.id < n`). -/
-theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI) :
+theorem flatHI_sound (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") (P : List HI) :
     ∀ (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
       (tr : List LaunchRec) (btr : List OpBinds),
-      ptr.id < n → e ptr = SymVal.unknown → HStmt.TameB fns ptr s = true →
+      ptr.id < n → e ptr = SymVal.unknown → HStmt.TameB ptr s = true →
       FarOk e ptr n s.farArgs →
       (∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests) →
       Fits P p (code fnLaunch ptr n p s) →
-      ∃ k c', hsteps fns ptr.id P k ⟨p, e, sm, ct, tr, btr⟩ = some c'
+      ∃ k c', hsteps ptr.id P k ⟨p, e, sm, ct, tr, btr⟩ = some c'
         ∧ c'.pc = p + (code fnLaunch ptr n p s).length
         ∧ c'.trace = tr ++ s.launches
         ∧ c'.btrace = btr ++ s.binds
@@ -1817,53 +1817,53 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
              by simp [HStmt.binds], fun _ _ _ => rfl, he, fun _ _ => rfl⟩
   | prim is =>
       intro n p e sm ct tr btr _ he htame _ _ hfit
-      have hall : ∀ i ∈ is, Inst.TameB fns ptr i = true := by
+      have hall : ∀ i ∈ is, Inst.TameB ptr i = true := by
         simpa [HStmt.TameB, List.all_eq_true] using htame
-      have hzero : launchCallCount fns is = 0 :=
-        launchCallCount_zero fns is (fun i hi => tame_noLaunch fns ptr i (hall i hi))
-      refine ⟨is.length, _, hsteps_insts fns ptr.id P is p e sm ct tr btr hfit,
+      have hzero : launchCallCount is = 0 :=
+        launchCallCount_zero is (fun i hi => tame_noLaunch ptr i (hall i hi))
+      refine ⟨is.length, _, hsteps_insts ptr.id P is p e sm ct tr btr hfit,
               ?_, ?_, ?_, ?_, ?_, fun _ _ => rfl⟩
       · show p + is.length = p + (is.map HI.inst).length
         rw [List.length_map]
-      · show tr ++ (scanBlock fns e is).2 = tr ++ []
-        rw [scanBlock_noLaunch fns is e hzero]
-      · show btr ++ (bindScan fns ptr.id ⟨e, sm⟩ is).2 = btr ++ []
-        rw [bindScan_noLaunch fns ptr.id is ⟨e, sm⟩ hzero]
+      · show tr ++ (scanBlock e is).2 = tr ++ []
+        rw [scanBlock_noLaunch is e hzero]
+      · show btr ++ (bindScan ptr.id ⟨e, sm⟩ is).2 = btr ++ []
+        rw [bindScan_noLaunch ptr.id is ⟨e, sm⟩ hzero]
       · intro w _ hnd
         show evalPure e is w = e w
         exact evalPure_frame is e w (fun i hi d hd => by
           intro hEq
           exact hnd (List.mem_filterMap.mpr ⟨i, hi, by rw [hd]; simpa using hEq.symm⟩))
       · show evalPure e is ptr = SymVal.unknown
-        rw [evalPure_frame is e ptr (fun i hi d hd => tame_noWrite fns ptr i (hall i hi) d hd)]
+        rw [evalPure_frame is e ptr (fun i hi d hd => tame_noWrite ptr i (hall i hi) d hd)]
         exact he
   | launch st =>
       intro n p e sm ct tr btr hptr he htame hfar _ hfit
       have hwf : st.WellFormedB = true := htame
       refine ⟨(emitLaunch fnLaunch ptr n st).2.length, _,
-              hsteps_insts fns ptr.id P (emitLaunch fnLaunch ptr n st).2 p e sm ct tr btr hfit,
+              hsteps_insts ptr.id P (emitLaunch fnLaunch ptr n st).2 p e sm ct tr btr hfit,
               ?_, ?_, ?_, ?_, ?_, fun _ _ => rfl⟩
       · show p + (emitLaunch fnLaunch ptr n st).2.length
             = p + ((emitLaunch fnLaunch ptr n st).2.map HI.inst).length
         rw [List.length_map]
-      · show tr ++ (scanBlock fns e (emitLaunch fnLaunch ptr n st).2).2 = tr ++ [st.toRec]
-        rw [emitLaunch_scan fns fnLaunch ptr hfn n st e hwf hptr he]
-      · show btr ++ (bindScan fns ptr.id ⟨e, sm⟩ (emitLaunch fnLaunch ptr n st).2).2
+      · show tr ++ (scanBlock e (emitLaunch fnLaunch ptr n st).2).2 = tr ++ [st.toRec]
+        rw [emitLaunch_scan fnLaunch ptr hfn n st e hwf hptr he]
+      · show btr ++ (bindScan ptr.id ⟨e, sm⟩ (emitLaunch fnLaunch ptr n st).2).2
             = btr ++ [st.toBinds]
-        rw [emitLaunch_bindScan fns fnLaunch ptr hfn n st e sm hptr he hwf hfar]
+        rw [emitLaunch_bindScan fnLaunch ptr hfn n st e sm hptr he hwf hfar]
       · intro w hw _
         exact emitLaunch_frame fnLaunch ptr n st e w hw
       · show evalPure e (emitLaunch fnLaunch ptr n st).2 ptr = SymVal.unknown
         rw [emitLaunch_frame fnLaunch ptr n st e ptr hptr]; exact he
   | extern es =>
       intro n p e sm ct tr btr hptr he htame hfar _ hfit
-      have h3 : (((fnNameOf fns es.fn == some es.name) = true
+      have h3 : (((fnNameOf es.fn == some es.name) = true
                 ∧ decide (es.name ∈ deviceWriterNames) = true)
                 ∧ (!decide (es.name ∈ launchNames)) = true)
                 ∧ es.argv.all ExternArg.LitOkB = true := by
         simp only [HStmt.TameB, Bool.and_eq_true] at htame
         exact ⟨⟨⟨htame.1.1.1, htame.1.1.2⟩, htame.1.2⟩, htame.2⟩
-      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1.1
+      have hnm : fnNameOf es.fn = some es.name := by simpa using h3.1.1.1
       have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.1.2
       have hl  : es.name ∉ launchNames := by simpa using h3.1.2
       have hff : FarOk e ptr n es.argv := hfar
@@ -1875,34 +1875,34 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
           rcases hc with h | h <;> simp [launchNames, h])
       refine ⟨((emitArgs ptr n es.argv).2.1
                  ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2]).length, _,
-              hsteps_insts fns ptr.id P _ p e sm ct tr btr hfit, ?_, ?_, ?_, ?_, ?_,
+              hsteps_insts ptr.id P _ p e sm ct tr btr hfit, ?_, ?_, ?_, ?_, ?_,
               fun _ _ => rfl⟩
       · show p + _ = p + (List.map HI.inst _).length
         rw [List.length_map]
       · -- the recovered record is the declared one, arguments included
-        show tr ++ (scanBlock fns e ((emitArgs ptr n es.argv).2.1
+        show tr ++ (scanBlock e ((emitArgs ptr n es.argv).2.1
                       ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2])).2
             = tr ++ [es.toRec]
         rw [scanBlock_append,
-            scanBlock_noCalls fns _ e (fun i hi => (emitArgs_props ptr es.argv n).2.2 i hi),
+            scanBlock_noCalls _ e (fun i hi => (emitArgs_props ptr es.argv n).2.2 i hi),
             List.nil_append]
-        show tr ++ ((launchAt fns (evalPure e (emitArgs ptr n es.argv).2.1)
+        show tr ++ ((launchAt (evalPure e (emitArgs ptr n es.argv).2.1)
                       (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)).toList ++ []) = _
         simp only [launchAt, hnm, if_neg hl, if_pos hw, Option.toList,
                    List.append_nil, ExternStep.toRec]
         rw [emitArgs_desc ptr es.argv n e hff hlit hptr he]
       · -- **…and so are its buffers**, base-aware, which is the new half
-        show btr ++ (bindScan fns ptr.id ⟨e, sm⟩ ((emitArgs ptr n es.argv).2.1
+        show btr ++ (bindScan ptr.id ⟨e, sm⟩ ((emitArgs ptr n es.argv).2.1
                       ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2])).2
             = btr ++ [es.toBinds]
         rw [bindScan_append,
-            bindScan_noLaunch fns ptr.id _ ⟨e, sm⟩
-              (launchCallCount_zero fns _ (fun i hi => by
+            bindScan_noLaunch ptr.id _ ⟨e, sm⟩
+              (launchCallCount_zero _ (fun i hi => by
                 have := (emitArgs_props ptr es.argv n).2.2 i hi
                 cases i <;> simp_all [Inst.isCallB, isLaunchCallB])),
             List.nil_append, bindScan_state]
-        show btr ++ ((if isLaunchCallB fns (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
-                      then [bindAt fns ptr.id (bevalPure ⟨e, sm⟩ (emitArgs ptr n es.argv).2.1)
+        show btr ++ ((if isLaunchCallB (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
+                      then [bindAt ptr.id (bevalPure ⟨e, sm⟩ (emitArgs ptr n es.argv).2.1)
                               (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)]
                       else []) ++ []) = _
         simp only [isLaunchCallB, bindAt, hnm, if_neg hpl, if_pos hw, List.append_nil,
@@ -2011,7 +2011,7 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
       have ihb : ∀ (e' : Env) (sm' : StoreMap) (ct' : Nat → Nat) (tr' : List LaunchRec)
           (btr' : List OpBinds),
           e' ptr = SymVal.unknown → FarOk e' ptr (n + 1) b.farArgs →
-          ∃ j c', hsteps fns ptr.id P j ⟨p + 2, e', sm', ct', tr', btr'⟩ = some c'
+          ∃ j c', hsteps ptr.id P j ⟨p + 2, e', sm', ct', tr', btr'⟩ = some c'
             ∧ c'.pc = p + 2 + cb.length
             ∧ c'.trace = tr' ++ b.launches
             ∧ c'.btrace = btr' ++ b.binds
@@ -2036,7 +2036,7 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
           ∀ (e' : Env) (sm' : StoreMap) (ct' : Nat → Nat) (tr' : List LaunchRec)
             (btr' : List OpBinds),
             e' ptr = SymVal.unknown → FarOk e' ptr (n + 1) b.farArgs → ct' n = i →
-            ∃ j c', hsteps fns ptr.id P j ⟨p + 1, e', sm', ct', tr', btr'⟩ = some c'
+            ∃ j c', hsteps ptr.id P j ⟨p + 1, e', sm', ct', tr', btr'⟩ = some c'
               ∧ c'.pc = p + (cb.length + 4)
               ∧ c'.trace = tr' ++ (List.replicate m b.launches).flatten
               ∧ c'.btrace = btr' ++ (List.replicate m b.binds).flatten
@@ -2050,14 +2050,14 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
             refine ⟨1, ⟨p + cb.length + 4, e', sm', ct', tr', btr'⟩, ?_,
                     show p + cb.length + 4 = p + (cb.length + 4) by omega,
                     by simp, by simp, fun _ _ _ => rfl, he', fun _ _ => rfl⟩
-            rw [hsteps_one, hstep_jmpLt fns ptr.id P (p + 1) e' sm' ct' tr' btr' ⟨n⟩ kk _ _ hP1]
+            rw [hsteps_one, hstep_jmpLt ptr.id P (p + 1) e' sm' ct' tr' btr' ⟨n⟩ kk _ _ hP1]
             simp only [hct', if_neg (by omega : ¬ (i < kk))]
         | succ m ihm =>
             intro i hik e' sm' ct' tr' btr' he' hfar' hct'
             -- guard: still iterations left, so enter the body
-            have hgo : hstep fns ptr.id P ⟨p + 1, e', sm', ct', tr', btr'⟩
+            have hgo : hstep ptr.id P ⟨p + 1, e', sm', ct', tr', btr'⟩
                 = some ⟨p + 2, e', sm', ct', tr', btr'⟩ := by
-              rw [hstep_jmpLt fns ptr.id P (p + 1) e' sm' ct' tr' btr' ⟨n⟩ kk _ _ hP1]
+              rw [hstep_jmpLt ptr.id P (p + 1) e' sm' ct' tr' btr' ⟨n⟩ kk _ _ hP1]
               simp only [hct', if_pos (by omega : i < kk)]
             obtain ⟨jb, c₁, hrb, hpcb, htrb, hbtb, hfrb, henb, hctb⟩ :=
               ihb e' sm' ct' tr' btr' he' hfar'
@@ -2069,15 +2069,15 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
             have henb' : enb ptr = SymVal.unknown := henb
             have hctb' : ∀ w, w < n + 1 → ctrb w = ct' w := hctb
             -- increment and back edge
-            have hinc : hstep fns ptr.id P ⟨p + 2 + cb.length, enb, smb, ctrb, trcb, btcb⟩
+            have hinc : hstep ptr.id P ⟨p + 2 + cb.length, enb, smb, ctrb, trcb, btcb⟩
                 = some ⟨p + 2 + cb.length + 1, enb, smb,
                         fun w => if w = n then ctrb n + 1 else ctrb w, trcb, btcb⟩ :=
-              hstep_incC fns ptr.id P _ enb smb ctrb trcb btcb ⟨n⟩ hPi
-            have hback : hstep fns ptr.id P ⟨p + 2 + cb.length + 1, enb, smb,
+              hstep_incC ptr.id P _ enb smb ctrb trcb btcb ⟨n⟩ hPi
+            have hback : hstep ptr.id P ⟨p + 2 + cb.length + 1, enb, smb,
                             (fun w => if w = n then ctrb n + 1 else ctrb w), trcb, btcb⟩
                 = some ⟨p + 1, enb, smb,
                         (fun w => if w = n then ctrb n + 1 else ctrb w), trcb, btcb⟩ :=
-              hstep_jmp fns ptr.id P _ enb smb _ trcb btcb (p + 1) hPj
+              hstep_jmp ptr.id P _ enb smb _ trcb btcb (p + 1) hPj
             have hctn : ctrb n = i := by rw [hctb' n (by omega), hct']
             obtain ⟨j₂, c₂, hr₂, hpc₂, htr₂, hbt₂, hfr₂, hen₂, hct₂⟩ :=
               ihm (i + 1) (by omega) enb smb (fun w => if w = n then ctrb n + 1 else ctrb w)
@@ -2085,10 +2085,10 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
                 (hfar'.monoD (Nat.le_refl _) hfd hfrb')
                 (by simp [hctn])
             refine ⟨1 + (jb + (1 + (1 + j₂))), c₂, ?_, hpc₂, ?_, ?_, ?_, hen₂, ?_⟩
-            · exact hsteps_trans fns ptr.id P 1 _ _ _ _ (by rw [hsteps_one]; exact hgo)
-                (hsteps_trans fns ptr.id P jb _ _ _ _ hrb
-                  (hsteps_trans fns ptr.id P 1 _ _ _ _ (by rw [hsteps_one]; exact hinc)
-                    (hsteps_trans fns ptr.id P 1 _ _ _ _ (by rw [hsteps_one]; exact hback) hr₂)))
+            · exact hsteps_trans ptr.id P 1 _ _ _ _ (by rw [hsteps_one]; exact hgo)
+                (hsteps_trans ptr.id P jb _ _ _ _ hrb
+                  (hsteps_trans ptr.id P 1 _ _ _ _ (by rw [hsteps_one]; exact hinc)
+                    (hsteps_trans ptr.id P 1 _ _ _ _ (by rw [hsteps_one]; exact hback) hr₂)))
             · rw [htr₂, htrb', List.append_assoc, List.replicate_succ, List.flatten_cons]
             · rw [hbt₂, hbtb', List.append_assoc, List.replicate_succ, List.flatten_cons]
             · intro w hw hnd
@@ -2098,14 +2098,14 @@ theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
               simp only [if_neg (by omega : ¬ (w = n))]
               exact hctb' w (by omega)
       -- the loop starts with the counter cleared
-      have hstart : hstep fns ptr.id P ⟨p, e, sm, ct, tr, btr⟩
+      have hstart : hstep ptr.id P ⟨p, e, sm, ct, tr, btr⟩
           = some ⟨p + 1, e, sm, fun w => if w = n then 0 else ct w, tr, btr⟩ :=
-        hstep_setC fns ptr.id P p e sm ct tr btr ⟨n⟩ 0 hP0
+        hstep_setC ptr.id P p e sm ct tr btr ⟨n⟩ 0 hP0
       obtain ⟨j, c', hr, hpc, htr, hbt, hfr, hen, hct⟩ :=
         loop kk 0 (by omega) e sm (fun w => if w = n then 0 else ct w) tr btr he
           (hfar.mono (Nat.le_succ n) (fun _ _ => rfl)) (by simp)
       refine ⟨1 + j, c', ?_, ?_, ?_, ?_, ?_, hen, ?_⟩
-      · exact hsteps_trans fns ptr.id P 1 j _ _ _ (by rw [hsteps_one]; exact hstart) hr
+      · exact hsteps_trans ptr.id P 1 j _ _ _ (by rw [hsteps_one]; exact hstart) hr
       · rw [hpc, hlen]
       · rw [htr]; rfl
       · rw [hbt]; rfl
@@ -2144,7 +2144,7 @@ def HStmt.BranchFreeB : HStmt → Bool
 
 /-- **Compile to one block's instructions.**  The same emission `flatHI` uses,
     without the branch machinery — so nothing here is a second code path. -/
-def instsOf (fnLaunch : FnRef) (ptr : Val) : Nat → HStmt → Nat × List Inst
+def instsOf (fnLaunch : Callee) (ptr : Val) : Nat → HStmt → Nat × List Inst
   | n, .skip      => (n, [])
   | n, .prim is   => (n, is)
   | n, .launch s  => emitLaunch fnLaunch ptr n s
@@ -2159,7 +2159,7 @@ def instsOf (fnLaunch : FnRef) (ptr : Val) : Nat → HStmt → Nat × List Inst
   | n, .forN _ _  => (n, [])
 
 /-- The straight-line emitter allocates upward, like `flatHI`. -/
-theorem instsOf_le (fnLaunch : FnRef) (ptr : Val) :
+theorem instsOf_le (fnLaunch : Callee) (ptr : Val) :
     ∀ (s : HStmt) (n : Nat), n ≤ (instsOf fnLaunch ptr n s).1 := by
   intro s
   induction s with
@@ -2175,7 +2175,7 @@ theorem instsOf_le (fnLaunch : FnRef) (ptr : Val) :
     unless one of its `prim` fragments writes it.  The counterpart of
     `flatHI_sound`'s frame conjunct, and what lets a `far` base keep its meaning
     across a sequence. -/
-theorem instsOf_frameAt (fnLaunch : FnRef) (ptr : Val) :
+theorem instsOf_frameAt (fnLaunch : Callee) (ptr : Val) :
     ∀ (s : HStmt) (n : Nat) (e : Env) (w : Val),
       w.id < n → w.id ∉ s.primDests →
       evalPure e (instsOf fnLaunch ptr n s).2 w = e w := by
@@ -2213,58 +2213,58 @@ theorem instsOf_frameAt (fnLaunch : FnRef) (ptr : Val) :
     no branches the two are the same walk.  The base pointer survives, so the
     statement composes: a sequence's second half starts from an environment in
     which `ptr` is still a runtime input. -/
-theorem instsOf_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") :
+theorem instsOf_sound (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") :
     ∀ (s : HStmt) (n : Nat) (e : Env),
-      s.BranchFreeB = true → HStmt.TameB fns ptr s = true →
+      s.BranchFreeB = true → HStmt.TameB ptr s = true →
       FarOk e ptr n s.farArgs →
       (∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests) →
       ptr.id < n → e ptr = SymVal.unknown →
       n ≤ (instsOf fnLaunch ptr n s).1
-      ∧ (scanBlock fns e (instsOf fnLaunch ptr n s).2).2 = s.launches
+      ∧ (scanBlock e (instsOf fnLaunch ptr n s).2).2 = s.launches
       ∧ evalPure e (instsOf fnLaunch ptr n s).2 ptr = SymVal.unknown := by
   intro s
   induction s with
   | skip => intro n e _ _ _ _ _ he; exact ⟨Nat.le_refl n, rfl, he⟩
   | prim is =>
       intro n e _ htame _ _ _ he
-      have hall : ∀ i ∈ is, Inst.TameB fns ptr i = true := by
+      have hall : ∀ i ∈ is, Inst.TameB ptr i = true := by
         simpa [HStmt.TameB, List.all_eq_true] using htame
       refine ⟨Nat.le_refl n, ?_, ?_⟩
-      · show (scanBlock fns e is).2 = []
-        exact scanBlock_noLaunch fns is e
-          (launchCallCount_zero fns is (fun i hi => tame_noLaunch fns ptr i (hall i hi)))
+      · show (scanBlock e is).2 = []
+        exact scanBlock_noLaunch is e
+          (launchCallCount_zero is (fun i hi => tame_noLaunch ptr i (hall i hi)))
       · show evalPure e is ptr = SymVal.unknown
         rw [evalPure_frame is e ptr
-              (fun i hi d hd => tame_noWrite fns ptr i (hall i hi) d hd)]
+              (fun i hi d hd => tame_noWrite ptr i (hall i hi) d hd)]
         exact he
   | launch st =>
       intro n e _ htame _ _ hptr he
       have hwf : st.WellFormedB = true := htame
       refine ⟨emitLaunch_le fnLaunch ptr n st,
-              emitLaunch_scan fns fnLaunch ptr hfn n st e hwf hptr he, ?_⟩
+              emitLaunch_scan fnLaunch ptr hfn n st e hwf hptr he, ?_⟩
       show evalPure e (emitLaunch fnLaunch ptr n st).2 ptr = SymVal.unknown
       rw [emitLaunch_frame fnLaunch ptr n st e ptr hptr]; exact he
   | extern es =>
       intro n e _ htame hfar _ hptr he
-      have h3 : (((fnNameOf fns es.fn == some es.name) = true
+      have h3 : (((fnNameOf es.fn == some es.name) = true
                 ∧ decide (es.name ∈ deviceWriterNames) = true)
                 ∧ (!decide (es.name ∈ launchNames)) = true)
                 ∧ es.argv.all ExternArg.LitOkB = true := by
         simp only [HStmt.TameB, Bool.and_eq_true] at htame
         exact ⟨⟨⟨htame.1.1.1, htame.1.1.2⟩, htame.1.2⟩, htame.2⟩
-      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1.1
+      have hnm : fnNameOf es.fn = some es.name := by simpa using h3.1.1.1
       have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.1.2
       have hl  : es.name ∉ launchNames := by simpa using h3.1.2
       have hff : FarOk e ptr n es.argv := hfar
       have hlit : es.argv.all ExternArg.LitOkB = true := h3.2
       refine ⟨(emitArgs_props ptr es.argv n).1, ?_, ?_⟩
-      · show (scanBlock fns e ((emitArgs ptr n es.argv).2.1
+      · show (scanBlock e ((emitArgs ptr n es.argv).2.1
                 ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2])).2 = [es.toRec]
         rw [scanBlock_append,
-            scanBlock_noCalls fns _ e (fun i hi => (emitArgs_props ptr es.argv n).2.2 i hi),
+            scanBlock_noCalls _ e (fun i hi => (emitArgs_props ptr es.argv n).2.2 i hi),
             List.nil_append]
-        show ((launchAt fns (evalPure e (emitArgs ptr n es.argv).2.1)
+        show ((launchAt (evalPure e (emitArgs ptr n es.argv).2.1)
                 (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)).toList ++ []) = _
         simp only [launchAt, hnm, if_neg hl, if_pos hw, Option.toList,
                    List.append_nil, ExternStep.toRec]
@@ -2295,7 +2295,7 @@ theorem instsOf_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
             (List.mem_append.mpr (Or.inr hc)))
           (Nat.lt_of_lt_of_le hptr hma) hea
       refine ⟨Nat.le_trans hma hmb, ?_, ?_⟩
-      · show (scanBlock fns e ((instsOf fnLaunch ptr n a).2
+      · show (scanBlock e ((instsOf fnLaunch ptr n a).2
                 ++ (instsOf fnLaunch ptr (instsOf fnLaunch ptr n a).1 b).2)).2
             = a.launches ++ b.launches
         rw [scanBlock_append, hsa, hsb]
@@ -2306,14 +2306,13 @@ theorem instsOf_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
   | forN k b _ => intro n e hbf _ _ _; exact absurd hbf (by simp [HStmt.BranchFreeB])
 
 /-- The single CLIF block a branch-free statement compiles to. -/
-def blockOf (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : HStmt) : BlockData :=
+def blockOf (fnLaunch : Callee) (ptr : Val) (n : Nat) (s : HStmt) : BlockData :=
   { ref := ⟨0⟩, params := [(ptr, .i64)], insts := (instsOf fnLaunch ptr n s).2 }
 
 /-- …and the built function containing it. -/
-def stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val) (n : Nat)
+def stateOf (fnLaunch : Callee) (ptr : Val) (n : Nat)
     (s : HStmt) : FuncData :=
-  { index := 0, callees := fns,
-    blocks := [blockOf fnLaunch ptr n s] }
+  { index := 0, blocks := [blockOf fnLaunch ptr n s] }
 
 /-- **What `Clif.launchesOf` reads out of the emitted function is the declared
     sequence.**
@@ -2323,17 +2322,17 @@ def stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val) (n : Nat)
     to reduce `StateT` and closures, which it cannot do; applied to `stateOf`
     it walks a first-order term, and `HStmt.launches` is a structural recursion
     on a small tree.  Same fact, kernel-checkable. -/
-theorem launchesOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
+theorem launchesOf_stateOf (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch")
     (s : HStmt) (n : Nat)
-    (hbf : s.BranchFreeB = true) (htame : HStmt.TameB fns ptr s = true)
+    (hbf : s.BranchFreeB = true) (htame : HStmt.TameB ptr s = true)
     (hfar : FarOk Env.empty ptr n s.farArgs)
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hptr : ptr.id < n) :
-    launchesOf (stateOf fns fnLaunch ptr n s) = s.launches := by
-  have h := instsOf_sound fns fnLaunch ptr hfn s n Env.empty hbf htame
+    launchesOf (stateOf fnLaunch ptr n s) = s.launches := by
+  have h := instsOf_sound fnLaunch ptr hfn s n Env.empty hbf htame
     hfar hfd hptr rfl
-  show ([] ++ (scanBlock fns Env.empty (instsOf fnLaunch ptr n s).2).2) = _
+  show ([] ++ (scanBlock Env.empty (instsOf fnLaunch ptr n s).2).2) = _
   rw [List.nil_append, h.2.1]
 
 -- ---------------------------------------------------------------------------
@@ -2348,36 +2347,36 @@ theorem launchesOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     writes its whole array immediately before its call, so its entries shadow
     whatever a `prim` left behind — which is why this composes across a
     sequence with no invariant threaded through. -/
-theorem instsOf_binds (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") :
+theorem instsOf_binds (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch") :
     ∀ (s : HStmt) (n : Nat) (e : Env) (m : StoreMap),
-      s.BranchFreeB = true → HStmt.TameB fns ptr s = true →
+      s.BranchFreeB = true → HStmt.TameB ptr s = true →
       FarOk e ptr n s.farArgs →
       (∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests) →
       ptr.id < n → e ptr = SymVal.unknown →
-      (bindScan fns ptr.id ⟨e, m⟩ (instsOf fnLaunch ptr n s).2).2 = s.binds := by
+      (bindScan ptr.id ⟨e, m⟩ (instsOf fnLaunch ptr n s).2).2 = s.binds := by
   intro s
   induction s with
   | skip => intro _ _ _ _ _ _ _ _ _; rfl
   | prim is =>
       intro n e m _ htame _ _ _ _
-      have hall : ∀ i ∈ is, Inst.TameB fns ptr i = true := by
+      have hall : ∀ i ∈ is, Inst.TameB ptr i = true := by
         simpa [HStmt.TameB, List.all_eq_true] using htame
-      exact bindScan_noLaunch fns ptr.id is ⟨e, m⟩
-        (launchCallCount_zero fns is (fun i hi => tame_noLaunch fns ptr i (hall i hi)))
+      exact bindScan_noLaunch ptr.id is ⟨e, m⟩
+        (launchCallCount_zero is (fun i hi => tame_noLaunch ptr i (hall i hi)))
   | launch st =>
       intro n e m _ htame hfar _ hptr he
-      exact emitLaunch_bindScan fns fnLaunch ptr hfn n st e m hptr he
+      exact emitLaunch_bindScan fnLaunch ptr hfn n st e m hptr he
         (by simpa [HStmt.TameB] using htame) hfar
   | extern es =>
       intro n e m _ htame hfar _ hptr he
-      have h3 : (((fnNameOf fns es.fn == some es.name) = true
+      have h3 : (((fnNameOf es.fn == some es.name) = true
                 ∧ decide (es.name ∈ deviceWriterNames) = true)
                 ∧ (!decide (es.name ∈ launchNames)) = true)
                 ∧ es.argv.all ExternArg.LitOkB = true := by
         simp only [HStmt.TameB, Bool.and_eq_true] at htame
         exact ⟨⟨⟨htame.1.1.1, htame.1.1.2⟩, htame.1.2⟩, htame.2⟩
-      have hnm : fnNameOf fns es.fn = some es.name := by simpa using h3.1.1.1
+      have hnm : fnNameOf es.fn = some es.name := by simpa using h3.1.1.1
       have hw  : es.name ∈ deviceWriterNames := by simpa using h3.1.1.2
       have hl  : es.name ∉ launchNames := by simpa using h3.1.2
       have hff : FarOk e ptr n es.argv := hfar
@@ -2396,20 +2395,20 @@ theorem instsOf_binds (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
                 = (fun v => bufDescOf ptr.id (evalPure e (emitArgs ptr n es.argv).2.1 v)) from by
               funext v; rw [bevalPure_env]]
         exact emitArgs_buf ptr es.argv n e hff hlit hptr he
-      have hcall : isLaunchCallB fns (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
+      have hcall : isLaunchCallB (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
                     = true := by simp [isLaunchCallB, hnm, hw]
-      have hbind : bindAt fns ptr.id (bevalPure ⟨e, m⟩ (emitArgs ptr n es.argv).2.1)
+      have hbind : bindAt ptr.id (bevalPure ⟨e, m⟩ (emitArgs ptr n es.argv).2.1)
                       (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
                     = es.toBinds := by
         simp only [bindAt, hnm, if_neg hlp, if_pos hw, hmap, ExternStep.toBinds]
-      show (bindScan fns ptr.id ⟨e, m⟩ ((emitArgs ptr n es.argv).2.1
+      show (bindScan ptr.id ⟨e, m⟩ ((emitArgs ptr n es.argv).2.1
               ++ [Inst.call none es.fn (emitArgs ptr n es.argv).2.2])).2 = [es.toBinds]
       rw [bindScan_append,
-          bindScan_noCalls fns ptr.id _ _
+          bindScan_noCalls ptr.id _ _
             (fun i hi => (emitArgs_props ptr es.argv n).2.2 i hi),
           List.nil_append, bindScan_state]
-      show ((if isLaunchCallB fns (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
-              then [bindAt fns ptr.id
+      show ((if isLaunchCallB (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)
+              then [bindAt ptr.id
                       (bevalPure ⟨e, m⟩ (emitArgs ptr n es.argv).2.1)
                       (Inst.call none es.fn (emitArgs ptr n es.argv).2.2)]
               else []) ++ []) = _
@@ -2439,8 +2438,8 @@ theorem instsOf_binds (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
         fun x hx bb hb hc => hfd x (List.mem_append.mpr (Or.inr hx)) bb hb
           (List.mem_append.mpr (Or.inr hc))
       obtain ⟨hma, _, hea⟩ :=
-        instsOf_sound fns fnLaunch ptr hfn a n e hbfa hta hfa hda hptr he
-      show (bindScan fns ptr.id ⟨e, m⟩ ((instsOf fnLaunch ptr n a).2
+        instsOf_sound fnLaunch ptr hfn a n e hbfa hta hfa hda hptr he
+      show (bindScan ptr.id ⟨e, m⟩ ((instsOf fnLaunch ptr n a).2
               ++ (instsOf fnLaunch ptr (instsOf fnLaunch ptr n a).1 b).2)).2
           = a.binds ++ b.binds
       rw [bindScan_append, iha n e m hbfa hta hfa hda hptr he, bindScan_state,
@@ -2453,35 +2452,35 @@ theorem instsOf_binds (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
 
 /-- **What `Clif.bindsOf` reads out of the emitted function is what the
     statement declared it would bind.** -/
-theorem bindsOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
+theorem bindsOf_stateOf (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch")
     (s : HStmt) (n : Nat)
-    (hbf : s.BranchFreeB = true) (htame : HStmt.TameB fns ptr s = true)
+    (hbf : s.BranchFreeB = true) (htame : HStmt.TameB ptr s = true)
     (hfar : FarOk Env.empty ptr n s.farArgs)
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hptr : ptr.id < n) :
-    bindsOf ptr.id (stateOf fns fnLaunch ptr n s) = s.binds := by
-  show ([] ++ (bindScan fns ptr.id BEnv.empty (instsOf fnLaunch ptr n s).2).2) = _
+    bindsOf ptr.id (stateOf fnLaunch ptr n s) = s.binds := by
+  show ([] ++ (bindScan ptr.id BEnv.empty (instsOf fnLaunch ptr n s).2).2) = _
   rw [List.nil_append]
-  exact instsOf_binds fns fnLaunch ptr hfn s n Env.empty [] hbf htame
+  exact instsOf_binds fnLaunch ptr hfn s n Env.empty [] hbf htame
     hfar hfd hptr rfl
 
 /-- **The seam, closed.**  Records *and* the arrays they were handed, both read
     out of the emitted CLIF, both equal to what the host statement declared.
     Downstream this is what lets a plan be matched against the program without
     the bind list arriving from somewhere else. -/
-theorem deviceOpsOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
-    (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
+theorem deviceOpsOf_stateOf (fnLaunch : Callee) (ptr : Val)
+    (hfn : fnNameOf fnLaunch = some "cl_cuda_launch")
     (s : HStmt) (n : Nat)
-    (hbf : s.BranchFreeB = true) (htame : HStmt.TameB fns ptr s = true)
+    (hbf : s.BranchFreeB = true) (htame : HStmt.TameB ptr s = true)
     (hfar : FarOk Env.empty ptr n s.farArgs)
     (hfd : ∀ x ∈ s.farArgs, ∀ b ∈ x.deps, b ∉ s.primDests)
     (hptr : ptr.id < n) :
-    deviceOpsOf ptr.id (stateOf fns fnLaunch ptr n s) = s.deviceOps := by
-  show (launchesOf (stateOf fns fnLaunch ptr n s)).zip
-        (bindsOf ptr.id (stateOf fns fnLaunch ptr n s)) = _
-  rw [launchesOf_stateOf fns fnLaunch ptr hfn s n hbf htame hfar hfd hptr,
-      bindsOf_stateOf fns fnLaunch ptr hfn s n hbf htame hfar hfd hptr]
+    deviceOpsOf ptr.id (stateOf fnLaunch ptr n s) = s.deviceOps := by
+  show (launchesOf (stateOf fnLaunch ptr n s)).zip
+        (bindsOf ptr.id (stateOf fnLaunch ptr n s)) = _
+  rw [launchesOf_stateOf fnLaunch ptr hfn s n hbf htame hfar hfd hptr,
+      bindsOf_stateOf fnLaunch ptr hfn s n hbf htame hfar hfd hptr]
   rfl
 
 -- ---------------------------------------------------------------------------
@@ -2495,9 +2494,7 @@ theorem deviceOpsOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
   loop *and* a call, then the sampling tail.
 -/
 
-def demoFns : List Callee := [.import "cl_cuda_launch"]
-
-def demoLaunch : FnRef := ⟨0⟩
+def demoLaunch : Callee := .ffi .cudaLaunch
 
 /-- The memory base — a block parameter, so unbound in the environment. -/
 def demoPtr : Val := ⟨0⟩
@@ -2546,14 +2543,14 @@ theorem demoDriver_deviceOps_count : demoDriver.deviceOps.length = 267 := by
     The loop body is emitted **once**.  Unrolling twenty-four layers would take
     3204 instructions; this is 172, and executes 267 launches. -/
 theorem demo_trace :
-    ∃ k c', hsteps demoFns demoPtr.id demoCode k
+    ∃ k c', hsteps demoPtr.id demoCode k
               ⟨0, Env.empty, [], fun _ => 0, [], []⟩ = some c'
       ∧ c'.trace = demoDriver.launches
       ∧ c'.trace.length = 267
       ∧ c'.btrace = demoDriver.binds
       ∧ (c'.trace.zip c'.btrace) = demoDriver.deviceOps := by
   obtain ⟨k, c', hr, _, htr, hbt, _, _⟩ :=
-    flatHI_sound demoFns demoLaunch demoPtr rfl demoCode demoDriver 1 0
+    flatHI_sound demoLaunch demoPtr rfl demoCode demoDriver 1 0
       Env.empty [] (fun _ => 0) [] [] (by decide) rfl (by decide)
       (FarOk.of_noBases (as := HStmt.farArgs demoDriver) (by decide))
       (fun x hx b hb =>
@@ -2580,12 +2577,9 @@ theorem demo_trace :
   kernel.  Same class of fact as `Qwen2Algorithm.ffn_writes`, no compiler trust.
 -/
 
-def demoFfnFns : List Callee :=
-  [.import "cl_cuda_launch", .import "cl_cublas_sgemv"]
-
 /-- `y := A·x`, with the three buffer handles loaded from their slots. -/
 def demoSgemv (a x y : Nat) : HStmt :=
-  .extern { name := "cl_cublas_sgemv", fn := ⟨1⟩
+  .extern { name := "cl_cublas_sgemv", fn := .ffi .cublasSgemv
             argv := [.const 1, .const 896, .const 4864, .slot a, .slot x, .slot y] }
 
 def demoFfn : HStmt :=
@@ -2600,8 +2594,8 @@ def demoFfn : HStmt :=
 /-- **What the extractor reads out of the emitted block is the declared
     sequence** — `[propext, Classical.choice, Quot.sound]`, no `trustCompiler`. -/
 theorem demoFfn_launchesOf :
-    launchesOf (stateOf demoFfnFns ⟨0⟩ ⟨0⟩ 1 demoFfn) = demoFfn.launches :=
-  launchesOf_stateOf demoFfnFns ⟨0⟩ ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
+    launchesOf (stateOf (.ffi .cudaLaunch) ⟨0⟩ 1 demoFfn) = demoFfn.launches :=
+  launchesOf_stateOf (.ffi .cudaLaunch) ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
     (FarOk.of_noBases (as := HStmt.farArgs demoFfn) (by decide))
     (fun x hx b hb => noBases_primDests (ds := HStmt.primDests demoFfn) (by decide) x hx b hb)
     (by decide)
@@ -2621,8 +2615,8 @@ theorem demoFfn_names :
     nothing: the three launches' pointer arrays come back off the stores, and
     the three `sgemv`s' arguments come back with their bases. -/
 theorem demoFfn_bindsOf :
-    bindsOf 0 (stateOf demoFfnFns ⟨0⟩ ⟨0⟩ 1 demoFfn) = demoFfn.binds :=
-  bindsOf_stateOf demoFfnFns ⟨0⟩ ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
+    bindsOf 0 (stateOf (.ffi .cudaLaunch) ⟨0⟩ 1 demoFfn) = demoFfn.binds :=
+  bindsOf_stateOf (.ffi .cudaLaunch) ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
     (FarOk.of_noBases (as := HStmt.farArgs demoFfn) (by decide))
     (fun x hx b hb => noBases_primDests (ds := HStmt.primDests demoFfn) (by decide) x hx b hb)
     (by decide)
@@ -2650,8 +2644,8 @@ theorem demoFfn_args_are :
 /-- **Records and bindings, both read out of the emitted CLIF, both equal to
     what the host statement declared.**  The seam, closed at a value. -/
 theorem demoFfn_deviceOps :
-    deviceOpsOf 0 (stateOf demoFfnFns ⟨0⟩ ⟨0⟩ 1 demoFfn) = demoFfn.deviceOps :=
-  deviceOpsOf_stateOf demoFfnFns ⟨0⟩ ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
+    deviceOpsOf 0 (stateOf (.ffi .cudaLaunch) ⟨0⟩ 1 demoFfn) = demoFfn.deviceOps :=
+  deviceOpsOf_stateOf (.ffi .cudaLaunch) ⟨0⟩ rfl demoFfn 1 (by decide) (by decide)
     (FarOk.of_noBases (as := HStmt.farArgs demoFfn) (by decide))
     (fun x hx b hb => noBases_primDests (ds := HStmt.primDests demoFfn) (by decide) x hx b hb)
     (by decide)

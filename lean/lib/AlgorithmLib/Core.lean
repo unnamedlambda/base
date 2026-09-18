@@ -107,7 +107,6 @@ private def sample : Artifact where
   functions := [{
     index := 0
     entryName := some "main"
-    callees := [.import "cl_x", .local 1]
     blocks := [{
       ref := ⟨0⟩
       params := [(⟨0⟩, .i64)]
@@ -116,20 +115,22 @@ private def sample : Artifact where
         .iconst ⟨2⟩ .i64 (2 ^ 63 - 1),
         .fconst ⟨3⟩ .f64 0xFFFFFFFFFFFFFFFF,
         .load ⟨4⟩ { kind := .uload8, ty := .i32 } ⟨0⟩,
-        .call none ⟨0⟩ [⟨0⟩],
+        -- Both arms of `Callee`: a call takes one, so the sample makes two.
+        .call none (.ffi .sinf) [⟨0⟩],
+        .call none (.local 1) [⟨0⟩],
         .ret none] }] }]
   required_memory := 2 ^ 40
   initial_memory := [0, 0, 0, 0xff, 0, 1]
 
 private def expected : String :=
-  "a36966756e6374696f6e7381a36a656e7472795f6e616d65646d61696e6763616c6c6565" ++
-  "7382a166496d706f727464636c5f78a1654c6f63616c0166626c6f636b7381a369726566" ++
-  "6572656e63650066706172616d738182006349363465696e73747386a16649636f6e7374" ++
-  "8301634936343b7fffffffffffffffa16649636f6e73748302634936341b7fffffffffff" ++
-  "ffffa16646636f6e73748303634636341bffffffffffffffffa1644c6f61648404a3646b" ++
-  "696e6466556c6f616438627479634933326e6e6f747261705f616c69676e6564f40000a1" ++
-  "6443616c6c83f6008100a163526574f66f72657175697265645f6d656d6f72791b000001" ++
-  "0000000000646461746181a2666f66667365740365627974657343ff0001"
+  "a36966756e6374696f6e7381a26a656e7472795f6e616d65646d61696e66626c6f636b73" ++
+  "81a3697265666572656e63650066706172616d738182006349363465696e73747387a166" ++
+  "49636f6e73748301634936343b7fffffffffffffffa16649636f6e73748302634936341b" ++
+  "7fffffffffffffffa16646636f6e73748303634636341bffffffffffffffffa1644c6f61" ++
+  "648404a3646b696e6466556c6f616438627479634933326e6e6f747261705f616c69676e" ++
+  "6564f40000a16443616c6c83f6a166496d706f727467636c5f73696e668100a16443616c" ++
+  "6c83f6a1654c6f63616c018100a163526574f66f72657175697265645f6d656d6f72791b" ++
+  "0000010000000000646461746181a2666f66667365740365627974657343ff0001"
 
 private def hexOf (b : ByteArray) : String :=
   b.foldl (init := "") fun s x =>

@@ -78,12 +78,12 @@ axiom cranelift_compositional : True
     A program is only *complete* in this sense if every symbol it names has a
     declared frame — otherwise something it calls has no statement about what it
     may write, and no proof about it can be. -/
-def assumes (env : FnEnv) (c : Code) : List (String × Option Frame) := footprint env c
+def assumes (c : Code) : List (String × Option Frame) := footprint c
 
 /-- The trusted base of a program, rendered. A1–A4 are fixed; only A5 varies,
     and for most programs it is short or empty. -/
-def report (env : FnEnv) (c : Code) : String :=
+def report (c : Code) : String :=
   "A1 instruction semantics, A2 block semantics, A3 memory model, " ++
-  "A4 compiler compositionality; A5: " ++ footprintReport env c
+  "A4 compiler compositionality; A5: " ++ footprintReport c
 
 end AlgorithmLib.HProg.Trust

@@ -261,14 +261,14 @@ open AlgorithmLib.Clif AlgorithmLib.Host in
     not covered by a pair like this is the *call and loop structure* of
     `inferFn` and `inferLayerFn` — which is why those two are what
     `ScanCore.openObligations` names. -/
-theorem attnDriver_is_built (fnOf : String → FnRef) :
+theorem attnDriver_is_built (fnOf : String → Callee) :
     (Qwen2Common.attnDriver fnOf).deviceOps
       = deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerAttnFn) := by
   rw [attn_ops_are, Qwen2Common.attnDriver_deviceOps]
 
 open AlgorithmLib.Clif AlgorithmLib.Host in
 /-- **…and the feed-forward half's.** -/
-theorem ffnDriver_is_built (fnOf : String → FnRef) :
+theorem ffnDriver_is_built (fnOf : String → Callee) :
     (Qwen2Common.ffnDriver fnOf).deviceOps
       = deviceOpsOf Qwen2Common.ROOT (Qwen2Common.stateOf Qwen2.inferLayerFfnFn) := by
   rw [ffn_ops_are, Qwen2Common.ffnDriver_deviceOps]

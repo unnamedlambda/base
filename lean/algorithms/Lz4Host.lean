@@ -143,13 +143,13 @@ theorem host_loop_is_rLaunches64 :
     twenty launches rather than twenty iterations of something else. -/
 theorem host_launch_in_loop_body32 :
     (blockInsts? (warpFn (WP.mk 15)) 2).map
-        (callsIn (warpFn (WP.mk 15)).callees)
+        callsIn
       = some ["cl_cuda_launch"] := by
   native_decide
 
 theorem host_launch_in_loop_body64 :
     (blockInsts? (warpFn (WP.mk 16)) 2).map
-        (callsIn (warpFn (WP.mk 16)).callees)
+        callsIn
       = some ["cl_cuda_launch"] := by
   native_decide
 
@@ -179,7 +179,7 @@ structure HostShape (b : Nat) : Prop where
          (some ((WP.mk b).numBlk : Int), some (AlgorithmLib.LZ4Simt.modelBlockDim : Int))]
   loop : loopsOf (warpFn (WP.mk b)) = [⟨1, 2, 3, rLaunches⟩]
   launchInBody : (blockInsts? (warpFn (WP.mk b)) 2).map
-      (callsIn (warpFn (WP.mk b)).callees) = some ["cl_cuda_launch"]
+      callsIn = some ["cl_cuda_launch"]
   bindTable : ∃ pre : List UInt8, pre.length = (WP.mk b).bindOff ∧
       warpPayloadDSL (WP.mk b) = pre ++ (uint32ToBytes 0 ++ uint32ToBytes 0)
 

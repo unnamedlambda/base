@@ -8,14 +8,15 @@ import cbor
 #
 # An artifact's functions are the program as data, so these build the shape
 # `base_types::clif` reads: externally-tagged variants whose fields are in
-# constructor order. Values, blocks and callees are bare integers. Same
+# constructor order. Values and blocks are bare integers, and a call carries
+# its callee. Same
 # vocabulary as `base/tests/common/mod.rs` on the Rust side.
 
 def program(functions):
     return {"functions": functions}
 
-def function(blocks, callees=None, export=None):
-    return {"entry_name": export, "callees": callees or [], "blocks": blocks}
+def function(blocks, export=None):
+    return {"entry_name": export, "blocks": blocks}
 
 def block(n, params, insts):
     return {"reference": n, "params": [[p, "I64"] for p in params], "insts": insts}

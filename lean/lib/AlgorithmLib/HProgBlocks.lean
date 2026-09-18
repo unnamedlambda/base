@@ -149,24 +149,21 @@ def runInsts (env : FnEnv) (s : BSt) : List Inst → Outcome (BSt × Next)
                   { s with world := { obsStore s.world addr 1 (b &&& 0xff) with mem := m } } rest
               | none => .stuck "istore8 to unmapped address"
           | _, _ => .stuck "istore8 operand is not defined"
-      | .call d fn args =>
+      | .call d c args =>
           match args.mapM (getV s.vals) with
           | none => .stuck "call argument is not defined"
           | some vs =>
-              match env.at? fn.id with
-              | none => .stuck s!"fn{fn.id} is not declared"
-              | some decl =>
-                  match decl.callee with
-                  | .local i => .stuck s!"fn{fn.id} calls u0:{i}"
-                  | .import name =>
-                      match callImport name vs (obsCall s.world fn.id vs) with
-                      | none => .stuck s!"{name} has no executable contract"
-                      | some (res, w') =>
-                          match d, res with
-                          | some dv, some r =>
-                              runInsts env { vals := setV s.vals dv r, world := w' } rest
-                          | none, _ => runInsts env { s with world := w' } rest
-                          | some _, none => .stuck s!"{name} returned nothing to bind"
+              match c with
+              | .local i => .stuck s!"calls u0:{i}"
+              | .ffi f =>
+                  match callImport f.cname vs (obsCall s.world c vs) with
+                  | none => .stuck s!"{f.cname} has no executable contract"
+                  | some (res, w') =>
+                      match d, res with
+                      | some dv, some r =>
+                          runInsts env { vals := setV s.vals dv r, world := w' } rest
+                      | none, _ => runInsts env { s with world := w' } rest
+                      | some _, none => .stuck s!"{f.cname} returned nothing to bind"
       | other =>
           match evalInst s.world.mem s.vals other with
           | none => .stuck "instruction is undefined here"
@@ -1398,26 +1395,23 @@ theorem mapM_args (vals : Blocks.Vals) (Γ : Sem.Env) (hv : ValsAgree vals Γ)
 
 
 /-- `runInsts`' `call` arm, as an equation. -/
-theorem runInsts_call (env : FnEnv) (s : Blocks.BSt) (d : Option Val) (fn : FnRef)
+theorem runInsts_call (env : FnEnv) (s : Blocks.BSt) (d : Option Val) (c : IR.Callee)
     (args : List Val) (rest : List Inst) :
-    Blocks.runInsts env s (.call d fn args :: rest)
+    Blocks.runInsts env s (.call d c args :: rest)
       = match args.mapM (Blocks.getV s.vals) with
         | none => .stuck "call argument is not defined"
         | some vs =>
-            match env.at? fn.id with
-            | none => .stuck s!"fn{fn.id} is not declared"
-            | some decl =>
-                match decl.callee with
-                | .local i => .stuck s!"fn{fn.id} calls u0:{i}"
-                | .import name =>
-                    match Sem.callImport name vs (Sem.obsCall s.world fn.id vs) with
-                    | none => .stuck s!"{name} has no executable contract"
-                    | some (res, w') =>
-                        match d, res with
-                        | some dv, some r =>
-                            Blocks.runInsts env { vals := Blocks.setV s.vals dv r, world := w' } rest
-                        | none, _ => Blocks.runInsts env { s with world := w' } rest
-                        | some _, none => .stuck s!"{name} returned nothing to bind" := rfl
+            match c with
+            | .local i => .stuck s!"calls u0:{i}"
+            | .ffi f =>
+                match Sem.callImport f.cname vs (Sem.obsCall s.world c vs) with
+                | none => .stuck s!"{f.cname} has no executable contract"
+                | some (res, w') =>
+                    match d, res with
+                    | some dv, some r =>
+                        Blocks.runInsts env { vals := Blocks.setV s.vals dv r, world := w' } rest
+                    | none, _ => Blocks.runInsts env { s with world := w' } rest
+                    | some _, none => .stuck s!"{f.cname} returned nothing to bind" := rfl
 
 /-- **A result-binding call satisfies the frame.**
 
@@ -1431,9 +1425,9 @@ theorem runInsts_call (env : FnEnv) (s : Blocks.BSt) (d : Option Val) (fn : FnRe
     `henv` is the one genuinely new obligation: the block interpreter takes its
     function environment as a parameter, the term takes it from the `Cfg`, and
     nothing but this hypothesis says they are the same table. -/
-theorem call_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (n : Nat)
-    (fn : Nat) (args : List R) (hall : ∀ r ∈ args, r < n) :
-    StmtStep env cfg n (.call fn args) (.call (some ⟨n⟩) ⟨fn⟩ (args.map (fun r => ⟨r⟩))) := by
+theorem call_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (n : Nat)
+    (c : IR.Callee) (args : List R) (hall : ∀ r ∈ args, r < n) :
+    StmtStep env cfg n (.call c args) (.call (some ⟨n⟩) c (args.map (fun r => ⟨r⟩))) := by
   intro w w₁ Γ Γ₁ vals rest hs hva hr
   have hargs := mapM_args vals Γ hva n hs args hall
   rw [Sem.runStmt_call] at hr
@@ -1443,42 +1437,36 @@ theorem call_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (n : 
   | none => rw [hm] at hr; simp at hr
   | some vs =>
     rw [hm] at hr
-    simp only [henv] at hr
-    cases hf : env.at? fn with
-    | none => rw [hf] at hr; simp at hr
-    | some d =>
-      rw [hf] at hr
+    cases hc : c with
+    | «local» i => rw [hc] at hr; simp at hr
+    | ffi f =>
+      rw [hc] at hr
       dsimp only at hr
-      cases hc : d.callee with
-      | «local» i => rw [hc] at hr; simp at hr
-      | «import» name =>
-        rw [hc] at hr
+      cases hcf : Sem.callImport f.cname vs (Sem.obsCall w (.ffi f) vs) with
+      | none => rw [hcf] at hr; simp at hr
+      | some p =>
+        obtain ⟨res, w'⟩ := p
+        rw [hcf] at hr
         dsimp only at hr
-        cases hcf : Sem.callImport name vs (Sem.obsCall w fn vs) with
-        | none => rw [hcf] at hr; simp at hr
-        | some p =>
-          obtain ⟨res, w'⟩ := p
-          rw [hcf] at hr
+        cases hres : res with
+        | none => rw [hres] at hr; simp at hr
+        | some v =>
+          rw [hres] at hr
           dsimp only at hr
-          cases hres : res with
-          | none => rw [hres] at hr; simp at hr
-          | some v =>
-            rw [hres] at hr
-            dsimp only at hr
-            simp only [Sem.Outcome.ok.injEq] at hr
-            obtain ⟨h1, h2⟩ := hr
-            subst h1; subst h2
-            refine ⟨Blocks.setV vals ⟨n⟩ v, ?_, agree_push vals Γ hva n hs v,
-                    by simp [hs, Stmt.binds]⟩
-            simp only [hf, hc, hcf, hres]
+          simp only [Sem.Outcome.ok.injEq] at hr
+          obtain ⟨h1, h2⟩ := hr
+          subst h1; subst h2
+          refine ⟨Blocks.setV vals ⟨n⟩ v, ?_, agree_push vals Γ hva n hs v,
+                  by simp [hs, Stmt.binds]⟩
+          simp only [hc, hcf, hres]
 
 
 /-- **A void call satisfies the frame.** Same contract, same observation; the
     only difference is that nothing is bound, so both states keep the value
     stores they had and agreement is inherited unchanged. -/
-theorem callVoid_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (n : Nat)
-    (fn : Nat) (args : List R) (hall : ∀ r ∈ args, r < n) :
-    StmtStep env cfg n (.callVoid fn args) (.call none ⟨fn⟩ (args.map (fun r => ⟨r⟩))) := by
+theorem callVoid_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (n : Nat)
+    (c : IR.Callee) (args : List R) (hall : ∀ r ∈ args, r < n) :
+    StmtStep env cfg n (.callVoid c args) (.call none c (args.map (fun r => ⟨r⟩))) := by
   intro w w₁ Γ Γ₁ vals rest hs hva hr
   have hargs := mapM_args vals Γ hva n hs args hall
   rw [Sem.runStmt_callVoid] at hr
@@ -1488,28 +1476,22 @@ theorem callVoid_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (
   | none => rw [hm] at hr; simp at hr
   | some vs =>
     rw [hm] at hr
-    simp only [henv] at hr
-    cases hf : env.at? fn with
-    | none => rw [hf] at hr; simp at hr
-    | some d =>
-      rw [hf] at hr
+    cases hc : c with
+    | «local» i => rw [hc] at hr; simp at hr
+    | ffi f =>
+      rw [hc] at hr
       dsimp only at hr
-      cases hc : d.callee with
-      | «local» i => rw [hc] at hr; simp at hr
-      | «import» name =>
-        rw [hc] at hr
+      cases hcf : Sem.callImport f.cname vs (Sem.obsCall w (.ffi f) vs) with
+      | none => rw [hcf] at hr; simp at hr
+      | some p =>
+        obtain ⟨res, w'⟩ := p
+        rw [hcf] at hr
         dsimp only at hr
-        cases hcf : Sem.callImport name vs (Sem.obsCall w fn vs) with
-        | none => rw [hcf] at hr; simp at hr
-        | some p =>
-          obtain ⟨res, w'⟩ := p
-          rw [hcf] at hr
-          dsimp only at hr
-          simp only [Sem.Outcome.ok.injEq] at hr
-          obtain ⟨h1, h2⟩ := hr
-          subst h1; subst h2
-          refine ⟨vals, ?_, hva, by simp [hs, Stmt.binds]⟩
-          simp only [hf, hc, hcf]
+        simp only [Sem.Outcome.ok.injEq] at hr
+        obtain ⟨h1, h2⟩ := hr
+        subst h1; subst h2
+        refine ⟨vals, ?_, hva, by simp [hs, Stmt.binds]⟩
+        simp only [hc, hcf]
 
 
 -- ---------------------------------------------------------------------------

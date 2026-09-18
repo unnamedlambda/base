@@ -405,12 +405,12 @@ def St.stmt (s : St) (st : Stmt) : St := { s with cur := st :: s.cur }
 def St.bind1 (s : St) (st : Stmt) : R × St :=
   (s.n, { s with n := s.n + 1, cur := st :: s.cur })
 
-/-- Record that the body calls `callee`, and say which reference names it: its
-    position in the table, appended the first time and reused after. -/
-def St.use (s : St) (callee : Callee) (params : List ClifTy)
-    (result : Option ClifTy) : FnRef × St :=
-  let (r, e) := s.callees.use callee params result
-  (r, { s with callees := e })
+/-- Record a local callee's signature, which is what the checker reads a
+    `local` call's arity from. An import needs no record: its signature is a
+    function of the `Ffi` the call already carries. -/
+def St.useLocal (s : St) (index : Nat) (params : List ClifTy)
+    (result : Option ClifTy) : St :=
+  { s with callees := s.callees.withLocal index params result }
 
 /-- The value a call hands its continuation: the slot it bound, or nothing. -/
 def resSlot : (res : Option ClifTy) → R → ResV Slot res
@@ -451,21 +451,23 @@ def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
   | fuel + 1, _, .storeUnaligned v a k, s => emitGo fuel k (s.stmt (.storeUnaligned v a))
   | fuel + 1, _, .istore8 v a _ k, s => emitGo fuel k (s.stmt (.istore8 v a))
   | fuel + 1, _, .call f args k, s =>
-      let (fn, s) := s.use (.import f.cname) f.params f.result
+      let c : Callee := .ffi f
       let as := args.slots
       if f.result.isSome then
-        let (r, s) := s.bind1 (.call fn.id as)
+        let (r, s) := s.bind1 (.call c as)
         emitGo fuel (k (resSlot f.result r)) s
       else
-        emitGo fuel (k (resSlot f.result 0)) (s.stmt (.callVoid fn.id as))
+        emitGo fuel (k (resSlot f.result 0)) (s.stmt (.callVoid c as))
   | fuel + 1, _, .callLocal (ps := ps) (res := res) r args k, s =>
-      let (fn, s) := s.use r.callee ps res
+      let s := match r.callee with
+        | .local i => s.useLocal i ps res
+        | .ffi _   => s
       let as := args.slots
       if res.isSome then
-        let (v, s) := s.bind1 (.call fn.id as)
+        let (v, s) := s.bind1 (.call r.callee as)
         emitGo fuel (k (resSlot res v)) s
       else
-        emitGo fuel (k (resSlot res 0)) (s.stmt (.callVoid fn.id as))
+        emitGo fuel (k (resSlot res 0)) (s.stmt (.callVoid r.callee as))
   | fuel + 1, _, .loop (tys := tys) (exitTys := exitTys) init head body k, s =>
       let s := s.flush
       let firstCarry := s.n
@@ -944,16 +946,15 @@ def run (p : Body) (params : List ClifTy := ptrParams) :
 
 /-- The callees a body calls, in the order it calls them.
 
-    A `call` names a position in the table the fold built, so a claim about
-    *what* a body calls resolves each position through that table. The names
-    are the symbols the JIT resolves, which is what such a claim is about; a
-    call to one of the program's own functions is its `u0:N`. -/
+    A `call` carries its callee, so a claim about *what* a body calls reads it
+    off the term with nothing to resolve. The names are the symbols the JIT
+    resolves, which is what such a claim is about; a call to one of the
+    program's own functions is its `u0:N`. -/
 def callNames (p : Body) (params : List ClifTy := ptrParams) : List String :=
-  let (c, env, _) := run p params
-  (HProg.callsOf c).filterMap fun i =>
-    (env.at? i).map fun d => match d.callee with
-      | .import n => n
-      | .local k  => s!"u0:{k}"
+  let (c, _, _) := run p params
+  (HProg.callsOf c).map fun
+    | .ffi f   => f.cname
+    | .local k => s!"u0:{k}"
 
 /-- The term a body denotes, or why it is not one.
 
@@ -1074,9 +1075,6 @@ theorem stateOf_index {i j : Nat} {p : Body} {params : List ClifTy} :
 
 theorem stateOf_blocks_index {i j : Nat} {p : Body} {params : List ClifTy} :
     (stateOf i p params).blocks = (stateOf j p params).blocks := rfl
-
-theorem stateOf_callees_index {i j : Nat} {p : Body} {params : List ClifTy} :
-    (stateOf i p params).callees = (stateOf j p params).callees := rfl
 
 /-- The functions of an artifact, in `u0:N` order, or the first failure.
 

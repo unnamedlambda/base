@@ -106,7 +106,7 @@ def code : Prog V L Unit := do
 
 /-- The program reads one file and then writes one, and does nothing else
     across the FFI. -/
-theorem code_calls : callsOf (Prog.emit code) = [fnRead, fnWrite].map Ffi.id := rfl
+theorem code_calls : callsOf (Prog.emit code) = [fnRead, fnWrite].map Callee.ffi := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
@@ -477,10 +477,10 @@ def main (args : List String) : IO Unit := do
                   ("clamp_sum", HProgPilots.ClampSum.code),
                   ("rmsnorm.infer", HProgPilots.RmsNorm.inferCode),
                   ("nested", HProgPilots.Nested.code)] do
-    let (c, e, _) := Prog.run p
-    if !footprintComplete e c then
+    let (c, _, _) := Prog.run p
+    if !footprintComplete c then
       throw (IO.userError s!"{nm} calls a symbol with no declared frame")
-    IO.println s!"  {nm}: {footprintReport e c}"
+    IO.println s!"  {nm}: {footprintReport c}"
   match HProgPilots.histCompileSound with
   | .error e => throw (IO.userError s!"histogram compile_sound: {e}")
   | .ok (n, calls) =>

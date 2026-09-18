@@ -187,30 +187,44 @@ pub fn decode_function(
 
     let mut func = ir::Function::with_name_signature(UserFuncName::user(0, index as u32), sig);
 
-    // The callees, in the order the function names them: `fn0` is the first.
-    // Each is resolved at the signature it actually has, and the name is kept
-    // beside it so a call that does not fit one can say which it did not fit.
-    let mut fn_refs: Vec<ir::FuncRef> = Vec::with_capacity(f.callees.len());
-    let mut callees: Vec<(String, Signature)> = Vec::with_capacity(f.callees.len());
-    for callee in &f.callees {
+    // Cranelift wants each callee declared once, up front, and a call naming
+    // that declaration. The artifact carries the callee in the call instead, so
+    // the prologue is built here by walking the body and interning on first
+    // use. Nothing chooses anything: `FuncRef` numbering never leaves this
+    // struct, and any order gives the same machine code.
+    let mut fn_refs: HashMap<clif::Callee, ir::FuncRef> = HashMap::new();
+    let mut callees: HashMap<clif::Callee, (String, Signature)> = HashMap::new();
+    for callee in f.blocks.iter().flat_map(|b| b.insts.iter()).filter_map(|i| match i {
+        clif::Inst::Call(_, c, _) | clif::Inst::FuncAddr(_, c) => Some(c),
+        _ => None,
+    }) {
+        if fn_refs.contains_key(callee) {
+            continue;
+        }
         let (resolved, sig) = declare_callee(callee)?;
-        callees.push((
-            match callee {
-                clif::Callee::Import(n) => n.clone(),
-                clif::Callee::Local(n) => format!("u0:{n}"),
-            },
-            sig.clone(),
-        ));
+        callees.insert(
+            callee.clone(),
+            (
+                match callee {
+                    clif::Callee::Import(n) => n.clone(),
+                    clif::Callee::Local(n) => format!("u0:{n}"),
+                },
+                sig.clone(),
+            ),
+        );
         let sr = func.import_signature(sig);
         let user_ref = func.declare_imported_user_function(UserExternalName {
             namespace: 0,
             index: resolved.id,
         });
-        fn_refs.push(func.import_function(ExtFuncData {
-            name: ExternalName::user(user_ref),
-            signature: sr,
-            colocated: resolved.colocated,
-        }));
+        fn_refs.insert(
+            callee.clone(),
+            func.import_function(ExtFuncData {
+                name: ExternalName::user(user_ref),
+                signature: sr,
+                colocated: resolved.colocated,
+            }),
+        );
     }
 
     // Blocks are created before any body is emitted, so a forward branch has a
@@ -260,10 +274,10 @@ fn check_call(
     inst: &clif::Inst,
     vals: &Vals,
     func: &ir::Function,
-    callees: &[(String, Signature)],
+    callees: &HashMap<clif::Callee, (String, Signature)>,
 ) -> Result<(), String> {
-    let clif::Inst::Call(_, fr, args) = inst else { return Ok(()) };
-    let Some((name, sig)) = callees.get(fr.0 as usize) else { return Ok(()) };
+    let clif::Inst::Call(_, c, args) = inst else { return Ok(()) };
+    let Some((name, sig)) = callees.get(c) else { return Ok(()) };
     if args.len() != sig.params.len() {
         return Err(format!(
             "u0:{index} calls {name} with {} argument{}, and {name} takes {}",
@@ -289,7 +303,7 @@ fn emit(
     blk: ir::Block,
     inst: &clif::Inst,
     vals: &mut Vals,
-    fn_refs: &[ir::FuncRef],
+    fn_refs: &HashMap<clif::Callee, ir::FuncRef>,
     block_of: &dyn Fn(clif::BlockRef) -> Result<ir::Block, String>,
 ) -> Result<(), String> {
     use clif::Inst as I;
@@ -360,17 +374,17 @@ fn emit(
                 .bitselect(vals.get(*c)?, vals.get(*a)?, vals.get(*b)?)
         ),
 
-        I::Call(d, fr, args) => {
+        I::Call(d, c, args) => {
             let f = *fn_refs
-                .get(fr.0 as usize)
-                .ok_or_else(|| format!("call to fn{}, which the function does not name", fr.0))?;
+                .get(c)
+                .ok_or_else(|| format!("call to {c:?}, which the prologue does not name"))?;
             let a = vals.get_all(args)?;
             let call = cur.ins().call(f, &a);
             if let Some(dst) = d {
                 let results = cur.func.dfg.inst_results(call);
                 let r = *results
                     .first()
-                    .ok_or_else(|| format!("fn{} has no result to bind", fr.0))?;
+                    .ok_or_else(|| format!("{c:?} has no result to bind"))?;
                 vals.set(*dst, r);
             }
         }
@@ -418,9 +432,9 @@ fn emit(
         I::Bitcast(d, t, s) => {
             def!(*d, cur.ins().bitcast(ty(*t), MemFlags::new(), vals.get(*s)?))
         }
-        I::FuncAddr(d, fr) => {
-            let f = *fn_refs.get(fr.0 as usize).ok_or_else(|| {
-                format!("func_addr of fn{}, which the function does not name", fr.0)
+        I::FuncAddr(d, c) => {
+            let f = *fn_refs.get(c).ok_or_else(|| {
+                format!("func_addr of {c:?}, which the prologue does not name")
             })?;
             def!(*d, cur.ins().func_addr(ir::types::I64, f))
         }

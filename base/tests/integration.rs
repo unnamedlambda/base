@@ -3531,9 +3531,15 @@ fn reordered(functions: &[Function], order: &[u32]) -> Vec<Function> {
         .iter()
         .map(|&old| {
             let mut f = functions[old as usize].clone();
-            for callee in &mut f.callees {
-                if let Callee::Local(i) = *callee {
-                    *callee = Callee::Local(new_index(i));
+            for b in &mut f.blocks {
+                for inst in &mut b.insts {
+                    let c = match inst {
+                        Inst::Call(_, c, _) | Inst::FuncAddr(_, c) => c,
+                        _ => continue,
+                    };
+                    if let Callee::Local(i) = *c {
+                        *c = Callee::Local(new_index(i));
+                    }
                 }
             }
             f
@@ -3559,7 +3565,9 @@ fn names_survive_a_reordering() {
     let before = programs(vec![noop(), times_ten, tens, answering(7).export("seven")]);
     let after = reordered(&before, &[3, 2, 0, 1]);
 
-    let Callee::Local(callee) = after[1].callees[0] else { panic!("a local call") };
+    let Inst::Call(_, Callee::Local(callee), _) = after[1].blocks[0].insts[1] else {
+        panic!("a local call")
+    };
     assert_eq!(callee, 3, "the call follows its callee");
     assert_eq!(before[3].entry_name.as_deref(), Some("seven"));
     assert_eq!(after[3].entry_name, None, "position 3 is now the unexported helper");

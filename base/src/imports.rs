@@ -258,7 +258,7 @@ pub(crate) fn lookup(name: &str) -> Option<&'static Import> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::clif::{Block, BlockRef, Callee, FnRef, Function, Inst, Val};
+    use base_types::clif::{Block, BlockRef, Callee, Function, Inst, Val};
 
     #[test]
     fn names_are_unique() {
@@ -274,17 +274,16 @@ mod tests {
     /// hands the JIT.
     #[test]
     fn every_import_links_at_its_own_signature() {
-        let mut callees = Vec::new();
         let mut insts = Vec::new();
         for (n, import) in imports().iter().enumerate() {
-            let n = n as u32;
-            callees.push(Callee::Import(import.name.to_string()));
-            insts.push(Inst::FuncAddr(Val(100 + n), FnRef(n)));
+            insts.push(Inst::FuncAddr(
+                Val(100 + n as u32),
+                Callee::Import(import.name.to_string()),
+            ));
         }
         insts.push(Inst::Ret(None));
         let f = Function {
             entry_name: None,
-            callees,
             blocks: vec![Block { reference: BlockRef(0), params: vec![(Val(0), ClifTy::I64)], insts }],
         };
         if let Err(e) = crate::jit::compile(&[f]) {
