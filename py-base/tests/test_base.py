@@ -14,8 +14,8 @@ import cbor
 def program(functions):
     return {"functions": functions}
 
-def function(blocks, sigs=None, fns=None, export=None):
-    return {"export_name": export, "sigs": sigs or [], "fns": fns or [], "blocks": blocks}
+def function(blocks, callees=None, export=None):
+    return {"export_name": export, "callees": callees or [], "blocks": blocks}
 
 def block(n, params, insts):
     return {"reference": n, "params": [[p, "I64"] for p in params], "insts": insts}

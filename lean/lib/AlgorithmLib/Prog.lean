@@ -281,12 +281,12 @@ structure Cond (V : ClifTy → Type) where
   exitOnTrue : Bool
 
 /-- A call to a function of this same program, or to a symbol resolved inside
-    it: what `Ffi` does not cover. The declaration travels with the reference,
-    so `emit` can collect the table a body needs rather than being handed one.
+    it: what `Ffi` does not cover. The callee travels with the reference, so
+    `emit` can collect the table a body needs rather than being handed one.
 
-    `id` is the callee id in the emitted table, allocated by `Module`. -/
+    No id: the fold gives each callee its position in the table the first time
+    the body calls it, so there is nothing to allocate and nothing to collide. -/
 structure LocalRef (params : List ClifTy) (result : Option ClifTy) where
-  id : Nat
   callee : Callee
 
 /-- A function body.
@@ -383,15 +383,9 @@ structure St where
   depth  : Nat
   pieces : List Piece := []      -- reversed
   cur    : List Stmt := []       -- reversed: the open straight-line run
-  /-- Which entry points the body calls. The derived table holds those and not
-      the whole of `Ffi.all`, which matters when a local callee's id coincides
-      with an entry point's --- a wrapper numbers its callees from zero. -/
-  ffis   : List Nat := []
-  /-- Declarations the body's local and colocated calls need, in first-seen
-      order. An entry point needs none: its id and signature are facts about
-      `Ffi.all`. -/
-  sigs   : List SigDecl := []
-  fns    : List FnDecl := []
+  /-- What the body calls, in the order it first calls each. Position is the
+      reference, so this list is both the numbering and the table. -/
+  callees : FnEnv := []
   /-- The first thing that went wrong, which only a loop whose head leaves can
       be. Kept so `emitChecked` can refuse the body and say why. -/
   err    : Option String := none
@@ -411,25 +405,12 @@ def St.stmt (s : St) (st : Stmt) : St := { s with cur := st :: s.cur }
 def St.bind1 (s : St) (st : Stmt) : R × St :=
   (s.n, { s with n := s.n + 1, cur := st :: s.cur })
 
-/-- Record that the body calls an entry point. -/
-def St.useFfi (s : St) (id : Nat) : St :=
-  if s.ffis.contains id then s else { s with ffis := s.ffis ++ [id] }
-
-/-- Record a local declaration, keeping the first with a given id. -/
-def St.declare (s : St) (id : Nat) (params : List ClifTy) (result : Option ClifTy)
-    (callee : Callee) : St :=
-  match s.fns.find? (·.ref.id == id), s.sigs.find? (·.ref.id == id) with
-  | some d, some sg =>
-      -- The same reference named twice is the common case and costs nothing.
-      -- Two *different* declarations under one id is a mistake, and a silent
-      -- one: `FnEnv.sigOf` resolves by id and takes the first match, so the
-      -- second reference's calls would go out under the first's signature.
-      if d.callee == callee
-          && sg.params == params && sg.result == result then s
-      else s.note s!"callee id {id} is declared twice, with different signatures"
-  | _, _ => { s with
-      sigs := s.sigs ++ [{ ref := ⟨id⟩, params, result }],
-      fns := s.fns ++ [{ ref := ⟨id⟩, callee, sig := ⟨id⟩ }] }
+/-- Record that the body calls `callee`, and say which reference names it: its
+    position in the table, appended the first time and reused after. -/
+def St.use (s : St) (callee : Callee) (params : List ClifTy)
+    (result : Option ClifTy) : FnRef × St :=
+  let (r, e) := s.callees.use callee params result
+  (r, { s with callees := e })
 
 /-- The value a call hands its continuation: the slot it bound, or nothing. -/
 def resSlot : (res : Option ClifTy) → R → ResV Slot res
@@ -470,21 +451,21 @@ def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
   | fuel + 1, _, .storeUnaligned v a k, s => emitGo fuel k (s.stmt (.storeUnaligned v a))
   | fuel + 1, _, .istore8 v a _ k, s => emitGo fuel k (s.stmt (.istore8 v a))
   | fuel + 1, _, .call f args k, s =>
-      let s := s.useFfi f.id
+      let (fn, s) := s.use (.import f.cname) f.params f.result
       let as := args.slots
       if f.result.isSome then
-        let (r, s) := s.bind1 (.call f.id as)
+        let (r, s) := s.bind1 (.call fn.id as)
         emitGo fuel (k (resSlot f.result r)) s
       else
-        emitGo fuel (k (resSlot f.result 0)) (s.stmt (.callVoid f.id as))
+        emitGo fuel (k (resSlot f.result 0)) (s.stmt (.callVoid fn.id as))
   | fuel + 1, _, .callLocal (ps := ps) (res := res) r args k, s =>
-      let s := s.declare r.id ps res r.callee
+      let (fn, s) := s.use r.callee ps res
       let as := args.slots
       if res.isSome then
-        let (v, s) := s.bind1 (.call r.id as)
+        let (v, s) := s.bind1 (.call fn.id as)
         emitGo fuel (k (resSlot res v)) s
       else
-        emitGo fuel (k (resSlot res 0)) (s.stmt (.callVoid r.id as))
+        emitGo fuel (k (resSlot res 0)) (s.stmt (.callVoid fn.id as))
   | fuel + 1, _, .loop (tys := tys) (exitTys := exitTys) init head body k, s =>
       let s := s.flush
       let firstCarry := s.n
@@ -568,13 +549,12 @@ def emitErr (p : Body) (params : List ClifTy := ptrParams) : Option String :=
   let (_, s) := emitGo emitFuel p { n := params.length, depth := 0 }
   s.err
 
-/-- The declarations a body's local and colocated calls need. -/
-def emitDecls (p : Body) (params : List ClifTy := ptrParams) :
-    List SigDecl × List FnDecl :=
+/-- The table a body's calls need, in the order the body first makes them. -/
+def emitDecls (p : Body) (params : List ClifTy := ptrParams) : FnEnv :=
   let (_, s) := emitGo emitFuel p { n := params.length, depth := 0 }
-  (s.sigs, s.fns)
+  s.callees
 
-instance {ps res} : Inhabited (LocalRef ps res) := ⟨{ id := 0, callee := .local 0 }⟩
+instance {ps res} : Inhabited (LocalRef ps res) := ⟨{ callee := .local 0 }⟩
 
 /-- A float vector satisfies the condition `fadd` and friends ask for. -/
 theorem floatVec_isFloat {ty : ClifTy} (h : ty.isFloatVec = true) :
@@ -939,18 +919,6 @@ end Surface
 -- The callee table, derived
 -- ---------------------------------------------------------------------------
 
-/-- The table a body is compiled against, read off the body.
-
-    A generator declares nothing: an FFI callee's id and signature are facts
-    about `Ffi.all`, and a local one travels with the `LocalRef` that names it.
-    `compileBody` keeps only what the body calls, so this may be a superset and
-    the emitted function still declares exactly its own callees. -/
-def envOf (ffis : List Nat) (extraSigs : List SigDecl) (extraFns : List FnDecl) :
-    FnEnv :=
-  let used := Ffi.all.filter (fun f => ffis.contains f.id)
-  { sigs := used.map Ffi.sigDecl ++ extraSigs,
-    fns := used.map Ffi.fnDecl ++ extraFns }
-
 /-- Which top-level piece first makes the body ill-formed, found by checking
     growing prefixes. Only ever run on a body already known to be bad. -/
 private def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat :=
@@ -967,31 +935,25 @@ def runAns {α} (p : Prog Slot Lvl α) (params : List ClifTy := ptrParams) :
     Option α × Code × FnEnv × Option String :=
   let (a, s) := emitGo emitFuel p { n := params.length, depth := 0 }
   let s := s.flush
-  -- By id, not by first call: an id is allocated once, in declaration order,
-  -- so this is the order the declarations were made in whichever function of
-  -- the program first made them --- and a table's order is what the compiled
-  -- function's `sigs` and `fns` arrays are.
-  let byId {β} (f : β → Nat) (xs : List β) := xs.mergeSort (fun a b => f a ≤ f b)
-  -- A local callee whose id is also that of an entry point the body calls
-  -- would put two declarations under one id in the table, and `sigOf` takes
-  -- the first: the call would go to the entry point instead. Ids for locals
-  -- are allocated past the table's, so this cannot happen by construction ---
-  -- but "by construction" is a property of the allocator, and this is the
-  -- place that would notice if it ever stopped holding.
-  let clash := s.fns.filter (fun d => s.ffis.contains d.ref.id)
-  let err := match s.err, clash with
-    | some e, _ => some e
-    | none, [] => none
-    | none, d :: _ =>
-        some s!"callee id {d.ref.id} is both a local declaration and an entry \
-          point this body calls"
-  (a, s.pieces.reverse,
-   envOf s.ffis (byId (·.ref.id) s.sigs) (byId (·.ref.id) s.fns), err)
+  (a, s.pieces.reverse, s.callees, s.err)
 
 /-- Everything one fold of a body yields, for a body that answers nothing. -/
 def run (p : Body) (params : List ClifTy := ptrParams) :
     Code × FnEnv × Option String :=
   (runAns p params).2
+
+/-- The callees a body calls, in the order it calls them.
+
+    A `call` names a position in the table the fold built, so a claim about
+    *what* a body calls resolves each position through that table. The names
+    are the symbols the JIT resolves, which is what such a claim is about; a
+    call to one of the program's own functions is its `u0:N`. -/
+def callNames (p : Body) (params : List ClifTy := ptrParams) : List String :=
+  let (c, env, _) := run p params
+  (HProg.callsOf c).filterMap fun i =>
+    (env.at? i).map fun d => match d.callee with
+      | .import n => n
+      | .local k  => s!"u0:{k}"
 
 /-- The term a body denotes, or why it is not one.
 
@@ -1113,8 +1075,8 @@ theorem stateOf_index {i j : Nat} {p : Body} {params : List ClifTy} :
 theorem stateOf_blocks_index {i j : Nat} {p : Body} {params : List ClifTy} :
     (stateOf i p params).blocks = (stateOf j p params).blocks := rfl
 
-theorem stateOf_fns_index {i j : Nat} {p : Body} {params : List ClifTy} :
-    (stateOf i p params).fns = (stateOf j p params).fns := rfl
+theorem stateOf_callees_index {i j : Nat} {p : Body} {params : List ClifTy} :
+    (stateOf i p params).callees = (stateOf j p params).callees := rfl
 
 /-- The functions of an artifact, in `u0:N` order, or the first failure.
 

@@ -55,7 +55,7 @@ pub struct Func {
 
 pub fn function() -> Func {
     Func {
-        inner: Function { export_name: None, fns: vec![], blocks: vec![] },
+        inner: Function { export_name: None, callees: vec![], blocks: vec![] },
     }
 }
 
@@ -67,21 +67,21 @@ impl Func {
     }
 
     /// `fnN = %name` — at whatever signature base's table gives that import.
+    ///
+    /// `n` is asserted rather than stored: a callee's reference is its position,
+    /// so a test that declares them out of order is saying something it does not
+    /// mean.
     pub fn import(mut self, n: u32, name: &str) -> Self {
-        self.inner.fns.push(FnDecl {
-            reference: FnRef(n),
-            callee: Callee::Import(name.to_string()),
-        });
+        assert_eq!(n as usize, self.inner.callees.len(), "fn{n} is not the next callee");
+        self.inner.callees.push(Callee::Import(name.to_string()));
         self
     }
 
     /// `fnN = colocated u0:I` — a call to another function of this program, at
     /// whatever signature that function's own entry block gives it.
     pub fn local(mut self, n: u32, index: u32) -> Self {
-        self.inner.fns.push(FnDecl {
-            reference: FnRef(n),
-            callee: Callee::Local(index),
-        });
+        assert_eq!(n as usize, self.inner.callees.len(), "fn{n} is not the next callee");
+        self.inner.callees.push(Callee::Local(index));
         self
     }
 

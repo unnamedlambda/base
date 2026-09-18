@@ -137,7 +137,7 @@ def frameOf (name : String) : Option Frame := (IR.Ffi.ofCname name).map frame
 
 /-- The symbol a callee index resolves to, when it is an import. -/
 def calleeName (env : FnEnv) (fn : Nat) : Option String := do
-  let d ← env.fns.find? (·.ref.id == fn)
+  let d ← env.at? fn
   match d.callee with
   | .import n => some n
   | .local _ => none

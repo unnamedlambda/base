@@ -251,14 +251,14 @@ def inferCode : Prog V L Unit := do
 
 /-- Loading allocates both buffers before either upload. -/
 theorem load_calls :
-    callsOf (Prog.emit loadCode) =
-      [IR.Ffi.cudaInit.id, IR.Ffi.cudaCreateBuffer.id, IR.Ffi.cudaCreateBuffer.id,
-       IR.Ffi.cudaUploadOffset.id, IR.Ffi.cudaUploadOffset.id] := rfl
+    Prog.callNames loadCode =
+      [IR.Ffi.cudaInit, IR.Ffi.cudaCreateBuffer, IR.Ffi.cudaCreateBuffer,
+       IR.Ffi.cudaUploadOffset, IR.Ffi.cudaUploadOffset].map (·.cname) := rfl
 
 /-- Inference launches, synchronizes, and downloads at most once. -/
 theorem infer_calls :
-    callsOf (Prog.emit inferCode) =
-      [IR.Ffi.cudaLaunch.id, IR.Ffi.cudaSync.id, IR.Ffi.cudaDownload.id] := rfl
+    Prog.callNames inferCode =
+      [IR.Ffi.cudaLaunch, IR.Ffi.cudaSync, IR.Ffi.cudaDownload].map (·.cname) := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program
@@ -314,7 +314,7 @@ def code : Prog V L Unit := do
   return ()
 
 
-theorem code_calls : callsOf (Prog.emit code) = [Hist.fnWrite].map Ffi.id := rfl
+theorem code_calls : Prog.callNames code = [Hist.fnWrite].map (·.cname) := rfl
 
 def program : Except String (List FuncData) :=
   Prog.program

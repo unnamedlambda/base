@@ -151,10 +151,7 @@ mod tests {
         Artifact {
             functions: vec![Function {
                 export_name: Some("main".into()),
-                fns: vec![
-                    FnDecl { reference: FnRef(0), callee: Callee::Import("cl_x".into()) },
-                    FnDecl { reference: FnRef(1), callee: Callee::Local(1) },
-                ],
+                callees: vec![Callee::Import("cl_x".into()), Callee::Local(1)],
                 blocks: vec![Block {
                     reference: BlockRef(0),
                     params: vec![(v(0), i64_)],
@@ -184,14 +181,13 @@ mod tests {
     #[test]
     fn an_artifact_encodes_in_the_profile() {
         let expected = hex(&[
-            "a36966756e6374696f6e7381a36b6578706f72745f6e616d65646d61696e63666e7382a269726566",
-            "6572656e6365006663616c6c6565a166496d706f727464636c5f78a2697265666572656e63650166",
-            "63616c6c6565a1654c6f63616c0166626c6f636b7381a3697265666572656e63650066706172616d",
-            "738182006349363465696e73747386a16649636f6e73748301634936343b7fffffffffffffffa166",
-            "49636f6e73748302634936341b7fffffffffffffffa16646636f6e73748303634636341bffffffff",
-            "ffffffffa1644c6f61648404a3646b696e6466556c6f616438627479634933326e6e6f747261705f",
-            "616c69676e6564f40000a16443616c6c83f6008100a163526574f66b6d656d6f72795f73697a651b",
-            "0000010000000000646461746181a2666f66667365740365627974657343ff0001",
+            "a36966756e6374696f6e7381a36b6578706f72745f6e616d65646d61696e6763616c6c65657382a1",
+            "66496d706f727464636c5f78a1654c6f63616c0166626c6f636b7381a3697265666572656e636500",
+            "66706172616d738182006349363465696e73747386a16649636f6e73748301634936343b7fffffff",
+            "ffffffffa16649636f6e73748302634936341b7fffffffffffffffa16646636f6e73748303634636",
+            "341bffffffffffffffffa1644c6f61648404a3646b696e6466556c6f616438627479634933326e6e",
+            "6f747261705f616c69676e6564f40000a16443616c6c83f6008100a163526574f66b6d656d6f7279",
+            "5f73697a651b0000010000000000646461746181a2666f66667365740365627974657343ff0001",
         ]);
         assert_eq!(sample().to_bytes(), expected);
         assert_eq!(Artifact::from_bytes(&expected).unwrap(), sample());

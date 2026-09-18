@@ -303,23 +303,18 @@ def ref (f : Ffi) : FnRef := ⟨f.id⟩
 /-- The entry point a name resolves to, if it is one. -/
 def ofCname (s : String) : Option Ffi := all.find? (·.cname == s)
 
-def sigDecl (f : Ffi) : SigDecl :=
-  { ref := ⟨f.id⟩, params := f.params, result := f.result }
-
 /-- Every entry point is a host symbol the JIT resolves by name. Whether a
     call may be PC-relative is the runtime's decision, not the declaration's:
     it knows where it placed the program's code and where the loader put the
     host's. -/
-def fnDecl (f : Ffi) : FnDecl :=
-  { ref := ⟨f.id⟩, callee := .import f.cname, sig := ⟨f.id⟩ }
+def decl (f : Ffi) : CalleeDecl :=
+  { callee := .import f.cname, params := f.params, result := f.result }
 
 end Ffi
 
-/-- The table a list of entry points declares. Ids come from `Ffi.all`, so a
-    selection keeps the ids the full table hands out and `FnEnv.sigOf` cannot
-    land two names on one id. -/
-def envFromFfi (fs : List Ffi) : FnEnv :=
-  { sigs := fs.map Ffi.sigDecl, fns := fs.map Ffi.fnDecl }
+/-- The table a list of entry points declares, in the order given: a call names
+    one by its position here. -/
+def envFromFfi (fs : List Ffi) : FnEnv := fs.map Ffi.decl
 
 namespace FFI
 

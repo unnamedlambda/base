@@ -153,7 +153,7 @@ def runInsts (env : FnEnv) (s : BSt) : List Inst → Outcome (BSt × Next)
           match args.mapM (getV s.vals) with
           | none => .stuck "call argument is not defined"
           | some vs =>
-              match env.fns.find? (·.ref.id == fn.id) with
+              match env.at? fn.id with
               | none => .stuck s!"fn{fn.id} is not declared"
               | some decl =>
                   match decl.callee with
@@ -1404,7 +1404,7 @@ theorem runInsts_call (env : FnEnv) (s : Blocks.BSt) (d : Option Val) (fn : FnRe
       = match args.mapM (Blocks.getV s.vals) with
         | none => .stuck "call argument is not defined"
         | some vs =>
-            match env.fns.find? (·.ref.id == fn.id) with
+            match env.at? fn.id with
             | none => .stuck s!"fn{fn.id} is not declared"
             | some decl =>
                 match decl.callee with
@@ -1444,7 +1444,7 @@ theorem call_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (n : 
   | some vs =>
     rw [hm] at hr
     simp only [henv] at hr
-    cases hf : env.fns.find? (·.ref.id == fn) with
+    cases hf : env.at? fn with
     | none => rw [hf] at hr; simp at hr
     | some d =>
       rw [hf] at hr
@@ -1489,7 +1489,7 @@ theorem callVoid_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (henv : cfg.env = env) (
   | some vs =>
     rw [hm] at hr
     simp only [henv] at hr
-    cases hf : env.fns.find? (·.ref.id == fn) with
+    cases hf : env.at? fn with
     | none => rw [hf] at hr; simp at hr
     | some d =>
       rw [hf] at hr

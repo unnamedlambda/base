@@ -187,34 +187,30 @@ pub fn decode_function(
 
     let mut func = ir::Function::with_name_signature(UserFuncName::user(0, index as u32), sig);
 
-    // The prologue: each callee at the signature it actually has. The names
-    // are kept beside the references so a call that does not fit one can say
-    // which callee it did not fit.
-    let mut fn_refs: HashMap<u32, ir::FuncRef> = HashMap::new();
-    let mut callees: HashMap<u32, (String, Signature)> = HashMap::new();
-    for d in &f.fns {
-        let (resolved, sig) = declare_callee(&d.callee)?;
-        callees.insert(
-            d.reference.0,
-            (
-                match &d.callee {
-                    clif::Callee::Import(n) => n.clone(),
-                    clif::Callee::Local(n) => format!("u0:{n}"),
-                },
-                sig.clone(),
-            ),
-        );
+    // The callees, in the order the function names them: `fn0` is the first.
+    // Each is resolved at the signature it actually has, and the name is kept
+    // beside it so a call that does not fit one can say which it did not fit.
+    let mut fn_refs: Vec<ir::FuncRef> = Vec::with_capacity(f.callees.len());
+    let mut callees: Vec<(String, Signature)> = Vec::with_capacity(f.callees.len());
+    for callee in &f.callees {
+        let (resolved, sig) = declare_callee(callee)?;
+        callees.push((
+            match callee {
+                clif::Callee::Import(n) => n.clone(),
+                clif::Callee::Local(n) => format!("u0:{n}"),
+            },
+            sig.clone(),
+        ));
         let sr = func.import_signature(sig);
         let user_ref = func.declare_imported_user_function(UserExternalName {
             namespace: 0,
             index: resolved.id,
         });
-        let fr = func.import_function(ExtFuncData {
+        fn_refs.push(func.import_function(ExtFuncData {
             name: ExternalName::user(user_ref),
             signature: sr,
             colocated: resolved.colocated,
-        });
-        fn_refs.insert(d.reference.0, fr);
+        }));
     }
 
     // Blocks are created before any body is emitted, so a forward branch has a
@@ -264,10 +260,10 @@ fn check_call(
     inst: &clif::Inst,
     vals: &Vals,
     func: &ir::Function,
-    callees: &HashMap<u32, (String, Signature)>,
+    callees: &[(String, Signature)],
 ) -> Result<(), String> {
     let clif::Inst::Call(_, fr, args) = inst else { return Ok(()) };
-    let Some((name, sig)) = callees.get(&fr.0) else { return Ok(()) };
+    let Some((name, sig)) = callees.get(fr.0 as usize) else { return Ok(()) };
     if args.len() != sig.params.len() {
         return Err(format!(
             "u0:{index} calls {name} with {} argument{}, and {name} takes {}",
@@ -293,7 +289,7 @@ fn emit(
     blk: ir::Block,
     inst: &clif::Inst,
     vals: &mut Vals,
-    fn_refs: &HashMap<u32, ir::FuncRef>,
+    fn_refs: &[ir::FuncRef],
     block_of: &dyn Fn(clif::BlockRef) -> Result<ir::Block, String>,
 ) -> Result<(), String> {
     use clif::Inst as I;
@@ -366,8 +362,8 @@ fn emit(
 
         I::Call(d, fr, args) => {
             let f = *fn_refs
-                .get(&fr.0)
-                .ok_or_else(|| format!("call to undeclared fn{}", fr.0))?;
+                .get(fr.0 as usize)
+                .ok_or_else(|| format!("call to fn{}, which the function does not name", fr.0))?;
             let a = vals.get_all(args)?;
             let call = cur.ins().call(f, &a);
             if let Some(dst) = d {
@@ -423,9 +419,9 @@ fn emit(
             def!(*d, cur.ins().bitcast(ty(*t), MemFlags::new(), vals.get(*s)?))
         }
         I::FuncAddr(d, fr) => {
-            let f = *fn_refs
-                .get(&fr.0)
-                .ok_or_else(|| format!("func_addr of undeclared fn{}", fr.0))?;
+            let f = *fn_refs.get(fr.0 as usize).ok_or_else(|| {
+                format!("func_addr of fn{}, which the function does not name", fr.0)
+            })?;
             def!(*d, cur.ins().func_addr(ir::types::I64, f))
         }
         I::Ctz(d, a) => def!(*d, cur.ins().ctz(vals.get(*a)?)),

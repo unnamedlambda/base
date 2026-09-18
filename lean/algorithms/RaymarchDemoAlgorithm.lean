@@ -226,7 +226,7 @@ open AlgorithmLib.Prog
     and the four state tests need nothing. -/
 
 
-def envNone : FnEnv := { sigs := [], fns := [] }
+def envNone : FnEnv := []
 
 def clearState (ptr : V .i64) : Prog V L Unit := do
   let z ← iconst64 0

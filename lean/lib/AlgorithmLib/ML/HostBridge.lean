@@ -561,7 +561,7 @@ def declaredCountOf (T : List KernelBinding) (D : List DeclaredBinding)
     *is* `Clif.bindsOf` of it, and `Clif.bindsOf_length` says the zip drops
     nothing. -/
 theorem host_realises_pipeline
-    (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+    (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
     (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
@@ -591,7 +591,7 @@ theorem host_realises_pipeline
     is exactly the table: that the PTX at slot `off` is the compiled `S.ew`.  It
     is a hypothesis with a name rather than a step nothing mentions. -/
 theorem host_computes_denote
-    (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+    (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
     (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
@@ -629,7 +629,7 @@ theorem host_computes_denote
     outside the theorem.  The machine executes the bind stores, so the arrays
     in the conclusion are the ones the program wrote. -/
 theorem host_computes_plan
-    (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+    (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI)
     (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)

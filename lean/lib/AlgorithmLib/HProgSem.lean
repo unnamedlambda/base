@@ -972,7 +972,7 @@ where
     match args.mapM (get Γ) with
     | none => .stuck s!"call argument to fn{fn} is not in scope"
     | some vs =>
-        match cfg.env.fns.find? (·.ref.id == fn) with
+        match cfg.env.at? fn with
         | none => .stuck s!"fn{fn} is not declared"
         | some d =>
             match d.callee with
@@ -1204,7 +1204,7 @@ theorem runStmt_call (cfg : Cfg) (Γ : Env) (w : World) (fn : Nat) (args : List 
       = match args.mapM (fun r => Γ[r]?) with
         | none => .stuck s!"call argument to fn{fn} is not in scope"
         | some vs =>
-            match cfg.env.fns.find? (·.ref.id == fn) with
+            match cfg.env.at? fn with
             | none => .stuck s!"fn{fn} is not declared"
             | some d =>
                 match d.callee with
@@ -1223,7 +1223,7 @@ theorem runStmt_callVoid (cfg : Cfg) (Γ : Env) (w : World) (fn : Nat) (args : L
       = match args.mapM (fun r => Γ[r]?) with
         | none => .stuck s!"call argument to fn{fn} is not in scope"
         | some vs =>
-            match cfg.env.fns.find? (·.ref.id == fn) with
+            match cfg.env.at? fn with
             | none => .stuck s!"fn{fn} is not declared"
             | some d =>
                 match d.callee with

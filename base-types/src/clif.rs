@@ -18,9 +18,10 @@
 //! Keeping the field order aligned with Lean's constructors is what lets the
 //! emitter be a one-line-per-variant mapping rather than a schema.
 //!
-//! A reference is an id, not a position: a compiler allocates blocks and
-//! callees it goes on to drop, so what ships is a selection whose numbering has
-//! gaps. A reference naming nothing is refused at load.
+//! A `FnRef` is a position in the function's `callees`. A `BlockRef` is an id,
+//! not a position: a compiler allocates blocks it goes on to drop, so what
+//! ships is a list whose numbering has gaps. Either kind naming nothing is
+//! refused at load.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +33,7 @@ pub struct Val(pub u32);
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockRef(pub u32);
 
-/// A callee declared in the function prologue.
+/// A callee: its position in the function's `callees`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FnRef(pub u32);
 
@@ -204,20 +205,6 @@ pub enum Callee {
     Local(u32),
 }
 
-/// A callee the body may call, under the reference it names it by.
-///
-/// No signature travels with it: an import's is the one base's table provides,
-/// and a local's is read off the callee's own entry block. Both are recovered
-/// at load, so a declaration cannot describe a callee in a way the callee
-/// disagrees with — the rule this format already applies to a function's own
-/// signature.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FnDecl {
-    pub reference: FnRef,
-    pub callee: Callee,
-}
-
 /// One function: what it is called by, what it may call, and what it does.
 ///
 /// Its signature is read off the body: the entry block's parameters are what it
@@ -239,6 +226,11 @@ pub struct Function {
     /// functions. Names are unique within an artifact, and a named function
     /// has to be shaped like an entry point.
     pub export_name: Option<String>,
-    pub fns: Vec<FnDecl>,
+    /// What the body may call. A `Call` names one by its position here, so the
+    /// order is the numbering and there is nothing to disagree with it.
+    ///
+    /// No signature travels with a callee: an import's is the one base's table
+    /// provides, and a local's is read off that function's own entry block.
+    pub callees: Vec<Callee>,
     pub blocks: Vec<Block>,
 }

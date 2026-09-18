@@ -9,7 +9,7 @@ namespace IR
 /-- A function that does nothing, at a given index: one block taking the shared
     memory pointer and returning. -/
 def noopAt (funcIdx : Nat) : FuncData :=
-  { index := funcIdx, fns := [],
+  { index := funcIdx, callees := [],
     blocks := [{ ref := { id := 0 },
                  params := [({ id := 0 }, ClifTy.i64)],
                  insts := [Inst.ret none] }] }
@@ -23,56 +23,47 @@ def noopFunction : FuncData := noopAt 0
 def f32Zero : Float := 0.0
 def f64Zero : Float := 0.0
 
+/-- One callee, as the compiler needs it: what to call, and what it takes.
+
+    Only `callee` is written out. The signature is here because the checker
+    reads a call's arity and types from it before anything is emitted; an
+    artifact carries none, since base's table gives an import's and a local
+    callee's own entry block gives its. -/
+structure CalleeDecl where
+  callee : Callee
+  params : List ClifTy
+  result : Option ClifTy
+  deriving BEq, Lean.ToExpr
+
 /-- The callee table a body is checked and compiled against.
 
-    `fns` is what the emitted function declares; `sigs` is how this side knows
-    what each callee takes, so a call can be checked here. It is not written
-    out: an artifact carries no signatures, because base's table already gives
-    an import's and a local callee's own entry block gives its. -/
-structure FnEnv where
-  sigs : List SigDecl
-  fns  : List FnDecl
-  deriving Inhabited, Lean.ToExpr
+    **Position is the reference.** A call names `callees[i]`, so the order is
+    the numbering: there are no ids to allocate, none to collide, and no way to
+    name a callee the table does not hold. What ships is this list with the
+    signatures dropped. -/
+abbrev FnEnv := List CalleeDecl
 
-/-- The signature `fn` resolves to, or `none` when nothing declares it. -/
-def FnEnv.sigOf (env : FnEnv) (fn : Nat) : Option SigDecl := do
-  let d ← env.fns.find? (·.ref.id == fn)
-  env.sigs.find? (·.ref.id == d.sig.id)
+/-- What `fn` calls and what it takes, or `none` when the table is shorter. -/
+def FnEnv.at? (env : FnEnv) (fn : Nat) : Option CalleeDecl := env[fn]?
 
-/-- The table with one more declaration, and the reference naming it.
+/-- The table with one more callee, and the reference naming it: its position.
 
-    Ids go past the largest in use, not past the count: a table is often a
-    selection from a larger one, in which case its ids are sparse and numbering
-    from the count would hand a new declaration an id an existing one already
-    holds. `sigOf` resolves by id and takes the first match, so that collision
-    would not be an error — the call would quietly land on the wrong
-    signature. -/
-def FnEnv.declare (e : FnEnv) (callee : Callee) (params : List ClifTy)
+    A callee already in the table at the same signature keeps its place, so a
+    body that calls one twice declares it once. -/
+def FnEnv.use (e : FnEnv) (callee : Callee) (params : List ClifTy)
     (result : Option ClifTy) : FnRef × FnEnv :=
-  let sigId := e.sigs.foldl (fun m s => max m (s.ref.id + 1)) 0
-  let fnId := e.fns.foldl (fun m d => max m (d.ref.id + 1)) 0
-  (⟨fnId⟩,
-   { sigs := e.sigs ++ [{ ref := ⟨sigId⟩, params, result }],
-     fns := e.fns ++ [{ ref := ⟨fnId⟩, callee := callee, sig := ⟨sigId⟩ }] })
+  let d : CalleeDecl := { callee, params, result }
+  match e.idxOf? d with
+  | some i => (⟨i⟩, e)
+  | none   => (⟨e.length⟩, e ++ [d])
 
-/-- Declare a call to another function of this same program, by `u0:N` index. -/
-def FnEnv.declareLocal (e : FnEnv) (index : Nat) (params : List ClifTy)
+/-- Call another function of this same program, by its `u0:N` index. -/
+def FnEnv.useLocal (e : FnEnv) (index : Nat) (params : List ClifTy)
     (result : Option ClifTy) : FnRef × FnEnv :=
-  e.declare (.local index) params result
+  e.use (.local index) params result
 
-/-- Declare a symbol the JIT resolves within this program's own module — what a
-    generator whose functions call each other by name needs, and the only kind
-    of declaration that is not already in `Ffi`. -/
-def FnEnv.declareColocated (e : FnEnv) (name : String) (params : List ClifTy)
-    (result : Option ClifTy) : FnRef × FnEnv :=
-  e.declare (.import name) params result
-
-/-- Several colocated declarations of one shape, in order. -/
-def FnEnv.declareColocatedAll (e : FnEnv) (names : List String) (params : List ClifTy)
-    (result : Option ClifTy) : List FnRef × FnEnv :=
-  names.foldl (fun (refs, e) n =>
-    let (r, e) := e.declareColocated n params result
-    (refs ++ [r], e)) ([], e)
+/-- What the emitted function carries: the callees, without the signatures. -/
+def FnEnv.callees (e : FnEnv) : List Callee := e.map (·.callee)
 
 end IR
 

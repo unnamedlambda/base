@@ -1085,8 +1085,7 @@ def bwdDriver : HStmt :=
     (.seq (.launch ⟨8, 3, 108, GRID, 32, dxBinds⟩)
           (.launch ⟨16, 3, 116, GRID, 32, dwBinds⟩))
 
-def bwdFns : List FnDecl :=
-  [{ ref := ⟨0⟩, callee := .import "cl_cuda_launch", sig := ⟨0⟩ }]
+def bwdFns : List Callee := [.import "cl_cuda_launch"]
 
 /-- The emitted host code — a real instruction list, compiled by `flatHI`. -/
 def bwdCode : List HI := code ⟨0⟩ ⟨0⟩ 1 0 bwdDriver
@@ -1134,9 +1133,8 @@ theorem bwd_host_computes (st : WSt) :
 
 def bwdBlasRef : FnRef := ⟨1⟩
 
-def bwdFnsBlas : List FnDecl :=
-  [ { ref := ⟨0⟩, callee := .import "cl_cuda_launch",  sig := ⟨0⟩ }
-  , { ref := ⟨1⟩, callee := .import "cl_cublas_sgemv", sig := ⟨0⟩ } ]
+def bwdFnsBlas : List Callee :=
+  [.import "cl_cuda_launch", .import "cl_cublas_sgemv"]
 
 /-- Buffer-handle slots, as a generator would lay them out. -/
 def SLOT_W : Nat := 0x100

@@ -581,27 +581,16 @@ def cublasSgemmBatchedOnStream (ptr : V .i64)
 -- Calling this program's own functions
 -- ---------------------------------------------------------------------------
 
-/-- The distinct callees, in the order they are first named. -/
-def wrapperUnique (callees : List Nat) : List Nat :=
-  callees.foldl (fun acc x => if acc.contains x then acc else acc ++ [x]) []
-
-/-- One `LocalRef` per distinct callee, numbered as `FnEnv.declare` numbers
-    them from an empty table --- which is where a wrapper's table starts, so
-    the ids are the positions. -/
-def wrapperRefs (callees : List Nat) : List (LocalRef HProg.ptrParams none) :=
-  (wrapperUnique callees).zipIdx.map (fun (c, i) => { id := i, callee := .local c })
-
 /-- A function that calls each of `callees` in order.
 
     Composes stages without the caller having to build the call sequence
-    itself; the callees are named by index, so nothing here resolves a symbol.
-    The table travels with the references, so `compileProg` finds it. Each
-    stage is an entry point, so each is handed exactly what the wrapper was. -/
+    itself; the callees are named by `u0:N`, so nothing here resolves a symbol.
+    The fold gives each its place in the table the first time it is called, so
+    calling one twice declares it once. Each stage is an entry point, so each
+    is handed exactly what the wrapper was. -/
 def sequenceWrapper (callees : List Nat) : Prog V L Unit := do
   let args ← entryArgs
-  let refs := wrapperRefs callees
-  let uniq := wrapperUnique callees
   for c in callees do
-    callLocalVoid (refs[(uniq.idxOf? c).getD 0]!) args
+    callLocalVoid (ps := HProg.ptrParams) (res := none) { callee := .local c } args
 
 end AlgorithmLib.Prog

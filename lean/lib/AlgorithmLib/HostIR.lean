@@ -591,7 +591,7 @@ def HStmt.primDests : HStmt → List Nat
     driver is assembled — the alternative would be to *assume* that filler code
     is filler, which is exactly the kind of unstated hypothesis that makes a
     theorem true and useless. -/
-def HStmt.TameB (fns : List FnDecl) (ptr : Val) : HStmt → Bool
+def HStmt.TameB (fns : List Callee) (ptr : Val) : HStmt → Bool
   | .skip     => true
   | .prim is  => is.all (Inst.TameB fns ptr)
   -- a launch must fill exactly the array it declares the arity of
@@ -608,7 +608,7 @@ def HStmt.TameB (fns : List FnDecl) (ptr : Val) : HStmt → Bool
   | .call b   => HStmt.TameB fns ptr b
 
 /-- A launch-free instruction list contributes nothing to the count. -/
-theorem launchCallCount_zero (fns : List FnDecl) : ∀ (is : List Inst),
+theorem launchCallCount_zero (fns : List Callee) : ∀ (is : List Inst),
     (∀ i ∈ is, isLaunchCallB fns i = false) → launchCallCount fns is = 0 := by
   intro is
   induction is with
@@ -803,7 +803,7 @@ def HCfg.setCtr (c : HCfg) (v : Val) (k : Nat) : HCfg :=
     `root` is the descriptor pointer every fixed layout slot is measured from,
     exactly as in `Clif.bindAt`: a bind array that does not sit at `root`
     resolves to `none` rather than to some other base's array. -/
-def hstep (fns : List FnDecl) (root : Nat) (P : List HI) (c : HCfg) : Option HCfg :=
+def hstep (fns : List Callee) (root : Nat) (P : List HI) (c : HCfg) : Option HCfg :=
   match P[c.pc]? with
   | none => none
   | some (.inst i) =>
@@ -819,7 +819,7 @@ def hstep (fns : List FnDecl) (root : Nat) (P : List HI) (c : HCfg) : Option HCf
   | some (.jmpLt v bound t f) =>
       some { c with pc := if c.ctr v.id < bound then t else f }
 
-def hsteps (fns : List FnDecl) (root : Nat) (P : List HI) : Nat → HCfg → Option HCfg
+def hsteps (fns : List Callee) (root : Nat) (P : List HI) : Nat → HCfg → Option HCfg
   | 0,     c => some c
   | k + 1, c => match hstep fns root P c with
                 | none    => none
@@ -827,7 +827,7 @@ def hsteps (fns : List FnDecl) (root : Nat) (P : List HI) : Nat → HCfg → Opt
 
 /-- Fuel composes, so a program's trace is its parts' traces in order.  The
     host analogue of `steps_add`. -/
-theorem hsteps_add (fns : List FnDecl) (root : Nat) (P : List HI) :
+theorem hsteps_add (fns : List Callee) (root : Nat) (P : List HI) :
     ∀ (a b : Nat) (c : HCfg),
       hsteps fns root P (a + b) c
         = match hsteps fns root P a c with
@@ -1508,7 +1508,7 @@ theorem Fits.right {P : List HI} {p : Nat} {L₁ L₂ : List HI}
     *machine* accumulates over a launch-free-or-not straight line is the list
     the *static scan* of that same straight line produces.  Control flow is what
     makes the two diverge, and control flow is handled separately below. -/
-theorem hsteps_insts (fns : List FnDecl) (root : Nat) (P : List HI) :
+theorem hsteps_insts (fns : List Callee) (root : Nat) (P : List HI) :
     ∀ (is : List Inst) (p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
       (tr : List LaunchRec) (btr : List OpBinds),
       Fits P p (is.map HI.inst) →
@@ -1584,7 +1584,7 @@ theorem emitLaunchCall_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : Launc
     twelve CLIF instructions, and the record `Clif.launchesOf` reads back out of
     them all agree.  It needs `e ptr = unknown` — the base pointer is a runtime
     input — and `ptr.id < n`, so the fragment's temporaries cannot shadow it. -/
-theorem emitLaunchCall_scan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem emitLaunchCall_scan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
     (n : Nat) (s : LaunchStep) (e : Env) (hwf : s.WellFormedB = true)
     (hptr : ptr.id < n) (he : e ptr = .unknown) :
@@ -1637,7 +1637,7 @@ theorem emitLaunch_frame (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : LaunchSte
 /-- **A launch fragment scans to exactly the record it was emitted from.**  The
     bind stores in front of the call contribute nothing to `scanBlock` — they
     are not calls — so this is the same fact it always was. -/
-theorem emitLaunch_scan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem emitLaunch_scan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
     (n : Nat) (s : LaunchStep) (e : Env) (hwf : s.WellFormedB = true)
     (hptr : ptr.id < n) (he : e ptr = .unknown) :
@@ -1659,7 +1659,7 @@ set_option maxRecDepth 12000 in
     the composition theorem had to be handed the recovered list.  Now the
     fragment writes them and this reads them back — the same fragment, two
     passes, one answer. -/
-theorem emitLaunch_bindScan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem emitLaunch_bindScan (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
     (n : Nat) (s : LaunchStep) (e : Env) (m : StoreMap)
     (hptr : ptr.id < n) (he : e ptr = SymVal.unknown)
@@ -1709,18 +1709,18 @@ theorem emitLaunch_bindScan (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
 -- Single control-flow transitions
 -- ---------------------------------------------------------------------------
 
-theorem hsteps_one (fns : List FnDecl) (root : Nat) (P : List HI) (c : HCfg) :
+theorem hsteps_one (fns : List Callee) (root : Nat) (P : List HI) (c : HCfg) :
     hsteps fns root P 1 c = hstep fns root P c := by
   cases h : hstep fns root P c <;> simp [hsteps, h]
 
 /-- Chaining: `a` steps then `b` steps.  The form the compositional cases are
     written in, so a program's run is assembled from its fragments' runs. -/
-theorem hsteps_trans (fns : List FnDecl) (root : Nat) (P : List HI) (a b : Nat) (c c' c'' : HCfg)
+theorem hsteps_trans (fns : List Callee) (root : Nat) (P : List HI) (a b : Nat) (c c' c'' : HCfg)
     (h1 : hsteps fns root P a c = some c') (h2 : hsteps fns root P b c' = some c'') :
     hsteps fns root P (a + b) c = some c'' := by
   rw [hsteps_add, h1]; exact h2
 
-theorem hstep_setC (fns : List FnDecl) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_setC (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds)
     (v : Val) (m : Nat)
     (h : P[q]? = some (HI.setC v m)) :
@@ -1728,20 +1728,20 @@ theorem hstep_setC (fns : List FnDecl) (root : Nat) (P : List HI) (q : Nat) (e :
       = some ⟨q + 1, e, sm, fun w => if w = v.id then m else ct w, tr, btr⟩ := by
   simp only [hstep, h, HCfg.setCtr]
 
-theorem hstep_incC (fns : List FnDecl) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_incC (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds) (v : Val)
     (h : P[q]? = some (HI.incC v)) :
     hstep fns root P ⟨q, e, sm, ct, tr, btr⟩
       = some ⟨q + 1, e, sm, fun w => if w = v.id then ct v.id + 1 else ct w, tr, btr⟩ := by
   simp only [hstep, h, HCfg.setCtr]
 
-theorem hstep_jmp (fns : List FnDecl) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_jmp (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds) (t : Nat)
     (h : P[q]? = some (HI.jmp t)) :
     hstep fns root P ⟨q, e, sm, ct, tr, btr⟩ = some ⟨t, e, sm, ct, tr, btr⟩ := by
   simp only [hstep, h]
 
-theorem hstep_jmpLt (fns : List FnDecl) (root : Nat) (P : List HI) (q : Nat) (e : Env)
+theorem hstep_jmpLt (fns : List Callee) (root : Nat) (P : List HI) (q : Nat) (e : Env)
     (sm : StoreMap) (ct : Nat → Nat) (tr : List LaunchRec) (btr : List OpBinds)
     (v : Val) (bd t f : Nat)
     (h : P[q]? = some (HI.jmpLt v bd t f)) :
@@ -1794,7 +1794,7 @@ theorem flatHI_mono (fnLaunch : FnRef) (ptr : Val) :
     Preconditions are the two the compiler's own convention supplies: the base
     pointer is a runtime input (`e ptr = unknown`) allocated below the
     fragment's watermark (`ptr.id < n`). -/
-theorem flatHI_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem flatHI_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") (P : List HI) :
     ∀ (s : HStmt) (n p : Nat) (e : Env) (sm : StoreMap) (ct : Nat → Nat)
       (tr : List LaunchRec) (btr : List OpBinds),
@@ -2213,7 +2213,7 @@ theorem instsOf_frameAt (fnLaunch : FnRef) (ptr : Val) :
     no branches the two are the same walk.  The base pointer survives, so the
     statement composes: a sequence's second half starts from an environment in
     which `ptr` is still a runtime input. -/
-theorem instsOf_sound (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem instsOf_sound (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") :
     ∀ (s : HStmt) (n : Nat) (e : Env),
       s.BranchFreeB = true → HStmt.TameB fns ptr s = true →
@@ -2310,9 +2310,9 @@ def blockOf (fnLaunch : FnRef) (ptr : Val) (n : Nat) (s : HStmt) : BlockData :=
   { ref := ⟨0⟩, params := [(ptr, .i64)], insts := (instsOf fnLaunch ptr n s).2 }
 
 /-- …and the built function containing it. -/
-def stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val) (n : Nat)
+def stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val) (n : Nat)
     (s : HStmt) : FuncData :=
-  { index := 0, fns := fns,
+  { index := 0, callees := fns,
     blocks := [blockOf fnLaunch ptr n s] }
 
 /-- **What `Clif.launchesOf` reads out of the emitted function is the declared
@@ -2323,7 +2323,7 @@ def stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val) (n : Nat)
     to reduce `StateT` and closures, which it cannot do; applied to `stateOf`
     it walks a first-order term, and `HStmt.launches` is a structural recursion
     on a small tree.  Same fact, kernel-checkable. -/
-theorem launchesOf_stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem launchesOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
     (s : HStmt) (n : Nat)
     (hbf : s.BranchFreeB = true) (htame : HStmt.TameB fns ptr s = true)
@@ -2348,7 +2348,7 @@ theorem launchesOf_stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     writes its whole array immediately before its call, so its entries shadow
     whatever a `prim` left behind — which is why this composes across a
     sequence with no invariant threaded through. -/
-theorem instsOf_binds (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem instsOf_binds (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch") :
     ∀ (s : HStmt) (n : Nat) (e : Env) (m : StoreMap),
       s.BranchFreeB = true → HStmt.TameB fns ptr s = true →
@@ -2453,7 +2453,7 @@ theorem instsOf_binds (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
 
 /-- **What `Clif.bindsOf` reads out of the emitted function is what the
     statement declared it would bind.** -/
-theorem bindsOf_stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem bindsOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
     (s : HStmt) (n : Nat)
     (hbf : s.BranchFreeB = true) (htame : HStmt.TameB fns ptr s = true)
@@ -2470,7 +2470,7 @@ theorem bindsOf_stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
     out of the emitted CLIF, both equal to what the host statement declared.
     Downstream this is what lets a plan be matched against the program without
     the bind list arriving from somewhere else. -/
-theorem deviceOpsOf_stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
+theorem deviceOpsOf_stateOf (fns : List Callee) (fnLaunch : FnRef) (ptr : Val)
     (hfn : fnNameOf fns fnLaunch = some "cl_cuda_launch")
     (s : HStmt) (n : Nat)
     (hbf : s.BranchFreeB = true) (htame : HStmt.TameB fns ptr s = true)
@@ -2495,7 +2495,7 @@ theorem deviceOpsOf_stateOf (fns : List FnDecl) (fnLaunch : FnRef) (ptr : Val)
   loop *and* a call, then the sampling tail.
 -/
 
-def demoFns : List FnDecl := [{ ref := ⟨0⟩, callee := .import "cl_cuda_launch", sig := ⟨0⟩ }]
+def demoFns : List Callee := [.import "cl_cuda_launch"]
 
 def demoLaunch : FnRef := ⟨0⟩
 
@@ -2580,9 +2580,8 @@ theorem demo_trace :
   kernel.  Same class of fact as `Qwen2Algorithm.ffn_writes`, no compiler trust.
 -/
 
-def demoFfnFns : List FnDecl :=
-  [ { ref := ⟨0⟩, callee := .import "cl_cuda_launch",  sig := ⟨0⟩ }
-  , { ref := ⟨1⟩, callee := .import "cl_cublas_sgemv", sig := ⟨0⟩ } ]
+def demoFfnFns : List Callee :=
+  [.import "cl_cuda_launch", .import "cl_cublas_sgemv"]
 
 /-- `y := A·x`, with the three buffer handles loaded from their slots. -/
 def demoSgemv (a x y : Nat) : HStmt :=

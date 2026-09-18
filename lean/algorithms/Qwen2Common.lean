@@ -299,24 +299,12 @@ open AlgorithmLib.Prog
 def ownFns : List Nat :=
   [27, 28, 29, 30, 31, 33, 34, 35, 38, 39, 40]
 
-/-- The bundles whose entry points this program may call. Nothing declares
-    them --- `Prog` reads an entry point's id off `Ffi` --- but the ids the
-    program's *own* functions get are the ones past the largest of these, so
-    the numbering still starts here. -/
-def ownBundles : List IR.FFI.Bundle := [.ht, .cuda, .cublas, .math, .fileIO]
-
-/-- The first id free for a colocated declaration: past every entry point in
-    `ownBundles`, exactly as `FnEnv.declare` allocates. -/
-def ownFirstId : Nat :=
-  (IR.Ffi.all.filter (fun f => ownBundles.contains f.bundle)).foldl
-    (fun m f => max m (f.id + 1)) 0
-
 /-- One reference per own function, in `ownFns` order. Each is an entry point
     in its own right as well as a callee, so it takes what an entry point takes
-    and returns nothing; the declaration travels with the reference, so a body
-    that calls one declares it and a body that does not never mentions it. -/
+    and returns nothing; the callee travels with the reference, so a body that
+    calls one declares it and a body that does not never mentions it. -/
 def ownRef (i : Nat) : Prog.LocalRef HProg.ptrParams none :=
-  { id := ownFirstId + i, callee := .local ((ownFns[i]?).getD 0) }
+  { callee := .local ((ownFns[i]?).getD 0) }
 
 /-- A function of this program that another one calls. -/
 abbrev OwnRef := Prog.LocalRef HProg.ptrParams none
@@ -2258,7 +2246,7 @@ theorem infer_loop_is_layers :
 open AlgorithmLib.Clif in
 /-- **…and its body dispatches to the layer function and nothing else.** -/
 theorem infer_loop_body_calls :
-    (blockInsts? (stateOf inferFn) 2).map (callsIn (stateOf inferFn).fns)
+    (blockInsts? (stateOf inferFn) 2).map (callsIn (stateOf inferFn).callees)
       = some ["u0:28"] := by native_decide
 
 open AlgorithmLib.Clif in

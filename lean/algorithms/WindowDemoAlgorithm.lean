@@ -172,7 +172,7 @@ open AlgorithmLib.Prog
     test reaches the GPU, and the four state tests reach nothing. -/
 
 
-def envNone : FnEnv := { sigs := [], fns := [] }
+def envNone : FnEnv := []
 
 /-- Put the player at (x, y) and clear held-keys / quit / frame. -/
 def clearState (ptr : V .i64) (x y : Int) : Prog V L Unit := do

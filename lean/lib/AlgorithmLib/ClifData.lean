@@ -31,12 +31,7 @@ structure BlockRef where
   id : Nat
   deriving Repr, BEq
 
-/-- A signature reference -/
-structure SigRef where
-  id : Nat
-  deriving Repr, BEq, Lean.ToExpr
-
-/-- An FFI function reference -/
+/-- A callee: its position in the function's `callees`. -/
 structure FnRef where
   id : Nat
   deriving Repr, BEq, Inhabited, Lean.ToExpr
@@ -129,32 +124,13 @@ structure BlockData where
   params : List (Val × ClifTy)
   insts : List Inst
 
-/-- A signature declaration -/
-structure SigDecl where
-  ref : SigRef
-  params : List ClifTy
-  result : Option ClifTy
-  deriving Lean.ToExpr
-
-/-- What a `fn` declaration names. -/
+/-- What a call names: a host symbol, or another function of this program. -/
 inductive Callee where
   /-- A symbol resolved through the JIT's symbol table. -/
   | import (name : String)
   /-- Another function of this same program, by its `u0:N` index. -/
   | local (index : Nat)
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
-
-/-- A callee declaration.
-
-    `sig` is the table's own bookkeeping: it names the `SigDecl` the checker
-    reads a call's arity and types from. It is not written out, because an
-    artifact carries no signatures — an import's is the one base's table
-    provides and a local's is read off the callee's entry block. -/
-structure FnDecl where
-  ref : FnRef
-  callee : Callee
-  sig : SigRef
-  deriving Lean.ToExpr
 
 -- ---------------------------------------------------------------------------
 -- The emitted program
@@ -168,7 +144,9 @@ structure FnDecl where
     the program's own. -/
 structure FuncData where
   index : Nat
-  fns : List FnDecl
+  /-- What the body may call. A `call` names one by its position here, so the
+      order is the numbering and there is nothing to disagree with it. -/
+  callees : List Callee
   blocks : List BlockData
   exportName : Option String := none
 
@@ -187,8 +165,6 @@ instance : ToCbor Val where
   cbor v := nat v.id
 instance : ToCbor BlockRef where
   cbor b := nat b.id
-instance : ToCbor SigRef where
-  cbor s := nat s.id
 instance : ToCbor FnRef where
   cbor f := nat f.id
 
@@ -287,15 +263,10 @@ instance : ToCbor Callee where
     | .import n => newtypeVariant "Import" (text n)
     | .local i => newtypeVariant "Local" (nat i)
 
-instance : ToCbor FnDecl where
-  cbor f := struct
-    [("reference", cbor f.ref),
-     ("callee", cbor f.callee)]
-
 instance : ToCbor FuncData where
   cbor f := struct
     [("export_name", option text f.exportName),
-     ("fns", array f.fns cbor),
+     ("callees", array f.callees cbor),
      ("blocks", array f.blocks cbor)]
 
 end IR

@@ -499,9 +499,9 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       let ta ← Γ.get a; need (ta == .i64) op.ty
 
 /-- Every argument in scope and typed as the signature declares. -/
-private def argsOk (Γ : TyEnv) (sig : SigDecl) (args : List R) : Bool :=
-  args.length == sig.params.length &&
-    (List.zip args sig.params).all fun (r, t) => Γ.get r == some t
+private def argsOk (Γ : TyEnv) (d : CalleeDecl) (args : List R) : Bool :=
+  args.length == d.params.length &&
+    (List.zip args d.params).all fun (r, t) => Γ.get r == some t
 
 /-- The type a statement appends to the environment, or `none` for statements
     that bind nothing. `ok` is the check itself. -/
@@ -517,13 +517,13 @@ def Stmt.check (env : FnEnv) (Γ : TyEnv) : Stmt → Bool × Option ClifTy
   -- which is what Cranelift does and what `runStmt` already accepted.
   | .istore8 v a =>
       (((Γ.get v).map (·.isInt)).getD false && Γ.get a == some .i64, none)
-  | .call fn args => match env.sigOf fn with
-      | some sig => match sig.result with
-          | some t => (argsOk Γ sig args, some t)
+  | .call fn args => match env.at? fn with
+      | some d => match d.result with
+          | some t => (argsOk Γ d args, some t)
           | none => (false, none)
       | none => (false, none)
-  | .callVoid fn args => match env.sigOf fn with
-      | some sig => (argsOk Γ sig args && sig.result.isNone, none)
+  | .callVoid fn args => match env.at? fn with
+      | some d => (argsOk Γ d args && d.result.isNone, none)
       | none => (false, none)
 
 /-- How many slots a statement defines. -/
@@ -936,14 +936,12 @@ def compileBody (idx : Nat) (c : Code) (env : FnEnv)
     let s := { s0.open' 0 params 0 with slots := params.length }
     let s := emitCode fuel s c
     let s := s.close (.ret (status.map s.get))
-    -- Declare what this body calls, not the whole table it was checked against.
-    -- The ids a call names are the table's, and the decoder resolves by id, so
-    -- dropping the rest renames nothing.
-    let used := callsOf c
-    let fns := env.fns.filter (fun d => used.contains d.ref.id)
+    -- The table is what the body called, in the order it first called each, so
+    -- there is nothing to filter and nothing to renumber: what ships is the
+    -- table the body was checked against, with the signatures dropped.
     return {
       index := idx
-      fns
+      callees := env.callees
       blocks := s.done.mergeSort (fun a b => a.ref.id ≤ b.ref.id)
     }
 
