@@ -131,46 +131,30 @@ pub(crate) fn compile(
 
     let mut decoded = Vec::with_capacity(functions.len());
     for (i, f) in functions.iter().enumerate() {
-        let mut declare = |callee: &base_types::clif::Callee,
-                           sig: &cranelift_codegen::ir::Signature| {
-            match callee {
-                // Only what base provides, at the signature it provides it
-                // at. A name outside the table would otherwise be looked up
-                // in whatever the process has loaded, and a signature that
-                // disagrees would be called with arguments in the wrong
-                // registers.
-                base_types::clif::Callee::Import(name) => {
-                    let import = crate::imports::lookup(name).ok_or_else(|| {
-                        format!("u0:{i} imports {name}, which base does not provide")
-                    })?;
-                    let want = crate::clif_decode::signature(&import.params, import.result, cc);
-                    if *sig != want {
-                        return Err(format!(
-                            "u0:{i} declares {name} as {sig}, but base provides it as {want}"
-                        ));
-                    }
-                    let id = module
-                        .declare_function(name, cranelift_module::Linkage::Import, sig)
-                        .map_err(|e| format!("declaring import {name}: {e}"))?;
-                    Ok(Resolved { id: id.as_u32(), colocated: false })
-                }
-                // The callee's signature is the one its own body declares, so
-                // a call site that says otherwise is refused here rather than
-                // passing arguments the callee never reads.
-                base_types::clif::Callee::Local(n) => {
-                    let (id, want) = func_ids
-                        .get(*n as usize)
-                        .zip(sigs.get(*n as usize))
-                        .ok_or_else(|| {
-                            format!("call to u0:{n}, which the program does not define")
-                        })?;
-                    if sig != want {
-                        return Err(format!(
-                            "u0:{i} declares its call to u0:{n} as {sig}, but u0:{n} takes {want}"
-                        ));
-                    }
-                    Ok(Resolved { id: id.as_u32(), colocated: true })
-                }
+        let mut declare = |callee: &base_types::clif::Callee| match callee {
+            // Only what base provides, at the signature it provides it at. A
+            // name outside the table would otherwise be looked up in whatever
+            // the process has loaded, and be called with arguments in the
+            // wrong registers.
+            base_types::clif::Callee::Import(name) => {
+                let import = crate::imports::lookup(name).ok_or_else(|| {
+                    format!("u0:{i} imports {name}, which base does not provide")
+                })?;
+                let sig = crate::clif_decode::signature(&import.params, import.result, cc);
+                let id = module
+                    .declare_function(name, cranelift_module::Linkage::Import, &sig)
+                    .map_err(|e| format!("declaring import {name}: {e}"))?;
+                Ok((Resolved { id: id.as_u32(), colocated: false }, sig))
+            }
+            // A local callee's signature is the one its own body declares,
+            // read once here and used for both the call site and the
+            // definition, so the two cannot disagree.
+            base_types::clif::Callee::Local(n) => {
+                let (id, sig) = func_ids
+                    .get(*n as usize)
+                    .zip(sigs.get(*n as usize))
+                    .ok_or_else(|| format!("call to u0:{n}, which the program does not define"))?;
+                Ok((Resolved { id: id.as_u32(), colocated: true }, sig.clone()))
             }
         };
         decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut declare)?);

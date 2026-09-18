@@ -55,7 +55,7 @@ pub struct Func {
 
 pub fn function() -> Func {
     Func {
-        inner: Function { export_name: None, sigs: vec![], fns: vec![], blocks: vec![] },
+        inner: Function { export_name: None, fns: vec![], blocks: vec![] },
     }
 }
 
@@ -66,32 +66,21 @@ impl Func {
         self
     }
 
-    /// `sigN = (params) -> result system_v`
-    pub fn sig(mut self, n: u32, params: &[ClifTy], result: Option<ClifTy>) -> Self {
-        self.inner.sigs.push(SigDecl {
-            reference: SigRef(n),
-            params: params.to_vec(),
-            result,
-        });
-        self
-    }
-
-    /// `fnN = %name sigS`
-    pub fn import(mut self, n: u32, name: &str, sig: u32) -> Self {
+    /// `fnN = %name` — at whatever signature base's table gives that import.
+    pub fn import(mut self, n: u32, name: &str) -> Self {
         self.inner.fns.push(FnDecl {
             reference: FnRef(n),
             callee: Callee::Import(name.to_string()),
-            sig: SigRef(sig),
         });
         self
     }
 
-    /// `fnN = colocated u0:I sigS` — a call to another function of this program.
-    pub fn local(mut self, n: u32, index: u32, sig: u32) -> Self {
+    /// `fnN = colocated u0:I` — a call to another function of this program, at
+    /// whatever signature that function's own entry block gives it.
+    pub fn local(mut self, n: u32, index: u32) -> Self {
         self.inner.fns.push(FnDecl {
             reference: FnRef(n),
             callee: Callee::Local(index),
-            sig: SigRef(sig),
         });
         self
     }

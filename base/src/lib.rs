@@ -267,12 +267,25 @@ pub fn clif_text(functions: &[base_types::clif::Function]) -> Result<String, Str
         // the stub resolver records what each id stood for and the names are
         // put back afterward.
         let mut names: Vec<String> = Vec::new();
-        let mut declare = |c: &Callee, _: &cranelift_codegen::ir::Signature| {
+        let mut declare = |c: &Callee| {
+            let sig = match c {
+                Callee::Import(n) => {
+                    let import = imports::lookup(n)
+                        .ok_or_else(|| format!("u0:{i} imports {n}, which base does not provide"))?;
+                    clif_decode::signature(&import.params, import.result, cc)
+                }
+                Callee::Local(n) => {
+                    let callee = functions
+                        .get(*n as usize)
+                        .ok_or_else(|| format!("call to u0:{n}, which the program does not define"))?;
+                    clif_decode::signature_of(callee, *n as usize, cc)?
+                }
+            };
             names.push(match c {
                 Callee::Import(n) => format!("%{n}"),
                 Callee::Local(i) => format!("u0:{i}"),
             });
-            Ok(clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false })
+            Ok((clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false }, sig))
         };
         let text = format!("{}", clif_decode::decode_function(f, i, cc, &mut declare)?);
         let mut text = text;

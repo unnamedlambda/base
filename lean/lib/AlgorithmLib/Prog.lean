@@ -1096,8 +1096,8 @@ theorem compileProg_eq_stateOf {idx : Nat} {p : Body} {params : List ClifTy}
 
 /-- **The function index is only the index.**
 
-    A body's blocks, its callee table and its signatures do not depend on the
-    position it is compiled at; `idx` reaches nothing but the `index` field.
+    A body's blocks and its callee table do not depend on the position it is
+    compiled at; `idx` reaches nothing but the `index` field.
 
     This is stated because of how it is used. A theorem about an emitted body
     is written over `stateOf i p`, and the artifact may ship that body at some
@@ -1115,9 +1115,6 @@ theorem stateOf_blocks_index {i j : Nat} {p : Body} {params : List ClifTy} :
 
 theorem stateOf_fns_index {i j : Nat} {p : Body} {params : List ClifTy} :
     (stateOf i p params).fns = (stateOf j p params).fns := rfl
-
-theorem stateOf_sigs_index {i j : Nat} {p : Body} {params : List ClifTy} :
-    (stateOf i p params).sigs = (stateOf j p params).sigs := rfl
 
 /-- The functions of an artifact, in `u0:N` order, or the first failure.
 

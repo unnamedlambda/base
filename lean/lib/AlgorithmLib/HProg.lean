@@ -943,7 +943,6 @@ def compileBody (idx : Nat) (c : Code) (env : FnEnv)
     let fns := env.fns.filter (fun d => used.contains d.ref.id)
     return {
       index := idx
-      sigs := env.sigs.filter (fun sg => fns.any (·.sig.id == sg.ref.id))
       fns
       blocks := s.done.mergeSort (fun a b => a.ref.id ≤ b.ref.id)
     }

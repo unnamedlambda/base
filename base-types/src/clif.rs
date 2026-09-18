@@ -14,9 +14,13 @@
 //! {"Call": [null, 3, [4, 5]]}
 //! ```
 //!
-//! `Val`, `BlockRef`, `SigRef` and `FnRef` are newtypes, so they appear as bare
-//! numbers. Keeping the field order aligned with Lean's constructors is what
-//! lets the emitter be a one-line-per-variant mapping rather than a schema.
+//! `Val`, `BlockRef` and `FnRef` are newtypes, so they appear as bare numbers.
+//! Keeping the field order aligned with Lean's constructors is what lets the
+//! emitter be a one-line-per-variant mapping rather than a schema.
+//!
+//! A reference is an id, not a position: a compiler allocates blocks and
+//! callees it goes on to drop, so what ships is a selection whose numbering has
+//! gaps. A reference naming nothing is refused at load.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,10 +31,6 @@ pub struct Val(pub u32);
 /// A basic block.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockRef(pub u32);
-
-/// A signature declared in the function prologue.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SigRef(pub u32);
 
 /// A callee declared in the function prologue.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -181,21 +181,16 @@ pub enum Inst {
 }
 
 /// A basic block: its parameters, then its instructions.
+///
+/// It carries its own reference because the ids are not positions: a compiler
+/// allocates a block it goes on to drop, so what ships is a list with gaps in
+/// its numbering, and a branch names the id rather than the place.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Block {
     pub reference: BlockRef,
     pub params: Vec<(Val, ClifTy)>,
     pub insts: Vec<Inst>,
-}
-
-/// A signature in the function prologue.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SigDecl {
-    pub reference: SigRef,
-    pub params: Vec<ClifTy>,
-    pub result: Option<ClifTy>,
 }
 
 /// What a `fn` declaration names.
@@ -209,21 +204,29 @@ pub enum Callee {
     Local(u32),
 }
 
-/// A callee in the function prologue.
+/// A callee the body may call, under the reference it names it by.
+///
+/// No signature travels with it: an import's is the one base's table provides,
+/// and a local's is read off the callee's own entry block. Both are recovered
+/// at load, so a declaration cannot describe a callee in a way the callee
+/// disagrees with — the rule this format already applies to a function's own
+/// signature.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FnDecl {
     pub reference: FnRef,
     pub callee: Callee,
-    pub sig: SigRef,
 }
 
-/// One function. Its signature is read off the body: the entry block's
-/// parameters are what it takes, and whether its `Ret` carries a value is
-/// whether it answers an `i64`. Under the host's C calling convention. So the
-/// signature is not a separate field that could disagree with the body. An entry point takes the
-/// memory base, the input buffer and its length, and the output buffer and its
-/// length; a function reached through `cl_thread_spawn` takes its spawn
+/// One function: what it is called by, what it may call, and what it does.
+///
+/// Its signature is read off the body: the entry block's parameters are what it
+/// takes, and whether its `Ret` carries a value is whether it answers an `i64`.
+/// Under the host's C calling convention. So the signature is not a separate
+/// field that could disagree with the body — and neither is a callee's, which
+/// is why `callees` says only what to call and not how. An entry point takes
+/// the memory base, the input buffer and its length, and the output buffer and
+/// its length; a function reached through `cl_thread_spawn` takes its spawn
 /// argument.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,7 +239,6 @@ pub struct Function {
     /// functions. Names are unique within an artifact, and a named function
     /// has to be shaped like an entry point.
     pub export_name: Option<String>,
-    pub sigs: Vec<SigDecl>,
     pub fns: Vec<FnDecl>,
     pub blocks: Vec<Block>,
 }

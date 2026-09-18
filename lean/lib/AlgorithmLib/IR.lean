@@ -9,7 +9,7 @@ namespace IR
 /-- A function that does nothing, at a given index: one block taking the shared
     memory pointer and returning. -/
 def noopAt (funcIdx : Nat) : FuncData :=
-  { index := funcIdx, sigs := [], fns := [],
+  { index := funcIdx, fns := [],
     blocks := [{ ref := { id := 0 },
                  params := [({ id := 0 }, ClifTy.i64)],
                  insts := [Inst.ret none] }] }
@@ -23,8 +23,12 @@ def noopFunction : FuncData := noopAt 0
 def f32Zero : Float := 0.0
 def f64Zero : Float := 0.0
 
-/-- The callee table a body is checked and compiled against — exactly the
-    `sigs` and `fns` the emitted function will declare. -/
+/-- The callee table a body is checked and compiled against.
+
+    `fns` is what the emitted function declares; `sigs` is how this side knows
+    what each callee takes, so a call can be checked here. It is not written
+    out: an artifact carries no signatures, because base's table already gives
+    an import's and a local callee's own entry block gives its. -/
 structure FnEnv where
   sigs : List SigDecl
   fns  : List FnDecl

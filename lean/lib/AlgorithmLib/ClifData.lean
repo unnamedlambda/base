@@ -144,7 +144,12 @@ inductive Callee where
   | local (index : Nat)
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
-/-- A callee declaration -/
+/-- A callee declaration.
+
+    `sig` is the table's own bookkeeping: it names the `SigDecl` the checker
+    reads a call's arity and types from. It is not written out, because an
+    artifact carries no signatures — an import's is the one base's table
+    provides and a local's is read off the callee's entry block. -/
 structure FnDecl where
   ref : FnRef
   callee : Callee
@@ -163,7 +168,6 @@ structure FnDecl where
     the program's own. -/
 structure FuncData where
   index : Nat
-  sigs : List SigDecl
   fns : List FnDecl
   blocks : List BlockData
   exportName : Option String := none
@@ -278,12 +282,6 @@ instance : ToCbor BlockData where
      ("params", array b.params fun (v, t) => do head 4 2; cbor v; cbor t),
      ("insts", array b.insts cbor)]
 
-instance : ToCbor SigDecl where
-  cbor s := struct
-    [("reference", cbor s.ref),
-     ("params", array s.params cbor),
-     ("result", option cbor s.result)]
-
 instance : ToCbor Callee where
   cbor
     | .import n => newtypeVariant "Import" (text n)
@@ -292,13 +290,11 @@ instance : ToCbor Callee where
 instance : ToCbor FnDecl where
   cbor f := struct
     [("reference", cbor f.ref),
-     ("callee", cbor f.callee),
-     ("sig", cbor f.sig)]
+     ("callee", cbor f.callee)]
 
 instance : ToCbor FuncData where
   cbor f := struct
     [("export_name", option text f.exportName),
-     ("sigs", array f.sigs cbor),
      ("fns", array f.fns cbor),
      ("blocks", array f.blocks cbor)]
 

@@ -71,8 +71,7 @@ fn test_cranelift_basic_compilation() {
     // Single CLIF function that writes 8 bytes at offset 2000 to the file at offset 3000.
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2000),
@@ -105,8 +104,7 @@ fn test_cranelift_arithmetic_add() {
     // Add operands at 2000/2008, store at 2016, write 2016 to file.
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -142,8 +140,7 @@ fn test_cranelift_arithmetic_multiply() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -179,8 +176,7 @@ fn test_cranelift_memory_operations() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 load32(v(1), v(0), 2000),
                 load32(v(2), v(0), 2004),
@@ -219,8 +215,7 @@ fn test_cranelift_conditional_logic() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -274,12 +269,10 @@ fn test_clif_ffi_file_smoke() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .sig(1, &[I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
-            .import(1, "cl_file_read", 0)
-            .import(2, "cl_file_write_from_ptr", 1)
-            .import(3, "cl_file_read_to_ptr", 1)
+            .import(0, "cl_file_write")
+            .import(1, "cl_file_read")
+            .import(2, "cl_file_write_from_ptr")
+            .import(3, "cl_file_read_to_ptr")
             .entry(vec![
                 iconst64(v(1), 2000),
                 iconst64(v(2), 3000),
@@ -331,19 +324,13 @@ fn test_clif_ffi_gpu_smoke() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I64, I64, I32], Some(I32))
-            .sig(4, &[I64, I32, I32, I32, I32], Some(I32))
-            .sig(5, &[I64, I32, I64, I64], Some(I32))
-            .import(0, "cl_gpu_init", 0)
-            .import(1, "cl_gpu_create_buffer", 1)
-            .import(2, "cl_gpu_upload", 2)
-            .import(3, "cl_gpu_create_pipeline", 3)
-            .import(4, "cl_gpu_dispatch", 4)
-            .import(5, "cl_gpu_download", 5)
-            .import(6, "cl_gpu_cleanup", 0)
+            .import(0, "cl_gpu_init")
+            .import(1, "cl_gpu_create_buffer")
+            .import(2, "cl_gpu_upload")
+            .import(3, "cl_gpu_create_pipeline")
+            .import(4, "cl_gpu_dispatch")
+            .import(5, "cl_gpu_download")
+            .import(6, "cl_gpu_cleanup")
             .entry(vec![
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
@@ -407,16 +394,12 @@ fn test_clif_ffi_net_smoke() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I64))
-            .sig(2, &[I64, I64, I64, I64], Some(I64))
-            .sig(3, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_net_init", 0)
-            .import(1, "cl_net_connect", 1)
-            .import(2, "cl_net_send", 2)
-            .import(3, "cl_net_recv", 2)
-            .import(4, "cl_net_cleanup", 0)
-            .import(5, "cl_file_write", 3)
+            .import(0, "cl_net_init")
+            .import(1, "cl_net_connect")
+            .import(2, "cl_net_send")
+            .import(3, "cl_net_recv")
+            .import(4, "cl_net_cleanup")
+            .import(5, "cl_file_write")
             .entry(vec![
                 call(None, 0, &[v(0)]),
                 load_trusted(v(1), I64, v(0), 0),
@@ -466,17 +449,12 @@ fn test_clif_ffi_lmdb_smoke() {
     //   3500:  cursor scan result buffer
     let clif_prog = program(
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64, I32], Some(I32))
-            .sig(2, &[I64, I32, I64, I32, I64, I32], Some(I32))
-            .sig(3, &[I64, I32, I64, I32, I64], Some(I32))
-            .sig(4, &[I64, I32, I64, I32, I32, I64], Some(I32))
-            .import(0, "cl_lmdb_init", 0)
-            .import(1, "cl_lmdb_open", 1)
-            .import(2, "cl_lmdb_put", 2)
-            .import(3, "cl_lmdb_get", 3)
-            .import(4, "cl_lmdb_cursor_scan", 4)
-            .import(5, "cl_lmdb_cleanup", 0)
+            .import(0, "cl_lmdb_init")
+            .import(1, "cl_lmdb_open")
+            .import(2, "cl_lmdb_put")
+            .import(3, "cl_lmdb_get")
+            .import(4, "cl_lmdb_cursor_scan")
+            .import(5, "cl_lmdb_cleanup")
             .entry(vec![
                 call(None, 0, &[v(0)]),
                 load_trusted(v(91), I64, v(0), 0),
@@ -527,18 +505,12 @@ fn test_clif_ffi_thread_smoke() {
 
     let clif_prog = programs(vec![
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64, I64], Some(I64))
-            .sig(2, &[I64, I64], Some(I64))
-            .sig(3, &[I64], None)
-            .sig(4, &[I64, I64, I64], Some(I64))
-            .sig(5, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_thread_init", 0)
-            .import(1, "cl_thread_spawn", 1)
-            .import(2, "cl_thread_join", 2)
-            .import(3, "cl_thread_cleanup", 3)
-            .import(4, "cl_thread_call", 4)
-            .import(5, "cl_file_write", 5)
+            .import(0, "cl_thread_init")
+            .import(1, "cl_thread_spawn")
+            .import(2, "cl_thread_join")
+            .import(3, "cl_thread_cleanup")
+            .import(4, "cl_thread_call")
+            .import(5, "cl_file_write")
             .entry(vec![
                 iadd_imm(v(1), v(0), 16),
                 call(None, 0, &[v(1)]),
@@ -589,8 +561,7 @@ fn test_clif_call_basic() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2000),
@@ -627,8 +598,7 @@ fn test_clif_call_multiple_functions() {
 
     let clif_prog = programs(vec![
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 2000),
                 iconst64(v(2), 3000),
@@ -638,8 +608,7 @@ fn test_clif_call_multiple_functions() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 2256),
                 iconst64(v(2), 3008),
@@ -686,8 +655,7 @@ fn test_clif_call_arithmetic() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -744,8 +712,7 @@ fn test_clif_call_sequential_mutations() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2008),
@@ -793,8 +760,7 @@ fn test_clif_call_no_workers_needed() {
 
     let clif_prog2 = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 77),
                 store(v(1), v(0), 2000),
@@ -837,8 +803,7 @@ fn test_clif_call_file_read_write() {
 
     let clif_prog = programs(vec![
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_read", 0)
+            .import(0, "cl_file_read")
             .entry(vec![
                 iconst64(v(1), 2000),
                 iconst64(v(2), 3000),
@@ -848,8 +813,7 @@ fn test_clif_call_file_read_write() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 2256),
                 iconst64(v(2), 3000),
@@ -1017,8 +981,7 @@ fn test_base_multi_execute_with_file_io() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 256),
                 iconst64(v(2), 512),
@@ -1444,18 +1407,13 @@ fn test_clif_ffi_cuda_smoke() {
 
     let clif_prog = program(
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
-            .sig(4, &[I64], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload", 2)
-            .import(3, "cl_cuda_launch", 3)
-            .import(4, "cl_cuda_sync", 4)
-            .import(5, "cl_cuda_download", 2)
-            .import(6, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload")
+            .import(3, "cl_cuda_launch")
+            .import(4, "cl_cuda_sync")
+            .import(5, "cl_cuda_download")
+            .import(6, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(90), v(0), 0),
                 call(None, 0, &[v(90)]),
@@ -1511,20 +1469,14 @@ fn test_cublas_sgemv_on_stream_reuse() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I32, I32], Some(I32))
-            .sig(4, &[I64], Some(I32))
-            .sig(5, &[I64, I32], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr", 2)
-            .import(3, "cl_cuda_download_ptr", 2)
-            .import(4, "cl_cublas_sgemv_on_stream", 3)
-            .import(5, "cl_cuda_stream_create", 4)
-            .import(6, "cl_cuda_stream_sync", 5)
-            .import(7, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cublas_sgemv_on_stream")
+            .import(5, "cl_cuda_stream_create")
+            .import(6, "cl_cuda_stream_sync")
+            .import(7, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
@@ -1616,21 +1568,14 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32, I32,
-                      I64, I64, I64, I32, I32, I32], Some(I32))
-            .sig(4, &[I64], Some(I32))
-            .sig(5, &[I64, I32], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr", 2)
-            .import(3, "cl_cuda_download_ptr", 2)
-            .import(4, "cl_cublas_sgemm_strided_batched_on_stream", 3)
-            .import(5, "cl_cuda_stream_create", 4)
-            .import(6, "cl_cuda_stream_sync", 5)
-            .import(7, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cublas_sgemm_strided_batched_on_stream")
+            .import(5, "cl_cuda_stream_create")
+            .import(6, "cl_cuda_stream_sync")
+            .import(7, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
@@ -2204,19 +2149,13 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I64, I64, I32], Some(I32))
-            .sig(3, &[I64, I32, I64, I64], Some(I32))
-            .sig(4, &[I64, I32, I32, I32, I32], Some(I32))
-            .sig(5, &[I64, I32, I64, I64, I64], Some(I32))
-            .import(0, "cl_gpu_init", 0)
-            .import(1, "cl_gpu_create_buffer", 1)
-            .import(2, "cl_gpu_create_pipeline", 2)
-            .import(3, "cl_gpu_upload_ptr", 3)
-            .import(4, "cl_gpu_dispatch", 4)
-            .import(5, "cl_gpu_download_ptr", 5)
-            .import(6, "cl_gpu_cleanup", 0)
+            .import(0, "cl_gpu_init")
+            .import(1, "cl_gpu_create_buffer")
+            .import(2, "cl_gpu_create_pipeline")
+            .import(3, "cl_gpu_upload_ptr")
+            .import(4, "cl_gpu_dispatch")
+            .import(5, "cl_gpu_download_ptr")
+            .import(6, "cl_gpu_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
@@ -2306,15 +2245,11 @@ fn test_gpu_download_ptr_with_offset() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I64, I64, I64], Some(I32))
-            .import(0, "cl_gpu_init", 0)
-            .import(1, "cl_gpu_create_buffer", 1)
-            .import(2, "cl_gpu_upload_ptr", 2)
-            .import(3, "cl_gpu_download_ptr", 3)
-            .import(4, "cl_gpu_cleanup", 0)
+            .import(0, "cl_gpu_init")
+            .import(1, "cl_gpu_create_buffer")
+            .import(2, "cl_gpu_upload_ptr")
+            .import(3, "cl_gpu_download_ptr")
+            .import(4, "cl_gpu_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
@@ -2433,16 +2368,12 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr", 2)
-            .import(3, "cl_cuda_download_ptr", 2)
-            .import(4, "cl_cuda_launch", 3)
-            .import(5, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cuda_launch")
+            .import(5, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
@@ -2568,16 +2499,12 @@ fn test_cuda_download_ptr_different_data() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr", 2)
-            .import(3, "cl_cuda_download_ptr", 2)
-            .import(4, "cl_cuda_launch", 3)
-            .import(5, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cuda_launch")
+            .import(5, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
@@ -2698,19 +2625,13 @@ fn test_cublas_sgemm_strided_batched_reuse() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I64, I32, I64, I32, I32, I64, I32,
-                      I64, I64, I64, I32, I32, I32], Some(I32))
-            .sig(4, &[I64], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr", 2)
-            .import(3, "cl_cuda_download_ptr", 2)
-            .import(4, "cl_cublas_sgemm_strided_batched", 3)
-            .import(5, "cl_cuda_sync", 4)
-            .import(6, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cublas_sgemm_strided_batched")
+            .import(5, "cl_cuda_sync")
+            .import(6, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
@@ -2831,15 +2752,11 @@ fn test_cuda_upload_ptr_offset_reuse() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I64, I64], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr_offset", 2)
-            .import(3, "cl_cuda_download_ptr", 3)
-            .import(4, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr_offset")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
@@ -2948,16 +2865,12 @@ fn test_cuda_launch_named_reuses_named_kernel() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I64, I64, I32, I64, I32, I32, I32, I32, I32, I32], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr", 2)
-            .import(3, "cl_cuda_download_ptr", 2)
-            .import(4, "cl_cuda_launch_named", 3)
-            .import(5, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cuda_launch_named")
+            .import(5, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
@@ -3052,18 +2965,13 @@ fn test_cublas_sgemv_reuse() {
                 ret(),
             ]),
         function()
-            .sig(0, &[I64], None)
-            .sig(1, &[I64, I64], Some(I32))
-            .sig(2, &[I64, I32, I64, I64], Some(I32))
-            .sig(3, &[I64, I32, I32, I32, I32, I32, I32, I32, I32], Some(I32))
-            .sig(4, &[I64], Some(I32))
-            .import(0, "cl_cuda_init", 0)
-            .import(1, "cl_cuda_create_buffer", 1)
-            .import(2, "cl_cuda_upload_ptr", 2)
-            .import(3, "cl_cuda_download_ptr", 2)
-            .import(4, "cl_cublas_sgemv", 3)
-            .import(5, "cl_cuda_sync", 4)
-            .import(6, "cl_cuda_cleanup", 0)
+            .import(0, "cl_cuda_init")
+            .import(1, "cl_cuda_create_buffer")
+            .import(2, "cl_cuda_upload_ptr")
+            .import(3, "cl_cuda_download_ptr")
+            .import(4, "cl_cublas_sgemv")
+            .import(5, "cl_cuda_sync")
+            .import(6, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
@@ -3176,8 +3084,7 @@ fn compute(insts: Vec<Inst>, n: i64) -> Vec<u8> {
     ]);
     let prog = program(
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], Some(I64))
-            .import(0, "cl_file_write", 0)
+            .import(0, "cl_file_write")
             .entry(body),
     );
 
@@ -3437,11 +3344,9 @@ fn local_calls_dispatch_to_other_functions() {
         ]),
         // u0:2 calls both, then writes the pair out
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], None)
-            .sig(1, &[I64, I64, I64, I64, I64], Some(I64))
-            .local(0, 0, 0)
-            .local(1, 1, 0)
-            .import(2, "cl_file_write", 1)
+            .local(0, 0)
+            .local(1, 1)
+            .import(2, "cl_file_write")
             .entry(vec![
                 call(None, 0, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
                 call(None, 1, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
@@ -3479,8 +3384,7 @@ fn clif_error_local_call_to_missing_function() {
         vec![0u8; 256],
         program(
             function()
-                .sig(0, &[I64], None)
-                .local(0, 3, 0)
+                .local(0, 3)
                 .entry(vec![call(None, 0, &[v(0)]), ret()]),
         ),
     );
@@ -3508,24 +3412,23 @@ fn refusal(functions: Vec<Function>) -> String {
 fn clif_error_import_base_does_not_provide() {
     let msg = refusal(program(
         function()
-            .sig(0, &[], None)
-            .import(0, "abort", 0)
+            .import(0, "abort")
             .entry(vec![call(None, 0, &[]), ret()]),
     ));
     assert!(msg.contains("abort") && msg.contains("does not provide"), "{msg}");
 }
 
-/// A program calling `cl_sinf` with an integer would pass it in a register
-/// the function never reads. The signature it declares has to be base's.
+/// A program calling `cl_sinf` with an integer would pass it in a register the
+/// function never reads. The artifact declares no signature, so the call is
+/// checked against the one base's table gives that import.
 #[test]
 fn clif_error_import_at_the_wrong_signature() {
     let msg = refusal(program(
         function()
-            .sig(0, &[I64], Some(F32))
-            .import(0, "cl_sinf", 0)
+            .import(0, "cl_sinf")
             .entry(vec![call(None, 0, &[v(0)]), ret()]),
     ));
-    assert!(msg.contains("cl_sinf") && msg.contains("provides it as"), "{msg}");
+    assert!(msg.contains("cl_sinf") && msg.contains("takes"), "{msg}");
 }
 
 /// A program's own functions are reached by index, never by the name the JIT
@@ -3535,22 +3438,21 @@ fn clif_error_import_naming_an_own_function() {
     let msg = refusal(programs(vec![
         noop(),
         function()
-            .sig(0, &[I64, I64, I64, I64, I64], None)
-            .import(0, "fn_0", 0)
+            .import(0, "fn_0")
             .entry(vec![call(None, 0, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]), ret()]),
     ]));
     assert!(msg.contains("fn_0") && msg.contains("does not provide"), "{msg}");
 }
 
-/// A call site declaring fewer arguments than its callee takes would leave the
-/// rest to whatever the registers held.
+/// A call passing fewer arguments than its callee takes would leave the rest to
+/// whatever the registers held. What the callee takes is read off its own entry
+/// block, so a call cannot be checked against anything else.
 #[test]
 fn clif_error_local_call_at_the_wrong_signature() {
     let msg = refusal(programs(vec![
         noop(),
         function()
-            .sig(0, &[I64], None)
-            .local(0, 0, 0)
+            .local(0, 0)
             .entry(vec![call(None, 0, &[v(0)]), ret()]),
     ]));
     assert!(msg.contains("u0:0") && msg.contains("takes"), "{msg}");
@@ -3652,8 +3554,7 @@ fn names_survive_a_reordering() {
     );
     let tens = function()
         .export("tens")
-        .sig(0, &[I64], Some(I64))
-        .local(0, 1, 0)
+        .local(0, 1)
         .entry(vec![iconst64(v(1), 4), call(Some(v(2)), 0, &[v(1)]), ret_status(v(2))]);
     let before = programs(vec![noop(), times_ten, tens, answering(7).export("seven")]);
     let after = reordered(&before, &[3, 2, 0, 1]);
@@ -3670,24 +3571,10 @@ fn names_survive_a_reordering() {
     }
 }
 
-#[test]
-fn clif_error_callee_names_undeclared_sig() {
-    let config = cranelift_config(
-        vec![0u8; 256],
-        program(
-            function()
-                .import(0, "cl_file_write", 7)
-                .entry(vec![ret()]),
-        ),
-    );
-    let Err(err) = Base::new(config) else {
-        panic!("expected an error for a callee naming a signature that is not declared");
-    };
-    let base::Error::Clif(msg) = err else {
-        panic!("expected Error::Clif");
-    };
-    assert!(msg.contains("sig7"), "message should name the signature: {msg}");
-}
+/// A callee naming a signature the function never declared was a refusal of
+/// its own. It has no test because it has no spelling: an artifact declares no
+/// signatures, so a callee cannot name one that is missing — base's table gives
+/// an import its signature and a local callee's own entry block gives its.
 
 #[test]
 fn clif_error_binding_the_result_of_a_void_callee() {
@@ -3695,8 +3582,7 @@ fn clif_error_binding_the_result_of_a_void_callee() {
         vec![0u8; 256],
         program(
             function()
-                .sig(0, &[I64], None)
-                .import(0, "cl_gpu_init", 0)
+                .import(0, "cl_gpu_init")
                 .entry(vec![call(Some(v(1)), 0, &[v(0)]), ret()]),
         ),
     );

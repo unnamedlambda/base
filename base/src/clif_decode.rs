@@ -171,31 +171,40 @@ pub struct Resolved {
 
 /// Builds one function.
 ///
-/// `declare_callee` is called once per callee in the prologue and must return
-/// the `FuncId` the runtime will resolve it to, so the reference is correct
-/// when it is created rather than patched afterward.
+/// `declare_callee` is called once per callee and must return the `FuncId` the
+/// runtime will resolve it to, so the reference is correct when it is created
+/// rather than patched afterward, together with the signature that callee
+/// actually has — from base's import table, or from the callee's own body.
+/// Nothing here compares that against a declared one, because the artifact
+/// declares none.
 pub fn decode_function(
     f: &clif::Function,
     index: usize,
     cc: CallConv,
-    declare_callee: &mut dyn FnMut(&clif::Callee, &Signature) -> Result<Resolved, String>,
+    declare_callee: &mut dyn FnMut(&clif::Callee) -> Result<(Resolved, Signature), String>,
 ) -> Result<ir::Function, String> {
     let sig = signature_of(f, index, cc)?;
 
     let mut func = ir::Function::with_name_signature(UserFuncName::user(0, index as u32), sig);
 
-    // Prologue: signatures, then callees that reference them.
-    let mut sig_refs: HashMap<u32, ir::SigRef> = HashMap::new();
-    for s in &f.sigs {
-        sig_refs.insert(s.reference.0, func.import_signature(signature(&s.params, s.result, cc)));
-    }
-
+    // The prologue: each callee at the signature it actually has. The names
+    // are kept beside the references so a call that does not fit one can say
+    // which callee it did not fit.
     let mut fn_refs: HashMap<u32, ir::FuncRef> = HashMap::new();
+    let mut callees: HashMap<u32, (String, Signature)> = HashMap::new();
     for d in &f.fns {
-        let sr = *sig_refs
-            .get(&d.sig.0)
-            .ok_or_else(|| format!("fn{} names undeclared sig{}", d.reference.0, d.sig.0))?;
-        let resolved = declare_callee(&d.callee, &func.dfg.signatures[sr].clone())?;
+        let (resolved, sig) = declare_callee(&d.callee)?;
+        callees.insert(
+            d.reference.0,
+            (
+                match &d.callee {
+                    clif::Callee::Import(n) => n.clone(),
+                    clif::Callee::Local(n) => format!("u0:{n}"),
+                },
+                sig.clone(),
+            ),
+        );
+        let sr = func.import_signature(sig);
         let user_ref = func.declare_imported_user_function(UserExternalName {
             namespace: 0,
             index: resolved.id,
@@ -235,11 +244,48 @@ pub fn decode_function(
     for b in &f.blocks {
         let blk = blocks[&b.reference.0];
         for inst in &b.insts {
+            check_call(index, inst, &vals, &func, &callees)?;
             emit(&mut func, blk, inst, &mut vals, &fn_refs, &block_of)?;
         }
     }
 
     Ok(func)
+}
+
+/// A call against the signature its callee actually has.
+///
+/// Cranelift's verifier refuses the same programs a step later, reporting the
+/// instruction it could not type. This says which callee was called with what
+/// instead, which is the fact a generator has to act on. The signature is the
+/// callee's own, so this compares the body against the callee rather than
+/// against a declaration the artifact could have got wrong.
+fn check_call(
+    index: usize,
+    inst: &clif::Inst,
+    vals: &Vals,
+    func: &ir::Function,
+    callees: &HashMap<u32, (String, Signature)>,
+) -> Result<(), String> {
+    let clif::Inst::Call(_, fr, args) = inst else { return Ok(()) };
+    let Some((name, sig)) = callees.get(&fr.0) else { return Ok(()) };
+    if args.len() != sig.params.len() {
+        return Err(format!(
+            "u0:{index} calls {name} with {} argument{}, and {name} takes {}",
+            args.len(),
+            if args.len() == 1 { "" } else { "s" },
+            sig.params.len(),
+        ));
+    }
+    for (n, (a, p)) in args.iter().zip(&sig.params).enumerate() {
+        let got = func.dfg.value_type(vals.get(*a)?);
+        if got != p.value_type {
+            return Err(format!(
+                "u0:{index} calls {name} with {got} as argument {n}, and {name} takes {} there",
+                p.value_type
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn emit(

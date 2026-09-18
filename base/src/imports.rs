@@ -258,7 +258,7 @@ pub(crate) fn lookup(name: &str) -> Option<&'static Import> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base_types::clif::{Block, BlockRef, Callee, FnDecl, FnRef, Function, Inst, SigDecl, SigRef, Val};
+    use base_types::clif::{Block, BlockRef, Callee, FnDecl, FnRef, Function, Inst, Val};
 
     #[test]
     fn names_are_unique() {
@@ -269,31 +269,24 @@ mod tests {
         assert_eq!(before, names.len());
     }
 
-    /// Every import, declared at the signature the table gives it and with its
-    /// address taken, links: the table names only functions that exist.
+    /// Every import, named by a program and with its address taken, links: the
+    /// table names only functions that exist, at the signature the table itself
+    /// hands the JIT.
     #[test]
     fn every_import_links_at_its_own_signature() {
-        let mut sigs = Vec::new();
         let mut fns = Vec::new();
         let mut insts = Vec::new();
         for (n, import) in imports().iter().enumerate() {
             let n = n as u32;
-            sigs.push(SigDecl {
-                reference: SigRef(n),
-                params: import.params.clone(),
-                result: import.result,
-            });
             fns.push(FnDecl {
                 reference: FnRef(n),
                 callee: Callee::Import(import.name.to_string()),
-                sig: SigRef(n),
             });
             insts.push(Inst::FuncAddr(Val(100 + n), FnRef(n)));
         }
         insts.push(Inst::Ret(None));
         let f = Function {
             export_name: None,
-            sigs,
             fns,
             blocks: vec![Block { reference: BlockRef(0), params: vec![(Val(0), ClifTy::I64)], insts }],
         };
