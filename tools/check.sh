@@ -21,9 +21,14 @@ FAST=0
 # elaboration then gets killed instead of thrashing the machine into a state
 # where even the SSH session stops responding. `ulimit -v` is the wrong tool —
 # it is per-process, so N jobs multiply it, and it counts thread stacks.
+#
+# 10G was too high to be a guard. The cap has to sit below what the session
+# needs to stay alive, or the kernel is still short when the build reaches it
+# and systemd-oomd kills the whole user slice instead — which logged the user
+# out rather than failing the build. 6G is under that, and the build fits.
 GUARD=()
 if command -v systemd-run >/dev/null 2>&1; then
-  GUARD=(systemd-run --user --scope -q -p MemoryMax=10G -p MemorySwapMax=0 --)
+  GUARD=(systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 -- nice -n 19)
 fi
 
 # The GPU is not shareable, and the driver that holds it does not fail politely.
@@ -70,7 +75,7 @@ lean_build() {
   local libs exes
   libs=$(grep -oP '^lean_lib \K\w+' lakefile.lean | tr '\n' ' ')
   exes=$(lake run generators | awk '{print $1}' | tr '\n' ' ')
-  "${GUARD[@]}" taskset -c 0-7 lake build $libs $exes
+  "${GUARD[@]}" taskset -c 0-3 lake build $libs $exes
 }
 
 # `sorry` leaves a warning rather than an error, so a file can carry one and
@@ -135,19 +140,22 @@ artifacts_reproduce() {
 
 rust_check() {
   cd "$ROOT"
-  cargo check --workspace --all-targets --exclude benchmarks --exclude bench-scaling
+  "${GUARD[@]}" taskset -c 0-3 cargo check -j 2 --workspace --all-targets \
+    --exclude benchmarks --exclude bench-scaling
 }
 
 # The benchmarks crate is never run here: it is long, it needs the device to be
 # quiet to mean anything, and it proves nothing about correctness.
 rust_test() {
   cd "$ROOT"
-  cargo test --workspace --exclude benchmarks --exclude bench-scaling
+  "${GUARD[@]}" taskset -c 0-3 cargo test -j 2 --workspace \
+    --exclude benchmarks --exclude bench-scaling
 }
 
 rust_test_fast() {
   cd "$ROOT"
-  cargo test --workspace --exclude benchmarks --exclude bench-scaling --exclude qwen2
+  "${GUARD[@]}" taskset -c 0-3 cargo test -j 2 --workspace \
+    --exclude benchmarks --exclude bench-scaling --exclude qwen2
 }
 
 # The MXFP4 expert kernels are outside the machine this project proves kernels
