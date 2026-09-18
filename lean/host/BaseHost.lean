@@ -62,8 +62,8 @@ private opaque executeRaw (handle : USize) (name : @& String)
 @[extern "lean_base_read_memory"]
 private opaque readMemoryRaw (handle : USize) (offset len : USize) : IO ByteArray
 
-@[extern "lean_base_required_memory"]
-private opaque requiredMemoryRaw (handle : USize) : IO USize
+@[extern "lean_base_memory_size"]
+private opaque memorySizeRaw (handle : USize) : IO USize
 
 /-- Compile an artifact and take its memory. Release it with `Runtime.close`,
 or let `withRuntime` do it. -/
@@ -108,8 +108,8 @@ def readMemory (rt : Runtime) (offset len : Nat) : IO ByteArray :=
   readMemoryRaw rt.raw (USize.ofNat offset) (USize.ofNat len)
 
 /-- How much shared memory the runtime holds, which bounds `readMemory`. -/
-def requiredMemory (rt : Runtime) : IO Nat :=
-  return (← requiredMemoryRaw rt.raw).toNat
+def memorySize (rt : Runtime) : IO Nat :=
+  return (← memorySizeRaw rt.raw).toNat
 
 end Runtime
 
