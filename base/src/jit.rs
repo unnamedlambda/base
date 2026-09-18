@@ -98,9 +98,9 @@ fn finalize(
 
 /// Compiles the functions an artifact carries.
 ///
-/// Unlike the text path, callees are declared while the function is built, so
-/// there is no name to rewrite afterward and no dependence on declaration order
-/// happening to match the indices a parser recovered.
+/// A call carries its callee, so the prologue Cranelift wants is interned from
+/// the body as it is built: there is no name to rewrite afterward and no
+/// declaration order for anything to depend on.
 pub(crate) fn compile(
     functions: &[base_types::clif::Function],
 ) -> Result<(cranelift_jit::JITModule, Arc<Vec<Compiled>>), String> {

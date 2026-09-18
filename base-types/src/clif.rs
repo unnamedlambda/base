@@ -213,13 +213,13 @@ pub enum Callee {
     Local(u32),
 }
 
-/// One function: what it is called by, what it may call, and what it does.
+/// One function: what it is called by, and what it does.
 ///
 /// Its signature is read off the body: the entry block's parameters are what it
 /// takes, and whether its `Ret` carries a value is whether it answers an `i64`.
 /// Under the host's C calling convention. So the signature is not a separate
 /// field that could disagree with the body — and neither is a callee's, which
-/// is why `callees` says only what to call and not how. An entry point takes
+/// is why a `Callee` says only what to call and not how. An entry point takes
 /// the memory base, the input buffer and its length, and the output buffer and
 /// its length; a function reached through `cl_thread_spawn` takes its spawn
 /// argument.
