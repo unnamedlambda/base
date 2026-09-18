@@ -531,6 +531,17 @@ def Stmt.binds : Stmt → Nat
   | .op _ | .call _ _ => 1
   | _ => 0
 
+/-- The slots a statement reads, the way `Op.regs` gives an operation's.
+
+    `emitStmt` resolves every one of them through `CS.get`, so "each is below
+    the slot count" is exactly the condition under which that resolution is the
+    identity — which is what the straight-line simulation runs on. Weaker than
+    `Stmt.check`, which also types them. -/
+def Stmt.regs : Stmt → List R
+  | .op o => o.regs
+  | .store _ v a | .storeUnaligned v a | .istore8 v a => [v, a]
+  | .call _ args | .callVoid _ args => args
+
 /-- Check a statement list, extending the environment as it goes.
 
     The verdict is carried down rather than combined on the way back up, so the

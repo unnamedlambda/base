@@ -591,6 +591,9 @@ theorem reloc1_load (op : LoadOp) : Reloc1 (Op.load op) := by
 theorem reloc3_select : Reloc3 .select := by
   intro m Γ a b c x y z ha hb hc; simp [evalOp, get, ha, hb, hc]
 
+theorem reloc3_bitselect : Reloc3 .bitselect := by
+  intro m Γ a b c x y z ha hb hc; simp [evalOp, get, ha, hb, hc]
+
 -- ---------------------------------------------------------------------------
 -- The world a term runs in
 -- ---------------------------------------------------------------------------
