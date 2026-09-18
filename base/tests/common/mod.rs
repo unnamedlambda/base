@@ -51,39 +51,16 @@ pub fn b(n: u32) -> BlockRef {
 /// Accumulates one function. Its `u0:N` is its position in the program.
 pub struct Func {
     inner: Function,
-    /// What `fnN` means in this function's body. A call carries its callee, so
-    /// this never reaches the wire: `programs` resolves each `fnN` through it,
-    /// which is the interning a generator does in Lean.
-    callees: Vec<Callee>,
 }
 
 pub fn function() -> Func {
-    Func { inner: Function { entry_name: None, blocks: vec![] }, callees: vec![] }
+    Func { inner: Function { entry_name: None, blocks: vec![] } }
 }
 
 impl Func {
     /// Exported as `name`, so a host can call it.
     pub fn export(mut self, name: &str) -> Self {
         self.inner.entry_name = Some(name.to_string());
-        self
-    }
-
-    /// `fnN = %name` — at whatever signature base's table gives that import.
-    ///
-    /// `n` is asserted rather than stored: a callee's reference is its position,
-    /// so a test that declares them out of order is saying something it does not
-    /// mean.
-    pub fn import(mut self, n: u32, name: &str) -> Self {
-        assert_eq!(n as usize, self.callees.len(), "fn{n} is not the next callee");
-        self.callees.push(Callee::Import(name.to_string()));
-        self
-    }
-
-    /// `fnN = colocated u0:I` — a call to another function of this program, at
-    /// whatever signature that function's own entry block gives it.
-    pub fn local(mut self, n: u32, index: u32) -> Self {
-        assert_eq!(n as usize, self.callees.len(), "fn{n} is not the next callee");
-        self.callees.push(Callee::Local(index));
         self
     }
 
@@ -126,27 +103,7 @@ pub fn program(f: Func) -> Vec<Function> {
 
 /// Several functions, in `u0:N` order.
 pub fn programs(fs: Vec<Func>) -> Vec<Function> {
-    fs.into_iter()
-        .map(|f| {
-            let at = |c: &Callee| match c {
-                // `call`/`func_addr` spell their target as `fnN`; anything the
-                // table does not hold stays as written, so a test can still
-                // build a body that names a callee it never declared.
-                Callee::Local(n) => f.callees.get(*n as usize).cloned().unwrap_or(c.clone()),
-                other => other.clone(),
-            };
-            let mut inner = f.inner.clone();
-            for b in &mut inner.blocks {
-                for i in &mut b.insts {
-                    match i {
-                        Inst::Call(_, c, _) | Inst::FuncAddr(_, c) => *c = at(c),
-                        _ => {}
-                    }
-                }
-            }
-            inner
-        })
-        .collect()
+    fs.into_iter().map(|f| f.inner).collect()
 }
 
 /// A function doing nothing — the slot generated artifacts reserve at `u0:0`
@@ -191,11 +148,17 @@ pub fn select(d: Val, c: Val, a: Val, b: Val) -> Inst { Inst::Select(d, c, a, b)
 pub fn bitselect(d: Val, c: Val, a: Val, b: Val) -> Inst { Inst::Bitselect(d, c, a, b) }
 
 /// `dst = call fnN(args)`, or `call fnN(args)` when the callee returns nothing.
-pub fn call(d: Option<Val>, f: u32, args: &[Val]) -> Inst {
-    Inst::Call(d, Callee::Local(f), args.to_vec())
+/// `%name` — an import, at whatever signature base's table gives it.
+pub fn imp(name: &str) -> Callee { Callee::Import(name.to_string()) }
+/// `u0:N` — another function of this program, at whatever signature its own
+/// entry block gives it.
+pub fn loc(index: u32) -> Callee { Callee::Local(index) }
+
+pub fn call(d: Option<Val>, c: Callee, args: &[Val]) -> Inst {
+    Inst::Call(d, c, args.to_vec())
 }
 /// `dst = func_addr.i64 fnN`
-pub fn func_addr(d: Val, f: u32) -> Inst { Inst::FuncAddr(d, Callee::Local(f)) }
+pub fn func_addr(d: Val, c: Callee) -> Inst { Inst::FuncAddr(d, c) }
 pub fn jump(t: u32, args: &[Val]) -> Inst { Inst::Jump(BlockRef(t), args.to_vec()) }
 pub fn brif(c: Val, t: u32, ta: &[Val], e: u32, ea: &[Val]) -> Inst {
     Inst::Brif(c, BlockRef(t), ta.to_vec(), BlockRef(e), ea.to_vec())

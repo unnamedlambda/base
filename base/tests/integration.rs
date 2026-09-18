@@ -71,13 +71,12 @@ fn test_cranelift_basic_compilation() {
     // Single CLIF function that writes 8 bytes at offset 2000 to the file at offset 3000.
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -104,7 +103,6 @@ fn test_cranelift_arithmetic_add() {
     // Add operands at 2000/2008, store at 2016, write 2016 to file.
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -114,7 +112,7 @@ fn test_cranelift_arithmetic_add() {
                 iconst64(v(5), 2016),
                 iconst64(v(6), 0),
                 iconst64(v(7), 8),
-                call(Some(v(8)), 0, &[v(0), v(4), v(5), v(6), v(7)]),
+                call(Some(v(8)), imp("cl_file_write"), &[v(0), v(4), v(5), v(6), v(7)]),
                 ret(),
             ]),
     );
@@ -140,7 +138,6 @@ fn test_cranelift_arithmetic_multiply() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -150,7 +147,7 @@ fn test_cranelift_arithmetic_multiply() {
                 iconst64(v(5), 2016),
                 iconst64(v(6), 0),
                 iconst64(v(7), 8),
-                call(Some(v(8)), 0, &[v(0), v(4), v(5), v(6), v(7)]),
+                call(Some(v(8)), imp("cl_file_write"), &[v(0), v(4), v(5), v(6), v(7)]),
                 ret(),
             ]),
     );
@@ -176,7 +173,6 @@ fn test_cranelift_memory_operations() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 load32(v(1), v(0), 2000),
                 load32(v(2), v(0), 2004),
@@ -188,7 +184,7 @@ fn test_cranelift_memory_operations() {
                 iconst64(v(7), 2012),
                 iconst64(v(8), 0),
                 iconst64(v(9), 4),
-                call(Some(v(10)), 0, &[v(0), v(6), v(7), v(8), v(9)]),
+                call(Some(v(10)), imp("cl_file_write"), &[v(0), v(6), v(7), v(8), v(9)]),
                 ret(),
             ]),
     );
@@ -215,7 +211,6 @@ fn test_cranelift_conditional_logic() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -237,7 +232,7 @@ fn test_cranelift_conditional_logic() {
                 iconst64(v(6), 2024),
                 iconst64(v(7), 0),
                 iconst64(v(8), 8),
-                call(Some(v(9)), 0, &[v(0), v(5), v(6), v(7), v(8)]),
+                call(Some(v(9)), imp("cl_file_write"), &[v(0), v(5), v(6), v(7), v(8)]),
                 ret(),
             ]),
     );
@@ -269,23 +264,19 @@ fn test_clif_ffi_file_smoke() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
-            .import(1, "cl_file_read")
-            .import(2, "cl_file_write_from_ptr")
-            .import(3, "cl_file_read_to_ptr")
             .entry(vec![
                 iconst64(v(1), 2000),
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 5),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 iconst64(v(6), 3100),
-                call(Some(v(7)), 1, &[v(0), v(1), v(6), v(3), v(4)]),
+                call(Some(v(7)), imp("cl_file_read"), &[v(0), v(1), v(6), v(3), v(4)]),
                 iadd_imm(v(8), v(0), 2256),
                 iadd_imm(v(9), v(0), 3000),
-                call(Some(v(10)), 2, &[v(8), v(9), v(3), v(4)]),
+                call(Some(v(10)), imp("cl_file_write_from_ptr"), &[v(8), v(9), v(3), v(4)]),
                 iadd_imm(v(11), v(0), 3200),
-                call(Some(v(12)), 3, &[v(8), v(11), v(3), v(4)]),
+                call(Some(v(12)), imp("cl_file_read_to_ptr"), &[v(8), v(11), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -324,29 +315,22 @@ fn test_clif_ffi_gpu_smoke() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_gpu_init")
-            .import(1, "cl_gpu_create_buffer")
-            .import(2, "cl_gpu_upload")
-            .import(3, "cl_gpu_create_pipeline")
-            .import(4, "cl_gpu_dispatch")
-            .import(5, "cl_gpu_download")
-            .import(6, "cl_gpu_cleanup")
             .entry(vec![
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_gpu_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iconst64(v(1), data_bytes as i64),
-                call(Some(v(2)), 1, &[v(91), v(1)]),
+                call(Some(v(2)), imp("cl_gpu_create_buffer"), &[v(91), v(1)]),
                 iadd_imm(v(3), v(0), data_off as i64),
-                call(Some(v(10)), 2, &[v(91), v(2), v(3), v(1)]),
+                call(Some(v(10)), imp("cl_gpu_upload"), &[v(91), v(2), v(3), v(1)]),
                 iadd_imm(v(4), v(0), shader_off as i64),
                 iadd_imm(v(5), v(0), bind_off as i64),
                 iconst32(v(6), 1),
-                call(Some(v(7)), 3, &[v(91), v(4), v(5), v(6)]),
-                call(Some(v(11)), 4, &[v(91), v(7), v(6), v(6), v(6)]),
+                call(Some(v(7)), imp("cl_gpu_create_pipeline"), &[v(91), v(4), v(5), v(6)]),
+                call(Some(v(11)), imp("cl_gpu_dispatch"), &[v(91), v(7), v(6), v(6), v(6)]),
                 iadd_imm(v(8), v(0), result_off as i64),
-                call(Some(v(12)), 5, &[v(91), v(2), v(8), v(1)]),
-                call(None, 6, &[v(90)]),
+                call(Some(v(12)), imp("cl_gpu_download"), &[v(91), v(2), v(8), v(1)]),
+                call(None, imp("cl_gpu_cleanup"), &[v(90)]),
                 ret(),
             ]),
     );
@@ -394,27 +378,21 @@ fn test_clif_ffi_net_smoke() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_net_init")
-            .import(1, "cl_net_connect")
-            .import(2, "cl_net_send")
-            .import(3, "cl_net_recv")
-            .import(4, "cl_net_cleanup")
-            .import(5, "cl_file_write")
             .entry(vec![
-                call(None, 0, &[v(0)]),
+                call(None, imp("cl_net_init"), &[v(0)]),
                 load_trusted(v(1), I64, v(0), 0),
                 iadd_imm(v(2), v(0), 2000),
-                call(Some(v(3)), 1, &[v(1), v(2)]),
+                call(Some(v(3)), imp("cl_net_connect"), &[v(1), v(2)]),
                 iadd_imm(v(4), v(0), 3000),
                 iconst64(v(5), 5),
-                call(Some(v(6)), 2, &[v(1), v(3), v(4), v(5)]),
+                call(Some(v(6)), imp("cl_net_send"), &[v(1), v(3), v(4), v(5)]),
                 iadd_imm(v(7), v(0), 3100),
-                call(Some(v(8)), 3, &[v(1), v(3), v(7), v(5)]),
+                call(Some(v(8)), imp("cl_net_recv"), &[v(1), v(3), v(7), v(5)]),
                 iconst64(v(9), 2100),
                 iconst64(v(10), 3100),
                 iconst64(v(11), 0),
-                call(Some(v(12)), 5, &[v(0), v(9), v(10), v(11), v(5)]),
-                call(None, 4, &[v(0)]),
+                call(Some(v(12)), imp("cl_file_write"), &[v(0), v(9), v(10), v(11), v(5)]),
+                call(None, imp("cl_net_cleanup"), &[v(0)]),
                 ret(),
             ]),
     );
@@ -449,30 +427,24 @@ fn test_clif_ffi_lmdb_smoke() {
     //   3500:  cursor scan result buffer
     let clif_prog = program(
         function()
-            .import(0, "cl_lmdb_init")
-            .import(1, "cl_lmdb_open")
-            .import(2, "cl_lmdb_put")
-            .import(3, "cl_lmdb_get")
-            .import(4, "cl_lmdb_cursor_scan")
-            .import(5, "cl_lmdb_cleanup")
             .entry(vec![
-                call(None, 0, &[v(0)]),
+                call(None, imp("cl_lmdb_init"), &[v(0)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iadd_imm(v(1), v(0), 2000),
                 iconst32(v(2), 10),
-                call(Some(v(3)), 1, &[v(91), v(1), v(2)]),
+                call(Some(v(3)), imp("cl_lmdb_open"), &[v(91), v(1), v(2)]),
                 iadd_imm(v(4), v(0), 3000),
                 iconst32(v(5), 5),
                 iadd_imm(v(6), v(0), 3100),
-                call(Some(v(10)), 2, &[v(91), v(3), v(4), v(5), v(6), v(5)]),
+                call(Some(v(10)), imp("cl_lmdb_put"), &[v(91), v(3), v(4), v(5), v(6), v(5)]),
                 iadd_imm(v(7), v(0), 3200),
-                call(Some(v(11)), 3, &[v(91), v(3), v(4), v(5), v(7)]),
+                call(Some(v(11)), imp("cl_lmdb_get"), &[v(91), v(3), v(4), v(5), v(7)]),
                 iadd_imm(v(8), v(0), 3500),
                 iconst64(v(9), 0),
                 iconst32(v(14), 0),
                 iconst32(v(12), 100),
-                call(Some(v(13)), 4, &[v(91), v(3), v(9), v(14), v(12), v(8)]),
-                call(None, 5, &[v(0)]),
+                call(Some(v(13)), imp("cl_lmdb_cursor_scan"), &[v(91), v(3), v(9), v(14), v(12), v(8)]),
+                call(None, imp("cl_lmdb_cleanup"), &[v(0)]),
                 ret(),
             ]),
     );
@@ -505,29 +477,23 @@ fn test_clif_ffi_thread_smoke() {
 
     let clif_prog = programs(vec![
         function()
-            .import(0, "cl_thread_init")
-            .import(1, "cl_thread_spawn")
-            .import(2, "cl_thread_join")
-            .import(3, "cl_thread_cleanup")
-            .import(4, "cl_thread_call")
-            .import(5, "cl_file_write")
             .entry(vec![
                 iadd_imm(v(1), v(0), 16),
-                call(None, 0, &[v(1)]),
+                call(None, imp("cl_thread_init"), &[v(1)]),
                 load_trusted(v(10), I64, v(0), 16),
                 iconst64(v(2), 1),
                 iadd_imm(v(3), v(0), 200),
-                call(Some(v(4)), 1, &[v(10), v(2), v(3)]),
-                call(Some(v(5)), 2, &[v(10), v(4)]),
+                call(Some(v(4)), imp("cl_thread_spawn"), &[v(10), v(2), v(3)]),
+                call(Some(v(5)), imp("cl_thread_join"), &[v(10), v(4)]),
                 iconst64(v(6), 2),
                 iadd_imm(v(7), v(0), 208),
-                call(Some(v(8)), 4, &[v(10), v(6), v(7)]),
-                call(None, 3, &[v(1)]),
+                call(Some(v(8)), imp("cl_thread_call"), &[v(10), v(6), v(7)]),
+                call(None, imp("cl_thread_cleanup"), &[v(1)]),
                 iconst64(v(20), 3000),
                 iconst64(v(21), 200),
                 iconst64(v(22), 0),
                 iconst64(v(23), 16),
-                call(Some(v(24)), 5, &[v(0), v(20), v(21), v(22), v(23)]),
+                call(Some(v(24)), imp("cl_file_write"), &[v(0), v(20), v(21), v(22), v(23)]),
                 ret(),
             ]),
         function()
@@ -561,13 +527,12 @@ fn test_clif_call_basic() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -598,23 +563,21 @@ fn test_clif_call_multiple_functions() {
 
     let clif_prog = programs(vec![
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 2000),
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 2256),
                 iconst64(v(2), 3008),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -655,7 +618,6 @@ fn test_clif_call_arithmetic() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 load64(v(1), v(0), 2000),
                 load64(v(2), v(0), 2008),
@@ -665,7 +627,7 @@ fn test_clif_call_arithmetic() {
                 iconst64(v(5), 2016),
                 iconst64(v(6), 0),
                 iconst64(v(7), 8),
-                call(Some(v(8)), 0, &[v(0), v(4), v(5), v(6), v(7)]),
+                call(Some(v(8)), imp("cl_file_write"), &[v(0), v(4), v(5), v(6), v(7)]),
                 ret(),
             ]),
     );
@@ -712,13 +674,12 @@ fn test_clif_call_sequential_mutations() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2008),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -760,7 +721,6 @@ fn test_clif_call_no_workers_needed() {
 
     let clif_prog2 = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 77),
                 store(v(1), v(0), 2000),
@@ -768,7 +728,7 @@ fn test_clif_call_no_workers_needed() {
                 iconst64(v(3), 2000),
                 iconst64(v(4), 0),
                 iconst64(v(5), 8),
-                call(Some(v(6)), 0, &[v(0), v(2), v(3), v(4), v(5)]),
+                call(Some(v(6)), imp("cl_file_write"), &[v(0), v(2), v(3), v(4), v(5)]),
                 ret(),
             ]),
     );
@@ -803,23 +763,21 @@ fn test_clif_call_file_read_write() {
 
     let clif_prog = programs(vec![
         function()
-            .import(0, "cl_file_read")
             .entry(vec![
                 iconst64(v(1), 2000),
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 256),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_read"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 2256),
                 iconst64(v(2), 3000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 256),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -981,13 +939,12 @@ fn test_base_multi_execute_with_file_io() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(vec![
                 iconst64(v(1), 256),
                 iconst64(v(2), 512),
                 iconst64(v(3), 0),
                 iconst64(v(4), 8),
-                call(Some(v(5)), 0, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
     );
@@ -1342,17 +1299,11 @@ fn clif_error_branch_to_undeclared_block() {
     assert!(matches!(err, base::Error::Clif(_)));
 }
 
-#[test]
-fn clif_error_call_to_undeclared_fn() {
-    let config = cranelift_config(
-        vec![0u8; 256],
-        program(function().entry(vec![call(None, 3, &[v(0)]), ret()])),
-    );
-    let Err(err) = Base::new(config) else {
-        panic!("expected an error for a call to an undeclared callee");
-    };
-    assert!(matches!(err, base::Error::Clif(_)));
-}
+// A call naming a callee the function never declared was a refusal of its own.
+// It has no test because it has no spelling: a call carries its callee, so
+// there is nothing to declare it against. What is still refusable is a callee
+// that names nothing — an import base does not provide, or a local index past
+// the artifact's functions — and those have their own tests below.
 
 #[test]
 fn clif_parse_error_empty_ir_no_error() {
@@ -1407,30 +1358,23 @@ fn test_clif_ffi_cuda_smoke() {
 
     let clif_prog = program(
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload")
-            .import(3, "cl_cuda_launch")
-            .import(4, "cl_cuda_sync")
-            .import(5, "cl_cuda_download")
-            .import(6, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iconst64(v(1), data_bytes as i64),
-                call(Some(v(2)), 1, &[v(91), v(1)]),
+                call(Some(v(2)), imp("cl_cuda_create_buffer"), &[v(91), v(1)]),
                 iadd_imm(v(3), v(0), data_off as i64),
-                call(Some(v(10)), 2, &[v(91), v(2), v(3), v(1)]),
+                call(Some(v(10)), imp("cl_cuda_upload"), &[v(91), v(2), v(3), v(1)]),
                 iadd_imm(v(4), v(0), ptx_off as i64),
                 iconst32(v(5), 1),
                 iadd_imm(v(6), v(0), bind_off as i64),
                 iconst32(v(7), 4),
-                call(Some(v(11)), 3, &[v(91), v(4), v(5), v(6), v(5), v(5), v(5), v(7), v(5), v(5)]),
-                call(Some(v(12)), 4, &[v(91)]),
+                call(Some(v(11)), imp("cl_cuda_launch"), &[v(91), v(4), v(5), v(6), v(5), v(5), v(5), v(7), v(5), v(5)]),
+                call(Some(v(12)), imp("cl_cuda_sync"), &[v(91)]),
                 iadd_imm(v(9), v(0), result_off as i64),
-                call(Some(v(13)), 5, &[v(91), v(2), v(9), v(1)]),
-                call(None, 6, &[v(90)]),
+                call(Some(v(13)), imp("cl_cuda_download"), &[v(91), v(2), v(9), v(1)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     );
@@ -1469,39 +1413,31 @@ fn test_cublas_sgemv_on_stream_reuse() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cublas_sgemv_on_stream")
-            .import(5, "cl_cuda_stream_create")
-            .import(6, "cl_cuda_stream_sync")
-            .import(7, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iconst64(v(10), a_bytes as i64),
                 iconst64(v(11), x_bytes as i64),
                 iconst64(v(12), y_bytes as i64),
-                call(Some(v(13)), 1, &[v(91), v(10)]),
-                call(Some(v(14)), 1, &[v(91), v(11)]),
-                call(Some(v(15)), 1, &[v(91), v(12)]),
-                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                call(Some(v(13)), imp("cl_cuda_create_buffer"), &[v(91), v(10)]),
+                call(Some(v(14)), imp("cl_cuda_create_buffer"), &[v(91), v(11)]),
+                call(Some(v(15)), imp("cl_cuda_create_buffer"), &[v(91), v(12)]),
+                call(Some(v(16)), imp("cl_cuda_upload_ptr"), &[v(91), v(13), v(1), v(10)]),
                 iadd(v(17), v(1), v(10)),
-                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
-                call(Some(v(19)), 5, &[v(91)]),
+                call(Some(v(18)), imp("cl_cuda_upload_ptr"), &[v(91), v(14), v(17), v(11)]),
+                call(Some(v(19)), imp("cl_cuda_stream_create"), &[v(91)]),
                 iconst32(v(20), 1),
                 iconst32(v(21), cols as i64),
                 iconst32(v(22), rows as i64),
                 iconst32(v(23), 0x3f800000),
                 iconst32(v(24), 0),
-                call(Some(v(25)), 4, &[v(91), v(20), v(21), v(22), v(23), v(13), v(14), v(24), v(15), v(19)]),
-                call(Some(v(26)), 6, &[v(91), v(19)]),
-                call(Some(v(27)), 3, &[v(91), v(15), v(2), v(12)]),
-                call(None, 7, &[v(90)]),
+                call(Some(v(25)), imp("cl_cublas_sgemv_on_stream"), &[v(91), v(20), v(21), v(22), v(23), v(13), v(14), v(24), v(15), v(19)]),
+                call(Some(v(26)), imp("cl_cuda_stream_sync"), &[v(91), v(19)]),
+                call(Some(v(27)), imp("cl_cuda_download_ptr"), &[v(91), v(15), v(2), v(12)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -1568,30 +1504,22 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cublas_sgemm_strided_batched_on_stream")
-            .import(5, "cl_cuda_stream_create")
-            .import(6, "cl_cuda_stream_sync")
-            .import(7, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iconst64(v(10), a_bytes as i64),
                 iconst64(v(11), x_bytes as i64),
                 iconst64(v(12), y_bytes as i64),
-                call(Some(v(13)), 1, &[v(91), v(10)]),
-                call(Some(v(14)), 1, &[v(91), v(11)]),
-                call(Some(v(15)), 1, &[v(91), v(12)]),
-                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                call(Some(v(13)), imp("cl_cuda_create_buffer"), &[v(91), v(10)]),
+                call(Some(v(14)), imp("cl_cuda_create_buffer"), &[v(91), v(11)]),
+                call(Some(v(15)), imp("cl_cuda_create_buffer"), &[v(91), v(12)]),
+                call(Some(v(16)), imp("cl_cuda_upload_ptr"), &[v(91), v(13), v(1), v(10)]),
                 iadd(v(17), v(1), v(10)),
-                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
-                call(Some(v(19)), 5, &[v(91)]),
+                call(Some(v(18)), imp("cl_cuda_upload_ptr"), &[v(91), v(14), v(17), v(11)]),
+                call(Some(v(19)), imp("cl_cuda_stream_create"), &[v(91)]),
                 iconst32(v(20), 1),
                 iconst32(v(21), 0),
                 iconst32(v(22), m as i64),
@@ -1605,11 +1533,11 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
                 // Element offsets into each operand, and explicit leading
                 // dimensions; zero means "start at the buffer, shape-implied".
                 iconst64(v(33), 0),
-                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29), v(19),
+                call(Some(v(30)), imp("cl_cublas_sgemm_strided_batched_on_stream"), &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29), v(19),
                                        v(33), v(33), v(33), v(21), v(21), v(21)]),
-                call(Some(v(31)), 6, &[v(91), v(19)]),
-                call(Some(v(32)), 3, &[v(91), v(15), v(2), v(12)]),
-                call(None, 7, &[v(90)]),
+                call(Some(v(31)), imp("cl_cuda_stream_sync"), &[v(91), v(19)]),
+                call(Some(v(32)), imp("cl_cuda_download_ptr"), &[v(91), v(15), v(2), v(12)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2149,34 +2077,27 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_gpu_init")
-            .import(1, "cl_gpu_create_buffer")
-            .import(2, "cl_gpu_create_pipeline")
-            .import(3, "cl_gpu_upload_ptr")
-            .import(4, "cl_gpu_dispatch")
-            .import(5, "cl_gpu_download_ptr")
-            .import(6, "cl_gpu_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
                 iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_gpu_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
-                call(Some(v(4)), 1, &[v(91), v(2)]),
-                call(Some(v(5)), 3, &[v(91), v(4), v(1), v(2)]),
+                call(Some(v(4)), imp("cl_gpu_create_buffer"), &[v(91), v(2)]),
+                call(Some(v(5)), imp("cl_gpu_upload_ptr"), &[v(91), v(4), v(1), v(2)]),
                 iadd_imm(v(6), v(0), shader_off as i64),
                 iadd_imm(v(7), v(0), bind_off as i64),
                 iconst32(v(8), 1),
-                call(Some(v(9)), 2, &[v(91), v(6), v(7), v(8)]),
-                call(Some(v(10)), 4, &[v(91), v(9), v(8), v(8), v(8)]),
+                call(Some(v(9)), imp("cl_gpu_create_pipeline"), &[v(91), v(6), v(7), v(8)]),
+                call(Some(v(10)), imp("cl_gpu_dispatch"), &[v(91), v(9), v(8), v(8), v(8)]),
                 iconst64(v(9001), 3),
                 ushr(v(11), v(2), v(9001)),
                 iconst64(v(9002), 2),
                 ishl(v(12), v(11), v(9002)),
                 iconst64(v(13), 0),
-                call(Some(v(14)), 5, &[v(91), v(4), v(13), v(3), v(12)]),
-                call(None, 6, &[v(90)]),
+                call(Some(v(14)), imp("cl_gpu_download_ptr"), &[v(91), v(4), v(13), v(3), v(12)]),
+                call(None, imp("cl_gpu_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2245,26 +2166,21 @@ fn test_gpu_download_ptr_with_offset() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_gpu_init")
-            .import(1, "cl_gpu_create_buffer")
-            .import(2, "cl_gpu_upload_ptr")
-            .import(3, "cl_gpu_download_ptr")
-            .import(4, "cl_gpu_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
                 iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_gpu_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 // create buffer for full data (2*64*4 = 512 bytes)
-                call(Some(v(4)), 1, &[v(91), v(2)]),
+                call(Some(v(4)), imp("cl_gpu_create_buffer"), &[v(91), v(2)]),
                 // upload all data from payload
-                call(Some(v(5)), 2, &[v(91), v(4), v(1), v(2)]),
+                call(Some(v(5)), imp("cl_gpu_upload_ptr"), &[v(91), v(4), v(1), v(2)]),
                 // download only second half: buf_offset = 256, size = 256, to out_ptr
                 iconst64(v(6), (n * 4) as i64),
-                call(Some(v(7)), 3, &[v(91), v(4), v(6), v(3), v(6)]),
-                call(None, 4, &[v(90)]),
+                call(Some(v(7)), imp("cl_gpu_download_ptr"), &[v(91), v(4), v(6), v(3), v(6)]),
+                call(None, imp("cl_gpu_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2368,39 +2284,33 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cuda_launch")
-            .import(5, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
                 iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 // create 3 buffers of {data_bytes} bytes each
                 iconst64(v(4), data_bytes as i64),
-                call(Some(v(5)), 1, &[v(91), v(4)]),
-                call(Some(v(6)), 1, &[v(91), v(4)]),
-                call(Some(v(7)), 1, &[v(91), v(4)]),
+                call(Some(v(5)), imp("cl_cuda_create_buffer"), &[v(91), v(4)]),
+                call(Some(v(6)), imp("cl_cuda_create_buffer"), &[v(91), v(4)]),
+                call(Some(v(7)), imp("cl_cuda_create_buffer"), &[v(91), v(4)]),
                 // upload A from data_ptr
-                call(Some(v(8)), 2, &[v(91), v(5), v(1), v(4)]),
+                call(Some(v(8)), imp("cl_cuda_upload_ptr"), &[v(91), v(5), v(1), v(4)]),
                 // upload B from data_ptr + data_bytes
                 iadd(v(9), v(1), v(4)),
-                call(Some(v(10)), 2, &[v(91), v(6), v(9), v(4)]),
+                call(Some(v(10)), imp("cl_cuda_upload_ptr"), &[v(91), v(6), v(9), v(4)]),
                 // launch PTX kernel: grid(1,1,1) block(64,1,1)
                 iadd_imm(v(11), v(0), ptx_off as i64),
                 iconst32(v(12), 3),
                 iadd_imm(v(13), v(0), bind_off as i64),
                 iconst32(v(14), 1),
                 iconst32(v(15), 64),
-                call(Some(v(16)), 4, &[v(91), v(11), v(12), v(13), v(14), v(14), v(14), v(15), v(14), v(14)]),
+                call(Some(v(16)), imp("cl_cuda_launch"), &[v(91), v(11), v(12), v(13), v(14), v(14), v(14), v(15), v(14), v(14)]),
                 // download result from buf 2 to out_ptr
-                call(Some(v(17)), 3, &[v(91), v(7), v(3), v(4)]),
-                call(None, 5, &[v(90)]),
+                call(Some(v(17)), imp("cl_cuda_download_ptr"), &[v(91), v(7), v(3), v(4)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2499,38 +2409,32 @@ fn test_cuda_download_ptr_different_data() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cuda_launch")
-            .import(5, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), data_len(), 0),
                 iadd_imm(v(3), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 // create 2 buffers
                 iconst64(v(4), data_bytes as i64),
-                call(Some(v(5)), 1, &[v(91), v(4)]),
-                call(Some(v(6)), 1, &[v(91), v(4)]),
+                call(Some(v(5)), imp("cl_cuda_create_buffer"), &[v(91), v(4)]),
+                call(Some(v(6)), imp("cl_cuda_create_buffer"), &[v(91), v(4)]),
                 // upload A from data_ptr to buf 0
-                call(Some(v(7)), 2, &[v(91), v(5), v(1), v(4)]),
+                call(Some(v(7)), imp("cl_cuda_upload_ptr"), &[v(91), v(5), v(1), v(4)]),
                 // upload B from data_ptr + data_bytes to buf 1
                 iadd(v(8), v(1), v(4)),
-                call(Some(v(9)), 2, &[v(91), v(6), v(8), v(4)]),
+                call(Some(v(9)), imp("cl_cuda_upload_ptr"), &[v(91), v(6), v(8), v(4)]),
                 // launch: grid(1,1,1) block(64,1,1)
                 iadd_imm(v(10), v(0), ptx_off as i64),
                 iconst32(v(11), 2),
                 iadd_imm(v(12), v(0), bind_off as i64),
                 iconst32(v(13), 1),
                 iconst32(v(14), 64),
-                call(Some(v(15)), 4, &[v(91), v(10), v(11), v(12), v(13), v(13), v(13), v(14), v(13), v(13)]),
+                call(Some(v(15)), imp("cl_cuda_launch"), &[v(91), v(10), v(11), v(12), v(13), v(13), v(13), v(14), v(13), v(13)]),
                 // download buf 1 (result) to out_ptr
-                call(Some(v(16)), 3, &[v(91), v(6), v(3), v(4)]),
-                call(None, 5, &[v(90)]),
+                call(Some(v(16)), imp("cl_cuda_download_ptr"), &[v(91), v(6), v(3), v(4)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2625,31 +2529,24 @@ fn test_cublas_sgemm_strided_batched_reuse() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cublas_sgemm_strided_batched")
-            .import(5, "cl_cuda_sync")
-            .import(6, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 // create A, x, y buffers
                 iconst64(v(10), a_bytes as i64),
                 iconst64(v(11), x_bytes as i64),
                 iconst64(v(12), y_bytes as i64),
-                call(Some(v(13)), 1, &[v(91), v(10)]),
-                call(Some(v(14)), 1, &[v(91), v(11)]),
-                call(Some(v(15)), 1, &[v(91), v(12)]),
+                call(Some(v(13)), imp("cl_cuda_create_buffer"), &[v(91), v(10)]),
+                call(Some(v(14)), imp("cl_cuda_create_buffer"), &[v(91), v(11)]),
+                call(Some(v(15)), imp("cl_cuda_create_buffer"), &[v(91), v(12)]),
                 // upload A from data_ptr
-                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                call(Some(v(16)), imp("cl_cuda_upload_ptr"), &[v(91), v(13), v(1), v(10)]),
                 // upload x from data_ptr + a_bytes
                 iadd(v(17), v(1), v(10)),
-                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
+                call(Some(v(18)), imp("cl_cuda_upload_ptr"), &[v(91), v(14), v(17), v(11)]),
                 // batched GEMV using SGEMM-strided-batched
                 // row-major A (2x3) => transa=1, transb=0, m=2, n=1, k=3
                 // stride_a=6, stride_b=3, stride_c=2 elements, batch_count=2
@@ -2666,11 +2563,11 @@ fn test_cublas_sgemm_strided_batched_reuse() {
                 // Element offsets into each operand, and explicit leading
                 // dimensions; zero means "start at the buffer, shape-implied".
                 iconst64(v(33), 0),
-                call(Some(v(30)), 4, &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29),
+                call(Some(v(30)), imp("cl_cublas_sgemm_strided_batched"), &[v(91), v(20), v(21), v(22), v(23), v(24), v(25), v(13), v(26), v(14), v(27), v(21), v(15), v(28), v(29),
                                        v(33), v(33), v(33), v(21), v(21), v(21)]),
-                call(Some(v(31)), 5, &[v(91)]),
-                call(Some(v(32)), 3, &[v(91), v(15), v(2), v(12)]),
-                call(None, 6, &[v(90)]),
+                call(Some(v(31)), imp("cl_cuda_sync"), &[v(91)]),
+                call(Some(v(32)), imp("cl_cuda_download_ptr"), &[v(91), v(15), v(2), v(12)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2752,29 +2649,24 @@ fn test_cuda_upload_ptr_offset_reuse() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr_offset")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iconst64(v(10), total_bytes as i64),
-                call(Some(v(11)), 1, &[v(91), v(10)]),
+                call(Some(v(11)), imp("cl_cuda_create_buffer"), &[v(91), v(10)]),
                 // upload first 2 floats to offset 0
                 iconst64(v(12), 8),
                 iconst64(v(13), 0),
-                call(Some(v(14)), 2, &[v(91), v(11), v(13), v(1), v(12)]),
+                call(Some(v(14)), imp("cl_cuda_upload_ptr_offset"), &[v(91), v(11), v(13), v(1), v(12)]),
                 // upload second 2 floats to offset 8
                 iadd(v(15), v(1), v(12)),
-                call(Some(v(16)), 2, &[v(91), v(11), v(12), v(15), v(12)]),
+                call(Some(v(16)), imp("cl_cuda_upload_ptr_offset"), &[v(91), v(11), v(12), v(15), v(12)]),
                 // download full 4-float buffer
-                call(Some(v(17)), 3, &[v(91), v(11), v(2), v(10)]),
-                call(None, 4, &[v(90)]),
+                call(Some(v(17)), imp("cl_cuda_download_ptr"), &[v(91), v(11), v(2), v(10)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2865,21 +2757,15 @@ fn test_cuda_launch_named_reuses_named_kernel() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cuda_launch_named")
-            .import(5, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iconst64(v(10), data_bytes as i64),
-                call(Some(v(11)), 1, &[v(91), v(10)]),
-                call(Some(v(12)), 2, &[v(91), v(11), v(1), v(10)]),
+                call(Some(v(11)), imp("cl_cuda_create_buffer"), &[v(91), v(10)]),
+                call(Some(v(12)), imp("cl_cuda_upload_ptr"), &[v(91), v(11), v(1), v(10)]),
                 // launch named kernel twice: x -> x+1 -> x+2
                 iadd_imm(v(13), v(0), ptx_off as i64),
                 iadd_imm(v(14), v(0), name_off as i64),
@@ -2887,10 +2773,10 @@ fn test_cuda_launch_named_reuses_named_kernel() {
                 iadd_imm(v(16), v(0), bind_off as i64),
                 iconst32(v(17), 1),
                 iconst32(v(18), n as i64),
-                call(Some(v(19)), 4, &[v(91), v(13), v(14), v(15), v(16), v(17), v(17), v(17), v(18), v(17), v(17)]),
-                call(Some(v(20)), 4, &[v(91), v(13), v(14), v(15), v(16), v(17), v(17), v(17), v(18), v(17), v(17)]),
-                call(Some(v(21)), 3, &[v(91), v(11), v(2), v(10)]),
-                call(None, 5, &[v(90)]),
+                call(Some(v(19)), imp("cl_cuda_launch_named"), &[v(91), v(13), v(14), v(15), v(16), v(17), v(17), v(17), v(18), v(17), v(17)]),
+                call(Some(v(20)), imp("cl_cuda_launch_named"), &[v(91), v(13), v(14), v(15), v(16), v(17), v(17), v(17), v(18), v(17), v(17)]),
+                call(Some(v(21)), imp("cl_cuda_download_ptr"), &[v(91), v(11), v(2), v(10)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -2965,38 +2851,31 @@ fn test_cublas_sgemv_reuse() {
                 ret(),
             ]),
         function()
-            .import(0, "cl_cuda_init")
-            .import(1, "cl_cuda_create_buffer")
-            .import(2, "cl_cuda_upload_ptr")
-            .import(3, "cl_cuda_download_ptr")
-            .import(4, "cl_cublas_sgemv")
-            .import(5, "cl_cuda_sync")
-            .import(6, "cl_cuda_cleanup")
             .entry(vec![
                 iadd_imm(v(1), data_ptr(), 0),
                 iadd_imm(v(2), out_ptr(), 0),
                 iadd_imm(v(90), v(0), 0),
-                call(None, 0, &[v(90)]),
+                call(None, imp("cl_cuda_init"), &[v(90)]),
                 load_trusted(v(91), I64, v(0), 0),
                 iconst64(v(10), a_bytes as i64),
                 iconst64(v(11), x_bytes as i64),
                 iconst64(v(12), y_bytes as i64),
-                call(Some(v(13)), 1, &[v(91), v(10)]),
-                call(Some(v(14)), 1, &[v(91), v(11)]),
-                call(Some(v(15)), 1, &[v(91), v(12)]),
-                call(Some(v(16)), 2, &[v(91), v(13), v(1), v(10)]),
+                call(Some(v(13)), imp("cl_cuda_create_buffer"), &[v(91), v(10)]),
+                call(Some(v(14)), imp("cl_cuda_create_buffer"), &[v(91), v(11)]),
+                call(Some(v(15)), imp("cl_cuda_create_buffer"), &[v(91), v(12)]),
+                call(Some(v(16)), imp("cl_cuda_upload_ptr"), &[v(91), v(13), v(1), v(10)]),
                 iadd(v(17), v(1), v(10)),
-                call(Some(v(18)), 2, &[v(91), v(14), v(17), v(11)]),
+                call(Some(v(18)), imp("cl_cuda_upload_ptr"), &[v(91), v(14), v(17), v(11)]),
                 // row-major A[rows, cols] -> sgemv(trans=1, m=cols, n=rows)
                 iconst32(v(19), 1),
                 iconst32(v(20), cols as i64),
                 iconst32(v(21), rows as i64),
                 iconst32(v(22), 0x3f800000),
                 iconst32(v(23), 0),
-                call(Some(v(24)), 4, &[v(91), v(19), v(20), v(21), v(22), v(13), v(14), v(23), v(15)]),
-                call(Some(v(25)), 5, &[v(91)]),
-                call(Some(v(26)), 3, &[v(91), v(15), v(2), v(12)]),
-                call(None, 6, &[v(90)]),
+                call(Some(v(24)), imp("cl_cublas_sgemv"), &[v(91), v(19), v(20), v(21), v(22), v(13), v(14), v(23), v(15)]),
+                call(Some(v(25)), imp("cl_cuda_sync"), &[v(91)]),
+                call(Some(v(26)), imp("cl_cuda_download_ptr"), &[v(91), v(15), v(2), v(12)]),
+                call(None, imp("cl_cuda_cleanup"), &[v(90)]),
                 ret(),
             ]),
     ]);
@@ -3079,12 +2958,11 @@ fn compute(insts: Vec<Inst>, n: i64) -> Vec<u8> {
         iconst64(v(901), 2000),
         iconst64(v(902), 0),
         iconst64(v(903), n),
-        call(Some(v(904)), 0, &[v(0), v(900), v(901), v(902), v(903)]),
+        call(Some(v(904)), imp("cl_file_write"), &[v(0), v(900), v(901), v(902), v(903)]),
         ret(),
     ]);
     let prog = program(
         function()
-            .import(0, "cl_file_write")
             .entry(body),
     );
 
@@ -3344,17 +3222,14 @@ fn local_calls_dispatch_to_other_functions() {
         ]),
         // u0:2 calls both, then writes the pair out
         function()
-            .local(0, 0)
-            .local(1, 1)
-            .import(2, "cl_file_write")
             .entry(vec![
-                call(None, 0, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
-                call(None, 1, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
+                call(None, loc(0), &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
+                call(None, loc(1), &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]),
                 iconst64(v(1), 3000),
                 iconst64(v(2), 2000),
                 iconst64(v(3), 0),
                 iconst64(v(4), 16),
-                call(Some(v(5)), 2, &[v(0), v(1), v(2), v(3), v(4)]),
+                call(Some(v(5)), imp("cl_file_write"), &[v(0), v(1), v(2), v(3), v(4)]),
                 ret(),
             ]),
     ]);
@@ -3384,8 +3259,7 @@ fn clif_error_local_call_to_missing_function() {
         vec![0u8; 256],
         program(
             function()
-                .local(0, 3)
-                .entry(vec![call(None, 0, &[v(0)]), ret()]),
+                .entry(vec![call(None, loc(3), &[v(0)]), ret()]),
         ),
     );
     let Err(err) = Base::new(config) else {
@@ -3412,8 +3286,7 @@ fn refusal(functions: Vec<Function>) -> String {
 fn clif_error_import_base_does_not_provide() {
     let msg = refusal(program(
         function()
-            .import(0, "abort")
-            .entry(vec![call(None, 0, &[]), ret()]),
+            .entry(vec![call(None, imp("abort"), &[]), ret()]),
     ));
     assert!(msg.contains("abort") && msg.contains("does not provide"), "{msg}");
 }
@@ -3425,8 +3298,7 @@ fn clif_error_import_base_does_not_provide() {
 fn clif_error_import_at_the_wrong_signature() {
     let msg = refusal(program(
         function()
-            .import(0, "cl_sinf")
-            .entry(vec![call(None, 0, &[v(0)]), ret()]),
+            .entry(vec![call(None, imp("cl_sinf"), &[v(0)]), ret()]),
     ));
     assert!(msg.contains("cl_sinf") && msg.contains("takes"), "{msg}");
 }
@@ -3438,8 +3310,7 @@ fn clif_error_import_naming_an_own_function() {
     let msg = refusal(programs(vec![
         noop(),
         function()
-            .import(0, "fn_0")
-            .entry(vec![call(None, 0, &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]), ret()]),
+            .entry(vec![call(None, imp("fn_0"), &[v(0), data_ptr(), data_len(), out_ptr(), out_len()]), ret()]),
     ]));
     assert!(msg.contains("fn_0") && msg.contains("does not provide"), "{msg}");
 }
@@ -3452,8 +3323,7 @@ fn clif_error_local_call_at_the_wrong_signature() {
     let msg = refusal(programs(vec![
         noop(),
         function()
-            .local(0, 0)
-            .entry(vec![call(None, 0, &[v(0)]), ret()]),
+            .entry(vec![call(None, loc(0), &[v(0)]), ret()]),
     ]));
     assert!(msg.contains("u0:0") && msg.contains("takes"), "{msg}");
 }
@@ -3560,8 +3430,7 @@ fn names_survive_a_reordering() {
     );
     let tens = function()
         .export("tens")
-        .local(0, 1)
-        .entry(vec![iconst64(v(1), 4), call(Some(v(2)), 0, &[v(1)]), ret_status(v(2))]);
+        .entry(vec![iconst64(v(1), 4), call(Some(v(2)), loc(1), &[v(1)]), ret_status(v(2))]);
     let before = programs(vec![noop(), times_ten, tens, answering(7).export("seven")]);
     let after = reordered(&before, &[3, 2, 0, 1]);
 
@@ -3590,8 +3459,7 @@ fn clif_error_binding_the_result_of_a_void_callee() {
         vec![0u8; 256],
         program(
             function()
-                .import(0, "cl_gpu_init")
-                .entry(vec![call(Some(v(1)), 0, &[v(0)]), ret()]),
+                .entry(vec![call(Some(v(1)), imp("cl_gpu_init"), &[v(0)]), ret()]),
         ),
     );
     let Err(err) = Base::new(config) else {
