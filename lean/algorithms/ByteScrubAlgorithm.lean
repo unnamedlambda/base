@@ -21,8 +21,10 @@ namespace ByteScrub
   table. This is the loop one would write in C with intrinsics, and the emitted
   CLIF is that loop.
 
-  `ByteScrub.blend_scrubs`, in `ByteScrubProof.lean`, compiles `blend` and says
-  what the result computes, for every sixteen bytes, under `HProgSem`: the
+  `ByteScrubProof.lean` states what this artifact's compare and blend do.
+  `blendInsts_ship` names them as the instructions block 2 of the entry point
+  carries, by running the compiler. `icmp_masks_nuls` and `bitselect_scrubs`
+  say what each computes, for every sixteen bytes, under `HProgSem`: the
   executable CLIF semantics this repository checks its artifacts against.
 -/
 
