@@ -217,7 +217,7 @@ theorem memMap_within :
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "hist4_algorithm" {
     functions := clif,
-    memory_size := MEM_SIZE
+    required_memory := MEM_SIZE
   }]
 
 end HistogramBench4

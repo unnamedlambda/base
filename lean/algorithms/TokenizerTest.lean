@@ -144,7 +144,7 @@ def tInitialMemory : List UInt8 :=
 
 def tSetup (clif : List FuncData) : Artifact := {
   functions := clif
-  memory_size := T_MEM_SIZE
+  required_memory := T_MEM_SIZE
   initial_memory := tInitialMemory
 }
 

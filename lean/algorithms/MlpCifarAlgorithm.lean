@@ -683,7 +683,7 @@ def initialMemory : List UInt8 :=
 
 def setup (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := MEM_SIZE
+  required_memory := MEM_SIZE
   initial_memory := initialMemory
 }
 
@@ -2530,7 +2530,7 @@ def qInitialMemory : List UInt8 :=
 
 def qSetup (clif : List FuncData) : Artifact := {
   functions := clif
-  memory_size := QMEM_SIZE
+  required_memory := QMEM_SIZE
   initial_memory := qInitialMemory
 }
 
@@ -2883,7 +2883,7 @@ def mInitialMemory : List UInt8 :=
 
 def mSetup (clif : List FuncData) : Artifact := {
   functions := clif
-  memory_size := MMEM_SIZE
+  required_memory := MMEM_SIZE
   initial_memory := mInitialMemory
 }
 

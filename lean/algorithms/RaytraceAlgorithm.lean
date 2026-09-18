@@ -384,7 +384,7 @@ def payloads : List UInt8 :=
 
 def raytraceConfig (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := payloads.length + pixelBytes,
+  required_memory := payloads.length + pixelBytes,
   initial_memory := payloads
 }
 

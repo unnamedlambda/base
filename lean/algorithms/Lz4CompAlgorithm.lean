@@ -102,7 +102,7 @@ def warpArtifactDSL (name : String) (blkLog : Nat) : Except String ArtifactEntry
   let w : WP := ⟨blkLog⟩
   let functions ← warpClif w
   return AlgorithmLib.artifactEntry name
-    { functions, memory_size := w.memSize, initial_memory := warpPayloadDSL w }
+    { functions, required_memory := w.memSize, initial_memory := warpPayloadDSL w }
 
 end Algorithm
 

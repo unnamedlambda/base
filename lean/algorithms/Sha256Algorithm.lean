@@ -506,7 +506,7 @@ def payloads : List UInt8 :=
 
 def sha256Config (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := layoutMeta.totalSize,
+  required_memory := layoutMeta.totalSize,
   initial_memory := payloads
 }
 

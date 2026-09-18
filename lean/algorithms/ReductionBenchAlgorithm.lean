@@ -75,7 +75,7 @@ def clifIR : Except String (List FuncData) :=
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "reduction_algorithm" {
     functions := clif,
-    memory_size := 40
+    required_memory := 40
   }]
 
 end ReductionBench

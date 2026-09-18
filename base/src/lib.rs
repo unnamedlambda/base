@@ -65,8 +65,8 @@ impl Base {
         // with, and nothing else: the caller's buffers are arguments, so there
         // is no header the engine has to make room for.
         let too_big = |what: String| Error::Execution(format!("{what}, more than this host can hold"));
-        let mut size = usize::try_from(artifact.memory_size)
-            .map_err(|_| too_big(format!("memory_size is {}", artifact.memory_size)))?;
+        let mut size = usize::try_from(artifact.required_memory)
+            .map_err(|_| too_big(format!("required_memory is {}", artifact.required_memory)))?;
         for s in &artifact.data {
             let end = usize::try_from(s.offset)
                 .ok()
@@ -213,7 +213,7 @@ fn exports_of(
 ) -> Result<HashMap<String, u32>, Error> {
     let mut exports = HashMap::new();
     for (i, (f, c)) in functions.iter().zip(compiled).enumerate() {
-        let Some(name) = &f.export_name else { continue };
+        let Some(name) = &f.entry_name else { continue };
         if c.arity != 5 && c.arity != 1 {
             return Err(Error::Clif(format!(
                 "u0:{i} is exported as {name:?} but takes {} parameters; an entry point \

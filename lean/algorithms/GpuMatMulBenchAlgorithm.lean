@@ -117,7 +117,7 @@ theorem memMap_within :
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "gpu_matmul_algorithm" {
     functions := clif,
-    memory_size := MEM_SIZE,
+    required_memory := MEM_SIZE,
     initial_memory := buildInitialMemory
   }]
 

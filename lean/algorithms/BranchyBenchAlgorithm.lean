@@ -61,7 +61,7 @@ def clifIR : Except String (List FuncData) :=
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "branchy_algorithm" {
-    functions := clif, memory_size := MEM_SIZE
+    functions := clif, required_memory := MEM_SIZE
   }]
 
 end BranchyBench

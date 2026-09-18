@@ -502,7 +502,7 @@ def payloads : List UInt8 :=
 
 def satConfig (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := totalMemory,
+  required_memory := totalMemory,
   initial_memory := payloads
 }
 

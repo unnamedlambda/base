@@ -140,7 +140,7 @@ inductive Callee where
 
     `index` is the `u0:N` it was compiled at, which is its position in the
     artifact and is not written out: `Prog.program` checks the two agree.
-    `exportName` is the name a host calls it by, and a function without one is
+    `entryName` is the name a host calls it by, and a function without one is
     the program's own. -/
 structure FuncData where
   index : Nat
@@ -148,7 +148,7 @@ structure FuncData where
       order is the numbering and there is nothing to disagree with it. -/
   callees : List Callee
   blocks : List BlockData
-  exportName : Option String := none
+  entryName : Option String := none
 
 -- ---------------------------------------------------------------------------
 -- Serialization
@@ -265,7 +265,7 @@ instance : ToCbor Callee where
 
 instance : ToCbor FuncData where
   cbor f := struct
-    [("export_name", option text f.exportName),
+    [("entry_name", option text f.entryName),
      ("callees", array f.callees cbor),
      ("blocks", array f.blocks cbor)]
 

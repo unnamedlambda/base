@@ -15,7 +15,7 @@ def program(functions):
     return {"functions": functions}
 
 def function(blocks, callees=None, export=None):
-    return {"export_name": export, "callees": callees or [], "blocks": blocks}
+    return {"entry_name": export, "callees": callees or [], "blocks": blocks}
 
 def block(n, params, insts):
     return {"reference": n, "params": [[p, "I64"] for p in params], "insts": insts}
@@ -89,7 +89,7 @@ DOUBLE_I32_PROG = program([
 def make_double_artifact():
     return cbor.encode({
         "functions": DOUBLE_I32_PROG["functions"],
-        "memory_size": 256,
+        "required_memory": 256,
         "data": [],
     })
 
@@ -109,10 +109,10 @@ class TestArtifact:
     def test_json_is_not_an_artifact(self):
         """The runtime decodes the artifact, so that is where bad input is caught."""
         with pytest.raises(ValueError, match="not an artifact"):
-            Base(Artifact(b'{"functions": [], "memory_size": 8, "data": []}'))
+            Base(Artifact(b'{"functions": [], "required_memory": 8, "data": []}'))
 
     def test_missing_fields(self):
-        with pytest.raises(ValueError, match="memory_size"):
+        with pytest.raises(ValueError, match="required_memory"):
             Base(Artifact(cbor.encode({"functions": []})))
 
     def test_from_file(self, tmp_path):
@@ -130,7 +130,7 @@ class TestBase:
         """v9 is never defined, so the program cannot be built."""
         artifact = cbor.encode({
             "functions": program([function([block(0, [0], [store(9, 0), ret()])])])["functions"],
-            "memory_size": 256,
+            "required_memory": 256,
             "data": [],
         })
         with pytest.raises(ValueError, match="v9 used before it is defined"):
@@ -150,7 +150,7 @@ class TestBase:
         artifact = cbor.encode({
             "functions": program([function([block(0, [0], [
                 iconst64(1, 42), ret(1)])], export="answer")])["functions"],
-            "memory_size": 256,
+            "required_memory": 256,
             "data": [],
         })
         base = Base(Artifact(artifact))
@@ -221,7 +221,7 @@ class TestBase:
         """What the artifact starts from, as `bytes` a host can unpack."""
         artifact = cbor.encode({
             "functions": DOUBLE_I32_PROG["functions"],
-            "memory_size": 256,
+            "required_memory": 256,
             "data": [{"offset": 8, "bytes": bytes([7, 0, 0, 0])}],
         })
         base = Base(Artifact(artifact))

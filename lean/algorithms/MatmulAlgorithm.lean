@@ -270,7 +270,7 @@ def buildMatmulConfig (m k n : Nat) (clif : List FuncData) : Artifact × UInt32 
   let memSize := payload.length
   let cfg : Artifact := {
     functions := clif,
-    memory_size := memSize,
+    required_memory := memSize,
     initial_memory := payload
   }
   let alg : UInt32 := IR.mainFnIdx

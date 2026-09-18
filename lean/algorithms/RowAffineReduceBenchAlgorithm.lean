@@ -100,7 +100,7 @@ def clifIR : Except String (List FuncData) :=
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "row_affine_reduce_algorithm" {
     functions := clif,
-    memory_size := MEM_SIZE
+    required_memory := MEM_SIZE
   }]
 
 end RowAffineReduceBench

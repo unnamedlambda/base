@@ -209,7 +209,7 @@ def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
      Prog.entry "infer" (Prog.compileProg 3 (inferCode output blockSize))]
   return {
     functions := clifProg
-    memory_size := memSize
+    required_memory := memSize
     initial_memory := initialMemory
   }
 

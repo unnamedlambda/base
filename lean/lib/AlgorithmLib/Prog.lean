@@ -1088,7 +1088,7 @@ def program (fs : List (Except String FuncData)) : Except String (List FuncData)
   for (f, i) in fs.zipIdx do
     if f.index != i then
       throw s!"the function at position {i} was compiled as u0:{f.index}"
-  let names := fs.filterMap (·.exportName)
+  let names := fs.filterMap (·.entryName)
   match names.find? (fun n => names.count n > 1) with
   | some n => throw s!"more than one function is exported as {n}"
   | none => pure fs
@@ -1096,7 +1096,7 @@ def program (fs : List (Except String FuncData)) : Except String (List FuncData)
 /-- `f`, exported as `name`: the name a host calls it by, which stays put
     wherever the function is placed. -/
 def entry (name : String) (f : Except String FuncData) : Except String FuncData :=
-  f.map fun d => { d with exportName := some name }
+  f.map fun d => { d with entryName := some name }
 
 /-- Unwrap in a generator's `main`: an ill-formed body is a build failure with
     a message, not an artifact. -/

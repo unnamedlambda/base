@@ -815,7 +815,7 @@ def main (args : List String) : IO Unit := do
   | .ok bytes =>
       let clif ← AlgorithmLib.Prog.orDie HProgCorpus.program
       emitArtifacts dir #[artifactEntry "hprog_corpus" {
-        functions := clif, memory_size := 0x100
+        functions := clif, required_memory := 0x100
       }]
       let names := HProgCorpus.caseNames
       -- A case is compared as a NaN when its own stored bytes are one, at the

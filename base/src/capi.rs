@@ -280,7 +280,7 @@ mod tests {
     fn empty_artifact() -> Vec<u8> {
         Artifact {
             functions: vec![],
-            memory_size: 64,
+            required_memory: 64,
             data: vec![Segment { offset: 0, bytes: vec![1, 2, 3, 4] }],
         }
         .to_bytes()
@@ -304,13 +304,13 @@ mod tests {
     /// back to the artifact.
     #[test]
     fn an_artifact_naming_a_field_that_is_gone_is_refused() {
-        // `{"functions": [], "memory_size": 64, "initial_memory": h'01020304'}`
+        // `{"functions": [], "required_memory": 64, "initial_memory": h'01020304'}`
         let text = |s: &str| [&[0x60 + s.len() as u8][..], s.as_bytes()].concat();
         let stale = [
             &[0xa3][..],
             &text("functions"),
             &[0x80],
-            &text("memory_size"),
+            &text("required_memory"),
             &[0x18, 64],
             &text("initial_memory"),
             &[0x44, 1, 2, 3, 4],
@@ -381,10 +381,10 @@ mod tests {
     #[test]
     fn a_memory_too_large_to_hold_is_refused() {
         for artifact in [
-            Artifact { functions: vec![], memory_size: u64::MAX, data: vec![] },
+            Artifact { functions: vec![], required_memory: u64::MAX, data: vec![] },
             Artifact {
                 functions: vec![],
-                memory_size: 8,
+                required_memory: 8,
                 data: vec![Segment { offset: u64::MAX, bytes: vec![1] }],
             },
         ] {

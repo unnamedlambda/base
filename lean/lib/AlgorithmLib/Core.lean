@@ -9,10 +9,12 @@ namespace AlgorithmLib
     they run in, and the bytes that memory starts with. This is the whole of
     the wire format, written as the CBOR `base_types::Artifact` reads.
 
-    A host calls a function by its `exportName`. -/
+    A host calls a function by its `entryName`. -/
 structure Artifact where
   functions : List IR.FuncData
-  memory_size : Nat
+  /-- How much the program needs. The runtime allocates it and cannot check
+      it, so what a generator proved its layout fits in is what belongs here. -/
+  required_memory : Nat
   /-- The image memory starts with, built here as one flat list and written out
       as the segments of it that are not zero. -/
   initial_memory : List UInt8 := []
@@ -65,7 +67,7 @@ open Cbor in
 instance : ToCbor Artifact where
   cbor a := struct
     [("functions", array a.functions cbor),
-     ("memory_size", nat a.memory_size),
+     ("required_memory", nat a.required_memory),
      ("data", array (segmentsOf a.initial_memory) fun (off, bs) =>
         struct [("offset", nat off), ("bytes", bytes ⟨bs.toArray⟩)])]
 
@@ -104,7 +106,7 @@ open IR
 private def sample : Artifact where
   functions := [{
     index := 0
-    exportName := some "main"
+    entryName := some "main"
     callees := [.import "cl_x", .local 1]
     blocks := [{
       ref := ⟨0⟩
@@ -116,18 +118,18 @@ private def sample : Artifact where
         .load ⟨4⟩ { kind := .uload8, ty := .i32 } ⟨0⟩,
         .call none ⟨0⟩ [⟨0⟩],
         .ret none] }] }]
-  memory_size := 2 ^ 40
+  required_memory := 2 ^ 40
   initial_memory := [0, 0, 0, 0xff, 0, 1]
 
 private def expected : String :=
-  "a36966756e6374696f6e7381a36b6578706f72745f6e616d65646d61696e6763616c6c65" ++
-  "657382a166496d706f727464636c5f78a1654c6f63616c0166626c6f636b7381a3697265" ++
-  "666572656e63650066706172616d738182006349363465696e73747386a16649636f6e73" ++
-  "748301634936343b7fffffffffffffffa16649636f6e73748302634936341b7fffffffff" ++
-  "ffffffa16646636f6e73748303634636341bffffffffffffffffa1644c6f61648404a364" ++
-  "6b696e6466556c6f616438627479634933326e6e6f747261705f616c69676e6564f40000" ++
-  "a16443616c6c83f6008100a163526574f66b6d656d6f72795f73697a651b000001000000" ++
-  "0000646461746181a2666f66667365740365627974657343ff0001"
+  "a36966756e6374696f6e7381a36a656e7472795f6e616d65646d61696e6763616c6c6565" ++
+  "7382a166496d706f727464636c5f78a1654c6f63616c0166626c6f636b7381a369726566" ++
+  "6572656e63650066706172616d738182006349363465696e73747386a16649636f6e7374" ++
+  "8301634936343b7fffffffffffffffa16649636f6e73748302634936341b7fffffffffff" ++
+  "ffffa16646636f6e73748303634636341bffffffffffffffffa1644c6f61648404a3646b" ++
+  "696e6466556c6f616438627479634933326e6e6f747261705f616c69676e6564f40000a1" ++
+  "6443616c6c83f6008100a163526574f66f72657175697265645f6d656d6f72791b000001" ++
+  "0000000000646461746181a2666f66667365740365627974657343ff0001"
 
 private def hexOf (b : ByteArray) : String :=
   b.foldl (init := "") fun s x =>

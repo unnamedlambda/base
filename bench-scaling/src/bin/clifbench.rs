@@ -31,7 +31,7 @@ fn main() {
         };
         let artifact = Artifact {
             functions: artifact.functions,
-            memory_size: 1 << 20,
+            required_memory: 1 << 20,
             data: Vec::new(),
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();

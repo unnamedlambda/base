@@ -172,7 +172,7 @@ def payload : List UInt8 :=
 
 def setup (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := layoutMeta.totalSize,
+  required_memory := layoutMeta.totalSize,
   initial_memory := payload
 }
 

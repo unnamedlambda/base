@@ -305,7 +305,7 @@ def buildQueryMonomorphic (patternStr : String) : Except String (Artifact × UIn
   let payload := buildPayload patternBytes
   let cfg : Artifact := {
     functions := ← clifIrSource patternBytes.length,
-    memory_size    := payload.length,
+    required_memory    := payload.length,
     initial_memory := payload
   }
   let alg : UInt32 := IR.mainFnIdx

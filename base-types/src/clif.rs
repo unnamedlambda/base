@@ -225,7 +225,7 @@ pub struct Function {
     /// function without one is the program's own, reached only by its other
     /// functions. Names are unique within an artifact, and a named function
     /// has to be shaped like an entry point.
-    pub export_name: Option<String>,
+    pub entry_name: Option<String>,
     /// What the body may call. A `Call` names one by its position here, so the
     /// order is the numbering and there is nothing to disagree with it.
     ///

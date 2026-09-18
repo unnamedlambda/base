@@ -570,7 +570,7 @@ def payloads : List UInt8 :=
 
 def gameSetup (clif : List IR.FuncData) : Artifact := {
   functions := clif,
-  memory_size := layoutMeta.totalSize,
+  required_memory := layoutMeta.totalSize,
   initial_memory := payloads
 }
 

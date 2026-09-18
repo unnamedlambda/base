@@ -85,7 +85,7 @@ fn splitting_the_lean_bounds_what_an_edit_costs() {
     let beta = fixture().join("beta-artifacts/artifacts/Beta.Gen/beta.cbor");
     let size = |p: &Path| {
         let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-        base_types::Artifact::from_bytes(&bytes).expect("an artifact").memory_size
+        base_types::Artifact::from_bytes(&bytes).expect("an artifact").required_memory
     };
     assert_eq!(size(&alpha), 111, "alpha's own artifact");
     assert_eq!(size(&beta), 222, "beta's own artifact");

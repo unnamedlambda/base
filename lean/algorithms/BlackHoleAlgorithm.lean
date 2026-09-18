@@ -1491,7 +1491,7 @@ def payloads (spec : BlackHoleSpec) : List UInt8 :=
 
 def config (spec : BlackHoleSpec) (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := (payloads spec).length + pixelBytes spec,
+  required_memory := (payloads spec).length + pixelBytes spec,
   initial_memory := payloads spec
 }
 

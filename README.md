@@ -13,13 +13,13 @@ GPU compute uses [wgpu](https://wgpu.rs/), a portable abstraction over Vulkan, M
 An `Artifact` contains:
 
 ```
-Artifact { functions, memory_size, data }
-Function { export_name, sigs, fns, blocks }
+Artifact { functions, required_memory, data }
+Function { entry_name, callees, blocks }
 ```
 
-**functions** are the compiled code, one Cranelift IR function each. A function calls another by its position in the list; a host calls one by its **export_name**, and a function without one is the program's own.
+**functions** are the compiled code, one Cranelift IR function each. A function calls another by its position in the list; a host calls one by its **entry_name**, and a function without one is the program's own.
 
-**memory_size** is the memory they run in, and **data** what it starts with: segments of bytes generated at build time (shader sources, binding descriptors, PTX kernels, etc.) at the addresses they belong at. Memory is zero everywhere a segment does not cover, so an artifact ships what it sets rather than an image of the whole.
+**required_memory** is the memory they run in, and **data** what it starts with: segments of bytes generated at build time (shader sources, binding descriptors, PTX kernels, etc.) at the addresses they belong at. Memory is zero everywhere a segment does not cover, so an artifact ships what it sets rather than an image of the whole.
 
 An **entry point** is an exported function, called by its name. A program answers through the out buffer its caller passes. Multi-stage flows (e.g., GPU load → prep → infer pipelines) are several entry points over one compilation and one memory. Names are unique within an artifact, and the generator is free to reorder functions: positions never leave the artifact, so a host is never written against one.
 

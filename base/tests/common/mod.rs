@@ -55,14 +55,14 @@ pub struct Func {
 
 pub fn function() -> Func {
     Func {
-        inner: Function { export_name: None, callees: vec![], blocks: vec![] },
+        inner: Function { entry_name: None, callees: vec![], blocks: vec![] },
     }
 }
 
 impl Func {
     /// Exported as `name`, so a host can call it.
     pub fn export(mut self, name: &str) -> Self {
-        self.inner.export_name = Some(name.to_string());
+        self.inner.entry_name = Some(name.to_string());
         self
     }
 

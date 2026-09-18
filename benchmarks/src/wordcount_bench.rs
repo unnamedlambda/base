@@ -130,14 +130,14 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         let _ = fs::remove_file(&output_path);
         {
             let mut artifact = Artifact::from_bytes(WC_ARTIFACT).expect("the build checked this artifact");
-            artifact.memory_size = WC_ARENA_BYTES;
+            artifact.required_memory = WC_ARENA_BYTES;
             let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
             let _ = base_instance.execute("main", &payload, &mut []);
         }
 
         let base_ms = harness::median_of(iterations, || {
             let mut artifact = Artifact::from_bytes(WC_ARTIFACT).expect("the build checked this artifact");
-            artifact.memory_size = WC_ARENA_BYTES;
+            artifact.required_memory = WC_ARENA_BYTES;
             let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
             let start = std::time::Instant::now();
             let _ = base_instance.execute("main", &payload, &mut []);
@@ -147,7 +147,7 @@ pub fn run(iterations: usize) -> Vec<BenchResult> {
         // Run one more time with fresh instance for verification
         let _ = fs::remove_file(&output_path);
         let mut artifact = Artifact::from_bytes(WC_ARTIFACT).expect("the build checked this artifact");
-        artifact.memory_size = WC_ARENA_BYTES;
+        artifact.required_memory = WC_ARENA_BYTES;
         let mut base_instance = base::Base::new(artifact).expect("Base::new failed");
         let _ = base_instance.execute("main", &payload, &mut []);
 

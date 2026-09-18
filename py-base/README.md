@@ -45,7 +45,7 @@ import cbor
 
 artifact = Artifact(cbor.encode({
     "functions": [...],              # the program, one exported as "double"
-    "memory_size": 256,
+    "required_memory": 256,
     "data": [],
 }))
 

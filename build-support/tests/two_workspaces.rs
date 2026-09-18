@@ -54,12 +54,12 @@ fn invalidate() {
     fs::write(&src, &text).expect("rewrite");
 }
 
-/// The `memory_size` of the artifact `workspace` generated, which the fixture
+/// The `required_memory` of the artifact `workspace` generated, which the fixture
 /// sets to 777.
 fn artifact(workspace: &str) -> u64 {
     let p = fixture().join(workspace).join("gen/artifacts/Shared.Gen/shared.cbor");
     let bytes = fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-    base_types::Artifact::from_bytes(&bytes).expect("an artifact").memory_size
+    base_types::Artifact::from_bytes(&bytes).expect("an artifact").required_memory
 }
 
 /// A child killed however the test ends, so a failure cannot leave a cargo

@@ -67,7 +67,7 @@ def vInitialMemory : List UInt8 :=
 
 def vSetup (clif : List FuncData) : Artifact := {
   functions := clif
-  memory_size := VMEM_SIZE
+  required_memory := VMEM_SIZE
   initial_memory := vInitialMemory
 }
 

@@ -600,7 +600,7 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := buildPayload.length,
+  required_memory := buildPayload.length,
   initial_memory := buildPayload
 }
 

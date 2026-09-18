@@ -271,7 +271,7 @@ def payloads : List UInt8 :=
 
 def fftConfig (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := payloads.length + totalAdditionalMemory,
+  required_memory := payloads.length + totalAdditionalMemory,
   initial_memory := payloads
 }
 

@@ -184,7 +184,7 @@ theorem memMap_within :
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "wc_algorithm" {
     functions := clif,
-    memory_size := MEM_SIZE
+    required_memory := MEM_SIZE
   }]
 
 end WordCountBench

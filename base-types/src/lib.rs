@@ -27,7 +27,7 @@ impl Segment {
 /// they run in, and the bytes that memory starts with.
 ///
 /// This is the whole of the wire format. A host calls a function by its
-/// [`clif::Function::export_name`]; what the bytes it reads and writes mean is
+/// [`clif::Function::entry_name`]; what the bytes it reads and writes mean is
 /// between the program and the host, and lives in those bytes when it needs to.
 ///
 /// # Encoding
@@ -56,10 +56,15 @@ impl Segment {
 pub struct Artifact {
     /// Compiled as a unit. A function's `u0:N` index is its position here.
     pub functions: Vec<clif::Function>,
+    /// How much the program needs, which the runtime allocates and cannot
+    /// check: nothing here says what the bodies go on to address, so an
+    /// artifact asking for too little is a program reading its own zeros.
+    /// What the generator proved its layout fits in is what belongs here.
+    ///
     /// Sizes and addresses are 64-bit whatever the host: the artifact is the
     /// same file everywhere, and a host that cannot hold it says so when it
     /// loads it.
-    pub memory_size: u64,
+    pub required_memory: u64,
     /// In ascending order of address and non-overlapping, which is what lets
     /// the runtime lay them over zeroed memory in one pass.
     #[serde(default)]
@@ -134,7 +139,7 @@ mod tests {
     use super::*;
 
     fn artifact(data: Vec<Segment>) -> Artifact {
-        Artifact { functions: vec![], memory_size: 64, data }
+        Artifact { functions: vec![], required_memory: 64, data }
     }
 
     fn hex(parts: &[&str]) -> Vec<u8> {
@@ -150,7 +155,7 @@ mod tests {
         let (i64_, v) = (ClifTy::I64, Val);
         Artifact {
             functions: vec![Function {
-                export_name: Some("main".into()),
+                entry_name: Some("main".into()),
                 callees: vec![Callee::Import("cl_x".into()), Callee::Local(1)],
                 blocks: vec![Block {
                     reference: BlockRef(0),
@@ -170,7 +175,7 @@ mod tests {
                     ],
                 }],
             }],
-            memory_size: 1 << 40,
+            required_memory: 1 << 40,
             data: vec![Segment { offset: 3, bytes: vec![0xff, 0x00, 0x01] }],
         }
     }
@@ -181,13 +186,14 @@ mod tests {
     #[test]
     fn an_artifact_encodes_in_the_profile() {
         let expected = hex(&[
-            "a36966756e6374696f6e7381a36b6578706f72745f6e616d65646d61696e6763616c6c65657382a1",
-            "66496d706f727464636c5f78a1654c6f63616c0166626c6f636b7381a3697265666572656e636500",
-            "66706172616d738182006349363465696e73747386a16649636f6e73748301634936343b7fffffff",
-            "ffffffffa16649636f6e73748302634936341b7fffffffffffffffa16646636f6e73748303634636",
-            "341bffffffffffffffffa1644c6f61648404a3646b696e6466556c6f616438627479634933326e6e",
-            "6f747261705f616c69676e6564f40000a16443616c6c83f6008100a163526574f66b6d656d6f7279",
-            "5f73697a651b0000010000000000646461746181a2666f66667365740365627974657343ff0001",
+            "a36966756e6374696f6e7381a36a656e7472795f6e616d65646d61696e6763616c6c65657382a166",
+            "496d706f727464636c5f78a1654c6f63616c0166626c6f636b7381a3697265666572656e63650066",
+            "706172616d738182006349363465696e73747386a16649636f6e73748301634936343b7fffffffff",
+            "ffffffa16649636f6e73748302634936341b7fffffffffffffffa16646636f6e7374830363463634",
+            "1bffffffffffffffffa1644c6f61648404a3646b696e6466556c6f616438627479634933326e6e6f",
+            "747261705f616c69676e6564f40000a16443616c6c83f6008100a163526574f66f72657175697265",
+            "645f6d656d6f72791b0000010000000000646461746181a2666f66667365740365627974657343ff",
+            "0001",
         ]);
         assert_eq!(sample().to_bytes(), expected);
         assert_eq!(Artifact::from_bytes(&expected).unwrap(), sample());

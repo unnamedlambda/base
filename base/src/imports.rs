@@ -283,7 +283,7 @@ mod tests {
         }
         insts.push(Inst::Ret(None));
         let f = Function {
-            export_name: None,
+            entry_name: None,
             callees,
             blocks: vec![Block { reference: BlockRef(0), params: vec![(Val(0), ClifTy::I64)], insts }],
         };

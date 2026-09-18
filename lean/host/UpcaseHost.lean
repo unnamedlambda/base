@@ -28,7 +28,7 @@ def main : IO Unit := do
 
   let artifact ← AlgorithmLib.Prog.orDie Upcase.shipped
   Base.withRuntime artifact fun rt => do
-    IO.println s!"runtime memory: {← rt.memorySize} bytes"
+    IO.println s!"runtime memory: {← rt.requiredMemory} bytes"
     let (_, status) ← rt.executeStatus "main"
     IO.println s!"artifact answered {status}"
 

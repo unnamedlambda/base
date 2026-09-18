@@ -457,20 +457,20 @@ def main (args : List String) : IO Unit := do
     CudaRmsNormPersist.artifacts rmsClif ++
     #[artifactEntry "hist1_hprog" {
         functions := histProg,
-        memory_size := HistogramBench1.MEM_SIZE
+        required_memory := HistogramBench1.MEM_SIZE
       },
       artifactEntry "clamp_sum_hprog" {
         functions := clampProg,
-        memory_size := ClampSumBench.MEM_SIZE
+        required_memory := ClampSumBench.MEM_SIZE
       },
       artifactEntry "cuda_rmsnorm_hprog" {
         functions := rmsProg,
-        memory_size := CudaRmsNormPersist.MEM_SIZE,
+        required_memory := CudaRmsNormPersist.MEM_SIZE,
         initial_memory := CudaRmsNormPersist.buildInitialMemory
       },
       artifactEntry "nested_hprog" {
         functions := nestedProg,
-        memory_size := 0x100000
+        required_memory := 0x100000
       }]
   -- Each pilot reports the FFI it actually assumes, derived from its own term.
   for (nm, p) in [("hist1", HProgPilots.Hist.code),

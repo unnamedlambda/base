@@ -126,7 +126,7 @@ def buildInitialMemory : List UInt8 := zeros MEM_SIZE
 
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := MEM_SIZE,
+  required_memory := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
 

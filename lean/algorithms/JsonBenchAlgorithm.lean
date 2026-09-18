@@ -169,7 +169,7 @@ theorem memMap_within :
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[artifactEntry "json_algorithm" {
     functions := clif,
-    memory_size := MEM_SIZE
+    required_memory := MEM_SIZE
   }]
 
 end JsonBench

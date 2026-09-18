@@ -226,7 +226,7 @@ def initialMemory : List UInt8 :=
     ++ q ++ zeros (MEM_SIZE - PTX_L_OFF - q.length)
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
-  #[ artifactEntry "silu_warp" { functions := clif, memory_size := MEM_SIZE, initial_memory := initialMemory } ]
+  #[ artifactEntry "silu_warp" { functions := clif, required_memory := MEM_SIZE, initial_memory := initialMemory } ]
 
 
 end SiluWarp

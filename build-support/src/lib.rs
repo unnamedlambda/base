@@ -627,14 +627,14 @@ mod tests {
     /// refused, because it is a writer disagreeing with the profile.
     #[test]
     fn an_artifact_in_another_encoding_is_refused() {
-        let good = Artifact { functions: vec![], memory_size: 8, data: vec![] }.to_bytes();
+        let good = Artifact { functions: vec![], required_memory: 8, data: vec![] }.to_bytes();
         assert_eq!(verify(&good), Ok(()));
 
-        // `memory_size: 8` as a one-byte head (0x08) spelled with two (0x18 0x08).
-        let at = good.windows(2).rposition(|w| w == [0x08, 0x64]).expect("memory_size value");
+        // `required_memory: 8` as a one-byte head (0x08) spelled with two (0x18 0x08).
+        let at = good.windows(2).rposition(|w| w == [0x08, 0x64]).expect("required_memory value");
         let mut wide = good.clone();
         wide.splice(at..at + 1, [0x18, 0x08]);
-        assert_eq!(Artifact::from_bytes(&wide).map(|a| a.memory_size), Ok(8));
+        assert_eq!(Artifact::from_bytes(&wide).map(|a| a.required_memory), Ok(8));
         let err = verify(&wide).expect_err("a wide head is not the encoding");
         assert!(err.contains("re-encodes differently"), "{err}");
 

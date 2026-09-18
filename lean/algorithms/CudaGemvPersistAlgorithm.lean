@@ -126,7 +126,7 @@ theorem memMap_within :
 
 def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
-  memory_size := MEM_SIZE
+  required_memory := MEM_SIZE
 }
 
 def loadAlgorithm : UInt32 := 1

@@ -412,7 +412,7 @@ def buildCompressor {bs : Nat} (_p : LZ4Params bs) : Except String (Artifact × 
   let payload := buildPayload bs
   let cfg : Artifact := {
     functions := ← Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 (code bs))],
-    memory_size   := payload.length + totalAdditionalMemory bs,
+    required_memory   := payload.length + totalAdditionalMemory bs,
     initial_memory := payload
   }
   let alg : UInt32 := IR.mainFnIdx
