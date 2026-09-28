@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# Run the full benchmark suite: Python + py-base, then the Rust suite.
+# Run the benchmark suite: device work against PyTorch through py-base.
 #
 # First run: creates .venv, builds py_base, installs deps (~1 min).
 # Subsequent runs: fast. Lake builds are incremental.
 #
-# Note: the Rust side is self-contained — `cargo run --release -p benchmarks`
-# triggers its own build.rs which runs Lake for the RustBenchmarks artifacts.
-# This script only sets up the Python half (venv, maturin, PythonBenchmarks
-# artifacts) and then delegates the Rust half to cargo.
-#
 # Usage: ./run.sh [--bench <name>] [--rounds <n>]
-#   --bench   csv | json | regex | strsearch | wordcount | vecops | torchops | pandas | vllm | all  (default: all)
+#   --bench   torchops | vllm | all                          (default: all)
 #   --rounds  timed iterations per size                      (default: 10)
 #
-# Args are forwarded to the Python runner only; the Rust runner always runs all.
+# Args are forwarded to the Python runner.
 
 set -euo pipefail
 
@@ -56,7 +51,3 @@ mkdir -p "$module_out_dir"
 # ── Run Python suite ──────────────────────────────────────────────────────────
 
 python "$PY_BENCH_DIR/bench.py" "$@"
-
-# ── Run Rust suite (cargo + build.rs handle Lake themselves) ──────────────────
-
-(cd "$REPO_ROOT" && cargo run --release -p benchmarks)

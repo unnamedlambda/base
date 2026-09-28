@@ -141,7 +141,7 @@ artifacts_reproduce() {
 rust_check() {
   cd "$ROOT"
   "${GUARD[@]}" taskset -c 0-3 cargo check -j 2 --workspace --all-targets \
-    --exclude benchmarks --exclude bench-scaling
+    --exclude bench-scaling
 }
 
 # The benchmarks crate is never run here: it is long, it needs the device to be
@@ -149,13 +149,13 @@ rust_check() {
 rust_test() {
   cd "$ROOT"
   "${GUARD[@]}" taskset -c 0-3 cargo test -j 2 --workspace \
-    --exclude benchmarks --exclude bench-scaling
+    --exclude bench-scaling
 }
 
 rust_test_fast() {
   cd "$ROOT"
   "${GUARD[@]}" taskset -c 0-3 cargo test -j 2 --workspace \
-    --exclude benchmarks --exclude bench-scaling --exclude qwen2
+    --exclude bench-scaling --exclude qwen2
 }
 
 # The MXFP4 expert kernels are outside the machine this project proves kernels

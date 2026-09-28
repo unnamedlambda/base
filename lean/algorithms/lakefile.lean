@@ -10,44 +10,12 @@ package algorithms where
   moreLeancArgs := #["-O0"]
 
 -- Benchmark algorithms
-lean_lib RustBenchmarks
 lean_lib PythonBenchmarks
-lean_lib CsvBenchAlgorithm
-lean_lib RegexBenchAlgorithm
-lean_lib JsonBenchAlgorithm
-lean_lib StringSearchAlgorithm
-lean_lib WordCountAlgorithm
-lean_lib SaxpyBenchAlgorithm
 lean_lib HistogramBench1Algorithm
-lean_lib HistogramBench4Algorithm
-lean_lib MatmulBenchAlgorithm
-lean_lib VecOpsBenchAlgorithm
-lean_lib ReductionBenchAlgorithm
-lean_lib GpuVecAddBenchAlgorithm
-lean_lib GpuMatMulBenchAlgorithm
-lean_lib GpuReductionBenchAlgorithm
-lean_lib CudaSaxpyBenchAlgorithm
-lean_lib GpuIterBenchAlgorithm
-lean_lib SortBenchAlgorithm
 lean_lib ClampSumBenchAlgorithm
 lean_lib HProgPilots
 lean_lib HProgCorpus
-lean_lib PlainSumBenchAlgorithm
-lean_lib BranchyBenchAlgorithm
-lean_lib SelectBenchAlgorithm
-lean_lib SelectLeaBenchAlgorithm
-lean_lib SelectRotBenchAlgorithm
-lean_lib SelectMaskBenchAlgorithm
-lean_lib StoreBenchAlgorithm
-lean_lib PminSumBenchAlgorithm
-lean_lib PandasBenchAlgorithm
-lean_lib RegPressureBenchAlgorithm
-lean_lib IntSumBenchAlgorithm
-lean_lib PandasFilterBenchAlgorithm
-lean_lib RowAffineReduceBenchAlgorithm
-lean_lib RowDotBenchAlgorithm
 lean_lib CudaDecodeAttentionAlgorithm
-lean_lib CudaDecoderLayerAlgorithm
 lean_lib CudaGemvPersistAlgorithm
 lean_lib CudaRmsNormPersistAlgorithm
 lean_lib CudaSaxpyPersistAlgorithm
@@ -162,7 +130,6 @@ lean_lib GenSurface
 lean_lib SatScan
 lean_lib Sha256Scan
 lean_lib LeanEvalScan
-lean_lib WordCountScan
 lean_lib CudaSaxpyPersistScan
 lean_lib CudaVecAddPersistScan
 
@@ -258,8 +225,6 @@ lean_exe genpythonbenchmarks where
   root := `PythonBenchmarks
 lean_exe genraymarchdemoalgorithm where
   root := `RaymarchDemoAlgorithm
-lean_exe genrustbenchmarks where
-  root := `RustBenchmarks
 lean_exe genqwen2ondiskalgorithm where
   root := `Qwen2OnDiskAlgorithm
 lean_exe genwarpsumsqalgorithm where

@@ -11,20 +11,6 @@ RMSNorm: manual RMSNorm vs py_base PTX (256-thread block, warp shuffle reduce)
 Softmax: torch.softmax vs py_base PTX (3-phase: max, exp+sum, normalize)
          Uses ex2.approx for fast approximate exp.
 
-Decoder layer: persistent single-token decoder layer with fixed Qwen-like dims.
-               Uses 7 cuBLAS GEMVs plus PTX RMSNorm / SiLU-gate / residual-add.
-               Attention is simplified to the seq_len=1 case, so attn(v)=v.
-
-               NOT a valid comparison as it stands. Because attn(v)=v, the q
-               and k projections feed nothing, and torch.compile deletes both:
-               the compiled reference runs five GEMVs where this side runs
-               seven (0.254ms against 0.267ms with them forced live). Either
-               drop q/k from both sides or give the layer a real seq_len=1
-               attention before quoting this row. The stack rows inherit the
-               same defect, and separately lose to compiled PyTorch because
-               Inductor fuses the elementwise glue between GEMVs and the
-               generator has no equivalent pass.
-
 Decode attention: persistent batch-1 decode attention over a resident KV cache.
                   Uses batched cuBLAS GEMMs for QK / PV and PTX softmax over
                   attention scores. No RoPE or GQA yet.
@@ -62,8 +48,6 @@ ATTN_SEQS = [128, 512, 2048]
 D_MODEL = 896
 D_HEAD = 64
 N_HEADS = 14
-D_FFN = 4864
-STACK_DEPTHS = [16, 32]
 SOFTMAX_INNER_ITERS = 64
 ATTN_INNER_ITERS = 64
 
@@ -251,168 +235,6 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     return results
 
 
-def _rms_torch(x, w):
-    return x * w * torch.rsqrt(x.pow(2).mean() + 1e-5)
-
-
-def _run_decoder_layer(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
-    artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact)
-    load_alg = "main"
-    prep_alg = "prep"
-    infer_alg = "infer"
-    stack16_alg = "stack16"
-    stack32_alg = "stack32"
-
-    rng = np.random.default_rng(23)
-
-    rms1 = (rng.standard_normal(D_MODEL).astype(np.float32) * 0.5 + 1.0)
-    wq = rng.standard_normal((D_MODEL, D_MODEL)).astype(np.float32) * 0.02
-    wk = rng.standard_normal((D_MODEL, D_MODEL)).astype(np.float32) * 0.02
-    wv = rng.standard_normal((D_MODEL, D_MODEL)).astype(np.float32) * 0.02
-    wo = rng.standard_normal((D_MODEL, D_MODEL)).astype(np.float32) * 0.02
-    rms2 = (rng.standard_normal(D_MODEL).astype(np.float32) * 0.5 + 1.0)
-    wg = rng.standard_normal((D_FFN, D_MODEL)).astype(np.float32) * 0.02
-    wu = rng.standard_normal((D_FFN, D_MODEL)).astype(np.float32) * 0.02
-    wd = rng.standard_normal((D_MODEL, D_FFN)).astype(np.float32) * 0.02
-
-    x_np = rng.standard_normal(D_MODEL).astype(np.float32)
-
-    load_data = b"".join(
-        [
-            rms1.tobytes(),
-            wq.tobytes(),
-            wk.tobytes(),
-            wv.tobytes(),
-            wo.tobytes(),
-            rms2.tobytes(),
-            wg.tobytes(),
-            wu.tobytes(),
-            wd.tobytes(),
-        ]
-    )
-    engine.execute(load_alg, load_data)
-    x_bytes = x_np.tobytes()
-    out = bytearray(D_MODEL * 4)
-
-    if _TORCH_OK:
-        x_t = torch.from_numpy(x_np).cuda()
-        rms1_t = torch.from_numpy(rms1).cuda()
-        wq_t = torch.from_numpy(wq).cuda()
-        wk_t = torch.from_numpy(wk).cuda()
-        wv_t = torch.from_numpy(wv).cuda()
-        wo_t = torch.from_numpy(wo).cuda()
-        rms2_t = torch.from_numpy(rms2).cuda()
-        wg_t = torch.from_numpy(wg).cuda()
-        wu_t = torch.from_numpy(wu).cuda()
-        wd_t = torch.from_numpy(wd).cuda()
-
-        def layer():
-            x1 = _rms_torch(x_t, rms1_t)
-            _q = torch.mv(wq_t, x1)
-            _k = torch.mv(wk_t, x1)
-            v = torch.mv(wv_t, x1)
-            o = torch.mv(wo_t, v)
-            h = x_t + o
-            x2 = _rms_torch(h, rms2_t)
-            g = torch.mv(wg_t, x2)
-            u = torch.mv(wu_t, x2)
-            a = torch.nn.functional.silu(g) * u
-            d = torch.mv(wd_t, a)
-            return h + d
-
-        torch_ms = harness.torch_median(layer, rounds, label="Decoder layer")
-    else:
-        torch_ms = None
-
-    engine.execute(prep_alg, x_bytes)
-    engine.execute(infer_alg)
-    pybase_ms = harness.median_of(
-        rounds,
-        lambda: (
-            engine.execute(prep_alg, x_bytes),
-            harness.time_ms(lambda: engine.execute(infer_alg)),
-        )[1],
-    )
-
-    if _TORCH_OK:
-        engine.execute(prep_alg, x_bytes)
-        engine.execute(infer_alg, b"", out)
-        ref = layer().cpu().numpy()
-        got = np.frombuffer(bytes(out), dtype=np.float32)
-        mag = max(float(np.abs(ref).max()), 1e-6)
-        verified = bool(np.max(np.abs(got - ref)) / mag < 1e-5)
-    else:
-        verified = None
-
-    results = [
-        harness.BenchResult(
-            name=f"Layer   ({D_MODEL}->{D_FFN}->{D_MODEL})",
-            python_ms=torch_ms,
-            pybase_ms=pybase_ms,
-            verified=verified,
-        )
-    ]
-
-    if _TORCH_OK:
-
-        def stack(depth: int):
-            h = x_t
-            for _ in range(depth):
-                x1 = _rms_torch(h, rms1_t)
-                _q = torch.mv(wq_t, x1)
-                _k = torch.mv(wk_t, x1)
-                v = torch.mv(wv_t, x1)
-                o = torch.mv(wo_t, v)
-                h = h + o
-                x2 = _rms_torch(h, rms2_t)
-                g = torch.mv(wg_t, x2)
-                u = torch.mv(wu_t, x2)
-                a = torch.nn.functional.silu(g) * u
-                d = torch.mv(wd_t, a)
-                h = h + d
-            return h
-
-    for depth in STACK_DEPTHS:
-        stack_alg = stack16_alg if depth == 16 else stack32_alg
-
-        if _TORCH_OK:
-            torch_stack_ms = harness.torch_median(lambda: stack(depth), rounds, label=f"Stack{depth}")
-        else:
-            torch_stack_ms = None
-
-        engine.execute(prep_alg, x_bytes)
-        engine.execute(stack_alg)
-        pybase_stack_ms = harness.median_of(
-            rounds,
-            lambda: (
-                engine.execute(prep_alg, x_bytes),
-                harness.time_ms(lambda: engine.execute(stack_alg)),
-            )[1],
-        )
-
-        if _TORCH_OK:
-            engine.execute(prep_alg, x_bytes)
-            engine.execute(stack_alg, b"", out)
-            ref = stack(depth).cpu().numpy()
-            got = np.frombuffer(bytes(out), dtype=np.float32)
-            mag = max(float(np.abs(ref).max()), 1e-6)
-            stack_ok = bool(np.max(np.abs(got - ref)) / mag < 1e-5)
-        else:
-            stack_ok = None
-
-        results.append(
-            harness.BenchResult(
-                name=f"Stack{depth} ({D_MODEL})",
-                python_ms=torch_stack_ms,
-                pybase_ms=pybase_stack_ms,
-                verified=stack_ok,
-            )
-        )
-
-    return results
-
-
 def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
     engine = py_base.Base(artifact)
@@ -497,7 +319,6 @@ def run(
     gemv: str,
     rmsnorm: str,
     softmax: str,
-    decoder: str,
     decode_attn: str,
     rounds: int,
 ) -> list[harness.BenchResult]:
@@ -505,6 +326,5 @@ def run(
         _run_gemv(gemv, rounds)
         + _run_rmsnorm(rmsnorm, rounds)
         + _run_softmax(softmax, rounds)
-        + _run_decoder_layer(decoder, rounds)
         + _run_decode_attention(decode_attn, rounds)
     )

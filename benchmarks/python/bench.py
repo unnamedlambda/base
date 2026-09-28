@@ -1,10 +1,14 @@
+"""Device work against PyTorch, through py-base.
+
+Usage: bench.py [--bench torchops|vllm|all] [--rounds N]
+"""
 import sys
 import os
 
 BENCHMARKS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BENCHMARKS_DIR)
 
-from benches import csv_bench, json_bench, pandas_bench, regex_bench, strsearch_bench, torchops_bench, vecops_bench, vllm_bench, wordcount_bench
+from benches import torchops_bench, vllm_bench
 import harness
 
 
@@ -46,36 +50,6 @@ def main():
             sys.exit(1)
         return path
 
-    if bench in ("all", "csv"):
-        results = csv_bench.run(artifact_path("csv_algorithm"), rounds)
-        harness.print_table(results)
-
-    if bench in ("all", "json"):
-        results = json_bench.run(artifact_path("json_algorithm"), rounds)
-        harness.print_table(results)
-
-    if bench in ("all", "regex"):
-        results = regex_bench.run(artifact_path("regex_algorithm"), rounds)
-        harness.print_table(results)
-
-    if bench in ("all", "strsearch"):
-        results = strsearch_bench.run(artifact_path("strsearch_algorithm"), rounds)
-        harness.print_table(results)
-
-    if bench in ("all", "wordcount"):
-        results = wordcount_bench.run(artifact_path("wc_algorithm"), rounds)
-        harness.print_table(results)
-
-    if bench in ("all", "vecops"):
-        results = vecops_bench.run(
-            artifact_path("vecops_algorithm"),
-            artifact_path("clamp_sum_algorithm"),
-            artifact_path("row_dot_algorithm"),
-            artifact_path("row_affine_reduce_algorithm"),
-            rounds,
-        )
-        harness.print_table(results, col_a="NumPy")
-
     if bench in ("all", "torchops"):
         results = torchops_bench.run(
             artifact_path("cuda_vecadd_persist"),
@@ -84,26 +58,17 @@ def main():
         )
         harness.print_table(results, col_a="PyTorch")
 
-    if bench in ("all", "pandas"):
-        results = pandas_bench.run(
-            artifact_path("pandas_algorithm"),
-            artifact_path("pandas_filter_algorithm"),
-            rounds,
-        )
-        harness.print_table(results, col_a="Pandas")
-
     if bench in ("all", "vllm"):
         results = vllm_bench.run(
             artifact_path("cuda_gemv"),
             artifact_path("cuda_rmsnorm"),
             artifact_path("cuda_softmax"),
-            artifact_path("cuda_decoder"),
             artifact_path("cuda_decode_attn"),
             rounds,
         )
         harness.print_table(results, col_a="PyTorch")
 
-    if bench not in ("all", "csv", "json", "regex", "strsearch", "wordcount", "vecops", "torchops", "pandas", "vllm"):
+    if bench not in ("all", "torchops", "vllm"):
         print(f"Unknown benchmark: {bench}", file=sys.stderr)
         print_usage()
         sys.exit(1)

@@ -137,19 +137,3 @@ def format_count(n: int) -> str:
     if n >= 1_000:
         return f"{n // 1_000}K"
     return str(n)
-
-
-def write_result_sync(path: str, value) -> None:
-    """Write a result the way ``cl_file_write`` does, fsync included.
-
-    The generated programs finish by writing their answer durably. A Python
-    baseline that only returned the value would be doing strictly less work,
-    which matters at the small sizes where the write is a large share of the
-    artifact's total.
-    """
-    import os as _os
-
-    with open(path, "wb") as f:
-        f.write(f"{value}\n".encode())
-        f.flush()
-        _os.fsync(f.fileno())
