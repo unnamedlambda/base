@@ -682,10 +682,133 @@ def callsOf (c : Code) : List Callee := callsGo fuel c
     and every annotation matches what its operands compute.
 
     Deliberately weaker than dominance: a reference from inside a loop to a slot
-    the loop defined, used after the loop, satisfies `wf` and is caught by
-    Cranelift's verifier instead. -/
+    the loop defined, used after the loop, satisfies `wf`. `scopeOk` is the
+    check that refuses it. -/
 def wf (env : FnEnv) (params : List ClifTy) (c : Code) : Bool :=
   (wfGo env fuel [] (TyEnv.ofList params) c).1
+
+-- ---------------------------------------------------------------------------
+-- Scope
+-- ---------------------------------------------------------------------------
+
+/-- Slots in scope, as half-open ranges `[a, b)`.
+
+    A slot is in scope where every path that reaches the point has bound it,
+    and bound it to the same value in the term and in the compiled blocks. That
+    is less than "below the slot count": the else arm is numbered past the then
+    arm's slots, which it never ran, and the code after a loop past the body's,
+    which the last trip may not have reached. Those slots exist in both
+    interpreters' stores and hold different things there. -/
+abbrev Scope := List (Nat × Nat)
+
+def Scope.mem (S : Scope) (i : Nat) : Bool := S.any fun (a, b) => a ≤ i && i < b
+
+/-- Add `[a, b)`, merging it into the most recent range when they touch, which
+    is what a straight-line run does one slot at a time. -/
+def Scope.add (S : Scope) (a b : Nat) : Scope :=
+  match S with
+  | (c, d) :: rest => if c ≤ a && d == a && a ≤ b then (c, b) :: rest else (a, b) :: S
+  | [] => [(a, b)]
+
+/-- Every slot of `S` is in `T`. -/
+def Scope.sub (S T : Scope) : Bool :=
+  S.all fun (a, b) => (List.range' a (b - a)).all T.mem
+
+/-- What a loop's `br` and `cont` are checked against: how many values its exit
+    block and its back-edge target take, and what has to be in scope where the
+    loop is left, which is what stays in scope after it. -/
+structure SLbl where
+  exitN  : Nat
+  carryN : Nat
+  need   : Scope
+
+/-- `r` is a slot bound so far, and in scope. -/
+def inS (S : Scope) (n : Nat) (r : R) : Bool := r < n && S.mem r
+
+def allIn (S : Scope) (n : Nat) (rs : List R) : Bool := rs.all (inS S n)
+
+/-- A straight-line run: each statement reads slots in scope and puts the ones
+    it binds in scope. -/
+def scStmts : Scope → Nat → List Stmt → Option (Scope × Nat)
+  | S, n, [] => some (S, n)
+  | S, n, st :: ss =>
+      if allIn S n st.regs then scStmts (S.add n (n + st.binds)) (n + st.binds) ss else none
+
+/-- The scope check, over the same fuel `emitCode` spends, so the two agree
+    on every `termsGo` they ask. Answers the scope and the slot count after `c`.
+
+    Where control joins, the scope is what every incoming path has: after a
+    branch, what was in scope before it and the join's parameters; after a loop,
+    what was in scope before it, its carries --- the head's parameters, which
+    every exit edge leaves from under --- and its exit values; after a
+    bottom-tested loop, what was in scope before it and its exit values. A `br`
+    has to have the loop's in scope; so does the edge that leaves from the head
+    or the back edge.
+
+    Nothing may follow a piece that leaves on every path: its block is closed,
+    and whatever came next would be emitted into a block that does not exist. -/
+def scGo : Nat → List SLbl → Scope → Nat → List Piece → Option (Scope × Nat)
+  | 0, _, _, _, _ => none
+  | _ + 1, _, S, n, [] => some (S, n)
+  | f + 1, lb, S, n, .straight ss :: ps => do
+      let (S1, n1) ← scStmts S n ss
+      scGo f lb S1 n1 ps
+  | f + 1, lb, S, n, .loop l pre body :: ps => do
+      let len := l.pTys.length
+      let need := S.add n (n + len)
+      let lb' : List SLbl := ⟨l.exitTys.length, len, need⟩ :: lb
+      let (Sp, np) ← scGo f lb' need (n + len) pre
+      let (Sb, nb) ← scGo f lb' (Sp.add np (np + len)) (np + len) body
+      if allIn S n l.init && l.init.length == len && !termsGo f pre &&
+          inS Sp np l.flag && allIn Sp np l.exitR &&
+          l.exitR.length == l.exitTys.length && need.sub Sp &&
+          (termsGo f body || (allIn Sb nb l.cont && l.cont.length == len))
+      then scGo f lb (need.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length) ps
+      else none
+  | f + 1, lb, S, n, .ite m thn els thnR elsR :: ps => do
+      let (St, nt) ← scGo f lb S n thn
+      let (Se, ne) ← scGo f lb S nt els
+      let tT := termsGo f thn
+      let tE := termsGo f els
+      if inS S n m.flag &&
+          (tT || (allIn St nt thnR && thnR.length == m.jTys.length && S.sub St)) &&
+          (tE || (allIn Se ne elsR && elsR.length == m.jTys.length && S.sub Se))
+      then
+        if tT && tE then (if ps.isEmpty then some (S, ne) else none)
+        else scGo f lb (S.add ne (ne + m.jTys.length)) (ne + m.jTys.length) ps
+      else none
+  | f + 1, lb, S, n, .dloop l body :: ps => do
+      let len := l.pTys.length
+      let lb' : List SLbl := ⟨l.exitTys.length, len, S⟩ :: lb
+      let (Sb, nb) ← scGo f lb' (S.add n (n + len)) (n + len) body
+      let guardOk := match l.guard with
+        | none => true
+        | some g => inS S n g
+      if allIn S n l.init && l.init.length == len && guardOk &&
+          l.exitIdx.length == l.exitTys.length && l.exitIdx.all (· < len) &&
+          (termsGo f body ||
+            (inS Sb nb l.flag && allIn Sb nb l.cont && l.cont.length == len && S.sub Sb))
+      then scGo f lb (S.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length) ps
+      else none
+  | _ + 1, lb, S, n, .br d args :: ps =>
+      match lb[d]? with
+      | some L =>
+          if ps.isEmpty && allIn S n args && args.length == L.exitN && L.need.sub S
+          then some (S, n) else none
+      | none => none
+  | _ + 1, lb, S, n, .cont d args :: ps =>
+      match lb[d]? with
+      | some L =>
+          if ps.isEmpty && allIn S n args && args.length == L.carryN then some (S, n)
+          else none
+      | none => none
+
+/-- **Every slot a body reads is bound, to the same value, on every path to the
+    read.** What `wf` deliberately leaves to Cranelift's verifier, stated so
+    that `compile_sound` can assume it: in scope is where the term's slot and
+    the compiled block's value are the same thing. -/
+def scopeOk (params : List ClifTy) (c : Code) : Bool :=
+  (scGo fuel [] [(0, params.length)] params.length c).isSome
 
 -- ---------------------------------------------------------------------------
 -- Observations

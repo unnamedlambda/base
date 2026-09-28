@@ -48,7 +48,7 @@ namespace AlgorithmLib.Prog
 
 open AlgorithmLib.IR
 open AlgorithmLib.HProg (Op Stmt Loop DLoop IteMeta Piece Code R fuel terminates
-  termsGo callsOf wf ptrParams)
+  termsGo callsOf wf scopeOk ptrParams)
 
 -- ---------------------------------------------------------------------------
 -- Value lists
@@ -996,9 +996,11 @@ def emitChecked (p : Body) (params : List ClifTy := ptrParams) :
   match err with
   | some e => .error e
   | none =>
-      if wf env params c then .ok c
-      else .error
+      if !wf env params c then .error
         s!"the body is not well-formed, from piece {firstBadPiece env params c} on"
+      else if !scopeOk params c then .error
+        "the body reads a slot that is not bound on every path to the read"
+      else .ok c
 
 /-- **The function a body compiles to, and why it must not ship, if it must
     not.**
@@ -1016,9 +1018,11 @@ def compile (idx : Nat) (p : Body) (params : List ClifTy := ptrParams) :
    match err with
    | some e => some s!"function {idx}: {e}"
    | none =>
-       if wf env params c then none
-       else some s!"function {idx} is not well-formed, from piece \
-         {firstBadPiece env params c} on")
+       if !wf env params c then some s!"function {idx} is not well-formed, from piece \
+         {firstBadPiece env params c} on"
+       else if !scopeOk params c then some s!"function {idx} reads a slot that is not \
+         bound on every path to the read"
+       else none)
 
 /-- The compiled form of a body, against the table it derives, without the
     check.
@@ -1062,9 +1066,11 @@ def compileStatus (idx : Nat) (p : StatusBody) (params : List ClifTy := ptrParam
    | none =>
        if a.isNone then some s!"function {idx} leaves its own body --- by a \
          `br` or a `cont` --- rather than reaching a status"
-       else if wf env params c then none
-       else some s!"function {idx} is not well-formed, from piece \
-         {firstBadPiece env params c} on")
+       else if !wf env params c then some s!"function {idx} is not well-formed, from piece \
+         {firstBadPiece env params c} on"
+       else if !scopeOk params c then some s!"function {idx} reads a slot that is not \
+         bound on every path to the read"
+       else none)
 
 /-- Compile a body that answers to the function an artifact ships. The checked
     door for `StatusBody`, beside `compileProg`. -/
