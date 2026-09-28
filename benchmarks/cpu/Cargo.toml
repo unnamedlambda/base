@@ -1,0 +1,15 @@
+[package]
+name = "cpu-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Built by `run.sh` with -C target-cpu=native into its own target directory.
+
+[dependencies]
+base = { path = "../../base" }
+lean-artifacts = { path = "../../lean" }
+
+[[bin]]
+name = "cpu-bench"
+path = "src/main.rs"

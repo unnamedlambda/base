@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run the benchmark suite: device work against PyTorch through py-base.
+# Run the benchmarks: device work against PyTorch through py-base, then the
+# CPU suite (`cpu/run.sh`).
 #
 # First run: creates .venv, builds py_base, installs deps (~1 min).
 # Subsequent runs: fast. Lake builds are incremental.
@@ -10,7 +11,7 @@
 #   --bench   torchops | vllm | all                          (default: all)
 #   --rounds  timed iterations per size                      (default: 10)
 #
-# Args are forwarded to the Python runner.
+# Args are forwarded to the Python runner; the CPU suite always runs all.
 
 set -euo pipefail
 
@@ -44,3 +45,7 @@ echo "Building artifacts ..."
 # ── Run Python suite ──────────────────────────────────────────────────────────
 
 python "$PY_BENCH_DIR/bench.py" "$@"
+
+# ── Run CPU suite ─────────────────────────────────────────────────────────────
+
+"$SCRIPT_DIR/cpu/run.sh"

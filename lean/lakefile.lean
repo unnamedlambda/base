@@ -86,6 +86,8 @@ lean_lib BlackHoleAlgorithm
 lean_lib ByteCountAlgorithm
 lean_lib SelfDescribingAlgorithm
 lean_lib ByteScrubAlgorithm
+lean_lib CpuBenchAsm
+lean_lib CpuBenchAlgorithm
 lean_lib X86Check
 lean_lib Sha256Algorithm
 @[default_target]
@@ -200,6 +202,8 @@ lean_exe genselfdescribingalgorithm where
   root := `SelfDescribingAlgorithm
 lean_exe genbytescrubalgorithm where
   root := `ByteScrubAlgorithm
+lean_exe gencpubenchalgorithm where
+  root := `CpuBenchAlgorithm
 lean_exe genleanevalalgorithm where
   root := `LeanEvalAlgorithm
 lean_exe gendrawalgorithm where

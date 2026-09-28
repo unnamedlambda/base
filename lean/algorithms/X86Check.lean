@@ -1,4 +1,5 @@
 import AlgorithmLib.X86
+import CpuBenchAsm
 
 /-! # `AlgorithmLib.X86` against GNU `as`
 
@@ -173,6 +174,9 @@ def alignCases : List Case := Id.run do
         [filler n, lbl "x", p2align 2, p2align k, lbl "y", inc rax]) :: out
   return out.reverse
 
+def shippedCases : List Case :=
+  [("CpuBenchAsm.poly", CpuBenchAsm.poly), ("CpuBenchAsm.stream", CpuBenchAsm.stream)]
+
 /-- Bodies `assemble` must refuse, and why. -/
 def refused : List (String × Body) :=
   [("an undefined label", [jmp "nowhere"]),
@@ -205,7 +209,7 @@ def run (cmd : String) (args : Array String) : IO String := do
   return r.stdout
 
 def main : IO UInt32 := do
-  let cases := (integerCases ++ vectorCases ++ controlCases ++ alignCases).toArray
+  let cases := (integerCases ++ vectorCases ++ controlCases ++ alignCases ++ shippedCases).toArray
   let mut src := #[".intel_syntax noprefix", ".text"]
   let mut want := #[]
   for k in [0:cases.size] do
