@@ -2275,7 +2275,10 @@ theorem run_mono (env : FnEnv) (f : FuncData) (args : List Sem.V) (w : Sem.World
     `run_mono` is what keeps this from being a weakening — the compiled side is
     upward-closed in its budget, so exhibiting one sufficient budget settles
     every larger one, and a caller who wants a concrete number can take any
-    bound that works. -/
+    bound that works.
+
+    `HProgSound.compileSoundE_of_ok` proves it for every body that passes
+    `scopeOk` and that the term interpreter runs to completion. -/
 def CompileSoundE (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
     (args : List V) (w : World) (fuel : Nat) : Prop :=
   ∃ steps, Sem.run { env, steps := fuel } args w c

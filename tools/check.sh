@@ -69,12 +69,16 @@ step() {
 # --- the Lean side -----------------------------------------------------------
 # One invocation: lake decides staleness by hashing contents, so asking twice
 # only costs the up-to-date check twice, and a failing build caches nothing.
+#
+# The root package's libraries reach only the library modules they import, so
+# the library is built whole as well: a module nothing imports -- a proof such
+# as `HProgSound` -- is otherwise never checked.
 
 lean_build() {
   cd "$ROOT/lean"
   local libs
   libs=$(grep -oP '^lean_lib \K\w+' lakefile.lean | tr '\n' ' ')
-  "${GUARD[@]}" taskset -c 0-3 lake build $libs &&
+  "${GUARD[@]}" taskset -c 0-3 lake build algorithmLib/AlgorithmLib $libs &&
     "${GUARD[@]}" taskset -c 0-3 lake build algorithmLib/artifacts
 }
 

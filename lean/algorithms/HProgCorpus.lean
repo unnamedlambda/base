@@ -772,10 +772,9 @@ def startWorld : Except String Sem.Mem :=
 /-- The corpus run through the *compiled* form, so the trace and the bytes can
     be compared against the term's.
 
-    This is `compile_sound`'s statement, checked by execution rather than
-    proved. Doing it in this order is deliberate: a theorem about traces can be
-    true and vacuous, or true about an order the demo never runs, and executing
-    both sides first is what rules that out. -/
+    This is the statement `compile_sound` proves, run as well. A theorem about
+    traces can be true and vacuous, or true about an order the demo never runs,
+    and executing both sides is what rules that out. -/
 def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
   let f ← Prog.compileProg 1 body
