@@ -336,18 +336,19 @@ fn emit(
         I::Sextend64(d, a) => def!(*d, cur.ins().sextend(ir::types::I64, vals.get(*a)?)),
 
         I::Store(v, addr, off) => {
-            cur.ins().store(MemFlags::new(), vals.get(*v)?, vals.get(*addr)?, *off);
+            cur.ins().store(access(false), vals.get(*v)?, vals.get(*addr)?, *off);
         }
         I::Istore8(v, addr, off) => {
-            cur.ins().istore8(MemFlags::new(), vals.get(*v)?, vals.get(*addr)?, *off);
+            cur.ins().istore8(access(false), vals.get(*v)?, vals.get(*addr)?, *off);
         }
         I::StoreTyped(_, v, addr, off) => {
-            // The type is carried by the stored value; `notrap aligned` is the
-            // part that matters here.
-            cur.ins().store(trusted(), vals.get(*v)?, vals.get(*addr)?, *off);
+            // The type is carried by the stored value.
+            let v = vals.get(*v)?;
+            let vector = cur.func.dfg.value_type(v).is_vector();
+            cur.ins().store(access(vector), v, vals.get(*addr)?, *off);
         }
         I::Load(d, op, addr, off) => {
-            let flags = if op.notrap_aligned { trusted() } else { MemFlags::new() };
+            let flags = access(op.notrap_aligned && ty(op.ty).is_vector());
             let a = vals.get(*addr)?;
             let r = match op.kind {
                 clif::LoadKind::Plain => cur.ins().load(ty(op.ty), flags, a, *off),
@@ -445,10 +446,24 @@ fn emit(
     Ok(())
 }
 
-/// `notrap aligned` — the flags the vector and float accessors carry.
-fn trusted() -> MemFlags {
+/// The flags every load and store carries: `notrap`, and `aligned` on the
+/// vector accesses that assert it.
+///
+/// `notrap` on every access, because base installs no trap handler: an access
+/// that faults ends the process whether or not Cranelift was told it could.
+/// Saying so everywhere is what keeps the load and the store of a
+/// read-modify-write under identical flags, which x64 requires before it fuses
+/// them into one `add [mem], x` (`store_x64_add_mem`); a counter bumped in
+/// memory is otherwise three instructions.
+///
+/// `aligned` only on vectors, the one place it changes code: a legacy-SSE
+/// instruction takes a memory operand only when it is aligned. On a scalar it
+/// changes nothing on x64 except whether the flags match.
+fn access(aligned_vector: bool) -> MemFlags {
     let mut f = MemFlags::new();
     f.set_notrap();
-    f.set_aligned();
+    if aligned_vector {
+        f.set_aligned();
+    }
     f
 }
