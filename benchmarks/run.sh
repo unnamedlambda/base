@@ -4,6 +4,8 @@
 # First run: creates .venv, builds py_base, installs deps (~1 min).
 # Subsequent runs: fast. Lake builds are incremental.
 #
+# This script asks Lake for the artifacts, then sets up the venv and py_base.
+#
 # Usage: ./run.sh [--bench <name>] [--rounds <n>]
 #   --bench   torchops | vllm | all                          (default: all)
 #   --rounds  timed iterations per size                      (default: 10)
@@ -17,9 +19,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PY_BENCH_DIR="$SCRIPT_DIR/python"
 PY_BASE_DIR="$REPO_ROOT/py-base"
 VENV="$PY_BASE_DIR/.venv"
-LAKE_DIR="$REPO_ROOT/lean/algorithms"
-OUT_DIR="$REPO_ROOT/lean/data"
-BENCHMARKS_MODULE="PythonBenchmarks"
 
 # ── Python environment ────────────────────────────────────────────────────────
 
@@ -37,16 +36,10 @@ echo "Building py_base ..."
 
 pip install -q -r "$PY_BENCH_DIR/requirements-bench.txt"
 
-# ── PythonBenchmarks artifacts ────────────────────────────────────────────────
+# ── Artifacts ─────────────────────────────────────────────────────────────────
 
-mkdir -p "$OUT_DIR"
-src="$LAKE_DIR/$BENCHMARKS_MODULE.lean"
-module_out_dir="$OUT_DIR/$BENCHMARKS_MODULE"
-
-(cd "$LAKE_DIR" && lake build "$BENCHMARKS_MODULE")
-echo "Generating artifacts from $BENCHMARKS_MODULE.lean ..."
-mkdir -p "$module_out_dir"
-(cd "$LAKE_DIR" && lake env lean --run "$src" "$module_out_dir")
+echo "Building artifacts ..."
+(cd "$REPO_ROOT/lean" && lake build algorithmLib/artifacts)
 
 # ── Run Python suite ──────────────────────────────────────────────────────────
 

@@ -13,8 +13,8 @@ from py_base import Base, load_artifact
 import cbor
 
 ARTIFACT = os.path.join(
-    os.path.dirname(__file__), "..", "..", "lean-artifacts", "artifacts",
-    "SelfDescribingAlgorithm", "self_describing.cbor")
+    os.path.dirname(__file__), "..", "..", "lean", ".lake", "build", "artifacts",
+    "self_describing.cbor")
 
 INPUT = b"abca"
 

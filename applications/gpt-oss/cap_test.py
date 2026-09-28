@@ -18,7 +18,7 @@ them, because nothing clamped it.  A missing clamp fails the first; a clamp
 that fires too early fails the second.
 
   python applications/gpt-oss/cap_test.py \\
-      lean-artifacts/artifacts/GptOssDecode/gptoss_decode.cbor \\
+      lean/.lake/build/artifacts/gptoss_decode.cbor \\
       --bank data/gptoss-bank --context 32768
 
 Run it at more than one `--context`: that the clamp moves with the request is

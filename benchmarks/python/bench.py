@@ -37,11 +37,12 @@ def main():
             print_usage()
             sys.exit(1)
 
-    data_dir = os.path.normpath(os.path.join(BENCHMARKS_DIR, "..", "..", "lean", "data"))
-    generator = "PythonBenchmarks"
+    data_dir = os.path.normpath(
+        os.path.join(BENCHMARKS_DIR, "..", "..", "lean", ".lake", "build", "artifacts")
+    )
 
     def artifact_path(name: str) -> str:
-        path = os.path.join(data_dir, generator, f"{name}.cbor")
+        path = os.path.join(data_dir, f"{name}.cbor")
         if not os.path.exists(path):
             print(
                 f"ERROR: {path} not found. Run ./run.sh first.",

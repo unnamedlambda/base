@@ -29,7 +29,7 @@ function the artifact exports, and a script calls it by that name.
 ```python
 from py_base import load_artifact, Base
 
-artifact = load_artifact("../lean-artifacts/artifacts/Sha256Algorithm/sha256_app.cbor")
+artifact = load_artifact("../lean/.lake/build/artifacts/sha256_app.cbor")
 
 base = Base(artifact)                # JIT compiles — do this once
 base.execute("main")                 # …then execute as often as you like

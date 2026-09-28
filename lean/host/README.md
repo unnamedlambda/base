@@ -24,7 +24,7 @@ cd lean/host && lake exe upcasehost
 ```
 
 That is the whole of it. Lake builds `libbase.so` itself — the `libbase` target
-runs `cargo build -p base` — which is the mirror of `build-support` running
+runs `cargo build -p base` — which is the mirror of `lean-artifacts` running
 lake from a cargo build script. Each ecosystem's tool drives the other, so a
 Lean caller never types `cargo` and a Rust caller never types `lake`.
 
@@ -124,9 +124,10 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
   compiled functions on whichever thread calls it, so a `Runtime` is usable
   from any of them. A program that opens a window is the exception: on macOS
   its event loop has to be created on the main thread.
-* **Two workspaces over one package.** `lake` here and `build-support`'s
-  `lake` in `lean/algorithms` build the same package directory. `build-support`
-  takes a lock; this does not. Do not run both at once.
+* **Two workspaces over one package.** `lake` here and the `lake` that
+  `lean-artifacts`' build script runs both build the package in `lean/`. Lake
+  takes no lock; the `artifacts` target takes one around its own run, but a
+  module build from here can still overlap it. Do not run both at once.
 * **Conventions, not coverage.** Every entry point is callable: `ffi f args`
   takes `Vals V f.params` and returns `ResV V f.result`, both read off `Ffi`,
   so arity and types are the call's type and there is nothing to keep in step.
