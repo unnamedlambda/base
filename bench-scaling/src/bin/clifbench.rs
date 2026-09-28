@@ -1,13 +1,18 @@
-//! JIT timing for generated CLIF programs.
+//! Decode and JIT timing for generated CLIF programs.
 //!
 //! Separate binary because it links `base` (and therefore wgpu/cudarc), which
 //! the harness itself has no reason to pull in. The `clif` suite invokes this if
 //! it has been built; otherwise it records the generation numbers and skips JIT.
 //!
-//!   cargo build --release -p bench-scaling --bin clifbench
+//!   cargo build --release -p bench-scaling --bin clifbench --features jit
 //!
 //! Takes generated `.cbor` artifact files. Prints one
-//! `file<TAB>bytes<TAB>seconds` line per input.
+//! `file<TAB>bytes<TAB>decode_seconds<TAB>jit_seconds` line per input.
+//!
+//! The two halves are timed apart because they cover different things. Decode
+//! reads the whole artifact, data segments included; the JIT below is handed
+//! only the functions, against a fixed arena. For an artifact that is mostly
+//! weights the first number is the one that grows.
 
 use base::{Artifact, Driver};
 
@@ -22,6 +27,7 @@ fn main() {
             }
         };
         let bytes = file.len();
+        let t = std::time::Instant::now();
         let artifact = match Artifact::from_bytes(&file) {
             Ok(a) => a,
             Err(e) => {
@@ -29,6 +35,9 @@ fn main() {
                 continue;
             }
         };
+        let decode = t.elapsed();
+        // The arena and the data segments are replaced rather than carried, so
+        // what the JIT is timed on is the functions alone.
         let artifact = Artifact {
             functions: artifact.functions,
             required_memory: 1 << 20,
@@ -39,11 +48,23 @@ fn main() {
         match Driver::load(artifact) {
             Ok(b) => {
                 let el = t.elapsed();
-                println!("{}\t{}\t{:.3}", name, bytes, el.as_secs_f64());
+                println!(
+                    "{}\t{}\t{:.3}\t{:.3}",
+                    name,
+                    bytes,
+                    decode.as_secs_f64(),
+                    el.as_secs_f64()
+                );
                 // keep the module alive until after the timing read
                 std::hint::black_box(&b);
             }
-            Err(e) => println!("{}\t{}\tERR {:?}", name, bytes, e),
+            Err(e) => println!(
+                "{}\t{}\t{:.3}\tERR {:?}",
+                name,
+                bytes,
+                decode.as_secs_f64(),
+                e
+            ),
         }
     }
 }

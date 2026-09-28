@@ -212,18 +212,20 @@ pub fn clif(ctx: &Ctx) -> Vec<Value> {
         let m = crate::measure::measure(&cmd, None, &[], 1800);
         for line in m.stdout.lines() {
             let p: Vec<&str> = line.split('\t').collect();
-            if p.len() == 3 && !p[2].starts_with("ERR") {
+            if p.len() == 4 && !p[3].starts_with("ERR") {
                 rows.push(json!({
                     "kind": "jit", "ok": true, "file": p[0],
                     "bytes": p[1].parse::<u64>().unwrap_or(0),
-                    "secs": p[2].parse::<f64>().unwrap_or(0.0),
+                    "decode_secs": p[2].parse::<f64>().unwrap_or(0.0),
+                    "secs": p[3].parse::<f64>().unwrap_or(0.0),
                 }));
             }
         }
     } else {
         rows.push(json!({
             "kind": "jit",
-            "skipped": "cargo build --release -p clifbench for parse+JIT numbers"
+            "skipped": "cargo build --release -p bench-scaling --bin clifbench \
+                        --features jit for decode+JIT numbers"
         }));
     }
     rows

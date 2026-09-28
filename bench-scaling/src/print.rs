@@ -170,12 +170,17 @@ pub fn all(raw: &Raw) {
         line("generate", &pts, &bad, |t| format!("{t:.2}s"), "");
         // dead and live CLIF have different per-byte costs; interleaving them
         // by size produces a growth figure that means nothing
-        for (label, tag) in [("JIT dead", "dead"), ("JIT live", "live")] {
-            let (pts, bad) = series(c, "bytes", "secs", |r| {
+        for (label, tag, col) in [
+            ("decode dead", "dead", "decode_secs"),
+            ("decode live", "live", "decode_secs"),
+            ("JIT dead", "dead", "secs"),
+            ("JIT live", "live", "secs"),
+        ] {
+            let (pts, bad) = series(c, "bytes", col, |r| {
                 s(r, "kind") == Some("jit")
                     && s(r, "file").is_some_and(|f| f.starts_with(tag))
             });
-            line(label, &pts, &bad, |t| format!("{t:.2}s"), "bytes of CLIF");
+            line(label, &pts, &bad, |t| format!("{t:.3}s"), "bytes of CLIF");
         }
     }
 
