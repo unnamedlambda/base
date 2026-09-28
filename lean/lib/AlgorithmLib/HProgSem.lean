@@ -1154,6 +1154,27 @@ def runCode : Nat → Cfg → Env → World → List Piece → CodeRes
       | .ok Γ' w' => runCode fuel cfg Γ' w' ps
 end
 
+/-- **`c`, run from `Γ`, spends `binds` slots and answers `v`, touching nothing.**
+
+    What a claim about a straight-line fragment has to say, with the plumbing
+    said once rather than at every claim: the fuel, the configuration and the
+    world are quantified here, the run succeeds, the world it leaves is the one
+    it started with --- so the fragment performs no store and no call --- and the
+    last of the `binds` values it appended is `v`.
+
+    `fuel + 2` rather than `fuel`, because `runCode (fuel + 1)` calls
+    `runPiece fuel` and a bare variable leaves the successor equation unable to
+    fire; putting it here keeps every claim from having to get it right.
+
+    Deliberately over a `Code` rather than over a `Prog`: `Prog.emit` stays at
+    the call site, where it is the reason the claim is about emitted
+    instructions and not about a transcription of them. -/
+def Answers (Γ : Env) (c : Code) (binds : Nat) (v : V) : Prop :=
+  ∀ (fuel : Nat) (cfg : Cfg) (w : World), ∃ Γ',
+    runCode (fuel + 2) cfg Γ w c = .ok Γ' w
+    ∧ Γ'.size = Γ.size + binds
+    ∧ Γ'.back? = some v
+
 /-- Run a body with `params` bound to `args`, and hand back the world it
     leaves, with the observation trace in program order. -/
 def run (cfg : Cfg) (args : List V) (w : World) (c : Code) : Outcome (List Obs) :=

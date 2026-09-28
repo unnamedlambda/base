@@ -20,6 +20,29 @@ open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 
 namespace ByteScrub
 
+/-- All ones on the NUL lanes, all zeros elsewhere. -/
+def nulMask (xs : Array UInt64) : Sem.V :=
+  .vec .i8x16 (xs.map fun x => if x = 0 then 255 else 0)
+
+/-- The same bytes with every NUL made a space. -/
+def scrubLanes (xs : Array UInt64) : Array UInt64 :=
+  xs.map fun x => if x = 0 then 32 else x
+
+def scrubbedBytes (xs : Array UInt64) : Sem.V := .vec .i8x16 (scrubLanes xs)
+
+/-- **No byte the scrubber leaves is a NUL.**
+
+    This is what the pass is for: a buffer it has written can be handed to an
+    interface that stops at the first NUL. It is a fact about the bytes rather
+    than a restatement of the definition, and it is what `blend_scrubs` is worth
+    proving for --- that theorem says which bytes come out, and this says the
+    thing about them that the caller needs. -/
+theorem scrubLanes_no_nul (xs : Array UInt64) : ∀ y ∈ scrubLanes xs, y ≠ 0 := by
+  intro y hy
+  simp only [scrubLanes, Array.mem_map] at hy
+  obtain ⟨x, _, rfl⟩ := hy
+  split <;> simp_all
+
 /-- Wherever `blend` runs, if its operands hold sixteen bytes, sixteen NULs and
     sixteen spaces, it leaves a mask that is all ones exactly on the NUL lanes,
     then the bytes with every NUL made a space. -/
@@ -30,19 +53,53 @@ theorem blend_scrubs (fuel : Nat) (cfg : Cfg) (w : World)
     (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
     (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32))) :
     runCode (fuel + 2) cfg Γ w (Prog.emit (discard (blend a b c)) tys)
-      = .ok ((Γ.push (.vec .i8x16 (xs.map fun x => if x = 0 then 255 else 0))).push
-               (.vec .i8x16 (xs.map fun x => if x = 0 then 32 else x))) w := by
+      = .ok ((Γ.push (nulMask xs)).push (scrubbedBytes xs)) w := by
   obtain ⟨ha', ha⟩ := Array.getElem?_eq_some_iff.mp ha
   obtain ⟨hb', hb⟩ := Array.getElem?_eq_some_iff.mp hb
   obtain ⟨hc', hc⟩ := Array.getElem?_eq_some_iff.mp hc
   -- compile blend
   conv in Prog.emit _ _ => reduce
   -- run both instructions under the semantics
-  simp +decide [runCode, runPiece, runStmts, runStmt, evalOp, Sem.get,
+  simp +decide [nulMask, scrubbedBytes, scrubLanes,
+    runCode, runPiece, runStmts, runStmt, evalOp, Sem.get,
     zipIntCmp, cmpInt, ClifTy.lanes, widthMask, zipAnyBits, zipBitsIf,
     Array.getElem?_push_lt, Array.push_eq_push, ha, hb, hc, ha', hb', hc', hΓ, h16]
   -- lane by lane: a NUL, or any other byte
   constructor <;> ext k hk <;> simp_all <;> split <;> simp_all +decide
+
+/-- **What running `blend` leaves, and that no NUL survives it.**
+
+    The conclusion names no definition of this file, so it says what the sixteen
+    bytes are --- each input byte, or a space where that byte was NUL --- rather
+    than asserting that the code computes a function declared to be what it
+    computes.
+
+    `ys` is bound and then fixed by the first conjunct, so the existential is a
+    naming and not a choice: `runCode` is a function, so the run has one result,
+    and what this says is that the result is those bytes. The equation comes
+    first for that reason --- read the other way round it invites the weaker
+    reading, that some possible answer happens to be right.
+
+    Both halves are needed. The second is the reason the pass exists: a buffer
+    it has written can be handed to an interface that stops at the first NUL. On
+    its own it would also hold of a program that wrote nothing but spaces, and
+    the first is what rules that out. The comparison mask the first
+    instruction leaves is not mentioned: `Answers` names only the last value,
+    since nothing outside the pair reads the mask. -/
+theorem blend_leaves_no_nul
+    (Γ : Env) (tys : List ClifTy) (hΓ : tys.length = Γ.size)
+    (a b c : R) (xs : Array UInt64) (h16 : xs.size = 16)
+    (ha : Γ[a]? = some (.vec .i8x16 xs))
+    (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
+    (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32))) :
+    ∃ ys, ys = xs.map (fun x => if x = 0 then 32 else x)
+          ∧ Answers Γ (Prog.emit (discard (blend a b c)) tys) 2 (.vec .i8x16 ys)
+          ∧ ∀ y ∈ ys, y ≠ 0 :=
+  ⟨scrubLanes xs, rfl,
+   fun fuel cfg w =>
+     ⟨_, blend_scrubs fuel cfg w Γ tys hΓ a b c xs h16 ha hb hc, by simp,
+      by simp [scrubbedBytes]⟩,
+   scrubLanes_no_nul xs⟩
 
 -- ---------------------------------------------------------------------------
 -- The same fact, about the instructions that ship
@@ -79,8 +136,7 @@ theorem blend_scrubs_stmts (fuel : Nat) (cfg : Cfg) (w : World)
     (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
     (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32))) :
     runStmts cfg Γ w (blendStmts a b c Γ.size)
-      = .ok ((Γ.push (.vec .i8x16 (xs.map fun x => if x = 0 then 255 else 0))).push
-               (.vec .i8x16 (xs.map fun x => if x = 0 then 32 else x))) w := by
+      = .ok ((Γ.push (nulMask xs)).push (scrubbedBytes xs)) w := by
   have h := blend_scrubs fuel cfg w Γ tys hΓ a b c xs h16 ha hb hc
   rw [blend_emits, hΓ, runCode_straight] at h
   cases hr : runStmts cfg Γ w (blendStmts a b c Γ.size) with
@@ -113,10 +169,8 @@ theorem blend_clif (fuel : Nat) (env : FnEnv) (cfg : Cfg) (w : World)
     ∃ vals',
       Blocks.runInsts env ⟨vals, w⟩ (emittedList s (blendStmts a b c Γ.size) ++ rest)
           = Blocks.runInsts env ⟨vals', w⟩ rest
-      ∧ Blocks.getV vals' ⟨Γ.size⟩
-          = some (.vec .i8x16 (xs.map fun x => if x = 0 then 255 else 0))
-      ∧ Blocks.getV vals' ⟨Γ.size + 1⟩
-          = some (.vec .i8x16 (xs.map fun x => if x = 0 then 32 else x)) := by
+      ∧ Blocks.getV vals' ⟨Γ.size⟩ = some (nulMask xs)
+      ∧ Blocks.getV vals' ⟨Γ.size + 1⟩ = some (scrubbedBytes xs) := by
   have haa : a < Γ.size := (Array.getElem?_eq_some_iff.mp ha).1
   have hbb : b < Γ.size := (Array.getElem?_eq_some_iff.mp hb).1
   have hcc : c < Γ.size := (Array.getElem?_eq_some_iff.mp hc).1
@@ -166,14 +220,6 @@ them does.
 def blendInsts : List Inst :=
   [.icmp ⟨18⟩ .eq ⟨17⟩ ⟨6⟩, .bitselect ⟨19⟩ ⟨18⟩ ⟨8⟩ ⟨17⟩]
 
-/-- All ones on the NUL lanes, all zeros elsewhere. -/
-def nulMask (xs : Array UInt64) : Sem.V :=
-  .vec .i8x16 (xs.map fun x => if x = 0 then 255 else 0)
-
-/-- The same bytes with every NUL made a space. -/
-def scrubbedBytes (xs : Array UInt64) : Sem.V :=
-  .vec .i8x16 (xs.map fun x => if x = 0 then 32 else x)
-
 /-- **These are the instructions that ship.** Block 2 of the entry point, in
     full, with the pair named. The compiler is run, not described. -/
 theorem blendInsts_ship :
@@ -215,8 +261,8 @@ theorem bitselect_scrubs (m : Sem.Mem) (vals : Blocks.Vals) (xs : Array UInt64)
     Blocks.evalInst m vals (.bitselect ⟨19⟩ ⟨18⟩ ⟨8⟩ ⟨17⟩)
       = some (⟨19⟩, scrubbedBytes xs) := by
   simp only [Blocks.evalInst, hm, hsp, hx, Blocks.viaOp]
-  simp +decide [nulMask, scrubbedBytes, evalOp, Sem.get, zipAnyBits, zipBitsIf,
-    ClifTy.lanes, widthMask, h16]
+  simp +decide [nulMask, scrubbedBytes, scrubLanes, evalOp, Sem.get, zipAnyBits, zipBitsIf,
+    ClifTy.lanes, h16]
   ext k hk <;> simp_all <;> split <;> simp_all +decide
 
 /-- The two together, run by the block interpreter from any agreeing state and
