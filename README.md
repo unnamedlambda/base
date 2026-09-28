@@ -1,215 +1,100 @@
 # Base
 
-Base is an execution system that delivers performance comparable to idiomatic Rust while allowing control logic to be specified in a language with a strong type system — without introducing type checking or interpreter overhead at runtime.
+Base is an interface and system for programming at the scope of an entire
+board. The CPU, GPU, network and file system are all controlled through a single
+artifact loaded by a driver.
 
-Programs are defined by an `Artifact`: Cranelift IR functions, the size of the memory they run in, and the data segments that memory starts with. An entry point is a function the artifact exports by name. This artifact is data — one CBOR file, transportable, and buildable from any language. Lean 4 is used here as the specification language, where dependent types can verify program structure at Rust build time, but execution at runtime has no knowledge of or usage of Lean.
+An artifact holds a program and the memory it starts with. The program is CLIF,
+the IR of the Cranelift code generator: it runs on the CPU and calls a fixed set
+of primitives for everything else, such as GPU dispatch, file reads and network
+sends. The driver compiles the program with Cranelift when it loads the artifact,
+then runs its entry points by name.
 
-The system is completely portable — all dependencies build from `cargo` with no manual system library installation, and only portable Rust features are used. Cranelift provides a JIT compiler similar to LLVM but without the system dependency — it is pure Rust, built from Cargo. Backend code quality is comparable to LLVM, which means optimization lives in Lean: emit good IR, and the generated code is fast. CPU, GPU, file, network, and database primitives are exposed through a shared memory space and directly callable from the JIT-compiled IR.
+Artifacts are produced by generators. The generators here are written in Lean,
+where theorems prove, at build time, properties of an artifact's run-time
+behavior. See the [paper](paper/main.pdf) for the design.
 
-GPU compute uses [wgpu](https://wgpu.rs/), a portable abstraction over Vulkan, Metal, DX12, and WebGPU — no vendor-specific SDK required. For NVIDIA GPUs, Base also provides direct CUDA support via [cudarc](https://github.com/coreylowman/cudarc), which dynamically loads the CUDA driver at runtime (`libcuda.so` / `nvcuda.dll`). PTX kernel source is embedded in the artifact's initial memory by Lean at build time and loaded into the CUDA driver at execution time — no `nvcc` compilation step, no `-sys` crate, and no build-time CUDA SDK dependency beyond having the driver installed.
+## Usage
 
-## How it works
+### Writing a generator
 
-An `Artifact` contains:
+A generator is a Lean program that builds an artifact. Each `←` emits CLIF
+instructions and binds their result, much as an IR builder does, and `forLoop`
+emits a loop into the artifact rather than looping in Lean.
 
+The generator below copies a 4096-byte buffer, replacing every NUL byte with a
+space. It is shipped as the `main` entry point of the `byte_scrub` artifact
+([source](lean/algorithms/ByteScrubAlgorithm.lean)).
+
+```lean4
+-- Sixteen bytes at a time: where a byte equals `nul`, take `space`.
+def blend (v nul space : V .i8x16) : Prog V L (V .i8x16) := do
+  bitselect (← icmp .eq v nul) space v
+
+def scrub (vectors : Nat) (src dst : V .i64) : Prog V L Unit := do
+  let nul ← splat .i8x16 (← iconst .i8 0)
+  let space ← splat .i8x16 (← iconst .i8 32)
+  forLoop (← iconst64 vectors) fun i => do
+    let off ← ishlImm i 4
+    let v ← loadI8x16 (← iadd src off)
+    store (← blend v nul space) (← iadd dst off)
+
+-- 256 vectors of 16 bytes, from the caller's input to its output.
+def code : Prog V L Unit := do
+  scrub 256 (← dataPtr) (← outPtr)
 ```
-Artifact { functions, required_memory, data }
-Function { entry_name, blocks }
-```
 
-**functions** are the compiled code, one Cranelift IR function each. A call carries its callee: an imported symbol the engine resolves by name, or another function of this artifact by its position in the list. A host calls one by its **entry_name**, and a function without one is the program's own.
+### Running an artifact
 
-**required_memory** is the memory they run in, and **data** what it starts with: segments of bytes generated at build time (shader sources, binding descriptors, PTX kernels, etc.) at the addresses they belong at. Memory is zero everywhere a segment does not cover, so an artifact ships what it sets rather than an image of the whole.
-
-An **entry point** is an exported function, called by its name. A program answers through the out buffer its caller passes. Multi-stage flows (e.g., GPU load → prep → infer pipelines) are several entry points over one compilation and one memory. Names are unique within an artifact, and the generator is free to reorder functions: positions never leave the artifact, so a host is never written against one.
-
-At build time, Lean 4 writes this artifact as CBOR, one file that every host reads. The Rust build script decodes each one into typed structs and refuses any that does not re-encode to the same bytes. At runtime, Cranelift JIT-compiles the IR once and executes algorithms against shared memory — no interpreter, no GC, no serialization layer in the hot path.
-
-## Execution patterns
-
-### One-shot execution
+The `lean-artifacts` crate builds every generator with Lake and embeds the
+resulting artifacts. Loading one compiles it once; each `execute` then calls an
+entry point by name with the caller's input and output buffers.
 
 ```rust
-let artifact = Artifact::from_bytes(ARTIFACT_BINARY)?;
-base::run(artifact, "main")?;
+use base::{Artifact, Driver};
+
+let artifact = Artifact::from_bytes(lean_artifacts::BYTE_SCRUB)?;
+let mut driver = Driver::load(artifact)?;
+
+let input = [0u8; 4096];
+let mut output = [0u8; 4096];
+driver.execute("main", &input, &mut output)?;
+assert!(!output.contains(&0));
 ```
 
-### Compile-once, execute-many with payloads
+The driver is also exported as a C API, which the Python and Lean bindings use.
 
-For workloads that benefit from persistent state and dynamic data, the `Base` struct provides JIT-once semantics with zero-copy data passing:
+## Performance
 
-```rust
-let artifact = Artifact::from_bytes(ARTIFACT_BINARY)?;
-let mut base = Base::new(artifact)?;            // JIT compile once
+In both tables a ratio below 1 means Base is faster.
 
-// Input and output are the caller's buffers, passed by pointer: no copying
-let status = base.execute("main", &data, &mut [])?;
-base.execute("main", &payload, &mut output)?;
+**CPU**, against the same kernel in Rust on an AMD Ryzen 5 5500. The CLIF column
+is the generator's code compiled by Cranelift. The two workloads that need
+instructions CLIF lacks (256-bit vectors, non-temporal stores) also carry native
+assembly, assembled in Lean, in the asm column.
 
-// Multi-stage flows are further entry points over the same memory
-base.execute("prep", &input, &mut [])?;
-base.execute("infer", b"", &mut output)?;
+| Workload | Rust (µs) | CLIF / Rust | asm / Rust |
+|---|---:|---:|---:|
+| Mandelbrot set | 1800.4 | 1.00 | |
+| Pointer chase | 2295.5 | 1.00 | |
+| Byte histogram | 320.5 | 1.00 | |
+| Polynomial, f32 | 6.1 | 2.04 | 1.01 |
+| Copy, 32 MB | 2296.8 | 1.56 | 1.00 |
 
-// What a program left in its own memory
-let bytes = &base.memory()[offset..offset + len];
-```
+**GPU**, against PyTorch on an RTX 3060, taking whichever of eager and compiled
+mode is faster. Small workloads are faster in Base through fusion and a lower
+cost of dispatch.
 
-An entry point returns an `i64` status — the one value a program answers without a host and a program agreeing on a place in memory to leave it. Nothing declares it: a body whose `return` carries a value answers with it, a body whose `return` carries nothing answers `0`, and the runtime reads that off the body.
+| Workload | PyTorch (µs) | Base / PyTorch |
+|---|---:|---:|
+| Vector add 50M | 1810 | 0.99 |
+| Scale-and-add 50M | 1860 | 0.97 |
+| Scale-and-add 1M | 90 | 0.52 |
+| GEMV 11008 × 4096 | 555 | 0.98 |
+| RMSNorm 4096 | 57 | 0.19 |
+| Softmax 32000 | 30 | 0.37 |
+| Decode attention, 2048 keys | 83 | 0.77 |
+| Decode attention, 128 keys | 67 | 0.22 |
 
-An entry point is called with five arguments: the base of shared memory, then the caller's input pointer and length and the caller's output pointer and length. CLIF code uses those pointers to reach the caller's buffers directly, so nothing is copied in or out and there is no arena slot the runtime and the program have to agree about. GPU uploads/downloads use `cl_gpu_upload_ptr` / `cl_gpu_download_ptr` to transfer between caller pointers and GPU memory with no intermediate copy through shared memory.
-
-## Example: CUDA Black Hole Renderer
-
-The [blackhole](applications/blackhole/) application renders a Schwarzschild black hole with an accretion disk by tracing geodesics through curved spacetime on the GPU. The entire program — PTX kernel source, Cranelift IR orchestration, BMP header, memory layout, and output filename — is defined in a single Lean file. Run with `cargo run --bin blackhole --release`.
-
-![CUDA black hole render by Base](blackhole.png)
-
-*1280x720, 512 samples per pixel, 1500 geodesic integration steps. Rendered in ~2.1s from raw PTX and converted to PNG offline for README inclusion.*
-
-**[BlackHoleAlgorithm.lean](lean/algorithms/BlackHoleAlgorithm.lean)** defines:
-
-1. A raw PTX renderer that integrates null geodesics through a Schwarzschild metric, samples the accretion disk emission with relativistic Doppler beaming, and tone-maps the HDR result. Camera and disk geometry are dependently typed so invalid scene specs are rejected at Lean compile time.
-
-2. Cranelift IR that orchestrates: CUDA init → device buffer creation → PTX launch → pixel download → file write as BMP.
-
-3. Initial memory that packs the BMP header, PTX source, binding descriptors, output filename, and CLIF IR into a flat byte layout.
-
-## Type system design
-
-The `Artifact` is plain data. The entire assembly-like control surface — memory layout, function indexing, FFI calls, GPU dispatch — is exposed to the specification language. This enables freedom to bolt on type systems that constrain effects in a bottom-up way: start with the raw primitives, then layer on whatever invariants the application needs.
-
-Lean 4 is used here because its dependent type system can express constraints on program structure (memory layout invariants, offset arithmetic, action sequencing) and verify them at build time. But this is a property of the specification language, not the Rust executor. Any language that can produce the right CBOR structure can target Base. The Cranelift JIT sees only the instructions and a byte array.
-
-## Benchmark results
-
-The benchmarks demonstrate that Base matches idiomatic Rust performance — the key point being that programs specified in Lean and compiled through Cranelift do not pay the runtime overhead you would see from a Lean, Python, or other high-level language runtime. The specification language's type system is a build-time concern only; at execution time, it is just native code operating on flat memory.
-
-All benchmarks run on the same machine, median of 10 rounds. CPU benchmarks compare Python, idiomatic Rust, and Base. GPU benchmarks compare Burn (wgpu/cuda backends) and Base. All results are verified for correctness. JIT compilation happens once before timing (`Base::new`), so only execution cost is measured.
-
-### CPU workloads
-
-```
-Benchmark                  Python         Rust         Base
-------------------------------------------------------------
-CSV (1M)                  542.6ms       55.8ms       30.0ms
-CSV (5M)                 2713.3ms      314.6ms      153.9ms
-JSON (100K)                81.5ms        2.6ms        2.4ms
-JSON (500K)               350.1ms       15.5ms        9.4ms
-Regex (500K)               59.4ms        4.1ms        2.8ms
-Regex (1M)                103.7ms        8.1ms        4.5ms
-StrSearch (1M)             19.2ms        2.1ms        1.5ms
-WordCount (1M)            155.7ms       36.0ms       37.1ms
-```
-
-The benchmarks measure pure execution time — JIT compilation happens once before timing via `Base::new()`. All file I/O benchmarks (CSV, JSON, Regex, StrSearch, WC) include file read/write in the timing for all three implementations. Base can exceed Rust on workloads like CSV and Regex because Cranelift IR can emit SIMD instructions directly, avoiding the overhead of Rust's standard library abstractions. WordCount is a regression — Base uses FFI calls to a hash table (`ht_*` primitives) which Cranelift cannot inline, whereas LLVM can inline Rust's equivalent `HashMap` operations.
-
-### Sort (radix sort vs Rust pdqsort)
-
-```
-Benchmark                    Rust         Base
----------------------------------------------
-Sort (100K)                 1.1ms        1.0ms
-Sort (1M)                  12.4ms        8.4ms
-Sort (5M)                  63.8ms       44.7ms
-```
-
-Base uses LSD radix sort (O(n), Lean-generated CLIF) vs Rust's `sort_unstable` (pdqsort, O(n log n)). This benchmark demonstrates that Base can execute a memory-intensive workload competitively. Rust would likely match given a native radix sort implementation — the comparison is less about Rust vs Base and more about showing Base handles hot memory access patterns well.
-
-### Burn CPU workloads (Rust vs Burn vs Base)
-
-```
-Benchmark                    Rust         Burn         Base
-------------------------------------------------------------
-MatMul (256x256)            1.5ms        0.2ms        1.0ms
-MatMul (1024x1024)         96.6ms        8.0ms       59.3ms
-VecAdd (10M)                7.1ms       22.5ms        2.4ms
-VecAdd (50M)               35.9ms      127.1ms       12.6ms
-Sum (50M)                  35.7ms        9.1ms        7.9ms
-Sum (100M)                 71.3ms       18.1ms       16.1ms
-```
-
-Burn wins at MatMul (uses optimized BLAS kernels). Base wins at simple operations (VecAdd, Sum) where allocation overhead dominates the trivial O(n) compute.
-
-### GPU workloads (Burn wgpu vs Base wgpu)
-
-```
-Benchmark              Burn(wgpu)         Base
----------------------------------------------
-VecAdd 256K                 3.7ms        0.6ms
-MatMul 256x256              3.0ms        0.5ms
-MatMul 512x512              3.8ms        1.9ms
-Reduction 256K              3.1ms        0.4ms
-Reduction 896K              4.2ms        1.1ms
-```
-
-Both sides use [wgpu](https://wgpu.rs/) — the same portable GPU library, the same GPU hardware. The 3-5x gap is entirely Burn's host-side framework overhead (tensor allocation, cubecl scheduling, backend abstraction layer). Base calls the wgpu API directly through thin FFI wrappers from JIT-compiled CLIF.
-
-### GPU iterative (data stays GPU-resident)
-
-```
-Benchmark                Raw wgpu         Burn         Base
-------------------------------------------------------------
-1x scale 1M                 4.5ms        5.7ms        2.2ms
-100x scale 1M               9.6ms        8.9ms        9.3ms
-1000x scale 1M             70.2ms       44.1ms       69.9ms
-```
-
-Base wins at low iteration counts (minimal setup overhead). At high iteration counts Burn pulls ahead through kernel fusion.
-
-### CUDA (Burn cuda-jit vs Base PTX)
-
-```
-Benchmark              Burn(cuda)         Base
----------------------------------------------
-SAXPY 262K                  0.5ms        0.4ms
-SAXPY 1M                    1.8ms        1.3ms
-```
-
-Both sides go through similar CUDA driver paths — Base with less runtime abstraction overhead.
-
-### Histogram (parallel, 256 bins)
-
-```
-Benchmark                    Rust         Base
----------------------------------------------
-hist n=10M workers=1        8.8ms        9.1ms
-hist n=10M workers=4        6.9ms        7.1ms
-```
-
-## FFI primitives
-
-Cranelift IR can call these directly via `%cl_*` function references:
-
-| Category | Functions |
-|----------|-----------|
-| **File** | `cl_file_read`, `cl_file_write` |
-| **GPU** | `cl_gpu_init`, `cl_gpu_create_buffer`, `cl_gpu_create_pipeline`, `cl_gpu_upload`, `cl_gpu_upload_ptr`, `cl_gpu_dispatch`, `cl_gpu_download`, `cl_gpu_download_ptr`, `cl_gpu_cleanup` |
-| **CUDA** | `cl_cuda_init`, `cl_cuda_create_buffer`, `cl_cuda_launch`, `cl_cuda_upload`, `cl_cuda_upload_ptr`, `cl_cuda_download`, `cl_cuda_download_ptr`, `cl_cuda_cleanup` |
-| **Network** | `cl_net_init`, `cl_net_listen`, `cl_net_connect`, `cl_net_accept`, `cl_net_send`, `cl_net_recv`, `cl_net_cleanup` |
-| **Database** | `cl_lmdb_init`, `cl_lmdb_open`, `cl_lmdb_begin_write_txn`, `cl_lmdb_commit_write_txn`, `cl_lmdb_put`, `cl_lmdb_get`, `cl_lmdb_delete`, `cl_lmdb_cursor_scan`, `cl_lmdb_sync`, `cl_lmdb_cleanup` |
-| **Threading** | `cl_thread_init`, `cl_thread_spawn`, `cl_thread_join`, `cl_thread_call`, `cl_thread_cleanup` |
-| **Hash table** | `ht_create`, `ht_insert`, `ht_lookup`, `ht_count`, `ht_get_entry`, `ht_increment` |
-
-The `_ptr` variants (`cl_gpu_upload_ptr`, `cl_gpu_download_ptr`, `cl_cuda_upload_ptr`, `cl_cuda_download_ptr`) transfer data directly between caller-provided pointers and GPU/CUDA buffers, enabling zero-copy integration with the caller's input and output buffers.
-
-## Building
-
-The `base` crate requires only Rust. Applications and benchmarks additionally require [Lean 4](https://leanprover.github.io/lean4/doc/setup.html) to generate their artifacts. GPU workloads require a Vulkan, Metal, DX12, or WebGPU capable system. CUDA workloads require an NVIDIA GPU with a CUDA-capable driver installed (libraries are loaded dynamically at runtime — see above).
-
-```bash
-# Run the full benchmark suite (Python + py-base, then the Rust suite)
-./benchmarks/run.sh
-
-# Run just the Rust benchmarks (no Python venv required)
-cargo run --release -p benchmarks -- --rounds 5
-
-# Run a specific Rust benchmark
-cargo run --release -p benchmarks -- --bench sort --rounds 5
-
-# Run tests
-cargo test -p base
-
-# Build an application
-cargo build --release --bin scene
-./target/release/scene
-```
+To reproduce, `./benchmarks/run.sh` runs both suites, and
+`./benchmarks/cpu/run.sh` runs the CPU suite alone.
