@@ -29,3 +29,8 @@ base-build/tests/two-packages/target/
 # Anchored, because `input.txt` unanchored is a plausible tracked input.
 /lean/host/input.txt
 /lean/host/output.txt
+
+# LaTeX build output; `make -C paper` writes it beside the PDF.
+/paper/*.aux
+/paper/*.log
+/paper/*.out
