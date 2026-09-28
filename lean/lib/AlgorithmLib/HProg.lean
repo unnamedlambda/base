@@ -156,16 +156,23 @@ inductive Stmt where
 /-- One top-tested loop.
 
     Entry binds `pTys.length` carried slots from `init`. Each iteration runs
-    `pre` — a whole `Code`, so the test may follow an inner loop — then tests
-    `cc ca cb`: the exit side leaves with `exitR`, each becoming a fresh slot
-    for the code after the loop, and the continue side runs `body` and loops
-    back with `cont` as the next carries. -/
+    `pre` — a whole `Code`, so the test may follow an inner loop — and reads
+    `flag`, the slot `pre` last bound: the exit side leaves with `exitR`, each
+    becoming a fresh slot for the code after the loop, and the continue side
+    binds the carries again, as the slots after `pre`'s, runs `body` and loops
+    back with `cont` as the next carries. The second binding is the body block's
+    parameters, so the body's carries are slots of its own.
+
+    The test is a statement of `pre` rather than a comparison this structure
+    carries, so it spends a slot like any other operation and `wf` types it by
+    the rule every `icmp` gets. That is what keeps the emitter's slot and value
+    counters equal through a loop, which is what lets a claim about a body
+    inside one be stated in terms of its slots. -/
 structure Loop where
   pTys       : List ClifTy
   init       : List R
-  cc         : ICmpCond
-  ca         : R
-  cb         : R
+  /-- The `i8` the exit test reads, bound by the last statement of `pre`. -/
+  flag       : R
   exitOnTrue : Bool
   cont       : List R
   exitR      : List R
@@ -176,24 +183,27 @@ structure Loop where
     end of each trip, so the body block branches to itself and there is no
     header. One fewer block on the hot path, and an empty input never enters.
 
-    The test and the exit values are given as *carry positions* rather than
-    slots, because they are read in two different scopes — from `init` at the
-    guard, and from `cont` at the end of the body — and a slot number could
-    only ever name one of them. -/
+    The test is read in two scopes, so it is two statements, each an ordinary
+    comparison that spends a slot: the *guard*, the statement before the loop,
+    comparing the initial carries; and the *back-edge test*, the body's last
+    statement, comparing what the trip produced. As with `Loop` and `IteMeta`,
+    the emitter reads both rather than building them, which is what keeps its
+    slot and value counters equal through the loop.
+
+    The exit values are *carry positions* rather than slots, for the same
+    reason: at the guard they are the initial carries, at the back edge the
+    next ones. -/
 structure DLoop where
   pTys    : List ClifTy
   init    : List R
-  cc      : ICmpCond
-  /-- The slot the back-edge test reads, in the body's scope — so it may be
-      something the body computed rather than a carry. -/
-  ca      : R
-  /-- Which carry the *entry* guard tests, or `none` for a loop entered
-      unconditionally. A loop whose trip count is known non-zero — zeroing a
-      fixed-size region, say — needs no guard, and one whose test reads a value
-      the body produces cannot have one: there is nothing to read yet. -/
-  guardIdx : Option Nat
-  /-- The test's right operand, which the loop does not change. -/
-  cb      : R
+  /-- The `i8` the entry guard reads, bound by the statement before the loop, or
+      `none` for a loop entered unconditionally. A loop whose trip count is known
+      non-zero — zeroing a fixed-size region, say — needs no guard, and one whose
+      test reads a value the body produces cannot have one: there is nothing to
+      read yet. -/
+  guard   : Option R
+  /-- The `i8` the back-edge test reads, bound by the body's last statement. -/
+  flag    : R
   contOnTrue : Bool
   cont    : List R
   /-- Which carries leave, in the order the exit block binds them. -/
@@ -201,12 +211,14 @@ structure DLoop where
   exitTys : List ClifTy
   deriving Repr
 
-/-- A two-way branch: `cc ca cb` is tested in the current block, each arm ends
-    with its export list, and the join binds one fresh slot per export. -/
+/-- A two-way branch: `flag` is read in the current block, each arm ends with
+    its export list, and the join binds one fresh slot per export.
+
+    As with `Loop`, the test is a statement of the code before the branch rather
+    than a comparison carried here. -/
 structure IteMeta where
-  cc   : ICmpCond
-  ca   : R
-  cb   : R
+  /-- The `i8` the branch reads, bound by the statement before it. -/
+  flag : R
   jTys : List ClifTy
   deriving Repr
 
@@ -588,11 +600,11 @@ def wfGo (env : FnEnv) : Nat → List (List ClifTy × Option (List ClifTy)) → 
       let Γcarry := Γ.pushAll l.pTys
       let rPre := wfGo env fuel lbl' Γcarry pre
       let Γhead := rPre.2
-      let rBody := wfGo env fuel lbl' Γhead body
+      let rBody := wfGo env fuel lbl' (Γhead.pushAll l.pTys) body
       let ok :=
         tysAre Γ l.init l.pTys &&
         rPre.1 && !termsGo fuel pre &&
-        (Γhead.get l.ca).isSome && (Γhead.get l.ca == Γhead.get l.cb) &&
+        (Γhead.get l.flag == some .i8) &&
         tysAre Γhead l.exitR l.exitTys &&
         rBody.1 &&
         (termsGo fuel body || tysAre rBody.2 l.cont l.pTys)
@@ -609,7 +621,7 @@ def wfGo (env : FnEnv) : Nat → List (List ClifTy × Option (List ClifTy)) → 
       -- constraint; when neither arm reaches it there is no join block at all.
       let jTys := if tT && tE then [] else m.jTys
       let ok :=
-        (Γ.get m.ca).isSome && (Γ.get m.ca == Γ.get m.cb) &&
+        (Γ.get m.flag == some .i8) &&
         rT.1 && rE.1 &&
         (tT || tysAre rT.2 thnR jTys) &&
         (tE || tysAre rE.2 elsR jTys)
@@ -619,15 +631,15 @@ def wfGo (env : FnEnv) : Nat → List (List ClifTy × Option (List ClifTy)) → 
       let Γcarry := Γ.pushAll l.pTys
       let lbl' := (l.exitTys, some l.pTys) :: lbl
       let rBody := wfGo env fuel lbl' Γcarry body
-      -- `caIdx` and `exitIdx` name carries, so they are checked against the
-      -- carry types once and hold at both the guard and the back edge.
+      -- `exitIdx` names carries, so it is checked against the carry types once
+      -- and holds at both the guard and the back edge.
       let carryTy (i : Nat) : Option ClifTy := l.pTys[i]?
-      let guardOk := match l.guardIdx with
+      let guardOk := match l.guard with
         | none => true
-        | some i => (carryTy i).isSome && (carryTy i == Γ.get l.cb)
+        | some g => Γ.get g == some .i8
       let ok :=
         tysAre Γ l.init l.pTys && guardOk &&
-        (rBody.2.get l.ca).isSome && (rBody.2.get l.ca == Γ.get l.cb) &&
+        (termsGo fuel body || rBody.2.get l.flag == some .i8) &&
         l.exitIdx.length == l.exitTys.length &&
         (List.zip l.exitIdx l.exitTys).all (fun (i, t) => carryTy i == some t) &&
         rBody.1 &&
@@ -816,22 +828,22 @@ def emitLoop (fuel : Nat) (s : CS) (l : Loop) (pre body : List Piece) : CS :=
              slots := firstCarry + l.pTys.length,
              labels := (exitId, some headId) :: outerLabels }
   let s := emitCode fuel s pre
-  let fr := s.fresh
-  let flag := fr.1
-  let sHead := { fr.2 with
-                 cur := .icmp flag l.cc (fr.2.get l.ca) (fr.2.get l.cb) :: fr.2.cur }
+  -- The test is the last statement `pre` emitted, so the flag is a slot to read
+  -- rather than a value to allocate here: nothing advances the value counter
+  -- past the slot counter, and every slot in the head is still `Val` of itself.
+  let sHead := s
+  let flag := sHead.get l.flag
   let carryVals := (List.range l.pTys.length).map (fun i => sHead.get (firstCarry + i))
   let exitArgs := l.exitR.map sHead.get
   let te :=
     if l.exitOnTrue then (exitId, exitArgs, bodyId, carryVals)
     else (bodyId, carryVals, exitId, exitArgs)
   let s := sHead.close (.brif flag ⟨te.1⟩ te.2.1 ⟨te.2.2.1⟩ te.2.2.2)
-  -- body: the carries re-bound as its own parameters, shadowing the head's.
-  -- Slots the prefix defined are re-run per iteration, so the body starts its
-  -- numbering after them and the back edge carries only `cont`.
-  let bodySlots := s.slots
-  let s := s.open' bodyId l.pTys firstCarry
-  let s := { s with slots := bodySlots }
+  -- body: the carries again, as its own parameters, bound to the slots after the
+  -- prefix's --- which is where the term numbers the body's carries, so slot `i`
+  -- stays `Val i`. The back edge carries only `cont`.
+  let bodyFirst := s.slots
+  let s := { s.open' bodyId l.pTys bodyFirst with slots := bodyFirst + l.pTys.length }
   let s := emitCode fuel s body
   -- A body that leaves on every path has already closed its block; the back
   -- edge would be a second terminator for a block that no longer exists.
@@ -847,20 +859,17 @@ def emitDLoop (fuel : Nat) (s : CS) (l : DLoop) (body : List Piece) : CS :=
   let bodyId := s.nextBlk
   let exitId := bodyId + 1
   let s := { s with nextBlk := bodyId + 2 }
-  -- The guard: tested on the initial carries, in the block already open.
+  -- The guard: the statement before the loop compared the initial carries, and
+  -- the block already open branches on it.
   let initVals := l.init.map s.get
   let s :=
-    match l.guardIdx with
-    | some gi =>
-      let ca0 := (l.init[gi]?).getD 0
-      let fr := s.fresh
-      let flag := fr.1
-      let sG := { fr.2 with cur := .icmp flag l.cc (fr.2.get ca0) (fr.2.get l.cb) :: fr.2.cur }
+    match l.guard with
+    | some g =>
       let exit0 := l.exitIdx.map (fun i => (initVals[i]?).getD (⟨1000000⟩ : Val))
       let te0 :=
         if l.contOnTrue then (bodyId, initVals, exitId, exit0)
         else (exitId, exit0, bodyId, initVals)
-      sG.close (.brif flag ⟨te0.1⟩ te0.2.1 ⟨te0.2.2.1⟩ te0.2.2.2)
+      s.close (.brif (s.get g) ⟨te0.1⟩ te0.2.1 ⟨te0.2.2.1⟩ te0.2.2.2)
     | none => s.close (.jump ⟨bodyId⟩ initVals)
   -- The body: the carries as its parameters, the trip, then the same test.
   let firstCarry := s.slots
@@ -874,15 +883,11 @@ def emitDLoop (fuel : Nat) (s : CS) (l : DLoop) (body : List Piece) : CS :=
     if termsGo fuel body then s
     else
       let contVals := l.cont.map s.get
-      let fr2 := s.fresh
-      let flag2 := fr2.1
-      let sB := { fr2.2 with
-                  cur := .icmp flag2 l.cc (fr2.2.get l.ca) (fr2.2.get l.cb) :: fr2.2.cur }
       let exitN := l.exitIdx.map (fun i => (contVals[i]?).getD ⟨1000000⟩)
       let teN :=
         if l.contOnTrue then (bodyId, contVals, exitId, exitN)
         else (exitId, exitN, bodyId, contVals)
-      sB.close (.brif flag2 ⟨teN.1⟩ teN.2.1 ⟨teN.2.2.1⟩ teN.2.2.2)
+      s.close (.brif (s.get l.flag) ⟨teN.1⟩ teN.2.1 ⟨teN.2.2.1⟩ teN.2.2.2)
   let exitFirst := s.slots
   let s := s.open' exitId l.exitTys exitFirst
   { s with slots := exitFirst + l.exitTys.length, labels := outerLabels }
@@ -893,9 +898,8 @@ def emitIte (fuel : Nat) (s : CS) (m : IteMeta) (thn els : List Piece)
   let elsId := thnId + 1
   let joinId := thnId + 2
   let s := { s with nextBlk := thnId + 3 }
-  let fr := s.fresh
-  let flag := fr.1
-  let s := { fr.2 with cur := .icmp flag m.cc (fr.2.get m.ca) (fr.2.get m.cb) :: fr.2.cur }
+  -- The test is the statement before the branch, so the flag is read here.
+  let flag := s.get m.flag
   let s := s.close (.brif flag ⟨thnId⟩ [] ⟨elsId⟩ [])
   let tT := termsGo fuel thn
   let tE := termsGo fuel els

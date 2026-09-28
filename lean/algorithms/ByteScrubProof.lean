@@ -140,7 +140,7 @@ theorem blend_clif (fuel : Nat) (env : FnEnv) (cfg : Cfg) (w : World)
   · rw [hva Γ.size (by simp only [Array.size_push]; omega)]
     simp [Array.getElem?_push]
   · rw [hva (Γ.size + 1) (by simp only [Array.size_push]; omega)]
-    simp [Array.getElem?_push, Array.getElem_push]
+    simp [Array.getElem_push]
 
 -- ---------------------------------------------------------------------------
 -- One fact about the CLIF the artifact ships
@@ -148,18 +148,16 @@ theorem blend_clif (fuel : Nat) (env : FnEnv) (cfg : Cfg) (w : World)
 
 /-!
 `blend_clif` is about `blend` compiled as a body of its own. What ships is
-`ByteScrub.code`, whose loop puts the same two operations inside a block — and
-there the emitter's numbering is *not* the identity on slots. A loop allocates a
-flag value that binds no slot (`v12` in the head block), so from that point
-`nextVal` runs ahead of `slots` and slot `i` is `v(i+2)` in the body. `Aligned`,
-and with it `emitStmts_sim`, does not reach inside the loop body.
+`ByteScrub.code`, whose loop puts the same two operations inside its body block.
+That block binds the carries again as its own parameters, and the term numbers
+them as the body's own slots --- the carry that is slot 11 and `v11` in the head
+is slot 13 and `v13` in the body --- so slot `i` is `v i` there as everywhere
+else.
 
-So the pair is named here as instructions rather than statements.
-`blendInsts_ship` is what keeps that from being a transcription — it says these
-are the instructions block 2 carries, by running the compiler — and
-`blendInsts_scrub` says what running them does. Neither needs a numbering
-invariant, which is the point: one fact about the shipped CLIF costs only this,
-whatever remains open about compilation in general.
+The pair is named here as instructions. `blendInsts_ship` is what keeps that
+from being a transcription — it says these are the instructions block 2
+carries, by running the compiler — and `blendInsts_scrub` says what running
+them does.
 -/
 
 /-- The pair `byte_scrub`'s loop body carries. `v17` holds the sixteen bytes the
@@ -189,10 +187,10 @@ theorem blendInsts_ship :
             ++ [.iadd ⟨20⟩ ⟨3⟩ ⟨15⟩, .storeTyped .i8x16 ⟨19⟩ ⟨20⟩,
                 .iconst ⟨21⟩ .i64 1, .iadd ⟨22⟩ ⟨13⟩ ⟨21⟩, .jump ⟨1⟩ [⟨22⟩]] } := by
   conv in Prog.compileProg _ _ => reduce
-  simp +decide [emitCode, emitPiece, emitLoop, emitStmts, emitStmt, termsGo, HProg.fuel,
+  simp +decide [emitCode, emitPiece, emitLoop, emitStmts, emitStmt,
     CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
     Trie.set, Trie.setGo, Trie.get, List.range, List.range.loop,
-    List.mergeSort, List.merge, blendInsts]
+    List.mergeSort, blendInsts]
   rfl
 
 /-- The compare marks the NUL lanes: given the loaded bytes in `v17` and the NUL

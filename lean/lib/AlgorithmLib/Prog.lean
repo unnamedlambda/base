@@ -475,22 +475,40 @@ def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
       let lvl := s.depth
       let s := { s with n := firstCarry + tys.length, depth := s.depth + 1 }
       let (hd, sH) := emitGo fuel (head lvl carries) s.enter
-      let (preCode, s) := St.leave s sH
       match hd with
       | none =>
+          let (_, s) := St.leave s sH
           (none, { s with depth := lvl }.note "a loop's head leaves the loop")
       | some (c, exitR, x) =>
-        let (bd, sB) := emitGo fuel (body lvl carries x) s.enter
+        -- The exit test is the head's last statement rather than something the
+        -- `Loop` carries, so it spends a slot like any operation and the
+        -- emitter's slot and value counters stay equal across the loop.
+        let (flag, sH) := sH.bind1 (.op (.icmp c.cc c.a c.b))
+        let (preCode, s) := St.leave s sH
+        -- The body's carries are its block's parameters, the slots after the
+        -- head's.
+        let bodyCarries := carriesFrom s.n tys
+        let s := { s with n := s.n + tys.length }
+        let (bd, sB) := emitGo fuel (body lvl bodyCarries x) s.enter
         let (bodyCode, s) := St.leave s sB
         let s := { s with depth := lvl }
         let cont := match bd with | some vs => vs.slots | none => []
         let exits := carriesFrom s.n exitTys
         let s := { s with n := s.n + exitTys.length }
         let l : Loop :=
-          { pTys := tys, init := init.slots, cc := c.cc, ca := c.a, cb := c.b,
+          { pTys := tys, init := init.slots, flag,
             exitOnTrue := c.exitOnTrue, cont, exitR := exitR.slots, exitTys }
         emitGo fuel (k exits) { s with pieces := .loop l preCode bodyCode :: s.pieces }
   | fuel + 1, _, .dloop (tys := tys) init cc cb guardIdx _ contOnTrue exitIdx body k, s =>
+      -- The guard is the statement before the loop, comparing the initial
+      -- carries, and the back-edge test the body's last, comparing what the
+      -- trip produced: two ordinary comparisons, each spending a slot, for the
+      -- same reason a loop's test is the last statement of its head.
+      let (guard, s) := match guardIdx with
+        | some gi =>
+            let (g, s) := s.bind1 (.op (.icmp cc ((init.slots[gi]?).getD 0) cb))
+            (some g, s)
+        | none => (none, s)
       let s := s.flush
       let exitTys := idxTys tys exitIdx
       let firstCarry := s.n
@@ -498,16 +516,27 @@ def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
       let lvl := s.depth
       let s := { s with n := firstCarry + tys.length, depth := s.depth + 1 }
       let (bd, sB) := emitGo fuel (body lvl carries) s.enter
+      -- A body that answers after a branch whose arms both leave answers from
+      -- unreachable code: nothing reaches the back edge, so there is no test to
+      -- make.
+      let (flag, cont, sB) := match bd with
+        | some (ca, vs) =>
+            if terminates (St.leave s sB).1 then (0, [], sB)
+            else
+              let (f, sB) := sB.bind1 (.op (.icmp cc ca cb))
+              (f, vs.slots, sB)
+        | none => (0, [], sB)
       let (bodyCode, s) := St.leave s sB
       let s := { s with depth := lvl }
-      let (ca, cont) := match bd with | some (ca, vs) => (ca, vs.slots) | none => (0, [])
       let exits := carriesFrom s.n exitTys
       let s := { s with n := s.n + exitTys.length }
       let l : DLoop :=
-        { pTys := tys, init := init.slots, cc, ca, guardIdx,
-          cb, contOnTrue, cont, exitIdx, exitTys }
+        { pTys := tys, init := init.slots, guard, flag, contOnTrue, cont, exitIdx, exitTys }
       emitGo fuel (k exits) { s with pieces := .dloop l bodyCode :: s.pieces }
   | fuel + 1, _, .ite (jTys := jTys) c thn els k, s =>
+      -- The test is the statement before the branch, for the same reason a
+      -- loop's is the last statement of its head.
+      let (flag, s) := s.bind1 (.op (.icmp c.cc c.a c.b))
       let s := s.flush
       let (tR, sT) := emitGo fuel thn s.enter
       let (thnC, s) := St.leave s sT
@@ -524,7 +553,7 @@ def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
       let thnR := match tR with | some vs => vs.slots | none => []
       let elsR := match eR with | some vs => vs.slots | none => []
       emitGo fuel (k joins)
-        { s with pieces := .ite ⟨c.cc, c.a, c.b, jTys'⟩ thnC elsC thnR elsR :: s.pieces }
+        { s with pieces := .ite ⟨flag, jTys'⟩ thnC elsC thnR elsR :: s.pieces }
   | fuel + 1, _, .params tys k, s => emitGo fuel (k (carriesFrom 0 tys)) s
   -- Nothing follows a `br` or a `cont`, so neither spends fuel on a
   -- continuation: they are where the fold stops.

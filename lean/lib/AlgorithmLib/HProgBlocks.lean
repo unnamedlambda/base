@@ -307,15 +307,20 @@ theorem brif_step (env : FnEnv) (s : Blocks.BSt) (flag a b : Val) (cc : ICmpCond
 /-- **A branch compiles correctly**, on the smallest body that has a join: two
     empty arms and no exported values. Three blocks are emitted where the term
     has one piece, and the run still ends in the same place having observed
-    nothing. -/
+    nothing.
+
+    The test is the statement before the branch --- slot 5, the first past the
+    entry parameters --- which is where `IteMeta.flag` points. -/
 theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x d dl o ol : UInt64)
     (w : World) (fuel : Nat) :
-    CompileSound idx env ptrParams [.ite ⟨.eq, 0, 0, []⟩ [] [] [] []]
+    CompileSound idx env ptrParams
+      [.straight [.op (.icmp .eq 0 0)], .ite ⟨5, []⟩ [] [] [] []]
       [.sc .i64 x, .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol]
-      w (fuel + 4) := by
-  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, compileBody,
+      w (fuel + 6) := by
+  simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
+        Sem.runStmt, compileBody,
         ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
-        emitCode, emitPiece, emitIte, termsGo, HProg.fuel,
+        emitCode, emitPiece, emitIte, emitStmt, emitStmts, termsGo, HProg.fuel,
         Blocks.runFrom, Blocks.runInsts, Blocks.setV, Blocks.getV,
         Sem.get, Sem.bindAt, Sem.slotsOf, Sem.slotsGo, Sem.cmpInt, Sem.boolV, Sem.isTrue,
         Trie.set, Trie.setGo, Trie.get, List.mergeSort, List.find?,
@@ -334,10 +339,11 @@ theorem ite_empty_sound (idx : Nat) (env : FnEnv) (x d dl o ol : UInt64)
 theorem ite_exports_sound (idx : Nat) (env : FnEnv) (k1 k2 : Int) (x d dl o ol : UInt64)
     (w : World) (fuel : Nat) :
     CompileSound idx env ptrParams
-      [.ite ⟨.eq, 0, 0, [.i64]⟩
-        [.straight [.op (.iconst .i64 k1)]] [.straight [.op (.iconst .i64 k2)]] [5] [6]]
+      [.straight [.op (.icmp .eq 0 0)],
+       .ite ⟨5, [.i64]⟩
+        [.straight [.op (.iconst .i64 k1)]] [.straight [.op (.iconst .i64 k2)]] [6] [7]]
       [.sc .i64 x, .sc .i64 d, .sc .i64 dl, .sc .i64 o, .sc .i64 ol]
-      w (fuel + 6) := by
+      w (fuel + 8) := by
   simp [CompileSound, Sem.run, Blocks.run, Sem.runCode, Sem.runPiece, Sem.runStmts,
         Sem.runStmt, compileBody, ptrParams, CS.open', CS.open'.go, CS.close, CS.fresh, CS.get,
         emitCode, emitPiece, emitIte, emitStmt, emitStmts, termsGo, HProg.fuel,

@@ -898,7 +898,7 @@ def slotsGo : Nat → Nat → List Piece → Nat
   | _ + 1, n, [] => n
   | fuel + 1, n, .straight ss :: ps => slotsGo fuel (stmtsSlots n ss) ps
   | fuel + 1, n, .loop l pre body :: ps =>
-      let afterBody := slotsGo fuel (slotsGo fuel (n + l.pTys.length) pre) body
+      let afterBody := slotsGo fuel (slotsGo fuel (n + l.pTys.length) pre + l.pTys.length) body
       slotsGo fuel (afterBody + l.exitTys.length) ps
   | fuel + 1, n, .ite m thn els _ _ :: ps =>
       let afterEls := slotsGo fuel (slotsGo fuel n thn) els
@@ -1030,16 +1030,16 @@ def runPiece : Nat → Cfg → Env → World → Piece → CodeRes
       let afterBody := slotsOf (n0 + l.pTys.length) body
       match l.init.mapM (get Γ) with
       | none => .stuck "loop initializer is not in scope"
-      | some inits => dtrip fuel cfg Γ w l body n0 afterBody inits l.guardIdx.isSome
+      | some inits => dtrip fuel cfg Γ w l body n0 afterBody inits l.guard.isSome
   | fuel + 1, cfg, Γ, w, .loop l pre body =>
       let n0 := Γ.size
-      let afterBody := slotsOf (slotsOf (n0 + l.pTys.length) pre) body
+      let afterBody := slotsOf (slotsOf (n0 + l.pTys.length) pre + l.pTys.length) body
       match l.init.mapM (get Γ) with
       | none => .stuck "loop initializer is not in scope"
       | some inits => iter fuel cfg Γ w l pre body n0 afterBody inits
   | fuel + 1, cfg, Γ, w, .ite m thn els thnR elsR =>
-      match get Γ m.ca, get Γ m.cb with
-      | some (.sc t x), some (.sc _ y) =>
+      match get Γ m.flag with
+      | some (.sc _ f) =>
           -- Both arms are numbered as if the one before it had run, because
           -- that is how `emitIte` numbers them. Only one arm executes, so the
           -- else arm starts from an environment padded past the then arm's
@@ -1047,7 +1047,7 @@ def runPiece : Nat → Cfg → Env → World → Piece → CodeRes
           let thnEnd := slotsOf Γ.size thn
           let joinAt := slotsOf thnEnd els
           let (arm, exports, Γ0) :=
-            if cmpInt m.cc t x y then (thn, thnR, Γ) else (els, elsR, bindAt Γ thnEnd [])
+            if f != 0 then (thn, thnR, Γ) else (els, elsR, bindAt Γ thnEnd [])
           match runCode fuel cfg Γ0 w arm with
           | .stuck s => .stuck s
           | .brk d Γb vs w' => .brk d Γb vs w'
@@ -1056,10 +1056,12 @@ def runPiece : Nat → Cfg → Env → World → Piece → CodeRes
               match exports.mapM (get Γ') with
               | none => .stuck "branch export is not in scope"
               | some vs => .ok (bindAt Γ' joinAt vs) w'
-      | _, _ => .stuck "branch condition is not in scope"
+      | _ => .stuck "branch condition is not in scope"
 
 /-- One trip of a loop: bind the carries, run the condition prefix, test, then
-    either leave with the exit values or run the body and go round again.
+    either leave with the exit values or run the body and go round again. The
+    body gets the carries again, bound after the prefix's slots, which is where
+    the compiled body block's parameters are.
 
     A `br 0` from either region leaves here, binding its values where the normal
     exit would have; a deeper one is passed out with its depth reduced. -/
@@ -1074,14 +1076,15 @@ def iter : Nat → Cfg → Env → World → Loop → List Piece → List Piece 
       | .cont 0 vs w' => iter fuel cfg Γ w' l pre body n0 afterBody vs
       | .cont (d + 1) vs w' => .cont d vs w'
       | .ok Γ1 w1 =>
-          match get Γ1 l.ca, get Γ1 l.cb with
-          | some (.sc t x), some (.sc _ y) =>
-              if cmpInt l.cc t x y == l.exitOnTrue then
+          match get Γ1 l.flag with
+          | some (.sc _ f) =>
+              if (f != 0) == l.exitOnTrue then
                 match l.exitR.mapM (get Γ1) with
                 | none => .stuck "loop exit value is not in scope"
                 | some vs => .ok (bindAt Γ1 afterBody vs) w1
               else
-                match runCode fuel cfg Γ1 w1 body with
+                match runCode fuel cfg
+                    (bindAt Γ1 (slotsOf (n0 + l.pTys.length) pre) carries) w1 body with
                 | .stuck s => .stuck s
                 | .brk 0 Γb vs w2 => .ok (bindAt Γb afterBody vs) w2
                 | .brk (d + 1) Γb vs w2 => .brk d Γb vs w2
@@ -1091,11 +1094,11 @@ def iter : Nat → Cfg → Env → World → Loop → List Piece → List Piece 
                     match l.cont.mapM (get Γ2) with
                     | none => .stuck "loop carry is not in scope"
                     | some next => iter fuel cfg Γ w2 l pre body n0 afterBody next
-          | _, _ => .stuck "loop condition is not in scope"
+          | _ => .stuck "loop condition is not in scope"
 
-/-- One trip of a bottom-tested loop. `first` says the test has not run yet, so
-    the guard is made before the body rather than after it; every later call
-    arrives with the test already passed. -/
+/-- One trip of a bottom-tested loop. `first` says the guard has not been read
+    yet, so it is read before the body rather than the back-edge test after it;
+    every later call arrives with the test already passed. -/
 def dtrip : Nat → Cfg → Env → World → DLoop → List Piece →
     Nat → Nat → List V → Bool → CodeRes
   | 0, _, _, _, _, _, _, _, _, _ => .stuck "loop exceeded its step budget"
@@ -1104,19 +1107,22 @@ def dtrip : Nat → Cfg → Env → World → DLoop → List Piece →
         match l.exitIdx.mapM (fun i => vs[i]?) with
         | none => .stuck "loop exit value is not a carry"
         | some outs => .ok (bindAt Γ' afterBody outs) w'
-      -- At the guard the tested value is a carry; at the back edge it is a slot
-      -- the body defined, so the two reads differ.
-      let testAt (Γ' : Env) (v : Option V) : Option Bool := do
-        let (.sc t x) ← v | none
-        let (.sc _ y) ← get Γ' l.cb | none
-        pure (cmpInt l.cc t x y)
+      -- The guard is a slot of the code before the loop, the back-edge test one
+      -- the body bound last; each is read in its own scope.
+      let testAt (Γ' : Env) (r : R) : Option Bool :=
+        match get Γ' r with
+        | some (.sc _ f) => some (f != 0)
+        | _ => none
       if first then
-        match testAt Γ (l.guardIdx.bind (carries[·]?)) with
-        | none => .stuck "loop condition is not in scope"
-        | some c =>
-            if c == l.contOnTrue then
-              dtrip fuel cfg Γ w l body n0 afterBody carries false
-            else leave Γ carries w
+        match l.guard with
+        | none => dtrip fuel cfg Γ w l body n0 afterBody carries false
+        | some g =>
+            match testAt Γ g with
+            | none => .stuck "loop condition is not in scope"
+            | some c =>
+                if c == l.contOnTrue then
+                  dtrip fuel cfg Γ w l body n0 afterBody carries false
+                else leave Γ carries w
       else
         match runCode fuel cfg (bindAt Γ n0 carries) w body with
         | .stuck s => .stuck s
@@ -1130,7 +1136,7 @@ def dtrip : Nat → Cfg → Env → World → DLoop → List Piece →
             match l.cont.mapM (get Γ2) with
             | none => .stuck "loop carry is not in scope"
             | some next =>
-                match testAt Γ2 (get Γ2 l.ca) with
+                match testAt Γ2 l.flag with
                 | none => .stuck "loop condition is not in scope"
                 | some c =>
                     if c == l.contOnTrue then
