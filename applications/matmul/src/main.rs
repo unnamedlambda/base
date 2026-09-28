@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("MatmulAlgorithm/matmul_app");
+    lean_artifacts::MATMUL_APP;
 
 
 fn main() {

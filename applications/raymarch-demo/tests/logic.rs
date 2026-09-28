@@ -1,7 +1,7 @@
 use base::{Artifact, Base};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("RaymarchDemoAlgorithm/raymarch_demo");
+    lean_artifacts::RAYMARCH_DEMO;
 
 
 fn run_scenario(base: &mut Base, entry: &str) -> (i64, i64, i64) {

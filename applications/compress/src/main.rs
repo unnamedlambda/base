@@ -1,6 +1,6 @@
 use base::{run, Artifact};
 
-const ARTIFACT_BINARY: &[u8] = build_support::artifact!("CompressAlgorithm/compress_app");
+const ARTIFACT_BINARY: &[u8] = lean_artifacts::COMPRESS_APP;
 
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).

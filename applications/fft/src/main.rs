@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("FftAlgorithm/fft_app");
+    lean_artifacts::FFT_APP;
 
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).

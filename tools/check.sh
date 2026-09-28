@@ -71,11 +71,11 @@ step() {
 # only costs the up-to-date check twice, and a failing build caches nothing.
 
 lean_build() {
-  cd "$ROOT/lean/algorithms"
-  local libs exes
+  cd "$ROOT/lean"
+  local libs
   libs=$(grep -oP '^lean_lib \K\w+' lakefile.lean | tr '\n' ' ')
-  exes=$(lake run generators | awk '{print $1}' | tr '\n' ' ')
-  "${GUARD[@]}" taskset -c 0-3 lake build $libs $exes
+  "${GUARD[@]}" taskset -c 0-3 lake build $libs &&
+    "${GUARD[@]}" taskset -c 0-3 lake build algorithmLib/artifacts
 }
 
 # `sorry` leaves a warning rather than an error, so a file can carry one and
@@ -116,21 +116,23 @@ PY
 # noticed the change.
 
 artifacts_reproduce() {
-  local out rc=0
-  out=$(mktemp -d)
-  cd "$ROOT/lean/algorithms"
-  while read -r exe module; do
-    [ -z "$exe" ] && continue
-    mkdir -p "$out/$module"
-    ./.lake/build/bin/"$exe" "$out/$module" || rc=1
-  done < <(lake run generators)
-  # The manifest naming what was emitted belongs to the build script, so it is
-  # not evidence about the generator and is excluded here.
-  diff -rq --exclude='generated.list' \
-       "$ROOT/lean-artifacts/artifacts" "$out" || rc=1
+  local query dir runs fresh rc=0
+  cd "$ROOT/lean"
+  query=$(lake query algorithmLib/artifacts) || return 1
+  dir=$(sed -n 's/^dir //p' <<<"$query")
+  runs=$(mktemp -d)
+  fresh=$(mktemp -d)
+  while read -r gen bin; do
+    mkdir -p "$runs/$gen"
+    "$bin" "$runs/$gen" >/dev/null || rc=1
+  done < <(sed -n 's/^generator //p' <<<"$query")
+  # Flattened as the target flattens them. It refuses a name two generators
+  # share, so nothing here is overwritten.
+  for g in "$runs"/*/; do cp -r "$g". "$fresh"/; done
+  diff -rq "$dir" "$fresh" || rc=1
   [ $rc -eq 0 ] &&
-    echo "$(find "$out" -name '*.cbor' | wc -l) artifacts reproduce byte-for-byte"
-  rm -rf "$out"
+    echo "$(find "$fresh" -name '*.cbor' | wc -l) artifacts reproduce byte-for-byte"
+  rm -rf "$runs" "$fresh"
   return $rc
 }
 
@@ -171,7 +173,7 @@ rust_test_fast() {
 gptoss_kernels() {
   local ptx
   ptx=$(mktemp --suffix=.ptx)
-  cd "$ROOT/lean/algorithms"
+  cd "$ROOT/lean"
   lake env lean --run "$ROOT/tools/dump_gptoss_kernels.lean" > "$ptx"
   "$ROOT/py-base/.venv/bin/python" "$ROOT/applications/gpt-oss/kernel_test.py" "$ptx"
   local rc=$?
@@ -180,7 +182,7 @@ gptoss_kernels() {
 }
 
 # --- the Lean host -----------------------------------------------------------
-# The third way to run an artifact, beside `build.rs` and `py-base`: a Lean
+# The third way to run an artifact, beside Rust and `py-base`: a Lean
 # program that builds one and runs it in the same process. It is a separate Lake
 # package, so the build above does not reach it.
 #

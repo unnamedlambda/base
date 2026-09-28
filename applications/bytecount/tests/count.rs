@@ -18,7 +18,7 @@
 
 use base::{Artifact, Base};
 
-const ARTIFACT: &[u8] = build_support::artifact!("ByteCountAlgorithm/byte_count");
+const ARTIFACT: &[u8] = lean_artifacts::BYTE_COUNT;
 
 
 /// The run `ByteCount.code` ships: `ByteCount.VECTORS` vectors of sixteen bytes.

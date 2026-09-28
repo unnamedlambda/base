@@ -1,0 +1,8 @@
+[package]
+name = "uses-both"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alpha-artifacts = { path = "../lean/alpha" }
+beta-artifacts = { path = "../lean/beta" }

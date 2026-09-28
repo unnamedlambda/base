@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("SceneAlgorithm/scene_app");
+    lean_artifacts::SCENE_APP;
 
 
 fn main() {

@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("RaymarchDemoAlgorithm/raymarch_demo");
+    lean_artifacts::RAYMARCH_DEMO;
 
 
 fn main() {

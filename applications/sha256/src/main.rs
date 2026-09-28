@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("Sha256Algorithm/sha256_app");
+    lean_artifacts::SHA256_APP;
 
 
 /// Payload offset where the input filename is stored (must match MakeAlgorithm.lean).

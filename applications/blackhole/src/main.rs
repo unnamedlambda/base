@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("BlackHoleAlgorithm/blackhole_app");
+    lean_artifacts::BLACKHOLE_APP;
 
 
 fn main() {

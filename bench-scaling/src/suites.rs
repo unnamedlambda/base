@@ -141,9 +141,9 @@ pub fn binds(ctx: &Ctx) -> Vec<Value> {
 //  clif: the real IRBuilder, then Cranelift
 
 pub fn clif(ctx: &Ctx) -> Vec<Value> {
-    let algo = ctx.repo.join("lean").join("algorithms");
-    if !algo.is_dir() {
-        return vec![json!({"skipped": "lean/algorithms not found"})];
+    let algo = ctx.repo.join("lean");
+    if !algo.join("lakefile.lean").is_file() {
+        return vec![json!({"skipped": "lean/lakefile.lean not found"})];
     }
     let src = ctx.work.join("ClifGen.lean");
     if gen::clif_gen(&src).is_err() {

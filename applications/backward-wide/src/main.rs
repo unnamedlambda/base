@@ -2,7 +2,7 @@ use base::{Artifact, Base};
 use warp_check::{dot_by, floats, gbs, roofline, Walk};
 
 const ART: &[u8] =
-    build_support::artifact!("BackwardWideAlgorithm/backward_wide");
+    lean_artifacts::BACKWARD_WIDE;
 
 
 

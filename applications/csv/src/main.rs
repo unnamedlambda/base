@@ -1,7 +1,7 @@
 use base::{init_tracing, run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("CsvAlgorithm/csv_app");
+    lean_artifacts::CSV_APP;
 
 
 fn main() {

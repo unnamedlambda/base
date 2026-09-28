@@ -16,7 +16,7 @@
 use base::{Artifact, Base};
 use warp_check::{compare, dot, dot_by, floats, gbs, le, roofline, time, Lcg, Walk};
 
-const ART: &[u8] = build_support::artifact!("MlpCifarAlgorithm/mlp_cifar");
+const ART: &[u8] = lean_artifacts::MLP_CIFAR;
 
 
 

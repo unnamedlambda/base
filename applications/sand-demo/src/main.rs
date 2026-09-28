@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("FallingSandAlgorithm/falling_sand");
+    lean_artifacts::FALLING_SAND;
 
 
 fn main() {

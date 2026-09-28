@@ -4,7 +4,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = build_support::artifact!("MlpWarpAlgorithm/mlp_warp");
+const ART: &[u8] = lean_artifacts::MLP_WARP;
 
 const D: usize = 4;
 const L: usize = 3;

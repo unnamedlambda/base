@@ -142,7 +142,6 @@ version = "0.1.0"
 dependencies = [
  "base",
  "base-types",
- "build-support",
  "ciborium",
  "lean-artifacts",
  "lz4_flex",
@@ -218,6 +217,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "base-build"
+version = "0.1.0"
+dependencies = [
+ "base-types",
+]
+
+[[package]]
 name = "base-types"
 version = "0.1.0"
 dependencies = [
@@ -284,14 +290,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c132eebf10f5cad5289222520a4a058514204aed6d791f1cf4fe8088b82d15f"
 dependencies = [
  "objc2",
-]
-
-[[package]]
-name = "build-support"
-version = "0.1.0"
-dependencies = [
- "base-types",
- "fs2",
 ]
 
 [[package]]
@@ -835,16 +833,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "gcc"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1164,7 +1152,8 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 name = "lean-artifacts"
 version = "0.1.0"
 dependencies = [
- "build-support",
+ "base-build",
+ "base-types",
 ]
 
 [[package]]

@@ -1,0 +1,15 @@
+[package]
+name = "lean-artifacts"
+version = "0.1.0"
+edition = "2021"
+# The crate sits in the Lake package it embeds, so its build script needs no
+# path. `links` makes it the package's only owner: cargo rejects a second crate
+# claiming the name, so one build script runs `lake` here, not several.
+links = "leanalgorithms"
+exclude = [".lake", "*/.lake"]
+
+[build-dependencies]
+base-build = { path = "../base-build" }
+
+[dev-dependencies]
+base-types = { path = "../base-types" }

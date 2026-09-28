@@ -26,13 +26,13 @@ use base::{Artifact, Base};
 use warp_check::{floats, gbs, roofline, time, Walk};
 
 const ART_QWEN: &[u8] =
-    build_support::artifact!("GemvWarpAlgorithm/gemv_warp");
+    lean_artifacts::GEMV_WARP;
 const ART_2048: &[u8] =
-    build_support::artifact!("GemvWarpAlgorithm/gemv_warp_2048");
+    lean_artifacts::GEMV_WARP_2048;
 const ART_8192: &[u8] =
-    build_support::artifact!("GemvWarpAlgorithm/gemv_warp_8192");
+    lean_artifacts::GEMV_WARP_8192;
 const ART_WIDE: &[u8] =
-    build_support::artifact!("GemvWarpAlgorithm/gemv_warp_wide");
+    lean_artifacts::GEMV_WARP_WIDE;
 
 
 /// One kernel family at one shape: time every schedule, check each against its

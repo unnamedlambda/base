@@ -440,21 +440,18 @@ def histCompileSound : Except String (Nat × Nat) :=
 end HProgPilots
 
 open AlgorithmLib in
-/-- Each pilot's artifact next to the one its generator emits, so the runtime
-    can be asked whether they behave the same. -/
+/-- Each pilot's term artifact beside the original it is compared against, so
+    the runtime can be asked whether the two behave the same. The norm's
+    original is `PythonBenchmarks`', which that suite also runs. -/
 def main (args : List String) : IO Unit := do
   let dir ← requireOutputDir args
-  let hist1Clif ← Prog.orDie HistogramBench1.clifIR
-  let clampClif ← Prog.orDie ClampSumBench.clifIR
-  let rmsClif ← Prog.orDie CudaRmsNormPersist.clifIR
   let histProg ← Prog.orDie HProgPilots.Hist.program
   let clampProg ← Prog.orDie HProgPilots.ClampSum.program
   let rmsProg ← Prog.orDie HProgPilots.RmsNorm.program
   let nestedProg ← Prog.orDie HProgPilots.Nested.program
-  emitArtifacts dir <|
-    HistogramBench1.artifacts hist1Clif ++
-    ClampSumBench.artifacts clampClif ++
-    CudaRmsNormPersist.artifacts rmsClif ++
+  let hist1 ← Prog.orDie HistogramBench1.clifIR
+  let clampSum ← Prog.orDie ClampSumBench.clifIR
+  emitArtifacts dir <| HistogramBench1.artifacts hist1 ++ ClampSumBench.artifacts clampSum ++
     #[artifactEntry "hist1_hprog" {
         functions := histProg,
         required_memory := HistogramBench1.MEM_SIZE

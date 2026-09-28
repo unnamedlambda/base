@@ -73,7 +73,7 @@ struct Args {
 
 /// The toolchain the repo pins, not whatever is on PATH.
 fn toolchain(repo: &std::path::Path) -> (PathBuf, String) {
-    let name = ["lib", "algorithms"]
+    let name = [".", "lib"]
         .iter()
         .find_map(|d| {
             std::fs::read_to_string(repo.join("lean").join(d).join("lean-toolchain")).ok()

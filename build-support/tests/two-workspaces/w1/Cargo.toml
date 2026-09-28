@@ -1,5 +1,0 @@
-# A workspace of its own, so cargo's own lock does not serialise these two and
-# the concurrency being tested is real.
-[workspace]
-members = ["gen"]
-resolver = "2"

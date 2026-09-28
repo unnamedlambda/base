@@ -11,21 +11,16 @@
 //! `hprog_corpus.rs`, whose cases are indexed by CLIF's vocabulary —
 //! instructions and control-flow constructs — and therefore stop growing.
 //!
-//! Gated on `BASE_HPROG_DIR` pointing at a directory holding both artifacts of
-//! each pair, which `lake env lean --run HProgPilots.lean <dir>` writes.
+//! Each pair is one generator's artifact and the pilot's, both embedded by
+//! `lean-artifacts`.
 
 use base_types::Artifact;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-fn artifact(dir: &Path, name: &str) -> Artifact {
-    let p = dir.join(format!("{name}.cbor"));
-    let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-    Artifact::from_bytes(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", p.display()))
-}
-
-fn dir() -> Option<PathBuf> {
-    std::env::var("BASE_HPROG_DIR").ok().map(PathBuf::from)
+fn artifact(name: &str) -> Artifact {
+    let bytes = lean_artifacts::by_name(name).unwrap_or_else(|| panic!("no artifact {name}"));
+    Artifact::from_bytes(bytes).unwrap_or_else(|e| panic!("parse {name}: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -42,8 +37,6 @@ fn run_histogram(a: &Artifact, input: &Path, output: &Path) -> Vec<u8> {
 
 #[test]
 fn histogram_matches_generator() {
-    let Some(dir) = dir() else { return };
-
     let tmp = tempfile::TempDir::new().unwrap();
     let input = tmp.path().join("input.bin");
     // Deliberately not a multiple of four, so the unrolled scan and the scalar
@@ -59,12 +52,12 @@ fn histogram_matches_generator() {
     let expected: Vec<u8> = counts.iter().flat_map(|c| c.to_le_bytes()).collect();
 
     let gen = run_histogram(
-        &artifact(&dir, "hist1_algorithm"),
+        &artifact("hist1_algorithm"),
         &input,
         &tmp.path().join("gen.bin"),
     );
     let hp = run_histogram(
-        &artifact(&dir, "hist1_hprog"),
+        &artifact("hist1_hprog"),
         &input,
         &tmp.path().join("hprog.bin"),
     );
@@ -88,16 +81,14 @@ fn run_clamp_sum(a: &Artifact, input: &[f32]) -> f64 {
 
 #[test]
 fn clamp_sum_matches_generator() {
-    let Some(dir) = dir() else { return };
-
     // A length that is neither a multiple of 16 nor of 4, so all three loops
     // run: the 16-wide body, the 4-wide body, and the scalar tail.
     let input: Vec<f32> = (0..1_002u32)
         .map(|i| (i as f32) * 0.001 - 0.5 + if i % 7 == 0 { 3.0 } else { 0.0 })
         .collect();
 
-    let gen = run_clamp_sum(&artifact(&dir, "clamp_sum_algorithm"), &input);
-    let hp = run_clamp_sum(&artifact(&dir, "clamp_sum_hprog"), &input);
+    let gen = run_clamp_sum(&artifact("clamp_sum_algorithm"), &input);
+    let hp = run_clamp_sum(&artifact("clamp_sum_hprog"), &input);
 
     // The reference sums in the same order the kernels do: four vector lanes of
     // partial sums, then the horizontal reduce, then the scalar tail.
@@ -121,8 +112,7 @@ fn clamp_sum_matches_generator() {
 
 #[test]
 fn nested_loops_and_branch_compute() {
-    let Some(dir) = dir() else { return };
-    let a = artifact(&dir, "nested_hprog");
+    let a = artifact("nested_hprog");
     let mut b = base::Base::new(a.clone()).expect("compile");
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -164,19 +154,17 @@ fn run_rmsnorm(a: &Artifact, weights: &[f32], x: &[f32]) -> Option<Vec<f32>> {
 
 #[test]
 fn rmsnorm_matches_generator() {
-    let Some(dir) = dir() else { return };
-
     let n = 512;
     let weights: Vec<f32> = (0..n).map(|i| 1.0 + (i as f32) * 0.001).collect();
     let x: Vec<f32> = (0..n).map(|i| ((i % 17) as f32) - 8.0).collect();
 
     // Both artifacts drive the same device; without one, neither runs and there
     // is nothing to compare.
-    let Some(gen) = run_rmsnorm(&artifact(&dir, "cuda_rmsnorm"), &weights, &x) else {
+    let Some(gen) = run_rmsnorm(&artifact("cuda_rmsnorm"), &weights, &x) else {
         eprintln!("skipping: no CUDA device");
         return;
     };
-    let hp = run_rmsnorm(&artifact(&dir, "cuda_rmsnorm_hprog"), &weights, &x)
+    let hp = run_rmsnorm(&artifact("cuda_rmsnorm_hprog"), &weights, &x)
         .expect("term artifact runs wherever the generator's does");
 
     assert_eq!(gen.len(), n, "generator produced a full vector");

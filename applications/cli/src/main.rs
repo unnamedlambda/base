@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("CliAlgorithm/cli_app");
+    lean_artifacts::CLI_APP;
 
 
 fn main() {

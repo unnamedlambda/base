@@ -9,7 +9,7 @@ Nothing in `base` links against Lean, so adding this takes nothing away from an
 embedder who wants a binary with an artifact in it and no Lean anywhere.
 
 `libbase.so` must exist before this links, and lake builds it: the `libbase`
-target below runs cargo. That is the mirror of `build-support`, which runs lake
+target below runs cargo. That is the mirror of `lean-artifacts`, which runs lake
 from a cargo build script -- each ecosystem's tool drives the other, so neither
 kind of consumer has to know the other exists. `lake exe upcasehost` works from
 a clean checkout.
@@ -58,7 +58,7 @@ package base where
 require algorithmLib from "../lib"
 -- For `ShipScan` only. Importing a *generator* from that package would bring
 -- its `main` with it, which is why the demo artifact lives here instead.
-require algorithms from "../algorithms"
+require algorithms from ".."
 
 
 /-- `cargo build -p base`, so the runtime exists before anything links it.

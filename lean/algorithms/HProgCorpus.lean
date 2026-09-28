@@ -835,11 +835,11 @@ def main (args : List String) : IO Unit := do
         ("names", Lean.toJson names),
         ("modes", Lean.toJson modes),
         ("expected", Lean.toJson (bytes.toList.map (·.toNat)))]
-      -- Not an artifact, so not beside them: the top of the output directory
-      -- holds artifacts only, and this is what to compare against.
-      let sideDir := System.FilePath.mk dir / "expected"
+      -- Not an artifact, so not beside them: an artifact's side data goes in
+      -- a directory of its name, and this is what to compare against.
+      let sideDir := System.FilePath.mk dir / "hprog_corpus"
       IO.FS.createDirAll sideDir
-      IO.FS.writeFile (sideDir / "hprog_corpus_expected.json") j.compress
+      IO.FS.writeFile (sideDir / "expected.json") j.compress
       IO.println s!"corpus: {names.length} cases, {bytes.size} expected bytes"
       -- `compile_sound`, executed rather than proved.
       match HProgCorpus.viaTerm, HProgCorpus.viaBlocks with

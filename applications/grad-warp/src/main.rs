@@ -13,7 +13,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = build_support::artifact!("GradWarpAlgorithm/grad_warp");
+const ART: &[u8] = lean_artifacts::GRAD_WARP;
 
 const G: usize = 4;
 const GRID: usize = 16384;

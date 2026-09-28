@@ -6,7 +6,7 @@
 
 use base::{init_tracing, Base, Artifact};
 
-const QWEN2_ON_DISK_BINARY: &[u8] = build_support::artifact!("Qwen2OnDiskAlgorithm/qwen2_on_disk");
+const QWEN2_ON_DISK_BINARY: &[u8] = lean_artifacts::QWEN2_ON_DISK;
 
 
 /// Path to the on-disk KV cache file.  Must match `KV_CACHE_PATH_OFF` in the

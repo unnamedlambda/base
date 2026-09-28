@@ -9,7 +9,7 @@
 use base::{Artifact, Base};
 use ciborium::Value;
 
-const ARTIFACT: &[u8] = build_support::artifact!("SelfDescribingAlgorithm/self_describing");
+const ARTIFACT: &[u8] = lean_artifacts::SELF_DESCRIBING;
 
 /// The input every test counts: two `a`s, a `b`, a `c`.
 const INPUT: &[u8] = b"abca";

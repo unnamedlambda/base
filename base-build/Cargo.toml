@@ -1,0 +1,8 @@
+[package]
+name = "base-build"
+version = "0.1.0"
+edition = "2021"
+description = "Embed the artifacts a Lean package generates, from a build script."
+
+[dev-dependencies]
+base-types = { path = "../base-types" }

@@ -1,0 +1,7 @@
+[package]
+name = "uses-alpha"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alpha-artifacts = { path = "../lean/alpha" }

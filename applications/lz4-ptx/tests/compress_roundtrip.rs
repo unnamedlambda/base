@@ -1,9 +1,9 @@
 use base::{Artifact, Base};
 
 const WARP_COMP: &[u8] =
-    build_support::artifact!("Lz4CompAlgorithm/lz4_comp_warpdsl");
+    lean_artifacts::LZ4_COMP_WARPDSL;
 const WARP_COMP64: &[u8] =
-    build_support::artifact!("Lz4CompAlgorithm/lz4_comp_warpdsl64");
+    lean_artifacts::LZ4_COMP_WARPDSL64;
 
 
 // Must match the shipped kernels' baked geometry (Lz4CompAlgorithm: blkLog 15/16,

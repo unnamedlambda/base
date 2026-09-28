@@ -1,6 +1,6 @@
 use base::{run, Artifact};
 
-const ARTIFACT_BINARY: &[u8] = build_support::artifact!("LeanEvalAlgorithm/lean_eval_app");
+const ARTIFACT_BINARY: &[u8] = lean_artifacts::LEAN_EVAL_APP;
 
 const INPUT_PATH_OFFSET: u64 = 0x0078;
 const INPUT_PATH_MAX_LEN: usize = 256;

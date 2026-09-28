@@ -9,16 +9,10 @@ edition = "2021"
 [dependencies]
 base = { path = "../base" }
 base-types = { path = "../base-types" }
-# Ordering only: cargo runs its build script, and so `lake`, before this crate
-# compiles and reads the artifacts with `include_bytes!`.
-lean-artifacts = { path = "../lean-artifacts" }
-# For `artifact!`; the build script below uses it to locate the generated tree.
-build-support = { path = "../build-support" }
+# Every artifact, as `lean_artifacts::NAME`.
+lean-artifacts = { path = "../lean" }
 warp-check = { path = "../warp-check" }
 lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
-
-[build-dependencies]
-build-support = { path = "../build-support" }
 
 [dev-dependencies]
 tempfile = "3"

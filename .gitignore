@@ -5,7 +5,6 @@ target/
 .pytest_cache/
 __pycache__/
 *.pyc
-lean/data/
 lean/**/.lake/
 
 # Locally-generated model artifacts (see tools/qwen2_convert.py).
@@ -23,14 +22,8 @@ cifar-10-batches-bin/
 # tracked input.
 /data/
 
-# Written by lean-artifacts/build.rs: one copy rather than one per unit
-# configuration, so it lives beside the crate that generates it. Removed by
-# `git clean -xfd`, not by `cargo clean`.
-/lean-artifacts/artifacts/
-build-support/tests/two-packages/target/
-build-support/tests/two-packages/*/artifacts/
-build-support/tests/two-workspaces/w*/target/
-build-support/tests/two-workspaces/w*/gen/artifacts/
+# The fixture base-build's integration test builds as its own workspace.
+base-build/tests/two-packages/target/
 
 # Read and written by lean/host's demo, in whatever directory it is run from.
 # Anchored, because `input.txt` unanchored is a plausible tracked input.

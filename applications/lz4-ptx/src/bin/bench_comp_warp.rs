@@ -13,8 +13,6 @@
 use base::{Artifact, Base};
 use std::time::Instant;
 
-/// Read at runtime rather than embedded: this bench selects a kernel by name.
-const ARTIFACTS: &str = env!("LEAN_ARTIFACT_DIR");
 /// Set up by `baseline/setup.sh`; override with `LZ4_CORPUS`.
 const CORPUS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/lz4-ptx/corpus/silesia_all.bin");
 /// The prefix the shipped kernels bake in (`Lz4CompAlgorithm.corpusBytes`).
@@ -22,9 +20,9 @@ const CORPUS_BYTES: usize = 209_715_200;
 
 fn run(name: &str, block: usize, original: &[u8]) {
     let data = original.to_vec();
-    let bytes = std::fs::read(format!("{ARTIFACTS}/Lz4CompAlgorithm/{name}.cbor"))
-        .unwrap_or_else(|e| panic!("read {name}.cbor: {e}"));
-    let art = Artifact::from_bytes(&bytes).unwrap_or_else(|e| panic!("{name}.cbor: {e}"));
+    // Looked up by name: this bench selects a kernel by name.
+    let bytes = lean_artifacts::by_name(name).unwrap_or_else(|| panic!("no artifact {name}"));
+    let art = Artifact::from_bytes(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut base = Base::new(art).expect("compile");
 
     // Layout mirrors Algorithm.WP in Lz4CompAlgorithm.lean; asserted against the

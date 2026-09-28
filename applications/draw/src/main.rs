@@ -1,7 +1,7 @@
 use base::{run, Artifact};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("DrawAlgorithm/draw_app");
+    lean_artifacts::DRAW_APP;
 
 
 fn main() {

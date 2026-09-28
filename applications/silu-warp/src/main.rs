@@ -4,7 +4,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = build_support::artifact!("SiluWarpAlgorithm/silu_warp");
+const ART: &[u8] = lean_artifacts::SILU_WARP;
 
 const GRID: usize = 2097152;
 const N: usize = GRID * 32;

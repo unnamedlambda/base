@@ -6,7 +6,7 @@
    "name": "algorithms",
    "manifestFile": "lake-manifest.json",
    "inherited": false,
-   "dir": "../algorithms",
+   "dir": "..",
    "configFile": "lakefile.lean"},
   {"type": "path",
    "scope": "",

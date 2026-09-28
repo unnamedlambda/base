@@ -1,6 +1,6 @@
 use base::{run, Artifact};
 
-const ARTIFACT_BINARY: &[u8] = build_support::artifact!("RaytraceAlgorithm/raytrace_app");
+const ARTIFACT_BINARY: &[u8] = lean_artifacts::RAYTRACE_APP;
 
 
 fn main() {

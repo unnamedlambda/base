@@ -6,7 +6,7 @@
 
 use base::{Artifact, Base};
 
-const ART: &[u8] = build_support::artifact!("WarpSumSqAlgorithm/warp_sumsq");
+const ART: &[u8] = lean_artifacts::WARP_SUMSQ;
 
 
 const K: usize = 128;

@@ -1,7 +1,7 @@
 use base::{Artifact, Base};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("FallingSandAlgorithm/falling_sand");
+    lean_artifacts::FALLING_SAND;
 
 
 fn run_scenario(base: &mut Base, entry: &str) -> (i64, i64, i64) {

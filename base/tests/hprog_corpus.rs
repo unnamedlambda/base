@@ -16,8 +16,8 @@
 //! would agree with the model only until someone changed the model, and this is
 //! the comparison the migration rests on.
 //!
-//! Set `BASE_HPROG_DIR` to a directory holding both artifacts to run one
-//! generated elsewhere.
+//! Set `BASE_HPROG_DIR` to a directory holding `hprog_corpus.cbor` and
+//! `hprog_corpus/expected.json` to run a corpus generated elsewhere.
 
 use base_types::Artifact;
 
@@ -65,7 +65,7 @@ impl Corpus {
 /// `lean-artifacts` builds and runs every generator, so this test reads what
 /// that produced rather than driving `lake` a second time.
 fn generated_corpus() -> PathBuf {
-    PathBuf::from(lean_artifacts::DIR).join("HProgCorpus")
+    PathBuf::from(lean_artifacts::DIR)
 }
 
 #[test]
@@ -75,7 +75,7 @@ fn interpreter_and_machine_agree() {
         Err(_) => generated_corpus(),
     };
 
-    let corpus = Corpus::read(&dir.join("expected/hprog_corpus_expected.json"));
+    let corpus = Corpus::read(&dir.join("hprog_corpus/expected.json"));
     let a = Artifact::from_bytes(&std::fs::read(dir.join("hprog_corpus.cbor")).expect("read artifact"))
         .expect("artifact shape");
 

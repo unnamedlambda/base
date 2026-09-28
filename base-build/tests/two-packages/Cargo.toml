@@ -1,0 +1,5 @@
+# Detached from the outer workspace on purpose: this fixture is driven by
+# `cargo build` from a test, and must resolve and cache independently.
+[workspace]
+members = ["lean/alpha", "lean/beta", "uses-alpha", "uses-both"]
+resolver = "2"

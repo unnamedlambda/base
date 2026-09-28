@@ -13,7 +13,7 @@
 
 use base::{Artifact, Base};
 
-const ARTIFACT: &[u8] = build_support::artifact!("ByteScrubAlgorithm/byte_scrub");
+const ARTIFACT: &[u8] = lean_artifacts::BYTE_SCRUB;
 
 
 /// The run `ByteScrub.code` ships: 256 vectors of sixteen bytes.

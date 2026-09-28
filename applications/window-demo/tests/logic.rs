@@ -1,7 +1,7 @@
 use base::{Artifact, Base};
 
 const ARTIFACT_BINARY: &[u8] =
-    build_support::artifact!("WindowDemoAlgorithm/window_demo");
+    lean_artifacts::WINDOW_DEMO;
 
 
 /// Run one test extra on the given Base and return (pass, actual, expected).
