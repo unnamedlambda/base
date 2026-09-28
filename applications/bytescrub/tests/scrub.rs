@@ -11,7 +11,7 @@
 //! only` and `final vector` catch one that stops early, `all` catches one that
 //! runs long, and `alternating` catches a blend that takes the wrong side.
 
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 
 const ARTIFACT: &[u8] = lean_artifacts::BYTE_SCRUB;
 
@@ -22,7 +22,7 @@ const BYTES: usize = 4096;
 const OLD: u8 = 0;
 const NEW: u8 = b' ';
 
-fn scrub(base: &mut Base, entry: &str, data: &[u8]) -> Vec<u8> {
+fn scrub(base: &mut Driver, entry: &str, data: &[u8]) -> Vec<u8> {
     let mut out = vec![0xAAu8; BYTES];
     base.execute(entry, data, &mut out)
         .expect("execute failed");
@@ -32,7 +32,7 @@ fn scrub(base: &mut Base, entry: &str, data: &[u8]) -> Vec<u8> {
 #[test]
 fn scrubs_every_vector() {
     let artifact = Artifact::from_bytes(ARTIFACT).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("none", vec![b'x'; BYTES]),

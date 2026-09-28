@@ -10,7 +10,7 @@
 //
 // Corpus: `baseline/setup.sh --corpus-only` (override with LZ4_CORPUS).
 // Baseline: `baseline/bench_nvcomp_compress.py`, which prints its own methodology.
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 use std::time::Instant;
 
 /// Set up by `baseline/setup.sh`; override with `LZ4_CORPUS`.
@@ -23,7 +23,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     // Looked up by name: this bench selects a kernel by name.
     let bytes = lean_artifacts::by_name(name).unwrap_or_else(|| panic!("no artifact {name}"));
     let art = Artifact::from_bytes(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let mut base = Base::new(art).expect("compile");
+    let mut base = Driver::load(art).expect("compile");
 
     // Layout mirrors Algorithm.WP in Lz4CompAlgorithm.lean; asserted against the
     // geometry the program writes after the blocks.
@@ -136,9 +136,9 @@ fn main() {
     println!(
 "warp-cooperative GPU LZ4 compression, {:.1} MB Silesia prefix (= Lz4CompAlgorithm.corpusBytes)
 
-WHAT IS TIMED (ours): one Base::execute_into = device buffer allocation + H2D upload
+WHAT IS TIMED (ours): one Driver::execute_into = device buffer allocation + H2D upload
   of the whole corpus + every kernel launch + D2H download of the whole output.
-  JIT compilation is NOT timed: Base::new runs before the timed loop. 2 warmup execs,
+  JIT compilation is NOT timed: Driver::load runs before the timed loop. 2 warmup execs,
   then {} timed. Transfers are ~4% of the number below (see LAUNCH MODEL).
 WHAT IS TIMED (nvCOMP, {}): device-side encode only, input pre-staged on the GPU
   — host transfers excluded, i.e. generous to nvCOMP. Its encode() also allocates its

@@ -1,6 +1,6 @@
 import struct
 import pytest
-from py_base import Artifact, Base, load_artifact, run
+from py_base import Artifact, Driver, load_artifact, run
 
 import cbor
 
@@ -110,21 +110,21 @@ class TestArtifact:
     def test_json_is_not_an_artifact(self):
         """The runtime decodes the artifact, so that is where bad input is caught."""
         with pytest.raises(ValueError, match="not an artifact"):
-            Base(Artifact(b'{"functions": [], "required_memory": 8, "data": []}'))
+            Driver(Artifact(b'{"functions": [], "required_memory": 8, "data": []}'))
 
     def test_missing_fields(self):
         with pytest.raises(ValueError, match="required_memory"):
-            Base(Artifact(cbor.encode({"functions": []})))
+            Driver(Artifact(cbor.encode({"functions": []})))
 
     def test_from_file(self, tmp_path):
         path = tmp_path / "double.cbor"
         path.write_bytes(make_double_artifact())
-        assert Base(load_artifact(str(path))).execute(DOUBLE) == 0
+        assert Driver(load_artifact(str(path))).execute(DOUBLE) == 0
 
 
 class TestBase:
     def test_new(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
         assert base is not None
 
     def test_malformed_program(self):
@@ -135,10 +135,10 @@ class TestBase:
             "data": [],
         })
         with pytest.raises(ValueError, match="v9 used before it is defined"):
-            Base(Artifact(artifact))
+            Driver(Artifact(artifact))
 
     def test_execute_no_data(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
         # A program whose body ends in a bare `return` answers 0.
         assert base.execute(DOUBLE) == 0
 
@@ -154,11 +154,11 @@ class TestBase:
             "required_memory": 256,
             "data": [],
         })
-        base = Base(Artifact(artifact))
+        base = Driver(Artifact(artifact))
         assert base.execute("answer") == 42
 
     def test_execute_into_doubles(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
 
         values = [1, 2, 3, 4, 5, 10, 100, -7]
         data = pack_i32s(values)
@@ -169,7 +169,7 @@ class TestBase:
         assert result == [v * 2 for v in values]
 
     def test_execute_into_reuse(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
 
         for seed in range(5):
             values = list(range(seed * 10, seed * 10 + 20))
@@ -180,7 +180,7 @@ class TestBase:
             assert result == [v * 2 for v in values]
 
     def test_execute_into_large(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
 
         n = 100_000
         values = list(range(n))
@@ -193,12 +193,12 @@ class TestBase:
             assert result[i] == values[i] * 2, f"Mismatch at index {i}"
 
     def test_execute_into_empty(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
         out = bytearray(0)
         base.execute(DOUBLE, b"", out)
 
     def test_bytes_input(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
 
         data = bytes(pack_i32s([42, -1, 0]))
         out = bytearray(len(data))
@@ -207,14 +207,14 @@ class TestBase:
 
     def test_execute_into_answers_through_out(self):
         """The result is what the program wrote to `out`; the status is 0."""
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
 
         out = bytearray(16)
         assert base.execute(DOUBLE, pack_i32s([1, 2, 3, 4]), out) == 0
         assert unpack_i32s(out, 4) == [2, 4, 6, 8]
 
     def test_a_name_nothing_exports_is_refused(self):
-        base = Base(Artifact(make_double_artifact()))
+        base = Driver(Artifact(make_double_artifact()))
         with pytest.raises(ValueError, match='"triple"'):
             base.execute("triple")
 
@@ -225,7 +225,7 @@ class TestBase:
             "required_memory": 256,
             "data": [{"offset": 8, "bytes": bytes([7, 0, 0, 0])}],
         })
-        base = Base(Artifact(artifact))
+        base = Driver(Artifact(artifact))
         got = base.read_memory(8, 4)
         assert isinstance(got, bytes)
         assert struct.unpack("<I", got)[0] == 7

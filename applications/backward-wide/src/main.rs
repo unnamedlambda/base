@@ -1,4 +1,4 @@
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 use warp_check::{dot_by, floats, gbs, roofline, Walk};
 
 const ART: &[u8] =
@@ -59,7 +59,7 @@ fn main() {
         want,
         "host input packing disagrees with the Lean `hostIn` layout"
     );
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
     let run = "run";
     let fetch = "fetch";
 
@@ -271,7 +271,7 @@ fn main() {
 /// loss is evidence the whole chain — forward, derivative-from-spec, outer
 /// product, optimiser — agrees on what it is differentiating.
 fn train(
-    base: &mut Base,
+    base: &mut Driver,
     xa: &[f32],
     ystar: &[f32],
 ) {
@@ -280,7 +280,7 @@ fn train(
     let step = ["runFwd", "runAdj", "runDw", "runSgd"];
     let fetch_y = "fetchY";
 
-    let loss = |base: &mut Base| -> f32 {
+    let loss = |base: &mut Driver| -> f32 {
         let mut out = vec![0u8; N * 4];
         base.execute(fetch_y, b"", &mut out).expect("fetchY");
         let y: Vec<f32> = floats(&out);

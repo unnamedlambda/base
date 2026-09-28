@@ -78,7 +78,7 @@ def main():
     T = max(positions) + 1
 
     art = py_base.load_artifact(args.artifact)
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     want = struct.unpack_from("<I", base.read_memory(0x80, 4))[0]
 
     # ---- the weights, exactly as the buffers want them ----

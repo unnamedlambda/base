@@ -1,11 +1,11 @@
 //! Thin wrapper around the Qwen2 Lean algorithm.
 //!
 //! Packs `weights_path\0tokenizer_path\0` into a single buffer and runs one
-//! `Base::execute_into` — Lean does everything (parse args, load weights, load
+//! `Driver::execute_into` — Lean does everything (parse args, load weights, load
 //! tokenizer, stdin/stdout chat loop). End-to-end behavior is covered by
 //! `tests/golden_cli.rs`.
 
-use base::{init_tracing, Base, Artifact};
+use base::{init_tracing, Driver, Artifact};
 
 const QWEN2_BINARY: &[u8] = lean_artifacts::QWEN2;
 
@@ -28,7 +28,7 @@ fn main() {
     }
 
     let artifact = Artifact::from_bytes(QWEN2_BINARY).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
 
     eprintln!("Starting qwen2 (weights={weights_path}, tokenizer={tokenizer_path})");
     base.execute("main", &data, &mut [])

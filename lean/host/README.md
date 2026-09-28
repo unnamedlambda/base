@@ -79,7 +79,7 @@ so a mismatch is a hard error rather than a negotiation.
 The external library is built *shared* on purpose. Lake gives an executable
 only its own package's `moreLinkArgs` (`Lake/Config/LeanExe.lean`), so a
 dependent's binary never sees the `-lbase` written here — with a static shim it
-fails at link with `undefined symbol: base_new`, and `precompileModules` does
+fails at link with `undefined symbol: base_driver_load`, and `precompileModules` does
 not change that. A shared shim carries the runtime as its own `DT_NEEDED` and
 resolves transitively, which is what makes `require` work at all.
 
@@ -89,7 +89,7 @@ resolves transitively, which is what makes `require` work at all.
 |---|---|
 | `base/src/capi.rs` | the runtime behind a C calling convention |
 | `c/shim.c` | that, in Lean's `IO` convention |
-| `BaseHost.lean` | `Runtime`, `execute`, `executeStatus`, `readMemory`, `withRuntime` |
+| `BaseHost.lean` | `Driver`, `execute`, `executeStatus`, `readMemory`, `withDriver` |
 | `Upcase.lean` | the demo artifact — a value, and buildable without any of the above |
 | `UpcaseHost.lean` | the ~15 lines that run it |
 
@@ -112,8 +112,8 @@ Results come back four ways:
   and the width both come from the layout, so the host never writes either
   down. `Upcase` stores the byte count it read to a `size` field and
   `UpcaseHost` reads it back; neither end knows the number ahead of time.
-* the out buffer `execute` answers, for a program that writes through its
-  `out_ptr`/`out_len` offsets.
+* the output buffer `execute` answers, for a program that writes through
+  `outPtr`, the entry parameter the caller's buffer arrives in.
 * `readMemory`, for an address no field describes.
 
 An artifact whose effects are files, sockets or the GPU needs none of them.
@@ -121,7 +121,7 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
 ## Known gaps
 
 * **Window programs and the main thread.** `execute` installs the runtime's
-  compiled functions on whichever thread calls it, so a `Runtime` is usable
+  compiled functions on whichever thread calls it, so a `Driver` is usable
   from any of them. A program that opens a window is the exception: on macOS
   its event loop has to be created on the main thread.
 * **Two workspaces over one package.** `lake` here and the `lake` that

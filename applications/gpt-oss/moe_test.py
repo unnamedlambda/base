@@ -44,7 +44,7 @@ def main():
     L = args.layer
 
     art = py_base.load_artifact(args.artifact)
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
 
     # The host region Lean declared, read back rather than restated: if the
     # packing here and the layout there disagreed, this is where it shows.

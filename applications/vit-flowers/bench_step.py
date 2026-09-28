@@ -8,7 +8,7 @@ SQ, NC, N = 200, 128, 30
 
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
-base = py_base.Base(art)
+base = py_base.Driver(art)
 base.execute("main", blob)
 base.execute("capture")
 base.execute("captureStep")

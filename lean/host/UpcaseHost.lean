@@ -6,10 +6,10 @@ import Upcase
 
 `Upcase.setup` reads a file, transforms it and writes it. This runs it. Between
 the two there is no build step, no serialization and no second process: the
-artifact is built in this process and handed straight to the runtime.
+artifact is built in this process and handed straight to the driver.
 
 `main` is what is left of a program once its work is an artifact. The `IO` in it
-is opening the runtime, running it, and printing; every effect that is the
+is opening the driver, running it, and printing; every effect that is the
 *point* of the program happens inside `execute`, and is described by a value
 this program could equally have written to disk for a Rust or Python host.
 
@@ -27,15 +27,15 @@ def main : IO Unit := do
   IO.FS.writeFile "input.txt" "a lean host, running its own artifact\n"
 
   let artifact ← AlgorithmLib.Prog.orDie Upcase.shipped
-  Base.withRuntime artifact fun rt => do
-    IO.println s!"runtime memory: {← rt.memorySize} bytes"
-    let (_, status) ← rt.executeStatus "main"
+  Base.withDriver artifact fun drv => do
+    IO.println s!"driver memory: {← drv.memorySize} bytes"
+    let (_, status) ← drv.executeStatus "main"
     IO.println s!"artifact answered {status}"
 
     -- Both of these name a field rather than an offset, and the second's
     -- length came from the first.
-    let size ← rt.readField Upcase.f.size
-    let transformed ← rt.readMemory Upcase.f.fileData.offset size.toNat
+    let size ← drv.readField Upcase.f.size
+    let transformed ← drv.readMemory Upcase.f.fileData.offset size.toNat
     IO.println s!"artifact transformed {size} bytes"
     IO.println s!"in memory: {(String.fromUTF8! transformed).trim}"
 

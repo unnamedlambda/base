@@ -54,7 +54,7 @@ def main():
 
     import json
     art = py_base.load_artifact(args.artifact)
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     check_layout(base)
 
     paths = {}

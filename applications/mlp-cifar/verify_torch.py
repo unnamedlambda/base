@@ -82,7 +82,7 @@ def main() -> None:
 
     blob = w1.tobytes() + w2.tobytes()
     HOST_LEN_OFF = 0x0080
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     assert len(blob) == struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
 
     base.execute("main", blob)

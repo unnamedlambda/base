@@ -50,7 +50,7 @@ def main():
     art = py_base.load_artifact(sys.argv[1])
     w = R.make_weights()
     w["ones"] = np.ones(DM, dtype=np.float32)
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     base.execute("main",
                       b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER))
     base.execute("uploadDOut", np.ones(DM, dtype=np.float32).tobytes())

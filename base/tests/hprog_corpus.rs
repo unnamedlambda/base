@@ -85,7 +85,7 @@ fn interpreter_and_machine_agree() {
         "one slot per case"
     );
 
-    let mut b = base::Base::new(a).expect("compile");
+    let mut b = base::Driver::load(a).expect("compile");
     let mut out = vec![0u8; corpus.expected.len()];
     b.execute("main", &[], &mut out).expect("execute");
 

@@ -54,7 +54,7 @@ ATTN_INNER_ITERS = 64
 
 def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact)
+    engine = py_base.Driver(artifact)
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"
@@ -112,7 +112,7 @@ def _run_gemv(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact)
+    engine = py_base.Driver(artifact)
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"
@@ -171,7 +171,7 @@ def _run_rmsnorm(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact)
+    engine = py_base.Driver(artifact)
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"
@@ -237,7 +237,7 @@ def _run_softmax(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
 
 def _run_decode_attention(artifact_path: str, rounds: int) -> list[harness.BenchResult]:
     artifact = py_base.load_artifact(artifact_path)
-    engine = py_base.Base(artifact)
+    engine = py_base.Driver(artifact)
     load_alg = "main"
     prep_alg = "prep"
     infer_alg = "infer"

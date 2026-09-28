@@ -121,7 +121,7 @@ def main():
     rng = np.random.default_rng(0)
     cu = Cuda()
     import py_base
-    mods = ptx_modules(py_base.Base(py_base.load_artifact(args.artifact)))
+    mods = ptx_modules(py_base.Driver(py_base.load_artifact(args.artifact)))
 
     # One expert, filled with plausible bytes.  Values do not matter to a timing
     # -- there is no data-dependent branch in either kernel -- but the buffers

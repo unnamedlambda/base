@@ -13,7 +13,7 @@
 //! [`butterfly`], `dotLane` is [`Walk::Vec4`], `dotStridedLane` is
 //! [`Walk::Strided`], and `Sched.idx` is [`Walk::idx`].
 
-use base::Base;
+use base::Driver;
 
 // ---------------------------------------------------------------------------
 // The committed fold order
@@ -207,7 +207,7 @@ pub fn compare(got: &[f32], want: impl Fn(usize) -> f32) -> Diff {
 pub const ROOFLINE_GBS: f64 = 360.0;
 
 /// Seconds per launch, after one warm-up.
-pub fn time(base: &mut Base, entry: &str, reps: usize) -> f64 {
+pub fn time(base: &mut Driver, entry: &str, reps: usize) -> f64 {
     base.execute(entry, b"", &mut []).expect("warm-up launch");
     let t = std::time::Instant::now();
     for _ in 0..reps {

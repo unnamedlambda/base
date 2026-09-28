@@ -128,7 +128,7 @@ def main() -> None:
     blob = w1.tobytes() + w2.tobytes()
     # The published layout, read from the image the artifact starts from.
     HOST_LEN_OFF = 0x0080
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     want = struct.unpack_from("<I", base.read_memory(HOST_LEN_OFF, 4))[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean's hostIn {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's hostIn")

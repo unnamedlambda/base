@@ -16,7 +16,7 @@ import sys, time, numpy as np, py_base
 ART, D, N = sys.argv[1], sys.argv[2], 50
 blob = np.load(D + "/blob.npy").tobytes()
 art = py_base.load_artifact(ART)
-base = py_base.Base(art)
+base = py_base.Driver(art)
 base.execute("main", blob)
 for c in ["capture", "captureStep", "captureBlas", "captureRow"]:
     base.execute(c)

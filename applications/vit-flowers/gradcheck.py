@@ -28,7 +28,7 @@ def pbase(i):
 
 
 art = py_base.load_artifact(ART)
-base = py_base.Base(art)
+base = py_base.Driver(art)
 # The map is the last region Lean writes: VMEM_SIZE = VGMAP_OFF + 4*VBASE + 0x100.
 GMAP = base.memory_size() - 0x100 - 4 * VBASE
 gmap = np.frombuffer(base.read_memory(GMAP, 4 * VBASE), "<u4")

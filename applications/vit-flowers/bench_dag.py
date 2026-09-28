@@ -18,7 +18,7 @@ SQ, NC, N = 200, 128, 50
 blob = np.load(D + "/blob.npy").tobytes()
 seed = np.load(D + "/seed.npy").astype("<f4").tobytes()
 art = py_base.load_artifact(ART)
-base = py_base.Base(art)
+base = py_base.Driver(art)
 base.execute("main", blob)
 
 for c in ["captureChain", "captureStepChain", "capture", "captureStep"]:

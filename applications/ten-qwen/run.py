@@ -92,7 +92,7 @@ def main():
              "wq", "wo", "w1", "w3", "w2"]
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in order)
 
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     want = struct.unpack_from("<I", base.read_memory(QHOST_LEN_OFF, 4))[0]
     assert len(blob) == want, f"host packing {len(blob)} vs Lean layout {want}"
     print(f"layout   : {len(blob)} bytes, matches Lean's qHostIn ({want})")

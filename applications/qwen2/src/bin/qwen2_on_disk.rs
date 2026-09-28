@@ -4,7 +4,7 @@
 //! storage strategy differs.  Useful on systems where the model is larger than
 //! VRAM (e.g. point at a 32B weights file on NVMe).
 
-use base::{init_tracing, Base, Artifact};
+use base::{init_tracing, Driver, Artifact};
 
 const QWEN2_ON_DISK_BINARY: &[u8] = lean_artifacts::QWEN2_ON_DISK;
 
@@ -40,7 +40,7 @@ fn main() {
     }
 
     let artifact = Artifact::from_bytes(QWEN2_ON_DISK_BINARY).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
 
     eprintln!("Starting qwen2_on_disk (weights={weights_path}, tokenizer={tokenizer_path})");
     base.execute("main", &data, &mut [])

@@ -1,10 +1,10 @@
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 
 const ARTIFACT_BINARY: &[u8] =
     lean_artifacts::RAYMARCH_DEMO;
 
 
-fn run_scenario(base: &mut Base, entry: &str) -> (i64, i64, i64) {
+fn run_scenario(base: &mut Driver, entry: &str) -> (i64, i64, i64) {
     // The scenario answers pass, actual and expected in its out buffer.
     let mut out = [0u8; 24];
     base.execute(entry, &[], &mut out).expect("execute failed");
@@ -15,7 +15,7 @@ fn run_scenario(base: &mut Base, entry: &str) -> (i64, i64, i64) {
 #[test]
 fn camera_scenarios() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
 
     for name in [
         "test_move_forward",
@@ -31,7 +31,7 @@ fn camera_scenarios() {
 #[test]
 fn render_scene_scenario() {
     let artifact = Artifact::from_bytes(ARTIFACT_BINARY).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
 
     let (pass, actual, expected) = run_scenario(&mut base, "test_render_scene");
     assert_eq!(

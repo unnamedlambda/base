@@ -16,7 +16,7 @@
 //! checks is the output buffer's, not the input's --- the input's length is not
 //! a generation-time fact.
 
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 
 const ARTIFACT: &[u8] = lean_artifacts::BYTE_COUNT;
 
@@ -26,7 +26,7 @@ const WINDOW: usize = 4096;
 /// Must match `ByteCount.needles`, in order.
 const NEEDLES: [u8; 3] = [b',', b'\n', b' '];
 
-fn counts(base: &mut Base, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
+fn counts(base: &mut Driver, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
     let mut out = [0u8; 8 * NEEDLES.len()];
     base.execute(entry, data, &mut out)
         .expect("execute failed");
@@ -40,7 +40,7 @@ fn counts(base: &mut Base, entry: &str, data: &[u8]) -> [u64; NEEDLES.len()] {
 #[test]
 fn counts_every_needle() {
     let artifact = Artifact::from_bytes(ARTIFACT).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("none", vec![b'x'; WINDOW]),

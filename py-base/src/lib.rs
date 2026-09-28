@@ -64,24 +64,24 @@ where
 
 /// A compiled artifact and the memory it runs in. Compiling is the expensive
 /// step, so build one and call it as often as you like.
-#[pyclass(name = "Base", unsendable)]
-struct PyBase {
-    handle: *mut base::Base,
+#[pyclass(name = "Driver", unsendable)]
+struct PyDriver {
+    handle: *mut base::Driver,
 }
 
-impl Drop for PyBase {
+impl Drop for PyDriver {
     fn drop(&mut self) {
-        unsafe { capi::base_free(self.handle) };
+        unsafe { capi::base_driver_free(self.handle) };
     }
 }
 
 #[pymethods]
-impl PyBase {
+impl PyDriver {
     #[new]
     fn new(artifact: &PyArtifact) -> PyResult<Self> {
-        let handle = unsafe { capi::base_new(artifact.bytes.as_ptr(), artifact.bytes.len()) };
+        let handle = unsafe { capi::base_driver_load(artifact.bytes.as_ptr(), artifact.bytes.len()) };
         if handle.is_null() {
-            return Err(last_error("Base"));
+            return Err(last_error("Driver"));
         }
         Ok(Self { handle })
     }
@@ -90,33 +90,33 @@ impl PyBase {
     /// status it answered: `0` unless the entry's body ends in a `return`
     /// carrying a value.
     ///
-    /// `data` is the program's input and `out` the buffer it answers in. Both
+    /// `input` is what the program is handed and `output` the buffer it answers in. Both
     /// are the caller's own memory, handed to the program as pointers: nothing
     /// is copied in or out.
-    #[pyo3(signature = (name, data=None, out=None))]
+    #[pyo3(signature = (name, input=None, output=None))]
     fn execute(
         &mut self,
         py: Python<'_>,
         name: &str,
-        data: Option<&[u8]>,
-        out: Option<&Bound<'_, pyo3::types::PyByteArray>>,
+        input: Option<&[u8]>,
+        output: Option<&Bound<'_, pyo3::types::PyByteArray>>,
     ) -> PyResult<i64> {
-        let data = data.unwrap_or(&[]);
-        let (out_ptr, out_len) = match out {
-            Some(out) => (out.data(), out.len()),
+        let input = input.unwrap_or(&[]);
+        let (output_ptr, output_len) = match output {
+            Some(output) => (output.data(), output.len()),
             None => (std::ptr::null_mut(), 0),
         };
         let handle = self.handle;
         let mut status = 0i64;
         let rc = allow_threads_unsafe(py, || unsafe {
-            capi::base_execute(
+            capi::base_driver_execute(
                 handle,
                 name.as_ptr(),
                 name.len(),
-                data.as_ptr(),
-                data.len(),
-                out_ptr,
-                out_len,
+                input.as_ptr(),
+                input.len(),
+                output_ptr,
+                output_len,
                 &mut status,
             )
         });
@@ -138,7 +138,7 @@ impl PyBase {
         length: usize,
     ) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
         let mut have = 0usize;
-        let memory = unsafe { capi::base_memory(self.handle, &mut have) };
+        let memory = unsafe { capi::base_driver_memory(self.handle, &mut have) };
         if memory.is_null() || offset > have || length > have - offset {
             return Err(PyValueError::new_err(format!(
                 "{offset}..{} is outside the {have} bytes of memory",
@@ -153,7 +153,7 @@ impl PyBase {
     /// How many bytes of memory this program runs in.
     fn memory_size(&self) -> usize {
         let mut len = 0usize;
-        unsafe { capi::base_memory(self.handle, &mut len) };
+        unsafe { capi::base_driver_memory(self.handle, &mut len) };
         len
     }
 }
@@ -168,15 +168,15 @@ fn load_artifact(path: &str) -> PyResult<PyArtifact> {
 
 /// Compile an artifact and call the entry point it exports as `name`, once.
 #[pyfunction]
-#[pyo3(signature = (artifact, name, data=None))]
+#[pyo3(signature = (artifact, name, input=None))]
 fn run(
     py: Python<'_>,
     artifact: &PyArtifact,
     name: &str,
-    data: Option<&[u8]>,
+    input: Option<&[u8]>,
 ) -> PyResult<i64> {
-    let mut base = PyBase::new(artifact)?;
-    base.execute(py, name, data, None)
+    let mut base = PyDriver::new(artifact)?;
+    base.execute(py, name, input, None)
 }
 
 /// Whether this extension was compiled without optimisations.
@@ -202,7 +202,7 @@ fn warn_if_unoptimised(py: Python<'_>) -> PyResult<()> {
 fn py_base(m: &Bound<'_, PyModule>) -> PyResult<()> {
     warn_if_unoptimised(m.py())?;
     m.add_class::<PyArtifact>()?;
-    m.add_class::<PyBase>()?;
+    m.add_class::<PyDriver>()?;
     m.add_function(wrap_pyfunction!(load_artifact, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
     Ok(())

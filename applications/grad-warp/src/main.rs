@@ -11,7 +11,7 @@
 //!
 //! `v0` is used twice — the case a naive `grad` duplicates and `gradProg` binds.
 
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 
 const ART: &[u8] = lean_artifacts::GRAD_WARP;
 
@@ -37,7 +37,7 @@ fn main() {
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
     let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
     let run = "run";
     let run_d = "runD";
     let fetch = "fetch";

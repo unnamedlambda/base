@@ -51,7 +51,7 @@ def main():
     art = py_base.load_artifact(sys.argv[1])
     blob = (np.ones(NE, dtype=np.float32).tobytes() + wr.tobytes() + x.tobytes()
             + b"".join(m.astype("<f4").ravel().tobytes() for w in ws for m in w))
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     base.execute("main", blob)
 
     # 1. Route.

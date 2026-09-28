@@ -33,7 +33,7 @@ def main():
     w["ones"] = np.ones(DM, dtype=np.float32)      # spans the widest reduction
 
     blob = b"".join(w[k].astype("<f4").ravel().tobytes() for k in ORDER)
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     base.execute("main", blob)
 
     dout = np.ones(DM, dtype=np.float32)

@@ -9,7 +9,7 @@
 //! Takes generated `.cbor` artifact files. Prints one
 //! `file<TAB>bytes<TAB>seconds` line per input.
 
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 
 
 fn main() {
@@ -36,7 +36,7 @@ fn main() {
         };
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         let t = std::time::Instant::now();
-        match Base::new(artifact) {
+        match Driver::load(artifact) {
             Ok(b) => {
                 let el = t.elapsed();
                 println!("{}\t{}\t{:.3}", name, bytes, el.as_secs_f64());

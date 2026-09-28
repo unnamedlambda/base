@@ -29,7 +29,7 @@ blob = np.load(D + "/blob.npy").tobytes()
 ref = np.load(D + "/losses.npy")
 
 art = py_base.load_artifact(ART)
-base = py_base.Base(art)
+base = py_base.Driver(art)
 base.execute("main", blob)
 
 # Capture both graphs first.  Capturing runs its sequence once eagerly to make

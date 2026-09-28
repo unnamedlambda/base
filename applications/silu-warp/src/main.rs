@@ -2,7 +2,7 @@
 //! proven by `compileWKernel_correct`, emitted to PTX, run on the GPU.
 //! No kernel was hand-written.
 
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 
 const ART: &[u8] = lean_artifacts::SILU_WARP;
 
@@ -14,7 +14,7 @@ fn main() {
     let bytes: Vec<u8> = input.iter().flat_map(|f| f.to_le_bytes()).collect();
 
     let artifact = Artifact::from_bytes(ART).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
     let run = "run";
     let fetch = "fetch";
 

@@ -13,7 +13,7 @@
 //! The training loop itself lives in `train.py`, which drives the same artifact
 //! against real CIFAR-10.
 
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 use warp_check::{compare, dot, dot_by, floats, gbs, le, roofline, time, Lcg, Walk};
 
 const ART: &[u8] = lean_artifacts::MLP_CIFAR;
@@ -72,8 +72,8 @@ fn main() {
     let want = u32::from_le_bytes(artifact.read(HOST_LEN_OFF, 4).try_into().unwrap()) as usize;
     assert_eq!(blob.len(), want, "host packing disagrees with Lean's `hostIn`");
 
-    let mut base = Base::new(artifact).expect("Base::new");
-    let go = |b: &mut Base, name: &str, data: &[u8], out: &mut [u8]| {
+    let mut base = Driver::load(artifact).expect("Driver::load");
+    let go = |b: &mut Driver, name: &str, data: &[u8], out: &mut [u8]| {
         b.execute(name, data, out).unwrap_or_else(|e| panic!("{name}: {e:?}"));
     };
 

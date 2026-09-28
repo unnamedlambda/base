@@ -8,7 +8,7 @@ import os
 import struct
 
 import pytest
-from py_base import Base, load_artifact
+from py_base import Driver, load_artifact
 
 import cbor
 
@@ -40,7 +40,7 @@ def histogram():
 
 @pytest.fixture
 def base():
-    return Base(load_artifact(ARTIFACT))
+    return Driver(load_artifact(ARTIFACT))
 
 
 def test_schema_describes_both_outputs(base):

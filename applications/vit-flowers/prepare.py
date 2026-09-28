@@ -44,7 +44,7 @@ blob = b"".join(np.ascontiguousarray(b, np.float32).tobytes() for b in bufs)
 # torch: only running it would be.
 import py_base
 want = struct.unpack_from(
-    "<I", py_base.Base(py_base.load_artifact(ART)).read_memory(0x80, 4))[0]
+    "<I", py_base.Driver(py_base.load_artifact(ART)).read_memory(0x80, 4))[0]
 assert len(blob) == want, f"packed {len(blob)} vs Lean layout {want}"
 print(f"layout   : {len(blob)} bytes, matches Lean vHostIn")
 

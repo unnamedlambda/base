@@ -1,7 +1,7 @@
 # py-base
 
 Python bindings for [Base](../README.md) via PyO3, over base's C ABI — the same
-six functions a C or Lean host calls. Zero-copy data passing between Python and
+five functions a C or Lean host calls. Zero-copy data passing between Python and
 the Base execution engine.
 
 ## Setup
@@ -27,12 +27,12 @@ memory they run in, and that memory's initial contents. An entry point is a
 function the artifact exports, and a script calls it by that name.
 
 ```python
-from py_base import load_artifact, Base
+from py_base import load_artifact, Driver
 
 artifact = load_artifact("../lean/.lake/build/artifacts/sha256_app.cbor")
 
-base = Base(artifact)                # JIT compiles — do this once
-base.execute("main")                 # …then execute as often as you like
+driver = Driver(artifact)            # JIT compiles — do this once
+driver.execute("main")               # …then execute as often as you like
 ```
 
 An artifact is CBOR, so one can also be built in Python from nested dicts,
@@ -40,7 +40,7 @@ which is what the tests do with the standard-library encoder in
 `tests/cbor.py`:
 
 ```python
-from py_base import Artifact, Base
+from py_base import Artifact, Driver
 import cbor
 
 artifact = Artifact(cbor.encode({
@@ -49,14 +49,14 @@ artifact = Artifact(cbor.encode({
     "data": [],
 }))
 
-data = b"\x01\x00\x00\x00\x02\x00\x00\x00"
-out = bytearray(8)
+input = b"\x01\x00\x00\x00\x02\x00\x00\x00"
+output = bytearray(8)
 
-base = Base(artifact)
-base.execute("double", data, out)    # both buffers zero-copy
+driver = Driver(artifact)
+driver.execute("double", input, output)  # both buffers zero-copy
 ```
 
-A program answers through `out`. What the bytes mean is the generator's to
+A program answers through `output`. What the bytes mean is the generator's to
 say; `base` gives them no format.
 
 ## API
@@ -64,33 +64,33 @@ say; `base` gives them no format.
 ### `Artifact(bytes)`
 What a generator emits: the CLIF functions, the memory size and the data
 segments memory starts with, encoded as CBOR. The runtime is what decodes it,
-so a malformed artifact is reported when a `Base` is built from it.
+so a malformed artifact is reported when a `Driver` is loaded from it.
 
 ### `load_artifact(path: str) -> Artifact`
 Read an artifact from the `.cbor` file a generator wrote.
 
-### `Base(artifact: Artifact)`
-An execution engine. JIT compiles the program. This is the expensive step — do
+### `Driver(artifact: Artifact)`
+The artifact, loaded: its program JIT compiled and its memory allocated. This is the expensive step — do
 it once.
 
-### `base.execute(name, data=None, out=None) -> int`
-Call the entry point the artifact exports as `name`. `data` accepts anything
+### `driver.execute(name, input=None, output=None) -> int`
+Call the entry point the artifact exports as `name`. `input` accepts anything
 implementing the buffer protocol (`bytes`, `bytearray`, `numpy` array), and the
-program answers by writing through `out` (a `bytearray`); both are zero-copy.
+program answers by writing through `output` (a `bytearray`); both are zero-copy.
 The `int` is the status the entry point answered: a program whose body ends in
 a bare `return` answers `0`. A name the artifact does not export is a
 `ValueError` naming it.
 
-### `base.read_memory(offset, length) -> bytes`
+### `driver.read_memory(offset, length) -> bytes`
 What the program left in its own memory, at an address its generator says it
 writes. A range past the end is an error, not a short answer.
 
-### `base.memory_size() -> int`
+### `driver.memory_size() -> int`
 How many bytes of memory the program runs in.
 
-### `run(artifact, name, data=None) -> int`
+### `run(artifact, name, input=None) -> int`
 One-shot: compile and execute in a single call. For a program run once; use
-`Base` for anything run twice.
+`Driver` for anything run twice.
 
 The GIL is released for the duration of an execution, so other Python threads
 run while a program does.

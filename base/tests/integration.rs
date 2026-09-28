@@ -1,4 +1,4 @@
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 use std::fs;
 
 mod common;
@@ -29,7 +29,7 @@ fn image(bytes: Vec<u8>) -> Vec<base_types::Segment> {
 }
 
 /// The i64 a program left at `offset` of its memory.
-fn read_i64(base: &Base, offset: usize) -> i64 {
+fn read_i64(base: &Driver, offset: usize) -> i64 {
     i64::from_le_bytes(base.memory()[offset..offset + 8].try_into().unwrap())
 }
 
@@ -590,7 +590,7 @@ fn test_clif_call_multiple_functions() {
 
     // Demonstrates JIT-once, run-many: one Base, two execute() calls picking different
     // fn_idx into the same compiled module.
-    let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
+    let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     base.execute(&at(1), &[], &mut []).unwrap();
 
@@ -687,7 +687,7 @@ fn test_clif_call_sequential_mutations() {
     let mut memory = vec![0u8; 4096];
     memory[3000..3000 + file_str.len()].copy_from_slice(file_str.as_bytes());
 
-    let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
+    let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     base.execute(&at(1), &[], &mut []).unwrap();
     base.execute(&at(2), &[], &mut []).unwrap();
@@ -787,7 +787,7 @@ fn test_clif_call_file_read_write() {
     memory[2256..2256 + output_str.len()].copy_from_slice(output_str.as_bytes());
 
     // Two execute() calls on one Base: fn0 reads input file, fn1 writes output file.
-    let mut base = Base::new(cranelift_config(memory, clif_prog)).unwrap();
+    let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
     base.execute(&at(0), &[], &mut []).unwrap();
     base.execute(&at(1), &[], &mut []).unwrap();
 
@@ -821,7 +821,7 @@ fn test_base_multi_execute_different_data() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // First execute: input = 10, expect 30
     let data1 = 10i64.to_le_bytes();
@@ -869,7 +869,7 @@ fn test_base_multi_execute_different_actions() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // First execute: call fn0 only
     let alg1 = at(0);
@@ -907,7 +907,7 @@ fn test_base_multi_execute_accumulates_in_memory() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Execute 1: add 10 → total = 10
     let d1 = 10i64.to_le_bytes();
@@ -958,7 +958,7 @@ fn test_base_multi_execute_with_file_io() {
         required_memory: 4096,
         data: image(mem1),
     };
-    let mut base = Base::new(config1).unwrap();
+    let mut base = Driver::load(config1).unwrap();
     base.execute(&at(0), &[], &mut [])
     .unwrap();
     assert!(file1.exists());
@@ -974,7 +974,7 @@ fn test_base_multi_execute_with_file_io() {
         required_memory: 4096,
         data: image(mem2),
     };
-    let mut base2 = Base::new(config2).unwrap();
+    let mut base2 = Driver::load(config2).unwrap();
     base2
         .execute(&at(0), &[], &mut [])
         .unwrap();
@@ -1003,7 +1003,7 @@ fn test_base_multi_execute_varying_cranelift_units() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Execute with 0 units
     base.execute(&at(0), &vec![0u8; 4096], &mut [])
@@ -1044,7 +1044,7 @@ fn test_base_initial_memory_and_data_pointer_coexist() {
         required_memory: 4096,
         data: image(mem),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let data = 99i64.to_le_bytes();
     base.execute(&at(0), &data, &mut [])
@@ -1083,7 +1083,7 @@ fn test_base_persistent_memory_survives_across_executes() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Execute 1: seed 77 at offset 200
     base.execute(&at(0), &[], &mut [])
@@ -1120,7 +1120,7 @@ fn test_base_empty_data_leaves_memory_intact() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Three executes with empty memory — counter should increment each time
     for expected in 1..=3 {
@@ -1153,7 +1153,7 @@ fn test_base_data_pointer_updates_each_execute() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Execute 1: 10 + 20 = 30
     let mut d1 = vec![0u8; 16];
@@ -1202,7 +1202,7 @@ fn test_base_output_in_persistent_region() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Execute 3 times with values 100, 200, 300
     for &val in &[100i64, 200, 300] {
@@ -1234,7 +1234,7 @@ fn a_program_answers_the_status_it_returns() {
         vec![0u8; 256],
         program(function().entry(vec![iconst64(v(1), 7), ret_status(v(1))])),
     );
-    let mut base = Base::new(cfg).unwrap();
+    let mut base = Driver::load(cfg).unwrap();
     assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 7);
 }
 
@@ -1247,7 +1247,7 @@ fn a_program_that_returns_nothing_has_status_zero() {
         vec![0u8; 256],
         program(function().entry(vec![ret()])),
     );
-    let mut base = Base::new(cfg).unwrap();
+    let mut base = Driver::load(cfg).unwrap();
     assert_eq!(base.execute(&alg, &[], &mut []).unwrap(), 0);
 }
 
@@ -1264,7 +1264,7 @@ fn clif_error_returns_disagree() {
                 .block(2, &[], vec![ret()]),
         ),
     );
-    let Err(base::Error::Clif(msg)) = Base::new(config) else {
+    let Err(base::Error::Clif(msg)) = Driver::load(config) else {
         panic!("expected a function whose returns disagree to be refused");
     };
     assert!(msg.contains("some paths"), "message should say what is wrong: {msg}");
@@ -1278,7 +1278,7 @@ fn clif_error_value_used_before_defined() {
         vec![0u8; 256],
         program(function().entry(vec![store(v(9), v(0), 0), ret()])),
     );
-    let Err(err) = Base::new(config) else {
+    let Err(err) = Driver::load(config) else {
         panic!("expected an error for a value used before it is defined");
     };
     let base::Error::Clif(msg) = err else {
@@ -1313,7 +1313,7 @@ fn clif_parse_error_empty_ir_no_error() {
         required_memory: 256,
         data: vec![],
     };
-    let base = Base::new(config);
+    let base = Driver::load(config);
     assert!(base.is_ok());
 }
 
@@ -1447,7 +1447,7 @@ fn test_cublas_sgemv_on_stream_reuse() {
         required_memory: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
     let alg = at(1);
 
     let a1: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
@@ -1547,7 +1547,7 @@ fn test_cublas_sgemm_strided_batched_on_stream_reuse() {
         required_memory: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(1);
 
@@ -1637,7 +1637,7 @@ fn test_data_ptr_clif_reads_caller_buffer_directly() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let mut data = vec![0u8; 16];
     data[0..8].copy_from_slice(&100i64.to_le_bytes());
@@ -1680,7 +1680,7 @@ fn test_data_ptr_written_even_when_data_empty() {
 
     let alg = at(0);
 
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
     base.execute(&alg, &[], &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
@@ -1715,7 +1715,7 @@ fn test_out_ptr_written_even_when_out_empty() {
 
     let alg = at(0);
 
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
     base.execute(&alg, &[], &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
@@ -1749,7 +1749,7 @@ fn test_execute_into_clif_writes_to_caller_out_buffer() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let mut data = vec![0u8; 8];
     data[0..8].copy_from_slice(&6i64.to_le_bytes());
@@ -1786,7 +1786,7 @@ fn test_execute_into_multiple_calls_different_data() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -1834,7 +1834,7 @@ fn test_data_ptr_with_large_buffer_no_shared_mem_copy() {
         required_memory: 256,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Data is 1KB — much larger than required_memory (256)
     let mut data = vec![0u8; 1024];
@@ -1883,7 +1883,7 @@ fn test_initial_memory_and_data_coexist() {
         required_memory: 4096,
         data: image(initial),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -1924,7 +1924,7 @@ fn test_execute_into_out_buffer_larger_than_memory() {
         required_memory: 64,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -1968,7 +1968,7 @@ fn test_run_with_data_argument() {
     let alg = at(0);
 
     let data = 777i64.to_le_bytes().to_vec();
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
     base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(
         read_i64(&base, 200),
@@ -2001,7 +2001,7 @@ fn test_data_single_byte_still_writes_pointer() {
     let alg = at(0);
 
     let data = vec![42u8]; // single byte
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
     base.execute(&alg, &data, &mut []).unwrap();
     assert_eq!(read_i64(&base, 200), 1, "data_len should be 1 for single-byte data");
 }
@@ -2029,7 +2029,7 @@ fn test_data_ptr_survives_across_multi_execute() {
         required_memory: 4096,
         data: vec![],
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(0);
 
@@ -2114,7 +2114,7 @@ fn test_gpu_upload_ptr_download_ptr_vecadd() {
         required_memory: mem_size as u64,
         data: image(memory),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Build payload: [A: 64 f32s][B: 64 f32s]
     let mut payload = vec![0u8; n * 4 * 2];
@@ -2196,7 +2196,7 @@ fn test_gpu_download_ptr_with_offset() {
         required_memory: mem_size as u64,
         data: image(memory),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Payload: [A: 1.0..64.0][B: 101.0..164.0]
     let mut payload = vec![0u8; n * 4 * 2];
@@ -2328,7 +2328,7 @@ fn test_cuda_upload_ptr_download_ptr_vecadd() {
         required_memory: mem_size as u64,
         data: image(memory),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     // Build payload: [A: 64 f32s][B: 64 f32s]
     let mut payload = vec![0u8; n * 4 * 2];
@@ -2451,7 +2451,7 @@ fn test_cuda_download_ptr_different_data() {
         required_memory: mem_size as u64,
         data: image(memory),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(1);
 
@@ -2577,7 +2577,7 @@ fn test_cublas_sgemm_strided_batched_reuse() {
         required_memory: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(1);
 
@@ -2676,7 +2676,7 @@ fn test_cuda_upload_ptr_offset_reuse() {
         required_memory: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(1);
 
@@ -2791,7 +2791,7 @@ fn test_cuda_launch_named_reuses_named_kernel() {
         required_memory: mem_size as u64,
         data: image(memory),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(1);
 
@@ -2885,7 +2885,7 @@ fn test_cublas_sgemv_reuse() {
         required_memory: mem_size as u64,
         data: image(vec![0u8; mem_size]),
     };
-    let mut base = Base::new(config).unwrap();
+    let mut base = Driver::load(config).unwrap();
 
     let alg = at(1);
 
@@ -3262,7 +3262,7 @@ fn clif_error_local_call_to_missing_function() {
                 .entry(vec![call(None, loc(3), &[v(0)]), ret()]),
         ),
     );
-    let Err(err) = Base::new(config) else {
+    let Err(err) = Driver::load(config) else {
         panic!("expected an error for a local call to a function that is not defined");
     };
     let base::Error::Clif(msg) = err else {
@@ -3271,9 +3271,9 @@ fn clif_error_local_call_to_missing_function() {
     assert!(msg.contains("u0:3"), "message should name the callee: {msg}");
 }
 
-/// The error `Base::new` answers for `functions`, which must be refused.
+/// The error `Driver::load` answers for `functions`, which must be refused.
 fn refusal(functions: Vec<Function>) -> String {
-    match Base::new(cranelift_config(vec![0u8; 256], functions)) {
+    match Driver::load(cranelift_config(vec![0u8; 256], functions)) {
         Err(base::Error::Clif(msg)) => msg,
         Err(e) => panic!("expected a build error, got {e:?}"),
         Ok(_) => panic!("expected the program to be refused"),
@@ -3342,7 +3342,7 @@ fn answering(k: i64) -> Func {
 
 #[test]
 fn an_entry_point_is_called_by_its_name() {
-    let mut base = Base::new(named(programs(vec![
+    let mut base = Driver::load(named(programs(vec![
         noop(),
         answering(7).export("seven"),
         answering(9).export("nine"),
@@ -3357,10 +3357,10 @@ fn an_entry_point_is_called_by_its_name() {
 /// even the `u0:N` a host might guess from the artifact.
 #[test]
 fn an_unexported_function_is_not_callable() {
-    let mut base = Base::new(named(programs(vec![answering(1), answering(2).export("two")])))
+    let mut base = Driver::load(named(programs(vec![answering(1), answering(2).export("two")])))
         .unwrap();
     for name in ["u0:0", "one", ""] {
-        let Err(base::Error::Execution(msg)) = base.execute(name, &[], &mut []) else {
+        let Err(base::Error::NoSuchEntry(msg)) = base.execute(name, &[], &mut []) else {
             panic!("{name:?} is not exported and should not be callable");
         };
         assert!(msg.contains(&format!("{name:?}")), "{msg}");
@@ -3371,7 +3371,7 @@ fn an_unexported_function_is_not_callable() {
 #[test]
 fn clif_error_two_functions_exported_under_one_name() {
     let Err(base::Error::Clif(msg)) =
-        Base::new(named(programs(vec![answering(1).export("x"), answering(2).export("x")])))
+        Driver::load(named(programs(vec![answering(1).export("x"), answering(2).export("x")])))
     else {
         panic!("a name exported twice should be refused");
     };
@@ -3386,7 +3386,7 @@ fn clif_error_exported_function_not_shaped_like_an_entry() {
     let two = function()
         .export("pair")
         .block(0, &[(v(0), I64), (v(1), I64)], vec![ret()]);
-    let Err(base::Error::Clif(msg)) = Base::new(named(programs(vec![two]))) else {
+    let Err(base::Error::Clif(msg)) = Driver::load(named(programs(vec![two]))) else {
         panic!("a two-parameter function should not be exportable");
     };
     assert!(msg.contains("pair") && msg.contains("2 parameters"), "{msg}");
@@ -3442,7 +3442,7 @@ fn names_survive_a_reordering() {
     assert_eq!(after[3].entry_name, None, "position 3 is now the unexported helper");
 
     for functions in [before, after] {
-        let mut base = Base::new(named(functions)).unwrap();
+        let mut base = Driver::load(named(functions)).unwrap();
         assert_eq!(base.execute("tens", &[], &mut []).unwrap(), 40);
         assert_eq!(base.execute("seven", &[], &mut []).unwrap(), 7);
     }
@@ -3462,7 +3462,7 @@ fn clif_error_binding_the_result_of_a_void_callee() {
                 .entry(vec![call(Some(v(1)), imp("cl_gpu_init"), &[v(0)]), ret()]),
         ),
     );
-    let Err(err) = Base::new(config) else {
+    let Err(err) = Driver::load(config) else {
         panic!("expected an error for binding the result of a callee that returns nothing");
     };
     assert!(matches!(err, base::Error::Clif(_)));
@@ -3477,7 +3477,7 @@ fn clif_error_float_constant_of_integer_type() {
             ret(),
         ])),
     );
-    let Err(err) = Base::new(config) else {
+    let Err(err) = Driver::load(config) else {
         panic!("expected an error for a float constant of a non-float type");
     };
     let base::Error::Clif(msg) = err else {

@@ -63,7 +63,7 @@ def main():
     bank = Bank(args.bank)
     H, NL = bank.H, bank.L
     art = py_base.load_artifact(args.artifact)
-    base = py_base.Base(art)
+    base = py_base.Driver(art)
     check_layout(base)
 
     exp = os.path.abspath(os.path.join(args.bank, "experts.bin")).encode() + b"\0"

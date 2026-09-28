@@ -28,10 +28,26 @@ pub enum Error {
     /// this is a malformed program — a value used before it is defined, a
     /// branch to a block that is not declared — rather than bad syntax.
     Clif(String),
-    Execution(String),
+    /// The arena could not be allocated. Nothing has run: this is the size the
+    /// artifact asked for against what the host can give.
+    Memory(String),
+    /// The artifact exports no entry point by that name.
+    NoSuchEntry(String),
 }
 
-pub struct Base {
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Clif(m) => write!(f, "clif: {m}"),
+            Error::Memory(m) => write!(f, "memory: {m}"),
+            Error::NoSuchEntry(m) => write!(f, "no such entry: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+pub struct Driver {
     memory: Pin<Box<[u8]>>,
     mem_ptr: *mut u8,
     clif_fns: Option<Arc<Vec<jit::Compiled>>>,
@@ -40,16 +56,16 @@ pub struct Base {
     _module: Option<cranelift_jit::JITModule>,
 }
 
-unsafe impl Send for Base {}
-unsafe impl Sync for Base {}
+unsafe impl Send for Driver {}
+unsafe impl Sync for Driver {}
 
-impl Drop for Base {
+impl Drop for Driver {
     /// Release the program's code. A JIT module otherwise keeps its code
     /// mapped for the life of the process, and the region it was placed in is
-    /// reserved up front, so every dropped `Base` would leak that reservation.
+    /// reserved up front, so every dropped `Driver` would leak that reservation.
     fn drop(&mut self) {
         // The functions stay reachable through this thread's installed table,
-        // but nothing calls them without a `Base` to execute: a program's
+        // but nothing calls them without a `Driver` to execute: a program's
         // workers are joined by `cl_thread_cleanup` before the program that
         // spawned them returns.
         self.clif_fns = None;
@@ -59,12 +75,15 @@ impl Drop for Base {
     }
 }
 
-impl Base {
-    pub fn new(artifact: Artifact) -> Result<Self, Error> {
+impl Driver {
+    /// Load an artifact: compile its functions and allocate the arena its
+    /// program runs in. There is no driver without an artifact, so this is the
+    /// only way to obtain one.
+    pub fn load(artifact: Artifact) -> Result<Self, Error> {
         // The arena holds what the program asked for and the image it ships
         // with, and nothing else: the caller's buffers are arguments, so there
         // is no header the engine has to make room for.
-        let too_big = |what: String| Error::Execution(format!("{what}, more than this host can hold"));
+        let too_big = |what: String| Error::Memory(format!("{what}, more than this host can hold"));
         let mut size = usize::try_from(artifact.required_memory)
             .map_err(|_| too_big(format!("required_memory is {}", artifact.required_memory)))?;
         for s in &artifact.data {
@@ -89,8 +108,8 @@ impl Base {
         functions: Vec<base_types::clif::Function>,
         memory: Box<[u8]>,
     ) -> Result<Self, Error> {
-        let _span = info_span!("base_new", memory_size = memory.len()).entered();
-        info!("creating Base instance");
+        let _span = info_span!("base_driver_load", memory_size = memory.len()).entered();
+        info!("loading artifact");
 
         let mut memory = Pin::new(memory);
         let mem_ptr = memory.as_mut().as_mut_ptr();
@@ -103,8 +122,8 @@ impl Base {
         };
         let exports = exports_of(&functions, clif_fns.as_deref().map_or(&[], |f| f))?;
 
-        info!("Base instance created");
-        Ok(Base {
+        info!("driver ready");
+        Ok(Driver {
             memory,
             mem_ptr,
             clif_fns,
@@ -114,13 +133,13 @@ impl Base {
     }
 
     /// The shared memory a program reads and writes, borrowed for as long as
-    /// this `Base` is not executing.
+    /// this `Driver` is not executing.
     pub fn memory(&self) -> &[u8] {
         &self.memory
     }
 
-    /// Call the entry point exported as `name` with `data` as its input, and
-    /// answer the status it returned. The entry answers in `out`, which it
+    /// Call the entry point exported as `name` with `input`, and answer the
+    /// status it returned. The entry answers in `output`, which it
     /// sees directly: nothing is copied either way. The status is the value
     /// the program returned, passed through without being read; a program
     /// that returns nothing has status `0`.
@@ -128,18 +147,18 @@ impl Base {
     /// A name is the only way a host reaches a function. A function's position
     /// is the generator's to choose and free to change, so it never leaves the
     /// artifact.
-    pub fn execute(&mut self, name: &str, data: &[u8], out: &mut [u8]) -> Result<i64, Error> {
+    pub fn execute(&mut self, name: &str, input: &[u8], output: &mut [u8]) -> Result<i64, Error> {
         let _span = info_span!("execute", name).entered();
         info!("starting execution");
 
         let fn_idx = *self.exports.get(name).ok_or_else(|| {
-            Error::Execution(format!("the artifact exports no entry point named {name:?}"))
+            Error::NoSuchEntry(format!("the artifact exports no entry point named {name:?}"))
         })? as usize;
         // Only a program with functions can export a name.
         let fns = self.clif_fns.clone().expect("an exported name implies compiled functions");
         // The FFI entry points a program calls — `cl_thread_init` and what
         // it spawns — reach the compiled functions through a thread-local,
-        // with no `Base` in hand. Installing them here rather than at
+        // with no `Driver` in hand. Installing them here rather than at
         // construction is what lets a host execute from any thread, and
         // makes two instances on one thread each find their own.
         THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(fns.clone()));
@@ -158,12 +177,12 @@ impl Base {
                         *mut u8,
                         usize,
                     ) -> i64 = std::mem::transmute(f.addr);
-                    entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len())
+                    entry(self.mem_ptr, input.as_ptr(), input.len(), output.as_mut_ptr(), output.len())
                 }
                 (5, false) => {
                     let entry: unsafe extern "C" fn(*mut u8, *const u8, usize, *mut u8, usize) =
                         std::mem::transmute(f.addr);
-                    entry(self.mem_ptr, data.as_ptr(), data.len(), out.as_mut_ptr(), out.len());
+                    entry(self.mem_ptr, input.as_ptr(), input.len(), output.as_mut_ptr(), output.len());
                     0
                 }
                 (1, true) => {
@@ -232,8 +251,8 @@ fn exports_of(
 
 /// Compile an artifact and call the entry point it exports as `name`, once.
 pub fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
-    let mut base = Base::new(artifact)?;
-    base.execute(name, &[], &mut [])
+    let mut driver = Driver::load(artifact)?;
+    driver.execute(name, &[], &mut [])
 }
 
 pub fn init_tracing() {

@@ -22,7 +22,7 @@
 //! shape: a 896-wide row is 3.5 KB and gets fetched whole however the warp
 //! walks it. Qwen2 decode is the shape where cuBLAS is beatable at all.
 
-use base::{Artifact, Base};
+use base::{Artifact, Driver};
 use warp_check::{floats, gbs, roofline, time, Walk};
 
 const ART_QWEN: &[u8] =
@@ -59,7 +59,7 @@ fn bench(
     bytes.extend(x.iter().flat_map(|f| f.to_le_bytes()));
 
     let artifact = Artifact::from_bytes(art_bytes).expect("the build checked this artifact");
-    let mut base = Base::new(artifact).expect("Base::new");
+    let mut base = Driver::load(artifact).expect("Driver::load");
     let fetch = "fetch";
     let dot = fam_label == "dot";
     let runs = if dot {
