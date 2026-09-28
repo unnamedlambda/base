@@ -1,937 +1,645 @@
-\documentclass[10pt,twocolumn]{article}
+\documentclass[11pt]{article}
 \raggedbottom
 
-\usepackage[margin=1in]{geometry}
-\usepackage{amsmath,amssymb}
-\usepackage{booktabs}
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{booktabs,tabularx,array}
 \usepackage{hyperref}
-\usepackage{listings}
-\usepackage{xcolor}
-\usepackage{enumitem}
-\usepackage{microtype}
-\usepackage{caption}
+\usepackage{listings,xcolor}
+\usepackage{enumitem,microtype,caption}
+\usepackage{tikz,needspace,float,etoolbox}
+\usetikzlibrary{arrows.meta,positioning,fit}
+\hypersetup{colorlinks=true,linkcolor=blue!45!black,urlcolor=blue!45!black}
 \captionsetup{font=small,labelfont=bf}
-\usepackage{abstract}
-\usepackage{tikz}
-\usepackage{needspace}
-\usepackage{placeins}
-\usepackage{float}
-\usepackage{etoolbox}
-\usetikzlibrary{arrows.meta,positioning,calc,fit,backgrounds}
+\setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
+\setlength{\intextsep}{10pt plus 2pt minus 2pt}
+\setlength{\emergencystretch}{1.5em}
+\widowpenalty=10000
+\clubpenalty=10000
 
-\setlength{\absleftindent}{0.5in}
-\setlength{\absrightindent}{0.5in}
-\renewcommand{\abstractnamefont}{\normalfont\bfseries\small}
-\renewcommand{\abstracttextfont}{\normalfont\small}
-\setcounter{topnumber}{4}
-\setcounter{bottomnumber}{2}
-\setcounter{totalnumber}{6}
-\renewcommand{\topfraction}{0.95}
-\renewcommand{\bottomfraction}{0.9}
-\renewcommand{\textfraction}{0.05}
-\renewcommand{\floatpagefraction}{0.8}
-\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
-\setlength{\floatsep}{6pt plus 2pt minus 2pt}
-\setlength{\intextsep}{6pt plus 2pt minus 2pt}
-
-\hypersetup{colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black}
+% Shared figure vocabulary. Blue is the producer side, orange the artifact,
+% green the driver, grey what the hardware and its vendors provide.
+\colorlet{cProducer}{blue!6}
+\colorlet{cArtifact}{orange!12}
+\colorlet{cDriver}{green!8}
+\colorlet{cNative}{black!4}
 
 \lstdefinestyle{code}{
-    basicstyle=\ttfamily\footnotesize,
-    keywordstyle=\bfseries\color{blue!70!black},
-    commentstyle=\color{green!40!black},
-    showstringspaces=false,
-    columns=flexible,
-    breaklines=true,
-    frame=single,
-    framerule=0.4pt,
-    rulecolor=\color{gray!50},
-    backgroundcolor=\color{gray!5},
-    xleftmargin=2pt,
-    xrightmargin=2pt,
-    aboveskip=4pt,
-    belowskip=4pt,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\bfseries\color{blue!50!black},
+  commentstyle=\color{black!55},
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  frame=single,
+  framerule=0.3pt,
+  rulecolor=\color{black!25},
+  backgroundcolor=\color{black!2},
+  xleftmargin=5pt,
+  xrightmargin=5pt,
+  aboveskip=12pt,
+  belowskip=8pt,
+  literate=%
+    {Γ}{{$\Gamma$}}1 {←}{{$\leftarrow$}}1 {→}{{$\rightarrow$}}1
+    {≤}{{$\le$}}1 {≠}{{$\ne$}}1 {⟨}{{$\langle$}}1 {⟩}{{$\rangle$}}1 {×}{{$\times$}}1
+    {∈}{{$\in$}}1 {∀}{{$\forall$}}1 {∧}{{$\wedge$}}1 {∃}{{$\exists$}}1,
 }
-% Keep headings with a few lines of following text, without forcing large gaps.
-\preto{\section}{\needspace{10\baselineskip}}
-\preto{\subsection}{\needspace{6\baselineskip}}
-% Keep short code blocks together when possible; allow long ones to break.
-\AtBeginEnvironment{lstlisting}{\needspace{8\baselineskip}}
+% Listings sit apart from the prose, and the paragraph resuming after one is
+% flush rather than indented: a code block is a display, not a new thought.
+\newenvironment{codeblock}
+  {\par\noindent\begin{minipage}{\linewidth}}
+  {\end{minipage}\par\noindent}
+% A downward arrow between two forms of the same code, centred on the page.
+\newcommand{\chainarrow}{{\centering\begin{tikzpicture}
+  \draw[-{Stealth[length=2mm]},thick] (0,0) -- (0,-0.55);
+\end{tikzpicture}\par}}
+\preto{\section}{\needspace{8\baselineskip}}
+\preto{\subsection}{\needspace{3\baselineskip}}
 
-\title{Base: A Board-Level Software ISA\\with Build-Time Dependent Type Checking}
+\title{Base: An Interface for Programming the Board}
 \author{\url{https://github.com/unnamedlambda/base}}
 \date{}
 
 \begin{document}
-
-\twocolumn[
-\begin{@twocolumnfalse}
 \maketitle
-\vspace{-1em}
-\begin{onecolabstract}
-A modern system board often contains many hardware units, each with its own
-ISA: a CPU, a GPU, and specialized accelerators. Programming them correctly
-requires reasoning about value-dependent properties such as memory layouts,
-buffer offsets, and cross-device data flow. Dependent type theory can express these
-constraints, but languages with sufficiently expressive type systems often
-incur managed run-time overhead (for example, garbage collection,
-reference-count traffic, boxing, and other run-time support costs). We therefore
-want dependent type checking to happen at build time and to execute code
-that maps well onto modern hardware, as modern systems languages commonly
-do (e.g., C and C++).
+\begin{abstract}
+Base is an interface and system for programming at the scope of an entire board.
+The CPU, GPU, network and file system are all controlled through a single
+artifact loaded by a driver. Its compiled entry points can then be called at
+run time, with the driver embedded through its C API and usable from Rust,
+Python, C and Lean. Lean generators for artifacts have theorems which prove, at
+build time, properties of the run-time behavior. Performance matches standalone
+Rust on CPU workloads and PyTorch on GPU workloads.
+\end{abstract}
 
-Base solves this with a clean separation. At build time, Lean~4~\cite{lean4}
-with dependent types produces a serializable execution artifact containing
-Cranelift~\cite{cranelift} IR text, an initial memory layout, and one or
-more compiled-function entry points. At run time, a Rust engine JIT-compiles
-the IR and calls the selected entry point. No type checker, no interpreter,
-no garbage collector runs at run time---just compiled machine code calling
-hardware through FFI primitives. The data artifact is the only thing that
-crosses from the verified world to the executable world, and it contains no
-closures, callbacks, or run-time artifacts from Lean.
+% ===========================================================================
+\section{System Architecture}
+\label{sec:interface}
 
-This supports a modern heterogeneous system with multiple ISAs following
-different conventions. The ISAs do not need to be designed to work intuitively
-together---they can be awkward, optimized purely for silicon, because the
-dependent type system absorbs their complexity at build time. Base is
-evaluated on CPU, GPU, and heterogeneous workloads. On the evaluated
-workloads, it is competitive with idiomatic Rust and native GPU frameworks.
-\end{onecolabstract}
-\vspace{1em}
-\end{@twocolumnfalse}
-]
+Modern computer applications run on many devices at once, each with its own
+control interface. A CPU has an instruction set, which a language like C is
+compiled to directly. A GPU has a driver API, reached through system software
+and usually programmed in a kernel language of its own such as CUDA~\cite{cuda}. Networks
+and file systems are reached by system calls the CPU makes, with values computed
+at run time. Each of these interfaces is precise in isolation, but real
+applications require them to be composed together correctly. The programmer must
+reason about CPU arithmetic, GPU kernel launches and their results, file paths
+and the contents of writes, and above all about the interleaving of data between
+these interfaces across the program's whole run.
 
-% ===================================================================
-\section{Introduction}
-\label{sec:intro}
+For a single general-purpose device this is solved by an instruction set: a
+finite, documented vocabulary through which the device's components are
+controlled. A program for that instruction set is a standalone object,
+independent of source details. Whether it was written by hand or generated by a
+compiler, the same final object is the whole of the interface and governs the
+resulting behavior. Base extends the scope of such an interface to the entire
+board. A software driver accepts full board control via an \emph{artifact}: a
+value that can be serialized, exist in memory, and be the subject of logical
+reasoning.
 
-Board-level software must coordinate multiple ISAs on one system board
-(CPU, GPU, tensor/crypto engines, and other accelerators). Doing this
-correctly requires reasoning about shared memory layouts,
-buffer offsets, dispatch ordering, and data flow between devices.
+\subsection{Artifact}
+\label{sec:contents}
 
-These are value-dependent invariants. A buffer offset must be less than the
-memory size. A GPU dispatch must happen after initialization. A data layout
-must be consistent between the CPU view and the GPU view. Dependent types
-allow types to depend on values, so bounds, layout relationships, and
-sequencing conditions can participate directly in artifact construction and
-checking. That is useful here because offsets, sizes, and dispatch structure
-all depend on concrete build-time values.
+An artifact is represented as the Rust struct below and is encoded as the CBOR
+data format~\cite{cbor}. It contains both a program and the memory it starts with.
 
-Dependent type checking requires substantial compile-time machinery.
-In Lean~4, checking depends on term reduction/normalization. None of this
-proof-assistant machinery should be in the run-time path.
+\begin{codeblock}
+\begin{lstlisting}[style=code,morekeywords={pub,struct,derive,serde}]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Artifact {
+    pub functions: Vec<clif::Function>,
+    pub required_memory: u64,
+    pub data: Vec<Segment>,
+}
+\end{lstlisting}
+\end{codeblock}
 
-Base separates the problem in two:
+A user decodes a serialized artifact, loads it, and calls an entry point by
+name.
 
-\begin{enumerate}[nosep,leftmargin=*]
-\item \textbf{Build time} (Lean~4): Verify program structure with dependent
-  types. Output a serializable data artifact containing Cranelift IR text,
-  an initial memory layout, and named entry points into the generated CLIF,
-  with no Lean run-time artifacts.
-\item \textbf{Run time} (Rust engine): JIT-compile the IR via Cranelift.
-  Execute selected CLIF functions against shared memory, calling hardware through typed FFI
-  primitives.
-\end{enumerate}
+\begin{codeblock}
+\begin{lstlisting}[style=code,morekeywords={let,mut}]
+let artifact = Artifact::from_bytes(ARTIFACT_BYTES)?;
+let mut driver = Driver::load(artifact)?;
 
-The data artifact is inert: bytes, offsets, IR text, integer tags. It is the
-only value that crosses from the verified world to the executable world.
+let status = driver.execute("infer", input, output)?;
+\end{lstlisting}
+\end{codeblock}
 
-A consequence: ISAs targeted by this system do not need to be programmer-friendly.
-If the specification language handles complexity, hardware can be optimized
-purely for silicon efficiency---what might be called \emph{awkward ISAs}.
-Because no human or general-purpose compiler targets the IR directly,
-instruction sets can be irregular---non-power-of-two register files,
-application-specific operations, unusual word sizes---and the Lean
-specification provides verified transformations to each device on the bus.
+The program is CLIF, the IR of the Cranelift code generator~\cite{cranelift}.
+During load the driver JIT compiles the artifact's program to machine code and
+initializes a shared arena according to the artifact's specification.
+\texttt{required\_memory} is how much space to reserve for the arena, and the
+segments of \texttt{data} are laid over it, so an artifact isn't forced to
+specify every initial zero. Calls to \texttt{execute} invoke functions keyed by
+the names the artifact carries, with the caller supplying both the input and
+output pointers. The same arena is shared between calls, so state carries across
+them: a device handle opened by one entry point is still open for the next.
 
-% ===================================================================
-\section{Architecture}
-\label{sec:arch}
+\subsection{Driver}
+\label{sec:running}
 
-Figure~\ref{fig:arch} shows the system. Lean constructs the data artifact
-at build time; the Rust engine consumes it at run time.
+The CLIF program is a list of functions, each carrying an optional name for use
+in \texttt{execute}. A function's blocks, block parameters and instructions are
+encoded as data rather than as raw text. The driver walks that structure through
+Cranelift's instruction builder to produce machine code. Only a subset of CLIF is
+included: eight types, the widest a 128-bit vector, and
+forty-five instruction forms spanning arithmetic, comparison, bit manipulation,
+conversion, memory access, calls and structured control flow.
 
-\begin{figure}[H]
+A CLIF program controls one core and the memory it addresses, and reaches for
+\emph{primitives} to access the rest of the board. A primitive is a Rust
+function using the C calling convention, compiled alongside the driver as part
+of the Base crate. When an artifact is loaded, the driver hands Cranelift each
+primitive's address to enable direct calls into these functions.
+
+Device kernels can be embedded into the artifact as source text in its data
+segments. The \texttt{cl\_gpu\_init} primitive leaves a device context at a
+pointer into the arena; \texttt{cl\_gpu\_create\_pipeline} takes kernel source out of the arena
+and gives it to the vendor's compiler; \texttt{cl\_gpu\_dispatch} launches the
+result, and \texttt{cl\_gpu\_download\_ptr} writes what it computed back into
+the arena. Figure~\ref{fig:lowering} follows both paths out of the artifact.
+Kernel source and vendor driver use are handled entirely this way; Base has no
+built-in device handling outside what a program reaches through these
+primitives.
+
+\begin{figure}[tb]
 \centering
 \begin{tikzpicture}[
-    >=Stealth,
-    box/.style={draw, rounded corners=3pt,
-                font=\footnotesize\sffamily, fill=#1, text=black,
-                inner sep=6pt, align=center},
-    box/.default=gray!8,
-    lbl/.style={font=\scriptsize\sffamily, text=black!60},
-    arr/.style={->, thick, color=black!55},
-  ]
-  % Build time — Lean
-  \node[box=blue!12, minimum width=2.9cm] (lean)
-    {Lean~4 \textbf{(build time)}\\[2pt]
-     {\scriptsize\sffamily\color{black!55} Layout DSL $+$ IR DSL}};
-
-  % The data artifact
-  \node[box=orange!15, minimum width=2.9cm, below=0.9 of lean] (artifact)
-    {\texttt{Artifact}\\[2pt]
-     {\scriptsize\sffamily\color{black!55} setup $\cdot$ main $\cdot$ extras}};
-  \draw[arr] (lean) -- node[lbl, right=3pt] {JSON} (artifact);
-
-  % Run time — Rust engine
-  \node[box=green!12, minimum width=2.9cm, below=0.9 of artifact] (engine)
-    {Rust engine \textbf{(run time)}\\[2pt]
-     {\scriptsize\sffamily\color{black!55} Cranelift JIT $+$ fn dispatch}};
-  \draw[arr] (artifact) -- node[lbl, right=3pt] {deserialize} (engine);
-
-  % Hardware targets
-  \node[box=red!10, minimum width=1.5cm, below left=0.7 and 0.5 of engine] (cpu) {CPU};
-  \node[box=red!10, minimum width=1.5cm, below=0.7 of engine]             (gpu) {GPU};
-  \node[box=red!10, minimum width=1.5cm, below right=0.7 and 0.5 of engine] (net) {I/O};
-  \draw[arr] (engine.south) -- (cpu.north);
-  \draw[arr] (engine.south) -- (gpu.north);
-  \draw[arr] (engine.south) -- (net.north);
-  \node[lbl, below=0.12 of gpu.south, anchor=north] {via FFI};
+  st/.style={draw,rounded corners=2pt,align=center,font=\scriptsize,
+    minimum width=4.2cm,minimum height=9mm,inner sep=3pt},
+  arr/.style={-{Stealth[length=2mm]},thick},
+  lab/.style={font=\tiny,inner sep=2.5pt},
+  grp/.style={draw,dashed,rounded corners=3pt,inner sep=4pt,draw=black!45},
+  gl/.style={font=\scriptsize\itshape,align=right}
+]
+\node[st,fill=cArtifact] (fn)  at (-2.6,0) {Functions};
+\node[st,fill=cArtifact] (mem) at ( 2.6,0) {Segments};
+\node[st,fill=cDriver]  (cl) at (-2.6,-1.5) {Cranelift IR};
+\node[st,fill=cNative]  (hm) at (-2.6,-3.0) {Host machine code};
+\node[st,fill=cDriver]  (ar) at ( 2.6,-3.0) {The arena\\\textit{kernel source among it}};
+\node[st,fill=cNative]  (dm) at ( 0,  -5.0) {Device machine code};
+\draw[arr] (fn)  -- node[lab,right]{Decode} (cl);
+\draw[arr] (cl)  -- node[lab,right]{Cranelift JIT} (hm);
+\draw[arr] (mem) -- node[lab,right]{Laid over zeros} (ar);
+\draw[arr] (hm.south) -- node[lab,left,pos=0.55,align=center]
+  {call to the\\vendor driver} (dm.north west);
+\draw[arr,densely dashed] (ar.south) -- node[lab,right,pos=0.55,align=center]
+  {kernel source,\\by pointer} (dm.north east);
+\node[grp,fit=(fn)(mem)] (ga) {};
+\node[gl,left=2mm of ga] {One\\artifact};
 \end{tikzpicture}
-\caption{Lean builds the data artifact at build time; the Rust engine
-consumes it at run time and dispatches via FFI.}
-\label{fig:arch}
+\caption{The functions are decoded and compiled for the host processor. The
+segments are laid into the arena, kernel source among them, and that source
+reaches the vendor's driver.}
+\label{fig:lowering}
 \end{figure}
 
-The build-time phase runs once per program revision. Lean~4 type-checks
-the specification, emits a flat memory layout and Cranelift IR text,
-and serializes the resulting \texttt{Artifact} as JSON.
-Rust \texttt{build.rs} then validates that JSON against the Rust data types,
-re-serializes it to bincode, and embeds it in the executable via
-\texttt{include\_bytes!}. At run time the engine deserializes the embedded
-artifact, JIT-compiles the IR once during \texttt{Base::new}, and executes
-the \texttt{main} algorithm or a named algorithm from \texttt{extras} by
-calling its compiled function index.
+Figure~\ref{fig:board} shows how CLIF and the primitives control board
+behavior. An exploration of a specific primitive, for reading a file into a
+buffer, follows.
 
-% ===================================================================
-\section{The Data Artifact}
-\label{sec:artifact}
+\begin{figure}[!tb]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize,
+  chip/.style={draw,rounded corners=2pt,align=center,inner sep=3pt},
+  cell/.style={draw,fill=white,minimum size=3.4mm,inner sep=0pt},
+  dimm/.style={draw,fill=white,minimum width=2.4mm,minimum height=10mm,inner sep=0pt},
+  call/.style={-{Stealth[length=1.6mm]},semithick},
+  lbl/.style={font=\tiny\ttfamily,align=center},
+  note/.style={font=\tiny\itshape,align=center}
+]
+\draw[draw=black!35,rounded corners=3pt,fill=cNative]
+  (-8.1,-3.0) rectangle (8.1,3.6);
 
-A Base program is a single \texttt{Artifact}, serialized as JSON:
+\node[chip,fill=cProducer,minimum width=2.9cm,minimum height=1.9cm]
+  (cpu) at (-5.4,1.1) {};
+\foreach \x in {-6.03,-5.61,-5.19,-4.77} \node[cell] at (\x,1.75) {};
+\node[anchor=north] at (-5.4,1.53) {CPU};
+\node[lbl] at (-5.4,0.75) {iadd\ \ icmp\ \ ishl\\fadd\ \ fmul\ \ select};
 
-\begin{lstlisting}[style=code,
-  morekeywords={pub,struct,Vec,String,usize,u8,u32,HashMap}]
-pub struct Artifact {
-  pub setup: Setup,
-  pub main: Algorithm,
-  pub extras: HashMap<String, Algorithm>,
-}
-pub struct Setup {
-  pub cranelift_ir: String,
-  pub memory_size: usize,
-  pub io_offsets: IoOffsets,
-  pub initial_memory: Vec<u8>,
-}
-pub struct IoOffsets {
-  pub data_ptr: usize,
-  pub data_len: usize,
-  pub out_ptr: usize,
-  pub out_len: usize,
-}
-pub struct Algorithm {
-  pub fn_idx: u32,
-  pub output: Vec<OutputBatchSchema>,
-}
+\foreach \x in {1.0,1.3,1.6,1.9} \node[dimm] at (\x,1.1) {};
+\node[anchor=south] at (1.45,1.75) {DRAM};
+
+\node[chip,fill=cArtifact,minimum width=2.4cm,minimum height=0.75cm]
+  (nvme) at (-5.4,-2.3) {NVMe flash};
+
+\node[chip,fill=cArtifact,minimum width=3.6cm,minimum height=1.4cm]
+  (gpu) at (4.5,-1.9) {};
+\node[anchor=north west] at (2.85,-1.35) {GPU};
+\node[chip,fill=white,minimum width=1.0cm,minimum height=4.5mm]
+  at (5.6,-1.65) {\tiny VRAM};
+
+\draw[call] (0.85,1.5) -- node[lbl,above=1pt] {load} (-3.95,1.5);
+\draw[call] (-3.95,0.7) -- node[lbl,below=1pt] {store} (0.85,0.7);
+
+\draw[call] (cpu.south) --
+  node[lbl,right=2pt] {call fn0\\\%cl\_file\_read\_to\_ptr} (nvme.north);
+
+\draw[call] (cpu.south east) --
+  node[lbl,pos=0.55,above right=1pt and 0pt]
+    {call fn1\\\%cl\_gpu\_dispatch}
+  (gpu.north west);
+
+\draw[call] (cpu.north west) to[out=125,in=55]
+  node[lbl,above=0pt] {call fn2\ \ \%cl\_thread\_spawn} (cpu.north east);
+\end{tikzpicture}
+\caption{A system board along with how its capabilities are accessed by CLIF.
+Arithmetic and memory access are instructions such as \texttt{iadd}, loads and
+stores. Everything else is reached by a call to a board primitive.}
+\label{fig:board}
+\end{figure}
+
+\begin{codeblock}
+\begin{lstlisting}[style=code,morekeywords={pub,crate,unsafe,extern,fn}]
+pub(crate) unsafe extern "C" fn cl_file_read_to_ptr(
+    path_ptr: *const u8,
+    dst_ptr: *mut u8,
+    file_offset: i64,
+    size: i64,
+) -> i64 { ... }
 \end{lstlisting}
+\end{codeblock}
 
-\texttt{Setup} contains the module-level Cranelift IR text, memory size,
-runtime input/output slots, and byte-level initial memory generated by
-Lean. \texttt{Algorithm} is an entry point into that compiled module:
-\texttt{fn\_idx} selects one JIT-compiled function, and \texttt{output}
-describes optional Arrow record batches to read from shared memory after
-the call. A single-artifact program uses \texttt{main}; multi-stage flows
-put additional entry points in \texttt{extras}, so all stages share one
-memory image and one Cranelift compilation.
+It takes a NUL-terminated path and a destination to write the file contents to,
+and returns the count read, or $-1$ to indicate a failure. The pointers are
+plain addresses; for a CLIF program they point into the arena, the only memory
+it has. The call itself is unremarkable: it sits among the arithmetic that
+computed its arguments, and what it returns is a value like any other
+(Figure~\ref{fig:cliftext}).
 
-Orchestration is represented either inside generated CLIF
-functions or by explicit calls to different \texttt{Algorithm} entry points
-by the host application.
-
-\subsection{Shared Memory}
-
-All state lives in a single pinned byte array. When a \texttt{Base}
-struct is created, the array is initialized from \texttt{initial\_memory},
-which holds program data, string constants, and scratch buffers produced
-by Lean. Every JIT-compiled function receives one argument: a pointer to
-byte~0 of this array.
-
-For caller-provided input and output buffers, \texttt{Setup.io\_offsets}
-specifies where the engine writes transient pointer slots before each
-\texttt{execute()} call (Table~\ref{tab:iooffsets}). These offsets are
-part of the artifact rather than a hard-coded Rust header.
-
-\begin{table}[H]
-\centering\small
-\caption{Runtime input/output slots specified by \texttt{IoOffsets}.}
-\label{tab:iooffsets}
-\begin{tabular}{@{}ll@{}}
-\toprule
-\textbf{Field} & \textbf{Value written before execution} \\
-\midrule
-\texttt{data\_ptr} & pointer to caller input bytes \\
-\texttt{data\_len} & caller input length \\
-\texttt{out\_ptr}  & pointer to caller output buffer \\
-\texttt{out\_len}  & caller output length \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-CLIF code reads \texttt{data\_ptr}/\texttt{data\_len} to access caller
-input and \texttt{out\_ptr}/\texttt{out\_len} to write results---zero
-copies. GPU, CUDA, hash-table, network, and database contexts are managed
-through FFI calls that initialize and pass context handles explicitly, not
-through a single serialized context offset in the artifact.
-
-\needspace{14\baselineskip}
-\subsection{Execution}
-
-\begin{lstlisting}[style=code,
-  morekeywords={let,mut,fn,pub}]
-// One-shot
-let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
-let results = run(artifact.setup, artifact.main)?;
-
-// Compile once, execute many
-let artifact = Artifact::from_bytes(ARTIFACT_BINARY);
-let mut base = Base::new(artifact.setup)?;
-base.execute(&artifact.main, &data)?;
-
-// Named multi-stage entry points
-let prep = &artifact.extras["prep"];
-let infer = &artifact.extras["infer"];
-base.execute(prep, &input)?;
-
-// Zero-copy output
-base.execute_into(infer, &in, &mut out)?;
-\end{lstlisting}
-
-After JIT compilation, \texttt{execute()} is a hot path: callers pass
-data by reference, the engine writes the caller pointers to the configured
-\texttt{IoOffsets}, and then calls \texttt{algorithm.fn\_idx} in the
-compiled module. CLIF code reads caller data directly.
-
-\subsection{FFI: From Rust to C~ABI to Cranelift}
-\label{sec:ffi}
-
-Hardware access follows a three-step chain. First, a Rust function wraps
-a driver library (wgpu~\cite{wgpu}, CUDA, LMDB~\cite{lmdb}, TCP) behind
-\texttt{extern "C"} linkage:
-
-\begin{lstlisting}[style=code,
-  morekeywords={unsafe,extern,fn,let,mut,match}]
-unsafe extern "C" fn cl_file_read_to_ptr(
-    path_ptr: *const u8, // filename pointer
-    dst_ptr: *mut u8,    // destination pointer
-    file_offset: i64,    // seek position
-    size: i64,           // bytes to read
-) -> i64 {
-    let filename = read_cstr_ptr(path_ptr);
-    let mut file = match fs::File::open(&filename) {
-        Ok(f) => f,  Err(_) => return -1,
-    };
-    // ... read into dst_ptr, return count
-}
-\end{lstlisting}
-
-Second, the engine registers this function pointer with the Cranelift JIT
-builder under its symbol name:
-
-\begin{lstlisting}[style=code,
-  morekeywords={builder}]
-builder.symbol("cl_file_read_to_ptr",
-    cl_file_read_to_ptr as *const u8);
-\end{lstlisting}
-
-Third, Lean can target the same symbol in two equivalent ways. Small
-benchmarks in this repository often emit the raw CLIF directly:
-
+\begin{figure}[tb]
+\centering
+\begin{codeblock}
 \begin{lstlisting}[style=code]
 sig0 = (i64, i64, i64, i64) -> i64 system_v
 fn0 = %cl_file_read_to_ptr sig0
 
-block4:
-    v3 = iconst.i64 256
-    v4 = iadd v0, v3      ; filename pointer
-    v5 = iconst.i64 8192
-    v6 = iadd v0, v5      ; destination pointer
-    v7 = iconst.i64 0
-    v8 = iconst.i64 4096
-    v9 = call fn0(v4, v6, v7, v8)
+v5 = call fn0(v1, v2, v3, v4)
 \end{lstlisting}
+\end{codeblock}
+\caption{Cranelift makes a call to \texttt{cl\_file\_read\_to\_ptr} just as it
+would any other function. The CLIF text format is shown for clarity.}
+\label{fig:cliftext}
+\end{figure}
 
-Larger applications use the IR builder, which produces the same external
-declaration while returning a typed handle:
+\subsection{C API}
 
-\begin{lstlisting}[style=code]
-def declareFileRead : IRBuilder FnRef :=
-  declareFFI "cl_file_read_to_ptr"
-    [.i64, .i64, .i64, .i64] (some .i64)
+The entire Base driver is exported as a C API, shown below. This
+enables the driver to be embedded for calling from other languages, as C is the
+common foreign function interface. Python and Lean APIs are built on top of
+this.
+
+\begin{codeblock}
+\begin{lstlisting}[style=code,morekeywords={pub,unsafe,extern,fn,no_mangle}]
+#[no_mangle]
+pub unsafe extern "C" fn base_driver_load(
+    artifact: *const u8, len: usize) -> *mut Driver { ... }
+
+#[no_mangle]
+pub unsafe extern "C" fn base_driver_execute(
+    driver: *mut Driver,
+    name:   *const u8, name_len:   usize,
+    input:  *const u8, input_len:  usize,
+    output: *mut u8,   output_len: usize,
+    status: *mut i64) -> i32 { ... }
+
+#[no_mangle]
+pub unsafe extern "C" fn base_driver_memory(
+    driver: *const Driver, len: *mut usize) -> *const u8 { ... }
+
+#[no_mangle]
+pub unsafe extern "C" fn base_driver_free(driver: *mut Driver) { ... }
+
+#[no_mangle]
+pub unsafe extern "C" fn base_last_error(buf: *mut u8, cap: usize) -> usize { ... }
 \end{lstlisting}
+\end{codeblock}
 
-In both cases the generated \texttt{cranelift\_ir} contains the same
-external symbol reference. At JIT time, Cranelift resolves
-\texttt{\%cl\_file\_read\_to\_ptr} to the registered pointer---a direct native
-call, no extra dispatch layer. The same three-step pattern applies to
-all registered FFI symbols (Table~\ref{tab:ffi}).
+
+% ===========================================================================
+\section{Programming Experience}
+\label{sec:construction}
+
+The driver's capabilities are accessed through the artifact, so it is clear why
+the construction of an artifact must be done carefully. CLIF's instructions and
+control-flow features have documented behavior, which enables reasoning about
+correctness.
+
+\subsection{Artifact Generation}
+
+Artifacts are produced programmatically, and a system that does this is called a
+\emph{generator}. A generator relates to an artifact much as a C compiler
+relates to its object code. Figure~\ref{fig:generators} puts this
+relation side by side.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  src/.style={draw,rounded corners=2pt,align=center,font=\scriptsize,
+    text width=1.9cm,minimum height=13mm,inner sep=2pt,fill=cProducer},
+  tgt/.style={draw,rounded corners=2pt,align=center,font=\scriptsize,
+    minimum width=6.6cm,minimum height=7mm,inner sep=3pt,fill=cArtifact},
+  arr/.style={-{Stealth[length=1.6mm]},semithick},
+  ttl/.style={font=\scriptsize\itshape}
+]
+\node[ttl] at (-4.2,1.35) {Conventional compilation};
+\node[src] (c)  at (-6.4,0.3) {C};
+\node[src] (rs) at (-4.2,0.3) {Rust};
+\node[src] (fo) at (-2.0,0.3) {Fortran};
+\node[tgt] (obj) at (-4.2,-1.1) {Object code for one instruction set};
+\draw[arr] (c.south)  -- (obj.north);
+\draw[arr] (rs.south) -- (obj.north);
+\draw[arr] (fo.south) -- (obj.north);
+
+\node[ttl] at (4.2,1.35) {Generation for Base};
+\node[src] (g1) at (2.0,0.3) {Linear\\algebra\\frontend};
+\node[src] (g2) at (4.2,0.3) {Data\\processing\\frontend};
+\node[src] (g3) at (6.4,0.3) {Graphics\\frontend};
+\node[tgt] (art) at (4.2,-1.1) {One artifact for the board};
+\draw[arr] (g1.south) -- (art.north);
+\draw[arr] (g2.south) -- (art.north);
+\draw[arr] (g3.south) -- (art.north);
+\end{tikzpicture}
+\caption{On the left source languages are compiled into native instructions for
+the processor being targeted. On the right Base enables generation of artifacts
+from different frontends.}
+\label{fig:generators}
+\end{figure}
+
+Lean~\cite{lean} serves as the interface from which artifacts are generated. Any
+language or proof assistant which is capable of accessing Base through the C API
+is a valid candidate for a generator, but no alternative has been implemented.
+Artifact contents are Lean terms, serialized into CBOR and used with the driver
+interface.
+
+The program below replaces every NUL byte in a buffer with a space. Lean's
+\texttt{do} notation over a \texttt{Prog} term binds values much as an IR
+builder does in an application with an embedded compiler. The Lean here runs to
+produce the artifact value, which is what performs the byte replacement.
+
+\begin{codeblock}
+\begin{lstlisting}[style=code,morekeywords={def,do,let,fun}]
+def blend (v nul space : V .i8x16) : Prog V L (V .i8x16) := do
+  bitselect (← icmp .eq v nul) space v
+
+def scrub (vectors : Nat) (src dst : V .i64) : Prog V L Unit := do
+  let nul ← splat .i8x16 (← iconst .i8 0)
+  let space ← splat .i8x16 (← iconst .i8 32)
+  forLoop (← iconst64 vectors) fun i => do
+    let off ← ishlImm i 4
+    let v ← loadI8x16 (← iadd src off)
+    store (← blend v nul space) (← iadd dst off)
+
+def code : Prog V L Unit := do
+  scrub 256 (← dataPtr) (← outPtr)
+\end{lstlisting}
+\end{codeblock}
+
+Figure~\ref{fig:chain} follows three lines of the scrub loop from Lean through
+CLIF to the machine code Cranelift emits.
+
+\begin{figure}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\normalfont\itshape Lean, by the user
+  & \normalfont\itshape CLIF, in the artifact
+  & \normalfont\itshape x86-64, for the host \\
+\midrule
+\ttfamily loadI8x16 ($\leftarrow$ iadd src off)
+  & \begin{tabular}[t]{@{}l@{}}
+      \ttfamily v16 = iadd.i64 v1, v15 \\
+      \ttfamily v17 = load.i8x16 notrap aligned v16
+    \end{tabular}
+  & \ttfamily vmovdqu (\%rsi, \%rdi), \%xmm2 \\
+\addlinespace[3pt]
+\begin{tabular}[t]{@{}l@{}}
+      \ttfamily bitselect ($\leftarrow$ icmp .eq v nul) \\
+      \ttfamily \ \ space v
+    \end{tabular}
+  & \begin{tabular}[t]{@{}l@{}}
+      \ttfamily v18 = icmp eq v17, v8 \\
+      \ttfamily v19 = bitselect.i8x16 v18, v10, v17
+    \end{tabular}
+  & \begin{tabular}[t]{@{}l@{}}
+      \ttfamily vpcmpeqb \%xmm3, \%xmm2, \%xmm3 \\
+      \ttfamily vpblendvb \%xmm3, \%xmm4, \%xmm2, \%xmm2
+    \end{tabular} \\
+\addlinespace[3pt]
+\begin{tabular}[t]{@{}l@{}}
+      \ttfamily store ($\leftarrow$ blend v nul space) \\
+      \ttfamily \ \ ($\leftarrow$ iadd dst off)
+    \end{tabular}
+  & \begin{tabular}[t]{@{}l@{}}
+      \ttfamily v20 = iadd.i64 v3, v15 \\
+      \ttfamily store notrap aligned v19, v20
+    \end{tabular}
+  & \ttfamily vmovdqu \%xmm2, (\%rcx, \%rdi) \\
+\bottomrule
+\end{tabular}
+\caption{Three representations of the same computation as handled by Base.}
+\label{fig:chain}
+\end{figure}
+
+\subsection{Reasoning About Emitted Code}
+\label{sec:constraints}
+
+The intention of the scrub code above is to leave no NUL bytes in the buffer.
+Below is a statement about the emitted instructions which are generated for the
+artifact. Each input byte is confirmed to carry through to the output, with the
+desired substitution performed.
+
+\begin{codeblock}
+\begin{lstlisting}[style=code,basicstyle=\ttfamily\footnotesize,upquote=true,
+  morekeywords={theorem,def,by,fun,if,then,else,at,in},morecomment={[l]{--}}]
+def Answers (Γ : Env) (c : Code) (binds : Nat) (v : V) : Prop :=
+  ∀ (fuel : Nat) (cfg : Cfg) (w : World), ∃ Γ',
+    runCode (fuel + 2) cfg Γ w c = .ok Γ' w
+    ∧ Γ'.size = Γ.size + binds
+    ∧ Γ'.back? = some v
+
+theorem blend_leaves_no_nul
+    (Γ : Env) (tys : List ClifTy) (hΓ : tys.length = Γ.size)
+    (a b c : R) (xs : Array UInt64) (h16 : xs.size = 16)
+    (ha : Γ[a]? = some (.vec .i8x16 xs))
+    (hb : Γ[b]? = some (.vec .i8x16 (.replicate 16 0)))
+    (hc : Γ[c]? = some (.vec .i8x16 (.replicate 16 32))) :
+    ∃ ys, ys = xs.map (fun x => if x = 0 then 32 else x)
+          ∧ Answers Γ (Prog.emit (discard (blend a b c)) tys) 2 (.vec .i8x16 ys)
+          ∧ ∀ y ∈ ys, y ≠ 0 :=
+  ⟨scrubLanes xs, rfl,
+   fun fuel cfg w =>
+     ⟨_, blend_scrubs fuel cfg w Γ tys hΓ a b c xs h16 ha hb hc, by simp,
+      by simp [scrubbedBytes]⟩,
+   scrubLanes_no_nul xs⟩
+\end{lstlisting}
+\end{codeblock}
+
+The theorem above does not cover the splats or any behavior of the loop around
+the blend.
+
+\subsection{Accessing the Board}
+\label{sec:coordinating}
+
+A program that drives other device capabilities besides the CPU is written with
+the same Lean interface. The following example renders a 4096$\times$4096
+Mandelbrot set on the GPU and writes it to a bitmap file. The artifact's data
+segments hold the GPU kernel source (the shader) and other values used at run time.
+
+\begin{codeblock}
+\begin{lstlisting}[style=code,morekeywords={def,do,let,fun,return}]
+def code : Prog V L Unit := do
+  let ptr ← basePtr
+  gpuInit ptr
+  let dataSz ← iconst64 pixelBytes
+  let bufId  ← gpuCreateBuffer ptr dataSz
+  let shOff  ← fldOffset f.shader
+  let bdOff  ← fldOffset f.bindDesc
+  let one32  ← iconst32 1
+  let pipeId ← gpuCreatePipeline ptr shOff bdOff one32
+  let wgx    ← iconst32 wgX
+  let wgy    ← iconst32 wgY
+  let _      ← gpuDispatch ptr pipeId wgx wgy one32
+  let pxOff  ← fldOffset f.pixels
+  let _      ← gpuDownload ptr bufId pxOff dataSz
+  gpuCleanup ptr
+  let total  ← iconst64 (54 + pixelBytes)
+  let _      ← fldWriteFile0 ptr f.filename f.bmpHeader total
+\end{lstlisting}
+\end{codeblock}
+
+% ===========================================================================
+\section{Evaluation}
+\label{sec:evaluation}
+
+Base has its speed evaluated on workloads to ensure it can maintain the speeds
+that are achievable with systems languages. The comparison is made with
+standalone Rust~\cite{rust} compiled through LLVM~\cite{llvm} implementing the same
+workload. To assess device work, GPU workloads in Base are compared with
+PyTorch~\cite{pytorch}.
 
 \begin{table}[H]
-\centering\small
-\caption{FFI primitive categories (88 registered symbols total).}
-\label{tab:ffi}
-\begin{tabular}{@{}lrp{0.42\columnwidth}@{}}
-\toprule
-\textbf{Category} & \textbf{n} & \textbf{Examples} \\
-\midrule
-Hash table  & 8  & init, insert, lookup, increment \\
-GPU (wgpu)  & 9  & init, ptr upload, dispatch \\
-CUDA/cuBLAS & 39 & streams, graphs, PTX launch, GEMM \\
-File/math/I/O & 9 & file read/write, trig, stdin/stdout \\
-Networking  & 8  & listen, connect, send \\
-Database    & 10 & LMDB transactions \\
-Threading   & 5  & spawn, join, direct call \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Adding a new device means: (1)~write \texttt{extern "C"} Rust wrappers,
-(2)~register symbols in the JIT builder, (3)~add a
-\texttt{declareFFI} bundle in Lean. The artifact format and function-index
-dispatch model do not change.
-
-% ===================================================================
-\section{Specification in Lean}
-\label{sec:lean}
-
-The goal of the Lean build-time phase is always the same: produce a valid
-\texttt{Artifact}. Figure~\ref{fig:pipeline}
-shows the end-to-end picture. What Lean emits---Cranelift IR text, an
-initial memory layout, and \texttt{main}/\texttt{extras} entry points---is
-fixed by that type. Any
-Lean code that type-checks and produces such an artifact is a legitimate front
-end. The DSLs described below are one convenient approach used in this
-repository, built from standard functional programming techniques in Lean;
-they are not the only option, and users may write whatever transformations
-suit their domain.
-
-\begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    >=Stealth,
-    box/.style={draw, rounded corners=3pt, font=\footnotesize\sffamily,
-                fill=#1, inner sep=5pt, align=center},
-    box/.default=gray!8,
-    lbl/.style={font=\scriptsize\sffamily, color=black!60},
-    arr/.style={->, thick, color=black!55},
-  ]
-  % User's Lean code — free-form
-  \node[box=blue!10, minimum width=2.6cm] (src)
-    {User Lean~4 code\\[2pt]
-     {\scriptsize\color{black!55} any representation}};
-
-  % DSLs (optional path)
-  \node[box=blue!18, minimum width=2.6cm, right=1.2 of src] (dsl)
-    {Layout DSL\\IR DSL\\[2pt]
-     {\scriptsize\color{black!55} one option}};
-
-  % Data artifact (fixed output)
-  \node[box=orange!18, minimum width=5.6cm, below=0.8 of dsl,
-        xshift=-1.6cm] (artifact)
-    {\texttt{Artifact}\\[2pt]
-     {\scriptsize\color{black!55}
-      setup $\cdot$ main $\cdot$ extras}};
-
-  \draw[arr] (src.south) -- (artifact.north -| src.south);
-  \draw[arr, dashed] (src) -- node[lbl, above=1pt] {may use} (dsl);
-  \draw[arr] (dsl.south) -- (artifact.north -| dsl.south);
-\end{tikzpicture}
-\caption{Any Lean code that produces the data artifact is valid. In this
-repository, both raw CLIF string emitters and the monadic DSL are used;
-both are just front ends to the same artifact.}
-\label{fig:pipeline}
-\end{figure}
-
-\subsection{The Transformation}
-
-Figure~\ref{fig:transform} shows what the DSLs do at a high level.
-On the left: typed Lean values---field declarations with their sizes
-and alignments, and SSA operations with their operands. On the right:
-the two outputs that populate the data artifact. The transformation is
-purely functional; standard stateful-computation patterns in Lean
-thread a byte cursor through field declarations and an instruction
-list through IR construction. The key property is that Lean computes
-offsets, sizes, and SSA value IDs during artifact construction, which
-lets the surrounding types and builders impose constraints before any
-code runs.
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    >=Stealth,
-    box/.style={draw, rounded corners=3pt, font=\footnotesize\sffamily,
-                fill=#1, inner sep=5pt, align=center, minimum width=2.4cm},
-    box/.default=gray!8,
-    lbl/.style={font=\scriptsize\sffamily, color=black!60},
-    arr/.style={->, thick, color=black!55},
-  ]
-  % Inputs
-  \node[box=blue!10] (fld)
-    {Field declarations\\[2pt]{\scriptsize\color{black!55}name, type, size}};
-  \node[box=blue!10, below=0.5 of fld] (ops)
-    {SSA operations\\[2pt]{\scriptsize\color{black!55}iconst, iadd, call, \ldots}};
-
-  % Outputs
-  \node[box=orange!15, right=2.0 of fld] (mem)
-    {\texttt{initial\_memory}\\[2pt]{\scriptsize\color{black!55}byte array + typed offsets}};
-  \node[box=orange!15, right=2.0 of ops] (ir)
-    {Cranelift IR text\\[2pt]{\scriptsize\color{black!55}CLIF string for JIT}};
-
-  \draw[arr] (fld) -- node[lbl, above=1pt] {layout pass} (mem);
-  \draw[arr] (ops) -- node[lbl, above=1pt] {IR emit pass} (ir);
-\end{tikzpicture}
-\caption{The two DSL passes: field declarations map to a typed byte layout;
-SSA operations map to Cranelift IR text. Both are pure Lean functions.}
-\label{fig:transform}
-\end{figure}
-
-\subsection{Memory Layout}
-
-The layout stage produces the concrete \texttt{initial\_memory} byte
-array, the total \texttt{memory\_size}, and typed references to
-important regions. In the current applications those outputs include
-string constants, headers, descriptors, scratch buffers, and
-runtime-visible input/output regions.
-
-What matters is that later CLIF generation refers to these generated
-locations by named Lean values rather than manually duplicated offsets.
-Lean computes the byte positions and serialized initial contents at
-build time, so the artifact carries both a concrete memory image and
-the locations that the generated code will read, write, and pass to
-FFI calls.
-
-% ===================================================================
-\section{Example: GPU Path Tracer}
-\label{sec:example}
-
-To illustrate the full pipeline, this section traces a complete application: a
-$4096 \times 4096$ Cornell box path tracer with 5-bounce ray tracing.
-The entire specification---WGSL shader, Cranelift IR, BMP header, and
-memory layout---is a single Lean file.
-
-\subsection{What Lean Produces}
-
-The Lean file constructs the full \texttt{Artifact}:
-
-\paragraph{Memory layout.} The \texttt{initial\_memory} byte array
-contains, at known offsets: the output filename string, a 54-byte BMP
-header (with width, height, and pixel format pre-filled), the WGSL
-shader source (${\sim}$16\,KB of text), a GPU binding descriptor, and a
-zero-filled pixel buffer large enough for $4096 \times 4096 \times 4$
-bytes (${\sim}$67\,MB). Every offset is a named Lean constant, checked
-against the total \texttt{memory\_size}.
-
-\paragraph{Cranelift IR.} The IR builder emits a single function
-(\texttt{u0:0}) that orchestrates the GPU through seven FFI calls:
-
-\begin{lstlisting}[style=code]
-def clifIrSource : String := buildProgram do
-  let gpu <- declareGpuFFI
-  let fnWr <- declareFileWrite
-  let ptr <- entryBlock
-  -- GPU lifecycle: init, buffer, shader,
-  -- dispatch, download, cleanup
-  callVoid gpu.fnInit [ptr]
-  let sz <- iconst64 pixelBytes
-  let buf <- call gpu.fnCreateBuffer [ptr, sz]
-  let pipe <- call gpu.fnCreatePipeline
-    [ptr, shaderOff, bindOff, one32]
-  let _ <- call gpu.fnDispatch
-    [ptr, pipe, wgX, wgY, one32]
-  let _ <- call gpu.fnDownload
-    [ptr, buf, pixelOff, sz]
-  callVoid gpu.fnCleanup [ptr]
-  -- Write BMP: header (54B) + pixels
-  let total <- iconst64 (54 + pixelBytes)
-  let _ <- writeFile0 ptr fnWr
-    filenameOff headerOff total
-  ret
-\end{lstlisting}
-
-\needspace{8\baselineskip}
-\paragraph{Algorithm entry point.} The artifact's \texttt{main}
-algorithm selects that function:
-
-\begin{lstlisting}[style=code]
-def raytraceAlgorithm : Algorithm := {
-  fn_idx := IR.mainFnIdx
-  output := []
-}
-\end{lstlisting}
-
-\subsection{What the Engine Does}
-
-Figure~\ref{fig:raytrace} shows the run-time execution flow. The Rust
-side is three lines: deserialize, construct \texttt{Base}, call
-\texttt{execute}.
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    >=Stealth,
-    step/.style={draw, rounded corners=2pt, minimum height=0.45cm,
-                 font=\scriptsize\sffamily, fill=#1, text=black,
-                 minimum width=2.8cm, align=center},
-    step/.default=gray!8,
-    arr/.style={->, thick, color=black!50},
-    lbl/.style={font=\tiny\sffamily, text=black!60},
-  ]
-  \node[step=blue!10] (jit) {construct \texttt{Base} (JIT once)};
-  \node[step=green!10, below=0.3 of jit] (init) {gpu\_init};
-  \node[step=green!10, below=0.2 of init] (buf) {create\_buffer (67\,MB)};
-  \node[step=green!10, below=0.2 of buf] (pipe) {create\_pipeline (WGSL)};
-  \node[step=red!10, below=0.2 of pipe] (disp) {dispatch 256$\times$256 wg};
-  \node[step=green!10, below=0.2 of disp] (dl) {download pixels};
-  \node[step=orange!10, below=0.2 of dl] (wr) {file\_write (BMP)};
-
-  \draw[arr] (jit) -- (init);
-  \draw[arr] (init) -- (buf);
-  \draw[arr] (buf) -- (pipe);
-  \draw[arr] (pipe) -- (disp);
-  \draw[arr] (disp) -- (dl);
-  \draw[arr] (dl) -- (wr);
-
-  % annotations
-  \node[lbl, right=0.15 of init] {FFI: wgpu};
-  \node[lbl, right=0.15 of disp] {GPU compute};
-  \node[lbl, right=0.15 of wr] {FFI: file I/O};
-\end{tikzpicture}
-\caption{Path tracer execution: one CLIF function orchestrates the GPU
-through FFI calls. Total: ${\sim}$735\,ms.}
-\label{fig:raytrace}
-\end{figure}
-
-The JIT-compiled native code calls \texttt{cl\_gpu\_init} to initialize
-a wgpu~\cite{wgpu} context handle, creates a buffer and pipeline, dispatches $256 \times 256$
-workgroups (each covering a $16 \times 16$ pixel tile), downloads the
-result into the pixel region of shared memory, and writes the BMP file.
-The entire GPU lifecycle---from shader compilation to file output---is
-driven by a single Cranelift function that Lean generated and type-checked.
-
-\subsection{What Lean Prevents}
-
-Without dependent types, common errors in this pipeline include:
-writing the shader string past its allocated region, using the wrong
-pixel buffer offset in the download call, or sizing the BMP header
-inconsistently with the pixel format. In Base, the Lean type system can
-rule out these classes of mistakes at build time: \texttt{shaderOff} is
-a typed field handle whose offset is computed by the layout builder, and
-using it with an incompatible size is a type error. In the generated
-path-tracer artifact, those checks eliminate the need for corresponding
-run-time offset validation in the engine.
-
-% ===================================================================
-\section{Build Pipeline}
-\label{sec:build}
-
-Figure~\ref{fig:buildpipeline} shows how a Lean source becomes an
-executable.
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    >=Stealth,
-    box/.style={draw, rounded corners=2pt, minimum height=0.45cm,
-                font=\scriptsize\sffamily, fill=#1, text=black,
-                minimum width=1.8cm},
-    box/.default=gray!8,
-    arr/.style={->, thick, color=black!50},
-    lbl/.style={font=\tiny\sffamily, text=black!60},
-  ]
-  \node[box=blue!10] (lean) {.lean source};
-  \node[box=blue!10, right=0.5 of lean] (lake) {\texttt{lake env lean {-}{-}run}};
-  \node[box=orange!10, right=0.5 of lake] (json) {JSON files};
-  \node[box=orange!10, below=0.4 of json] (bin) {bincode};
-  \node[box=green!10, below=0.4 of bin] (inc) {\texttt{include\_bytes!}};
-  \node[box=green!10, left=0.5 of inc] (exe) {executable};
-
-  \draw[arr] (lean) -- (lake);
-  \draw[arr] (lake) -- node[lbl, above] {out dir} (json);
-  \draw[arr] (json) -- node[lbl, right] {Artifact check} (bin);
-  \draw[arr] (bin) -- (inc);
-  \draw[arr] (inc) -- (exe);
-
-  % time labels
-  \node[lbl, above=0.08 of lean] {build time};
-  \node[lbl, below=0.08 of exe] {ships as binary};
-\end{tikzpicture}
-\caption{Build pipeline: Lean runs at \texttt{cargo build} time via
-\texttt{build.rs}. The data artifact is baked into the Rust binary.}
-\label{fig:buildpipeline}
-\end{figure}
-
-\texttt{build.rs} first invokes \texttt{lake build} for the Lean module,
-then runs \texttt{lake env lean --run <file> <out-dir>}. The Lean program
-writes one JSON file per artifact into that output directory. The build
-script validates each file against the Rust \texttt{Artifact} type via
-\texttt{serde\_json}, re-serializes it to bincode, and writes the result
-to \texttt{\$OUT\_DIR}. The Rust binary includes this blob via
-\texttt{include\_bytes!} and deserializes it with
-\texttt{Artifact::from\_bytes} at startup.
-
-% ===================================================================
-\section{Evaluation}
-\label{sec:eval}
-
-All benchmarks were run on the same machine: AMD Ryzen 5 5500
-(6 cores / 12 threads), NVIDIA RTX 3060 (12\,GB), 32\,GB DDR4, Linux 6.14.
-Reported times are medians of 10 rounds from the current harness, and each
-row is checked for correctness against a reference implementation. The full
-suite is invoked by \texttt{./benchmarks/run.sh}, which builds the Python
-extension and Python-generated artifacts first, then delegates the Rust
-suite to \texttt{cargo run --release -p benchmarks}. The two suites report
-different comparisons: the Python suite compares Python libraries with
-PyBase, while the Rust suite compares native Rust, Burn/Rayon where
-applicable, and Base.
-
-\subsection{CPU}
-
-\begin{table}[t]
-\centering\small
-\caption{Python-facing benchmarks. The Python column is Python, NumPy,
-Pandas, or PyTorch depending on the row; PyBase is the same Base engine
-called through the Python extension.}
-\label{tab:py}
-\begin{tabular}{@{}lrr@{}}
-\toprule
- & \textbf{Python} & \textbf{PyBase} \\
-\midrule
-CSV 1M        & 496.3\,ms & 26.4\,ms \\
-JSON 500K     & 312.8\,ms & 9.44\,ms \\
-Regex 1M      & 83.1\,ms  & 4.83\,ms \\
-StrSearch 1M  & 3.73\,ms  & 1.51\,ms \\
-WordCnt 1M    & 110.2\,ms & 37.4\,ms \\
-VecAdd 50M    & 43.5\,ms  & 12.9\,ms \\
-Pandas RevAgg 10M & 86.8\,ms & 7.88\,ms \\
-RMSNorm 4096  & 0.059\,ms & 0.012\,ms \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[t]
-\centering\small
-\caption{Rust CPU file/string benchmarks from the current harness.}
+\caption{A comparison for workloads written in idiomatic low-level Rust, Base
+using only CLIF, and Base generating native assembly, on an AMD Ryzen 5 5500.}
 \label{tab:cpu}
-\begin{tabular}{@{}lrr@{}}
+\begin{tabular}{@{}lrrrl@{}}
 \toprule
- & \textbf{Rust} & \textbf{Base} \\
+Workload & Rust ($\mu$s) & CLIF / Rust & asm / Rust & Cause \\
 \midrule
-CSV 10K      & 0.3\,ms   & 1.1\,ms \\
-CSV 1M       & 57.6\,ms  & 27.7\,ms \\
-CSV 5M       & 310.5\,ms & 141.4\,ms \\
-JSON 1K      & 0.0\,ms   & 0.8\,ms \\
-JSON 500K    & 15.9\,ms  & 9.7\,ms \\
-Regex 10K    & 0.1\,ms   & 0.9\,ms \\
-Regex 1M     & 6.7\,ms   & 4.2\,ms \\
-StrSearch 1M & 2.2\,ms   & 1.3\,ms \\
-WordCnt 1M   & 32.9\,ms  & 37.1\,ms \\
+Mandelbrot set & 1800.4 & 1.00 & & \\
+Pointer chase & 2295.5 & 1.00 & & \\
+Byte histogram & 320.5 & 1.00 & & \\
+\midrule
+Polynomial, \texttt{f32} & 6.1 & 2.04 & 1.01 & 128-bit vectors \\
+Copy, 32\,MB & 2296.8 & 1.56 & 1.00 & no non-temporal store \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[t]
-\centering\small
-\caption{Numerical compute (4$\times$-unrolled SIMD in Base).}
-\label{tab:num}
-\begin{tabular}{@{}lrrr@{}}
-\toprule
- & \textbf{Rust} & \textbf{Burn} & \textbf{Base} \\
-\midrule
-MatMul 128   & 0.2\,ms  & 0.1\,ms   & 0.2\,ms \\
-MatMul 512   & 12.0\,ms & 1.1\,ms   & 7.7\,ms \\
-MatMul 1024  & 98.9\,ms & 8.1\,ms   & 59.0\,ms \\
-VecAdd 1M    & 0.7\,ms  & 0.2\,ms   & 0.1\,ms \\
-VecAdd 10M   & 7.2\,ms  & 25.4\,ms  & 2.4\,ms \\
-VecAdd 50M   & 36.0\,ms & 117.3\,ms & 12.6\,ms \\
-Sum 1M       & 0.7\,ms  & 0.1\,ms   & 0.1\,ms \\
-Sum 10M      & 7.1\,ms  & 1.8\,ms   & 1.5\,ms \\
-Sum 100M     & 71.4\,ms & 18.5\,ms  & 16.3\,ms \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{CPU Workloads}
 
-On larger file and string-processing workloads, Base is competitive with
-and often faster than the current Rust baselines: CSV~5M runs in
-141.4\,ms vs.\ 310.5\,ms, JSON~500K in 9.7\,ms vs.\ 15.9\,ms,
-Regex~1M in 4.2\,ms vs.\ 6.7\,ms, and StrSearch~1M in 1.3\,ms vs.\
-2.2\,ms. Small inputs show the fixed cost of entering the engine and
-calling FFI. For workloads such as CSV and Regex, the generated CLIF uses
-explicit SIMD instructions such as
-\texttt{splat.i8x16}, \texttt{icmp}, and \texttt{vhigh\_bits} rather
-than relying on auto-vectorization.
+Base with CLIF is level with Rust for the first three workloads. The other two
+see Rust accessing capabilities that CLIF lacks support for: 256-bit vectors for
+the polynomial and non-temporal stores for the copy. To close this gap, Base uses native
+assembly, assembled in Lean and accessed using the \texttt{cl\_native\_load}
+primitive.
 
-On numerical CPU workloads, Base about matches Rust overall and is
-substantially faster than Burn on simple element-wise operations:
-VecAdd~10M runs in 2.4\,ms vs.\ 7.2\,ms for Rust and 25.4\,ms for Burn,
-and Sum~100M runs in 16.3\,ms vs.\ 71.4\,ms and 18.5\,ms respectively.
-Burn still exceeds Base on matmul because it routes to specialized
-backend kernels. WordCount is the notable exception on the file-processing side:
-at 1M words Base is slower than Rust (37.1\,ms vs.\ 32.9\,ms),
-most plausibly because Base goes through external \texttt{ht\_*} FFI
-calls that Cranelift cannot inline, whereas LLVM can optimize the Rust
-\texttt{HashMap} path more aggressively.
+\subsection{GPU Workloads}
 
-\subsection{GPU, CUDA, and Stress Tests}
+On GPU workloads Base is comparable to PyTorch in whichever of eager and
+compiled mode is faster. Small workloads are faster in Base, where fusion and a
+lower cost of dispatch improve over PyTorch.
 
-\begin{table}[t]
-\centering\small
-\caption{GPU benchmarks (one-shot: upload + compute + download).}
+\begin{table}[H]
+\centering
+\caption{GPU workload comparisons on an RTX 3060.}
 \label{tab:gpu}
 \begin{tabular}{@{}lrr@{}}
 \toprule
- & \textbf{Burn (wgpu)} & \textbf{Base} \\
+Workload & PyTorch ($\mu$s) & Base / PyTorch \\
 \midrule
-VecAdd 256K  & 4.2\,ms & 0.7\,ms \\
-VecAdd 500K  & 3.9\,ms & 1.2\,ms \\
-MatMul 256   & 3.0\,ms & 0.4\,ms \\
-MatMul 512   & 3.9\,ms & 1.2\,ms \\
-Reduce 256K  & 3.0\,ms & 0.4\,ms \\
-Reduce 512K  & 3.5\,ms & 0.5\,ms \\
-Reduce 896K  & 4.1\,ms & 0.8\,ms \\
+Vector add 50M & 1810 & 0.99 \\
+Scale-and-add 50M & 1860 & 0.97 \\
+Scale-and-add 1M & 90 & 0.52 \\
+GEMV $11008 \times 4096$ & 555 & 0.98 \\
+RMSNorm 4096 & 57 & 0.19 \\
+Softmax 32000 & 30 & 0.37 \\
+Decode attention, 2048 keys & 83 & 0.77 \\
+Decode attention, 128 keys & 67 & 0.22 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{table}[t]
-\centering\small
-\caption{GPU iterative (data stays on device).}
-\label{tab:gpuiter}
-\begin{tabular}{@{}lrrr@{}}
-\toprule
- & \textbf{Raw wgpu} & \textbf{Burn} & \textbf{Base} \\
-\midrule
-$1\times$ 1M     & 3.9\,ms  & 4.4\,ms  & 1.7\,ms \\
-$10\times$ 1M    & 4.0\,ms  & 5.0\,ms  & 2.2\,ms \\
-$100\times$ 1M   & 8.5\,ms  & 7.0\,ms  & 6.7\,ms \\
-$500\times$ 1M   & 25.8\,ms & 22.5\,ms & 26.9\,ms \\
-$1000\times$ 1M  & 49.4\,ms & 41.3\,ms & 49.4\,ms \\
-\bottomrule
-\end{tabular}
-\end{table}
+% ===========================================================================
+\section{Limitations}
+\label{sec:trust}
 
-\begin{table}[!t]
-\centering\small
-\caption{CUDA (direct PTX, no compile-time toolkit).}
-\label{tab:cuda}
-\begin{tabular}{@{}lrr@{}}
-\toprule
- & \textbf{Burn (cuda)} & \textbf{Base} \\
-\midrule
-SAXPY 262K  & 0.5\,ms & 0.5\,ms \\
-SAXPY 524K  & 0.9\,ms & 0.8\,ms \\
-SAXPY 1M    & 1.8\,ms & 1.7\,ms \\
-\bottomrule
-\end{tabular}
-\end{table}
+While Lean enables mechanical reasoning over the artifact and the code used to
+generate it, the components of the infrastructure that it cannot cover are worth
+considering. The model of CLIF is translated from the documentation and tested
+against Cranelift on a corpus of 482 cases. The driver and the primitives are
+implemented and tested in Rust, and no Lean proof can reach into these
+implementations; it can only state assumptions about them, which can be reviewed
+by hand.
 
-On one-shot GPU workloads, Base is consistently faster than Burn's
-\texttt{wgpu} backend: VecAdd~256K runs in 0.7\,ms vs.\ 4.2\,ms,
-MatMul~512 in 1.2\,ms vs.\ 3.9\,ms, and Reduce~896K in 0.8\,ms vs.\ 4.1\,ms.
-Because both implementations use \texttt{wgpu} on the same hardware,
-this is primarily a difference in host-side runtime overhead rather than
-a different GPU path.
+Not every application can accommodate embedding the Base driver along with the
+primitive implementations. Base is portable across x86-64 and ARM and uses no
+features specific to one operating system, but platforms outside these are not a
+fit, nor are applications that cannot accept the driver's cost at load: the most
+expensive artifact in the repository takes 45\,ms to decode and 600\,ms to
+compile.
 
-The iterative GPU-resident benchmark is more balanced. Base wins at
-$1\times$ and $10\times$ passes (1.7\,ms and 2.2\,ms), remains close at
-$100\times$, and by $500\times$--$1000\times$ passes Burn and raw wgpu
-catch up or pull ahead. That is consistent with a workload that becomes
-dominated by repeated kernel execution rather than orchestration. CUDA is
-also close: Base runs SAXPY~1M in 1.7\,ms versus 1.8\,ms for Burn(cuda).
-
-\begin{table}[!t]
-\centering\small
-\caption{Parallel histogram.}
-\label{tab:par}
-\begin{tabular}{@{}lrrr@{}}
-\toprule
- & \textbf{Rust} & \textbf{Rayon} & \textbf{Base} \\
-\midrule
-Hist 1M $w$=1   & 1.1\,ms  & 1.0\,ms  & 1.6\,ms \\
-Hist 1M $w$=4   & 0.8\,ms  & 0.9\,ms  & 1.4\,ms \\
-Hist 10M $w$=1  & 10.8\,ms & 11.5\,ms & 10.8\,ms \\
-Hist 10M $w$=4  & 8.6\,ms  & 8.4\,ms  & 7.9\,ms \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Table~\ref{tab:par} shows an additional CPU-side stress test. Base is
-close on parallel histogramming.
-
-% ===================================================================
+% ===========================================================================
 \section{Conclusion}
-\label{sec:conclusion}
+Base enables programming at the scope of an entire system board. A single
+interface accepts CPU control via CLIF programs, a shared memory arena, and a
+selection of primitive functions CLIF can call, which cover device, network and
+other board behavior.
+The artifact and driver API allow Base to be embedded both in systems code, which
+interacts with existing artifacts, and in proof assistants, which generate
+artifacts and invoke the driver through its C API.
+A Lean codebase allows programming applications at native speed while embedding
+proofs about their behavior.
 
-Base separates dependent-type verification (Lean~4, build time) from native
-execution (Rust engine, Cranelift JIT, run time) through a serializable
-\texttt{Artifact}. No type checker runs at run time. On the evaluated
-workloads, it is competitive with idiomatic Rust and native GPU frameworks.
-
-The artifact is emitted as JSON at build time and embedded as bincode at
-run time, so the model extends naturally to board-level programming. Today
-the engine dispatches to CPU,
-and exposes FFI primitives for wgpu, CUDA, networking, file I/O, LMDB,
-and threading. Each device keeps its awkward ISA; Lean verifies cross-device
-constraints at build time, and the engine orchestrates at run time.
-
-Any Lean code that produces a valid \texttt{Artifact} is a legitimate front end.
-The monadic DSLs presented here are one choice; users are free to build
-higher-level representations---algebraic IRs, domain-specific abstractions,
-or full compiler pipelines---and have dependent types flow through to the
-final algorithm emission. Layout errors, offset mismatches, and
-device-compatibility constraints can all be caught interactively as
-programmers construct objects, making the value of dependent types
-immediately visible rather than deferred to a separate verification step.
-
-Base targets CPU and GPU backends at the driver-API level---Cranelift for
-native code, the CUDA driver API for PTX, and wgpu for portable GPU
-compute---and exposes them to Lean as FFI primitives. This means the
-optimization and orchestration logic that would otherwise live in a C++
-compiler stack can instead be written in Lean, where a strong type system
-and proof assistant make it simpler to write correct transformations.
-
-% ===================================================================
 \begin{thebibliography}{9}
-
-\bibitem{lean4}
-L.~de Moura and S.~Ullrich,
-``The Lean~4 theorem prover and programming language,''
-in \emph{Proc.\ CADE-28}, 2021.
-
 \bibitem{cranelift}
-Bytecode Alliance,
-``Cranelift code generator,''
-\url{https://cranelift.dev}, 2024.
+Bytecode Alliance. \emph{Cranelift: A Code Generation Toolkit}.
+\url{https://cranelift.dev/}.
 
 \bibitem{llvm}
-C.~Lattner and V.~Adve,
-``LLVM: A compilation framework for lifelong program analysis and
-transformation,''
-in \emph{Proc.\ CGO}, 2004.
+Chris Lattner and Vikram Adve.
+\emph{LLVM: A Compilation Framework for Lifelong Program Analysis and
+Transformation}. CGO, 2004.
 
-\bibitem{wgpu}
-gfx-rs contributors,
-``wgpu: Safe and portable GPU abstraction,''
-\url{https://wgpu.rs}, 2024.
+\bibitem{cuda}
+NVIDIA. \emph{CUDA C++ Programming Guide}.
+\url{https://docs.nvidia.com/cuda/}.
 
-\bibitem{lmdb}
-H.~Chu,
-``LMDB: Lightning memory-mapped database,''
-\url{http://www.lmdb.tech/doc/}, 2011.
+\bibitem{cbor}
+Carsten Bormann and Paul Hoffman. \emph{Concise Binary Object Representation
+(CBOR)}. RFC 8949, IETF, 2020.
 
-\bibitem{burn}
-Burn contributors,
-``Burn: A flexible and comprehensive deep learning framework in Rust,''
-\url{https://burn.dev}, 2024.
+\bibitem{rust}
+Nicholas D. Matsakis and Felix S. Klock II. \emph{The Rust Language}.
+HILT, 2014.
 
+\bibitem{pytorch}
+Adam Paszke et al. \emph{PyTorch: An Imperative Style, High-Performance Deep
+Learning Library}. NeurIPS, 2019.
+
+\bibitem{lean}
+Leonardo de Moura and Sebastian Ullrich.
+\emph{The Lean 4 Theorem Prover and Programming Language}.
+CADE, 2021.
 \end{thebibliography}
 
 \end{document}
