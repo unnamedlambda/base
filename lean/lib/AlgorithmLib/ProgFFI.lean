@@ -593,4 +593,42 @@ def sequenceWrapper (callees : List Nat) : Prog V L Unit := do
   for c in callees do
     callLocalVoid (ps := HProg.ptrParams) (res := none) { callee := .local c } args
 
+-- ---------------------------------------------------------------------------
+-- Native code
+--
+-- Machine code the program carries as data, the way it carries a PTX kernel:
+-- placed by `nativeLoad`, run by `nativeCall`. `HProgSem` has no definition for
+-- any of these, so a proof about a program that calls one does not reach past
+-- the call; the CLIF path it would otherwise take is what the code is tested
+-- against.
+-- ---------------------------------------------------------------------------
+
+/-- Place `len` bytes of machine code at `src` where they can run. Answers the
+    address to call, or 0 if they could not be placed. -/
+def nativeLoad (src len : V .i64) : Prog V L (V .i64) :=
+  ffi .nativeLoad %[src, len]
+
+/-- Unmap what `nativeLoad` answered. Answers 0, or -1 for an address it did
+    not answer. -/
+def nativeFree (fn : V .i64) : Prog V L (V .i32) :=
+  ffi .nativeFree %[fn]
+
+/-- Run the code at `fn` on four arguments and answer what it returns: an
+    indirect call, with nothing of the engine's between. `fn` must be an
+    address `nativeLoad` answered and did not answer 0; nothing checks that
+    when the call runs, so a generator calls only what it read back from
+    where it kept `nativeLoad`'s answer. -/
+def nativeCall (fn a b c d : V .i64) : Prog V L (V .i64) :=
+  callLocal ({ callee := .native } : LocalRef [.i64, .i64, .i64, .i64, .i64] (some .i64))
+    %[fn, a, b, c, d]
+
+/-- 1 on x86-64, 2 on AArch64, 0 on anything else. -/
+def nativeArch : Prog V L (V .i32) :=
+  ffi .nativeArch %[]
+
+/-- Whether the CPU has the feature named by the NUL-terminated string at
+    `name`: 1, 0, or -1 for a name the runtime does not know. -/
+def cpuHas (name : V .i64) : Prog V L (V .i32) :=
+  ffi .cpuHas %[name]
+
 end AlgorithmLib.Prog

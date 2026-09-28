@@ -2,6 +2,7 @@ pub(crate) mod cuda;
 pub(crate) mod file;
 pub(crate) mod ht;
 pub(crate) mod lmdb;
+pub(crate) mod native;
 pub(crate) mod net;
 pub(crate) mod stdio;
 pub(crate) mod thread;

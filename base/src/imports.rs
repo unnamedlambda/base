@@ -11,7 +11,8 @@ use std::sync::OnceLock;
 use base_types::clif::ClifTy;
 
 use crate::ffi::{
-    cl_cosf, cl_powf, cl_sinf, cuda, file, ht, lmdb, net, stdio, thread, wgpu as gpu, window,
+    cl_cosf, cl_powf, cl_sinf, cuda, file, ht, lmdb, native, net, stdio, thread, wgpu as gpu,
+    window,
 };
 
 /// A host function a program may import.
@@ -207,6 +208,13 @@ pub(crate) fn imports() -> &'static [Import] {
         entry("cl_cublas_gemm_ex_bf16", cuda::cl_cublas_gemm_ex_bf16 as unsafe extern "C" fn(*mut _, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i64, i64, i64, i32, i32, i32) -> i32),
         entry("cl_cublas_gemm_strided_batched_ex_bf16", cuda::cl_cublas_gemm_strided_batched_ex_bf16 as unsafe extern "C" fn(*mut _, i32, i32, i32, i32, i32, i32, i32, i64, i32, i64, i32, i32, i64, i32, i64, i64, i64, i32, i32, i32) -> i32),
 
+        // Native code the program carries: place it, unmap it, and the two
+        // questions that decide which code to carry in (see ffi/native.rs).
+        // Calling it is not an import: it is `Callee::Native`.
+        entry("cl_native_load", native::cl_native_load as unsafe extern "C" fn(*const u8, i64) -> i64),
+        entry("cl_native_free", native::cl_native_free as unsafe extern "C" fn(i64) -> i32),
+        entry("cl_native_arch", native::cl_native_arch as unsafe extern "C" fn() -> i32),
+        entry("cl_cpu_has", native::cl_cpu_has as unsafe extern "C" fn(*const u8) -> i32),
         // File + math + stdio
         entry("cl_file_read", file::cl_file_read as unsafe extern "C" fn(*mut u8, i64, i64, i64, i64) -> i64),
         entry("cl_file_read_to_ptr", file::cl_file_read_to_ptr as unsafe extern "C" fn(*const u8, *mut u8, i64, i64) -> i64),

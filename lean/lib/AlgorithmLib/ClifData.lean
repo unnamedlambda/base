@@ -81,6 +81,7 @@ inductive Ffi where
   -- `all`, so inserting one renumbers every shipped artifact's calls.
   | cudaPinnedPtrAt | cudaMemInfoFree | cudaMemInfoTotal | cublasGemmExBf16
   | cublasGemmStridedBatchedExBf16
+  | nativeLoad | nativeFree | nativeArch | cpuHas
   deriving Repr, BEq, DecidableEq, Inhabited, Lean.ToExpr
 
 namespace Ffi
@@ -172,6 +173,10 @@ def cname : Ffi → String
   | .cudaMemInfoTotal => "cl_cuda_mem_info_total"
   | .cublasGemmExBf16 => "cl_cublas_gemm_ex_bf16"
   | .cublasGemmStridedBatchedExBf16 => "cl_cublas_gemm_strided_batched_ex_bf16"
+  | .nativeLoad => "cl_native_load"
+  | .nativeFree => "cl_native_free"
+  | .nativeArch => "cl_native_arch"
+  | .cpuHas => "cl_cpu_has"
 
 /-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
 def sig : Ffi → List ClifTy × Option ClifTy
@@ -298,6 +303,15 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .cublasGemmStridedBatchedExBf16 =>
       ([.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i32, .i64,
         .i32, .i32, .i64, .i32, .i64, .i64, .i64, .i32, .i32, .i32], some .i32)
+  -- ffi/native.rs: machine code the program carries as data. `load` takes the
+  -- bytes' address and length and answers where they now run (0 if they could
+  -- not be placed); `arch` and `cpuHas` (a NUL-terminated feature name) decide
+  -- which bytes to carry in. Running them is not an import: it is a call with
+  -- `Callee.native`.
+  | .nativeLoad => ([.i64, .i64], some .i64)
+  | .nativeFree => ([.i64], some .i32)
+  | .nativeArch => ([], some .i32)
+  | .cpuHas => ([.i64], some .i32)
 
 def params (f : Ffi) : List ClifTy := f.sig.1
 def result (f : Ffi) : Option ClifTy := f.sig.2
@@ -326,7 +340,8 @@ def all : List Ffi :=
    .cublasSgemv, .cublasSgemvOnStream, .cublasSgemm, .cublasSgemmOnStream,
    .cublasPtrArray, .cublasSgemmBatchedOnStream,
    .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16,
-   .cublasGemmStridedBatchedExBf16]
+   .cublasGemmStridedBatchedExBf16,
+   .nativeLoad, .nativeFree, .nativeArch, .cpuHas]
 
 /-- The callee id every artifact carries for `f`. -/
 def id (f : Ffi) : Nat := all.idxOf f
@@ -340,9 +355,10 @@ end Ffi
 
     Each arm is the identity its owner gives it: an import is named by the
     engine's own entry point, a defined function by its place in this artifact,
-    which is closed. There is no third name — nothing here is an index into a
-    table this format invented, which is what a call carrying a position into a
-    per-function callee list was.
+    which is closed. Machine code the program placed itself has no name at
+    all: its address is a value, the call's first argument. Nothing here is an
+    index into a table this format invented, which is what a call carrying a
+    position into a per-function callee list was.
 
     An import that the engine does not provide is unrepresentable rather than
     refused at load: `Ffi` is the only way to name one. -/
@@ -352,6 +368,12 @@ inductive Callee where
   | ffi (f : Ffi)
   /-- Another function of this same program, by its `u0:N` position. -/
   | local (index : Nat)
+  /-- Machine code at the address in the call's first argument --- one
+      `nativeLoad` answered --- called on the other four under the
+      architecture's C convention (System V on x86-64 whatever the OS), and
+      answering an `i64`. A plain indirect call: nothing of the engine's runs
+      between the caller and the code. -/
+  | native
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- A single CLIF instruction -/
@@ -484,6 +506,7 @@ instance : ToCbor Callee where
   cbor
     | .ffi f   => newtypeVariant "Import" (text f.cname)
     | .local i => newtypeVariant "Local" (nat i)
+    | .native  => text "Native"
 
 /-- One instruction, in the shape `base_types::clif::Inst` reads.
 

@@ -17,6 +17,11 @@ cranelift-codegen = "0.123"
 cranelift-jit = "0.123"
 cranelift-module = "0.123"
 cranelift-native = "0.123"
+# For `ffi/native.rs`: the same two crates cranelift-jit maps its own code with
+# (so already in the build), for placing a program's machine code executable
+# on every OS and making the instruction cache see it on AArch64.
+region = "3"
+wasmtime-internal-jit-icache-coherence = "=36.0.13"
 
 [dev-dependencies]
 # For the HProg tests only: they run what the build generated.

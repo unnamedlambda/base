@@ -299,10 +299,12 @@ pub fn clif_text(functions: &[base_types::clif::Function]) -> Result<String, Str
                         .ok_or_else(|| format!("call to u0:{n}, which the program does not define"))?;
                     clif_decode::signature_of(callee, *n as usize, cc)?
                 }
+                Callee::Native => return Err("machine code has no symbol to resolve".into()),
             };
             names.push(match c {
                 Callee::Import(n) => format!("%{n}"),
                 Callee::Local(i) => format!("u0:{i}"),
+                Callee::Native => unreachable!("returned above"),
             });
             Ok((clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false }, sig))
         };

@@ -208,10 +208,12 @@ dependencies = [
  "liblmdb-sys",
  "lmdb-zero",
  "pollster",
+ "region",
  "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",
+ "wasmtime-internal-jit-icache-coherence",
  "wgpu",
  "winit",
 ]

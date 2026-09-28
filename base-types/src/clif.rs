@@ -201,6 +201,8 @@ pub struct Block {
 /// symbol, and the artifact — which is closed — owns its own functions'
 /// positions. Kept distinct because the two resolve by different means, and
 /// spelling a local call as a symbol name is how the text form lost that.
+/// Machine code the program placed itself has no name: its address is a
+/// value, the call's first argument.
 ///
 /// A symbol is a string rather than anything enumerated here, so a runtime that
 /// links more can be called without the format changing. Whether a symbol is
@@ -211,6 +213,12 @@ pub enum Callee {
     Import(String),
     /// Another function of this same program, by its `u0:N` index.
     Local(u32),
+    /// Machine code at the address in the call's first argument (one
+    /// `cl_native_load` answered), called on the other four `i64`s under the
+    /// architecture's C convention — System V on x86-64 whatever the OS — and
+    /// answering an `i64`. An indirect call: nothing of the engine's runs
+    /// between the caller and the code.
+    Native,
 }
 
 /// One function: what it is called by, and what it does.

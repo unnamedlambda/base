@@ -156,6 +156,8 @@ pub(crate) fn compile(
                     .ok_or_else(|| format!("call to u0:{n}, which the program does not define"))?;
                 Ok((Resolved { id: id.as_u32(), colocated: true }, sig.clone()))
             }
+            // Called through its address; `decode_function` never resolves it.
+            base_types::clif::Callee::Native => Err("machine code has no symbol to resolve".into()),
         };
         decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut declare)?);
     }

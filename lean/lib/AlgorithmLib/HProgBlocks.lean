@@ -155,6 +155,7 @@ def runInsts (env : FnEnv) (s : BSt) : List Inst → Outcome (BSt × Next)
           | some vs =>
               match c with
               | .local i => .stuck s!"calls u0:{i}"
+              | .native => .stuck "calls machine code, which the model does not read"
               | .ffi f =>
                   match callImport f.cname vs (obsCall s.world c vs) with
                   | none => .stuck s!"{f.cname} has no executable contract"
@@ -1444,6 +1445,7 @@ theorem runInsts_call (env : FnEnv) (s : Blocks.BSt) (d : Option Val) (c : IR.Ca
         | some vs =>
             match c with
             | .local i => .stuck s!"calls u0:{i}"
+            | .native => .stuck "calls machine code, which the model does not read"
             | .ffi f =>
                 match Sem.callImport f.cname vs (Sem.obsCall s.world c vs) with
                 | none => .stuck s!"{f.cname} has no executable contract"
@@ -1480,6 +1482,7 @@ theorem call_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (n : Nat)
     rw [hm] at hr
     cases hc : c with
     | «local» i => rw [hc] at hr; simp at hr
+    | native => rw [hc] at hr; simp at hr
     | ffi f =>
       rw [hc] at hr
       dsimp only at hr
@@ -1519,6 +1522,7 @@ theorem callVoid_stmtStep (env : FnEnv) (cfg : Sem.Cfg) (n : Nat)
     rw [hm] at hr
     cases hc : c with
     | «local» i => rw [hc] at hr; simp at hr
+    | native => rw [hc] at hr; simp at hr
     | ffi f =>
       rw [hc] at hr
       dsimp only at hr

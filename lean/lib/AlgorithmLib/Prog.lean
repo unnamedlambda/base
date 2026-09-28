@@ -461,7 +461,7 @@ def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
   | fuel + 1, _, .callLocal (ps := ps) (res := res) r args k, s =>
       let s := match r.callee with
         | .local i => s.useLocal i ps res
-        | .ffi _   => s
+        | .ffi _ | .native => s
       let as := args.slots
       if res.isSome then
         let (v, s) := s.bind1 (.call r.callee as)
@@ -984,6 +984,7 @@ def callNames (p : Body) (params : List ClifTy := ptrParams) : List String :=
   (HProg.callsOf c).map fun
     | .ffi f   => f.cname
     | .local k => s!"u0:{k}"
+    | .native  => "native"
 
 /-- The term a body denotes, or why it is not one.
 

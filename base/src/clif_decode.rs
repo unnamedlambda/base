@@ -157,6 +157,15 @@ pub(crate) fn signature(params: &[clif::ClifTy], result: Option<clif::ClifTy>, c
     sig
 }
 
+/// What machine code a program placed itself is called as (`Callee::Native`):
+/// four `i64`s in, one out, under the convention the code was written to. On
+/// x86-64 that is System V on every OS, so a body is the same bytes on Windows
+/// as on Linux; on AArch64 the host's C convention is the architecture's one.
+pub(crate) fn native_signature(cc: CallConv) -> Signature {
+    let cc = if cfg!(target_arch = "x86_64") { CallConv::SystemV } else { cc };
+    signature(&[clif::ClifTy::I64; 4], Some(clif::ClifTy::I64), cc)
+}
+
 /// Where a callee resolved: the `FuncId` it is declared under, and whether it
 /// is defined in the same module as its caller.
 ///
@@ -194,11 +203,23 @@ pub fn decode_function(
     // struct, and any order gives the same machine code.
     let mut fn_refs: HashMap<clif::Callee, ir::FuncRef> = HashMap::new();
     let mut callees: HashMap<clif::Callee, (String, Signature)> = HashMap::new();
+    let mut native_sig = None;
     for callee in f.blocks.iter().flat_map(|b| b.insts.iter()).filter_map(|i| match i {
         clif::Inst::Call(_, c, _) | clif::Inst::FuncAddr(_, c) => Some(c),
         _ => None,
     }) {
-        if fn_refs.contains_key(callee) {
+        if fn_refs.contains_key(callee) || callees.contains_key(callee) {
+            continue;
+        }
+        // Machine code resolves to nothing: the call is indirect, through the
+        // address it is handed, so only its signature is declared. It is
+        // checked as five `i64`s, the address first.
+        if *callee == clif::Callee::Native {
+            let sig = native_signature(cc);
+            native_sig = Some(func.import_signature(sig.clone()));
+            let mut checked = sig;
+            checked.params.insert(0, AbiParam::new(ir::types::I64));
+            callees.insert(clif::Callee::Native, ("native code".into(), checked));
             continue;
         }
         let (resolved, sig) = declare_callee(callee)?;
@@ -208,6 +229,7 @@ pub fn decode_function(
                 match callee {
                     clif::Callee::Import(n) => n.clone(),
                     clif::Callee::Local(n) => format!("u0:{n}"),
+                    clif::Callee::Native => unreachable!("declared above"),
                 },
                 sig.clone(),
             ),
@@ -255,7 +277,7 @@ pub fn decode_function(
         let blk = blocks[&b.reference.0];
         for inst in &b.insts {
             check_call(index, inst, &vals, &func, &callees)?;
-            emit(&mut func, blk, inst, &mut vals, &fn_refs, &block_of)?;
+            emit(&mut func, blk, inst, &mut vals, &fn_refs, native_sig, &block_of)?;
         }
     }
 
@@ -304,6 +326,7 @@ fn emit(
     inst: &clif::Inst,
     vals: &mut Vals,
     fn_refs: &HashMap<clif::Callee, ir::FuncRef>,
+    native_sig: Option<ir::SigRef>,
     block_of: &dyn Fn(clif::BlockRef) -> Result<ir::Block, String>,
 ) -> Result<(), String> {
     use clif::Inst as I;
@@ -376,11 +399,17 @@ fn emit(
         ),
 
         I::Call(d, c, args) => {
-            let f = *fn_refs
-                .get(c)
-                .ok_or_else(|| format!("call to {c:?}, which the prologue does not name"))?;
             let a = vals.get_all(args)?;
-            let call = cur.ins().call(f, &a);
+            let call = if *c == clif::Callee::Native {
+                let sig = native_sig.ok_or("a native call the prologue did not declare")?;
+                let (addr, rest) = a.split_first().ok_or("a native call without its address")?;
+                cur.ins().call_indirect(sig, *addr, rest)
+            } else {
+                let f = *fn_refs
+                    .get(c)
+                    .ok_or_else(|| format!("call to {c:?}, which the prologue does not name"))?;
+                cur.ins().call(f, &a)
+            };
             if let Some(dst) = d {
                 let results = cur.func.dfg.inst_results(call);
                 let r = *results

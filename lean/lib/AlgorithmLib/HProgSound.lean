@@ -572,6 +572,7 @@ theorem call_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat)
     rw [hm] at hr
     cases hc : c with
     | «local» i => rw [hc] at hr; simp at hr
+    | native => rw [hc] at hr; simp at hr
     | ffi f =>
       rw [hc] at hr
       dsimp only at hr
@@ -607,6 +608,7 @@ theorem callVoid_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat)
     rw [hm] at hr
     cases hc : c with
     | «local» i => rw [hc] at hr; simp at hr
+    | native => rw [hc] at hr; simp at hr
     | ffi f =>
       rw [hc] at hr
       dsimp only at hr

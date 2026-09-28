@@ -570,7 +570,7 @@ structure LaunchRec where
     has none, and is not what any caller of this is looking for. -/
 def fnNameOf : Callee → Option String
   | .ffi f   => some f.cname
-  | .local _ => none
+  | .local _ | .native => none
 
 /-- **Primitives that write device memory without being a modelled launch.**
 
@@ -900,6 +900,7 @@ def callsIn (is : List Inst) : List String :=
   is.filterMap (fun i => match i with
     | .call _ (.ffi f)   _ => some f.cname
     | .call _ (.local k) _ => some s!"u0:{k}"
+    | .call _ .native _    => some "native"
     | _                    => none)
 
 /-- …over a whole function. -/

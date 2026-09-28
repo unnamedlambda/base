@@ -977,6 +977,7 @@ where
     | some vs =>
         match c with
         | .local i => .stuck s!"calls u0:{i}; only imports have contracts"
+        | .native => .stuck "calls machine code, which the model does not read"
         | .ffi f =>
             match callImport f.cname vs (obsCall w c vs) with
             | none => .stuck s!"{f.cname} has no executable contract"
@@ -1233,6 +1234,7 @@ theorem runStmt_call (cfg : Cfg) (Γ : Env) (w : World) (c : Callee) (args : Lis
         | some vs =>
             match c with
             | .local i => .stuck s!"calls u0:{i}; only imports have contracts"
+            | .native => .stuck "calls machine code, which the model does not read"
             | .ffi f =>
                 match callImport f.cname vs (obsCall w c vs) with
                 | none => .stuck s!"{f.cname} has no executable contract"
@@ -1249,6 +1251,7 @@ theorem runStmt_callVoid (cfg : Cfg) (Γ : Env) (w : World) (c : Callee) (args :
         | some vs =>
             match c with
             | .local i => .stuck s!"calls u0:{i}; only imports have contracts"
+            | .native => .stuck "calls machine code, which the model does not read"
             | .ffi f =>
                 match callImport f.cname vs (obsCall w c vs) with
                 | none => .stuck s!"{f.cname} has no executable contract"

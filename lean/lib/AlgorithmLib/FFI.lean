@@ -29,7 +29,7 @@ namespace FFI
 /-- A named group of entry points, so a body can be checked against the part of
     the table it uses. -/
 inductive Bundle where
-  | fileIO | gpu | window | lmdb | ht | math | thread | cuda | cublas
+  | fileIO | gpu | window | lmdb | ht | math | thread | cuda | cublas | native
   deriving Repr, BEq
 
 end FFI
@@ -50,6 +50,7 @@ def Ffi.bundle : Ffi → FFI.Bundle
   | .threadInit | .threadSpawn | .threadJoin | .threadCleanup => .thread
   | .cublasSgemv | .cublasSgemvOnStream | .cublasSgemm | .cublasSgemmOnStream
   | .cublasPtrArray | .cublasSgemmBatchedOnStream => .cublas
+  | .nativeLoad | .nativeFree | .nativeArch | .cpuHas => .native
   | _ => .cuda
 
 /-- The index of the entry point every application emits as `u0:1`, with `u0:0`

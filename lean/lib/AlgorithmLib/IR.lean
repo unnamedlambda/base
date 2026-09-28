@@ -47,10 +47,12 @@ structure CalleeSig where
 abbrev FnEnv := List (Nat × CalleeSig)
 
 /-- What a callee takes and answers: from the constructor for an import, from
-    this table for one of the program's own. -/
+    this table for one of the program's own, and for machine code the address
+    and four `i64`s in, an `i64` out. -/
 def FnEnv.sigOf (e : FnEnv) : Callee → Option CalleeSig
   | .ffi f   => some { params := f.params, result := f.result }
   | .local k => (e.find? (·.1 == k)).map (·.2)
+  | .native  => some { params := [.i64, .i64, .i64, .i64, .i64], result := some .i64 }
 
 /-- The table with one local function's signature recorded. A repeat at the
     same signature changes nothing; a repeat at a different one is what

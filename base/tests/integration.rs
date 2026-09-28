@@ -3485,3 +3485,59 @@ fn clif_error_float_constant_of_integer_type() {
     };
     assert!(msg.contains("fconst"), "message should say what is wrong: {msg}");
 }
+
+/// Machine code carried as data: the program keeps `a + b` as bytes in its own
+/// memory, asks the runtime to make them executable, and calls the address it
+/// gets back itself (`Callee::Native`, an indirect call), all as CLIF. The same
+/// program answers the same way on every OS of the architecture, because the
+/// code is called under one convention per architecture.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[test]
+fn a_program_runs_machine_code_it_carries_as_data() {
+    #[cfg(target_arch = "x86_64")]
+    let (arch, add): (i64, &[u8]) = (1, &[0x48, 0x89, 0xf8, 0x48, 0x01, 0xf0, 0xc3]); // mov rax,rdi; add rax,rsi; ret
+    #[cfg(target_arch = "aarch64")]
+    let (arch, add): (i64, &[u8]) = (2, &[0x00, 0x00, 0x01, 0x8b, 0xc0, 0x03, 0x5f, 0xd6]); // add x0,x0,x1; ret
+
+    let mut memory = vec![0u8; 4096];
+    memory[0x100..0x100 + add.len()].copy_from_slice(add);
+    let clif_prog = program(function().entry(vec![
+        call(Some(v(1)), imp("cl_native_arch"), &[]),
+        store(v(1), v(0), 300),
+        iadd_imm(v(2), v(0), 0x100),
+        iconst64(v(3), add.len() as i64),
+        call(Some(v(4)), imp("cl_native_load"), &[v(2), v(3)]),
+        iconst64(v(5), 40),
+        iconst64(v(6), 2),
+        iconst64(v(7), 0),
+        call(Some(v(8)), Callee::Native, &[v(4), v(5), v(6), v(7), v(7)]),
+        store(v(8), v(0), 200),
+        call(Some(v(9)), imp("cl_native_free"), &[v(4)]),
+        store(v(9), v(0), 208),
+        ret(),
+    ]));
+    let mut base = Driver::load(cranelift_config(memory, clif_prog)).unwrap();
+    base.execute(&at(0), &[], &mut []).unwrap();
+    assert_eq!(read_i64(&base, 200), 42);
+    assert_eq!(base.memory()[300] as i64, arch);
+    assert_eq!(i32::from_le_bytes(base.memory()[208..212].try_into().unwrap()), 0);
+}
+
+/// A native call is checked like any other: an address and four `i64`s, or the
+/// load says what is wrong instead of compiling a call with arguments in the
+/// wrong registers.
+#[test]
+fn a_native_call_with_the_wrong_arguments_is_refused() {
+    let clif_prog = program(function().entry(vec![
+        iconst64(v(1), 0),
+        call(Some(v(2)), Callee::Native, &[v(1), v(1)]),
+        ret(),
+    ]));
+    let Err(err) = Driver::load(cranelift_config(vec![0u8; 4096], clif_prog)) else {
+        panic!("a native call with one argument loaded");
+    };
+    let base::Error::Clif(msg) = err else {
+        panic!("expected Error::Clif");
+    };
+    assert!(msg.contains("native code") && msg.contains("2 arguments"), "{msg}");
+}

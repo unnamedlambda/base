@@ -43,6 +43,9 @@ inductive Frame where
   | dataDependent (dst : Nat)
   /-- Writes at `args[a]` and `args[b]`, both data-dependent. -/
   | dataDependent2 (a b : Nat)
+  /-- May write anywhere: the call runs code this model cannot read, so no byte
+      of memory is known to survive it. -/
+  | anywhere
   deriving Repr, BEq
 
 /-- Context slots are one pointer wide, and every `*_init`/`*_cleanup` writes
@@ -121,6 +124,11 @@ def frame : IR.Ffi → Frame
   | .threadSpawn => .dataDependent 2
   | .threadJoin => .none
 
+  -- native.rs — placing code and asking about the CPU write nothing the
+  -- program addresses. Running that code is `Callee.native`, whose frame is
+  -- `calleeFrame`'s.
+  | .nativeLoad | .nativeFree | .nativeArch | .cpuHas => .none
+
   -- window.rs
   | .windowInit | .windowCleanup => ctxSlot
   | .windowPoll => .dataDependent 1
@@ -135,14 +143,18 @@ def frameOf (name : String) : Option Frame := (IR.Ffi.ofCname name).map frame
 -- What one program assumes
 -- ---------------------------------------------------------------------------
 
-/-- The symbol a callee names, when it is an import. -/
-def calleeName : IR.Callee → Option String
-  | .ffi f   => some f.cname
+/-- What a program assumes by calling `c`, named: an import's declared frame,
+    and for machine code `anywhere`, since it is the program's own code and
+    nothing here reads what it does. A call to one of the program's own
+    functions assumes nothing: its body is part of the program. -/
+def calleeFrame : IR.Callee → Option (String × Option Frame)
+  | .ffi f   => some (f.cname, frameOf f.cname)
   | .local _ => none
+  | .native  => some ("native code", some .anywhere)
 
 /-- **The FFI a program actually assumes.**
 
-    Not every entry point that exists — only the symbols this body calls, which
+    Not every entry point that exists — only the callees this body calls, which
     `callsOf` already reads off the term. A program that computes and stores
     assumes nothing at all; the histogram assumes two.
 
@@ -152,9 +164,9 @@ def calleeName : IR.Callee → Option String
 def footprint (c : Code) : List (String × Option Frame) :=
   (callsOf c).foldl
     (fun acc fn =>
-      match calleeName fn with
+      match calleeFrame fn with
       | none => acc
-      | some n => if acc.any (·.1 == n) then acc else acc ++ [(n, frameOf n)])
+      | some (n, f) => if acc.any (·.1 == n) then acc else acc ++ [(n, f)])
     []
 
 /-- A program whose every callee has a declared frame — otherwise something it
