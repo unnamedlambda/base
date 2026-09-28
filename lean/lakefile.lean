@@ -86,6 +86,7 @@ lean_lib BlackHoleAlgorithm
 lean_lib ByteCountAlgorithm
 lean_lib SelfDescribingAlgorithm
 lean_lib ByteScrubAlgorithm
+lean_lib X86Check
 lean_lib Sha256Algorithm
 @[default_target]
 lean_lib Qwen2Common

@@ -113,6 +113,17 @@ PY
   echo "no sorry in the library or the generators"
 }
 
+# `AlgorithmLib.X86` must encode as GNU `as` does. The encoder is pure Lean, so
+# one kind of host checks it for all; elsewhere the step is skipped.
+x86_vs_as() {
+  if [ "$(uname -m)" != x86_64 ] || ! as --version 2>/dev/null | grep -q 'GNU assembler'; then
+    echo "skipped: needs an x86-64 host with GNU as"
+    return 0
+  fi
+  cd "$ROOT/lean"
+  "${GUARD[@]}" lake env lean --run algorithms/X86Check.lean
+}
+
 # --- artifacts ---------------------------------------------------------------
 # Regenerating and diffing is what says a generator is a function of its source
 # and nothing else. It is also the check that licenses a refactor: if every
@@ -212,6 +223,7 @@ lean_host() {
 
 step "lean build"          lean_build
 step "no sorry"            no_sorry
+step "x86 against as"      x86_vs_as
 step "artifacts reproduce" artifacts_reproduce
 step "rust check"          rust_check
 step "lean host"           lean_host
