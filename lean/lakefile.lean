@@ -108,6 +108,8 @@ lean_exe genbytescrubalgorithm where
   root := `Main.Demo.ByteScrub
 lean_exe gencpubenchalgorithm where
   root := `Main.Bench.Cpu
+lean_exe gensystembench where
+  root := `Main.Bench.System
 lean_exe genleanevalalgorithm where
   root := `Main.Demo.LeanEval
 lean_exe gendrawalgorithm where
