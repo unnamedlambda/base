@@ -1,5 +1,5 @@
 import AlgorithmLib.Gen
-import ShipScan
+import Scan.Ship
 
 /-!
 # An artifact that reads a file, changes it, and writes it

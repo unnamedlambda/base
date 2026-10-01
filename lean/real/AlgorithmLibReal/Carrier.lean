@@ -1,7 +1,7 @@
 import Mathlib.Analysis.SpecialFunctions.Sqrt
 import Mathlib.Analysis.SpecialFunctions.Exp
 import Mathlib.Analysis.SpecialFunctions.Log.Basic
-import AlgorithmLib.ML.Grad
+import AlgorithmLib.ML.Math.Grad
 
 /-!
   # ℝ as a lawful carrier — closing assumption A1

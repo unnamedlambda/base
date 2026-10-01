@@ -10,7 +10,7 @@
 //! * `HProgSem.evalOp` states Cranelift's semantics wrongly — the assumption
 //!   that file names and cannot prove.
 //!
-//! The corpus is generated from `HProgCorpus.lean` into the build directory and
+//! The corpus is generated from `Host/Corpus.lean` into the build directory and
 //! cached against that file's contents, so what the machine is compared against
 //! is always what the model in the tree says. A corpus committed beside the test
 //! would agree with the model only until someone changed the model, and this is

@@ -25,7 +25,7 @@ fn run(name: &str, block: usize, original: &[u8]) {
     let art = Artifact::from_bytes(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
     let mut base = Driver::load(art).expect("compile");
 
-    // Layout mirrors Algorithm.WP in Lz4CompAlgorithm.lean; asserted against the
+    // Layout mirrors Algorithm.WP in Lz4/Comp.lean; asserted against the
     // geometry the program writes after the blocks.
     let num_blk = CORPUS_BYTES / block;
     let len_off = block + block / 16 + 256;

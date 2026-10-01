@@ -1,20 +1,20 @@
-import AlgorithmLib.ML.PtxPrint
-import AlgorithmLib.ML.Block
-import AlgorithmLib.ML.Schema
-import AlgorithmLib.ML.TapeGrad
-import AlgorithmLib.ML.Layered
-import AlgorithmLib.ML.KVCache
-import AlgorithmLib.ML.Rewrite
-import AlgorithmLib.ML.Interchange
-import AlgorithmLib.ML.HostBridge
-import AlgorithmLib.ML.Backprop
-import AlgorithmLib.ML.Pipeline
+import AlgorithmLib.ML.Ptx.Print
+import AlgorithmLib.ML.Ptx.Block
+import AlgorithmLib.ML.Kernel.Schema
+import AlgorithmLib.ML.Math.TapeGrad
+import AlgorithmLib.ML.Math.Layered
+import AlgorithmLib.ML.Math.KVCache
+import AlgorithmLib.ML.Kernel.Rewrite
+import AlgorithmLib.ML.Launch.Interchange
+import AlgorithmLib.ML.Launch.HostBridge
+import AlgorithmLib.ML.Math.Backprop
+import AlgorithmLib.ML.Launch.Pipeline
 import AlgorithmLib.ML.Compose
-import AlgorithmLib.ML.Geometry
-import AlgorithmLib.Layout
-import AlgorithmLib.ML.Frontend
-import AlgorithmLib.ML.Sched
-import AlgorithmLib.ML.QuantMX
+import AlgorithmLib.ML.Machine.Geometry
+import AlgorithmLib.Surface.Layout
+import AlgorithmLib.ML.Model.Frontend
+import AlgorithmLib.ML.Kernel.Sched
+import AlgorithmLib.ML.Num.QuantMX
 
 /-!
   # What the ML stack proves, and what it rests on

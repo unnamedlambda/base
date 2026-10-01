@@ -1,20 +1,20 @@
-import AlgorithmLib.Core
-import AlgorithmLib.Bytes
-import AlgorithmLib.Layout
-import AlgorithmLib.Clif
-import AlgorithmLib.HostIR
-import AlgorithmLib.IR
-import AlgorithmLib.HProg
-import AlgorithmLib.HProgSem
-import AlgorithmLib.HProgBlocks
-import AlgorithmLib.HProgFrames
-import AlgorithmLib.HProgTrust
-import AlgorithmLib.FFI
-import AlgorithmLib.ProgFFI
-import AlgorithmLib.Prog
-import AlgorithmLib.CudaPipeline
-import AlgorithmLib.PTX
-import AlgorithmLib.WGSL
+import AlgorithmLib.Core.Artifact
+import AlgorithmLib.Core.Bytes
+import AlgorithmLib.Surface.Layout
+import AlgorithmLib.Host.Clif
+import AlgorithmLib.Host.HostIR
+import AlgorithmLib.Core.IR
+import AlgorithmLib.Host.Term
+import AlgorithmLib.Host.Sem
+import AlgorithmLib.Host.Blocks
+import AlgorithmLib.Host.Frames
+import AlgorithmLib.Host.Trust
+import AlgorithmLib.Surface.FFI
+import AlgorithmLib.Surface.ProgFFI
+import AlgorithmLib.Surface.Prog
+import AlgorithmLib.Surface.CudaPipeline
+import AlgorithmLib.Vocab.PTX
+import AlgorithmLib.Vocab.WGSL
 
 /-!
 # Everything needed to write a generator

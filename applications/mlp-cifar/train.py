@@ -4,7 +4,7 @@
 The model is `3072 → 256 → 10`, silu activation, cross-entropy loss, plain SGD
 at batch `BATCH`. Every kernel — both matvecs, the activation and its
 derivative, both outer products, both optimiser steps — is an instance of a
-schema proven in `lean/algorithms/MlpCifarAlgorithm.lean` and checked
+schema proven in `lean/algorithms/Warp/MlpCifar.lean` and checked
 bit-for-bit against its committed fold order by
 `cargo run --bin mlp-cifar --release`.
 

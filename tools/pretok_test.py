@@ -59,7 +59,7 @@ def corpus(n_fuzz):
     here = __import__("os").path.dirname(__import__("os").path.dirname(
         __import__("os").path.abspath(__file__)))
     docs = []
-    for f in ["lean/algorithms/GptOssAttention.lean", "applications/gpt-oss/reference.py"]:
+    for f in ["lean/algorithms/GptOss/Attention.lean", "applications/gpt-oss/reference.py"]:
         try:
             t = open(f"{here}/{f}").read()
         except OSError:

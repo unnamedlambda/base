@@ -1,5 +1,5 @@
 import AlgorithmLib.Gen
-import AlgorithmLib.LZ4Suite
+import AlgorithmLib.LZ4.Suite
 import AlgorithmLib.ML
 
 /-!

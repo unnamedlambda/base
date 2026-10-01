@@ -1,7 +1,7 @@
-import AlgorithmLib.ML.Pipeline
-import AlgorithmLib.ML.Rewrite
-import AlgorithmLib.ML.Sched
-import AlgorithmLib.ML.Transformer
+import AlgorithmLib.ML.Launch.Pipeline
+import AlgorithmLib.ML.Kernel.Rewrite
+import AlgorithmLib.ML.Kernel.Sched
+import AlgorithmLib.ML.Math.Transformer
 
 /-!
   # A launch sequence, as data

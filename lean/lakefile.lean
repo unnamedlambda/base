@@ -9,249 +9,125 @@ package algorithms where
   -- irrelevant, and -O0 keeps a large emitted body from costing minutes in gcc.
   moreLeancArgs := #["-O0"]
 
--- Benchmark algorithms
-lean_lib PythonBenchmarks
-lean_lib HistogramBench1Algorithm
-lean_lib ClampSumBenchAlgorithm
-lean_lib HProgPilots
-lean_lib HProgCorpus
-lean_lib CudaDecodeAttentionAlgorithm
-lean_lib CudaGemvPersistAlgorithm
-lean_lib CudaRmsNormPersistAlgorithm
-lean_lib CudaSaxpyPersistAlgorithm
-lean_lib CudaSoftmaxPersistAlgorithm
-lean_lib CudaVecAddPersistAlgorithm
-@[default_target]
-lean_lib WarpSumSqAlgorithm
-@[default_target]
-lean_lib SiluWarpAlgorithm
-@[default_target]
-lean_lib MlpWarpAlgorithm
-@[default_target]
-lean_lib GradWarpAlgorithm
-@[default_target]
-lean_lib Qwen2Proven
-@[default_target]
-lean_lib GemvWarpAlgorithm
-@[default_target]
-lean_lib BackwardWideAlgorithm
-@[default_target]
-lean_lib MlpCifarAlgorithm
-@[default_target]
-lean_lib WeaveCifar
-@[default_target]
-lean_lib WeaveVit
-lean_lib WeaveScan
-lean_lib VitModel
-lean_lib VitAlgorithm
-lean_lib VitShip
-lean_lib VitUnits
-lean_lib VitLaunches
-lean_lib VitGuards
-lean_lib VitDag
-lean_lib VitDagStep
-lean_lib VitRegs
-lean_lib VitSlot
-lean_lib VitScan
-lean_lib VitTerm
--- gpt-oss-20b: the ledger ships before the artifact does, on purpose.
-lean_lib GptOssDecode
-lean_lib GptOssAttention
-lean_lib GptOssKernels
-lean_lib GptOssAlgorithm
-lean_lib TokenizerCommon
-lean_lib PretokCommon
-lean_lib TokenizerTest
-lean_lib TokenizerScan
-lean_lib GptOssSurface
-lean_lib GptOssScan
-lean_lib GptOssDecodeScan
-@[default_target]
-lean_lib BigModelAlgorithm
-@[default_target]
-lean_lib NonVacuity
+-- One library per directory: the algorithms by area, their proofs beside
+-- them, and the scans that fail the build when a claim leaves its declared
+-- surface. Each generator defines its own `main`, so no module imports two.
 
--- Application algorithms
-lean_lib CliAlgorithm
-lean_lib CompressAlgorithm
-lean_lib CsvAlgorithm
-lean_lib DrawAlgorithm
-lean_lib FftAlgorithm
-lean_lib LeanEvalAlgorithm
-lean_lib MatmulAlgorithm
-lean_lib RaytraceAlgorithm
-lean_lib SatAlgorithm
-lean_lib SceneAlgorithm
-lean_lib BlackHoleAlgorithm
-lean_lib ByteCountAlgorithm
-lean_lib SelfDescribingAlgorithm
-lean_lib ByteScrubAlgorithm
-lean_lib CpuBenchAsm
-lean_lib CpuBenchAlgorithm
-lean_lib X86Check
-lean_lib Sha256Algorithm
 @[default_target]
-lean_lib Qwen2Common
+lean_lib Bench where
+  globs := #[.submodules `Bench]
+
 @[default_target]
-lean_lib Qwen2Algorithm
--- Build-enforced: recomputes the trusted base from the proof terms and fails
--- if any public claim reaches an axiom or opaque outside the declared surface.
-lean_lib Qwen2Spec
+lean_lib Demo where
+  globs := #[.submodules `Demo]
 
-lean_lib Qwen2Top
-
-lean_lib ScanCore
-
-lean_lib LayoutScan
-
-lean_lib ShipScan
-
--- Build-enforced: the frontend idioms a library is written with — type classes,
--- recursion over a user's syntax, higher-order and continuation combinators,
--- label passing, computed loop widths, obligation towers, monad transformers.
--- Each definition is its own check; a change to `Prog` that breaks one fails
--- here rather than in whoever's library meets it next.
-lean_lib ProgIdioms
-
--- Build-enforced: what one vector's trip of the byte scanner computes, for
--- every input, over the semantics the artifact is checked against.
-lean_lib ByteCountProof
-
--- Build-enforced: what one vector's trip of the byte scrubber computes, for
--- every input, over the semantics the artifact is checked against.
-lean_lib ByteScrubProof
-
-lean_lib MlSurface
-
-lean_lib TrustScan
-
--- …and the same scan over each generator that ships an artifact with no
--- algorithmic theorem.  Separate modules for the usual reason — each generator
--- defines its own `main` — and, for Sat and Sha256, because they share
--- `namespace Algorithm` and cannot be imported together at all.
-lean_lib GenSurface
-lean_lib SatScan
-lean_lib Sha256Scan
-lean_lib LeanEvalScan
-lean_lib CudaSaxpyPersistScan
-lean_lib CudaVecAddPersistScan
-
--- …and the same scan over each training pipeline.  Separate modules because
--- each generator defines its own `main`.
-lean_lib BackwardScan
-lean_lib MlpScan
-lean_lib Qwen2NonVacuity
 @[default_target]
-lean_lib Qwen2OnDiskAlgorithm
-lean_lib WindowDemoAlgorithm
-lean_lib RaymarchDemoAlgorithm
-lean_lib FallingSandAlgorithm
-lean_lib Lz4Kernel
-lean_lib Lz4CompAlgorithm
--- The compressor's ledger, its non-vacuity witnesses, and the scan that fails
--- the build when a claim leaves the declared surface.
-lean_lib Lz4Assumptions
-lean_lib Lz4NonVacuity
-lean_lib Lz4Launches
-lean_lib Lz4Interleave
-lean_lib Lz4Host
-lean_lib Lz4Sites
-lean_lib Lz4Scan
-lean_lib Lz4Cursor
-lean_lib Lz4Splice
-lean_lib Lz4OpLe
-lean_lib Lz4Ckpt
-lean_lib Lz4Stores
-lean_lib Lz4Geo
-lean_lib Lz4ExtShape
-lean_lib Lz4ExtGuard
-lean_lib Lz4ExtLoop
-lean_lib Lz4Extend
-lean_lib Lz4Shape64
-lean_lib Lz4Sites64
-lean_lib Lz4Cursor64
-lean_lib Lz4Splice64
-lean_lib Lz4Ckpt64
-lean_lib Lz4OpLe64
-lean_lib Lz4Stores64
-lean_lib Lz4Confine64
-lean_lib Lz4Whole
+lean_lib Host where
+  globs := #[.submodules `Host]
+
+@[default_target]
+lean_lib Warp where
+  globs := #[.submodules `Warp]
+
+@[default_target]
+lean_lib Qwen2 where
+  globs := #[.submodules `Qwen2]
+
+@[default_target]
+lean_lib GptOss where
+  globs := #[.submodules `GptOss]
+
+@[default_target]
+lean_lib Tokenizer where
+  globs := #[.submodules `Tokenizer]
+
+@[default_target]
+lean_lib Vit where
+  globs := #[.submodules `Vit]
+
+@[default_target]
+lean_lib Lz4 where
+  globs := #[.submodules `Lz4]
+
+@[default_target]
+lean_lib Scan where
+  globs := #[.submodules `Scan]
 
 -- Generators. Every `lean_exe` in this package is one: `main` takes a directory
 -- and writes `<name>.cbor` into it. `lake query algorithmLib/artifacts` builds
 -- and runs them (the target is in `lib/lakefile.lean`).
 lean_exe gencompressalgorithm where
-  root := `CompressAlgorithm
+  root := `Demo.Compress
 lean_exe gencsvalgorithm where
-  root := `CsvAlgorithm
+  root := `Demo.Csv
 lean_exe gengradwarpalgorithm where
-  root := `GradWarpAlgorithm
+  root := `Warp.Grad
 lean_exe gengemvwarpalgorithm where
-  root := `GemvWarpAlgorithm
+  root := `Warp.Gemv
 lean_exe genbackwardwidealgorithm where
-  root := `BackwardWideAlgorithm
+  root := `Warp.BackwardWide
 lean_exe genfftalgorithm where
-  root := `FftAlgorithm
+  root := `Demo.Fft
 lean_exe genfallingsandalgorithm where
-  root := `FallingSandAlgorithm
+  root := `Demo.FallingSand
 lean_exe genclialgorithm where
-  root := `CliAlgorithm
+  root := `Demo.Cli
 lean_exe genbytecountalgorithm where
-  root := `ByteCountAlgorithm
+  root := `Demo.ByteCount
 lean_exe genselfdescribingalgorithm where
-  root := `SelfDescribingAlgorithm
+  root := `Demo.SelfDescribing
 lean_exe genbytescrubalgorithm where
-  root := `ByteScrubAlgorithm
+  root := `Demo.ByteScrub
 lean_exe gencpubenchalgorithm where
-  root := `CpuBenchAlgorithm
+  root := `Bench.Cpu
 lean_exe genleanevalalgorithm where
-  root := `LeanEvalAlgorithm
+  root := `Demo.LeanEval
 lean_exe gendrawalgorithm where
-  root := `DrawAlgorithm
+  root := `Demo.Draw
 lean_exe genblackholealgorithm where
-  root := `BlackHoleAlgorithm
+  root := `Demo.BlackHole
 lean_exe genhprogpilots where
-  root := `HProgPilots
+  root := `Host.Pilots
 lean_exe genhprogcorpus where
-  root := `HProgCorpus
+  root := `Host.Corpus
 lean_exe genlz4compalgorithm where
-  root := `Lz4CompAlgorithm
+  root := `Lz4.Comp
 lean_exe genvitship where
-  root := `VitShip
+  root := `Vit.Ship
 lean_exe genqwen2algorithm where
-  root := `Qwen2Algorithm
+  root := `Qwen2.Algorithm
 lean_exe genraytracealgorithm where
-  root := `RaytraceAlgorithm
+  root := `Demo.Raytrace
 lean_exe genmatmulalgorithm where
-  root := `MatmulAlgorithm
+  root := `Demo.Matmul
 lean_exe genmlpwarpalgorithm where
-  root := `MlpWarpAlgorithm
+  root := `Warp.Mlp
 lean_exe gensiluwarpalgorithm where
-  root := `SiluWarpAlgorithm
+  root := `Warp.Silu
 lean_exe genpythonbenchmarks where
-  root := `PythonBenchmarks
+  root := `Bench.Python
 lean_exe genraymarchdemoalgorithm where
-  root := `RaymarchDemoAlgorithm
+  root := `Demo.RaymarchDemo
 lean_exe genqwen2ondiskalgorithm where
-  root := `Qwen2OnDiskAlgorithm
+  root := `Qwen2.OnDisk
 lean_exe genwarpsumsqalgorithm where
-  root := `WarpSumSqAlgorithm
+  root := `Warp.SumSq
 lean_exe gensatalgorithm where
-  root := `SatAlgorithm
+  root := `Demo.Sat
 lean_exe genscenealgorithm where
-  root := `SceneAlgorithm
+  root := `Demo.Scene
 lean_exe gensha256algorithm where
-  root := `Sha256Algorithm
+  root := `Demo.Sha256
 lean_exe genmlpcifaralgorithm where
-  root := `MlpCifarAlgorithm
+  root := `Warp.MlpCifar
 lean_exe genwindowdemoalgorithm where
-  root := `WindowDemoAlgorithm
+  root := `Demo.WindowDemo
 
 lean_exe gentokenizertest where
-  root := `TokenizerTest
+  root := `Tokenizer.Test
 
 lean_exe gengptossdecode where
-  root := `GptOssDecode
+  root := `GptOss.Decode
 
 lean_exe gengptossalgorithm where
-  root := `GptOssAlgorithm
+  root := `GptOss.Algorithm

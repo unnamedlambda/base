@@ -1,5 +1,5 @@
-import AlgorithmLib.Core
-import AlgorithmLib.Layout
+import AlgorithmLib.Core.Artifact
+import AlgorithmLib.Surface.Layout
 
 /-!
 # Running an artifact from Lean

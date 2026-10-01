@@ -72,7 +72,7 @@ step() {
 #
 # The root package's libraries reach only the library modules they import, so
 # the library is built whole as well: a module nothing imports -- a proof such
-# as `HProgSound` -- is otherwise never checked.
+# as `Host.Sound` -- is otherwise never checked.
 
 lean_build() {
   cd "$ROOT/lean"
@@ -121,7 +121,7 @@ x86_vs_as() {
     return 0
   fi
   cd "$ROOT/lean"
-  "${GUARD[@]}" lake env lean --run algorithms/X86Check.lean
+  "${GUARD[@]}" lake env lean --run algorithms/Bench/X86Check.lean
 }
 
 # --- artifacts ---------------------------------------------------------------

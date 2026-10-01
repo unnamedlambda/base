@@ -22,7 +22,7 @@ const OUT_BYTES: usize = 64 + 8 * STREAM_N;
 
 /// Every workload: its name (the artifact's entries are `<name>_clif` and
 /// `<name>_asm`), its Rust kernel, and the input the artifact is handed, laid
-/// out as the workload's `input` in `CpuBenchAlgorithm.lean` reads it.
+/// out as the workload's `input` in `Bench/Cpu.lean` reads it.
 fn workloads() -> Vec<(&'static str, Kernel, fn(&In) -> Vec<u8>)> {
     vec![
         ("histogram", k_histogram_low, |i| i.text.to_vec()),

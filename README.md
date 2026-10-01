@@ -24,7 +24,7 @@ emits a loop into the artifact rather than looping in Lean.
 
 The generator below copies a 4096-byte buffer, replacing every NUL byte with a
 space. It is shipped as the `main` entry point of the `byte_scrub` artifact
-([source](lean/algorithms/ByteScrubAlgorithm.lean)).
+([source](lean/algorithms/Demo/ByteScrub.lean)).
 
 ```lean4
 -- Sixteen bytes at a time: where a byte equals `nul`, take `space`.
