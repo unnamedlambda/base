@@ -1,9 +1,6 @@
 import Scan.MlSurface
-import Qwen2.Algorithm
-import Qwen2.NonVacuity
-import Qwen2.Spec
 import Qwen2.Top
-
+import Qwen2.Program
 /-!
   # What the inference claims actually rest on — computed, not documented
 
@@ -62,6 +59,9 @@ def roots : List Name :=
   , `Qwen2NonVacuity.token_computes_concrete
   , `Qwen2NonVacuity.ffn_down_at_0
   , `Qwen2NonVacuity.ffn_down_at_last
+  -- the orchestrators' own calls, compiled, answer as their terms do
+  , `Qwen2.qwen_locals_sound
+  , `Qwen2.qwen_shipped_compiled
   , `Qwen2NonVacuity.attn_o_at_0
   , `Qwen2NonVacuity.attn_o_at_last
   -- the spec-correspondence link: these say the values are the *model's*
@@ -148,7 +148,9 @@ def nativeRoster : List Name :=
    , `Qwen2NonVacuity.infer_entry_ok
    , `Qwen2NonVacuity.attn_blocks_ty_ok
    , `Qwen2NonVacuity.ffn_blocks_ty_ok
-   , `Qwen2NonVacuity.infer_blocks_ty_ok ]
+   , `Qwen2NonVacuity.infer_blocks_ty_ok
+   , `Qwen2.qwen_locals_sound
+   , `Qwen2.qwen_shipped_compiled ]
 
 
 open TrustScan in
