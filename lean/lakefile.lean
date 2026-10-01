@@ -64,7 +64,7 @@ lean_lib Lz4 where
 -- rather than pressing the machine toward the cap that kills the session.
 @[default_target]
 lean_lib Ship where
-  roots := #[`Ship.NoMisuse, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.Pilots, `Ship.PilotsHist, `Ship.LocalCalls]
+  roots := #[`Ship.NoMisuse, `Ship.CudaSafe, `Ship.CudaBackwardSafe, `Ship.CudaBenchSafe, `Ship.CpuApps, `Ship.CpuAppsHist, `Ship.CpuAppsSha256, `Ship.CudaApps, `Ship.CpuBenchStart, `Ship.CpuBench, `Ship.CpuBenchPoly, `Ship.CpuBenchStream, `Ship.CudaPipeline, `Ship.Lz4Comp, `Ship.MlpCifar1, `Ship.MlpCifar2, `Ship.VitSafe, `Ship.GemvWarpQwen, `Ship.GemvWarpMid, `Ship.GemvWarpMid2, `Ship.GemvWarpWide, `Ship.Pilots, `Ship.PilotsHist, `Ship.TenMoe, `Ship.LocalCalls]
   moreLeanArgs := #["--tstack=262144", "-M", "3500"]
 
 -- The trust, ship and layout scans. Plain files: they read proof terms.
