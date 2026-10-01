@@ -1,7 +1,8 @@
 import Scan.MlSurface
 import Warp.WeaveCifar
 import Vit.Weave
-
+import Scan.Core
+import AlgorithmLib.ML.Model.WeaveTOp
 /-!
   # What the broadcasting algebra's claims rest on — computed, not documented
 

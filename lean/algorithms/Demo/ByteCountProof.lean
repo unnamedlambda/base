@@ -1,6 +1,6 @@
 module
-public import Demo.ByteCount
-meta import Demo.ByteCount
+public import AlgorithmLib.Host.Sem
+meta import AlgorithmLib.Host.Sem
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -23,7 +23,7 @@ open AlgorithmLib.HProg.Sem
   then counts across a 32-bit word of which only sixteen positions can be live.
 
   `trip_counts` says it does, for every sixteen bytes and every needle, over
-  `HProgSem`'s semantics --- the semantics the shipped artifact is checked
+  `Host.Sem`'s semantics --- the semantics the shipped artifact is checked
   against, not a paraphrase of the algorithm. The domain is 2^128 inputs, so no
   test establishes it, and no `static_assert`, `constexpr` or `requires` clause
   can state it: those range over values a compiler knows, and this ranges over

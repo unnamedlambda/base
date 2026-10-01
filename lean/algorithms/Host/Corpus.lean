@@ -1,9 +1,15 @@
 module
 public import Lean
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Host.Blocks
+meta import AlgorithmLib.Host.Blocks
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -11,7 +17,7 @@ import all Init.Data.List.Sort.Basic
 /-!
 # The differential corpus
 
-`HProgSem` claims to know what Cranelift's instructions compute. Nothing proves
+`Host.Sem` claims to know what Cranelift's instructions compute. Nothing proves
 that — Cranelift publishes no formal semantics — so this file checks it the only
 way available: every operation, over operands chosen to separate the arms that
 are easy to get wrong, evaluated *here* and executed *there*.
@@ -21,7 +27,7 @@ One straight-line body holds every case. Case `k` stores its result at
 `base/tests/hprog_corpus.rs` runs the artifact through the JIT and compares.
 
 The check is not circular. `base/src/clif_decode.rs` decides *which* Cranelift
-instruction each term node emits; `HProgSem` decides what that instruction
+instruction each term node emits; `Host.Sem` decides what that instruction
 *computes*; the machine decides who was right. The two were written from the
 same documentation but not from each other, and only one of them runs on the
 CPU.
@@ -624,13 +630,11 @@ def casesDCont : List (Case V L) := Id.run do
     pure (e.head)⟩]
   return cs
 
-/-- The libm shims.
-
-    `Float32.sin`/`cos`/`pow` are `@[extern "sinf"/"cosf"/"powf"]`, so the model
-    calls the same symbols the runtime does and agreement is expected rather
-    than lucky. What this catches is the part that is not by construction: that
-    an `f32` argument and result survive the call boundary the JIT builds, and
-    that `clif_decode` gives the signature the same shape both sides assume. -/
+/-- `sinf`, `cosf` and `powf`: the model is `Libm`'s definition and the
+    machine runs `Lib.Math`'s CLIF, so these check the one against the other —
+    at chosen values, and over sweeps that fold every result's bits into one
+    word: arbitrary bit patterns (special values, huge and tiny arguments,
+    every sign), and the small angles a rotary table takes. -/
 def casesMath : List (Case V L) := Id.run do
   let mut cs : List (Case V L) := []
   for (nm, bits) in f32Cases do
@@ -641,6 +645,40 @@ def casesMath : List (Case V L) := Id.run do
                     ("0", f32Bits 0.0)] do
       cs := cs ++ [⟨s!"powf/{an}^{bn}", do
         ffi .powf %[← fconst .f32 a, ← fconst .f32 b]⟩]
+  let fold (acc : V .i64) (s c p : V .f32) : Prog V L (V .i64) := do
+    let w (v : V .f32) (sh : Nat) : Prog V L (V .i64) := do
+      ishlImm (← uextend64 (← bitcast .i32 v)) sh
+    bxor (← imul acc (← iconst64 1000003)) (← bxor (← w s 0) (← bxor (← w c 32) (← w p 16)))
+  cs := cs ++ [⟨"libm/sweep-sin", do
+    forLoopAcc (← iconst64 3000) (← iconst64 0) fun i acc => do
+      let k ← imul (← iaddImm i 1) (← iconst64 (0x9E3779B97F4A7C15 - 2 ^ 64))
+      let x ← bitcast .f32 (← ireduce32 (← ushrImm k 32))
+      let yb ← bor (← band (← ireduce32 k) (← iconst32 0x80ffffff)) (← iconst32 0x3c000000)
+      let y ← bitcast .f32 yb
+      let z ← fconst .f32 0
+      fold acc (← ffi .sinf %[x]) z z⟩]
+  cs := cs ++ [⟨"libm/sweep-cos", do
+    forLoopAcc (← iconst64 3000) (← iconst64 0) fun i acc => do
+      let k ← imul (← iaddImm i 1) (← iconst64 (0x9E3779B97F4A7C15 - 2 ^ 64))
+      let x ← bitcast .f32 (← ireduce32 (← ushrImm k 32))
+      let yb ← bor (← band (← ireduce32 k) (← iconst32 0x80ffffff)) (← iconst32 0x3c000000)
+      let y ← bitcast .f32 yb
+      let z ← fconst .f32 0
+      fold acc z (← ffi .cosf %[x]) z⟩]
+  cs := cs ++ [⟨"libm/sweep-pow", do
+    forLoopAcc (← iconst64 3000) (← iconst64 0) fun i acc => do
+      let k ← imul (← iaddImm i 1) (← iconst64 (0x9E3779B97F4A7C15 - 2 ^ 64))
+      let x ← bitcast .f32 (← ireduce32 (← ushrImm k 32))
+      let yb ← bor (← band (← ireduce32 k) (← iconst32 0x80ffffff)) (← iconst32 0x3c000000)
+      let y ← bitcast .f32 yb
+      let z ← fconst .f32 0
+      fold acc z z (← ffi .powf %[x, y])⟩]
+  cs := cs ++ [
+    ⟨"libm/angles", do
+      forLoopAcc (← iconst64 3000) (← iconst64 0) fun i acc => do
+        let x ← fmul (← fcvtFromSint .f32 i) (← fconst .f32 (f32Bits 0.37))
+        let e ← fmul (← fcvtFromSint .f32 i) (← fconst .f32 (f32Bits (-0.001)))
+        fold acc (← ffi .sinf %[x]) (← ffi .cosf %[x]) (← ffi .powf %[← fconst .f32 (f32Bits 10000.0), e])⟩]
   return cs
 
 /-- Scratch inside the corpus arena, clear of the context slots. -/
@@ -701,11 +739,249 @@ def casesHt : List (Case V L) := Id.run do
     load64 (← absAddr (← basePtr) htOut)⟩]
   return cs
 
+/-- An arena slot nothing writes, read as a zero the compiler cannot see: an
+    operand built as `k + zero` is not a constant, so the cases below exercise
+    the instruction Cranelift emits rather than its constant folder. -/
+def opaqueSlot : Nat := 0xF0
+def loadsSlot : Nat := 0xE0
+
+def zeroAt (ty : ClifTy) : Prog V L (V ty) := do
+  let a ← absAddr (← basePtr) opaqueSlot
+  match ty with
+  | .i8 => load_i8 a | .i16 => load_i16 a | .i32 => load32 a | .i64 => load64 a
+  | t => load { ty := t } a
+
+/-- An integer operand of type `ty` the compiler cannot fold. -/
+def opq (ty : ClifTy) (k : Int) (h : ty.isInt = true := by decide) : Prog V L (V ty) := do
+  iadd (← iconst ty k h) (← zeroAt ty) h
+
+/-- Float operands given by their bits, equally opaque. -/
+def opqF32 (bits : UInt64) : Prog V L (V .f32) := do
+  bitcast .f32 (← opq .i32 (Int.ofNat bits.toNat))
+def opqF64 (bits : UInt64) : Prog V L (V .f64) := do
+  bitcast .f64 (← opq .i64 (Sem.signed .i64 bits))
+
+def minOf (t : ClifTy) : Int := -((1 : Int) <<< (t.width - 1))
+def maxOf (t : ClifTy) : Int := ((1 : Int) <<< (t.width - 1)) - 1
+
+def ibinAll : List (String × IBin) :=
+  [("sdiv", .sdiv), ("urem", .urem), ("srem", .srem), ("smin", .smin), ("smax", .smax),
+   ("umin", .umin), ("umax", .umax), ("umulhi", .umulhi), ("smulhi", .smulhi)]
+
+/-- Whether a pair traps: a zero divisor, or the one quotient that overflows. -/
+def traps (k : IBin) (t : ClifTy) (x y : Int) : Bool :=
+  match k with
+  | .sdiv => y == 0 || (x == minOf t && y == -1)
+  | .urem | .srem => y == 0
+  | _ => false
+
+/-- The integer families at one width. Operands straddle the sign boundary,
+    since signed and unsigned readings of the same bits are what these differ on. -/
+def intFamAt (tn : String) (t : ClifTy) (ht : t.isInt = true) : List (Case V L) := Id.run do
+  let mut cs : List (Case V L) := []
+  let pairs := [(7, 2), (-7, 2), (7, -2), (-7, -2), (minOf t, -1), (maxOf t, 3),
+                (minOf t, 1), (-1, -1), (0x55, 3), (-1, 0x7f)]
+  for (kn, k) in ibinAll do
+    for (x, y) in pairs do
+      unless traps k t x y do
+        cs := cs ++ [⟨s!"{kn}.{tn}/{x}/{y}", do ibin k (← opq t x ht) (← opq t y ht) ht⟩]
+  for (kn, k) in [("sshr", IShift.sshr), ("rotl", .rotl), ("rotr", .rotr)] do
+    for x in [1, -1, minOf t, 0x5a] do
+      for sh in [0, 1, t.width - 1, t.width, t.width + 3] do
+        cs := cs ++ [⟨s!"{kn}.{tn}/{x}/{sh}", do
+          ishift k (← opq t x ht) (← opq .i64 (Int.ofNat sh)) (by rw [ht]; rfl)⟩]
+  for (kn, k) in [("bnot", IUn.bnot), ("iabs", .iabs), ("clz", .clz),
+                  ("bswap", .bswap), ("bitrev", .bitrev)] do
+    if hk : k.admits t = true then
+      for x in [0, 1, -1, 3, minOf t, maxOf t, 0x1234, -0x1234] do
+        cs := cs ++ [⟨s!"{kn}.{tn}/{x}", do iun k (← opq t x ht) hk⟩]
+  return cs
+
+def casesIntFam : List (Case V L) :=
+  intFamAt "i8" .i8 rfl ++ intFamAt "i16" .i16 rfl ++ intFamAt "i32" .i32 rfl
+    ++ intFamAt "i64" .i64 rfl
+
+def f32Extra : List (String × UInt64) :=
+  [("2.5", f32Bits 2.5), ("3.5", f32Bits 3.5), ("-2.5", f32Bits (-2.5)),
+   ("-0.3", f32Bits (-0.3)), ("0.5", f32Bits 0.5), ("1e10", f32Bits 1e10),
+   ("-1e10", f32Bits (-1e10)), ("3e9", f32Bits 3e9), ("0.1", f32Bits 0.1)]
+
+def f64Extra : List (String × UInt64) :=
+  [("-inf", f64Bits (-1.0/0.0)), ("0", 0), ("2.5", f64Bits 2.5), ("-3.5", f64Bits (-3.5)),
+   ("-0.3", f64Bits (-0.3)), ("0.1", f64Bits 0.1), ("1e300", f64Bits 1e300),
+   ("1e19", f64Bits 1e19), ("-1e19", f64Bits (-1e19)), ("1.0000001", f64Bits 1.0000001),
+   ("2", f64Bits 2.0), ("-2.25", f64Bits (-2.25))]
+
+def funAll : List (String × FUn) :=
+  [("sqrt", .sqrt), ("fabs", .fabs), ("ceil", .ceil), ("floor", .floor),
+   ("trunc", .trunc), ("nearest", .nearest)]
+
+/-- The float families, scalar at both widths and lane-wise on `f32x4`.
+
+    Results are stored whole; `f64` cases carry the `f64.` prefix, which is what
+    tells the comparison to read a NaN at that width. -/
+def casesFloatFam : List (Case V L) := Id.run do
+  let mut cs : List (Case V L) := []
+  let f32s := f32Cases ++ f32Extra
+  let f64s := f64Cases ++ f64Extra
+  for (kn, k) in funAll do
+    for (xn, x) in f32s do
+      cs := cs ++ [⟨s!"{kn}.f32/{xn}", do fun1 k (← opqF32 x)⟩]
+    for (xn, x) in f64s do
+      cs := cs ++ [⟨s!"f64.{kn}/{xn}", do fun1 k (← opqF64 x)⟩]
+    cs := cs ++ [⟨s!"{kn}.f32x4/-2.5", do
+      fun1 k (← splat .f32x4 (← opqF32 (f32Bits (-2.5))))⟩]
+  let pairs32 := [("1.5", "-2.25"), ("1.5", "0"), ("0", "0"), ("-0", "1.5"), ("inf", "inf"),
+                  ("sub", "0.5"), ("0.1", "3e9"), ("nan", "-inf")]
+  let bits32 := fun (n : String) => ((f32s.find? (·.1 == n)).map (·.2)).getD 0
+  let bits64 := fun (n : String) => ((f64s.find? (·.1 == n)).map (·.2)).getD 0
+  for (kn, k) in [("fdiv", FBin.fdiv), ("fcopysign", .fcopysign)] do
+    for (xn, yn) in pairs32 do
+      cs := cs ++ [⟨s!"{kn}.f32/{xn}/{yn}", do fbin k (← opqF32 (bits32 xn)) (← opqF32 (bits32 yn))⟩]
+    for (xn, yn) in [("1.5", "-3.5"), ("0.1", "-0"), ("1e300", "0.1"), ("-2.25", "2")] do
+      cs := cs ++ [⟨s!"f64.{kn}/{xn}/{yn}", do fbin k (← opqF64 (bits64 xn)) (← opqF64 (bits64 yn))⟩]
+  -- `fma` differs from `fmul` then `fadd` exactly where the product is not
+  -- representable, which `0.1 · 10 - 1` is.
+  let tri64 := [("0.1", "1e19", "-1e19"), ("1.5", "2", "-3.5"), ("-0", "2", "-0"),
+                ("1e300", "1e300", "-inf"), ("sub", "0.1", "0"), ("inf", "0", "1.5"),
+                ("1.0000001", "1.0000001", "-2")]
+  for (an, bn, cn) in tri64 do
+    cs := cs ++ [⟨s!"f64.fma/{an}/{bn}/{cn}", do
+      fma (← opqF64 (bits64 an)) (← opqF64 (bits64 bn)) (← opqF64 (bits64 cn))⟩]
+  for (an, bn, cn) in [("0.1", "3e9", "-1e10"), ("1.5", "-2.25", "0.5"), ("sub", "0.5", "-0"),
+                       ("1e10", "1e10", "-inf")] do
+    cs := cs ++ [⟨s!"fma.f32/{an}/{bn}/{cn}", do
+      fma (← opqF32 (bits32 an)) (← opqF32 (bits32 bn)) (← opqF32 (bits32 cn))⟩]
+  cs := cs ++ [⟨"fma.f32x4/0.1/3e9/-1e10", do
+    fma (← splat .f32x4 (← opqF32 (bits32 "0.1"))) (← splat .f32x4 (← opqF32 (bits32 "3e9")))
+        (← splat .f32x4 (← opqF32 (bits32 "-1e10")))⟩]
+  -- conversions: saturation at both ends and NaN, rounding of wide integers
+  for (xn, x) in f32s do
+    cs := cs ++ [⟨s!"toSint32.f32/{xn}", do fcvtToSint .i32 (← opqF32 x)⟩,
+                 ⟨s!"toSint64.f32/{xn}", do fcvtToSint .i64 (← opqF32 x)⟩]
+  for (xn, x) in f64s do
+    cs := cs ++ [⟨s!"toSint32.f64/{xn}", do fcvtToSint .i32 (← opqF64 x)⟩,
+                 ⟨s!"demote/{xn}", do fdemote (← opqF64 x)⟩]
+  for x in (ints ++ [0x7fffffffffffffff, 0x20000001, 0x1000000000000801] : List Int) do
+    cs := cs ++ [⟨s!"fromUint.f32/{x}", do fcvtFromUint .f32 (← opq .i64 x)⟩,
+                 ⟨s!"f64.fromUint/{x}", do fcvtFromUint .f64 (← opq .i64 x)⟩,
+                 ⟨s!"fromUint32.f32/{x}", do fcvtFromUint .f32 (← opq .i32 x)⟩,
+                 ⟨s!"fromSint.f32/{x}", do fcvtFromSint .f32 (← opq .i64 x)⟩]
+  return cs
+
+/-- The narrow loads, over bytes whose top bits are set so zero- and
+    sign-extension differ. -/
+def casesLoads : List (Case V L) := Id.run do
+  let mut cs : List (Case V L) := []
+  cs := cs ++ [⟨"loads/put", do
+    storeI64 (← opq .i64 (-0x7f7e7d7c7b7a7979)) (← absAddr (← basePtr) loadsSlot)
+    iconst64 0⟩]
+  for (kn, k) in [("uload16", LoadKind.uload16), ("sload16", .sload16), ("sload32", .sload32),
+                  ("uload32", .uload32), ("sload8", .sload8)] do
+    for off in [0, 1, 3] do
+      cs := cs ++ [⟨s!"{kn}/{off}", do
+        load { kind := k, ty := .i64 } (← absAddr (← basePtr) (loadsSlot + off))⟩]
+  -- every width change, and the narrow stores built from them
+  for (x : Int) in [-1, 0x1234, -0x1234, 0x7f, 0x80, 0x12345678] do
+    cs := cs ++ [⟨s!"ireduce.i8/{x}", do ireduce .i8 (← opq .i64 x)⟩,
+                 ⟨s!"ireduce.i16/{x}", do ireduce .i16 (← opq .i32 x)⟩,
+                 ⟨s!"uextend.i16/{x}", do uextend .i16 (← opq .i8 x)⟩,
+                 ⟨s!"sextend.i32/{x}", do sextend .i32 (← opq .i16 x)⟩,
+                 ⟨s!"sextend.i64/{x}", do sextend .i64 (← opq .i8 x)⟩,
+                 ⟨s!"uextend.i64/{x}", do uextend .i64 (← opq .i16 x)⟩]
+  cs := cs ++ [⟨"istore16+32", do
+    let p ← absAddr (← basePtr) loadsSlot
+    storeI64 (← iconst64 0) p
+    istore16 (← opq .i64 (-0x0123456789abcdef)) p
+    istore32 (← opq .i64 0x7eadbeef) (← absAddr (← basePtr) (loadsSlot + 4))
+    load64 p⟩]
+  cs := cs ++ [⟨"uload16.i32/2", do
+    load { kind := .uload16, ty := .i32 } (← absAddr (← basePtr) (loadsSlot + 2))⟩]
+  return cs
+
+def atomicSlot : Nat := 0xC0
+
+/-- The atomics at every width: each read-modify-write answers the old value
+    and leaves its result, which the next case reads back; a compare-exchange
+    that matches and one that does not. -/
+def atomicsAt (tn : String) (t : ClifTy) (ht : t.isInt = true) : List (Case V L) := Id.run do
+  let p : Prog V L (V .i64) := do absAddr (← basePtr) atomicSlot
+  let mut cs : List (Case V L) := []
+  cs := cs ++ [⟨s!"atomic.{tn}/store", do
+    atomicStore (← opq t (-0x5a5a5a5a5a5a5a5b) ht) (← p)
+    atomicLoad t (← p)⟩]
+  for (kn, k) in [("add", AtomicRmw.add), ("sub", .sub), ("and", .and), ("nand", .nand),
+                  ("or", .or), ("xor", .xor), ("xchg", .xchg), ("umin", .umin),
+                  ("umax", .umax), ("smin", .smin), ("smax", .smax)] do
+    cs := cs ++ [⟨s!"atomic.{tn}/{kn}/old", do atomicRmw k (← p) (← opq t 0x3c ht)⟩,
+                 ⟨s!"atomic.{tn}/{kn}/new", do atomicLoad t (← p)⟩]
+  cs := cs ++ [⟨s!"atomic.{tn}/cas.miss", do
+                  atomicCas (← p) (← opq t 12345 ht) (← opq t 7 ht)⟩,
+               ⟨s!"atomic.{tn}/cas.hit", do
+                  let old ← atomicLoad t (← p)
+                  atomicCas (← p) old (← opq t (-3) ht)⟩,
+               ⟨s!"atomic.{tn}/cas.after", do fence; atomicLoad t (← p)⟩]
+  return cs
+
+def casesAtomic : List (Case V L) :=
+  atomicsAt "i8" .i8 rfl ++ atomicsAt "i16" .i16 rfl ++ atomicsAt "i32" .i32 rfl
+    ++ atomicsAt "i64" .i64 rfl
+
+def extSlot : Nat := 0x100
+
+/-- The C library's memory functions, called directly: a copy, a copy between
+    overlapping ranges, a fill and a length, each read back, and a heap
+    allocation used and released. -/
+def casesExt : List (Case V L) := Id.run do
+  let at_ (off : Nat) : Prog V L (V .i64) := do absAddr (← basePtr) (extSlot + off)
+  let mut cs : List (Case V L) := []
+  cs := cs ++ [⟨"libc/present", do libPresent .c⟩]
+  cs := cs ++ [⟨"memcpy/ret", do
+    storeI64 (← opq .i64 0x0807060504030201) (← at_ 0)
+    storeI64 (← opq .i64 0x100f0e0d0c0b0a09) (← at_ 8)
+    let r ← ext (.c .memcpy) %[← at_ 0x20, ← at_ 0, ← iconst64 13]
+    isub r (← at_ 0x20)⟩,
+    ⟨"memcpy/lo", do load64 (← at_ 0x20)⟩, ⟨"memcpy/hi", do load64 (← at_ 0x28)⟩]
+  cs := cs ++ [⟨"memmove/overlap", do
+    let _ ← ext (.c .memmove) %[← at_ 3, ← at_ 0, ← iconst64 8]
+    load64 (← at_ 0)⟩, ⟨"memmove/hi", do load64 (← at_ 8)⟩]
+  cs := cs ++ [⟨"memset", do
+    let _ ← ext (.c .memset) %[← at_ 0x41, ← iconst32 0x1ab, ← iconst64 5]
+    load64 (← at_ 0x40)⟩]
+  cs := cs ++ [⟨"strlen", do
+    storeI64 (← opq .i64 0x006f6c6c6568) (← at_ 0x60)
+    ext (.c .strlen) %[← at_ 0x60]⟩,
+    ⟨"strlen/empty", do ext (.c .strlen) %[← at_ 0x80]⟩]
+  -- Zeroed memory, written and read back, then released. Without the library
+  -- the answer is `-1`, which nothing here dereferences.
+  cs := cs ++ [⟨"calloc/free", do
+    let p ← ext (.c .calloc) %[← opq .i64 4, ← iconst64 8]
+    let r ← ifte (jTys := [.i64]) .eq p (← iconst64 (-1)) (do pure %[← iconst64 (-1)]) (do
+      storeI64 (← opq .i64 0x1234) (← iaddImm p 8)
+      let v ← load64 (← iaddImm p 8)
+      let z ← load64 (← iaddImm p 24)
+      ext (.c .free) %[p]
+      pure %[← bxor v z])
+    pure r.head⟩,
+    ⟨"free/null", do
+      ext (.c .free) %[← iconst64 0]
+      iconst64 7⟩]
+  return cs
+
+/-- The performance controls a system grants without privilege: locking a
+    page and unlocking it, and lowering the calling thread's priority. The
+    model's system grants everything, so these check the machine does too. -/
+def casesOs : List (Case V L) :=
+  [⟨"os/lock", do memLock (← absAddr (← basePtr) 0x1000) (← iconst64 4096)⟩,
+   ⟨"os/unlock", do memUnlock (← absAddr (← basePtr) 0x1000) (← iconst64 4096)⟩,
+   ⟨"os/priority-lower", do threadPriority (← iconst32 (-1))⟩]
+
 /-- Every case, named so a failure says which one. -/
 def cases : List (Case V L) :=
   casesInt ++ casesShift ++ casesUnary ++ casesCmp ++ casesFloat ++ casesConv
     ++ casesVec ++ casesCfg ++ casesPminmax ++ casesBr ++ casesDLoop ++ casesCont ++ casesVecInt
-    ++ casesDCont ++ casesMath ++ casesHt
+    ++ casesDCont ++ casesMath ++ casesHt ++ casesIntFam ++ casesFloatFam ++ casesLoads ++ casesAtomic ++ casesExt
+    ++ casesOs
 
 /-- Every case, storing its result at its own stride in the output buffer. -/
 def body : Prog V L Unit := do
@@ -717,9 +993,7 @@ def body : Prog V L Unit := do
 /-- The names, in the order the body stores them. -/
 def caseNames : List String := (cases (V := Prog.Slot) (L := Prog.Lvl)).map (·.name)
 
-/-- The term the cases denote. This body is deeper than reifying it could go,
-    which used to be the reason it was built rather than spliced; there is no
-    splice now, and it is an ordinary term like every other. -/
+/-- The term the cases denote, an ordinary term like every other. -/
 def code : Code := Prog.emit body
 
 /-- The same, refused if `wf` rejects it --- a value `main` can act on. -/
@@ -771,7 +1045,7 @@ def entryArgVals : List Sem.V :=
     the arena first: a body reaches the caller's buffers through the arguments
     `entryArgVals` supplies, the way `execute_into` supplies them. -/
 def startWorld : Except String Sem.Mem :=
-  .ok { arena := ByteArray.mk (Array.replicate 0x100 0),
+  .ok { arena := ByteArray.mk (Array.replicate 0x200 0),
         data := ByteArray.mk (Array.replicate 8 0),
         out := ByteArray.mk (Array.replicate outBytes 0) }
 
@@ -784,8 +1058,8 @@ def startWorld : Except String Sem.Mem :=
 def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
   let f ← Prog.compileProg 1 body
-  match Blocks.run env f entryArgVals { mem := m } with
-  | .stuck why => .error why
+  match Blocks.run Sem.noLocals f entryArgVals { mem := m } with
+  | .stuck why | .misuse why | .fault why => .error why
   | .ok obs w => .ok (obs, w.mem.out)
 
 /-- The corpus run through the interpreter, which is what the JIT is compared
@@ -793,7 +1067,7 @@ def viaBlocks : Except String (List Sem.Obs × ByteArray) := do
 def expected : Except String ByteArray := do
   let m ← startWorld
   match Sem.run { env } entryArgVals { mem := m } code with
-  | .stuck why => .error why
+  | .stuck why | .misuse why | .fault why => .error why
   | .ok _ w => .ok w.mem.out
 
 /-- The term and its compiled form agree, on both the observation trace and the
@@ -801,8 +1075,50 @@ def expected : Except String ByteArray := do
 def viaTerm : Except String (List Sem.Obs × ByteArray) := do
   let m ← startWorld
   match Sem.run { env } entryArgVals { mem := m } code with
-  | .stuck why => .error why
+  | .stuck why | .misuse why | .fault why => .error why
   | .ok obs w => .ok (obs, w.mem.out)
+
+-- ---------------------------------------------------------------------------
+-- The same calls with every library missing
+-- ---------------------------------------------------------------------------
+
+/-- Library calls on a machine without the libraries: each function answers
+    `-1` and touches nothing, and each probe answers `0`. The test points each
+    call at a library file that does not exist to be that machine. The C
+    library is part of every process, so it is never absent. -/
+def absentCases : List (Case V L) :=
+  [⟨"cuInit", do ext (.cuda .init) %[← iconst32 0]⟩,
+   ⟨"cuMemAlloc", do ext (.cuda .memAlloc) %[← absAddr (← basePtr) extSlot, ← iconst64 64]⟩,
+   ⟨"cuda/present", do libPresent .cuda⟩,
+   -- what the allocation would have written is still zero
+   ⟨"untouched", do load64 (← absAddr (← basePtr) extSlot)⟩]
+
+def absentBody : Prog V L Unit := do
+  let outPtr ← outPtr
+  for (c, k) in absentCases.zipIdx do
+    let r ← c.run
+    store r (← iadd outPtr (← iconst64 (STRIDE * k)))
+
+def absentNames : List String := (absentCases (V := Prog.Slot) (L := Prog.Lvl)).map (·.name)
+
+def absentProgram : Except String (List FuncData) :=
+  Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 absentBody)]
+
+def absentOutBytes : Nat := absentNames.length * STRIDE
+
+/-- What the absent run leaves in the output buffer. -/
+def absentExpected : Except String ByteArray := do
+  let _ ← Prog.emitChecked absentBody
+  let args : List Sem.V :=
+    [.sc .i64 (Sem.regionBase .arena), .sc .i64 (Sem.regionBase .data),
+     .sc .i64 8, .sc .i64 (Sem.regionBase .out), .sc .i64 absentOutBytes.toUInt64]
+  let m : Sem.Mem := { arena := ByteArray.mk (Array.replicate 0x200 0),
+                       data := ByteArray.mk (Array.replicate 8 0),
+                       out := ByteArray.mk (Array.replicate absentOutBytes 0) }
+  match Sem.run { env := (Prog.run absentBody).2.1 } args
+      { mem := m, present := fun _ => false } (Prog.emit absentBody) with
+  | .stuck why | .misuse why | .fault why => .error why
+  | .ok _ w => .ok w.mem.out
 
 end HProgCorpus
 
@@ -820,7 +1136,7 @@ def Host.Corpus.main (args : List String) : IO Unit := do
   | .ok bytes =>
       let clif ← AlgorithmLib.Prog.orDie HProgCorpus.program
       emitArtifacts dir #[artifactEntry "hprog_corpus" {
-        functions := clif, required_memory := 0x100
+        functions := clif, required_memory := 0x200
       }]
       let names := HProgCorpus.caseNames
       -- A case is compared as a NaN when its own stored bytes are one, at the
@@ -846,6 +1162,22 @@ def Host.Corpus.main (args : List String) : IO Unit := do
       IO.FS.createDirAll sideDir
       IO.FS.writeFile (sideDir / "expected.json") j.compress
       IO.println s!"corpus: {names.length} cases, {bytes.size} expected bytes"
+      match HProgCorpus.absentExpected with
+      | .error e => throw (IO.userError s!"interpreting the absent corpus: {e}")
+      | .ok abytes =>
+          let aclif ← AlgorithmLib.Prog.orDie HProgCorpus.absentProgram
+          emitArtifacts dir #[artifactEntry "hprog_absent_corpus" {
+            functions := aclif, required_memory := 0x200
+          }]
+          let aj := Lean.Json.mkObj [
+            ("stride", Lean.toJson HProgCorpus.STRIDE),
+            ("names", Lean.toJson HProgCorpus.absentNames),
+            ("modes", Lean.toJson (HProgCorpus.absentNames.map fun _ => 0)),
+            ("expected", Lean.toJson (abytes.toList.map (·.toNat)))]
+          let aDir := System.FilePath.mk dir / "hprog_absent_corpus"
+          IO.FS.createDirAll aDir
+          IO.FS.writeFile (aDir / "expected.json") aj.compress
+          IO.println s!"absent corpus: {HProgCorpus.absentNames.length} cases"
       -- `compile_sound`, executed rather than proved.
       match HProgCorpus.viaTerm, HProgCorpus.viaBlocks with
       | .error e, _ | _, .error e => throw (IO.userError s!"compile_sound check: {e}")

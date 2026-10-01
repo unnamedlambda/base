@@ -1,8 +1,8 @@
 module
-public import Lz4.Sites64
-meta import Lz4.Sites64
 public import Lz4.Cursor
 meta import Lz4.Cursor
+public import Lz4.Sites64
+meta import Lz4.Sites64
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

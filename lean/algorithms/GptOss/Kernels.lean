@@ -1,8 +1,6 @@
 module
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
-public import AlgorithmLib.ML.Num.QuantMX
-meta import AlgorithmLib.ML.Num.QuantMX
+public import AlgorithmLib.Surface.CudaPipeline
+meta import AlgorithmLib.Surface.CudaPipeline
 public import GptOss.Attention
 meta import GptOss.Attention
 import all Init.Data.Repr
@@ -192,9 +190,6 @@ def smemBytes : Nat := (fp4TableFloats + smemFloats) * 4
 
 /-- Byte offset of the staged activation within the shared block. -/
 def xSmemOff : Nat := fp4TableFloats * 4
-
-/-- The padded shared index of element `e`: `e + e/32`. -/
-def padIdx (e : Nat) : Nat := e + e / G
 
 /-! ## The shared decoding fragment -/
 

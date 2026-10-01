@@ -47,10 +47,6 @@ structure BuilderState where
 /-- Layout builder monad -/
 abbrev LayoutBuilder := StateM BuilderState
 
-/-- Skip to an absolute offset. Fails silently if cursor is already past it. -/
-def skipTo (offset : Nat) : LayoutBuilder Unit :=
-  modify fun s => { s with cursor := max s.cursor offset }
-
 /-- Skip forward by n bytes -/
 def skip (n : Nat) : LayoutBuilder Unit :=
   modify fun s => { s with cursor := s.cursor + n }
@@ -60,12 +56,6 @@ def field (ty : FieldTy) : LayoutBuilder (Fld ty) :=
   modifyGet fun s =>
     let f : Fld ty := { offset := s.cursor }
     (f, { fields := s.fields ++ [f.toAny], cursor := s.cursor + ty.size })
-
-/-- Add a field at a specific absolute offset. Returns a typed handle. -/
-def fieldAt (ty : FieldTy) (offset : Nat) : LayoutBuilder (Fld ty) :=
-  modifyGet fun s =>
-    let f : Fld ty := { offset }
-    (f, { fields := s.fields ++ [f.toAny], cursor := max s.cursor (offset + ty.size) })
 
 -- -------------------------------------------------------------------------
 -- Layout finalization
@@ -192,13 +182,6 @@ def total (m : RegionMap) : Nat := m.foldl (fun a r => a + r.size) 0
     cannot drift because they are the same list. -/
 def offAt (m : RegionMap) (i : Nat) : Nat := ((m[i]?).map Region.off).getD 0
 
-/-- Size of region `i`. -/
-def sizeAt (m : RegionMap) (i : Nat) : Nat := ((m[i]?).map Region.size).getD 0
-
-/-- Size of the region called `name`, or `none`. -/
-def sizeOf? (m : RegionMap) (name : String) : Option Nat :=
-  (m.find? (fun r => r.name == name)).map Region.size
-
 /-- **Region `name` has room for `n` elements of `elemBytes` bytes each.**
 
     `okB` relates regions to *each other*; this relates a region to the loop
@@ -216,11 +199,6 @@ def holdsB (m : RegionMap) (name : String) (n elemBytes : Nat) : Bool :=
   match m.find? (fun r => r.name == name) with
   | some r => n * elemBytes ≤ r.size
   | none   => false
-
-/-- How many `elemBytes`-sized elements region `name` holds — what to widen a
-    bound to, once `holdsB` has told you it does not fit. -/
-def capacityOf? (m : RegionMap) (name : String) (elemBytes : Nat) : Option Nat :=
-  (m.sizeOf? name).map (fun s => s / max elemBytes 1)
 
 /-- Free gaps, largest first — where a new constant can safely go.  Answers the
     question you ask immediately after a collision. -/

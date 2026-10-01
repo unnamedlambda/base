@@ -1,12 +1,8 @@
 module
 public import AlgorithmLib.ML.Model.Fuse
 meta import AlgorithmLib.ML.Model.Fuse
-public import AlgorithmLib.ML.Model.LocalBind
-meta import AlgorithmLib.ML.Model.LocalBind
 public import AlgorithmLib.ML.Kernel.Sched
 meta import AlgorithmLib.ML.Kernel.Sched
-public import AlgorithmLib.ML.Ptx.Print
-meta import AlgorithmLib.ML.Ptx.Print
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

@@ -1,6 +1,5 @@
 import Scan.GptOssSurface
 import Tokenizer.Test
-
 /-!
   # What the tokenizer claims, and what it is only measured to do
 
@@ -20,8 +19,8 @@ namespace TokenizerScan
 
     Structural, like every guard in this application: the regions of its
     memory do not overlap and stay inside it. That its one body is well-formed
-    is no longer a theorem to name --- `compileProg` decides it when the
-    generator runs, and refuses to write the artifact otherwise. -/
+    is not a theorem to name --- `compileProg` decides it when the generator
+    runs, and refuses to write the artifact otherwise. -/
 def roots : List Name := [ ``TokenizerTest.tokenizerTestMap_ok ]
 
 /-- **What the tokenizer is relied on to do, and is not proven to.** -/

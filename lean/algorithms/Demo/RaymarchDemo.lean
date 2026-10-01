@@ -1,12 +1,13 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Vocab.WGSL
+meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 open Lean (Json)
 open AlgorithmLib
@@ -227,13 +228,6 @@ open AlgorithmLib.HProg
 -- whole section rather than per declaration.
 open AlgorithmLib.Prog
 
-/-- Three callee tables, because the six entry points do not all reach the FFI:
-    the game loop needs the window and the GPU, the render test needs the GPU,
-    and the four state tests need nothing. -/
-
-
-def envNone : FnEnv := []
-
 def clearState (ptr : V .i64) : Prog V L Unit := do
   let z ← iconst64 0
   fldStore ptr f.keyMask z
@@ -246,9 +240,9 @@ def processEvents (ptr : V .i64) : Prog V L Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
   let n ← fldLoad ptr f.nEvents
   let recSz ← iconst64 32
-  let _ ← wloop1 (← iconst64 0)
-    (head := fun i => return (contIfULt i n, %[], ()))
-    (body := fun i _ => do
+  -- a count past the slots, as a failed poll's -1 is, reads no events
+  when .ule n (← iconst64 eventSlots) do
+    forLoop n fun i => do
       let base ← iadd evBase (← imul i recSz)
       let kind ← load64 base
       let keyCode ← load64 (← iaddImm base 8)
@@ -273,7 +267,6 @@ def processEvents (ptr : V .i64) : Prog V L Unit := do
       let q0 ← fldLoad ptr f.quit
       let q1 ← bor q0 (← bor isClose (← imul isDown isEsc))
       fldStore ptr f.quit q1
-      return %[← iaddImm i 1])
 
 def clampField (ptr : V .i64) (fld : Fld .i64) (lo hi : Int) : Prog V L Unit := do
   let x ← fldLoad ptr fld
@@ -350,8 +343,8 @@ def mainBody : Prog V L Unit := do
   let pipeId ← gpuCreatePipeline ptr (← fldOffset f.shader) (← fldOffset f.bindDesc) (← iconst32 2)
   let w64 ← iconst64 imageWidth
   let h64 ← iconst64 imageHeight
-  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
-                      (← fldOffset f.blitShader) (← iconst64 (blitShaderSource.length : Int))
+  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.utf8ByteSize : Int))
+                      (← fldOffset f.blitShader) (← iconst64 (blitShaderSource.utf8ByteSize : Int))
   clearState ptr
   let _ ← wloop1 (← iconst64 0)
     (head := fun c => do
@@ -449,13 +442,6 @@ def gameSetup (clif : List FuncData) : Artifact := {
   required_memory := layoutMeta.totalSize,
   initial_memory := payloads
 }
-
-def mainAlgorithm  : UInt32 := IR.mainFnIdx
-def moveFwdAlg     : UInt32 := 2
-def strafeAlg      : UInt32 := 3
-def riseClampAlg   : UInt32 := 4
-def quitOnCloseAlg : UInt32 := 5
-def renderSceneAlg : UInt32 := 6
 
 end Raymarch
 

@@ -1,8 +1,4 @@
 module
-public import AlgorithmLib.LZ4.WarpDSL
-meta import AlgorithmLib.LZ4.WarpDSL
-public import AlgorithmLib.LZ4.WarpFind
-meta import AlgorithmLib.LZ4.WarpFind
 public import AlgorithmLib.LZ4.OuterByteLayer
 meta import AlgorithmLib.LZ4.OuterByteLayer
 public import AlgorithmLib.LZ4.SimSLAssembly

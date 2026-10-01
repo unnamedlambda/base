@@ -1,10 +1,12 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Layout
 meta import Scan.Layout
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -199,33 +201,36 @@ def loadCode : Prog V L Unit := do
   cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
-  let n         ← load64 dataPtr
-  let numBlocks ← ushrImm (← iaddImm n 255) 8   -- (n + 255) >> 8
-  store n         (← absAddr ptr 0x38)
-  store numBlocks (← absAddr ptr 0x40)
+  let dataLen ← dataLen
+  -- the element count only when the caller handed over its 8 bytes
+  Prog.when .ule (← iconst64 8) dataLen do
+    let n         ← load64 dataPtr
+    let numBlocks ← ushrImm (← iaddImm n 255) 8   -- (n + 255) >> 8
+    store n         (← absAddr ptr 0x38)
+    store numBlocks (← absAddr ptr 0x40)
 
-  let xBytes       ← ishlImm n 2          -- n*4
-  let partialsBytes← ishlImm numBlocks 3  -- num_blocks*8
-  let eight        ← iconst64 8
+    let xBytes       ← ishlImm n 2          -- n*4
+    let partialsBytes← ishlImm numBlocks 3  -- num_blocks*8
+    let eight        ← iconst64 8
 
-  -- buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
-  let _ ← ffi .cudaCreateBuffer %[ctxPtr, xBytes]
-  let _ ← ffi .cudaCreateBuffer %[ctxPtr, xBytes]
-  let metaBuf ← ffi .cudaCreateBuffer %[ctxPtr, eight]
-  let _ ← ffi .cudaCreateBuffer %[ctxPtr, partialsBytes]
-  let _ ← ffi .cudaCreateBuffer %[ctxPtr, eight]
+    -- buf order: 0=x, 1=y, 2=meta, 3=partials, 4=params
+    let _ ← ffi .cudaCreateBuffer %[ctxPtr, xBytes]
+    let _ ← ffi .cudaCreateBuffer %[ctxPtr, xBytes]
+    let metaBuf ← ffi .cudaCreateBuffer %[ctxPtr, eight]
+    let _ ← ffi .cudaCreateBuffer %[ctxPtr, partialsBytes]
+    let _ ← ffi .cudaCreateBuffer %[ctxPtr, eight]
 
-  -- Pack [n:u32, num_blocks:u32] as i64 LE into staging slot at 0x48
-  let n32   ← ireduce32 n
-  let nb32  ← ireduce32 numBlocks
-  let n64   ← uextend64 n32
-  let nb64  ← uextend64 nb32
-  let packed← bor n64 (← ishlImm nb64 32)
-  let metaSlot ← absAddr ptr 0x48
-  store packed metaSlot
+    -- Pack [n:u32, num_blocks:u32] as i64 LE into staging slot at 0x48
+    let n32   ← ireduce32 n
+    let nb32  ← ireduce32 numBlocks
+    let n64   ← uextend64 n32
+    let nb64  ← uextend64 nb32
+    let packed← bor n64 (← ishlImm nb64 32)
+    let metaSlot ← absAddr ptr 0x48
+    store packed metaSlot
 
-  -- Upload packed meta to buf2
-  let _ ← ffi .cudaUpload %[ctxPtr, metaBuf, metaSlot, eight]
+    -- Upload packed meta to buf2
+    let _ ← ffi .cudaUpload %[ctxPtr, metaBuf, metaSlot, eight]
 
 /-- Prep: upload x from data_ptr to buf0. -/
 def prepCode : Prog V L Unit := do
@@ -288,7 +293,7 @@ def finalizeCode : Prog V L Unit := do
   return ()
 
 
-/-- Stack depth baked into the `stackAlgorithm` wrapper. -/
+/-- Stack depth baked into the `stack` entry's wrapper. -/
 def STACK_DEPTH : Nat := 64
 
 def clifIR : Except String (List FuncData) :=
@@ -386,11 +391,6 @@ def buildSetup (clif : List FuncData) : Artifact := {
   required_memory := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
-
-def loadAlgorithm  : UInt32 := 1
-def prepAlgorithm  : UInt32 := 2
-def inferAlgorithm : UInt32 := 5
-def stackAlgorithm : UInt32 := 6
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[

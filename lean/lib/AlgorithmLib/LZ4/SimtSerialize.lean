@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.LZ4.SimtEmit
-meta import AlgorithmLib.LZ4.SimtEmit
+public import AlgorithmLib.LZ4.Simt
+meta import AlgorithmLib.LZ4.Simt
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

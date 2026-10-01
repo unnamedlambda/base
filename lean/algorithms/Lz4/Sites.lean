@@ -1,14 +1,8 @@
 module
-public import Lz4.Interleave
-meta import Lz4.Interleave
 public import Lz4.Geo
 meta import Lz4.Geo
-public import AlgorithmLib.LZ4.Confine
-meta import AlgorithmLib.LZ4.Confine
-public import AlgorithmLib.LZ4.OpBound
-meta import AlgorithmLib.LZ4.OpBound
-public import AlgorithmLib.LZ4.Checkpoint
-meta import AlgorithmLib.LZ4.Checkpoint
+public import Lz4.Interleave
+meta import Lz4.Interleave
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

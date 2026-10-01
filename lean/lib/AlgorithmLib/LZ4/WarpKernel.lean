@@ -1,8 +1,8 @@
 module
-public import AlgorithmLib.LZ4.WarpColl
-meta import AlgorithmLib.LZ4.WarpColl
-public import AlgorithmLib.LZ4.SimtSerialize
-meta import AlgorithmLib.LZ4.SimtSerialize
+public import AlgorithmLib.LZ4.SimtEmit
+meta import AlgorithmLib.LZ4.SimtEmit
+public import AlgorithmLib.LZ4.WarpEmit
+meta import AlgorithmLib.LZ4.WarpEmit
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

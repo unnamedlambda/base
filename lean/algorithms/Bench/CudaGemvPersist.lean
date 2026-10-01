@@ -1,10 +1,10 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Layout
 meta import Scan.Layout
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -51,22 +51,48 @@ def loadCode : Prog V L Unit := do
   cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
-  let m  ← load64 dataPtr
-  let n  ← load64 (← iaddImm dataPtr 8)
-  store m (← absAddr ptr M_OFF)
-  store n (← absAddr ptr N_OFF)
+  let dataLen ← dataLen
+  -- the header only when the caller handed over its 16 bytes
+  Prog.when .ule (← iconst64 16) dataLen do
+    let m  ← load64 dataPtr
+    let n  ← load64 (← iaddImm dataPtr 8)
 
-  let mNBytes ← ishlImm (← imul m n) 2
-  let nBytes  ← ishlImm n 2
-  let mBytes  ← ishlImm m 2
+    -- Dimensions sgemv takes as positive `i32`s, so the buffer sizes below do not
+    -- wrap: other dimensions make no buffers, and `infer` finds none.
+    let one ← iconst64 1
+    let lim ← iconst64 0x7FFFFFFF
+    let _ ← ifte .ult (← isub m one) lim
+      (thn := do
+        let _ ← ifte .ult (← isub n one) lim
+          (thn := do
+            store m (← absAddr ptr M_OFF)
+            store n (← absAddr ptr N_OFF)
 
-  let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, mNBytes]  -- A (buf id 0)
-  let _    ← ffi .cudaCreateBuffer %[ctxPtr, nBytes]   -- x (buf id 1)
-  let _    ← ffi .cudaCreateBuffer %[ctxPtr, mBytes]   -- y (buf id 2)
+            let mNBytes ← ishlImm (← imul m n) 2
+            let nBytes  ← ishlImm n 2
+            let mBytes  ← ishlImm m 2
 
-  -- Upload A from data[16..] (after m, n header)
-  let aPtr ← iaddImm dataPtr 16
-  let _ ← ffi .cudaUpload %[ctxPtr, buf0, aPtr, mNBytes]
+            let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, mNBytes]  -- A (buf id 0)
+            let _    ← ffi .cudaCreateBuffer %[ctxPtr, nBytes]   -- x (buf id 1)
+            let _    ← ffi .cudaCreateBuffer %[ctxPtr, mBytes]   -- y (buf id 2)
+
+            -- Upload A from data[16..] (after m, n header), where the data holds
+            -- it: an input shorter than its header says uploads nothing.
+            let hdr ← iconst64 16
+            let _ ← ifte .uge dataLen hdr
+              (thn := do
+                let _ ← ifte .ule mNBytes (← isub dataLen hdr)
+                  (thn := do
+                    let aPtr ← iaddImm dataPtr 16
+                    let _ ← ffi .cudaUpload %[ctxPtr, buf0, aPtr, mNBytes]
+                    pure %[])
+                  (els := pure %[])
+                pure %[])
+              (els := pure %[])
+            pure %[])
+          (els := pure %[])
+        pure %[])
+      (els := pure %[])
 
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
@@ -134,10 +160,6 @@ def buildSetup (clif : List FuncData) : Artifact := {
   functions := clif,
   required_memory := MEM_SIZE
 }
-
-def loadAlgorithm : UInt32 := 1
-def prepAlgorithm : UInt32 := 2
-def inferAlgorithm : UInt32 := 3
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[

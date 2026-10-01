@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Compose
-meta import AlgorithmLib.ML.Compose
+public import AlgorithmLib.ML.Launch.Sequence
+meta import AlgorithmLib.ML.Launch.Sequence
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -10,7 +10,7 @@ import all Init.Data.List.Sort.Basic
 
   A ViT launch is not one operation.  It is `n` of them joined by `.seq` over
   one shared buffer table, launched once over one grid — which is where the
-  speed comes from, and which nothing in `Pipeline.lean` could talk about: a
+  speed comes from, and which nothing in `Launch/Pipeline.lean` could talk about: a
   `StageSpec` has exactly one output, so `runGrid`, `Exclusive` and `denote`
   are single-output by construction.
 

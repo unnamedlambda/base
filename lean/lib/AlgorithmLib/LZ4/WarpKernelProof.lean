@@ -1,6 +1,8 @@
 module
-public import AlgorithmLib.LZ4.WarpKernel
-meta import AlgorithmLib.LZ4.WarpKernel
+public import AlgorithmLib.LZ4.WarpEmit
+meta import AlgorithmLib.LZ4.WarpEmit
+public import AlgorithmLib.LZ4.WarpColl
+meta import AlgorithmLib.LZ4.WarpColl
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

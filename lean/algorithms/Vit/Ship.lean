@@ -1,8 +1,10 @@
 module
-public import Vit.Algorithm
-meta import Vit.Algorithm
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
+public import Vit.Algorithm
+meta import Vit.Algorithm
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

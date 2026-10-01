@@ -1,8 +1,6 @@
 module
 public import AlgorithmLib.ML.Model.BufsOf
 meta import AlgorithmLib.ML.Model.BufsOf
-public import AlgorithmLib.ML.Kernel.EmitFacts
-meta import AlgorithmLib.ML.Kernel.EmitFacts
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -1208,20 +1206,6 @@ def Expr.codeLen : {Γ : Nat} → Expr Γ → Nat
   | _, .sum n f => 2 + (List.finRange n).foldl
                         (fun m j => m + (f j).codeLen + (f j).valLen + 2) 0
   | _, .letE a b => a.codeLen + a.valLen + 1 + b.codeLen
-
-/-- An exclusive bound on the machine registers the compiled code writes and
-    the value expression reads. -/
-def Expr.regHi : {Γ : Nat} → Expr Γ → Nat
-  | Γ, .var i   => i.val + 1
-  | _, .lit _   => 0
-  | _, .add a b => max a.regHi b.regHi
-  | _, .mul a b => max a.regHi b.regHi
-  | _, .neg a   => a.regHi
-  | _, .inv a   => a.regHi
-  | _, .exp a   => a.regHi
-  | _, .rsqrt a => a.regHi
-  | _, .sum n f => (List.finRange n).foldl (fun m j => max m (f j).regHi) 0
-  | _, .letE a b => max a.regHi b.regHi
 
 /-- The accumulating fold `sumSeq` performs, as a length. -/
 theorem sumSeq_flenCheap_gen (acc : Nat) :

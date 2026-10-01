@@ -1,8 +1,8 @@
 module
-public import AlgorithmLib.LZ4.WarpDSL
-meta import AlgorithmLib.LZ4.WarpDSL
 public import AlgorithmLib.LZ4.SimtRSim
 meta import AlgorithmLib.LZ4.SimtRSim
+public import AlgorithmLib.LZ4.WarpDSL
+meta import AlgorithmLib.LZ4.WarpDSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

@@ -44,6 +44,11 @@ def int (i : Int) : W Unit :=
   | .ofNat n => head 0 n
   | .negSucc n => head 1 n
 
+/-- An `i64`: an integer the reader holds in 64 signed bits, refused here
+    rather than by the reader when it does not fit. -/
+def i64 (i : Int) : W Unit :=
+  if i < -2 ^ 63 || i ≥ 2 ^ 63 then throw s!"{i} does not fit an i64" else int i
+
 def text (s : String) : W Unit := do
   let b := s.toUTF8
   head 3 b.size

@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Kernel.Schema
-meta import AlgorithmLib.ML.Kernel.Schema
+public import AlgorithmLib.ML.Num.Ops
+meta import AlgorithmLib.ML.Num.Ops
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

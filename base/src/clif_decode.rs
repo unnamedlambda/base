@@ -205,6 +205,8 @@ pub fn decode_function(
     let mut callees: HashMap<clif::Callee, (String, Signature)> = HashMap::new();
     let mut native_sig = None;
     for callee in f.blocks.iter().flat_map(|b| b.insts.iter()).filter_map(|i| match i {
+        // An atomic is emitted in place and declares nothing.
+        clif::Inst::Call(_, clif::Callee::Atomic(_), _) => None,
         clif::Inst::Call(_, c, _) | clif::Inst::FuncAddr(_, c) => Some(c),
         _ => None,
     }) {
@@ -229,7 +231,8 @@ pub fn decode_function(
                 match callee {
                     clif::Callee::Import(n) => n.clone(),
                     clif::Callee::Local(n) => format!("u0:{n}"),
-                    clif::Callee::Native => unreachable!("declared above"),
+                    clif::Callee::Extern(e) => format!("{}!{}", e.lib, e.symbol),
+                    clif::Callee::Native | clif::Callee::Atomic(_) => unreachable!("declared above"),
                 },
                 sig.clone(),
             ),
@@ -378,6 +381,9 @@ fn emit(
                 clif::LoadKind::Uload8 => cur.ins().uload8(ty(op.ty), flags, a, *off),
                 clif::LoadKind::Sload8 => cur.ins().sload8(ty(op.ty), flags, a, *off),
                 clif::LoadKind::Uload32 => cur.ins().uload32(flags, a, *off),
+                clif::LoadKind::Uload16 => cur.ins().uload16(ty(op.ty), flags, a, *off),
+                clif::LoadKind::Sload16 => cur.ins().sload16(ty(op.ty), flags, a, *off),
+                clif::LoadKind::Sload32 => cur.ins().sload32(flags, a, *off),
             };
             vals.set(*d, r);
         }
@@ -398,6 +404,15 @@ fn emit(
                 .bitselect(vals.get(*c)?, vals.get(*a)?, vals.get(*b)?)
         ),
 
+        I::Call(d, clif::Callee::Atomic(k), args) => {
+            let a = vals.get_all(args)?;
+            let r = atomic(&mut cur, *k, &a)?;
+            match (d, r) {
+                (Some(dst), Some(r)) => vals.set(*dst, r),
+                (None, _) => {}
+                (Some(_), None) => return Err(format!("{k:?} has no result to bind")),
+            }
+        }
         I::Call(d, c, args) => {
             let a = vals.get_all(args)?;
             let call = if *c == clif::Callee::Native {
@@ -471,8 +486,139 @@ fn emit(
         I::Ctz(d, a) => def!(*d, cur.ins().ctz(vals.get(*a)?)),
         I::Popcnt(d, a) => def!(*d, cur.ins().popcnt(vals.get(*a)?)),
         I::VhighBits(d, a) => def!(*d, cur.ins().vhigh_bits(ir::types::I32, vals.get(*a)?)),
+        I::Ibin(d, k, a, b) => {
+            let (x, y) = (vals.get(*a)?, vals.get(*b)?);
+            let r = match k {
+                clif::IBin::Sdiv => cur.ins().sdiv(x, y),
+                clif::IBin::Urem => cur.ins().urem(x, y),
+                clif::IBin::Srem => cur.ins().srem(x, y),
+                clif::IBin::Smin => cur.ins().smin(x, y),
+                clif::IBin::Smax => cur.ins().smax(x, y),
+                clif::IBin::Umin => cur.ins().umin(x, y),
+                clif::IBin::Umax => cur.ins().umax(x, y),
+                clif::IBin::Umulhi => cur.ins().umulhi(x, y),
+                clif::IBin::Smulhi => cur.ins().smulhi(x, y),
+            };
+            vals.set(*d, r);
+        }
+        I::Ishift(d, k, a, b) => {
+            let (x, y) = (vals.get(*a)?, vals.get(*b)?);
+            let r = match k {
+                clif::IShift::Sshr => cur.ins().sshr(x, y),
+                clif::IShift::Rotl => cur.ins().rotl(x, y),
+                clif::IShift::Rotr => cur.ins().rotr(x, y),
+            };
+            vals.set(*d, r);
+        }
+        I::Iun(d, k, a) => {
+            let x = vals.get(*a)?;
+            let r = match k {
+                clif::IUn::Bnot => cur.ins().bnot(x),
+                clif::IUn::Iabs => cur.ins().iabs(x),
+                clif::IUn::Clz => cur.ins().clz(x),
+                clif::IUn::Bswap => cur.ins().bswap(x),
+                clif::IUn::Bitrev => cur.ins().bitrev(x),
+            };
+            vals.set(*d, r);
+        }
+        I::Fbin(d, k, a, b) => {
+            let (x, y) = (vals.get(*a)?, vals.get(*b)?);
+            let r = match k {
+                clif::FBin::Fdiv => cur.ins().fdiv(x, y),
+                clif::FBin::Fcopysign => cur.ins().fcopysign(x, y),
+            };
+            vals.set(*d, r);
+        }
+        I::Fun1(d, k, a) => {
+            let x = vals.get(*a)?;
+            let r = match k {
+                clif::FUn::Sqrt => cur.ins().sqrt(x),
+                clif::FUn::Fabs => cur.ins().fabs(x),
+                clif::FUn::Ceil => cur.ins().ceil(x),
+                clif::FUn::Floor => cur.ins().floor(x),
+                clif::FUn::Trunc => cur.ins().trunc(x),
+                clif::FUn::Nearest => cur.ins().nearest(x),
+            };
+            vals.set(*d, r);
+        }
+        I::Fconv(d, k, t, a) => {
+            let x = vals.get(*a)?;
+            let r = match k {
+                clif::FConv::ToSint => cur.ins().fcvt_to_sint_sat(ty(*t), x),
+                clif::FConv::FromUint => cur.ins().fcvt_from_uint(ty(*t), x),
+                clif::FConv::Demote => cur.ins().fdemote(ty(*t), x),
+            };
+            vals.set(*d, r);
+        }
+        I::Iext(d, k, t, a) => {
+            let x = vals.get(*a)?;
+            let r = match k {
+                clif::IExt::Reduce => cur.ins().ireduce(ty(*t), x),
+                clif::IExt::Uextend => cur.ins().uextend(ty(*t), x),
+                clif::IExt::Sextend => cur.ins().sextend(ty(*t), x),
+            };
+            vals.set(*d, r);
+        }
+        I::Fma(d, a, b, c) => {
+            def!(*d, cur.ins().fma(vals.get(*a)?, vals.get(*b)?, vals.get(*c)?))
+        }
     }
     Ok(())
+}
+
+/// An atomic instruction on its arguments, the address first; its result, if
+/// it answers one.
+///
+/// `trusted` flags: `notrap`, as every access here carries, and `aligned`,
+/// which the model requires of an atomic because AArch64 faults on one that
+/// is not.
+fn atomic(
+    cur: &mut FuncCursor,
+    k: clif::Atomic,
+    a: &[ir::Value],
+) -> Result<Option<ir::Value>, String> {
+    use ir::AtomicRmwOp as Op;
+    let f = MemFlags::trusted();
+    let arity = |n: usize| {
+        if a.len() == n { Ok(()) } else { Err(format!("{k:?} takes {n} arguments, given {}", a.len())) }
+    };
+    Ok(match k {
+        clif::Atomic::Fence => {
+            arity(0)?;
+            cur.ins().fence();
+            None
+        }
+        clif::Atomic::Load(t) => {
+            arity(1)?;
+            Some(cur.ins().atomic_load(ty(t), f, a[0]))
+        }
+        clif::Atomic::Store(_) => {
+            arity(2)?;
+            cur.ins().atomic_store(f, a[0], a[1]);
+            None
+        }
+        clif::Atomic::Rmw(t, op) => {
+            arity(2)?;
+            let op = match op {
+                clif::AtomicRmw::Add => Op::Add,
+                clif::AtomicRmw::Sub => Op::Sub,
+                clif::AtomicRmw::And => Op::And,
+                clif::AtomicRmw::Nand => Op::Nand,
+                clif::AtomicRmw::Or => Op::Or,
+                clif::AtomicRmw::Xor => Op::Xor,
+                clif::AtomicRmw::Xchg => Op::Xchg,
+                clif::AtomicRmw::Umin => Op::Umin,
+                clif::AtomicRmw::Umax => Op::Umax,
+                clif::AtomicRmw::Smin => Op::Smin,
+                clif::AtomicRmw::Smax => Op::Smax,
+            };
+            Some(cur.ins().atomic_rmw(ty(t), f, op, a[0], a[1]))
+        }
+        clif::Atomic::Cas(_) => {
+            arity(3)?;
+            Some(cur.ins().atomic_cas(f, a[0], a[1], a[2]))
+        }
+    })
 }
 
 /// The flags every load and store carries: `notrap`, and `aligned` on the

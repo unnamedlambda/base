@@ -1,4 +1,6 @@
 module
+public import AlgorithmLib.ML.Kernel.EmitFacts
+meta import AlgorithmLib.ML.Kernel.EmitFacts
 public import Vit.Units
 meta import Vit.Units
 import all Init.Data.Repr

@@ -1,4 +1,4 @@
-//! Runs the differential corpus: what `HProgSem` says each operation computes,
+//! Runs the differential corpus: what `Host.Sem` says each operation computes,
 //! against what the machine does with the instruction `clif_decode` emitted.
 //!
 //! Two independent things can fail here, and the test tells them apart by which
@@ -7,10 +7,10 @@
 //! * `base/src/clif_decode.rs` maps a term node to the wrong Cranelift builder
 //!   — the migration's own risk, and the reason `udiv`/`sdiv` and `ctz`/`popcnt`
 //!   appear here on operands that separate them.
-//! * `HProgSem.evalOp` states Cranelift's semantics wrongly — the assumption
+//! * `Sem.evalOp` states Cranelift's semantics wrongly — the assumption
 //!   that file names and cannot prove.
 //!
-//! The corpus is generated from `Host/Corpus.lean` into the build directory and
+//! The corpus is generated from `HProgCorpus.lean` into the build directory and
 //! cached against that file's contents, so what the machine is compared against
 //! is always what the model in the tree says. A corpus committed beside the test
 //! would agree with the model only until someone changed the model, and this is

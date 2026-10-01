@@ -1,10 +1,12 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Layout
 meta import Scan.Layout
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -86,30 +88,44 @@ def loadCode : Prog V L Unit := do
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
   -- Read N from data[0], store at N_OFF
-  let n    ← load64 dataPtr
-  store n (← absAddr ptr N_OFF)
+  let dataLen ← dataLen
+  -- the element count only when the caller handed over its 8 bytes
+  Prog.when .ule (← iconst64 8) dataLen do
+    let n    ← load64 dataPtr
+    store n (← absAddr ptr N_OFF)
 
-  -- buf0 size = N*4 (input x) + 8 (N header) + N*4 (weights) = 8 + N*8
-  let nBytes ← ishlImm n 2
-  let buf0Sz ← iaddImm (← iadd nBytes nBytes) 8
-  -- buf1 size = N*4 (output)
-  let buf1Sz ← ishlImm n 2
+    -- buf0 size = N*4 (input x) + 8 (N header) + N*4 (weights) = 8 + N*8
+    let nBytes ← ishlImm n 2
+    let buf0Sz ← iaddImm (← iadd nBytes nBytes) 8
+    -- buf1 size = N*4 (output)
+    let buf1Sz ← ishlImm n 2
 
-  let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, buf0Sz]
-  let buf1 ← ffi .cudaCreateBuffer %[ctxPtr, buf1Sz]
-  store buf0 (← absAddr ptr BUF0_OFF)
-  store buf1 (← absAddr ptr BUF1_OFF)
+    let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, buf0Sz]
+    let buf1 ← ffi .cudaCreateBuffer %[ctxPtr, buf1Sz]
+    store buf0 (← absAddr ptr BUF0_OFF)
+    store buf1 (← absAddr ptr BUF1_OFF)
 
-  -- Upload N (8 bytes) to buf0 at offset 0
-  let nAddr  ← absAddr ptr N_OFF
-  let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
+    -- Upload N (8 bytes) to buf0 at offset 0
+    let nAddr  ← absAddr ptr N_OFF
+    let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 0, nAddr, ← iconst64 8]
 
-  -- Upload weights (data[1..N], N*4 bytes) to buf0 at offset 8 + N*4
-  let wSrc ← iaddImm dataPtr 8
-  let wOff ← iaddImm nBytes 8
-  let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, wOff, wSrc, nBytes]
+    -- Upload weights (data[1..N], N*4 bytes) to buf0 at offset 8 + N*4, where
+    -- the data holds them: an input shorter than its header says uploads none.
+    let hdr ← iconst64 8
+    let _ ← ifte .uge dataLen hdr
+      (thn := do
+        let _ ← ifte .ule nBytes (← isub dataLen hdr)
+          (thn := do
+            let wSrc ← iaddImm dataPtr 8
+            let wOff ← iaddImm nBytes 8
+            let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, wOff, wSrc, nBytes]
+            pure %[])
+          (els := pure %[])
+        pure %[])
+      (els := pure %[])
 
-/-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8. -/
+/-- Prep: upload input x (data_ptr, N*4 bytes) to buf0 at offset 8, where the
+    data holds that many. -/
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
   let dataPtr ← dataPtr
@@ -117,7 +133,13 @@ def prepCode : Prog V L Unit := do
   let buf0    ← load32 (← absAddr ptr BUF0_OFF)
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let nBytes  ← ishlImm n 2
-  let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
+  let dataLen ← dataLen
+  -- x where the data holds it: shorter data uploads nothing.
+  let _ ← ifte .ule nBytes dataLen
+    (thn := do
+      let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
+      pure %[])
+    (els := pure %[])
 
 /-- Infer: launch the kernel (1 block, 256 threads), sync, and download only if
     the caller asked for output.
@@ -189,10 +211,6 @@ def buildSetup (clif : List FuncData) : Artifact := {
   required_memory := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
-
-def loadAlgorithm : UInt32 := 1
-def prepAlgorithm : UInt32 := 2
-def inferAlgorithm : UInt32 := 3
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[

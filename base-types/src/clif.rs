@@ -41,7 +41,7 @@ pub struct BlockRef(pub u32);
 ///
 /// Deliberately smaller than Cranelift's set: these are the ones the generators
 /// use, and an artifact naming anything else is a bug rather than a feature.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ClifTy {
     I8,
     I16,
@@ -87,8 +87,77 @@ pub enum FloatCC {
 pub enum LoadKind {
     Plain,
     Uload8,
+    Uload16,
     Uload32,
     Sload8,
+    Sload16,
+    Sload32,
+}
+
+/// Two-operand integer instructions whose operands and result share one type.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IBin {
+    Sdiv,
+    Urem,
+    Srem,
+    Smin,
+    Smax,
+    Umin,
+    Umax,
+    Umulhi,
+    Smulhi,
+}
+
+/// Shift-shaped instructions: the amount may be any integer width.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IShift {
+    Sshr,
+    Rotl,
+    Rotr,
+}
+
+/// One-operand integer instructions.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IUn {
+    Bnot,
+    Iabs,
+    Clz,
+    Bswap,
+    Bitrev,
+}
+
+/// Two-operand float instructions, scalar or lane-wise.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FBin {
+    Fdiv,
+    Fcopysign,
+}
+
+/// One-operand float instructions, scalar or lane-wise.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FUn {
+    Sqrt,
+    Fabs,
+    Ceil,
+    Floor,
+    Trunc,
+    Nearest,
+}
+
+/// Integer width changes to a named type.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IExt {
+    Reduce,
+    Uextend,
+    Sextend,
+}
+
+/// Conversions to a named type; `ToSint` saturates.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FConv {
+    ToSint,
+    FromUint,
+    Demote,
 }
 
 /// A load: what to read, as what type, under which memory flags.
@@ -180,6 +249,15 @@ pub enum Inst {
     Ctz(Val, Val),
     Popcnt(Val, Val),
     VhighBits(Val, Val),
+    Ibin(Val, IBin, Val, Val),
+    Ishift(Val, IShift, Val, Val),
+    Iun(Val, IUn, Val),
+    Fbin(Val, FBin, Val, Val),
+    Fun1(Val, FUn, Val),
+    Fconv(Val, FConv, ClifTy, Val),
+    /// `dst = fma a, b, c`: `a * b + c` rounded once.
+    Fma(Val, Val, Val, Val),
+    Iext(Val, IExt, ClifTy, Val),
 }
 
 /// A basic block: its parameters, then its instructions.
@@ -219,6 +297,55 @@ pub enum Callee {
     /// answering an `i64`. An indirect call: nothing of the engine's runs
     /// between the caller and the code.
     Native,
+    /// A CLIF atomic instruction, emitted in place of the call. The address
+    /// comes first, then the operands, as the call's arguments.
+    Atomic(Atomic),
+    /// A function of a C library, called directly.
+    Extern(ExternFn),
+}
+
+/// A C library function, with everything needed to bind and call it.
+///
+/// The declaration is the program's: which library, the files each operating
+/// system names it with, the symbol, and the C signature. The engine loads the
+/// library, finds the symbol and calls it at that signature; it keeps no table
+/// of its own that could disagree. A library or symbol that is not there binds
+/// to a stub answering `-1`. An empty `symbol` is the presence probe, answering
+/// `1` when the library loaded and `0` when it did not.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternFn {
+    pub lib: String,
+    pub files: Vec<(String, Vec<String>)>,
+    pub symbol: String,
+    pub params: Vec<ClifTy>,
+    pub result: Option<ClifTy>,
+}
+
+/// The read-modify-write an `atomic_rmw` performs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AtomicRmw {
+    Add,
+    Sub,
+    And,
+    Nand,
+    Or,
+    Xor,
+    Xchg,
+    Umin,
+    Umax,
+    Smin,
+    Smax,
+}
+
+/// CLIF's atomic instructions, at an integer width.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Atomic {
+    Load(ClifTy),
+    Store(ClifTy),
+    Rmw(ClifTy, AtomicRmw),
+    Cas(ClifTy),
+    Fence,
 }
 
 /// One function: what it is called by, and what it does.

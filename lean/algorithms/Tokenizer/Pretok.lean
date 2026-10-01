@@ -1,8 +1,4 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.Host.Term
-meta import AlgorithmLib.Host.Term
 public import Tokenizer.Common
 meta import Tokenizer.Common
 import all Init.Data.Repr

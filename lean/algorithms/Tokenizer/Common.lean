@@ -1,8 +1,6 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.Host.Term
-meta import AlgorithmLib.Host.Term
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -94,7 +92,6 @@ def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
 /-- Header fields, by name rather than by a number at each use. -/
 def HDR_MERGES : Nat := 0
 def HDR_VOCAB : Nat := 4
-def HDR_POOL : Nat := 8
 def HDR_PRETOK : Nat := 12
 def BYTE_INIT_OFF : Nat := 16
 def MERGE_OFF : Nat := 1040

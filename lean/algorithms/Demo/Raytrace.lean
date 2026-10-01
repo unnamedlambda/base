@@ -1,10 +1,12 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Vocab.WGSL
+meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -342,9 +344,6 @@ theorem memMap_ok : AlgorithmLib.Layout.RegionMap.okB memMap = true := by decide
 open AlgorithmLib.Prog
 
 
-/-- The GPU entry points then `cl_file_write`, in callee-table order. -/
-abbrev fnWr : Ffi := .fileWrite
-
 def code : Prog V L Unit := do
   let ptr ← basePtr
   gpuInit ptr
@@ -395,8 +394,6 @@ def raytraceConfig (clif : List FuncData) : Artifact := {
   required_memory := payloads.length + pixelBytes,
   initial_memory := payloads
 }
-
-def raytraceAlgorithm : UInt32 := IR.mainFnIdx
 
 end Raytrace
 

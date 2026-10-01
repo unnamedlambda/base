@@ -1,11 +1,11 @@
 import Lean
 import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
-import AlgorithmLib.Surface.ProgCuda
 import Scan.Layout
 import Scan.Ship
-
+import AlgorithmLib.ML.Model.Frontend
+import AlgorithmLib.ML.Machine.Geometry
+import AlgorithmLib.ML.Launch.HostBridge
+import AlgorithmLib.Surface.ProgCuda
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 namespace BackwardWide
@@ -187,11 +187,6 @@ def ptxDxr : String := dxrKernel.ptx NBUF
     step adds launches rather than machinery.  The loss `½‖y − y*‖²` is not a
     kernel: it is `N` floats the host reads back, and reading it is what makes
     the demo a measurement rather than an assertion. -/
-
-/-- The forward walk: row `ctaid` of `W`, dotted with `x`.  Rows are contiguous,
-    so this is the *untransposed* walk — the same schema as the backward matvec
-    at a different address expression. -/
-def wFwdIx : IdxE := .add (.mul .ctaId (.lit N)) rowIx
 
 /-- Quad addressing for the same walk: lane `l` takes four contiguous weights
     per trip, `N/128` trips. -/
@@ -940,7 +935,7 @@ theorem dW_ptx_exact (cta : Nat) (m : MState) :
 /-! ## The three kernels are pipeline stages
 
     Not "resemble" — **are**, definitionally.  Each `rfl` below is the check
-    that `Pipeline.lean` abstracts the kernels this file actually ships rather
+    that `Launch/Pipeline.lean` abstracts the kernels this file actually ships rather
     than an idealised cousin of them. -/
 
 /-- The activation backward is a map stage. -/

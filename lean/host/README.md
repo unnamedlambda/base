@@ -45,8 +45,8 @@ way. The point is that the effectful part of a Lean program becomes a *value*.
 `Upcase.setup` is an `Artifact`. It reads a file, transforms every byte and writes a
 file, and it is data: a `main` that uses it does its work through the artifact,
 and its own `IO` is three lines of open/run/close. Lean's `IO` is opaque and
-nothing can be proved about it; a CLIF program has a semantics — `HProgSem`
-gives every FFI call a contract, `HProgFrames` says which memory it may write —
+nothing can be proved about it; a CLIF program has a semantics — `Host.Sem`
+gives every FFI call a contract, `Host.Frames` says which memory it may write —
 so this is not just a different way to plumb effects, it is effects you can
 state something about.
 
@@ -94,7 +94,8 @@ resolves transitively, which is what makes `require` work at all.
 | `UpcaseHost.lean` | the ~15 lines that run it |
 
 The layer it rests on is in `lean/lib`, shared with every generator:
-`AlgorithmLib/ProgFFI.lean`, the call side of all 85 entry points.
+`AlgorithmLib/Surface/ProgFFI.lean`, the call side of the engine's entry
+points, and `ext` in `Surface/Prog.lean` for C libraries called directly.
 
 The dependency arrow points Lean → base and never back. `base` links nothing of
 Lean's, so an embedder shipping a Rust or Python binary with an artifact
@@ -143,6 +144,6 @@ An artifact whose effects are files, sockets or the GPU needs none of them.
   buffers (Lean exposes no fsync at all), so a benchmark of the two compares
   durable against buffered and reports the artifact slower; at equal semantics
   they are equal within noise, and the emitted loop itself measures 2 us/KB.
-  The fact is invisible in `HProgSem`'s `fileWrite` contract, which is exactly
+  The fact is invisible in `Host.Sem`'s `fileWrite` contract, which is exactly
   where it belongs — whether to keep the fsync, drop it, or split the entry
   point is a semantics decision, not a performance tweak.

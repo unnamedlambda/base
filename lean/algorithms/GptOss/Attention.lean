@@ -1,10 +1,12 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
+public import AlgorithmLib.ML.Kernel.Library
+meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -214,8 +216,6 @@ def ropeEW (base : Nat) : EWStmt :=
   .seq (ropeBodyEW base)
        (.seq (.storeLane 0 (ropeLoIx base) 6) (.storeLane 0 (ropeHiIx base) 7))
 
-def ptxRope (base : Nat) : String := emitProvenKernelN "main" 3 0 (ropeEW base)
-
 /-- The query launch turns heads at the front of the packed row, the key launch
     those behind them. Two emitted kernels rather than one reading a base from
     memory, because a base in memory is a base every soundness statement then
@@ -279,7 +279,7 @@ def ptxKVStore (base hd : Nat) : String :=
 
 /-- What ships: keys and values, over a bf16 cache and over a `Float32` one.
 
-    The depth is no longer part of any of them -- that is `M_KVSTRIDE` -- so
+    The depth is part of none of them -- that is `M_KVSTRIDE` -- so
     what is left to vary is the width of a head, and only two artifacts make
     different choices about it. The decode holds bf16 and moves `HDW` words a
     head, two values to a word; the per-piece slices hold `Float32` and move

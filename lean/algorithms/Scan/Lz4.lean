@@ -1,15 +1,6 @@
 import Scan.Core
-import Lz4.Comp
 import Lz4.Assumptions
-import Lz4.NonVacuity
-import Lz4.Launches
-import Lz4.Interleave
-import Lz4.Confine64
-import Lz4.Whole
-import Lz4.Host
-import Lz4.Sites
-import Lz4.Extend
-
+import AlgorithmLib.LZ4.OpBound
 /-!
   # What the LZ4 compressor's claims actually rest on — computed, not documented
 
@@ -55,18 +46,14 @@ def lz4Surface : Surface :=
         -- `Op.name` keeps that to plain literals so the rendering machinery
         -- behind `repr` stays out of the closure.
       , `String.Internal.length, `String.Internal.pushn
+        -- `sinf`/`cosf`/`powf`, which the foreign-call model evaluates as
+        -- `Libm` states them: the conversions between doubles and integers
+        -- its range reduction and `exp2` make.
+      , `Float.toInt64, `Int64.toFloat ]
         -- Reached only by `warp32_entry_sound`, whose statement quantifies over
-        -- machine states: `Blocks.runInsts` interprets every `Inst`, so its
-        -- closure carries the float arms of `Sem.evalOp`.  The compressor
-        -- performs no float operation — nothing else in this surface reaches
-        -- these, and the emitted body has no float instruction.
-      , `floatSpec, `float32Spec
-      , `Float.add, `Float.sub, `Float.mul, `Float.neg, `Float.beq
-      , `Float.decLe, `Float.decLt, `Float.ofBits, `Float.toBits
-      , `Float.ofScientific, `Float.toFloat32, `Float.toUInt64
-      , `Float32.add, `Float32.sub, `Float32.mul, `Float32.beq
-      , `Float32.decLe, `Float32.decLt, `Float32.ofBits, `Float32.toBits
-      , `Float32.cos, `Float32.sin, `Float32.pow, `Float32.toFloat ]
+        -- machine states. The compressor performs no float operation and the
+        -- emitted body has no float instruction.
+      ++ evalOpOpaque
     allowedHyp :=
       [ `LT.lt, `LE.le, `Eq, `Ne, `Nat.lt, `Nat.le, `Not
         -- structural, not assumptions about the world: `Sim` is the interleaving

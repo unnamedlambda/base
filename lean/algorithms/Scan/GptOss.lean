@@ -1,8 +1,6 @@
 import Scan.GptOssSurface
-import AlgorithmLib.ML.Compose
-import GptOss.Attention
+import AlgorithmLib.ML
 import GptOss.Algorithm
-
 /-!
   # What the gpt-oss-20b artifact's claims rest on — and, mostly, do not yet
 

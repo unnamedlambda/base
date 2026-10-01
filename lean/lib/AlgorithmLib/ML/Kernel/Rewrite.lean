@@ -1,10 +1,6 @@
 module
-public import AlgorithmLib.ML.Ptx.Compile
-meta import AlgorithmLib.ML.Ptx.Compile
-public import AlgorithmLib.ML.Math.Quant
-meta import AlgorithmLib.ML.Math.Quant
-public import AlgorithmLib.ML.Kernel.Schema
-meta import AlgorithmLib.ML.Kernel.Schema
+public import AlgorithmLib.Core.Enum
+meta import AlgorithmLib.Core.Enum
 public import AlgorithmLib.ML.Kernel.Butterfly
 meta import AlgorithmLib.ML.Kernel.Butterfly
 import all Init.Data.Repr
@@ -65,26 +61,6 @@ structure Approx (Γ : Nat) where
   run  : Expr Γ → Expr Γ
   name : String
   why  : String
-
-/-- The softmax max-shift: mathematically the identity, numerically the reason
-    softmax does not overflow.  It is **not** a `Rewrite`, because in `Float`
-    `e^(x-m)/Σe^(x-m) ≠ e^x/Σe^x` bit-for-bit. -/
-def maxShift {Γ : Nat} (shift : Expr Γ) : Approx Γ where
-  run := fun e => .mul (.exp (.neg shift)) (.mul (.exp shift) e)
-  name := "softmax-max-shift"
-  why := "identity in ℝ; in Float it trades bit-exactness for overflow safety"
-
-/-- Substituting the hardware's `ex2.approx` for `exp`.
-
-    This is the *spec-level* name for what `AlgorithmLib.ML.expandExp` does
-    concretely at the machine-expression level, where the identity it needs is
-    the single named proposition `ExpIsEx2` and the only theorem mentioning it
-    is `expandExp_approx`.  Measured: max relative error 5.06e-7 on silu,
-    3.27e-7 end to end on the three-layer model. -/
-def ex2Approx {Γ : Nat} : Approx Γ where
-  run := fun e => e
-  name := "ex2.approx-for-exp"
-  why := "PTX has no exact e^x; e^x = 2^(x·log₂e) via ex2.approx, ~2 ULP"
 
 -- ---------------------------------------------------------------------------
 -- The declared-law registry
@@ -342,7 +318,7 @@ theorem cublasBatched_sums_own (hb : CuBlasBatchedIsSomeReassoc)
     elements.  Reading the kernel's answer as `Σᵢ aᵢ·bᵢ` needs both levels.
 
     This is the *second* half of the bridge between the pipeline theorems
-    (`Pipeline.lean`, which end at the committed fold) and the calculus
+    (`Launch/Pipeline.lean`, which end at the committed fold) and the calculus
     (`Backprop.lean`, which ends at `Expr.sum`).  Naming it is what makes the
     composite sentence a theorem with a stated hypothesis, rather than something
     a reader has to assemble from two halves.
@@ -709,6 +685,13 @@ def Law.all : List Law :=
 theorem Law.all_covers : ∀ l : Law, l ∈ Law.all := by
   intro l; cases l <;> decide
 
+/-- The law registry as an `Enum`: complete by `all_covers`, and no law listed
+    twice, so a count of laws is a count of assumptions. -/
+instance : AlgorithmLib.Enum Law where
+  all := Law.all
+  complete := Law.all_covers
+  nodup := by decide
+
 def Law.title : Law → String
   | .expIsEx2 => "ex2.approx-for-exp"
   | .sumAssoc => "sum-reassociation"
@@ -823,7 +806,7 @@ theorem bfly_eq_laneSum (h : AllHold [Law.sumAssoc]) (v : Lane → Float32) :
 
 /-- **The pipeline's answer, read as a flat sum — under its named law.**
 
-    `Pipeline.lean`'s theorems end at the committed two-level fold, because that
+    `Launch/Pipeline.lean`'s theorems end at the committed two-level fold, because that
     is what the hardware computes and stating it that way keeps them exact.
     `Backprop.lean`'s theorems end at `Expr.sum`, because that is what `sderiv`
     produces.  This law is what joins the two ends, so that "the launched
@@ -954,10 +937,5 @@ theorem bfly_lane_uniform_max (h : AllHold [Law.combinerComm]) (v : Lane → Flo
     (l l' : Lane) :
     bflyFoldOp (fun a b => NumOps.max a b) v l = bflyFoldOp (fun a b => NumOps.max a b) v l' :=
   bflyFoldOp_const _ (h Law.combinerComm (by simp)).2 v l l'
-
-/-- The laws a "launched pipeline = `sderiv`" claim rests on, as a list.
-
-    Anyone quoting the composite must quote this too. -/
-def gradientPipelineLaws : List Law := [Law.expIsEx2, Law.laneRegroup]
 
 end AlgorithmLib.ML

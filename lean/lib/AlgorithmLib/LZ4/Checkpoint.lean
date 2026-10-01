@@ -1,6 +1,4 @@
 module
-public import AlgorithmLib.LZ4.EvalValid
-meta import AlgorithmLib.LZ4.EvalValid
 public import AlgorithmLib.LZ4.StepDescent
 meta import AlgorithmLib.LZ4.StepDescent
 public import AlgorithmLib.LZ4.Tight

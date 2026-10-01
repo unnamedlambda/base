@@ -1,8 +1,8 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -429,67 +429,69 @@ def emitHexFormat (k : Consts V) : Prog V L Unit := do
       iadd hcpNext k.c1
   let nlChar ← iconst64 10
   istore8 nlChar (← iadd k.ptr (← iadd hexOutC totalChars))
-  let outLen ← iadd totalChars k.c1
+  -- 64 hex characters and the newline, whatever the digest
+  let outLen ← iconst64 65
   let outFname ← fldOffset f.outputFilename
   let outData ← fldOffset f.hexOutput
   let _ ← ffi .fileWrite %[k.ptr, outFname, outData, k.zero, outLen]
 
 -- Main builder: compose the sub-builders
-/-- The externals every emitted function declares, in one order. -/
-abbrev fnRead : Ffi := .fileRead
-abbrev fnWrite : Ffi := .fileWrite
 
 def mainCode : Prog V L Unit := do
   let ptr ← basePtr
 
-  let fileSize ← fldReadFile ptr f.inputFilename f.fileData
-  let dataOff ← fldOffset f.fileData
-  let zero ← iconst64 0
-  fldStore ptr f.fileSize fileSize
+  let fileSize ← fldReadFile ptr f.inputFilename f.fileData maxFileSize
+  -- A read that failed (-1) or ran past the input region hashes nothing.
+  let maxC ← iconst64 maxFileSize
+  let _ ← ifte .ugt fileSize maxC (pure %[]) (do
+    let dataOff ← fldOffset f.fileData
+    let zero ← iconst64 0
+    fldStore ptr f.fileSize fileSize
 
-  let c1 ← iconst64 1
-  let c4 ← iconst64 4
-  let c8 ← iconst64 8
-  let c32 ← iconst64 32
-  let c64 ← iconst64 64
-  let mask32 ← iconst64 0xFFFFFFFF
-  let c3 ← iconst64 3
-  let c16 ← iconst64 16
-  let c7 ← iconst64 7
-  let c10 ← iconst64 10
-  let c13 ← iconst64 13
-  let c24 ← iconst64 24
+    let c1 ← iconst64 1
+    let c4 ← iconst64 4
+    let c8 ← iconst64 8
+    let c32 ← iconst64 32
+    let c64 ← iconst64 64
+    let mask32 ← iconst64 0xFFFFFFFF
+    let c3 ← iconst64 3
+    let c16 ← iconst64 16
+    let c7 ← iconst64 7
+    let c10 ← iconst64 10
+    let c13 ← iconst64 13
+    let c24 ← iconst64 24
 
-  let k : Consts V :=
-    { ptr := ptr, zero := zero, c1 := c1, c3 := c3, c4 := c4, c7 := c7,
-      c8 := c8, c10 := c10, c13 := c13, c16 := c16, c24 := c24, c32 := c32,
-      c64 := c64, mask32 := mask32, dataOff := dataOff }
+    let k : Consts V :=
+      { ptr := ptr, zero := zero, c1 := c1, c3 := c3, c4 := c4, c7 := c7,
+        c8 := c8, c10 := c10, c13 := c13, c16 := c16, c24 := c24, c32 := c32,
+        c64 := c64, mask32 := mask32, dataOff := dataOff }
 
-  let (_, numBlocks) ← emitPadding k fileSize
-  emitCopyH k
+    let (_, numBlocks) ← emitPadding k fileSize
+    emitCopyH k
 
-  -- Each 64-byte block expanded to its message schedule, compressed, and added
-  -- back into the working hash.
-  let _ ← wloop1 zero
-    (head := fun blkIdx => return (contIf .ult blkIdx numBlocks, %[], ()))
-    (body := fun blkIdx _ => do
-      let blkBase ← iadd dataOff (← imul blkIdx c64)
-      emitLoadW k blkBase
-      emitExpandW k
-      let va ← fldLoad32At ptr f.H_work 0
-      let vb ← fldLoad32At ptr f.H_work 4
-      let vc ← fldLoad32At ptr f.H_work 8
-      let vd ← fldLoad32At ptr f.H_work 12
-      let ve ← fldLoad32At ptr f.H_work 16
-      let vf ← fldLoad32At ptr f.H_work 20
-      let vg ← fldLoad32At ptr f.H_work 24
-      let vh ← fldLoad32At ptr f.H_work 28
-      let r ← emitCompressionRound k va vb vc vd ve vf vg vh
-      emitAddBack k (r.head) (r.snd) (r.thd) (r.fth)
-        (r.fif) (r.get 5) (r.get 6) (r.get 7)
-      return %[← iadd blkIdx c1])
+    -- Each 64-byte block expanded to its message schedule, compressed, and added
+    -- back into the working hash.
+    let _ ← wloop1 zero
+      (head := fun blkIdx => return (contIf .ult blkIdx numBlocks, %[], ()))
+      (body := fun blkIdx _ => do
+        let blkBase ← iadd dataOff (← imul blkIdx c64)
+        emitLoadW k blkBase
+        emitExpandW k
+        let va ← fldLoad32At ptr f.H_work 0
+        let vb ← fldLoad32At ptr f.H_work 4
+        let vc ← fldLoad32At ptr f.H_work 8
+        let vd ← fldLoad32At ptr f.H_work 12
+        let ve ← fldLoad32At ptr f.H_work 16
+        let vf ← fldLoad32At ptr f.H_work 20
+        let vg ← fldLoad32At ptr f.H_work 24
+        let vh ← fldLoad32At ptr f.H_work 28
+        let r ← emitCompressionRound k va vb vc vd ve vf vg vh
+        emitAddBack k (r.head) (r.snd) (r.thd) (r.fth)
+          (r.fif) (r.get 5) (r.get 6) (r.get 7)
+        return %[← iadd blkIdx c1])
 
-  emitHexFormat k
+    emitHexFormat k
+    pure %[])
 
 def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 mainCode)]
@@ -516,8 +518,6 @@ def sha256Config (clif : List FuncData) : Artifact := {
   required_memory := layoutMeta.totalSize,
   initial_memory := payloads
 }
-
-def sha256Algorithm : UInt32 := IR.mainFnIdx
 
 end Sha256
 

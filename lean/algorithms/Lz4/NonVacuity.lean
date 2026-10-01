@@ -1,8 +1,8 @@
 module
-public import Lz4.Comp
-meta import Lz4.Comp
 public import AlgorithmLib.Host.ClifCheck
 meta import AlgorithmLib.Host.ClifCheck
+public import Lz4.Comp
+meta import Lz4.Comp
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -187,13 +187,13 @@ theorem warp64_entry_ok : EntryOk (warpFn (WP.mk 16)) = true := by native_decide
 
 /-- **The model's claims about the compressor's entry block are sound**, at the
     geometry the artifact ships. -/
-theorem warp32_entry_sound {env : AlgorithmLib.HProg.FnEnv}
+theorem warp32_entry_sound {lc : AlgorithmLib.HProg.Sem.Locals}
     {s : AlgorithmLib.HProg.Blocks.BSt}
     {r : AlgorithmLib.HProg.Blocks.BSt × AlgorithmLib.HProg.Blocks.Next}
     {w : AlgorithmLib.HProg.Sem.World}
     (hsz : s.vals.size = (entryParams (warpFn (WP.mk 15))).length)
     (hpar : TypesAgree (entryTys (warpFn (WP.mk 15))) s.vals)
-    (hr : AlgorithmLib.HProg.Blocks.runInsts env s
+    (hr : AlgorithmLib.HProg.Blocks.runInsts lc s
             (entryInsts (warpFn (WP.mk 15))) = .ok r w) :
     Sound (tyRun (entryTys (warpFn (WP.mk 15))) (entryInsts (warpFn (WP.mk 15))))
       r.1.vals (evalPure Env.empty (entryInsts (warpFn (WP.mk 15)))) :=

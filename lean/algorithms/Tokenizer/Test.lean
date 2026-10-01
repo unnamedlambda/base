@@ -1,18 +1,12 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.Host.Term
-meta import AlgorithmLib.Host.Term
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
-public import Tokenizer.Common
-meta import Tokenizer.Common
-public import Tokenizer.Pretok
-meta import Tokenizer.Pretok
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import Tokenizer.Pretok
+meta import Tokenizer.Pretok
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

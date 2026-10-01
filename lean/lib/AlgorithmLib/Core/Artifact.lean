@@ -88,8 +88,9 @@ def requireOutputDir (args : List String) : IO String :=
   | [dir] => pure dir
   | _ => throw <| IO.userError "expected exactly one argument: output directory"
 
-/-- Write each artifact to `{dir}/{name}.cbor`. -/
-def emitArtifacts (dir : String) (entries : Array ArtifactEntry) : IO Unit := do
+/-- Write each artifact to `{dir}/{name}.cbor`, as it is. Generators write
+    through `emitArtifacts` (`Surface.Link`), which links first. -/
+def writeArtifacts (dir : String) (entries : Array ArtifactEntry) : IO Unit := do
   IO.FS.createDirAll dir
   let mut seen : List String := []
   for (name, artifact) in entries do

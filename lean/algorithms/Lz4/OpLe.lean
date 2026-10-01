@@ -5,7 +5,6 @@ import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
-
 /-!
   # `CursorAtSites.opLe` at the shipped kernel — the audit's last obligation
 -/

@@ -1,8 +1,10 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Vocab.WGSL
+meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -151,9 +153,6 @@ def wgY : Nat := imageHeight / 16   -- 256
 open AlgorithmLib.Prog
 
 
-/-- The GPU entry points then `cl_file_write`, in callee-table order. -/
-abbrev fnWr : Ffi := .fileWrite
-
 def code : Prog V L Unit := do
   let ptr ← basePtr
   gpuInit ptr
@@ -192,8 +191,6 @@ def drawConfig (clif : List FuncData) : Artifact := {
   required_memory := layoutMeta.totalSize,
   initial_memory := payloads
 }
-
-def drawAlgorithm : UInt32 := IR.mainFnIdx
 
 end Draw
 

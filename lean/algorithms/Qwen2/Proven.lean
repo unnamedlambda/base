@@ -1,10 +1,12 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
+public import AlgorithmLib.ML.Launch.Bind
+meta import AlgorithmLib.ML.Launch.Bind
+public import AlgorithmLib.ML.Launch.HostBridge
+meta import AlgorithmLib.ML.Launch.HostBridge
+public import AlgorithmLib.ML.Model.Frontend
+meta import AlgorithmLib.ML.Model.Frontend
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -1487,25 +1489,20 @@ def ropeStage (im : Buf → Nat → Nat) (grid : Nat) : StageSpec :=
 /-!
   **Where the buffer numbers come from.**
 
-  They used to be chosen.  `B_X := 0` for the residual stream in the
-  feed-forward half, `B_AX := 10` for the residual stream in the attention
-  half — two numbers for one tensor, with nothing in the development able to
-  notice, because nothing related either number to the program.  Composing the
-  two halves then produced a `layerPlan` whose attention output (buffer 10) was
-  not the input its feed-forward half read (buffer 0): a plan that type-checks,
-  proves `run = denote`, and describes a layer that does not exist.  The same
-  slip put the output projection in buffer 25 while the residual add read
-  buffer 12.
+  Chosen numbers can give one tensor two buffers with nothing able to notice,
+  because nothing relates either number to the program: a composed
+  `layerPlan` then type-checks, proves `run = denote`, and describes a layer
+  that does not exist.  So they are derived.
 
   `Clif.bindsOf` recovers what the host actually stored into each launch's
   pointer array — `near k` for a handle loaded from slot `k` of the descriptor
   pointer, `far b k` for one reached through the per-layer base, whose SSA id
   `b` is carried so that a layer weight at offset `0` is not confused with the
-  descriptor's own slot `0`.  So the numbering is now the image of a single
+  descriptor's own slot `0`.  So the numbering is the image of a single
   function on those recovered handles, and a bind is derived from the array
   rather than written next to it.
 
-  Two numbers for one tensor is no longer expressible: `bufOf` is a function.
+  Two numbers for one tensor is not expressible: `bufOf` is a function.
 -/
 
 /-- **The renaming.**  The one table in this file that is chosen rather than

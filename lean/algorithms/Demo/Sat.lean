@@ -1,10 +1,10 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -79,9 +79,6 @@ theorem memMap_within :
 open AlgorithmLib.IR
 open AlgorithmLib.Prog
 
-abbrev fnRead : Ffi := .fileRead
-abbrev fnWrite : Ffi := .fileWrite
-
 /-- The constants and base addresses the whole body reads, made once in the
     entry block. -/
 structure K (V : ClifTy → Type) where
@@ -114,6 +111,10 @@ structure K (V : ClifTy → Type) where
   clauseCountAddr : V .i64
   resultFlagAddr : V .i64
   bytesRead : V .i64
+  c3 : V .i64
+  maxVarsC : V .i64
+  maxClausesC : V .i64
+  dbCapV : V .i64
 
 /-- The address of element `idx` of the region starting at relative `base`. -/
 def atOff (k : K V) (base idx : V .i64) : Prog V L (V .i64) := do iadd k.ptr (← iadd base idx)
@@ -165,11 +166,13 @@ def parseDigits (k : K V) (start : V .i64) : Prog V L (V .i64 × V .i64) := do
   return (e.head, e.snd)
 
 /-- `p cnf <vars> <clauses>`; `pos` is at the `p`. Text that runs out mid-header
-    leaves the counts at the zero the entry block stored. -/
+    leaves the counts at the zero the entry block stored. More variables than
+    `assign` holds is past a limit (flag `3`), which ends the parse. -/
 def parseHeader (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
   let pa ← skipToDigit k (← iaddImm pos 1)
   let (pb, nv) ← parseDigits k pa
-  store nv k.numVarsAddr
+  let _ ← ifte .ugt nv k.maxVarsC (do store k.c3 k.resultFlagAddr; pure %[])
+    (do store nv k.numVarsAddr; pure %[])
   let pc ← skipToDigit k pb
   let (pd, nc) ← parseDigits k pc
   store nc k.numClausesAddr
@@ -195,6 +198,12 @@ def parseClause (k : K V) (pos dbp : V .i64) : Prog V L (V .i64 × V .i64) := do
                 let isMinus ← icmp .eq byte k.c45
                 let (pEnd, acc) ← parseDigits k (← select isMinus p1 p)
                 let _ ← ifte .eq acc k.c0 (do brk lbl %[pEnd, lit, cnt]; pure %[]) (pure %[])
+                -- a variable past the header's count, or a literal past the
+                -- database: past a limit
+                let nv ← load64 k.numVarsAddr
+                let over ← bor (← uextend64 (← icmp .ugt acc nv)) (← uextend64 (← icmp .uge lit k.dbCapV))
+                let _ ← ifte .ne over k.c0
+                  (do store k.c3 k.resultFlagAddr; brk lbl %[pEnd, lit, k.c0]; pure %[]) (pure %[])
                 let litVal ← select isMinus (← ineg acc) acc
                 storeI32 (← ireduce32 litVal) (← atOff k k.dbOffV lit)
                 continueWith lbl %[pEnd, ← iaddImm lit 4, ← iaddImm cnt 1]
@@ -203,11 +212,14 @@ def parseClause (k : K V) (pos dbp : V .i64) : Prog V L (V .i64 × V .i64) := do
   let cnt := e.thd
   let r ← ifte .eq cnt k.c0 (return %[dbp])
     (do
-      storeI32 (← ireduce32 cnt) (← atOff k k.dbOffV dbp)
       let cc ← load64 k.clauseCountAddr
-      store dbp (← atOff k k.clIdxOffV (← imul cc k.c8))
-      store (← iadd cc k.c1) k.clauseCountAddr
-      return %[e.snd])
+      -- more clauses than the index holds: past a limit
+      ifte .uge cc k.maxClausesC (do store k.c3 k.resultFlagAddr; return %[dbp])
+        (do
+          storeI32 (← ireduce32 cnt) (← atOff k k.dbOffV dbp)
+          store dbp (← atOff k k.clIdxOffV (← imul cc k.c8))
+          store (← iadd cc k.c1) k.clauseCountAddr
+          return %[e.snd]))
   return (e.head, r.head)
 
 /-- The whole file: one loop whose body dispatches on the first byte of a line.
@@ -215,7 +227,10 @@ def parseClause (k : K V) (pos dbp : V .i64) : Prog V L (V .i64 × V .i64) := do
     to carry but the position and the next free database offset. -/
 def parseCnf (k : K V) : Prog V L Unit := do
   let _ ← wloop2L k.c0 k.c0
-    (head := fun _ p _ => return (exitIf .uge p k.bytesRead, %[], ()))
+    (head := fun _ p _ => do
+      let fl ← load64 k.resultFlagAddr
+      let stop ← bor (← uextend64 (← icmp .uge p k.bytesRead)) (← uextend64 (← icmp .ne fl k.c0))
+      return (exitIf .ne stop k.c0, %[], ()))
     (body := fun lbl p dbp _ => do
       let byte ← cnfByte k p
       let p1 ← iaddImm p 1
@@ -387,11 +402,18 @@ def emitStringBytes (base : V .i64) (s : String) : Prog V L Unit := do
     istore8 (← iconst64 b) addr
     addr := (← iadd addr one)
 
-/-- The DIMACS answer line, written to the output file. -/
+/-- The DIMACS answer line, written to the output file: `s UNKNOWN` for an
+    input past a limit, or an answer longer than the region it is written
+    from. -/
 def emitOutput (k : K V) : Prog V L Unit := do
   let resFlag ← load64 k.resultFlagAddr
   let outBase ← iadd k.ptr k.outOffV
-  let len ← ifte .eq resFlag k.c1
+  let write (len : V .i64) : Prog V L Unit := do
+    let _ ← writeFile k.ptr outputFilename_off out_off k.c0 len
+  let unknown : Prog V L Unit := do
+    emitStringBytes outBase "s UNKNOWN\n"
+    write (← iconst64 10)
+  let _ ← ifte .eq resFlag k.c1
     (do
       emitStringBytes outBase "s SATISFIABLE\nv "
       let nv ← load64 k.numVarsAddr
@@ -430,11 +452,17 @@ def emitOutput (k : K V) : Prog V L Unit := do
       let fOff := e.head
       istore8 k.c48 (← atOff k k.outOffV fOff)
       istore8 k.c10 (← atOff k k.outOffV (← iaddImm fOff 1))
-      return %[← iaddImm fOff 2])
-    (do
-      emitStringBytes outBase "s UNSATISFIABLE\n"
-      return %[← iconst64 16])
-  let _ ← writeFile k.ptr outputFilename_off out_off k.c0 len.head
+      let len ← iaddImm fOff 2
+      -- written only when it fits the region it is written from; one unsigned
+      -- compare also refuses the size `0`, which would write up to a NUL
+      let _ ← ifte .uge (← isub len k.c1) (← iconst64 (maxClauses * 8)) (do unknown; pure %[])
+        (do write len; pure %[])
+      pure %[])
+    (ifte .eq resFlag k.c3 (do unknown; pure %[])
+      (do
+        emitStringBytes outBase "s UNSATISFIABLE\n"
+        write (← iconst64 16)
+        pure %[]))
 
 -- ---------------------------------------------------------------------------
 -- Main body
@@ -471,7 +499,9 @@ def mainCode : Prog V L Unit := do
   let clauseCountAddr ← absAddr ptr clauseCount_off
   let resultFlagAddr ← absAddr ptr resultFlag_off
 
-  let bytesRead ← readFile ptr inputFilename_off cnf_off
+  let read ← readFile ptr inputFilename_off cnf_off maxCnfFileSize
+  -- a read that failed (-1) parses nothing
+  let bytesRead ← select (← icmp .ugt read (← iconst64 maxCnfFileSize)) c0 read
 
   store c0 numVarsAddr
   store c0 numClausesAddr
@@ -487,11 +517,14 @@ def mainCode : Prog V L Unit := do
     clIdxOffV := clIdxOffV, trailOffV := trailOffV, outOffV := outOffV,
     decStackV := decStackV, numVarsAddr := numVarsAddr,
     numClausesAddr := numClausesAddr, clauseCountAddr := clauseCountAddr,
-    resultFlagAddr := resultFlagAddr, bytesRead := bytesRead }
+    resultFlagAddr := resultFlagAddr, bytesRead := bytesRead,
+    c3 := ← iconst64 3, maxVarsC := ← iconst64 maxVars, maxClausesC := ← iconst64 maxClauses,
+    dbCapV := ← iconst64 (maxClauseWords * 4 - 4) }
 
   forLoop (← iconst64 maxVars) (fun i => do istore8 c0 (← iadd assignBase i))
   parseCnf k
-  solve k
+  let fl ← load64 resultFlagAddr
+  let _ ← ifte .eq fl c0 (do solve k; pure %[]) (pure %[])
   emitOutput k
 
 -- Deciding `wf` walks the whole body, which is deeper than the default budget.
@@ -513,8 +546,6 @@ def satConfig (clif : List FuncData) : Artifact := {
   required_memory := totalMemory,
   initial_memory := payloads
 }
-
-def satAlgorithm : UInt32 := IR.mainFnIdx
 
 end Sat
 

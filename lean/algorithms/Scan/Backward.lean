@@ -1,6 +1,5 @@
 import Scan.MlSurface
 import Warp.BackwardWide
-
 /-!
   # What the *training* pipeline's claims rest on — computed, not documented
 

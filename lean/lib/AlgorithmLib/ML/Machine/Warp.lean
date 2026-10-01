@@ -822,17 +822,4 @@ theorem warpSumSqV4Store_implements (off : Nat) (b out : Buf) (oi k : Nat) (st :
     commitment*: with split-K and atomics the vendor result is not reproducible,
     so `deterministic` must be set for any bit-exactness claim. -/
 
-/-- Matrix-vector product as a vendor contract: `y i = Σₖ A[i·n+k]·x[k]`,
-    committed to a left fold so a *deterministic* vendor mode can meet it
-    exactly.  The `A` and `x` regions are laid out consecutively. -/
-def gemvSpec (m n : Nat) (deterministic : Bool) : ExternOp where
-  name := "cl_cublas_sgemv"
-  deterministic := deterministic
-  spec := fun mem i =>
-    if i < m then
-      (List.range n).foldl
-        (fun acc k => NumOps.add acc (NumOps.mul (mem (i * n + k)) (mem (m * n + k))))
-        NumOps.zero
-    else NumOps.zero
-
 end AlgorithmLib.ML

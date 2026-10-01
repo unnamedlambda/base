@@ -8,14 +8,10 @@ import all Init.Data.List.Sort.Basic
 /-!
   # Buffers and the stride decomposition
 
-  What survives of the original sequential machine.  `Stmt`/`St`/`FExp` and
-  their compiler are **gone**: they had an emitter-free existence — proofs about
-  code that could never run — and the warp machine (`Warp.lean`) plus the proven
-  lowering superseded them entirely.
-
-  Kept here: the buffer identifier every layer shares, and the stride-cover
-  lemmas, which state the one fact the thread decomposition rests on — that a
-  stride-`s` sweep partitions `[0, n)` exactly.
+  The buffer identifier every layer shares, and the stride-cover lemmas, which
+  state the one fact the thread decomposition rests on — that a stride-`s`
+  sweep partitions `[0, n)` exactly.  Kernels themselves are the warp machine's
+  (`Machine/Warp.lean`).
 
   **Element-addressed buffers**, not bytes: `mem : Buf → Nat → Float32`.  The
   f32 byte layout is not modelled.

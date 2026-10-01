@@ -1,8 +1,10 @@
 module
 public import Lean
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import Scan.Ship
+meta import Scan.Ship
 public import Bench.CudaDecodeAttention
 meta import Bench.CudaDecodeAttention
 public import Bench.CudaGemvPersist
@@ -15,8 +17,6 @@ public import Bench.CudaSoftmaxPersist
 meta import Bench.CudaSoftmaxPersist
 public import Bench.CudaVecAddPersist
 meta import Bench.CudaVecAddPersist
-public import Scan.Ship
-meta import Scan.Ship
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

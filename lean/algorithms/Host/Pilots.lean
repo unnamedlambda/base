@@ -1,15 +1,19 @@
 module
 public import Lean
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import Bench.Histogram1
-meta import Bench.Histogram1
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
+public import Scan.Ship
+meta import Scan.Ship
+public import AlgorithmLib.Host.Blocks
+meta import AlgorithmLib.Host.Blocks
+public import AlgorithmLib.Host.Frames
+meta import AlgorithmLib.Host.Frames
 public import Bench.ClampSum
 meta import Bench.ClampSum
 public import Bench.CudaRmsNormPersist
 meta import Bench.CudaRmsNormPersist
-public import Scan.Ship
-meta import Scan.Ship
+public import Bench.Histogram1
+meta import Bench.Histogram1
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -44,7 +48,8 @@ namespace HProgPilots
 
 namespace Hist
 
-open HistogramBench1 (INPUT_PATH_OFF OUTPUT_PATH_OFF HIST_OFF HIST_BYTES DATA_OFF MEM_SIZE)
+open HistogramBench1 (INPUT_PATH_OFF OUTPUT_PATH_OFF HIST_OFF HIST_BYTES DATA_OFF MEM_SIZE MAX_DATA_BYTES
+  PATH_MAX_IN PATH_MAX_OUT BINS)
 
 abbrev fnRead : Ffi := .fileRead
 abbrev fnWrite : Ffi := .fileWrite
@@ -53,59 +58,75 @@ abbrev fnWrite : Ffi := .fileWrite
 def code : Prog V L Unit := do
   let dataPtr ← dataPtr
   let zeroI ← iconst64 0
-  -- copy the input path until NUL
-  let inExit ← wloop1 zeroI
-    (head := fun si => do
+  -- copy the input path until NUL, within the data handed over and its
+  -- region less one byte, which a NUL ends where the path ran out first; then
+  -- the output path, from just past that NUL, the same way
+  let dl ← dataLen
+  let inLim ← umin dl (← iconst64 (PATH_MAX_IN - 1))
+  let inEnd ← wloop1L zeroI
+    (head := fun _ si => return (contIfULt si inLim, %[si], ()))
+    (body := fun l si _ => do
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr (← basePtr) INPUT_PATH_OFF) si)
-      let si' ← iadd si (← iconst64 1)
-      return (exitIfEq ch (← iconst64 0), %[si'], si'))
-    (body := fun _ si' => return %[si'])
-  -- copy the output path until NUL
-  let _ ← wloop2 (inExit.head) zeroI
-    (head := fun si di => do
-      let ch ← uload8_64 (← iadd dataPtr si)
+      when .eq ch zeroI (brk l %[← iaddImm si 1])
+      return %[← iaddImm si 1])
+  istore8 zeroI (← iadd (← absAddr (← basePtr) INPUT_PATH_OFF) inEnd.head)
+  let outSrc ← iadd dataPtr inEnd.head
+  let outLim ← umin (← isub dl inEnd.head) (← iconst64 (PATH_MAX_OUT - 1))
+  let outEnd ← wloop1L zeroI
+    (head := fun _ di => return (contIfULt di outLim, %[di], ()))
+    (body := fun l di _ => do
+      let ch ← uload8_64 (← iadd outSrc di)
       istore8 ch (← iadd (← absAddr (← basePtr) OUTPUT_PATH_OFF) di)
-      let si' ← iadd si (← iconst64 1)
-      let di' ← iadd di (← iconst64 1)
-      return (exitIfEq ch (← iconst64 0), %[], (si', di')))
-    (body := fun _ _ c => return %[c.1, c.2])
+      when .eq ch zeroI (brk l %[di])
+      return %[← iaddImm di 1])
+  istore8 zeroI (← iadd (← absAddr (← basePtr) OUTPUT_PATH_OFF) outEnd.head)
   -- read the file, then derive the element count and the histogram bounds
+  -- at most the data region: a read of size 0 would take the whole file
   let fileSize ← ffi fnRead
-    %[(← basePtr), ← iconst64 INPUT_PATH_OFF, ← iconst64 DATA_OFF, zeroI, zeroI]
+    %[(← basePtr), ← iconst64 INPUT_PATH_OFF, ← iconst64 DATA_OFF, zeroI, ← iconst64 MAX_DATA_BYTES]
   let n ← ushr fileSize (← iconst64 2)
   let histPtr ← absAddr (← basePtr) HIST_OFF
   let histEnd ← iadd histPtr (← iconst64 HIST_BYTES)
-  -- zero the histogram, eight words per iteration
-  let _ ← wloop1 histPtr
-    (head := fun hp => do
+  -- zero the histogram, eight words per iteration; the region is a fixed
+  -- size, so the loop always runs and is tested at the bottom
+  let _ ← dwloop %[histPtr] .ult histEnd (contOnTrue := true) []
+    (body := fun c => do
+      let hp := c.head
       store zeroI hp
       for off in [8, 16, 24, 32, 40, 48, 56] do
         store zeroI (← iadd hp (← iconst64 off))
-      let hp' ← iadd hp (← iconst64 64)
-      return (contIfULt hp' histEnd, %[], hp'))
-    (body := fun _ hp' => return %[hp'])
+      let hp' ← iaddImm hp 64
+      return (hp', %[hp']))
+    (guardIdx := none)
   -- scan bounds
   let dataPtr2 ← absAddr (← basePtr) DATA_OFF
   let dataEnd ← iadd dataPtr2 (← ishl n (← iconst64 2))
   let n4 ← band n (← iconst64 (-4))
   let dataEnd4 ← iadd dataPtr2 (← ishl n4 (← iconst64 2))
-  -- four elements per iteration, then the scalar tail
+  -- four elements per iteration, then the scalar tail; a value past the last
+  -- bin counts in the bin its low bits name
   let bump := fun (histPtr one dp : V .i64) (off : Int) => do
-    let v ← uload32_64 (← iadd dp (← iconst64 off))
+    let v ← band (← uload32_64 (← iadd dp (← iconst64 off))) (← iconst64 (BINS - 1))
     let a ← iadd histPtr (← ishl v (← iconst64 3))
     store (← iadd (← load64 a) one) a
-  let scanExit ← wloop1 dataPtr2
-    (head := fun dp => return (contIfULt dp dataEnd4, %[dataEnd4], ()))
-    (body := fun dp _ => do
-      let one ← iconst64 1
-      for off in [0, 4, 8, 12] do bump histPtr one dp off
-      return %[← iadd dp (← iconst64 16)])
-  let _ ← wloop1 (scanExit.head)
+  -- the four-wide part only where it has a whole group, as the benchmark: a
+  -- read that failed leaves an end below the start
+  let mid ← ifte .ult dataPtr2 dataEnd4
+    (thn := do
+      let _ ← wloop1 dataPtr2
+        (head := fun dp => return (contIfULt dp dataEnd4, %[], ()))
+        (body := fun dp _ => do
+          let one ← iconst64 1
+          for off in [0, 4, 8, 12] do bump histPtr one dp off
+          return %[← iaddImm dp 16])
+      pure %[dataEnd4])
+    (els := pure %[dataPtr2])
+  let _ ← wloop1 (mid.head)
     (head := fun dp => return (contIfULt dp dataEnd, %[], ()))
     (body := fun dp _ => do
       bump histPtr (← iconst64 1) dp 0
-      return %[← iadd dp (← iconst64 4)])
+      return %[← iaddImm dp 4])
   -- write the histogram out
   let _ ← ffi fnWrite
     %[(← basePtr), ← iconst64 OUTPUT_PATH_OFF, ← iconst64 HIST_OFF, zeroI,
@@ -184,7 +205,9 @@ def code : Prog V L Unit := do
       let x ← loadF32 (← iadd dataPtr i)
       let c ← fmax (← fmin x hi) lo
       return %[← iadd i (← iconst64 4), ← fadd s (← fpromote c)])
-  store (tail.head) outPtr
+  -- the answer only where the caller left room for it
+  when .ule (← iconst64 8) (← outLen) do
+    store (tail.head) outPtr
 
 
 /-- The computation crosses no FFI boundary at all. -/
@@ -213,21 +236,34 @@ def loadCode : Prog V L Unit := do
   let dataPtr ← dataPtr
   ffiVoid .cudaInit %[← absAddr (← basePtr) CTX_OFF]
   let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
-  let n ← load64 dataPtr
-  store n (← absAddr (← basePtr) N_OFF)
-  let nBytes ← ishl n (← iconst64 2)
-  let buf0Sz ← iadd (← iadd nBytes nBytes) (← iconst64 8)
-  let buf1Sz ← ishl n (← iconst64 2)
-  let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, buf0Sz]
-  let buf1 ← ffi .cudaCreateBuffer %[ctxPtr, buf1Sz]
-  store buf0 (← absAddr (← basePtr) BUF0_OFF)
-  store buf1 (← absAddr (← basePtr) BUF1_OFF)
-  let _ ← ffi .cudaUploadOffset
-    %[ctxPtr, buf0, ← iconst64 0, ← absAddr (← basePtr) N_OFF, ← iconst64 8]
-  let _ ← ffi .cudaUploadOffset
-    %[ctxPtr, buf0, ← iadd nBytes (← iconst64 8),
-     ← iadd dataPtr (← iconst64 8), nBytes]
-  return ()
+  let dataLen ← dataLen
+  -- the element count only when the caller handed over its 8 bytes
+  Prog.when .ule (← iconst64 8) dataLen do
+    let n ← load64 dataPtr
+    store n (← absAddr (← basePtr) N_OFF)
+    let nBytes ← ishl n (← iconst64 2)
+    let buf0Sz ← iadd (← iadd nBytes nBytes) (← iconst64 8)
+    let buf1Sz ← ishl n (← iconst64 2)
+    let buf0 ← ffi .cudaCreateBuffer %[ctxPtr, buf0Sz]
+    let buf1 ← ffi .cudaCreateBuffer %[ctxPtr, buf1Sz]
+    store buf0 (← absAddr (← basePtr) BUF0_OFF)
+    store buf1 (← absAddr (← basePtr) BUF1_OFF)
+    let _ ← ffi .cudaUploadOffset
+      %[ctxPtr, buf0, ← iconst64 0, ← absAddr (← basePtr) N_OFF, ← iconst64 8]
+    -- the weights where the data holds them: an input shorter than its header
+    -- says uploads none
+    let hdr ← iconst64 8
+    let _ ← ifte .uge dataLen hdr
+      (thn := do
+        let _ ← ifte .ule nBytes (← isub dataLen hdr)
+          (thn := do
+            let _ ← ffi .cudaUploadOffset
+              %[ctxPtr, buf0, ← iadd nBytes (← iconst64 8), ← iadd dataPtr (← iconst64 8), nBytes]
+            pure %[])
+          (els := pure %[])
+        pure %[])
+      (els := pure %[])
+    return ()
 
 /-- Upload the input vector ahead of a launch. -/
 def prepCode : Prog V L Unit := do
@@ -235,8 +271,13 @@ def prepCode : Prog V L Unit := do
   let n ← load64 (← absAddr (← basePtr) N_OFF)
   let buf0 ← load32 (← absAddr (← basePtr) BUF0_OFF)
   let ctxPtr ← load64 (← absAddr (← basePtr) CTX_OFF)
-  let _ ← ffi .cudaUploadOffset
-    %[ctxPtr, buf0, ← iconst64 8, dataPtr, ← ishl n (← iconst64 2)]
+  let nBytes ← ishl n (← iconst64 2)
+  -- the input where the data holds it: shorter data uploads nothing
+  let _ ← ifte .ule nBytes (← dataLen)
+    (thn := do
+      let _ ← ffi .cudaUploadOffset %[ctxPtr, buf0, ← iconst64 8, dataPtr, nBytes]
+      pure %[])
+    (els := pure %[])
   return ()
 
 /-- Launch, synchronize, and download only when the caller asked for output. -/
@@ -292,13 +333,17 @@ namespace Nested
 def code : Prog V L Unit := do
   let dataPtr ← dataPtr
   let zeroI ← iconst64 0
+  -- copy the file name: the data handed over, as much as the field at 0x200
+  -- holds one byte short of it, and a NUL after, so the name ends at its own
+  -- NUL or there
+  let lim ← umin (← dataLen) (← iconst64 0x1FF)
   let _ ← wloop1 zeroI
-    (head := fun si => do
+    (head := fun si => return (contIfULt si lim, %[], ()))
+    (body := fun si _ => do
       let ch ← uload8_64 (← iadd dataPtr si)
       istore8 ch (← iadd (← absAddr (← basePtr) 0x200) si)
-      let si' ← iadd si (← iconst64 1)
-      return (exitIfEq ch (← iconst64 0), %[], si'))
-    (body := fun _ si' => return %[si'])
+      return %[← iadd si (← iconst64 1)])
+  istore8 zeroI (← iadd (← absAddr (← basePtr) 0x200) lim)
   let three ← iconst64 3
   let four ← iconst64 4
   let one ← iconst64 1
@@ -436,9 +481,9 @@ def histCompileSound : Except String (Nat × Nat) :=
       match Prog.compileProg 2 Hist.code with
       | .error e => .error e
       | .ok fd =>
-      match Sem.run { env := cenv } args w c, Blocks.run cenv fd args w with
-      | .stuck e, _ => .error s!"term: {e}"
-      | _, .stuck e => .error s!"blocks: {e}"
+      match Sem.run { env := cenv } args w c, Blocks.run Sem.noLocals fd args w with
+      | .stuck e, _ | .misuse e, _ | .fault e, _ => .error s!"term: {e}"
+      | _, .stuck e | _, .misuse e | _, .fault e => .error s!"blocks: {e}"
       | .ok tObs tw, .ok bObs bw =>
           if tObs != bObs then .error s!"traces differ: {tObs.length} vs {bObs.length}"
           else if (tw.fs.get "out.bin") != (bw.fs.get "out.bin") then

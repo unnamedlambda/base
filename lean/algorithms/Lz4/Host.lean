@@ -1,12 +1,11 @@
 module
-public import Lz4.Comp
-meta import Lz4.Comp
 public import AlgorithmLib.Host.Clif
 meta import AlgorithmLib.Host.Clif
+public import Lz4.Comp
+meta import Lz4.Comp
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 /-!
   # What the emitted host program actually does

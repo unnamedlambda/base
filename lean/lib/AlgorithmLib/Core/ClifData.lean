@@ -2,6 +2,8 @@ module
 public import Lean
 public import AlgorithmLib.Core.Cbor
 meta import AlgorithmLib.Core.Cbor
+public import AlgorithmLib.Core.Enum
+meta import AlgorithmLib.Core.Enum
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -24,7 +26,7 @@ inductive ClifTy where
   | i8 | i16 | i32 | i64
   | f32 | f64
   | f32x4 | i8x16
-  deriving Repr, BEq, Lean.ToExpr
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- An SSA value reference -/
 structure Val where
@@ -46,9 +48,492 @@ inductive FloatCC where
   | eq | ne | lt | le | gt | ge
   deriving Repr, BEq
 
+/-- Two-operand integer instructions whose operands and result share one
+    integer type: signed division and both remainders, the four min/max, and
+    the high halves of the two multiplications. -/
+inductive IBin where
+  | sdiv | urem | srem | smin | smax | umin | umax | umulhi | smulhi
+  deriving Repr, BEq, DecidableEq
+
+/-- Shift-shaped instructions: the amount may be any integer width and is
+    taken modulo the shifted operand's. -/
+inductive IShift where
+  | sshr | rotl | rotr
+  deriving Repr, BEq, DecidableEq
+
+/-- One-operand integer instructions whose result has the operand's type.
+    `cls` is absent: x64 has no lowering for it, so a body using it would not
+    build everywhere. -/
+inductive IUn where
+  | bnot | iabs | clz | bswap | bitrev
+  deriving Repr, BEq, DecidableEq
+
+/-- Two-operand float instructions, scalar or lane-wise. -/
+inductive FBin where
+  | fdiv | fcopysign
+  deriving Repr, BEq, DecidableEq
+
+/-- One-operand float instructions, scalar or lane-wise. `nearest` rounds half
+    to even. -/
+inductive FUn where
+  | sqrt | fabs | ceil | floor | trunc | nearest
+  deriving Repr, BEq, DecidableEq
+
+/-- Conversions to a named type. `toSint` saturates, as `fcvtToUint` does; a
+    conversion that traps on an out-of-range value would abort the process. -/
+inductive FConv where
+  | toSint | fromUint | demote
+  deriving Repr, BEq, DecidableEq
+
+/-- Integer width changes to a named type: narrowing keeps the low bits, and
+    the two widenings differ in what fills the new top bits. A store narrower
+    than its value is a narrowing followed by a store at the narrow type, which
+    Cranelift emits as one instruction. -/
+inductive IExt where
+  | reduce | uextend | sextend
+  deriving Repr, BEq, DecidableEq
+
+/-- The read-modify-write an `atomic_rmw` performs on the old value and its
+    operand. -/
+inductive AtomicRmw where
+  | add | sub | and | nand | or | xor | xchg | umin | umax | smin | smax
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+/-- CLIF's atomic instructions, at an integer width.
+
+    They travel as a callee rather than as instructions of their own: each takes
+    arguments and may answer a value exactly as a call does, so the term, its
+    checker and the compilation proof treat them as calls, and the engine emits
+    the instruction in place of the call. -/
+inductive Atomic where
+  | load (ty : ClifTy)
+  | store (ty : ClifTy)
+  | rmw (ty : ClifTy) (k : AtomicRmw)
+  | cas (ty : ClifTy)
+  | fence
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+/-- **A C library a program may call directly**, by the files each operating
+    system names it with, in the order they are tried.
+
+    Every one is ABI-portable: the same symbols, signatures, constants and
+    layouts on each target, so an artifact calls it identically everywhere.
+    It is loaded when a program first names it; a library that is not there
+    makes its functions absent rather than the program unloadable. The C
+    library, wgpu and the engine's window, CPU, serial and USB libraries are
+    built into it (`Lib.builtin`): always there, bound to the functions the
+    engine links. -/
+inductive Lib where
+  | c | cuda | cublas | usb | window | cpu | wgpu | serial
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def Lib.name : Lib → String
+  | .c => "c" | .cuda => "cuda" | .cublas => "cublas" | .usb => "usb"
+  | .window => "window" | .cpu => "cpu" | .wgpu => "wgpu" | .serial => "serial"
+
+def Lib.files : Lib → List (String × List String)
+  | .cuda => [("linux", ["libcuda.so.1", "libcuda.so"]), ("windows", ["nvcuda.dll"])]
+  | .cublas => [("linux", ["libcublas.so.12", "libcublas.so"]), ("windows", ["cublas64_12.dll"])]
+  | .c | .usb | .window | .cpu | .wgpu | .serial => []
+
+/-- Built into the engine: present on every platform, with no file to find. -/
+def Lib.builtin : Lib → Bool
+  | .c | .usb | .window | .cpu | .wgpu | .serial => true
+  | _ => false
+
+/-- The C library's memory functions: pointers and sizes only, so the same
+    call on every target. `memcmp` is not here: the value it answers beyond
+    its sign differs between implementations. `calloc` and `free` are the
+    heap: zeroed memory, and its release. -/
+inductive CFn where
+  | memcpy | memmove | memset | strlen | calloc | free
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+/-- The CUDA driver API, called directly: context, memory, modules, launches
+    and streams. Each answers a `CUresult`, `0` for success; an object it
+    creates is written through the pointer it is handed. -/
+inductive CudaFn where
+  | init | deviceGet | primaryCtxRetain | primaryCtxRelease | ctxSetCurrent | ctxSynchronize
+  | memGetInfo | memAlloc | memFree | memcpyHtoD | memcpyDtoH | memcpyDtoD | memsetD8
+  | moduleLoadData | moduleGetFunction | moduleUnload | launchKernel
+  | streamCreate | streamSynchronize | streamDestroy
+  | eventCreate | eventRecord | streamWaitEvent | eventSynchronize | eventDestroy
+  | eventElapsedTime
+  | memAllocHost | memFreeHost | memcpyHtoDAsync | memcpyDtoHAsync
+  | beginCapture | endCapture | graphInstantiate | graphLaunch | graphExecDestroy | graphDestroy
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+/-- Every driver function, in declaration order. -/
+def CudaFn.all : List CudaFn :=
+  [.init, .deviceGet, .primaryCtxRetain, .primaryCtxRelease, .ctxSetCurrent, .ctxSynchronize,
+   .memGetInfo, .memAlloc, .memFree, .memcpyHtoD, .memcpyDtoH, .memcpyDtoD, .memsetD8,
+   .moduleLoadData, .moduleGetFunction, .moduleUnload, .launchKernel,
+   .streamCreate, .streamSynchronize, .streamDestroy,
+   .eventCreate, .eventRecord, .streamWaitEvent, .eventSynchronize, .eventDestroy,
+   .eventElapsedTime, .memAllocHost, .memFreeHost, .memcpyHtoDAsync, .memcpyDtoHAsync,
+   .beginCapture, .endCapture, .graphInstantiate, .graphLaunch, .graphExecDestroy, .graphDestroy]
+
+theorem CudaFn.mem_all (f : CudaFn) : f ∈ CudaFn.all := by cases f <;> simp [CudaFn.all]
+
+/-- cuBLAS, called directly: handles, the stream a handle runs on, and the
+    single-precision and bf16-in, f32-out products. Each answers a
+    `cublasStatus_t`, `0` for success. -/
+inductive CublasFn where
+  | create | destroy | setStream
+  | sgemv | sgemm | sgemmStridedBatched | gemmEx | gemmStridedBatchedEx | sgemmBatched
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def CublasFn.all : List CublasFn :=
+  [.create, .destroy, .setStream, .sgemv, .sgemm, .sgemmStridedBatched, .gemmEx,
+   .gemmStridedBatchedEx, .sgemmBatched]
+
+theorem CublasFn.mem_all (f : CublasFn) : f ∈ CublasFn.all := by cases f <;> simp [CublasFn.all]
+
+/-- The kinds of object wgpu hands a program, each released by its own
+    symbol (`wgpu<Kind>Release`). -/
+inductive WgObj where
+  | instance | adapter | device | queue | buffer | shaderModule | bindGroupLayout
+  | pipelineLayout | computePipeline | bindGroup | commandEncoder | computePass
+  | commandBuffer | surface | texture | textureView | renderPipeline | renderPass
+  | errorScope
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def WgObj.all : List WgObj :=
+  [.instance, .adapter, .device, .queue, .buffer, .shaderModule, .bindGroupLayout,
+   .pipelineLayout, .computePipeline, .bindGroup, .commandEncoder, .computePass,
+   .commandBuffer, .surface, .texture, .textureView, .renderPipeline, .renderPass, .errorScope]
+
+/-- The kind's name, as its release symbol spells it after `wgpu`. -/
+def WgObj.cname : WgObj → String
+  | .instance => "Instance" | .adapter => "Adapter" | .device => "Device" | .queue => "Queue"
+  | .buffer => "Buffer" | .shaderModule => "ShaderModule" | .bindGroupLayout => "BindGroupLayout"
+  | .pipelineLayout => "PipelineLayout" | .computePipeline => "ComputePipeline"
+  | .bindGroup => "BindGroup" | .commandEncoder => "CommandEncoder"
+  | .computePass => "ComputePassEncoder" | .commandBuffer => "CommandBuffer"
+  | .surface => "Surface" | .texture => "Texture" | .textureView => "TextureView"
+  | .renderPipeline => "RenderPipeline" | .renderPass => "RenderPassEncoder"
+  | .errorScope => "ErrorScope"
+
+/-- wgpu, through the engine's shims over the `wgpu` crate
+    (`base/src/ffi/wgpu.rs`): the objects a compute dispatch and a present to
+    a window need, each made by one call whose descriptor is its arguments.
+    What a call reads from program memory is a run of words or of bytes at an
+    address and a length it is handed; what it writes is the bytes a buffer
+    read asks for. -/
+inductive WgpuFn where
+  | createInstance | requestAdapter | requestDevice | release (o : WgObj)
+  | deviceGetQueue | deviceCreateBuffer | deviceCreateShaderModule
+  | deviceCreateBindGroupLayout | deviceCreatePipelineLayout | deviceCreateComputePipeline
+  | deviceCreateBindGroup | deviceCreateCommandEncoder | deviceCreateRenderPipeline
+  | devicePushErrorScope | errorScopePop | renderPipelineGetBindGroupLayout
+  | encoderBeginComputePass | computePassSetPipeline | computePassSetBindGroup
+  | computePassDispatch | computePassEnd
+  | encoderCopyBufferToBuffer | encoderFinish
+  | encoderBeginRenderPass | renderPassSetPipeline | renderPassSetBindGroup
+  | renderPassDraw | renderPassEnd
+  | queueSubmit | queueWriteBuffer | bufferRead
+  | instanceCreateSurface | surfaceConfigure
+  | surfaceGetCurrentTexture | surfacePresent | textureCreateView
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def WgpuFn.all : List WgpuFn :=
+  [.createInstance, .requestAdapter, .requestDevice] ++ WgObj.all.map .release ++
+  [.deviceGetQueue, .deviceCreateBuffer, .deviceCreateShaderModule,
+   .deviceCreateBindGroupLayout, .deviceCreatePipelineLayout, .deviceCreateComputePipeline,
+   .deviceCreateBindGroup, .deviceCreateCommandEncoder, .deviceCreateRenderPipeline,
+   .devicePushErrorScope, .errorScopePop, .renderPipelineGetBindGroupLayout,
+   .encoderBeginComputePass, .computePassSetPipeline, .computePassSetBindGroup,
+   .computePassDispatch, .computePassEnd, .encoderCopyBufferToBuffer, .encoderFinish,
+   .encoderBeginRenderPass, .renderPassSetPipeline, .renderPassSetBindGroup,
+   .renderPassDraw, .renderPassEnd, .queueSubmit, .queueWriteBuffer, .bufferRead,
+   .instanceCreateSurface, .surfaceConfigure,
+   .surfaceGetCurrentTexture, .surfacePresent, .textureCreateView]
+
+theorem WgpuFn.mem_all (f : WgpuFn) : f ∈ WgpuFn.all := by
+  cases f
+  case release o => cases o <;> simp [WgpuFn.all, WgObj.all]
+  all_goals simp [WgpuFn.all]
+
+/-- The engine's window library (`base/src/ffi/window.rs`, over winit): the
+    thread's event loop, windows, their events as 32-byte records, and their
+    size in pixels. A wgpu surface is made from a window's handle. Where it
+    answers `bool` the result is an `i8`. -/
+inductive WindowFn where
+  | init | open | close | pump | poll | pixels
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def WindowFn.all : List WindowFn := [.init, .open, .close, .pump, .poll, .pixels]
+
+theorem WindowFn.mem_all (f : WindowFn) : f ∈ WindowFn.all := by cases f <;> simp [WindowFn.all]
+
+/-- The engine's CPU library (`base/src/ffi/cpu.rs`): how many logical CPUs
+    are online, the physical core and package of each, and pinning the
+    calling thread to one or releasing it. Each answers an `int`, `-1` where
+    the system does not say or does not grant it. -/
+inductive CpuFn where
+  | count | core | package | pin | unpin
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def CpuFn.all : List CpuFn := [.count, .core, .package, .pin, .unpin]
+
+theorem CpuFn.mem_all (f : CpuFn) : f ∈ CpuFn.all := by cases f <;> simp [CpuFn.all]
+
+/-- The engine's serial library (`base/src/ffi/serial.rs`, over the
+    `serialport` crate): the ports the system lists and their names, and a
+    port opened by name, read, written, asked what is waiting, and closed. -/
+inductive SerialFn where
+  | count | name | open | close | read | write | pending
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def SerialFn.all : List SerialFn := [.count, .name, .open, .close, .read, .write, .pending]
+
+theorem SerialFn.mem_all (f : SerialFn) : f ∈ SerialFn.all := by cases f <;> simp [SerialFn.all]
+
+/-- The engine's USB library (`base/src/ffi/usb.rs`, over the `nusb`
+    crate): the devices the system lists and what each is, and a device
+    opened by its place, its interfaces claimed and released, and its
+    control, bulk and interrupt transfers, each waited for. -/
+inductive UsbFn where
+  | count | info | open | close | claim | release | control | bulk | interrupt
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def UsbFn.all : List UsbFn := [.count, .info, .open, .close, .claim, .release, .control, .bulk, .interrupt]
+
+theorem UsbFn.mem_all (f : UsbFn) : f ∈ UsbFn.all := by cases f <;> simp [UsbFn.all]
+
+/-- **A function of a C library**, by family. `present l` is not a symbol: it
+    answers `1` when `l` loaded and `0` when it did not. -/
+inductive Ext where
+  | present (l : Lib)
+  | c (f : CFn)
+  | cuda (f : CudaFn)
+  | cublas (f : CublasFn)
+  | wgpu (f : WgpuFn)
+  | window (f : WindowFn)
+  | cpu (f : CpuFn)
+  | serial (f : SerialFn)
+  | usb (f : UsbFn)
+  deriving Repr, BEq, DecidableEq, Lean.ToExpr
+
+def Ext.lib : Ext → Lib
+  | .present l => l
+  | .c _ => .c
+  | .cuda _ => .cuda
+  | .cublas _ => .cublas
+  | .wgpu _ => .wgpu
+  | .window _ => .window
+  | .cpu _ => .cpu
+  | .serial _ => .serial
+  | .usb _ => .usb
+
+/-- The symbol the library exports, empty for the presence probe. -/
+def Ext.symbol : Ext → String
+  | .present _ => ""
+  | .c .memcpy => "memcpy" | .c .memmove => "memmove" | .c .memset => "memset"
+  | .c .strlen => "strlen" | .c .calloc => "calloc" | .c .free => "free"
+  | .cuda f => match f with
+    | .init => "cuInit" | .deviceGet => "cuDeviceGet"
+    | .primaryCtxRetain => "cuDevicePrimaryCtxRetain"
+    | .primaryCtxRelease => "cuDevicePrimaryCtxRelease_v2"
+    | .ctxSetCurrent => "cuCtxSetCurrent" | .ctxSynchronize => "cuCtxSynchronize"
+    | .memGetInfo => "cuMemGetInfo_v2" | .memAlloc => "cuMemAlloc_v2" | .memFree => "cuMemFree_v2"
+    | .memcpyHtoD => "cuMemcpyHtoD_v2" | .memcpyDtoH => "cuMemcpyDtoH_v2"
+    | .memcpyDtoD => "cuMemcpyDtoD_v2" | .memsetD8 => "cuMemsetD8_v2"
+    | .moduleLoadData => "cuModuleLoadData" | .moduleGetFunction => "cuModuleGetFunction"
+    | .moduleUnload => "cuModuleUnload" | .launchKernel => "cuLaunchKernel"
+    | .streamCreate => "cuStreamCreate" | .streamSynchronize => "cuStreamSynchronize"
+    | .streamDestroy => "cuStreamDestroy_v2"
+    | .eventCreate => "cuEventCreate" | .eventRecord => "cuEventRecord"
+    | .streamWaitEvent => "cuStreamWaitEvent" | .eventSynchronize => "cuEventSynchronize"
+    | .eventDestroy => "cuEventDestroy_v2" | .eventElapsedTime => "cuEventElapsedTime"
+    | .memAllocHost => "cuMemAllocHost_v2" | .memFreeHost => "cuMemFreeHost"
+    | .memcpyHtoDAsync => "cuMemcpyHtoDAsync_v2" | .memcpyDtoHAsync => "cuMemcpyDtoHAsync_v2"
+    | .beginCapture => "cuStreamBeginCapture_v2" | .endCapture => "cuStreamEndCapture"
+    | .graphInstantiate => "cuGraphInstantiateWithFlags" | .graphLaunch => "cuGraphLaunch"
+    | .graphExecDestroy => "cuGraphExecDestroy" | .graphDestroy => "cuGraphDestroy"
+  | .cublas f => match f with
+    | .create => "cublasCreate_v2" | .destroy => "cublasDestroy_v2"
+    | .setStream => "cublasSetStream_v2" | .sgemv => "cublasSgemv_v2" | .sgemm => "cublasSgemm_v2"
+    | .sgemmStridedBatched => "cublasSgemmStridedBatched" | .gemmEx => "cublasGemmEx"
+    | .gemmStridedBatchedEx => "cublasGemmStridedBatchedEx" | .sgemmBatched => "cublasSgemmBatched"
+  | .wgpu f => match f with
+    | .createInstance => "wgpuCreateInstance"
+    | .requestAdapter => "wgpuInstanceRequestAdapter"
+    | .requestDevice => "wgpuAdapterRequestDevice"
+    | .release o => "wgpu" ++ o.cname ++ "Release"
+    | .deviceGetQueue => "wgpuDeviceGetQueue"
+    | .deviceCreateBuffer => "wgpuDeviceCreateBuffer"
+    | .deviceCreateShaderModule => "wgpuDeviceCreateShaderModule"
+    | .deviceCreateBindGroupLayout => "wgpuDeviceCreateBindGroupLayout"
+    | .deviceCreatePipelineLayout => "wgpuDeviceCreatePipelineLayout"
+    | .deviceCreateComputePipeline => "wgpuDeviceCreateComputePipeline"
+    | .deviceCreateBindGroup => "wgpuDeviceCreateBindGroup"
+    | .deviceCreateCommandEncoder => "wgpuDeviceCreateCommandEncoder"
+    | .deviceCreateRenderPipeline => "wgpuDeviceCreateRenderPipeline"
+    | .devicePushErrorScope => "wgpuDevicePushErrorScope"
+    | .errorScopePop => "wgpuErrorScopePop"
+    | .renderPipelineGetBindGroupLayout => "wgpuRenderPipelineGetBindGroupLayout"
+    | .encoderBeginComputePass => "wgpuCommandEncoderBeginComputePass"
+    | .computePassSetPipeline => "wgpuComputePassSetPipeline"
+    | .computePassSetBindGroup => "wgpuComputePassSetBindGroup"
+    | .computePassDispatch => "wgpuComputePassDispatchWorkgroups"
+    | .computePassEnd => "wgpuComputePassEnd"
+    | .encoderCopyBufferToBuffer => "wgpuCommandEncoderCopyBufferToBuffer"
+    | .encoderFinish => "wgpuCommandEncoderFinish"
+    | .encoderBeginRenderPass => "wgpuCommandEncoderBeginRenderPass"
+    | .renderPassSetPipeline => "wgpuRenderPassSetPipeline"
+    | .renderPassSetBindGroup => "wgpuRenderPassSetBindGroup"
+    | .renderPassDraw => "wgpuRenderPassDraw"
+    | .renderPassEnd => "wgpuRenderPassEnd"
+    | .queueSubmit => "wgpuQueueSubmit"
+    | .queueWriteBuffer => "wgpuQueueWriteBuffer"
+    | .bufferRead => "wgpuBufferRead"
+    | .instanceCreateSurface => "wgpuInstanceCreateSurface"
+    | .surfaceConfigure => "wgpuSurfaceConfigure"
+    | .surfaceGetCurrentTexture => "wgpuSurfaceGetCurrentTexture"
+    | .surfacePresent => "wgpuSurfaceTexturePresent"
+    | .textureCreateView => "wgpuSurfaceTextureCreateView"
+  | .window f => match f with
+    | .init => "base_window_init" | .open => "base_window_open" | .close => "base_window_close"
+    | .pump => "base_window_pump" | .poll => "base_window_poll" | .pixels => "base_window_pixels"
+  | .cpu f => match f with
+    | .count => "base_cpu_count" | .core => "base_cpu_core" | .package => "base_cpu_package"
+    | .pin => "base_cpu_pin" | .unpin => "base_cpu_unpin"
+  | .serial f => "base_serial_" ++ match f with
+    | .count => "count" | .name => "name" | .open => "open" | .close => "close"
+    | .read => "read" | .write => "write" | .pending => "pending"
+  | .usb f => "base_usb_" ++ match f with
+    | .count => "count" | .info => "info" | .open => "open" | .close => "close"
+    | .claim => "claim" | .release => "release" | .control => "control"
+    | .bulk => "bulk" | .interrupt => "interrupt"
+
+/-- Parameters and result, as the C declaration gives them: a pointer or a
+    `size_t` is an `i64`, an `int` an `i32`. -/
+def Ext.sig : Ext → List ClifTy × Option ClifTy
+  | .present _ => ([], some .i32)
+  | .c .memcpy | .c .memmove => ([.i64, .i64, .i64], some .i64)
+  | .c .memset => ([.i64, .i32, .i64], some .i64)
+  | .c .strlen => ([.i64], some .i64)
+  | .c .calloc => ([.i64, .i64], some .i64)
+  | .c .free => ([.i64], none)
+  -- `CUresult`, `CUdevice`, `unsigned int` are `i32`; handles, pointers,
+  -- `CUdeviceptr` and `size_t` are `i64`. `cuMemsetD8`'s `unsigned char`
+  -- travels zero-extended as an `i32`, which a register reads the same.
+  | .cuda f => (match f with
+    | .init => [.i32] | .deviceGet => [.i64, .i32] | .primaryCtxRetain => [.i64, .i32]
+    | .primaryCtxRelease => [.i32] | .ctxSetCurrent => [.i64] | .ctxSynchronize => []
+    | .memGetInfo => [.i64, .i64] | .memAlloc => [.i64, .i64] | .memFree => [.i64]
+    | .memcpyHtoD | .memcpyDtoH | .memcpyDtoD => [.i64, .i64, .i64]
+    | .memsetD8 => [.i64, .i32, .i64]
+    | .moduleLoadData => [.i64, .i64] | .moduleGetFunction => [.i64, .i64, .i64]
+    | .moduleUnload => [.i64]
+    | .launchKernel => [.i64, .i32, .i32, .i32, .i32, .i32, .i32, .i32, .i64, .i64, .i64]
+    | .streamCreate => [.i64, .i32] | .streamSynchronize | .streamDestroy => [.i64]
+    | .eventCreate => [.i64, .i32] | .eventRecord => [.i64, .i64]
+    | .streamWaitEvent => [.i64, .i64, .i32]
+    | .eventSynchronize | .eventDestroy => [.i64]
+    | .eventElapsedTime => [.i64, .i64, .i64]
+    | .memAllocHost => [.i64, .i64] | .memFreeHost => [.i64]
+    | .memcpyHtoDAsync | .memcpyDtoHAsync => [.i64, .i64, .i64, .i64]
+    | .beginCapture => [.i64, .i32] | .endCapture => [.i64, .i64]
+    | .graphInstantiate => [.i64, .i64, .i64] | .graphLaunch => [.i64, .i64]
+    | .graphExecDestroy | .graphDestroy => [.i64],
+    some .i32)
+  -- `cublasOperation_t`, `cudaDataType`, `cublasComputeType_t`,
+  -- `cublasGemmAlgo_t` and `int` are `i32`; `long long` strides are `i64`.
+  | .cublas f => (match f with
+    | .create | .destroy => [.i64] | .setStream => [.i64, .i64]
+    | .sgemv => [.i64, .i32, .i32, .i32, .i64, .i64, .i32, .i64, .i32, .i64, .i64, .i32]
+    | .sgemm => [.i64, .i32, .i32, .i32, .i32, .i32, .i64, .i64, .i32, .i64, .i32, .i64, .i64, .i32]
+    | .sgemmStridedBatched =>
+        [.i64, .i32, .i32, .i32, .i32, .i32, .i64, .i64, .i32, .i64, .i64, .i32, .i64, .i64,
+         .i64, .i32, .i64, .i32]
+    | .gemmEx =>
+        [.i64, .i32, .i32, .i32, .i32, .i32, .i64, .i64, .i32, .i32, .i64, .i32, .i32, .i64,
+         .i64, .i32, .i32, .i32, .i32]
+    | .gemmStridedBatchedEx =>
+        [.i64, .i32, .i32, .i32, .i32, .i32, .i64, .i64, .i32, .i32, .i64, .i64, .i32, .i32,
+         .i64, .i64, .i64, .i32, .i32, .i64, .i32, .i32, .i32]
+    -- the three operands are device arrays of device pointers
+    | .sgemmBatched =>
+        [.i64, .i32, .i32, .i32, .i32, .i32, .i64, .i64, .i32, .i64, .i32, .i64, .i64, .i32, .i32],
+    some .i32)
+  -- Objects, addresses, lengths, counts, sizes, offsets and buffer usages
+  -- are `i64`; group indices, workgroup and draw counts, formats and a
+  -- surface's size, `i32`; a status `i32`.
+  | .wgpu f => match f with
+    | .createInstance => ([], some .i64)
+    | .requestAdapter | .requestDevice | .deviceGetQueue | .deviceCreateCommandEncoder
+    | .devicePushErrorScope | .encoderBeginComputePass | .encoderFinish
+    | .surfaceGetCurrentTexture | .textureCreateView => ([.i64], some .i64)
+    | .release _ | .computePassEnd | .renderPassEnd | .surfacePresent => ([.i64], none)
+    | .errorScopePop => ([.i64], some .i32)
+    | .deviceCreateBuffer | .deviceCreateShaderModule | .deviceCreateBindGroupLayout
+    | .deviceCreatePipelineLayout => ([.i64, .i64, .i64], some .i64)
+    | .deviceCreateComputePipeline => ([.i64, .i64, .i64, .i64, .i64], some .i64)
+    | .deviceCreateBindGroup => ([.i64, .i64, .i64, .i64], some .i64)
+    | .deviceCreateRenderPipeline => ([.i64, .i64, .i64, .i64, .i64, .i64, .i32], some .i64)
+    | .renderPipelineGetBindGroupLayout => ([.i64, .i32], some .i64)
+    | .computePassSetPipeline | .renderPassSetPipeline | .queueSubmit => ([.i64, .i64], none)
+    | .computePassSetBindGroup | .renderPassSetBindGroup => ([.i64, .i32, .i64], none)
+    | .computePassDispatch => ([.i64, .i32, .i32, .i32], none)
+    | .encoderCopyBufferToBuffer => ([.i64, .i64, .i64, .i64, .i64, .i64], none)
+    | .encoderBeginRenderPass => ([.i64, .i64, .i32], some .i64)
+    | .renderPassDraw => ([.i64, .i32, .i32, .i32, .i32], none)
+    | .queueWriteBuffer => ([.i64, .i64, .i64, .i64, .i64], none)
+    | .bufferRead => ([.i64, .i64, .i64, .i64, .i64], some .i32)
+    | .instanceCreateSurface => ([.i64, .i64], some .i64)
+    | .surfaceConfigure => ([.i64, .i64, .i32, .i32, .i32], none)
+  -- `bool` is an `i8`, `int32_t` an `i32`; a window, a title and a record
+  -- pointer `i64`s.
+  | .window f => match f with
+    | .init => ([], some .i8)
+    | .open => ([.i64, .i32, .i32], some .i64)
+    | .close => ([.i64], none)
+    | .pump => ([], none)
+    | .poll => ([.i64, .i64], some .i8)
+    | .pixels => ([.i64], some .i64)
+  -- A CPU's number, and every answer, is an `int`.
+  | .cpu f => match f with
+    | .count | .unpin => ([], some .i32)
+    | .core | .package | .pin => ([.i32], some .i32)
+  -- A port, a device, a buffer, a length and a count are `i64`s; an index,
+  -- a baud rate, a timeout, an interface, an endpoint and the fields of a
+  -- SETUP packet `i32`s.
+  | .serial f => match f with
+    | .count => ([], some .i32)
+    | .name => ([.i32, .i64, .i64], some .i64)
+    | .open => ([.i64, .i32, .i32], some .i64)
+    | .close => ([.i64], none)
+    | .read | .write => ([.i64, .i64, .i64], some .i64)
+    | .pending => ([.i64], some .i64)
+  | .usb f => match f with
+    | .count => ([], some .i32)
+    | .info => ([.i32, .i32], some .i64)
+    | .open => ([.i32], some .i64)
+    | .close => ([.i64], none)
+    | .claim | .release => ([.i64, .i32], some .i32)
+    | .control => ([.i64, .i32, .i32, .i32, .i32, .i64, .i32, .i32], some .i64)
+    | .bulk | .interrupt => ([.i64, .i32, .i32, .i64, .i64, .i32], some .i64)
+
+/-- The C declaration's parameter types, for the functions a header declares
+    more than once in C++ (as overloads that take older enums): what selects
+    the C one. -/
+def Ext.cParams : Ext → Option (List String)
+  | .cublas .gemmEx => some
+      ["cublasHandle_t", "cublasOperation_t", "cublasOperation_t", "int", "int", "int",
+       "const void*", "const void*", "cudaDataType", "int", "const void*", "cudaDataType", "int",
+       "const void*", "void*", "cudaDataType", "int", "cublasComputeType_t", "cublasGemmAlgo_t"]
+  | .cublas .gemmStridedBatchedEx => some
+      ["cublasHandle_t", "cublasOperation_t", "cublasOperation_t", "int", "int", "int",
+       "const void*", "const void*", "cudaDataType", "int", "long long int", "const void*",
+       "cudaDataType", "int", "long long int", "const void*", "void*", "cudaDataType", "int",
+       "long long int", "int", "cublasComputeType_t", "cublasGemmAlgo_t"]
+  | _ => none
+
 /-- Which load instruction, independent of the type it yields. -/
 inductive LoadKind where
-  | plain | uload8 | uload32 | sload8
+  | plain | uload8 | uload16 | uload32 | sload8 | sload16 | sload32
   deriving Repr, BEq
 
 /-- A load: what to read, as what type, under which memory flags. -/
@@ -87,7 +572,9 @@ inductive Ffi where
   | cudaPinnedPtrAt | cudaMemInfoFree | cudaMemInfoTotal | cublasGemmExBf16
   | cublasGemmStridedBatchedExBf16
   | nativeLoad | nativeFree | nativeArch | cpuHas
-  deriving Repr, BEq, DecidableEq, Inhabited, Lean.ToExpr
+  | fileCreateDirAll | threadStart | threadFinish
+  | memLock | memUnlock | memAdviseHuge | threadPriority
+  deriving Repr, DecidableEq, Inhabited, Lean.ToExpr
 
 namespace Ffi
 
@@ -182,6 +669,13 @@ def cname : Ffi → String
   | .nativeFree => "cl_native_free"
   | .nativeArch => "cl_native_arch"
   | .cpuHas => "cl_cpu_has"
+  | .fileCreateDirAll => "cl_file_create_dir_all"
+  | .threadStart => "cl_thread_start"
+  | .threadFinish => "cl_thread_finish"
+  | .memLock => "cl_mem_lock"
+  | .memUnlock => "cl_mem_unlock"
+  | .memAdviseHuge => "cl_mem_advise_huge"
+  | .threadPriority => "cl_thread_priority"
 
 /-- Parameters and result, exactly as `base/src/ffi/` takes them. -/
 def sig : Ffi → List ClifTy × Option ClifTy
@@ -210,7 +704,7 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .lmdbBeginWriteTxn => ([.i64, .i32], some .i32)
   | .lmdbPut => ([.i64, .i32, .i64, .i32, .i64, .i32], some .i32)
   | .lmdbCommitWriteTxn => ([.i64, .i32], some .i32)
-  | .lmdbCursorScan => ([.i64, .i32, .i64, .i32, .i32, .i64], some .i32)
+  | .lmdbCursorScan => ([.i64, .i32, .i64, .i32, .i32, .i64, .i64], some .i32)
   | .lmdbCleanup => ([.i64], none)
   | .htCreate => ([.i64], some .i32)
   | .htLookup => ([.i64, .i64, .i32, .i64], some .i32)
@@ -317,6 +811,27 @@ def sig : Ffi → List ClifTy × Option ClifTy
   | .nativeFree => ([.i64], some .i32)
   | .nativeArch => ([], some .i32)
   | .cpuHas => ([.i64], some .i32)
+  -- `(path)`: the directory at the path, and every one missing on the way;
+  -- `0`, or `-1` when that cannot be done.
+  | .fileCreateDirAll => ([.i64], some .i64)
+  -- `(fn, arg)`: function `fn` of the program run on `arg` on a new thread,
+  -- answered as a handle, or `-1`; `(handle)`: that thread waited for and the
+  -- handle released, once: `0`, or `-1`.
+  | .threadStart => ([.i64, .i64], some .i64)
+  | .threadFinish => ([.i64], some .i64)
+  -- The performance controls: lock `(ptr, len)` in physical memory, unlock
+  -- it, ask for huge pages under it, and raise (`1`) or lower (`-1`) the
+  -- calling thread's priority a step, or reset it (`0`). Each answers `0`,
+  -- or `-1` when the system declines; none changes what memory holds.
+  | .memLock => ([.i64, .i64], some .i32)
+  | .memUnlock => ([.i64, .i64], some .i32)
+  | .memAdviseHuge => ([.i64, .i64], some .i32)
+  | .threadPriority => ([.i32], some .i32)
+  -- What wgpu answers through a callback, waited for: `(instance)` its
+  -- high-performance adapter, or `0`; `(adapter)` a device, or `0`;
+  -- `(device, buffer, offset, dst, size)` the buffer's bytes copied to `dst`
+  -- through a mapping, `0` or `-1`; `(device)` the innermost error scope
+  -- popped, `0` when it caught nothing and `-1` otherwise.
 
 def params (f : Ffi) : List ClifTy := f.sig.1
 def result (f : Ffi) : Option ClifTy := f.sig.2
@@ -346,10 +861,21 @@ def all : List Ffi :=
    .cublasPtrArray, .cublasSgemmBatchedOnStream,
    .cudaPinnedPtrAt, .cudaMemInfoFree, .cudaMemInfoTotal, .cublasGemmExBf16,
    .cublasGemmStridedBatchedExBf16,
-   .nativeLoad, .nativeFree, .nativeArch, .cpuHas]
+   .nativeLoad, .nativeFree, .nativeArch, .cpuHas, .fileCreateDirAll, .threadStart, .threadFinish,
+   .memLock, .memUnlock, .memAdviseHuge, .threadPriority]
+
+/-- The registry of entry points: `all` misses none and repeats none, so the
+    ids below are a numbering of `Ffi` and not merely of a list beside it. -/
+instance : Enum Ffi where
+  all := all
+  complete f := by cases f <;> decide
+  nodup := by decide
 
 /-- The callee id every artifact carries for `f`. -/
 def id (f : Ffi) : Nat := all.idxOf f
+
+/-- Distinct entry points carry distinct ids. -/
+theorem id_injective {f g : Ffi} (h : f.id = g.id) : f = g := Enum.index_injective h
 
 /-- The entry point a name resolves to, if it is one. -/
 def ofCname (s : String) : Option Ffi := all.find? (·.cname == s)
@@ -379,6 +905,10 @@ inductive Callee where
       answering an `i64`. A plain indirect call: nothing of the engine's runs
       between the caller and the code. -/
   | native
+  /-- A CLIF atomic instruction, which the engine emits in place of a call. -/
+  | atomic (a : Atomic)
+  /-- A function of a C library, called directly. -/
+  | ext (e : Ext)
   deriving Repr, BEq, DecidableEq, Lean.ToExpr
 
 /-- A single CLIF instruction -/
@@ -438,6 +968,15 @@ inductive Inst where
   | ctz (dst a : Val)
   | popcnt (dst a : Val)
   | vhighBits (dst a : Val)
+  | ibin (dst : Val) (k : IBin) (a b : Val)
+  | ishift (dst : Val) (k : IShift) (a b : Val)
+  | iun (dst : Val) (k : IUn) (a : Val)
+  | fbin (dst : Val) (k : FBin) (a b : Val)
+  | fun1 (dst : Val) (k : FUn) (a : Val)
+  | fconv (dst : Val) (k : FConv) (ty : ClifTy) (a : Val)
+  /-- `a * b + c`, rounded once. -/
+  | fma (dst a b c : Val)
+  | iext (dst : Val) (k : IExt) (ty : ClifTy) (a : Val)
   deriving BEq
 
 /-- A finalized block -/
@@ -494,8 +1033,41 @@ instance : ToCbor FloatCC where
 
 instance : ToCbor LoadKind where
   cbor k := text <| match k with
-    | .plain => "Plain" | .uload8 => "Uload8"
-    | .uload32 => "Uload32" | .sload8 => "Sload8"
+    | .plain => "Plain" | .uload8 => "Uload8" | .uload16 => "Uload16"
+    | .uload32 => "Uload32" | .sload8 => "Sload8" | .sload16 => "Sload16"
+    | .sload32 => "Sload32"
+
+instance : ToCbor IBin where
+  cbor k := text <| match k with
+    | .sdiv => "Sdiv" | .urem => "Urem" | .srem => "Srem" | .smin => "Smin"
+    | .smax => "Smax" | .umin => "Umin" | .umax => "Umax" | .umulhi => "Umulhi"
+    | .smulhi => "Smulhi"
+
+instance : ToCbor IShift where
+  cbor k := text <| match k with
+    | .sshr => "Sshr" | .rotl => "Rotl" | .rotr => "Rotr"
+
+instance : ToCbor IUn where
+  cbor k := text <| match k with
+    | .bnot => "Bnot" | .iabs => "Iabs" | .clz => "Clz"
+    | .bswap => "Bswap" | .bitrev => "Bitrev"
+
+instance : ToCbor FBin where
+  cbor k := text <| match k with
+    | .fdiv => "Fdiv" | .fcopysign => "Fcopysign"
+
+instance : ToCbor FUn where
+  cbor k := text <| match k with
+    | .sqrt => "Sqrt" | .fabs => "Fabs" | .ceil => "Ceil" | .floor => "Floor"
+    | .trunc => "Trunc" | .nearest => "Nearest"
+
+instance : ToCbor IExt where
+  cbor k := text <| match k with
+    | .reduce => "Reduce" | .uextend => "Uextend" | .sextend => "Sextend"
+
+instance : ToCbor FConv where
+  cbor k := text <| match k with
+    | .toSint => "ToSint" | .fromUint => "FromUint" | .demote => "Demote"
 
 instance : ToCbor LoadOp where
   cbor op := struct
@@ -507,18 +1079,44 @@ instance : ToCbor LoadOp where
     `Ffi` already fixes; a defined function as its position. The constructor
     does not travel: the wire says what the engine needs to resolve, and the
     restriction to entry points the engine has belongs on this side of it. -/
+instance : ToCbor AtomicRmw where
+  cbor k := text <| match k with
+    | .add => "Add" | .sub => "Sub" | .and => "And" | .nand => "Nand" | .or => "Or"
+    | .xor => "Xor" | .xchg => "Xchg" | .umin => "Umin" | .umax => "Umax"
+    | .smin => "Smin" | .smax => "Smax"
+
+instance : ToCbor Atomic where
+  cbor
+    | .load t => newtypeVariant "Load" (cbor t)
+    | .store t => newtypeVariant "Store" (cbor t)
+    | .rmw t k => variant "Rmw" [cbor t, cbor k]
+    | .cas t => newtypeVariant "Cas" (cbor t)
+    | .fence => text "Fence"
+
+/-- A C function travels with everything the engine needs to bind it: the
+    library and its files, the symbol, and the signature to call it at. -/
+def Ext.toCbor (e : Ext) : W Unit :=
+  struct
+    [("lib", text e.lib.name),
+     ("files", array e.lib.files fun (os, fs) => do head 4 2; text os; array fs text),
+     ("symbol", text e.symbol),
+     ("params", array e.sig.1 cbor),
+     ("result", option cbor e.sig.2)]
+
 instance : ToCbor Callee where
   cbor
     | .ffi f   => newtypeVariant "Import" (text f.cname)
     | .local i => newtypeVariant "Local" (nat i)
     | .native  => text "Native"
+    | .atomic a => newtypeVariant "Atomic" (cbor a)
+    | .ext e => newtypeVariant "Extern" (Ext.toCbor e)
 
 /-- One instruction, in the shape `base_types::clif::Inst` reads.
 
     Stores and loads carry a byte offset on the Rust side that no builder here
     emits yet, so it is written as zero. -/
 def Inst.toCbor : Inst → W Unit
-  | .iconst d t v => variant "Iconst" [cbor d, cbor t, int v]
+  | .iconst d t v => variant "Iconst" [cbor d, cbor t, i64 v]
   | .iadd d a b => variant "Iadd" [cbor d, cbor a, cbor b]
   | .isub d a b => variant "Isub" [cbor d, cbor a, cbor b]
   | .imul d a b => variant "Imul" [cbor d, cbor a, cbor b]
@@ -567,6 +1165,14 @@ def Inst.toCbor : Inst → W Unit
   | .ctz d a => variant "Ctz" [cbor d, cbor a]
   | .popcnt d a => variant "Popcnt" [cbor d, cbor a]
   | .vhighBits d a => variant "VhighBits" [cbor d, cbor a]
+  | .ibin d k a b => variant "Ibin" [cbor d, cbor k, cbor a, cbor b]
+  | .ishift d k a b => variant "Ishift" [cbor d, cbor k, cbor a, cbor b]
+  | .iun d k a => variant "Iun" [cbor d, cbor k, cbor a]
+  | .fbin d k a b => variant "Fbin" [cbor d, cbor k, cbor a, cbor b]
+  | .fun1 d k a => variant "Fun1" [cbor d, cbor k, cbor a]
+  | .fconv d k t a => variant "Fconv" [cbor d, cbor k, cbor t, cbor a]
+  | .fma d a b c => variant "Fma" [cbor d, cbor a, cbor b, cbor c]
+  | .iext d k t a => variant "Iext" [cbor d, cbor k, cbor t, cbor a]
 
 
 

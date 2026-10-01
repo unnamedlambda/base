@@ -1,9 +1,11 @@
 module
 public import Lean
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -30,7 +32,7 @@ namespace ByteScrub
   `ByteScrubProof.lean` states what this artifact's compare and blend do.
   `blendInsts_ship` names them as the instructions block 2 of the entry point
   carries, by running the compiler. `icmp_masks_nuls` and `bitselect_scrubs`
-  say what each computes, for every sixteen bytes, under `HProgSem`: the
+  say what each computes, for every sixteen bytes, under `Host.Sem`: the
   executable CLIF semantics this repository checks its artifacts against.
 -/
 
@@ -48,9 +50,15 @@ def scrub (vectors : Nat) (src dst : V .i64) : Prog V L Unit := do
     store (← blend v nul space) (← iadd dst off)
 
 /-- **What ships.** 256 vectors, so 4096 bytes, from the caller's input to its
-    output buffer. -/
+    output buffer, when the caller handed over 4096 bytes and has room for
+    them; nothing otherwise. -/
 def code : Prog V L Unit := do
-  scrub 256 (← dataPtr) (← outPtr)
+  let src ← dataPtr
+  let dst ← outPtr
+  let need ← iconst64 4096
+  when .ule need (← dataLen) do
+    when .ule need (← outLen) do
+      scrub 256 src dst
 
 -- ---------------------------------------------------------------------------
 
@@ -60,8 +68,7 @@ def code : Prog V L Unit := do
     already sizes the arena to cover. -/
 def MEM_SIZE : Nat := 0
 
-/-- `compileProg` folds the term, derives the callee table it needs --- empty,
-    since this body calls nothing --- and refuses a body `wf` rejects. -/
+/-- `compileProg` folds the term and refuses a body `wf` rejects. -/
 def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
 

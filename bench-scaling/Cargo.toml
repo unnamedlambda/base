@@ -10,7 +10,7 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 
 # clifbench links the real runtime to time Cranelift parse+JIT. Optional so the
-# harness itself builds without pulling in wgpu/cudarc.
+# harness itself builds without pulling in Cranelift.
 base = { path = "../base", optional = true }
 base-types = { path = "../base-types", optional = true }
 

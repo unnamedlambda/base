@@ -1,9 +1,9 @@
 module
 public import Lean
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 public import Bench.CpuAsm
 meta import Bench.CpuAsm
 import all Init.Data.Repr
@@ -99,6 +99,11 @@ def initialMemory : List UInt8 :=
     (writeAt (zeros MEM_SIZE) NAME_OFF ("avx".toUTF8.toList ++ [0]))
   writeAt withCode POLY_OFF polyBytes
 
+/-- Each body's offset in memory, its length, and its slot. -/
+def loads : List (Nat × Nat × Nat) :=
+  (natives.zip (codeOffs.zip (List.range natives.length))).map
+    fun (b, off, k) => (off, (bodyBytes b).length, k)
+
 /-- Map every body, on an x86-64 CPU with AVX. The caller's output gets how
     many bodies there are at 0 and each slot at `8 * (1 + slot)`, so it can see
     that all loaded. -/
@@ -106,14 +111,16 @@ def asmLoad : Prog V L Unit := do
   let base ← basePtr
   let out ← outPtr
   let one ← iconst32 1
-  storeI64 (← iconst64 natives.length) out
-  when .eq (← nativeArch) one do
-    when .eq (← cpuHas (← iaddImm base NAME_OFF)) one do
-      for (b, off, k) in natives.zip (codeOffs.zip (List.range natives.length)) do
-        let addr ← nativeLoad (← iaddImm base off) (← iconst64 (bodyBytes b).length)
-        storeI64 addr (← iaddImm base (SLOT_OFF + 8 * k))
-  for k in List.range natives.length do
-    storeI64 (← load64 (← iaddImm base (SLOT_OFF + 8 * k))) (← iaddImm out (8 * (k + 1)))
+  -- the count and each body's address, only where the caller left room for them
+  when .ule (← iconst64 (8 * (natives.length + 1))) (← outLen) do
+    storeI64 (← iconst64 natives.length) out
+    when .eq (← nativeArch) one do
+      when .eq (← cpuHas (← iaddImm base NAME_OFF)) one do
+        for (off, len, k) in loads do
+          let addr ← nativeLoad (← iaddImm base off) (← iconst64 len)
+          storeI64 addr (← iaddImm base (SLOT_OFF + 8 * k))
+    for k in List.range natives.length do
+      storeI64 (← load64 (← iaddImm base (SLOT_OFF + 8 * k))) (← iaddImm out (8 * (k + 1)))
 
 /-- Run body `slot` on `a b c d` if `asm_load` mapped it, else `fallback`. -/
 def viaNative (slot : Nat) (a b c d : V .i64) (fallback : Prog V L (V .i64)) :
@@ -243,14 +250,16 @@ def polyVec (cs : List (V .f32x4)) (x : V .f32x4) : Prog V L (V .f32x4) := do
   | top :: rest => rest.foldlM (fun y c => do fadd (← fmul y x) c) top
 
 /-- Four vectors a trip, bounded by an end pointer, rotated; then one vector a
-    trip for the rest. `n` is a multiple of 4, as the input is. The
+    trip for the rest of the whole vectors; the benchmark's input is a
+    multiple of 4, and elements past the last whole vector are not read. The
     coefficients are read from memory once, before the loop. -/
 def polySimd (a : Args V) : Prog V L (V .i64) := do
   let (p, n, coef, _) := a
   let cs ← (List.range POLY.length).mapM fun d => do loadF32x4 (← iaddImm coef (16 * Int.ofNat d))
   let h0 ← splat .f32x4 (← fconst32 0.0)
   let end16 ← iadd p (← ishlImm (← band n (← iconst64 (-16))) 2)
-  let endN ← iadd p (← ishlImm n 2)
+  -- whole vectors only: a vector past the last whole one would read past the input
+  let endN ← iadd p (← ishlImm (← band n (← iconst64 (-4))) 2)
   let r ← dwloop %[p, h0] .ult end16 (contOnTrue := true) [0, 1] (guardIdx := some 0)
     (body := fun c => do
       let mut h := c.snd
@@ -274,11 +283,16 @@ def polySimd (a : Args V) : Prog V L (V .i64) := do
 -- stream: 32 MB copied, far past the caches
 -- ---------------------------------------------------------------------------
 
-/-- `b[n/2] ^ b[n-1]` of the u64s copied to `o`. -/
+/-- `b[n/2] ^ b[n-1]` of the u64s copied to `o`; 0 when none were. -/
 def copyAnswer (n o : V .i64) : Prog V L (V .i64) := do
-  let mid ← load64 (← iadd o (← ishlImm (← ushrImm n 1) 3))
-  let last ← load64 (← iadd o (← ishlImm (← iaddImm n (-1)) 3))
-  bxor mid last
+  let zero ← iconst64 0
+  let r ← ifte (jTys := [.i64]) .eq n zero
+    (thn := return %[zero])
+    (els := do
+      let mid ← load64 (← iadd o (← ishlImm (← ushrImm n 1) 3))
+      let last ← load64 (← iadd o (← ishlImm (← iaddImm n (-1)) 3))
+      return %[← bxor mid last])
+  return r.head
 
 /-- 64 bytes a trip in four `i8x16`s, then the rest a u64 at a time. -/
 def copySimd (a : Args V) : Prog V L (V .i64) := do
@@ -321,38 +335,53 @@ def nothing : Prog V L (Args V) := do
 
 abbrev Kernel := Args Slot → Prog Slot Lvl (Slot .i64)
 
+/-- The output an entry writes when only its answer goes there. -/
+def outAnswer : Prog V L (V .i64) := iconst64 8
+
+/-- The output `histogram` writes: its table at `outPtr + 64`. -/
+def outHist : Prog V L (V .i64) := iconst64 (64 + 8 * 256)
+
+/-- The output `stream` writes: the copy of the whole elements of its input
+    at `outPtr + 64`. -/
+def outCopy : Prog V L (V .i64) := do iaddImm (← ishlImm (← ushrImm (← dataLen) 3) 3) 64
+
 structure Workload where
   name : String
   input : Prog Slot Lvl (Args Slot)
   clif : Kernel
   native : Option Nat := none
+  /-- How many bytes of the caller's output the kernel writes. -/
+  out : Prog Slot Lvl (Slot .i64) := outAnswer
 
-/-- An entry that leaves `kernel`'s answer at `outPtr`. -/
-def answer (kernel : Prog V L (V .i64)) : Prog V L Unit := do
-  storeI64 (← kernel) (← outPtr)
+/-- An entry that leaves `kernel`'s answer at `outPtr`, run only when the
+    caller's output has the `need` bytes it writes. -/
+def answer (need : Prog V L (V .i64)) (kernel : Prog V L (V .i64)) : Prog V L Unit := do
+  let out ← outPtr
+  when .ule (← need) (← outLen) do
+    storeI64 (← kernel) out
 
 /-- A workload's entries, in function order from `idx`: `<name>_clif`, and
     `<name>_asm` when it carries machine code, falling back to the CLIF. -/
 def Workload.fns (w : Workload) (idx : Nat) : List (Except String FuncData) :=
-  [Prog.entry s!"{w.name}_clif" (Prog.compileProg idx (do answer (w.clif (← w.input))))]
+  [Prog.entry s!"{w.name}_clif" (Prog.compileProg idx (do answer w.out (w.clif (← w.input))))]
   ++ match w.native with
     | some slot =>
       [Prog.entry s!"{w.name}_asm" (Prog.compileProg (idx + 1) (do
         let args ← w.input
         let (a, b, c, d) := args
-        answer (viaNative slot a b c d (w.clif args))))]
+        answer w.out (viaNative slot a b c d (w.clif args))))]
     | none => []
 
 def Workload.count (w : Workload) : Nat := if w.native.isSome then 2 else 1
 
 def workloads : List Workload :=
-  [{ name := "histogram", input := array 0, clif := histUnr8 },
+  [{ name := "histogram", input := array 0, clif := histUnr8, out := outHist },
    { name := "mandel", input := nothing, clif := mandelUnr 8 },
    { name := "chase", input := array 2, clif := chaseLoop },
    { name := "poly", input := arrayWith 2 POLY_OFF, clif := polySimd, native := some POLY_SLOT },
    -- copy far past the caches, where LLVM's non-temporal stores write a line
    -- without reading it; CLIF's stores all read it first
-   { name := "stream", input := array 3, clif := copySimd, native := some STREAM_SLOT }]
+   { name := "stream", input := array 3, clif := copySimd, native := some STREAM_SLOT, out := outCopy }]
 
 /-- The functions before the workloads' entries: `noop` and `asm_load`. -/
 def FIRST : Nat := 2

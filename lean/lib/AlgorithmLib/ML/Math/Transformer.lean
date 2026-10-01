@@ -1,8 +1,6 @@
 module
-public import AlgorithmLib.ML.Math.Grad
-meta import AlgorithmLib.ML.Math.Grad
-public import AlgorithmLib.ML.Math.Grad
-meta import AlgorithmLib.ML.Math.Grad
+public import AlgorithmLib.ML.Math.Expr
+meta import AlgorithmLib.ML.Math.Expr
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -239,7 +237,7 @@ example (hd seq : Nat) (scale shift : Expr Γ) (q : Fin hd → Expr Γ)
           (softmaxAt seq shift (fun t' => .mul scale (dot hd q (K t'))) t) (V t i)) := rfl
 
 /-- The output projection is applied to the attention result and nothing else —
-    pinned because the elementwise `⊙ xn` that used to be here typechecked. -/
+    pinned because an elementwise `⊙ xn` in its place would typecheck. -/
 example {d dff hd seq : Nat} (hhd : hd = d) (I : LayerIn Γ d dff hd seq) (i : Fin d) :
     layer hhd I i
       = .add

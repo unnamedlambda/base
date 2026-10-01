@@ -1,8 +1,8 @@
 module
-public import Lz4.Launches
-meta import Lz4.Launches
 public import AlgorithmLib.LZ4.Concurrent
 meta import AlgorithmLib.LZ4.Concurrent
+public import Lz4.Launches
+meta import Lz4.Launches
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

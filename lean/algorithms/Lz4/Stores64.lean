@@ -1,6 +1,4 @@
 module
-public import Lz4.OpLe
-meta import Lz4.OpLe
 public import Lz4.OpLe64
 meta import Lz4.OpLe64
 public import Lz4.Stores

@@ -1,6 +1,4 @@
 module
-public import AlgorithmLib.LZ4.WarpKernel
-meta import AlgorithmLib.LZ4.WarpKernel
 public import AlgorithmLib.LZ4.Plan
 meta import AlgorithmLib.LZ4.Plan
 import all Init.Data.Repr

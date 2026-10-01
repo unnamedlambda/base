@@ -1,14 +1,11 @@
 module
-public import Lz4.Kernel
-meta import Lz4.Kernel
 public import AlgorithmLib.LZ4.Confine
 meta import AlgorithmLib.LZ4.Confine
-public import AlgorithmLib.LZ4.OpBound
-meta import AlgorithmLib.LZ4.OpBound
+public import Lz4.Kernel
+meta import Lz4.Kernel
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 /-!
   # The extend loop's read addresses

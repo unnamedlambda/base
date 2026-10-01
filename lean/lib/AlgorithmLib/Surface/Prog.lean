@@ -53,7 +53,7 @@ namespace AlgorithmLib.Prog
 
 open AlgorithmLib.IR
 open AlgorithmLib.HProg (Op Stmt Loop DLoop IteMeta Piece Code R fuel terminates
-  termsGo callsOf wf scopeOk ptrParams)
+  termsGo callsOf wf scopeOk retOk ptrParams)
 
 -- ---------------------------------------------------------------------------
 -- Value lists
@@ -224,7 +224,7 @@ inductive Op' (V : ClifTy → Type) : ClifTy → Type where
   | fcvtFromSint (ty : ClifTy) {ta} (a : V ta)
       (h : (ta.isInt && ty.isFloat) = true := by decide) : Op' V ty
   | fcvtToUint (ty : ClifTy) {ta} (a : V ta)
-      (h : (ta.isFloat && ty.isInt) = true := by decide) : Op' V ty
+      (h : (ta.isFloat && ty.isInt && decide (ty.width ≥ 32)) = true := by decide) : Op' V ty
   | splat (ty : ClifTy) (a : V (laneTy ty)) (h : ty.isVec = true := by decide) : Op' V ty
   | extractlane {ta} (a : V ta) (lane : Nat)
       (h : lane < laneCount ta := by decide) : Op' V (laneTy ta)
@@ -232,6 +232,19 @@ inductive Op' (V : ClifTy → Type) : ClifTy → Type where
   | bitcast (ty : ClifTy) {ta} (a : V ta)
       (h : (ta.width == ty.width) = true := by decide) : Op' V ty
   | load (op : LoadOp) (a : V .i64) : Op' V op.ty
+  | ibin (k : IBin) {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Op' V ty
+  | ishift (k : IShift) {ta tb} (a : V ta) (b : V tb)
+      (h : (ta.isInt && tb.isInt) = true := by decide) : Op' V ta
+  | iun (k : IUn) {ty} (a : V ty) (h : k.admits ty = true := by decide) : Op' V ty
+  | fbin (k : FBin) {ty} (a b : V ty)
+      (h : (ty.isFloat || ty.isFloatVec) = true := by decide) : Op' V ty
+  | fun1 (k : FUn) {ty} (a : V ty)
+      (h : (ty.isFloat || ty.isFloatVec) = true := by decide) : Op' V ty
+  | fma {ty} (a b c : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) : Op' V ty
+  | fconv (k : FConv) (ty : ClifTy) {ta} (a : V ta)
+      (h : k.admits ta ty = true := by decide) : Op' V ty
+  | iext (k : IExt) (ty : ClifTy) {ta} (a : V ta)
+      (h : k.admits ta ty = true := by decide) : Op' V ty
 
 /-- The first-order operation, once slots are what the values are. -/
 def Op'.erase {ty : ClifTy} : Op' (fun _ => R) ty → Op
@@ -271,6 +284,14 @@ def Op'.erase {ty : ClifTy} : Op' (fun _ => R) ty → Op
   | .vhighBits a _ => .vhighBits a
   | .bitcast t a _ => .bitcast t a
   | .load op a => .load op a
+  | .ibin k a b _ => .ibin k a b
+  | .ishift k a b _ => .ishift k a b
+  | .iun k a _ => .iun k a
+  | .fbin k a b _ => .fbin k a b
+  | .fun1 k a _ => .fun1 k a
+  | .fma a b c _ => .fma a b c
+  | .fconv k t a _ => .fconv k t a
+  | .iext k t a _ => .iext k t a
 
 -- ---------------------------------------------------------------------------
 -- The term
@@ -441,154 +462,252 @@ def St.leave (outer inner : St) : List Piece × St :=
   let inner := inner.flush
   (inner.pieces.reverse, { inner with cur := outer.cur, pieces := outer.pieces })
 
+-- Each construct's fold, given how to fold what it contains. `emitGo` and
+-- `emitGoS` differ only in how they recurse, so both are these. They are
+-- inlined so that in compiled code the continuation is `emitGoS`'s own tail
+-- call: through a closure, every foreign call in a body costs a stack frame,
+-- and a body with thousands of them overflows.
+
+/-- A call to a foreign function: its answer binds the next slot, if it has one. -/
+@[inline] def emitCall {α : Type} (f : Ffi) (args : Vals Slot f.params) (k : ResV Slot f.result → St → Option α × St)
+    (s : St) : Option α × St :=
+  let c : Callee := .ffi f
+  let as := args.slots
+  if f.result.isSome then
+    let (r, s) := s.bind1 (.call c as)
+    k (resSlot f.result r) s
+  else
+    k (resSlot f.result 0) (s.stmt (.callVoid c as))
+
+/-- A call to one of the program's own functions, recorded in the callee table. -/
+@[inline] def emitCallLocal {α : Type} {ps : List ClifTy} {res : Option ClifTy} (r : LocalRef ps res)
+    (args : Vals Slot ps) (k : ResV Slot res → St → Option α × St) (s : St) : Option α × St :=
+  let s := match r.callee with
+    | .local i => s.useLocal i ps res
+    | .ffi _ | .native | .atomic _ | .ext _ => s
+  let as := args.slots
+  if res.isSome then
+    let (v, s) := s.bind1 (.call r.callee as)
+    k (resSlot res v) s
+  else
+    k (resSlot res 0) (s.stmt (.callVoid r.callee as))
+
+/-- A top-tested loop. -/
+@[inline] def emitLoop {tys exitTys : List ClifTy} {β α : Type} (init : Vals Slot tys)
+    (head : Lvl exitTys tys → Vals Slot tys → St → Option (Cond Slot × Vals Slot exitTys × β) × St)
+    (body : Lvl exitTys tys → Vals Slot tys → β → St → Option (Vals Slot tys) × St)
+    (k : Vals Slot exitTys → St → Option α × St) (s : St) : Option α × St :=
+  let s := s.flush
+  let firstCarry := s.n
+  let carries := carriesFrom firstCarry tys
+  let lvl := s.depth
+  let s := { s with n := firstCarry + tys.length, depth := s.depth + 1 }
+  let (hd, sH) := head lvl carries s.enter
+  match hd with
+  | none =>
+      let (_, s) := St.leave s sH
+      (none, { s with depth := lvl }.note "a loop's head leaves the loop")
+  | some (c, exitR, x) =>
+    -- The exit test is the head's last statement rather than something the
+    -- `Loop` carries, so it spends a slot like any operation and the
+    -- emitter's slot and value counters stay equal across the loop.
+    let (flag, sH) := sH.bind1 (.op (.icmp c.cc c.a c.b))
+    let (preCode, s) := St.leave s sH
+    -- The body's carries are its block's parameters, the slots after the
+    -- head's.
+    let bodyCarries := carriesFrom s.n tys
+    let s := { s with n := s.n + tys.length }
+    let (bd, sB) := body lvl bodyCarries x s.enter
+    let (bodyCode, s) := St.leave s sB
+    let s := { s with depth := lvl }
+    let cont := match bd with | some vs => vs.slots | none => []
+    let exits := carriesFrom s.n exitTys
+    let s := { s with n := s.n + exitTys.length }
+    let l : Loop :=
+      { pTys := tys, init := init.slots, flag,
+        exitOnTrue := c.exitOnTrue, cont, exitR := exitR.slots, exitTys }
+    k exits { s with pieces := .loop l preCode bodyCode :: s.pieces }
+
+/-- A bottom-tested loop. -/
+@[inline] def emitDloop {tys : List ClifTy} {α : Type} {tb : ClifTy} (init : Vals Slot tys) (cc : ICmpCond)
+    (cb : Slot tb) (guardIdx : Option Nat) (contOnTrue : Bool) (exitIdx : List Nat)
+    (body : Lvl (idxTys tys exitIdx) tys → Vals Slot tys → St → Option (Slot tb × Vals Slot tys) × St)
+    (k : Vals Slot (idxTys tys exitIdx) → St → Option α × St) (s : St) : Option α × St :=
+  -- The guard is the statement before the loop, comparing the initial
+  -- carries, and the back-edge test the body's last, comparing what the
+  -- trip produced: two ordinary comparisons, each spending a slot, for the
+  -- same reason a loop's test is the last statement of its head.
+  let (guard, s) := match guardIdx with
+    | some gi =>
+        let (g, s) := s.bind1 (.op (.icmp cc ((init.slots[gi]?).getD 0) cb))
+        (some g, s)
+    | none => (none, s)
+  let s := s.flush
+  let exitTys := idxTys tys exitIdx
+  let firstCarry := s.n
+  let carries := carriesFrom firstCarry tys
+  let lvl := s.depth
+  let s := { s with n := firstCarry + tys.length, depth := s.depth + 1 }
+  let (bd, sB) := body lvl carries s.enter
+  -- A body that answers after a branch whose arms both leave answers from
+  -- unreachable code: nothing reaches the back edge, so there is no test to
+  -- make.
+  let (flag, cont, sB) := match bd with
+    | some (ca, vs) =>
+        if terminates (St.leave s sB).1 then (0, [], sB)
+        else
+          let (f, sB) := sB.bind1 (.op (.icmp cc ca cb))
+          (f, vs.slots, sB)
+    | none => (0, [], sB)
+  let (bodyCode, s) := St.leave s sB
+  let s := { s with depth := lvl }
+  let exits := carriesFrom s.n exitTys
+  let s := { s with n := s.n + exitTys.length }
+  let l : DLoop :=
+    { pTys := tys, init := init.slots, guard, flag, contOnTrue, cont, exitIdx, exitTys }
+  k exits { s with pieces := .dloop l bodyCode :: s.pieces }
+
+/-- A branch. -/
+@[inline] def emitIte {jTys : List ClifTy} {α : Type} (c : Cond Slot)
+    (thn els : St → Option (Vals Slot jTys) × St) (k : Vals Slot jTys → St → Option α × St)
+    (s : St) : Option α × St :=
+  -- The test is the statement before the branch, for the same reason a
+  -- loop's is the last statement of its head.
+  let (flag, s) := s.bind1 (.op (.icmp c.cc c.a c.b))
+  let s := s.flush
+  let (tR, sT) := thn s.enter
+  let (thnC, s) := St.leave s sT
+  let (eR, sE) := els s.enter
+  let (elsC, s) := St.leave s sE
+  -- An arm that leaves never reaches the join; when neither reaches it
+  -- there is no join block at all.
+  let jTys' := if !terminates thnC || !terminates elsC then jTys else []
+  -- When neither arm falls through the join block is never entered, so no
+  -- slots are spent on it; the continuation is unreachable code and gets
+  -- the numbers that block would have bound.
+  let joins := carriesFrom s.n jTys
+  let s := { s with n := s.n + jTys'.length }
+  let thnR := match tR with | some vs => vs.slots | none => []
+  let elsR := match eR with | some vs => vs.slots | none => []
+  k joins { s with pieces := .ite ⟨flag, jTys'⟩ thnC elsC thnR elsR :: s.pieces }
+
+/-- Leave a loop, or go round it: nothing follows. -/
+@[inline] def emitJump (piece : Nat → Piece) (s : St) : Option α × St :=
+  let s := s.flush
+  (none, { s with pieces := piece s.depth :: s.pieces })
+
+/-- `emitGo` by structural recursion: what compiled code runs (`emitGo_eq`). -/
+def emitGoS : {α : Type} → Prog Slot Lvl α → St → Option α × St
+  | _, .ret a, s => (some a, s)
+  | _, .op o k, s =>
+      let (r, s) := s.bind1 (.op o.erase)
+      emitGoS (k r) s
+  | _, .store (ty := ty) v a k, s => emitGoS k (s.stmt (.store ty v a))
+  | _, .storeUnaligned v a k, s => emitGoS k (s.stmt (.storeUnaligned v a))
+  | _, .istore8 v a _ k, s => emitGoS k (s.stmt (.istore8 v a))
+  | _, .call f args k, s => emitCall f args (fun r => emitGoS (k r)) s
+  | _, .callLocal r args k, s => emitCallLocal r args (fun v => emitGoS (k v)) s
+  | _, .loop init head body k, s =>
+      emitLoop init (fun l cs => emitGoS (head l cs)) (fun l cs x => emitGoS (body l cs x))
+        (fun vs => emitGoS (k vs)) s
+  | _, .dloop init cc cb guardIdx _ contOnTrue exitIdx body k, s =>
+      emitDloop init cc cb guardIdx contOnTrue exitIdx (fun l cs => emitGoS (body l cs))
+        (fun vs => emitGoS (k vs)) s
+  | _, .ite c thn els k, s => emitIte c (emitGoS thn) (emitGoS els) (fun vs => emitGoS (k vs)) s
+  | _, .params tys k, s => emitGoS (k (carriesFrom 0 tys)) s
+  -- Nothing follows a `br` or a `cont`: they are where the fold stops.
+  | _, .br l args, s => emitJump (fun d => .br (labelDepth d l) args.slots) s
+  | _, .cont l args, s => emitJump (fun d => .cont (labelDepth d l) args.slots) s
+
 /-- Fold a body into pieces, handing out slots in the order they are bound.
 
     The result is `none` exactly when the term left its region --- a `br` or a
     `cont` --- which is what tells `ite` that an arm has no exports and a loop
-    body that it needs no back edge. -/
-def emitGo : Nat → {α : Type} → Prog Slot Lvl α → St → Option α × St
-  | 0, _, _, s => (none, s.note "the body is deeper than the fold's fuel")
-  | _ + 1, _, .ret a, s => (some a, s)
-  | fuel + 1, _, .op o k, s =>
-      let (r, s) := s.bind1 (.op o.erase)
-      emitGo fuel (k r) s
-  | fuel + 1, _, .store (ty := ty) v a k, s => emitGo fuel k (s.stmt (.store ty v a))
-  | fuel + 1, _, .storeUnaligned v a k, s => emitGo fuel k (s.stmt (.storeUnaligned v a))
-  | fuel + 1, _, .istore8 v a _ k, s => emitGo fuel k (s.stmt (.istore8 v a))
-  | fuel + 1, _, .call f args k, s =>
-      let c : Callee := .ffi f
-      let as := args.slots
-      if f.result.isSome then
-        let (r, s) := s.bind1 (.call c as)
-        emitGo fuel (k (resSlot f.result r)) s
-      else
-        emitGo fuel (k (resSlot f.result 0)) (s.stmt (.callVoid c as))
-  | fuel + 1, _, .callLocal (ps := ps) (res := res) r args k, s =>
-      let s := match r.callee with
-        | .local i => s.useLocal i ps res
-        | .ffi _ | .native => s
-      let as := args.slots
-      if res.isSome then
-        let (v, s) := s.bind1 (.call r.callee as)
-        emitGo fuel (k (resSlot res v)) s
-      else
-        emitGo fuel (k (resSlot res 0)) (s.stmt (.callVoid r.callee as))
-  | fuel + 1, _, .loop (tys := tys) (exitTys := exitTys) init head body k, s =>
-      let s := s.flush
-      let firstCarry := s.n
-      let carries := carriesFrom firstCarry tys
-      let lvl := s.depth
-      let s := { s with n := firstCarry + tys.length, depth := s.depth + 1 }
-      let (hd, sH) := emitGo fuel (head lvl carries) s.enter
-      match hd with
-      | none =>
-          let (_, s) := St.leave s sH
-          (none, { s with depth := lvl }.note "a loop's head leaves the loop")
-      | some (c, exitR, x) =>
-        -- The exit test is the head's last statement rather than something the
-        -- `Loop` carries, so it spends a slot like any operation and the
-        -- emitter's slot and value counters stay equal across the loop.
-        let (flag, sH) := sH.bind1 (.op (.icmp c.cc c.a c.b))
-        let (preCode, s) := St.leave s sH
-        -- The body's carries are its block's parameters, the slots after the
-        -- head's.
-        let bodyCarries := carriesFrom s.n tys
-        let s := { s with n := s.n + tys.length }
-        let (bd, sB) := emitGo fuel (body lvl bodyCarries x) s.enter
-        let (bodyCode, s) := St.leave s sB
-        let s := { s with depth := lvl }
-        let cont := match bd with | some vs => vs.slots | none => []
-        let exits := carriesFrom s.n exitTys
-        let s := { s with n := s.n + exitTys.length }
-        let l : Loop :=
-          { pTys := tys, init := init.slots, flag,
-            exitOnTrue := c.exitOnTrue, cont, exitR := exitR.slots, exitTys }
-        emitGo fuel (k exits) { s with pieces := .loop l preCode bodyCode :: s.pieces }
-  | fuel + 1, _, .dloop (tys := tys) init cc cb guardIdx _ contOnTrue exitIdx body k, s =>
-      -- The guard is the statement before the loop, comparing the initial
-      -- carries, and the back-edge test the body's last, comparing what the
-      -- trip produced: two ordinary comparisons, each spending a slot, for the
-      -- same reason a loop's test is the last statement of its head.
-      let (guard, s) := match guardIdx with
-        | some gi =>
-            let (g, s) := s.bind1 (.op (.icmp cc ((init.slots[gi]?).getD 0) cb))
-            (some g, s)
-        | none => (none, s)
-      let s := s.flush
-      let exitTys := idxTys tys exitIdx
-      let firstCarry := s.n
-      let carries := carriesFrom firstCarry tys
-      let lvl := s.depth
-      let s := { s with n := firstCarry + tys.length, depth := s.depth + 1 }
-      let (bd, sB) := emitGo fuel (body lvl carries) s.enter
-      -- A body that answers after a branch whose arms both leave answers from
-      -- unreachable code: nothing reaches the back edge, so there is no test to
-      -- make.
-      let (flag, cont, sB) := match bd with
-        | some (ca, vs) =>
-            if terminates (St.leave s sB).1 then (0, [], sB)
-            else
-              let (f, sB) := sB.bind1 (.op (.icmp cc ca cb))
-              (f, vs.slots, sB)
-        | none => (0, [], sB)
-      let (bodyCode, s) := St.leave s sB
-      let s := { s with depth := lvl }
-      let exits := carriesFrom s.n exitTys
-      let s := { s with n := s.n + exitTys.length }
-      let l : DLoop :=
-        { pTys := tys, init := init.slots, guard, flag, contOnTrue, cont, exitIdx, exitTys }
-      emitGo fuel (k exits) { s with pieces := .dloop l bodyCode :: s.pieces }
-  | fuel + 1, _, .ite (jTys := jTys) c thn els k, s =>
-      -- The test is the statement before the branch, for the same reason a
-      -- loop's is the last statement of its head.
-      let (flag, s) := s.bind1 (.op (.icmp c.cc c.a c.b))
-      let s := s.flush
-      let (tR, sT) := emitGo fuel thn s.enter
-      let (thnC, s) := St.leave s sT
-      let (eR, sE) := emitGo fuel els s.enter
-      let (elsC, s) := St.leave s sE
-      -- An arm that leaves never reaches the join; when neither reaches it
-      -- there is no join block at all.
-      let jTys' := if !terminates thnC || !terminates elsC then jTys else []
-      -- When neither arm falls through the join block is never entered, so no
-      -- slots are spent on it; the continuation is unreachable code and gets
-      -- the numbers that block would have bound.
-      let joins := carriesFrom s.n jTys
-      let s := { s with n := s.n + jTys'.length }
-      let thnR := match tR with | some vs => vs.slots | none => []
-      let elsR := match eR with | some vs => vs.slots | none => []
-      emitGo fuel (k joins)
-        { s with pieces := .ite ⟨flag, jTys'⟩ thnC elsC thnR elsR :: s.pieces }
-  | fuel + 1, _, .params tys k, s => emitGo fuel (k (carriesFrom 0 tys)) s
-  -- Nothing follows a `br` or a `cont`, so neither spends fuel on a
-  -- continuation: they are where the fold stops.
-  | _ + 1, _, .br l args, s =>
-      let s := s.flush
-      (none, { s with pieces := .br (labelDepth s.depth l) args.slots :: s.pieces })
-  | _ + 1, _, .cont l args, s =>
-      let s := s.flush
-      (none, { s with pieces := .cont (labelDepth s.depth l) args.slots :: s.pieces })
+    body that it needs no back edge.
 
-/-- Fuel enough for any body this library builds. It bounds the *bind chain*,
-    which is one step per statement --- the largest artifact here is under
-    500,000 --- and running out is reported rather than silent. -/
-def emitFuel : Nat := 100000000
+    Written with the recursor rather than by pattern matching: the kernel
+    reduces `Prog.rec` on a constructor in one step, where structural recursion
+    goes through `brecOn`, which is slow enough on a real body to exhaust
+    memory in a `rfl`. Compiled code runs `emitGoS`, which `emitGo_eq` proves
+    the same function. -/
+noncomputable def emitGo {α : Type} (p : Prog Slot Lvl α) : St → Option α × St :=
+  Prog.rec (motive := fun β _ => St → Option β × St)
+    (ret := fun a s => (some a, s))
+    (op := fun o _ ih s =>
+      let (r, s) := s.bind1 (.op o.erase)
+      ih r s)
+    (store := fun {ty _} v a _ ih s => ih (s.stmt (.store ty v a)))
+    (storeUnaligned := fun v a _ ih s => ih (s.stmt (.storeUnaligned v a)))
+    (istore8 := fun v a _ _ ih s => ih (s.stmt (.istore8 v a)))
+    (call := fun f args _ ih s => emitCall f args ih s)
+    (callLocal := fun r args _ ih s => emitCallLocal r args ih s)
+    (loop := fun init _ _ _ ihHead ihBody ihK s => emitLoop init ihHead ihBody ihK s)
+    (dloop := fun {_ _ tb} init cc cb guardIdx _ contOnTrue exitIdx _ _ ihBody ihK s =>
+      emitDloop (tb := tb) init cc cb guardIdx contOnTrue exitIdx ihBody ihK s)
+    (ite := fun c _ _ _ ihThn ihEls ihK s => emitIte c ihThn ihEls ihK s)
+    (params := fun tys _ ih s => ih (carriesFrom 0 tys) s)
+    (br := fun l args s => emitJump (fun d => .br (labelDepth d l) args.slots) s)
+    (cont := fun l args s => emitJump (fun d => .cont (labelDepth d l) args.slots) s)
+    p
+
+-- What `emitGo` does to each construct, by definition.
+section emitGo_eqns
+variable {α : Type}
+
+theorem emitGo_ret (a : α) : emitGo (.ret a) = fun s => (some a, s) := rfl
+theorem emitGo_op {ty} (o : Op' Slot ty) (k : Slot ty → Prog Slot Lvl α) :
+    emitGo (.op o k) = fun s => let (r, s) := s.bind1 (.op o.erase); emitGo (k r) s := rfl
+theorem emitGo_store {ty} (v : Slot ty) (a : Slot .i64) (k : Prog Slot Lvl α) :
+    emitGo (.store v a k) = fun s => emitGo k (s.stmt (.store ty v a)) := rfl
+theorem emitGo_storeUnaligned {ty} (v : Slot ty) (a : Slot .i64) (k : Prog Slot Lvl α) :
+    emitGo (.storeUnaligned v a k) = fun s => emitGo k (s.stmt (.storeUnaligned v a)) := rfl
+theorem emitGo_istore8 {ty} (v : Slot ty) (a : Slot .i64) (h : ty.isInt = true) (k : Prog Slot Lvl α) :
+    emitGo (.istore8 v a h k) = fun s => emitGo k (s.stmt (.istore8 v a)) := rfl
+theorem emitGo_call (f : Ffi) (args : Vals Slot f.params) (k : ResV Slot f.result → Prog Slot Lvl α) :
+    emitGo (.call f args k) = emitCall f args (fun r => emitGo (k r)) := rfl
+theorem emitGo_callLocal {ps res} (r : LocalRef ps res) (args : Vals Slot ps)
+    (k : ResV Slot res → Prog Slot Lvl α) :
+    emitGo (.callLocal r args k) = emitCallLocal r args (fun v => emitGo (k v)) := rfl
+theorem emitGo_loop {tys exitTys β} (init : Vals Slot tys)
+    (head : Lvl exitTys tys → Vals Slot tys → Prog Slot Lvl (Cond Slot × Vals Slot exitTys × β))
+    (body : Lvl exitTys tys → Vals Slot tys → β → Prog Slot Lvl (Vals Slot tys))
+    (k : Vals Slot exitTys → Prog Slot Lvl α) :
+    emitGo (.loop init head body k) =
+      emitLoop init (fun l cs => emitGo (head l cs)) (fun l cs x => emitGo (body l cs x))
+        (fun vs => emitGo (k vs)) := rfl
+theorem emitGo_dloop {tys tb} (init : Vals Slot tys) (cc : ICmpCond) (cb : Slot tb) (guardIdx : Option Nat)
+    (hg : guardIdx.all (fun i => (tys[i]?).getD default == tb) = true) (contOnTrue : Bool)
+    (exitIdx : List Nat)
+    (body : Lvl (idxTys tys exitIdx) tys → Vals Slot tys → Prog Slot Lvl (Slot tb × Vals Slot tys))
+    (k : Vals Slot (idxTys tys exitIdx) → Prog Slot Lvl α) :
+    emitGo (.dloop init cc cb guardIdx hg contOnTrue exitIdx body k) =
+      emitDloop init cc cb guardIdx contOnTrue exitIdx (fun l cs => emitGo (body l cs))
+        (fun vs => emitGo (k vs)) := rfl
+theorem emitGo_ite {jTys} (c : Cond Slot) (thn els : Prog Slot Lvl (Vals Slot jTys))
+    (k : Vals Slot jTys → Prog Slot Lvl α) :
+    emitGo (.ite c thn els k) = emitIte c (emitGo thn) (emitGo els) (fun vs => emitGo (k vs)) := rfl
+theorem emitGo_params (tys : List ClifTy) (k : Vals Slot tys → Prog Slot Lvl α) :
+    emitGo (.params tys k) = emitGo (k (carriesFrom 0 tys)) := rfl
+theorem emitGo_br {ex ca} (l : Lvl ex ca) (args : Vals Slot ex) :
+    emitGo (α := α) (.br l args) = emitJump (fun d => .br (labelDepth d l) args.slots) := rfl
+theorem emitGo_cont {ex ca} (l : Lvl ex ca) (args : Vals Slot ca) :
+    emitGo (α := α) (.cont l args) = emitJump (fun d => .cont (labelDepth d l) args.slots) := rfl
+
+end emitGo_eqns
+
+/-- **The fold compiled code runs is the fold proofs reduce.** -/
+@[csimp] theorem emitGo_eq : @emitGo = @emitGoS := by
+  funext α p
+  induction p <;> funext s <;>
+    simp only [emitGo_ret, emitGo_op, emitGo_store, emitGo_storeUnaligned, emitGo_istore8,
+      emitGo_call, emitGo_callLocal, emitGo_loop, emitGo_dloop, emitGo_ite, emitGo_params,
+      emitGo_br, emitGo_cont, emitGoS, *]
 
 /-- The term a body denotes. Total: an ill-formed body compiles to pieces `wf`
     rejects, which is what `emitChecked` is for. -/
 def emit (p : Body) (params : List ClifTy := ptrParams) : Code :=
-  let (_, s) := emitGo emitFuel p { n := params.length, depth := 0 }
+  let (_, s) := emitGo p { n := params.length, depth := 0 }
   s.flush.pieces.reverse
-
-/-- What the fold found wrong while denoting the body, if anything. -/
-def emitErr (p : Body) (params : List ClifTy := ptrParams) : Option String :=
-  let (_, s) := emitGo emitFuel p { n := params.length, depth := 0 }
-  s.err
-
-/-- The table a body's calls need, in the order the body first makes them. -/
-def emitDecls (p : Body) (params : List ClifTy := ptrParams) : FnEnv :=
-  let (_, s) := emitGo emitFuel p { n := params.length, depth := 0 }
-  s.callees
 
 instance {ps res} : Inhabited (LocalRef ps res) := ⟨{ callee := .local 0 }⟩
 
@@ -647,7 +766,6 @@ def iconst (ty : ClifTy) (k : Int) (h : ty.isInt = true := by decide) :
     Prog V L (V ty) := op (.iconst ty k h)
 def iconst64 (k : Int) : Prog V L (V .i64) := iconst .i64 k
 def iconst32 (k : Int) : Prog V L (V .i32) := iconst .i32 k
-def iconst8 (k : Int) : Prog V L (V .i8) := iconst .i8 k
 def fconst (ty : ClifTy) (bits : UInt64) (h : ty.isFloat = true := by decide) :
     Prog V L (V ty) := op (.fconst ty bits h)
 def fconst32 (x : Float) : Prog V L (V .f32) := fconst .f32 (x.toFloat32.toBits.toUInt64)
@@ -714,7 +832,8 @@ def fcvtFromSint (ty : ClifTy) {ta} (a : V ta)
     (h : (ta.isInt && ty.isFloat) = true := by decide) : Prog V L (V ty) :=
   op (.fcvtFromSint ty a h)
 def fcvtToUint (ty : ClifTy) {ta} (a : V ta)
-    (h : (ta.isFloat && ty.isInt) = true := by decide) : Prog V L (V ty) :=
+    (h : (ta.isFloat && ty.isInt && decide (ty.width ≥ 32)) = true := by decide) :
+    Prog V L (V ty) :=
   op (.fcvtToUint ty a h)
 def splat (ty : ClifTy) (a : V (laneTy ty)) (h : ty.isVec = true := by decide) :
     Prog V L (V ty) := op (.splat ty a h)
@@ -725,7 +844,93 @@ def vhighBits {ta} (a : V ta) (h : ta.isVec = true := by decide) : Prog V L (V .
 def bitcast (ty : ClifTy) {ta} (a : V ta) (h : (ta.width == ty.width) = true := by decide) :
     Prog V L (V ty) := op (.bitcast ty a h)
 
+def ibin (k : IBin) {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  op (.ibin k a b h)
+def sdiv {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .sdiv a b h
+def urem {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .urem a b h
+def srem {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .srem a b h
+def smin {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .smin a b h
+def smax {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .smax a b h
+def umin {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .umin a b h
+def umax {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .umax a b h
+def umulhi {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .umulhi a b h
+def smulhi {ty} (a b : V ty) (h : ty.isInt = true := by decide) : Prog V L (V ty) :=
+  ibin .smulhi a b h
+def ishift (k : IShift) {ta tb} (a : V ta) (b : V tb)
+    (h : (ta.isInt && tb.isInt) = true := by decide) : Prog V L (V ta) := op (.ishift k a b h)
+def sshr {ta tb} (a : V ta) (b : V tb)
+    (h : (ta.isInt && tb.isInt) = true := by decide) : Prog V L (V ta) :=
+  ishift .sshr a b h
+def rotl {ta tb} (a : V ta) (b : V tb)
+    (h : (ta.isInt && tb.isInt) = true := by decide) : Prog V L (V ta) :=
+  ishift .rotl a b h
+def rotr {ta tb} (a : V ta) (b : V tb)
+    (h : (ta.isInt && tb.isInt) = true := by decide) : Prog V L (V ta) :=
+  ishift .rotr a b h
+def iun (k : IUn) {ty} (a : V ty) (h : k.admits ty = true := by decide) : Prog V L (V ty) :=
+  op (.iun k a h)
+def bnot {ty} (a : V ty) (h : IUn.bnot.admits ty = true := by decide) : Prog V L (V ty) :=
+  iun .bnot a h
+def iabs {ty} (a : V ty) (h : IUn.iabs.admits ty = true := by decide) : Prog V L (V ty) :=
+  iun .iabs a h
+def clz {ty} (a : V ty) (h : IUn.clz.admits ty = true := by decide) : Prog V L (V ty) :=
+  iun .clz a h
+def bswap {ty} (a : V ty) (h : IUn.bswap.admits ty = true := by decide) : Prog V L (V ty) :=
+  iun .bswap a h
+def bitrev {ty} (a : V ty) (h : IUn.bitrev.admits ty = true := by decide) : Prog V L (V ty) :=
+  iun .bitrev a h
+def fbin (k : FBin) {ty} (a b : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := op (.fbin k a b h)
+def fdiv {ty} (a b : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fbin .fdiv a b h
+def fcopysign {ty} (a b : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fbin .fcopysign a b h
+def fun1 (k : FUn) {ty} (a : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := op (.fun1 k a h)
+def sqrt {ty} (a : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fun1 .sqrt a h
+def fabs {ty} (a : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fun1 .fabs a h
+def ceil {ty} (a : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fun1 .ceil a h
+def floor {ty} (a : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fun1 .floor a h
+def trunc {ty} (a : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fun1 .trunc a h
+def nearest {ty} (a : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := fun1 .nearest a h
+def fma {ty} (a b c : V ty) (h : (ty.isFloat || ty.isFloatVec) = true := by decide) :
+    Prog V L (V ty) := op (.fma a b c h)
+def fconv (k : FConv) (ty : ClifTy) {ta} (a : V ta) (h : k.admits ta ty = true := by decide) :
+    Prog V L (V ty) := op (.fconv k ty a h)
+def fcvtToSint (ty : ClifTy) {ta} (a : V ta)
+    (h : FConv.toSint.admits ta ty = true := by decide) : Prog V L (V ty) :=
+  fconv .toSint ty a h
+def fcvtFromUint (ty : ClifTy) {ta} (a : V ta)
+    (h : FConv.fromUint.admits ta ty = true := by decide) : Prog V L (V ty) :=
+  fconv .fromUint ty a h
+def iext (k : IExt) (ty : ClifTy) {ta} (a : V ta) (h : k.admits ta ty = true := by decide) :
+    Prog V L (V ty) := op (.iext k ty a h)
+def ireduce (ty : ClifTy) {ta} (a : V ta) (h : IExt.reduce.admits ta ty = true := by decide) :
+    Prog V L (V ty) := iext .reduce ty a h
+def uextend (ty : ClifTy) {ta} (a : V ta) (h : IExt.uextend.admits ta ty = true := by decide) :
+    Prog V L (V ty) := iext .uextend ty a h
+def sextend (ty : ClifTy) {ta} (a : V ta) (h : IExt.sextend.admits ta ty = true := by decide) :
+    Prog V L (V ty) := iext .sextend ty a h
+def fdemote (a : V .f64) : Prog V L (V .f32) := fconv .demote .f32 a
+
 def load (o : LoadOp) (a : V .i64) : Prog V L (V o.ty) := op (.load o a)
+def uload16_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .uload16, ty := .i64 } a
+def sload16_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .sload16, ty := .i64 } a
+def sload32_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .sload32, ty := .i64 } a
 def load64 (a : V .i64) : Prog V L (V .i64) := load { ty := .i64 } a
 def load32 (a : V .i64) : Prog V L (V .i32) := load { ty := .i32 } a
 def load_i8 (a : V .i64) : Prog V L (V .i8) := load { ty := .i8 } a
@@ -734,7 +939,6 @@ def uload8_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .uload8, ty := 
 def sload8_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .sload8, ty := .i64 } a
 def uload32_64 (a : V .i64) : Prog V L (V .i64) := load { kind := .uload32, ty := .i64 } a
 def loadF32 (a : V .i64) : Prog V L (V .f32) := load { ty := .f32, notrapAligned := true } a
-def loadF64 (a : V .i64) : Prog V L (V .f64) := load { ty := .f64, notrapAligned := true } a
 def loadF32x4 (a : V .i64) : Prog V L (V .f32x4) :=
   load { ty := .f32x4, notrapAligned := true } a
 def loadI8x16 (a : V .i64) : Prog V L (V .i8x16) :=
@@ -751,6 +955,14 @@ def storeUnaligned {ty} (v : V ty) (a : V .i64) : Prog V L Unit :=
   .storeUnaligned v a (.ret ())
 def istore8 {ty} (v : V ty) (a : V .i64) (h : ty.isInt = true := by decide) :
     Prog V L Unit := .istore8 v a h (.ret ())
+/-- The low 16 or 32 bits of a wider integer, stored: a narrowing and a store
+    at the narrow type, which Cranelift emits as one narrow store. -/
+def istore16 {ty} (v : V ty) (a : V .i64)
+    (h : IExt.reduce.admits ty .i16 = true := by decide) : Prog V L Unit := do
+  storeW .i16 (← ireduce .i16 v h) a
+def istore32 {ty} (v : V ty) (a : V .i64)
+    (h : IExt.reduce.admits ty .i32 = true := by decide) : Prog V L Unit := do
+  storeW .i32 (← ireduce .i32 v h) a
 
 /-- Call an entry point. The signature says what it takes and whether it binds
     a result, so a generator cannot pass the wrong list or read a result that
@@ -769,18 +981,35 @@ def callLocalVoid {ps res} (r : LocalRef ps res) (args : Vals V ps) : Prog V L U
   let _ ← callLocal (L := L) r args
   pure ()
 
+/-- **Atomics.** Each travels as a call to `Callee.atomic`, which the engine
+    emits as the instruction itself; the address comes first. An integer width
+    and a naturally aligned address are what the model admits. -/
+def atomicLoad (ty : ClifTy) (p : V .i64) : Prog V L (V ty) :=
+  callLocal (⟨.atomic (.load ty)⟩ : LocalRef [.i64] (some ty)) %[p]
+def atomicStore {ty} (v : V ty) (p : V .i64) : Prog V L Unit :=
+  callLocalVoid (⟨.atomic (.store ty)⟩ : LocalRef [ty, .i64] none) %[v, p]
+/-- The old value, having left `k old x` in its place. -/
+def atomicRmw (k : AtomicRmw) {ty} (p : V .i64) (x : V ty) : Prog V L (V ty) :=
+  callLocal (⟨.atomic (.rmw ty k)⟩ : LocalRef [.i64, ty] (some ty)) %[p, x]
+/-- The old value, having replaced it with `n` exactly when it was `e`. -/
+def atomicCas {ty} (p : V .i64) (e n : V ty) : Prog V L (V ty) :=
+  callLocal (⟨.atomic (.cas ty)⟩ : LocalRef [.i64, ty, ty] (some ty)) %[p, e, n]
+def fence : Prog V L Unit :=
+  callLocalVoid (⟨.atomic .fence⟩ : LocalRef [] none) %[]
+
+/-- **A C library function, called directly**, at the signature its
+    declaration gives. -/
+def ext (e : Ext) (args : Vals V e.sig.1) : Prog V L (ResV V e.sig.2) :=
+  callLocal (⟨.ext e⟩ : LocalRef e.sig.1 e.sig.2) args
+/-- Whether a library loaded on this machine: `1` or `0`. -/
+def libPresent (l : Lib) : Prog V L (V .i32) := ext (.present l) %[]
+
 /-- `min(a, b)` with the hardware's NaN behaviour rather than IEEE
     `minimumNumber`. Cranelift lowers exactly this shape --- the wasm `pmin`
     pattern --- to a single `minps`, where `fmin` costs a NaN-correct sequence. -/
 def pmin (ty : ClifTy) (a b : V ty) (h : ty.isFloatVec = true := by decide) :
     Prog V L (V ty) := do
   bitselect (← bitcast ty (← fcmp .lt a b (floatVec_isFloat h)) (cmpTy_width h)) a b
-
-/-- `max(a, b)`, likewise a single `maxps`. Note the reversed compare: the rule
-    Cranelift matches is `bitselect(fcmp lt b a, a, b)`. -/
-def pmax (ty : ClifTy) (a b : V ty) (h : ty.isFloatVec = true := by decide) :
-    Prog V L (V ty) := do
-  bitselect (← bitcast ty (← fcmp .lt b a (floatVec_isFloat h)) (cmpTy_width h)) a b
 
 /-- The address of `base + off`, the shape every fixed-offset access takes. -/
 def absAddr (base : V .i64) (off : Int) : Prog V L (V .i64) := do
@@ -813,7 +1042,6 @@ def contIf {ty} (cc : ICmpCond) (a b : V ty) : Cond V :=
 def exitIfEq {ty} (a b : V ty) : Cond V := exitIf .eq a b
 def exitIfSGe {ty} (a b : V ty) : Cond V := exitIf .sge a b
 def contIfULt {ty} (a b : V ty) : Cond V := contIf .ult a b
-def exitIfSGt {ty} (a b : V ty) : Cond V := exitIf .sgt a b
 def contIfULe {ty} (a b : V ty) : Cond V := contIf .ule a b
 
 /-- Leave the labelled loop with its exit values. Nothing follows, which is why
@@ -952,7 +1180,7 @@ def when {ty} (cc : ICmpCond) (a b : V ty) (thn : Prog V L Unit) : Prog V L Unit
 end Surface
 
 -- ---------------------------------------------------------------------------
--- The callee table, derived
+-- Folding a body, and the door it passes
 -- ---------------------------------------------------------------------------
 
 /-- Which top-level piece first makes the body ill-formed, found by checking
@@ -969,7 +1197,7 @@ def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat :=
     as one that names nothing --- only the terminator differs. -/
 def runAns {α} (p : Prog Slot Lvl α) (params : List ClifTy := ptrParams) :
     Option α × Code × FnEnv × Option String :=
-  let (a, s) := emitGo emitFuel p { n := params.length, depth := 0 }
+  let (a, s) := emitGo p { n := params.length, depth := 0 }
   let s := s.flush
   (a, s.pieces.reverse, s.callees, s.err)
 
@@ -990,6 +1218,8 @@ def callNames (p : Body) (params : List ClifTy := ptrParams) : List String :=
     | .ffi f   => f.cname
     | .local k => s!"u0:{k}"
     | .native  => "native"
+    | .atomic _ => "atomic"
+    | .ext e => s!"{e.lib.name}!{e.symbol}"
 
 /-- The term a body denotes, or why it is not one.
 
@@ -1014,9 +1244,8 @@ def emitChecked (p : Body) (params : List ClifTy := ptrParams) :
     One computation, projected two ways. `stateOf` is its function and
     `compileProg` is its verdict, so a claim stated over the one is a claim
     about the other: there is a single compiled form, not a shipped one and a
-    proven one that a theorem has to hold together. That pairing was how the
-    compressor proof used to go wrong, and the way to not repeat it is for the
-    two names to denote the same subterm rather than to be provably equal. -/
+    proven one that a theorem has to hold together. The two names denote the
+    same subterm rather than being provably equal, so they cannot drift. -/
 def compile (idx : Nat) (p : Body) (params : List ClifTy := ptrParams) :
     FuncData × Option String :=
   let (c, env, err) := run p params
@@ -1074,8 +1303,8 @@ def compileStatus (idx : Nat) (p : StatusBody) (params : List ClifTy := ptrParam
          `br` or a `cont` --- rather than reaching a status"
        else if !wf env params c then some s!"function {idx} is not well-formed, from piece \
          {firstBadPiece env params c} on"
-       else if !scopeOk params c then some s!"function {idx} reads a slot that is not \
-         bound on every path to the read"
+       else if !retOk params c a then some s!"function {idx} reads a slot that is not \
+         bound on every path to the read, or answers with one"
        else none)
 
 /-- Compile a body that answers to the function an artifact ships. The checked
@@ -1087,6 +1316,7 @@ def compileProgStatus (idx : Nat) (p : StatusBody)
   | none   => .ok r.1
   | some e => .error e
 
+/-- The functions of an artifact, in `u0:N` order, or the first failure.
 /-- **The view is the shipped function.** True by `rfl` on the projection;
     stated because it is the property the single-form discipline exists to
     have, and a reader should be able to find it named. -/
@@ -1117,7 +1347,6 @@ theorem stateOf_index {i j : Nat} {p : Body} {params : List ClifTy} :
 theorem stateOf_blocks_index {i j : Nat} {p : Body} {params : List ClifTy} :
     (stateOf i p params).blocks = (stateOf j p params).blocks := rfl
 
-/-- The functions of an artifact, in `u0:N` order, or the first failure.
 
     Refused: a function whose position is not the index it was compiled at ---
     the artifact carries only the position, and a call names a callee by it ---

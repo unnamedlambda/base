@@ -1,8 +1,12 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -99,9 +103,6 @@ def f32Float (x : Float) : FImm :=
 
 def channelF32 (channel : Channel) : FImm :=
   f32Float (Float.ofNat channel.value / 255.0)
-
-def colorF32 (color : Color) : FImm × FImm × FImm :=
-  (channelF32 color.red, channelF32 color.green, channelF32 color.blue)
 
 def invSamplesF32 (spec : SceneSpec) : FImm :=
   f32Float (1.0 / Float.ofNat (sampleCount spec))
@@ -936,9 +937,6 @@ def pixelsOff : Nat := bmpHeaderOff + 54
 open AlgorithmLib.Prog
 
 
-/-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-abbrev fnWrite : Ffi := .fileWrite
-
 def code (spec : SceneSpec) : Prog V L Unit :=
   do
     let ptr ← basePtr
@@ -1011,12 +1009,6 @@ def studioPalette : ScenePalette := {
 def defaultScene : SceneSpec :=
   checkedScene 1280 720 128 5 defaultPalette "scene.bmp"
     (by decide) (by decide) (by decide) (by decide)
-
-/-- Well-formed at the scene that ships.
-
-    `clifIrSource` is generic in the spec, so there is no instance to
-    `decide` at; it takes `compileBody` and this theorem stands in for the
-    check. -/
 
 def previewScene : SceneSpec :=
   checkedScene 640 360 16 3 sunsetPalette "scene.bmp"

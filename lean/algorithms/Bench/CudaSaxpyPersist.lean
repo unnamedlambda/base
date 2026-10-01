@@ -1,8 +1,8 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import AlgorithmLib.Surface.CudaPipeline
+meta import AlgorithmLib.Surface.CudaPipeline
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

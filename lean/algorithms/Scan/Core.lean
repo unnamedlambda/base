@@ -1,5 +1,4 @@
 import Lean
-
 /-!
   # The trust scanner's machinery, shared by every pipeline's scanner
 
@@ -80,6 +79,26 @@ def conclHead (n : Name) : MetaM (Option Name) := do
   match env.find? n with
   | none => return none
   | some ci => return (← conclGo ci.type).getAppFn.constName?
+
+/-- **The float primitives `Sem.evalOp` reaches**, declared once for every
+    surface that needs them.
+
+    A claim whose statement quantifies over machine states — a launch model's
+    soundness on a shipped body — reaches `Blocks.runInsts`, which interprets
+    every `Inst`, so its closure carries every float arm of `Sem.evalOp` at both
+    widths whether or not the body it is about performs one. These are the
+    IEEE operations the C library implements (`sqrt`, `ceil`, `floor`, `round`,
+    `fabs`, division) and the conversions and comparisons around them. -/
+def evalOpOpaque : List Name :=
+  [ `floatSpec, `float32Spec
+  , `Float.add, `Float.sub, `Float.mul, `Float.div, `Float.neg, `Float.beq
+  , `Float.abs, `Float.sqrt, `Float.ceil, `Float.floor, `Float.round
+  , `Float.decLe, `Float.decLt, `Float.ofBits, `Float.toBits
+  , `Float.ofScientific, `Float.toFloat32, `Float.toUInt64
+  , `Float32.add, `Float32.sub, `Float32.mul, `Float32.div, `Float32.neg, `Float32.beq
+  , `Float32.abs, `Float32.sqrt, `Float32.ceil, `Float32.floor, `Float32.round
+  , `Float32.decLe, `Float32.decLt, `Float32.ofBits, `Float32.toBits
+  , `Float32.ofScientific, `Float32.toFloat ]
 
 /-- **A pipeline's declared surface, as one value.**
 

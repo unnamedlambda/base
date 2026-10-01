@@ -1,6 +1,8 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import AlgorithmLib.Core.Artifact
+meta import AlgorithmLib.Core.Artifact
+public import AlgorithmLib.Host.Term
+meta import AlgorithmLib.Host.Term
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

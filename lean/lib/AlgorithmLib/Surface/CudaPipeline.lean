@@ -1,20 +1,8 @@
 module
-public import AlgorithmLib.Core.Artifact
-meta import AlgorithmLib.Core.Artifact
-public import AlgorithmLib.Core.Bytes
-meta import AlgorithmLib.Core.Bytes
-public import AlgorithmLib.Surface.Layout
-meta import AlgorithmLib.Surface.Layout
-public import AlgorithmLib.Core.IR
-meta import AlgorithmLib.Core.IR
-public import AlgorithmLib.Surface.FFI
-meta import AlgorithmLib.Surface.FFI
-public import AlgorithmLib.Surface.ProgFFI
-meta import AlgorithmLib.Surface.ProgFFI
-public import AlgorithmLib.Surface.ProgFFI
-meta import AlgorithmLib.Surface.ProgFFI
 public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -137,36 +125,45 @@ def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) : String
   buildModule 0 [{ name := "main", params, body := kernelBody e output blockSize }]
 
 -- ---------------------------------------------------------------------------
--- CLIF emission: each stage is a term, compiled against one callee table.
+-- CLIF emission: each stage is a term.
 -- ---------------------------------------------------------------------------
 
-/-- Allocate the device buffers and publish the element count. -/
+/-- Allocate the device buffers and publish the element count, which the data
+    begins with: only when the caller handed over its eight bytes. -/
 def loadCode (inputs : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let dataPtr ← dataPtr
+  let dataLen ← dataLen
   cudaInit ptr
-  let n ← load64 dataPtr
-  storeI64 n (← absAddr ptr 0x38)
-  let nBytes ← ishlImm n 2
-  let metaBytes ← iconst64 8
-  let metaBuf ← cudaCreateBuffer ptr metaBytes
-  storeI32 metaBuf (← absAddr ptr 0x40)
-  (List.range inputs).forM fun (i : Nat) => do
-    let buf ← cudaCreateBuffer ptr nBytes
-    storeI32 buf (← absAddr ptr (0x44 + 4*i))
-  let _ ← cudaUpload ptr metaBuf (← iconst64 0x38) metaBytes
+  Prog.when .ule (← iconst64 8) dataLen do
+    let n ← load64 dataPtr
+    storeI64 n (← absAddr ptr 0x38)
+    let nBytes ← ishlImm n 2
+    let metaBytes ← iconst64 8
+    let metaBuf ← cudaCreateBuffer ptr metaBytes
+    storeI32 metaBuf (← absAddr ptr 0x40)
+    (List.range inputs).forM fun (i : Nat) => do
+      let buf ← cudaCreateBuffer ptr nBytes
+      storeI32 buf (← absAddr ptr (0x44 + 4*i))
+    let _ ← cudaUpload ptr metaBuf (← iconst64 0x38) metaBytes
 
-/-- Upload the inputs, which lie back to back from the caller's data pointer. -/
+/-- Upload the inputs, which lie back to back from the caller's data pointer:
+    only when the caller handed over all of them. -/
 def prepCode (inputs : Nat) : Prog V L Unit := do
   let ptr ← basePtr
   let dataPtr ← dataPtr
+  let dataLen ← dataLen
   let n ← load64 (← absAddr ptr 0x38)
   let nBytes ← ishlImm n 2
-  let ctxPtr ← cudaCtxPtr ptr
-  let _ ← (List.range inputs).foldlM (init := dataPtr) fun curSrc (i : Nat) => do
-    let bufId ← load32 (← absAddr ptr (0x44 + 4*i))
-    let _ ← ffi .cudaUpload %[ctxPtr, bufId, curSrc, nBytes]
-    iadd curSrc nBytes
+  -- a count past 2^32 elements is no input this was handed; below it the
+  -- total cannot wrap
+  Prog.when .ult n (← iconst64 (2 ^ 32)) do
+    Prog.when .ule (← imul nBytes (← iconst64 inputs)) dataLen do
+      let ctxPtr ← cudaCtxPtr ptr
+      let _ ← (List.range inputs).foldlM (init := dataPtr) fun curSrc (i : Nat) => do
+        let bufId ← load32 (← absAddr ptr (0x44 + 4*i))
+        let _ ← ffi .cudaUpload %[ctxPtr, bufId, curSrc, nBytes]
+        iadd curSrc nBytes
 
 /-- Launch, synchronise, and download the output — the last only when the
     caller asked for one. -/
@@ -198,11 +195,9 @@ def inferCode {n : Nat} (output : Fin n) (blockSize : Nat) : Prog V L Unit := do
 
 /-- The three stages are terms only once `n`, `out` and `blockSize` are given.
 
-    That used to be a problem: the compiler wanted a `wf` proof about each of
-    them, `decide` will not reduce a builder that iterates over an arity, and
-    so three `native_decide` obligations travelled out to every caller. They
-    are gone. The stages are typed terms, and `compileProg` checks the body it
-    emitted while the generator runs. -/
+    `decide` will not reduce a builder that iterates over an arity, so no `wf`
+    obligation is stated about them: the stages are typed terms, and
+    `compileProg` checks the body it emitted while the generator runs. -/
 def Expr.compileTo {n : Nat} (e : Expr n) (out : Nat) (h : out < n := by decide)
     (blockSize : Nat := 256) : Except String Artifact := do
   let output : Fin n := ⟨out, h⟩

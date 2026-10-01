@@ -1,8 +1,12 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
+public import AlgorithmLib.ML.Tensor.Surface
+meta import AlgorithmLib.ML.Tensor.Surface
+public import AlgorithmLib.ML.Model.Ten
+meta import AlgorithmLib.ML.Model.Ten
+public import AlgorithmLib.ML.Model.Schedule
+meta import AlgorithmLib.ML.Model.Schedule
+public import AlgorithmLib.ML.Model.LocalBind
+meta import AlgorithmLib.ML.Model.LocalBind
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

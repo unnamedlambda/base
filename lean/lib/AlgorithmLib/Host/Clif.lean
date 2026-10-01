@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.Core.IR
-meta import AlgorithmLib.Core.IR
+public import AlgorithmLib.Core.ClifData
+meta import AlgorithmLib.Core.ClifData
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -128,11 +128,6 @@ def SymVal.offsetOf? : SymVal → Option Int
   | .const k    => some k
   | _           => none
 
-/-- Which slot this value was loaded from, if it was. -/
-def SymVal.slotOf? : SymVal → Option Int
-  | .slot _ k => some k
-  | _         => none
-
 /-- **SSA environment.**
 
     Values are stored, not re-derived, and they are stored *positionally*: slot
@@ -232,7 +227,7 @@ theorem dOf_of_toD? (e : Env) (v : Val) (d : DExp) (h : (e v).toD? = some d) :
 
     `SymVal.const` carries no width.  The machine wraps at the operand's — `i32`
     for a grid dimension, `i64` for an offset — and the folds below are on
-    `Int`, which does not.  Against `HProgSem.evalOp`, the semantics the corpus
+    `Int`, which does not.  Against `Sem.evalOp`, the semantics the corpus
     tests against a real machine:
 
     * `imul 2^62 4` would fold to `2^64`; the machine computes `0`.
@@ -450,7 +445,9 @@ def stepPure (e : Env) : Inst → Env
   | .fconst d _ _ | .fadd d _ _ | .fsub d _ _ | .fmul d _ _ | .fmax d _ _
   | .fmin d _ _ | .fpromote d _ | .splat d _ _ | .extractlane d _ _
   | .fneg d _ | .fcvtFromSint d _ _ | .fcvtToUint d _ _
-  | .fcmp d _ _ _ | .bitcast d _ _ | .ctz d _ | .popcnt d _ | .vhighBits d _ =>
+  | .fcmp d _ _ _ | .bitcast d _ _ | .ctz d _ | .popcnt d _ | .vhighBits d _
+  | .ibin d _ _ _ | .ishift d _ _ _ | .iun d _ _ | .fbin d _ _ _ | .fun1 d _ _
+  | .fconv d _ _ _ | .fma d _ _ _ | .iext d _ _ _ =>
       e.set d .unknown
   | .call (some d) _ _ => e.set d .unknown
   | _ => e
@@ -471,6 +468,8 @@ def Inst.destOf? : Inst → Option Val
   | .load d _ _ | .fconst d _ _ | .splat d _ _ | .extractlane d _ _
   | .fcvtFromSint d _ _ | .fcvtToUint d _ _ | .bitcast d _ _ => some d
   | .icmp d _ _ _ | .select d _ _ _ | .fcmp d _ _ _ | .bitselect d _ _ _ => some d
+  | .ibin d _ _ _ | .ishift d _ _ _ | .iun d _ _ | .fbin d _ _ _ | .fun1 d _ _
+  | .fconv d _ _ _ | .fma d _ _ _ | .iext d _ _ _ => some d
   | .call d _ _ => d
   | _ => none
 
@@ -575,7 +574,7 @@ structure LaunchRec where
     has none, and is not what any caller of this is looking for. -/
 def fnNameOf : Callee → Option String
   | .ffi f   => some f.cname
-  | .local _ | .native => none
+  | .local _ | .native | .atomic _ | .ext _ => none
 
 /-- **Primitives that write device memory without being a modelled launch.**
 
@@ -701,7 +700,7 @@ theorem scanBlockTR_go_eq :
 
 /-- **The launch sequence a built function performs**, in program order.
 
-    This is the value that did not exist. A `Pipeline` in `ML/Compose.lean` says
+    This is the value that did not exist. A `Pipeline` in `ML/Launch/Sequence.lean` says
     which stages run in which order; this says which stages the *host program*
     actually launches. Relating the two is what a whole-model theorem needs, and
     it is now a statement about two lists rather than about an emission order
@@ -720,10 +719,6 @@ def launchesOf (s : FuncData) : List LaunchRec :=
   (s.blocks.foldl (fun (acc : Env × List LaunchRec) b =>
       let r := scanBlock acc.1 b.insts
       (r.1, acc.2 ++ r.2)) (Env.empty, [])).2
-
-/-- How many kernels the program launches. -/
-def launchCount (s : FuncData) : Nat := (launchesOf s).length
-
 
 -- ---------------------------------------------------------------------------
 -- Structural facts
@@ -772,26 +767,6 @@ def isDeviceWriterB : Inst → Bool
       | some nm => decide (nm ∈ deviceWriterNames)
       | none    => false
   | _ => false
-
-/-- **The device writers a block performs that this model does not interpret.**
-
-    The counterpart to `scanBlock`, and the one that was missing.  `launchesOf`
-    answers "which kernels run"; this answers "what else wrote device memory
-    while they did".  Reported as names so a generator's check can say *which*
-    primitive is unaccounted for rather than only that something is. -/
-def deviceWritesIn : List Inst → List String
-  | []      => []
-  | i :: is =>
-      (match i with
-       | .call _ fr _ =>
-           match fnNameOf fr with
-           | some nm => if nm ∈ deviceWriterNames then [nm] else []
-           | none    => []
-       | _ => []) ++ deviceWritesIn is
-
-/-- …over a whole function. -/
-def deviceWritesOf (s : FuncData) : List String :=
-  s.blocks.flatMap (fun b => deviceWritesIn b.insts)
 
 -- ---------------------------------------------------------------------------
 -- Counted loops, recovered
@@ -911,15 +886,6 @@ def callsIn (is : List Inst) : List String :=
 /-- …over a whole function. -/
 def callsOf (s : FuncData) : List String :=
   s.blocks.flatMap (fun b => callsIn b.insts)
-
-/-- **A program whose every device write is a modelled launch.**
-
-    The decidable statement of "the launch sequence is the whole story".  A
-    generator that satisfies this has nothing writing device memory behind
-    `launchesOf`'s back; one that does not is exactly as far from a pipeline
-    claim as this list is long. -/
-def launchesAreEverythingB (s : FuncData) : Bool := (deviceWritesOf s).isEmpty
-
 
 /-- **A fragment that is what it claims to be**: it launches nothing, it writes
     no device memory behind the model's back, and it does not rebind `ptr`.
@@ -1464,7 +1430,7 @@ theorem deviceOpsOf_length (root : Nat) (s : FuncData) :
   |---|---|---|
   | 1 | the CLIF backend | that Cranelift's `iadd`/`load`/`brif`/`call` mean what `stepPure` and the FFI contracts say. The host-side counterpart of the PTX opcode table. |
   | 2 | each FFI primitive | 75 of them. `file`/`stdio`/`ht`/`thread` have contracts statable in an afternoon; `cuda`/`wgpu`/`lmdb` wrap third-party surfaces and stay named assumptions. |
-  | 3 | `cl_cuda_launch` | that it runs the PTX at the given slot with the given grid — the seam between this file's `LaunchRec` and `ML/Compose.lean`'s `Pipeline`. |
+  | 3 | `cl_cuda_launch` | that it runs the PTX at the given slot with the given grid — the seam between this file's `LaunchRec` and `ML/Launch/Sequence.lean`'s `Pipeline`. |
 -/
 
 end AlgorithmLib.Clif

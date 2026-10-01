@@ -1,10 +1,8 @@
 module
-public import Qwen2.Algorithm
-meta import Qwen2.Algorithm
-public import Qwen2.Spec
-meta import Qwen2.Spec
 public import Qwen2.NonVacuity
 meta import Qwen2.NonVacuity
+public import Qwen2.Spec
+meta import Qwen2.Spec
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

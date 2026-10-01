@@ -1,8 +1,8 @@
 module
 public import AlgorithmLib.Gen
 meta import AlgorithmLib.Gen
-public import AlgorithmLib.LZ4.Suite
-meta import AlgorithmLib.LZ4.Suite
+public import AlgorithmLib.LZ4
+meta import AlgorithmLib.LZ4
 public import AlgorithmLib.ML
 meta import AlgorithmLib.ML
 import all Init.Data.Repr

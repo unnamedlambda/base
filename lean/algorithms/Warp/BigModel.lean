@@ -1,10 +1,10 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
+public import AlgorithmLib.ML.Model.Frontend
+meta import AlgorithmLib.ML.Model.Frontend
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

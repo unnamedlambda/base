@@ -1,18 +1,20 @@
 module
 public import AlgorithmLib.Host.Blocks
 meta import AlgorithmLib.Host.Blocks
+public import AlgorithmLib.Core.Compiler
+meta import AlgorithmLib.Core.Compiler
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
 
 /-!
-# `HProgSound` — compiling a term preserves what it does
+# `Host.Sound` — compiling a term preserves what it does
 
 `compile_sound`: a body that passes `scopeOk`, run by the term interpreter to a
 trace, runs to the same trace and the same world as the function `compileBody`
 makes of it, under some block budget.
 
-`HProgBlocks` proves this for straight-line bodies, against an invariant that
+`Host.Blocks` proves this for straight-line bodies, against an invariant that
 does not survive control flow: that the block's value array agrees with the
 term's environment on *every* slot below the count. Two places break it. The
 else arm is numbered past the then arm's slots, so the term pads its
@@ -21,7 +23,7 @@ numbered past the body's slots, which the blocks hold from whichever trip last
 reached them. Neither interpreter reads those slots in a body that passes
 `scopeOk`, and the coupling here says exactly that: the two stores agree on the
 slots in scope (`Rel`), and the blocks never write below where a region started
-(`Frame`).
+(`KeepsBelow`).
 
 The simulation is forward and on successful runs. A term that gets stuck has no
 behaviour to preserve, and the two interpreters word their failures
@@ -85,22 +87,22 @@ def Rel (S : Scope) (vals : Blocks.Vals) (Γ : Sem.Env) : Prop :=
 
 /-- The blocks wrote nothing below `n`: whatever was readable there still reads
     the same. What carries a loop's entry scope round to its next trip. -/
-def Frame (n : Nat) (vals vals' : Blocks.Vals) : Prop :=
+def KeepsBelow (n : Nat) (vals vals' : Blocks.Vals) : Prop :=
   ∀ i, i < n → ∀ x, Blocks.getV vals ⟨i⟩ = some x → Blocks.getV vals' ⟨i⟩ = some x
 
-theorem Frame.refl (n : Nat) (vals : Blocks.Vals) : Frame n vals vals :=
+theorem KeepsBelow.refl (n : Nat) (vals : Blocks.Vals) : KeepsBelow n vals vals :=
   fun _ _ _ h => h
 
-theorem Frame.trans {n : Nat} {a b c : Blocks.Vals} (h1 : Frame n a b) (h2 : Frame n b c) :
-    Frame n a c :=
+theorem KeepsBelow.trans {n : Nat} {a b c : Blocks.Vals} (h1 : KeepsBelow n a b) (h2 : KeepsBelow n b c) :
+    KeepsBelow n a c :=
   fun i hi x hx => h2 i hi x (h1 i hi x hx)
 
-theorem Frame.mono {m n : Nat} {a b : Blocks.Vals} (hle : m ≤ n) (h : Frame n a b) :
-    Frame m a b :=
+theorem KeepsBelow.mono {m n : Nat} {a b : Blocks.Vals} (hle : m ≤ n) (h : KeepsBelow n a b) :
+    KeepsBelow m a b :=
   fun i hi x hx => h i (by omega) x hx
 
 theorem frame_setV (n d : Nat) (hd : n ≤ d) (vals : Blocks.Vals) (x : V) :
-    Frame n vals (Blocks.setV vals ⟨d⟩ x) := by
+    KeepsBelow n vals (Blocks.setV vals ⟨d⟩ x) := by
   intro i hi y hy
   rw [getV_setV_ne vals d i x (by omega) (getV_lt vals i y hy)]
   exact hy
@@ -202,15 +204,15 @@ theorem instOf_of {s : CS} {st : Stmt} {inst : Inst}
 
 /-- **Every operation computes what the term computes**, given agreement at its
     operands alone; and its instruction reaches `runInsts`' evaluating arm. -/
-theorem op_mstep (env : FnEnv) (s : CS) (n : Nat) (ha : Aligned s n) (o : Op)
+theorem op_mstep (lc : Sem.Locals) (s : CS) (n : Nat) (ha : Aligned s n) (o : Op)
     (hr : ∀ r ∈ o.regs, r < n) (m : Sem.Mem) (vals : Blocks.Vals) (Γ : Sem.Env)
     (hag : ∀ r ∈ o.regs, ∃ x, Γ[r]? = some x ∧ Blocks.getV vals ⟨r⟩ = some x) :
     Blocks.evalInst m vals (instOf s (.op o)) = (Sem.evalOp m Γ o).map (fun x => (⟨n⟩, x))
     ∧ ∀ (w : Sem.World) (rest : List Inst),
-        Blocks.runInsts env ⟨vals, w⟩ (instOf s (.op o) :: rest)
+        Blocks.runInsts lc ⟨vals, w⟩ (instOf s (.op o) :: rest)
           = match Blocks.evalInst w.mem vals (instOf s (.op o)) with
             | none => .stuck "instruction is undefined here"
-            | some (d, r) => Blocks.runInsts env ⟨Blocks.setV vals d r, w⟩ rest := by
+            | some (d, r) => Blocks.runInsts lc ⟨Blocks.setV vals d r, w⟩ rest := by
   cases o with
   | iconst ty k =>
       rw [instOf_of (emit_iconst s n ha ty k)]
@@ -340,6 +342,56 @@ theorem op_mstep (env : FnEnv) (s : CS) (n : Nat) (ha : Aligned s n) (o : Op)
       obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
       rw [instOf_of (emit_popcnt s n ha a h1)]
       exact ⟨mdyn1 m vals Γ Op.popcnt Sem.reloc1_popcnt a x0 g0 v0 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | ibin k a b =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      have h2 : b < n := hr b (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      obtain ⟨x1, g1, v1⟩ := hag b (by simp [Op.regs])
+      rw [instOf_of (emit_ibin s n ha k a b h1 h2)]
+      exact ⟨mdyn2 m vals Γ (Op.ibin k) (Sem.reloc2_ibin k) a b x0 x1 g0 g1 v0 v1 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | ishift k a b =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      have h2 : b < n := hr b (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      obtain ⟨x1, g1, v1⟩ := hag b (by simp [Op.regs])
+      rw [instOf_of (emit_ishift s n ha k a b h1 h2)]
+      exact ⟨mdyn2 m vals Γ (Op.ishift k) (Sem.reloc2_ishift k) a b x0 x1 g0 g1 v0 v1 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | fbin k a b =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      have h2 : b < n := hr b (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      obtain ⟨x1, g1, v1⟩ := hag b (by simp [Op.regs])
+      rw [instOf_of (emit_fbin s n ha k a b h1 h2)]
+      exact ⟨mdyn2 m vals Γ (Op.fbin k) (Sem.reloc2_fbin k) a b x0 x1 g0 g1 v0 v1 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | iun k a =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      rw [instOf_of (emit_iun s n ha k a h1)]
+      exact ⟨mdyn1 m vals Γ (Op.iun k) (Sem.reloc1_iun k) a x0 g0 v0 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | fun1 k a =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      rw [instOf_of (emit_fun1 s n ha k a h1)]
+      exact ⟨mdyn1 m vals Γ (Op.fun1 k) (Sem.reloc1_fun1 k) a x0 g0 v0 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | fconv k t a =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      rw [instOf_of (emit_fconv s n ha k t a h1)]
+      exact ⟨mdyn1 m vals Γ (Op.fconv k t) (Sem.reloc1_fconv k t) a x0 g0 v0 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | iext k t a =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      rw [instOf_of (emit_iext s n ha k t a h1)]
+      exact ⟨mdyn1 m vals Γ (Op.iext k t) (Sem.reloc1_iext k t) a x0 g0 v0 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
+  | fma a b c =>
+      have h1 : a < n := hr a (by simp [Op.regs])
+      have h2 : b < n := hr b (by simp [Op.regs])
+      have h3 : c < n := hr c (by simp [Op.regs])
+      obtain ⟨x0, g0, v0⟩ := hag a (by simp [Op.regs])
+      obtain ⟨x1, g1, v1⟩ := hag b (by simp [Op.regs])
+      obtain ⟨x2, g2, v2⟩ := hag c (by simp [Op.regs])
+      rw [instOf_of (emit_fma s n ha a b c h1 h2 h3)]
+      exact ⟨mdyn3 m vals Γ Op.fma Sem.reloc3_fma a b c x0 x1 x2 g0 g1 g2 v0 v1 v2 _ ⟨n⟩ rfl, fun _ _ => rfl⟩
   | fconst ty b =>
       rw [instOf_of (emit_fconst s n ha ty b)]
       exact ⟨by simp [Blocks.evalInst, Blocks.viaOp, Sem.evalOp], fun _ _ => rfl⟩
@@ -434,21 +486,21 @@ theorem op_mstep (env : FnEnv) (s : CS) (n : Nat) (ha : Aligned s n) (o : Op)
 /-- The masked frame: one statement, from a state agreeing on `S`, lands on the
     term's world in a state agreeing on `S` and on whatever it bound, having
     written only at `n`. -/
-def MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (st : Stmt) (inst : Inst) :
+def MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat) (st : Stmt) (inst : Inst) :
     Prop :=
   ∀ (w w₁ : Sem.World) (Γ Γ₁ : Sem.Env) (vals : Blocks.Vals) (rest : List Inst),
     Γ.size = n → Rel S vals Γ →
     Sem.runStmt cfg Γ w st = .ok Γ₁ w₁ →
-    ∃ vals₁, Blocks.runInsts env ⟨vals, w⟩ (inst :: rest)
-               = Blocks.runInsts env ⟨vals₁, w₁⟩ rest
+    ∃ vals₁, Blocks.runInsts cfg.locals ⟨vals, w⟩ (inst :: rest)
+               = Blocks.runInsts cfg.locals ⟨vals₁, w₁⟩ rest
              ∧ Rel (S.add n (n + st.binds)) vals₁ Γ₁ ∧ Γ₁.size = n + st.binds
-             ∧ Frame n vals vals₁
+             ∧ KeepsBelow n vals vals₁
 
-theorem op_MStep (env : FnEnv) (cfg : Sem.Cfg) (s : CS) (S : Scope) (n : Nat)
+theorem op_MStep (cfg : Sem.Cfg) (s : CS) (S : Scope) (n : Nat)
     (ha : Aligned s n) (o : Op) (hr : ∀ r ∈ o.regs, r < n ∧ S.mem r = true) :
-    MStep env cfg S n (.op o) (instOf s (.op o)) := by
+    MStep cfg S n (.op o) (instOf s (.op o)) := by
   intro w w₁ Γ Γ₁ vals rest hs hrel hrun
-  obtain ⟨hE, hR⟩ := op_mstep env s n ha o (fun r h => (hr r h).1) w.mem vals Γ
+  obtain ⟨hE, hR⟩ := op_mstep cfg.locals s n ha o (fun r h => (hr r h).1) w.mem vals Γ
     (fun r h => hrel r (hr r h).2)
   cases hop : Sem.evalOp w.mem Γ o with
   | none => rw [Sem.runStmt, hop] at hrun; simp at hrun
@@ -462,9 +514,9 @@ theorem op_MStep (env : FnEnv) (cfg : Sem.Cfg) (s : CS) (S : Scope) (n : Nat)
       rw [hR w rest, hE, hop]
       rfl
 
-theorem istore8_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (v a : R)
+theorem istore8_MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat) (v a : R)
     (hvS : S.mem v = true) (haS : S.mem a = true) :
-    MStep env cfg S n (.istore8 v a) (.istore8 ⟨v⟩ ⟨a⟩) := by
+    MStep cfg S n (.istore8 v a) (.istore8 ⟨v⟩ ⟨a⟩) := by
   intro w w₁ Γ Γ₁ vals rest hs hrel hr
   obtain ⟨xv, hxΓ, hxv⟩ := hrel v hvS
   obtain ⟨xa, haΓ, hav⟩ := hrel a haS
@@ -484,20 +536,39 @@ theorem istore8_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (v a :
           obtain ⟨h1, h2⟩ := hr
           subst h1; subst h2
           refine ⟨vals, ?_, by simpa [Stmt.binds] using hrel.add_empty n,
-                  by simp [Stmt.binds, hs], Frame.refl n vals⟩
+                  by simp [Stmt.binds, hs], KeepsBelow.refl n vals⟩
           rw [runInsts_istore8, hxv, hav]
           dsimp only
           rw [hm]
 
-theorem storeUnaligned_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (v a : R)
+theorem storeUnaligned_MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat) (v a : R)
     (hvS : S.mem v = true) (haS : S.mem a = true) :
-    MStep env cfg S n (.storeUnaligned v a) (.store ⟨v⟩ ⟨a⟩) := by
+    MStep cfg S n (.storeUnaligned v a) (.store ⟨v⟩ ⟨a⟩) := by
   intro w w₁ Γ Γ₁ vals rest hs hrel hr
   obtain ⟨xv, hxΓ, hxv⟩ := hrel v hvS
   obtain ⟨xa, haΓ, hav⟩ := hrel a haS
   rw [Sem.runStmt_storeUnaligned, hxΓ, haΓ] at hr
   cases xv with
-  | vec _ _ => simp at hr
+  | vec t ls =>
+    cases xa with
+    | vec _ _ => simp at hr
+    | sc t2 addr =>
+      dsimp only at hr
+      split at hr
+      · next m hm =>
+        simp only [Sem.Outcome.ok.injEq] at hr
+        obtain ⟨h1, h2⟩ := hr
+        subst h1; subst h2
+        refine ⟨vals, ?_, by simpa [Stmt.binds] using hrel.add_empty n,
+                by simp [Stmt.binds, hs], KeepsBelow.refl n vals⟩
+        rw [runInsts_store]
+        have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ none
+            = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes t) 0 with mem := m }⟩ := by
+          simp only [Blocks.doStore, hxv, hav]
+          rw [hm]
+          simp
+        rw [hd]
+      · simp at hr
   | sc t b =>
     cases xa with
     | vec _ _ => simp at hr
@@ -511,16 +582,16 @@ theorem storeUnaligned_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat)
           obtain ⟨h1, h2⟩ := hr
           subst h1; subst h2
           refine ⟨vals, ?_, by simpa [Stmt.binds] using hrel.add_empty n,
-                  by simp [Stmt.binds, hs], Frame.refl n vals⟩
+                  by simp [Stmt.binds, hs], KeepsBelow.refl n vals⟩
           rw [runInsts_store]
           have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ none
               = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes t) b with mem := m }⟩ := by
             simp [Blocks.doStore, hxv, hav, hm]
           rw [hd]
 
-theorem store_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (ty : ClifTy)
+theorem store_MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat) (ty : ClifTy)
     (v a : R) (hvS : S.mem v = true) (haS : S.mem a = true) :
-    MStep env cfg S n (.store ty v a) (.storeTyped ty ⟨v⟩ ⟨a⟩) := by
+    MStep cfg S n (.store ty v a) (.storeTyped ty ⟨v⟩ ⟨a⟩) := by
   intro w w₁ Γ Γ₁ vals rest hs hrel hr
   obtain ⟨xv, hxΓ, hxv⟩ := hrel v hvS
   obtain ⟨xa, haΓ, hav⟩ := hrel a haS
@@ -538,7 +609,7 @@ theorem store_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (ty : Cl
         obtain ⟨h1, h2⟩ := hr
         subst h1; subst h2
         refine ⟨vals, ?_, by simpa [Stmt.binds] using hrel.add_empty n,
-                by simp [Stmt.binds, hs], Frame.refl n vals⟩
+                by simp [Stmt.binds, hs], KeepsBelow.refl n vals⟩
         rw [runInsts_storeTyped]
         have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ (some ty)
             = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes ty) b with mem := m }⟩ := by
@@ -553,7 +624,7 @@ theorem store_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (ty : Cl
         obtain ⟨h1, h2⟩ := hr
         subst h1; subst h2
         refine ⟨vals, ?_, by simpa [Stmt.binds] using hrel.add_empty n,
-                by simp [Stmt.binds, hs], Frame.refl n vals⟩
+                by simp [Stmt.binds, hs], KeepsBelow.refl n vals⟩
         rw [runInsts_storeTyped]
         have hd : Blocks.doStore ⟨vals, w⟩ ⟨v⟩ ⟨a⟩ (some ty)
             = .ok ⟨vals, { Sem.obsStore w addr (Sem.tyBytes ty) 0 with mem := m }⟩ := by
@@ -563,9 +634,9 @@ theorem store_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat) (ty : Cl
         rw [hd]
       · simp at hr
 
-theorem call_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat)
+theorem call_MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat)
     (c : IR.Callee) (args : List R) (hall : ∀ r ∈ args, S.mem r = true) :
-    MStep env cfg S n (.call c args) (.call (some ⟨n⟩) c (args.map (fun r => ⟨r⟩))) := by
+    MStep cfg S n (.call c args) (.call (some ⟨n⟩) c (args.map (fun r => ⟨r⟩))) := by
   intro w w₁ Γ Γ₁ vals rest hs hrel hr
   have hargs := hrel.mapM args hall
   rw [Sem.runStmt_call] at hr
@@ -575,33 +646,28 @@ theorem call_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat)
   | none => rw [hm] at hr; simp at hr
   | some vs =>
     rw [hm] at hr
-    cases hc : c with
-    | «local» i => rw [hc] at hr; simp at hr
-    | native => rw [hc] at hr; simp at hr
-    | ffi f =>
-      rw [hc] at hr
+    dsimp only at hr
+    cases hcf : Sem.callOf cfg.locals c vs (Sem.obsCall w c vs) with
+    | none => rw [hcf] at hr; exact absurd hr Sem.failOf_ne_ok
+    | some p =>
+      obtain ⟨res, w'⟩ := p
+      rw [hcf] at hr
       dsimp only at hr
-      cases hcf : Sem.callImport f.cname vs (Sem.obsCall w (.ffi f) vs) with
-      | none => rw [hcf] at hr; simp at hr
-      | some p =>
-        obtain ⟨res, w'⟩ := p
-        rw [hcf] at hr
+      cases hres : res with
+      | none => rw [hres] at hr; simp at hr
+      | some v =>
+        rw [hres] at hr
         dsimp only at hr
-        cases hres : res with
-        | none => rw [hres] at hr; simp at hr
-        | some v =>
-          rw [hres] at hr
-          dsimp only at hr
-          simp only [Sem.Outcome.ok.injEq] at hr
-          obtain ⟨h1, h2⟩ := hr
-          subst h1; subst h2
-          refine ⟨Blocks.setV vals ⟨n⟩ v, ?_, by simpa [Stmt.binds] using hrel.push n hs v,
-                  by simp [hs, Stmt.binds], frame_setV n n (Nat.le_refl n) vals v⟩
-          simp only [hcf, hres]
+        simp only [Sem.Outcome.ok.injEq] at hr
+        obtain ⟨h1, h2⟩ := hr
+        subst h1; subst h2
+        refine ⟨Blocks.setV vals ⟨n⟩ v, ?_, by simpa [Stmt.binds] using hrel.push n hs v,
+                by simp [hs, Stmt.binds], frame_setV n n (Nat.le_refl n) vals v⟩
+        simp only [hcf, hres]
 
-theorem callVoid_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat)
+theorem callVoid_MStep (cfg : Sem.Cfg) (S : Scope) (n : Nat)
     (c : IR.Callee) (args : List R) (hall : ∀ r ∈ args, S.mem r = true) :
-    MStep env cfg S n (.callVoid c args) (.call none c (args.map (fun r => ⟨r⟩))) := by
+    MStep cfg S n (.callVoid c args) (.call none c (args.map (fun r => ⟨r⟩))) := by
   intro w w₁ Γ Γ₁ vals rest hs hrel hr
   have hargs := hrel.mapM args hall
   rw [Sem.runStmt_callVoid] at hr
@@ -611,63 +677,58 @@ theorem callVoid_MStep (env : FnEnv) (cfg : Sem.Cfg) (S : Scope) (n : Nat)
   | none => rw [hm] at hr; simp at hr
   | some vs =>
     rw [hm] at hr
-    cases hc : c with
-    | «local» i => rw [hc] at hr; simp at hr
-    | native => rw [hc] at hr; simp at hr
-    | ffi f =>
-      rw [hc] at hr
+    dsimp only at hr
+    cases hcf : Sem.callOf cfg.locals c vs (Sem.obsCall w c vs) with
+    | none => rw [hcf] at hr; exact absurd hr Sem.failOf_ne_ok
+    | some p =>
+      obtain ⟨res, w'⟩ := p
+      rw [hcf] at hr
       dsimp only at hr
-      cases hcf : Sem.callImport f.cname vs (Sem.obsCall w (.ffi f) vs) with
-      | none => rw [hcf] at hr; simp at hr
-      | some p =>
-        obtain ⟨res, w'⟩ := p
-        rw [hcf] at hr
-        dsimp only at hr
-        simp only [Sem.Outcome.ok.injEq] at hr
-        obtain ⟨h1, h2⟩ := hr
-        subst h1; subst h2
-        refine ⟨vals, ?_, by simpa [Stmt.binds] using hrel.add_empty n,
-                by simp [hs, Stmt.binds], Frame.refl n vals⟩
-        simp only [hcf]
+      simp only [Sem.Outcome.ok.injEq] at hr
+      obtain ⟨h1, h2⟩ := hr
+      subst h1; subst h2
+      refine ⟨vals, ?_, by simpa [Stmt.binds] using hrel.add_empty n,
+              by simp [hs, Stmt.binds], KeepsBelow.refl n vals⟩
+      simp only [hcf]
 
 /-- **Every statement satisfies the masked frame against what it compiles to**,
     given that it reads only slots in scope. -/
-theorem mstep_emit (env : FnEnv) (cfg : Sem.Cfg) (s : CS) (S : Scope) (n : Nat)
+theorem mstep_emit (cfg : Sem.Cfg) (s : CS) (S : Scope) (n : Nat)
     (ha : Aligned s n) (st : Stmt) (hr : ∀ r ∈ st.regs, r < n ∧ S.mem r = true) :
-    MStep env cfg S n st (instOf s st) := by
+    MStep cfg S n st (instOf s st) := by
   obtain ⟨_, _, he⟩ := ha
   cases st with
-  | op o => exact op_MStep env cfg s S n ⟨‹_›, ‹_›, he⟩ o hr
+  | op o => exact op_MStep cfg s S n ⟨‹_›, ‹_›, he⟩ o hr
   | store ty v a =>
       have h1 := hr v (by simp [Stmt.regs])
       have h2 := hr a (by simp [Stmt.regs])
       have hi : instOf s (.store ty v a) = .storeTyped ty ⟨v⟩ ⟨a⟩ := by
         simp [instOf, emitStmt, CS.get, he v h1.1, he a h2.1]
-      rw [hi]; exact store_MStep env cfg S n ty v a h1.2 h2.2
+      rw [hi]; exact store_MStep cfg S n ty v a h1.2 h2.2
   | storeUnaligned v a =>
       have h1 := hr v (by simp [Stmt.regs])
       have h2 := hr a (by simp [Stmt.regs])
       have hi : instOf s (.storeUnaligned v a) = .store ⟨v⟩ ⟨a⟩ := by
         simp [instOf, emitStmt, CS.get, he v h1.1, he a h2.1]
-      rw [hi]; exact storeUnaligned_MStep env cfg S n v a h1.2 h2.2
+      rw [hi]; exact storeUnaligned_MStep cfg S n v a h1.2 h2.2
   | istore8 v a =>
       have h1 := hr v (by simp [Stmt.regs])
       have h2 := hr a (by simp [Stmt.regs])
       have hi : instOf s (.istore8 v a) = .istore8 ⟨v⟩ ⟨a⟩ := by
         simp [instOf, emitStmt, CS.get, he v h1.1, he a h2.1]
-      rw [hi]; exact istore8_MStep env cfg S n v a h1.2 h2.2
+      rw [hi]; exact istore8_MStep cfg S n v a h1.2 h2.2
   | call c args =>
       have hall : ∀ r ∈ args, r < n := fun r h => (hr r (by simpa [Stmt.regs] using h)).1
       have hi : instOf s (.call c args) = .call (some ⟨n⟩) c (args.map (fun r => ⟨r⟩)) := by
         rw [instOf, emit_call s n ⟨‹_›, ‹_›, he⟩ c args hall]; rfl
       rw [hi]
-      exact call_MStep env cfg S n c args (fun r h => (hr r (by simpa [Stmt.regs] using h)).2)
+      exact call_MStep cfg S n c args (fun r h => (hr r (by simpa [Stmt.regs] using h)).2)
   | callVoid c args =>
       have hall : ∀ r ∈ args, r < n := fun r h => (hr r (by simpa [Stmt.regs] using h)).1
       have hi : instOf s (.callVoid c args) = .call none c (args.map (fun r => ⟨r⟩)) := by
         rw [instOf, emit_callVoid s n ⟨‹_›, ‹_›, he⟩ c args hall]; rfl
       rw [hi]
-      exact callVoid_MStep env cfg S n c args (fun r h => (hr r (by simpa [Stmt.regs] using h)).2)
+      exact callVoid_MStep cfg S n c args (fun r h => (hr r (by simpa [Stmt.regs] using h)).2)
 
 theorem scStmts_count : ∀ (ss : List Stmt) (S : Scope) (n : Nat) (S' : Scope) (n' : Nat),
     scStmts S n ss = some (S', n') → n' = n + (ss.map Stmt.binds).sum := by
@@ -684,14 +745,14 @@ theorem scStmts_count : ∀ (ss : List Stmt) (S : Scope) (n : Nat) (S' : Scope) 
 /-- **A straight-line run, masked.** The instructions `emitStmts` writes reach
     the same continuation, in a state agreeing on the scope `scStmts` computes,
     having written nothing below `n`. -/
-theorem stmts_msim (env : FnEnv) (cfg : Sem.Cfg) :
+theorem stmts_msim (cfg : Sem.Cfg) :
     ∀ (ss : List Stmt) (s : CS) (S : Scope) (n : Nat) (S' : Scope) (n' : Nat)
       (w w' : Sem.World) (Γ Γ' : Sem.Env) (vals : Blocks.Vals) (rest : List Inst),
       scStmts S n ss = some (S', n') → Aligned s n → Γ.size = n → Rel S vals Γ →
       Sem.runStmts cfg Γ w ss = .ok Γ' w' →
-      ∃ vals', Blocks.runInsts env ⟨vals, w⟩ (emittedList s ss ++ rest)
-                 = Blocks.runInsts env ⟨vals', w'⟩ rest
-               ∧ Rel S' vals' Γ' ∧ Γ'.size = n' ∧ Frame n vals vals' := by
+      ∃ vals', Blocks.runInsts cfg.locals ⟨vals, w⟩ (emittedList s ss ++ rest)
+                 = Blocks.runInsts cfg.locals ⟨vals', w'⟩ rest
+               ∧ Rel S' vals' Γ' ∧ Γ'.size = n' ∧ KeepsBelow n vals vals' := by
   intro ss
   induction ss with
   | nil =>
@@ -700,7 +761,7 @@ theorem stmts_msim (env : FnEnv) (cfg : Sem.Cfg) :
       simp [Sem.runStmts] at hr
       obtain ⟨h1, h2⟩ := hsc; obtain ⟨h3, h4⟩ := hr
       subst h1; subst h2; subst h3; subst h4
-      exact ⟨vals, by simp [emittedList], hrel, hs, Frame.refl n vals⟩
+      exact ⟨vals, by simp [emittedList], hrel, hs, KeepsBelow.refl n vals⟩
   | cons st ss ih =>
       intro s S n S' n' w w' Γ Γ' vals rest hsc ha hs hrel hr
       simp only [scStmts] at hsc
@@ -710,10 +771,12 @@ theorem stmts_msim (env : FnEnv) (cfg : Sem.Cfg) :
         rw [Sem.runStmts] at hr
         cases hone : Sem.runStmt cfg Γ w st with
         | stuck m => rw [hone] at hr; simp at hr
+        | misuse m => rw [hone] at hr; simp at hr
+        | fault m => rw [hone] at hr; simp at hr
         | ok Γ₁ w₁ =>
             rw [hone] at hr
             obtain ⟨vals₁, hrun₁, hrel₁, hs₁, hf₁⟩ :=
-              mstep_emit env cfg s S n ha st hin w w₁ Γ Γ₁ vals
+              mstep_emit cfg s S n ha st hin w w₁ Γ Γ₁ vals
                 (emittedList (emitStmt s st) ss ++ rest) hs hrel hone
             obtain ⟨vals', hrun, hrel', hs', hf'⟩ :=
               ih (emitStmt s st) _ _ S' n' w₁ w' Γ₁ Γ' vals₁ rest hsc
@@ -1068,6 +1131,8 @@ theorem runCode_cons (k : Nat) (cfg : Sem.Cfg) (Γ : Sem.Env) (w : Sem.World) (p
     Sem.runCode (k + 1) cfg Γ w (p :: ps)
       = match Sem.runPiece k cfg Γ w p with
         | .stuck s => .stuck s
+        | .misuse s => .misuse s
+        | .fault s => .fault s
         | .brk d Γb vs w' => .brk d Γb vs w'
         | .cont d vs w' => .cont d vs w'
         | .ok Γ' w' => Sem.runCode k cfg Γ' w' ps := rfl
@@ -1119,6 +1184,8 @@ theorem termsGo_run : ∀ (f : Nat) (c : List Piece), termsGo f c = true →
                     · simp at hpk
                     · simp at hpk
                     · simp at hpk
+                    · simp at hpk
+                    · simp at hpk
                     · rename_i Γa wa hra
                       split at hra
                       · exact ih thn h.1 k cfg _ w Γa wa (by simpa using hra)
@@ -1131,8 +1198,12 @@ theorem termsGo_run : ∀ (f : Nat) (c : List Piece), termsGo f c = true →
           · simp at hrun
           · simp at hrun
           · simp at hrun
+          · simp at hrun
+          · simp at hrun
           · rename_i Γ1 w1 hpk; exact hp Γ1 w1 hpk
         · split at hrun
+          · simp at hrun
+          · simp at hrun
           · simp at hrun
           · simp at hrun
           · simp at hrun
@@ -2059,14 +2130,16 @@ theorem ExtC.placed {F : FuncData} {s t : CS} (h : ExtC s t) (hD : Done F t) :
 
 /-- Run a block from part-way through: its remaining instructions, then wherever
     its terminator sends control. -/
-def runK (env : FnEnv) (F : FuncData) (steps : Nat) (st : Blocks.BSt) (R : List Inst) :
-    Outcome World :=
-  match Blocks.runInsts env st R with
+def runK (lc : Sem.Locals) (F : FuncData) (steps : Nat) (st : Blocks.BSt) (R : List Inst) :
+    Outcome (Option V) :=
+  match Blocks.runInsts lc st R with
   | .stuck m => .stuck m
+  | .misuse m => .misuse m
+  | .fault m => .fault m
   | .ok (s', next) w =>
       match next with
-      | .done => .ok w w
-      | .goto t vs => Blocks.runFrom env F steps { s' with world := w } t vs
+      | .done r => .ok r w
+      | .goto t vs => Blocks.runFrom lc F steps { s' with world := w } t vs
 
 /-- What entering a block does to the value array: its parameters bound. -/
 def bindVals (vals : Blocks.Vals) (pars : List (Val × ClifTy)) (vs : List V) : Blocks.Vals :=
@@ -2074,37 +2147,37 @@ def bindVals (vals : Blocks.Vals) (pars : List (Val × ClifTy)) (vs : List V) : 
 
 /-- **Entering a block `s` was building** runs what is left of it, from its
     parameters bound. -/
-theorem enter {env : FnEnv} {F : FuncData} (hF : Distinct F) {t : CS} {R : List Inst}
+theorem enter {lc : Sem.Locals} {F : FuncData} (hF : Distinct F) {t : CS} {R : List Inst}
     (hP : Placed F t R) (hcur : t.cur = []) {m : Nat} {tys : List ClifTy}
     (hpars : t.curPars = parsOf m tys) {vs : List V} (hlen : tys.length = vs.length)
     (steps : Nat) (st : Blocks.BSt) :
-    Blocks.runFrom env F (steps + 1) st t.curRef vs
-      = runK env F steps ⟨bindVals st.vals (parsOf m tys) vs, st.world⟩ R := by
+    Blocks.runFrom lc F (steps + 1) st t.curRef vs
+      = runK lc F steps ⟨bindVals st.vals (parsOf m tys) vs, st.world⟩ R := by
   obtain ⟨b, hb, hid, hpar, hins⟩ := hP
-  rw [← hid, runFrom_block env F steps st b hF hb vs
+  rw [← hid, runFrom_block lc F steps st b hF hb vs
     (by rw [hpar, hpars, parsOf_length]; exact hlen)]
   unfold runK
   rw [hins, hpar, hpars, hcur]
   rfl
 
-theorem runK_insts {env : FnEnv} {F : FuncData} {steps : Nat} {st st' : Blocks.BSt}
-    {L R : List Inst} (h : Blocks.runInsts env st (L ++ R) = Blocks.runInsts env st' R) :
-    runK env F steps st (L ++ R) = runK env F steps st' R := by
+theorem runK_insts {lc : Sem.Locals} {F : FuncData} {steps : Nat} {st st' : Blocks.BSt}
+    {L R : List Inst} (h : Blocks.runInsts lc st (L ++ R) = Blocks.runInsts lc st' R) :
+    runK lc F steps st (L ++ R) = runK lc F steps st' R := by
   unfold runK; rw [h]
 
-theorem runK_jump {env : FnEnv} {F : FuncData} {steps : Nat} {vals : Blocks.Vals} {w : World}
+theorem runK_jump {lc : Sem.Locals} {F : FuncData} {steps : Nat} {vals : Blocks.Vals} {w : World}
     {t : BlockRef} {args : List Val} {rest : List Inst} {vs : List V}
     (h : args.mapM (Blocks.getV vals) = some vs) :
-    runK env F steps ⟨vals, w⟩ (.jump t args :: rest)
-      = Blocks.runFrom env F steps ⟨vals, w⟩ t.id vs := by
+    runK lc F steps ⟨vals, w⟩ (.jump t args :: rest)
+      = Blocks.runFrom lc F steps ⟨vals, w⟩ t.id vs := by
   unfold runK; simp only [Blocks.runInsts, h]
 
-theorem runK_brif {env : FnEnv} {F : FuncData} {steps : Nat} {vals : Blocks.Vals} {w : World}
+theorem runK_brif {lc : Sem.Locals} {F : FuncData} {steps : Nat} {vals : Blocks.Vals} {w : World}
     {c : Val} {tb eb : BlockRef} {ta ea : List Val} {rest : List Inst} {cv : V}
     (hc : Blocks.getV vals c = some cv) {vs : List V}
     (h : (if Sem.isTrue cv then ta else ea).mapM (Blocks.getV vals) = some vs) :
-    runK env F steps ⟨vals, w⟩ (.brif c tb ta eb ea :: rest)
-      = Blocks.runFrom env F steps ⟨vals, w⟩ (if Sem.isTrue cv then tb else eb).id vs := by
+    runK lc F steps ⟨vals, w⟩ (.brif c tb ta eb ea :: rest)
+      = Blocks.runFrom lc F steps ⟨vals, w⟩ (if Sem.isTrue cv then tb else eb).id vs := by
   unfold runK
   simp only [Blocks.runInsts, hc]
   cases hcv : Sem.isTrue cv <;> simp only [hcv, if_true, if_false, Bool.false_eq_true] at h ⊢ <;>
@@ -2135,14 +2208,14 @@ theorem bindAt_hi (Γ : Sem.Env) (m : Nat) (vs : List V) (j : Nat) :
   simp [this]
 
 theorem bindVals_frame : ∀ (tys : List ClifTy) (vs : List V) (m : Nat) (vals : Blocks.Vals),
-    Frame m vals (bindVals vals (parsOf m tys) vs) := by
+    KeepsBelow m vals (bindVals vals (parsOf m tys) vs) := by
   intro tys
   induction tys with
-  | nil => intro vs m vals; simp [bindVals, parsOf]; exact Frame.refl m vals
+  | nil => intro vs m vals; simp [bindVals, parsOf]; exact KeepsBelow.refl m vals
   | cons t ts ih =>
       intro vs m vals
       cases vs with
-      | nil => simp [bindVals, parsOf]; exact Frame.refl m vals
+      | nil => simp [bindVals, parsOf]; exact KeepsBelow.refl m vals
       | cons v vs =>
           have h1 := frame_setV m m (Nat.le_refl m) vals v
           have h2 := (ih vs (m + 1) (Blocks.setV vals ⟨m⟩ v)).mono (Nat.le_succ m)
@@ -2220,40 +2293,42 @@ theorem map_get_aligned {s : CS} {n : Nat} (ha : Aligned s n) (rs : List R)
     loop needs in scope. Going round: they jump to its back-edge target. In
     every case they have written nothing below `n`, and they get there in a
     number of block entries that does not depend on the budget left. -/
-def SimRes (env : FnEnv) (F : FuncData) (lb : List SLbl) (labels : List (Nat × Option Nat))
+def SimRes (lc : Sem.Locals) (F : FuncData) (lb : List SLbl) (labels : List (Nat × Option Nat))
     (n : Nat) (S' : Scope) (n' : Nat) (t : CS) (vals : Blocks.Vals) (w : World)
     (R0 : List Inst) : Sem.CodeRes → Prop
-  | .ok Γ' w' => Γ'.size = n' ∧ ∃ vals' cost, Rel S' vals' Γ' ∧ Frame n vals vals' ∧
+  | .ok Γ' w' => Γ'.size = n' ∧ ∃ vals' cost, Rel S' vals' Γ' ∧ KeepsBelow n vals vals' ∧
       ∀ R1, Placed F t R1 → ∀ steps,
-        runK env F (steps + cost) ⟨vals, w⟩ R0 = runK env F steps ⟨vals', w'⟩ R1
+        runK lc F (steps + cost) ⟨vals, w⟩ R0 = runK lc F steps ⟨vals', w'⟩ R1
   | .brk d Γb vs w' => ∃ L, lb[d]? = some L ∧ vs.length = L.exitN ∧ ∃ vals' cost,
-      Rel L.need vals' Γb ∧ Frame n vals vals' ∧ ∀ steps,
-        runK env F (steps + cost) ⟨vals, w⟩ R0
-          = Blocks.runFrom env F steps ⟨vals', w'⟩ (((labels[d]?).map (·.1)).getD 1000000) vs
+      Rel L.need vals' Γb ∧ KeepsBelow n vals vals' ∧ ∀ steps,
+        runK lc F (steps + cost) ⟨vals, w⟩ R0
+          = Blocks.runFrom lc F steps ⟨vals', w'⟩ (((labels[d]?).map (·.1)).getD 1000000) vs
   | .cont d vs w' => ∃ L, lb[d]? = some L ∧ vs.length = L.carryN ∧ ∃ vals' cost,
-      Frame n vals vals' ∧ ∀ steps,
-        runK env F (steps + cost) ⟨vals, w⟩ R0
-          = Blocks.runFrom env F steps ⟨vals', w'⟩ (((labels[d]?).bind (·.2)).getD 1000000) vs
+      KeepsBelow n vals vals' ∧ ∀ steps,
+        runK lc F (steps + cost) ⟨vals, w⟩ R0
+          = Blocks.runFrom lc F steps ⟨vals', w'⟩ (((labels[d]?).bind (·.2)).getD 1000000) vs
   | .stuck _ => True
+  | .misuse _ => True
+  | .fault _ => True
 
 /-- The simulation for every region at one emitter fuel, for every term fuel. -/
-def SimP (env : FnEnv) (cfg : Sem.Cfg) (F : FuncData) (f : Nat) : Prop :=
+def SimP (cfg : Sem.Cfg) (F : FuncData) (f : Nat) : Prop :=
   ∀ (k : Nat) (lb : List SLbl) (S : Scope) (n : Nat) (c : List Piece) (S' : Scope) (n' : Nat)
     (s : CS) (Γ : Sem.Env) (w : World) (vals : Blocks.Vals) (R0 : List Inst),
     f ≤ HProg.fuel → scGo f lb S n c = some (S', n') → Aligned s n → Inv s →
     Placed F s R0 → Done F (emitCode f s c) →
     (termsGo f c = false → ∃ R1, Placed F (emitCode f s c) R1) →
     Γ.size = n → Rel S vals Γ →
-    SimRes env F lb s.labels n S' n' (emitCode f s c) vals w R0 (Sem.runCode k cfg Γ w c)
+    SimRes cfg.locals F lb s.labels n S' n' (emitCode f s c) vals w R0 (Sem.runCode k cfg Γ w c)
 
 /-- A run that first gets from `R0` to `R_mid` simulates whatever the rest does. -/
-theorem SimRes.prepend {env : FnEnv} {F : FuncData} {lb : List SLbl}
+theorem SimRes.prepend {lc : Sem.Locals} {F : FuncData} {lb : List SLbl}
     {labels : List (Nat × Option Nat)} {n n1 : Nat} {S' : Scope} {n' : Nat} {t : CS}
     {vals vals1 : Blocks.Vals} {w w1 : World} {R0 Rm : List Inst} {res : Sem.CodeRes} {c : Nat}
-    (h : SimRes env F lb labels n1 S' n' t vals1 w1 Rm res)
-    (hc : ∀ st, runK env F (st + c) ⟨vals, w⟩ R0 = runK env F st ⟨vals1, w1⟩ Rm)
-    (hf : Frame n vals vals1) (hle : n ≤ n1) :
-    SimRes env F lb labels n S' n' t vals w R0 res := by
+    (h : SimRes lc F lb labels n1 S' n' t vals1 w1 Rm res)
+    (hc : ∀ st, runK lc F (st + c) ⟨vals, w⟩ R0 = runK lc F st ⟨vals1, w1⟩ Rm)
+    (hf : KeepsBelow n vals vals1) (hle : n ≤ n1) :
+    SimRes lc F lb labels n S' n' t vals w R0 res := by
   cases res with
   | ok Γ' w' =>
       obtain ⟨hs, vals', c2, hr, hf2, heq⟩ := h
@@ -2268,11 +2343,15 @@ theorem SimRes.prepend {env : FnEnv} {F : FuncData} {lb : List SLbl}
       refine ⟨L, hL, hlen, vals', c2 + c, hf.trans (hf2.mono hle), fun st => ?_⟩
       rw [← Nat.add_assoc, hc, heq]
   | stuck _ => trivial
+  | misuse _ => trivial
+  | fault _ => trivial
 
 /-- What `runCode` does with a piece's result: carry on with the rest when it
     finished, pass it out otherwise. -/
 def andThen (k : Nat) (cfg : Sem.Cfg) (ps : List Piece) : Sem.CodeRes → Sem.CodeRes
   | .stuck s => .stuck s
+  | .misuse s => .misuse s
+  | .fault s => .fault s
   | .brk d Γb vs w' => .brk d Γb vs w'
   | .cont d vs w' => .cont d vs w'
   | .ok Γ' w' => Sem.runCode k cfg Γ' w' ps
@@ -2283,16 +2362,16 @@ theorem runCode_cons' (k : Nat) (cfg : Sem.Cfg) (Γ : Sem.Env) (w : World) (p : 
   rw [runCode_cons]; cases Sem.runPiece k cfg Γ w p <;> rfl
 
 /-- **A piece followed by the rest.** -/
-theorem SimRes.seq {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl}
+theorem SimRes.seq {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl}
     {labels : List (Nat × Option Nat)} {n n1 : Nat} {S1 S' : Scope} {n' : Nat} {t1 t : CS}
     {vals : Blocks.Vals} {w : World} {R0 : List Inst} {r : Sem.CodeRes} {k : Nat}
     {ps : List Piece}
-    (hp : SimRes env F lb labels n S1 n1 t1 vals w R0 r) (hle : n ≤ n1)
+    (hp : SimRes cfg.locals F lb labels n S1 n1 t1 vals w R0 r) (hle : n ≤ n1)
     (hmid : ∀ Γ1 w1, r = .ok Γ1 w1 → ∃ Rm, Placed F t1 Rm)
     (hrest : ∀ Γ1 w1 vals1 Rm, r = .ok Γ1 w1 → Placed F t1 Rm → Γ1.size = n1 →
       Rel S1 vals1 Γ1 →
-      SimRes env F lb labels n1 S' n' t vals1 w1 Rm (Sem.runCode k cfg Γ1 w1 ps)) :
-    SimRes env F lb labels n S' n' t vals w R0
+      SimRes cfg.locals F lb labels n1 S' n' t vals1 w1 Rm (Sem.runCode k cfg Γ1 w1 ps)) :
+    SimRes cfg.locals F lb labels n S' n' t vals w R0
       (andThen k cfg ps r) := by
   cases r with
   | ok Γ1 w1 =>
@@ -2302,6 +2381,8 @@ theorem SimRes.seq {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl}
   | brk d Γb vs w' => exact hp
   | cont d vs w' => exact hp
   | stuck _ => trivial
+  | misuse _ => trivial
+  | fault _ => trivial
 
 theorem placed_emitStmts {F : FuncData} {s : CS} {ss : List Stmt} {R : List Inst}
     (h : Placed F (emitStmts s ss) R) : Placed F s (emittedList s ss ++ R) := by
@@ -2310,12 +2391,12 @@ theorem placed_emitStmts {F : FuncData} {s : CS} {ss : List Stmt} {R : List Inst
   refine ⟨b, hb, hid.trans hcr, hpar.trans (emitStmts_curPars ss s), ?_⟩
   rw [hins, emitStmts_cur]; simp [List.append_assoc]
 
-theorem sim_straight {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
+theorem sim_straight {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
     {lb : List SLbl} {S : Scope} {n : Nat} {ss : List Stmt} {S1 : Scope} {n1 : Nat}
     (hsc : scStmts S n ss = some (S1, n1)) (f k : Nat) (s : CS) (ha : Aligned s n)
     (Γ : Sem.Env) (w : World) (vals : Blocks.Vals) (R0 : List Inst) (hP : Placed F s R0)
     (hs : Γ.size = n) (hr : Rel S vals Γ) :
-    SimRes env F lb s.labels n S1 n1 (emitPiece f s (.straight ss)) vals w R0
+    SimRes cfg.locals F lb s.labels n S1 n1 (emitPiece f s (.straight ss)) vals w R0
       (Sem.runPiece k cfg Γ w (.straight ss)) := by
   cases k with
   | zero => simp [Sem.runPiece, SimRes]
@@ -2323,20 +2404,22 @@ theorem sim_straight {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct
     simp only [Sem.runPiece]
     cases hrun : Sem.runStmts cfg Γ w ss with
     | stuck _ => trivial
+    | misuse _ => trivial
+    | fault _ => trivial
     | ok Γ' w' =>
       have hep : emitPiece f s (.straight ss) = emitStmts s ss := by rw [emitPiece]
       rw [hep]
       by_cases hex : ∃ R1, Placed F (emitStmts s ss) R1
       · obtain ⟨R1, hP1⟩ := hex
         obtain ⟨vals', hins, hr', hs', hf⟩ :=
-          stmts_msim env cfg ss s S n S1 n1 w w' Γ Γ' vals R1 hsc ha hs hr hrun
+          stmts_msim cfg ss s S n S1 n1 w w' Γ Γ' vals R1 hsc ha hs hr hrun
         refine ⟨hs', vals', 0, hr', hf, fun R2 hP2 st => ?_⟩
         rw [← hP1.unique hF hP2]
         have := hP.unique hF (placed_emitStmts hP1)
         subst this
         exact runK_insts hins
       · obtain ⟨vals', _, hr', hs', hf⟩ :=
-          stmts_msim env cfg ss s S n S1 n1 w w' Γ Γ' vals [] hsc ha hs hr hrun
+          stmts_msim cfg ss s S n S1 n1 w w' Γ Γ' vals [] hsc ha hs hr hrun
         exact ⟨hs', vals', 0, hr', hf, fun R2 hP2 => absurd ⟨R2, hP2⟩ hex⟩
 
 theorem runPiece_br (k : Nat) (cfg : Sem.Cfg) (Γ : Sem.Env) (w : World) (d : Nat) (args : List R) :
@@ -2360,13 +2443,13 @@ theorem args_read {s : CS} {n : Nat} (ha : Aligned s n) {S : Scope} {vals : Bloc
   rw [map_get_aligned ha rs (fun r h => (hin r h).1)]
   exact hr.mapM rs (fun r h => (hin r h).2)
 
-theorem sim_br {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {S : Scope}
+theorem sim_br {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {S : Scope}
     {n : Nat} {d : Nat} {args : List R} {L : SLbl} (hL : lb[d]? = some L)
     (hin : allIn S n args = true) (hlen : args.length = L.exitN) (hneed : L.need.sub S = true)
     (f k : Nat) (s : CS) (ha : Aligned s n) (Γ : Sem.Env) (w : World) (vals : Blocks.Vals)
     (R0 : List Inst) (hF : Distinct F) (hP : Placed F s R0)
     (hD : Done F (emitPiece f s (.br d args))) (hr : Rel S vals Γ) (S1 : Scope) (n1 : Nat) :
-    SimRes env F lb s.labels n S1 n1 (emitPiece f s (.br d args)) vals w R0
+    SimRes cfg.locals F lb s.labels n S1 n1 (emitPiece f s (.br d args)) vals w R0
       (Sem.runPiece k cfg Γ w (.br d args)) := by
   have hep : emitPiece f s (.br d args) = s.close (.jump ⟨((s.labels[d]?).map (·.1)).getD 1000000⟩
       (args.map s.get)) := by rw [emitPiece]
@@ -2379,17 +2462,17 @@ theorem sim_br {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {S 
     cases hm : args.mapM (fun r => Γ[r]?) with
     | none => trivial
     | some vs =>
-      refine ⟨L, hL, (mapM_length hm).trans hlen, vals, 0, hr.sub hneed, Frame.refl n vals,
+      refine ⟨L, hL, (mapM_length hm).trans hlen, vals, 0, hr.sub hneed, KeepsBelow.refl n vals,
         fun st => ?_⟩
       exact runK_jump ((args_read ha hr hin).trans hm)
 
-theorem sim_cont {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {S : Scope}
+theorem sim_cont {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {S : Scope}
     {n : Nat} {d : Nat} {args : List R} {L : SLbl} (hL : lb[d]? = some L)
     (hin : allIn S n args = true) (hlen : args.length = L.carryN)
     (f k : Nat) (s : CS) (ha : Aligned s n) (Γ : Sem.Env) (w : World) (vals : Blocks.Vals)
     (R0 : List Inst) (hF : Distinct F) (hP : Placed F s R0)
     (hD : Done F (emitPiece f s (.cont d args))) (hr : Rel S vals Γ) (S1 : Scope) (n1 : Nat) :
-    SimRes env F lb s.labels n S1 n1 (emitPiece f s (.cont d args)) vals w R0
+    SimRes cfg.locals F lb s.labels n S1 n1 (emitPiece f s (.cont d args)) vals w R0
       (Sem.runPiece k cfg Γ w (.cont d args)) := by
   have hep : emitPiece f s (.cont d args) = s.close (.jump ⟨((s.labels[d]?).bind (·.2)).getD 1000000⟩
       (args.map s.get)) := by rw [emitPiece]
@@ -2402,7 +2485,7 @@ theorem sim_cont {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl} {
     cases hm : args.mapM (fun r => Γ[r]?) with
     | none => trivial
     | some vs =>
-      refine ⟨L, hL, (mapM_length hm).trans hlen, vals, 0, Frame.refl n vals, fun st => ?_⟩
+      refine ⟨L, hL, (mapM_length hm).trans hlen, vals, 0, KeepsBelow.refl n vals, fun st => ?_⟩
       exact runK_jump ((args_read ha hr hin).trans hm)
 
 /-- The states `emitIte` passes through, by name. -/
@@ -2519,8 +2602,8 @@ theorem iteArmEnd_open {f h : Nat} {arm : List Piece} {rs : List R} {sA : CS}
 /-- **One arm of a branch, then the jump to the join.** Given the arm's block
     was entered agreeing on `S`, what the term does with the arm and its exports
     the blocks do with the arm's code and the join's parameters. -/
-theorem sim_arm {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
-    (hfuel : f ≤ HProg.fuel) (ih : SimP env cfg F f) {lb : List SLbl} {S : Scope}
+theorem sim_arm {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
+    (hfuel : f ≤ HProg.fuel) (ih : SimP cfg F f) {lb : List SLbl} {S : Scope}
     {n na : Nat} {a : List Piece} {Sx : Scope} {nx : Nat} {rs : List R} {jTys : List ClifTy}
     {ne : Nat} (hsc : scGo f lb S na a = some (Sx, nx))
     (hx : termsGo f a = true ∨
@@ -2530,9 +2613,11 @@ theorem sim_arm {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (
     (ht1 : termsGo f a = false → t1.curRef = h + 2 ∧ t1.cur = [] ∧ t1.curPars = parsOf ne jTys)
     (Γa : Sem.Env) (w : World) (vals : Blocks.Vals) (hs : Γa.size = na) (hr : Rel S vals Γa) :
     ∃ RA, Placed F A RA ∧
-      SimRes env F lb A.labels n (S.add ne (ne + jTys.length)) (ne + jTys.length) t1 vals w RA
+      SimRes cfg.locals F lb A.labels n (S.add ne (ne + jTys.length)) (ne + jTys.length) t1 vals w RA
         (match Sem.runCode k cfg Γa w a with
           | .stuck s => .stuck s
+          | .misuse s => .misuse s
+          | .fault s => .fault s
           | .brk d Γb vs w' => .brk d Γb vs w'
           | .cont d vs w' => .cont d vs w'
           | .ok Γ' w' =>
@@ -2559,6 +2644,8 @@ theorem sim_arm {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (
   generalize hres : Sem.runCode k cfg Γa w a = r at hsim
   cases r with
   | stuck _ => trivial
+  | misuse _ => trivial
+  | fault _ => trivial
   | brk d Γb vs w' =>
       obtain ⟨L, hL, hlen, vals', c, hrel, hf, heq⟩ := hsim
       exact ⟨L, hL, hlen, vals', c, hrel, hf.mono hnle, heq⟩
@@ -2596,14 +2683,14 @@ theorem sim_arm {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (
           runK_jump ((args_read hDa hrel hin).trans hm), ← hr1]
         exact enter hF hP1 hc1 hp1 hvl.symm st ⟨vals', w'⟩
 
-theorem sim_ite {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
-    (hfuel : f ≤ HProg.fuel) (ih : SimP env cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
+theorem sim_ite {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
+    (hfuel : f ≤ HProg.fuel) (ih : SimP cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
     {m : IteMeta} {thn els : List Piece} {thnR elsR : List R} {St : Scope} {nt : Nat}
     {Se : Scope} {ne : Nat} (hok : IteOk f lb S n m thn els thnR elsR St nt Se ne) (k : Nat)
     (s : CS) (ha : Aligned s n) (hi : Inv s) (Γ : Sem.Env) (w : World) (vals : Blocks.Vals)
     (R0 : List Inst) (hP : Placed F s R0) (hD : Done F (emitPiece f s (.ite m thn els thnR elsR)))
     (hs : Γ.size = n) (hr : Rel S vals Γ) :
-    SimRes env F lb s.labels n (S.add ne (ne + m.jTys.length)) (ne + m.jTys.length)
+    SimRes cfg.locals F lb s.labels n (S.add ne (ne + m.jTys.length)) (ne + m.jTys.length)
       (emitPiece f s (.ite m thn els thnR elsR)) vals w R0
       (Sem.runPiece k cfg Γ w (.ite m thn els thnR elsR)) := by
   obtain ⟨hCi, hCa, hFi, hFa, hCE, hEH, _, hFc, hFp, hFr, hFl, hHc, hHa⟩ :=
@@ -2658,7 +2745,7 @@ theorem sim_ite {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (
         hsl2.1 k (iteThen s m) hCa hCi s.nextBlk _ hDE (fun ht => hjoin (by simp [ht]))
         Γ w vals hs hr
       rw [hCl] at hsim
-      refine hsim.prepend (c := 1) (fun st => ?_) (Frame.refl n vals) (Nat.le_refl n)
+      refine hsim.prepend (c := 1) (fun st => ?_) (KeepsBelow.refl n vals) (Nat.le_refl n)
       rw [runK_brif (ta := []) (ea := []) (vs := []) hxv (by simp), show Sem.isTrue (.sc t fv) = true from hfv, if_pos rfl]
       rw [← hCr]
       exact enter hF hPA hCc (m := 0) (tys := []) (vs := []) hCp rfl st ⟨vals, w⟩
@@ -2674,7 +2761,7 @@ theorem sim_ite {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (
         (fun ht => hjoin (by simp [ht])) (Sem.bindAt Γ nt []) w vals
         (by rw [bindAt_size]; rfl) hr0
       rw [hFl] at hsim
-      refine hsim.prepend (c := 1) (fun st => ?_) (Frame.refl n vals) (Nat.le_refl n)
+      refine hsim.prepend (c := 1) (fun st => ?_) (KeepsBelow.refl n vals) (Nat.le_refl n)
       rw [runK_brif (ta := []) (ea := []) (vs := []) hxv (by simp), show Sem.isTrue (.sc t fv) = false from hfv]
       simp only [Bool.false_eq_true, if_false]
       rw [show s.nextBlk + 1 = (iteF f s m thn thnR).curRef from hFr.symm]
@@ -2807,26 +2894,28 @@ theorem loop_stages (f : Nat) (ih : StructP f) {lb : List SLbl} {S : Scope} {n :
 
 /-- `SimRes` with the blocks' run given as a function of the budget, so a loop
     trip can start at a block entry rather than part-way through a block. -/
-def SimResS (env : FnEnv) (F : FuncData) (lb : List SLbl) (labels : List (Nat × Option Nat))
+def SimResS (lc : Sem.Locals) (F : FuncData) (lb : List SLbl) (labels : List (Nat × Option Nat))
     (n : Nat) (S' : Scope) (n' : Nat) (t : CS) (vals0 : Blocks.Vals)
-    (start : Nat → Outcome World) : Sem.CodeRes → Prop
-  | .ok Γ' w' => Γ'.size = n' ∧ ∃ vals' cost, Rel S' vals' Γ' ∧ Frame n vals0 vals' ∧
-      ∀ R1, Placed F t R1 → ∀ st, start (st + cost) = runK env F st ⟨vals', w'⟩ R1
+    (start : Nat → Outcome (Option V)) : Sem.CodeRes → Prop
+  | .ok Γ' w' => Γ'.size = n' ∧ ∃ vals' cost, Rel S' vals' Γ' ∧ KeepsBelow n vals0 vals' ∧
+      ∀ R1, Placed F t R1 → ∀ st, start (st + cost) = runK lc F st ⟨vals', w'⟩ R1
   | .brk d Γb vs w' => ∃ L, lb[d]? = some L ∧ vs.length = L.exitN ∧ ∃ vals' cost,
-      Rel L.need vals' Γb ∧ Frame n vals0 vals' ∧ ∀ st,
+      Rel L.need vals' Γb ∧ KeepsBelow n vals0 vals' ∧ ∀ st,
         start (st + cost)
-          = Blocks.runFrom env F st ⟨vals', w'⟩ (((labels[d]?).map (·.1)).getD 1000000) vs
+          = Blocks.runFrom lc F st ⟨vals', w'⟩ (((labels[d]?).map (·.1)).getD 1000000) vs
   | .cont d vs w' => ∃ L, lb[d]? = some L ∧ vs.length = L.carryN ∧ ∃ vals' cost,
-      Frame n vals0 vals' ∧ ∀ st,
+      KeepsBelow n vals0 vals' ∧ ∀ st,
         start (st + cost)
-          = Blocks.runFrom env F st ⟨vals', w'⟩ (((labels[d]?).bind (·.2)).getD 1000000) vs
+          = Blocks.runFrom lc F st ⟨vals', w'⟩ (((labels[d]?).bind (·.2)).getD 1000000) vs
   | .stuck _ => True
+  | .misuse _ => True
+  | .fault _ => True
 
-theorem SimResS.restart {env : FnEnv} {F : FuncData} {lb : List SLbl}
+theorem SimResS.restart {lc : Sem.Locals} {F : FuncData} {lb : List SLbl}
     {labels : List (Nat × Option Nat)} {n : Nat} {S' : Scope} {n' : Nat} {t : CS}
-    {vals0 : Blocks.Vals} {start start1 : Nat → Outcome World} {res : Sem.CodeRes} {c : Nat}
-    (h : SimResS env F lb labels n S' n' t vals0 start1 res)
-    (hc : ∀ st, start (st + c) = start1 st) : SimResS env F lb labels n S' n' t vals0 start res := by
+    {vals0 : Blocks.Vals} {start start1 : Nat → Outcome (Option V)} {res : Sem.CodeRes} {c : Nat}
+    (h : SimResS lc F lb labels n S' n' t vals0 start1 res)
+    (hc : ∀ st, start (st + c) = start1 st) : SimResS lc F lb labels n S' n' t vals0 start res := by
   cases res with
   | ok Γ' w' =>
       obtain ⟨hs, vals', c2, hr, hf, heq⟩ := h
@@ -2838,15 +2927,17 @@ theorem SimResS.restart {env : FnEnv} {F : FuncData} {lb : List SLbl}
       obtain ⟨L, hL, hlen, vals', c2, hf, heq⟩ := h
       exact ⟨L, hL, hlen, vals', c2 + c, hf, fun st => by rw [← Nat.add_assoc, hc, heq]⟩
   | stuck _ => trivial
+  | misuse _ => trivial
+  | fault _ => trivial
 
-theorem runK_brif' {env : FnEnv} {F : FuncData} {steps : Nat} {vals : Blocks.Vals} {w : World}
+theorem runK_brif' {lc : Sem.Locals} {F : FuncData} {steps : Nat} {vals : Blocks.Vals} {w : World}
     {c : Val} {tb eb : BlockRef} {ta ea : List Val} {rest : List Inst} {cv : V}
     {tgt : BlockRef} {args : List Val} {vs : List V}
     (hc : Blocks.getV vals c = some cv)
     (htgt : (if Sem.isTrue cv then (tb, ta) else (eb, ea)) = (tgt, args))
     (hargs : args.mapM (Blocks.getV vals) = some vs) :
-    runK env F steps ⟨vals, w⟩ (.brif c tb ta eb ea :: rest)
-      = Blocks.runFrom env F steps ⟨vals, w⟩ tgt.id vs := by
+    runK lc F steps ⟨vals, w⟩ (.brif c tb ta eb ea :: rest)
+      = Blocks.runFrom lc F steps ⟨vals, w⟩ tgt.id vs := by
   unfold runK; simp only [Blocks.runInsts, hc, htgt, hargs]
 
 theorem mapM_of_get {α β : Type} {g : α → Option β} : ∀ (xs : List α) (ys : List β),
@@ -2876,24 +2967,24 @@ theorem carry_read {vals : Blocks.Vals} {n len : Nat} {cs : List V} (hl : cs.len
   rw [h i (by simpa using h1)]; simp [h2]
 
 /-- The head's test, taken toward the exit. -/
-theorem loopBrif_exit {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
+theorem loopBrif_exit {lc : Sem.Locals} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
     {h : Nat} {l : Loop} {sH : CS} {fc : Nat} {t : ClifTy} {fv : UInt64} {vs : List V}
     (hflag : Blocks.getV vals (sH.get l.flag) = some (.sc t fv))
     (hcond : ((fv != 0) == l.exitOnTrue) = true)
     (hargs : (l.exitR.map sH.get).mapM (Blocks.getV vals) = some vs) :
-    runK env F st ⟨vals, w⟩ [loopBrif h l sH fc] = Blocks.runFrom env F st ⟨vals, w⟩ (h + 2) vs := by
+    runK lc F st ⟨vals, w⟩ [loopBrif h l sH fc] = Blocks.runFrom lc F st ⟨vals, w⟩ (h + 2) vs := by
   unfold loopBrif
   refine runK_brif' (tgt := ⟨h + 2⟩) (args := l.exitR.map sH.get) hflag ?_ hargs
   cases hE : l.exitOnTrue <;> cases hf : (fv != 0) <;> simp_all [Sem.isTrue]
 
 /-- The head's test, taken toward the body. -/
-theorem loopBrif_body {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
+theorem loopBrif_body {lc : Sem.Locals} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
     {h : Nat} {l : Loop} {sH : CS} {fc : Nat} {t : ClifTy} {fv : UInt64} {cs : List V}
     (hflag : Blocks.getV vals (sH.get l.flag) = some (.sc t fv))
     (hcond : ((fv != 0) == l.exitOnTrue) = false)
     (hargs : ((List.range l.pTys.length).map (fun i => sH.get (fc + i))).mapM (Blocks.getV vals)
       = some cs) :
-    runK env F st ⟨vals, w⟩ [loopBrif h l sH fc] = Blocks.runFrom env F st ⟨vals, w⟩ (h + 1) cs := by
+    runK lc F st ⟨vals, w⟩ [loopBrif h l sH fc] = Blocks.runFrom lc F st ⟨vals, w⟩ (h + 1) cs := by
   unfold loopBrif
   refine runK_brif' (tgt := ⟨h + 1⟩)
     (args := (List.range l.pTys.length).map (fun i => sH.get (fc + i))) hflag ?_ hargs
@@ -2903,18 +2994,18 @@ theorem loopBrif_body {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Val
     carries, the blocks do whatever `iter` does, however many trips it takes. By
     induction on the term's fuel, which bounds the trips; the regions inside
     come from the simulation one emitter fuel down. -/
-theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
-    (hfuel : f ≤ HProg.fuel) (ih : SimP env cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
+theorem loop_trip {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
+    (hfuel : f ≤ HProg.fuel) (ih : SimP cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
     {l : Loop} {pre body : List Piece} {Sp : Scope} {np : Nat} {Sb : Scope} {nb : Nat}
     (hok : LoopOk f lb S n l pre body Sp np Sb nb) (s : CS) (ha : Aligned s n) (hi : Inv s)
     (hD : Done F (emitPiece f s (.loop l pre body))) (Γ : Sem.Env) (hs : Γ.size = n)
     (vals0 : Blocks.Vals) (hr0 : Rel S vals0 Γ) :
     ∀ (k : Nat) (vals : Blocks.Vals) (w : World) (carries : List V),
-      Frame n vals0 vals → carries.length = l.pTys.length →
-      SimResS env F lb s.labels n
+      KeepsBelow n vals0 vals → carries.length = l.pTys.length →
+      SimResS cfg.locals F lb s.labels n
         ((S.add n (n + l.pTys.length)).add nb (nb + l.exitTys.length))
         (nb + l.exitTys.length) (emitPiece f s (.loop l pre body)) vals0
-        (fun st => Blocks.runFrom env F st ⟨vals, w⟩ s.nextBlk carries)
+        (fun st => Blocks.runFrom cfg.locals F st ⟨vals, w⟩ s.nextBlk carries)
         (Sem.iter k cfg Γ w l pre body n nb carries) := by
   obtain ⟨hCi, hCa, hDa, hCD, hDl, hBi, hBa, hGa, hBG, hGH, hHc, hHa⟩ :=
     loop_stages f (emit_struct f) hok s ha hi
@@ -2965,14 +3056,14 @@ theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
   have hsn : s.slots = n := ha.2.1
   -- Entering the three blocks.
   have enterC : ∀ st v w cs, cs.length = l.pTys.length →
-      Blocks.runFrom env F (st + 1) ⟨v, w⟩ s.nextBlk cs
-        = runK env F st ⟨bindVals v (parsOf n l.pTys) cs, w⟩ RC := by
+      Blocks.runFrom cfg.locals F (st + 1) ⟨v, w⟩ s.nextBlk cs
+        = runK cfg.locals F st ⟨bindVals v (parsOf n l.pTys) cs, w⟩ RC := by
     intro st v w cs hl
     rw [← hCr]
     exact enter hF hPC hCc (by rw [hCp, ha.1]) hl.symm st ⟨v, w⟩
   have enterB : ∀ st v w cs, cs.length = l.pTys.length →
-      Blocks.runFrom env F (st + 1) ⟨v, w⟩ (s.nextBlk + 1) cs
-        = runK env F st ⟨bindVals v (parsOf np l.pTys) cs, w⟩ RB := by
+      Blocks.runFrom cfg.locals F (st + 1) ⟨v, w⟩ (s.nextBlk + 1) cs
+        = runK cfg.locals F st ⟨bindVals v (parsOf np l.pTys) cs, w⟩ RB := by
     intro st v w cs hl
     have e1 : (loopB f s l pre).curRef = s.nextBlk + 1 := hBr
     rw [← e1]
@@ -2980,11 +3071,11 @@ theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
       hl.symm st ⟨v, w⟩
   -- Leaving by the exit block.
   have hexit : ∀ (vals' : Blocks.Vals) (w' : World) (Γb : Sem.Env) (vs : List V)
-      (start : Nat → Outcome World) (c : Nat),
-      Rel (S.add n (n + l.pTys.length)) vals' Γb → Frame n vals0 vals' →
+      (start : Nat → Outcome (Option V)) (c : Nat),
+      Rel (S.add n (n + l.pTys.length)) vals' Γb → KeepsBelow n vals0 vals' →
       vs.length = l.exitTys.length →
-      (∀ st, start (st + c) = Blocks.runFrom env F st ⟨vals', w'⟩ (s.nextBlk + 2) vs) →
-      SimResS env F lb s.labels n
+      (∀ st, start (st + c) = Blocks.runFrom cfg.locals F st ⟨vals', w'⟩ (s.nextBlk + 2) vs) →
+      SimResS cfg.locals F lb s.labels n
         ((S.add n (n + l.pTys.length)).add nb (nb + l.exitTys.length))
         (nb + l.exitTys.length) (loopExit s.nextBlk l s.labels (loopH f s l pre body)) vals0
         start (.ok (Sem.bindAt Γb nb vs) w') := by
@@ -3007,7 +3098,7 @@ theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
         (Sem.bindAt Γ n carries) := by
       have := bind_rel hrS hSn (tys := l.pTys) hlen.symm
       rwa [hlen] at this
-    have hfh : Frame n vals0 (bindVals vals (parsOf n l.pTys) carries) :=
+    have hfh : KeepsBelow n vals0 (bindVals vals (parsOf n l.pTys) carries) :=
       hfr.trans (bindVals_frame _ _ _ _)
     have hcarry : ∀ i, i < l.pTys.length →
         Blocks.getV (bindVals vals (parsOf n l.pTys) carries) ⟨n + i⟩ = carries[i]? :=
@@ -3020,6 +3111,8 @@ theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
     generalize Sem.runCode k cfg (Sem.bindAt Γ n carries) w pre = r at hpre
     cases r with
     | stuck _ => trivial
+    | misuse _ => trivial
+    | fault _ => trivial
     | brk d Γb vs w' =>
       obtain ⟨L, hL, hvl, vals', c, hrel, hf, heq⟩ := hpre
       cases d with
@@ -3102,10 +3195,10 @@ theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
             have := bind_rel hrel1 (m := np) (fun i hi => by have := hrel1.lt hi; omega)
               (tys := l.pTys) hlen.symm
             rwa [hlen] at this
-          have hfb : Frame n vals0 (bindVals vals1 (parsOf np l.pTys) carries) :=
+          have hfb : KeepsBelow n vals0 (bindVals vals1 (parsOf np l.pTys) carries) :=
             hfh.trans ((hf1.mono (by omega)).trans ((bindVals_frame _ _ _ _).mono (by omega)))
-          have hpfx : ∀ st, Blocks.runFrom env F (st + (c + 1 + 1)) ⟨vals, w⟩ s.nextBlk carries
-              = runK env F st ⟨bindVals vals1 (parsOf np l.pTys) carries, w1⟩ RB := by
+          have hpfx : ∀ st, Blocks.runFrom cfg.locals F (st + (c + 1 + 1)) ⟨vals, w⟩ s.nextBlk carries
+              = runK cfg.locals F st ⟨bindVals vals1 (parsOf np l.pTys) carries, w1⟩ RB := by
             intro st
             rw [show st + (c + 1 + 1) = ((st + 1) + c) + 1 by omega, enterC _ _ _ _ hlen,
               heq1', loopBrif_body hxv hcond hcs, enterB _ _ _ _ hlen]
@@ -3118,6 +3211,8 @@ theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
           generalize hres : Sem.runCode k cfg (Sem.bindAt Γ1 np carries) w1 body = r at hbody
           cases r with
           | stuck _ => trivial
+          | misuse _ => trivial
+          | fault _ => trivial
           | brk d Γb vs w2 =>
             obtain ⟨L, hL, hvl, vals2, c2, hrel, hf, heq⟩ := hbody
             cases d with
@@ -3169,14 +3264,14 @@ theorem loop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
               rw [← Nat.add_assoc, hpfx, heq2 _ (hPG hterm),
                 runK_jump ((args_read hGa' hrel2 hcin).trans hm)]
 
-theorem sim_loop {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
-    (hfuel : f ≤ HProg.fuel) (ih : SimP env cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
+theorem sim_loop {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
+    (hfuel : f ≤ HProg.fuel) (ih : SimP cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
     {l : Loop} {pre body : List Piece} {Sp : Scope} {np : Nat} {Sb : Scope} {nb : Nat}
     (hok : LoopOk f lb S n l pre body Sp np Sb nb) (k : Nat) (s : CS) (ha : Aligned s n)
     (hi : Inv s) (Γ : Sem.Env) (w : World) (vals : Blocks.Vals) (R0 : List Inst)
     (hP : Placed F s R0) (hD : Done F (emitPiece f s (.loop l pre body))) (hs : Γ.size = n)
     (hr : Rel S vals Γ) :
-    SimRes env F lb s.labels n ((S.add n (n + l.pTys.length)).add nb (nb + l.exitTys.length))
+    SimRes cfg.locals F lb s.labels n ((S.add n (n + l.pTys.length)).add nb (nb + l.exitTys.length))
       (nb + l.exitTys.length) (emitPiece f s (.loop l pre body)) vals w R0
       (Sem.runPiece k cfg Γ w (.loop l pre body)) := by
   have htrip := loop_trip hF f hfuel ih hok s ha hi hD Γ hs vals hr
@@ -3209,8 +3304,8 @@ theorem sim_loop {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) 
     cases hm : l.init.mapM (fun r => Γ[r]?) with
     | none => trivial
     | some inits =>
-      exact (htrip k vals w inits (Frame.refl n vals) ((mapM_length hm).trans hok.hinitN)).restart
-        (c := 0) (start := fun st => runK env F st ⟨vals, w⟩ [.jump ⟨s.nextBlk⟩ (l.init.map s.get)])
+      exact (htrip k vals w inits (KeepsBelow.refl n vals) ((mapM_length hm).trans hok.hinitN)).restart
+        (c := 0) (start := fun st => runK cfg.locals F st ⟨vals, w⟩ [.jump ⟨s.nextBlk⟩ (l.init.map s.get)])
         (fun st => runK_jump ((args_read ha hr hok.hinit).trans hm))
 
 def dloopD (f : Nat) (s : CS) (l : DLoop) (body : List Piece) : CS := emitCode f (dloopHead s l) body
@@ -3334,69 +3429,69 @@ theorem exit_read {vals : Blocks.Vals} {cvs : List Val} {next : List V}
             ih os (fun j hj => hidx j (by simp [hj])) hr]
           rfl
 
-theorem dloopBack_cont {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
+theorem dloopBack_cont {lc : Sem.Locals} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
     {h : Nat} {l : DLoop} {sB : CS} {t : ClifTy} {fv : UInt64} {next : List V}
     (hflag : Blocks.getV vals (sB.get l.flag) = some (.sc t fv))
     (hcond : ((fv != 0) == l.contOnTrue) = true)
     (hargs : (l.cont.map sB.get).mapM (Blocks.getV vals) = some next) :
-    runK env F st ⟨vals, w⟩ [dloopBack h l sB] = Blocks.runFrom env F st ⟨vals, w⟩ h next := by
+    runK lc F st ⟨vals, w⟩ [dloopBack h l sB] = Blocks.runFrom lc F st ⟨vals, w⟩ h next := by
   unfold dloopBack
   refine runK_brif' (tgt := ⟨h⟩) (args := l.cont.map sB.get) hflag ?_ hargs
   cases hE : l.contOnTrue <;> cases hf : (fv != 0) <;> simp_all [Sem.isTrue]
 
-theorem dloopBack_exit {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
+theorem dloopBack_exit {lc : Sem.Locals} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
     {h : Nat} {l : DLoop} {sB : CS} {t : ClifTy} {fv : UInt64} {outs : List V}
     (hflag : Blocks.getV vals (sB.get l.flag) = some (.sc t fv))
     (hcond : ((fv != 0) == l.contOnTrue) = false)
     (hargs : (l.exitIdx.map (fun i => ((l.cont.map sB.get)[i]?).getD (⟨1000000⟩ : Val))).mapM
       (Blocks.getV vals) = some outs) :
-    runK env F st ⟨vals, w⟩ [dloopBack h l sB] = Blocks.runFrom env F st ⟨vals, w⟩ (h + 1) outs := by
+    runK lc F st ⟨vals, w⟩ [dloopBack h l sB] = Blocks.runFrom lc F st ⟨vals, w⟩ (h + 1) outs := by
   unfold dloopBack
   refine runK_brif' (tgt := ⟨h + 1⟩)
     (args := l.exitIdx.map (fun i => ((l.cont.map sB.get)[i]?).getD (⟨1000000⟩ : Val)))
     hflag ?_ hargs
   cases hE : l.contOnTrue <;> cases hf : (fv != 0) <;> simp_all [Sem.isTrue]
 
-theorem dloopEntry_body {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
+theorem dloopEntry_body {lc : Sem.Locals} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
     {s : CS} {l : DLoop} {g : R} {t : ClifTy} {fv : UInt64} {cs : List V}
     (hg : l.guard = some g) (hflag : Blocks.getV vals (s.get g) = some (.sc t fv))
     (hcond : ((fv != 0) == l.contOnTrue) = true)
     (hargs : (l.init.map s.get).mapM (Blocks.getV vals) = some cs) :
-    runK env F st ⟨vals, w⟩ [dloopEntry s l] = Blocks.runFrom env F st ⟨vals, w⟩ s.nextBlk cs := by
+    runK lc F st ⟨vals, w⟩ [dloopEntry s l] = Blocks.runFrom lc F st ⟨vals, w⟩ s.nextBlk cs := by
   unfold dloopEntry; rw [hg]
   refine runK_brif' (tgt := ⟨s.nextBlk⟩) (args := l.init.map s.get) hflag ?_ hargs
   cases hE : l.contOnTrue <;> cases hf : (fv != 0) <;> simp_all [Sem.isTrue]
 
-theorem dloopEntry_exit {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
+theorem dloopEntry_exit {lc : Sem.Locals} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
     {s : CS} {l : DLoop} {g : R} {t : ClifTy} {fv : UInt64} {outs : List V}
     (hg : l.guard = some g) (hflag : Blocks.getV vals (s.get g) = some (.sc t fv))
     (hcond : ((fv != 0) == l.contOnTrue) = false)
     (hargs : (l.exitIdx.map (fun i => ((l.init.map s.get)[i]?).getD (⟨1000000⟩ : Val))).mapM
       (Blocks.getV vals) = some outs) :
-    runK env F st ⟨vals, w⟩ [dloopEntry s l]
-      = Blocks.runFrom env F st ⟨vals, w⟩ (s.nextBlk + 1) outs := by
+    runK lc F st ⟨vals, w⟩ [dloopEntry s l]
+      = Blocks.runFrom lc F st ⟨vals, w⟩ (s.nextBlk + 1) outs := by
   unfold dloopEntry; rw [hg]
   refine runK_brif' (tgt := ⟨s.nextBlk + 1⟩)
     (args := l.exitIdx.map (fun i => ((l.init.map s.get)[i]?).getD (⟨1000000⟩ : Val)))
     hflag ?_ hargs
   cases hE : l.contOnTrue <;> cases hf : (fv != 0) <;> simp_all [Sem.isTrue]
 
-theorem dloopEntry_none {env : FnEnv} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
+theorem dloopEntry_none {lc : Sem.Locals} {F : FuncData} {st : Nat} {vals : Blocks.Vals} {w : World}
     {s : CS} {l : DLoop} {cs : List V} (hg : l.guard = none)
     (hargs : (l.init.map s.get).mapM (Blocks.getV vals) = some cs) :
-    runK env F st ⟨vals, w⟩ [dloopEntry s l] = Blocks.runFrom env F st ⟨vals, w⟩ s.nextBlk cs := by
+    runK lc F st ⟨vals, w⟩ [dloopEntry s l] = Blocks.runFrom lc F st ⟨vals, w⟩ s.nextBlk cs := by
   unfold dloopEntry; rw [hg]
   exact runK_jump hargs
 
 /-- Leaving a bottom-tested loop by its exit block, from anywhere. -/
-theorem dloop_exit {env : FnEnv} {F : FuncData} (hF : Distinct F) (f : Nat) {lb : List SLbl}
+theorem dloop_exit {lc : Sem.Locals} {F : FuncData} (hF : Distinct F) (f : Nat) {lb : List SLbl}
     {S : Scope} {n : Nat} {l : DLoop} {body : List Piece} {Sb : Scope} {nb : Nat}
     (hok : DLoopOk f lb S n l body Sb nb) (s : CS) (ha : Aligned s n) (hi : Inv s)
     (hSn : ∀ i, S.mem i = true → i < n) (vals0 : Blocks.Vals) (vals' : Blocks.Vals) (w' : World)
-    (Γb : Sem.Env) (vs : List V) (start : Nat → Outcome World) (c : Nat)
-    (hrel : Rel S vals' Γb) (hf : Frame n vals0 vals') (hvl : vs.length = l.exitTys.length)
-    (hst : ∀ st, start (st + c) = Blocks.runFrom env F st ⟨vals', w'⟩ (s.nextBlk + 1) vs) :
-    SimResS env F lb s.labels n (S.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length)
+    (Γb : Sem.Env) (vs : List V) (start : Nat → Outcome (Option V)) (c : Nat)
+    (hrel : Rel S vals' Γb) (hf : KeepsBelow n vals0 vals') (hvl : vs.length = l.exitTys.length)
+    (hst : ∀ st, start (st + c) = Blocks.runFrom lc F st ⟨vals', w'⟩ (s.nextBlk + 1) vs) :
+    SimResS lc F lb s.labels n (S.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length)
       (emitPiece f s (.dloop l body)) vals0 start (.ok (Sem.bindAt Γb nb vs) w') := by
   obtain ⟨_, _, _, _, _, _, hEc, hEa⟩ := dloop_stages f (emit_struct f) hok s ha hi
   obtain ⟨_, _, hIr, hIc, hIp, _, _⟩ := dloopExit_facts s.nextBlk l s.labels (dloopE f s l body)
@@ -3410,17 +3505,17 @@ theorem dloop_exit {env : FnEnv} {F : FuncData} (hF : Distinct F) (f : Nat) {lb 
   rw [show st + (c + 1) = (st + 1) + c by omega, hst, ← hIr]
   exact enter hF hP1 (by rw [hIc, hEc]) (by rw [hIp, hEa.1]) hvl.symm st ⟨vals', w'⟩
 
-theorem dloop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
-    (hfuel : f ≤ HProg.fuel) (ih : SimP env cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
+theorem dloop_trip {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
+    (hfuel : f ≤ HProg.fuel) (ih : SimP cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
     {l : DLoop} {body : List Piece} {Sb : Scope} {nb : Nat}
     (hok : DLoopOk f lb S n l body Sb nb) (s : CS) (ha : Aligned s n) (hi : Inv s)
     (hD : Done F (emitPiece f s (.dloop l body))) (Γ : Sem.Env) (hs : Γ.size = n)
     (vals0 : Blocks.Vals) (hr0 : Rel S vals0 Γ) :
     ∀ (k : Nat) (vals : Blocks.Vals) (w : World) (carries : List V),
-      Frame n vals0 vals → carries.length = l.pTys.length →
-      SimResS env F lb s.labels n (S.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length)
+      KeepsBelow n vals0 vals → carries.length = l.pTys.length →
+      SimResS cfg.locals F lb s.labels n (S.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length)
         (emitPiece f s (.dloop l body)) vals0
-        (fun st => Blocks.runFrom env F st ⟨vals, w⟩ s.nextBlk carries)
+        (fun st => Blocks.runFrom cfg.locals F st ⟨vals, w⟩ s.nextBlk carries)
         (Sem.dtrip k cfg Γ w l body n nb carries false) := by
   obtain ⟨hCi, hCa, hDa, _, hDl, hDE, _, _⟩ := dloop_stages f (emit_struct f) hok s ha hi
   obtain ⟨_, _, hCr, hCc, hCp, hCl, _⟩ := dloopHead_facts s l
@@ -3444,8 +3539,8 @@ theorem dloop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F
     · exact hc.placed hDD
   have hSn : ∀ i, S.mem i = true → i < n := fun i hi => by have := hr0.lt hi; omega
   have enterC : ∀ st v w cs, cs.length = l.pTys.length →
-      Blocks.runFrom env F (st + 1) ⟨v, w⟩ s.nextBlk cs
-        = runK env F st ⟨bindVals v (parsOf n l.pTys) cs, w⟩ RC := by
+      Blocks.runFrom cfg.locals F (st + 1) ⟨v, w⟩ s.nextBlk cs
+        = runK cfg.locals F st ⟨bindVals v (parsOf n l.pTys) cs, w⟩ RC := by
     intro st v w cs hl
     rw [← hCr]
     exact enter hF hPC hCc (by rw [hCp, ha.1]) hl.symm st ⟨v, w⟩
@@ -3461,7 +3556,7 @@ theorem dloop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F
         (Sem.bindAt Γ n carries) := by
       have := bind_rel hrS hSn (tys := l.pTys) hlen.symm
       rwa [hlen] at this
-    have hfh : Frame n vals0 (bindVals vals (parsOf n l.pTys) carries) :=
+    have hfh : KeepsBelow n vals0 (bindVals vals (parsOf n l.pTys) carries) :=
       hfr.trans (bindVals_frame _ _ _ _)
     have hbody := ih k _ _ _ body Sb nb (dloopHead s l) (Sem.bindAt Γ n carries) w
       (bindVals vals (parsOf n l.pTys) carries) RC hfuel hok.hbody hCa hCi hPC hDD
@@ -3471,6 +3566,8 @@ theorem dloop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F
     generalize hres : Sem.runCode k cfg (Sem.bindAt Γ n carries) w body = r at hbody
     cases r with
     | stuck _ => trivial
+    | misuse _ => trivial
+    | fault _ => trivial
     | brk d Γb vs w' =>
       obtain ⟨L, hL, hvl, vals', c, hrel, hf, heq⟩ := hbody
       cases d with
@@ -3510,7 +3607,7 @@ theorem dloop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F
         rcases hok.hback with h' | h'
         · rw [hterm] at h'; cases h'
         · exact h'
-      have hfb : Frame n vals0 vals2 := hfh.trans (hf2.mono (by omega))
+      have hfb : KeepsBelow n vals0 vals2 := hfh.trans (hf2.mono (by omega))
       have heq2' := heq2 _ (hPD hterm)
       dsimp only
       rw [show l.cont.mapM (Sem.get Γ2) = l.cont.mapM (fun r => Γ2[r]?) from rfl]
@@ -3543,13 +3640,13 @@ theorem dloop_trip {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F
                 dloopBack_exit hxv hcond (exit_read hargs l.exitIdx outs
                   (fun i hi => by simp; have := hok.hexitI i hi; omega) hout)]
 
-theorem sim_dloop {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
-    (hfuel : f ≤ HProg.fuel) (ih : SimP env cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
+theorem sim_dloop {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) (f : Nat)
+    (hfuel : f ≤ HProg.fuel) (ih : SimP cfg F f) {lb : List SLbl} {S : Scope} {n : Nat}
     {l : DLoop} {body : List Piece} {Sb : Scope} {nb : Nat}
     (hok : DLoopOk f lb S n l body Sb nb) (k : Nat) (s : CS) (ha : Aligned s n) (hi : Inv s)
     (Γ : Sem.Env) (w : World) (vals : Blocks.Vals) (R0 : List Inst) (hP : Placed F s R0)
     (hD : Done F (emitPiece f s (.dloop l body))) (hs : Γ.size = n) (hr : Rel S vals Γ) :
-    SimRes env F lb s.labels n (S.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length)
+    SimRes cfg.locals F lb s.labels n (S.add nb (nb + l.exitTys.length)) (nb + l.exitTys.length)
       (emitPiece f s (.dloop l body)) vals w R0 (Sem.runPiece k cfg Γ w (.dloop l body)) := by
   have htrip := dloop_trip hF f hfuel ih hok s ha hi hD Γ hs vals hr
   obtain ⟨_, _, _, hCD, _, hDE, _, _⟩ := dloop_stages f (emit_struct f) hok s ha hi
@@ -3579,8 +3676,8 @@ theorem sim_dloop {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
       cases hg : l.guard with
       | none =>
         simp only [Option.isSome_none]
-        exact (htrip k vals w inits (Frame.refl n vals) hil).restart (c := 0)
-          (start := fun st => runK env F st ⟨vals, w⟩ [dloopEntry s l])
+        exact (htrip k vals w inits (KeepsBelow.refl n vals) hil).restart (c := 0)
+          (start := fun st => runK cfg.locals F st ⟨vals, w⟩ [dloopEntry s l])
           (fun st => dloopEntry_none hg hargs)
       | some g =>
         simp only [Option.isSome_some]
@@ -3598,8 +3695,8 @@ theorem sim_dloop {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
             simp only
             split
             · rename_i hcond
-              exact (htrip k vals w inits (Frame.refl n vals) hil).restart (c := 0)
-                (start := fun st => runK env F st ⟨vals, w⟩ [dloopEntry s l])
+              exact (htrip k vals w inits (KeepsBelow.refl n vals) hil).restart (c := 0)
+                (start := fun st => runK cfg.locals F st ⟨vals, w⟩ [dloopEntry s l])
                 (fun st => dloopEntry_body hg hxv hcond hargs)
             · rename_i hcond
               simp only [Bool.not_eq_true] at hcond
@@ -3607,7 +3704,7 @@ theorem sim_dloop {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F)
               | none => trivial
               | some outs =>
                 exact dloop_exit hF f hok s ha hi hSn vals vals w Γ outs
-                  (fun st => runK env F st ⟨vals, w⟩ [dloopEntry s l]) 0 hr (Frame.refl n vals)
+                  (fun st => runK cfg.locals F st ⟨vals, w⟩ [dloopEntry s l]) 0 hr (KeepsBelow.refl n vals)
                   ((mapM_length hout).trans hok.hexitN)
                   (fun st => dloopEntry_exit hg hxv hcond (exit_read hargs l.exitIdx outs
                     (fun i hi => by simp; have := hok.hexitI i hi; have := hok.hinitN; omega)
@@ -3695,22 +3792,24 @@ theorem piece_ok_not_term {f k : Nat} {cfg : Sem.Cfg} {Γ : Sem.Env} {w : World}
     rfl
 
 /-- A piece after which nothing runs. -/
-theorem SimRes.last {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl}
+theorem SimRes.last {cfg : Sem.Cfg} {F : FuncData} {lb : List SLbl}
     {labels : List (Nat × Option Nat)} {n : Nat} {S1 S' : Scope} {n1 n' : Nat} {t1 t : CS}
     {vals : Blocks.Vals} {w : World} {R0 : List Inst} {r : Sem.CodeRes} {k : Nat}
     {ps : List Piece}
-    (hp : SimRes env F lb labels n S1 n1 t1 vals w R0 r) (hnot : ∀ Γ1 w1, r ≠ .ok Γ1 w1) :
-    SimRes env F lb labels n S' n' t vals w R0
+    (hp : SimRes cfg.locals F lb labels n S1 n1 t1 vals w R0 r) (hnot : ∀ Γ1 w1, r ≠ .ok Γ1 w1) :
+    SimRes cfg.locals F lb labels n S' n' t vals w R0
       (andThen k cfg ps r) := by
   cases r with
   | ok Γ1 w1 => exact absurd rfl (hnot Γ1 w1)
   | brk d Γb vs w' => exact hp
   | cont d vs w' => exact hp
   | stuck _ => trivial
+  | misuse _ => trivial
+  | fault _ => trivial
 
 /-- A piece that may fall through, followed by the rest of its region. -/
-theorem sim_compose {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (f : Nat)
-    (hfuel : f ≤ HProg.fuel) (ih : SimP env cfg F f) {lb : List SLbl} {n : Nat} {p : Piece}
+theorem sim_compose {cfg : Sem.Cfg} {F : FuncData} (f : Nat)
+    (hfuel : f ≤ HProg.fuel) (ih : SimP cfg F f) {lb : List SLbl} {n : Nat} {p : Piece}
     {ps : List Piece} {S' : Scope} {n' : Nat} {S1 : Scope} {n1 : Nat} (s : CS) (k : Nat)
     (Γ : Sem.Env) (w : World) (vals : Blocks.Vals) (R0 : List Inst)
     (hpt : pieceTerm f p = false) (hsc : scGo f lb S1 n1 ps = some (S', n'))
@@ -3720,8 +3819,8 @@ theorem sim_compose {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (f : Nat)
     (hreach : termsGo (f + 1) (p :: ps) = false →
       ∃ R1, Placed F (emitCode f (emitPiece f s p) ps) R1)
     (hp : Done F (emitPiece f s p) →
-      SimRes env F lb s.labels n S1 n1 (emitPiece f s p) vals w R0 (Sem.runPiece k cfg Γ w p)) :
-    SimRes env F lb s.labels n S' n' (emitCode f (emitPiece f s p) ps) vals w R0
+      SimRes cfg.locals F lb s.labels n S1 n1 (emitPiece f s p) vals w R0 (Sem.runPiece k cfg Γ w p)) :
+    SimRes cfg.locals F lb s.labels n S' n' (emitCode f (emitPiece f s p) ps) vals w R0
       (Sem.runCode (k + 1) cfg Γ w (p :: ps)) := by
   rw [runCode_cons']
   have hD1 : Done F (emitPiece f s p) := hD.mono (emit_prefix f _ ps)
@@ -3742,8 +3841,8 @@ theorem sim_compose {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (f : Nat)
     rwa [hl1] at this
 
 /-- **Every region the check accepts simulates**, at every emitter fuel. -/
-theorem sim_code {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) :
-    ∀ f, SimP env cfg F f := by
+theorem sim_code {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) :
+    ∀ f, SimP cfg F f := by
   intro f
   induction f with
   | zero => intro k lb S n c S' n' s Γ w vals R0 _ h; simp [scGo] at h
@@ -3759,7 +3858,7 @@ theorem sim_code {env : FnEnv} {cfg : Sem.Cfg} {F : FuncData} (hF : Distinct F) 
         | zero => trivial
         | succ k =>
           rw [runCode_nil]
-          exact ⟨hs, vals, 0, hr, Frame.refl _ _, fun R1 hP1 st => by rw [hP.unique hF hP1]; rfl⟩
+          exact ⟨hs, vals, 0, hr, KeepsBelow.refl _ _, fun R1 hP1 st => by rw [hP.unique hF hP1]; rfl⟩
     | cons p ps =>
       cases k with
       | zero => trivial
@@ -3843,43 +3942,32 @@ theorem compileBody_eq (idx : Nat) (c : Code) (env : FnEnv) (params : List ClifT
             (fun a b => a.ref.id ≤ b.ref.id) } := by
   simp only [compileBody, Id.run, entryCS]; rfl
 
-theorem runK_ret (env : FnEnv) (F : FuncData) (steps : Nat) (st : Blocks.BSt) (v : Option Val)
-    (rest : List Inst) : runK env F steps st (.ret v :: rest) = .ok st.world st.world := rfl
+theorem runK_ret (lc : Sem.Locals) (F : FuncData) (steps : Nat) (st : Blocks.BSt)
+    (rest : List Inst) : runK lc F steps st (.ret none :: rest) = .ok none st.world := rfl
 
-/-- **`compile_sound`.** A body that passes `scopeOk`, run by the term
-    interpreter to a trace and a world, runs to the same trace and the same world
-    as the function `compileBody` makes of it, under some block budget.
-
-    Forward, on successful runs: a term that gets stuck has no behaviour to
-    preserve. The block budget is existential because the two interpreters
-    count different things --- pieces and trips on one side, block entries on
-    the other --- and `run_mono` makes any larger budget give the same answer. -/
-theorem compile_sound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
-    (status : Option R) (cfg : Sem.Cfg) (args : List V) (w : World) (obs : List Sem.Obs)
-    (w' : World) (hsc : scopeOk params c = true) (hlen : params.length = args.length)
-    (hrun : Sem.run cfg args w c = .ok obs w') :
-    ∃ steps, Blocks.run env (compileBody idx c env params status) args w steps = .ok obs w' := by
-  -- The term's run.
-  simp only [Sem.run] at hrun
-  generalize hres : Sem.runCode cfg.steps cfg args.toArray w c = r at hrun
-  cases r with
-  | stuck _ => simp at hrun
-  | brk _ _ _ _ => simp at hrun
-  | cont _ _ _ => simp at hrun
-  | ok Γf wf =>
-  simp only [Sem.Outcome.ok.injEq] at hrun
-  obtain ⟨rfl, rfl⟩ := hrun
+/-- **The compiled function answers as the term does.** A body that passes
+    `retOk`, run by the term interpreter to an environment and a world, runs as
+    the function `compileBody` makes of it to the same world, answering the
+    value of the slot it returns, under some block budget. -/
+theorem compile_core (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
+    (status : Option R) (cfg : Sem.Cfg) (args : List V) (w : World) (Γf : Sem.Env) (wf : World)
+    (hret : retOk params c status = true) (hlen : params.length = args.length)
+    (hres : Sem.runCode cfg.steps cfg args.toArray w c = .ok Γf wf) :
+    ∃ steps, Blocks.runFrom cfg.locals (compileBody idx c env params status) steps ⟨#[], w⟩ 0 args
+      = .ok (status.bind (Γf[·]?)) wf := by
+  obtain ⟨⟨S', n'⟩, hsc⟩ : ∃ p, scGo HProg.fuel [] [(0, params.length)] params.length c = some p := by
+    unfold retOk at hret; split at hret
+    · cases hret
+    · exact ⟨_, ‹_›⟩
   -- The check.
-  simp only [scopeOk, Option.isSome_iff_exists] at hsc
-  obtain ⟨⟨S', n'⟩, hsc⟩ := hsc
   have hterm : termsGo HProg.fuel c = false := by
     cases ht : termsGo HProg.fuel c
     · rfl
     · exact absurd hres (termsGo_run _ c ht _ cfg _ w Γf wf)
-  obtain ⟨_, _, hout, hext, _⟩ := emit_struct HProg.fuel [] [(0, params.length)] params.length c
+  obtain ⟨hal, _, hout, hext, _⟩ := emit_struct HProg.fuel [] [(0, params.length)] params.length c
     S' n' (entryCS params) hsc (entryCS_aligned params) (entryCS_inv params)
   rw [hterm] at hout
-  generalize ht : emitCode HProg.fuel (entryCS params) c = t at hout hext
+  generalize ht : emitCode HProg.fuel (entryCS params) c = t at hal hout hext
   -- The function, and where everything is in it.
   generalize hF : compileBody idx c env params status = F
   have hblocks : F.blocks = (t.close (.ret (status.map t.get))).done.mergeSort
@@ -3909,21 +3997,60 @@ theorem compile_sound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code
     have e : Sem.bindAt #[] 0 args = args.toArray := by simp [Sem.bindAt]
     rw [e, ← hlen] at h
     simpa [Scope.add] using h
-  have hsim := sim_code (env := env) (cfg := cfg) hFd HProg.fuel cfg.steps [] [(0, params.length)]
+  have hsim := sim_code (cfg := cfg) hFd HProg.fuel cfg.steps [] [(0, params.length)]
     params.length c S' n' (entryCS params) args.toArray w (bindVals #[] (parsOf 0 params) args) R0
     (Nat.le_refl _) hsc (entryCS_aligned params) (entryCS_inv params) hP0 (ht ▸ hDt)
     (fun _ => ⟨_, ht ▸ hPt⟩) (by simp [hlen]) hrel0
   rw [hres, ht] at hsim
-  obtain ⟨_, vals', cost, _, _, heq⟩ := hsim
+  obtain ⟨_, vals', cost, hrelf, _, heq⟩ := hsim
   refine ⟨cost + 1, ?_⟩
-  have hentry := enter (env := env) hFd hP0 (entryCS_cur params) (entryCS_curPars params) hlen cost
+  have hentry := enter (lc := cfg.locals) hFd hP0 (entryCS_cur params) (entryCS_curPars params) hlen cost
     ⟨#[], w⟩
   rw [entryCS_curRef] at hentry
-  simp only [Blocks.run]
   rw [hentry]
   have := heq _ hPt 0
   simp only [Nat.zero_add] at this
-  rw [this, runK_ret]
+  rw [this]
+  -- The answer: the returned slot is in scope where the body ends, so the
+  -- value the blocks return is the term's.
+  cases status with
+  | none => rfl
+  | some r =>
+      simp only [retOk, hsc, Option.all_some, Bool.and_eq_true, decide_eq_true_eq] at hret
+      obtain ⟨x, hΓ, hv⟩ := hrelf r hret.1
+      have hget : t.get r = ⟨r⟩ := by
+        simp only [CS.get, hal.2.2 r hret.2]
+      simp [runK, Blocks.runInsts, hget, hv, hΓ]
+
+
+/-- **`compile_sound`.** A body that passes `retOk`, run by the term
+    interpreter to a trace and a world, runs to the same trace and the same world
+    as the function `compileBody` makes of it, under some block budget.
+
+    Forward, on successful runs: a term that gets stuck has no behaviour to
+    preserve. The block budget is existential because the two interpreters
+    count different things --- pieces and trips on one side, block entries on
+    the other --- and `run_mono` makes any larger budget give the same answer.
+    A call to one of the program's own functions means `cfg.locals` on both
+    sides. -/
+theorem compile_sound (idx : Nat) (env : FnEnv) (params : List ClifTy) (c : Code)
+    (status : Option R) (cfg : Sem.Cfg) (args : List V) (w : World) (obs : List Sem.Obs)
+    (w' : World) (hret : retOk params c status = true) (hlen : params.length = args.length)
+    (hrun : Sem.run cfg args w c = .ok obs w') :
+    ∃ steps, Blocks.run cfg.locals (compileBody idx c env params status) args w steps = .ok obs w' := by
+  simp only [Sem.run] at hrun
+  generalize hres : Sem.runCode cfg.steps cfg args.toArray w c = r at hrun
+  cases r with
+  | stuck _ => simp at hrun
+  | misuse _ => simp at hrun
+  | fault _ => simp at hrun
+  | brk _ _ _ _ => simp at hrun
+  | cont _ _ _ => simp at hrun
+  | ok Γf wf =>
+  simp only [Sem.Outcome.ok.injEq] at hrun
+  obtain ⟨rfl, rfl⟩ := hrun
+  obtain ⟨steps, h⟩ := compile_core idx env params c status cfg args w Γf wf hret hlen hres
+  exact ⟨steps, by simp only [Blocks.run, h]⟩
 
 /-- `compile_sound` in `CompileSoundE`'s form: for a body that passes the scope
     check, every run the term completes is the compiled function's run. -/
@@ -3932,7 +4059,23 @@ theorem compileSoundE_of_ok (idx : Nat) (env : FnEnv) (params : List ClifTy) (c 
     (hsc : scopeOk params c = true) (hlen : params.length = args.length)
     (hrun : Sem.run { env, steps := fuel } args w c = .ok obs w') :
     CompileSoundE idx env params c args w fuel := by
-  obtain ⟨steps, h⟩ := compile_sound idx env params c none _ args w obs w' hsc hlen hrun
+  obtain ⟨steps, h⟩ := compile_sound idx env params c none _ args w obs w'
+    (by rw [retOk_none]; exact hsc) hlen hrun
   exact ⟨steps, by rw [hrun, h]⟩
+
+/-- **The host compiler, with `compile_sound` as its theorem.**
+
+    `compileBody` is what every generator ships; `scopeOk` is its door; and a
+    successful run of the term is matched by a run of the blocks that observes
+    the same thing and leaves the same world. -/
+def hostCompiler (idx : Nat) (env : FnEnv) (params : List ClifTy) (status : Option R) :
+    AlgorithmLib.Compiler Code FuncData where
+  compile c := compileBody idx c env params status
+  Pre c := retOk params c status = true
+  Refines c f := ∀ (cfg : Sem.Cfg) (args : List V) (w : World) (obs : List Sem.Obs) (w' : World),
+    params.length = args.length → Sem.run cfg args w c = .ok obs w' →
+    ∃ steps, Blocks.run cfg.locals f args w steps = .ok obs w'
+  sound c h cfg args w obs w' hl hr :=
+    compile_sound idx env params c status cfg args w obs w' h hl hr
 
 end AlgorithmLib.HProg

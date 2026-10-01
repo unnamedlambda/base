@@ -1,10 +1,12 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -33,8 +35,6 @@ namespace CsvDemo
 abbrev Schema := List String
 
 structure Table (s : Schema) where mk ::
-
-def mkTable (s : Schema) : Table s := Table.mk
 
 @[reducible] def mergeSchema (s1 s2 : Schema) : Schema :=
   s1 ++ s2.filter (fun c => !s1.elem c)
@@ -113,7 +113,6 @@ open AlgorithmLib.Prog
 
 
 /-- The externals every emitted function declares, in one order. -/
-abbrev fnFileRead : Ffi := .fileRead
 abbrev fnFileWrite : Ffi := .fileWrite
 
 /-- One CSV buffer's rows written to a database, one row per key. A row runs to
@@ -228,9 +227,9 @@ def mainCode (patternLen : Nat) : Prog V L Unit :=
   let ptr ← basePtr
   let empBufOff ← iconst64 empBuf_off
   let zero ← iconst64 0
-  let empSize ← readFile ptr empCsvPath_off empBuf_off
+  let empSize ← readFile ptr empCsvPath_off empBuf_off empBufSize
   let deptBufOff ← iconst64 deptBuf_off
-  let deptSize ← readFile ptr deptCsvPath_off deptBuf_off
+  let deptSize ← readFile ptr deptCsvPath_off deptBuf_off deptBufSize
   let lmdbSlot := ptr
   ffiVoid .lmdbInit %[lmdbSlot]
   let lmdbCtx ← load64 ptr
@@ -251,16 +250,16 @@ def mainCode (patternLen : Nat) : Prog V L Unit :=
   let maxEntries ← iconst32 100
   let scanResOff ← iconst64 scanResult_off
   let scanCount ← ffi .lmdbCursorScan
-    %[lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
+    %[lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff, ← iconst64 scanResultSize]
   emitWriteAll ptr lmdbCtx empHandle scanResOff scanCount (← iconst64 scanFname_off)
 
   let scanRes2Off ← iconst64 scanResult2_off
   let filterCount ← ffi .lmdbCursorScan
-    %[lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanRes2Off]
+    %[lmdbCtx, empHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanRes2Off, ← iconst64 scanResult2Size]
   emitFilter ptr scanRes2Off filterCount (← iconst64 filterFname_off) patternLen
 
   let joinCount ← ffi .lmdbCursorScan
-    %[lmdbCtx, deptHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff]
+    %[lmdbCtx, deptHandle, ptr, keyLen0, maxEntries, ← iadd ptr scanResOff, ← iconst64 scanResultSize]
   emitWriteAll ptr lmdbCtx deptHandle scanResOff joinCount (← iconst64 joinFname_off)
 
   ffiVoid .lmdbCleanup %[lmdbSlot]

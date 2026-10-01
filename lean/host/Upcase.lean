@@ -1,6 +1,5 @@
 import AlgorithmLib.Gen
 import Scan.Ship
-
 /-!
 # An artifact that reads a file, changes it, and writes it
 

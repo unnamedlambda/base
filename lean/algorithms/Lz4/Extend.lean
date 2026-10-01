@@ -1,6 +1,8 @@
 module
 public import Lz4.ExtLoop
 meta import Lz4.ExtLoop
+public import Lz4.ExtShape
+meta import Lz4.ExtShape
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

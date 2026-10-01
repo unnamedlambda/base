@@ -1,12 +1,10 @@
 module
 public import AlgorithmLib.ML.Kernel.Library
 meta import AlgorithmLib.ML.Kernel.Library
-public import AlgorithmLib.ML.Math.Transformer
-meta import AlgorithmLib.ML.Math.Transformer
-public import AlgorithmLib.ML.Math.MultiLayer
-meta import AlgorithmLib.ML.Math.MultiLayer
 public import AlgorithmLib.ML.Math.Layered
 meta import AlgorithmLib.ML.Math.Layered
+public import AlgorithmLib.ML.Math.Transformer
+meta import AlgorithmLib.ML.Math.Transformer
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -40,7 +38,7 @@ import all Init.Data.List.Sort.Basic
   ## And it reaches the GPU with no proof text
 
   `MapKernel.ofFn` composes this surface with the zero-proof front door in
-  `Kernels.lean`: a Lean function in, a proven kernel plus its PTX out.
+  `Kernel/Library.lean`: a Lean function in, a proven kernel plus its PTX out.
 -/
 
 namespace AlgorithmLib.ML

@@ -1,9 +1,11 @@
 module
 public import Lean
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -49,7 +51,7 @@ namespace ByteCount
   `requires` clause can state it --- those range over values a compiler knows,
   and this ranges over values the program will meet.
 
-  That theorem is stated over `HProgSem`, the executable semantics of CLIF this
+  That theorem is stated over `Host.Sem`, the executable semantics of CLIF this
   repository carries, which is differentially tested against the real
   JIT-compiled artifact by `base/tests/hprog_corpus.rs`. It is a claim about
   the instructions under that semantics, not about the silicon directly, and it
@@ -87,11 +89,14 @@ def SLOTS : Nat := 3
 /-- Vectors examined, so 4096 bytes. -/
 def VECTORS : Nat := 256
 
-/-- **What ships.** -/
+/-- **What ships**: when the caller handed over the bytes it examines and has
+    room for the counts; nothing otherwise. -/
 def code : Prog V L Unit := do
   let data ← dataPtr
   let out : Counters _ SLOTS := ⟨← outPtr⟩
-  countEach needles VECTORS data out
+  when .ule (← iconst64 (16 * VECTORS)) (← dataLen) do
+    when .ule (← iconst64 (8 * SLOTS)) (← outLen) do
+      countEach needles VECTORS data out
 
 -- ---------------------------------------------------------------------------
 
@@ -101,8 +106,7 @@ def code : Prog V L Unit := do
     already sizes the arena to cover. -/
 def MEM_SIZE : Nat := 0
 
-/-- `compileProg` folds the term, derives the callee table it needs --- empty,
-    since this body calls nothing --- and refuses a body `wf` rejects. -/
+/-- `compileProg` folds the term and refuses a body `wf` rejects. -/
 def clifIR : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
 

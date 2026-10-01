@@ -1,10 +1,8 @@
 module
-public import AlgorithmLib.ML.Machine.WarpEmit
-meta import AlgorithmLib.ML.Machine.WarpEmit
-public import AlgorithmLib.ML.Math.Grad
-meta import AlgorithmLib.ML.Math.Grad
 public import AlgorithmLib.ML.Math.Tape
 meta import AlgorithmLib.ML.Math.Tape
+public import AlgorithmLib.ML.Machine.WarpEmit
+meta import AlgorithmLib.ML.Machine.WarpEmit
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

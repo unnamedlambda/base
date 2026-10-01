@@ -1,5 +1,5 @@
+import AlgorithmLib.ML.Model.WeaveBuild
 import Warp.MlpCifar
-
 /-!
   # The CIFAR model, written in the algebra
 

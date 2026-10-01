@@ -5,14 +5,8 @@ edition = "2021"
 
 [dependencies]
 base-types = { path = "../base-types" }
-wgpu = "0.20"
-winit = "0.30"
-cudarc = { version = "0.12", default-features = false, features = ["std", "driver", "cublas", "cuda-12050"] }
-pollster = "0.3"
 tracing = { version = "0.1", features = ["release_max_level_off"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-lmdb-zero = "0.4"
-liblmdb-sys = "0.2"
 cranelift-codegen = "0.123"
 cranelift-jit = "0.123"
 cranelift-module = "0.123"
@@ -21,7 +15,32 @@ cranelift-native = "0.123"
 # (so already in the build), for placing a program's machine code executable
 # on every OS and making the instruction cache see it on AArch64.
 region = "3"
+# The performance controls in `ffi/os.rs`: `madvise` and `setpriority` on
+# Linux, and `SetThreadPriority` on Windows.
+libc = "0.2"
+# Loading the C libraries a program calls directly, at run time, so a library
+# that is not installed makes its functions absent rather than the engine
+# unloadable.
+libloading = "0.8"
+# wgpu, built from source by cargo: `ffi/wgpu.rs` is the functions a program's
+# `Ext.wgpu` calls reach, one call into the crate each.
+wgpu = { version = "=29.0.1", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "gles", "std", "parking_lot"] }
+pollster = "0.4"
+# Windows and their input (`ffi/window.rs`): pure Rust, opening the desktop's
+# own X11 or Wayland libraries at run time.
+winit = "0.30"
+# Pinning a thread to a CPU (`ffi/cpu.rs`).
+core_affinity = "=0.8.3"
+# Serial ports (`ffi/serial.rs`): without libudev, it lists ports from sysfs on
+# Linux and reaches termios and the Win32 comm API itself.
+serialport = { version = "=4.10.1", default-features = false }
+# USB devices (`ffi/usb.rs`): usbfs on Linux, IOKit on macOS, WinUSB on
+# Windows, all reached from Rust.
+nusb = "=0.2.7"
 wasmtime-internal-jit-icache-coherence = "=36.0.13"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 # For the HProg tests only: they run what the build generated.
@@ -34,7 +53,6 @@ name = "base"
 path = "src/lib.rs"
 # `rlib` for the Rust dependents; `cdylib` for the hosts that reach the same
 # `Base` through `src/capi.rs`. A shared object rather than a static library
-# because it resolves cudarc, wgpu, winit and lmdb itself: a non-Rust host
-# linking a `staticlib` would have to name every transitive system library on
-# its own link line.
+# so a non-Rust host links one file: linking a `staticlib` it would have to
+# name every transitive system library on its own link line.
 crate-type = ["rlib", "cdylib"]

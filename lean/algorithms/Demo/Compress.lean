@@ -1,14 +1,15 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Vocab.WGSL
+meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 open Lean (Json)
 open AlgorithmLib
@@ -254,7 +255,6 @@ def compressionShader (bs : Nat) : String :=
 /-- The file and GPU entry points this program calls, named out of the
     standard table. -/
 
-abbrev fnRead : Ffi := .fileRead
 abbrev fnWrite : Ffi := .fileWrite
 
 open AlgorithmLib.Prog in
@@ -275,114 +275,121 @@ def code (bs : Nat) : Prog V L Unit :=
     -- Step 1: Read input file
     let inData    ← iconst64 inputData_off
     let zero      ← iconst64 0
-    let bytesRead ← readFile ptr inputFilename_off inputData_off
+    let bytesRead ← readFile ptr inputFilename_off inputData_off maxInputSize
+    -- A read that failed (-1) or ran past the input region compresses nothing.
+    let _ ← ifte .ugt bytesRead (← iconst64 maxInputSize) (pure %[]) (do
 
-    -- Step 2: Align up to multiple of 4 (wgpu COPY_BUFFER_ALIGNMENT)
-    let alignedSz ← alignUp4 bytesRead
+      -- Step 2: Align up to multiple of 4 (wgpu COPY_BUFFER_ALIGNMENT)
+      let alignedSz ← alignUp4 bytesRead
 
-    -- Step 3: numBlocks = ceil(bytesRead / blockSize)
-    let blkSzV  ← iconst64 bs
-    let c1      ← iconst64 1
-    let bsm1    ← isub blkSzV c1
-    let sum     ← iadd bytesRead bsm1
-    let numBlocks   ← udiv sum blkSzV
-    let numBlocks32 ← ireduce32 numBlocks
+      -- Step 3: numBlocks = ceil(bytesRead / blockSize)
+      let blkSzV  ← iconst64 bs
+      let c1      ← iconst64 1
+      let bsm1    ← isub blkSzV c1
+      let sum     ← iadd bytesRead bsm1
+      let numBlocks   ← udiv sum blkSzV
+      let numBlocks32 ← ireduce32 numBlocks
 
-    -- Step 4: GPU init
-    gpuInit ptr
+      -- Step 4: GPU init
+      gpuInit ptr
 
-    -- Step 5: Create 3 buffers
-    let buf0      ← gpuCreateBuffer ptr alignedSz
-    let outBufSzV ← iconst64 obSz
-    let buf1      ← gpuCreateBuffer ptr outBufSzV
-    let metaSzV   ← iconst64 mSz
-    let buf2      ← gpuCreateBuffer ptr metaSzV
+      -- Step 5: Create 3 buffers
+      let buf0      ← gpuCreateBuffer ptr alignedSz
+      let outBufSzV ← iconst64 obSz
+      let buf1      ← gpuCreateBuffer ptr outBufSzV
+      let metaSzV   ← iconst64 mSz
+      let buf2      ← gpuCreateBuffer ptr metaSzV
 
-    -- Step 6: Write input size into metadata region
-    let inputSz32 ← ireduce32 bytesRead
-    let metaOffV  ← iconst64 mOff
-    let metaAddr  ← iadd ptr metaOffV
-    storeUnaligned inputSz32 metaAddr
+      -- Step 6: Write input size into metadata region
+      let inputSz32 ← ireduce32 bytesRead
+      let metaOffV  ← iconst64 mOff
+      let metaAddr  ← iadd ptr metaOffV
+      storeUnaligned inputSz32 metaAddr
 
-    -- Step 7: Upload input data and metadata
-    let _ ← gpuUpload ptr buf0 inData alignedSz
-    let _ ← gpuUpload ptr buf2 metaOffV metaSzV
+      -- Step 7: Upload input data and metadata
+      let _ ← gpuUpload ptr buf0 inData alignedSz
+      let _ ← gpuUpload ptr buf2 metaOffV metaSzV
 
-    -- Step 8: Create pipeline (3 bindings)
-    let shOffV  ← iconst64 shader_off
-    let bdOffV  ← iconst64 bindDesc_off
-    let three32 ← iconst32 3
-    let pipeId  ← gpuCreatePipeline ptr shOffV bdOffV three32
+      -- Step 8: Create pipeline (3 bindings)
+      let shOffV  ← iconst64 shader_off
+      let bdOffV  ← iconst64 bindDesc_off
+      let three32 ← iconst32 3
+      let pipeId  ← gpuCreatePipeline ptr shOffV bdOffV three32
 
-    -- Step 9: Dispatch — numBlocks workgroups
-    let one32 ← iconst32 1
-    let _ ← gpuDispatch ptr pipeId numBlocks32 one32 one32
+      -- Step 9: Dispatch — numBlocks workgroups
+      let one32 ← iconst32 1
+      let _ ← gpuDispatch ptr pipeId numBlocks32 one32 one32
 
-    -- Step 10: Download output and metadata
-    let outDataV ← iconst64 outputData_off
-    let _ ← gpuDownload ptr buf1 outDataV outBufSzV
-    let _ ← gpuDownload ptr buf2 metaOffV metaSzV
+      -- Step 10: Download output and metadata
+      let outDataV ← iconst64 outputData_off
+      let _ ← gpuDownload ptr buf1 outDataV outBufSzV
+      let _ ← gpuDownload ptr buf2 metaOffV metaSzV
 
-    -- Step 11: GPU cleanup
-    gpuCleanup ptr
+      -- Step 11: GPU cleanup
+      gpuCleanup ptr
 
-    -- Step 12: Write standard LZ4 frame format
-    -- Reuse inputData_off area as scratch
-    let scratchAddr ← iadd ptr inData
+      -- Step 12: Write standard LZ4 frame format
+      -- Reuse inputData_off area as scratch
+      let scratchAddr ← iadd ptr inData
 
-    -- Write magic number 0x184D2204 LE
-    let magic ← iconst32 0x184D2204
-    storeUnaligned magic scratchAddr
-    let c4      ← iconst64 4
-    let scratchP4 ← iadd scratchAddr c4
+      -- Write magic number 0x184D2204 LE
+      let magic ← iconst32 0x184D2204
+      storeUnaligned magic scratchAddr
+      let c4      ← iconst64 4
+      let scratchP4 ← iadd scratchAddr c4
 
-    -- FLG=0x60, BD=0x70, HC=0x73
-    let flg ← iconst64 0x60
-    istore8 flg scratchP4
-    let scratchP5 ← iadd scratchP4 c1
-    let bd ← iconst64 0x70
-    istore8 bd scratchP5
-    let scratchP6 ← iadd scratchP5 c1
-    let hc ← iconst64 0x73
-    istore8 hc scratchP6
+      -- FLG=0x60, BD=0x70, HC=0x73
+      let flg ← iconst64 0x60
+      istore8 flg scratchP4
+      let scratchP5 ← iadd scratchP4 c1
+      let bd ← iconst64 0x70
+      istore8 bd scratchP5
+      let scratchP6 ← iadd scratchP5 c1
+      let hc ← iconst64 0x73
+      istore8 hc scratchP6
 
-    -- Write 7-byte frame header to file
-    let outFname ← iconst64 outputFilename_off
-    let c7 ← iconst64 7
-    let _ ← ffi fnWrite %[ptr, outFname, inData, zero, c7]
+      -- Write 7-byte frame header to file
+      let outFname ← iconst64 outputFilename_off
+      let c7 ← iconst64 7
+      let _ ← ffi fnWrite %[ptr, outFname, inData, zero, c7]
 
-    -- Loop over blocks: write [block_size:4][block_data:N] for each
-    let c8        ← iconst64 8
-    let maxCompBlkV ← iconst64 mcbSz
+      -- Loop over blocks: write [block_size:4][block_data:N] for each
+      let c8        ← iconst64 8
+      let maxCompBlkV ← iconst64 mcbSz
 
-    -- For block_i in 0..numBlocks: write block size (4 bytes) + block data;
-    -- carry the running output-file offset.  Starts at 7 (frame header bytes).
-    let blkExit ← wloop2 (← iconst64 0) c7
-      (head := fun bi foff => return (contIfULt bi numBlocks, %[foff], ()))
-      (body := fun bi foff _ => do
+      -- For block_i in 0..numBlocks: write [block_size:4][block_data:N], the
+      -- running output-file offset carried from 7 (the frame header). A size the
+      -- device reports past the block's room, or of zero (a write of size 0 is
+      -- a write up to a NUL), is not written.
+      let blkExit ← forLoopAcc numBlocks c7 fun bi foff => do
         -- Read compressed size from block_meta[1 + block_i*2] = metaOff + 4 + block_i*8
         let bi8      ← imul bi c8
         let bi8p4    ← iadd bi8 c4
         let metaRel  ← iadd metaOffV bi8p4
         let metaAbsI ← iadd ptr metaRel
         let compSz32 ← load32 metaAbsI
-        -- Write block_size (u32 LE) into scratch, then to file
-        storeUnaligned compSz32 scratchAddr
-        let _ ← ffi fnWrite %[ptr, outFname, inData, foff, c4]
-        -- Write block data
-        let biTimesMax ← imul bi maxCompBlkV
-        let blkDataRel ← iadd outDataV biTimesMax
-        let compSz64   ← uextend64 compSz32
-        let foffP4     ← iadd foff c4
-        let _ ← ffi fnWrite %[ptr, outFname, blkDataRel, foffP4, compSz64]
-        let nextFoff ← iadd foffP4 compSz64
-        return %[← iaddImm bi 1, nextFoff])
-    let finalFoff := blkExit.head
+        let compSz64 ← uextend64 compSz32
+        let foffP4 ← iadd foff c4
+        let szM1 ← isub compSz64 c1
+        let _ ← ifte .uge szM1 maxCompBlkV (pure %[])
+          (do
+            -- Write block_size (u32 LE) into scratch, then to file
+            storeUnaligned compSz32 scratchAddr
+            let _ ← ffi fnWrite %[ptr, outFname, inData, foff, c4]
+            -- Write block data
+            let biTimesMax ← imul bi maxCompBlkV
+            let blkDataRel ← iadd outDataV biTimesMax
+            let _ ← ffi fnWrite %[ptr, outFname, blkDataRel, foffP4, compSz64]
+            pure %[])
+        -- the offset moves past a block only when one was written
+        select (← icmp .uge szM1 maxCompBlkV) foff (← iadd foffP4 compSz64)
+      let finalFoff := blkExit
 
-    -- Write 4-byte end mark (0x00000000) at the final offset
-    let endMark ← iconst32 0
-    storeUnaligned endMark scratchAddr
-    let _ ← ffi fnWrite %[ptr, outFname, inData, finalFoff, c4]
+      -- Write 4-byte end mark (0x00000000) at the final offset
+      let endMark ← iconst32 0
+      storeUnaligned endMark scratchAddr
+      let _ ← ffi fnWrite %[ptr, outFname, inData, finalFoff, c4]
+      pure %[])
 
 -- ---------------------------------------------------------------------------
 -- Payload construction (parameterized by blockSize)

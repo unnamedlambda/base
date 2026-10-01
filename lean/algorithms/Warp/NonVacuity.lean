@@ -1,9 +1,8 @@
 import Lean
 import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
 import Warp.BackwardWide
-
+import AlgorithmLib.ML.Math.Backprop
+import AlgorithmLib.ML.Math.Quant
 open AlgorithmLib AlgorithmLib.ML
 
 namespace NonVacuity

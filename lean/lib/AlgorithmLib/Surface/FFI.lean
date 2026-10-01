@@ -1,10 +1,6 @@
 module
 public import AlgorithmLib.Core.Artifact
 meta import AlgorithmLib.Core.Artifact
-public import AlgorithmLib.Surface.Layout
-meta import AlgorithmLib.Surface.Layout
-public import AlgorithmLib.Core.IR
-meta import AlgorithmLib.Core.IR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -24,8 +20,8 @@ travels is the `cname`; `all` fixes only the order `id` reports, which nothing
 shipped depends on.
 
 The executable contracts — what a call *does*, transcribed from
-`base/src/ffi/` — are in `HProgSem`; which memory a call may write is in
-`HProgFrames`. This file is only who exists and how to call them.
+`base/src/ffi/` — are in `Host.Sem`; which memory a call may write is in
+`Host.Frames`. This file is only who exists and how to call them.
 -/
 
 namespace AlgorithmLib.IR
@@ -40,25 +36,6 @@ inductive Bundle where
   deriving Repr, BEq
 
 end FFI
-
-/-- The bundle an entry point belongs to. -/
-def Ffi.bundle : Ffi → FFI.Bundle
-  | .fileRead | .fileWrite | .fileReadToPtr | .fileWriteFromPtr
-  | .stdinReadline | .stdoutWrite => .fileIO
-  | .gpuInit | .gpuCreateBuffer | .gpuCreatePipeline | .gpuUpload | .gpuDownload
-  | .gpuDispatch | .gpuCleanup | .gpuUploadPtr | .gpuDownloadPtr => .gpu
-  | .windowInit | .windowOpen | .windowPoll | .windowPresentGpuBuffer
-  | .windowCleanup => .window
-  | .lmdbInit | .lmdbOpen | .lmdbBeginWriteTxn | .lmdbPut | .lmdbCommitWriteTxn
-  | .lmdbCursorScan | .lmdbCleanup => .lmdb
-  | .htCreate | .htLookup | .htInsert | .htIncrement | .htCount | .htGetEntry
-  | .htCleanup | .htInit => .ht
-  | .sinf | .cosf | .powf => .math
-  | .threadInit | .threadSpawn | .threadJoin | .threadCleanup => .thread
-  | .cublasSgemv | .cublasSgemvOnStream | .cublasSgemm | .cublasSgemmOnStream
-  | .cublasPtrArray | .cublasSgemmBatchedOnStream => .cublas
-  | .nativeLoad | .nativeFree | .nativeArch | .cpuHas => .native
-  | _ => .cuda
 
 /-- The index of the entry point every application emits as `u0:1`, with `u0:0`
     reserved as a no-op stub. This is the number a host calls. -/

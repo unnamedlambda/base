@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Math.Grad
-meta import AlgorithmLib.ML.Math.Grad
+public import AlgorithmLib.ML.Math.Expr
+meta import AlgorithmLib.ML.Math.Expr
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

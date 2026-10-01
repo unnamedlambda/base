@@ -1,6 +1,4 @@
 module
-public import Qwen2.Common
-meta import Qwen2.Common
 public import AlgorithmLib.Host.ClifCheck
 meta import AlgorithmLib.Host.ClifCheck
 public import Qwen2.Algorithm
@@ -76,8 +74,8 @@ example : ¬ (gimBad (bSoft 1) Qwen2Proven.TAIL_SLOT = gimBad (bSoft 1) Qwen2Pro
     all three relations are arithmetic, and the only genuine precondition left
     is `0 < seq`, i.e. at least one token.
 
-    So what remains undischarged is no longer "three unexplained invariants"
-    but "the host's meta-writing code computes these four expressions", which is
+    So what remains undischarged is not "three unexplained invariants" but
+    "the host's meta-writing code computes these four expressions", which is
     a statement about ~4 CLIF instructions and can be checked against the
     generator. -/
 theorem smMeta_of_seqLen (im : Buf → Nat → Nat) (seq : Nat) (hpos : 0 < seq)
@@ -165,7 +163,7 @@ open AlgorithmLib.Clif in
 
     What is assumed: `MetaFaithful` (Cranelift's four instructions and the
     upload, both already trust-surface), `0 < seq` (at least one token), and the
-    compiler's own allocation convention.  `SmMeta` itself is no longer
+    compiler's own allocation convention.  `SmMeta` itself is not
     assumed. -/
 theorem smMeta_of_frag
     (ptr dataPtr pos32 seqLen64 : AlgorithmLib.IR.Val)
@@ -289,13 +287,13 @@ theorem ffn_entry_ok : EntryOk (stateOf inferLayerFfnFn) = true := by native_dec
 theorem infer_entry_ok : EntryOk (stateOf inferFn) = true := by native_decide
 
 /-- **The model's claims about the attention body's entry block are sound.** -/
-theorem attn_entry_sound {env' : AlgorithmLib.HProg.FnEnv}
+theorem attn_entry_sound {lc : AlgorithmLib.HProg.Sem.Locals}
     {s : AlgorithmLib.HProg.Blocks.BSt}
     {r : AlgorithmLib.HProg.Blocks.BSt × AlgorithmLib.HProg.Blocks.Next}
     {w : AlgorithmLib.HProg.Sem.World}
     (hsz : s.vals.size = (entryParams (stateOf inferLayerAttnFn)).length)
     (hpar : TypesAgree (entryTys (stateOf inferLayerAttnFn)) s.vals)
-    (hr : AlgorithmLib.HProg.Blocks.runInsts env' s
+    (hr : AlgorithmLib.HProg.Blocks.runInsts lc s
             (entryInsts (stateOf inferLayerAttnFn)) = .ok r w) :
     Sound (tyRun (entryTys (stateOf inferLayerAttnFn))
             (entryInsts (stateOf inferLayerAttnFn)))

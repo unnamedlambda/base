@@ -1,8 +1,8 @@
 module
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 public import Vit.Model
 meta import Vit.Model
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -421,19 +421,28 @@ def vSeedFn : Prog V L Unit :=
 
 /-- Download any buffer, named at run time: the input carries the buffer index
     and the byte count.  A gradient check reads a few hundred buffers, and one
-    emitted function per buffer would be a CLIF function per parameter. -/
+    emitted function per buffer would be a CLIF function per parameter.
+
+    It reads the two only when the caller handed over their eight bytes, and
+    downloads only when the index names a slot of the binding table and the
+    caller's output has room for the byte count. -/
 def vFetchAnyFn : Prog V L Unit :=
   do
   let ptr ← basePtr
   let ctxPtr ← cudaCtxPtr ptr
   let dataPtr ← dataPtr
   let outPtr ← outPtr
-  let idx ← load32 dataPtr
-  let nb ← load32 (← iaddImm dataPtr 4)
-  let base ← absAddr ptr VBIND_OFF
-  let off ← ishlImm (← uextend64 idx) 2
-  let id ← load32 (← iadd base off)
-  let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, (← uextend64 nb)]
+  let dataLen ← dataLen
+  let outLen ← outLen
+  Prog.when .ule (← iconst64 8) dataLen do
+    let idx ← uextend64 (← load32 dataPtr)
+    let nb ← uextend64 (← load32 (← iaddImm dataPtr 4))
+    Prog.when .ult idx (← iconst64 VNBUF) do
+      Prog.when .ule nb outLen do
+        let base ← absAddr ptr VBIND_OFF
+        let off ← ishlImm idx 2
+        let id ← load32 (← iadd base off)
+        let _ ← ffi .cudaDownload %[ctxPtr, id, outPtr, nb]
 
 def vFetchFn (b n : Nat) : Prog V L Unit :=
   do

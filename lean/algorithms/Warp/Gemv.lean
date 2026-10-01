@@ -1,12 +1,11 @@
 import Lean
 import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
 import Scan.MlSurface
 import Scan.Layout
 import Scan.Ship
-
-
+import AlgorithmLib.ML.Machine.Geometry
+import AlgorithmLib.ML.Kernel.Sched
+import AlgorithmLib.Surface.ProgFFI
 /-!
   # A proven GEMV, versus cuBLAS — and across schedules
 
@@ -241,8 +240,6 @@ def MEM_SIZE : Nat := BIND_OFF + 0x100
 
 open AlgorithmLib.Prog
 
-
-/-- Two callee tables: only the cuBLAS baseline reaches cuBLAS. -/
 
 def loadCode (sh : Shape) : Prog V L Unit :=
   do

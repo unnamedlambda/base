@@ -4,7 +4,6 @@ import Vit.Dag
 import Vit.DagStep
 import Vit.Regs
 import Vit.Slot
-
 /-!
   # What the ViT artifact's claims rest on — computed, not documented
 

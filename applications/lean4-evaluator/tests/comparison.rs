@@ -778,3 +778,57 @@ fn test_eval_if_paren_then() {
 fn test_eval_if_paren_else() {
     compare("#eval if 5 < 3 then 0 else (10 - 3) * 2");
 }
+
+// A binding reads its name again when it binds: evaluating the bound expression
+// reads other names into the same buffer.
+#[test]
+fn test_eval_let_binding_reads_other_names() {
+    compare("#eval let x := 1; let y := x + 1; x + y");
+}
+
+#[test]
+fn test_eval_lambda_arg_reads_other_names() {
+    compare("#eval let a := 4; let c := 1; (fun b => a + b) c");
+}
+
+#[test]
+fn test_eval_nested_parens_30() {
+    compare(&format!("#eval {}1{}", "(".repeat(30), ")".repeat(30)));
+}
+
+#[test]
+fn test_eval_twenty_digits() {
+    compare("#eval 10000000000000000000");
+}
+
+fn ours_only(code: &str) -> String {
+    let (test_file, output_file) = get_temp_files();
+    let (out, _) = run_ours(code, &test_file, &output_file);
+    fs::remove_file(&test_file).ok();
+    fs::remove_file(&output_file).ok();
+    out
+}
+
+// Past what the machine holds — a stack of frames, a name buffer, the source
+// buffer — the answer is `error`, never a write past them.
+#[test]
+fn test_eval_nested_too_deep_is_error() {
+    assert_eq!(ours_only(&format!("#eval {}1{}", "(".repeat(1000), ")".repeat(1000))), "error");
+}
+
+#[test]
+fn test_eval_long_name_is_error() {
+    let name = "a".repeat(70);
+    assert_eq!(ours_only(&format!("#eval let {} := 1; {}", name, name)), "error");
+}
+
+#[test]
+fn test_eval_unclosed_lambda_ends() {
+    // the text's end closes the lambda; whatever it answers, it answers
+    let _ = ours_only("#eval (fun x => x + 1");
+}
+
+#[test]
+fn test_eval_source_past_buffer_ends() {
+    let _ = ours_only(&format!("#eval {}", " ".repeat(5000)));
+}

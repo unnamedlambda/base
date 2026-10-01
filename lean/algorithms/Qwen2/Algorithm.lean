@@ -1,22 +1,15 @@
 module
 public import Lean
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
-public import AlgorithmLib.Surface.Cuda
-meta import AlgorithmLib.Surface.Cuda
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
-public import Qwen2.Common
-meta import Qwen2.Common
 public import Scan.Ship
 meta import Scan.Ship
+public import Qwen2.Common
+meta import Qwen2.Common
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 open Lean
 open AlgorithmLib
@@ -173,11 +166,6 @@ def buildSetup (clif : List FuncData) : Artifact := {
   required_memory := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
-
-/-- Single end-to-end algorithm: parse args → load weights → load tokenizer → server.
-    `data` must be `weights_path\0tokenizer_path\0`. The orchestrator is `fn38`,
-    a CLIF wrapper that calls each step in sequence (see `clifIR`). -/
-def qwen2Algorithm : UInt32 := 38
 
 end Qwen2
 

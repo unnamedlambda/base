@@ -1,14 +1,13 @@
 module
-public import Lz4.NonVacuity
-meta import Lz4.NonVacuity
 public import Lz4.Confine64
 meta import Lz4.Confine64
 public import Lz4.Host
 meta import Lz4.Host
+public import Lz4.NonVacuity
+meta import Lz4.NonVacuity
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 /-!
   # The composed claim

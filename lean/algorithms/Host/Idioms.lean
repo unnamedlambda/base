@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

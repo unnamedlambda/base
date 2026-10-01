@@ -1,8 +1,8 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -128,7 +128,7 @@ def histogram (data len hist : V .i64) : Prog V L (V .i64) := do
 
 /-- `v` as eight big-endian bytes at `addr`: a CBOR argument. -/
 def storeBE (v addr : V .i64) : Prog V L Unit := do
-  for k in [0:8] do
+  for k in List.range 8 do
     istore8 (← ushrImm v (Int.ofNat (56 - 8 * k))) (← iaddImm addr (Int.ofNat k))
 
 /-- Answer the `size` bytes at `src`: copy them to the caller's buffer if it

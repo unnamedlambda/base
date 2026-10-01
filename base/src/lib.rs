@@ -18,6 +18,7 @@ pub mod capi;
 mod clif_decode;
 mod ffi;
 mod imports;
+mod libs;
 mod jit;
 
 use crate::jit::THREAD_COMPILED_FNS;
@@ -300,11 +301,14 @@ pub fn clif_text(functions: &[base_types::clif::Function]) -> Result<String, Str
                     clif_decode::signature_of(callee, *n as usize, cc)?
                 }
                 Callee::Native => return Err("machine code has no symbol to resolve".into()),
+                Callee::Atomic(_) => return Err("an atomic has no symbol to resolve".into()),
+                Callee::Extern(e) => clif_decode::signature(&e.params, e.result, cc),
             };
             names.push(match c {
                 Callee::Import(n) => format!("%{n}"),
                 Callee::Local(i) => format!("u0:{i}"),
-                Callee::Native => unreachable!("returned above"),
+                Callee::Extern(e) => format!("%{}!{}", e.lib, e.symbol),
+                Callee::Native | Callee::Atomic(_) => unreachable!("returned above"),
             });
             Ok((clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false }, sig))
         };

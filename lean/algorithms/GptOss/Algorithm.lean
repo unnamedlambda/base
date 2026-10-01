@@ -1,18 +1,16 @@
 module
 public import Lean
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
-public import GptOss.Kernels
-meta import GptOss.Kernels
-public import GptOss.Attention
-meta import GptOss.Attention
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import GptOss.Kernels
+meta import GptOss.Kernels
+public import AlgorithmLib.Host.HostIR
+meta import AlgorithmLib.Host.HostIR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -87,8 +85,6 @@ def GNBUF : Nat := GSTORE + PIECES * NE
 
 /-- Slot `j`'s piece `t`, and expert `e`'s piece `t`. -/
 def slotBuf (j t : Nat) : Nat := GSLOT0 + PIECES * j + t
-def storeBuf (e t : Nat) : Nat := GSTORE + PIECES * e + t
-
 /-- Bytes per buffer.  The slot buffers are placeholders: the bind array points
     them at the store before the experts run, so what is allocated for them is
     never read. -/
@@ -932,15 +928,6 @@ theorem gptoss_layer_slots_are_bound :
 theorem gptoss_layer_binds_allocated :
     (lExpertBinds.flatMap (fun t => t.2.2)).all (fun b => decide (b < LNBUF))
       = true := by native_decide
-
-def lUploadFn (b n : Nat) : Prog V L Unit :=
-  do
-  let ptr ← basePtr
-  let ctxPtr ← cudaCtxPtr ptr
-  let dataPtr ← dataPtr
-  let id ← load32 (← absAddr ptr (lBindOff b))
-  let bytes ← iconst64 n
-  let _ ← ffi .cudaUpload %[ctxPtr, id, dataPtr, bytes]
 
 /-- Copy buffer `b` to the caller's output, `at` bytes in. -/
 def lFetchM (b n at_ : Nat) : Prog V L Unit := do

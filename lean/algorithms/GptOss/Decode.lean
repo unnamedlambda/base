@@ -1,22 +1,18 @@
 module
 public import Lean
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
-public import GptOss.Kernels
-meta import GptOss.Kernels
-public import GptOss.Attention
-meta import GptOss.Attention
-public import Tokenizer.Common
-meta import Tokenizer.Common
-public import Tokenizer.Pretok
-meta import Tokenizer.Pretok
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import GptOss.Kernels
+meta import GptOss.Kernels
+public import Tokenizer.Pretok
+meta import Tokenizer.Pretok
+public import AlgorithmLib.Host.HostIR
+meta import AlgorithmLib.Host.HostIR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -161,7 +157,6 @@ def S_ROPEK := 3
     became `M_KVSTRIDE`, so a sliding layer and a full one launch the same
     program. -/
 def S_KV := 4
-def S_SOFTMAX := 6
 def S_NARROW := 7
 def S_GATEUP := 8
 def S_DOWN := 9
@@ -176,9 +171,9 @@ def S_WIDEN := 13
 def S_SAMPLE := 14
 /-- Fused attention: one tile of the sequence a warp, then the merge.
 
-    Appended rather than placed beside `S_SOFTMAX`, whose four-kernel path they
-    replace, because a slot index is a position in `dPtx` and inserting one
-    renumbers every launch. -/
+    Appended rather than placed beside the softmax slot, whose four-kernel
+    path they replace, because a slot index is a position in `dPtx` and
+    inserting one renumbers every launch. -/
 def S_ATTTILE := 15
 def S_ATTCOMB := 16
 
@@ -245,9 +240,6 @@ def B_QKVB := B_X + 24
 /-- The attention probabilities, likewise, for the contraction against a bf16
     value cache. -/
 def B_PRB := B_X + 25
-/-- How many words that second narrow covers: `NQ * seqLen / 2`, and so a
-    number that follows the position rather than the geometry. -/
-def B_NMP := B_X + 26
 /-- How many words the first narrow covers, which is a constant: q, k and v
     together are `dQkvOut` floats however long the conversation is. -/
 def B_NMQKV := B_X + 27
@@ -255,7 +247,6 @@ def B_NMQKV := B_X + 27
     there are -- which follows the position, so the kernel is told rather than
     generated for it. -/
 def B_PART := B_X + 28
-def B_NT := B_X + 29
 def B_Y := B_X + 30                     -- four
 def B_HID := B_Y + TOPK                 -- four
 def DSTORE := B_HID + TOPK              -- 9 x NL dense weights
@@ -264,7 +255,6 @@ def SLOTSTORE := KVSTORE + 2 * NL       -- NSLOT_MAX x 6 expert pieces
 def DNBUF := SLOTSTORE + PIECES * NSLOT_MAX
 
 def dStoreBuf (layer k : Nat) : Nat := DSTORE + 9 * layer + k
-def kvStoreBuf (layer j : Nat) : Nat := KVSTORE + 2 * layer + j
 /-- The depth a layer's cache is *allowed*, which is what `dBufBytes` is about.
 
     What it is actually given is chosen at start-up and allocated then; this
@@ -410,12 +400,6 @@ theorem gptossDecodeMap_ok :
 /-! ## The host program -/
 
 
-/-- What the caller passes: a token, its position, and where the bank is.
-
-    Three paths and two integers, and nothing else — no weights, no embedding
-    row, no numbers the model is made of. The paths are read once; the two
-    integers are read every call. -/
-def D_TOK : Nat := 0
 def D_POS : Nat := 4
 /-- Zero for a single step, one for a whole turn. -/
 def D_MODE : Nat := 8
@@ -502,8 +486,6 @@ def D_OUT_GEN : Nat := D_OUT_NGEN + 8
     which is the thing this application exists to avoid. -/
 def D_OUT_NTEXT : Nat := D_OUT_GEN + 4 * TEXT_MAX
 def D_OUT_TEXTTOK : Nat := D_OUT_NTEXT + 8
-def D_OUT_BYTES : Nat := D_OUT_TEXTTOK + 4 * TEXT_MAX
-
 def NBLK : Nat := 32 * warpsPerCta
 
 /-- The staging buffer: wide enough for the widest dense tensor, and every
@@ -1265,3 +1247,4 @@ def GptOss.Decode.main (args : List String) : IO Unit := do
   emitArtifacts (← requireOutputDir args) (GptOssDecode.artifacts clif)
 
 #eval ShipScan.check "GptOss.Decode" `GptOss.Decode.main
+

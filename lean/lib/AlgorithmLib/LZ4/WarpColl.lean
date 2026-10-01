@@ -1,10 +1,8 @@
 module
-public import AlgorithmLib.LZ4.WarpEmit
-meta import AlgorithmLib.LZ4.WarpEmit
 public import AlgorithmLib.LZ4.SimtBits
 meta import AlgorithmLib.LZ4.SimtBits
-public import AlgorithmLib.LZ4.WarpSched
-meta import AlgorithmLib.LZ4.WarpSched
+public import AlgorithmLib.LZ4.SimtRSim
+meta import AlgorithmLib.LZ4.SimtRSim
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

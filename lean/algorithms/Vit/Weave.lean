@@ -1,8 +1,8 @@
 module
-public import Vit.Model
-meta import Vit.Model
 public import AlgorithmLib.ML.Model.WeaveLower
 meta import AlgorithmLib.ML.Model.WeaveLower
+public import Vit.Model
+meta import Vit.Model
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

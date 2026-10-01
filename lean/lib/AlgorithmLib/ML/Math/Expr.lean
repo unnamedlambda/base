@@ -39,22 +39,6 @@ abbrev Prog (Γ out : Nat) := Fin out → Expr Γ
 
 end Expr
 
-/-- Expressions with no `letE`.  `grad` is proven correct on this fragment.
-    Sharing is supported on the forward/compile path (`compileE`), which is
-    where the exponential blowup actually bit; correct AD *through* a binding
-    requires de Bruijn weakening and is the next item. -/
-def LetFree : {Γ : Nat} → Expr Γ → Prop
-  | _, .var _    => True
-  | _, .lit _    => True
-  | _, .add a b  => LetFree a ∧ LetFree b
-  | _, .mul a b  => LetFree a ∧ LetFree b
-  | _, .neg a    => LetFree a
-  | _, .inv a    => LetFree a
-  | _, .exp a    => LetFree a
-  | _, .rsqrt a  => LetFree a
-  | _, .sum _ f  => ∀ j, LetFree (f j)
-  | _, .letE _ _ => False
-
 -- ---------------------------------------------------------------------------
 -- Environments
 -- ---------------------------------------------------------------------------

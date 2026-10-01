@@ -1,14 +1,10 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
 public import Scan.Layout
 meta import Scan.Layout
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -139,51 +135,83 @@ def loadCode : Prog V L Unit := do
   cudaInit ptr CTX_OFF
   let ctxPtr ← load64 (← absAddr ptr CTX_OFF)
 
-  let seqLen    ← load64 dataPtr
-  let dMBytes   ← iconst64 D_MODEL_BYTES
-  let nHeads64  ← iconst64 N_HEADS
-  let kvBytes   ← imul seqLen dMBytes              -- seq_len * D_MODEL * 4
-  let scoreBytes← ishlImm (← imul seqLen nHeads64) 2  -- seq_len * N_HEADS * 4
-  let eight     ← iconst64 8
+  let dataLen ← dataLen
+  -- the sequence length only when the caller handed over its 8 bytes
+  Prog.when .ule (← iconst64 8) dataLen do
+    let seqLen    ← load64 dataPtr
+    -- A length the kernels take as a positive `u32` and the buffers are sized
+    -- by without wrapping: any other makes no buffers, and later entries find
+    -- none.
+    let one    ← iconst64 1
+    let maxSeq ← iconst64 MAX_SEQ
+    let _ ← ifte .ult (← isub seqLen one) maxSeq
+      (thn := do
+        let dMBytes   ← iconst64 D_MODEL_BYTES
+        let nHeads64  ← iconst64 N_HEADS
+        let kvBytes   ← imul seqLen dMBytes              -- seq_len * D_MODEL * 4
+        let scoreBytes← ishlImm (← imul seqLen nHeads64) 2  -- seq_len * N_HEADS * 4
+        let eight     ← iconst64 8
 
-  -- buf order: 0=q, 1=K, 2=V, 3=scores, 4=probs, 5=out, 6=meta
-  let bufQ      ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
-  let bufK      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
-  let bufV      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
-  let bufScores ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
-  let bufProbs  ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
-  let bufOut    ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
-  let bufMeta   ← ffi .cudaCreateBuffer %[ctxPtr, eight]
+        -- buf order: 0=q, 1=K, 2=V, 3=scores, 4=probs, 5=out, 6=meta
+        let bufQ      ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
+        let bufK      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
+        let bufV      ← ffi .cudaCreateBuffer %[ctxPtr, kvBytes]
+        let bufScores ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
+        let bufProbs  ← ffi .cudaCreateBuffer %[ctxPtr, scoreBytes]
+        let bufOut    ← ffi .cudaCreateBuffer %[ctxPtr, dMBytes]
+        let bufMeta   ← ffi .cudaCreateBuffer %[ctxPtr, eight]
 
-  store bufQ      (← absAddr ptr BUF_Q_OFF)
-  store bufK      (← absAddr ptr BUF_K_OFF)
-  store bufV      (← absAddr ptr BUF_V_OFF)
-  store bufScores (← absAddr ptr BUF_SCORES_OFF)
-  store bufProbs  (← absAddr ptr BUF_PROBS_OFF)
-  store bufOut    (← absAddr ptr BUF_OUT_OFF)
-  store bufMeta   (← absAddr ptr BUF_META_OFF)
+        store bufQ      (← absAddr ptr BUF_Q_OFF)
+        store bufK      (← absAddr ptr BUF_K_OFF)
+        store bufV      (← absAddr ptr BUF_V_OFF)
+        store bufScores (← absAddr ptr BUF_SCORES_OFF)
+        store bufProbs  (← absAddr ptr BUF_PROBS_OFF)
+        store bufOut    (← absAddr ptr BUF_OUT_OFF)
+        store bufMeta   (← absAddr ptr BUF_META_OFF)
 
-  -- Pack [seq_len:u32][0:u32] at SEQ_LEN_OFF, upload to meta buf
-  let seqLen32 ← ireduce32 seqLen
-  let seqLen64 ← uextend64 seqLen32
-  let metaSlot ← absAddr ptr SEQ_LEN_OFF
-  store seqLen64 metaSlot
-  let _ ← ffi .cudaUpload %[ctxPtr, bufMeta, metaSlot, eight]
+        -- Pack [seq_len:u32][0:u32] at SEQ_LEN_OFF, upload to meta buf
+        let seqLen32 ← ireduce32 seqLen
+        let seqLen64 ← uextend64 seqLen32
+        let metaSlot ← absAddr ptr SEQ_LEN_OFF
+        store seqLen64 metaSlot
+        let _ ← ffi .cudaUpload %[ctxPtr, bufMeta, metaSlot, eight]
 
-  -- Upload K and V from data (K at data+8, V at data+8+kvBytes)
-  let kSrc ← iaddImm dataPtr 8
-  let _ ← ffi .cudaUpload %[ctxPtr, bufK, kSrc, kvBytes]
-  let vSrc ← iadd kSrc kvBytes
-  let _ ← ffi .cudaUpload %[ctxPtr, bufV, vSrc, kvBytes]
+        -- Upload K and V from data (K at data+8, V at data+8+kvBytes), where the
+        -- data holds both: an input shorter than its header says uploads neither.
+        let _ ← ifte .uge dataLen eight
+          (thn := do
+            let rest ← isub dataLen eight
+            let _ ← ifte .ule kvBytes rest
+              (thn := do
+                let _ ← ifte .ule kvBytes (← isub rest kvBytes)
+                  (thn := do
+                    let kSrc ← iaddImm dataPtr 8
+                    let _ ← ffi .cudaUpload %[ctxPtr, bufK, kSrc, kvBytes]
+                    let vSrc ← iadd kSrc kvBytes
+                    let _ ← ffi .cudaUpload %[ctxPtr, bufV, vSrc, kvBytes]
+                    pure %[])
+                  (els := pure %[])
+                pure %[])
+              (els := pure %[])
+            pure %[])
+          (els := pure %[])
+        pure %[])
+      (els := pure %[])
 
-/-- Prep: upload q from data_ptr to buf0. -/
+/-- Prep: upload q from data_ptr to buf0, where the data holds it. -/
 def prepCode : Prog V L Unit := do
   let ptr ← basePtr
   let dataPtr ← dataPtr
   let ctxPtr  ← load64 (← absAddr ptr CTX_OFF)
   let bufQ    ← load32 (← absAddr ptr BUF_Q_OFF)
   let dMBytes ← iconst64 D_MODEL_BYTES
-  let _ ← ffi .cudaUpload %[ctxPtr, bufQ, dataPtr, dMBytes]
+  let dataLen ← dataLen
+  -- q where the data holds it: shorter data uploads nothing.
+  let _ ← ifte .ule dMBytes dataLen
+    (thn := do
+      let _ ← ffi .cudaUpload %[ctxPtr, bufQ, dataPtr, dMBytes]
+      pure %[])
+    (els := pure %[])
 
 /-- **The softmax kernel, as a record its launch site reads.**
 
@@ -323,11 +351,6 @@ def buildSetup (clif : List FuncData) : Artifact := {
   required_memory := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
-
-def loadAlgorithm : UInt32 := 1
-def prepAlgorithm : UInt32 := 2
-def inferAlgorithm : UInt32 := 5
-def stackAlgorithm : UInt32 := 6
 
 def artifacts (clif : List FuncData) : Array ArtifactEntry :=
   #[

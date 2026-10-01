@@ -1,8 +1,12 @@
 module
-public import AlgorithmLib.Surface.Prog
-meta import AlgorithmLib.Surface.Prog
 public import AlgorithmLib.Surface.Layout
 meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
+public import AlgorithmLib.Core.Artifact
+meta import AlgorithmLib.Core.Artifact
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -54,9 +58,6 @@ def initAt (f : Ffi) (hp : f.params = [ClifTy.i64] := by rfl)
 -- wgpu
 -- ---------------------------------------------------------------------------
 
-def gpuCtxSlotPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.wgpu) :
-    Prog V L (V .i64) := ctxSlotPtr ptr slotOffset
-
 def gpuCtxPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.wgpu) :
     Prog V L (V .i64) := ctxPtr ptr slotOffset
 
@@ -101,9 +102,6 @@ def gpuCleanup (ptr : V .i64) (slotOffset : Nat := ContextSlots.wgpu) : Prog V L
 -- generators do not agree on one -- `WordCountAlgorithm` keeps it at 0 and
 -- `HProgCorpus` at 0x80 -- and `ContextSlots.ht` is only the default.
 -- ---------------------------------------------------------------------------
-
-def htCtxSlotPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.ht) :
-    Prog V L (V .i64) := ctxSlotPtr ptr slotOffset
 
 def htCtxPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.ht) :
     Prog V L (V .i64) := ctxPtr ptr slotOffset
@@ -153,12 +151,13 @@ def htGetEntry (ptr : V .i64) (index : V .i32) (keyOutOff valOutOff : V .i64)
 -- Files
 -- ---------------------------------------------------------------------------
 
-/-- Read a file into shared memory; the result is the byte count. -/
-def readFile (ptr : V .i64) (filenameOff dataOff : Nat) : Prog V L (V .i64) := do
+/-- Read a file into `room` bytes of shared memory; the result is the byte
+    count. A longer file is read as far as it fits. -/
+def readFile (ptr : V .i64) (filenameOff dataOff room : Nat) : Prog V L (V .i64) := do
   let fnOff ← iconst64 filenameOff
   let dOff ← iconst64 dataOff
   let zero ← iconst64 0
-  ffi .fileRead %[ptr, fnOff, dOff, zero, zero]
+  ffi .fileRead %[ptr, fnOff, dOff, zero, ← iconst64 room]
 
 /-- Write a region of shared memory to a file; the result is the byte count. -/
 def writeFile (ptr : V .i64) (filenameOff srcOff : Nat) (fileOffset size : V .i64) :
@@ -230,30 +229,19 @@ def fldLoad {t} (base : V .i64) (f : Layout.Fld t) [inst : IsScalarV V L t] :
     Prog V L (V .i64) := do
   inst.scalarLoad (← fldAddr base f)
 
-def fldStoreAt {n ty} (base : V .i64) (f : Layout.Fld (.bytes n)) (i : Nat)
-    (val : V ty) (_h : i + 8 ≤ n := by omega) : Prog V L Unit := do
-  storeUnaligned val (← absAddr base (f.offset + i))
-
 def fldStore32At {n ty} (base : V .i64) (f : Layout.Fld (.bytes n)) (i : Nat)
     (val : V ty) (_h : i + 4 ≤ n := by omega) : Prog V L Unit := do
   storeUnaligned val (← absAddr base (f.offset + i))
-
-def fldLoadAt {n} (base : V .i64) (f : Layout.Fld (.bytes n)) (i : Nat)
-    (_h : i + 8 ≤ n := by omega) : Prog V L (V .i64) := do
-  load64 (← absAddr base (f.offset + i))
-
-def fldLoad8At {n} (base : V .i64) (f : Layout.Fld (.bytes n)) (i : Nat)
-    (_h : i + 1 ≤ n := by omega) : Prog V L (V .i64) := do
-  uload8_64 (← absAddr base (f.offset + i))
 
 def fldLoad32At {n} (base : V .i64) (f : Layout.Fld (.bytes n)) (i : Nat)
     (_h : i + 4 ≤ n := by omega) : Prog V L (V .i64) := do
   uload32_64 (← absAddr base (f.offset + i))
 
-/-- Read a file using typed field handles for the filename and data regions. -/
+/-- Read a file using typed field handles for the filename and data regions,
+    as far as `room` holds: by default the whole data field. -/
 def fldReadFile {ft dt} (ptr : V .i64) (filenameFld : Layout.Fld ft)
-    (dataFld : Layout.Fld dt) : Prog V L (V .i64) :=
-  readFile ptr filenameFld.offset dataFld.offset
+    (dataFld : Layout.Fld dt) (room : Nat := dt.size) : Prog V L (V .i64) :=
+  readFile ptr filenameFld.offset dataFld.offset room
 
 /-- Write a whole field to a file, from offset 0. -/
 def fldWriteFile0 {ft st} (ptr : V .i64) (filenameFld : Layout.Fld ft)
@@ -263,9 +251,6 @@ def fldWriteFile0 {ft st} (ptr : V .i64) (filenameFld : Layout.Fld ft)
 -- ---------------------------------------------------------------------------
 -- Window
 -- ---------------------------------------------------------------------------
-
-def windowCtxSlotPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.window) :
-    Prog V L (V .i64) := ctxSlotPtr ptr slotOffset
 
 def windowCtxPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.window) :
     Prog V L (V .i64) := ctxPtr ptr slotOffset
@@ -304,9 +289,6 @@ def windowCleanup (ptr : V .i64) (slotOffset : Nat := ContextSlots.window) :
 -- the device buffer, so the host pointee need not be the whole allocation.
 -- ---------------------------------------------------------------------------
 
-def cudaCtxSlotPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.cuda) :
-    Prog V L (V .i64) := ctxSlotPtr ptr slotOffset
-
 def cudaCtxPtr (ptr : V .i64) (slotOffset : Nat := ContextSlots.cuda) :
     Prog V L (V .i64) := ctxPtr ptr slotOffset
 
@@ -321,10 +303,6 @@ def cudaUpload (ptr : V .i64) (bufId : V .i32) (srcOff size : V .i64)
     (slotOffset : Nat := ContextSlots.cuda) : Prog V L (V .i32) := do
   let c ← cudaCtxPtr ptr slotOffset
   ffi .cudaUpload %[c, bufId, ← iadd ptr srcOff, size]
-
-def cudaUploadRaw (ptr : V .i64) (bufId : V .i32) (srcPtr size : V .i64)
-    (slotOffset : Nat := ContextSlots.cuda) : Prog V L (V .i32) := do
-  ffi .cudaUpload %[← cudaCtxPtr ptr slotOffset, bufId, srcPtr, size]
 
 def cudaUploadRawOffset (ptr : V .i64) (bufId : V .i32) (bufOff srcPtr size : V .i64)
     (slotOffset : Nat := ContextSlots.cuda) : Prog V L (V .i32) := do
@@ -349,10 +327,6 @@ def cudaDownload (ptr : V .i64) (bufId : V .i32) (dstOff size : V .i64)
     (slotOffset : Nat := ContextSlots.cuda) : Prog V L (V .i32) := do
   let c ← cudaCtxPtr ptr slotOffset
   ffi .cudaDownload %[c, bufId, ← iadd ptr dstOff, size]
-
-def cudaDownloadRaw (ptr : V .i64) (bufId : V .i32) (dstPtr size : V .i64)
-    (slotOffset : Nat := ContextSlots.cuda) : Prog V L (V .i32) := do
-  ffi .cudaDownload %[← cudaCtxPtr ptr slotOffset, bufId, dstPtr, size]
 
 def cudaDownloadRawOffset (ptr : V .i64) (bufId : V .i32) (bufOff dstPtr size : V .i64)
     (slotOffset : Nat := ContextSlots.cuda) : Prog V L (V .i32) := do
@@ -532,41 +506,6 @@ def cublasGemmStridedBatchedExBf16 (ptr : V .i64)
     %[c, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB,
       betaBits, cBuf, strideC, batchCount, oa, ob, oc, la, lb, lc]
 
-/-- The same, with the operand offsets held in **registers** rather than fixed
-    at emission.
-
-    A sliding window moves with the position, so the offset that names its first
-    key is not a number the generator knows. Nothing else changes: an offset
-    still moves a pointer and leaves the matrix contracted alone, which is why
-    this costs no law the constant form does not already cost. -/
-def cublasGemmExBf16At (ptr : V .i64)
-    (transA transB m n k alphaBits aBuf bBuf betaBits cBuf : V .i32)
-    (offA offB offC : V .i64)
-    (slotOffset : Nat := ContextSlots.cuda) (ldA ldB ldC : Nat := 0) :
-    Prog V L (V .i32) := do
-  let c ← cudaCtxPtr ptr slotOffset
-  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
-  ffi .cublasGemmExBf16
-    %[c, transA, transB, m, n, k, alphaBits, aBuf, bBuf, betaBits, cBuf,
-      offA, offB, offC, la, lb, lc]
-
-/-- The strided-batched contraction with its operand offsets in registers.
-
-    Attention over a sliding window is the reason: the window's first key is a
-    function of the position, so `offA`/`offB` are computed at run time. The
-    constant-offset form above is the same call with the offsets frozen. -/
-def cublasSgemmStridedBatchedOnStreamAt (ptr : V .i64)
-    (transA transB m n k alphaBits aBuf : V .i32) (strideA : V .i64) (bBuf : V .i32)
-    (strideB : V .i64) (betaBits cBuf : V .i32) (strideC : V .i64)
-    (batchCount streamId : V .i32) (offA offB offC : V .i64)
-    (slotOffset : Nat := ContextSlots.cuda) (ldA ldB ldC : Nat := 0) :
-    Prog V L (V .i32) := do
-  let c ← cudaCtxPtr ptr slotOffset
-  let la ← iconst32 ldA; let lb ← iconst32 ldB; let lc ← iconst32 ldC
-  ffi .cublasSgemmOnStream
-    %[c, transA, transB, m, n, k, alphaBits, aBuf, strideA, bBuf, strideB,
-      betaBits, cBuf, strideC, batchCount, streamId, offA, offB, offC, la, lb, lc]
-
 /-- Store `srcBuf`'s device pointer, advanced by `off` f32 elements, into entry
     `slot` of the pointer array held in `arrBuf`. -/
 def cublasPtrArray (ptr : V .i64) (arrBuf slot srcBuf : V .i32) (off : V .i64)
@@ -603,7 +542,7 @@ def sequenceWrapper (callees : List Nat) : Prog V L Unit := do
 -- Native code
 --
 -- Machine code the program carries as data, the way it carries a PTX kernel:
--- placed by `nativeLoad`, run by `nativeCall`. `HProgSem` has no definition for
+-- placed by `nativeLoad`, run by `nativeCall`. `Host.Sem` has no definition for
 -- any of these, so a proof about a program that calls one does not reach past
 -- the call; the CLIF path it would otherwise take is what the code is tested
 -- against.
@@ -636,5 +575,18 @@ def nativeArch : Prog V L (V .i32) :=
     `name`: 1, 0, or -1 for a name the runtime does not know. -/
 def cpuHas (name : V .i64) : Prog V L (V .i32) :=
   ffi .cpuHas %[name]
+
+-- ---------------------------------------------------------------------------
+-- Performance controls: `0` granted, `-1` declined, memory unchanged either way
+-- ---------------------------------------------------------------------------
+
+/-- Keep `len` bytes from `p` in physical memory. -/
+def memLock (p len : V .i64) : Prog V L (V .i32) := ffi .memLock %[p, len]
+def memUnlock (p len : V .i64) : Prog V L (V .i32) := ffi .memUnlock %[p, len]
+/-- Ask for huge pages under the whole pages of `len` bytes from `p`. -/
+def memAdviseHuge (p len : V .i64) : Prog V L (V .i32) := ffi .memAdviseHuge %[p, len]
+/-- Raise (`1`) or lower (`-1`) the calling thread's priority a step from
+    where it stands, or reset it (`0`). -/
+def threadPriority (level : V .i32) : Prog V L (V .i32) := ffi .threadPriority %[level]
 
 end AlgorithmLib.Prog

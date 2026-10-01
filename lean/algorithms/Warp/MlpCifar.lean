@@ -1,10 +1,16 @@
+import AlgorithmLib.ML.Math.Transformer
+import AlgorithmLib.ML.Model.Dense
+import AlgorithmLib.ML.Tensor.Surface
+import AlgorithmLib.ML.Model.Ten
 import Lean
 import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
 import Scan.Layout
 import Scan.Ship
-
+import AlgorithmLib.ML.Kernel.EmitFacts
+import AlgorithmLib.ML.Launch.HostBridge
+import AlgorithmLib.ML.Model.RegBound
+import AlgorithmLib.ML.Model.Schedule
+import AlgorithmLib.Surface.ProgFFI
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 /-!
@@ -295,8 +301,10 @@ def slotOff (i : Nat) : Nat := PTX_OFF + i * SLOT
 def BIND_OFF : Nat := slotOff NSLOT
 
 /-- Scratch for the table a single launch binds.  `bufs_le_five` bounds it, so
-    this is a fixed twenty bytes however many buffers the model allocates. -/
-def LOCAL_OFF : Nat := BIND_OFF + 4 * NBUF
+    this is a fixed twenty bytes however many buffers the model allocates.  It
+    starts on the word after the buffer table, so a launch's scratch never shares
+    a word with a buffer's handle. -/
+def LOCAL_OFF : Nat := BIND_OFF + 8 * ((NBUF + 1) / 2)
 def MEM_SIZE : Nat := LOCAL_OFF + 4 * 8 + 0x100
 
 /-- Byte offset of binding slot `i`.  This array is both the launch argument
@@ -2793,23 +2801,30 @@ def mLoadFn : Prog V L Unit :=
     entries slot `j`'s kernels read — six integer moves, no kernel re-emitted
     and no weight copied.  The expert index is loaded, so the address is
     computed at run time; nothing about which expert is chosen is baked into
-    the image. -/
+    the image. A choice the data does not hold whole, or one naming no expert,
+    binds nothing. -/
 def mBindExperts : Prog V L Unit :=
   do
   let ptr ← basePtr
   let dataPtr ← dataPtr
   let four ← iconst64 4
   let three ← iconst64 3
-  for j in List.range MUSED do
-    let e ← load32 (← iaddImm dataPtr (4 * j))
-    let e64 ← uextend64 e
-    let e3 ← imul e64 three
-    for t in List.range 3 do
-      let srcIx ← iaddImm e3 (MSTORE + t)
-      let srcOff ← imul srcIx four
-      let srcAddr ← iadd (← absAddr ptr MBIND_OFF) srcOff
-      let id ← load32 srcAddr
-      storeI32 id (← absAddr ptr (mBindOff (MSLOT0 + 3 * j + t)))
+  let ne ← iconst64 NE
+  -- the caller's choice, one expert per slot: bound only when the data holds
+  -- every slot's and each names an expert there is
+  Prog.when .ule (← iconst64 (4 * MUSED)) (← dataLen) do
+    let es ← (List.range MUSED).mapM fun (j : Nat) => do
+      uextend64 (← load32 (← iaddImm dataPtr ((4 * j : Nat) : Int)))
+    let bind : Prog V L Unit := do
+      for (j, e64) in (List.range MUSED).zip es do
+        let e3 ← imul e64 three
+        for t in List.range 3 do
+          let srcIx ← iaddImm e3 (MSTORE + t)
+          let srcOff ← imul srcIx four
+          let srcAddr ← iadd (← absAddr ptr MBIND_OFF) srcOff
+          let id ← load32 srcAddr
+          storeI32 id (← absAddr ptr (mBindOff (MSLOT0 + 3 * j + t)))
+    es.foldr (fun e k => do let _ ← ifte .ult e ne (do k; pure %[]) (pure %[])) bind
 
 /-- Copy the buffer ids one launch names into its own table, so the store that
     `mBindExperts` rewrote is what the kernel reads. -/

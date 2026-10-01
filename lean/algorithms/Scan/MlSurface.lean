@@ -1,5 +1,4 @@
 import Scan.Core
-
 /-!
   # The model stack's trust surface
 
@@ -67,14 +66,13 @@ def allowedOpaque : List Name :=
     `Qwen2Proven.Stage.uploadedValue,
     `Lean.opaqueId, `String.Internal.append, `System.Platform.getNumBits,
     `mixHash, `String.hash, `Float32.toString,
-    -- Reached only by the launch model's soundness on a shipped body, whose
-    -- statement quantifies over machine states: `Blocks.runInsts` interprets
-    -- every `Inst`, so its closure carries every arm of `Sem.evalOp` — the
-    -- double-precision ones included, which no emitted kernel uses.
-    `floatSpec, `Float.add, `Float.sub, `Float.mul, `Float.neg, `Float.beq,
-    `Float.decLe, `Float.decLt, `Float.ofBits, `Float.toBits,
-    `Float.ofScientific, `Float.toFloat32, `Float.toUInt64,
-    `Float32.cos, `Float32.sin, `Float32.toFloat ]
+    `Float32.cos, `Float32.sin,
+    -- `sinf`/`cosf`/`powf` as `Libm` states them
+    `Float.toInt64, `Int64.toFloat ]
+  -- The launch model's soundness on a shipped body reaches every arm of
+  -- `Sem.evalOp`, the double-precision ones included, which no emitted kernel
+  -- uses.
+  ++ evalOpOpaque
 
 /-- **Hypotheses a claim may carry without comment.**
 

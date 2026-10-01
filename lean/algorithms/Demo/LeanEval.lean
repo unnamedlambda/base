@@ -1,10 +1,10 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -27,13 +27,11 @@ def HT_VAL_BUF     : Nat := 0x11C8
 def OUTPUT_BUF     : Nat := 0x11D0
 def OUTPUT_BUF_SZ  : Nat := 64
 def STACK_BASE     : Nat := 0x1210
-def STACK_SZ       : Nat := 512
+def STACK_SZ       : Nat := 4096
 
 open AlgorithmLib.IR
 open AlgorithmLib.Prog
 
-abbrev fnFileRead : Ffi := .fileRead
-abbrev fnFileWrite : Ffi := .fileWrite
 abbrev fnHtInit : Ffi := .htInit
 abbrev fnHtCleanup : Ffi := .htCleanup
 abbrev fnHtCreate : Ffi := .htCreate
@@ -60,7 +58,12 @@ structure K (V : ClifTy → Type) where
   frameSize : V .i64
   space : V .i64
   newline : V .i64
-  doneTag : V .i64
+  srcLast : V .i64
+  identLast : V .i64
+  identSz : V .i64
+  maxSp : V .i64
+  popSpan : V .i64
+  maxDigits : V .i64
   srcAddr : V .i64
   identAddr : V .i64
   htValAddr : V .i64
@@ -86,20 +89,43 @@ structure K (V : ClifTy → Type) where
 -- body: 0 enters at the expression, 1 at the term, 2 at the atom.
 -- ---------------------------------------------------------------------------
 
-/-- The source byte at `pos`. -/
-def srcByte (k : K V) (pos : V .i64) : Prog V L (V .i64) := do uload8_64 (← iadd k.srcAddr pos)
+/-- The evaluator's two loops, as labels.
+
+    `Eval` is the outer one --- it carries the level, the position and the
+    stack pointer, and going round it is how the machine descends. `Ret` is the
+    inner one, which pops frames. The helpers below leave or re-enter one of
+    them, and now say so in their types: under the old surface that was a
+    `contTo 1` whose depth no reader could check. -/
+abbrev EvalLbl (L : List ClifTy → List ClifTy → Type) :=
+  L [ClifTy.i64, ClifTy.i64] [ClifTy.i64, ClifTy.i64, ClifTy.i64]
+abbrev RetLbl (L : List ClifTy → List ClifTy → Type) :=
+  L [ClifTy.i64, ClifTy.i64] [ClifTy.i64, ClifTy.i64, ClifTy.i64, ClifTy.i64]
+
+/-- The source byte at `pos`: past the source, the buffer's last byte, which
+    the read never fills, so every scan meets a zero at the end of the text. -/
+def srcByte (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
+  uload8_64 (← iadd k.srcAddr (← umin pos k.srcLast))
 
 /-- The source byte `d` bytes past `pos`. -/
 def srcByteAt (k : K V) (pos : V .i64) (d : Int) : Prog V L (V .i64) := do
-  uload8_64 (← iadd k.srcAddr (← iaddImm pos d))
+  srcByte k (← iaddImm pos d)
 
-/-- Push a frame — tag, saved value, extra — and yield the new stack pointer. -/
-def pushFrame (k : K V) (sp tag val extra : V .i64) : Prog V L (V .i64) := do
-  let a ← iadd k.stackAddr sp
-  store tag a
-  store val (← iaddImm a 8)
-  store extra (← iaddImm a 16)
-  iadd sp k.frameSize
+/-- The answer a source the machine cannot run evaluates to: the `isBool`
+    word 2 says so, and the output is `error`. -/
+def failWith (evalLbl : EvalLbl L) (k : K V) : Prog V L α :=
+  brk evalLbl %[k.zero, k.c2]
+
+/-- Push a frame — tag, saved value, extra — and yield the new stack pointer.
+    A source nested deeper than the stack holds is an error. -/
+def pushFrame (k : K V) (evalLbl : EvalLbl L) (sp tag val extra : V .i64) :
+    Prog V L (V .i64) := do
+  let r ← ifte .ugt sp k.maxSp (failWith evalLbl k) (do
+    let a ← iadd k.stackAddr sp
+    store tag a
+    store val (← iaddImm a 8)
+    store extra (← iaddImm a 16)
+    return %[← iadd sp k.frameSize])
+  return r.head
 
 /-- Advance past spaces and newlines. -/
 def skipWs (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
@@ -114,18 +140,6 @@ def skipWs (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
 /-- Advance one byte when the next is a space. -/
 def skipOptSpace (k : K V) (pos : V .i64) : Prog V L (V .i64) := do
   select (← icmp .eq (← srcByte k pos) k.space) (← iaddImm pos 1) pos
-
-/-- The evaluator's two loops, as labels.
-
-    `Eval` is the outer one --- it carries the level, the position and the
-    stack pointer, and going round it is how the machine descends. `Ret` is the
-    inner one, which pops frames. The helpers below leave or re-enter one of
-    them, and now say so in their types: under the old surface that was a
-    `contTo 1` whose depth no reader could check. -/
-abbrev EvalLbl (L : List ClifTy → List ClifTy → Type) :=
-  L [ClifTy.i64, ClifTy.i64] [ClifTy.i64, ClifTy.i64, ClifTy.i64]
-abbrev RetLbl (L : List ClifTy → List ClifTy → Type) :=
-  L [ClifTy.i64, ClifTy.i64] [ClifTy.i64, ClifTy.i64, ClifTy.i64, ClifTy.i64]
 
 /-- Nonzero when `ch` is a decimal digit. -/
 def isDigitCh (k : K V) (ch : V .i64) : Prog V L (V .i8) := do
@@ -150,36 +164,46 @@ def parseNumber (k : K V) (start : V .i64) : Prog V L (V .i64 × V .i64) := do
       return %[← iaddImm p 1, a'])
   return (e.head, e.snd)
 
-/-- Copy a name into the identifier buffer, stopping at the first space; the
-    result is the position of that space and the length written. -/
+/-- Copy a name into the identifier buffer, stopping at the first space, line
+    end or the text's end; the result is the position it stopped at and the
+    name's length. A name longer than the buffer keeps writing its last byte. -/
 def readName (k : K V) (start : V .i64) : Prog V L (V .i64 × V .i64) := do
   let e ← wloop2 start k.zero
     (head := fun p n => do
       let ch ← srcByte k p
-      return (exitIf .eq ch k.space, %[p, n], ch))
+      return (exitIf .ule ch k.space, %[p, n], ch))
     (body := fun p n ch => do
-      istore8 ch (← iadd k.identAddr n)
+      istore8 ch (← iadd k.identAddr (← umin n k.identLast))
       return %[← iaddImm p 1, ← iaddImm n 1])
   return (e.head, e.snd)
 
-/-- An identifier, looked up in the binding table. -/
-def readVar (k : K V) (start : V .i64) : Prog V L (V .i64 × V .i64) := do
+/-- An identifier, looked up in the binding table. One longer than the
+    identifier buffer is an error. -/
+def readVar (k : K V) (evalLbl : EvalLbl L) (start : V .i64) :
+    Prog V L (V .i64 × V .i64) := do
   let e ← wloop2 start k.zero
     (head := fun p n => do
       let ch ← srcByte k p
       return (contIf .ne (← isIdentCh k ch) k.z8, %[p, n], ch))
     (body := fun p n ch => do
-      istore8 ch (← iadd k.identAddr n)
+      istore8 ch (← iadd k.identAddr (← umin n k.identLast))
       return %[← iaddImm p 1, ← iaddImm n 1])
-  let _ ← ffi fnHtLookup
-    %[k.ctx, k.identAddr, ← ireduce32 (e.snd), k.htValAddr]
-  return (e.head, ← load64 k.htValAddr)
+  let v ← ifte .ugt (e.snd) k.identSz (failWith evalLbl k) (do
+    let _ ← ffi fnHtLookup
+      %[k.ctx, k.identAddr, ← ireduce32 (e.snd), k.htValAddr]
+    return %[← load64 k.htValAddr])
+  return (e.head, v.head)
 
-/-- Bind the identifier buffer's first `len` bytes to `value`. -/
-def bindName (k : K V) (len value : V .i64) : Prog V L Unit := do
-  store value k.htValAddr
-  ffiVoid fnHtInsert
-    %[k.ctx, k.identAddr, ← ireduce32 len, k.htValAddr, ← iconst32 8]
+/-- Bind the name at `namePos` in the source to `value`. The name is read again
+    here: the identifier buffer has held every name read since. -/
+def bindName (k : K V) (evalLbl : EvalLbl L) (namePos value : V .i64) :
+    Prog V L Unit := do
+  let (_, len) ← readName k namePos
+  let _ ← ifte .ugt len k.identSz (failWith evalLbl k) (do
+    store value k.htValAddr
+    ffiVoid fnHtInsert
+      %[k.ctx, k.identAddr, ← ireduce32 len, k.htValAddr, ← iconst32 8]
+    pure %[])
 
 /-- Scan a lambda body to its matching `)`, and yield the position after it. -/
 def scanToClose (k : K V) (start : V .i64) : Prog V L (V .i64) := do
@@ -188,6 +212,8 @@ def scanToClose (k : K V) (start : V .i64) : Prog V L (V .i64) := do
     (body := fun lbl p depth _ => do
       let ch ← srcByte k p
       let next ← iaddImm p 1
+      -- the text's end closes whatever is open
+      let _ ← ifte .eq ch k.zero (do brk lbl %[p]; pure %[]) (pure %[])
       let _ ← ifte .eq ch (← iconst64 41)
         (do
           let _ ← ifte .eq depth k.zero (do brk lbl %[next]; pure %[]) (pure %[])
@@ -261,11 +287,11 @@ def descend (k : K V) (evalLbl : EvalLbl L) (level pos sp : V .i64) :
   let atExpr ← ifte .eq level k.zero
     (do
       let p ← skipWs k pos
-      return %[p, ← pushFrame k sp k.zero k.zero k.zero])
+      return %[p, ← pushFrame k evalLbl sp k.zero k.zero k.zero])
     (return %[pos, sp])
   let pos1 := atExpr.head
   let atTerm ← ifte .ule level k.one
-    (do return %[← pushFrame k (atExpr.snd) k.one k.zero k.zero])
+    (do return %[← pushFrame k evalLbl (atExpr.snd) k.one k.zero k.zero])
     (return %[atExpr.snd])
   let sp1 := atTerm.head
   let pos2 ← skipWs k pos1
@@ -276,29 +302,31 @@ def descend (k : K V) (evalLbl : EvalLbl L) (level pos sp : V .i64) :
       return %[p, sp1, v, k.zero])
     (ifte .eq cls k.one
       (do
-        let (p, v) ← readVar k pos2
+        let (p, v) ← readVar k evalLbl pos2
         return %[p, sp1, v, k.zero])
       (ifte .eq cls k.c2
         (do
-          let sp2 ← pushFrame k sp1 k.c7 k.zero k.zero
+          let sp2 ← pushFrame k evalLbl sp1 k.c7 k.zero k.zero
           continueWith evalLbl %[k.zero, ← iaddImm pos2 1, sp2])
         (ifte .eq cls k.c3
           (do
             -- (fun <name> => <body>) <arg>
-            let (pName, len) ← readName k (← iaddImm pos2 5)
+            let namePos ← iaddImm pos2 5
+            let (pName, _) ← readName k namePos
             let pBody ← iaddImm pName 4
-            let sp2 ← pushFrame k sp1 k.c8 pBody len
+            let sp2 ← pushFrame k evalLbl sp1 k.c8 pBody namePos
             let pArg ← skipOptSpace k (← scanToClose k pBody)
-            let sp3 ← pushFrame k sp2 k.c9 k.zero k.zero
+            let sp3 ← pushFrame k evalLbl sp2 k.c9 k.zero k.zero
             continueWith evalLbl %[k.one, pArg, sp3])
           (ifte .eq cls k.c4
             (do
-              let (pName, len) ← readName k (← iaddImm pos2 4)
-              let sp2 ← pushFrame k sp1 k.c2 len k.zero
+              let namePos ← iaddImm pos2 4
+              let (pName, _) ← readName k namePos
+              let sp2 ← pushFrame k evalLbl sp1 k.c2 namePos k.zero
               continueWith evalLbl %[k.zero, ← iaddImm pName 4, sp2])
             (ifte .eq cls k.c5
               (do
-                let sp2 ← pushFrame k sp1 k.c4 k.zero k.zero
+                let sp2 ← pushFrame k evalLbl sp1 k.c4 k.zero k.zero
                 continueWith evalLbl %[k.zero, ← iaddImm pos2 3, sp2])
               (ifte .eq cls k.c6
                 (return %[← iaddImm pos2 4, sp1, k.one, k.one])
@@ -317,25 +345,25 @@ def exprOperator (k : K V) (evalLbl : EvalLbl L) (retLbl : RetLbl L)
   let ch ← srcByte k p
   let _ ← ifte .eq ch (← iconst64 43)
     (do
-      let sp' ← pushFrame k sp k.zero value k.one
+      let sp' ← pushFrame k evalLbl sp k.zero value k.one
       continueWith evalLbl %[k.one, ← skipOptSpace k (← iaddImm p 1), sp'])
     (ifte .eq ch (← iconst64 45)
       (do
-        let sp' ← pushFrame k sp k.zero value k.c2
+        let sp' ← pushFrame k evalLbl sp k.zero value k.c2
         continueWith evalLbl %[k.one, ← skipOptSpace k (← iaddImm p 1), sp'])
       (ifte .eq ch (← iconst64 60)
         (do
           let after ← iaddImm p 1
           let isEq ← icmp .eq (← srcByte k after) (← iconst64 61)
           let p1 ← select isEq (← iaddImm after 1) after
-          let sp' ← pushFrame k sp k.c10 value (← select isEq k.one k.zero)
+          let sp' ← pushFrame k evalLbl sp k.c10 value (← select isEq k.one k.zero)
           continueWith evalLbl %[k.one, ← skipOptSpace k p1, sp'])
         (ifte .eq ch (← iconst64 62)
           (do
             let after ← iaddImm p 1
             let isEq ← icmp .eq (← srcByte k after) (← iconst64 61)
             let p1 ← select isEq (← iaddImm after 1) after
-            let sp' ← pushFrame k sp k.c10 value (← select isEq k.c3 k.c2)
+            let sp' ← pushFrame k evalLbl sp k.c10 value (← select isEq k.c3 k.c2)
             continueWith evalLbl %[k.one, ← skipOptSpace k p1, sp'])
           (do continueWith retLbl %[p, sp, value, isBool]; pure %[]))))
 
@@ -345,7 +373,7 @@ def termOperator (k : K V) (evalLbl : EvalLbl L) (retLbl : RetLbl L)
   let p ← skipWs k pos
   let _ ← ifte .eq (← srcByte k p) (← iconst64 42)
     (do
-      let sp' ← pushFrame k sp k.one value k.one
+      let sp' ← pushFrame k evalLbl sp k.one value k.one
       continueWith evalLbl %[k.c2, ← skipOptSpace k (← iaddImm p 1), sp'])
     (do continueWith retLbl %[p, sp, value, isBool]; pure %[])
 
@@ -362,37 +390,44 @@ def compareBy (k : K V) (op left right : V .i64) : Prog V L (V .i64) := do
 -- Output
 -- ---------------------------------------------------------------------------
 
-/-- A literal string and its terminator, at the start of the output buffer. -/
-def writeCStr (k : K V) (s : String) : Prog V L Unit := do
+/-- Write the output buffer's first `len` bytes to the output file. -/
+def writeOut (k : K V) (len : V .i64) : Prog V L Unit := do
+  let _ ← writeFile0 k.ptr OUTPUT_PATH OUTPUT_BUF len
+
+/-- A literal string, written out. -/
+def writeText (k : K V) (s : String) : Prog V L Unit := do
   let mut i : Int := 0
   for b in s.toList.map (·.toNat) do
     istore8 (← iconst64 b) (← iaddImm k.outBufAddr i)
     i := i + 1
-  istore8 k.zero (← iaddImm k.outBufAddr i)
+  writeOut k (← iconst64 i.toNat)
 
-/-- The decimal form of `value`, most significant digit first. -/
+/-- The decimal form of `value` and a newline, written out: at most twenty
+    digits, so at most twenty-one trips, the last writing the newline. The largest power of ten not above the value is the one past which
+    a tenth of the value lies, so finding it never multiplies past 64 bits. -/
 def writeDecimal (k : K V) (value : V .i64) : Prog V L Unit := do
+  let tenth ← udiv value k.ten
   let top ← wloop1 k.one
-    (head := fun d => do
-      let next ← imul d k.ten
-      return (exitIf .ugt next value, %[d], next))
-    (body := fun _ next => return %[next])
-  let e ← wloopL %[value, k.zero, top.head]
-    (head := fun _ cs => return (exitIf .ne k.zero k.zero, %[cs.snd], ()))
+    (head := fun d => return (exitIf .ugt d tenth, %[d], ()))
+    (body := fun d _ => return %[← imul d k.ten])
+  let _ ← wloopL %[value, k.zero, top.head]
+    (head := fun _ cs => return (exitIf .uge cs.snd k.maxDigits, %[], ()))
     (body := fun lbl cs _ => do
       let rem := cs.head
       let outPos := cs.snd
       let div := cs.thd
-      let digit ← udiv rem div
-      istore8 (← iadd digit (← iconst64 48)) (← iadd k.outBufAddr outPos)
-      let rem' ← isub rem (← imul digit div)
-      let div' ← udiv div k.ten
-      let outPos' ← iaddImm outPos 1
-      let _ ← ifte .eq div' k.zero (do brk lbl %[outPos']; pure %[]) (pure %[])
-      return %[rem', outPos', div'])
-  let outPos := e.head
-  istore8 k.newline (← iadd k.outBufAddr outPos)
-  istore8 k.zero (← iadd k.outBufAddr (← iaddImm outPos 1))
+      -- the last digit written: the newline, and out
+      let _ ← ifte .eq div k.zero
+        (do
+          istore8 k.newline (← iadd k.outBufAddr outPos)
+          writeOut k (← iaddImm outPos 1)
+          brk lbl %[]; pure %[])
+        (do
+          let digit ← udiv rem div
+          istore8 (← iadd digit (← iconst64 48)) (← iadd k.outBufAddr outPos)
+          let rem' ← isub rem (← imul digit div)
+          continueWith lbl %[rem', ← iaddImm outPos 1, ← udiv div k.ten]; pure %[])
+      return cs)
 
 -- ---------------------------------------------------------------------------
 -- Main body
@@ -417,52 +452,51 @@ def mainCode : Prog V L Unit := do
   let frameSize ← iconst64 24
   let space ← iconst64 32
   let newline ← iconst64 10
-  let doneTag ← iconst64 255
   let srcAddr ← absAddr ptr SOURCE_BUF
   let identAddr ← absAddr ptr IDENT_BUF
   let htValAddr ← absAddr ptr HT_VAL_BUF
   let outBufAddr ← absAddr ptr OUTPUT_BUF
   let stackAddr ← absAddr ptr STACK_BASE
 
-  let _ ← readFile ptr INPUT_PATH SOURCE_BUF
+  -- one byte short of the buffer: its last byte stays zero, the text's end
+  let _ ← readFile ptr INPUT_PATH SOURCE_BUF (SOURCE_BUF_SZ - 1)
   let htSlotPtr ← absAddr ptr AlgorithmLib.ContextSlots.ht
   ffiVoid fnHtInit %[htSlotPtr]
   let ctx ← load64 htSlotPtr
   let _ ← ffi fnHtCreate %[ctx]
-
-  -- The bottom frame: reaching it means the whole expression is evaluated.
-  store doneTag stackAddr
-  store zero (← iaddImm stackAddr 8)
-  store zero (← iaddImm stackAddr 16)
 
   let k : K V := {
     ptr := ptr, z8 := z8, zero := zero, one := one,
     c2 := c2, c3 := c3, c4 := c4, c5 := c5, c6 := c6, c7 := c7,
     c8 := c8, c9 := c9, c10 := c10, ten := ten,
     frameSize := frameSize, space := space, newline := newline,
-    doneTag := doneTag, srcAddr := srcAddr, identAddr := identAddr,
+    srcLast := ← iconst64 (SOURCE_BUF_SZ - 1), identLast := ← iconst64 (IDENT_BUF_SZ - 1),
+    identSz := ← iconst64 IDENT_BUF_SZ, maxSp := ← iconst64 (STACK_SZ - 24),
+    popSpan := ← iconst64 (STACK_SZ - 48), maxDigits := ← iconst64 21,
+    srcAddr := srcAddr, identAddr := identAddr,
     htValAddr := htValAddr, outBufAddr := outBufAddr, stackAddr := stackAddr,
     ctx := ctx }
 
-  -- `#eval ` is six bytes; one frame is already pushed.
+  -- `#eval ` is six bytes; the bottom frame, at offset 0, is never written:
+  -- popping down to it is the end of the expression.
   let answer ← wloopL %[zero, ← iconst64 6, frameSize]
     (head := fun _ _ => return (exitIf .ne zero zero, %[zero, zero], ()))
     (body := fun evalLbl cs _ => do
       let atom ← descend k evalLbl cs.head cs.snd cs.thd
       let done ← wloopL %[atom.head, atom.snd, atom.thd, atom.fth]
         (head := fun _ rs => do
+          -- the frame popped is at `sp`, a whole frame inside the stack above
+          -- the bottom one; at the bottom (`sp` 0) the expression is done
           let sp ← isub (rs.snd) k.frameSize
+          return (exitIf .ugt (← isub sp k.frameSize) k.popSpan, %[rs.thd, rs.fth], sp))
+        (body := fun retLbl rs sp => do
+          let pos := rs.head
+          let value := rs.thd
+          let isBool := rs.fth
           let fa ← iadd k.stackAddr sp
           let tag ← load64 fa
           let savedVal ← load64 (← iaddImm fa 8)
           let savedExtra ← load64 (← iaddImm fa 16)
-          return (exitIf .eq tag k.doneTag, %[rs.thd, rs.fth],
-                  (sp, tag, savedVal, savedExtra)))
-        (body := fun retLbl rs x => do
-          let pos := rs.head
-          let value := rs.thd
-          let isBool := rs.fth
-          let (sp, tag, savedVal, savedExtra) := x
           let _ ← ifte .eq tag k.zero
             (do
               -- expression frame: extra 0 is the first term, 1 add, 2 subtract
@@ -483,10 +517,10 @@ def mainCode : Prog V L Unit := do
               (ifte .eq tag k.c2
                 (do
                   -- let: bind the name, then evaluate the body
-                  bindName k savedVal value
+                  bindName k evalLbl savedVal value
                   let semi ← icmp .eq (← srcByte k pos) (← iconst64 59)
                   let p ← select semi (← iaddImm pos 1) pos
-                  let sp' ← pushFrame k sp k.c3 k.zero k.zero
+                  let sp' ← pushFrame k evalLbl sp k.c3 k.zero k.zero
                   continueWith evalLbl %[k.zero, p, sp'])
                 (ifte .eq tag k.c3
                   (do continueWith retLbl %[pos, sp, value, isBool]; pure %[])
@@ -494,12 +528,12 @@ def mainCode : Prog V L Unit := do
                     (do
                       -- if: the condition is in hand, evaluate the then-branch
                       let p ← iaddImm (← skipOptSpace k pos) 5
-                      let sp' ← pushFrame k sp k.c5 value k.zero
+                      let sp' ← pushFrame k evalLbl sp k.c5 value k.zero
                       continueWith evalLbl %[k.zero, p, sp'])
                     (ifte .eq tag k.c5
                       (do
                         let p ← iaddImm (← skipOptSpace k pos) 5
-                        let sp' ← pushFrame k sp k.c6 savedVal value
+                        let sp' ← pushFrame k evalLbl sp k.c6 savedVal value
                         continueWith evalLbl %[k.zero, p, sp'])
                       (ifte .eq tag k.c6
                         (do
@@ -516,8 +550,8 @@ def mainCode : Prog V L Unit := do
                             (do
                               -- the lambda's argument is evaluated: bind it and
                               -- run the body the frame remembered
-                              bindName k savedExtra value
-                              let sp' ← pushFrame k sp k.c3 k.zero k.zero
+                              bindName k evalLbl savedExtra value
+                              let sp' ← pushFrame k evalLbl sp k.c3 k.zero k.zero
                               continueWith evalLbl %[k.zero, savedVal, sp'])
                             (ifte .eq tag k.c9
                               (do continueWith retLbl %[pos, sp, value, isBool]; pure %[])
@@ -535,23 +569,13 @@ def mainCode : Prog V L Unit := do
 
   let value := answer.head
   let isBool := answer.snd
-  let _ ← ifte .ne isBool zero
-    (do
-      let _ ← ifte .ne value zero
-        (do
-          writeCStr k "true\n"
-          let _ ← writeFile0 ptr OUTPUT_PATH OUTPUT_BUF zero
-          pure %[])
-        (do
-          writeCStr k "false\n"
-          let _ ← writeFile0 ptr OUTPUT_PATH OUTPUT_BUF zero
-          pure %[])
-      pure %[])
-    (do
-      writeDecimal k value
-      let _ ← writeFile0 ptr OUTPUT_PATH OUTPUT_BUF zero
-      ffiVoid fnHtCleanup %[htSlotPtr]
-      pure %[])
+  -- `isBool` 1 is a boolean, 2 a source the machine could not run
+  let _ ← ifte .eq isBool c2 (do writeText k "error\n"; pure %[])
+    (ifte .ne isBool zero
+      (ifte .ne value zero (do writeText k "true\n"; pure %[])
+        (do writeText k "false\n"; pure %[]))
+      (do writeDecimal k value; pure %[]))
+  ffiVoid fnHtCleanup %[htSlotPtr]
 
 -- Deciding `wf` walks the whole body: deeper than the default recursion budget,
 -- and long enough that the kernel does not finish inside the default heartbeats.
@@ -610,8 +634,6 @@ def buildSetup (clif : List FuncData) : Artifact := {
   required_memory := buildPayload.length,
   initial_memory := buildPayload
 }
-
-def buildAlgorithm : UInt32 := IR.mainFnIdx
 
 end LeanEval
 

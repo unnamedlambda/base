@@ -1,12 +1,10 @@
 module
-public import Vit.Units
-meta import Vit.Units
-public import Vit.Algorithm
-meta import Vit.Algorithm
-public import AlgorithmLib.Host.Clif
-meta import AlgorithmLib.Host.Clif
 public import AlgorithmLib.Host.ClifCheck
 meta import AlgorithmLib.Host.ClifCheck
+public import Vit.Algorithm
+meta import Vit.Algorithm
+public import Vit.Units
+meta import Vit.Units
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -109,13 +107,13 @@ theorem vStep_entry_ok : EntryOk vStepBody = true := by native_decide
 
 open AlgorithmLib.IR AlgorithmLib.Clif AlgorithmLib.Clif.Check in
 /-- **The model's claims about the forward capture body are sound.** -/
-theorem vFwd_entry_sound {env' : AlgorithmLib.HProg.FnEnv}
+theorem vFwd_entry_sound {lc : AlgorithmLib.HProg.Sem.Locals}
     {s : AlgorithmLib.HProg.Blocks.BSt}
     {r : AlgorithmLib.HProg.Blocks.BSt × AlgorithmLib.HProg.Blocks.Next}
     {w : AlgorithmLib.HProg.Sem.World}
     (hsz : s.vals.size = (entryParams vFwdBody).length)
     (hpar : TypesAgree (entryTys vFwdBody) s.vals)
-    (hr : AlgorithmLib.HProg.Blocks.runInsts env' s (entryInsts vFwdBody) = .ok r w) :
+    (hr : AlgorithmLib.HProg.Blocks.runInsts lc s (entryInsts vFwdBody) = .ok r w) :
     Sound (tyRun (entryTys vFwdBody) (entryInsts vFwdBody)) r.1.vals
       (evalPure Env.empty (entryInsts vFwdBody)) :=
   sound_entry vFwd_entry_ok hsz hpar hr

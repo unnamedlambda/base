@@ -1,6 +1,5 @@
 import AlgorithmLib.Core.Artifact
 import AlgorithmLib.Surface.Layout
-
 /-!
 # Running an artifact from Lean
 

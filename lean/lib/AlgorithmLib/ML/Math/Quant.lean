@@ -1,6 +1,4 @@
 module
-public import AlgorithmLib.ML.Math.Grad
-meta import AlgorithmLib.ML.Math.Grad
 public import AlgorithmLib.ML.Math.TapeGrad
 meta import AlgorithmLib.ML.Math.TapeGrad
 import all Init.Data.Repr

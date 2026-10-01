@@ -1,12 +1,8 @@
 module
-public import AlgorithmLib.LZ4.WarpKernelProof
-meta import AlgorithmLib.LZ4.WarpKernelProof
-public import AlgorithmLib.LZ4.CoopWindowLeaf
-meta import AlgorithmLib.LZ4.CoopWindowLeaf
-public import AlgorithmLib.LZ4.CoopWindowRelaxed
-meta import AlgorithmLib.LZ4.CoopWindowRelaxed
 public import AlgorithmLib.LZ4.CoopCopyLeaf
 meta import AlgorithmLib.LZ4.CoopCopyLeaf
+public import AlgorithmLib.LZ4.CoopWindowRelaxed
+meta import AlgorithmLib.LZ4.CoopWindowRelaxed
 public import AlgorithmLib.LZ4.EmitContent
 meta import AlgorithmLib.LZ4.EmitContent
 import all AlgorithmLib.LZ4.WarpDSL

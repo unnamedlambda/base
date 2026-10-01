@@ -72,7 +72,15 @@ def unOps : List (R → Op) :=
   , (.fneg ·), (.fpromote ·), (.vhighBits ·), (Op.extractlane · 0)
   , (Op.fcvtFromSint .f32 ·), (Op.fcvtFromSint .f64 ·), (Op.fcvtToUint .i32 ·)
   , (Op.splat .f32x4 ·), (Op.splat .i8x16 ·), (Op.bitcast .i64 ·), (Op.bitcast .f32x4 ·)
-  , (Op.load { ty := .i64 } ·), (Op.load { ty := .f32 } ·) ]
+  , (Op.load { ty := .i64 } ·), (Op.load { ty := .f32 } ·)
+  , (Op.load { kind := .uload16, ty := .i32 } ·), (Op.load { kind := .sload16, ty := .i64 } ·)
+  , (Op.load { kind := .sload32, ty := .i64 } ·) ]
+  ++ ([.bnot, .iabs, .clz, .bswap, .bitrev] : List IUn).map (fun k => (Op.iun k ·))
+  ++ ([.sqrt, .fabs, .ceil, .floor, .trunc, .nearest] : List FUn).map (fun k => (Op.fun1 k ·))
+  ++ [ (Op.fconv .toSint .i32 ·), (Op.fconv .toSint .i64 ·), (Op.fconv .fromUint .f32 ·)
+     , (Op.fconv .fromUint .f64 ·), (Op.fconv .demote .f32 ·)
+     , (Op.iext .reduce .i8 ·), (Op.iext .reduce .i16 ·), (Op.iext .uextend .i32 ·)
+     , (Op.iext .sextend .i16 ·), (Op.iext .sextend .i64 ·) ]
 
 def binOps : List (R → R → Op) :=
   [ (.iadd · ·), (.isub · ·), (.imul · ·), (.udiv · ·), (.ishl · ·), (.ushr · ·)
@@ -80,9 +88,13 @@ def binOps : List (R → R → Op) :=
   , (Op.icmp .eq · ·), (Op.icmp .slt · ·), (Op.icmp .ult · ·)
   , (.fadd · ·), (.fsub · ·), (.fmul · ·), (.fmax · ·), (.fmin · ·)
   , (Op.fcmp .lt · ·), (Op.fcmp .eq · ·) ]
+  ++ ([.sdiv, .urem, .srem, .smin, .smax, .umin, .umax, .umulhi, .smulhi] : List IBin).map
+       (fun k => (Op.ibin k · ·))
+  ++ ([.sshr, .rotl, .rotr] : List IShift).map (fun k => (Op.ishift k · ·))
+  ++ ([.fdiv, .fcopysign] : List FBin).map (fun k => (Op.fbin k · ·))
 
 def terOps : List (R → R → R → Op) :=
-  [ (.select · · ·), (.bitselect · · ·) ]
+  [ (.select · · ·), (.bitselect · · ·), (.fma · · ·) ]
 
 def unOk : Bool := unOps.all fun f => tys.all fun a => agrees [a] (f 0)
 

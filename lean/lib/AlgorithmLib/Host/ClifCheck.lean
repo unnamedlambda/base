@@ -42,18 +42,6 @@ open AlgorithmLib.Clif
 open AlgorithmLib.HProg.Sem
 open AlgorithmLib.HProg.Blocks
 
-/-- **The promise, as a decision.**  A reported constant must be the machine's
-    word read as a signed integer of its own width — the convention that makes
-    `sextend64` sound to pass a constant through and `uextend64` not.
-
-    A model value that is not `const` claims no number, so it passes.  So does
-    an instruction the machine gets stuck on: it never runs. -/
-def claimHolds (sym : SymVal) (conc : Option V) : Bool :=
-  match sym, conc with
-  | .const k, some (.sc t x) => signed t x == k
-  | .const _, some _         => false
-  | _,        _              => true
-
 /-- Every integer width the tracked fragment is emitted at. -/
 def types : List ClifTy := [.i8, .i16, .i32, .i64]
 
@@ -73,7 +61,7 @@ def sample : List Int :=
 -- ---------------------------------------------------------------------------
 
 /-- The roots a `DExp` names are SSA values; their valuation is the machine's
-    own word for them, read signed — the same convention `claimHolds` uses. -/
+    own word for them, read signed. -/
 def rhoOf (vs : Vals) : Nat → Int := fun k =>
   match getV vs ⟨k⟩ with
   | some (.sc t w) => signed t w
@@ -620,8 +608,7 @@ theorem signed_i64_mask (x : UInt64) :
     `constLit` reports `const v` only when `litOk` holds — the literal is
     inside the foldable range and its type is one of the two the model tracks.
     This says that when it does, the word `Sem.ofInt` builds for the same
-    literal reads back as exactly `v`, which is the claim `claimHolds` checks
-    over a corpus and this proves outright. -/
+    literal reads back as exactly `v`. -/
 theorem constLit_sound (t : ClifTy) (v : Int) (h : litOk t v = true) :
     ∃ x, ofInt t v = .sc t x ∧ signed t x = v := by
   have hf : inFold v = true := by
@@ -928,11 +915,10 @@ theorem signed_uextend64 {t : ClifTy} (ht : TrackedTy t) {a : UInt64} {k : Int}
 
 /-- **What a `const` claim owes the machine.**
 
-    `claimHolds` checks the middle clause alone — its `const` arm reads
-    `signed t x == k` with `t` unconstrained — so a narrow-typed constant would
-    have passed the corpus check.  It cannot arise, because `litOk` refuses
-    narrow literals and the retagging arms yield `i32` or `i64`, but that is a
-    fact about `stepPure` and belongs in the invariant rather than in a comment.
+    The value's type is tracked (`TrackedTy`): a narrow-typed constant cannot
+    arise, because `litOk` refuses narrow literals and the retagging arms yield
+    `i32` or `i64`, but that is a fact about `stepPure` and belongs in the
+    invariant rather than in a comment.
     `inFold k` is here for the same reason: every fold guards on it, and every
     arm below needs it of its operands. -/
 def Agree (vs : Vals) (e : Env) : Prop :=
@@ -1249,6 +1235,15 @@ theorem evalInst_load_inv {m : Mem} {vs : Vals} {d a dd : Val} {op : LoadOp} {x 
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
     case sload8 =>
       rcases hb : Mem.load m w 1 with _ | b <;> rw [hb] at h <;> simp at h
+      exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
+    case uload16 =>
+      rcases hb : Mem.load m w 2 with _ | b <;> rw [hb] at h <;> simp at h
+      exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
+    case sload16 =>
+      rcases hb : Mem.load m w 2 with _ | b <;> rw [hb] at h <;> simp at h
+      exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
+    case sload32 =>
+      rcases hb : Mem.load m w 4 with _ | b <;> rw [hb] at h <;> simp at h
       exact ⟨h.1.symm, _, by rw [← h.2]; rfl⟩
 
 /-- `addSym` reports a constant only by folding two of them. -/
@@ -1648,8 +1643,7 @@ theorem const_sound_load {m : Mem} {vs : Vals} {e : Env} {d dd a : Val}
 
     One step of the abstract interpretation preserves the promise: if every
     constant the model already claims is the machine's word read signed, then it
-    still is after the step. Proved rather than sampled, which is what retired
-    the corpus check this file used to carry for the same claim.
+    still is after the step. Proved for every step, not sampled.
 
     Nothing is claimed about `offset`, `slot` or `derived`: those describe
     provenance rather than a number, and each carries its own side condition —
@@ -2636,8 +2630,7 @@ theorem denotes_opaque_dest {vs : Vals} {e : Env} {i : Inst} {d : Val} {x : V}
 
     `Fresh` is what an SSA numbering gives, and it is a fact about the *text* of
     a block: destinations run upward from the value count the block entered
-    with.  `DestsFrom` says exactly that, decidably, so a run instantiated at a
-    shipped function discharges it by `decide` rather than by hypothesis. -/
+    with. -/
 
 /-- Binding a value grows the map to hold it and no further. -/
 theorem size_setV (vs : Vals) (d : Val) (x : V) :
@@ -2648,12 +2641,6 @@ theorem size_setV (vs : Vals) (d : Val) (x : V) :
   · rw [if_neg (Nat.not_lt.mpr h)]
     simp only [Array.size_append, Array.size_replicate]
     omega
-
-def DestsFrom (n : Nat) : List Inst → Bool
-  | []      => true
-  | i :: is => match Inst.destOf? i with
-               | some d => n ≤ d.id && DestsFrom (d.id + 1) is
-               | none   => DestsFrom n is
 
 /-! ### A partial static typing
 
@@ -3042,16 +3029,16 @@ theorem runOk_tail_nodest {Θ : TyEnv} {n : Nat} {i : Inst} {rest : List Inst}
 
     `RunOk` and `TermLast` are the only side conditions, and both are decided
     from the block's own text. -/
-theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEnv)
+theorem sound_runInsts : ∀ (is : List Inst) (lc : AlgorithmLib.HProg.Sem.Locals) (s : BSt) (Θ : TyEnv)
     (e : Env) (r : BSt × Next) (w : World),
     Sound Θ s.vals e → TermLast is = true → RunOk Θ s.vals.size is = true →
-    AlgorithmLib.HProg.Blocks.runInsts env s is = .ok r w →
+    AlgorithmLib.HProg.Blocks.runInsts lc s is = .ok r w →
     Sound (tyRun Θ is) r.1.vals (evalPure e is) := by
   intro is
   induction is with
   | nil => intro _ _ _ _ _ _ _ _ _ hr; exact absurd hr (by simp [AlgorithmLib.HProg.Blocks.runInsts])
   | cons i rest ih =>
-    intro env s Θ e r w hs hterm hok hr
+    intro lc s Θ e r w hs hterm hok hr
     -- the terminator arms: the machine stops, and `TermLast` says nothing follows
     have hlast : ∀ (_ : Inst.isTerm i = true), rest = [] := by
       intro hit
@@ -3059,10 +3046,20 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
       | nil => rfl
       | cons j rest' => simp [TermLast, hit] at hterm
     cases i with
-    | ret =>
+    | ret v =>
         rw [hlast rfl]
-        simp only [AlgorithmLib.HProg.Blocks.runInsts, Outcome.ok.injEq] at hr
-        rw [← hr.1]
+        have hr1 : r.1 = s := by
+          cases v with
+          | none =>
+              simp only [AlgorithmLib.HProg.Blocks.runInsts, Outcome.ok.injEq] at hr
+              rw [← hr.1]
+          | some x =>
+              simp only [AlgorithmLib.HProg.Blocks.runInsts] at hr
+              split at hr
+              · cases hr
+              · simp only [Outcome.ok.injEq] at hr
+                rw [← hr.1]
+        rw [hr1]
         simp only [tyRun, evalPure]
         exact sound_nodest hs (by simp [Inst.destOf?])
     | jump t args =>
@@ -3093,7 +3090,7 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
         · exact absurd hr (by simp)
         · rename_i s' hds
           have hv : s'.vals = s.vals := doStore_vals hds
-          exact ih env s' _ _ r w (by rw [hv]; exact sound_nodest hs hnd)
+          exact ih lc s' _ _ r w (by rw [hv]; exact sound_nodest hs hnd)
             (termLast_tail hterm) (by rw [hv]; exact runOk_tail_nodest hok hnd) hr
     | storeTyped t v a =>
         have hnd : Inst.destOf? (Inst.storeTyped t v a) = none := by simp [Inst.destOf?]
@@ -3103,7 +3100,7 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
         · exact absurd hr (by simp)
         · rename_i s' hds
           have hv : s'.vals = s.vals := doStore_vals hds
-          exact ih env s' _ _ r w (by rw [hv]; exact sound_nodest hs hnd)
+          exact ih lc s' _ _ r w (by rw [hv]; exact sound_nodest hs hnd)
             (termLast_tail hterm) (by rw [hv]; exact runOk_tail_nodest hok hnd) hr
     | istore8 v a =>
         have hnd : Inst.destOf? (Inst.istore8 v a) = none := by simp [Inst.destOf?]
@@ -3111,7 +3108,7 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
         simp only [tyRun, evalPure]
         split at hr
         · split at hr
-          · exact ih env _ _ _ r w (by exact sound_nodest hs hnd)
+          · exact ih lc _ _ _ r w (by exact sound_nodest hs hnd)
               (termLast_tail hterm) (by exact runOk_tail_nodest hok hnd) hr
           · exact absurd hr (by simp)
         · exact absurd hr (by simp)
@@ -3122,16 +3119,12 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
         · exact absurd hr (by simp)
         rename_i avs hargs
         split at hr
-        · exact absurd hr (by simp)
-        · exact absurd hr (by simp)
-        rename_i fn hcallee
-        split at hr
-        · exact absurd hr (by simp)
+        · exact absurd hr AlgorithmLib.HProg.Sem.failOf_ne_ok
         rename_i res w' hcall
         cases dopt with
         | none =>
             have hd : Inst.destOf? (Inst.call none fn args) = none := rfl
-            exact ih env _ _ _ r w (by exact sound_nodest hs hd)
+            exact ih lc _ _ _ r w (by exact sound_nodest hs hd)
               (termLast_tail hterm) (by exact runOk_tail_nodest hok hd) hr
         | some dv =>
             cases res with
@@ -3143,7 +3136,7 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
                 have hun : stepPure e (Inst.call (some dv) fn args) dv = SymVal.unknown :=
                   stepPure_untracked _ _ _ hd (by simp [Inst.TrackedB])
                 have hcl : tyStep Θ (Inst.call (some dv) fn args) = Θ.set dv none := rfl
-                exact ih env _ _ _ r w (by exact sound_opaque hs hf hd hun hcl)
+                exact ih lc _ _ _ r w (by exact sound_opaque hs hf hd hun hcl)
                   (termLast_tail hterm)
                   (by rw [show (setV s.vals dv rv).size = dv.id + 1 from size_setV_fresh hf]
                       exact hrest) hr
@@ -3156,7 +3149,7 @@ theorem sound_runInsts : ∀ (is : List Inst) (env : FnEnv) (s : BSt) (Θ : TyEn
           have hd := evalInst_dest hev
           obtain ⟨hle, hrest⟩ := runOk_tail_dest hok hd
           have hf : Fresh s.vals d := hle
-          exact ih env _ _ _ r w (by exact sound_step hs (runOk_head hok) hf hev)
+          exact ih lc _ _ _ r w (by exact sound_step hs (runOk_head hok) hf hev)
             (termLast_tail hterm)
             (by rw [show (setV s.vals d xv).size = d.id + 1 from size_setV_fresh hf]
                 exact hrest) hr
@@ -3310,15 +3303,15 @@ def EntryOk (f : FuncData) : Bool :=
     environment every later block inherits.  `EntryOk` is decided from the
     function's text; what is left is a statement about the caller — the machine
     entered with the parameters the compiled form declares. -/
-theorem sound_entry {f : FuncData} {env : FnEnv} {s : BSt}
+theorem sound_entry {f : FuncData} {lc : AlgorithmLib.HProg.Sem.Locals} {s : BSt}
     {r : BSt × Next} {w : World}
     (hok : EntryOk f = true) (hsz : s.vals.size = (entryParams f).length)
     (hpar : TypesAgree (entryTys f) s.vals)
-    (hr : AlgorithmLib.HProg.Blocks.runInsts env s (entryInsts f) = .ok r w) :
+    (hr : AlgorithmLib.HProg.Blocks.runInsts lc s (entryInsts f) = .ok r w) :
     Sound (tyRun (entryTys f) (entryInsts f)) r.1.vals
       (evalPure Env.empty (entryInsts f)) := by
   simp only [EntryOk, Bool.and_eq_true] at hok
-  exact sound_runInsts (entryInsts f) env s (entryTys f) Env.empty r w
+  exact sound_runInsts (entryInsts f) lc s (entryTys f) Env.empty r w
     ⟨agree_empty _, denotes_empty _, noBaseDerived_empty, hpar⟩
     hok.1 (by rw [hsz]; exact hok.2) hr
 

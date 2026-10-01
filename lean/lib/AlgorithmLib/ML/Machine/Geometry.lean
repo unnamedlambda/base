@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Kernel.Library
-meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Machine.WarpEmit
+meta import AlgorithmLib.ML.Machine.WarpEmit
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

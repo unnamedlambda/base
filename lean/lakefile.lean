@@ -8,60 +8,67 @@ package algorithms where
   -- Generator executables are build-time tools: their own runtime is
   -- irrelevant, and -O0 keeps a large emitted body from costing minutes in gcc.
   moreLeancArgs := #["-O0"]
-  -- The module system: a proof edit that leaves a module's public interface
-  -- alone does not rebuild the modules that import it.
   leanOptions := #[⟨`experimental.module, true⟩]
 
--- One library per directory: the algorithms by area, their proofs beside
--- them, and the scans that fail the build when a claim leaves its declared
--- surface. Each generator defines its own `main`, so no module imports two.
+-- One library per directory. All are default targets, so a bare `lake build`
+-- builds and checks everything, the scans included.
 
-@[default_target]
-lean_lib Bench where
-  globs := #[.submodules `Bench]
-
+-- Programs that ship as demos, each with the claims it makes.
 @[default_target]
 lean_lib Demo where
   globs := #[.submodules `Demo]
 
+-- Benchmark bodies: CPU, CUDA and the x86 bodies checked against GNU as.
+@[default_target]
+lean_lib Bench where
+  globs := #[.submodules `Bench]
+
+-- Host-language pilots, the conformance corpus, and the surface idioms.
 @[default_target]
 lean_lib Host where
   globs := #[.submodules `Host]
 
+-- Models on proven warp kernels: the demos, CIFAR, the wide backward pass.
 @[default_target]
 lean_lib Warp where
   globs := #[.submodules `Warp]
 
+-- Qwen2 inference: spec, proven kernels, plan, host, and the top claim.
 @[default_target]
 lean_lib Qwen2 where
   globs := #[.submodules `Qwen2]
 
+-- gpt-oss-20b: kernels, attention, the decode artifact.
 @[default_target]
 lean_lib GptOss where
   globs := #[.submodules `GptOss]
 
+-- The tokenizer and pre-tokenizer shared by Qwen2 and gpt-oss.
 @[default_target]
 lean_lib Tokenizer where
   globs := #[.submodules `Tokenizer]
 
+-- ViT: model, schedule, launches and their guards.
 @[default_target]
 lean_lib Vit where
   globs := #[.submodules `Vit]
 
+-- The LZ4 compressor artifact and its proof.
 @[default_target]
 lean_lib Lz4 where
   globs := #[.submodules `Lz4]
 
+-- The trust, ship and layout scans. Plain files: they read proof terms.
 @[default_target]
 lean_lib Scan where
   globs := #[.submodules `Scan]
 
--- Each generator's executable: it runs its algorithm module's `main`, so
--- algorithm modules can be imported together.
+-- The executables' roots, one line each; built by the executables that use them.
 lean_lib Main where
   globs := #[.submodules `Main]
 
--- Generators. Every `lean_exe` in this package is one: `main` takes a directory
+-- Generators. Every `lean_exe` in this package is one, rooted in `Main/`: its
+-- `main` calls the generator module's own, which takes a directory
 -- and writes `<name>.cbor` into it. `lake query algorithmLib/artifacts` builds
 -- and runs them (the target is in `lib/lakefile.lean`).
 lean_exe gencompressalgorithm where
@@ -130,12 +137,35 @@ lean_exe genmlpcifaralgorithm where
   root := `Main.Warp.MlpCifar
 lean_exe genwindowdemoalgorithm where
   root := `Main.Demo.WindowDemo
-
 lean_exe gentokenizertest where
   root := `Main.Tokenizer.Test
-
 lean_exe gengptossdecode where
   root := `Main.GptOss.Decode
-
 lean_exe gengptossalgorithm where
   root := `Main.GptOss.Algorithm
+lean_exe genhprogcudacorpus where
+  root := `Main.Host.CudaCorpus
+lean_exe genhprogdrivercorpus where
+  root := `Main.Host.DriverCorpus
+lean_exe genhprogserialcorpus where
+  root := `Main.Host.SerialCorpus
+lean_exe genhprogusbcorpus where
+  root := `Main.Host.UsbCorpus
+lean_exe genhprogcpucorpus where
+  root := `Main.Host.CpuCorpus
+lean_exe genhprogwgpucorpus where
+  root := `Main.Host.WgpuCorpus
+lean_exe genhprogpucorpus where
+  root := `Main.Host.GpuCorpus
+lean_exe genhprogstreamcorpus where
+  root := `Main.Host.StreamCorpus
+lean_exe genhproglmdbcorpus where
+  root := `Main.Host.LmdbCorpus
+lean_exe genhprogwindowcorpus where
+  root := `Main.Host.WindowCorpus
+lean_exe genhprognativecorpus where
+  root := `Main.Host.NativeCorpus
+lean_exe genhproglocalcorpus where
+  root := `Main.Host.LocalCorpus
+lean_exe genhprogthreadcorpus where
+  root := `Main.Host.ThreadCorpus

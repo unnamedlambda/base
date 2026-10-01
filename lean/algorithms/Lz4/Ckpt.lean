@@ -1,4 +1,6 @@
 module
+public import AlgorithmLib.LZ4.Checkpoint
+meta import AlgorithmLib.LZ4.Checkpoint
 public import Lz4.Splice
 meta import Lz4.Splice
 import all Init.Data.Repr

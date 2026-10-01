@@ -1,6 +1,5 @@
 import Scan.MlSurface
 import Warp.MlpCifar
-
 /-!
   # What the CIFAR classifier's claims rest on — computed, not documented
 

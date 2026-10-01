@@ -1,6 +1,5 @@
 import Scan.GptOssSurface
 import GptOss.Decode
-
 /-!
   # What the whole-model artifact claims, and what it only arranges
 

@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.LZ4
-meta import AlgorithmLib.LZ4
+public import AlgorithmLib.LZ4.Format
+meta import AlgorithmLib.LZ4.Format
 public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
 import all Init.Data.Repr

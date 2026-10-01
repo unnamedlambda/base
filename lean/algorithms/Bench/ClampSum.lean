@@ -1,7 +1,9 @@
 module
 public import Lean
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
+public import AlgorithmLib.Core.Artifact
+meta import AlgorithmLib.Core.Artifact
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -80,7 +82,9 @@ def code : Prog V L Unit := do
       let t    ← fmin x hi; let t' ← fmax t lo
       return %[← iaddImm i 4, ← fadd s (← fpromote t')])
 
-  store (d.head) outPtr
+  -- the answer only where the caller left room for it
+  when .ule (← iconst64 8) (← outLen) do
+    store (d.head) outPtr
 
 
 def clifIR : Except String (List FuncData) :=

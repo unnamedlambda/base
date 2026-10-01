@@ -1,7 +1,7 @@
 module
 public import Lean
-public import AlgorithmLib.Surface.FFI
-meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -100,6 +100,15 @@ inductive Op where
   | vhighBits (a : R)
   | bitcast (ty : ClifTy) (a : R)
   | load    (op : LoadOp) (a : R)
+  | ibin    (k : IBin) (a b : R)
+  | ishift  (k : IShift) (a b : R)
+  | iun     (k : IUn) (a : R)
+  | fbin    (k : FBin) (a b : R)
+  | fun1    (k : FUn) (a : R)
+  | fconv   (k : FConv) (ty : ClifTy) (a : R)
+  /-- `a * b + c`, rounded once. -/
+  | fma     (a b c : R)
+  | iext    (k : IExt) (ty : ClifTy) (a : R)
   deriving Repr
 
 /-- The slots an operation reads, in the order its CLIF instruction takes them.
@@ -112,12 +121,13 @@ def Op.regs : Op → List R
   | .ishl a b | .ushr a b | .band a b | .bandNot a b
   | .bor a b | .bxor a b | .icmp _ a b
   | .fadd a b | .fsub a b | .fmul a b | .fmax a b | .fmin a b
-  | .fcmp _ a b => [a, b]
+  | .fcmp _ a b | .ibin _ a b | .ishift _ a b | .fbin _ a b => [a, b]
+  | .iun _ a | .fun1 _ a | .fconv _ _ a | .iext _ _ a
   | .ineg a | .ctz a | .popcnt a | .ireduce32 a | .uextend64 a
   | .sextend64 a | .fneg a | .fpromote a | .vhighBits a
   | .fcvtFromSint _ a | .fcvtToUint _ a | .splat _ a
   | .extractlane a _ | .bitcast _ a | .load _ a => [a]
-  | .select c a b | .bitselect c a b => [c, a, b]
+  | .select c a b | .bitselect c a b | .fma c a b => [c, a, b]
 
 /-- An operation's name, for diagnostics.
 
@@ -143,6 +153,10 @@ def Op.name : Op → String
   | .splat _ _ => "splat" | .extractlane _ _ => "extractlane"
   | .vhighBits _ => "vhighBits" | .bitcast _ _ => "bitcast"
   | .load _ _ => "load"
+  | .ibin _ _ _ => "ibin" | .ishift _ _ _ => "ishift" | .iun _ _ => "iun"
+  | .fbin _ _ _ => "fbin" | .fun1 _ _ => "fun1" | .fconv _ _ _ => "fconv"
+  | .fma _ _ _ => "fma"
+  | .iext _ _ _ => "iext"
 
 /-- Statements. `op` and `call` define the next slot; the rest define nothing. -/
 inductive Stmt where
@@ -290,7 +304,7 @@ export _root_.AlgorithmLib.IR (FnEnv)
 
     Both the checker and the compiler key their slot maps on this, and both are
     reduced by the kernel: `wf` under the `decide` `emitChecked` runs,
-    `emitStmt` under the `rfl` steps `HProgBlocks` takes. So the recursion is
+    `emitStmt` under the `rfl` steps `Host.Blocks` takes. So the recursion is
     structural throughout — `get` on the tree, `set` on a fuel of `k + 1`,
     which is past what halving `k` can consume. -/
 inductive Trie (α : Type) where
@@ -409,10 +423,6 @@ def _root_.AlgorithmLib.IR.ClifTy.name : ClifTy → String
   | .i8 => "i8" | .i16 => "i16" | .i32 => "i32" | .i64 => "i64"
   | .f32 => "f32" | .f64 => "f64" | .f32x4 => "f32x4" | .i8x16 => "i8x16"
 
-/-- A type list, as diagnostics print it. -/
-def tyListName (ts : List ClifTy) : String :=
-  "[" ++ String.intercalate ", " (ts.map (·.name)) ++ "]"
-
 def _root_.AlgorithmLib.IR.ClifTy.isInt : ClifTy → Bool
   | .i8 | .i16 | .i32 | .i64 => true
   | _ => false
@@ -446,6 +456,28 @@ instance : Inhabited ClifTy := ⟨.i64⟩
 
 /-- Guard reading as a predicate on the checked type. -/
 def need (b : Bool) (t : ClifTy) : Option ClifTy := if b then some t else none
+
+/-- The operand and result types a conversion of `FConv` admits.
+
+    The integer side is `i32` or `i64`: Cranelift's verifier accepts a
+    saturating conversion to `i8`, and its x64 emitter then reaches
+    `unreachable!` on it, so the narrower widths would pass this check and
+    abort the JIT. -/
+def _root_.AlgorithmLib.IR.FConv.admits : FConv → ClifTy → ClifTy → Bool
+  | .toSint, ta, ty => ta.isFloat && ty.isInt && decide (ty.width ≥ 32)
+  | .fromUint, ta, ty => ta.isInt && decide (ta.width ≥ 32) && ty.isFloat
+  | .demote, ta, ty => ta == .f64 && ty == .f32
+
+/-- The operand and result types a width change admits: both integers, the
+    result strictly narrower for `reduce` and strictly wider otherwise. -/
+def _root_.AlgorithmLib.IR.IExt.admits : IExt → ClifTy → ClifTy → Bool
+  | .reduce, ta, ty => ta.isInt && ty.isInt && decide (ty.width < ta.width)
+  | _, ta, ty => ta.isInt && ty.isInt && decide (ta.width < ty.width)
+
+/-- The integer types a one-operand integer operation admits: every one but
+    `bswap`, which has no 8-bit form. -/
+def _root_.AlgorithmLib.IR.IUn.admits (k : IUn) (ta : ClifTy) : Bool :=
+  ta.isInt && (k != .bswap || decide (ta.width ≥ 16))
 
 /-- The type `o` yields, or `none` when an operand is out of scope, the operand
     types disagree, or the operation does not apply to them. -/
@@ -500,8 +532,9 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       else need (ta == tb && ta.isFloat) .i8
   | .fcvtFromSint ty a => do
       let ta ← Γ.get a; need (ta.isInt && ty.isFloat) ty
+  -- `i32` or `i64` only, for the reason `FConv.admits` gives.
   | .fcvtToUint ty a => do
-      let ta ← Γ.get a; need (ta.isFloat && ty.isInt) ty
+      let ta ← Γ.get a; need (ta.isFloat && ty.isInt && decide (ty.width ≥ 32)) ty
   | .splat ty a => do
       let ta ← Γ.get a; let (lane, _) ← ty.lanes
       need (ta == lane) ty
@@ -514,6 +547,26 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       let ta ← Γ.get a; need (ta.width == ty.width) ty
   | .load op a => do
       let ta ← Γ.get a; need (ta == .i64) op.ty
+  | .ibin _ a b => do
+      let ta ← Γ.get a; let tb ← Γ.get b
+      need (ta == tb && ta.isInt) ta
+  | .ishift _ a b => do
+      let ta ← Γ.get a; let tb ← Γ.get b
+      need (ta.isInt && tb.isInt) ta
+  | .iun k a => do
+      let ta ← Γ.get a; need (k.admits ta) ta
+  | .fbin _ a b => do
+      let ta ← Γ.get a; let tb ← Γ.get b
+      need (ta == tb && (ta.isFloat || ta.isFloatVec)) ta
+  | .fun1 _ a => do
+      let ta ← Γ.get a; need (ta.isFloat || ta.isFloatVec) ta
+  | .fma a b c => do
+      let ta ← Γ.get a; let tb ← Γ.get b; let tc ← Γ.get c
+      need (ta == tb && ta == tc && (ta.isFloat || ta.isFloatVec)) ta
+  | .fconv k ty a => do
+      let ta ← Γ.get a; need (k.admits ta ty) ty
+  | .iext k ty a => do
+      let ta ← Γ.get a; need (k.admits ta ty) ty
 
 /-- Every argument in scope and typed as the signature declares. -/
 def argsOk (Γ : TyEnv) (d : CalleeSig) (args : List R) : Bool :=
@@ -815,6 +868,15 @@ def scGo : Nat → List SLbl → Scope → Nat → List Piece → Option (Scope 
 def scopeOk (params : List ClifTy) (c : Code) : Bool :=
   (scGo fuel [] [(0, params.length)] params.length c).isSome
 
+/-- `scopeOk`, and the slot a body answers with is in scope where it ends. -/
+def retOk (params : List ClifTy) (c : Code) (status : Option R) : Bool :=
+  match scGo fuel [] [(0, params.length)] params.length c with
+  | none => false
+  | some (S', n') => status.all fun r => S'.mem r && decide (r < n')
+
+theorem retOk_none (params : List ClifTy) (c : Code) : retOk params c none = scopeOk params c := by
+  unfold retOk scopeOk; split <;> simp_all
+
 -- ---------------------------------------------------------------------------
 -- Observations
 -- ---------------------------------------------------------------------------
@@ -908,6 +970,14 @@ def emitStmt (s : CS) : Stmt → CS
         | .fneg a       => .fneg v (s.get a)
         | .fpromote a   => .fpromote v (s.get a)
         | .fcmp c a b   => .fcmp v c (s.get a) (s.get b)
+        | .ibin k a b   => .ibin v k (s.get a) (s.get b)
+        | .ishift k a b => .ishift v k (s.get a) (s.get b)
+        | .iun k a      => .iun v k (s.get a)
+        | .fbin k a b   => .fbin v k (s.get a) (s.get b)
+        | .fun1 k a     => .fun1 v k (s.get a)
+        | .fconv k t a  => .fconv v k t (s.get a)
+        | .fma a b c    => .fma v (s.get a) (s.get b) (s.get c)
+        | .iext k t a   => .iext v k t (s.get a)
         | .fcvtFromSint ty a => .fcvtFromSint v ty (s.get a)
         | .fcvtToUint ty a   => .fcvtToUint v ty (s.get a)
         | .splat ty a   => .splat v ty (s.get a)

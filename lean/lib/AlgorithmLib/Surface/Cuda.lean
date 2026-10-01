@@ -1,10 +1,10 @@
 module
-public import AlgorithmLib.Core.IR
-meta import AlgorithmLib.Core.IR
 public import AlgorithmLib.Surface.Layout
 meta import AlgorithmLib.Surface.Layout
 public import AlgorithmLib.Vocab.PTX
 meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -30,10 +30,6 @@ def Shape.staticElems? : Shape → Option Nat
   | []              => some 1
   | .sta n :: rest  => Option.map (· * n) (Shape.staticElems? rest)
   | .dyn   :: _     => none
-
-/-- Static byte size assuming f32 elements (4 bytes). -/
-def Shape.staticBytesF32? (s : Shape) : Option Nat :=
-  (Shape.staticElems? s).map (· * 4)
 
 /-- Pretty-printed shape for diagnostics. -/
 def Shape.render : Shape → String
@@ -191,14 +187,6 @@ def slotOf (s : Shape) : Layout.LayoutBuilder (BufferSlot s) := do
     migration: keep an existing offset constant while gaining typed load/store. -/
 def slotOfAt {s : Shape} (offset : Nat) : BufferSlot s := ⟨{ offset := offset }⟩
 
-/-- Reshape a tensor to a different shape with the same total element count.
-    No runtime cost; the proof obligation closes by `decide` when both shapes
-    are fully-static and evaluate to the same product. -/
-def reshape {s1 s2 : Shape} (t : Tensor s1)
-    (_h : Shape.staticElems? s1 = Shape.staticElems? s2 := by decide) : Tensor s2 :=
-  ⟨t.buf⟩
-
-
 end Tensor
 
 -- ---------------------------------------------------------------------------
@@ -230,23 +218,10 @@ end AlgorithmLib
 
 namespace AlgorithmLib.Layout
 
-/-- A 1-D array field — `count` cells, each `cellSize` bytes.  Provides
-    runtime-indexed offset access (`cellOffset`) and a static
-    `cellOffsetStatic` for compile-time-known indices. -/
+/-- A 1-D array field — `count` cells, each `cellSize` bytes, with
+    runtime-indexed offset access (`cellOffset`). -/
 structure ArrayFld (cellSize : Nat) (count : Nat) where
   offset : Nat
   deriving Repr
-
-/-- Allocate an `ArrayFld` (`count` cells of `cellSize` bytes each). -/
-def arrayField (cellSize : Nat) (count : Nat) : LayoutBuilder (ArrayFld cellSize count) :=
-  modifyGet fun s =>
-    let totalBytes := cellSize * count
-    let f : ArrayFld cellSize count := { offset := s.cursor }
-    let anyFld : AnyFld := { offset := s.cursor, ty := .bytes totalBytes }
-    (f, { fields := s.fields ++ [anyFld], cursor := s.cursor + totalBytes })
-
-/-- Static-index cell offset (compile-time `Nat` index). -/
-def ArrayFld.cellOffsetStatic (a : ArrayFld cs n) (i : Nat) : Nat :=
-  a.offset + i * cs
 
 end AlgorithmLib.Layout

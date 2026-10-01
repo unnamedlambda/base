@@ -1,4 +1,6 @@
 module
+public import AlgorithmLib.LZ4.Tight
+meta import AlgorithmLib.LZ4.Tight
 public import Lz4.Sites
 meta import Lz4.Sites
 import all Init.Data.Repr

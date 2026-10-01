@@ -1,22 +1,13 @@
 module
-public import Lz4.Kernel
-meta import Lz4.Kernel
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.LZ4.Suite
-meta import AlgorithmLib.LZ4.Suite
-public import AlgorithmLib.LZ4.SimtSerialize
-meta import AlgorithmLib.LZ4.SimtSerialize
-public import AlgorithmLib.LZ4.WarpKernel
-meta import AlgorithmLib.LZ4.WarpKernel
-public import AlgorithmLib.LZ4.CompTop
-meta import AlgorithmLib.LZ4.CompTop
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import Lz4.Kernel
+meta import Lz4.Kernel
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 open Lean (Json)
 open AlgorithmLib
@@ -67,8 +58,10 @@ def warpCodeAt (w : WP) (bo : Nat) : Prog V L Unit :=
     let _ ← forLoopAcc (← iconst64 rLaunches) (← iconst64 0) (fun _ acc => do
       let _ ← cudaLaunch ptr ptxOff nbufs bindOff g one32 one32 bk one32 one32
       pure acc)
-    let _ ← cudaDownloadRawOffset ptr inBuf (← iconst64 w.outOff) outPtr
-              (← iconst64 w.totOut)
+    -- the blocks, into a buffer with room for all of them
+    when .uge outLen (← iconst64 w.totOut) do
+      let _ ← cudaDownloadRawOffset ptr inBuf (← iconst64 w.outOff) outPtr
+                (← iconst64 w.totOut)
     cudaCleanup ptr
     -- The geometry this program was built for, after the blocks: a host checks
     -- its own against it, and prices a run by launches x bytes per launch. A

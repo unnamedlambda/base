@@ -1,10 +1,8 @@
 module
-public import Vit.Model
-meta import Vit.Model
 public import AlgorithmLib.ML.Model.RegBound
 meta import AlgorithmLib.ML.Model.RegBound
-public import AlgorithmLib.ML.Launch.Interchange
-meta import AlgorithmLib.ML.Launch.Interchange
+public import Vit.Model
+meta import Vit.Model
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

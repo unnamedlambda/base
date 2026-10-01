@@ -194,8 +194,7 @@ theorem vit_ptx_exact (u : List Nat) (hu : u ∈ vProvenUnits) (cta : Nat) (m : 
     floor, so its exponential underflows and the value it would have been
     multiplied by never reaches the output.
 
-    It used to be a number a host script wrote, agreed with by convention.  It
-    is now laid out into `initial_memory` from `TOK` and `SK` and uploaded from
+    It is laid out into `initial_memory` from `TOK` and `SK` and uploaded from
     there, so the claim is about the bytes that ship. -/
 theorem vit_mask_is_padding :
     vMaskWords.length = SK

@@ -1,6 +1,8 @@
 module
 public import AlgorithmLib.ML.Math.MultiLayer
 meta import AlgorithmLib.ML.Math.MultiLayer
+public import AlgorithmLib.ML.Math.Grad
+meta import AlgorithmLib.ML.Math.Grad
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -171,18 +173,10 @@ theorem Tele.env_append : ∀ {n m : Nat} (t : Tele Γ n) (u : Tele (Γ + n) m)
           · rw [extend_ge ((t.append u).env env) _ k (show ¬ (k.val < Γ + (n + m)) by omega),
                 extend_ge (u.env (t.env env)) _ (⟨k.val, by omega⟩ : Fin (Γ + n + m + 1)) hk]
 
-/-- Random access into a telescope: binding `i`, in the context it was written
-    in. -/
-def Tele.get : {n : Nat} → Tele Γ n → (i : Fin n) → Expr (Γ + i.val)
-  | 0,     .nil,      i => absurd i.isLt (by omega)
-  | n + 1, .cons t e, i =>
-      if h : i.val < n then Tele.get t ⟨i.val, h⟩
-      else castE (by have := i.isLt; omega) e
-
 /-- Binding `i`, weakened into the telescope's *full* context.
 
-    `Tele.get` returns the binding in the context it was written in, which then
-    needs a cast at every use.  `getW` weakens instead — and weakens by exactly
+    The binding in the context it was written in would need a cast at every
+    use.  `getW` weakens instead — and weakens by exactly
     one `wk` per `cons`, so an induction on the telescope meets `sderiv`'s
     interaction with `wk` (`sderiv_wk`) rather than with an arbitrary cast.
     That single choice is what keeps the correctness proof free of transport. -/

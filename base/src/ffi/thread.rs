@@ -1,116 +1,64 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+//! Starting and finishing an OS thread that runs one of the program's own
+//! functions.
+//!
+//! Two stateless calls. `cl_thread_start` runs function `fn_index` of the
+//! program on a new thread, handing it one pointer, and answers the thread as
+//! an owned handle; `cl_thread_finish` waits for that thread and releases the
+//! handle, once. Which handles are live, and which of them a program may still
+//! finish, is the program's to keep: `Lib.Thread` keeps it in CLIF. What stays
+//! here is the one part only the engine can do, finding the function's code in
+//! the table the JIT built.
 
-use super::{clear_ctx_slot, read_ctx_mut, read_ctx_ref, write_ctx_slot};
+use std::thread::JoinHandle;
+
 use crate::jit::{Compiled, THREAD_COMPILED_FNS};
 
-/// A spawned or directly called worker takes the one pointer the call site
-/// supplies and nothing else. That pointer is whatever the program passed to
-/// `cl_thread_spawn`, so a worker is a function in the table whose entry block
-/// declares a single parameter.
 type Worker = unsafe extern "C" fn(*mut u8);
 
-pub(crate) struct CraneliftThreadContext {
-    threads: HashMap<u32, std::thread::JoinHandle<()>>,
-    next_handle: u32,
-    compiled_fns: Arc<Vec<Compiled>>,
-}
-
-/// Leaves the slot null when the JIT has not installed the function table,
-/// rather than panicking out of an `extern "C"` frame — which the compiler's
-/// abort shim turns into a dead process. Every other entry point already
-/// answers `-1` on a null context, so the slot itself carries the failure.
-pub(crate) unsafe extern "C" fn cl_thread_init(ctx_slot_ptr: *mut *mut CraneliftThreadContext) {
-    let Some(compiled_fns) = THREAD_COMPILED_FNS.with(|cell| cell.borrow().clone()) else {
-        let _ = write_ctx_slot(ctx_slot_ptr, std::ptr::null_mut());
-        return;
-    };
-    let ctx = Box::new(CraneliftThreadContext {
-        threads: HashMap::new(),
-        next_handle: 1,
-        compiled_fns,
-    });
-    let raw = Box::into_raw(ctx);
-    if !write_ctx_slot(ctx_slot_ptr, raw) {
-        drop(Box::from_raw(raw));
-    }
-}
-
-/// The function at `fn_index`, if it is shaped like a worker: one argument and
-/// no answer. Anything else would be called with registers it reads but was
-/// never given.
+/// The code of function `fn_index`, when it is shaped like a worker: one
+/// pointer in, nothing out. Anything else would read registers nobody set.
 unsafe fn worker(fns: &[Compiled], fn_index: i64) -> Option<Worker> {
     let f = fns.get(usize::try_from(fn_index).ok()?)?;
     (f.arity == 1 && !f.answers).then(|| std::mem::transmute::<*const u8, Worker>(f.addr))
 }
 
-pub(crate) unsafe extern "C" fn cl_thread_spawn(
-    ctx_ptr: *mut CraneliftThreadContext,
-    fn_index: i64,
-    thread_ptr: *mut u8,
-) -> i64 {
-    let Some(ctx) = read_ctx_mut::<CraneliftThreadContext>(ctx_ptr) else {
+/// Run function `fn_index` on `arg` on a new thread: the thread as a handle,
+/// or `-1` when there is no such worker or no thread could be made.
+pub(crate) unsafe extern "C" fn cl_thread_start(fn_index: i64, arg: *mut u8) -> i64 {
+    let Some(fns) = THREAD_COMPILED_FNS.with(|cell| cell.borrow().clone()) else {
         return -1;
     };
-    let Some(func) = worker(&ctx.compiled_fns, fn_index) else {
+    let Some(func) = worker(&fns, fn_index) else {
         return -1;
     };
-    let thread_arg = thread_ptr as usize;
-    let handle_id = ctx.next_handle;
-    ctx.next_handle += 1;
-
-    let compiled_fns_clone = ctx.compiled_fns.clone();
-    let join = std::thread::spawn(move || {
-        THREAD_COMPILED_FNS.with(|cell| {
-            *cell.borrow_mut() = Some(compiled_fns_clone);
-        });
-        func(thread_arg as *mut u8);
+    let arg = arg as usize;
+    let spawned = std::thread::Builder::new().spawn(move || {
+        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(fns));
+        func(arg as *mut u8);
     });
-
-    ctx.threads.insert(handle_id, join);
-    handle_id as i64
-}
-
-pub(crate) unsafe extern "C" fn cl_thread_join(
-    ctx_ptr: *mut CraneliftThreadContext,
-    handle: i64,
-) -> i64 {
-    let Some(ctx) = read_ctx_mut::<CraneliftThreadContext>(ctx_ptr) else {
-        return -1;
-    };
-    if let Some(join) = ctx.threads.remove(&(handle as u32)) {
-        match join.join() {
-            Ok(_) => 0,
-            Err(_) => -1,
-        }
-    } else {
-        -1
+    match spawned {
+        Ok(join) => Box::into_raw(Box::new(join)) as i64,
+        Err(_) => -1,
     }
 }
 
-pub(crate) unsafe extern "C" fn cl_thread_cleanup(ctx_slot_ptr: *mut *mut CraneliftThreadContext) {
-    let ctx_ptr = clear_ctx_slot::<CraneliftThreadContext>(ctx_slot_ptr);
-    if !ctx_ptr.is_null() {
-        let mut ctx = Box::from_raw(ctx_ptr);
-        for (_, join) in ctx.threads.drain() {
-            let _ = join.join();
-        }
+/// Wait for the thread `handle` names and release it: `0`, or `-1` when it
+/// panicked or `handle` is not one. A handle may be finished once.
+pub(crate) unsafe extern "C" fn cl_thread_finish(handle: i64) -> i64 {
+    if handle == 0 || handle == -1 {
+        return -1;
+    }
+    let join = Box::from_raw(handle as *mut JoinHandle<()>);
+    match join.join() {
+        Ok(()) => 0,
+        Err(_) => -1,
     }
 }
 
-pub(crate) unsafe extern "C" fn cl_thread_call(
-    ctx_ptr: *const CraneliftThreadContext,
-    fn_index: i64,
-    arg_ptr: *mut u8,
-) -> i64 {
-    let Some(ctx) = read_ctx_ref::<CraneliftThreadContext>(ctx_ptr) else {
-        return -1;
-    };
-    let Some(func) = worker(&ctx.compiled_fns, fn_index) else {
-        return -1;
-    };
-    func(arg_ptr);
-    0
+/// The table the JIT installs, for a caller outside an `execute`.
+#[cfg(test)]
+fn install(fns: Vec<Compiled>) {
+    THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(std::sync::Arc::new(fns)));
 }
 
 #[cfg(test)]
@@ -120,245 +68,63 @@ mod tests {
     unsafe extern "C" fn write_42(p: *mut u8) {
         *(p as *mut u64) = 42;
     }
-    unsafe extern "C" fn write_99(p: *mut u8) {
-        *(p as *mut u64) = 99;
-    }
-    unsafe extern "C" fn write_88(p: *mut u8) {
-        *(p as *mut u64) = 88;
-    }
+
     unsafe extern "C" fn slow_write_77(p: *mut u8) {
         std::thread::sleep(std::time::Duration::from_millis(20));
         *(p as *mut u64) = 77;
     }
 
-    fn install_fns(fns: Vec<Worker>) {
-        let table: Vec<Compiled> = fns
-            .into_iter()
-            .map(|f| Compiled {
-                addr: f as *const u8,
-                arity: 1,
-                answers: false,
-            })
-            .collect();
-        THREAD_COMPILED_FNS.with(|cell| {
-            *cell.borrow_mut() = Some(Arc::new(table));
-        });
+    fn table(fns: &[Worker]) -> Vec<Compiled> {
+        fns.iter().map(|f| Compiled { addr: *f as *const u8, arity: 1, answers: false }).collect()
     }
 
-    /// Cleanup twice, and on a slot that was never initialised.
-    ///
-    /// `clear_ctx_slot` answers null in both cases, and this used to hand that
-    /// null straight to `Box::from_raw`.
     #[test]
-    fn cleanup_twice_and_uninitialised_is_safe() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        unsafe {
-            cl_thread_init(&mut slot);
-            assert!(!slot.is_null());
-            cl_thread_cleanup(&mut slot);
-            assert!(slot.is_null());
-            cl_thread_cleanup(&mut slot);
-            let mut fresh: *mut CraneliftThreadContext = std::ptr::null_mut();
-            cl_thread_cleanup(&mut fresh);
-        }
-    }
-
-    /// Init with no function table installed leaves the slot null and does not
-    /// abort. Every entry point then answers `-1`.
-    #[test]
-    fn init_without_compiled_fns_leaves_slot_null() {
-        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = None);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        unsafe {
-            cl_thread_init(&mut slot);
-            assert!(slot.is_null());
-            assert_eq!(cl_thread_call(slot, 0, std::ptr::null_mut()), -1);
-            assert_eq!(cl_thread_spawn(slot, 0, std::ptr::null_mut()), -1);
-            cl_thread_cleanup(&mut slot);
-        }
-    }
-
-    /// An entry point takes five arguments; spawned as a worker it would read
-    /// four registers nobody set. Neither spawn nor call runs it.
-    #[test]
-    fn a_function_not_shaped_like_a_worker_is_refused() {
-        let table = vec![
-            Compiled { addr: write_42 as *const u8, arity: 5, answers: false },
-            Compiled { addr: write_42 as *const u8, arity: 1, answers: true },
-        ];
-        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = Some(Arc::new(table)));
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+    fn start_then_finish_runs_the_worker() {
+        install(table(&[write_42]));
         let mut val: u64 = 0;
         unsafe {
-            cl_thread_init(&mut slot);
-            for idx in [0, 1, -1] {
-                let arg = &mut val as *mut u64 as *mut u8;
-                assert_eq!(cl_thread_spawn(slot, idx, arg), -1);
-                assert_eq!(cl_thread_call(slot, idx, arg), -1);
+            let h = cl_thread_start(0, &mut val as *mut u64 as *mut u8);
+            assert!(h != -1 && h != 0);
+            assert_eq!(cl_thread_finish(h), 0);
+        }
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn finish_waits_for_the_worker() {
+        install(table(&[slow_write_77]));
+        let mut val: u64 = 0;
+        unsafe {
+            let h = cl_thread_start(0, &mut val as *mut u64 as *mut u8);
+            assert_eq!(cl_thread_finish(h), 0);
+        }
+        assert_eq!(val, 77);
+    }
+
+    /// A function not shaped like a worker, or no function at all, is refused
+    /// and nothing runs.
+    #[test]
+    fn a_function_not_shaped_like_a_worker_is_refused() {
+        install(vec![
+            Compiled { addr: write_42 as *const u8, arity: 5, answers: false },
+            Compiled { addr: write_42 as *const u8, arity: 1, answers: true },
+        ]);
+        let mut val: u64 = 0;
+        unsafe {
+            for idx in [0, 1, 2, -1] {
+                assert_eq!(cl_thread_start(idx, &mut val as *mut u64 as *mut u8), -1);
             }
-            cl_thread_cleanup(&mut slot);
+            assert_eq!(cl_thread_finish(-1), -1);
+            assert_eq!(cl_thread_finish(0), -1);
         }
         assert_eq!(val, 0);
     }
 
     #[test]
-    fn init_then_cleanup_lifecycle() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
+    fn no_table_no_thread() {
+        THREAD_COMPILED_FNS.with(|cell| *cell.borrow_mut() = None);
         unsafe {
-            cl_thread_init(&mut slot);
-            assert!(!slot.is_null());
-            cl_thread_cleanup(&mut slot);
-            assert!(slot.is_null());
-        }
-    }
-
-    #[test]
-    fn spawn_then_join_executes_fn() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        let mut val: u64 = 0;
-        unsafe {
-            cl_thread_init(&mut slot);
-            let h = cl_thread_spawn(slot, 0, &mut val as *mut u64 as *mut u8);
-            assert!(h > 0);
-            assert_eq!(cl_thread_join(slot, h), 0);
-            cl_thread_cleanup(&mut slot);
-        }
-        assert_eq!(val, 42);
-    }
-
-    #[test]
-    fn multiple_workers_run_in_parallel() {
-        install_fns(vec![write_42, write_99, write_88]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        let mut v0: u64 = 0;
-        let mut v1: u64 = 0;
-        let mut v2: u64 = 0;
-        unsafe {
-            cl_thread_init(&mut slot);
-            let h0 = cl_thread_spawn(slot, 0, &mut v0 as *mut u64 as *mut u8);
-            let h1 = cl_thread_spawn(slot, 1, &mut v1 as *mut u64 as *mut u8);
-            let h2 = cl_thread_spawn(slot, 2, &mut v2 as *mut u64 as *mut u8);
-            assert!(h0 > 0 && h1 > 0 && h2 > 0);
-            assert!(h0 != h1 && h1 != h2 && h0 != h2);
-            assert_eq!(cl_thread_join(slot, h0), 0);
-            assert_eq!(cl_thread_join(slot, h1), 0);
-            assert_eq!(cl_thread_join(slot, h2), 0);
-            cl_thread_cleanup(&mut slot);
-        }
-        assert_eq!(v0, 42);
-        assert_eq!(v1, 99);
-        assert_eq!(v2, 88);
-    }
-
-    #[test]
-    fn join_invalid_handle_returns_neg1() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        unsafe {
-            cl_thread_init(&mut slot);
-            assert_eq!(cl_thread_join(slot, 999), -1);
-            cl_thread_cleanup(&mut slot);
-        }
-    }
-
-    #[test]
-    fn double_join_returns_neg1_second_time() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        let mut val: u64 = 0;
-        unsafe {
-            cl_thread_init(&mut slot);
-            let h = cl_thread_spawn(slot, 0, &mut val as *mut u64 as *mut u8);
-            assert_eq!(cl_thread_join(slot, h), 0);
-            assert_eq!(cl_thread_join(slot, h), -1);
-            cl_thread_cleanup(&mut slot);
-        }
-    }
-
-    #[test]
-    fn spawn_oob_fn_index_returns_neg1() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        let mut val: u64 = 0;
-        unsafe {
-            cl_thread_init(&mut slot);
-            assert_eq!(
-                cl_thread_spawn(slot, 5, &mut val as *mut u64 as *mut u8),
-                -1
-            );
-            assert_eq!(
-                cl_thread_spawn(slot, -1, &mut val as *mut u64 as *mut u8),
-                -1
-            );
-            cl_thread_cleanup(&mut slot);
-        }
-    }
-
-    #[test]
-    fn cleanup_joins_unjoined_threads() {
-        install_fns(vec![slow_write_77]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        let mut val: u64 = 0;
-        unsafe {
-            cl_thread_init(&mut slot);
-            let h = cl_thread_spawn(slot, 0, &mut val as *mut u64 as *mut u8);
-            assert!(h > 0);
-            // do NOT join — cleanup must wait for it.
-            cl_thread_cleanup(&mut slot);
-        }
-        assert_eq!(val, 77, "cleanup should have waited for the worker");
-    }
-
-    #[test]
-    fn call_runs_fn_inline_on_current_thread() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        let mut val: u64 = 0;
-        unsafe {
-            cl_thread_init(&mut slot);
-            let rc = cl_thread_call(slot, 0, &mut val as *mut u64 as *mut u8);
-            assert_eq!(rc, 0);
-            cl_thread_cleanup(&mut slot);
-        }
-        assert_eq!(val, 42);
-    }
-
-    #[test]
-    fn call_oob_fn_index_returns_neg1() {
-        install_fns(vec![write_42]);
-        let mut slot: *mut CraneliftThreadContext = std::ptr::null_mut();
-        let mut val: u64 = 0;
-        unsafe {
-            cl_thread_init(&mut slot);
-            assert_eq!(
-                cl_thread_call(slot, 5, &mut val as *mut u64 as *mut u8),
-                -1
-            );
-            cl_thread_cleanup(&mut slot);
-        }
-    }
-
-    #[test]
-    fn null_ctx_pointers_return_neg1() {
-        let null_ctx = std::ptr::null_mut::<CraneliftThreadContext>();
-        let mut val: u64 = 0;
-        unsafe {
-            assert_eq!(
-                cl_thread_spawn(null_ctx, 0, &mut val as *mut u64 as *mut u8),
-                -1
-            );
-            assert_eq!(cl_thread_join(null_ctx, 1), -1);
-            assert_eq!(
-                cl_thread_call(
-                    null_ctx as *const _,
-                    0,
-                    &mut val as *mut u64 as *mut u8
-                ),
-                -1
-            );
+            assert_eq!(cl_thread_start(0, std::ptr::null_mut()), -1);
         }
     }
 }

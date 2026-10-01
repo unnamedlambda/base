@@ -1,14 +1,13 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 open Lean (Json)
 open AlgorithmLib
@@ -204,10 +203,6 @@ def storeScratchByteDyn (ptr baseIdx depth value : V .i64) : Prog V L Unit := do
 def storeOutputByte (ptr idx value : V .i64) : Prog V L Unit :=
   storeByteAt ptr f.output.offset idx value
 
-def storeOutputByteFrom (ptr base idx value : V .i64) : Prog V L Unit := do
-  let outIdx ← iadd base idx
-  storeOutputByte ptr outIdx value
-
 def loadOutputByte (ptr idx : V .i64) : Prog V L (V .i64) :=
   loadByteAt ptr f.output.offset idx
 
@@ -273,9 +268,6 @@ def emitIsVarChar (ch : V .i64) : Prog V L (V .i8) := do
   let geA ← icmp .uge ch a
   let leZ ← icmp .ule ch z
   band geA leZ
-
-def loadVarPresent (ptr idx : V .i64) : Prog V L (V .i64) :=
-  loadByteAt ptr f.varPresent.offset idx
 
 def storeVarPresent (ptr idx value : V .i64) : Prog V L Unit :=
   storeByteAt ptr f.varPresent.offset idx value
@@ -509,75 +501,6 @@ def emitAccFromVar (ptr varIdx : V .i64) : Prog V L Unit := do
   let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
   let varBuf ← ireduce32 (← loadVarBufId ptr varIdx)
   emitCudaLaunchAdd ptr zeroBuf varBuf accBuf
-
-def emitTermToLiteralBuf (ptr value : V .i64) : Prog V L (V .i32) := do
-  let litBuf64 ← fldLoad ptr f.litBuf
-  let litBuf ← ireduce32 litBuf64
-  emitUploadLiteralToBuf ptr litBuf value
-  pure litBuf
-
-/-- A term: `(isVar, value-or-variable-index, position after it)`. -/
-def emitTermParse (ptr start len : V .i64) : Prog V L (V .i64 × V .i64 × V .i64) := do
-  let zero ← iconst64 0
-  let z8 ← iconst .i8 0
-  let pos0 ← emitSkipWs ptr start len
-
-  let r ← ifte .uge pos0 len (pure %[zero, zero, pos0]) do
-    let ch ← loadInputByte ptr pos0
-    let isVar ← emitIsVarChar ch
-    let a ← iconst64 asciiA
-    let idx ← isub ch a
-    ifte .ne isVar z8
-      (do
-        let one ← iconst64 1
-        return %[one, idx, ← iadd pos0 one])
-      (do
-        let (v, p) ← emitParseInt ptr pos0 len
-        return %[zero, v, p])
-  return (r.head, r.snd, r.thd)
-
-def emitParseAddChain (ptr start len : V .i64) : Prog V L Unit := do
-  let zero ← iconst64 0
-  let one ← iconst64 1
-  let plus ← iconst64 asciiPlus
-  let sp ← iconst64 asciiSpace
-  let nl ← iconst64 asciiNewline
-
-  let (firstIsVar, firstPayload, pos1) ← emitTermParse ptr start len
-  let _ ← ifte .ne firstIsVar zero
-    (do emitAccFromVar ptr firstPayload; pure %[])
-    (do emitAccFromLiteral ptr firstPayload; pure %[])
-
-  -- Separators are skipped one at a time; a `+` takes the next term into the
-  -- accumulator, and anything else ends the chain.
-  let _ ← wloop2L one pos1
-    (head := fun _ _ pos => return (contIfULt pos len, %[], ()))
-    (body := fun lbl haveAcc pos _ => do
-      let ch ← loadInputByte ptr pos
-      let nextPos ← iadd pos one
-      when .eq ch sp (continueWith lbl %[haveAcc, nextPos])
-      when .eq ch nl (continueWith lbl %[haveAcc, nextPos])
-      when .ne ch plus (brk lbl %[])
-      let (termIsVar, termPayload, termEnd) ← emitTermParse ptr nextPos len
-      let _ ← ifte .ne termIsVar zero
-        (do
-          let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
-          let outBuf ← ireduce32 (← fldLoad ptr f.outBuf)
-          let rhsBuf ← ireduce32 (← loadVarBufId ptr termPayload)
-          emitCudaLaunchAdd ptr accBuf rhsBuf outBuf
-          let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
-          emitCudaLaunchAdd ptr zeroBuf outBuf accBuf
-          pure %[])
-        (do
-          let litBuf ← emitTermToLiteralBuf ptr termPayload
-          let accBuf ← ireduce32 (← fldLoad ptr f.accBuf)
-          let outBuf ← ireduce32 (← fldLoad ptr f.outBuf)
-          emitCudaLaunchAdd ptr accBuf litBuf outBuf
-          let zeroBuf ← ireduce32 (← fldLoad ptr f.zeroBuf)
-          emitCudaLaunchAdd ptr zeroBuf outBuf accBuf
-          pure %[])
-      return %[haveAcc, termEnd])
-  pure ()
 
 def emitDownloadAccToResult (ptr : V .i64) : Prog V L (V .i64) := do
   let accBuf64 ← fldLoad ptr f.accBuf
@@ -1412,8 +1335,6 @@ def cliConfig (clif : List FuncData) : Artifact := {
   required_memory := layoutMeta.totalSize,
   initial_memory := payloads
 }
-
-def cliAlgorithm : UInt32 := IR.mainFnIdx
 
 end Cli
 

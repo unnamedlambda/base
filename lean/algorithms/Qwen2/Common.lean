@@ -1,20 +1,14 @@
 module
 public import Lean
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.ML
-meta import AlgorithmLib.ML
-public import AlgorithmLib.Surface.Cuda
-meta import AlgorithmLib.Surface.Cuda
+public import Scan.Layout
+meta import Scan.Layout
 public import AlgorithmLib.Surface.ProgCuda
 meta import AlgorithmLib.Surface.ProgCuda
 public import Qwen2.Proven
 meta import Qwen2.Proven
 public import Tokenizer.Common
 meta import Tokenizer.Common
-public import Scan.Layout
-meta import Scan.Layout
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -270,8 +264,6 @@ def TEXT_OUT_OFF    : Nat := TEXT_IN_OFF   + TEXT_IN_BYTES
 def MEM_SIZE        : Nat := TEXT_OUT_OFF  + TEXT_OUT_BYTES
 
 -- ── PTX Kernels ──────────────────────────────────────────────────────────────
-
-def D_AS_BITS : UInt32 := 0x44600000  -- 896.0f
 
 -- ── Tensor shape abbreviations for Qwen2 ────────────────────────────────────
 abbrev VecD (V : ClifTy → Type)     := Prog.Tsr V [.sta D]              -- hidden state, rmsnorm weights, residual
@@ -970,9 +962,6 @@ structure AttnConsts (V : ClifTy → Type) where
   attnAlpha : V .i32
   zero32    : V .i32
 
-def load32At (base : V .i64) (off : Nat) : Prog V L (V .i32) :=
-  load32 =<< iaddImm base off
-
 def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
   load64 =<< iaddImm base off
 
@@ -1450,19 +1439,6 @@ def memMap : RegionMap :=
     that reach an artifact are checked where `clifIR` assembles them. -/
 def stateOf (p : Prog.Body) : AlgorithmLib.IR.FuncData := Prog.stateOf 1 p
 
-/-- The layer-forward function, as a value. -/
-def inferState : AlgorithmLib.IR.FuncData := (stateOf inferFn)
-
-/-- **Device writes the launch model does not see, in `inferFn` itself.**
-
-    `inferFn` directly performs the embed launch and the projection matvecs it
-    does not delegate; the per-layer cuBLAS calls sit inside `layerStepFn`.
-    This number is not a target to drive to zero by weakening the check — it is
-    the size of the gap between "the launches are proven" and "the program is
-    proven", and it goes to zero only when the calls themselves are replaced by
-    kernels with `StageSpec`s. -/
-def EXPECTED_UNMODELLED_WRITES : Nat := 1
-
 /-- A device write the model **records but does not interpret** — a vendor call
     or a host→device copy.  Every field is `none`: its position in the sequence
     is what a composition needs, and claiming to have recovered a slot or a grid
@@ -1577,13 +1553,6 @@ def expectedFfnOps : List (String × Option Int × Option Int) :=
   , kl PTX_SILU_OFF 152
   , bl "cl_cublas_sgemv"
   , kl PTX_ADD_OFF 28 ]
-
-/-- **The per-token totals, derived from the parts.**
-
-    `LAYERS · (attn + ffn) + embed + upload + final`.  Stated as a definition so
-    the numbers cannot drift from the sequences above. -/
-def opsPerLayer : Nat := expectedAttnOps.length + expectedFfnOps.length
-def opsPerToken : Nat := N_LAYERS * opsPerLayer + 2 + 3
 
 -- ---------------------------------------------------------------------------
 -- Which launched kernels are stages — the ledger, as a theorem

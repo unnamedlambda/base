@@ -1,8 +1,10 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Vocab.WGSL
+meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -29,13 +31,6 @@ def EMPTY : Nat := 0
 def SAND  : Nat := 1
 def WALL  : Nat := 2
 
-def sandX0 : Nat := 120
-def sandX1 : Nat := 200
-def sandY0 : Nat := 16
-def sandY1 : Nat := 60
-def shelfY : Nat := 120
-def gapX0  : Nat := 148
-def gapX1  : Nat := 172
 def brushR : Nat := 8
 
 -- params buffer word indices
@@ -351,44 +346,41 @@ open AlgorithmLib.HProg
 open AlgorithmLib.Prog
 
 
-/-- Two callee tables: the live loop reaches the window and the GPU, the two
-    headless tests reach the GPU alone. -/
-
-
-
 def processEvents (ptr : V .i64) : Prog V L Unit := do
   let evBase ← iadd ptr (← fldOffset f.events)
   let n ← fldLoad ptr f.nEvents
   let recSz ← iconst64 32
-  forLoop n (fun i => do
-    let base ← iadd evBase (← imul i recSz)
-    let kind ← load64 base
-    let a ← load64 (← iaddImm base 8)
-    let b ← load64 (← iaddImm base 16)
-    let isClose ← sextend64 (← icmp .eq kind (← iconst64 evClose))
-    let isDownKey ← sextend64 (← icmp .eq kind (← iconst64 evKeyDown))
-    let isEsc ← sextend64 (← icmp .eq a (← iconst64 keyEscape))
-    let isMove ← sextend64 (← icmp .eq kind (← iconst64 evMouseMove))
-    let isMDown ← sextend64 (← icmp .eq kind (← iconst64 evMouseDown))
-    let isMUp ← sextend64 (← icmp .eq kind (← iconst64 evMouseUp))
-    -- quit |= close | (keydown & escape)
-    let q0 ← fldLoad ptr f.quit
-    fldStore ptr f.quit (← bor q0 (← bor isClose (← imul isDownKey isEsc)))
-    -- mouse position (a=x, b=y on move)
-    let mx ← fldLoad ptr f.mouseX
-    fldStore ptr f.mouseX (← iadd mx (← imul isMove (← isub a mx)))
-    let my ← fldLoad ptr f.mouseY
-    fldStore ptr f.mouseY (← iadd my (← imul isMove (← isub b my)))
-    -- brush material on mouse-down (a=button: 1→sand, 2→wall, else erase)
-    let matSand ← sextend64 (← icmp .eq a (← iconst64 1))
-    let matWall ← sextend64 (← icmp .eq a (← iconst64 2))
-    let newMat ← iadd (← imul matSand (← iconst64 SAND)) (← imul matWall (← iconst64 WALL))
-    let bm ← fldLoad ptr f.brushMat
-    fldStore ptr f.brushMat (← iadd bm (← imul isMDown (← isub newMat bm)))
-    -- brush held: set on down, clear on up
-    let bd ← fldLoad ptr f.brushDown
-    let bd1 ← iadd bd (← imul isMDown (← isub (← iconst64 1) bd))
-    fldStore ptr f.brushDown (← isub bd1 (← imul isMUp bd1)))
+  -- a count past the slots, as a failed poll's -1 is, reads no events
+  when .ule n (← iconst64 eventSlots) do
+    forLoop n (fun i => do
+      let base ← iadd evBase (← imul i recSz)
+      let kind ← load64 base
+      let a ← load64 (← iaddImm base 8)
+      let b ← load64 (← iaddImm base 16)
+      let isClose ← sextend64 (← icmp .eq kind (← iconst64 evClose))
+      let isDownKey ← sextend64 (← icmp .eq kind (← iconst64 evKeyDown))
+      let isEsc ← sextend64 (← icmp .eq a (← iconst64 keyEscape))
+      let isMove ← sextend64 (← icmp .eq kind (← iconst64 evMouseMove))
+      let isMDown ← sextend64 (← icmp .eq kind (← iconst64 evMouseDown))
+      let isMUp ← sextend64 (← icmp .eq kind (← iconst64 evMouseUp))
+      -- quit |= close | (keydown & escape)
+      let q0 ← fldLoad ptr f.quit
+      fldStore ptr f.quit (← bor q0 (← bor isClose (← imul isDownKey isEsc)))
+      -- mouse position (a=x, b=y on move)
+      let mx ← fldLoad ptr f.mouseX
+      fldStore ptr f.mouseX (← iadd mx (← imul isMove (← isub a mx)))
+      let my ← fldLoad ptr f.mouseY
+      fldStore ptr f.mouseY (← iadd my (← imul isMove (← isub b my)))
+      -- brush material on mouse-down (a=button: 1→sand, 2→wall, else erase)
+      let matSand ← sextend64 (← icmp .eq a (← iconst64 1))
+      let matWall ← sextend64 (← icmp .eq a (← iconst64 2))
+      let newMat ← iadd (← imul matSand (← iconst64 SAND)) (← imul matWall (← iconst64 WALL))
+      let bm ← fldLoad ptr f.brushMat
+      fldStore ptr f.brushMat (← iadd bm (← imul isMDown (← isub newMat bm)))
+      -- brush held: set on down, clear on up
+      let bd ← fldLoad ptr f.brushDown
+      let bd1 ← iadd bd (← imul isMDown (← isub (← iconst64 1) bd))
+      fldStore ptr f.brushDown (← isub bd1 (← imul isMUp bd1)))
 
 def pollAndProcess (ptr : V .i64) : Prog V L Unit := do
   let n ← windowPoll ptr (← fldOffset f.events) (← iconst32 eventSlots)
@@ -452,8 +444,8 @@ def mainBody : Prog V L Unit := do
   let renderA ← gpuCreatePipeline ptr (← fldOffset f.renderSh) (← fldOffset f.bindRenderA) (← iconst32 2)
   let w64 ← iconst64 imageWidth
   let h64 ← iconst64 imageHeight
-  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.length : Int))
-                      (← fldOffset f.blitSh) (← iconst64 (blitShaderSource.length : Int))
+  let _ ← windowOpen ptr w64 h64 (← fldOffset f.title) (← iconst64 (titleText.utf8ByteSize : Int))
+                      (← fldOffset f.blitSh) (← iconst64 (blitShaderSource.utf8ByteSize : Int))
   let gwg ← iconst32 gridWgX
   let ghg ← iconst32 gridWgY
   let rwx ← iconst32 renderWgX
@@ -579,10 +571,6 @@ def gameSetup (clif : List IR.FuncData) : Artifact := {
   required_memory := layoutMeta.totalSize,
   initial_memory := payloads
 }
-
-def mainAlgorithm   : UInt32 := IR.mainFnIdx
-def grainFallsAlg   : UInt32 := 2
-def conservationAlg : UInt32 := 3
 
 end FallingSand
 

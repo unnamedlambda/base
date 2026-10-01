@@ -1,6 +1,8 @@
 module
-public import AlgorithmLib.ML.Model.WeaveTOp
-meta import AlgorithmLib.ML.Model.WeaveTOp
+public import AlgorithmLib.ML.Model.TenDenote
+meta import AlgorithmLib.ML.Model.TenDenote
+public import AlgorithmLib.ML.Model.WeaveBCast
+meta import AlgorithmLib.ML.Model.WeaveBCast
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

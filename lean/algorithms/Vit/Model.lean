@@ -1,34 +1,20 @@
 module
-public import AlgorithmLib.Surface.Layout
-meta import AlgorithmLib.Surface.Layout
-public import AlgorithmLib.Vocab.PTX
-meta import AlgorithmLib.Vocab.PTX
-public import AlgorithmLib.ML.Launch.Bind
-meta import AlgorithmLib.ML.Launch.Bind
-public import AlgorithmLib.ML.Ptx.Emit
-meta import AlgorithmLib.ML.Ptx.Emit
-public import AlgorithmLib.ML.Ptx.Print
-meta import AlgorithmLib.ML.Ptx.Print
-public import AlgorithmLib.ML.Model.Fuse
-meta import AlgorithmLib.ML.Model.Fuse
-public import AlgorithmLib.ML.Machine.Buf
-meta import AlgorithmLib.ML.Machine.Buf
-public import AlgorithmLib.ML.Compose
-meta import AlgorithmLib.ML.Compose
-public import AlgorithmLib.ML.Kernel.Library
-meta import AlgorithmLib.ML.Kernel.Library
-public import AlgorithmLib.ML.Model.Frontend
-meta import AlgorithmLib.ML.Model.Frontend
-public import AlgorithmLib.ML.Model.Schedule
-meta import AlgorithmLib.ML.Model.Schedule
-public import AlgorithmLib.ML.Model.LocalBind
-meta import AlgorithmLib.ML.Model.LocalBind
-public import AlgorithmLib.ML.Model.BufsOf
-meta import AlgorithmLib.ML.Model.BufsOf
-public import AlgorithmLib.Core.IR
-meta import AlgorithmLib.Core.IR
+public import AlgorithmLib.ML.Tensor.Surface
+meta import AlgorithmLib.ML.Tensor.Surface
+public import AlgorithmLib.ML.Model.Ten
+meta import AlgorithmLib.ML.Model.Ten
 public import Scan.Layout
 meta import Scan.Layout
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.ML.Model.LocalBind
+meta import AlgorithmLib.ML.Model.LocalBind
+public import AlgorithmLib.ML.Model.Schedule
+meta import AlgorithmLib.ML.Model.Schedule
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
+public import AlgorithmLib.Core.Artifact
+meta import AlgorithmLib.Core.Artifact
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -2040,48 +2026,6 @@ def vInMerge : Array Bool := Id.run do
     for u in g do a := a.set! u true
   pure a
 
-/-- **An operation as it addresses the fused buffers.**
-
-    A member of a merged group needs no shift: the merged launch runs its chunk
-    index over the whole fused range, so at `cta = p*grid + r` the addressing it
-    already has lands on member `p`'s slice.  Everything *else* reading a fused
-    buffer is reaching into the middle of it and shifts by the offset.
-
-    `shift` refuses on `.scalar`, and `vShiftFailures` counts the refusals rather
-    than letting `getD` paper over one — a silent wrong address here is a wrong
-    number, not a crash. -/
-def vShiftB (member : Bool) (m : AlgorithmLib.ML.BCast) (r : Ref) :
-    AlgorithmLib.ML.BCast :=
-  if member then m else (m.shift (vFuseOf r).2).getD m
-
-def vOpFused (member : Bool) (op : AlgorithmLib.ML.TOp) : AlgorithmLib.ML.TOp :=
-  let f := fun r => (vFuseOf r).1
-  match op with
-  | .ziprow a b o fx mA mB n k w rows =>
-      .ziprow (f a) (f b) (f o) fx (vShiftB member mA a) (vShiftB member mB b) n k w rows
-  | .ziprow3 a b c o fx mA mB mC n k w rows =>
-      .ziprow3 (f a) (f b) (f c) (f o) fx (vShiftB member mA a) (vShiftB member mB b)
-        (vShiftB member mC c) n k w rows
-  | .ziprow4 a b c d o fx mA mB mC mD n k w rows =>
-      .ziprow4 (f a) (f b) (f c) (f d) (f o) fx (vShiftB member mA a)
-        (vShiftB member mB b) (vShiftB member mC c) (vShiftB member mD d) n k w rows
-  | .rowdot4 a b c d o fx mA mB mC mD n rows =>
-      .rowdot4 (f a) (f b) (f c) (f d) (f o) fx (vShiftB member mA a)
-        (vShiftB member mB b) (vShiftB member mC c) (vShiftB member mD d) n rows
-  | .rowdot a b o mA mB n rows =>
-      .rowdot (f a) (f b) (f o) (vShiftB member mA a) (vShiftB member mB b) n rows
-  | .ew1 fx a o g => .ew1 fx (f a) (f o) g
-  | .ew2 fx a b o g => .ew2 fx (f a) (f b) (f o) g
-  | .ew3 fx a b c o g => .ew3 fx (f a) (f b) (f c) (f o) g
-  | .ew4 fx a b c d o g => .ew4 fx (f a) (f b) (f c) (f d) (f o) g
-  | .upd2 fx a b g => .upd2 fx (f a) (f b) g
-  | .rowsq a o n rows => .rowsq (f a) (f o) n rows
-  | .rowmax a o n rows i => .rowmax (f a) (f o) n rows i
-  | .smce a b c o g => .smce (f a) (f b) (f c) (f o) g
-  | .mv bk a b o bt i ow bA => .mv bk (f a) (f b) (f o) bt i ow bA
-  | .mvT bk a b o bt i ow => .mvT bk (f a) (f b) (f o) bt i ow
-  | .outer bk a b o bt i ow => .outer bk (f a) (f b) (f o) bt i ow
-
 /-- Shifts `BCast.shift` refused: every one is an address the fusion would get
     wrong, so this must be zero for the plan to be usable. -/
 def vShiftFailures : Nat := Id.run do
@@ -2276,8 +2220,7 @@ def VNEVENT : Nat := 2 * VNSTRM + vDag.nev
 /-- Where the schedule's own events start. -/
 def vDagEvent (e : Nat) : Nat := 2 * VNSTRM + e
 /-- Slots in the per-launch buffer table: as many as the widest group binds.
-    A single operation never needed more than five; a fused group does, and
-    eight was the fixed size that used to be enough. -/
+    A single operation needs at most five; a fused group needs more. -/
 def VLOCAL_SLOTS : Nat :=
   ((List.range VNUNIT).filter (fun k => ((vUnitOps (vUnitArr.getD k [])).head?
       >>= vGemmOf).isNone)).foldl

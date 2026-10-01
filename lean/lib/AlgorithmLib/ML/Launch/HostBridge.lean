@@ -1,10 +1,8 @@
 module
 public import AlgorithmLib.Host.HostIR
 meta import AlgorithmLib.Host.HostIR
-public import AlgorithmLib.ML.Compose
-meta import AlgorithmLib.ML.Compose
-public import AlgorithmLib.ML.Kernel.Rewrite
-meta import AlgorithmLib.ML.Kernel.Rewrite
+public import AlgorithmLib.ML.Launch.Declared
+meta import AlgorithmLib.ML.Launch.Declared
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -19,7 +17,7 @@ import all Init.Data.List.Sort.Basic
   exactly the declared sequence of `LaunchRec`s.  A `LaunchRec` names a PTX
   slot and a grid.
 
-  `ML/Compose.lean` proves what the *kernels* compute: `Pipeline.run_denote`
+  `ML/Launch/Sequence.lean` proves what the *kernels* compute: `Pipeline.run_denote`
   says a list of `StageSpec`s executed in order computes the fold of their
   `step`s, for any length.
 
@@ -112,7 +110,7 @@ abbrev DeviceOp := LaunchRec × OpBinds
       all — this is what ties the stage's buffer numbering to the handles the
       program stored, rather than to numbers a table author picked;
     * the launched grid must equal the stage's own `grid`, because every theorem
-      in `Compose.lean` is about `runGrid S.ew S.grid`, so a record launching a
+      in `Launch/Sequence.lean` is about `runGrid S.ew S.grid`, so a record launching a
       different number of blocks realises a *different* function;
     * the launch must be on the stream this fragment is being realised at.
       `Pipeline.run` is a sequential fold, and two kernels issued on different

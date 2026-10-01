@@ -1,6 +1,4 @@
 module
-public import AlgorithmLib.Vocab.X86
-meta import AlgorithmLib.Vocab.X86
 public import Bench.CpuAsm
 meta import Bench.CpuAsm
 import all Init.Data.Repr
@@ -9,7 +7,7 @@ import all Init.Data.List.Sort.Basic
 
 /-! # `AlgorithmLib.X86` against GNU `as`
 
-    cd lean && lake env lean --run algorithms/X86Check.lean
+    cd lean && lake env lean -Dexperimental.module=true --run algorithms/Bench/X86Check.lean
 
 Every case is printed with `Body.intel`, assembled by `as`, and must match
 `assemble` byte for byte. -/

@@ -31,9 +31,12 @@ thread_local! {
 }
 
 /// Every function a program may import, registered under its name.
-fn register_symbols(builder: &mut JITBuilder) {
+fn register_symbols(builder: &mut JITBuilder, externs: &[(String, usize)]) {
     for import in crate::imports::imports() {
         builder.symbol(import.name, import.addr as *const u8);
+    }
+    for (name, addr) in externs {
+        builder.symbol(name.clone(), *addr as *const u8);
     }
 }
 
@@ -57,7 +60,10 @@ const CODE_RESERVE_MAX: usize = 128 << 20;
 /// apart than a direct call reaches — ±128 MiB on AArch64, ±2 GiB on x86-64
 /// and RISC-V — with the program's data, or a pinned host buffer, mapped in
 /// between.
-fn new_module(insts: usize) -> Result<cranelift_jit::JITModule, String> {
+fn new_module(
+    insts: usize,
+    externs: &[(String, usize)],
+) -> Result<cranelift_jit::JITModule, String> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
@@ -65,7 +71,7 @@ fn new_module(insts: usize) -> Result<cranelift_jit::JITModule, String> {
         .finish(settings::Flags::new(flag_builder))
         .unwrap();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    register_symbols(&mut builder);
+    register_symbols(&mut builder, externs);
     let reserve = CODE_RESERVE_MIN
         .saturating_add(insts.saturating_mul(CODE_RESERVE_PER_INST))
         .min(CODE_RESERVE_MAX);
@@ -110,7 +116,18 @@ pub(crate) fn compile(
         .flat_map(|f| &f.blocks)
         .map(|b| b.insts.len())
         .sum();
-    let mut module = new_module(insts)?;
+    // The C functions the program calls, bound before the module is built so
+    // each resolves like any other import.
+    let mut externs: Vec<(String, usize)> = Vec::new();
+    for f in functions.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts) {
+        if let base_types::clif::Inst::Call(_, base_types::clif::Callee::Extern(e), _) = f {
+            let name = crate::libs::link_name(e);
+            if !externs.iter().any(|(n, _)| *n == name) {
+                externs.push((name, crate::libs::bind(e)));
+            }
+        }
+    }
+    let mut module = new_module(insts, &externs)?;
     let cc = module.isa().default_call_conv();
 
     // Declared before any body is built, so `u0:N` resolves to FuncId(N).
@@ -158,6 +175,17 @@ pub(crate) fn compile(
             }
             // Called through its address; `decode_function` never resolves it.
             base_types::clif::Callee::Native => Err("machine code has no symbol to resolve".into()),
+            // Emitted in place; `decode_function` never resolves it.
+            base_types::clif::Callee::Atomic(_) => Err("an atomic has no symbol to resolve".into()),
+            // Bound above, at the signature the program declares.
+            base_types::clif::Callee::Extern(e) => {
+                let sig = crate::clif_decode::signature(&e.params, e.result, cc);
+                let name = crate::libs::link_name(e);
+                let id = module
+                    .declare_function(&name, cranelift_module::Linkage::Import, &sig)
+                    .map_err(|err| format!("declaring {name}: {err}"))?;
+                Ok((Resolved { id: id.as_u32(), colocated: false }, sig))
+            }
         };
         decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut declare)?);
     }

@@ -1,8 +1,10 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Vocab.WGSL
+meta import AlgorithmLib.Vocab.WGSL
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -130,8 +132,6 @@ def fftShader : String :=
 open AlgorithmLib.Prog
 
 
-/-- The GPU entry points, then the two file ones, in callee-table order. -/
-abbrev fnRead : Ffi := .fileRead
 abbrev fnWrite : Ffi := .fileWrite
 
 def code : Prog V L Unit := do
@@ -145,105 +145,100 @@ def code : Prog V L Unit := do
 
   -- Step 1: Read input file
   let inDatOff ← iconst64 inputData_off
-  let bytesRead ← readFile ptr inputFilename_off inputData_off
+  let bytesRead ← readFile ptr inputFilename_off inputData_off maxDataSize
 
-  -- Compute N = bytes_read / 8
-  let c3 ← iconst64 3
-  let bigN ← ushr bytesRead c3
+  -- A read that failed (-1), ran past the input region, or holds no complete
+  -- number computes nothing: a write of size 0 would write up to a NUL.
+  let maxC ← iconst64 maxDataSize
+  let _ ← ifte .ugt bytesRead maxC (pure %[]) (do
+   let _ ← ifte .ult bytesRead c8 (pure %[]) (do
+    -- Compute N = bytes_read / 8
+    let c3 ← iconst64 3
+    let bigN ← ushr bytesRead c3
 
-  -- Step 2: Compute log2(N) — while tmp > 1, tmp >>= 1, log2n += 1.
-  let (_, log2Result) ← whileLoop2 bigN c0
-    (fun tmp _ => icmp .ugt tmp c1)
-    (fun tmp log2n => do
-      let tmp2  ← ushr tmp c1
-      let log2n2 ← iadd log2n c1
-      return (tmp2, log2n2))
+    -- Step 2: log2(N), the position of N's highest bit: 63 less its leading zeros.
+    let lz ← clz bigN
+    let log2Result ← isub (← iconst64 63) lz
 
-  let bufAOff ← iconst64 bufA_off
+    let bufAOff ← iconst64 bufA_off
 
-  -- For i in [0, bigN): compute bit-reverse(i, log2Result), then copy
-  -- inputData[i] (8 bytes) to bufA[rev].
-  forLoop bigN fun i => do
-    -- Inner: fold log2Result bits, carrying (val, rev). bit-count is the loop counter.
-    let (_, revIdx) ← forLoopAcc2 log2Result i c0 fun _ val rev => do
-      let lsb      ← band val c1
-      let revShift ← ishl rev c1
-      let revNew   ← bor revShift lsb
-      let valShift ← ushr val c1
-      return (valShift, revNew)
-    -- src = inputData_off + i * 8;   dst = bufA_off + rev * 8
-    let srcAbs ← iadd ptr (← iadd inDatOff (← imul i c8))
-    let dstAbs ← iadd ptr (← iadd bufAOff (← imul revIdx c8))
-    storeUnaligned (← load32 srcAbs) dstAbs
-    storeUnaligned (← load32 (← iadd srcAbs c4)) (← iadd dstAbs c4)
-  gpuInit ptr
+    -- Bit-reversed order, gathered: bufA[j] = inputData[rev(j)], `rev`
+    -- reversing j's low log2(N) bits (an involution for N a power of two).
+    -- The top bits of the 64-bit reversal, shifted down by 64 - log2(N);
+    -- N = 1 shifts by 64, which is 0, and reverses only 0.
+    let revShift ← iadd lz c1
+    forLoop bigN fun j => do
+      let revIdx ← ushr (← bitrev j) revShift
+      let srcAbs ← iadd ptr (← iadd inDatOff (← imul revIdx c8))
+      let dstAbs ← iadd ptr (← iadd bufAOff (← imul j c8))
+      storeUnaligned (← load32 srcAbs) dstAbs
+      storeUnaligned (← load32 (← iadd srcAbs c4)) (← iadd dstAbs c4)
 
-  -- Align data size to multiple of 4: (N*8 + 3) & ~3
-  let dataSz ← imul bigN c8
-  let alignedSz ← alignUp4 dataSz
+    gpuInit ptr
 
-  -- Create 3 buffers
-  let buf0 ← gpuCreateBuffer ptr alignedSz
-  let buf1 ← gpuCreateBuffer ptr alignedSz
-  let metaSzC ← iconst64 metaSize
-  let buf2 ← gpuCreateBuffer ptr metaSzC
+    -- N*8 bytes: already the multiple of 4 wgpu asks of a buffer
+    let dataSz ← imul bigN c8
+    let alignedSz := dataSz
 
-  -- Write N into meta region
-  let metaOffC ← iconst64 meta_off
-  let metaAbs ← iadd ptr metaOffC
-  let nI32 ← ireduce32 bigN
-  store nI32 metaAbs
+    -- Create 3 buffers
+    let buf0 ← gpuCreateBuffer ptr alignedSz
+    let buf1 ← gpuCreateBuffer ptr alignedSz
+    let metaSzC ← iconst64 metaSize
+    let buf2 ← gpuCreateBuffer ptr metaSzC
 
-  -- Upload buf_a
-  let _ ← gpuUpload ptr buf0 bufAOff alignedSz
+    -- Write N into meta region
+    let metaOffC ← iconst64 meta_off
+    let metaAbs ← iadd ptr metaOffC
+    let nI32 ← ireduce32 bigN
+    store nI32 metaAbs
 
-  -- Create pipeline (3 bindings)
-  let shOffC ← iconst64 shader_off
-  let bdOffC ← iconst64 bindDesc_off
-  let c3_i32 ← iconst32 3
-  let pipeId ← gpuCreatePipeline ptr shOffC bdOffC c3_i32
+    -- Upload buf_a
+    let _ ← gpuUpload ptr buf0 bufAOff alignedSz
 
-  -- Compute dispatch size: ceil(N/2 / 64)
-  let halfN ← ushr bigN c1
-  let c63 ← iconst64 63
-  let halfPad ← iadd halfN c63
-  let c6 ← iconst64 6
-  let wgCount ← ushr halfPad c6
-  let wgCount32 ← ireduce32 wgCount
-  let one32 ← iconst32 1
+    -- Create pipeline (3 bindings)
+    let shOffC ← iconst64 shader_off
+    let bdOffC ← iconst64 bindDesc_off
+    let c3_i32 ← iconst32 3
+    let pipeId ← gpuCreatePipeline ptr shOffC bdOffC c3_i32
 
-  -- Step 4: Stage loop — counter `stage` for log2Result iterations,
-  -- accumulator `dir` toggled each iteration.
-  let finalDir ← forLoopAcc log2Result c0 fun stage dir => do
-    -- Write stage and direction into meta
-    let metaStage ← iadd metaAbs c4
-    storeUnaligned (← ireduce32 stage) metaStage
-    let metaDir ← iadd metaStage c4
-    storeUnaligned (← ireduce32 dir) metaDir
-    -- Upload meta, dispatch, then sync via download-to-scratch
-    let _ ← gpuUpload ptr buf2 metaOffC metaSzC
-    let _ ← gpuDispatch ptr pipeId wgCount32 one32 one32
-    let scratchOff ← iconst64 64
-    let _ ← gpuDownload ptr buf2 scratchOff metaSzC
-    bxor dir c1   -- next direction
+    -- Compute dispatch size: ceil(N/2 / 64)
+    let halfN ← ushr bigN c1
+    let c63 ← iconst64 63
+    let halfPad ← iadd halfN c63
+    let c6 ← iconst64 6
+    let wgCount ← ushr halfPad c6
+    let wgCount32 ← ireduce32 wgCount
+    let one32 ← iconst32 1
 
-  -- Step 5: Download result.
-  -- direction==0 after loop → last was dir=1 → wrote to buf_a → download buf_a
-  -- direction==1 after loop → last was dir=0 → wrote to buf_b → download buf_b
-  let bufAOffC ← iconst64 bufA_off
-  let bufBOffC ← iconst64 bufB_off
-  -- Both arms reach one join carrying (dst_offset, gpu_buf_id)
-  let fin ← ifte .eq finalDir c0
-    (thn := pure %[bufAOffC, buf0])
-    (els := pure %[bufBOffC, buf1])
-  let dstOff2 := fin.head
-  let bufId := fin.snd
-  let _ ← gpuDownload ptr bufId dstOff2 alignedSz
-  gpuCleanup ptr
+    -- Step 4: Stage loop — counter `stage` for log2Result iterations,
+    -- accumulator `dir` toggled each iteration.
+    let finalDir ← forLoopAcc log2Result c0 fun stage dir => do
+      -- Write stage and direction into meta
+      let metaStage ← iadd metaAbs c4
+      storeUnaligned (← ireduce32 stage) metaStage
+      let metaDir ← iadd metaStage c4
+      storeUnaligned (← ireduce32 dir) metaDir
+      -- Upload meta, dispatch, then sync via download-to-scratch
+      let _ ← gpuUpload ptr buf2 metaOffC metaSzC
+      let _ ← gpuDispatch ptr pipeId wgCount32 one32 one32
+      let scratchOff ← iconst64 64
+      let _ ← gpuDownload ptr buf2 scratchOff metaSzC
+      bxor dir c1   -- next direction
 
-  -- Step 6: Write output file
-  let outFnOff ← iconst64 outputFilename_off
-  let _ ← ffi fnWrite %[ptr, outFnOff, dstOff2, c0, dataSz]
+    -- Step 5: Download the buffer the last stage wrote and write it out:
+    -- direction 0 after the loop → the last stage wrote buf_a, else buf_b.
+    let outFnOff ← iconst64 outputFilename_off
+    let finish (dstOff : V .i64) (bufId : V .i32) : Prog V L Unit := do
+      let _ ← gpuDownload ptr bufId dstOff alignedSz
+      gpuCleanup ptr
+      let _ ← ffi fnWrite %[ptr, outFnOff, dstOff, c0, dataSz]
+    let bufAOffC ← iconst64 bufA_off
+    let bufBOffC ← iconst64 bufB_off
+    let _ ← ifte .eq finalDir c0
+      (thn := do finish bufAOffC buf0; pure %[])
+      (els := do finish bufBOffC buf1; pure %[])
+    pure %[])
+   pure %[])
 
 def clifIrSource : Except String (List FuncData) :=
   Prog.program [.ok noopFunction, Prog.entry "main" (Prog.compileProg 1 code)]
@@ -281,8 +276,6 @@ def fftConfig (clif : List FuncData) : Artifact := {
   required_memory := payloads.length + totalAdditionalMemory,
   initial_memory := payloads
 }
-
-def fftAlgorithm : UInt32 := IR.mainFnIdx
 
 end Fft
 

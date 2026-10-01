@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Math.Transformer
-meta import AlgorithmLib.ML.Math.Transformer
+public import AlgorithmLib.ML.Math.Expr
+meta import AlgorithmLib.ML.Math.Expr
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

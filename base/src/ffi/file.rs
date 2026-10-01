@@ -22,31 +22,30 @@ pub(crate) unsafe extern "C" fn cl_file_read(
         Ok(f) => f,
         Err(_) => return -1,
     };
-    if file_offset > 0 {
-        let _ = file.seek(std::io::SeekFrom::Start(file_offset as u64));
+    // The offset as the model reads it, an unsigned count: past the end, or
+    // negative, it leaves nothing to read.
+    let from = file_offset as u64;
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let avail = file_len.saturating_sub(from) as usize;
+    // As many bytes as the model says are written, and a slice no longer than
+    // them: `size` 0 is the rest of the file.
+    let want = if size == 0 { avail } else { (size as usize).min(avail) };
+    if want == 0 {
+        return 0;
     }
-    if size == 0 {
-        let file_len = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
-        if file_len == 0 {
-            return 0;
-        }
-        let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), file_len);
-        let mut total = 0;
-        while total < file_len {
-            match file.read(&mut dst[total..]) {
-                Ok(0) => break,
-                Ok(n) => total += n,
-                Err(_) => break,
-            }
-        }
-        total as i64
-    } else {
-        let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), size as usize);
-        match file.read(dst) {
-            Ok(n) => n as i64,
-            Err(_) => -1,
+    if file.seek(std::io::SeekFrom::Start(from)).is_err() {
+        return -1;
+    }
+    let dst = std::slice::from_raw_parts_mut(ptr.add(dst_off as usize), want);
+    let mut total = 0;
+    while total < want {
+        match file.read(&mut dst[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(_) => return -1,
         }
     }
+    total as i64
 }
 
 /// Write `size` bytes from an arbitrary host pointer into a file at the given
@@ -93,17 +92,19 @@ pub(crate) unsafe extern "C" fn cl_file_read_to_ptr(
         Ok(f) => f,
         Err(_) => return -1,
     };
-    if file_offset > 0 {
-        if file
-            .seek(std::io::SeekFrom::Start(file_offset as u64))
-            .is_err()
-        {
-            return -1;
-        }
+    // As `cl_file_read`: the offset unsigned, and no more than the file has.
+    let from = file_offset as u64;
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let want = (size as u64).min(file_len.saturating_sub(from)) as usize;
+    if want == 0 {
+        return 0;
     }
-    let dst = std::slice::from_raw_parts_mut(dst_ptr, size as usize);
+    if file.seek(std::io::SeekFrom::Start(from)).is_err() {
+        return -1;
+    }
+    let dst = std::slice::from_raw_parts_mut(dst_ptr, want);
     let mut total = 0usize;
-    while total < dst.len() {
+    while total < want {
         match file.read(&mut dst[total..]) {
             Ok(0) => break,
             Ok(n) => total += n,
@@ -111,6 +112,18 @@ pub(crate) unsafe extern "C" fn cl_file_read_to_ptr(
         }
     }
     total as i64
+}
+
+/// Create the directory at `path_ptr` and every one missing on the way:
+/// `0`, or `-1` when that cannot be done.
+pub(crate) unsafe extern "C" fn cl_file_create_dir_all(path_ptr: *const u8) -> i64 {
+    if path_ptr.is_null() {
+        return -1;
+    }
+    match fs::create_dir_all(read_cstr_ptr(path_ptr)) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
 }
 
 pub(crate) unsafe extern "C" fn cl_file_write(

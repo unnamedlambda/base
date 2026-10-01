@@ -1,5 +1,5 @@
 import Scan.MlSurface
-
+import Scan.Core
 /-!
   # What the gpt-oss-20b scanners are allowed to trust
 

@@ -8,20 +8,13 @@ import all Init.Data.List.Sort.Basic
 /-!
 # What a call may write
 
-`HProgSem` gives the file, stdio, hash-table and libm families an executable
-contract, because the corpus runs them. The rest are device drivers, windows
-and database handles: nothing here will ever compute what they return. What can
-still be said about them — and what a proof about a program containing one
-actually needs — is *which memory they may disturb*.
+A `Frame` says which memory a call may disturb, and only that: a call writes
+at an address built from its own arguments and leaves the rest of memory
+alone. It does not say what it writes.
 
-A `Frame` is that statement, and only that. It says a call writes at an address
-built from its own arguments and leaves the rest of memory alone. It does not
-say what it writes.
-
-**These frames are assumptions.** Each one is read off the Rust implementation
-in `base/src/ffi/`, and nothing checks that it stays true when that code
-changes. They are named here so a proof that leans on one is leaning on
-something written down rather than on silence.
+Every entry point has one, read off `base/src/ffi/`. None is taken on trust:
+`Spec.lean` proves each contract writes only inside its frame
+(`callFfi_respects_frame`).
 -/
 
 namespace AlgorithmLib.HProg
@@ -43,6 +36,12 @@ inductive Frame where
   | atOffRet (base off : Nat)
   /-- Writes exactly `n` bytes at `args[dst]`. -/
   | fixed (dst n : Nat)
+  /-- Writes exactly `n` bytes at `args[a]` and `n` at `args[b]`: two out
+      parameters of one width. -/
+  | fixed2 (a b n : Nat)
+  /-- Writes at `args[dst]`, at most `size` bytes for each of `args[count]`
+      records, read as an `i32`: fewer may be written, never more. -/
+  | atRecords (dst count size : Nat)
   /-- Writes at `args[dst]`, for a length decided by state the call reads
       rather than by any argument. -/
   | dataDependent (dst : Nat)
@@ -61,16 +60,14 @@ def ctxSlot : Frame := .fixed 0 8
     `base/src/ffi/`.
 
     A total function of `Ffi`, so every entry point has a frame and none is
-    named that no declaration uses. Keyed by symbol name this was neither: the
-    six colocated hash-table symbols were spelled `cl_ht_*` while the JIT
-    resolves `ht_*`, so every program using the table silently had no frame for
-    it, and twenty-one names belonged to no declaration at all. -/
+    named that no declaration uses — which a table keyed by symbol name could
+    not say: a misspelt symbol there is a program with no frame. -/
 def frame : IR.Ffi → Frame
   -- file.rs — the read family writes into shared memory, the write family only
   -- touches the file system.
   | .fileRead => .atOffRet 0 2
   | .fileReadToPtr => .at 1 3
-  | .fileWrite | .fileWriteFromPtr => .none
+  | .fileWrite | .fileWriteFromPtr | .fileCreateDirAll => .none
 
   -- stdio.rs
   | .stdinReadline => .atOff 0 1 2
@@ -120,13 +117,16 @@ def frame : IR.Ffi → Frame
   -- lmdb.rs — reads write their result where the caller asked, for as long as
   -- the stored value is.
   | .lmdbInit | .lmdbCleanup => ctxSlot
-  | .lmdbCursorScan => .dataDependent 5
+  | .lmdbCursorScan => .at 5 6
   | .lmdbOpen | .lmdbPut | .lmdbBeginWriteTxn | .lmdbCommitWriteTxn => .none
 
   -- thread.rs — a spawned body runs against the arena it is handed, so what it
   -- writes is the callee's frame, not this one's.
   | .threadInit | .threadCleanup => ctxSlot
   | .threadSpawn => .dataDependent 2
+  | .threadStart => .dataDependent 1
+  | .threadFinish => .none
+  | .memLock | .memUnlock | .memAdviseHuge | .threadPriority => .none
   | .threadJoin => .none
 
   -- native.rs — placing code and asking about the CPU write nothing the
@@ -136,8 +136,49 @@ def frame : IR.Ffi → Frame
 
   -- window.rs
   | .windowInit | .windowCleanup => ctxSlot
-  | .windowPoll => .dataDependent 1
+  | .windowPoll => .atRecords 1 2 32
   | .windowOpen | .windowPresentGpuBuffer => .none
+
+/-- **What a C library function may write**, by its parameters. The copies
+    write their destination for their count; the driver writes each object it
+    creates through the one pointer it is handed, and a download its
+    destination. The probe and everything else write no host memory. -/
+def _root_.AlgorithmLib.IR.Ext.frame : IR.Ext → Frame
+  | .present _ => .none
+  | .c .memcpy | .c .memmove | .c .memset => .at 0 2
+  | .c .strlen | .c .calloc | .c .free => .none
+  | .cuda .deviceGet => .fixed 0 4
+  | .cuda .primaryCtxRetain | .cuda .memAlloc | .cuda .moduleLoadData
+  | .cuda .moduleGetFunction | .cuda .streamCreate | .cuda .eventCreate
+  | .cuda .memAllocHost | .cuda .graphInstantiate => .fixed 0 8
+  | .cuda .endCapture => .fixed 1 8
+  | .cuda .eventElapsedTime => .fixed 0 4
+  | .cuda .memGetInfo => .fixed2 0 1 8
+  | .cuda .memcpyDtoH | .cuda .memcpyDtoHAsync => .at 0 2
+  | .cuda .init | .cuda .primaryCtxRelease | .cuda .ctxSetCurrent | .cuda .ctxSynchronize
+  | .cuda .memFree | .cuda .memcpyHtoD | .cuda .memcpyDtoD | .cuda .memsetD8
+  | .cuda .moduleUnload | .cuda .launchKernel | .cuda .streamSynchronize
+  | .cuda .streamDestroy | .cuda .eventRecord | .cuda .streamWaitEvent
+  | .cuda .eventSynchronize | .cuda .eventDestroy | .cuda .memFreeHost
+  | .cuda .memcpyHtoDAsync | .cuda .beginCapture | .cuda .graphLaunch
+  | .cuda .graphExecDestroy | .cuda .graphDestroy => .none
+  | .cublas .create => .fixed 0 8
+  | .cublas _ => .none
+  | .cpu _ => .none
+  -- The serial library writes a port's name and what a read takes; the USB
+  -- library what a transfer brings back from the device.
+  | .serial .name | .serial .read => .at 1 2
+  | .serial _ => .none
+  | .usb .control => .at 5 6
+  | .usb .bulk | .usb .interrupt => .at 3 4
+  | .usb _ => .none
+  -- wgpu writes host memory only where a texture is acquired: the
+  -- `WGPUSurfaceTexture` it is handed.
+  | .wgpu .bufferRead => .at 3 4
+  | .wgpu _ => .none
+  -- The window library writes the record it polls.
+  | .window .poll => .fixed 1 32
+  | .window _ => .none
 
 /-- The frame declared for a symbol, or `none` when it is not an entry point —
     which is the honest answer for a program's own colocated functions, and the
@@ -156,6 +197,10 @@ def calleeFrame : IR.Callee → Option (String × Option Frame)
   | .ffi f   => some (f.cname, frameOf f.cname)
   | .local _ => none
   | .native  => some ("native code", some .anywhere)
+  -- An atomic is the program's own memory access, like a load or a store.
+  | .atomic _ => none
+  -- A C library function is foreign code, with its frame from the table.
+  | .ext e => some (s!"{e.lib.name}!{e.symbol}", some e.frame)
 
 /-- **The FFI a program actually assumes.**
 

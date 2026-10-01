@@ -1,6 +1,6 @@
 module
-public import Vit.Units
-meta import Vit.Units
+public import Vit.Model
+meta import Vit.Model
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

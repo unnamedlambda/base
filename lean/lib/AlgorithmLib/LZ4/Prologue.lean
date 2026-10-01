@@ -1,10 +1,10 @@
 module
-public import AlgorithmLib.LZ4.U32Field
-meta import AlgorithmLib.LZ4.U32Field
 public import AlgorithmLib.LZ4.EvalValid
 meta import AlgorithmLib.LZ4.EvalValid
 public import AlgorithmLib.LZ4.SimtRSimComp
 meta import AlgorithmLib.LZ4.SimtRSimComp
+public import AlgorithmLib.LZ4.U32Field
+meta import AlgorithmLib.LZ4.U32Field
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section

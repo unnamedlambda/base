@@ -1,8 +1,12 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -206,7 +210,6 @@ def buildPayload (m k n : Nat) : List UInt8 :=
 open AlgorithmLib.Prog
 
 
-/-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
 abbrev fnWrite : Ffi := .fileWrite
 
 def code (m k n : Nat) : Prog V L Unit :=

@@ -1,100 +1,69 @@
-use std::collections::VecDeque;
+//! Windows and their input, through winit: the C functions a program's
+//! `Ext.window` calls reach, by symbol.
+//!
+//! winit is a Rust API, so this is the one library here written for the
+//! engine: seven functions over it, each a plain C call that the program's
+//! `Lib.Window` makes and `Host/WindowLib.lean` states. Everything a window
+//! shows — the surface, made from the window's handle, the blit, presenting —
+//! is the program's own wgpu calls, and turning these records into the
+//! engine's events is the program's too.
+//!
+//! A window is the program's: `base_window_open` hands back a box it passes
+//! to every other call, and `base_window_close` drops. What is kept here is
+//! what winit keeps per process: the event loop, made on the first thread
+//! that asks and living as long as the thread, and each open window's events
+//! not yet read. winit makes one event loop per process, so windows live on
+//! that thread; on any other `base_window_init` answers `false`.
+//!
+//! **Records.** Each event is four little-endian `i64`s: a kind, then its
+//! operands.
+//!
+//! | kind | event | operands |
+//! |---|---|---|
+//! | 1 | close requested | |
+//! | 2 | size in pixels changed | width, height |
+//! | 3 / 4 | key pressed / released | the key's USB HID usage (page 7) |
+//! | 5 | pointer moved | x, y in pixels, as `f64` bits |
+//! | 6 / 7 | button pressed / released | 1 left, 2 right, 3 middle |
+//!
+//! A key without a HID usage here, and any other button or event, is dropped.
+
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::ffi::c_char;
+use std::sync::Arc;
 use std::time::Duration;
-use wgpu::{
-    BindGroupDescriptor, BindGroupEntry, BindingResource, Color, ColorTargetState, ColorWrites,
-    CommandEncoderDescriptor, FragmentState, LoadOp, MultisampleState, Operations,
-    PipelineCompilationOptions, PrimitiveState, RenderPassColorAttachment, RenderPassDescriptor,
-    RenderPipeline, RenderPipelineDescriptor, ShaderModuleDescriptor, ShaderSource, StoreOp,
-    Surface, SurfaceConfiguration, SurfaceError, TextureFormat, TextureUsages,
-    TextureViewDescriptor, VertexState,
-};
+
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Event, WindowEvent};
+use winit::event::{ElementState, Event, MouseButton, WindowEvent};
 use winit::event_loop::EventLoop;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::platform::pump_events::EventLoopExtPumpEvents;
-use winit::window::Window;
+use winit::window::{Window, WindowId};
 
-use super::wgpu::{cached_gpu_handles, CraneliftGpuContext, GpuHandles};
-use super::{clear_ctx_slot, read_ctx_mut, write_ctx_slot};
+type Record = [i64; 4];
 
-// Event record wire format: four i64s, mirrored on the CLIF side.
-const EVENT_BYTES: usize = 32;
-const EVENT_CLOSE: i64 = 1;
-const EVENT_RESIZE: i64 = 2;
-const EVENT_KEY_DOWN: i64 = 3;
-const EVENT_KEY_UP: i64 = 4;
-const EVENT_MOUSE_MOVE: i64 = 5;
-const EVENT_MOUSE_DOWN: i64 = 6;
-const EVENT_MOUSE_UP: i64 = 7;
-
-fn map_mouse_button(button: winit::event::MouseButton) -> i64 {
-    use winit::event::MouseButton as B;
-    match button {
-        B::Left => 1,
-        B::Right => 2,
-        B::Middle => 3,
-        _ => 0,
-    }
+struct Loop {
+    events: EventLoop<()>,
+    pending: HashMap<WindowId, VecDeque<Record>>,
 }
 
-/// Portable, keyboard-layout-independent ids for physical keys — the game owns
-/// what they mean. Unmapped keys return 0 (dropped). Extend as games need more;
-/// only the numbering must stay in sync with the CLIF-side key constants.
-fn map_key_code(code: winit::keyboard::KeyCode) -> i64 {
-    use winit::keyboard::KeyCode as K;
-    match code {
-        K::Escape => 1,
-        K::Space => 2,
-        K::ArrowLeft => 3,
-        K::ArrowRight => 4,
-        K::ArrowUp => 5,
-        K::ArrowDown => 6,
-        K::KeyW => 10,
-        K::KeyA => 11,
-        K::KeyS => 12,
-        K::KeyD => 13,
-        _ => 0,
-    }
+thread_local! {
+    static LOOP: RefCell<Option<Loop>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone, Copy)]
-struct EventRecord {
-    kind: i64,
-    a: i64,
-    b: i64,
-    c: i64,
+/// An open window, as the program holds it. A wgpu surface made from it
+/// shares it, so the window lives as long as either.
+pub(crate) struct Win {
+    window: Arc<Window>,
 }
 
-struct WindowState {
-    // `surface` borrows `window`'s raw handles via the 'static transmute in
-    // recreate_surface. Rust drops fields in declaration order, so `surface`
-    // MUST be declared before `window` to be dropped first — otherwise the
-    // window would be freed while the surface still references it.
-    surface: Surface<'static>,
-    // Never read after construction, but keeps the OS window alive for `surface`.
-    #[allow(dead_code)]
-    window: Window,
-    config: SurfaceConfiguration,
-    pipeline: RenderPipeline,
-    // Derived from the shader via auto-layout, not declared here (no sync).
-    bind_group_layout: wgpu::BindGroupLayout,
+/// The window `win` holds, shared; `None` for no handle.
+pub(crate) unsafe fn shared(win: i64) -> Option<Arc<Window>> {
+    (win as *const Win).as_ref().map(|w| w.window.clone())
 }
 
-pub(crate) struct CraneliftWindowContext {
-    event_loop: EventLoop<()>,
-    gpu: GpuHandles,
-    window: Option<WindowState>,
-    pending: VecDeque<EventRecord>,
-}
-
-/// The event loop, created on whichever thread runs the program.
-///
-/// winit refuses by default to create one off the main thread. Linux (X11 and
-/// Wayland) and Windows lift that when asked, so a host may execute from any
-/// thread there. macOS cannot: AppKit requires the main thread, so a window
-/// program must be executed from it — a contract on the host, not something
-/// the runtime can arrange.
-fn new_event_loop() -> EventLoop<()> {
+fn new_event_loop() -> Option<EventLoop<()>> {
     let mut builder = EventLoop::builder();
     #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
     {
@@ -108,375 +77,193 @@ fn new_event_loop() -> EventLoop<()> {
         use winit::platform::windows::EventLoopBuilderExtWindows;
         builder.with_any_thread(true);
     }
-    builder.build().expect("failed to create winit event loop")
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| builder.build().ok())).ok().flatten()
 }
 
-pub(crate) unsafe extern "C" fn cl_window_init(ctx_slot_ptr: *mut *mut CraneliftWindowContext) {
-    let raw = std::panic::catch_unwind(|| {
-        let event_loop = new_event_loop();
-        let ctx = Box::new(CraneliftWindowContext {
-            event_loop,
-            gpu: cached_gpu_handles(),
-            window: None,
-            pending: VecDeque::new(),
-        });
-        Box::into_raw(ctx)
-    })
-    .unwrap_or(std::ptr::null_mut());
-    let _ = write_ctx_slot(ctx_slot_ptr, raw);
-}
-
-/// Open the single window and build the blit pipeline from the Lean-supplied
-/// WGSL at `blit_ptr` (see the module docs for the shader contract).
-pub(crate) unsafe extern "C" fn cl_window_open(
-    ctx_ptr: *mut CraneliftWindowContext,
-    width: i64,
-    height: i64,
-    title_ptr: *const u8,
-    title_len: i64,
-    blit_ptr: *const u8,
-    blit_len: i64,
-) -> i32 {
-    if width <= 0
-        || height <= 0
-        || title_len < 0
-        || title_ptr.is_null()
-        || blit_len <= 0
-        || blit_ptr.is_null()
-    {
-        return -1;
+/// The HID usage of a key, `0` for one not here.
+fn hid(code: KeyCode) -> i64 {
+    use KeyCode as K;
+    let letters = [
+        K::KeyA, K::KeyB, K::KeyC, K::KeyD, K::KeyE, K::KeyF, K::KeyG, K::KeyH, K::KeyI, K::KeyJ, K::KeyK,
+        K::KeyL, K::KeyM, K::KeyN, K::KeyO, K::KeyP, K::KeyQ, K::KeyR, K::KeyS, K::KeyT, K::KeyU, K::KeyV,
+        K::KeyW, K::KeyX, K::KeyY, K::KeyZ,
+    ];
+    let digits =
+        [K::Digit1, K::Digit2, K::Digit3, K::Digit4, K::Digit5, K::Digit6, K::Digit7, K::Digit8, K::Digit9, K::Digit0];
+    let fkeys = [K::F1, K::F2, K::F3, K::F4, K::F5, K::F6, K::F7, K::F8, K::F9, K::F10, K::F11, K::F12];
+    if let Some(i) = letters.iter().position(|&k| k == code) {
+        return 4 + i as i64;
     }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Some(ctx) = read_ctx_mut::<CraneliftWindowContext>(ctx_ptr) else {
-            return -1;
-        };
-        if ctx.window.is_some() {
-            return -1; // one window per context
+    if let Some(i) = digits.iter().position(|&k| k == code) {
+        return 30 + i as i64;
+    }
+    if let Some(i) = fkeys.iter().position(|&k| k == code) {
+        return 58 + i as i64;
+    }
+    match code {
+        K::Enter => 40,
+        K::Escape => 41,
+        K::Backspace => 42,
+        K::Tab => 43,
+        K::Space => 44,
+        K::Minus => 45,
+        K::Equal => 46,
+        K::BracketLeft => 47,
+        K::BracketRight => 48,
+        K::Backslash => 49,
+        K::Semicolon => 51,
+        K::Quote => 52,
+        K::Backquote => 53,
+        K::Comma => 54,
+        K::Period => 55,
+        K::Slash => 56,
+        K::CapsLock => 57,
+        K::Insert => 73,
+        K::Home => 74,
+        K::PageUp => 75,
+        K::Delete => 76,
+        K::End => 77,
+        K::PageDown => 78,
+        K::ArrowRight => 79,
+        K::ArrowLeft => 80,
+        K::ArrowDown => 81,
+        K::ArrowUp => 82,
+        K::ControlLeft => 224,
+        K::ShiftLeft => 225,
+        K::AltLeft => 226,
+        K::SuperLeft => 227,
+        K::ControlRight => 228,
+        K::ShiftRight => 229,
+        K::AltRight => 230,
+        K::SuperRight => 231,
+        _ => 0,
+    }
+}
+
+fn record(event: WindowEvent) -> Option<Record> {
+    let pressed = |s: ElementState| s == ElementState::Pressed;
+    match event {
+        WindowEvent::CloseRequested => Some([1, 0, 0, 0]),
+        WindowEvent::Resized(size) => Some([2, i64::from(size.width), i64::from(size.height), 0]),
+        WindowEvent::KeyboardInput { event, .. } => {
+            let PhysicalKey::Code(code) = event.physical_key else { return None };
+            let usage = hid(code);
+            (usage != 0).then(|| [if pressed(event.state) { 3 } else { 4 }, usage, 0, 0])
         }
-        let title = match std::str::from_utf8(std::slice::from_raw_parts(
-            title_ptr,
-            title_len as usize,
-        )) {
-            Ok(s) => s,
-            Err(_) => return -1,
-        };
-        let blit_src =
-            match std::str::from_utf8(std::slice::from_raw_parts(blit_ptr, blit_len as usize)) {
-                Ok(s) => s,
-                Err(_) => return -1,
+        WindowEvent::CursorMoved { position, .. } => {
+            Some([5, position.x.to_bits() as i64, position.y.to_bits() as i64, 0])
+        }
+        WindowEvent::MouseInput { state, button, .. } => {
+            let b = match button {
+                MouseButton::Left => 1,
+                MouseButton::Right => 2,
+                MouseButton::Middle => 3,
+                _ => return None,
             };
-        let attrs = Window::default_attributes()
-            .with_title(title)
-            .with_inner_size(LogicalSize::new(width as f64, height as f64));
-        #[allow(deprecated)]
-        let window = match ctx.event_loop.create_window(attrs) {
-            Ok(w) => w,
-            Err(_) => return -1,
-        };
-
-        // Surface lives as long as the window (kept together in WindowState,
-        // dropped before it). See recreate_surface for the 'static rationale.
-        let Some(surface) = recreate_surface(&ctx.gpu, &window) else {
-            return -1;
-        };
-
-        let size = window.inner_size();
-        let caps = surface.get_capabilities(&ctx.gpu.adapter);
-        // Prefer a non-sRGB format so the fragment writes the game's 0-255 bytes
-        // straight through without a gamma re-encode.
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .unwrap_or_else(|| caps.formats[0]);
-        let config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo, // vsync: paces the loop, no tearing
-            desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-        };
-        surface.configure(&ctx.gpu.device, &config);
-
-        let (pipeline, bind_group_layout) =
-            match create_blit_pipeline(&ctx.gpu.device, format, blit_src) {
-                Some(p) => p,
-                None => return -1,
-            };
-
-        ctx.window = Some(WindowState {
-            surface,
-            window,
-            config,
-            pipeline,
-            bind_group_layout,
-        });
-        0
-    }))
-    .unwrap_or(-1)
-}
-
-pub(crate) unsafe extern "C" fn cl_window_poll(
-    ctx_ptr: *mut CraneliftWindowContext,
-    events_ptr: *mut u8,
-    max_events: i32,
-) -> i32 {
-    if max_events < 0 || events_ptr.is_null() {
-        return -1;
-    }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Some(ctx) = read_ctx_mut::<CraneliftWindowContext>(ctx_ptr) else {
-            return -1;
-        };
-        pump_events(ctx);
-        drain_events(&mut ctx.pending, events_ptr, max_events as usize) as i32
-    }))
-    .unwrap_or(-1)
-}
-
-/// Blit a game framebuffer (a wgpu storage buffer of packed RGBA u32, produced
-/// by the compute FFI on the same device) to the window, zero-copy. The
-/// framebuffer size is baked into the blit shader, so no dimensions are passed.
-///
-/// `gpu_ctx_ptr` is the compute context that owns `buf_id`; the same physical
-/// device backs both contexts, so the buffer is bound directly into the blit
-/// pipeline with no host transfer.
-pub(crate) unsafe extern "C" fn cl_window_present_gpu_buffer(
-    ctx_ptr: *mut CraneliftWindowContext,
-    gpu_ctx_ptr: *mut CraneliftGpuContext,
-    buf_id: i32,
-) -> i32 {
-    if buf_id < 0 {
-        return -1;
-    }
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Some(ctx) = read_ctx_mut::<CraneliftWindowContext>(ctx_ptr) else {
-            return -1;
-        };
-        pump_events(ctx);
-        let Some(gpu) = read_ctx_mut::<CraneliftGpuContext>(gpu_ctx_ptr) else {
-            return -1;
-        };
-        // Ensure the render dispatch that filled the buffer is submitted before
-        // we sample it (same queue => ordered).
-        gpu.flush_pending();
-        let Some(pixel_buf) = gpu.buffer(buf_id as usize) else {
-            return -1;
-        };
-        let Some(state) = ctx.window.as_mut() else {
-            return -1;
-        };
-
-        let bind_group = ctx.gpu.device.create_bind_group(&BindGroupDescriptor {
-            label: Some("base_window_blit_bg"),
-            layout: &state.bind_group_layout,
-            entries: &[BindGroupEntry {
-                binding: 0,
-                resource: BindingResource::Buffer(pixel_buf.as_entire_buffer_binding()),
-            }],
-        });
-
-        let frame = match state.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
-                state.surface.configure(&ctx.gpu.device, &state.config);
-                match state.surface.get_current_texture() {
-                    Ok(f) => f,
-                    Err(_) => return -1,
-                }
-            }
-            Err(SurfaceError::Timeout) => return 0,
-            Err(SurfaceError::OutOfMemory) => return -1,
-        };
-        let view = frame.texture.create_view(&TextureViewDescriptor::default());
-        let mut encoder = ctx
-            .gpu
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("base_window_present"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("base_window_present_pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color::BLACK),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&state.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            Some([if pressed(state) { 6 } else { 7 }, b, 0, 0])
         }
-        ctx.gpu.queue.submit(Some(encoder.finish()));
-        frame.present();
-        0
-    }))
-    .unwrap_or(-1)
-}
-
-pub(crate) unsafe extern "C" fn cl_window_cleanup(ctx_slot_ptr: *mut *mut CraneliftWindowContext) {
-    let ctx_ptr = clear_ctx_slot::<CraneliftWindowContext>(ctx_slot_ptr);
-    if !ctx_ptr.is_null() {
-        drop(Box::from_raw(ctx_ptr));
+        _ => None,
     }
 }
 
-/// Pop up to `max_events` records off `pending` into the caller's 32-byte-strided
-/// event buffer, returning the number written. Display-independent (unit-tested).
-fn drain_events(
-    pending: &mut VecDeque<EventRecord>,
-    events_ptr: *mut u8,
-    max_events: usize,
-) -> usize {
-    let count = pending.len().min(max_events);
-    for i in 0..count {
-        let ev = pending.pop_front().unwrap();
-        unsafe {
-            let base = events_ptr.add(i * EVENT_BYTES);
-            std::ptr::write_unaligned(base as *mut i64, ev.kind);
-            std::ptr::write_unaligned(base.add(8) as *mut i64, ev.a);
-            std::ptr::write_unaligned(base.add(16) as *mut i64, ev.b);
-            std::ptr::write_unaligned(base.add(24) as *mut i64, ev.c);
-        }
-    }
-    count
-}
-
-fn recreate_surface(gpu: &GpuHandles, window: &Window) -> Option<Surface<'static>> {
-    // SAFETY: the surface is stored alongside the window in WindowState and
-    // dropped before it, so the raw handles it borrows stay valid.
-    let surface = gpu.instance.create_surface(window).ok()?;
-    Some(unsafe { std::mem::transmute::<Surface<'_>, Surface<'static>>(surface) })
-}
-
-/// Build the fullscreen-triangle blit pipeline from the Lean-supplied WGSL.
-/// Uses wgpu auto-layout (`layout: None`) so the bind-group layout is reflected
-/// from the shader rather than declared here; returns that derived layout.
-fn create_blit_pipeline(
-    device: &wgpu::Device,
-    format: TextureFormat,
-    shader_src: &str,
-) -> Option<(RenderPipeline, wgpu::BindGroupLayout)> {
-    let shader = device.create_shader_module(ShaderModuleDescriptor {
-        label: Some("base_window_blit_shader"),
-        source: ShaderSource::Wgsl(shader_src.into()),
-    });
-    let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: Some("base_window_blit_pipeline"),
-        layout: None, // auto: derive the bind-group layout from the shader
-        vertex: VertexState {
-            module: &shader,
-            entry_point: "vs_main",
-            buffers: &[],
-            compilation_options: PipelineCompilationOptions::default(),
-        },
-        primitive: PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: MultisampleState::default(),
-        fragment: Some(FragmentState {
-            module: &shader,
-            entry_point: "fs_main",
-            targets: &[Some(ColorTargetState {
-                format,
-                blend: None,
-                write_mask: ColorWrites::ALL,
-            })],
-            compilation_options: PipelineCompilationOptions::default(),
-        }),
-        multiview: None,
-    });
-    let bind_group_layout = pipeline.get_bind_group_layout(0);
-    Some((pipeline, bind_group_layout))
-}
-
-fn pump_events(ctx: &mut CraneliftWindowContext) {
-    let pending = &mut ctx.pending;
-    let window_state = &mut ctx.window;
-    let device = &ctx.gpu.device;
+/// What has arrived, onto each open window's events.
+fn pump(l: &mut Loop) {
+    let pending = &mut l.pending;
     #[allow(deprecated)]
-    let _ = ctx
-        .event_loop
-        .pump_events(Some(Duration::ZERO), |event, _target| {
-            let Event::WindowEvent { event, .. } = event else {
-                return;
-            };
-            match event {
-                WindowEvent::CloseRequested => {
-                    pending.push_back(EventRecord {
-                        kind: EVENT_CLOSE,
-                        a: 0,
-                        b: 0,
-                        c: 0,
-                    });
-                }
-                WindowEvent::Resized(size) => {
-                    if let Some(state) = window_state.as_mut() {
-                        if size.width > 0 && size.height > 0 {
-                            state.config.width = size.width;
-                            state.config.height = size.height;
-                            state.surface.configure(device, &state.config);
-                        }
-                    }
-                    pending.push_back(EventRecord {
-                        kind: EVENT_RESIZE,
-                        a: i64::from(size.width),
-                        b: i64::from(size.height),
-                        c: 0,
-                    });
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    let winit::keyboard::PhysicalKey::Code(code) = event.physical_key else {
-                        return;
-                    };
-                    let key = map_key_code(code);
-                    if key == 0 {
-                        return;
-                    }
-                    pending.push_back(EventRecord {
-                        kind: if event.state == ElementState::Pressed {
-                            EVENT_KEY_DOWN
-                        } else {
-                            EVENT_KEY_UP
-                        },
-                        a: key,
-                        b: 0,
-                        c: 0,
-                    });
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    pending.push_back(EventRecord {
-                        kind: EVENT_MOUSE_MOVE,
-                        a: position.x.round() as i64,
-                        b: position.y.round() as i64,
-                        c: 0,
-                    });
-                }
-                WindowEvent::MouseInput { state, button, .. } => {
-                    pending.push_back(EventRecord {
-                        kind: if state == ElementState::Pressed {
-                            EVENT_MOUSE_DOWN
-                        } else {
-                            EVENT_MOUSE_UP
-                        },
-                        a: map_mouse_button(button),
-                        b: 0,
-                        c: 0,
-                    });
-                }
-                _ => {}
+    let _ = l.events.pump_events(Some(Duration::ZERO), |event, _| {
+        if let Event::WindowEvent { window_id, event } = event {
+            if let (Some(q), Some(r)) = (pending.get_mut(&window_id), record(event)) {
+                q.push_back(r);
             }
-        });
+        }
+    });
+}
+
+fn with_loop<T>(f: impl FnOnce(&mut Loop) -> T) -> Option<T> {
+    LOOP.with(|l| l.borrow_mut().as_mut().map(f))
+}
+
+/// The thread's event loop, started on the first call: `true`, or `false`
+/// where there is no display or another thread has it.
+unsafe extern "C" fn base_window_init() -> bool {
+    LOOP.with(|l| {
+        let mut l = l.borrow_mut();
+        if l.is_none() {
+            *l = new_event_loop().map(|events| Loop { events, pending: HashMap::new() });
+        }
+        l.is_some()
+    })
+}
+
+/// A window `width` by `height` logical pixels titled with the C string at
+/// `title`, or null — for a size that is not positive too.
+unsafe extern "C" fn base_window_open(title: *const c_char, width: i32, height: i32) -> *mut Win {
+    if width <= 0 || height <= 0 {
+        return std::ptr::null_mut();
+    }
+    let title = super::read_cstr_ptr(title as *const u8);
+    let attrs = Window::default_attributes()
+        .with_title(title)
+        .with_inner_size(LogicalSize::new(f64::from(width), f64::from(height)));
+    with_loop(|l| {
+        #[allow(deprecated)]
+        let window = l.events.create_window(attrs).ok()?;
+        l.pending.insert(window.id(), VecDeque::new());
+        let win = Win { window: Arc::new(window) };
+        Some(Box::into_raw(Box::new(win)))
+    })
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// `win` closed: its window and its events not yet read are gone.
+unsafe extern "C" fn base_window_close(win: *mut Win) {
+    let win = Box::from_raw(win);
+    let id = win.window.id();
+    with_loop(|l| l.pending.remove(&id));
+    drop(win);
+}
+
+/// What has arrived, onto each open window's events.
+unsafe extern "C" fn base_window_pump() {
+    with_loop(pump);
+}
+
+/// What has arrived pumped, and `win`'s next event written at `out` as a
+/// record: `true`, or `false` with nothing written when there is none.
+unsafe extern "C" fn base_window_poll(win: *mut Win, out: *mut Record) -> bool {
+    let id = (*win).window.id();
+    let next = with_loop(|l| {
+        pump(l);
+        l.pending.get_mut(&id).and_then(VecDeque::pop_front)
+    })
+    .flatten();
+    match next {
+        Some(r) => {
+            std::ptr::write_unaligned(out, r);
+            true
+        }
+        None => false,
+    }
+}
+
+/// `win`'s size in pixels: the width, and the height in the upper 32 bits.
+unsafe extern "C" fn base_window_pixels(win: *mut Win) -> i64 {
+    let size = (*win).window.inner_size();
+    i64::from(size.width) | (i64::from(size.height) << 32)
+}
+
+/// The address of `symbol`, or `None` for one this library does not have.
+pub(crate) fn linked(symbol: &str) -> Option<usize> {
+    Some(match symbol {
+        "base_window_init" => base_window_init as usize,
+        "base_window_open" => base_window_open as usize,
+        "base_window_close" => base_window_close as usize,
+        "base_window_pump" => base_window_pump as usize,
+        "base_window_poll" => base_window_poll as usize,
+        "base_window_pixels" => base_window_pixels as usize,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -484,68 +271,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn drain_events_layout_and_clamp() {
-        let mut pending: VecDeque<EventRecord> = VecDeque::new();
-        pending.push_back(EventRecord { kind: EVENT_KEY_DOWN, a: 4, b: 0, c: 0 });
-        pending.push_back(EventRecord { kind: EVENT_CLOSE, a: 0, b: 0, c: 0 });
-        pending.push_back(EventRecord { kind: EVENT_RESIZE, a: 800, b: 600, c: 0 });
-
-        // Buffer for 2 events; max_events clamps to 2, leaving 1 pending.
-        let mut buf = vec![0u8; 2 * EVENT_BYTES];
-        let n = drain_events(&mut pending, buf.as_mut_ptr(), 2);
-        assert_eq!(n, 2);
-        assert_eq!(pending.len(), 1, "unwritten events stay queued");
-
-        let read = |off: usize| i64::from_le_bytes(buf[off..off + 8].try_into().unwrap());
-        // Record 0: kind at +0, a at +8.
-        assert_eq!(read(0), EVENT_KEY_DOWN);
-        assert_eq!(read(8), 4);
-        // Record 1 begins at +EVENT_BYTES.
-        assert_eq!(read(EVENT_BYTES), EVENT_CLOSE);
-        // The leftover is the resize, still at the front.
-        assert_eq!(pending.front().unwrap().kind, EVENT_RESIZE);
-    }
-
-    // The arg-validation guards run before any window/display work, so these
-    // are safe headless. A null ctx is fine: invalid args short-circuit before
-    // the ctx is read, and valid args then hit the null-ctx check.
-    #[test]
-    fn null_ctx_returns_neg1() {
-        let title = b"x";
-        let blit = b"shader";
-        let mut buf = [0u8; EVENT_BYTES];
-        unsafe {
-            assert_eq!(
-                cl_window_open(
-                    std::ptr::null_mut(), 640, 360,
-                    title.as_ptr(), 1, blit.as_ptr(), 6
-                ),
-                -1
-            );
-            assert_eq!(cl_window_poll(std::ptr::null_mut(), buf.as_mut_ptr(), 1), -1);
-            assert_eq!(
-                cl_window_present_gpu_buffer(std::ptr::null_mut(), std::ptr::null_mut(), 0),
-                -1
-            );
-        }
-    }
-
-    #[test]
-    fn invalid_args_return_neg1() {
-        let title = b"x";
-        let blit = b"shader";
-        let mut buf = [0u8; EVENT_BYTES];
-        let n = std::ptr::null_mut();
-        unsafe {
-            assert_eq!(cl_window_open(n, 0, 360, title.as_ptr(), 1, blit.as_ptr(), 6), -1); // width<=0
-            assert_eq!(cl_window_open(n, 640, 0, title.as_ptr(), 1, blit.as_ptr(), 6), -1); // height<=0
-            assert_eq!(cl_window_open(n, 640, 360, title.as_ptr(), -1, blit.as_ptr(), 6), -1); // title_len<0
-            assert_eq!(cl_window_open(n, 640, 360, title.as_ptr(), 1, blit.as_ptr(), 0), -1); // blit_len<=0
-            assert_eq!(cl_window_open(n, 640, 360, std::ptr::null(), 1, blit.as_ptr(), 6), -1); // null title
-            assert_eq!(cl_window_open(n, 640, 360, title.as_ptr(), 1, std::ptr::null(), 6), -1); // null blit
-            assert_eq!(cl_window_poll(n, buf.as_mut_ptr(), -1), -1); // negative max
-            assert_eq!(cl_window_poll(n, std::ptr::null_mut(), 1), -1); // null events buf
-            assert_eq!(cl_window_present_gpu_buffer(n, std::ptr::null_mut(), -1), -1); // buf_id<0
-        }
+    fn hid_usages() {
+        assert_eq!(hid(KeyCode::KeyA), 4);
+        assert_eq!(hid(KeyCode::KeyZ), 29);
+        assert_eq!(hid(KeyCode::Digit1), 30);
+        assert_eq!(hid(KeyCode::Digit0), 39);
+        assert_eq!(hid(KeyCode::F12), 69);
+        assert_eq!(hid(KeyCode::Escape), 41);
+        assert_eq!(hid(KeyCode::ArrowUp), 82);
+        assert_eq!(hid(KeyCode::NumLock), 0);
     }
 }

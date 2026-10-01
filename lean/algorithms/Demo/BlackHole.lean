@@ -1,8 +1,12 @@
 module
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
 public import Scan.Ship
 meta import Scan.Ship
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
@@ -144,9 +148,6 @@ def aspectRatio (spec : BlackHoleSpec) : Float :=
 
 def cosDPhi (spec : BlackHoleSpec) : Float := Float.cos spec.dPhi
 def sinDPhi (spec : BlackHoleSpec) : Float := Float.sin spec.dPhi
-
-def fImm (x : Float) : FImm := AlgorithmLib.PTX.FImm.float x
-def fNat (n : Nat) : FImm := AlgorithmLib.PTX.FImm.nat n
 
 /-- ============================================================
     BMP header (identical to the legacy renderer).
@@ -1435,9 +1436,6 @@ def hdrPixelBytes (spec : BlackHoleSpec) : Nat := pixelCount spec * 16
 open AlgorithmLib.Prog
 
 
-/-- `cl_file_write` then the CUDA entry points, in callee-table order. -/
-abbrev fnWrite : Ffi := .fileWrite
-
 def code (spec : BlackHoleSpec) : Prog V L Unit :=
   do
     let ptr ← basePtr
@@ -1528,40 +1526,6 @@ def defaultBlackHole : BlackHoleSpec :=
     (fovYDeg := 45.0)
     (dPhi := 0.004)
     (rMax := 100.0)
-    (filename := "blackhole.bmp")
-    (by decide) (by decide) (by decide) (by decide)
-    (by native_decide) (by native_decide) (by native_decide)
-    (by native_decide) (by native_decide) (by native_decide)
-
-/-- Well-formed at the spec that ships. -/
-
-def previewBlackHole : BlackHoleSpec :=
-  checkedBlackHole
-    (width := 640) (height := 360) (stepCount := 400) (samplesPerPixel := 4)
-    (schwarzschildRadius := 1.0)
-    (diskInner := 3.0)
-    (diskOuter := 10.0)
-    (cameraHeight := 3.0)
-    (cameraDistance := 12.0)
-    (fovYDeg := 55.0)
-    (dPhi := 0.012)
-    (rMax := 80.0)
-    (filename := "blackhole.bmp")
-    (by decide) (by decide) (by decide) (by decide)
-    (by native_decide) (by native_decide) (by native_decide)
-    (by native_decide) (by native_decide) (by native_decide)
-
-def edgeOnBlackHole : BlackHoleSpec :=
-  checkedBlackHole
-    (width := 1280) (height := 720) (stepCount := 1000) (samplesPerPixel := 32)
-    (schwarzschildRadius := 1.0)
-    (diskInner := 3.0)
-    (diskOuter := 14.0)
-    (cameraHeight := 1.2)
-    (cameraDistance := 18.0)
-    (fovYDeg := 45.0)
-    (dPhi := 0.005)
-    (rMax := 120.0)
     (filename := "blackhole.bmp")
     (by decide) (by decide) (by decide) (by decide)
     (by native_decide) (by native_decide) (by native_decide)

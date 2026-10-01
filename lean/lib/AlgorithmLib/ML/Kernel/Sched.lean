@@ -1,6 +1,6 @@
 module
-public import AlgorithmLib.ML.Kernel.Library
-meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Ptx.Print
+meta import AlgorithmLib.ML.Ptx.Print
 public import AlgorithmLib.ML.Kernel.Rewrite
 meta import AlgorithmLib.ML.Kernel.Rewrite
 import all Init.Data.Repr
@@ -31,12 +31,6 @@ def Sched.trips : Sched → Nat → Nat
   | .vec4,    n => n / 128
   | .strided, n => n / 32
   | .blocked, n => n / 32
-
-/-- Elements consumed per lane per step. -/
-def Sched.width : Sched → Nat
-  | .vec4    => 4
-  | .strided => 1
-  | .blocked => 1
 
 /-- **The kernel for a choice.**  Both arms are schemas that were already
     proven; this is a menu over them, not new machinery. -/
@@ -150,11 +144,5 @@ theorem schedAgree_refl (s : Sched) : SchedAgree s s := fun _ _ _ _ _ _ => rfl
 
 /-- The menu, for a tool or a docstring to enumerate. -/
 def Sched.all : List Sched := [.vec4, .strided, .blocked]
-
-/-- A one-line description of each choice. -/
-def Sched.describe : Sched → String
-  | .vec4    => "ld.global.v4.f32, 4 contiguous elements per lane per step, n/128 trips"
-  | .strided => "ld.global.f32, 1 element per lane per step, n/32 trips, free addressing"
-  | .blocked => "ld.global.f32, lane l walks the contiguous run l*(n/32)…, n/32 trips"
 
 end AlgorithmLib.ML

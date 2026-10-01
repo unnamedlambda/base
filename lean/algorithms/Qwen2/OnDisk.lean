@@ -1,22 +1,17 @@
 module
 public import Lean
+public import AlgorithmLib.Surface.Link
+meta import AlgorithmLib.Surface.Link
 public import Std
-public import AlgorithmLib.Gen
-meta import AlgorithmLib.Gen
-public import AlgorithmLib.Surface.Cuda
-meta import AlgorithmLib.Surface.Cuda
-public import AlgorithmLib.Surface.ProgCuda
-meta import AlgorithmLib.Surface.ProgCuda
-public import Qwen2.Common
-meta import Qwen2.Common
 public import Scan.Layout
 meta import Scan.Layout
 public import Scan.Ship
 meta import Scan.Ship
+public import Qwen2.Common
+meta import Qwen2.Common
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 @[expose] public section
-
 
 open Lean
 open AlgorithmLib
@@ -264,9 +259,6 @@ def buildSetup (clif : List FuncData) : Artifact := {
   required_memory := MEM_SIZE,
   initial_memory := buildInitialMemory
 }
-
-/-- Orchestrator at `fn41` runs the full pipeline (see `clifIR`). -/
-def qwen2OnDiskAlgorithm : UInt32 := 41
 
 -- ── The memory map, as data ──────────────────────────────────────────────────
 
