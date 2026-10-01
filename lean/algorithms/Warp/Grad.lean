@@ -202,7 +202,7 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end GradWarp
 
-def main (args : List String) : IO Unit := do
+def Warp.Grad.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie GradWarp.clifIR
   emitArtifacts outDir (GradWarp.artifacts clif)
@@ -395,4 +395,4 @@ theorem grad_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
 
 end GradWarp
 
-#eval ShipScan.check "Warp.Grad"
+#eval ShipScan.check "Warp.Grad" `Warp.Grad.main

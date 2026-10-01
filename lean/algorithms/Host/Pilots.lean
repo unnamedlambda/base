@@ -452,7 +452,7 @@ open AlgorithmLib in
 /-- Each pilot's term artifact beside the original it is compared against, so
     the runtime can be asked whether the two behave the same. The norm's
     original is `PythonBenchmarks`', which that suite also runs. -/
-def main (args : List String) : IO Unit := do
+def Host.Pilots.main (args : List String) : IO Unit := do
   let dir ← requireOutputDir args
   let histProg ← Prog.orDie HProgPilots.Hist.program
   let clampProg ← Prog.orDie HProgPilots.ClampSum.program
@@ -494,4 +494,4 @@ def main (args : List String) : IO Unit := do
                    — {n} observations, {calls} of them FFI calls"
 
 
-#eval ShipScan.check "Host.Pilots"
+#eval ShipScan.check "Host.Pilots" `Host.Pilots.main

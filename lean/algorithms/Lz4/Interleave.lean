@@ -12,7 +12,7 @@ set_option maxRecDepth 1000000
 /-!
   # `LaunchAgreesPerWarp`, derived rather than assumed
 
-  `Algorithm.launch_correct` takes `LaunchAgreesPerWarp` — that the final memory
+  `Lz4Ship.launch_correct` takes `LaunchAgreesPerWarp` — that the final memory
   of the real launch agrees, on each warp's output range, with what that warp
   would have written running alone.  It is where the platform's memory model
   would enter, if it had to.
@@ -36,7 +36,7 @@ set_option maxRecDepth 1000000
 
 namespace Lz4Interleave
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
 /-- Warp `w`'s output range: the bytes `ShippedCorrect` says it writes. -/
@@ -206,7 +206,7 @@ theorem launchAgrees_of_confined (b : Nat) (ht : TailOOB b) (inPtr outPtr : Nat)
     (hAt : ∀ w, (siter (WP.mk b).kernel (nAt w)
       (initSt w.val inPtr outPtr gm smemB)).pc = 272)
     (hlong : ∀ w, nAt w + 1 ≤ schedCount sched w) :
-    Algorithm.LaunchAgreesPerWarp b inPtr outPtr gm smemB
+    Lz4Ship.LaunchAgreesPerWarp b inPtr outPtr gm smemB
       (crun (WP.mk b).kernel sched ⟨launchInit b inPtr outPtr gm smemB, gm⟩).gmem := by
   intro w hw ss' hreach hpc272 j hj1 hj2
   let wf : Fin (WP.mk b).numBlk := ⟨w, hw⟩

@@ -14,7 +14,7 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.PTX
 
-namespace Algorithm
+namespace BlackHole
 
 structure PositiveNat where
   value : Nat
@@ -1567,12 +1567,12 @@ def edgeOnBlackHole : BlackHoleSpec :=
     (by native_decide) (by native_decide) (by native_decide)
     (by native_decide) (by native_decide) (by native_decide)
 
-end Algorithm
+end BlackHole
 
-def main (args : List String) : IO Unit := do
-  let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultBlackHole)
+def Demo.BlackHole.main (args : List String) : IO Unit := do
+  let (cfg, alg) ← Prog.orDie (BlackHole.renderScene BlackHole.defaultBlackHole)
   let jsonEntry := artifactEntry "blackhole_app" cfg
   let outputDir ← requireOutputDir args
   emitArtifacts outputDir #[jsonEntry]
 
-#eval ShipScan.check "Demo.BlackHole"
+#eval ShipScan.check "Demo.BlackHole" `Demo.BlackHole.main

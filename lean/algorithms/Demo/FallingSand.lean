@@ -14,7 +14,7 @@ open AlgorithmLib
 open AlgorithmLib.Layout
 open AlgorithmLib.WGSL
 
-namespace Algorithm
+namespace FallingSand
 
 def imageWidth  : Nat := 640
 def imageHeight : Nat := 360
@@ -584,12 +584,12 @@ def mainAlgorithm   : UInt32 := IR.mainFnIdx
 def grainFallsAlg   : UInt32 := 2
 def conservationAlg : UInt32 := 3
 
-end Algorithm
+end FallingSand
 
-def main (args : List String) : IO Unit := do
+def Demo.FallingSand.main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
-  let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
+  let clif ← AlgorithmLib.Prog.orDie FallingSand.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.artifactEntry "falling_sand" (Algorithm.gameSetup clif)]
+    AlgorithmLib.artifactEntry "falling_sand" (FallingSand.gameSetup clif)]
 
-#eval ShipScan.check "Demo.FallingSand"
+#eval ShipScan.check "Demo.FallingSand" `Demo.FallingSand.main

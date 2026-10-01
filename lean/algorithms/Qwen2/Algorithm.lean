@@ -348,11 +348,11 @@ theorem layer_program_computes (gim : Buf → Nat → Nat)
   ⟨layerPlan gim h hm, layer_program_realises_plan gim h hm,
    layer_computes gim h hm R hR st⟩
 
-def main (args : List String) : IO Unit := do
+def Qwen2.Algorithm.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Qwen2.clifIR
   emitArtifacts outDir #[
     artifactEntry "qwen2" (Qwen2.buildSetup clif)
   ]
 
-#eval ShipScan.check "Qwen2.Algorithm"
+#eval ShipScan.check "Qwen2.Algorithm" `Qwen2.Algorithm.main

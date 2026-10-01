@@ -13,7 +13,7 @@ open AlgorithmLib
 open AlgorithmLib.Layout
 open AlgorithmLib.WGSL
 
-namespace Algorithm
+namespace WindowDemo
 
 -- Screen / framebuffer -------------------------------------------------------
 def imageWidth  : Nat := 640
@@ -407,12 +407,12 @@ def moveUpClampAlg : UInt32 := 4
 def quitOnCloseAlg : UInt32 := 5
 def renderPixelAlg : UInt32 := 6
 
-end Algorithm
+end WindowDemo
 
-def main (args : List String) : IO Unit := do
+def Demo.WindowDemo.main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
-  let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
+  let clif ← AlgorithmLib.Prog.orDie WindowDemo.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.artifactEntry "window_demo" (Algorithm.gameSetup clif)]
+    AlgorithmLib.artifactEntry "window_demo" (WindowDemo.gameSetup clif)]
 
-#eval ShipScan.check "Demo.WindowDemo"
+#eval ShipScan.check "Demo.WindowDemo" `Demo.WindowDemo.main

@@ -139,10 +139,10 @@ def report : IO Unit := do
   IO.println s!"[vit] row-chunked elementwise would give {Vit.vUnitsNorm.length} launches, sizes {(List.range 10).map (fun k => (k+1, (szN.filter (· == k+1)).length))}"
   IO.println s!"[vit] schedule: {Vit.vDag.nev} events, {(Vit.vDag.ewait.toList.map List.length).foldl (· + ·) 0} waits"
 
-def main (args : List String) : IO Unit := do
+def Vit.Ship.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Vit.vClifIR
   emitArtifacts outDir (Vit.artifacts clif)
   report
 
-#eval ShipScan.check "Vit.Ship"
+#eval ShipScan.check "Vit.Ship" `Vit.Ship.main

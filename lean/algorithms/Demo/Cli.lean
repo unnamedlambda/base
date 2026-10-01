@@ -15,7 +15,7 @@ open AlgorithmLib
 open AlgorithmLib.Layout
 open AlgorithmLib.PTX
 
-namespace Algorithm
+namespace Cli
 
 structure Fields where
   reserved : Fld (.bytes 64)
@@ -1415,11 +1415,11 @@ def cliConfig (clif : List FuncData) : Artifact := {
 
 def cliAlgorithm : UInt32 := IR.mainFnIdx
 
-end Algorithm
+end Cli
 
-def main (args : List String) : IO Unit := do
+def Demo.Cli.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[artifactEntry "cli_app" (Algorithm.cliConfig clif)]
+  let clif ← Prog.orDie Cli.clifIrSource
+  emitArtifacts outDir #[artifactEntry "cli_app" (Cli.cliConfig clif)]
 
-#eval ShipScan.check "Demo.Cli"
+#eval ShipScan.check "Demo.Cli" `Demo.Cli.main

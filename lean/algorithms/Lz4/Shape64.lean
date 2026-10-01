@@ -22,7 +22,7 @@ the emitted arrays, and this file is where it is *checked* rather than assumed.
 -/
 
 namespace Lz4Sites
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 open AlgorithmLib.LZ4SimtBits
 

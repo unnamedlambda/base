@@ -411,9 +411,9 @@ def result : Except String (Artifact × UInt32) :=
 
 end CsvDemo
 
-def main (args : List String) : IO Unit := do
+def Demo.Csv.main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie CsvDemo.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[artifactEntry "csv_app" cfg]
 
-#eval ShipScan.check "Demo.Csv"
+#eval ShipScan.check "Demo.Csv" `Demo.Csv.main

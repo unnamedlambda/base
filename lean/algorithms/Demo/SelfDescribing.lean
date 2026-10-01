@@ -186,7 +186,7 @@ def shipped : Except String Artifact := do return setup (← clifIR)
 
 end SelfDescribing
 
-def main (args : List String) : IO Unit := do
+def Demo.SelfDescribing.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[artifactEntry "self_describing" (← Prog.orDie SelfDescribing.shipped)]
 

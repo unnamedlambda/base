@@ -31,7 +31,7 @@ namespace Sha256Scan
     already in force.  The hand-written maps elsewhere need the theorem exactly
     because they are hand-written. -/
 def roots : List Name :=
-  [ `Algorithm.clifIrSource ]
+  [ `Sha256.clifIrSource ]
 
 /-- **What this artifact does not state.** -/
 def notYetStated : List String :=

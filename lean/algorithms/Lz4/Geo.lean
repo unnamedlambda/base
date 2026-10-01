@@ -32,7 +32,7 @@ import all Init.Data.List.Sort.Basic
 
 namespace Lz4Sites
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 open AlgorithmLib.LZ4SimtBits
 

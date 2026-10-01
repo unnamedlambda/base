@@ -12,7 +12,7 @@ import all Init.Data.List.Sort.Basic
 open Lean (Json toJson)
 open AlgorithmLib
 
-namespace Algorithm
+namespace Sat
 
 -- ---------------------------------------------------------------------------
 -- DPLL SAT solver for DIMACS CNF
@@ -516,11 +516,11 @@ def satConfig (clif : List FuncData) : Artifact := {
 
 def satAlgorithm : UInt32 := IR.mainFnIdx
 
-end Algorithm
+end Sat
 
-def main (args : List String) : IO Unit := do
+def Demo.Sat.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[artifactEntry "sat_app" (Algorithm.satConfig clif)]
+  let clif ← Prog.orDie Sat.clifIrSource
+  emitArtifacts outDir #[artifactEntry "sat_app" (Sat.satConfig clif)]
 
-#eval ShipScan.check "Demo.Sat"
+#eval ShipScan.check "Demo.Sat" `Demo.Sat.main

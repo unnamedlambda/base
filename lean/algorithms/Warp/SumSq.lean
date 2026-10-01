@@ -186,7 +186,7 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end WarpSumSq
 
-def main (args : List String) : IO Unit := do
+def Warp.SumSq.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie WarpSumSq.clifIR
   emitArtifacts outDir (WarpSumSq.artifacts clif)
@@ -227,4 +227,4 @@ end WarpSumSq
 
 #eval LayoutScan.check "warp_sumsq" [``WarpSumSq.memMap]
 
-#eval ShipScan.check "Warp.SumSq"
+#eval ShipScan.check "Warp.SumSq" `Warp.SumSq.main

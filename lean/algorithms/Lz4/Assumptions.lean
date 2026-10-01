@@ -95,7 +95,7 @@ import all Init.Data.List.Sort.Basic
 
 namespace Lz4Assumptions
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4WarpDSL
 
 /-- **The whole claim for one geometry, written out.**

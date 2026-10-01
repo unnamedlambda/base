@@ -16,7 +16,7 @@ set_option maxRecDepth 8192
 
 namespace Lz4Sites
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
 theorem prologue_at_shipped (w inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)

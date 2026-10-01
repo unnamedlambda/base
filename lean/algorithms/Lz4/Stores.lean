@@ -22,7 +22,7 @@ set_option maxRecDepth 8192
 
 namespace Lz4Sites
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
 /-- The four length stores are at `outBase + lenOff + i`, and the region runs to

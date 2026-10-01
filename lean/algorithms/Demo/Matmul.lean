@@ -317,9 +317,9 @@ def result : Except String (Artifact × UInt32) := do
 
 end Matmul
 
-def main (args : List String) : IO Unit := do
+def Demo.Matmul.main (args : List String) : IO Unit := do
   let (cfg, alg) ← Prog.orDie Matmul.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[artifactEntry "matmul_app" cfg]
 
-#eval ShipScan.check "Demo.Matmul"
+#eval ShipScan.check "Demo.Matmul" `Demo.Matmul.main

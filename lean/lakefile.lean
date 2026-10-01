@@ -56,81 +56,86 @@ lean_lib Lz4 where
 lean_lib Scan where
   globs := #[.submodules `Scan]
 
+-- Each generator's executable: it runs its algorithm module's `main`, so
+-- algorithm modules can be imported together.
+lean_lib Main where
+  globs := #[.submodules `Main]
+
 -- Generators. Every `lean_exe` in this package is one: `main` takes a directory
 -- and writes `<name>.cbor` into it. `lake query algorithmLib/artifacts` builds
 -- and runs them (the target is in `lib/lakefile.lean`).
 lean_exe gencompressalgorithm where
-  root := `Demo.Compress
+  root := `Main.Demo.Compress
 lean_exe gencsvalgorithm where
-  root := `Demo.Csv
+  root := `Main.Demo.Csv
 lean_exe gengradwarpalgorithm where
-  root := `Warp.Grad
+  root := `Main.Warp.Grad
 lean_exe gengemvwarpalgorithm where
-  root := `Warp.Gemv
+  root := `Main.Warp.Gemv
 lean_exe genbackwardwidealgorithm where
-  root := `Warp.BackwardWide
+  root := `Main.Warp.BackwardWide
 lean_exe genfftalgorithm where
-  root := `Demo.Fft
+  root := `Main.Demo.Fft
 lean_exe genfallingsandalgorithm where
-  root := `Demo.FallingSand
+  root := `Main.Demo.FallingSand
 lean_exe genclialgorithm where
-  root := `Demo.Cli
+  root := `Main.Demo.Cli
 lean_exe genbytecountalgorithm where
-  root := `Demo.ByteCount
+  root := `Main.Demo.ByteCount
 lean_exe genselfdescribingalgorithm where
-  root := `Demo.SelfDescribing
+  root := `Main.Demo.SelfDescribing
 lean_exe genbytescrubalgorithm where
-  root := `Demo.ByteScrub
+  root := `Main.Demo.ByteScrub
 lean_exe gencpubenchalgorithm where
-  root := `Bench.Cpu
+  root := `Main.Bench.Cpu
 lean_exe genleanevalalgorithm where
-  root := `Demo.LeanEval
+  root := `Main.Demo.LeanEval
 lean_exe gendrawalgorithm where
-  root := `Demo.Draw
+  root := `Main.Demo.Draw
 lean_exe genblackholealgorithm where
-  root := `Demo.BlackHole
+  root := `Main.Demo.BlackHole
 lean_exe genhprogpilots where
-  root := `Host.Pilots
+  root := `Main.Host.Pilots
 lean_exe genhprogcorpus where
-  root := `Host.Corpus
+  root := `Main.Host.Corpus
 lean_exe genlz4compalgorithm where
-  root := `Lz4.Comp
+  root := `Main.Lz4.Comp
 lean_exe genvitship where
-  root := `Vit.Ship
+  root := `Main.Vit.Ship
 lean_exe genqwen2algorithm where
-  root := `Qwen2.Algorithm
+  root := `Main.Qwen2.Algorithm
 lean_exe genraytracealgorithm where
-  root := `Demo.Raytrace
+  root := `Main.Demo.Raytrace
 lean_exe genmatmulalgorithm where
-  root := `Demo.Matmul
+  root := `Main.Demo.Matmul
 lean_exe genmlpwarpalgorithm where
-  root := `Warp.Mlp
+  root := `Main.Warp.Mlp
 lean_exe gensiluwarpalgorithm where
-  root := `Warp.Silu
+  root := `Main.Warp.Silu
 lean_exe genpythonbenchmarks where
-  root := `Bench.Python
+  root := `Main.Bench.Python
 lean_exe genraymarchdemoalgorithm where
-  root := `Demo.RaymarchDemo
+  root := `Main.Demo.RaymarchDemo
 lean_exe genqwen2ondiskalgorithm where
-  root := `Qwen2.OnDisk
+  root := `Main.Qwen2.OnDisk
 lean_exe genwarpsumsqalgorithm where
-  root := `Warp.SumSq
+  root := `Main.Warp.SumSq
 lean_exe gensatalgorithm where
-  root := `Demo.Sat
+  root := `Main.Demo.Sat
 lean_exe genscenealgorithm where
-  root := `Demo.Scene
+  root := `Main.Demo.Scene
 lean_exe gensha256algorithm where
-  root := `Demo.Sha256
+  root := `Main.Demo.Sha256
 lean_exe genmlpcifaralgorithm where
-  root := `Warp.MlpCifar
+  root := `Main.Warp.MlpCifar
 lean_exe genwindowdemoalgorithm where
-  root := `Demo.WindowDemo
+  root := `Main.Demo.WindowDemo
 
 lean_exe gentokenizertest where
-  root := `Tokenizer.Test
+  root := `Main.Tokenizer.Test
 
 lean_exe gengptossdecode where
-  root := `GptOss.Decode
+  root := `Main.GptOss.Decode
 
 lean_exe gengptossalgorithm where
-  root := `GptOss.Algorithm
+  root := `Main.GptOss.Algorithm

@@ -615,9 +615,9 @@ def buildAlgorithm : UInt32 := IR.mainFnIdx
 
 end LeanEval
 
-def main (args : List String) : IO Unit := do
+def Demo.LeanEval.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie LeanEval.clifIrSource
   emitArtifacts outDir #[artifactEntry "lean_eval_app" (LeanEval.buildSetup clif)]
 
-#eval ShipScan.check "Demo.LeanEval"
+#eval ShipScan.check "Demo.LeanEval" `Demo.LeanEval.main

@@ -30,8 +30,8 @@ namespace SatScan
     the clause index sat once solving is done.  It appears in `memMap` under one
     name, which is why `okB` accepts it. -/
 def roots : List Name :=
-  [ `Algorithm.memMap_ok
-  , `Algorithm.memMap_within ]
+  [ `Sat.memMap_ok
+  , `Sat.memMap_within ]
 
 /-- **What this artifact does not state.** -/
 def notYetStated : List String :=

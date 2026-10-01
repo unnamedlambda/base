@@ -374,9 +374,9 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end CpuBench
 
-def main (args : List String) : IO Unit := do
+def Bench.Cpu.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie CpuBench.clifIR
   emitArtifacts outDir (CpuBench.artifacts clif)
 
-#eval ShipScan.check "Bench.Cpu"
+#eval ShipScan.check "Bench.Cpu" `Bench.Cpu.main

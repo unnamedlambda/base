@@ -1260,9 +1260,8 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end GptOssDecode
 
-def main (args : List String) : IO Unit := do
+def GptOss.Decode.main (args : List String) : IO Unit := do
   let clif ← Prog.orDie GptOssDecode.dClifIR
   emitArtifacts (← requireOutputDir args) (GptOssDecode.artifacts clif)
 
-#eval ShipScan.check "GptOss.Decode"
-
+#eval ShipScan.check "GptOss.Decode" `GptOss.Decode.main

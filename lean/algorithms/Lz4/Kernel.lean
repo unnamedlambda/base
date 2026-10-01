@@ -25,7 +25,7 @@ generator, which is what keeps them clear of a change to the CLIF surface.
 open AlgorithmLib
 open AlgorithmLib.PTX
 
-namespace Algorithm
+namespace Lz4Ship
 
 def corpusBytes : Nat := 209715200   -- 3200 * 65536 (fixed corpus prefix)
 def rLaunches  : Nat := 20
@@ -263,4 +263,4 @@ example : (WP.mk 16).totIn = corpusBytes := by decide
 
 end SeamGuards
 
-end Algorithm
+end Lz4Ship

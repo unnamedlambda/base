@@ -762,7 +762,7 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end BackwardWide
 
-def main (args : List String) : IO Unit := do
+def Warp.BackwardWide.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie BackwardWide.clifIR
   emitArtifacts outDir (BackwardWide.artifacts clif)
@@ -1260,4 +1260,4 @@ theorem bwd_chain (st : WSt) (cta : Nat) (hlt : cta < GRID) :
 
 end BackwardWide
 
-#eval ShipScan.check "Warp.BackwardWide"
+#eval ShipScan.check "Warp.BackwardWide" `Warp.BackwardWide.main

@@ -25,7 +25,7 @@ open Lean
 open AlgorithmLib
 
 /-- The device programs only the Python benchmarks run. -/
-def main (args : List String) : IO Unit := do
+def Bench.Python.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   -- Every body is checked while it is emitted, so a generator that built an
   -- ill-formed one stops here with a message rather than writing an artifact.
@@ -43,4 +43,4 @@ def main (args : List String) : IO Unit := do
     CudaSoftmaxPersist.artifacts softmax ++
     CudaDecodeAttention.artifacts decodeAttn
 
-#eval ShipScan.check "Bench.Python"
+#eval ShipScan.check "Bench.Python" `Bench.Python.main

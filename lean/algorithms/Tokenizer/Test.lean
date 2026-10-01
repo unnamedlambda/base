@@ -166,8 +166,8 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end TokenizerTest
 
-def main (args : List String) : IO Unit := do
+def Tokenizer.Test.main (args : List String) : IO Unit := do
   let clif ← Prog.orDie TokenizerTest.tClifIR
   emitArtifacts (← requireOutputDir args) (TokenizerTest.artifacts clif)
 
-#eval ShipScan.check "Tokenizer.Test"
+#eval ShipScan.check "Tokenizer.Test" `Tokenizer.Test.main

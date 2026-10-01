@@ -14,7 +14,7 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
-namespace Algorithm
+namespace Draw
 
 -- ---------------------------------------------------------------------------
 -- 4096×4096 Mandelbrot set rendered on GPU, written to BMP
@@ -195,11 +195,11 @@ def drawConfig (clif : List FuncData) : Artifact := {
 
 def drawAlgorithm : UInt32 := IR.mainFnIdx
 
-end Algorithm
+end Draw
 
-def main (args : List String) : IO Unit := do
+def Demo.Draw.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[artifactEntry "draw_app" (Algorithm.drawConfig clif)]
+  let clif ← Prog.orDie Draw.clifIrSource
+  emitArtifacts outDir #[artifactEntry "draw_app" (Draw.drawConfig clif)]
 
-#eval ShipScan.check "Demo.Draw"
+#eval ShipScan.check "Demo.Draw" `Demo.Draw.main

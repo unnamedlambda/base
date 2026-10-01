@@ -22,7 +22,7 @@ open Lean (Json)
 open AlgorithmLib
 open AlgorithmLib.PTX
 
-namespace Algorithm
+namespace Lz4Ship
 
 -- The host program as a *builder*, so `Clif`'s scanners can read the blocks it
 -- emits.  `warpClif` is this printed; the two cannot drift because there is only
@@ -115,12 +115,12 @@ def warpArtifactDSL (name : String) (blkLog : Nat) : Except String ArtifactEntry
   return AlgorithmLib.artifactEntry name
     { functions, required_memory := w.memSize, initial_memory := warpPayloadDSL w }
 
-end Algorithm
+end Lz4Ship
 
-def main (args : List String) : IO Unit := do
+def Lz4.Comp.main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
   AlgorithmLib.emitArtifacts outDir #[
-    ← AlgorithmLib.Prog.orDie (Algorithm.warpArtifactDSL "lz4_comp_warpdsl" 15),
-    ← AlgorithmLib.Prog.orDie (Algorithm.warpArtifactDSL "lz4_comp_warpdsl64" 16)]
+    ← AlgorithmLib.Prog.orDie (Lz4Ship.warpArtifactDSL "lz4_comp_warpdsl" 15),
+    ← AlgorithmLib.Prog.orDie (Lz4Ship.warpArtifactDSL "lz4_comp_warpdsl64" 16)]
 
-#eval ShipScan.check "Lz4.Comp"
+#eval ShipScan.check "Lz4.Comp" `Lz4.Comp.main

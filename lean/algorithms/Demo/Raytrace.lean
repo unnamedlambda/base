@@ -15,7 +15,7 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
-namespace Algorithm
+namespace Raytrace
 
 -- ---------------------------------------------------------------------------
 -- 4096x4096 Cornell box path tracer rendered on GPU, written to BMP
@@ -398,11 +398,11 @@ def raytraceConfig (clif : List FuncData) : Artifact := {
 
 def raytraceAlgorithm : UInt32 := IR.mainFnIdx
 
-end Algorithm
+end Raytrace
 
-def main (args : List String) : IO Unit := do
+def Demo.Raytrace.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[artifactEntry "raytrace_app" (Algorithm.raytraceConfig clif)]
+  let clif ← Prog.orDie Raytrace.clifIrSource
+  emitArtifacts outDir #[artifactEntry "raytrace_app" (Raytrace.raytraceConfig clif)]
 
-#eval ShipScan.check "Demo.Raytrace"
+#eval ShipScan.check "Demo.Raytrace" `Demo.Raytrace.main

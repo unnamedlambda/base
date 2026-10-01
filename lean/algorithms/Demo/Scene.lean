@@ -13,7 +13,7 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.PTX
 
-namespace Algorithm
+namespace Scene
 
 structure PositiveNat where
   value : Nat
@@ -1028,11 +1028,11 @@ def studioScene : SceneSpec :=
 
 -- To render a different valid scene, change `main` below to:
 --
---   let (cfg, alg) := Algorithm.renderScene Algorithm.previewScene
+--   let (cfg, alg) := Scene.renderScene Scene.previewScene
 --
 -- or:
 --
---   let (cfg, alg) := Algorithm.renderScene Algorithm.studioScene
+--   let (cfg, alg) := Scene.renderScene Scene.studioScene
 --
 -- These intentionally invalid examples show the dependent checks. Uncomment
 -- one at a time and Lean rejects it before PTX or CLIF is generated.
@@ -1052,11 +1052,11 @@ def studioScene : SceneSpec :=
 --     checkedScene 1280 720 128 0 defaultPalette "bad.bmp"
 --       (by decide) (by decide) (by decide) (by decide)
 
-end Algorithm
+end Scene
 
-def main (args : List String) : IO Unit := do
-  let (cfg, alg) ← Prog.orDie (Algorithm.renderScene Algorithm.defaultScene)
+def Demo.Scene.main (args : List String) : IO Unit := do
+  let (cfg, alg) ← Prog.orDie (Scene.renderScene Scene.defaultScene)
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[artifactEntry "scene_app" cfg]
 
-#eval ShipScan.check "Demo.Scene"
+#eval ShipScan.check "Demo.Scene" `Demo.Scene.main

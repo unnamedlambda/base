@@ -26,7 +26,7 @@ set_option maxRecDepth 1500
 
 namespace Lz4Sites
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
 theorem stores_la64 (inPtr outPtr : Nat) (gm : Array UInt8) (smemB : List UInt8)

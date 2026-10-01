@@ -807,7 +807,7 @@ def viaTerm : Except String (List Sem.Obs × ByteArray) := do
 end HProgCorpus
 
 open AlgorithmLib in
-def main (args : List String) : IO Unit := do
+def Host.Corpus.main (args : List String) : IO Unit := do
   let dir ← requireOutputDir args
   -- A case whose operands do not typecheck is a type error where it is
   -- written; that the whole body is well-formed is checked here, and fails
@@ -860,5 +860,5 @@ def main (args : List String) : IO Unit := do
               s!"compile_sound (executed): term and compiled form agree \
                  — {tObs.length} observations, {tOut.size} bytes"
 
-#eval ShipScan.check "Host.Corpus"
+#eval ShipScan.check "Host.Corpus" `Host.Corpus.main
   (gatedElsewhere := "main, which refuses on emitChecked before emitting")

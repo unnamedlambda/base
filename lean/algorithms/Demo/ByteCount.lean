@@ -114,9 +114,9 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end ByteCount
 
-def main (args : List String) : IO Unit := do
+def Demo.ByteCount.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie ByteCount.clifIR
   emitArtifacts outDir (ByteCount.artifacts clif)
 
-#eval ShipScan.check "Demo.ByteCount"
+#eval ShipScan.check "Demo.ByteCount" `Demo.ByteCount.main

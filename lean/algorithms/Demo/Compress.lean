@@ -16,7 +16,7 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
-namespace Algorithm
+namespace Compress
 
 -- ===========================================================================
 -- Dependent-type interface for LZ4 compression.
@@ -442,11 +442,11 @@ def result : Except String (Artifact × UInt32) := buildCompressor defaultParams
 --   def misaligned : LZ4Params 100 := ⟨by omega, by omega⟩
 --   -- error: omega could not prove 100 % 4 = 0
 
-end Algorithm
+end Compress
 
-def main (args : List String) : IO Unit := do
-  let (cfg, alg) ← Prog.orDie Algorithm.result
+def Demo.Compress.main (args : List String) : IO Unit := do
+  let (cfg, alg) ← Prog.orDie Compress.result
   let outDir ← requireOutputDir args
   emitArtifacts outDir #[artifactEntry "compress_app" cfg]
 
-#eval ShipScan.check "Demo.Compress"
+#eval ShipScan.check "Demo.Compress" `Demo.Compress.main

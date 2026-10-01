@@ -23,7 +23,7 @@ import all Init.Data.List.Sort.Basic
 
 namespace Lz4Whole
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 open AlgorithmLib.LZ4WarpDSL
 open Lz4Interleave

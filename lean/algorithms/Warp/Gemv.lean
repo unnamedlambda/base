@@ -363,7 +363,7 @@ def artifacts : Except String (Array ArtifactEntry) := do
 
 end GemvWarp
 
-def main (args : List String) : IO Unit := do
+def Warp.Gemv.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   emitArtifacts outDir (← Prog.orDie GemvWarp.artifacts)
 
@@ -438,4 +438,4 @@ end GemvWarp
 open GemvWarp TrustScan in
 #eval runScan "schedules" schedRoots []
 
-#eval ShipScan.check "Warp.Gemv"
+#eval ShipScan.check "Warp.Gemv" `Warp.Gemv.main

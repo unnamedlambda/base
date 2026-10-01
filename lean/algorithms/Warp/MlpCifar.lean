@@ -2897,7 +2897,7 @@ def artifacts (clif qClif mClif : List FuncData) : Array ArtifactEntry :=
 
 end MlpCifar
 
-def main (args : List String) : IO Unit := do
+def Warp.MlpCifar.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie MlpCifar.clifIR
   let qClif ← Prog.orDie MlpCifar.qClifIR
@@ -2905,4 +2905,4 @@ def main (args : List String) : IO Unit := do
   emitArtifacts outDir (MlpCifar.artifacts clif qClif mClif)
 
 
-#eval ShipScan.check "Warp.MlpCifar"
+#eval ShipScan.check "Warp.MlpCifar" `Warp.MlpCifar.main

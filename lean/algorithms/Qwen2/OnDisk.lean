@@ -290,11 +290,11 @@ theorem memMapOnDisk_within :
 
 end Qwen2OnDisk
 
-def main (args : List String) : IO Unit := do
+def Qwen2.OnDisk.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie Qwen2OnDisk.clifIR
   emitArtifacts outDir #[
     artifactEntry "qwen2_on_disk" (Qwen2OnDisk.buildSetup clif)
   ]
 
-#eval ShipScan.check "Qwen2.OnDisk"
+#eval ShipScan.check "Qwen2.OnDisk" `Qwen2.OnDisk.main

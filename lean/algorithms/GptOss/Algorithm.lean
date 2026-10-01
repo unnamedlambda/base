@@ -1018,10 +1018,10 @@ def artifacts (gClif aClif lClif : List FuncData) : Array ArtifactEntry :=
 
 end GptOssAlgorithm
 
-def main (args : List String) : IO Unit := do
+def GptOss.Algorithm.main (args : List String) : IO Unit := do
   let gClif ← Prog.orDie GptOssAlgorithm.gClifIR
   let aClif ← Prog.orDie GptOssAlgorithm.Attn.aClifIR
   let lClif ← Prog.orDie GptOssAlgorithm.Layer.lClifIR
   emitArtifacts (← requireOutputDir args) (GptOssAlgorithm.artifacts gClif aClif lClif)
 
-#eval ShipScan.check "GptOss.Algorithm"
+#eval ShipScan.check "GptOss.Algorithm" `GptOss.Algorithm.main

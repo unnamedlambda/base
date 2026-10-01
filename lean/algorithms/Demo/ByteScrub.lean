@@ -73,9 +73,9 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end ByteScrub
 
-def main (args : List String) : IO Unit := do
+def Demo.ByteScrub.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie ByteScrub.clifIR
   emitArtifacts outDir (ByteScrub.artifacts clif)
 
-#eval ShipScan.check "Demo.ByteScrub"
+#eval ShipScan.check "Demo.ByteScrub" `Demo.ByteScrub.main

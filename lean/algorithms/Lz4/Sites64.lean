@@ -19,7 +19,7 @@ set_option maxHeartbeats 2000000
 namespace Lz4Sites
 
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 open AlgorithmLib.LZ4SimtBits
 

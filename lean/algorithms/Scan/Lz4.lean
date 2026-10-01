@@ -110,7 +110,7 @@ def lz4Surface : Surface :=
         -- the `endpoints` check below is what enforces that.
       , `Lz4Interleave.SchedComplete ]
     derivedObligations :=
-      [ (`Algorithm.ShippedCorrect, `Algorithm.shipped32_correct)
+      [ (`Lz4Ship.ShippedCorrect, `Lz4Ship.shipped32_correct)
         -- race-freedom is not assumed: it follows from `KernelConfined` plus the
         -- already-proven disjointness of the warps' output ranges.
       , (`AlgorithmLib.LZ4Simt.RaceFree, `Lz4Interleave.raceFree_of_confined)
@@ -123,7 +123,7 @@ def lz4Surface : Surface :=
       , (`Lz4Launches.LaunchFrame, `Lz4Interleave.launchFrame_of_confined)
         -- and the agreement half too: `pc272_unique` identifies the state
         -- `ShippedCorrect` returns with the one a schedule runs to.
-      , (`Algorithm.LaunchAgreesPerWarp, `Lz4Interleave.launchAgrees_of_confined)
+      , (`Lz4Ship.LaunchAgreesPerWarp, `Lz4Interleave.launchAgrees_of_confined)
         -- and the bottom of that chain: the twelve load sites are confined by
         -- the kernel's own clamps, the sixteen store sites by the output
         -- cursor's budget.  No assumption is left about what an address
@@ -137,7 +137,7 @@ def lz4Surface : Surface :=
         -- exhibited at a concrete state.
       , (`AlgorithmLib.Clif.Check.TypesAgree, `Lz4NonVacuity.warp32_entry_arg) ]
     openObligations :=
-      [ `Algorithm.LayoutOK
+      [ `Lz4Ship.LayoutOK
         -- a hypothesis of the GENERIC lemmas (`launches_correct` and friends,
         -- which are stated about any run) and a CONCLUSION of the endpoints
         -- below, where `launchesTo_of_layout` constructs it.
@@ -147,14 +147,14 @@ def lz4Surface : Surface :=
       -- geometries, so proving a layer at 32 KiB and forgetting 64 KiB fails
       -- here; and `LayoutOK` alone, so re-introducing an assumption the layers
       -- below already discharge fails here too.
-      [ (`Lz4Whole.shipped32_run_correct, [`Algorithm.LayoutOK])
-      , (`Lz4Whole.shipped64_run_correct, [`Algorithm.LayoutOK])
+      [ (`Lz4Whole.shipped32_run_correct, [`Lz4Ship.LayoutOK])
+      , (`Lz4Whole.shipped64_run_correct, [`Lz4Ship.LayoutOK])
         -- …and applied to concrete addresses and a concrete memory, so the
         -- contract cannot be silently unsatisfiable
       , (`Lz4Whole.run_correct_witness, [])
         -- the same, at the emitted program's own launch count and grid
-      , (`Lz4Whole.shipped32_run_at_emitted, [`Algorithm.LayoutOK, `Eq])
-      , (`Lz4Whole.shipped64_run_at_emitted, [`Algorithm.LayoutOK, `Eq]) ]
+      , (`Lz4Whole.shipped32_run_at_emitted, [`Lz4Ship.LayoutOK, `Eq])
+      , (`Lz4Whole.shipped64_run_at_emitted, [`Lz4Ship.LayoutOK, `Eq]) ]
     reachedExempt :=
       -- named in a `simp only` list where it never fires, so it is live at
       -- ELABORATION and absent from the proof term.  Reachability is computed
@@ -176,12 +176,12 @@ def roots : List Name :=
     `AlgorithmLib.LZ4WarpDSL.warpKernelDSL_prologue_roundtrips
   , `AlgorithmLib.LZ4WarpDSL.warpKernelDSL_tail_roundtrips
     -- the shipped claim, at both geometries the artifact emits
-  , `Algorithm.shipped32_correct
-  , `Algorithm.shipped64_correct
+  , `Lz4Ship.shipped32_correct
+  , `Lz4Ship.shipped64_correct
     -- the proven half of data-race-freedom
-  , `Algorithm.warp_regions_disjoint
+  , `Lz4Ship.warp_regions_disjoint
     -- whole-launch: every block decodes out of the FINAL memory
-  , `Algorithm.launch_correct
+  , `Lz4Ship.launch_correct
     -- …instantiated at the artifacts, so the top claim is not merely generic
   , `Lz4NonVacuity.shipped32_launch_correct
   , `Lz4NonVacuity.shipped64_launch_correct
@@ -314,8 +314,8 @@ def roots : List Name :=
   , `Lz4NonVacuity.layoutOK_of_alloc
   , `Lz4NonVacuity.layoutOK_of_alloc_witness
     -- the payload image and the offsets derived from it cannot disagree
-  , `Algorithm.payload_length
-  , `Algorithm.payload_fits
+  , `Lz4Ship.payload_length
+  , `Lz4Ship.payload_fits
     -- the model's block dimension is the one the launch passes
   , `AlgorithmLib.LZ4Simt.initRegs_ntid
     -- every address the kernel uses, bounded: the loads from the kernel's own

@@ -240,9 +240,9 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end SiluWarp
 
-def main (args : List String) : IO Unit := do
+def Warp.Silu.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie SiluWarp.clifIR
   emitArtifacts outDir (SiluWarp.artifacts clif)
 
-#eval ShipScan.check "Warp.Silu"
+#eval ShipScan.check "Warp.Silu" `Warp.Silu.main

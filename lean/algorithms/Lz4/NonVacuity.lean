@@ -26,7 +26,7 @@ import all Init.Data.List.Sort.Basic
 
 namespace Lz4NonVacuity
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4WarpDSL
 
 /-- A concrete zero-filled memory.  `Array.size` of this reduces by

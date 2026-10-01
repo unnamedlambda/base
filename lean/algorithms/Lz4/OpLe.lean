@@ -12,7 +12,7 @@ import all Init.Data.List.Sort.Basic
 
 namespace Lz4Sites
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
 /-- **The output cursor is below `lenOff` at every one of the ten `sbAddr`

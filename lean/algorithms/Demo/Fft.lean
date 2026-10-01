@@ -13,7 +13,7 @@ open AlgorithmLib.IR
 open AlgorithmLib.HProg
 open AlgorithmLib.WGSL
 
-namespace Algorithm
+namespace Fft
 
 -- ---------------------------------------------------------------------------
 -- GPU-accelerated FFT (Cooley-Tukey radix-2 decimation-in-time)
@@ -284,11 +284,11 @@ def fftConfig (clif : List FuncData) : Artifact := {
 
 def fftAlgorithm : UInt32 := IR.mainFnIdx
 
-end Algorithm
+end Fft
 
-def main (args : List String) : IO Unit := do
+def Demo.Fft.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[artifactEntry "fft_app" (Algorithm.fftConfig clif)]
+  let clif ← Prog.orDie Fft.clifIrSource
+  emitArtifacts outDir #[artifactEntry "fft_app" (Fft.fftConfig clif)]
 
-#eval ShipScan.check "Demo.Fft"
+#eval ShipScan.check "Demo.Fft" `Demo.Fft.main

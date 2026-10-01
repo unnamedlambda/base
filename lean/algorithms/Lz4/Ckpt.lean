@@ -16,7 +16,7 @@ set_option maxRecDepth 8192
 
 namespace Lz4Sites
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4Simt
 
 set_option maxHeartbeats 1000000 in

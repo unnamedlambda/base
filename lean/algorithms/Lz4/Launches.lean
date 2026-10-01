@@ -28,7 +28,7 @@ import all Init.Data.List.Sort.Basic
 
 namespace Lz4Launches
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib.LZ4WarpDSL
 
 /-- **A launch's frame.**  Bytes outside every warp's output range come through a

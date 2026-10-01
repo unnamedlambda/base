@@ -11,7 +11,7 @@ open Lean (Json toJson)
 open AlgorithmLib
 open AlgorithmLib.Layout
 
-namespace Algorithm
+namespace Sha256
 
 -- ---------------------------------------------------------------------------
 -- SHA-256 hasher
@@ -519,11 +519,11 @@ def sha256Config (clif : List FuncData) : Artifact := {
 
 def sha256Algorithm : UInt32 := IR.mainFnIdx
 
-end Algorithm
+end Sha256
 
-def main (args : List String) : IO Unit := do
+def Demo.Sha256.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
-  let clif ← Prog.orDie Algorithm.clifIrSource
-  emitArtifacts outDir #[artifactEntry "sha256_app" (Algorithm.sha256Config clif)]
+  let clif ← Prog.orDie Sha256.clifIrSource
+  emitArtifacts outDir #[artifactEntry "sha256_app" (Sha256.sha256Config clif)]
 
-#eval ShipScan.check "Demo.Sha256"
+#eval ShipScan.check "Demo.Sha256" `Demo.Sha256.main

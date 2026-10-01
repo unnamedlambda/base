@@ -172,7 +172,7 @@ def artifacts (clif : List FuncData) : Array ArtifactEntry :=
 
 end MlpWarp
 
-def main (args : List String) : IO Unit := do
+def Warp.Mlp.main (args : List String) : IO Unit := do
   let outDir ← requireOutputDir args
   let clif ← Prog.orDie MlpWarp.clifIR
   emitArtifacts outDir (MlpWarp.artifacts clif)
@@ -210,4 +210,4 @@ theorem mlp_ptx_runs_kernel (h : ExpIsEx2) (cta : Nat) (m : MState) :
 
 end MlpWarp
 
-#eval ShipScan.check "Warp.Mlp"
+#eval ShipScan.check "Warp.Mlp" `Warp.Mlp.main

@@ -42,7 +42,7 @@ import all Init.Data.List.Sort.Basic
 
 namespace Lz4Host
 
-open Algorithm
+open Lz4Ship
 open AlgorithmLib
 open AlgorithmLib.Clif
 

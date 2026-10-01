@@ -13,7 +13,7 @@ open AlgorithmLib
 open AlgorithmLib.Layout
 open AlgorithmLib.WGSL
 
-namespace Algorithm
+namespace Raymarch
 
 def imageWidth  : Nat := 640
 def imageHeight : Nat := 360
@@ -457,12 +457,12 @@ def riseClampAlg   : UInt32 := 4
 def quitOnCloseAlg : UInt32 := 5
 def renderSceneAlg : UInt32 := 6
 
-end Algorithm
+end Raymarch
 
-def main (args : List String) : IO Unit := do
+def Demo.RaymarchDemo.main (args : List String) : IO Unit := do
   let outDir ← AlgorithmLib.requireOutputDir args
-  let clif ← AlgorithmLib.Prog.orDie Algorithm.clifIrSource
+  let clif ← AlgorithmLib.Prog.orDie Raymarch.clifIrSource
   AlgorithmLib.emitArtifacts outDir #[
-    AlgorithmLib.artifactEntry "raymarch_demo" (Algorithm.gameSetup clif)]
+    AlgorithmLib.artifactEntry "raymarch_demo" (Raymarch.gameSetup clif)]
 
-#eval ShipScan.check "Demo.RaymarchDemo"
+#eval ShipScan.check "Demo.RaymarchDemo" `Demo.RaymarchDemo.main
