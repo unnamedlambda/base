@@ -1,6 +1,13 @@
-import AlgorithmLib.Core.IR
-import AlgorithmLib.Surface.Layout
-import AlgorithmLib.Vocab.PTX
+module
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib
 

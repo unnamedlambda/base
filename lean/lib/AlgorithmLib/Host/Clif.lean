@@ -1,4 +1,9 @@
-import AlgorithmLib.Core.IR
+module
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A model of the host program

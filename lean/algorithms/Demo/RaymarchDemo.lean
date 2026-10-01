@@ -1,5 +1,11 @@
-import AlgorithmLib.Gen
-import Scan.Ship
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 open Lean (Json)
@@ -50,7 +56,7 @@ def centerX : Nat := imageWidth / 2
 def skyByteOff : Nat := (10 * imageWidth + centerX) * 4 + 2
 def groundByteOff : Nat := ((imageHeight - 10) * imageWidth + centerX) * 4 + 2
 
-private def v3 (x y z : String) : Expr .vec3f := mkVec3f (litF x) (litF y) (litF z)
+def v3 (x y z : String) : Expr .vec3f := mkVec3f (litF x) (litF y) (litF z)
 
 def fnSdSphere : WGSLFn :=
   { name := "sdSphere", retTy := some .f32,

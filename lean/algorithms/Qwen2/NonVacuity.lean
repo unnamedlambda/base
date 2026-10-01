@@ -1,6 +1,13 @@
-import Qwen2.Common
-import AlgorithmLib.Host.ClifCheck
-import Qwen2.Algorithm
+module
+public import Qwen2.Common
+meta import Qwen2.Common
+public import AlgorithmLib.Host.ClifCheck
+meta import AlgorithmLib.Host.ClifCheck
+public import Qwen2.Algorithm
+meta import Qwen2.Algorithm
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The inference claims, at concrete values

@@ -1,5 +1,11 @@
-import AlgorithmLib.Vocab.X86
-import Bench.CpuAsm
+module
+public import AlgorithmLib.Vocab.X86
+meta import AlgorithmLib.Vocab.X86
+public import Bench.CpuAsm
+meta import Bench.CpuAsm
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-! # `AlgorithmLib.X86` against GNU `as`
 

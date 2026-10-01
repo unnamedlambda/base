@@ -1,7 +1,15 @@
-import AlgorithmLib.ML.Kernel.Library
-import AlgorithmLib.ML.Math.Transformer
-import AlgorithmLib.ML.Math.MultiLayer
-import AlgorithmLib.ML.Math.Layered
+module
+public import AlgorithmLib.ML.Kernel.Library
+meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Math.Transformer
+meta import AlgorithmLib.ML.Math.Transformer
+public import AlgorithmLib.ML.Math.MultiLayer
+meta import AlgorithmLib.ML.Math.MultiLayer
+public import AlgorithmLib.ML.Math.Layered
+meta import AlgorithmLib.ML.Math.Layered
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A function-first surface

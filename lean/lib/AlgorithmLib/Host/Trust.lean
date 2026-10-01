@@ -1,5 +1,11 @@
-import AlgorithmLib.Host.Blocks
-import AlgorithmLib.Host.Frames
+module
+public import AlgorithmLib.Host.Blocks
+meta import AlgorithmLib.Host.Blocks
+public import AlgorithmLib.Host.Frames
+meta import AlgorithmLib.Host.Frames
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The trusted base, named

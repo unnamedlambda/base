@@ -1,4 +1,9 @@
-import AlgorithmLib.Host.Term
+module
+public import AlgorithmLib.Host.Term
+meta import AlgorithmLib.Host.Term
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # `Prog` — a function body as a typed term with binders
@@ -952,7 +957,7 @@ end Surface
 
 /-- Which top-level piece first makes the body ill-formed, found by checking
     growing prefixes. Only ever run on a body already known to be bad. -/
-private def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat :=
+def firstBadPiece (env : FnEnv) (params : List ClifTy) (c : Code) : Nat :=
   (List.range c.length).find?
       (fun k => !(HProg.wfGo env fuel [] (HProg.TyEnv.ofList params) (c.take (k + 1))).1)
     |>.getD c.length

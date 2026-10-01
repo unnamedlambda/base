@@ -1,5 +1,11 @@
-import Lz4.Launches
-import AlgorithmLib.LZ4.Concurrent
+module
+public import Lz4.Launches
+meta import Lz4.Launches
+public import AlgorithmLib.LZ4.Concurrent
+meta import AlgorithmLib.LZ4.Concurrent
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 set_option maxRecDepth 1000000
 
@@ -225,10 +231,6 @@ theorem launchAgrees_of_confined (b : Nat) (ht : TailOOB b) (inPtr outPtr : Nat)
     rw [hmem, huniq, hiter]
   rw [← hgm]
   exact hagree wf j ⟨hj1, hj2⟩
-
-/-- info: 'Lz4Interleave.launch_agrees' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms launch_agrees
 
 -- ── From `LayoutOK` to a whole run ───────────────────────────────────────────
 

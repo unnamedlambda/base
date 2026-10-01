@@ -1,6 +1,13 @@
-import AlgorithmLib.Core.Artifact
-import AlgorithmLib.Surface.Layout
-import AlgorithmLib.Core.IR
+module
+public import AlgorithmLib.Core.Artifact
+meta import AlgorithmLib.Core.Artifact
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The runtime surface, as data

@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Machine.Geometry
-import AlgorithmLib.ML.Launch.Pipeline
+module
+public import AlgorithmLib.ML.Machine.Geometry
+meta import AlgorithmLib.ML.Machine.Geometry
+public import AlgorithmLib.ML.Launch.Pipeline
+meta import AlgorithmLib.ML.Launch.Pipeline
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The frame obligation, proven once for every emittable kernel

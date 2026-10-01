@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.Refine
+module
+public import AlgorithmLib.LZ4.Refine
+meta import AlgorithmLib.LZ4.Refine
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4Plan
 

@@ -1,7 +1,15 @@
-import Vit.Units
-import Vit.Algorithm
-import AlgorithmLib.Host.Clif
-import AlgorithmLib.Host.ClifCheck
+module
+public import Vit.Units
+meta import Vit.Units
+public import Vit.Algorithm
+meta import Vit.Algorithm
+public import AlgorithmLib.Host.Clif
+meta import AlgorithmLib.Host.Clif
+public import AlgorithmLib.Host.ClifCheck
+meta import AlgorithmLib.Host.ClifCheck
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The launches the emitted code makes

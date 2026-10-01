@@ -1,11 +1,21 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
-import AlgorithmLib.Surface.Cuda
-import AlgorithmLib.Surface.ProgCuda
-import Qwen2.Common
-import Scan.Ship
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+public import AlgorithmLib.Surface.Cuda
+meta import AlgorithmLib.Surface.Cuda
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
+public import Qwen2.Common
+meta import Qwen2.Common
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 open Lean
@@ -106,7 +116,7 @@ def inferLayerFn : Prog V L Unit := do
   callLocalVoid Qwen2Common.q.fnFfn  (← entryArgs)
 
 /-- Compute the per-layer slot base address for the current `LAYER_IDX_OFF`. -/
-private def currentLayerSlot (ptr : V .i64) : Prog V L (V .i64) := do
+def currentLayerSlot (ptr : V .i64) : Prog V L (V .i64) := do
   let layerIdx ← load64 (← absAddr ptr LAYER_IDX_OFF)
   let stride64 ← iconst64 LAYER_BUF_STRIDE
   let base64   ← iconst64 LAYER_BUFS_BASE

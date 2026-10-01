@@ -1,4 +1,9 @@
-import Demo.ByteCount
+module
+public import Demo.ByteCount
+meta import Demo.ByteCount
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg
 open AlgorithmLib.HProg.Sem

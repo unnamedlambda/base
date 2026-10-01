@@ -1,4 +1,9 @@
-import AlgorithmLib.Host.Clif
+module
+public import AlgorithmLib.Host.Clif
+meta import AlgorithmLib.Host.Clif
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A structured host program

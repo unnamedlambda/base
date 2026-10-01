@@ -1,4 +1,10 @@
-import AlgorithmLib.LZ4.WarpKernelProof
+module
+public import AlgorithmLib.LZ4.WarpKernelProof
+meta import AlgorithmLib.LZ4.WarpKernelProof
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open AlgorithmLib.LZ4WarpDSL AlgorithmLib.LZ4Simt AlgorithmLib.LZ4WarpFind
 open AlgorithmLib.LZ4SimtBits (ballotOf_testBit ballotOf_toNat)
 open AlgorithmLib.LZ4Ptx (toNat_ofNat_lt u64_add_ofNat u64_sub_ofNat)

@@ -1,4 +1,9 @@
-import AlgorithmLib.Host.Sem
+module
+public import AlgorithmLib.Host.Sem
+meta import AlgorithmLib.Host.Sem
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # What a call may write
@@ -50,7 +55,7 @@ inductive Frame where
 
 /-- Context slots are one pointer wide, and every `*_init`/`*_cleanup` writes
     exactly that at the slot it is handed. -/
-private def ctxSlot : Frame := .fixed 0 8
+def ctxSlot : Frame := .fixed 0 8
 
 /-- The memory each entry point may write, ordered by module to match
     `base/src/ffi/`.

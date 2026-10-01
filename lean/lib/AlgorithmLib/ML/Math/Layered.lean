@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Math.TapeGrad
+module
+public import AlgorithmLib.ML.Math.TapeGrad
+meta import AlgorithmLib.ML.Math.TapeGrad
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Linear gradients at depth: the window obligation, discharged structurally

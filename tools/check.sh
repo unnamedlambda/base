@@ -121,7 +121,7 @@ x86_vs_as() {
     return 0
   fi
   cd "$ROOT/lean"
-  "${GUARD[@]}" lake env lean --run algorithms/Bench/X86Check.lean
+  "${GUARD[@]}" lake env lean -Dexperimental.module=true --run algorithms/Bench/X86Check.lean
 }
 
 # --- artifacts ---------------------------------------------------------------

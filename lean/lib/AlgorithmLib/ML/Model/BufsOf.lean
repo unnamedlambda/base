@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Model.LocalBind
+module
+public import AlgorithmLib.ML.Model.LocalBind
+meta import AlgorithmLib.ML.Model.LocalBind
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # Which buffers a schema names

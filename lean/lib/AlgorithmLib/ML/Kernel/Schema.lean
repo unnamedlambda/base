@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Ptx.Monad
+module
+public import AlgorithmLib.ML.Ptx.Monad
+meta import AlgorithmLib.ML.Ptx.Monad
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.ML
 
@@ -47,7 +52,7 @@ def dotLane (memA memB : Nat → Float32) (fA fB : Nat → Lane → Nat) (K : Na
 -- The sweep
 -- ---------------------------------------------------------------------------
 
-private def stepW (bA bB : Buf) (fA fB : Nat → Lane → Nat) (i : Nat) : WStmt :=
+def stepW (bA bB : Buf) (fA fB : Nat → Lane → Nat) (i : Nat) : WStmt :=
   .seq (.seq (.loadV4 1 2 3 4 bA (fA i)) (.loadV4 5 6 7 8 bB (fB i)))
        (.setR 0 dotStepE)
 

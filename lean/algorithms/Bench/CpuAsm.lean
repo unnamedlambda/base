@@ -1,4 +1,9 @@
-import AlgorithmLib.Vocab.X86
+module
+public import AlgorithmLib.Vocab.X86
+meta import AlgorithmLib.Vocab.X86
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-! The machine code `CpuBenchAlgorithm` carries: LLVM's code for each
     workload's Rust kernel, with the arguments taken in registers. Each keeps

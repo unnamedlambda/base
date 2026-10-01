@@ -1,4 +1,9 @@
-import AlgorithmLib.Gen
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Every body an artifact carries was compiled through a checked door
@@ -76,7 +81,7 @@ where
 /-- A declaration producing an `Artifact`, whatever it takes first --- and
     through an `Except`, because a body checked while it is emitted yields one
     only if it passed. -/
-private partial def yieldsArtifact : Expr → Bool
+partial def yieldsArtifact : Expr → Bool
   | .forallE _ _ b _ => yieldsArtifact b
   | e                =>
       if e.isConstOf ``AlgorithmLib.Artifact then true

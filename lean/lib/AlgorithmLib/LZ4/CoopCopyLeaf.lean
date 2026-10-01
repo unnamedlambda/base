@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.WarpKernel
+module
+public import AlgorithmLib.LZ4.WarpKernel
+meta import AlgorithmLib.LZ4.WarpKernel
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace CoopCopyModel
 open AlgorithmLib.LZ4WarpDSL (copyGmem copyGmem_size copyGmem_getD_lt copyGmem_getD)

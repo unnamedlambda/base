@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Model.WeaveTOp
+module
+public import AlgorithmLib.ML.Model.WeaveTOp
+meta import AlgorithmLib.ML.Model.WeaveTOp
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Compiling the algebra

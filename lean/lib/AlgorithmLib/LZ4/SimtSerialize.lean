@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.SimtEmit
+module
+public import AlgorithmLib.LZ4.SimtEmit
+meta import AlgorithmLib.LZ4.SimtEmit
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4Simt
 open Std
@@ -12,7 +17,7 @@ def isSpecialReg (n : String) : Bool :=
 /-- Kernel parameters (loaded via `ld.param.u64`). -/
 def isParamReg (n : String) : Bool := n == "in_ptr" || n == "out_ptr"
 
-private def pushIf (acc : List String) (n : String) : List String :=
+def pushIf (acc : List String) (n : String) : List String :=
   if acc.contains n then acc else n :: acc
 
 /-- Predicate registers = destinations of `setp`/`andp`.  (Branches/predicated
@@ -113,7 +118,7 @@ def instrLines : SInstr → List String
   | .ret                => ["ret;"]
 
 /-- A body line gets `;` unless it is a label or already terminated. -/
-private def term (s : String) : String :=
+def term (s : String) : String :=
   if s.endsWith ":" || s.endsWith ";" then s else s ++ ";"
 
 -- ── Module scaffold ───────────────────────────────────────────────────────────

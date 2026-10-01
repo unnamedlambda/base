@@ -1,3 +1,8 @@
+module
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 /-! # x86-64 machine code, assembled in Lean
 
 A `Body` is a list of instructions, labels, alignments and literal bytes;

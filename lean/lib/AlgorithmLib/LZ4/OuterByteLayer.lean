@@ -1,7 +1,15 @@
-import AlgorithmLib.LZ4.ByteLayer
-import AlgorithmLib.LZ4.EmitContent
-import AlgorithmLib.LZ4.EncodeLen
-import AlgorithmLib.LZ4.WarpEvalBytes
+module
+public import AlgorithmLib.LZ4.ByteLayer
+meta import AlgorithmLib.LZ4.ByteLayer
+public import AlgorithmLib.LZ4.EmitContent
+meta import AlgorithmLib.LZ4.EmitContent
+public import AlgorithmLib.LZ4.EncodeLen
+meta import AlgorithmLib.LZ4.EncodeLen
+public import AlgorithmLib.LZ4.WarpEvalBytes
+meta import AlgorithmLib.LZ4.WarpEvalBytes
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4Plan AlgorithmLib.LZ4WarpFind AlgorithmLib.LZ4

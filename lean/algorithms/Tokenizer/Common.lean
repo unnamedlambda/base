@@ -1,5 +1,11 @@
-import AlgorithmLib.Gen
-import AlgorithmLib.Host.Term
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.Host.Term
+meta import AlgorithmLib.Host.Term
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The tokenizer, once, for every model that ships one
@@ -82,7 +88,7 @@ structure TokMem where
     they emit different CLIF. Each site below uses the one it has always used,
     which is what lets a program that already ships be rewired onto this
     module without its artifact changing by a byte. -/
-private def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
+def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
   load64 =<< iaddImm base off
 
 /-- Header fields, by name rather than by a number at each use. -/

@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.Imp
+module
+public import AlgorithmLib.LZ4.Imp
+meta import AlgorithmLib.LZ4.Imp
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4Imp
 open AlgorithmLib

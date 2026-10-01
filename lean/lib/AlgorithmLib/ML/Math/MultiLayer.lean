@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Math.Grad
+module
+public import AlgorithmLib.ML.Math.Grad
+meta import AlgorithmLib.ML.Math.Grad
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Multi-layer models: binding a whole activation vector

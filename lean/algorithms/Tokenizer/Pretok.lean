@@ -1,6 +1,13 @@
-import AlgorithmLib.Gen
-import AlgorithmLib.Host.Term
-import Tokenizer.Common
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.Host.Term
+meta import AlgorithmLib.Host.Term
+public import Tokenizer.Common
+meta import Tokenizer.Common
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The pre-tokenizer, as a table a scan can read
@@ -81,15 +88,15 @@ structure PretokMem where
   /-- i64: how many tokens `outTok` holds. -/
   outCount : Nat
 
-private def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
+def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
   load64 =<< iaddImm base off
 
 /-- The membership byte of one code point. -/
-private def classOf (tabPtr cp : V .i64) : Prog V L (V .i64) := do
+def classOf (tabPtr cp : V .i64) : Prog V L (V .i64) := do
   uload8_64 (← iadd tabPtr cp)
 
 /-- The code point at index `k`. -/
-private def cpAt (cpsPtr k : V .i64) : Prog V L (V .i64) := do
+def cpAt (cpsPtr k : V .i64) : Prog V L (V .i64) := do
   uload32_64 (← iadd cpsPtr (← ishlImm k 2))
 
 /-- **UTF-8 in, code points out.**
@@ -176,7 +183,7 @@ def utf8DecodeM (c : TokenizerCommon.TokMem) (p : PretokMem) : Prog V L Unit := 
   storeI64 kEnd (← absAddr ptr p.cpCount)
 
 /-- ASCII lowering, which is all the contraction table needs. -/
-private def lowerAscii (cp : V .i64) : Prog V L (V .i64) := do
+def lowerAscii (cp : V .i64) : Prog V L (V .i64) := do
   let bigA ← iconst64 65
   let bigZ ← iconst64 90
   let r ← ifte .ugt cp bigZ (pure %[cp])
@@ -188,7 +195,7 @@ private def lowerAscii (cp : V .i64) : Prog V L (V .i64) := do
 
     Returns its length, or -1 when one was required and none matched. Compared
     case-insensitively because the pattern is, and the literals are ASCII. -/
-private def contrM (cpsPtr nCp contrPtr nContr pos required : V .i64) : Prog V L (V .i64) := do
+def contrM (cpsPtr nCp contrPtr nContr pos required : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let negOne ← iconst64 (-1)
   let stride ← iconst64 CONTR_BYTES
@@ -225,7 +232,7 @@ private def contrM (cpsPtr nCp contrPtr nContr pos required : V .i64) : Prog V L
 
     `extra` is one code point the class accepts in addition to whatever `mask`
     says, or zero for none — o200k's `[\r\n/]*` is a class plus one literal. -/
-private def runM (cpsPtr nCp tabPtr pos mask neg lo hi extra : V .i64) : Prog V L (V .i64) := do
+def runM (cpsPtr nCp tabPtr pos mask neg lo hi extra : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let ex ← wloop1L zero64
     (head := fun _ nn => return (contIf .ult nn hi, %[nn], ()))
@@ -258,7 +265,7 @@ private def runM (cpsPtr nCp tabPtr pos mask neg lo hi extra : V .i64) : Prog V 
 /-- `\s+(?!\S)`: the whitespace run, less its last character unless the input
     ends there. Written forward, which is the whole point — the lookahead is
     what a regex backtracks for. -/
-private def runButM (cpsPtr nCp tabPtr pos mask : V .i64) : Prog V L (V .i64) := do
+def runButM (cpsPtr nCp tabPtr pos mask : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let ex ← wloop1L zero64
     (head := fun _ nn => return (contIf .ult zero64 (← iconst64 1), %[nn], ()))
@@ -278,7 +285,7 @@ private def runButM (cpsPtr nCp tabPtr pos mask : V .i64) : Prog V L (V .i64) :=
 
 /-- `\s*[\r\n]+`: the run truncated at its last newline, and a failure when it
     holds none. -/
-private def runToM (cpsPtr nCp tabPtr pos mask neg : V .i64) : Prog V L (V .i64) := do
+def runToM (cpsPtr nCp tabPtr pos mask neg : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let ex ← wloopL %[zero64, zero64]                        -- n, last
     (head := fun _ s => return (contIf .ult zero64 (← iconst64 1),
@@ -299,7 +306,7 @@ private def runToM (cpsPtr nCp tabPtr pos mask neg : V .i64) : Prog V L (V .i64)
   return r.head
 
 /-- One specific code point, `lo` to `hi` times. -/
-private def charRunM (cpsPtr nCp pos want lo hi : V .i64) : Prog V L (V .i64) := do
+def charRunM (cpsPtr nCp pos want lo hi : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let ex ← wloop1L zero64
     (head := fun _ nn => return (contIf .ult nn hi, %[nn], ()))
@@ -321,7 +328,7 @@ private def charRunM (cpsPtr nCp pos want lo hi : V .i64) : Prog V L (V .i64) :=
     when `q` is in `B`, and zero when it is not.
 
     Returns the matched length, or -1 when no `B` run exists at all. -/
-private def starPlusM (cpsPtr nCp tabPtr pos maskA maskB : V .i64) : Prog V L (V .i64) := do
+def starPlusM (cpsPtr nCp tabPtr pos maskA maskB : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
   let negOne ← iconst64 (-1)
@@ -373,7 +380,7 @@ private def starPlusM (cpsPtr nCp tabPtr pos maskA maskB : V .i64) : Prog V L (V
 
     `skipLead` forces the leading optional item empty, which is the one retry
     these patterns need. -/
-private def scanM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
+def scanM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
                    altStart altCount skipLead i : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
@@ -430,7 +437,7 @@ private def scanM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
 /-- Greedy, then once with the leading optional forced empty — in that order,
     because a regex returns the first success in backtracking order and not the
     longest match. -/
-private def matchAltM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
+def matchAltM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
                        altStart altCount i : V .i64) : Prog V L (V .i64) := do
   let zero64 ← iconst64 0
   let one64 ← iconst64 1
@@ -459,7 +466,7 @@ private def matchAltM (cpsPtr nCp tabPtr itemsPtr contrPtr nContr
     `TokenizerCommon.tokenizeInitM` does this for the whole of `textIn`; a
     chunk needs it for a slice, and copying the slice to the front of the
     buffer instead would destroy the text the later chunks still need. -/
-private def initRangeM (c : TokenizerCommon.TokMem) (b0 b1 : V .i64) : Prog V L Unit := do
+def initRangeM (c : TokenizerCommon.TokMem) (b0 b1 : V .i64) : Prog V L Unit := do
   let ptr ← basePtr
   let bufP ← load64At ptr c.bufPtr
   let byteInit ← iaddImm bufP TokenizerCommon.BYTE_INIT_OFF

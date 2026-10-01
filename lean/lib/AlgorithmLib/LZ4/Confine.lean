@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.Concurrent
+module
+public import AlgorithmLib.LZ4.Concurrent
+meta import AlgorithmLib.LZ4.Concurrent
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Transporting facts along a warp's trace

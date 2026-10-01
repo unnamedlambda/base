@@ -1,5 +1,11 @@
-import AlgorithmLib.LZ4
-import AlgorithmLib.Vocab.PTX
+module
+public import AlgorithmLib.LZ4
+meta import AlgorithmLib.LZ4
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4Imp
 open AlgorithmLib

@@ -1,4 +1,10 @@
-import AlgorithmLib.LZ4.Prologue
+module
+public import AlgorithmLib.LZ4.Prologue
+meta import AlgorithmLib.LZ4.Prologue
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib AlgorithmLib.LZ4 AlgorithmLib.LZ4Simt AlgorithmLib.LZ4Plan AlgorithmLib.LZ4Imp
 open AlgorithmLib.LZ4Ptx (toNat_ofNat_lt)

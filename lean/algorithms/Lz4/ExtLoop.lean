@@ -1,4 +1,9 @@
-import Lz4.ExtGuard
+module
+public import Lz4.ExtGuard
+meta import Lz4.ExtGuard
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 namespace Lz4Sites

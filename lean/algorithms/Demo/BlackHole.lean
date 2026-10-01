@@ -1,5 +1,12 @@
-import AlgorithmLib.Gen
-import Scan.Ship
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 set_option maxRecDepth 8192
 open Lean (Json toJson)
 open AlgorithmLib
@@ -170,10 +177,10 @@ def bmpHeader (spec : BlackHoleSpec) : List UInt8 :=
     PTX register naming helpers + named slots for state we touch
     from multiple emitter blocks.
     ============================================================ -/
-private def pReg (n : Nat) : Reg .pred := ⟨s!"%p{n}"⟩
-private def uReg (n : Nat) : Reg .u32 := ⟨s!"%r{n}"⟩
-private def dReg (n : Nat) : Reg .u64 := ⟨s!"%rd{n}"⟩
-private def fReg (n : Nat) : Reg .f32 := ⟨s!"%f{n}"⟩
+def pReg (n : Nat) : Reg .pred := ⟨s!"%p{n}"⟩
+def uReg (n : Nat) : Reg .u32 := ⟨s!"%r{n}"⟩
+def dReg (n : Nat) : Reg .u64 := ⟨s!"%rd{n}"⟩
+def fReg (n : Nat) : Reg .f32 := ⟨s!"%f{n}"⟩
 
 namespace BHReg
 -- Pixel + output address.
@@ -215,7 +222,7 @@ end BHReg
     Camera basis vectors and plane u1 are precomputed in Lean and
     burnt in as f32 immediates.
     ============================================================ -/
-private def emitBHSetupAndRay (spec : BlackHoleSpec) : PTX Unit := do
+def emitBHSetupAndRay (spec : BlackHoleSpec) : PTX Unit := do
   declPredRegs 48
   declU32Regs 128
   declU64Regs 16
@@ -397,7 +404,7 @@ private def emitBHSetupAndRay (spec : BlackHoleSpec) : PTX Unit := do
         sin_new = sin·cosΔ + cos·sinΔ
     avoiding any per-step trig call.
     ============================================================ -/
-private def emitBHIntegrationLoop (spec : BlackHoleSpec) : PTX Unit := do
+def emitBHIntegrationLoop (spec : BlackHoleSpec) : PTX Unit := do
   label "BH_LOOP"
   setpGeI (pReg 2) (BHReg.stepIdx) (stepCount spec)
   braIf (pReg 2) "BH_LOOP_END"
@@ -487,7 +494,7 @@ private def emitBHIntegrationLoop (spec : BlackHoleSpec) : PTX Unit := do
     escape   → procedural starfield + faint nebula tint based on
                the photon's asymptotic direction.
     ============================================================ -/
-private def emitBHColorAndWrite (spec : BlackHoleSpec) : PTX Unit := do
+def emitBHColorAndWrite (spec : BlackHoleSpec) : PTX Unit := do
   setpEqI (pReg 8) (BHReg.outcome) 0
   braIf (pReg 8) "BH_C_HORIZON"
   setpEqI (pReg 9) (BHReg.outcome) 1
@@ -1111,7 +1118,7 @@ private def emitBHColorAndWrite (spec : BlackHoleSpec) : PTX Unit := do
     being clamped at 1.0, so the bright-pass actually has something
     to spread).
     ============================================================ -/
-private def emitBloomComposite (spec : BlackHoleSpec) : PTX Unit := do
+def emitBloomComposite (spec : BlackHoleSpec) : PTX Unit := do
   declPredRegs 32
   declU32Regs 64
   declU64Regs 16

@@ -1,6 +1,14 @@
-import Vit.Model
-import AlgorithmLib.ML.Model.RegBound
-import AlgorithmLib.ML.Launch.Interchange
+module
+public import Vit.Model
+meta import Vit.Model
+public import AlgorithmLib.ML.Model.RegBound
+meta import AlgorithmLib.ML.Model.RegBound
+public import AlgorithmLib.ML.Launch.Interchange
+meta import AlgorithmLib.ML.Launch.Interchange
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open AlgorithmLib AlgorithmLib.ML
 
 /-!

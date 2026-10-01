@@ -1,7 +1,15 @@
-import AlgorithmLib.ML.Ptx.Compile
-import AlgorithmLib.ML.Math.Quant
-import AlgorithmLib.ML.Kernel.Schema
-import AlgorithmLib.ML.Kernel.Butterfly
+module
+public import AlgorithmLib.ML.Ptx.Compile
+meta import AlgorithmLib.ML.Ptx.Compile
+public import AlgorithmLib.ML.Math.Quant
+meta import AlgorithmLib.ML.Math.Quant
+public import AlgorithmLib.ML.Kernel.Schema
+meta import AlgorithmLib.ML.Kernel.Schema
+public import AlgorithmLib.ML.Kernel.Butterfly
+meta import AlgorithmLib.ML.Kernel.Butterfly
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A rewrite calculus: transformations that carry their own justification

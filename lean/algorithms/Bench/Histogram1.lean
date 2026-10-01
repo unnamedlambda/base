@@ -1,6 +1,12 @@
-import Lean
-import AlgorithmLib.Gen
-import Scan.Layout
+module
+public import Lean
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Scan.Layout
+meta import Scan.Layout
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean
 open AlgorithmLib

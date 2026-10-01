@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Ptx.Print
+module
+public import AlgorithmLib.ML.Ptx.Print
+meta import AlgorithmLib.ML.Ptx.Print
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # Emitter facts that hold for every kernel

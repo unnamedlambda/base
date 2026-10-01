@@ -1,6 +1,13 @@
-import AlgorithmLib.Host.HostIR
-import AlgorithmLib.ML.Compose
-import AlgorithmLib.ML.Kernel.Rewrite
+module
+public import AlgorithmLib.Host.HostIR
+meta import AlgorithmLib.Host.HostIR
+public import AlgorithmLib.ML.Compose
+meta import AlgorithmLib.ML.Compose
+public import AlgorithmLib.ML.Kernel.Rewrite
+meta import AlgorithmLib.ML.Kernel.Rewrite
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # From the host program to the pipeline

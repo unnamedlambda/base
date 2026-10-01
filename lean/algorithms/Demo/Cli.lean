@@ -1,6 +1,13 @@
-import AlgorithmLib.Gen
-import AlgorithmLib.Surface.ProgCuda
-import Scan.Ship
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 open Lean (Json)

@@ -1,6 +1,13 @@
-import Lz4.NonVacuity
-import Lz4.Confine64
-import Lz4.Host
+module
+public import Lz4.NonVacuity
+meta import Lz4.NonVacuity
+public import Lz4.Confine64
+meta import Lz4.Confine64
+public import Lz4.Host
+meta import Lz4.Host
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 /-!
@@ -184,13 +191,5 @@ theorem run_correct_witness :
             = some (gmemInpAt (Lz4NonVacuity.zeroMem 434522144)
                 (0 + w * (WP.mk 15).inStride) (WP.mk 15).inStride) :=
   shipped32_run_correct 0 209715232 [] _ Lz4NonVacuity.layoutOK_witness32
-
-/-- info: 'Lz4Whole.shipped32_run_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms shipped32_run_correct
-
-/-- info: 'Lz4Whole.shipped64_run_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms shipped64_run_correct
 
 end Lz4Whole

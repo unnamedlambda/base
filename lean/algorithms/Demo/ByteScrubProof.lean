@@ -1,4 +1,9 @@
-import Demo.ByteScrub
+module
+public import Demo.ByteScrub
+meta import Demo.ByteScrub
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open AlgorithmLib AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem
 

@@ -8,6 +8,9 @@ package algorithms where
   -- Generator executables are build-time tools: their own runtime is
   -- irrelevant, and -O0 keeps a large emitted body from costing minutes in gcc.
   moreLeancArgs := #["-O0"]
+  -- The module system: a proof edit that leaves a module's public interface
+  -- alone does not rebuild the modules that import it.
+  leanOptions := #[⟨`experimental.module, true⟩]
 
 -- One library per directory: the algorithms by area, their proofs beside
 -- them, and the scans that fail the build when a claim leaves its declared

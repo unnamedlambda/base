@@ -1,5 +1,11 @@
-import AlgorithmLib.LZ4.Simt
-import AlgorithmLib.LZ4.WarpSched
+module
+public import AlgorithmLib.LZ4.Simt
+meta import AlgorithmLib.LZ4.Simt
+public import AlgorithmLib.LZ4.WarpSched
+meta import AlgorithmLib.LZ4.WarpSched
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib AlgorithmLib.LZ4Simt

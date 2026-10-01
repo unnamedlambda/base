@@ -1,6 +1,13 @@
-import Qwen2.Algorithm
-import Qwen2.Spec
-import Qwen2.NonVacuity
+module
+public import Qwen2.Algorithm
+meta import Qwen2.Algorithm
+public import Qwen2.Spec
+meta import Qwen2.Spec
+public import Qwen2.NonVacuity
+meta import Qwen2.NonVacuity
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open AlgorithmLib AlgorithmLib.ML AlgorithmLib.Clif
 open Qwen2Common Qwen2Proven Qwen2Proven.Stage Qwen2Spec

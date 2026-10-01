@@ -1,5 +1,11 @@
-import Vit.Model
-import AlgorithmLib.Surface.ProgCuda
+module
+public import Vit.Model
+meta import Vit.Model
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The functions the ViT artifact ships

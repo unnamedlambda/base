@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.CoopWindowLeaf
+module
+public import AlgorithmLib.LZ4.CoopWindowLeaf
+meta import AlgorithmLib.LZ4.CoopWindowLeaf
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4WarpDSL AlgorithmLib.LZ4Simt AlgorithmLib.LZ4WarpFind

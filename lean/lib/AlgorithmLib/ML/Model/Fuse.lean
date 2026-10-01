@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Model.TenDenote
+module
+public import AlgorithmLib.ML.Model.TenDenote
+meta import AlgorithmLib.ML.Model.TenDenote
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # Fusion as a tape rewrite

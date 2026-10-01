@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Math.Transformer
+module
+public import AlgorithmLib.ML.Math.Transformer
+meta import AlgorithmLib.ML.Math.Transformer
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Incremental decode equals full recompute

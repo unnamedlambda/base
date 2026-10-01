@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.WarpKernel
+module
+public import AlgorithmLib.LZ4.WarpKernel
+meta import AlgorithmLib.LZ4.WarpKernel
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib AlgorithmLib.LZ4Simt AlgorithmLib.LZ4WarpSched AlgorithmLib.LZ4WarpFind

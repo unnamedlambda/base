@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.EvalValid
+module
+public import AlgorithmLib.LZ4.EvalValid
+meta import AlgorithmLib.LZ4.EvalValid
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The tight output budget, as a forward invariant

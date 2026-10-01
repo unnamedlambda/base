@@ -1,18 +1,38 @@
-import AlgorithmLib.Surface.Layout
-import AlgorithmLib.Vocab.PTX
-import AlgorithmLib.ML.Launch.Bind
-import AlgorithmLib.ML.Ptx.Emit
-import AlgorithmLib.ML.Ptx.Print
-import AlgorithmLib.ML.Model.Fuse
-import AlgorithmLib.ML.Machine.Buf
-import AlgorithmLib.ML.Compose
-import AlgorithmLib.ML.Kernel.Library
-import AlgorithmLib.ML.Model.Frontend
-import AlgorithmLib.ML.Model.Schedule
-import AlgorithmLib.ML.Model.LocalBind
-import AlgorithmLib.ML.Model.BufsOf
-import AlgorithmLib.Core.IR
-import Scan.Layout
+module
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.ML.Launch.Bind
+meta import AlgorithmLib.ML.Launch.Bind
+public import AlgorithmLib.ML.Ptx.Emit
+meta import AlgorithmLib.ML.Ptx.Emit
+public import AlgorithmLib.ML.Ptx.Print
+meta import AlgorithmLib.ML.Ptx.Print
+public import AlgorithmLib.ML.Model.Fuse
+meta import AlgorithmLib.ML.Model.Fuse
+public import AlgorithmLib.ML.Machine.Buf
+meta import AlgorithmLib.ML.Machine.Buf
+public import AlgorithmLib.ML.Compose
+meta import AlgorithmLib.ML.Compose
+public import AlgorithmLib.ML.Kernel.Library
+meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Model.Frontend
+meta import AlgorithmLib.ML.Model.Frontend
+public import AlgorithmLib.ML.Model.Schedule
+meta import AlgorithmLib.ML.Model.Schedule
+public import AlgorithmLib.ML.Model.LocalBind
+meta import AlgorithmLib.ML.Model.LocalBind
+public import AlgorithmLib.ML.Model.BufsOf
+meta import AlgorithmLib.ML.Model.BufsOf
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
+public import Scan.Layout
+meta import Scan.Layout
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open AlgorithmLib AlgorithmLib.ML
 
 /-! DeiT-Tiny's twelve blocks as one `Ten` term, at the padded geometry. -/

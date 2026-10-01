@@ -1,4 +1,9 @@
-import AlgorithmLib.Host.Sem
+module
+public import AlgorithmLib.Host.Sem
+meta import AlgorithmLib.Host.Sem
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # `HProgBlocks` — executing the compiled form

@@ -1,4 +1,9 @@
-import AlgorithmLib.Core.Bytes
+module
+public import AlgorithmLib.Core.Bytes
+meta import AlgorithmLib.Core.Bytes
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib
 
@@ -95,7 +100,7 @@ def Fld.init (_f : Fld t) (bytes : List UInt8) : FieldInit :=
     { offset := _f.offset, bytes }
 
 /-- Write bytes into a list at a given offset -/
-private def writeBytesAux (buf : List UInt8) (pos : Nat) (bytes : List UInt8) (limit : Nat) : List UInt8 :=
+def writeBytesAux (buf : List UInt8) (pos : Nat) (bytes : List UInt8) (limit : Nat) : List UInt8 :=
   match bytes with
   | [] => buf
   | b :: rest =>

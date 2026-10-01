@@ -1,13 +1,25 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import Bench.CudaDecodeAttention
-import Bench.CudaGemvPersist
-import Bench.CudaRmsNormPersist
-import Bench.CudaSaxpyPersist
-import Bench.CudaSoftmaxPersist
-import Bench.CudaVecAddPersist
-import Scan.Ship
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Bench.CudaDecodeAttention
+meta import Bench.CudaDecodeAttention
+public import Bench.CudaGemvPersist
+meta import Bench.CudaGemvPersist
+public import Bench.CudaRmsNormPersist
+meta import Bench.CudaRmsNormPersist
+public import Bench.CudaSaxpyPersist
+meta import Bench.CudaSaxpyPersist
+public import Bench.CudaSoftmaxPersist
+meta import Bench.CudaSoftmaxPersist
+public import Bench.CudaVecAddPersist
+meta import Bench.CudaVecAddPersist
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean
 open AlgorithmLib

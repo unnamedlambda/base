@@ -1,5 +1,11 @@
-import AlgorithmLib.LZ4.Confine
-import AlgorithmLib.LZ4.SimSLAssembly
+module
+public import AlgorithmLib.LZ4.Confine
+meta import AlgorithmLib.LZ4.Confine
+public import AlgorithmLib.LZ4.SimSLAssembly
+meta import AlgorithmLib.LZ4.SimSLAssembly
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Carrying a per-step obligation across a simulated segment

@@ -1,7 +1,13 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 
@@ -683,11 +689,11 @@ def smIx : IdxE := .add rowBaseIx (.add (.mul .loopI (.lit 32)) .laneId)
 def smTailIx : IdxE := .add rowBaseIx (.add (.ldIdx 1 (.lit TAIL_SLOT)) .loopI)
 
 /-- `%fw0 ← max(%fw0, s[ix])` — `sweepBody` at the max combiner. -/
-private def maxF : WFExp := .maxW (.reg 0) (.reg 2)
+def maxF : WFExp := .maxW (.reg 0) (.reg 2)
 
 /-- `%fw0 ← %fw0 + exp(s[ix] − %fw5)` — `sweepBody` at the sum combiner.  It
     reads `%fw5`, which is why the sweep frame has to name kept registers. -/
-private def sumF : WFExp := .add (.reg 0) (.exp (.add (.reg 2) (.neg (.reg 5))))
+def sumF : WFExp := .add (.reg 0) (.exp (.add (.reg 2) (.neg (.reg 5))))
 
 /-- The sum butterfly, as the schema's reduction argument. -/
 def smSumBfly : EWStmt :=

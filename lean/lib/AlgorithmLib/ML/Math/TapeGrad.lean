@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Math.Tape
+module
+public import AlgorithmLib.ML.Math.Tape
+meta import AlgorithmLib.ML.Math.Tape
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # `gradProg` is correct

@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Kernel.Library
+module
+public import AlgorithmLib.ML.Kernel.Library
+meta import AlgorithmLib.ML.Kernel.Library
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Batching, without a new address constructor

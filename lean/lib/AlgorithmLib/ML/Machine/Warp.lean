@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Machine.Buf
+module
+public import AlgorithmLib.ML.Machine.Buf
+meta import AlgorithmLib.ML.Machine.Buf
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A warp-level machine — making real tuning provable
@@ -593,11 +598,11 @@ theorem warpReduceSum_spec (acc tmp : Nat) (h : tmp ≠ acc) (st : WSt) :
     allocation would be, which also makes every distinctness side condition
     `by decide`. -/
 
-private abbrev aR : Nat := 0
-private abbrev v0 : Nat := 1
-private abbrev v1 : Nat := 2
-private abbrev v2 : Nat := 3
-private abbrev v3 : Nat := 4
+abbrev aR : Nat := 0
+abbrev v0 : Nat := 1
+abbrev v1 : Nat := 2
+abbrev v2 : Nat := 3
+abbrev v3 : Nat := 4
 
 def sq (x : Float32) : Float32 := NumOps.mul x x
 

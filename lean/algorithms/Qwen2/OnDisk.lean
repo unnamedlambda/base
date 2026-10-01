@@ -1,11 +1,21 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.Surface.Cuda
-import AlgorithmLib.Surface.ProgCuda
-import Qwen2.Common
-import Scan.Layout
-import Scan.Ship
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.Surface.Cuda
+meta import AlgorithmLib.Surface.Cuda
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
+public import Qwen2.Common
+meta import Qwen2.Common
+public import Scan.Layout
+meta import Scan.Layout
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 open Lean

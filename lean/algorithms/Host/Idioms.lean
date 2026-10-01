@@ -1,4 +1,9 @@
-import AlgorithmLib.Gen
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The frontend composes — checked by the build

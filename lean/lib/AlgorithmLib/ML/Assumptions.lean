@@ -1,20 +1,41 @@
-import AlgorithmLib.ML.Ptx.Print
-import AlgorithmLib.ML.Ptx.Block
-import AlgorithmLib.ML.Kernel.Schema
-import AlgorithmLib.ML.Math.TapeGrad
-import AlgorithmLib.ML.Math.Layered
-import AlgorithmLib.ML.Math.KVCache
-import AlgorithmLib.ML.Kernel.Rewrite
-import AlgorithmLib.ML.Launch.Interchange
-import AlgorithmLib.ML.Launch.HostBridge
-import AlgorithmLib.ML.Math.Backprop
-import AlgorithmLib.ML.Launch.Pipeline
-import AlgorithmLib.ML.Compose
-import AlgorithmLib.ML.Machine.Geometry
-import AlgorithmLib.Surface.Layout
-import AlgorithmLib.ML.Model.Frontend
-import AlgorithmLib.ML.Kernel.Sched
-import AlgorithmLib.ML.Num.QuantMX
+module
+public import AlgorithmLib.ML.Ptx.Print
+meta import AlgorithmLib.ML.Ptx.Print
+public import AlgorithmLib.ML.Ptx.Block
+meta import AlgorithmLib.ML.Ptx.Block
+public import AlgorithmLib.ML.Kernel.Schema
+meta import AlgorithmLib.ML.Kernel.Schema
+public import AlgorithmLib.ML.Math.TapeGrad
+meta import AlgorithmLib.ML.Math.TapeGrad
+public import AlgorithmLib.ML.Math.Layered
+meta import AlgorithmLib.ML.Math.Layered
+public import AlgorithmLib.ML.Math.KVCache
+meta import AlgorithmLib.ML.Math.KVCache
+public import AlgorithmLib.ML.Kernel.Rewrite
+meta import AlgorithmLib.ML.Kernel.Rewrite
+public import AlgorithmLib.ML.Launch.Interchange
+meta import AlgorithmLib.ML.Launch.Interchange
+public import AlgorithmLib.ML.Launch.HostBridge
+meta import AlgorithmLib.ML.Launch.HostBridge
+public import AlgorithmLib.ML.Math.Backprop
+meta import AlgorithmLib.ML.Math.Backprop
+public import AlgorithmLib.ML.Launch.Pipeline
+meta import AlgorithmLib.ML.Launch.Pipeline
+public import AlgorithmLib.ML.Compose
+meta import AlgorithmLib.ML.Compose
+public import AlgorithmLib.ML.Machine.Geometry
+meta import AlgorithmLib.ML.Machine.Geometry
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.ML.Model.Frontend
+meta import AlgorithmLib.ML.Model.Frontend
+public import AlgorithmLib.ML.Kernel.Sched
+meta import AlgorithmLib.ML.Kernel.Sched
+public import AlgorithmLib.ML.Num.QuantMX
+meta import AlgorithmLib.ML.Num.QuantMX
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # What the ML stack proves, and what it rests on

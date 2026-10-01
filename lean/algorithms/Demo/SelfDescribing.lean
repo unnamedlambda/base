@@ -1,5 +1,11 @@
-import AlgorithmLib.Gen
-import Scan.Ship
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # Output that says what it is
@@ -43,13 +49,13 @@ def uint64leTag : Nat := 71
 
 def HIST_BYTES : Nat := 256 * 8
 
-private def bytesOf (w : Cbor.W Unit) : List UInt8 :=
+def bytesOf (w : Cbor.W Unit) : List UInt8 :=
   match Cbor.run w with
   | .ok b => b.toList
   | .error e => panic! e
 
 /-- A text key or value. -/
-private def txt (s : String) : List UInt8 := bytesOf (Cbor.text s)
+def txt (s : String) : List UInt8 := bytesOf (Cbor.text s)
 
 /-- `stats`' answer is three pieces with the run's values between them:
 

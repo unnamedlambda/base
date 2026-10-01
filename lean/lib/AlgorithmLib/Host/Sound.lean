@@ -1,4 +1,9 @@
-import AlgorithmLib.Host.Blocks
+module
+public import AlgorithmLib.Host.Blocks
+meta import AlgorithmLib.Host.Blocks
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # `HProgSound` — compiling a term preserves what it does

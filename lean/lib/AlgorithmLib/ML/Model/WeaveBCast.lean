@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Math.Weave
-import AlgorithmLib.ML.Launch.Pipeline
+module
+public import AlgorithmLib.ML.Math.Weave
+meta import AlgorithmLib.ML.Math.Weave
+public import AlgorithmLib.ML.Launch.Pipeline
+meta import AlgorithmLib.ML.Launch.Pipeline
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The kernels' broadcasts are reindexings

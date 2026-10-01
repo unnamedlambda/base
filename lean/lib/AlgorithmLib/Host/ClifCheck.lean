@@ -1,5 +1,11 @@
-import AlgorithmLib.Host.Clif
-import AlgorithmLib.Host.Blocks
+module
+public import AlgorithmLib.Host.Clif
+meta import AlgorithmLib.Host.Clif
+public import AlgorithmLib.Host.Blocks
+meta import AlgorithmLib.Host.Blocks
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Checking the launch model against the machine

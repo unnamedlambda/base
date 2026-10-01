@@ -1,6 +1,13 @@
-import AlgorithmLib.ML.Ptx.Compile
-import AlgorithmLib.ML.Kernel.Schema
-import AlgorithmLib.ML.Ptx.Print
+module
+public import AlgorithmLib.ML.Ptx.Compile
+meta import AlgorithmLib.ML.Ptx.Compile
+public import AlgorithmLib.ML.Kernel.Schema
+meta import AlgorithmLib.ML.Kernel.Schema
+public import AlgorithmLib.ML.Ptx.Print
+meta import AlgorithmLib.ML.Ptx.Print
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The zero-proof front door

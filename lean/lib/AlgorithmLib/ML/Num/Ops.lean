@@ -1,3 +1,8 @@
+module
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 /-!
   # Numeric carriers for the ML expression language
 

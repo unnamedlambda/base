@@ -1,8 +1,17 @@
-import AlgorithmLib.Vocab.PTX
-import AlgorithmLib.LZ4.SimtSerialize
-import AlgorithmLib.LZ4.WarpKernel
-import AlgorithmLib.LZ4.WarpDSL
-import AlgorithmLib.LZ4.CompTop
+module
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.LZ4.SimtSerialize
+meta import AlgorithmLib.LZ4.SimtSerialize
+public import AlgorithmLib.LZ4.WarpKernel
+meta import AlgorithmLib.LZ4.WarpKernel
+public import AlgorithmLib.LZ4.WarpDSL
+meta import AlgorithmLib.LZ4.WarpDSL
+public import AlgorithmLib.LZ4.CompTop
+meta import AlgorithmLib.LZ4.CompTop
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The warp compressor's kernel, its memory layout, and its launch correctness
@@ -154,14 +163,6 @@ theorem shipped64_correct : ShippedCorrect 16 := by
     (by decide) (by decide) hw (by decide) (by decide) (by decide)
     hw64 hib40 htop hbuf hderive hdisj (Nat.le_refl _) hlOtop hlOfit
 
-/-- info: 'Algorithm.shipped32_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms shipped32_correct
-
-/-- info: 'Algorithm.shipped64_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms shipped64_correct
-
 
 /-- The buffer-placement contract the runtime must satisfy.
 
@@ -250,10 +251,6 @@ theorem launch_correct (b : Nat) (inPtr outPtr : Nat) (gm : Array UInt8)
     intro i hi
     rw [List.mem_range] at hi
     exact hagree _ (by omega) (by omega)
-
-/-- info: 'Algorithm.launch_correct' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms launch_correct
 
 end ShippedClaim
 

@@ -1,7 +1,13 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML
 
@@ -359,8 +365,8 @@ def smTailIx : IdxE := .add rowBaseIx (.add (.ldIdx 1 (.lit M_TAIL)) .loopI)
 /-- This block's sink: the block index, since a block is a query head. -/
 def sinkIx : IdxE := .ctaId
 
-private def maxF : WFExp := .maxW (.reg 0) (.reg 2)
-private def sumF : WFExp := .add (.reg 0) (.exp (.add (.reg 2) (.neg (.reg 5))))
+def maxF : WFExp := .maxW (.reg 0) (.reg 2)
+def sumF : WFExp := .add (.reg 0) (.exp (.add (.reg 2) (.neg (.reg 5))))
 
 def smSumBfly : EWStmt :=
   .seq (warpRoundE 16) (.seq (warpRoundE 8) (.seq (warpRoundE 4)

@@ -1,10 +1,19 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
-import AlgorithmLib.Surface.ProgCuda
-import Scan.Layout
-import Scan.Ship
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
+public import Scan.Layout
+meta import Scan.Layout
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A user's spec, compiled to the GPU

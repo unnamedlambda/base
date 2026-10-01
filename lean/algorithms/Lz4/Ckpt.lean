@@ -1,4 +1,9 @@
-import Lz4.Splice
+module
+public import Lz4.Splice
+meta import Lz4.Splice
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 set_option maxRecDepth 8192
 

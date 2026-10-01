@@ -1,4 +1,8 @@
-import Lean
+module
+public import Lean
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Every address a module names must be inside its region map
@@ -25,7 +29,7 @@ def isAddressName (n : Name) : Bool :=
 
 /-- Declared by the module being elaborated: the environment gives an imported
     constant a module index and a local one none. -/
-private def isLocal (env : Environment) (n : Name) : Bool :=
+def isLocal (env : Environment) (n : Name) : Bool :=
   (env.getModuleIdxFor? n).isNone
 
 /-- Transitive constant closure of a declaration's value and type. -/

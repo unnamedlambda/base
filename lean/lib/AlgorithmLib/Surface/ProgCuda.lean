@@ -1,5 +1,11 @@
-import AlgorithmLib.Surface.Cuda
-import AlgorithmLib.Surface.ProgFFI
+module
+public import AlgorithmLib.Surface.Cuda
+meta import AlgorithmLib.Surface.Cuda
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The typed CUDA layer, over `Prog`

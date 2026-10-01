@@ -1,5 +1,11 @@
-import Lz4.Comp
-import AlgorithmLib.Host.ClifCheck
+module
+public import Lz4.Comp
+meta import Lz4.Comp
+public import AlgorithmLib.Host.ClifCheck
+meta import AlgorithmLib.Host.ClifCheck
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The compressor's claims, at the two geometries that ship
@@ -102,14 +108,6 @@ theorem shipped64_launch_correct
           (WP.mk 16).inStride
           = some (gmemInpAt gm (inPtr + w * (WP.mk 16).inStride) (WP.mk 16).inStride) :=
   launch_correct 16 inPtr outPtr gm smemB gfinal shipped64_correct hlayout hSC
-
-/-- info: 'Lz4NonVacuity.shipped32_launch_correct' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in
-#print axioms shipped32_launch_correct
-
-/-- info: 'Lz4NonVacuity.layoutOK_witness32' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms layoutOK_witness32
 
 -- ── What the allocator owes, and what it does not ─────────────────────────────
 

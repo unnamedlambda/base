@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Model.BufsOf
-import AlgorithmLib.ML.Kernel.EmitFacts
+module
+public import AlgorithmLib.ML.Model.BufsOf
+meta import AlgorithmLib.ML.Model.BufsOf
+public import AlgorithmLib.ML.Kernel.EmitFacts
+meta import AlgorithmLib.ML.Kernel.EmitFacts
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # No kernel names a reserved register

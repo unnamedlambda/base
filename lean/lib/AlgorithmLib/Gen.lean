@@ -1,20 +1,41 @@
-import AlgorithmLib.Core.Artifact
-import AlgorithmLib.Core.Bytes
-import AlgorithmLib.Surface.Layout
-import AlgorithmLib.Host.Clif
-import AlgorithmLib.Host.HostIR
-import AlgorithmLib.Core.IR
-import AlgorithmLib.Host.Term
-import AlgorithmLib.Host.Sem
-import AlgorithmLib.Host.Blocks
-import AlgorithmLib.Host.Frames
-import AlgorithmLib.Host.Trust
-import AlgorithmLib.Surface.FFI
-import AlgorithmLib.Surface.ProgFFI
-import AlgorithmLib.Surface.Prog
-import AlgorithmLib.Surface.CudaPipeline
-import AlgorithmLib.Vocab.PTX
-import AlgorithmLib.Vocab.WGSL
+module
+public import AlgorithmLib.Core.Artifact
+meta import AlgorithmLib.Core.Artifact
+public import AlgorithmLib.Core.Bytes
+meta import AlgorithmLib.Core.Bytes
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.Host.Clif
+meta import AlgorithmLib.Host.Clif
+public import AlgorithmLib.Host.HostIR
+meta import AlgorithmLib.Host.HostIR
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
+public import AlgorithmLib.Host.Term
+meta import AlgorithmLib.Host.Term
+public import AlgorithmLib.Host.Sem
+meta import AlgorithmLib.Host.Sem
+public import AlgorithmLib.Host.Blocks
+meta import AlgorithmLib.Host.Blocks
+public import AlgorithmLib.Host.Frames
+meta import AlgorithmLib.Host.Frames
+public import AlgorithmLib.Host.Trust
+meta import AlgorithmLib.Host.Trust
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
+public import AlgorithmLib.Surface.CudaPipeline
+meta import AlgorithmLib.Surface.CudaPipeline
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.Vocab.WGSL
+meta import AlgorithmLib.Vocab.WGSL
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # Everything needed to write a generator

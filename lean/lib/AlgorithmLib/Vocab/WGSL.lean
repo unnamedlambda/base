@@ -1,4 +1,9 @@
-import Lean
+module
+public import Lean
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open Lean
 
 namespace AlgorithmLib.WGSL
@@ -72,7 +77,7 @@ structure WGSLState where
 
 abbrev WB := StateM WGSLState
 
-private def emit (line : String) : WB Unit :=
+def emit (line : String) : WB Unit :=
   modify fun st =>
     let pfx := String.ofList (List.replicate (st.indent * 4) ' ')
     { st with lines := st.lines.push (pfx ++ line) }
@@ -82,18 +87,18 @@ def raw (src : String) : WB Unit := do
   for line in src.splitOn "\n" do
     emit line
 
-private def indented (inner : WB α) : WB α := do
+def indented (inner : WB α) : WB α := do
   modify fun st => { st with indent := st.indent + 1 }
   let r ← inner
   modify fun st => { st with indent := st.indent - 1 }
   return r
 
-private def emitBlock (body : WB Unit) : WB Unit := do
+def emitBlock (body : WB Unit) : WB Unit := do
   emit "{"
   indented body
   emit "}"
 
-private def runBodyAt (indent : Nat) (body : WB Unit) : List String :=
+def runBodyAt (indent : Nat) (body : WB Unit) : List String :=
   let st₀ : WGSLState := { lines := #[], indent, varCount := 0 }
   (body.run st₀).2.lines.toList
 
@@ -294,7 +299,7 @@ def deref  (e : Expr (.ptrFn ty)) : Expr ty := ⟨s!"*{e}"⟩
 
 /-- Allocate a fresh, unique local name (`v0`, `v1`, …) — reset per function body,
     so callers thread the returned `Expr` handle rather than naming locals. -/
-private def freshName : WB String := do
+def freshName : WB String := do
   let n := (← get).varCount
   modify fun st => { st with varCount := n + 1 }
   return s!"v{n}"
@@ -421,7 +426,7 @@ structure Binding where
   ty      : WTy           -- array type (e.g. `.arr .f32`)
   ro      : Bool := false -- read-only storage?
 
-private def Binding.render (b : Binding) : String :=
+def Binding.render (b : Binding) : String :=
   let mode := if b.ro then "storage, read" else "storage, read_write"
   s!"@group({b.group}) @binding({b.binding}) var<{mode}> {b.name}: {b.ty.render};"
 
@@ -434,7 +439,7 @@ structure EntrySpec where
   lid  : Bool   := false  -- @builtin(local_invocation_id)  lid: vec3<u32>
   wid  : Bool   := false  -- @builtin(workgroup_id)          wid: vec3<u32>
 
-private def renderEntry (e : EntrySpec) (body : WB Unit) : String :=
+def renderEntry (e : EntrySpec) (body : WB Unit) : String :=
   let wg := if e.wgY > 1 || e.wgZ > 1
     then s!"@compute @workgroup_size({e.wgX}, {e.wgY}, {e.wgZ})"
     else s!"@compute @workgroup_size({e.wgX})"

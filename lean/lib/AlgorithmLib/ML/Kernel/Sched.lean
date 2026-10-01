@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Kernel.Library
-import AlgorithmLib.ML.Kernel.Rewrite
+module
+public import AlgorithmLib.ML.Kernel.Library
+meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Kernel.Rewrite
+meta import AlgorithmLib.ML.Kernel.Rewrite
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.ML
 

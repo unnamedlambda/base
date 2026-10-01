@@ -1,5 +1,11 @@
-import AlgorithmLib.LZ4.WarpKernel
-import AlgorithmLib.LZ4.Plan
+module
+public import AlgorithmLib.LZ4.WarpKernel
+meta import AlgorithmLib.LZ4.WarpKernel
+public import AlgorithmLib.LZ4.Plan
+meta import AlgorithmLib.LZ4.Plan
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4Plan AlgorithmLib.LZ4

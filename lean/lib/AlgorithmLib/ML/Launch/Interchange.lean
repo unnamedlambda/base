@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Compose
+module
+public import AlgorithmLib.ML.Compose
+meta import AlgorithmLib.ML.Compose
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A fused launch is the members' pipeline

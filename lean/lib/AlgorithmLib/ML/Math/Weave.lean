@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Math.Reindex
+module
+public import AlgorithmLib.ML.Math.Reindex
+meta import AlgorithmLib.ML.Math.Reindex
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The broadcasting algebra

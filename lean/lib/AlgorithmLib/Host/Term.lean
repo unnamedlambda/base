@@ -1,5 +1,10 @@
-import Lean
-import AlgorithmLib.Surface.FFI
+module
+public import Lean
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # `HProg` — a function body as a first-order term
@@ -440,7 +445,7 @@ def _root_.AlgorithmLib.IR.ClifTy.width : ClifTy → Nat
 instance : Inhabited ClifTy := ⟨.i64⟩
 
 /-- Guard reading as a predicate on the checked type. -/
-private def need (b : Bool) (t : ClifTy) : Option ClifTy := if b then some t else none
+def need (b : Bool) (t : ClifTy) : Option ClifTy := if b then some t else none
 
 /-- The type `o` yields, or `none` when an operand is out of scope, the operand
     types disagree, or the operation does not apply to them. -/
@@ -511,7 +516,7 @@ def Op.check (Γ : TyEnv) : Op → Option ClifTy
       let ta ← Γ.get a; need (ta == .i64) op.ty
 
 /-- Every argument in scope and typed as the signature declares. -/
-private def argsOk (Γ : TyEnv) (d : CalleeSig) (args : List R) : Bool :=
+def argsOk (Γ : TyEnv) (d : CalleeSig) (args : List R) : Bool :=
   args.length == d.params.length &&
     (List.zip args d.params).all fun (r, t) => Γ.get r == some t
 
@@ -571,11 +576,11 @@ where
         go (acc && ok) Γ' ss
 
 /-- The slots `rs` name, in order, if all are in scope. -/
-private def tysOf (Γ : TyEnv) : List R → Option (List ClifTy)
+def tysOf (Γ : TyEnv) : List R → Option (List ClifTy)
   | [] => some []
   | r :: rs => do let t ← Γ.get r; let ts ← tysOf Γ rs; pure (t :: ts)
 
-private def tysAre (Γ : TyEnv) (rs : List R) (ts : List ClifTy) : Bool :=
+def tysAre (Γ : TyEnv) (rs : List R) (ts : List ClifTy) : Bool :=
   tysOf Γ rs == some ts
 
 /-- The carry types of the `depth`-th enclosing loop, when it has a header to go
@@ -657,7 +662,7 @@ def wfGo (env : FnEnv) : Nat → List (List ClifTy × Option (List ClifTy)) → 
         (carryOf lbl depth).isSome && tysAre Γ args ((carryOf lbl depth).getD []),
        Γ)
 
-private def callsIn (ss : List Stmt) : List Callee :=
+def callsIn (ss : List Stmt) : List Callee :=
   ss.filterMap fun
     | .call c _ => some c
     | .callVoid c _ => some c

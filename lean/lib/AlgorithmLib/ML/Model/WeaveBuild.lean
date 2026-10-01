@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Model.WeaveLower
+module
+public import AlgorithmLib.ML.Model.WeaveLower
+meta import AlgorithmLib.ML.Model.WeaveLower
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Writing a model in the algebra

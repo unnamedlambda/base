@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Ptx.Flat
+module
+public import AlgorithmLib.ML.Ptx.Flat
+meta import AlgorithmLib.ML.Ptx.Flat
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.ML
 

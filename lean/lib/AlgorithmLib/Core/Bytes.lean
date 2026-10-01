@@ -1,3 +1,8 @@
+module
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 namespace AlgorithmLib
 
 def stringToBytes (s : String) : List UInt8 :=

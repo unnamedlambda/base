@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Machine.Warp
-import AlgorithmLib.Vocab.PTX
+module
+public import AlgorithmLib.ML.Machine.Warp
+meta import AlgorithmLib.ML.Machine.Warp
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Lowering a proven warp kernel to PTX

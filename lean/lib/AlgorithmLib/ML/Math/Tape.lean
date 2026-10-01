@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Math.MultiLayer
+module
+public import AlgorithmLib.ML.Math.MultiLayer
+meta import AlgorithmLib.ML.Math.MultiLayer
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Let-normal programs, and why the gradient needs them

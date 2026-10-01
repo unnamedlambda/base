@@ -1,11 +1,21 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
-import GptOss.Kernels
-import GptOss.Attention
-import Scan.Layout
-import Scan.Ship
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+public import GptOss.Kernels
+meta import GptOss.Kernels
+public import GptOss.Attention
+meta import GptOss.Attention
+public import Scan.Layout
+meta import Scan.Layout
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 open AlgorithmLib.Prog

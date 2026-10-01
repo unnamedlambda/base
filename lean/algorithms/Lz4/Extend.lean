@@ -1,4 +1,9 @@
-import Lz4.ExtLoop
+module
+public import Lz4.ExtLoop
+meta import Lz4.ExtLoop
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 set_option maxRecDepth 8192
 

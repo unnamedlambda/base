@@ -1,5 +1,12 @@
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open AlgorithmLib AlgorithmLib.ML
 
 -- The twelve-block lowering is one `rfl` over the whole tape, which nests

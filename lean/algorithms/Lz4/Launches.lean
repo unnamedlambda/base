@@ -1,4 +1,9 @@
-import Lz4.Kernel
+module
+public import Lz4.Kernel
+meta import Lz4.Kernel
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Repeated launches over the same buffers
@@ -154,9 +159,5 @@ theorem shipped64_launches_correct (inPtr outPtr : Nat) (gm gfinal : Array UInt8
           (WP.mk 16).inStride
           = some (gmemInpAt gm (inPtr + w * (WP.mk 16).inStride) (WP.mk 16).inStride) :=
   launches_correct 16 inPtr outPtr gm gfinal smemB 19 shipped64_correct hlayout hruns
-
-/-- info: 'Lz4Launches.launches_correct' depends on axioms: [propext, Quot.sound] -/
-#guard_msgs in
-#print axioms launches_correct
 
 end Lz4Launches

@@ -1,5 +1,12 @@
-import Vit.Algorithm
-import Scan.Ship
+module
+public import Vit.Algorithm
+meta import Vit.Algorithm
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open AlgorithmLib AlgorithmLib.ML
 
 /-!

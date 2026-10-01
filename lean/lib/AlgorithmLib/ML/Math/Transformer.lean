@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Math.Grad
-import AlgorithmLib.ML.Math.Grad
+module
+public import AlgorithmLib.ML.Math.Grad
+meta import AlgorithmLib.ML.Math.Grad
+public import AlgorithmLib.ML.Math.Grad
+meta import AlgorithmLib.ML.Math.Grad
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A transformer layer, as `Expr` combinators

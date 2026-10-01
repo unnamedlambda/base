@@ -1,6 +1,12 @@
-import Lean
-import AlgorithmLib.Gen
-import Scan.Ship
+module
+public import Lean
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The differential corpus
@@ -34,23 +40,23 @@ namespace HProgCorpus
 /-- 16 bytes per case, so a vector result fits without overlapping the next. -/
 def STRIDE : Nat := 16
 
-private def i64min : Int := -9223372036854775808
-private def i64max : Int := 9223372036854775807
+def i64min : Int := -9223372036854775808
+def i64max : Int := 9223372036854775807
 
 /-- Operands that separate signed from unsigned, and saturation from wrap. -/
-private def ints : List Int := [0, 1, -1, 3, i64min, i64max, 0x5555555555555555]
+def ints : List Int := [0, 1, -1, 3, i64min, i64max, 0x5555555555555555]
 
-private def f32Bits (x : Float) : UInt64 := x.toFloat32.toBits.toUInt64
-private def f64Bits (x : Float) : UInt64 := x.toBits
+def f32Bits (x : Float) : UInt64 := x.toFloat32.toBits.toUInt64
+def f64Bits (x : Float) : UInt64 := x.toBits
 
 /-- The float operands worth trying: a quiet NaN, both infinities, both zeros,
     a subnormal, and something ordinary. -/
-private def f32Cases : List (String × UInt64) :=
+def f32Cases : List (String × UInt64) :=
   [("nan", 0x7fc00000), ("inf", 0x7f800000), ("-inf", 0xff800000),
    ("0", 0x00000000), ("-0", 0x80000000), ("sub", 0x00000001),
    ("1.5", f32Bits 1.5), ("-2.25", f32Bits (-2.25))]
 
-private def f64Cases : List (String × UInt64) :=
+def f64Cases : List (String × UInt64) :=
   [("nan", 0x7ff8000000000000), ("inf", 0x7ff0000000000000),
    ("-0", 0x8000000000000000), ("sub", 0x0000000000000001),
    ("1.5", f64Bits 1.5)]
@@ -63,16 +69,16 @@ structure Case (V : ClifTy → Type) (L : List ClifTy → List ClifTy → Type) 
   {ty : ClifTy}
   run : Prog V L (V ty)
 
-private def intBinops : List (String × (V .i64 → V .i64 → Prog V L (V .i64))) :=
+def intBinops : List (String × (V .i64 → V .i64 → Prog V L (V .i64))) :=
   [("iadd", iadd), ("isub", isub), ("imul", imul), ("band", band),
    ("bandNot", bandNot), ("bor", bor), ("bxor", bxor)]
 
-private def floatBinopNames : List String := ["fadd", "fsub", "fmul", "fmax", "fmin"]
+def floatBinopNames : List String := ["fadd", "fsub", "fmul", "fmax", "fmin"]
 
 /-- The operation a name stands for, at whichever width the caller asks. The
     corpus applies each at `f32` and at `f64`, so the width is a parameter
     rather than fixed by the table. -/
-private def floatBinop {ty} (nm : String) (a b : V ty)
+def floatBinop {ty} (nm : String) (a b : V ty)
     (h : (ty.isFloat || ty.isFloatVec) = true := by decide) : Prog V L (V ty) :=
   match nm with
   | "fadd" => fadd a b h
@@ -81,11 +87,11 @@ private def floatBinop {ty} (nm : String) (a b : V ty)
   | "fmax" => fmax a b h
   | _      => fmin a b h
 
-private def allICmp : List (String × ICmpCond) :=
+def allICmp : List (String × ICmpCond) :=
   [("eq", .eq), ("ne", .ne), ("ult", .ult), ("ule", .ule), ("ugt", .ugt),
    ("uge", .uge), ("slt", .slt), ("sle", .sle), ("sgt", .sgt), ("sge", .sge)]
 
-private def allFCmp : List (String × FloatCC) :=
+def allFCmp : List (String × FloatCC) :=
   [("eq", .eq), ("ne", .ne), ("lt", .lt), ("le", .le), ("gt", .gt), ("ge", .ge)]
 
 /-- Integer arithmetic and bitwise operations. -/
@@ -625,7 +631,7 @@ def casesDCont : List (Case V L) := Id.run do
     than lucky. What this catches is the part that is not by construction: that
     an `f32` argument and result survive the call boundary the JIT builds, and
     that `clif_decode` gives the signature the same shape both sides assume. -/
-private def casesMath : List (Case V L) := Id.run do
+def casesMath : List (Case V L) := Id.run do
   let mut cs : List (Case V L) := []
   for (nm, bits) in f32Cases do
     cs := cs ++ [⟨s!"sinf/{nm}", do ffi .sinf %[← fconst .f32 bits]⟩]
@@ -638,11 +644,11 @@ private def casesMath : List (Case V L) := Id.run do
   return cs
 
 /-- Scratch inside the corpus arena, clear of the context slots. -/
-private def htCtxSlot : Nat := 0x80
-private def htKeyA : Nat := 0x90
-private def htKeyB : Nat := 0x98
-private def htVal : Nat := 0xA0
-private def htOut : Nat := 0xB0
+def htCtxSlot : Nat := 0x80
+def htKeyA : Nat := 0x90
+def htKeyB : Nat := 0x98
+def htVal : Nat := 0xA0
+def htOut : Nat := 0xB0
 
 /-- The hash table, run as one sequence: the cases share a world, so what each
     stores is the state the ones before it left.
@@ -651,7 +657,7 @@ private def htOut : Nat := 0xB0
     given, and iterates a `HashMap`, so `ht_get_entry` is asked here only while
     exactly one entry exists — an index into an unordered container is not
     something the implementation promises and not something to pin. -/
-private def casesHt : List (Case V L) := Id.run do
+def casesHt : List (Case V L) := Id.run do
   let put : Nat → List Nat → Prog V L Unit := fun off bs => do
     for (b, i) in bs.zipIdx do
       istore8 (← iconst64 (Int.ofNat b)) (← absAddr (← basePtr) (off + i))

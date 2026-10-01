@@ -1,7 +1,15 @@
-import AlgorithmLib.ML.Kernel.Library
-import AlgorithmLib.ML.Math.Layered
-import AlgorithmLib.ML.Kernel.Batch
-import AlgorithmLib.ML.Kernel.SoftmaxCE
+module
+public import AlgorithmLib.ML.Kernel.Library
+meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Math.Layered
+meta import AlgorithmLib.ML.Math.Layered
+public import AlgorithmLib.ML.Kernel.Batch
+meta import AlgorithmLib.ML.Kernel.Batch
+public import AlgorithmLib.ML.Kernel.SoftmaxCE
+meta import AlgorithmLib.ML.Kernel.SoftmaxCE
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Stages, grids, and pipelines

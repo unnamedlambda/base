@@ -1,5 +1,11 @@
-import AlgorithmLib.Surface.Prog
-import AlgorithmLib.Surface.Layout
+module
+public import AlgorithmLib.Surface.Prog
+meta import AlgorithmLib.Surface.Prog
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The FFI call wrappers, over `Prog`
@@ -40,7 +46,7 @@ def ctxPtr (ptr : V .i64) (slotOffset : Nat) : Prog V L (V .i64) := do
 
 /-- `init` takes the *slot* --- it writes the context there. Every subsystem's
     `init` and `cleanup` has this one signature, which the index states. -/
-private def initAt (f : Ffi) (hp : f.params = [ClifTy.i64] := by rfl)
+def initAt (f : Ffi) (hp : f.params = [ClifTy.i64] := by rfl)
     (ptr : V .i64) (slotOffset : Nat) : Prog V L Unit := do
   ffiVoid f (hp ▸ %[← ctxSlotPtr ptr slotOffset])
 

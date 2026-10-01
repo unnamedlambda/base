@@ -3,6 +3,9 @@ open Lake DSL System
 
 package algorithmLib where
   srcDir := "."
+  -- The module system: a proof edit that leaves a module's public interface
+  -- alone does not rebuild the modules that import it.
+  leanOptions := #[⟨`experimental.module, true⟩]
 
 @[default_target]
 lean_lib AlgorithmLib where

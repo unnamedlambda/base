@@ -1,6 +1,11 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean
 open AlgorithmLib

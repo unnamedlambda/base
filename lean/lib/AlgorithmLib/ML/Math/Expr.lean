@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Num.Ops
+module
+public import AlgorithmLib.ML.Num.Ops
+meta import AlgorithmLib.ML.Num.Ops
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.ML
 

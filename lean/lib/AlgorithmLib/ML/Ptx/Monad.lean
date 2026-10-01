@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Ptx.Emit
-import AlgorithmLib.ML.Machine.WarpEmit
+module
+public import AlgorithmLib.ML.Ptx.Emit
+meta import AlgorithmLib.ML.Ptx.Emit
+public import AlgorithmLib.ML.Machine.WarpEmit
+meta import AlgorithmLib.ML.Machine.WarpEmit
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The full lowering, part 1: a machine with memory, addresses and loops

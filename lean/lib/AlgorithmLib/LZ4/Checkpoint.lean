@@ -1,6 +1,13 @@
-import AlgorithmLib.LZ4.EvalValid
-import AlgorithmLib.LZ4.StepDescent
-import AlgorithmLib.LZ4.Tight
+module
+public import AlgorithmLib.LZ4.EvalValid
+meta import AlgorithmLib.LZ4.EvalValid
+public import AlgorithmLib.LZ4.StepDescent
+meta import AlgorithmLib.LZ4.StepDescent
+public import AlgorithmLib.LZ4.Tight
+meta import AlgorithmLib.LZ4.Tight
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib AlgorithmLib.LZ4Simt

@@ -1,9 +1,18 @@
-import Lean
-import AlgorithmLib.Gen
-import Bench.Histogram1
-import Bench.ClampSum
-import Bench.CudaRmsNormPersist
-import Scan.Ship
+module
+public import Lean
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Bench.Histogram1
+meta import Bench.Histogram1
+public import Bench.ClampSum
+meta import Bench.ClampSum
+public import Bench.CudaRmsNormPersist
+meta import Bench.CudaRmsNormPersist
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # Three generators written as `HProg` terms

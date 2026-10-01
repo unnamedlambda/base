@@ -1,6 +1,13 @@
-import AlgorithmLib.LZ4.WarpEmit
-import AlgorithmLib.LZ4.SimtBits
-import AlgorithmLib.LZ4.WarpSched
+module
+public import AlgorithmLib.LZ4.WarpEmit
+meta import AlgorithmLib.LZ4.WarpEmit
+public import AlgorithmLib.LZ4.SimtBits
+meta import AlgorithmLib.LZ4.SimtBits
+public import AlgorithmLib.LZ4.WarpSched
+meta import AlgorithmLib.LZ4.WarpSched
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib AlgorithmLib.LZ4Simt AlgorithmLib.LZ4SimtBits AlgorithmLib.LZ4WarpFind

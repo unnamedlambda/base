@@ -1,6 +1,13 @@
-import Lz4.Extend
-import Lz4.Shape64
-import Lz4.Stores64
+module
+public import Lz4.Extend
+meta import Lz4.Extend
+public import Lz4.Shape64
+meta import Lz4.Shape64
+public import Lz4.Stores64
+meta import Lz4.Stores64
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 set_option maxRecDepth 8192
 

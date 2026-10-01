@@ -1,4 +1,9 @@
-import Lz4.Splice64
+module
+public import Lz4.Splice64
+meta import Lz4.Splice64
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 set_option maxRecDepth 100000
 set_option maxHeartbeats 2000000

@@ -1,6 +1,13 @@
-import Lz4.OpLe
-import Lz4.OpLe64
-import Lz4.Stores
+module
+public import Lz4.OpLe
+meta import Lz4.OpLe
+public import Lz4.OpLe64
+meta import Lz4.OpLe64
+public import Lz4.Stores
+meta import Lz4.Stores
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 set_option maxRecDepth 1500
 

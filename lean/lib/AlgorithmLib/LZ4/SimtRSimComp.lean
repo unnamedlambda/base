@@ -1,5 +1,11 @@
-import AlgorithmLib.LZ4.SimtEmit
-import AlgorithmLib.LZ4.WarpColl
+module
+public import AlgorithmLib.LZ4.SimtEmit
+meta import AlgorithmLib.LZ4.SimtEmit
+public import AlgorithmLib.LZ4.WarpColl
+meta import AlgorithmLib.LZ4.WarpColl
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4Simt
 open AlgorithmLib

@@ -1,4 +1,9 @@
-import AlgorithmLib.Host.Term
+module
+public import AlgorithmLib.Host.Term
+meta import AlgorithmLib.Host.Term
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # `HProgSem` — what an `HProg` term does
@@ -102,10 +107,10 @@ def asBits : V → Option UInt64
   | .sc _ b => some b
   | _ => none
 
-private def f32 (b : UInt64) : Float32 := Float32.ofBits b.toUInt32
-private def f64 (b : UInt64) : Float := Float.ofBits b
-private def ofF32 (x : Float32) : UInt64 := x.toBits.toUInt64
-private def ofF64 (x : Float) : UInt64 := x.toBits
+def f32 (b : UInt64) : Float32 := Float32.ofBits b.toUInt32
+def f64 (b : UInt64) : Float := Float.ofBits b
+def ofF32 (x : Float32) : UInt64 := x.toBits.toUInt64
+def ofF64 (x : Float) : UInt64 := x.toBits
 
 -- ---------------------------------------------------------------------------
 -- Memory
@@ -213,7 +218,7 @@ def un (Γ : Env) (a : R) (ok : ClifTy → Bool) (f : ClifTy → UInt64 → Opti
 
 /-- Elementwise on a vector pair, or on two scalars — how the float operations
     apply to both `f32`/`f64` and `f32x4`. -/
-private def zipF (u v : V) (f32op : Float32 → Float32 → Float32)
+def zipF (u v : V) (f32op : Float32 → Float32 → Float32)
     (f64op : Float → Float → Float) : Option V :=
   match u, v with
   | .sc .f32 x, .sc .f32 y => some (.sc .f32 (ofF32 (f32op (f32 x) (f32 y))))
@@ -240,7 +245,7 @@ def zipBitsIf (ok : ClifTy → Bool) (u v : V)
   | _, _ => none
 
 /-- The float-shaped uses: `fmax`, `fmin` and `bitselect`'s mask arithmetic. -/
-private def zipBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → Option V :=
+def zipBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → Option V :=
   zipBitsIf (·.isFloat)
 
 /-- Bit-for-bit on two values of one type, whatever that type is. `bitselect`'s
@@ -255,7 +260,7 @@ def zipAnyBits : V → V → (ClifTy → UInt64 → UInt64 → UInt64) → Optio
     operations that use it are float ones. The bitwise operations apply to both,
     and `Op.check` accepts a vector for every one of them, so the semantics has
     to as well or a term can pass the checker and get stuck here. -/
-private def zipIntBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) : Option V :=
+def zipIntBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) : Option V :=
   match u, v with
   | .sc t x, .sc t' y =>
       if t == t' && (t.isInt || t.isVec) then some (norm t (f t x y)) else none
@@ -268,24 +273,24 @@ private def zipIntBits (u v : V) (f : ClifTy → UInt64 → UInt64 → UInt64) :
       | none => none
   | _, _ => none
 
-private def isNaNBits (t : ClifTy) (x : UInt64) : Bool :=
+def isNaNBits (t : ClifTy) (x : UInt64) : Bool :=
   match t with
   | .f32 => (x &&& 0x7f800000) == 0x7f800000 && (x &&& 0x007fffff) != 0
   | .f64 => (x &&& 0x7ff0000000000000) == 0x7ff0000000000000 &&
             (x &&& 0x000fffffffffffff) != 0
   | _ => false
 
-private def signBit (t : ClifTy) (x : UInt64) : Bool :=
+def signBit (t : ClifTy) (x : UInt64) : Bool :=
   match t with
   | .f32 => x &&& 0x80000000 != 0
   | _ => x &&& 0x8000000000000000 != 0
 
-private def ltBits (t : ClifTy) (x y : UInt64) : Bool :=
+def ltBits (t : ClifTy) (x y : UInt64) : Bool :=
   match t with
   | .f32 => f32 x < f32 y
   | _ => f64 x < f64 y
 
-private def eqBits (t : ClifTy) (x y : UInt64) : Bool :=
+def eqBits (t : ClifTy) (x y : UInt64) : Bool :=
   match t with
   | .f32 => f32 x == f32 y
   | _ => f64 x == f64 y
@@ -293,7 +298,7 @@ private def eqBits (t : ClifTy) (x y : UInt64) : Bool :=
 /-- `fmax` (`wantMax`) and `fmin`, sharing everything but which end they take.
     NaN wins outright; otherwise equal values are split by sign, which is how
     the two zeros get ordered. -/
-private def pickExtreme (wantMax : Bool) (t : ClifTy) (x y : UInt64) : UInt64 :=
+def pickExtreme (wantMax : Bool) (t : ClifTy) (x y : UInt64) : UInt64 :=
   if isNaNBits t x then x
   else if isNaNBits t y then y
   else if eqBits t x y then
@@ -313,12 +318,12 @@ def cmpInt : ICmpCond → ClifTy → UInt64 → UInt64 → Bool
   | .sgt, t, x, y => signed t x > signed t y
   | .sge, t, x, y => signed t x ≥ signed t y
 
-private def cmpF32 : FloatCC → Float32 → Float32 → Bool
+def cmpF32 : FloatCC → Float32 → Float32 → Bool
   | .eq, x, y => x == y | .ne, x, y => !(x == y)
   | .lt, x, y => x < y  | .le, x, y => x ≤ y
   | .gt, x, y => y < x  | .ge, x, y => y ≤ x
 
-private def cmpF64 : FloatCC → Float → Float → Bool
+def cmpF64 : FloatCC → Float → Float → Bool
   | .eq, x, y => x == y | .ne, x, y => !(x == y)
   | .lt, x, y => x < y  | .le, x, y => x ≤ y
   | .gt, x, y => y < x  | .ge, x, y => y ≤ x
@@ -345,7 +350,7 @@ def zipIntCmp (c : ICmpCond) (u v : V) : Option V :=
 
 /-- Saturating float-to-unsigned: NaN and everything below zero give zero, and
     everything above the type's range gives its maximum. -/
-private def satToUint (ty : ClifTy) (x : Float) : V :=
+def satToUint (ty : ClifTy) (x : Float) : V :=
   let hi := widthMask ty
   if x != x || x ≤ 0.0 then .sc ty 0
   else if x ≥ Float.ofNat hi.toNat then .sc ty hi
@@ -683,11 +688,11 @@ def readCStr (m : Mem) (a : UInt64) : Option String := do
   let n ← n
   String.fromUTF8? ((List.range n).map (fun i => bs.get! (off + i))).toByteArray
 
-private def copyIn (m : Mem) (a : UInt64) (src : ByteArray) : Option Mem :=
+def copyIn (m : Mem) (a : UInt64) (src : ByteArray) : Option Mem :=
   (List.range src.size).foldlM
     (fun mm i => mm.store (a + UInt64.ofNat i) 1 (src.get! i).toUInt64) m
 
-private def copyOut (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray :=
+def copyOut (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray :=
   (List.range n).foldlM
     (fun (acc : ByteArray) i => do
       let b ← m.load (a + UInt64.ofNat i) 1
@@ -700,23 +705,23 @@ private def copyOut (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray :=
 def htCtx : UInt64 := 0x5000000000
 
 /-- An `i64` as the eight bytes the implementation stores it in. -/
-private def le64 (x : UInt64) : ByteArray :=
+def le64 (x : UInt64) : ByteArray :=
   ((List.range 8).map (fun i => ((x >>> (8 * UInt64.ofNat i)) &&& 0xff).toUInt8)).toByteArray
 
 /-- The `i64` the first eight bytes of `b` encode. -/
-private def ofLe64 (b : ByteArray) : UInt64 :=
+def ofLe64 (b : ByteArray) : UInt64 :=
   (List.range 8).foldr (fun (i : Nat) (acc : UInt64) => (acc <<< 8) ||| (b.get! i).toUInt64) 0
 
 /-- The bytes from `a` up to the first zero. -/
-private def readCStrAt (m : Mem) (a : UInt64) : Option String := readCStr m a
+def readCStrAt (m : Mem) (a : UInt64) : Option String := readCStr m a
 
 /-- `n` bytes at `a` as a `ByteArray`, or `none` if they are not all mapped. -/
-private def readBytes (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray := copyOut m a n
+def readBytes (m : Mem) (a : UInt64) (n : Nat) : Option ByteArray := copyOut m a n
 
 /-- Writing `bytes` into a file at `at_`, as `write_all` after a seek leaves it:
     a seek past the end leaves a hole that reads back as zeros, and a write
     shorter than what is there does *not* truncate the rest. -/
-private def spliceAt (prev bytes : ByteArray) (at_ : Nat) : ByteArray :=
+def spliceAt (prev bytes : ByteArray) (at_ : Nat) : ByteArray :=
   let pad := if at_ > prev.size then at_ - prev.size else 0
   let head := ((List.range (min at_ prev.size)).map prev.get!).toByteArray
   let tail :=
@@ -727,7 +732,7 @@ private def spliceAt (prev bytes : ByteArray) (at_ : Nat) : ByteArray :=
   head ++ ByteArray.mk (Array.replicate pad 0) ++ bytes ++ tail
 
 /-- The `i64` a `UInt64` denotes, for the arguments the Rust reads as signed. -/
-private def asI64 (x : UInt64) : Int := signed .i64 x
+def asI64 (x : UInt64) : Int := signed .i64 x
 
 /-- What each entry point does, as a function of the world.
 

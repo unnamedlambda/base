@@ -1,7 +1,14 @@
-import Lean
-import AlgorithmLib.Gen
-import Scan.Ship
-import Bench.CpuAsm
+module
+public import Lean
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Scan.Ship
+meta import Scan.Ship
+public import Bench.CpuAsm
+meta import Bench.CpuAsm
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean
 open AlgorithmLib

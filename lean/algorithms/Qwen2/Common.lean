@@ -1,12 +1,23 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
-import AlgorithmLib.Surface.Cuda
-import AlgorithmLib.Surface.ProgCuda
-import Qwen2.Proven
-import Tokenizer.Common
-import Scan.Layout
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+public import AlgorithmLib.Surface.Cuda
+meta import AlgorithmLib.Surface.Cuda
+public import AlgorithmLib.Surface.ProgCuda
+meta import AlgorithmLib.Surface.ProgCuda
+public import Qwen2.Proven
+meta import Qwen2.Proven
+public import Tokenizer.Common
+meta import Tokenizer.Common
+public import Scan.Layout
+meta import Scan.Layout
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 set_option maxRecDepth 4096
 
@@ -328,7 +339,7 @@ def q : Q2Own :=
     fnTokBpe := ownRef 6, fnDetok := ownRef 7, fnStream := ownRef 8
     fnKvLoad := ownRef 9, fnKvSave := ownRef 10 }
 
-private def launchEmbed (ptr : V .i64) (bindOff : Nat)
+def launchEmbed (ptr : V .i64) (bindOff : Nat)
     (table : EmbedTbl V) (metaT : VecMeta V) (outT : VecD V) : Prog V L Unit :=
   launch3 embedKernel ptr bindOff table metaT outT
 
@@ -354,7 +365,7 @@ def ptxRmsNorm : String := rmsNormKernel.ptxSource
 
 /-- Typed RMSNorm launcher.  `x` is the input, `w` the weights, `y` the output —
     all `[D]` f32. The bind region is the only call-site-specific value. -/
-private def launchRms (ptr : V .i64) (bindOff : Nat)
+def launchRms (ptr : V .i64) (bindOff : Nat)
     (x w y : Prog.Tsr V [.sta D]) : Prog V L Unit :=
   launch3 rmsNormKernel ptr bindOff x w y
 
@@ -382,11 +393,11 @@ def biasAddKVKernel : Kernel := {
 def ptxBiasAddD  : String := biasAddDKernel.ptxSource
 def ptxBiasAddKV : String := biasAddKVKernel.ptxSource
 
-private def launchBiasD (ptr : V .i64) (bindOff : Nat)
+def launchBiasD (ptr : V .i64) (bindOff : Nat)
     (x b : VecD V) : Prog V L Unit :=
   launch2 biasAddDKernel ptr bindOff x b
 
-private def launchBiasKV (ptr : V .i64) (bindOff : Nat)
+def launchBiasKV (ptr : V .i64) (bindOff : Nat)
     (x b : VecKV V) : Prog V L Unit :=
   launch2 biasAddKVKernel ptr bindOff x b
 
@@ -421,11 +432,11 @@ def ropeKKernel : Kernel := {
 def ptxRoPEQ : String := ropeQKernel.ptxSource
 def ptxRoPEK : String := ropeKKernel.ptxSource
 
-private def launchRopeQ (ptr : V .i64) (bindOff : Nat)
+def launchRopeQ (ptr : V .i64) (bindOff : Nat)
     (q : VecD V) (mb : VecMeta V) (rope : RopeTbl V) : Prog V L Unit :=
   launch3 ropeQKernel ptr bindOff q mb rope
 
-private def launchRopeK (ptr : V .i64) (bindOff : Nat)
+def launchRopeK (ptr : V .i64) (bindOff : Nat)
     (k : VecKV V) (mb : VecMeta V) (rope : RopeTbl V) : Prog V L Unit :=
   launch3 ropeKKernel ptr bindOff k mb rope
 
@@ -444,7 +455,7 @@ def softmaxKernel : Kernel := {
 
 def ptxSoftmax : String := softmaxKernel.ptxSource
 
-private def launchSoftmax (ptr : V .i64) (bindOff : Nat)
+def launchSoftmax (ptr : V .i64) (bindOff : Nat)
     (scores : VecScores V) (mb : VecMeta V) (probs : VecScores V) : Prog V L Unit :=
   launch3 softmaxKernel ptr bindOff scores mb probs
 
@@ -461,7 +472,7 @@ def siluGateKernel : Kernel := {
 
 def ptxSiluGate : String := siluGateKernel.ptxSource
 
-private def launchSiluGate (ptr : V .i64) (bindOff : Nat)
+def launchSiluGate (ptr : V .i64) (bindOff : Nat)
     (gate up out_ : VecDff V) : Prog V L Unit :=
   launch3 siluGateKernel ptr bindOff gate up out_
 
@@ -477,7 +488,7 @@ def residualAddKernel : Kernel := {
 
 def ptxResidualAdd : String := residualAddKernel.ptxSource
 
-private def launchResidualAdd (ptr : V .i64) (bindOff : Nat)
+def launchResidualAdd (ptr : V .i64) (bindOff : Nat)
     (x add_ : VecD V) : Prog V L Unit :=
   launch2 residualAddKernel ptr bindOff x add_
 
@@ -495,7 +506,7 @@ def kvStoreKernel : Kernel := {
 
 def ptxKVStore : String := kvStoreKernel.ptxSource
 
-private def launchKVStore (ptr : V .i64) (bindOff : Nat)
+def launchKVStore (ptr : V .i64) (bindOff : Nat)
     (kCur : VecKV V) (kCache : KVCache V) (mb : VecMeta V) : Prog V L Unit :=
   launch3 kvStoreKernel ptr bindOff kCur kCache mb
 
@@ -511,7 +522,7 @@ def argmaxKernel : Kernel := {
 
 def ptxArgmax : String := argmaxKernel.ptxSource
 
-private def launchArgmax (ptr : V .i64) (bindOff : Nat)
+def launchArgmax (ptr : V .i64) (bindOff : Nat)
     (logits : VecVocab V) (mb : VecMeta V) : Prog V L Unit :=
   launch2 argmaxKernel ptr bindOff logits mb
 
@@ -519,7 +530,7 @@ private def launchArgmax (ptr : V .i64) (bindOff : Nat)
 
 /-- Advance past the next null byte in a host buffer and return the pointer
     immediately after it. Used to split a concatenated `a\0b\0c\0` arg payload. -/
-private def walkPastNull (start : V .i64) : Prog V L (V .i64) := do
+def walkPastNull (start : V .i64) : Prog V L (V .i64) := do
   let e ← wloop1 start
     (head := fun p => do
       let b ← uload8_64 p
@@ -561,7 +572,7 @@ def uploadFromFile {s : Shape}
           for each pos in 0..MAX_SEQ, write sin/cos of (pos*inv_freq) to scratch.
     Table layout: [sin: MAX_SEQ × HEAD_DIM/2 f32][cos: MAX_SEQ × HEAD_DIM/2 f32].
     All trig goes through libm via FFI (cl_sinf/cl_cosf/cl_powf). -/
-private def buildRopeTable
+def buildRopeTable
     (ctxPtr scratchPtr : V .i64) (ropeTable : RopeTbl V) : Prog V L Unit := do
   let bufRopeTable := ropeTable.buf
   let hdh   : Nat := HEAD_DIM / 2
@@ -921,7 +932,7 @@ def inferFn : Prog V L Unit := do
 
 -- ── Attention helper types and sub-builders ───────────────────────────────────
 
-private structure AttnBufs (V : ClifTy → Type) where
+structure AttnBufs (V : ClifTy → Type) where
   bufRmsAttn : VecD V
   bufWq      : MatDD V
   bufBq      : VecD V
@@ -942,7 +953,7 @@ private structure AttnBufs (V : ClifTy → Type) where
   bufProbs   : VecScores V
   bufMeta    : VecMeta V
 
-private structure AttnConsts (V : ClifTy → Type) where
+structure AttnConsts (V : ClifTy → Type) where
   one32     : V .i32
   two32     : V .i32
   three32   : V .i32
@@ -959,13 +970,13 @@ private structure AttnConsts (V : ClifTy → Type) where
   attnAlpha : V .i32
   zero32    : V .i32
 
-private def load32At (base : V .i64) (off : Nat) : Prog V L (V .i32) :=
+def load32At (base : V .i64) (off : Nat) : Prog V L (V .i32) :=
   load32 =<< iaddImm base off
 
-private def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
+def load64At (base : V .i64) (off : Nat) : Prog V L (V .i64) :=
   load64 =<< iaddImm base off
 
-private def attnLoadBufs (ptr slotBaseA : V .i64) : Prog V L (AttnBufs V) := do
+def attnLoadBufs (ptr slotBaseA : V .i64) : Prog V L (AttnBufs V) := do
   let bufRmsAttn ← slotLoad LayerSlot.rmsAttn slotBaseA
   let bufWq      ← slotLoad LayerSlot.wq      slotBaseA
   let bufBq      ← slotLoad LayerSlot.bq      slotBaseA
@@ -989,7 +1000,7 @@ private def attnLoadBufs (ptr slotBaseA : V .i64) : Prog V L (AttnBufs V) := do
            bufKCache, bufVCache, bufHidden, bufHdNorm, bufQ, bufKCur, bufVCur,
            bufAttnOut, bufScores, bufProbs, bufMeta }
 
-private def mkAttnConsts : Prog V L (AttnConsts V) := do
+def mkAttnConsts : Prog V L (AttnConsts V) := do
   let one32 ← iconst32 1;    let two32 ← iconst32 2;    let three32 ← iconst32 3
   let blk256 ← iconst32 256; let nq32 ← iconst32 N_Q;   let nkv32 ← iconst32 N_KV
   let dm32 ← iconst32 D;     let kv32 ← iconst32 KV_DIM; let hdim32 ← iconst32 HEAD_DIM
@@ -1000,7 +1011,7 @@ private def mkAttnConsts : Prog V L (AttnConsts V) := do
   return { one32 := one32, two32 := two32, three32 := three32, blk256 := blk256, nq32 := nq32, nkv32 := nkv32, dm32 := dm32, kv32 := kv32, hdim32 := hdim32, blk32_2 := blk32_2, hdim64 := hdim64, maxSeq64 := maxSeq64, alpha := alpha, attnAlpha := attnAlpha, zero32 := zero32 }
 
 -- RMSNorm → QKV projections → bias adds
-private def attnProjPhase (ptr : V .i64)
+def attnProjPhase (ptr : V .i64)
     (b : AttnBufs V) : Prog V L Unit := do
   launchRms ptr BIND_RMS1 b.bufHidden b.bufRmsAttn b.bufHdNorm
   -- Q/K/V projections: shape-typed.  Wq:[D,D]·hidden:[D] → q:[D];
@@ -1013,7 +1024,7 @@ private def attnProjPhase (ptr : V .i64)
   launchBiasKV ptr BIND_BIAS_V b.bufVCur b.bufBv
 
 -- RoPE → KV store
-private def attnRopePhase (ptr : V .i64) (b : AttnBufs V)
+def attnRopePhase (ptr : V .i64) (b : AttnBufs V)
     (_c : AttnConsts V) : Prog V L Unit := do
   let bufRopeTable ← slotLoad slotRopeTable ptr
   launchRopeQ  ptr BIND_ROPE_Q b.bufQ    b.bufMeta bufRopeTable
@@ -1022,7 +1033,7 @@ private def attnRopePhase (ptr : V .i64) (b : AttnBufs V)
   launchKVStore ptr BIND_KV_V  b.bufVCur b.bufVCache b.bufMeta
 
 -- Attention scores → softmax → V-mix → Wo → residual
-private def attnMixPhase (ptr : V .i64)
+def attnMixPhase (ptr : V .i64)
     (b : AttnBufs V) (c : AttnConsts V) : Prog V L Unit := do
   let seqLen64 ← load64At ptr SEQ_LEN_SLOT_OFF
   let seqLen32 ← ireduce32 seqLen64
@@ -1761,8 +1772,8 @@ def vlOp (nm : String) (as : List BufDesc) : DeviceOp :=
   (externRec nm (as.map BufDesc.toArg), { args := as })
 
 /-- `1.0f` and `0.5f` as bit patterns, and the attention scale. -/
-private def F1 : BufDesc := .const 1065353216
-private def FR : BufDesc := .const 1040187392   -- 1/8, the 1/√head_dim scale
+def F1 : BufDesc := .const 1065353216
+def FR : BufDesc := .const 1040187392   -- 1/8, the 1/√head_dim scale
 
 /-- **The attention half's device writes, with what each one bound.**  Pinned
     to `inferLayerAttnFn` by `Qwen2.attn_ops_are`. -/

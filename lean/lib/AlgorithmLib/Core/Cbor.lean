@@ -1,3 +1,8 @@
+module
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 /-!
 # CBOR, as artifacts are written
 
@@ -16,9 +21,9 @@ namespace AlgorithmLib.Cbor
 /-- A writer: appends to the output, or fails naming what it could not write. -/
 abbrev W := EStateM String ByteArray
 
-private def push (b : UInt8) : W Unit := modify (·.push b)
+def push (b : UInt8) : W Unit := modify (·.push b)
 
-private def pushBE (n : Nat) : Nat → W Unit
+def pushBE (n : Nat) : Nat → W Unit
   | 0 => pure ()
   | k + 1 => do push (n >>> (8 * k)).toUInt8; pushBE n k
 

@@ -1,7 +1,15 @@
-import AlgorithmLib.ML.Launch.Pipeline
-import AlgorithmLib.ML.Kernel.Rewrite
-import AlgorithmLib.ML.Kernel.Sched
-import AlgorithmLib.ML.Math.Transformer
+module
+public import AlgorithmLib.ML.Launch.Pipeline
+meta import AlgorithmLib.ML.Launch.Pipeline
+public import AlgorithmLib.ML.Kernel.Rewrite
+meta import AlgorithmLib.ML.Kernel.Rewrite
+public import AlgorithmLib.ML.Kernel.Sched
+meta import AlgorithmLib.ML.Kernel.Sched
+public import AlgorithmLib.ML.Math.Transformer
+meta import AlgorithmLib.ML.Math.Transformer
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A launch sequence, as data

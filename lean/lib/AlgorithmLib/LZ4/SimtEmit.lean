@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.Simt
+module
+public import AlgorithmLib.LZ4.Simt
+meta import AlgorithmLib.LZ4.Simt
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4Simt
 open AlgorithmLib

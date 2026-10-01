@@ -43,6 +43,9 @@ open Lean AlgorithmLib AlgorithmLib.IR AlgorithmLib.ML AlgorithmLib.Host
 
 namespace MlpCifar
 
+-- The per-sample kernel theorems unfold the batched tapes past the default depth.
+set_option maxRecDepth 4096
+
 /-- CIFAR-10 images: 32·32·3 = 3072 floats.  `3072 = 96·32`, so the strided
     sweep divides. -/
 def IN : Nat := 3072

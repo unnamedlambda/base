@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Kernel.Schema
+module
+public import AlgorithmLib.ML.Kernel.Schema
+meta import AlgorithmLib.ML.Kernel.Schema
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The butterfly leaves the same value in every lane

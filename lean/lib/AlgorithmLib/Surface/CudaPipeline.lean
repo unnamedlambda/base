@@ -1,11 +1,23 @@
-import AlgorithmLib.Core.Artifact
-import AlgorithmLib.Core.Bytes
-import AlgorithmLib.Surface.Layout
-import AlgorithmLib.Core.IR
-import AlgorithmLib.Surface.FFI
-import AlgorithmLib.Surface.ProgFFI
-import AlgorithmLib.Surface.ProgFFI
-import AlgorithmLib.Vocab.PTX
+module
+public import AlgorithmLib.Core.Artifact
+meta import AlgorithmLib.Core.Artifact
+public import AlgorithmLib.Core.Bytes
+meta import AlgorithmLib.Core.Bytes
+public import AlgorithmLib.Surface.Layout
+meta import AlgorithmLib.Surface.Layout
+public import AlgorithmLib.Core.IR
+meta import AlgorithmLib.Core.IR
+public import AlgorithmLib.Surface.FFI
+meta import AlgorithmLib.Surface.FFI
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Surface.ProgFFI
+meta import AlgorithmLib.Surface.ProgFFI
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean
 open AlgorithmLib.IR
@@ -17,7 +29,7 @@ namespace AlgorithmLib
 
 namespace CudaPipeline
 
-private instance : Inhabited (Reg k) := ⟨⟨""⟩⟩
+instance : Inhabited (Reg k) := ⟨⟨""⟩⟩
 
 -- ---------------------------------------------------------------------------
 -- Expression DSL: small staged language for elementwise GPU kernels.
@@ -44,8 +56,8 @@ def Expr.saxpy (a x y : Expr n) : Expr n := a * x + y
 --   0x10 ctx slot,
 --   0x38 N (i64),  0x40 meta buffer id (i32),
 --   0x44 + 4*i  input[i] buffer id (i32)
-private def ptxSourceOff : Nat := 0x0100
-private def bindDescOff  : Nat := 0x1400
+def ptxSourceOff : Nat := 0x0100
+def bindDescOff  : Nat := 0x1400
 
 /-- The fixed part of that layout, as regions.
 
@@ -73,7 +85,7 @@ theorem memMap_ok : (List.range 16).all (fun n => Layout.RegionMap.okB (memMap n
 /-- Structural on `e`, so it has equation lemmas: a `partial` here would make
     the PTX lowering an opaque constant that nothing can unfold, which is a
     stronger obstacle than merely having no theorem about it. -/
-private def emitExprPTX {n : Nat}
+def emitExprPTX {n : Nat}
     (e : Expr n) (inPtrs : Array (Reg .u64)) (off : Reg .u64) : PTX (Reg .f32) := do
   match e with
   | .input idx =>
@@ -99,7 +111,7 @@ private def emitExprPTX {n : Nat}
       mulF f fa fb
       pure f
 
-private def kernelBody {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) :
+def kernelBody {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) :
     PTX Unit := do
   let metaPtr ← ldParam "meta_ptr"
   let mut inPtrs : Array (Reg .u64) := #[]
@@ -120,7 +132,7 @@ private def kernelBody {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat)
   label "DONE"
   ptxRet
 
-private def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) : String :=
+def ptxSource {n : Nat} (e : Expr n) (output : Fin n) (blockSize : Nat) : String :=
   let params := "meta_ptr" :: (List.range n).map (fun i => s!"in{i}_ptr")
   buildModule 0 [{ name := "main", params, body := kernelBody e output blockSize }]
 

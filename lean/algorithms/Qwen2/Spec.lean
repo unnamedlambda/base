@@ -1,4 +1,9 @@
-import Qwen2.Common
+module
+public import Qwen2.Common
+meta import Qwen2.Common
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The shipped FFN, against the model definition

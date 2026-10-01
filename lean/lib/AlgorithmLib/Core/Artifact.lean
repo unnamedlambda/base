@@ -1,5 +1,10 @@
-import Lean
-import AlgorithmLib.Core.ClifData
+module
+public import Lean
+public import AlgorithmLib.Core.ClifData
+meta import AlgorithmLib.Core.ClifData
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 open Lean
 
@@ -103,7 +108,7 @@ open IR
 /-- The artifact `base_types`' `an_artifact_encodes_in_the_profile` encodes,
     and the bytes it expects: the Lean writer and serde agree on each shape the
     profile spells, byte for byte. -/
-private def sample : Artifact where
+def sample : Artifact where
   functions := [{
     index := 0
     entryName := some "main"
@@ -122,7 +127,7 @@ private def sample : Artifact where
   required_memory := 2 ^ 40
   initial_memory := [0, 0, 0, 0xff, 0, 1]
 
-private def expected : String :=
+def expected : String :=
   "a36966756e6374696f6e7381a26a656e7472795f6e616d65646d61696e66626c6f636b73" ++
   "81a3697265666572656e63650066706172616d738182006349363465696e73747387a166" ++
   "49636f6e73748301634936343b7fffffffffffffffa16649636f6e73748302634936341b" ++
@@ -132,7 +137,7 @@ private def expected : String :=
   "6c83f6a1654c6f63616c018100a163526574f66f72657175697265645f6d656d6f72791b" ++
   "0000010000000000646461746181a2666f66667365740365627974657343ff0001"
 
-private def hexOf (b : ByteArray) : String :=
+def hexOf (b : ByteArray) : String :=
   b.foldl (init := "") fun s x =>
     let d := Nat.toDigits 16 x.toNat
     s ++ String.ofList (if d.length < 2 then '0' :: d else d)

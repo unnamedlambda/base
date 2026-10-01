@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Math.Expr
+module
+public import AlgorithmLib.ML.Math.Expr
+meta import AlgorithmLib.ML.Math.Expr
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Automatic differentiation, and its correctness

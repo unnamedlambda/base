@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Model.WeaveBCast
-import AlgorithmLib.ML.Model.TenDenote
+module
+public import AlgorithmLib.ML.Model.WeaveBCast
+meta import AlgorithmLib.ML.Model.WeaveBCast
+public import AlgorithmLib.ML.Model.TenDenote
+meta import AlgorithmLib.ML.Model.TenDenote
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Shipped operations are broadcasted operations

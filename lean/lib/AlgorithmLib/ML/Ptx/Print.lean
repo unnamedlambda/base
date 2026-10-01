@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Ptx.Flat
+module
+public import AlgorithmLib.ML.Ptx.Flat
+meta import AlgorithmLib.ML.Ptx.Flat
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.ML
 
@@ -11,7 +16,7 @@ def smemSym : String := "_smem"
 -- Literals and registers
 -- ---------------------------------------------------------------------------
 
-private def hexDigit (n : Nat) : Char :=
+def hexDigit (n : Nat) : Char :=
   if n < 10 then Char.ofNat (48 + n) else Char.ofNat (65 + (n - 10))
 
 /-- 8 uppercase hex digits — the `0f…` literal form PTX wants. -/
@@ -64,13 +69,13 @@ def PTX_ADDR_SCRATCH : Nat := 1020
 
 /-- Byte address of element `%r{ix}` of buffer `b`, into the scratch
     `%rd{PTX_ADDR_SCRATCH}`. -/
-private def addrLines (b ix : Nat) : List String :=
+def addrLines (b ix : Nat) : List String :=
   [s!"    mul.wide.u32 %rd{PTX_ADDR_SCRATCH + 1}, %r{ix}, 4;",
    s!"    add.u64 %rd{PTX_ADDR_SCRATCH}, %rd{b}, %rd{PTX_ADDR_SCRATCH + 1};"]
 
 /-- Byte address of element `%r{ix}` of shared memory, into
     `%r{PTX_ADDR_SCRATCH}`. -/
-private def smemLines (ix : Nat) : List String :=
+def smemLines (ix : Nat) : List String :=
   [s!"    mov.u32 %r{PTX_ADDR_SCRATCH}, {smemSym};",
    s!"    mul.lo.u32 %r{PTX_ADDR_SCRATCH + 1}, %r{ix}, 4;",
    s!"    add.u32 %r{PTX_ADDR_SCRATCH}, %r{PTX_ADDR_SCRATCH}, %r{PTX_ADDR_SCRATCH + 1};"]
@@ -360,7 +365,7 @@ def PTX_REG_BUDGET : Nat := 1024
 /-- Register declarations.  Counts are virtual — ptxas allocates — so they are
     set generously; the scratch indices used above sit above anything the
     emitter allocates. -/
-private def regDecls : String :=
+def regDecls : String :=
   "    .reg .pred %p<" ++ toString PTX_REG_BUDGET ++ ">;\n"
     ++ "    .reg .u32  %r<" ++ toString PTX_REG_BUDGET ++ ">;\n"
     ++ "    .reg .u64  %rd<" ++ toString PTX_REG_BUDGET ++ ">;\n"

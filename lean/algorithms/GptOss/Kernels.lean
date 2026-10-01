@@ -1,6 +1,13 @@
-import AlgorithmLib.Vocab.PTX
-import AlgorithmLib.ML.Num.QuantMX
-import GptOss.Attention
+module
+public import AlgorithmLib.Vocab.PTX
+meta import AlgorithmLib.Vocab.PTX
+public import AlgorithmLib.ML.Num.QuantMX
+meta import AlgorithmLib.ML.Num.QuantMX
+public import GptOss.Attention
+meta import GptOss.Attention
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The MXFP4 expert kernels

@@ -1,53 +1,107 @@
-import AlgorithmLib.ML.Num.Ops
-import AlgorithmLib.ML.Math.Expr
-import AlgorithmLib.ML.Math.Reindex
-import AlgorithmLib.ML.Math.Weave
-import AlgorithmLib.ML.Math.Grad
-import AlgorithmLib.ML.Math.MultiLayer
-import AlgorithmLib.ML.Math.Tape
-import AlgorithmLib.ML.Math.TapeGrad
-import AlgorithmLib.ML.Math.Layered
-import AlgorithmLib.ML.Machine.Buf
-import AlgorithmLib.ML.Machine.Warp
-import AlgorithmLib.ML.Machine.WarpEmit
-import AlgorithmLib.ML.Ptx.Compile
-import AlgorithmLib.ML.Math.Transformer
-import AlgorithmLib.ML.Math.Quant
-import AlgorithmLib.ML.Num.QuantMX
-import AlgorithmLib.ML.Kernel.Rewrite
-import AlgorithmLib.ML.Ptx.Emit
-import AlgorithmLib.ML.Ptx.Monad
-import AlgorithmLib.ML.Kernel.Schema
-import AlgorithmLib.ML.Ptx.Flat
-import AlgorithmLib.ML.Ptx.Block
-import AlgorithmLib.ML.Ptx.Print
-import AlgorithmLib.ML.Math.KVCache
-import AlgorithmLib.ML.Kernel.Library
-import AlgorithmLib.ML.Math.Backprop
-import AlgorithmLib.ML.Machine.Geometry
-import AlgorithmLib.ML.Launch.Pipeline
-import AlgorithmLib.ML.Launch.StageFrame
-import AlgorithmLib.ML.Launch.Bind
-import AlgorithmLib.ML.Kernel.Butterfly
-import AlgorithmLib.ML.Compose
-import AlgorithmLib.ML.Launch.Interchange
-import AlgorithmLib.ML.Launch.HostBridge
-import AlgorithmLib.ML.Kernel.Sched
-import AlgorithmLib.ML.Model.Frontend
-import AlgorithmLib.ML.Assumptions
-import AlgorithmLib.ML.Kernel.Batch
-import AlgorithmLib.ML.Kernel.SoftmaxCE
-import AlgorithmLib.ML.Model.TenDenote
-import AlgorithmLib.ML.Model.Fuse
-import AlgorithmLib.ML.Model.LocalBind
-import AlgorithmLib.ML.Model.BufsOf
-import AlgorithmLib.ML.Kernel.EmitFacts
-import AlgorithmLib.ML.Model.RegBound
-import AlgorithmLib.ML.Model.Schedule
-import AlgorithmLib.ML.Model.WeaveBCast
-import AlgorithmLib.ML.Model.WeaveTOp
-import AlgorithmLib.ML.Model.WeaveLower
-import AlgorithmLib.ML.Model.WeaveBuild
+module
+public import AlgorithmLib.ML.Num.Ops
+meta import AlgorithmLib.ML.Num.Ops
+public import AlgorithmLib.ML.Math.Expr
+meta import AlgorithmLib.ML.Math.Expr
+public import AlgorithmLib.ML.Math.Reindex
+meta import AlgorithmLib.ML.Math.Reindex
+public import AlgorithmLib.ML.Math.Weave
+meta import AlgorithmLib.ML.Math.Weave
+public import AlgorithmLib.ML.Math.Grad
+meta import AlgorithmLib.ML.Math.Grad
+public import AlgorithmLib.ML.Math.MultiLayer
+meta import AlgorithmLib.ML.Math.MultiLayer
+public import AlgorithmLib.ML.Math.Tape
+meta import AlgorithmLib.ML.Math.Tape
+public import AlgorithmLib.ML.Math.TapeGrad
+meta import AlgorithmLib.ML.Math.TapeGrad
+public import AlgorithmLib.ML.Math.Layered
+meta import AlgorithmLib.ML.Math.Layered
+public import AlgorithmLib.ML.Machine.Buf
+meta import AlgorithmLib.ML.Machine.Buf
+public import AlgorithmLib.ML.Machine.Warp
+meta import AlgorithmLib.ML.Machine.Warp
+public import AlgorithmLib.ML.Machine.WarpEmit
+meta import AlgorithmLib.ML.Machine.WarpEmit
+public import AlgorithmLib.ML.Ptx.Compile
+meta import AlgorithmLib.ML.Ptx.Compile
+public import AlgorithmLib.ML.Math.Transformer
+meta import AlgorithmLib.ML.Math.Transformer
+public import AlgorithmLib.ML.Math.Quant
+meta import AlgorithmLib.ML.Math.Quant
+public import AlgorithmLib.ML.Num.QuantMX
+meta import AlgorithmLib.ML.Num.QuantMX
+public import AlgorithmLib.ML.Kernel.Rewrite
+meta import AlgorithmLib.ML.Kernel.Rewrite
+public import AlgorithmLib.ML.Ptx.Emit
+meta import AlgorithmLib.ML.Ptx.Emit
+public import AlgorithmLib.ML.Ptx.Monad
+meta import AlgorithmLib.ML.Ptx.Monad
+public import AlgorithmLib.ML.Kernel.Schema
+meta import AlgorithmLib.ML.Kernel.Schema
+public import AlgorithmLib.ML.Ptx.Flat
+meta import AlgorithmLib.ML.Ptx.Flat
+public import AlgorithmLib.ML.Ptx.Block
+meta import AlgorithmLib.ML.Ptx.Block
+public import AlgorithmLib.ML.Ptx.Print
+meta import AlgorithmLib.ML.Ptx.Print
+public import AlgorithmLib.ML.Math.KVCache
+meta import AlgorithmLib.ML.Math.KVCache
+public import AlgorithmLib.ML.Kernel.Library
+meta import AlgorithmLib.ML.Kernel.Library
+public import AlgorithmLib.ML.Math.Backprop
+meta import AlgorithmLib.ML.Math.Backprop
+public import AlgorithmLib.ML.Machine.Geometry
+meta import AlgorithmLib.ML.Machine.Geometry
+public import AlgorithmLib.ML.Launch.Pipeline
+meta import AlgorithmLib.ML.Launch.Pipeline
+public import AlgorithmLib.ML.Launch.StageFrame
+meta import AlgorithmLib.ML.Launch.StageFrame
+public import AlgorithmLib.ML.Launch.Bind
+meta import AlgorithmLib.ML.Launch.Bind
+public import AlgorithmLib.ML.Kernel.Butterfly
+meta import AlgorithmLib.ML.Kernel.Butterfly
+public import AlgorithmLib.ML.Compose
+meta import AlgorithmLib.ML.Compose
+public import AlgorithmLib.ML.Launch.Interchange
+meta import AlgorithmLib.ML.Launch.Interchange
+public import AlgorithmLib.ML.Launch.HostBridge
+meta import AlgorithmLib.ML.Launch.HostBridge
+public import AlgorithmLib.ML.Kernel.Sched
+meta import AlgorithmLib.ML.Kernel.Sched
+public import AlgorithmLib.ML.Model.Frontend
+meta import AlgorithmLib.ML.Model.Frontend
+public import AlgorithmLib.ML.Assumptions
+meta import AlgorithmLib.ML.Assumptions
+public import AlgorithmLib.ML.Kernel.Batch
+meta import AlgorithmLib.ML.Kernel.Batch
+public import AlgorithmLib.ML.Kernel.SoftmaxCE
+meta import AlgorithmLib.ML.Kernel.SoftmaxCE
+public import AlgorithmLib.ML.Model.TenDenote
+meta import AlgorithmLib.ML.Model.TenDenote
+public import AlgorithmLib.ML.Model.Fuse
+meta import AlgorithmLib.ML.Model.Fuse
+public import AlgorithmLib.ML.Model.LocalBind
+meta import AlgorithmLib.ML.Model.LocalBind
+public import AlgorithmLib.ML.Model.BufsOf
+meta import AlgorithmLib.ML.Model.BufsOf
+public import AlgorithmLib.ML.Kernel.EmitFacts
+meta import AlgorithmLib.ML.Kernel.EmitFacts
+public import AlgorithmLib.ML.Model.RegBound
+meta import AlgorithmLib.ML.Model.RegBound
+public import AlgorithmLib.ML.Model.Schedule
+meta import AlgorithmLib.ML.Model.Schedule
+public import AlgorithmLib.ML.Model.WeaveBCast
+meta import AlgorithmLib.ML.Model.WeaveBCast
+public import AlgorithmLib.ML.Model.WeaveTOp
+meta import AlgorithmLib.ML.Model.WeaveTOp
+public import AlgorithmLib.ML.Model.WeaveLower
+meta import AlgorithmLib.ML.Model.WeaveLower
+public import AlgorithmLib.ML.Model.WeaveBuild
+meta import AlgorithmLib.ML.Model.WeaveBuild
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The ML development

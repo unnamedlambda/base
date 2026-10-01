@@ -1,5 +1,11 @@
-import AlgorithmLib.LZ4.CompTop
-import AlgorithmLib.LZ4.Confine
+module
+public import AlgorithmLib.LZ4.CompTop
+meta import AlgorithmLib.LZ4.CompTop
+public import AlgorithmLib.LZ4.Confine
+meta import AlgorithmLib.LZ4.Confine
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # The output cursor never runs backwards

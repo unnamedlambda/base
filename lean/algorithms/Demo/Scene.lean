@@ -1,5 +1,12 @@
-import AlgorithmLib.Gen
-import Scan.Ship
+module
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import Scan.Ship
+meta import Scan.Ship
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open Lean (Json toJson)
 open AlgorithmLib
 open AlgorithmLib.IR
@@ -124,10 +131,10 @@ def bmpHeader (spec : SceneSpec) : List UInt8 :=
   biCompression ++ biSizeImage ++ biXPelsPerMeter ++ biYPelsPerMeter ++
   biClrUsed ++ biClrImportant
 
-private def pReg (n : Nat) : Reg .pred := ⟨s!"%p{n}"⟩
-private def uReg (n : Nat) : Reg .u32 := ⟨s!"%r{n}"⟩
-private def dReg (n : Nat) : Reg .u64 := ⟨s!"%rd{n}"⟩
-private def fReg (n : Nat) : Reg .f32 := ⟨s!"%f{n}"⟩
+def pReg (n : Nat) : Reg .pred := ⟨s!"%p{n}"⟩
+def uReg (n : Nat) : Reg .u32 := ⟨s!"%r{n}"⟩
+def dReg (n : Nat) : Reg .u64 := ⟨s!"%rd{n}"⟩
+def fReg (n : Nat) : Reg .f32 := ⟨s!"%f{n}"⟩
 
 namespace SceneReg
 
@@ -156,7 +163,7 @@ def normalZ : Reg .f32 := fReg 53
 
 end SceneReg
 
-private def emitKernelSetupAndSampleLoop (spec : SceneSpec) : PTX Unit := do
+def emitKernelSetupAndSampleLoop (spec : SceneSpec) : PTX Unit := do
   declPredRegs 64
   declU32Regs 192
   declU64Regs 32
@@ -227,7 +234,7 @@ private def emitKernelSetupAndSampleLoop (spec : SceneSpec) : PTX Unit := do
   addF (fReg 22) (fReg 0) (fReg 20)
   addF (fReg 23) (fReg 1) (fReg 21)
 
-private def emitPrimaryRayAndInitialIntersections (spec : SceneSpec) : PTX Unit := do
+def emitPrimaryRayAndInitialIntersections (spec : SceneSpec) : PTX Unit := do
   divRn (fReg 24) (fReg 22) (fReg 408)
   divRn (fReg 25) (fReg 23) (fReg 409)
   mulF (fReg 24) (fReg 24) (fReg 402)
@@ -298,7 +305,7 @@ private def emitPrimaryRayAndInitialIntersections (spec : SceneSpec) : PTX Unit 
   braIf (pReg 8) "WALL_DONE"
   setpGeF (pReg 9) (fReg 62) (SceneReg.hitT)
 
-private def emitSphereIntersectionPassA (_spec : SceneSpec) : PTX Unit := do
+def emitSphereIntersectionPassA (_spec : SceneSpec) : PTX Unit := do
   braIf (pReg 9) "WALL_DONE"
   movF (SceneReg.hitT) (fReg 62)
   movRC (SceneReg.hitKind) 2
@@ -376,7 +383,7 @@ private def emitSphereIntersectionPassA (_spec : SceneSpec) : PTX Unit := do
   mulFI (SceneReg.normalY) (fReg 87) (1.3333334 : Float)
   mulFI (SceneReg.normalZ) (fReg 88) (1.3333334 : Float)
 
-private def emitHitDispatchAndLightSamplingSetup (_spec : SceneSpec) : PTX Unit := do
+def emitHitDispatchAndLightSamplingSetup (_spec : SceneSpec) : PTX Unit := do
   label "GOLD_DONE"
   addFI (fReg 89) (SceneReg.rayOx) (-0.1 : Float)
   addFI (fReg 90) (SceneReg.rayOy) (-0.15 : Float)
@@ -448,7 +455,7 @@ private def emitHitDispatchAndLightSamplingSetup (_spec : SceneSpec) : PTX Unit 
   addFI (fReg 114) (fReg 114) (-0.5 : Float)
   addFI (fReg 115) (fReg 115) (-0.5 : Float)
 
-private def emitDirectLightVisibilityA (_spec : SceneSpec) : PTX Unit := do
+def emitDirectLightVisibilityA (_spec : SceneSpec) : PTX Unit := do
   addFI (fReg 116) (fReg 116) (-0.5 : Float)
   fmaFII (fReg 117) (fReg 113) (1.25 : Float) (-4.0 : Float)
   fmaFII (fReg 118) (fReg 114) (0.35 : Float) (5.5 : Float)
@@ -526,7 +533,7 @@ private def emitDirectLightVisibilityA (_spec : SceneSpec) : PTX Unit := do
   fmaRn (fReg 149) (fReg 146) (fReg 146) (fReg 149)
   fmaRn (fReg 149) (fReg 147) (fReg 147) (fReg 149)
 
-private def emitDirectLightVisibilityBAndDispatch (_spec : SceneSpec) : PTX Unit := do
+def emitDirectLightVisibilityBAndDispatch (_spec : SceneSpec) : PTX Unit := do
   addFI (fReg 149) (fReg 149) (-1.3225 : Float)
   mulF (fReg 150) (fReg 148) (fReg 148)
   subF (fReg 150) (fReg 150) (fReg 149)
@@ -603,7 +610,7 @@ private def emitDirectLightVisibilityBAndDispatch (_spec : SceneSpec) : PTX Unit
   setpEqI (pReg 37) (SceneReg.hitKind) (3)
   braIf (pReg 37) "SHADE_GLASS"
 
-private def emitMaterialShading (spec : SceneSpec) : PTX Unit := do
+def emitMaterialShading (spec : SceneSpec) : PTX Unit := do
   setpEqI (pReg 38) (SceneReg.hitKind) (4)
   braIf (pReg 38) "SHADE_GOLD"
   bra "SHADE_BLUE"
@@ -681,7 +688,7 @@ private def emitMaterialShading (spec : SceneSpec) : PTX Unit := do
   negF (fReg 228) (SceneReg.normalZ)
   fmaRn (SceneReg.rayDx) (fReg 226) (fReg 183) (SceneReg.rayDx)
 
-private def emitMetalAndGlassSetup (_spec : SceneSpec) : PTX Unit := do
+def emitMetalAndGlassSetup (_spec : SceneSpec) : PTX Unit := do
   fmaRn (SceneReg.rayDy) (fReg 227) (fReg 183) (SceneReg.rayDy)
   fmaRn (SceneReg.rayDz) (fReg 228) (fReg 183) (SceneReg.rayDz)
   madLoRII (SceneReg.rng) (SceneReg.rng) (1664525) (1013904223)
@@ -761,7 +768,7 @@ private def emitMetalAndGlassSetup (_spec : SceneSpec) : PTX Unit := do
   mulFI (SceneReg.throughputR) (SceneReg.throughputR) (0.98 : Float)
   mulFI (SceneReg.throughputG) (SceneReg.throughputG) (0.99 : Float)
 
-private def emitGlassResolveAndDiffuseBounce (_spec : SceneSpec) : PTX Unit := do
+def emitGlassResolveAndDiffuseBounce (_spec : SceneSpec) : PTX Unit := do
   mulFI (SceneReg.throughputB) (SceneReg.throughputB) (1.0 : Float)
   movF (SceneReg.rayOx) (fReg 102)
   movF (SceneReg.rayOy) (fReg 103)
@@ -840,7 +847,7 @@ private def emitGlassResolveAndDiffuseBounce (_spec : SceneSpec) : PTX Unit := d
   rcp (fReg 218) (fReg 216)
   mulF (SceneReg.throughputR) (SceneReg.throughputR) (fReg 218)
 
-private def emitSkyRrAndFinalize (_spec : SceneSpec) : PTX Unit := do
+def emitSkyRrAndFinalize (_spec : SceneSpec) : PTX Unit := do
   mulF (SceneReg.throughputG) (SceneReg.throughputG) (fReg 218)
   mulF (SceneReg.throughputB) (SceneReg.throughputB) (fReg 218)
   label "RR_SKIP"

@@ -1,7 +1,13 @@
-import Lean
-import Std
-import AlgorithmLib.Gen
-import AlgorithmLib.ML
+module
+public import Lean
+public import Std
+public import AlgorithmLib.Gen
+meta import AlgorithmLib.Gen
+public import AlgorithmLib.ML
+meta import AlgorithmLib.ML
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # A model at Qwen2's width and deeper, elaborated

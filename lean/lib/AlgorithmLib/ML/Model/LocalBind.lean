@@ -1,5 +1,11 @@
-import AlgorithmLib.ML.Model.Fuse
-import AlgorithmLib.ML.Launch.Bind
+module
+public import AlgorithmLib.ML.Model.Fuse
+meta import AlgorithmLib.ML.Model.Fuse
+public import AlgorithmLib.ML.Launch.Bind
+meta import AlgorithmLib.ML.Launch.Bind
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # Per-kernel buffer tables

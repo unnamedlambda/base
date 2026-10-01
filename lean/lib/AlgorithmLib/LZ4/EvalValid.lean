@@ -1,7 +1,15 @@
-import AlgorithmLib.LZ4.WarpDSL
-import AlgorithmLib.LZ4.WarpFind
-import AlgorithmLib.LZ4.OuterByteLayer
-import AlgorithmLib.LZ4.SimSLAssembly
+module
+public import AlgorithmLib.LZ4.WarpDSL
+meta import AlgorithmLib.LZ4.WarpDSL
+public import AlgorithmLib.LZ4.WarpFind
+meta import AlgorithmLib.LZ4.WarpFind
+public import AlgorithmLib.LZ4.OuterByteLayer
+meta import AlgorithmLib.LZ4.OuterByteLayer
+public import AlgorithmLib.LZ4.SimSLAssembly
+meta import AlgorithmLib.LZ4.SimSLAssembly
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 namespace AlgorithmLib.LZ4WarpDSL
 open AlgorithmLib.LZ4Plan AlgorithmLib.LZ4WarpFind

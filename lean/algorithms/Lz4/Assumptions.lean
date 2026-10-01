@@ -1,4 +1,9 @@
-import Lz4.Whole
+module
+public import Lz4.Whole
+meta import Lz4.Whole
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # What the LZ4 compressor proves, and what it rests on

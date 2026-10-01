@@ -1,5 +1,10 @@
-import Lean
-import Std
+module
+public import Lean
+public import Std
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 open Lean
 
 namespace AlgorithmLib.PTX
@@ -36,7 +41,7 @@ structure PTXState where
 
 abbrev PTX := StateM PTXState
 
-private def emit (s : String) : PTX Unit :=
+def emit (s : String) : PTX Unit :=
   modify fun st => { st with lines := st.lines.push ("    " ++ s ++ ";") }
 
 def declLine (text : String) : PTX Unit :=

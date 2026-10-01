@@ -1,4 +1,9 @@
-import Lz4.ExtShape
+module
+public import Lz4.ExtShape
+meta import Lz4.ExtShape
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 namespace Lz4Sites

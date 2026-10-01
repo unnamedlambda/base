@@ -1,5 +1,10 @@
-import Lean
-import AlgorithmLib.Core.Cbor
+module
+public import Lean
+public import AlgorithmLib.Core.Cbor
+meta import AlgorithmLib.Core.Cbor
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
 # The CLIF program an artifact carries

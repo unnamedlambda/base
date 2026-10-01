@@ -1,4 +1,9 @@
-import AlgorithmLib.LZ4.SimtRSim
+module
+public import AlgorithmLib.LZ4.SimtRSim
+meta import AlgorithmLib.LZ4.SimtRSim
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 
 /-!
@@ -65,7 +70,7 @@ def Writes (prog : Array SInstr) (st : SState) (j : Nat) : Prop :=
 
 -- ── `storeBytes`: size, and the frame ─────────────────────────────────────────
 
-private def sbFold (pred : Lane → Bool) (addr val : Lane → UInt64) :
+def sbFold (pred : Lane → Bool) (addr val : Lane → UInt64) :
     List Lane → Array UInt8 → Array UInt8
   | [], m => m
   | l :: ls, m => sbFold pred addr val ls (if pred l then m.set! (addr l).toNat (val l).toUInt8 else m)

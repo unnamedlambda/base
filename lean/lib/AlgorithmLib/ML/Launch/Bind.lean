@@ -1,4 +1,9 @@
-import AlgorithmLib.ML.Launch.StageFrame
+module
+public import AlgorithmLib.ML.Launch.StageFrame
+meta import AlgorithmLib.ML.Launch.StageFrame
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
 
 /-!
   # Buffer binding: from kernel-local slots to the pipeline's buffers

@@ -1,3 +1,8 @@
+module
+import all Init.Data.Repr
+import all Init.Data.List.Sort.Basic
+@[expose] public section
+
 /-!
   # The indexing category
 
