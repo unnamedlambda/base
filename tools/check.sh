@@ -113,6 +113,13 @@ PY
   echo "no sorry in the library or the generators"
 }
 
+# The library imports only downward, applications import no other application,
+# and no generator reaches a host proof beyond the listed exceptions. With the
+# module system this is what keeps a proof edit from rebuilding the generators.
+layers() {
+  python3 "$ROOT/tools/layers.py"
+}
+
 # `AlgorithmLib.X86` must encode as GNU `as` does. The encoder is pure Lean, so
 # one kind of host checks it for all; elsewhere the step is skipped.
 x86_vs_as() {
@@ -223,6 +230,7 @@ lean_host() {
 
 step "lean build"          lean_build
 step "no sorry"            no_sorry
+step "layers"              layers
 step "x86 against as"      x86_vs_as
 step "artifacts reproduce" artifacts_reproduce
 step "rust check"          rust_check

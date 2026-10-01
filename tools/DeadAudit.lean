@@ -1,5 +1,4 @@
 import Scan.Mlp
-
 /-!
   Decl-level reachability audit: which declarations in the ML library and the
   CIFAR generator are reached by nothing.
