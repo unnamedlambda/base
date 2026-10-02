@@ -39,6 +39,14 @@ use std::process::Command;
 /// every artifact-generating package requires.
 const TARGET: &str = "algorithmLib/artifacts";
 
+/// How many Lean processes Lake runs at once: as many as the Lean runtime has
+/// worker threads, every hardware thread unless this says otherwise.
+const LEAN_JOBS: &str = "LEAN_NUM_THREADS";
+
+/// Memory one Lean process may need: the largest modules of a package's
+/// proofs take one to two gigabytes.
+const LEAN_JOB_BYTES: u64 = 2 << 30;
+
 /// Prebuilt artifacts to embed in place of running Lake.
 const PREBUILT: &str = "BASE_ARTIFACTS_DIR";
 
@@ -51,6 +59,7 @@ const CONFIG_LOCK_BUSY: &str = "could not acquire an exclusive configuration loc
 /// `NAMES`, `by_name` and `DIR`.
 pub fn lean() {
     println!("cargo:rerun-if-env-changed={PREBUILT}");
+    println!("cargo:rerun-if-env-changed={LEAN_JOBS}");
     let (dir, names) = match env::var_os(PREBUILT) {
         Some(dir) => prebuilt(Path::new(&dir)),
         None => from_lake(&PathBuf::from(
@@ -65,14 +74,18 @@ pub fn lean() {
 /// Ask Lake to bring the artifacts up to date, and watch what it says they
 /// depend on.
 fn from_lake(package: &Path) -> (String, Vec<String>) {
+    let jobs = lean_jobs();
     let query = || {
-        Command::new("lake")
-            .args(["query", TARGET])
-            .current_dir(package)
-            .output()
-            .unwrap_or_else(|e| {
-                panic!("Failed to run `lake`: {e}. Install elan, or set {PREBUILT} to prebuilt artifacts.")
-            })
+        let mut lake = Command::new("lake");
+        lake.args(["query", TARGET]).current_dir(package);
+        if let Some(n) = jobs {
+            lake.env(LEAN_JOBS, n.to_string());
+        }
+        lake.output().unwrap_or_else(|e| {
+            panic!(
+                "Failed to run `lake`: {e}. Install elan, or set {PREBUILT} to prebuilt artifacts."
+            )
+        })
     };
     // Lake locks a package while it re-reads a changed lakefile, and a second
     // process refuses rather than waits. Two owner crates sharing a package
@@ -203,4 +216,46 @@ mod tests {
     fn refuses_a_name_the_module_declares() {
         module("/a", &["names".into()]);
     }
+}
+
+/// Lake's job count, when the caller has not set one: as many Lean processes as
+/// the memory this build may use holds, so a cap on the build (a cgroup's
+/// `memory.max`) or a machine short of memory gets a build that fits rather
+/// than one the kernel kills. `None` where neither can be read, which leaves
+/// Lake's default.
+fn lean_jobs() -> Option<u64> {
+    if env::var_os(LEAN_JOBS).is_some() {
+        return None;
+    }
+    let bytes = [cgroup_limit(), mem_available()]
+        .into_iter()
+        .flatten()
+        .min()?;
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
+    Some((bytes / LEAN_JOB_BYTES).clamp(1, cores))
+}
+
+/// The memory limit of the cgroup this process runs in (cgroup v2).
+fn cgroup_limit() -> Option<u64> {
+    let own = fs::read_to_string("/proc/self/cgroup").ok()?;
+    let path = own.lines().find_map(|l| l.strip_prefix("0::"))?;
+    fs::read_to_string(format!("/sys/fs/cgroup{path}/memory.max"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// The memory the kernel could hand out now without swapping.
+fn mem_available() -> Option<u64> {
+    let info = fs::read_to_string("/proc/meminfo").ok()?;
+    let kib: u64 = info
+        .lines()
+        .find_map(|l| l.strip_prefix("MemAvailable:"))?
+        .trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse()
+        .ok()?;
+    Some(kib * 1024)
 }

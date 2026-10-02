@@ -30,6 +30,11 @@ GUARD=()
 if command -v systemd-run >/dev/null 2>&1; then
   GUARD=(systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 -- nice -n 19)
 fi
+# Lake runs as many Lean processes at once as the Lean runtime has worker
+# threads, every hardware thread by default whatever cores it is pinned to,
+# and the Ship proofs and scans each need one to two gigabytes: three fit the
+# cap. Cargo's build scripts run Lake too, so this covers them as well.
+export LEAN_NUM_THREADS="${LEAN_NUM_THREADS:-3}"
 
 # The GPU is not shareable, and the driver that holds it does not fail politely.
 #
