@@ -317,53 +317,35 @@ pub unsafe fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
     unsafe { driver.execute(name, &[], &mut []) }
 }
 
-/// Each function decoded as the engine decodes it, with the names its
-/// callees stand for: Cranelift prints a callee as the `FuncId` it was
-/// declared with, so the stub resolver records what each id stood for.
-fn decoded(artifact: &Artifact) -> Result<Vec<(cranelift_codegen::ir::Function, Vec<String>)>, String> {
-    use base_types::clif::Callee;
-    let cc = jit::isa().default_call_conv();
-    let mut out = Vec::with_capacity(artifact.functions.len());
-    for (i, f) in artifact.functions.iter().enumerate() {
-        let mut names: Vec<String> = Vec::new();
-        let mut resolve = |c: Callee| {
-            let (name, sig) = match c {
-                Callee::Function(n) => {
-                    let callee = artifact
-                        .functions
-                        .get(n as usize)
-                        .ok_or_else(|| format!("a call to u0:{n}, which the program does not define"))?;
-                    (format!("u0:{n}"), clif_decode::signature_of(callee, n as usize, cc)?)
-                }
-                Callee::Primitive(n) => {
-                    let p = artifact
-                        .primitives
-                        .get(n as usize)
-                        .ok_or_else(|| format!("a call to primitive {n}, which the program does not declare"))?;
-                    (format!("%{}!{}", p.lib, p.symbol), clif_decode::signature(&p.signature, cc)?)
-                }
-            };
-            names.push(name);
-            Ok((clif_decode::Resolved { id: names.len() as u32 - 1, colocated: false }, sig))
-        };
-        let mut module = clif_decode::Module { primitives: &artifact.primitives, arena: 0, resolve: &mut resolve };
-        let func = clif_decode::decode_function(f, i, cc, &mut module)?;
-        out.push((func, names));
-    }
-    Ok(out)
+/// Each function as the engine decodes it, and the name each `FuncId` stands
+/// for: a primitive as `%lib!symbol`, a function as its `u0:N`.
+fn decoded(artifact: &Artifact) -> Result<(Vec<cranelift_codegen::ir::Function>, Vec<String>), String> {
+    let d = clif_decode::decode(&artifact.primitives, &artifact.functions, jit::isa().default_call_conv())?;
+    let names = artifact
+        .primitives
+        .iter()
+        .map(|p| format!("%{}!{}", p.lib, p.symbol))
+        .chain((0..artifact.functions.len()).map(|n| format!("u0:{n}")))
+        .collect();
+    Ok((d.functions, names))
 }
 
-/// The program as CLIF text: what the engine builds from it, rather than what
-/// its author believes it built. For reading a program; nothing in the
-/// pipeline reads it.
+/// The program as CLIF text: what the engine builds from it.
 pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
+    let (functions, names) = decoded(artifact)?;
     let mut out = String::new();
-    for (func, names) in decoded(artifact)? {
-        let mut text = format!("{}", func.display());
-        for (i, name) in names.iter().enumerate().rev() {
-            text = text.replace(&format!("= u0:{i} sig"), &format!("= {name} sig"));
+    for func in functions {
+        for line in func.display().to_string().lines() {
+            // A callee is printed as its `FuncId`, `u0:K sig`: say what K is.
+            let named = line.find("u0:").and_then(|at| {
+                let digits = line[at + 3..].find(|c: char| !c.is_ascii_digit()).map(|n| at + 3 + n)?;
+                let k: usize = line[at + 3..digits].parse().ok()?;
+                let name = names.get(k).filter(|_| line[digits..].starts_with(" sig"))?;
+                Some(format!("{}{name}{}", &line[..at], &line[digits..]))
+            });
+            out.push_str(named.as_deref().unwrap_or(line));
+            out.push('\n');
         }
-        out.push_str(&text);
         out.push('\n');
     }
     Ok(out)
@@ -376,7 +358,7 @@ pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
 pub fn disassemble(artifact: &Artifact) -> Result<String, String> {
     let isa = jit::isa();
     let mut out = String::new();
-    for (i, (func, _)) in decoded(artifact)?.into_iter().enumerate() {
+    for (i, func) in decoded(artifact)?.0.into_iter().enumerate() {
         let mut ctx = cranelift_codegen::Context::for_function(func);
         ctx.set_disasm(true);
         let code = ctx

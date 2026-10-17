@@ -118,38 +118,57 @@ impl Vals {
     }
 }
 
-/// Where a callee resolved: the `FuncId` it is declared under, and whether it
-/// is defined in the same module as its caller.
-///
-/// The second is the runtime's to know, not the program's. A call to code in
-/// the module may be PC-relative, because the module's code is placed in one
-/// region; a call to a host symbol may not, because the loader put it wherever
-/// it put it. The program cannot tell which it has.
-pub struct Resolved {
-    pub id: u32,
-    pub colocated: bool,
+/// An artifact decoded as Cranelift declares it: the primitives are `FuncId`s
+/// `0..P`, the functions follow them, and the arena is `DataId` 0.
+pub(crate) struct Decoded {
+    pub primitive_sigs: Vec<Signature>,
+    pub function_sigs: Vec<Signature>,
+    pub functions: Vec<ir::Function>,
 }
 
-/// What the decoder knows of the module a function is in: what its callees
-/// resolve to, and where the arena is declared.
-pub struct Module<'a> {
-    /// The artifact's primitives, which a call names by position.
-    pub primitives: &'a [clif::Primitive],
-    /// The `DataId` the arena is declared under.
-    pub arena: u32,
-    /// The `FuncId` a callee is declared under, and the signature it has —
-    /// from the primitive's declaration, or the function's own.
-    pub resolve: &'a mut dyn FnMut(clif::Callee) -> Result<(Resolved, Signature), String>,
+pub(crate) fn decode(primitives: &[clif::Primitive], functions: &[clif::Function], host: CallConv) -> Result<Decoded, String> {
+    let primitive_sigs = primitives
+        .iter()
+        .map(|p| signature(&p.signature, host).map_err(|e| format!("the primitive {}!{}: {e}", p.lib, p.symbol)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let function_sigs =
+        functions.iter().enumerate().map(|(i, f)| signature_of(f, i, host)).collect::<Result<Vec<_>, _>>()?;
+    let m = Module { primitives, primitive_sigs: &primitive_sigs, function_sigs: &function_sigs };
+    let functions =
+        functions.iter().enumerate().map(|(i, f)| decode_function(f, i, host, &m)).collect::<Result<Vec<_>, _>>()?;
+    Ok(Decoded { primitive_sigs, function_sigs, functions })
 }
 
-/// Builds one function.
-pub fn decode_function(
-    f: &clif::Function,
-    index: usize,
-    host: CallConv,
-    module: &mut Module,
-) -> Result<ir::Function, String> {
-    let sig = signature_of(f, index, host)?;
+struct Module<'a> {
+    primitives: &'a [clif::Primitive],
+    primitive_sigs: &'a [Signature],
+    function_sigs: &'a [Signature],
+}
+
+impl Module<'_> {
+    /// `c`'s `FuncId`, whether it is in this module, its signature and its name.
+    fn callee(&self, c: clif::Callee) -> Result<(u32, bool, Signature, String), String> {
+        match c {
+            clif::Callee::Primitive(i) => {
+                let p = self
+                    .primitives
+                    .get(i as usize)
+                    .ok_or_else(|| format!("a call to primitive {i}, which the program does not declare"))?;
+                Ok((i, false, self.primitive_sigs[i as usize].clone(), format!("{}!{}", p.lib, p.symbol)))
+            }
+            clif::Callee::Function(n) => {
+                let sig = self
+                    .function_sigs
+                    .get(n as usize)
+                    .ok_or_else(|| format!("a call to u0:{n}, which the program does not define"))?;
+                Ok((self.primitives.len() as u32 + n, true, sig.clone(), format!("u0:{n}")))
+            }
+        }
+    }
+}
+
+fn decode_function(f: &clif::Function, index: usize, host: CallConv, module: &Module) -> Result<ir::Function, String> {
+    let sig = module.function_sigs[index].clone();
     if f.blocks.is_empty() {
         return Err(format!("u0:{index} has no blocks, so no entry block"));
     }
@@ -181,21 +200,13 @@ pub fn decode_function(
     for inst in f.blocks.iter().flat_map(|b| &b.insts) {
         match inst {
             clif::Inst::Call(_, _, _, c, _) | clif::Inst::FuncAddr(_, _, _, c) if !callees.contains_key(c) => {
-                let (resolved, sig) = (module.resolve)(*c)?;
-                let name = match c {
-                    clif::Callee::Function(n) => format!("u0:{n}"),
-                    clif::Callee::Primitive(i) => module
-                        .primitives
-                        .get(*i as usize)
-                        .map(|p| format!("{}!{}", p.lib, p.symbol))
-                        .unwrap_or_else(|| format!("primitive {i}")),
-                };
+                let (id, colocated, sig, name) = module.callee(*c)?;
                 let sr = func.import_signature(sig.clone());
-                let user = func.declare_imported_user_function(UserExternalName { namespace: 0, index: resolved.id });
+                let user = func.declare_imported_user_function(UserExternalName { namespace: 0, index: id });
                 let fr = func.import_function(ExtFuncData {
                     name: ExternalName::user(user),
                     signature: sr,
-                    colocated: resolved.colocated,
+                    colocated,
                 });
                 callees.insert(*c, (fr, name, sig));
             }
@@ -206,7 +217,7 @@ pub fn decode_function(
             clif::Inst::UnaryGlobalValue(_, _, _, clif::Global::Arena) if arena.is_none() => {
                 // Data is namespace 1 of a module's names, as functions are 0.
                 let name =
-                    func.declare_imported_user_function(UserExternalName { namespace: 1, index: module.arena });
+                    func.declare_imported_user_function(UserExternalName { namespace: 1, index: 0 });
                 arena = Some(func.create_global_value(ir::GlobalValueData::Symbol {
                     name: ExternalName::user(name),
                     offset: ir::immediates::Imm64::new(0),

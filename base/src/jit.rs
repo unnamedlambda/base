@@ -1,8 +1,7 @@
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::JITBuilder;
-use cranelift_module::Module;
+use cranelift_module::{Linkage, Module};
 
-use crate::clif_decode::Resolved;
 
 /// What a host calls a function as: the input, its length, the output, its
 /// length, answering the status. The arena is not an argument: a function
@@ -96,24 +95,16 @@ pub(crate) fn exports_of(functions: &[base_types::clif::Function]) -> Result<Vec
     Ok(exports)
 }
 
-/// Compiles the functions an artifact carries.
-///
-/// Its primitives are declared first, each once, as the module's imports, and
-/// its functions after, so a call resolves by position to either.
+/// Compiles the functions an artifact carries, its primitives declared first
+/// so each `FuncId` is the one `clif_decode::decode` named it by.
 pub(crate) fn compile(
     primitives: &[base_types::clif::Primitive],
     functions: &[base_types::clif::Function],
     arena: *mut u8,
 ) -> Result<Program, String> {
     let exports = exports_of(functions)?;
-    let insts = functions
-        .iter()
-        .flat_map(|f| &f.blocks)
-        .map(|b| b.insts.len())
-        .sum();
-    // The C functions the program calls, bound before the module is built so
-    // each resolves like any other import. A primitive is declared once: a
-    // second declaration of the same symbol is the same fact stated twice.
+    let decoded = crate::clif_decode::decode(primitives, functions, isa().default_call_conv())?;
+    let insts = functions.iter().flat_map(|f| &f.blocks).map(|b| b.insts.len()).sum();
     let mut symbols: Vec<(String, usize)> = Vec::with_capacity(primitives.len() + 1);
     for p in primitives {
         let name = crate::libs::link_name(p);
@@ -124,66 +115,30 @@ pub(crate) fn compile(
     }
     symbols.push((ARENA.into(), arena as usize));
     let mut module = new_module(insts, &symbols)?;
-    let cc = module.isa().default_call_conv();
-    let arena_data = module
-        .declare_data(ARENA, cranelift_module::Linkage::Import, true, false)
-        .map_err(|e| format!("declaring {ARENA}: {e}"))?;
-
-    let mut prims = Vec::with_capacity(primitives.len());
-    for p in primitives {
-        let sig = crate::clif_decode::signature(&p.signature, cc)
-            .map_err(|e| format!("the primitive {}!{}: {e}", p.lib, p.symbol))?;
+    let declared = |what: &str, id: u32, at: usize| {
+        if id as usize == at { Ok(()) } else { Err(format!("{what} was declared as {id}, not {at}")) }
+    };
+    let data = module.declare_data(ARENA, Linkage::Import, true, false).map_err(|e| format!("declaring {ARENA}: {e}"))?;
+    declared("the arena", data.as_u32(), 0)?;
+    for (k, (p, sig)) in primitives.iter().zip(&decoded.primitive_sigs).enumerate() {
         let name = crate::libs::link_name(p);
-        let id = module
-            .declare_function(&name, cranelift_module::Linkage::Import, &sig)
-            .map_err(|e| format!("declaring {name}: {e}"))?;
-        prims.push((id, sig));
+        let id = module.declare_function(&name, Linkage::Import, sig).map_err(|e| format!("declaring {name}: {e}"))?;
+        declared(&name, id.as_u32(), k)?;
     }
-    let sigs = functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| crate::clif_decode::signature_of(f, i, cc))
-        .collect::<Result<Vec<_>, String>>()?;
-    let mut func_ids = Vec::with_capacity(functions.len());
-    for (i, sig) in sigs.iter().enumerate() {
-        func_ids.push(
-            module
-                .declare_function(&format!("fn_{i}"), cranelift_module::Linkage::Local, sig)
-                .map_err(|e| format!("declaring fn_{i}: {e}"))?,
-        );
+    let mut ids = Vec::with_capacity(functions.len());
+    for (i, sig) in decoded.function_sigs.iter().enumerate() {
+        let id = module.declare_function(&format!("fn_{i}"), Linkage::Local, sig).map_err(|e| format!("declaring fn_{i}: {e}"))?;
+        declared(&format!("u0:{i}"), id.as_u32(), primitives.len() + i)?;
+        ids.push(id);
     }
-
-    let mut decoded = Vec::with_capacity(functions.len());
-    for (i, f) in functions.iter().enumerate() {
-        let mut resolve = |callee: base_types::clif::Callee| match callee {
-            base_types::clif::Callee::Function(n) => func_ids
-                .get(n as usize)
-                .zip(sigs.get(n as usize))
-                .map(|(id, sig)| (Resolved { id: id.as_u32(), colocated: true }, sig.clone()))
-                .ok_or_else(|| format!("a call to u0:{n}, which the program does not define")),
-            base_types::clif::Callee::Primitive(n) => prims
-                .get(n as usize)
-                .map(|(id, sig)| (Resolved { id: id.as_u32(), colocated: false }, sig.clone()))
-                .ok_or_else(|| format!("a call to primitive {n}, which the program does not declare")),
-        };
-        let mut m = crate::clif_decode::Module { primitives, arena: arena_data.as_u32(), resolve: &mut resolve };
-        decoded.push(crate::clif_decode::decode_function(f, i, cc, &mut m)?);
-    }
-
-    for (i, func) in decoded.into_iter().enumerate() {
+    for (i, func) in decoded.functions.into_iter().enumerate() {
         let mut ctx = cranelift_codegen::Context::for_function(func);
-        let exported = match &functions[i].name {
-            Some(name) => format!(
-                " (named {name:?}, so a host calls it: it takes the input and output \
-                 buffers and answers a status)"
-            ),
+        let named = match &functions[i].name {
+            Some(name) => format!(" (named {name:?}, so a host calls it: it takes the input and output buffers and answers a status)"),
             None => String::new(),
         };
-        module
-            .define_function(func_ids[i], &mut ctx)
-            // Debug rather than Display: a verifier rejection names the
-            // offending instructions only in the former.
-            .map_err(|e| format!("compiling u0:{i}{exported}: {e:?}"))?;
+        // Debug, not Display: only it names the instructions a verifier refuses.
+        module.define_function(ids[i], &mut ctx).map_err(|e| format!("compiling u0:{i}{named}: {e:?}"))?;
     }
 
     module.finalize_definitions().map_err(|e| format!("{e}"))?;
@@ -192,7 +147,7 @@ pub(crate) fn compile(
         // SAFETY: each was declared at `FunctionPtr`'s signature and its body
         // verified against it, and is mapped for as long as the module is.
         .map(|(name, k)| {
-            let addr = module.get_finalized_function(func_ids[k]);
+            let addr = module.get_finalized_function(ids[k]);
             (name, unsafe { std::mem::transmute::<*const u8, FunctionPtr>(addr) })
         })
         .collect();
