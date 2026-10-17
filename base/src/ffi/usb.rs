@@ -1,21 +1,6 @@
-//! USB devices, through the `nusb` crate: the C functions a program's
-//! `Ext.usb` calls reach, by symbol.
-//!
-//! Nine blocking calls, each one call into the crate: how many devices the
-//! system lists and what each is — its bus, address, vendor and product — a
-//! device opened by its place in the list, an interface claimed through it and
-//! released, and control, bulk and interrupt transfers through a claimed
-//! interface, each waited for. A device and an interface are each a box of the
-//! crate's own object, handed back to the call that drops it; an interface
-//! keeps its device open until it is released. Nothing is kept here of which
-//! handles are live or what was claimed: that a handle names a live object of
-//! its kind is the call's precondition, as `Host/UsbLib.lean` states, and what
-//! the system does with a claim is the system's (a second claim of one
-//! interface through one device is granted on Linux and refused elsewhere).
-//! The devices are listed afresh at each call.
-//!
-//! A transfer answers how many bytes moved, or `-1`, as do a request type, a
-//! length or a timeout the crate cannot take.
+//! USB through `nusb`: listing, opening a device, claiming an interface, and
+//! blocking control, bulk and interrupt transfers. A transfer answers the
+//! bytes moved, or `-1`.
 
 use std::time::Duration;
 

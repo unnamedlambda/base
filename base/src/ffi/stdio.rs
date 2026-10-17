@@ -1,12 +1,9 @@
-//! Standard input and output, each one call into std on bytes the program
-//! points at.
+//! Standard input and output.
 
 use std::io::{BufRead, Write as IoWrite};
 
-/// A line of standard input into `dst`, with its newline, or as much of it as
-/// `cap` bytes hold, the rest left for the next call, as `fgets` leaves it:
-/// how many bytes, `0` at the end of input, `-1` for a `cap` that is not
-/// positive or a read that fails.
+/// A line of standard input into `dst`, as much as `cap` holds, as `fgets`
+/// reads: the bytes read, `0` at the end, `-1` on failure.
 ///
 /// # Safety
 ///
@@ -36,8 +33,7 @@ pub(crate) unsafe extern "C" fn cl_stdin_read_line(dst: *mut u8, cap: i64) -> i6
     n as i64
 }
 
-/// `size` bytes at `src` written to standard output and flushed to it: `size`,
-/// or `-1` for a negative `size` or a write that fails.
+/// `size` bytes at `src` written to standard output and flushed: `size`, or `-1`.
 ///
 /// # Safety
 ///

@@ -1,7 +1,5 @@
-// The platform contract. Artifacts address the arena with 64-bit integers and
-// write multi-byte values little-endian, and the FFI passes pointers and
-// lengths as `i64`. Elsewhere those bytes would be misread rather than
-// rejected, so the build refuses instead.
+// Artifacts address the arena with 64-bit little-endian integers, and pass
+// pointers and lengths as `i64`.
 #[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
 compile_error!("base runs only on 64-bit little-endian targets");
 
@@ -21,16 +19,13 @@ mod jit;
 
 #[derive(Debug)]
 pub enum Error {
-    /// The program an artifact carries could not be built. Nothing parses, so
-    /// this is a malformed program — a value used before it is defined, a
-    /// branch to a block that is not declared — rather than bad syntax.
+    /// The program is malformed.
     Clif(String),
-    /// The arena could not be allocated. Nothing has run: this is the size the
-    /// artifact asked for against what the host can give.
+    /// The arena cannot be allocated, or its segments are malformed.
     Arena(String),
-    /// The artifact has no function by that name.
+    /// No function has the name.
     NoSuchFunction(String),
-    /// A read reached past the end of the arena.
+    /// A read reaches past the arena.
     Range(String),
 }
 
@@ -47,21 +42,12 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// The arena a program runs in: its own pages, mapped anonymous and zeroed,
-/// as a loader maps a library's `.bss`.
-///
-/// Held as a pointer rather than a slice: running programs write it from any
-/// number of threads while the `Driver` is shared, and a `&mut [u8]` asserts
-/// that nothing else reaches its bytes.
-///
-/// Page-aligned, so an address a program keeps naturally aligned relative to
-/// its base is naturally aligned in fact, which an atomic needs, and huge
-/// pages can back it: Linux aligns a large anonymous mapping to them itself.
-/// Pages a program never touches never cost anything.
+/// The arena: zeroed, page-aligned pages of its own. A pointer, not a slice,
+/// since running programs write it from any thread.
 struct Arena {
     ptr: NonNull<u8>,
     len: usize,
-    /// The mapping, unmapped when the arena goes; none for an empty arena.
+    /// Unmapped on drop; none for an empty arena.
     _map: Option<region::Allocation>,
 }
 
@@ -83,12 +69,7 @@ impl Arena {
     }
 }
 
-/// A function of a [`Driver`], as the C function it is: calling it runs the
-/// program's code directly, with nothing of the engine's in between.
-///
-/// It borrows the driver, so it cannot outlive it. A host outside Rust gets the
-/// same function from `base_driver_function`, and keeping the driver alive for as
-/// long as it calls it is then its own part.
+/// A function of a [`Driver`], as the C function it is, borrowing the driver.
 #[derive(Clone, Copy)]
 pub struct Function<'d> {
     f: jit::FunctionPtr,
@@ -96,34 +77,23 @@ pub struct Function<'d> {
 }
 
 impl Function<'_> {
-    /// Call the function with `input`, answering in `output`, and answer
-    /// the status it returned (`0` from one that returns nothing). The buffers
-    /// are the program's to read and write directly: nothing is copied.
-    ///
-    /// Any number of threads may call functions of one driver at once. Each
-    /// call runs on its caller's thread against the one arena, and how calls
-    /// share it is the program's to decide: with atomics, as `shared_sum`
-    /// does, or by keeping to disjoint bytes.
+    /// Calls the function on `input` and `output` in place, answering its status
+    /// (`0` when it returns nothing). Any number of threads may call at once.
     ///
     /// # Safety
     ///
-    /// A load answers whether the artifact is a program, not whether running
-    /// it is defined: that is the program's to keep, as with any foreign
-    /// function. It keeps every contract of the calls it makes and reaches
-    /// only its arena, its input and its output, which for an artifact Lean
-    /// built is what its no-misuse theorem states, under the capabilities the
-    /// theorem names. The thread calling it is in the default floating-point
-    /// environment, and `input` and `output` are as the function's own
-    /// contract asks: for one Lean built, not bytes of the arena.
+    /// As any foreign call: the program keeps the contracts of what it calls
+    /// and reaches only its arena, `input` and `output` (for one Lean built,
+    /// what its no-misuse theorem states). The thread is in the default
+    /// floating-point environment, and `input` and `output` meet the
+    /// function's own contract.
     pub unsafe fn call(&self, input: &[u8], output: &mut [u8]) -> i64 {
-        // SAFETY: the function has `FunctionPtr`'s signature, which loading
-        // declared and verified, and is mapped for as long as the driver this
-        // borrows; the buffers are valid for their lengths; the rest is the
-        // caller's, above.
+        // SAFETY: loading verified the signature, the code lives as long as the
+        // borrowed driver, and the rest is the caller's.
         unsafe { (self.f)(input.as_ptr(), input.len(), output.as_mut_ptr(), output.len()) }
     }
 
-    /// The function itself, for a host that calls it through a C pointer.
+    /// The C function itself.
     pub fn as_ptr(&self) -> FunctionPtr {
         self.f
     }
@@ -131,14 +101,12 @@ impl Function<'_> {
 
 pub use jit::FunctionPtr;
 
-/// Waiting on a word of the arena, waking, and the clock, for a host:
-/// the system's own calls, which programs make too, so a host's thread and a
-/// program's meet at a word ([`Driver::arena_ptr`] plus an offset).
+/// Waiting on a word, waking, and the clock: the calls programs make, for hosts.
 pub use ffi::sync::{now, wait, wake};
 
 pub struct Driver {
     arena: Arena,
-    /// Each function a host may call, by its name.
+    /// The named functions.
     exports: HashMap<String, FunctionPtr>,
     /// Taken only by `drop`, which frees its code.
     module: Option<cranelift_jit::JITModule>,
@@ -148,14 +116,8 @@ unsafe impl Send for Driver {}
 unsafe impl Sync for Driver {}
 
 impl Drop for Driver {
-    /// Release the program's code. A JIT module otherwise keeps its code
-    /// mapped for the life of the process, and the region it was placed in is
-    /// reserved up front, so every dropped `Driver` would leak that reservation.
     fn drop(&mut self) {
-        // Nothing runs the code once the driver goes: a host may call a function
-        // only while the driver lives, and a program finishes the
-        // threads it started before then: both are what a caller of
-        // `Function::call` keeps.
+        // SAFETY: no call, and no thread a program started, outlives the driver.
         if let Some(module) = self.module.take() {
             unsafe { module.free_memory() };
         }
@@ -163,16 +125,11 @@ impl Drop for Driver {
 }
 
 impl Driver {
-    /// Load an artifact: compile its functions and allocate the arena its
-    /// program runs in. There is no driver without an artifact, so this is the
-    /// only way to obtain one.
+    /// Allocates the artifact's arena and compiles its functions.
     pub fn load(artifact: Artifact) -> Result<Self, Error> {
-        // The arena is the size the artifact states, which covers its image:
-        // the generator decides it, and a segment past it is refused.
         let size = usize::try_from(artifact.arena_size).map_err(|_| {
             Error::Arena(format!("the arena is {} bytes, more than this host can hold", artifact.arena_size))
         })?;
-        // In order and apart, so the image has one spelling.
         let mut free_from = 0usize;
         for s in &artifact.data {
             let at = usize::try_from(s.offset).ok().filter(|&at| at >= free_from);
@@ -195,8 +152,6 @@ impl Driver {
         let mut arena = Arena::zeroed(size).ok_or_else(|| {
             Error::Arena(format!("the arena is {size} bytes, more than this host can hold"))
         })?;
-        // Zeros everywhere a segment does not reach, which is what an artifact
-        // leaves out rather than shipping.
         let bytes = arena.bytes_mut();
         for s in &artifact.data {
             let at = s.offset as usize;
@@ -207,43 +162,23 @@ impl Driver {
         Ok(Driver { arena, exports: program.exports, module: Some(program.module) })
     }
 
-    /// The arena, borrowed exclusively: nothing can execute while the slice is
-    /// held, which is what makes a plain slice of it sound. [`Driver::read`] is
-    /// the way in while programs run.
+    /// The arena, borrowed exclusively, so no call runs while it is held.
     pub fn arena(&mut self) -> &[u8] {
         self.arena.bytes_mut()
     }
 
-    /// How many bytes the arena holds.
     pub fn arena_size(&self) -> usize {
         self.arena.len
     }
 
-    /// Where the arena is: the same address for as long as the driver lives,
-    /// and the one its programs see as their base.
-    ///
-    /// This is how a host shares the arena with running programs rather than
-    /// copying out of it. While any call runs, the host reaches bytes a
-    /// program may also touch only with atomic operations, as the program
-    /// does, and is free with bytes no running program touches. That is the
-    /// rule two threads of one C program follow, and it lets a host take the
-    /// ordering it needs: an acquire load of a flag a program set with a
-    /// release store, then the data the flag guards.
+    /// The arena's address, fixed for the driver's life. While calls run, bytes
+    /// a program may touch are reached only atomically.
     pub fn arena_ptr(&self) -> *mut u8 {
         self.arena.ptr.as_ptr()
     }
 
-    /// Copy `out.len()` bytes of the arena from `offset` into `out`.
-    ///
-    /// Sound while any number of calls run. Every naturally aligned 8-byte
-    /// word the range covers is read with one relaxed atomic load, so a word a
-    /// program updates atomically, like `shared_sum`'s total, is never copied
-    /// torn: it is a value the word held at some point during the read. The
-    /// bytes outside such words are read one at a time, and different words
-    /// may be copied at different moments.
-    ///
-    /// A range reaching past the end is an error rather than a short read, so
-    /// a truncated read cannot be mistaken for a result.
+    /// Copies the arena from `offset` into `out` while calls may run: each
+    /// aligned word with one atomic load, so none is read torn.
     pub fn read(&self, offset: usize, out: &mut [u8]) -> Result<(), Error> {
         let len = self.arena.len;
         if offset.checked_add(out.len()).is_none_or(|end| end > len) {
@@ -254,9 +189,7 @@ impl Driver {
         }
         let base = self.arena.ptr.as_ptr();
         let mut i = 0;
-        // SAFETY, for both loads: in bounds, checked above; the word's address
-        // is 8-aligned where it is loaded as one; and every access a host makes
-        // while programs run is atomic.
+        // SAFETY: in bounds, aligned where loaded as a word, and atomic.
         while i < out.len() {
             let at = unsafe { base.add(offset + i) };
             if at as usize % 8 == 0 && out.len() - i >= 8 {
@@ -271,8 +204,7 @@ impl Driver {
         Ok(())
     }
 
-    /// The function named `name`, as the C function it is. A host calling one
-    /// function often finds it once and calls it.
+    /// The function named `name`.
     pub fn function(&self, name: &str) -> Result<Function<'_>, Error> {
         let f = *self.exports.get(name).ok_or_else(|| {
             Error::NoSuchFunction(format!("the artifact has no function named {name:?}"))
@@ -280,7 +212,6 @@ impl Driver {
         Ok(Function { f, _driver: std::marker::PhantomData })
     }
 
-    /// Call the function named `name` with `input`, answering in `output`:
     /// [`Driver::function`], then [`Function::call`].
     ///
     /// # Safety
@@ -291,7 +222,7 @@ impl Driver {
     }
 }
 
-/// Compile an artifact and call its function named `name`, once.
+/// Loads `artifact` and calls `name` once.
 ///
 /// # Safety
 ///
@@ -301,8 +232,7 @@ pub unsafe fn run(artifact: Artifact, name: &str) -> Result<i64, Error> {
     unsafe { driver.execute(name, &[], &mut []) }
 }
 
-/// Each function as the engine decodes it, and the name each `FuncId` stands
-/// for: a primitive as `%lib!symbol`, a function as its `u0:N`.
+/// The decoded functions, and the name each `FuncId` stands for.
 fn decoded(artifact: &Artifact) -> Result<(Vec<cranelift_codegen::ir::Function>, Vec<String>), String> {
     let d = clif_decode::decode(&artifact.primitives, &artifact.functions, jit::isa().default_call_conv())?;
     let names = artifact
@@ -314,13 +244,13 @@ fn decoded(artifact: &Artifact) -> Result<(Vec<cranelift_codegen::ir::Function>,
     Ok((d.functions, names))
 }
 
-/// The program as CLIF text: what the engine builds from it.
+/// The program as CLIF text.
 pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
     let (functions, names) = decoded(artifact)?;
     let mut out = String::new();
     for func in functions {
         for line in func.display().to_string().lines() {
-            // A callee is printed as its `FuncId`, `u0:K sig`: say what K is.
+            // A callee prints as its `FuncId`, `u0:K sig`.
             let named = line.find("u0:").and_then(|at| {
                 let digits = line[at + 3..].find(|c: char| !c.is_ascii_digit()).map(|n| at + 3 + n)?;
                 let k: usize = line[at + 3..digits].parse().ok()?;
@@ -335,10 +265,7 @@ pub fn clif_text(artifact: &Artifact) -> Result<String, String> {
     Ok(out)
 }
 
-/// The machine code the engine compiles each function to, as Cranelift prints
-/// it: what came out of the backend, for the host this runs on, with the
-/// flags a load compiles with. For reading a program; nothing in the pipeline
-/// reads it.
+/// The machine code each function compiles to on this host.
 pub fn disassemble(artifact: &Artifact) -> Result<String, String> {
     let isa = jit::isa();
     let mut out = String::new();

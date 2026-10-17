@@ -1,29 +1,13 @@
-//! The C libraries a program calls directly.
-//!
-//! A program declares each primitive by its library, its symbol and its
-//! signature ([`Primitive`]), and this binds the symbol to an address. The engine's own
-//! functions (`base`), the C library, wgpu and the window, CPU, serial and USB
-//! libraries are built into it, so their symbols bind to the linked-in
-//! functions. The others are the system libraries this engine knows how to
-//! find, each under the file names its vendor gives it on each operating
-//! system ([`files`]), listing only releases the corpora have run against,
-//! newest first: which file a library is, is how the system packages it, not
-//! what a program means, so a new release is a change here and to no
-//! artifact. Such a library is opened the first time any program names it and
-//! stays open for the life of the process, so an address handed out is never
-//! unmapped under code that calls it. A library this engine does not know, or
-//! one not installed, binds to a stub, so the program still loads and can ask
-//! whether the library is present.
+//! Binding each primitive to an address: a library built into the engine, or
+//! a system library opened once for the process's life. A missing library or
+//! symbol binds to a stub, so the program loads and can ask what is present.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use base_types::clif::Primitive;
 
-/// What every function of a missing library, or a missing symbol, answers.
-/// Returning an integer in the return register is well defined whatever the
-/// callee's parameters, because every supported convention has the caller
-/// pop its own arguments.
+/// A missing function: `-1`, whatever it was called with (the caller pops).
 extern "C" fn absent() -> i64 {
     -1
 }
@@ -36,15 +20,14 @@ extern "C" fn present_no() -> i32 {
     0
 }
 
-/// Opened libraries by name, `None` for one none of whose files opened.
+/// Opened libraries by name; `None` when none of its files opened.
 fn opened() -> &'static Mutex<HashMap<String, Option<&'static libloading::Library>>> {
     static LIBS: OnceLock<Mutex<HashMap<String, Option<&'static libloading::Library>>>> =
         OnceLock::new();
     LIBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The files the system library `lib` is on this operating system, newest
-/// release first; none for a library this engine does not open.
+/// The files `lib` is on this system, newest first.
 fn files(lib: &str) -> &'static [&'static str] {
     match lib {
         #[cfg(target_os = "linux")]
@@ -59,21 +42,20 @@ fn files(lib: &str) -> &'static [&'static str] {
     }
 }
 
-/// The library `f` names, opened on first use from its files, in order.
+/// The library `f` names, opened on first use.
 fn library(f: &Primitive) -> Option<&'static libloading::Library> {
     let mut libs = opened().lock().unwrap_or_else(|e| e.into_inner());
     *libs.entry(f.lib.clone()).or_insert_with(|| {
         files(&f.lib).iter().find_map(|file| {
             // SAFETY: opening a library runs its initialisers. The files are
-            // the system libraries listed above, whose initialisers have no
-            // preconditions on the caller; an artifact cannot name another.
+            // the system libraries above, whose initialisers ask nothing.
             let lib = unsafe { libloading::Library::new(file) }.ok()?;
             Some(&*Box::leak(Box::new(lib)))
         })
     })
 }
 
-/// A library built into the engine: how to find its symbols.
+/// A library built into the engine.
 fn builtin(lib: &str) -> Option<fn(&str) -> Option<usize>> {
     match lib {
         "base" => Some(crate::ffi::linked),
@@ -107,8 +89,7 @@ pub(crate) fn bind(f: &Primitive) -> usize {
     }
 }
 
-/// The name a bound function is declared under in the JIT module: unique per
-/// library and symbol, and not a name anything else can declare.
+/// The JIT-module name of a primitive, unique per library and symbol.
 pub(crate) fn link_name(f: &Primitive) -> String {
     format!("extern:{}:{}", f.lib, f.symbol)
 }

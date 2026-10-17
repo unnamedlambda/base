@@ -1,9 +1,5 @@
-//! The performance controls a program may ask the system for.
-//!
-//! Each is one stateless call answering `0` when the system grants it and `-1`
-//! when it declines — for want of privilege, a limit, or an OS that has no such
-//! thing — and none changes what memory holds. A program that needs one to
-//! hold says so in what it claims; everything else only runs faster with it.
+//! Performance controls: memory locking, huge pages, thread priority. Each
+//! answers `0` when granted and `-1` when not, and changes no memory.
 
 /// Keep `len` bytes from `ptr` in physical memory.
 pub(crate) unsafe extern "C" fn cl_mem_lock(ptr: *const u8, len: i64) -> i32 {
@@ -51,11 +47,8 @@ pub(crate) unsafe extern "C" fn cl_mem_advise_huge(ptr: *const u8, len: i64) -> 
     }
 }
 
-/// The calling thread's priority set to `level`, on the scale the
-/// `thread-priority` crate makes the same on every system: `0` the lowest,
-/// `99` the highest, carried to niceness on Linux and to the priority classes
-/// on Windows. Lowering is the thread's own to do; raising past where it
-/// started takes privilege. `-1` for a level off the scale or one not granted.
+/// The calling thread's priority, `0` lowest to `99` highest; raising it may
+/// need privilege. `0`, or `-1`.
 pub(crate) unsafe extern "C" fn cl_thread_priority(level: i32) -> i32 {
     use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
     let Some(v) = u8::try_from(level).ok().and_then(|v| ThreadPriorityValue::try_from(v).ok()) else {

@@ -1,15 +1,6 @@
-//! Builds `cranelift_codegen::ir::Function` from the program an artifact
-//! carries.
-//!
-//! The artifact is CLIF as data: an instruction is a Cranelift instruction
-//! format, an opcode of it by CLIF's name, and the format's fields, so this is
-//! one rule per format rather than one per opcode. Every name is parsed by
-//! Cranelift's own parser and printed back, and one that does not come back as
-//! it was written is refused, so a name has CLIF's spelling and no other.
-//! Everything Cranelift could panic on rather than refuse — an opcode of
-//! another format, a type the opcode is not defined at — is checked before
-//! the instruction is built, so a load answers an error or a function, and
-//! never stops the process.
+//! An artifact's program as Cranelift IR, one rule per instruction format.
+//! Every name is parsed by Cranelift and must print back as written, and
+//! whatever Cranelift would panic on is refused before building.
 
 use base_types::clif;
 use cranelift_codegen::cursor::{Cursor, FuncCursor};
@@ -22,8 +13,7 @@ use cranelift_codegen::isa::CallConv;
 use std::collections::HashMap;
 use std::str::FromStr;
 
-/// The type CLIF spells `t`: a lane type, and `x` and a lane count for a
-/// vector, printed back to check it was CLIF's spelling.
+/// The type CLIF spells `t`.
 fn ty(t: &clif::ClifTy) -> Result<ir::Type, String> {
     use ir::types::*;
     let name = &*t.0;
@@ -71,9 +61,7 @@ fn abi_param(p: &clif::AbiParam) -> Result<ir::AbiParam, String> {
     Ok(a)
 }
 
-/// A signature, under the convention it names: `Host` is `host`, the
-/// convention of the machine this runs on, and `Arch` is Cranelift's System V,
-/// which is the architecture's on every OS.
+/// A signature; `Arch` is System V, the architecture's convention on every OS.
 pub(crate) fn signature(s: &clif::Signature, host: CallConv) -> Result<Signature, String> {
     let mut sig = Signature::new(match s.convention {
         clif::Convention::Host => host,
@@ -88,10 +76,7 @@ pub(crate) fn signature(s: &clif::Signature, host: CallConv) -> Result<Signature
     Ok(sig)
 }
 
-/// The signature of function `index`. A named function's is `BaseFunction`,
-/// since a host calls it as one; a body that does not take those arguments or
-/// answer that status is ill-typed CLIF, which Cranelift's verifier refuses as
-/// it would any other.
+/// Function `index`'s signature; a named function's must be `BaseFunction`.
 pub fn signature_of(f: &clif::Function, index: usize, host: CallConv) -> Result<Signature, String> {
     if f.name.is_some() && f.signature != clif::Signature::base_function() {
         return Err(format!("u0:{index} has a name, so a host calls it, and its signature is not BaseFunction's"));
@@ -189,11 +174,7 @@ fn decode_function(f: &clif::Function, index: usize, host: CallConv, module: &Mo
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    // Cranelift wants each callee, signature and global declared once in the
-    // function, and an instruction naming that declaration. The artifact
-    // carries the thing itself in the instruction instead, so the declarations
-    // are made here, on first use. Nothing chooses anything: the numbering
-    // never leaves this function, and any order gives the same machine code.
+    // Each callee, signature and global the instructions carry, declared once.
     let mut callees: HashMap<clif::Callee, (ir::FuncRef, String, Signature)> = HashMap::new();
     let mut sigs: HashMap<&clif::Signature, (ir::SigRef, Signature)> = HashMap::new();
     let mut arena = None;
@@ -229,9 +210,7 @@ fn decode_function(f: &clif::Function, index: usize, host: CallConv, module: &Mo
         }
     }
 
-    // Blocks are created, in the order they are laid out, before any body is
-    // emitted, so a forward branch has a target to name; and their parameters
-    // before any instruction can use one.
+    // Every block and its parameters first, so a branch can name any of them.
     let mut blocks: HashMap<u32, ir::Block> = HashMap::new();
     let mut order = Vec::with_capacity(f.blocks.len());
     for b in &f.blocks {
@@ -267,11 +246,7 @@ struct Ctx<'a> {
     blocks: &'a HashMap<u32, ir::Block>,
 }
 
-/// A call against the signature its callee has.
-///
-/// Cranelift's verifier refuses the same programs a step later, reporting the
-/// instruction it could not type. This says which callee was called with what
-/// instead, which is the fact a generator has to act on.
+/// A call against its callee's signature, refused naming the callee.
 fn check_call(name: &str, sig: &Signature, args: &[ir::Value], dfg: &ir::DataFlowGraph) -> Result<(), String> {
     if args.len() != sig.params.len() {
         return Err(format!(
@@ -290,8 +265,7 @@ fn check_call(name: &str, sig: &Signature, args: &[ir::Value], dfg: &ir::DataFlo
     Ok(())
 }
 
-/// The opcode CLIF spells `name`, which must be of `format`: the builder
-/// Cranelift offers for a format checks that only in debug builds.
+/// The opcode CLIF spells `name`, which must be of `format`.
 fn opcode(name: &str, format: InstructionFormat) -> Result<Opcode, String> {
     let op = Opcode::from_str(name).map_err(|_| format!("{name:?} is not a CLIF opcode"))?;
     if op.format() != format {
@@ -300,11 +274,8 @@ fn opcode(name: &str, format: InstructionFormat) -> Result<Opcode, String> {
     Ok(op)
 }
 
-/// The controlling type `op` is built at: the type of the operand CLIF takes
-/// it from, or the one the instruction names where CLIF takes it from none.
-/// Exactly one of the two, so an instruction has one spelling; and a type in
-/// the set the opcode is defined at, checked before building, since building
-/// at another can panic inside Cranelift rather than fail.
+/// The controlling type: from the operand CLIF takes it from, or named where it
+/// takes it from none, and one the opcode is defined at.
 fn ctrl_type(
     op: Opcode,
     named: Option<&clif::ClifTy>,
@@ -335,17 +306,8 @@ fn ctrl_type(
     Ok(t)
 }
 
-/// The flags of a memory access: CLIF's words, in the order CLIF prints them,
-/// and `notrap` on every access, which the engine sets and a program does not
-/// state.
-///
-/// `notrap` everywhere because base installs no trap handler: an access that
-/// faults ends the process whether or not Cranelift was told it could. Saying
-/// so everywhere is what keeps the load and the store of a read-modify-write
-/// under identical flags, which x64 requires before it fuses them into one
-/// `add [mem], x` (`store_x64_add_mem`); a counter bumped in memory is
-/// otherwise three instructions. An instruction of a memory format that
-/// touches no memory (`bitcast`) takes only what it states.
+/// A memory access's flags, in CLIF's order, plus `notrap`: nothing catches a
+/// fault anyway, and equal flags let x64 fuse a read-modify-write.
 fn flags(op: Opcode, words: &[String]) -> Result<MemFlags, String> {
     let mut m = MemFlags::new();
     for w in words {
@@ -368,8 +330,7 @@ fn flags(op: Opcode, words: &[String]) -> Result<MemFlags, String> {
     Ok(m)
 }
 
-/// Binds every result of `inst` to the values the program names for them,
-/// which must be all of them, as CLIF text names them.
+/// Binds every result of `inst` to the value the program names it.
 fn bind(vals: &mut Vals, names: &[clif::Val], inst: ir::Inst, dfg: &ir::DataFlowGraph) -> Result<(), String> {
     let results = dfg.inst_results(inst);
     if results.len() != names.len() {
@@ -387,8 +348,7 @@ fn bind(vals: &mut Vals, names: &[clif::Val], inst: ir::Inst, dfg: &ir::DataFlow
     Ok(())
 }
 
-/// An immediate cut to the width of the type it is at, as Cranelift's own
-/// builders cut it (`InstructionData::mask_immediates`, private to Cranelift).
+/// Cuts immediates to the type's width, as Cranelift's (private) builders do.
 fn mask_immediates(data: &mut ir::InstructionData, ct: ir::Type) {
     let cut = |imm: &mut ir::immediates::Imm64| {
         if !ct.is_invalid() && ct.bits() < 64 {

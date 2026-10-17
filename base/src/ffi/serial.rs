@@ -1,13 +1,5 @@
-//! Serial ports, through the `serialport` crate: the C functions a program's
-//! `Ext.serial` calls reach, by symbol.
-//!
-//! Seven calls: how many ports the system lists and the name of each, and a
-//! port opened by name — at a baud rate, eight data bits, no parity, one stop
-//! bit and no flow control — then read, written, asked how much is waiting,
-//! and closed. A port is the program's: `base_serial_open` hands back a box it
-//! passes to every other call, and `base_serial_close` drops. Nothing is kept
-//! here, and the ports are listed afresh at each call. `Host/SerialLib.lean`
-//! states them.
+//! Serial ports through `serialport`: listing, opening at a baud rate (8N1,
+//! no flow control), reading, writing, and what is waiting.
 
 use std::ffi::c_char;
 use std::io::{Read, Write};

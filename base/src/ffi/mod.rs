@@ -48,10 +48,8 @@ crate::ffi::symbols!(
     sync::cl_clock_now,
 );
 
-/// The string in the `cap`-byte field at `start`: its bytes up to the first
-/// NUL, or all `cap` of them if there is none, as a fixed-size `char` field
-/// holds one (`sun_path`, `strnlen`). `None` for a negative `cap` or bytes that
-/// are not UTF-8, which every caller answers as its refusal.
+/// The string in the `cap`-byte field at `start`, up to its first NUL if any;
+/// `None` for a negative `cap` or bytes that are not UTF-8.
 ///
 /// # Safety
 ///

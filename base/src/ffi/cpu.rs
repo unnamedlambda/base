@@ -1,14 +1,5 @@
-//! Which CPUs there are and where a thread runs: the C functions a program's
-//! `Ext.cpu` calls reach, by symbol.
-//!
-//! Five stateless calls over what the operating system itself answers: how
-//! many logical CPUs are online, the physical core and package of each, and
-//! pinning the calling thread to one of them or releasing it. Each answers
-//! `-1` where the system does not say or does not grant it — a CPU that is
-//! not there, an OS with no such thing (macOS neither reports cores here nor
-//! releases a thread, and pins only as a hint) — and none touches program
-//! memory. Pinning is the `core_affinity` crate's; the rest is the system's
-//! own calls. `Host/CpuLib.lean` states them.
+//! CPUs and thread placement: the count, each CPU's core and package, and
+//! pinning the calling thread. `-1` where the system does not say or grant it.
 
 /// The logical CPUs online, at least `1`.
 unsafe extern "C" fn base_cpu_count() -> i32 {

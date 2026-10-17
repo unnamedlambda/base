@@ -1,32 +1,13 @@
-//! Windows and their input, through winit: the C functions a program's
-//! `Ext.window` calls reach, by symbol.
-//!
-//! winit is a Rust API, so this is the one library here written for the
-//! engine: seven functions over it, each a plain C call that the program's
-//! `Lib.Window` makes and `Host/WindowLib.lean` states. Everything a window
-//! shows — the surface, made from the window's handle, the blit, presenting —
-//! is the program's own wgpu calls, and turning these records into the
-//! engine's events is the program's too.
-//!
-//! A window is the program's: `base_window_open` hands back a box it passes
-//! to every other call, and `base_window_close` drops. What is kept here is
-//! what winit keeps per process: the event loop, made on the first thread
-//! that asks and living as long as the thread, and each open window's events
-//! not yet read. winit makes one event loop per process, so windows live on
-//! that thread; on any other `base_window_init` answers `false`.
-//!
-//! **Records.** Each event is four little-endian `i64`s: a kind, then its
-//! operands.
+//! Windows and their input through winit. The event loop lives on the first
+//! thread that asks; each event is four little-endian `i64`s:
 //!
 //! | kind | event | operands |
 //! |---|---|---|
 //! | 1 | close requested | |
-//! | 2 | size in pixels changed | width, height |
-//! | 3 / 4 | key pressed / released | the key's USB HID usage (page 7) |
+//! | 2 | resized | width, height in pixels |
+//! | 3 / 4 | key pressed / released | USB HID usage (page 7) |
 //! | 5 | pointer moved | x, y in pixels, as `f64` bits |
 //! | 6 / 7 | button pressed / released | 1 left, 2 right, 3 middle |
-//!
-//! A key without a HID usage here, and any other button or event, is dropped.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};

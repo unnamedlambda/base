@@ -1,15 +1,6 @@
-//! Machine code a program carries as data, loaded at run time and called
-//! directly (`CallIndirect` at the architecture's convention), for instructions CLIF cannot spell.
-//!
-//! A body keeps one convention per architecture, whatever the OS:
-//!
-//! * x86-64: SysV (rdi, rsi, rdx, rcx in; rax out; rbx, rbp, r12–r15, rsp
-//!   preserved), on Windows too.
-//! * AArch64: AAPCS64 (x0–x3 in; x0 out; x19–x30, sp preserved; x18 untouched).
-//!
-//! It is position-independent, calls nothing and makes no system call. None of
-//! this is checked here, and nothing is kept of what was loaded: a free finds
-//! the mapping from the address it is handed.
+//! Machine code a program carries, made executable and called at the
+//! architecture's convention: System V on x86-64 (Windows too), AAPCS64 on
+//! AArch64. It must be position-independent and make no calls.
 
 /// What a free gives back to the system: the mapping `cl_native_load` made.
 type Mapping = region::Allocation;

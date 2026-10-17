@@ -1,5 +1,4 @@
-//! The C library's memory functions, as the process links them: Rust's
-//! standard library links the platform C runtime, so these are always there.
+//! The C library's memory functions, as the process links them.
 
 use std::ffi::{c_char, c_int, c_void};
 

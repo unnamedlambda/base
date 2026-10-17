@@ -3,64 +3,47 @@ use cranelift_jit::JITBuilder;
 use cranelift_module::{Linkage, Module};
 
 
-/// What a host calls a function as: the input, its length, the output, its
-/// length, answering the status. The arena is not an argument: a function
-/// takes its address itself, from the symbol [`ARENA`] the engine links it to.
+/// A function a host calls: input, its length, output, its length; a status.
 pub type FunctionPtr = unsafe extern "C" fn(*const u8, usize, *mut u8, usize) -> i64;
 
-/// The symbol the arena is linked under: what `symbol_value` of
-/// [`base_types::clif::Global::Arena`] answers.
+/// The symbol the arena is linked under.
 pub(crate) const ARENA: &str = "arena";
 
-/// A compiled program: its code, and each named function as the C function a
-/// host calls.
+/// A compiled program and its named functions.
 pub(crate) struct Program {
     pub(crate) module: cranelift_jit::JITModule,
     pub(crate) exports: std::collections::HashMap<String, FunctionPtr>,
 }
 
-/// Every symbol a program links to, registered under its link name.
+/// Every symbol a program links to, under its link name.
 fn register_symbols(builder: &mut JITBuilder, symbols: &[(String, usize)]) {
     for (name, addr) in symbols {
         builder.symbol(name.clone(), *addr as *const u8);
     }
 }
 
-/// Address space reserved for a program's code, however little it compiles to.
+/// Code space reserved for any program.
 const CODE_RESERVE_MIN: usize = 16 << 20;
 
-/// Reserved per instruction on top of that. The densest shipped program
-/// (`vit_block`) compiles to about 4 bytes per instruction, so this leaves
-/// room for constants, alignment and a far worse ratio.
+/// And per instruction: generous against the ~4 bytes the densest program needs.
 const CODE_RESERVE_PER_INST: usize = 64;
 
-/// The most that is ever reserved: AArch64's direct call reaches ±128 MiB, so a
-/// region no larger than that keeps every call within the module in range.
+/// At most AArch64's ±128 MiB direct-call reach.
 const CODE_RESERVE_MAX: usize = 128 << 20;
 
-/// The host's ISA, as every program is compiled for it: optimized for speed,
-/// frames probed.
+/// The host's ISA, optimized for speed, frames probed.
 pub(crate) fn isa() -> cranelift_codegen::isa::OwnedTargetIsa {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
-    // A program runs on its caller's stack. A frame larger than the guard
-    // page could otherwise step past it and write whatever is mapped below,
-    // where probing it first faults on the guard: an overflow ends the
-    // process, as the C API says, and frames under a page are not probed.
+    // A frame larger than the guard page faults on it instead of stepping past.
     flag_builder.set("enable_probestack", "true").unwrap();
     flag_builder.set("probestack_strategy", "inline").unwrap();
     let isa_builder = cranelift_native::builder().expect("Host ISA not supported");
     isa_builder.finish(settings::Flags::new(flag_builder)).unwrap()
 }
 
-/// The JIT module every compilation starts from: host ISA, speed, all FFI
-/// symbols registered, and code placed in one contiguous region.
-///
-/// The region is what makes a call between a program's own functions safe to
-/// emit PC-relative. Allocated separately, two functions can land further
-/// apart than a direct call reaches — ±128 MiB on AArch64, ±2 GiB on x86-64
-/// and RISC-V — with the program's data, or a pinned host buffer, mapped in
-/// between.
+/// A JIT module with `symbols` registered and its code in one region, so calls
+/// between a program's functions stay within a direct call's reach.
 fn new_module(
     insts: usize,
     symbols: &[(String, usize)],
@@ -76,12 +59,7 @@ fn new_module(
     Ok(cranelift_jit::JITModule::new(builder))
 }
 
-/// Each named function by its name, and its position.
-///
-/// A name given twice is refused: which function a host reached would
-/// depend on the order a map was filled. That each takes what [`FunctionPtr`]
-/// passes is not checked here: a named function is declared at that
-/// signature (`signature_of`), and the verifier refuses a body that is not.
+/// Each named function and its position; a name given twice is refused.
 pub(crate) fn exports_of(functions: &[base_types::clif::Function]) -> Result<Vec<(String, usize)>, String> {
     let mut exports: Vec<(String, usize)> = Vec::new();
     let mut named: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();

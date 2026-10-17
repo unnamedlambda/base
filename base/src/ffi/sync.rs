@@ -1,34 +1,14 @@
-//! Waiting on memory, and the clock: what lets a thread sleep until another
-//! changes a word, rather than spin on it.
-//!
-//! Both are the operating system's own, so a host's threads meet a program's
-//! threads at the same words and read the same clock with the system's calls,
-//! nothing of the engine's between:
-//!
-//! - **Waiting** is the system's address wait, through the `wait_on_address`
-//!   crate: a private futex on Linux (`FUTEX_WAIT | FUTEX_PRIVATE_FLAG`),
-//!   `WaitOnAddress` / `WakeByAddress*` on Windows, and
-//!   `os_sync_wait_on_address` / `os_sync_wake_by_address_*` on macOS 14.4 and
-//!   later. Earlier macOS, and any other system, falls back to a table of the
-//!   crate's own, which only the engine's threads meet at.
-//! - **The clock** is the system's monotonic one: `CLOCK_MONOTONIC` on Linux,
-//!   `CLOCK_UPTIME_RAW` on macOS, and `QueryPerformanceCounter` on Windows
-//!   scaled to nanoseconds by its frequency.
-//!
-//! The semantics are the futex's. A wait checks the word and sleeps as one
-//! step against a wake, so a wake that follows a change to the word is never
-//! lost; and a wait may end for no reason at all, so a caller loops on its
-//! condition. Neither call answers: what the system reports is not the same
-//! on every system, and a caller rereads the word, and the clock, anyway.
+//! Waiting on a word and the monotonic clock, through the system's own calls
+//! (futex, `WaitOnAddress`, `os_sync_wait_on_address`), so a host's threads
+//! and a program's meet at the same words. A wait may end spuriously.
 
 use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
 use wait_on_address::AtomicWait;
 
-/// Sleep while `word` holds `expected`, until a wake on it, `timeout_ns`
-/// nanoseconds (none if negative), or for no reason: the system's address
-/// wait, which a program's threads meet a host's at. Loop on the condition.
+/// Sleeps while `word` holds `expected`, until woken, `timeout_ns` passes (never
+/// if negative), or spuriously.
 pub fn wait(word: &AtomicU32, expected: u32, timeout_ns: i64) {
     match u64::try_from(timeout_ns) {
         Ok(ns) => word.wait_timeout(expected, Duration::from_nanos(ns)),
@@ -36,8 +16,7 @@ pub fn wait(word: &AtomicU32, expected: u32, timeout_ns: i64) {
     }
 }
 
-/// Wake one thread waiting on `word` when `count` is 1, every one for any
-/// other `count` but 0, and none for 0.
+/// Wakes one waiter when `count` is 1, none for 0, and all otherwise.
 pub fn wake(word: &AtomicU32, count: i32) {
     match count {
         0 => {}
@@ -46,8 +25,7 @@ pub fn wake(word: &AtomicU32, count: i32) {
     }
 }
 
-/// Sleep while the 32-bit word at `addr` holds `expected`, until a wake on
-/// `addr`, `timeout_ns` nanoseconds (none if negative), or for no reason.
+/// [`wait`] on the word at `addr`.
 ///
 /// # Safety
 ///
@@ -57,9 +35,7 @@ pub(crate) unsafe extern "C" fn cl_mem_wait(addr: *const u8, expected: i32, time
     wait(AtomicU32::from_ptr(addr as *mut u32), expected as u32, timeout_ns);
 }
 
-/// Wake one thread waiting on `addr` when `count` is 1, every one for any
-/// other `count` but 0, and none for 0. Waking more than were asked for is
-/// what a wait allows, since it may end for no reason.
+/// [`wake`] on the word at `addr`.
 ///
 /// # Safety
 ///

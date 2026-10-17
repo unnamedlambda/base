@@ -1,17 +1,6 @@
-//! Starting and finishing an OS thread that runs one of the program's own
-//! functions.
-//!
-//! Two stateless calls. `cl_thread_start` runs the function at an address on a
-//! new thread, handing it one pointer, and answers the thread as an owned
-//! handle; `cl_thread_finish` waits for that thread and releases the handle,
-//! once. The address is one the program took of its own function
-//! (`func_addr`), and that the function is a worker, taking one pointer and
-//! answering nothing, is the program's to make true: `Prog.checkShapes` refuses
-//! a program taking the address of any other. Which handles are live, and which
-//! of them a program may still finish, is the program's to keep too:
-//! `Lib.Thread` keeps it in CLIF. A worker's code stays mapped as long as the
-//! driver it belongs to, so a program finishes its workers before the driver
-//! goes, as `Lib.Thread`'s cleanup does.
+//! Threads running a program's own functions: started on a function's
+//! address with one pointer, and finished once. The program finishes its
+//! threads before its driver is freed.
 
 use std::thread::JoinHandle;
 

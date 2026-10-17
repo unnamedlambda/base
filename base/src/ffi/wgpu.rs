@@ -1,21 +1,6 @@
-//! wgpu, through the `wgpu` crate: the C functions a program's `Ext.wgpu`
-//! calls reach, by symbol.
-//!
-//! Each is one call into wgpu, its descriptor spelled as arguments; what a
-//! call reads from program memory is an array of words or a run of bytes, at
-//! an address and a length it is handed. `Host/Wgpu.lean` states them.
-//!
-//! **Objects.** Every object is the program's: a call that makes one answers
-//! it boxed, as an `i64`, and every other call takes the box back as the type
-//! its parameter names. A call that consumes its object (ending a pass,
-//! finishing an encoder, submitting, presenting, popping an error scope) frees
-//! the box; so does each kind's release. That every handle names a live object
-//! of the kind its parameter takes is the call's precondition, as it is of
-//! `webgpu.h`'s: `wgDecode` states it, and nothing here checks it again.
-//! Nothing is kept here between calls.
-//!
-//! **Errors.** An error no scope catches is reported on standard error and
-//! the program goes on. A panic inside wgpu ends the process, as any trap does.
+//! wgpu through the `wgpu` crate, one call each. An object is boxed and
+//! handed out as an `i64`; a call that consumes one frees it. An error no
+//! scope catches is printed and the program goes on.
 
 // The functions are named as the symbols a program's calls name.
 #![allow(non_snake_case)]
@@ -70,9 +55,7 @@ fn format(f: i32) -> Option<wgpu::TextureFormat> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Setup
-// ---------------------------------------------------------------------------
+// --- Setup
 
 unsafe extern "C" fn wgpuCreateInstance() -> i64 {
     boxed(wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle()))
@@ -109,9 +92,7 @@ unsafe extern "C" fn wgpuDeviceGetQueue(dev: i64) -> i64 {
     boxed(get::<Device>(dev).1.clone())
 }
 
-// ---------------------------------------------------------------------------
-// Objects
-// ---------------------------------------------------------------------------
+// --- Objects
 
 /// A zeroed buffer of `size` bytes with `usage` (`WGPUBufferUsage` bits).
 unsafe extern "C" fn wgpuDeviceCreateBuffer(dev: i64, usage: i64, size: i64) -> i64 {
@@ -247,9 +228,7 @@ unsafe extern "C" fn wgpuRenderPipelineGetBindGroupLayout(pipe: i64, index: i32)
     boxed(get::<wgpu::RenderPipeline>(pipe).get_bind_group_layout(index))
 }
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
+// --- Errors
 
 /// A scope catching `dev`'s validation errors, as a handle to pop.
 unsafe extern "C" fn wgpuDevicePushErrorScope(dev: i64) -> i64 {
@@ -263,9 +242,7 @@ unsafe extern "C" fn wgpuErrorScopePop(scope: i64) -> i32 {
     if pollster::block_on(g.pop()).is_none() { 0 } else { -1 }
 }
 
-// ---------------------------------------------------------------------------
-// Recording
-// ---------------------------------------------------------------------------
+// --- Recording
 
 unsafe extern "C" fn wgpuDeviceCreateCommandEncoder(dev: i64) -> i64 {
     boxed(get::<Device>(dev).0.create_command_encoder(&wgpu::CommandEncoderDescriptor::default()))
@@ -346,9 +323,7 @@ unsafe extern "C" fn wgpuCommandEncoderFinish(enc: i64) -> i64 {
     boxed(take::<wgpu::CommandEncoder>(enc).finish())
 }
 
-// ---------------------------------------------------------------------------
-// The queue
-// ---------------------------------------------------------------------------
+// --- The queue
 
 /// `cmds` run on `queue`, and freed.
 unsafe extern "C" fn wgpuQueueSubmit(queue: i64, cmds: i64) {
@@ -382,9 +357,7 @@ unsafe extern "C" fn wgpuBufferRead(dev: i64, buf: i64, off: i64, dst: *mut u8, 
     0
 }
 
-// ---------------------------------------------------------------------------
-// Surfaces
-// ---------------------------------------------------------------------------
+// --- Surfaces
 
 /// A surface of the window `win` (the window library's handle), which keeps
 /// the window alive; `0` when wgpu cannot make one.
@@ -431,9 +404,7 @@ unsafe extern "C" fn wgpuSurfaceTexturePresent(tex: i64) {
     take::<wgpu::SurfaceTexture>(tex).present()
 }
 
-// ---------------------------------------------------------------------------
-// Releases
-// ---------------------------------------------------------------------------
+// --- Releases
 
 macro_rules! release {
     ($($name:ident $t:ty;)*) => {

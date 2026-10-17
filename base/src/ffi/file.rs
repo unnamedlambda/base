@@ -3,10 +3,8 @@ use std::io::{Read as IoRead, Seek, Write as IoWrite};
 
 use super::read_field;
 
-/// Write `size` bytes from an arbitrary host pointer into a file at the given
-/// offset. Opens (creating if needed), seeks, writes, and closes each call.
-/// Every file shim names its file by the path in a `path_cap`-byte field
-/// ([`read_field`]), answering -1 for one that is not UTF-8.
+/// `size` bytes from `src_ptr` written into the file at `file_offset`, creating
+/// it. Each file call names its file by a path field ([`read_field`]); `-1` on failure.
 pub(crate) unsafe extern "C" fn cl_file_write_from_ptr(
     path_ptr: *const u8,
     path_cap: i64,
