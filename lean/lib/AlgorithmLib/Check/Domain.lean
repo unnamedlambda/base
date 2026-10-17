@@ -24,6 +24,8 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
+variable {vals : List UInt64}
+
 open AlgorithmLib.HProg.Contracts (Fact TState roomAt roomAt_spec holds_of_mem)
 
 /-- How far into its region an address may point: the span of a region. -/
@@ -70,6 +72,9 @@ inductive AV where
   /-- A value of type `t`, contents unknown: a scalar, or a vector with its
       lanes. -/
   | sc (t : ClifTy)
+  /-- A 64-bit handle of kind `k` held open; where `held` is false, that or
+      null: what an open answers. -/
+  | hand (k : Contracts.Held) (held : Bool)
   | any
   deriving Repr, Inhabited
 
@@ -84,6 +89,7 @@ def AV.Desc (Γ : Env) (w : World) : AV → V → Prop
   | .cmp c a b, v => ∃ t x y, Γ[a]? = some (.sc t x) ∧ Γ[b]? = some (.sc t y) ∧ t.isInt = true ∧
       v = boolV (cmpInt c t x y)
   | .sc t, v => TyV t v
+  | .hand k held, v => ∃ x, v = .sc .i64 x ∧ ((held = false ∧ x = 0) ∨ k.live w x = true)
   | .any, _ => True
 
 /-- The scalar type a value is known to have. -/
@@ -93,6 +99,7 @@ def AV.scTy : AV → Option ClifTy
   | .ptr .. => some .i64
   | .cmp .. => some .i8
   | .sc t => if t.lanes.isNone then some t else none
+  | .hand .. => some .i64
   | _ => none
 
 /-- The type a value is known to have, scalar or vector. -/
@@ -148,6 +155,9 @@ theorem AV.scTy_desc {Γ : Env} {w : World} {av : AV} {v : V} {t : ClifTy} (hd :
         | none => rw [e] at hd; exact hd
         | some _ => rw [e] at hl; cases hl
       · cases h
+  | hand k b =>
+      simp only [scTy, Option.some.injEq] at h; subst h
+      obtain ⟨x, rfl, -⟩ := hd; exact ⟨x, rfl⟩
   | any => cases h
 
 theorem AV.ty_desc {Γ : Env} {w : World} {av : AV} {v : V} {t : ClifTy} (hd : av.Desc Γ w v)
@@ -193,9 +203,10 @@ theorem AV.portable_desc {Γ Γ' : Env} {w : World} {av : AV} {v : V} (hd : av.D
   | _ => exact hd
 
 /-- A description reads only the slots `refs` names, and the world only
-    through region sizes other than the pinned one's. -/
+    through region sizes other than the pinned one's and the handles held. -/
 theorem AV.desc_transport {Γ Γ' : Env} {w w' : World} {av : AV} {v : V} (hd : av.Desc Γ w v)
-    (hΓ : ∀ a ∈ av.refs, Γ'[a]? = Γ[a]?) (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r) :
+    (hΓ : ∀ a ∈ av.refs, Γ'[a]? = Γ[a]?) (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hh : ∀ (k : Contracts.Held) b, av = .hand k b → ∀ x, k.live w x = true → k.live w' x = true) :
     av.Desc Γ' w' v := by
   cases av with
   | int n =>
@@ -209,6 +220,9 @@ theorem AV.desc_transport {Γ Γ' : Env} {w w' : World} {av : AV} {v : V} (hd : 
       exact ⟨t, x, y, by rw [hΓ a (by simp [refs])]; exact ha, by rw [hΓ b (by simp [refs])]; exact hb, ht, rfl⟩
   | known _ => exact hd
   | sc _ => exact hd
+  | hand k b =>
+      obtain ⟨x, rfl, h⟩ := hd
+      exact ⟨x, rfl, h.imp id (hh k b rfl x)⟩
   | any => exact hd
 
 -- ---------------------------------------------------------------------------
@@ -358,21 +372,175 @@ theorem get_zip {f : α → α → α} (hf : f Blank.blank Blank.blank = Blank.b
 
 end Slots
 
+/-- A number computed from the program's parameters, the numbers its
+    typestate names but does not fix, as 64-bit arithmetic computes it. -/
+inductive PExpr where
+  | lit (c : UInt64)
+  | param (i : Nat)
+  | mul (a b : PExpr)
+  | shl (a : PExpr) (k : Nat)
+  | trunc32 (a : PExpr)
+  deriving DecidableEq, Repr, Inhabited
+
+def PExpr.eval (vals : List UInt64) : PExpr → UInt64
+  | .lit c => c
+  | .param i => vals.getD i 0
+  | .mul a b => a.eval vals * b.eval vals
+  | .shl a k => a.eval vals <<< UInt64.ofNat k
+  | .trunc32 a => a.eval vals &&& 0xFFFFFFFF
+
+/-- An argument a call is handed: bits known, or bits computed from the
+    parameters. -/
+inductive PArg where
+  | known (x : UInt64)
+  | sym (e : PExpr)
+  deriving DecidableEq, Repr, Inhabited
+
+def PArg.bits (vals : List UInt64) : PArg → UInt64
+  | .known x => x
+  | .sym e => e.eval vals
+
+/-- The device buffers sized by the parameters, as facts. -/
+def bufFacts (bufs : List (UInt64 × PExpr)) (vals : List UInt64) : TState :=
+  bufs.map fun b => .devBuf b.1 (b.2.eval vals)
+
+/-- A call whose precondition the parameters decide, written out for a proof
+    to show: entry point `f` handed `args`, in a typestate of `facts` and the
+    device buffers `bufs` sized by the parameters. -/
+structure Obl where
+  f : Ffi
+  args : List PArg
+  facts : TState
+  bufs : List (UInt64 × PExpr)
+  deriving DecidableEq, Repr
+
+/-- An obligation shown: for the parameters' values, every world its typestate
+    describes meets the call's precondition. -/
+def Obl.Holds (o : Obl) (vals : List UInt64) : Prop :=
+  ∀ w, TState.holds (o.facts ++ bufFacts o.bufs vals) w → Contracts.Pre o.f (o.args.map (PArg.bits vals)) w
+
+/-- What the checker knows of the program's parameters, never their values:
+    the slots holding a number computed from them, the cells holding one, the
+    device buffers sized by them, and the calls whose preconditions they
+    decide. In `collect`, a run that only gathers those calls. -/
+structure Par where
+  slots : List (R × ClifTy × PExpr) := []
+  cells : List (UInt64 × Nat) := []
+  bufs : List (UInt64 × PExpr) := []
+  obls : List Obl := []
+  collect : Bool := false
+  deriving Inhabited, DecidableEq
+
+/-- The cells and buffers the record names, as facts at the parameters'
+    values. -/
+def Par.facts (P : Par) (vals : List UInt64) : TState :=
+  P.cells.map (fun c => .cell c.1 (vals.getD c.2 0)) ++ bufFacts P.bufs vals
+
+/-- What the record says of an environment and a world, at the parameters'
+    values `vals`. -/
+def Par.At (P : Par) (vals : List UInt64) (Γ : Env) (w : World) : Prop :=
+  P.collect = false ∧
+  (∀ s ∈ P.slots, Γ[s.1]? = some (.sc s.2.1 (s.2.2.eval vals))) ∧
+  (P.facts vals).holds w ∧
+  (∀ o ∈ P.obls, (o.Holds vals))
+
+/-- The record with what it says of the world forgotten. -/
+def Par.clearWorld (P : Par) : Par := { P with cells := [], bufs := [] }
+
+theorem Par.At.clearWorld {P : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : P.At vals Γ w)
+    (w' : World) : P.clearWorld.At vals Γ w' :=
+  ⟨h.1, h.2.1, fun _ hx => by simp [Par.clearWorld, Par.facts, bufFacts] at hx, h.2.2.2⟩
+
+/-- The record keeping, of the cells and buffers it names, those `k` keeps:
+    a cell or a buffer read by where it is, whatever its value. -/
+def Par.keepWorld (P : Par) (k : Fact → Bool) : Par :=
+  { P with cells := P.cells.filter (fun c => k (.cell c.1 0)),
+           bufs := P.bufs.filter (fun b => k (.devBuf b.1 0)) }
+
+/-- What the record keeps holds in a world where what `k` keeps does. -/
+theorem Par.At.keepWorld {P : Par} {vals : List UInt64} {Γ : Env} {w w' : World} (h : P.At vals Γ w)
+    {k : Fact → Bool} (hc : ∀ a v, k (.cell a v) = k (.cell a 0)) (hb : ∀ b n, k (.devBuf b n) = k (.devBuf b 0))
+    (hk : ∀ x, k x = true → x.holds w → x.holds w') : (P.keepWorld k).At vals Γ w' := by
+  refine ⟨h.1, h.2.1, fun x hx => ?_, h.2.2.2⟩
+  simp only [Par.keepWorld, Par.facts, bufFacts, List.mem_append, List.mem_map, List.mem_filter] at hx
+  rcases hx with ⟨c, ⟨hcm, hkc⟩, rfl⟩ | ⟨d, ⟨hdm, hkd⟩, rfl⟩
+  · exact hk _ (by rw [hc]; exact hkc) (h.2.2.1 _ (List.mem_append_left _ (List.mem_map_of_mem hcm)))
+  · exact hk _ (by rw [hb]; exact hkd) (h.2.2.1 _ (List.mem_append_right _ (List.mem_map_of_mem hdm)))
+
+/-- What two records both say: nothing but the calls gathered, where the run
+    gathers them. -/
+def Par.join (P Q : Par) : Par :=
+  { collect := P.collect && Q.collect, obls := if P.collect && Q.collect then P.obls ++ Q.obls else [] }
+
+theorem Par.join_at {P : Par} (Q : Par) {vals : List UInt64} {Γ : Env} {w : World} (hc : P.collect = false) :
+    (P.join Q).At vals Γ w :=
+  ⟨by simp [Par.join, hc], fun _ e => by simp [Par.join] at e,
+    fun _ e => by simp [Par.join, Par.facts, bufFacts] at e,
+    fun _ e => by simp only [Par.join, hc, Bool.false_and, Bool.false_eq_true, if_false, List.not_mem_nil] at e⟩
+
+theorem Par.At.join_left {P : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : P.At vals Γ w) (Q : Par) :
+    (P.join Q).At vals Γ w :=
+  Par.join_at Q h.1
+
+theorem Par.At.join_right {Q : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : Q.At vals Γ w) (P : Par) :
+    (P.join Q).At vals Γ w := by
+  have e : P.join Q = Q.join P := by simp [Par.join, Bool.and_comm, h.1]
+  rw [e]; exact Par.join_at P h.1
+
+/-- The record with the slots from `n` on forgotten. -/
+def Par.cut (P : Par) (n : Nat) : Par := { P with slots := P.slots.filter (·.1 < n) }
+
+theorem Par.At.cut {P : Par} {vals : List UInt64} {Γ Γ' : Env} {w : World} (h : P.At vals Γ w) {n : Nat}
+    (hΓ : ∀ r, r < n → Γ'[r]? = Γ[r]?) : (P.cut n).At vals Γ' w := by
+  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2⟩
+  obtain ⟨hs, hn⟩ := List.mem_filter.mp hs
+  rw [hΓ _ (by simpa using hn)]
+  exact h.2.1 s hs
+
+/-- What the record says of slots holds as more are appended. -/
+theorem Par.At.extend {P : Par} {vals : List UInt64} {Γ Γ' : Env} {w : World} (h : P.At vals Γ w)
+    (hΓ : ∀ r, r < Γ.size → Γ'[r]? = Γ[r]?) : P.At vals Γ' w := by
+  refine ⟨h.1, fun s hs => ?_, h.2.2.1, h.2.2.2⟩
+  have e := h.2.1 s hs
+  have hlt : s.1 < Γ.size := by
+    rcases Nat.lt_or_ge s.1 Γ.size with h' | h'
+    · exact h'
+    · rw [Array.getElem?_eq_none h'] at e; cases e
+  rw [hΓ _ hlt, e]
+
+/-- The number slot `r` holds, where it holds one computed from the
+    parameters. -/
+def Par.slotOf (P : Par) (r : R) : Option (ClifTy × PExpr) := (P.slots.find? (·.1 == r)).map (·.2)
+
+theorem Par.At.slotOf {P : Par} {vals : List UInt64} {Γ : Env} {w : World} (h : P.At vals Γ w) {r : R}
+    {t : ClifTy} {e : PExpr} (he : P.slotOf r = some (t, e)) : Γ[r]? = some (.sc t (e.eval vals)) := by
+  unfold Par.slotOf at he
+  obtain ⟨s, hs, hse⟩ := Option.map_eq_some_iff.mp he
+  have hm := List.mem_of_find?_eq_some hs
+  have hr : s.1 = r := by simpa using List.find?_some hs
+  rw [← hr, h.2.1 s hm, hse]
+
 /-- The checker's state: what it knows of each of `len` slots, and of the
-    world; and, beyond each slot's range, the linear facts `syms` holds. -/
+    world; beyond each slot's range, the linear facts `syms` holds; and what
+    it knows of the program's parameters. -/
 structure AS where
   slots : Slots AV
   len : Nat
   facts : TState
   syms : Slots Sym
+  par : Par := {}
 
 def AS.get (A : AS) (r : R) : AV := if r < A.len then A.slots.get r else .any
 
 /-- What the checker knows of a slot beyond its range. -/
 def AS.sym (A : AS) (r : R) : Sym := if r < A.len then A.syms.get r else {}
 
-/-- The same slots, with other facts. -/
-def AS.withFacts (A : AS) (S : TState) : AS := { A with facts := S }
+/-- The same state, knowing one more fact of the same world. -/
+def AS.addFact (A : AS) (f : Fact) : AS := { A with facts := f :: A.facts }
+
+/-- The same slots, with other facts, and what the parameters' record says of
+    the world forgotten. -/
+def AS.withFacts (A : AS) (S : TState) : AS := { A with facts := S, par := A.par.clearWorld }
 
 /-- A slot's linear facts hold, and read only slots before `n` and sizes of
     regions other than the pinned one. -/
@@ -383,8 +551,8 @@ def Sym.FitsAt (σ : Sym) (Γ : Env) (w : World) (x : Int) (n : Nat) : Prop :=
 abbrev Sym.Fits (σ : Sym) (Γ : Env) (w : World) (r n : Nat) : Prop := σ.FitsAt Γ w (slotVal Γ r) n
 
 /-- The environments and worlds an abstract state describes. -/
-def AS.Holds (A : AS) (Γ : Env) (w : World) : Prop :=
-  (Γ.size = A.len ∧ ∀ i, i < A.len → (A.syms.get i).Fits Γ w i A.len) ∧
+def AS.Holds (A : AS) (vals : List UInt64) (Γ : Env) (w : World) : Prop :=
+  (Γ.size = A.len ∧ (∀ i, i < A.len → (A.syms.get i).Fits Γ w i A.len) ∧ A.par.At vals Γ w) ∧
     (∀ i, i < A.len → ∃ v, Γ[i]? = some v ∧ (A.get i).Desc Γ w v) ∧
     A.facts.holds w
 
@@ -401,11 +569,11 @@ theorem AS.get_lt_known {A : AS} {r : R} (hk : (A.get r).isKnown = true) : r < A
   · exact hl
   · rw [AS.get_out (Nat.not_lt_of_ge hl)] at hk; cases hk
 
-theorem AS.Holds.get {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R} (hr : r < A.len) :
+theorem AS.Holds.get {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} (hr : r < A.len) :
     ∃ v, Γ[r]? = some v ∧ (A.get r).Desc Γ w v := h.2.1 r hr
 
 /-- A slot known to be a scalar holds one. -/
-theorem AS.Holds.getSc {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R} {t : ClifTy}
+theorem AS.Holds.getSc {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} {t : ClifTy}
     (ht : (A.get r).scTy = some t) : ∃ x, Γ[r]? = some (.sc t x) ∧ (A.get r).Desc Γ w (.sc t x) := by
   obtain ⟨v, hv, hd⟩ := h.get (AS.get_lt_scTy ht)
   obtain ⟨x, rfl⟩ := AV.scTy_desc hd ht
@@ -414,7 +582,7 @@ theorem AS.Holds.getSc {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R
 /-- What the checker knows after a slot is appended, with what it knows of
     it beyond its range. -/
 def AS.pushS (A : AS) (av : AV) (σ : Sym) : AS :=
-  ⟨A.slots.set A.len av, A.len + 1, A.facts, A.syms.set A.len σ⟩
+  ⟨A.slots.set A.len av, A.len + 1, A.facts, A.syms.set A.len σ, A.par⟩
 
 /-- What the checker knows after a slot is appended. -/
 def AS.push (A : AS) (av : AV) : AS := A.pushS av {}
@@ -423,7 +591,7 @@ def AS.push (A : AS) (av : AV) : AS := A.pushS av {}
 def AS.pushAll (B : AS) (xs : List (AV × Sym)) : AS := xs.foldl (fun B (av, σ) => B.pushS av σ) B
 
 /-- A state of the slots a list describes, in order. -/
-def AS.ofList (l : List AV) (S : TState) : AS := (⟨.leaf, 0, S, .leaf⟩ : AS).pushAll (l.map (·, {}))
+def AS.ofList (l : List AV) (S : TState) : AS := (⟨.leaf, 0, S, .leaf, {}⟩ : AS).pushAll (l.map (·, {}))
 
 theorem AS.get_pushS_lt {A : AS} {av : AV} {σ : Sym} {i : R} (hi : i < A.len) :
     (A.pushS av σ).get i = A.get i := by
@@ -547,11 +715,42 @@ theorem Sym.fitsAt_blank (Γ : Env) (w : World) (x : Int) (n : Nat) : ({} : Sym)
 theorem Sym.fits_blank (Γ : Env) (w : World) (r n : Nat) : ({} : Sym).Fits Γ w r n :=
   Sym.fitsAt_blank Γ w _ n
 
-theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : AV} {v : V} {σ : Sym}
+/-- The state with another record of the parameters. -/
+def AS.withPar (A : AS) (P : Par) : AS := { A with par := P }
+
+theorem AS.Holds.withPar {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {P : Par} (hP : P.At vals Γ w) :
+    (A.withPar P).Holds vals Γ w :=
+  ⟨⟨h.1.1, h.1.2.1, hP⟩, h.2.1, h.2.2⟩
+
+/-- The same slots, with other facts, and of the parameters' cells and
+    buffers those `k` keeps. -/
+def AS.withFactsK (A : AS) (S : TState) (k : Fact → Bool) : AS := (A.withFacts S).withPar (A.par.keepWorld k)
+
+/-- The state knowing slot `r` holds a number computed from the parameters,
+    where `x` gives one. -/
+def AS.parSlot (A : AS) (r : R) : Option (ClifTy × PExpr) → AS
+  | some (t, e) => A.withPar { A.par with slots := (r, t, e) :: A.par.slots }
+  | none => A
+
+theorem AS.Holds.parSlot {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w)
+    {r : R} {x : Option (ClifTy × PExpr)}
+    (hx : ∀ t e, x = some (t, e) → Γ[r]? = some (.sc t (e.eval vals))) : (A.parSlot r x).Holds vals Γ w := by
+  cases x with
+  | none => exact h
+  | some p =>
+    obtain ⟨t, e⟩ := p
+    have hP := h.1.2.2
+    refine h.withPar ⟨hP.1, fun s hs => ?_, hP.2.2.1, hP.2.2.2⟩
+    rcases List.mem_cons.mp hs with rfl | hs
+    · exact hx t e rfl
+    · exact hP.2.1 s hs
+
+theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {av : AV} {v : V} {σ : Sym}
     (hv : av.Desc (Γ.push v) w v) (hσ : σ.Fits (Γ.push v) w A.len (A.len + 1)) :
-    (A.pushS av σ).Holds (Γ.push v) w := by
-  obtain ⟨⟨hs, hy⟩, he, hf⟩ := h
-  refine ⟨⟨by simp [AS.pushS, hs], fun i hi => ?_⟩, fun i hi => ?_, hf⟩
+    (A.pushS av σ).Holds vals (Γ.push v) w := by
+  obtain ⟨⟨hs, hy, hp⟩, he, hf⟩ := h
+  refine ⟨⟨by simp [AS.pushS, hs], fun i hi => ?_, hp.extend fun r hr => by
+    rw [Array.getElem?_push, if_neg (by omega)]⟩, fun i hi => ?_, hf⟩
   · simp only [AS.pushS] at hi ⊢
     rw [Slots.get_set]
     split
@@ -565,7 +764,7 @@ theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : 
   · obtain ⟨u, hu, hd⟩ := he i hlt
     refine ⟨u, by rw [Array.getElem?_push, if_neg (by omega)]; exact hu, ?_⟩
     rw [AS.get_pushS_lt hlt]
-    refine AV.desc_transport hd (fun a ha => ?_) (fun _ _ => rfl)
+    refine AV.desc_transport hd (fun a ha => ?_) (fun _ _ => rfl) (fun _ _ _ _ h => h)
     rcases Nat.lt_or_ge a Γ.size with ha' | ha'
     · rw [Array.getElem?_push, if_neg (by omega)]
     · -- a slot past the environment reads nothing, so no description names one
@@ -585,18 +784,136 @@ theorem AS.Holds.pushS {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : 
     refine ⟨v, by rw [Array.getElem?_push, if_pos (by omega)], ?_⟩
     rw [AS.get_pushS_eq]; exact hv
 
-theorem AS.Holds.push {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {av : AV} {v : V}
-    (hv : av.Desc (Γ.push v) w v) : (A.push av).Holds (Γ.push v) w :=
+theorem AS.Holds.push {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {av : AV} {v : V}
+    (hv : av.Desc (Γ.push v) w v) : (A.push av).Holds vals (Γ.push v) w :=
   h.pushS hv (Sym.fits_blank _ _ _ _)
 
 /-- The same environment, a world the new facts describe, reached by a step that
-    keeps the region sizes. -/
-theorem AS.Holds.world {A : AS} {Γ : Env} {w w' : World} (h : A.Holds Γ w) {S : TState}
-    (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r) :
-    (A.withFacts S).Holds Γ w' :=
-  ⟨⟨h.1.1, fun i hi => Sym.fits_congr (h.1.2 i hi) (fun _ _ => rfl) rfl hw (Nat.le_refl _)⟩, fun i hi => by
+    keeps the region sizes and each handle a slot is described as. -/
+theorem AS.Holds.worldP {A : AS} {Γ : Env} {w w' : World} (h : A.Holds vals Γ w) {S : TState}
+    (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hh : ∀ i (k : Contracts.Held) b, A.get i = .hand k b → ∀ x, k.live w x = true → k.live w' x = true) :
+    (A.withFacts S).Holds vals Γ w' :=
+  ⟨⟨h.1.1, fun i hi => Sym.fits_congr (h.1.2.1 i hi) (fun _ _ => rfl) rfl hw (Nat.le_refl _),
+    h.1.2.2.clearWorld w'⟩, fun i hi => by
     obtain ⟨v, hv, hd⟩ := h.2.1 i hi
-    exact ⟨v, hv, AV.desc_transport hd (fun _ _ => rfl) hw⟩, hS⟩
+    exact ⟨v, hv, AV.desc_transport hd (fun _ _ => rfl) hw (fun k b e => hh i k b e)⟩, hS⟩
+
+/-- The same, reached by a step that keeps every handle held. -/
+theorem AS.Holds.world {A : AS} {Γ : Env} {w w' : World} (h : A.Holds vals Γ w) {S : TState}
+    (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hh : ∀ (k : Contracts.Held) x, k.live w x = true → k.live w' x = true) :
+    (A.withFacts S).Holds vals Γ w' :=
+  h.worldP hS hw fun _ k _ _ => hh k
+
+/-- Whether a value is described as a handle. -/
+def AV.isHand : AV → Bool
+  | .hand .. => true
+  | _ => false
+
+/-- A value described without the handle it may be: what a step that may close
+    any handle leaves of it. -/
+def AV.forget : AV → AV
+  | .hand .. => .sc .i64
+  | a => a
+
+theorem AV.forget_desc {Γ : Env} {w : World} {av : AV} {v : V} (hd : av.Desc Γ w v) : av.forget.Desc Γ w v := by
+  cases av with
+  | hand k b => obtain ⟨x, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
+  | _ => exact hd
+
+/-- A description that is no handle reads the world only through region sizes. -/
+theorem AV.desc_transport_nh {Γ Γ' : Env} {w w' : World} {av : AV} {v : V} (hd : av.Desc Γ w v)
+    (hΓ : ∀ a ∈ av.refs, Γ'[a]? = Γ[a]?) (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r)
+    (hn : av.isHand = false) : av.Desc Γ' w' v := by
+  cases av with
+  | int n =>
+      obtain ⟨x, rfl, h1, h2, h3, h4⟩ := hd
+      exact ⟨x, rfl, h1, h2, h3, h4.transport hw⟩
+  | ptr r n =>
+      obtain ⟨off, rfl, ⟨h1, h2, h3, h4⟩, h5⟩ := hd
+      exact ⟨off, rfl, ⟨h1, h2, h3, h4.transport hw⟩, h5⟩
+  | cmp c a b =>
+      obtain ⟨t, x, y, ha, hb, ht, rfl⟩ := hd
+      exact ⟨t, x, y, by rw [hΓ a (by simp [refs])]; exact ha, by rw [hΓ b (by simp [refs])]; exact hb, ht, rfl⟩
+  | known _ => exact hd
+  | sc _ => exact hd
+  | hand k b => cases hn
+  | any => exact hd
+
+/-- The state with every handle forgotten. -/
+def AS.forgetHands (A : AS) : AS := { A with slots := A.slots.map AV.forget }
+
+/-- No slot is described as a handle. -/
+def AS.NoHands (A : AS) : Prop := ∀ i, (A.get i).isHand = false
+
+theorem AS.forgetHands_get (A : AS) (i : R) : A.forgetHands.get i = (A.get i).forget := by
+  unfold AS.forgetHands AS.get
+  dsimp only
+  split
+  · exact Slots.get_map (f := AV.forget) rfl _ _
+  · rfl
+
+theorem AS.forgetHands_noHands (A : AS) : A.forgetHands.NoHands := fun i => by
+  rw [AS.forgetHands_get]; cases A.get i <;> rfl
+
+theorem AS.Holds.forgetHands {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) : A.forgetHands.Holds vals Γ w :=
+  ⟨h.1, fun i hi => by
+    obtain ⟨v, hv, hd⟩ := h.2.1 i hi
+    exact ⟨v, hv, by rw [AS.forgetHands_get]; exact AV.forget_desc hd⟩, h.2.2⟩
+
+/-- The same environment, a world the new facts describe, reached by a step that
+    keeps the region sizes, from a state that names no handle. -/
+theorem AS.Holds.worldNH {A : AS} {Γ : Env} {w w' : World} (h : A.Holds vals Γ w) (hn : A.NoHands) {S : TState}
+    (hS : S.holds w') (hw : ∀ r, r ≠ .pinned → w'.mem.sizes r = w.mem.sizes r) :
+    (A.withFacts S).Holds vals Γ w' :=
+  h.worldP hS hw fun i k b e => by have := hn i; rw [e] at this; cases this
+
+/-- A value described without the handles of kind `k` it may be. -/
+def AV.forgetK (k : Contracts.Held) : AV → AV
+  | .hand k' b => if k' = k then .sc .i64 else .hand k' b
+  | a => a
+
+theorem AV.forgetK_desc {Γ : Env} {w : World} {k : Contracts.Held} {av : AV} {v : V} (hd : av.Desc Γ w v) :
+    (av.forgetK k).Desc Γ w v := by
+  cases av with
+  | hand k' b =>
+      simp only [AV.forgetK]
+      split
+      · obtain ⟨x, rfl, -⟩ := hd; exact TyV.sc (t := .i64) rfl
+      · exact hd
+  | _ => exact hd
+
+/-- The state with the handles of the kind a step may close forgotten. -/
+def AS.forgetKind (A : AS) : Option Contracts.Held → AS
+  | some k => { A with slots := A.slots.map (AV.forgetK k) }
+  | none => A
+
+theorem AS.forgetKind_get (A : AS) (k : Contracts.Held) (i : R) :
+    (A.forgetKind (some k)).get i = (A.get i).forgetK k := by
+  unfold AS.forgetKind AS.get
+  dsimp only
+  split
+  · exact Slots.get_map (f := AV.forgetK k) rfl _ _
+  · rfl
+
+theorem AS.Holds.forgetKind {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) (kc : Option Contracts.Held) :
+    (A.forgetKind kc).Holds vals Γ w := by
+  cases kc with
+  | none => exact h
+  | some k =>
+      exact ⟨h.1, fun i hi => by
+        obtain ⟨v, hv, hd⟩ := h.2.1 i hi
+        exact ⟨v, hv, by rw [AS.forgetKind_get]; exact AV.forgetK_desc hd⟩, h.2.2⟩
+
+theorem AS.forgetKind_hand {A : AS} {kc : Option Contracts.Held} {i : R} {k : Contracts.Held} {b : Bool}
+    (h : (A.forgetKind kc).get i = .hand k b) : kc ≠ some k := by
+  intro e; subst e
+  rw [AS.forgetKind_get] at h
+  cases e' : A.get i <;> rw [e'] at h <;> simp only [AV.forgetK, reduceCtorEq] at h
+  split at h
+  · cases h
+  · rename_i hne; cases h; exact hne rfl
 
 -- ---------------------------------------------------------------------------
 -- Operations
@@ -608,7 +925,7 @@ def concV : AV → V
   | _ => .sc .i64 0
 
 /-- A known slot holds the value it is known to. -/
-theorem AS.Holds.known {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R}
+theorem AS.Holds.known {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R}
     (hk : (A.get r).isKnown = true) : Γ[r]? = some (concV (A.get r)) := by
   obtain ⟨u, hu, hd⟩ := h.get (AS.get_lt_known hk)
   rw [hu]
@@ -959,7 +1276,7 @@ def absLoad (S : TState) (op : LoadOp) (addr : AV) : Option AV :=
   | some av => some av
   | none => if loadKindOk op && memN S addr (loadBytes op) then some (loadAV op) else none
 
-theorem cellLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {op : LoadOp} {a : R}
+theorem cellLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {op : LoadOp} {a : R}
     {av : AV} (hl : cellLoad A.facts op (A.get a) = some av) :
     ∃ v, evalOp w.mem Γ (.load op a) = some v ∧ ∀ Γ', av.Desc Γ' w v := by
   unfold cellLoad at hl
@@ -1010,7 +1327,7 @@ theorem load_of_fits {Γ : Env} {w : World} {op : LoadOp} {a : R} {t : ClifTy} {
     exact ⟨y, rfl, Nat.zero_le _, hy, Nat.one_dvd _, trivial⟩
   · exact ht
 
-theorem absLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {op : LoadOp} {a : R}
+theorem absLoad_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {op : LoadOp} {a : R}
     {av : AV} (hl : absLoad A.facts op (A.get a) = some av) :
     ∃ v, evalOp w.mem Γ (.load op a) = some v ∧ ∀ Γ', av.Desc Γ' w v := by
   unfold absLoad at hl
@@ -1475,7 +1792,7 @@ def cmpA (A : AS) (c : ICmpCond) (a b : R) : Option AV :=
   | some t, some t' => if t = t' ∧ t.isInt then some (.cmp c a b) else none
   | _, _ => none
 
-theorem argsTy_of {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) :
+theorem argsTy_of {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) :
     ∀ {rs : List R} {ts : List ClifTy}, rs.mapM (fun r => (A.get r).scTy) = some ts → ArgsTy Γ rs ts
   | [], ts, e => by simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at e; subst e; trivial
   | r :: rs, ts, e => by
@@ -1485,7 +1802,7 @@ theorem argsTy_of {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) :
       obtain ⟨x, hx, -⟩ := h.getSc ht
       exact ⟨⟨x, hx⟩, argsTy_of h hts⟩
 
-theorem argsV_of {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) :
+theorem argsV_of {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) :
     ∀ {rs : List R} {ts : List ClifTy}, rs.mapM (fun r => (A.get r).ty) = some ts → ArgsV Γ rs ts
   | [], ts, e => by simp only [List.mapM_nil, Option.pure_def, Option.some.injEq] at e; subst e; trivial
   | r :: rs, ts, e => by
@@ -2030,7 +2347,7 @@ theorem uextA_sound {Γ : Env} {w : World} {ga av : AV} {a : R} {u : V}
   refine ⟨_, ?_, fun _ => ⟨x &&& widthMask na.t, by rw [hnt], by rw [mask_toNat hi]; exact hh⟩⟩
   simp only [evalOp, un, Sem.get, ha, Option.bind_eq_bind, Option.bind_some, hok, if_true]
 
-theorem cmpA_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {c : ICmpCond} {a b : R} {av : AV}
+theorem cmpA_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {c : ICmpCond} {a b : R} {av : AV}
     (hc : cmpA A c a b = some av) (m : Mem) :
     ∃ v, evalOp m Γ (.icmp c a b) = some v ∧ ∀ v0, av.Desc (Γ.push v0) w v := by
   unfold cmpA at hc
@@ -2109,14 +2426,14 @@ def absOp (A : AS) (o : Op) : Option AV :=
           | some T => if T.lanes.isNone then some (.sc T) else none
           | none => (o.regs.mapM (fun r => (A.get r).ty) >>= tyVOp o).map .sc
 
-theorem AS.Holds.get' {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R} (hr : A.get r ≠ .any) :
+theorem AS.Holds.get' {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} (hr : A.get r ≠ .any) :
     ∃ u, Γ[r]? = some u ∧ (A.get r).Desc Γ w u :=
   h.get (by
     rcases Nat.lt_or_ge r A.len with h' | h'
     · exact h'
     · exact absurd (AS.get_out (Nat.not_lt_of_ge h')) hr)
 
-theorem special_bin {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {f : AV → AV → Option AV}
+theorem special_bin {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {f : AV → AV → Option AV}
     {o : R → R → Op} {a b : R} {av : AV}
     (h1 : ∀ g, f .any g = none) (h2 : ∀ g, f g .any = none) (hs : f (A.get a) (A.get b) = some av)
     (snd : ∀ {ga gb av : AV} {u u' : V}, Γ[a]? = some u → Γ[b]? = some u' → ga.Desc Γ w u → gb.Desc Γ w u' →
@@ -2128,7 +2445,7 @@ theorem special_bin {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {f : AV �
   obtain ⟨v, hv, hd⟩ := snd hu hu' hdu hdu' hs
   exact ⟨v, hv, fun _ => hd _⟩
 
-theorem special_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op} {av : AV}
+theorem special_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : Op} {av : AV}
     (hs : special A o = some av) (m : Mem) :
     ∃ v, evalOp m Γ o = some v ∧ ∀ v0, av.Desc (Γ.push v0) w v := by
   have nb : ∀ (f : Num → Num → Option Num) g, numBin f .any g = none := fun _ _ => rfl
@@ -2175,7 +2492,7 @@ theorem special_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op
 /-- **What `absOp` says of an operation is true of it**: in every state the
     abstract one describes, the operation is defined, and the value it leaves is
     one the result describes in the environment it is pushed onto. -/
-theorem absOp_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op} {av : AV}
+theorem absOp_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : Op} {av : AV}
     (ho : absOp A o = some av) : ∃ v, evalOp w.mem Γ o = some v ∧ av.Desc (Γ.push v) w v := by
   unfold absOp at ho
   split at ho

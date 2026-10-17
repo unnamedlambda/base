@@ -337,14 +337,17 @@ theorem keeps_congr {f : Ffi} {bits bits' : List UInt64} (x : Fact)
       simp only [keeps, h4]
   | _ => rfl
 
+/-- Whether a call keeps a fact, decided by the arguments it is handed: where
+    its keeping reads only arguments known, as `keeps` says. -/
+def keepA (f : Ffi) (as : List AV) (x : Fact) : Bool :=
+  (fpos f x).all (fun k => (as.getD k .any).bits.isSome) && keeps f (as.map (·.bits.getD 0)) x
+
 /-- What a call leaves of a typestate: the table's `after` where every argument
-    is known; otherwise each fact whose keeping reads only arguments it knows,
-    where it is kept. -/
+    is known; otherwise each fact `keepA` keeps. -/
 def postA (f : Ffi) (as : List AV) (S : TState) : TState :=
   match allBits as with
   | some bits => after f bits S
-  | none => S.filter fun x =>
-      (fpos f x).all (fun k => (as.getD k .any).bits.isSome) && keeps f (as.map (·.bits.getD 0)) x
+  | none => S.filter (keepA f as)
 
 theorem allBits_eq {Γ : Env} {w : World} : ∀ {as : List AV} {bits bs : List UInt64},
     ArgBits Γ w as bits → allBits as = some bs → bits = bs
@@ -365,6 +368,24 @@ theorem argBits_getD {Γ : Env} {w : World} : ∀ {as : List AV} {bits : List UI
   | a :: as, x :: xs, 0, y, ⟨hd, _⟩, h => by simpa using known_bits hd h
   | a :: as, x :: xs, k + 1, y, ⟨_, hds⟩, h => by simpa using argBits_getD hds h
 
+/-- **A fact `keepA` keeps** holds after the call. -/
+theorem keepA_sound {Γ : Env} {f : Ffi} {as : List AV} {bits : List UInt64} {w0 w w' : World}
+    {r : Option V} (hb : ArgBits Γ w0 as bits) (h : callBits f bits w = some (r, w')) {x : Fact}
+    (hk : keepA f as x = true) (hx : x.holds w) : x.holds w' := by
+  unfold keepA at hk
+  simp only [Bool.and_eq_true] at hk
+  obtain ⟨hall, hk⟩ := hk
+  refine keeps_sound h ?_ hx
+  rw [keeps_congr (bits' := as.map (·.bits.getD 0)) x (fun k hk' => ?_)]
+  · exact hk
+  · obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp (List.all_eq_true.mp hall k hk')
+    rw [argBits_getD hb hy]
+    rw [List.getD_eq_getElem?_getD, List.getElem?_map]
+    rw [List.getD_eq_getElem?_getD] at hy
+    cases e : as[k]? with
+    | none => rw [e] at hy; cases hy
+    | some a => rw [e] at hy; simp only [Option.getD_some] at hy; simp [hy]
+
 theorem postA_sound {Γ : Env} {f : Ffi} {as : List AV} {S : TState} {bits : List UInt64} {w w' : World}
     {r : Option V} (hb : ArgBits Γ w as bits) (hS : S.holds w)
     (h : callBits f bits w = some (r, w')) : (postA f as S).holds w' := by
@@ -373,18 +394,7 @@ theorem postA_sound {Γ : Env} {f : Ffi} {as : List AV} {S : TState} {bits : Lis
   · rename_i bs hbs; rw [← allBits_eq hb hbs]; exact after_sound hS h
   · intro x hx
     obtain ⟨hx, hk⟩ := List.mem_filter.mp hx
-    simp only [Bool.and_eq_true] at hk
-    obtain ⟨hall, hk⟩ := hk
-    refine keeps_sound h ?_ (hS x hx)
-    rw [keeps_congr (bits' := as.map (·.bits.getD 0)) x (fun k hk' => ?_)]
-    · exact hk
-    · obtain ⟨y, hy⟩ := Option.isSome_iff_exists.mp (List.all_eq_true.mp hall k hk')
-      rw [argBits_getD hb hy]
-      rw [List.getD_eq_getElem?_getD, List.getElem?_map]
-      rw [List.getD_eq_getElem?_getD] at hy
-      cases e : as[k]? with
-      | none => rw [e] at hy; cases hy
-      | some a => rw [e] at hy; simp only [Option.getD_some] at hy; simp [hy]
+    exact keepA_sound hb h hk (hS x hx)
 
 -- ---------------------------------------------------------------------------
 -- Entry points
@@ -777,10 +787,90 @@ def preLmdbCursorScan (S : TState) (as : List AV) : Bool :=
          | _, _ => false)
   | _ => false
 
-/-- **What a call needs, decided.** One case per entry point a shipped body
-    calls; every other entry point is refused. -/
+/-- A handle of kind `k` held, by its description. -/
+def handB (k : Contracts.Held) : AV → Bool
+  | .hand k' true => k' == k
+  | _ => false
+
+/-- **What a call of the engine's own libraries needs, decided** by the
+    arguments it is handed, as `extNeeds` asks it: each handle held, and room
+    for each buffer it reads or writes, by a length known. -/
+def preExt (S : TState) : Ext → List AV → Bool
+  | .c .memcpy, [d, s, n] =>
+      match d.bits, s.bits, n.bits with
+      | some d', some s', some n' =>
+          decide (n'.toNat = 0 ∨ s'.toNat + n'.toNat ≤ d'.toNat ∨ d'.toNat + n'.toNat ≤ s'.toNat) &&
+            memN S s n'.toNat && memN S d n'.toNat
+      | _, _, _ => false
+  | .c .memmove, [d, s, n] => match n.bits with
+      | some n' => memN S s n'.toNat && memN S d n'.toNat
+      | none => false
+  | .c .memset, [d, _, n] => match n.bits with
+      | some n' => memN S d n'.toNat
+      | none => false
+  | .c .calloc, [n, sz] => match n.bits, sz.bits with
+      | some a, some b => decide (0 < a.toNat * b.toNat)
+      | _, _ => false
+  | .c .free, [p] => handB .heap p
+  | .window .init, [] | .window .pump, [] => true
+  | .window .close, [p] | .window .pixels, [p] => handB .window p
+  | .window .poll, [p, out] => handB .window p && memN S out 32
+  | .cpu .count, [] | .cpu .unpin, [] => true
+  | .cpu .core, [_] | .cpu .package, [_] | .cpu .pin, [_] => true
+  | .serial .count, [] => true
+  | .serial .name, [_, out, cap] => match cap.bits with
+      | some c => memN S out (lenOf c)
+      | none => false
+  | .serial .close, [p] | .serial .pending, [p] => handB .port p
+  | .serial .read, [p, buf, len] | .serial .write, [p, buf, len] =>
+      handB .port p && match len.bits with
+        | some l => memN S buf (lenOf l)
+        | none => false
+  | .usb .count, [] | .usb .info, [_, _] | .usb .open, [_] => true
+  | .usb .close, [d] | .usb .claim, [d, _] | .usb .release, [d, _] => handB .usbDevice d
+  | .usb .control, [d, _, _, _, _, data, len, _] =>
+      handB .usbDevice d && match len.bits with
+        | some l => memN S data (len16 l)
+        | none => false
+  | .usb .bulk, [d, _, _, data, len, _] | .usb .interrupt, [d, _, _, data, len, _] =>
+      handB .usbDevice d && match len.bits with
+        | some l => memN S data (lenOf l)
+        | none => false
+  | _, _ => false
+
+/-- Whether a library call with these arguments keeps a fact: as `extKeeps`
+    says, where a cell or a string reads the arguments' bits only when they
+    are known. -/
+def extKeepsA (e : Ext) (as : List AV) (f : Fact) : Bool :=
+  match f with
+  | .cell .. | .cstrIn .. =>
+      match as.mapM AV.bits with
+      | some bits => Contracts.extKeeps e bits f
+      | none => false
+  | _ => Contracts.extKeeps e [] f
+
+/-- A call whose contract asks nothing but its arguments' number. -/
+def preArity (n : Nat) (as : List AV) : Bool := as.length == n
+
+/-- A call whose contract asks a live CUDA context first, among `n`
+    arguments, and where `cap`, the device not capturing. -/
+def preCtxN (S : TState) (n : Nat) (cap : Bool) (as : List AV) : Bool :=
+  match as with
+  | c :: rest => rest.length + 1 == n && cudaB S c && (!cap || S.contains (.part .capturing false))
+  | [] => false
+
+/-- **What a call needs, decided.** One case per entry point the checker
+    decides; every other entry point is refused. -/
 def preB (f : Ffi) (as : List AV) (S : TState) (rb : Nat → Nat → Bool := fun _ _ => false) : Bool :=
   match f with
+  | .cosf | .sinf | .nativeFree | .htCount | .threadPriority => preArity 1 as
+  | .powf | .memAdviseHuge | .memLock | .memUnlock => preArity 2 as
+  | .cudaEventCreate | .cudaMemInfoFree | .cudaMemInfoTotal | .cudaStreamCreate => preCtxN S 1 false as
+  | .cudaEventDestroy | .cudaGraphDestroy | .cudaPinnedFree | .cudaPinnedPtr => preCtxN S 2 false as
+  | .cudaGraphUpload => preCtxN S 3 false as
+  | .cudaPinnedPtrAt => preCtxN S 4 false as
+  | .cudaGraphBeginCapture | .cudaStreamDestroy | .cudaStreamSync => preCtxN S 2 true as
+  | .cudaEventRecord => preCtxN S 3 true as
   | .cudaInit => preCudaInit S as
   | .cudaCleanup => preCudaCleanup S as
   | .cudaCreateBuffer => preCudaCreateBuffer S as

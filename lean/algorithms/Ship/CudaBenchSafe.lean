@@ -143,9 +143,22 @@ theorem CudaGemvPersist_infer_no_misuse (cfg : Cfg) (dataLen outLen m n : UInt64
     (hm : 0 < m.toNat ∧ m.toNat < 2 ^ 31) (hn : 0 < n.toNat ∧ n.toNat < 2 ^ 31) (w : World)
     (h : CudaGemvPersistInfer dataLen outLen m n w) (msg : String) :
     Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.inferCode : Prog Slot Lvl Unit)) ≠ .misuse msg ∧
-    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault msg :=
-  sound_of_wp_entry (CudaGemvPersistInfer dataLen outLen m n) (runArgs dataLen outLen)
-    (by prog_vc (CudaGemvPersistInfer dataLen outLen m n)) CudaGemvPersist_infer_fine rfl h msg
+    Sem.run cfg (runArgs dataLen outLen) w (emit (CudaGemvPersist.inferCode : Prog Slot Lvl Unit)) ≠ .fault msg := by
+  check_body
+  -- the one call the sizes decide: sgemv over the m-by-n matrix the buffers hold
+  refine Check.Obl.holds_of_preB ?_
+  dsimp only [Check.preB, Check.preCublasSgemv, List.map, Check.PArg.bits, Check.PExpr.eval, Check.AV.bits,
+    Check.bufFacts, List.cons_append, List.nil_append, List.getD_cons_zero, List.getD_cons_succ, Check.cudaB,
+    Check.ctxB, Check.devBufOf, List.findSome?_cons]
+  simp
+  have e1 : asI32 (m &&& 4294967295) = m.toNat := Contracts.asI32_low hm.2
+  have e2 : asI32 (n &&& 4294967295) = n.toNat := Contracts.asI32_low hn.2
+  have hmn : m.toNat * n.toNat < 2 ^ 62 := Nat.lt_of_lt_of_le (Nat.mul_lt_mul'' hm.2 hn.2) (by decide)
+  refine ⟨rfl, ?_⟩
+  simp only [e1, e2, Int.toNat_natCast, Nat.shiftLeft_eq, show asI32 1 ≠ 0 by decide, if_false,
+    Nat.mul_comm n.toNat m.toNat]
+  generalize m.toNat * n.toNat = p at *
+  omega
 
 -- CudaRmsNormPersist
 
@@ -256,10 +269,27 @@ theorem CudaDecodeAttention_core_triple (cfg : Cfg) (dataLen outLen s : UInt64)
     (hs : 0 < s.toNat ∧ s.toNat ≤ CudaDecodeAttention.MAX_SEQ) (w : World)
     (h : CudaDecodeAttentionCore dataLen outLen s w) :
     Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) (emit (CudaDecodeAttention.coreCode : Prog Slot Lvl Unit))
-      { ok := fun _ w' => CudaDecodeAttentionCore dataLen outLen s w', faultOk := false } :=
-  triple_of_wp_entry (CudaDecodeAttentionCore dataLen outLen s) (CudaDecodeAttentionCore dataLen outLen s) (runArgs dataLen outLen)
-    (by simp only [CudaDecodeAttention.MAX_SEQ] at hs; prog_vc (CudaDecodeAttentionCore dataLen outLen s))
-    CudaDecodeAttention_core_fine rfl w h
+      { ok := fun _ w' => CudaDecodeAttentionCore dataLen outLen s w', faultOk := false } := by
+  check_reach
+  -- the two calls the sequence length decides: the batched sgemms over the
+  -- `s`-row K and V buffers
+  all_goals
+    refine Check.Obl.holds_of_preB ?_
+    dsimp only [Check.preB, Check.preCublasSgemm, List.map, Check.PArg.bits, Check.PExpr.eval, Check.AV.bits,
+      Check.bufFacts, List.cons_append, List.nil_append, List.getD_cons_zero, List.getD_cons_succ, Check.cudaB,
+      Check.ctxB, Check.devBufOf, List.findSome?_cons, Check.allBits, Check.gemmStridedFitsN]
+    simp
+  all_goals
+    have hs' : s.toNat ≤ 2048 := hs.2
+    have e1 : asI32 (s &&& 4294967295) = s.toNat := Contracts.asI32_low (by omega)
+    have e2 : asI64 s = s.toNat := Contracts.asI64_low (by omega)
+    have e3 : asI64 (s * 64) = (s * 64).toNat := Contracts.asI64_low (by rw [UInt64.toNat_mul]; simp; omega)
+    refine ⟨rfl, ?_⟩
+    simp only [e1, e2, e3, show asI32 1 = 1 by decide, show asI32 0 = 0 by decide, show asI32 64 = 64 by decide,
+      show asI32 14 = 14 by decide, show asI64 0 = 0 by decide, show asI64 64 = 64 by decide, colMajorSpan]
+    have hs0 : s.toNat ≠ 0 := by omega
+    simp [UInt64.toNat_mul, Nat.shiftLeft_eq, hs0]
+    omega
 
 theorem CudaDecodeAttention_core_no_misuse (cfg : Cfg) (dataLen outLen s : UInt64)
     (hs : 0 < s.toNat ∧ s.toNat ≤ CudaDecodeAttention.MAX_SEQ) (w : World)

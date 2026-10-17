@@ -897,6 +897,52 @@ theorem lib_scalar {e : Ext} {vs : List V} {bits : List UInt64} {w : World} {v :
       | (cases hr <;> exact ⟨_, _, rfl⟩)
       | (cases hr <;> exact usbDecode_answer hc)
 
+/-- **An open answers a 64-bit word**: the handle it opened, or null. -/
+theorem lib_open_i64 {e : Ext} {k : Held} (hk : e.opens = some k) {vs : List V} {bits : List UInt64}
+    {w : World} {v : V} {w' : World} (h : extCall e vs w = some (some v, w')) (hb : vs.mapM asBits = some bits) :
+    ∃ x, v = .sc .i64 x := by
+  cases e <;> simp only [Ext.opens, reduceCtorEq] at hk
+  case c f =>
+    cases f <;> simp only [reduceCtorEq] at hk
+    simp only [extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true, Bool.false_eq_true,
+      if_false] at h
+    obtain ⟨bits', -, h⟩ := Option.bind_eq_some_iff.mp h
+    rcases bits' with _ | ⟨n, _ | ⟨sz, _ | ⟨_, _⟩⟩⟩ <;> simp only [cCall, reduceCtorEq] at h
+    repeat' split at h
+    all_goals simp only [Option.some.injEq, Prod.mk.injEq, reduceCtorEq] at h
+    all_goals exact ⟨_, h.1.symm⟩
+  all_goals rename_i f
+  all_goals cases f <;> simp only [reduceCtorEq] at hk
+  all_goals
+    simp only [extCall, World.has, Ext.lib, Lib.builtin, Bool.true_or, Bool.not_true, Bool.false_eq_true,
+      if_false, hb, Option.bind_eq_bind, Option.bind_some] at h
+  · obtain ⟨c, hc, hr, -⟩ := wlCall_of h
+    simp only [wlDecode, wlDOpen] at hc
+    repeat' split at hc
+    all_goals first
+      | (cases hc; done)
+      | (simp only [Option.some.injEq] at hc; subst hc; simp only [wlEffect, Option.some.injEq] at hr; exact ⟨_, hr⟩)
+      | (obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
+         repeat' split at hc
+         all_goals (simp only [Option.some.injEq] at hc; subst hc; simp only [wlEffect, Option.some.injEq] at hr
+                    exact ⟨_, hr⟩))
+  · obtain ⟨c, hc, hr, -⟩ := serialCall_of h
+    simp only [serDecode, serDOpen] at hc
+    repeat' split at hc
+    all_goals first
+      | (cases hc; done)
+      | (obtain ⟨_, -, hc⟩ := Option.bind_eq_some_iff.mp hc
+         repeat' split at hc
+         all_goals (simp only [Option.some.injEq] at hc; subst hc; simp only [serEffect] at hr
+                    repeat' split at hr
+                    all_goals (simp only [Option.some.injEq] at hr; exact ⟨_, hr⟩)))
+  · obtain ⟨c, hc, hr, -⟩ := usbCall_of h
+    simp only [usbDecode, usbDOpen] at hc
+    repeat' split at hc
+    all_goals first
+      | (cases hc; done)
+      | (simp only [Option.some.injEq] at hc; subst hc; simp only [usbEffect, Option.some.injEq] at hr; exact ⟨_, hr⟩)
+
 /-- A call of the engine's own libraries reads only its arguments' bits. -/
 theorem extCall_bits {e : Ext} (ha : e.aside = true) {cs cs' : List V} {bits : List UInt64} (w : World)
     (h1 : cs.mapM asBits = some bits) (h2 : cs'.mapM asBits = some bits) :
@@ -958,26 +1004,24 @@ theorem extNeeds_length {e : Ext} {bits : List UInt64} {n : List (Held × UInt64
   unfold extNeeds at h
   split at h <;> first | rfl | cases h
 
-theorem copyIn_zeros {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
-    (h : roomAt S a n = true) : ∃ m, Sem.copyIn w.mem a (ByteArray.mk (Array.replicate n 0)) = some m :=
-  Option.isSome_iff_exists.mp (writable_of_state hS h (ByteArray.mk (Array.replicate n 0)) (Array.size_replicate ..))
+theorem copyIn_zeros {w : World} {a : UInt64} {n : Nat} (h : Fits w.mem a n) :
+    ∃ m, Sem.copyIn w.mem a (ByteArray.mk (Array.replicate n 0)) = some m :=
+  Option.isSome_iff_exists.mp (h.writable (ByteArray.mk (Array.replicate n 0)) (Array.size_replicate ..))
 
-theorem readBytes_some {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
-    (h : roomAt S a n = true) : ∃ bs, readBytes w.mem a n = some bs :=
-  Option.isSome_iff_exists.mp (readable_of_state hS h)
+theorem readBytes_some {w : World} {a : UInt64} {n : Nat} (h : Fits w.mem a n) :
+    ∃ bs, readBytes w.mem a n = some bs :=
+  Option.isSome_iff_exists.mp h.readable
 
 theorem live_some {α : Type} {o : Option α} (h : o.isSome = true) : ∃ x, o = some x :=
   Option.isSome_iff_exists.mp h
 
-/-- **What a call needs is enough**: a typestate holding the handles and
-    the room `extNeeds` names gives the call's precondition. -/
-theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
+/-- **What a call needs is enough**: the handles `extNeeds` names held, and
+    the bytes it names in memory not frozen, give the call's precondition. -/
+theorem extNeeds_pre {e : Ext} {bits : List UInt64} {w : World}
     {hs : List (Held × UInt64)} {rs : List (UInt64 × Nat)}
-    (hn : extNeeds e bits = some (hs, rs)) (hS : S.holds w)
-    (hh : ∀ p ∈ hs, Fact.held p.1 p.2 ∈ S) (hr : rs.all (fun q => roomAt S q.1 q.2) = true) :
+    (hn : extNeeds e bits = some (hs, rs))
+    (live : ∀ p ∈ hs, p.1.live w p.2 = true) (room : ∀ q ∈ rs, Fits w.mem q.1 q.2) :
     ExtContracts.ExtPre e bits w := by
-  have live : ∀ p ∈ hs, p.1.live w p.2 = true := fun p hp => hS _ (hh p hp)
-  have room : ∀ q ∈ rs, roomAt S q.1 q.2 = true := fun q hq => List.all_eq_true.mp hr q hq
   intro _
   unfold extNeeds at hn
   split at hn <;> (try cases hn)
@@ -985,13 +1029,13 @@ theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
   · split at hn
     · rename_i hdis
       cases hn
-      exact ⟨readable_of_state hS (room _ List.mem_cons_self),
-        writable_of_state hS (room _ (List.mem_cons_of_mem _ List.mem_cons_self)), hdis⟩
+      exact ⟨Fits.readable (room _ List.mem_cons_self),
+        Fits.writable (room _ (List.mem_cons_of_mem _ List.mem_cons_self)), hdis⟩
     · cases hn
   -- C: memmove, memset
-  · exact ⟨readable_of_state hS (room _ List.mem_cons_self),
-      writable_of_state hS (room _ (List.mem_cons_of_mem _ List.mem_cons_self))⟩
-  · exact writable_of_state hS (room _ List.mem_cons_self)
+  · exact ⟨Fits.readable (room _ List.mem_cons_self),
+      Fits.writable (room _ (List.mem_cons_of_mem _ List.mem_cons_self))⟩
+  · exact Fits.writable (room _ List.mem_cons_self)
   -- C: calloc, of a size that is not zero
   · split at hn
     · rename_i hz; cases hn; exact hz
@@ -1008,7 +1052,7 @@ theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
     exact ⟨rfl, by simp [wlDecode, wlDPixels, hk]⟩
   -- window: poll
   · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
-    obtain ⟨m, hm⟩ := copyIn_zeros hS (room _ List.mem_cons_self)
+    obtain ⟨m, hm⟩ := copyIn_zeros (room _ List.mem_cons_self)
     exact ⟨rfl, by simp [wlDecode, wlDPoll, hk, hm]⟩
   -- cpu
   all_goals try exact rfl
@@ -1020,8 +1064,8 @@ theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
     split
     · rfl
     · rename_i name _
-      obtain ⟨m, hm⟩ := copyIn_zeros hS
-        (roomAt_mono (k := min name.utf8ByteSize _) (room _ List.mem_cons_self) (Nat.min_le_right _ _))
+      obtain ⟨m, hm⟩ := copyIn_zeros
+        (Fits.mono (n := min name.utf8ByteSize _) (Nat.min_le_right _ _) (room _ List.mem_cons_self))
       simp [hm]
   -- serial: close, pending
   · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
@@ -1030,14 +1074,14 @@ theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
     exact ⟨rfl, by simp [serDecode, serDPending, hk]⟩
   -- serial: read, write
   · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
-    obtain ⟨m, hm⟩ := copyIn_zeros hS (room _ List.mem_cons_self)
+    obtain ⟨m, hm⟩ := copyIn_zeros (room _ List.mem_cons_self)
     refine ⟨rfl, ?_⟩
     simp only [serDecode, serDRead, hk, Option.bind_eq_bind, Option.bind_some]
     split
     · rfl
     · simp [hm]
   · obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
-    obtain ⟨bs, hbs⟩ := readBytes_some hS (room _ List.mem_cons_self)
+    obtain ⟨bs, hbs⟩ := readBytes_some (room _ List.mem_cons_self)
     refine ⟨rfl, ?_⟩
     simp only [serDecode, serDWrite, hk, Option.bind_eq_bind, Option.bind_some]
     split
@@ -1067,11 +1111,19 @@ theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
   -- usb: control, bulk, interrupt
   all_goals
     obtain ⟨k, hk⟩ := live_some (live _ List.mem_cons_self)
-    obtain ⟨m, hm⟩ := copyIn_zeros hS (room _ List.mem_cons_self)
-    obtain ⟨bs, hbs⟩ := readBytes_some hS (room _ List.mem_cons_self)
+    obtain ⟨m, hm⟩ := copyIn_zeros (room _ List.mem_cons_self)
+    obtain ⟨bs, hbs⟩ := readBytes_some (room _ List.mem_cons_self)
     refine ⟨rfl, ?_⟩
     simp only [usbDecode, usbDControl, usbDData, hk, Option.bind_eq_bind, Option.bind_some]
     repeat' split
     all_goals simp_all
+
+/-- The same, from a typestate holding the handles and giving the room. -/
+theorem extNeeds_sound {e : Ext} {bits : List UInt64} {S : TState} {w : World}
+    {hs : List (Held × UInt64)} {rs : List (UInt64 × Nat)}
+    (hn : extNeeds e bits = some (hs, rs)) (hS : S.holds w)
+    (hh : ∀ p ∈ hs, Fact.held p.1 p.2 ∈ S) (hr : rs.all (fun q => roomAt S q.1 q.2) = true) :
+    ExtContracts.ExtPre e bits w :=
+  extNeeds_pre hn (fun p hp => hS _ (hh p hp)) (fun q hq => roomAt_spec hS (List.all_eq_true.mp hr q hq))
 
 end AlgorithmLib.HProg.Contracts

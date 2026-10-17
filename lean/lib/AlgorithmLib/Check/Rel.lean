@@ -18,6 +18,8 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
+variable {vals : List UInt64}
+
 open AlgorithmLib.HProg.Contracts (Fact TState holds_of_mem)
 
 /-- The most room the facts give region `r`. -/
@@ -91,6 +93,7 @@ theorem AV.rangeOf_sound {Γ : Env} {w : World} {av : AV} {r : R} {v : V} (hv : 
       simp only [AV.rangeOf, boolV, vVal]
       split <;> simp
   | sc t => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
+  | hand k b => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
   | any => exact ⟨h0, by simp only [AV.rangeOf]; omega⟩
 
 /-- A number a value's bits, as a number, are a multiple of. -/
@@ -112,6 +115,7 @@ theorem AV.absAl_dvd {Γ : Env} {w : World} {av : AV} {t : ClifTy} {x : UInt64}
       exact Nat.dvd_add (Nat.gcd_dvd_right _ _) (Nat.dvd_trans (Nat.gcd_dvd_left _ _) hn.2.2.1)
   | cmp => exact Nat.one_dvd _
   | sc => exact Nat.one_dvd _
+  | hand => exact Nat.one_dvd _
   | any => exact Nat.one_dvd _
 
 /-- A slot's linear facts, with the bound its range's fit gives. -/
@@ -126,14 +130,14 @@ def Sym.withFit (σ : Sym) : AV → Sym
 def AS.ctx (A : AS) : Ctx := ⟨fun r => (A.get r).rangeOf, fun r => (A.sym r).withFit (A.get r),
   fun g => roomOf A.facts g⟩
 
-theorem AS.Holds.symHolds {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) (r : R) :
+theorem AS.Holds.symHolds {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) (r : R) :
     (A.sym r).Holds Γ w (slotVal Γ r) := by
   simp only [AS.sym]
   split
-  · rename_i hr; exact (h.1.2 r hr).1
+  · rename_i hr; exact (h.1.2.1 r hr).1
   · exact Sym.holds_blank _ _ _
 
-theorem AS.ctx_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) : A.ctx.Sound Γ w := by
+theorem AS.ctx_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) : A.ctx.Sound Γ w := by
   refine ⟨fun r => ?_, fun r => ?_, fun g => by simp only [AS.ctx]; exact_mod_cast roomOf_le h.2.2 g⟩
   · simp only [AS.ctx]
     by_cases hr : r < A.len
@@ -148,7 +152,7 @@ theorem AS.ctx_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) : A.ctx.
     have hσ : (A.sym r).Holds Γ w (slotVal Γ r) := by
       simp only [AS.sym]
       split
-      · rename_i hr; exact (h.1.2 r hr).1
+      · rename_i hr; exact (h.1.2.1 r hr).1
       · exact Sym.holds_blank _ _ _
     unfold Sym.withFit
     split
@@ -203,7 +207,7 @@ def memRel (A : AS) (a : R) (k : Nat) : Bool :=
 def memRel2 (A : AS) (p n : R) : Bool :=
   [Region.arena, .data, .out].any (memIn A p (Lin.atom (.slot n)))
 
-theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {a : R} {len : Lin} {g : Region}
+theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : R} {len : Lin} {g : Region}
     (hm : memIn A a len g = true) {t : ClifTy} {x : UInt64} (hx : Γ[a]? = some (.sc t x)) :
     Fits w.mem x (len.eval Γ w).toNat := by
   simp only [memIn, Bool.and_eq_true, decide_eq_true_eq] at hm
@@ -227,13 +231,13 @@ theorem memIn_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {a : R} {l
   subst hxe
   exact ⟨g, off, ptr_decode (Nat.le_refl _) hspan, hg, by omega, holds_of_mem h.2.2 hz, by omega⟩
 
-theorem memRel_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {a : R} {k : Nat}
+theorem memRel_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : R} {k : Nat}
     (hm : memRel A a k = true) {t : ClifTy} {x : UInt64} (hx : Γ[a]? = some (.sc t x)) : Fits w.mem x k := by
   obtain ⟨g, -, hg⟩ := List.any_eq_true.mp hm
   have := memIn_fits h hg hx
   simpa [Lin.eval_const] using this
 
-theorem memRel2_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {p n : R}
+theorem memRel2_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {p n : R}
     (hm : memRel2 A p n = true) {t t' : ClifTy} {x k : UInt64} (hx : Γ[p]? = some (.sc t x))
     (hk : Γ[n]? = some (.sc t' k)) : Fits w.mem x k.toNat := by
   obtain ⟨g, -, hg⟩ := List.any_eq_true.mp hm
@@ -291,13 +295,13 @@ def symOp (A : AS) : Op → Sym
   | .iun k a => if (k = .clz ∨ k = .bitrev) ∧ isI64 A a = true then { dfn := some (Lin.atom (.iun k a)) } else {}
   | _ => {}
 
-theorem slot_i64 {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R} (hr : isI64 A r = true) :
+theorem slot_i64 {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} (hr : isI64 A r = true) :
     ∃ x, Γ[r]? = some (.sc .i64 x) ∧ r < A.len := by
   have ht : (A.get r).scTy = some .i64 := by simpa [isI64] using hr
   obtain ⟨x, hx, -⟩ := h.getSc ht
   exact ⟨x, hx, AS.get_lt_scTy ht⟩
 
-theorem slot_int {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R} (hr : isIntSlot A r = true) :
+theorem slot_int {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} (hr : isIntSlot A r = true) :
     ∃ t x, Γ[r]? = some (.sc t x) ∧ t.isInt = true ∧ r < A.len := by
   unfold isIntSlot at hr
   split at hr
@@ -306,7 +310,7 @@ theorem slot_int {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R} (hr 
     exact ⟨t, x, hx, hr, AS.get_lt_scTy ht⟩
   · cases hr
 
-theorem AS.Holds.descAt {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {r : R} {u : V}
+theorem AS.Holds.descAt {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {r : R} {u : V}
     (hr : Γ[r]? = some u) : (A.get r).Desc Γ w u := by
   have hl : r < A.len := by
     rw [← h.1.1]
@@ -323,7 +327,7 @@ theorem slotVal_sc {Γ : Env} {r : R} {t : ClifTy} {x : UInt64} (h : Γ[r]? = so
   rw [slotVal_of h]; rfl
 
 /-- The new slot's facts, read in the environment it is pushed onto. -/
-theorem fits_new {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {v : V} {σ : Sym}
+theorem fits_new {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {v : V} {σ : Sym}
     (hs : ∀ x ∈ σ.slots, x < A.len) (hg : ∀ g ∈ σ.regions, g ≠ .pinned)
     (hh : σ.Holds Γ w (vVal v)) : σ.Fits (Γ.push v) w A.len (A.len + 1) := by
   have hsz := h.1.1
@@ -374,7 +378,7 @@ def opAV (A : AS) (o : Op) (av : AV) : AV :=
       | none => av
   | _ => av
 
-theorem opAV_desc {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op} {av : AV} {v : V}
+theorem opAV_desc {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : Op} {av : AV} {v : V}
     (hv : evalOp w.mem Γ o = some v) (hd : av.Desc (Γ.push v) w v) : (opAV A o av).Desc (Γ.push v) w v := by
   cases o
   case isub a b =>
@@ -427,7 +431,7 @@ theorem opAV_desc {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op} {a
   all_goals exact hd
 
 /-- **What `symOp` says of an operation's result is true.** -/
-theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op} {v : V}
+theorem symOp_fits {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : Op} {v : V}
     (hv : evalOp w.mem Γ o = some v) : (symOp A o).Fits (Γ.push v) w A.len (A.len + 1) := by
   have blank : ({} : Sym).Fits (Γ.push v) w A.len (A.len + 1) := Sym.fits_blank _ _ _ _
   cases o
@@ -714,8 +718,8 @@ def AS.setAV (A : AS) (r : R) (av : AV) : AS :=
   | .known _ => A
   | _ => if r < A.len then { A with slots := A.slots.set r av } else A
 
-theorem AS.Holds.setAV {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {r : R} {av : AV}
-    (hv : ∀ v, Γ[r]? = some v → av.Desc Γ w v) : (A.setAV r av).Holds Γ w := by
+theorem AS.Holds.setAV {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {r : R} {av : AV}
+    (hv : ∀ v, Γ[r]? = some v → av.Desc Γ w v) : (A.setAV r av).Holds vals Γ w := by
   unfold AS.setAV
   split
   · exact hA
@@ -746,8 +750,8 @@ def AS.tightenHi (A : AS) (r : R) (s : Nat) (k : Int) : AS :=
     | _ => A
   else A
 
-theorem AS.Holds.tightenHi {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {r : R} {s : Nat} {k : Int}
-    (hv : (s : Int) * slotVal Γ r ≤ k) : (A.tightenHi r s k).Holds Γ w := by
+theorem AS.Holds.tightenHi {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {r : R} {s : Nat} {k : Int}
+    (hv : (s : Int) * slotVal Γ r ≤ k) : (A.tightenHi r s k).Holds vals Γ w := by
   unfold AS.tightenHi
   split
   · rename_i hk
@@ -796,20 +800,20 @@ def AS.addUb (A : AS) (a : R) (p : Nat × Lin) : AS :=
 def ubOk (A : AS) (p : Nat × Lin) : Bool :=
   decide (0 < p.1) && p.2.slots.all (· < A.len) && p.2.regions.all (fun g => decide (g ≠ .pinned))
 
-theorem AS.Holds.addUb {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {a : R} {p : Nat × Lin}
-    (hv : (p.1 : Int) * slotVal Γ a ≤ p.2.eval Γ w) (hok : ubOk A p = true) : (A.addUb a p).Holds Γ w := by
+theorem AS.Holds.addUb {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a : R} {p : Nat × Lin}
+    (hv : (p.1 : Int) * slotVal Γ a ≤ p.2.eval Γ w) (hok : ubOk A p = true) : (A.addUb a p).Holds vals Γ w := by
   unfold AS.addUb
   split
   · rename_i ha
     simp only [ubOk, Bool.and_eq_true, List.all_eq_true, decide_eq_true_eq] at hok
     obtain ⟨⟨-, hs⟩, hg⟩ := hok
-    refine ⟨⟨h.1.1, fun i hi => ?_⟩, h.2.1, h.2.2⟩
+    refine ⟨⟨h.1.1, fun i hi => ?_, h.1.2.2⟩, h.2.1, h.2.2⟩
     show (Slots.set A.syms a _ |>.get i).Fits Γ w i A.len
     rw [Slots.get_set]
     split
     · rename_i e
       subst e
-      obtain ⟨⟨hd, hu⟩, hsl, hrg⟩ := h.1.2 i hi
+      obtain ⟨⟨hd, hu⟩, hsl, hrg⟩ := h.1.2.1 i hi
       have hmem : ∀ q ∈ (p :: (A.syms.get i).ubs).take ubsKept, q = p ∨ q ∈ (A.syms.get i).ubs := by
         intro q hq
         simpa using List.mem_of_mem_take hq
@@ -833,7 +837,7 @@ theorem AS.Holds.addUb {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {a : R
           · exact hrg g (by
               simp only [Sym.regions, List.mem_append, List.mem_flatten, List.mem_map]
               exact .inr ⟨_, ⟨q, hq', rfl⟩, hgr⟩)
-    · exact h.1.2 i hi
+    · exact h.1.2.1 i hi
   · exact h
 
 /-- What `x + e ≤ y` teaches beyond ranges: `x` no more than `y - e`, and, with
@@ -853,14 +857,14 @@ def relLess (A : AS) (x y : R) (e : Nat) : AS :=
   else A
 
 theorem foldl_addUb {A : AS} {Γ : Env} {w : World} :
-    ∀ (ubs : List (R × Nat × Lin)) (B : AS), B.Holds Γ w →
+    ∀ (ubs : List (R × Nat × Lin)) (B : AS), B.Holds vals Γ w →
       (∀ q ∈ ubs, ubOk A q.2 = true → ((q.2.1 : Int) * slotVal Γ q.1 ≤ q.2.2.eval Γ w ∧ ubOk B q.2 = true)) →
       (∀ q ∈ ubs, ∀ C : AS, C.len = B.len → ubOk C q.2 = ubOk B q.2) →
-      (ubs.foldl (fun B (r, p) => if ubOk A p then B.addUb r p else B) B).Holds Γ w
+      (ubs.foldl (fun B (r, p) => if ubOk A p then B.addUb r p else B) B).Holds vals Γ w
   | [], _, hB, _, _ => hB
   | (r, p) :: ubs, B, hB, hq, hlen => by
       rw [List.foldl_cons]
-      have hB' : (if ubOk A p then B.addUb r p else B).Holds Γ w := by
+      have hB' : (if ubOk A p then B.addUb r p else B).Holds vals Γ w := by
         split
         · rename_i hok
           obtain ⟨hv, hokB⟩ := hq _ (List.mem_cons_self ..) hok
@@ -964,7 +968,7 @@ def opFacts (A : AS) : Op → List (R × Nat × Lin)
       | none => bitrevFacts A a b
   | _ => []
 
-theorem bitrevFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {a b : R} {v : V}
+theorem bitrevFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {a b : R} {v : V}
     (hv : evalOp w.mem Γ (.ushr a b) = some v) :
     ∀ q ∈ bitrevFacts A a b, (q.2.1 : Int) * slotVal (Γ.push v) q.1 ≤ q.2.2.eval (Γ.push v) w := by
   intro q hq
@@ -1025,7 +1029,7 @@ theorem bitrevFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {a 
   · simp at hq
 
 /-- **What `opFacts` teaches is true** of the operation's value pushed. -/
-theorem opFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op} {v : V}
+theorem opFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {o : Op} {v : V}
     (hv : evalOp w.mem Γ o = some v) :
     ∀ q ∈ opFacts A o, (q.2.1 : Int) * slotVal (Γ.push v) q.1 ≤ q.2.2.eval (Γ.push v) w := by
   intro q hq
@@ -1084,7 +1088,7 @@ theorem opFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op
           have haL : a < A.len := ha
           have hzl : z < A.len := by
             have h1' : (1, L) ∈ (A.syms.get a).ubs := by simpa [AS.sym, haL] using h1
-            exact (h.1.2 a haL).2.1 z (List.mem_append_right _ (List.mem_flatten.mpr
+            exact (h.1.2.1 a haL).2.1 z (List.mem_append_right _ (List.mem_flatten.mpr
               ⟨_, List.mem_map.mpr ⟨_, h1', rfl⟩, by simp [Lin.slots, hLt]⟩))
           have hLe : L.eval Γ w = (M : Int) * slotVal Γ z + ((M : Int) - 1) := by
             simp only [Lin.eval, hLt, hLk, Lin.evalT, Atom.val]; omega
@@ -1121,18 +1125,18 @@ theorem opFacts_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {o : Op
     · exact bitrevFacts_sound h hv q hq
   all_goals simp [opFacts] at hq
 
-theorem foldl_tighten {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) :
-    ∀ (ubs : List (R × Nat × Lin)) (B : AS), B.Holds Γ w →
+theorem foldl_tighten {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) :
+    ∀ (ubs : List (R × Nat × Lin)) (B : AS), B.Holds vals Γ w →
       (∀ q ∈ ubs, (q.2.1 : Int) * slotVal Γ q.1 ≤ q.2.2.eval Γ w) →
       (ubs.foldl (fun B (r, p) => match A.ctx.hiOf p.2 with
         | some k => B.tightenHi r p.1 k
-        | none => B) B).Holds Γ w
+        | none => B) B).Holds vals Γ w
   | [], _, hB, _ => hB
   | (r, p) :: ubs, B, hB, hq => by
       rw [List.foldl_cons]
       have hB' : (match A.ctx.hiOf p.2 with
           | some k => B.tightenHi r p.1 k
-          | none => B).Holds Γ w := by
+          | none => B).Holds vals Γ w := by
         split
         · rename_i k hk
           have h := hq _ (List.mem_cons_self ..)
@@ -1141,8 +1145,8 @@ theorem foldl_tighten {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) :
       exact foldl_tighten hA ubs _ hB' (fun q hqm => hq q (List.mem_cons_of_mem _ hqm))
 
 /-- **What `relLess` teaches is true** where `x + e ≤ y`. -/
-theorem relLess_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {x y : R} {e : Nat}
-    (hxy : slotVal Γ x + e ≤ slotVal Γ y) : (relLess A x y e).Holds Γ w := by
+theorem relLess_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {x y : R} {e : Nat}
+    (hxy : slotVal Γ x + e ≤ slotVal Γ y) : (relLess A x y e).Holds vals Γ w := by
   unfold relLess
   split
   · rename_i hxy'
@@ -1184,8 +1188,8 @@ def AS.tightenLo (A : AS) (r : R) (s : Nat) (k : Int) : AS :=
 theorem ceil_le {k s x : Nat} (hs : 0 < s) (h : k ≤ s * x) : (k + s - 1) / s ≤ x :=
   Nat.lt_succ_iff.mp ((Nat.div_lt_iff_lt_mul hs).mpr (by rw [Nat.succ_mul, Nat.mul_comm x s]; omega))
 
-theorem AS.Holds.tightenLo {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) {r : R} {s : Nat} {k : Int}
-    (hv : k ≤ (s : Int) * slotVal Γ r) : (A.tightenLo r s k).Holds Γ w := by
+theorem AS.Holds.tightenLo {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) {r : R} {s : Nat} {k : Int}
+    (hv : k ≤ (s : Int) * slotVal Γ r) : (A.tightenLo r s k).Holds vals Γ w := by
   unfold AS.tightenLo
   split
   · rename_i hk
@@ -1233,7 +1237,7 @@ def relLo (A : AS) (x : R) : AS :=
         | none => B) A
   | none => A
 
-theorem relLo_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) (x : R) : (relLo A x).Holds Γ w := by
+theorem relLo_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds vals Γ w) (x : R) : (relLo A x).Holds vals Γ w := by
   unfold relLo
   split
   · rename_i D hD
@@ -1241,10 +1245,10 @@ theorem relLo_holds {A : AS} {Γ : Env} {w : World} (hA : A.Holds Γ w) (x : R) 
     have hx := Ctx.exactDef_sound hC hD
     have hD0 : 0 ≤ D.norm.eval Γ w := by rw [Lin.eval_norm, ← hx]; exact slotVal_nonneg Γ x
     generalize D.norm = E at hD0 ⊢
-    suffices h : ∀ (rs : List R) (B : AS), B.Holds Γ w → (∀ r ∈ rs, 0 < Lin.coeff (.slot r) E.terms) →
+    suffices h : ∀ (rs : List R) (B : AS), B.Holds vals Γ w → (∀ r ∈ rs, 0 < Lin.coeff (.slot r) E.terms) →
         (rs.foldl (fun B r => match A.ctx.hiOf (E.drop (.slot r)) with
           | some h => B.tightenLo r (Lin.coeff (.slot r) E.terms).toNat (-h)
-          | none => B) B).Holds Γ w from
+          | none => B) B).Holds vals Γ w from
       h _ A hA (fun r hr => by simpa using (List.mem_filter.mp hr).2)
     intro rs
     induction rs with
@@ -1295,7 +1299,7 @@ theorem slot_bits {Γ : Env} : ∀ {args : List R} {vs : List V} {bits : List UI
           obtain ⟨t, ht⟩ := slot_bits hvs' hxs i (by omega)
           exact ⟨t, by simpa using ht⟩
 
-theorem relRb_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds Γ w) {args : List R} {vs : List V}
+theorem relRb_sound {A : AS} {Γ : Env} {w : World} (h : A.Holds vals Γ w) {args : List R} {vs : List V}
     {bits : List UInt64} (hv : args.mapM (fun r => Γ[r]?) = some vs) (hb : vs.mapM asBits = some bits) :
     RbSound w bits (relRb A args) := by
   intro i j hr

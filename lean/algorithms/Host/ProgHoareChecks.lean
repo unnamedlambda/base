@@ -5,6 +5,8 @@ public import AlgorithmLib.Host.DevSpec
 meta import AlgorithmLib.Host.DevSpec
 public import AlgorithmLib.Proof.Typestate
 meta import AlgorithmLib.Proof.Typestate
+public import AlgorithmLib.Check.Entry
+meta import AlgorithmLib.Check.Entry
 import all Init.Data.Repr
 import all Init.Data.List.Sort.Basic
 
@@ -13,13 +15,10 @@ import all Init.Data.List.Sort.Basic
 
 `syncLoop` synchronises the live context's default stream as many times as the
 first input byte says. `syncLoop_no_misuse` says no run of `emit syncLoop`
-misuses a foreign call, for any input, from any world in the `Live` typestate.
-Its proof is `prog_vc Live`: the typestate is the loop's invariant and the
-call's contract, and the weakest precondition does the rest. The one check on
+misuses a foreign call, for any arguments and input, from any world in the
+`Live` typestate, by the construct rules, one per construct, with the loop's
+invariant and the argument slots written out (`syncLoop_pt`). The one check on
 the emission is `syncLoop_fine`, decided on the finished code.
-
-`syncLoop_pt` is the same fact by the construct rules, one per construct, with
-the loop's invariant and the argument slots written out.
 
 `ctxLoop` is the shape generators have: it opens the context into its slot of
 shared memory, reads the handle back from the slot before each call, and closes
@@ -148,11 +147,6 @@ theorem syncLoop_fine : Fine (emitGo (syncLoop (V := Slot) (L := Lvl)) ⟨5, 0, 
     its typestate. -/
 theorem syncLoop_no_misuse (cfg : Cfg) (args : List V) (w : World) (hargs : args.length = 5)
     (h : Live w) (m : String) : run cfg args w (emit syncLoop) ≠ .misuse m :=
-  safe_of_wp Live (by prog_vc Live) syncLoop_fine hargs h m
-
-/-- The same, from the construct rules. -/
-theorem syncLoop_no_misuse_by_rules (cfg : Cfg) (args : List V) (w : World) (hargs : args.length = 5)
-    (h : Live w) (m : String) : run cfg args w (emit syncLoop) ≠ .misuse m :=
   run_safe (emit_triple (params := ptrParams) (syncLoop_pt cfg) syncLoop_fine
     (fun _ _ ⟨e1, e2⟩ => by subst e1 e2; exact ⟨by simp [hargs, ptrParams], h⟩)) m
 
@@ -209,8 +203,8 @@ open HProgStaticChecks (args) in
     back from its slot: the typestate carries the slot's value through the
     loop, and nothing but the typestate is written. -/
 theorem ctxLoop_no_misuse (cfg : Cfg) (w : World) (h : Arena w) (m : String) :
-    run cfg args w (emit ctxLoop) ≠ .misuse m :=
-  safe_of_wp_entry Arena args (by prog_vc Arena) ctxLoop_fine rfl h m
+    run cfg args w (emit ctxLoop) ≠ .misuse m := by
+  check_body
 
 /-- A table filled in a loop: the context read once from its slot, a key and a
     value stored to scratch each trip, and one insertion per trip. Every call
@@ -260,16 +254,16 @@ set_option maxRecDepth 20000 in
 /-- **Filling a table never misuses a call**, however many entries the input
     asks for. -/
 theorem fillTable_no_misuse (cfg : Cfg) (w : World) (h : Scratch w) (m : String) :
-    run cfg args w (emit fillTable) ≠ .misuse m :=
-  safe_of_wp_entry Scratch args (by prog_vc Scratch) fillTable_fine rfl h m
+    run cfg args w (emit fillTable) ≠ .misuse m := by
+  check_body
 
 open HProgStaticChecks (args) in
 set_option maxRecDepth 20000 in
 /-- **Summing never misuses a call** — it makes none, and stores only where
     its rooms say. -/
 theorem sumTrips_no_misuse (cfg : Cfg) (w : World) (h : Scratch w) (m : String) :
-    run cfg args w (emit sumTrips) ≠ .misuse m :=
-  safe_of_wp_entry Scratch args (by prog_vc Scratch) sumTrips_fine rfl h m
+    run cfg args w (emit sumTrips) ≠ .misuse m := by
+  check_body
 
 /-- Open the first USB device and, where it opened, claim its first
     interface, read its device descriptor into the output, release the
@@ -300,8 +294,8 @@ open HProgStaticChecks (args) in
     opened was checked not null before it was used, and the descriptor lands
     where there is room. -/
 theorem usbSession_no_misuse (cfg : Cfg) (w : World) (h : OutRoom w) (m : String) :
-    run cfg args w (emit usbSession) ≠ .misuse m :=
-  safe_of_wp_entry OutRoom args (by prog_vc OutRoom) usbSession_fine rfl h m
+    run cfg args w (emit usbSession) ≠ .misuse m := by
+  check_body
 
 -- The check is not idle: without it, a machine with no device to open hands
 -- the claim a null device, which is misuse; with it, nothing is claimed.
@@ -341,8 +335,8 @@ open HProgStaticChecks (args) in
     allocated and checked not null, the fill and the copy land in room, and
     the copy's ranges are apart. -/
 theorem heapSession_no_misuse (cfg : Cfg) (w : World) (h : OutRoom16 w) (m : String) :
-    run cfg args w (emit heapSession) ≠ .misuse m :=
-  safe_of_wp_entry OutRoom16 args (by prog_vc OutRoom16) heapSession_fine rfl h m
+    run cfg args w (emit heapSession) ≠ .misuse m := by
+  check_body
 
 -- Freeing the block twice is misuse: the second free is handed a block no
 -- longer allocated.

@@ -38,6 +38,7 @@ def AV.beq : AV → AV → Bool
   | .ptr r n, .ptr r' n' => decide (r = r') && decide (n = n')
   | .cmp c a b, .cmp c' a' b' => c == c' && a == a' && b == b'
   | .sc t, .sc t' => decide (t = t')
+  | .hand k b, .hand k' b' => decide (k = k') && b == b'
   | .any, .any => true
   | _, _ => false
 
@@ -120,7 +121,7 @@ theorem Sym.join_right {σ τ : Sym} {Γ : Env} {w : World} {x : Int} {m : Nat} 
 def AS.join (A B : AS) : Except String AS :=
   if A.len = B.len then
     .ok ⟨Slots.zip AV.join A.slots B.slots, A.len, factsMeet A.facts B.facts,
-      Slots.zip Sym.join A.syms B.syms⟩
+      Slots.zip Sym.join A.syms B.syms, A.par.join B.par⟩
   else .error s!"join of environments of {A.len} and {B.len} slots"
 
 def joinOpt : Option AS → Option AS → Except String (Option AS)
@@ -174,8 +175,8 @@ def Slots.clear {α : Type} [Blank α] (t : Slots α) (i : Nat) : Nat → Slots 
     away. -/
 def AS.bindAt (A : AS) (n : Nat) (vs : List AV) (ss : List Sym := []) : AS :=
   let base : AS :=
-    if A.len ≤ n then ⟨A.slots.clear A.len (n - A.len), n, A.facts, A.syms.clear A.len (n - A.len)⟩
-    else ⟨A.slots.map (AV.cut n), n, A.facts, A.syms.map (Sym.cut n)⟩
+    if A.len ≤ n then ⟨A.slots.clear A.len (n - A.len), n, A.facts, A.syms.clear A.len (n - A.len), A.par⟩
+    else ⟨A.slots.map (AV.cut n), n, A.facts, A.syms.map (Sym.cut n), A.par.cut n⟩
   base.pushAll (vs.mapIdx fun i v => (v.portable, ss.getD i {}))
 
 -- ---------------------------------------------------------------------------
@@ -233,7 +234,7 @@ def lessRange (A : AS) (x y : R) (e : Nat) : AS :=
         let A2 := A1.setAV y (offAV gx { ny with lo := max ny.lo (nx.lo + step) })
         match ny.fit with
         | some (r, s, d) =>
-            if 0 < nx.lo + step then A2.withFacts (.room r ((nx.lo + step) * s + d) :: A2.facts) else A2
+            if 0 < nx.lo + step then A2.addFact (.room r ((nx.lo + step) * s + d)) else A2
         | none => A2
       else A
   | _, _ => A
@@ -248,10 +249,14 @@ def alignE (A : AS) (x y : R) (e : Nat) : Nat :=
 def lessThan (A : AS) (x y : R) (e : Nat) : AS :=
   relLo (relLess (lessRange A x y e) x y (alignE A x y e)) x
 
-/-- What `x ≠ 0` teaches: `x` is at least one. -/
+/-- What `x ≠ 0` teaches: `x` is at least one, and an open's answer a handle
+    held. -/
 def nonZero (A : AS) (x y : R) : AS :=
   match A.get y with
-  | .known (.sc _ 0) => A.tightenLo x 1 1
+  | .known (.sc _ 0) =>
+      match A.get x with
+      | .hand k false => A.setAV x (.hand k true)
+      | _ => A.tightenLo x 1 1
   | _ => A
 
 /-- What `x rel y` teaches. -/
@@ -307,15 +312,18 @@ def storeBytes (A : AS) (v : R) (n : Nat) : Option Nat :=
 
 /-- What a store leaves, `none` where it may fault. A scalar store to a known
     address keeps what `afterStore` keeps; one to an address in a range, the
-    facts about bytes outside it; a vector store, every fact but the cells. -/
+    facts about bytes outside it; a vector store, every fact but the cells.
+    Of the parameters' cells and buffers, each keeps those outside the bytes
+    it may write. -/
 def absStore (A : AS) (v a : R) (n : Nat) : Except String AS :=
   match storeBytes A v n with
   | none => .error s!"store of a value of unknown type (slot {v})"
   | some n =>
       match A.get a, storeSpan A.facts (A.get a) n, (A.get v).scTy with
-      | .known (.sc _ x), some _, some _ => .ok (A.withFacts (afterStore (some x) (A.get v).bits n A.facts))
-      | _, some (lo, hi), some _ => .ok (A.withFacts (A.facts.filter (rangeKeeps lo hi)))
-      | _, some _, none => .ok (A.withFacts (A.facts.filter (!·.isCell)))
+      | .known (.sc _ x), some (lo, hi), some _ =>
+          .ok (A.withFactsK (afterStore (some x) (A.get v).bits n A.facts) (rangeKeeps lo hi))
+      | _, some (lo, hi), some _ => .ok (A.withFactsK (A.facts.filter (rangeKeeps lo hi)) (rangeKeeps lo hi))
+      | _, some _, none => .ok (A.withFactsK (A.facts.filter (!·.isCell)) (!·.isCell))
       | ga, none, _ => .error s!"store of {n} bytes to {repr ga} the typestate gives no room for"
 
 /-- A store `absStore` refuses: one the linear facts show inside a region
@@ -343,11 +351,69 @@ def AS.pushOp (A : AS) (o : Op) (av : AV) : AS :=
     | some k => D.tightenHi r p.1 k
     | none => D) C
 
+/-- The number an operation computes from the parameters, where it computes
+    one: a read of a cell holding a parameter, the low half of such a number,
+    such a number times a known one. -/
+def parOp (A : AS) : Op → Option (ClifTy × PExpr)
+  | .load op a =>
+      match op.kind, op.ty, A.get a with
+      | .plain, .i64, .known (.sc _ x) => (A.par.cells.find? (·.1 == x)).map fun c => (.i64, .param c.2)
+      | _, _, _ => none
+  | .ireduce32 a =>
+      match A.par.slotOf a with
+      | some (.i64, e) => some (.i32, .trunc32 e)
+      | _ => none
+  | .imul a b =>
+      match A.par.slotOf a, A.get b with
+      | some (.i64, e), .known (.sc .i64 c) => some (.i64, .mul e (.lit c))
+      | _, _ => none
+  | _ => none
+
+/-- An argument as the parameters' record reads it: a number computed from
+    them, or bits known. -/
+def parArg (A : AS) (r : R) : Option PArg :=
+  match A.par.slotOf r with
+  | some (_, e) => some (.sym e)
+  | none => (A.get r).bits.map .known
+
+/-- The obligation a call of `f` handed `pas` leaves, in the state's facts and
+    buffers. -/
+def oblOf (A : AS) (f : Ffi) (pas : List PArg) : Obl := ⟨f, pas, A.facts, A.par.bufs⟩
+
+/-- How a foreign call's precondition is shown, and the record after: decided
+    by the facts; or an obligation on the parameters the record holds, or, in
+    a run that gathers them, gathers. -/
+def ffiPre (A : AS) (f : Ffi) (args : List R) : Option Par :=
+  if preB f (args.map A.get) A.facts (relRb A args) then some A.par else
+  match args.mapM (parArg A) with
+  | some pas =>
+      if A.par.obls.contains (oblOf A f pas) then some A.par
+      else if A.par.collect then some { A.par with obls := A.par.obls ++ [oblOf A f pas] }
+      else none
+  | none => none
+
+/-- The state after a foreign call the checker accepts, its answer not yet
+    appended. -/
+def AS.ffiCall (A : AS) (f : Ffi) (args : List R) : Except String AS :=
+  let as := args.map A.get
+  if f != .threadSpawn && A.facts.contains (.part .frozen false) && as.all (·.scTy.isSome) then
+    match ffiPre A f args with
+    | some P => .ok ((A.forgetHands.withFacts (postA f as A.facts)).withPar (P.keepWorld (keepA f as)))
+    | none => .error s!"call {f.cname}: precondition not decided (args {repr as})"
+  else .error s!"call {f.cname}: precondition not decided (args {repr as})"
+
+/-- What a library call answers: for an open, null or a handle held; any value
+    otherwise. -/
+def extAnswer (e : Ext) : AV :=
+  match e.opens with
+  | some k => .hand k false
+  | none => .any
+
 /-- What a statement leaves; where `fo` says the body may fault, an operation
     or a store the checker cannot show defined is let fault. -/
 def absStmt (fo : Bool) (A : AS) : Stmt → Except String AS
   | .op o => match absOp A o with
-      | some av => .ok (A.pushOp o av)
+      | some av => .ok ((A.pushOp o av).parSlot A.len (parOp A o))
       | none =>
           match relLoad A o with
           | some av => .ok (A.push av)
@@ -360,15 +426,20 @@ def absStmt (fo : Bool) (A : AS) : Stmt → Except String AS
       | some _ => absStoreF fo A v a 1
       | none => if fo then .ok (A.withFacts (A.facts.filter (!·.isCell))) else .error "istore8 of a non-scalar"
   | .call (.ffi f) args =>
+      match A.ffiCall f args with
+      | .ok B => .ok (B.push (.sc (f.result.getD .i64)))
+      | .error e => .error e
+  | .callVoid (.ffi f) args => A.ffiCall f args
+  | .call (.ext e) args =>
       let as := args.map A.get
-      if f != .threadSpawn && A.facts.contains (.part .frozen false) && as.all (·.scTy.isSome) && preB f as A.facts (relRb A args) then
-        .ok ((A.withFacts (postA f as A.facts)).push (.sc (f.result.getD .i64)))
-      else .error s!"call {f.cname}: precondition not decided (args {repr as})"
-  | .callVoid (.ffi f) args =>
+      if e.aside && e.sig.2.isSome && as.all (·.scTy.isSome) && preExt A.facts e as then
+        .ok (((A.forgetKind e.closes).withFacts (A.facts.filter (extKeepsA e as))).push (extAnswer e))
+      else .error s!"call {repr e}: precondition not decided (args {repr as})"
+  | .callVoid (.ext e) args =>
       let as := args.map A.get
-      if f != .threadSpawn && A.facts.contains (.part .frozen false) && as.all (·.scTy.isSome) && preB f as A.facts (relRb A args) then
-        .ok (A.withFacts (postA f as A.facts))
-      else .error s!"call {f.cname}: precondition not decided (args {repr as})"
+      if e.aside && e.sig.2.isNone && as.all (·.scTy.isSome) && preExt A.facts e as then
+        .ok ((A.forgetKind e.closes).withFacts (A.facts.filter (extKeepsA e as)))
+      else .error s!"call {repr e}: precondition not decided (args {repr as})"
   | .call c _ | .callVoid c _ => .error s!"call of {repr c} not handled"
 
 /-- A statement, for a refusal's message. -/
@@ -486,7 +557,7 @@ def Slots.beqBy {α : Type} (f : α → α → Bool) : Slots α → Slots α →
 /-- Equality of states, decided. -/
 def AS.beq (A B : AS) : Bool :=
   A.len == B.len && Slots.beqBy AV.beq A.slots B.slots && decide (A.facts = B.facts) &&
-    Slots.beqBy (decide <| · = ·) A.syms B.syms
+    Slots.beqBy (decide <| · = ·) A.syms B.syms && decide (A.par = B.par)
 
 /-- What a run of the checker found, handed to a later run: the invariant each
     loop settled at, and the state each piece started from, each named by
@@ -880,7 +951,7 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
       let ab := slotsOf (preEnd + k) body
       let Y := loopCands n0 (pre ++ body)
       let tripOf := fun (ct : Cert) (c : Carry) =>
-        match execC ct (0 :: path) 0 ((A.withFacts c.facts).bindAt n0 c.vals (c.headSyms n0)) pre with
+        match execC ct (0 :: path) 0 ((A.forgetHands.withFacts c.facts).bindAt n0 c.vals (c.headSyms n0)) pre with
         | .error e => .error e
         | .ok op => loopTrip l n0 k preEnd ab Y c op fun Ab => execC ct (1 :: path) 0 Ab body
       let c0 : Carry := ⟨((l.init.map A.get).map AV.portable).map (AV.enrich A.facts), A.facts,
@@ -897,7 +968,7 @@ def execP (cert : Cert) (path : List Nat) (A : AS) : Piece → Except String AOu
         | none => .ok ⟨dSkip A l ab Y, [], [], {}⟩
         | some Ae =>
             let tripOf := fun (ct : Cert) (c : Carry) =>
-              match execC ct (0 :: path) 0 ((Ae.withFacts c.facts).bindAt n0 c.vals (c.headSyms n0)) body with
+              match execC ct (0 :: path) 0 ((Ae.forgetHands.withFacts c.facts).bindAt n0 c.vals (c.headSyms n0)) body with
               | .error e => .error e
               | .ok ob => .ok (dloopTrip l n0 ab Y c ob)
             match runLoopIv cert path (tripOf cert) (tripOf { cert with fo := true, guess := true }) ⟨((l.init.map Ae.get).map AV.portable).map (AV.enrich Ae.facts), Ae.facts,

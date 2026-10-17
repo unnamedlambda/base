@@ -5626,9 +5626,41 @@ def roomAt (S : TState) (a : UInt64) (n : Nat) : Bool :=
       S.any fun | .room r' k => decide (r' = r) && decide (off + n ≤ k) | _ => false
   | none => false
 
+/-- `n` bytes at `a` lie inside one region outside pinned memory, within the
+    span an address names, with memory not frozen: a load or a store of them
+    finds them, and so does one of any part of them. -/
+def Fits (m : Mem) (a : UInt64) (n : Nat) : Prop :=
+  ∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ m.sizes r ∧ m.frozen = false ∧
+    off + n ≤ 2 ^ 36
+
+theorem Fits.load {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : ∃ x, m.load a n = some x := by
+  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := h
+  exact Option.isSome_iff_exists.mp (load_isSome hd hp hs hz)
+
+theorem Fits.store {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) (v : UInt64) :
+    ∃ m', m.store a n v = some m' := by
+  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := h
+  exact Option.isSome_iff_exists.mp (store_isSome hd hp hs hz v)
+
+theorem Fits.mono {m : Mem} {a : UInt64} {n n' : Nat} (hn : n ≤ n') (h : Fits m a n') : Fits m a n := by
+  obtain ⟨r, off, hd, hp, hs, hz, hsp⟩ := h
+  exact ⟨r, off, hd, hp, by omega, hz, by omega⟩
+
+/-- Part of bytes that fit fits. -/
+theorem Fits.part {m : Mem} {a : UInt64} {n i k : Nat} (h : Fits m a n) (hik : i + k ≤ n) (hk : 0 < k) :
+    Fits m (a + UInt64.ofNat i) k := by
+  obtain ⟨r, off, hd, hp, hs, hz, hsp⟩ := h
+  have hd' := Static.decodeAddr_add (i := i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
+  exact ⟨r, off + i, hd', hp, by omega, hz, by omega⟩
+
+/-- A fit asks only a region's size and whether memory is frozen. -/
+theorem Fits.congr {m m' : Mem} {a : UInt64} {n : Nat} (hs : m'.sizes = m.sizes) (hz : m'.frozen = m.frozen)
+    (h : Fits m a n) : Fits m' a n := by
+  obtain ⟨r, off, hd, hp, hsz, hf, hsp⟩ := h
+  exact ⟨r, off, hd, hp, by rw [hs]; exact hsz, by rw [hz]; exact hf, hsp⟩
+
 theorem roomAt_spec {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
-    (h : roomAt S a n = true) : ∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧
-      off + n ≤ w.mem.sizes r ∧ w.mem.frozen = false ∧ off + n ≤ 2 ^ 36 := by
+    (h : roomAt S a n = true) : Fits w.mem a n := by
   unfold roomAt at h
   split at h
   · rename_i r off hd
@@ -5671,17 +5703,23 @@ theorem load8_of_cell {S : TState} {w : World} {a v : UInt64} (hS : S.holds w)
     (h : S.contains (.cell a v) = true) : Load8 w.mem a := by
   unfold Load8; rw [TState.holds_cell hS h]; rfl
 
-theorem readable_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
-    (h : roomAt S a n = true) : Readable w.mem a n := by
-  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := roomAt_spec hS h
+theorem Fits.readable {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : Readable m a n := by
+  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := h
   exact copyOut_isSome hd hp hs hz hn
 
-theorem writable_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
-    (h : roomAt S a n = true) : Writable w.mem a n := by
-  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := roomAt_spec hS h
+theorem Fits.writable {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : Writable m a n := by
+  obtain ⟨r, off, hd, hp, hs, hz, hn⟩ := h
   intro src hsrc
   subst hsrc
   exact copyIn_isSome src hd hp hs hz hn
+
+theorem readable_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
+    (h : roomAt S a n = true) : Readable w.mem a n :=
+  (roomAt_spec hS h).readable
+
+theorem writable_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
+    (h : roomAt S a n = true) : Writable w.mem a n :=
+  (roomAt_spec hS h).writable
 
 theorem roomAt_mono {S : TState} {a : UInt64} {n k : Nat} (h : roomAt S a n = true) (hk : k ≤ n) :
     roomAt S a k = true := by

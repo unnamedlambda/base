@@ -26,6 +26,11 @@ deriving instance ToExpr for AlgorithmLib.Check.Atom
 deriving instance ToExpr for AlgorithmLib.Check.Lin
 deriving instance ToExpr for AlgorithmLib.Check.Sym
 deriving instance ToExpr for AlgorithmLib.Check.Carry
+deriving instance ToExpr for AlgorithmLib.Check.PExpr
+deriving instance ToExpr for AlgorithmLib.Check.PArg
+deriving instance ToExpr for AlgorithmLib.IR.Ffi
+deriving instance ToExpr for AlgorithmLib.Check.Obl
+deriving instance ToExpr for AlgorithmLib.Check.Par
 deriving instance ToExpr for AlgorithmLib.Check.Slots
 deriving instance ToExpr for AlgorithmLib.Check.AS
 deriving instance ToExpr for AlgorithmLib.Check.Cert

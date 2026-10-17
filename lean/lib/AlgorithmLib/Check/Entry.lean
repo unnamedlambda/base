@@ -26,17 +26,20 @@ open AlgorithmLib.IR AlgorithmLib.HProg AlgorithmLib.HProg.Sem AlgorithmLib.HPro
 
 namespace AlgorithmLib.Check
 
+variable {vals : List UInt64}
+
 open AlgorithmLib.HProg.Contracts (Fact TState)
 
 def isRoomArg : Fact → Bool
   | .roomArg _ _ => true
   | _ => false
 
-/-- The checker's state where a body is called with `runArgs`. -/
-def entryOf (S : TState) (dLen oLen : Bool) : AS :=
-  AS.ofList [.known (.sc .i64 (regionBase .arena)), .known (.sc .i64 (regionBase .data)),
+/-- The checker's state where a body is called with `runArgs`, `P` what it
+    knows of the program's parameters. -/
+def entryOf (S : TState) (dLen oLen : Bool) (P : Par) : AS :=
+  (AS.ofList [.known (.sc .i64 (regionBase .arena)), .known (.sc .i64 (regionBase .data)),
     if dLen then AV.len .data else .sc .i64, .known (.sc .i64 (regionBase .out)),
-    if oLen then AV.len .out else .sc .i64] S
+    if oLen then AV.len .out else .sc .i64] S).withPar P
 
 theorem AS.ofList_len (l : List AV) (S : TState) : (AS.ofList l S).len = l.length := by
   unfold AS.ofList; rw [AS.pushAll_len]; simp
@@ -54,6 +57,11 @@ theorem AS.ofList_fits (l : List AV) (S : TState) (Γ : Env) (w : World) :
     rw [AS.ofList_len] at hi
     rw [AS.ofList_syms l S i hi]
     exact Sym.fits_blank _ _ _ _
+
+theorem AS.ofList_par_at (l : List AV) (S : TState) (Γ : Env) (w : World) :
+    (AS.ofList l S).par.At vals Γ w := by
+  unfold AS.ofList; rw [AS.pushAll_par]
+  exact ⟨rfl, fun _ e => by simp at e, fun _ e => by simp [Par.facts, bufFacts] at e, fun _ e => by simp at e⟩
 
 theorem AS.ofList_get (l : List AV) (S : TState) (i : Nat) : (AS.ofList l S).get i = l.getD i .any := by
   unfold AS.ofList; rw [AS.pushAll_get]; simp
@@ -78,18 +86,40 @@ def certOrRefusal (fo : Bool) (A : AS) (c : Code) : Except String Cert :=
       | .error _ => .ok loops
   | .error e => .error e
 
+/-- The calls whose preconditions the parameters decide, gathered by a run of
+    the checker that gathers them; or why it refuses the body. -/
+def oblsOf (fo : Bool) (A : AS) (c : Code) : Except String (List Obl) :=
+  match execC { fo } [] 0 (A.withPar { A.par with collect := true }) c with
+  | .ok o =>
+      let states := o.ok.toList ++ o.brk.map (·.2.1) ++ o.cont.map (·.2.1)
+      .ok (states.flatMap (·.par.obls)).eraseDups
+  | .error e => .error e
+
 theorem len_desc {Γ : Env} {w : World} {r : Region} (hr : r ≠ .pinned) {x : UInt64}
     (h : (Fact.roomArg r x).holds w) : (AV.len r).Desc Γ w (.sc .i64 x) :=
   ⟨x, rfl, Nat.zero_le _, by have := h.2; unfold span; omega, Nat.one_dvd _, hr,
     by have := h.1; omega⟩
 
-theorem entryOf_holds {S L : TState} {dLen oLen : Bool} {dataLen outLen : UInt64} {w : World}
-    (h : L.holds w) (hS : S = L.filter fun x => !isRoomArg x)
-    (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L) :
-    (entryOf S dLen oLen).Holds (runArgs dataLen outLen).toArray w := by
-  refine ⟨⟨by unfold entryOf; rw [AS.ofList_len]; rfl, AS.ofList_fits _ _ _ _⟩, fun i hi => ?_, fun x hx => h x (by
-    unfold entryOf at hx; rw [AS.ofList_facts, hS] at hx; exact (List.mem_filter.mp hx).1)⟩
-  unfold entryOf at hi ⊢
+/-- The facts a list of positions picks out of a typestate hold where it does. -/
+theorem holds_pick {L : TState} {w : World} (h : L.holds w) (idx : List Nat) :
+    TState.holds (idx.filterMap (L[·]?)) w := fun x hx => by
+  obtain ⟨i, -, hi⟩ := List.mem_filterMap.mp hx
+  exact h x (List.mem_of_getElem? hi)
+
+/-- **The checker's state at entry describes the call**: `S` the facts picked
+    out of the typestate, the lengths bounded where it says so, and the
+    parameters' record holding at `vals`, its cells and buffers picked out of
+    the typestate and its obligations shown. -/
+theorem entryOf_holds {L S : TState} {dLen oLen : Bool} {P : Par} {dataLen outLen : UInt64} {w : World}
+    (h : L.holds w) (idx : List Nat) (hS : idx.filterMap (L[·]?) = S)
+    (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L)
+    (pidx : List Nat) (hP : pidx.filterMap (L[·]?) = P.facts vals) (hc : P.collect = false) (hs : P.slots = [])
+    (hob : ∀ o ∈ P.obls, o.Holds vals) :
+    (entryOf S dLen oLen P).Holds vals (runArgs dataLen outLen).toArray w := by
+  unfold entryOf
+  refine AS.Holds.withPar ⟨⟨by rw [AS.ofList_len]; rfl, AS.ofList_fits _ _ _ _, AS.ofList_par_at _ _ _ _⟩,
+    fun i hi => ?_, by rw [AS.ofList_facts, ← hS]; exact holds_pick h idx⟩
+    ⟨hc, by simp [hs], by rw [← hP]; exact holds_pick h pidx, hob⟩
   rw [AS.ofList_len] at hi
   rw [AS.ofList_get]
   simp only [List.length_cons, List.length_nil] at hi
@@ -110,31 +140,48 @@ theorem entryOf_holds {S L : TState} {dLen oLen : Bool} {dataLen outLen : UInt64
       · rename_i e; exact len_desc (by decide) (h _ (ho e))
       · exact TyV.sc (t := .i64) rfl
 
-/-- **A body the checker accepts from its entry never misuses a call and never
-    faults**, run from `runArgs` in any world its typestate describes. -/
-theorem check_run {cfg : Cfg} {cert : Cert} {S : TState} {dLen oLen : Bool} {c : Code}
-    (hc : accepts cert (entryOf S dLen oLen) c = true) (hfo : cert.fo = false) {L : TState} {dataLen outLen : UInt64} {w : World}
-    (h : L.holds w) (hS : S = L.filter fun x => !isRoomArg x)
-    (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L)
-    (m : String) :
-    run cfg (runArgs dataLen outLen) w c ≠ .misuse m ∧ run cfg (runArgs dataLen outLen) w c ≠ .fault m := by
+/-- Each of a list of obligations shown, one by one. -/
+def OblsHold (vals : List UInt64) : List Obl → Prop
+  | [] => True
+  | o :: os => o.Holds vals ∧ OblsHold vals os
+
+theorem obls_of : ∀ {os : List Obl}, OblsHold vals os → ∀ o ∈ os, o.Holds vals
+  | [], _, _, e => nomatch e
+  | _ :: _, ⟨h, _⟩, _, .head _ => h
+  | _ :: _, ⟨_, hs⟩, o, .tail _ e => obls_of hs o e
+
+theorem argBits_known : ∀ (bits : List UInt64) (Γ : Env) (w : World),
+    ArgBits Γ w (bits.map fun x => .known (.sc .i64 x)) bits
+  | [], _, _ => trivial
+  | _ :: bits, Γ, w => ⟨⟨.i64, rfl⟩, argBits_known bits Γ w⟩
+
+/-- **An obligation the checker's own decision shows**: where `preB` decides
+    the call, handed the arguments' bits, in the obligation's typestate at the
+    parameters' values. -/
+theorem Obl.holds_of_preB {o : Obl}
+    (h : preB o.f ((o.args.map (PArg.bits vals)).map fun x => .known (.sc .i64 x))
+      (o.facts ++ bufFacts o.bufs vals) = true) : o.Holds vals :=
+  fun w hw => preB_sound hw (argBits_known _ ∅ w) h fun _ _ e => by cases e
+
+/-- **A body the checker accepts never misuses a call and never faults**, run
+    from any arguments and world its state describes. -/
+theorem check_run {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} (hc : accepts cert A c = true)
+    (hfo : cert.fo = false) {args : List V} {w : World} (hA : A.Holds vals args.toArray w) (m : String) :
+    run cfg args w c ≠ .misuse m ∧ run cfg args w c ≠ .fault m := by
   unfold accepts at hc
   split at hc
   · rename_i o ho'
-    exact execC_run ho' hfo (entryOf_holds h hS hd ho) m
+    exact execC_run ho' hfo hA m
   · cases hc
 
 /-- **A body the checker accepts, as one that may fault, never misuses a
-    call**, run from `runArgs` in any world its typestate describes. -/
-theorem check_safe {cfg : Cfg} {cert : Cert} {S : TState} {dLen oLen : Bool} {c : Code}
-    (hc : accepts cert (entryOf S dLen oLen) c = true) {L : TState} {dataLen outLen : UInt64} {w : World}
-    (h : L.holds w) (hS : S = L.filter fun x => !isRoomArg x)
-    (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L)
-    (m : String) : run cfg (runArgs dataLen outLen) w c ≠ .misuse m := by
+    call**, run from any arguments and world its state describes. -/
+theorem check_safe {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} (hc : accepts cert A c = true)
+    {args : List V} {w : World} (hA : A.Holds vals args.toArray w) (m : String) : run cfg args w c ≠ .misuse m := by
   unfold accepts at hc
   split at hc
   · rename_i o ho'
-    exact execC_safe ho' (entryOf_holds h hS hd ho) m
+    exact execC_safe ho' hA m
   · cases hc
 
 /-- The checker's state where a body is called with arguments it knows
@@ -142,9 +189,10 @@ theorem check_safe {cfg : Cfg} {cert : Cert} {S : TState} {dLen oLen : Bool} {c 
 def entryKnown (S : TState) (args : List V) : AS := AS.ofList (args.map .known) S
 
 theorem entryKnown_holds {S : TState} {args : List V} {w : World} (h : S.holds w) :
-    (entryKnown S args).Holds args.toArray w := by
+    (entryKnown S args).Holds vals args.toArray w := by
   unfold entryKnown
-  refine ⟨⟨by rw [AS.ofList_len]; simp, AS.ofList_fits _ _ _ _⟩, fun i hi => ?_, by rw [AS.ofList_facts]; exact h⟩
+  refine ⟨⟨by rw [AS.ofList_len]; simp, AS.ofList_fits _ _ _ _, AS.ofList_par_at _ _ _ _⟩, fun i hi => ?_,
+    by rw [AS.ofList_facts]; exact h⟩
   rw [AS.ofList_len, List.length_map] at hi
   rw [AS.ofList_get]
   refine ⟨args[i], by simp [hi], ?_⟩
@@ -152,36 +200,15 @@ theorem entryKnown_holds {S : TState} {args : List V} {w : World} (h : S.holds w
     Option.getD_some]
   rfl
 
-/-- **A body the checker accepts from arguments it knows never misuses a call
-    and never faults**, run from those arguments in any world its typestate
-    describes. -/
-theorem check_run_known {cfg : Cfg} {cert : Cert} {S : TState} {args : List V} {c : Code}
-    (hc : accepts cert (entryKnown S args) c = true) (hfo : cert.fo = false) {w : World} (h : S.holds w)
-    (m : String) : run cfg args w c ≠ .misuse m ∧ run cfg args w c ≠ .fault m := by
-  unfold accepts at hc
-  split at hc
-  · rename_i o ho'
-    exact execC_run ho' hfo (entryKnown_holds h) m
-  · cases hc
-
-/-- A body the checker accepts from arguments it knows, as one that may fault,
-    never misuses a call. -/
-theorem check_safe_known {cfg : Cfg} {cert : Cert} {S : TState} {args : List V} {c : Code}
-    (hc : accepts cert (entryKnown S args) c = true) {w : World} (h : S.holds w) (m : String) :
-    run cfg args w c ≠ .misuse m := by
-  unfold accepts at hc
-  split at hc
-  · rename_i o ho'
-    exact execC_safe ho' (entryKnown_holds h) m
-  · cases hc
-
 /-- Whether the checker accepts a body from a state, the body leaving only by
-    falling off its end, in a state whose facts include `S'`. -/
-def acceptsTo (cert : Cert) (A : AS) (c : Code) (S' : TState) : Bool :=
+    falling off its end, in a state whose facts include `S'` and whose record
+    of the parameters names the cells and buffers `P'` does. -/
+def acceptsTo (cert : Cert) (A : AS) (c : Code) (S' : TState) (P' : Par) : Bool :=
   match execC cert [] 0 A c with
   | .ok o => o.brk.isEmpty && o.cont.isEmpty &&
       (match o.ok with
-       | some Af => S'.all (Af.facts.contains ·)
+       | some Af => S'.all (Af.facts.contains ·) && P'.cells.all (Af.par.cells.contains ·) &&
+           P'.bufs.all (Af.par.bufs.contains ·)
        | none => true)
   | .error _ => false
 
@@ -191,33 +218,51 @@ theorem roomArg_kept {r : Region} {x : UInt64} {w w' : World} (h : (Fact.roomArg
     (hr : r ≠ .pinned) (hk : Contracts.KeepsRooms w w') : (Fact.roomArg r x).holds w' :=
   ⟨by rw [hk r hr]; exact h.1, h.2⟩
 
-/-- **A body the checker accepts reaches a typestate**: run from `runArgs` in a
-    world its entry typestate describes, it neither misuses a call nor faults,
-    and where it ends, the world satisfies `L'`. -/
-theorem check_triple {cfg : Cfg} {cert : Cert} {S S' : TState} {dLen oLen : Bool} {c : Code}
-    (hc : acceptsTo cert (entryOf S dLen oLen) c S' = true) (hfo : cert.fo = false) {L L' : TState} {dataLen outLen : UInt64}
-    {w : World} (h : L.holds w) (hS : S = L.filter fun x => !isRoomArg x)
-    (hd : dLen = true → Fact.roomArg .data dataLen ∈ L) (ho : oLen = true → Fact.roomArg .out outLen ∈ L)
-    (hS' : S' = L'.filter fun x => !isRoomArg x)
-    (hR : ∀ x ∈ L', isRoomArg x = true → x ∈ L ∧ ∀ r v, x = .roomArg r v → r ≠ .pinned) :
-    Triple cfg (At (runArgs dataLen outLen).toArray w) c { ok := fun _ w' => L'.holds w', faultOk := false } := by
+/-- A typestate after a body: its lengths those the caller passed, its other
+    facts picked out of `S'` and `T`. -/
+theorem post_of {L L' S' T : TState} {w w' : World} (h : L.holds w) (hk : Contracts.KeepsRooms w w')
+    (hS' : S'.holds w') (hT : T.holds w') (plan : List Nat)
+    (hn : plan.filterMap ((S' ++ T)[·]?) = L'.filter fun x => !isRoomArg x)
+    (hR : ∀ x ∈ L', isRoomArg x = true → x ∈ L ∧ ∀ r v, x = .roomArg r v → r ≠ .pinned) : L'.holds w' := by
+  intro x hx
+  by_cases hra : isRoomArg x = true
+  · obtain ⟨hxL, hpin⟩ := hR x hx hra
+    cases x with
+    | roomArg r v => exact roomArg_kept (h _ hxL) (hpin r v rfl) hk
+    | _ => simp [isRoomArg] at hra
+  · have hm : x ∈ plan.filterMap ((S' ++ T)[·]?) := by
+      rw [hn]; exact List.mem_filter.mpr ⟨hx, by simpa using hra⟩
+    obtain ⟨i, -, hi⟩ := List.mem_filterMap.mp hm
+    rcases List.mem_append.mp (List.mem_of_getElem? hi) with hm | hm
+    · exact hS' x hm
+    · exact hT x hm
+
+/-- **A body the checker accepts reaches a typestate**: run from arguments and
+    a world its state describes, it neither misuses a call nor faults, and
+    where it ends, the world satisfies `L'`. -/
+theorem check_triple {cfg : Cfg} {cert : Cert} {A : AS} {c : Code} {S' : TState} {P' : Par}
+    (hc : acceptsTo cert A c S' P' = true) (hfo : cert.fo = false) {args : List V} {w : World}
+    (hA : A.Holds vals args.toArray w) {L' : TState}
+    (hpost : ∀ w', Contracts.KeepsRooms w w' → S'.holds w' → (P'.facts vals).holds w' → L'.holds w') :
+    Triple cfg (At args.toArray w) c { ok := fun _ w' => L'.holds w', faultOk := false } := by
   unfold acceptsTo at hc
   split at hc
   · rename_i o ho'
     simp only [Bool.and_eq_true, List.isEmpty_iff] at hc
     obtain ⟨⟨hb, hcn⟩, hf⟩ := hc
-    have ht := execC_sound (cfg := cfg) ho' (entryOf_holds h hS hd ho)
+    have ht := execC_sound (cfg := cfg) ho' hA
     rw [hfo] at ht
     refine Hoare.conseq ht (fun _ _ h => h) ?_ ?_ ?_
-    · rintro Γ w' ⟨⟨Af, hAf, hAh⟩, -, hk⟩ x hx
-      by_cases hra : isRoomArg x = true
-      · obtain ⟨hxL, hpin⟩ := hR x hx hra
-        cases x with
-        | roomArg r v => exact roomArg_kept (h _ hxL) (hpin r v rfl) hk
-        | _ => simp [isRoomArg] at hra
-      · rw [hAf] at hf
-        have hm : x ∈ S' := by rw [hS']; exact List.mem_filter.mpr ⟨hx, by simpa using hra⟩
-        exact hAh.2.2 x (by simpa using List.all_eq_true.mp hf x hm)
+    · rintro Γ w' ⟨⟨Af, hAf, hAh⟩, -, hk⟩
+      rw [hAf] at hf
+      simp only [Bool.and_eq_true, List.all_eq_true] at hf
+      obtain ⟨⟨hfs, hfc⟩, hfb⟩ := hf
+      refine hpost w' hk (fun x hx => hAh.2.2 x (by simpa using hfs x hx)) fun x hx => ?_
+      have hP := hAh.1.2.2.2.2.1
+      simp only [Par.facts, bufFacts, List.mem_append, List.mem_map] at hx
+      rcases hx with ⟨p, hp, rfl⟩ | ⟨p, hp, rfl⟩
+      · exact hP _ (List.mem_append_left _ (List.mem_map_of_mem (List.contains_iff_mem.mp (hfc p hp))))
+      · exact hP _ (List.mem_append_right _ (List.mem_map_of_mem (List.contains_iff_mem.mp (hfb p hp))))
     · rintro d Γ vs w' ⟨⟨A, args, hm, -⟩, -⟩
       rw [hb] at hm; cases hm
     · rintro d vs w' ⟨⟨A, args, Γ, hm, -⟩, -⟩
@@ -230,20 +275,126 @@ meta partial def listElems (e : Lean.Expr) : Lean.MetaM (List Lean.Expr) := do
   if e.isAppOfArity ``List.cons 3 then return e.getArg! 1 :: (← listElems (e.getArg! 2))
   return []
 
+open Lean Meta in
+/-- A number the typestate computes from its variables, as the parameters'
+    expression, the variables met so far `vs`. -/
+meta partial def toPExpr (vs : Array Expr) (e : Expr) : MetaM (PExpr × Array Expr) := do
+  if e.isFVar then
+    match vs.findIdx? (· == e) with
+    | some i => return (.param i, vs)
+    | none => return (.param vs.size, vs.push e)
+  if !e.hasFVar then
+    let c ← unsafe evalExpr UInt64 (mkConst ``UInt64) e
+    return (.lit c, vs)
+  let e' ← whnfR e
+  if e'.isAppOfArity ``HMul.hMul 6 then
+    let (a, vs) ← toPExpr vs (e'.getArg! 4)
+    let (b, vs) ← toPExpr vs (e'.getArg! 5)
+    return (.mul a b, vs)
+  if e'.isAppOfArity ``HShiftLeft.hShiftLeft 6 && !(e'.getArg! 5).hasFVar then
+    let (a, vs) ← toPExpr vs (e'.getArg! 4)
+    let k ← unsafe evalExpr UInt64 (mkConst ``UInt64) (e'.getArg! 5)
+    return (.shl a k.toNat, vs)
+  throwError "the typestate computes {e} in a way the parameters' record does not name"
+
+open Lean Meta in
+/-- A typestate read for the checker: the closed facts and where each sits,
+    whether it gives the data's and the output's lengths, the cells and
+    buffers the variables `vs` fix and where each sits, and the variables met. -/
+meta def readTypestate (L : Expr) (vs0 : Array Expr) :
+    MetaM (List Expr × List Nat × Bool × Bool × Par × List Nat × List Expr × Array Expr) := do
+  let mut keep : Array Expr := #[]
+  let mut idx : Array Nat := #[]
+  let mut dLen := false
+  let mut oLen := false
+  let mut cells : Array ((UInt64 × Nat) × Nat) := #[]
+  let mut bufs : Array ((UInt64 × PExpr) × Nat) := #[]
+  let mut vs := vs0
+  let mut i := 0
+  for f in ← listElems L do
+    let f ← instantiateMVars f
+    if f.isAppOfArity ``Fact.roomArg 2 then
+      let r ← whnf (f.getArg! 0)
+      if r.isConstOf ``Region.data then dLen := true
+      else if r.isConstOf ``Region.out then oLen := true
+    else if !f.hasFVar then
+      keep := keep.push f
+      idx := idx.push i
+    else if f.isAppOfArity ``Fact.cell 2 && !(f.getArg! 0).hasFVar && (f.getArg! 1).isFVar then
+      let a ← unsafe evalExpr UInt64 (mkConst ``UInt64) (f.getArg! 0)
+      let (p, vs') ← toPExpr vs (f.getArg! 1)
+      vs := vs'
+      let .param k := p | throwError "unreachable"
+      cells := cells.push ((a, k), i)
+    else if f.isAppOfArity ``Fact.devBuf 2 && !(f.getArg! 0).hasFVar then
+      let b ← unsafe evalExpr UInt64 (mkConst ``UInt64) (f.getArg! 0)
+      let (e, vs') ← toPExpr vs (f.getArg! 1)
+      vs := vs'
+      bufs := bufs.push ((b, e), i)
+    else throwError "the typestate fact {f} names a variable the checker cannot place"
+    i := i + 1
+  let P : Par := { cells := (cells.map (·.1)).toList, bufs := (bufs.map (·.1)).toList }
+  return (keep.toList, idx.toList, dLen, oLen, P, (cells.map (·.2) ++ bufs.map (·.2)).toList,
+    (cells.map (·.2) ++ bufs.map (·.2)).toList.map (mkNatLit ·), vs)
+
+open Lean Meta Elab Tactic in
+/-- Run the checker natively: the obligations the parameters leave, gathered,
+    then the certificate; or why the checker refuses the body. -/
+meta def runChecker (who : String) (fo : Bool) (S : Expr) (dLen oLen : Bool) (P : Par) (code : Expr) :
+    MetaM (Par × Cert) := do
+  let mkA (P : Par) := mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P)
+  let P ← if P.cells.isEmpty && P.bufs.isEmpty then pure P else
+    match ← unsafe evalExpr (Except String (List Obl))
+        (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkApp (mkConst ``List [0]) (mkConst ``Obl)))
+        (mkApp3 (mkConst ``oblsOf) (toExpr fo) (mkA P) code) with
+    | .ok os => pure { P with obls := os }
+    | .error e => throwError "{who}: the checker refuses this body:\n{e}"
+  match ← unsafe evalExpr (Except String Cert)
+      (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
+      (mkApp3 (mkConst ``certOrRefusal) (toExpr fo) (mkA P) code) with
+  | .ok c => return (P, c)
+  | .error e => throwError "{who}: the checker refuses this body:\n{e}"
+
+open Lean Meta Elab Tactic in
+/-- The hypothesis that a typestate holds. -/
+meta def findTypestate (who : String) : TacticM (Expr × Expr) := do
+  let mut found : Option (Expr × Expr) := none
+  for d in ← getLCtx do
+    if d.isImplementationDetail then continue
+    let t ← whnfR (← instantiateMVars d.type)
+    if t.isAppOfArity ``Contracts.TState.holds 2 then found := some (d.toExpr, t.getArg! 0)
+  let some r := found | throwError "{who}: no hypothesis that a typestate holds"
+  return r
+
+open Lean Meta Elab Tactic in
+/-- The proof that the entry state describes the call, its obligations left
+    as goals. -/
+meta def entryProof (h S : Expr) (idx : List Nat) (dLen oLen : Bool) (P : Par) (pidx : List Nat)
+    (vs : Array Expr) : TacticM (TSyntax `term) := do
+  let sh ← Term.exprToSyntax h
+  let sS ← Term.exprToSyntax S
+  let sP ← Term.exprToSyntax (toExpr P)
+  let sv ← Term.exprToSyntax (← mkListLit (mkConst ``UInt64) vs.toList)
+  let si ← Term.exprToSyntax (toExpr idx)
+  let sp ← Term.exprToSyntax (toExpr pidx)
+  let sd ← if dLen then `(true) else `(false)
+  let so ← if oLen then `(true) else `(false)
+  let hob ← if P.obls.isEmpty then `(fun _ e => nomatch e) else
+    let holes ← (List.range P.obls.length).mapM fun _ => `(?_)
+    `(obls_of ⟨$(holes.toArray),*, trivial⟩)
+  `((entryOf_holds (vals := $sv) (S := $sS) (dLen := $sd) (oLen := $so) (P := $sP) $sh $si (by rfl)
+      (by simp) (by simp) $sp (by rfl) rfl rfl $hob))
+
 open Lean Meta Elab Tactic in
 /-- Prove `run cfg args w c ≠ .misuse m` (and `≠ .fault m`) from the
     hypothesis that the world satisfies a typestate, by the checker: `args`
     `runArgs`, or a list it knows exactly. A goal that asks only for no misuse
-    is checked as a body that may fault. -/
+    is checked as a body that may fault. Where the typestate names variables,
+    the calls whose preconditions they decide are left as goals. -/
 elab "check_body" : tactic => do
   let g ← getMainGoal
   g.withContext do
-    let mut found : Option (Expr × Expr) := none
-    for d in ← getLCtx do
-      if d.isImplementationDetail then continue
-      let t ← whnfR (← instantiateMVars d.type)
-      if t.isAppOfArity ``Contracts.TState.holds 2 then found := some (d.toExpr, t.getArg! 0)
-    let some (h, L) := found | throwError "check_body: no hypothesis that a typestate holds"
+    let (h, L) ← findTypestate "check_body"
     let tgt ← instantiateMVars (← g.getType)
     let some runE := tgt.find? (fun e => e.isAppOfArity ``Sem.run 4)
       | throwError "check_body: the goal runs no body"
@@ -264,77 +415,35 @@ elab "check_body" : tactic => do
         | .ok c => pure c
         | .error e => throwError "check_body: the checker refuses this body:\n{e}"
       let sCert ← Term.exprToSyntax (toExpr cert)
-      let sL ← Term.exprToSyntax L
-      let sa ← Term.exprToSyntax args
+      let sA ← Term.exprToSyntax A
       let sh ← Term.exprToSyntax h
       let sc ← Term.exprToSyntax code
-      evalTactic (← `(tactic|
-        have hacc : accepts $sCert (entryKnown $sL $sa) $sc = true := by decide +kernel))
-      if fo then evalTactic (← `(tactic| exact check_safe_known hacc $sh _))
-      else evalTactic (← `(tactic| exact check_run_known hacc rfl $sh _))
+      evalTactic (← `(tactic| have hacc : accepts $sCert $sA $sc = true := by decide +kernel))
+      if fo then evalTactic (← `(tactic| exact check_safe (vals := []) hacc (entryKnown_holds $sh) _))
+      else evalTactic (← `(tactic| exact check_run (vals := []) hacc rfl (entryKnown_holds $sh) _))
       return
-    let mut keep : Array Expr := #[]
-    let mut dLen := false
-    let mut oLen := false
-    for f in ← listElems L do
-      let f ← instantiateMVars f
-      if f.isAppOfArity ``Fact.roomArg 2 then
-        let r ← whnf (f.getArg! 0)
-        if r.isConstOf ``Region.data then dLen := true
-        else if r.isConstOf ``Region.out then oLen := true
-      else
-        if f.hasFVar then throwError "check_body: the typestate fact {f} names a variable"
-        keep := keep.push f
-    let S ← mkListLit (mkConst ``Fact) keep.toList
-    let A := mkApp3 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen)
-    let cert ← match ← unsafe evalExpr (Except String Cert)
-        (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
-        (mkApp3 (mkConst ``certOrRefusal) (toExpr fo) A code) with
-      | .ok c => pure c
-      | .error e => throwError "check_body: the checker refuses this body:\n{e}"
+    let (keep, idx, dLen, oLen, P, pidx, _, vs) ← readTypestate L #[]
+    let S ← mkListLit (mkConst ``Fact) keep
+    let (P, cert) ← runChecker "check_body" fo S dLen oLen P code
     let sCert ← Term.exprToSyntax (toExpr cert)
-    let sS ← Term.exprToSyntax S
-    let sh ← Term.exprToSyntax h
+    let sA ← Term.exprToSyntax (mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P))
     let sc ← Term.exprToSyntax code
-    let sd ← if dLen then `(true) else `(false)
-    let so ← if oLen then `(true) else `(false)
-    evalTactic (← `(tactic|
-      have hacc : accepts $sCert (entryOf $sS $sd $so) $sc = true := by decide +kernel))
-    if fo then evalTactic (← `(tactic| exact check_safe hacc $sh rfl (by simp) (by simp) _))
-    else evalTactic (← `(tactic| exact check_run hacc rfl $sh rfl (by simp) (by simp) _))
-
-open Lean Meta Elab Tactic in
-/-- The typestate a hypothesis says holds, split into its closed facts, and
-    whether it gives the data's and the output's lengths. -/
-meta def readTypestate (L : Expr) : MetaM (Expr × Bool × Bool) := do
-  let mut keep : Array Expr := #[]
-  let mut dLen := false
-  let mut oLen := false
-  for f in ← listElems L do
-    let f ← instantiateMVars f
-    if f.isAppOfArity ``Fact.roomArg 2 then
-      let r ← whnf (f.getArg! 0)
-      if r.isConstOf ``Region.data then dLen := true
-      else if r.isConstOf ``Region.out then oLen := true
-    else
-      if f.hasFVar then throwError "the typestate fact {f} names a variable"
-      keep := keep.push f
-  return (← mkListLit (mkConst ``Fact) keep.toList, dLen, oLen)
+    evalTactic (← `(tactic| have hacc : accepts $sCert $sA $sc = true := by decide +kernel))
+    let hA ← entryProof h S idx dLen oLen P pidx vs
+    if fo then evalTactic (← `(tactic| refine check_safe hacc $hA _))
+    else evalTactic (← `(tactic| refine check_run hacc rfl $hA _))
 
 open Lean Meta Elab Tactic in
 /-- Prove `Hoare.Triple cfg (Hoare.At (runArgs dataLen outLen).toArray w) c
     { ok := fun _ w' => L'.holds w', faultOk := false }` from the hypothesis
-    that the world satisfies a typestate, by the checker. -/
+    that the world satisfies a typestate, by the checker. Where the
+    typestates name variables, the calls whose preconditions they decide are
+    left as goals. -/
 elab "check_reach" : tactic => do
   let g ← getMainGoal
   g.withContext do
-    let mut found : Option (Expr × Expr) := none
-    for d in ← getLCtx do
-      if d.isImplementationDetail then continue
-      let t ← whnfR (← instantiateMVars d.type)
-      if t.isAppOfArity ``Contracts.TState.holds 2 then found := some (d.toExpr, t.getArg! 0)
-    let some (h, L) := found | throwError "check_reach: no hypothesis that a typestate holds"
-    let (S, dLen, oLen) ← readTypestate L
+    let (h, L) ← findTypestate "check_reach"
+    let (keep, idx, dLen, oLen, P, pidx, _, vs) ← readTypestate L #[]
     let tgt ← instantiateMVars (← g.getType)
     unless tgt.isAppOfArity ``Hoare.Triple 4 do throwError "check_reach: the goal is not a triple"
     let code := tgt.getArg! 2
@@ -346,23 +455,46 @@ elab "check_reach" : tactic => do
       let L' := b.getArg! 0
       if xs.any (fun x => L'.containsFVar x.fvarId!) then throwError "check_reach: the typestate reads the state"
       return L'
-    let (S', _, _) ← readTypestate L'
+    let (keep', _, _, _, P', pidx', _, vs') ← readTypestate L' vs
+    if vs'.size != vs.size then throwError "check_reach: the post names a variable the entry does not"
     if code.hasFVar then throwError "check_reach: the body names a variable"
-    let A := mkApp3 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen)
-    let cert ← match ← unsafe evalExpr (Except String Cert)
-        (mkApp2 (mkConst ``Except [0, 0]) (mkConst ``String) (mkConst ``Cert))
-        (mkApp3 (mkConst ``certOrRefusal) (toExpr false) A code) with
-      | .ok c => pure c
-      | .error e => throwError "check_reach: the checker refuses this body:\n{e}"
+    let S ← mkListLit (mkConst ``Fact) keep
+    let S' ← mkListLit (mkConst ``Fact) keep'
+    let (P, cert) ← runChecker "check_reach" false S dLen oLen P code
+    -- the post's facts but its lengths, in order: closed ones from `S'`, the
+    -- others from `P'`'s cells then buffers
+    let mut plan : Array Nat := #[]
+    let mut k := 0
+    let mut j := 0
+    for f in ← listElems L' do
+      let f ← instantiateMVars f
+      if f.isAppOfArity ``Fact.roomArg 2 then
+        j := j + 1
+        continue
+      if !f.hasFVar then
+        plan := plan.push k
+        k := k + 1
+      else
+        match pidx'.findIdx? (· == j) with
+        | some q => plan := plan.push (keep'.length + q)
+        | none => throwError "check_reach: unplaced post fact {f}"
+      j := j + 1
     let sCert ← Term.exprToSyntax (toExpr cert)
-    let sS ← Term.exprToSyntax S
+    let sA ← Term.exprToSyntax (mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P))
     let sS' ← Term.exprToSyntax S'
-    let sh ← Term.exprToSyntax h
+    let sP' ← Term.exprToSyntax (toExpr P')
     let sc ← Term.exprToSyntax code
-    let sd ← if dLen then `(true) else `(false)
-    let so ← if oLen then `(true) else `(false)
+    let sh ← Term.exprToSyntax h
+    let splan ← Term.exprToSyntax (toExpr plan.toList)
+    let A := mkApp4 (mkConst ``entryOf) S (toExpr dLen) (toExpr oLen) (toExpr P)
+    unless ← unsafe evalExpr Bool (mkConst ``Bool) (mkApp5 (mkConst ``acceptsTo) (toExpr cert) A code S' (toExpr P')) do
+      throwError "check_reach: the checker accepts the body but does not reach the post typestate"
     evalTactic (← `(tactic|
-      have hacc : acceptsTo $sCert (entryOf $sS $sd $so) $sc $sS' = true := by decide +kernel))
-    evalTactic (← `(tactic| exact check_triple hacc rfl $sh rfl (by simp) (by simp) rfl (by simp [isRoomArg])))
+      have hacc : acceptsTo $sCert $sA $sc $sS' $sP' = true := by decide +kernel))
+    let hA ← entryProof h S idx dLen oLen P pidx vs
+    let sv ← Term.exprToSyntax (← mkListLit (mkConst ``UInt64) vs.toList)
+    evalTactic (← `(tactic| refine check_triple (vals := $sv) hacc rfl $hA ?hpost))
+    evalTactic (← `(tactic| case hpost =>
+      exact fun w' hk hS' hT => post_of $sh hk hS' hT $splan (by rfl) (by simp [isRoomArg])))
 
 end AlgorithmLib.Check

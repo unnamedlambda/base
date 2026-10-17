@@ -861,6 +861,193 @@ end entries
 
 /-- **What `preB` accepts, `Pre` holds of**: where the checker describes the
     arguments and the typestate, a call `preB` accepts has its precondition. -/
+theorem handB_sound {a : AV} {x : UInt64} {k : Contracts.Held} (hd : ∃ t, a.Desc Γ w (.sc t x))
+    (h : handB k a = true) : k.live w x = true := by
+  unfold handB at h
+  split at h
+  · rename_i k'
+    simp only [beq_iff_eq] at h
+    subst h
+    obtain ⟨t, x', e, hl⟩ := hd
+    cases e
+    rcases hl with ⟨h1, -⟩ | hl
+    · cases h1
+    · exact hl
+  · cases h
+
+/-- Room for `n` bytes the arguments name, and a handle the arguments name,
+    as the library contracts ask them. -/
+private theorem ext_room {p : AV} {x : UInt64} {k : Nat} (hS : S.holds w) (hd : ∃ t, p.Desc Γ w (.sc t x))
+    (h : memN S p k = true) : ∀ q ∈ [(x, k)], Fits w.mem q.1 q.2 := by
+  intro q hq; simp only [List.mem_singleton] at hq; subst hq; exact memN_fits hS hd h
+
+private theorem ext_hand {a : AV} {x : UInt64} {k : Contracts.Held} (hd : ∃ t, a.Desc Γ w (.sc t x))
+    (h : handB k a = true) : ∀ p ∈ [(k, x)], p.1.live w p.2 = true := by
+  intro q hq; simp only [List.mem_singleton] at hq; subst hq; exact handB_sound hd h
+
+/-- **What `preExt` decides is what the library contracts ask**: the handles
+    and the room `extNeeds` names for the bits handed over. -/
+theorem preExt_sound (hS : S.holds w) {e : IR.Ext} {as : List AV} {bits : List UInt64} (hb : ArgBits Γ w as bits)
+    (h : preExt S e as = true) :
+    ∃ hs rs, Contracts.extNeeds e bits = some (hs, rs) ∧ (∀ p ∈ hs, p.1.live w p.2 = true) ∧
+      (∀ q ∈ rs, Fits w.mem q.1 q.2) := by
+  have none_ : ∀ p ∈ ([] : List (Contracts.Held × UInt64)), p.1.live w p.2 = true := by simp
+  have noroom : ∀ q ∈ ([] : List (UInt64 × Nat)), Fits w.mem q.1 q.2 := by simp
+  unfold preExt at h
+  split at h <;> (try (cases h; done))
+  -- C: memcpy
+  · rename_i d s n
+    split at h
+    · rename_i d' s' n' e1 e2 e3
+      simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+      obtain ⟨⟨hc, hs⟩, hd⟩ := h
+      argbits hb [h1, h2, h3]
+      have := known_bits h1 e1; subst this
+      have := known_bits h2 e2; subst this
+      have := known_bits h3 e3; subst this
+      refine ⟨[], _, by simp only [Contracts.extNeeds]; rw [if_pos hc], none_, fun q hq => ?_⟩
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+      rcases hq with rfl | rfl
+      · exact memN_fits hS h2 hs
+      · exact memN_fits hS h1 hd
+    · cases h
+  -- C: memmove
+  · rename_i d s n
+    split at h
+    · rename_i n' e3
+      simp only [Bool.and_eq_true] at h
+      argbits hb [h1, h2, h3]
+      have := known_bits h3 e3; subst this
+      refine ⟨[], _, rfl, none_, fun q hq => ?_⟩
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hq
+      rcases hq with rfl | rfl
+      · exact memN_fits hS h2 h.1
+      · exact memN_fits hS h1 h.2
+    · cases h
+  -- C: memset
+  · rename_i d c n
+    split at h
+    · rename_i n' e3
+      argbits hb [h1, h2, h3]
+      have := known_bits h3 e3; subst this
+      exact ⟨[], _, rfl, none_, ext_room hS h1 h⟩
+    · cases h
+  -- C: calloc
+  · rename_i n sz
+    split at h
+    · rename_i a b e1 e2
+      simp only [decide_eq_true_eq] at h
+      argbits hb [h1, h2]
+      have := known_bits h1 e1; subst this
+      have := known_bits h2 e2; subst this
+      exact ⟨[], [], by simp [Contracts.extNeeds, h], none_, noroom⟩
+    · cases h
+  -- C: free
+  · rename_i p
+    argbits hb [h1]
+    exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  -- window: init, pump
+  · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
+  · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
+  -- window: close, pixels
+  · argbits hb [h1]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  · argbits hb [h1]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  -- window: poll
+  · simp only [Bool.and_eq_true] at h
+    argbits hb [h1, h2]
+    exact ⟨_, _, rfl, ext_hand h1 h.1, ext_room hS h2 h.2⟩
+  -- cpu
+  · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
+  · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
+  · argbits hb [h1]; exact ⟨[], [], rfl, none_, noroom⟩
+  · argbits hb [h1]; exact ⟨[], [], rfl, none_, noroom⟩
+  · argbits hb [h1]; exact ⟨[], [], rfl, none_, noroom⟩
+  -- serial: count
+  · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
+  -- serial: name
+  · split at h
+    · rename_i c e3
+      argbits hb [h1, h2, h3]
+      have := known_bits h3 e3; subst this
+      exact ⟨[], _, rfl, none_, ext_room hS h2 h⟩
+    · cases h
+  -- serial: close, pending
+  · argbits hb [h1]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  · argbits hb [h1]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  -- serial: read, write
+  · simp only [Bool.and_eq_true] at h
+    obtain ⟨hp, h⟩ := h
+    split at h
+    · rename_i l e3
+      argbits hb [h1, h2, h3]
+      have := known_bits h3 e3; subst this
+      exact ⟨_, _, rfl, ext_hand h1 hp, ext_room hS h2 h⟩
+    · cases h
+  · simp only [Bool.and_eq_true] at h
+    obtain ⟨hp, h⟩ := h
+    split at h
+    · rename_i l e3
+      argbits hb [h1, h2, h3]
+      have := known_bits h3 e3; subst this
+      exact ⟨_, _, rfl, ext_hand h1 hp, ext_room hS h2 h⟩
+    · cases h
+  -- usb: count, info, open
+  · argbits hb []; exact ⟨[], [], rfl, none_, noroom⟩
+  · argbits hb [h1, h2]; exact ⟨[], [], rfl, none_, noroom⟩
+  · argbits hb [h1]; exact ⟨[], [], rfl, none_, noroom⟩
+  -- usb: close, claim, release
+  · argbits hb [h1]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  · argbits hb [h1, h2]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  · argbits hb [h1, h2]; exact ⟨_, [], rfl, ext_hand h1 h, noroom⟩
+  -- usb: control
+  · simp only [Bool.and_eq_true] at h
+    obtain ⟨hp, h⟩ := h
+    split at h
+    · rename_i l e7
+      argbits hb [h1, h2, h3, h4, h5, h6, h7, h8]
+      have := known_bits h7 e7; subst this
+      exact ⟨_, _, rfl, ext_hand h1 hp, ext_room hS h6 h⟩
+    · cases h
+  -- usb: bulk, interrupt
+  all_goals
+    simp only [Bool.and_eq_true] at h
+    obtain ⟨hp, h⟩ := h
+    split at h
+    · rename_i l e5
+      argbits hb [h1, h2, h3, h4, h5, h6]
+      have := known_bits h5 e5; subst this
+      exact ⟨_, _, rfl, ext_hand h1 hp, ext_room hS h4 h⟩
+    · cases h
+
+theorem ArgBits.length_eq {Γ : Env} {w : World} :
+    ∀ {as : List AV} {bits : List UInt64}, ArgBits Γ w as bits → bits.length = as.length
+  | [], [], _ => rfl
+  | _ :: _, _ :: _, h => by simp [ArgBits.length_eq h.2]
+  | [], _ :: _, h => h.elim
+  | _ :: _, [], h => h.elim
+
+theorem preArity_len {n : Nat} {as : List AV} (h : preArity n as = true) : as.length = n := by
+  simpa [preArity] using h
+
+theorem preCtxN_sound (hS : S.holds w) {as : List AV} (hb : ArgBits Γ w as bits) {n : Nat} {cap : Bool}
+    (h : preCtxN S n cap as = true) :
+    ∃ x rest, bits = x :: rest ∧ rest.length + 1 = n ∧ (x = 0 ∨ (x = cudaCtx ∧ Part.cuda.get w = true)) ∧
+      (cap = true → w.dev.capture = none) := by
+  unfold preCtxN at h
+  split at h
+  · rename_i c rest
+    cases bits with
+    | nil => exact hb.elim
+    | cons x xs =>
+        obtain ⟨hc, hr⟩ := hb
+        simp only [Bool.and_eq_true, beq_iff_eq, Bool.or_eq_true, Bool.not_eq_true'] at h
+        obtain ⟨⟨hl, hcb⟩, hcap⟩ := h
+        refine ⟨x, xs, rfl, by rw [ArgBits.length_eq hr]; exact hl, ctxB_sound hS hc hcb, fun hc' => ?_⟩
+        rcases hcap with e | e
+        · rw [hc'] at e; cases e
+        · exact Contracts.capture_of_state hS e
+  · cases h
+
 theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w) (hb : ArgBits Γ w as bits)
     (h : preB f as S rb = true) (hrb : RbSound w bits rb) : Contracts.Pre f bits w := by
   cases f
@@ -906,6 +1093,71 @@ theorem preB_sound {f : Ffi} {as : List AV} {bits : List UInt64} (hS : S.holds w
   case htInsert => exact pre_htInsert' hS hb h
   case htLookup => exact pre_htLookup' hS hb h
   case lmdbCursorScan => exact pre_lmdbCursorScan' hS hb h
-  all_goals exact absurd h (by simp [preB])
+  case cosf =>
+    have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+    match bits, hl with | [_], _ => trivial
+  case sinf =>
+    have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+    match bits, hl with | [_], _ => trivial
+  case nativeFree =>
+    have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+    match bits, hl with | [_], _ => trivial
+  case htCount =>
+    have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+    match bits, hl with | [_], _ => trivial
+  case threadPriority =>
+    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+  case powf =>
+    have hl := (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+    match bits, hl with | [_, _], _ => trivial
+  case memAdviseHuge =>
+    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+  case memLock =>
+    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+  case memUnlock =>
+    exact (ArgBits.length_eq hb).trans (preArity_len (by dsimp only [preB] at h; exact h))
+  case cudaEventCreate =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [], _ => exact hc
+  case cudaMemInfoFree =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [], _ => exact hc
+  case cudaMemInfoTotal =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [], _ => exact hc
+  case cudaStreamCreate =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [], _ => exact hc
+  case cudaEventDestroy =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_], _ => exact hc
+  case cudaGraphDestroy =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_], _ => exact hc
+  case cudaPinnedFree =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_], _ => exact hc
+  case cudaPinnedPtr =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_], _ => exact hc
+  case cudaGraphUpload =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_, _], _ => exact hc
+  case cudaPinnedPtrAt =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_, _, _], _ => exact hc
+  case cudaGraphBeginCapture =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_], _ => exact ⟨hc, hcap rfl⟩
+  case cudaStreamDestroy =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_], _ => exact ⟨hc, hcap rfl⟩
+  case cudaStreamSync =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_], _ => exact ⟨hc, hcap rfl⟩
+  case cudaEventRecord =>
+    obtain ⟨x, rest, rfl, hl, hc, hcap⟩ := preCtxN_sound hS hb (by dsimp only [preB] at h; exact h)
+    match rest, hl with | [_, _], _ => exact ⟨hc, hcap rfl⟩
+  all_goals (dsimp only [preB] at h; cases h)
 
 end AlgorithmLib.Check

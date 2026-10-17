@@ -715,38 +715,12 @@ abbrev Live : World → Prop :=
 
 theorem tyBytes_le (ty : ClifTy) : tyBytes ty ≤ 2 ^ 64 := by cases ty <;> decide
 
-/-- `n` bytes at `a` lie inside one region outside pinned memory, within the
-    span an address names, with memory not frozen: a load or a store of them
-    finds them, and so does one of any part of them. -/
-def Fits (m : Mem) (a : UInt64) (n : Nat) : Prop :=
-  ∃ r off, decodeAddr a = some (r, off) ∧ r ≠ .pinned ∧ off + n ≤ m.sizes r ∧ m.frozen = false ∧
-    off + n ≤ 2 ^ 36
-
-theorem Fits.load {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) : ∃ x, m.load a n = some x := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := h
-  exact Option.isSome_iff_exists.mp (Contracts.load_isSome hd hp hs hz)
-
-theorem Fits.store {m : Mem} {a : UInt64} {n : Nat} (h : Fits m a n) (v : UInt64) :
-    ∃ m', m.store a n v = some m' := by
-  obtain ⟨r, off, hd, hp, hs, hz, -⟩ := h
-  exact Option.isSome_iff_exists.mp (Contracts.store_isSome hd hp hs hz v)
-
-theorem Fits.mono {m : Mem} {a : UInt64} {n n' : Nat} (hn : n ≤ n') (h : Fits m a n') : Fits m a n := by
-  obtain ⟨r, off, hd, hp, hs, hz, hsp⟩ := h
-  exact ⟨r, off, hd, hp, by omega, hz, by omega⟩
-
-/-- Part of bytes that fit fits. -/
-theorem Fits.part {m : Mem} {a : UInt64} {n i k : Nat} (h : Fits m a n) (hik : i + k ≤ n) (hk : 0 < k) :
-    Fits m (a + UInt64.ofNat i) k := by
-  obtain ⟨r, off, hd, hp, hs, hz, hsp⟩ := h
-  have hd' := Static.decodeAddr_add (i := i) hd (by simp only [regionSpan, UInt64.reduceToNat]; omega)
-  exact ⟨r, off + i, hd', hp, by omega, hz, by omega⟩
+export AlgorithmLib.HProg.Contracts (Fits)
 
 /-- Bytes a `room` fact covers. -/
 theorem fits_of_state {S : TState} {w : World} {a : UInt64} {n : Nat} (hS : S.holds w)
-    (h : Contracts.roomAt S a n = true) : Fits w.mem a n := by
-  obtain ⟨r, off, hd, hp, hs, hz, hsp⟩ := Contracts.roomAt_spec hS h
-  exact ⟨r, off, hd, hp, hs, hz, hsp⟩
+    (h : Contracts.roomAt S a n = true) : Fits w.mem a n :=
+  Contracts.roomAt_spec hS h
 
 /-- Bytes within a length the program was handed. -/
 theorem fits_of_roomArg {S : TState} {w : World} {a x : UInt64} {n : Nat} {r : Region} {off : Nat}
@@ -1017,7 +991,7 @@ theorem wp_storeU_wide {cfg : Cfg} {d : Nat} {J : Post} {α : Type} {Q : α → 
     (hv : Γ[v]? = some (.sc t' y)) (hS : S.holds w) (hJ : J.faultOk = true ∨ Fits w.mem x 16)
     (hS' : afterStore (some x) none 16 S = S')
     (hk : ∀ w', S'.holds w' → wp cfg d J k Q Γ w') : wp cfg d J (.storeUnaligned v a k) Q Γ w :=
-  wp_storeU_addr S _ ha hv hS (hJ.imp_right (Fits.mono (by cases t' <;> decide))) rfl fun w' h => hk w' (by
+  wp_storeU_addr S _ ha hv hS (hJ.imp_right (AlgorithmLib.HProg.Contracts.Fits.mono (by cases t' <;> decide))) rfl fun w' h => hk w' (by
     subst hS'
     intro f hf
     have hf' : f ∈ S.filter (Contracts.storeKeeps x 16) := hf
@@ -3877,12 +3851,6 @@ theorem toNat_and_mask {x : UInt64} {k : Nat} (hk : k < 64) :
       rw [Nat.mul_comm, ← Nat.shiftLeft_eq, Nat.testBit_shiftLeft]
       simp [hi]
     simp [this, hi]
-
-/-- A fit asks only a region's size and whether memory is frozen. -/
-theorem Fits.congr {m m' : Mem} {a : UInt64} {n : Nat} (hs : m'.sizes = m.sizes) (hz : m'.frozen = m.frozen)
-    (h : Fits m a n) : Fits m' a n := by
-  obtain ⟨r, off, hd, hp, hsz, hf, hsp⟩ := h
-  exact ⟨r, off, hd, hp, by rw [hs]; exact hsz, by rw [hz]; exact hf, hsp⟩
 
 /-- Lanes that each fit store. -/
 theorem foldlM_lane_stores_some {addr : UInt64} {lw : Nat} : ∀ (l : List (UInt64 × Nat)) (m0 : Mem),
