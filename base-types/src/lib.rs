@@ -2,11 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod clif;
 
-/// Bytes the arena starts with at one address.
-///
-/// The arena is zero everywhere a segment does not cover it, which is what
-/// keeps an artifact from shipping the zeros: across the artifacts in this
-/// repository the images are 29.7 MB, of which 4.9 MB is not zero.
+/// Bytes the arena starts with at `offset`; the rest of the arena is zero.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Segment {
@@ -16,69 +12,33 @@ pub struct Segment {
 }
 
 impl Segment {
-    /// The first address past the segment. Saturating, so a segment no memory
-    /// could hold compares past every address rather than wrapping around.
+    /// The first offset past the segment, saturating.
     fn end(&self) -> u64 {
         self.offset.saturating_add(self.bytes.len() as u64)
     }
 }
 
-/// The board's control, as data: one Cranelift module. The primitives it
-/// calls, the functions it defines, and the one piece of data it declares —
-/// the arena they run in — with the bytes the arena starts with.
+/// One Cranelift module as data: the primitives it calls, the functions it
+/// defines, and the arena they share with the bytes it starts with.
 ///
-/// This is the whole of the wire format. A host calls a function by its
-/// [`clif::Function::name`]; what the bytes it reads and writes mean is
-/// between the program and the host, and lives in those bytes when it needs to.
-///
-/// # Encoding
-///
-/// CBOR (RFC 8949), the same file for every host, in one profile:
-///
-/// - lengths are definite, and every head is the shortest that holds its value;
-/// - a struct is a map whose text keys are its fields in declaration order —
-///   deliberately not the key sorting of RFC 8949 §4.2.1, so the field order
-///   here is part of the format;
-/// - an enum is externally tagged: a unit variant is its name as text, any
-///   other variant a one-entry map from its name to its value, with a tuple
-///   variant's fields as an array;
-/// - a newtype is its content, `None` is null, a tuple is an array, and segment
-///   bytes are a byte string.
-///
-/// [`Artifact::to_bytes`] writes exactly this, so one file has one encoding:
-/// the build refuses a generated artifact that does not re-encode to itself.
-///
-/// Unknown fields are refused rather than skipped, and every field is written,
-/// so a writer left behind by a change to this struct fails to load rather
-/// than producing a program that starts from an arena it believes it filled.
+/// Encoded as CBOR with definite lengths and shortest heads; a struct is a map
+/// keyed by field name in declaration order, an enum is externally tagged, and
+/// unknown fields are refused. [`Artifact::to_bytes`] is the one encoding.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
-    /// The C functions the program calls, each declared once; a call names
-    /// one by its position here.
+    /// The C functions the program calls; a call names one by position.
     pub primitives: Vec<clif::Primitive>,
-    /// Compiled as a unit. A call names one by its position here.
+    /// The program's functions; a call names one by position.
     pub functions: Vec<clif::Function>,
-    /// The size of the arena, which the engine allocates exactly and cannot
-    /// check: nothing here says what the bodies go on to address, so an
-    /// artifact asking for too little is a program reading its own zeros.
-    /// What the generator proved its layout fits in is what belongs here.
-    ///
-    /// The arena is page-aligned, so an address a program keeps aligned
-    /// relative to its start is aligned in fact, which an `aligned` access
-    /// states. Sizes and addresses are 64-bit whatever the host: the artifact
-    /// is the same file everywhere, and a host that cannot hold it says so
-    /// when it loads it.
+    /// The arena's size in bytes.
     pub arena_size: u64,
-    /// In ascending order of address and not overlapping, which is what lets
-    /// the engine lay them over the zeroed arena in one pass, and what gives an
-    /// arena one spelling; a segment out of order, overlapping another, or
-    /// past the arena is refused at load.
+    /// The arena's initial bytes, in ascending order of offset, not overlapping.
     pub data: Vec<Segment>,
 }
 
 impl Artifact {
-    /// Decode an artifact, refusing trailing bytes after it.
+    /// Decodes an artifact, refusing bytes after it.
     pub fn from_bytes(bytes: &[u8]) -> Result<Artifact, String> {
         let mut de = minicbor_serde::Deserializer::new(bytes);
         let artifact = Artifact::deserialize(&mut de).map_err(|e| format!("not an artifact: {e}"))?;
@@ -89,13 +49,11 @@ impl Artifact {
         Ok(artifact)
     }
 
-    /// Encode an artifact in the profile described above.
     pub fn to_bytes(&self) -> Vec<u8> {
         minicbor_serde::to_vec(self).expect("an artifact has nothing serde cannot write")
     }
 
-    /// The `len` bytes the arena starts with at `offset`, zero-filled where no
-    /// segment covers them.
+    /// The `len` bytes the arena starts with at `offset`.
     pub fn read(&self, offset: u64, len: usize) -> Vec<u8> {
         let mut out = vec![0u8; len];
         let end = offset.saturating_add(len as u64);
@@ -111,11 +69,8 @@ impl Artifact {
         out
     }
 
-    /// Put `bytes` at `offset` of the arena the program starts from — what a
-    /// host does when a path or a length is known only when it runs.
-    ///
-    /// Segments the write touches or abuts are merged with it, so the result is
-    /// still ordered and non-overlapping.
+    /// Sets the arena's initial bytes at `offset`, merging the segments it
+    /// touches or abuts.
     pub fn write(&mut self, offset: u64, bytes: &[u8]) {
         let (mut lo, mut hi) = (offset, offset.saturating_add(bytes.len() as u64));
         let mut touched: Vec<Segment> = Vec::new();
@@ -153,9 +108,7 @@ mod tests {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 
-    /// One function touching each shape the profile has to spell: an optional
-    /// name, unit, newtype and tuple variants, null, a nested struct, a tuple,
-    /// and integers no double holds exactly.
+    /// An artifact using each shape the encoding spells.
     fn sample() -> Artifact {
         use clif::*;
         let v = Val;
@@ -206,9 +159,7 @@ mod tests {
         }
     }
 
-    /// The profile, byte for byte. `AlgorithmLib.Core` checks that the Lean
-    /// writer, written separately from minicbor, produces the same bytes for
-    /// the same value, so a change to either side shows here or there.
+    /// The encoding, byte for byte; Lean's writer is checked against the same bytes.
     #[test]
     fn an_artifact_encodes_in_the_profile() {
         let expected = hex(&[
@@ -232,10 +183,7 @@ mod tests {
         assert_eq!(Artifact::from_bytes(&expected).unwrap(), sample());
     }
 
-    /// Integers come back exactly. JSON read through doubles — every
-    /// JavaScript host — turns `i64::MAX` into 9223372036854775808 and the
-    /// all-ones float pattern into a different pattern; CBOR carries them as
-    /// integers, so there is nothing to round.
+    /// Integers round-trip exactly, including those a double cannot hold.
     #[test]
     fn integers_past_two_to_the_53_come_back_exactly() {
         let back = Artifact::from_bytes(&sample().to_bytes()).unwrap();
@@ -247,9 +195,7 @@ mod tests {
         assert_eq!((i64::MAX - 1) as f64, i64::MAX as f64, "a double cannot tell these apart");
     }
 
-    /// Instructions are named, not numbered, so a reader that does not know one
-    /// says which — rather than reading it as whichever instruction has that
-    /// number, which is what a positional encoding does.
+    /// An instruction the reader does not know is refused by its name.
     #[test]
     fn an_instruction_the_reader_does_not_know_is_refused_by_name() {
         let bytes = sample().to_bytes();
@@ -282,9 +228,7 @@ mod tests {
         assert_eq!(a.read(2, 2), vec![0, 0]);
     }
 
-    /// A write that lands in the zeros becomes a segment of its own; one that
-    /// touches existing segments joins them, and what it does not cover keeps
-    /// the bytes that were there.
+    /// A write in the zeros is a segment of its own; one touching segments joins them.
     #[test]
     fn writing_keeps_segments_ordered_and_disjoint() {
         let mut a = artifact(vec![
